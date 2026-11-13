@@ -154,7 +154,7 @@ export async function assertCallerMayAccessPty(
     return { lane: 'own' };
   } catch (ownErr) {
     const viaTask = lane
-      ? await resolveTaskOwnerAccess(getWindow, (expected) => resolvePtyOwnerWorkspace(getWindow, ptyId, { expected }), missFor(lane, `pane "${ptyId}"`))
+      ? await resolveTaskOwnerAccess(getWindow, (expected) => resolvePtyOwnerWorkspace(getWindow, ptyId, { expected }), missFor(lane, `pane ${JSON.stringify(ptyId)}`))
       : null;
     if (viaTask) return viaTask;
     throw ownErr;
@@ -187,7 +187,7 @@ export async function assertCallerMayAccessSurface(
   const owner = await resolveSurfaceOwnerWorkspace(getWindow, surfaceId);
   if (owner === expectedWorkspaceId) return { lane: 'own' };
   const viaTask = lane
-    ? await resolveTaskOwnerAccess(getWindow, async () => owner, missFor(lane, `surface "${surfaceId}"`))
+    ? await resolveTaskOwnerAccess(getWindow, async () => owner, missFor(lane, `surface ${JSON.stringify(surfaceId)}`))
     : null;
   if (viaTask) return viaTask;
   throw new Error(
@@ -232,14 +232,14 @@ async function taskOwnerAccess(
   };
   if (!callerWorkspaceId) {
     return miss(lane.callerPtyId
-      ? `caller pane "${lane.callerPtyId}" is in no workspace`
+      ? `caller pane ${JSON.stringify(lane.callerPtyId)} is in no workspace`
       : 'the call named no caller pane and no commander token');
   }
   const taskWorkspaces = lane.openTaskWorkspacesOf(callerWorkspaceId);
-  if (taskWorkspaces.length === 0) return miss(`workspace "${callerWorkspaceId}" owns no open ledger task`);
+  if (taskWorkspaces.length === 0) return miss(`workspace ${JSON.stringify(callerWorkspaceId)} owns no open ledger task`);
   const owner = await ownerOf(taskWorkspaces);
   if (owner === null || owner === callerWorkspaceId || !taskWorkspaces.includes(owner)) {
-    return miss(`the pane's workspace "${owner ?? 'none'}" is not an open task of workspace "${callerWorkspaceId}"`);
+    return miss(`the pane's workspace ${JSON.stringify(owner ?? 'none')} is not an open task of workspace ${JSON.stringify(callerWorkspaceId)}`);
   }
   return { lane: 'task-owner', taskWorkspaceId: owner, callerWorkspaceId };
 }

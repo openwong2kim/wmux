@@ -9,6 +9,7 @@ import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { registerInputRpc, taskPaneTextRefusal } from '../input.rpc';
+import { beginDeliverySend } from '../deliverySenders';
 import { mintCommanderToken, __resetCommanderTrustForTesting } from '../../../deck/commanderTrust';
 import type { PTYManager } from '../../../pty/PTYManager';
 import type { TaskLedger } from '../../../../daemon/ledger/TaskLedger';
@@ -71,13 +72,15 @@ interface WireOpts {
   /** Whether the task pane is held at its usage limit. */
   usageLimited?: boolean;
   /** The daemon's folder-trust verdict, asked when no screen was read. */
-  daemonTrust?: FolderTrustState | { state: FolderTrustState; reason?: string } | null;
+  daemonTrust?: FolderTrustState | { state: FolderTrustState; reason?: string; dialog?: true } | null;
   /** The daemon's agent name for the task pane (default Claude Code). */
   agent?: string | null;
   /** The daemon's A2A task rows, read by a delivery's owner lane. */
   tasks?: unknown[];
   /** Whether wmux's own launch record proves the pane trust-clear. */
   trustProvenClear?: boolean;
+  /** The daemon's channel messages: the author workspace of each "channel:seq". */
+  mentionAuthors?: Record<string, string>;
 }
 
 function wire(opts: WireOpts = {}): Wiring {
@@ -86,8 +89,14 @@ function wire(opts: WireOpts = {}): Wiring {
   const writes: Array<{ ptyId: string; data: string }> = [];
   const dc = {
     isConnected: true,
-    rpc: async (method: string) =>
-      method === 'daemon.approvals.list' ? { pending: opts.pending ?? [] } : {},
+    rpc: async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'daemon.approvals.list') return { pending: opts.pending ?? [] };
+      if (method === 'a2a.channel.getMessages') {
+        const author = opts.mentionAuthors?.[`${String(params['channelId'])}:${String(params['sinceSeq'])}`];
+        return { ok: true, messages: author ? [{ seq: params['sinceSeq'], workspaceId: author }] : [] };
+      }
+      return {};
+    },
     writeToSession: (ptyId: string, data: string) => {
       writes.push({ ptyId, data });
       return true;
@@ -873,6 +882,57 @@ describe('owner lane — a delivery from the task\'s orchestrator', () => {
   it('the launch record never overrides a trust prompt the ring text shows', async () => {
     const w = wire({ screen: { parked: SCREENS['trust'].screen as string }, daemonTrust: null, trustProvenClear: true });
     expect(await w.gatedSubmit('pty-task', 'hello', 'claude')).toMatchObject({ ok: false });
+    expect(w.writes).toEqual([]);
+  });
+
+  it('passes only an unseen-cells verdict over clear ring text with no other dialog', async () => {
+    const tasks = [task('t1', 'ws-owner', 'ws-task')];
+    const refused: Array<[string, WireOpts]> = [
+      ...(['timeout', 'unreadable', 'muted'] as const).map((reason): [string, WireOpts] => [reason, { screen: { parked: 'WORKER SCREEN' }, daemonTrust: { state: 'unknown', reason } }]),
+      ['no reason', { screen: { parked: 'WORKER SCREEN' }, daemonTrust: 'unknown' }],
+      ['another dialog', { screen: { parked: 'WORKER SCREEN' }, daemonTrust: { state: 'unknown', reason: 'unseen-cells', dialog: true } }],
+      ['no ring text', { screen: '', daemonTrust: { state: 'unknown', reason: 'unseen-cells' } }],
+      ['a trust question in the ring text', { screen: { parked: SCREENS['trust'].screen as string }, daemonTrust: { state: 'unknown', reason: 'unseen-cells' } }],
+    ];
+    for (const [name, opts] of refused) {
+      for (const proof of [false, true]) {
+        const w = wire({ ...opts, tasks, trustProvenClear: proof });
+        expect(await w.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t1'] }), `${name}, record ${proof}`).toMatchObject({ ok: false });
+        expect(w.writes, name).toEqual([]);
+      }
+    }
+  });
+
+  it('a new task: the sender comes from main\'s record of the send, while it runs', async () => {
+    const send = beginDeliverySend('ws-owner');
+    // No daemon row yet: the daemon writes it after the delivery.
+    const w = wire({ ...UNREAD, tasks: [] });
+    expect(await w.gatedSubmit('pty-task', 'hello', 'claude', { senderSendKey: send.key })).toMatchObject({ ok: true });
+    expect(w.logs).toHaveLength(1);
+    send.end();
+    const after = wire({ ...UNREAD, tasks: [] });
+    expect(await after.gatedSubmit('pty-task', 'hello', 'claude', { senderSendKey: send.key })).toMatchObject({ ok: false });
+
+    const stranger = beginDeliverySend('ws-stranger');
+    const w2 = wire({ ...UNREAD, tasks: [] });
+    expect(await w2.gatedSubmit('pty-task', 'hello', 'claude', { senderSendKey: stranger.key })).toMatchObject({ ok: false });
+    stranger.end();
+  });
+
+  it('a mention nudge: the sender is each message\'s author as the daemon stamped it', async () => {
+    const mentions = [{ channelId: 'ch-1', seq: 4 }, { channelId: 'ch-1', seq: 5 }];
+    const owner = wire({ ...UNREAD, mentionAuthors: { 'ch-1:4': 'ws-owner', 'ch-1:5': 'ws-owner' } });
+    expect(await owner.gatedSubmit('pty-task', 'nudge', 'claude', { senderMentions: mentions })).toMatchObject({ ok: true });
+    for (const authors of [{ 'ch-1:4': 'ws-owner', 'ch-1:5': 'ws-stranger' }, { 'ch-1:4': 'ws-owner' }, { 'ch-1:4': 'ws-stranger', 'ch-1:5': 'ws-stranger' }]) {
+      const w = wire({ ...UNREAD, mentionAuthors: authors });
+      expect(await w.gatedSubmit('pty-task', 'nudge', 'claude', { senderMentions: mentions }), JSON.stringify(authors)).toMatchObject({ ok: false });
+    }
+  });
+
+  it('the launch record changes deliveries only, not a terminal_send', async () => {
+    const w = wire({ ...UNREAD, trustProvenClear: true, ownerAnswers: 'off' });
+    const res = await asPane(w, 'input.send', { workspaceId: 'ws-owner', ptyId: 'pty-task', callerPtyId: 'pty-owner', text: 'go', submit: true });
+    expect(res.ok).toBe(false);
     expect(w.writes).toEqual([]);
   });
 

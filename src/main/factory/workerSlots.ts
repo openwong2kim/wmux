@@ -112,8 +112,8 @@ export interface LaunchRequest {
   botId?: string;
   ownerWorkspaceId: string;
   /** The launch puts CLAUDE_CODE_SANDBOXED=1 in the pane env (TaskLaunch.sandboxed).
-   *  Left out on a relaunch in a pane of the task: the pane keeps its env, so
-   *  the new generation keeps what the prior one recorded. */
+   *  Left out on a relaunch in the pane of the task's latest generation: the
+   *  pane keeps its env, so the new generation keeps what that one recorded. */
   sandboxed?: boolean;
   /** A relaunch in an existing pane: the pane and its workspace name the
    *  new generation in the same write, before the line is typed. */
@@ -345,8 +345,9 @@ export class WorkerSlots {
     let top = prior?.gen ?? 0;
     for (const p of this.panes.values()) if (p.taskId === req.taskId && p.gen > top) top = p.gen;
     for (const w of this.workspaces.values()) if (w.taskId === req.taskId && w.gen > top) top = w.gen;
+    const relaunched = req.pane ? this.panes.get(req.pane.sessionId) : undefined;
     const sandboxed = req.sandboxed ?? (
-      req.pane !== undefined && prior?.sandboxed === true && this.panes.get(req.pane.sessionId)?.taskId === req.taskId
+      prior?.sandboxed === true && relaunched?.taskId === req.taskId && relaunched.gen === prior.gen
     );
     const next: TaskLaunch = {
       taskId: req.taskId,

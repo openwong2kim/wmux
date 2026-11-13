@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_SENDER_TASK_IDS, daemonOpenTaskOnPane, gatedSubmitSenderTasks, gatedSubmitTaskContext, makeDaemonTaskQuery } from '../a2aOpenTasks';
+import { MAX_SENDER_TASK_IDS, daemonOpenTaskOnPane, gatedSubmitSenders, gatedSubmitTaskContext, makeDaemonTaskQuery } from '../a2aOpenTasks';
 import type { DaemonClient } from '../../../DaemonClient';
 
 const PANE = { workspaceId: 'ws-1', paneId: 'pane-1', surfaceId: 'surf-1' };
@@ -75,9 +75,18 @@ describe('gatedSubmitTaskContext', () => {
   });
 });
 
-describe('gatedSubmitSenderTasks', () => {
+describe('gatedSubmitSenders', () => {
   it('keeps a list of ids, deduplicated', () => {
-    expect(gatedSubmitSenderTasks({ senderTaskIds: ['t1', 't2', 't1'] })).toEqual({ senderTaskIds: ['t1', 't2'] });
+    expect(gatedSubmitSenders({ senderTaskIds: ['t1', 't2', 't1'] })).toEqual({ senderTaskIds: ['t1', 't2'] });
+  });
+
+  it('keeps a send key and mentions, each checked on its own', () => {
+    expect(gatedSubmitSenders({
+      senderSendKey: 'send-1',
+      senderMentions: [{ channelId: 'ch-1', seq: 4 }, { channelId: 'ch-1', seq: 4 }, { channelId: 'ch-2', seq: 0 }],
+    })).toEqual({ senderSendKey: 'send-1', senderMentions: [{ channelId: 'ch-1', seq: 4 }, { channelId: 'ch-2', seq: 0 }] });
+    expect(gatedSubmitSenders({ senderSendKey: 7, senderMentions: [{ channelId: 'ch-1', seq: -1 }], senderTaskIds: ['t1'] }))
+      .toEqual({ senderTaskIds: ['t1'] });
   });
 
   it('drops the whole field on anything malformed, empty or too long', () => {
@@ -90,7 +99,7 @@ describe('gatedSubmitSenderTasks', () => {
       { senderTaskIds: ['x'.repeat(201)] },
       { senderTaskIds: Array.from({ length: MAX_SENDER_TASK_IDS + 1 }, (_, i) => `t${i}`) },
     ]) {
-      expect(gatedSubmitSenderTasks(opts), JSON.stringify(opts)).toEqual({});
+      expect(gatedSubmitSenders(opts), JSON.stringify(opts)).toEqual({});
     }
   });
 });

@@ -545,6 +545,15 @@ describe('paneLaunchedSandboxed', () => {
     s.launched('t3', again.gen, 'ws-t3', 'pty-4');
     expect(paneLaunchedSandboxed('pty-4', s)).toBe(true);
 
+    // A relaunch typed into an older generation's pane does not inherit the flag.
+    const unflagged = s.beginLaunch({ taskId: 't4', origin: 'owner', ownerWorkspaceId: 'ws-owner' });
+    s.launched('t4', unflagged.gen, 'ws-t4', 'pty-5');
+    const flagged = s.beginLaunch({ taskId: 't4', origin: 'owner', ownerWorkspaceId: 'ws-owner', sandboxed: true });
+    s.launched('t4', flagged.gen, 'ws-t4', 'pty-6');
+    const intoOld = s.beginLaunch({ taskId: 't4', origin: 'owner', ownerWorkspaceId: 'ws-owner', pane: { sessionId: 'pty-5', workspaceId: 'ws-t4' } });
+    s.launched('t4', intoOld.gen, 'ws-t4', 'pty-5');
+    expect(paneLaunchedSandboxed('pty-5', s)).toBe(false);
+
     const third = s.beginLaunch({ taskId: 't2', origin: 'owner', ownerWorkspaceId: 'ws-owner', sandboxed: true });
     s.launched('t2', third.gen, 'ws-t2', 'pty-3');
     s.released('t2', third.gen);

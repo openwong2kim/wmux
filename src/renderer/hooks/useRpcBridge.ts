@@ -382,6 +382,8 @@ interface NewTaskDelivery {
   deadlineAt?: number;
   /** With waitQuiet: main's own check for this delivery (GatedSubmitOptions.guardKey). */
   guardKey?: string;
+  /** The key main gave this task's send (GatedSubmitOptions.senderSendKey). */
+  senderKey?: string;
 }
 
 /** The fields a new-task delivery's receipt carries about the fresh-context
@@ -402,8 +404,8 @@ async function deliverA2aText(
   text: string,
   operator: boolean,
   newTask?: NewTaskDelivery,
-  // A reply's task, so main can let its orchestrator past an unreadable
-  // folder-trust check (a new task names its own id).
+  // A reply's task, so main can read who sent it (a new task names the key
+  // main gave its send instead).
   replyTaskId?: string,
 ): Promise<A2aPtyWrite> {
   // The operator's own deliveries are excluded from fresh context in v1.
@@ -419,10 +421,10 @@ async function deliverA2aText(
   // Main also asks the daemon's task store (this list is not reloaded after a
   // restart), keyed by where the pane sits; a pane it cannot place is kept.
   const pane = newTask ? paneAddressOfPty(s.workspaces, ptyId) : undefined;
-  const senderTask = newTask?.taskId ?? replyTaskId;
   const result = await gatedSubmitToPty(ptyId, text, {
     agent: ptyAgent(ptyId).name,
-    ...(senderTask ? { senderTaskIds: [senderTask] } : {}),
+    ...(newTask?.senderKey ? { senderSendKey: newTask.senderKey } : {}),
+    ...(!newTask && replyTaskId ? { senderTaskIds: [replyTaskId] } : {}),
     ...(newTask ? { newTask: true, taskId: newTask.taskId, ...keep, ...(pane ? { pane } : {}) } : {}),
     ...(newTask?.waitQuiet ? { waitQuiet: true } : {}),
     ...(newTask?.waitQuiet && newTask.expectAgent ? { expectAgent: newTask.expectAgent } : {}),
@@ -4034,14 +4036,18 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         agentAlive: panes.agentAliveByPtyId,
         commandRunning: panes.commandRunningByPtyId,
       });
-      const gated: Omit<NewTaskDelivery, 'taskId'> = params.gatedDelivery === true
-        ? {
-            waitQuiet: true,
-            ...(liveMeta?.agentName ? { expectAgent: liveMeta.agentName } : {}),
-            ...(typeof params.deliveryDeadlineAt === 'number' ? { deadlineAt: params.deliveryDeadlineAt } : {}),
-            ...(typeof params.deliveryGuardKey === 'string' ? { guardKey: params.deliveryGuardKey } : {}),
-          }
-        : {};
+      const gated: Omit<NewTaskDelivery, 'taskId'> = {
+        ...(params.gatedDelivery === true
+          ? {
+              waitQuiet: true,
+              ...(liveMeta?.agentName ? { expectAgent: liveMeta.agentName } : {}),
+              ...(typeof params.deliveryDeadlineAt === 'number' ? { deadlineAt: params.deliveryDeadlineAt } : {}),
+              ...(typeof params.deliveryGuardKey === 'string' ? { guardKey: params.deliveryGuardKey } : {}),
+            }
+          : {}),
+        // Main's record of who sent this task (a2a.rpc sendTask), for its delivery gate.
+        ...(typeof params.deliverySenderKey === 'string' ? { senderKey: params.deliverySenderKey } : {}),
+      };
       let write: A2aPtyWrite = { ptyId: null };
       let mode: 'nudge' | 'notification' | 'no-agent-pane' = 'nudge';
       if (noAgentTarget || (referenceDelivery && !referencePaneHasAgent)) {

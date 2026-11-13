@@ -71,6 +71,7 @@ import { findWorkspaceIdForPty } from './hooks.rpc';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
 import { reclaimedWorkerOfPane, reclaimedWorkerWorkspaces } from '../../factory/workerReclaim';
 import { paneLaunchedSandboxed } from '../../factory/workerSlots';
+import { deliverySendSender } from './deliverySenders';
 import { taskSignedIn } from '../../factory/wakeTaint';
 import { hasRedactedSecrets, redactStoredSecrets } from '../../factory/secretRedaction';
 import type { TaskLedger } from '../../../daemon/ledger/TaskLedger';
@@ -965,17 +966,27 @@ export interface ApprovalInputGate {
   daemonFolderTrust?: (
     ptyId: string,
     opts?: { budgetMs?: number },
-  ) => Promise<FolderTrustState | { state: FolderTrustState; reason?: string } | null>;
+  ) => Promise<FolderTrustState | { state: FolderTrustState; reason?: string; dialog?: true } | null>;
   /** wmux's own launch record says this pane's agent cannot show a
    *  folder-trust dialog: wmux launched it with CLAUDE_CODE_SANDBOXED=1, and
-   *  its agent is claude now. Asked only when the pane's output left the
-   *  verdict undecided (never over text that shows a trust question). */
+   *  its agent is claude now. Asked by a delivery only, and only for a verdict
+   *  that may be passed (passableUnknown). */
   trustProvenClear?: (ptyId: string) => Promise<boolean>;
   /** A delivery's owner lane (gatedSubmit's deliveryLaneOf), resolved when a
    *  check needs it: present when its sender is the orchestrator of an open
    *  task the pane works on and the owner setting is `all` right now. */
   deliveryLane?: () => Promise<DeliveryLane | undefined>;
 }
+
+/** The records a delivery names for its sender (GatedSubmitOptions sender*). */
+interface DeliverySenders {
+  taskIds?: readonly string[];
+  sendKey?: string;
+  mentions?: ReadonlyArray<{ channelId: string; seq: number }>;
+}
+
+/** Budget for reading a mention's author from the daemon, per message. */
+const CHANNEL_AUTHOR_TIMEOUT_MS = 2_000;
 
 /** The owner lane a delivery travels on. */
 export interface DeliveryLane {
@@ -986,13 +997,19 @@ export interface DeliveryLane {
 }
 
 /**
- * Whether a folder-trust verdict is one the delivery owner lane may pass: an
- * 'unknown' from output main could not see whole. Text that was read and
- * shows a trust question with its choices cut short is evidence of a dialog,
- * so it never passes.
+ * Whether a delivery may pass a folder-trust verdict (on the owner lane, or on
+ * wmux's own launch record). Only one case: the daemon read the pane's output
+ * and found nothing but cells it never saw where a dialog would sit
+ * ('unseen-cells'), saw no other dialog in the cells it did read, and the
+ * pane's ring text, which the rest of the check reads too, shows no trust
+ * question. Any other reason, or no ring text, is not passed.
  */
-function undecidedFromOutput(trust: FolderTrustRead): boolean {
-  return trust.verdict === 'unknown' && trust.read !== 'screen' && trust.reason !== 'cut-choices';
+function passableUnknown(trust: FolderTrustRead): boolean {
+  return trust.verdict === 'unknown'
+    && trust.reason === 'unseen-cells'
+    && trust.dialog !== true
+    && trust.ringText !== undefined
+    && folderTrustOnScreen(trust.ringText) === 'clear';
 }
 
 /** The gate could not decide: a delivery found the screen unreadable (any policy). */
@@ -1004,6 +1021,10 @@ interface FolderTrustRead {
   verdict: FolderTrustState | null;
   read: 'screen' | 'parked' | 'output';
   reason?: string;
+  /** The daemon saw another dialog in the cells it read. */
+  dialog?: true;
+  /** A parked pane's ring text, when that is what was read. */
+  ringText?: string;
 }
 
 /**
@@ -1024,13 +1045,14 @@ async function folderTrustVerdict(gate: ApprovalInputGate, ptyId: string, screen
   // No daemon verdict for a parked read: its ring text decides, as before.
   if (verdict === null && parked) return { verdict: folderTrustOnScreen(screen.parked), read: 'screen' };
   const reason = typeof answer === 'object' && answer !== null ? answer.reason : undefined;
-  const read: FolderTrustRead = { verdict, read: parked ? 'parked' : 'output', ...(reason ? { reason } : {}) };
-  // The output left it undecided, and wmux's own launch record rules the
-  // dialog out.
-  if (undecidedFromOutput(read) && (await (gate.trustProvenClear?.(ptyId) ?? Promise.resolve(false)).catch(() => false))) {
-    return { verdict: 'clear', read: read.read };
-  }
-  return read;
+  const dialog = typeof answer === 'object' && answer !== null && answer.dialog === true;
+  return {
+    verdict,
+    read: parked ? 'parked' : 'output',
+    ...(reason ? { reason } : {}),
+    ...(dialog ? { dialog: true as const } : {}),
+    ...(parked ? { ringText: screen.parked } : {}),
+  };
 }
 
 /**
@@ -1076,6 +1098,16 @@ async function assertNotAtFolderTrust(
   refuseAtFolderTrust(await folderTrustVerdict(gate, ptyId, screen), op, ptyId, opts.refuseUnknown ?? true, opts.stage ?? NOTHING_SENT);
 }
 
+/** Whether a delivery passes a passable verdict: the launch record proves the
+ *  pane clear, or the owner lane is open (logged there). */
+async function deliveryPasses(gate: ApprovalInputGate, ptyId: string, reason: string | undefined): Promise<boolean> {
+  if (await (gate.trustProvenClear?.(ptyId) ?? Promise.resolve(false)).catch(() => false)) return true;
+  const lane = await (gate.deliveryLane?.() ?? Promise.resolve(undefined)).catch(() => undefined);
+  if (!lane) return false;
+  lane.passed(reason);
+  return true;
+}
+
 /** A retried Enter withheld on purpose (a folder-trust prompt took the screen). */
 export class EnterRetryRefused extends Error {}
 
@@ -1109,13 +1141,12 @@ async function assertNotTypingAtAnApproval(
   // A delivery refuses an unreadable screen whatever the daemon would say.
   if (!(read === null && opts.refuseUnreadable)) {
     const trust = await folderTrustVerdict(gate, ptyId, read);
-    // On the owner lane under `all`, a verdict main could not decide does not
-    // stop the task's own orchestrator; a definite trust prompt still does.
-    const lane = opts.refuseUnreadable && undecidedFromOutput(trust)
-      ? await (gate.deliveryLane?.() ?? Promise.resolve(undefined)).catch(() => undefined)
-      : undefined;
-    if (lane) lane.passed(trust.reason);
-    else refuseAtFolderTrust(trust, op, ptyId, true, opts.stage ?? NOTHING_SENT);
+    // A delivery may pass the one verdict passableUnknown allows: on wmux's
+    // own launch record, or on the owner lane under `all`. Every other
+    // verdict, and every other writer, gets the check as it was.
+    if (!(opts.refuseUnreadable && passableUnknown(trust) && (await deliveryPasses(gate, ptyId, trust.reason)))) {
+      refuseAtFolderTrust(trust, op, ptyId, true, opts.stage ?? NOTHING_SENT);
+    }
   }
   // A parked read's ring text stands for the screen; a session that has not
   // started here shows nothing yet, so no dialog.
@@ -1415,6 +1446,10 @@ export interface InputRpcDeps {
   /** Injected in tests; the daemon's open a2a tasks for a workspace (see
    *  a2aOpenTasks). Defaults to the daemon's `a2a.task.query`. */
   queryDaemonTasks?: (workspaceId: string) => Promise<unknown[] | null>;
+  /** Injected in tests; the workspace that posted a channel message, as the
+   *  daemon stamped it, read as `viewerWorkspaceId` (a member). Defaults to
+   *  the daemon's `a2a.channel.getMessages`. */
+  channelMessageAuthor?: (channelId: string, seq: number, viewerWorkspaceId: string) => Promise<string | null>;
   /** Injected in tests; the workspaces of a bot's reclaimed workers (ended
    *  tasks it started, factory/workerReclaim.ts), for its own reads. */
   reclaimedWorkerWorkspaces?: (botId: string, ownerWorkspaceId: string) => string[];
@@ -2515,11 +2550,45 @@ export function registerInputRpc(
     };
   };
 
+  const channelMessageAuthor = deps.channelMessageAuthor ?? (async (channelId: string, seq: number, viewerWorkspaceId: string): Promise<string | null> => {
+    const dc = getDaemonClient?.();
+    if (!dc?.isConnected) return null;
+    const reply = (await dc.rpc(
+      'a2a.channel.getMessages',
+      { channelId, sinceSeq: seq, limit: 1, verifiedWorkspaceId: viewerWorkspaceId },
+      { timeoutMs: CHANNEL_AUTHOR_TIMEOUT_MS },
+    )) as { messages?: unknown } | null;
+    const messages = reply?.messages;
+    const first = Array.isArray(messages) ? (messages[0] as { seq?: unknown; workspaceId?: unknown } | undefined) : undefined;
+    return first && first.seq === seq && typeof first.workspaceId === 'string' && first.workspaceId ? first.workspaceId : null;
+  });
+
   /**
-   * The owner lane of a delivery: when every task it carries (`senderTaskIds`)
-   * was sent by one workspace, read from the daemon's task store and never
-   * from the request, and the target pane works on one of that workspace's
-   * OPEN tasks (resolveTaskOwnerAccess, as for input.send). Only the `all`
+   * The one workspace that sent a delivery, from main's own records only:
+   * the send's record (a new task: the daemon writes its row after the
+   * delivery), the channel messages' stamped authors (a mention nudge), or
+   * the daemon's task rows (a reply or update). Null when there is no record,
+   * a record is missing, or two senders differ.
+   */
+  const deliverySender = async (targetWorkspaceId: string, senders: DeliverySenders): Promise<string | null> => {
+    if (senders.sendKey) return deliverySendSender(senders.sendKey);
+    if (senders.mentions && senders.mentions.length > 0) {
+      const authors = await Promise.all(senders.mentions.map((m) => channelMessageAuthor(m.channelId, m.seq, targetWorkspaceId)));
+      const first = authors[0];
+      return first && authors.every((a) => a === first) ? first : null;
+    }
+    if (senders.taskIds && senders.taskIds.length > 0) {
+      const tasks = await queryDaemonTasks(targetWorkspaceId);
+      return tasks ? deliverySenderOf(tasks, senders.taskIds, targetWorkspaceId) : null;
+    }
+    return null;
+  };
+
+  /**
+   * The owner lane of a delivery: when one workspace sent it, read from
+   * main's own records (deliverySender) and never from the request, and the
+   * target pane works on one of that workspace's OPEN tasks
+   * (resolveTaskOwnerAccess, as for input.send). Only the `all`
    * setting changes a delivery's gate, so under any other one nothing is
    * looked up. Anything unresolved: no lane, the default gate. Resolved on
    * each check that needs it, so a task closed or a setting changed while
@@ -2527,15 +2596,14 @@ export function registerInputRpc(
    */
   const deliveryLaneOf = async (
     ptyId: string,
-    taskIds: readonly string[],
+    senders: DeliverySenders,
     log: (line: string) => void,
   ): Promise<DeliveryLane | undefined> => {
     if (ownerAnswersNow() !== 'all') return undefined;
     const targetWorkspaceId = await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null);
     if (!targetWorkspaceId) return undefined;
-    const tasks = await queryDaemonTasks(targetWorkspaceId);
-    const sender = tasks ? deliverySenderOf(tasks, taskIds, targetWorkspaceId) : null;
-    if (!sender) return undefined;
+    const sender = await deliverySender(targetWorkspaceId, senders).catch(() => null);
+    if (!sender || sender === targetWorkspaceId) return undefined;
     const lane: TaskOwnerLane = { commanderWorkspace: sender, openTaskWorkspacesOf };
     const access = await assertCallerMayAccessPty(getWindow, ptyId, sender, 'delivery', lane).catch(() => null);
     if (access?.lane !== 'task-owner') return undefined;
@@ -2550,7 +2618,11 @@ export function registerInputRpc(
   return {
     deliveryGate: (ptyId) => deliveryGateCheck(approvalGate, ptyId),
     gatedSubmit: async (ptyId, text, agent, opts) => {
-      const taskIds = opts?.senderTaskIds ?? [];
+      const senders: DeliverySenders = {
+        ...(opts?.senderTaskIds?.length ? { taskIds: opts.senderTaskIds } : {}),
+        ...(opts?.senderSendKey ? { sendKey: opts.senderSendKey } : {}),
+        ...(opts?.senderMentions?.length ? { mentions: opts.senderMentions } : {}),
+      };
       // One lane line per delivery, though the paste and the Enter each check.
       let logged = false;
       const logOnce = (line: string): void => {
@@ -2558,8 +2630,8 @@ export function registerInputRpc(
         logged = true;
         logLine(line);
       };
-      const gate: ApprovalInputGate = taskIds.length > 0
-        ? { ...approvalGate, deliveryLane: () => deliveryLaneOf(ptyId, taskIds, logOnce) }
+      const gate: ApprovalInputGate = Object.keys(senders).length > 0
+        ? { ...approvalGate, deliveryLane: () => deliveryLaneOf(ptyId, senders, logOnce) }
         : approvalGate;
       // The Git page's hand-off: hold the paste while the person is typing in
       // that pane, and check right before the paste and the Enter that the
