@@ -252,7 +252,9 @@ function main(): void {
   let hostedSessions = 0;
 
   const server = net.createServer((socket) => {
-    // Closed at once, before any read: the launcher runs its own server.
+    // Read here, before anything else can close and reuse the descriptor.
+    const peer = peerPidOf(socket);
+    // Closed at once, before any byte is read: the launcher runs its own server.
     if (!connectionRate.admit()) {
       const now = Date.now();
       if (now - rateLogged >= 1000) {
@@ -262,8 +264,6 @@ function main(): void {
       socket.destroy();
       return;
     }
-    // Read here, before anything else can close and reuse the descriptor.
-    const peer = peerPidOf(socket);
     // Accumulate until the handshake line; hand the remainder back to the
     // socket so the MCP transport sees a clean stream from byte 0.
     let buffer = Buffer.alloc(0);
