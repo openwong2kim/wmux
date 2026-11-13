@@ -149,8 +149,9 @@ export function procStartMs(pid: number): ProcAnswer<number> {
 }
 
 /**
- * A command line as `ps -o args=` prints it: procps turns each NUL and
- * newline into a space, then any other control character into `?`.
+ * A command line as `ps -o args=` prints it in a UTF-8 locale: procps turns
+ * each NUL and newline into a space, then any other control character into
+ * `?` (procps 4 in a non-UTF-8 locale prints `.` for those instead).
  */
 export function argsFromCmdline(cmdline: string, comm: string, state: string): string {
   const argv = cmdline.replace(/\0+$/, '');

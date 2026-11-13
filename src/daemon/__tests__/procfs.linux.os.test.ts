@@ -141,7 +141,9 @@ describe.runIf(linux)('/proc readers match ps', () => {
     await waitFor(() => ps('args', spaced.pid as number).includes('an argument with spaces'), 10_000, 'the child');
     const asRows = (rows: Awaited<ReturnType<typeof procTable>>) => parsePsOutput((rows ?? []).map((r) => `${r.pid} ${r.ppid} ${r.args}`).join('\n'));
     const before = new Map(asRows(await procTable()).map((e) => [e.pid, e]));
-    const fromPs = parsePsOutput(execFileSync('ps', ['-ww', '-axo', 'pid=,ppid=,args='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
+    // A UTF-8 codeset, as a daemon runs with: procps 4 in a non-UTF-8 locale prints a control character as '.', not '?'.
+    const env = { ...process.env, LC_ALL: 'C.UTF-8' };
+    const fromPs = parsePsOutput(execFileSync('ps', ['-ww', '-axo', 'pid=,ppid=,args='], { encoding: 'utf8', env, maxBuffer: 64 * 1024 * 1024 }));
     const after = new Map(asRows(await procTable()).map((e) => [e.pid, e]));
     // Only rows that did not change across the ps run (ps itself, a process
     // that exec'd), and no kernel thread: a kworker renames itself as it works.
