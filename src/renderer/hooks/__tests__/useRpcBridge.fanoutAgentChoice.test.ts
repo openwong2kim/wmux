@@ -63,7 +63,7 @@ describe('fan-out launch with an agent choice', () => {
 
   it('codex in manual asks, even when its choice is unattended: its ask flags replace the unattended ones, before the prompt', () => {
     const cmd = launch({ agent: 'codex', unattended: true }, 'manual');
-    expect(cmd).toMatch(/^.*codex -a on-request -s read-only -c '[^']+' "\$\(cat /);
+    expect(cmd).toMatch(/^.*codex -a on-request -s read-only -c approvals_reviewer=user -c '[^']+' "\$\(cat /);
     expect(cmd).not.toMatch(/-a never|workspace-write|--permission-mode|--allowedTools/);
   });
 
@@ -124,12 +124,12 @@ describe('manual mode on the lines wmux composes, exactly as fanout.spawnWorkspa
     return applyFanoutAgentFlags(bound.initialCommand as string, checked.choice, CWD, platform);
   }
   const cases: Array<[string, FanOutChoiceInput | undefined, 'darwin' | 'win32', string]> = [
-    ['a default local Claude worker (main adds the model-env marker)', undefined, 'darwin', '--permission-mode manual'],
-    ['a Claude worker with a model override', { agent: 'claude', model: 'opus' }, 'darwin', '--permission-mode manual'],
-    ['a Codex unattended choice', { agent: 'codex', unattended: true }, 'darwin', '-a on-request -s read-only'],
+    ['a default local Claude worker (main adds the model-env marker)', undefined, 'darwin', '--permission-mode default'],
+    ['a Claude worker with a model override', { agent: 'claude', model: 'opus' }, 'darwin', '--permission-mode default'],
+    ['a Codex unattended choice', { agent: 'codex', unattended: true }, 'darwin', '-a on-request -s read-only -c approvals_reviewer=user'],
     ['a Grok unattended choice', { agent: 'grok', unattended: true }, 'darwin', '--permission-mode default'],
-    ['a default Claude worker on Windows', undefined, 'win32', '--permission-mode manual'],
-    ['a Codex unattended choice on Windows', { agent: 'codex', unattended: true }, 'win32', '-a on-request -s read-only'],
+    ['a default Claude worker on Windows', undefined, 'win32', '--permission-mode default'],
+    ['a Codex unattended choice on Windows', { agent: 'codex', unattended: true }, 'win32', '-a on-request -s read-only -c approvals_reviewer=user'],
   ];
   it.each(cases)('%s: the agent is the first word, manual is taken, and its flags land', (_name, choice, platform, flags) => {
     const line = atCheck(choice, platform);

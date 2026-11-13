@@ -152,7 +152,7 @@ export function reattachModelEnvMarker(
 
 /** The operator's choice for fan-out workers, and for the agents this PC
  *  starts for another PC. `manual` means the agent asks before it acts
- *  (Claude's `--permission-mode manual`, an agent row's `askMode` for others); an agent
+ *  (Claude's `--permission-mode default`, an agent row's `askMode` for others); an agent
  *  with no flag wmux knows for that is not started in it (workerModeRefusal).
  *  Not a PermissionMode value, which describes what a transcript recorded
  *  rather than what wmux launches. */
@@ -169,6 +169,15 @@ export const DEFAULT_FANOUT_WORKER_PERMISSION_MODE: FanoutWorkerPermissionMode =
 
 export function isFanoutWorkerPermissionMode(v: unknown): v is FanoutWorkerPermissionMode {
   return typeof v === 'string' && (FANOUT_WORKER_PERMISSION_MODES as readonly string[]).includes(v);
+}
+
+/**
+ * The worker mode a bot worker respawns in, from the mode its pane recorded: a worker mode as it is, anything else
+ * (`plan`, `default`, nothing) `manual`, which asks and keeps an asking mode already on the resume line (a plan
+ * worker resumes in plan).
+ */
+export function respawnWorkerMode(recorded: unknown): FanoutWorkerPermissionMode {
+  return isFanoutWorkerPermissionMode(recorded) ? recorded : 'manual';
 }
 
 /** What a task's orchestrator may answer on its workers' panes by key or
@@ -223,18 +232,28 @@ const PERMISSION_FLAG_FOR_WORKER: Readonly<Record<FanoutWorkerPermissionMode, st
   auto: '--permission-mode auto',
   acceptEdits: '--permission-mode acceptEdits',
   bypassPermissions: '--dangerously-skip-permissions',
-  manual: '--permission-mode manual',
+  // `default` asks before it acts. Claude 2.1.322 lists it as `manual` and still takes `default`; older
+  // releases know only `default`.
+  manual: '--permission-mode default',
 };
+
+/** Claude modes that already ask before acting: `manual` keeps one of these on the line (a `plan` resume stays in plan). */
+const ASKING_CLAUDE_MODES = new Set(['plan', 'default', 'manual']);
 
 /** The flags wmux appends for `mode`, as they appear on the line. */
 export function workerLaunchFlags(mode: FanoutWorkerPermissionMode, extraDisallowed: readonly string[] = []): string {
+  return launchFlags(PERMISSION_FLAG_FOR_WORKER[mode], extraDisallowed);
+}
+
+/** `permission` (empty for none) and the tool lists, as they appear on the line. */
+function launchFlags(permission: string, extraDisallowed: readonly string[]): string {
   // Extra rules join the SAME quoted list: claude splits it on commas and
   // spaces outside parentheses, so `Bash(git push*)` stays one rule.
   const denied = [...FANOUT_WORKER_DISALLOWED_TOOLS, ...extraDisallowed];
   // A tool denied is not also allowed: the two lists never contradict.
   const allowed = FANOUT_WORKER_ALLOWED_TOOLS.filter((tool) => !denied.some((rule) => toolRuleCovers(rule, tool)));
   return [
-    PERMISSION_FLAG_FOR_WORKER[mode],
+    permission,
     `--allowedTools "${allowed.join(',')}"`,
     `--disallowedTools "${denied.join(',')}"`,
   ]
@@ -386,15 +405,20 @@ export function applyWorkerPermissionFlags(
   if (stem !== 'claude') return command;
 
   const cut: Span[] = [];
+  /** The line's own `--permission-mode` words and values. */
+  const modes: { words: Span[]; value: string }[] = [];
+  let bypass = false;
   for (let k = 1; k < words.length; k++) {
     const v = words[k].value;
     const flag = v.includes('=') ? v.slice(0, v.indexOf('=')) : v;
     const hasValue = v.includes('=');
     if (BARE_PERMISSION_FLAGS.has(v)) {
       cut.push(words[k]);
+      bypass = true;
     } else if (VALUE_FLAGS.has(flag)) {
-      cut.push(words[k]);
-      if (!hasValue && k + 1 < words.length) cut.push(words[++k]);
+      const own = [words[k]];
+      if (!hasValue && k + 1 < words.length) own.push(words[++k]);
+      modes.push({ words: own, value: hasValue ? v.slice(v.indexOf('=') + 1) : own[1]?.value ?? '' });
     } else if (LIST_FLAGS.has(flag)) {
       cut.push(words[k]);
       if (!hasValue) {
@@ -402,5 +426,9 @@ export function applyWorkerPermissionFlags(
       }
     }
   }
-  return `${withoutWords(command, cut)} ${workerLaunchFlags(mode, extraDisallowed)}`;
+  // Manual keeps a mode of the line's own that already asks (a resumed `plan` worker stays in plan); any other mode,
+  // or one beside a bypass, gives way to the worker's.
+  const keep = mode === 'manual' && !bypass && modes.length > 0 && modes.every((m) => ASKING_CLAUDE_MODES.has(m.value));
+  if (!keep) for (const m of modes) cut.push(...m.words);
+  return `${withoutWords(command, cut)} ${launchFlags(keep ? '' : PERMISSION_FLAG_FOR_WORKER[mode], extraDisallowed)}`;
 }

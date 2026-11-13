@@ -22,7 +22,7 @@ import {
 import { FANOUT_AGENTS } from '../fanoutPreset';
 import { AGENT_ROWS, agentRow } from '../agentIdentity';
 
-const CODEX_MANUAL_FLAGS = '-a on-request -s read-only';
+const CODEX_MANUAL_FLAGS = '-a on-request -s read-only -c approvals_reviewer=user';
 const GROK_MANUAL_FLAGS = '--permission-mode default';
 
 describe('MODEL_ENV_MARKER', () => {
@@ -175,10 +175,18 @@ describe('applyWorkerPermissionFlags', () => {
     expect(applyWorkerPermissionFlags(spaced, 'auto').startsWith(spaced + ' ')).toBe(true);
   });
 
-  it("manual makes claude ask: the line's own permission flag is replaced, as for every mode, and the tool lists still apply", () => {
-    for (const own of ['--permission-mode plan', '--permission-mode auto', '--dangerously-skip-permissions']) {
-      expect(applyWorkerPermissionFlags(`claude ${own} ${PROMPT}`, 'manual')).toBe(`claude ${PROMPT} --permission-mode manual ${LISTS}`);
+  it("manual makes claude ask: a mode of the line's own that does not ask is replaced, and the tool lists still apply", () => {
+    for (const own of ['--permission-mode auto', '--permission-mode=acceptEdits', '--permission-mode dontAsk', '--permission-mode bypassPermissions', '--dangerously-skip-permissions', '--permission-mode plan --dangerously-skip-permissions', '--permission-mode plan --permission-mode auto']) {
+      expect(applyWorkerPermissionFlags(`claude ${own} ${PROMPT}`, 'manual')).toBe(`claude ${PROMPT} --permission-mode default ${LISTS}`);
     }
+  });
+
+  it("manual keeps a mode of the line's own that already asks: a resumed plan worker stays in plan", () => {
+    for (const own of ['--permission-mode plan', '--permission-mode=plan', '--permission-mode default', '--permission-mode manual']) {
+      expect(applyWorkerPermissionFlags(`claude --resume 0b6f ${own}`, 'manual')).toBe(`claude --resume 0b6f ${own} ${LISTS}`);
+    }
+    // Any other worker mode still replaces it.
+    expect(applyWorkerPermissionFlags('claude --resume 0b6f --permission-mode plan', 'acceptEdits')).toBe(`claude --resume 0b6f --permission-mode acceptEdits ${LISTS}`);
   });
 
   it('each mode gives claude its own permission flag', () => {
@@ -186,7 +194,7 @@ describe('applyWorkerPermissionFlags', () => {
       auto: '--permission-mode auto',
       acceptEdits: '--permission-mode acceptEdits',
       bypassPermissions: '--dangerously-skip-permissions',
-      manual: '--permission-mode manual',
+      manual: '--permission-mode default',
     } as const;
     expect(Object.keys(flags).sort()).toEqual([...FANOUT_WORKER_PERMISSION_MODES].sort());
     for (const mode of FANOUT_WORKER_PERMISSION_MODES) {
@@ -198,7 +206,7 @@ describe('applyWorkerPermissionFlags', () => {
   it('manual makes codex ask: every permission choice on its line goes, and its ask flags go before the prompt', () => {
     expect(agentRow('codex')?.askMode?.flags).toBe(CODEX_MANUAL_FLAGS);
     const trust = `-c 'projects={"/w"={trust_level="trusted"}}'`;
-    for (const own of ['-a never -s workspace-write', '--ask-for-approval=never --sandbox danger-full-access', '--yolo', '--dangerously-bypass-approvals-and-sandbox', '-c approval_policy=never -c sandbox_mode=workspace-write', `-c 'sandbox_permissions=["disk-full-read-access"]'`, '--approve-for-me', '']) {
+    for (const own of ['-a never -s workspace-write', '--ask-for-approval=never --sandbox danger-full-access', '--yolo', '--dangerously-bypass-approvals-and-sandbox', '-c approval_policy=never -c sandbox_mode=workspace-write', `-c 'sandbox_permissions=["disk-full-read-access"]'`, `-c 'approvals_reviewer="auto_review"'`, '--config approvals_reviewer=guardian_subagent', '--approve-for-me', '']) {
       const line = `codex ${trust} ${own} ${PROMPT}`.replace(/  +/g, ' ');
       expect(applyWorkerPermissionFlags(line, 'manual')).toBe(`codex ${CODEX_MANUAL_FLAGS} ${trust} ${PROMPT}`);
       expect(workerModeRefusal(line, 'manual')).toBeNull();
