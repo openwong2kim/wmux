@@ -25,7 +25,7 @@ vi.mock('../../identity', () => ({
 
 import { sendDaemonRequest } from '../../client';
 import { resolveSelfContext } from '../../identity';
-import { handleRemote, policyIo, rootLabel } from '../remote';
+import { ASK_ON_HEADLESS, handleRemote, policyIo, rootLabel } from '../remote';
 import { defaultSpawnPolicy, type A2aSpawnPolicyV1 } from '../../../shared/a2aSpawn';
 import { isNestingMarker } from '../../../shared/envFilter';
 
@@ -69,6 +69,8 @@ let sets: A2aSpawnPolicyV1[];
 let setRefusal: string | null;
 /** What the daemon answers when asked whether it finds an agent; undefined: it does not say (an older daemon). */
 let agentFound: boolean | undefined;
+/** What `daemon.headless.status` answers: in effect or not; undefined: the daemon does not know the method. */
+let headlessOn: boolean | undefined;
 
 function policy(patch: Partial<A2aSpawnPolicyV1> = {}): A2aSpawnPolicyV1 {
   return { ...defaultSpawnPolicy(), ...patch };
@@ -80,6 +82,9 @@ function fakeDaemon(): void {
     switch (method) {
       case 'a2a.remote.hosts.list': return ok({ hosts });
       case 'a2a.remote.peers.list': return ok({ peers });
+      case 'daemon.headless.status':
+        if (headlessOn === undefined) throw new Error('Unknown method daemon.headless.status');
+        return ok({ appAttached: false, optedIn: headlessOn, inEffect: headlessOn });
       case 'a2a.remote.spawnPolicy.get':
         return ok({ policy: structuredClone(store), ...(params['agent'] !== undefined && agentFound !== undefined ? { agentInstalled: agentFound } : {}) });
       case 'a2a.remote.spawnPolicy.set': {
@@ -135,6 +140,7 @@ beforeEach(() => {
   beforeSet = null;
   setRefusal = null;
   agentFound = undefined;
+  headlessOn = undefined;
   sets = [];
   fakeDaemon();
   vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
@@ -188,6 +194,27 @@ describe('wmux remote allow', () => {
       agentFound = found;
       expect(await run('allow', allowArgs())).toBe(0);
       expect(printed()).not.toContain('did not find');
+    }
+  });
+
+  it('on a host in headless mode, a rule saved with follow-ups on ask says they will be refused here', async () => {
+    headlessOn = true;
+    expect(await run('allow', allowArgs())).toBe(0);
+    expect(store.followUps).toBe('ask');
+    expect(printed()).toContain(ASK_ON_HEADLESS);
+    // Already allowed, still on ask: said again.
+    logSpy.mockClear();
+    expect(await run('allow', allowArgs())).toBe(0);
+    expect(printed()).toContain('Already allowed');
+    expect(printed()).toContain(ASK_ON_HEADLESS);
+    // Not said with direct, nor where headless mode is off or the daemon cannot say.
+    for (const [on, extra] of [[true, ['--follow-ups', 'direct']], [false, []], [undefined, []]] as const) {
+      logSpy.mockClear();
+      errSpy.mockClear();
+      store = policy();
+      headlessOn = on;
+      expect(await run('allow', allowArgs([...extra]))).toBe(0);
+      expect(printed()).not.toContain(ASK_ON_HEADLESS);
     }
   });
 

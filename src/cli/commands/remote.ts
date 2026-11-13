@@ -311,6 +311,19 @@ export const policyIo = {
 const CONFIRM_WORD = 'yes';
 const SAVE_ATTEMPTS = 3;
 
+/** Said when a rule is saved with follow-ups on `ask` where headless mode is in effect: nobody here can approve one. */
+export const ASK_ON_HEADLESS = 'Headless mode is on and follow-ups are set to ask: follow-ups and replies from that PC will be refused here; use --follow-ups direct to accept them.';
+
+/** Whether this daemon has headless mode in effect; false when it cannot say (an older daemon, no answer). */
+async function headlessInEffect(): Promise<boolean> {
+  try {
+    const res = await sendDaemonRequest('daemon.headless.status' as RpcMethod, {});
+    return res.ok && (res.result as { inEffect?: unknown } | undefined)?.inEffect === true;
+  } catch {
+    return false;
+  }
+}
+
 function fail(message: string): never {
   console.error(`Error: ${message}`);
   process.exit(1);
@@ -603,6 +616,7 @@ async function remoteAllow(args: string[], jsonMode: boolean): Promise<void> {
     if (sameContent(before, next)) {
       if (jsonMode) console.log(JSON.stringify({ ok: true, changed: false, policy: before }, null, 2));
       else console.log(`Already allowed: ${pcLabel(pc)} may start ${agent} in ${folderText(rootPath, sub)}.`);
+      if (before.followUps === 'ask' && await headlessInEffect()) say(ASK_ON_HEADLESS);
       return;
     }
     if (next.roots.length > SPAWN_ROOTS_MAX) fail(`this PC already lists ${SPAWN_ROOTS_MAX} folders, the most it can. Remove one in the desktop app first.`);
@@ -622,6 +636,8 @@ async function remoteAllow(args: string[], jsonMode: boolean): Promise<void> {
     if (res.ok) {
       if (jsonMode) console.log(JSON.stringify({ ok: true, changed: true, policy: res.policy }, null, 2));
       else console.log(`Saved. ${pcLabel(pc)} may start ${agent} in ${folderText(rootPath, sub)} without approval here.`);
+      // eslint-disable-next-line no-await-in-loop -- once, on the save that went through
+      if (res.policy.followUps === 'ask' && await headlessInEffect()) say(ASK_ON_HEADLESS);
       return;
     }
     if (!res.conflict) fail(`the daemon did not save it: ${res.error}`);

@@ -11,14 +11,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { DaemonSessionManager } from '../../DaemonSessionManager';
-import { folderTrustRefusal } from '../../folderTrustState';
+import { folderTrustRefusal, readFolderTrust } from '../../folderTrustState';
 import { deliverScheduledPrompt, deliveryInputFence } from '../../sessionPromptDelivery';
 import { buildWebPaneEnv } from '../../web/webPaneEnv';
 import type { A2aRemoteTaskMarkerV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
 import type { Task } from '../../../shared/types';
 import { deliberateSleep, waitFor } from '../../../test-utils/waitFor';
-import { HeadlessDelivery } from '../headlessDelivery';
+import { HeadlessDelivery, QUESTION_NOTICE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS } from '../headlessDelivery';
 import { createHeadlessSessions } from '../headlessSessions';
 import type { HeadlessStartRecordV1 } from '../headlessStartStore';
 
@@ -48,10 +48,12 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
       "const id = process.argv[process.argv.indexOf('--session-id') + 1];",
       `const file = ${JSON.stringify(transcripts)} + '/' + id + '.jsonl';`,
       "process.stdin.setRawMode(true);",
-      // STUB_DIALOG=start: a permission dialog on screen for a while; =enter: one opens the moment a paste ends.
+      // STUB_DIALOG=start: a permission dialog on screen for a while; =stay: one that never closes;
+      // =enter: one opens the moment a paste ends.
       "const dialog = () => process.stdout.write('\\x1b[2J\\x1b[HBash command\\n\\n  uname -s\\n\\nDo you want to proceed?\\n\\u276f 1. Yes\\n  2. No\\n');",
       "const idle = () => process.stdout.write('\\x1b[2J\\x1b[Hready> ');",
-      "if (process.env.STUB_DIALOG === 'start') { dialog(); setTimeout(() => { idle(); fs.writeFileSync(file + '.cleared', ''); }, 2500); } else idle();",
+      "if (process.env.STUB_DIALOG === 'start') { dialog(); setTimeout(() => { idle(); fs.writeFileSync(file + '.cleared', ''); }, 2500); }",
+      "else if (process.env.STUB_DIALOG === 'stay') dialog(); else idle();",
       "fs.writeFileSync(file + '.ready', '');",
       "let buf = '';",
       "process.stdin.on('data', (d) => {",
@@ -85,7 +87,7 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
   });
 
   /** A stub agent in a real session, and the delivery wired to it as index.ts wires the real one. */
-  async function harness(stubDialog?: 'start' | 'enter') {
+  async function harness(stubDialog?: 'start' | 'stay' | 'enter') {
     const mgr = new DaemonSessionManager();
     managers.push(mgr);
     const sessions = createHeadlessSessions({
@@ -130,6 +132,8 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
     const results: string[] = [];
     const marks: Array<Record<string, unknown>> = [];
     const verdicts: Array<string | null> = [];
+    /** Moved forward by a test to stand for minutes passing (the delivery's clock only). */
+    const clock = { skew: 0 };
 
     const delivery = new HeadlessDelivery({
       mode: { active: () => true },
@@ -138,8 +142,18 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
       tasks: {
         pending: () => (m().delivered !== true && !m().held && task.status.state === 'submitted' ? [task] : []),
         remote: () => [task],
+        held: () => [],
         get: () => task,
       },
+      rejectHeld: async () => ({ ok: false, error: 'not-held' }),
+      followUpsDirect: () => true,
+      // As index.ts: the screen read as the delivery guard reads it.
+      questionOnScreen: async (id) => {
+        const seen = await readFolderTrust({ getSession: (sid) => mgr.getSession(sid), timeoutMs: 1000 }, id);
+        if (seen.state === 'trust' || seen.dialog) return 'dialog';
+        return seen.state === 'clear' ? 'clear' : 'unknown';
+      },
+      now: () => Date.now() + clock.skew,
       mark: async (input) => {
         marks.push(input);
         if (input.delivered) m().delivered = true;
@@ -197,7 +211,11 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
       .map((l) => JSON.parse(l) as { type: string; message: { content: unknown } })
       .filter((l) => l.type === 'user')
       .map((l) => l.message.content);
-    return { delivery, file, replies, moves, results, marks, verdicts, run, prompts };
+    const alive = (): boolean => {
+      const s = mgr.getSession(sessionId);
+      return !!s && s.meta.state !== 'dead';
+    };
+    return { delivery, file, replies, moves, results, marks, verdicts, run, prompts, clock, alive };
   }
 
   it('a task typed into a real session reaches the agent once, and its answer comes back as the reply', async () => {
@@ -224,6 +242,27 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
     expect(h.results.at(-1)).toBe('sent');
     expect(h.prompts()).toEqual([PROMPT]);
     expect(h.moves).toEqual([{ to: 'working' }, { to: 'input-required' }]);
+  }, 60_000);
+
+  it('a question that stays on screen: the asker is told once, then at 10 minutes the task is canceled; nothing typed, the agent left running', async () => {
+    const h = await harness('stay');
+    await h.run(() => h.verdicts.includes('dialog'));
+    expect(h.results.every((r) => r === 'busy')).toBe(true);
+    // The clock starts at the first read that sees the question.
+    h.clock.skew += 10_000;
+    await h.delivery.tick();
+    h.clock.skew += QUESTION_NOTICE_MS;
+    await h.delivery.tick();
+    expect(h.replies).toHaveLength(1);
+    expect(h.replies[0]).toContain('waits on a question');
+    expect(h.moves).toEqual([]);
+    h.clock.skew += QUESTION_TIMEOUT_MS;
+    await h.delivery.tick();
+    expect(h.moves).toEqual([{ to: 'canceled', summary: QUESTION_REASON }]);
+    expect(h.replies.slice(1)).toEqual([`Canceled: ${QUESTION_REASON}`]);
+    expect(h.prompts()).toEqual([]);
+    // The agent is still there: its session was not ended.
+    expect(h.alive()).toBe(true);
   }, 60_000);
 
   it('a dialog that opens between the paste and Enter: no Enter, the task ends with the reason, never typed again', async () => {
