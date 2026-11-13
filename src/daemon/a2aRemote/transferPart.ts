@@ -1,11 +1,12 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import type http from 'node:http';
 import { Transform, type Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import zlib from 'node:zlib';
 import type { HostId } from '../../shared/a2aRemote';
 import { ContinueStagingRefusal, continueParentsInside } from './continueStaging';
-import { continueWireMax } from './server';
+import { continueWireMax, sendJson } from './server';
 import { errMsg } from './storeFile';
 
 /**
@@ -130,4 +131,11 @@ async function syncFile(file: string): Promise<void> {
   } finally {
     await handle.close();
   }
+}
+
+/** Answer without reading the rest of the body, then cut the connection. */
+export function answerAndClose(req: http.IncomingMessage, res: http.ServerResponse, status: number, body: unknown): void {
+  res.setHeader('Connection', 'close');
+  res.once('finish', () => req.socket.destroy());
+  sendJson(res, status, body);
 }

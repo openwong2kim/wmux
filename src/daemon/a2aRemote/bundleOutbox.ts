@@ -1,19 +1,28 @@
 import fs from 'node:fs';
-import type http from 'node:http';
 import { pipeline } from 'node:stream/promises';
 import { A2A_ROUTES, A2A_SHA256_RE, isHostId, type HostId } from '../../shared/a2aRemote';
 import { BUNDLE_BYTES_CEILING, BUNDLE_TTL_DEFAULT_MS, isBundleId } from '../../shared/a2aBundle';
 import type { A2aRouteContext, A2aRouteTable } from './routes';
 import { continueTransferBudgetMs, sendJson } from './server';
+import { PinnedClientError } from './pinnedClient';
+import type { StreamedPut } from './session';
 import { errMsg } from './storeFile';
 import { transferSlots } from './transferPart';
 
 /**
- * The bundles this PC made for other PCs, served to them (this PC is the
- * server; the asking PC joined it and fetches with a GET):
+ * The bundles this PC made for other PCs, handed to them whichever PC
+ * dialled:
  *
- *   GET /api/a2a/bundle/:bundleId — the bundle's bytes, raw, with its exact
- *        Content-Length.
+ *   The asking PC joined this one: it fetches with a GET.
+ *     GET /api/a2a/bundle/:bundleId — the bundle's bytes, raw, with its
+ *          exact Content-Length.
+ *   This PC joined the asking one: `send` puts it there with a PUT through
+ *     this PC's session (bundleIntake.ts takes it; the asking PC asked for
+ *     it, and waits for that id and hash only). Its answer: `sent`; `again`
+ *     when the transfer broke or the other PC was busy; `fatal` when it was
+ *     refused (nothing awaited there, or not that bundle). A refusal that
+ *     closes the connection before its answer is read reads as `again`: the
+ *     caller tries a bounded number of times.
  *
  * Only the PC a bundle was made for gets it (its authenticated id, never a
  * field it sent), only while its offer stands (until it is withdrawn or its
@@ -27,8 +36,14 @@ import { transferSlots } from './transferPart';
  * size's budget; a fetch past it is cut, and the asking PC fetches again.
  */
 
-/** Transfers at once: at most one per PC. */
+/** Transfers at once, fetches and sends together: at most one per PC. */
 const TRANSFERS_MAX = 2;
+
+export type BundleSend =
+  | { kind: 'sent' }
+  | { kind: 'again'; why: string }
+  | { kind: 'fatal'; why: string }
+  | { kind: 'busy' };
 
 export interface BundleOffer {
   /** The PC it was made for: the only one that may fetch it. */
@@ -70,8 +85,8 @@ export class BundleOutbox {
   private readonly now: () => number;
   private readonly budget: (bytes: number) => number;
   private readonly offers = new Map<string, Offered>();
-  /** Responses streaming each offer now: ended when the offer ends. */
-  private readonly sending = new Map<string, Set<http.ServerResponse>>();
+  /** Transfers of each offer under way (how to end each): ended when the offer ends. */
+  private readonly sending = new Map<string, Set<() => void>>();
   private readonly slots = transferSlots(TRANSFERS_MAX);
 
   constructor(deps: BundleOutboxDeps) {
@@ -121,8 +136,86 @@ export class BundleOutbox {
   }
 
   private endSending(k: string): void {
-    for (const res of this.sending.get(k) ?? []) res.destroy();
+    for (const end of this.sending.get(k) ?? []) end();
     this.sending.delete(k);
+  }
+
+  /** A transfer of `k` under way, ended by `end` when its offer ends; the returned call forgets it. */
+  private track(k: string, end: () => void): () => void {
+    const live = this.sending.get(k) ?? new Set<() => void>();
+    live.add(end);
+    this.sending.set(k, live);
+    return () => {
+      live.delete(end);
+      if (live.size === 0 && this.sending.get(k) === live) this.sending.delete(k);
+    };
+  }
+
+  /**
+   * Open the offered file as it is now, never through a link and never waiting on one that is not a plain file (a
+   * FIFO): the one offered, else null, and the offer ends. An error that says nothing of the file (too many open
+   * files, a lock held for a moment) is thrown, and the offer stands. (Windows has neither flag; its check is the
+   * identity compared below.)
+   */
+  private async openOffered(offered: Offered, what: string): Promise<fs.promises.FileHandle | null> {
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+    const pre = await fs.promises.lstat(offered.file).catch(goneOrThrow);
+    const handle = pre?.isFile() ? await fs.promises.open(offered.file, flags).catch(goneOrThrow) : null;
+    const st = handle ? await handle.stat().catch(async (err: unknown) => {
+      await handle.close().catch(() => undefined);
+      throw err;
+    }) : null;
+    if (handle && st?.isFile() && st.size === offered.bytes && st.ino === offered.ino && st.mtimeMs === offered.mtimeMs) return handle;
+    await handle?.close().catch(() => undefined);
+    this.deps.log('warn', `[a2a-remote] ${what}: its file is not the one offered; the offer ends`);
+    this.withdraw(offered.hostId, offered.bundleId);
+    return null;
+  }
+
+  /**
+   * Send an offered bundle to the PC it was made for, which asked for it, when this PC joined that one: a PUT of
+   * its bytes through this PC's session (`put`), within its size's budget.
+   */
+  async send(hostId: HostId, bundleId: string, put: StreamedPut): Promise<BundleSend> {
+    if (!this.deps.enabled()) return { kind: 'fatal', why: 'bundles are off on this PC' };
+    const offered = this.standing(hostId, bundleId);
+    if (!offered) return { kind: 'fatal', why: 'not offered to that PC' };
+    const release = this.slots.take(hostId);
+    if (!release) return { kind: 'busy' };
+    const what = `bundle ${offered.bundleId} for ${offered.hostId}`;
+    const k = key(offered.hostId, offered.bundleId);
+    const abort = new AbortController();
+    const forget = this.track(k, () => abort.abort());
+    let handle: fs.promises.FileHandle | null = null;
+    try {
+      handle = await this.openOffered(offered, what);
+      if (!handle) return { kind: 'fatal', why: 'its file is not the one offered' };
+      // Withdrawn while the file was opened: not sent.
+      if (this.offers.get(k) !== offered || abort.signal.aborted) return { kind: 'fatal', why: 'not offered to that PC' };
+      const stream = handle.createReadStream({ start: 0, end: offered.bytes - 1, autoClose: false });
+      const { status } = await put(`${A2A_ROUTES.bundle}/${offered.bundleId}/${offered.sha256}`, stream, {
+        bytes: offered.bytes,
+        timeoutMs: this.budget(offered.bytes),
+        signal: abort.signal,
+      });
+      if (status === 200) {
+        this.deps.log('info', `[a2a-remote] ${what}: sent`);
+        return { kind: 'sent' };
+      }
+      // As for a fetch: a refusal of this bundle (a 4xx but 401, 408 and 429) is final; anything else is tried again.
+      const refused = status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429;
+      const why = `the other PC answered HTTP ${status}`;
+      this.deps.log(refused ? 'warn' : 'info', `[a2a-remote] ${what}: not sent: ${why}`);
+      return { kind: refused ? 'fatal' : 'again', why };
+    } catch (err) {
+      const why = err instanceof PinnedClientError ? `${err.code}: ${err.message}` : errMsg(err);
+      this.deps.log('info', `[a2a-remote] ${what}: not sent whole: ${why}`);
+      return { kind: 'again', why };
+    } finally {
+      forget();
+      await handle?.close().catch(() => undefined);
+      release();
+    }
   }
 
   /** The offer `hostId` may fetch, while it stands. */
@@ -149,25 +242,13 @@ export class BundleOutbox {
     const k = key(offered.hostId, offered.bundleId);
     let handle: fs.promises.FileHandle | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let forget = (): void => undefined;
     try {
-      // The file as it is now, never through a link and never waiting on one that is not a plain file (a FIFO):
-      // the one offered, else not served. (Windows has neither flag; its check is the stat below.)
-      // An error that says nothing of the file (too many open files, a lock held for a moment) is a 503 and the
-      // offer stands; only a file that is gone or is another one ends it.
-      const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
-      const pre = await fs.promises.lstat(offered.file).catch(goneOrThrow);
-      handle = pre?.isFile() ? await fs.promises.open(offered.file, flags).catch(goneOrThrow) : null;
-      const st = handle ? await handle.stat() : null;
-      if (!handle || !st?.isFile() || st.size !== offered.bytes || st.ino !== offered.ino || st.mtimeMs !== offered.mtimeMs) {
-        this.deps.log('warn', `[a2a-remote] ${what}: its file is not the one offered; the offer ends`);
-        this.withdraw(offered.hostId, offered.bundleId);
-        return sendJson(res, 404, { ok: false, error: 'bad-request', message: 'not found' });
-      }
-      // Withdrawn while the file was opened: not served.
-      if (this.offers.get(k) !== offered) return sendJson(res, 404, { ok: false, error: 'bad-request', message: 'not found' });
-      const live = this.sending.get(k) ?? new Set<http.ServerResponse>();
-      live.add(res);
-      this.sending.set(k, live);
+      // An error that says nothing of the file is a 503 and the offer stands; a file that is not the one offered is 404.
+      handle = await this.openOffered(offered, what);
+      // Withdrawn while the file was opened (or just now): not served.
+      if (!handle || this.offers.get(k) !== offered) return sendJson(res, 404, { ok: false, error: 'bad-request', message: 'not found' });
+      forget = this.track(k, () => res.destroy());
       res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': offered.bytes, 'Cache-Control': 'no-store' });
       // Within its size's budget: a fetch that reads too slowly is cut, and its slot freed.
       timer = setTimeout(() => res.destroy(), this.budget(offered.bytes));
@@ -184,9 +265,7 @@ export class BundleOutbox {
       else res.destroy();
     } finally {
       clearTimeout(timer);
-      const live = this.sending.get(k);
-      live?.delete(res);
-      if (live?.size === 0) this.sending.delete(k);
+      forget();
       await handle?.close().catch(() => undefined);
       release();
     }

@@ -2,19 +2,33 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { A2A_ROUTES, A2A_SHA256_RE, isHostId, type HostId } from '../../shared/a2aRemote';
-import { bundleBytesMax, isBundleId, type A2aBundleManifestV1 } from '../../shared/a2aBundle';
+import { BUNDLE_TTL_DEFAULT_MS, bundleBytesMax, isBundleId, type A2aBundleManifestV1 } from '../../shared/a2aBundle';
 import { ContinueStagingRefusal, continueParentsInside } from './continueStaging';
 import { PinnedClientError } from './pinnedClient';
-import { continueTransferBudgetMs, continueWireMax } from './server';
+import type { A2aRouteContext, A2aRouteTable } from './routes';
+import { continueTransferBudgetMs, continueWireMax, extendBodyDeadline, sendJson } from './server';
 import type { StreamedGet } from './session';
 import { errMsg } from './storeFile';
-import { placePart, transferSlots, wireEncoding, writePart, type TransferOutcome } from './transferPart';
+import { answerAndClose, placePart, transferSlots, wireEncoding, writePart, type TransferOutcome } from './transferPart';
 
 /**
  * A git bundle another PC made of the work its agent did for this one,
- * fetched here (this PC is the joiner: it pulls with a GET through its
- * session; bundleOutbox.ts serves it there). What the bundle holds is not
- * read here: it is bytes of a size and hash the manifest names, staged as
+ * taken in here, whichever PC dialled:
+ *
+ *   This PC joined that one: it pulls with a GET through its session
+ *     (`pull`; bundleOutbox.ts serves it there).
+ *   That PC joined this one: this PC waits for it (`receive`) and that PC
+ *     sends it with a PUT through its session (bundleOutbox.ts `send`):
+ *     PUT /api/a2a/bundle/:bundleId/:sha256 — answered only for the PC this
+ *     one waits on (its authenticated id, never a field it sent), for that
+ *     id and hash, while the wait stands, with a raw body (no encoding) of
+ *     exactly the manifest's size declared. Anything else is answered before
+ *     any byte of the body is read, and its connection is closed: 404 when
+ *     nothing is awaited. Once staged, the wait is over: the route takes
+ *     that bundle no more. While the feature is off the route does not exist.
+ *
+ * What the bundle holds is not read here: it is bytes of a size and hash
+ * the manifest names, staged as
  *
  *   <a2a dir>/bundle-in/<hostId>/<bundleId>.<sha256>.<bytes>.bundle
  *
@@ -45,6 +59,8 @@ export type BundlePull =
 export interface BundleIntakeDeps {
   /** `<wmux dir>/a2a`: staging is its `bundle-in/`. */
   a2aDir: string;
+  /** The bundle feature is on: else the PUT route does not exist. */
+  enabled: () => boolean;
   /** A streamed GET from `hostId`, when this PC joined it; null when that PC joined this one. */
   fetchFrom: (hostId: HostId) => StreamedGet | null;
   /** The largest bundle taken (a setting); held to BUNDLE_BYTES_CEILING. */
@@ -67,7 +83,27 @@ export function bundleStagedFile(a2aDir: string, hostId: HostId, m: A2aBundleMan
   return path.join(bundleStagingHostDir(a2aDir, hostId), `${stem(m)}.bundle`);
 }
 
+const NOT_FOUND = { ok: false, error: 'bad-request', message: 'not found' };
+
+/** A bundle this PC waits for: taken once, by one PUT at a time. */
+interface Wait {
+  hostId: HostId;
+  m: A2aBundleManifestV1;
+  done: Promise<BundlePull>;
+  settle: (r: BundlePull) => void;
+  /** Ends a transfer of it under way when the wait ends. */
+  abort: AbortController;
+  receiving: boolean;
+  /** Its time ran out while a transfer of it ran: it ends once that transfer does. */
+  late: boolean;
+  /** Settles once a PUT of it under way has finished with its files. */
+  landed: Promise<void>;
+  timer: ReturnType<typeof setTimeout> | undefined;
+}
+
 const key = (hostId: HostId, m: A2aBundleManifestV1): string => `${hostId}:${stem(m)}`;
+/** A wait, by what its PUT route names: the PC, the id and the hash (the size is the request's declared length). */
+const waitKey = (hostId: HostId, m: Pick<A2aBundleManifestV1, 'bundleId' | 'sha256'>): string => `${hostId}:${m.bundleId}:${m.sha256}`;
 
 export class BundleIntake {
   private readonly deps: BundleIntakeDeps;
@@ -75,6 +111,8 @@ export class BundleIntake {
   private readonly slots = transferSlots(TRANSFERS_MAX);
   /** One pull per bundle at a time: a second call while one runs gets its answer. */
   private readonly running = new Map<string, { hostId: HostId; done: Promise<BundlePull>; abort: AbortController }>();
+  /** Bundles this PC waits for a PC that joined it to send. */
+  private readonly awaited = new Map<string, Wait>();
 
   constructor(deps: BundleIntakeDeps) {
     this.deps = deps;
@@ -98,9 +136,129 @@ export class BundleIntake {
     return done;
   }
 
-  /** Every pull in flight ends (the daemon stops). */
+  registerRoutes(table: A2aRouteTable): void {
+    // Off, this is a path never registered: a PC learns nothing of a feature switched off.
+    table.add('PUT', `${A2A_ROUTES.bundle}/:bundleId/:sha256`, (ctx) => this.put(ctx), { when: () => this.deps.enabled() });
+  }
+
+  /**
+   * Wait, for `ttlMs`, for `hostId` (a PC that joined this one) to send the
+   * bundle `manifest` names, and take it once. A second call while it waits
+   * gets the same answer. Resolves `staged` once it is in, `fatal` when what
+   * came is not that bundle, and `again` when nothing came in time or the
+   * wait ended (the PC removed, the intake stopped).
+   */
+  receive(hostId: HostId, manifest: unknown, ttlMs = BUNDLE_TTL_DEFAULT_MS): Promise<BundlePull> {
+    const m = wellFormed(manifest);
+    if (!isHostId(hostId) || !m || !(ttlMs > 0)) return Promise.resolve({ kind: 'fatal', why: 'not a bundle this PC can take' });
+    // Off, the route it would come by does not exist: nothing is waited for.
+    if (!this.deps.enabled()) return Promise.resolve({ kind: 'fatal', why: 'bundles are off on this PC' });
+    const max = bundleBytesMax(this.deps.maxBytes?.());
+    if (m.bytes > max) return Promise.resolve({ kind: 'fatal', why: `${m.bytes} bytes, past the ${max} this PC takes` });
+    const k = waitKey(hostId, m);
+    const waiting = this.awaited.get(k);
+    // The same manifest waited for twice is one wait; the same id and hash with another size is not that bundle.
+    if (waiting) return waiting.m.bytes === m.bytes ? waiting.done : Promise.resolve({ kind: 'fatal', why: 'another size is awaited for that bundle' });
+    let settle: (r: BundlePull) => void = () => undefined;
+    const done = new Promise<BundlePull>((r) => { settle = r; });
+    const w: Wait = { hostId, m, done, settle, abort: new AbortController(), receiving: false, late: false, landed: Promise.resolve(), timer: undefined };
+    // A transfer under way when the time is up still lands, within its own budget; the wait ends after it.
+    w.timer = setTimeout(() => {
+      if (w.receiving) w.late = true;
+      else this.endWait(k, { kind: 'again', why: 'not sent in time' }, w);
+    }, ttlMs);
+    w.timer.unref?.();
+    this.awaited.set(k, w);
+    // Taken before (a repeat after a restart, say): the wait is over at once when it still checks out. Something
+    // other than a plain file where it goes is final at once, as for a pull.
+    const target = bundleStagedFile(this.deps.a2aDir, hostId, m);
+    void holds(this.deps.a2aDir, target, m.sha256, m.bytes).then(
+      (held) => { if (held && !w.receiving) this.endWait(k, { kind: 'staged', file: target }, w); },
+      (err: unknown) => { if (err instanceof ContinueStagingRefusal) this.endWait(k, { kind: 'fatal', why: err.message }, w); },
+    );
+    return done;
+  }
+
+  /** Every pull and wait ends (the daemon stops). */
   stop(): void {
     for (const r of this.running.values()) r.abort.abort();
+    for (const k of [...this.awaited.keys()]) this.endWait(k, { kind: 'again', why: 'stopped' });
+  }
+
+  /** The wait for `k` (only `only`, when named: a later wait for the same bundle is not this one's) ends with `r`, and a transfer of it under way with it. */
+  private endWait(k: string, r: BundlePull, only?: Wait): void {
+    const w = this.awaited.get(k);
+    if (!w || (only && w !== only)) return;
+    this.awaited.delete(k);
+    clearTimeout(w.timer);
+    w.abort.abort();
+    w.settle(r);
+  }
+
+  private async put({ req, res, params, peer }: A2aRouteContext): Promise<void> {
+    const k = waitKey(peer.hostId, { bundleId: params['bundleId'] ?? '', sha256: params['sha256'] ?? '' });
+    const w = this.awaited.get(k);
+    if (!w) return answerAndClose(req, res, 404, NOT_FOUND);
+    if (wireEncoding(req.headers['content-encoding']) !== 'identity') {
+      return answerAndClose(req, res, 415, { ok: false, error: 'bad-request', message: 'raw bytes only' });
+    }
+    // Exactly the manifest's size, declared up front: never chunked, never more or less.
+    if (req.headers['content-length'] !== String(w.m.bytes)) {
+      return answerAndClose(req, res, 411, { ok: false, error: 'bad-request', message: 'the manifest\'s length only' });
+    }
+    if (w.receiving) return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
+    const release = this.slots.take(peer.hostId);
+    if (!release) return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
+    // Before any wait: a client gone mid-request still gives the slot back.
+    res.once('close', release);
+    w.receiving = true;
+    let landed: () => void = () => undefined;
+    w.landed = new Promise((r) => { landed = r; });
+    const { m } = w;
+    const what = `bundle ${m.bundleId} from ${w.hostId}`;
+    const target = bundleStagedFile(this.deps.a2aDir, w.hostId, m);
+    const part = path.join(bundleStagingHostDir(this.deps.a2aDir, w.hostId), PARTS, stem(m));
+    const cut = new AbortController();
+    const timer = setTimeout(() => cut.abort(), this.budget(m.bytes));
+    timer.unref?.();
+    const both = AbortSignal.any([w.abort.signal, cut.signal]);
+    // A wait that ends meanwhile (the PC removed) cuts the connection.
+    const onEnd = (): void => { req.destroy(); };
+    w.abort.signal.addEventListener('abort', onEnd, { once: true });
+    let outcome: TransferOutcome;
+    try {
+      // Its own budget, not the listener's 30 s: a file of megabytes takes longer.
+      extendBodyDeadline(req, this.budget(m.bytes));
+      await fs.promises.mkdir(path.join(this.deps.a2aDir, BUNDLE_IN), { recursive: true, mode: 0o700 });
+      await continueParentsInside(this.deps.a2aDir, part, true);
+      await fs.promises.rm(part, { force: true });
+      outcome = await writePart(req, 'identity', m.sha256, m.bytes, part, both);
+      if (outcome.kind === 'staged') await placePart(this.deps.a2aDir, part, target);
+    } catch (err) {
+      outcome = err instanceof ContinueStagingRefusal ? { kind: 'fatal', why: err.message } : { kind: 'again', why: errMsg(err) };
+    } finally {
+      clearTimeout(timer);
+      w.abort.signal.removeEventListener('abort', onEnd);
+      release();
+    }
+    if (outcome.kind !== 'staged') await fs.promises.rm(part, { force: true }).catch(() => undefined);
+    landed();
+    if (outcome.kind === 'staged') {
+      this.deps.log('info', `[a2a-remote] ${what}: received (${m.bytes} bytes)`);
+      this.endWait(k, { kind: 'staged', file: target }, w);
+      return sendJson(res, 200, { ok: true });
+    }
+    this.deps.log(outcome.kind === 'fatal' ? 'warn' : 'info', `[a2a-remote] ${what}: not received: ${outcome.why}`);
+    // What came is not that bundle: the wait is over. A transfer that broke may come again while the wait stands.
+    if (outcome.kind === 'fatal') {
+      this.endWait(k, outcome, w);
+      return answerAndClose(req, res, 400, { ok: false, error: 'bad-request' });
+    }
+    w.receiving = false;
+    // Its time ran out while this transfer ran: the wait ends now.
+    if (w.late) this.endWait(k, { kind: 'again', why: 'not sent in time' }, w);
+    // The body may be read only in part: never drained.
+    return answerAndClose(req, res, 503, { ok: false, error: 'unavailable' });
   }
 
   /** A staged bundle is done with (imported, or refused there): it goes. */
@@ -110,12 +268,14 @@ export class BundleIntake {
     await fs.promises.rm(bundleStagedFile(this.deps.a2aDir, hostId, m), { force: true });
   }
 
-  /** A paired PC was removed: its pulls end, then everything staged from it goes. */
+  /** A paired PC was removed: its pulls and waits end, then everything staged from it goes. */
   async forgetHost(hostId: HostId): Promise<void> {
     if (!isHostId(hostId)) return;
+    const waits = [...this.awaited].filter(([, w]) => w.hostId === hostId);
+    for (const [k] of waits) this.endWait(k, { kind: 'again', why: 'that PC was removed' });
     const ending = [...this.running.values()].filter((r) => r.hostId === hostId);
     for (const r of ending) r.abort.abort();
-    await Promise.allSettled(ending.map((r) => r.done));
+    await Promise.allSettled([...ending.map((r) => r.done), ...waits.map(([, w]) => w.landed)]);
     await fs.promises.rm(bundleStagingHostDir(this.deps.a2aDir, hostId), { recursive: true, force: true });
   }
 

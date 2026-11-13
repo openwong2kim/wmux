@@ -1,3 +1,4 @@
+import type { Readable } from 'node:stream';
 import {
   A2A_FEATURE_STREAM_PING,
   A2A_REDIAL_BACKOFF_MIN_MS,
@@ -89,7 +90,15 @@ export interface SessionClient {
   headStatus?(path: string, timeoutMs: number, signal?: AbortSignal): Promise<number>;
   getBytes?(path: string, opts: { maxBytes: number; timeoutMs: number; signal?: AbortSignal }): Promise<Buffer>;
   getStream?<T>(path: string, opts: { timeoutMs: number; signal?: AbortSignal; acceptEncoding?: string }, consume: (res: PinnedStreamedBody) => Promise<T>): Promise<T>;
+  putStream?(path: string, body: Readable, opts: { bytes: number; timeoutMs: number; signal?: AbortSignal }): Promise<{ status: number; json: unknown }>;
 }
+
+/** A PUT of exactly `opts.bytes` read from `body` as it is sent (JoinerSession.sendStream). */
+export type StreamedPut = (
+  path: string,
+  body: Readable,
+  opts: { bytes: number; timeoutMs: number; signal: AbortSignal },
+) => Promise<{ status: number; json: unknown }>;
 
 /** A GET whose body `consume` reads as it arrives (JoinerSession.fetchStream). */
 export type StreamedGet = <T>(
@@ -224,6 +233,23 @@ export class JoinerSession {
     if (!client?.getStream) throw new PinnedClientError('connect-failed', 'that PC cannot be reached from here now', { sent: false });
     try {
       return await client.getStream(path, { ...opts, signal: AbortSignal.any([opts.signal, this.halt.signal]) }, consume);
+    } catch (err) {
+      if (err instanceof PinnedClientError && err.code === 'fingerprint-mismatch') this.identityChanged(err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * A PUT to the server of a body too large to hold (a bundle that PC asked
+   * this one for), as fetchStream: through a pinned client to the host as it
+   * is now, ended by `opts.signal` or by stop(). Throws as the pinned client
+   * does; a certificate that is not the pinned one stops the session.
+   */
+  async sendStream(path: string, body: Readable, opts: { bytes: number; timeoutMs: number; signal: AbortSignal }): Promise<{ status: number; json: unknown }> {
+    const client = this.status.state === 'identity-changed' ? null : this.client();
+    if (!client?.putStream) throw new PinnedClientError('connect-failed', 'that PC cannot be reached from here now', { sent: false });
+    try {
+      return await client.putStream(path, body, { ...opts, signal: AbortSignal.any([opts.signal, this.halt.signal]) });
     } catch (err) {
       if (err instanceof PinnedClientError && err.code === 'fingerprint-mismatch') this.identityChanged(err.message);
       throw err;

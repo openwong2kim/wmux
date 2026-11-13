@@ -22,6 +22,7 @@ import {
   type A2aPairResponse,
   type A2aRemoteErrorCode,
 } from '../../shared/a2aRemote';
+import { BUNDLE_BYTES_CEILING } from '../../shared/a2aBundle';
 import { CONTINUE_BYTES_MAX } from '../../shared/a2aContinue';
 import type { A2aRemotePairBeginResult, A2aRemotePairStatus, A2aRemoteStatus } from '../../shared/rpc';
 import type { WebA2aPeer, WebA2aRoutes } from '../web/WebTerminalServer';
@@ -849,11 +850,14 @@ function closeServer(server: https.Server): Promise<void> {
  * upload (`PUT /api/a2a/blobs/:sha256`, which counts what actually arrives
  * too), the largest conversation file gzipped for a continue upload
  * (`PUT /api/a2a/continue/:continueId/:sha256`, which holds it to its own
- * manifest entry), `A2A_REQUEST_BODY_MAX` for everything else.
+ * manifest entry), the largest bundle for a bundle upload
+ * (`PUT /api/a2a/bundle/:bundleId/:sha256`, which holds it to its manifest's
+ * exact size), `A2A_REQUEST_BODY_MAX` for everything else.
  */
 export function requestBodyMax(method: string | undefined, pathname: string): number {
   if (method === 'PUT' && pathname.startsWith(`${A2A_ROUTES.blobs}/`)) return A2A_REMOTE_IMAGE_LIMITS.IMAGE_MAX_BYTES;
   if (method === 'PUT' && pathname.startsWith(`${A2A_ROUTES.continue}/`)) return continueWireMax(CONTINUE_BYTES_MAX, 'gzip');
+  if (method === 'PUT' && pathname.startsWith(`${A2A_ROUTES.bundle}/`)) return BUNDLE_BYTES_CEILING;
   return A2A_REQUEST_BODY_MAX;
 }
 
