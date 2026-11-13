@@ -271,6 +271,10 @@ export interface GatedSubmitOptions {
   waitQuiet?: boolean;
   /** With `waitQuiet`: the agent the sender saw in the pane (display name). */
   expectAgent?: string;
+  /** With `waitQuiet`: the agent session (incarnation) the text was meant
+   *  for; another one refuses as `agent_changed`. Main-only (a stored
+   *  delivery's retry, input.rpc pendingDeliveries). */
+  expectIncarnation?: string;
   /** With `waitQuiet`: epoch ms after which nothing is written (main stamps
    *  it from the send's own timeout). */
   deadlineAt?: number;

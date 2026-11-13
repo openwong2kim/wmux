@@ -89,6 +89,8 @@ export async function waitForQuietAgent(
   read: () => Promise<PaneAgentState | null>,
   opts: {
     expectAgent?: string;
+    /** The agent session the delivery was meant for: another one is a change. */
+    expectIncarnation?: string;
     quietMs?: number;
     waitMs?: number;
     pollMs?: number;
@@ -106,7 +108,11 @@ export async function waitForQuietAgent(
   for (;;) {
     const s = await read().catch(() => null);
     if (s) {
-      if (!s.agentName || (opts.expectAgent && s.agentName !== opts.expectAgent)) {
+      if (
+        !s.agentName
+        || (opts.expectAgent && s.agentName !== opts.expectAgent)
+        || (opts.expectIncarnation && s.incarnationId !== opts.expectIncarnation)
+      ) {
         return { ok: false, reason: 'agent_changed', detail: 'delivery: the agent the hand-off was aimed at is no longer in the pane' };
       }
       baseline ??= { agentName: s.agentName, incarnationId: s.incarnationId, agentVerified: s.agentVerified === true };

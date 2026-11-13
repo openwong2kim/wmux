@@ -2499,6 +2499,7 @@ export function registerInputRpc(
     const read = () => dc.getAgentState(ptyId, { timeoutMs: 1_000 });
     const waited = await waitForQuietAgent(read, {
       ...(opts.expectAgent ? { expectAgent: opts.expectAgent } : {}),
+      ...(opts.expectIncarnation ? { expectIncarnation: opts.expectIncarnation } : {}),
       waitMs: quietWaitBudget(deadlineAt, now()),
       ...(deps.sleep ? { sleep: deps.sleep } : {}),
       now,
@@ -2699,9 +2700,14 @@ export function registerInputRpc(
 
   const pending = new PendingDeliveries({
     // At retry, the sender check names the task (its row exists by then); the
-    // hand-off guard holds the paste while a person types and refuses a
-    // changed agent.
-    submit: (entry) => deliverGated(entry.ptyId, entry.text, entry.agent, { ...entry.opts, waitQuiet: true, expectAgent: entry.agentName }),
+    // hand-off guard holds the paste while a person types, and refuses an
+    // agent session other than the one the text was meant for.
+    submit: (entry) => deliverGated(entry.ptyId, entry.text, entry.agent, {
+      ...entry.opts,
+      waitQuiet: true,
+      expectAgent: entry.agentName,
+      expectIncarnation: entry.incarnationId,
+    }),
     taskState: async (entry): Promise<PendingTaskState> => {
       const workspaceId = await resolvePtyOwnerWorkspace(getWindow, entry.ptyId).catch(() => undefined);
       if (workspaceId === undefined) return null;
@@ -2709,11 +2715,6 @@ export function registerInputRpc(
       const tasks = await queryDaemonTasks(workspaceId);
       if (!tasks) return null;
       return tasks.some((t) => typeof t === 'object' && t !== null && (t as { id?: unknown }).id === entry.taskId) ? 'open' : 'ended';
-    },
-    agentSession: async (ptyId) => {
-      const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
-      if (!dc?.isConnected) return null;
-      return (await dc.getAgentState(ptyId, { timeoutMs: 1_000 }))?.incarnationId ?? null;
     },
     log: logLine,
     ...(deps.now ? { now: deps.now } : {}),

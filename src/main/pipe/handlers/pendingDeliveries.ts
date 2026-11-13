@@ -49,12 +49,11 @@ export type PendingDropReason = 'replaced' | 'cap' | 'expired' | 'task ended' | 
 export type PendingTaskState = 'open' | 'ended' | 'pane gone' | null;
 
 export interface PendingDeliveryDeps {
-  /** The full delivery gate and write. */
+  /** The full delivery gate and write; it refuses as `agent_changed` when
+   *  the pane's agent session is not `entry.incarnationId`. */
   submit: (entry: PendingDelivery) => Promise<GatedSubmitResult>;
   /** The task's state, read from the daemon's task rows. */
   taskState: (entry: PendingDelivery) => Promise<PendingTaskState>;
-  /** The pane's agent session now: null when it cannot be read. */
-  agentSession: (ptyId: string) => Promise<string | null>;
   log: (line: string) => void;
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => { cancel: () => void };
@@ -114,12 +113,6 @@ export class PendingDeliveries {
         return;
       }
       if (state !== 'open') return;
-      const session = await this.deps.agentSession(ptyId).catch(() => null);
-      if (session === null) return;
-      if (session !== entry.incarnationId) {
-        this.drop(entry, 'agent changed');
-        return;
-      }
       const result = await this.deps.submit(entry).catch((err: unknown): GatedSubmitResult => ({
         ok: false,
         reason: 'write_failed',

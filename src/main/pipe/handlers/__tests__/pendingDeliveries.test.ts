@@ -13,19 +13,22 @@ import {
   type PendingTaskState,
 } from '../pendingDeliveries';
 
-function harness(opts: { result?: GatedSubmitResult; state?: PendingTaskState; session?: string | null } = {}) {
+function harness(opts: { result?: GatedSubmitResult; state?: PendingTaskState } = {}) {
   let t = 1_000_000;
   const typed: string[] = [];
   const logs: string[] = [];
   let timers = 0;
-  const live = { result: opts.result ?? ({ ok: true } as GatedSubmitResult), state: ('state' in opts ? opts.state : 'open') as PendingTaskState, session: opts.session === undefined ? 'inc-1' : opts.session };
+  const live = { result: opts.result ?? ({ ok: true } as GatedSubmitResult), state: ('state' in opts ? opts.state : 'open') as PendingTaskState };
+  const reads: string[] = [];
   const queue = new PendingDeliveries({
     submit: async (entry) => {
       if (live.result.ok) typed.push(entry.text);
       return live.result;
     },
-    taskState: async () => live.state,
-    agentSession: async () => live.session,
+    taskState: async (entry) => {
+      reads.push(entry.ptyId);
+      return live.state;
+    },
     log: (line) => logs.push(line),
     now: () => t,
     setTimer: () => {
@@ -36,7 +39,7 @@ function harness(opts: { result?: GatedSubmitResult; state?: PendingTaskState; s
   const entry = (taskId: string, ptyId = 'pty-1', text = `text ${taskId}`): PendingDelivery => ({
     taskId, ptyId, text, agent: 'claude', opts: { senderTaskIds: [taskId] }, agentName: 'Claude Code', incarnationId: 'inc-1', storedAt: t,
   });
-  return { queue, typed, logs, live, entry, advance: (ms: number) => { t += ms; }, timers: () => timers };
+  return { queue, typed, logs, live, reads, entry, advance: (ms: number) => { t += ms; }, timers: () => timers };
 }
 
 describe('PendingDeliveries', () => {
@@ -91,7 +94,7 @@ describe('PendingDeliveries', () => {
     expect(h.logs.at(-1)).toContain(': expired;');
   });
 
-  it('drops when the task ended, after the grace for a row still being written', async () => {
+  it('drops an entry whose task never appeared, once the grace for a row still being written is over', async () => {
     const h = harness({ state: 'ended' });
     h.queue.store(h.entry('t1'));
     await h.queue.retry('pty-1');
@@ -115,22 +118,21 @@ describe('PendingDeliveries', () => {
     expect(gone.logs.at(-1)).toContain(': pane gone;');
   });
 
-  it('drops when the pane\'s agent session changed, before or during the write', async () => {
-    const before = harness({ session: 'inc-2' });
-    before.queue.store(before.entry('t1'));
-    await before.queue.retry('pty-1');
-    expect(before.typed).toEqual([]);
-    expect(before.logs.at(-1)).toContain(': agent changed;');
+  it('drops when the gate finds another agent session in the pane', async () => {
+    const h = harness({ result: { ok: false, reason: 'agent_changed', detail: 'changed' } });
+    h.queue.store(h.entry('t1'));
+    await h.queue.retry('pty-1');
+    expect(h.typed).toEqual([]);
+    expect(h.queue.size).toBe(0);
+    expect(h.logs.at(-1)).toContain(': agent changed;');
+  });
 
-    const during = harness({ result: { ok: false, reason: 'agent_changed', detail: 'changed' } });
-    during.queue.store(during.entry('t1'));
-    await during.queue.retry('pty-1');
-    expect(during.queue.size).toBe(0);
-
-    const unread = harness({ session: null });
-    unread.queue.store(unread.entry('t1'));
-    await unread.queue.retry('pty-1');
-    expect(unread.queue.size).toBe(1);
+  it('reads the task state once per pane per pass, whatever the pane holds', async () => {
+    const h = harness({ result: { ok: false, reason: 'gate_unavailable', detail: 'x' } });
+    for (const id of ['t1', 't2', 't3']) h.queue.store(h.entry(id, 'pty-1'));
+    h.queue.store(h.entry('t4', 'pty-2'));
+    await h.queue.sweep();
+    expect(h.reads.sort()).toEqual(['pty-1', 'pty-2']);
   });
 
   it('a text left in the composer is not typed again', async () => {
