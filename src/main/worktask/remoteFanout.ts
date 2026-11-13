@@ -65,8 +65,8 @@ export interface RemoteFanoutDaemon {
 export interface RemoteTaskView {
   id: string;
   state: string;
-  /** When the other PC last reported it (ISO); absent before any report. */
-  reportedAt?: string;
+  /** The id of the other PC's message that last reported it; absent before any report. */
+  reportId?: string;
   status?: { kind: string; since: string; question?: string; resetsAt?: string };
 }
 
@@ -83,7 +83,7 @@ export function remoteTaskViewOf(raw: unknown): RemoteTaskView[] {
       ...(typeof st.detail?.resetsAt === 'string' ? { resetsAt: st.detail.resetsAt } : {}),
     }
     : undefined;
-  return [{ id: t.id, state: t.status.state, ...(typeof remote?.reported === 'string' ? { reportedAt: remote.reported } : {}), ...(status ? { status } : {}) }];
+  return [{ id: t.id, state: t.status.state, ...(typeof remote?.reported === 'string' ? { reportId: remote.reported } : {}), ...(status ? { status } : {}) }];
 }
 
 export type RemoteLedger = Pick<TaskLedger, 'get' | 'list' | 'register' | 'update' | 'updateRemote' | 'closeTask' | 'onTransition'>;
@@ -521,9 +521,10 @@ async function followTasks(deps: RemoteFanoutDeps): Promise<void> {
  * One row from its A2A task (null: the daemon no longer lists it). The row is
  * read again here, after the daemon call: one closed meanwhile is left alone.
  *
- * Precedence: a new report moves the row to review_requested, and a report
- * stands there until a follow-up sets the agent working again (then the
- * statuses below apply as before). An ended task beats the worker's status.
+ * Precedence: a new report (another report message id) moves the row to
+ * review_requested, and a report stands there until a follow-up sets the
+ * agent working again (then the statuses below apply as before), also once
+ * the daemon no longer lists the task. An ended task beats the worker's status.
  * A gone agent, or a task the daemon dropped, fails the row only after
  * REMOTE_GONE_GRACE_MS, so the end that normally follows is taken instead.
  * Text from the other PC never goes into the row: kinds, the PC's name and
@@ -548,12 +549,14 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
     if (r.goneSeenAt === undefined) return patch({ goneSeenAt: now });
     if (now - r.goneSeenAt >= REMOTE_GONE_GRACE_MS) await move('failed', summary);
   };
-  if (!view) return failAfterGrace(`the task on ${r.pc} is no longer known here`);
+  // A report stands: a reported task the daemon dropped later (its log keeps
+  // ended tasks only a while) keeps its row as it is.
+  if (!view) return entry.status === 'review_requested' ? undefined : failAfterGrace(`the task on ${r.pc} is no longer known here`);
   const settled = r.waiting || r.goneSeenAt !== undefined ? { waiting: undefined, goneSeenAt: undefined } : null;
   if (view.state === 'canceled') return move('cancelled', `cancelled on ${r.pc}`);
-  const newReport = view.reportedAt !== undefined && view.reportedAt !== r.reportedAt;
+  const newReport = view.reportId !== undefined && view.reportId !== r.reportId;
   if (newReport || (view.state === 'completed' && entry.status !== 'review_requested')) {
-    await patch({ ...(settled ?? {}), ...(view.reportedAt ? { reportedAt: view.reportedAt } : {}) });
+    await patch({ ...(settled ?? {}), ...(view.reportId ? { reportId: view.reportId } : {}) });
     return move('review_requested', `reported on ${r.pc}; the report is on ${on}`);
   }
   // A report stands until a follow-up sets the agent working again.

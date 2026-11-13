@@ -11,6 +11,7 @@ import { branchFor } from '../../a2aRemote/spawnWorktree';
 import { SPAWN_REQUEST_KEY_RE, type A2aSpawnAskInput, type A2aSpawnOutgoingSummary } from '../../../shared/a2aSpawn';
 import { isRemoteTask } from '../../../shared/ledger';
 import { TaskCloseService } from '../TaskCloseService';
+import { installFanoutCallerLedgerNotify } from '../../deck/fanoutCallerNotify';
 import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 import { registerLedgerRpc } from '../../pipe/handlers/ledger.rpc';
 import type { RpcContext } from '../../../shared/rpc';
@@ -512,7 +513,8 @@ describe('a started task follows its A2A task', () => {
     return { f, deps, res, a2a, view, row };
   }
   const at = '2026-11-13T09:00:00.000Z';
-  const REPORTED = '2026-11-13T09:05:00.000Z';
+  /** The other PC's report message id, as the daemon keeps it. */
+  const REPORTED = 'msg-report-1';
 
   it('a question moves the row to input_required, by kind and PC only, and back to working once answered', async () => {
     const s = await started(1);
@@ -556,10 +558,10 @@ describe('a started task follows its A2A task', () => {
 
   it('a report moves it to review_requested and stands: a later failure does not move it', async () => {
     const s = await started(1);
-    s.view(0, { state: 'input-required', reportedAt: REPORTED });
+    s.view(0, { state: 'input-required', reportId: REPORTED });
     await reconcileRemoteTasks(s.deps);
     expect(s.row(0)).toMatchObject({ status: 'review_requested', summary: `reported on box; the report is on A2A task ${s.a2a[0]}` });
-    s.view(0, { state: 'failed', reportedAt: REPORTED });
+    s.view(0, { state: 'failed', reportId: REPORTED });
     await reconcileRemoteTasks(s.deps);
     expect(s.row(0).status).toBe('review_requested');
     expect(s.f.revoked).toEqual([]);
@@ -642,6 +644,40 @@ describe('a started task follows its A2A task', () => {
     expect(s.row(0).remote?.goneSeenAt).toBeUndefined();
   });
 
+  it('the same report is not new twice: a follow-up under it stays working', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'input-required', reportId: REPORTED });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'review_requested', remote: { reportId: REPORTED } });
+    // A follow-up: the agent works again; the task still carries that report's id.
+    s.view(0, { state: 'working', reportId: REPORTED, status: { kind: 'working', since: at } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).status).toBe('working');
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).status).toBe('working');
+  });
+
+  it('a reported row keeps its report once the daemon no longer lists its task: no failure, no revoke, no nudge', async () => {
+    const s = await started(1);
+    let clock = Date.parse(at);
+    s.deps.now = () => clock;
+    s.view(0, { state: 'input-required', reportId: REPORTED });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).status).toBe('review_requested');
+    const notified: unknown[][] = [];
+    installFanoutCallerLedgerNotify(() => false, (...a) => { notified.push(a); }, s.deps.ledger as TaskLedger);
+    // The daemon's log drops the ended task.
+    s.f.views.clear();
+    for (const step of [0, REMOTE_GONE_GRACE_MS, 30 * 60_000]) {
+      clock += step;
+      await reconcileRemoteTasks(s.deps);
+    }
+    expect(s.row(0)).toMatchObject({ status: 'review_requested' });
+    expect(s.row(0).remote?.goneSeenAt).toBeUndefined();
+    expect(s.f.revoked).toEqual([]);
+    expect(notified).toEqual([]);
+  });
+
   it('an agent that stopped with no reply and no report needs input', async () => {
     const s = await started(1);
     s.view(0, { state: 'working', status: { kind: 'waiting-input', since: at } });
@@ -651,17 +687,17 @@ describe('a started task follows its A2A task', () => {
 
   it('after a report, a follow-up moves the row again: a question, then a new report', async () => {
     const s = await started(1);
-    s.view(0, { state: 'input-required', reportedAt: REPORTED });
+    s.view(0, { state: 'input-required', reportId: REPORTED });
     await reconcileRemoteTasks(s.deps);
     expect(s.row(0).status).toBe('review_requested');
     // The caller follows up; the agent works on it and meets a question.
-    s.view(0, { state: 'working', reportedAt: REPORTED, status: { kind: 'question', since: at, question: 'permission' } });
+    s.view(0, { state: 'working', reportId: REPORTED, status: { kind: 'question', since: at, question: 'permission' } });
     await reconcileRemoteTasks(s.deps);
     expect(s.row(0)).toMatchObject({ status: 'input_required', remote: { waiting: { on: 'question', question: 'permission' } } });
     // Answered, then reported again: a new report.
-    s.view(0, { state: 'input-required', reportedAt: '2026-11-13T10:00:00.000Z' });
+    s.view(0, { state: 'input-required', reportId: 'msg-report-2' });
     await reconcileRemoteTasks(s.deps);
-    expect(s.row(0)).toMatchObject({ status: 'review_requested', remote: { reportedAt: '2026-11-13T10:00:00.000Z' } });
+    expect(s.row(0)).toMatchObject({ status: 'review_requested', remote: { reportId: 'msg-report-2' } });
     expect(s.row(0).remote?.waiting).toBeUndefined();
   });
 

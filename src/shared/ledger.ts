@@ -169,9 +169,10 @@ export interface LedgerRemote {
    *  while the task was still open here (epoch ms): the row fails once
    *  REMOTE_GONE_GRACE_MS passed with nothing ending the task meanwhile. */
   goneSeenAt?: number;
-  /** The other PC's latest report this row moved to review_requested on
-   *  (ISO): a later one is a new report, after a follow-up. */
-  reportedAt?: string;
+  /** The id of the other PC's message that reported it (its remote message
+   *  id, A2A_REMOTE_MESSAGE_ID_RE), the one this row moved to review_requested
+   *  on: another id is a new report, after a follow-up. Not a time. */
+  reportId?: string;
 }
 
 export const LEDGER_REMOTE_QUESTIONS = ['permission', 'plan', 'menu', 'dialog', 'trust'] as const;
