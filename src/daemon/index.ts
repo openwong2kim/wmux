@@ -528,6 +528,8 @@ let sessionLifecycle: WebSessionLifecycle | null = null;
 // session RPCs it wraps live), and each side reaches the other through these.
 let headlessSessionsRef: HeadlessSessionPort | null = null;
 let headlessStarterRef: A2aHeadlessStarter | null = null;
+// Headless mode in effect: the idle timeout does not stop a host other PCs are meant to reach.
+let idleHoldForRemoteStarts: () => boolean = () => false;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 let noteCodexServerLost: ((id:string)=>void) | undefined;
 /** Contract v-next item 1: a Codex turn on a daemon-owned relay failed (set at boot). */
@@ -10589,6 +10591,11 @@ async function main(): Promise<void> {
       // file an earlier identify wrote, or a reconciled pane snapshot (only the app publishes one).
       appSeen: () => pipeServer.appAttached() || fs.existsSync(path.join(wmuxDir, APP_ATTACHED_FILE)) || a2aExposedPanes.isReconciled(),
     });
+    // In effect: opted in, the app never seen here, and the starter built this run (below).
+    const headlessInEffect = (): boolean => headlessMode.active() && a2aHeadless !== null;
+    // A host in headless mode waits for other PCs, with no client and no session of its own:
+    // the idle timeout does not stop it. Off for good once the app is seen here (a desktop install).
+    idleHoldForRemoteStarts = headlessInEffect;
     // Read-only, for `wmux daemon headless status|on` (not an a2a.* method, so
     // also answered on a host without the app): what this daemon decides from.
     // Registered before anything else of the a2a stack can fail, so the app
@@ -10596,7 +10603,7 @@ async function main(): Promise<void> {
     pipeServer.onRpc('daemon.headless.status', async () => ({
       appAttached: !headlessMode.appStillAbsent(),
       optedIn: headlessMode.optedIn(),
-      inEffect: headlessMode.active() && a2aHeadless !== null,
+      inEffect: headlessInEffect(),
     }));
     const a2aLinks = new LinkStore({
       dir: a2aDir,
@@ -11391,6 +11398,7 @@ async function main(): Promise<void> {
       ),
       pendingApprovals: approvalRegistry?.pendingCount() ?? 0,
       automations: automationEngine?.holdsDaemon() ? 1 : 0,
+      remoteStarts: idleHoldForRemoteStarts() ? 1 : 0,
     }),
     // Idle self-terminate. Routes through the same shutdown() path used
     // by SIGTERM / SIGINT / daemon.shutdown RPC — the `shuttingDown`
