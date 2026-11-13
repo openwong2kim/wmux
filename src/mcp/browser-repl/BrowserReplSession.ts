@@ -124,7 +124,12 @@ export class BrowserReplSession {
   /** Id of the run currently executing, if any; stray calls outside it are refused. */
   private activeRunId: number | null = null;
 
-  constructor(private readonly tools: readonly string[]) {}
+  /** `owner` is who the session's runners count against (runnerProcess.ts): the
+   *  agent's connection under the broker, the server otherwise. */
+  constructor(
+    private readonly tools: readonly string[],
+    private readonly owner?: object,
+  ) {}
 
   get lastUsed(): number {
     return this.lastUsedAt;
@@ -179,7 +184,7 @@ export class BrowserReplSession {
   /** Throws when no runner can be started (the server's cap). */
   private ensureWorker(): { worker: RunnerProcess; ready: Promise<void>; fresh: boolean } {
     if (this.worker && this.ready) return { worker: this.worker, ready: this.ready, fresh: false };
-    const worker = new RunnerProcess();
+    const worker = new RunnerProcess(this.owner);
     this.worker = worker;
     // Between runs no run-scoped listener is attached, so a worker that dies
     // then would be found only by the next run's timeout. Notice it now and

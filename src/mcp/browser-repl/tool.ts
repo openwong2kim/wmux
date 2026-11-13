@@ -89,12 +89,14 @@ function trackSession(session: BrowserReplSession): void {
   }
 }
 
-function getSession(create: () => BrowserReplSession): BrowserReplSession {
+/** `create` gets the owner its runners count against: the connection under the
+ *  broker, so each agent has its own cap, as it does with a server of its own. */
+function getSession(create: (owner?: object) => BrowserReplSession): BrowserReplSession {
   const scope = getConnectionScope();
   if (scope) {
     let session = scope.browserRepl as BrowserReplSession | undefined;
     if (!session || !liveSessions.has(session)) {
-      session = create();
+      session = create(brokerMode ? scope : undefined);
       scope.browserRepl = session;
       trackSession(session);
     }
@@ -280,7 +282,7 @@ export function createBrowserReplCatalog(
       // worker's messages arrive outside this AsyncLocalStorage context.
       const scope = getConnectionScope();
       const bridge = createBrowserBridge(tools, { surfaceId, scope, context: captureDispatchContext() });
-      const session = getSession(() => new BrowserReplSession(BROWSER_REPL_TOOLS));
+      const session = getSession((owner) => new BrowserReplSession(BROWSER_REPL_TOOLS, owner));
       const resolvedTimeout = clampTimeout(timeout);
       try {
         const outcome = await session.run(code, resolvedTimeout, bridge);
