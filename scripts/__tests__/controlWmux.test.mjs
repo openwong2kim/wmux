@@ -31,6 +31,7 @@ import {
   parseUserDataLog,
   processStartQuery,
   purgeSuffixedData,
+  releaseRecordedClaim,
   resolvedPath,
   resolveUserDataRecord,
   samePath,
@@ -639,5 +640,41 @@ describe('ownedCdpPort', () => {
     expect(findClaimedPort(dir, 29944)).toBe(18801);
     expect(ownedCdpPort(dir, 29944, null)).toBeNull();
     expect(ownedCdpPort(dir, 29944, parseCdpLog('[WinMux] starting').requested)).toBeNull();
+  });
+});
+
+describe('releaseRecordedClaim', () => {
+  let dir;
+  afterEach(() => { if (dir) fs.rmSync(dir, { recursive: true, force: true }); dir = null; });
+  const claim = (port) => path.join(dir, `wmux-cdp-${port}.lock`);
+  const gone = { pidAlive: () => false };
+
+  it('removes the recorded port claim once its pid is gone', () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cdp-release-'));
+    fs.writeFileSync(claim(18830), '29944 uptime=1200\n');
+    expect(releaseRecordedClaim(dir, { port: 18830, pid: 29944 }, gone)).toMatch(/18830: removed/);
+    expect(fs.existsSync(claim(18830))).toBe(false);
+    expect(releaseRecordedClaim(dir, { port: 18830, pid: 29944 }, gone)).toMatch(/already gone/);
+  });
+
+  it('leaves a claim that names another pid, and one whose pid is running', () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cdp-release-'));
+    fs.writeFileSync(claim(18830), '31000');
+    expect(releaseRecordedClaim(dir, { port: 18830, pid: 29944 }, gone)).toMatch(/another pid/);
+    expect(fs.existsSync(claim(18830))).toBe(true);
+    // A live holder of the pid may be a later process the OS gave it.
+    fs.writeFileSync(claim(18831), '29944');
+    expect(releaseRecordedClaim(dir, { port: 18831, pid: 29944 }, { pidAlive: () => true })).toMatch(/still running/);
+    expect(fs.existsSync(claim(18831))).toBe(true);
+  });
+
+  it('finds the claim by pid when launch never learned the port, and touches no other', () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cdp-release-'));
+    fs.writeFileSync(claim(18801), '111');
+    fs.writeFileSync(claim(18842), '29944');
+    expect(releaseRecordedClaim(dir, { port: null, pid: 29944 }, gone)).toMatch(/18842: removed/);
+    expect(fs.readdirSync(dir)).toEqual(['wmux-cdp-18801.lock']);
+    expect(releaseRecordedClaim(dir, { port: null, pid: 29944 }, gone)).toMatch(/none names pid 29944/);
+    expect(releaseRecordedClaim(dir, { port: null, pid: null }, gone)).toMatch(/no recorded pid/);
   });
 });

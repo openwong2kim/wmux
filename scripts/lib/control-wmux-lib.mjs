@@ -105,6 +105,33 @@ export function claimOwnedBy(dir, port, pid) {
 }
 
 /**
+ * Remove the CDP claim the recorded app left behind, once that app is gone.
+ * The app gives its claim back only on a clean quit, and `stop` and `restart`
+ * end it with a hard kill on Windows, so its file stayed until some later
+ * launch happened to reclaim that port.
+ *
+ * Only the claim for `port` is touched (or, when launch never learned the
+ * port, the claim naming `pid`), and only while it names `pid` and no process
+ * holds that pid: a live holder may be a later process the OS gave the pid,
+ * and the claim may then be its own. Returns a line for the command's steps.
+ */
+export function releaseRecordedClaim(dir, { port, pid }, deps) {
+  if (!Number.isInteger(pid) || pid <= 0) return 'cdp claim: no recorded pid, nothing removed';
+  const at = Number.isInteger(port) && port > 0 ? port : findClaimedPort(dir, pid);
+  if (at == null) return `cdp claim: none names pid ${pid}`;
+  const file = path.join(dir, `wmux-cdp-${at}.lock`);
+  if (!fs.existsSync(file)) return `cdp claim ${at}: already gone`;
+  if (!claimOwnedBy(dir, at, pid)) return `cdp claim ${at}: names another pid than ${pid}, left in place`;
+  if (deps.pidAlive(pid)) return `cdp claim ${at}: pid ${pid} is still running, left in place`;
+  try {
+    fs.unlinkSync(file);
+    return `cdp claim ${at}: removed (it named pid ${pid}, which is gone)`;
+  } catch (err) {
+    return `cdp claim ${at}: not removed (${err.code ?? err.message})`;
+  }
+}
+
+/**
  * Environment for the launched instance. An agent usually runs INSIDE the
  * owner's wmux, so its env carries that instance's pane identity (WMUX_*) and
  * the parent Claude Code session (CLAUDE*). Inheriting either would make the
