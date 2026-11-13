@@ -49,7 +49,9 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
     // contract this test exists for — reset BEFORE held bytes parse — remains.
     // The reset is in-stream (RIS + DEC 2026 BEGIN, then END after the held
     // bytes) so no render can paint the empty screen between reset and replay.
-    const body = src.slice(idx, idx + 3600);
+    // Wide enough for the function's head: a recovered-nothing early return
+    // and the kitty-flags restore (#3330) sit ahead of the writes it orders.
+    const body = src.slice(idx, idx + 4800);
     expect(body).not.toMatch(/terminal\.reset\(\)/);
     const resetIdx = body.indexOf('terminal.write(REPAINT_BEGIN');
     const writeIdx = body.indexOf('writePtyDataImmediately(terminal, chunk');
