@@ -291,8 +291,9 @@ async function applyInbound(
     if (!task || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: true, taskId, duplicate: true };
     const about = env.notice.messageId;
     // A notice's id is derived from the message it is about, so there is one per message; the task must be
-    // this link's (a local task has no marker), and the message one this PC sent on it. Any other notice is
-    // answered like every drop, before anything else is looked at.
+    // this link's, and the message one this PC sent on it. Any other notice is answered like every drop.
+    // The link test cannot fail here: checkMessage above already refused (unknown-task) a task that is not
+    // this link's, a local one included. It stays as defense in depth, and is not tested for that reason.
     if (env.messageId !== heldNoticeMessageId(about) || marker?.linkId !== link.linkId || !marker.sent?.includes(about)) {
       // Only this PC's ids in the line; nothing the peer wrote.
       if (deps.remoteNotice?.unknownOnce(link.linkId) ?? true) {

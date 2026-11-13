@@ -716,19 +716,17 @@ describe('a host notice about one of our messages (held-notice.1, #3326)', () =>
     expect(tasks.getTask(taskId)!.history.filter((m) => m.metadata?.['wmuxNotice'])).toHaveLength(1);
   });
 
-  it('naming a task of another link, or a local task: dropped like any other, nothing stored (#3344)', async () => {
+  it('naming a task of another link, or a local task: refused unknown-task, as a plain reply there is; nothing stored (#3344)', async () => {
     const { taskId } = await taskWithOurReply();
     const otherLink = activeLink();
     const before = tasks.getTask(taskId)!.history.length;
-    // Refused as a plain reply on another link's task is (unknown-task), or dropped: never stored.
-    const crossLink = await acceptInbound(env(otherLink, { kind: 'reply', taskId, messageId: 'notice-mine-1', notice: notice() as never }), peer, noticeDeps);
-    expect(crossLink.ok === false || crossLink.duplicate === true).toBe(true);
+    expect(await acceptInbound(env(otherLink, { kind: 'reply', taskId, messageId: 'notice-mine-1', notice: notice() as never }), peer, noticeDeps))
+      .toEqual({ ok: false, error: 'unknown-task' });
     expect(tasks.getTask(taskId)!.history).toHaveLength(before);
 
     await tasks.createTask({ id: 'task-local-n', title: 'L', from: { workspaceId: 'ws-b', name: 'B' }, to: { workspaceId: 'ws-c', name: 'C' }, history: [{ kind: 'message', messageId: 'mine-1', role: 'user', parts: [{ kind: 'text', text: 'x' }] }] });
-    const res = await acceptInbound(env(otherLink, { kind: 'reply', taskId: 'task-local-n', messageId: 'notice-mine-1', notice: notice() as never }), peer, noticeDeps);
-    // Refused or dropped; never stored on the local task.
-    expect(res.ok === false || res.duplicate === true).toBe(true);
+    expect(await acceptInbound(env(otherLink, { kind: 'reply', taskId: 'task-local-n', messageId: 'notice-mine-1', notice: notice() as never }), peer, noticeDeps))
+      .toEqual({ ok: false, error: 'unknown-task' });
     expect(tasks.getTask('task-local-n')!.history).toHaveLength(1);
   });
 
