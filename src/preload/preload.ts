@@ -847,6 +847,9 @@ const electronAPI = {
         ...(opts?.waitQuiet && opts.expectAgent ? { expectAgent: opts.expectAgent } : {}),
         ...(opts?.waitQuiet && opts.deadlineAt !== undefined ? { deadlineAt: opts.deadlineAt } : {}),
         ...(opts?.waitQuiet && typeof opts.guardKey === 'string' ? { guardKey: opts.guardKey } : {}),
+        ...(Array.isArray(opts?.senderTaskIds) && opts.senderTaskIds.length > 0 ? { senderTaskIds: opts.senderTaskIds } : {}),
+        ...(typeof opts?.senderSendKey === 'string' ? { senderSendKey: opts.senderSendKey } : {}),
+        ...(Array.isArray(opts?.senderMentions) && opts.senderMentions.length > 0 ? { senderMentions: opts.senderMentions } : {}),
       }) as Promise<
         import('../shared/ptyMessageDelivery').GatedSubmitResult
       >,

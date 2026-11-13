@@ -99,6 +99,7 @@ import type { Connector } from '../../shared/botConnector';
 import { AGENT_ROWS, AGENT_SLUG_SET, agentLauncherStem, agentSlugToDisplay, type AgentSlug } from '../../shared/agentIdentity';
 import { getSharedTaskGateRunner } from './TaskGateRunner';
 import {
+  CLAUDE_SANDBOXED_ENV,
   clearFirstRunPrompts,
   detectFirstRunPrompt,
   FIRST_RUN_MODEL_RECHECK_MS,
@@ -1832,6 +1833,14 @@ export class FanOutService {
     // create and every later reader name the task by it. Not recorded, not
     // launched.
     const launches = this.launches ?? getWorkerSlots();
+    // A-1 — first-run env for the PANE only (not for the setup hook, which is a
+    // shell line, not an agent). Keyed on the command main is sending: a role
+    // binding may still swap the launcher in the renderer, which is why the
+    // post-spawn watch below keys on the command that was actually launched.
+    // A preset/agents choice names the real CLI; the command main sends still
+    // starts with the default one (the renderer swaps it), so key on the choice.
+    // Decided before the launch is recorded, which keeps whether it sandboxes.
+    const firstRunEnv = firstRunEnvForAgent(ctx.agentChoice?.agent ?? ctx.agentCmd);
     let gen: number;
     try {
       gen = launches.beginLaunch({
@@ -1839,6 +1848,7 @@ export class FanOutService {
         origin: ctx.requester?.kind === 'bot' ? 'bot' : 'owner',
         ...(ctx.requester?.kind === 'bot' && ctx.requester.botId ? { botId: ctx.requester.botId } : {}),
         ownerWorkspaceId: ctx.verifiedWorkspaceId,
+        sandboxed: firstRunEnv[CLAUDE_SANDBOXED_ENV] === '1',
       }).gen;
     } catch (err) {
       releaseSlot();
@@ -1908,15 +1918,10 @@ export class FanOutService {
     const initialCommand = launch.command;
     base.initialCommand = initialCommand; // F2 재발사 재료(맨 셸 오배선 방지).
     const wsName = `wtask: ${ctx.title.slice(0, 32)}`;
-    // A-1 — first-run env for the PANE only (not for the setup hook, which is a
-    // shell line, not an agent). Keyed on the command main is sending: a role
-    // binding may still swap the launcher in the renderer, which is why the
-    // post-spawn watch below keys on the command that was actually launched.
-    // A preset/agents choice names the real CLI; the command main sends still
-    // starts with the default one (the renderer swaps it), so key on the choice.
+    // The first-run env decided above, over the task's own.
     const paneEnv = {
       ...taskEnv,
-      ...firstRunEnvForAgent(ctx.agentChoice?.agent ?? ctx.agentCmd),
+      ...firstRunEnv,
     };
     let workspaceId: string;
     // The renderer resolves the final launcher (a role binding may make it agy)
@@ -2437,9 +2442,18 @@ export class FanOutService {
     // A respawn is a new launch of the task: its generation goes up, on disk
     // before the spawn (factory/workerSlots.ts).
     const launches = this.launches ?? getWorkerSlots();
+    // The same first-run env as the task's first launch: without it a
+    // resumed worker stops at claude's folder-trust dialog (#2261).
+    const paneEnv = firstRunEnvForAgent(input.command);
     let gen: number;
     try {
-      gen = launches.beginLaunch({ taskId: input.taskId, origin: 'bot', botId: input.botId, ownerWorkspaceId: input.ownerWorkspaceId }).gen;
+      gen = launches.beginLaunch({
+        taskId: input.taskId,
+        origin: 'bot',
+        botId: input.botId,
+        ownerWorkspaceId: input.ownerWorkspaceId,
+        sandboxed: paneEnv[CLAUDE_SANDBOXED_ENV] === '1',
+      }).gen;
     } catch (err) {
       revokeSecretGrant(secretGrant);
       return { error: (err as Error).message };
@@ -2447,9 +2461,6 @@ export class FanOutService {
     const releaseBotSpawn = beginBotWorkerSpawn(input.ownerWorkspaceId, input.cwd, { botId: input.botId, taskId: input.taskId, ...(connectors.length > 0 ? { connectors } : {}), ...(gatewayConnectors.length > 0 ? { gatewayConnectors } : {}) });
     let spawned: Awaited<ReturnType<FanOutRendererPort['spawnWorkspace']>>;
     try {
-      // The same first-run env as the task's first launch: without it a
-      // resumed worker stops at claude's folder-trust dialog (#2261).
-      const paneEnv = firstRunEnvForAgent(input.command);
       spawned = await this.renderer.spawnWorkspace({
         name: `wtask: ${input.title.slice(0, 32)}`,
         cwd: input.cwd,

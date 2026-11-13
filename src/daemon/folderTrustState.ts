@@ -424,7 +424,7 @@ export interface FolderTrustSessions {
 }
 
 /**
- * `daemon.folderTrustState({ id, budgetMs? })` → `{ state, reason? }`. Main
+ * `daemon.folderTrustState({ id, budgetMs? })` → `{ state, reason?, dialog? }`. Main
  * asks when the renderer has no screen for a pane (hidden, parked, not
  * attached yet). `budgetMs` (clamped to FOLDER_TRUST_DEFAULT_BUDGET_MS ..
  * FOLDER_TRUST_MAX_BUDGET_MS) is for a caller no person waits on: an
@@ -437,10 +437,10 @@ export function registerFolderTrustRpc(pipeServer: Pick<DaemonPipeServer, 'onRpc
     const timeoutMs = typeof budget === 'number' && Number.isFinite(budget)
       ? Math.min(FOLDER_TRUST_MAX_BUDGET_MS, Math.max(FOLDER_TRUST_DEFAULT_BUDGET_MS, budget))
       : undefined;
-    // `reason` is additive: a main that predates it reads `state` alone, and
-    // one that predates `budgetMs` gets the default budget.
-    const { state, reason } = await readFolderTrust({ getSession: (sid) => sessions.getSession(sid), ...(timeoutMs !== undefined ? { timeoutMs } : {}) }, id);
-    return reason ? { state, reason } : { state };
+    // `reason` and `dialog` are additive: a main that predates them reads
+    // `state` alone, and one that predates `budgetMs` gets the default budget.
+    const { state, reason, dialog } = await readFolderTrust({ getSession: (sid) => sessions.getSession(sid), ...(timeoutMs !== undefined ? { timeoutMs } : {}) }, id);
+    return { state, ...(reason ? { reason } : {}), ...(dialog ? { dialog: true } : {}) };
   });
 }
 

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LedgerEntry } from '../../../shared/ledger';
-import { WORKER_SLOTS_FILENAME, WORKER_SLOTS_MAX, WORKER_SLOTS_VERSION, WorkerSlots, beginPaneRelaunch, launchStillCurrent, resolvePaneOwner, setReclaimedPaneSource, setWorkerSlotsForTests, startsAgent, taskOfPane } from '../workerSlots';
+import { WORKER_SLOTS_FILENAME, WORKER_SLOTS_MAX, WORKER_SLOTS_VERSION, WorkerSlots, beginPaneRelaunch, launchStillCurrent, paneLaunchedSandboxed, resolvePaneOwner, setReclaimedPaneSource, setWorkerSlotsForTests, startsAgent, taskOfPane } from '../workerSlots';
 import { AGENT_GONE_FILENAME, AgentGoneFacts } from '../agentGoneFacts';
 import { __resetWorkspaceMirrorForTest, getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
@@ -517,5 +517,46 @@ describe('resolvePaneOwner: one answer to which task a pane is the worker of', (
     settle?.(true);
     expect(s.paneOf('pty-second')).toEqual({ taskId: 'w', gen: 2, workspaceId: 'ws-w' });
     setTaskLedgerForTests(null);
+  });
+});
+
+describe('paneLaunchedSandboxed', () => {
+  it('holds only for the pane of the current, live generation wmux launched sandboxed', () => {
+    const dir = tmp();
+    const s = store(dir);
+    const first = s.beginLaunch({ taskId: 't1', origin: 'owner', ownerWorkspaceId: 'ws-owner', sandboxed: true });
+    s.launched('t1', first.gen, 'ws-t1', 'pty-1');
+    expect(paneLaunchedSandboxed('pty-1', s)).toBe(true);
+    // The record survives a restart.
+    s.settlePendingWriteForTests();
+    expect(paneLaunchedSandboxed('pty-1', store(dir))).toBe(true);
+    expect(paneLaunchedSandboxed('pty-other', s)).toBe(false);
+
+    // A relaunch without the flag: neither the old pane nor the new one counts.
+    const second = s.beginLaunch({ taskId: 't1', origin: 'owner', ownerWorkspaceId: 'ws-owner' });
+    s.launched('t1', second.gen, 'ws-t1', 'pty-2');
+    expect(paneLaunchedSandboxed('pty-1', s)).toBe(false);
+    expect(paneLaunchedSandboxed('pty-2', s)).toBe(false);
+
+    // A relaunch typed into the same pane keeps the pane's env, and the flag.
+    const kept = s.beginLaunch({ taskId: 't3', origin: 'owner', ownerWorkspaceId: 'ws-owner', sandboxed: true });
+    s.launched('t3', kept.gen, 'ws-t3', 'pty-4');
+    const again = s.beginLaunch({ taskId: 't3', origin: 'owner', ownerWorkspaceId: 'ws-owner', pane: { sessionId: 'pty-4', workspaceId: 'ws-t3' } });
+    s.launched('t3', again.gen, 'ws-t3', 'pty-4');
+    expect(paneLaunchedSandboxed('pty-4', s)).toBe(true);
+
+    // A relaunch typed into an older generation's pane does not inherit the flag.
+    const unflagged = s.beginLaunch({ taskId: 't4', origin: 'owner', ownerWorkspaceId: 'ws-owner' });
+    s.launched('t4', unflagged.gen, 'ws-t4', 'pty-5');
+    const flagged = s.beginLaunch({ taskId: 't4', origin: 'owner', ownerWorkspaceId: 'ws-owner', sandboxed: true });
+    s.launched('t4', flagged.gen, 'ws-t4', 'pty-6');
+    const intoOld = s.beginLaunch({ taskId: 't4', origin: 'owner', ownerWorkspaceId: 'ws-owner', pane: { sessionId: 'pty-5', workspaceId: 'ws-t4' } });
+    s.launched('t4', intoOld.gen, 'ws-t4', 'pty-5');
+    expect(paneLaunchedSandboxed('pty-5', s)).toBe(false);
+
+    const third = s.beginLaunch({ taskId: 't2', origin: 'owner', ownerWorkspaceId: 'ws-owner', sandboxed: true });
+    s.launched('t2', third.gen, 'ws-t2', 'pty-3');
+    s.released('t2', third.gen);
+    expect(paneLaunchedSandboxed('pty-3', s)).toBe(false);
   });
 });

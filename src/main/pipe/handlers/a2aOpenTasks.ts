@@ -43,6 +43,51 @@ export function gatedSubmitTaskContext(opts: unknown): { taskId?: string; pane?:
   };
 }
 
+/** The most task ids or mentions one delivery may name (a mention nudge batches a pane's queue). */
+export const MAX_SENDER_TASK_IDS = 32;
+
+/**
+ * A delivery's sender records (GatedSubmitOptions `senderTaskIds`,
+ * `senderSendKey`, `senderMentions`), checked: ids and keys only, mentions
+ * as a channel id and a whole seq, at most MAX_SENDER_TASK_IDS of each list,
+ * deduplicated. A malformed field is dropped whole, which leaves the
+ * delivery on the default gate.
+ */
+export function gatedSubmitSenders(opts: unknown): {
+  senderTaskIds?: string[];
+  senderSendKey?: string;
+  senderMentions?: Array<{ channelId: string; seq: number }>;
+} {
+  if (!isRecord(opts)) return {};
+  const taskIds = listOf(opts.senderTaskIds, idOf, (a, b) => a === b);
+  const sendKey = idOf(opts.senderSendKey);
+  const mentions = listOf(opts.senderMentions, mentionOf, (a, b) => a.channelId === b.channelId && a.seq === b.seq);
+  return {
+    ...(taskIds ? { senderTaskIds: taskIds } : {}),
+    ...(sendKey ? { senderSendKey: sendKey } : {}),
+    ...(mentions ? { senderMentions: mentions } : {}),
+  };
+}
+
+function mentionOf(v: unknown): { channelId: string; seq: number } | undefined {
+  if (!isRecord(v)) return undefined;
+  const channelId = idOf(v.channelId);
+  const seq = v.seq;
+  return channelId && typeof seq === 'number' && Number.isSafeInteger(seq) && seq >= 0 ? { channelId, seq } : undefined;
+}
+
+/** A non-empty list of at most MAX_SENDER_TASK_IDS well-formed items, deduplicated; else undefined. */
+function listOf<T>(raw: unknown, itemOf: (v: unknown) => T | undefined, same: (a: T, b: T) => boolean): T[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_SENDER_TASK_IDS) return undefined;
+  const out: T[] = [];
+  for (const v of raw) {
+    const item = itemOf(v);
+    if (item === undefined) return undefined;
+    if (!out.some((o) => same(o, item))) out.push(item);
+  }
+  return out;
+}
+
 /** Budget for the daemon task read: well inside the delivery's own budget. */
 const DAEMON_TASK_QUERY_TIMEOUT_MS = 2_000;
 

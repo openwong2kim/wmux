@@ -1280,16 +1280,18 @@ export class DaemonClient extends EventEmitter {
     sessionId: string,
     timeoutMs: number,
     budgetMs?: number,
-  ): Promise<{ state: FolderTrustState; reason?: string } | { unavailable: string }> {
+  ): Promise<{ state: FolderTrustState; reason?: string; dialog?: true } | { unavailable: string }> {
     if (!this.isConnected) return { unavailable: 'daemon not connected' };
     try {
       const params = budgetMs !== undefined ? { id: sessionId, budgetMs } : { id: sessionId };
-      const r = (await this.rpc('daemon.folderTrustState', params, { timeoutMs })) as { state?: unknown; reason?: unknown } | null;
+      const r = (await this.rpc('daemon.folderTrustState', params, { timeoutMs })) as { state?: unknown; reason?: unknown; dialog?: unknown } | null;
       const state = r?.state;
       if (state !== 'trust' && state !== 'clear' && state !== 'unknown') return { unavailable: 'malformed answer' };
       // Only a short tag goes into a log line.
       const reason = state === 'unknown' && typeof r?.reason === 'string' && /^[a-z-]{1,32}$/.test(r.reason) ? r.reason : undefined;
-      return reason ? { state, reason } : { state };
+      // Another dialog showing in the cells the daemon did read.
+      const dialog = state !== 'trust' && r?.dialog === true ? { dialog: true as const } : {};
+      return reason ? { state, reason, ...dialog } : { state, ...dialog };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return { unavailable: /Unknown method/.test(message) ? 'daemon predates daemon.folderTrustState' : message };

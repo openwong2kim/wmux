@@ -275,4 +275,19 @@ export interface GatedSubmitOptions {
    *  in main). Main runs that delivery's own check before the paste and before
    *  the Enter; an unknown key refuses. Only adds checks, never removes one. */
   guardKey?: string;
+  /*
+   * Who sent this delivery, for main's owner-lane check (input.rpc
+   * deliveryLaneOf). Each names a record main reads the sender from; none
+   * grants anything by itself. When the sender is the orchestrator of the
+   * task the target pane works on, that owner's fan-out setting applies to
+   * the delivery's gate.
+   */
+  /** A reply's or update's A2A task: its sender is read from the daemon's task store. */
+  senderTaskIds?: string[];
+  /** A new task's send, by the key main gave it (a2a.task.send): main's own
+   *  record of the verified sender, held while the send runs. */
+  senderSendKey?: string;
+  /** A mention nudge's channel messages: each author is read from the
+   *  daemon's channel store, which stamped it at post time. */
+  senderMentions?: Array<{ channelId: string; seq: number }>;
 }

@@ -102,7 +102,8 @@ describe('a2a fresh context (#1680)', () => {
     await handleRpcMethod('a2a.task.update', { taskId: created.taskId, workspaceId: SENDER.id, message: 'progress' });
     await handleRpcMethod('a2a.broadcast', { workspaceId: SENDER.id, message: 'all hands' });
     expect(gate.mock.calls.length).toBeGreaterThan(0);
-    for (const call of gate.mock.calls) expect(call[3]).toBeUndefined();
+    // They may name their task for the sender check, never a new task.
+    for (const call of gate.mock.calls) expect((call[3] as { newTask?: boolean } | undefined)?.newTask).toBeUndefined();
   });
 
   it("the operator's own delivery is excluded", async () => {
