@@ -174,6 +174,8 @@ const accepted: Case[] = [
   // - Left first: xterm clears the alternate buffer and its resize skips it,
   //   so the save keeps its row there; Alacritty clamps the inactive grid's.
   resizedThrough('alt-decrc-left-shorter-taller-back', [20, 6], [['a\x1b[?1049h\x1b[6;1H\x1b7\x1b[2;1Hb\x1b[?1049l', [20, 4]], ['x', [20, 6]]], '\x1b[?1049h\x1b8X'),
+  // DECSTR puts the save at column 0, so a narrower resize's clamp no longer refuses it.
+  resizedThrough('alt-decstr-after-narrower-while-left', [20, 6], [['a\x1b[?1049h\x1b[1;17H\x1b7\x1b[?1049l', [12, 6]], ['x', [20, 6]]], '\x1b[?1049h\x1b[!p\x1b8X'),
   // A line feed inside the save runs first and scrolls before it.
   synthetic('decsc-line-feed-inside', 'a\x1b[6;1H\x1b\n7\x1b[2;1Hb\x1b8X'),
   synthetic('decsc-ls2', '\x1b*0\x1bn\x1b7\x0fq\x1b8q'),
@@ -566,6 +568,17 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     const before = Array.from({ length: 2000 }, () => 'q'.repeat(750)).join('\r\n') + '\r\nz';
     const req: SnapshotRequest = { cols: 1000, rows: 4, scrollback: 100000, initial: Buffer.from(`${before}\x1b8X`),
       geometry: { start: { cols: 500, rows: 6 }, changes: [{ offset: Buffer.byteLength(before), cols: 1000, rows: 4 }] } };
+    expect(await generateRustSnapshot(req, 'ansi')).toMatchObject({ ok: false, detail: expect.stringMatching(/^unsupported-history-limit/) });
+  });
+
+  it('refuses a held synchronized update that trims at the native cap before a width-only wider reflow', async () => {
+    // Held by ?2026h until the resize: at 500 columns each 750-cell line
+    // takes two rows, 3995 history rows next to 6 screen rows, one past the
+    // cap of 3994 (1000x6). The wider reflow then joins the line pairs.
+    const before = '\x1b[?2026h' + Array.from({ length: 2000 }, () => 'q'.repeat(750)).join('\r\n') + '\r\nz';
+    const req: SnapshotRequest = { cols: 1000, rows: 6, scrollback: 100000, initial: Buffer.from(`${before}\x1b[?2026lX`),
+      geometry: { start: { cols: 500, rows: 6 }, changes: [{ offset: Buffer.byteLength(before), cols: 1000, rows: 6 }] } };
+    expect(ansiScrollbackCap(req)).toBe(3994);
     expect(await generateRustSnapshot(req, 'ansi')).toMatchObject({ ok: false, detail: expect.stringMatching(/^unsupported-history-limit/) });
   });
 

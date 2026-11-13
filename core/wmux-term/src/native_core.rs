@@ -654,6 +654,8 @@ impl XtermFeed {
                 self.charset_slots = 0;
                 self.dec_slots = [false; 4];
                 self.saved[screen].history = if screen == 0 { history() as i64 } else { 0 };
+                // Column 0 is placeable whatever a narrower resize clamped.
+                self.saved[screen].unplaceable = false;
             }
             b"\x1b%@" | b"\x1b%G" => self.designate(0, false),
             [0x1b, slot @ (b'(' | b')' | b'*' | b'+' | b'-' | b'.'), set @ (b'B' | b'0')] => self
@@ -1568,6 +1570,11 @@ impl NativeTerminal {
         let synchronized = self.parser.sync_timeout().pending_timeout();
         if synchronized {
             self.parser.stop_sync(term);
+            // The held bytes can trim at the cap at the old width, and a
+            // width-only widen can take the history back under it.
+            if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
+                self.refusal.get_or_insert(HISTORY_LIMIT);
+            }
         }
         // xterm never reflows or cuts the alternate screen: its rows keep
         // their cells and wrap flags across a resize. The vendored grid keeps
