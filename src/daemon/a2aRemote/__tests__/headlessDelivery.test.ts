@@ -34,6 +34,7 @@ let results: Array<SessionPromptScheduleResult | 'error!'>;
 /** What the screen shows when the delivery asks for a question on it. */
 let screen: 'dialog' | 'clear' | 'unknown';
 let rejected: Array<{ taskId: string; reason: string }>;
+let followUpsDirect: boolean;
 let delivered: Array<{ sessionId: string; prompt: string }>;
 let marks: Array<Record<string, unknown>>;
 let replies: Array<{ taskId: string; workspaceId: string; text: string }>;
@@ -80,7 +81,7 @@ function deps(over: Partial<HeadlessDeliveryDeps> = {}): HeadlessDeliveryDeps {
     starts: { list: () => [rec] },
     runId: 'run-1',
     tasks: {
-      pending: () => (marker().delivered !== true && !marker().held && !isEnded() ? [task] : []),
+      pending: () => ((marker().delivered !== true && !marker().held && !isEnded()) || (marker().inbox ?? []).some((i) => i.delivered !== true && !i.held) ? [task] : []),
       remote: () => [task],
       held: () => (marker().held && !isEnded() ? [task] : []),
       get: (id) => (id === task.id ? task : undefined),
@@ -91,8 +92,15 @@ function deps(over: Partial<HeadlessDeliveryDeps> = {}): HeadlessDeliveryDeps {
       return { ok: true };
     },
     questionOnScreen: async () => screen,
+    followUpsDirect: () => followUpsDirect,
     mark: async (input) => {
       marks.push(input);
+      const item = input.messageId ? marker().inbox?.find((i) => i.messageId === input.messageId) : undefined;
+      if (item) {
+        if (input.delivered) item.delivered = true;
+        else if (input.attempted !== undefined) item.attempted = input.attempted;
+        return { ok: true };
+      }
       const m = marker();
       if (input.delivered) {
         m.delivered = true;
@@ -156,6 +164,7 @@ beforeEach(() => {
   results = [];
   screen = 'clear';
   rejected = [];
+  followUpsDirect = true;
   delivered = [];
   marks = [];
   replies = [];
@@ -715,11 +724,74 @@ describe('the reply, from the transcript', () => {
   });
 });
 
-describe('a question on the agent\'s screen', () => {
-  const advance = async (d: HeadlessDelivery, ms: number): Promise<void> => {
-    clock += ms;
+const advance = async (d: HeadlessDelivery, ms: number): Promise<void> => {
+  clock += ms;
+  await d.tick();
+};
+
+describe('a reply the asking PC sends on the task (an inbox item)', () => {
+  async function answered(d: HeadlessDelivery): Promise<void> {
     await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(task.status.state).toBe('input-required');
+  }
+  const replyOn = (messageId: string, text: string): void => {
+    task.history.push({ kind: 'message', messageId, role: 'user', parts: [{ kind: 'text', text }] });
+    (task.metadata.remote as A2aRemoteTaskState).inbox = [...((task.metadata.remote as A2aRemoteTaskState).inbox ?? []), { messageId, kind: 'reply', delivered: false }];
   };
+
+  it('with `direct`: typed in as the task\'s next turn, answered, and the task waits for more again', async () => {
+    const d = new HeadlessDelivery(deps());
+    await answered(d);
+    replyOn('m9', 'now the kernel version');
+    await d.tick();
+    expect(delivered.map((x) => x.prompt)).toEqual([PROMPT, 'now the kernel version']);
+    expect(marks.slice(-2)).toEqual([{ taskId: TASK, messageId: 'm9', attempted: true }, { taskId: TASK, messageId: 'm9', delivered: true }]);
+    expect(task.status.state).toBe('working');
+    write(userLine('now the kernel version'), assistantLine('25.4.0'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG', '25.4.0']);
+    expect(task.status.state).toBe('input-required');
+    // Typed once.
+    await d.tick();
+    expect(delivered).toHaveLength(2);
+  });
+
+  it('with `ask`: not typed; the task is canceled with the reason. A state item is only recorded as handled', async () => {
+    followUpsDirect = false;
+    const d = new HeadlessDelivery(deps());
+    await answered(d);
+    (task.metadata.remote as A2aRemoteTaskState).inbox = [{ messageId: 's1', kind: 'state', state: 'input-required', delivered: false }];
+    await d.tick();
+    expect(marks.at(-1)).toEqual({ taskId: TASK, messageId: 's1', delivered: true });
+    expect(task.status.state).toBe('input-required');
+    replyOn('m9', 'now the kernel version');
+    await d.tick();
+    expect(delivered).toHaveLength(1);
+    expect(moves.at(-1)).toEqual({ to: 'canceled', summary: ASK_REASON });
+  });
+
+  it('a question that outlasted the task before it ends the next one at once, not after another 10 minutes', async () => {
+    const d = new HeadlessDelivery(deps());
+    await answered(d);
+    replyOn('m9', 'now the kernel version');
+    await d.tick();
+    write(userLine('now the kernel version'));
+    screen = 'dialog';
+    for (let t = 0; t <= QUESTION_TIMEOUT_MS; t += 10_000) await advance(d, 10_000);
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: QUESTION_REASON });
+    // A new start's first task behind the same question: canceled within one check.
+    task = inboundTask();
+    moves = [];
+    results = Array(50).fill('busy');
+    await advance(d, 10_000);
+    await advance(d, 10_000);
+    expect(moves.at(-1)).toEqual({ to: 'canceled', summary: QUESTION_REASON });
+  });
+});
+
+describe('a question on the agent\'s screen', () => {
 
   it('before the task is typed in: the asker is told once at about a minute, and at 10 minutes the task is canceled; the agent is left as it is', async () => {
     results = Array(200).fill('busy');
@@ -773,6 +845,46 @@ describe('a question on the agent\'s screen', () => {
     expect(task.status.state).toBe('submitted');
     await advance(d, 10_000);
     expect(moves.at(-1)).toEqual({ to: 'canceled', summary: QUESTION_REASON });
+  });
+
+  it('a usage-limit stop is waited out: its limit menu on screen is not a question', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), apiErrorLine('rate_limit', "You've hit your limit · resets 5pm"));
+    screen = 'dialog';
+    for (let t = 0; t <= QUESTION_TIMEOUT_MS + 60_000; t += 10_000) await advance(d, 10_000);
+    expect(task.status.state).toBe('working');
+    expect(replies).toEqual([]);
+    // The daemon's own hold counts the same, before the limit line is read.
+    task = inboundTask();
+    moves = [];
+    results = Array(200).fill('busy');
+    const held = new HeadlessDelivery(deps({ limitHeld: () => true }));
+    for (let t = 0; t <= QUESTION_TIMEOUT_MS + 60_000; t += 10_000) await advance(held, 10_000);
+    expect(task.status.state).toBe('submitted');
+  });
+
+  it('a notice that landed although the call failed is still not taken for the agent answering itself', async () => {
+    const base = deps();
+    const d = new HeadlessDelivery({
+      ...base,
+      reply: async (input) => {
+        const res = await base.reply(input);
+        if (input.text.includes('waits on a question')) throw new Error('timed out after it was stored');
+        return res;
+      },
+    });
+    await d.tick();
+    write(userLine(PROMPT));
+    screen = 'dialog';
+    await advance(d, 10_000);
+    await advance(d, QUESTION_NOTICE_MS);
+    expect(replies).toHaveLength(1);
+    screen = 'clear';
+    write(assistantLine('PONG'));
+    await advance(d, 10_000);
+    expect(replies.map((r) => r.text).at(-1)).toBe('PONG');
+    expect(moves.at(-1)).toEqual({ to: 'input-required' });
   });
 
   it('a turn that ended and is only being finished (its move tried again) is not ended by a question on screen', async () => {

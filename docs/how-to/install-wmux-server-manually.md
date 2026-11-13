@@ -208,17 +208,21 @@ With headless mode on:
   daemon restarts). A usage-limit pause is waited out. An answer larger
   than 32 KiB is cut: its start goes back, ending with a line that says how
   many bytes were left out.
-- Later tasks the asking PC sends to the same agent (follow-ups) depend on
-  `--follow-ups`. With `direct`, each is typed in once the agent finished
-  the one before, in the order they were sent, and answered the same way.
-  With `ask`, each is refused at once and the asking PC is told why: a
-  follow-up held for approval has nobody here to approve it.
+- What the asking PC sends to the same agent afterwards (follow-ups: a new
+  task, or a reply on a task that waits for more) depends on `--follow-ups`.
+  With `direct`, each is typed in once the agent finished the one before, in
+  the order it reached this host, and answered the same way; a reply on a
+  task becomes that task's next turn. With `ask`, a new task is refused at
+  once and the asking PC is told why, since nobody here can approve it; a
+  reply on a task ends that task with the same reason.
 - An agent that stops on a question (a permission prompt, say) cannot be
   answered here. After about a minute the asking PC is told so, once. If
   the question is still there after 10 minutes, the task ends with that
   reason: canceled if it was never typed in, failed if the agent was working
-  on it. The agent itself is left running. Use a permission mode that lets
-  it work on its own, such as `auto`.
+  on it. A task waiting behind the same question ends at once. The agent
+  itself is left running. A usage-limit pause is not such a question: it is
+  waited out. Use a permission mode that lets the agent work on its own,
+  such as `auto`.
 - Images sent with a task are not passed to the agent.
 - A request no rule matches is refused at once; nothing waits for an
   approval. The asking PC sees `not-allowed` when it may not ask this host,

@@ -315,6 +315,7 @@ async function makePc(name: string, opts: { headless?: boolean; asking?: boolean
       tasks: { pending: () => tasks.listRemotePending(), remote: () => tasks.listRemote(), held: () => tasks.listRemoteHeld(), get: (id) => tasks.getTask(id) },
       mark: (input) => call('a2a.remote.mark', input),
       rejectHeld: (input) => call('a2a.remote.rejectHeld', input),
+      followUpsDirect: () => policy.get().followUps === 'direct',
       // The fake agent: records the prompt and writes its turn as Claude Code would.
       deliver: async (sessionId, _agent, prompt, authorized, onWrite) => {
         if (!authorized()) return 'busy';
@@ -440,6 +441,22 @@ describe('headless remote spawn, two PCs and no app', () => {
     expect(a.tasks.getTask(second)?.history.at(-1)).toMatchObject({ role: 'agent', parts: [{ kind: 'text', text: 'PONG\nLinux' }] });
     // The first task's own answer stands.
     expect(a.tasks.getTask(taskId)?.status.state).toBe('input-required');
+  });
+
+  it('a reply the asking pane sends on its task (`direct`): typed in as that task\'s next turn, and answered on it', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    const { taskId, rec } = await startedTask(a, b);
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
+    expect(await a.rpc(A2A_REMOTE_RPC.reply, { taskId, workspaceId: 'ws-a', text: 'and now the kernel version' })).toMatchObject({ ok: true });
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { inbox?: unknown[] })?.inbox?.length === 1);
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    expect(b.sessions.typed).toEqual([{ sessionId: rec.sessionId, prompt: PROMPT }, { sessionId: rec.sessionId, prompt: 'and now the kernel version' }]);
+    await until(() => (a.tasks.getTask(taskId)?.history.filter((m) => m.role === 'agent').length ?? 0) === 2);
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
   });
 
   it('a follow-up with `ask`: refused at once, the asking PC sees why; nothing typed for it', async () => {

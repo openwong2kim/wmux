@@ -3,7 +3,7 @@ import { A2A_REMOTE_BODY_MAX } from '../../shared/a2aRemote';
 import { truncateUtf8 } from '../../shared/chatv2/limits';
 import type { SessionPromptScheduleResult } from '../../shared/sessionPromptSchedule';
 import { sanitizeBracketedPastePayload } from '../../shared/ptyMessageDelivery';
-import { localSideOf, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
+import { localSideOf, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 import { spawnFirstMessageId, type SpawnLinkId } from '../../shared/a2aSpawn';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
 import type { TurnEvent } from '../../shared/transcript/turnEvents';
@@ -17,10 +17,12 @@ import { errMsg } from './storeFile';
 /**
  * Headless remote spawn, part two: the task a paired PC sent with its request
  * is typed into the agent the daemon started for it (headlessStarter.ts), and
- * the agent's answer goes back as the task's reply. Later tasks on the same
- * link (follow-ups) are typed in one at a time, oldest first, when the start's
- * policy lets them through (`--follow-ups direct`); with `ask` they wait for a
- * person, and there is none here, so they are refused at once with the reason.
+ * the agent's answer goes back as the task's reply. What the asking PC sends
+ * after that (follow-ups: a new task on the same link, or a reply on a task
+ * that waits for more) is typed in one at a time, in the order it reached this
+ * PC, when the policy lets follow-ups through (`--follow-ups direct`); with
+ * `ask` it would wait for a person, and there is none here, so it is refused
+ * at once with the reason.
  *
  * Only here, only in headless mode and only into a session a `started` start
  * of this daemon run owns; the app's bridge leaves `hl-` workspaces alone
@@ -50,7 +52,11 @@ const QUESTION_NOTICE = 'The agent on that PC waits on a question on its screen 
 export const ASK_REASON = 'follow-ups need approval on this PC, which runs without a person; '
   + 'its owner can allow them with `wmux remote allow … --follow-ups direct`';
 
-type MarkInput = { taskId: string; attempted?: boolean; delivered?: true; ptyId?: string };
+type MarkInput = { taskId: string; messageId?: string; attempted?: boolean; delivered?: true; ptyId?: string };
+
+/** What is typed in: an inbound task, or a reply the asking PC sent on one (an inbox item). */
+type Unit = { task: Task; item?: A2aRemoteInboxItem };
+const unitKey = (taskId: string, messageId?: string): string => (messageId ? `${taskId}#${messageId}` : taskId);
 
 export interface HeadlessDeliveryDeps {
   mode: { active(): boolean };
@@ -93,6 +99,8 @@ export interface HeadlessDeliveryDeps {
   transcriptPath(sessionId: string): string | null;
   /** Its size now (0 when it does not exist yet). */
   transcriptSize(path: string): number;
+  /** The spawn policy lets follow-ups through without a person (`--follow-ups direct`). */
+  followUpsDirect(): boolean;
   /** The daemon's own `a2a.remote.rejectHeld`: a held task ends here and its sender is told the reason. */
   rejectHeld(input: { taskId: string; reason: string }): Promise<{ ok: boolean; error?: string }>;
   /**
@@ -101,6 +109,8 @@ export interface HeadlessDeliveryDeps {
    * nothing of the kind, or cells it could not read.
    */
   questionOnScreen?(sessionId: string): Promise<'dialog' | 'clear' | 'unknown'>;
+  /** The daemon holds this session for a usage limit (its own limit menu is on screen, and waited out). */
+  limitHeld?(sessionId: string): boolean;
   /** The daemon's own `a2a.remote.reply`, as main calls it. */
   reply(input: { taskId: string; workspaceId: string; text: string; ptyId: string }): Promise<{ ok: boolean; error?: string }>;
   /**
@@ -285,7 +295,7 @@ export class HeadlessDelivery {
   /** Sessions whose start is ending: nothing more is typed into them. */
   private readonly ending = new Set<string>();
   /** The question clock of each session's current task (owed, or in its turn). */
-  private readonly questions = new Map<string, { taskId: string; since: number | null; probedAt: number; noticed: boolean }>();
+  private readonly questions = new Map<string, { since: number | null; probedAt: number; noticedTask: string | null }>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
   /** Stopped (the daemon shutting down): a pass under way types nothing more. */
@@ -329,35 +339,44 @@ export class HeadlessDelivery {
       // Sessions whose oldest owed task was looked at: a newer one waits behind it.
       const taken = new Set<string>();
       for (const task of oldestFirst(this.deps.tasks.pending())) {
-        if (this.stopped) return;
-        try {
-          const rec = this.headOf(task, starts);
-          if (rec && taken.has(rec.sessionId)) continue;
-          if (rec) taken.add(rec.sessionId);
-          const unsent = this.unsentMarks.get(task.id);
-          if (unsent) {
-            // Only the mark is tried again: the task is never typed in a second time for it.
-            if ((await this.markSafely(unsent)).ok) this.unsentMarks.delete(task.id);
-            continue;
+        for (const unit of this.unitsOf(task)) {
+          if (this.stopped) return;
+          const key = unitKey(task.id, unit.item?.messageId);
+          try {
+            const rec = this.ownerOf(task, starts);
+            if (!rec || taken.has(rec.sessionId)) continue;
+            // A state the asking PC sent, or anything on a task that ended: nothing to type, recorded as handled.
+            if (unit.item && (unit.item.kind !== 'reply' || this.ended(task.id))) {
+              await this.markOrKeep({ taskId: task.id, messageId: unit.item.messageId, delivered: true });
+              continue;
+            }
+            if (!unit.item && this.ended(task.id)) continue;
+            taken.add(rec.sessionId);
+            const idle = !this.episodes.has(rec.sessionId);
+            const unsent = this.unsentMarks.get(key);
+            if (unsent) {
+              // Only the mark is tried again: nothing is typed a second time for it.
+              if ((await this.markSafely(unsent)).ok) this.unsentMarks.delete(key);
+              if (idle) current.set(rec.sessionId, { taskId: task.id, workspaceId: rec.workspaceId });
+              continue;
+            }
+            // One turn at a time per agent: a reply on a task goes in after its task's own turn (that comes first here).
+            if (!idle) continue;
+            await this.offer(unit, rec);
+            if (!this.episodes.has(rec.sessionId) && !this.ended(task.id)) current.set(rec.sessionId, { taskId: task.id, workspaceId: rec.workspaceId });
+          } catch (err) {
+            this.deps.log('warn', `[headless] task ${key}: not typed in: ${errMsg(err)}`);
+            this.backoff(key);
           }
-          if (!rec || this.episodes.has(rec.sessionId)) continue;
-          await this.offer(task, rec);
-          if (!this.episodes.has(rec.sessionId) && !this.ended(task.id)) current.set(rec.sessionId, { taskId: task.id, workspaceId: rec.workspaceId });
-        } catch (err) {
-          this.deps.log('warn', `[headless] task ${task.id}: not typed in: ${errMsg(err)}`);
-          this.backoff(task.id);
         }
       }
       // A turn that ended and is only being finished (its reply or move tried again) has no question clock.
       for (const ep of this.episodes.values()) if (!ep.outcome) current.set(ep.sessionId, { taskId: ep.taskId, workspaceId: ep.workspaceId });
       for (const sessionId of [...this.questions.keys()]) if (!current.has(sessionId)) this.questions.delete(sessionId);
-      for (const [sessionId, cur] of current) {
-        try {
-          await this.watchQuestion(sessionId, cur.taskId, cur.workspaceId);
-        } catch (err) {
-          this.deps.log('warn', `[headless] task ${cur.taskId}: the screen could not be checked: ${errMsg(err)}`);
-        }
-      }
+      // Each session's screen is read on its own, side by side: one slow read does not hold up the others.
+      await Promise.all([...current].map(([sessionId, cur]) => this.watchQuestion(sessionId, cur.taskId, cur.workspaceId).catch((err: unknown) => {
+        this.deps.log('warn', `[headless] task ${cur.taskId}: the screen could not be checked: ${errMsg(err)}`);
+      })));
     } finally {
       this.ticking = false;
     }
@@ -400,12 +419,14 @@ export class HeadlessDelivery {
     return this.ownerOf(task, this.deps.starts.list())?.sessionId === sessionId;
   }
 
-  /** The start an owed task is to be typed into: an inbound task not delivered, held or ended, of this run's live start. */
-  private headOf(task: Task, starts: readonly HeadlessStartRecordV1[]): HeadlessStartRecordV1 | null {
+  /** What an inbound task still owes this PC: itself (not delivered, not held), then each reply or state item not handled yet. */
+  private unitsOf(task: Task): Unit[] {
     const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
-    if (!marker || marker.direction !== 'inbound' || marker.delivered === true || marker.held) return null;
-    if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return null;
-    return this.ownerOf(task, starts);
+    if (!marker || marker.direction !== 'inbound') return [];
+    const out: Unit[] = [];
+    if (marker.delivered !== true && !marker.held) out.push({ task });
+    for (const item of marker.inbox ?? []) if (item.delivered !== true && !item.held) out.push({ task, item });
+    return out;
   }
 
   private ended(taskId: string): boolean {
@@ -450,57 +471,80 @@ export class HeadlessDelivery {
   private async watchQuestion(sessionId: string, taskId: string, workspaceId: string): Promise<void> {
     if (!this.deps.questionOnScreen) return;
     const now = this.now();
+    // The clock follows the screen, not the task: a question that outlasted one task ends the next one
+    // waiting behind it at once, instead of making each wait its full time again.
     let q = this.questions.get(sessionId);
-    if (!q || q.taskId !== taskId) {
-      q = { taskId, since: null, probedAt: Number.NEGATIVE_INFINITY, noticed: false };
+    if (!q) {
+      q = { since: null, probedAt: Number.NEGATIVE_INFINITY, noticedTask: null };
       this.questions.set(sessionId, q);
     }
     if (now - q.probedAt < QUESTION_PROBE_MS) return;
     q.probedAt = now;
+    const ep = this.episodes.get(sessionId);
+    const inTurn = ep?.taskId === taskId ? ep : undefined;
+    // A usage-limit stop shows the agent's own limit menu: that pause is waited out, not a question.
+    if (inTurn?.limitStopped || this.deps.limitHeld?.(sessionId)) {
+      q.since = null;
+      return;
+    }
     const seen = await this.deps.questionOnScreen(sessionId);
     if (seen === 'clear') q.since = null;
     if (seen !== 'dialog') return;
     q.since ??= now;
     const waited = now - q.since;
-    const ep = this.episodes.get(sessionId);
-    const inTurn = ep?.taskId === taskId ? ep : undefined;
     if (waited >= QUESTION_TIMEOUT_MS) {
-      this.questions.delete(sessionId);
-      this.retry.delete(taskId);
       this.deps.log('warn', `[headless] task ${taskId}: ${QUESTION_REASON}`);
       if (inTurn) return this.finish(inTurn, { kind: 'failed', reason: QUESTION_REASON });
-      return this.fail(taskId, workspaceId, QUESTION_REASON);
+      await this.fail(taskId, workspaceId, QUESTION_REASON);
+      return;
     }
-    if (waited >= QUESTION_NOTICE_MS && !q.noticed) {
-      q.noticed = true;
-      const sent = await this.deps.reply({ taskId, workspaceId, text: QUESTION_NOTICE, ptyId: sessionId });
-      if (!sent.ok) this.deps.log('warn', `[headless] task ${taskId}: the asking PC could not be told of the question: ${sent.error ?? 'unknown'}`);
-      // This notice is not the agent answering through its own tools.
-      else if (inTurn) inTurn.agentMessagesAtSend += 1;
+    if (waited >= QUESTION_NOTICE_MS && q.noticedTask !== taskId) {
+      q.noticedTask = taskId;
+      try {
+        const sent = await this.deps.reply({ taskId, workspaceId, text: QUESTION_NOTICE, ptyId: sessionId });
+        if (!sent.ok) this.deps.log('warn', `[headless] task ${taskId}: the asking PC could not be told of the question: ${sent.error ?? 'unknown'}`);
+      } catch (err) {
+        this.deps.log('warn', `[headless] task ${taskId}: the asking PC could not be told of the question: ${errMsg(err)}`);
+      }
+      // This notice is not the agent answering through its own tools: counted as already there,
+      // from the task itself, so a notice that landed although the call failed is counted too.
+      if (inTurn) {
+        const agentMessages = this.deps.tasks.get(taskId)?.history.filter((m) => m.role === 'agent').length ?? 0;
+        inTurn.agentMessagesAtSend = Math.max(inTurn.agentMessagesAtSend, agentMessages);
+      }
     }
   }
 
-  /** Type an owed task in (`headOf` found its start, and no turn is open there). */
-  private async offer(task: Task, rec: HeadlessStartRecordV1): Promise<void> {
+  /** Type an owed task or reply in (its start found, and no turn is open there). */
+  private async offer(unit: Unit, rec: HeadlessStartRecordV1): Promise<void> {
+    const { task, item } = unit;
+    const key = unitKey(task.id, item?.messageId);
+    const ids = { taskId: task.id, ...(item ? { messageId: item.messageId } : {}) };
     const marker = task.metadata.remote as A2aRemoteTaskState;
-    if (marker.attempted) {
+    if (item && !this.deps.followUpsDirect()) {
+      // As a new task on the link would be: nobody here can let it through.
+      await this.markOrKeep({ ...ids, delivered: true });
+      await this.end(task.id, rec.workspaceId, 'canceled', ASK_REASON);
+      return;
+    }
+    if (item ? item.attempted : marker.attempted) {
       // A write was started and never confirmed (the daemon stopped mid-way): it may be in the agent's
       // input already, and nobody here can look. Never typed again.
       await this.fail(task.id, rec.workspaceId, 'the task may have reached the agent only in part');
       return;
     }
-    const wait = this.retry.get(task.id);
+    const wait = this.retry.get(key);
     if (wait && wait.at > this.now()) return;
-    const first = task.history[0]?.parts.find((p) => p.kind === 'text');
-    const prompt = first && first.kind === 'text' ? first.text : '';
+    const message = item ? task.history.find((m) => m.messageId === item.messageId) : task.history[0];
+    const prompt = (message?.parts ?? []).flatMap((p) => (p.kind === 'text' ? [p.text] : [])).join('\n');
     if (!prompt.trim()) {
       await this.fail(task.id, rec.workspaceId, 'the task has no text to give the agent');
       return;
     }
     // Durable before the write: a daemon that dies after it does not type it again.
-    const started = await this.markSafely({ taskId: task.id, attempted: true });
+    const started = await this.markSafely({ ...ids, attempted: true });
     if (!started.ok) {
-      this.backoff(task.id);
+      this.backoff(key);
       this.deps.log('warn', `[headless] task ${task.id}: the attempt was not recorded, not typed in: ${started.error ?? 'unknown'}`);
       return;
     }
@@ -523,7 +567,7 @@ export class HeadlessDelivery {
     if (result === 'error' && !wrote) result = 'busy';
     switch (result) {
       case 'sent': {
-        this.retry.delete(task.id);
+        this.retry.delete(key);
         if (this.ending.has(rec.sessionId)) return;
         const ep: Episode = {
           taskId: task.id, sessionId: rec.sessionId, workspaceId: rec.workspaceId, promptHash: promptHash(prompt),
@@ -531,16 +575,16 @@ export class HeadlessDelivery {
           working: false, outcome: null,
         };
         this.episodes.set(rec.sessionId, ep);
-        await this.markOrKeep({ taskId: task.id, delivered: true, ptyId: rec.sessionId });
+        await this.markOrKeep({ ...ids, delivered: true, ...(item ? {} : { ptyId: rec.sessionId }) });
         await this.toWorking(ep);
-        this.deps.log('info', `[headless] task ${task.id}: typed into ${rec.sessionId}`);
+        this.deps.log('info', `[headless] task ${key}: typed into ${rec.sessionId}`);
         return;
       }
       case 'busy':
       case 'unavailable':
         // Nothing was written (every refusal after a write is `error`): tried again later.
-        await this.markOrKeep({ taskId: task.id, attempted: false });
-        this.backoff(task.id);
+        await this.markOrKeep({ ...ids, attempted: false });
+        this.backoff(key);
         return;
       case 'error':
         // It may have been written in part: never typed again, and the task fails (the reason goes with it).
@@ -548,7 +592,7 @@ export class HeadlessDelivery {
         return;
       default:
         // `session_changed` / `folder_trust`: not expected for an agent this daemon started; nothing was written.
-        await this.markOrKeep({ taskId: task.id, attempted: false });
+        await this.markOrKeep({ ...ids, attempted: false });
         await this.fail(task.id, rec.workspaceId, `the agent could not take the task (${result})`);
     }
   }
@@ -556,7 +600,8 @@ export class HeadlessDelivery {
   /** The delivered task moved to `working`; tried again each pass until it is (never by typing it again). */
   private async toWorking(ep: Episode): Promise<void> {
     const state = this.deps.tasks.get(ep.taskId)?.status.state;
-    if (state !== 'submitted') {
+    // `submitted`: its first turn; `input-required`: a reply on it was typed in, its next turn.
+    if (state !== 'submitted' && state !== 'input-required') {
       ep.working = state !== undefined;
       return;
     }
@@ -623,9 +668,7 @@ export class HeadlessDelivery {
         return;
       }
       if (!sent.ok) {
-        const reason = sent.error === 'too-large'
-          ? "the agent's answer is larger than a reply may be"
-          : `the agent's answer could not be sent: ${sent.error ?? 'unknown'}`;
+        const reason = `the agent's answer could not be sent: ${sent.error ?? 'unknown'}`;
         ep.outcome = { kind: 'failed', reason };
         if (await this.fail(ep.taskId, ep.workspaceId, reason)) this.drop(ep);
         return;
@@ -642,7 +685,6 @@ export class HeadlessDelivery {
   /** The episode is done with (only this one: another may have taken the session since). */
   private drop(ep: Episode): void {
     if (this.episodes.get(ep.sessionId) === ep) this.episodes.delete(ep.sessionId);
-    if (this.questions.get(ep.sessionId)?.taskId === ep.taskId) this.questions.delete(ep.sessionId);
   }
 
   private fail(taskId: string, workspaceId: string, reason: string): Promise<boolean> {
@@ -656,7 +698,8 @@ export class HeadlessDelivery {
   private async end(taskId: string, workspaceId: string, wanted: 'failed' | 'canceled', reason: string): Promise<boolean> {
     const state = this.deps.tasks.get(taskId)?.status.state;
     if (!state || (TERMINAL_STATES as readonly string[]).includes(state)) return true;
-    const to = wanted === 'failed' && state === 'submitted' ? 'canceled' : wanted;
+    // `failed` is not a move from `submitted` or `input-required` in the ledger: those are canceled, with the reason.
+    const to = wanted === 'failed' && (state === 'submitted' || state === 'input-required') ? 'canceled' : wanted;
     const res = await this.deps.transition({ taskId, workspaceId, to, summary: reason }).catch((err: unknown) => ({ ok: false, error: errMsg(err) }));
     if (!res.ok) this.deps.log('warn', `[headless] task ${taskId}: not marked ${to} (${reason}): ${res.error ?? 'unknown'}`);
     return res.ok;
@@ -674,7 +717,7 @@ export class HeadlessDelivery {
   private async markOrKeep(input: MarkInput): Promise<void> {
     const res = await this.markSafely(input);
     if (res.ok) return;
-    this.unsentMarks.set(input.taskId, input);
+    this.unsentMarks.set(unitKey(input.taskId, input.messageId), input);
     this.deps.log('warn', `[headless] task ${input.taskId}: mark not recorded, tried again: ${res.error ?? 'unknown'}`);
   }
 

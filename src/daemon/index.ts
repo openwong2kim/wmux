@@ -11000,12 +11000,15 @@ async function main(): Promise<void> {
           },
           mark: (input) => deliveryCall(A2A_REMOTE_RPC.mark, input),
           rejectHeld: (input) => deliveryCall(A2A_REMOTE_RPC.rejectHeld, input),
-          // Read as the delivery guard reads it (folderTrustState): the folder-trust prompt or another dialog is a question.
+          followUpsDirect: () => a2aSpawnPolicy.get().followUps === 'direct',
+          // Read as the delivery guard reads it (folderTrustState): the folder-trust prompt (also one whose
+          // choices are cut off on a small screen) or another dialog is a question.
           questionOnScreen: async (sessionId) => {
             const seen = await readFolderTrust({ getSession: (sid) => sessionManager.getSession(sid), timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }, sessionId);
-            if (seen.state === 'trust' || seen.dialog) return 'dialog';
+            if (seen.state === 'trust' || seen.dialog || seen.reason === 'cut-choices') return 'dialog';
             return seen.state === 'clear' ? 'clear' : 'unknown';
           },
+          limitHeld: (sessionId) => usageLimits?.holds(sessionId) === true,
           deliver: (sessionId, agent, prompt, authorized, onWrite) => (headlessDeliverRef ? headlessDeliverRef(sessionId, agent, prompt, authorized, onWrite) : Promise.resolve('unavailable')),
           // Its own sessions only (the delivery asks for no other): a no-op once the agent is tracked.
           armAgent: (sessionId) => {

@@ -146,6 +146,7 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
         get: () => task,
       },
       rejectHeld: async () => ({ ok: false, error: 'not-held' }),
+      followUpsDirect: () => true,
       // As index.ts: the screen read as the delivery guard reads it.
       questionOnScreen: async (id) => {
         const seen = await readFolderTrust({ getSession: (sid) => mgr.getSession(sid), timeoutMs: 1000 }, id);
