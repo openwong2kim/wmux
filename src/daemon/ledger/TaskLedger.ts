@@ -787,22 +787,34 @@ export class TaskLedger {
   }
 
   /** What this PC learned of a task another PC runs: its request's state,
-   *  link, or that it was withdrawn here, and with `summary` why the row
-   *  waits, when only that changed. SYSTEM write; bumps the rev; no status
-   *  change, no transition event. Resolves with the row as it is afterwards,
-   *  or null for a row that is not remote. */
-  updateRemote(id: string, patch: Partial<Omit<LedgerRemote, 'hostId' | 'spawnId'>>, summary?: string): Promise<LedgerEntry | null> {
+   *  link, or that it was withdrawn here. SYSTEM write; bumps the rev; no
+   *  status change, no transition event. Resolves with the row as it is
+   *  afterwards, or null for a row that is not remote.
+   *
+   *  `text`: why the row waits, when only that changed, written with the
+   *  patch in one write. Only onto the row as it was read (`expectedRev`)
+   *  and still open; a stale rev writes nothing (the next pass reads the row
+   *  again). Only over a text the caller wrote itself (`replaces`): a text
+   *  someone else wrote (a person, a brain) is kept, and only the patch is
+   *  written. */
+  updateRemote(
+    id: string,
+    patch: Partial<Omit<LedgerRemote, 'hostId' | 'spawnId'>>,
+    text?: { summary: string; expectedRev: number; replaces: readonly string[] },
+  ): Promise<LedgerEntry | null> {
     return this.serialize(async () => {
       const entry = this.entries.get(id);
       if (!entry?.remote) return null;
+      if (text && (entry.rev !== text.expectedRev || !isOpenLedgerStatus(entry.status))) return entry;
       const remote = copyRemote({ ...entry.remote, ...patch });
       if (!remote) throw new Error(`ledger: the remote record of task ${id} would not be valid`);
-      const text = summary !== undefined && summary.trim().length > 0
-        ? truncateHead(this.redact(summary.trim()), LEDGER_SUMMARY_MAX_BYTES)
-        : entry.summary;
-      if (JSON.stringify(remote) === JSON.stringify(entry.remote) && text === entry.summary) return entry;
+      const stored = (t: string): string => truncateHead(this.redact(t.trim()), LEDGER_SUMMARY_MAX_BYTES);
+      const ours = text !== undefined && text.summary.trim().length > 0
+        && (entry.summary === undefined || text.replaces.some((t) => stored(t) === entry.summary));
+      const summary = ours ? stored(text.summary) : entry.summary;
+      if (JSON.stringify(remote) === JSON.stringify(entry.remote) && summary === entry.summary) return entry;
       const updated: LedgerEntry = this.redact({
-        ...entry, remote, ...(text !== undefined ? { summary: text } : {}), rev: entry.rev + 1, updatedAt: this.now(), updatedBy: SYSTEM_ACTOR(),
+        ...entry, remote, ...(summary !== undefined ? { summary } : {}), rev: entry.rev + 1, updatedAt: this.now(), updatedBy: SYSTEM_ACTOR(),
       });
       await this.append({ op: 'entry', entry: updated });
       this.entries.set(id, updated);

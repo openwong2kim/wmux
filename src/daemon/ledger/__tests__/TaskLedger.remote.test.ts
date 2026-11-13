@@ -112,10 +112,28 @@ describe('a remote task row', () => {
     const entry = await registerRemote(a);
     const moves: unknown[] = [];
     a.onTransition((t) => moves.push(t));
-    const told = await a.updateRemote(entry.id, {}, 'the agent on box waits for your reply');
-    expect(told).toMatchObject({ rev: entry.rev + 1, status: entry.status, summary: 'the agent on box waits for your reply', remote: REMOTE });
-    expect((await a.updateRemote(entry.id, {}, 'the agent on box waits for your reply'))?.rev).toBe(entry.rev + 1);
+    const reply = 'the agent on box waits for your reply';
+    const told = await a.updateRemote(entry.id, {}, { summary: reply, expectedRev: entry.rev, replaces: [entry.summary ?? ''] });
+    expect(told).toMatchObject({ rev: entry.rev + 1, status: entry.status, summary: reply, remote: REMOTE });
+    expect((await a.updateRemote(entry.id, {}, { summary: reply, expectedRev: told!.rev, replaces: [reply] }))?.rev).toBe(entry.rev + 1);
     expect(moves).toEqual([]);
+  });
+
+  it('a text goes only onto the row as it was read and still open, and only over a text the caller wrote', async () => {
+    const a = open();
+    const entry = await registerRemote(a);
+    const first = 'the agent on box waits on a permission question';
+    const reply = 'the agent on box waits for your reply';
+    const read = await a.updateRemote(entry.id, {}, { summary: first, expectedRev: entry.rev, replaces: [entry.summary ?? ''] });
+    // A stale rev writes nothing, not even the patch.
+    expect(await a.updateRemote(entry.id, { goneSeenAt: 5 }, { summary: reply, expectedRev: entry.rev, replaces: [first] })).toMatchObject({ rev: read!.rev, summary: first });
+    expect(a.get(entry.id)?.remote?.goneSeenAt).toBeUndefined();
+    // A text the caller did not write is kept; the patch still goes.
+    const kept = await a.updateRemote(entry.id, { goneSeenAt: 5 }, { summary: reply, expectedRev: read!.rev, replaces: ['something else'] });
+    expect(kept).toMatchObject({ rev: read!.rev + 1, summary: first, remote: { goneSeenAt: 5 } });
+    // A closed row takes no text.
+    const closed = await a.closeTask(entry.id);
+    expect(await a.updateRemote(entry.id, {}, { summary: reply, expectedRev: closed!.rev, replaces: [closed!.summary ?? ''] })).toMatchObject({ rev: closed!.rev, summary: closed!.summary });
   });
 
   it('copyRemote keeps only the fields it knows, each checked', () => {
