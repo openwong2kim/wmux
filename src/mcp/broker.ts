@@ -43,6 +43,7 @@ import { decidePeer, retryingSelfCheck } from './brokerPeer';
 import { createConnectionReporter, trackConnection, trackToolCalls, type ReportChannel } from './brokerConnectionReporter';
 import { setBrokerEnvelopeMode } from './wmux-client';
 import { acceptBrokerStamp } from './brokerStamp';
+import { brokerTokenSource, tokenMatches } from './brokerToken';
 
 interface ShimHandshake {
   wmuxShim: number;
@@ -69,25 +70,6 @@ interface ShimHandshake {
  *  bytes the shim reads. The native shim forwards no stdin until it arrives. */
 function brokerAckLine(ok: boolean, error?: string): string {
   return JSON.stringify(ok ? { wmuxBroker: 1, ok } : { wmuxBroker: 1, ok, error }) + '\n';
-}
-
-function readAuthToken(): string | undefined {
-  try {
-    const fromFile = fs.readFileSync(getAuthTokenPath(), 'utf8').trim();
-    if (fromFile) return fromFile;
-  } catch { /* file doesn't exist */ }
-  if (process.env.WMUX_AUTH_TOKEN) return process.env.WMUX_AUTH_TOKEN;
-  return undefined;
-}
-
-/** Constant-time-ish token compare; length leak is fine for a local pipe. */
-function tokenMatches(presented: string | undefined, expected: string): boolean {
-  if (!presented || presented.length !== expected.length) return false;
-  let diff = 0;
-  for (let i = 0; i < expected.length; i++) {
-    diff |= presented.charCodeAt(i) ^ expected.charCodeAt(i);
-  }
-  return diff === 0;
 }
 
 let connSeq = 0;
@@ -226,7 +208,8 @@ function main(): void {
   setReplBrokerMode();
   setBrowserReplBrokerMode();
   setBrokerEnvelopeMode();
-  const expectedToken = readAuthToken();
+  const ownUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  const expectedToken = brokerTokenSource(getAuthTokenPath(), process.env.WMUX_AUTH_TOKEN, ownUid);
   if (!expectedToken) {
     console.error('[wmux-mcp-broker] auth token not found; refusing to serve. Is wmux running?');
     process.exit(1);
@@ -246,7 +229,6 @@ function main(): void {
       console.error(`[wmux-mcp-broker] peer-pid${attempt > 1 ? ` (check ${attempt})` : ''}: ${verdict ?? 'unavailable (no peer pids on this platform)'}${verdict === 'available' ? '' : '; every session is refused'}`);
     },
   );
-  const ownUid = typeof process.getuid === 'function' ? process.getuid() : null;
 
   const server = net.createServer((socket) => {
     // Read here, before anything else can close and reuse the descriptor.
@@ -291,7 +273,15 @@ function main(): void {
         return;
       }
       const wantsAck = handshake.ack === 1;
-      if (!tokenMatches(handshake.authToken, expectedToken)) {
+      const expected = expectedToken();
+      if (!expected.ok) {
+        // Closed with no ack line, as for a refused peer: the shim runs its
+        // own full server. The token file is read again for the next session.
+        console.error(`[wmux-mcp-broker] auth token file not usable (${expected.problem}); session refused`);
+        socket.destroy();
+        return;
+      }
+      if (!tokenMatches(handshake.authToken, expected.token)) {
         console.error('[wmux-mcp-broker] auth failed, dropping connection');
         if (wantsAck) socket.end(brokerAckLine(false, 'auth'), () => socket.destroy());
         else socket.destroy();

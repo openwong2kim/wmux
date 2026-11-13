@@ -9,7 +9,7 @@ vi.mock('../brokerProbe', () => ({ canConnectBrokerPipe: vi.fn() }));
 import * as fs from 'fs';
 import { spawn } from 'child_process';
 import { canConnectBrokerPipe } from '../brokerProbe';
-import { BrokerSupervisor } from '../BrokerSupervisor';
+import { BrokerSupervisor, isMcpBrokerEnabled } from '../BrokerSupervisor';
 
 interface FakeChild extends EventEmitter {
   pid: number;
@@ -32,6 +32,25 @@ function makeChild(): FakeChild {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(fs.existsSync).mockReturnValue(true);
+});
+
+describe('isMcpBrokerEnabled', () => {
+  // On whichever OS runs the suite (CI covers all three): today's behaviour,
+  // where only WMUX_MCP_BROKER=1 turns the broker on.
+  it.each([[undefined, false], ['0', false], ['1', true], ['true', false]] as const)(
+    'WMUX_MCP_BROKER=%s → %s',
+    (value, on) => {
+      const saved = process.env.WMUX_MCP_BROKER;
+      try {
+        if (value === undefined) delete process.env.WMUX_MCP_BROKER;
+        else process.env.WMUX_MCP_BROKER = value;
+        expect(isMcpBrokerEnabled()).toBe(on);
+      } finally {
+        if (saved === undefined) delete process.env.WMUX_MCP_BROKER;
+        else process.env.WMUX_MCP_BROKER = saved;
+      }
+    },
+  );
 });
 
 describe('BrokerSupervisor.whenReady', () => {

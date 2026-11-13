@@ -128,6 +128,21 @@ describe('resolveWmuxScript', () => {
     expect(resolved).not.toMatch(/shim\.js$/);
   });
 
+  // The CLI keeps its live probe whatever the app's platform default is: an
+  // unset flag, or any value but '0', still probes, and no broker answering
+  // means the full bundle, as before shared/mcpBroker.ts.
+  it.each([undefined, '1', 'true'])('WMUX_MCP_BROKER=%s and no broker answers: probes, then the full bundle', async (flag) => {
+    if (flag === undefined) delete process.env.WMUX_MCP_BROKER;
+    else process.env.WMUX_MCP_BROKER = flag;
+    scriptConnect('error');
+    existsFor(['shim', 'bundle']);
+
+    const resolved = await resolveWmuxScript();
+
+    expect(connectMock).toHaveBeenCalledTimes(1);
+    expect(resolved).toMatch(/index\.js$|entry\.js$/);
+  });
+
   it('probe times out: socket is guarded/destroyed and the full bundle is used', async () => {
     const { setTimeout: setTimeoutSpy, destroy } = scriptConnect('timeout');
     existsFor(['shim', 'bundle']);
