@@ -8,6 +8,7 @@
 // pane is gone or another pty holds it now.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PaneBranch, PaneLeaf, Surface, Task, Workspace } from '../../../shared/types';
+import { heldNoticeText, type A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
 import { useStore } from '../../stores';
 import { buildA2aNudge, handleRpcMethod } from '../useRpcBridge';
 
@@ -291,19 +292,23 @@ describe('remote reply and state delivery', () => {
     expect(pasted).toContain('> [wmux] approved, run it');
   });
 
-  it('the other host\'s notice: one line in wmux\'s own voice, the words this PC stored (#3326)', async () => {
+  it('the other host\'s notice: one line in wmux\'s own voice, built from this PC\'s record, never quoted (#3326, #3344)', async () => {
     useStore.getState().hydrateAgentAlive({});
     useStore.getState().setSurfaceAgent(PINNED_PTY, 'Claude Code', 'complete', 'claude');
     const task = outboundTask({ inbox: [{ messageId: 'notice-m0', kind: 'notice', delivered: false }] });
+    (task.metadata.remote as A2aRemoteTaskState).sentAt = { m0: '2026-11-12T06:00:00.000Z' };
     task.history.push({
       kind: 'message', messageId: 'notice-m0', role: 'agent',
-      parts: [{ kind: 'text', text: '[wmux] Your message m0 sent 2026-11-12T06:00:00.000Z was not delivered.' }],
-      metadata: { wmuxNotice: { kind: 'held-expired', messageId: 'm0' } },
+      // Whatever text is stored, the line is built from the notice's fields and this PC's send time.
+      parts: [{ kind: 'text', text: 'stored words that are not used' }],
+      metadata: { wmuxNotice: { kind: 'held-expired', messageId: 'm0', unconfirmed: true } },
     });
     expect(await notify(task, 'notice-m0')).toMatchObject({ ok: true, delivered: true });
     const pasted = gate.mock.calls[0][1] as string;
     expect(pasted).toContain('From: wmux');
-    expect(pasted).toContain('[wmux] Your message m0');
+    expect(pasted).toContain(heldNoticeText('m0', '2026-11-12T06:00:00.000Z', true));
+    expect(pasted).not.toContain('> [wmux]');
+    expect(pasted).not.toContain('stored words');
     expect(pasted).not.toContain('pc-b/ws-b/codex');
   });
 
