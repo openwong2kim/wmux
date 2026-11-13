@@ -1107,6 +1107,20 @@ describe('background work the agent leaves running', () => {
     expect(moves).toEqual([{ to: 'working' }, { to: 'input-required' }]);
   });
 
+  it('the 30 minutes do not run while a woken turn is still under way', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), callLine('m1', 'Monitor', { command: 'x' }), resultLine('m1', 'Monitor started (task mon1, expires in 15m)'), assistantLine('Watching.'));
+    await d.tick();
+    clock += BACKGROUND_WAIT_MS - 60_000;
+    // Woken by an event, the agent works (a tool call, no turn end yet).
+    write(notification('mon1', 'm1', null), callLine('t9', 'Read', { file_path: '/tmp/x' }));
+    await d.tick();
+    await advance(d, 120_000);
+    expect(task.status.state).toBe('working');
+    expect(replies.map((r) => r.text)).toEqual(['Watching.']);
+  });
+
   it('progress replies are bounded; the answer is not one of them and still goes', async () => {
     const d = new HeadlessDelivery(deps());
     await d.tick();
