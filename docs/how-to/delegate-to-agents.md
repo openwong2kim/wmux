@@ -61,6 +61,42 @@ signal that your ping did not land the way you asked. The human (`ws-human`) is
 the exception: it is reachable in any channel it can see, seat or not, so a
 mention of the human is not reported as dropped.
 
+## Answering your workers' prompts
+
+If you started a fan-out, you can drive the pane of each of its open tasks
+the way you drive your own. Pass the worker pane's `ptyId`:
+- `terminal_send_key` takes any key: enter, tab, the arrows, space, backspace,
+  `y`, `n`, the digits `0`-`9`, ctrl+c and escape.
+- `terminal_send` takes text without control characters. Commit it with
+  `submit: true` or the enter key.
+
+This covers only the tasks you started that are still open. A task's own
+sub-tasks belong to the worker that started them.
+
+What you may answer there is the operator's setting `ownerAnswers`, in the
+fan-out policy file `fanout-worker-policy.json` in the wmux data directory. No
+tool or RPC changes it.
+
+| Value | You may answer |
+|---|---|
+| `all` (default) | Any prompt: selection menus, permission prompts, plan approval and the folder-trust prompt. |
+| `menus` | Claude Code's selection menus only: its questions and the usage-limit menu. Permission, plan and folder-trust prompts are refused. So is every dialog of an agent other than Claude Code, because wmux does not tell its menus apart from its permission prompts. |
+| `off` | Nothing: the same gate as any other caller. Keys and text still reach a pane with no prompt on screen. |
+
+Under every value, ctrl+c stops a worker. A policy file that cannot be read
+counts as `off`, and the main log says so once.
+
+Every write on this lane is logged in wmux's main log, allowed or refused, as
+one line:
+
+```
+[owner-lane] pane "<your pane>" (ws "<your workspace>") → pane "<worker pane>" (task ws "<task workspace>"): key enter; screen menu; setting all; allowed
+```
+
+`screen` is what the pane showed: `none`, `menu`, `permission`, `plan`,
+`trust`, or `unknown` (unreadable). The task's workspace also gets one
+notification per minute while you write to it.
+
 ## If you are the worker
 
 Follow-up instructions do not arrive by themselves once you go idle — see the

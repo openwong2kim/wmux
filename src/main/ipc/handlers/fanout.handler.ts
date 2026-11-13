@@ -30,6 +30,7 @@ import {
   loadFanoutDepth,
   loadFanoutHourlyTaskCap,
   loadFanoutLiveTaskCap,
+  loadFanoutOwnerAnswers,
   loadFanoutTasksPerCall,
   loadFanoutRequireApproval,
   loadFanoutTrustAgyFolders,
@@ -37,6 +38,7 @@ import {
   setFanoutDepth,
   setFanoutHourlyTaskCap,
   setFanoutLiveTaskCap,
+  setFanoutOwnerAnswers,
   setFanoutTasksPerCall,
   setFanoutRequireApproval,
   setFanoutTrustAgyFolders,
@@ -186,6 +188,19 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     IPC.FANOUT_TRUST_AGY_FOLDERS_SET,
     wrapHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
       setFanoutTrustAgyFolders(value),
+    ),
+  );
+
+  ipcMain.removeHandler(IPC.FANOUT_OWNER_ANSWERS_GET);
+  ipcMain.handle(
+    IPC.FANOUT_OWNER_ANSWERS_GET,
+    wrapHandler(IPC.FANOUT_OWNER_ANSWERS_GET, async () => loadFanoutOwnerAnswers()),
+  );
+  ipcMain.removeHandler(IPC.FANOUT_OWNER_ANSWERS_SET);
+  ipcMain.handle(
+    IPC.FANOUT_OWNER_ANSWERS_SET,
+    wrapHandler(IPC.FANOUT_OWNER_ANSWERS_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
+      setFanoutOwnerAnswers(value),
     ),
   );
 
