@@ -385,13 +385,14 @@ export const AGENT_IDENTITIES = [
     // Verified against codex-cli 0.162.1 --help: `-a` takes on-request or
     // never; `-s` takes read-only, workspace-write or danger-full-access. Its
     // read-only sandbox with approval on request asks before an edit, a
-    // command outside it, or network access.
+    // command outside it, or network access. A `-c sandbox_permissions=…`
+    // grant goes too: how it combines with read-only is not verified.
     askMode: {
       flags: '-a on-request -s read-only',
       replaces: {
         flags: ['-a', '--ask-for-approval', '-s', '--sandbox'],
         switches: ['--approve-for-me', '--dangerously-bypass-approvals-and-sandbox', '--yolo'],
-        config: { flags: ['-c', '--config'], keys: ['approval_policy', 'sandbox_mode'] },
+        config: { flags: ['-c', '--config'], keys: ['approval_policy', 'sandbox_mode', 'sandbox_permissions'] },
       },
     },
     resume: { picker: 'resume', exact: 'resume {id}', idFormat: 'uuid' },

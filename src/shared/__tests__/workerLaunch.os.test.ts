@@ -198,7 +198,7 @@ describe('applyWorkerPermissionFlags', () => {
   it('manual makes codex ask: every permission choice on its line goes, and its ask flags go before the prompt', () => {
     expect(agentRow('codex')?.askMode?.flags).toBe(CODEX_MANUAL_FLAGS);
     const trust = `-c 'projects={"/w"={trust_level="trusted"}}'`;
-    for (const own of ['-a never -s workspace-write', '--ask-for-approval=never --sandbox danger-full-access', '--yolo', '--dangerously-bypass-approvals-and-sandbox', '-c approval_policy=never -c sandbox_mode=workspace-write', '--approve-for-me', '']) {
+    for (const own of ['-a never -s workspace-write', '--ask-for-approval=never --sandbox danger-full-access', '--yolo', '--dangerously-bypass-approvals-and-sandbox', '-c approval_policy=never -c sandbox_mode=workspace-write', `-c 'sandbox_permissions=["disk-full-read-access"]'`, '--approve-for-me', '']) {
       const line = `codex ${trust} ${own} ${PROMPT}`.replace(/  +/g, ' ');
       expect(applyWorkerPermissionFlags(line, 'manual')).toBe(`codex ${CODEX_MANUAL_FLAGS} ${trust} ${PROMPT}`);
       expect(workerModeRefusal(line, 'manual')).toBeNull();
