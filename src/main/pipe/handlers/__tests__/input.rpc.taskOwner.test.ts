@@ -71,7 +71,7 @@ interface WireOpts {
   /** Whether the task pane is held at its usage limit. */
   usageLimited?: boolean;
   /** The daemon's folder-trust verdict, asked when no screen was read. */
-  daemonTrust?: FolderTrustState | null;
+  daemonTrust?: FolderTrustState | { state: FolderTrustState; reason?: string } | null;
   /** The daemon's agent name for the task pane (default Claude Code). */
   agent?: string | null;
   /** The daemon's A2A task rows, read by a delivery's owner lane. */
@@ -801,6 +801,16 @@ describe('owner lane — an MCP terminal_send', () => {
   });
 });
 
+describe('owner lane — the miss line', () => {
+  it('is written once a minute for the same refused write', async () => {
+    const w = wire();
+    const send = () => asPane(w, 'input.send', { workspaceId: 'ws-owner', ptyId: 'pty-task', text: 'x' });
+    await send();
+    await send();
+    expect(w.logs).toHaveLength(1);
+  });
+});
+
 describe('owner lane — a delivery from the task\'s orchestrator', () => {
   const task = (id: string, from: string, to: string) => ({
     id,
@@ -808,7 +818,7 @@ describe('owner lane — a delivery from the task\'s orchestrator', () => {
   });
   // A hidden pane: read from its ring, where the daemon cannot see the cells
   // a dialog would sit on.
-  const UNREAD = { screen: { parked: 'WORKER SCREEN' }, daemonTrust: 'unknown' as const };
+  const UNREAD = { screen: { parked: 'WORKER SCREEN' }, daemonTrust: { state: 'unknown' as const, reason: 'unseen-cells' } };
 
   it('under all, an unreadable folder-trust check is passed over and logged', async () => {
     const w = wire({ ...UNREAD, tasks: [task('t1', 'ws-owner', 'ws-task')] });
@@ -816,7 +826,7 @@ describe('owner lane — a delivery from the task\'s orchestrator', () => {
     expect(res, JSON.stringify(res)).toMatchObject({ ok: true });
     expect(w.writes.map((x) => x.data)).toEqual(['\x1b[200~hello\x1b[201~', '\r']);
     expect(w.logs).toEqual([
-      '[owner-lane] delivery from ws "ws-owner" → pane "pty-task" (task ws "ws-task"): folder-trust unknown passed; setting all',
+      '[owner-lane] delivery from ws "ws-owner" → pane "pty-task" (task ws "ws-task"): folder-trust unknown (unseen-cells) passed; setting all',
     ]);
   });
 
@@ -838,12 +848,31 @@ describe('owner lane — a delivery from the task\'s orchestrator', () => {
     }
   });
 
-  it('a folder-trust prompt on screen is still refused, and the refusal says why and names the owner lane', async () => {
+  it('a folder-trust prompt on screen is still refused, and the refusal says why and who may answer it', async () => {
     const w = wire({ ...SCREENS['trust'], tasks: [task('t1', 'ws-owner', 'ws-task')] });
     const res = await w.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t1'] });
     expect(res).toMatchObject({ ok: false });
     expect(JSON.stringify(res)).toContain('is on a folder-trust prompt, which would take the text and its Enter as its answer');
-    expect(JSON.stringify(res)).toContain("the task's orchestrator can also send keys there on the owner lane");
+    expect(JSON.stringify(res)).toContain("when the owner setting is 'all', its task's orchestrator can send the keys there");
+    expect(w.writes).toEqual([]);
+  });
+
+  it('a trust question read with its choices cut short is not passed, from text or from the daemon', async () => {
+    const tasks = [task('t1', 'ws-owner', 'ws-task')];
+    for (const opts of [
+      { screen: { parked: 'WORKER SCREEN' }, daemonTrust: { state: 'unknown' as const, reason: 'cut-choices' }, tasks },
+      { screen: { parked: 'WORKER SCREEN' }, daemonTrust: { state: 'unknown' as const, reason: 'cut-choices' }, tasks, trustProvenClear: true },
+    ]) {
+      const w = wire(opts);
+      expect(await w.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t1'] })).toMatchObject({ ok: false, reason: 'gate_unavailable' });
+      expect(w.writes).toEqual([]);
+      expect(w.logs).toEqual([]);
+    }
+  });
+
+  it('the launch record never overrides a trust prompt the ring text shows', async () => {
+    const w = wire({ screen: { parked: SCREENS['trust'].screen as string }, daemonTrust: null, trustProvenClear: true });
+    expect(await w.gatedSubmit('pty-task', 'hello', 'claude')).toMatchObject({ ok: false });
     expect(w.writes).toEqual([]);
   });
 

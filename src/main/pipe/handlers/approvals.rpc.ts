@@ -262,7 +262,7 @@ export function folderTrustGateMessage(op: string, ptyId: string): string {
 export function folderTrustDeliveryMessage(ptyId: string): string {
   return (
     `delivery: pane "${ptyId}" is on a folder-trust prompt, which would take the text and its Enter as its answer, ` +
-    "so it was not typed. Answer the prompt in the pane; the task's orchestrator can also send keys there on the owner lane."
+    "so it was not typed. Answer the prompt in the pane, or, when the owner setting is 'all', its task's orchestrator can send the keys there."
   );
 }
 

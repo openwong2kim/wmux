@@ -538,6 +538,13 @@ describe('paneLaunchedSandboxed', () => {
     expect(paneLaunchedSandboxed('pty-1', s)).toBe(false);
     expect(paneLaunchedSandboxed('pty-2', s)).toBe(false);
 
+    // A relaunch typed into the same pane keeps the pane's env, and the flag.
+    const kept = s.beginLaunch({ taskId: 't3', origin: 'owner', ownerWorkspaceId: 'ws-owner', sandboxed: true });
+    s.launched('t3', kept.gen, 'ws-t3', 'pty-4');
+    const again = s.beginLaunch({ taskId: 't3', origin: 'owner', ownerWorkspaceId: 'ws-owner', pane: { sessionId: 'pty-4', workspaceId: 'ws-t3' } });
+    s.launched('t3', again.gen, 'ws-t3', 'pty-4');
+    expect(paneLaunchedSandboxed('pty-4', s)).toBe(true);
+
     const third = s.beginLaunch({ taskId: 't2', origin: 'owner', ownerWorkspaceId: 'ws-owner', sandboxed: true });
     s.launched('t2', third.gen, 'ws-t2', 'pty-3');
     s.released('t2', third.gen);

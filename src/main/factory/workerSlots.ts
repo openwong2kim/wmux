@@ -111,7 +111,9 @@ export interface LaunchRequest {
   origin: 'bot' | 'owner';
   botId?: string;
   ownerWorkspaceId: string;
-  /** The launch puts CLAUDE_CODE_SANDBOXED=1 in the pane env (TaskLaunch.sandboxed). */
+  /** The launch puts CLAUDE_CODE_SANDBOXED=1 in the pane env (TaskLaunch.sandboxed).
+   *  Left out on a relaunch in a pane of the task: the pane keeps its env, so
+   *  the new generation keeps what the prior one recorded. */
   sandboxed?: boolean;
   /** A relaunch in an existing pane: the pane and its workspace name the
    *  new generation in the same write, before the line is typed. */
@@ -343,6 +345,9 @@ export class WorkerSlots {
     let top = prior?.gen ?? 0;
     for (const p of this.panes.values()) if (p.taskId === req.taskId && p.gen > top) top = p.gen;
     for (const w of this.workspaces.values()) if (w.taskId === req.taskId && w.gen > top) top = w.gen;
+    const sandboxed = req.sandboxed ?? (
+      req.pane !== undefined && prior?.sandboxed === true && this.panes.get(req.pane.sessionId)?.taskId === req.taskId
+    );
     const next: TaskLaunch = {
       taskId: req.taskId,
       gen: top + 1,
@@ -351,7 +356,7 @@ export class WorkerSlots {
       ...(req.botId ? { botId: req.botId } : {}),
       ownerWorkspaceId: req.ownerWorkspaceId,
       state: 'launching',
-      ...(req.sandboxed === true ? { sandboxed: true as const } : {}),
+      ...(sandboxed ? { sandboxed: true as const } : {}),
     };
     if (this.mode === 'broken') {
       // The file may be free again (a lock that held it at load is gone).
