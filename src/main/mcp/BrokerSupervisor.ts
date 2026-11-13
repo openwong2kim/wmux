@@ -152,7 +152,10 @@ export class BrokerSupervisor {
     }
 
     const startedAt = Date.now();
-    const child = spawn(process.execPath, [script], {
+    // --disable-sigusr1: a signal from another process of this user does not
+    // open the broker's inspector. The broker always runs on the app's own
+    // binary (Electron as Node), which takes the flag.
+    const child = spawn(process.execPath, ['--disable-sigusr1', script], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
       // The IPC channel carries the broker's connection reports; stdout stays
       // ignored, since a hosted server's stray console.log would land there.

@@ -134,6 +134,16 @@ describe('BrokerSupervisor status', () => {
     sup.stop();
   });
 
+  it('spawns the broker with the signal-opened inspector off, before its script', () => {
+    vi.mocked(spawn).mockReturnValue(makeChild() as never);
+    const sup = new BrokerSupervisor();
+    sup.start();
+    const args = vi.mocked(spawn).mock.calls[0][1] as string[];
+    expect(args[0]).toBe('--disable-sigusr1');
+    expect(args).toHaveLength(2);
+    sup.stop();
+  });
+
   it('takes the connection count only from the exact report shape', () => {
     const child = makeChild();
     vi.mocked(spawn).mockReturnValue(child as never);
