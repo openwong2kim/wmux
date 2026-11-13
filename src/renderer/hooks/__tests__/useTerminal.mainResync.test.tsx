@@ -30,8 +30,8 @@ let emitFlush: ((ptyId: string, recoveredBytes: number) => void) | null = null;
 let emitRestarted: ((p: { ptyId: string; restartCount: number; exitCode: number | null }) => void) | null = null;
 let emitStarting: ((ptyId: string) => void) | null = null;
 let emitFailed: ((ptyId: string, code: string) => void) | null = null;
-let resolveLoad: ((content: string) => void) | null = null;
 const resync = vi.fn(async () => ({ success: true, mode: 'snapshot' }));
+const reconnect = vi.fn(async (): Promise<{ success: boolean; code?: string }> => ({ success: true }));
 // Laid-out size of every element; 0 models a display:none workspace.
 let layoutSize = 800;
 
@@ -50,7 +50,7 @@ beforeAll(() => {
         onResyncStarting: (cb: typeof emitStarting) => { emitStarting = cb; return () => undefined; },
         onResyncFailed: (cb: typeof emitFailed) => { emitFailed = cb; return () => undefined; },
         resize: vi.fn(async () => undefined),
-        reconnect: vi.fn(async () => ({ success: true })),
+        reconnect,
         resync,
         setViewerVisibility: vi.fn(),
         write: vi.fn(async () => undefined),
@@ -58,7 +58,7 @@ beforeAll(() => {
       },
       daemon: { onConnected: unsub },
       scrollback: {
-        load: vi.fn(() => new Promise<string>((resolve) => { resolveLoad = resolve; })),
+        load: vi.fn(() => new Promise<string>(() => undefined)),
         save: vi.fn(async () => undefined),
       },
       shell: { openPath: vi.fn(async () => ({ ok: true })) },
@@ -87,7 +87,6 @@ let root: Root | null = null;
 let termRef: MutableRefObject<Terminal | null> | null = null;
 let host: HTMLDivElement | null = null;
 let propose: ReturnType<typeof vi.spyOn> | null = null;
-let rerender: ((key: string) => Promise<void>) | null = null;
 let setShown: ((visible: boolean) => Promise<void>) | null = null;
 
 
@@ -103,10 +102,10 @@ afterEach(() => {
   root = null;
   host = null;
   termRef = null;
-  rerender = null;
   setShown = null;
   propose?.mockRestore();
   resync.mockClear();
+  reconnect.mockClear();
   setDaemonModeActive(false);
 });
 
@@ -122,16 +121,10 @@ async function mount(ptyId: string, { visible = true, scrollbackFile }: { visibl
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
-  let key = 'first';
+  const key = 'first';
   let shown = visible;
   await act(async () => { root!.render(<Harness key={key} shown={shown} />); });
   await settle();
-  // A pane-tree restructure: the leaf unmounts and remounts in one commit.
-  rerender = async (next: string) => {
-    key = next;
-    await act(async () => { root!.render(<Harness key={key} shown={shown} />); });
-    await settle();
-  };
   // A workspace switch: the same mount hidden or shown.
   setShown = async (v: boolean) => {
     shown = v;
@@ -140,7 +133,6 @@ async function mount(ptyId: string, { visible = true, scrollbackFile }: { visibl
     await settle();
   };
 }
-const mountVisible = (ptyId: string) => mount(ptyId);
 
 function lines(): string[] {
   const buf = termRef!.current!.buffer.active;
@@ -234,7 +226,32 @@ describe('useTerminal: a re-flush main started', { timeout: 60_000 }, () => {
     expect(lines().slice(0, 5)).toEqual(['PS> echo a', 'a', 'PS> echo b', 'b', 'PS>']);
   });
 
-  it('a failure notice releases the held output instead of leaving the pane waiting', async () => {
+  it('a failed re-flush re-attaches the pane, and the attach flush settles it', async () => {
+    await mount('m-e');
+    act(() => {
+      replay('m-e', 'PS> ');
+      marker('m-e', 4);
+    });
+    await settle();
+    act(() => {
+      emitStarting!('m-e');
+      live('m-e', 'echo held\r\nheld\r\nPS> ');
+    });
+    await settle();
+    act(() => emitFailed!('m-e', 'rpc-error'));
+    await settle();
+    expect(reconnect).toHaveBeenCalledWith('m-e', { promote: false, joinOnly: true });
+    expect(lines()).not.toContain('held');
+    act(() => {
+      replay('m-e', 'PS> echo held\r\nheld\r\nPS> ');
+      marker('m-e', 27);
+    });
+    await settle();
+    expect(lines().slice(0, 4)).toEqual(['PS> echo held', 'held', 'PS>', '']);
+    expect(resync).not.toHaveBeenCalled();
+  });
+
+  it('a failed re-attach releases the held output instead of leaving the pane waiting', async () => {
     await mount('m-d');
     act(() => {
       replay('m-d', 'PS> ');
@@ -247,6 +264,7 @@ describe('useTerminal: a re-flush main started', { timeout: 60_000 }, () => {
     });
     await settle();
     expect(lines()).not.toContain('held');
+    reconnect.mockResolvedValueOnce({ success: false, code: 'session-gone' });
     act(() => emitFailed!('m-d', 'rpc-error'));
     await settle();
     expect(lines().slice(0, 3)).toEqual(['PS> echo held', 'held', 'PS>']);

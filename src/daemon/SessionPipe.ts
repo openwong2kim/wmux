@@ -92,8 +92,10 @@ export class SessionPipe {
   /** Live output is not written (see writeToClient) until a re-flush starts. */
   private behind = false;
   private behindRetry: ReturnType<typeof setTimeout> | null = null;
-  /** A replay just written counts against the bound only until it drains. */
-  private replayQueuedBytes = 0;
+  /** Bytes handed to the client socket so far, and where the last replay ended
+   *  in that count: a replay still queued does not count against the bound. */
+  private outputWritten = 0;
+  private replayEnd = 0;
   private connectionRate = { count: 0, resetAt: 0 };
   private readonly markers: SessionPipeMarkers;
 
@@ -171,6 +173,7 @@ export class SessionPipe {
 
   private writeOutput(socket: net.Socket, data: Buffer): void {
     socket.write(data);
+    this.outputWritten += data.length;
     this.socketPeakQueuedBytes = Math.max(this.socketPeakQueuedBytes, socket.writableLength);
   }
 
@@ -191,10 +194,14 @@ export class SessionPipe {
   private requestResync(socket: net.Socket): void {
     this.clearBehindRetry();
     if (!this.behind || this.client !== socket || socket.destroyed) return;
-    try {
-      this.onResyncNeeded?.();
-    } catch {
-      /* the retry below asks again */
+    // Not while the client is being let go (releaseClient): a re-flush is
+    // refused then, and the next client starts caught up anyway.
+    if (this.flushed) {
+      try {
+        this.onResyncNeeded?.();
+      } catch {
+        /* the retry below asks again */
+      }
     }
     this.behindRetry = setTimeout(() => this.requestResync(socket), this.resyncRetryMs);
     this.behindRetry.unref?.();
@@ -516,7 +523,10 @@ export class SessionPipe {
     const socket = this.client;
     if (!socket || socket.destroyed || !this.flushed || this.behind) return;
     this.writeOutput(socket, data);
-    if (socket.writableLength > SESSION_PIPE_RESYNC_BYTES + this.replayQueuedBytes) this.fallBehind(socket);
+    // The part of the last replay still queued is history the client asked for,
+    // not a backlog: it shrinks as the client reads it.
+    const replayQueued = Math.max(0, this.replayEnd - (this.outputWritten - socket.writableLength));
+    if (socket.writableLength > SESSION_PIPE_RESYNC_BYTES + replayQueued) this.fallBehind(socket);
   }
 
   /** Register callback for client input (forwarded to PTY stdin). */
@@ -645,13 +655,7 @@ export class SessionPipe {
     this.flushed = true;
     this.replayPending = false;
     this.ringBuffer.settleGeometry();
-    const socket = this.client;
-    this.replayQueuedBytes = socket && !socket.destroyed ? socket.writableLength : 0;
-    if (socket && this.replayQueuedBytes > 0) {
-      socket.once('drain', () => {
-        if (this.client === socket) this.replayQueuedBytes = 0;
-      });
-    }
+    this.replayEnd = this.outputWritten;
   }
 
   /**

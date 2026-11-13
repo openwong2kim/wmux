@@ -11179,7 +11179,12 @@ async function main(): Promise<void> {
   // #1965: a pipe past its initial flush delivers PTY output live, so its
   // renderer answers the startup DA1 itself; before that the bytes only reach
   // it through the (query-stripped) ring replay, and the daemon answers.
-  sessionManager.setLiveRendererProbe((id) => sessionPipes.get(id)?.isFlushed === true);
+  // A pipe that fell behind delivers nothing live until its re-flush, and the
+  // re-flush strips queries: the daemon answers them meanwhile.
+  sessionManager.setLiveRendererProbe((id) => {
+    const pipe = sessionPipes.get(id);
+    return pipe?.isFlushed === true && !pipe.isBehind;
+  });
   sessionManager.setReplayPendingProbe((id) => attachesInFlight.has(id) || sessionPipes.get(id)?.awaitingReplay === true);
   // #2388: a task folder whose removal did not finish takes no new pane,
   // whoever asks (the desktop, a phone, an automation, a recovery).

@@ -637,6 +637,8 @@ interface ResyncState {
   /** Main started the resync in flight (armResync), not this terminal: only
    *  then does main's failure notice settle it. */
   byMain: boolean;
+  /** That resync's replay still owes the keyboard state its refold (deliverPtyData). */
+  keyboardRefold: boolean;
 }
 
 /** Cooldown between resync retries after a degrade. Long enough to ride out a
@@ -1237,7 +1239,22 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const resyncRef = useRef<ResyncState>({
     pending: false, buffer: [], bufferedChars: 0, resolvers: [], timer: null,
     degradedUntil: 0, viaRawFallback: false, mode: 'snapshot', lastMechanism: '', byMain: false,
+    keyboardRefold: false,
   });
+
+  /** Put the pane into a resync's pending state: bytes held from here on. */
+  const beginResync = useCallback((id: string, reason: string, byMain: boolean) => {
+    const st = resyncRef.current;
+    st.pending = true;
+    st.byMain = byMain;
+    st.keyboardRefold = byMain;
+    st.buffer.length = 0;
+    st.bufferedChars = 0;
+    st.viaRawFallback = false;
+    st.mode = 'snapshot';
+    setPaneSyncUi(id, 'syncing');
+    console.log(`[useTerminal] ${byMain ? 'resync' : 'hidden-pane resync'} ptyId=${id} (${reason}${byMain ? ', started by main' : ''})`);
+  }, []);
 
   /**
    * Depth of in-flight REPLAY writes (#998). Non-zero means xterm is parsing
@@ -1435,14 +1452,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       st.resolvers.splice(0).forEach((r) => r());
       return done;
     }
-    st.pending = true;
-    st.byMain = false;
-    st.buffer.length = 0;
-    st.bufferedChars = 0;
-    st.viaRawFallback = false;
-    st.mode = 'snapshot';
-    setPaneSyncUi(id, 'syncing');
-    console.log(`[useTerminal] hidden-pane resync ptyId=${id} (${reason})`);
+    beginResync(id, reason, false);
     // Timeout with bounded re-arm: the daemon serializes snapshot work behind
     // a global slot, so under concurrent dirty-pane reveals this pane's RPC
     // can legitimately wait several budgets before its replay even starts. A
@@ -1512,7 +1522,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       fallbackReconnect();
     });
     return done;
-  }, [abortResync, paintDeadSnapshot, scrollbackLines]);
+  }, [abortResync, beginResync, paintDeadSnapshot, scrollbackLines]);
 
   /** A resync main started (its daemon session pipe fell behind): hold the
    *  replay that is on its way exactly as for startResync, without asking for
@@ -1522,18 +1532,29 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const id = ptyIdRef.current;
     const st = resyncRef.current;
     if (!terminalRef.current || !id || st.pending) return;
-    st.pending = true;
-    st.byMain = true;
-    st.buffer.length = 0;
-    st.bufferedChars = 0;
-    st.viaRawFallback = false;
-    st.mode = 'snapshot';
-    setPaneSyncUi(id, 'syncing');
-    console.log(`[useTerminal] resync ptyId=${id} (${reason}, started by main)`);
+    beginResync(id, reason, true);
     // Main's re-flush may wait behind the daemon's snapshot slot like our own
     // (startResync re-arms up to four windows); this bound covers a notice
     // that never came.
     st.timer = setTimeout(() => abortResync('timeout'), RESYNC_TIMEOUT_MS * 4);
+  }, [abortResync, beginResync]);
+
+  /** Main's re-flush failed. Down the same ladder as startResync: a pipe or RPC
+   *  failure re-attaches the pane (its fresh pipe starts caught up, and its
+   *  attach flush settles this resync); anything else leaves the pane stale. */
+  const failMainResync = useCallback((id: string, code: string) => {
+    const st = resyncRef.current;
+    if (!st.pending || !st.byMain) return;
+    if (code !== 'pipe-not-writable' && code !== 'rpc-error' && code !== 'legacy-daemon') {
+      abortResync(`main-resync-failed:${code}`);
+      return;
+    }
+    st.viaRawFallback = true;
+    window.electronAPI.pty.reconnect(id, { promote: false, joinOnly: true }).then((res) => {
+      if (!res?.success) abortResync(`reconnect-failed${res?.code ? `:${res.code}` : ''}`);
+    }).catch((err: unknown) => {
+      abortResync(`reconnect-error:${err instanceof Error ? err.message : String(err)}`);
+    });
   }, [abortResync]);
 
   const fit = useCallback(() => {
@@ -3738,8 +3759,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Fold before the resync buffer so a mid-resync negotiation still arms
       // the encoding (#1152). Replay is history, not a negotiation: it
       // re-delivers the dead session's `?9001h` on every restart (#1363).
+      const resyncing = resyncRef.current;
       if (!payload.replay) noteKeyboard(payload.data);
-      else if (fixedGeometryRef.current) {
+      else if (resyncing.pending && resyncing.byMain) {
+        // A re-flush main started carries output this pane never got live (its
+        // pipe fell behind): like a viewer's snapshot below, it is the current
+        // negotiation, folded from scratch at its first chunk.
+        if (resyncing.keyboardRefold) {
+          resyncing.keyboardRefold = false;
+          keyboardRef.current = INITIAL_REMOTE_KEYBOARD_STATE;
+        }
+        noteKeyboard(payload.data);
+      } else if (fixedGeometryRef.current) {
         // A viewer (`fixedGeometry`) never saw the negotiation happen: its
         // replay is a snapshot of the pane's CURRENT state, so it is the
         // negotiation to fold — from scratch, as the snapshot starts over.
@@ -4940,14 +4971,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (ptyIdRef.current === id) armResync('session-pipe-behind');
     });
     const offFailed = ptyResyncFailedDispatcher.register(id, (code) => {
-      const st = resyncRef.current;
-      if (ptyIdRef.current === id && st.pending && st.byMain) abortResync(`main-resync-failed:${code}`);
+      if (ptyIdRef.current === id) failMainResync(id, code);
     });
     return () => {
       offStarting();
       offFailed();
     };
-  }, [ptyId, armResync, abortResync]);
+  }, [ptyId, armResync, failMainResync]);
 
   // #2398 — the first show of a pane whose suspended session was left
   // suspended while hidden promotes it: the reattach effect above is keyed on
