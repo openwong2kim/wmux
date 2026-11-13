@@ -252,6 +252,12 @@ export interface Episode {
   limitResumed?: boolean;
   /** Resumes in a row that hit the limit again before the agent wrote anything (LIMIT_LOOPS_MAX). */
   limitLoops?: number;
+  /**
+   * The reset the asking PC was told of in this run of stops (null: told it
+   * is not known); absent until one is told. Cleared once the agent writes
+   * something of its own, so a later stop is told again.
+   */
+  limitTold?: number | null;
   /** Text of the assistant entries since the last tool call: the answer so far. */
   answer: string[];
   /** The task was moved to `working` (a failed move is tried again). */
@@ -425,6 +431,7 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
     ep.limitUnknownSince = null;
     ep.limitResumed = false;
     ep.limitLoops = 0;
+    ep.limitTold = undefined;
   }
   // Claude Code went on by itself after its limit stop (its notice, its own prompt, or the agent writing on): no continue is owed.
   if (ep.limitStopped && (raw?.type === 'assistant' || raw?.autoContinued)) {
@@ -495,8 +502,6 @@ export class HeadlessDelivery {
   private readonly questions = new Map<string, { since: number | null; probedAt: number; noticedTask: string | null }>();
   /** After an answer, by session: the transcript read on for turns nothing on this PC started. */
   private readonly afterwards = new Map<string, Episode>();
-  /** The last usage-limit reset each task's asking PC was told of (`limitNotice`); null: told it is not known. */
-  private readonly limitNoticed = new Map<string, number | null>();
   /** Replies sent on each task besides its answers (progress, later turns): bounded by FURTHER_REPLIES_MAX. */
   private readonly further = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -527,7 +532,6 @@ export class HeadlessDelivery {
     if (this.ticking || this.stopped) return;
     this.ticking = true;
     try {
-      for (const taskId of [...this.limitNoticed.keys()]) if (this.ended(taskId)) this.limitNoticed.delete(taskId);
       for (const ep of [...this.episodes.values()]) {
         try {
           await this.follow(ep);
@@ -889,7 +893,6 @@ export class HeadlessDelivery {
       if (limit.resetsAt != null) limit.capAt = limit.resetsAt + LIMIT_RESUME_MARGIN_MS;
       else limit.capAt = (ep.limitUnknownSince ??= limit.seenAt) + LIMIT_UNKNOWN_MAX_MS;
       this.deps.noteLimit?.(ep.sessionId, limit.message, limit.at);
-      this.deps.log('info', `[headless] task ${ep.taskId}: the agent is at its usage limit (${limit.resetsAt != null ? `resets ${new Date(limit.resetsAt).toISOString()}` : 'reset unknown'})`);
     }
     return limit;
   }
@@ -975,12 +978,13 @@ export class HeadlessDelivery {
     const resetsAt = limit.resetsAt ?? null;
     // Every resume came straight back to the limit: the task ends, the agent is left running.
     if ((ep.limitLoops ?? 0) >= LIMIT_LOOPS_MAX) return this.finish(ep, { kind: 'failed', reason: limitLoopReason(resetsAt) });
-    // The first stop on the task is told; after that only a reset that moved far enough (a 5-hour limit rolling
-    // into a weekly one), not each of Claude Code's own retries that hit the limit again a few minutes on.
-    const told = this.limitNoticed.get(ep.taskId);
+    // The first stop since the agent last wrote is told; after that only a reset that moved far enough (a 5-hour
+    // limit rolling into a weekly one), not each of Claude Code's own retries that hit the limit again a few minutes on.
+    const told = ep.limitTold;
     const tell = told === undefined || (resetsAt != null && (told === null || Math.abs(resetsAt - told) >= LIMIT_NOTICE_MOVE_MS));
     if (tell) {
-      this.limitNoticed.set(ep.taskId, resetsAt);
+      ep.limitTold = resetsAt;
+      this.deps.log('info', `[headless] task ${ep.taskId}: the agent is at its usage limit (${resetsAt != null ? `resets ${new Date(resetsAt).toISOString()}` : 'reset unknown'})`);
       await this.notify(ep, limitNotice(resetsAt, told !== undefined), 'of the usage limit', ep);
     }
     const now = this.now();
@@ -1207,7 +1211,7 @@ export class HeadlessDelivery {
     // Read on from here for turns nothing on this PC starts (only while nothing else took the session).
     if (ep.path !== null && !this.episodes.has(ep.sessionId) && !this.ending.has(ep.sessionId)) {
       this.afterwards.set(ep.sessionId, {
-        ...ep, opened: true, answer: [], endPending: undefined, limitStopped: false, outcome: null, waitingSince: null, busy: false, lastProgress: null,
+        ...ep, opened: true, answer: [], endPending: undefined, limitStopped: false, limitTold: undefined, outcome: null, waitingSince: null, busy: false, lastProgress: null,
       });
     }
   }

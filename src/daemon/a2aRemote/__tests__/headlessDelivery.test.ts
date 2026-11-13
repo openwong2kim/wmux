@@ -1629,6 +1629,33 @@ describe('a usage limit on a headless session (no hooks, nobody at the pane)', (
     expect(task.status.state).toBe('working');
   });
 
+  it('a limit in a later turn of the task, after an answered one: told again, even with the same reset', async () => {
+    const d = new HeadlessDelivery(limitDeps());
+    await atLimit(d);
+    // Claude Code goes on by itself after the reset and answers.
+    write(AUTO_PROMPT(), assistantLine('PONG'));
+    await d.tick();
+    expect(task.status.state).toBe('input-required');
+    // The asking PC sends more; that turn hits the limit again, same reset.
+    task.history.push({ kind: 'message', messageId: 'm9', role: 'user', parts: [{ kind: 'text', text: 'and the kernel version' }] });
+    marker().inbox = [{ messageId: 'm9', kind: 'reply', delivered: false }];
+    await d.tick();
+    write(userLine('and the kernel version'), apiErrorLine('rate_limit', LIMIT_TEXT));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual([limitNotice(RESET), 'PONG', limitNotice(RESET)]);
+  });
+
+  it('within one turn: once the agent got work done after a stop, the next stop is told again', async () => {
+    const d = new HeadlessDelivery(limitDeps());
+    await atLimit(d);
+    write(AUTO_PROMPT(), apiErrorLine('rate_limit', LIMIT_TEXT));
+    await d.tick();
+    expect(replies).toHaveLength(1);
+    write(AUTO_PROMPT(), toolUseLine(), toolResultLine(), apiErrorLine('rate_limit', LIMIT_TEXT));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual([limitNotice(RESET), limitNotice(RESET)]);
+  });
+
   it('anything the agent writes between resumes starts the count over', async () => {
     const d = new HeadlessDelivery(limitDeps());
     await atLimit(d);
