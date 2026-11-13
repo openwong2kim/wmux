@@ -115,6 +115,18 @@ function runFullServer(why: string): void {
   require(entry);
 }
 
+/** No token file at all: wmux never ran under this home, or its files were
+ *  removed. Only this falls back; anything at the path that gives no token
+ *  (a blank or unreadable file, a dangling link) keeps the refusal. */
+function tokenFileAbsent(): boolean {
+  try {
+    fs.lstatSync(getAuthTokenPath());
+    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT';
+  }
+}
+
 function readAuthToken(): string | undefined {
   try {
     const fromFile = fs.readFileSync(getAuthTokenPath(), 'utf8').trim();
@@ -142,6 +154,12 @@ function sleep(ms: number): Promise<void> {
 async function main(): Promise<void> {
   const token = readAuthToken();
   if (!token) {
+    // With no token file there is no broker to reach either: the session runs
+    // on the full server, as the bundle entry would run it.
+    if (tokenFileAbsent()) {
+      runFullServer('no auth token file');
+      return;
+    }
     console.error('[wmux-mcp-shim] auth token not found. Is wmux running?');
     process.exit(1);
   }
