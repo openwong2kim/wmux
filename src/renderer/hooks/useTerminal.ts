@@ -3783,19 +3783,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Fold before the resync buffer so a mid-resync negotiation still arms
       // the encoding (#1152). Replay is history, not a negotiation: it
       // re-delivers the dead session's `?9001h` on every restart (#1363).
-      const resyncing = resyncRef.current;
       if (!payload.replay) noteKeyboard(payload.data);
-      else if (resyncing.pending && resyncing.foldReplay) {
-        // A re-flush after the session pipe fell behind carries output this
-        // pane never got live. Folded forward, not from scratch: a replay cut
-        // from the ring rarely holds the program's startup negotiation, so
-        // the state from before survives unless the replay changes it.
-        noteKeyboard(payload.data);
-      } else if (fixedGeometryRef.current) {
+      else if (fixedGeometryRef.current) {
         // A viewer (`fixedGeometry`) never saw the negotiation happen: its
         // replay is a snapshot of the pane's CURRENT state, so it is the
         // negotiation to fold — from scratch, as the snapshot starts over.
         keyboardRef.current = INITIAL_REMOTE_KEYBOARD_STATE;
+        noteKeyboard(payload.data);
+      } else if (resyncRef.current.pending && resyncRef.current.foldReplay) {
+        // A re-flush after the session pipe fell behind carries output this
+        // pane never got live. Folded forward, not from scratch: a replay cut
+        // from the ring rarely holds the program's startup negotiation, so
+        // the state from before survives unless the replay changes it.
         noteKeyboard(payload.data);
       }
       const st = resyncRef.current;
