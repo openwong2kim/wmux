@@ -2,6 +2,7 @@
 // (shared/peerPid.ts), and that process's start time (shared/processStartTime.ts),
 // read over a real socket.
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
@@ -28,9 +29,14 @@ import { setBrokerIdentitySource, setBrokerStampSource } from '../handlers/peerP
 
 const supported = process.platform === 'darwin' || process.platform === 'linux';
 let server: PipeServer | null = null;
-afterEach(() => {
-  server?.stop();
+afterEach(async () => {
+  const stopping = server;
+  const pipe = paths.pipe;
+  stopping?.stop();
   server = null;
+  // stop() removes the socket file in its close callback, reading the pipe
+  // name then: wait for it, so it cannot remove the next test's socket.
+  if (stopping && pipe) await vi.waitFor(() => expect(fs.existsSync(pipe)).toBe(false), { timeout: 5_000 });
   startTime.unreadable = false;
   setBrokerIdentitySource(() => null);
   setBrokerStampSource(() => false);
@@ -145,12 +151,16 @@ describe.runIf(supported)('PipeServer broker stamp', () => {
 
   it('does not mark a call with another stamp, or with none, from the same connection', async () => {
     asBroker(process.pid);
-    const wrong = seen(await sendOne({ method: 'a2a.resolve.identity', brokerStamp: 'd'.repeat(64) }));
-    expect('brokerStamped' in wrong.ctx).toBe(false);
-    expect('brokerStamp' in wrong.request).toBe(false);
-    server?.stop();
-    const none = seen(await sendOne({ method: 'a2a.resolve.identity' }));
-    expect('brokerStamped' in none.ctx).toBe(false);
+    // One server and one connection: a server stopped and another started at
+    // once could see the first one's close remove the second one's socket.
+    const s = await openSession();
+    await s.send(s.request({ brokerStamp: 'd'.repeat(64) }));
+    await s.send(s.request({}));
+    const [wrong, none] = s.dispatch.mock.calls.map((c) => c as unknown as [Record<string, unknown>, Record<string, unknown>]);
+    expect('brokerStamped' in wrong[1]).toBe(false);
+    expect('brokerStamp' in wrong[0]).toBe(false);
+    expect('brokerStamped' in none[1]).toBe(false);
+    s.close();
   });
 
   it('refuses the stamp on a connection that is not the spawned broker, even when it matches', async () => {
@@ -170,12 +180,15 @@ describe.runIf(supported)('PipeServer broker stamp', () => {
 
   it('does not mark a stamp that is not a string, and removes it all the same', async () => {
     asBroker(process.pid);
-    for (const bad of [12345, { stamp: STAMP }, [STAMP], null, true]) {
-      server?.stop();
-      const { request, ctx } = seen(await sendOne({ method: 'a2a.resolve.identity', brokerStamp: bad }));
+    const s = await openSession();
+    const bads = [12345, { stamp: STAMP }, [STAMP], null, true];
+    for (const [i, bad] of bads.entries()) {
+      await s.send(s.request({ brokerStamp: bad }));
+      const [request, ctx] = s.dispatch.mock.calls[i] as unknown as [Record<string, unknown>, Record<string, unknown>];
       expect('brokerStamped' in ctx, JSON.stringify(bad)).toBe(false);
       expect('brokerStamp' in request, JSON.stringify(bad)).toBe(false);
     }
+    s.close();
   });
 
   it('keeps the stamp out of the response', async () => {
