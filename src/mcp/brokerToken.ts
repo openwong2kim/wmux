@@ -11,7 +11,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 
 /** Why the token file could not be used. */
-export type TokenFileProblem = 'missing' | 'unreadable' | 'not-a-file' | 'owner' | 'mode' | 'empty';
+export type TokenFileProblem = 'missing' | 'unreadable' | 'not-a-file' | 'owner' | 'mode' | 'too-large' | 'empty';
 
 export type TokenRead = { ok: true; token: string } | { ok: false; problem: TokenFileProblem };
 
@@ -26,7 +26,9 @@ const MAX_TOKEN_FILE_BYTES = 4096;
 export function readTokenFile(file: string, ownUid: number | null, platform: NodeJS.Platform = process.platform): TokenRead {
   let fd: number;
   try {
-    fd = fs.openSync(file, 'r');
+    // Non-blocking, so a FIFO in the file's place cannot stall the open; the
+    // check below refuses anything but a regular file.
+    fd = fs.openSync(file, platform === 'win32' ? 'r' : fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
   } catch (err) {
     return { ok: false, problem: (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'unreadable' };
   }
@@ -38,8 +40,15 @@ export function readTokenFile(file: string, ownUid: number | null, platform: Nod
       if (ownUid !== null && st.uid !== ownUid) return { ok: false, problem: 'owner' };
       if ((st.mode & 0o077) !== 0) return { ok: false, problem: 'mode' };
     }
-    if (st.size > MAX_TOKEN_FILE_BYTES) return { ok: false, problem: 'unreadable' };
-    const token = fs.readFileSync(fd, 'utf8').trim();
+    // One byte more than the cap: a file that fills it is too large, even if
+    // it grew after the stat.
+    const buf = Buffer.alloc(MAX_TOKEN_FILE_BYTES + 1);
+    let length = 0;
+    for (let n = -1; n !== 0 && length < buf.length; length += n) {
+      n = fs.readSync(fd, buf, length, buf.length - length, null);
+    }
+    if (length > MAX_TOKEN_FILE_BYTES) return { ok: false, problem: 'too-large' };
+    const token = buf.subarray(0, length).toString('utf8').trim();
     return token ? { ok: true, token } : { ok: false, problem: 'empty' };
   } catch {
     return { ok: false, problem: 'unreadable' };
@@ -48,21 +57,36 @@ export function readTokenFile(file: string, ownUid: number | null, platform: Nod
   }
 }
 
+export interface BrokerTokenSource {
+  /** The expected token for one handshake; null when there is no source at all. */
+  read: (() => TokenRead) | null;
+  /** Why the token file could not be used when the broker started, if it could not. */
+  startProblem: TokenFileProblem | null;
+}
+
 /**
- * Where the broker gets the expected token, chosen once at start: the token
- * file when it is usable then (wmux writes it before it spawns the broker),
- * read again at each handshake; otherwise a WMUX_AUTH_TOKEN from the
- * environment, fixed for the broker's life. Null when there is neither.
+ * Where the broker gets the expected token. The token file, read again at
+ * every handshake. A WMUX_AUTH_TOKEN from the environment stands in only
+ * until the file is first usable: a broker that started without a usable
+ * file, on that token, moves to the file for good once it can read it.
  */
 export function brokerTokenSource(
   file: string,
   envToken: string | undefined,
   ownUid: number | null,
   platform: NodeJS.Platform = process.platform,
-): (() => TokenRead) | null {
-  if (readTokenFile(file, ownUid, platform).ok) return () => readTokenFile(file, ownUid, platform);
-  if (envToken) return () => ({ ok: true, token: envToken });
-  return null;
+): BrokerTokenSource {
+  const first = readTokenFile(file, ownUid, platform);
+  const startProblem = first.ok ? null : first.problem;
+  if (!first.ok && !envToken) return { read: null, startProblem };
+  let fileSeen = first.ok;
+  const read = (): TokenRead => {
+    const r = readTokenFile(file, ownUid, platform);
+    if (r.ok) fileSeen = true;
+    if (r.ok || fileSeen || !envToken) return r;
+    return { ok: true, token: envToken };
+  };
+  return { read, startProblem };
 }
 
 const digest = (s: string) => crypto.createHash('sha256').update(s, 'utf8').digest();

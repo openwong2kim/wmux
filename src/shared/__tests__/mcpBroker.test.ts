@@ -1,3 +1,5 @@
+// @wmux-lane unit
+// Pure functions of the platform name passed in: the OS running the test cannot change a result.
 import { describe, expect, it } from 'vitest';
 import { BROKER_DEFAULT_ON, brokerDefault, brokerFlag } from '../mcpBroker';
 

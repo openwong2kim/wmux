@@ -1,3 +1,4 @@
+import { execFileSync, spawn } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -76,6 +77,27 @@ describe('readTokenFile', () => {
     expect(readTokenFile(file, (uid ?? 0) + 1)).toEqual({ ok: false, problem: 'owner' });
   });
 
+  it.runIf(!isWin)('a FIFO in its place is refused at once, without blocking', () => {
+    execFileSync('mkfifo', [file]);
+    // A blocking open would wait for a writer forever: this one arrives after
+    // 2 s, so a regression fails on the time below instead of hanging the run.
+    const watchdog = spawn('sh', ['-c', 'sleep 2; exec 3>"$0"', file], { stdio: 'ignore' });
+    try {
+      const started = Date.now();
+      expect(readTokenFile(file, uid)).toEqual({ ok: false, problem: 'not-a-file' });
+      expect(Date.now() - started).toBeLessThan(1000);
+    } finally {
+      watchdog.kill();
+    }
+  });
+
+  it('a file over 4096 bytes', () => {
+    write('x'.repeat(4097));
+    expect(readTokenFile(file, uid)).toEqual({ ok: false, problem: 'too-large' });
+    write('x'.repeat(4096));
+    expect(readTokenFile(file, uid)).toEqual({ ok: true, token: 'x'.repeat(4096) });
+  });
+
   it('modes are not checked on Windows', () => {
     write(SECRET, 0o644);
     expect(readTokenFile(file, null, 'win32')).toEqual({ ok: true, token: SECRET });
@@ -92,27 +114,41 @@ describe('readTokenFile', () => {
 });
 
 describe('brokerTokenSource', () => {
-  it('a usable file at start: read again on every call', () => {
+  it('a usable file at start: read again on every call, never the environment token', () => {
     write('first');
-    const source = brokerTokenSource(file, 'from-env', uid);
-    expect(source?.()).toEqual({ ok: true, token: 'first' });
+    const { read, startProblem } = brokerTokenSource(file, 'from-env', uid);
+    expect(startProblem).toBeNull();
+    expect(read?.()).toEqual({ ok: true, token: 'first' });
     write('second');
-    expect(source?.()).toEqual({ ok: true, token: 'second' });
+    expect(read?.()).toEqual({ ok: true, token: 'second' });
     fs.unlinkSync(file);
-    expect(source?.()).toEqual({ ok: false, problem: 'missing' });
+    expect(read?.()).toEqual({ ok: false, problem: 'missing' });
     write('third');
-    expect(source?.()).toEqual({ ok: true, token: 'third' });
+    expect(read?.()).toEqual({ ok: true, token: 'third' });
   });
 
-  it('no usable file at start: the environment token, fixed', () => {
-    const source = brokerTokenSource(file, 'from-env', uid);
+  it('no usable file at start: the environment token until the file is usable, then the file for good', () => {
+    const { read, startProblem } = brokerTokenSource(file, 'from-env', uid);
+    expect(startProblem).toBe('missing');
+    expect(read?.()).toEqual({ ok: true, token: 'from-env' });
     write('later');
-    expect(source?.()).toEqual({ ok: true, token: 'from-env' });
+    expect(read?.()).toEqual({ ok: true, token: 'later' });
+    fs.unlinkSync(file);
+    expect(read?.()).toEqual({ ok: false, problem: 'missing' });
   });
 
-  it('neither: null', () => {
-    expect(brokerTokenSource(file, undefined, uid)).toBeNull();
-    expect(brokerTokenSource(file, '', uid)).toBeNull();
+  it.runIf(!isWin)('a file too open at start is named, and the environment token stands in', () => {
+    write('loose', 0o644);
+    const { read, startProblem } = brokerTokenSource(file, 'from-env', uid);
+    expect(startProblem).toBe('mode');
+    expect(read?.()).toEqual({ ok: true, token: 'from-env' });
+    fs.chmodSync(file, 0o600);
+    expect(read?.()).toEqual({ ok: true, token: 'loose' });
+  });
+
+  it('neither: no source', () => {
+    expect(brokerTokenSource(file, undefined, uid).read).toBeNull();
+    expect(brokerTokenSource(file, '', uid).read).toBeNull();
   });
 });
 

@@ -209,7 +209,11 @@ function main(): void {
   setBrowserReplBrokerMode();
   setBrokerEnvelopeMode();
   const ownUid = typeof process.getuid === 'function' ? process.getuid() : null;
-  const expectedToken = brokerTokenSource(getAuthTokenPath(), process.env.WMUX_AUTH_TOKEN, ownUid);
+  const tokenSource = brokerTokenSource(getAuthTokenPath(), process.env.WMUX_AUTH_TOKEN, ownUid);
+  if (tokenSource.startProblem && tokenSource.startProblem !== 'missing') {
+    console.error(`[wmux-mcp-broker] auth token file not usable at start (${tokenSource.startProblem})`);
+  }
+  const expectedToken = tokenSource.read;
   if (!expectedToken) {
     console.error('[wmux-mcp-broker] auth token not found; refusing to serve. Is wmux running?');
     process.exit(1);
