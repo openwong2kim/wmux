@@ -156,6 +156,32 @@ afterEach(() => {
 });
 
 describe('typing the task in', () => {
+  it('stopped (the daemon shutting down): a pass types nothing more, and the write gate says no', async () => {
+    const d = new HeadlessDelivery(deps({
+      deliver: async (_s, _a, _p, authorized) => {
+        d.stop();
+        gateAnswers.push(authorized());
+        return 'busy';
+      },
+    }));
+    await d.tick();
+    expect(gateAnswers).toEqual([false]);
+    await d.tick();
+    expect(gateAnswers).toHaveLength(1);
+  });
+
+  it('a task that ended while it was being typed in (canceled by the asker) is not let through the write gate', async () => {
+    const d = new HeadlessDelivery(deps({
+      deliver: async (_s, _a, _p, authorized) => {
+        task.status = { state: 'canceled', timestamp: '' };
+        gateAnswers.push(authorized());
+        return 'error';
+      },
+    }));
+    await d.tick();
+    expect(gateAnswers).toEqual([false]);
+  });
+
   it('sent: the attempt is recorded first, then delivered, and the task is working', async () => {
     const d = new HeadlessDelivery(deps());
     await d.tick();
@@ -481,6 +507,80 @@ describe('the reply, from the transcript', () => {
     write(userLine(PROMPT), assistantLine('x'.repeat(10)));
     await d.tick();
     expect(moves.at(-1)).toEqual({ to: 'failed', summary: "the agent's answer is larger than a reply may be" });
+  });
+
+  it('a subagent\'s entries (sidechain) neither end the turn nor count as input; the lead\'s own end does', async () => {
+    const d = await delivering();
+    const side = (o: object): string => JSON.stringify({ ...o, isSidechain: true });
+    write(userLine(PROMPT), toolUseLine(),
+      side({ type: 'user', uuid: 's1', timestamp: stamp(), message: { role: 'user', content: 'the subagent\'s brief' } }),
+      side({ type: 'assistant', uuid: 's2', timestamp: stamp(), message: { role: 'assistant', content: [{ type: 'text', text: 'sub done' }], stop_reason: 'end_turn' } }));
+    await d.tick();
+    expect(replies).toEqual([]);
+    expect(moves).toEqual([{ to: 'working' }]);
+    write(toolResultLine(), assistantLine('the lead\'s answer'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(["the lead's answer"]);
+    expect(moves.at(-1)).toEqual({ to: 'input-required' });
+  });
+
+  it('a move to working that failed is tried again (never by typing again), and the answer still ends it', async () => {
+    let failWorking = true;
+    const base = deps();
+    const d = new HeadlessDelivery({
+      ...base,
+      transition: async (input) => {
+        if (input.to === 'working' && failWorking) {
+          failWorking = false;
+          return { ok: false, error: 'ledger busy' };
+        }
+        return base.transition(input);
+      },
+    });
+    await d.tick();
+    expect(task.status.state).toBe('submitted');
+    // The next pass moves it, with the turn still under way.
+    await d.tick();
+    expect(task.status.state).toBe('working');
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(delivered).toHaveLength(1);
+    expect(moves).toEqual([{ to: 'working' }, { to: 'input-required' }]);
+    expect(replies.map((r) => r.text)).toEqual(['PONG']);
+  });
+
+  it('a move to input-required that failed, or a reply that threw, is tried again; the reply is sent once', async () => {
+    let failMove = true;
+    let throwReply = true;
+    const base = deps();
+    const d = new HeadlessDelivery({
+      ...base,
+      reply: async (input) => {
+        if (throwReply) {
+          throwReply = false;
+          throw new Error('pipe closed');
+        }
+        return base.reply(input);
+      },
+      transition: async (input) => {
+        if (input.to === 'input-required' && failMove) {
+          failMove = false;
+          return { ok: false, error: 'ledger busy' };
+        }
+        return base.transition(input);
+      },
+    });
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(replies).toEqual([]);
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG']);
+    expect(task.status.state).toBe('working');
+    await d.tick();
+    expect(task.status.state).toBe('input-required');
+    await d.tick();
+    expect(replies).toHaveLength(1);
   });
 
   it('a transcript replaced under it fails the episode', async () => {

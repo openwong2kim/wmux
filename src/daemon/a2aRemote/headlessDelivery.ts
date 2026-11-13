@@ -106,6 +106,10 @@ export interface Episode {
   limitStopped: boolean;
   /** Text of the assistant entries since the last tool call: the answer so far. */
   answer: string[];
+  /** The task was moved to `working` (a failed move is tried again). */
+  working: boolean;
+  /** How the turn ended, kept until the reply and the task's move both went through. */
+  outcome: EpisodeOutcome | null;
 }
 
 export type EpisodeOutcome =
@@ -121,8 +125,8 @@ function hashOf(text: string): string {
   return crypto.createHash('sha256').update(text.replace(/\r\n?/g, '\n').trim()).digest('hex');
 }
 
-/** The entry's `type`, `stop_reason` and content, from its raw line (null: not JSON). */
-function rawEntry(line: string): { type?: unknown; stopReason?: unknown; content?: unknown } | null {
+/** The entry's `type`, `stop_reason`, content and sidechain flag, from its raw line (null: not JSON). */
+function rawEntry(line: string): { type?: unknown; stopReason?: unknown; content?: unknown; sidechain: boolean } | null {
   let entry: unknown;
   try {
     entry = JSON.parse(line);
@@ -130,8 +134,8 @@ function rawEntry(line: string): { type?: unknown; stopReason?: unknown; content
     return null;
   }
   if (!entry || typeof entry !== 'object') return null;
-  const e = entry as { type?: unknown; message?: { stop_reason?: unknown; content?: unknown } };
-  return { type: e.type, stopReason: e.message?.stop_reason, content: e.message?.content };
+  const e = entry as { type?: unknown; isSidechain?: unknown; message?: { stop_reason?: unknown; content?: unknown } };
+  return { type: e.type, stopReason: e.message?.stop_reason, content: e.message?.content, sidechain: e.isSidechain === true };
 }
 
 function textOfContent(content: unknown): string | null {
@@ -164,6 +168,8 @@ function textOfContent(content: unknown): string | null {
  */
 export function stepEpisode(ep: Episode, line: string, events: readonly TurnEvent[]): EpisodeOutcome | null {
   const raw = rawEntry(line);
+  // A subagent's entry (in the lead's file): not the prompt, not input, and its turn end is not the lead's.
+  if (raw?.sidechain) return null;
   if (!ep.opened) {
     const text = raw?.type === 'user' ? textOfContent(raw.content) : null;
     if (text !== null && hashOf(text) === ep.promptHash) {
@@ -236,6 +242,8 @@ export class HeadlessDelivery {
   private readonly ending = new Set<string>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
+  /** Stopped (the daemon shutting down): a pass under way types nothing more. */
+  private stopped = false;
 
   constructor(deps: HeadlessDeliveryDeps) {
     this.deps = deps;
@@ -243,19 +251,21 @@ export class HeadlessDelivery {
   }
 
   start(): void {
+    this.stopped = false;
     if (this.timer) return;
     this.timer = setInterval(() => void this.tick(), HEADLESS_DELIVERY_TICK_MS);
     this.timer.unref?.();
   }
 
   stop(): void {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
   }
 
   /** One pass: open episodes read, then owed tasks typed in. Never two at once; one failing item never stops the rest. */
   async tick(): Promise<void> {
-    if (this.ticking) return;
+    if (this.ticking || this.stopped) return;
     this.ticking = true;
     try {
       for (const ep of [...this.episodes.values()]) {
@@ -268,6 +278,7 @@ export class HeadlessDelivery {
       if (!this.deps.mode.active()) return;
       const starts = this.deps.starts.list();
       for (const task of this.deps.tasks.pending()) {
+        if (this.stopped) return;
         try {
           await this.offer(task, starts);
         } catch (err) {
@@ -309,9 +320,11 @@ export class HeadlessDelivery {
 
   /** Still the owner at this moment (asked again before the first write and before Enter). */
   private stillOwner(taskId: string, sessionId: string): boolean {
-    if (!this.deps.mode.active() || this.ending.has(sessionId)) return false;
+    if (this.stopped || !this.deps.mode.active() || this.ending.has(sessionId)) return false;
     const task = this.deps.tasks.get(taskId);
-    return !!task && this.ownerOf(task, this.deps.starts.list())?.sessionId === sessionId;
+    // A task that ended meanwhile (canceled on the asking PC, say) is not typed in.
+    if (!task || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return false;
+    return this.ownerOf(task, this.deps.starts.list())?.sessionId === sessionId;
   }
 
   /** Type an owed task in, if it is this run's headless start's and its agent is free. */
@@ -371,13 +384,14 @@ export class HeadlessDelivery {
       case 'sent': {
         this.retry.delete(task.id);
         if (this.ending.has(rec.sessionId)) return;
-        this.episodes.set(rec.sessionId, {
+        const ep: Episode = {
           taskId: task.id, sessionId: rec.sessionId, workspaceId: rec.workspaceId, promptHash: promptHash(prompt),
           sentAt: this.now(), agentMessagesAtSend: agentMessages, path, offset, opened: false, limitStopped: false, answer: [],
-        });
+          working: false, outcome: null,
+        };
+        this.episodes.set(rec.sessionId, ep);
         await this.markOrKeep({ taskId: task.id, delivered: true, ptyId: rec.sessionId });
-        const working = await this.deps.transition({ taskId: task.id, workspaceId: rec.workspaceId, to: 'working' });
-        if (!working.ok) this.deps.log('warn', `[headless] task ${task.id}: not marked working: ${working.error ?? 'unknown'}`);
+        await this.toWorking(ep);
         this.deps.log('info', `[headless] task ${task.id}: typed into ${rec.sessionId}`);
         return;
       }
@@ -398,8 +412,24 @@ export class HeadlessDelivery {
     }
   }
 
+  /** The delivered task moved to `working`; tried again each pass until it is (never by typing it again). */
+  private async toWorking(ep: Episode): Promise<void> {
+    const state = this.deps.tasks.get(ep.taskId)?.status.state;
+    if (state !== 'submitted') {
+      ep.working = state !== undefined;
+      return;
+    }
+    const moved = await this.deps.transition({ taskId: ep.taskId, workspaceId: ep.workspaceId, to: 'working' })
+      .catch((err: unknown) => ({ ok: false, error: errMsg(err) }));
+    ep.working = moved.ok;
+    if (!moved.ok) this.deps.log('warn', `[headless] task ${ep.taskId}: not marked working, tried again: ${moved.error ?? 'unknown'}`);
+  }
+
   /** Read what the agent wrote since the last pass; end the episode when its turn did. */
   private async follow(ep: Episode): Promise<void> {
+    // The turn ended already, and its reply or the task's move did not go through: only that is tried again.
+    if (ep.outcome) return this.finish(ep, ep.outcome);
+    if (!ep.working) await this.toWorking(ep);
     const path = this.deps.transcriptPath(ep.sessionId);
     if (!path) return;
     // Bound only after the write: read from where the file began. Bound to another file since: not this turn's.
@@ -424,42 +454,69 @@ export class HeadlessDelivery {
   /**
    * The one place an episode's end is decided: a reply (unless the agent
    * already answered through its own tools after the task was typed in), then
-   * `input-required`; or `failed` with the reason.
+   * `input-required`; or `failed` with the reason. The episode is kept, with
+   * its outcome, until that went through: a later pass tries again only what
+   * did not. A reply that landed shows in the task's history, so it is never
+   * sent twice.
    */
   private async finish(ep: Episode, outcome: EpisodeOutcome): Promise<void> {
-    this.episodes.delete(ep.sessionId);
+    const first = ep.outcome === null;
+    ep.outcome = outcome;
     if (outcome.kind === 'failed') {
-      this.deps.log('warn', `[headless] task ${ep.taskId}: ${outcome.reason}`);
-      await this.fail(ep.taskId, ep.workspaceId, outcome.reason);
+      if (first) this.deps.log('warn', `[headless] task ${ep.taskId}: ${outcome.reason}`);
+      if (await this.fail(ep.taskId, ep.workspaceId, outcome.reason)) this.drop(ep);
       return;
     }
     const task = this.deps.tasks.get(ep.taskId);
-    if (!task || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return;
-    const repliedItself = task.history.filter((m) => m.role === 'agent').length > ep.agentMessagesAtSend;
-    if (!repliedItself) {
+    if (!task || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return this.drop(ep);
+    const replied = task.history.filter((m) => m.role === 'agent').length > ep.agentMessagesAtSend;
+    if (!replied) {
       const text = outcome.text.trim() || '(the agent ended its turn without text)';
-      const sent = await this.deps.reply({ taskId: ep.taskId, workspaceId: ep.workspaceId, text, ptyId: ep.sessionId });
+      let sent: { ok: boolean; error?: string };
+      try {
+        sent = await this.deps.reply({ taskId: ep.taskId, workspaceId: ep.workspaceId, text, ptyId: ep.sessionId });
+      } catch (err) {
+        // Not known whether it landed: the next pass looks at the task's history first.
+        this.deps.log('warn', `[headless] task ${ep.taskId}: the reply failed, tried again: ${errMsg(err)}`);
+        return;
+      }
       if (!sent.ok) {
-        await this.fail(ep.taskId, ep.workspaceId, sent.error === 'too-large'
+        const reason = sent.error === 'too-large'
           ? "the agent's answer is larger than a reply may be"
-          : `the agent's answer could not be sent: ${sent.error ?? 'unknown'}`);
+          : `the agent's answer could not be sent: ${sent.error ?? 'unknown'}`;
+        ep.outcome = { kind: 'failed', reason };
+        if (await this.fail(ep.taskId, ep.workspaceId, reason)) this.drop(ep);
         return;
       }
     }
-    if (this.deps.tasks.get(ep.taskId)?.status.state !== 'working') return;
-    const moved = await this.deps.transition({ taskId: ep.taskId, workspaceId: ep.workspaceId, to: 'input-required' });
-    if (!moved.ok) this.deps.log('warn', `[headless] task ${ep.taskId}: not moved to input-required: ${moved.error ?? 'unknown'}`);
+    if (!ep.working) await this.toWorking(ep);
+    if (this.deps.tasks.get(ep.taskId)?.status.state !== 'working') return this.drop(ep);
+    const moved = await this.deps.transition({ taskId: ep.taskId, workspaceId: ep.workspaceId, to: 'input-required' })
+      .catch((err: unknown) => ({ ok: false, error: errMsg(err) }));
+    if (moved.ok) this.drop(ep);
+    else this.deps.log('warn', `[headless] task ${ep.taskId}: not moved to input-required, tried again: ${moved.error ?? 'unknown'}`);
   }
 
-  private fail(taskId: string, workspaceId: string, reason: string): Promise<void> {
+  /** The episode is done with (only this one: another may have taken the session since). */
+  private drop(ep: Episode): void {
+    if (this.episodes.get(ep.sessionId) === ep) this.episodes.delete(ep.sessionId);
+  }
+
+  private fail(taskId: string, workspaceId: string, reason: string): Promise<boolean> {
     return this.end(taskId, workspaceId, 'failed', reason);
   }
 
-  /** A task that was never taken (still `submitted`) can only be canceled, with the same reason. */
-  private async end(taskId: string, workspaceId: string, wanted: 'failed' | 'canceled', reason: string): Promise<void> {
-    const to = wanted === 'failed' && this.deps.tasks.get(taskId)?.status.state === 'submitted' ? 'canceled' : wanted;
+  /**
+   * A task that was never taken (still `submitted`) can only be canceled, with the same reason.
+   * True when the task is ended (by this or before it).
+   */
+  private async end(taskId: string, workspaceId: string, wanted: 'failed' | 'canceled', reason: string): Promise<boolean> {
+    const state = this.deps.tasks.get(taskId)?.status.state;
+    if (!state || (TERMINAL_STATES as readonly string[]).includes(state)) return true;
+    const to = wanted === 'failed' && state === 'submitted' ? 'canceled' : wanted;
     const res = await this.deps.transition({ taskId, workspaceId, to, summary: reason }).catch((err: unknown) => ({ ok: false, error: errMsg(err) }));
     if (!res.ok) this.deps.log('warn', `[headless] task ${taskId}: not marked ${to} (${reason}): ${res.error ?? 'unknown'}`);
+    return res.ok;
   }
 
   private async markSafely(input: MarkInput): Promise<{ ok: boolean; error?: string }> {

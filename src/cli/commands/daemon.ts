@@ -472,7 +472,7 @@ export const HEADLESS_STAYS_UP = 'While headless mode is on, the daemon stays ru
 /** After `headless on`: the stays-up rule, and how to start the daemon when none runs now. */
 async function sayStaysUp(say: (line: string) => void): Promise<void> {
   say(HEADLESS_STAYS_UP);
-  if (!(await headlessIo.daemonView())) say('No daemon is running now: start it with `wmux daemon start`.');
+  if (!(await headlessIo.daemonView())) say('No daemon answered: start it with `wmux daemon start` (or check `wmux daemon status` if one should be running).');
 }
 
 function headlessFail(message: string): never {
