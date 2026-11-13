@@ -50,11 +50,16 @@ export interface FanoutCallerSubmitPorts {
   /** The PR the pane's checkout shows now, or null. Absent → PR lines refused. */
   prOf?: (ptyId: string) => { number: number; url: string } | null;
   agentState: (ptyId: string) => Promise<{ agentName: string | null; agentVerified: boolean; incarnationId: string } | null>;
+  /** Where the line saying the gate refused a nudge goes; defaults to the main log. */
+  log?: (message: string) => void;
   deliver: (args: { id: string; agentSlug: AgentSlug; incarnationId: string; prompt: string }) => Promise<{
     result: 'sent' | 'held' | 'approval_pending' | 'session_changed' | 'unavailable' | 'error';
     pasted: boolean;
   }>;
 }
+
+/** Panes whose last logged gate refusal is remembered. */
+const REFUSALS_KEPT = 256;
 
 function str(v: unknown): string {
   return typeof v === 'string' && v.length > 0 && v.length <= 256 ? v : '';
@@ -78,6 +83,17 @@ export function createFanoutCallerSubmit(ports: FanoutCallerSubmitPorts): {
     const slug = st?.agentName ? agentDisplayToSlug(st.agentName) : undefined;
     return st && st.agentVerified && slug && st.incarnationId ? { slug, incarnationId: st.incarnationId } : null;
   };
+  // The renderer retries a refused nudge, so the gate's refusal is logged
+  // once per pane and reason, and again only after a nudge passed the gate.
+  // The oldest pane is forgotten past REFUSALS_KEPT.
+  const refusalLogged = new Map<string, string>();
+  const noteRefusal = (ptyId: string, reason: string): void => {
+    if (refusalLogged.get(ptyId) === reason) return;
+    refusalLogged.delete(ptyId);
+    refusalLogged.set(ptyId, reason);
+    if (refusalLogged.size > REFUSALS_KEPT) refusalLogged.delete(refusalLogged.keys().next().value as string);
+    (ports.log ?? console.log)(`[fanout] delivery gate refused a caller nudge on pane ${JSON.stringify(ptyId)}: ${reason}`);
+  };
   return {
     session: async (raw) => {
       const ptyId = str(raw);
@@ -99,10 +115,12 @@ export function createFanoutCallerSubmit(ports: FanoutCallerSubmitPorts): {
       if (named.some((n) => !claimed.some((c) => c.number === n))) return { result: 'error', pasted: false };
       const refusal = await ports.deliveryGate(ptyId).catch(() => null);
       if (refusal) {
+        noteRefusal(ptyId, refusal.reason);
         if (refusal.reason === 'usage_limited') return { result: 'held', pasted: false };
         if (refusal.reason === 'approval_pending') return { result: 'approval_pending', pasted: false };
         return { result: 'unavailable', pasted: false };
       }
+      refusalLogged.delete(ptyId);
       if ((await ports.ownerOf(ptyId).catch(() => null)) !== owner) return { result: 'gone', pasted: false };
       const v = await verified(ptyId);
       if (!v) return { result: 'gone', pasted: false };
