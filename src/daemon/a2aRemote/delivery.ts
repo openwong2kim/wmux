@@ -696,12 +696,16 @@ export class A2aRemoteDelivery {
    * A host notice about to go to a peer that does not take one now (it was
    * checked when queued; the peer may have changed since): refused here, never
    * sent, and its dropped message marked `not-sent`. False for anything else,
-   * which goes as usual. True with the record still owed when the refusal
-   * could not be written: it is checked again next time.
+   * which goes as usual. True with the record still owed when the peer's
+   * features are not known yet (a session before the server's hello) or the
+   * refusal could not be written: it is checked again next time.
    */
   private withholdNotice(hostId: HostId, rec: A2aOutboxRecordV1): boolean {
     const notice = rec.envelope.notice;
-    if (!notice || this.liveFeatures(hostId)?.has(A2A_FEATURE_HELD_NOTICE) === true) return false;
+    if (!notice) return false;
+    const features = this.liveFeatures(hostId);
+    if (features === undefined) return true;
+    if (features.has(A2A_FEATURE_HELD_NOTICE)) return false;
     try {
       this.outbox.refuse(hostId, rec.seq, 'protocol');
     } catch (err) {

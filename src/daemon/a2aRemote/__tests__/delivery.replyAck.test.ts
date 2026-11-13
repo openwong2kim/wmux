@@ -171,6 +171,8 @@ describe('a host notice checked again as it goes out (#3344)', () => {
   it('to a peer that does not take one now: refused, never sent, and the dropped message marked not-sent', async () => {
     const { delivery, tasks } = boot();
     await droppedPeerReply(tasks);
+    // Its stream advertised no held-notice.1.
+    vi.spyOn(delivery, 'liveFeatures').mockReturnValue(new Set());
     const rec = delivery.outbox.enqueue(HOST, notice('r-p'));
     expect((delivery as unknown as Withhold).withholdNotice(HOST, rec)).toBe(true);
     expect(delivery.outbox.pending(HOST)).toEqual([]);
@@ -179,6 +181,17 @@ describe('a host notice checked again as it goes out (#3344)', () => {
     // Anything that is not a notice goes as usual.
     const plain = delivery.outbox.enqueue(HOST, reply('r-2'));
     expect((delivery as unknown as Withhold).withholdNotice(HOST, plain)).toBe(false);
+  });
+
+  it('to a peer whose features are not known yet (no hello so far): kept owed, not refused', async () => {
+    const { delivery, tasks } = boot();
+    await droppedPeerReply(tasks);
+    vi.spyOn(delivery, 'liveFeatures').mockReturnValue(undefined);
+    const rec = delivery.outbox.enqueue(HOST, notice('r-p'));
+    expect((delivery as unknown as Withhold).withholdNotice(HOST, rec)).toBe(true);
+    expect(delivery.outbox.pending(HOST)).toHaveLength(1);
+    await settle();
+    expect(rejected(tasks)?.notice).toBe('sent');
   });
 
   it('to a peer that takes one: it goes', async () => {

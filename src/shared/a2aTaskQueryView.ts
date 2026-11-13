@@ -156,7 +156,7 @@ function reasonOf(status: Rec): string | undefined {
 }
 
 /**
- * A failed or canceled remote task as a full view returns it: its reason
+ * A failed or canceled remote task as an agent's full view returns it: its reason
  * (`status.evidence.summary`, often the other PC's words) moved apart under
  * `untrusted.reason`, as a summary row has it, never left where this side's
  * own words are read. Any other task is returned as it is.
@@ -414,7 +414,8 @@ export function applyTaskQueryView<T extends object>(tasks: readonly T[], params
     });
   }
   if (isAnchorTaskQuery(params)) return taskAnchorRows(tasks);
-  if (!isPagedTaskQuery(params)) return tasks.map((task) => separateRemoteReason(task as Rec));
+  // The legacy view is main's own read (work links take a remote task's reason from it), never an agent's.
+  if (!isPagedTaskQuery(params)) return [...tasks];
   const taskId = pagedTaskId(params);
   if (taskId) {
     return tasks
