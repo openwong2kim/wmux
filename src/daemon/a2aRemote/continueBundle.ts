@@ -2,10 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type http from 'node:http';
 import path from 'node:path';
-import { Transform, type Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
+import type { Readable } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
-import zlib from 'node:zlib';
 import { A2A_ROUTES, A2A_SHA256_RE, isHostId, type HostId } from '../../shared/a2aRemote';
 import { isContinueId, type A2aContinueManifestV1 } from '../../shared/a2aContinue';
 import type { ContinuePolicyStore } from './continuePolicyStore';
@@ -28,6 +26,7 @@ import type { A2aRouteContext, A2aRouteTable } from './routes';
 import { continueTransferBudgetMs, continueWireMax, extendBodyDeadline, sendJson } from './server';
 import type { StreamedGet } from './session';
 import { errMsg } from './storeFile';
+import { placePart, transferSlots, wireEncoding, writePart, type TransferOutcome, type WireEncoding } from './transferPart';
 
 /**
  * The bytes of a conversation another PC continues here (this PC is B; see
@@ -81,19 +80,11 @@ const RECEIVED_RETRY_MIN_MS = 5_000;
 const RECEIVED_RETRY_MAX_MS = 5 * 60_000;
 /** The hash of no bytes: the only one an empty file has. */
 const EMPTY_SHA256 = crypto.createHash('sha256').digest('hex');
+/** How one transfer ended. */
+type Outcome = TransferOutcome;
 /** The states whose staging dir holds their bytes. */
 const HOLDS_BYTES: ReadonlySet<string> = new Set(['receiving', 'received', 'starting']);
 const NOT_FOUND = { ok: false, error: 'bad-request', message: 'not found' };
-
-type WireEncoding = 'identity' | 'gzip';
-
-/** How one transfer ended. */
-type Outcome =
-  | { kind: 'staged' }
-  /** A check failed: the request fails. */
-  | { kind: 'fatal'; why: string }
-  /** It broke on the way (a reset, a cut, this disk): tried again. */
-  | { kind: 'again'; why: string };
 
 interface Want {
   bytes: number;
@@ -525,32 +516,6 @@ export class ContinueBundle implements ContinueBytesIntake {
   }
 }
 
-/** One transfer per PC and `max` in all; `take` answers its release, or null when there is no room. */
-function transferSlots(max: number): { take(hostId: HostId): (() => void) | null } {
-  const perPeer = new Set<HostId>();
-  return {
-    take(hostId) {
-      if (perPeer.has(hostId) || perPeer.size >= max) return null;
-      perPeer.add(hostId);
-      let done = false;
-      return () => {
-        if (done) return;
-        done = true;
-        perPeer.delete(hostId);
-      };
-    },
-  };
-}
-
-/** A body's Content-Encoding, when it is one taken here (identity or gzip). */
-function wireEncoding(header: string | string[] | undefined): WireEncoding | null {
-  if (header === undefined) return 'identity';
-  if (typeof header !== 'string') return null;
-  const value = header.trim().toLowerCase();
-  if (value === '' || value === 'identity') return 'identity';
-  return value === 'gzip' ? 'gzip' : null;
-}
-
 /**
  * What each hash of a manifest fills: its size and its staged paths. Refused
  * when the manifest cannot be what it says: one hash at two sizes, or a
@@ -568,86 +533,6 @@ function wantsOf(manifest: A2aContinueManifestV1, dir: string, sessionId: string
   add(manifest.transcript.sha256, manifest.transcript.bytes, continueStagedTranscript(dir, sessionId));
   for (const f of manifest.files) add(f.sha256, f.bytes, continueStagedFile(dir, sessionId, f.rel));
   return wants;
-}
-
-/**
- * Stream a body into a new part file: counted on the wire (at most
- * continueWireMax of `bytes`), gunzipped when gzip, counted and hashed as it
- * inflates (at most `bytes`), then exactly `bytes` with hash `sha`. The part
- * file goes on anything but `staged`.
- */
-async function writePart(source: Readable, encoding: WireEncoding, sha: string, bytes: number, part: string, signal: AbortSignal): Promise<Outcome> {
-  const wireMax = continueWireMax(bytes, encoding);
-  const hash = crypto.createHash('sha256');
-  let wire = 0;
-  let size = 0;
-  let refused: string | null = null;
-  const onWire = new Transform({
-    transform(chunk: Buffer, _encoding, done) {
-      wire += chunk.length;
-      if (wire > wireMax) {
-        refused = 'more bytes on the wire than its entry allows';
-        return done(new Error(refused));
-      }
-      done(null, chunk);
-    },
-  });
-  const inflated = new Transform({
-    transform(chunk: Buffer, _encoding, done) {
-      size += chunk.length;
-      if (size > bytes) {
-        refused = 'larger than its entry';
-        return done(new Error(refused));
-      }
-      hash.update(chunk);
-      done(null, chunk);
-    },
-  });
-  const out = fs.createWriteStream(part, { flags: 'wx', mode: 0o600 });
-  try {
-    await pipeline(encoding === 'gzip' ? [source, onWire, zlib.createGunzip(), inflated, out] : [source, onWire, inflated, out], { signal });
-  } catch (err) {
-    await fs.promises.rm(part, { force: true }).catch(() => undefined);
-    if (refused) return { kind: 'fatal', why: refused };
-    if (signal.aborted) return { kind: 'again', why: 'cut: past its budget, or the request ended' };
-    // A body that arrived whole yet does not inflate (the first error is the inflater's: a cut body fails first).
-    if (isZlibError(err)) return { kind: 'fatal', why: 'its gzip does not inflate' };
-    return { kind: 'again', why: errMsg(err) };
-  }
-  const digest = hash.digest('hex');
-  if (size === bytes && digest === sha) return { kind: 'staged' };
-  await fs.promises.rm(part, { force: true }).catch(() => undefined);
-  return { kind: 'fatal', why: size !== bytes ? `${size} bytes, not its entry's ${bytes}` : 'a hash other than its entry names' };
-}
-
-function isZlibError(err: unknown): boolean {
-  const code = (err as { code?: unknown } | null)?.code;
-  return typeof code === 'string' && code.startsWith('Z_');
-}
-
-/** Rename a checked part file to its staged path, made through plain folders only; refused over anything but a plain file. */
-async function placePart(dir: string, part: string, target: string): Promise<void> {
-  try {
-    await continueParentsInside(dir, target, true);
-    const st = await fs.promises.lstat(target).catch(() => null);
-    if (st && !st.isFile()) throw new ContinueStagingRefusal('something other than a plain file where a staged file goes');
-    // On disk before it takes its name: a power cut after `received` never leaves a staged file cut short.
-    await syncFile(part);
-    await fs.promises.rename(part, target);
-  } catch (err) {
-    await fs.promises.rm(part, { force: true }).catch(() => undefined);
-    throw err;
-  }
-}
-
-/** Flush a written file's bytes to disk. */
-async function syncFile(file: string): Promise<void> {
-  const handle = await fs.promises.open(file, 'r+');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
 }
 
 /** Fill `target` with a copy of `from` (an empty file when null), through a part file. */
