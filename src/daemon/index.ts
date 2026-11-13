@@ -1866,13 +1866,15 @@ async function reapIfIdentityConfirmed(opts: {
   if (win32) {
     now = { ...readWin32ReapIdentity(opts.pid, opts.cmd), currentStartTime: null };
   } else {
-    const currentStartKernel = kernelStartOf(opts.pid);
+    // Read before and after the start-time read, and kept only when both agree: one process.
+    const kernelBefore = kernelStartOf(opts.pid);
     const [startRead, looksLikeOurShell] = await Promise.all([
       readPosixStartTime(opts.pid),
       // Only consulted when no creation time was recorded, but probing both in
       // parallel keeps the slow path off the critical path of the common case.
       isOurShellProcess(opts.pid, opts.cmd),
     ]);
+    const currentStartKernel = kernelBefore !== null && kernelBefore === kernelStartOf(opts.pid) ? kernelBefore : null;
     now = { currentCreatedAtFt: null, currentStartTime: startRead.value, currentStartKernel, currentGone: startRead.gone, looksLikeOurShell };
   }
   const { currentCreatedAtFt, currentStartTime, looksLikeOurShell } = now;

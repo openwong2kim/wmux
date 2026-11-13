@@ -1499,7 +1499,7 @@ export interface DaemonDestroySessionParams extends DaemonSessionIdParams {
  *  tree exited, and which did not. */
 export type DaemonDestroySessionTree =
   | { ok: true; killed: number[] }
-  | { ok: false; killed: number[]; survivors: Array<{ pid: number; reason: string; startTime?: string; unverified?: true }> };
+  | { ok: false; killed: number[]; survivors: Array<{ pid: number; reason: string; startTime?: string; startKernel?: string; unverified?: true }> };
 
 /** Why `daemon.destroySession` refuses a `killTree` destroy (#2388): the
  *  pane's process identity is unknown, so its tree cannot be taken and the

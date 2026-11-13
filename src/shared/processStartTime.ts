@@ -79,7 +79,8 @@ export function processStartTime(pid: number): bigint | null {
 
 type SysctlByName = (name: string, oldp: Buffer, oldlenp: Buffer, newp: null, newlen: number) => number;
 
-let bootIdCache: string | null | undefined;
+/** Kept once read; a failed read is tried again next time. */
+let bootIdCache: string | null = null;
 
 function darwinBootId(): string | null {
   try {
@@ -99,7 +100,7 @@ function darwinBootId(): string | null {
 
 /** This boot's id (Linux boot_id, macOS kern.bootsessionuuid); null elsewhere or when it cannot be read. */
 export function currentBootId(): string | null {
-  if (bootIdCache !== undefined) return bootIdCache;
+  if (bootIdCache) return bootIdCache;
   let id: string | null = null;
   if (process.platform === 'linux') {
     try {

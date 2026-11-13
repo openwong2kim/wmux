@@ -212,7 +212,7 @@ async function processesStillRunning(survivors: readonly TreeKillSurvivor[]): Pr
     const row = byPid.get(s.pid);
     // Gone: POSIX hands what it started to init, where no tree leads.
     if (!row || row.stat.startsWith('Z')) return [];
-    const byKernel = sameKernelStart(s.startKernel, kernelStartOf(row.pid));
+    const byKernel = sameKernelStart(s.startKernel, defaultPosixDeps.kernelStart?.(row.pid));
     if (byKernel !== null) return byKernel ? [s] : [];
     return s.startTime === undefined || row.start === s.startTime ? [s] : [];
   });
@@ -561,6 +561,41 @@ export function parsePsIdentityRows(output: string): PosixProcRow[] {
   return rows;
 }
 
+/**
+ * The kernel starts of `pids` as listed in `rows`, read after that listing.
+ * One is kept only when a listing taken after the reads shows the same pid
+ * with the same parent and start text: the kernel start and the text then
+ * name one process. A pid freed and reused in between keeps its text only,
+ * so a stranger's kernel start is never recorded for it.
+ */
+export async function confirmedKernelStarts(
+  deps: Pick<PosixTreeDeps, 'listProcesses' | 'kernelStart'>,
+  rows: ReadonlyMap<number, PosixProcRow>,
+  pids: readonly number[],
+): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (!deps.kernelStart || pids.length === 0) return out;
+  const read = new Map<number, string>();
+  for (const pid of pids) {
+    const kernel = deps.kernelStart(pid);
+    if (kernel) read.set(pid, kernel);
+  }
+  if (read.size === 0) return out;
+  let after: PosixProcRow[];
+  try {
+    after = await deps.listProcesses();
+  } catch {
+    return out;
+  }
+  const again = new Map(after.map((r) => [r.pid, r]));
+  for (const [pid, kernel] of read) {
+    const before = rows.get(pid);
+    const now = again.get(pid);
+    if (before && now && now.start === before.start && now.ppid === before.ppid) out.set(pid, kernel);
+  }
+  return out;
+}
+
 const defaultPosixDeps: PosixTreeDeps = {
   listProcesses: () =>
     new Promise((resolve, reject) => {
@@ -734,14 +769,14 @@ export async function captureTreePosix(rootPid: number, deps: PosixTreeDeps, opt
       }
       const deadline = Date.now() + timeoutMs;
       let alive: TreeKillSurvivor[] = [];
+      let lastRows = new Map<number, PosixProcRow>();
       for (;;) {
         try {
           const byPid = new Map((await deps.listProcesses()).map((r) => [r.pid, r]));
+          lastRows = byPid;
           alive = [...targets].flatMap(([pid, start]) => {
             const row = byPid.get(pid);
-            if (!row || row.start !== start || row.stat.startsWith('Z')) return [];
-            const kernel = deps.kernelStart?.(pid) ?? null;
-            return [{ pid, reason: 'still running', startTime: start, ...(kernel ? { startKernel: kernel } : {}) }];
+            return row && row.start === start && !row.stat.startsWith('Z') ? [{ pid, reason: 'still running', startTime: start }] : [];
           });
         } catch (err) {
           alive = [...targets].map(([pid, start]) => ({ pid, reason: `the process table could not be read: ${err instanceof Error ? err.message : String(err)}`, startTime: start }));
@@ -749,7 +784,8 @@ export async function captureTreePosix(rootPid: number, deps: PosixTreeDeps, opt
         if (alive.length === 0 || Date.now() >= deadline) break;
         await sleep(POLL_MS);
       }
-      const survivors = [...alive];
+      const kernels = await confirmedKernelStarts(deps, lastRows, alive.map((s) => s.pid));
+      const survivors = alive.map((s) => (kernels.has(s.pid) ? { ...s, startKernel: kernels.get(s.pid) } : s));
       if (scanError !== null) survivors.push({ pid: rootPid, reason: `the tree could not be taken whole: ${scanError}`, unverified: true });
       const killed = [...targets.keys()].filter((pid) => !alive.some((s) => s.pid === pid));
       return survivors.length === 0 ? { ok: true, killed } : { ok: false, killed, survivors };

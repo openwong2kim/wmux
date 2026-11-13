@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { parsePsIdentityRows, type PosixProcRow } from '../automation/verifiedTreeKill';
+import { confirmedKernelStarts, parsePsIdentityRows, type PosixProcRow } from '../automation/verifiedTreeKill';
 import { kernelStartOf, sameKernelStart } from '../../shared/processStartTime';
 import type { HeadlessSurvivor } from './headlessStartStore';
 
@@ -68,11 +68,12 @@ export async function snapshotTree(rootPid: number, deps: HeadlessProcDeps = def
     seen.add(pid);
     const row = live.find((r) => r.pid === pid);
     if (!row) continue;
-    const kernel = deps.kernelStart?.(pid) ?? null;
-    out.push({ pid, startTime: row.start, ...(kernel ? { startKernel: kernel } : {}), reason: 'in the agent process tree when it was ended' });
+    out.push({ pid, startTime: row.start, reason: 'in the agent process tree when it was ended' });
     for (const child of live) if (child.ppid === pid) queue.push(child.pid);
   }
-  return out;
+  // Each with its kernel start when that is proven to be the same process's (read between two listings).
+  const kernels = await confirmedKernelStarts(deps, new Map(live.map((r) => [r.pid, r])), out.map((s) => s.pid));
+  return out.map((s) => (kernels.has(s.pid) ? { ...s, startKernel: kernels.get(s.pid) } : s));
 }
 
 /**

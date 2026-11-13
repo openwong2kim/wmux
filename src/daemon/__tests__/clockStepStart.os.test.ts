@@ -89,6 +89,19 @@ describe.skipIf(process.platform === 'win32')('a headless record across a clock 
     expect(await stillHeld(snap, '/tmp/worktree', deps(AT, `${OTHER_BOOT}:2154321`))).toEqual([]);
   });
 
+  it('records a kernel start only when a second listing shows the same process', async () => {
+    let calls = 0;
+    const reused: HeadlessProcDeps = {
+      // The pid is freed and taken by another process between the listing and the kernel read.
+      listProcesses: async () => [{ pid: 200, ppid: 1, stat: 'S', start: calls++ === 0 ? AT : STEPPED }],
+      procRoot: '/nonexistent-proc-for-test',
+      kernelStart: () => `${BOOT}:2154999`,
+    };
+    const snap = (await snapshotTree(200, reused)) ?? [];
+    expect(snap).toEqual([expect.objectContaining({ pid: 200, startTime: AT })]);
+    expect(snap[0]).not.toHaveProperty('startKernel');
+  });
+
   it('stores the kernel start beside the text, and loads a record without it', () => {
     const base = {
       v: 1, hostId: '0f1e2d3c-4b5a-4968-8776-655443322110', spawnId: 'sp-0f6c1d2e-3a4b-4c5d-8e9f-0123456789ab', agent: 'claude', repoPath: '/repo',
