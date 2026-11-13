@@ -18,6 +18,11 @@ const rowsOf8 = Array.from({ length: 8 }, (_, i) => `L${i}`).join('\r\n');
 const savedThenScrolled = 'a\x1b[3;1H\x1b7\x1b[6;1H\n\n';
 const twoRowHistory = (name: string, text: string): Case =>
   ({ name, backend: 'rust', req: { cols: 20, rows: 6, scrollback: 2, initial: Buffer.from(text) } });
+/** `before` at 20x6, the pane resized to `to`, then `after`. */
+const resizedBetween = (name: string, before: string, to: [number, number], after: string): Case =>
+  ({ name, backend: 'rust', req: { cols: to[0], rows: to[1], scrollback: 100, initial: Buffer.from(before + after),
+    geometry: { start: { cols: 20, rows: 6 }, changes: [{ offset: Buffer.byteLength(before), cols: to[0], rows: to[1] }] } } });
+const longRows = Array.from({ length: 4 }, (_, i) => `${i}`.repeat(18)).join('\r\n');
 
 // One or more cases per control class the selector used to refuse wholesale.
 const accepted: Case[] = [
@@ -110,10 +115,16 @@ const accepted: Case[] = [
   synthetic('decrc-ed3', `${rowsOf8}\x1b[1;1H\x1b7\x1b[3J\x1b8X`),
   twoRowHistory('decrc-full-history', `${rowsOf8}\x1b[3;1H\x1b7\x1b[6;1H\n\n\x1b8X`),
   twoRowHistory('scorc-full-history', `${rowsOf8}\x1b[3;1H\x1b[s\x1b[6;1H\n\n\x1b[uX`),
-  // A resize between the scroll and the restore that moves no row.
-  ({ name: 'main-1049l-scrolled-then-widened', backend: 'rust', req: { cols: 24, rows: 6, scrollback: 100,
-    initial: Buffer.from(`${savedThenScrolled}\x1b[?1049lX`),
-    geometry: { start: { cols: 20, rows: 6 }, changes: [{ offset: savedThenScrolled.length, cols: 24, rows: 6 }] } } }),
+  // A resize between the scroll and the restore: the rows it moves between
+  // the screen and the history are not the stream's scrolling. (A height
+  // shrink with a main-screen save is left out: Alacritty clamps the saved
+  // row there and xterm keeps it absolute, before this change too.)
+  resizedBetween('main-1049l-scrolled-then-widened', savedThenScrolled, [24, 6], '\x1b[?1049lX'),
+  resizedBetween('decrc-scrolled-then-taller', savedThenScrolled, [20, 8], '\x1b8X'),
+  resizedBetween('decrc-scrolled-then-narrowed', `${longRows}\x1b[3;1H\x1b7\x1b[6;1H\n\n`, [12, 6], '\x1b8X'),
+  resizedBetween('decrc-scrolled-then-widened', `${longRows}\r\n${'z'.repeat(30)}\x1b[3;1H\x1b7\x1b[6;1H\n\n`, [30, 6], '\x1b8X'),
+  // A line feed inside the save runs first and scrolls before it.
+  synthetic('decsc-line-feed-inside', 'a\x1b[6;1H\x1b\n7\x1b[2;1Hb\x1b8X'),
   synthetic('decsc-ls2', '\x1b*0\x1bn\x1b7\x0fq\x1b8q'),
   synthetic('alt-1049-ls2', '\x1b*0\x1bn\x1b[?1049h\x0fq\x1b[?1049lq'),
   synthetic('ls2-in-update', '\x1b*0\x1b[?2026h\x1bnq\x1b[?2026l'),

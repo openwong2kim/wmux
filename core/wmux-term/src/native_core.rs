@@ -907,12 +907,13 @@ impl XtermFeed {
                     Some(ContextRule::AltLeave { mode_47: true }) => self.round_trip = false,
                     _ => {}
                 }
-                // Read only at a save, so the parser runs up to the sequence
-                // just for those.
+                // Read only at a save, so the parser runs through the
+                // sequence just for those (`from` moves with it): a C0 inside
+                // runs first and may scroll, and a save itself never does.
                 let rows = term.screen_lines();
                 self.track(sequence, rows, &mut || {
-                    parser.advance(term, &data[from..at]);
-                    from = at;
+                    parser.advance(term, &data[from..at + len]);
+                    from = at + len;
                     main_history(parser, term)
                 });
                 next = Some(at + len);
@@ -1074,13 +1075,16 @@ fn alternate_shown(parser: &mut Processor, term: &mut Term<VoidListener>) -> boo
 /// The main screen's history (rows above the screen), with the bytes a
 /// synchronized update holds back applied. The alternate screen keeps none.
 fn main_history(parser: &mut Processor, term: &mut Term<VoidListener>) -> usize {
-    with_sync_flushed(parser, term, |term| {
-        if term.mode().contains(TermMode::ALT_SCREEN) {
-            term.inactive_grid().history_size()
-        } else {
-            term.grid().history_size()
-        }
-    })
+    with_sync_flushed(parser, term, |term| main_grid(term).history_size())
+}
+
+/// The main screen's grid, whichever screen is shown.
+fn main_grid(term: &Term<VoidListener>) -> &Grid<Cell> {
+    if term.mode().contains(TermMode::ALT_SCREEN) {
+        term.inactive_grid()
+    } else {
+        term.grid()
+    }
 }
 
 /// xterm's restoreCursor (DECRC) on Alacritty's main screen, once the parser
@@ -1450,11 +1454,7 @@ impl NativeTerminal {
         // its cursor row by the rows that adds as if they were above it and
         // clips a different row than Alacritty does. (A widen follows xterm's
         // rule in the vendored grow_columns.)
-        let primary = if term.mode().contains(TermMode::ALT_SCREEN) {
-            term.inactive_grid()
-        } else {
-            term.grid()
-        };
+        let primary = main_grid(term);
         // xterm resizes its alternate screen's cursor without a reflow, and
         // the round trip's `?47l` then hands it to the main screen.
         let resized =
@@ -1479,12 +1479,7 @@ impl NativeTerminal {
         // scrolled (place_like_xterm).
         let before = primary.history_size() as i64;
         term.resize(size);
-        let main = if term.mode().contains(TermMode::ALT_SCREEN) {
-            term.inactive_grid()
-        } else {
-            term.grid()
-        };
-        self.feed.saved[0].history += main.history_size() as i64 - before;
+        self.feed.saved[0].history += main_grid(term).history_size() as i64 - before;
         if synchronized {
             self.parser.advance(term, b"\x1b[?2026h");
         }
@@ -2492,6 +2487,8 @@ mod tests {
             restored(&[filled, "\x1b[2;1H\x1b7\x1b[3J\x1b[?1049l"]).0,
             Some("unsupported-state-restore-row")
         );
+        // A line feed inside the save runs before it and scrolls first.
+        assert_eq!(restored(&["1\r\n2\r\n3\x1b\n7\x1b[?1049l"]), (None, 2));
         // A soft reset saves the top left of the screen as it is then.
         assert_eq!(
             restored(&[filled, "\x1b[2;1H\x1b7\x1b[3J\x1b[!p\x1b[?1049l"]),
