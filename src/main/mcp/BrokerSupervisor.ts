@@ -7,6 +7,7 @@ import { canConnectBrokerPipe } from './brokerProbe';
 import { brokerOffEffects, type BrokerOffEffects } from './brokerOffMarker';
 import { parseBrokerConnectionsReport, type BrokerDownReason, type BrokerStampMessage, type BrokerStatus } from '../../shared/mcpSessions';
 import { processStartTime } from '../../shared/processStartTime';
+import { brokerDefault } from '../../shared/mcpBroker';
 
 /**
  * Supervises the shared MCP broker process (Option A,
@@ -14,12 +15,12 @@ import { processStartTime } from '../../shared/processStartTime';
  * pattern: Electron's own binary with ELECTRON_RUN_AS_NODE=1, restart with
  * backoff on crash, no restart on the "pipe already owned" exit (75).
  *
- * Rollout flag: WMUX_MCP_BROKER=1 (default OFF). While OFF nothing here
- * runs and registration keeps pointing agents at the single-child bundle —
- * the pre-broker world, byte for byte.
+ * Rollout flag: WMUX_MCP_BROKER (shared/mcpBroker.ts; off unless set to 1
+ * today). While off nothing here runs and registration keeps pointing agents
+ * at the single-child bundle — the pre-broker world, byte for byte.
  */
 export function isMcpBrokerEnabled(): boolean {
-  return process.env.WMUX_MCP_BROKER === '1';
+  return brokerDefault(process.platform, process.env.WMUX_MCP_BROKER);
 }
 
 const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];

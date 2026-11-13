@@ -197,7 +197,8 @@ describe.skipIf(isWin || !NATIVE)('identity across the bundle, shim and fallback
   async function makeWorld(name: string, koffi: boolean): Promise<World> {
     const home = fs.mkdtempSync(path.join('/tmp', `idm-${name}-`));
     const suffix = `-idm${name}${process.pid}`;
-    fs.writeFileSync(path.join(home, `.wmux${suffix}-auth-token`), TOKEN + '\n');
+    // Private to the user, as wmux writes it: the broker refuses any other mode.
+    fs.writeFileSync(path.join(home, `.wmux${suffix}-auth-token`), TOKEN + '\n', { mode: 0o600 });
     const main = new StubMain(path.join(home, `.wmux${suffix}.sock`));
     await main.listen();
     const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: home, WMUX_DATA_SUFFIX: suffix, TMPDIR: process.env.TMPDIR };

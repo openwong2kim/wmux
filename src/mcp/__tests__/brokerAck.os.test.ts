@@ -105,7 +105,13 @@ function open(line: string, pipe = pipeName()): Promise<Session> {
 }
 
 /** Build the broker from source into `dir` and start it on `suffix`; resolves once it listens. */
-async function startBroker(dir: string, suffix: string, withKoffi: boolean, onLog: (text: string) => void): Promise<ChildProcess> {
+async function startBroker(
+  dir: string,
+  suffix: string,
+  withKoffi: boolean,
+  onLog: (text: string) => void,
+  envToken: string | null = TOKEN,
+): Promise<ChildProcess> {
   const outfile = path.join(dir, 'broker.cjs');
   buildSync({
     entryPoints: [path.join(REPO_ROOT, 'src', 'mcp', 'broker.ts')],
@@ -117,7 +123,8 @@ async function startBroker(dir: string, suffix: string, withKoffi: boolean, onLo
     define: { __WMUX_MCP_VERSION__: JSON.stringify('0.0.0-test') },
     logLevel: 'error',
   });
-  const env: NodeJS.ProcessEnv = { HOME: dir, USERPROFILE: dir, WMUX_DATA_SUFFIX: suffix, WMUX_AUTH_TOKEN: TOKEN };
+  const env: NodeJS.ProcessEnv = { HOME: dir, USERPROFILE: dir, WMUX_DATA_SUFFIX: suffix };
+  if (envToken !== null) env.WMUX_AUTH_TOKEN = envToken;
   for (const keep of ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP', 'TMPDIR']) {
     if (process.env[keep] !== undefined) env[keep] = process.env[keep];
   }
@@ -360,5 +367,76 @@ describe.runIf(hostable)('a broker that cannot read peer pids', () => {
     } finally {
       fs.rmSync(shimDir, { recursive: true, force: true });
     }
+  });
+});
+
+// The broker reads the token file again at every handshake (brokerToken.ts):
+// a new token takes effect for the next session with no restart, and a file it
+// cannot use refuses the session before the ack (closed with no bytes, so the
+// shim runs its own full server) while the broker keeps serving.
+describe.runIf(hostable)('a broker that reads its token from the file', () => {
+  const suffix = `-brokertokfile-${process.pid}`;
+  const first = `first-token-${process.pid}`;
+  const second = `second-token-${process.pid}`;
+  const canMakeUnreadable = process.getuid?.() !== 0;
+  let dir = '';
+  let tokenFile = '';
+  let child: ChildProcess | null = null;
+  let log = '';
+
+  const writeToken = (content: string, mode = 0o600) => {
+    fs.writeFileSync(tokenFile, content, { mode });
+    fs.chmodSync(tokenFile, mode);
+  };
+  const ack = async (token: string) => {
+    const s = await open(handshake({ ack: 1 }, token), pipeName(suffix, dir));
+    const all = s.data().length > 0 ? s.data() : await Promise.race([s.closed, s.lines(1).then((l) => `${l[0]}\n`)]);
+    s.socket.destroy();
+    return all;
+  };
+
+  beforeAll(async () => {
+    dir = fs.mkdtempSync(path.join('/tmp', 'btf-'));
+    tokenFile = path.join(dir, `.wmux${suffix}-auth-token`);
+    writeToken(first);
+    child = await startBroker(dir, suffix, true, (text) => { log += text; }, null);
+    await logged('peer-pid: available', () => log);
+  }, 60_000);
+
+  afterAll(async () => {
+    await stopBroker(child);
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a token replaced mid-run: the next handshake takes the new one, the old one is refused', async () => {
+    expect(await ack(first)).toBe('{"wmuxBroker":1,"ok":true}\n');
+    writeToken(second);
+    expect(await ack(first)).toBe('{"wmuxBroker":1,"ok":false,"error":"auth"}\n');
+    expect(await ack(second)).toBe('{"wmuxBroker":1,"ok":true}\n');
+  });
+
+  it('a file missing, empty, too open, unreadable or not a file: refused before the ack, and the broker keeps serving', async () => {
+    const states: [string, () => void][] = [
+      ['missing', () => fs.unlinkSync(tokenFile)],
+      ['empty', () => writeToken('')],
+      ['mode', () => writeToken(second, 0o644)],
+      ['not-a-file', () => { fs.unlinkSync(tokenFile); fs.mkdirSync(tokenFile); }],
+    ];
+    if (canMakeUnreadable) states.push(['unreadable', () => writeToken(second, 0o000)]);
+    for (const [problem, arrange] of states) {
+      arrange();
+      const s = await open(handshake({ ack: 1 }, second), pipeName(suffix, dir));
+      expect(await s.closed, problem).toBe('');
+      await logged(`auth token file not usable (${problem}); session refused`, () => log);
+      expect(child?.exitCode, problem).toBeNull();
+      fs.rmSync(tokenFile, { recursive: true, force: true });
+      writeToken(second);
+      expect(await ack(second), `${problem}, restored`).toBe('{"wmuxBroker":1,"ok":true}\n');
+    }
+  });
+
+  it('logs no token text', () => {
+    expect(log).not.toContain(first);
+    expect(log).not.toContain(second);
   });
 });
