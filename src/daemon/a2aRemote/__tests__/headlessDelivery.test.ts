@@ -775,6 +775,26 @@ describe('a question on the agent\'s screen', () => {
     expect(moves.at(-1)).toEqual({ to: 'canceled', summary: QUESTION_REASON });
   });
 
+  it('a turn that ended and is only being finished (its move tried again) is not ended by a question on screen', async () => {
+    let failMove = true;
+    const base = deps();
+    const d = new HeadlessDelivery({
+      ...base,
+      transition: async (input) => (input.to === 'input-required' && failMove ? { ok: false, error: 'ledger busy' } : base.transition(input)),
+    });
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    screen = 'dialog';
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG']);
+    for (let t = 0; t <= QUESTION_TIMEOUT_MS; t += 10_000) await advance(d, 10_000);
+    expect(task.status.state).toBe('working');
+    expect(replies).toHaveLength(1);
+    failMove = false;
+    await advance(d, 10_000);
+    expect(task.status.state).toBe('input-required');
+  });
+
   it('inside the turn: failed at 10 minutes with the reason; the notice is not taken for the agent answering itself', async () => {
     const d = new HeadlessDelivery(deps());
     await d.tick();
