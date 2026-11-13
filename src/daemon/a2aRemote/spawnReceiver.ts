@@ -694,7 +694,7 @@ export class A2aSpawnReceiver {
 
     let got: ReturnType<SpawnReceiverDeps['requests']['receive']>;
     try {
-      got = this.deps.requests.receive(hostId, req, localExpiresAt);
+      got = this.deps.requests.receive(hostId, req, localExpiresAt, limits.startsPerHour !== undefined || limits.startsPerDay !== undefined);
     } catch (err) {
       this.deps.log('warn', `[a2a-remote] spawn request from ${hostId} not stored: ${errMsg(err)}`);
       return UNAVAILABLE;
