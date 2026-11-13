@@ -61,6 +61,11 @@ export function setBrowserReplRunnerCapForTest(cap: number | null): void {
   runnerCap = cap ?? MAX_BROWSER_REPL_RUNNERS;
 }
 
+/** Test seam: the slots of the cap held now. */
+export function liveBrowserReplRunnersForTest(): number {
+  return liveRunners;
+}
+
 /** Windows: the job runners join, so they end with this process. */
 let runnerJob: PaneJob | null | undefined;
 function job(): PaneJob | null {
