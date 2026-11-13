@@ -162,6 +162,13 @@ describe('PendingDeliveries', () => {
     expect(h.queue.size).toBe(2);
   });
 
+  it('the same text stored again after its fresh-context step ran keeps the step from running again', () => {
+    const h = harness();
+    h.queue.store({ ...h.entry('t1'), opts: { newTask: true, taskId: 't1', keepContext: 'open_a2a_task' } });
+    h.queue.store({ ...h.entry('t1'), opts: { taskId: 't1' } });
+    expect(h.queue.heldFor('pty-1', 't1')?.opts).toEqual({ taskId: 't1' });
+  });
+
   it('a pane gone past the grace drops all of its entries at once', async () => {
     const h = harness({ state: 'pane gone' });
     for (const id of ['t1', 't2', 't3']) h.queue.store(h.entry(id));

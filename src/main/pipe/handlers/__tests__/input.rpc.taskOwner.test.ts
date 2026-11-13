@@ -101,6 +101,8 @@ interface WireOpts {
   /** A stored delivery's task state on each read in turn, before `tasks`
    *  decides; `hang` never answers. */
   taskStates?: Array<PendingTaskState | 'hang'>;
+  /** Called on each stored-delivery task read, with its 1-based count. */
+  onTaskRead?: (n: number) => void;
   /** Awaited inside every delivery sleep (the paste-to-Enter gap among them). */
   sleepGate?: () => Promise<void>;
   /** The pane holds a typed draft. */
@@ -113,6 +115,7 @@ function wire(initial: WireOpts = {}): Wiring {
   // Read on each call, so a test may change it between a refusal and a retry.
   const opts: WireOpts = { ...initial };
   let clock = 1_000_000;
+  let taskReads = 0;
   const logs: string[] = [];
   const notices: string[] = [];
   const writes: Array<{ ptyId: string; data: string }> = [];
@@ -167,6 +170,7 @@ function wire(initial: WireOpts = {}): Wiring {
       daemonFolderTrust: async () => opts.daemonTrust ?? null,
       queryDaemonTasks: async () => opts.tasks ?? [],
       readTaskState: async (_ws: string, taskId: string): Promise<PendingTaskState> => {
+        opts.onTaskRead?.(++taskReads);
         const next = opts.taskStates?.length ? opts.taskStates.shift() : undefined;
         if (next === 'hang') return new Promise<PendingTaskState>(() => undefined);
         return next !== undefined ? next : taskStateOfRows(opts.tasks ?? [], [], taskId);
@@ -1178,7 +1182,8 @@ describe('a refused local delivery, stored and typed later', () => {
     const { w } = await refusedNewTask('ws-owner');
     w.live.daemonTrust = PASSABLE;
     w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
-    w.live.taskStates = ['open', null];
+    // Open for the pass and before the fresh-context step; unreadable right before the paste.
+    w.live.taskStates = ['open', 'open', null];
     await w.retryPendingDeliveries('pty-task');
     expect(pasted(w)).toEqual([]);
     expect(w.logs.some((l) => l.includes('dropped stored task'))).toBe(false);
@@ -1196,9 +1201,8 @@ describe('a refused local delivery, stored and typed later', () => {
       w.live.tasks = [row('t-reply', 'ws-owner', 'ws-task'), row('t-live', 'ws-owner', 'ws-task')];
       // Open for the pass; the read right before the paste never answers.
       w.live.taskStates = ['open', 'hang'];
-      const retry = w.retryPendingDeliveries('pty-task');
+      void w.retryPendingDeliveries('pty-task');
       await vi.advanceTimersByTimeAsync(22_000);
-      await retry;
       expect(pasted(w)).toEqual([]);
       expect(w.logs.some((l) => l.includes('dropped stored task'))).toBe(false);
       const live = w.gatedSubmit('pty-task', 'hello live', 'claude', { senderTaskIds: ['t-live'] });
@@ -1207,6 +1211,52 @@ describe('a refused local delivery, stored and typed later', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('a retry that submits after the pane was let go is not typed again', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = wire({ ...UNPASSABLE, tasks: [row('t-reply', 'ws-owner', 'ws-task')] });
+      await w.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t-reply'] });
+      w.live.daemonTrust = PASSABLE;
+      let resume: () => void = () => undefined;
+      const parked = new Promise<void>((resolve) => { resume = resolve; });
+      // The paste-to-Enter gap outlasts the pane hold.
+      w.live.sleepGate = async () => {
+        if (!pasted(w).length) return;
+        w.live.sleepGate = undefined;
+        await parked;
+      };
+      const retry = w.retryPendingDeliveries('pty-task');
+      await vi.advanceTimersByTimeAsync(23_000);
+      resume();
+      await vi.advanceTimersByTimeAsync(0);
+      await retry;
+      expect(w.logs.some((l) => l.includes('typed stored task "t-reply"'))).toBe(true);
+      await w.retryPendingDeliveries('pty-task');
+      expect(pasted(w)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a text withdrawn while its task is read right before the paste is not typed', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    w.live.onTaskRead = (n) => { if (n >= 2) w.agentEnded('pty-task'); };
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+  });
+
+  it('a later message on a stored task that is too long to keep is refused, not typed first', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    const res = await w.gatedSubmit('pty-task', `hello ${'x'.repeat(PENDING_TEXT_MAX)}`, 'claude', { senderTaskIds: ['t-new'] });
+    expect(res).toMatchObject({ ok: false });
+    expect(res).not.toHaveProperty('stored');
+    expect(pasted(w)).toEqual([]);
   });
 
   it('a clear or a compaction in the same agent is no restart: the text is still typed', async () => {
@@ -1277,8 +1327,8 @@ describe('a refused local delivery, stored and typed later', () => {
     const { w } = await refusedNewTask('ws-owner');
     w.live.daemonTrust = PASSABLE;
     w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
-    // Open when the pass reads it; cancelled by the check right before the paste.
-    w.live.taskStates = ['open', 'ended'];
+    // Open for the pass and before the fresh-context step; cancelled by the check right before the paste.
+    w.live.taskStates = ['open', 'open', 'ended'];
     await w.retryPendingDeliveries('pty-task');
     expect(pasted(w)).toEqual([]);
     expect(w.logs.at(-1)).toContain(': refused (guard_refused);');

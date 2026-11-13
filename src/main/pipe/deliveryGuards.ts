@@ -8,6 +8,8 @@ export interface DeliveryCheck {
   /** null = go on; a string = refuse, with this detail. */
   beforePaste: () => Promise<string | null> | string | null;
   beforeEnter: () => Promise<string | null> | string | null;
+  /** Before a new task's fresh-context step writes anything, when set. */
+  beforeFreshContext?: () => Promise<string | null> | string | null;
 }
 
 const checks = new Map<string, DeliveryCheck>();

@@ -135,6 +135,13 @@ export class PendingDeliveries {
       prior.agentName = entry.agentName;
       prior.incarnationId = entry.incarnationId;
       prior.sessionStartAt = entry.sessionStartAt;
+      // Stored again after its fresh-context step ran: the step is not run again.
+      if (!entry.opts.newTask && prior.opts.newTask) {
+        const rest = { ...prior.opts };
+        delete rest.newTask;
+        delete rest.keepContext;
+        prior.opts = rest;
+      }
       return true;
     }
     const own = this.entries.filter((e) => e.taskId === entry.taskId);

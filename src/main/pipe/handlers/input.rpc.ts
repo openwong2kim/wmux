@@ -1254,9 +1254,11 @@ export function withRegisteredCheck(guard: DeliveryGuard, key: string | undefine
     }
     return why ? { ok: false, reason: 'guard_refused', detail: `delivery: ${why}` } : null;
   };
+  // The registered check first: it may wait on a read, and the pane's own
+  // check (a person typing, the agent) must be the last before the write.
   return {
-    beforePaste: async () => (await guard.beforePaste()) ?? run('beforePaste'),
-    beforeEnter: async () => (await guard.beforeEnter()) ?? run('beforeEnter'),
+    beforePaste: async () => (await run('beforePaste')) ?? guard.beforePaste(),
+    beforeEnter: async () => (await run('beforeEnter')) ?? guard.beforeEnter(),
   };
 }
 
@@ -2681,6 +2683,9 @@ export function registerInputRpc(
       ptyId,
       () =>
         gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
+          const before = opts.guardKey ? getDeliveryCheck(opts.guardKey)?.beforeFreshContext : undefined;
+          const why = before ? await before() : null;
+          if (why) throw new Error(`delivery: ${why}; nothing was written`);
           const workspaceId = (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ?? undefined;
           return runFreshContextOn(
             ptyId,
@@ -2775,24 +2780,21 @@ export function registerInputRpc(
     if (retrying.has(ptyId) || liveOn.has(ptyId)) return paneBusy('another delivery is running on this pane');
     let done: () => void = () => undefined;
     retrying.set(ptyId, new Promise<void>((resolve) => { done = resolve; }));
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      // A retry carries the same deadline, so its guard refuses any write
-      // after the pane is let go.
-      return await Promise.race([
-        deliverGated(ptyId, text, agent, opts),
-        new Promise<GatedSubmitResult>((resolve) => {
-          timer = setTimeout(() => resolve({
-            ok: false,
-            reason: 'deadline',
-            detail: 'delivery: the stored message held the pane past its time; it is tried again later',
-          }), RETRY_HOLD_MS);
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
+    const release = (): void => {
+      if (retrying.get(ptyId) !== held) return;
       retrying.delete(ptyId);
       done();
+    };
+    const held = retrying.get(ptyId);
+    // Past RETRY_HOLD_MS the pane is let go (the retry carries the same
+    // deadline, so its guard refuses any later write), but the retry's own
+    // outcome still decides the entry: one submitted late is not typed again.
+    const timer = setTimeout(release, RETRY_HOLD_MS);
+    try {
+      return await deliverGated(ptyId, text, agent, opts);
+    } finally {
+      clearTimeout(timer);
+      release();
     }
   };
 
@@ -2826,9 +2828,16 @@ export function registerInputRpc(
             unreadAtPaste = true;
             return 'the task could not be read';
           }
-          return state === 'open' ? null : 'the task is no longer open';
+          return state === 'open' ? stillOurs() : 'the task is no longer open';
         },
         beforeEnter: stillOurs,
+        // No fresh-context step for a text that is withdrawn or whose task ended.
+        beforeFreshContext: async () => {
+          const changed = stillOurs();
+          if (changed) return changed;
+          const state = await taskStateOf(entry).catch(() => null);
+          return state === 'open' || state === null ? stillOurs() : 'the task is no longer open';
+        },
       });
       try {
         const result = await deliverRetry(entry.ptyId, entry.text, entry.agent, {
@@ -2906,8 +2915,17 @@ export function registerInputRpc(
     gatedSubmit: async (ptyId, text, agent, opts) => {
       const taskId = storableTaskOf(text, opts);
       // An earlier message on this task still waits for this pane: typing
-      // this one now would put it first, so it waits behind.
-      const earlier = taskId ? pending.heldFor(ptyId, taskId) : undefined;
+      // this one now would put it first, so it waits behind, or, too long to
+      // keep, is refused.
+      const orderTask = taskId ?? storableTaskOf('', opts);
+      const earlier = orderTask ? pending.heldFor(ptyId, orderTask) : undefined;
+      if (earlier && !taskId) {
+        return {
+          ok: false,
+          reason: earlier.reason,
+          detail: `delivery: an earlier message on task ${JSON.stringify(orderTask)} is still stored for this pane, and this one is too long to keep behind it; nothing was written`,
+        };
+      }
       if (taskId && earlier && (await storeForLater(ptyId, taskId, text, agent, opts, earlier.reason))) {
         void pending.retry(ptyId);
         return {

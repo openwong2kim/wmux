@@ -33,6 +33,8 @@ interface PaneOptions {
   dialogOnGateRead?: number;
   /** The approval gate's screen read with this 1-based index cannot be read. */
   unreadableOnGateRead?: number;
+  /** A stored delivery's task state on each read in turn (open after). */
+  taskStates?: Array<'open' | 'ended'>;
   lockWaitMs?: number;
   /** The daemon task read waits for this (holds a delivery inside the lock). */
   holdDaemonQuery?: Promise<void>;
@@ -137,7 +139,7 @@ function scriptedPane(opts: PaneOptions = {}) {
         return gateReads === opts.dialogOnGateRead ? DIALOG : screen();
       },
       // A stored delivery's task is open.
-      readTaskState: async () => 'open',
+      readTaskState: async () => opts.taskStates?.shift() ?? 'open',
       queryDaemonTasks: async () => {
         await opts.holdDaemonQuery;
         return opts.daemonTasks === undefined ? [] : opts.daemonTasks;
@@ -321,6 +323,16 @@ describe('gated submit, new-task delivery (#1680)', () => {
     await retryPendingDeliveries('pty-a');
     expect(writes.filter((w) => w === '/clear')).toHaveLength(1);
     expect(writes.some((w) => w.includes('new task'))).toBe(true);
+  });
+
+  it('a stored new task whose task ended before its retry clears nothing', async () => {
+    // Read 1, before the step, cannot be read: stored with its step.
+    const { writes, gatedSubmit, retryPendingDeliveries } = scriptedPane({ binding: FRESH, hooks: true, unreadableOnGateRead: 1, taskStates: ['open', 'ended'] });
+    expect(await gatedSubmit('pty-a', 'new task', 'Claude Code', NEW)).toMatchObject({ stored: true });
+    expect(writes).toEqual([]);
+    // Open for the pass, ended by the check before the step.
+    await retryPendingDeliveries('pty-a');
+    expect(writes).toEqual([]);
   });
 
   it('refuses with fresh_context_timeout and pastes nothing when the command never finishes', async () => {
