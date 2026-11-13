@@ -100,7 +100,8 @@ export type SnapshotFallbackReason =
 
 export type SnapshotOutcome =
   | { ok: true; payload: Buffer; bytesIn: number; durationMs: number }
-  | { ok: false; reason: SnapshotFallbackReason; detail?: string };
+  /** `families`: a native refusal's every family, the reported one first (RustSnapshot). */
+  | { ok: false; reason: SnapshotFallbackReason; detail?: string; families?: string[] };
 
 // Measured (resync probe, 2026-07-10): chunked parse runs ~4 MB/s, so a FULL
 // 8 MB ring — the flagship flooded-pane case — needs ~2 s. A 2 s budget would

@@ -44,9 +44,10 @@ describe('daemon memory diagnostics', () => {
     expect(result.screenParses).toEqual(expect.any(Object));
     expect(result.tailReads).toEqual(expect.any(Object));
     expect(result.eventLoop!.activeMs + result.eventLoop!.idleMs).toBeGreaterThan(0);
-    for (const backend of [result.snapshots!.ansi, result.snapshots!.text]) {
-      expect(backend).toEqual({ native: expect.any(Number), fallbacks: expect.any(Number), skipped: expect.any(Number),
-        circuitOpen: expect.any(Boolean), reasons: expect.any(Object) });
-    }
+    const counters = { native: expect.any(Number), fallbacks: expect.any(Number), skipped: expect.any(Number),
+      circuitOpen: expect.any(Boolean), reasons: expect.any(Object) };
+    // Only the ANSI backend lists the families behind a native refusal.
+    expect(result.snapshots!.ansi).toEqual({ ...counters, reasonsSeen: expect.any(Object) });
+    expect(result.snapshots!.text).toEqual(counters);
   });
 });

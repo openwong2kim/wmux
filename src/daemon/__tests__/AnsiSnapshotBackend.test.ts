@@ -178,6 +178,30 @@ describe('ANSI snapshot backend selection', () => {
     expect(getAnsiSnapshotBackendDiagnostics().circuitOpen).toBe(false);
   });
 
+  // A refusal hides what else the stream holds; `reasonsSeen` counts every
+  // family a refused stream met, once per snapshot, the counted one included.
+  it('counts every refusal family a refused stream holds in reasonsSeen', async () => {
+    const before = getAnsiSnapshotBackendDiagnostics();
+    const delta = (key: 'reasons' | 'reasonsSeen') => {
+      const now = getAnsiSnapshotBackendDiagnostics()[key];
+      return Object.fromEntries(Object.entries(now).map(([k, n]) => [k, n - (before[key][k] ?? 0)]).filter(([, n]) => n));
+    };
+    const reference = vi.fn(async () => success);
+    native.mockResolvedValueOnce({
+      ok: false, reason: 'error', detail: 'unsupported-state-mode: a mode Alacritty sets differently',
+      families: ['unsupported-state-mode', 'unsupported-state-charset', 'unsupported-state-mode'],
+    } as never);
+    await selectAnsiSnapshot(request, reference);
+    // A module built before families: the counted family only.
+    native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'unsupported-state-sgr: an SGR attribute' });
+    await selectAnsiSnapshot(request, reference);
+    // Not a native refusal: nothing seen.
+    native.mockResolvedValueOnce({ ok: false, reason: 'budget' });
+    await selectAnsiSnapshot(request, reference);
+    expect(delta('reasons')).toEqual({ 'unsupported-state-mode': 1, 'unsupported-state-sgr': 1, budget: 1 });
+    expect(delta('reasonsSeen')).toEqual({ 'unsupported-state-mode': 1, 'unsupported-state-charset': 1, 'unsupported-state-sgr': 1 });
+  });
+
   it('rejects a result that did not parse every byte', async () => {
     native.mockResolvedValue({ ...success, bytesIn: 4 } as never);
     const reference = vi.fn(async () => success);

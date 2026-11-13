@@ -94,6 +94,20 @@ describe('memory diagnostics', () => {
     expect(text).toContain('native text snapshots: 9 native, 0 not served natively, 0 skipped\n');
   });
 
+  it('names the refusal families seen behind the first refusal', () => {
+    const ansi = {
+      native: 2, fallbacks: 3, skipped: 0, circuitOpen: false,
+      reasons: { 'unsupported-state-mode': 3 },
+      reasonsSeen: { 'unsupported-state-mode': 3, 'unsupported-state-charset': 1, 'unsupported-state-sgr': 2 },
+    };
+    const daemon = {
+      pid: 2, rssBytes: 0, heapUsedBytes: 0, heapTotalBytes: 0, externalBytes: 0, arrayBuffersBytes: 0, sessions: [],
+      snapshots: { ansi, text: { native: 0, fallbacks: 0, skipped: 0, circuitOpen: false, reasons: {} } },
+    };
+    const text = renderMemoryDiagnostics(undefined, daemon, { available: false, reason: 'n/a' });
+    expect(text).toContain('native ansi snapshots: 2 native, 3 not served natively, 0 skipped (unsupported-state-mode 3; also seen: unsupported-state-sgr 2, unsupported-state-charset 1)');
+  });
+
   it('shows what screen reads cost, the snapshot queue and the event loop', () => {
     const daemon = {
       pid: 2, rssBytes: 0, heapUsedBytes: 0, heapTotalBytes: 0, externalBytes: 0, arrayBuffersBytes: 0, sessions: [],

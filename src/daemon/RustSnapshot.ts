@@ -13,6 +13,9 @@ interface NativeTerminal {
    * An alternate screen's width change is not reported: leaving that screen
    * later in the stream lifts it, so feeding goes on. */
   feedXterm(bytes: Uint8Array, requestedScrollback: number): boolean;
+  /** Every refusal family the ANSI feed met, the reported one first. Absent
+   *  from a module built before it. */
+  refusalFamilies?(): string[];
   feedFrozen(source: NativeFrozenRing, start: number, end: number): void;
   resize(cols: number, rows: number): void;
   textSnapshot(undimmed: boolean): Omit<Extract<TextSnapshotOutcome, { ok: true }>, 'ok' | 'bytesIn' | 'durationMs'>;
@@ -70,9 +73,13 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
     term = nativeTerminal;
     let carry = Buffer.alloc(0);
     let bytesIn = 0;
-    // Set once the native terminal refuses the ANSI snapshot: parsing on
-    // would only delay the xterm fallback.
+    // Set once the native terminal refuses the ANSI snapshot for good and has
+    // scanned its bounded stretch past the refusal for other refusal families
+    // (NativeTerminal.feedXterm): parsing on would only delay the fallback.
     let refused = false;
+    // A refusal already met: running out of budget during the scan past it
+    // still reports that refusal, not the budget.
+    const refusedAlready = (): boolean => kind === 'ansi' && (nativeTerminal.refusalFamilies?.().length ?? 0) > 0;
     const feed = async (raw: Buffer): Promise<boolean> => {
       bytesIn += raw.length;
       if (refused) return true;
@@ -91,7 +98,11 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
           else if (nativeTerminal.feedXterm(bytes, requested)) { refused = true; return true; }
           await new Promise<void>(resolve => setImmediate(resolve));
         }
-        if (performance.now() - started > (req.budgetMs ?? 4000)) return false;
+        if (performance.now() - started > (req.budgetMs ?? 4000)) {
+          if (!refusedAlready()) return false;
+          refused = true;
+          return true;
+        }
       }
       return true;
     };
@@ -147,6 +158,9 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
     // An incomplete UTF-8 character at the end goes out raw, as on xterm.
     return { ok: true, payload: Buffer.concat([core, carry]), bytesIn, durationMs: performance.now() - started };
   } catch (err) {
-    return { ok: false, reason: 'error', detail: err instanceof Error ? err.message : String(err) };
+    const detail = err instanceof Error ? err.message : String(err);
+    let families: string[] | undefined;
+    try { families = kind === 'ansi' ? term?.refusalFamilies?.() : undefined; } catch { /* disposed or older module */ }
+    return { ok: false, reason: 'error', detail, ...(families?.length ? { families } : {}) };
   } finally { term?.dispose(); }
 }
