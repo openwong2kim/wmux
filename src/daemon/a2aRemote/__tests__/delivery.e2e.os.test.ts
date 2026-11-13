@@ -1018,24 +1018,52 @@ describe('a state the other PC refuses, end to end', () => {
     await until(() => !!(b.tasks.getTask(taskId)?.metadata.remote as { replyDeliveredAt?: string }).replyDeliveredAt);
   });
 
-  it('the sender cancelled while the receiver\'s state was on its way: the receiver ends cancelled, not failed', async () => {
+  /** A client for B that holds A's cancel on the stream until `gate` opens, so the cancel and B's state cross. */
+  const holdingCancel = (gate: Promise<void>): ClientHook => (opts) => {
+    const real = new PinnedTlsClient(opts);
+    return {
+      requestJson: (method, p, body) => real.requestJson(method, p, body),
+      async *openStream(p, o) {
+        for await (const ev of real.openStream(p, o)) {
+          if (JSON.stringify(ev.data).includes('"state":"canceled"')) await gate;
+          yield ev;
+        }
+      },
+    };
+  };
+
+  it('the sender cancelled while the receiver\'s final state was on its way: both stay where they were, the receiver completed with the refusal recorded', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    const a = await makePc('PC-A');
+    const b = await makePc('PC-B', { client: holdingCancel(gate) });
+    const linkId = await linkedReceiverJoins(a, b);
+    const taskId = await sendTask(a, linkId, 'one job');
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
+    await moveB(b, taskId, 'working');
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'working');
+
+    expect((await a.tasks.cancelTask({ taskId, callerWorkspaceId: 'ws-a' })).ok).toBe(true);
+    expect(await a.rpc(A2A_REMOTE_RPC.state, { taskId, state: 'canceled' })).toMatchObject({ ok: true });
+    await moveB(b, taskId, 'completed');
+    await until(() => refusedOn(b, taskId) !== undefined);
+    expect(refusedOn(b, taskId)).toMatchObject({ state: 'completed', code: 'bad-request' });
+
+    // The cancel lands on a task already finished there: taken, and it moves nothing.
+    release();
+    await until(() => a.delivery.outbox.pending(b.hostId).length === 0 && b.delivery.outbox.pending(a.hostId).length === 0);
+    await deliberateSleep(300, 'negative: nothing more moves either copy');
+    expect(b.tasks.getTask(taskId)!.status.state).toBe('completed');
+    expect(refusedOn(b, taskId)).toMatchObject({ state: 'completed', code: 'bad-request' });
+    expect(a.tasks.getTask(taskId)!.status.state).toBe('canceled');
+  });
+
+  it('the sender cancelled while the receiver\'s non-final state was on its way: the receiver ends cancelled, not failed', async () => {
     // B holds A's cancel until its own state was refused, so the two cross.
     let release: () => void = () => undefined;
     const gate = new Promise<void>((r) => { release = r; });
-    const holdCancel: ClientHook = (opts) => {
-      const real = new PinnedTlsClient(opts);
-      return {
-        requestJson: (method, p, body) => real.requestJson(method, p, body),
-        async *openStream(p, o) {
-          for await (const ev of real.openStream(p, o)) {
-            if (JSON.stringify(ev.data).includes('"state":"canceled"')) await gate;
-            yield ev;
-          }
-        },
-      };
-    };
     const a = await makePc('PC-A');
-    const b = await makePc('PC-B', { client: holdCancel });
+    const b = await makePc('PC-B', { client: holdingCancel(gate) });
     const linkId = await linkedReceiverJoins(a, b);
     const taskId = await sendTask(a, linkId, 'one job');
     await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
