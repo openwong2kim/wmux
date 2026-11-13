@@ -2264,7 +2264,11 @@ describe('task.fanout.start with pc (tasks on another PC)', () => {
         closedMissions: async () => new Set<string>(),
         linkRemoteWorkspace: async () => null,
       },
-      ledger: { get: () => null, list: () => [], register: vi.fn(), update: vi.fn(), updateRemote: vi.fn(), closeTask: vi.fn(), onTransition: () => () => undefined },
+      ledger: {
+        get: () => null, list: () => [],
+        register: vi.fn(async (input: Record<string, unknown>) => ({ ...input, status: 'working', rev: 1, updatedAt: 0 })),
+        update: vi.fn(async () => ({ ok: true })), updateRemote: vi.fn(async () => null), closeTask: vi.fn(), onTransition: () => () => undefined,
+      },
       rememberChannel: () => undefined,
     } as unknown as RemoteFanoutDeps;
     return { deps, ask };
@@ -2306,13 +2310,41 @@ describe('task.fanout.start with pc (tasks on another PC)', () => {
     expect(r.ask).not.toHaveBeenCalled();
   });
 
+  it('a repeat of the key with another number of titles is refused before anything is sent', async () => {
+    const r = remote();
+    const guards = guardsIn(capped(tmp()));
+    const h = setup({ requireApproval: false, guards, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    expect((await h.call(pcParams())).ok).toBe(true);
+    const asked = r.ask.mock.calls.length;
+    const more = await h.call(pcParams({ titles: ['first task', 'second task', 'third task'] }));
+    expect(errorOf(more)).toMatchObject({ code: 'INVALID_ARGUMENT', message: expect.stringMatching(/different request.*\(2 task\(s\)\).*new key/) });
+    // Same count, another prompt: refused too.
+    expect(errorOf(await h.call(pcParams({ prompt: 'do another thing' }))).code).toBe('INVALID_ARGUMENT');
+    expect(r.ask.mock.calls.length).toBe(asked);
+  });
+
+  it('gives back the hour a call stamped when it is refused as a whole for a mistake in it, not for a passing failure', async () => {
+    const guards = guardsIn(capped(tmp()));
+    const r = remote();
+    const h = setup({ requireApproval: false, guards, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    // An unknown PC: nothing ran, so nothing stays on the hourly cap.
+    expect(errorOf(await h.call(pcParams({ pc: 'nowhere' }))).message).toMatch(/no paired PC/);
+    expect(guards.remoteStamped(`${CALLER_WS}::fanout-key-1`)).toBeNull();
+    // A listing the daemon refused for now: the stamp stays, so the same key is a poll.
+    const busy = remote();
+    busy.deps.daemon.outgoing = async () => { throw new Error('rate limited (global)'); };
+    const h2 = setup({ requireApproval: false, guards, remoteFanout: () => busy.deps, resolveCallerPane: async () => 'pane-1' });
+    expect(errorOf(await h2.call(pcParams({ idempotencyKey: 'k-busy' }))).message).toMatch(/send the same idempotency_key again/);
+    expect(guards.remoteStamped(`${CALLER_WS}::k-busy`)).toMatchObject({ count: 2 });
+  });
+
   it('a repeat of the key is a poll: not stamped or refused again', async () => {
     const r = remote();
     const dir = tmp();
     const guards = guardsIn(capped(dir));
     const h = setup({ requireApproval: false, guards, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
     expect((await h.call(pcParams())).ok).toBe(true);
-    expect(guards.remoteStamped(`${CALLER_WS}::fanout-key-1`)).toBe(true);
+    expect(guards.remoteStamped(`${CALLER_WS}::fanout-key-1`)).toMatchObject({ count: 2 });
     const stamps = () => JSON.stringify(fs.readdirSync(dir).map((f) => fs.statSync(nodePath.join(dir, f)).size));
     const before = stamps();
     expect((await h.call(pcParams())).ok).toBe(true);

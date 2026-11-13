@@ -90,6 +90,8 @@ interface HourlyStamp {
   id: string;
   at: number;
   count: number;
+  /** A fan-out to another PC: the digest of its request (see stampRemote). */
+  digest?: string;
 }
 
 export interface FanOutAuditRecord {
@@ -677,11 +679,13 @@ export class FanOutGuards {
     return { ok: true };
   }
 
-  /** A fan-out to another PC already stamped this rolling hour under `key`
-   *  (a repeat of it is a poll, not a new start). */
-  remoteStamped(key: string): boolean {
+  /** What a fan-out to another PC stamped this rolling hour under `key`: its
+   *  task count and request digest, or null when it stamped none (a repeat of
+   *  it is a poll, not a new start). */
+  remoteStamped(key: string): { count: number; digest: string | undefined } | null {
     const windowStart = this.now() - FANOUT_CAP_WINDOW_MS;
-    return this.loadHourly().some((s) => s.id === key && s.at > windowStart);
+    const mine = this.loadHourly().filter((s) => s.id === key && s.at > windowStart);
+    return mine.length > 0 ? { count: mine.reduce((sum, s) => sum + s.count, 0), digest: mine[0].digest } : null;
   }
 
   /**
@@ -689,7 +693,7 @@ export class FanOutGuards {
    * not apply (the other PC's limits bound them), but they count against the
    * hourly cap like any start. Checked and stamped in one call.
    */
-  stampRemote(key: string, count: number): CapReservation {
+  stampRemote(key: string, count: number, digest: string): CapReservation {
     const now = this.now();
     const recorded = this.loadHourly()
       .filter((s) => s.at > now - FANOUT_CAP_WINDOW_MS)
@@ -701,14 +705,14 @@ export class FanOutGuards {
         message: `fan-out refused: at most ${hourlyCap} fan-out tasks may start per rolling hour across wmux (${recorded} started in the last hour, ${count} requested)`,
       };
     }
-    this.appendStamp(key, count);
+    this.appendStamp(key, count, digest);
     return { ok: true };
   }
 
-  private appendStamp(key: string, count: number): void {
+  private appendStamp(key: string, count: number, digest?: string): void {
     const now = this.now();
     const hourly = this.loadHourly().filter((s) => s.at > now - FANOUT_CAP_WINDOW_MS);
-    const next = [...hourly, { id: key, at: now, count }];
+    const next = [...hourly, { id: key, at: now, count, ...(digest ? { digest } : {}) }];
     try {
       this.saveHourly(next);
     } catch (err) {

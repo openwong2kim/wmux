@@ -15,7 +15,7 @@ import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 import { registerLedgerRpc } from '../../pipe/handlers/ledger.rpc';
 import type { RpcContext } from '../../../shared/rpc';
 import {
-  branchOnPc, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal,
+  REMOTE_ASK_GRACE_MS, branchOnPc, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal,
   startRemoteFanout, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
 } from '../remoteFanout';
 
@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 /** The daemon as the requester and the mission log answer it. */
-function fakeDaemon(opts: { supported?: boolean; askError?: 'unavailable'; askThrows?: boolean; name?: string } = {}) {
+function fakeDaemon(opts: { supported?: boolean; askError?: 'unavailable'; askThrows?: boolean; dropReply?: boolean; name?: string } = {}) {
   const requests = new Map<string, A2aSpawnOutgoingSummary>(); // by spawnId
   const byKey = new Map<string, string>(); // callerKey:requestKey → spawnId
   const missions = new Map<string, { taskId: string; channelId: string }>();
@@ -51,7 +51,7 @@ function fakeDaemon(opts: { supported?: boolean; askError?: 'unavailable'; askTh
       const k = `${input.callerKey}:${input.requestKey}`;
       const known = byKey.get(k);
       if (known) return { ok: true as const, spawn: requests.get(known)!, online: true };
-      const spawnId = `sp-0f6c1d2e-3a4b-4c5d-8e9f-${String(++n).padStart(12, '0')}`;
+      const spawnId = input.spawnId ?? `sp-0f6c1d2e-3a4b-4c5d-8e9f-${String(++n).padStart(12, '0')}`;
       const at = new Date(0).toISOString();
       const spawn: A2aSpawnOutgoingSummary = {
         hostId: BOX, hostName: 'box', spawnId, agent: 'claude', rootId: input.folder.root, from: input.from,
@@ -59,6 +59,8 @@ function fakeDaemon(opts: { supported?: boolean; askError?: 'unavailable'; askTh
       };
       requests.set(spawnId, spawn);
       byKey.set(k, spawnId);
+      // Stored and on its way, but the answer never reaches main.
+      if (opts.dropReply) throw new Error('timed out');
       return { ok: true as const, spawn, online: true };
     }),
     outgoing: async () => ({
@@ -85,7 +87,7 @@ function fakeDaemon(opts: { supported?: boolean; askError?: 'unavailable'; askTh
     linkRemoteWorkspace: async (linkId) => linkEnds.get(linkId) ?? null,
   };
   const set = (spawnId: string, patch: Partial<A2aSpawnOutgoingSummary>) => requests.set(spawnId, { ...requests.get(spawnId)!, ...patch });
-  return { daemon, asks, revoked, closed, closedMissions, linkEnds, requests, set };
+  return { daemon, asks, revoked, closed, closedMissions, linkEnds, requests, set, opts };
 }
 
 const depsOf = (daemon: RemoteFanoutDaemon, ledger = new TaskLedger({ dir })): RemoteFanoutDeps => ({ daemon, ledger, rememberChannel: () => undefined });
@@ -168,7 +170,7 @@ describe('startRemoteFanout', () => {
   it('a listing refused by the daemon (rate) sends nothing and says to send the same key again', async () => {
     const f = fakeDaemon();
     const deps = depsOf({ ...f.daemon, outgoing: async () => { throw new Error('rate limited (global)'); } });
-    expect(await startRemoteFanout(request(8), deps)).toEqual({ error: expect.stringMatching(/rate limited \(global\).*send the same idempotency_key again/) });
+    expect(await startRemoteFanout(request(8), deps)).toEqual({ error: expect.stringMatching(/rate limited \(global\).*send the same idempotency_key again/), retry: true });
     expect(f.asks).toHaveLength(0);
     // The same key once the daemon answers: all 8 asked, once each.
     const res = await startRemoteFanout(request(8), depsOf(f.daemon, deps.ledger as TaskLedger));
@@ -185,14 +187,14 @@ describe('startRemoteFanout', () => {
     expect(f.asks).toHaveLength(0);
   });
 
-  it('a request refused here ends its task with a closed row and mission; the same key answers from that row', async () => {
+  it('a request refused here fails its row and closes its mission; the same key answers from that row', async () => {
     const f = fakeDaemon({ askError: 'unavailable' });
     const deps = depsOf(f.daemon);
     const res = await startRemoteFanout(request(1), deps);
     if ('error' in res) throw new Error(res.error);
     expect(res.tasks[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/could not be stored or queued/) });
     expect(f.closed).toEqual([res.tasks[0].taskId]);
-    expect(deps.ledger.get(res.tasks[0].taskId!)).toMatchObject({ status: 'cancelled', taskWorkspaceId: `unlaunched:${res.tasks[0].taskId}` });
+    expect(deps.ledger.get(res.tasks[0].taskId!)).toMatchObject({ status: 'failed', summary: expect.stringMatching(/could not be stored or queued/) });
     const again = await startRemoteFanout(request(1), deps);
     if ('error' in again) throw new Error(again.error);
     expect(again.tasks[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/could not be stored or queued/) });
@@ -200,27 +202,69 @@ describe('startRemoteFanout', () => {
   });
 
   it('a retried key whose mission is closed is refused, not asked again', async () => {
-    const f = fakeDaemon({ askThrows: true });
-    const deps = depsOf(f.daemon);
+    const f = fakeDaemon();
+    const ledger = new TaskLedger({ dir });
+    // The row could not be written: nothing was sent; the mission is then closed.
+    const register = ledger.register.bind(ledger);
+    ledger.register = async () => { throw new Error('disk full'); };
+    const deps = depsOf(f.daemon, ledger);
     const res = await startRemoteFanout(request(1), deps);
     if ('error' in res) throw new Error(res.error);
-    // No row (the request got no answer); the mission is then closed.
+    expect(res.tasks[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/nothing was sent/) });
+    ledger.register = register;
     f.closedMissions.add(res.tasks[0].taskId!);
     const again = await startRemoteFanout(request(1), deps);
     if ('error' in again) throw new Error(again.error);
     expect(again.tasks[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/mission was closed/) });
-    expect(f.asks).toHaveLength(1);
-    expect(deps.ledger.list()).toHaveLength(0);
+    expect(f.asks).toHaveLength(0);
+    expect(ledger.list()).toHaveLength(0);
   });
 
-  it('a request with no answer keeps its mission open and is found by its key on a retry', async () => {
+  it('a request that never reached the daemon keeps its row sent and its mission open; the same key asks again, once', async () => {
     const f = fakeDaemon({ askThrows: true });
     const deps = depsOf(f.daemon);
     const res = await startRemoteFanout(request(1), deps);
     if ('error' in res) throw new Error(res.error);
-    expect(res.tasks[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/send the same key again/) });
+    expect(res.tasks[0]).toMatchObject({ ok: false, state: 'sent', reason: expect.stringMatching(/send the same idempotency_key again/) });
     expect(f.closed).toEqual([]);
-    expect(deps.ledger.list()).toHaveLength(0);
+    expect(deps.ledger.get(res.tasks[0].taskId!)).toMatchObject({ status: 'working', remote: { state: 'sent', spawnId: res.tasks[0].spawnId } });
+    f.opts.askThrows = false;
+    const again = await startRemoteFanout(request(1), deps);
+    if ('error' in again) throw new Error(again.error);
+    expect(again.tasks[0]).toMatchObject({ ok: true, spawnId: res.tasks[0].spawnId });
+    expect(f.requests.size).toBe(1);
+    // Held now: a poll asks nothing more.
+    await startRemoteFanout(request(1), deps);
+    expect(f.asks).toHaveLength(2);
+  });
+
+  it('a request whose answer was lost, then a close: the start that arrives later is ended at once', async () => {
+    const f = fakeDaemon({ dropReply: true });
+    const ledger = new TaskLedger({ dir });
+    const deps = depsOf(f.daemon, ledger);
+    const off = installRemoteTaskWithdraw(ledger, () => deps);
+    const res = await startRemoteFanout(request(1), deps);
+    if ('error' in res) throw new Error(res.error);
+    expect(res.tasks[0]).toMatchObject({ ok: false, state: 'sent' });
+    const id = res.tasks[0].taskId!;
+    await ledger.closeTask(id);
+    await vi.waitFor(() => expect(ledger.get(id)?.remote?.withdrawn).toBe(true), { timeout: 5_000 });
+    f.set(res.tasks[0].spawnId!, { state: 'started', code: 'started', linkId: LINK });
+    await reconcileRemoteTasks(deps);
+    expect(f.revoked).toEqual([LINK]);
+    off();
+  });
+
+  it('a row written just before its request lands is not expired by a pass in between', async () => {
+    const f = fakeDaemon({ askThrows: true });
+    const deps = depsOf(f.daemon);
+    const res = await startRemoteFanout(request(1), deps);
+    if ('error' in res) throw new Error(res.error);
+    await reconcileRemoteTasks(deps);
+    expect(deps.ledger.get(res.tasks[0].taskId!)).toMatchObject({ status: 'working', remote: { state: 'sent' } });
+    // Past the grace with no request held: it ends as expired.
+    await reconcileRemoteTasks({ ...deps, now: () => Date.now() + REMOTE_ASK_GRACE_MS + 1 });
+    expect(deps.ledger.get(res.tasks[0].taskId!)).toMatchObject({ status: 'failed', remote: { state: 'expired' } });
   });
 
   it('checks the folder id and the PC name it stores before anything is sent', async () => {
@@ -257,13 +301,29 @@ describe('reconcileRemoteTasks', () => {
     expect(started.remote?.a2aTaskId).toMatch(/^rt-[0-9a-f]{32}$/);
   });
 
+  it('a refused row whose status write failed is moved to failed on a later pass', async () => {
+    const f = fakeDaemon();
+    const deps = depsOf(f.daemon);
+    const res = await startRemoteFanout(request(1), deps);
+    if ('error' in res) throw new Error(res.error);
+    f.set(res.tasks[0].spawnId!, { state: 'refused', code: 'declined' });
+    const ledger = deps.ledger as TaskLedger;
+    const update = ledger.update.bind(ledger);
+    let fail = true;
+    ledger.update = async (input) => (fail ? (fail = false, { ok: false as const, error: 'persist_failed' as const, message: 'disk' }) : update(input));
+    await reconcileRemoteTasks(deps);
+    expect(ledger.get(res.tasks[0].taskId!)).toMatchObject({ status: 'working', remote: { state: 'refused' } });
+    await reconcileRemoteTasks(deps);
+    expect(ledger.get(res.tasks[0].taskId!)).toMatchObject({ status: 'failed', remote: { state: 'refused', code: 'declined' } });
+  });
+
   it('a waiting row whose request this PC no longer holds ends expired and is never asked again', async () => {
     const f = fakeDaemon();
     const deps = depsOf(f.daemon);
     const res = await startRemoteFanout(request(1), deps);
     if ('error' in res) throw new Error(res.error);
     f.requests.clear();
-    await reconcileRemoteTasks(deps);
+    await reconcileRemoteTasks({ ...deps, now: () => Date.now() + REMOTE_ASK_GRACE_MS + 1 });
     expect(deps.ledger.get(res.tasks[0].taskId!)).toMatchObject({ status: 'failed', remote: { state: 'expired', code: 'expired' } });
     const again = await startRemoteFanout(request(1), deps);
     if ('error' in again) throw new Error(again.error);

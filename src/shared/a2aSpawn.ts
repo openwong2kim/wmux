@@ -512,6 +512,12 @@ export interface A2aSpawnAskInput {
    * on requests waiting for one PC. Never sent.
    */
   budget?: 'fanout';
+  /**
+   * The spawn id for a new request (`sp-<uuid>`), chosen by main so its task
+   * row exists before the request is sent. Absent: the daemon mints one. A
+   * request already stored under `requestKey` keeps its own.
+   */
+  spawnId?: string;
 }
 
 /**

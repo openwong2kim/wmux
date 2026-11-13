@@ -13,6 +13,7 @@ import {
   SPAWN_REQUEST_KEY_RE,
   SPAWN_TTL_MAX_MS,
   asSpawnLinkId,
+  isSpawnId,
   parseSpawnRequest,
   spawnFirstMessageId,
   type A2aSpawnAskInput,
@@ -88,7 +89,10 @@ export class A2aSpawnRequester {
     const hours = input.expiresInHours ?? SPAWN_ASK_TTL_DEFAULT_MS / HOUR_MS;
     if (!Number.isInteger(hours) || hours < 1 || hours > 72) return { ok: false, error: 'bad-request', message: 'expiresInHours must be a whole number from 1 to 72' };
     const now = this.now();
-    const spawnId = `sp-${crypto.randomUUID()}`;
+    if (input.spawnId !== undefined && (!isSpawnId(input.spawnId) || this.deps.store.get(host.hostId, input.spawnId))) {
+      return { ok: false, error: 'bad-request', message: 'spawnId must be a new sp-<uuid>' };
+    }
+    const spawnId = input.spawnId ?? `sp-${crypto.randomUUID()}`;
     const request = parseSpawnRequest({
       v: 1,
       spawnId,
@@ -347,6 +351,7 @@ export function registerSpawnAskRpc(onRpc: (method: string, handler: RpcHandler)
       ...(typeof p['requestKey'] === 'string' ? { requestKey: p['requestKey'] } : {}),
       ...(typeof p['label'] === 'string' ? { label: p['label'] } : {}),
       ...(p['budget'] === 'fanout' ? { budget: 'fanout' as const } : {}),
+      ...(typeof p['spawnId'] === 'string' ? { spawnId: p['spawnId'] } : {}),
     });
   });
   onRpc(A2A_SPAWN_RPC.outgoing, async (p) => requester.list(typeof p['spawnId'] === 'string' ? p['spawnId'] : undefined));

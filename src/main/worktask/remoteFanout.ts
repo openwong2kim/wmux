@@ -32,6 +32,13 @@ export const REMOTE_FANOUT_AGENT: AgentSlug = 'claude';
 /** How long a request waits for the other PC (the shortest a request may ask for). */
 export const REMOTE_FANOUT_EXPIRES_HOURS = 1;
 
+/**
+ * How long a row stays `sent` with no request this PC holds before it ends
+ * as expired: its row is written before the request, and the request may
+ * still be on its way to the daemon (well past any RPC timeout).
+ */
+export const REMOTE_ASK_GRACE_MS = 10 * 60 * 1000;
+
 /** Appended to every remote task's prompt: v1 brings back only the branch and its head. */
 export const REMOTE_TASK_FOOTER =
   'When you are done, commit your work on the current branch, and end your last reply with the branch name and the commit sha.';
@@ -57,6 +64,8 @@ export interface RemoteFanoutDeps {
   ledger: RemoteLedger;
   rememberChannel(taskId: string, channelId: string): void;
   log?: (line: string) => void;
+  /** Injected in tests; default Date.now. */
+  now?: () => number;
 }
 
 export interface RemoteFanoutRequest {
@@ -93,13 +102,17 @@ export interface RemoteTaskResult {
 const sha256 = (s: string): string => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 
 /** The keys of one remote fan-out: one caller key, one request key and one mission key per task. */
-export function remoteFanoutKeys(scopedKey: string): { callerKey: string; requestKey: (k: number) => string; missionKey: (k: number) => string } {
+export function remoteFanoutKeys(scopedKey: string): { callerKey: string; requestKey: (k: number) => string; missionKey: (k: number) => string; spawnId: (k: number) => string } {
   return {
     callerKey: sha256(scopedKey).slice(0, 32),
     requestKey: (k) => sha256(`${scopedKey}\0${k}`),
     missionKey: (k) => `remote-${sha256(`${scopedKey}\0${k}`).slice(0, 48)}`,
+    spawnId: (k) => `sp-${uuidOf(sha256(`${scopedKey}\0${k}\0spawn`))}`,
   };
 }
+
+/** A uuid-shaped id (version 4, variant 8) from hex. */
+const uuidOf = (h: string): string => `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
 
 /**
  * The branch the agent works on, on the other PC. A box that runs headless
@@ -111,8 +124,7 @@ export function remoteFanoutKeys(scopedKey: string): { callerKey: string; reques
 export function branchOnPc(spawnId: string, remoteWorkspaceId: string, askingHostId: string | null): string | null {
   if (!remoteWorkspaceId.startsWith('hl-')) return `wmux/remote/${spawnId}`;
   if (!askingHostId) return null;
-  const h = sha256(`${askingHostId}:${spawnId}`);
-  return `wmux/remote/sp-${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+  return `wmux/remote/sp-${uuidOf(sha256(`${askingHostId}:${spawnId}`))}`;
 }
 
 /** Why a request could not be sent, in words. */
@@ -212,14 +224,14 @@ const storableName = (name: string): boolean => name.length > 0 && name.length <
  * whole call come back as `{ error }`; a task that fails alone is a result
  * with `ok: false`.
  */
-export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFanoutDeps): Promise<{ hostId: string; pc: string; tasks: RemoteTaskResult[] } | { error: string }> {
+export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFanoutDeps): Promise<{ hostId: string; pc: string; tasks: RemoteTaskResult[] } | { error: string; retry?: true }> {
   // Everything the row will hold is checked before anything is sent.
   if (!ROOT_ID_RE.test(req.root)) return { error: 'root is a folder id the other PC offers (lowercase letters, digits and dashes, at most 32)' };
   let list: A2aSpawnOutgoingList;
   try {
     list = await deps.daemon.outgoing();
   } catch (err) {
-    return { error: `the background service could not list the paired PCs (${(err as Error).message}); nothing was sent, so send the same idempotency_key again` };
+    return { error: `the background service could not list the paired PCs (${(err as Error).message}); nothing was sent, so send the same idempotency_key again`, retry: true };
   }
   const place = resolvePlace(list.places, req.pc);
   if (place === 'unknown-pc' || place === 'ambiguous-pc') return { error: askErrorText(place, req.pc) };
@@ -232,10 +244,11 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
   try {
     closed = await deps.daemon.closedMissions(req.ownerWorkspaceId);
   } catch (err) {
-    return { error: `the background service could not list your missions (${(err as Error).message}); nothing was sent, so send the same idempotency_key again` };
+    return { error: `the background service could not list your missions (${(err as Error).message}); nothing was sent, so send the same idempotency_key again`, retry: true };
   }
 
   const keys = remoteFanoutKeys(req.scopedKey);
+  const held = new Set(list.requests.map((r) => r.spawnId));
   const tasks: RemoteTaskResult[] = [];
   for (const [k, title] of req.titles.entries()) {
     const text = req.prompts[k];
@@ -253,14 +266,33 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
     const { taskId, channelId } = mission;
     deps.rememberChannel(taskId, channelId);
     const existing = deps.ledger.get(taskId);
-    if (!existing && closed.has(taskId)) {
-      tasks.push({ index: k, title, ok: false, taskId, channelId, reason: 'this task\'s mission was closed, so it is not asked for again; send a new key' });
+    if (closed.has(taskId)) {
+      // Its mission was closed: never asked for again.
+      tasks.push(existing ? resultOf(k, title, existing, channelId, promptBytes) : { index: k, title, ok: false, taskId, channelId, reason: 'this task\'s mission was closed, so it is not asked for again; send a new key' });
       continue;
     }
-    if (existing) {
-      // A retry: answered from the row, never asked again (a task whose
-      // request was refused here has a closed row too).
+    // A retry of a task whose request never reached the daemon (its row is
+    // still `sent` and open, and this PC holds no such request) asks again:
+    // the request key and spawn id make that the same request. Any other row
+    // answers as it is.
+    const resend = existing?.remote?.state === 'sent' && isOpenLedgerStatus(existing.status) && !held.has(existing.remote.spawnId);
+    if (existing && !resend) {
       tasks.push(resultOf(k, title, existing, channelId, promptBytes));
+      continue;
+    }
+    // The row comes first, under the spawn id the request will carry: a close
+    // always has a row to withdraw, even when the request's answer is lost.
+    let row: LedgerEntry;
+    try {
+      row = existing ?? await deps.ledger.register({
+        id: taskId,
+        taskWorkspaceId: remoteTaskWorkspaceId(keys.spawnId(k)),
+        ownerWorkspaceId: req.ownerWorkspaceId,
+        title,
+        remote: { hostId: place.hostId, pc: pcName, spawnId: keys.spawnId(k), root: req.root, state: 'sent' },
+      });
+    } catch (err) {
+      tasks.push({ index: k, title, ok: false, taskId, channelId, reason: `the task row could not be written (${(err as Error).message}); nothing was sent, so send the same idempotency_key again` });
       continue;
     }
     let asked: A2aSpawnAskResult;
@@ -275,46 +307,33 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
         callerKey: keys.callerKey,
         requestKey: keys.requestKey(k),
         budget: 'fanout',
+        spawnId: row.remote!.spawnId,
       });
     } catch (err) {
-      // No answer: the request may be stored and on its way. The mission
-      // stays open; the same key again finds the request by its key.
-      tasks.push({ index: k, title, ok: false, taskId, channelId, reason: `the request got no answer (${(err as Error).message}); send the same key again` });
+      // No answer: the request may be stored and on its way. The row stays
+      // `sent` (a close withdraws it); the same key again asks again.
+      tasks.push({ index: k, title, ok: false, taskId, channelId, spawnId: row.remote!.spawnId, state: 'sent', reason: `the request got no answer (${(err as Error).message}); send the same idempotency_key again` });
       continue;
     }
     if (!asked.ok) {
-      // Refused here, so nothing was sent. The task ends with a closed row,
-      // which answers the same key from now on, and its mission is closed.
+      // Refused here, so nothing was sent: the row fails with the reason,
+      // which answers the same key from now on, and the mission is closed.
       const reason = askErrorText(asked.error, pcName, asked.message);
-      try {
-        await deps.ledger.register({ id: taskId, taskWorkspaceId: `unlaunched:${taskId}`, ownerWorkspaceId: req.ownerWorkspaceId, title });
-        await deps.ledger.closeTask(taskId, undefined, reason);
-      } catch (err) {
-        deps.log?.(`[remote-fanout] ${taskId}: the refused task's row could not be written: ${String(err)}`);
-      }
+      const failed = await deps.ledger.update({ id: taskId, status: 'failed', actor: { kind: 'system', workspaceId: 'main' }, expectedRev: row.rev, summary: reason }).catch(() => null);
+      if (!failed?.ok) deps.log?.(`[remote-fanout] ${taskId}: the refused task's row could not be failed`);
       await deps.daemon.missionClose(taskId, req.ownerWorkspaceId).catch(() => undefined);
       tasks.push({ index: k, title, ok: false, taskId, channelId, reason });
       continue;
     }
     const spawn = asked.spawn;
-    try {
-      const entry = await deps.ledger.register({
-        id: taskId,
-        taskWorkspaceId: remoteTaskWorkspaceId(spawn.spawnId),
-        ownerWorkspaceId: req.ownerWorkspaceId,
-        title,
-        remote: { hostId: place.hostId, pc: pcName, spawnId: spawn.spawnId, root: req.root, state: spawn.state, ...(spawn.code ? { code: spawn.code } : {}) },
-      });
-      tasks.push(resultOf(k, title, entry, channelId, promptBytes));
-    } catch (err) {
-      // The request is out: the same key again registers it (the request key answers with it).
-      tasks.push({ index: k, title, ok: false, taskId, channelId, spawnId: spawn.spawnId, state: spawn.state, reason: `the task row could not be written (${(err as Error).message}); send the same key again` });
-    }
+    const entry = await deps.ledger.updateRemote(taskId, { state: spawn.state, ...(spawn.code ? { code: spawn.code } : {}) }).catch(() => null);
+    tasks.push(resultOf(k, title, entry ?? row, channelId, promptBytes));
   }
   // States that arrived meanwhile (a refusal, a start) are on the rows before the answer.
   await reconcileRemoteTasks(deps).catch((err: unknown) => deps.log?.(`[remote-fanout] reconcile failed: ${String(err)}`));
   for (const t of tasks) {
-    if (!t.taskId || !t.spawnId) continue;
+    // A task that failed here keeps its reason; one that was asked shows its row now.
+    if (!t.ok || !t.taskId || !t.spawnId) continue;
     const entry = deps.ledger.get(t.taskId);
     if (entry) Object.assign(t, resultOf(t.index, t.title, entry, t.channelId, Buffer.byteLength(req.prompts[t.index], 'utf8')));
   }
@@ -363,9 +382,10 @@ export function reconcileRemoteTasks(deps: RemoteFanoutDeps): Promise<void> {
 }
 
 async function reconcileOnce(deps: RemoteFanoutDeps): Promise<void> {
-  // A revoked row is done. A refused one never starts. Every other row is
-  // read: an expired request still takes a late start.
-  const rows = deps.ledger.list().filter((e) => e.remote && !e.remote.revoked && e.remote.state !== 'refused');
+  // A revoked row is done. A refused one never starts, once its status has
+  // moved (a failed status write is retried here). Every other row is read:
+  // an expired request still takes a late start.
+  const rows = deps.ledger.list().filter((e) => e.remote && !e.remote.revoked && (e.remote.state !== 'refused' || isOpenLedgerStatus(e.status)));
   if (rows.length === 0) return;
   const list = await deps.daemon.outgoing();
   const bySpawn = new Map<string, A2aSpawnOutgoingSummary>(list.requests.map((r) => [r.spawnId, r]));
@@ -383,7 +403,9 @@ async function reconcileOnce(deps: RemoteFanoutDeps): Promise<void> {
     let next: LedgerEntry | null = row;
     if (!rec) {
       // Not held any more: a waiting row ends here and is never asked again.
-      if (r.state === 'sent' || r.state === 'waiting') next = await deps.ledger.updateRemote(row.id, { state: 'expired', code: 'expired' });
+      // A row written just before its request is given time for it to land.
+      const young = r.state === 'sent' && (deps.now ?? Date.now)() - row.updatedAt < REMOTE_ASK_GRACE_MS;
+      if ((r.state === 'sent' && !young) || r.state === 'waiting') next = await deps.ledger.updateRemote(row.id, { state: 'expired', code: 'expired' });
     } else if (rec.state === 'started' && asSpawnLinkId(rec.linkId)) {
       const linkId = asSpawnLinkId(rec.linkId)!;
       const branch = r.branchOnPc ?? await branchOf(linkId, r.spawnId);
@@ -431,7 +453,13 @@ export function remoteFanoutDepsOf(getDaemonClient: () => DaemonClient | null): 
   if (!dc?.isConnected) return null;
   return {
     daemon: {
-      ask: (input) => dc.a2aSpawnAsk(input),
+      ask: async (input) => {
+        const res = await dc.a2aSpawnAsk(input);
+        // Test seam for a live run: the daemon stores and sends the request,
+        // and its answer never reaches this PC (a lost reply).
+        if (process.env['WMUX_TEST_DROP_SPAWN_ASK_REPLY'] === '1') throw new Error('the answer was dropped (WMUX_TEST_DROP_SPAWN_ASK_REPLY)');
+        return res;
+      },
       outgoing: () => dc.a2aSpawnOutgoing(),
       revokeLink: async (linkId) => {
         const res = await dc.a2aRemoteLinkAction('revoke', linkId);

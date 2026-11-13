@@ -1,4 +1,5 @@
 import { setWorkflowFanout } from '../../factory/workflowFanout';
+import crypto from 'node:crypto';
 import type { WorkflowDispatchBinding } from '../../factory/workflowFanout';
 // ─── task.fanout.start — fan-out on the pipe / MCP surface ─────────────────
 //
@@ -1264,11 +1265,19 @@ export function registerFanOutRpc(
       // A new key (not a poll of one already started): the owner's approval
       // switch, the hourly cap and the audit record apply as to any fan-out.
       const guards = guardsOf();
-      if (!guards.remoteStamped(key)) {
+      const stamped = guards.remoteStamped(key);
+      // A repeat is a poll of the same request: one that differs (another
+      // count, title, prompt, PC or folder) would start tasks that were never
+      // approved, stamped or audited.
+      const digest = crypto.createHash('sha256').update(JSON.stringify([pc, root, sub, parsed.titles, prompts])).digest('hex');
+      if (stamped !== null && stamped.digest !== digest) {
+        return deny('INVALID_ARGUMENT', `this key started a different request on another PC (${stamped.count} task(s)); send the same request to poll it, or use a new key`);
+      }
+      if (stamped === null) {
         if ((deps.requireApproval ?? loadFanoutRequireApproval)()) {
           return deny('FAILED_PRECONDITION', 'tasks on another PC do not start while fan-out approval is on (Settings › Roles & fan-out): they have no approval prompt yet');
         }
-        const room = guards.stampRemote(key, parsed.titles.length);
+        const room = guards.stampRemote(key, parsed.titles.length, digest);
         if (!room.ok) return deny('RESOURCE_EXHAUSTED', room.message);
         try {
           guards.appendAudit({
@@ -1299,7 +1308,13 @@ export function registerFanOutRpc(
         titles: parsed.titles,
         prompts: prompts.map((p) => `${p}\n\n${REMOTE_TASK_FOOTER}`),
       }, remote);
-      if ('error' in started) return deny('FAILED_PRECONDITION', started.error);
+      if ('error' in started) {
+        // Refused before anything was sent. A mistake in the call (an unknown
+        // PC, a bad folder id) gives back the hour it stamped; a passing
+        // failure keeps it, so the same key again is a poll, not a second charge.
+        if (stamped === null && !started.retry) guards.refundStart(key, parsed.titles.length);
+        return deny('FAILED_PRECONDITION', started.error);
+      }
       return {
         ok: true as const,
         status: 'completed' as const,
