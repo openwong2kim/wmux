@@ -321,6 +321,11 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
    * task keeps its own state, and that state is not sent again. Cleared once the peer takes a later state.
    */
   stateRefused?: { state: TaskState; code: A2aRemoteErrorCode; at: string };
+  /**
+   * Outbound task that failed here because the other PC refused a reply of ours: that PC is owed `canceled`, so its
+   * copy ends too. The outbound sync sends it (and records it in `stateSync`), also after a restart.
+   */
+  cancelOwed?: true;
   /** Our own replies on this task already queued for the peer (messageIds). */
   sent?: string[];
   /** Inbound task: when our side first read it (a2a_task_query). */

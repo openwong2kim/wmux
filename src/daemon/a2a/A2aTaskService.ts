@@ -389,6 +389,7 @@ export class A2aTaskService {
         // A state set on this PC (the done on a report, a forced end) ends the report.
         const m = remoteMarkerOf(task);
         if (m) delete m.reported;
+        if (m && t.peerCanceled) m.cancelOwed = true;
       }
       return;
     }
@@ -956,8 +957,7 @@ export class A2aTaskService {
           && (input.receiptSync === undefined || receiptRank(marker.receiptSync) >= receiptRank(input.receiptSync))
           && (input.remoteReceipt === undefined || (input.remoteReceipt === 'read' ? !!marker.remoteReadAt : !!marker.remoteDeliveredAt))
           && (input.replyAcked !== true || !!marker.replyDeliveredAt)
-          && (input.stateRefused === undefined
-            || (marker.stateRefused?.state === input.stateRefused.state && marker.stateRefused.code === input.stateRefused.code))
+          && input.stateRefused === undefined
           && (input.stateAccepted !== true || !marker.stateRefused);
         body = {
           ...(input.stateSync !== undefined ? { stateSync: input.stateSync } : {}),
@@ -1056,6 +1056,8 @@ export class A2aTaskService {
     taskId: string;
     reason: string;
     forced: 'remote_held_rejected' | 'remote_link_ended' | 'remote_refused';
+    /** A task this PC sent: the other PC is owed a cancel once it has failed here (recorded in the same write). */
+    peerCanceled?: true;
   }): Promise<{ ok: true; task: Task; failed: boolean } | OpErr> {
     const res = await this.withTaskLock<{ ok: true; task: Task; failed: boolean } | OpErr>(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
@@ -1069,6 +1071,7 @@ export class A2aTaskService {
         timestamp: this.isoNow(),
         forced: input.forced,
         evidence: { summary: input.reason, items: [] },
+        ...(input.peerCanceled && remoteMarkerOf(task)?.direction === 'outbound' ? { peerCanceled: true as const } : {}),
       };
       const side = localSideOf(task);
       const ws = task.metadata[side].workspaceId;

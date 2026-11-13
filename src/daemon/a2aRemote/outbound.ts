@@ -293,21 +293,8 @@ function spawnLinkStatus(status: A2aRemoteStatusV1): A2aRemoteStatusV1 {
   return options ? { ...status, detail: { ...status.detail, options: options.map((o) => redactSecrets(o)) } } : status;
 }
 
-/**
- * A task this PC sent failed here because the other PC refused a message of ours on it: that PC is told `canceled`,
- * the one state a sender tells, so its copy ends too (through the same envelope a sender's cancel takes).
- */
-export function sendRemoteCancel(deps: StateDeps, taskId: string): OutboundResult {
-  const found = remoteTaskAndLink(deps, taskId);
-  if (!found.ok) return found;
-  const { task, link } = found;
-  if ((task.metadata.remote as A2aRemoteTaskState).direction !== 'outbound') return { ok: false, error: 'only a task this PC sent is cancelled on the other PC' };
-  const check = deps.linkStore.checkMessage(link.linkId, link.version, link.remote.hostId, 'outbound', 'reply', undefined, { onThisLink: true });
-  if (!check.ok) return { ok: false, error: check.error };
-  const canceled: Task = { ...task, status: { state: 'canceled', timestamp: task.status.timestamp } };
-  deps.outbox.enqueue(link.remote.hostId, stateEnvelope(deps, link, canceled, statusSummary(task)));
-  return { ok: true, taskId };
-}
+/** What the other PC's copy says when this PC's copy ended because that PC refused a reply of ours. */
+const PEER_CANCELED_TEXT = 'the sender ended the task: a reply it sent was refused on this PC';
 
 const SYNCED_STATES: ReadonlySet<string> = new Set(['working', 'input-required', 'completed', 'failed', 'canceled']);
 
@@ -365,12 +352,15 @@ export async function syncRemoteTask(
       await deps.taskService.markRemote({ taskId: task.id, receiptSync: receipt });
       queued += 1;
     }
-    const state = task.status.state;
+    // A task this PC sent that failed here because the other PC refused a reply of ours: that PC is told `canceled`.
+    const owed = task.status.state === 'failed' && marker.cancelOwed === true;
+    const state = owed ? 'canceled' : task.status.state;
     // Only the receiver moves a task on the peer: one this PC sent tells it nothing but a cancel.
     const mayTell = marker.direction !== 'outbound' || state === 'canceled';
     if (mayTell && SYNCED_STATES.has(state) && marker.stateSync !== state) {
-      const summary = (opts.summary ?? statusSummary(task))?.slice(0, 2000);
-      deps.outbox.enqueue(link.remote.hostId, stateEnvelope(deps, link, task, summary));
+      const summary = owed ? PEER_CANCELED_TEXT : (opts.summary ?? statusSummary(task))?.slice(0, 2000);
+      const told: Task = owed ? { ...task, status: { state: 'canceled', timestamp: task.status.timestamp } } : task;
+      deps.outbox.enqueue(link.remote.hostId, stateEnvelope(deps, link, told, summary));
       await deps.taskService.markRemote({ taskId: task.id, stateSync: state });
       queued += 1;
     }

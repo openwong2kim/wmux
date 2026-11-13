@@ -66,6 +66,8 @@ export interface A2aTaskTransitionPayload {
    * 전진 불가하므로 정당). 일반 transition API로는 이 값이 실리지 않는다.
    */
   forced?: 'workspace_removed' | 'remote_state' | 'remote_held_rejected' | 'remote_link_ended' | 'remote_refused';
+  /** With `forced: 'remote_refused'` on a task this PC sent: the other PC is owed a cancel (its marker's `cancelOwed`). */
+  peerCanceled?: true;
   /**
    * Cross-host A2A: the peer's messageId when this transition came from the
    * other host (`forced: 'remote_state'` for a terminal one, and for a report

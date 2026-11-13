@@ -1014,6 +1014,8 @@ describe('a state the other PC refuses, end to end', () => {
     await moveB(b, taskId, 'input-required');
     await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
     await until(() => refusedOn(b, taskId) === undefined);
+    // The refused record does not keep B's states from counting as received there.
+    await until(() => !!(b.tasks.getTask(taskId)?.metadata.remote as { replyDeliveredAt?: string }).replyDeliveredAt);
   });
 
   it('the sender cancelled while the receiver\'s state was on its way: the receiver ends cancelled, not failed', async () => {
@@ -1070,6 +1072,8 @@ describe('a state the other PC refuses, end to end', () => {
     expect(await a.rpc(A2A_REMOTE_RPC.reply, { taskId, workspaceId: 'ws-a', text: 'one more thing' })).toMatchObject({ ok: true });
     await until(() => a.tasks.getTask(taskId)?.status.state === 'failed');
     await until(() => b.tasks.getTask(taskId)?.status.state === 'canceled');
+    // Owed on A's own record, so a restart sends it too; told once.
+    expect(a.tasks.getTask(taskId)!.metadata.remote).toMatchObject({ cancelOwed: true, stateSync: 'canceled' });
     // B's pane is told the way any cancel from the sender is: a state item on its inbox.
     const inbox = (b.tasks.getTask(taskId)!.metadata.remote as { inbox?: Array<{ kind: string; state?: string }> }).inbox ?? [];
     expect(inbox.filter((i) => i.kind === 'state').map((i) => i.state)).toContain('canceled');
