@@ -727,10 +727,12 @@ describe('a returned bundle, sent by the PC that made it (it joined the asking P
     const stalled = rawPut(route(m), { 'content-length': String(body.length) }, body, BOX, 30_000);
     await vi.waitFor(() => expect(partsOf(BOX)).toHaveLength(1), { timeout: 10_000 });
     await deliberateSleep(100, 'past the wait\'s 50 ms time, with the first PUT still under way');
-    const retry = rawPut(route(m), { 'content-length': String(body.length) }, body, BOX);
+    // Headers and one byte: nothing is still being written when the refusal closes the connection.
+    const retry = rawPut(route(m), { 'content-length': String(body.length) }, body, BOX, 1);
     expect(await retry.status).toBe(429);
     expect(await waiting).toEqual({ kind: 'again', why: 'not sent in time' });
     stalled.req.destroy();
+    retry.req.destroy();
   });
 
   it('a PUT that waited on a staged check which ended its wait lands for a newer wait of the same bundle', async () => {
