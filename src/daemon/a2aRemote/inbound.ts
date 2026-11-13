@@ -250,6 +250,9 @@ async function applyInbound(
     const marker = task?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
     if (!deps.remoteStatus) return fail('bad-request', 'this PC takes no status');
     if (marker?.direction !== 'outbound') return fail('forbidden', 'a status is only for a task this host sent');
+    // The agent there is gone: said in this PC's log, since the task ends right after and its status with it.
+    // Only this PC's own ids and the fixed kind; nothing the peer wrote.
+    if ((env.status as A2aRemoteStatusV1).kind === 'gone') deps.log?.('info', `[a2a-remote] task ${taskId} on link ${link.linkId}: the agent on that PC is gone`);
     // A task that ended has no worker status any more: taken, and dropped.
     if (!(TERMINAL_STATES as readonly string[]).includes(task!.status.state)) deps.remoteStatus.note(taskId, env.status as A2aRemoteStatusV1);
     return { ok: true, taskId, duplicate: false };

@@ -523,6 +523,17 @@ describe('a worker\'s status on a task this PC sent', () => {
     expect(noted).toHaveLength(1);
   });
 
+  it('`gone` is said in this PC\'s log with its own ids only, whatever the peer put in its detail', async () => {
+    const linkId = activeLink();
+    const out = await sentTask(linkId);
+    const lines: string[] = [];
+    const logged = { ...withStatus, log: (_level: 'info' | 'warn' | 'error', msg: string) => { lines.push(msg); } };
+    await acceptInbound(env(linkId, { ...status({ kind: 'working' }), taskId: out }), peer, logged);
+    expect(lines).toEqual([]);
+    await acceptInbound(env(linkId, { ...status({ kind: 'gone', detail: { provider: 'evil', options: ['PEER TEXT'], menuId: 'toolu_PEER' } as never }), taskId: out }), peer, logged);
+    expect(lines).toEqual([`[a2a-remote] task ${out} on link ${linkId}: the agent on that PC is gone`]);
+  });
+
   it('refused for a task this PC did not send, malformed, or on a PC that takes none', async () => {
     const linkId = activeLink();
     const out = await sentTask(linkId);
