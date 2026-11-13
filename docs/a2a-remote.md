@@ -224,7 +224,7 @@ The **Remote** page has a **Messages between PCs** section:
     It goes first, in order, under the line `[wmux] delayed: sent <time>,
     held because no agent was in the pane`, which stands before the sender's
     block. If it still cannot be written it stays held, keeping the time it
-    was first held, and the new reply goes anyway. At most three are offered
+    was first held, the ones after it wait, and the new reply goes anyway. At most three are offered
     again at a time; the rest, and the newer reply behind them, go on a later
     pass. One whose paste was started and never confirmed reads as
     `delivery-unconfirmed` and is never pasted again on its own.

@@ -661,6 +661,27 @@ describe('RemoteA2aBridge — a reply held for want of an agent is offered again
     expect(notified().map((p) => p.messageId).slice(first.length)).toEqual(['h4', 'r2']);
   });
 
+  it(`no agent in the pane and more than ${REMOTE_BRIDGE_REOFFER_PER_PASS} held: the new reply is still tried, backs off and is held, and the re-offers stop (#3344)`, async () => {
+    const t = taskWithHeldReply();
+    const marker = t.metadata.remote as A2aRemoteTaskState;
+    const extra = ['h2', 'h3', 'h4'];
+    for (const m of extra) t.history.push({ kind: 'message', messageId: m, role: 'user', parts: [{ kind: 'text', text: m }] });
+    marker.inbox!.splice(1, 0, ...extra.map((m) => ({ messageId: m, kind: 'reply' as const, at: '2026-11-12T06:05:00.000Z', delivered: false, held: 'no-agent' as const, heldAt: '2026-11-12T06:15:00.000Z' })));
+    answer = () => ({ ok: true, delivered: false, reason: 'no_agent_pane' });
+
+    bridge.start();
+    await settle();
+    // The first re-offer writes nothing: the rest wait, and the new reply is tried in the same pull.
+    expect(notified().map((p) => p.messageId)).toEqual(['r1', 'r2']);
+
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(item('r2')).toMatchObject({ held: 'no-agent' });
+    const offered = notified().length;
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(notified().length).toBe(offered);
+    expect(item('h4')).toMatchObject({ held: 'no-agent', heldAt: '2026-11-12T06:15:00.000Z' });
+  });
+
   it('never offered again: without its text here, held for another reason, or with no new reply on the task', async () => {
     taskWithHeldReply({ inHistory: false });
     bridge.start();

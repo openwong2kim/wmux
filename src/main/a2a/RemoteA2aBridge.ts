@@ -328,13 +328,17 @@ export class RemoteA2aBridge {
       const ref = { taskId: task.id, messageId: item.messageId };
       this.inFlight.add(key);
       this.reofferMarks.add(key);
+      let outcome: RetryHeldResult['results'][number]['outcome'];
       try {
         // eslint-disable-next-line no-await-in-loop -- in the task's order
-        await this.deliver({ key, task, item }, false, true);
+        outcome = await this.deliver({ key, task, item }, false, true);
       } finally {
         this.inFlight.delete(key);
         if (!this.pendingMarks.has(key)) this.reofferMarks.delete(key);
       }
+      // Not written: the pane cannot take the older ones now. The rest wait, and the new reply is tried as
+      // usual, so it backs off (and without an agent is held) instead of being re-offered behind on every pull.
+      if (outcome !== 'delivered') return { budget, done: true };
     }
     return { budget, done: true };
   }
