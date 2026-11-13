@@ -124,8 +124,11 @@ beforeEach(() => {
   });
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 });
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
+  // A write still queued would land in the dir while it is removed (ENOTEMPTY).
+  await links.flush();
+  await handOuts.flush();
   rmSync(dir, { recursive: true, force: true });
 });
 

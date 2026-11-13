@@ -55,8 +55,8 @@ async function sentTask(): Promise<{ linkId: string; taskId: string }> {
   const linkId = crypto.randomUUID();
   links.receiveProposal({
     linkId,
-    local: { kind: 'pane', workspaceId: 'ws-a', paneId: `pane-a-${linkId.slice(0, 4)}` },
-    remote: { hostId: HOST, kind: 'pane', workspaceId: 'ws-b', paneId: `pane-b-${linkId.slice(0, 4)}`, label: 'claude' },
+    local: { kind: 'pane', workspaceId: 'ws-a', paneId: `pane-a-${linkId}` },
+    remote: { hostId: HOST, kind: 'pane', workspaceId: 'ws-b', paneId: `pane-b-${linkId}`, label: 'claude' },
     allow: { outbound: true, inbound: true },
   });
   links.accept(linkId);
