@@ -1506,8 +1506,10 @@ export function registerA2aRpc(
       ? rawDaemonTasks.map((t) => (isRecord(t.metadata) ? flagOrphanedTask(summarizeTask(t), t, params) : t))
       : rawDaemonTasks;
     const rendererOk = isRecord(rendererRes) && Array.isArray(rendererRes.tasks);
+    // A named task the daemon collected after it ended: its answer says so instead of "not found".
+    const collected = isRecord(gate.result.collected) ? { collected: gate.result.collected } : {};
     if (!rendererOk) {
-      return shape({ workspaceId: params.workspaceId, tasks: daemonTasks });
+      return shape({ workspaceId: params.workspaceId, tasks: daemonTasks, ...collected });
     }
     const rendererTasks = (rendererRes as { tasks: Array<Record<string, unknown>> }).tasks
       .filter((t) => !withheld.has(t.id as string));
@@ -1534,7 +1536,7 @@ export function registerA2aRpc(
     // 렌더러는 이미 status로 걸렀지만, 데몬 override로 상태가 바뀐 태스크(stale
     // working→canonical completed)와 데몬-only 추가분은 여기서 걸러져야 한다.
     const finalTasks = statusFilter ? merged.filter((t) => stateOf(t) === statusFilter) : merged;
-    return shape({ ...(rendererRes as Record<string, unknown>), tasks: finalTasks });
+    return shape({ ...(rendererRes as Record<string, unknown>), tasks: finalTasks, ...collected });
   });
 
   /**

@@ -3,6 +3,7 @@ import {
   A2A_BRAIN_ALIAS,
   A2A_REMOTE_BODY_MAX,
   parseA2aRemoteImageRefs,
+  parseA2aRemoteNotice,
   parseA2aRemoteStatus,
   type A2aRemoteImageRef,
   A2A_REMOTE_MESSAGE_ID_RE,
@@ -17,7 +18,7 @@ import {
   type A2aRemoteTaskMarkerV1,
   type HostId,
 } from '../../shared/a2aRemote';
-import { A2A_REMOTE_INBOUND_EVENT, remoteWorkspaceId, sanitizeRemoteMessage, type A2aRemoteInboundEvent } from '../../shared/a2aRemoteDelivery';
+import { A2A_REMOTE_INBOUND_EVENT, heldNoticeText, remoteWorkspaceId, sanitizeRemoteMessage, type A2aRemoteInboundEvent, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 import { normalizeCompletionEvidenceWire } from '../../shared/completionEvidence';
 import { isTaskState, TERMINAL_STATES, type CompletionEvidence, type EvidenceItem, type Message, type Part } from '../../shared/types';
 import type { A2aImageStore, ImageNotReceived } from './imageStore';
@@ -76,6 +77,16 @@ export interface InboundDeps {
     /** True the first time a task's `gone` is seen (its log line); false after, until the task is forgotten. */
     firstGone?(taskId: string): boolean;
     forget(taskId: string): void;
+  };
+  /**
+   * A host's notice about one of our own messages (`held-notice.1`): how many
+   * a link may bring (past it they are taken and dropped, one log line per
+   * window), and the one log line for a notice that names no message of ours.
+   * Absent: a notice is taken with no limit.
+   */
+  remoteNotice?: {
+    admit(linkId: string): boolean;
+    unknownOnce(linkId: string): boolean;
   };
   /** New tasks each PC may send this one (`PeerTaskBudget`); absent, no limit. */
   taskBudget?: PeerTaskBudget;
@@ -271,6 +282,37 @@ async function applyInbound(
     if (!res.ok) return fail('unavailable', res.error);
     return { ok: true, taskId, duplicate: false };
   }
+  if (env.kind === 'reply' && env.notice) {
+    // The other host's notice about a message WE sent on this task: never an answer, never a state.
+    const task = deps.taskService.getTask(taskId);
+    const marker = task?.metadata.remote as A2aRemoteTaskState | undefined;
+    if (deps.remoteNotice && !deps.remoteNotice.admit(link.linkId)) return { ok: true, taskId, duplicate: true };
+    if (!task || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: true, taskId, duplicate: true };
+    const about = env.notice.messageId;
+    if (!marker?.sent?.includes(about)) {
+      // Only this PC's ids in the line; nothing the peer wrote.
+      if (deps.remoteNotice?.unknownOnce(link.linkId) ?? true) {
+        deps.log?.('warn', `[a2a-remote] link ${link.linkId}: a notice about a message this PC did not send on task ${taskId}; dropped`);
+      }
+      return { ok: true, taskId, duplicate: true };
+    }
+    const role: Message['role'] = task.metadata.from.workspaceId === remoteWs ? 'user' : 'agent';
+    const res = await deps.taskService.appendRemoteMessage({
+      taskId,
+      linkId: link.linkId,
+      actorWorkspaceId: remoteWs,
+      // The words are this PC's own, with its own record of when it sent the message.
+      message: {
+        kind: 'message',
+        messageId: env.messageId,
+        role,
+        parts: [{ kind: 'text', text: heldNoticeText(about, marker.sentAt?.[about]) }],
+        metadata: { wmuxNotice: { kind: env.notice.kind, messageId: about } },
+      },
+    });
+    if (!res.ok) return fail('conflict' in res ? 'conflict' : 'unavailable', res.error);
+    return { ok: true, taskId, duplicate: res.duplicate };
+  }
   if (env.kind === 'reply') {
     const task = deps.taskService.getTask(taskId);
     // The peer is the sender of an inbound task and the receiver of an outbound one.
@@ -376,6 +418,13 @@ function parseEnvelope(raw: unknown): Parsed {
   const envelope = { ...raw } as unknown as A2aRemoteEnvelope;
   if (images) envelope.images = images;
   else delete envelope.images;
+  // A host's notice rides on a reply only, checked strictly: one that does not parse is refused, never
+  // taken as a plain reply (its fixed text would then reach the agent as a message).
+  if (raw['notice'] !== undefined) {
+    const notice = kind === 'reply' ? parseA2aRemoteNotice(raw['notice']) : null;
+    if (!notice) return { error: 'bad-request' };
+    envelope.notice = notice;
+  }
   // A state's message and evidence are optional extras: one that is malformed
   // or too large is left off and the state still applies, as from an older peer.
   const message = raw['message'];

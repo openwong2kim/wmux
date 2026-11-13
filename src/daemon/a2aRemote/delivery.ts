@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import {
   A2A_FEATURE_IMAGES,
+  A2A_FEATURE_HELD_NOTICE,
   A2A_FEATURE_STATUS,
   A2A_REMOTE_IMAGE_LIMITS,
   A2A_REMOTE_PROTOCOL,
@@ -23,7 +24,7 @@ import { prepareA2aImage, type A2aImageInfo, type A2aImageRefusal } from '../../
 import { companyBriefOf } from '../../shared/company';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
 import type { A2aTaskService } from '../a2a/A2aTaskService';
-import { failTasksForLink, expireHeld, rejectHeld, type HeldDeps } from './held';
+import { failTasksForLink, expireHeld, rejectHeld, sendHeldNotices, type HeldDeps } from './held';
 import { remoteTaskId } from './ids';
 import { A2aImageStore, sha256 } from './imageStore';
 import { registerImageRoutes } from './imageRoutes';
@@ -162,6 +163,8 @@ export const REMOTE_STATUS_PER_WINDOW = 1500;
  * span is over, never dropped; `question`, `usage-limit` and `gone` apply at once.
  */
 export const REMOTE_STATUS_TASK_GAP_MS = 2_000;
+/** Host notices one link may bring in a window (one per dropped message, so few in honest use). */
+export const REMOTE_NOTICES_PER_WINDOW = 60;
 const REMOTE_STATUS_AT_ONCE: ReadonlySet<A2aRemoteStatusV1['kind']> = new Set(['question', 'usage-limit', 'gone']);
 
 export class A2aRemoteDelivery {
@@ -426,9 +429,16 @@ export class A2aRemoteDelivery {
     }
     try {
       const expired = await expireHeld(this.heldDeps());
-      if (expired.length > 0) this.deps.log('info', `[a2a-remote] ${expired.length} held remote task(s) expired`);
+      const units = expired.filter((id) => id.includes('#')).length;
+      if (expired.length > units) this.deps.log('info', `[a2a-remote] ${expired.length - units} held remote task(s) expired`);
+      if (units > 0) this.deps.log('info', `[a2a-remote] ${units} held remote message(s) expired; their tasks stay open`);
     } catch (err) {
       this.deps.log('warn', `[a2a-remote] hold expiry failed: ${errMsg(err)}`);
+    }
+    try {
+      await sendHeldNotices(this.heldDeps());
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] held notices failed: ${errMsg(err)}`);
     }
     // Expiry, put-backs still owed, and claims a restart (or the app's absence) left unfinished.
     this.deps.offers?.recover();
@@ -504,6 +514,8 @@ export class A2aRemoteDelivery {
         ...(typeof held === 'string' ? { held: readHeldReason(held) } : {}),
         ...(typeof p['attempted'] === 'boolean' && p['delivered'] !== true && held === undefined ? { attempted: p['attempted'] } : {}),
         ...(typeof p['ptyId'] === 'string' && isSafeId(p['ptyId']) ? { ptyId: p['ptyId'] } : {}),
+        // main offering a held reply again (only with an attempt, on an item).
+        ...(p['reoffer'] === true && typeof p['attempted'] === 'boolean' && messageId !== undefined ? { reoffer: true as const } : {}),
       });
       // A reply that could not go now is tried again by `maintain`.
       if (res.ok && held === 'no-agent' && messageId === undefined) await this.tellSender(taskId, NO_AGENT_SUMMARY);
@@ -769,9 +781,44 @@ export class A2aRemoteDelivery {
         firstGone: (taskId) => this.firstGone(taskId),
         forget: (taskId) => { this.remoteStatuses.delete(taskId); this.statusGates.delete(taskId); this.goneSeen.delete(taskId); },
       },
+      remoteNotice: {
+        admit: (linkId) => this.noticeWindow(linkId, true),
+        unknownOnce: (linkId) => this.noticeWindow(linkId, false),
+      },
       taskBudget: this.taskBudget,
       log: this.deps.log,
     };
+  }
+
+  /** Notices taken per link in the current window, and which log lines it has had. */
+  private readonly noticeWindows = new Map<string, { start: number; count: number; logged: boolean; unknownLogged: boolean }>();
+
+  /**
+   * `admit`: one more notice from this link is taken now (past
+   * REMOTE_NOTICES_PER_WINDOW it is dropped, one log line per window).
+   * Otherwise: whether the "names no message of ours" line is due (once per window).
+   */
+  private noticeWindow(linkId: string, admit: boolean): boolean {
+    const now = Date.now();
+    let w = this.noticeWindows.get(linkId);
+    if (!w || now - w.start >= REMOTE_STATUS_WINDOW_MS) {
+      w = { start: now, count: 0, logged: false, unknownLogged: false };
+      this.noticeWindows.delete(linkId);
+      this.noticeWindows.set(linkId, w);
+      while (this.noticeWindows.size > REMOTE_STATUSES_MAX) this.noticeWindows.delete(this.noticeWindows.keys().next().value as string);
+    }
+    if (!admit) {
+      if (w.unknownLogged) return false;
+      w.unknownLogged = true;
+      return true;
+    }
+    w.count += 1;
+    if (w.count <= REMOTE_NOTICES_PER_WINDOW) return true;
+    if (!w.logged) {
+      w.logged = true;
+      this.deps.log('warn', `[a2a-remote] link ${linkId}: more than ${REMOTE_NOTICES_PER_WINDOW} notices in a minute; the rest are dropped`);
+    }
+    return false;
   }
 
   // --- worker status (`status.1`) -------------------------------------------
@@ -994,6 +1041,7 @@ export class A2aRemoteDelivery {
       linkStore: this.deps.links,
       outbox: this.outbox,
       ...(this.deps.spawnLinks ? { spawnLink: (id: string) => this.deps.spawnLinks!.isSpawnLink(id) } : {}),
+      takesNotice: (hostId: string) => this.liveFeatures(hostId as HostId)?.has(A2A_FEATURE_HELD_NOTICE),
     };
   }
 }

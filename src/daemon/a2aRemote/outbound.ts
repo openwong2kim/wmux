@@ -12,6 +12,7 @@ import {
   isA2aRemoteImageMediaType,
   parseA2aRemoteStatus,
   type A2aRemoteImageRef,
+  type A2aRemoteNoticeV1,
   type A2aRemoteStatusV1,
   type A2aLinkRecordV1,
   type A2aRemoteReceipt,
@@ -20,6 +21,8 @@ import {
 } from '../../shared/a2aRemote';
 import { redactSecrets } from '../../shared/redactSecrets';
 import {
+  heldNoticeMessageId,
+  heldNoticeText,
   isRemoteWorkspaceId,
   remoteAlias,
   remoteWorkspaceId,
@@ -287,6 +290,35 @@ export function sendRemoteStatus(deps: StateDeps, input: { taskId: string; statu
   return { ok: true, taskId: task.id };
 }
 
+/**
+ * The host's notice to the PC that sent `messageId` on `taskId`: that message
+ * was held here and is now dropped, the task left open. A `reply` with a
+ * `notice` field, one per message (its id is derived from the message's), and
+ * only to a peer that advertises `A2A_FEATURE_HELD_NOTICE`, which is the
+ * caller's to check. The peer shows its own fixed text; `text` is the same
+ * fixed words, for a reader of the raw envelope.
+ */
+export function sendHeldNotice(deps: StateDeps, input: { taskId: string; messageId: string; at: string }): OutboundResult {
+  const found = remoteTaskAndLink(deps, input.taskId);
+  if (!found.ok) return found;
+  const { task, link } = found;
+  if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: false, error: 'ended' };
+  const check = deps.linkStore.checkMessage(link.linkId, link.version, link.remote.hostId, 'outbound', 'reply', undefined, { onThisLink: true });
+  if (!check.ok) return { ok: false, error: check.error };
+  const notice: A2aRemoteNoticeV1 = { kind: 'held-expired', messageId: input.messageId, sentAt: input.at };
+  try {
+    deps.outbox.enqueue(link.remote.hostId, envelope(deps, link, heldNoticeMessageId(input.messageId), {
+      kind: 'reply',
+      taskId: task.id,
+      text: heldNoticeText(input.messageId, undefined),
+      notice,
+    }));
+  } catch (err) {
+    return { ok: false, error: `unavailable: could not queue for the peer (${errText(err)})` };
+  }
+  return { ok: true, taskId: task.id };
+}
+
 /** A status on a link a remote start made: its option labels redacted. */
 function spawnLinkStatus(status: A2aRemoteStatusV1): A2aRemoteStatusV1 {
   const options = status.detail?.options;
@@ -465,7 +497,7 @@ function envelope(
   deps: Pick<OutboundDeps, 'now' | 'spawnLink'>,
   link: A2aLinkRecordV1,
   messageId: string,
-  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images' | 'status'>,
+  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images' | 'status' | 'notice'>,
 ): A2aRemoteEnvelope {
   return {
     protocol: A2A_REMOTE_PROTOCOL,
@@ -484,7 +516,7 @@ function envelope(
  * field added later cannot pass unredacted).
  */
 function spawnLinkBody(
-  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images' | 'status'>,
+  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images' | 'status' | 'notice'>,
 ): typeof body {
   const r = (v: string): string => redactSecrets(v);
   const evidence: CompletionEvidence | undefined = body.evidence
@@ -512,6 +544,8 @@ function spawnLinkBody(
     ...(body.receipt === 'delivered' || body.receipt === 'read' ? { receipt: body.receipt } : {}),
     // A status is rebuilt from its checked shape; the only free text, its options, redacted.
     ...(body.status ? { status: spawnLinkStatus(body.status) } : {}),
+    // A notice is ids and a time only, rebuilt from its checked shape.
+    ...(body.notice ? { notice: { kind: body.notice.kind, messageId: body.notice.messageId, sentAt: body.notice.sentAt } } : {}),
   };
 }
 

@@ -1217,14 +1217,30 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
   if ('held' in target) return { ok: true, delivered: false, held: target.held };
   const msg = task.history.find((h) => h.messageId === messageId);
   const part = msg?.parts.find((p) => p.kind === 'text');
+  const liveMeta = deliveryLiveMeta(useStore.getState().surfaceAgent, target.pty, target.ws.metadata);
+  if (item.kind === 'notice') {
+    // The other host's notice about one of this side's messages: this PC's daemon wrote its words (fixed
+    // text, an id and a time), so it goes in as one line in wmux's own voice, never as the agent's reply.
+    const line = oneLine(sanitizeRemoteMessage(part && part.kind === 'text' ? part.text : ''));
+    if (!line) return { error: `${A2A_REMOTE_NOTIFY_METHOD}: the notice has no text` };
+    return writeRemoteDelivery({ ...anchor, ptyId: target.pty }, target, () => (isLiveTuiAgent(liveMeta)
+      ? deliverPtyNudge(target.ws, line, target.pty, false)
+      : deliverPtyNotification(target.ws, 'wmux', line, target.pty, false)));
+  }
   const text = sanitizeRemoteMessage(part && part.kind === 'text' ? part.text : '');
   const images = deliveredImagesOf(msg?.parts);
   if (!text && images.length === 0) return { error: `${A2A_REMOTE_NOTIFY_METHOD}: the reply has no text` };
   const senderName = sanitizeRemoteText(task.metadata[side === 'from' ? 'to' : 'from'].name);
-  const liveMeta = deliveryLiveMeta(useStore.getState().surfaceAgent, target.pty, target.ws.metadata);
+  // A held reply offered late (main's fixed words and a time): said first, on its own line.
+  const delayed = typeof params.delayed === 'string' && /^\[wmux\] delayed: [ -~]{1,120}$/.test(params.delayed) ? params.delayed : '';
   return writeRemoteDelivery({ ...anchor, ptyId: target.pty }, target, () => (isLiveTuiAgent(liveMeta)
-    ? deliverPtyNudge(target.ws, buildA2aNudge(task.id, senderName, 'reply') + imagesNudgeSuffix(images), target.pty, false)
-    : deliverPtyNotification(target.ws, senderName, bodyWithImages(text, images), target.pty, false)));
+    ? deliverPtyNudge(target.ws, (delayed ? `${delayed}. ` : '') + buildA2aNudge(task.id, senderName, 'reply') + imagesNudgeSuffix(images), target.pty, false)
+    : deliverPtyNotification(target.ws, senderName, (delayed ? `${delayed}\n\n` : '') + bodyWithImages(text, images), target.pty, false)));
+}
+
+/** One line: control characters and line breaks folded to spaces. */
+function oneLine(text: string): string {
+  return text.replace(/[\p{Cc}\s]+/gu, ' ').trim();
 }
 
 // ---------------------------------------------------------------------------

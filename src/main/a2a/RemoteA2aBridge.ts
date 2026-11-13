@@ -1,6 +1,7 @@
 import { isRemoteTaskId } from '../../shared/a2aRemote';
 import {
   A2A_REMOTE_INBOUND_EVENT,
+  heldDelayPrefix,
   A2A_REMOTE_NOTIFY_METHOD,
   A2A_REMOTE_RPC,
   deliveredImagesOf,
@@ -71,7 +72,8 @@ export interface RemoteA2aBridgeDeps {
 type Mark =
   | { delivered: true; ptyId?: string }
   | { held: A2aRemoteHeldReason }
-  | { attempted: false; waiting?: A2aRemoteWaitingCause };
+  | { attempted: false; waiting?: A2aRemoteWaitingCause }
+  | { attempted: false; reoffer: true };
 
 /** One unit of work: the task itself, or one inbox item of it. */
 interface Work {
@@ -216,6 +218,13 @@ export class RemoteA2aBridge {
     for (const key of this.retry.keys()) if (!listed.has(key)) this.retry.delete(key);
     for (const key of this.pendingMarks.keys()) if (!listed.has(key)) this.pendingMarks.delete(key);
     for (const key of this.misses.keys()) if (!listed.has(key)) this.misses.delete(key);
+    // A task with a reply to hand over now, whose earlier replies were held for want of an agent: those
+    // are offered again first, in order (the pane is about to be tried anyway).
+    const reofferable = tasks.filter((t) => work.some((w) => w.task.id === t.id && w.item?.kind === 'reply') && reofferUnits(t).length > 0);
+    for (const task of reofferable) {
+      if (this.stopped) return;
+      await this.reofferHeld(task);
+    }
     for (const unit of work) {
       if (this.inFlight.has(unit.key)) continue;
       const pendingMark = this.pendingMarks.get(unit.key);
@@ -245,8 +254,35 @@ export class RemoteA2aBridge {
     if (!this.stopped) await this.deps.afterPull?.().catch(() => undefined);
   }
 
-  /** Hand one unit to the renderer and record the outcome. */
-  private async deliver(unit: Work, resnapshot: boolean): Promise<RetryHeldResult['results'][number]['outcome']> {
+  /**
+   * The task's replies held for want of an agent, offered again in order (a
+   * later reply is about to be tried on the same pane). Each keeps its hold
+   * and its hold time when it is not written, so the 24 h hold clock goes on;
+   * one main may have pasted and not confirmed becomes `delivery-unconfirmed`,
+   * never pasted twice. A reply with no text here is never offered.
+   */
+  private async reofferHeld(task: Task): Promise<void> {
+    for (const item of reofferUnits(task)) {
+      const key = itemKey(task.id, item.messageId);
+      if (this.inFlight.has(key)) continue;
+      const ref = { taskId: task.id, messageId: item.messageId };
+      if (item.attempted) {
+        // eslint-disable-next-line no-await-in-loop -- in the task's order
+        await this.mark(key, { ...ref, mark: { held: 'delivery-unconfirmed' } });
+        continue;
+      }
+      this.inFlight.add(key);
+      try {
+        // eslint-disable-next-line no-await-in-loop -- in the task's order
+        await this.deliver({ key, task, item }, false, true);
+      } finally {
+        this.inFlight.delete(key);
+      }
+    }
+  }
+
+  /** Hand one unit to the renderer and record the outcome. `reoffer`: a held reply offered again. */
+  private async deliver(unit: Work, resnapshot: boolean, reoffer = false): Promise<RetryHeldResult['results'][number]['outcome']> {
     const { task, item } = unit;
     const marker = task.metadata.remote as A2aRemoteTaskState;
     // A pane task always names its local pane; one that does not is held, never guessed.
@@ -261,7 +297,7 @@ export class RemoteA2aBridge {
     // Durable BEFORE the write: if main dies after the paste, the daemon knows
     // a paste may have happened and the unit is not pasted again on its own.
     try {
-      const started = await this.deps.daemonRpc(A2A_REMOTE_RPC.mark, { ...ref, attempted: true });
+      const started = await this.deps.daemonRpc(A2A_REMOTE_RPC.mark, { ...ref, attempted: true, ...(reoffer ? { reoffer: true } : {}) });
       if (!isRecord(started) || started.ok !== true) throw new Error(isRecord(started) && typeof started.error === 'string' ? started.error : 'not recorded');
     } catch (err) {
       this.backoff(unit.key);
@@ -272,7 +308,13 @@ export class RemoteA2aBridge {
     try {
       res = item
         // A gated paste with its submit receipt can outlast the bridge's 5 s default.
-        ? await this.deps.sendToRenderer(A2A_REMOTE_NOTIFY_METHOD, { task, messageId: item.messageId, ...(resnapshot ? { resnapshot: true } : {}) }, { timeoutMs: GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS })
+        ? await this.deps.sendToRenderer(A2A_REMOTE_NOTIFY_METHOD, {
+          task,
+          messageId: item.messageId,
+          ...(resnapshot ? { resnapshot: true } : {}),
+          // Offered late: the pane is told it was held, and since when.
+          ...(reoffer ? { delayed: heldDelayPrefix(item.at ?? item.heldAt) } : {}),
+        }, { timeoutMs: GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS })
         : await this.deps.sendToRenderer('a2a.task.send', this.taskParams(task, marker, resnapshot), { timeoutMs: GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS });
     } catch (err) {
       this.backoff(unit.key);
@@ -280,7 +322,8 @@ export class RemoteA2aBridge {
       this.deps.log?.('warn', `[a2a-remote] delivery of ${unit.key} failed: ${msg}`);
       // No window: nothing was written. Anything else (a timeout) may have
       // pasted, so the attempt stands and the unit goes to a person.
-      if (/BrowserWindow is not available/.test(msg)) await this.mark(unit.key, { ...ref, mark: { attempted: false } });
+      if (/BrowserWindow is not available/.test(msg)) await this.mark(unit.key, { ...ref, mark: reoffer ? { attempted: false, reoffer: true } : { attempted: false } });
+      else if (reoffer) await this.mark(unit.key, { ...ref, mark: { held: 'delivery-unconfirmed' } });
       return 'not-delivered';
     }
     const result = res as A2aRemoteDeliveryResult;
@@ -292,6 +335,15 @@ export class RemoteA2aBridge {
         mark: { delivered: true, ...(result.ptyId ? { ptyId: result.ptyId } : {}) },
       });
       return 'delivered';
+    }
+    if (reoffer) {
+      // Still held, under the same hold (and its time) unless the renderer names another reason.
+      if (isRecord(result) && result.ok === true && result.delivered === false && result.held && result.held !== item?.held) {
+        await this.mark(unit.key, { ...ref, mark: { held: result.held } });
+        return result.held;
+      }
+      await this.mark(unit.key, { ...ref, mark: { attempted: false, reoffer: true } });
+      return 'not-delivered';
     }
     this.backoff(unit.key);
     if (isRecord(result) && result.ok === true && result.delivered === false && result.held) {
@@ -397,12 +449,23 @@ function workOf(task: Task): Work[] {
   const taskOwed = marker.direction === 'inbound' && marker.delivered !== true;
   if (taskOwed && !marker.held && !ended) out.push({ key: task.id, task });
   for (const item of marker.inbox ?? []) {
-    if (item.delivered === true || item.held) continue;
+    if (item.delivered === true || item.held || item.rejected) continue;
     // A reply into an inbound task waits until the task itself is in the pane.
     if (item.kind === 'reply' && taskOwed) continue;
     out.push({ key: itemKey(task.id, item.messageId), task, item });
   }
   return out;
+}
+
+/**
+ * A task's replies held for want of an agent that may be offered again, in
+ * the task's order: not ended, not dropped, and with their text in history.
+ */
+function reofferUnits(task: Task): A2aRemoteInboxItem[] {
+  const marker = task.metadata?.remote as A2aRemoteTaskState | undefined;
+  if (!marker || marker.v !== 1 || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return [];
+  return (marker.inbox ?? []).filter((i) => i.kind === 'reply' && i.held === 'no-agent' && !i.rejected && i.delivered !== true
+    && task.history.some((m) => m.messageId === i.messageId));
 }
 
 function itemKey(taskId: string, messageId: string): string {
