@@ -2,14 +2,12 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChromeLauncher } from '../../main/browser-session/ChromeLauncher';
-import { DOWNLOAD_DIR_PREFIX } from '../chromeDownloads';
 import { stopChrome, tempChromeProfile } from '../chromeProfile';
 import { removeTempDirs } from '../removeTempDir';
-import { sweepStaleTempDirs } from '../staleTempDirs';
+import { SWEEP_MARKER, makeSweepableTempDir } from '../staleTempDirs';
 
 describe('tempChromeProfile', () => {
   it('removes the profile, its pinned download folder and every scratch dir, keeping extra preferences next to the pin', async () => {
@@ -23,27 +21,30 @@ describe('tempChromeProfile', () => {
     expect([profile.dir, profile.downloads, scratch].filter((d) => fs.existsSync(d))).toEqual([]);
   });
 
-  it('leaves nothing in the temp dir, and sweeps the stale dirs a killed run left', async () => {
+  it('leaves nothing in the temp dir, and sweeps the marked stale profile a killed run left', async () => {
     // A temp dir of this test's own, so the count is exact while other runs share the machine's.
-    sweepStaleTempDirs('wmux-profile-count-root-');
-    const ownTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-profile-count-root-'));
+    const ownTmp = makeSweepableTempDir('wmux-profile-count-root-');
     for (const k of ['TMPDIR', 'TEMP', 'TMP']) vi.stubEnv(k, ownTmp);
     try {
       // As a run killed before its afterAll leaves them: a day and more old, no Chrome on them.
+      // Only the one the helper marked is its to sweep.
       const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
-      const stale = ['wmux-profile-count-', DOWNLOAD_DIR_PREFIX, 'wmux-profile-scratch-'].map((p) => {
-        const dir = fs.mkdtempSync(path.join(ownTmp, p));
-        fs.writeFileSync(path.join(dir, 'Local State'), '{}');
-        fs.utimesSync(path.join(dir, 'Local State'), old, old);
+      const [marked, unmarked] = [true, false].map((mark) => {
+        const dir = fs.mkdtempSync(path.join(ownTmp, 'wmux-profile-count-'));
+        for (const name of ['Local State', ...(mark ? [SWEEP_MARKER] : [])]) {
+          fs.writeFileSync(path.join(dir, name), '');
+          fs.utimesSync(path.join(dir, name), old, old);
+        }
         fs.utimesSync(dir, old, old);
         return dir;
       });
 
       const profile = tempChromeProfile('wmux-profile-count-');
+      expect(fs.lstatSync(path.join(profile.dir, SWEEP_MARKER)).isFile()).toBe(true);
       profile.scratch('wmux-profile-scratch-');
-      expect(stale.filter((d) => fs.existsSync(d))).toEqual([]);
+      expect([fs.existsSync(marked), fs.existsSync(unmarked)]).toEqual([false, true]);
       await profile.remove();
-      expect(fs.readdirSync(ownTmp)).toEqual([]);
+      expect(fs.readdirSync(ownTmp).filter((n) => n !== SWEEP_MARKER)).toEqual([path.basename(unmarked)]);
     } finally {
       vi.unstubAllEnvs();
       await removeTempDirs([ownTmp]);

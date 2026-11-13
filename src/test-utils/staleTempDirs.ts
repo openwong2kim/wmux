@@ -8,8 +8,9 @@ import path from 'node:path';
  * A suite removes its own temp dir in afterAll, which never runs when the
  * worker or the whole run is killed (a cancelled job, SIGKILL, a timeout
  * teardown). Those dirs then stay in a long-lived TMPDIR until something
- * removes them; this is that something, run before the next dir of the same
- * prefix is made. It removes a dir only when all of these hold:
+ * removes them; this is that something, run by makeSweepableTempDir before the
+ * first dir of a prefix in a process is made. It removes a dir only when all of
+ * these hold:
  *
  * - the temp dir's realpath is a dir no other user can rename entries in (not
  *   group- or world-writable, or sticky);
@@ -18,16 +19,22 @@ import path from 'node:path';
  * - lstat says it is a real directory, not a link, its realpath is that same
  *   path, and, outside Windows, it is owned by this user and closed to others
  *   (mode 0700, as mkdtemp makes it);
+ * - it holds SWEEP_MARKER, a regular file of this user's, which only
+ *   makeSweepableTempDir writes: a dir anything else made is never a
+ *   candidate, whatever its name;
  * - nothing uses it (`inUse`; by default no live Chrome holds its lock);
  * - it and everything in it (links not followed) are older than `maxAgeMs`;
  * - a second lstat right before the removal sees the same dir (dev, ino).
  *
- * The removal does not follow links inside the dir (fs.rmSync unlinks a link
- * rather than descending into it). Anything it cannot check or remove is kept.
+ * Every removal goes through removeTempDirInside. Anything it cannot check or
+ * remove is kept.
  */
 
 /** Leftovers older than this are swept: far longer than any test run. */
 export const STALE_TEMP_DIR_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** The file makeSweepableTempDir writes in each dir; the sweep removes no dir without it. */
+export const SWEEP_MARKER = '.wmux-sweepable-test-dir';
 
 const MKDTEMP_SUFFIX = '[A-Za-z0-9]{6}';
 const ownUid = (): number | null => (typeof process.getuid === 'function' ? process.getuid() : null);
@@ -43,6 +50,37 @@ const BOOT_SLACK_MS = 60_000;
 /** Owned by this user and closed to everyone else; not checked on Windows. */
 function ownedAndClosed(st: fs.Stats, uid: number | null): boolean {
   return uid === null || (st.uid === uid && (st.mode & 0o077) === 0);
+}
+
+/** The dir holds the marker as a regular file of this user's (not a link or a dir). */
+function hasMarker(dir: string, uid: number | null): boolean {
+  try {
+    const st = fs.lstatSync(path.join(dir, SWEEP_MARKER));
+    return st.isFile() && (uid === null || st.uid === uid);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The sweep's one removal path. Removes `dir` only when it sits directly in
+ * `root`'s realpath, lstat says it is a real directory (not a link), its
+ * realpath is itself, and, when `expected` is given, it is still that dir
+ * (dev, ino). fs.rmSync unlinks the links inside instead of following them.
+ * Returns whether it removed the dir; never throws.
+ */
+export function removeTempDirInside(root: string, dir: string, expected?: { dev: number; ino: number }): boolean {
+  try {
+    if (path.dirname(dir) !== fs.realpathSync(root)) return false;
+    const st = fs.lstatSync(dir);
+    if (!st.isDirectory()) return false;
+    if (expected && (st.dev !== expected.dev || st.ino !== expected.ino)) return false;
+    if (fs.realpathSync(dir) !== dir) return false;
+    fs.rmSync(dir, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -142,16 +180,37 @@ export function sweepStaleTempDirs(prefix: string, opts: SweepOptions = {}): str
     const dir = path.join(root, name);
     try {
       const first = fs.lstatSync(dir);
-      if (!first.isDirectory() || !ownedAndClosed(first, uid)) continue;
+      if (!first.isDirectory() || !ownedAndClosed(first, uid) || !hasMarker(dir, uid)) continue;
       if (fs.realpathSync(dir) !== dir) continue;
       if (inUse(dir) || !allOlderThan(dir, now - maxAgeMs)) continue;
-      const again = fs.lstatSync(dir);
-      if (!again.isDirectory() || again.dev !== first.dev || again.ino !== first.ino) continue;
-      fs.rmSync(dir, { recursive: true, force: true });
-      removed.push(dir);
+      if (removeTempDirInside(root, dir, first)) removed.push(dir);
     } catch {
       // Kept: whatever could not be checked or removed stays for a later sweep.
     }
   }
   return removed;
+}
+
+/** Temp dir and prefix pairs this process has swept already. */
+const swept = new Set<string>();
+
+/**
+ * mkdtemp under os.tmpdir(), with SWEEP_MARKER written in it so a later sweep
+ * may remove it once it is stale. The first call for a prefix in a process
+ * sweeps that prefix's stale dirs before making the new one.
+ */
+export function makeSweepableTempDir(prefix: string): string {
+  const key = `${os.tmpdir()}\0${prefix}`;
+  if (!swept.has(key)) {
+    swept.add(key);
+    sweepStaleTempDirs(prefix);
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  try {
+    fs.writeFileSync(path.join(dir, SWEEP_MARKER), '', { flag: 'wx', mode: 0o600 });
+  } catch (err) {
+    removeTempDirInside(os.tmpdir(), dir);
+    throw err;
+  }
+  return dir;
 }

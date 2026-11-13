@@ -1,10 +1,17 @@
-// The sweep of a killed run's temp dirs removes only stale, unused dirs of its
-// own prefix, directly in the temp dir, and never follows a link out of it.
+// The sweep of a killed run's temp dirs removes only stale, unused, marked dirs
+// of its own prefix, directly in the temp dir, and never follows a link out of it.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { STALE_TEMP_DIR_AGE_MS, chromeHoldsProfile, sweepStaleTempDirs } from '../staleTempDirs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  STALE_TEMP_DIR_AGE_MS,
+  SWEEP_MARKER,
+  chromeHoldsProfile,
+  makeSweepableTempDir,
+  removeTempDirInside,
+  sweepStaleTempDirs,
+} from '../staleTempDirs';
 
 const isWin = process.platform === 'win32';
 const PREFIX = 'wmux-sweep-test-';
@@ -12,11 +19,12 @@ const DAY = STALE_TEMP_DIR_AGE_MS;
 let root = '';
 let outside = '';
 
-/** A dir named and moded as mkdtemp makes it, with a file in it, made `ageMs` old. */
-function leftover(name: string, ageMs: number): string {
+/** A dir as makeSweepableTempDir makes it (mode, marker), with a file in it, made `ageMs` old. */
+function leftover(name: string, ageMs: number, marked = true): string {
   const dir = path.join(root, name);
   fs.mkdirSync(dir, { mode: 0o700 });
   fs.writeFileSync(path.join(dir, 'Preferences'), '{}');
+  if (marked) fs.writeFileSync(path.join(dir, SWEEP_MARKER), '');
   age(dir, ageMs);
   return dir;
 }
@@ -130,11 +138,44 @@ describe('sweepStaleTempDirs', () => {
   it.skipIf(isWin)('removes a stale dir holding a link out of the temp dir without following it', () => {
     const dir = path.join(root, `${PREFIX}Inner1`);
     fs.mkdirSync(dir, { mode: 0o700 });
+    fs.writeFileSync(path.join(dir, SWEEP_MARKER), '');
     fs.symlinkSync(outside, path.join(dir, 'Default'));
     age(dir, 2 * DAY);
     expect(sweepStaleTempDirs(PREFIX, { root, inUse: unused })).toEqual([dir]);
     expect(fs.existsSync(dir)).toBe(false);
     expect(fs.readFileSync(path.join(outside, 'keep-me'), 'utf8')).toBe('x');
+  });
+
+  it('keeps a dir without the marker, or whose marker is not a regular file', () => {
+    leftover(`${PREFIX}NoMrk1`, 2 * DAY, false);
+    const asDir = leftover(`${PREFIX}DirMrk`, 2 * DAY, false);
+    fs.mkdirSync(path.join(asDir, SWEEP_MARKER));
+    age(asDir, 2 * DAY);
+    const names = [`${PREFIX}NoMrk1`, `${PREFIX}DirMrk`];
+    if (!isWin) {
+      const asLink = leftover(`${PREFIX}LnkMrk`, 2 * DAY, false);
+      fs.writeFileSync(path.join(outside, 'marker'), '');
+      fs.symlinkSync(path.join(outside, 'marker'), path.join(asLink, SWEEP_MARKER));
+      age(asLink, 2 * DAY);
+      names.push(`${PREFIX}LnkMrk`);
+    }
+    expect(sweepStaleTempDirs(PREFIX, { root, inUse: unused })).toEqual([]);
+    expect(kept()).toEqual(names.sort());
+  });
+
+  it('keeps a dir swapped for another after its checks began', () => {
+    const dir = leftover(`${PREFIX}Swap01`, 2 * DAY);
+    const swapped: string[] = [];
+    const swap = (d: string) => {
+      // Another dir, as stale and marked, takes the same name mid-sweep.
+      fs.renameSync(d, `${d}-moved`);
+      swapped.push(`${d}-moved`);
+      leftover(path.basename(d), 2 * DAY);
+      return false;
+    };
+    expect(sweepStaleTempDirs(PREFIX, { root, inUse: swap })).toEqual([]);
+    expect(swapped).toEqual([`${dir}-moved`]);
+    expect(kept()).toEqual([`${PREFIX}Swap01`, `${PREFIX}Swap01-moved`]);
   });
 
   it('keeps a dir something still uses', () => {
@@ -148,6 +189,60 @@ describe('sweepStaleTempDirs', () => {
     if (!isWin) fs.symlinkSync(root, viaLink);
     const stale = leftover(`${PREFIX}aB3dE9`, 2 * DAY);
     expect(sweepStaleTempDirs(PREFIX, { root: isWin ? root : viaLink, inUse: unused })).toEqual([stale]);
+  });
+});
+
+describe('removeTempDirInside', () => {
+  it.skipIf(isWin)('refuses a link, even one named and placed like a candidate, and leaves what it points to', () => {
+    const link = path.join(root, `${PREFIX}Link02`);
+    fs.symlinkSync(outside, link);
+    expect(removeTempDirInside(root, link)).toBe(false);
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(path.join(outside, 'keep-me'), 'utf8')).toBe('x');
+  });
+
+  it.skipIf(isWin)('removes a dir holding a link out of the temp dir, unlinking the link without following it', () => {
+    const dir = leftover(`${PREFIX}Inner2`, 0);
+    fs.symlinkSync(outside, path.join(dir, 'Default'));
+    expect(removeTempDirInside(root, dir)).toBe(true);
+    expect(fs.existsSync(dir)).toBe(false);
+    expect(fs.readFileSync(path.join(outside, 'keep-me'), 'utf8')).toBe('x');
+  });
+
+  it('refuses a file', () => {
+    const file = path.join(root, `${PREFIX}File01`);
+    fs.writeFileSync(file, 'x');
+    expect(removeTempDirInside(root, file)).toBe(false);
+    expect(fs.existsSync(file)).toBe(true);
+  });
+
+  it('refuses anything not directly in the temp dir, a relative path, or a dir that changed', () => {
+    const dir = leftover(`${PREFIX}Place1`, 0);
+    const nested = path.join(dir, 'sub');
+    fs.mkdirSync(nested);
+    expect(removeTempDirInside(root, nested)).toBe(false);
+    expect(removeTempDirInside(root, outside)).toBe(false);
+    expect(removeTempDirInside(root, path.relative(process.cwd(), dir))).toBe(false);
+    expect(removeTempDirInside(root, `${root}${path.sep}..${path.sep}${path.basename(outside)}`)).toBe(false);
+    const st = fs.lstatSync(dir);
+    expect(removeTempDirInside(root, dir, { dev: st.dev, ino: st.ino + 1 })).toBe(false);
+    expect(fs.existsSync(nested) && fs.existsSync(outside)).toBe(true);
+    expect(removeTempDirInside(root, dir, st)).toBe(true);
+  });
+});
+
+describe('makeSweepableTempDir', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('marks the dir it makes, and first sweeps only the marked stale dirs of its prefix', () => {
+    for (const k of ['TMPDIR', 'TEMP', 'TMP']) vi.stubEnv(k, root);
+    const stale = leftover(`${PREFIX}Mark01`, 2 * DAY);
+    leftover(`${PREFIX}NoMrk2`, 2 * DAY, false);
+    const made = makeSweepableTempDir(PREFIX);
+    expect(path.dirname(fs.realpathSync(made))).toBe(root);
+    expect(fs.lstatSync(path.join(made, SWEEP_MARKER)).isFile()).toBe(true);
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(kept()).toEqual([path.basename(made), `${PREFIX}NoMrk2`].sort());
   });
 });
 

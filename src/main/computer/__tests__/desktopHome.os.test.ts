@@ -1,9 +1,8 @@
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { REMOVE_TEMP_DIR_HOOK_TIMEOUT_MS, removeTempDirs } from '../../../test-utils/removeTempDir';
-import { sweepStaleTempDirs } from '../../../test-utils/staleTempDirs';
+import { SWEEP_MARKER, makeSweepableTempDir } from '../../../test-utils/staleTempDirs';
 import { trackedTempDir } from '../../../test-utils/trackedTempDir';
 import { clearDesktopSnapshots, endDesktopRunner, prepareDesktopHome } from '../desktopHome';
 
@@ -14,16 +13,15 @@ let ownTmp = '';
 const tmp = () => trackedTempDir('adhome-');
 
 beforeAll(() => {
-  // One a killed run of this file left.
-  sweepStaleTempDirs('wmux-adhome-count-');
-  ownTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-adhome-count-'));
+  // Marked, so a later run sweeps it if this one is killed before afterAll.
+  ownTmp = makeSweepableTempDir('wmux-adhome-count-');
   for (const k of ['TMPDIR', 'TEMP', 'TMP']) vi.stubEnv(k, ownTmp);
 });
 // Runs before trackedTempDir's own afterAll: only per-test dirs are removed by now.
 afterAll(async () => {
   vi.unstubAllEnvs();
   if (!ownTmp) return;
-  const left = fs.readdirSync(ownTmp);
+  const left = fs.readdirSync(ownTmp).filter((n) => n !== SWEEP_MARKER);
   await removeTempDirs([ownTmp]);
   expect(left).toEqual([]);
 }, REMOVE_TEMP_DIR_HOOK_TIMEOUT_MS);
