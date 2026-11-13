@@ -1505,6 +1505,80 @@ describe('a usage limit on a headless session (no hooks, nobody at the pane)', (
     expect(typed).toEqual([PROMPT, USAGE_LIMIT_CONTINUE_PROMPT, USAGE_LIMIT_CONTINUE_PROMPT]);
   });
 
+  /** A later reset than LIMIT_TEXT's: 11:50pm (Asia/Seoul) on the same day, 14:50 UTC. */
+  const LATER_TEXT = "You've hit your limit · resets 11:50pm (Asia/Seoul)";
+  const LATER = Date.UTC(2026, 10, 13, 14, 50);
+  /** Claude Code's own auto-continuation prompt (its staged line). */
+  const AUTO_PROMPT = () => AUTO_RESUME[3]!;
+
+  it('Claude Code\'s own retries hit the limit again: one notice per reset time; a later reset is told once more, and its cap is its own', async () => {
+    const d = new HeadlessDelivery(limitDeps());
+    await atLimit(d);
+    // Its retry, then the limit again with the same reset: nothing new to tell.
+    write(AUTO_PROMPT(), apiErrorLine('rate_limit', LIMIT_TEXT));
+    await d.tick();
+    write(AUTO_PROMPT(), apiErrorLine('rate_limit', LIMIT_TEXT));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual([limitNotice(RESET)]);
+    // Then a later reset: told once, as moved.
+    write(AUTO_PROMPT(), apiErrorLine('rate_limit', LATER_TEXT));
+    await d.tick();
+    write(AUTO_PROMPT(), apiErrorLine('rate_limit', LATER_TEXT));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual([limitNotice(RESET), limitNotice(LATER, true)]);
+    expect(replies[1]!.text).toContain('again; it now resets at 2026-11-13T14:50:00.000Z');
+    // The first reset's cap passed: the later reset is the one waited for.
+    clock = RESET + LIMIT_RESUME_MARGIN_MS + LIMIT_PROBE_MS;
+    await d.tick();
+    expect(task.status.state).toBe('working');
+    clock = LATER + LIMIT_RESUME_MARGIN_MS;
+    await d.tick();
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: limitReason(LATER) });
+    expect(typed).toEqual([PROMPT]);
+  });
+
+  it('a second limit after the daemon\'s continue: its own Escape count, its own one continue', async () => {
+    const d = new HeadlessDelivery(limitDeps());
+    await atLimit(d);
+    clock = AFTER_RESET;
+    screens = ['menu', 'menu', 'menu', 'menu'];
+    await d.tick();
+    for (let i = 0; i < 3; i++) await advance(d, LIMIT_PROBE_MS);
+    expect(escapes).toBe(3);
+    screens = ['clear', 'clear'];
+    await advance(d, LIMIT_PROBE_MS);
+    await advance(d, LIMIT_PROBE_MS);
+    expect(typed).toEqual([PROMPT, USAGE_LIMIT_CONTINUE_PROMPT]);
+    // The continue goes in, and hits the limit again (a later reset).
+    write(userLine(USAGE_LIMIT_CONTINUE_PROMPT), apiErrorLine('rate_limit', LATER_TEXT));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual([limitNotice(RESET), limitNotice(LATER, true)]);
+    clock = LATER + LIMIT_CONTINUE_GRACE_MS;
+    screens = ['menu'];
+    await d.tick();
+    expect(escapes).toBe(4);
+    screens = ['clear', 'clear', 'clear'];
+    for (let i = 0; i < 3; i++) await advance(d, LIMIT_PROBE_MS);
+    expect(typed).toEqual([PROMPT, USAGE_LIMIT_CONTINUE_PROMPT, USAGE_LIMIT_CONTINUE_PROMPT]);
+    write(userLine(USAGE_LIMIT_CONTINUE_PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(replies.at(-1)?.text).toBe('PONG');
+    expect(task.status.state).toBe('input-required');
+  });
+
+  it('a reset that is not known, hit again by retries: one notice, and the cap still counts from the first stop', async () => {
+    const d = new HeadlessDelivery(limitDeps({ limitScreen: async () => 'other' }));
+    await atLimit(d, "You've hit your usage limit");
+    const seen = clock;
+    clock = seen + 2 * 60 * 60 * 1000;
+    write(AUTO_PROMPT(), apiErrorLine('rate_limit', "You've hit your usage limit"));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual([limitNotice(null)]);
+    clock = seen + LIMIT_UNKNOWN_MAX_MS;
+    await d.tick();
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: limitReason(null) });
+  });
+
   it('a reset that is not known: nothing is typed; the task fails after the fixed maximum, with the reason', async () => {
     const d = new HeadlessDelivery(limitDeps({ limitScreen: async () => 'clear' }));
     await atLimit(d, "You've hit your usage limit");

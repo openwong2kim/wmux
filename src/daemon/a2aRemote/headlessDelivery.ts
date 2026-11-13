@@ -78,8 +78,17 @@ export const LIMIT_PROBE_MS = 10 * 1000;
 /** Escape is pressed on the limit menu at most this many times. */
 const LIMIT_ESCAPES_MAX = 3;
 
-/** What the asking PC is told, once, when the agent stops at its usage limit. */
-export function limitNotice(resetsAt: number | null): string {
+/**
+ * What the asking PC is told when the agent stops at its usage limit: once per
+ * reset time on a task. `again`: the task was told of another reset before
+ * (Claude Code went on by itself and hit the limit again, now with this reset).
+ */
+export function limitNotice(resetsAt: number | null, again = false): string {
+  if (again) {
+    return resetsAt != null
+      ? `The agent on that PC hit its usage limit again; it now resets at ${new Date(resetsAt).toISOString()}, and the agent goes on after that.`
+      : 'The agent on that PC hit its usage limit again; when it resets is not known.';
+  }
   return resetsAt != null
     ? `The agent on that PC is at its usage limit until ${new Date(resetsAt).toISOString()}; it goes on after that.`
     : "The agent on that PC is at its usage limit; when it resets is not known.";
@@ -207,12 +216,19 @@ export interface Episode {
     at: number | null;
     seenAt?: number;
     resetsAt?: number | null;
-    noticed?: boolean;
+    /** When the task ends if the agent has not gone on: this stop's reset plus the margin, or LIMIT_UNKNOWN_MAX_MS from `limitUnknownSince`. */
+    capAt?: number;
     probedAt?: number;
     escapes?: number;
     clearSince?: number | null;
     continued?: boolean;
   };
+  /**
+   * The first usage-limit stop with no known reset since the agent last wrote
+   * anything of its own: the unknown-reset cap counts from it, so retries that
+   * hit the limit again do not start it over.
+   */
+  limitUnknownSince?: number | null;
   /** Text of the assistant entries since the last tool call: the answer so far. */
   answer: string[];
   /** The task was moved to `working` (a failed move is tried again). */
@@ -376,6 +392,8 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
     }
     return { kind: 'failed', reason: `the agent's turn ended on an error: ${apiError.message || apiError.error}` };
   }
+  // The agent wrote something of its own (API errors returned above): a later unknown-reset stop is a new wait.
+  if (raw?.type === 'assistant') ep.limitUnknownSince = null;
   // Claude Code went on by itself after its limit stop (its notice, its own prompt, or the agent writing on): no continue is owed.
   if (ep.limitStopped && (raw?.type === 'assistant' || raw?.autoContinued)) {
     ep.limitStopped = false;
@@ -443,6 +461,8 @@ export class HeadlessDelivery {
   private readonly questions = new Map<string, { since: number | null; probedAt: number; noticedTask: string | null }>();
   /** After an answer, by session: the transcript read on for turns nothing on this PC started. */
   private readonly afterwards = new Map<string, Episode>();
+  /** The usage-limit resets each task's asking PC was told of (`limitNotice`), by reset time (`unknown`). */
+  private readonly limitNoticed = new Map<string, Set<string>>();
   /** Replies sent on each task besides its answers (progress, later turns): bounded by FURTHER_REPLIES_MAX. */
   private readonly further = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -473,6 +493,7 @@ export class HeadlessDelivery {
     if (this.ticking || this.stopped) return;
     this.ticking = true;
     try {
+      for (const taskId of [...this.limitNoticed.keys()]) if (this.ended(taskId)) this.limitNoticed.delete(taskId);
       for (const ep of [...this.episodes.values()]) {
         try {
           await this.follow(ep);
@@ -827,6 +848,10 @@ export class HeadlessDelivery {
     if (limit.seenAt === undefined) {
       limit.seenAt = this.now();
       limit.resetsAt = claudeUsageLimitFromStopFailure({ error: 'rate_limit', last_assistant_message: limit.message }, limit.at ?? limit.seenAt)?.resetsAt ?? null;
+      // A known reset is a real wait of its own, so a later one sets a later cap. An unknown one counts from the
+      // first unknown stop since the agent last wrote, so a retry that hits the limit again does not extend it.
+      if (limit.resetsAt != null) limit.capAt = limit.resetsAt + LIMIT_RESUME_MARGIN_MS;
+      else limit.capAt = (ep.limitUnknownSince ??= limit.seenAt) + LIMIT_UNKNOWN_MAX_MS;
       this.deps.noteLimit?.(ep.sessionId, limit.message, limit.at);
       this.deps.log('info', `[headless] task ${ep.taskId}: the agent is at its usage limit (${limit.resetsAt != null ? `resets ${new Date(limit.resetsAt).toISOString()}` : 'reset unknown'})`);
     }
@@ -834,7 +859,7 @@ export class HeadlessDelivery {
   }
 
   private limitCapAt(limit: NonNullable<Episode['limit']>): number {
-    return limit.resetsAt != null ? limit.resetsAt + LIMIT_RESUME_MARGIN_MS : (limit.seenAt ?? this.now()) + LIMIT_UNKNOWN_MAX_MS;
+    return limit.capAt ?? (limit.resetsAt != null ? limit.resetsAt + LIMIT_RESUME_MARGIN_MS : (limit.seenAt ?? this.now()) + LIMIT_UNKNOWN_MAX_MS);
   }
 
   /**
@@ -911,9 +936,17 @@ export class HeadlessDelivery {
   private async atLimit(ep: Episode): Promise<void> {
     const limit = this.limitOf(ep);
     if (!limit) return;
-    if (!limit.noticed) {
-      limit.noticed = true;
-      await this.notify(ep, limitNotice(limit.resetsAt ?? null), 'of the usage limit', ep);
+    // Once per reset time on the task: Claude Code's own retries hit the limit again with the same reset, or a later one.
+    let told = this.limitNoticed.get(ep.taskId);
+    const key = limit.resetsAt != null ? String(limit.resetsAt) : 'unknown';
+    if (!told?.has(key)) {
+      const again = (told?.size ?? 0) > 0;
+      if (!told) {
+        told = new Set();
+        this.limitNoticed.set(ep.taskId, told);
+      }
+      told.add(key);
+      await this.notify(ep, limitNotice(limit.resetsAt ?? null, again), 'of the usage limit', ep);
     }
     const now = this.now();
     const resetsAt = limit.resetsAt ?? null;
