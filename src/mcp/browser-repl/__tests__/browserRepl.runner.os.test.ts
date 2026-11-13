@@ -12,7 +12,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { BrowserReplSession } from '../BrowserReplSession';
 import { BROWSER_REPL_TOOLS, type BridgeCall } from '../bridge';
-import { RunnerLines, setBrowserReplRunnerCapForTest, type RunnerProcess } from '../runnerProcess';
+import { RunnerLines, liveBrowserReplRunnersForTest, setBrowserReplRunnerCapForTest, type RunnerProcess } from '../runnerProcess';
 import { peerPidOf } from '../../../shared/peerPid';
 import { processStartTime } from '../../../shared/processStartTime';
 import { checkClaim, resetClaimChecks } from '../../../main/pipe/handlers/peerPidShadow';
@@ -56,8 +56,12 @@ const startGrandchild = (options = "{ stdio: 'ignore' }") => [
 ].join('\n');
 const START_GRANDCHILD = startGrandchild();
 
-afterEach(() => {
+afterEach(async () => {
   for (const s of sessions.splice(0)) s.dispose();
+  // A runner's slot of the cap comes back on its 'close', which can come after
+  // its pid is gone; dispose does not wait for it. Each test starts with none
+  // held, so a slot freed late cannot refuse the next test's runner.
+  await vi.waitFor(() => expect(liveBrowserReplRunnersForTest()).toBe(0), { timeout: 15_000 });
   setBrowserReplRunnerCapForTest(null);
 });
 
@@ -231,6 +235,13 @@ describe('browser_repl runner process', () => {
     expect(again.ok).toBe(true);
   });
 
+  it('starts the runner with the signal-opened inspector off where the runtime takes the flag', async () => {
+    const out = await newSession().run('JSON.stringify(process.execArgv)', 10_000, bridge);
+    expect(out.ok).toBe(true);
+    const supported = process.allowedNodeEnvironmentFlags.has('--disable-sigusr1');
+    expect(JSON.parse(out.result?.text ?? '[]').includes('--disable-sigusr1')).toBe(supported);
+  });
+
   it('dispose ends the runner', async () => {
     const session = newSession();
     await session.run('1', 10_000, bridge);
@@ -240,6 +251,7 @@ describe('browser_repl runner process', () => {
   });
 
   it('refuses a runner past the cap, readably, and starts one once another ends', async () => {
+    expect(liveBrowserReplRunnersForTest()).toBe(0);
     setBrowserReplRunnerCapForTest(1);
     const a = newSession();
     expect((await a.run('1', 10_000, bridge)).ok).toBe(true);
