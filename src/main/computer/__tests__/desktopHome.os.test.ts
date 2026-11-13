@@ -1,10 +1,23 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { clearDesktopSnapshots, endDesktopRunner, prepareDesktopHome } from '../desktopHome';
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'adhome-'));
+/** Every temp dir a test made, removed after it. */
+const made: string[] = [];
+const tmp = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'adhome-'));
+  made.push(dir);
+  return dir;
+};
+const adhomes = () => fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('adhome-')).sort();
+let before: string[] = [];
+
+beforeAll(() => { before = adhomes(); });
+// Links inside are removed as links: rmSync never follows them.
+afterEach(() => { for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
+afterAll(() => { expect(adhomes()).toEqual(before); });
 
 function seed(home: string): void {
   fs.mkdirSync(path.join(home, 'snapshots', 's1'), { recursive: true });

@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChromeLauncher } from '../../main/browser-session/ChromeLauncher';
@@ -17,6 +18,23 @@ describe('tempChromeProfile', () => {
 
     await profile.remove();
     expect([profile.dir, profile.downloads, scratch].filter((d) => fs.existsSync(d))).toEqual([]);
+  });
+
+  it('leaves the count of its prefix in the temp dir unchanged, and sweeps a stale one a killed run left', async () => {
+    const prefix = 'wmux-profile-count-';
+    const ofPrefix = () => fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith(prefix)).sort();
+    const before = ofPrefix();
+    // As a run killed before its afterAll leaves it: a day and more old, no Chrome on it.
+    const stale = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    fs.writeFileSync(path.join(stale, 'Local State'), '{}');
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(path.join(stale, 'Local State'), old, old);
+    fs.utimesSync(stale, old, old);
+
+    const profile = tempChromeProfile(prefix);
+    expect(fs.existsSync(stale)).toBe(false);
+    await profile.remove();
+    expect(ofPrefix()).toEqual(before);
   });
 
   it('leaves no dir behind when setting up the profile fails', () => {
