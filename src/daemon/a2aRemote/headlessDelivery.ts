@@ -11,6 +11,7 @@ import { isClaudeUsageLimitText, USAGE_LIMIT_CONTINUE_PROMPT } from '../../share
 import { apiErrorFromTranscriptLine } from '../transcript/apiErrorTurnEnd';
 import { parseTranscriptLine } from '../transcript/parseEntry';
 import { readTranscriptDelta } from '../transcript/readTail';
+import { ClaudeSubagentCounter } from '../transcript/subagentCount';
 import type { HeadlessStartRecordV1 } from './headlessStartStore';
 import { errMsg } from './storeFile';
 
@@ -31,9 +32,15 @@ import { errMsg } from './storeFile';
  *
  * The answer is read from the agent's transcript (Claude Code), not hooks: a
  * server host has none installed. The delivered prompt opens an "episode" when
- * its own user entry shows up; the first turn end after it closes the episode
- * and its last assistant text is the reply. See `stepEpisode` for what else
- * can happen in between.
+ * its own user entry shows up; the first turn end after it with no background
+ * work of the turn's still running closes the episode, and its last assistant
+ * text is the reply. A turn end while such work runs (a background command, an
+ * async agent, a Monitor) is progress: its text goes back as a reply and the
+ * task stays `working` until the agent hears the work ended and ends a turn
+ * with nothing left running. See `stepEpisode` for what else can happen in
+ * between. After the answer, a turn nothing on this PC started (background
+ * work the agent was not waited for, a wake it set itself) is sent as a
+ * further reply on the task, a few times at most.
  */
 
 export const HEADLESS_DELIVERY_TICK_MS = 1000;
@@ -51,6 +58,15 @@ const QUESTION_NOTICE = 'The agent on that PC waits on a question on its screen 
   + 'The task ends if the question is still there 10 minutes after it appeared.';
 export const ASK_REASON = 'follow-ups need approval on this PC, which runs without a person; '
   + 'its owner can allow them with `wmux remote allow … --follow-ups direct`';
+/** A turn ended this long ago with background work still running, and the agent did nothing since: the answer goes. */
+export const BACKGROUND_WAIT_MS = 30 * 60 * 1000;
+export const BACKGROUND_NOTE = 'Background work the agent started is still running on that PC. '
+  + 'What the agent says when it ends may follow as another reply on this task.';
+/** Replies sent on a task besides its answers (progress, and turns nothing on this PC started): at most this many. */
+export const FURTHER_REPLIES_MAX = 5;
+/** How long a stopping daemon waits for the asking PCs to take what it queued for them. */
+export const HEADLESS_STOP_FLUSH_MS = 2000;
+export const DAEMON_STOPPED_REASON = 'the daemon on that PC stopped';
 
 type MarkInput = { taskId: string; messageId?: string; attempted?: boolean; delivered?: true; ptyId?: string };
 
@@ -152,6 +168,12 @@ export interface Episode {
    * its text may follow in the next entry of the same message. `at`: when that was seen.
    */
   endPending?: { messageId: string | null; at: number };
+  /** The work the agent's turns left running in the background (Claude Code); none read for another agent. */
+  work?: ClaudeSubagentCounter | null;
+  /** A turn ended with background work running, and the agent wrote nothing since: when. */
+  waitingSince?: number | null;
+  /** The text of that turn end, and whether it went back as a reply. */
+  lastProgress?: { text: string; sent: boolean } | null;
 }
 
 /** A thinking-only turn end with nothing after it closes this long after it was read. */
@@ -160,6 +182,21 @@ export const TURN_END_SETTLE_MS = 2000;
 export type EpisodeOutcome =
   | { kind: 'answered'; text: string }
   | { kind: 'failed'; reason: string };
+
+/**
+ * What one transcript line did to an episode: an outcome, or a turn end while
+ * background work runs (`progress`). `again`: the line that showed the end was
+ * not read yet; it is read once the progress is handled.
+ */
+export type EpisodeStep = EpisodeOutcome | { kind: 'progress'; text: string; again?: true };
+
+/** A turn ended: the answer, or progress while work it left runs. The buffer starts over either way. */
+function turnEnd(ep: Episode): { kind: 'answered'; text: string } | { kind: 'progress'; text: string } {
+  const text = ep.answer.join('\n\n');
+  ep.answer = [];
+  ep.endPending = undefined;
+  return (ep.work?.background ?? 0) > 0 ? { kind: 'progress', text } : { kind: 'answered', text };
+}
 
 /** The hash a delivered prompt is recognized by in the transcript. */
 export function promptHash(prompt: string): string {
@@ -223,22 +260,32 @@ function textOfContent(content: unknown): string | null {
  *  - after it, the first turn end closes it with the assistant text since the
  *    last tool call as the answer. An assistant entry that stopped for any
  *    reason other than a tool call is a turn end too (end_turn, max_tokens,
- *    refusal, a stop sequence);
+ *    refusal, a stop sequence). A turn end while background work the turns
+ *    started still runs is `progress`, and the episode stays open: the agent
+ *    is woken when that work ends (the notification parses as meta), and its
+ *    next turn end is read the same way;
  *  - an interrupt, or an API error other than a usage limit, fails it;
  *  - a usage-limit stop keeps it open, and so does the continue the daemon
  *    types once the limit resets (that exact prompt, after that stop);
  *  - any other user entry inside it is input from this PC: failed, no reply.
  * Compactions, slash commands and reminders parse as `meta`, not user text.
  */
-export function stepEpisode(ep: Episode, line: string, events: readonly TurnEvent[]): EpisodeOutcome | null {
+export function stepEpisode(ep: Episode, line: string, events: readonly TurnEvent[]): EpisodeStep | null {
   const raw = rawEntry(line);
   // A subagent's entry (in the lead's file): not the prompt, not input, and its turn end is not the lead's.
   if (raw?.sidechain) return null;
   if (ep.endPending) {
     // The stopped message goes on in its next entry; anything else means the turn is over.
     const sameMessage = raw?.type === 'assistant' && ep.endPending.messageId !== null && raw.messageId === ep.endPending.messageId;
-    if (!sameMessage) return { kind: 'answered', text: ep.answer.join('\n\n') };
+    if (!sameMessage) {
+      // Decided before this line is read: it may be what ends the background work, after the turn.
+      const end = turnEnd(ep);
+      return end.kind === 'progress' ? { ...end, again: true } : end;
+    }
   }
+  ep.work?.noteLine(line);
+  // The agent writes again: it is not waiting any more.
+  if (raw?.type === 'assistant') ep.waitingSince = null;
   if (!ep.opened) {
     const text = raw?.type === 'user' ? textOfContent(raw.content) : null;
     if (text !== null && hashOf(text) === ep.promptHash) {
@@ -267,7 +314,7 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
     if (!ep.opened) continue;
     if (event.kind === 'tool_use' || event.kind === 'tool_result') ep.answer = [];
     else if (event.kind === 'meta' && event.subtype === 'turn_aborted') return { kind: 'failed', reason: "the agent's turn was interrupted on this PC" };
-    else if (event.kind === 'meta' && event.subtype === 'turn_complete') return { kind: 'answered', text: ep.answer.join('\n\n') };
+    else if (event.kind === 'meta' && event.subtype === 'turn_complete') return turnEnd(ep);
     else if (event.kind === 'assistant_text' && !event.thinking && !answered) {
       // One entry may parse to several events: its text is taken once.
       const text = assistantTextOf(line);
@@ -278,7 +325,7 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
   // The turn ended when the entry stopped for anything but a tool call. An entry with no text of
   // its own (thinking only) leaves the end pending: the message's text may be in its next entry.
   if (ep.opened && raw?.type === 'assistant' && typeof raw.stopReason === 'string' && raw.stopReason !== 'tool_use') {
-    if (answered) return { kind: 'answered', text: ep.answer.join('\n\n') };
+    if (answered) return turnEnd(ep);
     ep.endPending = { messageId: raw.messageId, at: 0 };
   }
   return null;
@@ -313,6 +360,10 @@ export class HeadlessDelivery {
   private readonly ending = new Set<string>();
   /** The question clock of each session's current task (owed, or in its turn). */
   private readonly questions = new Map<string, { since: number | null; probedAt: number; noticedTask: string | null }>();
+  /** After an answer, by session: the transcript read on for turns nothing on this PC started. */
+  private readonly afterwards = new Map<string, Episode>();
+  /** Replies sent on each task besides its answers (progress, later turns): bounded by FURTHER_REPLIES_MAX. */
+  private readonly further = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
   /** Stopped (the daemon shutting down): a pass under way types nothing more. */
@@ -346,6 +397,13 @@ export class HeadlessDelivery {
           await this.follow(ep);
         } catch (err) {
           this.deps.log('warn', `[headless] task ${ep.taskId}: reading the agent's turn failed: ${errMsg(err)}`);
+        }
+      }
+      for (const w of [...this.afterwards.values()]) {
+        try {
+          await this.followAfter(w);
+        } catch (err) {
+          this.deps.log('warn', `[headless] task ${w.taskId}: reading the agent's later turns failed: ${errMsg(err)}`);
         }
       }
       if (!this.deps.mode.active()) return;
@@ -408,6 +466,7 @@ export class HeadlessDelivery {
   async startEnding(rec: HeadlessStartRecordV1, why: string): Promise<void> {
     this.ending.add(rec.sessionId);
     this.episodes.delete(rec.sessionId);
+    this.afterwards.delete(rec.sessionId);
     this.questions.delete(rec.sessionId);
     for (const task of this.deps.tasks.remote()) {
       const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
@@ -416,6 +475,25 @@ export class HeadlessDelivery {
       if (state === 'submitted' || state === 'working') await this.fail(task.id, rec.workspaceId, why);
       else if (state === 'input-required') await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`);
     }
+  }
+
+  /**
+   * The daemon is stopping: every live start of this run ends now, while the
+   * links can still tell the asking PCs (the sessions die later in the
+   * shutdown, after the links closed). The tasks that were open: their ids.
+   */
+  async endAll(why: string): Promise<string[]> {
+    this.stop();
+    const live = this.deps.starts.list().filter((r) => r.phase === 'started' && r.runId === this.deps.runId && !this.ending.has(r.sessionId));
+    const ids: string[] = [];
+    for (const rec of live) {
+      for (const task of this.deps.tasks.remote()) {
+        const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
+        if (marker?.direction === 'inbound' && task.metadata[localSideOf(task)].workspaceId === rec.workspaceId && !this.ended(task.id)) ids.push(task.id);
+      }
+      await this.startEnding(rec, why);
+    }
+    return ids;
   }
 
   /** The start that owns a task's local pane, when it is one of this run's live headless starts. */
@@ -585,11 +663,13 @@ export class HeadlessDelivery {
     switch (result) {
       case 'sent': {
         this.retry.delete(key);
+        // Typed in: what the agent says next is this turn's, not a later one of the task before.
+        this.afterwards.delete(rec.sessionId);
         if (this.ending.has(rec.sessionId)) return;
         const ep: Episode = {
           taskId: task.id, sessionId: rec.sessionId, workspaceId: rec.workspaceId, promptHash: promptHash(prompt),
           sentAt: this.now(), agentMessagesAtSend: agentMessages, path, offset, opened: false, limitStopped: false, answer: [],
-          working: false, outcome: null,
+          working: false, outcome: null, work: rec.agent === 'claude' ? new ClaudeSubagentCounter() : null,
         };
         this.episodes.set(rec.sessionId, ep);
         await this.markOrKeep({ ...ids, delivered: true, ...(item ? {} : { ptyId: rec.sessionId }) });
@@ -638,26 +718,113 @@ export class HeadlessDelivery {
     // Bound only after the write: read from where the file began. Bound to another file since: not this turn's.
     if (ep.path === null) ep.path = path;
     else if (ep.path !== path) return this.finish(ep, { kind: 'failed', reason: "the agent's conversation was replaced on this PC" });
+    const lines = this.readNew(ep, path);
+    // The file was cut or replaced: the turn cannot be followed any more.
+    if (lines === null) return this.finish(ep, { kind: 'failed', reason: "the agent's conversation was replaced on this PC" });
+    for (const { line, events } of lines) {
+      for (let step = stepEpisode(ep, line, events); step;) {
+        if (step.kind !== 'progress') return this.finish(ep, step);
+        await this.progress(ep, step.text);
+        step = step.again ? stepEpisode(ep, line, events) : null;
+      }
+    }
+    // A thinking-only end with nothing after it: the message had no text to come.
+    const end = this.settled(ep);
+    if (end?.kind === 'answered') return this.finish(ep, end);
+    if (end) await this.progress(ep, end.text);
+    // Work still running long after the last turn ended, and the agent quiet since: the answer goes, saying so.
+    if (ep.waitingSince != null && this.now() - ep.waitingSince >= BACKGROUND_WAIT_MS) {
+      this.deps.log('info', `[headless] task ${ep.taskId}: answered while background work still runs`);
+      const last = ep.lastProgress;
+      const lead = last && !last.sent && last.text ? `${last.text}\n\n` : '';
+      return this.finish(ep, { kind: 'answered', text: lead + BACKGROUND_NOTE });
+    }
+  }
+
+  /** The lines written since the episode's offset (the offset moved past them); null when the file was cut or replaced. */
+  private readNew(ep: Episode, path: string): Array<{ line: string; events: TurnEvent[] }> | null {
     const lines: Array<{ line: string; events: TurnEvent[] }> = [];
     const delta = readTranscriptDelta(path, ep.offset, undefined, (line, offset) => {
       const events = parseTranscriptLine(line, offset);
       lines.push({ line, events });
       return events;
     });
-    if (delta) {
-      // The file was cut or replaced: the turn cannot be followed any more.
-      if (delta.reset) return this.finish(ep, { kind: 'failed', reason: "the agent's conversation was replaced on this PC" });
-      ep.offset = delta.cursor.tailOffset;
-      for (const { line, events } of lines) {
-        const outcome = stepEpisode(ep, line, events);
-        if (outcome) return this.finish(ep, outcome);
+    if (!delta) return [];
+    if (delta.reset) return null;
+    ep.offset = delta.cursor.tailOffset;
+    return lines;
+  }
+
+  /** A thinking-only end that nothing followed for TURN_END_SETTLE_MS: the turn's end, now. */
+  private settled(ep: Episode): ReturnType<typeof turnEnd> | null {
+    if (!ep.endPending) return null;
+    if (ep.endPending.at === 0) {
+      ep.endPending.at = this.now();
+      return null;
+    }
+    return this.now() - ep.endPending.at >= TURN_END_SETTLE_MS ? turnEnd(ep) : null;
+  }
+
+  /**
+   * A turn ended while work it left runs: its text goes back as a reply (the
+   * task stays `working`), and the episode waits for the agent's next turn.
+   */
+  private async progress(ep: Episode, text: string): Promise<void> {
+    ep.waitingSince = this.now();
+    const body = text.trim();
+    ep.lastProgress = { text: body, sent: false };
+    if (!body || this.ended(ep.taskId)) return;
+    ep.lastProgress.sent = await this.sayFurther(ep, body);
+    // Not the agent answering through its own tools: counted as already there, from the task itself
+    // (a reply that landed although the call failed counts too), so the answer still goes.
+    const agentMessages = this.deps.tasks.get(ep.taskId)?.history.filter((m) => m.role === 'agent').length ?? 0;
+    ep.agentMessagesAtSend = Math.max(ep.agentMessagesAtSend, agentMessages);
+  }
+
+  /** A reply on the task besides its answer, within the task's budget. True when it was sent. */
+  private async sayFurther(ep: Episode, text: string): Promise<boolean> {
+    const n = this.further.get(ep.taskId) ?? 0;
+    if (n >= FURTHER_REPLIES_MAX) return false;
+    this.further.set(ep.taskId, n + 1);
+    if (n + 1 === FURTHER_REPLIES_MAX) this.deps.log('info', `[headless] task ${ep.taskId}: last further reply (${FURTHER_REPLIES_MAX})`);
+    try {
+      const sent = await this.deps.reply({ taskId: ep.taskId, workspaceId: ep.workspaceId, text: cutReply(text), ptyId: ep.sessionId });
+      if (sent.ok) return true;
+      this.deps.log('warn', `[headless] task ${ep.taskId}: a further reply was not sent: ${sent.error ?? 'unknown'}`);
+    } catch (err) {
+      this.deps.log('warn', `[headless] task ${ep.taskId}: a further reply was not sent: ${errMsg(err)}`);
+    }
+    return false;
+  }
+
+  /**
+   * After the answer: a turn nothing on this PC started (background work the
+   * agent was not waited for, a wake it set itself) goes back as a further
+   * reply, the task's state unchanged. It stops at input on this PC, at a new
+   * turn typed in, when the task is no longer `input-required`, and at the
+   * budget.
+   */
+  private async followAfter(w: Episode): Promise<void> {
+    const stop = (): void => {
+      if (this.afterwards.get(w.sessionId) === w) this.afterwards.delete(w.sessionId);
+      if (this.ended(w.taskId)) this.further.delete(w.taskId);
+    };
+    if (this.episodes.has(w.sessionId) || this.ending.has(w.sessionId)) return stop();
+    if (this.deps.tasks.get(w.taskId)?.status.state !== 'input-required' || (this.further.get(w.taskId) ?? 0) >= FURTHER_REPLIES_MAX) return stop();
+    const path = this.deps.transcriptPath(w.sessionId);
+    if (!path || path !== w.path) return stop();
+    const lines = this.readNew(w, path);
+    if (lines === null) return stop();
+    for (const { line, events } of lines) {
+      for (let step = stepEpisode(w, line, events); step;) {
+        // Input on this PC, an interrupt, an error: nothing more is said on the task.
+        if (step.kind === 'failed') return stop();
+        if (step.text.trim() && !(await this.sayFurther(w, step.text.trim()))) return stop();
+        step = step.kind === 'progress' && step.again ? stepEpisode(w, line, events) : null;
       }
     }
-    // A thinking-only end with nothing after it: the message had no text to come.
-    if (ep.endPending) {
-      if (ep.endPending.at === 0) ep.endPending.at = this.now();
-      else if (this.now() - ep.endPending.at >= TURN_END_SETTLE_MS) return this.finish(ep, { kind: 'answered', text: ep.answer.join('\n\n') });
-    }
+    const end = this.settled(w);
+    if (end?.text.trim() && !(await this.sayFurther(w, end.text.trim()))) stop();
   }
 
   /**
@@ -701,8 +868,17 @@ export class HeadlessDelivery {
     if (this.deps.tasks.get(ep.taskId)?.status.state !== 'working') return this.drop(ep);
     const moved = await this.deps.transition({ taskId: ep.taskId, workspaceId: ep.workspaceId, to: 'input-required' })
       .catch((err: unknown) => ({ ok: false, error: errMsg(err) }));
-    if (moved.ok) this.drop(ep);
-    else this.deps.log('warn', `[headless] task ${ep.taskId}: not moved to input-required, tried again: ${moved.error ?? 'unknown'}`);
+    if (!moved.ok) {
+      this.deps.log('warn', `[headless] task ${ep.taskId}: not moved to input-required, tried again: ${moved.error ?? 'unknown'}`);
+      return;
+    }
+    this.drop(ep);
+    // Read on from here for turns nothing on this PC starts (only while nothing else took the session).
+    if (ep.path !== null && !this.episodes.has(ep.sessionId) && !this.ending.has(ep.sessionId)) {
+      this.afterwards.set(ep.sessionId, {
+        ...ep, opened: true, answer: [], endPending: undefined, limitStopped: false, outcome: null, waitingSince: null, lastProgress: null,
+      });
+    }
   }
 
   /** The episode is done with (only this one: another may have taken the session since). */
@@ -720,13 +896,17 @@ export class HeadlessDelivery {
    */
   private async end(taskId: string, workspaceId: string, wanted: 'failed' | 'canceled', reason: string): Promise<boolean> {
     const state = this.deps.tasks.get(taskId)?.status.state;
-    if (!state || (TERMINAL_STATES as readonly string[]).includes(state)) return true;
+    if (!state || (TERMINAL_STATES as readonly string[]).includes(state)) {
+      this.further.delete(taskId);
+      return true;
+    }
     // `failed` is not a move from `submitted` or `input-required` in the ledger: those are canceled, with the reason.
     const to = wanted === 'failed' && (state === 'submitted' || state === 'input-required') ? 'canceled' : wanted;
     // A cancel reaches the asking PC without its summary (a failure carries one): the reason goes first, as a reply, once.
     if (to === 'canceled') await this.sayOnce(taskId, workspaceId, `Canceled: ${reason}`);
     const res = await this.deps.transition({ taskId, workspaceId, to, summary: reason }).catch((err: unknown) => ({ ok: false, error: errMsg(err) }));
     if (!res.ok) this.deps.log('warn', `[headless] task ${taskId}: not marked ${to} (${reason}): ${res.error ?? 'unknown'}`);
+    else this.further.delete(taskId);
     return res.ok;
   }
 
@@ -763,4 +943,43 @@ export class HeadlessDelivery {
     const waitMs = prev ? Math.min(prev.waitMs * 2, RETRY_MAX_MS) : RETRY_MIN_MS;
     this.retry.set(taskId, { at: this.now() + waitMs, waitMs });
   }
+}
+
+/** Waits until the asking PCs took what was queued for these tasks (`A2aRemoteDelivery.drain`). */
+export interface HeadlessStopLinks {
+  drain(taskIds: readonly string[], timeoutMs: number): Promise<boolean>;
+}
+
+/**
+ * The daemon's stop, before it closes its links: this run's headless starts
+ * end, and the asking PCs are told why while the links still carry it (the
+ * sessions only die later in the shutdown, after the links closed, and the
+ * asking PC would see the link break instead). Bounded by `timeoutMs` twice
+ * over: once for the ends, once for the peers to take them.
+ */
+export async function endHeadlessOnStop(
+  delivery: HeadlessDelivery | null,
+  links: HeadlessStopLinks | null,
+  log: HeadlessDeliveryDeps['log'],
+  timeoutMs = HEADLESS_STOP_FLUSH_MS,
+): Promise<void> {
+  if (!delivery) return;
+  const bound = <T>(work: Promise<T>): Promise<T | 'late'> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<'late'>((resolve) => {
+      timer = setTimeout(() => resolve('late'), timeoutMs);
+    });
+    return Promise.race([work, late]).finally(() => clearTimeout(timer));
+  };
+  const ids = await bound(delivery.endAll(DAEMON_STOPPED_REASON)).catch((err: unknown) => {
+    log('warn', `[headless] the open tasks could not be ended before the stop: ${errMsg(err)}`);
+    return [] as string[];
+  });
+  if (ids === 'late') {
+    log('warn', '[headless] ending the open tasks before the stop took too long');
+    return;
+  }
+  if (ids.length === 0 || !links) return;
+  const done = await bound(links.drain(ids, timeoutMs)).catch(() => false);
+  if (done !== true) log('warn', `[headless] ${ids.length} ended task(s) may not have reached the asking PC before the stop`);
 }

@@ -102,6 +102,13 @@ const CLAUDE_TASK_STOP_TOOLS: ReadonlySet<string> = new Set(['TaskStop', 'KillSh
  *  same shape wmux-bridge.mjs BACKGROUND_TASK_ID_RE matches), anchored at the
  *  start so a result that only quotes it started nothing. */
 const ASYNC_AGENT_RE = /^\s*Async agent launched successfully[\s\S]*?agentId:\s*([\w-]+)/i;
+/** The tools that can leave work running past their call: a Bash command run in the background, a Monitor. */
+const CLAUDE_BACKGROUND_TOOLS: ReadonlySet<string> = new Set(['Bash', 'Monitor']);
+/** Their immediate result when they did (Claude Code 2.1), anchored like ASYNC_AGENT_RE: the task id. */
+const BACKGROUND_STARTED_RES: readonly RegExp[] = [
+  /^\s*Command running in background with ID:\s*([\w-]+)/,
+  /^\s*Monitor started \(task\s+([\w-]+)/,
+];
 
 function resultText(content: unknown): string {
   if (typeof content === 'string') return content;
@@ -111,7 +118,7 @@ function resultText(content: unknown): string {
 
 /**
  * Claude Code. Two kinds of subagent are counted, background shells and
- * Monitors are not:
+ * Monitors are not (`count`):
  *   - A foreground Agent/Task call runs until its tool_result arrives. A
  *     prompt the user typed also ends it (a call left without a result by an
  *     interrupt must not stay counted).
@@ -122,27 +129,50 @@ function resultText(content: unknown): string {
  *     it), or a TaskStop names its agent id.
  * Only `assistant` / `user` records are read for tool calls: other records
  * (an `api-request-blob`) can carry copies of earlier turns.
+ *
+ * `background` is the work a turn left running for the agent to hear about
+ * later (the headless delivery waits for it): the async agents above, plus
+ * background shells and Monitors. Those two start when their call's result
+ * says so (BACKGROUND_STARTED_RES) and end on a `<task-notification>` that
+ * names them and carries a `<status>`, once it is handed to the agent (a
+ * queued_command attachment or the user record, not the queue-operation
+ * written when it arrives): a Monitor sends one without a status for each
+ * event it sees, and a notification queued while the turn still runs is not
+ * the agent's yet. A TaskStop / KillShell naming one ends it too.
  */
 export class ClaudeSubagentCounter implements SubagentCounter {
   /** Foreground Agent/Task calls without a result yet, by tool_use id. */
   private readonly foreground = new Set<string>();
   /** Async agents: tool_use id → agent id. */
   private readonly async = new Map<string, string>();
+  /** Bash / Monitor calls without a result yet, by tool_use id. */
+  private readonly backgroundCalls = new Set<string>();
+  /** Background shells and Monitors: tool_use id → task id. */
+  private readonly shells = new Map<string, string>();
 
   get count(): number { return this.foreground.size + this.async.size; }
+
+  /** Async agents, background shells and Monitors still running. */
+  get background(): number { return this.async.size + this.shells.size; }
 
   reset(): void {
     this.foreground.clear();
     this.async.clear();
+    this.backgroundCalls.clear();
+    this.shells.clear();
   }
 
   private settleAgentId(agentId: string): void {
     for (const [toolUseId, id] of this.async) if (id === agentId) this.async.delete(toolUseId);
   }
 
+  private settleShell(taskId: string): void {
+    for (const [toolUseId, id] of this.shells) if (id === taskId) this.shells.delete(toolUseId);
+  }
+
   noteLine(line: string): void {
     const notification = line.includes('<task-notification>');
-    const turnEnd = this.foreground.size > 0 && line.includes('"stop_reason":"');
+    const turnEnd = (this.foreground.size > 0 || this.backgroundCalls.size > 0) && line.includes('"stop_reason":"');
     if (!notification && !turnEnd && !line.includes('"tool_use"') && !line.includes('"tool_result"') && !line.includes('"type":"user"')) return;
     const entry = parse(line);
     // A subagent's own records (older Claude Code wrote them into the lead's
@@ -159,23 +189,35 @@ export class ClaudeSubagentCounter implements SubagentCounter {
       && record(entry.origin).kind !== 'task-notification'
       && (typeof message.content === 'string' || (content && !content.some((b) => record(b).type === 'tool_result')))) {
       this.foreground.clear();
+      this.backgroundCalls.clear();
     }
     // The lead's turn ended: no foreground call of it still runs (one left
     // without a result by an interrupt, say).
     if (entry.type === 'assistant' && typeof message.stop_reason === 'string' && message.stop_reason !== 'tool_use'
       && !(content ?? []).some((b) => record(b).type === 'tool_use')) {
       this.foreground.clear();
+      this.backgroundCalls.clear();
     }
     for (const raw of content ?? []) {
       const block = record(raw);
       if (block.type === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string') {
         if (CLAUDE_AGENT_TOOLS.has(block.name)) this.foreground.add(block.id);
+        else if (CLAUDE_BACKGROUND_TOOLS.has(block.name)) this.backgroundCalls.add(block.id);
         else if (CLAUDE_TASK_STOP_TOOLS.has(block.name)) {
           const input = record(block.input);
           const taskId = input.task_id ?? input.shell_id ?? input.bash_id;
-          if (typeof taskId === 'string' && taskId) this.settleAgentId(taskId);
+          if (typeof taskId === 'string' && taskId) {
+            this.settleAgentId(taskId);
+            this.settleShell(taskId);
+          }
         }
       } else if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+        if (this.backgroundCalls.delete(block.tool_use_id)) {
+          const text = resultText(block.content);
+          const taskId = BACKGROUND_STARTED_RES.map((re) => re.exec(text)?.[1]).find((id) => id !== undefined);
+          if (taskId) this.shells.set(block.tool_use_id, taskId);
+          continue;
+        }
         if (!this.foreground.delete(block.tool_use_id)) continue;
         const agentId = ASYNC_AGENT_RE.exec(resultText(block.content))?.[1];
         if (agentId) this.async.set(block.tool_use_id, agentId);
@@ -189,11 +231,15 @@ export class ClaudeSubagentCounter implements SubagentCounter {
         : entry.type === 'user' ? resultText(message.content)
           : undefined;
     if (typeof body !== 'string' || !body.includes('<task-notification>')) return;
-    // Its arrival settles the task, whatever its <status> says.
+    // Its arrival settles an async agent, whatever its <status> says.
     const toolUseId = /<tool-use-id>([^<]+)<\/tool-use-id>/.exec(body)?.[1]?.trim();
     if (toolUseId) this.async.delete(toolUseId);
     const taskId = /<task-id>([^<]+)<\/task-id>/.exec(body)?.[1]?.trim();
     if (taskId) this.settleAgentId(taskId);
+    // A shell or Monitor: only its last notification (with a status), once the agent is given it.
+    if (entry.type === 'queue-operation' || !/<status>[^<]*<\/status>/.test(body)) return;
+    if (toolUseId) this.shells.delete(toolUseId);
+    if (taskId) this.settleShell(taskId);
   }
 }
 
