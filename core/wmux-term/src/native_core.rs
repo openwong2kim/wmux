@@ -243,6 +243,8 @@ const ROUND_TRIP: &str =
     "unsupported-state-mode: more than kitty keyboard controls between ?47h and ?47l";
 const OPEN_ROUND_TRIP: &str = "unsupported-state-mode: the stream ends between ?47h and ?47l";
 /// Not counted past a first refusal: `scan` has no screen to read.
+const RESTORE_ROW_ALT: &str = "unsupported-state-restore-row: a DECRC or SCORC on the alternate screen after a resize xterm skipped there, so its saved cursor cannot be placed";
+
 const RESTORE_ROW: &str =
     "unsupported-state-restore-row: a DECRC or SCORC on a screen this tracker and Alacritty disagree on, so xterm's row cannot be placed";
 
@@ -373,6 +375,16 @@ struct XtermFeed {
     dec_slots: [bool; 4],
     /// xterm's saved cursor on the main and the alternate screen.
     saved: [SavedCursor; 2],
+    /// The length of xterm's alternate buffer (`lines.maxLength`): the rows
+    /// at its last leave or reset, or at a resize while it is shown, and
+    /// only ever more at a resize while it is not (an empty buffer's resize
+    /// grows it and returns). Past the screen rows, the alternate screen
+    /// keeps rows above it there.
+    alt_rows: usize,
+    /// The alternate screen was shown with `alt_rows` past the screen rows
+    /// since it was last left: its saved row may count rows above the screen
+    /// that Alacritty's alternate grid never keeps.
+    alt_overhang: bool,
 }
 
 /// What xterm's DECRC restores and Alacritty's does not (Buffer.saved*),
@@ -395,6 +407,9 @@ struct SavedCursor {
     /// alternate screen keeps none, so there it starts at 0. A resize then
     /// carries the rows the two move their saved rows apart by (RowStep).
     history: i64,
+    /// A narrower resize clamped Alacritty's saved column on the alternate
+    /// screen while xterm's, in its emptied buffer, kept it (resize).
+    unplaceable: bool,
 }
 
 /// A byte of a printed character (not a C0 control or DEL).
@@ -674,6 +689,7 @@ impl XtermFeed {
             no_wraparound: self.no_wraparound,
             origin: self.origin,
             history: if screen == 0 { history() as i64 } else { 0 },
+            unplaceable: false,
         };
     }
 
@@ -922,6 +938,15 @@ impl XtermFeed {
                     Some(ContextRule::AltLeave { mode_47: true }) => self.round_trip = false,
                     _ => {}
                 }
+                // Whether Alacritty shows its alternate screen before a control
+                // that may leave it (xterm's alternate buffer length, below).
+                let shown_before = (sequence == b"\x1bc"
+                    || (sequence.starts_with(b"\x1b[?") && sequence.ends_with(b"l")))
+                    && {
+                        parser.advance(term, &data[from..at]);
+                        from = at;
+                        alternate_shown(parser, term)
+                    };
                 // Read only at a save, so the parser runs through the
                 // sequence just for those (`from` moves with it): a C0 inside
                 // runs first and may scroll, and a save itself never does.
@@ -962,6 +987,25 @@ impl XtermFeed {
                         placed
                     });
                     self.refuse(!placed, RESTORE_ROW);
+                    self.refuse(
+                        screen == 1
+                            && (self.saved[1].unplaceable
+                                || self.alt_overhang
+                                || self.alt_rows > rows),
+                        RESTORE_ROW_ALT,
+                    );
+                }
+                if self.may_leave_alt {
+                    // xterm empties its alternate buffer on leaving it, which
+                    // sets the buffer's length back to the screen rows; RIS
+                    // makes new buffers. Decided by Alacritty's own mode, as
+                    // below.
+                    parser.advance(term, &data[from..at + len]);
+                    from = at + len;
+                    if sequence == b"\x1bc" || (shown_before && !alternate_shown(parser, term)) {
+                        self.alt_rows = rows;
+                        self.alt_overhang = false;
+                    }
                 }
                 if self.alt_reflow && self.may_leave_alt {
                     // Leaving the alternate screen, or a reset there, drops
@@ -1177,10 +1221,38 @@ impl RowStep {
         }
     }
 
+    /// A screen xterm's resize skips: its alternate buffer while another is
+    /// shown, emptied when it was left. The saved row stays as it is.
+    fn untouched(grid: &Grid<Cell>, saved_history: i64) -> Self {
+        RowStep {
+            xterm_saved: saved_history + i64::from(grid.saved_cursor.point.line.0),
+        }
+    }
+
     /// The save's history once Alacritty's grid has run the step.
     fn after(&self, grid: &Grid<Cell>) -> i64 {
         self.xterm_saved - i64::from(grid.saved_cursor.point.line.0)
     }
+}
+
+/// The alternate screen's grid, whichever screen is shown.
+fn alt_grid(term: &Term<VoidListener>) -> &Grid<Cell> {
+    if term.mode().contains(TermMode::ALT_SCREEN) {
+        term.grid()
+    } else {
+        term.inactive_grid()
+    }
+}
+
+const HISTORY_LIMIT: &str = "unsupported-history-limit: history reached the native grid cap";
+
+/// Past the native cap xterm keeps rows this grid trimmed (its own cap,
+/// `requested`, is larger), so the history and the saved rows part.
+fn history_at_native_cap(term: &Term<VoidListener>, requested: u32, cap: u32) -> bool {
+    requested > cap
+        && [term.grid(), term.inactive_grid()]
+            .iter()
+            .any(|grid| grid.history_size() >= cap as usize)
 }
 
 /// A DECRST that resets 1049, read as `track` reads it (C0 controls inside
@@ -1386,7 +1458,10 @@ impl NativeTerminal {
             parser: Processor::new(),
             scrollback,
             requested_scrollback: scrollback,
-            feed: XtermFeed::default(),
+            feed: XtermFeed {
+                alt_rows: rows as usize,
+                ..XtermFeed::default()
+            },
             refusal: None,
             scanned: 0,
             text_held: Vec::new(),
@@ -1434,12 +1509,8 @@ impl NativeTerminal {
                     .refused
                     .unwrap_or("unsupported-state: a control Alacritty parses differently"),
             );
-        } else if requested_scrollback > self.scrollback
-            && [term.grid(), term.inactive_grid()]
-                .iter()
-                .any(|grid| grid.history_size() >= self.scrollback as usize)
-        {
-            self.refusal = Some("unsupported-history-limit: history reached the native grid cap");
+        } else if history_at_native_cap(term, requested_scrollback, self.scrollback) {
+            self.refusal = Some(HISTORY_LIMIT);
         }
         // Refused in these bytes: the scan of the next ones comes first.
         Ok(false)
@@ -1486,6 +1557,12 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+        // The row step runs at the old width first (below).
+        if (rows as u64 + self.scrollback as u64) * term.columns() as u64 > 4_000_000 {
+            return Err(Error::from_reason(
+                "Experiment grid exceeds four million cells",
+            ));
+        }
         // vte holds bytes back inside a synchronized update; xterm parsed them
         // at the old size. Apply them first, then re-enter the update.
         let synchronized = self.parser.sync_timeout().pending_timeout();
@@ -1543,48 +1620,50 @@ impl NativeTerminal {
         // later restore counts only the rows the stream scrolled
         // (place_like_xterm).
         let target = size.screen_lines();
+        let alt = term.mode().contains(TermMode::ALT_SCREEN);
+        // xterm's alternate buffer, emptied whenever it is left, is skipped by
+        // its resize: it keeps the length it had, so shown again on fewer
+        // rows it keeps rows above the screen that Alacritty's has none of,
+        // and its saved column is not clamped.
+        if alt && self.feed.alt_rows > term.screen_lines() {
+            self.feed.alt_overhang = true;
+        }
+        if !alt && alt_grid(term).saved_cursor.point.column.0 >= size.columns() {
+            self.feed.saved[1].unplaceable = true;
+        }
+        self.feed.alt_rows = if alt {
+            target
+        } else {
+            self.feed.alt_rows.max(target)
+        };
         if term.screen_lines() != target {
-            let alt = term.mode().contains(TermMode::ALT_SCREEN);
-            let (main, other) = if alt {
-                (term.inactive_grid(), term.grid())
-            } else {
-                (term.grid(), term.inactive_grid())
-            };
             let main_step = RowStep::before(
-                main,
+                main_grid(term),
                 self.feed.saved[0].history,
                 target,
                 self.scrollback as usize,
             );
-            // xterm clears the alternate buffer when it leaves it, and its
-            // resize skips an empty buffer: a save there keeps its row.
             let alt_step = if alt {
-                RowStep::before(other, self.feed.saved[1].history, target, 0)
+                RowStep::before(alt_grid(term), self.feed.saved[1].history, target, 0)
             } else {
-                RowStep::before(other, self.feed.saved[1].history, other.screen_lines(), 0)
+                RowStep::untouched(alt_grid(term), self.feed.saved[1].history)
             };
             term.resize(dimensions(term.columns() as u32, rows)?);
-            let (main, other) = if alt {
-                (term.inactive_grid(), term.grid())
-            } else {
-                (term.grid(), term.inactive_grid())
-            };
-            self.feed.saved[0].history = main_step.after(main);
-            self.feed.saved[1].history = alt_step.after(other);
+            self.feed.saved[0].history = main_step.after(main_grid(term));
+            self.feed.saved[1].history = alt_step.after(alt_grid(term));
+            // Checked here too: a wider reflow next can take history back
+            // under the cap after the row step trimmed at it.
+            if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
+                self.refusal.get_or_insert(HISTORY_LIMIT);
+            }
         }
         let before = main_grid(term).history_size() as i64;
         term.resize(size);
         self.feed.saved[0].history += main_grid(term).history_size() as i64 - before;
-        // Past the native cap xterm keeps rows this grid trimmed, so their
-        // saved rows part (feed_xterm refuses the same after a chunk; a
-        // chunk's ED 3 could hide it there).
-        if self.requested_scrollback > self.scrollback
-            && [term.grid(), term.inactive_grid()]
-                .iter()
-                .any(|grid| grid.history_size() >= self.scrollback as usize)
-        {
-            self.refusal
-                .get_or_insert("unsupported-history-limit: history reached the native grid cap");
+        // feed_xterm checks the same after a chunk, where the chunk's own
+        // ED 3 could hide a resize's trim.
+        if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
+            self.refusal.get_or_insert(HISTORY_LIMIT);
         }
         if synchronized {
             self.parser.advance(term, b"\x1b[?2026h");
