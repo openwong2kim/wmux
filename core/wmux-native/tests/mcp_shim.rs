@@ -101,6 +101,12 @@ impl Sandbox {
 
     fn write_token(&self, content: &str) {
         std::fs::write(self.token_path(), content).expect("write token");
+        // Private to the user, as wmux writes it: the broker refuses any other mode.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(self.token_path(), std::fs::Permissions::from_mode(0o600)).expect("token mode");
+        }
     }
 
     fn pipe(&self) -> String {

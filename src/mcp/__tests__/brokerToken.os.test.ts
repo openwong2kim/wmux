@@ -105,11 +105,18 @@ describe('readTokenFile', () => {
 
   it('a refusal never carries token text', () => {
     const results = [];
-    write(SECRET, 0o644);
+    write(SECRET.repeat(400));
     results.push(readTokenFile(file, uid));
-    write(SECRET);
-    results.push(readTokenFile(file, (uid ?? 0) + 1));
-    for (const r of results) expect(JSON.stringify(r)).not.toContain(SECRET);
+    if (!isWin) {
+      write(SECRET, 0o644);
+      results.push(readTokenFile(file, uid));
+      write(SECRET);
+      results.push(readTokenFile(file, (uid ?? 0) + 1));
+    }
+    for (const r of results) {
+      expect(r.ok).toBe(false);
+      expect(JSON.stringify(r)).not.toContain(SECRET);
+    }
   });
 });
 
