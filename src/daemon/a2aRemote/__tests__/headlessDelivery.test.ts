@@ -12,7 +12,7 @@ import { VALID_TRANSITIONS, type Task } from '../../../shared/types';
 import { USAGE_LIMIT_CONTINUE_PROMPT } from '../../../shared/usageLimit';
 import { A2A_REMOTE_BODY_MAX } from '../../../shared/a2aRemote';
 import {
-  ASK_REASON, HeadlessDelivery, QUESTION_NOTICE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS, assistantTextOf, cutReply, type HeadlessDeliveryDeps,
+  ASK_REASON, HeadlessDelivery, TURN_END_SETTLE_MS, QUESTION_NOTICE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS, assistantTextOf, cutReply, type HeadlessDeliveryDeps,
 } from '../headlessDelivery';
 import type { HeadlessStartRecordV1 } from '../headlessStartStore';
 
@@ -497,6 +497,31 @@ describe('the reply, from the transcript', () => {
       expect(replies.map((r) => r.text)).toEqual(['done']);
       expect(moves.at(-1)).toEqual({ to: 'input-required' });
     }
+  });
+
+  it('a message written as a thinking entry then a text entry, both with its final stop reason: the text is the answer', async () => {
+    const d = await delivering();
+    const entry = (blocks: object[]): string => JSON.stringify({ type: 'assistant', uuid: `m${seq}`, timestamp: stamp(),
+      message: { id: 'msg_1', role: 'assistant', content: blocks, stop_reason: 'end_turn' } });
+    // Claude Code 2.1.323: one API message, two entries, both stamped end_turn; read together.
+    write(userLine(PROMPT), entry([{ type: 'thinking', thinking: 'long thought', signature: 's' }]), entry([{ type: 'text', text: '1\n2\n3' }]));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['1\n2\n3']);
+    expect(moves.at(-1)).toEqual({ to: 'input-required' });
+  });
+
+  it('a thinking-only end with nothing after it closes once it has settled', async () => {
+    const d = await delivering();
+    write(userLine(PROMPT), JSON.stringify({ type: 'assistant', uuid: 'x', timestamp: stamp(),
+      message: { id: 'msg_2', role: 'assistant', content: [{ type: 'thinking', thinking: 't', signature: 's' }], stop_reason: 'end_turn' } }));
+    await d.tick();
+    clock += TURN_END_SETTLE_MS - 1;
+    await d.tick();
+    expect(replies).toEqual([]);
+    clock += 1;
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['(the agent ended its turn without text)']);
+    expect(moves.at(-1)).toEqual({ to: 'input-required' });
   });
 
   it('a turn that stops for a reason other than a tool call ends it (max_tokens), with what it wrote', async () => {

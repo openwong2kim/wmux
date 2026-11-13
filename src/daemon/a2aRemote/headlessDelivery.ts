@@ -146,7 +146,16 @@ export interface Episode {
   working: boolean;
   /** How the turn ended, kept until the reply and the task's move both went through. */
   outcome: EpisodeOutcome | null;
+  /**
+   * The turn's last message stopped, but the entry said so carried no text (Claude Code
+   * writes a message's thinking as its own entry, with the message's final stop reason):
+   * its text may follow in the next entry of the same message. `at`: when that was seen.
+   */
+  endPending?: { messageId: string | null; at: number };
 }
+
+/** A thinking-only turn end with nothing after it closes this long after it was read. */
+export const TURN_END_SETTLE_MS = 2000;
 
 export type EpisodeOutcome =
   | { kind: 'answered'; text: string }
@@ -180,7 +189,7 @@ function hashOf(text: string): string {
 }
 
 /** The entry's `type`, `stop_reason`, content and sidechain flag, from its raw line (null: not JSON). */
-function rawEntry(line: string): { type?: unknown; stopReason?: unknown; content?: unknown; sidechain: boolean } | null {
+function rawEntry(line: string): { type?: unknown; stopReason?: unknown; content?: unknown; messageId: string | null; sidechain: boolean } | null {
   let entry: unknown;
   try {
     entry = JSON.parse(line);
@@ -188,8 +197,9 @@ function rawEntry(line: string): { type?: unknown; stopReason?: unknown; content
     return null;
   }
   if (!entry || typeof entry !== 'object') return null;
-  const e = entry as { type?: unknown; isSidechain?: unknown; message?: { stop_reason?: unknown; content?: unknown } };
-  return { type: e.type, stopReason: e.message?.stop_reason, content: e.message?.content, sidechain: e.isSidechain === true };
+  const e = entry as { type?: unknown; isSidechain?: unknown; message?: { id?: unknown; stop_reason?: unknown; content?: unknown } };
+  const messageId = typeof e.message?.id === 'string' ? e.message.id : null;
+  return { type: e.type, stopReason: e.message?.stop_reason, content: e.message?.content, messageId, sidechain: e.isSidechain === true };
 }
 
 function textOfContent(content: unknown): string | null {
@@ -224,6 +234,11 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
   const raw = rawEntry(line);
   // A subagent's entry (in the lead's file): not the prompt, not input, and its turn end is not the lead's.
   if (raw?.sidechain) return null;
+  if (ep.endPending) {
+    // The stopped message goes on in its next entry; anything else means the turn is over.
+    const sameMessage = raw?.type === 'assistant' && ep.endPending.messageId !== null && raw.messageId === ep.endPending.messageId;
+    if (!sameMessage) return { kind: 'answered', text: ep.answer.join('\n\n') };
+  }
   if (!ep.opened) {
     const text = raw?.type === 'user' ? textOfContent(raw.content) : null;
     if (text !== null && hashOf(text) === ep.promptHash) {
@@ -260,9 +275,11 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
       answered = true;
     }
   }
-  // The turn ended when the entry stopped for anything but a tool call.
+  // The turn ended when the entry stopped for anything but a tool call. An entry with no text of
+  // its own (thinking only) leaves the end pending: the message's text may be in its next entry.
   if (ep.opened && raw?.type === 'assistant' && typeof raw.stopReason === 'string' && raw.stopReason !== 'tool_use') {
-    return { kind: 'answered', text: ep.answer.join('\n\n') };
+    if (answered) return { kind: 'answered', text: ep.answer.join('\n\n') };
+    ep.endPending = { messageId: raw.messageId, at: 0 };
   }
   return null;
 }
@@ -627,13 +644,19 @@ export class HeadlessDelivery {
       lines.push({ line, events });
       return events;
     });
-    if (!delta) return;
-    // The file was cut or replaced: the turn cannot be followed any more.
-    if (delta.reset) return this.finish(ep, { kind: 'failed', reason: "the agent's conversation was replaced on this PC" });
-    ep.offset = delta.cursor.tailOffset;
-    for (const { line, events } of lines) {
-      const outcome = stepEpisode(ep, line, events);
-      if (outcome) return this.finish(ep, outcome);
+    if (delta) {
+      // The file was cut or replaced: the turn cannot be followed any more.
+      if (delta.reset) return this.finish(ep, { kind: 'failed', reason: "the agent's conversation was replaced on this PC" });
+      ep.offset = delta.cursor.tailOffset;
+      for (const { line, events } of lines) {
+        const outcome = stepEpisode(ep, line, events);
+        if (outcome) return this.finish(ep, outcome);
+      }
+    }
+    // A thinking-only end with nothing after it: the message had no text to come.
+    if (ep.endPending) {
+      if (ep.endPending.at === 0) ep.endPending.at = this.now();
+      else if (this.now() - ep.endPending.at >= TURN_END_SETTLE_MS) return this.finish(ep, { kind: 'answered', text: ep.answer.join('\n\n') });
     }
   }
 
