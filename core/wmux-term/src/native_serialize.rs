@@ -550,9 +550,22 @@ fn csi_divergent(rest: &[u8]) -> bool {
         (None, b"", b'^') => true,
         (Some(b'?'), b"", b'h' | b'l') => {
             let mut modes = params.split(';').map(number);
+            // A mode that switches screens, saves the cursor or sets X10
+            // mouse, with a sub-parameter or past the 32 parameters both
+            // parsers take: xterm reads the mode before a colon, and the
+            // feed's tracker reads neither form, so its screen and saves
+            // would fall out of step.
+            let leading = params
+                .split(';')
+                .map(|g| number(g.split(':').next().unwrap_or("")));
+            let unread = (params.contains(':') || params.split(';').count() > 32)
+                && leading
+                    .clone()
+                    .any(|mode| matches!(mode, Some(9 | 47 | 1047 | 1048 | 1049)));
             // vte leaves a synchronized update only on exactly `CSI ? 2026 l`.
             // xterm's DECSET 2 (DECANM) puts ASCII in G0-G3; vte ignores it.
-            params != "2026" && modes.clone().any(|mode| mode == Some(2026))
+            unread
+                || params != "2026" && modes.clone().any(|mode| mode == Some(2026))
                 || modes.any(|mode| matches!(mode, Some(2 | 3 | 9 | 45 | 66 | 47 | 1047 | 1048)))
         }
         (None, b"", b'h' | b'l') => params.split(';').any(|mode| number(mode) == Some(20)),
@@ -761,6 +774,13 @@ mod tests {
             "\x1b[38:5:1:2m",
             "\x1b[38:7:1m",
             "\x1b[?01047h",
+            "\x1b[?47:0h",
+            "\x1b[?1047:0l",
+            "\x1b[?1048:0l",
+            "\x1b[?9:0l",
+            "\x1b[?1049:0h",
+            "\x1b[?1049:0l",
+            "\x1b[?1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1049l",
             "\x1b[?2026;0h",
             "\x1b[020h",
             "\x1b[2\x00J",

@@ -11,6 +11,7 @@ import { getAnsiSnapshotBackendDiagnostics } from '../AnsiSnapshotBackend';
 import { generateSnapshotUnqueued, type SnapshotRequest } from '../HeadlessSnapshot';
 import { generateRustSnapshot } from '../RustSnapshot';
 import { CLAUDE_WRAPPED_REPLY_80x30 } from '../../renderer/terminal/__tests__/fixtures/claudeWrappedReply';
+import { restoreSeam } from '../../shared/restoreSeam';
 import { available, expectParity, expectRustAloneDiverges, modulePath, parity, resized, synthetic, type Case } from './_rustParity';
 
 // One or more cases per control class the selector used to refuse wholesale.
@@ -68,6 +69,15 @@ const accepted: Case[] = [
   // savedCharsets); with nothing saved both keep every slot.
   synthetic('decrc-saved-g2', '\x1b*0\x1b7\x1b(B\x1b*B\x1b8\x1bnq'),
   synthetic('decrc-unsaved-g2', '\x1b*0\x1b8\x1bnq'),
+  // A slot designated since the save restores alike when it holds the set it
+  // held at the save: designated again to it (sgr0's `ESC ( B` on Claude
+  // Code's alternate screen), or changed and changed back. The GL shift is
+  // saved with the cursor on both (xterm's savedGlevel, Alacritty's
+  // active_charset), so a shift between save and restore is restored alike.
+  synthetic('alt-1049-redesignate-ascii', '\x1b[?1049h\x1b(Bq\x1b[?1049lq'),
+  synthetic('decrc-redesignate-same-g2', '\x1b7\x1b*B\x1b8\x1bnq'),
+  synthetic('decrc-redesignate-g2-and-back', '\x1b7\x1b*0\x1b*B\x1b8\x1bnq'),
+  synthetic('decrc-redesignate-shifted', '\x1b)0\x1b7\x0e\x1b)0\x1b8q\x0eq'),
   synthetic('decsc-ls2', '\x1b*0\x1bn\x1b7\x0fq\x1b8q'),
   synthetic('alt-1049-ls2', '\x1b*0\x1bn\x1b[?1049h\x0fq\x1b[?1049lq'),
   synthetic('ls2-in-update', '\x1b*0\x1b[?2026h\x1bnq\x1b[?2026l'),
@@ -174,6 +184,7 @@ const refused: Case[] = [
   // xterm restores only the slots it saved, and DECAWM/DECOM from the save.
   synthetic('decrc-later-g2', '\x1b7\x1b*0\x1b8\x1bnq', 'xterm'),
   synthetic('alt-1049-later-g2', '\x1b(0\x1b[?1049h\x1b*0\x1b[?1049l\x1bnq', 'xterm'),
+  synthetic('alt-1049-later-g0-dec', '\x1b[?1049h\x1b(0q\x1b[?1049lq', 'xterm'),
   synthetic('decstr-decrc-nowrap', `\x1b[?7l\x1b7\x1b[!p\x1b8${'x'.repeat(25)}`, 'xterm'),
   synthetic('decrc-unsaved-nowrap', `\x1b[?7l\x1b8${'x'.repeat(25)}`, 'xterm'),
   synthetic('decstr-cut-by-del', 'ab\x1b[4h\x1b[!\x7fpcd', 'xterm'),
@@ -192,6 +203,16 @@ const refused: Case[] = [
   synthetic('mode-decnkm', '\x1b[?66hx', 'xterm'),
   synthetic('alt-47', 'n\x1b[?47ha', 'xterm'),
   synthetic('alt-1047', 'n\x1b[?1047ha\x1b[?1047lb', 'xterm'),
+  // The restore seam's controls where they diverge: ?47l and ?1047l leave
+  // xterm's alternate screen, and a ?47 round trip shows a blank one while
+  // it is open or once it holds more than kitty keyboard controls.
+  synthetic('alt-47-leaves-1049', 'n\x1b[?1049ha\x1b[?47lb', 'xterm'),
+  synthetic('alt-1047-leaves-1049', 'n\x1b[?1049ha\x1b[?1047lb', 'xterm'),
+  synthetic('alt-47-round-trip-text', 'n\x1b[?47ha\x1b[?47lb', 'xterm'),
+  synthetic('alt-47-round-trip-open', 'n\x1b[?47h\x1b[<99u', 'xterm'),
+  // xterm reads the mode before a colon; the feed's tracker reads none.
+  synthetic('alt-47-subparam', 'a\x1b[?47:0hXYZ', 'xterm'),
+  synthetic('alt-1049-subparam', 'a\x1b[?1049:0hXYZ\x1b[?1049l', 'xterm'),
   synthetic('save-1048', 'ab\x1b[?1048hcd\r\n\x1b[?1048lX', 'xterm'),
   // Refused by the serializer: xterm drops a saved pending wrap.
   synthetic('decsc-wrap-pending', 'abcdefgh\x1b7\x1b[H\x1b8X', 'xterm', 8),
@@ -204,6 +225,33 @@ const refused: Case[] = [
 // xterm keeps, is in neither backend's payload.)
 const leftAlt: Case[] = [
   synthetic('alt-decsc-wrap-pending-left', 'n\x1b[?1049h\x1b[Habcdefgh\x1b7\x1b[?1049lX', 'rust', 8),
+];
+
+// A recovered pane's ring: what the dead process left, the restore seam the
+// daemon writes (the real one, at the pane's rows), then the fresh shell. Its
+// prompt holds lowercase letters, which DEC line drawing would turn into
+// glyphs: a charset or shift the seam leaves differently shows there.
+const recovered = (name: string, dump: string | Buffer, after = 'PS> ls -la', cols = 20, rows = 6,
+  backend: 'rust' | 'xterm' = 'rust'): Case =>
+  ({ name: `seam/${name}`, backend, req: { cols, rows, scrollback: 100,
+    initial: Buffer.concat([Buffer.from(dump), Buffer.from(restoreSeam(rows) + after)]) } });
+const seams: Case[] = [
+  recovered('plain', 'old> ls\r\nfile\r\nold> '),
+  // xterm's ?1049l restores the main screen's saved cursor even on the main
+  // screen (position, G0-G3 as saved, the GL shift); Alacritty's does only
+  // when it leaves the alternate one, so the feed runs that restore there.
+  recovered('cursor-away-unsaved', 'a\r\nb\r\nc\x1b[3;9H'),
+  recovered('cursor-away-saved', 'a\x1b[2;5H\x1b7\x1b[5;12Hb'),
+  recovered('main-saved-g0', '\x1b(B\x1b7\x1b(0q'),
+  recovered('main-shifted-dec-g1', '\x1b)0\x0eq'),
+  // A slot designated since the save to another set stays on xterm only.
+  recovered('main-later-g0-dec', '\x1b7\x1b(0q', 'PS> ls -la', 20, 6, 'xterm'),
+  recovered('cursor-pending-wrap', 'x'.repeat(20)),
+  // An agent that died on its alternate screen with input reporting on.
+  recovered('died-on-alt', 'sh\r\n\x1b[>1u\x1b[?1049h\x1b[>3u\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?1004h\x1b[?1h\x1b=\x1b[?25l\x1b[3;3Hui'),
+  recovered('died-on-main-modes', '\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[31mred'),
+  recovered('twice', `a${restoreSeam(6)}PS> exit\r\n`),
+  recovered('claude-capture', Buffer.from(CLAUDE_WRAPPED_REPLY_80x30, 'base64'), 'PS> ', 80, 30),
 ];
 
 // A line feed into a soft-wrapped row's continuation: LF, VT and FF end the
@@ -390,7 +438,7 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
   beforeEach(() => vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', modulePath));
   afterEach(() => vi.unstubAllEnvs());
 
-  it.each([...accepted, ...refused, ...leftAlt, ...lineFeeds, ...erases, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
+  it.each([...accepted, ...refused, ...leftAlt, ...seams, ...lineFeeds, ...erases, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
     await expectParity(c);
   });
 
@@ -431,6 +479,7 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     ['\x1b(A#', 'unsupported-state-charset'],
     ['\x1b[1!p', 'unsupported-state-decstr'],
     ['\x1b[?47hx', 'unsupported-state-mode'],
+    ['\x1b[?47h\x1b[<99u', 'unsupported-state-mode'],
   ])('names the refused control in the refusal: %j', async (stream, family) => {
     const native = await generateRustSnapshot({ cols: 20, rows: 6, scrollback: 100, initial: Buffer.from(stream) }, 'ansi');
     expect(native.ok).toBe(false);
@@ -467,6 +516,22 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     if (!reference.ok || !native.ok) throw new Error('snapshot failed');
     const pixels = (payload: Buffer) => payload.toString('latin1').includes('\x1b[?1016h');
     expect(pixels(native.payload as Buffer)).toBe(pixels(reference.payload));
+  });
+
+  // The seam's ?47 round trip and ?1047l rely on this (ContextRule in
+  // native_core.rs): xterm swaps the kitty flags there and Alacritty does
+  // not, which is safe only while neither payload carries them.
+  it('writes no kitty keyboard flags into either payload', async () => {
+    const req: SnapshotRequest = { cols: 20, rows: 6, scrollback: 100, initial: Buffer.from('a\x1b[>1u\x1b[?1049h\x1b[>5ub') };
+    const native = await generateRustSnapshot(req, 'ansi');
+    if (!native.ok) throw new Error(`refused: ${native.detail}`);
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');
+    const reference = await generateSnapshotUnqueued(req);
+    if (!reference.ok) throw new Error('xterm snapshot failed');
+    for (const payload of [native.payload as Buffer, reference.payload]) {
+      // ESC shown as `^`: no control character in the pattern.
+      expect(payload.toString('latin1').replaceAll('\x1b', '^')).not.toMatch(/\^\[[<>=?][\d;]*u/);
+    }
   });
 
   // Evidence for each refusal: without it the Rust payload would diverge.
