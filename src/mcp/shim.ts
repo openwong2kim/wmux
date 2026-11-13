@@ -236,15 +236,24 @@ function pumpSession(socket: net.Socket, rest: Buffer): { signal: () => void } {
   let held: Buffer[] | null = null;
   let hostEnded = false;
 
-  /** Sinks a source is paused on, so one full sink adds one drain listener. */
-  const draining = new Set<NodeJS.WritableStream>();
-  const write = (sink: NodeJS.WritableStream, bytes: Buffer, source: { pause(): unknown; resume(): unknown }): void => {
-    if (bytes.length === 0 || sink.write(bytes) || draining.has(sink)) return;
-    draining.add(sink);
+  type Source = { pause(): unknown; resume(): unknown };
+  /** Each full sink, with the sources paused until it drains: one drain
+   *  listener per sink, and every source that wrote to it meanwhile (the
+   *  broker, then the child after a handover) waits for it. */
+  const draining = new Map<NodeJS.WritableStream, Set<Source>>();
+  const write = (sink: NodeJS.WritableStream, bytes: Buffer, source: Source): void => {
+    if (bytes.length === 0 || sink.write(bytes)) return;
     source.pause();
+    const paused = draining.get(sink);
+    if (paused) {
+      paused.add(source);
+      return;
+    }
+    draining.set(sink, new Set([source]));
     sink.once('drain', () => {
+      const sources = draining.get(sink);
       draining.delete(sink);
-      source.resume();
+      for (const s of sources ?? []) s.resume();
     });
   };
 
@@ -275,8 +284,10 @@ function pumpSession(socket: net.Socket, rest: Buffer): { signal: () => void } {
     if (handedOver) return;
     handedOver = true;
     socket.destroy();
-    // A destroyed socket never drains: stdin must not stay paused on it.
-    if (draining.delete(socket)) process.stdin.resume();
+    // A destroyed socket never drains: what waits on it must not stay paused.
+    const waiting = draining.get(socket);
+    draining.delete(socket);
+    for (const s of waiting ?? []) s.resume();
     console.error(`[wmux-mcp-shim] ${why}`);
     const { ids, replay } = calls.handOver();
     for (const id of ids) process.stdout.write(mayHaveRun(id));
