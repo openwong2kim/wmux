@@ -9,8 +9,10 @@
 /** The platforms where an unset WMUX_MCP_BROKER means on. Empty: off everywhere. */
 export const BROKER_DEFAULT_ON: readonly NodeJS.Platform[] = [];
 
+export type BrokerFlag = 'on' | 'off' | 'unset';
+
 /** What WMUX_MCP_BROKER asks for: '1' → on, '0' → off, anything else → unset. */
-export function brokerFlag(value: string | undefined): 'on' | 'off' | 'unset' {
+export function brokerFlag(value: string | undefined): BrokerFlag {
   if (value === '1') return 'on';
   if (value === '0') return 'off';
   return 'unset';

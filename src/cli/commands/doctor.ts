@@ -606,23 +606,53 @@ function downConsequences(kinds: ReadonlySet<string>): string[] {
   return out;
 }
 
+/** Why the broker is on, and the way back, for an app that says what it read. */
+function brokerRule(flag: McpSessionsSummary['broker']['flag']): string | undefined {
+  if (flag === 'on') {
+    return 'On because WMUX_MCP_BROKER=1 is set for the app. To turn it off, remove it (or set it to 0) and restart wmux: '
+      + 'agents then run their own MCP server, and the entries the app registers go back to the full bundle at that start.';
+  }
+  if (flag === 'unset') {
+    return 'On by default on this platform. WMUX_MCP_BROKER=0 for the app turns it off, from the next wmux start.';
+  }
+  return undefined;
+}
+
 /**
  * The broker line. A down broker is described only as far as its state is
  * known: a restart is promised only when one is scheduled, and a state this
  * doctor cannot name gets no hint at all.
  */
 function brokerLine(b: McpSessionsSummary['broker'], kinds: ReadonlySet<string>): CheckLine {
-  if (!b.enabled) return { label: 'broker', value: 'off', verdict: 'OK' };
+  if (!b.enabled) {
+    if (b.flag === 'off') return { label: 'broker', value: 'off (WMUX_MCP_BROKER=0)', verdict: 'OK' };
+    if (b.flag === 'unset') {
+      return {
+        label: 'broker',
+        value: 'off (the default)',
+        verdict: 'OK',
+        hint: "WMUX_MCP_BROKER=1 in the app's environment turns it on, from the next wmux start.",
+      };
+    }
+    return { label: 'broker', value: 'off', verdict: 'OK' };
+  }
+  const rule = brokerRule(b.flag);
   if (b.running) {
     return {
       label: 'broker',
       value: `running pid ${b.pid}, up ${formatUptime(b.uptimeS ?? undefined)}, connections ${b.connections}, ` +
         `crash exits ${b.crashExits}, spawn failures ${b.spawnFailures}, stand-downs ${b.standDowns}`,
       verdict: 'OK',
+      ...(rule ? { hint: rule } : {}),
     };
   }
   if (b.standingDown) {
-    return { label: 'broker', value: `served by another wmux instance's broker (stand-downs ${b.standDowns})`, verdict: 'OK' };
+    return {
+      label: 'broker',
+      value: `served by another wmux instance's broker (stand-downs ${b.standDowns})`,
+      verdict: 'OK',
+      ...(rule ? { hint: rule } : {}),
+    };
   }
   const known: Record<string, { value: string; next?: string }> = {
     restarting: {
@@ -637,8 +667,8 @@ function brokerLine(b: McpSessionsSummary['broker'], kinds: ReadonlySet<string>)
     stopped: { value: 'not running: stopped by the app' },
   };
   const state = typeof b.downReason === 'string' ? known[b.downReason] : undefined;
-  if (!state) return { label: 'broker', value: 'not running', verdict: 'WARN' };
-  const hint = [state.next, ...downConsequences(kinds)].filter(Boolean).join(' ');
+  if (!state) return { label: 'broker', value: 'not running', verdict: 'WARN', ...(rule ? { hint: rule } : {}) };
+  const hint = [state.next, ...downConsequences(kinds), rule].filter(Boolean).join(' ');
   return { label: 'broker', value: state.value, verdict: 'WARN', ...(hint ? { hint } : {}) };
 }
 

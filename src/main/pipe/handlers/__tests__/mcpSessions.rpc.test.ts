@@ -37,6 +37,13 @@ describe('mcp.sessions.summary', () => {
     expect((res as { result: { identity?: unknown } }).result.identity).toEqual(identity);
   });
 
+  it('carries WMUX_MCP_BROKER as the app read it, when given', async () => {
+    const router = new RpcRouter();
+    registerMcpSessionsRpc(router, { brokerEnabled: () => false, brokerFlag: () => 'unset', brokerStatus: () => broker, tracker: new McpSessionTracker({ now: () => 0 }) });
+    const res = await router.dispatch({ id: '1', method: 'mcp.sessions.summary', params: {} });
+    expect((res as { result: { broker: { flag?: string; enabled: boolean } } }).result.broker).toMatchObject({ enabled: false, flag: 'unset' });
+  });
+
   it('is an internal method the CLI tier reaches', () => {
     expect(METHOD_CAPABILITY['mcp.sessions.summary']).toEqual({ capability: 'wmux.internal' });
     expect(WMUX_CLI_METHODS.has('mcp.sessions.summary')).toBe(true);

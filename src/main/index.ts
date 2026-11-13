@@ -224,6 +224,7 @@ import { isAltF4Held, isAltF4KeyDown } from './altF4';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { startBrokerAndRegister } from './mcp/brokerBoot';
+import { brokerFlag } from '../shared/mcpBroker';
 import { identitySummary, notePeerReadCheck, setBrokerIdentitySource, setBrokerStampSource, setUnownedBrokerSource } from './pipe/handlers/peerPidShadow';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry, releaseCdpPortOnExit } from './browser-session/cdpPort';
@@ -1373,6 +1374,7 @@ const mcpSessionTracker = new McpSessionTracker();
 rpcRouter.setMcpSessionSink(mcpSessionTracker);
 registerMcpSessionsRpc(rpcRouter, {
   brokerEnabled: isMcpBrokerEnabled,
+  brokerFlag: () => brokerFlag(process.env.WMUX_MCP_BROKER),
   brokerStatus: () => mcpBrokerSupervisor.status(),
   tracker: mcpSessionTracker,
   identity: () => identitySummary(),

@@ -6,6 +6,7 @@
  */
 
 import type { IdentityClaimsSummary } from './identityClaims';
+import type { BrokerFlag } from './mcpBroker';
 
 /** A tool name as a report may carry it: never arguments or paths. */
 export const BROKER_TOOL_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -96,7 +97,8 @@ export interface BrokerStatus {
 
 /** `mcp.sessions.summary` result. */
 export interface McpSessionsSummary {
-  broker: BrokerStatus & { enabled: boolean };
+  /** `flag`: WMUX_MCP_BROKER as the app read it (shared/mcpBroker.ts); absent from older apps. */
+  broker: BrokerStatus & { enabled: boolean; flag?: BrokerFlag };
   bundle: { recent: number; capped: boolean; ttlS: number };
   /** How main takes pid claims (shared/identityClaims.ts); absent from older apps. */
   identity?: IdentityClaimsSummary;
