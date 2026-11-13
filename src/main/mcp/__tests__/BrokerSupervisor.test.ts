@@ -178,6 +178,25 @@ describe('BrokerSupervisor status', () => {
     }
   });
 
+  it('passes config.json mcp.broker limits at each start, and reports them', () => {
+    vi.mocked(spawn).mockReturnValue(makeChild() as never);
+    const readLimits = vi.fn(() => ({
+      limits: { maxSessions: 10, maxRssMb: null, maxBrowserReplRunners: null },
+      ignored: ['mcp.broker.maxRssMb'],
+    }));
+    const sup = new BrokerSupervisor({ readLimits });
+    expect(sup.status().limits).toBeUndefined();
+    sup.start();
+    const opts = vi.mocked(spawn).mock.calls[0][2] as { env: NodeJS.ProcessEnv };
+    expect(JSON.parse(opts.env.WMUX_MCP_BROKER_LIMITS as string)).toEqual({ maxSessions: 10, maxRssMb: null, maxBrowserReplRunners: null });
+    expect(sup.status()).toMatchObject({
+      limits: { maxSessions: 10, maxRssMb: null, maxBrowserReplRunners: null },
+      ignoredLimits: ['mcp.broker.maxRssMb'],
+    });
+    expect(readLimits).toHaveBeenCalledTimes(1);
+    sup.stop();
+  });
+
   it('spawns the broker with the signal-opened inspector off, before its script', () => {
     vi.mocked(spawn).mockReturnValue(makeChild() as never);
     const sup = new BrokerSupervisor();

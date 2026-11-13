@@ -221,6 +221,43 @@ describe('doctor broker rule', () => {
   });
 });
 
+describe('doctor broker limits', () => {
+  const limitsLine = async (broker: Partial<McpSessionsSummary['broker']>) => {
+    const result = { ...summary, broker: { ...summary.broker, ...broker } };
+    const section = await buildMcpSection(deps({ sessions: () => Promise.resolve({ id: '1', ok: true, result }) }));
+    return section.lines.find((l) => l.label === 'broker limits');
+  };
+  const none = { maxSessions: null, maxRssMb: null, maxBrowserReplRunners: null };
+
+  it('none set by default, and says where they live and when a change applies', async () => {
+    const line = await limitsLine({ limits: none, ignoredLimits: [] });
+    expect(line).toMatchObject({ value: 'none set', verdict: 'OK' });
+    expect(line?.hint).toContain('config.json under mcp.broker');
+    expect(line?.hint).toContain('a change applies from the next wmux start');
+  });
+
+  it('names the limits that are set', async () => {
+    expect(await limitsLine({ limits: { ...none, maxSessions: 10, maxBrowserReplRunners: 40 }, ignoredLimits: [] }))
+      .toMatchObject({ value: 'maxSessions 10, maxBrowserReplRunners 40', verdict: 'OK' });
+  });
+
+  it('warns about a setting it ignored', async () => {
+    const line = await limitsLine({ limits: none, ignoredLimits: ['mcp.broker.maxRssMb'] });
+    expect(line?.verdict).toBe('WARN');
+    expect(line?.hint).toContain('Ignored, not a positive integer: mcp.broker.maxRssMb.');
+  });
+
+  it('a malformed ignored list is read as empty, not thrown on', async () => {
+    const line = await limitsLine({ limits: none, ignoredLimits: {} as unknown as string[] });
+    expect(line).toMatchObject({ value: 'none set', verdict: 'OK' });
+  });
+
+  it('no line while the broker is off, or for an app that does not report limits', async () => {
+    expect(await limitsLine({ enabled: false, limits: none })).toBeUndefined();
+    expect(await limitsLine({})).toBeUndefined();
+  });
+});
+
 describe('doctor identity section', () => {
   const withIdentity = (identity: unknown) => deps({ sessions: () => Promise.resolve({ id: '1', ok: true, result: { ...summary, identity } }) });
   const zero = { 'no-peer': 0, 'other-pid': 0, 'start-unread': 0, restarted: 0, 'broker-unverified': 0 };

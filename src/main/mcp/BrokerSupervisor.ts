@@ -8,6 +8,8 @@ import { brokerOffEffects, type BrokerOffEffects } from './brokerOffMarker';
 import { parseBrokerConnectionsReport, type BrokerDownReason, type BrokerStampMessage, type BrokerStatus } from '../../shared/mcpSessions';
 import { processStartTime } from '../../shared/processStartTime';
 import { brokerDefault } from '../../shared/mcpBroker';
+import { BROKER_LIMITS_ENV, type BrokerLimits } from '../../shared/brokerLimits';
+import { readBrokerLimitsConfig } from './brokerConfig';
 
 /**
  * Supervises the shared MCP broker process (Option A,
@@ -72,8 +74,16 @@ export class BrokerSupervisor {
   private lastCrashTools: string[] = [];
   private readonly brokerOff: BrokerOffEffects;
   private readonly startTimeOf: (pid: number) => bigint | null;
+  private readonly readLimits: () => { limits: BrokerLimits; ignored: string[] };
+  /** The limits the current or last broker was started with; null before the first start. */
+  private limits: { limits: BrokerLimits; ignored: string[] } | null = null;
 
-  constructor(opts: { brokerOff?: BrokerOffEffects; startTimeOf?: (pid: number) => bigint | null } = {}) {
+  constructor(opts: {
+    brokerOff?: BrokerOffEffects;
+    startTimeOf?: (pid: number) => bigint | null;
+    readLimits?: () => { limits: BrokerLimits; ignored: string[] };
+  } = {}) {
+    this.readLimits = opts.readLimits ?? (() => readBrokerLimitsConfig());
     this.brokerOff = opts.brokerOff ?? brokerOffEffects();
     this.startTimeOf = opts.startTimeOf ?? processStartTime;
   }
@@ -118,6 +128,7 @@ export class BrokerSupervisor {
       standingDown: this.standingDown,
       downReason: this.downReason(),
       lastCrashTools: [...this.lastCrashTools],
+      ...(this.limits ? { limits: { ...this.limits.limits }, ignoredLimits: [...this.limits.ignored] } : {}),
     };
   }
 
@@ -175,6 +186,10 @@ export class BrokerSupervisor {
     // another instance) names that instance's socket; the broker talks only
     // to this one.
     delete env.WMUX_SOCKET_PATH;
+    // config.json mcp.broker, read at each start: a change applies from the
+    // next broker start.
+    this.limits = this.readLimits();
+    env[BROKER_LIMITS_ENV] = JSON.stringify(this.limits.limits);
     const child = spawn(process.execPath, ['--disable-sigusr1', script], {
       env,
       // The IPC channel carries the broker's connection reports; stdout stays

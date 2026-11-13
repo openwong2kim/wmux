@@ -12,7 +12,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { BrowserReplSession } from '../BrowserReplSession';
 import { BROWSER_REPL_TOOLS, type BridgeCall } from '../bridge';
-import { RunnerLines, liveBrowserReplRunnersForTest, setBrowserReplRunnerCapForTest, type RunnerProcess } from '../runnerProcess';
+import { RunnerLines, liveBrowserReplRunnersForTest, setBrowserReplRunnerCapForTest, setBrowserReplRunnerTotal, type RunnerProcess } from '../runnerProcess';
 import { peerPidOf } from '../../../shared/peerPid';
 import { processStartTime } from '../../../shared/processStartTime';
 import { checkClaim, resetClaimChecks } from '../../../main/pipe/handlers/peerPidShadow';
@@ -63,6 +63,7 @@ afterEach(async () => {
   // held, so a slot freed late cannot refuse the next test's runner.
   await vi.waitFor(() => expect(liveBrowserReplRunnersForTest()).toBe(0), { timeout: 15_000 });
   setBrowserReplRunnerCapForTest(null);
+  setBrowserReplRunnerTotal(null);
 });
 
 describe('browser_repl runner process', () => {
@@ -290,6 +291,16 @@ describe('browser_repl runner process', () => {
     // Another agent is not held back by this one's runners.
     expect((await newSession({}).run('1', 10_000, bridge)).ok).toBe(true);
   }, 120_000);
+
+  it('mcp.broker.maxBrowserReplRunners caps the total across agents, naming the setting', async () => {
+    setBrowserReplRunnerTotal(2);
+    expect((await newSession({}).run('1', 10_000, bridge)).ok).toBe(true);
+    expect((await newSession({}).run('1', 10_000, bridge)).ok).toBe(true);
+    const refused = await newSession({}).run('1', 10_000, bridge);
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain('already running 2 browser_repl runtimes across all agents');
+    expect(refused.error).toContain('mcp.broker.maxBrowserReplRunners');
+  });
 
   it("a session that ends frees its owner's count", async () => {
     setBrowserReplRunnerCapForTest(1);
