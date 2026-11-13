@@ -437,6 +437,19 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     if (!native.ok) expect(native.detail?.split(':')[0]).toBe(family);
   });
 
+  // The counters' `reasonsSeen`: what else a refused stream holds.
+  it('lists every refusal family of a refused stream, the reported one first', async () => {
+    const stream = 'a\x1b[?47hb\x1b(Ac\x1b[53md\x1b(Ke';
+    const native = await generateRustSnapshot({ cols: 20, rows: 6, scrollback: 100, initial: Buffer.from(stream) }, 'ansi');
+    expect(native.ok).toBe(false);
+    if (!native.ok) {
+      expect(native.detail?.split(':')[0]).toBe('unsupported-state-mode');
+      expect(native.families).toEqual(['unsupported-state-mode', 'unsupported-state-charset', 'unsupported-state-sgr']);
+    }
+    const served = await generateRustSnapshot({ cols: 20, rows: 6, scrollback: 100, initial: Buffer.from('plain') }, 'ansi');
+    expect(served.ok).toBe(true);
+  });
+
   // xterm's public modes do not expose the mouse encoding, so capture() cannot
   // compare it: check the restored ?1016 directly.
   it.each(['\x1b[?1003;1016hx', '\x1b[?1002;1006;1016hx', '\x1b[?1016hx', '\x1b[?1000;1016h\x1b[?1016lx', '\x1b[?1000;1016h\x1bcx'])('restores the pixel mouse encoding as xterm does: %j', async (stream) => {

@@ -138,7 +138,15 @@ export function renderMemoryDiagnostics(
     if (daemon.snapshots) {
       for (const [name, c] of Object.entries(daemon.snapshots)) {
         const reasons = Object.entries(c.reasons).sort((a, b) => b[1] - a[1]).map(([reason, n]) => `${reason} ${n}`).join(', ');
-        lines.push(`  native ${name} snapshots: ${c.native} native, ${c.fallbacks} not served natively, ${c.skipped} skipped${reasons ? ` (${reasons})` : ''}${c.circuitOpen ? '; native module bypassed after an error' : ''}`);
+        // Refused streams that also held a family behind their first refusal.
+        const alsoSeen = Object.entries(c.reasonsSeen ?? {})
+          .map(([family, n]) => [family, n - (c.reasons[family] ?? 0)] as const)
+          .filter(([, n]) => n > 0)
+          .sort((a, b) => b[1] - a[1])
+          .map(([family, n]) => `${family} ${n}`)
+          .join(', ');
+        const detail = [reasons, alsoSeen && `also seen: ${alsoSeen}`].filter(Boolean).join('; ');
+        lines.push(`  native ${name} snapshots: ${c.native} native, ${c.fallbacks} not served natively, ${c.skipped} skipped${detail ? ` (${detail})` : ''}${c.circuitOpen ? '; native module bypassed after an error' : ''}`);
       }
     }
     for (const [site, c] of Object.entries(daemon.tailReads ?? {})) {

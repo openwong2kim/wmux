@@ -12,13 +12,15 @@ interface Diagnostics {
   skipped: number;
   /** Each fallback and skip, by reason (a native refusal by its `unsupported-*` family). */
   reasons: SnapshotReasons;
+  /** Per native refusal, every family its stream holds (RustSnapshot's `families`). */
+  reasonsSeen: SnapshotReasons;
   last?: { backend: 'rust' | 'xterm'; reason: Reason };
 }
-const diagnostics: Diagnostics = { native: 0, fallbacks: 0, skipped: 0, reasons: {} };
+const diagnostics: Diagnostics = { native: 0, fallbacks: 0, skipped: 0, reasons: {}, reasonsSeen: {} };
 let failedModule: { path: string | undefined } | undefined;
 
 export function getAnsiSnapshotBackendDiagnostics(): Diagnostics & { circuitOpen: boolean } {
-  return { ...diagnostics, reasons: { ...diagnostics.reasons }, last: diagnostics.last && { ...diagnostics.last },
+  return { ...diagnostics, reasons: { ...diagnostics.reasons }, reasonsSeen: { ...diagnostics.reasonsSeen }, last: diagnostics.last && { ...diagnostics.last },
     circuitOpen: !!failedModule && failedModule.path === (process.env.WMUX_TERMINAL_CORE_MODULE ?? process.env.WMUX_RUST_SNAPSHOT_MODULE) };
 }
 
@@ -79,6 +81,7 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
   });
   let failure: Reason = 'error';
   let refusal: string | undefined;
+  let families: string[] | undefined;
   try {
     // Half of the caller's total budget stays reserved for the fallback.
     const native = await generateRustSnapshot({ ...input, drainQueue: record, budgetMs: budget / 2 }, 'ansi');
@@ -97,6 +100,7 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
         return native;
       }
       refusal = native.detail;
+      families = native.families;
       if (native.reason === 'budget') failure = 'budget';
       // The native terminal refuses a stream or grid it cannot replay as
       // xterm would (a divergent control, a reflow, the history cap): the
@@ -107,7 +111,13 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
   } catch { /* Module or disposal errors also use the intact xterm input. */ }
   if (failure === 'error') failedModule = { path: modulePath };
   diagnostics.fallbacks++;
-  countReason(diagnostics.reasons, failure === 'state' || failure === 'unsupported' ? refusalFamily(refusal, failure) : failure);
+  const counted = failure === 'state' || failure === 'unsupported' ? refusalFamily(refusal, failure) : failure;
+  countReason(diagnostics.reasons, counted);
+  if (counted.startsWith('unsupported-')) {
+    for (const family of new Set([counted, ...(families ?? []).map((f) => refusalFamily(f, ''))])) {
+      if (family) countReason(diagnostics.reasonsSeen, family);
+    }
+  }
   diagnostics.last = { backend: 'xterm', reason: failure };
   const remaining = budget - (performance.now() - started);
   if (remaining <= 0) return overBudget();

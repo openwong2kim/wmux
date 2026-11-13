@@ -90,6 +90,12 @@ export interface SnapshotBackendCounters {
   /** The native module failed and is bypassed until it changes. */
   circuitOpen: boolean;
   reasons: Record<string, number>;
+  /**
+   * ANSI only: per native refusal, every refusal family its stream holds,
+   * the one counted in `reasons` included. A family behind the first refusal
+   * shows here only. Absent from older daemons.
+   */
+  reasonsSeen?: Record<string, number>;
 }
 
 export interface AppMemoryDiagnostics {

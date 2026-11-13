@@ -13,6 +13,9 @@ interface NativeTerminal {
    * An alternate screen's width change is not reported: leaving that screen
    * later in the stream lifts it, so feeding goes on. */
   feedXterm(bytes: Uint8Array, requestedScrollback: number): boolean;
+  /** Every refusal family the ANSI feed met, the reported one first. Absent
+   *  from a module built before it. */
+  refusalFamilies?(): string[];
   feedFrozen(source: NativeFrozenRing, start: number, end: number): void;
   resize(cols: number, rows: number): void;
   textSnapshot(undimmed: boolean): Omit<Extract<TextSnapshotOutcome, { ok: true }>, 'ok' | 'bytesIn' | 'durationMs'>;
@@ -40,6 +43,10 @@ function load(): NativeModule {
   }
   return cached.module;
 }
+
+/** How long the ANSI feed goes on after a refusal, naming the other refusal
+ *  families in the stream (NativeTerminal.refusalFamilies). */
+const REFUSAL_SCAN_MS = 50;
 
 /** NativeTerminal refuses a grid above four million cells, history included. */
 const NATIVE_CELL_LIMIT = 4_000_000;
@@ -70,12 +77,14 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
     term = nativeTerminal;
     let carry = Buffer.alloc(0);
     let bytesIn = 0;
-    // Set once the native terminal refuses the ANSI snapshot: parsing on
-    // would only delay the xterm fallback.
-    let refused = false;
+    // Set once the native terminal refuses the ANSI snapshot. Parsing goes on
+    // for REFUSAL_SCAN_MS only, so the counters learn which other refusal
+    // families the stream holds without holding up the xterm fallback.
+    let refusedAt: number | undefined;
+    const refused = (): boolean => refusedAt !== undefined && performance.now() - refusedAt >= REFUSAL_SCAN_MS;
     const feed = async (raw: Buffer): Promise<boolean> => {
       bytesIn += raw.length;
-      if (refused) return true;
+      if (refused()) return true;
       const data = carry.length ? Buffer.concat([carry, raw]) : raw;
       carry = Buffer.alloc(0);
       for (let offset = 0; offset < data.length;) {
@@ -88,7 +97,10 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
           // The ANSI feed also tracks margins, cursor visibility and the
           // pending tail natively, as ansiStreamScan does for xterm.
           if (kind !== 'ansi') nativeTerminal.feed(bytes);
-          else if (nativeTerminal.feedXterm(bytes, requested)) { refused = true; return true; }
+          else if (nativeTerminal.feedXterm(bytes, requested)) {
+            refusedAt ??= performance.now();
+            if (refused()) return true;
+          }
           await new Promise<void>(resolve => setImmediate(resolve));
         }
         if (performance.now() - started > (req.budgetMs ?? 4000)) return false;
@@ -147,6 +159,9 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
     // An incomplete UTF-8 character at the end goes out raw, as on xterm.
     return { ok: true, payload: Buffer.concat([core, carry]), bytesIn, durationMs: performance.now() - started };
   } catch (err) {
-    return { ok: false, reason: 'error', detail: err instanceof Error ? err.message : String(err) };
+    const detail = err instanceof Error ? err.message : String(err);
+    let families: string[] | undefined;
+    try { families = kind === 'ansi' ? term?.refusalFamilies?.() : undefined; } catch { /* disposed or older module */ }
+    return { ok: false, reason: 'error', detail, ...(families?.length ? { families } : {}) };
   } finally { term?.dispose(); }
 }

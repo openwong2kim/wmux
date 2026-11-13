@@ -272,6 +272,10 @@ struct XtermFeed {
     divergent: bool,
     /// The refusal the first one is reported as (native_serialize::refusal).
     refused: Option<&'static str>,
+    /// Every refusal family met so far, each once, in the order met. The
+    /// feed goes on past the first refusal, so the counters can tell what
+    /// else a refused stream holds (NativeTerminal::refusal_families).
+    seen: Vec<&'static str>,
     /// The alternate screen changed width with a soft-wrapped row on it
     /// (NativeTerminal::resize). Unlike the other refusals this one ends:
     /// leaving that screen discards the rows that differ.
@@ -337,10 +341,23 @@ fn string_end(data: &[u8]) -> Option<usize> {
         .position(|b| matches!(b, 0x07 | 0x18 | 0x1a | 0x1b))
 }
 
+/// A refusal's family: the `unsupported-*` token before its colon.
+fn refusal_family(why: &'static str) -> &'static str {
+    why.split(':').next().unwrap_or(why)
+}
+
 impl XtermFeed {
-    /// Refuse the stream, reported as `why` when it is the first refusal.
+    /// Refuse the stream, reported as `why` when it is the first refusal;
+    /// every refusal's family is kept in `seen`.
     fn refuse(&mut self, when: bool, why: &'static str) {
-        if when && !self.divergent {
+        if !when {
+            return;
+        }
+        let family = refusal_family(why);
+        if !self.seen.contains(&family) {
+            self.seen.push(family);
+        }
+        if !self.divergent {
             self.divergent = true;
             self.refused = Some(why);
         }
@@ -972,8 +989,10 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+        // Fed on past a refusal too: the snapshot is lost by then, but the
+        // rest of the stream still names the other families it holds.
+        self.feed.feed(&mut self.parser, term, &bytes);
         if self.refusal.is_none() {
-            self.feed.feed(&mut self.parser, term, &bytes);
             if self.feed.divergent {
                 self.refusal = Some(
                     self.feed
@@ -990,6 +1009,20 @@ impl NativeTerminal {
             }
         }
         Ok(self.refusal.is_some())
+    }
+
+    /// Every refusal family the ANSI feed met, the reported one first, each
+    /// once. Empty while the snapshot is not refused.
+    #[napi]
+    pub fn refusal_families(&self) -> Vec<String> {
+        let mut families: Vec<&'static str> =
+            self.refusal.map(refusal_family).into_iter().collect();
+        for family in &self.feed.seen {
+            if !families.contains(family) {
+                families.push(family);
+            }
+        }
+        families.into_iter().map(str::to_owned).collect()
     }
 
     /// Replay an immutable native ring copy without a full JS Buffer round trip.
@@ -1932,6 +1965,39 @@ mod tests {
             "unsupported-state-alt-margins"
         );
         assert!(feed_with(&["\x1b*0\x1bn\x1b[!pok"]).2.refused.is_none());
+    }
+
+    #[test]
+    fn every_refused_family_is_seen_once_in_order() {
+        let seen = |chunks: &[&str]| feed_with(chunks).2.seen;
+        assert_eq!(
+            seen(&["\x1b[?47h\x1b(Ax\x1b[?47l\x1b[53m", "\x1b(K"]),
+            [
+                "unsupported-state-mode",
+                "unsupported-state-charset",
+                "unsupported-state-sgr"
+            ]
+        );
+        // A C1 is seen at the first control after it, or at the chunk's end.
+        assert_eq!(
+            seen(&["\u{9b}31m\x1b(A"]),
+            ["unsupported-state-c1", "unsupported-state-charset"]
+        );
+        assert_eq!(
+            seen(&["\x1b(Ax\u{9b}31m"]),
+            ["unsupported-state-charset", "unsupported-state-c1"]
+        );
+        assert!(seen(&["plain \x1b[1mtext"]).is_empty());
+        // The first refusal is still the one reported.
+        let feed = feed_with(&["\x1b[53m\x1b(A"]).2;
+        assert_eq!(
+            feed.refused.map(crate::native_core::refusal_family),
+            Some("unsupported-state-sgr")
+        );
+        assert_eq!(
+            feed.seen,
+            ["unsupported-state-sgr", "unsupported-state-charset"]
+        );
     }
 
     #[test]
