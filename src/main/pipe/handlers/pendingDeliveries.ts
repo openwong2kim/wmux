@@ -102,15 +102,14 @@ const defaultTimer = (fn: () => void, ms: number): { cancel: () => void } => {
   return { cancel: () => clearInterval(t) };
 };
 
-/** The queue main runs (one per app); a2a.rpc withdraws through it. */
-let current: PendingDeliveries | null = null;
-
 /** Drop what is stored for `taskId`: its send turned out not to stand. */
 export function withdrawStoredDeliveries(taskId: string): void {
-  current?.withdraw(taskId);
+  PendingDeliveries.active?.withdraw(taskId);
 }
 
 export class PendingDeliveries {
+  /** The queue main runs (one per app); a2a.rpc withdraws through it. */
+  static active: PendingDeliveries | null = null;
   /** Oldest first. */
   private entries: PendingDelivery[] = [];
   private readonly busy = new Set<string>();
@@ -119,7 +118,7 @@ export class PendingDeliveries {
 
   constructor(private readonly deps: PendingDeliveryDeps) {
     this.now = deps.now ?? Date.now;
-    current = this;
+    PendingDeliveries.active = this;
   }
 
   get size(): number {
@@ -199,7 +198,9 @@ export class PendingDeliveries {
         entry.reason = result.reason;
         // The pane's conversation was already cleared: the next try types the text alone.
         if (result.freshContextApplied) {
-          const { newTask: _newTask, keepContext: _keep, ...rest } = entry.opts;
+          const rest = { ...entry.opts };
+          delete rest.newTask;
+          delete rest.keepContext;
           entry.opts = rest;
         }
       }

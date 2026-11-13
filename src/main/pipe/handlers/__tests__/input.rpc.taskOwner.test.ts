@@ -11,6 +11,7 @@ import { RpcRouter } from '../../RpcRouter';
 import { registerInputRpc, taskPaneTextRefusal, taskStateOfRows } from '../input.rpc';
 import { PENDING_TEXT_MAX, type PendingTaskState } from '../pendingDeliveries';
 import { beginDeliverySend } from '../deliverySenders';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 import { mintCommanderToken, __resetCommanderTrustForTesting } from '../../../deck/commanderTrust';
 import type { PTYManager } from '../../../pty/PTYManager';
 import type { TaskLedger } from '../../../../daemon/ledger/TaskLedger';
@@ -1185,7 +1186,7 @@ describe('a refused local delivery, stored and typed later', () => {
     const retry = w.retryPendingDeliveries('pty-task');
     await atGap;
     const live = w.gatedSubmit('pty-task', 'hello live', 'claude', { senderTaskIds: ['t-live'] });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await deliberateSleep(50, 'the live send runs up to the pane lock; nothing to observe until the retry lets go');
     release();
     await retry;
     expect(await live).toMatchObject({ ok: true });
