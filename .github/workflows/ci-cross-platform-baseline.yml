@@ -38,9 +38,9 @@ jobs:
     name: Baseline (${{ matrix.os }})
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ${{ matrix.os }}
-    # The slowest leg (macos) takes ~17 min; a hung test must not hold a
-    # runner for the 6 h default.
-    timeout-minutes: 30
+    # The macos leg takes 26-29 min, the ubuntu leg less; a hung test must
+    # not hold a runner for the 6 h default.
+    timeout-minutes: ${{ startsWith(matrix.os, 'macos') && 45 || 30 }}
     strategy:
       # Per DX/Eng review T1 (per-OS independent publish policy): keep all
       # matrix legs running so we can see the full cross-platform picture

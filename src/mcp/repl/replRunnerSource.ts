@@ -346,6 +346,11 @@ send({ ready: true });
  * anything to mangle.
  */
 export function buildRunnerBootstrap(): string {
-  const encoded = Buffer.from(REPL_RUNNER_SOURCE, 'utf8').toString('base64');
+  return evalBootstrap(REPL_RUNNER_SOURCE);
+}
+
+/** The `node -e` argument that runs `source`, base64-encoded as above. */
+export function evalBootstrap(source: string): string {
+  const encoded = Buffer.from(source, 'utf8').toString('base64');
   return `eval(Buffer.from("${encoded}","base64").toString("utf8"))`;
 }

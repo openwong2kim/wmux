@@ -2,7 +2,7 @@ import { terminalCoreSelection } from '../shared/terminalCoreSettings';
 /** Experimental text selection, independent of the separately gated ANSI path. */
 import type { SnapshotRequest, TextSnapshotOutcome } from './HeadlessSnapshot';
 import { generateRustSnapshot } from './RustSnapshot';
-import { withSnapshotShadow } from './SnapshotShadow';
+import { snapshotModeOverride } from './snapshotMode';
 import { countReason, refusalFamily, type SnapshotReasons } from './snapshotBackendReasons';
 
 type Reference = (req: SnapshotRequest) => Promise<TextSnapshotOutcome>;
@@ -47,8 +47,8 @@ function materialize(req: SnapshotRequest): SnapshotRequest {
 }
 export async function selectTextSnapshot(req: SnapshotRequest, xterm: Reference): Promise<TextSnapshotOutcome> {
   const reference: Reference = request => xterm(materialize(request));
-  const mode = process.env.WMUX_RUST_SNAPSHOT ?? (terminalCoreSelection() === 'rust' ? 'text' : undefined);
-  if (mode !== 'text' && mode !== 'all') return withSnapshotShadow(materialize(req), 'text', reference);
+  const mode = snapshotModeOverride() ?? (terminalCoreSelection() === 'rust' ? 'text' : undefined);
+  if (mode !== 'text' && mode !== 'all') return reference(req);
   const modulePath = process.env.WMUX_TERMINAL_CORE_MODULE ?? process.env.WMUX_RUST_SNAPSHOT_MODULE;
   if (failedModule && failedModule.path !== modulePath) failedModule = undefined;
   // A failed candidate must not consume the caller's live tee. Read-only ring
