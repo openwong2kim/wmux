@@ -458,7 +458,7 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
     'so the message was NOT pasted, and the pane may hold the command or already be cleared. The task is ' +
     'stored; the receiver can find it with a2a_task_query. Read the pane before sending again.',
   fresh_context_busy:
-    'Another new task was still being delivered to the target pane, so nothing was written to it. The task is ' +
+    'Another message was still being delivered to the target pane, so nothing was written to it. The task is ' +
     'stored; the receiver can find it with a2a_task_query. Send again in a few seconds.',
   usage_limited:
     "The target pane hit its provider's usage limit and is held until the limit resets, so nothing was " +
@@ -484,8 +484,9 @@ const STORED_FOR_LATER_HINT =
   "pane can take it: it tries again when the pane's agent ends a turn and once a minute (a pane held by a usage " +
   'limit waits for the limit to reset). The receiver can read it now with a2a_task_query. The kept copy is ' +
   "dropped, with no word back, after 24 hours, when the task ends, when the pane closes or its agent changes, " +
-  'or when more than 8 messages wait for the pane. Do not just send it again: check the task with ' +
-  'a2a_task_query first.';
+  'or when more messages wait for the pane than it keeps (4 per task, 8 in all); nor does it survive an app ' +
+  'restart. Do not just send it ' +
+  'again: check the task with a2a_task_query first.';
 
 /** A refused delivery whose text is still in the target's composer (#2993). */
 const PASTED_NOT_SUBMITTED_HINT =

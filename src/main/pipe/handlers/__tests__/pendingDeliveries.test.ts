@@ -6,14 +6,16 @@ import type { GatedSubmitResult } from '../../../../shared/ptyMessageDelivery';
 import {
   PENDING_DELIVERY_TTL_MS,
   PENDING_PER_PANE_CAP,
+  PENDING_PER_TASK_CAP,
   PENDING_TASK_ROW_GRACE_MS,
   PENDING_TOTAL_CAP,
   PendingDeliveries,
+  withdrawStoredDeliveries,
   type PendingDelivery,
   type PendingTaskState,
 } from '../pendingDeliveries';
 
-function harness(opts: { result?: GatedSubmitResult; state?: PendingTaskState } = {}) {
+function harness(opts: { result?: GatedSubmitResult; state?: PendingTaskState; submit?: (entry: PendingDelivery) => Promise<GatedSubmitResult> } = {}) {
   let t = 1_000_000;
   const typed: string[] = [];
   const logs: string[] = [];
@@ -22,8 +24,9 @@ function harness(opts: { result?: GatedSubmitResult; state?: PendingTaskState } 
   const reads: string[] = [];
   const queue = new PendingDeliveries({
     submit: async (entry) => {
-      if (live.result.ok) typed.push(entry.text);
-      return live.result;
+      const result = opts.submit ? await opts.submit(entry) : live.result;
+      if (result.ok) typed.push(entry.text);
+      return result;
     },
     taskState: async (entry) => {
       reads.push(entry.ptyId);
@@ -37,7 +40,7 @@ function harness(opts: { result?: GatedSubmitResult; state?: PendingTaskState } 
     },
   });
   const entry = (taskId: string, ptyId = 'pty-1', text = `text ${taskId}`): PendingDelivery => ({
-    taskId, ptyId, text, agent: 'claude', opts: { senderTaskIds: [taskId] }, agentName: 'Claude Code', incarnationId: 'inc-1', storedAt: t, reason: 'gate_unavailable',
+    taskId, ptyId, text, agent: 'claude', opts: { senderTaskIds: [taskId] }, agentName: 'Claude Code', incarnationId: 'inc-1', sessionStartAt: null, storedAt: t, reason: 'gate_unavailable',
   });
   return { queue, typed, logs, live, reads, entry, advance: (ms: number) => { t += ms; }, timers: () => timers };
 }
@@ -99,8 +102,16 @@ describe('PendingDeliveries', () => {
     expect(h.logs.at(-1)).toContain(': expired;');
   });
 
-  it('drops an entry whose task never appeared, once the grace for a row still being written is over', async () => {
+  it('drops an entry whose task is listed as ended at once', async () => {
     const h = harness({ state: 'ended' });
+    h.queue.store(h.entry('t1'));
+    await h.queue.retry('pty-1');
+    expect(h.queue.size).toBe(0);
+    expect(h.logs.at(-1)).toContain(': task ended;');
+  });
+
+  it('drops an entry whose task never appeared, once the grace for a row still being written is over', async () => {
+    const h = harness({ state: 'missing' });
     h.queue.store(h.entry('t1'));
     await h.queue.retry('pty-1');
     expect(h.queue.size).toBe(1);
@@ -111,16 +122,74 @@ describe('PendingDeliveries', () => {
     expect(h.logs.at(-1)).toContain(': task ended;');
   });
 
-  it('drops when the pane is gone, and keeps when the task cannot be read', async () => {
+  it('drops when the pane stays gone past the grace, and keeps when the task cannot be read', async () => {
     const unknown = harness({ state: null });
     unknown.queue.store(unknown.entry('t1'));
     await unknown.queue.retry('pty-1');
     expect(unknown.queue.size).toBe(1);
     const gone = harness({ state: 'pane gone' });
     gone.queue.store(gone.entry('t1'));
+    // A window reload can read as ownerless for a moment.
+    await gone.queue.retry('pty-1');
+    expect(gone.queue.size).toBe(1);
+    gone.live.state = 'open';
+    gone.live.result = { ok: false, reason: 'gate_unavailable', detail: 'x' };
+    await gone.queue.retry('pty-1');
+    gone.live.state = 'pane gone';
+    gone.advance(PENDING_TASK_ROW_GRACE_MS);
+    await gone.queue.retry('pty-1');
+    expect(gone.queue.size).toBe(1);
+    gone.advance(PENDING_TASK_ROW_GRACE_MS);
     await gone.queue.retry('pty-1');
     expect(gone.queue.size).toBe(0);
     expect(gone.logs.at(-1)).toContain(': pane gone;');
+  });
+
+  it('the same text stored while it is being typed stays one entry, typed once', async () => {
+    let release: (r: GatedSubmitResult) => void = () => undefined;
+    const h = harness({ submit: () => new Promise((resolve) => { release = resolve; }) });
+    h.queue.store(h.entry('t1'));
+    const running = h.queue.retry('pty-1');
+    await Promise.resolve();
+    await Promise.resolve();
+    h.queue.store(h.entry('t1'));
+    release({ ok: true });
+    await running;
+    expect(h.typed).toEqual(['text t1']);
+    expect(h.queue.size).toBe(0);
+  });
+
+  it('a kept new task whose conversation was already cleared is typed next time without clearing again', async () => {
+    const seen: PendingDelivery['opts'][] = [];
+    const results: GatedSubmitResult[] = [{ ok: false, reason: 'gate_unavailable', detail: 'x', freshContextApplied: true }, { ok: true }];
+    const h = harness({ submit: async (entry) => { seen.push({ ...entry.opts }); return results.shift() as GatedSubmitResult; } });
+    h.queue.store({ ...h.entry('t1'), opts: { newTask: true, taskId: 't1', keepContext: 'open_a2a_task', senderTaskIds: ['t1'] } });
+    await h.queue.retry('pty-1');
+    await h.queue.retry('pty-1');
+    expect(seen[0]).toMatchObject({ newTask: true });
+    expect(seen[1]).toEqual({ taskId: 't1', senderTaskIds: ['t1'] });
+    expect(h.typed).toEqual(['text t1']);
+  });
+
+  it('past the per-task cap a task drops its own oldest, never another sender\'s', () => {
+    const h = harness();
+    h.queue.store(h.entry('other', 'pty-1', 'theirs'));
+    for (let i = 0; i < PENDING_PER_PANE_CAP + 2; i++) h.queue.store(h.entry('burst', 'pty-1', `mine ${i}`));
+    expect(h.queue.heldFor('pty-1', 'other')?.text).toBe('theirs');
+    expect(h.queue.size).toBe(1 + PENDING_PER_TASK_CAP);
+    expect(h.queue.heldFor('pty-1', 'burst')?.text).toBe(`mine ${PENDING_PER_PANE_CAP + 2 - PENDING_PER_TASK_CAP}`);
+  });
+
+  it('drops a pane\'s entries when its agent ends, and a task\'s when its send is withdrawn', () => {
+    const h = harness();
+    h.queue.store(h.entry('t1', 'pty-1'));
+    h.queue.store(h.entry('t2', 'pty-2'));
+    h.queue.dropPane('pty-1', 'agent changed');
+    expect(h.queue.heldFor('pty-1', 't1')).toBeUndefined();
+    expect(h.logs.at(-1)).toContain(': agent changed;');
+    withdrawStoredDeliveries('t2');
+    expect(h.queue.size).toBe(0);
+    expect(h.logs.at(-1)).toContain(': withdrawn;');
   });
 
   it('drops when the gate finds another agent session in the pane', async () => {

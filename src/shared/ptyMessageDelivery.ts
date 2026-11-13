@@ -241,6 +241,9 @@ export interface GatedSubmitRefusal {
   /** Main kept the text to type when the pane can take it (input.rpc
    *  pendingDeliveries): the refusal was not about a person or a dialog. */
   stored?: true;
+  /** A new task's fresh-context step had cleared the pane's conversation
+   *  before this refusal. */
+  freshContextApplied?: true;
 }
 /** A delivered submit. A new-task delivery also says what its fresh-context
  *  step did (shared/freshContext). */

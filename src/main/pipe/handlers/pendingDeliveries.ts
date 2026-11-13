@@ -1,32 +1,41 @@
 // Local A2A deliveries the gate could not check, kept to type later.
 //
 // A delivery refused with `gate_unavailable` (main could not rule out a
-// folder-trust prompt) or `usage_limited` (the pane is held until its limit
-// resets) is not about a person or a dialog: the pane may well take it a
-// little later. Main keeps it here, the same text for the same task and pane
-// once, and types it when the
-// pane's agent stops or on the next sweep, through the full delivery gate
-// each time. Everything a send checks is checked again then: the owner lane,
-// read fresh from the daemon's task rows; a person typing; an approval. The
-// task itself is stored in the daemon from the start, so the receiver can read
-// it at any time with a2a_task_query.
+// folder-trust prompt), `usage_limited` (the pane is held until its limit
+// resets) or `fresh_context_busy` (another delivery held the pane) is not
+// about a person or a dialog: the pane may well take it a little later. Main
+// keeps it here, the same text for the same task and pane once, and types it
+// when the pane's agent stops or on the next sweep, through the full delivery
+// gate each time. Everything a send checks is checked again then: the owner
+// lane, read fresh from the daemon's task rows; a person typing; an approval.
+// The task itself is stored in the daemon from the start, so the receiver can
+// read it at any time with a2a_task_query. The queue lives in main's memory
+// only: an app restart loses it.
 //
 // Bounds, after the remote held units (a2aRemote/held.ts): at most
-// PER_PANE_CAP entries per pane and TOTAL_CAP in all, the oldest dropped
-// first, and each entry dropped PENDING_DELIVERY_TTL_MS after it was stored.
+// PER_TASK_CAP entries per task and pane, PER_PANE_CAP per pane and TOTAL_CAP
+// in all; past a cap the storing task's own oldest entry goes first. Each
+// entry is dropped PENDING_DELIVERY_TTL_MS after it was stored.
 
 import type { GatedSubmitOptions, GatedSubmitRefusal, GatedSubmitResult } from '../../../shared/ptyMessageDelivery';
+import { A2A_REMOTE_BODY_MAX } from '../../../shared/a2aRemote';
 
 /** How long a stored delivery waits before it is dropped. */
 export const PENDING_DELIVERY_TTL_MS = 24 * 60 * 60 * 1000;
-/** Stored deliveries per pane; a new one past it drops that pane's oldest. */
+/** Stored deliveries per task and pane. */
+export const PENDING_PER_TASK_CAP = 4;
+/** Stored deliveries per pane. */
 export const PENDING_PER_PANE_CAP = 8;
-/** Stored deliveries in all; a new one past it drops the oldest anywhere. */
+/** Stored deliveries in all. */
 export const PENDING_TOTAL_CAP = 64;
+/** The longest text kept, in UTF-16 units: the remote A2A body cap. A local
+ *  delivery is usually a one-line nudge; anything longer is not kept. */
+export const PENDING_TEXT_MAX = A2A_REMOTE_BODY_MAX;
 /** How often stored deliveries are retried while any are kept. */
 export const PENDING_SWEEP_MS = 60_000;
 /** A task the daemon does not list yet may still be being written (a new
- *  task's row lands after its delivery): it counts as ended only after this. */
+ *  task's row lands after its delivery), and a pane may read as ownerless
+ *  while the window reloads: either counts only after this long. */
 export const PENDING_TASK_ROW_GRACE_MS = 60_000;
 
 export interface PendingDelivery {
@@ -35,25 +44,36 @@ export interface PendingDelivery {
   ptyId: string;
   text: string;
   agent: string | null;
-  /** The gate options to retry with: the task named for the sender check,
-   *  a new task's fresh-context fields kept. */
+  /** The gate options to retry with: the task named for the sender check
+   *  only when the send had a sender record, a new task's fresh-context
+   *  fields kept. */
   opts: GatedSubmitOptions;
-  /** The pane's agent at the refusal: its name and its session. */
+  /** The pane's agent at the refusal: its name, its pane session, and the
+   *  time of its agent's last session-start hook (null without one). */
   agentName: string;
   incarnationId: string;
+  sessionStartAt: number | null;
   storedAt: number;
   /** The pane's last refusal of it. */
   reason: GatedSubmitRefusal['reason'];
+  /** When the pane first read as gone, while that lasts. */
+  goneSince?: number;
 }
 
-export type PendingDropReason = 'replaced' | 'cap' | 'expired' | 'task ended' | 'pane gone' | 'agent changed' | 'refused';
+export type PendingDropReason = 'cap' | 'expired' | 'task ended' | 'pane gone' | 'agent changed' | 'refused' | 'withdrawn';
+
+/**
+ * A stored delivery's task now: `ended` = listed in an ended state;
+ * `missing` = not listed; null when that cannot be read, or the daemon
+ * withholds the task from the receiving side for now.
+ */
+export type PendingTaskState = 'open' | 'ended' | 'missing' | 'pane gone' | null;
 
 /**
  * Refusals that leave the pane as it was and that the pane can outgrow: a
  * stored delivery refused with one of these is tried again. Any other
- * refusal, or one after a paste, wrote something into the pane (a
- * fresh-context command, a paste) or will not change by waiting, so the
- * entry is dropped rather than repeat it on every pass.
+ * refusal, or one after a paste, wrote something into the pane or will not
+ * change by waiting, so the entry is dropped rather than repeat it.
  */
 const RETRYABLE: ReadonlySet<GatedSubmitRefusal['reason']> = new Set<GatedSubmitRefusal['reason']>([
   'gate_unavailable',
@@ -65,12 +85,9 @@ const RETRYABLE: ReadonlySet<GatedSubmitRefusal['reason']> = new Set<GatedSubmit
   'deadline',
 ]);
 
-/** A stored delivery's task now: null when that cannot be read. */
-export type PendingTaskState = 'open' | 'ended' | 'pane gone' | null;
-
 export interface PendingDeliveryDeps {
   /** The full delivery gate and write; it refuses as `agent_changed` when
-   *  the pane's agent session is not `entry.incarnationId`. */
+   *  the pane's agent is not the one the entry was stored for. */
   submit: (entry: PendingDelivery) => Promise<GatedSubmitResult>;
   /** The task's state, read from the daemon's task rows. */
   taskState: (entry: PendingDelivery) => Promise<PendingTaskState>;
@@ -85,6 +102,14 @@ const defaultTimer = (fn: () => void, ms: number): { cancel: () => void } => {
   return { cancel: () => clearInterval(t) };
 };
 
+/** The queue main runs (one per app); a2a.rpc withdraws through it. */
+let current: PendingDeliveries | null = null;
+
+/** Drop what is stored for `taskId`: its send turned out not to stand. */
+export function withdrawStoredDeliveries(taskId: string): void {
+  current?.withdraw(taskId);
+}
+
 export class PendingDeliveries {
   /** Oldest first. */
   private entries: PendingDelivery[] = [];
@@ -94,20 +119,22 @@ export class PendingDeliveries {
 
   constructor(private readonly deps: PendingDeliveryDeps) {
     this.now = deps.now ?? Date.now;
+    current = this;
   }
 
   get size(): number {
     return this.entries.length;
   }
 
-  /** Keep `entry`; the same text stored for the same task and pane is replaced. */
+  /** Keep `entry`. The same text already kept for the same task and pane
+   *  stays as it is, where it is (it may be being typed right now). */
   store(entry: PendingDelivery): void {
-    const prior = this.entries.find((e) => e.taskId === entry.taskId && e.ptyId === entry.ptyId && e.text === entry.text);
-    if (prior) this.drop(prior, 'replaced');
+    if (this.entries.some((e) => e.taskId === entry.taskId && e.ptyId === entry.ptyId && e.text === entry.text)) return;
     this.entries.push(entry);
-    const ofPane = this.entries.filter((e) => e.ptyId === entry.ptyId);
-    if (ofPane.length > PENDING_PER_PANE_CAP) this.drop(ofPane[0], 'cap');
-    if (this.entries.length > PENDING_TOTAL_CAP) this.drop(this.entries[0], 'cap');
+    const sameTask = (e: PendingDelivery): boolean => e.taskId === entry.taskId;
+    this.evict(this.entries.filter((e) => e.ptyId === entry.ptyId && sameTask(e)), PENDING_PER_TASK_CAP, sameTask);
+    this.evict(this.entries.filter((e) => e.ptyId === entry.ptyId), PENDING_PER_PANE_CAP, sameTask);
+    this.evict(this.entries, PENDING_TOTAL_CAP, sameTask);
     this.deps.log(`[delivery] stored task ${JSON.stringify(entry.taskId)} for pane ${JSON.stringify(entry.ptyId)}; it is typed when the pane can take it`);
     this.timer ??= (this.deps.setTimer ?? defaultTimer)(() => void this.sweep(), PENDING_SWEEP_MS);
   }
@@ -115,6 +142,16 @@ export class PendingDeliveries {
   /** The oldest delivery stored for `taskId` on the pane, if any. */
   heldFor(ptyId: string, taskId: string): PendingDelivery | undefined {
     return this.entries.find((e) => e.ptyId === ptyId && e.taskId === taskId);
+  }
+
+  /** Drop every delivery stored for the pane: its agent ended. */
+  dropPane(ptyId: string, reason: PendingDropReason): void {
+    for (const e of this.entries.filter((x) => x.ptyId === ptyId)) this.drop(e, reason);
+  }
+
+  /** Drop every delivery stored for `taskId`. */
+  withdraw(taskId: string): void {
+    for (const e of this.entries.filter((x) => x.taskId === taskId)) this.drop(e, 'withdrawn');
   }
 
   /**
@@ -130,10 +167,12 @@ export class PendingDeliveries {
       if (!entry) return;
       const state = await this.deps.taskState(entry).catch(() => null);
       if (state === 'pane gone') {
-        this.drop(entry, 'pane gone');
+        entry.goneSince ??= this.now();
+        if (this.now() - entry.goneSince >= PENDING_TASK_ROW_GRACE_MS) this.drop(entry, 'pane gone');
         return;
       }
-      if (state === 'ended' && this.now() - entry.storedAt >= PENDING_TASK_ROW_GRACE_MS) {
+      delete entry.goneSince;
+      if (state === 'ended' || (state === 'missing' && this.now() - entry.storedAt >= PENDING_TASK_ROW_GRACE_MS)) {
         this.drop(entry, 'task ended');
         return;
       }
@@ -143,7 +182,7 @@ export class PendingDeliveries {
         reason: 'write_failed',
         detail: `delivery: ${err instanceof Error ? err.message : String(err)}`,
       }));
-      // Replaced or dropped while the write ran: that is the newer state.
+      // Dropped while the write ran: that is the newer state.
       if (!this.entries.includes(entry)) return;
       if (result.ok) {
         this.remove(entry);
@@ -158,6 +197,11 @@ export class PendingDeliveries {
         this.drop(entry, 'refused', result.reason);
       } else {
         entry.reason = result.reason;
+        // The pane's conversation was already cleared: the next try types the text alone.
+        if (result.freshContextApplied) {
+          const { newTask: _newTask, keepContext: _keep, ...rest } = entry.opts;
+          entry.opts = rest;
+        }
       }
     } finally {
       this.busy.delete(ptyId);
@@ -171,6 +215,14 @@ export class PendingDeliveries {
     await Promise.all(panes.map((ptyId) => this.retry(ptyId)));
   }
 
+  /** Past `cap` in `pool`, drop the storing task's own oldest entry when it
+   *  holds more than one there, else the pool's oldest. */
+  private evict(pool: PendingDelivery[], cap: number, sameTask: (e: PendingDelivery) => boolean): void {
+    if (pool.length <= cap) return;
+    const own = pool.filter(sameTask);
+    this.drop(own.length > 1 ? own[0] : pool[0], 'cap');
+  }
+
   private expire(): void {
     const now = this.now();
     for (const e of [...this.entries]) {
@@ -180,7 +232,6 @@ export class PendingDeliveries {
 
   private drop(entry: PendingDelivery, reason: PendingDropReason, refusal?: string): void {
     this.remove(entry);
-    if (reason === 'replaced') return;
     const why = refusal ? `${reason} (${refusal})` : reason;
     this.deps.log(`[delivery] dropped stored task ${JSON.stringify(entry.taskId)} for pane ${JSON.stringify(entry.ptyId)}: ${why}; the task stays readable with a2a_task_query`);
   }
