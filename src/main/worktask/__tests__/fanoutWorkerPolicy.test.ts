@@ -4,7 +4,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   getFanoutWorkerPolicyPath,
   loadFanoutDepth,
@@ -13,11 +13,13 @@ import {
   setFanoutTasksPerCall,
   loadFanoutHourlyTaskCap,
   loadFanoutLiveTaskCap,
+  loadFanoutOwnerAnswers,
   loadFanoutRequireApproval,
   loadFanoutTrustAgyFolders,
   loadFanoutWorkerPermissionMode,
   setFanoutHourlyTaskCap,
   setFanoutLiveTaskCap,
+  setFanoutOwnerAnswers,
   setFanoutRequireApproval,
   setFanoutTrustAgyFolders,
   setFanoutWorkerPermissionMode,
@@ -26,6 +28,35 @@ import {
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-fanout-policy-'));
 
 describe('fan-out policy store', () => {
+  it('owner answers: all without a file, off while the file cannot be read (logged once), only a known value writes', async () => {
+    const dir = tmp();
+    expect(loadFanoutOwnerAnswers(dir)).toBe('all');
+    expect(await setFanoutOwnerAnswers('none', dir)).toBe('all');
+    expect(await setFanoutOwnerAnswers('menus', dir)).toBe('menus');
+    await setFanoutRequireApproval(true, dir);
+    expect(loadFanoutOwnerAnswers(dir)).toBe('menus');
+    expect(loadFanoutRequireApproval(dir)).toBe(true);
+    fs.writeFileSync(getFanoutWorkerPolicyPath(dir), JSON.stringify({ ownerAnswers: 'ALL' }), 'utf8');
+    expect(loadFanoutOwnerAnswers(dir)).toBe('all');
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      fs.writeFileSync(getFanoutWorkerPolicyPath(dir), '{ torn', 'utf8');
+      expect(loadFanoutOwnerAnswers(dir)).toBe('off');
+      expect(loadFanoutOwnerAnswers(dir)).toBe('off');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('orchestrators answer no prompts');
+      // Read again, then torn again: logged again.
+      fs.writeFileSync(getFanoutWorkerPolicyPath(dir), JSON.stringify({ ownerAnswers: 'off' }), 'utf8');
+      expect(loadFanoutOwnerAnswers(dir)).toBe('off');
+      fs.writeFileSync(getFanoutWorkerPolicyPath(dir), '{ torn', 'utf8');
+      loadFanoutOwnerAnswers(dir);
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('defaults to auto and no approval when there is no file', () => {
     const dir = tmp();
     expect(loadFanoutWorkerPermissionMode(dir)).toBe('auto');

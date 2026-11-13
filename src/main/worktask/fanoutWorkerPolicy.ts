@@ -25,11 +25,16 @@
 //                      must not set its own brakes, so they live here, where
 //                      only the Settings IPC writes, clamped to
 //                      shared/fanoutTaskCaps.ts's bounds.
+//   ownerAnswers     — what a task's orchestrator may answer on its workers'
+//                      panes through the owner lane (input.rpc.ts): every
+//                      prompt (the default), Claude Code's selection menus
+//                      only, or none. Human-only, like the rest.
 //
 // A missing file is the defaults (auto, no approval — owner decision
 // 2026-09-24). A file that exists but cannot be read resolves to the SAFE side
 // of each setting: approval required, the default permission mode, and the
-// caps at their old defaults (8 live, 24 per hour). A missing file has no
+// caps at their old defaults (8 live, 24 per hour), and ownerAnswers off; that
+// is logged once. A missing file has no
 // caps (no limit). A file written before the caps were optional reads those
 // old defaults as unset; see `taskCapsVersion`.
 
@@ -38,8 +43,11 @@ import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import {
+  DEFAULT_FANOUT_OWNER_ANSWERS,
   DEFAULT_FANOUT_WORKER_PERMISSION_MODE,
+  isFanoutOwnerAnswers,
   isFanoutWorkerPermissionMode,
+  type FanoutOwnerAnswers,
   type FanoutWorkerPermissionMode,
 } from '../../shared/workerLaunch';
 import {
@@ -67,6 +75,8 @@ interface FanoutPolicy {
   tasksPerCall: number;
   /** How deep fan-out may go (default 1: a task cannot fan out again). */
   fanoutDepth: number;
+  /** What a task's orchestrator may answer on its workers' panes. */
+  ownerAnswers: FanoutOwnerAnswers;
   /**
    * TASK_CAPS_VERSION once the caps were read as optional. A file without it
    * was written when they were always stored: there, a cap equal to the old
@@ -90,6 +100,9 @@ export function getFanoutWorkerPolicyPath(dir: string = getWmuxDir()): string {
   return path.join(dir, 'fanout-worker-policy.json');
 }
 
+/** Whether the unreadable-file warning was logged since the file last read. */
+let unreadableLogged = false;
+
 function loadPolicy(dir?: string): FanoutPolicy {
   const p = getFanoutWorkerPolicyPath(dir);
   if (!fs.existsSync(p)) {
@@ -101,13 +114,14 @@ function loadPolicy(dir?: string): FanoutPolicy {
       hourlyTaskCap: null,
       tasksPerCall: DEFAULT_FANOUT_TASKS_PER_CALL,
       fanoutDepth: DEFAULT_FANOUT_DEPTH,
+      ownerAnswers: DEFAULT_FANOUT_OWNER_ANSWERS,
       taskCapsVersion: TASK_CAPS_VERSION,
     };
   }
   try {
     const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Record<string, unknown>;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('not an object');
-    return {
+    const policy: FanoutPolicy = {
       permissionMode: isFanoutWorkerPermissionMode(raw.permissionMode)
         ? raw.permissionMode
         : DEFAULT_FANOUT_WORKER_PERMISSION_MODE,
@@ -119,9 +133,16 @@ function loadPolicy(dir?: string): FanoutPolicy {
       hourlyTaskCap: storedCap(raw, 'hourlyTaskCap', LEGACY_FANOUT_HOURLY_TASK_CAP, clampFanoutHourlyTaskCap),
       tasksPerCall: clampFanoutTasksPerCall(raw.tasksPerCall),
       fanoutDepth: clampFanoutDepth(raw.fanoutDepth),
+      ownerAnswers: isFanoutOwnerAnswers(raw.ownerAnswers) ? raw.ownerAnswers : DEFAULT_FANOUT_OWNER_ANSWERS,
       taskCapsVersion: TASK_CAPS_VERSION,
     };
+    unreadableLogged = false;
+    return policy;
   } catch {
+    if (!unreadableLogged) {
+      unreadableLogged = true;
+      console.warn(`[fanout] ${p} could not be read: fan-out approval is required, the task caps are at their old defaults, and orchestrators answer no prompts on their workers' panes until it reads again`);
+    }
     return {
       permissionMode: DEFAULT_FANOUT_WORKER_PERMISSION_MODE,
       requireApproval: true,
@@ -131,6 +152,7 @@ function loadPolicy(dir?: string): FanoutPolicy {
       hourlyTaskCap: LEGACY_FANOUT_HOURLY_TASK_CAP,
       tasksPerCall: DEFAULT_FANOUT_TASKS_PER_CALL,
       fanoutDepth: DEFAULT_FANOUT_DEPTH,
+      ownerAnswers: 'off',
       taskCapsVersion: TASK_CAPS_VERSION,
     };
   }
@@ -230,4 +252,18 @@ export async function setFanoutDepth(value: unknown, dir?: string): Promise<numb
   const n = clampFanoutDepth(value);
   await atomicWriteJSON(getFanoutWorkerPolicyPath(dir), { ...loadPolicy(dir), fanoutDepth: n });
   return n;
+}
+
+/** What a task's orchestrator may answer on its workers' panes (default all;
+ *  off while the file cannot be read). */
+export function loadFanoutOwnerAnswers(dir?: string): FanoutOwnerAnswers {
+  return loadPolicy(dir).ownerAnswers;
+}
+
+/** Persist the owner setting. Only a known value writes; returns the value
+ *  now in force. */
+export async function setFanoutOwnerAnswers(value: unknown, dir?: string): Promise<FanoutOwnerAnswers> {
+  if (!isFanoutOwnerAnswers(value)) return loadFanoutOwnerAnswers(dir);
+  await atomicWriteJSON(getFanoutWorkerPolicyPath(dir), { ...loadPolicy(dir), ownerAnswers: value });
+  return value;
 }

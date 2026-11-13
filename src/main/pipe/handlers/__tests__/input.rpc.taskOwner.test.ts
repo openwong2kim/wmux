@@ -4,6 +4,8 @@
 // workspace main resolves `callerPtyId` to), never `params.workspaceId`.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { registerInputRpc, taskPaneTextRefusal } from '../input.rpc';
@@ -11,6 +13,8 @@ import { mintCommanderToken, __resetCommanderTrustForTesting } from '../../../de
 import type { PTYManager } from '../../../pty/PTYManager';
 import type { TaskLedger } from '../../../../daemon/ledger/TaskLedger';
 import type { RpcContext } from '../../../../shared/rpc';
+import type { FanoutOwnerAnswers } from '../../../../shared/workerLaunch';
+import type { FolderTrustState } from '../../../../daemon/folderTrustState';
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
 vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
@@ -47,9 +51,32 @@ function ledgerOf(entries: Entry[]): TaskLedger {
 interface Wiring {
   router: RpcRouter;
   writes: Array<{ ptyId: string; data: string }>;
+  logs: string[];
+  notices: string[];
+  deliveryGate: (ptyId: string) => Promise<unknown>;
 }
 
-function wire(opts: { entries?: Entry[]; pending?: unknown[]; ledgerThrows?: boolean } = {}): Wiring {
+interface WireOpts {
+  entries?: Entry[];
+  pending?: unknown[];
+  ledgerThrows?: boolean;
+  /** The owner setting in force (default all, as with no policy file). */
+  ownerAnswers?: FanoutOwnerAnswers;
+  /** What the task pane shows (default: plain worker output). */
+  screen?: string | null;
+  /** What the task pane shows on each read in turn, the last one after. */
+  screens?: Array<string | null>;
+  /** Whether the task pane is held at its usage limit. */
+  usageLimited?: boolean;
+  /** The daemon's folder-trust verdict, asked when no screen was read. */
+  daemonTrust?: FolderTrustState | null;
+  /** The daemon's agent name for the task pane (default Claude Code). */
+  agent?: string | null;
+}
+
+function wire(opts: WireOpts = {}): Wiring {
+  const logs: string[] = [];
+  const notices: string[] = [];
   const writes: Array<{ ptyId: string; data: string }> = [];
   const dc = {
     isConnected: true,
@@ -65,7 +92,7 @@ function wire(opts: { entries?: Entry[]; pending?: unknown[]; ledgerThrows?: boo
     opts.entries ?? [{ ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', status: 'working' }],
   );
   const router = new RpcRouter();
-  registerInputRpc(
+  const { deliveryGate } = registerInputRpc(
     router,
     { get: () => undefined } as unknown as PTYManager,
     () => fakeWindow,
@@ -77,9 +104,25 @@ function wire(opts: { entries?: Entry[]; pending?: unknown[]; ledgerThrows?: boo
         if (opts.ledgerThrows) throw new Error('ledger unreadable');
         return ledger;
       },
+      ownerAnswers: () => opts.ownerAnswers ?? 'all',
+      paneAgent: async () => (opts.agent === undefined ? 'claude' : opts.agent),
+      ownerLaneNotice: (ws) => notices.push(ws),
+      log: (line) => logs.push(line),
+      answerPolicy: async () => ({ allowed: false, reason: 'autonomy-off' }),
+      daemonFolderTrust: async () => opts.daemonTrust ?? null,
+      usageLimited: () => opts.usageLimited ?? false,
+      ...(opts.screen !== undefined || opts.screens
+        ? {
+          readScreenText: async (ptyId: string) => {
+            if (ptyId !== 'pty-task') return 'OWNER SCREEN';
+            if (!opts.screens) return opts.screen as string | null;
+            return opts.screens.length > 1 ? (opts.screens.shift() as string | null) : opts.screens[0];
+          },
+        }
+        : {}),
     },
   );
-  return { router, writes };
+  return { router, writes, logs, notices, deliveryGate };
 }
 
 type Answer = { ok: boolean; error?: string; result?: Record<string, unknown> };
@@ -277,8 +320,8 @@ describe('input.send — owner lane', () => {
     expect(w.writes).toEqual([{ ptyId: 'pty-task', data: 'status?' }]);
   });
 
-  it('refuses a pane agent typing at a task pane that holds an approval', async () => {
-    const w = wire({ pending: [{ id: 'ap-1', sessionId: 'pty-task', workspaceId: 'ws-task', toolName: 'Bash' }] });
+  it('refuses a pane agent typing at a task pane that holds an approval, under ownerAnswers off', async () => {
+    const w = wire({ ownerAnswers: 'off', pending: [{ id: 'ap-1', sessionId: 'pty-task', workspaceId: 'ws-task', toolName: 'Bash' }] });
 
     const res = await asPane(w, 'input.send', {
       workspaceId: 'ws-owner',
@@ -368,8 +411,8 @@ describe('commander lane on send / sendKey', () => {
     expect(w.writes).toEqual([{ ptyId: 'pty-task', data: 'go on' }]);
   });
 
-  it('is refused at an approval prompt, and pointed at approval_press', async () => {
-    const w = wire({ pending: [{ id: 'ap-1', sessionId: 'pty-task', workspaceId: 'ws-task', toolName: 'Bash' }] });
+  it('is refused at an approval prompt under ownerAnswers off, and pointed at approval_press', async () => {
+    const w = wire({ ownerAnswers: 'off', pending: [{ id: 'ap-1', sessionId: 'pty-task', workspaceId: 'ws-task', toolName: 'Bash' }] });
 
     const res = await asBrain(w, 'input.send', { workspaceId: 'ws-owner', ptyId: 'pty-task', text: '1' });
 
@@ -378,8 +421,8 @@ describe('commander lane on send / sendKey', () => {
     expect(w.writes).toHaveLength(0);
   });
 
-  it('interrupts with ctrl+c but may not press enter', async () => {
-    const w = wire();
+  it('under ownerAnswers off, interrupts with ctrl+c at an approval but may not press enter there', async () => {
+    const w = wire({ ownerAnswers: 'off', pending: [{ id: 'ap-1', sessionId: 'pty-task', workspaceId: 'ws-task', toolName: 'Bash' }] });
 
     expect((await asBrain(w, 'input.sendKey', { workspaceId: 'ws-owner', ptyId: 'pty-task', key: 'ctrl+c' })).ok).toBe(true);
     expect((await asBrain(w, 'input.sendKey', { workspaceId: 'ws-owner', ptyId: 'pty-task', key: 'enter' })).ok).toBe(false);
@@ -417,32 +460,282 @@ describe('non-local origin', () => {
   });
 });
 
-describe('input.sendKey — owner lane covers only the stop keys', () => {
-  it.each(['ctrl+c', 'escape'])('allows %s at a task pane', async (key) => {
-    const w = wire();
+describe('input.sendKey — every key on the owner lane', () => {
+  it.each([
+    ['ctrl+c', '\x03'], ['escape', '\x1b'], ['enter', '\r'], ['down', '\x1b[B'], ['ctrl+d', '\x04'], ['tab', '\t'],
+    ['space', ' '], ['backspace', '\x7f'], ['y', 'y'], ['n', 'n'], ['0', '0'], ['3', '3'], ['9', '9'],
+  ])('writes %s to a task pane', async (key, bytes) => {
+    for (const ownerAnswers of ['all', 'menus', 'off'] as const) {
+      const w = wire({ ownerAnswers });
 
-    const res = await asPane(w, 'input.sendKey', {
-      workspaceId: 'ws-owner',
-      ptyId: 'pty-task',
-      callerPtyId: 'pty-owner',
-      key,
-    });
+      const res = await asPane(w, 'input.sendKey', { workspaceId: 'ws-owner', ptyId: 'pty-task', callerPtyId: 'pty-owner', key });
 
-    expect(res.ok).toBe(true);
-    expect(w.writes).toHaveLength(1);
+      expect(res.ok, ownerAnswers).toBe(true);
+      expect(w.writes).toEqual([{ ptyId: 'pty-task', data: bytes }]);
+    }
   });
 
-  it.each(['enter', 'down', 'ctrl+d'])('refuses %s at a task pane', async (key) => {
-    const w = wire();
-
-    const res = await asPane(w, 'input.sendKey', {
-      workspaceId: 'ws-owner',
-      ptyId: 'pty-task',
-      callerPtyId: 'pty-owner',
-      key,
-    });
+  it('names the new keys when a key is unknown', async () => {
+    const res = await asPane(wire(), 'input.sendKey', { workspaceId: 'ws-owner', ptyId: 'pty-task', callerPtyId: 'pty-owner', key: 'f13' });
 
     expect(res.ok).toBe(false);
+    expect(res.error).toContain('space, backspace, y, n');
+    expect(res.error).toContain('0, 1, 2');
+  });
+});
+
+// ── The owner setting (ownerAnswers) ────────────────────────────────────────
+
+const fixture = (dir: string, name: string): string =>
+  (JSON.parse(fs.readFileSync(path.join(__dirname, '../../../../daemon/approvals/__tests__/fixtures', dir, `${name}.json`), 'utf8')) as { screen: string[] }).screen.join('\n');
+
+/** The selection menu Claude Code shows when a turn stops on its usage limit. */
+const LIMIT_MENU = [
+  '  ⎿  You\'ve hit your weekly limit · resets 3am',
+  '',
+  '✻ Worked for 0s',
+  '▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔',
+  '   What do you want to do?',
+  '',
+  '   ❯ 1. Stop and wait for limit to reset',
+  '     2. Wait here, then continue automatically shortly',
+  '     3. Ask your admin for more usage',
+  '',
+  '   Enter to confirm · Esc to cancel',
+].join('\n');
+
+/** Each screen kind, as the pane shows it (or the daemon reads it). */
+const QUESTION_RECORD = [{ id: 'ap-q', sessionId: 'pty-task', workspaceId: 'ws-task', kind: 'awaiting_input', question: 'Which?' }];
+const ASK_MENU = fixture('terminal-prompts', 'claude-ask-single-01-initial');
+
+const SCREENS: Record<string, Pick<WireOpts, 'screen' | 'daemonTrust' | 'pending' | 'usageLimited'>> = {
+  none: { screen: 'WORKER SCREEN' },
+  'limit menu': { screen: LIMIT_MENU, usageLimited: true },
+  'question menu': { screen: ASK_MENU, pending: QUESTION_RECORD },
+  'question record': { screen: 'WORKER SCREEN', pending: QUESTION_RECORD },
+  'question menu with no record': { screen: ASK_MENU },
+  'limit menu on a pane not held': { screen: LIMIT_MENU },
+  'permission under a question record': { screen: fixture('terminal-prompts', 'claude-bash-boxed-01'), pending: QUESTION_RECORD },
+  permission: { screen: fixture('terminal-prompts', 'claude-bash-boxed-01') },
+  'permission record': { screen: 'WORKER SCREEN', pending: [{ id: 'ap-p', sessionId: 'pty-task', workspaceId: 'ws-task', kind: 'terminal_prompt', toolName: 'Bash' }] },
+  plan: { screen: fixture('terminal-prompts', 'claude-plan-01-initial') },
+  trust: { screen: fixture('folder-trust', 'claude-folder-trust-60x30') },
+  unknown: { screen: null, daemonTrust: 'unknown' },
+};
+
+const MENUS = new Set(['none', 'limit menu', 'question menu', 'question record']);
+
+const sendKey = (w: Wiring, key: string): Promise<Answer> =>
+  asPane(w, 'input.sendKey', { workspaceId: 'ws-owner', ptyId: 'pty-task', callerPtyId: 'pty-owner', key });
+
+describe('owner lane — what each setting lets the owner answer', () => {
+  const kinds = Object.keys(SCREENS);
+
+  it.each(kinds)('all: every key reaches a pane showing %s', async (kind) => {
+    for (const key of ['enter', '2', 'down', 'y', 'escape']) {
+      const w = wire({ ownerAnswers: 'all', ...SCREENS[kind] });
+      const res = await sendKey(w, key);
+      expect(res.ok, `${kind} ${key}: ${res.error}`).toBe(true);
+      expect(w.writes).toHaveLength(1);
+    }
+  });
+
+  it.each(kinds)('menus: a Claude pane showing %s', async (kind) => {
+    for (const key of ['enter', '2', 'down']) {
+      const w = wire({ ownerAnswers: 'menus', ...SCREENS[kind] });
+      const res = await sendKey(w, key);
+      expect(res.ok, `${kind} ${key}: ${res.error}`).toBe(MENUS.has(kind));
+      expect(w.writes).toHaveLength(MENUS.has(kind) ? 1 : 0);
+    }
+  });
+
+  it.each(kinds)('off: a pane showing %s gets the gate every other caller gets', async (kind) => {
+    const w = wire({ ownerAnswers: 'off', ...SCREENS[kind] });
+    const res = await sendKey(w, 'enter');
+    expect(res.ok, `${kind}: ${res.error}`).toBe(kind === 'none');
+    expect(w.writes).toHaveLength(kind === 'none' ? 1 : 0);
+  });
+
+  it('menus: says why, and writes nothing', async () => {
+    const w = wire({ ownerAnswers: 'menus', ...SCREENS['permission'] });
+    const res = await sendKey(w, '1');
+    expect(res.error).toContain('pane "pty-task" is showing a permission prompt');
+    expect(res.error).toContain('"ownerAnswers" is "menus"');
+    expect(res.error).toContain('Nothing was sent.');
+  });
+
+  it('menus: another agent\'s menu is refused, since its dialogs read as menus too', async () => {
+    for (const agent of ['codex', null]) {
+      const held = wire({ ownerAnswers: 'menus', screen: LIMIT_MENU, usageLimited: true, agent });
+      const res = await sendKey(held, 'enter');
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain("cannot confirm is Claude Code's");
+      expect(held.writes).toHaveLength(0);
+    }
+    const codex = wire({ ownerAnswers: 'menus', screen: fixture('terminal-prompts', 'codex-approval-exec-01'), agent: 'codex' });
+    const res = await sendKey(codex, 'enter');
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('not a question or usage-limit menu');
+  });
+
+  it('menus: a pane drawing Claude Code\'s dialogs counts (OpenClaude)', async () => {
+    const w = wire({ ownerAnswers: 'menus', ...SCREENS['limit menu'], agent: 'openclaude' });
+    expect((await sendKey(w, '1')).ok).toBe(true);
+  });
+
+  it('a refusal at a later check of the same write is logged too', async () => {
+    // Clear when the gate reads it; a folder-trust prompt by the time the text is written.
+    const trust = fixture('folder-trust', 'claude-folder-trust-60x30');
+    const w = wire({ ownerAnswers: 'menus', screens: ['WORKER SCREEN', trust] });
+    const res = await asPane(w, 'input.send', { workspaceId: 'ws-owner', ptyId: 'pty-task', callerPtyId: 'pty-owner', text: 'go' });
+    expect(res.ok).toBe(false);
     expect(w.writes).toHaveLength(0);
+    expect(w.logs.map((l) => l.slice(l.lastIndexOf(';') + 2))).toEqual(['allowed', 'refused']);
+  });
+
+  it('menus: ctrl+c still stops a worker at any prompt; escape is refused on a trust prompt', async () => {
+    for (const kind of kinds) {
+      const w = wire({ ownerAnswers: 'menus', ...SCREENS[kind] });
+      expect((await sendKey(w, 'ctrl+c')).ok, kind).toBe(true);
+    }
+    expect((await sendKey(wire({ ownerAnswers: 'menus', ...SCREENS['trust'] }), 'escape')).ok).toBe(false);
+    expect((await sendKey(wire({ ownerAnswers: 'menus', ...SCREENS['permission'] }), 'escape')).ok).toBe(true);
+  });
+
+  it('text: written at a prompt under all, refused under menus and off', async () => {
+    const send = (ownerAnswers: FanoutOwnerAnswers) => {
+      const w = wire({ ownerAnswers, ...SCREENS['permission'] });
+      return asPane(w, 'input.send', { workspaceId: 'ws-owner', ptyId: 'pty-task', callerPtyId: 'pty-owner', text: 'use the other file' })
+        .then((res) => ({ res, writes: w.writes }));
+    };
+    const all = await send('all');
+    expect(all.res.ok).toBe(true);
+    expect(all.writes).toEqual([{ ptyId: 'pty-task', data: 'use the other file' }]);
+    for (const setting of ['menus', 'off'] as const) {
+      const r = await send(setting);
+      expect(r.res.ok, setting).toBe(false);
+      expect(r.writes).toHaveLength(0);
+    }
+  });
+
+  it('text: a submit under all reaches a folder-trust prompt too', async () => {
+    const w = wire({ ownerAnswers: 'all', ...SCREENS['trust'] });
+    const res = await asPane(w, 'input.send', { workspaceId: 'ws-owner', ptyId: 'pty-task', callerPtyId: 'pty-owner', text: '1', submit: true });
+    expect(res.ok, res.error).toBe(true);
+    expect(w.writes.map((x) => x.data)).toEqual(['1', '\r']);
+  });
+});
+
+describe('owner lane — who gets it', () => {
+  it.each(['all', 'menus', 'off'] as const)('a pane that is not an open task of the caller is refused under %s', async (ownerAnswers) => {
+    for (const [ptyId, entries] of [
+      ['pty-stranger', undefined],
+      ['pty-task', [{ ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', status: 'completed' }]],
+    ] as const) {
+      const w = wire({ ownerAnswers, ...(entries ? { entries: [...entries] } : {}) });
+      const res = await asPane(w, 'input.sendKey', { workspaceId: 'ws-owner', ptyId, callerPtyId: 'pty-owner', key: 'enter' });
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain('Cross-workspace terminal access is not allowed');
+      expect(w.writes).toHaveLength(0);
+      expect(w.logs).toEqual([]);
+    }
+  });
+
+  it('a task\'s own sub-task is not reachable by the task\'s owner (direct ownership only)', async () => {
+    PANE_OWNERS['pty-sub'] = 'ws-sub';
+    try {
+      const w = wire({ entries: [
+        { ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', status: 'working' },
+        { ownerWorkspaceId: 'ws-task', taskWorkspaceId: 'ws-sub', status: 'working' },
+      ] });
+      const fromGrandparent = await asPane(w, 'input.sendKey', { workspaceId: 'ws-owner', ptyId: 'pty-sub', callerPtyId: 'pty-owner', key: 'enter' });
+      expect(fromGrandparent.ok).toBe(false);
+      // The worker that started the sub-task drives it.
+      const fromParent = await asPane(w, 'input.sendKey', { workspaceId: 'ws-task', ptyId: 'pty-sub', callerPtyId: 'pty-task', key: 'enter' });
+      expect(fromParent.ok, fromParent.error).toBe(true);
+      expect(w.writes).toEqual([{ ptyId: 'pty-sub', data: '\r' }]);
+    } finally {
+      delete PANE_OWNERS['pty-sub'];
+    }
+  });
+
+  it.each([
+    ['a remote-origin caller', { origin: 'remote', commanderWorkspace: 'ws-owner' }],
+    ['a plugin-hosted caller', { origin: 'local', hostedWorkspace: 'ws-owner' }],
+    ['a fenced worker', { origin: 'local', fencedWorker: true }],
+  ] as const)('%s gets no owner lane', async (_label, ctx) => {
+    const handlers = new Map<string, (p: Record<string, unknown>, ctx?: RpcContext) => Promise<unknown>>();
+    const fakeRouter = { register: (name: string, fn: never) => handlers.set(name, fn) } as unknown as RpcRouter;
+    const writes: string[] = [];
+    registerInputRpc(fakeRouter, { get: () => undefined } as unknown as PTYManager, () => fakeWindow,
+      () => ({ isConnected: true, rpc: async () => ({ pending: [] }), writeToSession: (_p: string, d: string) => writes.push(d) }) as never,
+      undefined, undefined, {
+        getLedger: () => ledgerOf([{ ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', status: 'working' }]),
+        ownerAnswers: () => 'all',
+      });
+    const sendKeyHandler = handlers.get('input.sendKey') as NonNullable<ReturnType<typeof handlers.get>>;
+    await expect(
+      sendKeyHandler({ workspaceId: 'ws-owner', ptyId: 'pty-task', callerPtyId: 'pty-owner', key: 'enter' }, ctx as RpcContext),
+    ).rejects.toThrow(/Cross-workspace terminal access is not allowed/);
+    expect(writes).toEqual([]);
+  });
+});
+
+describe('owner lane — log line and notice', () => {
+  it('logs every lane write, allowed or refused, with the screen and the setting', async () => {
+    const w = wire({ ownerAnswers: 'menus', ...SCREENS['limit menu'] });
+    await sendKey(w, '2');
+    await asPane(w, 'input.send', { workspaceId: 'ws-owner', ptyId: 'pty-task', callerPtyId: 'pty-owner', text: 'héllo', submit: true });
+    const refused = wire({ ownerAnswers: 'menus', ...SCREENS['plan'] });
+    await sendKey(refused, 'enter');
+
+    expect(w.logs).toEqual([
+      '[owner-lane] pane "pty-owner" (ws "ws-owner") → pane "pty-task" (task ws "ws-task"): key 2; screen menu; setting menus; allowed',
+      '[owner-lane] pane "pty-owner" (ws "ws-owner") → pane "pty-task" (task ws "ws-task"): text 6 bytes + enter; screen menu; setting menus; allowed',
+    ]);
+    expect(refused.logs).toEqual([
+      '[owner-lane] pane "pty-owner" (ws "ws-owner") → pane "pty-task" (task ws "ws-task"): key enter; screen plan; setting menus; refused',
+    ]);
+  });
+
+  it('a stop key is not held up by a screen read', async () => {
+    const w = wire({ ownerAnswers: 'menus', ...SCREENS['permission'] });
+    await sendKey(w, 'ctrl+c');
+    expect(w.logs).toEqual([
+      '[owner-lane] pane "pty-owner" (ws "ws-owner") → pane "pty-task" (task ws "ws-task"): key ctrl+c; screen not read; setting menus; allowed',
+    ]);
+  });
+
+  it('names a commander by its workspace', async () => {
+    const w = wire();
+    await asBrain(w, 'input.sendKey', { workspaceId: 'ws-owner', ptyId: 'pty-task', key: 'enter' });
+    expect(w.logs).toEqual([
+      '[owner-lane] ws "ws-owner" → pane "pty-task" (task ws "ws-task"): key enter; screen none; setting all; allowed',
+    ]);
+  });
+
+  it('raises one notice in the task workspace for a run of writes, none for a refusal', async () => {
+    const w = wire();
+    for (const key of ['down', 'down', 'enter']) await sendKey(w, key);
+    expect(w.notices).toEqual(['ws-task']);
+
+    const refused = wire({ ownerAnswers: 'off', ...SCREENS['permission'] });
+    await sendKey(refused, 'enter');
+    expect(refused.notices).toEqual([]);
+  });
+
+  it('writes nothing to the log for a caller on its own pane', async () => {
+    const w = wire();
+    await asPane(w, 'input.sendKey', { workspaceId: 'ws-owner', ptyId: 'pty-owner', callerPtyId: 'pty-owner', key: 'enter' });
+    expect(w.logs).toEqual([]);
+  });
+});
+
+describe('owner setting and the automated writers', () => {
+  it.each(['all', 'menus', 'off'] as const)('a delivery into a task pane still waits on its prompt under %s', async (ownerAnswers) => {
+    for (const kind of ['permission', 'limit menu', 'trust']) {
+      const w = wire({ ownerAnswers, ...SCREENS[kind] });
+      expect(await w.deliveryGate('pty-task'), `${kind}`).toMatchObject({ ok: false });
+    }
   });
 });

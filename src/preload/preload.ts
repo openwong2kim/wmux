@@ -864,6 +864,10 @@ const electronAPI = {
     getTrustAgyFolders: () => ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_GET) as Promise<boolean>,
     setTrustAgyFolders: (value: boolean) =>
       ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_SET, value) as Promise<boolean>,
+    getOwnerAnswers: () =>
+      ipcRenderer.invoke(IPC.FANOUT_OWNER_ANSWERS_GET) as Promise<import('../shared/workerLaunch').FanoutOwnerAnswers>,
+    setOwnerAnswers: (value: import('../shared/workerLaunch').FanoutOwnerAnswers) =>
+      ipcRenderer.invoke(IPC.FANOUT_OWNER_ANSWERS_SET, value) as Promise<import('../shared/workerLaunch').FanoutOwnerAnswers>,
     getWorkerFenceOff: (workspaceId: string) => ipcRenderer.invoke(IPC.WORKER_FENCE_OFF_GET, workspaceId) as Promise<boolean>,
     setWorkerFenceOff: (workspaceId: string, off: boolean) =>
       ipcRenderer.invoke(IPC.WORKER_FENCE_OFF_SET, workspaceId, off) as Promise<boolean>,

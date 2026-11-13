@@ -221,7 +221,7 @@ const TERMINAL_SEND_SHAPE = {
 
 const TERMINAL_SEND_KEY_SHAPE = {
   key: z.string().describe(
-    'Key name: enter, tab, ctrl+c, ctrl+d, ctrl+z, ctrl+l, escape, up, down, right, left',
+    'Key name: enter, tab, ctrl+c, ctrl+d, ctrl+z, ctrl+l, escape, up, down, right, left, space, backspace, y, n, 0-9',
   ),
   ptyId: z.string().optional().describe('Target a specific terminal by PTY ID (surface_list()) or #pane name. Omit for the active terminal.'),
 };
@@ -1878,7 +1878,7 @@ server.tool(
 
 server.tool(
   'terminal_send_key',
-  'Send a named key to a terminal. Omit ptyId for the active terminal. NOT A SUBMIT MECHANISM: `key:"enter"` presses Enter on whatever the input box holds, which is usually NOTHING — a question an agent PRINTED is rendered text, not pending input, so Enter submits nothing and the pane stays blocked. ok means the key was delivered, never that anything was submitted or that the agent resumed. To answer a waiting agent, send the answer with terminal_send({ text, submit: true }) and check its `accepted` field — that is the only receipt that the pane moved. Reserve this tool for real key presses: ctrl+c, escape, arrow keys, and y/N prompts the agent genuinely rendered.',
+  'Send a named key to a terminal. Omit ptyId for the active terminal. NOT A SUBMIT MECHANISM: `key:"enter"` presses Enter on whatever the input box holds, which is usually NOTHING — a question an agent PRINTED is rendered text, not pending input, so Enter submits nothing and the pane stays blocked. ok means the key was delivered, never that anything was submitted or that the agent resumed. To answer a waiting agent, send the answer with terminal_send({ text, submit: true }) and check its `accepted` field — that is the only receipt that the pane moved. Reserve this tool for real key presses: ctrl+c, escape, arrow keys, and y/N prompts the agent genuinely rendered. Also reaches your open fan-out tasks\' panes.',
   TERMINAL_SEND_KEY_SHAPE,
   async ({ key, ptyId }) => {
     // #2398 — see terminal_send.
