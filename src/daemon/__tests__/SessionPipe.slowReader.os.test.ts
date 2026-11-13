@@ -53,7 +53,7 @@ describe('SessionPipe with a client that stops reading', () => {
   it('stops queueing at the bound, asks for a re-flush on drain, asks again, and catches up', async () => {
     const { ring, pipe } = await attachedPipe('behind');
     const asked: number[] = [];
-    pipe.onResyncNeeded = () => asked.push(Date.now());
+    pipe.onResyncNeeded = (ask) => asked.push(ask);
     pipe.resyncRetryMs = 100;
     const client = await connectClient(pipe.getPipeName());
     cleanups.push(() => client.socket.destroy());
@@ -85,6 +85,8 @@ describe('SessionPipe with a client that stops reading', () => {
     await waitFor(() => asked.length >= 1, 10_000);
     // Nobody answered (a lost request): the pipe asks again.
     await waitFor(() => asked.length >= 2, 3000);
+    // Counted from the first ask since the pipe fell behind (the daemon's log cadence).
+    expect(asked.slice(0, 2)).toEqual([1, 2]);
 
     const bridge = new EventEmitter();
     const result = await pipe.reflush({ bridge, cols: 80, rows: 24, generate: generateSnapshot });
@@ -123,6 +125,76 @@ describe('SessionPipe with a client that stops reading', () => {
     expect(pipe.isBehind).toBe(false);
     client.socket.resume();
     await waitFor(() => client.wire().includes('live after a big replay'), 10_000);
+  }, 60_000);
+
+  // Fills a paused client's queue until the pipe falls behind.
+  async function fallBehind(ring: RingBuffer, pipe: SessionPipe): Promise<number> {
+    let n = 0;
+    while (!pipe.isBehind && n < 2000) {
+      const data = line(n++);
+      ring.write(data);
+      pipe.writeToClient(data);
+      await tick();
+    }
+    expect(pipe.isBehind).toBe(true);
+    return n;
+  }
+
+  it('output the pane prints while the re-flush is generated goes out once, after its replay', async () => {
+    const { ring, pipe } = await attachedPipe('tee');
+    const client = await connectClient(pipe.getPipeName());
+    cleanups.push(() => client.socket.destroy());
+    await waitFor(() => pipe.isFlushed, 3000);
+    client.socket.pause();
+    await fallBehind(ring, pipe);
+    client.socket.resume();
+
+    // The pane as the session manager drives it: ring, bridge 'data', pipe.
+    const bridge = new EventEmitter();
+    const print = (text: string): void => {
+      const data = Buffer.from(text);
+      ring.write(data);
+      bridge.emit('data', data);
+      pipe.writeToClient(data);
+    };
+    const result = await pipe.reflush({
+      bridge, cols: 80, rows: 24,
+      generate: async (req) => {
+        // Between T0 and T1: printed while the snapshot is being made.
+        print('during-generation-1\r\n');
+        await tick();
+        print('during-generation-2\r\n');
+        return generateSnapshot(req);
+      },
+    });
+    expect(result.mode).toBe('snapshot');
+    print('after-the-reflush\r\n');
+    await waitFor(() => client.wire().includes('after-the-reflush'), 10_000);
+    const wire = client.wire();
+    const begin = wire.lastIndexOf(RESYNC_BEGIN);
+    const count = (needle: string): number => wire.subarray(begin).toString('latin1').split(needle).length - 1;
+    expect(count('during-generation-1')).toBe(1);
+    expect(count('during-generation-2')).toBe(1);
+    expect(wire.subarray(0, begin).includes('during-generation')).toBe(false);
+    expect(wire.indexOf('during-generation-2', begin)).toBeLessThan(wire.indexOf('after-the-reflush', begin));
+  }, 60_000);
+
+  it('a stopped pipe asks for nothing more', async () => {
+    const { ring, pipe } = await attachedPipe('stop');
+    const asked: number[] = [];
+    pipe.onResyncNeeded = (ask) => asked.push(ask);
+    pipe.resyncRetryMs = 50;
+    const client = await connectClient(pipe.getPipeName());
+    cleanups.push(() => client.socket.destroy());
+    await waitFor(() => pipe.isFlushed, 3000);
+    client.socket.pause();
+    await fallBehind(ring, pipe);
+    client.socket.resume();
+    await waitFor(() => asked.length >= 1, 10_000);
+    pipe.stop();
+    const asks = asked.length;
+    await deliberateSleep(300, 'negative check: six retry intervals pass after stop');
+    expect(asked).toHaveLength(asks);
   }, 60_000);
 
   it('a new client starts caught up', async () => {

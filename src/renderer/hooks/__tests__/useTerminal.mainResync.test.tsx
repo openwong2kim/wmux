@@ -32,7 +32,7 @@ let emitRestarted: ((p: { ptyId: string; restartCount: number; exitCode: number 
 let emitStarting: ((ptyId: string) => void) | null = null;
 let emitFailed: ((ptyId: string, code: string) => void) | null = null;
 const resync = vi.fn(async () => ({ success: true, mode: 'snapshot' }));
-const write = vi.fn(async (_id: string, _data: string) => undefined);
+const write = vi.fn<(id: string, data: string) => Promise<undefined>>(async () => undefined);
 const reconnect = vi.fn(async (): Promise<{ success: boolean; code?: string }> => ({ success: true }));
 // Laid-out size of every element; 0 models a display:none workspace.
 let layoutSize = 800;
@@ -248,6 +248,33 @@ describe('useTerminal: a re-flush main started', { timeout: 60_000 }, () => {
     expect(lines().slice(0, 5)).toEqual(['PS> echo a', 'a', 'PS> echo held', 'held', 'PS>']);
     const { getPaneSyncUi } = await import('../useTerminal');
     expect(getPaneSyncUi('m-z')).toBe('stale');
+  });
+
+  it('a re-flush that never arrives is given up after 32 s: held output released, pane stale', async () => {
+    await mount('m-t');
+    act(() => {
+      replay('m-t', 'PS> ');
+      marker('m-t', 4);
+    });
+    await settle();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      act(() => {
+        emitStarting!('m-t');
+        live('m-t', 'echo held\r\nheld\r\nPS> ');
+      });
+      // 8 s × 4, the bound armResync sets: still waiting just before it.
+      act(() => { vi.advanceTimersByTime(32_000 - 1); });
+      const { getPaneSyncUi } = await import('../useTerminal');
+      expect(getPaneSyncUi('m-t')).toBe('syncing');
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(getPaneSyncUi('m-t')).toBe('stale');
+      await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    } finally {
+      vi.useRealTimers();
+    }
+    await settle();
+    expect(lines().slice(0, 3)).toEqual(['PS> echo held', 'held', 'PS>']);
   });
 
   it('a failed re-flush re-attaches the pane, and the attach flush settles it', async () => {

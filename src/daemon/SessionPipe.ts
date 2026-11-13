@@ -57,6 +57,10 @@ export const SESSION_PIPE_RESYNC_BYTES = 8 * 1024 * 1024;
  *  until one starts: a lost request is asked again, never left behind. */
 export const SESSION_PIPE_RESYNC_RETRY_MS = 5_000;
 
+/** Unanswered requests between two daemon log lines: 60 × 5 s = one line every
+ *  5 minutes per behind pane, for a main that never answers (an older one). */
+export const SESSION_PIPE_RESYNC_ASK_LOG_EVERY = 60;
+
 /**
  * Per-session data pipe for raw byte streaming.
  * Created on attach, destroyed on detach.
@@ -98,6 +102,7 @@ export class SessionPipe {
   /** Live output is not written (see writeToClient) until a re-flush starts. */
   private behind = false;
   private behindRetry: ReturnType<typeof setTimeout> | null = null;
+  private behindAsks = 0;
   /** Bytes handed to the client socket so far, and where the last replay ended
    *  in that count: a replay still queued does not count against the bound. */
   private outputWritten = 0;
@@ -117,9 +122,10 @@ export class SessionPipe {
   /**
    * Fired when the pipe fell behind (SESSION_PIPE_RESYNC_BYTES) and its client
    * has drained: the client should re-flush the session (daemon.resyncSession).
-   * Repeated every SESSION_PIPE_RESYNC_RETRY_MS until a re-flush starts.
+   * Repeated every SESSION_PIPE_RESYNC_RETRY_MS until a re-flush starts;
+   * `ask` counts the requests since the pipe fell behind, from 1.
    */
-  onResyncNeeded?: () => void;
+  onResyncNeeded?: (ask: number) => void;
   /** SESSION_PIPE_RESYNC_RETRY_MS; a test seam. */
   resyncRetryMs = SESSION_PIPE_RESYNC_RETRY_MS;
 
@@ -190,6 +196,7 @@ export class SessionPipe {
 
   private fallBehind(socket: net.Socket): void {
     this.behind = true;
+    this.behindAsks = 0;
     // eslint-disable-next-line no-console
     console.log(
       `[SessionPipe] sessionId=${this.sessionId} fell behind (${socket.writableLength} bytes queued): live output paused until a re-flush`,
@@ -204,7 +211,7 @@ export class SessionPipe {
     // refused then, and the next client starts caught up anyway.
     if (this.flushed) {
       try {
-        this.onResyncNeeded?.();
+        this.onResyncNeeded?.(++this.behindAsks);
       } catch {
         /* the retry below asks again */
       }

@@ -76,7 +76,7 @@ import { DaemonSessionManager, type ManagedSession } from './DaemonSessionManage
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { APP_ATTACHED_FILE, applyAppHostAtBoot, registerClientIdentify, takeAppSpawnedMarker } from './appHostMarker';
-import { SessionPipe } from './SessionPipe';
+import { SessionPipe, SESSION_PIPE_RESYNC_ASK_LOG_EVERY } from './SessionPipe';
 import { WebTerminalServer } from './web/WebTerminalServer';
 import { SessionAuthorizationExpiredError } from './web/WebTerminalServer';
 import type { WebTerminalInfo, WebSessionLifecycle } from './web/WebTerminalServer';
@@ -3268,9 +3268,14 @@ function registerRpcHandlers(
       };
 
       // Main fell behind reading this pipe and has drained: ask it to re-flush.
-      pipe.onResyncNeeded = () => {
+      pipe.onResyncNeeded = (ask) => {
         if (sessionPipes.get(p.id) !== pipe) return;
-        log('info', `[resync] session=${p.id} pipe fell behind: asking main to re-flush`);
+        // A main that never answers (one older than this request) gets asked
+        // every 5 s for as long as the pane stays behind: log the first ask,
+        // then one line per SESSION_PIPE_RESYNC_ASK_LOG_EVERY.
+        if (ask === 1 || ask % SESSION_PIPE_RESYNC_ASK_LOG_EVERY === 0) {
+          log('info', `[resync] session=${p.id} pipe fell behind: asking main to re-flush${ask > 1 ? ` (ask ${ask}, unanswered)` : ''}`);
+        }
         const event: DaemonEvent = { type: 'session.resyncNeeded', sessionId: p.id, data: null };
         pipeServer.broadcast(event);
       };
