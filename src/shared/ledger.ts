@@ -173,7 +173,16 @@ export interface LedgerRemote {
    *  id, A2A_REMOTE_MESSAGE_ID_RE), the one this row moved to review_requested
    *  on: another id is a new report, after a follow-up. Not a time. */
   reportId?: string;
+  /** What the row's text says it waits for, when the follow pass wrote that
+   *  text while the row was input_required: `reply`, `stopped`, or
+   *  `question` / `question:<kind>`. The pass writes a new text only when
+   *  this changes, so a text someone else wrote stays until the agent waits
+   *  for something else. */
+  waitsFor?: string;
 }
+
+/** A `waitsFor` value: what the follow pass's text says a waiting row waits for. */
+export const LEDGER_REMOTE_WAITS_FOR_RE = /^(reply|stopped|question(:(permission|plan|menu|dialog|trust))?)$/;
 
 export const LEDGER_REMOTE_QUESTIONS = ['permission', 'plan', 'menu', 'dialog', 'trust'] as const;
 

@@ -50,6 +50,7 @@ import * as path from 'node:path';
 import {
   LEDGER_GATE_TAIL_MAX_BYTES,
   LEDGER_REMOTE_QUESTIONS,
+  LEDGER_REMOTE_WAITS_FOR_RE,
   LEDGER_REMOTE_STATES,
   LEDGER_SCHEMA_VERSION,
   REMOTE_TASK_WORKSPACE_PREFIX,
@@ -329,6 +330,7 @@ export function copyRemote(r: unknown): LedgerRemote | null {
     ...(copyWaiting(o.waiting) ? { waiting: copyWaiting(o.waiting)! } : {}),
     ...(typeof o.goneSeenAt === 'number' && Number.isFinite(o.goneSeenAt) && o.goneSeenAt > 0 ? { goneSeenAt: o.goneSeenAt } : {}),
     ...(typeof o.reportId === 'string' && A2A_REMOTE_MESSAGE_ID_RE.test(o.reportId) ? { reportId: o.reportId } : {}),
+    ...(typeof o.waitsFor === 'string' && LEDGER_REMOTE_WAITS_FOR_RE.test(o.waitsFor) ? { waitsFor: o.waitsFor } : {}),
   };
 }
 
@@ -793,25 +795,22 @@ export class TaskLedger {
    *
    *  `text`: why the row waits, when only that changed, written with the
    *  patch in one write. Only onto the row as it was read (`expectedRev`)
-   *  and still open; a stale rev writes nothing (the next pass reads the row
-   *  again). Only over a text the caller wrote itself (`replaces`): a text
-   *  someone else wrote (a person, a brain) is kept, and only the patch is
-   *  written. */
+   *  and still open: otherwise only the patch is written, and the next pass
+   *  reads the row again. */
   updateRemote(
     id: string,
     patch: Partial<Omit<LedgerRemote, 'hostId' | 'spawnId'>>,
-    text?: { summary: string; expectedRev: number; replaces: readonly string[] },
+    text?: { summary: string; expectedRev: number },
   ): Promise<LedgerEntry | null> {
     return this.serialize(async () => {
       const entry = this.entries.get(id);
       if (!entry?.remote) return null;
-      if (text && (entry.rev !== text.expectedRev || !isOpenLedgerStatus(entry.status))) return entry;
+      const current = text !== undefined && entry.rev === text.expectedRev && isOpenLedgerStatus(entry.status);
       const remote = copyRemote({ ...entry.remote, ...patch });
       if (!remote) throw new Error(`ledger: the remote record of task ${id} would not be valid`);
-      const stored = (t: string): string => truncateHead(this.redact(t.trim()), LEDGER_SUMMARY_MAX_BYTES);
-      const ours = text !== undefined && text.summary.trim().length > 0
-        && (entry.summary === undefined || text.replaces.some((t) => stored(t) === entry.summary));
-      const summary = ours ? stored(text.summary) : entry.summary;
+      const summary = current && text.summary.trim().length > 0
+        ? truncateHead(this.redact(text.summary.trim()), LEDGER_SUMMARY_MAX_BYTES)
+        : entry.summary;
       if (JSON.stringify(remote) === JSON.stringify(entry.remote) && summary === entry.summary) return entry;
       const updated: LedgerEntry = this.redact({
         ...entry, remote, ...(summary !== undefined ? { summary } : {}), rev: entry.rev + 1, updatedAt: this.now(), updatedBy: SYSTEM_ACTOR(),

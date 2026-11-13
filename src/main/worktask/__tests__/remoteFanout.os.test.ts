@@ -563,7 +563,12 @@ describe('a started task follows its A2A task', () => {
     // The follow-up sets the agent working, and it asks the caller again.
     s.view(0, { state: 'input-required', reportId: REPORTED });
     await reconcileRemoteTasks(s.deps);
-    expect(s.row(0)).toMatchObject({ status: 'input_required', summary: 'fix the failing test first' });
+    expect(s.row(0)).toMatchObject({ status: 'input_required', summary: 'fix the failing test first', remote: { waitsFor: 'reply' } });
+    // Until the agent waits for something new: a question on its screen is said, since only that PC's pane answers it.
+    s.view(0, { state: 'working', reportId: REPORTED, status: { kind: 'question', since: at, question: 'permission' } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'input_required', remote: { waitsFor: 'question:permission' } });
+    expect(s.row(0).summary).toContain('waits on a permission question');
   });
 
   it('a dialog question with no menu id (a picker as the real service reports it) is a question like any other', async () => {

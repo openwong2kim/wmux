@@ -544,21 +544,35 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   const patch = async (p: Partial<LedgerRemote>): Promise<void> => {
     entry = (await deps.ledger.updateRemote(entry!.id, p)) ?? entry;
   };
-  // What this pass writes while the row waits: only one of these is ever replaced, never a text someone else wrote.
-  const reply = `the agent on ${r.pc} waits for your reply on ${on}`;
-  const stopped = `the agent on ${r.pc} stopped without a reply; send it a follow-up on ${on}`;
-  const asked = (question?: string): string => `the agent on ${r.pc} waits on a ${question ?? 'screen'} question: answer it in that PC's pane; it cannot be answered from here yet, and a headless box ends the task after 10 minutes`;
-  const waitTexts = [reply, stopped, asked(), ...LEDGER_REMOTE_QUESTIONS.map(asked)];
-  /** The row to `status` with `summary`, after `p` on its remote record. Still waiting for another reason (a question answered, then a reply asked for): the patch and the new text, in one write. */
-  const move = async (status: LedgerStatus, summary: string, p?: Partial<LedgerRemote>): Promise<void> => {
-    if (entry!.status === status) {
-      if (status === 'input_required') entry = (await deps.ledger.updateRemote(entry!.id, p ?? {}, { summary, expectedRev: entry!.rev, replaces: waitTexts })) ?? entry;
-      else if (p) await patch(p);
-      return;
-    }
-    if (p) await patch(p);
+  const move = async (status: LedgerStatus, summary: string): Promise<void> => {
+    if (entry!.status === status) return;
+    // Any other status: what the row waited for no longer holds.
+    if (entry!.remote?.waitsFor !== undefined) await patch({ waitsFor: undefined });
     const res = await deps.ledger.update({ id: entry!.id, status, actor: SYSTEM_ACTOR, expectedRev: entry!.rev, summary });
     if (res.ok) entry = res.entry;
+  };
+  /**
+   * The row waits for `waitsFor`, said by `summary`, after `p` on its remote record. Into input_required: the record,
+   * then the move. Already there: a new text only when it waits for something else (a question answered, then a
+   * reply asked for), with the record in one write; the same wait writes only the patch. A text someone else wrote
+   * (a brain sending it back for input) stays until the agent waits for something new.
+   */
+  const waitFor = async (waitsFor: string, summary: string, p: Partial<LedgerRemote> = {}): Promise<void> => {
+    if (entry!.status !== 'input_required') {
+      await patch({ ...p, waitsFor });
+      const res = await deps.ledger.update({ id: entry!.id, status: 'input_required', actor: SYSTEM_ACTOR, expectedRev: entry!.rev, summary });
+      if (res.ok) entry = res.entry;
+      return;
+    }
+    const was = entry!.remote?.waitsFor;
+    if (was === waitsFor) {
+      if (Object.keys(p).length > 0) await patch(p);
+      return;
+    }
+    // No wait recorded while the row waits: its text is not this pass's (a brain sent it back for input). The wait
+    // is recorded and the text kept; a later change of what it waits for says so.
+    if (was === undefined) return patch({ ...p, waitsFor });
+    entry = (await deps.ledger.updateRemote(entry!.id, { ...p, waitsFor }, { summary, expectedRev: entry!.rev })) ?? entry;
   };
   /** Fails the row once the grace from the first sighting is over. */
   const failAfterGrace = async (summary: string): Promise<void> => {
@@ -578,16 +592,16 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   // A report stands until a follow-up sets the agent working again.
   if (entry.status === 'review_requested' && view.state !== 'working' && view.state !== 'submitted') return;
   if (view.state === 'failed') return move('failed', `failed on ${r.pc}; why is on ${on}`);
-  if (view.state === 'input-required') return move('input_required', reply, settled ?? undefined);
+  if (view.state === 'input-required') return waitFor('reply', `the agent on ${r.pc} waits for your reply on ${on}`, settled ?? {});
   const st = view.status;
   if (st?.kind === 'question') {
     const question = (LEDGER_REMOTE_QUESTIONS as readonly string[]).includes(st.question ?? '') ? st.question as LedgerRemoteWaiting['question'] : undefined;
-    return move('input_required', asked(question), { waiting: { on: 'question', since: st.since, ...(question ? { question } : {}) }, goneSeenAt: undefined });
+    return waitFor(question ? `question:${question}` : 'question', `the agent on ${r.pc} waits on a ${question ?? 'screen'} question: answer it in that PC's pane; it cannot be answered from here yet, and a headless box ends the task after 10 minutes`, { waiting: { on: 'question', since: st.since, ...(question ? { question } : {}) }, goneSeenAt: undefined });
   }
   if (st?.kind === 'gone') return failAfterGrace(`the agent on ${r.pc} is gone`);
   if (st?.kind === 'waiting-input') {
     // Its turn ended with no reply and no report: nothing moves until someone writes to it.
-    return move('input_required', stopped, settled ?? undefined);
+    return waitFor('stopped', `the agent on ${r.pc} stopped without a reply; send it a follow-up on ${on}`, settled ?? {});
   }
   if (st?.kind === 'usage-limit') {
     // That PC resumes it by itself: nothing is asked of the caller.
