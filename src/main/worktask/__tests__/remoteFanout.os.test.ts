@@ -569,6 +569,19 @@ describe('a started task follows its A2A task', () => {
     expect(s.row(0)).toMatchObject({ status: 'input_required', summary: 'fix the failing test first', remote: { waiting: { on: 'question', question: 'permission' } } });
   });
 
+  it('a brain sending a reported row back with no text of its own leaves the pass\'s text, which then follows why it waits', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'input-required', reportId: REPORTED });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).summary).toBe(`reported on box; the report is on A2A task ${s.a2a[0]}`);
+    const bounced = await s.deps.ledger.update({ id: s.row(0).id, status: 'input_required', actor: { kind: 'brain', workspaceId: 'ws-owner' }, expectedRev: s.row(0).rev });
+    expect(bounced).toMatchObject({ ok: true, entry: { status: 'input_required', summary: `reported on box; the report is on A2A task ${s.a2a[0]}` } });
+    s.view(0, { state: 'working', reportId: REPORTED, status: { kind: 'question', since: at, question: 'permission' } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'input_required', remote: { waiting: { on: 'question', question: 'permission' } } });
+    expect(s.row(0).summary).toContain('waits on a permission question');
+  });
+
   it('a dialog question with no menu id (a picker as the real service reports it) is a question like any other', async () => {
     const s = await started(1);
     s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'dialog' } });

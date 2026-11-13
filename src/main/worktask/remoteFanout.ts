@@ -552,16 +552,19 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   const replyText = `the agent on ${r.pc} waits for your reply on ${on}`;
   const stoppedText = `the agent on ${r.pc} stopped without a reply; send it a follow-up on ${on}`;
   const questionText = (question?: string): string => `the agent on ${r.pc} waits on a ${question ?? 'screen'} question: answer it in that PC's pane; it cannot be answered from here yet, and a headless box ends the task after 10 minutes`;
+  const reportedText = `reported on ${r.pc}; the report is on ${on}`;
+  const workingText = `working on ${r.pc}`;
+  /** Every text this pass writes on an open row; a brain's move keeps the one it found when it gives none. */
+  const ownTexts = new Set([replyText, stoppedText, reportedText, workingText, questionText(), ...LEDGER_REMOTE_QUESTIONS.map(questionText)]);
   /**
    * The row waits, as `summary` says, after `p` on its remote record. Into input_required: the record, then the move.
-   * Already there: a text this pass wrote for another reason (a question answered, then a reply asked for) is
-   * replaced, with the record in one write. Any other text (one a brain wrote when it sent the row back) is kept.
+   * Already there: a text this pass wrote (a question answered, then a reply asked for; or one left by a brain that
+   * sent the row back with no text) is replaced, with the record in one write. A text a brain wrote is kept.
    */
   const waitFor = async (summary: string, p: Partial<LedgerRemote>): Promise<void> => {
-    const ownText = entry!.status === 'input_required' && entry!.summary !== summary
-      && [replyText, stoppedText, questionText(), ...LEDGER_REMOTE_QUESTIONS.map(questionText)].includes(entry!.summary ?? '');
+    const ownText = entry!.status === 'input_required' && entry!.summary !== summary && ownTexts.has(entry!.summary ?? '');
     if (!ownText) {
-      if (Object.keys(p).length > 0) await patch(p);
+      await patch(p);
       return move('input_required', summary);
     }
     entry = (await deps.ledger.updateRemote(entry!.id, p, { summary, expectedRev: entry!.rev })) ?? entry;
@@ -579,7 +582,7 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   const newReport = view.reportId !== undefined && view.reportId !== r.reportId;
   if (newReport || (view.state === 'completed' && entry.status !== 'review_requested')) {
     await patch({ ...(settled ?? {}), ...(view.reportId ? { reportId: view.reportId } : {}) });
-    return move('review_requested', `reported on ${r.pc}; the report is on ${on}`);
+    return move('review_requested', reportedText);
   }
   // A report stands until a follow-up sets the agent working again.
   if (entry.status === 'review_requested' && view.state !== 'working' && view.state !== 'submitted') return;
@@ -601,7 +604,7 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   } else if (settled) {
     await patch(settled);
   }
-  await move('working', `working on ${r.pc}`);
+  await move('working', workingText);
 }
 
 /** Withdraw every remote row that ends here. Returns the unsubscribe. */
