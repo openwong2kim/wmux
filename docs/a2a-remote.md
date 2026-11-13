@@ -295,8 +295,10 @@ PCs and the folder ids (`root`) each one allows.
     and the reset time in the poll (that PC resumes it by itself);
   - an agent gone (below).
 
-  After a report, a follow-up that sets the agent working again moves the row
-  on as above, and a later report moves it back to `review_requested`. An
+  A report comes only from a PC running the app (a headless box answers with
+  `input-required` and its reply instead). A follow-up after a report reaches
+  the agent, but its answer cannot come back on that task yet, and the row
+  stays `review_requested`. An
   agent that PC reports gone, or a task this PC no longer lists, fails the row
   after a minute if nothing ended the task meanwhile, and it stays failed.
   Tasks on a headless box end when its daemon stops; they are not resumed.
@@ -305,8 +307,10 @@ PCs and the folder ids (`root`) each one allows.
   nudge when a row needs input or fails. The report itself arrives there as
   the agent's reply.
 - **Following up.** `send_message task_id=<the row's A2A task>` reaches the
-  agent, and its replies come back to your pane; the poll shows this as
-  `followUp`. A question on the agent's screen is the exception: a reply on
+  agent; the poll shows this as `followUp`. From a headless box its replies
+  come back to your pane. From a PC running the app, after its report, the
+  follow-up reaches the agent, but its answer cannot come back on that task
+  yet. A question on the agent's screen is the exception: a reply on
   the task is never typed into it, so it is answered only in that PC's pane
   (a headless box ends the task if the question is still there after 10
   minutes). A post in the task's mission channel is kept, but nobody on the
