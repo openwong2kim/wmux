@@ -18,6 +18,7 @@ import {
   splitModelEnvMarker,
   workerModeRefusal,
   FANOUT_WORKER_PERMISSION_MODES,
+  CODEX_MANUAL_FLAGS,
 } from '../workerLaunch';
 import { FANOUT_AGENTS } from '../fanoutPreset';
 
@@ -191,10 +192,22 @@ describe('applyWorkerPermissionFlags', () => {
     }
   });
 
-  it('manual is refused for every agent but claude, and for a wrapped line; the other modes are never refused', () => {
+  it('manual makes codex ask: every permission choice on its line goes, and its ask flags go before the prompt', () => {
+    expect(CODEX_MANUAL_FLAGS).toBe('-a on-request -s read-only');
+    const trust = `-c 'projects={"/w"={trust_level="trusted"}}'`;
+    for (const own of ['-a never -s workspace-write', '--ask-for-approval=never --sandbox danger-full-access', '--yolo', '--dangerously-bypass-approvals-and-sandbox', '-c approval_policy=never -c sandbox_mode=workspace-write', '--approve-for-me', '']) {
+      const line = `codex ${trust} ${own} ${PROMPT}`.replace(/  +/g, ' ');
+      expect(applyWorkerPermissionFlags(line, 'manual')).toBe(`codex ${CODEX_MANUAL_FLAGS} ${trust} ${PROMPT}`);
+      expect(workerModeRefusal(line, 'manual')).toBeNull();
+    }
+    // The other modes still leave a codex line as it is (a separate item).
+    expect(applyWorkerPermissionFlags(`codex -a never ${PROMPT}`, 'auto')).toBe(`codex -a never ${PROMPT}`);
+  });
+
+  it('manual is refused for every agent but claude and codex, and for a wrapped line; the other modes are never refused', () => {
     const agents = FANOUT_AGENTS.map((a) => a.stem);
-    expect(agents).toContain('claude');
-    for (const stem of agents.filter((a) => a !== 'claude')) {
+    expect(agents).toEqual(expect.arrayContaining(['claude', 'codex', 'grok', 'agy']));
+    for (const stem of agents.filter((a) => a !== 'claude' && a !== 'codex')) {
       expect(workerModeRefusal(`${stem} ${PROMPT}`, 'manual')).toContain(`\`${stem}\``);
       for (const mode of FANOUT_WORKER_PERMISSION_MODES.filter((m) => m !== 'manual')) expect(workerModeRefusal(`${stem} ${PROMPT}`, mode)).toBeNull();
     }

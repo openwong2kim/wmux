@@ -47,6 +47,7 @@
 // Vertex `model@version`) that claude's own default is not, so either flag
 // cancels the neutralisation the same way.
 
+import { isSkipPermissionsToken, launchGrammarFor, permissionChoiceIndexes } from './agentLaunchOptions';
 import { commandChoosesModel } from './orchestratorRole';
 
 /** The variable the launch neutralises. */
@@ -149,10 +150,11 @@ export function reattachModelEnvMarker(
 // the operator picks bypassPermissions.
 
 /** The operator's choice for fan-out workers, and for the agents this PC
- *  starts for another PC. `manual` means the agent asks before each action
- *  (Claude's `--permission-mode manual`); an agent with no flag wmux knows for
- *  that is not started in it (workerModeRefusal). Not a PermissionMode value,
- *  which describes what a transcript recorded rather than what wmux launches. */
+ *  starts for another PC. `manual` means the agent asks before it acts
+ *  (Claude's `--permission-mode manual`, Codex's CODEX_MANUAL_FLAGS); an agent
+ *  with no flag wmux knows for that is not started in it (workerModeRefusal).
+ *  Not a PermissionMode value, which describes what a transcript recorded
+ *  rather than what wmux launches. */
 export type FanoutWorkerPermissionMode = 'auto' | 'acceptEdits' | 'bypassPermissions' | 'manual';
 
 export const FANOUT_WORKER_PERMISSION_MODES: readonly FanoutWorkerPermissionMode[] = [
@@ -302,22 +304,64 @@ function launcherStemOf(words: readonly Span[]): string {
 }
 
 /**
+ * What `manual` puts on a codex line: its read-only sandbox with approval on
+ * request, so it asks before it edits a file, runs a command outside that
+ * sandbox or reaches the network. Verified against codex-cli 0.162.1 --help:
+ * `-a` takes only `on-request` or `never`; `-s` takes `read-only`,
+ * `workspace-write` or `danger-full-access`.
+ */
+export const CODEX_MANUAL_FLAGS = '-a on-request -s read-only';
+
+/** The agents `manual` can make ask (applyWorkerPermissionFlags). */
+const MANUAL_AGENTS: ReadonlySet<string> = new Set(['claude', 'codex']);
+
+/**
  * Why a launch line may not start in `mode`, or null when it may. `manual`
- * must make the agent ask before each action, and only a `claude` launch has
- * a flag wmux knows for that: any other agent (or a wrapper wmux cannot see
- * through) would run on its own settings, so it is refused instead.
+ * must make the agent ask, and wmux knows how only for the agents in
+ * MANUAL_AGENTS: any other agent (or a wrapper wmux cannot see through) would
+ * run on its own settings, so it is refused instead.
  */
 export function workerModeRefusal(command: string, mode: FanoutWorkerPermissionMode): string | null {
   if (mode !== 'manual') return null;
   const stem = launcherStemOf(spans(command));
-  if (stem === 'claude') return null;
-  return `the manual worker mode makes the agent ask before each action, and wmux knows no flag that does that for ${stem ? `\`${stem}\`` : 'this launch line'}; it was not started. Choose another worker mode, or Claude`;
+  if (MANUAL_AGENTS.has(stem)) return null;
+  return `the manual worker mode makes the agent ask before it acts, and wmux knows no flag that does that for ${stem ? `\`${stem}\`` : 'this launch line'}; it was not started. Choose another worker mode, or Claude or Codex`;
+}
+
+/** `line` without the words in `cut`, each with the whitespace in front of it; nothing else is re-spaced. */
+function withoutWords(line: string, cut: readonly Span[]): string {
+  // Cut from the end so earlier offsets stay valid.
+  for (const w of [...cut].sort((a, b) => b.start - a.start)) {
+    let from = w.start;
+    while (from > 0 && /\s/.test(line[from - 1])) from--;
+    line = line.slice(0, from) + line.slice(w.end);
+  }
+  return line;
+}
+
+/**
+ * A codex line in `manual`: every permission choice on it (an approval policy,
+ * a sandbox, the bypass switch, their `-c` config spellings, the unattended
+ * flags an agent choice added) is removed, and CODEX_MANUAL_FLAGS goes right
+ * after the launcher, ahead of the prompt (codex reads anything after it as
+ * part of the prompt).
+ */
+function codexManual(command: string, words: readonly Span[]): string {
+  const grammar = launchGrammarFor('codex');
+  if (!grammar) return command;
+  const values = words.slice(1).map((w) => w.value);
+  const cut = new Set(permissionChoiceIndexes(grammar, values));
+  values.forEach((v, i) => { if (isSkipPermissionsToken(grammar, v)) cut.add(i); });
+  const line = withoutWords(command, [...cut].map((i) => words[i + 1]));
+  const launcher = words[0];
+  return `${line.slice(0, launcher.end)} ${CODEX_MANUAL_FLAGS}${line.slice(launcher.end)}`;
 }
 
 /**
  * Append the worker's permission flag and tool lists to a launch line.
  *
- * Only a `claude` launch is touched — a role binding may have swapped the agent
+ * Only a `claude` launch is touched, and a `codex` one in `manual` (codexManual)
+ * — a role binding may have swapped the agent
  * to one that rejects these flags, and a wrapper (`env …`, `sh -c …`) is left
  * alone because wmux cannot see which word is the launcher. Everything goes
  * AFTER what is already on the line, i.e. after the prompt argument: the list
@@ -340,7 +384,9 @@ export function applyWorkerPermissionFlags(
   extraDisallowed: readonly string[] = [],
 ): string {
   const words = spans(command);
-  if (launcherStemOf(words) !== 'claude') return command;
+  const stem = launcherStemOf(words);
+  if (stem === 'codex' && mode === 'manual') return codexManual(command, words);
+  if (stem !== 'claude') return command;
 
   const cut: Span[] = [];
   for (let k = 1; k < words.length; k++) {
@@ -359,13 +405,5 @@ export function applyWorkerPermissionFlags(
       }
     }
   }
-  let line = command;
-  // Cut from the end so earlier offsets stay valid; each word goes with the
-  // whitespace in front of it and nothing else on the line is re-spaced.
-  for (const w of [...cut].sort((a, b) => b.start - a.start)) {
-    let from = w.start;
-    while (from > 0 && /\s/.test(line[from - 1])) from--;
-    line = line.slice(0, from) + line.slice(w.end);
-  }
-  return `${line} ${workerLaunchFlags(mode, extraDisallowed)}`;
+  return `${withoutWords(command, cut)} ${workerLaunchFlags(mode, extraDisallowed)}`;
 }
