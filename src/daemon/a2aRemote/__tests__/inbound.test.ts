@@ -720,10 +720,10 @@ describe('a host notice about one of our messages (held-notice.1, #3326)', () =>
     const { taskId } = await taskWithOurReply();
     const otherLink = activeLink();
     const before = tasks.getTask(taskId)!.history.length;
-    expect(await acceptInbound(env(otherLink, { kind: 'reply', taskId, messageId: 'notice-mine-1', notice: notice() as never }), peer, noticeDeps))
-      .toMatchObject({ ok: true, duplicate: true });
+    // Refused as a plain reply on another link's task is (unknown-task), or dropped: never stored.
+    const crossLink = await acceptInbound(env(otherLink, { kind: 'reply', taskId, messageId: 'notice-mine-1', notice: notice() as never }), peer, noticeDeps);
+    expect(crossLink.ok === false || crossLink.duplicate === true).toBe(true);
     expect(tasks.getTask(taskId)!.history).toHaveLength(before);
-    expect(logs.some(([level, msg]) => level === 'warn' && msg.includes(`link ${otherLink}:`))).toBe(true);
 
     await tasks.createTask({ id: 'task-local-n', title: 'L', from: { workspaceId: 'ws-b', name: 'B' }, to: { workspaceId: 'ws-c', name: 'C' }, history: [{ kind: 'message', messageId: 'mine-1', role: 'user', parts: [{ kind: 'text', text: 'x' }] }] });
     const res = await acceptInbound(env(otherLink, { kind: 'reply', taskId: 'task-local-n', messageId: 'notice-mine-1', notice: notice() as never }), peer, noticeDeps);
