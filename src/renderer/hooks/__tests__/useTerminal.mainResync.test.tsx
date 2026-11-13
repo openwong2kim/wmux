@@ -314,6 +314,26 @@ describe('useTerminal: keyboard negotiation across a re-flush main started', { t
     expect(await shiftEnter('k-a')).toBe('\x1b[13;2u');
   });
 
+  it('on a Windows host, where wmux encodes Shift+Enter itself, it stays `;2u`', async () => {
+    // No xterm kitty encoder on win32 (kittyKeyboardForHost): Shift+Enter
+    // follows the pane's folded negotiation, and without it goes out as LF.
+    const api = window.electronAPI as unknown as { platform: string };
+    api.platform = 'win32';
+    try {
+      await negotiated('k-w', KITTY);
+      expect(await shiftEnter('k-w')).toBe('\x1b[13;2u');
+      act(() => {
+        emitStarting!('k-w');
+        replay('k-w', '\x1bcPS> tui\r\ntui> ');
+        marker('k-w', 20);
+      });
+      await settle();
+      expect(await shiftEnter('k-w')).toBe('\x1b[13;2u');
+    } finally {
+      api.platform = 'linux';
+    }
+  });
+
   it('a pane that negotiated modifyOtherKeys keeps it', async () => {
     await negotiated('k-b', MODIFY_OTHER_KEYS);
     act(() => {
