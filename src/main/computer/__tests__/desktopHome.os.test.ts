@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { REMOVE_TEMP_DIR_HOOK_TIMEOUT_MS, removeTempDirs } from '../../../test-utils/removeTempDir';
 import { sweepStaleTempDirs } from '../../../test-utils/staleTempDirs';
 import { trackedTempDir } from '../../../test-utils/trackedTempDir';
 import { clearDesktopSnapshots, endDesktopRunner, prepareDesktopHome } from '../desktopHome';
@@ -19,13 +20,13 @@ beforeAll(() => {
   for (const k of ['TMPDIR', 'TEMP', 'TMP']) vi.stubEnv(k, ownTmp);
 });
 // Runs before trackedTempDir's own afterAll: only per-test dirs are removed by now.
-afterAll(() => {
+afterAll(async () => {
   vi.unstubAllEnvs();
   if (!ownTmp) return;
   const left = fs.readdirSync(ownTmp);
-  fs.rmSync(ownTmp, { recursive: true, force: true });
+  await removeTempDirs([ownTmp]);
   expect(left).toEqual([]);
-});
+}, REMOVE_TEMP_DIR_HOOK_TIMEOUT_MS);
 
 function seed(home: string): void {
   fs.mkdirSync(path.join(home, 'snapshots', 's1'), { recursive: true });

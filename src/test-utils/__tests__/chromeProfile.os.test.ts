@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ChromeLauncher } from '../../main/browser-session/ChromeLauncher';
 import { DOWNLOAD_DIR_PREFIX } from '../chromeDownloads';
 import { stopChrome, tempChromeProfile } from '../chromeProfile';
+import { removeTempDirs } from '../removeTempDir';
 import { sweepStaleTempDirs } from '../staleTempDirs';
 
 describe('tempChromeProfile', () => {
@@ -45,7 +46,7 @@ describe('tempChromeProfile', () => {
       expect(fs.readdirSync(ownTmp)).toEqual([]);
     } finally {
       vi.unstubAllEnvs();
-      fs.rmSync(ownTmp, { recursive: true, force: true });
+      await removeTempDirs([ownTmp]);
     }
   });
 
