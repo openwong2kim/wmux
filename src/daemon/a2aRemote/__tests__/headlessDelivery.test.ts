@@ -1827,6 +1827,27 @@ describe('the status this delivery reports for each task (headlessStatus.ts send
     expect(last()).toEqual({ taskId: TASK, kind: 'working' });
   });
 
+  it('a question answered in the pane, then a follow-up typed before the next probe: the next status is working, not question', async () => {
+    const d = new HeadlessDelivery(statusDeps());
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(task.status.state).toBe('input-required');
+    // A follow-up waits behind a question on the screen: the agent is busy, so it is not typed yet.
+    task.history.push({ kind: 'message', messageId: 'm9', role: 'user', parts: [{ kind: 'text', text: 'now the kernel version' }] });
+    (task.metadata.remote as A2aRemoteTaskState).inbox = [{ messageId: 'm9', kind: 'reply', delivered: false }];
+    results = ['busy'];
+    screen = 'dialog';
+    await advance(d, QUESTION_PROBE_MS);
+    expect(delivered.map((x) => x.prompt)).toEqual([PROMPT]);
+    expect(last()).toEqual({ taskId: TASK, kind: 'question', detail: { question: 'dialog' } });
+    // Answered in the pane; the retry types the follow-up well inside the probe interval.
+    screen = 'clear';
+    await advance(d, 2_000);
+    expect(delivered.map((x) => x.prompt)).toEqual([PROMPT, 'now the kernel version']);
+    expect(last()).toEqual({ taskId: TASK, kind: 'working' });
+  });
+
   it('at its usage limit: usage-limit, with whose limit and when it resets', async () => {
     clock = Date.UTC(2026, 10, 13, 0, 5);
     const d = new HeadlessDelivery(statusDeps());

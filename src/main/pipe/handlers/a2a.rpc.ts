@@ -4,6 +4,7 @@ import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
 import { isHostedCaller } from '../../../shared/rpc';
 import { a2aCallerWorkspace } from './a2aCaller';
+import { beginDeliverySend } from './deliverySenders';
 import { sendToRenderer } from './_bridge';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import type { ClaudeWorker } from '../../a2a/ClaudeWorker';
@@ -1381,12 +1382,13 @@ export function registerA2aRpc(
   /** A method whose caller's workspace is taken from the server side (a2aCaller.ts). */
   function registerAsCaller(
     method: 'a2a.task.query' | 'a2a.task.update' | 'a2a.task.send' | 'a2a.task.cancel' | 'a2a.broadcast',
-    handler: (params: Record<string, unknown>, ctx: RpcContext | undefined) => Promise<unknown>,
+    /** `verifiedWorkspaceId`: the caller's workspace as main derived it; absent on a trusted lane. */
+    handler: (params: Record<string, unknown>, ctx: RpcContext | undefined, verifiedWorkspaceId?: string) => Promise<unknown>,
   ): void {
     router.register(method, async (params, ctx) => {
       const caller = await a2aCallerWorkspace(getWindow, method, params, ctx);
       if (!caller.ok) return { error: caller.error };
-      return handler(caller.trusted ? params : { ...params, workspaceId: caller.workspaceId }, ctx);
+      return caller.trusted ? handler(params, ctx) : handler({ ...params, workspaceId: caller.workspaceId }, ctx, caller.workspaceId);
     });
   }
 
@@ -1958,10 +1960,10 @@ export function registerA2aRpc(
   // await — 이후 전이(working/completed)가 데몬 게이트에서 태스크를 찾도록.
   // A working slot the send took is released once it is over, its task in the
   // daemon's record by then (or never stored).
-  registerAsCaller('a2a.task.send', async (params, ctx) => {
+  registerAsCaller('a2a.task.send', async (params, ctx, verifiedWorkspaceId) => {
     const taken: { release?: () => void; handOut?: () => void } = {};
     try {
-      return await sendTask(params, ctx, taken);
+      return await sendTask(params, ctx, taken, verifiedWorkspaceId);
     } finally {
       taken.release?.();
       taken.handOut?.();
@@ -1999,6 +2001,7 @@ export function registerA2aRpc(
     params: Record<string, unknown>,
     ctx: RpcContext | undefined,
     taken: { release?: () => void; handOut?: () => void },
+    verifiedWorkspaceId?: string,
   ): Promise<unknown> {
     const marked = refuseHandoffMarker('a2a.task.send', [params.message, params.title], ctx);
     if (marked) return marked;
@@ -2068,6 +2071,8 @@ export function registerA2aRpc(
     // `workspaceId` on the wire would carry its privilege into someone else's.
     let sendParams: Record<string, unknown> = withOperatorOrigin(params, ctx);
     delete sendParams.commanderWorkspaceId;
+    // Main's own send record (below); never taken from the wire.
+    delete sendParams.deliverySenderKey;
     // Images reach the renderer only as main's checked copies (`attachments`).
     delete sendParams.images;
     const staged = await stageLocalImages(params, ctx);
@@ -2145,13 +2150,22 @@ export function registerA2aRpc(
     if (gatedNewTask) {
       sendParams.deliveryDeadlineAt = Date.now() + GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS - GATED_DELIVERY_DEADLINE_MARGIN_MS;
     }
-    const result = awaitsApproval
-      ? await sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: EXECUTE_SEND_MAIN_TIMEOUT_MS })
+    // A new task's daemon row is written after its delivery (below), so the
+    // delivery gate reads its sender from this record, held while the send
+    // runs: the caller's workspace as main derived it, for a local caller the
+    // owner lane would take (input.rpc taskOwnerLane).
+    const sendRecord = !params.taskId && verifiedWorkspaceId && ctx?.origin === 'local' && !isHostedCaller(ctx) && !ctx.fencedWorker
+      ? beginDeliverySend(verifiedWorkspaceId)
+      : undefined;
+    if (sendRecord) sendParams.deliverySenderKey = sendRecord.key;
+    const sending = awaitsApproval
+      ? sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: EXECUTE_SEND_MAIN_TIMEOUT_MS })
       : !params.taskId
-        ? await sendToRenderer(getWindow, 'a2a.task.send', sendParams, {
+        ? sendToRenderer(getWindow, 'a2a.task.send', sendParams, {
             timeoutMs: gatedNewTask ? GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS : NEW_TASK_SEND_MAIN_TIMEOUT_MS,
           })
-        : await sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: A2A_PASTE_MAIN_TIMEOUT_MS });
+        : sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: A2A_PASTE_MAIN_TIMEOUT_MS });
+    const result = await Promise.resolve(sending).finally(() => sendRecord?.end());
 
     // 데몬 정본 미러-생성(신규 태스크 브랜치에서만 — 렌더러가 task 스냅샷 동반).
     // 실패는 soft-degrade: 이후 전이가 'task not found'로 렌더러 폴백을 탄다.

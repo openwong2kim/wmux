@@ -90,6 +90,56 @@ export function ownerLaneLogLine(w: OwnerLaneWrite): string {
   );
 }
 
+/** The main-log line for a delivery the owner lane let past a folder-trust
+ *  verdict main could not decide. */
+export function ownerLaneDeliveryLogLine(d: {
+  callerWorkspaceId: string;
+  ptyId: string;
+  taskWorkspaceId: string;
+  reason?: string;
+}): string {
+  return (
+    `[owner-lane] delivery from ws ${JSON.stringify(d.callerWorkspaceId)} → pane ${JSON.stringify(d.ptyId)} ` +
+    `(task ws ${JSON.stringify(d.taskWorkspaceId)}): folder-trust unknown${d.reason ? ` (${d.reason})` : ''} passed; setting all`
+  );
+}
+
+/** The main-log line for a write that left the caller's workspace and found
+ *  no owner lane: why, so a refused orchestrator write can be traced. */
+export function ownerLaneMissLogLine(method: string, callerPtyId: string | undefined, reason: string): string {
+  const caller = callerPtyId ? `pane ${JSON.stringify(callerPtyId)}` : 'a caller with no pane';
+  return `[owner-lane] ${method} from ${caller}: no owner lane for ${reason}`;
+}
+
+/**
+ * The workspace that sent every task of a delivery, read from the daemon's
+ * task rows (`a2a.task.query` on the target's workspace): for each task, the
+ * side that is not the target's workspace. Null when a task is missing, has
+ * the target's workspace on both sides or on neither, or when two tasks name
+ * different senders. Pure.
+ */
+export function deliverySenderOf(tasks: readonly unknown[], taskIds: readonly string[], targetWorkspaceId: string): string | null {
+  if (taskIds.length === 0 || !targetWorkspaceId) return null;
+  let sender: string | null = null;
+  for (const id of taskIds) {
+    const task = tasks.find((t) => isRecord(t) && t.id === id);
+    const metadata = isRecord(task) && isRecord(task.metadata) ? task.metadata : null;
+    const from = metadata && isRecord(metadata.from) ? metadata.from.workspaceId : undefined;
+    const to = metadata && isRecord(metadata.to) ? metadata.to.workspaceId : undefined;
+    let side: unknown;
+    if (to === targetWorkspaceId && from !== targetWorkspaceId) side = from;
+    else if (from === targetWorkspaceId && to !== targetWorkspaceId) side = to;
+    if (typeof side !== 'string' || side.length === 0) return null;
+    if (sender !== null && sender !== side) return null;
+    sender = side;
+  }
+  return sender;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
 /** How long one notice in a task workspace covers further writes there. */
 export const OWNER_LANE_NOTICE_WINDOW_MS = 60_000;
 

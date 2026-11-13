@@ -56,8 +56,9 @@ const NOOP = (chunk: string): void => { void chunk; };
 function buildDaemonSource(dc: DaemonClient, ptyId: string): PtyDataSource {
   let handlerRef: (chunk: string) => void = NOOP;
   const listener = (...args: unknown[]): void => {
-    const payload = args[0] as { sessionId?: string; data?: Buffer | string } | undefined;
-    if (!payload || payload.sessionId !== ptyId) return;
+    const payload = args[0] as { sessionId?: string; data?: Buffer | string; reflush?: true } | undefined;
+    // A re-flush replays history already seen: an old prompt in it is not the shell at a prompt now.
+    if (!payload || payload.sessionId !== ptyId || payload.reflush) return;
     const data = payload.data;
     const text = Buffer.isBuffer(data) ? data.toString('utf8') : (typeof data === 'string' ? data : '');
     if (text.length > 0) handlerRef(text);

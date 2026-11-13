@@ -173,12 +173,12 @@ export interface DaemonClientLike {
   rpc(method: string, params?: unknown): Promise<unknown>;
   connectSessionPipe(sessionId: string, opts?: { forceFresh?: boolean }): Promise<void>;
   writeToSession(sessionId: string, data: string | Buffer): boolean;
-  on(event: 'session:data', listener: (payload: { sessionId: string; data: Buffer }) => void): unknown;
+  on(event: 'session:data', listener: (payload: { sessionId: string; data: Buffer; reflush?: true }) => void): unknown;
   on(
     event: 'session:died' | 'session:destroyed',
     listener: (payload: { sessionId: string; exitCode?: number | null }) => void,
   ): unknown;
-  off(event: 'session:data', listener: (payload: { sessionId: string; data: Buffer }) => void): unknown;
+  off(event: 'session:data', listener: (payload: { sessionId: string; data: Buffer; reflush?: true }) => void): unknown;
   off(
     event: 'session:died' | 'session:destroyed',
     listener: (payload: { sessionId: string; exitCode?: number | null }) => void,
@@ -223,8 +223,10 @@ export function createBrainPtyHost(client: DaemonClientLike): BrainPtyHost {
       }
     },
     onData(id, cb) {
-      const listener = (payload: { sessionId: string; data: Buffer }): void => {
-        if (payload.sessionId !== id) return;
+      const listener = (payload: { sessionId: string; data: Buffer; reflush?: true }): void => {
+        // A re-flush replays output the brain already read (refusals, the
+        // banner, paste-mode toggles); the attach replay is still its first sight.
+        if (payload.sessionId !== id || payload.reflush) return;
         cb(payload.data.toString('utf8'));
       };
       client.on('session:data', listener);

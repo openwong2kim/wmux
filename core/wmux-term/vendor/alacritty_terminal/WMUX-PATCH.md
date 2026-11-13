@@ -12,7 +12,8 @@ Local changes:
   hash. The xterm MIT license is included as `LICENSE-XTERM`. Native builds check
   that the table is current; regenerate deliberately after a provider update.
 - `src/lib.rs` registers that module; `src/term/mod.rs` uses its width lookup for
-  character input and exposes read-only `inactive_grid()` for snapshot replay.
+  character input and exposes read-only `inactive_grid()` and `scroll_region()`
+  for snapshot replay.
 - `src/grid/resize.rs` preserves the cursor paragraph without reflow, matching
   wmux's xterm configuration. Other paragraphs retain upstream reflow. Shrinking
   clamps the cursor and clears pending wrap. Clipped fullwidth cells are retained

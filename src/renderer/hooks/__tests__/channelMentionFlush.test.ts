@@ -9,6 +9,7 @@ import {
   buildChannelMentionNudge,
   resolveTaskTargetPty,
   flushMentions,
+  mentionRefsOf,
   type FlushMentionDeps,
 } from '../channelMentionFlush';
 import type { Task, PaneLeaf, Surface } from '../../../shared/types';
@@ -447,5 +448,16 @@ describe('buildChannelMentionNudge — ack-hint fallbacks (ship reviews)', () =>
     const n = buildChannelMentionNudge([nt(7, 'w1-1(claude)', '#general — mention from A', false)]);
     expect(n).toContain('wmux channel ack general 7');
     expect(n).not.toContain('--member');
+  });
+});
+
+describe('mentionRefsOf', () => {
+  const mention = (metadata: Record<string, unknown>) =>
+    ({ id: 'chmention-x', history: [{ kind: 'message', messageId: 'm', role: 'user', parts: [], metadata }] }) as unknown as Task;
+
+  it('names each task\'s channel message, and nothing when one is missing', () => {
+    expect(mentionRefsOf([mention({ channelId: 'ch-1', seq: 4 }), mention({ channelId: 'ch-2', seq: 0 })]))
+      .toEqual([{ channelId: 'ch-1', seq: 4 }, { channelId: 'ch-2', seq: 0 }]);
+    expect(mentionRefsOf([mention({ channelId: 'ch-1', seq: 4 }), mention({ channelId: 'ch-1' })])).toEqual([]);
   });
 });

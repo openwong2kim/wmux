@@ -205,6 +205,26 @@ export function resolveTaskTargetPty(
   return r.ptyId;
 }
 
+/** A channel message a mention task came from. */
+export interface MentionRef {
+  channelId: string;
+  seq: number;
+}
+
+/** The channel messages of a group of mention tasks, from each task's first
+ *  message (channelMentionInbox); empty when any one is missing. */
+export function mentionRefsOf(tasks: readonly Task[]): MentionRef[] {
+  const refs: MentionRef[] = [];
+  for (const t of tasks) {
+    const meta = t.history[0]?.metadata;
+    const channelId = meta?.channelId;
+    const seq = meta?.seq;
+    if (typeof channelId !== 'string' || !channelId || typeof seq !== 'number') return [];
+    refs.push({ channelId, seq });
+  }
+  return refs;
+}
+
 /** Injected store/PTY dependencies — keeps `flushMentions` pure + testable. */
 export interface FlushMentionDeps {
   /** Undelivered channel-mention tasks (chmention-*, non-terminal, not yet
@@ -221,8 +241,10 @@ export interface FlushMentionDeps {
    *  the Enter). Resolves once the nudge is submitted; REJECTS when it was not
    *  (an approval is in front of the pane, the gate could not check, the write
    *  failed) — the tasks then stay UNMARKED and the next Stop retries. This
-   *  reject-on-not-submitted contract is what keeps mark-after-deliver correct. */
-  deliverNudge: (ptyId: string, text: string) => Promise<void>;
+   *  reject-on-not-submitted contract is what keeps mark-after-deliver correct.
+   *  `mentions` names the group's channel messages, whose authors main reads
+   *  from the daemon for its owner-lane check (empty when one is unknown). */
+  deliverNudge: (ptyId: string, text: string, mentions: MentionRef[]) => Promise<void>;
   /** Mark a task delivered so it is never pasted twice (idempotency). Called
    *  ONLY after a successful deliverNudge. */
   markDelivered: (taskId: string) => void;
@@ -310,7 +332,7 @@ export async function flushMentions(
     const nudge = buildChannelMentionNudge(group);
     for (const t of group) mentionsInFlight.add(t.id);
     try {
-      await deps.deliverNudge(ptyId, nudge);
+      await deps.deliverNudge(ptyId, nudge, mentionRefsOf(group));
       deps.recordNudge?.(ptyId); // count this nudge toward the per-pane cap (A5)
       // Mark ONLY after a successful paste — a throw above retries next Stop.
       for (const t of group) {

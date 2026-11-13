@@ -39,13 +39,11 @@ export const SPAWN_REQUEST_KEY_RE = /^[A-Za-z0-9-]{8,64}$/;
 export const SPAWN_SUB_MAX = 512;
 /** Roots and agents one policy may list. */
 export const SPAWN_ROOTS_MAX = 32;
-/** Decided requests kept per PC; past it, that PC's new requests wait (`rate-limited`). */
-export const SPAWN_DECIDED_PER_HOST_MAX = 100;
 /** "Always allow" rules one policy may hold. */
 export const SPAWN_RULES_MAX = 256;
 /** A root's display label (characters). */
 export const SPAWN_LABEL_MAX = 64;
-/** A decided request is kept this long past its expiry, so a resend gets the same answer. */
+/** A decided request is kept at least this long after its decision, and until its request expires, so a resend gets the same answer. */
 export const SPAWN_REQUEST_KEEP_MS = 24 * 60 * 60 * 1000;
 /** Requests B keeps (all PCs). */
 export const SPAWN_REQUESTS_MAX = 1000;

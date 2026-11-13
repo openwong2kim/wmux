@@ -131,6 +131,9 @@ export interface TaskOwnerLane {
   callerPtyId?: string;
   /** The open task workspaces the given workspace owns, from the task ledger. */
   openTaskWorkspacesOf: (ownerWorkspaceId: string) => string[];
+  /** Told why the lane did not open, when the caller's own workspace did not
+   *  hold the pane either. Diagnostics only; it decides nothing. */
+  noteMiss?: (reason: string) => void;
 }
 
 /**
@@ -151,7 +154,7 @@ export async function assertCallerMayAccessPty(
     return { lane: 'own' };
   } catch (ownErr) {
     const viaTask = lane
-      ? await resolveTaskOwnerAccess(getWindow, (expected) => resolvePtyOwnerWorkspace(getWindow, ptyId, { expected }), lane).catch(() => null)
+      ? await resolveTaskOwnerAccess(getWindow, (expected) => resolvePtyOwnerWorkspace(getWindow, ptyId, { expected }), missFor(lane, `pane ${JSON.stringify(ptyId)}`))
       : null;
     if (viaTask) return viaTask;
     throw ownErr;
@@ -184,7 +187,7 @@ export async function assertCallerMayAccessSurface(
   const owner = await resolveSurfaceOwnerWorkspace(getWindow, surfaceId);
   if (owner === expectedWorkspaceId) return { lane: 'own' };
   const viaTask = lane
-    ? await resolveTaskOwnerAccess(getWindow, async () => owner, lane).catch(() => null)
+    ? await resolveTaskOwnerAccess(getWindow, async () => owner, missFor(lane, `surface ${JSON.stringify(surfaceId)}`))
     : null;
   if (viaTask) return viaTask;
   throw new Error(
@@ -193,9 +196,29 @@ export async function assertCallerMayAccessSurface(
   );
 }
 
+/** `lane` with its miss notes naming the target. */
+function missFor(lane: TaskOwnerLane, target: string): TaskOwnerLane {
+  const note = lane.noteMiss;
+  return note ? { ...lane, noteMiss: (reason) => note(`${target}: ${reason}`) } : lane;
+}
+
+/** The owner lane's answer, or null; never throws (a failed lookup is a miss). */
 async function resolveTaskOwnerAccess(
   getWindow: GetWindow,
   /** The target's owner; `expected` lets a mirror answer only an allow. */
+  ownerOf: (expected: readonly string[]) => Promise<string | null>,
+  lane: TaskOwnerLane,
+): Promise<PtyAccess | null> {
+  try {
+    return await taskOwnerAccess(getWindow, ownerOf, lane);
+  } catch {
+    lane.noteMiss?.('a lookup failed');
+    return null;
+  }
+}
+
+async function taskOwnerAccess(
+  getWindow: GetWindow,
   ownerOf: (expected: readonly string[]) => Promise<string | null>,
   lane: TaskOwnerLane,
 ): Promise<PtyAccess | null> {
@@ -203,11 +226,21 @@ async function resolveTaskOwnerAccess(
   if (!callerWorkspaceId && lane.callerPtyId) {
     callerWorkspaceId = (await resolvePtyOwnerWorkspace(getWindow, lane.callerPtyId)) ?? '';
   }
-  if (!callerWorkspaceId) return null;
+  const miss = (reason: string): null => {
+    lane.noteMiss?.(reason);
+    return null;
+  };
+  if (!callerWorkspaceId) {
+    return miss(lane.callerPtyId
+      ? `caller pane ${JSON.stringify(lane.callerPtyId)} is in no workspace`
+      : 'the call named no caller pane and no commander token');
+  }
   const taskWorkspaces = lane.openTaskWorkspacesOf(callerWorkspaceId);
-  if (taskWorkspaces.length === 0) return null;
+  if (taskWorkspaces.length === 0) return miss(`workspace ${JSON.stringify(callerWorkspaceId)} owns no open ledger task`);
   const owner = await ownerOf(taskWorkspaces);
-  if (owner === null || owner === callerWorkspaceId || !taskWorkspaces.includes(owner)) return null;
+  if (owner === null || owner === callerWorkspaceId || !taskWorkspaces.includes(owner)) {
+    return miss(`the pane's workspace ${JSON.stringify(owner ?? 'none')} is not an open task of workspace ${JSON.stringify(callerWorkspaceId)}`);
+  }
   return { lane: 'task-owner', taskWorkspaceId: owner, callerWorkspaceId };
 }
 

@@ -71,6 +71,10 @@ export interface TaskLaunch {
   /** launching: written, the spawn under way; launched: its pane came up;
    *  released: the launch did not happen (refused or failed). */
   state: TaskLaunchState;
+  /** wmux put CLAUDE_CODE_SANDBOXED=1 in this generation's pane env itself
+   *  (agentFirstRun firstRunEnvForAgent): its claude shows no folder-trust
+   *  dialog. Absent on a launch that did not, and on any older record. */
+  sandboxed?: true;
 }
 
 export interface TaskPane {
@@ -90,7 +94,8 @@ function isLaunch(v: unknown): v is TaskLaunch {
     && typeof r.launchedAt === 'number' && Number.isFinite(r.launchedAt)
     && (r.origin === 'bot' || r.origin === 'owner')
     && (r.botId === undefined || typeof r.botId === 'string')
-    && typeof r.ownerWorkspaceId === 'string' && isState(r.state);
+    && typeof r.ownerWorkspaceId === 'string' && isState(r.state)
+    && (r.sandboxed === undefined || r.sandboxed === true);
 }
 
 function isPane(v: unknown): v is TaskPane {
@@ -106,6 +111,10 @@ export interface LaunchRequest {
   origin: 'bot' | 'owner';
   botId?: string;
   ownerWorkspaceId: string;
+  /** The launch puts CLAUDE_CODE_SANDBOXED=1 in the pane env (TaskLaunch.sandboxed).
+   *  Left out on a relaunch in the pane of the task's latest generation: the
+   *  pane keeps its env, so the new generation keeps what that one recorded. */
+  sandboxed?: boolean;
   /** A relaunch in an existing pane: the pane and its workspace name the
    *  new generation in the same write, before the line is typed. */
   pane?: { sessionId: string; workspaceId: string };
@@ -336,6 +345,10 @@ export class WorkerSlots {
     let top = prior?.gen ?? 0;
     for (const p of this.panes.values()) if (p.taskId === req.taskId && p.gen > top) top = p.gen;
     for (const w of this.workspaces.values()) if (w.taskId === req.taskId && w.gen > top) top = w.gen;
+    const relaunched = req.pane ? this.panes.get(req.pane.sessionId) : undefined;
+    const sandboxed = req.sandboxed ?? (
+      prior?.sandboxed === true && relaunched?.taskId === req.taskId && relaunched.gen === prior.gen
+    );
     const next: TaskLaunch = {
       taskId: req.taskId,
       gen: top + 1,
@@ -344,6 +357,7 @@ export class WorkerSlots {
       ...(req.botId ? { botId: req.botId } : {}),
       ownerWorkspaceId: req.ownerWorkspaceId,
       state: 'launching',
+      ...(sandboxed ? { sandboxed: true as const } : {}),
     };
     if (this.mode === 'broken') {
       // The file may be free again (a lock that held it at load is gone).
@@ -693,6 +707,20 @@ export function resolvePaneOwner(sessionId: string, src: PaneOwnerSources): Pane
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether wmux itself put CLAUDE_CODE_SANDBOXED=1 in this pane's env: the
+ * pane's own launch record (written at its create) names its task's current
+ * generation, and that generation's launch recorded the flag. A pane with no
+ * record, an older generation's pane, or a launch that did not set it: false.
+ * Read from main's records only, never from the pane or its env.
+ */
+export function paneLaunchedSandboxed(sessionId: string, slots: WorkerSlots = getWorkerSlots()): boolean {
+  const pane = slots.paneOf(sessionId);
+  if (!pane) return false;
+  const launch = slots.launchOf(pane.taskId);
+  return !!launch && launch.gen === pane.gen && launch.state !== 'released' && launch.sandboxed === true;
 }
 
 /** The hosted store's pane launch record, with its task's bot. */

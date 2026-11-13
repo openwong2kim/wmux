@@ -529,7 +529,10 @@ describe('FirstRunOrchestrator', () => {
     dc.emit('session:data', { sessionId: 'session-B', data: Buffer.from('nope', 'utf8') });
     // Correct sessionId — should arrive decoded as UTF-8.
     dc.emit('session:data', { sessionId: 'session-A', data: Buffer.from('hello', 'utf8') });
-    expect(received).toEqual(['hello']);
+    // The attach replay is the pane's output too; a re-flush replays it again and is skipped.
+    dc.emit('session:data', { sessionId: 'session-A', data: Buffer.from('first-sight', 'utf8'), replay: true });
+    dc.emit('session:data', { sessionId: 'session-A', data: Buffer.from('seen-again', 'utf8'), replay: true, reflush: true });
+    expect(received).toEqual(['hello', 'first-sight']);
 
     // The write goes through the daemon's conditional write, never the pipe.
     dc.rpc.mockResolvedValueOnce({ events: [{ type: 'prompt_end', byteOffset: 9 }], eventCount: 2, totalBytesWritten: 9, keyInputRevision: 0, incarnationId: 'inc-1', emptyShellPrompt: true, sessionFound: true });

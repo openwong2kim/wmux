@@ -908,6 +908,10 @@ export class HeadlessDelivery {
           working: false, outcome: null, work: SUBAGENT_COUNTERS[rec.agent]?.() ?? null,
         };
         this.episodes.set(rec.sessionId, ep);
+        // The screen is read again on this tick: a question answered in the pane since the last read no longer
+        // shows as the status, and one that is still there keeps its clock.
+        const q = this.questions.get(rec.sessionId);
+        if (q) q.probedAt = Number.NEGATIVE_INFINITY;
         await this.markOrKeep({ ...ids, delivered: true, ...(item ? {} : { ptyId: rec.sessionId }) });
         await this.toWorking(ep);
         this.deps.log('info', `[headless] task ${key}: typed into ${rec.sessionId}`);

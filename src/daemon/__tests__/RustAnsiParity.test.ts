@@ -14,6 +14,16 @@ import { CLAUDE_WRAPPED_REPLY_80x30 } from '../../renderer/terminal/__tests__/fi
 import { restoreSeam } from '../../shared/restoreSeam';
 import { available, expectParity, expectRustAloneDiverges, modulePath, parity, resized, synthetic, type Case } from './_rustParity';
 
+const rowsOf8 = Array.from({ length: 8 }, (_, i) => `L${i}`).join('\r\n');
+const savedThenScrolled = 'a\x1b[3;1H\x1b7\x1b[6;1H\n\n';
+const twoRowHistory = (name: string, text: string): Case =>
+  ({ name, backend: 'rust', req: { cols: 20, rows: 6, scrollback: 2, initial: Buffer.from(text) } });
+/** `before` at 20x6, the pane resized to `to`, then `after`. */
+const resizedBetween = (name: string, before: string, to: [number, number], after: string): Case =>
+  ({ name, backend: 'rust', req: { cols: to[0], rows: to[1], scrollback: 100, initial: Buffer.from(before + after),
+    geometry: { start: { cols: 20, rows: 6 }, changes: [{ offset: Buffer.byteLength(before), cols: to[0], rows: to[1] }] } } });
+const longRows = Array.from({ length: 4 }, (_, i) => `${i}`.repeat(18)).join('\r\n');
+
 // One or more cases per control class the selector used to refuse wholesale.
 const accepted: Case[] = [
   // OSC: not screen state (xterm's path drops it too) except OSC 8, restored.
@@ -78,6 +88,51 @@ const accepted: Case[] = [
   synthetic('decrc-redesignate-same-g2', '\x1b7\x1b*B\x1b8\x1bnq'),
   synthetic('decrc-redesignate-g2-and-back', '\x1b7\x1b*0\x1b*B\x1b8\x1bnq'),
   synthetic('decrc-redesignate-shifted', '\x1b)0\x1b7\x0e\x1b)0\x1b8q\x0eq'),
+  // A ?1049l on the main screen: xterm restores its saved absolute row, so
+  // each row scrolled into history since the save moves it up (to 0 at
+  // most); ED 3 moves it down. The save is DECSC, a ?1049h, or a soft reset.
+  synthetic('main-1049l-no-scroll', 'a\x1b[3;1H\x1b7\x1b[6;1Hb\x1b[?1049lX'),
+  synthetic('main-1049l-scrolled', `${savedThenScrolled}\x1b[?1049lX`),
+  synthetic('main-1049l-scrolled-past-top', 'a\x1b[3;1H\x1b7\x1b[6;1H\n\n\n\n\x1b[?1049lX'),
+  synthetic('main-1049l-scrolled-ind', 'a\x1b[3;1H\x1b7\x1b[6;1H\x1bD\x1bD\x1b[?1049lX'),
+  synthetic('main-1049l-scrolled-region', 'a\x1b[1;4r\x1b[3;1H\x1b7\x1b[4;1H\n\n\x1b[r\x1b[?1049lX'),
+  synthetic('main-1049l-scrolled-synchronized', '\x1b[?2026ha\x1b[3;1H\x1b7\x1b[6;1H\n\n\x1b[?1049lX\x1b[?2026l'),
+  synthetic('main-1049l-after-alt-save', 'a\x1b[3;1H\x1b[?1049hzz\x1b[?1049l\x1b[6;1H\n\n\x1b[?1049lX'),
+  synthetic('main-1049l-ed3', `${rowsOf8}\x1b[1;1H\x1b7\x1b[3J\x1b[?1049lX`),
+  synthetic('main-1049l-decstr', `${rowsOf8}\x1b[3;1H\x1b7\x1b[3J\x1b[!p\x1b[?1049lX`),
+  // A full history keeps its size as rows scroll: both keep the screen row.
+  twoRowHistory('main-1049l-full-history', `${rowsOf8}\x1b[3;1H\x1b7\x1b[6;1H\n\n\x1b[?1049lX`),
+  twoRowHistory('main-1049l-filling-history', 'a\r\nb\x1b[3;1H\x1b7\x1b[6;1H\n\n\n\n\x1b[?1049lX'),
+  // DECRC and SCORC on the main screen restore xterm's row the same way;
+  // a region that does not start at the top scrolls nothing into history.
+  synthetic('decrc-no-scroll', 'a\x1b[3;1H\x1b7\x1b[6;1Hb\x1b8X'),
+  synthetic('decrc-scrolled', `${savedThenScrolled}\x1b8X`),
+  synthetic('scorc-scrolled', 'a\x1b[3;1H\x1b[s\x1b[6;1H\n\n\x1b[uX'),
+  // (The region is reset at the end: neither snapshot serializes margins.)
+  synthetic('decrc-scrolled-region', 'a\x1b[1;4r\x1b[3;1H\x1b7\x1b[4;1H\n\n\x1b8X\x1b[r'),
+  synthetic('scorc-scrolled-region', 'a\x1b[1;4r\x1b[3;1H\x1b[s\x1b[4;1H\n\n\x1b[uX\x1b[r'),
+  synthetic('decrc-scrolled-inner-region', 'a\x1b[2;5r\x1b[3;1H\x1b7\x1b[5;1H\n\n\x1b8X\x1b[r'),
+  synthetic('decrc-ed3', `${rowsOf8}\x1b[1;1H\x1b7\x1b[3J\x1b8X`),
+  // xterm's restore ends in _restrictCursor: past the bottom after ED 3, the
+  // last row; with DECOM on, inside the scrolling region.
+  synthetic('main-1049l-ed3-below-screen', `${rowsOf8}\x1b[5;1H\x1b7\x1b[3J\x1b[?1049lX`),
+  synthetic('decrc-ed3-below-screen', `${rowsOf8}\x1b[5;1H\x1b7\x1b[3J\x1b8X`),
+  synthetic('decrc-origin-scrolled-above-region',
+    `\x1b[3;6r\x1b[?6h\x1b7\x1b[r${'\n'.repeat(8)}\x1b[3;6r\x1b8X\x1b[r\x1b[?6l`),
+  synthetic('decrc-origin-ed3-below-region', `${rowsOf8}\x1b[1;2r\x1b[?6h\x1b7\x1b[3J\x1b8X\x1b[r\x1b[?6l`),
+  synthetic('decrc-origin-no-scroll', 'a\x1b[2;5r\x1b[?6h\x1b[3;1H\x1b7\x1b8X\x1b[r\x1b[?6l'),
+  twoRowHistory('decrc-full-history', `${rowsOf8}\x1b[3;1H\x1b7\x1b[6;1H\n\n\x1b8X`),
+  twoRowHistory('scorc-full-history', `${rowsOf8}\x1b[3;1H\x1b[s\x1b[6;1H\n\n\x1b[uX`),
+  // A resize between the scroll and the restore: the rows it moves between
+  // the screen and the history are not the stream's scrolling. (A height
+  // shrink with a main-screen save is left out: Alacritty clamps the saved
+  // row there and xterm keeps it absolute, before this change too.)
+  resizedBetween('main-1049l-scrolled-then-widened', savedThenScrolled, [24, 6], '\x1b[?1049lX'),
+  resizedBetween('decrc-scrolled-then-taller', savedThenScrolled, [20, 8], '\x1b8X'),
+  resizedBetween('decrc-scrolled-then-narrowed', `${longRows}\x1b[3;1H\x1b7\x1b[6;1H\n\n`, [12, 6], '\x1b8X'),
+  resizedBetween('decrc-scrolled-then-widened', `${longRows}\r\n${'z'.repeat(30)}\x1b[3;1H\x1b7\x1b[6;1H\n\n`, [30, 6], '\x1b8X'),
+  // A line feed inside the save runs first and scrolls before it.
+  synthetic('decsc-line-feed-inside', 'a\x1b[6;1H\x1b\n7\x1b[2;1Hb\x1b8X'),
   synthetic('decsc-ls2', '\x1b*0\x1bn\x1b7\x0fq\x1b8q'),
   synthetic('alt-1049-ls2', '\x1b*0\x1bn\x1b[?1049h\x0fq\x1b[?1049lq'),
   synthetic('ls2-in-update', '\x1b*0\x1b[?2026h\x1bnq\x1b[?2026l'),
@@ -247,6 +302,9 @@ const seams: Case[] = [
   // A slot designated since the save to another set stays on xterm only.
   recovered('main-later-g0-dec', '\x1b7\x1b(0q', 'PS> ls -la', 20, 6, 'xterm'),
   recovered('cursor-pending-wrap', 'x'.repeat(20)),
+  // A full-screen program that exited, then output that scrolled: the seam's
+  // ?1049l restores the row that program's ?1049h saved.
+  recovered('exited-app-then-scrolled', `a\x1b[3;1H\x1b[?1049hzz\x1b[?1049l${'out\r\n'.repeat(10)}`),
   // An agent that died on its alternate screen with input reporting on.
   recovered('died-on-alt', 'sh\r\n\x1b[>1u\x1b[?1049h\x1b[>3u\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?1004h\x1b[?1h\x1b=\x1b[?25l\x1b[3;3Hui'),
   recovered('died-on-main-modes', '\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[31mred'),

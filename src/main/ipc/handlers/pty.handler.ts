@@ -56,7 +56,7 @@ import { resolveClaudeExecutable } from '../../claude/resolveClaudeExecutable';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
 import { reconnectSessionPipe } from './reconnectSessionPipe';
 import { createReplayResetGate } from './replayResetGate';
-import { createSessionResync, type SessionResync } from './sessionResync';
+import { createResyncNeededHandler, createSessionResync, type SessionResync } from './sessionResync';
 import { verifyLaunchLine, type LaunchLineRead } from './verifyLaunchLine';
 import { LAUNCH_PROBE_CONFIRM_TIMEOUT_MS } from '../../worktask/fanoutLaunchProbe';
 import { launchPresenceAllowsResend, type LaunchPresenceVerdict } from '../../../daemon/launchPresence';
@@ -629,6 +629,9 @@ export function registerPTYHandlers(
   let onDaemonFlushComplete:
     | ((payload: { sessionId: string; recoveredBytes: number }) => void)
     | null = null;
+  // The daemon stopped writing a pane's live output because main fell behind
+  // reading its session pipe, and asks for a re-flush once main has drained.
+  let onDaemonResyncNeeded: ((payload: { sessionId: string }) => void) | null = null;
   // Daemon-mode cwd forwarder. Same named-variable/cleanup discipline as
   // flushComplete: the daemon detects cwd (OSC 7 / prompt) and emits
   // session:cwd; we relay it to the renderer as IPC.CWD_CHANGED and refresh
@@ -662,6 +665,23 @@ export function registerPTYHandlers(
       }
     };
     daemonClient.on('session:flushComplete', onDaemonFlushComplete);
+
+    // The renderer arms for the replay before any of it can arrive: the notice
+    // goes after the output already batched, and before the RPC.
+    const resyncNeeded = createResyncNeededHandler({
+      resync: () => resyncOf(daemonClient),
+      ownsPipe: (id) => daemonClient.isSessionPipeWritable(id),
+      flushBatch: (id) => dataBatcher.flushSession(id),
+      notify: (notice, id, code) => {
+        const win = getWindow?.();
+        if (!win || win.isDestroyed()) return;
+        if (notice === 'starting') win.webContents.send(IPC.PTY_RESYNC_STARTING, id);
+        else win.webContents.send(IPC.PTY_RESYNC_FAILED, id, code);
+      },
+      log: (line) => console.warn(line),
+    });
+    onDaemonResyncNeeded = ({ sessionId }) => resyncNeeded(sessionId);
+    daemonClient.on('session:resyncNeeded', onDaemonResyncNeeded);
 
     onDaemonCwd = (payload: { sessionId: string; cwd: string }) => {
       updateCwd(payload.sessionId, payload.cwd);
@@ -2266,6 +2286,9 @@ export function registerPTYHandlers(
       }
       if (onDaemonFlushComplete) {
         daemonClient.removeListener('session:flushComplete', onDaemonFlushComplete);
+      }
+      if (onDaemonResyncNeeded) {
+        daemonClient.removeListener('session:resyncNeeded', onDaemonResyncNeeded);
       }
       if (onDaemonCwd) {
         daemonClient.removeListener('session:cwd', onDaemonCwd);

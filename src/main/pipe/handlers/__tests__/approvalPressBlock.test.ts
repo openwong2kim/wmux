@@ -578,7 +578,7 @@ describe('a folder-trust dialog on screen', () => {
       expect(await w.gatedSubmit('pty-w', 'hello')).toMatchObject({
         ok: false,
         reason: 'approval_pending',
-        detail: expect.stringContaining('folder-trust prompt; answer it in the pane'),
+        detail: expect.stringContaining('is on a folder-trust prompt, which would take the text and its Enter as its answer'),
       });
       for (const call of [
         () => asPaneAgent('input.send', { ptyId: 'pty-w', text: 'go on', submit: true }),

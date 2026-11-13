@@ -164,7 +164,7 @@ export function remoteCodeText(code: string | undefined, pc: string, promptBytes
     case 'agent-not-installed': return `Claude is not installed on ${pc} (agent-not-installed)`;
     case 'folder-not-allowed': return `${pc} does not let this PC use that folder (folder-not-allowed)`;
     case 'expired': return `${pc} did not start it within ${REMOTE_FANOUT_EXPIRES_HOURS} hour (expired)`;
-    case 'rate-limited': return `${pc} is at its own limit of agents (rate-limited)`;
+    case 'rate-limited': return `${pc} is at a limit it sets (agents running, or starts per hour or day), or holds too many requests from this PC (rate-limited)`;
     case 'declined': return `${pc}'s owner declined it (declined)`;
     case 'app-not-ready': return `${pc} could not take it: its wmux was not ready (app-not-ready)`;
     default: return `${pc} could not start the agent (${code ?? 'failed'})`;

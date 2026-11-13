@@ -37,7 +37,7 @@ export async function daemonFolderTrustReading(
   dc: Pick<DaemonClient, 'folderTrustState'> | null | undefined,
   ptyId: string,
   opts: { budgetMs?: number } = {},
-): Promise<{ state: FolderTrustState; reason?: string } | null> {
+): Promise<{ state: FolderTrustState; reason?: string; dialog?: true } | null> {
   const timeoutMs = (opts.budgetMs ?? FOLDER_TRUST_DEFAULT_BUDGET_MS) + FOLDER_TRUST_CLIENT_MARGIN_MS;
   const answer = dc
     ? await (opts.budgetMs !== undefined ? dc.folderTrustState(ptyId, timeoutMs, opts.budgetMs) : dc.folderTrustState(ptyId, timeoutMs))

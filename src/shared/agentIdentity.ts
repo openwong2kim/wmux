@@ -294,6 +294,10 @@ export interface AgentIdentityRow {
    *  one-shot interstitials; `trust` only its folder-trust dialog, which is
    *  reported and never answered. Absent: not watched. */
   readonly firstRunWatch?: 'all' | 'trust';
+  /** Launched with CLAUDE_CODE_SANDBOXED=1 (shared/agentFirstRun), it shows no
+   *  folder-trust dialog, so a pane wmux launched that way may count as clear
+   *  of one (input.rpc trustProvenClear). */
+  readonly sandboxedNoTrustDialog?: true;
 }
 
 /**
@@ -314,6 +318,7 @@ export const AGENT_IDENTITIES = [
     slug: 'claude',
     display: 'Claude Code',
     firstRunWatch: 'all',
+    sandboxedNoTrustDialog: true,
     connectorLaunch: 'mcp-json',
     modelFlag: '--model',
     resume: { picker: '--resume', exact: '--resume {id}', pin: '--session-id', idFormat: 'uuid' },

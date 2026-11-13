@@ -382,6 +382,8 @@ interface NewTaskDelivery {
   deadlineAt?: number;
   /** With waitQuiet: main's own check for this delivery (GatedSubmitOptions.guardKey). */
   guardKey?: string;
+  /** The key main gave this task's send (GatedSubmitOptions.senderSendKey). */
+  senderKey?: string;
 }
 
 /** The fields a new-task delivery's receipt carries about the fresh-context
@@ -402,6 +404,9 @@ async function deliverA2aText(
   text: string,
   operator: boolean,
   newTask?: NewTaskDelivery,
+  // A reply's task, so main can read who sent it (a new task names the key
+  // main gave its send instead).
+  replyTaskId?: string,
 ): Promise<A2aPtyWrite> {
   // The operator's own deliveries are excluded from fresh context in v1.
   if (operator) {
@@ -418,6 +423,8 @@ async function deliverA2aText(
   const pane = newTask ? paneAddressOfPty(s.workspaces, ptyId) : undefined;
   const result = await gatedSubmitToPty(ptyId, text, {
     agent: ptyAgent(ptyId).name,
+    ...(newTask?.senderKey ? { senderSendKey: newTask.senderKey } : {}),
+    ...(!newTask && replyTaskId ? { senderTaskIds: [replyTaskId] } : {}),
     ...(newTask ? { newTask: true, taskId: newTask.taskId, ...keep, ...(pane ? { pane } : {}) } : {}),
     ...(newTask?.waitQuiet ? { waitQuiet: true } : {}),
     ...(newTask?.waitQuiet && newTask.expectAgent ? { expectAgent: newTask.expectAgent } : {}),
@@ -713,6 +720,7 @@ export async function deliverPtyNotification(
   explicitPtyId?: string,
   operator = false,
   newTask?: NewTaskDelivery,
+  replyTaskId?: string,
   // wmux's own line, put before the sender's block and never inside it.
   leadLine?: string,
 ): Promise<A2aPtyWrite> {
@@ -728,6 +736,7 @@ export async function deliverPtyNotification(
       leadLine ? `${leadLine}\n${block}` : block,
       operator,
       newTask,
+      replyTaskId,
     );
   }
   return { ptyId: null };
@@ -750,13 +759,14 @@ async function deliverPtyNudge(
   explicitPtyId?: string,
   operator = false,
   newTask?: NewTaskDelivery,
+  replyTaskId?: string,
 ): Promise<A2aPtyWrite> {
   // getWorkspaceLeafPanes puts VISIBLE leaves first, so the "first leaf with a
   // live terminal" fallback still prefers something on screen (#977); a stashed
   // pane only catches the message when nothing visible can take it, which beats
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
-  if (ptyId) return deliverA2aText(ptyId, typeof nudge === 'function' ? nudge(ptyId) : nudge, operator, newTask);
+  if (ptyId) return deliverA2aText(ptyId, typeof nudge === 'function' ? nudge(ptyId) : nudge, operator, newTask, replyTaskId);
   return { ptyId: null };
 }
 
@@ -1240,7 +1250,7 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
     ? deliverPtyNudge(target.ws, (delayed ? `${delayed}. ` : '') + buildA2aNudge(task.id, senderName, 'reply') + imagesNudgeSuffix(images), target.pty, false)
     // wmux's line goes before the sender's block, never inside it (the held text's own `[wmux]` lines are
     // already quoted by sanitizeRemoteMessage).
-    : deliverPtyNotification(target.ws, senderName, bodyWithImages(text, images), target.pty, false, undefined, delayed || undefined)));
+    : deliverPtyNotification(target.ws, senderName, bodyWithImages(text, images), target.pty, false, undefined, undefined, delayed || undefined)));
 }
 
 /** One line: control characters and line breaks folded to spaces. */
@@ -3742,13 +3752,13 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
               mode = 'no-agent-pane';
             } else if (decision.sameWs) {
               // Same-ws sibling: pointer-only nudge (no full-body injection).
-              write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply') + imagesNudgeSuffix(images), replyPty, operator);
+              write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply') + imagesNudgeSuffix(images), replyPty, operator, undefined, taskId);
             } else {
               const liveMeta = deliveryLiveMeta(store.surfaceAgent, replyPty, targetWs.metadata);
               if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
-                write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply') + imagesNudgeSuffix(images), replyPty, operator);
+                write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply') + imagesNudgeSuffix(images), replyPty, operator, undefined, taskId);
               } else {
-                write = await deliverPtyNotification(targetWs, senderName, bodyWithImages(message, images), replyPty, operator);
+                write = await deliverPtyNotification(targetWs, senderName, bodyWithImages(message, images), replyPty, operator, undefined, taskId);
                 mode = 'notification';
               }
             }
@@ -4047,14 +4057,18 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         agentAlive: panes.agentAliveByPtyId,
         commandRunning: panes.commandRunningByPtyId,
       });
-      const gated: Omit<NewTaskDelivery, 'taskId'> = params.gatedDelivery === true
-        ? {
-            waitQuiet: true,
-            ...(liveMeta?.agentName ? { expectAgent: liveMeta.agentName } : {}),
-            ...(typeof params.deliveryDeadlineAt === 'number' ? { deadlineAt: params.deliveryDeadlineAt } : {}),
-            ...(typeof params.deliveryGuardKey === 'string' ? { guardKey: params.deliveryGuardKey } : {}),
-          }
-        : {};
+      const gated: Omit<NewTaskDelivery, 'taskId'> = {
+        ...(params.gatedDelivery === true
+          ? {
+              waitQuiet: true,
+              ...(liveMeta?.agentName ? { expectAgent: liveMeta.agentName } : {}),
+              ...(typeof params.deliveryDeadlineAt === 'number' ? { deadlineAt: params.deliveryDeadlineAt } : {}),
+              ...(typeof params.deliveryGuardKey === 'string' ? { guardKey: params.deliveryGuardKey } : {}),
+            }
+          : {}),
+        // Main's record of who sent this task (a2a.rpc sendTask), for its delivery gate.
+        ...(typeof params.deliverySenderKey === 'string' ? { senderKey: params.deliverySenderKey } : {}),
+      };
       let write: A2aPtyWrite = { ptyId: null };
       let mode: 'nudge' | 'notification' | 'no-agent-pane' = 'nudge';
       if (noAgentTarget || (referenceDelivery && !referencePaneHasAgent)) {
@@ -4351,7 +4365,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             // #1573 — the same #1489 gate as below: a sibling pane back at its
             // shell would run the nudge line as a command. Write nothing then.
             if (a2aTargetHasAgent(targetWs, explicitPty)) {
-              updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName, 'reply'), explicitPty, operator);
+              updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName, 'reply'), explicitPty, operator, undefined, taskId);
             }
           } else {
             // #1336 — the same unaddressed rule as send/reply. Without it the
@@ -4376,9 +4390,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             if (!a2aTargetHasAgent(targetWs, updatePty)) {
               // Write nothing; the receiver follows the EventBus pointer.
             } else if (isLiveTuiAgent(liveMeta)) {
-              updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName, 'reply'), updatePty, operator);
+              updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName, 'reply'), updatePty, operator, undefined, taskId);
             } else {
-              updateWrite = await deliverPtyNotification(targetWs, callerName, message, updatePty, operator);
+              updateWrite = await deliverPtyNotification(targetWs, callerName, message, updatePty, operator, undefined, taskId);
             }
           }
         }

@@ -76,7 +76,7 @@ import { DaemonSessionManager, type ManagedSession } from './DaemonSessionManage
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { APP_ATTACHED_FILE, applyAppHostAtBoot, registerClientIdentify, takeAppSpawnedMarker } from './appHostMarker';
-import { SessionPipe } from './SessionPipe';
+import { SessionPipe, SESSION_PIPE_RESYNC_ASK_LOG_EVERY } from './SessionPipe';
 import { WebTerminalServer } from './web/WebTerminalServer';
 import { SessionAuthorizationExpiredError } from './web/WebTerminalServer';
 import type { WebTerminalInfo, WebSessionLifecycle } from './web/WebTerminalServer';
@@ -3268,6 +3268,19 @@ function registerRpcHandlers(
           })().catch((err) => log('warn', `auto-demote failed for ${p.id}:`, err));
         }, ATTACHED_ORPHAN_GRACE_MS);
         orphanTimer.unref();
+      };
+
+      // Main fell behind reading this pipe and has drained: ask it to re-flush.
+      pipe.onResyncNeeded = (ask) => {
+        if (sessionPipes.get(p.id) !== pipe) return;
+        // A main that never answers (one older than this request) gets asked
+        // every 5 s for as long as the pane stays behind: log the first ask,
+        // then one line per SESSION_PIPE_RESYNC_ASK_LOG_EVERY.
+        if (ask === 1 || ask % SESSION_PIPE_RESYNC_ASK_LOG_EVERY === 0) {
+          log('info', `[resync] session=${p.id} pipe fell behind: asking main to re-flush${ask > 1 ? ` (ask ${ask}, unanswered)` : ''}`);
+        }
+        const event: DaemonEvent = { type: 'session.resyncNeeded', sessionId: p.id, data: null };
+        pipeServer.broadcast(event);
       };
 
       // Forward PTY output to session pipe
@@ -11217,7 +11230,12 @@ async function main(): Promise<void> {
   // #1965: a pipe past its initial flush delivers PTY output live, so its
   // renderer answers the startup DA1 itself; before that the bytes only reach
   // it through the (query-stripped) ring replay, and the daemon answers.
-  sessionManager.setLiveRendererProbe((id) => sessionPipes.get(id)?.isFlushed === true);
+  // A pipe that fell behind delivers nothing live until its re-flush, and the
+  // re-flush strips queries: the daemon answers them meanwhile.
+  sessionManager.setLiveRendererProbe((id) => {
+    const pipe = sessionPipes.get(id);
+    return pipe?.isFlushed === true && !pipe.isBehind;
+  });
   sessionManager.setReplayPendingProbe((id) => attachesInFlight.has(id) || sessionPipes.get(id)?.awaitingReplay === true);
   // #2388: a task folder whose removal did not finish takes no new pane,
   // whoever asks (the desktop, a phone, an automation, a recovery).

@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { A2A_REMOTE_MESSAGE_ID_RE, A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
-import { SPAWN_DECIDED_PER_HOST_MAX, SPAWN_PENDING_PER_HOST_DEFAULT, SPAWN_REQUEST_KEEP_MS, SPAWN_TARGETS_LINK_ID } from '../../../shared/a2aSpawn';
+import { SPAWN_PENDING_PER_HOST_DEFAULT, SPAWN_REQUEST_KEEP_MS, SPAWN_REQUESTS_MAX, SPAWN_TARGETS_LINK_ID } from '../../../shared/a2aSpawn';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { acceptInbound, type InboundDeps } from '../inbound';
@@ -16,13 +16,14 @@ import { LinkStore } from '../linkStore';
 import { linkAlias } from '../outbound';
 import { A2aSpawnReceiver, registerSpawnRpc, unpairedHostNamed, type SpawnReceiverDeps } from '../spawnReceiver';
 import { SpawnPolicyStore, samePath } from '../spawnPolicyStore';
-import { SpawnRequestStore } from '../spawnRequestStore';
+import { SPAWN_REQUESTS_FILE, SpawnRequestStore } from '../spawnRequestStore';
 import { CheckBusy, CheckTimeout, SpawnChecks, realpathNative } from '../spawnChecks';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 import { shortPathOf } from '../../../test-utils/shortPath';
 
 const HOST = '11111111-1111-4111-8111-111111111111';
 const OTHER = '22222222-2222-4222-8222-222222222222';
+const THIRD = '33333333-3333-4333-8333-333333333333';
 const quiet = (): void => undefined;
 
 let dir: string;
@@ -549,22 +550,83 @@ describe('SpawnRequestStore', () => {
     expect(failing.summaries()).toEqual([]);
   });
 
-  it('decided records go a day after their decision, whatever expiry the asker chose; one PC cannot fill the store', () => {
+  const HOUR = 3600_000;
+  const DAY = 24 * HOUR;
+  /** A request taken, approved, started and its answer sent. */
+  const startedOne = (store: SpawnRequestStore, r: ReturnType<typeof req>, hostId = HOST): void => {
+    store.receive(hostId, r);
+    store.advance(hostId, r.spawnId, ['pending'], 'approved');
+    store.decide(hostId, r.spawnId, 'started', { endpoint: { kind: 'pane', workspaceId: 'ws-b', paneId: 'pane-b' }, linkVersion: 1, linkId: `lk-${r.spawnId}` });
+    store.markSent(hostId, r.spawnId);
+  };
+
+  it('150 ended starts from one PC in a day: the 151st is still taken', () => {
+    const store = new SpawnRequestStore({ dir: a2aDir, scheduleHarden: quiet, write: () => undefined });
+    for (let i = 0; i < 150; i++) startedOne(store, req());
+    expect(store.receive(HOST, req()).kind).toBe('new');
+    expect(store.startsSince(Date.now() - DAY, HOST)).toBe(150);
+  });
+
+  it('a decided record stays while its request could be resent, and a resend is answered from it; a full store makes room with ones that cannot', () => {
     let now = Date.now();
-    const store = new SpawnRequestStore({ dir: a2aDir, scheduleHarden: quiet, now: () => now });
-    const long = req(72 * 3600_000);
+    const store = new SpawnRequestStore({ dir: a2aDir, scheduleHarden: quiet, write: () => undefined, now: () => now });
+    const long = req(72 * HOUR);
     store.receive(HOST, long);
     store.decide(HOST, long.spawnId, 'not-supported');
-    now += SPAWN_REQUEST_KEEP_MS + 1000;
-    expect(store.prune()).toBe(1);
+    store.markSent(HOST, long.spawnId);
+    for (let i = 1; i < SPAWN_REQUESTS_MAX / 2; i++) startedOne(store, req());
+    for (let i = 0; i < SPAWN_REQUESTS_MAX / 2; i++) startedOne(store, req(), OTHER);
+    // Every record can still be resent: no room.
+    expect(store.receive(THIRD, req())).toEqual({ kind: 'full' });
+    // The 1 h requests expired; the oldest record (the 72 h one) still can be resent and stays.
+    now += 2 * HOUR;
+    expect(store.receive(THIRD, req()).kind).toBe('new');
+    expect(store.receive(HOST, long).kind).toBe('duplicate');
+    // Past the day it is kept after its decision, but inside its request's expiry: still answered from its record.
+    now += SPAWN_REQUEST_KEEP_MS;
+    store.prune();
+    expect(store.receive(HOST, long)).toEqual({ kind: 'duplicate', rec: expect.objectContaining({ state: 'decided', code: 'not-supported' }) });
+    now += 72 * HOUR;
+    store.prune();
+    expect(store.get(HOST, long.spawnId)).toBeUndefined();
+  });
 
-    for (let i = 0; i < SPAWN_DECIDED_PER_HOST_MAX; i++) {
-      const r = req();
-      store.receive(HOST, r);
-      store.decide(HOST, r.spawnId, 'not-supported');
-    }
+  it('one PC holds at most half the store in decided requests that could still be resent: past that it waits, another PC does not; expiry frees it', () => {
+    let now = Date.now();
+    const store = new SpawnRequestStore({ dir: a2aDir, scheduleHarden: quiet, write: () => undefined, now: () => now });
+    for (let i = 0; i < SPAWN_REQUESTS_MAX / 2; i++) startedOne(store, req());
     expect(store.receive(HOST, req())).toEqual({ kind: 'full' });
     expect(store.receive(OTHER, req()).kind).toBe('new');
+    now += 2 * HOUR;
+    expect(store.receive(HOST, req()).kind).toBe('new');
+  });
+
+  it('records that make room leave their start times while an hour or day limit is set: starts per day are not undercounted, also after a restart', () => {
+    let now = Date.now();
+    let written: unknown;
+    const store = new SpawnRequestStore({ dir: a2aDir, scheduleHarden: quiet, write: (_p, d) => { written = d; }, now: () => now });
+    // Two batches an expiry apart, so one PC holds the whole store within the day.
+    for (let i = 0; i < SPAWN_REQUESTS_MAX / 2; i++) startedOne(store, req());
+    now += 2 * HOUR;
+    for (let i = 0; i < SPAWN_REQUESTS_MAX / 2; i++) startedOne(store, req());
+    expect(store.receive(OTHER, req(), undefined, true).kind).toBe('new');
+    expect(store.receive(OTHER, req(), undefined, true).kind).toBe('new');
+    expect(store.startsSince(now - DAY, HOST)).toBe(SPAWN_REQUESTS_MAX);
+    expect(store.approvedSince(now - DAY, HOST)).toBe(SPAWN_REQUESTS_MAX);
+    expect(store.approvedSince(now - DAY)).toBe(SPAWN_REQUESTS_MAX);
+    // With no such limit set, nothing is kept for them.
+    expect(store.receive(OTHER, req()).kind).toBe('new');
+    expect(store.startsSince(now - DAY, HOST)).toBe(SPAWN_REQUESTS_MAX - 1);
+
+    // The store's own writes were kept in memory: its folder is made here for the one file read back.
+    fs.mkdirSync(a2aDir, { recursive: true });
+    fs.writeFileSync(path.join(a2aDir, SPAWN_REQUESTS_FILE), JSON.stringify(written), { mode: 0o600 });
+    const reloaded = new SpawnRequestStore({ dir: a2aDir, scheduleHarden: quiet, write: () => undefined, now: () => now });
+    expect(reloaded.startsSince(now - DAY, HOST)).toBe(SPAWN_REQUESTS_MAX - 1);
+    // A day on, the start times are gone with the day.
+    now += DAY + HOUR;
+    reloaded.prune();
+    expect(reloaded.startsSince(now - DAY, HOST)).toBe(0);
   });
 });
 

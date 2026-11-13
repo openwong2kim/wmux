@@ -39,6 +39,29 @@ export const ATTACH_TAIL_SNAPSHOT_BUDGET_MS = 1500;
 export const CLIENT_RELEASE_MS = 500;
 
 /**
+ * Queued bytes past which the pipe stops writing live output to its client
+ * and asks for a re-flush instead (writeToClient). The default ring size: past
+ * it the queue holds more than a re-flush sends, and every byte not written is
+ * still in the ring the re-flush is cut from. A reader that stopped reading
+ * (main's event loop stalled) used to grow this queue without bound.
+ *
+ * Fixed, not the configured ring size: it bounds the queue, which is memory
+ * whatever the ring holds. With a larger ring (bufferSizeMb up to 64) the
+ * re-flush is the screen snapshot as usual; a raw re-flush (alternate screen)
+ * can then exceed what main holds of a replay (sessionPipeStreamScanner), and
+ * main drops it, so the pane keeps its screen and stays stale instead.
+ */
+export const SESSION_PIPE_RESYNC_BYTES = 8 * 1024 * 1024;
+
+/** While behind and drained, how often the pipe repeats its re-flush request
+ *  until one starts: a lost request is asked again, never left behind. */
+export const SESSION_PIPE_RESYNC_RETRY_MS = 5_000;
+
+/** Unanswered requests between two daemon log lines: 60 × 5 s = one line every
+ *  5 minutes per behind pane, for a main that never answers (an older one). */
+export const SESSION_PIPE_RESYNC_ASK_LOG_EVERY = 60;
+
+/**
  * Per-session data pipe for raw byte streaming.
  * Created on attach, destroyed on detach.
  *
@@ -76,6 +99,14 @@ export class SessionPipe {
   private reflushInFlight = false;
   private socketPeakQueuedBytes = 0;
   private resyncQueuedBytes = 0;
+  /** Live output is not written (see writeToClient) until a re-flush starts. */
+  private behind = false;
+  private behindRetry: ReturnType<typeof setTimeout> | null = null;
+  private behindAsks = 0;
+  /** Bytes handed to the client socket so far, and where the last replay ended
+   *  in that count: a replay still queued does not count against the bound. */
+  private outputWritten = 0;
+  private replayEnd = 0;
   private connectionRate = { count: 0, resetAt: 0 };
   private readonly markers: SessionPipeMarkers;
 
@@ -87,6 +118,16 @@ export class SessionPipe {
    * sockets (scanner/handshake churn).
    */
   onClientGone?: () => void;
+
+  /**
+   * Fired when the pipe fell behind (SESSION_PIPE_RESYNC_BYTES) and its client
+   * has drained: the client should re-flush the session (daemon.resyncSession).
+   * Repeated every SESSION_PIPE_RESYNC_RETRY_MS until a re-flush starts;
+   * `ask` counts the requests since the pipe fell behind, from 1.
+   */
+  onResyncNeeded?: (ask: number) => void;
+  /** SESSION_PIPE_RESYNC_RETRY_MS; a test seam. */
+  resyncRetryMs = SESSION_PIPE_RESYNC_RETRY_MS;
 
   // A single session pipe is legitimately consumed by at most one renderer at a time.
   // Anything above this cap in a 1-second window is brute-force / scanner traffic.
@@ -144,7 +185,50 @@ export class SessionPipe {
 
   private writeOutput(socket: net.Socket, data: Buffer): void {
     socket.write(data);
+    this.outputWritten += data.length;
     this.socketPeakQueuedBytes = Math.max(this.socketPeakQueuedBytes, socket.writableLength);
+  }
+
+  /** Whether live output is paused until a re-flush (a test seam, and the diagnostics' view). */
+  get isBehind(): boolean {
+    return this.behind;
+  }
+
+  private fallBehind(socket: net.Socket): void {
+    this.behind = true;
+    this.behindAsks = 0;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[SessionPipe] sessionId=${this.sessionId} fell behind (${socket.writableLength} bytes queued): live output paused until a re-flush`,
+    );
+    socket.once('drain', () => this.requestResync(socket));
+  }
+
+  private requestResync(socket: net.Socket): void {
+    this.clearBehindRetry();
+    if (!this.behind || this.client !== socket || socket.destroyed) return;
+    // Not while the client is being let go (releaseClient): a re-flush is
+    // refused then, and the next client starts caught up anyway.
+    if (this.flushed) {
+      try {
+        this.onResyncNeeded?.(++this.behindAsks);
+      } catch {
+        /* the retry below asks again */
+      }
+    }
+    this.behindRetry = setTimeout(() => this.requestResync(socket), this.resyncRetryMs);
+    this.behindRetry.unref?.();
+  }
+
+  private clearBehindRetry(): void {
+    if (this.behindRetry) clearTimeout(this.behindRetry);
+    this.behindRetry = null;
+  }
+
+  /** Back to writing live output: a re-flush or a new client covers what was not written. */
+  private catchUp(): void {
+    this.behind = false;
+    this.clearBehindRetry();
   }
 
   /** Start listening for a single client connection. */
@@ -224,6 +308,7 @@ export class SessionPipe {
         this.pendingInput = null;
         this.client = socket;
         this.flushed = false;
+        this.catchUp();
         this.replayPending = true;
         this.replayPendingSince = Date.now();
         this.handleClient(socket);
@@ -442,11 +527,19 @@ export class SessionPipe {
     this.replayDone();
   }
 
-  /** Write PTY output data to the connected client. */
+  /**
+   * Write PTY output data to the connected client. Past
+   * SESSION_PIPE_RESYNC_BYTES queued, live output stops (it stays in the ring)
+   * until a re-flush repaints the client from the ring.
+   */
   writeToClient(data: Buffer): void {
-    if (this.client && !this.client.destroyed && this.flushed) {
-      this.writeOutput(this.client, data);
-    }
+    const socket = this.client;
+    if (!socket || socket.destroyed || !this.flushed || this.behind) return;
+    this.writeOutput(socket, data);
+    // The part of the last replay still queued is history the client asked for,
+    // not a backlog: it shrinks as the client reads it.
+    const replayQueued = Math.max(0, this.replayEnd - (this.outputWritten - socket.writableLength));
+    if (socket.writableLength > SESSION_PIPE_RESYNC_BYTES + replayQueued) this.fallBehind(socket);
   }
 
   /** Register callback for client input (forwarded to PTY stdin). */
@@ -513,6 +606,7 @@ export class SessionPipe {
   async stop(): Promise<void> {
     this.pendingInput = null;
     this.replayPending = false;
+    this.catchUp();
     this.inputDrainDispose?.(); this.inputDrainDispose = undefined;
     if (this.client) {
       this.client.destroy();
@@ -566,6 +660,7 @@ export class SessionPipe {
     this.client = null;
     this.flushed = false;
     this.replayPending = false;
+    this.catchUp();
   }
 
   /** The replay is out: live mode, and the size the viewer now holds is applied. */
@@ -573,6 +668,7 @@ export class SessionPipe {
     this.flushed = true;
     this.replayPending = false;
     this.ringBuffer.settleGeometry();
+    this.replayEnd = this.outputWritten;
   }
 
   /**
@@ -686,6 +782,8 @@ export class SessionPipe {
       // the ring, arm the tee. Nothing can arrive between these statements.
       this.writeOutput(socket, this.markers.resyncBegin);
       this.flushed = false;
+      // This re-flush covers everything a pipe that was behind did not write.
+      this.catchUp();
       const { replay: initial, geometry } = this.readRing();
       opts.bridge.on('data', tee);
 
@@ -694,7 +792,9 @@ export class SessionPipe {
         outcome = await opts.generate({
           cols: opts.cols,
           rows: opts.rows,
-          scrollback: opts.scrollback,
+          // A caller that names none (main, re-flushing a pipe that fell
+          // behind) gets the rows the viewer attached with.
+          scrollback: opts.scrollback ?? this.attachScrollback,
           initial,
           geometry,
           drainQueue,
