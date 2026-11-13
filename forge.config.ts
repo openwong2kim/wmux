@@ -505,8 +505,14 @@ const config: ForgeConfig = {
       // 5b. The MCP broker hosts a session only for a peer the OS names
       // (src/mcp/brokerPeer.ts), read through koffi; without it the broker
       // refuses every session. Windows named pipes give no peer pid yet.
+      // On Windows, browser_repl puts its runner in a kill-on-close job through
+      // koffi (src/daemon/paneJob.ts), so koffi is copied there too when
+      // present; without it that job is off and the runner's tree kill remains.
+      const mcpBundleDir = path.join(resourcesDir, 'mcp-bundle');
+      if (koffiPlatform === 'win32' && koffiPresent && fs.existsSync(mcpBundleDir)) {
+        copyKoffiInto(path.join(mcpBundleDir, 'node_modules'));
+      }
       if (koffiPlatform !== 'win32') {
-        const mcpBundleDir = path.join(resourcesDir, 'mcp-bundle');
         if (!fs.existsSync(mcpBundleDir)) {
           throw new Error(`[postPackage] ${mcpBundleDir} missing — run \`npm run build:mcp\` before packaging.`);
         }
