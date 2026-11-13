@@ -1,7 +1,5 @@
 // The sweep of a killed run's temp dirs removes only stale, unused dirs of its
 // own prefix, directly in the temp dir, and never follows a link out of it.
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,6 +29,11 @@ function age(p: string, ageMs: number): void {
 
 const kept = () => fs.readdirSync(root).sort();
 const host = os.hostname();
+// Above any pid Linux (pid_max at most 2^22) or macOS hands out, yet seven digits.
+const DEAD_PID = 4194305;
+// A boot long before these tests' aged dirs, so only the pid and host decide.
+const bootLongAgo = () => Date.now() - 30 * DAY;
+const holds = (dir: string) => chromeHoldsProfile(dir, process.platform, bootLongAgo());
 // No live Chrome in these dirs unless a test gives one a lock.
 const unused = () => false;
 
@@ -82,6 +85,8 @@ describe('sweepStaleTempDirs', () => {
   it.skipIf(isWin)('sweeps nothing in a temp dir any user can rename entries in, unless it is sticky', () => {
     const stale = leftover(`${PREFIX}aB3dE9`, 2 * DAY);
     fs.chmodSync(root, 0o777);
+    expect(sweepStaleTempDirs(PREFIX, { root, inUse: unused })).toEqual([]);
+    fs.chmodSync(root, 0o770);
     expect(sweepStaleTempDirs(PREFIX, { root, inUse: unused })).toEqual([]);
     fs.chmodSync(root, 0o1777);
     expect(sweepStaleTempDirs(PREFIX, { root, inUse: unused })).toEqual([stale]);
@@ -147,42 +152,48 @@ describe('sweepStaleTempDirs', () => {
 });
 
 describe('chromeHoldsProfile', () => {
-  it.skipIf(isWin)('a SingletonLock naming a live pid holds the profile; one naming an exited pid does not', async () => {
+  it.skipIf(isWin)('a SingletonLock naming a live pid holds the profile; one naming a gone pid does not', () => {
     const live = leftover(`${PREFIX}Live01`, 2 * DAY);
     fs.symlinkSync(`${host}-${process.pid}`, path.join(live, 'SingletonLock'));
     // Old again after the lock: only the lock keeps it.
     age(live, 2 * DAY);
-    expect(chromeHoldsProfile(live)).toBe(true);
+    expect(holds(live)).toBe(true);
 
-    const child = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore' });
-    await once(child, 'exit');
     const gone = leftover(`${PREFIX}Gone01`, 2 * DAY);
-    fs.symlinkSync(`${host}-${child.pid}`, path.join(gone, 'SingletonLock'));
+    fs.symlinkSync(`${host}-${DEAD_PID}`, path.join(gone, 'SingletonLock'));
     age(gone, 2 * DAY);
-    expect(chromeHoldsProfile(gone)).toBe(false);
+    expect(holds(gone)).toBe(false);
 
-    // The default check: the live one stays, the exited one goes.
-    expect(sweepStaleTempDirs(PREFIX, { root })).toEqual([gone]);
+    // Through the sweep: the live one stays, the gone one goes.
+    expect(sweepStaleTempDirs(PREFIX, { root, inUse: holds })).toEqual([gone]);
     expect(kept()).toEqual([`${PREFIX}Live01`]);
   });
 
-  it.skipIf(isWin)('a lock naming another host, or a pid of another shape, counts as held', async () => {
-    // A pid that is gone here, so only the host or the shape can hold the lock.
-    const child = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore' });
-    await once(child, 'exit');
-    const gone = String(child.pid);
+  it.skipIf(isWin)('a lock naming another host, or a pid of another shape, counts as held', () => {
+    const gone = String(DEAD_PID);
     const targets = [`not-${host}-${gone}`, `${host}-0`, `${host}-0${gone}`, `${host}-99999999`, `${host}-${gone}x`, `${host}-`, `-${gone}`, gone];
     for (const [i, target] of targets.entries()) {
       const dir = leftover(`${PREFIX}Shape${i}`, 2 * DAY);
       fs.symlinkSync(target, path.join(dir, 'SingletonLock'));
-      expect(chromeHoldsProfile(dir), target).toBe(true);
+      expect(holds(dir), target).toBe(true);
+    }
+  });
+
+  it.skipIf(isWin)('a lock made before the last boot is free, whatever pid or host it names', () => {
+    for (const [i, target] of [`${host}-${process.pid}`, `not-${host}-${process.pid}`].entries()) {
+      const dir = leftover(`${PREFIX}Boot0${i}`, 2 * DAY);
+      fs.symlinkSync(target, path.join(dir, 'SingletonLock'));
+      age(dir, 2 * DAY);
+      // Booted a day ago: the lock is older, so nothing alive made it.
+      expect(chromeHoldsProfile(dir, process.platform, Date.now() - DAY), target).toBe(false);
+      expect(holds(dir), target).toBe(true);
     }
   });
 
   it.skipIf(isWin)('a lock it cannot read counts as held', () => {
     const dir = leftover(`${PREFIX}Odd001`, 2 * DAY);
     fs.writeFileSync(path.join(dir, 'SingletonLock'), 'not a link');
-    expect(chromeHoldsProfile(dir)).toBe(true);
+    expect(holds(dir)).toBe(true);
   });
 
   it('no lock: not held; on Windows a lockfile holds it', () => {

@@ -12,7 +12,7 @@ import path from 'node:path';
  * prefix is made. It removes a dir only when all of these hold:
  *
  * - the temp dir's realpath is a dir no other user can rename entries in (not
- *   world-writable, or sticky);
+ *   group- or world-writable, or sticky);
  * - the dir's name is exactly `prefix` plus mkdtemp's six characters, directly
  *   in that realpath (no other prefix, no nested path);
  * - lstat says it is a real directory, not a link, its realpath is that same
@@ -32,10 +32,13 @@ export const STALE_TEMP_DIR_AGE_MS = 24 * 60 * 60 * 1000;
 const MKDTEMP_SUFFIX = '[A-Za-z0-9]{6}';
 const ownUid = (): number | null => (typeof process.getuid === 'function' ? process.getuid() : null);
 
-/** Not world-writable, or sticky: no other user can swap an entry in it. */
+/** Not group- or world-writable, or sticky: no other user can swap an entry in it. */
 function rootClosed(st: fs.Stats, uid: number | null): boolean {
-  return st.isDirectory() && (uid === null || (st.mode & 0o002) === 0 || (st.mode & 0o1000) !== 0);
+  return st.isDirectory() && (uid === null || (st.mode & 0o022) === 0 || (st.mode & 0o1000) !== 0);
 }
+
+/** Slack for clock adjustments when comparing a lock's time with the boot time. */
+const BOOT_SLACK_MS = 60_000;
 
 /** Owned by this user and closed to everyone else; not checked on Windows. */
 function ownedAndClosed(st: fs.Stats, uid: number | null): boolean {
@@ -74,17 +77,23 @@ function pidAlive(pid: number): boolean {
 /**
  * Whether a Chrome may be running on the profile at `dir`. Chrome keeps a lock
  * in its user-data-dir while it runs: outside Windows a `SingletonLock` link
- * whose target is `<host>-<pid>`, on Windows a `lockfile`. Only a lock naming
- * this host and a pid that is gone counts as free; a live pid, another host, a
- * target of any other shape, a lock that cannot be read, or a Windows lockfile
- * counts as in use.
+ * whose target is `<host>-<pid>`, on Windows a `lockfile`. A lock made before
+ * the last boot is free: no process from then is alive, whatever pid or host
+ * it names. Otherwise only a lock naming this host and a pid that is gone
+ * counts as free; a live pid, another host, a target of any other shape, a
+ * lock that cannot be read, or a Windows lockfile counts as in use.
  */
-export function chromeHoldsProfile(dir: string, platform: NodeJS.Platform = process.platform): boolean {
+export function chromeHoldsProfile(
+  dir: string,
+  platform: NodeJS.Platform = process.platform,
+  bootTimeMs: number = Date.now() - os.uptime() * 1000,
+): boolean {
   if (platform === 'win32') return fs.existsSync(path.join(dir, 'lockfile'));
   const lock = path.join(dir, 'SingletonLock');
   let target: string;
   try {
     target = fs.readlinkSync(lock);
+    if (fs.lstatSync(lock).mtimeMs < bootTimeMs - BOOT_SLACK_MS) return false;
   } catch (err) {
     return (err as NodeJS.ErrnoException).code !== 'ENOENT';
   }

@@ -24,11 +24,9 @@ describe('tempChromeProfile', () => {
 
   it('leaves nothing in the temp dir, and sweeps the stale dirs a killed run left', async () => {
     // A temp dir of this test's own, so the count is exact while other runs share the machine's.
-    const keys = ['TMPDIR', 'TEMP', 'TMP'] as const;
-    const saved = keys.map((k) => process.env[k]);
     sweepStaleTempDirs('wmux-profile-count-root-');
     const ownTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-profile-count-root-'));
-    for (const k of keys) process.env[k] = ownTmp;
+    for (const k of ['TMPDIR', 'TEMP', 'TMP']) vi.stubEnv(k, ownTmp);
     try {
       // As a run killed before its afterAll leaves them: a day and more old, no Chrome on them.
       const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
@@ -46,7 +44,7 @@ describe('tempChromeProfile', () => {
       await profile.remove();
       expect(fs.readdirSync(ownTmp)).toEqual([]);
     } finally {
-      keys.forEach((k, i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; });
+      vi.unstubAllEnvs();
       fs.rmSync(ownTmp, { recursive: true, force: true });
     }
   });

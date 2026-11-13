@@ -9,8 +9,6 @@ import { clearDesktopSnapshots, endDesktopRunner, prepareDesktopHome } from '../
 // Each test's dirs are removed after it (trackedTempDir). They are made in a
 // temp dir of this file's own, so the count left behind is exact even while
 // another run of this file shares the machine's temp dir.
-const TMP_ENV = ['TMPDIR', 'TEMP', 'TMP'] as const;
-const savedEnv = TMP_ENV.map((k) => process.env[k]);
 let ownTmp = '';
 const tmp = () => trackedTempDir('adhome-');
 
@@ -18,10 +16,12 @@ beforeAll(() => {
   // One a killed run of this file left.
   sweepStaleTempDirs('wmux-adhome-count-');
   ownTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-adhome-count-'));
-  for (const k of TMP_ENV) process.env[k] = ownTmp;
+  for (const k of ['TMPDIR', 'TEMP', 'TMP']) vi.stubEnv(k, ownTmp);
 });
+// Runs before trackedTempDir's own afterAll: only per-test dirs are removed by now.
 afterAll(() => {
-  TMP_ENV.forEach((k, i) => { if (savedEnv[i] === undefined) delete process.env[k]; else process.env[k] = savedEnv[i]; });
+  vi.unstubAllEnvs();
+  if (!ownTmp) return;
   const left = fs.readdirSync(ownTmp);
   fs.rmSync(ownTmp, { recursive: true, force: true });
   expect(left).toEqual([]);

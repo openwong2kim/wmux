@@ -35,11 +35,23 @@ export const CHROME_TEARDOWN_TIMEOUT_MS = REMOVE_TEMP_DIR_HOOK_TIMEOUT_MS + 20_0
 /** How long a disposed Chrome gets to exit before SIGKILL, and again after it. */
 const EXIT_WAIT_MS = 5_000;
 
-export function tempChromeProfile(prefix: string, opts: { preferences?: Record<string, unknown> } = {}): TempChromeProfile {
-  // A run killed before its afterAll left its profile and download folder
-  // behind: sweep the stale ones (staleTempDirs.ts) before making the next.
+/** Temp dir and prefix pairs this process has swept already. */
+const swept = new Set<string>();
+
+/**
+ * A run killed before its afterAll left its dirs behind: sweep a prefix's
+ * stale ones (staleTempDirs.ts) the first time this process makes one.
+ */
+function sweepOnce(prefix: string): void {
+  const key = `${os.tmpdir()}\0${prefix}`;
+  if (swept.has(key)) return;
+  swept.add(key);
   sweepStaleTempDirs(prefix);
-  sweepStaleTempDirs(DOWNLOAD_DIR_PREFIX);
+}
+
+export function tempChromeProfile(prefix: string, opts: { preferences?: Record<string, unknown> } = {}): TempChromeProfile {
+  sweepOnce(prefix);
+  sweepOnce(DOWNLOAD_DIR_PREFIX);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   let downloads: string;
   try {
@@ -54,7 +66,7 @@ export function tempChromeProfile(prefix: string, opts: { preferences?: Record<s
     dir,
     downloads,
     scratch: (scratchPrefix) => {
-      sweepStaleTempDirs(scratchPrefix);
+      sweepOnce(scratchPrefix);
       const made = fs.mkdtempSync(path.join(os.tmpdir(), scratchPrefix));
       owned.push(made);
       return made;
