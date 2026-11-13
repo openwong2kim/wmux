@@ -65,6 +65,12 @@ describe('fan-out launch with an agent choice', () => {
     expect(cmd).not.toMatch(/-a never|workspace-write|--permission-mode|--allowedTools/);
   });
 
+  it('grok in manual asks, even when its choice is unattended: its ask mode replaces bypassPermissions, before the prompt', () => {
+    const cmd = launch({ agent: 'grok', unattended: true }, 'manual');
+    expect(cmd).toMatch(/^.*grok --permission-mode default "\$\(cat /);
+    expect(cmd).not.toMatch(/bypassPermissions|--always-approve|--allowedTools/);
+  });
+
   it('codex unattended puts its approval flags before the prompt', () => {
     const cmd = launch({ agent: 'codex', unattended: true });
     expect(cmd).toMatch(/^.*codex -c '[^']+' -a never -s workspace-write "\$\(cat /);

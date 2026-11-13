@@ -47,7 +47,7 @@
 // Vertex `model@version`) that claude's own default is not, so either flag
 // cancels the neutralisation the same way.
 
-import { isSkipPermissionsToken, launchGrammarFor, permissionChoiceIndexes } from './agentLaunchOptions';
+import { isSkipPermissionsToken, launchGrammarFor, permissionChoiceIndexes, type AgentLaunchGrammar } from './agentLaunchOptions';
 import { commandChoosesModel } from './orchestratorRole';
 
 /** The variable the launch neutralises. */
@@ -151,7 +151,7 @@ export function reattachModelEnvMarker(
 
 /** The operator's choice for fan-out workers, and for the agents this PC
  *  starts for another PC. `manual` means the agent asks before it acts
- *  (Claude's `--permission-mode manual`, Codex's CODEX_MANUAL_FLAGS); an agent
+ *  (Claude's `--permission-mode manual`, MANUAL_BY_AGENT for others); an agent
  *  with no flag wmux knows for that is not started in it (workerModeRefusal).
  *  Not a PermissionMode value, which describes what a transcript recorded
  *  rather than what wmux launches. */
@@ -312,8 +312,26 @@ function launcherStemOf(words: readonly Span[]): string {
  */
 export const CODEX_MANUAL_FLAGS = '-a on-request -s read-only';
 
+/**
+ * What `manual` puts on a grok line: its own ask mode. Verified against grok
+ * 1.0.70 --help: `--permission-mode` takes default, acceptEdits, auto,
+ * dontAsk, bypassPermissions or plan, and `--always-approve` approves all.
+ */
+export const GROK_MANUAL_FLAGS = '--permission-mode default';
+
+/**
+ * The agents other than claude that `manual` can make ask: the flags it puts
+ * right after the launcher (ahead of the prompt), and the permission choices
+ * it removes from the line first. agy is not here: agy 1.5.3's `--mode`
+ * names no ask mode.
+ */
+const MANUAL_BY_AGENT: Readonly<Record<string, { flags: string; grammar: () => AgentLaunchGrammar | undefined }>> = {
+  codex: { flags: CODEX_MANUAL_FLAGS, grammar: () => launchGrammarFor('codex') },
+  grok: { flags: GROK_MANUAL_FLAGS, grammar: () => ({ permissionFlags: ['--permission-mode'], permissionSwitches: ['--always-approve'] }) },
+};
+
 /** The agents `manual` can make ask (applyWorkerPermissionFlags). */
-const MANUAL_AGENTS: ReadonlySet<string> = new Set(['claude', 'codex']);
+const MANUAL_AGENTS: ReadonlySet<string> = new Set(['claude', ...Object.keys(MANUAL_BY_AGENT)]);
 
 /**
  * Why a launch line may not start in `mode`, or null when it may. `manual`
@@ -325,7 +343,7 @@ export function workerModeRefusal(command: string, mode: FanoutWorkerPermissionM
   if (mode !== 'manual') return null;
   const stem = launcherStemOf(spans(command));
   if (MANUAL_AGENTS.has(stem)) return null;
-  return `the manual worker mode makes the agent ask before it acts, and wmux knows no flag that does that for ${stem ? `\`${stem}\`` : 'this launch line'}; it was not started. Choose another worker mode, or Claude or Codex`;
+  return `the manual worker mode makes the agent ask before it acts, and wmux knows no flag that does that for ${stem ? `\`${stem}\`` : 'this launch line'}; it was not started. Choose another worker mode, or Claude, Codex or Grok`;
 }
 
 /** `line` without the words in `cut`, each with the whitespace in front of it; nothing else is re-spaced. */
@@ -340,27 +358,28 @@ function withoutWords(line: string, cut: readonly Span[]): string {
 }
 
 /**
- * A codex line in `manual`: every permission choice on it (an approval policy,
- * a sandbox, the bypass switch, their `-c` config spellings, the unattended
- * flags an agent choice added) is removed, and CODEX_MANUAL_FLAGS goes right
- * after the launcher, ahead of the prompt (codex reads anything after it as
- * part of the prompt).
+ * A codex or grok line in `manual`: every permission choice on it (for codex
+ * an approval policy, a sandbox, the bypass switch and their `-c` config
+ * spellings; for grok a permission mode and `--always-approve`; either way the
+ * unattended flags an agent choice added) is removed, and the agent's ask
+ * flags go right after the launcher, ahead of the prompt (anything after it
+ * is read as part of the prompt).
  */
-function codexManual(command: string, words: readonly Span[]): string {
-  const grammar = launchGrammarFor('codex');
+function manualOnLine(command: string, words: readonly Span[], ask: { flags: string; grammar: () => AgentLaunchGrammar | undefined }): string {
+  const grammar = ask.grammar();
   if (!grammar) return command;
   const values = words.slice(1).map((w) => w.value);
   const cut = new Set(permissionChoiceIndexes(grammar, values));
   values.forEach((v, i) => { if (isSkipPermissionsToken(grammar, v)) cut.add(i); });
   const line = withoutWords(command, [...cut].map((i) => words[i + 1]));
   const launcher = words[0];
-  return `${line.slice(0, launcher.end)} ${CODEX_MANUAL_FLAGS}${line.slice(launcher.end)}`;
+  return `${line.slice(0, launcher.end)} ${ask.flags}${line.slice(launcher.end)}`;
 }
 
 /**
  * Append the worker's permission flag and tool lists to a launch line.
  *
- * Only a `claude` launch is touched, and a `codex` one in `manual` (codexManual)
+ * Only a `claude` launch is touched, and a codex or grok one in `manual` (manualOnLine)
  * — a role binding may have swapped the agent
  * to one that rejects these flags, and a wrapper (`env …`, `sh -c …`) is left
  * alone because wmux cannot see which word is the launcher. Everything goes
@@ -385,7 +404,8 @@ export function applyWorkerPermissionFlags(
 ): string {
   const words = spans(command);
   const stem = launcherStemOf(words);
-  if (stem === 'codex' && mode === 'manual') return codexManual(command, words);
+  const ask = mode === 'manual' && Object.prototype.hasOwnProperty.call(MANUAL_BY_AGENT, stem) ? MANUAL_BY_AGENT[stem] : undefined;
+  if (ask) return manualOnLine(command, words, ask);
   if (stem !== 'claude') return command;
 
   const cut: Span[] = [];

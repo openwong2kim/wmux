@@ -19,6 +19,7 @@ import {
   workerModeRefusal,
   FANOUT_WORKER_PERMISSION_MODES,
   CODEX_MANUAL_FLAGS,
+  GROK_MANUAL_FLAGS,
 } from '../workerLaunch';
 import { FANOUT_AGENTS } from '../fanoutPreset';
 
@@ -204,10 +205,21 @@ describe('applyWorkerPermissionFlags', () => {
     expect(applyWorkerPermissionFlags(`codex -a never ${PROMPT}`, 'auto')).toBe(`codex -a never ${PROMPT}`);
   });
 
-  it('manual is refused for every agent but claude and codex, and for a wrapped line; the other modes are never refused', () => {
+  it('manual makes grok ask: its permission mode and always-approve go, and its ask mode goes before the prompt', () => {
+    expect(GROK_MANUAL_FLAGS).toBe('--permission-mode default');
+    for (const own of ['--permission-mode bypassPermissions', '--permission-mode=auto', '--always-approve', '--permission-mode dontAsk --always-approve', '']) {
+      const line = `grok ${own} ${PROMPT}`.replace(/  +/g, ' ');
+      expect(applyWorkerPermissionFlags(line, 'manual')).toBe(`grok ${GROK_MANUAL_FLAGS} ${PROMPT}`);
+      expect(workerModeRefusal(line, 'manual')).toBeNull();
+    }
+    expect(applyWorkerPermissionFlags(`grok --always-approve ${PROMPT}`, 'auto')).toBe(`grok --always-approve ${PROMPT}`);
+  });
+
+  it('manual is refused for every agent but claude, codex and grok (agy included), and for a wrapped line; the other modes are never refused', () => {
     const agents = FANOUT_AGENTS.map((a) => a.stem);
     expect(agents).toEqual(expect.arrayContaining(['claude', 'codex', 'grok', 'agy']));
-    for (const stem of agents.filter((a) => a !== 'claude' && a !== 'codex')) {
+    expect(workerModeRefusal(`agy ${PROMPT}`, 'manual')).toContain('`agy`');
+    for (const stem of agents.filter((a) => a !== 'claude' && a !== 'codex' && a !== 'grok')) {
       expect(workerModeRefusal(`${stem} ${PROMPT}`, 'manual')).toContain(`\`${stem}\``);
       for (const mode of FANOUT_WORKER_PERMISSION_MODES.filter((m) => m !== 'manual')) expect(workerModeRefusal(`${stem} ${PROMPT}`, mode)).toBeNull();
     }
