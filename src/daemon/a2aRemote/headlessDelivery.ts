@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { A2A_REMOTE_BODY_MAX } from '../../shared/a2aRemote';
+import { A2A_REMOTE_BODY_MAX, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
 import { truncateUtf8 } from '../../shared/chatv2/limits';
 import type { SessionPromptScheduleResult } from '../../shared/sessionPromptSchedule';
 import { sanitizeBracketedPastePayload } from '../../shared/ptyMessageDelivery';
@@ -196,6 +196,16 @@ export interface HeadlessDeliveryDeps {
   questionOnScreen?(sessionId: string): Promise<'dialog' | 'clear' | 'unknown'>;
   /** The daemon holds this session for a usage limit (its own limit menu is on screen, and waited out). */
   limitHeld?(sessionId: string): boolean;
+  /**
+   * Which question a screen that shows one asks (screenQuestion.ts). `asking`:
+   * the agent's own AskUserQuestion is open in its transcript.
+   */
+  questionKind?(sessionId: string, asking: boolean): Promise<A2aRemoteQuestionKind>;
+  /**
+   * Where each task's status goes (headlessStatus.ts): every pass, the tasks
+   * this delivery works on; and `gone`, before a start's tasks are ended.
+   */
+  status?: { tick(statuses: HeadlessTaskStatus[]): void; gone(taskIds: string[]): void };
   /** The daemon's own `a2a.remote.reply`, as main calls it. */
   reply(input: { taskId: string; workspaceId: string; text: string; ptyId?: string }): Promise<{ ok: boolean; error?: string }>;
   /**
@@ -205,6 +215,23 @@ export interface HeadlessDeliveryDeps {
   transition(input: { taskId: string; workspaceId: string; to: 'working' | 'input-required' | 'failed' | 'canceled'; summary?: string }): Promise<{ ok: boolean; error?: string }>;
   log(level: 'info' | 'warn' | 'error', msg: string): void;
   now?: () => number;
+}
+
+/**
+ * What the worker does on one task, as this delivery sees it. `kind: null`:
+ * nothing new to say (a turn being finished, a task waiting its turn).
+ */
+export interface HeadlessTaskStatus {
+  taskId: string;
+  kind: A2aRemoteStatusKind | null;
+  detail?: {
+    question?: A2aRemoteQuestionKind;
+    menuId?: string;
+    options?: string[];
+    resetsAt?: string;
+    provider?: string;
+    background?: number;
+  };
 }
 
 /** One delivered task, from the write until its turn ended. */
@@ -276,6 +303,8 @@ export interface Episode {
   waitingSince?: number | null;
   /** The agent is in a turn (it wrote since its last turn end). */
   busy?: boolean;
+  /** The agent's AskUserQuestion with no answer yet: its tool call id and its first question's choices. */
+  ask?: { id: string; options: string[] } | null;
   /** The text of that turn end, and whether it went back as a reply. */
   lastProgress?: { text: string; sent: boolean } | null;
   /**
@@ -402,6 +431,7 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
     }
   }
   ep.work?.noteLine(line);
+  if (ep.opened) noteAsk(ep, raw?.content);
   // A conversation entry after a turn end: the agent is in a turn again.
   if (raw?.type === 'assistant' || raw?.type === 'user') ep.busy = true;
   if (!ep.opened) {
@@ -476,6 +506,26 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
  * left out. Read from the raw line because the parser replaces fenced code
  * with markers (turnEvents.ts), and a reply needs the code itself.
  */
+/** The AskUserQuestion tool waits for a person's pick; its result is the answer. */
+const ASK_TOOL = 'AskUserQuestion';
+
+/** An AskUserQuestion call opens the episode's question; its tool result closes it. */
+function noteAsk(ep: Episode, content: unknown): void {
+  if (!Array.isArray(content)) return;
+  for (const block of content as Array<Record<string, unknown> | null>) {
+    if (!block || typeof block !== 'object') continue;
+    if (block.type === 'tool_use' && block.name === ASK_TOOL && typeof block.id === 'string') {
+      const input = block.input as { questions?: Array<{ options?: Array<{ label?: unknown }> }> } | undefined;
+      const options = (input?.questions?.[0]?.options ?? [])
+        .map((o) => o?.label)
+        .filter((l): l is string => typeof l === 'string' && l.trim().length > 0);
+      ep.ask = { id: block.id, options };
+    } else if (block.type === 'tool_result' && ep.ask && block.tool_use_id === ep.ask.id) {
+      ep.ask = null;
+    }
+  }
+}
+
 export function assistantTextOf(line: string): string | null {
   const content = rawEntry(line)?.content;
   if (typeof content === 'string') return content.trim() || null;
@@ -499,7 +549,7 @@ export class HeadlessDelivery {
   /** Sessions whose start is ending: nothing more is typed into them. */
   private readonly ending = new Set<string>();
   /** The question clock of each session's current task (owed, or in its turn). */
-  private readonly questions = new Map<string, { since: number | null; probedAt: number; noticedTask: string | null }>();
+  private readonly questions = new Map<string, { since: number | null; probedAt: number; noticedTask: string | null; taskId?: string; kind?: A2aRemoteQuestionKind | null }>();
   /** After an answer, by session: the transcript read on for turns nothing on this PC started. */
   private readonly afterwards = new Map<string, Episode>();
   /** Replies sent on each task besides its answers (progress, later turns): bounded by FURTHER_REPLIES_MAX. */
@@ -592,6 +642,7 @@ export class HeadlessDelivery {
       await Promise.all([...current].map(([sessionId, cur]) => this.watchQuestion(sessionId, cur.taskId, cur.workspaceId).catch((err: unknown) => {
         this.deps.log('warn', `[headless] task ${cur.taskId}: the screen could not be checked: ${errMsg(err)}`);
       })));
+      if (this.deps.status && !this.stopped) this.deps.status.tick(this.statuses(starts));
     } finally {
       this.ticking = false;
     }
@@ -610,9 +661,13 @@ export class HeadlessDelivery {
     this.questions.delete(rec.sessionId);
     // An ended link carries no reply: the reason is not sent ahead of the cancel (the link's own end fails its tasks too).
     const say = why !== LINK_ENDED_REASON;
-    for (const task of this.deps.tasks.remote()) {
-      const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
-      if (marker?.direction !== 'inbound' || task.metadata[localSideOf(task)].workspaceId !== rec.workspaceId) continue;
+    const open = this.deps.tasks.remote().filter((task) => (task.metadata.remote as A2aRemoteTaskState | undefined)?.direction === 'inbound'
+      && task.metadata[localSideOf(task)].workspaceId === rec.workspaceId && !this.ended(task.id));
+    // The asking PC learns the agent is gone, right before the reason its task ended: only here, where a start of
+    // this run ends its tasks. Never on a link drop (nothing ends then), never on an ended link (it carries nothing),
+    // and not for a start an earlier daemon run left (its tasks end with "the daemon restarted").
+    if (say && rec.runId === this.deps.runId && open.length > 0) this.deps.status?.gone(open.map((t) => t.id));
+    for (const task of open) {
       const state = task.status.state;
       if (state === 'submitted' || state === 'working') await this.fail(task.id, rec.workspaceId, why, { say });
       else if (state === 'input-required') await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`, { say });
@@ -719,15 +774,22 @@ export class HeadlessDelivery {
     q.probedAt = now;
     const ep = this.episodes.get(sessionId);
     const inTurn = ep?.taskId === taskId ? ep : undefined;
+    q.taskId = taskId;
     // A usage-limit stop shows the agent's own limit menu: that pause is waited out, not a question.
     if (inTurn?.limitStopped || this.deps.limitHeld?.(sessionId)) {
       q.since = null;
+      q.kind = null;
       return;
     }
     const seen = await this.deps.questionOnScreen(sessionId);
-    if (seen === 'clear') q.since = null;
+    if (seen === 'clear') {
+      q.since = null;
+      q.kind = null;
+    }
     if (seen !== 'dialog') return;
     q.since ??= now;
+    // Which question, for the asking PC's status: read with the same pass, never acted on.
+    q.kind = this.deps.questionKind ? await this.deps.questionKind(sessionId, !!inTurn?.ask).catch(() => 'dialog' as const) : 'dialog';
     const waited = now - q.since;
     if (waited >= QUESTION_TIMEOUT_MS) {
       this.deps.log('warn', `[headless] task ${taskId}: ${QUESTION_REASON}`);
@@ -739,6 +801,39 @@ export class HeadlessDelivery {
       q.noticedTask = taskId;
       await this.notify({ taskId, workspaceId, sessionId }, QUESTION_NOTICE, 'of the question', inTurn);
     }
+  }
+
+  /** The status of each open task a live start of this run works on. */
+  private statuses(starts: readonly HeadlessStartRecordV1[]): HeadlessTaskStatus[] {
+    const out: HeadlessTaskStatus[] = [];
+    for (const task of this.deps.tasks.remote()) {
+      if ((task.metadata.remote as A2aRemoteTaskState | undefined)?.direction !== 'inbound' || this.ended(task.id)) continue;
+      const rec = this.ownerOf(task, starts);
+      if (rec) out.push({ taskId: task.id, ...this.statusOf(task, rec) });
+    }
+    return out;
+  }
+
+  /** At its usage limit, then a question it waits on, then in a turn, then waiting for more. */
+  private statusOf(task: Task, rec: HeadlessStartRecordV1): Omit<HeadlessTaskStatus, 'taskId'> {
+    const ep = this.episodes.get(rec.sessionId);
+    const inTurn = ep?.taskId === task.id ? ep : undefined;
+    if (inTurn?.limitStopped) {
+      const resetsAt = inTurn.limit?.resetsAt;
+      return { kind: 'usage-limit', detail: { provider: rec.agent, ...(resetsAt != null ? { resetsAt: new Date(resetsAt).toISOString() } : {}) } };
+    }
+    if (inTurn?.ask) {
+      return { kind: 'question', detail: { question: 'menu', menuId: inTurn.ask.id, ...(inTurn.ask.options.length > 0 ? { options: inTurn.ask.options } : {}) } };
+    }
+    const q = this.questions.get(rec.sessionId);
+    if (q?.since != null && q.taskId === task.id) return { kind: 'question', detail: { question: q.kind ?? 'dialog' } };
+    const after = this.afterwards.get(rec.sessionId);
+    if ((inTurn && !inTurn.outcome) || (after?.taskId === task.id && after.busy)) {
+      const background = (inTurn ?? after)?.work?.background ?? 0;
+      return { kind: 'working', ...(background > 0 ? { detail: { background } } : {}) };
+    }
+    if (task.status.state === 'input-required' && !inTurn) return { kind: 'waiting-input' };
+    return { kind: null };
   }
 
   /** Type an owed task or reply in (its start found, and no turn is open there). */

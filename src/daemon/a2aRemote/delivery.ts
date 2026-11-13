@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import {
   A2A_FEATURE_IMAGES,
+  A2A_FEATURE_STATUS,
   A2A_REMOTE_IMAGE_LIMITS,
   A2A_REMOTE_PROTOCOL,
   parseA2aRemoteImageRefs,
@@ -11,14 +12,15 @@ import {
   type A2aRemoteEnvelope,
   type A2aRemoteErrorCode,
   type A2aRemoteHostRecordV1,
+  type A2aRemoteStatusV1,
   type HostId,
   type PeerCredential,
 } from '../../shared/a2aRemote';
-import { A2A_REMOTE_RPC, isLegacyHeldReason, isWaitingCause, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteWaitingCause } from '../../shared/a2aRemoteDelivery';
+import { A2A_REMOTE_RPC, isLegacyHeldReason, isWaitingCause, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteTaskState, type A2aRemoteWaitingCause } from '../../shared/a2aRemoteDelivery';
 import type { A2aRemoteHostStatus, A2aRemoteHostsStatusResult } from '../../shared/rpc';
 import { prepareA2aImage, type A2aImageInfo, type A2aImageRefusal } from '../../shared/a2aImages';
 import { companyBriefOf } from '../../shared/company';
-import { TERMINAL_STATES } from '../../shared/types';
+import { TERMINAL_STATES, type Task } from '../../shared/types';
 import type { A2aTaskService } from '../a2a/A2aTaskService';
 import { failTasksForLink, expireHeld, rejectHeld, type HeldDeps } from './held';
 import { remoteTaskId } from './ids';
@@ -29,7 +31,7 @@ import { PeerTaskBudget, acceptInbound, type ImagePull, type InboundDeps } from 
 import type { NotifyLinkChange } from './linkRpc';
 import type { LinkStore } from './linkStore';
 import type { A2aOffers } from './offers';
-import { aliasTable, imageRefsOf, linkAlias, listRemoteTargets, sendRemoteReply, sendRemoteState, sendRemoteTask, syncRemoteTask, type ImageCaller, type OutboundDeps, type PreparedImage } from './outbound';
+import { aliasTable, imageRefsOf, linkAlias, listRemoteTargets, sendRemoteReply, sendRemoteState, sendRemoteStatus, sendRemoteTask, syncRemoteTask, type ImageCaller, type OutboundDeps, type PreparedImage } from './outbound';
 import { OutboxStore } from './outboxStore';
 import { PeerFeatureStore } from './peerFeatureStore';
 import type { A2aRouteTable } from './routes';
@@ -140,6 +142,9 @@ export function shareOfferFeatures(delivery: () => A2aRemoteDelivery | null): (h
   };
 }
 
+/** Worker statuses kept in memory at most (one per open task this PC sent). */
+const REMOTE_STATUSES_MAX = 1000;
+
 export class A2aRemoteDelivery {
   readonly outbox: OutboxStore;
   readonly hub: A2aStreamHub;
@@ -151,6 +156,8 @@ export class A2aRemoteDelivery {
   private readonly features: readonly string[] | undefined;
   /** Failed image fetches from the servers this PC joined (`InboundImages.pullAttempts`). */
   private readonly pullAttempts = new Map<string, number>();
+  /** The newest worker status on each task this PC sent (in memory only: the worker sends its current one again on reconnect). */
+  private readonly remoteStatuses = new Map<string, A2aRemoteStatusV1>();
   /** New tasks each PC sent this one in the last hour (the inbound limit). */
   private readonly taskBudget = new PeerTaskBudget();
   private readonly deps: A2aRemoteDeliveryDeps;
@@ -737,9 +744,68 @@ export class A2aRemoteDelivery {
       ...(this.deps.continue ? { continue: this.deps.continue } : {}),
       ...(this.deps.spawnLinks ? { spawnLinks: this.deps.spawnLinks } : {}),
       ...(this.images ? { images: { store: this.images, pullAttempts: this.pullAttempts } } : {}),
+      remoteStatus: {
+        note: (taskId, status) => this.noteRemoteStatus(taskId, status),
+        forget: (taskId) => { this.remoteStatuses.delete(taskId); },
+      },
       taskBudget: this.taskBudget,
       log: this.deps.log,
     };
+  }
+
+  // --- worker status (`status.1`) -------------------------------------------
+
+  /** A worker's status on a task this PC sent, the newest per task (by its `since`). */
+  private noteRemoteStatus(taskId: string, status: A2aRemoteStatusV1): void {
+    const prev = this.remoteStatuses.get(taskId);
+    if (prev && prev.since > status.since) return;
+    this.remoteStatuses.delete(taskId);
+    this.remoteStatuses.set(taskId, status);
+    // Bounded: the least recently updated go first (a task that ended without a word from its peer).
+    while (this.remoteStatuses.size > REMOTE_STATUSES_MAX) this.remoteStatuses.delete(this.remoteStatuses.keys().next().value as string);
+  }
+
+  /**
+   * The task with the newest status its worker sent (`metadata.remote.status`),
+   * as a query returns it; a copy, the ledger's own task is left alone. A task
+   * that ended has none, and its kept status is forgotten.
+   */
+  withRemoteStatus<T extends Task>(task: T): T {
+    const status = this.remoteStatuses.get(task.id);
+    if (!status) return task;
+    if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
+      this.remoteStatuses.delete(task.id);
+      return task;
+    }
+    const remote = task.metadata.remote as A2aRemoteTaskState | undefined;
+    if (!remote) return task;
+    return { ...task, metadata: { ...task.metadata, remote: { ...remote, status } } };
+  }
+
+  /**
+   * Whether the PC that sent `taskId` is connected now, takes a status, and
+   * since when its link has been up (a new value after each reconnect).
+   * Null: no such remote task.
+   */
+  statusPeer(taskId: string): { connected: boolean; takesStatus: boolean; epoch: string | null } | null {
+    const marker = this.deps.taskService.getTask(taskId)?.metadata.remote as { hostId?: HostId } | undefined;
+    if (!marker?.hostId) return null;
+    const hostId = marker.hostId;
+    const served = this.hub.isConnected(hostId) ? this.hub.connectedSince(hostId) : undefined;
+    const joined = this.sessions.get(hostId)?.session.current();
+    const joinedAt = joined?.state === 'connected' ? joined.connectedAt : undefined;
+    const connected = served !== undefined || joinedAt !== undefined;
+    return {
+      connected,
+      takesStatus: this.liveFeatures(hostId)?.has(A2A_FEATURE_STATUS) === true,
+      epoch: connected ? `${served ?? ''}|${joinedAt ?? ''}` : null,
+    };
+  }
+
+  /** Queue the worker's status on an inbound task for its sender (`sendRemoteStatus`). */
+  sendStatus(taskId: string, status: A2aRemoteStatusV1): { ok: true } | { ok: false; error: string } {
+    const res = sendRemoteStatus(this.outboundDeps(), { taskId, status });
+    return res.ok ? { ok: true } : { ok: false, error: res.error };
   }
 
   private outboundDeps(): OutboundDeps {

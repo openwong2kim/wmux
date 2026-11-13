@@ -248,6 +248,13 @@ With headless mode on:
   task becomes that task's next turn. With `ask`, a new task is refused at
   once and the asking PC is told why, since nobody here can approve it; a
   reply on a task ends that task with the same reason.
+- The asking PC sees what the agent is doing on its task (working, waiting
+  for more, on a question, at its usage limit, gone) as `remoteStatus` in
+  `a2a_task_query`, when its build knows it. For the agent's own question
+  menu the choices are sent along. To keep them on this host and send only
+  how many there are, run `wmux remote status-labels keep` (`send` turns
+  it back; with no argument it prints the setting). The setting has its own
+  file, `a2a-remote-status.json`, next to the other remote settings.
 - An agent that stops on a question (a permission prompt, say) cannot be
   answered here. After about a minute the asking PC is told so, once. If
   the question is still there after 10 minutes, the task ends with that

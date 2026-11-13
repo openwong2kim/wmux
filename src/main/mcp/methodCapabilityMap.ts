@@ -553,6 +553,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // Remote spawn: only the app's own human sets who may start agents here.
   'a2a.remote.spawnPolicy.get': { capability: 'wmux.internal' },
   'a2a.remote.spawnPolicy.set': { capability: 'wmux.internal' },
+  // Whether a menu's labels leave this PC in a worker's status: the same human's setting.
+  'a2a.remote.statusLabels.get': { capability: 'wmux.internal' },
+  'a2a.remote.statusLabels.set': { capability: 'wmux.internal' },
   'a2a.remote.spawnRequests.list': { capability: 'wmux.internal' },
   'a2a.remote.spawn.work': { capability: 'wmux.internal' },
   'a2a.remote.spawn.decide': { capability: 'wmux.internal' },

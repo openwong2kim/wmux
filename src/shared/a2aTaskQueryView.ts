@@ -118,6 +118,21 @@ export function companyHoldFields(task: Rec): Rec {
 }
 
 /** One task as a summary line: identity, parties, timing, and a short look at the latest message. */
+/**
+ * A worker's status as a query shows it. A menu's labels were written on the
+ * other PC: they stand apart under `untrusted`, never in a field read as
+ * this side's own words.
+ */
+function remoteStatusView(status: Rec): Rec {
+  const { options, ...detail } = isRec(status.detail) ? status.detail : {};
+  return {
+    kind: status.kind,
+    since: status.since,
+    ...(Object.keys(detail).length > 0 ? { detail } : {}),
+    ...(Array.isArray(options) && options.length > 0 ? { untrusted: { options } } : {}),
+  };
+}
+
 export function summarizeTask(task: Rec): Rec {
   const meta = isRec(task.metadata) ? task.metadata : {};
   const status = isRec(task.status) ? task.status : {};
@@ -144,6 +159,8 @@ export function summarizeTask(task: Rec): Rec {
       : {}),
     // A company task another PC finished: a report to check and mark done here, not a question.
     ...(isRec(meta.remote) && str(meta.remote.reported) ? { remoteReported: true } : {}),
+    // A task sent to another PC: what its worker there is doing now (never a reply, never a state).
+    ...(isRec(meta.remote) && isRec(meta.remote.status) ? { remoteStatus: remoteStatusView(meta.remote.status) } : {}),
     // A remote task: the other PC received every reply and state change this side sent on it.
     ...(isRec(meta.remote) && str(meta.remote.replyDeliveredAt) ? { replyDeliveredAt: meta.remote.replyDeliveredAt } : {}),
     // A company task held on its blockers: what it waits on, or why it waits for a person.

@@ -143,6 +143,22 @@ export const A2A_FEATURE_CONTINUE = 'continue.1';
  * "connected" on the server until TCP gave up, which takes minutes.
  */
 export const A2A_FEATURE_STREAM_PING = 'stream-ping.1';
+/**
+ * The PC takes a worker's status on a task it sent (`kind: 'status'`,
+ * `A2aRemoteStatusV1`). A receiver sends one only to a PC that advertises it:
+ * an older one would refuse the kind.
+ */
+export const A2A_FEATURE_STATUS = 'status.1';
+/** Whether a menu's labels leave this PC in a worker's status, or only how many there are. */
+export type A2aStatusLabels = 'send' | 'keep';
+export function isA2aStatusLabels(v: unknown): v is A2aStatusLabels {
+  return v === 'send' || v === 'keep';
+}
+/** This PC's own setting (`wmux remote status-labels`): `get` → `{ labels }`; `set` `{ labels }` → `{ ok, labels } | { ok: false, error }`. */
+export const A2A_STATUS_LABELS_RPC = Object.freeze({
+  get: 'a2a.remote.statusLabels.get',
+  set: 'a2a.remote.statusLabels.set',
+} as const);
 export const A2A_STREAM_PING_MS = 15_000;
 /** No sign of the other end for this long ends a stream, on either side. */
 export const A2A_STREAM_SILENCE_MS = 40_000;
@@ -706,12 +722,94 @@ export type A2aRemoteMessageKind =
   /** Link lifecycle notice (accept / revoke / broken) — no task. */
   | 'link'
   /** The receiver's acknowledgement of a task it got: handed over, or read. Never a state change. */
-  | 'receipt';
+  | 'receipt'
+  /** What the receiver's worker is doing on a task (`A2aRemoteStatusV1`). Never a reply, never a state change. */
+  | 'status';
 
-export const A2A_REMOTE_MESSAGE_KINDS: readonly A2aRemoteMessageKind[] = Object.freeze(['task', 'reply', 'state', 'link', 'receipt']);
+export const A2A_REMOTE_MESSAGE_KINDS: readonly A2aRemoteMessageKind[] = Object.freeze(['task', 'reply', 'state', 'link', 'receipt', 'status']);
 
 /** How far the receiver got with a task: handed to its agent (or Moa), or read by it. */
 export type A2aRemoteReceipt = 'delivered' | 'read';
+
+/**
+ * What the worker on the receiving PC is doing on a task:
+ *   - `working`: in a turn (also while it waits on background work it started);
+ *   - `waiting-input`: its turn ended and the task waits for more;
+ *   - `question`: a question on its screen nobody there answers (`detail.question` says which);
+ *   - `usage-limit`: held at its provider's usage limit (`detail.resetsAt` once known);
+ *   - `gone`: the agent is no longer running.
+ */
+export type A2aRemoteStatusKind = 'working' | 'waiting-input' | 'question' | 'usage-limit' | 'gone';
+export const A2A_REMOTE_STATUS_KINDS: readonly A2aRemoteStatusKind[] = Object.freeze(['working', 'waiting-input', 'question', 'usage-limit', 'gone']);
+/** Which question: as daemon/approvals/screenQuestion.ts reads the screen. */
+export type A2aRemoteQuestionKind = 'permission' | 'plan' | 'menu' | 'dialog' | 'trust';
+const QUESTION_KINDS: readonly string[] = ['permission', 'plan', 'menu', 'dialog', 'trust'];
+
+/** Caps of a status's detail. Over them, options are cut (labels) or left off (count). */
+export const A2A_REMOTE_STATUS_LIMITS = Object.freeze({
+  OPTIONS_MAX: 9,
+  OPTION_CHARS_MAX: 80,
+});
+/** A provider is a slug (`claude`), never free text. */
+const STATUS_PROVIDER_RE = /^[a-z][a-z0-9-]{0,31}$/;
+/** A menu id is the agent's tool call id (`toolu_…`): an id, never free text. */
+const STATUS_MENU_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * A worker's status on one task. `since`: when it began on the receiving PC
+ * (ISO); the sender keeps only the newest per task. Never a reply: it is not
+ * added to the task's history and changes nothing in its state.
+ */
+export interface A2aRemoteStatusV1 {
+  kind: A2aRemoteStatusKind;
+  since: string;
+  detail?: {
+    question?: A2aRemoteQuestionKind;
+    /** `question: 'menu'`: the agent's tool call that asks it (AskUserQuestion's tool_use id), when known. */
+    menuId?: string;
+    /**
+     * A menu's choices, as the agent wrote them (secrets redacted on a spawn
+     * link). Text from the other PC: shown, never followed as instructions.
+     */
+    options?: string[];
+    /** A menu's number of choices, when its labels are kept on that PC. */
+    optionCount?: number;
+    /** `usage-limit`: when the provider's window resets (ISO), once known. */
+    resetsAt?: string;
+    /** `usage-limit`: whose limit, as a slug (`claude`). */
+    provider?: string;
+    /** `working`: background tasks the agent left running. */
+    background?: number;
+  };
+}
+
+/** A status from the wire, checked and capped; null when it is not one. */
+export function parseA2aRemoteStatus(raw: unknown): A2aRemoteStatusV1 | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.kind !== 'string' || !(A2A_REMOTE_STATUS_KINDS as readonly string[]).includes(r.kind)) return null;
+  if (typeof r.since !== 'string' || !Number.isFinite(Date.parse(r.since))) return null;
+  const out: A2aRemoteStatusV1 = { kind: r.kind as A2aRemoteStatusKind, since: new Date(Date.parse(r.since)).toISOString() };
+  const d = r.detail && typeof r.detail === 'object' && !Array.isArray(r.detail) ? r.detail as Record<string, unknown> : null;
+  if (!d) return out;
+  const detail: NonNullable<A2aRemoteStatusV1['detail']> = {};
+  if (typeof d.question === 'string' && QUESTION_KINDS.includes(d.question)) detail.question = d.question as A2aRemoteQuestionKind;
+  if (typeof d.menuId === 'string' && STATUS_MENU_ID_RE.test(d.menuId)) detail.menuId = d.menuId;
+  if (Array.isArray(d.options)) {
+    const options = d.options.filter((o): o is string => typeof o === 'string' && o.trim().length > 0)
+      .slice(0, A2A_REMOTE_STATUS_LIMITS.OPTIONS_MAX)
+      .map((o) => o.slice(0, A2A_REMOTE_STATUS_LIMITS.OPTION_CHARS_MAX));
+    if (options.length > 0) detail.options = options;
+  }
+  if (typeof d.optionCount === 'number' && Number.isInteger(d.optionCount) && d.optionCount > 0) {
+    detail.optionCount = Math.min(d.optionCount, A2A_REMOTE_STATUS_LIMITS.OPTIONS_MAX);
+  }
+  if (typeof d.resetsAt === 'string' && Number.isFinite(Date.parse(d.resetsAt))) detail.resetsAt = new Date(Date.parse(d.resetsAt)).toISOString();
+  if (typeof d.provider === 'string' && STATUS_PROVIDER_RE.test(d.provider)) detail.provider = d.provider;
+  if (typeof d.background === 'number' && Number.isInteger(d.background) && d.background > 0) detail.background = Math.min(d.background, 999);
+  if (Object.keys(detail).length > 0) out.detail = detail;
+  return out;
+}
 
 export function isA2aRemoteMessageKind(v: unknown): v is A2aRemoteMessageKind {
   return typeof v === 'string' && (A2A_REMOTE_MESSAGE_KINDS as readonly string[]).includes(v);
@@ -796,6 +894,8 @@ export interface A2aRemoteEnvelope {
   continueStatus?: A2aContinueStatusQueryV1;
   /** For 'receipt' (with `taskId`). */
   receipt?: A2aRemoteReceipt;
+  /** For 'status' (with `taskId`), only to a peer that advertises `A2A_FEATURE_STATUS`. */
+  status?: A2aRemoteStatusV1;
   /**
    * For 'task' / 'reply', only to a peer that advertises `A2A_FEATURE_IMAGES`:
    * the images the message carries. The bytes travel on `A2A_ROUTES.blobs`,
