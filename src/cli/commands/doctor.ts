@@ -685,10 +685,11 @@ function brokerLimitsLine(b: McpSessionsSummary['broker']): CheckLine | null {
     maxRssMb !== null ? `maxRssMb ${maxRssMb}` : null,
     maxBrowserReplRunners !== null ? `maxBrowserReplRunners ${maxBrowserReplRunners}` : null,
   ].filter(Boolean);
-  const ignored = (b.ignoredLimits ?? []).filter((k) => typeof k === 'string');
+  const ignored = Array.isArray(b.ignoredLimits) ? b.ignoredLimits.filter((k) => typeof k === 'string') : [];
   const hint = [
     'Set in config.json under mcp.broker; none is set by default. The app reads them when it starts the broker, '
-      + 'so a change applies from the next wmux start. A session over a limit runs its own MCP server.',
+      + 'so a change applies from the next wmux start. A session over the session or memory limit runs its own MCP server; '
+      + 'over the runner limit, browser_repl returns an error naming the setting.',
     ignored.length > 0 ? `Ignored, not a positive integer: ${ignored.join(', ')}.` : '',
   ].filter(Boolean).join(' ');
   return {

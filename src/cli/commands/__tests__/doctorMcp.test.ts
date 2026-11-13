@@ -247,6 +247,11 @@ describe('doctor broker limits', () => {
     expect(line?.hint).toContain('Ignored, not a positive integer: mcp.broker.maxRssMb.');
   });
 
+  it('a malformed ignored list is read as empty, not thrown on', async () => {
+    const line = await limitsLine({ limits: none, ignoredLimits: {} as unknown as string[] });
+    expect(line).toMatchObject({ value: 'none set', verdict: 'OK' });
+  });
+
   it('no line while the broker is off, or for an app that does not report limits', async () => {
     expect(await limitsLine({ enabled: false, limits: none })).toBeUndefined();
     expect(await limitsLine({})).toBeUndefined();
