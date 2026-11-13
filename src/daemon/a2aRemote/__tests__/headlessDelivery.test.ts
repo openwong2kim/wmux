@@ -795,6 +795,8 @@ describe('a reply the asking PC sends on the task (an inbox item)', () => {
     await d.tick();
     expect(delivered).toHaveLength(1);
     expect(moves.at(-1)).toEqual({ to: 'canceled', summary: ASK_REASON });
+    // The asking PC is told why in a reply first: a cancel reaches it without the summary.
+    expect(replies.at(-1)?.text).toBe(`Canceled: ${ASK_REASON}`);
   });
 
   it('a question that outlasted the task before it ends the next one at once, not after another 10 minutes', async () => {
@@ -833,7 +835,8 @@ describe('a question on the agent\'s screen', () => {
     expect(task.status.state).toBe('submitted');
     await advance(d, 10_000);
     expect(moves.at(-1)).toEqual({ to: 'canceled', summary: QUESTION_REASON });
-    expect(replies).toHaveLength(1);
+    // The notice, then the reason before the cancel (a cancel reaches the asker without its summary).
+    expect(replies.map((r) => r.text).slice(1)).toEqual([`Canceled: ${QUESTION_REASON}`]);
     expect(delivered).toEqual([]);
   });
 

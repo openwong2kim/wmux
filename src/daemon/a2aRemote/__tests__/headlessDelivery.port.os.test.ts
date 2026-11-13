@@ -259,7 +259,7 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
     h.clock.skew += QUESTION_TIMEOUT_MS;
     await h.delivery.tick();
     expect(h.moves).toEqual([{ to: 'canceled', summary: QUESTION_REASON }]);
-    expect(h.replies).toHaveLength(1);
+    expect(h.replies.slice(1)).toEqual([`Canceled: ${QUESTION_REASON}`]);
     expect(h.prompts()).toEqual([]);
     // The agent is still there: its session was not ended.
     expect(h.alive()).toBe(true);

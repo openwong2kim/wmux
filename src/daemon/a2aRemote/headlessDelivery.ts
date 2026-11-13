@@ -112,7 +112,7 @@ export interface HeadlessDeliveryDeps {
   /** The daemon holds this session for a usage limit (its own limit menu is on screen, and waited out). */
   limitHeld?(sessionId: string): boolean;
   /** The daemon's own `a2a.remote.reply`, as main calls it. */
-  reply(input: { taskId: string; workspaceId: string; text: string; ptyId: string }): Promise<{ ok: boolean; error?: string }>;
+  reply(input: { taskId: string; workspaceId: string; text: string; ptyId?: string }): Promise<{ ok: boolean; error?: string }>;
   /**
    * Commit a task state as its receiver and tell the peer (`transition` + sync).
    * `summary`: the reason (failed, canceled).
@@ -723,9 +723,23 @@ export class HeadlessDelivery {
     if (!state || (TERMINAL_STATES as readonly string[]).includes(state)) return true;
     // `failed` is not a move from `submitted` or `input-required` in the ledger: those are canceled, with the reason.
     const to = wanted === 'failed' && (state === 'submitted' || state === 'input-required') ? 'canceled' : wanted;
+    // A cancel reaches the asking PC without its summary (a failure carries one): the reason goes first, as a reply, once.
+    if (to === 'canceled') await this.sayOnce(taskId, workspaceId, `Canceled: ${reason}`);
     const res = await this.deps.transition({ taskId, workspaceId, to, summary: reason }).catch((err: unknown) => ({ ok: false, error: errMsg(err) }));
     if (!res.ok) this.deps.log('warn', `[headless] task ${taskId}: not marked ${to} (${reason}): ${res.error ?? 'unknown'}`);
     return res.ok;
+  }
+
+  /** A reply on the task, unless the task already holds that text (a retry). Best effort: the move goes on regardless. */
+  private async sayOnce(taskId: string, workspaceId: string, text: string): Promise<void> {
+    const said = this.deps.tasks.get(taskId)?.history.some((m) => m.parts.some((p) => p.kind === 'text' && p.text === text));
+    if (said) return;
+    try {
+      const res = await this.deps.reply({ taskId, workspaceId, text });
+      if (!res.ok) this.deps.log('warn', `[headless] task ${taskId}: the reason could not be sent before canceling: ${res.error ?? 'unknown'}`);
+    } catch (err) {
+      this.deps.log('warn', `[headless] task ${taskId}: the reason could not be sent before canceling: ${errMsg(err)}`);
+    }
   }
 
   private async markSafely(input: MarkInput): Promise<{ ok: boolean; error?: string }> {
