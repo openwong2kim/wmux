@@ -21,6 +21,7 @@ import { A2A_REMOTE_RPC, isLegacyHeldReason, isWaitingCause, readHeldReason, typ
 import type { A2aRemoteHostStatus, A2aRemoteHostsStatusResult } from '../../shared/rpc';
 import { prepareA2aImage, type A2aImageInfo, type A2aImageRefusal } from '../../shared/a2aImages';
 import { companyBriefOf } from '../../shared/company';
+import { A2A_SPAWN_WORKER_EVENT, type A2aSpawnWorkerStatus } from '../../shared/a2aSpawn';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
 import type { A2aTaskService } from '../a2a/A2aTaskService';
 import { failTasksForLink, expireHeld, rejectHeld, type HeldDeps } from './held';
@@ -861,6 +862,36 @@ export class A2aRemoteDelivery {
     this.remoteStatuses.set(taskId, { ...status, since: new Date(since).toISOString() });
     // Bounded: the least recently updated go first (a task that ended without a word from its peer).
     while (this.remoteStatuses.size > REMOTE_STATUSES_MAX) this.remoteStatuses.delete(this.remoteStatuses.keys().next().value as string);
+    // A started agent's row on the Remote page reads it again (A2aSpawnRequester.list).
+    if (prev?.kind !== status.kind || JSON.stringify(prev?.detail ?? null) !== JSON.stringify(status.detail ?? null)) {
+      const hostId = (this.deps.taskService.getTask(taskId)?.metadata.remote as { hostId?: string } | undefined)?.hostId;
+      if (hostId) this.deps.broadcast({ type: A2A_SPAWN_WORKER_EVENT, sessionId: '', data: { type: A2A_SPAWN_WORKER_EVENT, hostId } });
+    }
+  }
+
+  /**
+   * The newest worker status on an open task this PC sent over `linkId`
+   * (a started agent's link), as the Remote page row shows it: the kind and
+   * its facts, never a menu's choices. Undefined: none.
+   */
+  statusOnLink(linkId: string): A2aSpawnWorkerStatus | undefined {
+    let newest: A2aRemoteStatusV1 | undefined;
+    for (const task of this.deps.taskService.listRemoteByLink(linkId)) {
+      if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) continue;
+      if ((task.metadata.remote as { direction?: string } | undefined)?.direction !== 'outbound') continue;
+      this.settleRemoteStatus(task.id);
+      const status = this.remoteStatuses.get(task.id);
+      if (status && (!newest || Date.parse(status.since) > Date.parse(newest.since))) newest = status;
+    }
+    if (!newest) return undefined;
+    const d = newest.detail;
+    return {
+      kind: newest.kind,
+      since: newest.since,
+      ...(d?.question ? { question: d.question } : {}),
+      ...(d?.resetsAt ? { resetsAt: d.resetsAt } : {}),
+      ...(typeof d?.background === 'number' ? { background: d.background } : {}),
+    };
   }
 
   /**

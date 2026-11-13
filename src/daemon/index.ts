@@ -10730,6 +10730,8 @@ async function main(): Promise<void> {
         features: (hostId) => a2aDelivery?.peerFeatures(hostId),
         aliasFor: (l) => linkAlias(l, a2aHostName(l.remote.hostId)),
         broadcast: (event) => pipeServer.broadcast({ type: event.type, sessionId: '', data: event }),
+        // A started agent's newest worker status, for its Remote page row.
+        workerStatus: (linkId) => a2aDeliveryRef?.statusOnLink(linkId),
         log: a2aLog,
       })
       : null;

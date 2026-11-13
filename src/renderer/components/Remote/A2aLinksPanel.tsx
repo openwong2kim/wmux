@@ -1,5 +1,9 @@
 import type { ReactNode } from 'react';
 import type { A2aLinkOfferRecordV1, A2aLinkRecordV1 } from '../../../shared/a2aRemote';
+import type { A2aSpawnWorkerStatus } from '../../../shared/a2aSpawn';
+import { formatResetClock } from '../../../shared/usageLimit';
+import { getLocale } from '../../i18n';
+import { StatusMarkView } from '../Sidebar/AgentMarks';
 import type { Workspace } from '../../../shared/types';
 import type { AgentSlug } from '../../../shared/events';
 import UiButton from '../ui/Button';
@@ -198,7 +202,32 @@ export interface A2aLinkRowProps {
   onAskUnlink: () => void;
   onCancelUnlink: () => void;
   onUnlink: () => void;
+  /** A link to an agent this PC started there: what that agent is doing now (`status.1`). */
+  worker?: A2aSpawnWorkerStatus;
   t: T;
+}
+
+/**
+ * A started agent's status as one short phrase with the sidebar's mark: a
+ * question is the needs-you ring in the attention colour; working a dot; an
+ * answer waiting for more a check; a usage limit the muted clock; gone no mark.
+ */
+export function WorkerStatusCell({ status, now, t }: { status: A2aSpawnWorkerStatus; now: number; t: T }) {
+  const resets = status.resetsAt ? Date.parse(status.resetsAt) : NaN;
+  const word = status.kind === 'working'
+    ? (status.background ? t('remotePage.worker.workingBackground', { count: status.background }) : t('remotePage.worker.working'))
+    : status.kind === 'waiting-input' ? t('remotePage.worker.waitingInput')
+      : status.kind === 'question' ? t(`remotePage.worker.question.${status.question ?? 'dialog'}`)
+        : status.kind === 'usage-limit'
+          ? (Number.isNaN(resets) ? t('remotePage.worker.usageLimit') : t('remotePage.worker.usageLimitResets', { clock: formatResetClock(resets, now, getLocale()) }))
+          : t('remotePage.worker.gone');
+  const mark = status.kind === 'question' ? 'awaiting_input' : status.kind === 'waiting-input' ? 'complete' : status.kind === 'gone' ? 'idle' : 'running';
+  return (
+    <span className="wmux-remote-worker" data-worker-status={status.kind} data-attention={status.kind === 'question' ? 'true' : undefined}>
+      <StatusMarkView status={mark} usageWaiting={status.kind === 'usage-limit'} neutralRunning quiet />
+      <span className="truncate">{word}</span>
+    </span>
+  );
 }
 
 /** One live link, nested under its PC: `mine ↔ PC/theirs · direction or waiting`. */
@@ -206,12 +235,13 @@ export function A2aLinkRow(p: A2aLinkRowProps) {
   const { link: l, t } = p;
   const word = linkStateWord(l.state);
   return (
-    <li className="wmux-remote-link" data-link-id={l.linkId} data-state={word} data-testid="a2a-link-row">
+    <li className="wmux-remote-link" data-link-id={l.linkId} data-state={word} data-testid="a2a-link-row" data-worker={p.worker ? 'true' : undefined}>
       <span className="wmux-remote-link-ln" aria-hidden="true"><IconElbow size={16} /></span>
       <span className="wmux-remote-link-what">
         {`${localEndName(l, p.names, t)} ↔ ${remoteAlias(p.pcName, l.remote, t('room.role.moa'))} · `}
         {word === 'pending' ? t('remotePage.linkWaiting', { pc: p.pcName }) : t(DIRECTION_KEY[linkDirection(l.allow)])}
       </span>
+      {p.worker && <WorkerStatusCell status={p.worker} now={Date.now()} t={t} />}
       <span className="wmux-remote-acts">
         {p.confirming ? (
           <>

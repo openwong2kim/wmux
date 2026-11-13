@@ -1,7 +1,7 @@
 import { BrowserWindow, ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { A2A_REMOTE_RPC } from '../../../shared/a2aRemoteDelivery';
-import { A2A_SPAWN_OUTGOING_EVENT, SPAWN_REQUEST_KEY_RE, coerceSpawnPolicy, type A2aSpawnUiAsk } from '../../../shared/a2aSpawn';
+import { A2A_SPAWN_OUTGOING_EVENT, A2A_SPAWN_WORKER_EVENT, SPAWN_REQUEST_KEY_RE, coerceSpawnPolicy, type A2aSpawnUiAsk } from '../../../shared/a2aSpawn';
 import { isAgentSlug } from '../../../shared/agentIdentity';
 import { getFanOutGuards, lineageDepth } from '../../worktask/fanoutGuards';
 import { loadFanoutDepth } from '../../worktask/fanoutWorkerPolicy';
@@ -31,7 +31,7 @@ const publisher = new A2aExposurePublisher({
 });
 
 // Share offer nudges ride the link channel: the renderer re-reads both lists.
-const LINK_EVENTS: ReadonlySet<string> = new Set(['a2a.remote.link.proposed', 'a2a.remote.link.changed', 'a2a.remote.offer.changed', A2A_SPAWN_OUTGOING_EVENT]);
+const LINK_EVENTS: ReadonlySet<string> = new Set(['a2a.remote.link.proposed', 'a2a.remote.link.changed', 'a2a.remote.offer.changed', A2A_SPAWN_OUTGOING_EVENT, A2A_SPAWN_WORKER_EVENT]);
 
 /** How long a call made before the daemon connected waits for it (the
  *  renderer reads the Remote feed at start, racing the boot connect). */

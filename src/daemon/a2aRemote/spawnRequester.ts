@@ -24,6 +24,7 @@ import {
   type A2aSpawnRequestV1,
   type A2aSpawnResultV1,
   type A2aSpawnTargetsV1,
+  type A2aSpawnWorkerStatus,
 } from '../../shared/a2aSpawn';
 import type { A2aTaskService } from '../a2a/A2aTaskService';
 import { remoteTaskId } from './ids';
@@ -56,6 +57,8 @@ export interface SpawnRequesterDeps {
   features: (hostId: HostId) => ReadonlySet<string> | undefined;
   aliasFor: (link: A2aLinkRecordV1) => string;
   broadcast: (event: A2aSpawnOutgoingEvent) => void;
+  /** A started agent's newest worker status on its link (A2aRemoteDelivery.statusOnLink); absent, none is shown. */
+  workerStatus?: (linkId: string) => A2aSpawnWorkerStatus | undefined;
   now?: () => number;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
 }
@@ -324,6 +327,10 @@ export class A2aSpawnRequester {
       from: { kind: 'pane', workspaceId: rec.from.workspaceId, paneId: rec.from.paneId }, ...(rec.label ? { label: rec.label } : {}),
       state: rec.state, ...(rec.code ? { code: rec.code } : {}), ...(rec.linkId ? { linkId: rec.linkId } : {}),
       createdAt: rec.createdAt, updatedAt: rec.updatedAt, expiresAt: rec.expiresAt,
+      ...(() => {
+        const status = rec.state === 'started' && rec.linkId ? this.deps.workerStatus?.(rec.linkId) : undefined;
+        return status ? { workerStatus: status } : {};
+      })(),
     };
   }
 }

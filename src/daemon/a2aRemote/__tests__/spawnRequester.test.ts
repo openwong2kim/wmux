@@ -182,6 +182,23 @@ describe('answers', () => {
     expect(asks.isOutstanding(B, id)).toBe(false);
   });
 
+  it('a started agent carries its worker\'s newest status for the Remote page row; a request not started carries none', async () => {
+    const seen: string[] = [];
+    asks = new A2aSpawnRequester({
+      store, links, taskService: tasks, enqueue: (hostId, env) => void sent.push({ hostId, env }),
+      hosts: () => [{ hostId: B, name: 'DESK', online }], features: (h) => features.get(h), aliasFor: (l) => linkAlias(l, 'DESK'),
+      broadcast: quiet, now: () => clock, log: quiet,
+      workerStatus: (linkId) => { seen.push(linkId); return { kind: 'question', since: '2026-11-13T07:00:00.000Z', question: 'menu' }; },
+    });
+    const waiting = askOk();
+    expect(stateOf(waiting)).not.toHaveProperty('workerStatus');
+    const id = askOk();
+    const result = started(id);
+    await asks.onResult(B, result);
+    expect(stateOf(id)).toMatchObject({ state: 'started', workerStatus: { kind: 'question', question: 'menu' } });
+    expect(seen).toEqual([asSpawnLinkId(result.linkId)]);
+  });
+
   it('started: this PC\'s side of the link and its copy of the first task, under the ids both PCs derive', async () => {
     const id = askOk();
     const result = started(id);

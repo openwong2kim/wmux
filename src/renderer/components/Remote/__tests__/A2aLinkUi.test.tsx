@@ -335,6 +335,32 @@ function rowProps(over: Partial<A2aLinkRowProps> = {}): A2aLinkRowProps {
   };
 }
 
+describe('A2aLinkRow — a started agent\'s worker status (status.1)', () => {
+  const cell = (worker: NonNullable<A2aLinkRowProps['worker']>) =>
+    [...render(inList(createElement(A2aLinkRow, rowProps({ worker })))).querySelectorAll('[data-worker-status]')].at(-1) as HTMLElement;
+
+  it('one phrase per kind; only a question wears the attention colour, and no menu choice is ever shown', () => {
+    expect(cell({ kind: 'working', since: 's' }).textContent).toBe('remotePage.worker.working');
+    expect(cell({ kind: 'working', since: 's', background: 2 }).textContent).toBe('remotePage.worker.workingBackground(2)');
+    expect(cell({ kind: 'waiting-input', since: 's' }).textContent).toBe('remotePage.worker.waitingInput');
+    const q = cell({ kind: 'question', since: 's', question: 'permission' });
+    expect(q.textContent).toBe('remotePage.worker.question.permission');
+    expect(q.dataset.attention).toBe('true');
+    expect(cell({ kind: 'question', since: 's' }).textContent).toBe('remotePage.worker.question.dialog');
+    expect(cell({ kind: 'usage-limit', since: 's' }).textContent).toBe('remotePage.worker.usageLimit');
+    expect(cell({ kind: 'usage-limit', since: 's', resetsAt: '2026-11-13T14:30:00.000Z' }).textContent).toMatch(/^remotePage\.worker\.usageLimitResets\(/);
+    const gone = cell({ kind: 'gone', since: 's' });
+    expect(gone.textContent).toBe('remotePage.worker.gone');
+    expect(gone.dataset.attention).toBeUndefined();
+  });
+
+  it('a link with no started agent has no status cell and keeps its three columns', () => {
+    const body = render(inList(createElement(A2aLinkRow, rowProps())));
+    expect(body.querySelector('[data-worker-status]')).toBeNull();
+    expect((body.querySelector('[data-testid="a2a-link-row"]') as HTMLElement).dataset.worker).toBeUndefined();
+  });
+});
+
 describe('A2aLinkRow', () => {
   it('shows a live link with its direction; Unlink asks first', () => {
     const onAskUnlink = vi.fn();

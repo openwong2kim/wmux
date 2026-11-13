@@ -640,6 +640,8 @@ export default function RemotePage() {
           onAskUnlink={() => setConfirming({ kind: 'link', id: l.linkId })}
           onCancelUnlink={() => setConfirming(null)}
           onUnlink={() => a2a && void linkCall(l.linkId, () => a2a.linksRevoke(l.linkId))}
+          // An agent this PC started there: what it is doing now.
+          worker={asked.find((r) => r.linkId === l.linkId && r.state === 'started')?.workerStatus}
           t={t}
         />
       )),

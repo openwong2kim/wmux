@@ -1025,6 +1025,10 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-remote-link { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 32px; padding: 2px 6px 2px 40px; font-size: 12px; color: var(--text-sub); }
 .wmux-remote-link-ln { display: grid; place-items: center; color: var(--text-muted); }
 .wmux-remote-link-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A started agent's status (status.1): its own column, so the link line truncates first; colour only for a question. */
+.wmux-remote-link[data-worker] { grid-template-columns: 16px minmax(0, 1fr) auto auto; }
+.wmux-remote-worker { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 260px; white-space: nowrap; color: var(--text-sub); }
+.wmux-remote-worker[data-attention] { color: var(--attention-text); }
 /* A nested row has no named areas: its actions take the third column, not an implicit `acts` track on a row of its own. */
 .wmux-remote-link > .wmux-remote-acts { grid-area: auto; }
 /* Its error line sits under the row's text, across the text and actions columns. */

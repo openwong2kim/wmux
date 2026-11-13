@@ -24,6 +24,7 @@ let delivery: A2aRemoteDelivery;
 let tasks: A2aTaskService;
 let links: LinkStore;
 let logs: string[];
+let events: Array<{ type?: string; data?: unknown }>;
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-status-'));
@@ -33,13 +34,14 @@ beforeEach(() => {
   const quiet = (): void => undefined;
   links = new LinkStore({ dir: path.join(dir, 'a2a'), scheduleHarden: quiet });
   logs = [];
+  events = [];
   delivery = new A2aRemoteDelivery({
     dir: path.join(dir, 'a2a'),
     links,
     taskService: tasks,
     peers: { list: () => [] },
     remoteHosts: { list: () => [], get: () => undefined, credentialFor: () => null },
-    broadcast: quiet,
+    broadcast: (e) => { events.push(e as { type?: string; data?: unknown }); },
     refreshLink: async () => undefined,
     log: (_level, msg) => { logs.push(msg); },
   });
@@ -203,5 +205,25 @@ describe('a worker status on the asking PC', () => {
     expect(await tasks.cancelTask({ taskId, callerWorkspaceId: 'ws-a' })).toMatchObject({ ok: true });
     await delivery.accept(statusEnv(linkId, taskId, { kind: 'gone', since: new Date().toISOString() }), { hostId: HOST });
     expect(gone()).toHaveLength(1);
+  });
+
+  it('a started agent\'s link: its newest status for the Remote page row (no menu choices), and a nudge when it changes', async () => {
+    const { linkId, taskId } = await sentTask();
+    expect(delivery.statusOnLink(linkId)).toBeUndefined();
+    await delivery.accept(statusEnv(linkId, taskId, { kind: 'working', since: SINCE, detail: { background: 2 } }), { hostId: HOST });
+    expect(delivery.statusOnLink(linkId)).toEqual({ kind: 'working', since: SINCE, background: 2 });
+    expect(events.filter((e) => e.type === 'a2a.remote.spawn.worker.changed')).toEqual([
+      expect.objectContaining({ data: { type: 'a2a.remote.spawn.worker.changed', hostId: HOST } }),
+    ]);
+    const later = new Date(Date.parse(SINCE) + 10_000).toISOString();
+    await delivery.accept(statusEnv(linkId, taskId, { kind: 'question', since: later, detail: { question: 'menu', menuId: 'toolu_1', options: ['Red'] } }), { hostId: HOST });
+    expect(delivery.statusOnLink(linkId)).toEqual({ kind: 'question', since: later, question: 'menu' });
+    expect(events.filter((e) => e.type === 'a2a.remote.spawn.worker.changed')).toHaveLength(2);
+    // The same status again: no nudge.
+    await delivery.accept(statusEnv(linkId, taskId, { kind: 'question', since: new Date(Date.parse(later) + 3000).toISOString(), detail: { question: 'menu', menuId: 'toolu_1', options: ['Red'] } }), { hostId: HOST });
+    expect(events.filter((e) => e.type === 'a2a.remote.spawn.worker.changed')).toHaveLength(2);
+    // The task ended: nothing to show.
+    await tasks.cancelTask({ taskId, callerWorkspaceId: 'ws-a' });
+    expect(delivery.statusOnLink(linkId)).toBeUndefined();
   });
 });

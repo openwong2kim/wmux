@@ -480,6 +480,21 @@ export interface A2aSpawnOutgoingSummary {
   createdAt: string;
   updatedAt: string;
   expiresAt: string;
+  /**
+   * A started agent: the newest status its worker sent on an open task of
+   * its link (`status.1`), for the Remote page row. The kind and the facts
+   * the row says; never a menu's choices.
+   */
+  workerStatus?: A2aSpawnWorkerStatus;
+}
+
+/** A started agent's newest worker status, as the Remote page row shows it. */
+export interface A2aSpawnWorkerStatus {
+  kind: 'working' | 'waiting-input' | 'question' | 'usage-limit' | 'gone';
+  since: string;
+  question?: 'permission' | 'plan' | 'menu' | 'trust' | 'dialog';
+  resetsAt?: string;
+  background?: number;
 }
 
 /** What main hands the daemon; `from` is the caller's own pane, found by main. */
@@ -570,6 +585,12 @@ export interface A2aSpawnOutgoingList {
 
 /** Daemon broadcast: a request this PC sent, or what a PC lets it ask for, changed. */
 export const A2A_SPAWN_OUTGOING_EVENT = 'a2a.remote.spawn.outgoing.changed';
+/**
+ * Daemon broadcast: a started agent's worker status changed (its Remote page
+ * row reads the list again). Apart from A2A_SPAWN_OUTGOING_EVENT, which also
+ * moves fan-out task rows: a status changes far more often than a request.
+ */
+export const A2A_SPAWN_WORKER_EVENT = 'a2a.remote.spawn.worker.changed';
 export interface A2aSpawnOutgoingEvent {
   type: typeof A2A_SPAWN_OUTGOING_EVENT;
   hostId: HostId;
