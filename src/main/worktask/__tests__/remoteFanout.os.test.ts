@@ -15,7 +15,7 @@ import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 import { registerLedgerRpc } from '../../pipe/handlers/ledger.rpc';
 import type { RpcContext } from '../../../shared/rpc';
 import {
-  REMOTE_ASK_GRACE_MS, branchOnPc, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal,
+  REMOTE_ASK_GRACE_MS, branchOnPc, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal, remoteKeyRows,
   startRemoteFanout, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
 } from '../remoteFanout';
 
@@ -96,6 +96,7 @@ const request = (n: number, over: Partial<RemoteFanoutRequest> = {}): RemoteFano
   idempotencyKey: 'k1', scopedKey: 'ws-owner::k1', ownerWorkspaceId: 'ws-owner', paneId: 'pane-1', pc: 'box', root: 'repo',
   titles: Array.from({ length: n }, (_, i) => `task ${i + 1}`),
   prompts: Array.from({ length: n }, (_, i) => `do ${i + 1}`),
+  digest: 'd'.repeat(64),
   ...over,
 });
 
@@ -147,6 +148,18 @@ describe('startRemoteFanout', () => {
     const rows = deps.ledger.list().filter(isRemoteTask);
     expect(rows).toHaveLength(8);
     expect(rows[0].taskWorkspaceId).toBe(`remote:${rows[0].remote?.spawnId}`);
+  });
+
+  it('keeps the request digest on each row, found from the key alone', async () => {
+    const f = fakeDaemon();
+    const deps = depsOf(f.daemon);
+    await startRemoteFanout(request(3), deps);
+    await startRemoteFanout(request(1, { idempotencyKey: 'k2', scopedKey: 'ws-owner::k2', digest: 'e'.repeat(64) }), deps);
+    const rows = remoteKeyRows(deps.ledger, 'ws-owner::k1');
+    expect(rows).toHaveLength(3);
+    expect(rows.map((e) => e.remote?.requestDigest)).toEqual(['d'.repeat(64), 'd'.repeat(64), 'd'.repeat(64)]);
+    expect(remoteKeyRows(deps.ledger, 'ws-owner::k2').map((e) => e.remote?.requestDigest)).toEqual(['e'.repeat(64)]);
+    expect(remoteKeyRows(deps.ledger, 'ws-owner::other')).toEqual([]);
   });
 
   it('a desktop restart mid-fan-out, then the same key: one request and one row per task', async () => {

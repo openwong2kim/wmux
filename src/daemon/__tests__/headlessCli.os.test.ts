@@ -130,9 +130,16 @@ describe('wmux daemon headless', () => {
     await runHeadless('status', false, dir);
     expect(out).toContain(HEADLESS_STAYS_UP);
     out.length = 0;
-    fs.writeFileSync(path.join(dir, APP_ATTACHED_FILE), 'x\n');
-    expect(headlessStatus(dir)).toMatchObject({ inEffect: false, reason: expect.stringContaining('desktop app') });
+    const marker = path.join(dir, APP_ATTACHED_FILE);
+    fs.writeFileSync(marker, 'x\n');
+    const written = new Date('2026-11-01T08:00:00.000Z');
+    fs.utimesSync(marker, written, written);
+    // A marker left from an earlier run is the reason: named, with when it was written and how to clear it.
+    expect(headlessStatus(dir)).toMatchObject({ inEffect: false, reason: expect.stringContaining(`recorded in ${marker} at ${written.toISOString()}`) });
     await runHeadless('status', false, dir);
+    const line = out.find((l) => l.startsWith('Headless mode: not in effect:'));
+    expect(line).toContain('delete that file and restart the daemon');
+    expect(line).not.toContain('\n');
     expect(out.join('\n')).toContain(kept);
     // Not in effect: the daemon exits when idle as before, so the line is not said.
     expect(out).not.toContain(HEADLESS_STAYS_UP);
@@ -175,7 +182,8 @@ describe('wmux daemon headless', () => {
     fs.mkdirSync(path.join(dir, 'a2a'));
     fs.writeFileSync(flag(), 'on\n');
     const view = { appAttached: true, optedIn: true, inEffect: false };
-    expect(headlessStatus(dir, view)).toMatchObject({ inEffect: false, appAttached: true, from: 'daemon', reason: expect.stringContaining('desktop app') });
+    // No marker on disk: the daemon knows of the app in this run, which a restart without it clears.
+    expect(headlessStatus(dir, view)).toMatchObject({ inEffect: false, appAttached: true, from: 'daemon', reason: expect.stringMatching(/attached to the running daemon.*Restart the daemon without the app/) });
     fs.unlinkSync(flag());
     vi.spyOn(headlessIo, 'daemonView').mockResolvedValue(view);
     const ask = vi.spyOn(policyIo, 'ask').mockResolvedValue('yes');

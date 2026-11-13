@@ -26,6 +26,7 @@ import type { RpcContext } from '../../../../shared/rpc';
 import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../../../../shared/workTask';
 import { CHANNEL_TOPIC_MAX, HUMAN_WORKSPACE_ID } from '../../../../shared/channels';
 import type { RemoteFanoutDeps } from '../../../worktask/remoteFanout';
+import { TaskLedger } from '../../../../daemon/ledger/TaskLedger';
 
 vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
 vi.mock('../../../git/git', () => ({ git: vi.fn() }));
@@ -2336,6 +2337,56 @@ describe('task.fanout.start with pc (tasks on another PC)', () => {
     const h2 = setup({ requireApproval: false, guards, remoteFanout: () => busy.deps, resolveCallerPane: async () => 'pane-1' });
     expect(errorOf(await h2.call(pcParams({ idempotencyKey: 'k-busy' }))).message).toMatch(/send the same idempotency_key again/);
     expect(guards.remoteStamped(`${CALLER_WS}::k-busy`)).toMatchObject({ count: 2 });
+  });
+
+  /** A daemon that stores each request and a real ledger, so rows outlive the call. */
+  const stored = () => {
+    const box = '0f1e2d3c-4b5a-4968-8776-655443322110';
+    const requests: Array<Record<string, unknown>> = [];
+    const ask = vi.fn(async (input: Record<string, unknown>) => {
+      const at = new Date(0).toISOString();
+      const spawn = { hostId: box, spawnId: input['spawnId'], agent: 'claude', rootId: 'repo', from: input['from'], state: 'sent', createdAt: at, updatedAt: at, expiresAt: at };
+      requests.push(spawn);
+      return { ok: true as const, spawn, online: true };
+    });
+    const base = remote().deps;
+    const deps = {
+      ...base,
+      daemon: {
+        ...base.daemon,
+        ask,
+        outgoing: async () => ({ requests, places: [{ hostId: box, name: 'box', online: true, supported: true }] }),
+        missionStart: async ({ idempotencyKey }: { idempotencyKey: string }) => ({ taskId: `wtask-${idempotencyKey.slice(-12)}`, channelId: `ch-${idempotencyKey.slice(-12)}` }),
+      },
+      ledger: new TaskLedger({ dir: tmp() }),
+    } as unknown as RemoteFanoutDeps;
+    return { deps, ask };
+  };
+
+  it('the same key past the hour is still a poll: no approval, stamp, audit or request', async () => {
+    const r = stored();
+    let now = Date.now();
+    const guards = new FanOutGuards({ dir: capped(tmp()), now: () => now, countLiveTasks: () => 0, ledgerTaskOwner: () => null });
+    const h = setup({ requireApproval: false, guards, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    const first = await h.call(pcParams());
+    expect(first.ok).toBe(true);
+    expect(r.ask).toHaveBeenCalledTimes(2);
+    now += 61 * 60 * 1000;
+    expect(guards.remoteStamped(`${CALLER_WS}::fanout-key-1`)).toBeNull();
+    const stamp = vi.spyOn(guards, 'stampRemote');
+    const audit = vi.spyOn(guards, 'appendAudit');
+    // Approval switched on since: a poll is not a new start, so it still answers.
+    const later = setup({ requireApproval: true, guards, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    const again = await later.call(pcParams());
+    expect(again).toMatchObject({ ok: true, result: { tasks: (first as { result: { tasks: unknown[] } }).result.tasks } });
+    expect(r.ask).toHaveBeenCalledTimes(2);
+    expect(stamp).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+    // More tasks under that key after the hour: refused, nothing asked.
+    const more = await later.call(pcParams({ titles: ['first task', 'second task', 'third task'] }));
+    expect(errorOf(more)).toMatchObject({ code: 'INVALID_ARGUMENT', message: expect.stringMatching(/different request/) });
+    expect(r.ask).toHaveBeenCalledTimes(2);
+    expect(stamp).not.toHaveBeenCalled();
   });
 
   it('a repeat of the key is a poll: not stamped or refused again', async () => {

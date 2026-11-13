@@ -13,6 +13,7 @@ import { parseTranscriptLine } from '../transcript/parseEntry';
 import { readTranscriptDelta } from '../transcript/readTail';
 import { SUBAGENT_COUNTERS, type SubagentCounter } from '../transcript/subagentCount';
 import type { HeadlessStartRecordV1 } from './headlessStartStore';
+import { LINK_ENDED_REASON } from './headlessStarter';
 import { errMsg } from './storeFile';
 
 /**
@@ -77,12 +78,39 @@ export const LIMIT_CONTINUE_GRACE_MS = 3 * 60 * 1000;
 export const LIMIT_PROBE_MS = 10 * 1000;
 /** Escape is pressed on the limit menu at most this many times. */
 const LIMIT_ESCAPES_MAX = 3;
+/** A later usage-limit notice on a task goes only when the reset moved at least this much from the last one told. */
+export const LIMIT_NOTICE_MOVE_MS = 15 * 60 * 1000;
+/**
+ * Resumes in a row (Claude Code's own after a reset, or the daemon's one
+ * continue) that hit the limit again before the agent wrote anything: past
+ * this many the task fails. Waiting for a real later reset, even days, is
+ * intended; a limit that moves away on every request (seen against a stub)
+ * would otherwise keep the task waiting forever, with nothing done.
+ */
+export const LIMIT_LOOPS_MAX = 5;
 
-/** What the asking PC is told, once, when the agent stops at its usage limit. */
-export function limitNotice(resetsAt: number | null): string {
+/**
+ * What the asking PC is told when the agent stops at its usage limit: the
+ * first stop on a task, then only a reset that moved LIMIT_NOTICE_MOVE_MS or
+ * more. `again`: the task was told of another reset before (Claude Code went
+ * on by itself and hit the limit again, now with this reset).
+ */
+export function limitNotice(resetsAt: number | null, again = false): string {
+  if (again) {
+    return resetsAt != null
+      ? `The agent on that PC hit its usage limit again; it now resets at ${new Date(resetsAt).toISOString()}, and the agent goes on after that.`
+      : 'The agent on that PC hit its usage limit again; when it resets is not known.';
+  }
   return resetsAt != null
     ? `The agent on that PC is at its usage limit until ${new Date(resetsAt).toISOString()}; it goes on after that.`
     : "The agent on that PC is at its usage limit; when it resets is not known.";
+}
+
+/** Why the task ends when every resume hit the limit again (LIMIT_LOOPS_MAX). */
+export function limitLoopReason(resetsAt: number | null): string {
+  return resetsAt != null
+    ? `that PC's agent hits its usage limit again after every reset; last reset ${new Date(resetsAt).toISOString()}`
+    : "that PC's agent hits its usage limit again after every reset; when it resets is not known";
 }
 
 /** Why the task ends when the agent did not go on after its usage limit. */
@@ -207,12 +235,29 @@ export interface Episode {
     at: number | null;
     seenAt?: number;
     resetsAt?: number | null;
-    noticed?: boolean;
+    /** When the task ends if the agent has not gone on: this stop's reset plus the margin, or LIMIT_UNKNOWN_MAX_MS from `limitUnknownSince`. */
+    capAt?: number;
     probedAt?: number;
     escapes?: number;
     clearSince?: number | null;
     continued?: boolean;
   };
+  /**
+   * The first usage-limit stop with no known reset since the agent last wrote
+   * anything of its own: the unknown-reset cap counts from it, so retries that
+   * hit the limit again do not start it over.
+   */
+  limitUnknownSince?: number | null;
+  /** The stop was left (Claude Code's own resume, or the daemon's continue), and the agent wrote nothing since. */
+  limitResumed?: boolean;
+  /** Resumes in a row that hit the limit again before the agent wrote anything (LIMIT_LOOPS_MAX). */
+  limitLoops?: number;
+  /**
+   * The reset the asking PC was told of in this run of stops (null: told it
+   * is not known); absent until one is told. Cleared once the agent writes
+   * something of its own, so a later stop is told again.
+   */
+  limitTold?: number | null;
   /** Text of the assistant entries since the last tool call: the answer so far. */
   answer: string[];
   /** The task was moved to `working` (a failed move is tried again). */
@@ -369,17 +414,30 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
   const apiError = apiErrorFromTranscriptLine(line);
   if (apiError && ep.opened) {
     if (apiError.error === 'rate_limit' && isClaudeUsageLimitText(apiError.message)) {
-      // A new stop (not the same one read again): its own notice, its own one continue.
-      if (!ep.limitStopped) ep.limit = { message: apiError.message, at: apiError.at };
+      // A new stop (not the same one read again): its own Escapes, its own one continue.
+      if (!ep.limitStopped) {
+        ep.limit = { message: apiError.message, at: apiError.at };
+        // A resume that came straight back to the limit.
+        if (ep.limitResumed) ep.limitLoops = (ep.limitLoops ?? 0) + 1;
+        ep.limitResumed = false;
+      }
       ep.limitStopped = true;
       return null;
     }
     return { kind: 'failed', reason: `the agent's turn ended on an error: ${apiError.message || apiError.error}` };
   }
+  // The agent wrote something of its own (API errors returned above): a later stop is a new wait.
+  if (raw?.type === 'assistant') {
+    ep.limitUnknownSince = null;
+    ep.limitResumed = false;
+    ep.limitLoops = 0;
+    ep.limitTold = undefined;
+  }
   // Claude Code went on by itself after its limit stop (its notice, its own prompt, or the agent writing on): no continue is owed.
   if (ep.limitStopped && (raw?.type === 'assistant' || raw?.autoContinued)) {
     ep.limitStopped = false;
     ep.limit = undefined;
+    if (raw?.autoContinued) ep.limitResumed = true;
   }
   let answered = false;
   for (const event of events) {
@@ -388,6 +446,7 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
       if (ep.limitStopped && event.text.trim() === USAGE_LIMIT_CONTINUE_PROMPT) {
         ep.limitStopped = false;
         ep.limit = undefined;
+        ep.limitResumed = true;
         continue;
       }
       return { kind: 'failed', reason: "the agent's turn was taken over by input on this PC" };
@@ -549,12 +608,14 @@ export class HeadlessDelivery {
     this.episodes.delete(rec.sessionId);
     this.afterwards.delete(rec.sessionId);
     this.questions.delete(rec.sessionId);
+    // An ended link carries no reply: the reason is not sent ahead of the cancel (the link's own end fails its tasks too).
+    const say = why !== LINK_ENDED_REASON;
     for (const task of this.deps.tasks.remote()) {
       const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
       if (marker?.direction !== 'inbound' || task.metadata[localSideOf(task)].workspaceId !== rec.workspaceId) continue;
       const state = task.status.state;
-      if (state === 'submitted' || state === 'working') await this.fail(task.id, rec.workspaceId, why);
-      else if (state === 'input-required') await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`);
+      if (state === 'submitted' || state === 'working') await this.fail(task.id, rec.workspaceId, why, { say });
+      else if (state === 'input-required') await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`, { say });
     }
   }
 
@@ -827,14 +888,17 @@ export class HeadlessDelivery {
     if (limit.seenAt === undefined) {
       limit.seenAt = this.now();
       limit.resetsAt = claudeUsageLimitFromStopFailure({ error: 'rate_limit', last_assistant_message: limit.message }, limit.at ?? limit.seenAt)?.resetsAt ?? null;
+      // A known reset is a real wait of its own, so a later one sets a later cap. An unknown one counts from the
+      // first unknown stop since the agent last wrote, so a retry that hits the limit again does not extend it.
+      if (limit.resetsAt != null) limit.capAt = limit.resetsAt + LIMIT_RESUME_MARGIN_MS;
+      else limit.capAt = (ep.limitUnknownSince ??= limit.seenAt) + LIMIT_UNKNOWN_MAX_MS;
       this.deps.noteLimit?.(ep.sessionId, limit.message, limit.at);
-      this.deps.log('info', `[headless] task ${ep.taskId}: the agent is at its usage limit (${limit.resetsAt != null ? `resets ${new Date(limit.resetsAt).toISOString()}` : 'reset unknown'})`);
     }
     return limit;
   }
 
   private limitCapAt(limit: NonNullable<Episode['limit']>): number {
-    return limit.resetsAt != null ? limit.resetsAt + LIMIT_RESUME_MARGIN_MS : (limit.seenAt ?? this.now()) + LIMIT_UNKNOWN_MAX_MS;
+    return limit.capAt ?? (limit.resetsAt != null ? limit.resetsAt + LIMIT_RESUME_MARGIN_MS : (limit.seenAt ?? this.now()) + LIMIT_UNKNOWN_MAX_MS);
   }
 
   /**
@@ -911,12 +975,19 @@ export class HeadlessDelivery {
   private async atLimit(ep: Episode): Promise<void> {
     const limit = this.limitOf(ep);
     if (!limit) return;
-    if (!limit.noticed) {
-      limit.noticed = true;
-      await this.notify(ep, limitNotice(limit.resetsAt ?? null), 'of the usage limit', ep);
+    const resetsAt = limit.resetsAt ?? null;
+    // Every resume came straight back to the limit: the task ends, the agent is left running.
+    if ((ep.limitLoops ?? 0) >= LIMIT_LOOPS_MAX) return this.finish(ep, { kind: 'failed', reason: limitLoopReason(resetsAt) });
+    // The first stop since the agent last wrote is told; after that only a reset that moved far enough (a 5-hour
+    // limit rolling into a weekly one), not each of Claude Code's own retries that hit the limit again a few minutes on.
+    const told = ep.limitTold;
+    const tell = told === undefined || (resetsAt != null && (told === null || Math.abs(resetsAt - told) >= LIMIT_NOTICE_MOVE_MS));
+    if (tell) {
+      ep.limitTold = resetsAt;
+      this.deps.log('info', `[headless] task ${ep.taskId}: the agent is at its usage limit (${resetsAt != null ? `resets ${new Date(resetsAt).toISOString()}` : 'reset unknown'})`);
+      await this.notify(ep, limitNotice(resetsAt, told !== undefined), 'of the usage limit', ep);
     }
     const now = this.now();
-    const resetsAt = limit.resetsAt ?? null;
     if (now >= this.limitCapAt(limit)) return this.finish(ep, { kind: 'failed', reason: limitReason(resetsAt) });
     if (limit.continued) return;
     // No dialog on two reads in a row after the reset, and the agent did not go on by itself meanwhile.
@@ -1140,7 +1211,7 @@ export class HeadlessDelivery {
     // Read on from here for turns nothing on this PC starts (only while nothing else took the session).
     if (ep.path !== null && !this.episodes.has(ep.sessionId) && !this.ending.has(ep.sessionId)) {
       this.afterwards.set(ep.sessionId, {
-        ...ep, opened: true, answer: [], endPending: undefined, limitStopped: false, outcome: null, waitingSince: null, busy: false, lastProgress: null,
+        ...ep, opened: true, answer: [], endPending: undefined, limitStopped: false, limitTold: undefined, outcome: null, waitingSince: null, busy: false, lastProgress: null,
       });
     }
   }
@@ -1150,15 +1221,15 @@ export class HeadlessDelivery {
     if (this.episodes.get(ep.sessionId) === ep) this.episodes.delete(ep.sessionId);
   }
 
-  private fail(taskId: string, workspaceId: string, reason: string): Promise<boolean> {
-    return this.end(taskId, workspaceId, 'failed', reason);
+  private fail(taskId: string, workspaceId: string, reason: string, opts: { say?: boolean } = {}): Promise<boolean> {
+    return this.end(taskId, workspaceId, 'failed', reason, opts);
   }
 
   /**
    * A task that was never taken (still `submitted`) can only be canceled, with the same reason.
    * True when the task is ended (by this or before it).
    */
-  private async end(taskId: string, workspaceId: string, wanted: 'failed' | 'canceled', reason: string): Promise<boolean> {
+  private async end(taskId: string, workspaceId: string, wanted: 'failed' | 'canceled', reason: string, opts: { say?: boolean } = {}): Promise<boolean> {
     const state = this.deps.tasks.get(taskId)?.status.state;
     if (!state || (TERMINAL_STATES as readonly string[]).includes(state)) {
       this.further.delete(taskId);
@@ -1167,11 +1238,18 @@ export class HeadlessDelivery {
     // `failed` is not a move from `submitted` or `input-required` in the ledger: those are canceled, with the reason.
     const to = wanted === 'failed' && (state === 'submitted' || state === 'input-required') ? 'canceled' : wanted;
     // A cancel reaches the asking PC without its summary (a failure carries one): the reason goes first, as a reply, once.
-    if (to === 'canceled') await this.sayOnce(taskId, workspaceId, `Canceled: ${reason}`);
-    const res = await this.deps.transition({ taskId, workspaceId, to, summary: reason }).catch((err: unknown) => ({ ok: false, error: errMsg(err) }));
-    if (!res.ok) this.deps.log('warn', `[headless] task ${taskId}: not marked ${to} (${reason}): ${res.error ?? 'unknown'}`);
-    else this.further.delete(taskId);
-    return res.ok;
+    if (to === 'canceled' && opts.say !== false) await this.sayOnce(taskId, workspaceId, `Canceled: ${reason}`);
+    // The state read above may be stale by now: another path can end the task meanwhile (an ended link fails
+    // every task on it, failTasksForLink). Ended is ended: nothing more to move.
+    const res: { ok: boolean; error?: string } = this.ended(taskId)
+      ? { ok: true }
+      : await this.deps.transition({ taskId, workspaceId, to, summary: reason }).catch((err: unknown) => ({ ok: false, error: errMsg(err) }));
+    if (res.ok || this.ended(taskId)) {
+      this.further.delete(taskId);
+      return true;
+    }
+    this.deps.log('warn', `[headless] task ${taskId}: not marked ${to} (${reason}): ${res.error ?? 'unknown'}`);
+    return false;
   }
 
   /** A reply on the task, unless the task already holds that text (a retry). Best effort: the move goes on regardless. */

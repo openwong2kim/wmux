@@ -237,6 +237,66 @@ const LONG_SEQUENCE: &str =
 /// families (XtermFeed::scan): a fixed bound, so the same stream always
 /// names the same families, and the xterm fallback waits little for it.
 const REFUSAL_SCAN_BYTES: usize = 1024 * 1024;
+const ROUND_TRIP: &str =
+    "unsupported-state-mode: more than kitty keyboard controls between ?47h and ?47l";
+const OPEN_ROUND_TRIP: &str = "unsupported-state-mode: the stream ends between ?47h and ?47l";
+
+/// Alternate-screen and mouse controls that Alacritty ignores (vte maps no
+/// mode 9, 47 or 1047) and that xterm runs, which leave the same screen as
+/// Alacritty's in some states only. The restore seam writes all three
+/// (src/shared/restoreSeam.ts); `XtermFeed::allows` holds the states.
+///
+/// Kitty keyboard flags: xterm swaps them on every switch of 47, 1047 and
+/// 1049, and Alacritty only on 1049, so after these rules the two may hold
+/// different flags. Neither payload restores any: xterm's SerializeAddon
+/// does not serialize them and `native_serialize::serialize` writes none
+/// (RustAnsiParity.test.ts fails if either starts to). A native payload that
+/// carries the flags needs xterm's per-screen flag stacks tracked first.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContextRule {
+    /// `?9l`: xterm turns its mouse protocol off whichever it was. The
+    /// payload writes the protocol this feed tracks as xterm does (`mouse`).
+    MouseOff,
+    /// `?47l` or `?1047l`. Off the alternate screen xterm does nothing either
+    /// (activateNormalBuffer returns); on it, xterm leaves and Alacritty
+    /// does not, except that `?47l` closes a round trip.
+    AltLeave { mode_47: bool },
+    /// `?47h` from the main screen: xterm shows a blank alternate screen with
+    /// the cursor where it was, and the matching `?47l` puts back the main
+    /// screen with the cursor where the alternate one left it. With only
+    /// kitty keyboard controls between (`round_trip`), neither cursor nor
+    /// cell moved, as on Alacritty, which stayed on the main screen.
+    AltEnter,
+}
+
+/// The rule a control falls under, by its shape alone: one private mode,
+/// digits only (leading zeros as xterm reads them), no C0 inside.
+fn context_rule(sequence: &[u8]) -> Option<ContextRule> {
+    let (&last, params) = sequence.strip_prefix(b"\x1b[?")?.split_last()?;
+    if params.is_empty() || !params.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let mode = std::str::from_utf8(params).ok()?.parse::<u16>().ok()?;
+    match (mode, last) {
+        (9, b'l') => Some(ContextRule::MouseOff),
+        (47, b'l') => Some(ContextRule::AltLeave { mode_47: true }),
+        (1047, b'l') => Some(ContextRule::AltLeave { mode_47: false }),
+        (47, b'h') => Some(ContextRule::AltEnter),
+        _ => None,
+    }
+}
+
+/// A kitty keyboard flag push, pop or set: `CSI > Ps u`, `CSI < Ps u`,
+/// `CSI = Ps ; Ps u`. Neither payload restores the flags (`ContextRule`).
+fn is_kitty_keyboard(sequence: &[u8]) -> bool {
+    sequence
+        .strip_prefix(b"\x1b[")
+        .and_then(|s| s.strip_suffix(b"u"))
+        .and_then(<[u8]>::split_first)
+        .is_some_and(|(marker, params)| {
+            b"<>=".contains(marker) && params.iter().all(|&b| b.is_ascii_digit() || b == b';')
+        })
+}
 /// The longest unfinished sequence `feed_xterm` holds for its next bytes.
 const MAX_HELD: usize = 256;
 /// The longest unfinished string re-shipped after a snapshot, in UTF-16
@@ -262,6 +322,9 @@ struct XtermFeed {
     alt_margins: bool,
     /// xterm's alternate screen is active (?47, ?1047, ?1049).
     alt_screen: bool,
+    /// Inside a `?47h` taken from the main screen and not yet left
+    /// (`ContextRule::AltEnter`): Alacritty stayed on the main screen.
+    round_trip: bool,
     /// DECTCEM off (CursorVisibilityTracker).
     cursor_hidden: bool,
     /// SGR-pixels mouse encoding, ?1016 (SgrMouseEncodingTracker). Alacritty
@@ -300,6 +363,9 @@ struct XtermFeed {
     /// How many charset slots (G0 up) xterm designated since its charsets
     /// were last reset: its DECSC saves only those.
     charset_slots: u8,
+    /// Which charset slots (G0 up) hold DEC line drawing, on both terminals
+    /// alike: every other set is refused (native_serialize::divergent).
+    dec_slots: [bool; 4],
     /// xterm's saved cursor on the main and the alternate screen.
     saved: [SavedCursor; 2],
 }
@@ -313,9 +379,10 @@ struct SavedCursor {
     saved: bool,
     /// The charset slots xterm saved; it restores only those, Alacritty all.
     charset_slots: u8,
-    /// A slot past them was designated since the save: xterm keeps it on a
-    /// restore, Alacritty puts back what that slot held at the save.
-    later_slot: bool,
+    /// What each slot held at the save. A slot past `charset_slots` that
+    /// holds another set by the restore keeps it on xterm, where Alacritty
+    /// puts this one back; designated again to the same set, both agree.
+    dec_slots: [bool; 4],
     no_wraparound: bool,
     origin: bool,
 }
@@ -397,12 +464,41 @@ impl XtermFeed {
         self.tail_overflow = false;
     }
 
-    /// The refusals a control shows by itself, given the byte after it and
-    /// whether a printed character came right before it.
-    fn refuse_control(&mut self, sequence: &[u8], next_byte: Option<u8>, printed: bool) {
-        // xterm forgets the preceding character at any control;
-        // Alacritty repeats whatever was printed last.
-        if crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed) {
+    /// Whether xterm and Alacritty leave the same screen after a control
+    /// under `rule`. `alt`: Alacritty shows its alternate screen at this
+    /// byte, read from its own mode rather than this tracker's (which misses
+    /// a sub-parameter like `?1049:0h`, or a mode past 32 parameters).
+    /// Alacritty enters it only by 1049; xterm's other entries are refused,
+    /// except the round trip, during which Alacritty stays on the main one.
+    fn allows(&self, rule: ContextRule, alt: bool) -> bool {
+        match rule {
+            ContextRule::MouseOff => true,
+            ContextRule::AltLeave { mode_47 } if self.round_trip => mode_47,
+            ContextRule::AltLeave { .. } => !alt,
+            ContextRule::AltEnter => !alt && !self.round_trip,
+        }
+    }
+
+    /// The refusals a control shows, given the byte after it and whether a
+    /// printed character came right before it. `rule`: its `context_rule`.
+    /// `alt`: Alacritty's alternate screen at this byte, when the feed's
+    /// state is current (see `allows`); past a refusal (`scan`) it is not,
+    /// and a `ContextRule` control counts as nothing.
+    fn refuse_control(
+        &mut self,
+        sequence: &[u8],
+        rule: Option<ContextRule>,
+        next_byte: Option<u8>,
+        printed: bool,
+        alt: Option<bool>,
+    ) {
+        let refused = match rule {
+            Some(rule) => alt.is_some_and(|alt| !self.allows(rule, alt)),
+            // xterm forgets the preceding character at any control;
+            // Alacritty repeats whatever was printed last.
+            None => crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed),
+        };
+        if refused {
             self.refuse(true, crate::native_serialize::refusal(sequence));
         }
         // A sequence cut short by DEL (or an escape by a byte past ASCII):
@@ -423,7 +519,8 @@ impl XtermFeed {
     /// After a refusal: only name the families the rest of the stream holds,
     /// without laying it into the grid. It sees what a control shows by
     /// itself (`refuse_control`, C1, an overlong sequence); a refusal that
-    /// needs the screen's state (a restore, margins) counts only when first.
+    /// needs the screen's state (a restore, margins, a `ContextRule` control
+    /// or a round trip) counts only when first.
     fn scan(&mut self, bytes: &[u8]) {
         let mut data = std::mem::take(&mut self.held);
         data.extend_from_slice(bytes);
@@ -459,7 +556,8 @@ impl XtermFeed {
                 next = self.string_payload(&mut data, at + len);
             } else {
                 let next_byte = data.get(at + len).copied();
-                self.refuse_control(&data[at..at + len], next_byte, printed);
+                let sequence = &data[at..at + len];
+                self.refuse_control(sequence, context_rule(sequence), next_byte, printed, None);
                 next = Some(at + len);
             }
             printed = false;
@@ -509,6 +607,7 @@ impl XtermFeed {
                 self.no_wraparound = false;
                 self.origin = false;
                 self.charset_slots = 0;
+                self.dec_slots = [false; 4];
                 self.saved = Default::default();
             }
             // xterm's softReset resets the charsets and the modes, not the
@@ -517,33 +616,35 @@ impl XtermFeed {
                 self.no_wraparound = false;
                 self.origin = false;
                 self.charset_slots = 0;
+                self.dec_slots = [false; 4];
             }
-            b"\x1b%@" | b"\x1b%G" => self.designate(0),
-            [0x1b, slot @ (b'(' | b')' | b'*' | b'+' | b'-' | b'.'), b'B' | b'0'] => self
-                .designate(match slot {
-                    b'(' => 0,
-                    b')' | b'-' => 1,
-                    b'*' | b'.' => 2,
-                    _ => 3,
-                }),
+            b"\x1b%@" | b"\x1b%G" => self.designate(0, false),
+            [0x1b, slot @ (b'(' | b')' | b'*' | b'+' | b'-' | b'.'), set @ (b'B' | b'0')] => self
+                .designate(
+                    match slot {
+                        b'(' => 0,
+                        b')' | b'-' => 1,
+                        b'*' | b'.' => 2,
+                        _ => 3,
+                    },
+                    *set == b'0',
+                ),
             _ if plain_csi(b's') => self.save_cursor(screen),
             _ if plain_csi(b'u') => self.restore_cursor(screen),
             _ => {}
         }
     }
 
-    fn designate(&mut self, slot: u8) {
+    fn designate(&mut self, slot: u8, dec: bool) {
         self.charset_slots = self.charset_slots.max(slot + 1);
-        for saved in &mut self.saved {
-            saved.later_slot |= saved.saved && slot >= saved.charset_slots;
-        }
+        self.dec_slots[usize::from(slot)] = dec;
     }
 
     fn save_cursor(&mut self, screen: usize) {
         self.saved[screen] = SavedCursor {
             saved: true,
             charset_slots: self.charset_slots,
-            later_slot: false,
+            dec_slots: self.dec_slots,
             no_wraparound: self.no_wraparound,
             origin: self.origin,
         };
@@ -551,14 +652,18 @@ impl XtermFeed {
 
     /// xterm restores DECAWM and DECOM (their defaults when nothing was
     /// saved) and only the charset slots it saved; Alacritty restores no mode
-    /// and every slot.
+    /// and every slot. The GL shift needs no check: both save it with the
+    /// cursor (xterm's savedGlevel, Alacritty's `Cursor::active_charset`).
     fn restore_cursor(&mut self, screen: usize) {
         let saved = self.saved[screen];
+        let later_slot = saved.saved
+            && (usize::from(saved.charset_slots)..4)
+                .any(|slot| self.dec_slots[slot] != saved.dec_slots[slot]);
         self.refuse(
-            saved.later_slot
+            later_slot
                 || saved.no_wraparound != self.no_wraparound
                 || saved.origin != self.origin,
-            "unsupported-state-decrc: a cursor restore xterm runs differently (DECAWM, DECOM, or a charset slot designated since the save)",
+            "unsupported-state-decrc: a cursor restore xterm runs differently (DECAWM, DECOM, or a charset slot designated since the save to another set)",
         );
     }
 
@@ -586,6 +691,7 @@ impl XtermFeed {
             self.main_margins = false;
             self.alt_margins = false;
             self.alt_screen = false;
+            self.round_trip = false;
             self.sgr_pixels = false;
             self.sgr_mouse = false;
             self.mouse = 0;
@@ -683,12 +789,15 @@ impl XtermFeed {
             let Some(found) = data[at..].iter().position(|&b| b == 0x1b) else {
                 if at < data.len() {
                     printed = printable(data[data.len() - 1]);
+                    // Text or a C0 control on xterm's blank alternate screen.
+                    self.refuse(self.round_trip, ROUND_TRIP);
                 }
                 break;
             };
             let at = at + found;
             if found > 0 {
                 printed = printable(data[at - 1]);
+                self.refuse(self.round_trip, ROUND_TRIP);
             }
             self.refuse(c1.is_some_and(|c1| c1 < at), C1);
             let Some(len) = crate::native_serialize::sequence_len(&data[at..]) else {
@@ -700,6 +809,13 @@ impl XtermFeed {
                 break;
             };
             let sequence = &data[at..at + len];
+            let rule = context_rule(sequence);
+            self.refuse(
+                self.round_trip
+                    && !is_kitty_keyboard(sequence)
+                    && rule != Some(ContextRule::AltLeave { mode_47: true }),
+                ROUND_TRIP,
+            );
             if sequence == b"\x1b[1J" || sequence == b"\x1b[2J" {
                 parser.advance(term, &data[from..at]);
                 erase_like_xterm(parser, term, sequence[2] == b'2');
@@ -738,9 +854,50 @@ impl XtermFeed {
                 self.push_tail(sequence);
                 next = self.string_payload(&mut data, at + len);
             } else {
-                self.refuse_control(sequence, data.get(at + len).copied(), printed);
+                let leave_1049 = resets_1049(sequence);
+                let screen_rule = matches!(
+                    rule,
+                    Some(ContextRule::AltLeave { .. } | ContextRule::AltEnter)
+                );
+                // Alacritty's own screen before this control (`allows`).
+                let alt = if screen_rule || leave_1049.is_some() {
+                    parser.advance(term, &data[from..at]);
+                    from = at;
+                    alternate_shown(parser, term)
+                } else {
+                    self.alt_screen
+                };
+                self.refuse_control(
+                    sequence,
+                    rule,
+                    data.get(at + len).copied(),
+                    printed,
+                    Some(alt),
+                );
+                match rule {
+                    Some(ContextRule::AltEnter) if self.allows(ContextRule::AltEnter, alt) => {
+                        self.round_trip = true;
+                    }
+                    Some(ContextRule::AltLeave { mode_47: true }) => self.round_trip = false,
+                    _ => {}
+                }
                 self.track(sequence, term.screen_lines());
                 next = Some(at + len);
+                // xterm's ?1049l restores the main screen's saved cursor even
+                // on the main screen (the restore seam's first control);
+                // Alacritty's does nothing there. Run that restore as xterm
+                // does: `track` checked it as the DECRC it then is.
+                match leave_1049 {
+                    Some(true) if !alt => {
+                        parser.advance(term, &data[from..at + len]);
+                        from = at + len;
+                        restore_like_xterm(parser, term);
+                    }
+                    Some(false) if !alt => {
+                        self.refuse(true, crate::native_serialize::refusal(sequence))
+                    }
+                    _ => {}
+                }
                 if self.alt_reflow && self.may_leave_alt {
                     // Leaving the alternate screen, or a reset there, drops
                     // its rows on both (xterm at once, Alacritty on the next
@@ -750,14 +907,7 @@ impl XtermFeed {
                     // disagree on whether a leave happened.
                     parser.advance(term, &data[from..at + len]);
                     from = at + len;
-                    let synchronized = parser.sync_timeout().pending_timeout();
-                    if synchronized {
-                        parser.stop_sync(term);
-                    }
-                    self.alt_reflow = term.mode().contains(TermMode::ALT_SCREEN);
-                    if synchronized {
-                        parser.advance(term, b"\x1b[?2026h");
-                    }
+                    self.alt_reflow = alternate_shown(parser, term);
                 }
             }
             printed = false;
@@ -848,6 +998,77 @@ fn index_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, seque
     if synchronized {
         parser.advance(term, b"\x1b[?2026h");
     }
+}
+
+/// Run `f` on Alacritty with every byte the parser holds in a synchronized
+/// update applied first, then re-enter the update.
+fn with_sync_flushed<R>(
+    parser: &mut Processor,
+    term: &mut Term<VoidListener>,
+    f: impl FnOnce(&mut Term<VoidListener>) -> R,
+) -> R {
+    let synchronized = parser.sync_timeout().pending_timeout();
+    if synchronized {
+        parser.stop_sync(term);
+    }
+    let result = f(term);
+    if synchronized {
+        parser.advance(term, b"\x1b[?2026h");
+    }
+    result
+}
+
+/// Alacritty shows its alternate screen.
+fn alternate_shown(parser: &mut Processor, term: &mut Term<VoidListener>) -> bool {
+    with_sync_flushed(parser, term, |term| {
+        term.mode().contains(TermMode::ALT_SCREEN)
+    })
+}
+
+/// xterm's restoreCursor (DECRC) on Alacritty, once the parser has taken
+/// the control that runs it. xterm puts back the colours, not the open
+/// hyperlink (`extended.urlId` stays), and clamps the cursor into the last
+/// column, which drops a pending wrap.
+fn restore_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>) {
+    with_sync_flushed(parser, term, |term| {
+        let link = term.grid().cursor.template.hyperlink();
+        term.restore_cursor_position();
+        let cursor = &mut term.grid_mut().cursor;
+        cursor.template.set_hyperlink(link);
+        cursor.input_needs_wrap = false;
+    });
+}
+
+/// A DECRST that resets 1049, read as `track` reads it (C0 controls inside
+/// run and are not part of it): `Some(true)` with 1049 as its only mode in
+/// plain digits, `Some(false)` in a list (`divergent` refuses a sub-parameter
+/// or a list past 32 parameters before this runs).
+fn resets_1049(sequence: &[u8]) -> Option<bool> {
+    let filtered: Vec<u8>;
+    let sequence = if sequence[1..].iter().any(|&b| b < 0x20) {
+        filtered = sequence[..1]
+            .iter()
+            .chain(sequence[1..].iter().filter(|&&b| b >= 0x20))
+            .copied()
+            .collect();
+        &filtered[..]
+    } else {
+        sequence
+    };
+    let params = sequence.strip_prefix(b"\x1b[?")?.strip_suffix(b"l")?;
+    if params.is_empty() || !params.iter().all(|&b| b.is_ascii_digit() || b == b';') {
+        return None;
+    }
+    let mut count = 0;
+    let mut found = false;
+    for mode in params.split(|&b| b == b';') {
+        count += 1;
+        let value = mode.iter().fold(0u32, |n, &d| {
+            n.saturating_mul(10).saturating_add(u32::from(d - b'0'))
+        });
+        found |= value == 1049 && !mode.is_empty();
+    }
+    found.then_some(count == 1)
 }
 
 /// A control vte ignores (native_serialize::XtermControl), run as xterm.js
@@ -1153,13 +1374,21 @@ impl NativeTerminal {
         } else {
             term.grid()
         };
+        // xterm resizes its alternate screen's cursor without a reflow, and
+        // the round trip's `?47l` then hands it to the main screen.
+        let resized =
+            term.columns() != size.columns() || term.screen_lines() != size.screen_lines();
+        if self.feed.round_trip && resized {
+            self.refusal
+                .get_or_insert("unsupported-state-mode: a resize between ?47h and ?47l");
+        }
         if reflows_below_cursor(primary, cols as usize) {
             self.refusal.get_or_insert(
                 "unsupported-reflow: a paragraph below the cursor reflows, which moves xterm's cursor off its row",
             );
         }
         // Both terminals reset the margins of both screens on a size change.
-        if term.columns() != size.columns() || term.screen_lines() != size.screen_lines() {
+        if resized {
             self.feed.main_margins = false;
             self.feed.alt_margins = false;
         }
@@ -1253,6 +1482,11 @@ impl NativeTerminal {
         // Bytes held in a synchronized update count for the checks below.
         let synchronized = self.parser.sync_timeout().pending_timeout();
         self.parser.stop_sync(term);
+        // xterm still shows the blank alternate screen; Alacritty the main.
+        if self.feed.round_trip && self.refusal.is_none() {
+            self.feed.refuse(true, OPEN_ROUND_TRIP);
+            self.refusal = Some(OPEN_ROUND_TRIP);
+        }
         if let Some(refusal) = self.refusal {
             return Err(Error::from_reason(refusal));
         }
@@ -2035,13 +2269,143 @@ mod tests {
     }
 
     #[test]
+    fn alternate_screen_and_mouse_resets_are_judged_on_the_state_they_meet() {
+        let refused = |chunks: &[&str]| feed_with(chunks).2.refused;
+        // Off the alternate screen, the resets xterm ignores too.
+        assert_eq!(refused(&["a\x1b[?47l\x1b[?1047l\x1b[?047lb"]), None);
+        assert_eq!(refused(&["\x1b[?1049ha\x1b[?1049l\x1b[?1047lb"]), None);
+        // On xterm's alternate screen they leave it; Alacritty stays.
+        let mode = Some("unsupported-state-mode: a mode Alacritty sets differently");
+        assert_eq!(refused(&["\x1b[?1049ha\x1b[?47lb"]), mode);
+        assert_eq!(refused(&["\x1b[?1049ha\x1b[?1047lb"]), mode);
+        // One mode per control only: a list keeps the old refusal.
+        assert_eq!(refused(&["a\x1b[?47;1047l"]), mode);
+        // ?9l with any protocol on; the payload writes the tracked one.
+        let (_, _, feed) = feed_with(&["\x1b[?1002h\x1b[?1006h\x1b[?9lx"]);
+        assert_eq!((feed.refused, feed.mouse), (None, 0));
+        assert_eq!(refused(&["\x1b[?9hx"]), mode);
+        assert_eq!(refused(&["\x1b[?9;1000lx"]), mode);
+        // A C0 inside is not the plain control the rule reads.
+        assert!(refused(&["\x1b[?4\r7lx"]).is_some());
+    }
+
+    #[test]
+    fn a_restore_refuses_only_a_later_slot_that_holds_another_set() {
+        let refused = |chunks: &[&str]| feed_with(chunks).2.refused.is_some();
+        // Designated again to the set it held at the save (sgr0's `ESC ( B`
+        // on an alternate screen): both restore alike.
+        assert!(!refused(&["\x1b7\x1b(B\x1b8"]));
+        assert!(!refused(&["\x1b[?1049h\x1b(Bx\x1b[?1049l"]));
+        assert!(!refused(&["\x1b7\x1b*0\x1b*B\x1b8"]));
+        // Another set: xterm keeps it, Alacritty puts back the saved one.
+        assert!(refused(&["\x1b7\x1b*0\x1b8"]));
+        assert!(refused(&["\x1b[?1049h\x1b(0x\x1b[?1049l"]));
+        // A slot the save held is restored by both.
+        assert!(!refused(&["\x1b(B\x1b7\x1b(0\x1b8"]));
+        // So are they after a soft reset, which keeps the save.
+        assert!(!refused(&["\x1b*0\x1b7\x1b[!p\x1b*0\x1b8"]));
+    }
+
+    #[test]
+    fn a_1049_reset_on_the_main_screen_restores_as_xterm_does() {
+        let first_cell = |chunks: &[&str]| {
+            let (mut term, mut parser, feed) = feed_with(chunks);
+            parser.advance(&mut term, &feed.held);
+            (feed.refused, term.grid()[Line(0)][Column(0)].c)
+        };
+        // xterm puts back the saved G0 (ASCII) and the saved GL (G0); without
+        // the restore Alacritty would print line drawing.
+        assert_eq!(
+            first_cell(&["\x1b(B\x1b7\x1b(0\x1b[?1049l\x1b[Hq"]),
+            (None, 'q')
+        );
+        assert_eq!(first_cell(&["\x1b)0\x0e\x1b[?1049l\x1b[Hq"]), (None, 'q'));
+        // The cursor comes back too: nothing saved puts it top left.
+        assert_eq!(first_cell(&["\x1b[2;5H\x1b[?1049lq"]), (None, 'q'));
+        // A slot designated since the save to another set stays on xterm.
+        assert!(first_cell(&["\x1b7\x1b(0\x1b[?1049l"]).0.is_some());
+        // In a list, or with a sub-parameter: refused.
+        assert!(first_cell(&["a\x1b[?1049;25l"]).0.is_some());
+        assert!(first_cell(&["a\x1b[?1049:0l"]).0.is_some());
+        assert!(first_cell(&["\x1b[?1049:0hx"]).0.is_some());
+        // A C0 inside runs and is not part of it: still the restore.
+        assert_eq!(
+            first_cell(&["\x1b(B\x1b7\x1b(0\x1b[?10\r49l\x1b[Hq"]),
+            (None, 'q')
+        );
+        // xterm keeps the open hyperlink (urlId) and puts back the colours.
+        let link = |chunks: &[&str]| {
+            feed_with(chunks)
+                .0
+                .grid()
+                .cursor
+                .template
+                .hyperlink()
+                .is_some()
+        };
+        assert!(link(&["\x1b]8;;http://e.com\x1b\\a\x1b[?1049l"]));
+        assert!(!link(&[
+            "\x1b]8;;http://e.com\x1b\\\x1b7\x1b]8;;\x1b\\a\x1b[?1049l"
+        ]));
+        // xterm clamps a cursor saved with a pending wrap into the last column.
+        let (term, _, _) = feed_with(&["0123456789\x1b7\x1b[H\x1b[?1049l"]);
+        assert!(!term.grid().cursor.input_needs_wrap);
+        // Leaving the alternate screen stays as it was.
+        assert_eq!(first_cell(&["q\x1b[?1049hx\x1b[?1049l"]), (None, 'q'));
+    }
+
+    #[test]
+    fn the_alternate_screen_rules_read_alacritty_s_own_screen() {
+        let refused = |chunks: &[&str]| feed_with(chunks).2.refused.is_some();
+        // 33 parameters: neither parser takes the last one, the tracker does.
+        let long = format!("\x1b[?{}1049l", "1;".repeat(32));
+        assert!(refused(&["\x1b[?1049ha", &long, "\x1b[?47lb"]));
+        // Alacritty on its main screen: the resets xterm ignores there too.
+        assert!(!refused(&["a\x1b[?47l\x1b[?1047lb"]));
+    }
+
+    #[test]
+    fn a_47_round_trip_holds_only_kitty_keyboard_controls() {
+        let (_, _, feed) = feed_with(&["a\x1b[?47h\x1b[<99u\x1b[>1u\x1b[=1;1u\x1b[?47lb"]);
+        assert_eq!(
+            (feed.refused, feed.round_trip, feed.alt_screen),
+            (None, false, false)
+        );
+        // Split across feeds, held mid-sequence.
+        let (_, _, feed) = feed_with(&["a\x1b[?47h\x1b[<9", "9u\x1b[?4", "7lb"]);
+        assert_eq!(feed.refused, None);
+        let round_trip = |chunks: &[&str]| feed_with(chunks).2.refused;
+        let inside = Some(crate::native_core::ROUND_TRIP);
+        assert_eq!(round_trip(&["\x1b[?47hx\x1b[?47l"]), inside);
+        assert_eq!(round_trip(&["\x1b[?47h", "\r\n", "\x1b[?47l"]), inside);
+        assert_eq!(round_trip(&["\x1b[?47h\x1b[2J\x1b[?47l"]), inside);
+        assert_eq!(round_trip(&["\x1b[?47h\x1b]0;t\x07\x1b[?47l"]), inside);
+        assert_eq!(round_trip(&["\x1b[?47h\x1b[?u\x1b[?47l"]), inside);
+        assert_eq!(round_trip(&["\x1b[?47h\x1b[?1047l"]), inside);
+        assert_eq!(round_trip(&["\x1b[?47h\x1b[?47h"]), inside);
+        // Entered on the alternate screen: refused as before.
+        assert_eq!(
+            round_trip(&["\x1b[?1049h\x1b[?47h"]),
+            Some("unsupported-state-mode: a mode Alacritty sets differently")
+        );
+        // Still open at the end: the snapshot refuses it (ansi_snapshot).
+        let (_, _, feed) = feed_with(&["a\x1b[?47h\x1b[<99u"]);
+        assert_eq!((feed.refused, feed.round_trip), (None, true));
+        // A RIS ends it with the alternate screen.
+        let (_, _, feed) = feed_with(&["\x1b[?47h\x1bc"]);
+        assert!(!feed.round_trip);
+    }
+
+    #[test]
     fn the_scan_past_a_refusal_names_what_controls_show_by_themselves() {
         let mut feed = feed_with(&["\x1b(A"]).2;
         // Split across scans, inside a string, cut by DEL, and a C1.
         feed.scan(b"\x1b]0;\x1b[53m title\x07\x1b[5");
         feed.scan(b"3m\x1b[!\x7fp\xc2\x9b31m");
-        // A restore needs the screen's state: not seen by the scan.
+        // A restore needs the screen's state: not seen by the scan. Neither
+        // does a ContextRule control, nor text inside a round trip.
         feed.scan(b"\x1b7\x1b*0\x1b8");
+        feed.scan(b"\x1b[?47hx\x1b[?47l\x1b[?1047l\x1b[?9l");
         assert_eq!(
             feed.seen,
             [
@@ -2886,8 +3250,8 @@ mod alt_kept_cells_tests {
             rows(&[N, Out("\x1b[?1049l"), W, Out("\x1b[?1049h")]),
             all([BLANK; 4])
         );
-        // ?47 and ?1047 are divergent controls (native_serialize): a stream
-        // with them never gets a native snapshot.
+        // ?47 and ?1047 get a native snapshot only where they leave no
+        // alternate screen behind on xterm (ContextRule).
         assert_eq!(rows(&[N, Out("\x1bc"), W]), all([BLANK; 4]));
     }
 

@@ -21,6 +21,7 @@ import { asSpawnLinkId, spawnFirstMessageId } from '../../shared/a2aSpawn';
 import { isHostId } from '../../shared/a2aRemote';
 import type { AgentSlug } from '../../shared/agentIdentity';
 import { type LedgerEntry, type LedgerRemote, remoteTaskWorkspaceId } from '../../shared/ledger';
+import { FANOUT_MAX_TASKS } from '../../shared/workTask';
 import { isOpenLedgerStatus, type LedgerTransition, type TaskLedger } from '../../daemon/ledger/TaskLedger';
 import { remoteTaskId } from '../../daemon/a2aRemote/ids';
 import type { DaemonClient } from '../DaemonClient';
@@ -80,6 +81,8 @@ export interface RemoteFanoutRequest {
   titles: string[];
   /** The full prompt of each task, index-aligned with `titles`. */
   prompts: string[];
+  /** The sha256 of the whole call, kept on each row (see remoteKeyRows). */
+  digest: string;
 }
 
 export interface RemoteTaskResult {
@@ -109,6 +112,14 @@ export function remoteFanoutKeys(scopedKey: string): { callerKey: string; reques
     missionKey: (k) => `remote-${sha256(`${scopedKey}\0${k}`).slice(0, 48)}`,
     spawnId: (k) => `sp-${uuidOf(sha256(`${scopedKey}\0${k}\0spawn`))}`,
   };
+}
+
+/** The rows an earlier call with this key wrote: the spawn ids follow from
+ *  the key, so this needs no mission or request. */
+export function remoteKeyRows(ledger: Pick<RemoteLedger, 'list'>, scopedKey: string): LedgerEntry[] {
+  const keys = remoteFanoutKeys(scopedKey);
+  const ids = new Set(Array.from({ length: FANOUT_MAX_TASKS }, (_, k) => remoteTaskWorkspaceId(keys.spawnId(k))));
+  return ledger.list().filter((e) => ids.has(e.taskWorkspaceId));
 }
 
 /** A uuid-shaped id (version 4, variant 8) from hex. */
@@ -289,7 +300,7 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
         taskWorkspaceId: remoteTaskWorkspaceId(keys.spawnId(k)),
         ownerWorkspaceId: req.ownerWorkspaceId,
         title,
-        remote: { hostId: place.hostId, pc: pcName, spawnId: keys.spawnId(k), root: req.root, state: 'sent' },
+        remote: { hostId: place.hostId, pc: pcName, spawnId: keys.spawnId(k), root: req.root, state: 'sent', requestDigest: req.digest },
       });
     } catch (err) {
       tasks.push({ index: k, title, ok: false, taskId, channelId, reason: `the task row could not be written (${(err as Error).message}); nothing was sent, so send the same idempotency_key again` });

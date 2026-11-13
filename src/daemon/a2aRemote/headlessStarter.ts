@@ -36,6 +36,9 @@ import { HEADLESS_SESSION_ID_RE, type HeadlessStartRecordV1, type HeadlessStartS
 import type { SpawnRequestRecordV1 } from './spawnRequestStore';
 import { errMsg } from './storeFile';
 
+/** Why a start ends when its link did (revoked, broken, or its PC removed). */
+export const LINK_ENDED_REASON = "the agent's link ended";
+
 /**
  * Remote spawn on a host with no desktop app (headless mode, see
  * headlessMode.ts): the daemon starts the agent itself, where main's
@@ -290,7 +293,7 @@ export class A2aHeadlessStarter {
     if (!sessions) return;
     const why = rec.runId !== this.deps.runId ? 'the daemon restarted'
       : !this.deps.mode.active() ? 'headless mode was turned off on that PC'
-        : linkEnded ? "the agent's link ended"
+        : linkEnded ? LINK_ENDED_REASON
           : "the agent's session ended";
     await this.end(rec, link, sessions, why);
   }

@@ -179,6 +179,45 @@ describe('doctor mcp section', () => {
   });
 });
 
+describe('doctor broker rule', () => {
+  const line = async (broker: Partial<McpSessionsSummary['broker']>) => {
+    const result = { ...summary, broker: { ...summary.broker, ...broker } };
+    const section = await buildMcpSection(deps({ sessions: () => Promise.resolve({ id: '1', ok: true, result }) }));
+    return section.lines.find((l) => l.label === 'broker');
+  };
+
+  it('off by default: says so, and how to turn it on', async () => {
+    expect(await line({ enabled: false, flag: 'unset' })).toEqual({
+      label: 'broker',
+      value: 'off (the default)',
+      verdict: 'OK',
+      hint: "WMUX_MCP_BROKER=1 in the app's environment turns it on, from the next wmux start.",
+    });
+  });
+
+  it('off by WMUX_MCP_BROKER=0: names it', async () => {
+    expect(await line({ enabled: false, flag: 'off' })).toEqual({ label: 'broker', value: 'off (WMUX_MCP_BROKER=0)', verdict: 'OK' });
+  });
+
+  it('on by WMUX_MCP_BROKER=1: names it and the way back, running or down', async () => {
+    const running = await line({ enabled: true, flag: 'on' });
+    expect(running?.verdict).toBe('OK');
+    expect(running?.hint).toContain('On because WMUX_MCP_BROKER=1 is set for the app. To turn it off, remove it (or set it to 0) and restart wmux');
+    const down = await line({ enabled: true, flag: 'on', running: false, pid: null, uptimeS: null, downReason: 'restarting' });
+    expect(down?.verdict).toBe('WARN');
+    expect(down?.hint).toContain('The app restarts it with a backoff.');
+    expect(down?.hint).toContain('On because WMUX_MCP_BROKER=1');
+  });
+
+  it('on with the flag unset (a platform default): says so, and that WMUX_MCP_BROKER=0 turns it off', async () => {
+    expect((await line({ enabled: true, flag: 'unset' }))?.hint).toBe(
+      'On by default on this platform. WMUX_MCP_BROKER=0 for the app turns it off, from the next wmux start.',
+    );
+  });
+
+  it('an app that does not say what it read: the lines as before', async () => {
+    expect(await line({ enabled: false })).toEqual({ label: 'broker', value: 'off', verdict: 'OK' });
+    expect((await line({ enabled: true }))?.hint).toBeUndefined();
 describe('doctor broker limits', () => {
   const limitsLine = async (broker: Partial<McpSessionsSummary['broker']>) => {
     const result = { ...summary, broker: { ...summary.broker, ...broker } };
