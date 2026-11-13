@@ -11,6 +11,7 @@ import { getAnsiSnapshotBackendDiagnostics } from '../AnsiSnapshotBackend';
 import { generateSnapshotUnqueued, type SnapshotRequest } from '../HeadlessSnapshot';
 import { generateRustSnapshot } from '../RustSnapshot';
 import { CLAUDE_WRAPPED_REPLY_80x30 } from '../../renderer/terminal/__tests__/fixtures/claudeWrappedReply';
+import { restoreSeam } from '../../shared/restoreSeam';
 import { available, expectParity, expectRustAloneDiverges, modulePath, parity, resized, synthetic, type Case } from './_rustParity';
 
 // One or more cases per control class the selector used to refuse wholesale.
@@ -202,6 +203,13 @@ const refused: Case[] = [
   synthetic('mode-decnkm', '\x1b[?66hx', 'xterm'),
   synthetic('alt-47', 'n\x1b[?47ha', 'xterm'),
   synthetic('alt-1047', 'n\x1b[?1047ha\x1b[?1047lb', 'xterm'),
+  // The restore seam's controls where they diverge: ?47l and ?1047l leave
+  // xterm's alternate screen, and a ?47 round trip shows a blank one while
+  // it is open or once it holds more than kitty keyboard controls.
+  synthetic('alt-47-leaves-1049', 'n\x1b[?1049ha\x1b[?47lb', 'xterm'),
+  synthetic('alt-1047-leaves-1049', 'n\x1b[?1049ha\x1b[?1047lb', 'xterm'),
+  synthetic('alt-47-round-trip-text', 'n\x1b[?47ha\x1b[?47lb', 'xterm'),
+  synthetic('alt-47-round-trip-open', 'n\x1b[?47h\x1b[<99u', 'xterm'),
   synthetic('save-1048', 'ab\x1b[?1048hcd\r\n\x1b[?1048lX', 'xterm'),
   // Refused by the serializer: xterm drops a saved pending wrap.
   synthetic('decsc-wrap-pending', 'abcdefgh\x1b7\x1b[H\x1b8X', 'xterm', 8),
@@ -214,6 +222,25 @@ const refused: Case[] = [
 // xterm keeps, is in neither backend's payload.)
 const leftAlt: Case[] = [
   synthetic('alt-decsc-wrap-pending-left', 'n\x1b[?1049h\x1b[Habcdefgh\x1b7\x1b[?1049lX', 'rust', 8),
+];
+
+// A recovered pane's ring: what the dead process left, the restore seam the
+// daemon writes (the real one, at the pane's rows), then the fresh shell.
+const recovered = (name: string, dump: string | Buffer, after = 'PS> ', cols = 20, rows = 6): Case =>
+  ({ name: `seam/${name}`, backend: 'rust', req: { cols, rows, scrollback: 100,
+    initial: Buffer.concat([Buffer.from(dump), Buffer.from(restoreSeam(rows) + after)]) } });
+const seams: Case[] = [
+  recovered('plain', 'old> ls\r\nfile\r\nold> '),
+  // xterm's ?1049l restores the main screen's cursor even on the main
+  // screen; Alacritty's only when it leaves the alternate one.
+  recovered('cursor-away-unsaved', 'a\r\nb\r\nc\x1b[3;9H'),
+  recovered('cursor-away-saved', 'a\x1b[2;5H\x1b7\x1b[5;12Hb'),
+  recovered('cursor-pending-wrap', 'x'.repeat(20)),
+  // An agent that died on its alternate screen with input reporting on.
+  recovered('died-on-alt', 'sh\r\n\x1b[>1u\x1b[?1049h\x1b[>3u\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?1004h\x1b[?1h\x1b=\x1b[?25l\x1b[3;3Hui'),
+  recovered('died-on-main-modes', '\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[31mred'),
+  recovered('twice', `a${restoreSeam(6)}PS> exit\r\n`),
+  recovered('claude-capture', Buffer.from(CLAUDE_WRAPPED_REPLY_80x30, 'base64'), 'PS> ', 80, 30),
 ];
 
 // A line feed into a soft-wrapped row's continuation: LF, VT and FF end the
@@ -400,7 +427,7 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
   beforeEach(() => vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', modulePath));
   afterEach(() => vi.unstubAllEnvs());
 
-  it.each([...accepted, ...refused, ...leftAlt, ...lineFeeds, ...erases, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
+  it.each([...accepted, ...refused, ...leftAlt, ...seams, ...lineFeeds, ...erases, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
     await expectParity(c);
   });
 
@@ -441,6 +468,7 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     ['\x1b(A#', 'unsupported-state-charset'],
     ['\x1b[1!p', 'unsupported-state-decstr'],
     ['\x1b[?47hx', 'unsupported-state-mode'],
+    ['\x1b[?47h\x1b[<99u', 'unsupported-state-mode'],
   ])('names the refused control in the refusal: %j', async (stream, family) => {
     const native = await generateRustSnapshot({ cols: 20, rows: 6, scrollback: 100, initial: Buffer.from(stream) }, 'ansi');
     expect(native.ok).toBe(false);
@@ -477,6 +505,15 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     if (!reference.ok || !native.ok) throw new Error('snapshot failed');
     const pixels = (payload: Buffer) => payload.toString('latin1').includes('\x1b[?1016h');
     expect(pixels(native.payload as Buffer)).toBe(pixels(reference.payload));
+  });
+
+  // The seam's ?47 round trip and ?1047l rely on this (ContextRule in
+  // native_core.rs): xterm swaps the kitty flags there and Alacritty does
+  // not, which is safe only while neither payload carries them.
+  it('writes no kitty keyboard flags into the native payload', async () => {
+    const native = await generateRustSnapshot({ cols: 20, rows: 6, scrollback: 100, initial: Buffer.from('a\x1b[>1u\x1b[?1049h\x1b[>5ub') }, 'ansi');
+    if (!native.ok) throw new Error(`refused: ${native.detail}`);
+    expect(native.payload.toString('latin1')).not.toMatch(/\x1b\[[<>=?][\d;]*u/);
   });
 
   // Evidence for each refusal: without it the Rust payload would diverge.
