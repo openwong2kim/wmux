@@ -637,8 +637,10 @@ interface ResyncState {
   /** Main started the resync in flight (armResync), not this terminal: only
    *  then does main's failure notice settle it. */
   byMain: boolean;
-  /** That resync's replay still owes the keyboard state its refold (deliverPtyData). */
-  keyboardRefold: boolean;
+  /** The resync's replay carries output this pane never got live (main
+   *  started or joined it: the session pipe fell behind), so deliverPtyData
+   *  folds the keyboard negotiation forward over it. */
+  foldReplay: boolean;
 }
 
 /** Cooldown between resync retries after a degrade. Long enough to ride out a
@@ -745,6 +747,10 @@ function kittySetFlags(flags: number): string {
 function kittyRestoreFlags(flags: number): string {
   return KITTY_FLAGS_RESET + kittySetFlags(flags);
 }
+
+/** A kitty flags push, pop or set (`CSI > n u`, `CSI < n u`, `CSI = n ; m u`). */
+// eslint-disable-next-line no-control-regex -- matches an escape sequence
+const KITTY_NEGOTIATION = /\x1b\[[<>=][\d;]*u/;
 
 /** What a pane hands from its old terminal to the one an engine swap builds.
  *  Saved by the old terminal's cleanup, read by the new mount. */
@@ -1239,7 +1245,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const resyncRef = useRef<ResyncState>({
     pending: false, buffer: [], bufferedChars: 0, resolvers: [], timer: null,
     degradedUntil: 0, viaRawFallback: false, mode: 'snapshot', lastMechanism: '', byMain: false,
-    keyboardRefold: false,
+    foldReplay: false,
   });
 
   /** Put the pane into a resync's pending state: bytes held from here on. */
@@ -1247,7 +1253,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const st = resyncRef.current;
     st.pending = true;
     st.byMain = byMain;
-    st.keyboardRefold = byMain;
+    st.foldReplay = byMain;
     st.buffer.length = 0;
     st.bufferedChars = 0;
     st.viaRawFallback = false;
@@ -1531,7 +1537,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const armResync = useCallback((reason: string) => {
     const id = ptyIdRef.current;
     const st = resyncRef.current;
-    if (!terminalRef.current || !id || st.pending) return;
+    if (!terminalRef.current || !id) return;
+    if (st.pending) {
+      // This terminal's own resync takes main's replay; the replay still
+      // carries what the pane never got live.
+      st.foldReplay = true;
+      return;
+    }
     beginResync(id, reason, true);
     // Main's re-flush may wait behind the daemon's snapshot slot like our own
     // (startResync re-arms up to four windows); this bound covers a notice
@@ -3648,8 +3660,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // next live bytes finish (splitTrailingEscape).
       const held = splitTrailingEscape(st.buffer);
       // Kitty flags go right after the replayed snapshot, so live output that
-      // came after it still changes them as it did.
-      const kittyFlags = swapFinish?.kittyFlags ?? 0;
+      // came after it still changes them as it did. The RIS pops them, and a
+      // replay cut from the ring rarely holds the program's push: the flags
+      // in force before it come back, unless the replay negotiates its own.
+      const replayNegotiates = held.complete.some((chunk) => chunk.replay && KITTY_NEGOTIATION.test(chunk.data));
+      const kittyFlags = swapFinish ? swapFinish.kittyFlags
+        : replayNegotiates ? 0 : xtermKittyFlags(terminal) ?? 0;
       let kittyAfter = -1;
       if (kittyFlags > 0) held.complete.forEach((chunk, i) => { if (chunk.replay) kittyAfter = i; });
       held.complete.forEach((chunk, i) => {
@@ -3761,14 +3777,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // re-delivers the dead session's `?9001h` on every restart (#1363).
       const resyncing = resyncRef.current;
       if (!payload.replay) noteKeyboard(payload.data);
-      else if (resyncing.pending && resyncing.byMain) {
-        // A re-flush main started carries output this pane never got live (its
-        // pipe fell behind): like a viewer's snapshot below, it is the current
-        // negotiation, folded from scratch at its first chunk.
-        if (resyncing.keyboardRefold) {
-          resyncing.keyboardRefold = false;
-          keyboardRef.current = INITIAL_REMOTE_KEYBOARD_STATE;
-        }
+      else if (resyncing.pending && resyncing.foldReplay) {
+        // A re-flush after the session pipe fell behind carries output this
+        // pane never got live. Folded forward, not from scratch: a replay cut
+        // from the ring rarely holds the program's startup negotiation, so
+        // the state from before survives unless the replay changes it.
         noteKeyboard(payload.data);
       } else if (fixedGeometryRef.current) {
         // A viewer (`fixedGeometry`) never saw the negotiation happen: its

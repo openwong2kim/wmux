@@ -16,6 +16,7 @@ import { setDaemonModeActive } from '../../daemon/daemonMode';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 import { isTerminalDirty } from '../../terminal/terminalOutputScheduler';
 import { createReplayResetGate } from '../../../main/ipc/handlers/replayResetGate';
+import { xtermKittyFlags } from '../../terminal/kittyKeyboard';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -31,6 +32,7 @@ let emitRestarted: ((p: { ptyId: string; restartCount: number; exitCode: number 
 let emitStarting: ((ptyId: string) => void) | null = null;
 let emitFailed: ((ptyId: string, code: string) => void) | null = null;
 const resync = vi.fn(async () => ({ success: true, mode: 'snapshot' }));
+const write = vi.fn(async (_id: string, _data: string) => undefined);
 const reconnect = vi.fn(async (): Promise<{ success: boolean; code?: string }> => ({ success: true }));
 // Laid-out size of every element; 0 models a display:none workspace.
 let layoutSize = 800;
@@ -53,7 +55,7 @@ beforeAll(() => {
         reconnect,
         resync,
         setViewerVisibility: vi.fn(),
-        write: vi.fn(async () => undefined),
+        write,
         list: vi.fn(async () => []),
       },
       daemon: { onConnected: unsub },
@@ -106,6 +108,7 @@ afterEach(() => {
   propose?.mockRestore();
   resync.mockClear();
   reconnect.mockClear();
+  write.mockClear();
   setDaemonModeActive(false);
 });
 
@@ -268,5 +271,87 @@ describe('useTerminal: a re-flush main started', { timeout: 60_000 }, () => {
     act(() => emitFailed!('m-d', 'rpc-error'));
     await settle();
     expect(lines().slice(0, 3)).toEqual(['PS> echo held', 'held', 'PS>']);
+  });
+});
+
+// What the pane's Shift+Enter sends: the form the program negotiated.
+async function shiftEnter(ptyId: string): Promise<string> {
+  write.mockClear();
+  const textarea = termRef!.current!.textarea!;
+  act(() => {
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, shiftKey: true, bubbles: true, cancelable: true }));
+  });
+  await settle();
+  return write.mock.calls.filter(([id]) => id === ptyId).map(([, data]) => data).join('');
+}
+
+describe('useTerminal: keyboard negotiation across a re-flush main started', { timeout: 60_000 }, () => {
+  // The program negotiated at startup, long before the ring the re-flush is
+  // cut from: the replay holds none of it.
+  const KITTY = '\x1b[>1u';
+  const MODIFY_OTHER_KEYS = '\x1b[>4;2m';
+
+  async function negotiated(ptyId: string, negotiation: string): Promise<void> {
+    await mount(ptyId);
+    act(() => {
+      replay(ptyId, 'PS> ');
+      marker(ptyId, 4);
+      live(ptyId, `tui\r\n${negotiation}tui> `);
+    });
+    await settle();
+  }
+
+  it('a pane that negotiated kitty keys keeps them', async () => {
+    await negotiated('k-a', KITTY);
+    expect(await shiftEnter('k-a')).toBe('\x1b[13;2u');
+    act(() => {
+      emitStarting!('k-a');
+      replay('k-a', '\x1bcPS> tui\r\ntui> ');
+      marker('k-a', 20);
+    });
+    await settle();
+    expect(xtermKittyFlags(termRef!.current!)).toBe(1);
+    expect(await shiftEnter('k-a')).toBe('\x1b[13;2u');
+  });
+
+  it('a pane that negotiated modifyOtherKeys keeps it', async () => {
+    await negotiated('k-b', MODIFY_OTHER_KEYS);
+    act(() => {
+      emitStarting!('k-b');
+      replay('k-b', '\x1bcPS> tui\r\ntui> ');
+      marker('k-b', 20);
+    });
+    await settle();
+    expect(await shiftEnter('k-b')).toBe('\x1b[27;2;13~');
+  });
+
+  it('joined to the pane\'s own resync, kitty keys survive and a negotiation only the replay holds counts', async () => {
+    let release: (v: { success: true; mode: string }) => void = () => undefined;
+    resync.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    await negotiated('k-c', KITTY);
+    await setShown!(false);
+    act(() => {
+      // A second ring flush leaves the hidden pane dirty: its reveal resyncs.
+      replay('k-c', 'PS> tui\r\ntui> ');
+      marker('k-c', 16);
+    });
+    await settle();
+    await setShown!(true);
+    expect(resync).toHaveBeenCalledTimes(1);
+    act(() => emitStarting!('k-c'));
+    await settle();
+    act(() => {
+      // Printed while the pipe was behind: modifyOtherKeys, never seen live.
+      replay('k-c', `\x1bcPS> tui\r\n${MODIFY_OTHER_KEYS}tui> `);
+      marker('k-c', 30);
+    });
+    await act(async () => { release({ success: true, mode: 'snapshot' }); });
+    await settle();
+    expect(xtermKittyFlags(termRef!.current!)).toBe(1);
+    expect(await shiftEnter('k-c')).toBe('\x1b[13;2u');
+    // The kitty pop on exit leaves the modifyOtherKeys the replay carried.
+    act(() => live('k-c', '\x1b[<u'));
+    await settle();
+    expect(await shiftEnter('k-c')).toBe('\x1b[27;2;13~');
   });
 });
