@@ -95,9 +95,9 @@ export function chromeHoldsProfile(dir: string, platform: NodeJS.Platform = proc
   const dash = target.lastIndexOf('-');
   const host = target.slice(0, dash);
   const pidText = target.slice(dash + 1);
-  if (dash <= 0 || host !== os.hostname() || !/^[1-9][0-9]{0,9}$/.test(pidText)) return true;
-  const pid = Number(pidText);
-  return pid > 0x7fffffff || pidAlive(pid);
+  // Seven digits hold any pid (Linux's pid_max is at most 2^22); a longer one is not a pid.
+  if (dash <= 0 || host !== os.hostname() || !/^[1-9][0-9]{0,6}$/.test(pidText)) return true;
+  return pidAlive(Number(pidText));
 }
 
 export interface SweepOptions {

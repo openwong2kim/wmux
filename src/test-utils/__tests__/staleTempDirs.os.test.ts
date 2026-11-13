@@ -166,8 +166,12 @@ describe('chromeHoldsProfile', () => {
     expect(kept()).toEqual([`${PREFIX}Live01`]);
   });
 
-  it.skipIf(isWin)('a lock naming another host, or a pid of another shape, counts as held', () => {
-    const targets = [`not-${host}-1`, `${host}-0`, `${host}-99999999999`, `${host}-12x`, `${host}-`, '-1', '1'];
+  it.skipIf(isWin)('a lock naming another host, or a pid of another shape, counts as held', async () => {
+    // A pid that is gone here, so only the host or the shape can hold the lock.
+    const child = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore' });
+    await once(child, 'exit');
+    const gone = String(child.pid);
+    const targets = [`not-${host}-${gone}`, `${host}-0`, `${host}-0${gone}`, `${host}-99999999`, `${host}-${gone}x`, `${host}-`, `-${gone}`, gone];
     for (const [i, target] of targets.entries()) {
       const dir = leftover(`${PREFIX}Shape${i}`, 2 * DAY);
       fs.symlinkSync(target, path.join(dir, 'SingletonLock'));
