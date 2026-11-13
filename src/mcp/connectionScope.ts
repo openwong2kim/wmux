@@ -49,6 +49,12 @@ export interface RpcIdentityState {
 export interface ConnectionScope {
   rpcIdentity: RpcIdentityState;
   /**
+   * The pid the broker verified for this session against the OS peer of its
+   * socket (brokerPeer.ts). Set only by the broker; the only pid its
+   * `a2a.resolve.identity` calls are stamped for (brokerStamp.ts).
+   */
+  verifiedCallerPid?: number;
+  /**
    * Per-connection PlaywrightEngine. Typed as unknown to avoid an import
    * cycle (PlaywrightEngine imports this module); the engine module owns
    * the cast.

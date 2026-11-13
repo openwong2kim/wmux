@@ -15,6 +15,8 @@ interface FakeChild extends EventEmitter {
   pid: number;
   stderr: EventEmitter;
   kill: ReturnType<typeof vi.fn>;
+  connected: boolean;
+  send: ReturnType<typeof vi.fn>;
 }
 
 function makeChild(): FakeChild {
@@ -22,6 +24,8 @@ function makeChild(): FakeChild {
   c.pid = 4321;
   c.stderr = new EventEmitter();
   c.kill = vi.fn();
+  c.connected = true;
+  c.send = vi.fn();
   return c;
 }
 
@@ -436,5 +440,75 @@ describe('BrokerSupervisor.identity', () => {
     sup.start();
     expect(sup.identity).toEqual({ pid: 4321, startedAt: null });
     sup.stop();
+  });
+});
+
+describe('BrokerSupervisor stamp', () => {
+  const stampedChild = makeChild;
+  const sentStamp = (c: FakeChild): string => (c.send.mock.calls[0][0] as { stamp: string }).stamp;
+
+  it('sends each spawned broker a stamp of its own, and matches only the current one', () => {
+    const first = stampedChild();
+    const second = stampedChild();
+    vi.mocked(spawn).mockReturnValueOnce(first as never).mockReturnValueOnce(second as never);
+    const sup = new BrokerSupervisor({ startTimeOf: () => 1n });
+    expect(sup.stampMatches('a'.repeat(64))).toBe(false);
+    sup.start();
+    expect(first.send).toHaveBeenCalledTimes(1);
+    const message = first.send.mock.calls[0][0] as Record<string, unknown>;
+    expect(Object.keys(message).sort()).toEqual(['stamp', 'wmuxBroker']);
+    expect(message.wmuxBroker).toBe('stamp');
+    const one = sentStamp(first);
+    expect(one).toMatch(/^[0-9a-f]{64}$/);
+    expect(sup.stampMatches(one)).toBe(true);
+    expect(sup.stampMatches(one.slice(1))).toBe(false);
+    expect(sup.stampMatches(`${one.slice(0, 63)}${one[63] === '0' ? '1' : '0'}`)).toBe(false);
+
+    sup.stop();
+    first.emit('exit', 0, null);
+    expect(sup.stampMatches(one)).toBe(false);
+
+    sup.resume();
+    const two = sentStamp(second);
+    expect(two).not.toBe(one);
+    expect(sup.stampMatches(two)).toBe(true);
+    expect(sup.stampMatches(one)).toBe(false);
+    sup.stop();
+  });
+
+  it('matches nothing once the broker has crashed', () => {
+    vi.useFakeTimers();
+    try {
+      const child = stampedChild();
+      vi.mocked(spawn).mockReturnValueOnce(child as never);
+      const sup = new BrokerSupervisor({ startTimeOf: () => 1n });
+      sup.start();
+      const stamp = sentStamp(child);
+      child.emit('exit', 1, null);
+      expect(sup.stampMatches(stamp)).toBe(false);
+      sup.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ends a broker it could not hand its stamp to, so the restart gives the next one a stamp', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const failing = stampedChild();
+    failing.send.mockImplementation((_m: unknown, cb: (err: Error | null) => void) => cb(new Error('channel closed')));
+    vi.mocked(spawn).mockReturnValueOnce(failing as never);
+    const sup = new BrokerSupervisor({ startTimeOf: () => 1n });
+    sup.start();
+    expect(failing.kill).toHaveBeenCalledTimes(1);
+    sup.stop();
+
+    const unconnected = stampedChild();
+    unconnected.connected = false;
+    vi.mocked(spawn).mockReturnValueOnce(unconnected as never);
+    const other = new BrokerSupervisor({ startTimeOf: () => 1n });
+    other.start();
+    expect(unconnected.send).not.toHaveBeenCalled();
+    expect(unconnected.kill).toHaveBeenCalledTimes(1);
+    other.stop();
   });
 });

@@ -27,6 +27,27 @@ export function brokerConnectionsReport(open: number, inflight: readonly string[
   return names.length > 0 ? { wmuxBroker: 'connections', open, inflight: names } : { wmuxBroker: 'connections', open };
 }
 
+/**
+ * main → broker, once per spawn: the stamp the broker puts on an
+ * `a2a.resolve.identity` call for a session it verified (src/mcp/brokerStamp.ts,
+ * main's PipeServer). 64 hex characters.
+ */
+export interface BrokerStampMessage {
+  wmuxBroker: 'stamp';
+  stamp: string;
+}
+
+const BROKER_STAMP_RE = /^[0-9a-f]{64}$/;
+
+/** The stamp in an exact stamp message, or null for anything else. */
+export function parseBrokerStampMessage(message: unknown): string | null {
+  if (typeof message !== 'object' || message === null || Array.isArray(message)) return null;
+  const keys = Object.keys(message);
+  if (keys.length !== 2 || !keys.includes('wmuxBroker') || !keys.includes('stamp')) return null;
+  const { wmuxBroker, stamp } = message as Record<string, unknown>;
+  return wmuxBroker === 'stamp' && typeof stamp === 'string' && BROKER_STAMP_RE.test(stamp) ? stamp : null;
+}
+
 /** What an exact report says, or null for anything else. */
 export function parseBrokerConnectionsReport(message: unknown): { open: number; inflight: string[] } | null {
   if (typeof message !== 'object' || message === null || Array.isArray(message)) return null;

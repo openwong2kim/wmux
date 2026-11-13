@@ -390,6 +390,8 @@ export class RemoteA2aBridge {
 function workOf(task: Task): Work[] {
   const marker = task.metadata?.remote as A2aRemoteTaskState | undefined;
   if (!marker || marker.v !== 1) return [];
+  // An agent the daemon started itself (headless, workspace `hl-…`): the daemon delivers to it, never the app.
+  if (task.metadata[localSideOf(task)]?.workspaceId?.startsWith('hl-')) return [];
   const ended = (TERMINAL_STATES as readonly string[]).includes(task.status.state);
   const out: Work[] = [];
   const taskOwed = marker.direction === 'inbound' && marker.delivered !== true;

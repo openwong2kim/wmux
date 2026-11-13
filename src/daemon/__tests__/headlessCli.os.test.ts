@@ -54,6 +54,11 @@ describe('wmux daemon headless', () => {
     // Run again on a box already on (one turned on before this line existed): said too.
     out.length = 0;
     await runHeadless('on', false, dir);
+    // No daemon answers here: how to start one is said too.
+    expect(out).toEqual(['Headless mode is on already.', HEADLESS_STAYS_UP, 'No daemon answered: start it with `wmux daemon start` (or check `wmux daemon status` if one should be running).']);
+    out.length = 0;
+    vi.spyOn(headlessIo, 'daemonView').mockResolvedValue({ appAttached: false, optedIn: true, inEffect: true });
+    await runHeadless('on', false, dir);
     expect(out).toEqual(['Headless mode is on already.', HEADLESS_STAYS_UP]);
     expect(headlessStatus(dir)).toMatchObject({ inEffect: true, optedIn: true, appAttached: false });
   });

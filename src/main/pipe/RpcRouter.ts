@@ -153,6 +153,8 @@ type RpcDispatchOptions = (
   peerStartedAt?: string;
   /** The request came over the loopback TCP fallback (PipeServer, Windows). */
   viaTcp?: true;
+  /** The request carried the spawned broker's stamp over that broker's own connection (PipeServer). */
+  brokerStamped?: true;
 };
 
 export class RpcRouter {
@@ -408,6 +410,7 @@ export class RpcRouter {
       ...(opts?.peerPid !== undefined && { peerPid: opts.peerPid }),
       ...(opts?.peerStartedAt !== undefined && { peerStartedAt: opts.peerStartedAt }),
       ...(opts?.viaTcp && { viaTcp: true as const }),
+      ...(opts?.brokerStamped && { brokerStamped: true as const }),
       clientName:
         typeof request.clientName === 'string' && request.clientName.trim().length > 0
           ? request.clientName.trim()

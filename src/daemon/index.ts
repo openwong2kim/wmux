@@ -6,6 +6,7 @@ import { terminalCoreRuntime, terminalCoreSelection } from '../shared/terminalCo
 import { labsSettingsAtStartup } from '../shared/labsSettings';
 import { collectDaemonMemoryDiagnostics } from './memoryDiagnostics';
 import { createStartupRecovery } from './startupRecovery';
+import { procComm } from './procfs';
 import { loadChatSkills } from './transcript/chatSkills';
 import { TerminalChatService } from './transcript/TerminalChatService';
 import { HermesChatService, routeTerminalChat } from './transcript/HermesChatService';
@@ -94,7 +95,7 @@ import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import { WEB_DEFAULT_PORT, webHostIsLoopback, type WebTlsConfig } from '../shared/web';
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, runSmallSnapshotJob, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
-import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
+import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, readFolderTrust, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
 import { HOST_WINDOW_RPC, createHostWindowRpc } from './hostWindowRpc';
 import type { TerminalPty } from '../shared/terminalPty';
@@ -161,6 +162,8 @@ import { HeadlessMode, headlessReleases } from './a2aRemote/headlessMode';
 import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
 import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
 import { createHeadlessSessions } from './a2aRemote/headlessSessions';
+import { HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
+import { A2A_REMOTE_RPC } from '../shared/a2aRemoteDelivery';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
@@ -530,6 +533,9 @@ let headlessSessionsRef: HeadlessSessionPort | null = null;
 let headlessStarterRef: A2aHeadlessStarter | null = null;
 // Headless mode in effect: the idle timeout does not stop a host other PCs are meant to reach.
 let idleHoldForRemoteStarts: () => boolean = () => false;
+// What types a remote task into a headless agent's session (a2aRemote/headlessDelivery.ts).
+let headlessDeliverRef: HeadlessDeliveryDeps['deliver'] | null = null;
+let headlessDeliveryRef: HeadlessDelivery | null = null;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 let noteCodexServerLost: ((id:string)=>void) | undefined;
 /** Contract v-next item 1: a Codex turn on a daemon-owned relay failed (set at boot). */
@@ -1903,16 +1909,21 @@ async function reapIfIdentityConfirmed(opts: {
  *  Prevents killing unrelated processes after PID recycling (e.g. reboot). */
 async function isOurShellProcess(pid: number, expectedCmd: string): Promise<boolean> {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires -- keep this optional dependency lazy
-    const { execFile } = require('child_process');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires -- keep this optional dependency lazy
-    const { promisify } = require('util');
-    const execFileAsync = promisify(execFile);
-    // Unix: check /proc/<pid>/exe or use ps
-    const { stdout } = await execFileAsync('ps', ['-o', 'comm=', '-p', String(pid)], {
-      encoding: 'utf-8', timeout: 3000,
-    });
-    const actualCmd = (stdout as string).trim();
+    // Linux: /proc/<pid>/comm, the name `ps -o comm=` prints; `ps` when it cannot be read.
+    const proc = procComm(pid);
+    if (proc && proc.value === null) return false;
+    let actualCmd = proc?.value?.trim();
+    if (actualCmd === undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires -- keep this optional dependency lazy
+      const { execFile } = require('child_process');
+      // eslint-disable-next-line @typescript-eslint/no-var-requires -- keep this optional dependency lazy
+      const { promisify } = require('util');
+      const execFileAsync = promisify(execFile);
+      const { stdout } = await execFileAsync('ps', ['-o', 'comm=', '-p', String(pid)], {
+        encoding: 'utf-8', timeout: 3000,
+      });
+      actualCmd = (stdout as string).trim();
+    }
     const expectedBase = path.basename(expectedCmd);
     return actualCmd === expectedBase || actualCmd.includes(expectedBase);
   } catch {
@@ -6345,6 +6356,13 @@ function registerRpcHandlers(
         return true;
       },
     });
+  // A remote task into a headless agent: the same checked paste and Enter, asked
+  // again before each write whether the delivery still owns the session.
+  headlessDeliverRef = async (id, agent, prompt, authorized, onWrite) => {
+    const incarnationId = readDaemonAgentState(id).incarnationId;
+    if (!incarnationId) return 'unavailable';
+    return deliverPromptToSessionNow(id, agent, incarnationId, prompt, { authorized: async () => authorized(), onWrite: () => onWrite(), acceptError: false }, 'headless-delivery', { refuseUnknown: true });
+  };
   pipeServer.onRpc('daemon.deliverScheduledPromptV2', async (params) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const agentSlug = isAgentSlug(params['agentSlug']) ? params['agentSlug'] : null;
@@ -9178,8 +9196,9 @@ async function shutdown(
   // Best-effort — must never block the shutdown path.
   try { lanLinkServerRef?.dispose(); } catch { /* best effort */ }
   try { void a2aDeliveryRef?.stop(); } catch { /* best effort */ }
-  // No headless start begins while the daemon goes down (its retries would only fail).
+  // No headless start begins while the daemon goes down (its retries would only fail), nor any task is typed in.
   headlessStarterRef?.stop();
+  headlessDeliveryRef?.stop();
   try { a2aServerRef?.dispose(); } catch { /* best effort */ }
   try { a2aDiscoverRef?.dispose(); } catch { /* best effort */ }
   paneSupervisorRef = null;
@@ -10929,7 +10948,12 @@ async function main(): Promise<void> {
         log: a2aLog,
       });
       a2aDelivery.registerRoutes(a2aRoutes);
-      a2aDelivery.registerRpc(onA2aRpc);
+      // Kept too: the headless delivery calls them in-process, as main does over the pipe.
+      const a2aDeliveryHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
+      a2aDelivery.registerRpc((method, handler) => {
+        a2aDeliveryHandlers.set(method, handler);
+        onA2aRpc(method, handler);
+      });
       a2aDelivery.start();
       a2aDeliveryRef = a2aDelivery;
       // A share that was mid-accept when the daemon stopped is settled by links.json.
@@ -10960,13 +10984,68 @@ async function main(): Promise<void> {
       if (a2aStarter) {
         const paneGone = a2aLinkHandlers.get('a2a.remote.local.paneGone');
         const starter = a2aStarter;
+        const headlessStarts = new HeadlessStartStore({ dir: a2aDir, log: a2aLog });
+        const headlessRunId = randomUUID();
+        const taskSvc = a2aTaskService;
+        const deliveryCall = async (method: string, params: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> => {
+          const handler = a2aDeliveryHandlers.get(method);
+          if (!handler) return { ok: false, error: `${method} is not available` };
+          const res = (await handler(params)) as { ok?: unknown; error?: unknown };
+          return { ok: res?.ok === true, ...(typeof res?.error === 'string' ? { error: res.error } : {}) };
+        };
+        // The tasks paired PCs send with their requests, typed into the agents started for them (a2aRemote/headlessDelivery.ts).
+        const headlessDelivery = new HeadlessDelivery({
+          mode: headlessMode,
+          starts: headlessStarts,
+          runId: headlessRunId,
+          tasks: {
+            pending: () => taskSvc.listRemotePending(),
+            remote: () => taskSvc.listRemote(),
+            held: () => taskSvc.listRemoteHeld(),
+            get: (taskId) => taskSvc.getTask(taskId),
+          },
+          mark: (input) => deliveryCall(A2A_REMOTE_RPC.mark, input),
+          rejectHeld: (input) => deliveryCall(A2A_REMOTE_RPC.rejectHeld, input),
+          followUpsDirect: () => a2aSpawnPolicy.get().followUps === 'direct',
+          // Read as the delivery guard reads it (folderTrustState): the folder-trust prompt (also one whose
+          // choices are cut off on a small screen) or another dialog is a question.
+          questionOnScreen: async (sessionId) => {
+            const seen = await readFolderTrust({ getSession: (sid) => sessionManager.getSession(sid), timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }, sessionId);
+            if (seen.state === 'trust' || seen.dialog || seen.reason === 'cut-choices') return 'dialog';
+            return seen.state === 'clear' ? 'clear' : 'unknown';
+          },
+          limitHeld: (sessionId) => usageLimits?.holds(sessionId) === true,
+          deliver: (sessionId, agent, prompt, authorized, onWrite) => (headlessDeliverRef ? headlessDeliverRef(sessionId, agent, prompt, authorized, onWrite) : Promise.resolve('unavailable')),
+          // Its own sessions only (the delivery asks for no other): a no-op once the agent is tracked.
+          armAgent: (sessionId) => {
+            const managed = sessionManager.getSession(sessionId);
+            if (managed && managed.meta.pid > 0) agentProcessTracker.arm(sessionId, managed.meta.pid);
+          },
+          transcriptPath: (sessionId) => transcriptProjector?.transcriptPath(sessionId) ?? null,
+          transcriptSize: (file) => {
+            try {
+              return fs.statSync(file).size;
+            } catch {
+              return 0;
+            }
+          },
+          reply: (input) => deliveryCall(A2A_REMOTE_RPC.reply, input),
+          // As `a2a.task.update` does for the receiver: the ledger first, then the peer hears it (the reason as its summary).
+          transition: async ({ taskId, workspaceId, to, summary }) => {
+            const moved = await taskSvc.transition({ taskId, to, callerWorkspaceId: workspaceId, ...(summary ? { evidence: { summary, items: [] } } : {}) });
+            if (moved.ok) await a2aDeliveryRef?.syncTask(taskId);
+            return moved.ok ? { ok: true } : { ok: false, error: moved.error };
+          },
+          log: a2aLog,
+        });
+        headlessDeliveryRef = headlessDelivery;
         a2aHeadless = new A2aHeadlessStarter({
           mode: headlessMode,
           receiver: a2aSpawn,
           requests: a2aSpawnRequests,
           links: a2aLinks,
           activationOwed: (linkId) => a2aSpawnLinks.get(linkId)?.phase === 'committed',
-          starts: new HeadlessStartStore({ dir: a2aDir, log: a2aLog }),
+          starts: headlessStarts,
           sessions: () => headlessSessionsRef,
           worktrees: {
             create: (input) => createSpawnWorktree(input),
@@ -10991,10 +11070,12 @@ async function main(): Promise<void> {
             if (paneGone) await paneGone({ workspaceId, paneId, reason: 'pane-closed' });
           },
           abandon: (hostId, spawnId) => starter.abandon(hostId, spawnId),
-          runId: randomUUID(),
+          startEnding: (rec, why) => headlessDelivery.startEnding(rec, why),
+          runId: headlessRunId,
           log: a2aLog,
         });
         headlessStarterRef = a2aHeadless;
+        headlessDelivery.start();
         const headless = a2aHeadless;
         sessionManager.on('session:died', (payload: { id: string }) => headless.onSessionGone(payload.id));
         sessionManager.on('session:destroyed', (payload: { id: string }) => headless.onSessionGone(payload.id));

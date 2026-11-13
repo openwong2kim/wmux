@@ -133,6 +133,20 @@ describe('RemoteA2aBridge', () => {
     expect(daemon.marks).toEqual([{ taskId: id(1), delivered: true }]);
   });
 
+  it('leaves a task for an agent the daemon started itself (workspace hl-…) to the daemon', async () => {
+    const headless = remoteTask(1);
+    headless.metadata.to = { workspaceId: 'hl-0123abcd-4567-4abc-8def-0123456789ab', name: 'B', paneId: 'hl-11111111-2222-4333-8444-555555555555' };
+    daemon.tasks.set(id(1), headless);
+    daemon.tasks.set(id(2), remoteTask(2));
+    bridge.start();
+    await settle();
+    expect(renderer).toHaveBeenCalledTimes(1);
+    expect(renderer.mock.calls[0][1]).toMatchObject({ presetTaskId: id(2) });
+    // Not even an attempt is recorded for it.
+    expect(daemon.attempts.map((a) => a.taskId)).toEqual([id(2)]);
+    expect(daemon.marks.map((m) => m.taskId)).toEqual([id(2)]);
+  });
+
   it('a task whose broadcast was lost is picked up by the backstop', async () => {
     bridge.start();
     await settle();

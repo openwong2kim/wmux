@@ -894,7 +894,7 @@ export function registerA2aRpc(
     //
     // callerPid names the caller's own process. On macOS and Linux the claim is taken only from the process it names, as
     // the OS reports it for the connection, or from the MCP broker main spawned
-    // (peerPidShadow.checkClaim). A claim not taken gets no walk and no claim;
+    // on a call it stamped (peerPidShadow.checkClaim). A claim not taken gets no walk and no claim;
     // `entries` still go back for the caller's own walk.
     const callerPid = normalizeCallerPid((params as { callerPid?: unknown }).callerPid);
     const callerVerdict = callerPid != null ? checkClaim('callerPid', ctx, callerPid) : null;

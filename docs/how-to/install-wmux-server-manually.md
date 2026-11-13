@@ -196,10 +196,34 @@ With headless mode on:
   fresh worktree of the folder (branch `wmux/remote/sp-…`, named after the
   asking PC and its spawn id), starts the
   agent in it with the permission mode set by `remote allow`, and tells the
-  asking PC which session it runs in. In this version the asking PC's prompt
-  is kept as the agent's first task but not typed in yet, so the agent waits
-  idle until its link ends; typing it in and sending the reply back come in a
-  later version.
+  asking PC which session it runs in.
+- The asking PC's prompt is typed into the agent as soon as it is ready, and
+  when the agent's turn ends, its last answer goes back to the asking PC as
+  the reply (the task then waits for more input there). The answer is read
+  from the agent's own conversation file, so no hooks are installed on the
+  host. The task fails, with the reason shown on the asking PC, when the
+  agent is given other input on the host during its turn, when its turn is
+  interrupted or ends on an error, or when the agent ends before answering
+  (its session ends, its link ends, headless mode is turned off, or the
+  daemon restarts). A usage-limit pause is waited out. An answer larger
+  than 32 KiB is cut: its start goes back, ending with a line that says how
+  many bytes were left out.
+- What the asking PC sends to the same agent afterwards (follow-ups: a new
+  task, or a reply on a task that waits for more) depends on `--follow-ups`.
+  With `direct`, each is typed in once the agent finished the one before, in
+  the order it reached this host, and answered the same way; a reply on a
+  task becomes that task's next turn. With `ask`, a new task is refused at
+  once and the asking PC is told why, since nobody here can approve it; a
+  reply on a task ends that task with the same reason.
+- An agent that stops on a question (a permission prompt, say) cannot be
+  answered here. After about a minute the asking PC is told so, once. If
+  the question is still there after 10 minutes, the task ends with that
+  reason: canceled if it was never typed in, failed if the agent was working
+  on it. A task waiting behind the same question ends at once. The agent
+  itself is left running. A usage-limit pause is not such a question: it is
+  waited out. Use a permission mode that lets the agent work on its own,
+  such as `auto`.
+- Images sent with a task are not passed to the agent.
 - A request no rule matches is refused at once; nothing waits for an
   approval. The asking PC sees `not-allowed` when it may not ask this host,
   `agent-not-allowed` when it may but not for that agent, and
