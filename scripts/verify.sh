@@ -10,7 +10,9 @@
 #      a pure rename (content identical to the base's) is not linted,
 #   2. the typecheck,
 #   3. the vitest files related to the change (`vitest --changed`), in the
-#      main lane and the runtime lane,
+#      main lane and the runtime lane, plus the tests that read a changed
+#      source file as text (a regex over its source): they import nothing they
+#      check, so `--changed` never picks them (scripts/verify-source-readers.mjs),
 #   4. the guard tests in scripts/verify-guards.txt, whatever changed: they
 #      check rules of the repository (a directory scan, a doc, a generated
 #      file), so `--changed`, which follows imports, rarely picks them.
@@ -84,6 +86,31 @@ npx vitest run --changed "$base" --maxWorkers="$workers" --passWithNoTests --rep
 
 echo "verify: related runtime tests"
 npx vitest run --config vitest.runtime.config.ts --changed "$base" --maxWorkers="$workers" --passWithNoTests --reporter=dot --silent
+
+# Read into a variable first so a failing helper stops the gate (set -e).
+# Arrays are tested for length before use: bash 3.2 (macOS) treats an empty
+# "${a[@]}" as unbound under set -u.
+reader_list="$(node scripts/verify-source-readers.mjs "$base")"
+readers=()
+runtime_readers=()
+while IFS= read -r t; do
+  case "$t" in
+    '') ;;
+    *.runtime.test.*) runtime_readers+=("$t") ;;
+    *) readers+=("$t") ;;
+  esac
+done <<< "$reader_list"
+if [ $((${#readers[@]} + ${#runtime_readers[@]})) -gt 0 ]; then
+  echo "verify: tests that read a changed source as text ($((${#readers[@]} + ${#runtime_readers[@]})))"
+  if [ "${#readers[@]}" -gt 0 ]; then
+    printf '  %s\n' "${readers[@]}"
+    npx vitest run "${readers[@]}" --maxWorkers="$workers" --reporter=dot --silent
+  fi
+  if [ "${#runtime_readers[@]}" -gt 0 ]; then
+    printf '  %s\n' "${runtime_readers[@]}"
+    npx vitest run --config vitest.runtime.config.ts "${runtime_readers[@]}" --maxWorkers="$workers" --reporter=dot --silent
+  fi
+fi
 
 # The base's list plus the lines this change adds (scripts/lib/verify-guards.mjs).
 # Read into a variable first so a failing helper stops the gate (set -e)
