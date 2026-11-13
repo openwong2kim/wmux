@@ -73,7 +73,7 @@ import { getTaskLedger } from '../../deck/taskLedgerHost';
 import { reclaimedWorkerOfPane, reclaimedWorkerWorkspaces } from '../../factory/workerReclaim';
 import { paneLaunchedSandboxed } from '../../factory/workerSlots';
 import { deliverySendSender } from './deliverySenders';
-import { PENDING_TEXT_MAX, PendingDeliveries, type PendingDelivery, type PendingTaskState } from './pendingDeliveries';
+import { PENDING_TASK_ROW_GRACE_MS, PENDING_TEXT_MAX, PendingDeliveries, type PendingDelivery, type PendingTaskState } from './pendingDeliveries';
 import { eventBus } from '../../events/EventBus';
 import { isRemoteTaskId } from '../../../shared/a2aRemote';
 import { taskSignedIn } from '../../factory/wakeTaint';
@@ -2731,13 +2731,22 @@ export function registerInputRpc(
    *  agent; a process exit is seen apart (agentEnded). */
   const agentRestarted = (entry: PendingDelivery): boolean => {
     const now = deps.readSessionStart?.(entry.ptyId);
-    return !!now && now.at !== entry.sessionStartAt && (now.source === 'startup' || now.source === 'resume');
+    if (!now || now.at === entry.sessionStartAt || (now.source !== 'startup' && now.source !== 'resume')) return false;
+    // Stored before the agent's first hook reached main: a start hook soon
+    // after is that same agent (an exit in between drops the entry).
+    if (entry.sessionStartAt === null && now.at - entry.storedAt < PENDING_TASK_ROW_GRACE_MS) {
+      entry.sessionStartAt = now.at;
+      return false;
+    }
+    return true;
   };
 
   // A stored delivery's retry and a live delivery never share a pane: a
-  // retry runs only on a pane no delivery is on, and a live one waits for a
-  // retry in its pane (up to the new-task lock's wait). Live deliveries among
-  // themselves are as before.
+  // retry runs only on a pane no delivery is on, and holds it at most
+  // RETRY_HOLD_MS; a live one waits for a retry in its pane (up to the
+  // new-task lock's wait). A live local delivery refused then, or by the
+  // new-task lock, is stored like any other kept refusal. Live deliveries
+  // among themselves are as before.
   const retrying = new Map<string, Promise<void>>();
   const liveOn = new Map<string, number>();
   const paneBusy = (detail: string): GatedSubmitRefusal => ({ ok: false, reason: 'fresh_context_busy', detail: `delivery: ${detail}; nothing was written` });
@@ -2766,9 +2775,22 @@ export function registerInputRpc(
     if (retrying.has(ptyId) || liveOn.has(ptyId)) return paneBusy('another delivery is running on this pane');
     let done: () => void = () => undefined;
     retrying.set(ptyId, new Promise<void>((resolve) => { done = resolve; }));
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await deliverGated(ptyId, text, agent, opts);
+      // A retry carries the same deadline, so its guard refuses any write
+      // after the pane is let go.
+      return await Promise.race([
+        deliverGated(ptyId, text, agent, opts),
+        new Promise<GatedSubmitResult>((resolve) => {
+          timer = setTimeout(() => resolve({
+            ok: false,
+            reason: 'deadline',
+            detail: 'delivery: the stored message held the pane past its time; it is tried again later',
+          }), RETRY_HOLD_MS);
+        }),
+      ]);
     } finally {
+      if (timer) clearTimeout(timer);
       retrying.delete(ptyId);
       done();
     }
@@ -2792,24 +2814,34 @@ export function registerInputRpc(
       const guardKey = `pending-delivery:${++pendingCheckSeq}`;
       const stillOurs = (): string | null =>
         !pending.isKept(entry) ? 'the stored text was withdrawn' : agentRestarted(entry) ? 'the pane\'s agent was started again' : null;
+      // A task that cannot be read right before the paste is not typed; the
+      // entry is kept for the next pass.
+      let unreadAtPaste = false;
       const unregister = registerDeliveryCheck(guardKey, {
         beforePaste: async () => {
           const changed = stillOurs();
           if (changed) return changed;
           const state = await taskStateOf(entry).catch(() => null);
-          return state === 'ended' || state === 'missing' || state === 'pane gone' ? 'the task is no longer open' : null;
+          if (state === null) {
+            unreadAtPaste = true;
+            return 'the task could not be read';
+          }
+          return state === 'open' ? null : 'the task is no longer open';
         },
         beforeEnter: stillOurs,
       });
       try {
-        return await deliverRetry(entry.ptyId, entry.text, entry.agent, {
+        const result = await deliverRetry(entry.ptyId, entry.text, entry.agent, {
           ...entry.opts,
           waitQuiet: true,
           expectAgent: entry.agentName,
           expectIncarnation: entry.incarnationId,
-          deadlineAt: (deps.now ?? Date.now)() + DELIVERY_RESERVE_MS + PENDING_QUIET_WAIT_MS,
+          deadlineAt: (deps.now ?? Date.now)() + RETRY_HOLD_MS,
           guardKey,
         });
+        return !result.ok && result.reason === 'guard_refused' && unreadAtPaste
+          ? { ...result, reason: 'gate_unavailable', detail: 'delivery: the task could not be read right before the paste; nothing was written' }
+          : result;
       } finally {
         unregister();
       }
@@ -2848,7 +2880,7 @@ export function registerInputRpc(
     // The owner lane at retry only for a send that could have had it live:
     // one with main's send record, or a reply whose sender is the task row's.
     const hadSender = !!opts?.senderSendKey || !!opts?.senderTaskIds?.length;
-    pending.store({
+    return pending.store({
       taskId,
       ptyId,
       text,
@@ -2867,7 +2899,6 @@ export function registerInputRpc(
       storedAt: (deps.now ?? Date.now)(),
       reason,
     });
-    return true;
   };
 
   return {
@@ -2910,6 +2941,9 @@ const STORE_ON_REFUSAL: ReadonlySet<GatedSubmitRefusal['reason']> = new Set<Gate
 
 /** How long a stored delivery's retry waits for a quiet pane, holding it. */
 const PENDING_QUIET_WAIT_MS = 1_000;
+/** The longest a stored delivery's retry holds its pane: its quiet wait and
+ *  the delivery's own reserve. Past it the pane is let go. */
+const RETRY_HOLD_MS = DELIVERY_RESERVE_MS + PENDING_QUIET_WAIT_MS;
 
 /** A task's state from a daemon task query: null while it is withheld from
  *  the receiving side; a daemon that predates the `state` view lists every

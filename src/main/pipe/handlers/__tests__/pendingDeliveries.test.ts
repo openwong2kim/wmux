@@ -81,15 +81,22 @@ describe('PendingDeliveries', () => {
     expect(h.typed).toEqual(['text t1']);
   });
 
-  it('drops the oldest past the per-pane and the total cap', () => {
+  it('past the per-pane or the total cap, a task with nothing of its own there is not stored', () => {
     const h = harness();
-    for (let i = 0; i <= PENDING_PER_PANE_CAP; i++) h.queue.store(h.entry(`a${i}`, 'pty-a'));
+    for (let i = 0; i < PENDING_PER_PANE_CAP; i++) expect(h.queue.store(h.entry(`a${i}`, 'pty-a'))).toBe(true);
+    expect(h.queue.store(h.entry('late', 'pty-a'))).toBe(false);
     expect(h.queue.size).toBe(PENDING_PER_PANE_CAP);
-    expect(h.logs.some((l) => l.includes('"a0"') && l.endsWith('cap; the task stays readable with a2a_task_query'))).toBe(true);
+    expect(h.queue.heldFor('pty-a', 'a0')).toBeDefined();
+    expect(h.logs.at(-1)).toContain('did not store task "late" for pane "pty-a"');
+    // A task already there gives up its own oldest instead.
+    expect(h.queue.store(h.entry('a3', 'pty-a', 'a3 again'))).toBe(true);
+    expect(h.queue.heldFor('pty-a', 'a3')?.text).toBe('a3 again');
+    expect(h.queue.size).toBe(PENDING_PER_PANE_CAP);
     const h2 = harness();
-    for (let i = 0; i <= PENDING_TOTAL_CAP; i++) h2.queue.store(h2.entry(`b${i}`, `pty-${i}`));
+    for (let i = 0; i < PENDING_TOTAL_CAP; i++) h2.queue.store(h2.entry(`b${i}`, `pty-${i}`));
+    expect(h2.queue.store(h2.entry('late', 'pty-new'))).toBe(false);
     expect(h2.queue.size).toBe(PENDING_TOTAL_CAP);
-    expect(h2.logs.some((l) => l.includes('"b0"') && l.includes(': cap;'))).toBe(true);
+    expect(h2.queue.heldFor('pty-0', 'b0')).toBeDefined();
   });
 
   it('drops an entry past its expiry', async () => {

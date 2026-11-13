@@ -64,6 +64,8 @@ interface Wiring {
   live: WireOpts;
   /** Move the virtual clock (with `virtualClock`). */
   advance: (ms: number) => void;
+  /** The virtual clock now. */
+  now: () => number;
 }
 
 interface WireOpts {
@@ -96,8 +98,9 @@ interface WireOpts {
   /** The time and `source` of the pane agent's last session-start hook (none by default). */
   sessionStartAt?: number;
   sessionStartSource?: string;
-  /** A stored delivery's task state on each read in turn, before `tasks` decides. */
-  taskStates?: PendingTaskState[];
+  /** A stored delivery's task state on each read in turn, before `tasks`
+   *  decides; `hang` never answers. */
+  taskStates?: Array<PendingTaskState | 'hang'>;
   /** Awaited inside every delivery sleep (the paste-to-Enter gap among them). */
   sleepGate?: () => Promise<void>;
   /** The pane holds a typed draft. */
@@ -163,8 +166,11 @@ function wire(initial: WireOpts = {}): Wiring {
       answerPolicy: async () => ({ allowed: false, reason: 'autonomy-off' }),
       daemonFolderTrust: async () => opts.daemonTrust ?? null,
       queryDaemonTasks: async () => opts.tasks ?? [],
-      readTaskState: async (_ws: string, taskId: string) =>
-        opts.taskStates?.length ? (opts.taskStates.shift() as PendingTaskState) : taskStateOfRows(opts.tasks ?? [], [], taskId),
+      readTaskState: async (_ws: string, taskId: string): Promise<PendingTaskState> => {
+        const next = opts.taskStates?.length ? opts.taskStates.shift() : undefined;
+        if (next === 'hang') return new Promise<PendingTaskState>(() => undefined);
+        return next !== undefined ? next : taskStateOfRows(opts.tasks ?? [], [], taskId);
+      },
       readSessionStart: () => (opts.sessionStartAt === undefined
         ? undefined
         : { at: opts.sessionStartAt, agent: 'claude', ...(opts.sessionStartSource ? { source: opts.sessionStartSource } : {}) }),
@@ -189,7 +195,7 @@ function wire(initial: WireOpts = {}): Wiring {
         : {}),
     },
   );
-  return { router, writes, logs, notices, deliveryGate, gatedSubmit, retryPendingDeliveries, agentEnded, live: opts, advance: (ms) => { clock += ms; } };
+  return { router, writes, logs, notices, deliveryGate, gatedSubmit, retryPendingDeliveries, agentEnded, live: opts, advance: (ms) => { clock += ms; }, now: () => clock };
 }
 
 type Answer = { ok: boolean; error?: string; result?: Record<string, unknown> };
@@ -1150,6 +1156,57 @@ describe('a refused local delivery, stored and typed later', () => {
     await w.retryPendingDeliveries('pty-task');
     expect(w.writes.length).toBe(before);
     expect(w.logs.at(-1)).toContain(': agent changed;');
+  });
+
+  it("an agent's first start hook arriving just after the store is the same agent; a later one is a restart", async () => {
+    for (const [lateMs, typed] of [[5_000, 1], [61_000, 0]] as const) {
+      const w = wire({ ...UNPASSABLE, tasks: [] });
+      const send = beginDeliverySend('ws-owner');
+      await w.gatedSubmit('pty-task', 'hello', 'claude', { newTask: true, taskId: 't-new', senderSendKey: send.key });
+      send.end();
+      w.live.daemonTrust = PASSABLE;
+      w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+      w.live.sessionStartAt = w.now() + lateMs;
+      w.live.sessionStartSource = 'startup';
+      w.advance(lateMs);
+      await w.retryPendingDeliveries('pty-task');
+      expect(pasted(w)).toHaveLength(typed);
+    }
+  });
+
+  it('a task that cannot be read right before the paste is not typed, and stays stored', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    w.live.taskStates = ['open', null];
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+    expect(w.logs.some((l) => l.includes('dropped stored task'))).toBe(false);
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toHaveLength(1);
+  });
+
+  it('a retry that hangs lets the pane go after its time, and a live send there is typed', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      // A stored reply (a new task's retry would also hold the new-task lock).
+      const w = wire({ ...UNPASSABLE, tasks: [row('t-reply', 'ws-owner', 'ws-task')] });
+      expect(await w.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t-reply'] })).toMatchObject({ stored: true });
+      w.live.daemonTrust = PASSABLE;
+      w.live.tasks = [row('t-reply', 'ws-owner', 'ws-task'), row('t-live', 'ws-owner', 'ws-task')];
+      // Open for the pass; the read right before the paste never answers.
+      w.live.taskStates = ['open', 'hang'];
+      const retry = w.retryPendingDeliveries('pty-task');
+      await vi.advanceTimersByTimeAsync(22_000);
+      await retry;
+      expect(pasted(w)).toEqual([]);
+      expect(w.logs.some((l) => l.includes('dropped stored task'))).toBe(false);
+      const live = w.gatedSubmit('pty-task', 'hello live', 'claude', { senderTaskIds: ['t-live'] });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await live).toMatchObject({ ok: true });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a clear or a compaction in the same agent is no restart: the text is still typed', async () => {

@@ -14,8 +14,9 @@
 //
 // Bounds, after the remote held units (a2aRemote/held.ts): at most
 // PER_TASK_CAP entries per task and pane, PER_PANE_CAP per pane and TOTAL_CAP
-// in all; past a cap the storing task's own oldest entry goes first. Each
-// entry is dropped PENDING_DELIVERY_TTL_MS after it was stored.
+// in all. Past a cap the storing task gives up its own oldest entry; with
+// none of its own there, the new one is not stored (never another sender's).
+// Each entry is dropped PENDING_DELIVERY_TTL_MS after it was stored.
 
 import type { GatedSubmitOptions, GatedSubmitRefusal, GatedSubmitResult } from '../../../shared/ptyMessageDelivery';
 import { A2A_REMOTE_BODY_MAX } from '../../../shared/a2aRemote';
@@ -125,24 +126,42 @@ export class PendingDeliveries {
     return this.entries.length;
   }
 
-  /** Keep `entry`. The same text already kept for the same task and pane
-   *  keeps its place and age (it may be being typed right now) and takes
-   *  the pane's agent as it is now. */
-  store(entry: PendingDelivery): void {
+  /** Keep `entry`; false when it is not kept. The same text already kept
+   *  for the same task and pane keeps its place and age (it may be being
+   *  typed right now) and takes the pane's agent as it is now. */
+  store(entry: PendingDelivery): boolean {
     const prior = this.entries.find((e) => e.taskId === entry.taskId && e.ptyId === entry.ptyId && e.text === entry.text);
     if (prior) {
       prior.agentName = entry.agentName;
       prior.incarnationId = entry.incarnationId;
       prior.sessionStartAt = entry.sessionStartAt;
-      return;
+      return true;
     }
+    const own = this.entries.filter((e) => e.taskId === entry.taskId);
+    const ownOnPane = own.filter((e) => e.ptyId === entry.ptyId);
+    const onPane = this.entries.filter((e) => e.ptyId === entry.ptyId);
+    // At each cap the storing task gives up its own oldest entry there.
+    const giveUp = new Set<PendingDelivery>();
+    const yieldOwn = (pool: PendingDelivery[], ownPool: PendingDelivery[], cap: number): boolean => {
+      if (pool.filter((e) => !giveUp.has(e)).length < cap) return true;
+      const oldest = ownPool.find((e) => !giveUp.has(e));
+      if (!oldest) return false;
+      giveUp.add(oldest);
+      return true;
+    };
+    if (
+      !yieldOwn(ownOnPane, ownOnPane, PENDING_PER_TASK_CAP) ||
+      !yieldOwn(onPane, ownOnPane, PENDING_PER_PANE_CAP) ||
+      !yieldOwn(this.entries, own, PENDING_TOTAL_CAP)
+    ) {
+      this.deps.log(`[delivery] did not store task ${JSON.stringify(entry.taskId)} for pane ${JSON.stringify(entry.ptyId)}: as many messages wait as are kept`);
+      return false;
+    }
+    for (const e of giveUp) this.drop(e, 'cap');
     this.entries.push(entry);
-    const sameTask = (e: PendingDelivery): boolean => e.taskId === entry.taskId;
-    this.evict(this.entries.filter((e) => e.ptyId === entry.ptyId && sameTask(e)), PENDING_PER_TASK_CAP, sameTask);
-    this.evict(this.entries.filter((e) => e.ptyId === entry.ptyId), PENDING_PER_PANE_CAP, sameTask);
-    this.evict(this.entries, PENDING_TOTAL_CAP, sameTask);
     this.deps.log(`[delivery] stored task ${JSON.stringify(entry.taskId)} for pane ${JSON.stringify(entry.ptyId)}; it is typed when the pane can take it`);
     this.timer ??= (this.deps.setTimer ?? defaultTimer)(() => void this.sweep(), PENDING_SWEEP_MS);
+    return true;
   }
 
   /** Is `entry` still kept (not typed, dropped or withdrawn)? */
@@ -226,14 +245,6 @@ export class PendingDeliveries {
     this.expire();
     const panes = [...new Set(this.entries.map((e) => e.ptyId))];
     await Promise.all(panes.map((ptyId) => this.retry(ptyId)));
-  }
-
-  /** Past `cap` in `pool`, drop the storing task's own oldest entry when it
-   *  holds more than one there, else the pool's oldest. */
-  private evict(pool: PendingDelivery[], cap: number, sameTask: (e: PendingDelivery) => boolean): void {
-    if (pool.length <= cap) return;
-    const own = pool.filter(sameTask);
-    this.drop(own.length > 1 ? own[0] : pool[0], 'cap');
   }
 
   private expire(): void {
