@@ -249,9 +249,11 @@ PCs and the folder ids (`root`) each one allows.
   A commander or a bot is refused, and so is a fan-out task (the depth
   setting applies as usual). The fan-out approval switch and the hourly cap
   apply; the live cap does not, since nothing runs here.
-- **Polling.** The same `idempotency_key` again answers from the task rows
-  and asks for nothing twice. A task whose mission was closed is not asked
-  for again.
+- **Polling.** The same `idempotency_key` with the same request answers
+  from the task rows and asks for nothing twice, however much later it comes.
+  A poll is not approved, counted on the hourly cap or audited again. The
+  same key with a different request (another task, title, prompt, PC or
+  folder) is refused. A task whose mission was closed is not asked for again.
 - **What the row shows.** Whether the other PC refused the request, let it
   expire (each request waits 1 hour), or started it. Once started, the row
   holds the task its replies arrive on. The agent is asked to commit and to

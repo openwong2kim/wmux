@@ -320,6 +320,7 @@ export function copyRemote(r: unknown): LedgerRemote | null {
     ...(typeof o.branchOnPc === 'string' && BRANCH_ON_PC_RE.test(o.branchOnPc) ? { branchOnPc: o.branchOnPc } : {}),
     ...(o.withdrawn === true ? { withdrawn: true as const } : {}),
     ...(o.revoked === true ? { revoked: true as const } : {}),
+    ...(typeof o.requestDigest === 'string' && /^[0-9a-f]{64}$/.test(o.requestDigest) ? { requestDigest: o.requestDigest } : {}),
   };
 }
 
