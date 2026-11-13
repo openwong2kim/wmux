@@ -94,7 +94,7 @@ import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import { WEB_DEFAULT_PORT, webHostIsLoopback, type WebTlsConfig } from '../shared/web';
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, runSmallSnapshotJob, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
-import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
+import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, readFolderTrust, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
 import { HOST_WINDOW_RPC, createHostWindowRpc } from './hostWindowRpc';
 import type { TerminalPty } from '../shared/terminalPty';
@@ -10995,9 +10995,17 @@ async function main(): Promise<void> {
           tasks: {
             pending: () => taskSvc.listRemotePending(),
             remote: () => taskSvc.listRemote(),
+            held: () => taskSvc.listRemoteHeld(),
             get: (taskId) => taskSvc.getTask(taskId),
           },
           mark: (input) => deliveryCall(A2A_REMOTE_RPC.mark, input),
+          rejectHeld: (input) => deliveryCall(A2A_REMOTE_RPC.rejectHeld, input),
+          // Read as the delivery guard reads it (folderTrustState): the folder-trust prompt or another dialog is a question.
+          questionOnScreen: async (sessionId) => {
+            const seen = await readFolderTrust({ getSession: (sid) => sessionManager.getSession(sid), timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }, sessionId);
+            if (seen.state === 'trust' || seen.dialog) return 'dialog';
+            return seen.state === 'clear' ? 'clear' : 'unknown';
+          },
           deliver: (sessionId, agent, prompt, authorized, onWrite) => (headlessDeliverRef ? headlessDeliverRef(sessionId, agent, prompt, authorized, onWrite) : Promise.resolve('unavailable')),
           // Its own sessions only (the delivery asks for no other): a no-op once the agent is tracked.
           armAgent: (sessionId) => {

@@ -10,7 +10,10 @@ import type { A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
 import type { SessionPromptScheduleResult } from '../../../shared/sessionPromptSchedule';
 import { VALID_TRANSITIONS, type Task } from '../../../shared/types';
 import { USAGE_LIMIT_CONTINUE_PROMPT } from '../../../shared/usageLimit';
-import { HeadlessDelivery, assistantTextOf, type HeadlessDeliveryDeps } from '../headlessDelivery';
+import { A2A_REMOTE_BODY_MAX } from '../../../shared/a2aRemote';
+import {
+  ASK_REASON, HeadlessDelivery, QUESTION_NOTICE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS, assistantTextOf, cutReply, type HeadlessDeliveryDeps,
+} from '../headlessDelivery';
 import type { HeadlessStartRecordV1 } from '../headlessStartStore';
 
 const LINK = '11111111-1111-4111-8111-111111111111';
@@ -28,6 +31,9 @@ let active: boolean;
 let rec: HeadlessStartRecordV1;
 let task: Task;
 let results: Array<SessionPromptScheduleResult | 'error!'>;
+/** What the screen shows when the delivery asks for a question on it. */
+let screen: 'dialog' | 'clear' | 'unknown';
+let rejected: Array<{ taskId: string; reason: string }>;
 let delivered: Array<{ sessionId: string; prompt: string }>;
 let marks: Array<Record<string, unknown>>;
 let replies: Array<{ taskId: string; workspaceId: string; text: string }>;
@@ -76,8 +82,15 @@ function deps(over: Partial<HeadlessDeliveryDeps> = {}): HeadlessDeliveryDeps {
     tasks: {
       pending: () => (marker().delivered !== true && !marker().held && !isEnded() ? [task] : []),
       remote: () => [task],
+      held: () => (marker().held && !isEnded() ? [task] : []),
       get: (id) => (id === task.id ? task : undefined),
     },
+    rejectHeld: async (input) => {
+      rejected.push(input);
+      task.status = { state: 'failed', timestamp: new Date().toISOString() };
+      return { ok: true };
+    },
+    questionOnScreen: async () => screen,
     mark: async (input) => {
       marks.push(input);
       const m = marker();
@@ -141,6 +154,8 @@ beforeEach(() => {
   rec = startRecord();
   task = inboundTask();
   results = [];
+  screen = 'clear';
+  rejected = [];
   delivered = [];
   marks = [];
   replies = [];
@@ -330,7 +345,7 @@ describe('typing the task in', () => {
     other.id = `rt-${'2'.padStart(32, '0')}`;
     let typed = 0;
     const d = new HeadlessDelivery(deps({
-      tasks: { pending: () => [task, other], remote: () => [task, other], get: (id) => (id === task.id ? task : id === other.id ? other : undefined) },
+      tasks: { pending: () => [task, other], remote: () => [task, other], held: () => [], get: (id) => (id === task.id ? task : id === other.id ? other : undefined) },
       starts: { list: () => [rec, startRecord({ sessionId: 'hl-22222222-2222-4333-8444-555555555555', workspaceId: 'hl-second' })] },
       mark: async (input) => {
         if (input.taskId === task.id) throw new Error('store broke');
@@ -346,19 +361,93 @@ describe('typing the task in', () => {
     expect(typed).toBe(1);
   });
 
-  it('only the start\'s first task is typed in: a later task on its link (a follow-up) is left as it is', async () => {
+  it('one task at a time per agent, oldest first: follow-ups (`direct`) wait for the open turn, then go in the order they came', async () => {
+    // A small ledger of three tasks for the same agent: the first, then two follow-ups (the newer one listed first).
+    const at = (n: number): string => `2026-11-13T00:00:0${n}.000Z`;
     const first = task;
-    task = inboundTask('a follow-up', 'm2');
-    task.id = `rt-${'2'.padStart(32, '0')}`;
-    const d = new HeadlessDelivery(deps());
+    const later = inboundTask('second follow-up', 'm3');
+    later.id = `rt-${'3'.padStart(32, '0')}`;
+    later.metadata.createdAt = at(3);
+    const next = inboundTask('first follow-up', 'm2');
+    next.id = `rt-${'2'.padStart(32, '0')}`;
+    next.metadata.createdAt = at(2);
+    first.metadata.createdAt = at(1);
+    const all = [later, next, first];
+    const owed = (t: Task): boolean => (t.metadata.remote as A2aRemoteTaskState).delivered !== true && !['completed', 'failed', 'canceled'].includes(t.status.state);
+    const byId = (id: string): Task => all.find((t) => t.id === id)!;
+    const d = new HeadlessDelivery(deps({
+      tasks: { pending: () => all.filter(owed), remote: () => all, held: () => [], get: (id) => all.find((t) => t.id === id) },
+      mark: async (input) => {
+        const m = byId(input.taskId).metadata.remote as A2aRemoteTaskState;
+        if (input.delivered) m.delivered = true;
+        return { ok: true };
+      },
+      reply: async (input) => {
+        replies.push(input);
+        byId(input.taskId).history.push({ kind: 'message', messageId: `r${replies.length}`, role: 'agent', parts: [{ kind: 'text', text: input.text }] });
+        return { ok: true };
+      },
+      transition: async ({ taskId, to }) => {
+        const t = byId(taskId);
+        if (!VALID_TRANSITIONS[t.status.state].includes(to)) return { ok: false, error: 'illegal' };
+        t.status = { state: to, timestamp: '' };
+        return { ok: true };
+      },
+    }));
     await d.tick();
-    expect(delivered).toHaveLength(0);
-    expect(marks).toEqual([]);
-    expect(task.status.state).toBe('submitted');
-    // The first task still is.
-    task = first;
+    expect(delivered.map((x) => x.prompt)).toEqual([PROMPT]);
+    // The open turn holds the follow-ups back.
     await d.tick();
     expect(delivered).toHaveLength(1);
+    // The turn ends; in the same pass the older follow-up is offered (not the newer one listed
+    // before it). Its agent busy at first: the newer one still waits behind it, even while the
+    // older one waits for its retry.
+    results = ['busy'];
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(first.status.state).toBe('input-required');
+    expect(delivered.map((x) => x.prompt)).toEqual([PROMPT]);
+    await d.tick();
+    expect(delivered.map((x) => x.prompt)).toEqual([PROMPT]);
+    clock += 2_000;
+    await d.tick();
+    expect(delivered.map((x) => x.prompt)).toEqual([PROMPT, 'first follow-up']);
+    write(userLine('first follow-up'), assistantLine('one'));
+    await d.tick();
+    await d.tick();
+    expect(delivered.map((x) => x.prompt)).toEqual([PROMPT, 'first follow-up', 'second follow-up']);
+    write(userLine('second follow-up'), assistantLine('two'));
+    await d.tick();
+    expect(replies.map((r) => [r.taskId, r.text])).toEqual([[TASK, 'PONG'], [next.id, 'one'], [later.id, 'two']]);
+    expect(all.map((t) => t.status.state)).toEqual(['input-required', 'input-required', 'input-required']);
+  });
+
+  it('a follow-up held for a person (`ask`) is refused at once with the reason; nothing typed', async () => {
+    task = inboundTask('a follow-up', 'm2');
+    task.id = `rt-${'2'.padStart(32, '0')}`;
+    (task.metadata.remote as A2aRemoteTaskState).held = 'awaiting-approval';
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    expect(rejected).toEqual([{ taskId: task.id, reason: ASK_REASON }]);
+    expect(delivered).toEqual([]);
+    expect(marks).toEqual([]);
+    // Once.
+    await d.tick();
+    expect(rejected).toHaveLength(1);
+  });
+
+  it('a hold on a pane that is not this run\'s live start is left alone', async () => {
+    task = inboundTask('a follow-up', 'm2');
+    (task.metadata.remote as A2aRemoteTaskState).held = 'awaiting-approval';
+    rec = startRecord({ runId: 'an-earlier-run' });
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    rec = startRecord({ phase: 'ended' });
+    await d.tick();
+    rec = startRecord();
+    active = false;
+    await d.tick();
+    expect(rejected).toEqual([]);
   });
 });
 
@@ -502,11 +591,24 @@ describe('the reply, from the transcript', () => {
   });
 
   it('a reply that cannot be sent fails the task with why', async () => {
-    replyError = 'too-large';
+    replyError = 'link-inactive';
     const d = await delivering();
     write(userLine(PROMPT), assistantLine('x'.repeat(10)));
     await d.tick();
-    expect(moves.at(-1)).toEqual({ to: 'failed', summary: "the agent's answer is larger than a reply may be" });
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: "the agent's answer could not be sent: link-inactive" });
+  });
+
+  it('an answer over the body limit is cut: its start, then a marker, within the limit', async () => {
+    const d = await delivering();
+    const long = `RESULT first\n${'y'.repeat(40 * 1024)}`;
+    write(userLine(PROMPT), assistantLine(long));
+    await d.tick();
+    expect(replies).toHaveLength(1);
+    const sent = replies[0].text;
+    expect(Buffer.byteLength(sent, 'utf8')).toBeLessThanOrEqual(A2A_REMOTE_BODY_MAX);
+    expect(sent.startsWith('RESULT first\n')).toBe(true);
+    expect(sent).toMatch(/\n\n\[… cut: \d+ bytes not sent\]$/);
+    expect(moves.at(-1)).toEqual({ to: 'input-required' });
   });
 
   it('a subagent\'s entries (sidechain) neither end the turn nor count as input; the lead\'s own end does', async () => {
@@ -611,6 +713,119 @@ describe('the reply, from the transcript', () => {
     await d.startEnding(rec, "the agent's session ended");
     expect(moves.at(-1)).toEqual({ to: 'canceled', summary: "the agent ended: the agent's session ended" });
   });
+});
+
+describe('a question on the agent\'s screen', () => {
+  const advance = async (d: HeadlessDelivery, ms: number): Promise<void> => {
+    clock += ms;
+    await d.tick();
+  };
+
+  it('before the task is typed in: the asker is told once at about a minute, and at 10 minutes the task is canceled; the agent is left as it is', async () => {
+    results = Array(200).fill('busy');
+    screen = 'dialog';
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    await advance(d, QUESTION_NOTICE_MS - 10_000);
+    expect(replies).toEqual([]);
+    await advance(d, 10_000);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({ taskId: TASK, workspaceId: WS, ptyId: SESSION });
+    expect(replies[0].text).toContain('waits on a question');
+    for (let t = QUESTION_NOTICE_MS; t < QUESTION_TIMEOUT_MS - 10_000; t += 10_000) await advance(d, 10_000);
+    expect(task.status.state).toBe('submitted');
+    await advance(d, 10_000);
+    expect(moves.at(-1)).toEqual({ to: 'canceled', summary: QUESTION_REASON });
+    expect(replies).toHaveLength(1);
+    expect(delivered).toEqual([]);
+  });
+
+  it('a screen that could not be read neither starts the clock nor resets it', async () => {
+    results = Array(400).fill('busy');
+    screen = 'unknown';
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    await advance(d, QUESTION_TIMEOUT_MS);
+    expect(task.status.state).toBe('submitted');
+    screen = 'dialog';
+    await advance(d, 10_000);
+    await advance(d, 5 * 60_000);
+    // Unread for a minute, then the question again: the clock kept its start.
+    screen = 'unknown';
+    await advance(d, 60_000);
+    screen = 'dialog';
+    await advance(d, QUESTION_TIMEOUT_MS - 6 * 60_000);
+    expect(moves.at(-1)).toEqual({ to: 'canceled', summary: QUESTION_REASON });
+  });
+
+  it('a screen with no question resets the clock', async () => {
+    results = Array(400).fill('busy');
+    screen = 'dialog';
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    await advance(d, 5 * 60_000);
+    screen = 'clear';
+    await advance(d, 10_000);
+    screen = 'dialog';
+    await advance(d, 10_000);
+    // 9 min 50 s after the question came back: still open; at 10 min it ends.
+    await advance(d, QUESTION_TIMEOUT_MS - 10_000);
+    expect(task.status.state).toBe('submitted');
+    await advance(d, 10_000);
+    expect(moves.at(-1)).toEqual({ to: 'canceled', summary: QUESTION_REASON });
+  });
+
+  it('inside the turn: failed at 10 minutes with the reason; the notice is not taken for the agent answering itself', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    expect(moves).toEqual([{ to: 'working' }]);
+    write(userLine(PROMPT));
+    screen = 'dialog';
+    await advance(d, 10_000);
+    await advance(d, QUESTION_NOTICE_MS);
+    expect(replies).toHaveLength(1);
+    // Answered on this PC after all: the turn ends and its answer is still sent.
+    screen = 'clear';
+    write(assistantLine('PONG'));
+    await advance(d, 10_000);
+    expect(replies.map((r) => r.text).at(-1)).toBe('PONG');
+    expect(moves.at(-1)).toEqual({ to: 'input-required' });
+
+    // Another start, a question that stays.
+    task = inboundTask();
+    moves = [];
+    replies = [];
+    const d2 = new HeadlessDelivery(deps());
+    await d2.tick();
+    write(userLine(PROMPT));
+    screen = 'dialog';
+    await advance(d2, 10_000);
+    for (let t = 0; t < QUESTION_TIMEOUT_MS; t += 10_000) await advance(d2, 10_000);
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: QUESTION_REASON });
+    // The episode is gone: a late turn end sends nothing more.
+    write(assistantLine('late'));
+    await advance(d2, 10_000);
+    expect(replies.map((r) => r.text)).not.toContain('late');
+  });
+});
+
+it('cutReply keeps the start, cuts on a code point, and counts the marker in the limit', () => {
+  expect(cutReply('short')).toBe('short');
+  const max = 64;
+  // 3-byte characters: a straddling one is left out whole.
+  const euros = '€'.repeat(40);
+  const cut = cutReply(euros, max);
+  expect(Buffer.byteLength(cut, 'utf8')).toBeLessThanOrEqual(max);
+  expect(cut).not.toContain('\uFFFD');
+  const [kept, marker] = cut.split('\n\n');
+  expect(/^€+$/.test(kept)).toBe(true);
+  const left = Number(/cut: (\d+) bytes/.exec(marker)![1]);
+  expect(Buffer.byteLength(kept, 'utf8') + left).toBe(Buffer.byteLength(euros, 'utf8'));
+  // A pair of surrogates (4 bytes) is not split either.
+  const faces = '😀'.repeat(40);
+  const cut2 = cutReply(faces, max);
+  expect(Buffer.byteLength(cut2, 'utf8')).toBeLessThanOrEqual(max);
+  expect(/^(😀)+$/u.test(cut2.split('\n\n')[0])).toBe(true);
 });
 
 it('assistantTextOf reads the text blocks of a raw entry, code included', () => {

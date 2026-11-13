@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { A2A_REMOTE_BODY_MAX } from '../../shared/a2aRemote';
+import { truncateUtf8 } from '../../shared/chatv2/limits';
 import type { SessionPromptScheduleResult } from '../../shared/sessionPromptSchedule';
 import { sanitizeBracketedPastePayload } from '../../shared/ptyMessageDelivery';
 import { localSideOf, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
@@ -15,7 +17,10 @@ import { errMsg } from './storeFile';
 /**
  * Headless remote spawn, part two: the task a paired PC sent with its request
  * is typed into the agent the daemon started for it (headlessStarter.ts), and
- * the agent's answer goes back as the task's reply.
+ * the agent's answer goes back as the task's reply. Later tasks on the same
+ * link (follow-ups) are typed in one at a time, oldest first, when the start's
+ * policy lets them through (`--follow-ups direct`); with `ask` they wait for a
+ * person, and there is none here, so they are refused at once with the reason.
  *
  * Only here, only in headless mode and only into a session a `started` start
  * of this daemon run owns; the app's bridge leaves `hl-` workspaces alone
@@ -33,6 +38,17 @@ export const HEADLESS_DELIVERY_TICK_MS = 1000;
 /** First retry after a refusal that wrote nothing (the agent still starting, busy); doubles up to the max. */
 const RETRY_MIN_MS = 2000;
 const RETRY_MAX_MS = 5 * 60 * 1000;
+/** How often the screen is checked for a question (a render each time). */
+export const QUESTION_PROBE_MS = 10 * 1000;
+/** A question on screen this long: the asking PC is told once. */
+export const QUESTION_NOTICE_MS = 60 * 1000;
+/** A question on screen this long: the task ends (the agent is left running). */
+export const QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
+export const QUESTION_REASON = 'the agent waits on a question on its screen that nobody on this PC can answer';
+const QUESTION_NOTICE = 'The agent on that PC waits on a question on its screen that nobody there can answer. '
+  + 'The task ends if the question is still there 10 minutes after it appeared.';
+export const ASK_REASON = 'follow-ups need approval on this PC, which runs without a person; '
+  + 'its owner can allow them with `wmux remote allow … --follow-ups direct`';
 
 type MarkInput = { taskId: string; attempted?: boolean; delivered?: true; ptyId?: string };
 
@@ -47,6 +63,8 @@ export interface HeadlessDeliveryDeps {
     pending(): Task[];
     /** Every remote task (`A2aTaskService.listRemote`). */
     remote(): Task[];
+    /** Remote tasks held for a person (`A2aTaskService.listRemoteHeld`). */
+    held(): Task[];
     get(taskId: string): Task | undefined;
   };
   /** The daemon's own `a2a.remote.mark` (attempted / delivered), as main calls it. */
@@ -75,6 +93,14 @@ export interface HeadlessDeliveryDeps {
   transcriptPath(sessionId: string): string | null;
   /** Its size now (0 when it does not exist yet). */
   transcriptSize(path: string): number;
+  /** The daemon's own `a2a.remote.rejectHeld`: a held task ends here and its sender is told the reason. */
+  rejectHeld(input: { taskId: string; reason: string }): Promise<{ ok: boolean; error?: string }>;
+  /**
+   * What the session's screen shows, read as the delivery guard reads it: a
+   * question (a permission dialog, a selection menu, the folder-trust prompt),
+   * nothing of the kind, or cells it could not read.
+   */
+  questionOnScreen?(sessionId: string): Promise<'dialog' | 'clear' | 'unknown'>;
   /** The daemon's own `a2a.remote.reply`, as main calls it. */
   reply(input: { taskId: string; workspaceId: string; text: string; ptyId: string }): Promise<{ ok: boolean; error?: string }>;
   /**
@@ -119,6 +145,24 @@ export type EpisodeOutcome =
 /** The hash a delivered prompt is recognized by in the transcript. */
 export function promptHash(prompt: string): string {
   return hashOf(sanitizeBracketedPastePayload(prompt));
+}
+
+/**
+ * A reply within the body limit: the start of `text`, cut on a code point,
+ * then a marker naming the bytes left out. The marker counts in the limit.
+ */
+export function cutReply(text: string, max = A2A_REMOTE_BODY_MAX): string {
+  const bytes = Buffer.byteLength(text, 'utf8');
+  if (bytes <= max) return text;
+  const marker = (n: number): string => `\n\n[… cut: ${n} bytes not sent]`;
+  // The marker for all of it is the longest one this cut can need.
+  const kept = truncateUtf8(text, max - Buffer.byteLength(marker(bytes), 'utf8'));
+  return kept + marker(bytes - Buffer.byteLength(kept, 'utf8'));
+}
+
+/** Oldest first (when each reached this PC), so follow-ups are typed in the order they were sent. */
+function oldestFirst(tasks: Task[]): Task[] {
+  return [...tasks].sort((a, b) => a.metadata.createdAt.localeCompare(b.metadata.createdAt) || a.id.localeCompare(b.id));
 }
 
 function hashOf(text: string): string {
@@ -240,6 +284,8 @@ export class HeadlessDelivery {
   private readonly unsentMarks = new Map<string, MarkInput>();
   /** Sessions whose start is ending: nothing more is typed into them. */
   private readonly ending = new Set<string>();
+  /** The question clock of each session's current task (owed, or in its turn). */
+  private readonly questions = new Map<string, { taskId: string; since: number | null; probedAt: number; noticed: boolean }>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
   /** Stopped (the daemon shutting down): a pass under way types nothing more. */
@@ -277,13 +323,39 @@ export class HeadlessDelivery {
       }
       if (!this.deps.mode.active()) return;
       const starts = this.deps.starts.list();
-      for (const task of this.deps.tasks.pending()) {
+      await this.refuseAsked(starts);
+      // The task each session works on, or waits to: its question clock runs.
+      const current = new Map<string, { taskId: string; workspaceId: string }>();
+      // Sessions whose oldest owed task was looked at: a newer one waits behind it.
+      const taken = new Set<string>();
+      for (const task of oldestFirst(this.deps.tasks.pending())) {
         if (this.stopped) return;
         try {
-          await this.offer(task, starts);
+          const rec = this.headOf(task, starts);
+          if (rec && taken.has(rec.sessionId)) continue;
+          if (rec) taken.add(rec.sessionId);
+          const unsent = this.unsentMarks.get(task.id);
+          if (unsent) {
+            // Only the mark is tried again: the task is never typed in a second time for it.
+            if ((await this.markSafely(unsent)).ok) this.unsentMarks.delete(task.id);
+            continue;
+          }
+          if (!rec || this.episodes.has(rec.sessionId)) continue;
+          await this.offer(task, rec);
+          if (!this.episodes.has(rec.sessionId) && !this.ended(task.id)) current.set(rec.sessionId, { taskId: task.id, workspaceId: rec.workspaceId });
         } catch (err) {
           this.deps.log('warn', `[headless] task ${task.id}: not typed in: ${errMsg(err)}`);
           this.backoff(task.id);
+        }
+      }
+      // A turn that ended and is only being finished (its reply or move tried again) has no question clock.
+      for (const ep of this.episodes.values()) if (!ep.outcome) current.set(ep.sessionId, { taskId: ep.taskId, workspaceId: ep.workspaceId });
+      for (const sessionId of [...this.questions.keys()]) if (!current.has(sessionId)) this.questions.delete(sessionId);
+      for (const [sessionId, cur] of current) {
+        try {
+          await this.watchQuestion(sessionId, cur.taskId, cur.workspaceId);
+        } catch (err) {
+          this.deps.log('warn', `[headless] task ${cur.taskId}: the screen could not be checked: ${errMsg(err)}`);
         }
       }
     } finally {
@@ -300,6 +372,7 @@ export class HeadlessDelivery {
   async startEnding(rec: HeadlessStartRecordV1, why: string): Promise<void> {
     this.ending.add(rec.sessionId);
     this.episodes.delete(rec.sessionId);
+    this.questions.delete(rec.sessionId);
     for (const task of this.deps.tasks.remote()) {
       const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
       if (marker?.direction !== 'inbound' || task.metadata[localSideOf(task)].workspaceId !== rec.workspaceId) continue;
@@ -327,21 +400,89 @@ export class HeadlessDelivery {
     return this.ownerOf(task, this.deps.starts.list())?.sessionId === sessionId;
   }
 
-  /** Type an owed task in, if it is this run's headless start's and its agent is free. */
-  private async offer(task: Task, starts: readonly HeadlessStartRecordV1[]): Promise<void> {
-    const unsent = this.unsentMarks.get(task.id);
-    if (unsent) {
-      // Only the mark is tried again: the task is never typed in a second time for it.
-      if ((await this.markSafely(unsent)).ok) this.unsentMarks.delete(task.id);
-      return;
-    }
+  /** The start an owed task is to be typed into: an inbound task not delivered, held or ended, of this run's live start. */
+  private headOf(task: Task, starts: readonly HeadlessStartRecordV1[]): HeadlessStartRecordV1 | null {
     const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
-    if (!marker || marker.direction !== 'inbound' || marker.delivered === true || marker.held) return;
-    // Only the start's first task is typed in for now: a later task on its link (a follow-up) is left as it is.
-    if (marker.messageId !== spawnFirstMessageId(marker.linkId as SpawnLinkId)) return;
-    if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return;
-    const rec = this.ownerOf(task, starts);
-    if (!rec || this.episodes.has(rec.sessionId)) return;
+    if (!marker || marker.direction !== 'inbound' || marker.delivered === true || marker.held) return null;
+    if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return null;
+    return this.ownerOf(task, starts);
+  }
+
+  private ended(taskId: string): boolean {
+    const state = this.deps.tasks.get(taskId)?.status.state;
+    return !state || (TERMINAL_STATES as readonly string[]).includes(state);
+  }
+
+  /**
+   * A follow-up held for a person (`--follow-ups ask`) on one of this run's
+   * live starts: nobody here can approve it, so it is refused at once and its
+   * sender told why. Holds on any other pane are left alone.
+   */
+  private async refuseAsked(starts: readonly HeadlessStartRecordV1[]): Promise<void> {
+    for (const task of this.deps.tasks.held()) {
+      const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
+      if (marker?.direction !== 'inbound' || marker.held !== 'awaiting-approval') continue;
+      if (marker.messageId === spawnFirstMessageId(marker.linkId as SpawnLinkId) || !this.ownerOf(task, starts)) continue;
+      const wait = this.retry.get(task.id);
+      if (wait && wait.at > this.now()) continue;
+      try {
+        const res = await this.deps.rejectHeld({ taskId: task.id, reason: ASK_REASON });
+        if (res.ok) {
+          this.retry.delete(task.id);
+          this.deps.log('info', `[headless] task ${task.id}: a follow-up refused (follow-ups need approval)`);
+          continue;
+        }
+        this.deps.log('warn', `[headless] task ${task.id}: the follow-up could not be refused: ${res.error ?? 'unknown'}`);
+      } catch (err) {
+        this.deps.log('warn', `[headless] task ${task.id}: the follow-up could not be refused: ${errMsg(err)}`);
+      }
+      this.backoff(task.id);
+    }
+  }
+
+  /**
+   * The question clock of a session's current task: started by a question on
+   * its screen, reset when the screen shows none, untouched by a screen it
+   * could not read. The asking PC is told once at QUESTION_NOTICE_MS; at
+   * QUESTION_TIMEOUT_MS the task ends (canceled if it was never typed in,
+   * failed inside its turn). The agent itself is left running, nothing typed.
+   */
+  private async watchQuestion(sessionId: string, taskId: string, workspaceId: string): Promise<void> {
+    if (!this.deps.questionOnScreen) return;
+    const now = this.now();
+    let q = this.questions.get(sessionId);
+    if (!q || q.taskId !== taskId) {
+      q = { taskId, since: null, probedAt: Number.NEGATIVE_INFINITY, noticed: false };
+      this.questions.set(sessionId, q);
+    }
+    if (now - q.probedAt < QUESTION_PROBE_MS) return;
+    q.probedAt = now;
+    const seen = await this.deps.questionOnScreen(sessionId);
+    if (seen === 'clear') q.since = null;
+    if (seen !== 'dialog') return;
+    q.since ??= now;
+    const waited = now - q.since;
+    const ep = this.episodes.get(sessionId);
+    const inTurn = ep?.taskId === taskId ? ep : undefined;
+    if (waited >= QUESTION_TIMEOUT_MS) {
+      this.questions.delete(sessionId);
+      this.retry.delete(taskId);
+      this.deps.log('warn', `[headless] task ${taskId}: ${QUESTION_REASON}`);
+      if (inTurn) return this.finish(inTurn, { kind: 'failed', reason: QUESTION_REASON });
+      return this.fail(taskId, workspaceId, QUESTION_REASON);
+    }
+    if (waited >= QUESTION_NOTICE_MS && !q.noticed) {
+      q.noticed = true;
+      const sent = await this.deps.reply({ taskId, workspaceId, text: QUESTION_NOTICE, ptyId: sessionId });
+      if (!sent.ok) this.deps.log('warn', `[headless] task ${taskId}: the asking PC could not be told of the question: ${sent.error ?? 'unknown'}`);
+      // This notice is not the agent answering through its own tools.
+      else if (inTurn) inTurn.agentMessagesAtSend += 1;
+    }
+  }
+
+  /** Type an owed task in (`headOf` found its start, and no turn is open there). */
+  private async offer(task: Task, rec: HeadlessStartRecordV1): Promise<void> {
+    const marker = task.metadata.remote as A2aRemoteTaskState;
     if (marker.attempted) {
       // A write was started and never confirmed (the daemon stopped mid-way): it may be in the agent's
       // input already, and nobody here can look. Never typed again.
@@ -471,7 +612,8 @@ export class HeadlessDelivery {
     if (!task || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return this.drop(ep);
     const replied = task.history.filter((m) => m.role === 'agent').length > ep.agentMessagesAtSend;
     if (!replied) {
-      const text = outcome.text.trim() || '(the agent ended its turn without text)';
+      // Over the body limit: its start goes, with a marker (an answer leads with its result).
+      const text = cutReply(outcome.text.trim() || '(the agent ended its turn without text)');
       let sent: { ok: boolean; error?: string };
       try {
         sent = await this.deps.reply({ taskId: ep.taskId, workspaceId: ep.workspaceId, text, ptyId: ep.sessionId });
@@ -500,6 +642,7 @@ export class HeadlessDelivery {
   /** The episode is done with (only this one: another may have taken the session since). */
   private drop(ep: Episode): void {
     if (this.episodes.get(ep.sessionId) === ep) this.episodes.delete(ep.sessionId);
+    if (this.questions.get(ep.sessionId)?.taskId === ep.taskId) this.questions.delete(ep.sessionId);
   }
 
   private fail(taskId: string, workspaceId: string, reason: string): Promise<boolean> {
