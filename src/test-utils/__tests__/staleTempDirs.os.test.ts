@@ -73,12 +73,14 @@ describe('sweepStaleTempDirs', () => {
     expect(kept()).toEqual([...names].sort());
   });
 
-  it('refuses a prefix that is not a plain mkdtemp prefix', () => {
+  it('refuses a prefix that is not a plain mkdtemp prefix ending in a dash', () => {
     leftover(`${PREFIX}aB3dE9`, 2 * DAY);
+    // What mkdtemp would make for a dashless prefix: still refused.
+    leftover('wmux-sweep-testaB3dE9', 2 * DAY);
     for (const bad of ['', '-', '../wmux-sweep-test-', 'wmux-sweep-test', 'a/b-', '.*-']) {
       expect(sweepStaleTempDirs(bad, { root, inUse: unused }), JSON.stringify(bad)).toEqual([]);
     }
-    expect(kept()).toEqual([`${PREFIX}aB3dE9`]);
+    expect(kept()).toEqual([`${PREFIX}aB3dE9`, 'wmux-sweep-testaB3dE9']);
   });
 
   it.skipIf(isWin)('keeps a link named like its prefix, and what it points to', () => {
