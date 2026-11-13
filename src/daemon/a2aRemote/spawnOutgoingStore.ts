@@ -52,6 +52,8 @@ export interface SpawnOutgoingRecordV1 {
   text?: string;
   /** The asker's name for the started agent: the remote label of the link `started` makes. */
   label?: string;
+  /** Asked by `fanout_start`: its first task holds the peer's `completed` as a report. */
+  fanout?: true;
   state: A2aSpawnOutgoingState;
   code?: A2aSpawnCode;
   /** `started`: the link to the agent (the uuid the other PC minted). */
@@ -258,6 +260,7 @@ function coerceRecord(raw: unknown): SpawnOutgoingRecordV1 | null {
     from: { workspaceId: from['workspaceId'] as string, paneId: from['paneId'] as string },
     callerKey, ...(typeof requestKey === 'string' ? { requestKey } : {}), ...(typeof text === 'string' ? { text } : {}),
     ...(name ? { label: name } : {}),
+    ...(raw['fanout'] === true ? { fanout: true as const } : {}),
     state: state as A2aSpawnOutgoingState, ...(code ? { code: code as A2aSpawnCode } : {}),
     ...(typeof linkId === 'string' ? { linkId } : {}),
     createdAt, updatedAt, expiresAt,

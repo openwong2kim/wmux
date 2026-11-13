@@ -282,19 +282,25 @@ PCs and the folder ids (`root`) each one allows.
   10 seconds while such a task is open):
   - its report → `review_requested` (it stops there; only the owner marks a
     task completed);
+  - the agent asking you → `input_required`;
+  - the task failing or being cancelled there → the same here.
+
+  A headless box (`wmux headless`) also reports what its agent is doing, and
+  the row follows that too. A PC running the app reports none of this yet, so
+  there the row stays `working` through these:
   - a question on the agent's screen → `input_required`, naming only the kind
     (permission, plan, menu, dialog, trust) and the PC;
   - an agent that stopped with no reply and no report → `input_required`;
   - a usage limit → still `working`, with `pending.waitingOn: 'usage-limit'`
     and the reset time in the poll (that PC resumes it by itself);
-  - the task failing or being cancelled there → the same here.
+  - an agent gone (below).
 
   After a report, a follow-up that sets the agent working again moves the row
   on as above, and a later report moves it back to `review_requested`. An
   agent that PC reports gone, or a task this PC no longer lists, fails the row
   after a minute if nothing ended the task meanwhile, and it stays failed.
-  Tasks on that PC end when its daemon stops; they are not resumed. Nothing
-  the other PC writes goes into the row.
+  Tasks on a headless box end when its daemon stops; they are not resumed.
+  Nothing the other PC writes goes into the row.
 - **Being told.** The pane that started the fan-out gets the one-line fan-out
   nudge when a row needs input or fails. The report itself arrives there as
   the agent's reply.
@@ -306,8 +312,10 @@ PCs and the folder ids (`root`) each one allows.
   minutes). A post in the task's mission channel is kept, but nobody on the
   other PC reads it: the reply says so.
 - **Ending it.** Closing the mission (or cancelling or finishing its row)
-  ends the agent on the other PC: its link is revoked now, or as soon as a
-  late start arrives.
+  revokes the agent's link now, or as soon as a late start arrives, and its
+  task ends on both PCs. A headless box then ends the agent. On a PC running
+  the app the agent's pane keeps running there, owned by that PC's person:
+  nothing more reaches it from here.
 - **After a rollback.** A wmux from before this feature keeps the task row
   but does not revoke links. Closing the mission closes the row; an agent
   that already started on the other PC keeps running until you revoke its

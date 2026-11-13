@@ -444,6 +444,32 @@ describe('A2aTaskService — a company task\'s remote completion is held as a re
     expect(remoteOf(restored, 'rt-out').inbox?.at(-1)).toEqual(plain);
   });
 
+  it('a fan-out task (marked when this host made it) holds the peer\'s completed as a report, and a follow-up\'s working replaces it', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'rt-fo',
+      title: 'T',
+      from: { workspaceId: 'ws-local', name: 'Local', paneId: 'pane-l' },
+      to: { workspaceId: REMOTE_WS, name: 'pc-b/ws/pane' },
+      history: [msg('m-0', 'please')],
+      remote: { ...marker('outbound'), fanout: true },
+    });
+    await svc.applyRemoteState({ taskId: 'rt-fo', linkId: LINK, messageId: 's1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-fo', linkId: LINK, messageId: 's2', to: 'completed', summary: 'done', message: 'Done.' });
+    expect(svc.getTask('rt-fo')?.status.state).toBe('input-required');
+    expect(remoteOf(svc, 'rt-fo')).toMatchObject({ reported: 's2', fanout: true });
+    expect(lastPayload(log)).toMatchObject({ to: 'input-required', remoteAsked: 'completed', remoteMessageId: 's2' });
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(restored.getTask('rt-fo')?.status.state).toBe('input-required');
+    expect(remoteOf(restored, 'rt-fo')).toMatchObject({ reported: 's2', fanout: true });
+    // A follow-up sets the agent working again: the task is still open and the report is gone.
+    expect((await svc.applyRemoteState({ taskId: 'rt-fo', linkId: LINK, messageId: 's3', to: 'working' })).ok).toBe(true);
+    expect(svc.getTask('rt-fo')?.status.state).toBe('working');
+    expect(remoteOf(svc, 'rt-fo')).not.toHaveProperty('reported');
+  });
+
   it('a non-company remote task keeps today\'s completion', async () => {
     const log = newLog();
     const svc = newService(log);

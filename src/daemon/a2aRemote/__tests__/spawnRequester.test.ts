@@ -195,6 +195,15 @@ describe('answers', () => {
     expect(task.metadata.remote).toMatchObject({ direction: 'outbound', linkId, hostId: B });
   });
 
+  it('started from a fan-out ask: its first task is marked fan-out here (a hand ask\'s is not)', async () => {
+    const fan = asSpawnLinkId(crypto.randomUUID())!;
+    const hand = asSpawnLinkId(crypto.randomUUID())!;
+    expect(await asks.onResult(B, started(askOk({ budget: 'fanout', callerKey: 'fanout-key' }), fan))).toBe(true);
+    expect(await asks.onResult(B, started(askOk(), hand))).toBe(true);
+    expect(tasks.getTask(remoteTaskId(fan, spawnFirstMessageId(fan)))!.metadata.remote).toMatchObject({ direction: 'outbound', fanout: true });
+    expect(tasks.getTask(remoteTaskId(hand, spawnFirstMessageId(hand)))!.metadata.remote).not.toHaveProperty('fanout');
+  });
+
   it('a started answer this PC could not write is taken again, without a second link', async () => {
     const id = askOk();
     const result = started(id);
