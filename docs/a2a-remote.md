@@ -244,9 +244,30 @@ it is linked to, the way it briefs a staff pane on this PC:
 - **Who needs an open port.** Only the server (the PC that created the
   invite) accepts inbound connections. The joiner only connects out. If one
   PC cannot accept inbound connections, make it the joiner.
-- **Bind address.** The listener binds all interfaces (`0.0.0.0`). Every
-  request still needs a valid peer credential, and pairing needs an open
-  invite.
+- **Bind address.** The listener binds all interfaces (`0.0.0.0`) by
+  default. To bind one address, stop the wmux daemon, set
+  `a2aRemote.bindHost` in wmux's `config.json` to an IPv4 address (for
+  example a tailnet `100.x` address) or `localhost` (127.0.0.1), and start
+  it again.
+  - Invites then offer only that address, with no machine name and no
+    alternates, and tailnet discovery opens only when it is this PC's
+    tailnet address.
+  - A PC paired before the change keeps the addresses its invite named
+    and may try ones the listener no longer answers on first. Pair it
+    again to give it only the bound address.
+  - A loopback address (`127.0.0.1`, `localhost`) can be reached only
+    from this same PC, so the firewall check leaves it out.
+  - The address must exist when the listener starts. If it does not (a
+    tailnet address before Tailscale is up), Settings shows the address
+    problem; turn **Accept connections from other PCs** off and on once
+    it exists.
+  - A value that is not an IPv4 address or `localhost` (an IPv6 address
+    included: an invite names an IPv4 address) keeps the listener down.
+    The daemon log and Settings name the value; fix it and restart the
+    daemon. `0.0.0.0` is the same as no setting.
+
+  Every request still needs a valid peer credential, and pairing needs an
+  open invite.
 - **No proxy.** The joiner connects directly. `HTTP_PROXY`/`HTTPS_PROXY`
   and similar settings are ignored on purpose, since the connection is
   pinned to one certificate.

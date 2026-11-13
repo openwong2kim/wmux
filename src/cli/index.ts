@@ -88,6 +88,9 @@ DAEMON (headless lifecycle, no Electron/GUI required)
   daemon install-service            Linux: start the daemon at boot and keep it
                                     after logout (systemd --user unit)
   daemon uninstall-service          Remove that unit (the running daemon stays)
+  daemon headless on|off|status     Host without the desktop app: let the daemon
+                                    start agents that paired PCs' allow rules match
+  daemon headless release <id>      Drop the hold on a start whose processes were checked
 
 WEB ACCESS (browser / PWA)
   web                               Serve wmux panes to a browser (read-only,
@@ -157,6 +160,9 @@ WEB ACCESS (browser / PWA)
                                     the sign-in, and the proxy must drop a
                                     client's own copy of the header
         [--status]                  Show whether the web server is running
+        [--show-token]              Also print the access token and the
+                                    addresses that carry it (left out by
+                                    default, --json included)
         [--stop]                    Stop the web server and revoke all web
                                     credentials
   web pair --name <device>          Start a pairing on the RUNNING web server

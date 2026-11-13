@@ -31,6 +31,22 @@ describe('ANSI snapshot backend selection', () => {
     expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'rust', reason: 'native' });
   });
 
+  it.each([['rust', true], ['node', false]] as const)('reads the removed shadow mode as unset on the %s engine', async (engine, rust) => {
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'shadow');
+    vi.stubEnv('WMUX_TERMINAL_CORE', engine);
+    nativeSuccess(request.initial);
+    const reference = vi.fn(async () => success);
+    const out = await selectAnsiSnapshot(request, reference);
+    if (rust) {
+      expect(out).toMatchObject({ ...success, durationMs: expect.any(Number) });
+      expect(reference).not.toHaveBeenCalled();
+    } else {
+      expect(out).toBe(success);
+      expect(reference).toHaveBeenCalledTimes(1);
+      expect(native).not.toHaveBeenCalled();
+    }
+  });
+
   it.each([['off', 'rust'], [undefined, 'node']])('keeps xterm with mode %s on the %s engine', async (mode, engine) => {
     vi.stubEnv('WMUX_RUST_SNAPSHOT', mode);
     vi.stubEnv('WMUX_TERMINAL_CORE', engine);

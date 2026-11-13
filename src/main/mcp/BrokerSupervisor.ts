@@ -5,6 +5,7 @@ import { app } from 'electron';
 import { canConnectBrokerPipe } from './brokerProbe';
 import { brokerOffEffects, type BrokerOffEffects } from './brokerOffMarker';
 import { parseBrokerConnectionsReport, type BrokerDownReason, type BrokerStatus } from '../../shared/mcpSessions';
+import { processStartTime } from '../../shared/processStartTime';
 
 /**
  * Supervises the shared MCP broker process (Option A,
@@ -50,6 +51,8 @@ export class BrokerSupervisor {
   private reclaimTimer: NodeJS.Timeout | null = null;
   /** When the current child was spawned; null while none runs. */
   private childStartedAt: number | null = null;
+  /** The current child's start time as the OS reports it, read right after the spawn. */
+  private childProcessStartedAt: string | null = null;
   /** Open connections, as the current child last reported them. */
   private connections = 0;
   private crashExits = 0;
@@ -64,14 +67,26 @@ export class BrokerSupervisor {
   private inflight: string[] = [];
   private lastCrashTools: string[] = [];
   private readonly brokerOff: BrokerOffEffects;
+  private readonly startTimeOf: (pid: number) => bigint | null;
 
-  constructor(opts: { brokerOff?: BrokerOffEffects } = {}) {
+  constructor(opts: { brokerOff?: BrokerOffEffects; startTimeOf?: (pid: number) => bigint | null } = {}) {
     this.brokerOff = opts.brokerOff ?? brokerOffEffects();
+    this.startTimeOf = opts.startTimeOf ?? processStartTime;
   }
 
-  /** The running broker's pid, for telling its relayed calls apart (peer pid measurement). */
-  get pid(): number | null {
-    return this.child?.pid ?? null;
+  /**
+   * The broker this supervisor spawned: its pid, and the start time the OS
+   * reported for it right after the spawn (null when that could not be read).
+   * Null while no child runs.
+   */
+  get identity(): { pid: number; startedAt: string | null } | null {
+    const pid = this.child?.pid;
+    return pid === undefined ? null : { pid, startedAt: this.childProcessStartedAt };
+  }
+
+  /** True while another broker serves the pipe and this supervisor stands down for it. */
+  get standingDown(): boolean {
+    return this.reclaimTimer !== null;
   }
 
   /** Counts for `wmux doctor` (mcp.sessions.summary). */
@@ -85,7 +100,7 @@ export class BrokerSupervisor {
       crashExits: this.crashExits,
       spawnFailures: this.spawnFailures,
       standDowns: this.standDowns,
-      standingDown: this.reclaimTimer !== null,
+      standingDown: this.standingDown,
       downReason: this.downReason(),
       lastCrashTools: [...this.lastCrashTools],
     };
@@ -146,6 +161,8 @@ export class BrokerSupervisor {
     });
     this.child = child;
     this.childStartedAt = startedAt;
+    const processStartedAt = child.pid === undefined ? null : this.startTimeOf(child.pid);
+    this.childProcessStartedAt = processStartedAt === null ? null : String(processStartedAt);
     this.connections = 0;
     this.inflight = [];
     console.log(`[BrokerSupervisor] broker started pid=${child.pid}`);
@@ -224,6 +241,7 @@ export class BrokerSupervisor {
   private clearChild(): void {
     this.child = null;
     this.childStartedAt = null;
+    this.childProcessStartedAt = null;
     this.connections = 0;
     this.inflight = [];
   }

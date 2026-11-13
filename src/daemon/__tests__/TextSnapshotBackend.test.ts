@@ -15,6 +15,24 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.resetAllMocks(); });
 
 describe('opt-in Rust text delivery', () => {
+  it('reads the removed shadow mode as unset: Rust on the rust engine', async () => {
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'shadow');
+    vi.stubEnv('WMUX_TERMINAL_CORE', 'rust');
+    native.mockResolvedValueOnce(success);
+    const reference = vi.fn(async () => success);
+    expect(await selectTextSnapshot(req, reference)).toMatchObject({ ...success, durationMs: expect.any(Number) });
+    expect(reference).not.toHaveBeenCalled();
+  });
+
+  it('reads the removed shadow mode as unset: xterm on the node engine, and never runs native', async () => {
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'shadow');
+    vi.stubEnv('WMUX_TERMINAL_CORE', 'node');
+    const reference = vi.fn(async () => success);
+    expect(await selectTextSnapshot(req, reference)).toBe(success);
+    expect(reference).toHaveBeenCalledTimes(1);
+    expect(native).not.toHaveBeenCalled();
+  });
+
   it.each(['', 'off', 'unknown'])('leaves the reference authoritative with mode %s', async mode => {
     vi.stubEnv('WMUX_RUST_SNAPSHOT', mode);
     const reference = vi.fn(async () => success);

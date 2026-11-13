@@ -262,10 +262,19 @@ export interface RpcContext {
   /**
    * The pid the OS reports for the connection's peer (shared/peerPid.ts), on
    * macOS and Linux unix sockets. Set ONLY by PipeServer through the dispatch
-   * options, never from the request. Measurement for now: handlers log it
-   * beside the pids a call names, and nothing decides on it yet.
+   * options, never from the request. a2a.resolve.identity takes a pid claim
+   * only from this process, or from the broker main spawned
+   * (main/pipe/handlers/peerPidShadow.ts).
    */
   peerPid?: number;
+  /**
+   * The start time of the process `peerPid` named when the connection was
+   * accepted (shared/processStartTime.ts), as a decimal string. Set only by
+   * PipeServer, and absent when it could not be read.
+   */
+  peerStartedAt?: string;
+  /** Set only by PipeServer for a request that came over the loopback TCP fallback (Windows). */
+  viaTcp?: true;
   clientName?: string;
   clientVersion?: string;
   /**

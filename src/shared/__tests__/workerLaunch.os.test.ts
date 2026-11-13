@@ -8,6 +8,7 @@ import {
   FANOUT_WORKER_DISALLOWED_TOOLS,
   applyWorkerPermissionFlags,
   workerLaunchFlags,
+  toolRuleCovers,
   MODEL_ENV_MARKER,
   WORKER_GATEWAY_ENV,
   WORKER_MODEL_ENV,
@@ -134,6 +135,19 @@ describe('applyWorkerPermissionFlags', () => {
       `claude ${PROMPT} --dangerously-skip-permissions ${LISTS}`,
     );
     expect(workerLaunchFlags('acceptEdits')).toBe(`--permission-mode acceptEdits ${LISTS}`);
+  });
+
+  it('never allows a tool it also denies, whatever extra rules are added', () => {
+    const lists = (line: string): [string[], string[]] => [
+      (line.match(/--allowedTools "([^"]*)"/)?.[1] ?? '').split(','),
+      (line.match(/--disallowedTools "([^"]*)"/)?.[1] ?? '').split(','),
+    ];
+    for (const extra of [[], [FANOUT_WORKER_ALLOWED_TOOLS[0]], ['mcp__wmux__*']]) {
+      const [allowed, denied] = lists(workerLaunchFlags('auto', extra));
+      expect(allowed.filter((tool) => denied.some((rule) => toolRuleCovers(rule, tool)))).toEqual([]);
+    }
+    // The base lists alone are unchanged.
+    expect(lists(workerLaunchFlags('auto'))[0]).toEqual([...FANOUT_WORKER_ALLOWED_TOOLS]);
   });
 
   it('replaces every spelling of a permission or tool-list flag a role binding put on the line', () => {

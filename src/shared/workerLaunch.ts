@@ -214,13 +214,21 @@ const PERMISSION_FLAG_FOR_WORKER: Readonly<Record<FanoutWorkerPermissionMode, st
 export function workerLaunchFlags(mode: FanoutWorkerPermissionMode, extraDisallowed: readonly string[] = []): string {
   // Extra rules join the SAME quoted list: claude splits it on commas and
   // spaces outside parentheses, so `Bash(git push*)` stays one rule.
+  const denied = [...FANOUT_WORKER_DISALLOWED_TOOLS, ...extraDisallowed];
+  // A tool denied is not also allowed: the two lists never contradict.
+  const allowed = FANOUT_WORKER_ALLOWED_TOOLS.filter((tool) => !denied.some((rule) => toolRuleCovers(rule, tool)));
   return [
     PERMISSION_FLAG_FOR_WORKER[mode],
-    `--allowedTools "${FANOUT_WORKER_ALLOWED_TOOLS.join(',')}"`,
-    `--disallowedTools "${[...FANOUT_WORKER_DISALLOWED_TOOLS, ...extraDisallowed].join(',')}"`,
+    `--allowedTools "${allowed.join(',')}"`,
+    `--disallowedTools "${denied.join(',')}"`,
   ]
     .filter((p) => p.length > 0)
     .join(' ');
+}
+
+/** Whether a tool rule names `tool`: the same rule, or a `prefix*` rule it starts with. */
+export function toolRuleCovers(rule: string, tool: string): boolean {
+  return rule === tool || (rule.endsWith('*') && !rule.includes('(') && tool.startsWith(rule.slice(0, -1)));
 }
 
 interface Span {

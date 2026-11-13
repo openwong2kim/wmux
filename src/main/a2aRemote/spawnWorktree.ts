@@ -203,7 +203,8 @@ export function gitRunner(repo: string, opts: SpawnWorktreeOptions & { timeoutMs
 }
 
 async function removeWorktree(git: Git, root: string, worktreePath: string, branch: string): Promise<void> {
-  await git(['worktree', 'remove', '--force', worktreePath]);
+  // Twice: a `worktree add` that was cut leaves its worktree locked ("initializing").
+  await git(['worktree', 'remove', '--force', '--force', worktreePath]);
   await git(['worktree', 'prune']);
   await git(['branch', '-D', branch]);
   // A folder git no longer knows: removed only as a plain child of the root.

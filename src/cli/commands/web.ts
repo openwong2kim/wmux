@@ -171,10 +171,12 @@ async function runWebPair(args: string[], jsonMode: boolean): Promise<void> {
 export async function handleWeb(args: string[], jsonMode: boolean): Promise<void> {
   // `pair` reads the running server and never (re)starts it — see runWebPair.
   if (args[0] === 'pair') return runWebPair(args.slice(1), jsonMode);
+  // The access token and its `?token=` addresses print only on request.
+  const showToken = hasFlag(args, '--show-token');
   // --status / --stop are control verbs; otherwise we (re)start.
   if (hasFlag(args, '--status')) {
     const response = await sendDaemonStringRequest('daemon.web.status', {});
-    return report(response, jsonMode, 'status');
+    return report(response, jsonMode, 'status', showToken);
   }
   if (hasFlag(args, '--stop')) {
     // The read-before-stop ordering and the "only remove our own" rule now live
@@ -357,7 +359,7 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
     jsonMode && start.value.ok && isRecord(start.value.result)
       ? { ...start.value, result: { ...start.value.result, kept: plan.kept, narrowed: plan.narrowed } }
       : start.value;
-  return report(value, jsonMode, 'start', start.tailnet);
+  return report(value, jsonMode, 'start', showToken, start.tailnet);
 }
 
 /**
@@ -533,12 +535,44 @@ export function deviceCredentialWarning(info: Pick<WebInfo, 'deviceCredentials'>
   ];
 }
 
+/**
+ * The status without the access token: `token` is left out and every
+ * `?token=` address loses that parameter (an address that does not parse is
+ * left out). `tokenHidden` says a token was there.
+ */
+export function withoutToken(result: Record<string, unknown>): Record<string, unknown> {
+  const token = result['token'];
+  if (typeof token !== 'string' || token === '') return result;
+  const rest = { ...result };
+  delete rest['token'];
+  const urls = Array.isArray(result['urls'])
+    ? result['urls'].flatMap((raw) => {
+        const url = String(raw);
+        let bare: string;
+        try {
+          const parsed = new URL(url);
+          parsed.searchParams.delete('token');
+          bare = parsed.toString();
+        } catch {
+          // Not a URL `new URL` reads (an unbracketed IPv6 host): cut the
+          // parameter out of the text instead.
+          bare = url.replace(`?token=${token}`, '').replace(`&token=${token}`, '');
+        }
+        return bare.includes(token) ? [] : [bare];
+      })
+    : undefined;
+  return { ...rest, ...(urls ? { urls } : {}), tokenHidden: true };
+}
+
 function report(
-  response: RpcResponse,
+  raw: RpcResponse,
   jsonMode: boolean,
   mode: 'start' | 'status',
+  showToken: boolean,
   tailnet?: TailnetServe,
 ): void {
+  const response =
+    !showToken && raw.ok && isRecord(raw.result) ? { ...raw, result: withoutToken(raw.result) } : raw;
   if (jsonMode) {
     // A `--json` consumer must see the tailnet front door too — it is where the
     // phone connects, and it is nowhere in the daemon's own status payload.
@@ -548,7 +582,7 @@ function report(
     return printResult(response);
   }
   ensureOk(response);
-  const info = response.result as WebInfo;
+  const info = response.result as WebInfo & { tokenHidden?: boolean };
 
   if (!info.running) {
     console.log('wmux web is not running. Start it with `wmux web`.');
@@ -615,7 +649,7 @@ function report(
   if (tailnet) {
     console.log('');
     console.log('  Open on your phone (any device on your tailnet):');
-    console.log(`    ${tailnet.url}/?token=${info.token ?? ''}`);
+    console.log(`    ${tailnet.url}/${info.token ? `?token=${info.token}` : ''}`);
   } else if (urls.length) {
     console.log('');
     // A front means the phone can reach this even though the bind is loopback.
@@ -625,6 +659,11 @@ function report(
     for (const u of urls) console.log(`    ${u}`);
   } else if (info.token) {
     console.log(`  token: ${info.token}`);
+  }
+  if (info.tokenHidden) {
+    console.log('');
+    console.log('  The access token is hidden. `wmux web --status --show-token` prints');
+    console.log('  it and the addresses that sign in with it, without a restart.');
   }
 
   // Pairing code: far easier to key in on a phone than the 36-char UUID token.
@@ -702,7 +741,7 @@ function report(
   }
   console.log('');
   console.log('  This stays on across daemon restarts (crash, reboot, update) and the');
-  console.log('  token above keeps working, so a phone left open reconnects by itself.');
+  console.log(`  ${info.tokenHidden ? 'access token' : 'token above'} keeps working, so a phone left open reconnects by itself.`);
   console.log('  Stop with `wmux web --stop` — that also revokes every web credential.');
   console.log('');
 }

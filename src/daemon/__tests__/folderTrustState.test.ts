@@ -456,7 +456,7 @@ describe('a ring that outgrew the tail window, on a pane that went idle (#2855)'
       wholeParses++;
       return { ok: false, reason: 'budget' };
     };
-    const log = (): void => {};
+    const log = (): void => undefined;
     const now = Date.now();
     const clock = vi.spyOn(Date, 'now');
     try {
@@ -621,8 +621,9 @@ describe("the daemon's writers and their folder-trust policy", () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf8');
 
   it.each([
-    ['a prompt delivery (schedule, run, nudge) by default', "trustRefusal(sessionManager, id, writer, trust.refuseUnknown ?? true, { once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS })"],
+    ['a prompt delivery (schedule, run, nudge) by default, and at any dialog', "trustRefusal(sessionManager, id, writer, trust.refuseUnknown ?? true, { once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS, refuseDialog: true })"],
     ['the usage-limit continue: only the armed one', "'usage-limit continue', { refuseUnknown: armed, onRefused: () => { refused = true; } });"],
+    ['the usage-limit continue: a refusal after the paste stays final', "return refused && result !== 'error' ? 'folder_trust' : result;"],
     ['the scheduled-run retry continue: unknown too', "'automation retry', { refuseUnknown: true })"],
     ['both continues through the shared trust-checked delivery', "}, writer, trust);"],
     ['writeIfUnchanged: all but a line a person asked for', "const trustOpts = human ? { once: true } : { once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS };"],
