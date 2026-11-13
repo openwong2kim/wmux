@@ -168,6 +168,9 @@ const refused: Case[] = [
   synthetic('designate-uk-g2', '\x1b*A\x1bn#', 'xterm'),
   synthetic('ls2-with-c0-inside', '\x1b*0\x1b\x07nq', 'xterm'),
   synthetic('designate-unknown-final', '\x1b(0\x1b(Xq', 'xterm'),
+  // xterm's DECSET 2 puts ASCII in G0-G3; vte ignores it.
+  synthetic('decanm-resets-g2', '\x1b*0\x1b[?2h\x1bnq', 'xterm'),
+  synthetic('decanm-resets-g0', '\x1b(0\x1b[?2hq', 'xterm'),
   // xterm restores only the slots it saved, and DECAWM/DECOM from the save.
   synthetic('decrc-later-g2', '\x1b7\x1b*0\x1b8\x1bnq', 'xterm'),
   synthetic('alt-1049-later-g2', '\x1b(0\x1b[?1049h\x1b*0\x1b[?1049l\x1bnq', 'xterm'),

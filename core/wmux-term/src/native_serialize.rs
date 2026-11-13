@@ -478,7 +478,7 @@ fn run_by_the_feed(plain: &[u8]) -> bool {
 /// each): a designation into G0-G3 other than ASCII or DEC line drawing,
 /// selective erase, SL/SR, DECIC/DECDC, DECSTR with parameters, SD spelled
 /// `CSI ^` (vte ignores it), ED 1/2 spelled other than `CSI 1 J` /
-/// `CSI 2 J`, the modes 9, 20, 45, 47, 66, 1047 and 1048, SGR 21/53 or
+/// `CSI 2 J`, the modes 2, 9, 20, 45, 47, 66, 1047 and 1048, SGR 21/53 or
 /// malformed colors, and a control the feed runs as xterm does
 /// (`run_by_the_feed`) with a C0 control inside. `sequence` is complete.
 pub(crate) fn divergent(sequence: &[u8]) -> bool {
@@ -551,8 +551,9 @@ fn csi_divergent(rest: &[u8]) -> bool {
         (Some(b'?'), b"", b'h' | b'l') => {
             let mut modes = params.split(';').map(number);
             // vte leaves a synchronized update only on exactly `CSI ? 2026 l`.
+            // xterm's DECSET 2 (DECANM) puts ASCII in G0-G3; vte ignores it.
             params != "2026" && modes.clone().any(|mode| mode == Some(2026))
-                || modes.any(|mode| matches!(mode, Some(3 | 9 | 45 | 66 | 47 | 1047 | 1048)))
+                || modes.any(|mode| matches!(mode, Some(2 | 3 | 9 | 45 | 66 | 47 | 1047 | 1048)))
         }
         (None, b"", b'h' | b'l') => params.split(';').any(|mode| number(mode) == Some(20)),
         (None, b"", b'J') => {
@@ -746,6 +747,8 @@ mod tests {
             "\x1b[38;7;1m",
             "\x1b[?3h",
             "\x1b[?3l",
+            "\x1b[?2h",
+            "\x1b[?1;2l",
             "\x1b[?2026;1l",
             "\x1b[?1;2026h",
             "\x1b[1^",
