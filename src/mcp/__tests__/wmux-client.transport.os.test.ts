@@ -90,12 +90,15 @@ describe.skipIf(isWin)('sendRpc transport', () => {
   it('tells the stale-identity handler only the final answer from main: a failed connection is no answer (#3355)', async () => {
     const { runWithStaleIdentityHandler } = await import('../wmux-client');
     const seen: Array<[string, boolean]> = [];
-    // Nothing listens yet: the first attempt cannot connect and is retried.
-    const call = runWithStaleIdentityHandler((outcome, failed) => { seen.push([outcome, failed]); },
-      () => sendRpc('a2a.task.query' as RpcMethod, {}));
-    await new Promise((resolve) => setTimeout(resolve, 300));
     await listen((id) => JSON.stringify({ id, ok: false, error: 'the workspace you claimed is gone' }));
-    await expect(call).rejects.toThrow(/claimed is gone/);
+    // A socket path nothing listens on: its attempts cannot connect, then the derived path answers.
+    process.env.WMUX_SOCKET_PATH = path.join(tmpHome, 'nothing-here.sock');
+    try {
+      await expect(runWithStaleIdentityHandler((outcome, failed) => { seen.push([outcome, failed]); },
+        () => sendRpc('a2a.task.query' as RpcMethod, {}))).rejects.toThrow(/claimed is gone/);
+    } finally {
+      delete process.env.WMUX_SOCKET_PATH;
+    }
     expect(seen).toEqual([['the workspace you claimed is gone', true]]);
   }, 15_000);
 
