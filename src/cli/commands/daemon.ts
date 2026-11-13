@@ -469,6 +469,12 @@ async function appKnown(wmuxDir: string): Promise<boolean> {
 /** Said by `headless on` and `headless status`: an idle daemon stays up now, and what brings it back after a reboot. */
 export const HEADLESS_STAYS_UP = 'While headless mode is on, the daemon stays running when idle. It does not start again by itself after a reboot or a crash: on Linux, `wmux daemon install-service` starts it at boot; otherwise run `wmux daemon start` again.';
 
+/** After `headless on`: the stays-up rule, and how to start the daemon when none runs now. */
+async function sayStaysUp(say: (line: string) => void): Promise<void> {
+  say(HEADLESS_STAYS_UP);
+  if (!(await headlessIo.daemonView())) say('No daemon answered: start it with `wmux daemon start` (or check `wmux daemon status` if one should be running).');
+}
+
 function headlessFail(message: string): never {
   console.error(`Error: ${message}`);
   process.exit(1);
@@ -526,7 +532,7 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
   if (existsSync(flag)) {
     if (jsonMode) console.log(JSON.stringify({ ok: true, optedIn: true, changed: false }, null, 2));
     else console.log('Headless mode is on already.');
-    say(HEADLESS_STAYS_UP);
+    await sayStaysUp(say);
     return;
   }
   say([
@@ -543,7 +549,7 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
   writeFileSync(flag, `${new Date().toISOString()}\n`, { mode: 0o600 });
   if (jsonMode) console.log(JSON.stringify({ ok: true, optedIn: true, changed: true }, null, 2));
   else console.log('Headless mode: on.');
-  say(HEADLESS_STAYS_UP);
+  await sayStaysUp(say);
 }
 
 /**

@@ -93,13 +93,14 @@ describe('daemon execute-wall — every way of naming a module', () => {
 
 // Headless remote spawn: the daemon starts (and, later, feeds) remote agents
 // itself on a host without the app. Under src/daemon/a2aRemote only the
-// headless starter and the pane port it is given (headlessSessions.ts) may
-// name the pane functions, which index.ts hands them; every other file there
-// stays a transport that cannot open a pane or type into one. Owners are
-// matched by their path below src/daemon.
+// headless starter, the pane port it is given (headlessSessions.ts) and the
+// task delivery that types into those panes (headlessDelivery.ts) may name
+// the pane functions, which index.ts hands them; every other file there stays
+// a transport that cannot open a pane or type into one. Owners are matched by
+// their path below src/daemon.
 const A2A_REMOTE_DIR = path.join(DAEMON_DIR, 'a2aRemote');
 const rel = (file: string): string => path.relative(DAEMON_DIR, file).split(path.sep).join('/');
-const PANE_OWNERS: ReadonlySet<string> = new Set(['a2aRemote/headlessStarter.ts', 'a2aRemote/headlessSessions.ts']);
+const PANE_OWNERS: ReadonlySet<string> = new Set(['a2aRemote/headlessStarter.ts', 'a2aRemote/headlessSessions.ts', 'a2aRemote/headlessDelivery.ts']);
 const PANE_FUNCTIONS = /\b(createSession\w*|destroySession\w*|createWebPane|deliverPromptToSession\w*|deliverScheduledPrompt|ptyProcess|sessionManager|HeadlessSessionPort)\b|\bsessions\(\)/;
 /** What opens, ends or types into a pane, as index.ts names it. */
 const PANE_CLOSURES = /\b(createSessionRpc|destroySessionRpc|deliverPromptToSession\w*|deliverScheduledPrompt|createWebPane|sessionLifecycle|headlessSessionsRef|ptyProcess\.write)\b/;
@@ -133,7 +134,7 @@ function argumentsAt(src: string, open: number): string {
 }
 
 describe('daemon execute-wall — headless remote spawn', () => {
-  it('only the headless starter under a2aRemote names the pane functions', () => {
+  it('only the pane owners under a2aRemote name the pane functions', () => {
     const named = collectTsFiles(A2A_REMOTE_DIR)
       .filter((file) => PANE_FUNCTIONS.test(fs.readFileSync(file, 'utf-8')))
       .map(rel)
@@ -150,7 +151,7 @@ describe('daemon execute-wall — headless remote spawn', () => {
     }
   });
 
-  it('in index.ts, only the headless starter is handed what opens, ends or types into a pane', () => {
+  it('in index.ts, only the pane owners are handed what opens, ends or types into a pane', () => {
     const src = fs.readFileSync(path.join(DAEMON_DIR, 'index.ts'), 'utf-8');
     // Every value imported from ./a2aRemote/* (multi-line imports included), by the file it comes from.
     const fromA2a = new Map<string, string>();

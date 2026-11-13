@@ -163,7 +163,7 @@ describe('headless start', () => {
     expect(input.agentBin).toBe('/home/u/.local/bin/claude');
     // The worker flags and the pinned conversation id; never the prompt.
     expect(input.command).toBe(`claude --session-id ${rec.agentSessionId} ${workerLaunchFlags('auto', HEADLESS_EXTRA_DISALLOWED_TOOLS)}`);
-    for (const tool of ['remote_spawn', 'hand_out', 'a2a_broadcast', 'pane_close', 'automation_propose', 'computer', 'repl_run', 'terminal_send']) {
+    for (const tool of ['remote_spawn', 'hand_out', 'a2a_broadcast', 'pane_close', 'automation_propose', 'computer', 'repl_run', 'terminal_send', 'channel_join', 'channel_create', 'channel_invite']) {
       expect(input.command).toContain(`mcp__wmux__${tool}`);
     }
     expect(input.command).toContain('mcp__wmux__fanout_start');
@@ -557,6 +557,32 @@ describe('headless starts across a crash, a restart, and an unchanged worktree',
     await makeStarter().start(HOST, SPAWN);
     expect(removedTrees).toEqual([]);
     expect(starts.list()).toEqual([]);
+  });
+
+  it('a start that ends tells its tasks why first, while its link can still carry it', async () => {
+    const order: string[] = [];
+    const told: string[] = [];
+    const starter = makeStarter({
+      startEnding: async (_rec, why) => {
+        told.push(why);
+        order.push('told');
+      },
+      paneGone: async () => void order.push('link broken'),
+    });
+    // An earlier run's start: the daemon restarted.
+    record({ runId: 'run-0' });
+    request = { state: 'decided', code: 'started', linkId: LINK };
+    link = { linkId: LINK, state: 'active' } as A2aLinkRecordV1;
+    await starter.reconcile();
+    expect(told).toEqual(['the daemon restarted']);
+    expect(order).toEqual(['told', 'link broken']);
+    // Headless mode turned off, this run.
+    starts.remove(HOST, SPAWN);
+    record();
+    live.add('hl-11111111-2222-4333-8444-555555555555');
+    active = false;
+    await starter.reconcile();
+    expect(told.at(-1)).toBe('headless mode was turned off on that PC');
   });
 
   it('after a restart, the agent of the earlier run is ended by its recorded pid; one that does not exit holds the start', async () => {
