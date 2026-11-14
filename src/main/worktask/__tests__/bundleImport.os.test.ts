@@ -358,6 +358,8 @@ describe('importBundle (real git)', () => {
   it('into a linked worktree: lands in the shared repository, and refuses once its common dir was swapped', async () => {
     const wt = path.join(root, 'linked');
     g(home, 'worktree', 'add', '-q', '-b', 'side', wt, base);
+    // A home repository has one origin.
+    g(home, 'remote', 'add', 'origin', 'https://github.com/o/r.git');
     const opened = await openHomeRepo(wt);
     if (!opened.ok) throw new Error(`not opened: ${opened.reason}`);
     expect(opened).toMatchObject({ linked: true, commonDir: fs.realpathSync.native(path.join(home, '.git')) });
