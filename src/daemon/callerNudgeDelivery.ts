@@ -32,6 +32,8 @@ export interface CallerNudgeDeps {
   usageHeld: () => boolean;
   /** The session's input state; undefined when the session is gone. */
   input: () => { hasDraft(): boolean; isKeyInputQuietFor(ms: number): boolean } | undefined;
+  /** Lets the screen clear a draft mark that outlived its draft (draftScreen.ts). */
+  refreshDraft?: () => Promise<unknown>;
   /** deliverScheduledPrompt bound to the session, slug and incarnation. */
   deliver: (opts: Pick<ScheduledPromptDeliveryDeps, 'authorized' | 'onWrite'>) => Promise<SessionPromptScheduleResult>;
   quietMs?: number;
@@ -46,6 +48,7 @@ export async function deliverCallerNudge(prompt: string, deps: CallerNudgeDeps):
   const quiet = (): boolean => !input.hasDraft() && input.isKeyInputQuietFor(quietMs);
   // Checked here as well as in `authorized`: a refusal there reads as 'error',
   // the same answer as an abort after the paste.
+  await deps.refreshDraft?.();
   if (!quiet()) return { result: 'held', pasted: false };
   let pasted = false;
   const result = await deps.deliver({
