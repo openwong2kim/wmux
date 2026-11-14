@@ -67,7 +67,6 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let template = mem::take(&mut self.cursor.template);
         // wmux: set again below only by a narrowing that reflows.
         self.narrowing_added = 0;
-        self.narrowing_trimmed = 0;
 
         match self.lines.cmp(&lines) {
             Ordering::Less => self.grow_lines(lines),
@@ -511,12 +510,11 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                 self.cursor.point.line = cursor_line_before;
             }
             // wmux: xterm's saved row moves down by every added row, also
-            // those trimmed at the cap; here it moves only with the rows kept
-            // on screen and the history's growth. The snapshot carries the
-            // difference (`native_core.rs`, the column step of `resize`).
-            let grown = self.history_size().saturating_sub(history_before);
+            // those trimmed at the cap or clipped at the last row above; here
+            // it moves only with the rows kept on screen and the history's
+            // growth. The snapshot moves it xterm's way (`native_core.rs`,
+            // the column step of `resize`).
             self.narrowing_added = added;
-            self.narrowing_trimmed = added.saturating_sub(kept + grown);
         }
 
         // Clamp display offset in case some lines went off.

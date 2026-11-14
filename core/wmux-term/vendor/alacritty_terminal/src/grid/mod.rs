@@ -126,18 +126,13 @@ pub struct Grid<T> {
     #[cfg_attr(feature = "serde", serde(skip))]
     pub cursor_saved: bool,
 
-    /// wmux: what the last resize's narrowing reflow did, read by the
+    /// wmux: the rows the last resize's narrowing reflow added, read by the
     /// snapshot for xterm's saved row: xterm moves `savedY` down by every row
-    /// its `_reflowSmaller` adds, also the rows it then trims at the cap,
-    /// while the rows here move with the history. 0 and 0 after any resize
-    /// that did not narrow with reflow.
+    /// its `_reflowSmaller` adds, also the rows it then trims at the cap or
+    /// that this grid clips at the last row. 0 after any resize that did not
+    /// narrow with reflow.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub narrowing_added: usize,
-
-    /// wmux: of `narrowing_added`, the rows that neither stayed on the
-    /// screen nor fit in the history (trimmed at the cap).
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub narrowing_trimmed: usize,
 
     /// Lines in the grid. Each row holds a list of cells corresponding to the
     /// columns in that row.
@@ -169,7 +164,6 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             saved_cursor: Cursor::default(),
             cursor_saved: false,
             narrowing_added: 0,
-            narrowing_trimmed: 0,
             cursor: Cursor::default(),
             lines,
             columns,

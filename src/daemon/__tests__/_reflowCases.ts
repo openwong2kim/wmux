@@ -172,6 +172,15 @@ function trimmedSavedRowCases(): Case[] {
     // The save below the cursor on an empty history: the rows kept on screen
     // push it past the last row, where the grid clips it; xterm's clamp binds.
     ...[1, 3, 100].map((sb) => script(`trim-save-below-cursor-sb${sb}`, [30, 8], [saveBelowCursor, [10, 8], RESTORE], 'rust', sb)),
+    // The save scrolled above the screen, then the history cleared (ED 3):
+    // the clipped rows are not all absorbed by the clamp there.
+    ...[3, 100].map((sb) => script(`trim-save-clipped-after-clear-sb${sb}`, [30, 8], [
+      '\x1b[6;1H\x1b7\x1b[8;1H\n\n\n',
+      [30, 6],
+      `\x1b[3J\x1b[2J\x1b[1;1H${long(30, 'a')}\x1b[2;1H${long(30, 'b')}\x1b[5;1H`,
+      [10, 6],
+      RESTORE,
+    ], 'rust', sb)),
   ];
   // Composed with a later resize before the restore; at 3 and 4 the
   // narrowing trims.
