@@ -164,4 +164,12 @@ describe('turn-end A2A reminder', () => {
     await sweepTurnEndReminders();
     expect(gatedSubmit).toHaveBeenCalledTimes(2);
   });
+
+  it('keeps the turn end when another delivery held the pane, and retries at the next sweep', async () => {
+    useStore.setState({ a2aTasks: { a: task('a', 'submitted', 'pane-r') } });
+    gatedSubmit.mockResolvedValueOnce({ ok: false, reason: 'fresh_context_busy', detail: 'another delivery is still running on this pane' });
+    await turnEnd();
+    await sweepTurnEndReminders();
+    expect(gatedSubmit).toHaveBeenCalledTimes(2);
+  });
 });

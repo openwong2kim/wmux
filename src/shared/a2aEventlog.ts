@@ -82,13 +82,19 @@ export interface A2aTaskTransitionPayload {
    * remote-message dedupe keys on `remoteAsked ?? to`.
    */
   remoteAsked?: 'completed';
+  /** Cross-host A2A: the peer's `working` on a task that ended `completed` here, taken for a follow-up of ours. */
+  followedAgain?: true;
   /**
    * Reopen marker. `'sender_message'` = the sender wrote to a task that had
    * already ended, so it went back to `submitted` for the receiver
    * (`reopenTask`). Like `forced`, this bypasses VALID_TRANSITIONS on purpose;
    * the regular transition API never carries it. Also set when the sender's
    * message hands a reported company task back (`input-required` ->
-   * `working`, an edge VALID_TRANSITIONS has).
+   * `working`, an edge VALID_TRANSITIONS has), and when the sender on
+   * another PC writes again to an inbound task that ended `completed`: it
+   * goes back to `working`, committed by that remote sender
+   * (`appendRemoteMessage` with `reopenCompleted`; the next state is then
+   * told to the peer even if it was told before).
    */
   reopened?: 'sender_message';
 }
@@ -135,6 +141,11 @@ export interface A2aRemoteMarkPayload {
   stateSync?: TaskState;
   /** Task-level: this reply of ours was queued for the peer. */
   sent?: string;
+  /**
+   * With `sent`: that reply went with the request to follow the task again
+   * (`reopen`), so one `working` of the peer's is taken for it.
+   */
+  followUp?: true;
   /** Task-level, inbound: our side read the task now. */
   read?: true;
   /** Task-level, inbound: this receipt was queued for the peer. */

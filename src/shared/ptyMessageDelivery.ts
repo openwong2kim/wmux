@@ -212,8 +212,8 @@ export function resolveAgentSlug(agent?: string | null): AgentSlug | undefined {
  * `pasted`: the text reached the composer but the Enter was withheld. Unless
  * `cleared` too, it is still there: the delivery must not be counted as made,
  * nor pasted again on its own (#2993).
- * `fresh_context_busy` (#1680): another new-task delivery held the pane too
- * long; nothing was written.
+ * `fresh_context_busy` (#1680): another delivery held the pane too long;
+ * nothing was written.
  * `fresh_context_timeout` (#1680): a new-task delivery typed the pane's
  * fresh-context command and never saw it finish, so the text was not written.
  * `usage_limited`: the pane hit its provider's usage limit and is held until

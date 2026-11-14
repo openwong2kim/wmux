@@ -99,6 +99,16 @@ export const FRESH_CONTEXT_UNCHANGED_HOLD_MS = 3_000;
 export const FRESH_CONTEXT_LOCK_WAIT_MS = 4_000;
 
 /**
+ * How long a delivery without a new task waits for the pane's delivery lock.
+ * A delivery holds the pane well under a second when the agent answers (the
+ * submit receipt comes at once), and about 3 s by the constants when no
+ * receipt arrives. Four arriving within 4 s then need at most about 5.4 s;
+ * this stays under the shortest caller's timeout (the company CEO line, 10 s)
+ * minus a delivery of its own.
+ */
+export const PANE_DELIVERY_LOCK_WAIT_MS = 6_000;
+
+/**
  * Main's renderer budget for an a2a new-task send. The renderer's delivery can
  * now include a fresh-context step (up to FRESH_CONTEXT_TIMEOUT_MS after the
  * command, plus the reads before it and the paste after it), which the 5 s

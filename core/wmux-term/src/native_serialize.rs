@@ -581,8 +581,10 @@ fn csi_divergent(rest: &[u8]) -> bool {
 /// `repair_wide`: whether a half-erased fullwidth glyph may be replayed as
 /// the blank its erased partner holds (the stream shifted no cells).
 pub fn serialize(term: &Term<VoidListener>, repair_wide: bool) -> Result<String, &'static str> {
-    // xterm can retain half a wide glyph when clipping the cursor paragraph.
-    // Printing that glyph would wrap instead. Refuse instead of corrupting it.
+    // A fullwidth glyph in the last column cannot be printed there: it would
+    // wrap instead. The cursor paragraph's narrowing resets it as xterm's trim
+    // does (vendored grid `resize_cursor_row`); what is left is the alternate
+    // screen, which xterm does not trim. Refuse instead of corrupting it.
     // The inactive grid is the primary screen only while the alternate one is
     // shown. Otherwise it is a left alternate screen: xterm cleared its cells,
     // and the payload carries none of it (nor its saved cursor, which both

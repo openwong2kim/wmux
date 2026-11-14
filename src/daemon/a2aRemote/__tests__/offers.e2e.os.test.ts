@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { A2A_FEATURE_LINK_OFFER, type A2aLinkOfferRecordV1 } from '../../../shared/a2aRemote';
+import { A2A_FEATURE_LINK_OFFER, A2A_FEATURE_REOPEN, type A2aLinkOfferRecordV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteOfferCreateResult, A2aRemoteOfferResult } from '../../../shared/rpc';
 import type { DaemonConfig } from '../../types';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
@@ -182,7 +182,7 @@ describe('share offers, end to end', () => {
     await pair(a, b);
     await until(() => b.delivery.hub.featuresOf(a.hostId)?.has(A2A_FEATURE_LINK_OFFER) === true);
     const statuses = (await b.rpc('a2a.remote.hosts.status')) as { hosts: Array<{ hostId: string; features?: string[] }> };
-    expect(statuses.hosts.find((h) => h.hostId === a.hostId)?.features).toEqual([A2A_FEATURE_LINK_OFFER]);
+    expect(statuses.hosts.find((h) => h.hostId === a.hostId)?.features).toEqual([A2A_FEATURE_LINK_OFFER, A2A_FEATURE_REOPEN]);
 
     const made = await share(b, a);
     expect(made).toMatchObject({ ok: true, offer: { state: 'open', addedExposure: true } });

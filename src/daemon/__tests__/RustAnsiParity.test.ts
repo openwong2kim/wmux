@@ -540,6 +540,44 @@ function corpus(): Case[] {
   });
 }
 
+// A fullwidth glyph in the cursor's paragraph, cut by a narrowing. xterm does
+// not reflow that paragraph (reflowCursorLine is off); its trim resets a glyph
+// whose lead lands in the new last column to a default cell and drops the
+// trailing half (`BufferLine.resize`).
+const cutAtNine = `${'a'.repeat(9)}한b`;
+const wideEdges: Case[] = [
+  resizedThrough('wide-lead-cut-in-cursor-paragraph', [20, 6], [[cutAtNine, [10, 6]]], ''),
+  resizedThrough('wide-lead-cut-then-typed', [20, 6], [[cutAtNine, [10, 6]]], '\rX'),
+  // The lead fits and the trailing half takes the new last column: nothing to reset.
+  resizedThrough('wide-trailing-half-at-the-edge', [20, 6], [[`${'a'.repeat(8)}한b`, [10, 6]]], ''),
+  // A soft-wrapped row of the cursor's paragraph keeps its wrap.
+  resizedThrough('wide-lead-cut-on-a-wrapped-row', [20, 6], [[`${'a'.repeat(9)}한${'a'.repeat(12)}`, [10, 6]]], ''),
+  resizedThrough('wide-lead-cut-on-the-cursor-row-of-a-wrap', [20, 6], [[`${'c'.repeat(20)}${cutAtNine}`, [10, 6]]], ''),
+  // Its colour and link go with it: the default cell has neither.
+  resizedThrough('wide-lead-cut-colored', [20, 6], [[`${'a'.repeat(9)}\x1b[31;44m한\x1b[0mb`, [10, 6]]], ''),
+  resizedThrough('wide-lead-cut-linked', [20, 6], [[`${'a'.repeat(9)}\x1b]8;;https://example.invalid/\x1b\\한\x1b]8;;\x1b\\b`, [10, 6]]], ''),
+  // Widened again, the glyph does not come back.
+  resizedThrough('wide-lead-cut-then-widened', [20, 6], [[cutAtNine, [10, 6]], ['', [20, 6]]], ''),
+  // The cut row is soft-wrapped; the cursor then leaves the paragraph and a
+  // wider reflow joins it. xterm counts the reset cell as empty: before a row
+  // that starts with a fullwidth glyph it is that glyph's wrap gap
+  // (getWrappedLineTrimmedLength), elsewhere a blank cell of the line.
+  resizedThrough('wide-lead-cut-wrapped-then-joined-before-a-wide-glyph', [20, 6],
+    [[`${'a'.repeat(9)}한${'a'.repeat(9)}한x`, [10, 6]], ['\r\n', [20, 6]]], ''),
+  resizedThrough('wide-lead-cut-wrapped-then-joined', [20, 6],
+    [[`${'a'.repeat(9)}한${'a'.repeat(9)}bx`, [10, 6]], ['\r\n', [20, 6]]], ''),
+  resizedThrough('wide-lead-cut-wrapped-then-narrowed-again', [20, 6],
+    [[`${'a'.repeat(9)}한${'a'.repeat(9)}한x`, [10, 6]], ['\r\n', [8, 6]]], ''),
+  // The primary screen narrowed while the alternate one is shown.
+  resizedThrough('wide-lead-cut-under-the-alternate-screen', [20, 6], [[`${cutAtNine}\x1b[?1049hq`, [10, 6]]], ''),
+  resizedThrough('wide-lead-cut-under-the-alternate-screen-left', [20, 6], [[`${cutAtNine}\x1b[?1049hq`, [10, 6]]], '\x1b[?1049lX'),
+  // A paragraph above the cursor's reflows: the glyph moves down whole, as before.
+  resizedThrough('wide-lead-reflowed-above-the-cursor', [20, 6], [[`${cutAtNine}\r\nz`, [10, 6]]], ''),
+];
+// The alternate screen is not trimmed by xterm; still refused.
+const altWideEdge: Case = { ...resizedThrough('alt-wide-lead-at-the-edge', [20, 6], [[`\x1b[?1049h${cutAtNine}`, [10, 6]]], ''), backend: 'xterm' };
+wideEdges.push(altWideEdge);
+
 const claude: Case = { name: 'claude-code-capture', backend: 'rust',
   req: { cols: 80, rows: 30, scrollback: 1000, initial: Buffer.from(CLAUDE_WRAPPED_REPLY_80x30, 'base64') } };
 
@@ -547,8 +585,12 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
   beforeEach(() => vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', modulePath));
   afterEach(() => vi.unstubAllEnvs());
 
-  it.each([...accepted, ...refused, ...leftAlt, ...seams, ...lineFeeds, ...erases, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
+  it.each([...accepted, ...refused, ...leftAlt, ...seams, ...lineFeeds, ...erases, ...others, ...resizes, ...wideEdges, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
     await expectParity(c);
+  });
+
+  it('still refuses a fullwidth glyph cut at the edge of the alternate screen', async () => {
+    expect(await generateRustSnapshot(altWideEdge.req, 'ansi')).toMatchObject({ ok: false, detail: expect.stringMatching(/^unsupported-wide-edge/) });
   });
 
   it('refuses a history a height shrink pushes to the native cap, though ED 3 clears it after', async () => {

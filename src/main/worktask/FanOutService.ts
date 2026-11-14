@@ -89,6 +89,7 @@ import {
   MODEL_ENV_MARKER,
   WORKER_GATEWAY_ENV,
   WORKER_MODEL_ENV,
+  deniedWorkerReportTools,
   isSimpleLaunchCommand,
   splitModelEnvMarker,
   type FanoutWorkerPermissionMode,
@@ -493,6 +494,17 @@ function setupTail(tail: string | undefined): string[] | undefined {
 export function configFilesGapWarning(index: number, c: WorkspaceCopyResult): string | undefined {
   if (c.missing + c.refused === 0) return undefined;
   return `task ${index + 1}: ${c.missing + c.refused} of the repository's config files (fanout.copy) were not copied (${c.missing} not found, ${c.refused} refused: not a git-ignored file inside the project folder)`;
+}
+
+/**
+ * A task whose launch line denies a tool its worker reports with: the
+ * launcher's own deny stays on the line, so the result says so. Only wmux's
+ * tool names are shown, never the launcher's rule.
+ */
+export function deniedReportToolsWarning(index: number, command: string | undefined): string | undefined {
+  const tools = command ? deniedWorkerReportTools(command) : [];
+  if (tools.length === 0) return undefined;
+  return `task ${index + 1}: its launch line denies ${tools.join(', ')}, which a worker reports with; the deny stays, so this task may not report its progress or result`;
 }
 
 /** 태스크 단위 결과(리포트 — 상태 구분). */
@@ -1015,6 +1027,8 @@ export class FanOutService {
     for (const t of tasks) {
       const gap = t.configFiles ? configFilesGapWarning(t.index, t.configFiles) : undefined;
       if (gap) warnings.push(gap);
+      const denied = t.ok ? deniedReportToolsWarning(t.index, t.initialCommand) : undefined;
+      if (denied) warnings.push(denied);
     }
     const result: FanOutResult = {
       ok: tasks.every((t) => t.ok || t.pending),
@@ -1053,6 +1067,8 @@ export class FanOutService {
         });
         const gap = r.configFiles ? configFilesGapWarning(k, r.configFiles) : undefined;
         if (gap) addWarning(result, gap);
+        const denied = r.ok ? deniedReportToolsWarning(k, r.initialCommand) : undefined;
+        if (denied) addWarning(result, denied);
         return r;
       } finally {
         if (!r?.ok) releaseFanoutPorts([lateEnv.ports[0]]);

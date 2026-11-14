@@ -2126,7 +2126,9 @@ export function registerFanOutRpc(
                   : '\n\nno worktree: each task writes into its own folder under the wmux outputs directory') +
                 // Only when a task can actually run claude: the flags are claude-only.
                 (agentChoices.length === 0 || agentChoices.some((c) => c.agent === 'claude')
-                  ? `\n\nclaude workers launch with: ${workerLaunchFlags(workerMode, [])}${workerModeSource === 'inherited-caller-pane' ? ' (inherited bypass from the calling pane)' : ''}`
+                  ? `\n\nclaude workers launch with: ${workerLaunchFlags(workerMode, [])}${workerModeSource === 'inherited-caller-pane' ? ' (inherited bypass from the calling pane)' : ''}` +
+                    // A role's or agent's own deny rules join that list at launch (applyWorkerPermissionFlags).
+                    '\nplus the launcher\'s own --disallowedTools rules, which stay denied'
                   : ''),
               // The roles again, as data. The preview prints the role NAME, but
               // what a role resolves to — agent, model, extra args — lives in the

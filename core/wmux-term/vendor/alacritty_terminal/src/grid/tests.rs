@@ -183,6 +183,35 @@ fn shrink_reflow() {
     assert_eq!(grid[Line(0)][Column(1)], cell('2'));
 }
 
+/// wmux: a narrowing records the rows its reflow added, also those trimmed at
+/// the cap, for xterm's saved row (#3354); any other resize clears it.
+#[test]
+fn shrink_reflow_records_added_rows() {
+    let filled = |max_scroll_limit| {
+        let mut grid = Grid::<Cell>::new(2, 4, max_scroll_limit);
+        for (i, c) in "1234".chars().enumerate() {
+            grid[Line(0)][Column(i)] = cell(c);
+        }
+        // The cursor below that paragraph, so it reflows.
+        grid.cursor.point.line = Line(1);
+        grid
+    };
+
+    // No history allowed: the added row is trimmed, and still counted.
+    let mut grid = filled(0);
+    grid.resize(true, 2, 2);
+    assert_eq!((grid.narrowing_added, grid.history_size()), (1, 0));
+
+    // Room for it in the history.
+    let mut grid = filled(1);
+    grid.resize(true, 2, 2);
+    assert_eq!((grid.narrowing_added, grid.history_size()), (1, 1));
+
+    // A later widen clears it.
+    grid.resize(true, 2, 4);
+    assert_eq!(grid.narrowing_added, 0);
+}
+
 #[test]
 fn shrink_reflow_twice() {
     let mut grid = Grid::<Cell>::new(1, 5, 2);
@@ -445,6 +474,62 @@ fn size_hint_matches_count<T>(iter: impl Iterator<Item = T>) {
     let count = iterator.count();
     assert_eq!(lower, count);
     assert_eq!(upper, Some(count));
+}
+
+#[test]
+fn shrink_cursor_paragraph_resets_a_cut_wide_glyph() {
+    // wmux: xterm's trim resets a fullwidth glyph whose lead lands in the new
+    // last column to an empty cell and drops its trailing half
+    // (`BufferLine.resize`); a soft-wrapped row keeps its wrap. Before a row
+    // that starts with a fullwidth glyph, that empty cell is the glyph's wrap
+    // gap to xterm, a leading spacer here.
+    let wide = || {
+        let mut lead = cell('한');
+        lead.flags.insert(Flags::WIDE_CHAR);
+        let mut spacer = Cell::default();
+        spacer.flags.insert(Flags::WIDE_CHAR_SPACER);
+        (lead, spacer)
+    };
+    let (lead, spacer) = wide();
+    let cut_row = |grid: &mut Grid<Cell>| {
+        grid[Line(0)][Column(0)] = cell('a');
+        grid[Line(0)][Column(1)] = lead.clone();
+        grid[Line(0)][Column(2)] = spacer.clone();
+        grid[Line(0)][Column(3)] = cell('b');
+        grid[Line(0)][Column(4)] = wrap_cell('c');
+    };
+
+    // The next row starts with a plain cell.
+    let mut grid = Grid::<Cell>::new(2, 5, 0);
+    cut_row(&mut grid);
+    grid[Line(1)][Column(0)] = cell('a');
+    grid[Line(1)][Column(1)] = lead.clone();
+    grid[Line(1)][Column(2)] = spacer.clone();
+    grid.cursor.point = Point::new(Line(1), Column(3));
+    grid.resize(true, 2, 2);
+    assert_eq!(grid[Line(0)].len(), 2);
+    assert_eq!(grid[Line(0)][Column(0)], cell('a'));
+    let mut wrapped_blank = Cell::default();
+    wrapped_blank.flags.insert(Flags::WRAPLINE);
+    assert_eq!(grid[Line(0)][Column(1)], wrapped_blank);
+    assert_eq!(grid[Line(1)][Column(0)], cell('a'));
+    assert_eq!(grid[Line(1)][Column(1)], Cell::default());
+    assert_eq!(grid.cursor.point, Point::new(Line(1), Column(1)));
+    assert!(!grid.cursor.input_needs_wrap);
+
+    // The next row starts with a fullwidth glyph.
+    let mut grid = Grid::<Cell>::new(2, 5, 0);
+    cut_row(&mut grid);
+    grid[Line(1)][Column(0)] = lead.clone();
+    grid[Line(1)][Column(1)] = spacer.clone();
+    grid[Line(1)][Column(2)] = cell('x');
+    grid.cursor.point = Point::new(Line(1), Column(3));
+    grid.resize(true, 2, 2);
+    let mut gap = Cell::default();
+    gap.flags.insert(Flags::LEADING_WIDE_CHAR_SPACER | Flags::WRAPLINE);
+    assert_eq!(grid[Line(0)][Column(1)], gap);
+    assert_eq!(grid[Line(1)][Column(0)], lead);
+    assert_eq!(grid[Line(1)][Column(1)], spacer);
 }
 
 // https://github.com/rust-lang/rust-clippy/pull/6375

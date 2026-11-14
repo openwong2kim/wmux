@@ -201,6 +201,144 @@ describe('acceptInbound — reply and state', () => {
     expect(await acceptInbound({ ...r, text: 'changed' }, peer, deps)).toMatchObject({ ok: false, error: 'conflict' });
   });
 
+  it('a reply from the sender asking to follow a task again (reopen) reopens it when it ended completed here, and asks for the sender to be told, once', async () => {
+    // As the outbound sync does: the sender told, recorded.
+    const syncTask = vi.fn(async (taskId: string) => { await tasks.markRemote({ taskId, stateSync: 'working' }); });
+    const withSync: InboundDeps = { ...deps, syncTask, peerReopens: () => true };
+    const linkId = activeLink();
+    const id = await landed(linkId);
+    const to = tasks.getTask(id)!.metadata.to;
+    const caller = { callerWorkspaceId: to.workspaceId, ...(to.paneId ? { callerAddr: { paneId: to.paneId } } : {}) };
+    const evidence = { summary: 'done', items: [{ kind: 'command' as const, status: 'passed' as const, command: 'npm test', summary: 'ok' }] };
+    expect((await tasks.transition({ taskId: id, to: 'working', ...caller })).ok).toBe(true);
+    expect((await tasks.transition({ taskId: id, to: 'completed', ...caller, evidence })).ok).toBe(true);
+    // Without the request, a reply is kept and moves nothing.
+    expect(await acceptInbound(env(linkId, { kind: 'reply', taskId: id, text: 'noted' }), peer, withSync)).toMatchObject({ ok: true, duplicate: false });
+    expect(tasks.getTask(id)!.status.state).toBe('completed');
+    expect(syncTask).not.toHaveBeenCalled();
+    const r = env(linkId, { kind: 'reply', taskId: id, text: 'one more thing', reopen: true });
+    expect(await acceptInbound(r, peer, withSync)).toEqual({ ok: true, taskId: id, duplicate: false });
+    expect(tasks.getTask(id)!.status.state).toBe('working');
+    expect(syncTask).toHaveBeenCalledTimes(1);
+    expect(syncTask).toHaveBeenCalledWith(id);
+    // Redelivered: nothing more.
+    expect(await acceptInbound(r, peer, withSync)).toMatchObject({ ok: true, duplicate: true });
+    expect(syncTask).toHaveBeenCalledTimes(1);
+    // The request on a task still working is ignored: it moves nothing and tells nobody.
+    expect(await acceptInbound(env(linkId, { kind: 'reply', taskId: id, text: 'and another', reopen: true }), peer, withSync)).toMatchObject({ ok: true, duplicate: false });
+    expect(tasks.getTask(id)!.status.state).toBe('working');
+    expect(syncTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('a reopen the sender was not told of (the earlier try kept no message) is told on the next flagged reply, once', async () => {
+    const linkId = activeLink();
+    const id = await landed(linkId);
+    const to = tasks.getTask(id)!.metadata.to;
+    const caller = { callerWorkspaceId: to.workspaceId, ...(to.paneId ? { callerAddr: { paneId: to.paneId } } : {}) };
+    const evidence = { summary: 'done', items: [{ kind: 'command' as const, status: 'passed' as const, command: 'npm test', summary: 'ok' }] };
+    expect((await tasks.transition({ taskId: id, to: 'working', ...caller })).ok).toBe(true);
+    expect((await tasks.transition({ taskId: id, to: 'completed', ...caller, evidence })).ok).toBe(true);
+    // Reopened, but the sender was never told (as when the try that reopened it failed before its sync).
+    const untold: InboundDeps = { ...deps, peerReopens: () => true };
+    await acceptInbound(env(linkId, { kind: 'reply', taskId: id, text: 'one more thing', reopen: true }), peer, untold);
+    expect(tasks.getTask(id)!.status.state).toBe('working');
+    const syncTask = vi.fn(async (_taskId: string) => undefined);
+    const withSync: InboundDeps = { ...deps, syncTask, peerReopens: () => true };
+    await acceptInbound(env(linkId, { kind: 'reply', taskId: id, text: 'again', reopen: true }), peer, withSync);
+    expect(syncTask).toHaveBeenCalledTimes(1);
+    // Told since: nothing more.
+    expect((await tasks.markRemote({ taskId: id, stateSync: 'working' })).ok).toBe(true);
+    await acceptInbound(env(linkId, { kind: 'reply', taskId: id, text: 'and again', reopen: true }), peer, withSync);
+    expect(syncTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('the request to follow a task again is ignored on a task the sender canceled', async () => {
+    const syncTask = vi.fn(async (_taskId: string) => undefined);
+    const withSync: InboundDeps = { ...deps, syncTask, peerReopens: () => true };
+    const linkId = activeLink();
+    const id = await landed(linkId);
+    expect(await acceptInbound(env(linkId, { kind: 'state', taskId: id, state: 'canceled', text: undefined }), peer, withSync)).toMatchObject({ ok: true });
+    expect(tasks.getTask(id)!.status.state).toBe('canceled');
+    await acceptInbound(env(linkId, { kind: 'reply', taskId: id, text: 'go on anyway', reopen: true }), peer, withSync);
+    expect(tasks.getTask(id)!.status.state).toBe('canceled');
+    expect(syncTask).not.toHaveBeenCalled();
+  });
+
+  it('a build that does not follow a task again (no reopen.1 here or there) ignores the request: the task stays completed, the reply is kept', async () => {
+    const syncTask = vi.fn(async (_taskId: string) => undefined);
+    const old: InboundDeps = { ...deps, syncTask, peerReopens: () => false };
+    const linkId = activeLink();
+    const id = await landed(linkId);
+    const to = tasks.getTask(id)!.metadata.to;
+    const caller = { callerWorkspaceId: to.workspaceId, ...(to.paneId ? { callerAddr: { paneId: to.paneId } } : {}) };
+    const evidence = { summary: 'done', items: [{ kind: 'command' as const, status: 'passed' as const, command: 'npm test', summary: 'ok' }] };
+    expect((await tasks.transition({ taskId: id, to: 'working', ...caller })).ok).toBe(true);
+    expect((await tasks.transition({ taskId: id, to: 'completed', ...caller, evidence })).ok).toBe(true);
+    expect(await acceptInbound(env(linkId, { kind: 'reply', taskId: id, text: 'one more thing', reopen: true }), peer, old)).toMatchObject({ ok: true, duplicate: false });
+    expect(tasks.getTask(id)!.status.state).toBe('completed');
+    expect(tasks.getTask(id)!.history.at(-1)?.parts).toEqual([{ kind: 'text', text: 'one more thing' }]);
+    expect(syncTask).not.toHaveBeenCalled();
+  });
+
+  /** A task the peer sent that ended `completed` here. */
+  async function completedHere(linkId: string): Promise<string> {
+    const id = await landed(linkId);
+    const to = tasks.getTask(id)!.metadata.to;
+    const caller = { callerWorkspaceId: to.workspaceId, ...(to.paneId ? { callerAddr: { paneId: to.paneId } } : {}) };
+    const evidence = { summary: 'done', items: [{ kind: 'command' as const, status: 'passed' as const, command: 'npm test', summary: 'ok' }] };
+    expect((await tasks.transition({ taskId: id, to: 'working', ...caller })).ok).toBe(true);
+    expect((await tasks.transition({ taskId: id, to: 'completed', ...caller, evidence })).ok).toBe(true);
+    return id;
+  }
+
+  it('a reply that would reopen counts against the new-task budget; past it the reply is kept and the task stays completed', async () => {
+    const syncTask = vi.fn(async (taskId: string) => { await tasks.markRemote({ taskId, stateSync: 'working' }); });
+    const linkId = activeLink();
+    const budget = new PeerTaskBudget(2);
+    const id = await completedHere(linkId);
+    const second = await completedHere(linkId);
+    // The two tasks landed through `deps`, which has no budget: this one starts empty.
+    const withBudget: InboundDeps = { ...deps, syncTask, peerReopens: () => true, taskBudget: budget };
+    // A plain reply, and a request on a task that does not reopen, take nothing from it.
+    await acceptInbound(env(linkId, { kind: 'reply', taskId: id, text: 'noted' }), peer, withBudget);
+    const r = env(linkId, { kind: 'reply', taskId: id, text: 'one more thing', reopen: true });
+    expect(await acceptInbound(r, peer, withBudget)).toMatchObject({ ok: true, duplicate: false });
+    expect(tasks.getTask(id)!.status.state).toBe('working');
+    // Redelivered: a duplicate, nothing taken.
+    expect(await acceptInbound(r, peer, withBudget)).toMatchObject({ ok: true, duplicate: true });
+    await acceptInbound(env(linkId, { kind: 'reply', taskId: id, text: 'and another', reopen: true }), peer, withBudget);
+    // One reopen counted: a new task still fits, then the budget is full.
+    expect(budget.admit(peer.hostId)).toBe(true);
+    const over = env(linkId, { kind: 'reply', taskId: second, text: 'one more thing', reopen: true });
+    expect(await acceptInbound(over, peer, withBudget)).toMatchObject({ ok: true, duplicate: false });
+    expect(tasks.getTask(second)!.status.state).toBe('completed');
+    expect(tasks.getTask(second)!.history.at(-1)).toMatchObject({ messageId: over.messageId });
+    expect(syncTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('on a link whose follow-ups wait for a person, a reply never reopens: it is kept as before and the sender is told nothing', async () => {
+    const syncTask = vi.fn(async (_taskId: string) => undefined);
+    const linkId = activeLink();
+    const id = await completedHere(linkId);
+    const asks: InboundDeps = { ...deps, syncTask, peerReopens: () => true, spawnLinks: { isSpawnLink: () => false, holdsFollowUps: (l) => l === linkId } };
+    const r = env(linkId, { kind: 'reply', taskId: id, text: 'one more thing', reopen: true });
+    expect(await acceptInbound(r, peer, asks)).toMatchObject({ ok: true, duplicate: false });
+    expect(tasks.getTask(id)!.status.state).toBe('completed');
+    expect(tasks.getTask(id)!.history.at(-1)).toMatchObject({ messageId: r.messageId });
+    expect(syncTask).not.toHaveBeenCalled();
+  });
+
+  it('a reopen that is not a boolean is refused, not ignored', async () => {
+    const linkId = activeLink();
+    const id = await completedHere(linkId);
+    const withReopen: InboundDeps = { ...deps, peerReopens: () => true };
+    for (const reopen of ['yes', 1, null, {}]) {
+      const r = { ...env(linkId, { kind: 'reply', taskId: id, text: 'one more thing' }), reopen } as unknown;
+      expect(await acceptInbound(r, peer, withReopen)).toMatchObject({ ok: false, error: 'bad-request' });
+    }
+    expect(tasks.getTask(id)!.status.state).toBe('completed');
+  });
+
   it('a reply into a task that is not on this link is unknown-task', async () => {
     const linkId = activeLink();
     await tasks.createTask({ id: 'task-local', title: 't', from: { workspaceId: 'ws-x', name: 'x' }, to: { workspaceId: 'ws-b', name: 'b' } });

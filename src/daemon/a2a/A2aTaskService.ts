@@ -249,7 +249,7 @@ export type CreateOk = { ok: true; taskId: string; task: Task; existed?: true };
 /** Same id, different payload (only with `conflictOnBodyMismatch` / remote ops). */
 export type ConflictErr = { ok: false; error: string; conflict: true };
 /** Remote op result: `duplicate` = the same message was already applied, nothing appended. */
-export type RemoteOpOk = { ok: true; task: Task; duplicate: boolean };
+export type RemoteOpOk = { ok: true; task: Task; duplicate: boolean; reopened?: true };
 export type ReopenOk = { ok: true; reopened: boolean; task: Task };
 
 export interface QueryFilters {
@@ -379,6 +379,16 @@ export class A2aTaskService {
         ...(t.evidence ? { evidence: t.evidence } : {}),
       };
       task.metadata.updatedAt = t.timestamp;
+      // Ended here again: no follow-up of ours still waits for the peer's `working` (one left over is never taken later).
+      if ((TERMINAL_STATES as readonly string[]).includes(t.to)) {
+        const m = remoteMarkerOf(task);
+        if (m) delete m.followUpsOpen;
+      }
+      // Reopened by its sender: whatever this PC tells the peer next is new to it, even a state it was told before.
+      if (t.reopened === 'sender_message' && !t.remoteMessageId) {
+        const m = remoteMarkerOf(task);
+        if (m) delete m.stateSync;
+      }
       if (t.remoteMessageId) {
         // The peer's `completed` held here as a report: its item says completed.
         const report = t.remoteAsked === 'completed' && t.to === 'input-required';
@@ -387,6 +397,11 @@ export class A2aTaskService {
         const m = remoteMarkerOf(task);
         if (m) {
           m.stateSync = t.to;
+          // The peer's `working` takes the follow-up it was for: another needs another follow-up.
+          if (t.followedAgain && m.followUpsOpen !== undefined) {
+            if (m.followUpsOpen > 1) m.followUpsOpen -= 1;
+            else delete m.followUpsOpen;
+          }
           // The peer's latest state replaces a report it made earlier.
           if (report) m.reported = t.remoteMessageId;
           else delete m.reported;
@@ -408,6 +423,8 @@ export class A2aTaskService {
       if (!task) return;
       task.status = { state: 'canceled', timestamp: c.timestamp };
       task.metadata.updatedAt = c.timestamp;
+      const cm = remoteMarkerOf(task);
+      if (cm) delete cm.followUpsOpen;
       if (c.remoteMessageId) {
         addInboxItem(task, c.remoteMessageId, 'state', 'canceled');
         const m = remoteMarkerOf(task);
@@ -443,6 +460,8 @@ export class A2aTaskService {
         if (r.sent !== undefined && !(marker.sent ?? []).includes(r.sent)) {
           (marker.sent ??= []).push(r.sent);
           (marker.sentAt ??= {})[r.sent] = r.timestamp;
+          // Counted only for a reply that went with the request: one `working` of the peer's is taken for it.
+          if (r.followUp) marker.followUpsOpen = (marker.followUpsOpen ?? 0) + 1;
         }
         if (r.read && !marker.readAt) marker.readAt = r.timestamp;
         if (r.receiptSync !== undefined) marker.receiptSync = r.receiptSync;
@@ -926,6 +945,8 @@ export class A2aTaskService {
     attempted?: boolean;
     stateSync?: TaskState;
     sent?: string;
+    /** With `sent`: that reply went with the request to follow the task again (counted in `followUpsOpen`). */
+    followUp?: true;
     /** Inbound: our side read it (first time only). */
     read?: true;
     /** Inbound: this receipt was queued for the peer. */
@@ -973,6 +994,7 @@ export class A2aTaskService {
       const bookkeeping = input.stateSync !== undefined || input.sent !== undefined || receipts || input.replyAcked === true
         || input.stateRefused !== undefined || input.stateAccepted === true;
       if (bookkeeping && input.messageId !== undefined) return { ok: false, error: 'a2a.remote.mark: stateSync/sent/receipts are task-level' };
+      if (input.followUp && input.sent === undefined) return { ok: false, error: 'a2a.remote.mark: followUp goes with sent' };
       const itemMark = input.rejected !== undefined || input.notice !== undefined;
       if (itemMark && input.messageId === undefined) return { ok: false, error: 'a2a.remote.mark: rejected/notice are item-level' };
       if (input.delivered !== true && !input.held && input.attempted === undefined && !bookkeeping && !itemMark) {
@@ -994,6 +1016,7 @@ export class A2aTaskService {
         body = {
           ...(input.stateSync !== undefined ? { stateSync: input.stateSync } : {}),
           ...(input.sent !== undefined ? { sent: input.sent } : {}),
+          ...(input.sent !== undefined && input.followUp ? { followUp: true as const } : {}),
           ...(input.read ? { read: true as const } : {}),
           ...(input.receiptSync !== undefined ? { receiptSync: input.receiptSync } : {}),
           ...(input.remoteReceipt !== undefined ? { remoteReceipt: input.remoteReceipt } : {}),
@@ -1143,12 +1166,19 @@ export class A2aTaskService {
    * peer sent, the local workspace for one of ours. Keyed by
    * `message.messageId`: the same id with the same text is a duplicate, with a
    * different text a conflict.
+   *
+   * `reopenCompleted`: a new message from the sender of an inbound task that
+   * ended `completed` is new work for this PC's agent, as `reopenTask` has it
+   * for a local task: the task goes back to `working` (a synced state, so the
+   * sender sees it move, and the agent's answer is then a valid `completed`).
+   * Never from `failed` or `canceled`, and a duplicate reopens nothing.
    */
   appendRemoteMessage(input: {
     taskId: string;
     linkId: string;
     actorWorkspaceId: string;
     message: Message;
+    reopenCompleted?: boolean;
   }): Promise<RemoteOpOk | ConflictErr | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
@@ -1159,6 +1189,25 @@ export class A2aTaskService {
       if (seen) {
         if (firstMessageText([seen]) === firstMessageText([input.message])) return { ok: true, task, duplicate: true };
         return { ok: false, error: `a2a.remote.message: conflict: message ${input.message.messageId} exists with a different body`, conflict: true };
+      }
+      // Decided before anything is written, and the reopen goes first: a message that was not written is sent again
+      // (and finds the task working), so the reopen is never lost between the two appends.
+      const fromSender = input.actorWorkspaceId === `remote:${input.linkId}` && task.metadata.from.workspaceId === input.actorWorkspaceId;
+      const reopen = input.reopenCompleted === true && fromSender && remoteMarkerOf(task)?.direction === 'inbound' && task.status.state === 'completed';
+      if (reopen) {
+        // A plain transition with the marker, as reopenTask commits it: a replayed log lands on `working` too.
+        const transition: A2aTaskTransitionPayload = {
+          kind: 'task.transition',
+          taskId: input.taskId,
+          to: 'working',
+          timestamp: this.isoNow(),
+          reopened: 'sender_message',
+        };
+        const reopened = await this.log.append(
+          this.envelope(transition, input.actorWorkspaceId, this.derivePrincipalId(task, 'from', input.actorWorkspaceId)),
+        );
+        if (!reopened) return { ok: false, error: 'a2a.remote.message: daemon log append failed (uncommitted)' };
+        this.applyPayload(transition);
       }
       const payload: A2aTaskMessagePayload = {
         kind: 'task.message',
@@ -1173,7 +1222,7 @@ export class A2aTaskService {
       );
       if (!committed) return { ok: false, error: 'a2a.remote.message: daemon log append failed (uncommitted)' };
       this.applyPayload(payload);
-      return { ok: true, task, duplicate: false };
+      return reopen ? { ok: true, task, duplicate: false, reopened: true } : { ok: true, task, duplicate: false };
     });
   }
 
@@ -1209,6 +1258,8 @@ export class A2aTaskService {
     message?: string;
     /** The peer's completion evidence (wire-normalized, sanitized), re-checked here like local evidence. */
     evidence?: CompletionEvidence;
+    /** The peer advertises `reopen.1`: its `working` on a task that ended `completed` here may follow a follow-up of ours. */
+    peerReopens?: boolean;
   }): Promise<RemoteOpOk | ConflictErr | OpErr> {
     const res = await this.withTaskLock<RemoteOpOk | ConflictErr | OpErr>(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
@@ -1257,14 +1308,18 @@ export class A2aTaskService {
       // from `submitted` too: only the latest state is synced, so a fast peer
       // can skip `working`. After a report, the peer asking a question
       // replaces it.
-      const allowed = input.to === 'failed'
+      // The peer follows the task again for a follow-up of ours sent after it ended `completed` (once per follow-up).
+      const followedAgain = current === 'completed' && input.to === 'working' && followsAgain(task, input.peerReopens === true)
+        && (remoteMarkerOf(task)?.followUpsOpen ?? 0) > 0;
+      const allowed = followedAgain
+        || input.to === 'failed'
         || validateTransition(current, input.to)
         || (current === 'submitted' && (input.to === 'completed' || input.to === 'input-required'))
         || (current === 'input-required' && input.to === 'input-required' && remoteMarkerOf(task)?.reported !== undefined);
       if (!allowed) {
         return { ok: false, error: `a2a.remote.state: invalid transition ${current} -> ${input.to}` };
       }
-      if ((TERMINAL_STATES as readonly string[]).includes(current)) {
+      if (!followedAgain && (TERMINAL_STATES as readonly string[]).includes(current)) {
         return { ok: false, error: `a2a.remote.state: invalid transition ${current} -> ${input.to}` };
       }
       const terminal = input.to === 'completed' || input.to === 'failed';
@@ -1289,6 +1344,12 @@ export class A2aTaskService {
         ...(verdict?.ok ? { verifiedItemCount: verdict.verifiedItemCount } : {}),
         remoteMessageId: input.messageId,
         ...(report ? { remoteAsked: 'completed' as const } : {}),
+        // A `working` that answers a follow-up of ours takes it: the task followed again after it completed here, or
+        // a fan-out report held here that the peer's agent took up again.
+        ...(followedAgain || (input.to === 'working' && remoteMarkerOf(task)?.reported !== undefined && followsAgain(task, input.peerReopens === true)
+          && (remoteMarkerOf(task)?.followUpsOpen ?? 0) > 0)
+          ? { followedAgain: true as const }
+          : {}),
       };
       const committed = await this.log.append(this.envelope(payload, remoteWs, this.derivePrincipalId(task, 'to', remoteWs)));
       if (!committed) return { ok: false, error: 'a2a.remote.state: daemon log append failed (uncommitted)' };
@@ -1753,6 +1814,25 @@ export class A2aTaskService {
   }
 }
 
+/**
+ * A task this PC sent that ended on the other PC: completed here, or a fan-out
+ * report held here. A follow-up of ours on it may have the task followed again
+ * there (outbound.ts sends the request on the same rule).
+ */
+export function endedThere(task: Task): boolean {
+  const m = remoteMarkerOf(task);
+  return m?.direction === 'outbound' && (task.status.state === 'completed' || (m.fanout === true && m.reported !== undefined));
+}
+
+/**
+ * The one rule for following a task again, on the PC that sent it: our reply asks for it (`reopen`), is counted
+ * for it (`followUpsOpen`), and the peer's `working` is taken for it, only while this holds. The task ended there,
+ * it is not a company task (its seat's working slots are that PC's to give), and both builds take `reopen.1`.
+ */
+export function followsAgain(task: Task, peerReopens: boolean): boolean {
+  return peerReopens && endedThere(task) && !isCompanyTask(task.history);
+}
+
 /** The cross-host marker on a task, or undefined (only a well-formed v1 marker counts). */
 function remoteMarkerOf(task: Task | undefined): A2aRemoteTaskState | undefined {
   const m = task?.metadata.remote as A2aRemoteTaskState | undefined;
@@ -1760,10 +1840,13 @@ function remoteMarkerOf(task: Task | undefined): A2aRemoteTaskState | undefined 
 }
 
 /** Owe the local pane one delivery for a reply/state the peer sent (idempotent). */
-/** How long a task that ended stays in memory: a failed or canceled remote one 24 h, any other 30 min. */
+/** How long a task that ended stays in memory: a failed or canceled remote one, or one with a follow-up still open, 24 h; any other 30 min. */
 function keepEndedMs(task: Task): number {
   const remote = remoteMarkerOf(task);
-  return remote && (task.status.state === 'failed' || task.status.state === 'canceled') ? GC_REMOTE_ENDED_MAX_AGE_MS : GC_MAX_AGE_MS;
+  // A follow-up of ours still waiting for the other PC to follow the task again keeps it as long: that PC's
+  // `working` may come once the follow-up reaches it, and must find the task here.
+  const waits = (remote?.followUpsOpen ?? 0) > 0;
+  return remote && (task.status.state === 'failed' || task.status.state === 'canceled' || waits) ? GC_REMOTE_ENDED_MAX_AGE_MS : GC_MAX_AGE_MS;
 }
 
 function addInboxItem(task: Task, messageId: string, kind: A2aRemoteInboxItem['kind'], state?: TaskState, reported = false, at?: string): void {

@@ -19,6 +19,8 @@ import type { RpcContext } from '../../../../shared/rpc';
 import type { FanoutOwnerAnswers } from '../../../../shared/workerLaunch';
 import type { FolderTrustState } from '../../../../daemon/folderTrustState';
 import type { DeliveryPresence } from '../../../../shared/deliveryPresence';
+import type { GatedSubmitResult } from '../../../../shared/ptyMessageDelivery';
+import { PANE_DELIVERY_LOCK_WAIT_MS } from '../../../../shared/freshContext';
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
 vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
@@ -1196,7 +1198,7 @@ describe('a refused local delivery, stored and typed later', () => {
     expect(pasted(w)).toHaveLength(1);
   });
 
-  it('a retry that hangs lets the pane go after its time, and a live send there is typed', async () => {
+  it('a retry whose task read never answers ends at its deadline, and a live send there is typed', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       // A stored reply (a new task's retry would also hold the new-task lock).
@@ -1218,7 +1220,7 @@ describe('a refused local delivery, stored and typed later', () => {
     }
   });
 
-  it('a retry that submits after the pane was let go is not typed again', async () => {
+  it('a retry that submits late is not typed again', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       const w = wire({ ...UNPASSABLE, tasks: [row('t-reply', 'ws-owner', 'ws-task')] });
@@ -1243,6 +1245,91 @@ describe('a refused local delivery, stored and typed later', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe('a retry and a live send share the pane lock', () => {
+    /** A stored reply, the pane passable again, and a sleep gate that parks
+     *  the first delivery whose text matches `park` in its paste-to-Enter gap. */
+    const setup = async (park: (data: string) => boolean) => {
+      const w = wire({ ...UNPASSABLE, tasks: [row('t-reply', 'ws-owner', 'ws-task')] });
+      expect(await w.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t-reply'] })).toMatchObject({ stored: true });
+      w.live.daemonTrust = PASSABLE;
+      w.live.tasks = [row('t-reply', 'ws-owner', 'ws-task'), row('t-live', 'ws-owner', 'ws-task')];
+      let resume: () => void = () => undefined;
+      const parked = new Promise<void>((resolve) => { resume = resolve; });
+      w.live.sleepGate = async () => {
+        if (!pasted(w).some(park)) return;
+        w.live.sleepGate = undefined;
+        await parked;
+      };
+      return { w, resume };
+    };
+    const isLive = (d: string) => d.includes('hello live');
+
+    it('a live send arriving while a retry holds the pane waits, and is delivered after it', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const { w, resume } = await setup((d) => !isLive(d));
+        const retry = w.retryPendingDeliveries('pty-task');
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(pasted(w)).toHaveLength(1);
+        const live = w.gatedSubmit('pty-task', 'hello live', 'claude', { senderTaskIds: ['t-live'] });
+        await vi.advanceTimersByTimeAsync(3_000);
+        expect(pasted(w).some(isLive)).toBe(false);
+        resume();
+        await vi.advanceTimersByTimeAsync(0);
+        await retry;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(await live).toMatchObject({ ok: true });
+        expect(pasted(w).map(isLive)).toEqual([false, true]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // The CEO line's 10 s budget: a live send behind a retry waits the
+    // pane-lock wait main has (6 s), with nothing in front of it.
+    it('a live send behind a retry gives up at the pane-lock wait main has, no later', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const { w, resume } = await setup((d) => !isLive(d));
+        const retry = w.retryPendingDeliveries('pty-task');
+        await vi.advanceTimersByTimeAsync(2_000);
+        let settled: GatedSubmitResult | undefined;
+        const live = w.gatedSubmit('pty-task', 'hello live', 'claude', { senderTaskIds: ['t-live'] }).then((r) => { settled = r; return r; });
+        await vi.advanceTimersByTimeAsync(PANE_DELIVERY_LOCK_WAIT_MS - 100);
+        expect(settled).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(200);
+        expect(await live).toMatchObject({ ok: false, reason: 'fresh_context_busy', stored: true });
+        expect(pasted(w).some(isLive)).toBe(false);
+        resume();
+        await vi.advanceTimersByTimeAsync(0);
+        await retry;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a retry never starts while a live send is on the pane', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const { w, resume } = await setup(isLive);
+        const live = w.gatedSubmit('pty-task', 'hello live', 'claude', { senderTaskIds: ['t-live'] });
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(pasted(w).map(isLive)).toEqual([true]);
+        await w.retryPendingDeliveries('pty-task');
+        // Nothing of the stored text, and it stays stored.
+        expect(pasted(w).map(isLive)).toEqual([true]);
+        expect(w.logs.some((l) => l.includes('dropped stored task'))).toBe(false);
+        resume();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(await live).toMatchObject({ ok: true });
+        await w.retryPendingDeliveries('pty-task');
+        expect(pasted(w).map(isLive)).toEqual([true, false]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('a text withdrawn while its task is read right before the paste is not typed', async () => {
