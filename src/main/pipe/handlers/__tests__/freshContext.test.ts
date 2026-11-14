@@ -7,7 +7,7 @@ import {
   FreshContextBusy,
   FreshContextTimeout,
   runFreshContext,
-  withFreshContextLock,
+  withPaneDeliveryLock,
   type FreshContextAgentState,
   type FreshContextProbe,
 } from '../freshContext';
@@ -534,19 +534,19 @@ describe('runFreshContext — evidence after Enter', () => {
   });
 });
 
-describe('withFreshContextLock', () => {
+describe('withPaneDeliveryLock', () => {
   it('serializes work on one pane and leaves other panes free', async () => {
     const order: string[] = [];
     let releaseFirst: () => void = () => undefined;
-    const first = withFreshContextLock('p1', async () => {
+    const first = withPaneDeliveryLock('p1', async () => {
       order.push('first:start');
       await new Promise<void>((resolve) => { releaseFirst = resolve; });
       order.push('first:end');
     });
-    const second = withFreshContextLock('p1', async () => {
+    const second = withPaneDeliveryLock('p1', async () => {
       order.push('second');
     });
-    const other = withFreshContextLock('p2', async () => {
+    const other = withPaneDeliveryLock('p2', async () => {
       order.push('other');
     });
     await other;
@@ -560,12 +560,12 @@ describe('withFreshContextLock', () => {
   // Review P2-D: a queued send must never outlive its caller.
   it('gives up after the bounded wait, before writing anything, and keeps the queue intact', async () => {
     let releaseFirst: () => void = () => undefined;
-    const first = withFreshContextLock('p4', () => new Promise<void>((resolve) => { releaseFirst = resolve; }));
+    const first = withPaneDeliveryLock('p4', () => new Promise<void>((resolve) => { releaseFirst = resolve; }));
     let ran = false;
-    await expect(withFreshContextLock('p4', async () => { ran = true; }, 20)).rejects.toBeInstanceOf(FreshContextBusy);
+    await expect(withPaneDeliveryLock('p4', async () => { ran = true; }, 20)).rejects.toBeInstanceOf(FreshContextBusy);
     expect(ran).toBe(false);
     const order: string[] = [];
-    const third = withFreshContextLock('p4', async () => { order.push('third'); });
+    const third = withPaneDeliveryLock('p4', async () => { order.push('third'); });
     await Promise.resolve();
     expect(order).toEqual([]);
     releaseFirst();
@@ -575,7 +575,7 @@ describe('withFreshContextLock', () => {
   });
 
   it('releases the pane when the work throws', async () => {
-    await expect(withFreshContextLock('p3', async () => { throw new Error('boom'); })).rejects.toThrow('boom');
-    await expect(withFreshContextLock('p3', async () => 'ok')).resolves.toBe('ok');
+    await expect(withPaneDeliveryLock('p3', async () => { throw new Error('boom'); })).rejects.toThrow('boom');
+    await expect(withPaneDeliveryLock('p3', async () => 'ok')).resolves.toBe('ok');
   });
 });

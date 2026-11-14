@@ -170,7 +170,7 @@ export class FreshContextTimeout extends Error {
   }
 }
 
-/** Another new-task send held the pane for longer than
+/** Another delivery held the pane for longer than
  *  FRESH_CONTEXT_LOCK_WAIT_MS. Nothing was written. */
 export class FreshContextBusy extends Error {
   constructor(message: string) {
@@ -495,19 +495,24 @@ export async function runFreshContext(
 
 // ─── Per-pane serialization ─────────────────────────────────────────────────
 //
-// A new-task send holds its pane from the fresh-context step through the text
-// write and the Enter, so a second new-task send to the same pane cannot type
-// its command into the first one's half-delivered task. The second one waits —
-// at most FRESH_CONTEXT_LOCK_WAIT_MS, so it can never outlive its caller and
-// deliver behind a retry — and then runs its own step against the pane as it
-// is by then (usually busy with the first task, so `skipped_busy`). Past the
-// wait it fails with FreshContextBusy, before writing anything. Ordinary sends
-// do not take the lock: they never type a command, and a human or another tool
-// typing at the same moment is what the key-input guards above are for.
+// One delivery at a time into a pane. Every gated delivery holds its pane from
+// its first check before the paste through the Enter and the submit receipt
+// (or its refusal and take-back). A new-task send also holds it across its
+// fresh-context step, so a second send cannot type into the first one's
+// half-delivered task. Without the lock, two deliveries arriving together both
+// found an empty input box, both pasted, and each then refused its Enter
+// because the box held more than its own text.
+//
+// Waiters go in arrival order. One waits at most FRESH_CONTEXT_LOCK_WAIT_MS, so
+// it can never outlive its caller and deliver behind a retry, and then runs its
+// own checks against the pane as it is by then. Past the wait it fails with
+// FreshContextBusy, before writing anything. A raw `input.send` without a new
+// task does not take the lock, and a human or another tool typing at the same
+// moment is what the key-input guards above are for.
 
 const paneLocks = new Map<string, Promise<void>>();
 
-export async function withFreshContextLock<T>(
+export async function withPaneDeliveryLock<T>(
   ptyId: string,
   fn: () => Promise<T>,
   waitMs: number = FRESH_CONTEXT_LOCK_WAIT_MS,
@@ -532,7 +537,7 @@ export async function withFreshContextLock<T>(
     // for `previous`, which is the send actually holding the pane.
     release();
     throw new FreshContextBusy(
-      `another new-task send is still running on this pane (waited ${waitMs} ms); nothing was written`,
+      `another delivery is still running on this pane (waited ${waitMs} ms); nothing was written`,
     );
   }
   try {
