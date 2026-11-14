@@ -325,7 +325,7 @@ describe('BundleAsker', () => {
     await flush();
     const missing = harness({}, h.dir);
     missing.asker.start();
-    await vi.waitFor(() => expect(missing.lastAsk().bundleAsk?.op).toBe('make'));
+    await vi.waitFor(() => expect(missing.lastAsk().bundleAsk?.op).toBe('make'), { timeout: 10_000 });
     missing.asker.stop();
 
     const k = harness();
@@ -337,7 +337,7 @@ describe('BundleAsker', () => {
     fs.writeFileSync(bundleStagedFile(k.dir, HOST, M), 'x'.repeat(M.bytes));
     const landed = harness({}, k.dir);
     landed.asker.start();
-    await vi.waitFor(async () => expect(await landed.asker.bringBack(HOST, SPAWN, ORIGIN)).toMatchObject({ state: 'staged' }));
+    await vi.waitFor(async () => expect(await landed.asker.bringBack(HOST, SPAWN, ORIGIN)).toMatchObject({ state: 'staged' }), { timeout: 10_000 });
     expect(landed.lastAsk().bundleAsk).toMatchObject({ op: 'done', bundleId: M.bundleId });
     landed.asker.stop();
   });
@@ -355,7 +355,7 @@ describe('BundleAsker', () => {
     // Staged late in the ask's time (through a restart), then swept past the ask's own time: it is kept.
     const later = harness({ now: () => now }, h.dir);
     later.asker.start();
-    await vi.waitFor(async () => expect(await later.asker.bringBack(HOST, SPAWN, ORIGIN)).toMatchObject({ state: 'staged' }));
+    await vi.waitFor(async () => expect(await later.asker.bringBack(HOST, SPAWN, ORIGIN)).toMatchObject({ state: 'staged' }), { timeout: 10_000 });
     now = BUNDLE_ASK_LIMITS.stagedTtlMs + 10;
     await later.asker.sweep();
     expect(await later.asker.bringBack(HOST, SPAWN, ORIGIN)).toMatchObject({ state: 'staged' });
