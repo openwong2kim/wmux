@@ -576,6 +576,8 @@ let noteAuthLost: ((sessionId: string, agent: AuthLostAgent, env: Record<string,
 let noteAuthWorks: ((agent: AuthLostAgent, env: Record<string, string> | undefined) => void) | undefined;
 /** N4 — one status probe per agent and account a minute, before a scheduled run and as an agent starts. */
 const agentLoginGate = new AgentLoginGate((agent, env) => new AgentSetupDetector().loginState(agent, env));
+/** The check a box runs before it starts an agent for another PC (offlineEnv only). */
+const boxLoginGate = new AgentLoginGate((agent, env) => new AgentSetupDetector().loginState(agent, env));
 /** Re-run a pane's awaiting verification (#1901), set by wireEvents. */
 let reverifyAwaiting: ((sessionId: string) => void) | undefined;
 /**
@@ -10861,11 +10863,18 @@ async function main(): Promise<void> {
       // asked, and with that env, so the check never contacts the vendor. Only
       // a definite "signed out" refuses; no answer within the wait is "cannot
       // tell", and the start goes on.
+      // Its own gate: an answer taken with offlineEnv is never shared with,
+      // or taken from, a probe that ran without it. The PATH is the agent's
+      // login PATH, as for a phone pane; the owner here gets the same
+      // sign-in notice as for a refused phone pane.
       agentSignedOut: async (agent) => {
         const status = agentRow(agent)?.setup?.loginStatus;
         const offlineEnv = status && status.read !== 'none' ? status.offlineEnv : undefined;
         if (!offlineEnv || !isAuthLostAgent(agent)) return false;
-        return (await agentLoginGate.check(agent, { ...process.env, ...offlineEnv }, { waitMs: SESSION_LOGIN_WAIT_MS })) === false;
+        const env = { ...process.env, PATH: (await agentExecEnv(process.env)).PATH ?? process.env.PATH, ...offlineEnv };
+        if ((await boxLoginGate.check(agent, env, { waitMs: SESSION_LOGIN_WAIT_MS })) !== false) return false;
+        noteAuthLost?.('', agent, env as Record<string, string>, 'start');
+        return true;
       },
       peerFeatures: (hostId) => a2aDelivery?.peerFeatures(hostId),
       ...(a2aStarter

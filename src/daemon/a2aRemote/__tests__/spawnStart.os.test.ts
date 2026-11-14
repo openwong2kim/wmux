@@ -250,6 +250,47 @@ describe('right before the start', () => {
     expect(await receiver.claim(HOST, env.linkId)).toMatchObject({ ok: false, code: 'agent-not-allowed' });
   });
 
+  it('a Claude its own status says is signed out: agent-signed-out to a PC that reads it, failed to any other', async () => {
+    let features: ReadonlySet<string> | undefined = new Set([A2A_FEATURE_SPAWN_SIGNED_OUT]);
+    const asked: string[] = [];
+    receiver.stop();
+    receiver = makeReceiver({ agentSignedOut: async (agent) => { asked.push(agent); return true; }, peerFeatures: () => features });
+    await allow();
+    const reads = request();
+    await arrive(reads);
+    expect(codes(reads)).toEqual(['agent-signed-out']);
+    // A PC on a build that does not read the code would drop it and wait until expiry.
+    features = new Set(['spawn.1']);
+    const older = request();
+    await arrive(older);
+    expect(codes(older)).toEqual(['failed']);
+    features = undefined;
+    const unseen = request();
+    await arrive(unseen);
+    expect(codes(unseen)).toEqual(['failed']);
+    expect(asked).toEqual(['claude', 'claude', 'claude']);
+  });
+
+  it('signed in, cannot tell, or a status that throws: decided as before; a request refused earlier never asks', async () => {
+    await allow();
+    const baseline = request();
+    await arrive(baseline);
+    for (const agentSignedOut of [async () => false, async () => { throw new Error('status unreadable'); }]) {
+      receiver.stop();
+      receiver = makeReceiver({ agentSignedOut, peerFeatures: () => new Set([A2A_FEATURE_SPAWN_SIGNED_OUT]) });
+      const env = request();
+      await arrive(env);
+      expect(codes(env)).toEqual(codes(baseline));
+    }
+    let asked = 0;
+    receiver.stop();
+    receiver = makeReceiver({ agentInstalled: async () => false, agentSignedOut: async () => { asked++; return true; } });
+    const notInstalled = request();
+    await arrive(notInstalled);
+    expect(codes(notInstalled)).toEqual(['agent-not-installed']);
+    expect(asked).toBe(0);
+  });
+
   // A sign-in can lapse while a card waits: checked again right before the start.
   it('a Claude signed out after its card was answered is not started', async () => {
     let signedOut = false;

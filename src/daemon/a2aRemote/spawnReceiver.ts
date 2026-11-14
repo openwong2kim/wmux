@@ -59,14 +59,14 @@ import { errMsg, isPlainObject } from './storeFile';
  *   -- answered `ok` here; then, decided:
  *   4. the agent is on B's list                       else `agent-not-allowed`
  *   5. the agent is installed                         else `agent-not-installed`
- *      and not surely signed out (Claude: its own
- *      status says so)                                 else `agent-signed-out`
- *      (`failed` to a PC that does not read that code)
  *   6. the root is listed, still resolves to itself,
  *      and root + sub stays inside it, as a folder    else `folder-not-allowed`
  *   7. the policy and the expiry, read again after those waits
  *   8. room: starts per PC per hour and per day, and
  *      agents running at once, per PC and in all       else `rate-limited`
+ *   8b. the agent is not surely signed out (its own
+ *      status, where it answers offline: Claude)       else `agent-signed-out`
+ *      (`failed` to a PC that does not read that code)
  *   9. the app is up (it waits for it, until expiry)  else `app-not-ready`
  *  10. a rule allows it (allow-list mode)             → approved
  *      otherwise                                      → its card; `waiting-for-approval`
@@ -114,6 +114,7 @@ export interface SpawnReceiverDeps {
   /**
    * True only when the agent's own status says this PC's account is signed
    * out; false when signed in or when that cannot be told. Absent: not checked.
+   * Asked last, after every other refusal, as it starts a process.
    */
   agentSignedOut?: (agent: AgentSlug) => Promise<boolean>;
   /** What `hostId` last advertised (A2A features); undefined when never seen. */
@@ -448,7 +449,9 @@ export class A2aSpawnReceiver {
     });
   }
 
-  /** Only a definite "signed out" counts; a check that fails is "cannot tell". */
+  /** Only a definite "signed out" counts; a check that fails is "cannot tell".
+   *  Not on the disk/PATH gate: the status bounds its own wait (a few seconds)
+   *  and would hold the gate's few slots that long. */
   private async signedOut(agent: AgentSlug): Promise<boolean> {
     return (await this.deps.agentSignedOut?.(agent).catch(() => false)) === true;
   }
@@ -481,8 +484,6 @@ export class A2aSpawnReceiver {
     if (!this.roomFor(hostId, spawnId)) return refuse('rate-limited');
     try {
       if (!(await this.checks.run(() => this.agentInstalled(req.agent)))) return refuse('agent-not-installed');
-      // Right before the start too: a sign-in can lapse while a card waits.
-      if (await this.checks.run(() => this.signedOut(req.agent))) return refuse(this.signedOutCode(hostId));
       if (!(await this.folderInside(root.path, sub))) return refuse('folder-not-allowed');
     } catch (err) {
       if (err instanceof CheckTimeout) return refuse('failed');
@@ -506,6 +507,8 @@ export class A2aSpawnReceiver {
     }
     if (this.now() > Date.parse(rec.expiresAt)) return refuse('expired');
     if (!this.roomFor(hostId, spawnId)) return refuse('rate-limited');
+    // Right before the start too: a sign-in can lapse while a card waits.
+    if (await this.signedOut(req.agent)) return refuse(this.signedOutCode(hostId));
     try {
       this.deps.requests.noteClaimedRoot?.(hostId, spawnId, root.path);
     } catch (err) {
@@ -845,7 +848,6 @@ export class A2aSpawnReceiver {
       if (refused) return refused;
     }
     if (!(await this.checks.run(() => this.agentInstalled(req.agent)))) return 'agent-not-installed';
-    if (await this.checks.run(() => this.signedOut(req.agent))) return this.signedOutCode(hostId);
     if (!(await this.folderInside(root.path, sub))) return 'folder-not-allowed';
     // The checks above wait on the disk and the PATH: the human may have
     // turned this PC (or that root, or that agent) off meanwhile, and the
@@ -856,6 +858,8 @@ export class A2aSpawnReceiver {
     if (this.now() > Date.parse(rec.expiresAt)) return 'expired';
     if (!this.deps.start) return 'not-supported';
     if (this.overCaps(hostId)) return 'rate-limited';
+    // Last of the refusals, as it starts a process: the agent's own status.
+    if (await this.signedOut(req.agent)) return this.signedOutCode(hostId);
     // Headless (no app, owner opted in): checked again on the policy as it is now; no card, no waiting for an app.
     if (this.deps.headless?.() === true) return headlessRefusal(now, hostId, root.id, req.agent, sub) ?? 'approved';
     // Nothing is shown or started before the app has caught up: the request waits for it, until it expires.

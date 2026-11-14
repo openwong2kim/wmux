@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_REMOTE_MESSAGE_ID_RE, A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
+import { A2A_REMOTE_MESSAGE_ID_RE, A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
 import { SPAWN_PENDING_PER_HOST_DEFAULT, SPAWN_REQUEST_KEEP_MS, SPAWN_REQUESTS_MAX, SPAWN_TARGETS_LINK_ID } from '../../../shared/a2aSpawn';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
@@ -187,32 +187,6 @@ describe('the decision', () => {
     await allowHost();
     installed.clear();
     expect(await decide(envelope())).toBe('agent-not-installed');
-  });
-
-  it('a Claude its own status says is signed out: agent-signed-out to a PC that reads it, failed to any other', async () => {
-    await allowHost();
-    let features: ReadonlySet<string> | undefined = new Set([A2A_FEATURE_SPAWN_SIGNED_OUT]);
-    const asked: string[] = [];
-    const r = makeReceiver({ agentSignedOut: async (agent) => { asked.push(agent); return true; }, peerFeatures: () => features });
-    expect(await decide(envelope(), HOST, r)).toBe('agent-signed-out');
-    // A PC on a build that does not read the code would drop it and wait until expiry.
-    features = new Set(['spawn.1']);
-    expect(await decide(envelope(), HOST, r)).toBe('failed');
-    features = undefined;
-    expect(await decide(envelope(), HOST, r)).toBe('failed');
-    expect(asked).toEqual(['claude', 'claude', 'claude']);
-    r.stop();
-  });
-
-  it('signed in, cannot tell, or a check that throws: the request is decided as before', async () => {
-    await allowHost();
-    const baseline = await decide(envelope());
-    expect(baseline).not.toBe('agent-signed-out');
-    for (const agentSignedOut of [async () => false, async () => { throw new Error('status unreadable'); }]) {
-      const r = makeReceiver({ agentSignedOut, peerFeatures: () => new Set([A2A_FEATURE_SPAWN_SIGNED_OUT]) });
-      expect(await decide(envelope(), HOST, r)).toBe(baseline);
-      r.stop();
-    }
   });
 
   it('an unknown root, a missing sub, a symlink that leaves the root, and a file', async () => {
