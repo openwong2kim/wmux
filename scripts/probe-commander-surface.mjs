@@ -50,7 +50,11 @@ const packageJson = JSON.parse(readFileSync(PACKAGE_PATH, 'utf8'));
 //   about 79,930 bytes before it, under one tool of headroom, and 80,576 with
 //   it. fanout_bring_back is the one way an agent brings a task's work back
 //   from another PC: about +650 bytes, some 160 tokens per full-profile
-//   client. core (49000) is untouched.
+//   client.
+//   core: 49000 -> 50000 (fanout_bring_back, #3368). Core measured about
+//   48,790 bytes before it and 49,311 with it (the shortened tool, ~520
+//   bytes). fanout_start's remote shape and remote_spawn are already in core,
+//   so starting work on another PC and bringing it back stay symmetric there.
 //   commander: 45000 -> 60000 (orchestrator track, 2026-09). The commander
 //   profile measured ~43,000 bytes against 45,000 — under one tool of
 //   headroom. The task-ledger / gate / adopt tools (ledger_*, task_*,
