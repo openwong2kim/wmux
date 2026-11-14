@@ -107,6 +107,7 @@ function sanitize(raw: unknown): SessionPromptSchedule | null {
   if (typeof o.busySince === 'number' && Number.isFinite(o.busySince)) {
     schedule.busySince = o.busySince;
   }
+  if (o.busyGaveUp === true) schedule.busyGaveUp = true;
   if (o.deliveryClaim && typeof o.deliveryClaim === 'object' && !Array.isArray(o.deliveryClaim)) {
     const claim = o.deliveryClaim as Record<string, unknown>;
     if (
@@ -350,6 +351,7 @@ export function advanceSessionPromptSchedule(
   };
   // Only a run of busy answers keeps its start; any other answer ends it.
   delete next.busySince;
+  delete next.busyGaveUp;
   // A folder-trust prompt waits for a person; the occurrence stays due.
   if (result === 'busy' || result === 'unavailable' || result === 'folder_trust') {
     if (result !== 'busy') return next;
@@ -361,6 +363,7 @@ export function advanceSessionPromptSchedule(
     next.lastRunAt = now;
     if (!schedule.intervalMinutes || schedule.intervalMinutes <= 0) {
       next.enabled = false;
+      next.busyGaveUp = true;
       return next;
     }
     // Given up: the occurrence that is due now (if any) stays due, so it runs.

@@ -268,6 +268,17 @@ describe('an agent whose plain prompt wmux does not know: its pointer line only'
     }
   });
 
+  // A paste keeps a tab (only ESC is made visible); as plain keys a tab would
+  // be a key press (completion in most prompts), so it goes as a space.
+  it('a tab stays a tab in a bracketed paste and goes as a space in plain keys', async () => {
+    await deliver({ senderTaskIds: ['task-1'] }, 'Claude Code', 'a\tb');
+    expect(writes[0]).toBe('\x1b[200~a\tb\x1b[201~');
+    writes = [];
+    answers = [{ ...PROCESS, bracketedPaste: false }];
+    await deliver({ senderTaskIds: ['task-1'] }, 'Claude Code', 'a\tb');
+    expect(writes[0]).toBe('a b');
+  });
+
   it('plain keys (no bracketed paste) carry printable text only', async () => {
     answers = [{ ...PROCESS, bracketedPaste: false }];
     await deliver({ senderTaskIds: ['task-1'] }, 'Claude Code', 'hi\x03there\x1b[2J\tx\x7f\x9b\x04!');

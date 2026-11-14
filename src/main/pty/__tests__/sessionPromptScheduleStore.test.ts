@@ -152,12 +152,17 @@ describe('sessionPromptScheduleStore', () => {
     const later = advanceSessionPromptSchedule(first, 'busy', due + SESSION_PROMPT_BUSY_GIVE_UP_MS - 1);
     expect(later).toMatchObject({ enabled: true, busySince: due });
     const gaveUp = advanceSessionPromptSchedule(later, 'busy', due + SESSION_PROMPT_BUSY_GIVE_UP_MS);
-    expect(gaveUp).toMatchObject({ enabled: false, lastResult: 'busy', lastRunAt: due + SESSION_PROMPT_BUSY_GIVE_UP_MS });
+    expect(gaveUp).toMatchObject({ enabled: false, lastResult: 'busy', lastRunAt: due + SESSION_PROMPT_BUSY_GIVE_UP_MS, busyGaveUp: true });
     expect(gaveUp.busySince).toBeUndefined();
+    // The next attempt (after a Resume) is no longer the given-up one.
+    expect(advanceSessionPromptSchedule({ ...gaveUp, enabled: true }, 'busy', due + 2 * SESSION_PROMPT_BUSY_GIVE_UP_MS).busyGaveUp).toBeUndefined();
     // Every 10 minutes: given up ten minutes into the run, and the occurrence due then runs.
     const every10 = schedule({ nextRunAt: due, intervalMinutes: 10, busySince: due });
     expect(advanceSessionPromptSchedule(every10, 'busy', due + 9 * 60_000).nextRunAt).toBe(due);
-    expect(advanceSessionPromptSchedule(every10, 'busy', due + 10 * 60_000)).toMatchObject({ enabled: true, nextRunAt: due + 10 * 60_000, lastResult: 'busy' });
+    const repeatGaveUp = advanceSessionPromptSchedule(every10, 'busy', due + 10 * 60_000);
+    expect(repeatGaveUp).toMatchObject({ enabled: true, nextRunAt: due + 10 * 60_000, lastResult: 'busy' });
+    // Only a one-shot is disabled by a give-up, so only it is marked.
+    expect(repeatGaveUp.busyGaveUp).toBeUndefined();
     // unavailable and folder_trust still wait, and end a run of busy answers.
     const away = advanceSessionPromptSchedule(schedule({ nextRunAt: due, busySince: due }), 'unavailable', due + 10 * SESSION_PROMPT_BUSY_GIVE_UP_MS);
     expect(away.nextRunAt).toBe(due);

@@ -202,6 +202,16 @@ describe('session prompt schedule IPC handlers', () => {
     ]);
   });
 
+  it('a Resume gives a given-up one-shot a fresh busy hour and drops its given-up mark', async () => {
+    const gaveUp = { ...schedule('gave-up'), enabled: false, lastResult: 'busy' as const, busySince: 5, busyGaveUp: true as const };
+    await saveSessionPromptSchedules([gaveUp], dir);
+    await expect(handlers().update({ ptyId: 'pty-1', id: 'gave-up', enabled: true })).resolves.toEqual({ ok: true });
+    const [resumed] = loadSessionPromptSchedules(dir);
+    expect(resumed.enabled).toBe(true);
+    expect(resumed.busySince).toBeUndefined();
+    expect(resumed.busyGaveUp).toBeUndefined();
+  });
+
   it('refuses to schedule a live-but-unverified pane (#1307)', async () => {
     const request = {
       ptyId: 'pty-1',

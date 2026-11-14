@@ -475,6 +475,23 @@ describe('runFreshContext — evidence after Enter', () => {
     expect(pane.writes).toEqual(['/clear', '\x7f'.repeat(6)]);
   });
 
+  // Unread, the command may still be in the input line: skipping would type
+  // the task next to it, so the send fails with nothing more written.
+  it('a screen that cannot be read to take the command back fails the step, nothing more written', async () => {
+    const pane = scriptedPane();
+    const readState = pane.probe.readAgentState;
+    let reads = 0;
+    pane.probe.readAgentState = async () => {
+      if (++reads !== 2) return readState();
+      pane.probe.readScreen = async () => '';
+      return null;
+    };
+    const err = await runFreshContext(CLAUDE, pane.probe, pane.opts).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FreshContextTimeout);
+    expect((err as Error).message).toMatch(/the command may still be in the input line/);
+    expect(pane.writes).toEqual(['/clear']);
+  });
+
   it('claude without hooks: applied on the settled screen', async () => {
     const pane = scriptedPane({ sessionStartSource: null });
     const out = await runFreshContext(CLAUDE, pane.probe, pane.opts);

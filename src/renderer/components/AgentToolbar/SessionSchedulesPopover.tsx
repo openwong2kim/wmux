@@ -3,6 +3,7 @@ import type { AgentSlug } from '../../../shared/agentIdentity';
 import type { SessionPromptSchedule } from '../../../shared/sessionPromptSchedule';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { getLocale } from '../../i18n';
 import { ptyLocationName } from '../../utils/paneNaming';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
@@ -42,7 +43,8 @@ function defaultWhen(now = new Date()): string {
 }
 
 function formatWhen(ms: number): string {
-  return new Intl.DateTimeFormat(undefined, {
+  // The app's language, not the OS's: the rest of the row is in it.
+  return new Intl.DateTimeFormat(getLocale(), {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -57,11 +59,9 @@ function statusKey(schedule: SessionPromptSchedule): string {
     case undefined: return idle;
     case 'busy':
       if (schedule.enabled) return 'sessionSchedule.statusBusy';
-      // Given up (one-shot, an hour busy) sets lastRunAt to that attempt; a
-      // Pause changes only `enabled`, so it keeps "paused".
-      return schedule.lastRunAt !== undefined && schedule.lastRunAt === schedule.lastAttemptAt
-        ? 'sessionSchedule.statusGaveUpBusy'
-        : idle;
+      // A one-shot given up after an hour busy; a Pause (or a Resume and a
+      // Pause) keeps "paused".
+      return schedule.busyGaveUp ? 'sessionSchedule.statusGaveUpBusy' : idle;
     case 'unavailable': return schedule.enabled ? 'sessionSchedule.statusUnavailable' : idle;
     case 'folder_trust': return schedule.enabled ? 'sessionSchedule.statusFolderTrust' : idle;
     case 'session_changed': return 'sessionSchedule.statusSessionChanged';

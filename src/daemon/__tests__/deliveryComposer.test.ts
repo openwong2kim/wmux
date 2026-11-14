@@ -118,13 +118,13 @@ describe('frameShowsPaste', () => {
     const text = 'wmux: A2A task t-1 is waiting for you, read it with a2a_task_query';
     const pasted = { probe: 'wmux: A2A task t-1 is wa', text };
     // Wrapped as the composer wraps it: continuation rows indented.
-    const wrapped = [RULE, '❯ wmux: A2A task t-1 is waiting for you, read', '  it with a2a_task_query', RULE];
+    const wrapped = [RULE, '❯\u00a0wmux: A2A task t-1 is waiting for you, read', '  it with a2a_task_query', RULE];
     expect(frameShowsPaste(f(wrapped), pasted)).toBe(true);
     // Same start, but someone's keys before or after it: not only ours.
-    expect(frameShowsPaste(f([RULE, `❯ ${text} and also fix the build`, RULE]), pasted)).toBe(false);
-    expect(frameShowsPaste(f([RULE, `❯ note: ${text}`, RULE]), pasted)).toBe(false);
+    expect(frameShowsPaste(f([RULE, `❯\u00a0${text} and also fix the build`, RULE]), pasted)).toBe(false);
+    expect(frameShowsPaste(f([RULE, `❯\u00a0note: ${text}`, RULE]), pasted)).toBe(false);
     // Only part of it shown (the rest never arrived): not this paste either.
-    expect(frameShowsPaste(f([RULE, '❯ wmux: A2A task t-1 is waiting', RULE]), pasted)).toBe(false);
+    expect(frameShowsPaste(f([RULE, '❯\u00a0wmux: A2A task t-1 is waiting', RULE]), pasted)).toBe(false);
   });
 
   it('the same words in the transcript above prove nothing', () => {

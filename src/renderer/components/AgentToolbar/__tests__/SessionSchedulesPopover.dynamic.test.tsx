@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import SessionSchedulesPopover, { type SessionSchedulesApi } from '../SessionSchedulesPopover';
 import type { SessionPromptSchedule } from '../../../../shared/sessionPromptSchedule';
 import { useStore } from '../../../stores';
+import { loadLocale, setLocale } from '../../../i18n';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -257,8 +258,9 @@ describe('SessionSchedulesPopover', () => {
 
   it('a one-shot given up after an hour busy says so; one paused while busy still reads paused', async () => {
     const api = fakeApi([
-      schedule({ id: 'gave-up', enabled: false, lastResult: 'busy', lastAttemptAt: 5_000, lastRunAt: 5_000 }),
-      schedule({ id: 'paused', enabled: false, lastResult: 'busy', lastAttemptAt: 5_000 }),
+      schedule({ id: 'gave-up', enabled: false, lastResult: 'busy', lastAttemptAt: 5_000, lastRunAt: 5_000, busyGaveUp: true }),
+      // Paused while busy, or paused after a give-up and a Resume (same times, no flag).
+      schedule({ id: 'paused', enabled: false, lastResult: 'busy', lastAttemptAt: 5_000, lastRunAt: 5_000 }),
     ]);
     await mount(api);
     const status = (id: string) => query<HTMLElement>(`[data-schedule-id="${id}"] [data-session-schedule-status]`).textContent;
@@ -266,6 +268,20 @@ describe('SessionSchedulesPopover', () => {
     expect(status('paused')).toBe('paused');
     // Resume stays offered: it makes the occurrence due again.
     expect(query<HTMLButtonElement>('[data-schedule-id="gave-up"] [data-session-schedule-toggle]').textContent).toContain('Resume');
+  });
+
+  it("formats a row's time in the app's language, not the system's", async () => {
+    await loadLocale('ko');
+    const at = new Date(2026, 10, 14, 14, 59).getTime();
+    setLocale('ko');
+    try {
+      await mount(fakeApi([schedule({ nextRunAt: at })]));
+      const expected = new Intl.DateTimeFormat('ko', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(at);
+      expect(container.textContent).toContain(expected);
+      expect(container.textContent).not.toContain('Nov 14');
+    } finally {
+      setLocale('en');
+    }
   });
 
   it('explains an unavailable resume and lets the same row recover on retry', async () => {

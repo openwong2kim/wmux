@@ -369,14 +369,27 @@ export async function runFreshContext(
   // 5. Type the command, without Enter, and check what it landed next to.
   // Only while the cursor row ends with the command: DELs remove the
   // characters before the cursor, which are someone else's otherwise.
-  const eraseIfShown = async (): Promise<boolean> => {
+  const eraseIfShown = async (): Promise<'erased' | 'not-shown' | 'unreadable'> => {
     const screen = await probe.readScreen();
-    if (!screen || !squash(cursorRow(screen)).endsWith(squash(command))) return false;
+    if (!screen) return 'unreadable';
+    if (!squash(cursorRow(screen)).endsWith(squash(command))) return 'not-shown';
     probe.write('\x7f'.repeat(command.length));
-    return true;
+    return 'erased';
   };
-  const erase = async (reason: string, result: FreshContextReply['freshContext'] = 'skipped_busy'): Promise<FreshContextReply> =>
-    skip(result, `${reason}; ${(await eraseIfShown()) ? 'it was erased' : 'it was not shown at the cursor, so nothing was erased'}`);
+  const erase = async (reason: string, result: FreshContextReply['freshContext'] = 'skipped_busy'): Promise<FreshContextReply> => {
+    const erased = await eraseIfShown();
+    // Unread, the command may still sit in the input line: the task text
+    // must not be typed next to it, so the send fails with nothing more written.
+    if (erased === 'unreadable') {
+      throw new FreshContextTimeout(
+        `typed ${command}, and the pane could not be read to take it back (${reason}); nothing further was written ` +
+          '(the command may still be in the input line)',
+        command,
+        'timeout',
+      );
+    }
+    return skip(result, `${reason}; ${erased === 'erased' ? 'it was erased' : 'it was not shown at the cursor, so nothing was erased'}`);
+  };
   await probe.verify?.('command', command);
   probe.write(command);
   let placement: ReturnType<typeof commandOnCursorRow> = 'absent';
