@@ -1121,3 +1121,150 @@ describe('a follow-up on a fan-out report held here', () => {
     expect(remoteOf(svc, 'rt-fo')).not.toHaveProperty('followUpsOpen');
   });
 });
+
+describe('a reopen undone when the message that reopened the task never reached an agent', () => {
+  const DONE = { summary: 'shipped', items: [{ kind: 'command' as const, status: 'passed' as const, command: 'npm test', summary: 'ok' }] };
+  const caller = { callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-l' } };
+  /** B's copy: completed by its agent, then reopened by the sender's follow-up `f-1`. */
+  async function reopened(log = newLog()): Promise<A2aTaskService> {
+    const svc = newService(log);
+    await inbound(svc);
+    expect((await svc.transition({ taskId: 'rt-in', to: 'working', ...caller })).ok).toBe(true);
+    expect((await svc.transition({ taskId: 'rt-in', to: 'completed', ...caller, evidence: DONE })).ok).toBe(true);
+    const res = await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('f-1', 'one more thing'), reopenCompleted: true });
+    expect(res).toMatchObject({ ok: true, reopened: true });
+    expect(remoteOf(svc, 'rt-in').reopenedBy).toMatchObject({ messageId: 'f-1', status: { state: 'completed', evidence: DONE } });
+    return svc;
+  }
+  const expire = async (svc: A2aTaskService, id = 'f-1') => {
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: id, held: 'no-agent' })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: id, rejected: 'held-expired' })).ok).toBe(true);
+  };
+
+  it('held-expired: completed again with the status it had, the reason in the log, and the same after a replay', async () => {
+    const log = newLog();
+    const svc = await reopened(log);
+    await expire(svc);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ ok: true, undone: true });
+    expect(svc.getTask('rt-in')!.status).toMatchObject({ state: 'completed', evidence: DONE });
+    expect(lastPayload(log)).toMatchObject({ kind: 'task.transition', to: 'completed', reopenUndone: 'held-expired' });
+    expect(remoteOf(svc, 'rt-in')).not.toHaveProperty('reopenedBy');
+    // Once: a second try finds nothing to undo.
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ ok: true, undone: false });
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(restored.getTask('rt-in')!.status).toMatchObject({ state: 'completed', evidence: DONE });
+    expect(remoteOf(restored, 'rt-in')).not.toHaveProperty('reopenedBy');
+  });
+
+  it('link-ended: a reopening message still owed is undone too', async () => {
+    const svc = await reopened();
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'link-ended' })).toMatchObject({ ok: true, undone: true });
+    expect(svc.getTask('rt-in')!.status.state).toBe('completed');
+  });
+
+  it('is not undone when the agent moved the task, the message reached the pane, a later one did, or a paste may have landed', async () => {
+    // The agent moved it after the reopen.
+    let svc = await reopened();
+    expect((await svc.transition({ taskId: 'rt-in', to: 'input-required', ...caller })).ok).toBe(true);
+    expect((await svc.transition({ taskId: 'rt-in', to: 'working', ...caller })).ok).toBe(true);
+    await expire(svc);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ undone: false });
+    expect(svc.getTask('rt-in')!.status.state).toBe('working');
+    // The reopening message was delivered.
+    svc = await reopened();
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-1', delivered: true })).ok).toBe(true);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'link-ended' })).toMatchObject({ undone: false });
+    // A later message was delivered.
+    svc = await reopened();
+    expect((await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('f-2', 'and this') })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-2', delivered: true })).ok).toBe(true);
+    await expire(svc);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ undone: false });
+    // Its paste may have landed (delivery-unconfirmed), then it expired.
+    svc = await reopened();
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-1', held: 'delivery-unconfirmed' })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-1', rejected: 'held-expired' })).ok).toBe(true);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ undone: false });
+    // Left unconfirmed once, then held for another reason: its paste may still be in the pane.
+    svc = await reopened();
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-1', held: 'delivery-unconfirmed' })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-1', held: 'no-agent' })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-1', rejected: 'held-expired' })).ok).toBe(true);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ undone: false });
+    // A later follow-up still owed: the task stays open for it, until it is dropped too.
+    svc = await reopened();
+    expect((await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('f-2', 'and this') })).ok).toBe(true);
+    await expire(svc);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ undone: false });
+    await expire(svc, 'f-2');
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ undone: true });
+    // Not the message that reopened it.
+    svc = await reopened();
+    await expire(svc);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'm-0', reason: 'held-expired' })).toMatchObject({ undone: false });
+    expect(svc.getTask('rt-in')!.status.state).toBe('working');
+  });
+
+  it('link-ended: a reopening message already dropped unread (its notice still owed) is undone too', async () => {
+    const svc = await reopened();
+    await expire(svc);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'link-ended' })).toMatchObject({ ok: true, undone: true });
+    expect(svc.getTask('rt-in')!.status.state).toBe('completed');
+  });
+});
+
+describe('the sender\'s count when the peer ends a reopened task before its working arrives', () => {
+  async function counted(n: number, log = newLog()): Promise<A2aTaskService> {
+    const svc = newService(log);
+    await outbound(svc);
+    await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's2', to: 'completed', summary: 'merged', evidence: PEER_EVIDENCE });
+    for (let i = 1; i <= n; i += 1) {
+      expect((await svc.appendRemoteMessage({ taskId: 'rt-out', linkId: LINK, actorWorkspaceId: 'ws-local', message: msg(`f-${i}`, 'one more thing') })).ok).toBe(true);
+      expect((await svc.markRemote({ taskId: 'rt-out', sent: `f-${i}`, followUp: true })).ok).toBe(true);
+    }
+    expect(remoteOf(svc, 'rt-out').followUpsOpen).toBe(n);
+    return svc;
+  }
+  const peer = (svc: A2aTaskService, id: string, to: 'working' | 'completed') =>
+    svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: id, to, peerReopens: true, ...(to === 'completed' ? { summary: 'done', evidence: PEER_EVIDENCE } : {}) });
+
+  it('working, then completed: one taken, at the working', async () => {
+    const svc = await counted(1);
+    expect((await peer(svc, 's3', 'working')).ok).toBe(true);
+    expect(remoteOf(svc, 'rt-out')).not.toHaveProperty('followUpsOpen');
+    expect((await peer(svc, 's4', 'completed')).ok).toBe(true);
+    expect(svc.getTask('rt-out')!.status.state).toBe('completed');
+    expect(remoteOf(svc, 'rt-out')).not.toHaveProperty('followUpsOpen');
+  });
+
+  it('completed only: one taken, still completed with the peer\'s result, nothing refused; after a replay too', async () => {
+    const log = newLog();
+    const svc = await counted(1, log);
+    // The peer's agent answered the follow-up before its working went out: that answer is the task's result now.
+    const res = await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's3', to: 'completed', peerReopens: true, summary: 'answered', message: 'Here is the answer.', evidence: PEER_EVIDENCE });
+    expect(res).toMatchObject({ ok: true, duplicate: false });
+    expect(svc.getTask('rt-out')!.status).toMatchObject({ state: 'completed', message: { parts: [{ kind: 'text', text: 'Here is the answer.' }] } });
+    expect(remoteOf(svc, 'rt-out')).not.toHaveProperty('followUpsOpen');
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(remoteOf(restored, 'rt-out')).not.toHaveProperty('followUpsOpen');
+    // Its id is still known after the restart: a redelivery is a duplicate.
+    expect(await restored.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's3', to: 'completed', peerReopens: true })).toMatchObject({ ok: true, duplicate: true });
+  });
+
+  it('the same completed delivered again: no second decrement', async () => {
+    const svc = await counted(2);
+    expect((await peer(svc, 's3', 'completed')).ok).toBe(true);
+    expect(await peer(svc, 's3', 'completed')).toMatchObject({ ok: true, duplicate: true });
+    expect(remoteOf(svc, 'rt-out').followUpsOpen).toBe(1);
+  });
+
+  it('two follow-ups open, one restored completed: 2 → 1', async () => {
+    const svc = await counted(2);
+    expect((await peer(svc, 's3', 'completed')).ok).toBe(true);
+    expect(remoteOf(svc, 'rt-out').followUpsOpen).toBe(1);
+    expect(svc.getTask('rt-out')!.status.state).toBe('completed');
+  });
+});

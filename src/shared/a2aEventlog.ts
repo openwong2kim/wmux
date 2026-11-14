@@ -82,7 +82,11 @@ export interface A2aTaskTransitionPayload {
    * remote-message dedupe keys on `remoteAsked ?? to`.
    */
   remoteAsked?: 'completed';
-  /** Cross-host A2A: the peer's `working` on a task that ended `completed` here, taken for a follow-up of ours. */
+  /**
+   * Cross-host A2A: taken for a follow-up of ours (one off `followUpsOpen`): the peer's `working` on a task that
+   * ended `completed` here, or its `completed` on one still `completed` here (it followed the task again and ended it
+   * before its `working` reached us).
+   */
   followedAgain?: true;
   /**
    * Reopen marker. `'sender_message'` = the sender wrote to a task that had
@@ -97,6 +101,14 @@ export interface A2aTaskTransitionPayload {
    * told to the peer even if it was told before).
    */
   reopened?: 'sender_message';
+  /** With `reopened` on an inbound task its remote sender wrote to again: the message that reopened it. */
+  reopenedBy?: string;
+  /**
+   * The reopen undone: the message that reopened the task never reached an
+   * agent (its hold expired, or the link ended), so it is `completed` again,
+   * with the status it had before.
+   */
+  reopenUndone?: 'held-expired' | 'link-ended';
 }
 
 /** 취소(canceled) — sender/receiver 모두 가능(권한은 서비스가 판정). */

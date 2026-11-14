@@ -372,6 +372,11 @@ export class A2aTaskService {
       const t = payload as A2aTaskTransitionPayload;
       const task = this.tasks.get(t.taskId);
       if (!task) return;
+      const before = task.status;
+      const rm = remoteMarkerOf(task);
+      // A reopen by the remote sender keeps what it reopened from, until anything else moves the task.
+      if (rm) delete rm.reopenedBy;
+      if (rm && t.reopened === 'sender_message' && t.reopenedBy) rm.reopenedBy = { messageId: t.reopenedBy, status: before };
       task.status = {
         state: t.to,
         timestamp: t.timestamp,
@@ -380,7 +385,8 @@ export class A2aTaskService {
       };
       task.metadata.updatedAt = t.timestamp;
       // Ended here again: no follow-up of ours still waits for the peer's `working` (one left over is never taken later).
-      if ((TERMINAL_STATES as readonly string[]).includes(t.to)) {
+      // A completion that takes a follow-up (followedAgain) takes that one only.
+      if ((TERMINAL_STATES as readonly string[]).includes(t.to) && !t.followedAgain) {
         const m = remoteMarkerOf(task);
         if (m) delete m.followUpsOpen;
       }
@@ -502,6 +508,8 @@ export class A2aTaskService {
         // The first hold's time stays through a change of reason, so the 24 h clock never starts again.
         if (!target.heldAt) target.heldAt = r.timestamp;
         target.held = held;
+        // A paste that may have landed stays known through any later hold (an inbox item only).
+        if (held === 'delivery-unconfirmed' && r.messageId) (target as A2aRemoteInboxItem).unconfirmed = true;
       }
       return;
     }
@@ -1161,6 +1169,57 @@ export class A2aTaskService {
   }
 
   /**
+   * Undo a reopen whose cause never reached an agent: an inbound task its remote sender reopened (`working` after it
+   * ended `completed`) goes back to `completed`, with the status it had, when all of these hold:
+   *   - nothing has moved it since the reopen, and `messageId` is the message that reopened it;
+   *   - that message was not delivered: dropped when its hold expired (`held-expired`), or still owed when the link
+   *     ended (`link-ended`), and never one whose paste may have landed (`delivery-unconfirmed`, or an attempt in
+   *     flight);
+   *   - no message after it was delivered.
+   * `undone: false` when any of that does not hold; the task is left as it is.
+   */
+  async undoReopen(input: { taskId: string; messageId: string; reason: 'held-expired' | 'link-ended' }): Promise<{ ok: true; task: Task; undone: boolean } | OpErr> {
+    const res = await this.withTaskLock<{ ok: true; task: Task; undone: boolean } | OpErr>(input.taskId, async () => {
+      const task = this.tasks.get(input.taskId);
+      const marker = remoteMarkerOf(task);
+      if (!task || !marker) return { ok: false, error: `a2a.remote.undo: remote task not found: ${input.taskId}` };
+      const reopen = marker.reopenedBy;
+      const inbox = marker.inbox ?? [];
+      const at = inbox.findIndex((i) => i.messageId === input.messageId);
+      const item = at >= 0 ? inbox[at] : undefined;
+      // Dropped unread (its hold expired), or, on a link end, still owed or dropped; never one whose paste may be in
+      // the pane (left unconfirmed at any time, or an attempt in flight).
+      const neverReached = item !== undefined && item.delivered !== true && !item.attempted && !item.unconfirmed
+        && item.held !== 'delivery-unconfirmed' && item.rejected?.held !== 'delivery-unconfirmed'
+        && (item.rejected?.reason === 'held-expired' || (input.reason === 'link-ended' && !item.rejected));
+      // Every later message from the sender is dropped too: one delivered reached the agent, and one still owed or
+      // held is work the task is open for (it would be stranded on a task that ended, never delivered or expired).
+      const laterOpen = inbox.slice(at + 1).some((i) => i.delivered === true || (i.kind === 'reply' && !i.rejected));
+      const undo = marker.direction === 'inbound' && task.status.state === 'working' && reopen?.messageId === input.messageId
+        && neverReached && !laterOpen;
+      if (!undo || !reopen) return { ok: true, task, undone: false };
+      const payload: A2aTaskTransitionPayload = {
+        kind: 'task.transition',
+        taskId: input.taskId,
+        to: 'completed',
+        timestamp: this.isoNow(),
+        ...(reopen.status.message ? { message: reopen.status.message } : {}),
+        ...(reopen.status.evidence ? { evidence: reopen.status.evidence } : {}),
+        reopenUndone: input.reason,
+      };
+      const side = localSideOf(task);
+      const ws = task.metadata[side].workspaceId;
+      const committed = await this.log.append(this.envelope(payload, ws, this.derivePrincipalId(task, side, ws)));
+      if (!committed) return { ok: false, error: 'a2a.remote.undo: daemon log append failed (uncommitted)' };
+      this.applyPayload(payload);
+      return { ok: true, task, undone: true };
+    });
+    // Ended again: what waits on it moves on, as for any other end.
+    if (res.ok && res.undone) await this.settleDependentsOf(input.taskId);
+    return res;
+  }
+
+  /**
    * Append one message to a remote task on `linkId` (a reply, either way).
    * `actorWorkspaceId` is the side writing it: `remote:<linkId>` for one the
    * peer sent, the local workspace for one of ours. Keyed by
@@ -1202,6 +1261,7 @@ export class A2aTaskService {
           to: 'working',
           timestamp: this.isoNow(),
           reopened: 'sender_message',
+          reopenedBy: input.message.messageId,
         };
         const reopened = await this.log.append(
           this.envelope(transition, input.actorWorkspaceId, this.derivePrincipalId(task, 'from', input.actorWorkspaceId)),
@@ -1311,7 +1371,12 @@ export class A2aTaskService {
       // The peer follows the task again for a follow-up of ours sent after it ended `completed` (once per follow-up).
       const followedAgain = current === 'completed' && input.to === 'working' && followsAgain(task, input.peerReopens === true)
         && (remoteMarkerOf(task)?.followUpsOpen ?? 0) > 0;
-      const allowed = followedAgain
+      // The peer's `completed` on a task still `completed` here, with a follow-up of ours open: the peer followed it
+      // again and ended it before its `working` reached us (its answer, or the result it had when the follow-up never
+      // reached its agent). It is taken like any completion, and takes that follow-up; nothing is refused.
+      const followUpTaken = current === 'completed' && input.to === 'completed' && followsAgain(task, input.peerReopens === true)
+        && (remoteMarkerOf(task)?.followUpsOpen ?? 0) > 0;
+      const allowed = followedAgain || followUpTaken
         || input.to === 'failed'
         || validateTransition(current, input.to)
         || (current === 'submitted' && (input.to === 'completed' || input.to === 'input-required'))
@@ -1319,7 +1384,7 @@ export class A2aTaskService {
       if (!allowed) {
         return { ok: false, error: `a2a.remote.state: invalid transition ${current} -> ${input.to}` };
       }
-      if (!followedAgain && (TERMINAL_STATES as readonly string[]).includes(current)) {
+      if (!followedAgain && !followUpTaken && (TERMINAL_STATES as readonly string[]).includes(current)) {
         return { ok: false, error: `a2a.remote.state: invalid transition ${current} -> ${input.to}` };
       }
       const terminal = input.to === 'completed' || input.to === 'failed';
@@ -1346,7 +1411,7 @@ export class A2aTaskService {
         ...(report ? { remoteAsked: 'completed' as const } : {}),
         // A `working` that answers a follow-up of ours takes it: the task followed again after it completed here, or
         // a fan-out report held here that the peer's agent took up again.
-        ...(followedAgain || (input.to === 'working' && remoteMarkerOf(task)?.reported !== undefined && followsAgain(task, input.peerReopens === true)
+        ...(followedAgain || followUpTaken || (input.to === 'working' && remoteMarkerOf(task)?.reported !== undefined && followsAgain(task, input.peerReopens === true)
           && (remoteMarkerOf(task)?.followUpsOpen ?? 0) > 0)
           ? { followedAgain: true as const }
           : {}),
