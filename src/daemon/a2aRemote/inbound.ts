@@ -29,7 +29,6 @@ import { isPlainObject, isSafeId } from './storeFile';
 import { isSpawnEnvelope } from './spawnReceiver';
 import { heldNoticeMessageId } from './outbound';
 import { isContinueEnvelope } from './continueReceiver';
-import { isBundleEnvelope } from './bundleBox';
 
 /**
  * Cross-host A2A, receiving side: apply one envelope an authenticated peer
@@ -67,8 +66,10 @@ export interface InboundDeps {
   spawn?: { applyInbound(env: A2aRemoteEnvelope, peer: { hostId: HostId }): A2aRemoteDeliverResponse | Promise<A2aRemoteDeliverResponse> };
   /** Continuing a conversation from another PC (the `link` states `continue*`); absent, they are an unknown link. */
   continue?: { applyInbound(env: A2aRemoteEnvelope, peer: { hostId: HostId }): A2aRemoteDeliverResponse | Promise<A2aRemoteDeliverResponse> };
-  /** Bringing back an agent's work as a bundle (the `link` states `bundle-*`, bundleBox.ts); absent, they are an unknown link. */
+  /** Asks to bring back an agent's work as a bundle (the `link` state `bundle-ask`; the box side); absent, they are an unknown link. */
   bundles?: { applyInbound(env: A2aRemoteEnvelope, peer: { hostId: HostId }): A2aRemoteDeliverResponse | Promise<A2aRemoteDeliverResponse> };
+  /** The box's answers to this PC's asks (the `link` state `bundle-made`; the asking side); absent, they are an unknown link. */
+  bundleAsks?: { applyInbound(env: A2aRemoteEnvelope, peer: { hostId: HostId }): A2aRemoteDeliverResponse | Promise<A2aRemoteDeliverResponse> };
   /**
    * Where a worker's status on a task this PC sent goes (`kind: 'status'`): the newest per task, in memory.
    * Absent, a status is refused as unknown.
@@ -193,7 +194,9 @@ async function applyInbound(
   // A spawn or continue request names no link: it is answered before any link check.
   if (deps.spawn && isSpawnEnvelope(env)) return deps.spawn.applyInbound(env, peer);
   if (deps.continue && isContinueEnvelope(env)) return deps.continue.applyInbound(env, peer);
-  if (deps.bundles && isBundleEnvelope(env)) return deps.bundles.applyInbound(env, peer);
+  // Bringing back a bundle (shared/a2aBundle.ts): an ask goes to the box side, its answer to the asking side.
+  if (env.kind === 'link' && env.link?.state === 'bundle-ask' && deps.bundles) return deps.bundles.applyInbound(env, peer);
+  if (env.kind === 'link' && env.link?.state === 'bundle-made' && deps.bundleAsks) return deps.bundleAsks.applyInbound(env, peer);
   if (env.kind === 'link' && deps.offers && (env.link?.state === 'offer' || env.link?.state === 'offer-withdrawn')) {
     return deps.offers.applyInbound(env, peer);
   }
