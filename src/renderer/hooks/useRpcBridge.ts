@@ -70,7 +70,7 @@ import {
 } from '../utils/searchEngine';
 import { gatedSubmitToPty, submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { isTerminalDirty, isTerminalRetained } from '../terminal/terminalOutputScheduler';
-import type { GatedSubmitRefusal, GatedSubmitResult } from '../../shared/ptyMessageDelivery';
+import { NO_BACKGROUND_SERVICE_DETAIL, type GatedSubmitRefusal, type GatedSubmitResult } from '../../shared/ptyMessageDelivery';
 import type { FreshContextReply } from '../../shared/freshContext';
 import { paneAddressOfPty, paneHasOtherOpenA2aTask } from './a2aFreshContext';
 import { publishA2aTask } from '../events/publisher';
@@ -502,7 +502,10 @@ function refusedDelivery(mode: string, refused: GatedSubmitRefusal): Record<stri
     notified: false,
     mode,
     reason: refused.reason,
-    hint: DELIVERY_REFUSED_HINTS[refused.reason],
+    // No background service: a retry in a few seconds would not help.
+    hint: refused.detail.endsWith(NO_BACKGROUND_SERVICE_DETAIL)
+      ? `This PC's wmux is running without its background service; deliveries wait until it is running. The task is stored; the receiver can find it with a2a_task_query.`
+      : DELIVERY_REFUSED_HINTS[refused.reason],
     detail: refused.detail,
     ...(refused.pasted ? (refused.cleared ? { pastedCleared: true } : { pastedNotSubmitted: true, hint: PASTED_NOT_SUBMITTED_HINT }) : {}),
   };

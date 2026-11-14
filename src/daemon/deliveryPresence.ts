@@ -57,6 +57,10 @@ export interface DeliveryPresenceDeps {
   platform: NodeJS.Platform;
 }
 
+/** Agents a screen alone may verify (no attributed process): their prompt and
+ *  where they keep the cursor are both known. */
+const SCREEN_TIER_AGENTS: ReadonlySet<AgentSlug> = new Set(['claude']);
+
 const none = (reason: DeliveryPresenceReason, pasteShown?: boolean): DeliveryPresence =>
   ({ tier: 'none', reason, ...(pasteShown !== undefined ? { pasteShown } : {}) });
 
@@ -94,7 +98,10 @@ export async function deliveryPresence(
     if (read.verdict === 'mode') return refuse('composer-mode');
     if (read.verdict === 'busy') return refuse('composer-busy');
     if (read.verdict !== 'plain') return refuse('composer-unknown');
-    if (tier === 'screen' && !(current && cursorInComposer(current, read))) return refuse('no-screen-proof');
+    // A screen alone proves the agent only with the cursor on its prompt: a
+    // frame being drawn now, not a leftover. Codex's cursor was not measured,
+    // so its screen tier holds; its process tier reads the signature alone.
+    if (tier === 'screen' && !(SCREEN_TIER_AGENTS.has(slug) && current && cursorInComposer(current, read))) return refuse('no-screen-proof');
     return pass(tier, slug, 'full');
   };
 

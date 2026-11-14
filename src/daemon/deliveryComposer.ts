@@ -68,30 +68,33 @@ function slice(rows: ChatScreenRows, from: number, to: number): ChatScreenRows {
 
 /**
  * Claude's composer: the last prompt row (any glyph) under a rule, its
- * indented continuation rows, and the closing rule. Only the composer and the
- * rows under it decide: a transcript above that quotes a dialog's footer or a
- * mode's hint is not the pane's state, and neither is the text this delivery
- * pasted into the composer.
+ * indented continuation rows, and the closing rule, the prompt row and both
+ * rules at column 0 (every captured Claude frame draws them there; Claude
+ * indents the transcript, so text it prints cannot forge them). Only the
+ * composer and the rows under it decide: a transcript above that quotes a
+ * dialog's footer or a mode's hint is not the pane's state, and neither is
+ * the text this delivery pasted into the composer.
  */
 function readClaude(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRead {
   if (rows.every((row) => !row.trim())) return { verdict: 'unknown' };
-  const isTopRule = (row: string | undefined): boolean => row !== undefined && (CLAUDE_RULE.test(row.trim()) || CLAUDE_LABELLED_RULE.test(row.trimEnd()));
+  const isRule = (row: string): boolean => CLAUDE_RULE.test(row.trimEnd());
+  const isTopRule = (row: string | undefined): boolean => row !== undefined && (isRule(row) || CLAUDE_LABELLED_RULE.test(row.trimEnd()));
   /** The closing rule of a prompt row at `at`, past its indented continuation rows; -1 if none. */
   const closing = (at: number): number => {
-    const end = rows.findIndex((row, i) => i > at && CLAUDE_RULE.test(row.trim()));
+    const end = rows.findIndex((row, i) => i > at && isRule(row));
     return end > at && rows.slice(at + 1, end).every((row) => !row.trim() || /^\s{2}/.test(row)) ? end : -1;
   };
   let from = -1;
   let to = -1;
   for (let i = rows.length - 1; i > 0 && from < 0; i--) {
-    if (!CLAUDE_PROMPT.test(rows[i].replace(/^ +/, '')) || !isTopRule(rows[i - 1])) continue;
+    if (!CLAUDE_PROMPT.test(rows[i]) || !isTopRule(rows[i - 1])) continue;
     const end = closing(i);
     if (end > 0) [from, to] = [i, end];
   }
   // No composer on screen: a dialog owns it, or nothing that is Claude's.
   if (from < 0) return { verdict: blocks(rows) ? 'mode' : 'unknown' };
   const span = { from, to };
-  const glyph = CLAUDE_PROMPT.exec(rows[from].replace(/^ +/, ''))?.[1];
+  const glyph = CLAUDE_PROMPT.exec(rows[from])?.[1];
   const below = rows.slice(to + 1);
   if (glyph !== '❯' || below.some((row) => CLAUDE_MODE_HINT.test(row)) || blocks(below)) return { verdict: 'mode', span };
   if (phase === 'enter') return { verdict: 'plain', span };

@@ -27,6 +27,7 @@ import { pointerForBatch } from '../../../shared/deliveryPointer';
 import {
   formatBracketedPastePayload,
   isMultilinePtyPayload,
+  NO_BACKGROUND_SERVICE_DETAIL,
   resolveAgentSlug,
   submitProfileForAgent,
   type GatedSubmitOptions,
@@ -1263,6 +1264,10 @@ export class DeliveryRefused extends Error {
 export function pasteProbe(text: string): string {
   return (text.split('\n').find((line) => line.trim()) ?? '').trim().slice(0, 24);
 }
+
+/** The presence read's answer when there is no background service to ask
+ *  (wmux fell back to running panes itself, or the service is not connected). */
+export const NO_BACKGROUND_SERVICE = 'no-background-service';
 
 /** Budget for the daemon's presence answer: an attribution probe, the
  *  process checks and, for an unattributed pane, one screen read. */
@@ -2696,7 +2701,7 @@ export function registerInputRpc(
    */
   const readDeliveryPresence = async (ptyId: string, expectAgent: AgentSlug | undefined, check: DeliveryCheck): Promise<unknown> => {
     const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
-    if (!dc?.isConnected) return undefined;
+    if (!dc?.isConnected) return NO_BACKGROUND_SERVICE;
     return dc.rpc('daemon.deliveryPresence', {
       id: ptyId,
       ...(expectAgent ? { expectAgent } : {}),
@@ -2711,6 +2716,9 @@ export function registerInputRpc(
   ): Promise<{ ok: true; input: 'full' | 'pointer'; bracketedPaste: boolean; pasteShown?: boolean } | { ok: false; refusal: GatedSubmitRefusal; pasteShown?: boolean }> => {
     const expectAgent = agent ? (isAgentSlug(agent) ? agent : agentDisplayToSlug(agent)) : undefined;
     const raw = await (deps.deliveryPresence ?? readDeliveryPresence)(ptyId, expectAgent, check).catch(() => undefined);
+    if (raw === NO_BACKGROUND_SERVICE) {
+      return { ok: false, refusal: { ok: false, reason: 'gate_unavailable', detail: `delivery: ${NO_BACKGROUND_SERVICE_DETAIL}` } };
+    }
     const presence = parseDeliveryPresence(raw, isAgentSlug);
     if (!presence) {
       return { ok: false, refusal: { ok: false, reason: 'gate_unavailable', detail: "delivery: wmux could not check the target pane's agent, so nothing was typed" } };

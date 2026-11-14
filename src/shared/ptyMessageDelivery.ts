@@ -20,6 +20,10 @@ export function formatBracketedPastePayload(text: string): string {
   return `${BRACKETED_PASTE_START}${sanitizeBracketedPastePayload(text)}${BRACKETED_PASTE_END}`;
 }
 
+/** A delivery refused because this PC's wmux has no background service to
+ *  verify an agent with (its local fallback): said in these words to the sender. */
+export const NO_BACKGROUND_SERVICE_DETAIL = "this PC's wmux is running without its background service; deliveries wait until it is running.";
+
 export function isMultilinePtyPayload(text: string): boolean {
   return text.includes('\n') || text.includes('\r');
 }

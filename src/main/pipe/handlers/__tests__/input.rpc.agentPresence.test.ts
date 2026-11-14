@@ -6,7 +6,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RpcRouter } from '../../RpcRouter';
-import { registerInputRpc } from '../input.rpc';
+import { NO_BACKGROUND_SERVICE, registerInputRpc } from '../input.rpc';
 import type { GatedSubmitOptions, GatedSubmitResult } from '../../../../shared/ptyMessageDelivery';
 import type { DeliveryCheck, DeliveryPresence } from '../../../../shared/deliveryPresence';
 import type { BrowserWindow } from 'electron';
@@ -186,6 +186,14 @@ describe('deliveries wait for a verified agent in plain input mode', () => {
     expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ reason: 'gate_unavailable' });
     answers = [{ tier: 'screen' } as unknown as DeliveryPresence];
     expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ reason: 'gate_unavailable' });
+    expect(writes).toEqual([]);
+  });
+
+  it('no background service to ask: held, and the sender is told so in plain words', async () => {
+    answers = [NO_BACKGROUND_SERVICE as unknown as DeliveryPresence];
+    expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({
+      ok: false, reason: 'gate_unavailable', detail: expect.stringContaining("this PC's wmux is running without its background service"),
+    });
     expect(writes).toEqual([]);
   });
 

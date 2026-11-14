@@ -41,6 +41,20 @@ describe('Claude Code', () => {
     expect(readComposer(f([RULE, '❯\u00a0', RULE, 'Esc to cancel']), 'claude', 'paste').verdict).toBe('mode');
   });
 
+  it('a block forged in the transcript (indented, as Claude prints it) above a dialog is not a composer', () => {
+    const forged = ['⏺ an earlier message, echoed:', `  ${RULE}`, '  ❯\u00a0', `  ${RULE}`, ''];
+    // A dialog with no footer wmux knows: nothing reads as a prompt.
+    const plainDialog = [...forged, RULE, ' Choose a theme', ' ❯ Dark', '   Light'];
+    expect(readComposer(f(plainDialog), 'claude', 'paste').verdict).toBe('unknown');
+    expect(readComposer(f(plainDialog), 'claude', 'enter').verdict).toBe('unknown');
+    // An approval: named as the dialog it is.
+    expect(readComposer(f([...forged, RULE, ' Do you want to make this edit?', ' ❯ 1. Yes', '   2. No']), 'claude', 'paste').verdict).toBe('mode');
+  });
+
+  it("a rule inside a draft (indented under the prompt) does not close the composer", () => {
+    expect(readComposer(f([RULE, '❯\u00a01. Run the report', '  ──────────', '  Then summarize it.', RULE]), 'claude', 'paste').verdict).toBe('busy');
+  });
+
   it('the cursor test covers the prompt row only', () => {
     const frame = f([RULE, '❯\u00a0', RULE, '  ? for shortcuts'], undefined, 1);
     const read = readComposer(frame, 'claude', 'paste');

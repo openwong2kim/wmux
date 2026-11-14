@@ -73,6 +73,13 @@ describe('deliveryPresence: the process tier', () => {
     expect(await deliveryPresence(d, 'p', 'claude', { phase: 'enter', shownProbe: 'not there' })).toEqual({ ...FULL, pasteShown: false });
   });
 
+  it('Codex on the process tier reads its signature alone (its cursor was not measured)', async () => {
+    // The placeholder is dim: the undimmed copy is the bare prompt.
+    const codex = (cursorRow: number): DeliveryFrame => ({ rows: Object.assign(['• done', '› Ask Codex to do anything', '  gpt-5 medium · ~/project'], { undimmed: ['• done', '›', '  gpt-5 medium · ~/project'] }), cursorRow });
+    const d = deps({ tracked: () => ({ alive: true, slug: 'codex' }), s: { namedSlug: 'codex' }, frame: async () => codex(-1) });
+    expect(await deliveryPresence(d, 'p', 'codex')).toEqual({ ...FULL, slug: 'codex' });
+  });
+
   it('a frame that cannot be read is composer-unknown', async () => {
     expect(await deliveryPresence(deps({ frame: async () => null }), 'p', 'claude')).toEqual({ tier: 'none', reason: 'composer-unknown' });
   });
@@ -132,6 +139,13 @@ describe('deliveryPresence: the screen tier (nothing attributed)', () => {
     expect(await deliveryPresence(deps({ ...untracked, s: { namedSlug: undefined } }), 'p', undefined)).toEqual({ tier: 'none', reason: 'no-screen-proof' });
     // No pointer on the screen tier: an agent wmux cannot read gets nothing there.
     expect(await deliveryPresence(deps({ ...untracked, s: { namedSlug: 'gemini' } }), 'p', undefined)).toEqual({ tier: 'none', reason: 'no-screen-proof' });
+  });
+
+  it('Codex is never verified from its screen alone: where it keeps the cursor is not known', async () => {
+    // The placeholder is dim: the undimmed copy is the bare prompt.
+    const codex = (cursorRow: number): DeliveryFrame => ({ rows: Object.assign(['• done', '› Ask Codex to do anything', '  gpt-5 medium · ~/project'], { undimmed: ['• done', '›', '  gpt-5 medium · ~/project'] }), cursorRow });
+    expect(await deliveryPresence(deps({ ...untracked, s: { namedSlug: 'codex' }, frame: async () => codex(1) }), 'p', 'codex'))
+      .toEqual({ tier: 'none', reason: 'no-screen-proof' });
   });
 
   it('`!` mode on the screen tier is composer-mode', async () => {
