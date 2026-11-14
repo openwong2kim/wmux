@@ -468,7 +468,7 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
     'so the message was NOT pasted, and the pane may hold the command or already be cleared. The task is ' +
     'stored; the receiver can find it with a2a_task_query. Read the pane before sending again.',
   fresh_context_busy:
-    'Another new task was still being delivered to the target pane, so nothing was written to it. The task is ' +
+    'Another message was still being delivered to the target pane, so nothing was written to it. The task is ' +
     'stored; the receiver can find it with a2a_task_query. Send again in a few seconds.',
   usage_limited:
     "The target pane hit its provider's usage limit and is held until the limit resets, so nothing was " +
@@ -489,6 +489,16 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
     'The task is stored. Send again once the pane is idle.',
 };
 
+/** A refused delivery main kept to type later (input.rpc pendingDeliveries). */
+const STORED_FOR_LATER_HINT =
+  'The target pane could not take the message now, so it was not typed. wmux keeps it and types it once the ' +
+  "pane can take it: it tries again when the pane's agent ends a turn and once a minute (a pane held by a usage " +
+  'limit waits for the limit to reset). The receiver can read it now with a2a_task_query. The kept copy is ' +
+  "dropped, with no word back, after 24 hours, when the task ends, when the pane closes or its agent changes, " +
+  'or when more messages wait than it keeps (4 per task and 8 per pane, 64 in all); nor does it survive an app ' +
+  'restart. Do not just send it ' +
+  'again: check the task with a2a_task_query first.';
+
 /** A refused delivery whose text is still in the target's composer (#2993). */
 const PASTED_NOT_SUBMITTED_HINT =
   'The message was pasted into the target pane but not submitted, and it is still in its prompt. Do not ' +
@@ -502,11 +512,15 @@ function refusedDelivery(mode: string, refused: GatedSubmitRefusal): Record<stri
     notified: false,
     mode,
     reason: refused.reason,
-    // No background service: a retry in a few seconds would not help.
-    hint: refused.detail.endsWith(NO_BACKGROUND_SERVICE_DETAIL)
+    // Stored: main types it later. No background service: a retry in a few
+    // seconds would not help.
+    hint: refused.stored
+      ? STORED_FOR_LATER_HINT
+      : refused.detail.endsWith(NO_BACKGROUND_SERVICE_DETAIL)
       ? `This PC's wmux is running without its background service; deliveries wait until it is running. The task is stored; the receiver can find it with a2a_task_query.`
       : DELIVERY_REFUSED_HINTS[refused.reason],
     detail: refused.detail,
+    ...(refused.stored ? { storedForLater: true } : {}),
     ...(refused.pasted ? (refused.cleared ? { pastedCleared: true } : { pastedNotSubmitted: true, hint: PASTED_NOT_SUBMITTED_HINT }) : {}),
   };
 }

@@ -135,6 +135,18 @@ describe('A2A delivery approval gate', () => {
     expect(String(result.delivery?.hint)).toMatch(/Retry/);
   });
 
+  it('a refusal main stored for later says so, and when the kept copy is dropped', async () => {
+    gateRefusal = { ok: false, reason: 'gate_unavailable', detail: 'delivery: could not be read whole', stored: true };
+    const result = await send({ silent: false });
+    expect(writesToTarget()).toEqual([]);
+    expect(result.delivery).toMatchObject({ notified: false, reason: 'gate_unavailable', storedForLater: true });
+    const hint = String(result.delivery?.hint);
+    expect(hint).toMatch(/keeps it and types it once the pane can take it/);
+    expect(hint).toMatch(/usage limit waits for the limit to reset/);
+    expect(hint).toMatch(/dropped, with no word back, after 24 hours/);
+    expect(hint).toMatch(/check the task with a2a_task_query first/);
+  });
+
   it('no background service: the hint says so in plain words, not "retry in a few seconds"', async () => {
     gateRefusal = { ok: false, reason: 'gate_unavailable', detail: `delivery: ${NO_BACKGROUND_SERVICE_DETAIL}` };
     const result = await send({ silent: false });

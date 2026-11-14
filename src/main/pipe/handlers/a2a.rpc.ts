@@ -57,6 +57,7 @@ import { noteTrackReply } from '../../deck/trackRecordFeed';
 import { checkClaim, claimHeldRefusal, claimStartTime, claimStillHeld, type ClaimVerdict } from './peerPidShadow';
 import type { ClaimRefusal } from '../../../shared/identityClaims';
 import { A2A_BRAIN_ALIAS, A2A_REMOTE_BODY_MAX, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
+import { withdrawStoredDeliveries } from './pendingDeliveries';
 import {
   isRemoteWorkspaceId,
   remoteWorkspaceId,
@@ -148,6 +149,15 @@ export { refuseHandoffMarker } from '../handoffMarkerTripwire';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** A send whose delivery main kept to type later turned out not to stand:
+ *  drop what main kept, and say so on the receipt. */
+function notKeptForLater(result: Record<string, unknown>, taskId: string, why: string): void {
+  withdrawStoredDeliveries(taskId);
+  if (!isRecord(result.delivery) || result.delivery.storedForLater !== true) return;
+  const { storedForLater: _kept, ...delivery } = result.delivery;
+  result.delivery = { ...delivery, hint: `The target pane could not take the message, and ${why}.` };
 }
 
 /** task.metadata.updatedAt(ISO-8601, 사전순=시간순). 부재 시 '' — 항상 최소값. */
@@ -2198,6 +2208,8 @@ export function registerA2aRpc(
             `[a2a.rpc] daemon mirror-create failed for task ${t.id} — will not survive restart:`,
             mirror.kind === 'reject' ? mirror.error : 'daemon unavailable',
           );
+          // A stored delivery waits for the daemon's row, which never comes.
+          notKeptForLater(result, t.id, 'the task could not be saved, so its message was not kept to type later');
         }
       }
       // 내부 운반 필드 제거 — 파이프 호출자 응답 계약 불변.
@@ -2211,6 +2223,7 @@ export function registerA2aRpc(
     // the item reads open again.
     if (handOutId && isRecord(result) && result.ok === true && typeof result.taskId === 'string'
       && !(isRecord(result.delivery) && result.delivery.notified === true)) {
+      notKeptForLater(result, result.taskId, 'the pick is withdrawn, so its message was not kept to type later');
       const cancel = await cancelTask({ taskId: result.taskId, workspaceId: params.workspaceId, senderPtyId: params.senderPtyId }, ctx).catch(() => null);
       const withdrawn = isRecord(cancel) && cancel.ok === true;
       return {

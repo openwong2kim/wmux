@@ -2792,6 +2792,8 @@ app.on('ready', async () => {
     createClient: (pipeName, token) => new DaemonClient(pipeName, token),
     onInstall: async (client) => {
       daemonClient = client;
+      // A pane's agent process ended: what main stored to type into it is dropped.
+      client.on('session:agentProcessExit', ({ sessionId }: { sessionId: string }) => inputRpc.agentEnded(sessionId));
       console.log('[Main] Connected to wmux-daemon (auth verified)');
       // Each pane's last refused tool call (agents/toolRefusals.ts), as this client holds it.
       setToolRefusalSource((ptyId) => client.toolRefusalOf(ptyId));

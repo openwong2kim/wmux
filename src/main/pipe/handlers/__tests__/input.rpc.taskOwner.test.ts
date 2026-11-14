@@ -8,14 +8,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
-import { registerInputRpc, taskPaneTextRefusal } from '../input.rpc';
+import { registerInputRpc, taskPaneTextRefusal, taskStateOfRows } from '../input.rpc';
+import { PENDING_TEXT_MAX, type PendingTaskState } from '../pendingDeliveries';
 import { beginDeliverySend } from '../deliverySenders';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 import { mintCommanderToken, __resetCommanderTrustForTesting } from '../../../deck/commanderTrust';
 import type { PTYManager } from '../../../pty/PTYManager';
 import type { TaskLedger } from '../../../../daemon/ledger/TaskLedger';
 import type { RpcContext } from '../../../../shared/rpc';
 import type { FanoutOwnerAnswers } from '../../../../shared/workerLaunch';
 import type { FolderTrustState } from '../../../../daemon/folderTrustState';
+import type { DeliveryPresence } from '../../../../shared/deliveryPresence';
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
 vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
@@ -56,6 +59,14 @@ interface Wiring {
   notices: string[];
   deliveryGate: (ptyId: string) => Promise<unknown>;
   gatedSubmit: ReturnType<typeof registerInputRpc>['gatedSubmit'];
+  retryPendingDeliveries: ReturnType<typeof registerInputRpc>['retryPendingDeliveries'];
+  agentEnded: ReturnType<typeof registerInputRpc>['agentEnded'];
+  /** Change what the harness answers between a refusal and a retry. */
+  live: WireOpts;
+  /** Move the virtual clock (with `virtualClock`). */
+  advance: (ms: number) => void;
+  /** The virtual clock now. */
+  now: () => number;
 }
 
 interface WireOpts {
@@ -81,9 +92,33 @@ interface WireOpts {
   trustProvenClear?: boolean;
   /** The daemon's channel messages: the author workspace of each "channel:seq". */
   mentionAuthors?: Record<string, string>;
+  /** The daemon's agent state for the task pane (default: Claude Code, session inc-1, quiet). */
+  agentSession?: string;
+  /** The daemon reads no agent in the task pane: it is back at a shell. */
+  atShell?: boolean;
+  /** The time and `source` of the pane agent's last session-start hook (none by default). */
+  sessionStartAt?: number;
+  sessionStartSource?: string;
+  /** A stored delivery's task state on each read in turn, before `tasks`
+   *  decides; `hang` never answers. */
+  taskStates?: Array<PendingTaskState | 'hang'>;
+  /** Called on each stored-delivery task read, with its 1-based count. */
+  onTaskRead?: (n: number) => void;
+  /** Awaited inside every delivery sleep (the paste-to-Enter gap among them). */
+  sleepGate?: () => Promise<void>;
+  /** The pane holds a typed draft. */
+  draft?: boolean;
+  /** Time and sleeps on a virtual clock. */
+  virtualClock?: boolean;
+  /** The daemon's delivery-presence answer (default: a tracked Claude in plain input mode). */
+  presence?: DeliveryPresence;
 }
 
-function wire(opts: WireOpts = {}): Wiring {
+function wire(initial: WireOpts = {}): Wiring {
+  // Read on each call, so a test may change it between a refusal and a retry.
+  const opts: WireOpts = { ...initial };
+  let clock = 1_000_000;
+  let taskReads = 0;
   const logs: string[] = [];
   const notices: string[] = [];
   const writes: Array<{ ptyId: string; data: string }> = [];
@@ -102,12 +137,23 @@ function wire(opts: WireOpts = {}): Wiring {
       return true;
     },
     readPromptEvents: async () => ({ events: [{ kind: 'command_end' }], lastCompletedRange: null }),
+    getAgentState: async () => ({
+      agentName: opts.atShell ? '' : 'Claude Code',
+      agentVerified: true,
+      agentStatus: 'running',
+      inputQuiet: true,
+      inputRevision: 0,
+      incarnationId: opts.agentSession ?? 'inc-1',
+      keyInputRevision: 0,
+      keyInputIdleMs: 60_000,
+      hasDraft: opts.draft === true,
+    }),
   };
   const ledger = ledgerOf(
     opts.entries ?? [{ ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', status: 'working' }],
   );
   const router = new RpcRouter();
-  const { deliveryGate, gatedSubmit } = registerInputRpc(
+  const { deliveryGate, gatedSubmit, retryPendingDeliveries, agentEnded } = registerInputRpc(
     router,
     { get: () => undefined } as unknown as PTYManager,
     () => fakeWindow,
@@ -125,12 +171,27 @@ function wire(opts: WireOpts = {}): Wiring {
       log: (line) => logs.push(line),
       answerPolicy: async () => ({ allowed: false, reason: 'autonomy-off' }),
       // A tracked agent process in the pane (deliveries wait for one).
-      deliveryPresence: async () => ({ tier: 'process', slug: 'claude', input: 'full', bracketedPaste: true }),
+      deliveryPresence: async () => opts.presence ?? { tier: 'process', slug: 'claude', input: 'full', bracketedPaste: true },
       daemonFolderTrust: async () => opts.daemonTrust ?? null,
       queryDaemonTasks: async () => opts.tasks ?? [],
+      readTaskState: async (_ws: string, taskId: string): Promise<PendingTaskState> => {
+        opts.onTaskRead?.(++taskReads);
+        const next = opts.taskStates?.length ? opts.taskStates.shift() : undefined;
+        if (next === 'hang') return new Promise<PendingTaskState>(() => undefined);
+        return next !== undefined ? next : taskStateOfRows(opts.tasks ?? [], [], taskId);
+      },
+      readSessionStart: () => (opts.sessionStartAt === undefined
+        ? undefined
+        : { at: opts.sessionStartAt, agent: 'claude', ...(opts.sessionStartSource ? { source: opts.sessionStartSource } : {}) }),
       trustProvenClear: async () => opts.trustProvenClear ?? false,
       // The gap between a delivery's paste and its Enter.
-      sleep: async () => undefined,
+      sleep: async (ms: number) => {
+        if (opts.virtualClock) clock += ms;
+        await opts.sleepGate?.();
+      },
+      ...(opts.virtualClock ? { now: () => clock } : {}),
+      // No stop events in these tests: retries are called directly.
+      subscribeAgentStops: () => () => undefined,
       usageLimited: () => opts.usageLimited ?? false,
       ...(opts.screen !== undefined || opts.screens
         ? {
@@ -143,7 +204,7 @@ function wire(opts: WireOpts = {}): Wiring {
         : {}),
     },
   );
-  return { router, writes, logs, notices, deliveryGate, gatedSubmit };
+  return { router, writes, logs, notices, deliveryGate, gatedSubmit, retryPendingDeliveries, agentEnded, live: opts, advance: (ms) => { clock += ms; }, now: () => clock };
 }
 
 type Answer = { ok: boolean; error?: string; result?: Record<string, unknown> };
@@ -877,7 +938,7 @@ describe('owner lane — a delivery from the task\'s orchestrator', () => {
       const w = wire(opts);
       expect(await w.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t1'] })).toMatchObject({ ok: false, reason: 'gate_unavailable' });
       expect(w.writes).toEqual([]);
-      expect(w.logs).toEqual([]);
+      expect(w.logs.filter((l) => l.startsWith('[owner-lane]'))).toEqual([]);
     }
   });
 
@@ -946,5 +1007,366 @@ describe('owner lane — a delivery from the task\'s orchestrator', () => {
     const res = await w.gatedSubmit('pty-task', 'hello', 'claude');
     expect(res, JSON.stringify(res)).toMatchObject({ ok: true });
     expect(w.logs).toEqual([]);
+  });
+});
+
+describe('a refused local delivery, stored and typed later', () => {
+  const row = (id: string, from: string, to: string) => ({ id, metadata: { from: { workspaceId: from }, to: { workspaceId: to } } });
+  // A hidden pane whose verdict the gate may not pass: refused at send.
+  const UNPASSABLE = { screen: { parked: 'WORKER SCREEN' }, daemonTrust: { state: 'unknown' as const, reason: 'timeout' }, virtualClock: true };
+  const PASSABLE = { state: 'unknown' as const, reason: 'unseen-cells' };
+  const pasted = (w: Wiring) => w.writes.map((x) => x.data).filter((d) => d.includes('hello'));
+
+  /** A new task refused at send, on main's record of the send, before its daemon row exists. */
+  async function refusedNewTask(sender: string) {
+    const w = wire({ ...UNPASSABLE, tasks: [] });
+    const send = beginDeliverySend(sender);
+    const res = await w.gatedSubmit('pty-task', 'hello', 'claude', { newTask: true, taskId: 't-new', senderSendKey: send.key });
+    send.end();
+    return { w, res };
+  }
+
+  it("the owner's new task is stored, then typed at retry under the lane read from the daemon row", async () => {
+    const { w, res } = await refusedNewTask('ws-owner');
+    expect(res).toMatchObject({ ok: false, reason: 'gate_unavailable', stored: true });
+    expect(pasted(w)).toEqual([]);
+    // By the retry the send key is dead and the daemon has the task's row.
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toHaveLength(1);
+    expect(w.logs.some((l) => l.startsWith('[owner-lane] delivery from ws "ws-owner"'))).toBe(true);
+    expect(w.logs.at(-1)).toBe('[delivery] typed stored task "t-new" into pane "pty-task"');
+    // Typed once: a later pass finds nothing.
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toHaveLength(1);
+  });
+
+  it("a non-owner's stored message is still refused at retry", async () => {
+    const { w, res } = await refusedNewTask('ws-stranger');
+    expect(res).toMatchObject({ stored: true });
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-stranger', 'ws-task')];
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+    expect(w.logs.some((l) => l.includes('typed stored task'))).toBe(false);
+  });
+
+  it('is dropped, not typed, once its task has ended', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [];
+    w.advance(61_000);
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+    expect(w.logs.at(-1)).toContain('dropped stored task "t-new" for pane "pty-task": task ended');
+  });
+
+  it('is dropped, not typed, when its task row shows an ended state', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    // A daemon that predates the anchors view lists ended tasks too.
+    w.live.tasks = [{ ...row('t-new', 'ws-owner', 'ws-task'), status: { state: 'completed' } }];
+    w.advance(61_000);
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+    expect(w.logs.at(-1)).toContain(': task ended;');
+  });
+
+  it('a later message on the task waits behind the stored one, and is typed after it', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    const res = await w.gatedSubmit('pty-task', 'hello again', 'claude', { senderTaskIds: ['t-new'] });
+    expect(res).toMatchObject({ ok: false, reason: 'gate_unavailable', stored: true });
+    expect((res as { detail: string }).detail).toContain('stored behind it');
+    await vi.waitFor(() => expect(pasted(w)).toHaveLength(1), { timeout: 5_000 });
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w).map((d) => (d.includes('hello again') ? 'follow-up' : 'body'))).toEqual(['body', 'follow-up']);
+  });
+
+  it("is dropped, not typed, when the pane's agent session changed", async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    w.live.agentSession = 'inc-2';
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+    expect(w.logs.at(-1)).toContain(': agent changed;');
+  });
+
+  it('keeps refusing while a person types in the pane, and types once it is quiet', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    w.live.draft = true;
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+    w.live.draft = false;
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toHaveLength(1);
+  });
+
+  it('keeps refusing at an approval', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    w.live.pending = [{ id: 'ap-1', sessionId: 'pty-task', workspaceId: 'ws-task', toolName: 'Bash' }];
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+  });
+
+  it('after an approval clears, the retry still checks the screen before the paste and before the Enter', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    w.live.pending = [{ id: 'ap-1', sessionId: 'pty-task', workspaceId: 'ws-task', toolName: 'Bash' }];
+    await w.retryPendingDeliveries('pty-task');
+    w.live.pending = [];
+    // A follow-up dialog on the screen: nothing is pasted.
+    w.live.screen = SCREENS.trust.screen;
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+    // A dialog that comes up after the paste: no Enter.
+    w.live.screen = undefined;
+    // Two reads before the paste (the gate's checks) see it clear; the read before the Enter sees the dialog.
+    w.live.screens = ['WORKER SCREEN', 'WORKER SCREEN', SCREENS.trust.screen as string];
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toHaveLength(1);
+    expect(w.writes.map((x) => x.data)).not.toContain('\r');
+    // The text stays in the composer (#2993): it is not pasted again.
+    expect(w.logs.at(-1)).toContain('was pasted into pane "pty-task" but not submitted');
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toHaveLength(1);
+  });
+
+  it('is never typed into a shell: a pane with no agent gets no write at all', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    w.live.atShell = true;
+    const before = w.writes.length;
+    await w.retryPendingDeliveries('pty-task');
+    expect(w.writes.length).toBe(before);
+    expect(w.logs.at(-1)).toContain(': agent changed;');
+  });
+
+  it('is dropped, not typed, when the agent restarted in the pane with the same name and pane session', async () => {
+    const w = wire({ ...UNPASSABLE, tasks: [], sessionStartAt: 100 });
+    const send = beginDeliverySend('ws-owner');
+    await w.gatedSubmit('pty-task', 'hello', 'claude', { newTask: true, taskId: 't-new', senderSendKey: send.key });
+    send.end();
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    // claude exited and was started again: a new session-start hook, same name and incarnation.
+    w.live.sessionStartAt = 200;
+    w.live.sessionStartSource = 'startup';
+    const before = w.writes.length;
+    await w.retryPendingDeliveries('pty-task');
+    expect(w.writes.length).toBe(before);
+    expect(w.logs.at(-1)).toContain(': agent changed;');
+  });
+
+  it("an agent's first start hook arriving just after the store is the same agent; a later one is a restart", async () => {
+    for (const [lateMs, typed] of [[5_000, 1], [61_000, 0]] as const) {
+      const w = wire({ ...UNPASSABLE, tasks: [] });
+      const send = beginDeliverySend('ws-owner');
+      await w.gatedSubmit('pty-task', 'hello', 'claude', { newTask: true, taskId: 't-new', senderSendKey: send.key });
+      send.end();
+      w.live.daemonTrust = PASSABLE;
+      w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+      w.live.sessionStartAt = w.now() + lateMs;
+      w.live.sessionStartSource = 'startup';
+      w.advance(lateMs);
+      await w.retryPendingDeliveries('pty-task');
+      expect(pasted(w)).toHaveLength(typed);
+    }
+  });
+
+  it('a task that cannot be read right before the paste is not typed, and stays stored', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    // Open for the pass and before the fresh-context step; unreadable right before the paste.
+    w.live.taskStates = ['open', 'open', null];
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+    expect(w.logs.some((l) => l.includes('dropped stored task'))).toBe(false);
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toHaveLength(1);
+  });
+
+  it('a retry that hangs lets the pane go after its time, and a live send there is typed', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      // A stored reply (a new task's retry would also hold the new-task lock).
+      const w = wire({ ...UNPASSABLE, tasks: [row('t-reply', 'ws-owner', 'ws-task')] });
+      expect(await w.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t-reply'] })).toMatchObject({ stored: true });
+      w.live.daemonTrust = PASSABLE;
+      w.live.tasks = [row('t-reply', 'ws-owner', 'ws-task'), row('t-live', 'ws-owner', 'ws-task')];
+      // Open for the pass; the read right before the paste never answers.
+      w.live.taskStates = ['open', 'hang'];
+      void w.retryPendingDeliveries('pty-task');
+      await vi.advanceTimersByTimeAsync(22_000);
+      expect(pasted(w)).toEqual([]);
+      expect(w.logs.some((l) => l.includes('dropped stored task'))).toBe(false);
+      const live = w.gatedSubmit('pty-task', 'hello live', 'claude', { senderTaskIds: ['t-live'] });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await live).toMatchObject({ ok: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a retry that submits after the pane was let go is not typed again', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const w = wire({ ...UNPASSABLE, tasks: [row('t-reply', 'ws-owner', 'ws-task')] });
+      await w.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t-reply'] });
+      w.live.daemonTrust = PASSABLE;
+      let resume: () => void = () => undefined;
+      const parked = new Promise<void>((resolve) => { resume = resolve; });
+      // The paste-to-Enter gap outlasts the pane hold.
+      w.live.sleepGate = async () => {
+        if (!pasted(w).length) return;
+        w.live.sleepGate = undefined;
+        await parked;
+      };
+      const retry = w.retryPendingDeliveries('pty-task');
+      await vi.advanceTimersByTimeAsync(23_000);
+      resume();
+      await vi.advanceTimersByTimeAsync(0);
+      await retry;
+      expect(w.logs.some((l) => l.includes('typed stored task "t-reply"'))).toBe(true);
+      await w.retryPendingDeliveries('pty-task');
+      expect(pasted(w)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a text withdrawn while its task is read right before the paste is not typed', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    w.live.onTaskRead = (n) => { if (n >= 2) w.agentEnded('pty-task'); };
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+  });
+
+  it('a later message on a stored task that is too long to keep is refused, not typed first', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    const res = await w.gatedSubmit('pty-task', `hello ${'x'.repeat(PENDING_TEXT_MAX)}`, 'claude', { senderTaskIds: ['t-new'] });
+    expect(res).toMatchObject({ ok: false });
+    expect(res).not.toHaveProperty('stored');
+    expect(pasted(w)).toEqual([]);
+  });
+
+  it('a clear or a compaction in the same agent is no restart: the text is still typed', async () => {
+    for (const source of ['clear', 'compact']) {
+      const w = wire({ ...UNPASSABLE, tasks: [], sessionStartAt: 100, sessionStartSource: 'startup' });
+      const send = beginDeliverySend('ws-owner');
+      await w.gatedSubmit('pty-task', 'hello', 'claude', { newTask: true, taskId: 't-new', senderSendKey: send.key });
+      send.end();
+      w.live.daemonTrust = PASSABLE;
+      w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+      w.live.sessionStartAt = 200;
+      w.live.sessionStartSource = source;
+      await w.retryPendingDeliveries('pty-task');
+      expect(pasted(w)).toHaveLength(1);
+    }
+  });
+
+  it("is dropped when the pane's agent process ends", async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.agentEnded('pty-task');
+    expect(w.logs.at(-1)).toContain('dropped stored task "t-new" for pane "pty-task": agent changed');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+  });
+
+  it('a new task sent without a sender record gets no owner lane at retry either', async () => {
+    const w = wire({ ...UNPASSABLE, tasks: [] });
+    expect(await w.gatedSubmit('pty-task', 'hello', 'claude', { newTask: true, taskId: 't-new' })).toMatchObject({ stored: true });
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+    expect(w.logs.some((l) => l.startsWith('[owner-lane]'))).toBe(false);
+  });
+
+  it('a retry and a live send on the same pane take turns: each paste gets its own Enter', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task'), row('t-live', 'ws-owner', 'ws-task')];
+    // Hold the retry in its paste-to-Enter gap while the live send comes in.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let parked: () => void = () => undefined;
+    const atGap = new Promise<void>((resolve) => { parked = resolve; });
+    w.live.sleepGate = async () => {
+      if (!pasted(w).length) return;
+      w.live.sleepGate = undefined;
+      parked();
+      await held;
+    };
+    const retry = w.retryPendingDeliveries('pty-task');
+    await atGap;
+    const live = w.gatedSubmit('pty-task', 'hello live', 'claude', { senderTaskIds: ['t-live'] });
+    await deliberateSleep(50, 'the live send runs up to the pane lock; nothing to observe until the retry lets go');
+    release();
+    await retry;
+    expect(await live).toMatchObject({ ok: true });
+    const order = w.writes.map((x) => x.data).filter((d) => d.includes('hello') || d === '\r' || d === '\x15');
+    expect(order).toHaveLength(4);
+    expect(order[1]).toBe('\r');
+    expect(order[3]).toBe('\r');
+    expect(w.logs.some((l) => l.includes('typed stored task "t-new"'))).toBe(true);
+  });
+
+  it('is not typed when its task ends while the retry runs', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    // Open for the pass and before the fresh-context step; cancelled by the check right before the paste.
+    w.live.taskStates = ['open', 'open', 'ended'];
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+    expect(w.logs.at(-1)).toContain(': refused (guard_refused);');
+  });
+
+  it('is not stored for a person or a dialog, nor without a single local task', async () => {
+    const approval = wire({ ...UNPASSABLE, pending: [{ id: 'ap-1', sessionId: 'pty-task', workspaceId: 'ws-task', toolName: 'Bash' }] });
+    expect(await approval.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t1'] })).not.toHaveProperty('stored');
+    const noTask = wire(UNPASSABLE);
+    expect(await noTask.gatedSubmit('pty-task', 'hello', 'claude')).not.toHaveProperty('stored');
+    const twoTasks = wire(UNPASSABLE);
+    expect(await twoTasks.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t1', 't2'] })).not.toHaveProperty('stored');
+    const tooLong = wire(UNPASSABLE);
+    expect(await tooLong.gatedSubmit('pty-task', 'x'.repeat(PENDING_TEXT_MAX + 1), 'claude', { senderTaskIds: ['t1'] })).not.toHaveProperty('stored');
+    // A hand-off's caller settles its task on the outcome itself.
+    const handoff = wire(UNPASSABLE);
+    expect(await handoff.gatedSubmit('pty-task', 'hello', 'claude', { newTask: true, taskId: 't-h', waitQuiet: true })).not.toHaveProperty('stored');
+    const reply = wire(UNPASSABLE);
+    expect(await reply.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t1'] })).toMatchObject({ stored: true });
+  });
+
+  it("is stored when the agent's input box is not a plain prompt, never when no agent is verified", async () => {
+    for (const reason of ['composer-busy', 'composer-mode', 'composer-unknown'] as const) {
+      const w = wire({ ...UNPASSABLE, daemonTrust: PASSABLE, presence: { tier: 'none', reason } });
+      expect(await w.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t1'] }))
+        .toMatchObject({ ok: false, reason: 'input_mode', composerNotPlain: true, stored: true });
+      expect(pasted(w)).toEqual([]);
+    }
+    for (const reason of ['no-agent', 'agent-ended', 'shell-at-prompt'] as const) {
+      const w = wire({ ...UNPASSABLE, daemonTrust: PASSABLE, presence: { tier: 'none', reason } });
+      const res = await w.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t1'] });
+      expect(res).toMatchObject({ ok: false, reason: 'agent_unverified' });
+      expect(res).not.toHaveProperty('stored');
+    }
   });
 });
