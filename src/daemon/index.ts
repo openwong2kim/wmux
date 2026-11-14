@@ -10854,15 +10854,19 @@ async function main(): Promise<void> {
         if (state === 'approved') void a2aHeadless?.start(hostId, spawnId);
       },
       hostName: a2aHostName,
-      // A start for another PC refuses a Claude whose own status (`claude auth
-      // status`, the probe a phone pane and an automation run get) says the
-      // account the daemon runs as is signed out. Only a definite "signed out"
-      // refuses; no answer within the wait is "cannot tell", and the start goes
-      // on. The status answers from the local credential store; with
-      // nonessential traffic off it opens no connection at all.
-      agentSignedOut: async (agent) =>
-        agent === 'claude' &&
-        (await agentLoginGate.check(agent, { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }, { waitMs: SESSION_LOGIN_WAIT_MS })) === false,
+      // A start for another PC refuses an agent whose own status (the probe a
+      // phone pane and an automation run get) says the account the daemon runs
+      // as is signed out. Only an agent whose status was measured to answer
+      // with no network connection (`offlineEnv` on its row: Claude) is
+      // asked, and with that env, so the check never contacts the vendor. Only
+      // a definite "signed out" refuses; no answer within the wait is "cannot
+      // tell", and the start goes on.
+      agentSignedOut: async (agent) => {
+        const status = agentRow(agent)?.setup?.loginStatus;
+        const offlineEnv = status && status.read !== 'none' ? status.offlineEnv : undefined;
+        if (!offlineEnv || !isAuthLostAgent(agent)) return false;
+        return (await agentLoginGate.check(agent, { ...process.env, ...offlineEnv }, { waitMs: SESSION_LOGIN_WAIT_MS })) === false;
+      },
       peerFeatures: (hostId) => a2aDelivery?.peerFeatures(hostId),
       ...(a2aStarter
         ? { start: a2aStarter, abandon: (hostId, spawnId) => a2aStarter.abandon(hostId, spawnId) }
