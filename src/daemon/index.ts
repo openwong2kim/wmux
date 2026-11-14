@@ -10937,6 +10937,7 @@ async function main(): Promise<void> {
       enabled: a2aBundlesOn,
       peerTakes: (hostId) => a2aDelivery?.peerFeatures(hostId)?.has(A2A_FEATURE_BUNDLE) === true,
       selfHostId: () => a2aServerRef?.status().hostId ?? null,
+      maxBytes: () => bundleBytesMax(config.a2aRemote?.bundleBytes),
       enqueue: (hostId, envelope) => {
         if (!a2aDelivery) throw new Error('messages between PCs are not carried this run');
         a2aDelivery.outbox.enqueue(hostId, envelope);
@@ -11141,8 +11142,11 @@ async function main(): Promise<void> {
       a2aDelivery.start();
       a2aDeliveryRef = a2aDelivery;
       // main asks for a bundle and releases it once imported; open asks are asked again and staging is swept.
-      registerBundleAskRpc(onA2aRpc, a2aBundleAsker);
-      void a2aBundleIntake.sweepParts().catch(() => undefined).then(() => a2aBundleAsker.start());
+      // Main's asks are taken once the asks kept from before a restart have gone on.
+      void a2aBundleIntake.sweepParts().catch(() => undefined).then(() => {
+        a2aBundleAsker.start();
+        registerBundleAskRpc(onA2aRpc, a2aBundleAsker);
+      });
       // A share that was mid-accept when the daemon stopped is settled by links.json.
       a2aOffersRef.recover();
       // A spawn request still pending from before a restart is decided now.

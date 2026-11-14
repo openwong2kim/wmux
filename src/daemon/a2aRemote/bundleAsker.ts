@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { A2A_REMOTE_PROTOCOL, isHostId, type A2aRemoteDeliverResponse, type A2aRemoteEnvelope, type HostId } from '../../shared/a2aRemote';
+import { A2A_REMOTE_PROTOCOL, A2A_SHA256_RE, isHostId, type A2aRemoteDeliverResponse, type A2aRemoteEnvelope, type HostId } from '../../shared/a2aRemote';
 import {
   BUNDLE_TTL_DEFAULT_MS,
   bundleRefName,
@@ -60,9 +60,11 @@ export interface BundleAskRecordV1 {
   step: Step;
   manifest?: A2aBundleManifestV1;
   reason?: BundleBringBackRefusal;
-  /** Retries used of the current ask. */
+  /** Retries used, over every step of the ask: a bundle that keeps failing its checks is not asked for forever. */
   tries: number;
   createdAt: number;
+  /** When the bundle was staged: a staged file keeps its full time to be imported. */
+  stagedAt?: number;
   /** A refusal was told to a caller once: the next call asks anew. */
   shown?: true;
 }
@@ -76,11 +78,15 @@ export interface BundleAskerDeps {
   peerTakes: (hostId: HostId) => boolean;
   /** This PC's host id as other PCs know it; null when it has none yet. */
   selfHostId: () => string | null;
+  /** The largest bundle this PC takes (shared/a2aBundle.ts bundleBytesMax). */
+  maxBytes: () => number;
   enqueue: (hostId: HostId, envelope: A2aRemoteEnvelope) => void;
   log: StoreLog;
   /** Test seams. */
   now?: () => number;
   random?: () => number;
+  /** Free bytes on the disk of `dir`, or null when it cannot be read. */
+  freeBytes?: (dir: string) => number | null;
   write?: (filePath: string, data: unknown) => void;
   harden?: (filePath: string) => void;
 }
@@ -91,6 +97,19 @@ const BAD: A2aRemoteDeliverResponse = { ok: false, error: 'bad-request' };
 const RETRIED: ReadonlySet<A2aBundleRefusal> = new Set(['again', 'busy', 'rate-limited']);
 const OPEN: ReadonlySet<Phase> = new Set(['making', 'made']);
 const key = (hostId: string, spawnId: string): string => `${hostId}:${spawnId}`;
+/** Free disk kept besides a bundle: the staged file and, at import, its pack in the home repository. */
+const DISK_RESERVE_BYTES = 256 * 1024 * 1024;
+/** Make asks that ended before their answer came, remembered so a late bundle is told to go. */
+const ENDED_ASKS_MAX = 64;
+
+function statfsFree(dir: string): number | null {
+  try {
+    const st = fs.statfsSync(dir);
+    return Number(st.bavail) * Number(st.bsize);
+  } catch {
+    return null;
+  }
+}
 
 export class BundleAsker {
   private readonly deps: BundleAskerDeps;
@@ -104,6 +123,8 @@ export class BundleAsker {
   private readonly gen = new Map<string, number>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly waiters = new Map<string, Set<() => void>>();
+  /** askId → the PC and spawn of a make ask that ended while it waited for its answer (oldest first). */
+  private readonly endedAsks = new Map<string, { hostId: HostId; spawnId: string }>();
   private readonly boot = crypto.randomBytes(4).toString('hex');
   private sends = 0;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
@@ -130,13 +151,15 @@ export class BundleAsker {
     }
   }
 
-  /** At daemon start: open asks are asked again, staging is swept, and the sweep repeats. */
+  /** At daemon start: open asks go on (with the feature off, the sweep ends them), staging is swept, and the sweep repeats. */
   start(): void {
-    for (const rec of this.records.values()) {
+    for (const rec of this.deps.enabled() ? this.records.values() : []) {
       if (!OPEN.has(rec.phase)) continue;
+      if (rec.phase === 'made') {
+        void this.resumeMade(rec);
+        continue;
+      }
       // The box may have restarted: a make on an unchanged head answers the bundle it stands for.
-      Object.assign(rec, { phase: 'making', step: 'make', tries: 0 });
-      delete rec.manifest;
       this.sendMake(rec);
     }
     this.save();
@@ -152,6 +175,19 @@ export class BundleAsker {
     this.sweepTimer = null;
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
+  }
+
+  /** A made ask at start: its file, when it landed before the stop, is staged; else the bundle is made again. */
+  private async resumeMade(rec: BundleAskRecordV1): Promise<void> {
+    const mine = this.genOf(rec);
+    const there = await this.stillStaged(rec);
+    if (this.records.get(key(rec.hostId, rec.spawnId)) !== rec || this.genOf(rec) !== mine) return;
+    if (there && rec.manifest) return this.staged(rec, rec.manifest);
+    Object.assign(rec, { phase: 'making', step: 'make' });
+    delete rec.manifest;
+    this.bump(rec);
+    this.save();
+    this.sendMake(rec);
   }
 
   /**
@@ -201,7 +237,10 @@ export class BundleAsker {
     if (!made || made.askId !== env.linkId) return BAD;
     // Only an ask this PC made, of that PC, still open: anything else is taken and dropped.
     const rec = [...this.records.values()].find((r) => r.askId === made.askId && r.hostId === peer.hostId);
-    if (!rec || !OPEN.has(rec.phase)) return OK;
+    if (!rec || !OPEN.has(rec.phase)) {
+      this.lateMade(made.askId, peer.hostId, made.op === 'made' ? made.manifest.bundleId : null);
+      return OK;
+    }
     if (made.op === 'made') this.onMade(rec, made.manifest);
     else this.onRefused(rec, made.reason);
     return OK;
@@ -212,8 +251,12 @@ export class BundleAsker {
     for (const [k, rec] of [...this.records]) {
       if (rec.hostId !== hostId) continue;
       this.bump(rec);
+      clearTimeout(this.timers.get(k));
+      this.timers.delete(k);
       this.drop(k);
+      this.notify(rec);
     }
+    for (const [askId, ended] of [...this.endedAsks]) if (ended.hostId === hostId) this.endedAsks.delete(askId);
     await this.deps.intake.forgetHost(hostId);
   }
 
@@ -222,7 +265,7 @@ export class BundleAsker {
     const off = !this.deps.enabled();
     if (off) this.deps.intake.stop();
     for (const [k, rec] of [...this.records]) {
-      if (this.now() - rec.createdAt > BUNDLE_ASK_LIMITS.stagedTtlMs) {
+      if (this.now() - (rec.stagedAt ?? rec.createdAt) > BUNDLE_ASK_LIMITS.stagedTtlMs) {
         this.end(rec);
         this.drop(k);
       } else if (off && OPEN.has(rec.phase)) {
@@ -244,12 +287,14 @@ export class BundleAsker {
 
   private onMade(rec: BundleAskRecordV1, manifest: A2aBundleManifestV1): void {
     if (rec.step !== 'make') return;
-    if (!this.room(rec.hostId, manifest.bytes, rec)) {
+    const tooLarge = manifest.bytes > this.deps.maxBytes();
+    const free = tooLarge ? null : (this.deps.freeBytes ?? statfsFree)(this.deps.a2aDir);
+    if (tooLarge || !this.room(rec.hostId, manifest.bytes, rec) || (free !== null && free < 2 * manifest.bytes + DISK_RESERVE_BYTES)) {
       // The box keeps it until it hears: it is told, so its offer ends now.
       this.ask(rec, { op: 'done', bundleId: manifest.bundleId });
-      return this.refuse(rec, 'staging-full');
+      return this.refuse(rec, tooLarge ? 'too-large' : 'staging-full');
     }
-    Object.assign(rec, { phase: 'made', step: 'pull', manifest, tries: 0 });
+    Object.assign(rec, { phase: 'made', step: 'pull', manifest });
     this.bump(rec);
     this.save();
     void this.transfer(rec);
@@ -285,18 +330,30 @@ export class BundleAsker {
       got = await waiting;
       if (!current()) return;
     }
-    if (got.kind === 'staged') {
-      Object.assign(rec, { phase: 'staged' });
-      this.bump(rec);
-      this.save();
-      this.ask(rec, { op: 'done', bundleId: m.bundleId });
-      this.deps.log('info', `[a2a-remote] bundle ${m.bundleId} for ${rec.spawnId} staged (${m.bytes} bytes)`);
-      return this.notify(rec);
-    }
+    if (got.kind === 'staged') return this.staged(rec, m);
     if (got.kind === 'again' || got.kind === 'busy') return this.retry(rec, 'pull', got.kind === 'busy' ? 'busy' : 'again');
     // Refused before any byte, or not the bytes named: the offer may be gone (the box restarted); it is made again.
     if (got.kind === 'fatal') this.deps.log('info', `[a2a-remote] bundle ${m.bundleId} for ${rec.spawnId} not taken: ${got.why}`);
     this.retry(rec, 'make', 'unavailable');
+  }
+
+  private staged(rec: BundleAskRecordV1, m: A2aBundleManifestV1): void {
+    Object.assign(rec, { phase: 'staged', stagedAt: this.now() });
+    this.bump(rec);
+    this.save();
+    this.ask(rec, { op: 'done', bundleId: m.bundleId });
+    this.deps.log('info', `[a2a-remote] bundle ${m.bundleId} for ${rec.spawnId} staged (${m.bytes} bytes)`);
+    this.notify(rec);
+  }
+
+  /** An answer to a make ask that has ended: a bundle made for it is told to go, unless that spawn is asked for again. */
+  private lateMade(askId: string, hostId: HostId, bundleId: string | null): void {
+    const ended = this.endedAsks.get(askId);
+    if (!ended || ended.hostId !== hostId) return;
+    this.endedAsks.delete(askId);
+    const again = this.records.get(key(hostId, ended.spawnId));
+    if (bundleId === null || (again && again.phase !== 'refused')) return;
+    this.enqueueAsk(hostId, { op: 'done', bundleId });
   }
 
   /** The step again after its wait, or the ask ends once its retries are used. */
@@ -338,6 +395,10 @@ export class BundleAsker {
     const k = key(rec.hostId, rec.spawnId);
     clearTimeout(this.timers.get(k));
     this.timers.delete(k);
+    if (rec.phase === 'making') {
+      this.endedAsks.set(rec.askId, { hostId: rec.hostId, spawnId: rec.spawnId });
+      while (this.endedAsks.size > ENDED_ASKS_MAX) this.endedAsks.delete(this.endedAsks.keys().next().value as string);
+    }
     if (rec.manifest && rec.phase === 'made') {
       this.deps.intake.cancel(rec.hostId, rec.manifest);
       this.ask(rec, { op: 'done', bundleId: rec.manifest.bundleId });
@@ -358,14 +419,20 @@ export class BundleAsker {
       rec.askId = `ba-${crypto.randomUUID()}`;
       this.save();
     }
-    const askId = op.op === 'done' ? `ba-${crypto.randomUUID()}` : rec.askId;
+    const failed = this.enqueueAsk(rec.hostId, op, op.op === 'done' ? undefined : rec.askId);
+    if (failed && op.op !== 'done' && rec.phase !== 'refused') this.refuse(rec, failed);
+  }
+
+  /** The envelope of one ask, queued to `hostId`; the refusal when it could not be. A `done` gets its own id. */
+  private enqueueAsk(
+    hostId: HostId,
+    op: { op: 'make'; spawnId: string; origin: string } | { op: 'send' | 'done'; bundleId: string },
+    askId = `ba-${crypto.randomUUID()}`,
+  ): BundleBringBackRefusal | null {
     const bundleAsk = parseBundleAsk({ v: 1, askId, ...op });
-    if (!bundleAsk) {
-      if (op.op !== 'done') this.refuse(rec, 'bundle-unexpected');
-      return;
-    }
+    if (!bundleAsk) return 'bundle-unexpected';
     try {
-      this.deps.enqueue(rec.hostId, {
+      this.deps.enqueue(hostId, {
         protocol: A2A_REMOTE_PROTOCOL,
         linkId: askId,
         linkVersion: 0,
@@ -375,9 +442,10 @@ export class BundleAsker {
         bundleAsk,
         sentAt: new Date(this.now()).toISOString(),
       });
+      return null;
     } catch (err) {
-      this.deps.log('warn', `[a2a-remote] bundle ask ${askId} (${op.op}) to ${rec.hostId} not queued: ${errMsg(err)}`);
-      if (op.op !== 'done' && rec.phase !== 'refused') this.refuse(rec, 'unavailable');
+      this.deps.log('warn', `[a2a-remote] bundle ask ${askId} (${op.op}) to ${hostId} not queued: ${errMsg(err)}`);
+      return 'unavailable';
     }
   }
 
@@ -473,15 +541,14 @@ export class BundleAsker {
 }
 
 const REPO_KEY_RE = /^[a-z0-9_.-]+(?:\/[a-z0-9_.-]+){1,21}$/;
-const SHA256_RE = /^[0-9a-f]{64}$/;
 
 function coerceRecord(raw: unknown): BundleAskRecordV1 | null {
   if (!isPlainObject(raw) || raw['v'] !== 1) return null;
-  const { hostId, spawnId, askId, origin, phase, step, manifest, reason, tries, createdAt } = raw;
+  const { hostId, spawnId, askId, origin, phase, step, manifest, reason, tries, createdAt, stagedAt } = raw;
   if (!isHostId(hostId) || !isSpawnId(spawnId) || !isBundleAskId(askId) || typeof origin !== 'string' || !REPO_KEY_RE.test(origin)) return null;
   if (!(['making', 'made', 'staged', 'refused'] as unknown[]).includes(phase) || !(['make', 'pull', 'send'] as unknown[]).includes(step)) return null;
   if (typeof tries !== 'number' || !Number.isInteger(tries) || tries < 0 || typeof createdAt !== 'number' || !Number.isFinite(createdAt)) return null;
-  const m = isPlainObject(manifest) && isBundleId(manifest['bundleId']) && typeof manifest['sha256'] === 'string' && SHA256_RE.test(manifest['sha256'])
+  const m = isPlainObject(manifest) && isBundleId(manifest['bundleId']) && typeof manifest['sha256'] === 'string' && A2A_SHA256_RE.test(manifest['sha256'])
     && typeof manifest['bytes'] === 'number' && Number.isInteger(manifest['bytes']) && manifest['bytes'] > 0
     ? { bundleId: manifest['bundleId'], sha256: manifest['sha256'], bytes: manifest['bytes'] }
     : undefined;
@@ -489,6 +556,7 @@ function coerceRecord(raw: unknown): BundleAskRecordV1 | null {
   if (phase === 'refused' && !isBundleBringBackRefusal(reason)) return null;
   return {
     v: 1, hostId, spawnId, askId, origin, phase: phase as Phase, step: step as Step, tries, createdAt,
+    ...(phase === 'staged' && typeof stagedAt === 'number' && Number.isFinite(stagedAt) ? { stagedAt } : {}),
     ...(m ? { manifest: m } : {}),
     ...(phase === 'refused' ? { reason: reason as BundleBringBackRefusal } : {}),
     ...(raw['shown'] === true ? { shown: true as const } : {}),

@@ -87,6 +87,7 @@ export const HOME_REPO_CONFIG_KIND_TEXT = {
   transport: 'an http or ssh transport setting',
   signing: 'a signing program setting',
   filter: 'a content filter',
+  fsck: 'a setting that weakens git\'s object checks',
 } as const;
 export type HomeRepoConfigKind = keyof typeof HOME_REPO_CONFIG_KIND_TEXT;
 

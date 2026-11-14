@@ -300,5 +300,5 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
   );
 }
 
-/** A bring-back call's deadline: the 15 s wait for the other PC plus the import's git (up to 120 s). */
-const BRING_BACK_RPC_TIMEOUT_MS = 180_000;
+/** A bring-back call's deadline: the 15 s wait for the other PC, the bundle's hash, and the import's git (index-pack up to 120 s). */
+const BRING_BACK_RPC_TIMEOUT_MS = 300_000;

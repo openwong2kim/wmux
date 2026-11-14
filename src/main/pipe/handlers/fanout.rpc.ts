@@ -104,8 +104,7 @@ import { resolvePaneForPty, resolvePtyOwnerWorkspace } from '../../workspace/pty
 import { isSpawnId } from '../../../shared/a2aSpawn';
 import type { A2aBundleManifestV1 } from '../../../shared/a2aBundle';
 import { A2A_BUNDLE_ASK_RPC, bringBackRefusalText, isBundleBringBackRefusal, type BundleBringBackRefusal, type HomeRepoConfigKind } from '../../../shared/a2aBundleAsk';
-import { BUNDLE_IMPORT_WARNING_TEXT, importBundle, openHomeRepo } from '../../worktask/bundleImport';
-import { defaultGit, type TaskPushGit } from '../../worktask/taskPush';
+import { BUNDLE_IMPORT_WARNING_TEXT, importBundle, importGit, openHomeRepo, type ImportGit } from '../../worktask/bundleImport';
 import { REMOTE_FANOUT_AGENT, REMOTE_TASK_FOOTER, remoteFanoutDepsOf, remoteFanoutRefusal, remoteKeyRows, startRemoteFanout, type RemoteFanoutDeps } from '../../worktask/remoteFanout';
 import { git as runGit } from '../../git/git';
 import type { DaemonClient } from '../../DaemonClient';
@@ -736,8 +735,8 @@ export interface FanOutRpcDeps {
   /** The git top level of the calling pane's directory, or null (default: the
    *  same derivation as a local fan-out's repository). Injected in tests. */
   resolveHomeRepo?: (senderPtyId: string, workspaceId: string) => Promise<string | null>;
-  /** Main's git for a bring-back import (default: taskPush.ts defaultGit). Injected in tests. */
-  bundleGit?: TaskPushGit;
+  /** Main's git for a bring-back import (default: bundleImport.ts importGit). Injected in tests. */
+  bundleGit?: ImportGit;
 }
 
 /** How long one fanout_bring_back call waits for its ask to move on before it answers `asking`. */
@@ -1161,18 +1160,21 @@ export function registerFanOutRpc(
     // The row's owner only, as for its other changes: another workspace learns nothing of it.
     const row = remote.ledger.list().find((e) => e.remote?.spawnId === spawnId && e.ownerWorkspaceId === callerWorkspaceId);
     if (!row?.remote) return deny('NOT_FOUND', `no task on another PC with spawn id ${spawnId} belongs to this workspace`);
-    const { hostId, pc, homeRepo } = row.remote;
+    const { hostId, homeRepo } = row.remote;
+    // Fixed words and the short form of the host id: the PC's name is chosen by that PC.
+    const from = `the other PC (host ${hostId.replace(/[^0-9a-fA-F-]/g, '').slice(0, 8)})`;
     // One call per spawn at a time, from the cancel through the release: a second call waits, so it never imports a
     // staged file the first one released (it asks anew instead).
     return bringBackLock(`${hostId}:${spawnId}`, async () => {
-      const refused = (reason: BundleBringBackRefusal, kind?: HomeRepoConfigKind) => ({ ok: true as const, state: 'refused' as const, reason, text: `Not brought back from ${pc}: ${bringBackRefusalText(reason, kind)}.` });
+      const refused = (reason: BundleBringBackRefusal, kind?: HomeRepoConfigKind) => ({ ok: true as const, state: 'refused' as const, reason, text: `Not brought back from ${from}: ${bringBackRefusalText(reason, kind)}.` });
       // A cancel needs no home repository: it frees the ask even when that repository is gone.
       if (params['cancel'] === true) {
-        await dc.rpc(A2A_BUNDLE_ASK_RPC.release, { hostId, spawnId });
-        return { ok: true as const, state: 'cancelled' as const, text: `The bring-back from ${pc} was cancelled.` };
+        const released = await dc.rpc(A2A_BUNDLE_ASK_RPC.release, { hostId, spawnId }).then(() => true, () => false);
+        if (!released) return deny('UNAVAILABLE', 'the background service did not take the cancel');
+        return { ok: true as const, state: 'cancelled' as const, text: `The bring-back from ${from} was cancelled.` };
       }
       if (!homeRepo) return refused('no-home-repo');
-      const git = deps.bundleGit ?? defaultGit;
+      const git = deps.bundleGit ?? importGit;
       const home = await openHomeRepo(homeRepo, git);
       if (!home.ok) return refused(home.reason, home.reason === 'home-repo-config' ? home.kind : undefined);
       const asked = (await dc.rpc(A2A_BUNDLE_ASK_RPC.bringBack, { hostId, spawnId, origin: home.origin, waitMs: BRING_BACK_WAIT_MS }, { timeoutMs: BRING_BACK_WAIT_MS + 15_000 })) as
@@ -1180,7 +1182,7 @@ export function registerFanOutRpc(
       if (asked?.ok !== true) return deny('UNAVAILABLE', 'the background service did not take the bring-back');
       if (asked.state === 'refused') return refused(isBundleBringBackRefusal(asked.reason) ? asked.reason : 'unavailable');
       if (asked.state !== 'staged' || typeof asked.file !== 'string' || typeof asked.ref !== 'string' || !asked.manifest) {
-        return { ok: true as const, state: 'asking' as const, text: `Bringing the work back from ${pc}: call fanout_bring_back again in a minute.` };
+        return { ok: true as const, state: 'asking' as const, text: `Bringing the work back from ${from}: call fanout_bring_back again in a minute.` };
       }
       const imported = await importBundle({
         top: home.top, spawnId, file: asked.file, manifest: asked.manifest as A2aBundleManifestV1, ref: asked.ref,
@@ -1194,14 +1196,15 @@ export function registerFanOutRpc(
       }
       // One audit line per import.
       console.info(`[fanout.rpc] bring-back ${spawnId} from ${hostId}: ${imported.noop ? 'already at' : 'imported'} ${imported.sha} on ${imported.branch} in ${home.top}`);
-      const notes = imported.warnings.map((w) => ` Note: ${BUNDLE_IMPORT_WARNING_TEXT[w]}.`).join('');
+      const notes = imported.warnings.map((w) => ` Note: ${BUNDLE_IMPORT_WARNING_TEXT[w]}.`).join('')
+        + (home.linked ? ' Note: the home repository is a linked worktree, so the branch is in the repository it shares.' : '');
       return {
         ok: true as const,
         state: 'imported' as const,
         branch: imported.branch,
         sha: imported.sha,
         ...(imported.warnings.length > 0 ? { warnings: imported.warnings } : {}),
-        text: `${imported.noop ? 'Already brought back' : 'Brought back'} from ${pc}: branch ${imported.branch} at ${imported.sha} in the home repository. Nothing was checked out: the commits are inert until checked out, not after, so review them first.${notes}`,
+        text: `${imported.noop ? 'Already brought back' : 'Brought back'} from ${from}: branch ${imported.branch} at ${imported.sha} in the home repository. Nothing was checked out: the commits are inert until checked out, not after, so review them first.${notes}`,
       };
     });
   };
@@ -1360,18 +1363,6 @@ export function registerFanOutRpc(
       if (!paneId) return deny('NOT_AUTHORIZED', 'the calling pane could not be resolved; tasks on another PC reply to it');
       const remote = (deps.remoteFanout ?? (() => remoteFanoutDepsOf(() => deps.getDaemonClient?.() ?? null)))();
       if (!remote) return deny('UNAVAILABLE', 'the background service is not connected');
-      // Where bring-back will import the work: the repository of the calling pane, as main resolves it now. Optional:
-      // a pane outside any repository still starts tasks on another PC, and bring-back then says there is no home repo.
-      const homeRepo = await (deps.resolveHomeRepo ?? (async (pty, ws) => {
-        const r = await deriveCallerRepoRoot(getWindow, ws, pty, { requireRepo: true, platform: deps.platform, daemonRpc });
-        if (!('root' in r)) return null;
-        // Kept as its native real path (a Windows short name expanded), as bring-back compares it.
-        try {
-          return fs.realpathSync.native(r.root);
-        } catch {
-          return r.root;
-        }
-      }))(senderPtyId, callerWorkspaceId).catch(() => null);
       // A new key (not a poll of one already started): the owner's approval
       // switch, the hourly cap and the audit record apply as to any fan-out.
       // A key is known from its rows (they keep the request's digest and
@@ -1387,6 +1378,19 @@ export function registerFanOutRpc(
         return deny('INVALID_ARGUMENT', `this key started a different request on another PC (${stamped?.count ?? digests.length} task(s)); send the same request to poll it, or use a new key`);
       }
       const poll = stamped !== null || digests.length > 0;
+      // Where bring-back will import the work: the repository of the calling pane, as main resolves it now. Optional:
+      // a pane outside any repository still starts tasks on another PC, and bring-back then says there is no home repo.
+      // Resolved only while some task of this key has no row yet: a poll of written rows does not use it.
+      const homeRepo = remoteKeyRows(remote.ledger, key).length >= parsed.titles.length ? null : await (deps.resolveHomeRepo ?? (async (pty, ws) => {
+        const r = await deriveCallerRepoRoot(getWindow, ws, pty, { requireRepo: true, platform: deps.platform, daemonRpc });
+        if (!('root' in r)) return null;
+        // Kept as its native real path (a Windows short name expanded), as bring-back compares it.
+        try {
+          return fs.realpathSync.native(r.root);
+        } catch {
+          return r.root;
+        }
+      }))(senderPtyId, callerWorkspaceId).catch(() => null);
       if (!poll) {
         if ((deps.requireApproval ?? loadFanoutRequireApproval)()) {
           return deny('FAILED_PRECONDITION', 'tasks on another PC do not start while fan-out approval is on (Settings › Roles & fan-out): they have no approval prompt yet');

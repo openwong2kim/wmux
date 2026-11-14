@@ -45,6 +45,8 @@ function harness(over: Partial<BundleAskerDeps> = {}, dir = trackedTempDir('wmux
     enabled: () => enabled,
     peerTakes: (h) => h === HOST,
     selfHostId: () => SELF,
+    maxBytes: () => 1024 * 1024,
+    freeBytes: () => null,
     enqueue: (hostId, env) => {
       order.push(`send:${env.bundleAsk?.op}`);
       sent.push({ hostId, env });
@@ -256,6 +258,117 @@ describe('BundleAsker', () => {
     second.resolve({ kind: 'staged', file: bundleStagedFile(h.dir, HOST, M) });
     await flush();
     expect(h.sent.filter((s) => s.env.bundleAsk?.op === 'done')).toHaveLength(2);
+  });
+
+  it('bounds retries over the whole ask: a bundle that keeps failing its checks ends it', async () => {
+    const h = harness();
+    h.setPull(async () => ({ kind: 'fatal', why: 'not the bytes named' }));
+    await h.asker.bringBack(HOST, SPAWN, ORIGIN);
+    for (let i = 0; i < BUNDLE_ASK_LIMITS.retries; i++) {
+      h.answer({ op: 'made', manifest: M });
+      await flush();
+      await vi.advanceTimersByTimeAsync(BUNDLE_ASK_LIMITS.backoffMs[i]);
+      expect(h.lastAsk().bundleAsk?.op).toBe('make');
+    }
+    h.answer({ op: 'made', manifest: M });
+    await flush();
+    expect(await h.asker.bringBack(HOST, SPAWN, ORIGIN)).toEqual({ state: 'refused', reason: 'unavailable' });
+    expect(h.intake.pull).toHaveBeenCalledTimes(BUNDLE_ASK_LIMITS.retries + 1);
+  });
+
+  it('refuses a bundle over the size limit, or one the disk has no room for, and tells the box', async () => {
+    const big = harness({ maxBytes: () => M.bytes - 1 });
+    await big.asker.bringBack(HOST, SPAWN, ORIGIN);
+    big.answer({ op: 'made', manifest: M });
+    expect(big.lastAsk().bundleAsk).toMatchObject({ op: 'done', bundleId: M.bundleId });
+    expect(await big.asker.bringBack(HOST, SPAWN, ORIGIN)).toEqual({ state: 'refused', reason: 'too-large' });
+    const full = harness({ freeBytes: () => 0 });
+    await full.asker.bringBack(HOST, SPAWN, ORIGIN);
+    full.answer({ op: 'made', manifest: M });
+    expect(full.lastAsk().bundleAsk).toMatchObject({ op: 'done', bundleId: M.bundleId });
+    expect(await full.asker.bringBack(HOST, SPAWN, ORIGIN)).toEqual({ state: 'refused', reason: 'staging-full' });
+    expect(full.intake.pull).not.toHaveBeenCalled();
+  });
+
+  it('a bundle made for an ask that ended meanwhile is told to go, unless the spawn is asked for again', async () => {
+    const h = harness();
+    await h.asker.bringBack(HOST, SPAWN, ORIGIN);
+    const ended = h.lastAsk().linkId;
+    await h.asker.release(HOST, SPAWN);
+    h.answer({ op: 'made', manifest: M }, HOST, ended);
+    expect(h.lastAsk().bundleAsk).toMatchObject({ op: 'done', bundleId: M.bundleId });
+    expect(h.intake.pull).not.toHaveBeenCalled();
+
+    const again = harness();
+    await again.asker.bringBack(HOST, SPAWN, ORIGIN);
+    const old = again.lastAsk().linkId;
+    await again.asker.release(HOST, SPAWN);
+    await again.asker.bringBack(HOST, SPAWN, ORIGIN);
+    again.answer({ op: 'made', manifest: M }, HOST, old);
+    expect(again.sent.filter((x) => x.env.bundleAsk?.op === 'done')).toHaveLength(0);
+  });
+
+  it('start sends nothing while the feature is off', async () => {
+    const h = harness();
+    await h.asker.bringBack(HOST, SPAWN, ORIGIN);
+    const off = harness({ enabled: () => false }, h.dir);
+    off.asker.start();
+    expect(off.sent).toHaveLength(0);
+    off.asker.stop();
+  });
+
+  it('after a restart, a made ask whose file landed is staged; one whose file is missing is made again', async () => {
+    const h = harness();
+    h.setPull(() => new Promise<BundlePull>(() => undefined));
+    await h.asker.bringBack(HOST, SPAWN, ORIGIN);
+    h.answer({ op: 'made', manifest: M });
+    await flush();
+    const missing = harness({}, h.dir);
+    missing.asker.start();
+    await vi.waitFor(() => expect(missing.lastAsk().bundleAsk?.op).toBe('make'));
+    missing.asker.stop();
+
+    const k = harness();
+    k.setPull(() => new Promise<BundlePull>(() => undefined));
+    await k.asker.bringBack(HOST, SPAWN, ORIGIN);
+    k.answer({ op: 'made', manifest: M });
+    await flush();
+    fs.mkdirSync(path.dirname(bundleStagedFile(k.dir, HOST, M)), { recursive: true });
+    fs.writeFileSync(bundleStagedFile(k.dir, HOST, M), 'x'.repeat(M.bytes));
+    const landed = harness({}, k.dir);
+    landed.asker.start();
+    await vi.waitFor(async () => expect(await landed.asker.bringBack(HOST, SPAWN, ORIGIN)).toMatchObject({ state: 'staged' }));
+    expect(landed.lastAsk().bundleAsk).toMatchObject({ op: 'done', bundleId: M.bundleId });
+    landed.asker.stop();
+  });
+
+  it('a staged file keeps its full time from when it was staged', async () => {
+    let now = 0;
+    const h = harness({ now: () => now });
+    h.setPull(() => new Promise<BundlePull>(() => undefined));
+    await h.asker.bringBack(HOST, SPAWN, ORIGIN);
+    now = BUNDLE_ASK_LIMITS.stagedTtlMs - 1;
+    h.answer({ op: 'made', manifest: M });
+    await flush();
+    fs.mkdirSync(path.dirname(bundleStagedFile(h.dir, HOST, M)), { recursive: true });
+    fs.writeFileSync(bundleStagedFile(h.dir, HOST, M), 'x'.repeat(M.bytes));
+    // Staged late in the ask's time (through a restart), then swept past the ask's own time: it is kept.
+    const later = harness({ now: () => now }, h.dir);
+    later.asker.start();
+    await vi.waitFor(async () => expect(await later.asker.bringBack(HOST, SPAWN, ORIGIN)).toMatchObject({ state: 'staged' }));
+    now = BUNDLE_ASK_LIMITS.stagedTtlMs + 10;
+    await later.asker.sweep();
+    expect(await later.asker.bringBack(HOST, SPAWN, ORIGIN)).toMatchObject({ state: 'staged' });
+    later.asker.stop();
+  });
+
+  it('forgetting a PC ends its asks and answers a waiting call at once', async () => {
+    const h = harness();
+    const waiting = h.asker.bringBack(HOST, SPAWN, ORIGIN, 10_000);
+    await flush();
+    await h.asker.forgetHost(HOST);
+    expect(await waiting).toEqual({ state: 'refused', reason: 'gone' });
+    expect(h.intake.forgetHost).toHaveBeenCalledWith(HOST);
   });
 
   it('release discards the staged file and ends the ask', async () => {

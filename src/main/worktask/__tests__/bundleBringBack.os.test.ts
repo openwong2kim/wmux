@@ -92,6 +92,8 @@ function wire() {
     enabled: () => true,
     peerTakes: () => true,
     selfHostId: () => ASKER,
+    maxBytes: () => 64 * 1024 * 1024,
+    freeBytes: () => null,
     // No file-permission pass in a test: on Windows it runs after the test and logs.
     harden: () => undefined,
     enqueue: (_hostId: HostId, env: A2aRemoteEnvelope) => {

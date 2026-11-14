@@ -48,7 +48,7 @@ import { setHolderSource } from '../../../factory/workerHolders';
 import type { LedgerEntry } from '../../../../shared/ledger';
 import type { FanoutPreset } from '../../../../shared/fanoutPreset';
 import type { DaemonClient } from '../../../DaemonClient';
-import type { TaskPushGit } from '../../../worktask/taskPush';
+import type { ImportGit } from '../../../worktask/bundleImport';
 import { validateFanoutTaskGraph } from '../../../../shared/fanoutTaskGraph';
 import { trackedTempDir } from '../../../../test-utils/trackedTempDir';
 
@@ -159,7 +159,7 @@ function setup(opts?: {
   /** The daemon client's rpc for a bring-back (a connected client is given). */
   daemon?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
   /** Main's git for a bring-back. */
-  bundleGit?: TaskPushGit;
+  bundleGit?: ImportGit;
 }): Harness {
   const commanderAnchorPtyId =
     opts?.commanderAnchorPtyId === undefined ? 'pty-1' : opts.commanderAnchorPtyId;
@@ -2427,7 +2427,7 @@ describe('fanout_bring_back (task.fanout.bringBack)', () => {
     ledger: { get: () => null, list: () => rows, register: vi.fn(), update: vi.fn(), updateRemote: vi.fn(), closeTask: vi.fn(), onTransition: () => () => undefined },
   }) as unknown as RemoteFanoutDeps;
   /** A home repository main's git reads as its own top level, with one origin. */
-  const homeGit = (top: string, origin = 'https://github.com/o/r.git'): TaskPushGit => vi.fn(async (args: string[]) => {
+  const homeGit = (top: string, origin = 'https://github.com/o/r.git'): ImportGit => vi.fn(async (args: string[]) => {
     if (args.includes('--show-toplevel')) return { code: 0, stdout: `${top}\n`, stderr: '' };
     if (args.includes('--show-scope')) return { code: 0, stdout: `local\0remote.origin.url\n${origin}\0`, stderr: '' };
     return { code: 1, stdout: '', stderr: 'unexpected' };
@@ -2500,7 +2500,8 @@ describe('fanout_bring_back (task.fanout.bringBack)', () => {
     });
     const h = setup({ daemon, bundleGit: homeGit(home), remoteFanout: () => remoteWith([rowOf({ homeRepo: home })]) });
     const asking = await call(h, { origin: 'evil/repo', homeRepo: '/tmp' });
-    expect(asking).toMatchObject({ ok: true, state: 'asking', text: 'Bringing the work back from box: call fanout_bring_back again in a minute.' });
+    // Fixed words and the host id's short form: the PC's name ('box') is chosen by that PC and never shown.
+    expect(asking).toMatchObject({ ok: true, state: 'asking', text: 'Bringing the work back from the other PC (host 0f1e2d3c): call fanout_bring_back again in a minute.' });
     expect(seen[0]).toEqual(['a2a.remote.bundle.bringBack', expect.objectContaining({ hostId: HOST, spawnId: SPAWN, origin: 'github.com/o/r' })]);
 
     // A reason that is not one of ours is never echoed.
@@ -2531,6 +2532,9 @@ describe('fanout_bring_back (task.fanout.bringBack)', () => {
     // The home repository gone since: the cancel still frees the ask.
     const gone = setup({ daemon, bundleGit: homeGit(home), remoteFanout: () => remoteWith([rowOf({ homeRepo: nodePath.join(home, 'gone') })]) });
     expect(await call(gone, { cancel: true })).toMatchObject({ ok: true, state: 'cancelled' });
+    // The service not taking the cancel is said so, not thrown.
+    const down = setup({ daemon: vi.fn(async () => { throw new Error('closed'); }), bundleGit: homeGit(home), remoteFanout: () => remoteWith([rowOf({ homeRepo: home })]) });
+    expect(errorOf(await call(down, { cancel: true })).code).toBe('UNAVAILABLE');
   });
 
   it('runs one bring-back per spawn at a time: a second call waits for the first to release', async () => {
