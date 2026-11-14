@@ -152,7 +152,7 @@ describe('bring-back end to end (real box, real asker, real git)', () => {
     expect(offers.size).toBe(0);
 
     const noHooks = path.join(root, 'no-hooks');
-    fs.mkdirSync(noHooks);
+    // Made by the import itself (0700).
     const imported = await importOnRunner({ top: home, gitDir: fs.realpathSync.native(path.join(home, '.git')), spawnId: SPAWN, file: staged.file, manifest: staged.manifest, ref: staged.ref, noHooksDir: noHooks });
     const boxHead = g(worktree, 'rev-parse', 'HEAD');
     expect(imported).toMatchObject({ ok: true, sha: boxHead, noop: false });

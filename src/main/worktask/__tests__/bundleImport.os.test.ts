@@ -349,7 +349,7 @@ describe('importBundle (real git)', () => {
 
   it('refuses a hooks folder that is not empty or not a folder', async () => {
     const input = bundleOf('hooks-dir');
-    fs.mkdirSync(noHooks, { recursive: true });
+    fs.mkdirSync(noHooks, { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(noHooks, 'reference-transaction'), '#!/bin/sh\n', { mode: 0o755 });
     expect(await importOnRunner(input)).toEqual({ ok: false, reason: 'import-failed' });
     fs.rmSync(noHooks, { recursive: true });
