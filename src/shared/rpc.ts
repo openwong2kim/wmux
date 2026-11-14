@@ -792,6 +792,9 @@ export type RpcMethod =
   // `task.mission.*`, the spawn is approval-gated, and the call is
   // accept-then-poll (re-send the key to read the state).
   | 'task.fanout.start'
+  // fanout_bring_back: import a task's work from another PC into the home
+  // repository its row recorded (owner workspace only).
+  | 'task.fanout.bringBack'
   // Task ledger (pipe/handlers/ledger.rpc.ts) — the status log behind
   // src/shared/ledger.ts. Reads are scoped to the caller's own rows (owner or
   // task workspace); updates are authorized by the ledger's canActorSet.
@@ -1149,6 +1152,7 @@ export const ALL_RPC_METHODS = [
   'task.mission.list',
   'task.mission.update',
   'task.fanout.start',
+  'task.fanout.bringBack',
   'ledger.list',
   'ledger.update',
   'verify.recordVerdict',

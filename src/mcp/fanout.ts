@@ -257,4 +257,48 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
       }
     },
   );
+
+  // Bringing back a task another PC ran: only where tasks on another PC can be started (a pane caller).
+  if (!deps.remotePc) return;
+  server.tool(
+    'fanout_bring_back',
+    'Bring back the committed work of a task another PC ran for you (fanout_start with pc) into your repository, as branch wmux/returned/<spawn_id>. ' +
+      'Nothing is checked out. Call it again while it answers "asking". Only the workspace that started the task may call it.',
+    {
+      spawn_id: z.string().max(64).describe('The task\'s remote spawn id (sp-<uuid>), from its fanout_start result or ledger row.'),
+      cancel: z.boolean().optional().describe('Stop a bring-back that is under way.'),
+    },
+    async ({ spawn_id, cancel }) => {
+      if (deps.resolveWorkspaceId) {
+        try {
+          await deps.resolveWorkspaceId();
+        } catch {
+          // The handler refuses an unverifiable caller with its own words.
+        }
+      }
+      const params: Record<string, unknown> = { spawnId: spawn_id };
+      if (cancel === true) params['cancel'] = true;
+      const pty = resolveSenderPtyId();
+      if (pty) params['senderPtyId'] = pty;
+      try {
+        // Waits for the other PC up to 15 s, then a local import: well past the default deadline.
+        const result = (await sendRpc('task.fanout.bringBack', params, BRING_BACK_RPC_TIMEOUT_MS)) as
+          | { ok: true; text?: unknown }
+          | { ok: false; error: { code: string; message: string } }
+          | undefined;
+        if (!result || result.ok !== true) {
+          const e = result && result.ok === false ? result.error : { code: 'UNAVAILABLE', message: 'no answer' };
+          return { content: [{ type: 'text' as const, text: `Error [${e.code}]: ${e.message}` }], isError: true };
+        }
+        // Main's fixed words, a sha and a branch name only.
+        return { content: [{ type: 'text' as const, text: typeof result.text === 'string' ? result.text : JSON.stringify(result) }] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
 }
+
+/** A bring-back call's deadline: the 15 s wait for the other PC plus the import's git (up to 120 s). */
+const BRING_BACK_RPC_TIMEOUT_MS = 180_000;

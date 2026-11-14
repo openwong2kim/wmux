@@ -358,6 +358,54 @@ export class BundleIntake {
     return sendJson(res, 200, { ok: true });
   }
 
+  /** One bundle's pull and wait end (its ask was cancelled); what is staged of it stays for `discard`. */
+  cancel(hostId: HostId, manifest: unknown): void {
+    const m = wellFormed(manifest);
+    if (!isHostId(hostId) || !m) return;
+    this.running.get(key(hostId, m))?.abort.abort();
+    const k = waitKey(hostId, m);
+    const w = this.awaited.get(k);
+    if (w && w.m.bytes === m.bytes) this.endWait(k, { kind: 'again', why: 'cancelled' }, w);
+  }
+
+  /**
+   * Staging swept: every staged bundle `keep` does not name goes (an ask that
+   * ended, or a crash's orphan), and every part file with no transfer under
+   * way. Only names staging itself writes are removed (`<bundle id>.<sha256>.
+   * <bytes>.bundle`, part files under `parts/`), through `removeStaged`; a
+   * link is removed, never followed.
+   */
+  async sweepStaged(keep: (hostId: HostId, file: string) => boolean): Promise<number> {
+    const root = path.join(this.deps.a2aDir, BUNDLE_IN);
+    if (!(await fs.promises.lstat(root).catch(() => null))?.isDirectory()) return 0;
+    const hosts = await fs.promises.readdir(root).catch(() => [] as string[]);
+    const busy = new Set([...this.running.values()].map((r) => r.hostId));
+    for (const w of this.awaited.values()) if (w.receiving) busy.add(w.hostId);
+    let removed = 0;
+    for (const hostId of hosts.filter(isHostId)) {
+      const dir = bundleStagingHostDir(this.deps.a2aDir, hostId);
+      // A link where a PC's folder goes is removed as a link, never read through.
+      // eslint-disable-next-line no-await-in-loop -- one PC's folder at a time
+      const st = await fs.promises.lstat(dir).catch(() => null);
+      if (!st) continue;
+      if (!st.isDirectory()) {
+        // eslint-disable-next-line no-await-in-loop -- rare
+        if (await removeStaged(dir)) removed++;
+        continue;
+      }
+      // eslint-disable-next-line no-await-in-loop -- one PC's folder at a time
+      const names = await fs.promises.readdir(dir).catch(() => [] as string[]);
+      for (const name of names) {
+        const file = path.join(dir, name);
+        const ours = STAGED_NAME_RE.test(name) || (name === PARTS && !busy.has(hostId));
+        if (!ours || (name !== PARTS && keep(hostId, file))) continue;
+        // eslint-disable-next-line no-await-in-loop -- few files, one at a time
+        if (await removeStaged(file)) removed++;
+      }
+    }
+    return removed;
+  }
+
   /** A staged bundle is done with (imported, or refused there): it goes. */
   async discard(hostId: HostId, manifest: unknown): Promise<void> {
     const m = wellFormed(manifest);
@@ -444,6 +492,17 @@ export class BundleIntake {
       release();
     }
   }
+}
+
+/** The name staging gives a staged bundle (bundleStagedFile): the only files a sweep removes besides part files. */
+const STAGED_NAME_RE = /^bd-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[0-9a-f]{64}\.[1-9][0-9]*\.bundle$/;
+
+/** The one remover of what staging made: removed whatever it is (a link as a link). False when it was not there. */
+async function removeStaged(file: string): Promise<boolean> {
+  const st = await fs.promises.lstat(file).catch(() => null);
+  if (!st) return false;
+  await fs.promises.rm(file, { recursive: st.isDirectory(), force: true }).catch(() => undefined);
+  return true;
 }
 
 /** The manifest as taken: an id, a hash and a whole positive size, each of its type; null otherwise. */
