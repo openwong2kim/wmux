@@ -442,8 +442,16 @@ export async function runFreshContext(
   try {
     await probe.verify?.('enter', command);
   } catch (err) {
-    await eraseIfShown();
-    throw err;
+    if ((await eraseIfShown()) === 'erased') throw err;
+    // Not taken back: the refusal's own words ("nothing was typed") would be
+    // wrong while the command may still sit in the input line.
+    const why = err instanceof Error ? err.message : String(err);
+    throw new FreshContextTimeout(
+      `typed ${command}, and the check before its Enter refused (${why}); it could not be taken back, so ` +
+        'nothing further was written (the command may still be in the input line)',
+      command,
+      'timeout',
+    );
   }
   probe.write('\r');
   const enterAt = now();
