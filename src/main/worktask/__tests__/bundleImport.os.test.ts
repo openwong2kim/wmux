@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { importBundle, openHomeRepo, parseBundleHeader, type BundleImportInput } from '../bundleImport';
+import { BUNDLE_IMPORT_GIT_FLOOR, gitAtLeast, importBundle, openHomeRepo, parseBundleHeader, parseGitVersion, type BundleImportInput } from '../bundleImport';
 import { defaultGit, type TaskPushGit } from '../taskPush';
 import { trackedTempDir } from '../../../test-utils/trackedTempDir';
 
@@ -31,6 +31,21 @@ describe('parseBundleHeader', () => {
     expect(h(`# v2 git bundle\n${oid} HEAD\n\n`)).toBeNull();
     expect(h(`# v2 git bundle\n${'c'.repeat(64)} ${REF}\n\n`)).toBeNull();
     expect(h(`# v2 git bundle\n${oid} ${REF}\n`)).toBeNull();
+  });
+});
+
+describe('the git version floor', () => {
+  it('reads git\'s version line on each platform, and compares it with the floor', () => {
+    expect(parseGitVersion('git version 2.50.1 (Apple Git-155)\n')).toEqual([2, 50, 1]);
+    expect(parseGitVersion('git version 2.47.1.windows.2')).toEqual([2, 47, 1]);
+    expect(parseGitVersion('git version 2.43.0')).toEqual([2, 43, 0]);
+    expect(parseGitVersion('hub version 2.14.2')).toBeNull();
+    expect(parseGitVersion('')).toBeNull();
+    expect(gitAtLeast([2, 50, 1], [2, 50, 1])).toBe(true);
+    expect(gitAtLeast([3, 0, 0], [2, 50, 1])).toBe(true);
+    expect(gitAtLeast([2, 51, 0], [2, 50, 1])).toBe(true);
+    expect(gitAtLeast([2, 50, 0], [2, 50, 1])).toBe(false);
+    expect(gitAtLeast([2, 9, 9], [2, 50, 1])).toBe(false);
   });
 });
 
@@ -165,6 +180,65 @@ describe('importBundle (real git)', () => {
     expect(tipOf(home, BRANCH)).toBeNull();
   });
 
+  it('this runner\'s git refuses a bundle whose objects fail fsck when fetched with the import\'s settings (the floor\'s measurement; never skipped)', () => {
+    // The same fetch the import runs, straight through git: it must refuse on every runner that runs this suite.
+    fs.writeFileSync(path.join(box, '.gitmodules'), '[submodule "../../../hooks"]\n\tpath = x\n\turl = ./x\n');
+    g(box, 'add', '.gitmodules');
+    g(box, 'commit', '-q', '-m', 'modules');
+    const input = bundleOf('measure');
+    const version = execFileSync('git', ['--version'], { encoding: 'utf8' }).trim();
+    let refused = false;
+    try {
+      execFileSync('git', ['-c', 'transfer.fsckObjects=true', '-c', 'fetch.fsckObjects=true', '-c', 'fetch.unpackLimit=1',
+        'fetch', '--no-tags', '--recurse-submodules=no', '--no-write-fetch-head', '--quiet', '--', input.file, `${REF}:${BRANCH}`],
+      { cwd: home, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }, stdio: 'pipe' });
+    } catch {
+      refused = true;
+    }
+    expect({ version, refused }).toEqual({ version, refused: true });
+    expect(tipOf(home, BRANCH)).toBeNull();
+    // A git this suite runs on is at or above the floor, or the import refuses it before fetching.
+    const v = parseGitVersion(version);
+    expect(v).not.toBeNull();
+    if (v && !gitAtLeast(v)) console.warn(`[bundleImport] git ${version} is below the floor ${BUNDLE_IMPORT_GIT_FLOOR.join('.')}`);
+  });
+
+  it('refuses before fetching when git is older than the floor or its version cannot be read', async () => {
+    const input = bundleOf('old');
+    for (const out of ['git version 2.20.1', 'not git']) {
+      const calls: string[][] = [];
+      const old: TaskPushGit = (args, cwd, env, opts) => {
+        calls.push(args);
+        return args.includes('--version') ? Promise.resolve({ code: 0, stdout: `${out}\n`, stderr: '' }) : defaultGit(args, cwd, env, opts);
+      };
+      expect(await importBundle(input, old)).toEqual({ ok: false, reason: 'git-too-old' });
+      expect(calls.some((a) => a.includes('fetch'))).toBe(false);
+    }
+    expect(tipOf(home, BRANCH)).toBeNull();
+  });
+
+  it('leaves no ref but the one branch, and no FETCH_HEAD, whether the import lands or fails', async () => {
+    const refsBefore = g(home, 'for-each-ref', '--format=%(refname)');
+    fs.writeFileSync(path.join(box, '.gitmodules'), '[submodule "../../../hooks"]\n\tpath = x\n\turl = ./x\n');
+    g(box, 'add', '.gitmodules');
+    g(box, 'commit', '-q', '-m', 'modules');
+    expect((await importBundle(bundleOf('fail'))).ok).toBe(false);
+    expect(g(home, 'for-each-ref', '--format=%(refname)')).toBe(refsBefore);
+    expect(fs.existsSync(path.join(home, '.git', 'FETCH_HEAD'))).toBe(false);
+  });
+
+  it('refuses, and does not move, a returned branch checked out in any worktree', async () => {
+    const other = path.join(root, 'wt');
+    g(home, 'worktree', 'add', '-q', '-b', `wmux/returned/${SPAWN}`, other, base);
+    expect(await importBundle(bundleOf('wt'))).toEqual({ ok: false, reason: 'import-failed' });
+    expect(tipOf(home, BRANCH)).toBe(base);
+    g(home, 'worktree', 'remove', '--force', other);
+    // Checked out in the home repository's own worktree.
+    g(home, 'checkout', '-q', `wmux/returned/${SPAWN}`);
+    expect(await importBundle(bundleOf('main-wt'))).toEqual({ ok: false, reason: 'import-failed' });
+    expect(tipOf(home, BRANCH)).toBe(base);
+  });
+
   it('runs git with no global or system config, the file after --, no tags, no submodules and no force', async () => {
     const calls: Array<{ args: string[]; env?: Record<string, string> }> = [];
     const recording: TaskPushGit = (args, cwd, env, opts) => {
@@ -195,6 +269,9 @@ describe('openHomeRepo (real git)', () => {
     expect(await openHomeRepo(path.join(repo, 'sub'))).toEqual({ ok: false, reason: 'no-home-repo' });
     expect(await openHomeRepo(path.join(root, 'gone'))).toEqual({ ok: false, reason: 'no-home-repo' });
     g(repo, 'config', 'core.sshCommand', 'touch /tmp/x');
-    expect(await openHomeRepo(repo)).toEqual({ ok: false, reason: 'home-repo-config' });
+    expect(await openHomeRepo(repo)).toEqual({ ok: false, reason: 'home-repo-config', kind: 'core' });
+    g(repo, 'config', '--unset', 'core.sshCommand');
+    g(repo, 'config', 'credential.helper', 'store');
+    expect(await openHomeRepo(repo)).toEqual({ ok: false, reason: 'home-repo-config', kind: 'credential' });
   });
 });

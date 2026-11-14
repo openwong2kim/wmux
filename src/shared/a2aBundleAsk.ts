@@ -33,6 +33,8 @@ export const BUNDLE_ASKER_REFUSALS = [
   'home-repo-config',
   /** Git refused the import (a corrupt object, the branch checked out): nothing was written. */
   'import-failed',
+  /** Git on this PC is older than the version seen to check a bundle's objects on fetch, or its version is unreadable. */
+  'git-too-old',
 ] as const;
 export type BundleAskerRefusal = (typeof BUNDLE_ASKER_REFUSALS)[number];
 export type BundleBringBackRefusal = A2aBundleRefusal | BundleAskerRefusal;
@@ -73,8 +75,23 @@ export type BundleBringBackState =
   | { state: 'staged'; file: string; manifest: A2aBundleManifestV1; ref: string }
   | { state: 'refused'; reason: BundleBringBackRefusal };
 
+/** The kinds of home-repository config key that refuse an import (home-repo-config), each with its fixed words: the kind, never the value. */
+export const HOME_REPO_CONFIG_KIND_TEXT = {
+  core: 'a core setting that runs a program',
+  credential: 'a credential setting',
+  include: 'an include of another config file',
+  protocol: 'a protocol setting',
+  url: 'a URL rewrite',
+  remote: 'a remote program setting',
+  push: 'a push setting',
+  transport: 'an http or ssh transport setting',
+  signing: 'a signing program setting',
+  filter: 'a content filter',
+} as const;
+export type HomeRepoConfigKind = keyof typeof HOME_REPO_CONFIG_KIND_TEXT;
+
 /** The fixed words for each refusal: what happened and what the caller can do. */
-export function bringBackRefusalText(reason: BundleBringBackRefusal): string {
+export function bringBackRefusalText(reason: BundleBringBackRefusal, configKind?: HomeRepoConfigKind): string {
   switch (reason) {
     case 'not-supported': return 'the other PC cannot hand back this task\'s work (it was not started headless there, or its wmux is too old)';
     case 'unknown-spawn': return 'the other PC has no task with that id from this PC';
@@ -97,7 +114,8 @@ export function bringBackRefusalText(reason: BundleBringBackRefusal): string {
     case 'bundle-unexpected': return 'what came back is not the one bundle this PC takes, so nothing was imported';
     case 'feature-off': return 'bringing work back is off on this PC or the other one';
     case 'staging-full': return 'too many bundles are waiting on this PC: import or let them expire, then bring back again';
-    case 'home-repo-config': return 'the home repository\'s git config names a program git would run, so nothing was imported';
+    case 'home-repo-config': return `the home repository's own git config (.git/config) has ${configKind ? HOME_REPO_CONFIG_KIND_TEXT[configKind] : 'a setting that runs a program'}, which wmux does not run git with: remove it there, then bring back again`;
+    case 'git-too-old': return 'git on this PC is too old to check a returned bundle; update git, then bring back again';
     case 'import-failed': return 'git refused to import the bundle (a damaged object, or the returned branch is checked out): nothing was changed';
   }
 }

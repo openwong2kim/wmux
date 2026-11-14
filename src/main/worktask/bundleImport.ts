@@ -16,13 +16,32 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type { A2aBundleManifestV1 } from '../../shared/a2aBundle';
-import { returnedBranchName, type BundleAskerRefusal } from '../../shared/a2aBundleAsk';
+import { returnedBranchName, type BundleAskerRefusal, type HomeRepoConfigKind } from '../../shared/a2aBundleAsk';
 import { isSpawnId } from '../../shared/a2aSpawn';
 import { defaultGit, type TaskPushGit } from './taskPush';
-import { originUrlRepoKey, parseGitConfigList, workerGitConfigRefusal, workerGitSafeArgs } from './workerGit';
+import { originUrlRepoKey, parseGitConfigList, workerGitConfigRefusal, workerGitSafeArgs, type GitConfigEntry } from './workerGit';
 
 /** The longest a git call of the import may run before it is killed. */
 export const BUNDLE_IMPORT_TIMEOUT_MS = 120_000;
+/**
+ * The oldest git seen to refuse a bundle whose objects fail fsck on fetch
+ * (`fetch.fsckObjects`): measured, never guessed. An older git may fetch a
+ * bundle without checking its objects, so the import refuses it.
+ */
+export const BUNDLE_IMPORT_GIT_FLOOR: readonly [number, number, number] = [2, 50, 1];
+
+/** `git --version` output → [major, minor, patch], or null when it cannot be read. Pure. */
+export function parseGitVersion(out: string): [number, number, number] | null {
+  const m = /^git version (\d+)\.(\d+)\.(\d+)/.exec(out.trim());
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/** Whether `v` is at least the floor. Pure. */
+export function gitAtLeast(v: readonly [number, number, number], floor: readonly [number, number, number] = BUNDLE_IMPORT_GIT_FLOOR): boolean {
+  for (let i = 0; i < 3; i++) if (v[i] !== floor[i]) return v[i] > floor[i];
+  return true;
+}
+
 /** The most of a bundle read for its header: a header is a few lines. */
 const HEADER_READ_MAX = 64 * 1024;
 
@@ -74,7 +93,24 @@ export function parseBundleHeader(buf: Buffer): BundleHeader | null {
   return { version, objectFormat, prerequisites, refs };
 }
 
-export type HomeRepoResult = { ok: true; top: string; origin: string } | { ok: false; reason: Extract<BundleAskerRefusal, 'no-home-repo' | 'home-repo-config'> };
+export type HomeRepoResult =
+  | { ok: true; top: string; origin: string }
+  | { ok: false; reason: 'no-home-repo' }
+  | { ok: false; reason: 'home-repo-config'; kind: HomeRepoConfigKind };
+
+/** The kind of a config key main does not run git with (home-repo-config's words). Pure. */
+export function homeRepoConfigKind(key: string): HomeRepoConfigKind {
+  if (key.startsWith('credential.')) return 'credential';
+  if (key.startsWith('include.') || key.startsWith('includeif.')) return 'include';
+  if (key.startsWith('protocol.')) return 'protocol';
+  if (key.startsWith('url.')) return 'url';
+  if (key.startsWith('remote.')) return 'remote';
+  if (key.startsWith('push.')) return 'push';
+  if (key.startsWith('http.') || key.startsWith('ssh.')) return 'transport';
+  if (key.startsWith('gpg.')) return 'signing';
+  if (key.startsWith('filter.')) return 'filter';
+  return 'core';
+}
 
 /**
  * The recorded home repository as it is now: still a folder that is its own
@@ -101,7 +137,9 @@ export async function openHomeRepo(homeRepo: string, git: TaskPushGit = defaultG
   const cfg = await git(['-c', 'core.fsmonitor=false', 'config', '-z', '--list', '--show-scope'], real, IMPORT_ENV, { timeoutMs: BUNDLE_IMPORT_TIMEOUT_MS });
   if (cfg.code !== 0) return noRepo;
   const entries = parseGitConfigList(cfg.stdout);
-  if (workerGitConfigRefusal(entries)) return { ok: false, reason: 'home-repo-config' };
+  // The first of its own keys main would refuse, told by its kind only.
+  const hit = entries.find((e: GitConfigEntry) => workerGitConfigRefusal([e]) !== null);
+  if (hit) return { ok: false, reason: 'home-repo-config', kind: homeRepoConfigKind(hit.key) };
   const urls = entries.filter((e) => (e.scope === 'local' || e.scope === 'worktree') && e.key === 'remote.origin.url');
   const origin = urls.length === 1 ? originUrlRepoKey(urls[0].value) : null;
   return origin ? { ok: true, top: real, origin } : noRepo;
@@ -123,7 +161,7 @@ export interface BundleImportInput {
 
 export type BundleImportResult =
   | { ok: true; branch: string; sha: string; noop: boolean; warnings: BundleImportWarning[] }
-  | { ok: false; reason: Extract<BundleAskerRefusal, 'base-not-local' | 'not-fast-forward' | 'bundle-unexpected' | 'import-failed'> };
+  | { ok: false; reason: Extract<BundleAskerRefusal, 'base-not-local' | 'not-fast-forward' | 'bundle-unexpected' | 'import-failed' | 'git-too-old'> };
 
 /** What the imported work holds that a branch alone does not bring (fixed words only). */
 export type BundleImportWarning = 'submodules' | 'lfs';
@@ -144,6 +182,10 @@ export async function importBundle(input: BundleImportInput, git: TaskPushGit = 
   const tip = header.refs[0].oid;
   const safe = [...workerGitSafeArgs(input.noHooksDir), '-c', 'submodule.recurse=false'];
   const run = (args: string[]): ReturnType<TaskPushGit> => git([...safe, ...args], input.top, IMPORT_ENV, { timeoutMs: BUNDLE_IMPORT_TIMEOUT_MS });
+  // A git older than the floor may not check the bundle's objects: nothing is fetched with it.
+  const version = await run(['--version']);
+  const v = version.code === 0 ? parseGitVersion(version.stdout) : null;
+  if (!v || !gitAtLeast(v)) return { ok: false, reason: 'git-too-old' };
   const commitOf = async (rev: string): Promise<string | null> => {
     const r = await run(['rev-parse', '--verify', '--quiet', '--end-of-options', `${rev}^{commit}`]);
     return r.code === 0 ? r.stdout.trim() : null;

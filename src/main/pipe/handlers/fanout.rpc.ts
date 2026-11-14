@@ -103,7 +103,7 @@ import { sendToRenderer } from './_bridge';
 import { resolvePaneForPty, resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { isSpawnId } from '../../../shared/a2aSpawn';
 import type { A2aBundleManifestV1 } from '../../../shared/a2aBundle';
-import { A2A_BUNDLE_ASK_RPC, bringBackRefusalText, isBundleBringBackRefusal, type BundleBringBackRefusal } from '../../../shared/a2aBundleAsk';
+import { A2A_BUNDLE_ASK_RPC, bringBackRefusalText, isBundleBringBackRefusal, type BundleBringBackRefusal, type HomeRepoConfigKind } from '../../../shared/a2aBundleAsk';
 import { BUNDLE_IMPORT_WARNING_TEXT, importBundle, openHomeRepo } from '../../worktask/bundleImport';
 import { defaultGit, type TaskPushGit } from '../../worktask/taskPush';
 import { REMOTE_FANOUT_AGENT, REMOTE_TASK_FOOTER, remoteFanoutDepsOf, remoteFanoutRefusal, remoteKeyRows, startRemoteFanout, type RemoteFanoutDeps } from '../../worktask/remoteFanout';
@@ -1162,11 +1162,11 @@ export function registerFanOutRpc(
     const row = remote.ledger.list().find((e) => e.remote?.spawnId === spawnId && e.ownerWorkspaceId === callerWorkspaceId);
     if (!row?.remote) return deny('NOT_FOUND', `no task on another PC with spawn id ${spawnId} belongs to this workspace`);
     const { hostId, pc } = row.remote;
-    const refused = (reason: BundleBringBackRefusal) => ({ ok: true as const, state: 'refused' as const, reason, text: `Not brought back from ${pc}: ${bringBackRefusalText(reason)}.` });
+    const refused = (reason: BundleBringBackRefusal, kind?: HomeRepoConfigKind) => ({ ok: true as const, state: 'refused' as const, reason, text: `Not brought back from ${pc}: ${bringBackRefusalText(reason, kind)}.` });
     if (!row.remote.homeRepo) return refused('no-home-repo');
     const git = deps.bundleGit ?? defaultGit;
     const home = await openHomeRepo(row.remote.homeRepo, git);
-    if (!home.ok) return refused(home.reason);
+    if (!home.ok) return refused(home.reason, home.reason === 'home-repo-config' ? home.kind : undefined);
     const cancel = params['cancel'] === true;
     if (cancel) {
       await dc.rpc(A2A_BUNDLE_ASK_RPC.release, { hostId, spawnId });
