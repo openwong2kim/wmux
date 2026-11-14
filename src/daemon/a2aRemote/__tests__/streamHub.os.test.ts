@@ -179,6 +179,15 @@ describe('A2aStreamHub: a refusal on a stream ack (stream-refuse.1)', () => {
     expect(h.outbox.get(OTHER, 9)).toMatchObject({ state: 'pending' });
   });
 
+  it('takes a refusal of a record left outcome-unknown by a pump (the stream sends those too)', async () => {
+    const h = await refusing();
+    h.outbox.markOutcomeUnknown(HOST, 1);
+    const res = await h.post({ cursor: { epoch: h.outbox.epoch, seq: 1 }, refused: { seq: 1, code: 'conflict' } });
+    expect(res.json).toMatchObject({ refused: 'applied' });
+    expect(h.outbox.get(HOST, 1)).toMatchObject({ state: 'refused', lastError: 'conflict' });
+    expect(h.refused).toEqual([{ seq: 1, code: 'conflict' }]);
+  });
+
   it('a refusal it cannot store acks nothing: 503, the record stays owed, nothing is ended', async () => {
     const h = await refusing();
     h.failWrites.on = true;

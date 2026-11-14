@@ -214,7 +214,8 @@ export class A2aStreamHub {
 
   /**
    * A joiner's refusal of one record on its ack. Taken only for a record this host streams to that joiner (it serves
-   * it), of the current epoch, still `pending`, at or below the ack's cursor, with a terminal code: it is refused in
+   * it), of the current epoch, still owed (any state the stream sends), at or below the ack's cursor, with a terminal
+   * code: it is refused in
    * the outbox, then `onRefused` ends what it was about (awaited; its failure is logged and the ack goes on).
    * Anything else is `ignored`, and the ack goes on as a plain one; a record already refused (a repeat of the same
    * ack) is one of those. `unavailable`: the refusal could not be stored, so nothing is acked.
@@ -231,8 +232,9 @@ export class A2aStreamHub {
     if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 1 || seq > cursor.seq) return 'ignored';
     if (typeof code !== 'string' || !TERMINAL_REFUSALS.has(code as A2aRemoteErrorCode) || cursor.epoch !== this.deps.outbox.epoch) return 'ignored';
     const rec = this.deps.outbox.get(hostId, seq);
-    // Only `pending`: a record in another state is not one this host streamed (the pump's outcome-unknown is not).
-    if (rec?.state !== 'pending') return 'ignored';
+    // Still owed, as the stream sends it (`pending`, or `outcome-unknown` left by a pump before this host served that
+    // peer); a record of a peer this host joins was refused above (`serves`).
+    if (rec?.state !== 'pending' && rec?.state !== 'outcome-unknown') return 'ignored';
     try {
       this.deps.outbox.refuse(hostId, seq, code as A2aRemoteErrorCode);
     } catch (err) {

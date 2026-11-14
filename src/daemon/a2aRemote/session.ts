@@ -314,8 +314,10 @@ export class JoinerSession {
               ping = setInterval(() => void this.ping(client, epoch), this.timing.pingMs);
               ping.unref?.();
             }
-            // A refusal the server has not taken yet keeps the redial backing off: each dial would only fail it again.
-            if (!this.refusalBackoff) this.streamBackoff = 0;
+            // The dial after a refusal the server did not take keeps its backoff (each dial may only fail it again); the
+            // mark is spent here, so a refusal the server took but whose answer was lost does not slow later redials.
+            if (this.refusalBackoff) this.refusalBackoff = false;
+            else this.streamBackoff = 0;
             this.setState('connected');
             void this.reconcile();
             this.kick();
@@ -385,7 +387,13 @@ export class JoinerSession {
     // the stream's hello started may not have caught up yet, is applied once more after one.
     const told = this.serverFeatures?.includes(A2A_FEATURE_STREAM_REFUSE) === true;
     if (!result.ok && told && LINK_VIEW_REFUSALS.has(result.error)) {
-      await this.reconcile();
+      // A reconcile that failed proves nothing: the event stays owed and comes again on the next dial.
+      try {
+        await this.deps.reconcileLinks();
+      } catch (err) {
+        this.deps.log('warn', `[a2a-remote] ${this.deps.hostId}: link reconcile failed: ${errMsg(err)}`);
+        return false;
+      }
       result = await apply();
       if (!result) return false;
     }

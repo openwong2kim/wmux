@@ -219,6 +219,7 @@ describe('JoinerSession: a refusal of a streamed record (stream-refuse.1)', () =
     features: string[],
     result: A2aRemoteDeliverResponse | (() => A2aRemoteDeliverResponse),
     answers: number[] = [],
+    opts: { reconcileFails?: () => boolean } = {},
   ): { acks: unknown[]; resumes: Array<string | undefined>; applied: () => number; reconciled: () => number } {
     let reconciled = 0;
     const acks: unknown[] = [];
@@ -250,6 +251,7 @@ describe('JoinerSession: a refusal of a streamed record (stream-refuse.1)', () =
       onRefused: () => undefined,
       reconcileLinks: async () => {
         reconciled += 1;
+        if (opts.reconcileFails?.()) throw new Error('reconcile failed');
       },
       onStatus: () => undefined,
       timing: { livenessMs: 60_000, backoffMinMs: 10, backoffMaxMs: 20 },
@@ -295,5 +297,17 @@ describe('JoinerSession: a refusal of a streamed record (stream-refuse.1)', () =
     expect(s.applied()).toBe(2);
     expect(s.reconciled()).toBeGreaterThanOrEqual(1);
     expect(s.acks[0]).toEqual({ cursor: { epoch: 'e7', seq: 5 } });
+  });
+  it('a reconcile that fails keeps the event owed: nothing is refused, and the next dial applies it again', async () => {
+    let n = 0;
+    // Refused from the link view twice, then taken; the reconcile after the first refusal fails.
+    const s = streaming([A2A_FEATURE_STREAM_REFUSE], () => (n++ < 2 ? { ok: false, error: 'stale-link-version' } : { ok: true, duplicate: false }), [], {
+      reconcileFails: () => n === 1,
+    });
+    await vi.waitFor(() => expect(s.acks).toHaveLength(1), { timeout: 5_000 });
+    // Never told: the first try ended the dial with nothing acked, the second was taken after a good reconcile.
+    expect(s.acks[0]).toEqual({ cursor: { epoch: 'e7', seq: 5 } });
+    expect(s.applied()).toBe(3);
+    expect(s.resumes.length).toBeGreaterThanOrEqual(2);
   });
 });
