@@ -105,15 +105,37 @@ export function findImportGit(env: NodeJS.ProcessEnv): string | null {
 
 /** Whether `file` (as it resolves) is under the folder `dir`. Never throws. */
 function isInside(dir: string, file: string): boolean {
-  const rel = path.relative(realOrNull(dir) ?? path.resolve(dir), realOrNull(file) ?? path.resolve(file));
+  // path.relative compares case-insensitively on Windows.
+  const rel = path.relative(resolveReal(dir), resolveReal(file));
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/**
+ * `p` as the native realpath of its nearest existing folder plus the rest: a Windows short (8.3) name or a link in
+ * an existing part resolves the same way whether or not the file itself exists. Never throws.
+ */
+function resolveReal(p: string): string {
+  let head = path.resolve(p);
+  const tail: string[] = [];
+  for (;;) {
+    const real = realOrNull(head);
+    if (real) return path.join(real, ...tail.reverse());
+    const up = path.dirname(head);
+    if (up === head) return path.resolve(p);
+    tail.push(path.basename(head));
+    head = up;
+  }
 }
 
 /**
  * The import's git, found by `find`: never one inside the folder it runs in (the repository), and past its time it
  * is killed with its whole process group.
  */
-export const importGitWith = (find: (env: NodeJS.ProcessEnv) => string | null): ImportGit => (args, cwd, { stdin, timeoutMs = BUNDLE_IMPORT_TIMEOUT_MS } = {}) => new Promise((resolve) => {
+export const importGitWith = (
+  find: (env: NodeJS.ProcessEnv) => string | null,
+  /** Test-only seam: what starts the process (a test records that nothing was started). */
+  start: typeof spawn = spawn,
+): ImportGit => (args, cwd, { stdin, timeoutMs = BUNDLE_IMPORT_TIMEOUT_MS } = {}) => new Promise((resolve) => {
   const env = importGitEnv();
   const exe = find(env);
   if (!exe) {
@@ -137,7 +159,7 @@ export const importGitWith = (find: (env: NodeJS.ProcessEnv) => string | null): 
   };
   let child: ReturnType<typeof spawn>;
   try {
-    child = spawn(exe, args, {
+    child = start(exe, args, {
       cwd, env, windowsHide: true, stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32',
     });
   } catch (err) {

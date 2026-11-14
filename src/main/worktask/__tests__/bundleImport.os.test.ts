@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -347,11 +347,28 @@ describe('importBundle (real git)', () => {
     expect(tipOf(home, BRANCH)).toBeNull();
   });
 
-  it('never runs a git found inside the home repository', async () => {
+  it('never runs a git found inside the home repository: nothing is started', async () => {
     const input = bundleOf('git-in-repo');
-    const inside = importGitWith(() => path.join(home, 'bin', 'git'));
+    // A git there that leaves a mark when it runs, named as findImportGit would return it on this platform.
+    const marker = path.join(root, 'in-repo-git-ran');
+    const bin = path.join(home, 'bin');
+    fs.mkdirSync(bin);
+    const stub = path.join(bin, process.platform === 'win32' ? 'git.exe' : 'git');
+    fs.writeFileSync(stub, `#!/bin/sh\necho ran > '${marker}'\n`, { mode: 0o755 });
+    if (process.platform !== 'win32') expect(findImportGit({ PATH: bin })).toBe(stub);
+    const started: string[] = [];
+    const record = ((file: string, ...rest: unknown[]) => {
+      started.push(file);
+      return (spawn as (...a: unknown[]) => ReturnType<typeof spawn>)(file, ...rest);
+    }) as typeof spawn;
+    // Reached through a short (8.3) name or a link too: the check compares real paths.
+    const inside = importGitWith(() => stub, record);
     expect(await importBundle(input, inside)).toEqual({ ok: false, reason: 'git-in-repo' });
     expect(await openHomeRepo(home, inside)).toEqual({ ok: false, reason: 'git-in-repo' });
+    const notYet = importGitWith(() => path.join(home, 'not-there', 'git'), record);
+    expect(await openHomeRepo(home, notYet)).toEqual({ ok: false, reason: 'git-in-repo' });
+    expect(started).toEqual([]);
+    expect(fs.existsSync(marker)).toBe(false);
     expect(tipOf(home, BRANCH)).toBeNull();
   });
 
