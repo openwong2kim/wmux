@@ -213,7 +213,12 @@ describe('JoinerSession: a refusal of a streamed record (stream-refuse.1)', () =
    * A server whose stream sends one event (seq 5) on every dial. `answers`: the status of each ack POST in turn
    * (then 200). Records each ack body and the resume id of each dial.
    */
-  function streaming(features: string[], result: A2aRemoteDeliverResponse, answers: number[] = []): { acks: unknown[]; resumes: Array<string | undefined>; applied: () => number } {
+  function streaming(
+    features: string[],
+    result: A2aRemoteDeliverResponse | (() => A2aRemoteDeliverResponse),
+    answers: number[] = [],
+  ): { acks: unknown[]; resumes: Array<string | undefined>; applied: () => number; reconciled: () => number } {
+    let reconciled = 0;
     const acks: unknown[] = [];
     const resumes: Array<string | undefined> = [];
     let applied = 0;
@@ -238,10 +243,12 @@ describe('JoinerSession: a refusal of a streamed record (stream-refuse.1)', () =
       outbox: { epoch: 'e', head: () => undefined, openCount: () => 0, markSent: () => record(), markOutcomeUnknown: () => record(), ack: () => 0, refuse: () => record() },
       accept: async () => {
         applied += 1;
-        return result;
+        return typeof result === 'function' ? result() : result;
       },
       onRefused: () => undefined,
-      reconcileLinks: async () => undefined,
+      reconcileLinks: async () => {
+        reconciled += 1;
+      },
       onStatus: () => undefined,
       timing: { livenessMs: 60_000, backoffMinMs: 10, backoffMaxMs: 20 },
       client: () => client,
@@ -249,7 +256,7 @@ describe('JoinerSession: a refusal of a streamed record (stream-refuse.1)', () =
     });
     sessions.push(session);
     session.start();
-    return { acks, resumes, applied: () => applied };
+    return { acks, resumes, applied: () => applied, reconciled: () => reconciled };
   }
 
   it('tells a server that takes it, in the ack of that record', async () => {
@@ -278,5 +285,13 @@ describe('JoinerSession: a refusal of a streamed record (stream-refuse.1)', () =
     expect(s.resumes[1]).toBeUndefined();
     expect(s.applied()).toBe(2);
     expect(s.acks[1]).toEqual({ cursor: { epoch: 'e7', seq: 5 }, refused: { seq: 5, code: 'conflict' } });
+  });
+  it('a refusal from its own view of the link is applied once more after a reconcile, and not told when that takes it', async () => {
+    let n = 0;
+    const s = streaming([A2A_FEATURE_STREAM_REFUSE], () => (n++ === 0 ? { ok: false, error: 'unknown-link' } : { ok: true, duplicate: false }));
+    await vi.waitFor(() => expect(s.acks).toHaveLength(1), { timeout: 5_000 });
+    expect(s.applied()).toBe(2);
+    expect(s.reconciled()).toBeGreaterThanOrEqual(1);
+    expect(s.acks[0]).toEqual({ cursor: { epoch: 'e7', seq: 5 } });
   });
 });

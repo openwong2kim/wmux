@@ -219,7 +219,9 @@ export class A2aRemoteDelivery {
     this.images = deps.uploadsRoot ? new A2aImageStore({ a2aDir: deps.dir, uploadsRoot: deps.uploadsRoot, log: deps.log }) : null;
     // `images.1` is a promise to take images: only with somewhere to keep them.
     // `reopen.1` is this build's own way of following a task again; a test may play a build without it.
-    const own = [...(deps.reopen === false ? [] : [A2A_FEATURE_REOPEN]), ...(deps.streamRefuse === false ? [] : [A2A_FEATURE_STREAM_REFUSE])];
+    // One switch for both: what this PC advertises (`stream-refuse.1`) and whether its hub takes refusals on acks.
+    const streamRefuse = deps.streamRefuse !== false;
+    const own = [...(deps.reopen === false ? [] : [A2A_FEATURE_REOPEN]), ...(streamRefuse ? [A2A_FEATURE_STREAM_REFUSE] : [])];
     this.features = [...(deps.features?.filter((f) => f !== A2A_FEATURE_IMAGES || this.images !== null) ?? []), ...own];
     this.hub = new A2aStreamHub({
       outbox: this.outbox,
@@ -233,7 +235,7 @@ export class A2aRemoteDelivery {
       features: this.features,
       withhold: (hostId, rec) => this.withholdNotice(hostId, rec),
       // A joiner's refusal of a record streamed to it ends what the record was about, as a refused POST does.
-      ...(deps.streamRefuse === false ? {} : { onRefused: (rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode) => this.onRefused(rec, code) }),
+      ...(streamRefuse ? { onRefused: (rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode) => this.onRefused(rec, code) } : {}),
       ...(deps.heartbeatMs !== undefined ? { heartbeatMs: deps.heartbeatMs } : {}),
       log: deps.log,
     });
