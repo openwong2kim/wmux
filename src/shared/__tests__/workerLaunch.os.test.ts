@@ -133,7 +133,7 @@ describe('reattachModelEnvMarker', () => {
 // (the list flags are variadic and would swallow it), exactly once, only on a
 // claude launch, and never by editing text inside a quoted argument.
 describe('applyWorkerPermissionFlags', () => {
-  const PROMPT = `"$(cat '/tmp/meta/task one/prompt.md')"`;
+  const PROMPT = `"$(cat '/tmp/.meta/task one/prompt.md')"`;
   const LISTS = `--allowedTools "${FANOUT_WORKER_ALLOWED_TOOLS.join(',')}" --disallowedTools "${FANOUT_WORKER_DISALLOWED_TOOLS.join(',')}"`;
   /** wmux's lists with the launcher's own deny rules after wmux's. */
   const listsDenying = (...own: string[]): string =>
@@ -228,9 +228,15 @@ describe('applyWorkerPermissionFlags', () => {
       `claude ${PROMPT} --permission-mode auto --disallowedTools "${[...FANOUT_WORKER_DISALLOWED_TOOLS, 'Read', '*'].join(',')}"`,
     );
     // The prompt argument exactly as main builds it may follow a deny list, on either platform.
-    for (const [platform, file] of [['win32', 'C:\\p\\task one\\prompt.md'], ['linux', '/tmp/p/task one/prompt.md'], ['darwin', '/tmp/p/prompt.md']] as const) {
+    for (const [platform, file] of [
+      ['win32', 'C:\\w\\.wmux\\worktrees\\6a3b\\.meta\\task one-ta7w\\prompt.md'],
+      ['linux', '/home/u/.wmux/worktrees/6a3b/.meta/task one-ta7w/prompt.md'],
+      ['darwin', '/Users/u/outputs/batch/.meta/t1/prompt.md'],
+    ] as const) {
       expect(workerModeRefusal(`claude --disallowedTools Bash ${promptFileArgument(file, platform)}`, 'auto')).toBeNull();
     }
+    // A task with no prompt gets no prompt argument: a launcher's own word of that shape is then not taken for one.
+    expect(workerModeRefusal(`claude --disallowedTools Read "$(cat '/tmp/denies')"`, 'auto')).toContain('was not started');
     // Any other word after the rules is a deny wmux cannot carry, a launcher's own `$(…)` included.
     expect(workerModeRefusal(`claude --disallowedTools Read "rm -rf" ${PROMPT}`, 'auto')).toContain('was not started');
     expect(workerModeRefusal(`claude --disallowedTools Read "$(printf Bash)" ${PROMPT}`, 'auto')).toContain('was not started');

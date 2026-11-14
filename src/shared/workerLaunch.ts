@@ -377,6 +377,8 @@ function rowOfStem(stem: string): AgentIdentityRow | undefined {
 }
 
 const DENY_FLAGS = new Set(['--disallowedTools', '--disallowed-tools']);
+/** The prompt file FanOutService writes for a task, `<dir>/.meta/<task>/prompt.md`, as quoted in its prompt argument. */
+const WMUX_PROMPT_FILE = /[\\/]\.meta[\\/][^\\/']+[\\/]prompt\.md'/;
 
 /** What a line's permission and tool-list flags are, read once. */
 interface LineFlags {
@@ -405,10 +407,17 @@ interface LineFlags {
  */
 function lineFlags(command: string, words: readonly Span[]): LineFlags {
   const out: LineFlags = { cut: [], modes: [], bypass: false, denied: [], carriable: [], uncarriable: false };
-  /** The index of wmux's own prompt argument: the last word of exactly its shape (-1 when none). */
+  /**
+   * The index of wmux's own prompt argument, or -1: the last word of exactly
+   * its shape, and only when it names a fan-out prompt file. A task with no
+   * prompt gets none, and a launcher's own word of that shape is then the last one.
+   */
   let promptAt = -1;
-  for (let k = words.length - 1; k > 0 && promptAt < 0; k--) {
-    if (stripPromptFileArgument(command.slice(words[k].start, words[k].end)) === '') promptAt = k;
+  for (let k = words.length - 1; k > 0; k--) {
+    const raw = command.slice(words[k].start, words[k].end);
+    if (stripPromptFileArgument(raw) !== '') continue;
+    if (WMUX_PROMPT_FILE.test(raw)) promptAt = k;
+    break;
   }
   const deny = (word: Span, value: string): void => {
     const rules = toolRules(value);
