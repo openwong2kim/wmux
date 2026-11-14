@@ -1,7 +1,7 @@
 // JoinerSession pump, with a fake pinned client: what happens when this side
 // cannot record the outcome of a send.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { A2A_FEATURE_STREAM_PING, A2A_REMOTE_PROTOCOL, A2A_ROUTES, type A2aOutboxRecordV1 } from '../../../shared/a2aRemote';
+import { A2A_FEATURE_STREAM_PING, A2A_FEATURE_STREAM_REFUSE, A2A_REMOTE_PROTOCOL, A2A_ROUTES, type A2aOutboxRecordV1, type A2aRemoteDeliverResponse } from '../../../shared/a2aRemote';
 import { JoinerSession, type SessionClient } from '../session';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 
@@ -205,5 +205,78 @@ describe('JoinerSession stream ping', () => {
     // Nothing applied yet on this stream: seq 0 of its epoch, which acks nothing.
     expect(yes.acks()[0]).toEqual({ cursor: { epoch: 'e7', seq: 0 } });
     expect(no.acks()).toHaveLength(0);
+  });
+});
+
+describe('JoinerSession: a refusal of a streamed record (stream-refuse.1)', () => {
+  /**
+   * A server whose stream sends one event (seq 5) on every dial. `answers`: the status of each ack POST in turn
+   * (then 200). Records each ack body and the resume id of each dial.
+   */
+  function streaming(features: string[], result: A2aRemoteDeliverResponse, answers: number[] = []): { acks: unknown[]; resumes: Array<string | undefined>; applied: () => number } {
+    const acks: unknown[] = [];
+    const resumes: Array<string | undefined> = [];
+    let applied = 0;
+    const client: SessionClient = {
+      requestJson: async (_m, p, body) => {
+        if (p !== A2A_ROUTES.ack) return { status: 200, json: { ok: true } };
+        acks.push(body);
+        const status = answers.shift() ?? 200;
+        return { status, json: status === 200 ? { ok: true, acked: 1, refused: 'applied' } : { ok: false, error: 'unavailable' } };
+      },
+      openStream: async function* (_p, { signal, lastEventId }) {
+        resumes.push(lastEventId);
+        yield { event: 'hello', data: { epoch: 'e7', features } };
+        yield { event: 'message', data: { cursor: { epoch: 'e7', seq: 5 }, envelope: {} } };
+        await new Promise<void>((r) => signal.addEventListener('abort', () => r(), { once: true }));
+      },
+    };
+    const session = new JoinerSession({
+      hostId: HOST,
+      host: () => ({ v: 1, hostId: HOST, name: 'B', addresses: ['127.0.0.1'], port: 1, fingerprint256: 'AB', peerId: 'p', createdAt: 'x' }),
+      credential: () => ({ peerId: '22222222-2222-4222-8222-222222222222', secret: 'a'.repeat(43) }),
+      outbox: { epoch: 'e', head: () => undefined, openCount: () => 0, markSent: () => record(), markOutcomeUnknown: () => record(), ack: () => 0, refuse: () => record() },
+      accept: async () => {
+        applied += 1;
+        return result;
+      },
+      onRefused: () => undefined,
+      reconcileLinks: async () => undefined,
+      onStatus: () => undefined,
+      timing: { livenessMs: 60_000, backoffMinMs: 10, backoffMaxMs: 20 },
+      client: () => client,
+      log: () => undefined,
+    });
+    sessions.push(session);
+    session.start();
+    return { acks, resumes, applied: () => applied };
+  }
+
+  it('tells a server that takes it, in the ack of that record', async () => {
+    const s = streaming([A2A_FEATURE_STREAM_REFUSE], { ok: false, error: 'unknown-task' });
+    await vi.waitFor(() => expect(s.acks).toHaveLength(1), { timeout: 5_000 });
+    expect(s.acks[0]).toEqual({ cursor: { epoch: 'e7', seq: 5 }, refused: { seq: 5, code: 'unknown-task' } });
+  });
+
+  it('a server without it in its hello gets a plain ack, as before', async () => {
+    const s = streaming([], { ok: false, error: 'unknown-task' });
+    await vi.waitFor(() => expect(s.acks).toHaveLength(1), { timeout: 5_000 });
+    expect(s.acks[0]).toEqual({ cursor: { epoch: 'e7', seq: 5 } });
+  });
+
+  it('a record applied fine is acked plainly, refusal feature or not', async () => {
+    const s = streaming([A2A_FEATURE_STREAM_REFUSE], { ok: true, duplicate: false });
+    await vi.waitFor(() => expect(s.acks).toHaveLength(1), { timeout: 5_000 });
+    expect(s.acks[0]).toEqual({ cursor: { epoch: 'e7', seq: 5 } });
+  });
+
+  it('a refusal the server did not take acks nothing: the stream is dialled again from the previous event, and the record is refused again', async () => {
+    const s = streaming([A2A_FEATURE_STREAM_REFUSE], { ok: false, error: 'conflict' }, [503]);
+    await vi.waitFor(() => expect(s.acks).toHaveLength(2), { timeout: 5_000 });
+    // The second dial resumed from before seq 5 (nothing was acked here), so the server sent it again.
+    expect(s.resumes[0]).toBeUndefined();
+    expect(s.resumes[1]).toBeUndefined();
+    expect(s.applied()).toBe(2);
+    expect(s.acks[1]).toEqual({ cursor: { epoch: 'e7', seq: 5 }, refused: { seq: 5, code: 'conflict' } });
   });
 });

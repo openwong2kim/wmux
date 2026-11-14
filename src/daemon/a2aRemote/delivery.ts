@@ -4,6 +4,7 @@ import {
   A2A_FEATURE_IMAGES,
   A2A_FEATURE_HELD_NOTICE,
   A2A_FEATURE_REOPEN,
+  A2A_FEATURE_STREAM_REFUSE,
   A2A_FEATURE_STATUS,
   A2A_REMOTE_IMAGE_LIMITS,
   A2A_REMOTE_PROTOCOL,
@@ -95,6 +96,8 @@ export interface A2aRemoteDeliveryDeps {
   features?: readonly string[];
   /** false: this build neither follows a task again after it ended nor advertises `reopen.1`, as an older one; tests only. */
   reopen?: false;
+  /** false: this build neither takes a refusal on a stream ack nor advertises `stream-refuse.1`, as an older one; tests only. */
+  streamRefuse?: false;
   /**
    * `<wmux dir>/uploads`: images on messages (`images.1`) are received into
    * its `a2a/` folder and may be attached from it. Absent: no images either way.
@@ -216,7 +219,7 @@ export class A2aRemoteDelivery {
     this.images = deps.uploadsRoot ? new A2aImageStore({ a2aDir: deps.dir, uploadsRoot: deps.uploadsRoot, log: deps.log }) : null;
     // `images.1` is a promise to take images: only with somewhere to keep them.
     // `reopen.1` is this build's own way of following a task again; a test may play a build without it.
-    const own = deps.reopen === false ? [] : [A2A_FEATURE_REOPEN];
+    const own = [...(deps.reopen === false ? [] : [A2A_FEATURE_REOPEN]), ...(deps.streamRefuse === false ? [] : [A2A_FEATURE_STREAM_REFUSE])];
     this.features = [...(deps.features?.filter((f) => f !== A2A_FEATURE_IMAGES || this.images !== null) ?? []), ...own];
     this.hub = new A2aStreamHub({
       outbox: this.outbox,
@@ -229,6 +232,8 @@ export class A2aRemoteDelivery {
       },
       features: this.features,
       withhold: (hostId, rec) => this.withholdNotice(hostId, rec),
+      // A joiner's refusal of a record streamed to it ends what the record was about, as a refused POST does.
+      ...(deps.streamRefuse === false ? {} : { onRefused: (rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode) => this.onRefused(rec, code) }),
       ...(deps.heartbeatMs !== undefined ? { heartbeatMs: deps.heartbeatMs } : {}),
       log: deps.log,
     });

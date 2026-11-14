@@ -1,6 +1,7 @@
 import type { Readable } from 'node:stream';
 import {
   A2A_FEATURE_STREAM_PING,
+  A2A_FEATURE_STREAM_REFUSE,
   A2A_REDIAL_BACKOFF_MIN_MS,
   A2A_ROUTES,
   A2A_STREAM_PING_MS,
@@ -20,7 +21,7 @@ import type { A2aRemoteHostStatus } from '../../shared/rpc';
 import type { OutboxStore } from './outboxStore';
 import { PinnedClientError, PinnedTlsClient, type PinnedClientOptions, type PinnedSseEvent, type PinnedStreamedBody } from './pinnedClient';
 import type { ImagePull } from './inbound';
-import { formatCursorId, parseCursorId } from './streamHub';
+import { formatCursorId, parseCursorId, TERMINAL_REFUSALS } from './streamHub';
 import { errMsg, isPlainObject } from './storeFile';
 
 /**
@@ -50,19 +51,6 @@ import { errMsg, isPlainObject } from './storeFile';
  * `livenessMs` is dropped and redialled.
  */
 
-/** Refusals resending can never fix: the record is dropped, and `onRefused` ends what it was about (see delivery.ts). */
-export const TERMINAL_REFUSALS: ReadonlySet<A2aRemoteErrorCode> = new Set<A2aRemoteErrorCode>([
-  'unknown-link',
-  'link-not-active',
-  'direction-not-allowed',
-  'forbidden',
-  'conflict',
-  'stale-link-version',
-  'unknown-task',
-  'too-large',
-  'bad-request',
-  'protocol',
-]);
 
 export interface SessionTiming {
   backoffMinMs: number;
@@ -391,6 +379,21 @@ export class JoinerSession {
       this.deps.log('warn', `[a2a-remote] ${this.deps.hostId}: refused a stream message (${result.error})`);
     }
     const c = { epoch: cursor['epoch'], seq: cursor['seq'] };
+    // A server that takes refusals (`stream-refuse.1`, from this connection's hello) is told, in the ack itself.
+    // Nothing past the previous event counts as acked here until it took both: on any failure the stream is dialled
+    // again, the server sends this event again, and it is refused again.
+    if (!result.ok && TERMINAL_REFUSALS.has(result.error) && this.serverFeatures?.includes(A2A_FEATURE_STREAM_REFUSE) === true) {
+      let answer: { status: number; json: unknown };
+      try {
+        answer = await client.requestJson('POST', A2A_ROUTES.ack, { cursor: c, refused: { seq: c.seq, code: result.error } });
+      } catch {
+        return false;
+      }
+      const body = isPlainObject(answer.json) ? answer.json : null;
+      if (answer.status < 200 || answer.status >= 300 || body?.['ok'] !== true) return false;
+      this.lastEventId = formatCursorId(c);
+      return true;
+    }
     try {
       await client.requestJson('POST', A2A_ROUTES.ack, { cursor: c });
     } catch {

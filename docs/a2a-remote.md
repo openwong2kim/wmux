@@ -190,6 +190,14 @@ is the one that will accept connections, and PC A is the one that joins it.
 The two PCs do not need to be paired both ways. One pairing carries traffic
 in both directions over the joiner's connection.
 
+A message one PC refuses for good (a task that is not on that link any
+more, a state it disagrees with) is answered the same way in both
+directions. The PC that sent it fails its task, or records a disagreeing
+state on it, whichever way the message travelled. A message the joiner
+refuses on the server's connection is told back with its acknowledgement
+(feature `stream-refuse.1`); with an older build on either side the
+server is not told, as before.
+
 ## Delivery, receipts and held work
 
 The **Remote** page has a **Messages between PCs** section:
