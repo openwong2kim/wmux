@@ -80,6 +80,8 @@ export interface A2aRemoteDeliveryDeps {
   spawn?: InboundDeps['spawn'];
   /** Conversations other PCs continue here (link envelopes; see `continueReceiver.ts`). */
   continue?: InboundDeps['continue'];
+  /** Asks to bring back an agent's work as a bundle (link envelopes; see `bundleBox.ts`). */
+  bundles?: InboundDeps['bundles'];
   /** Their bytes (continueBundle.ts): the routes a PC that joined this one uploads them to. */
   continueBytes?: { registerRoutes(table: A2aRouteTable): void };
   /** Links a remote start made here (spawnStarter.ts): redacted, no images, follow-ups held for their card. */
@@ -847,6 +849,7 @@ export class A2aRemoteDelivery {
       ...(this.deps.offers ? { offers: this.deps.offers } : {}),
       ...(this.deps.spawn ? { spawn: this.deps.spawn } : {}),
       ...(this.deps.continue ? { continue: this.deps.continue } : {}),
+      ...(this.deps.bundles ? { bundles: this.deps.bundles } : {}),
       ...(this.deps.spawnLinks ? { spawnLinks: this.deps.spawnLinks } : {}),
       ...(this.images ? { images: { store: this.images, pullAttempts: this.pullAttempts } } : {}),
       remoteStatus: {
