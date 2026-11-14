@@ -111,6 +111,8 @@ export interface RemoteFanoutRequest {
   prompts: string[];
   /** The sha256 of the whole call, kept on each row (see remoteKeyRows). */
   digest: string;
+  /** The calling pane's repository as main resolved it (LedgerRemote.homeRepo); absent when it is in none. */
+  homeRepo?: string;
 }
 
 export interface RemoteTaskResult {
@@ -347,7 +349,7 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
         taskWorkspaceId: remoteTaskWorkspaceId(keys.spawnId(k)),
         ownerWorkspaceId: req.ownerWorkspaceId,
         title,
-        remote: { hostId: place.hostId, pc: pcName, spawnId: keys.spawnId(k), root: req.root, state: 'sent', requestDigest: req.digest, from: { paneId: req.paneId } },
+        remote: { hostId: place.hostId, pc: pcName, spawnId: keys.spawnId(k), root: req.root, state: 'sent', requestDigest: req.digest, from: { paneId: req.paneId }, ...(req.homeRepo ? { homeRepo: req.homeRepo } : {}) },
       });
     } catch (err) {
       tasks.push({ index: k, title, ok: false, taskId, channelId, reason: `the task row could not be written (${(err as Error).message}); nothing was sent, so send the same idempotency_key again` });

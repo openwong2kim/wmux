@@ -21,6 +21,13 @@ export interface A2aRemoteConfig {
    * a2aRemoteBindHost.
    */
   bindHost?: string;
+  /**
+   * Bringing back an agent's work as a git bundle (shared/a2aBundle.ts):
+   * off unless set. Off, its routes do not exist and asks are refused.
+   */
+  bundles?: boolean;
+  /** The largest bundle taken (bytes; a2aBundle.ts bundleBytesMax). Absent = its default. */
+  bundleBytes?: number;
 }
 
 export interface A2aRemoteConfigurePatch {
@@ -51,6 +58,8 @@ export function coerceA2aRemoteConfig(raw: unknown, def: A2aRemoteConfig = defau
   // Any set value is kept, as written or as JSON when it is not a string:
   // a2aRemoteBindHost reports a value it cannot use instead of dropping it.
   if (o['bindHost'] !== undefined) out.bindHost = typeof o['bindHost'] === 'string' ? o['bindHost'] : JSON.stringify(o['bindHost']);
+  if (o['bundles'] === true) out.bundles = true;
+  if (typeof o['bundleBytes'] === 'number' && Number.isInteger(o['bundleBytes']) && o['bundleBytes'] >= 1) out.bundleBytes = o['bundleBytes'];
   return out;
 }
 
@@ -133,6 +142,8 @@ export class A2aRemoteController extends EventEmitter {
     const port = patch.port ?? cur.port;
     if (port !== undefined) next.port = port;
     if (cur.bindHost !== undefined) next.bindHost = cur.bindHost;
+    if (cur.bundles !== undefined) next.bundles = cur.bundles;
+    if (cur.bundleBytes !== undefined) next.bundleBytes = cur.bundleBytes;
     if (next.enabled === cur.enabled && (next.port ?? null) === (cur.port ?? null)) return cur;
     this.persist({ ...this.config, a2aRemote: next });
     this.config.a2aRemote = next;

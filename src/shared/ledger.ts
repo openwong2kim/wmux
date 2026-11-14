@@ -161,6 +161,12 @@ export interface LedgerRemote {
   requestDigest?: string;
   /** The pane that asked for it: told when the task needs it or fails. */
   from?: { paneId: string };
+  /** The git top level of that pane's directory when fanout_start ran, as
+   *  main resolved it (never a caller's word): where bring-back imports the
+   *  work. Absent on rows from before it existed, or when that pane was not
+   *  in a repository; bring-back then answers no-home-repo. Set once, at
+   *  fanout_start; updateRemote never changes it. */
+  homeRepo?: string;
   /** What the agent on that PC waits on while the row stays open: a question
    *  on its screen (the row is input_required) or its usage limit (the row
    *  stays working; that PC resumes it by itself). Kinds only, never its text. */

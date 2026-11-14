@@ -324,6 +324,7 @@ export function copyRemote(r: unknown): LedgerRemote | null {
     ...(o.withdrawn === true ? { withdrawn: true as const } : {}),
     ...(o.revoked === true ? { revoked: true as const } : {}),
     ...(typeof o.requestDigest === 'string' && /^[0-9a-f]{64}$/.test(o.requestDigest) ? { requestDigest: o.requestDigest } : {}),
+    ...(isHomeRepo(o.homeRepo) ? { homeRepo: o.homeRepo } : {}),
     ...(o.from && typeof o.from === 'object' && typeof (o.from as { paneId?: unknown }).paneId === 'string' && PANE_ID_RE.test((o.from as { paneId: string }).paneId)
       ? { from: { paneId: (o.from as { paneId: string }).paneId } } : {}),
     ...(copyWaiting(o.waiting) ? { waiting: copyWaiting(o.waiting)! } : {}),
@@ -333,6 +334,9 @@ export function copyRemote(r: unknown): LedgerRemote | null {
 }
 
 const PANE_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+/** A recorded home repository: an absolute path (either platform's form) with no control character. */
+const isHomeRepo = (v: unknown): v is string =>
+  boundedText(v, 4096) && (path.posix.isAbsolute(v) || path.win32.isAbsolute(v));
 const isIso = (v: unknown): v is string => typeof v === 'string' && v.length <= 40 && Number.isFinite(Date.parse(v));
 
 function copyWaiting(w: unknown): LedgerRemoteWaiting | null {
@@ -797,13 +801,14 @@ export class TaskLedger {
    *  reads the row again. */
   updateRemote(
     id: string,
-    patch: Partial<Omit<LedgerRemote, 'hostId' | 'spawnId'>>,
+    patch: Partial<Omit<LedgerRemote, 'hostId' | 'spawnId' | 'homeRepo'>>,
     text?: { summary: string; expectedRev: number },
   ): Promise<LedgerEntry | null> {
     return this.serialize(async () => {
       const entry = this.entries.get(id);
       if (!entry?.remote) return null;
-      const remote = copyRemote({ ...entry.remote, ...patch });
+      // The home repository is the one fanout_start recorded: no patch moves it.
+      const remote = copyRemote({ ...entry.remote, ...patch, homeRepo: entry.remote.homeRepo });
       if (!remote) throw new Error(`ledger: the remote record of task ${id} would not be valid`);
       const current = text !== undefined && entry.rev === text.expectedRev && entry.status === 'input_required';
       const summary = current && text.summary.trim().length > 0

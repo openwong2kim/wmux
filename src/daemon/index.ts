@@ -154,6 +154,11 @@ import { A2aSpawnRequester, registerSpawnAskRpc } from './a2aRemote/spawnRequest
 import { SpawnOutgoingStore } from './a2aRemote/spawnOutgoingStore';
 import { A2aContinueReceiver, paneHoldsSession } from './a2aRemote/continueReceiver';
 import { ContinueBundle } from './a2aRemote/continueBundle';
+import { BundleIntake } from './a2aRemote/bundleIntake';
+import { bundleBytesMax } from '../shared/a2aBundle';
+import { BundleAsker, registerBundleAskRpc } from './a2aRemote/bundleAsker';
+import { BundleBox } from './a2aRemote/bundleBox';
+import { BundleOutbox } from './a2aRemote/bundleOutbox';
 import { ContinuePolicyStore } from './a2aRemote/continuePolicyStore';
 import { ContinueRequestStore } from './a2aRemote/continueRequestStore';
 import { ContinuePlacer } from './a2aRemote/continuePlacer';
@@ -172,7 +177,7 @@ import { A2A_REMOTE_RPC } from '../shared/a2aRemoteDelivery';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
-import { A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
+import { A2A_FEATURE_BUNDLE, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
@@ -10915,6 +10920,38 @@ async function main(): Promise<void> {
       bytes: a2aContinueBytes,
       log: a2aLog,
     });
+    // Bringing back an agent's work (the asking side, shared/a2aBundleAsk.ts): off unless `a2aRemote.bundles`
+    // is set in config.json. The bundle lands in `bundle-in/` under the a2a dir, pulled from a PC this one
+    // joined or put here by one that joined this one; main imports it.
+    const a2aBundlesOn = (): boolean => config.a2aRemote?.bundles === true;
+    const a2aBundleIntake = new BundleIntake({
+      a2aDir,
+      enabled: a2aBundlesOn,
+      fetchFrom: (hostId) => a2aDelivery?.continueFetch(hostId) ?? null,
+      maxBytes: () => bundleBytesMax(config.a2aRemote?.bundleBytes),
+      log: a2aLog,
+    });
+    const a2aBundleAsker = new BundleAsker({
+      a2aDir,
+      intake: a2aBundleIntake,
+      enabled: a2aBundlesOn,
+      peerTakes: (hostId) => a2aDelivery?.peerFeatures(hostId)?.has(A2A_FEATURE_BUNDLE) === true,
+      selfHostId: () => a2aServerRef?.status().hostId ?? null,
+      maxBytes: () => bundleBytesMax(config.a2aRemote?.bundleBytes),
+      enqueue: (hostId, envelope) => {
+        if (!a2aDelivery) throw new Error('messages between PCs are not carried this run');
+        a2aDelivery.outbox.enqueue(hostId, envelope);
+      },
+      log: a2aLog,
+    });
+    // The box's side: bundles made here of the work of agents other PCs started headless here, offered to them
+    // (fetched with a GET, or put there when this PC joined that one). The box is made below, with the headless starts.
+    const a2aBundleOutbox = new BundleOutbox({
+      enabled: a2aBundlesOn,
+      putTo: (hostId) => a2aDelivery?.bundlePut(hostId) ?? null,
+      log: a2aLog,
+    });
+    let a2aBundleBox: BundleBox | null = null;
     const a2aForgetHost = forgetHostCascade({ links: a2aLinks, exposures: a2aExposures, offers: a2aOffersRef }, a2aLog);
     const a2aCascade = (hostId: string): void => {
       a2aForgetHost(hostId);
@@ -10954,6 +10991,13 @@ async function main(): Promise<void> {
         a2aContinue.forgetHost(hostId);
       } catch (err) {
         a2aLog('error', `[a2a-remote] revoke cascade: continue receiver for ${hostId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (isHostId(hostId)) {
+        a2aBundleBox?.forgetHost(hostId);
+        a2aBundleOutbox.forgetHost(hostId);
+        void a2aBundleAsker.forgetHost(hostId).catch((err: unknown) => {
+          a2aLog('error', `[a2a-remote] revoke cascade: bundles asked of ${hostId}: ${err instanceof Error ? err.message : String(err)}`);
+        });
       }
       a2aDelivery?.onPeerRevoked(hostId);
     };
@@ -11069,10 +11113,14 @@ async function main(): Promise<void> {
         continueBytes: a2aContinueBytes,
         ...(a2aStarter ? { spawnLinks: a2aStarter } : {}),
         ...(a2aAsks ? { spawnAsks: a2aAsks } : {}),
+        bundleAsks: a2aBundleAsker,
+        // No box this run (no headless starts kept here): an ask is taken and dropped, as by a box that is off.
+        bundles: { applyInbound: (env, peer) => a2aBundleBox?.applyInbound(env, peer) ?? { ok: true, duplicate: false } },
         // This build shows and accepts share offers, takes images on
         // messages and pings its streams: tell the servers it joins, and the
         // joiners in its hello.
-        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE],
+        // `bundle.1` only while bundles are on (read at start: a change takes effect on the next one).
+        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE, ...(a2aBundlesOn() ? [A2A_FEATURE_BUNDLE] : [])],
         uploadsRoot: path.join(wmuxDir, 'uploads'),
         // A live terminal of the sender's workspace (stamped at spawn by main), else none.
         spawnCwdOf: (ptyId, workspaceId) => {
@@ -11082,6 +11130,9 @@ async function main(): Promise<void> {
         log: a2aLog,
       });
       a2aDelivery.registerRoutes(a2aRoutes);
+      // Their routes exist only while bundles are on.
+      a2aBundleIntake.registerRoutes(a2aRoutes);
+      a2aBundleOutbox.registerRoutes(a2aRoutes);
       // Kept too: the headless delivery calls them in-process, as main does over the pipe.
       const a2aDeliveryHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
       a2aDelivery.registerRpc((method, handler) => {
@@ -11090,6 +11141,12 @@ async function main(): Promise<void> {
       });
       a2aDelivery.start();
       a2aDeliveryRef = a2aDelivery;
+      // main asks for a bundle and releases it once imported; open asks are asked again and staging is swept.
+      // Main's asks are taken once the asks kept from before a restart have gone on.
+      void a2aBundleIntake.sweepParts().catch(() => undefined).then(() => {
+        a2aBundleAsker.start();
+        registerBundleAskRpc(onA2aRpc, a2aBundleAsker);
+      });
       // A share that was mid-accept when the daemon stopped is settled by links.json.
       a2aOffersRef.recover();
       // A spawn request still pending from before a restart is decided now.
@@ -11119,6 +11176,22 @@ async function main(): Promise<void> {
         const paneGone = a2aLinkHandlers.get('a2a.remote.local.paneGone');
         const starter = a2aStarter;
         const headlessStarts = new HeadlessStartStore({ dir: a2aDir, log: a2aLog });
+        // The box makes bundles only of starts recorded here, keyed by the asking PC's id and the spawn id.
+        a2aBundleBox = new BundleBox({
+          a2aDir,
+          enabled: a2aBundlesOn,
+          peerTakes: (hostId) => a2aDeliveryRef?.peerFeatures(hostId)?.has(A2A_FEATURE_BUNDLE) === true,
+          startOf: (hostId, spawnId) => headlessStarts.get(hostId, spawnId),
+          starts: () => headlessStarts.list(),
+          outbox: a2aBundleOutbox,
+          enqueue: (hostId, envelope) => {
+            if (!a2aDeliveryRef) throw new Error('messages between PCs are not carried this run');
+            a2aDeliveryRef.outbox.enqueue(hostId, envelope);
+          },
+          limits: () => (config.a2aRemote?.bundleBytes !== undefined ? { bundleBytes: config.a2aRemote.bundleBytes } : {}),
+          log: a2aLog,
+        });
+        void a2aBundleBox.start();
         const headlessRunId = randomUUID();
         const taskSvc = a2aTaskService;
         const deliveryCall = async (method: string, params: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> => {
