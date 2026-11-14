@@ -1199,6 +1199,13 @@ describe('a reopen undone when the message that reopened the task never reached 
     expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ undone: false });
     await expire(svc, 'f-2');
     expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ undone: true });
+    // A later follow-up dropped, but its paste may have landed (left unconfirmed, then expired): not undone.
+    svc = await reopened();
+    expect((await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('f-2', 'and this') })).ok).toBe(true);
+    await expire(svc);
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-2', held: 'delivery-unconfirmed' })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-2', rejected: 'held-expired' })).ok).toBe(true);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ undone: false });
     // Not the message that reopened it.
     svc = await reopened();
     await expire(svc);

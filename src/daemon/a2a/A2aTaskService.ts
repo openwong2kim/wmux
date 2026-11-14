@@ -1192,9 +1192,11 @@ export class A2aTaskService {
       const neverReached = item !== undefined && item.delivered !== true && !item.attempted && !item.unconfirmed
         && item.held !== 'delivery-unconfirmed' && item.rejected?.held !== 'delivery-unconfirmed'
         && (item.rejected?.reason === 'held-expired' || (input.reason === 'link-ended' && !item.rejected));
-      // Every later message from the sender is dropped too: one delivered reached the agent, and one still owed or
-      // held is work the task is open for (it would be stranded on a task that ended, never delivered or expired).
-      const laterOpen = inbox.slice(at + 1).some((i) => i.delivered === true || (i.kind === 'reply' && !i.rejected));
+      // Every later message from the sender is dropped too, unread: one delivered (or whose paste may have landed)
+      // reached the agent, and one still owed or held is work the task is open for (it would be stranded on a task
+      // that ended, never delivered or expired).
+      const laterOpen = inbox.slice(at + 1).some((i) => i.delivered === true || !!i.attempted || !!i.unconfirmed
+        || i.rejected?.held === 'delivery-unconfirmed' || (i.kind === 'reply' && !i.rejected));
       const undo = marker.direction === 'inbound' && task.status.state === 'working' && reopen?.messageId === input.messageId
         && neverReached && !laterOpen;
       if (!undo || !reopen) return { ok: true, task, undone: false };
