@@ -24,7 +24,7 @@ import type { A2aBundleManifestV1 } from '../../shared/a2aBundle';
 import { returnedBranchName, type BundleAskerRefusal, type HomeRepoConfigKind } from '../../shared/a2aBundleAsk';
 import { isSpawnId } from '../../shared/a2aSpawn';
 import { getExecEnv } from '../../shared/execEnv';
-import { findExecutable } from '../../shared/exeSearch';
+import { findAbsoluteGit, GIT_NOT_FOUND_TEXT, isInsideFolder } from '../../shared/gitExe';
 import { originUrlRepoKey, parseGitConfigList, workerGitConfigRefusal, workerGitEnv, workerGitSafeArgs, type GitConfigEntry } from './workerGit';
 
 /** The longest a git call of the import may run before it (and anything it started) is killed. */
@@ -80,52 +80,8 @@ export interface ImportGitOut {
 /** Runs git in `cwd` with the import's env, `stdin` piped in when given; never throws. */
 export type ImportGit = (args: string[], cwd: string, opts?: { stdin?: Readable; timeoutMs?: number }) => Promise<ImportGitOut>;
 
-/**
- * Git's absolute path, from the absolute folders of PATH only, or null. Never a bare name: started with its
- * folder in a repository, a bare name may be looked up in that folder first.
- */
-export function findImportGit(env: NodeJS.ProcessEnv): string | null {
-  if (process.platform === 'win32') {
-    const found = findExecutable('git', { env });
-    return found && path.isAbsolute(found) ? found : null;
-  }
-  for (const dir of (env['PATH'] ?? '').split(path.delimiter)) {
-    if (!path.isAbsolute(dir)) continue;
-    const file = path.join(dir, 'git');
-    try {
-      if (!fs.statSync(file).isFile()) continue;
-      fs.accessSync(file, fs.constants.X_OK);
-      return file;
-    } catch {
-      continue;
-    }
-  }
-  return null;
-}
-
-/** Whether `file` (as it resolves) is under the folder `dir`. Never throws. */
-function isInside(dir: string, file: string): boolean {
-  // path.relative compares case-insensitively on Windows.
-  const rel = path.relative(resolveReal(dir), resolveReal(file));
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
-}
-
-/**
- * `p` as the native realpath of its nearest existing folder plus the rest: a Windows short (8.3) name or a link in
- * an existing part resolves the same way whether or not the file itself exists. Never throws.
- */
-function resolveReal(p: string): string {
-  let head = path.resolve(p);
-  const tail: string[] = [];
-  for (;;) {
-    const real = realOrNull(head);
-    if (real) return path.join(real, ...tail.reverse());
-    const up = path.dirname(head);
-    if (up === head) return path.resolve(p);
-    tail.push(path.basename(head));
-    head = up;
-  }
-}
+/** Git's absolute path, from the absolute folders of PATH only, or null (shared/gitExe.ts). */
+export const findImportGit = findAbsoluteGit;
 
 /** What starts the import's git: never with a console window. */
 export type ImportGitStart = (file: string, args: string[], opts: SpawnOptions) => ChildProcess;
@@ -144,10 +100,10 @@ export const importGitWith = (
   const exe = find(env);
   if (!exe) {
     stdin?.destroy();
-    resolve({ code: 1, stdout: '', stderr: 'git was not found on this PC', missing: true });
+    resolve({ code: 1, stdout: '', stderr: GIT_NOT_FOUND_TEXT, missing: true });
     return;
   }
-  if (isInside(cwd, exe)) {
+  if (isInsideFolder(cwd, exe)) {
     stdin?.destroy();
     resolve({ code: 1, stdout: '', stderr: 'the git found is inside the repository it would run in', inRepo: true });
     return;

@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope, type HostId } from '../../../shared/a2aRemote';
 import { bundleRefName, parseBundleMade, type A2aBundleAskV1, type A2aBundleMadeV1 } from '../../../shared/a2aBundle';
 import { BundleBox, type BundleBoxLimits } from '../bundleBox';
-import { makeBundle, sweepBundleRefs, type BundleMakeInput } from '../bundleMaker';
+import { bundleGit, makeBundle, sweepBundleRefs, type BundleMakeInput } from '../bundleMaker';
 import { BundleIntake, bundleStagedFile } from '../bundleIntake';
 import { BundleOutbox } from '../bundleOutbox';
 import { headlessTreeId } from '../headlessStarter';
@@ -156,6 +156,36 @@ describe('makeBundle', () => {
     g(repo, 'config', 'core.fsmonitor', script);
     expect(await makeBundle(input(rec))).toMatchObject({ kind: 'refused', reason: 'repo-config' });
     expect(fs.existsSync(sentinel)).toBe(false);
+  });
+
+  it('runs no git when none is found by absolute path: no bare name, nothing made, no ref', async () => {
+    const rec = start();
+    commit(rec.worktreePath!, 'work.txt', 'done\n');
+    const inp = input(rec);
+    for (const PATH of ['', 'relative/bin', `.${path.delimiter}bin`]) {
+      const env = { ...GIT_ENV, PATH };
+      expect(await makeBundle(inp, { env })).toEqual({ kind: 'refused', reason: 'unavailable', detail: 'git was not found on this PC' });
+      expect(await bundleGit(rec.worktreePath!, { env })(['--version'])).toEqual({ code: 1, stdout: '', stderr: 'git was not found on this PC' });
+    }
+    expect(fs.existsSync(inp.file)).toBe(false);
+    expect(bundleRefs()).toBe('');
+  });
+
+  it('never runs a git found inside the worktree: nothing is started', async () => {
+    const rec = start();
+    commit(rec.worktreePath!, 'work.txt', 'done\n');
+    // A git there that leaves a mark when it runs, first on PATH.
+    const marker = path.join(root, 'worktree-git-ran');
+    const bin = path.join(rec.worktreePath!, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, posix ? 'git' : 'git.exe'), `#!/bin/sh\necho ran > '${marker}'\n`, { mode: 0o755 });
+    const env = { ...GIT_ENV, PATH: `${bin}${path.delimiter}${GIT_ENV.PATH ?? ''}` };
+    const inp = input(rec);
+    expect(await makeBundle(inp, { env })).toEqual({ kind: 'refused', reason: 'unavailable', detail: 'the git found on this PC is inside the worktree, so it was not run' });
+    expect((await bundleGit(rec.worktreePath!, { env })(['--version'])).code).toBe(1);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(fs.existsSync(inp.file)).toBe(false);
+    expect(bundleRefs()).toBe('');
   });
 
   it('GIT_* of the daemon\'s own environment does not reach git', async () => {
