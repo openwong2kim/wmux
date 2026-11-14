@@ -1238,6 +1238,27 @@ impl RowStep {
 }
 
 /// The alternate screen's grid, whichever screen is shown.
+/// xterm's saved row on the main screen across a narrowing that reflows
+/// (`Buffer._reflowSmaller`): for each reflowed paragraph,
+/// `savedY = min(savedY + linesToAdd, ybase + rows - 1)`, absolute. ybase
+/// grows by at most a paragraph's added rows, so this is one clamp of the
+/// total: `min(savedY + added, ybase + rows - 1)` (#3354).
+///
+/// The save is placeable while xterm's `savedY` equals the save's history
+/// plus Alacritty's saved screen row (place_like_xterm). Alacritty moved that
+/// row by the rows the reflow kept on screen, and the column step carried the
+/// history's growth; xterm's also counts the rows trimmed at the cap. The
+/// clamp is applied here, not at the restore: xterm keeps the clamped row,
+/// and later output below the cap moves ybase but not savedY.
+fn narrowed_saved_history(grid: &Grid<Cell>, history: i64) -> i64 {
+    if grid.narrowing_added == 0 {
+        return history;
+    }
+    let line = i64::from(grid.saved_cursor.point.line.0);
+    let bottom = grid.history_size() as i64 + grid.screen_lines() as i64 - 1;
+    (history + grid.narrowing_trimmed as i64).min(bottom - line)
+}
+
 fn alt_grid(term: &Term<VoidListener>) -> &Grid<Cell> {
     if term.mode().contains(TermMode::ALT_SCREEN) {
         term.grid()
@@ -1667,6 +1688,8 @@ impl NativeTerminal {
         let before = main_grid(term).history_size() as i64;
         term.resize(size);
         self.feed.saved[0].history += main_grid(term).history_size() as i64 - before;
+        self.feed.saved[0].history =
+            narrowed_saved_history(main_grid(term), self.feed.saved[0].history);
         // feed_xterm checks the same after a chunk, where the chunk's own
         // ED 3 could hide a resize's trim.
         if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
