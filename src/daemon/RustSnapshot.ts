@@ -46,10 +46,15 @@ function load(): NativeModule {
 
 /** NativeTerminal refuses a grid above four million cells, history included. */
 const NATIVE_CELL_LIMIT = 4_000_000;
-/** The most history rows the native grid can hold at every size the request replays. */
+/**
+ * The most history rows the native grid can hold at every size the request
+ * replays. A resize changes rows first, at the old width (NativeTerminal
+ * resize), so each step's old width with its new rows counts too.
+ */
 export function ansiScrollbackCap(req: Pick<SnapshotRequest, 'cols' | 'rows' | 'geometry'>): number {
-  const sizes = [req, ...(req.geometry ? [req.geometry.start, ...req.geometry.changes] : [])];
-  return Math.min(...sizes.map(({ cols, rows }) => Math.floor(NATIVE_CELL_LIMIT / Math.max(1, cols)) - rows));
+  const replayed = [...(req.geometry ? [req.geometry.start, ...req.geometry.changes] : []), req];
+  const steps = replayed.slice(1).map((next, i) => ({ cols: replayed[i].cols, rows: next.rows }));
+  return Math.min(...[...replayed, ...steps].map(({ cols, rows }) => Math.floor(NATIVE_CELL_LIMIT / Math.max(1, cols)) - rows));
 }
 
 export function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi'): Promise<SnapshotOutcome>;

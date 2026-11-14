@@ -9,7 +9,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getAnsiSnapshotBackendDiagnostics } from '../AnsiSnapshotBackend';
 import { generateSnapshotUnqueued, type SnapshotRequest } from '../HeadlessSnapshot';
-import { generateRustSnapshot } from '../RustSnapshot';
+import { ansiScrollbackCap, generateRustSnapshot } from '../RustSnapshot';
 import { CLAUDE_WRAPPED_REPLY_80x30 } from '../../renderer/terminal/__tests__/fixtures/claudeWrappedReply';
 import { restoreSeam } from '../../shared/restoreSeam';
 import { available, expectParity, expectRustAloneDiverges, modulePath, parity, resized, synthetic, type Case } from './_rustParity';
@@ -18,10 +18,23 @@ const rowsOf8 = Array.from({ length: 8 }, (_, i) => `L${i}`).join('\r\n');
 const savedThenScrolled = 'a\x1b[3;1H\x1b7\x1b[6;1H\n\n';
 const twoRowHistory = (name: string, text: string): Case =>
   ({ name, backend: 'rust', req: { cols: 20, rows: 6, scrollback: 2, initial: Buffer.from(text) } });
+/** From `start`, each step's text then the pane resized to its size; then `after`. */
+const resizedThrough = (
+  name: string, start: [number, number], steps: [string, [number, number]][], after: string, scrollback = 100,
+): Case => {
+  let text = '';
+  const changes = steps.map(([chunk, [cols, rows]]) => {
+    text += chunk;
+    return { offset: Buffer.byteLength(text), cols, rows };
+  });
+  const [cols, rows] = steps[steps.length - 1][1];
+  return { name, backend: 'rust', req: { cols, rows, scrollback, initial: Buffer.from(text + after),
+    geometry: { start: { cols: start[0], rows: start[1] }, changes } } };
+};
 /** `before` at 20x6, the pane resized to `to`, then `after`. */
 const resizedBetween = (name: string, before: string, to: [number, number], after: string): Case =>
-  ({ name, backend: 'rust', req: { cols: to[0], rows: to[1], scrollback: 100, initial: Buffer.from(before + after),
-    geometry: { start: { cols: 20, rows: 6 }, changes: [{ offset: Buffer.byteLength(before), cols: to[0], rows: to[1] }] } } });
+  resizedThrough(name, [20, 6], [[before, to]], after);
+const savedOnRow3CursorOnBottom = 'a\x1b[3;1H\x1b7\x1b[6;1Hb';
 const longRows = Array.from({ length: 4 }, (_, i) => `${i}`.repeat(18)).join('\r\n');
 
 // One or more cases per control class the selector used to refuse wholesale.
@@ -124,13 +137,45 @@ const accepted: Case[] = [
   twoRowHistory('decrc-full-history', `${rowsOf8}\x1b[3;1H\x1b7\x1b[6;1H\n\n\x1b8X`),
   twoRowHistory('scorc-full-history', `${rowsOf8}\x1b[3;1H\x1b[s\x1b[6;1H\n\n\x1b[uX`),
   // A resize between the scroll and the restore: the rows it moves between
-  // the screen and the history are not the stream's scrolling. (A height
-  // shrink with a main-screen save is left out: Alacritty clamps the saved
-  // row there and xterm keeps it absolute, before this change too.)
+  // the screen and the history are not the stream's scrolling.
   resizedBetween('main-1049l-scrolled-then-widened', savedThenScrolled, [24, 6], '\x1b[?1049lX'),
   resizedBetween('decrc-scrolled-then-taller', savedThenScrolled, [20, 8], '\x1b8X'),
   resizedBetween('decrc-scrolled-then-narrowed', `${longRows}\x1b[3;1H\x1b7\x1b[6;1H\n\n`, [12, 6], '\x1b8X'),
   resizedBetween('decrc-scrolled-then-widened', `${longRows}\r\n${'z'.repeat(30)}\x1b[3;1H\x1b7\x1b[6;1H\n\n`, [30, 6], '\x1b8X'),
+  // Shorter between a main-screen save and its restore. Shrinking pushes the
+  // rows the cursor needs into history on both; xterm keeps its absolute
+  // saved row (less what its history cap trims), Alacritty clamps its saved
+  // screen row (row_step in native_core.rs).
+  // - The rows pushed for the cursor are not the stream's scrolling:
+  resizedBetween('decrc-shorter-cursor-on-bottom', savedOnRow3CursorOnBottom, [20, 4], '\x1b8X'),
+  resizedBetween('scorc-shorter-cursor-on-bottom', 'a\x1b[3;1H\x1b[s\x1b[6;1Hb', [20, 4], '\x1b[uX'),
+  resizedBetween('main-1049l-shorter-cursor-on-bottom', savedOnRow3CursorOnBottom, [20, 4], '\x1b[?1049lX'),
+  resizedBetween('decrc-shorter-cursor-mid', 'a\x1b[2;1H\x1b7\x1b[5;1Hb', [20, 4], '\x1b8X'),
+  // - A saved row below the new bottom: Alacritty clamps it, xterm keeps it,
+  //   which shows once the stream scrolls.
+  resizedBetween('decrc-shorter-saved-below-bottom', 'a\x1b[6;1H\x1b7\x1b[2;1Hb', [20, 4], '\x1b[4;1H\n\n\x1b8X'),
+  // - xterm's cap trims history rows and moves its saved row with them:
+  resizedThrough('decrc-shorter-full-history', [20, 6], [[`${rowsOf8}\x1b[3;1H\x1b7\x1b[6;1Hb`, [20, 4]]], '\x1b8X', 2),
+  resizedThrough('decrc-shorter-filling-history', [20, 6], [['a\r\nb\r\nc\x1b[4;1H\x1b7\x1b[6;1Hb', [20, 3]]], '\x1b8X', 2),
+  resizedThrough('decrc-shorter-twice', [20, 8], [['a\x1b[5;1H\x1b7\x1b[8;1Hb', [20, 6]], ['x', [20, 4]]], '\x1b8X'),
+  resizedThrough('decrc-shorter-then-taller', [20, 6], [[`a\x1b[4;1H\x1b7\x1b[6;1Hb`, [20, 4]], ['x', [20, 6]]], '\x1b8X'),
+  resizedBetween('decrc-shorter-with-region', 'a\x1b[4;1H\x1b7\x1b[1;5r\x1b[6;1Hb', [20, 4], '\x1b8X'),
+  // - Rows before columns, on both: narrower and wider while shorter.
+  resizedBetween('decrc-narrower-and-shorter', `${'w'.repeat(30)}\r\nb\x1b[3;1H\x1b7\x1b[6;1Hc`, [12, 4], '\x1b8X'),
+  resizedBetween('decrc-wider-and-shorter', `${'w'.repeat(30)}\r\nb\x1b[3;1H\x1b7\x1b[6;1Hc`, [30, 4], '\x1b8X'),
+  // - Shorter with the alternate screen shown: the main screen's save is the
+  //   `?1049h`'s, on the cursor's row, which both move alike.
+  resizedBetween('main-shorter-under-alt', 'a\x1b[5;1H\x1b[?1049hzz', [20, 4], '\x1b[?1049l\n\n\x1b8X'),
+  // - A save on the alternate screen: xterm's alternate buffer keeps no
+  //   history, so the rows the cursor pushes are trimmed and its saved row
+  //   moves up with them; Alacritty clamps it.
+  resizedBetween('alt-decrc-shorter', 'a\x1b[?1049h\x1b[3;1H\x1b7\x1b[6;1Hb', [20, 4], '\x1b8X'),
+  resizedThrough('alt-decrc-shorter-then-taller', [20, 6], [['a\x1b[?1049h\x1b[6;1H\x1b7\x1b[2;1Hb', [20, 4]], ['x', [20, 6]]], '\x1b8X'),
+  // - Left first: xterm clears the alternate buffer and its resize skips it,
+  //   so the save keeps its row there; Alacritty clamps the inactive grid's.
+  resizedThrough('alt-decrc-left-shorter-taller-back', [20, 6], [['a\x1b[?1049h\x1b[6;1H\x1b7\x1b[2;1Hb\x1b[?1049l', [20, 4]], ['x', [20, 6]]], '\x1b[?1049h\x1b8X'),
+  // DECSTR puts the save at column 0, so a narrower resize's clamp no longer refuses it.
+  resizedThrough('alt-decstr-after-narrower-while-left', [20, 6], [['a\x1b[?1049h\x1b[1;17H\x1b7\x1b[?1049l', [12, 6]], ['x', [20, 6]]], '\x1b[?1049h\x1b[!p\x1b8X'),
   // A line feed inside the save runs first and scrolls before it.
   synthetic('decsc-line-feed-inside', 'a\x1b[6;1H\x1b\n7\x1b[2;1Hb\x1b8X'),
   synthetic('decsc-ls2', '\x1b*0\x1bn\x1b7\x0fq\x1b8q'),
@@ -218,6 +263,12 @@ const accepted: Case[] = [
 
 // Classes that stay on xterm because Alacritty parses them differently.
 const refused: Case[] = [
+  // A restore where xterm's resize skipped its emptied alternate buffer.
+  // Shorter while not shown, the buffer keeps its old length, so shown again
+  // it keeps rows above the screen. Narrower, it keeps the saved column
+  // Alacritty clamps.
+  { ...resizedThrough('alt-decrc-after-shorter-while-left', [20, 6], [['a', [20, 4]]], '\x1b[?1049h\x1b[4;1H\x1b7\n\n\x1b8X'), backend: 'xterm' },
+  { ...resizedThrough('alt-decrc-column-after-narrower-while-left', [20, 6], [['a\x1b[?1049h\x1b[1;17H\x1b7\x1b[?1049l', [12, 6]], ['x', [20, 6]]], '\x1b[?1049h\x1b8X'), backend: 'xterm' },
   synthetic('sync-mixed-params', 'a\x1b[?2026hb\x1b[?2026;1lc', 'xterm'),
   synthetic('deccolm', 'abc\x1b[?3hd', 'xterm'),
   synthetic('colon-rgb-no-colorspace', '\x1b[38:2:10:20:30mx', 'xterm'),
@@ -498,6 +549,45 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
 
   it.each([...accepted, ...refused, ...leftAlt, ...seams, ...lineFeeds, ...erases, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
     await expectParity(c);
+  });
+
+  it('refuses a history a height shrink pushes to the native cap, though ED 3 clears it after', async () => {
+    // 4M cells / 1000 columns leave 3994 history rows next to 6 screen rows;
+    // xterm keeps 100000. 3993 history rows, and the shrink pushes two: the
+    // native grid trims one at its cap, xterm none, and their saved rows part.
+    const before = Array.from({ length: 3999 }, (_, i) => `l${i}`).join('\r\n') + '\x1b[1;1H\x1b7\x1b[6;1H';
+    const req: SnapshotRequest = { cols: 1000, rows: 4, scrollback: 100000, initial: Buffer.from(`${before}\x1b[3J\x1b8X`),
+      geometry: { start: { cols: 1000, rows: 6 }, changes: [{ offset: Buffer.byteLength(before), cols: 1000, rows: 4 }] } };
+    expect(await generateRustSnapshot(req, 'ansi')).toMatchObject({ ok: false, detail: expect.stringMatching(/^unsupported-history-limit/) });
+  });
+
+  it('refuses a row step that trims at the native cap, though the wider reflow after it takes the history back under', async () => {
+    // At 500 columns each 750-cell line takes two rows: 3995 history rows
+    // next to 6 screen rows. To 1000x4 (a cap of 3996): the row step pushes
+    // two and trims one, then the wider reflow joins the line pairs.
+    const before = Array.from({ length: 2000 }, () => 'q'.repeat(750)).join('\r\n') + '\r\nz';
+    const req: SnapshotRequest = { cols: 1000, rows: 4, scrollback: 100000, initial: Buffer.from(`${before}\x1b8X`),
+      geometry: { start: { cols: 500, rows: 6 }, changes: [{ offset: Buffer.byteLength(before), cols: 1000, rows: 4 }] } };
+    expect(await generateRustSnapshot(req, 'ansi')).toMatchObject({ ok: false, detail: expect.stringMatching(/^unsupported-history-limit/) });
+  });
+
+  it('refuses a held synchronized update that trims at the native cap before a width-only wider reflow', async () => {
+    // Held by ?2026h until the resize: at 500 columns each 750-cell line
+    // takes two rows, 3995 history rows next to 6 screen rows, one past the
+    // cap of 3994 (1000x6). The wider reflow then joins the line pairs.
+    const before = '\x1b[?2026h' + Array.from({ length: 2000 }, () => 'q'.repeat(750)).join('\r\n') + '\r\nz';
+    const req: SnapshotRequest = { cols: 1000, rows: 6, scrollback: 100000, initial: Buffer.from(`${before}\x1b[?2026lX`),
+      geometry: { start: { cols: 500, rows: 6 }, changes: [{ offset: Buffer.byteLength(before), cols: 1000, rows: 6 }] } };
+    expect(ansiScrollbackCap(req)).toBe(3994);
+    expect(await generateRustSnapshot(req, 'ansi')).toMatchObject({ ok: false, detail: expect.stringMatching(/^unsupported-history-limit/) });
+  });
+
+  it('caps the history for the row step at the old width, so narrower and taller still resizes', async () => {
+    // 200x50 to 150x60 runs its row step at 200x60: 4M / 200 - 60 = 19940.
+    const req: SnapshotRequest = { cols: 150, rows: 60, scrollback: 100000, initial: Buffer.from('a\r\nb'),
+      geometry: { start: { cols: 200, rows: 50 }, changes: [{ offset: 1, cols: 150, rows: 60 }] } };
+    expect(ansiScrollbackCap(req)).toBe(19940);
+    expect(await generateRustSnapshot(req, 'ansi')).toMatchObject({ ok: true });
   });
 
   it('takes an attach-sized request and refuses a history past the native cap', async () => {

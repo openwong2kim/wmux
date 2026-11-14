@@ -8,7 +8,7 @@
 //
 // Pure module: no node:* imports (the renderer imports it).
 
-import { A2A_BRAIN_ALIAS, isRemoteTaskId, type A2aEndpointKind, type A2aRemoteReceipt, type A2aRemoteStatusShown, type A2aRemoteTaskMarkerV1, type HostId } from './a2aRemote';
+import { A2A_BRAIN_ALIAS, isRemoteTaskId, type A2aEndpointKind, type A2aRemoteErrorCode, type A2aRemoteReceipt, type A2aRemoteStatusShown, type A2aRemoteTaskMarkerV1, type HostId } from './a2aRemote';
 import type { CompanyBriefV1 } from './company';
 import type { GatedSubmitRefusal } from './ptyMessageDelivery';
 import { isTaskState, type Part, type Task, type TaskState } from './types';
@@ -334,6 +334,16 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
   attempted?: boolean;
   /** The last task state exchanged with the peer (sent, or applied from it). */
   stateSync?: TaskState;
+  /**
+   * The peer refused a state of ours (`code`: bad-request or conflict): the two PCs differ about this task. The
+   * task keeps its own state, and that state is not sent again. Cleared once the peer takes a later state.
+   */
+  stateRefused?: { state: TaskState; code: A2aRemoteErrorCode; at: string };
+  /**
+   * Outbound task that failed here because the other PC refused a reply of ours: that PC is owed `canceled`, so its
+   * copy ends too. The outbound sync sends it (and records it in `stateSync`), also after a restart.
+   */
+  cancelOwed?: true;
   /** Our own replies on this task already queued for the peer (messageIds). */
   sent?: string[];
   /** When each of `sent` was queued (a notice about one of them names this time, never one the peer gives). */

@@ -9,15 +9,16 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { A2A_ROUTES } from '../../../shared/a2aRemote';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { A2A_ROUTES, type HostId } from '../../../shared/a2aRemote';
 import { BUNDLE_BYTES_CEILING, BUNDLE_BYTES_DEFAULT, bundleBytesMax, type A2aBundleManifestV1 } from '../../../shared/a2aBundle';
 import { BundleIntake, bundleStagedFile, bundleStagingHostDir } from '../bundleIntake';
-import { BundleOutbox } from '../bundleOutbox';
+import { deliberateSleep } from '../../../test-utils/waitFor';
+import { BundleOutbox, type BundleSend } from '../bundleOutbox';
 import { PinnedClientError } from '../pinnedClient';
 import { A2aRouteTable } from '../routes';
-import { CONTINUE_TRANSFER_MAX_MS, continueTransferBudgetMs } from '../server';
-import type { StreamedGet } from '../session';
+import { A2A_REQUEST_BODY_MAX, CONTINUE_TRANSFER_MAX_MS, continueTransferBudgetMs, requestBodyMax } from '../server';
+import type { StreamedGet, StreamedPut } from '../session';
 
 const ASKER = '11111111-1111-4111-8111-111111111111';
 const OTHER = '22222222-2222-4222-8222-222222222222';
@@ -49,6 +50,11 @@ let serveBudgetMs: number | null;
 /** What the serving side logged. */
 let served: string[];
 let onServed: (line: string) => void;
+let table: A2aRouteTable;
+/** What the asking side logged. */
+let onTaken: (line: string) => void;
+/** The session the outbox sends by (its putTo). */
+let putter: StreamedPut | null;
 
 beforeEach(async () => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-bundle-')));
@@ -61,13 +67,16 @@ beforeEach(async () => {
   serveBudgetMs = null;
   served = [];
   onServed = quiet;
+  onTaken = quiet;
+  putter = null;
   outbox = new BundleOutbox({
     enabled: () => enabled,
+    putTo: () => putter,
     log: (_level, line) => { served.push(line); onServed(line); },
     now: () => clock,
     transferBudgetMs: (n) => serveBudgetMs ?? continueTransferBudgetMs(n),
   });
-  const table = new A2aRouteTable();
+  table = new A2aRouteTable();
   outbox.registerRoutes(table);
   server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://x');
@@ -101,14 +110,63 @@ function getAs(hostId: string): StreamedGet {
   });
 }
 
-function intake(over: { get?: StreamedGet | null; maxBytes?: number } = {}): BundleIntake {
+function intake(over: {
+  get?: StreamedGet | null;
+  maxBytes?: number;
+  budgetMs?: number;
+  takeSlot?: (hostId: HostId) => (() => void) | null;
+  checkStaged?: (a2aDir: string, target: string, sha: string, bytes: number) => Promise<boolean>;
+} = {}): BundleIntake {
   return new BundleIntake({
+    ...(over.budgetMs !== undefined ? { transferBudgetMs: () => over.budgetMs as number } : {}),
+    ...(over.takeSlot ? { takeSlot: over.takeSlot } : {}),
+    ...(over.checkStaged ? { checkStaged: over.checkStaged } : {}),
     a2aDir: askerA2a,
+    enabled: () => enabled,
     fetchFrom: () => (over.get === undefined ? getAs(ASKER) : over.get),
     ...(over.maxBytes !== undefined ? { maxBytes: () => over.maxBytes as number } : {}),
-    log: quiet,
+    log: (_level, line) => onTaken(line),
   });
 }
+
+/** A PUT to the asking PC as `hostId`, the way a joiner session streams one (exact length declared). */
+function putAs(hostId: string): StreamedPut {
+  return (p, body, o) => new Promise((resolve, reject) => {
+    const req = http.request({
+      method: 'PUT', host: '127.0.0.1', port, path: p, signal: o.signal,
+      headers: { 'x-test-host': hostId, 'content-type': 'application/octet-stream', 'content-length': String(o.bytes) },
+    }, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (c: string) => { text += c; });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, json: text ? JSON.parse(text) as unknown : null }));
+    });
+    req.on('error', reject);
+    body.on('error', (err) => req.destroy(err));
+    body.pipe(req);
+  });
+}
+
+/** A raw PUT as `hostId` with `headers`: `body` written whole, or only its first `cutAt` bytes and the connection then held. */
+function rawPut(p: string, headers: http.OutgoingHttpHeaders, body: Buffer, hostId = BOX, cutAt?: number): { status: Promise<number>; req: http.ClientRequest } {
+  const req = http.request({ method: 'PUT', host: '127.0.0.1', port, path: p, headers: { 'x-test-host': hostId, ...headers } });
+  const status = new Promise<number>((resolve) => {
+    req.on('response', (res) => { res.resume(); resolve(res.statusCode ?? 0); });
+    req.on('error', () => resolve(0));
+  });
+  if (cutAt === undefined) req.end(body);
+  else req.write(body.subarray(0, cutAt));
+  return { status, req };
+}
+
+/** The box sends `m` to the asking PC through `put` (its session with that PC). */
+function sendWith(put: StreamedPut, m: { bundleId: string }): Promise<BundleSend> {
+  putter = put;
+  return outbox.send(ASKER, m.bundleId);
+}
+
+/** Resolves once the asking side logs a line holding `text`. */
+const takenLine = (text: string): Promise<void> => new Promise((r) => { onTaken = (line) => { if (line.includes(text)) r(); }; });
 
 /** A bundle the box made and offers to `hostId`. */
 function made(body: Buffer, hostId = ASKER): A2aBundleManifestV1 {
@@ -119,8 +177,8 @@ function made(body: Buffer, hostId = ASKER): A2aBundleManifestV1 {
   return m;
 }
 
-const partsOf = (): string[] => {
-  const dir = path.join(bundleStagingHostDir(askerA2a, ASKER), 'parts');
+const partsOf = (hostId = ASKER): string[] => {
+  const dir = path.join(bundleStagingHostDir(askerA2a, hostId), 'parts');
   return fs.existsSync(dir) ? fs.readdirSync(dir) : [];
 };
 
@@ -422,5 +480,307 @@ describe('a returned bundle, fetched by the asking PC', () => {
     expect(await one.pull(ASKER, m)).toMatchObject({ kind: 'staged' });
     await one.forgetHost(ASKER);
     expect(fs.existsSync(bundleStagingHostDir(askerA2a, ASKER))).toBe(false);
+  });
+});
+
+describe('a returned bundle, sent by the PC that made it (it joined the asking PC)', () => {
+  const route = (m: A2aBundleManifestV1): string => `${A2A_ROUTES.bundle}/${m.bundleId}/${m.sha256}`;
+
+  it('the asking PC takes the bundle it waits for exactly, once, and a repeat wait is over at once', async () => {
+    const body = bytes(300_000, 30);
+    const m = made(body);
+    const one = intake();
+    one.registerRoutes(table);
+    const waiting = one.receive(BOX, m);
+    expect(one.receive(BOX, m)).toBe(waiting);
+    expect(await sendWith(putAs(BOX), m)).toEqual({ kind: 'sent' });
+    expect(await waiting).toEqual({ kind: 'staged', file: bundleStagedFile(askerA2a, BOX, m) });
+    expect(fs.readFileSync(bundleStagedFile(askerA2a, BOX, m)).equals(body)).toBe(true);
+    expect(partsOf(BOX)).toEqual([]);
+    // Taken: sent again (its answer lost on the way), it is taken already; anything else is not awaited.
+    expect(await sendWith(putAs(BOX), m)).toEqual({ kind: 'sent' });
+    expect(await rawPut(route(m), { 'content-length': '0' }, Buffer.alloc(0)).status).toBe(404);
+    expect(await intake().receive(BOX, m)).toEqual({ kind: 'staged', file: bundleStagedFile(askerA2a, BOX, m) });
+  });
+
+  it('refuses before any byte what it does not wait for: nothing awaited, another PC, another hash, another length, an encoding', async () => {
+    const body = bytes(5000, 31);
+    const m = made(body);
+    const one = intake();
+    one.registerRoutes(table);
+    expect(await sendWith(putAs(BOX), m)).toEqual({ kind: 'fatal', why: 'the other PC answered HTTP 404' });
+    const waiting = one.receive(BOX, m);
+    // The same id and hash awaited with another size is not that bundle, and does not share its wait.
+    expect(await one.receive(BOX, { ...m, bytes: m.bytes + 1 })).toEqual({ kind: 'fatal', why: 'another size is awaited for that bundle' });
+    // A wait longer than a timer can hold is refused, not ended at once.
+    expect(await one.receive(BOX, made(bytes(10, 43)), 2 ** 31)).toEqual({ kind: 'fatal', why: 'not a bundle this PC can take' });
+    const ok = { 'content-length': String(body.length) };
+    expect(await rawPut(route(m), ok, body, OTHER).status).toBe(404);
+    expect(await rawPut(route({ ...m, sha256: sha(Buffer.from('x')) }), ok, body).status).toBe(404);
+    expect(await rawPut(route(m), { 'content-length': String(body.length - 1) }, body.subarray(1)).status).toBe(400);
+    expect(await rawPut(route(m), { 'transfer-encoding': 'chunked' }, body).status).toBe(411);
+    expect(await rawPut(route(m), { ...ok, 'content-encoding': 'gzip' }, body).status).toBe(415);
+    expect(partsOf(BOX)).toEqual([]);
+    // The listener holds a bundle upload's body to the largest bundle, and only that route's.
+    expect(requestBodyMax('PUT', route(m), true)).toBe(BUNDLE_BYTES_CEILING);
+    // While bundles are off, a bundle upload's body is held as any other: nothing changes for a client.
+    expect(requestBodyMax('PUT', route(m))).toBe(A2A_REQUEST_BODY_MAX);
+    expect(requestBodyMax('POST', route(m))).toBe(A2A_REQUEST_BODY_MAX);
+    // The wait still stands for the bundle itself.
+    expect(await sendWith(putAs(BOX), m)).toEqual({ kind: 'sent' });
+    expect(await waiting).toMatchObject({ kind: 'staged' });
+  });
+
+  it('bytes whose hash is not the manifest\'s end the wait, and leave nothing behind', async () => {
+    const body = bytes(5000, 32);
+    const claimed = { bundleId: bundleId(), sha256: sha(Buffer.from('another')), bytes: body.length };
+    const one = intake();
+    one.registerRoutes(table);
+    const waiting = one.receive(BOX, claimed);
+    expect(await rawPut(route(claimed), { 'content-length': String(body.length) }, body).status).toBe(400);
+    expect(await waiting).toEqual({ kind: 'fatal', why: 'a hash other than its entry names' });
+    expect(fs.existsSync(bundleStagedFile(askerA2a, BOX, claimed))).toBe(false);
+    expect(partsOf(BOX)).toEqual([]);
+  });
+
+  it('a transfer cut half way leaves no part file, the wait stands, and the box sends it whole again', async () => {
+    const body = bytes(80_000, 33);
+    const m = made(body);
+    const one = intake();
+    one.registerRoutes(table);
+    const waiting = one.receive(BOX, m);
+    const broke = takenLine(`bundle ${m.bundleId} from ${BOX}: not received`);
+    const { req } = rawPut(route(m), { 'content-length': String(body.length) }, body, BOX, 30_000);
+    // Once the first bytes are in, the connection goes.
+    await vi.waitFor(() => expect(partsOf(BOX)).toHaveLength(1), { timeout: 10_000 });
+    req.destroy();
+    await broke;
+    expect(partsOf(BOX)).toEqual([]);
+    expect(await sendWith(putAs(BOX), m)).toEqual({ kind: 'sent' });
+    expect(await waiting).toMatchObject({ kind: 'staged' });
+  });
+
+  it('a wait ends when its time is up, when its PC is removed (also while it sends), and when the intake stops', async () => {
+    const body = bytes(80_000, 34);
+    const m = made(body);
+    const one = intake();
+    one.registerRoutes(table);
+    expect(await one.receive(BOX, made(bytes(100, 35)), 20)).toEqual({ kind: 'again', why: 'not sent in time' });
+    const waiting = one.receive(BOX, m);
+    rawPut(route(m), { 'content-length': String(body.length) }, body, BOX, 30_000);
+    await vi.waitFor(() => expect(partsOf(BOX)).toHaveLength(1), { timeout: 10_000 });
+    await one.forgetHost(BOX);
+    expect(await waiting).toEqual({ kind: 'again', why: 'that PC was removed' });
+    expect(fs.existsSync(bundleStagingHostDir(askerA2a, BOX))).toBe(false);
+    const stopped = one.receive(BOX, m);
+    one.stop();
+    expect(await stopped).toEqual({ kind: 'again', why: 'stopped' });
+  });
+
+  it('while the feature is off, the route does not exist, and nothing is waited for or sent', async () => {
+    const m = made(bytes(1000, 36));
+    const one = intake();
+    one.registerRoutes(table);
+    const waiting = one.receive(BOX, m);
+    enabled = false;
+    expect(await rawPut(route(m), { 'content-length': '0' }, Buffer.alloc(0)).status).toBe(404);
+    expect(await one.receive(BOX, { bundleId: bundleId(), sha256: sha(Buffer.from('y')), bytes: 1 })).toEqual({ kind: 'fatal', why: 'bundles are off on this PC' });
+    expect(await sendWith(putAs(BOX), m)).toEqual({ kind: 'fatal', why: 'bundles are off on this PC' });
+    enabled = true;
+    expect(await sendWith(putAs(BOX), m)).toEqual({ kind: 'sent' });
+    expect(await waiting).toMatchObject({ kind: 'staged' });
+  });
+
+  it('a transfer under way when the wait\'s time is up still lands; one that then breaks ends the wait', async () => {
+    const body = bytes(80_000, 39);
+    const m = made(body);
+    const one = intake();
+    one.registerRoutes(table);
+    const pastTtl = (): Promise<void> => new Promise((r) => setTimeout(r, 800));
+    const waiting = one.receive(BOX, m, 500);
+    const sending = rawPut(route(m), { 'content-length': String(body.length) }, body, BOX, 30_000);
+    await vi.waitFor(() => expect(partsOf(BOX)).toHaveLength(1), { timeout: 10_000 });
+    await pastTtl();
+    sending.req.end(body.subarray(30_000));
+    expect(await sending.status).toBe(200);
+    expect(await waiting).toEqual({ kind: 'staged', file: bundleStagedFile(askerA2a, BOX, m) });
+
+    const other = bytes(80_000, 40);
+    const n = made(other);
+    const late = one.receive(BOX, n, 500);
+    const broken = rawPut(route(n), { 'content-length': String(other.length) }, other, BOX, 30_000);
+    await vi.waitFor(() => expect(partsOf(BOX)).toHaveLength(1), { timeout: 10_000 });
+    await pastTtl();
+    broken.req.destroy();
+    expect(await late).toEqual({ kind: 'again', why: 'not sent in time' });
+    expect(partsOf(BOX)).toEqual([]);
+  });
+
+  it('something other than a plain file where the bundle would be staged ends the wait at once', async () => {
+    const m = made(bytes(1000, 41));
+    fs.mkdirSync(bundleStagedFile(askerA2a, BOX, m), { recursive: true });
+    expect(await intake().receive(BOX, m)).toEqual({ kind: 'fatal', why: 'something other than a plain file where a staged bundle goes' });
+  });
+
+  it('send() takes a 5xx, 401, 408 or 429 as again, and another 4xx as final, as a fetch does', async () => {
+    const m = made(bytes(1000, 42));
+    const answer = (status: number): StreamedPut => (_p, body) => {
+      body.destroy();
+      return Promise.resolve({ status, json: null });
+    };
+    for (const status of [500, 503, 401, 408, 429]) {
+      expect(await sendWith(answer(status), m)).toEqual({ kind: 'again', why: `the other PC answered HTTP ${status}` });
+    }
+    for (const status of [400, 404, 413]) {
+      expect(await sendWith(answer(status), m)).toEqual({ kind: 'fatal', why: `the other PC answered HTTP ${status}` });
+    }
+  });
+
+  it('a PUT that comes while the wait checks an old file where the bundle goes waits for that check, and lands', async () => {
+    const body = bytes(8 * 1024 * 1024, 44);
+    const m = made(body);
+    // Same size, other bytes: the check hashes it all, then removes it.
+    fs.mkdirSync(path.dirname(bundleStagedFile(askerA2a, BOX, m)), { recursive: true });
+    fs.writeFileSync(bundleStagedFile(askerA2a, BOX, m), bytes(body.length, 45));
+    const one = intake();
+    one.registerRoutes(table);
+    const waiting = one.receive(BOX, m);
+    expect(await sendWith(putAs(BOX), m)).toEqual({ kind: 'sent' });
+    expect(await waiting).toEqual({ kind: 'staged', file: bundleStagedFile(askerA2a, BOX, m) });
+    expect(fs.readFileSync(bundleStagedFile(askerA2a, BOX, m)).equals(body)).toBe(true);
+  });
+
+  it('a PUT the sender gave up on (its connection held open) is cut when the same PC sends it again', async () => {
+    const body = bytes(80_000, 46);
+    const m = made(body);
+    const one = intake();
+    one.registerRoutes(table);
+    const waiting = one.receive(BOX, m);
+    const stalled = rawPut(route(m), { 'content-length': String(body.length) }, body, BOX, 30_000);
+    await vi.waitFor(() => expect(partsOf(BOX)).toHaveLength(1), { timeout: 10_000 });
+    expect(await sendWith(putAs(BOX), m)).toEqual({ kind: 'sent' });
+    expect(await waiting).toMatchObject({ kind: 'staged' });
+    expect(await stalled.status).not.toBe(200);
+  });
+
+  it('past its time with a transfer under way, the sender\'s retry takes over and lands; asked for again, the wait starts anew', async () => {
+    const body = bytes(80_000, 48);
+    const m = made(body);
+    const one = intake();
+    one.registerRoutes(table);
+    const pastTtl = (): Promise<void> => new Promise((r) => setTimeout(r, 800));
+    const waiting = one.receive(BOX, m, 500);
+    const stalled = rawPut(route(m), { 'content-length': String(body.length) }, body, BOX, 30_000);
+    await vi.waitFor(() => expect(partsOf(BOX)).toHaveLength(1), { timeout: 10_000 });
+    await pastTtl();
+    expect(await sendWith(putAs(BOX), m)).toEqual({ kind: 'sent' });
+    expect(await waiting).toEqual({ kind: 'staged', file: bundleStagedFile(askerA2a, BOX, m) });
+    expect(await stalled.status).not.toBe(200);
+
+    const other = bytes(80_000, 49);
+    const n = made(other);
+    const first = one.receive(BOX, n, 500);
+    const broken = rawPut(route(n), { 'content-length': String(other.length) }, other, BOX, 30_000);
+    await vi.waitFor(() => expect(partsOf(BOX)).toHaveLength(1), { timeout: 10_000 });
+    await pastTtl();
+    // Asked for again while late: the same wait, with a time of its own from now.
+    expect(one.receive(BOX, n, 60_000)).toBe(first);
+    broken.req.destroy();
+    await vi.waitFor(() => expect(partsOf(BOX)).toEqual([]), { timeout: 10_000 });
+    expect(await sendWith(putAs(BOX), n)).toEqual({ kind: 'sent' });
+    expect(await first).toMatchObject({ kind: 'staged' });
+  });
+
+  it('send() goes only through this PC\'s own session with that PC: none, and it is not sent', async () => {
+    const m = made(bytes(1000, 50));
+    putter = null;
+    expect(await outbox.send(ASKER, m.bundleId)).toEqual({ kind: 'not-joined' });
+  });
+
+  it('PUTs that keep taking over from each other past the wait\'s time end with the wait, at its time plus one budget', async () => {
+    const body = bytes(80_000, 51);
+    const m = made(body);
+    const one = intake({ budgetMs: 1500 });
+    one.registerRoutes(table);
+    const started = Date.now();
+    let ended = false;
+    const waiting = one.receive(BOX, m, 300).finally(() => { ended = true; });
+    const puts: Array<ReturnType<typeof rawPut>> = [];
+    // A new PUT takes over every 350 ms for as long as the wait stands (up to 6 s).
+    while (!ended && Date.now() - started < 6000) {
+      puts.push(rawPut(route(m), { 'content-length': String(body.length) }, body, BOX, 30_000));
+      await new Promise((r) => setTimeout(r, 350));
+    }
+    expect(await waiting).toEqual({ kind: 'again', why: 'not sent in time' });
+    // Its time (300 ms) plus one budget (1.5 s), not a fresh budget per PUT.
+    expect(Date.now() - started).toBeLessThan(3000);
+    for (const p of puts) p.req.destroy();
+  });
+
+  it('past its time, a retry that took over and finds no transfer slot ends the wait at once', async () => {
+    const body = bytes(80_000, 52);
+    const m = made(body);
+    let takes = 0;
+    const one = intake({ takeSlot: () => (takes++ === 0 ? () => undefined : null) });
+    one.registerRoutes(table);
+    const waiting = one.receive(BOX, m, 50);
+    const stalled = rawPut(route(m), { 'content-length': String(body.length) }, body, BOX, 30_000);
+    await vi.waitFor(() => expect(partsOf(BOX)).toHaveLength(1), { timeout: 10_000 });
+    await deliberateSleep(100, 'past the wait\'s 50 ms time, with the first PUT still under way');
+    // Headers and one byte: nothing is still being written when the refusal closes the connection.
+    const retry = rawPut(route(m), { 'content-length': String(body.length) }, body, BOX, 1);
+    expect(await retry.status).toBe(429);
+    expect(await waiting).toEqual({ kind: 'again', why: 'not sent in time' });
+    stalled.req.destroy();
+    retry.req.destroy();
+  });
+
+  it('a PUT that waited on a staged check which ended its wait lands for a newer wait of the same bundle', async () => {
+    const body = bytes(5000, 53);
+    const m = made(body);
+    let open: (held: boolean) => void = () => undefined;
+    const gated = new Promise<boolean>((r) => { open = r; });
+    let checks = 0;
+    const one = intake({ checkStaged: () => (checks++ === 0 ? gated : Promise.resolve(false)) });
+    one.registerRoutes(table);
+    let second: Promise<unknown> | undefined;
+    // The first wait finds it staged (the check says so); in its continuation the caller asks for it again.
+    const first = one.receive(BOX, m).then((r) => {
+      second = one.receive(BOX, m);
+      return r;
+    });
+    const sending = sendWith(putAs(BOX), m);
+    await deliberateSleep(50, 'the PUT reaches the route and waits on the held check');
+    open(true);
+    expect(await first).toMatchObject({ kind: 'staged' });
+    expect(await sending).toEqual({ kind: 'sent' });
+    expect(await second).toMatchObject({ kind: 'staged' });
+    expect(fs.readFileSync(bundleStagedFile(askerA2a, BOX, m)).equals(body)).toBe(true);
+  });
+
+  it('send() leaves no read stream behind when the request fails before it is read', async () => {
+    const m = made(bytes(1000, 47));
+    let given: Readable | undefined;
+    const failing: StreamedPut = (_p, body) => {
+      given = body;
+      return Promise.reject(new PinnedClientError('connect-failed', 'unreachable', { sent: false }));
+    };
+    expect(await sendWith(failing, m)).toMatchObject({ kind: 'again' });
+    expect(given?.destroyed).toBe(true);
+  });
+
+  it('withdrawing the offer ends a send under way; an offer that does not stand is not sent', async () => {
+    const m = made(bytes(24 * 1024 * 1024, 37));
+    const one = intake();
+    one.registerRoutes(table);
+    void one.receive(BOX, m);
+    const real = putAs(BOX);
+    const ending: StreamedPut = (p, body, o) => {
+      outbox.withdraw(ASKER, m.bundleId);
+      return real(p, body, o);
+    };
+    expect(await sendWith(ending, m)).toMatchObject({ kind: 'again' });
+    expect(await sendWith(putAs(BOX), m)).toEqual({ kind: 'fatal', why: 'not offered to that PC' });
+    expect(fs.existsSync(bundleStagedFile(askerA2a, BOX, m))).toBe(false);
   });
 });

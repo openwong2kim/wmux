@@ -71,7 +71,7 @@ import type {
   A2aTaskMessagePayload,
   A2aTaskTransitionPayload,
 } from '../../shared/a2aEventlog';
-import type { A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from '../../shared/a2aRemote';
+import type { A2aRemoteErrorCode, A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from '../../shared/a2aRemote';
 import { isRemoteWorkspaceId, localSideOf, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 
 /** a2aSlice 현행 값 준수(캐시와 동일 시멘틱). */
@@ -398,6 +398,7 @@ export class A2aTaskService {
         // A state set on this PC (the done on a report, a forced end) ends the report.
         const m = remoteMarkerOf(task);
         if (m) delete m.reported;
+        if (m && t.peerCanceled) m.cancelOwed = true;
       }
       return;
     }
@@ -433,7 +434,8 @@ export class A2aTaskService {
         ? marker.inbox?.find((i) => i.messageId === r.messageId)
         : marker;
       if (!target) return;
-      if (r.stateSync !== undefined || r.sent !== undefined || r.read || r.receiptSync !== undefined || r.remoteReceipt !== undefined || r.replyAcked) {
+      if (r.stateSync !== undefined || r.sent !== undefined || r.read || r.receiptSync !== undefined || r.remoteReceipt !== undefined || r.replyAcked
+        || r.stateRefused || r.stateAccepted) {
         // Something new of ours is queued for the peer: not all of it has arrived yet.
         if (r.stateSync !== undefined || r.sent !== undefined) delete marker.replyDeliveredAt;
         if (r.replyAcked && !marker.replyDeliveredAt) marker.replyDeliveredAt = r.timestamp;
@@ -447,6 +449,8 @@ export class A2aTaskService {
         // A read implies the hand-over, even when the peer's 'delivered' never came.
         if (r.remoteReceipt !== undefined && !marker.remoteDeliveredAt) marker.remoteDeliveredAt = r.timestamp;
         if (r.remoteReceipt === 'read' && !marker.remoteReadAt) marker.remoteReadAt = r.timestamp;
+        if (r.stateRefused) marker.stateRefused = { state: r.stateRefused.state, code: r.stateRefused.code, at: r.timestamp };
+        if (r.stateAccepted) delete marker.stateRefused;
         return;
       }
       if (r.rejected !== undefined || r.notice !== undefined) {
@@ -930,6 +934,10 @@ export class A2aTaskService {
     remoteReceipt?: A2aRemoteReceipt;
     /** The peer acked every reply / state of ours queued on this task (#1922). */
     replyAcked?: true;
+    /** The peer refused this state of ours (it disagrees); the task keeps its own. */
+    stateRefused?: { state: TaskState; code: A2aRemoteErrorCode };
+    /** The peer took a state of ours: a refusal recorded before is over. */
+    stateAccepted?: true;
     /**
      * With `replyAcked`: true while something of ours on the task is still
      * owed. Asked inside the task lock, so a reply queued after the ack keeps
@@ -951,7 +959,8 @@ export class A2aTaskService {
       if (input.messageId !== undefined) {
         target = marker.inbox?.find((i) => i.messageId === input.messageId);
         if (!target) return { ok: false, error: `a2a.remote.mark: no inbound item ${input.messageId} on ${input.taskId}` };
-      } else if (marker.direction !== 'inbound' && input.stateSync === undefined && input.sent === undefined && input.remoteReceipt === undefined && input.replyAcked === undefined) {
+      } else if (marker.direction !== 'inbound' && input.stateSync === undefined && input.sent === undefined && input.remoteReceipt === undefined
+        && input.replyAcked === undefined && input.stateRefused === undefined && input.stateAccepted === undefined) {
         return { ok: false, error: 'a2a.remote.mark: only an inbound remote task has a delivery state' };
       }
       if ((input.read || input.receiptSync !== undefined) && marker.direction !== 'inbound') {
@@ -961,7 +970,8 @@ export class A2aTaskService {
         return { ok: false, error: 'a2a.remote.mark: only an outbound remote task takes the peer\'s receipt' };
       }
       const receipts = input.read === true || input.receiptSync !== undefined || input.remoteReceipt !== undefined;
-      const bookkeeping = input.stateSync !== undefined || input.sent !== undefined || receipts || input.replyAcked === true;
+      const bookkeeping = input.stateSync !== undefined || input.sent !== undefined || receipts || input.replyAcked === true
+        || input.stateRefused !== undefined || input.stateAccepted === true;
       if (bookkeeping && input.messageId !== undefined) return { ok: false, error: 'a2a.remote.mark: stateSync/sent/receipts are task-level' };
       const itemMark = input.rejected !== undefined || input.notice !== undefined;
       if (itemMark && input.messageId === undefined) return { ok: false, error: 'a2a.remote.mark: rejected/notice are item-level' };
@@ -978,7 +988,9 @@ export class A2aTaskService {
           && (input.read !== true || !!marker.readAt)
           && (input.receiptSync === undefined || receiptRank(marker.receiptSync) >= receiptRank(input.receiptSync))
           && (input.remoteReceipt === undefined || (input.remoteReceipt === 'read' ? !!marker.remoteReadAt : !!marker.remoteDeliveredAt))
-          && (input.replyAcked !== true || !!marker.replyDeliveredAt);
+          && (input.replyAcked !== true || !!marker.replyDeliveredAt)
+          && input.stateRefused === undefined
+          && (input.stateAccepted !== true || !marker.stateRefused);
         body = {
           ...(input.stateSync !== undefined ? { stateSync: input.stateSync } : {}),
           ...(input.sent !== undefined ? { sent: input.sent } : {}),
@@ -986,6 +998,8 @@ export class A2aTaskService {
           ...(input.receiptSync !== undefined ? { receiptSync: input.receiptSync } : {}),
           ...(input.remoteReceipt !== undefined ? { remoteReceipt: input.remoteReceipt } : {}),
           ...(input.replyAcked ? { replyAcked: true as const } : {}),
+          ...(input.stateRefused ? { stateRefused: { state: input.stateRefused.state, code: input.stateRefused.code } } : {}),
+          ...(input.stateAccepted ? { stateAccepted: true as const } : {}),
         };
       } else if (itemMark) {
         const item = target as A2aRemoteInboxItem;
@@ -1095,6 +1109,8 @@ export class A2aTaskService {
     taskId: string;
     reason: string;
     forced: 'remote_held_rejected' | 'remote_link_ended' | 'remote_refused';
+    /** A task this PC sent: the other PC is owed a cancel once it has failed here (recorded in the same write). */
+    peerCanceled?: true;
   }): Promise<{ ok: true; task: Task; failed: boolean } | OpErr> {
     const res = await this.withTaskLock<{ ok: true; task: Task; failed: boolean } | OpErr>(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
@@ -1108,6 +1124,7 @@ export class A2aTaskService {
         timestamp: this.isoNow(),
         forced: input.forced,
         evidence: { summary: input.reason, items: [] },
+        ...(input.peerCanceled && remoteMarkerOf(task)?.direction === 'outbound' ? { peerCanceled: true as const } : {}),
       };
       const side = localSideOf(task);
       const ws = task.metadata[side].workspaceId;
@@ -1534,6 +1551,7 @@ export class A2aTaskService {
     for (const [id, task] of this.tasks) {
       if (
         (TERMINAL_STATES as readonly string[]).includes(task.status.state) &&
+        !this.keepsEnded(task) &&
         now - new Date(task.metadata.updatedAt).getTime() > keepEndedMs(task)
       ) {
         this.tasks.delete(id);
@@ -1546,7 +1564,7 @@ export class A2aTaskService {
     let toRemove = this.tasks.size - GC_MAX_TASKS;
     // 종단 태스크만 축출 후보 — 활성은 절대 지우지 않는다(정본 무결성).
     const terminalOldest = [...this.tasks.values()]
-      .filter((t) => (TERMINAL_STATES as readonly string[]).includes(t.status.state))
+      .filter((t) => (TERMINAL_STATES as readonly string[]).includes(t.status.state) && !this.keepsEnded(t))
       .sort((a, b) => new Date(a.metadata.updatedAt).getTime() - new Date(b.metadata.updatedAt).getTime());
     for (const task of terminalOldest) {
       if (toRemove <= 0) break;
@@ -1556,6 +1574,21 @@ export class A2aTaskService {
       this.noteEvicted(task, now);
       toRemove--;
     }
+  }
+
+  /**
+   * Ended tasks the GC keeps: one this PC sent that still owes the other PC its cancel (`cancelOwed`, not yet told),
+   * while `whileAlso` holds (the delivery: while its link is active, so the cancel can still go).
+   */
+  keepEndedWhile(whileAlso: (task: Task) => boolean): void {
+    this.endedKeep = whileAlso;
+  }
+
+  private endedKeep: (task: Task) => boolean = () => true;
+
+  private keepsEnded(task: Task): boolean {
+    const m = remoteMarkerOf(task);
+    return m?.cancelOwed === true && m.stateSync !== 'canceled' && this.endedKeep(task);
   }
 
   /**

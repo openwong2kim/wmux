@@ -14,7 +14,7 @@
  */
 
 import type { Task, TaskState, Message, CompletionEvidence } from './types';
-import type { A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from './a2aRemote';
+import type { A2aRemoteErrorCode, A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from './a2aRemote';
 import type { CompanyBlockerEnd, CompanyHoldReason } from './companyHold';
 
 /**
@@ -66,6 +66,8 @@ export interface A2aTaskTransitionPayload {
    * 전진 불가하므로 정당). 일반 transition API로는 이 값이 실리지 않는다.
    */
   forced?: 'workspace_removed' | 'remote_state' | 'remote_held_rejected' | 'remote_link_ended' | 'remote_refused';
+  /** With `forced: 'remote_refused'` on a task this PC sent: the other PC is owed a cancel (its marker's `cancelOwed`). */
+  peerCanceled?: true;
   /**
    * Cross-host A2A: the peer's messageId when this transition came from the
    * other host (`forced: 'remote_state'` for a terminal one, and for a report
@@ -141,6 +143,10 @@ export interface A2aRemoteMarkPayload {
   remoteReceipt?: A2aRemoteReceipt;
   /** Task-level: the peer acked every reply / state of ours queued on this task. */
   replyAcked?: true;
+  /** Task-level: the peer refused this state of ours (it disagrees); the task keeps its own. */
+  stateRefused?: { state: TaskState; code: A2aRemoteErrorCode };
+  /** Task-level: the peer took a state of ours again; a refusal recorded before is over. */
+  stateAccepted?: true;
   /** Item-level: dropped undelivered (its hold expired); the task stays open. Its notice starts `pending`. */
   rejected?: 'held-expired';
   /** Item-level, after `rejected`: whether the PC that sent it was told. */
