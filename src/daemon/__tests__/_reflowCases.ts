@@ -152,7 +152,10 @@ function trimmedSavedRowCases(): Case[] {
   const emptyHistory = lines(long(40, 'a'), SAVE + long(40, 'b'), long(40, 'c'), 'end');
   // Small paragraphs above, a big one, one below the save, the save near the bottom.
   const mixed = lines(long(35, 'a'), long(35, 'b'), long(90, 'C'), `${SAVE}s`, long(35, 'd'), 'end');
-  const aboveScreen = SAVE + lines('top', ...[0, 1, 2, 3, 4, 5].map((i) => long(30, String(i))), 'end');
+  // Two 35-cell lines (three rows added each at 10), the save on the last row,
+  // the cursor two rows above it.
+  const saveBelowCursor = `${lines(long(35, 'a'), long(35, 'b'))}\x1b[8;1H${SAVE}s\x1b[6;1H`;
+  const aboveScreen =SAVE + lines('top', ...[0, 1, 2, 3, 4, 5].map((i) => long(30, String(i))), 'end');
   const out: Case[] = [
     // The issue's stream: history at its cap.
     script('trim-saved-top-sb1', [20, 6], [savedTop, [10, 6], RESTORE], 'rust', 1),
@@ -166,6 +169,9 @@ function trimmedSavedRowCases(): Case[] {
     // The save scrolled above the screen, and no save at all (xterm's 0).
     script('trim-save-above-screen-sb3', [20, 6], [aboveScreen, [10, 6], RESTORE], 'rust', 3),
     script('trim-no-save-sb1', [20, 6], [noSave, [10, 6], RESTORE], 'rust', 1),
+    // The save below the cursor on an empty history: the rows kept on screen
+    // push it past the last row, where the grid clips it; xterm's clamp binds.
+    ...[1, 3, 100].map((sb) => script(`trim-save-below-cursor-sb${sb}`, [30, 8], [saveBelowCursor, [10, 8], RESTORE], 'rust', sb)),
   ];
   // Composed with a later resize before the restore; at 3 and 4 the
   // narrowing trims.
