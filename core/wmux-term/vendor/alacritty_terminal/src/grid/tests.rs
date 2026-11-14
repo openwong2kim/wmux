@@ -183,6 +183,35 @@ fn shrink_reflow() {
     assert_eq!(grid[Line(0)][Column(1)], cell('2'));
 }
 
+/// wmux: a narrowing records the rows its reflow added, also those trimmed at
+/// the cap, for xterm's saved row (#3354); any other resize clears it.
+#[test]
+fn shrink_reflow_records_added_rows() {
+    let filled = |max_scroll_limit| {
+        let mut grid = Grid::<Cell>::new(2, 4, max_scroll_limit);
+        for (i, c) in "1234".chars().enumerate() {
+            grid[Line(0)][Column(i)] = cell(c);
+        }
+        // The cursor below that paragraph, so it reflows.
+        grid.cursor.point.line = Line(1);
+        grid
+    };
+
+    // No history allowed: the added row is trimmed, and still counted.
+    let mut grid = filled(0);
+    grid.resize(true, 2, 2);
+    assert_eq!((grid.narrowing_added, grid.history_size()), (1, 0));
+
+    // Room for it in the history.
+    let mut grid = filled(1);
+    grid.resize(true, 2, 2);
+    assert_eq!((grid.narrowing_added, grid.history_size()), (1, 1));
+
+    // A later widen clears it.
+    grid.resize(true, 2, 4);
+    assert_eq!(grid.narrowing_added, 0);
+}
+
 #[test]
 fn shrink_reflow_twice() {
     let mut grid = Grid::<Cell>::new(1, 5, 2);

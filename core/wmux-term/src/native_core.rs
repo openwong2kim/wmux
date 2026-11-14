@@ -1237,6 +1237,27 @@ impl RowStep {
     }
 }
 
+/// xterm's saved row on the main screen across a narrowing that reflows
+/// (`Buffer._reflowSmaller`): for each reflowed paragraph,
+/// `savedY = min(savedY + linesToAdd, ybase + rows - 1)`, absolute. ybase
+/// grows by at most a paragraph's added rows, so this is one clamp of the
+/// total: `min(savedY + added, ybase + rows - 1)` (#3354).
+///
+/// The save is placeable while xterm's `savedY` equals the save's history
+/// plus Alacritty's saved screen row (place_like_xterm). So the history
+/// before the narrowing, `history`, plus the saved row before it,
+/// `line_before`, moves by every added row. Alacritty moved its row only by
+/// the rows the reflow kept on screen, clipped at the last row, and the
+/// history grew by fewer rows than were added once the cap trimmed some, so
+/// neither of those is used. The clamp is applied here, not at the restore:
+/// xterm keeps the clamped row, and later output below the cap moves ybase
+/// but not savedY. For a resize whose narrowing added rows.
+fn narrowed_saved_history(grid: &Grid<Cell>, history: i64, line_before: i64) -> i64 {
+    let line = i64::from(grid.saved_cursor.point.line.0);
+    let bottom = grid.history_size() as i64 + grid.screen_lines() as i64 - 1;
+    (history + line_before + grid.narrowing_added as i64 - line).min(bottom - line)
+}
+
 /// The alternate screen's grid, whichever screen is shown.
 fn alt_grid(term: &Term<VoidListener>) -> &Grid<Cell> {
     if term.mode().contains(TermMode::ALT_SCREEN) {
@@ -1665,8 +1686,17 @@ impl NativeTerminal {
             }
         }
         let before = main_grid(term).history_size() as i64;
+        let saved_line = i64::from(main_grid(term).saved_cursor.point.line.0);
+        // The grid records a narrowing only when this resize runs one: a
+        // resize to the same size returns early and leaves the last one's.
+        let narrows = size.columns() < term.columns();
         term.resize(size);
-        self.feed.saved[0].history += main_grid(term).history_size() as i64 - before;
+        let grid = main_grid(term);
+        self.feed.saved[0].history = if narrows && grid.narrowing_added > 0 {
+            narrowed_saved_history(grid, self.feed.saved[0].history, saved_line)
+        } else {
+            self.feed.saved[0].history + grid.history_size() as i64 - before
+        };
         // feed_xterm checks the same after a chunk, where the chunk's own
         // ED 3 could hide a resize's trim.
         if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
@@ -3728,5 +3758,44 @@ mod alt_kept_cells_tests {
             red(&[N, Out("\x1b[41m\x1b[2;1H\x1b[L\x1b[0m"), W])[1],
             "0123456789"
         );
+    }
+}
+
+#[cfg(test)]
+mod narrowed_saved_history_tests {
+    use super::narrowed_saved_history;
+    use alacritty_terminal::grid::Grid;
+    use alacritty_terminal::index::Line;
+    use alacritty_terminal::term::cell::Cell;
+
+    /// An 8-row grid with no history, its saved row on `line`, after a
+    /// narrowing that added `added` rows.
+    fn grid(line: i32, added: usize) -> Grid<Cell> {
+        let mut grid = Grid::<Cell>::new(8, 10, 2);
+        grid.saved_cursor.point.line = Line(line);
+        grid.narrowing_added = added;
+        grid
+    }
+
+    #[test]
+    fn carries_every_added_row() {
+        // The row stayed on 2 while 3 rows were added, none kept in the
+        // history: absolute row 2 + 3 = 5, above the last row.
+        assert_eq!(narrowed_saved_history(&grid(2, 3), 0, 2), 3);
+    }
+
+    #[test]
+    fn carries_the_rows_clipped_at_the_last_row() {
+        // From row 6, 2 rows kept above clipped it at 7: absolute row
+        // -2 + 6 + 2 = 6, screen row 6; the clamp (row 7) does not bind.
+        assert_eq!(narrowed_saved_history(&grid(7, 2), -2, 6), -1);
+    }
+
+    #[test]
+    fn clamps_to_the_last_row() {
+        // Row 5 + 9 added would pass row 7.
+        assert_eq!(narrowed_saved_history(&grid(5, 9), 0, 5), 2);
+        // xterm clamps on every reflowed narrowing, trimmed rows or not.
+        assert_eq!(narrowed_saved_history(&grid(6, 2), 3, 6), 1);
     }
 }
