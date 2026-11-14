@@ -205,6 +205,16 @@ describe('applyWorkerPermissionFlags', () => {
     expect(applyWorkerPermissionFlags(`claude --disallowedTools mcp__wmux__fanout_start,Bash ${PROMPT}`, 'auto')).toBe(
       `claude ${PROMPT} --permission-mode auto ${listsDenying('Bash')}`,
     );
+    // Nor one a wmux wildcard already covers.
+    expect(applyWorkerPermissionFlags(`claude --disallowedTools mcp__wmux__browser_click ${PROMPT}`, 'auto')).toBe(
+      `claude ${PROMPT} --permission-mode auto ${LISTS}`,
+    );
+  });
+
+  it('never takes a quoted sentence after a deny flag for tool rules', () => {
+    // The prompt stays an argument; only the deny flag's own rule is carried.
+    const line = `claude --disallowedTools Bash "Read the README first"`;
+    expect(applyWorkerPermissionFlags(line, 'auto')).toBe(`claude "Read the README first" --permission-mode auto ${listsDenying('Bash')}`);
   });
 
   it("a launcher's deny that covers a reporting tool takes it off the allow list, and is named", () => {
@@ -215,7 +225,12 @@ describe('applyWorkerPermissionFlags', () => {
     // A server's rule denies every tool of it.
     const all = applyWorkerPermissionFlags(`claude --disallowedTools mcp__wmux ${PROMPT}`, 'auto');
     expect(allowed(all)).toEqual([]);
+    // No allow list at all rather than an empty word, and applying again changes nothing.
+    expect(all).not.toContain('--allowedTools');
+    expect(applyWorkerPermissionFlags(all, 'auto')).toBe(all);
     expect(deniedWorkerReportTools(all)).toEqual([...FANOUT_WORKER_ALLOWED_TOOLS]);
+    // A line wmux gave no worker lists to (a codex or grok line) is not read as one.
+    expect(deniedWorkerReportTools(`grok --permission-mode default --disallowedTools mcp__wmux ${PROMPT}`)).toEqual([]);
     expect(toolRuleCovers('mcp__wmux', 'mcp__wmux__ledger_update')).toBe(true);
     expect(toolRuleCovers('mcp__wmux__ledger_update', 'mcp__wmux__ledger_update_x')).toBe(false);
     expect(toolRuleCovers('mcp__wmuxx', 'mcp__wmux__ledger_update')).toBe(false);
@@ -224,7 +239,7 @@ describe('applyWorkerPermissionFlags', () => {
   });
 
   it('refuses a launch whose own deny rule cannot be quoted on the worker line, rather than dropping it', () => {
-    for (const rule of [`'Bash(echo "x")'`, `'Bash(rm $HOME)'`, `'Bash(a\`b)'`, `'Bash(a\\b)'`]) {
+    for (const rule of [`'Bash(echo "x")'`, `'Bash(rm $HOME)'`, `'Bash(a\`b)'`, `'Bash(a\\b)'`, `'Bash(rm !(*.keep))'`, `'Bash(echo %TEMP%)'`, `'Bash(echo it''s)'`]) {
       const line = `claude --disallowedTools ${rule} ${PROMPT}`;
       for (const mode of FANOUT_WORKER_PERMISSION_MODES) {
         const refusal = workerModeRefusal(line, mode);
