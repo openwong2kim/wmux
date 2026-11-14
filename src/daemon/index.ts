@@ -155,6 +155,7 @@ import { SpawnOutgoingStore } from './a2aRemote/spawnOutgoingStore';
 import { A2aContinueReceiver, paneHoldsSession } from './a2aRemote/continueReceiver';
 import { ContinueBundle } from './a2aRemote/continueBundle';
 import { BundleIntake } from './a2aRemote/bundleIntake';
+import { bundleBytesMax } from '../shared/a2aBundle';
 import { BundleAsker, registerBundleAskRpc } from './a2aRemote/bundleAsker';
 import { ContinuePolicyStore } from './a2aRemote/continuePolicyStore';
 import { ContinueRequestStore } from './a2aRemote/continueRequestStore';
@@ -10925,7 +10926,7 @@ async function main(): Promise<void> {
       a2aDir,
       enabled: a2aBundlesOn,
       fetchFrom: (hostId) => a2aDelivery?.continueFetch(hostId) ?? null,
-      maxBytes: () => config.a2aRemote?.bundleBytes,
+      maxBytes: () => bundleBytesMax(config.a2aRemote?.bundleBytes),
       log: a2aLog,
     });
     const a2aBundleAsker = new BundleAsker({
