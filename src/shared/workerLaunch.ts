@@ -274,7 +274,8 @@ function launchFlags(permission: string, extraDisallowed: readonly string[]): st
 export function toolRuleCovers(rule: string, tool: string): boolean {
   return (
     rule === tool ||
-    (rule.endsWith('*') && !rule.includes('(') && tool.startsWith(rule.slice(0, -1))) ||
+    // A tool-name glob (`mcp__wmux__*`, `mcp__wmux__*update`, `*`); a rule with an argument names no tool by glob.
+    (rule.includes('*') && !rule.includes('(') && new RegExp(`^${rule.split('*').map((p) => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`).test(tool)) ||
     (/^mcp__[^_]+(?:_[^_]+)*$/.test(rule) && tool.startsWith(`${rule}__`))
   );
 }
@@ -304,7 +305,7 @@ function toolRules(value: string): string[] {
  * no quote, `$`, backtick, backslash, `!` (history expansion in an interactive
  * bash or zsh), `%` (cmd's variables) or line break.
  */
-const CARRIABLE_RULE = /^[A-Za-z_][\w*.:-]*(\([^"'`$\\!%\r\n“”„‘’]*\))?$/;
+const CARRIABLE_RULE = /^(?:\*|[A-Za-z_][\w*.:-]*(\([^"'`$\\!%\r\n“”„‘’]*\))?)$/;
 
 interface Span {
   /** Unquoted value (quotes stripped). */
@@ -356,11 +357,12 @@ const VALUE_FLAGS = new Set(['--permission-mode']);
 const LIST_FLAGS = new Set(['--allowedTools', '--allowed-tools', '--disallowedTools', '--disallowed-tools']);
 /** A tool rule as it appears after a space-form list flag (`Bash(git *)`,
  *  `mcp__x__y`, `Edit,Read`). The prompt argument never looks like one. */
-const TOOL_RULE = /^[A-Za-z_][\w*-]*(\(.*\))?(,[A-Za-z_][\w*-]*(\(.*\))?)*$/;
+const TOOL_RULE = /^(?:\*|[A-Za-z_][\w*-]*(\(.*\))?)(,(?:\*|[A-Za-z_][\w*-]*(\(.*\))?))*$/;
 /** A quoted space-separated list (`"Bash PowerShell"`, claude splits on spaces
  *  too). Only tool-shaped names: a built-in tool's capitalised name or an MCP
  *  name, so a quoted sentence ("Read the README first") is never taken. */
 const SPACED_TOOL_RULE = /^(?:[A-Z][A-Za-z0-9]*|mcp__[\w*-]+)(\([^)]*\))?([,\s]+(?:[A-Z][A-Za-z0-9]*|mcp__[\w*-]+)(\([^)]*\))?)+$/;
+/** Either form; `*` (claude's every-tool rule) is one in both. */
 const isToolRuleWord = (value: string): boolean => TOOL_RULE.test(value) || SPACED_TOOL_RULE.test(value);
 
 /** The launcher of a line: its first word's file name, lower case, without a Windows extension. */
@@ -394,15 +396,19 @@ interface LineFlags {
  * The line's permission and tool-list flags. Word-based: a flag spelled inside
  * a quoted argument (a prompt, an --append-system-prompt value) is part of
  * that word and is never matched. A deny word written with PowerShell's `''`
- * escape is uncarriable too: the words lose the apostrophe, so the rule read
- * here is not the rule the launcher denied.
+ * escape or with a backslash is uncarriable too: the words drop those, while
+ * a shell may keep them, so the rule read here may not be the rule the
+ * launcher denied. So is a space-form deny flag followed by a word that is no
+ * tool rule (claude would read it as one): it is not carried as a rule, and
+ * dropping it would leave a deny out.
  */
 function lineFlags(command: string, words: readonly Span[]): LineFlags {
   const out: LineFlags = { cut: [], modes: [], bypass: false, denied: [], carriable: [], uncarriable: false };
   const deny = (word: Span, value: string): void => {
     const rules = toolRules(value);
     out.denied.push(...rules);
-    const escaped = command.slice(word.start, word.end).includes("''");
+    const raw = command.slice(word.start, word.end);
+    const escaped = raw.includes("''") || raw.includes('\\');
     for (const rule of rules) {
       if (!escaped && CARRIABLE_RULE.test(rule)) out.carriable.push(rule);
       else out.uncarriable = true;
@@ -426,10 +432,12 @@ function lineFlags(command: string, words: readonly Span[]): LineFlags {
         if (denies) deny(words[k], v.slice(eq + 1));
         continue;
       }
+      const first = k + 1;
       while (k + 1 < words.length && isToolRuleWord(words[k + 1].value)) {
         out.cut.push(words[++k]);
         if (denies) deny(words[k], words[k].value);
       }
+      if (denies && k + 1 === first && first < words.length && !words[first].value.startsWith('-')) out.uncarriable = true;
     }
   }
   return out;
@@ -467,11 +475,21 @@ export function workerModeRefusal(command: string, mode: FanoutWorkerPermissionM
   if (mode === 'manual' && !(row?.permissions === 'permission-mode' || row?.askMode)) {
     return `the manual worker mode makes the agent ask before it acts, and wmux knows no flag that does that for ${stem ? `\`${stem}\`` : 'this launch line'}; it was not started. Choose another worker mode, or an agent it can make ask`;
   }
-  const carried = stem === 'claude' && !(mode === 'manual' && row?.askMode);
-  if (carried && lineFlags(command, words).uncarriable) {
-    return 'the launch line denies a tool with a rule that holds a quote, `$`, `!`, `%`, a backtick or a backslash, which wmux cannot carry onto the worker\'s line; it was not started, so that tool is not left allowed. Write the rule without those characters';
+  if (workerLineKind(stem, mode).lists && lineFlags(command, words).uncarriable) {
+    return 'the launch line denies a tool with a rule wmux cannot carry onto the worker\'s line (one that holds a quote, `$`, `!`, `%`, a backtick or a backslash, or a value that is no tool rule); it was not started, so that tool is not left allowed. Write the rule without those characters';
   }
   return null;
+}
+
+/**
+ * How applyWorkerPermissionFlags treats a line with this launcher: `ask`, the
+ * ask flags of a `manual` agent that declares them (manualOnLine); `lists`,
+ * a claude line that gets the worker's permission flag and tool lists.
+ * Anything else is left as it is.
+ */
+function workerLineKind(stem: string, mode: FanoutWorkerPermissionMode): { ask?: NonNullable<AgentIdentityRow['askMode']>; lists: boolean } {
+  const ask = mode === 'manual' ? rowOfStem(stem)?.askMode : undefined;
+  return { ask, lists: !ask && stem === 'claude' };
 }
 
 /** `line` without the words in `cut`, each with the whitespace in front of it; nothing else is re-spaced. */
@@ -534,10 +552,9 @@ export function applyWorkerPermissionFlags(
   extraDisallowed: readonly string[] = [],
 ): string {
   const words = spans(command);
-  const stem = launcherStemOf(words);
-  const ask = mode === 'manual' ? rowOfStem(stem)?.askMode : undefined;
+  const { ask, lists } = workerLineKind(launcherStemOf(words), mode);
   if (ask) return manualOnLine(command, words, ask);
-  if (stem !== 'claude') return command;
+  if (!lists) return command;
 
   const { cut, modes, bypass, carriable } = lineFlags(command, words);
   // Manual keeps a mode of the line's own that already asks (a resumed `plan` worker stays in plan); any other mode,

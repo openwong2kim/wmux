@@ -473,7 +473,12 @@ describe('T3 worktree base — one fetch per fan-out, OID pinned, warning surfac
     const launchers = ['claude --disallowedTools Bash', 'claude --disallowedTools mcp__wmux'];
     let n = 0;
     const renderer = makeRendererFake({
-      rewriteCommand: (p) => applyWorkerPermissionFlags(p.initialCommand.replace(/^claude/, launchers[n++]), 'auto'),
+      // As the renderer does: the model marker (POSIX) comes off first and goes back on last.
+      rewriteCommand: (p) => {
+        const { marker, command } = splitModelEnvMarker(p.initialCommand);
+        const applied = applyWorkerPermissionFlags(command.replace(/^claude/, launchers[n++]), 'auto');
+        return reattachModelEnvMarker(marker, applied, undefined).command;
+      },
     });
     const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: renderer.port, worktrees: makeWorktreesFake() });
     const res = await svc.start(baseReq());

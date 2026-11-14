@@ -234,12 +234,28 @@ describe('applyWorkerPermissionFlags', () => {
     expect(toolRuleCovers('mcp__wmux', 'mcp__wmux__ledger_update')).toBe(true);
     expect(toolRuleCovers('mcp__wmux__ledger_update', 'mcp__wmux__ledger_update_x')).toBe(false);
     expect(toolRuleCovers('mcp__wmuxx', 'mcp__wmux__ledger_update')).toBe(false);
+    // Tool-name globs anywhere in the name, and `*` alone (every tool).
+    expect(toolRuleCovers('mcp__wmux__*update', 'mcp__wmux__ledger_update')).toBe(true);
+    expect(toolRuleCovers('mcp__wmux__*update', 'mcp__wmux__task_push')).toBe(false);
+    expect(toolRuleCovers('Bash(git *)', 'Bash')).toBe(false);
+    const glob = applyWorkerPermissionFlags(`claude --disallowedTools 'mcp__wmux__*update' ${PROMPT}`, 'auto');
+    expect(deniedWorkerReportTools(glob)).toEqual(['mcp__wmux__ledger_update']);
+    const every = applyWorkerPermissionFlags(`claude --disallowedTools "*" ${PROMPT}`, 'auto');
+    expect(workerModeRefusal(`claude --disallowedTools "*" ${PROMPT}`, 'auto')).toBeNull();
+    expect(every).toBe(`claude ${PROMPT} --permission-mode auto --disallowedTools "${[...FANOUT_WORKER_DISALLOWED_TOOLS, '*'].join(',')}"`);
+    expect(deniedWorkerReportTools(every)).toEqual([...FANOUT_WORKER_ALLOWED_TOOLS]);
     // wmux's own lists deny none of them.
     expect(deniedWorkerReportTools(applyWorkerPermissionFlags(`claude ${PROMPT}`, 'auto'))).toEqual([]);
   });
 
   it('refuses a launch whose own deny rule cannot be quoted on the worker line, rather than dropping it', () => {
-    for (const rule of [`'Bash(echo "x")'`, `'Bash(rm $HOME)'`, `'Bash(a\`b)'`, `'Bash(a\\b)'`, `'Bash(rm !(*.keep))'`, `'Bash(echo %TEMP%)'`, `'Bash(echo it''s)'`]) {
+    for (const rule of [
+      `'Bash(echo "x")'`, `'Bash(rm $HOME)'`, `'Bash(a\`b)'`, `'Bash(a\\b)'`, `'Bash(rm !(*.keep))'`, `'Bash(echo %TEMP%)'`, `'Bash(echo it''s)'`,
+      // A backslash the words drop (bash keeps it before q inside double quotes).
+      `"Bash(echo \\q)"`,
+      // A value that is no tool rule: claude would read it as one, so it cannot just be dropped.
+      `"rm -rf"`,
+    ]) {
       const line = `claude --disallowedTools ${rule} ${PROMPT}`;
       for (const mode of FANOUT_WORKER_PERMISSION_MODES) {
         const refusal = workerModeRefusal(line, mode);
@@ -248,7 +264,7 @@ describe('applyWorkerPermissionFlags', () => {
         expect(refusal).not.toContain('Bash(');
       }
       // Never written into the quoted list either.
-      expect(applyWorkerPermissionFlags(line, 'auto')).toBe(`claude ${PROMPT} --permission-mode auto ${LISTS}`);
+      expect(applyWorkerPermissionFlags(line, 'auto').endsWith(`--permission-mode auto ${LISTS}`)).toBe(true);
     }
   });
 
