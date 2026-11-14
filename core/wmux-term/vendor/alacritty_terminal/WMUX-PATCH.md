@@ -16,8 +16,12 @@ Local changes:
   for snapshot replay.
 - `src/grid/resize.rs` preserves the cursor paragraph without reflow, matching
   wmux's xterm configuration. Other paragraphs retain upstream reflow. Shrinking
-  clamps the cursor and clears pending wrap. Clipped fullwidth cells are retained
-  to match xterm; the ANSI serializer explicitly refuses an unrepresentable edge.
+  clamps the cursor and clears pending wrap. A fullwidth glyph whose lead a
+  narrowing leaves in the new last column of that paragraph becomes a default
+  cell, as xterm's trim resets it (`BufferLine.resize`, lines 452-455 in
+  6.1.0-beta.336); its trailing half is cut off. Added 2026-11-14. Elsewhere
+  (the alternate screen, which xterm does not trim) the ANSI serializer still
+  refuses a fullwidth glyph in the last column.
 - `src/grid/resize.rs` `grow_lines`: more rows pull history rows down only while
   the cursor is on the bottom row, as xterm does (`Buffer.ts` `resize`, the rows
   grow branch, lines 196-221 in 6.1.0-beta.336). Otherwise blank rows are added
@@ -33,6 +37,17 @@ Local changes:
   with the room used. `native_core.rs` refuses a narrowing that reflows a
   paragraph below the cursor's, where xterm moves its cursor row off its
   content.
+- `src/grid/mod.rs` `narrowing_added`, set by `shrink_columns` and reset by
+  every `Grid::resize`: the rows a narrowing's reflow added. xterm moves its
+  absolute saved row down by every added row, also those trimmed at the cap
+  or clipped at the last row, clamped to the screen's last row (`Buffer.ts`
+  `_reflowSmaller`,
+  `savedY = Math.min(savedY + linesToAdd, ybase + newRows - 1)`,
+  line 486 in 6.1.0-beta.336); `native_core.rs` moves the snapshot's
+  saved row that way after each resize that narrows, reading the value only
+  then: a resize to the same size returns before `Grid::resize` and leaves
+  the last narrowing's value in place (#3354). Read-only for the grid
+  itself; not serialized. Added 2026-11-14.
 - `src/grid/resize.rs` `grow_columns`: after the reflow, the cursor row and
   the saved cursor row follow xterm's rule rather than their content
   (`Buffer.ts` `_reflowLargerAdjustViewport`). Every removed row counts,

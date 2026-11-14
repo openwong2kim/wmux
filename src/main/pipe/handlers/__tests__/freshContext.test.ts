@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
@@ -6,8 +6,9 @@ import {
   commandOnCursorRow,
   FreshContextBusy,
   FreshContextTimeout,
+  paneDeliveryLocksForTest,
   runFreshContext,
-  withFreshContextLock,
+  withPaneDeliveryLock,
   type FreshContextAgentState,
   type FreshContextProbe,
 } from '../freshContext';
@@ -549,19 +550,19 @@ describe('runFreshContext — evidence after Enter', () => {
   });
 });
 
-describe('withFreshContextLock', () => {
+describe('withPaneDeliveryLock', () => {
   it('serializes work on one pane and leaves other panes free', async () => {
     const order: string[] = [];
     let releaseFirst: () => void = () => undefined;
-    const first = withFreshContextLock('p1', async () => {
+    const first = withPaneDeliveryLock('p1', async () => {
       order.push('first:start');
       await new Promise<void>((resolve) => { releaseFirst = resolve; });
       order.push('first:end');
     });
-    const second = withFreshContextLock('p1', async () => {
+    const second = withPaneDeliveryLock('p1', async () => {
       order.push('second');
     });
-    const other = withFreshContextLock('p2', async () => {
+    const other = withPaneDeliveryLock('p2', async () => {
       order.push('other');
     });
     await other;
@@ -575,12 +576,12 @@ describe('withFreshContextLock', () => {
   // Review P2-D: a queued send must never outlive its caller.
   it('gives up after the bounded wait, before writing anything, and keeps the queue intact', async () => {
     let releaseFirst: () => void = () => undefined;
-    const first = withFreshContextLock('p4', () => new Promise<void>((resolve) => { releaseFirst = resolve; }));
+    const first = withPaneDeliveryLock('p4', () => new Promise<void>((resolve) => { releaseFirst = resolve; }));
     let ran = false;
-    await expect(withFreshContextLock('p4', async () => { ran = true; }, 20)).rejects.toBeInstanceOf(FreshContextBusy);
+    await expect(withPaneDeliveryLock('p4', async () => { ran = true; }, 20)).rejects.toBeInstanceOf(FreshContextBusy);
     expect(ran).toBe(false);
     const order: string[] = [];
-    const third = withFreshContextLock('p4', async () => { order.push('third'); });
+    const third = withPaneDeliveryLock('p4', async () => { order.push('third'); });
     await Promise.resolve();
     expect(order).toEqual([]);
     releaseFirst();
@@ -590,7 +591,62 @@ describe('withFreshContextLock', () => {
   });
 
   it('releases the pane when the work throws', async () => {
-    await expect(withFreshContextLock('p3', async () => { throw new Error('boom'); })).rejects.toThrow('boom');
-    await expect(withFreshContextLock('p3', async () => 'ok')).resolves.toBe('ok');
+    await expect(withPaneDeliveryLock('p3', async () => { throw new Error('boom'); })).rejects.toThrow('boom');
+    await expect(withPaneDeliveryLock('p3', async () => 'ok')).resolves.toBe('ok');
+  });
+
+  it('leaves no entry when two waiters time out behind the holder', async () => {
+    let releaseFirst: () => void = () => undefined;
+    const first = withPaneDeliveryLock('p5', () => new Promise<void>((resolve) => { releaseFirst = resolve; }));
+    const second = withPaneDeliveryLock('p5', async () => 'second', 10);
+    const third = withPaneDeliveryLock('p5', async () => 'third', 20);
+    await expect(second).rejects.toBeInstanceOf(FreshContextBusy);
+    await expect(third).rejects.toBeInstanceOf(FreshContextBusy);
+    expect(paneDeliveryLocksForTest()).toContain('p5');
+    releaseFirst();
+    await first;
+    expect(paneDeliveryLocksForTest()).not.toContain('p5');
+    await expect(withPaneDeliveryLock('p5', async () => 'free')).resolves.toBe('free');
+    expect(paneDeliveryLocksForTest()).not.toContain('p5');
+  });
+
+  it('keeps the order when a waiter in the middle times out', async () => {
+    const order: string[] = [];
+    let releaseFirst: () => void = () => undefined;
+    const first = withPaneDeliveryLock('p6', async () => {
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      order.push('first');
+    });
+    const middle = withPaneDeliveryLock('p6', async () => { order.push('middle'); }, 10);
+    const last = withPaneDeliveryLock('p6', async () => { order.push('last'); }, 60_000);
+    await expect(middle).rejects.toBeInstanceOf(FreshContextBusy);
+    expect(order).toEqual([]);
+    releaseFirst();
+    await Promise.all([first, last]);
+    expect(order).toEqual(['first', 'last']);
+    expect(paneDeliveryLocksForTest()).not.toContain('p6');
+  });
+
+  it('clamps a wait longer than a timer can hold instead of giving up at once', async () => {
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      let releaseFirst: () => void = () => undefined;
+      let started: () => void = () => undefined;
+      const holding = new Promise<void>((resolve) => { started = resolve; });
+      const first = withPaneDeliveryLock('p7', () => new Promise<void>((resolve) => { releaseFirst = resolve; started(); }));
+      await holding;
+      let settled = false;
+      const waiter = withPaneDeliveryLock('p7', async () => 'ran', 1e12).finally(() => { settled = true; });
+      const waits = timers.mock.calls.map((call) => call[1]);
+      expect(waits).toContain(2_147_483_647);
+      expect(waits.every((ms) => typeof ms !== 'number' || ms <= 2_147_483_647)).toBe(true);
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      releaseFirst();
+      await first;
+      await expect(waiter).resolves.toBe('ran');
+    } finally {
+      timers.mockRestore();
+    }
   });
 });

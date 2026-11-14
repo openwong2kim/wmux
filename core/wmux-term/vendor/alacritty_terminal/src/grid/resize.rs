@@ -29,11 +29,25 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             ..=(self.lines as i32 - first.0 - 1) as usize
     }
 
-    fn resize_cursor_row(row: &mut Row<T>, columns: usize) {
+    /// `next_starts_wide`: the row below, which a soft-wrapped row continues
+    /// into, starts with a fullwidth glyph.
+    fn resize_cursor_row(row: &mut Row<T>, columns: usize, next_starts_wide: bool) {
         let wrapped = row.take_wrap();
         let old = row.len();
         if row.len() > columns {
             row.shrink(columns);
+            // wmux: xterm's trim resets a fullwidth glyph cut at the new edge
+            // to an empty cell (`BufferLine.resize`); its trailing half is gone.
+            // Before a row that starts with a fullwidth glyph, xterm reads that
+            // empty last cell as the glyph's wrap gap (its reflow and its
+            // serializer both do), which is what a leading spacer is here.
+            if columns > 0 && row[Column(columns - 1)].flags().contains(Flags::WIDE_CHAR) {
+                let mut cell = T::default();
+                if wrapped && next_starts_wide {
+                    cell.flags_mut().insert(Flags::LEADING_WIDE_CHAR_SPACER);
+                }
+                row[Column(columns - 1)] = cell;
+            }
         } else { row.grow(columns); }
         // wmux: a soft-wrapped row grown here has empty cells xterm never
         // wrote (its paragraph is not reflowed); the serializer keeps them so.
@@ -51,6 +65,8 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
     {
         // Use empty template cell for resetting cells due to resize.
         let template = mem::take(&mut self.cursor.template);
+        // wmux: set again below only by a narrowing that reflows.
+        self.narrowing_added = 0;
 
         match self.lines.cmp(&lines) {
             Ordering::Less => self.grow_lines(lines),
@@ -175,7 +191,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         for (i, mut row) in rows.drain(..).enumerate().rev() {
             if reflow && cursor_paragraph.contains(&i) {
-                Self::resize_cursor_row(&mut row, columns);
+                Self::resize_cursor_row(&mut row, columns, false);
                 reversed.push(row);
                 continue;
             }
@@ -336,9 +352,12 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let mut buffered: Option<Vec<T>> = None;
 
         let mut rows = self.raw.take_all();
+        // wmux: which rows start with a fullwidth glyph (the row below index i is i - 1).
+        let starts_wide: Vec<bool> =
+            rows.iter().map(|r| r.len() > 0 && r[Column(0)].flags().contains(Flags::WIDE_CHAR)).collect();
         for (i, mut row) in rows.drain(..).enumerate().rev() {
             if reflow && cursor_paragraph.contains(&i) {
-                Self::resize_cursor_row(&mut row, columns);
+                Self::resize_cursor_row(&mut row, columns, i > 0 && starts_wide[i - 1]);
                 new_raw.push(row);
                 continue;
             }
@@ -490,6 +509,12 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             } else {
                 self.cursor.point.line = cursor_line_before;
             }
+            // wmux: xterm's saved row moves down by every added row, also
+            // those trimmed at the cap or clipped at the last row above; here
+            // it moves only with the rows kept on screen and the history's
+            // growth. The snapshot moves it xterm's way (`native_core.rs`,
+            // the column step of `resize`).
+            self.narrowing_added = added;
         }
 
         // Clamp display offset in case some lines went off.

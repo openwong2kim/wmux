@@ -3,6 +3,7 @@ import path from 'node:path';
 import {
   A2A_FEATURE_IMAGES,
   A2A_FEATURE_HELD_NOTICE,
+  A2A_FEATURE_REOPEN,
   A2A_FEATURE_STATUS,
   A2A_REMOTE_IMAGE_LIMITS,
   A2A_REMOTE_PROTOCOL,
@@ -92,6 +93,8 @@ export interface A2aRemoteDeliveryDeps {
   spawnAsks?: { onRefused(hostId: HostId, envelope: A2aRemoteEnvelope, code: A2aRemoteErrorCode): void };
   /** Optional features this PC advertises: on its streams to the servers it joined, and in its own streams' `hello`. */
   features?: readonly string[];
+  /** false: this build neither follows a task again after it ended nor advertises `reopen.1`, as an older one; tests only. */
+  reopen?: false;
   /**
    * `<wmux dir>/uploads`: images on messages (`images.1`) are received into
    * its `a2a/` folder and may be attached from it. Absent: no images either way.
@@ -192,7 +195,7 @@ export class A2aRemoteDelivery {
   /** Image files of messages; null when `uploadsRoot` is not given. */
   readonly images: A2aImageStore | null;
   /** What this PC advertises (`deps.features`, without `images.1` when it has no image store). */
-  private readonly features: readonly string[] | undefined;
+  private readonly features: readonly string[];
   /** Failed image fetches from the servers this PC joined (`InboundImages.pullAttempts`). */
   private readonly pullAttempts = new Map<string, number>();
   /** The newest worker status on each task this PC sent (in memory only: the worker sends its current one again on reconnect). */
@@ -212,7 +215,9 @@ export class A2aRemoteDelivery {
     this.peerFeatureStore = new PeerFeatureStore({ dir: deps.dir, log: deps.log });
     this.images = deps.uploadsRoot ? new A2aImageStore({ a2aDir: deps.dir, uploadsRoot: deps.uploadsRoot, log: deps.log }) : null;
     // `images.1` is a promise to take images: only with somewhere to keep them.
-    this.features = deps.features?.filter((f) => f !== A2A_FEATURE_IMAGES || this.images !== null);
+    // `reopen.1` is this build's own way of following a task again; a test may play a build without it.
+    const own = deps.reopen === false ? [] : [A2A_FEATURE_REOPEN];
+    this.features = [...(deps.features?.filter((f) => f !== A2A_FEATURE_IMAGES || this.images !== null) ?? []), ...own];
     this.hub = new A2aStreamHub({
       outbox: this.outbox,
       accept: (env, peer) => this.acceptFromJoiner(env, peer),
@@ -222,7 +227,7 @@ export class A2aRemoteDelivery {
         this.peerFeatureStore.record(hostId, 'asJoiner', features);
         deps.offers?.onPeerFeatures(hostId, features);
       },
-      ...(this.features ? { features: this.features } : {}),
+      features: this.features,
       withhold: (hostId, rec) => this.withholdNotice(hostId, rec),
       ...(deps.heartbeatMs !== undefined ? { heartbeatMs: deps.heartbeatMs } : {}),
       log: deps.log,
@@ -687,7 +692,7 @@ export class A2aRemoteDelivery {
       reconcileLinks: () => this.reconcileLinks(hostId),
       onStatus: (status) => this.deps.broadcast({ type: 'a2a.remote.hosts.status', sessionId: '', data: status }),
       onServerFeatures: (features) => this.peerFeatureStore.record(hostId, 'asServer', features),
-      ...(this.features ? { features: this.features } : {}),
+      features: this.features,
       ...(this.deps.timing ? { timing: this.deps.timing } : {}),
       ...(this.deps.client ? { client: this.deps.client } : {}),
       log: this.deps.log,
@@ -841,11 +846,19 @@ export class A2aRemoteDelivery {
     this.deps.broadcast({ type: 'a2a.remote.hosts.status', sessionId: '', data: status });
   }
 
+  /** This build and `hostId` both follow a task again after it ended (`reopen.1`). */
+  private peerReopens(hostId: string): boolean {
+    return this.deps.reopen !== false && this.peerFeatures(hostId as HostId)?.has(A2A_FEATURE_REOPEN) === true;
+  }
+
   private inboundDeps(): InboundDeps {
     return {
       linkStore: this.deps.links,
       taskService: this.deps.taskService,
       broadcast: (event) => this.deps.broadcast({ type: event.type, sessionId: '', data: event }),
+      syncTask: (taskId) => this.syncTask(taskId),
+      // Only a build that follows a task again itself, with a peer that does.
+      peerReopens: (hostId) => this.peerReopens(hostId),
       aliasFor: (l) => this.aliasFor(l),
       ...(this.deps.localWorkspaceName ? { localWorkspaceName: this.deps.localWorkspaceName } : {}),
       ...(this.deps.offers ? { offers: this.deps.offers } : {}),
@@ -1044,6 +1057,7 @@ export class A2aRemoteDelivery {
       outbox: this.outbox,
       aliasFor: (l) => this.aliasFor(l),
       peerFeatures: (hostId) => this.peerFeatures(hostId),
+      peerReopens: (hostId) => this.peerReopens(hostId),
       ...(this.deps.spawnLinks ? { spawnLink: (id: string) => this.deps.spawnLinks!.isSpawnLink(id) } : {}),
       ...(store
         ? {

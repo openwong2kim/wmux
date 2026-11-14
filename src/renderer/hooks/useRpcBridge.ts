@@ -468,7 +468,7 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
     'so the message was NOT pasted, and the pane may hold the command or already be cleared. The task is ' +
     'stored; the receiver can find it with a2a_task_query. Read the pane before sending again.',
   fresh_context_busy:
-    'Another new task was still being delivered to the target pane, so nothing was written to it. The task is ' +
+    'Another delivery was still being written to the target pane, so nothing was written to it. The task is ' +
     'stored; the receiver can find it with a2a_task_query. Send again in a few seconds.',
   usage_limited:
     "The target pane hit its provider's usage limit and is held until the limit resets, so nothing was " +
