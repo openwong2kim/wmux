@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { getExecEnv } from '../../shared/execEnv';
-import { findAbsoluteGit, GIT_NOT_FOUND_TEXT, isInsideFolder } from '../../shared/gitExe';
+import { GIT_NOT_FOUND_TEXT, gitToRunIn } from '../../shared/gitExe';
 import { BUNDLE_REF_PREFIX, bundleRefName, type A2aBundleRefusal } from '../../shared/a2aBundle';
 import { parseGitConfigList, workerGitConfigRefusal } from '../../main/worktask/workerGit';
 import { filterDriverNames, type Git } from '../../main/a2aRemote/spawnWorktree';
@@ -77,10 +77,9 @@ export interface BundleGitOptions {
  * in `dir` first), and never one inside `dir`. Never throws.
  */
 function gitIn(dir: string, env: NodeJS.ProcessEnv): { exe: string } | { why: string } {
-  const exe = findAbsoluteGit(env);
-  if (!exe) return { why: GIT_NOT_FOUND_TEXT };
-  if (isInsideFolder(dir, exe)) return { why: 'the git found on this PC is inside the worktree, so it was not run' };
-  return { exe };
+  const found = gitToRunIn(dir, env);
+  if ('exe' in found) return found;
+  return { why: found.why === 'missing' ? GIT_NOT_FOUND_TEXT : 'the git found on this PC is inside the worktree, so it was not run' };
 }
 
 /** git with this module's isolation, in `at`. Never throws. */

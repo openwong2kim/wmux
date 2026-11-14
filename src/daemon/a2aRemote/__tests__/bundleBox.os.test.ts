@@ -183,6 +183,21 @@ describe('makeBundle', () => {
     const inp = input(rec);
     expect(await makeBundle(inp, { env })).toEqual({ kind: 'refused', reason: 'unavailable', detail: 'the git found on this PC is inside the worktree, so it was not run' });
     expect((await bundleGit(rec.worktreePath!, { env })(['--version'])).code).toBe(1);
+    // A folder whose name starts with `..` is still inside.
+    const dotted = path.join(rec.worktreePath!, '..tools');
+    fs.mkdirSync(dotted);
+    fs.writeFileSync(path.join(dotted, posix ? 'git' : 'git.exe'), `#!/bin/sh\necho ran > '${marker}'\n`, { mode: 0o755 });
+    const dottedEnv = { ...GIT_ENV, PATH: `${dotted}${path.delimiter}${GIT_ENV.PATH ?? ''}` };
+    expect(await makeBundle(input(rec), { env: dottedEnv })).toMatchObject({ kind: 'refused', reason: 'unavailable', detail: 'the git found on this PC is inside the worktree, so it was not run' });
+    if (posix) {
+      // A link inside the worktree to the real git outside it: what runs is the checked real path, so the make works.
+      const linked = path.join(rec.worktreePath!, 'linked-bin');
+      fs.mkdirSync(linked);
+      const realGit = execFileSync('sh', ['-c', 'command -v git'], { env: GIT_ENV, encoding: 'utf8' }).trim();
+      fs.symlinkSync(fs.realpathSync(realGit), path.join(linked, 'git'));
+      const linkEnv = { ...GIT_ENV, PATH: `${linked}${path.delimiter}${GIT_ENV.PATH ?? ''}` };
+      expect(await makeBundle(input(rec), { env: linkEnv })).toMatchObject({ kind: 'made' });
+    }
     expect(fs.existsSync(marker)).toBe(false);
     expect(fs.existsSync(inp.file)).toBe(false);
     expect(bundleRefs()).toBe('');

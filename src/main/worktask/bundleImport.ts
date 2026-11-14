@@ -24,7 +24,7 @@ import type { A2aBundleManifestV1 } from '../../shared/a2aBundle';
 import { returnedBranchName, type BundleAskerRefusal, type HomeRepoConfigKind } from '../../shared/a2aBundleAsk';
 import { isSpawnId } from '../../shared/a2aSpawn';
 import { getExecEnv } from '../../shared/execEnv';
-import { findAbsoluteGit, GIT_NOT_FOUND_TEXT, isInsideFolder } from '../../shared/gitExe';
+import { findAbsoluteGit, GIT_NOT_FOUND_TEXT, gitToRunIn } from '../../shared/gitExe';
 import { originUrlRepoKey, parseGitConfigList, workerGitConfigRefusal, workerGitEnv, workerGitSafeArgs, type GitConfigEntry } from './workerGit';
 
 /** The longest a git call of the import may run before it (and anything it started) is killed. */
@@ -97,17 +97,16 @@ export const importGitWith = (
   start: ImportGitStart = startHidden,
 ): ImportGit => (args, cwd, { stdin, timeoutMs = BUNDLE_IMPORT_TIMEOUT_MS } = {}) => new Promise((resolve) => {
   const env = importGitEnv();
-  const exe = find(env);
-  if (!exe) {
+  // The real path that was checked is what runs.
+  const found = gitToRunIn(cwd, env, find);
+  if (!('exe' in found)) {
     stdin?.destroy();
-    resolve({ code: 1, stdout: '', stderr: GIT_NOT_FOUND_TEXT, missing: true });
+    resolve(found.why === 'missing'
+      ? { code: 1, stdout: '', stderr: GIT_NOT_FOUND_TEXT, missing: true }
+      : { code: 1, stdout: '', stderr: 'the git found is inside the repository it would run in', inRepo: true });
     return;
   }
-  if (isInsideFolder(cwd, exe)) {
-    stdin?.destroy();
-    resolve({ code: 1, stdout: '', stderr: 'the git found is inside the repository it would run in', inRepo: true });
-    return;
-  }
+  const exe = found.exe;
   let stdout = '';
   let stderr = '';
   let settled = false;

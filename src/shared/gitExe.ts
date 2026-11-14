@@ -39,7 +39,25 @@ export function findAbsoluteGit(env: NodeJS.ProcessEnv): string | null {
 export function isInsideFolder(dir: string, file: string): boolean {
   // path.relative compares case-insensitively on Windows.
   const rel = path.relative(resolveReal(dir), resolveReal(file));
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  // Only a leading `..` segment climbs out: a folder named `..tools` is inside.
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
+/**
+ * The git a guarded caller runs in `dir`, as the real path it was checked at (a link swapped after the check does
+ * not change what runs), or why none is run. `find` is the lookup (default: findAbsoluteGit). Never throws.
+ */
+export function gitToRunIn(dir: string, env: NodeJS.ProcessEnv, find: (env: NodeJS.ProcessEnv) => string | null = findAbsoluteGit): { exe: string } | { why: 'missing' | 'inside' } {
+  const found = find(env);
+  if (!found) return { why: 'missing' };
+  if (isInsideFolder(dir, found)) return { why: 'inside' };
+  let exe: string;
+  try {
+    exe = fs.realpathSync.native(found);
+  } catch {
+    return { why: 'missing' };
+  }
+  return isInsideFolder(dir, exe) ? { why: 'inside' } : { exe };
 }
 
 /**
