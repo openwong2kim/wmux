@@ -30,15 +30,17 @@ const idOf = (v: unknown): string | undefined =>
 
 /** The task id and pane address of a gated-submit IPC call's options, kept
  *  only when well-formed (the renderer is trusted, the shape is still checked). */
-export function gatedSubmitTaskContext(opts: unknown): { taskId?: string; pane?: DeliveredPaneAddress } {
+export function gatedSubmitTaskContext(opts: unknown): { taskId?: string; pane?: DeliveredPaneAddress; pointerTaskId?: string } {
   if (!isRecord(opts)) return {};
   const taskId = idOf(opts.taskId);
+  const pointerTaskId = idOf(opts.pointerTaskId);
   const p = isRecord(opts.pane) ? opts.pane : undefined;
   const workspaceId = idOf(p?.workspaceId);
   const paneId = idOf(p?.paneId);
   const surfaceId = idOf(p?.surfaceId);
   return {
     ...(taskId ? { taskId } : {}),
+    ...(pointerTaskId ? { pointerTaskId } : {}),
     ...(workspaceId && paneId && surfaceId ? { pane: { workspaceId, paneId, surfaceId } } : {}),
   };
 }

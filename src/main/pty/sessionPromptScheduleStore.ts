@@ -313,13 +313,25 @@ export async function removeSessionPromptSchedulesForPty(
   }, dir);
 }
 
+/** How long one occurrence keeps retrying a busy pane before it is given up
+ *  (a draft left in the input box for hours, an input box in another mode):
+ *  an hour, and a repeating schedule no later than its next occurrence. */
+export const SESSION_PROMPT_BUSY_GIVE_UP_MS = 60 * 60_000;
+
+function busyGivenUp(schedule: SessionPromptSchedule, now: number): boolean {
+  const interval = schedule.intervalMinutes && schedule.intervalMinutes > 0 ? schedule.intervalMinutes * 60_000 : Infinity;
+  return now - schedule.nextRunAt >= Math.min(SESSION_PROMPT_BUSY_GIVE_UP_MS, interval);
+}
+
 /**
  * Advance one delivery attempt.
  *
  * Busy and temporarily unavailable sessions remain due and retry on the next
- * tick. A successful delivery consumes the occurrence. An error after a
- * partial write also consumes it: retrying could duplicate half a prompt in
- * the target TUI, which is worse than surfacing the failed result.
+ * tick; a busy one only until SESSION_PROMPT_BUSY_GIVE_UP_MS, when the
+ * occurrence is given up (consumed, its result `busy`). A successful delivery
+ * consumes the occurrence. An error after a partial write also consumes it:
+ * retrying could duplicate half a prompt in the target TUI, which is worse
+ * than surfacing the failed result.
  */
 export function advanceSessionPromptSchedule(
   schedule: SessionPromptSchedule,
@@ -332,18 +344,28 @@ export function advanceSessionPromptSchedule(
     lastResult: result,
   };
   // A folder-trust prompt waits for a person; the occurrence stays due.
-  if (result === 'busy' || result === 'unavailable' || result === 'folder_trust') return next;
-
-  // An incarnation mismatch is permanent. In particular, repeating schedules
-  // must not advance and later target the replacement session.
-  if (result === 'session_changed') {
+  if (result === 'busy' || result === 'unavailable' || result === 'folder_trust') {
+    if (!(result === 'busy' && busyGivenUp(schedule, now))) return next;
+    next.lastRunAt = now;
+    if (!schedule.intervalMinutes || schedule.intervalMinutes <= 0) {
+      next.enabled = false;
+      return next;
+    }
+    // Given up: the occurrence that is due now (if any) stays due, so it runs.
+    const step = schedule.intervalMinutes * 60_000;
+    next.nextRunAt = schedule.nextRunAt + Math.max(1, Math.floor((now - schedule.nextRunAt) / step)) * step;
+    return next;
+  } else if (result === 'session_changed') {
+    // An incarnation mismatch is permanent. In particular, repeating schedules
+    // must not advance and later target the replacement session.
     next.enabled = false;
     return next;
+  } else {
+    // Only 'sent' and 'error' are left to consume the occurrence: a new result
+    // fails typecheck here until it is decided above.
+    const consumes: 'sent' | 'error' = result;
+    void consumes;
   }
-  // Only 'sent' and 'error' are left to consume the occurrence: a new result
-  // fails typecheck here until it is decided above.
-  const consumes: 'sent' | 'error' = result;
-  void consumes;
 
   next.lastRunAt = now;
   if (schedule.intervalMinutes && schedule.intervalMinutes > 0) {

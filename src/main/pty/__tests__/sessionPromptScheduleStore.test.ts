@@ -12,6 +12,7 @@ import {
   mutateSessionPromptSchedules,
   removeSessionPromptSchedulesForPty,
   saveSessionPromptSchedules,
+  SESSION_PROMPT_BUSY_GIVE_UP_MS,
   type SessionPromptSchedule,
 } from '../sessionPromptScheduleStore';
 
@@ -141,6 +142,20 @@ describe('sessionPromptScheduleStore', () => {
       expect(advanced.lastAttemptAt).toBe(5_000);
       expect(advanced.lastRunAt).toBeUndefined();
     }
+  });
+
+  it('gives up a busy occurrence after an hour, and a repeating one by its next occurrence', () => {
+    const due = 1_000;
+    // A one-shot: retried for an hour (240 ticks of 15 s), then consumed as busy.
+    expect(advanceSessionPromptSchedule(schedule({ nextRunAt: due }), 'busy', due + SESSION_PROMPT_BUSY_GIVE_UP_MS - 1).enabled).toBe(true);
+    const gaveUp = advanceSessionPromptSchedule(schedule({ nextRunAt: due }), 'busy', due + SESSION_PROMPT_BUSY_GIVE_UP_MS);
+    expect(gaveUp).toMatchObject({ enabled: false, lastResult: 'busy', lastRunAt: due + SESSION_PROMPT_BUSY_GIVE_UP_MS });
+    // Every 10 minutes: given up when the next occurrence is due, which then runs.
+    const every10 = schedule({ nextRunAt: due, intervalMinutes: 10 });
+    expect(advanceSessionPromptSchedule(every10, 'busy', due + 9 * 60_000).nextRunAt).toBe(due);
+    expect(advanceSessionPromptSchedule(every10, 'busy', due + 10 * 60_000)).toMatchObject({ enabled: true, nextRunAt: due + 10 * 60_000, lastResult: 'busy' });
+    // unavailable and folder_trust still wait.
+    expect(advanceSessionPromptSchedule(schedule({ nextRunAt: due }), 'unavailable', due + 10 * SESSION_PROMPT_BUSY_GIVE_UP_MS).nextRunAt).toBe(due);
   });
 
   it('keeps a folder-trust result across a save and a load (the popover reads it back)', async () => {

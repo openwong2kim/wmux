@@ -20,6 +20,17 @@ export function formatBracketedPastePayload(text: string): string {
   return `${BRACKETED_PASTE_START}${sanitizeBracketedPastePayload(text)}${BRACKETED_PASTE_END}`;
 }
 
+/** A delivery refused because this PC's wmux has no background service to
+ *  verify an agent with (its local fallback): said in these words to the sender. */
+export const NO_BACKGROUND_SERVICE_DETAIL = "this PC's wmux is running without its background service; deliveries wait until it is running.";
+
+/** One line typed as plain keys (no bracketed paste): printable characters
+ *  only. Controls (C0, DEL, C1) are dropped; a tab becomes a space. */
+export function printableLine(text: string): string {
+  // eslint-disable-next-line no-control-regex -- dropping controls is the point
+  return text.replace(/\t/g, ' ').replace(/[\x00-\x1f\x7f-\x9f]/g, '');
+}
+
 export function isMultilinePtyPayload(text: string): boolean {
   return text.includes('\n') || text.includes('\r');
 }
@@ -228,6 +239,10 @@ export interface GatedSubmitRefusal {
     /** A `waitQuiet` delivery: the pane's agent could not be read, so it could
      *  not be verified (a local pty, no daemon, or a failed read). */
     | 'agent_unverified'
+    /** The agent is there, but its input box is not a plain prompt (a mode
+     *  that would run or reinterpret the text, a dialog, a draft left in it,
+     *  or no way to confirm it), or the pane cannot take this text as typed. */
+    | 'input_mode'
     /** A `waitQuiet` delivery ran past its deadline; the sender has given up. */
     | 'deadline'
     /** A `waitQuiet` delivery carrying main's `guardKey`: main's own check for
@@ -238,6 +253,9 @@ export interface GatedSubmitRefusal {
   /** With `pasted`: whether the pasted text was cleared again (best effort:
    *  one Ctrl+U, which empties an agent's composer or a shell's line). */
   cleared?: boolean;
+  /** With `pasted`: whether the last check found this paste, and only it, in
+   *  the agent's input box (undefined: not asked). */
+  pasteShown?: boolean;
 }
 /** A delivered submit. A new-task delivery also says what its fresh-context
  *  step did (shared/freshContext). */
@@ -290,4 +308,7 @@ export interface GatedSubmitOptions {
   /** A mention nudge's channel messages: each author is read from the
    *  daemon's channel store, which stamped it at post time. */
   senderMentions?: Array<{ channelId: string; seq: number }>;
+  /** The A2A task this text is about: what an agent whose plain prompt wmux
+   *  cannot recognise is pointed at, in place of the text. Grants nothing. */
+  pointerTaskId?: string;
 }

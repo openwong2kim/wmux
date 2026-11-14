@@ -4395,7 +4395,7 @@ export const ko = {
   'git.handoff.notSent': '{kind} {ref}을(를) {workspace}의 {agent}에게 보내지 않았습니다.',
   'git.handoff.why.user_typing': '그 판에서 누군가 입력 중이었습니다. 한가해지면 다시 시도하세요.',
   'git.handoff.why.agent_changed': '에이전트가 그 판을 떠났거나 바뀌었습니다.',
-  'git.handoff.why.agent_unverified': '그 판의 에이전트를 읽지 못했습니다. 잠시 후 다시 시도하세요.',
+  'git.handoff.why.agent_unverified': '그 판에서 실행 중인 에이전트를 확인하지 못했습니다. 그곳에서 에이전트를 시작한 뒤 다시 시도하세요.',
   'git.handoff.why.deadline': '판이 비기를 너무 오래 기다렸습니다.',
   'git.handoff.why.no_agent_pane': '그 판에 살아 있는 에이전트가 없습니다.',
   'git.handoff.why.approval_pending': '그 판이 승인을 기다리고 있습니다.',

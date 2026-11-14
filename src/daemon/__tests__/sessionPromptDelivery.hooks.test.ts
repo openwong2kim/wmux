@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { deliverScheduledPrompt, type ScheduledPromptAgentState } from '../sessionPromptDelivery';
 
-function harness(authorize: (call: number) => boolean, leadingPastes?: string[]) {
+function harness(authorize: (call: number) => boolean | 'busy' | 'unavailable', leadingPastes?: string[]) {
   let current: ScheduledPromptAgentState = { slug: 'claude', incarnationId: 'i', status: 'complete', inputQuiet: true, inputRevision: 0 };
   const log: string[] = [];
   let calls = 0;
@@ -29,6 +29,16 @@ describe('deliverScheduledPrompt re-authorization hooks', () => {
     const h = harness(() => false);
     expect(await h.run()).toBe('error');
     expect(h.log.some(entry => entry.startsWith('write') || entry.startsWith('on:'))).toBe(false);
+  });
+
+  it('a "not now" before the paste is the result itself, so the caller comes back; after the paste it is final', async () => {
+    const busy = harness(() => 'busy');
+    expect(await busy.run()).toBe('busy');
+    expect(busy.log.some(entry => entry.startsWith('write'))).toBe(false);
+    expect(await harness(() => 'unavailable').run()).toBe('unavailable');
+    const late = harness(call => (call === 1 ? true : 'busy'));
+    expect(await late.run()).toBe('error');
+    expect(late.log).not.toContain('write:"\\r"');
   });
 
   it('never presses Enter when refused after the paste', async () => {

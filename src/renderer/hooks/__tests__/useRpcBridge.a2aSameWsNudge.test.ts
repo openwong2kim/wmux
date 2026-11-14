@@ -83,7 +83,7 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
   it('a pane_id-addressed send nudges only the addressed pane', async () => {
     const sent = await sendAtoB('review the login fix');
     expect(sent.delivery).toMatchObject({ notified: true, mode: 'nudge' });
-    expect(writesTo(PTY_B)).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared.w0-0(claude) — title: "review the login fix" — a2a_task_query task_id:${sent.taskId}`);
+    expect(writesTo(PTY_B)).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared.w0-0_claude_ — title: "review the login fix" — a2a_task_query task_id:${sent.taskId}`);
     expect(writesTo(PTY_B)).not.toContain('please review');
     expect(writesTo(PTY_A)).toBe('');
   });
@@ -104,7 +104,7 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
     const sent = await sendAtoB();
     expect(sent.delivery).toMatchObject({ notified: true, mode: 'nudge' });
     const line = writesTo(PTY_B);
-    expect(line).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared.w0-0(claude) — a2a_task_query task_id:${sent.taskId}`);
+    expect(line).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared.w0-0_claude_ — a2a_task_query task_id:${sent.taskId}`);
     expect(line).not.toContain('please review');
     expect(line).not.toContain('title:');
   });
@@ -112,10 +112,10 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
   it('a new-task nudge carries an allowlisted title and the full task id, never the body', () => {
     const line = buildA2aNudge('task-12345678-rest', 'Ops', 'new', 'Fix login; printf INJECTION_REACHED; # @src/x');
     expect(line).toBe(
-      '[wmux] new A2A task 12345678 from Ops — title: "Fix login printf INJECTION_REACHED src/x" — a2a_task_query task_id:task-12345678-rest',
+      '[wmux] new A2A task 12345678 from Ops — title: "Fix login_ printf INJECTION_REACHED_ _ _src_x" — a2a_task_query task_id:task-12345678-rest',
     );
     // Shell metacharacters, quotes, @, C0/C1 controls, bidi and zero-width marks all become spaces.
-    expect(nudgeTitlePreview('a$(b)`c`|d&e<f>g"h\'i\\j@k\u0000l\u0085m\u202en\u200bo')).toBe('a b c d e f g h i j k l m n o');
+    expect(nudgeTitlePreview('a$(b)`c`|d&e<f>g"h\'i\\j@k\u0000l\u0085m\u202en\u200bo')).toBe('a_b_c_d_e_f_g_h_i_j_k_l_m_n_o');
     // Letters of any script survive; the cut is by code point, never inside a surrogate pair.
     expect(nudgeTitlePreview('한글 제목')).toBe('한글 제목');
     const astral = nudgeTitlePreview('\u{20000}'.repeat(100));
@@ -139,7 +139,7 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
       workspaceId: WS.id, taskId: sent.taskId, status: 'working', message: 'on it', senderPtyId: PTY_B,
     });
     const afterUpdate = writesTo(PTY_A);
-    expect(afterUpdate).toContain(`[wmux] reply on A2A task ${id8} from Shared.w0-0(claude) — a2a_task_query`);
+    expect(afterUpdate).toContain(`[wmux] reply on A2A task ${id8} from Shared.w0-0_claude_ — a2a_task_query`);
     expect(afterUpdate).not.toContain('new A2A task');
     expect(writesTo(PTY_B)).toBe('');
 
@@ -148,7 +148,7 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
       workspaceId: WS.id, taskId: sent.taskId, message: 'done', senderPtyId: PTY_B,
     });
     const afterReply = writesTo(PTY_A);
-    expect(afterReply).toContain(`[wmux] reply on A2A task ${id8} from Shared.w0-0(claude) — a2a_task_query`);
+    expect(afterReply).toContain(`[wmux] reply on A2A task ${id8} from Shared.w0-0_claude_ — a2a_task_query`);
     expect(afterReply).not.toContain('new A2A task');
     expect(writesTo(PTY_B)).toBe('');
   });

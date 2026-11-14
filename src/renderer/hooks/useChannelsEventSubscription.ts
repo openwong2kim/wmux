@@ -67,7 +67,7 @@ import { isNudgeRateLimited, recordNudge, shouldWarnLoopSuspect } from './channe
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import { panePrincipalId } from '../../shared/principals';
 import { publishA2aTask } from '../events/publisher';
-import { flushMentions, type FlushOpts } from './channelMentionFlush';
+import { flushMentions, mentionNudgeSettled, MentionNudgeRefused, noteSettledUnsent, type FlushOpts } from './channelMentionFlush';
 import { gatedSubmitToPty } from '../utils/ptyMessageDelivery';
 import { noteAgentTurnEnd, sweepTurnEndReminders } from './a2aTurnEndReminder';
 import { noteFanoutCallerLifecycle, sweepFanoutCallerNudges } from './fanoutCallerNudge';
@@ -363,7 +363,12 @@ export function useChannelsEventSubscription(): void {
             agent: useStore.getState().surfaceAgent[ptyId]?.slug,
             senderMentions: mentions,
           });
-          if (!result.ok) throw new Error(`mention nudge not submitted (${result.reason}): ${result.detail}`);
+          if (result.ok) return;
+          if (mentionNudgeSettled(result)) {
+            noteSettledUnsent(ptyId, result.reason, result.detail);
+            return;
+          }
+          throw new MentionNudgeRefused(result.reason, result.detail);
         },
         markDelivered: st.markChannelMentionDelivered,
         // 2f: rate cap unchanged; the first capped observation per window also
