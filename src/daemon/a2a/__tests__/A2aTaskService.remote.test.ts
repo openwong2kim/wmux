@@ -1251,6 +1251,26 @@ describe('a reopen undone when the message that reopened the task never reached 
     expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'm1', reason: 'held-expired' })).toMatchObject({ undone: true });
   });
 
+  it('link-ended: attempts refused with nothing written do not keep it; one in flight does; a delivery does', async () => {
+    // Three attempts on a busy pane, each cleared with nothing written, then the link ends: undone.
+    let svc = await reopened();
+    for (let i = 0; i < 3; i += 1) {
+      expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-1', attempted: true })).ok).toBe(true);
+      expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-1', attempted: false })).ok).toBe(true);
+    }
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'link-ended' })).toMatchObject({ undone: true });
+    // An attempt of another message still in flight when the link ends: not undone.
+    svc = await reopened();
+    expect((await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('f-2', 'and this') })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-2', attempted: true })).ok).toBe(true);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'link-ended' })).toMatchObject({ undone: false });
+    // A later message delivered: not undone.
+    svc = await reopened();
+    expect((await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('f-2', 'and this') })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-2', delivered: true })).ok).toBe(true);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'link-ended' })).toMatchObject({ undone: false });
+  });
+
   it('link-ended: a reopening message already dropped unread (its notice still owed) is undone too', async () => {
     const svc = await reopened();
     await expire(svc);

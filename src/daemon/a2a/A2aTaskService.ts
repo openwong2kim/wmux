@@ -460,9 +460,10 @@ export class A2aTaskService {
         ? marker.inbox?.find((i) => i.messageId === r.messageId)
         : marker;
       if (!target) return;
-      // Since a reopen by the sender: a delivery, an attempt or a paste left unconfirmed, of any message on the task,
-      // may have reached the agent.
-      if (marker.reopenedBy && (r.delivered === true || r.attempted === true || r.held === 'delivery-unconfirmed')) marker.reopenedBy.touched = true;
+      // Since a reopen by the sender: a delivery, or a paste left unconfirmed, of any message on the task, may have
+      // reached the agent. An attempt alone does not: one refused (cleared with nothing written) reached nothing, and
+      // one still in flight is read from the items when the undo is decided.
+      if (marker.reopenedBy && (r.delivered === true || r.held === 'delivery-unconfirmed')) marker.reopenedBy.touched = true;
       if (r.stateSync !== undefined || r.sent !== undefined || r.read || r.receiptSync !== undefined || r.remoteReceipt !== undefined || r.replyAcked
         || r.stateRefused || r.stateAccepted) {
         // Something new of ours is queued for the peer: not all of it has arrived yet.
@@ -1203,8 +1204,10 @@ export class A2aTaskService {
       // stranded on a task that ended, never delivered or expired). On a link end nothing owed can come any more.
       const stillOwed = input.reason === 'held-expired'
         && inbox.some((i) => i.kind === 'reply' && i.messageId !== input.messageId && i.delivered !== true && !i.rejected);
+      // A paste of any message in flight right now may land.
+      const inFlight = inbox.some((i) => i.attempted === true);
       const undo = marker.direction === 'inbound' && task.status.state === 'working' && reopen?.messageId === input.messageId
-        && neverReached && !reopen.touched && !stillOwed;
+        && neverReached && !reopen.touched && !stillOwed && !inFlight;
       if (!undo || !reopen) return { ok: true, task, undone: false };
       const payload: A2aTaskTransitionPayload = {
         kind: 'task.transition',

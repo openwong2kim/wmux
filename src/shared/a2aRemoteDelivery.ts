@@ -361,7 +361,8 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
     status: Task['status'];
     /**
      * Since the reopen, something may have reached the agent or come from it: a message on the task was delivered,
-     * a paste of one was attempted or left unconfirmed, or the agent wrote on the task. The reopen is then never undone.
+     * a paste of one was left unconfirmed, or the agent wrote on the task. The reopen is then never undone. (A refused
+     * attempt, cleared with nothing written, does not count; one in flight blocks the undo while it is.)
      */
     touched?: true;
   };
