@@ -19,6 +19,7 @@
 // long before the run finishes, the same key must progress rather than restart,
 // and a denial must be reported instead of going quiet.
 
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -160,6 +161,8 @@ function setup(opts?: {
   daemon?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
   /** Main's git for a bring-back. */
   bundleGit?: ImportGit;
+  /** The wmux folder (the bring-back's hooks folder lives under it). */
+  wmuxDir?: string;
 }): Harness {
   const commanderAnchorPtyId =
     opts?.commanderAnchorPtyId === undefined ? 'pty-1' : opts.commanderAnchorPtyId;
@@ -288,6 +291,7 @@ function setup(opts?: {
         ? () => ({ isConnected: true, rpc: daemonRpc }) as unknown as DaemonClient
         : undefined,
     ...(opts?.bundleGit ? { bundleGit: opts.bundleGit } : {}),
+    ...(opts?.wmuxDir ? { wmuxDir: () => opts.wmuxDir as string } : {}),
     ...(opts?.reserve ? { usageReserveHold: opts.reserve, noteUsageReserveHeld: () => undefined } : {}),
     ...(opts?.remoteFanout ? { remoteFanout: opts.remoteFanout } : {}),
     ...(opts?.resolveCallerPane ? { resolveCallerPane: opts.resolveCallerPane } : {}),
@@ -2525,6 +2529,32 @@ describe('fanout_bring_back (task.fanout.bringBack)', () => {
     expect(res).toMatchObject({ state: 'refused', reason: 'bundle-unexpected' });
     expect(String(res.text)).not.toMatch(/rm -rf/);
     expect(seen.map((c) => c[0])).toEqual(['a2a.remote.bundle.bringBack', 'a2a.remote.bundle.release']);
+  });
+
+  it('an import refused for a config key added after the repository was opened names that key\'s kind', async () => {
+    const home = homeDir();
+    const ref = 'refs/wmux/bundle/x';
+    const file = nodePath.join(home, 'x.bundle');
+    const bytes = Buffer.from(`# v2 git bundle\n${'b'.repeat(40)} ${ref}\n\nPACK`, 'latin1');
+    fs.writeFileSync(file, bytes);
+    const manifest = { bundleId: 'bd-11111111-2222-4333-8444-555555555555', sha256: crypto.createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
+    const daemon = vi.fn(async (method: string) => (method === 'a2a.remote.bundle.bringBack' ? { ok: true, state: 'staged', file, manifest, ref } : { ok: true }));
+    const opened = homeGit(home);
+    let reads = 0;
+    // The first config read (when the repository is opened) is clean; the second, right before the objects, has a check weakened.
+    const git: ImportGit = async (args, cwd, o) => {
+      if (args.includes('--show-scope')) {
+        reads += 1;
+        if (reads > 1) return { code: 0, stdout: 'local\0fsck.hasdotgit\nignore\0', stderr: '' };
+      }
+      if (args.includes('--version')) return { code: 0, stdout: 'git version 2.55.0\n', stderr: '' };
+      if (args.includes('--show-object-format')) return { code: 0, stdout: 'sha1\n', stderr: '' };
+      return opened(args, cwd, o);
+    };
+    const h = setup({ daemon, bundleGit: git, wmuxDir: tempDir('wmux-bring-back-wmux-'), remoteFanout: () => remoteWith([rowOf({ homeRepo: home })]) });
+    const res = await call(h);
+    expect(res).toMatchObject({ state: 'refused', reason: 'home-repo-config' });
+    expect(String(res.text)).toMatch(/weakens git's object checks/);
   });
 
   it('cancel releases the ask without asking again', async () => {

@@ -1192,7 +1192,7 @@ export function registerFanOutRpc(
       await dc.rpc(A2A_BUNDLE_ASK_RPC.release, { hostId, spawnId }).catch(() => undefined);
       if (!imported.ok) {
         console.warn(`[fanout.rpc] bring-back ${spawnId} from ${hostId}: not imported (${imported.reason})`);
-        return refused(imported.reason);
+        return refused(imported.reason, imported.reason === 'home-repo-config' ? imported.kind : undefined);
       }
       // One audit line per import.
       console.info(`[fanout.rpc] bring-back ${spawnId} from ${hostId}: ${imported.noop ? 'already at' : 'imported'} ${imported.sha} on ${imported.branch} in ${home.top}`);
