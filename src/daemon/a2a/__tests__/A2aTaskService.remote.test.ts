@@ -1213,6 +1213,44 @@ describe('a reopen undone when the message that reopened the task never reached 
     expect(svc.getTask('rt-in')!.status.state).toBe('working');
   });
 
+  it('an EARLIER message delivered after the reopen keeps it from being undone (held, frozen while completed, then retried)', async () => {
+    const svc = newService(newLog());
+    await inbound(svc);
+    expect((await svc.transition({ taskId: 'rt-in', to: 'working', ...caller })).ok).toBe(true);
+    // M0 arrives while it works and is held; the agent completes anyway, and M0 stays held on the completed task.
+    expect((await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('m0', 'also this') })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'm0', held: 'occupant-changed' })).ok).toBe(true);
+    expect((await svc.transition({ taskId: 'rt-in', to: 'completed', ...caller, evidence: DONE })).ok).toBe(true);
+    // M1 reopens it and queues behind M0.
+    expect(await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('m1', 'one more thing'), reopenCompleted: true })).toMatchObject({ ok: true, reopened: true });
+    // A person retries the held items: M0 reaches the agent; M1's write fails and is held, then expires.
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'm0', delivered: true })).ok).toBe(true);
+    await expire(svc, 'm1');
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'm1', reason: 'held-expired' })).toMatchObject({ undone: false });
+    expect(svc.getTask('rt-in')!.status.state).toBe('working');
+  });
+
+  it('the agent writing on the task after the reopen keeps it from being undone', async () => {
+    const svc = await reopened();
+    expect((await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: 'ws-local', message: msg('a-1', 'on it', 'agent') })).ok).toBe(true);
+    await expire(svc);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ undone: false });
+  });
+
+  it('an earlier message still owed keeps an expiry from undoing it, until that one is dropped too', async () => {
+    const svc = newService(newLog());
+    await inbound(svc);
+    expect((await svc.transition({ taskId: 'rt-in', to: 'working', ...caller })).ok).toBe(true);
+    expect((await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('m0', 'also this') })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'm0', held: 'occupant-changed' })).ok).toBe(true);
+    expect((await svc.transition({ taskId: 'rt-in', to: 'completed', ...caller, evidence: DONE })).ok).toBe(true);
+    expect(await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('m1', 'one more thing'), reopenCompleted: true })).toMatchObject({ reopened: true });
+    await expire(svc, 'm1');
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'm1', reason: 'held-expired' })).toMatchObject({ undone: false });
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'm0', rejected: 'held-expired' })).ok).toBe(true);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'm1', reason: 'held-expired' })).toMatchObject({ undone: true });
+  });
+
   it('link-ended: a reopening message already dropped unread (its notice still owed) is undone too', async () => {
     const svc = await reopened();
     await expire(svc);

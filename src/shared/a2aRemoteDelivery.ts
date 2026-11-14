@@ -356,7 +356,15 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
    * Inbound task its sender reopened (`working` again after it ended `completed`), while nothing has moved it since:
    * the message that reopened it, and the status it had before. Gone with the next transition.
    */
-  reopenedBy?: { messageId: string; status: Task['status'] };
+  reopenedBy?: {
+    messageId: string;
+    status: Task['status'];
+    /**
+     * Since the reopen, something may have reached the agent or come from it: a message on the task was delivered,
+     * a paste of one was attempted or left unconfirmed, or the agent wrote on the task. The reopen is then never undone.
+     */
+    touched?: true;
+  };
   /** Our own replies on this task already queued for the peer (messageIds). */
   sent?: string[];
   /** When each of `sent` was queued (a notice about one of them names this time, never one the peer gives). */

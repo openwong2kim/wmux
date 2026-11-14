@@ -446,6 +446,9 @@ export class A2aTaskService {
       task.history.push(m.message);
       task.metadata.updatedAt = m.timestamp;
       if (m.remoteInbound) addInboxItem(task, m.message.messageId, m.message.metadata?.['wmuxNotice'] ? 'notice' : 'reply', undefined, false, m.timestamp);
+      // This PC's own message on a task reopened by its sender: the agent works on it.
+      const rb = m.remoteInbound ? undefined : remoteMarkerOf(task)?.reopenedBy;
+      if (rb) rb.touched = true;
       return;
     }
     if (p.kind === 'remote.mark') {
@@ -457,6 +460,9 @@ export class A2aTaskService {
         ? marker.inbox?.find((i) => i.messageId === r.messageId)
         : marker;
       if (!target) return;
+      // Since a reopen by the sender: a delivery, an attempt or a paste left unconfirmed, of any message on the task,
+      // may have reached the agent.
+      if (marker.reopenedBy && (r.delivered === true || r.attempted === true || r.held === 'delivery-unconfirmed')) marker.reopenedBy.touched = true;
       if (r.stateSync !== undefined || r.sent !== undefined || r.read || r.receiptSync !== undefined || r.remoteReceipt !== undefined || r.replyAcked
         || r.stateRefused || r.stateAccepted) {
         // Something new of ours is queued for the peer: not all of it has arrived yet.
@@ -1185,20 +1191,20 @@ export class A2aTaskService {
       if (!task || !marker) return { ok: false, error: `a2a.remote.undo: remote task not found: ${input.taskId}` };
       const reopen = marker.reopenedBy;
       const inbox = marker.inbox ?? [];
-      const at = inbox.findIndex((i) => i.messageId === input.messageId);
-      const item = at >= 0 ? inbox[at] : undefined;
+      const item = inbox.find((i) => i.messageId === input.messageId);
       // Dropped unread (its hold expired), or, on a link end, still owed or dropped; never one whose paste may be in
       // the pane (left unconfirmed at any time, or an attempt in flight).
       const neverReached = item !== undefined && item.delivered !== true && !item.attempted && !item.unconfirmed
         && item.held !== 'delivery-unconfirmed' && item.rejected?.held !== 'delivery-unconfirmed'
         && (item.rejected?.reason === 'held-expired' || (input.reason === 'link-ended' && !item.rejected));
-      // Every later message from the sender is dropped too, unread: one delivered (or whose paste may have landed)
-      // reached the agent, and one still owed or held is work the task is open for (it would be stranded on a task
-      // that ended, never delivered or expired).
-      const laterOpen = inbox.slice(at + 1).some((i) => i.delivered === true || !!i.attempted || !!i.unconfirmed
-        || i.rejected?.held === 'delivery-unconfirmed' || (i.kind === 'reply' && !i.rejected));
+      // Since the reopen nothing may have reached the agent or come from it (`touched`: a delivery, attempt or
+      // unconfirmed paste of ANY message on the task, earlier ones included, or a message of the agent's). On an
+      // expiry, no other message from the sender is still owed either: the task stays open for it (it would be
+      // stranded on a task that ended, never delivered or expired). On a link end nothing owed can come any more.
+      const stillOwed = input.reason === 'held-expired'
+        && inbox.some((i) => i.kind === 'reply' && i.messageId !== input.messageId && i.delivered !== true && !i.rejected);
       const undo = marker.direction === 'inbound' && task.status.state === 'working' && reopen?.messageId === input.messageId
-        && neverReached && !laterOpen;
+        && neverReached && !reopen.touched && !stillOwed;
       if (!undo || !reopen) return { ok: true, task, undone: false };
       const payload: A2aTaskTransitionPayload = {
         kind: 'task.transition',
