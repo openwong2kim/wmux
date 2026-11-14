@@ -1161,45 +1161,59 @@ export function registerFanOutRpc(
     // The row's owner only, as for its other changes: another workspace learns nothing of it.
     const row = remote.ledger.list().find((e) => e.remote?.spawnId === spawnId && e.ownerWorkspaceId === callerWorkspaceId);
     if (!row?.remote) return deny('NOT_FOUND', `no task on another PC with spawn id ${spawnId} belongs to this workspace`);
-    const { hostId, pc } = row.remote;
-    const refused = (reason: BundleBringBackRefusal, kind?: HomeRepoConfigKind) => ({ ok: true as const, state: 'refused' as const, reason, text: `Not brought back from ${pc}: ${bringBackRefusalText(reason, kind)}.` });
-    if (!row.remote.homeRepo) return refused('no-home-repo');
-    const git = deps.bundleGit ?? defaultGit;
-    const home = await openHomeRepo(row.remote.homeRepo, git);
-    if (!home.ok) return refused(home.reason, home.reason === 'home-repo-config' ? home.kind : undefined);
-    const cancel = params['cancel'] === true;
-    if (cancel) {
-      await dc.rpc(A2A_BUNDLE_ASK_RPC.release, { hostId, spawnId });
-      return { ok: true as const, state: 'cancelled' as const, text: `The bring-back from ${pc} was cancelled.` };
-    }
-    const asked = (await dc.rpc(A2A_BUNDLE_ASK_RPC.bringBack, { hostId, spawnId, origin: home.origin, waitMs: BRING_BACK_WAIT_MS }, { timeoutMs: BRING_BACK_WAIT_MS + 15_000 })) as
-      { ok?: unknown; state?: unknown; reason?: unknown; file?: unknown; manifest?: unknown; ref?: unknown } | null;
-    if (asked?.ok !== true) return deny('UNAVAILABLE', 'the background service did not take the bring-back');
-    if (asked.state === 'refused') return refused(isBundleBringBackRefusal(asked.reason) ? asked.reason : 'unavailable');
-    if (asked.state !== 'staged' || typeof asked.file !== 'string' || typeof asked.ref !== 'string' || !asked.manifest) {
-      return { ok: true as const, state: 'asking' as const, text: `Bringing the work back from ${pc}: call fanout_bring_back again in a minute.` };
-    }
-    const imported = await importBundle({
-      top: home.top, spawnId, file: asked.file, manifest: asked.manifest as A2aBundleManifestV1, ref: asked.ref,
-      noHooksDir: path.join((deps.wmuxDir ?? getWmuxDir)(), 'factory', 'no-hooks'),
-    }, git);
-    // Imported or refused, the staged file is done with; a refusal is final for this bundle.
-    await dc.rpc(A2A_BUNDLE_ASK_RPC.release, { hostId, spawnId }).catch(() => undefined);
-    if (!imported.ok) {
-      console.warn(`[fanout.rpc] bring-back ${spawnId} from ${hostId}: not imported (${imported.reason})`);
-      return refused(imported.reason);
-    }
-    // One audit line per import.
-    console.info(`[fanout.rpc] bring-back ${spawnId} from ${hostId}: ${imported.noop ? 'already at' : 'imported'} ${imported.sha} on ${imported.branch} in ${home.top}`);
-    const notes = imported.warnings.map((w) => ` Note: ${BUNDLE_IMPORT_WARNING_TEXT[w]}.`).join('');
-    return {
-      ok: true as const,
-      state: 'imported' as const,
-      branch: imported.branch,
-      sha: imported.sha,
-      ...(imported.warnings.length > 0 ? { warnings: imported.warnings } : {}),
-      text: `${imported.noop ? 'Already brought back' : 'Brought back'} from ${pc}: branch ${imported.branch} at ${imported.sha} in the home repository. Nothing was checked out: the commits are inert until checked out, not after, so review them first.${notes}`,
-    };
+    const { hostId, pc, homeRepo } = row.remote;
+    // One call per spawn at a time, from the cancel through the release: a second call waits, so it never imports a
+    // staged file the first one released (it asks anew instead).
+    return bringBackLock(`${hostId}:${spawnId}`, async () => {
+      const refused = (reason: BundleBringBackRefusal, kind?: HomeRepoConfigKind) => ({ ok: true as const, state: 'refused' as const, reason, text: `Not brought back from ${pc}: ${bringBackRefusalText(reason, kind)}.` });
+      // A cancel needs no home repository: it frees the ask even when that repository is gone.
+      if (params['cancel'] === true) {
+        await dc.rpc(A2A_BUNDLE_ASK_RPC.release, { hostId, spawnId });
+        return { ok: true as const, state: 'cancelled' as const, text: `The bring-back from ${pc} was cancelled.` };
+      }
+      if (!homeRepo) return refused('no-home-repo');
+      const git = deps.bundleGit ?? defaultGit;
+      const home = await openHomeRepo(homeRepo, git);
+      if (!home.ok) return refused(home.reason, home.reason === 'home-repo-config' ? home.kind : undefined);
+      const asked = (await dc.rpc(A2A_BUNDLE_ASK_RPC.bringBack, { hostId, spawnId, origin: home.origin, waitMs: BRING_BACK_WAIT_MS }, { timeoutMs: BRING_BACK_WAIT_MS + 15_000 })) as
+        { ok?: unknown; state?: unknown; reason?: unknown; file?: unknown; manifest?: unknown; ref?: unknown } | null;
+      if (asked?.ok !== true) return deny('UNAVAILABLE', 'the background service did not take the bring-back');
+      if (asked.state === 'refused') return refused(isBundleBringBackRefusal(asked.reason) ? asked.reason : 'unavailable');
+      if (asked.state !== 'staged' || typeof asked.file !== 'string' || typeof asked.ref !== 'string' || !asked.manifest) {
+        return { ok: true as const, state: 'asking' as const, text: `Bringing the work back from ${pc}: call fanout_bring_back again in a minute.` };
+      }
+      const imported = await importBundle({
+        top: home.top, spawnId, file: asked.file, manifest: asked.manifest as A2aBundleManifestV1, ref: asked.ref,
+        noHooksDir: path.join((deps.wmuxDir ?? getWmuxDir)(), 'factory', 'no-hooks'),
+      }, git);
+      // Imported or refused, the staged file is done with; a refusal is final for this bundle.
+      await dc.rpc(A2A_BUNDLE_ASK_RPC.release, { hostId, spawnId }).catch(() => undefined);
+      if (!imported.ok) {
+        console.warn(`[fanout.rpc] bring-back ${spawnId} from ${hostId}: not imported (${imported.reason})`);
+        return refused(imported.reason);
+      }
+      // One audit line per import.
+      console.info(`[fanout.rpc] bring-back ${spawnId} from ${hostId}: ${imported.noop ? 'already at' : 'imported'} ${imported.sha} on ${imported.branch} in ${home.top}`);
+      const notes = imported.warnings.map((w) => ` Note: ${BUNDLE_IMPORT_WARNING_TEXT[w]}.`).join('');
+      return {
+        ok: true as const,
+        state: 'imported' as const,
+        branch: imported.branch,
+        sha: imported.sha,
+        ...(imported.warnings.length > 0 ? { warnings: imported.warnings } : {}),
+        text: `${imported.noop ? 'Already brought back' : 'Brought back'} from ${pc}: branch ${imported.branch} at ${imported.sha} in the home repository. Nothing was checked out: the commits are inert until checked out, not after, so review them first.${notes}`,
+      };
+    });
+  };
+  /** Bring-backs in flight, by `hostId:spawnId`: each waits for the one before it. */
+  const bringBackTails = new Map<string, Promise<unknown>>();
+  const bringBackLock = <T>(k: string, fn: () => Promise<T>): Promise<T> => {
+    const before = bringBackTails.get(k) ?? Promise.resolve();
+    const run = before.catch(() => undefined).then(fn);
+    const tail = run.catch(() => undefined);
+    bringBackTails.set(k, tail);
+    void tail.then(() => { if (bringBackTails.get(k) === tail) bringBackTails.delete(k); });
+    return run;
   };
 
   const start = async (params: Record<string, unknown>, ctx?: RpcContext, workflow?: WorkflowDispatchBinding) => {

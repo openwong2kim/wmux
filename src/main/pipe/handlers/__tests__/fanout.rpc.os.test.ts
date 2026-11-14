@@ -2528,5 +2528,29 @@ describe('fanout_bring_back (task.fanout.bringBack)', () => {
     const h = setup({ daemon, bundleGit: homeGit(home), remoteFanout: () => remoteWith([rowOf({ homeRepo: home })]) });
     expect(await call(h, { cancel: true })).toMatchObject({ ok: true, state: 'cancelled' });
     expect(daemon.mock.calls.map((c) => (c as unknown[])[0])).toEqual(['a2a.remote.bundle.release']);
+    // The home repository gone since: the cancel still frees the ask.
+    const gone = setup({ daemon, bundleGit: homeGit(home), remoteFanout: () => remoteWith([rowOf({ homeRepo: nodePath.join(home, 'gone') })]) });
+    expect(await call(gone, { cancel: true })).toMatchObject({ ok: true, state: 'cancelled' });
+  });
+
+  it('runs one bring-back per spawn at a time: a second call waits for the first to release', async () => {
+    const home = homeDir();
+    const order: string[] = [];
+    let open: () => void = () => undefined;
+    const gate = new Promise<void>((r) => { open = r; });
+    const daemon = vi.fn(async (method: string) => {
+      order.push(method);
+      if (method === 'a2a.remote.bundle.bringBack' && order.length === 1) await gate;
+      return method === 'a2a.remote.bundle.bringBack' ? { ok: true, state: 'asking' } : { ok: true };
+    });
+    const h = setup({ daemon, bundleGit: homeGit(home), remoteFanout: () => remoteWith([rowOf({ homeRepo: home })]) });
+    const first = call(h);
+    const second = call(h, { cancel: true });
+    await new Promise((r) => setImmediate(r));
+    expect(order).toEqual(['a2a.remote.bundle.bringBack']);
+    open();
+    expect(await first).toMatchObject({ state: 'asking' });
+    expect(await second).toMatchObject({ state: 'cancelled' });
+    expect(order).toEqual(['a2a.remote.bundle.bringBack', 'a2a.remote.bundle.release']);
   });
 });

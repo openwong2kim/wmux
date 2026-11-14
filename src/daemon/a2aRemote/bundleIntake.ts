@@ -379,8 +379,6 @@ export class BundleIntake {
     const root = path.join(this.deps.a2aDir, BUNDLE_IN);
     if (!(await fs.promises.lstat(root).catch(() => null))?.isDirectory()) return 0;
     const hosts = await fs.promises.readdir(root).catch(() => [] as string[]);
-    const busy = new Set([...this.running.values()].map((r) => r.hostId));
-    for (const w of this.awaited.values()) if (w.receiving) busy.add(w.hostId);
     let removed = 0;
     for (const hostId of hosts.filter(isHostId)) {
       const dir = bundleStagingHostDir(this.deps.a2aDir, hostId);
@@ -397,8 +395,19 @@ export class BundleIntake {
       const names = await fs.promises.readdir(dir).catch(() => [] as string[]);
       for (const name of names) {
         const file = path.join(dir, name);
-        const ours = STAGED_NAME_RE.test(name) || (name === PARTS && !busy.has(hostId));
-        if (!ours || (name !== PARTS && keep(hostId, file))) continue;
+        if (name === PARTS) {
+          // Under that PC's transfer slot: no pull or PUT of it can start, or be under way, while its parts go.
+          const release = this.takeSlot(hostId);
+          if (!release) continue;
+          try {
+            // eslint-disable-next-line no-await-in-loop -- one PC's parts at a time
+            if (await removeStaged(file)) removed++;
+          } finally {
+            release();
+          }
+          continue;
+        }
+        if (!STAGED_NAME_RE.test(name) || keep(hostId, file)) continue;
         // eslint-disable-next-line no-await-in-loop -- few files, one at a time
         if (await removeStaged(file)) removed++;
       }

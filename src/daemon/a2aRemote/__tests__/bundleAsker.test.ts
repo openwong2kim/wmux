@@ -223,6 +223,41 @@ describe('BundleAsker', () => {
     expect(later.sent.filter((s) => s.env.bundleAsk?.op === 'make')).toHaveLength(1);
   });
 
+  it('the sweep keeps the file of an ask whose bundle is on its way, asked as each file is reached', async () => {
+    const h = harness();
+    h.setPull(() => new Promise<BundlePull>(() => undefined));
+    await h.asker.bringBack(HOST, SPAWN, ORIGIN);
+    h.answer({ op: 'made', manifest: M });
+    await flush();
+    await h.asker.sweep();
+    const keep = h.intake.sweepStaged.mock.calls[0][0];
+    expect(keep(HOST, bundleStagedFile(h.dir, HOST, M))).toBe(true);
+    expect(keep(HOST, bundleStagedFile(h.dir, HOST, { ...M, bundleId: 'bd-99999999-2222-4333-8444-555555555555' }))).toBe(false);
+  });
+
+  it('a transfer of a released ask never touches a new ask for the same spawn', async () => {
+    const h = harness();
+    const first = deferred<BundlePull>();
+    h.setPull(() => first.promise);
+    await h.asker.bringBack(HOST, SPAWN, ORIGIN);
+    h.answer({ op: 'made', manifest: M });
+    await flush();
+    await h.asker.release(HOST, SPAWN);
+    // A new ask, and its own bundle on its way.
+    const second = deferred<BundlePull>();
+    h.setPull(() => second.promise);
+    await h.asker.bringBack(HOST, SPAWN, ORIGIN);
+    h.answer({ op: 'made', manifest: M });
+    await flush();
+    // The released ask's pull ends now: nothing of it lands on the new ask.
+    first.resolve({ kind: 'staged', file: bundleStagedFile(h.dir, HOST, M) });
+    await flush();
+    expect(h.sent.filter((s) => s.env.bundleAsk?.op === 'done')).toHaveLength(1);
+    second.resolve({ kind: 'staged', file: bundleStagedFile(h.dir, HOST, M) });
+    await flush();
+    expect(h.sent.filter((s) => s.env.bundleAsk?.op === 'done')).toHaveLength(2);
+  });
+
   it('release discards the staged file and ends the ask', async () => {
     const h = harness();
     await h.asker.bringBack(HOST, SPAWN, ORIGIN);

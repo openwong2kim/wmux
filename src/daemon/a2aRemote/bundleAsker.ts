@@ -229,8 +229,11 @@ export class BundleAsker {
         this.refuse(rec, 'feature-off');
       }
     }
-    const keep = new Set([...this.records.values()].flatMap((r) => (r.phase === 'staged' && r.manifest ? [bundleStagedFile(this.deps.a2aDir, r.hostId, r.manifest)] : [])));
-    const removed = await this.deps.intake.sweepStaged((_hostId, file) => keep.has(file)).catch((err: unknown) => {
+    // Asked as each file is reached, not once before: a transfer that lands meanwhile is kept. A made ask owns its
+    // file too (it may be placed while the sweep runs), as a staged one does.
+    const owned = (file: string): boolean => [...this.records.values()].some((r) =>
+      r.manifest !== undefined && (r.phase === 'made' || r.phase === 'staged') && bundleStagedFile(this.deps.a2aDir, r.hostId, r.manifest) === file);
+    const removed = await this.deps.intake.sweepStaged((_hostId, file) => owned(file)).catch((err: unknown) => {
       this.deps.log('warn', `[a2a-remote] bundle staging not swept: ${errMsg(err)}`);
       return 0;
     });
@@ -270,15 +273,17 @@ export class BundleAsker {
     const m = rec.manifest;
     if (!m) return;
     const mine = this.genOf(rec);
+    // Still this ask, at this step: a release and a new ask for the same spawn make another record.
+    const current = (): boolean => this.records.get(key(rec.hostId, rec.spawnId)) === rec && this.genOf(rec) === mine;
     let got: BundlePull = await this.deps.intake.pull(rec.hostId, m);
-    if (this.genOf(rec) !== mine) return;
+    if (!current()) return;
     if (got.kind === 'not-joined') {
       rec.step = 'send';
       this.save();
       const waiting = this.deps.intake.receive(rec.hostId, m, BUNDLE_TTL_DEFAULT_MS);
       this.ask(rec, { op: 'send', bundleId: m.bundleId });
       got = await waiting;
-      if (this.genOf(rec) !== mine) return;
+      if (!current()) return;
     }
     if (got.kind === 'staged') {
       Object.assign(rec, { phase: 'staged' });
@@ -430,9 +435,9 @@ export class BundleAsker {
     return next;
   }
 
+  /** The record goes; its generation is kept counting, so work started for it never matches a later record's. */
   private drop(k: string): void {
     this.records.delete(k);
-    this.gen.delete(k);
     this.save();
   }
 
