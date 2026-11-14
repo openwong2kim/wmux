@@ -16,7 +16,7 @@
 // branch is then set with `git update-ref`, compare-and-swap.
 
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
@@ -127,6 +127,10 @@ function resolveReal(p: string): string {
   }
 }
 
+/** What starts the import's git: never with a console window. */
+export type ImportGitStart = (file: string, args: string[], opts: SpawnOptions) => ChildProcess;
+const startHidden: ImportGitStart = (file, args, opts) => spawn(file, args, { ...opts, windowsHide: true });
+
 /**
  * The import's git, found by `find`: never one inside the folder it runs in (the repository), and past its time it
  * is killed with its whole process group.
@@ -134,7 +138,7 @@ function resolveReal(p: string): string {
 export const importGitWith = (
   find: (env: NodeJS.ProcessEnv) => string | null,
   /** Test-only seam: what starts the process (a test records that nothing was started). */
-  start: typeof spawn = spawn,
+  start: ImportGitStart = startHidden,
 ): ImportGit => (args, cwd, { stdin, timeoutMs = BUNDLE_IMPORT_TIMEOUT_MS } = {}) => new Promise((resolve) => {
   const env = importGitEnv();
   const exe = find(env);
@@ -157,7 +161,7 @@ export const importGitWith = (
     clearTimeout(timer);
     resolve(out);
   };
-  let child: ReturnType<typeof spawn>;
+  let child: ChildProcess;
   try {
     child = start(exe, args, {
       cwd, env, windowsHide: true, stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32',

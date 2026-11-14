@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import {
   BUNDLE_IMPORT_GIT_FLOOR, findImportGit, gitAtLeast, importBundle, importGit, importGitEnv, importGitWith, noHooksDirReady, openHomeRepo, parseBundleHeader, parseGitVersion,
-  type BundleImportInput, type ImportGit,
+  type BundleImportInput, type ImportGit, type ImportGitStart,
 } from '../bundleImport';
 import { trackedTempDir } from '../../../test-utils/trackedTempDir';
 
@@ -357,10 +357,10 @@ describe('importBundle (real git)', () => {
     fs.writeFileSync(stub, `#!/bin/sh\necho ran > '${marker}'\n`, { mode: 0o755 });
     if (process.platform !== 'win32') expect(findImportGit({ PATH: bin })).toBe(stub);
     const started: string[] = [];
-    const record = ((file: string, ...rest: unknown[]) => {
+    const record: ImportGitStart = (file, args, opts) => {
       started.push(file);
-      return (spawn as (...a: unknown[]) => ReturnType<typeof spawn>)(file, ...rest);
-    }) as typeof spawn;
+      return spawn(file, args, { ...opts, windowsHide: true });
+    };
     // Reached through a short (8.3) name or a link too: the check compares real paths.
     const inside = importGitWith(() => stub, record);
     expect(await importBundle(input, inside)).toEqual({ ok: false, reason: 'git-in-repo' });
