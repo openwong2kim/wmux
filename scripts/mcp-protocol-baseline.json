@@ -93,7 +93,7 @@
     },
     "core": {
       "maxListBytes": 50000,
-      "wireResultSha256": "fc79f2adf454ccc3000903bfe50924158d972ae30713d6738d2c04cf5fe91d91",
+      "wireResultSha256": "d4357c64c28b830ea6f7533e04d33afcad0278f4b5b40d3708f05bf798aa634a",
       "instructionSha256": "4a87aa8208502b84c23fd41c6c2594b91c7e368ad187f14d4905164448548f4a",
       "toolNames": [
         "terminal_read",
