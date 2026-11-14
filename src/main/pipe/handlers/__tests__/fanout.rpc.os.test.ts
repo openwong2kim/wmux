@@ -2430,6 +2430,10 @@ describe('fanout_bring_back (task.fanout.bringBack)', () => {
   const homeGit = (top: string, origin = 'https://github.com/o/r.git'): ImportGit => vi.fn(async (args: string[]) => {
     if (args.includes('--show-toplevel')) return { code: 0, stdout: `${top}\n`, stderr: '' };
     if (args.includes('--show-scope')) return { code: 0, stdout: `local\0remote.origin.url\n${origin}\0`, stderr: '' };
+    if (args.includes('--git-dir')) {
+      fs.mkdirSync(nodePath.join(top, '.git'), { recursive: true });
+      return { code: 0, stdout: `${top}/.git\n${top}/.git\n`, stderr: '' };
+    }
     return { code: 1, stdout: '', stderr: 'unexpected' };
   });
   const call = (h: Harness, over: Record<string, unknown> = {}) => h.bringBack({ senderPtyId: 'pty-1', spawnId: SPAWN, ...over });

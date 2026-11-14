@@ -1185,7 +1185,7 @@ export function registerFanOutRpc(
         return { ok: true as const, state: 'asking' as const, text: `Bringing the work back from ${from}: call fanout_bring_back again in a minute.` };
       }
       const imported = await importBundle({
-        top: home.top, spawnId, file: asked.file, manifest: asked.manifest as A2aBundleManifestV1, ref: asked.ref,
+        top: home.top, gitDir: home.gitDir, spawnId, file: asked.file, manifest: asked.manifest as A2aBundleManifestV1, ref: asked.ref,
         noHooksDir: path.join((deps.wmuxDir ?? getWmuxDir)(), 'factory', 'no-hooks'),
       }, git);
       // Imported or refused, the staged file is done with; a refusal is final for this bundle.

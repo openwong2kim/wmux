@@ -31,6 +31,8 @@ export const BUNDLE_ASKER_REFUSALS = [
   'staging-full',
   /** The home repository's own git config names a program git would run. */
   'home-repo-config',
+  /** No git was found on this PC (in an absolute folder of PATH). */
+  'git-missing',
   /** The home repository belongs to another user, so git does not work in it with this user's settings. */
   'home-repo-owner',
   /** Git refused the import (a corrupt object, the branch checked out): nothing was written. */
@@ -119,6 +121,7 @@ export function bringBackRefusalText(reason: BundleBringBackRefusal, configKind?
     case 'staging-full': return 'too many bundles are waiting on this PC: import or let them expire, then bring back again';
     case 'home-repo-config': return `the home repository's own git config (.git/config) has ${configKind ? HOME_REPO_CONFIG_KIND_TEXT[configKind] : 'a setting that runs a program'}, which wmux does not run git with: remove it there, then bring back again`;
     case 'home-repo-owner': return 'the home repository belongs to another user, and wmux runs git without the global config that could mark it safe: bring back into a repository this user owns';
+    case 'git-missing': return 'git was not found on this PC';
     case 'git-too-old': return 'git on this PC is too old to check a returned bundle; update git, then bring back again';
     case 'import-failed': return 'git refused to import the bundle (a damaged object, or the returned branch is checked out): nothing was changed';
   }

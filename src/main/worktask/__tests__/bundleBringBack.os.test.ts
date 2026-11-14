@@ -153,7 +153,7 @@ describe('bring-back end to end (real box, real asker, real git)', () => {
 
     const noHooks = path.join(root, 'no-hooks');
     fs.mkdirSync(noHooks);
-    const imported = await importOnRunner({ top: home, spawnId: SPAWN, file: staged.file, manifest: staged.manifest, ref: staged.ref, noHooksDir: noHooks });
+    const imported = await importOnRunner({ top: home, gitDir: fs.realpathSync.native(path.join(home, '.git')), spawnId: SPAWN, file: staged.file, manifest: staged.manifest, ref: staged.ref, noHooksDir: noHooks });
     const boxHead = g(worktree, 'rev-parse', 'HEAD');
     expect(imported).toMatchObject({ ok: true, sha: boxHead, noop: false });
     expect(g(home, 'rev-parse', `refs/heads/wmux/returned/${SPAWN}`)).toBe(boxHead);
@@ -164,7 +164,7 @@ describe('bring-back end to end (real box, real asker, real git)', () => {
     asks.length = 0;
     const again = await stagedOf(asker);
     expect(asks.map((a) => a.op)).toEqual(['make', 'send', 'done']);
-    expect(await importOnRunner({ top: home, spawnId: SPAWN, file: again.file, manifest: again.manifest, ref: again.ref, noHooksDir: noHooks }))
+    expect(await importOnRunner({ top: home, gitDir: fs.realpathSync.native(path.join(home, '.git')), spawnId: SPAWN, file: again.file, manifest: again.manifest, ref: again.ref, noHooksDir: noHooks }))
       .toMatchObject({ ok: true, sha: boxHead, noop: true });
     await asker.release(BOX, SPAWN);
   });

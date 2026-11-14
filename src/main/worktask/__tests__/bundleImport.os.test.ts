@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import {
-  BUNDLE_IMPORT_GIT_FLOOR, gitAtLeast, importBundle, importGit, importGitEnv, noHooksDirReady, openHomeRepo, parseBundleHeader, parseGitVersion,
+  BUNDLE_IMPORT_GIT_FLOOR, findImportGit, gitAtLeast, importBundle, importGit, importGitEnv, importGitWith, noHooksDirReady, openHomeRepo, parseBundleHeader, parseGitVersion,
   type BundleImportInput, type ImportGit,
 } from '../bundleImport';
 import { trackedTempDir } from '../../../test-utils/trackedTempDir';
@@ -84,7 +84,7 @@ describe('importBundle (real git)', () => {
   const inputFor = (file: string): BundleImportInput => {
     const bytes = fs.readFileSync(file);
     return {
-      top: home, spawnId: SPAWN, file, ref: REF, noHooksDir: noHooks,
+      top: home, gitDir: fs.realpathSync.native(path.join(home, '.git')), spawnId: SPAWN, file, ref: REF, noHooksDir: noHooks,
       manifest: { bundleId: 'bd-11111111-2222-4333-8444-555555555555', sha256: crypto.createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length },
     };
   };
@@ -116,8 +116,15 @@ describe('importBundle (real git)', () => {
     { name: 'a symlinked .gitmodules', input: () => bundleOf('h-link', [REF], base, commitWith([['120000', '.gitmodules', blob('../../outside')]])) },
     { name: 'a tree with a .git entry', input: () => bundleOf('h-dotgit', [REF], base, commitWith([['40000', '.git', tree([['100644', 'config', blob('[core]\n\tbare = false\n')]])]])) },
     { name: 'a tree with a .. entry', input: () => bundleOf('h-dotdot', [REF], base, commitWith([['40000', '..', tree([['100644', 'x', blob('x\n')]])]])) },
+    { name: 'a tree with a .GIT entry', input: () => bundleOf('h-dotgit-case', [REF], base, commitWith([['40000', '.GIT', tree([['100644', 'config', blob('x\n')]])]])) },
+    { name: 'a tree with a git~1 entry', input: () => bundleOf('h-dotgit-ntfs', [REF], base, commitWith([['40000', 'git~1', tree([['100644', 'config', blob('x\n')]])]])) },
+    { name: 'a .gitmodules url that starts with -', input: () => bundleOf('h-url', [REF], base, commitWith([['100644', '.gitmodules', blob('[submodule "x"]\n\tpath = x\n\turl = -x\n')]])) },
+    { name: 'a .gitmodules update command', input: () => bundleOf('h-update', [REF], base, commitWith([['100644', '.gitmodules', blob('[submodule "x"]\n\tpath = x\n\turl = ./x\n\tupdate = !true\n')]])) },
+    { name: 'a symlinked .gitattributes', input: () => bundleOf('h-attr-link', [REF], base, commitWith([['120000', '.gitattributes', blob('../../outside')]])) },
+    { name: 'a tree with duplicate entries', input: () => bundleOf('h-dup', [REF], base, commitWith([['100644', 'a.txt', blob('again\n')]])) },
     { name: 'a tip that is not a commit', input: () => { g(box, 'tag', '-a', '-m', 't', 'not-a-commit', 'HEAD'); return bundleOf('h-tag', [REF], base, g(box, 'rev-parse', 'not-a-commit')); } },
     {
+      // The manifest is computed over the damaged file, as a box would name it: the hash passes and git refuses the pack.
       name: 'a damaged pack',
       input: () => {
         const input = bundleOf('h-damaged');
@@ -317,9 +324,27 @@ describe('importBundle (real git)', () => {
     for (const a of calls) expect(a).toEqual(expect.arrayContaining(['core.fsmonitor=false', `core.hooksPath=${noHooks}`]));
     expect(calls.some((a) => a.some((x) => ['fetch', 'clone', 'pull', 'remote', 'ls-remote'].includes(x)))).toBe(false);
     const index = calls.find((a) => a.includes('index-pack'))!;
-    expect(index.slice(index.indexOf('index-pack'))).toEqual(['index-pack', '--stdin', '--fix-thin', '--strict', '--fsck-objects']);
+    expect(index.slice(index.indexOf('index-pack'))).toEqual(['index-pack', '--stdin', '--fix-thin', '--strict=gitattributesSymlink=error,gitignoreSymlink=error,mailmapSymlink=error', '--fsck-objects']);
     const update = calls.find((a) => a.includes('update-ref'))!;
     expect(update.slice(update.indexOf('update-ref'))).toEqual(['update-ref', '--no-deref', '-m', 'wmux: bring back', BRANCH, g(box, 'rev-parse', 'HEAD'), '0'.repeat(40)]);
+  });
+
+  it('refuses a home repository whose .git was swapped after it was opened', async () => {
+    const input = bundleOf('swapped');
+    fs.renameSync(path.join(home, '.git'), path.join(root, 'home-git'));
+    fs.writeFileSync(path.join(home, '.git'), `gitdir: ${path.join(box, '.git')}\n`);
+    expect(await importOnRunner(input)).toEqual({ ok: false, reason: 'import-failed' });
+    expect(tipOf(box, BRANCH)).toBeNull();
+    fs.rmSync(path.join(home, '.git'));
+    fs.renameSync(path.join(root, 'home-git'), path.join(home, '.git'));
+    expect(tipOf(home, BRANCH)).toBeNull();
+  });
+
+  it('refuses when no git is found on this PC, before anything runs', async () => {
+    const input = bundleOf('no-git');
+    expect(await importBundle(input, importGitWith(() => null))).toEqual({ ok: false, reason: 'git-missing' });
+    expect(await openHomeRepo(home, importGitWith(() => null))).toEqual({ ok: false, reason: 'git-missing' });
+    expect(tipOf(home, BRANCH)).toBeNull();
   });
 
   it('refuses a hooks folder that is not empty or not a folder', async () => {
@@ -368,11 +393,30 @@ describe('the import\'s git', () => {
     await expect.poll(gone, { timeout: 5_000 }).toBe(true);
   });
 
+  it('finds git only in an absolute folder of PATH, never as a bare name', () => {
+    const found = findImportGit(process.env);
+    expect(found !== null && path.isAbsolute(found)).toBe(true);
+    expect(findImportGit({ PATH: '' })).toBeNull();
+    if (process.platform !== 'win32') {
+      // A relative folder (here, one holding a git) is skipped.
+      const dir = fs.realpathSync(trackedTempDir('wmux-find-git-'));
+      fs.writeFileSync(path.join(dir, 'git'), '#!/bin/sh\n', { mode: 0o755 });
+      expect(findImportGit({ PATH: path.relative(process.cwd(), dir) })).toBeNull();
+      expect(findImportGit({ PATH: dir })).toBe(path.join(dir, 'git'));
+    }
+  });
+
   it('takes a hooks folder only while it is ours, a real folder, and empty; it is made 0700 when missing', () => {
     const dir = fs.realpathSync(trackedTempDir('wmux-no-hooks-'));
     const made = path.join(dir, 'a', 'no-hooks');
     expect(noHooksDirReady(made)).toBe(true);
     if (process.platform !== 'win32') expect(fs.statSync(made).mode & 0o777).toBe(0o700);
+    if (process.platform !== 'win32') {
+      // An existing folder open to others is refused.
+      fs.chmodSync(made, 0o755);
+      expect(noHooksDirReady(made)).toBe(false);
+      fs.chmodSync(made, 0o700);
+    }
     fs.writeFileSync(path.join(made, 'x'), '');
     expect(noHooksDirReady(made)).toBe(false);
     if (process.platform !== 'win32') {
@@ -391,7 +435,7 @@ describe('openHomeRepo (real git)', () => {
     execFileSync('git', ['init', '-q', '-b', 'main', repo]);
     expect(await openHomeRepo(repo)).toEqual({ ok: false, reason: 'no-home-repo' });
     g(repo, 'remote', 'add', 'origin', 'https://github.com/o/r.git');
-    expect(await openHomeRepo(repo)).toEqual({ ok: true, top: fs.realpathSync.native(repo), origin: 'github.com/o/r', linked: false });
+    expect(await openHomeRepo(repo)).toEqual({ ok: true, top: fs.realpathSync.native(repo), gitDir: fs.realpathSync.native(path.join(repo, '.git')), origin: 'github.com/o/r', linked: false });
     fs.mkdirSync(path.join(repo, 'sub'));
     expect(await openHomeRepo(path.join(repo, 'sub'))).toEqual({ ok: false, reason: 'no-home-repo' });
     expect(await openHomeRepo(path.join(root, 'gone'))).toEqual({ ok: false, reason: 'no-home-repo' });
@@ -408,7 +452,7 @@ describe('openHomeRepo (real git)', () => {
     g(repo, 'commit', '-q', '--allow-empty', '-m', 'base');
     const wt = path.join(root, 'wt');
     g(repo, 'worktree', 'add', '-q', '-b', 'other', wt);
-    expect(await openHomeRepo(wt)).toEqual({ ok: true, top: fs.realpathSync.native(wt), origin: 'github.com/o/r', linked: true });
+    expect(await openHomeRepo(wt)).toEqual({ ok: true, top: fs.realpathSync.native(wt), gitDir: fs.realpathSync.native(path.join(repo, '.git', 'worktrees', 'wt')), origin: 'github.com/o/r', linked: true });
   });
 
   it('says when the home repository belongs to another user (git\'s ownership check), not that there is none', async () => {
