@@ -28,6 +28,7 @@ function make(answer: unknown, failWrites: { ack?: boolean; refuse?: boolean }):
       return { status: 200, json: answer };
     },
     // A stream that never yields: only the pump is under test.
+    // eslint-disable-next-line require-yield -- a stream that never yields
     openStream: async function* (_p, { signal }) {
       await new Promise<void>((r) => signal.addEventListener('abort', () => r(), { once: true }));
     },
@@ -84,6 +85,7 @@ describe('JoinerSession status', () => {
       requestJson: async () => ({ status: 200, json: { ok: true, duplicate: false } }),
       // The first stream attempt fails (server down) and leaves a long backoff;
       // the redial afterwards hangs open without a hello yet.
+      // eslint-disable-next-line require-yield -- this stream throws or hangs, never yields
       openStream: async function* (_p, { signal }) {
         stream += 1;
         if (stream === 1) throw new Error('stream refused');
