@@ -3,13 +3,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { A2A_REMOTE_PROTOCOL, type A2aRemoteDeliverResponse, type A2aRemoteEnvelope, type HostId } from '../../shared/a2aRemote';
 import {
-  A2A_BUNDLE_LINK_STATES,
   BUNDLE_BYTES_DEFAULT,
   BUNDLE_TTL_DEFAULT_MS,
   bundleBytesMax,
   parseBundleAsk,
   type A2aBundleAskV1,
-  type A2aBundleLinkState,
   type A2aBundleMadeV1,
   type A2aBundleManifestV1,
   type A2aBundleRefusal,
@@ -99,11 +97,6 @@ interface Standing {
   expiresAt: number;
 }
 
-export function isBundleEnvelope(env: A2aRemoteEnvelope): env is A2aRemoteEnvelope & { link: { state: A2aBundleLinkState } } {
-  const s = env.kind === 'link' ? env.link?.state : undefined;
-  return s !== undefined && (A2A_BUNDLE_LINK_STATES as readonly string[]).includes(s);
-}
-
 const OK: A2aRemoteDeliverResponse = { ok: true, duplicate: false };
 const BAD: A2aRemoteDeliverResponse = { ok: false, error: 'bad-request' };
 
@@ -165,13 +158,11 @@ export class BundleBox {
     this.timer = null;
   }
 
-  /** A `bundle-ask` or `bundle-made` from `peer`: answered later (the make runs on its own), taken now. */
+  /** A `bundle-ask` from `peer` (inbound.ts routes it here): answered later (the make runs on its own), taken now. */
   applyInbound(env: A2aRemoteEnvelope, peer: { hostId: HostId }): A2aRemoteDeliverResponse {
-    if (env.linkVersion !== 0) return BAD;
+    if (env.kind !== 'link' || env.link?.state !== 'bundle-ask' || env.linkVersion !== 0) return BAD;
     // Off here, or a PC that does not take it: taken and dropped, never answered.
     if (!this.deps.enabled() || !this.deps.peerTakes(peer.hostId)) return OK;
-    // An answer to an ask of this PC's: the asking side is not built yet, so it is taken and dropped.
-    if (env.link?.state === 'bundle-made') return OK;
     const ask = parseBundleAsk(env.bundleAsk);
     if (!ask || ask.askId !== env.linkId) return BAD;
     const hostId = peer.hostId;
