@@ -11,8 +11,20 @@ const g = (cwd: string, ...args: string[]): string =>
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8' }).trim();
 
 const SPAWN = 'sp-11111111-2222-4333-8444-555555555555';
-/** The import's checks other than the floor, on whatever git this runner has: the floor has its own tests. */
-const ANY_GIT: readonly [number, number, number] = [0, 0, 0];
+/** This runner's git, named in the measurement's title. */
+const RUNNER_GIT = execFileSync('git', ['--version'], { encoding: 'utf8' }).trim();
+
+/**
+ * The import as shipped (its floor included). A runner whose git is below the floor fails here, loudly and by that
+ * name, never as a failure of the behaviour under test.
+ */
+async function importOnRunner(input: BundleImportInput, git: TaskPushGit = defaultGit): ReturnType<typeof importBundle> {
+  const res = await importBundle(input, git);
+  if (!res.ok && res.reason === 'git-too-old') {
+    throw new Error(`below floor: this runner's ${RUNNER_GIT} is older than the bundle import's floor ${BUNDLE_IMPORT_GIT_FLOOR.join('.')}`);
+  }
+  return res;
+}
 const TREE = 'sp-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const REF = `refs/wmux/bundle/${TREE}`;
 const BRANCH = `refs/heads/wmux/returned/${SPAWN}`;
@@ -100,7 +112,7 @@ describe('importBundle (real git)', () => {
   it('fetches the one ref into wmux/returned/<spawn id>, checks nothing out, and a repeat is a no-op', async () => {
     const input = bundleOf('ok');
     const headBefore = g(home, 'rev-parse', 'HEAD');
-    const res = await importBundle(input, defaultGit, ANY_GIT);
+    const res = await importOnRunner(input);
     const tip = g(box, 'rev-parse', 'HEAD');
     expect(res).toEqual({ ok: true, branch: `wmux/returned/${SPAWN}`, sha: tip, noop: false, warnings: [] });
     expect(tipOf(home, BRANCH)).toBe(tip);
@@ -110,7 +122,7 @@ describe('importBundle (real git)', () => {
     // Nothing but the branch: no tag, no FETCH_HEAD, no bundle ref.
     expect(tipOf(home, REF)).toBeNull();
     expect(fs.existsSync(path.join(home, '.git', 'FETCH_HEAD'))).toBe(false);
-    expect(await importBundle(input, defaultGit, ANY_GIT)).toMatchObject({ ok: true, sha: tip, noop: true });
+    expect(await importOnRunner(input)).toMatchObject({ ok: true, sha: tip, noop: true });
   });
 
   it('runs no hook of the home repository, the reference-transaction hook included', async () => {
@@ -119,29 +131,29 @@ describe('importBundle (real git)', () => {
     for (const name of ['reference-transaction', 'post-checkout', 'post-merge', 'pre-auto-gc', 'fsmonitor-watchman']) {
       fs.writeFileSync(path.join(hooks, name), `#!/bin/sh\necho ${name} >> '${sentinel}'\n`, { mode: 0o755 });
     }
-    const res = await importBundle(bundleOf('hooks'), defaultGit, ANY_GIT);
+    const res = await importOnRunner(bundleOf('hooks'));
     expect(res.ok).toBe(true);
     expect(fs.existsSync(sentinel)).toBe(false);
   });
 
   it('takes only the ref this PC computed: another ref, or two refs, write nothing', async () => {
     const wrong = bundleOf('wrong', ['refs/heads/main']);
-    expect(await importBundle(wrong)).toEqual({ ok: false, reason: 'bundle-unexpected' });
+    expect(await importOnRunner(wrong)).toEqual({ ok: false, reason: 'bundle-unexpected' });
     const two = bundleOf('two', [REF, 'refs/wmux/bundle/other']);
-    expect(await importBundle(two)).toEqual({ ok: false, reason: 'bundle-unexpected' });
+    expect(await importOnRunner(two)).toEqual({ ok: false, reason: 'bundle-unexpected' });
     expect(tipOf(home, BRANCH)).toBeNull();
   });
 
   it('refuses a spawn id that is not an sp-<uuid> before git runs', async () => {
     const input = bundleOf('id');
-    expect(await importBundle({ ...input, spawnId: '../../heads/main' })).toEqual({ ok: false, reason: 'bundle-unexpected' });
+    expect(await importOnRunner({ ...input, spawnId: '../../heads/main' })).toEqual({ ok: false, reason: 'bundle-unexpected' });
     expect(tipOf(home, 'refs/heads/main')).toBe(base);
   });
 
   it('refuses a file whose size or hash is not the manifest\'s', async () => {
     const input = bundleOf('sha');
-    expect(await importBundle({ ...input, manifest: { ...input.manifest, sha256: 'f'.repeat(64) } })).toEqual({ ok: false, reason: 'bundle-unexpected' });
-    expect(await importBundle({ ...input, manifest: { ...input.manifest, bytes: input.manifest.bytes + 1 } })).toEqual({ ok: false, reason: 'bundle-unexpected' });
+    expect(await importOnRunner({ ...input, manifest: { ...input.manifest, sha256: 'f'.repeat(64) } })).toEqual({ ok: false, reason: 'bundle-unexpected' });
+    expect(await importOnRunner({ ...input, manifest: { ...input.manifest, bytes: input.manifest.bytes + 1 } })).toEqual({ ok: false, reason: 'bundle-unexpected' });
     expect(tipOf(home, BRANCH)).toBeNull();
   });
 
@@ -151,7 +163,7 @@ describe('importBundle (real git)', () => {
     g(box, 'commit', '-q', '-m', 'more');
     // Its prerequisite is the box's own first commit of work, which the home repository never had.
     const input = bundleOf('prereq', [REF], 'HEAD~1');
-    expect(await importBundle(input, defaultGit, ANY_GIT)).toEqual({ ok: false, reason: 'base-not-local' });
+    expect(await importOnRunner(input)).toEqual({ ok: false, reason: 'base-not-local' });
     expect(tipOf(home, BRANCH)).toBeNull();
   });
 
@@ -161,7 +173,7 @@ describe('importBundle (real git)', () => {
     g(home, 'commit', '-q', '-m', 'mine');
     const mine = g(home, 'rev-parse', 'HEAD');
     g(home, 'update-ref', BRANCH, mine);
-    expect(await importBundle(bundleOf('nonff'), defaultGit, ANY_GIT)).toEqual({ ok: false, reason: 'not-fast-forward' });
+    expect(await importOnRunner(bundleOf('nonff'))).toEqual({ ok: false, reason: 'not-fast-forward' });
     expect(tipOf(home, BRANCH)).toBe(mine);
   });
 
@@ -170,7 +182,7 @@ describe('importBundle (real git)', () => {
     const bytes = fs.readFileSync(input.file);
     bytes[bytes.length - 1] ^= 0xff;
     fs.writeFileSync(input.file, bytes);
-    expect(await importBundle(inputFor(input.file), defaultGit, ANY_GIT)).toEqual({ ok: false, reason: 'import-failed' });
+    expect(await importOnRunner(inputFor(input.file))).toEqual({ ok: false, reason: 'import-failed' });
     expect(tipOf(home, BRANCH)).toBeNull();
   });
 
@@ -178,36 +190,24 @@ describe('importBundle (real git)', () => {
     fs.writeFileSync(path.join(box, '.gitmodules'), '[submodule "../../../hooks"]\n\tpath = x\n\turl = ./x\n');
     g(box, 'add', '.gitmodules');
     g(box, 'commit', '-q', '-m', 'modules');
-    expect(await importBundle(bundleOf('modules'), defaultGit, ANY_GIT)).toEqual({ ok: false, reason: 'import-failed' });
+    expect(await importOnRunner(bundleOf('modules'))).toEqual({ ok: false, reason: 'import-failed' });
     expect(tipOf(home, BRANCH)).toBeNull();
   });
 
-  it('this runner\'s git refuses a bundle whose objects fail fsck when fetched with the import\'s settings (the floor\'s measurement; never skipped)', () => {
-    // The same fetch the import runs, straight through git: it must refuse on every runner that runs this suite.
+  it(`measurement: ${RUNNER_GIT} refuses a bundle whose objects fail fsck, through the import's exact fetch (floor bypassed; never skipped)`, async () => {
     fs.writeFileSync(path.join(box, '.gitmodules'), '[submodule "../../../hooks"]\n\tpath = x\n\turl = ./x\n');
     g(box, 'add', '.gitmodules');
     g(box, 'commit', '-q', '-m', 'modules');
-    const input = bundleOf('measure');
-    const version = execFileSync('git', ['--version'], { encoding: 'utf8' }).trim();
-    let refused = false;
-    try {
-      execFileSync('git', ['-c', 'transfer.fsckObjects=true', '-c', 'fetch.fsckObjects=true', '-c', 'fetch.unpackLimit=1',
-        'fetch', '--no-tags', '--recurse-submodules=no', '--no-write-fetch-head', '--quiet', '--', input.file, `${REF}:${BRANCH}`],
-      { cwd: home, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }, stdio: 'pipe' });
-    } catch {
-      refused = true;
-    }
-    expect({ version, refused }).toEqual({ version, refused: true });
+    // The floor is bypassed with the test-only seam (a floor of 0.0.0): this measures git, not the floor.
+    const res = await importBundle(bundleOf('measure'), defaultGit, [0, 0, 0]);
+    console.info(`[bundleImport measurement] ${RUNNER_GIT}: ${res.ok ? 'NOT refused' : `refused (${res.reason})`}`);
+    expect({ git: RUNNER_GIT, res }).toEqual({ git: RUNNER_GIT, res: { ok: false, reason: 'import-failed' } });
     expect(tipOf(home, BRANCH)).toBeNull();
-    // A git this suite runs on is at or above the floor, or the import refuses it before fetching.
-    const v = parseGitVersion(version);
-    expect(v).not.toBeNull();
-    if (v && !gitAtLeast(v)) console.warn(`[bundleImport] git ${version} is below the floor ${BUNDLE_IMPORT_GIT_FLOOR.join('.')}`);
   });
 
   it('refuses before fetching when git is older than the floor or its version cannot be read', async () => {
     const input = bundleOf('old');
-    for (const out of ['git version 2.20.1', 'not git']) {
+    for (const out of ['git version 2.20.1', `git version ${BUNDLE_IMPORT_GIT_FLOOR[0]}.${BUNDLE_IMPORT_GIT_FLOOR[1]}.${BUNDLE_IMPORT_GIT_FLOOR[2] - 1}`, 'not git', '']) {
       const calls: string[][] = [];
       const old: TaskPushGit = (args, cwd, env, opts) => {
         calls.push(args);
@@ -217,6 +217,16 @@ describe('importBundle (real git)', () => {
       expect(calls.some((a) => a.includes('fetch'))).toBe(false);
     }
     expect(tipOf(home, BRANCH)).toBeNull();
+    // At the floor and above it, the import goes on to fetch.
+    for (const out of [`git version ${BUNDLE_IMPORT_GIT_FLOOR.join('.')}`, `git version ${BUNDLE_IMPORT_GIT_FLOOR[0]}.${BUNDLE_IMPORT_GIT_FLOOR[1] + 1}.0.windows.1`]) {
+      const fetched: string[][] = [];
+      const at: TaskPushGit = (args, cwd, env, opts) => {
+        fetched.push(args);
+        return args.includes('--version') ? Promise.resolve({ code: 0, stdout: `${out}\n`, stderr: '' }) : defaultGit(args, cwd, env, opts);
+      };
+      expect((await importBundle(input, at)).ok).toBe(true);
+      expect(fetched.some((a) => a.includes('fetch')) || tipOf(home, BRANCH) !== null).toBe(true);
+    }
   });
 
   it('leaves no ref but the one branch, and no FETCH_HEAD, whether the import lands or fails', async () => {
@@ -224,7 +234,7 @@ describe('importBundle (real git)', () => {
     fs.writeFileSync(path.join(box, '.gitmodules'), '[submodule "../../../hooks"]\n\tpath = x\n\turl = ./x\n');
     g(box, 'add', '.gitmodules');
     g(box, 'commit', '-q', '-m', 'modules');
-    expect((await importBundle(bundleOf('fail'), defaultGit, ANY_GIT)).ok).toBe(false);
+    expect((await importOnRunner(bundleOf('fail'))).ok).toBe(false);
     expect(g(home, 'for-each-ref', '--format=%(refname)')).toBe(refsBefore);
     expect(fs.existsSync(path.join(home, '.git', 'FETCH_HEAD'))).toBe(false);
   });
@@ -232,12 +242,12 @@ describe('importBundle (real git)', () => {
   it('refuses, and does not move, a returned branch checked out in any worktree', async () => {
     const other = path.join(root, 'wt');
     g(home, 'worktree', 'add', '-q', '-b', `wmux/returned/${SPAWN}`, other, base);
-    expect(await importBundle(bundleOf('wt'), defaultGit, ANY_GIT)).toEqual({ ok: false, reason: 'import-failed' });
+    expect(await importOnRunner(bundleOf('wt'))).toEqual({ ok: false, reason: 'import-failed' });
     expect(tipOf(home, BRANCH)).toBe(base);
     g(home, 'worktree', 'remove', '--force', other);
     // Checked out in the home repository's own worktree.
     g(home, 'checkout', '-q', `wmux/returned/${SPAWN}`);
-    expect(await importBundle(bundleOf('main-wt'), defaultGit, ANY_GIT)).toEqual({ ok: false, reason: 'import-failed' });
+    expect(await importOnRunner(bundleOf('main-wt'))).toEqual({ ok: false, reason: 'import-failed' });
     expect(tipOf(home, BRANCH)).toBe(base);
   });
 
@@ -248,7 +258,7 @@ describe('importBundle (real git)', () => {
       return defaultGit(args, cwd, env, opts);
     };
     const input = bundleOf('argv');
-    expect((await importBundle(input, recording, ANY_GIT)).ok).toBe(true);
+    expect((await importOnRunner(input, recording)).ok).toBe(true);
     const fetch = calls.find((c) => c.args.includes('fetch'));
     expect(fetch).toBeDefined();
     const a = fetch!.args;

@@ -175,7 +175,7 @@ export const BUNDLE_IMPORT_WARNING_TEXT: Record<BundleImportWarning, string> = {
 export async function importBundle(
   input: BundleImportInput,
   git: TaskPushGit = defaultGit,
-  /** Tests of the import's other checks run on any git; the floor has its own tests. */
+  /** Test-only seam: the floor's measurement bypasses it to test git itself. Callers leave it as shipped. */
   gitFloor: readonly [number, number, number] = BUNDLE_IMPORT_GIT_FLOOR,
 ): Promise<BundleImportResult> {
   const unexpected = { ok: false as const, reason: 'bundle-unexpected' as const };
