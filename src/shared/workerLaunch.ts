@@ -50,6 +50,7 @@
 import { AGENT_ROWS, type AgentIdentityRow } from './agentIdentity';
 import { permissionChoiceIndexes } from './agentLaunchOptions';
 import { commandChoosesModel } from './orchestratorRole';
+import { stripPromptFileArgument } from './promptFileArgument';
 
 /** The variable the launch neutralises. */
 export const WORKER_MODEL_ENV = 'ANTHROPIC_MODEL';
@@ -438,10 +439,13 @@ function lineFlags(command: string, words: readonly Span[]): LineFlags {
       }
       // claude's list flags are variadic: it reads every word up to the next
       // flag as a rule. The one word wmux puts there itself is the prompt
-      // argument (`"$(cat '…')"`, `"$(Get-Content …)"`), which follows the
-      // launcher; any other word would be a deny wmux cannot carry.
-      const next = words[k + 1]?.value;
-      if (denies && next !== undefined && !next.startsWith('-') && !next.startsWith('$(')) out.uncarriable = true;
+      // argument, exactly as promptFileArgument builds it (`"$(cat '…')"`,
+      // `"$(Get-Content …)"`), which follows the launcher; any other word,
+      // a launcher's own `"$(…)"` included, would be a deny wmux cannot carry.
+      const next = words[k + 1];
+      if (denies && next && !next.value.startsWith('-') && stripPromptFileArgument(command.slice(next.start, next.end)) !== '') {
+        out.uncarriable = true;
+      }
     }
   }
   return out;

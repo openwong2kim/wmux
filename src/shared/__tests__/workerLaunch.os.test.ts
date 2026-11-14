@@ -21,6 +21,7 @@ import {
   FANOUT_WORKER_PERMISSION_MODES,
 } from '../workerLaunch';
 import { FANOUT_AGENTS } from '../fanoutPreset';
+import { promptFileArgument } from '../promptFileArgument';
 import { AGENT_ROWS, agentRow } from '../agentIdentity';
 
 const CODEX_MANUAL_FLAGS = '-a on-request -s read-only -c approvals_reviewer=user';
@@ -226,10 +227,13 @@ describe('applyWorkerPermissionFlags', () => {
       // Bash is not repeated: the `*` before it already covers it.
       `claude ${PROMPT} --permission-mode auto --disallowedTools "${[...FANOUT_WORKER_DISALLOWED_TOOLS, 'Read', '*'].join(',')}"`,
     );
-    // The PowerShell prompt argument follows a deny list as well.
-    expect(workerModeRefusal(`claude --disallowedTools Bash "$(Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:/p/prompt.md')"`, 'auto')).toBeNull();
-    // Any other word after the rules is a deny wmux cannot carry.
+    // The prompt argument exactly as main builds it may follow a deny list, on either platform.
+    for (const [platform, file] of [['win32', 'C:\\p\\task one\\prompt.md'], ['linux', '/tmp/p/task one/prompt.md'], ['darwin', '/tmp/p/prompt.md']] as const) {
+      expect(workerModeRefusal(`claude --disallowedTools Bash ${promptFileArgument(file, platform)}`, 'auto')).toBeNull();
+    }
+    // Any other word after the rules is a deny wmux cannot carry, a launcher's own `$(…)` included.
     expect(workerModeRefusal(`claude --disallowedTools Read "rm -rf" ${PROMPT}`, 'auto')).toContain('was not started');
+    expect(workerModeRefusal(`claude --disallowedTools Read "$(printf Bash)" ${PROMPT}`, 'auto')).toContain('was not started');
     expect(workerModeRefusal(`claude --disallowedTools Read --model opus ${PROMPT}`, 'auto')).toBeNull();
   });
 
