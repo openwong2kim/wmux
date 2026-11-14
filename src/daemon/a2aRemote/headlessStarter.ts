@@ -17,6 +17,7 @@ import { workerLaunchFlags } from '../../shared/workerLaunch';
  */
 export const HEADLESS_EXTRA_DISALLOWED_TOOLS: readonly string[] = [
   'mcp__wmux__remote_spawn',
+  'mcp__wmux__fanout_bring_back',
   'mcp__wmux__hand_out',
   'mcp__wmux__task_push',
   'mcp__wmux__a2a_broadcast',

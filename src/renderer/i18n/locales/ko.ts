@@ -4676,6 +4676,7 @@ export const ko = {
   'sessionSchedule.statusSent': '전송됨',
   'sessionSchedule.statusError': '전송 오류',
   'sessionSchedule.statusPaused': '일시정지됨',
+  'sessionSchedule.statusGaveUpBusy': '전송 안 됨: 입력창이 1시간 동안 비어 있지 않았음',
   'sessionSchedule.daemonRequired': '예약하려면 wmux 백그라운드 서비스가 필요한데 연결되어 있지 않습니다. 다시 연결되면 시도하세요.',
   'sessionSchedule.promptLabel': '예약 프롬프트',
   'sessionSchedule.whenLabel': '전송 시간',

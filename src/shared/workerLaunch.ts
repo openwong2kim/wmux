@@ -50,6 +50,7 @@
 import { AGENT_ROWS, type AgentIdentityRow } from './agentIdentity';
 import { permissionChoiceIndexes } from './agentLaunchOptions';
 import { commandChoosesModel } from './orchestratorRole';
+import { stripPromptFileArgument } from './promptFileArgument';
 
 /** The variable the launch neutralises. */
 export const WORKER_MODEL_ENV = 'ANTHROPIC_MODEL';
@@ -248,23 +249,89 @@ export function workerLaunchFlags(mode: FanoutWorkerPermissionMode, extraDisallo
 /** `permission` (empty for none) and the tool lists, as they appear on the line. */
 function launchFlags(permission: string, extraDisallowed: readonly string[]): string {
   // Extra rules join the SAME quoted list: claude splits it on commas and
-  // spaces outside parentheses, so `Bash(git push*)` stays one rule.
-  const denied = [...FANOUT_WORKER_DISALLOWED_TOOLS, ...extraDisallowed];
-  // A tool denied is not also allowed: the two lists never contradict.
+  // spaces outside parentheses, so `Bash(git push*)` stays one rule. Only an
+  // exact repeat is left out: a rule another one "covers" by wmux's reading of
+  // globs stays, since claude may read the glob differently and the user's
+  // deny would be lost; a repeat costs nothing.
+  const denied: string[] = [...FANOUT_WORKER_DISALLOWED_TOOLS];
+  for (const rule of extraDisallowed) {
+    if (!denied.includes(rule)) denied.push(rule);
+  }
+  // A tool denied is not also allowed: the two lists never contradict. Here
+  // wmux's glob reading only trims the allow list (a wrong read only keeps a
+  // reporting tool off it, which the fan-out result then says).
   const allowed = FANOUT_WORKER_ALLOWED_TOOLS.filter((tool) => !denied.some((rule) => toolRuleCovers(rule, tool)));
   return [
     permission,
-    `--allowedTools "${allowed.join(',')}"`,
+    // Nothing left to allow: no list at all, rather than an empty word.
+    allowed.length > 0 ? `--allowedTools "${allowed.join(',')}"` : '',
     `--disallowedTools "${denied.join(',')}"`,
   ]
     .filter((p) => p.length > 0)
     .join(' ');
 }
 
-/** Whether a tool rule names `tool`: the same rule, or a `prefix*` rule it starts with. */
+/**
+ * Whether a tool rule names `tool`: the same rule, a `prefix*` rule it starts
+ * with, or an MCP server's rule (`mcp__wmux`), which claude reads as every
+ * tool of that server.
+ */
 export function toolRuleCovers(rule: string, tool: string): boolean {
-  return rule === tool || (rule.endsWith('*') && !rule.includes('(') && tool.startsWith(rule.slice(0, -1)));
+  return (
+    rule === tool ||
+    // A tool-name glob (`mcp__wmux__*`, `mcp__wmux__*update`, `*`); a rule with an argument names no tool by glob.
+    (rule.includes('*') && !rule.includes('(') && globMatches(rule, tool)) ||
+    (/^mcp__[^_]+(?:_[^_]+)*$/.test(rule) && tool.startsWith(`${rule}__`))
+  );
 }
+
+/**
+ * Whether `text` matches `glob`, where `*` is any run of characters and every
+ * other character is literal. Linear: each literal part is found left to
+ * right with indexOf, so a rule like `m***…***X` cannot backtrack.
+ */
+function globMatches(glob: string, text: string): boolean {
+  const parts = glob.split('*');
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  if (!text.startsWith(first) || text.length < first.length + last.length || !text.endsWith(last)) return false;
+  let at = first.length;
+  const end = text.length - last.length;
+  for (const part of parts.slice(1, -1)) {
+    if (!part) continue;
+    const found = text.indexOf(part, at);
+    if (found < 0 || found + part.length > end) return false;
+    at = found + part.length;
+  }
+  return true;
+}
+
+/** A tool-list value split into rules the way claude reads it: on commas and whitespace outside parentheses. */
+function toolRules(value: string): string[] {
+  const out: string[] = [];
+  let rule = '';
+  let depth = 0;
+  for (const c of value) {
+    if (c === '(') depth++;
+    else if (c === ')' && depth > 0) depth--;
+    if (depth === 0 && (c === ',' || /\s/.test(c))) {
+      if (rule) out.push(rule);
+      rule = '';
+    } else {
+      rule += c;
+    }
+  }
+  if (rule) out.push(rule);
+  return out;
+}
+
+/**
+ * A deny rule wmux can put inside the double-quoted list on the worker's line
+ * and have claude read unchanged, in a POSIX shell, PowerShell and cmd alike:
+ * no quote, `$`, backtick, backslash, `!` (history expansion in an interactive
+ * bash or zsh), `%` (cmd's variables) or line break.
+ */
+const CARRIABLE_RULE = /^(?:\*|[A-Za-z_][\w*.:-]*(\([^"'`$\\!%\r\n“”„‘’]*\))?)$/;
 
 interface Span {
   /** Unquoted value (quotes stripped). */
@@ -316,7 +383,13 @@ const VALUE_FLAGS = new Set(['--permission-mode']);
 const LIST_FLAGS = new Set(['--allowedTools', '--allowed-tools', '--disallowedTools', '--disallowed-tools']);
 /** A tool rule as it appears after a space-form list flag (`Bash(git *)`,
  *  `mcp__x__y`, `Edit,Read`). The prompt argument never looks like one. */
-const TOOL_RULE = /^[A-Za-z_][\w*-]*(\(.*\))?(,[A-Za-z_][\w*-]*(\(.*\))?)*$/;
+const TOOL_RULE = /^(?:\*|[A-Za-z_][\w*-]*(\(.*\))?)(,(?:\*|[A-Za-z_][\w*-]*(\(.*\))?))*$/;
+/** A quoted space-separated list (`"Bash PowerShell"`, claude splits on spaces
+ *  too). Only tool-shaped names: a built-in tool's capitalised name or an MCP
+ *  name, so a quoted sentence ("Read the README first") is never taken. */
+const SPACED_TOOL_RULE = /^(?:\*|(?:[A-Z][A-Za-z0-9*]*|mcp__[\w*-]+)(\([^)]*\))?)([,\s]+(?:\*|(?:[A-Z][A-Za-z0-9*]*|mcp__[\w*-]+)(\([^)]*\))?))+$/;
+/** Either form; `*` (claude's every-tool rule) is one in both. */
+const isToolRuleWord = (value: string): boolean => TOOL_RULE.test(value) || SPACED_TOOL_RULE.test(value);
 
 /** The launcher of a line: its first word's file name, lower case, without a Windows extension. */
 function launcherStemOf(words: readonly Span[]): string {
@@ -328,19 +401,168 @@ function rowOfStem(stem: string): AgentIdentityRow | undefined {
   return AGENT_ROWS.find((r) => (r.launcher ?? r.slug) === stem);
 }
 
+const DENY_FLAGS = new Set(['--disallowedTools', '--disallowed-tools']);
+/** The prompt file FanOutService writes for a task, `<dir>/.meta/<task>/prompt.md`, as quoted in its prompt argument. */
+const WMUX_PROMPT_FILE = /[\\/]\.meta[\\/][^\\/']+[\\/]prompt\.md'/;
+
+/** What a line's permission and tool-list flags are, read once. */
+interface LineFlags {
+  /** The bare bypass flags, and every tool-list flag with its rules: always cut. */
+  cut: Span[];
+  /** The line's own `--permission-mode` words and values. */
+  modes: { words: Span[]; value: string }[];
+  bypass: boolean;
+  /** The rules of its own deny lists. */
+  denied: string[];
+  /** Those of them wmux can write onto a worker's line as the launcher wrote them. */
+  carriable: string[];
+  /** What kept a deny rule from being carried as written (the kinds of character, never the rule). */
+  unquotable: Set<string>;
+  /** A word right after a space-form deny list that is neither a rule, a flag nor wmux's prompt. */
+  strayWord: boolean;
+}
+
+/** Why a deny rule cannot be carried, by kind of character; empty when it can. */
+function unquotableKinds(rule: string, raw: string): string[] {
+  const kinds: string[] = [];
+  if (/["'“”„‘’]/.test(rule)) kinds.push('a quote');
+  if (rule.includes('$')) kinds.push('`$`');
+  if (rule.includes('`')) kinds.push('a backtick');
+  if (rule.includes('\\') || raw.includes('\\')) kinds.push('a backslash');
+  if (rule.includes('!')) kinds.push('`!`');
+  if (rule.includes('%')) kinds.push('`%`');
+  if (/[\r\n]/.test(rule)) kinds.push('a line break');
+  if (raw.includes("''")) kinds.push("PowerShell's `''` escape");
+  if (kinds.length === 0 && !CARRIABLE_RULE.test(rule)) kinds.push('a character a tool rule does not have');
+  return kinds;
+}
+
 /**
- * Why a launch line may not start in `mode`, or null when it may. `manual`
- * must make the agent ask, and wmux knows how only for an agent whose row
- * declares it (`permissions` for Claude's permission mode, or `askMode`): any
- * other agent (or a wrapper wmux cannot see through) would run on its own
+ * The line's permission and tool-list flags. Word-based: a flag spelled inside
+ * a quoted argument (a prompt, an --append-system-prompt value) is part of
+ * that word and is never matched. A deny word written with PowerShell's `''`
+ * escape or with a backslash cannot be carried either (`unquotable`): the
+ * words drop those, while a shell may keep them, so the rule read here may not
+ * be the rule the launcher denied. A space-form deny list followed by a word
+ * that is no tool rule (claude would read it as one) is `strayWord`: that word
+ * is not carried as a rule, and dropping it would leave a deny out.
+ */
+function lineFlags(command: string, words: readonly Span[]): LineFlags {
+  const out: LineFlags = { cut: [], modes: [], bypass: false, denied: [], carriable: [], unquotable: new Set(), strayWord: false };
+  /**
+   * The index of wmux's own prompt argument, or -1: the last word of exactly
+   * its shape, and only when it names a fan-out prompt file. A task with no
+   * prompt gets none, and a launcher's own word of that shape is then the last one.
+   */
+  let promptAt = -1;
+  for (let k = words.length - 1; k > 0; k--) {
+    const raw = command.slice(words[k].start, words[k].end);
+    if (stripPromptFileArgument(raw) !== '') continue;
+    if (WMUX_PROMPT_FILE.test(raw)) promptAt = k;
+    break;
+  }
+  const deny = (word: Span, value: string): void => {
+    const rules = toolRules(value);
+    out.denied.push(...rules);
+    const raw = command.slice(word.start, word.end);
+    for (const rule of rules) {
+      const kinds = unquotableKinds(rule, raw);
+      if (kinds.length === 0) out.carriable.push(rule);
+      for (const kind of kinds) out.unquotable.add(kind);
+    }
+  };
+  for (let k = 1; k < words.length; k++) {
+    const v = words[k].value;
+    const eq = v.indexOf('=');
+    const flag = eq >= 0 ? v.slice(0, eq) : v;
+    if (BARE_PERMISSION_FLAGS.has(v)) {
+      out.cut.push(words[k]);
+      out.bypass = true;
+    } else if (VALUE_FLAGS.has(flag)) {
+      const own = [words[k]];
+      if (eq < 0 && k + 1 < words.length) own.push(words[++k]);
+      out.modes.push({ words: own, value: eq >= 0 ? v.slice(eq + 1) : own[1]?.value ?? '' });
+    } else if (LIST_FLAGS.has(flag)) {
+      out.cut.push(words[k]);
+      const denies = DENY_FLAGS.has(flag);
+      if (eq >= 0) {
+        if (denies) deny(words[k], v.slice(eq + 1));
+        continue;
+      }
+      while (k + 1 < words.length && isToolRuleWord(words[k + 1].value)) {
+        out.cut.push(words[++k]);
+        if (denies) deny(words[k], words[k].value);
+      }
+      // claude's list flags are variadic: it reads every word up to the next
+      // flag as a rule. The one word wmux puts there itself is the prompt
+      // argument, exactly as promptFileArgument builds it (`"$(cat '…')"`,
+      // `"$(Get-Content …)"`), appended after the whole launcher, so it is the
+      // last word of that shape on the line. Any other word, a launcher's own
+      // `"$(…)"` included (even one of the same shape), would be a deny wmux
+      // cannot carry. A lone `-` is no flag either.
+      const next = k + 1;
+      const isFlag = next < words.length && words[next].value.length > 1 && words[next].value.startsWith('-');
+      if (denies && next < words.length && !isFlag && next !== promptAt) out.strayWord = true;
+    }
+  }
+  return out;
+}
+
+/**
+ * The tools a fan-out worker reports with (FANOUT_WORKER_ALLOWED_TOOLS) that
+ * the deny list of a claude worker's line covers. Only a line wmux gave the
+ * worker lists to counts (its own deny list is on it): a launcher's deny
+ * stays on that line, so the worker may not be able to report.
+ */
+export function deniedWorkerReportTools(command: string): string[] {
+  const { denied } = lineFlags(command, spans(command));
+  if (!denied.includes(FANOUT_WORKER_DISALLOWED_TOOLS[0])) return [];
+  return FANOUT_WORKER_ALLOWED_TOOLS.filter((tool) => denied.some((rule) => toolRuleCovers(rule, tool)));
+}
+
+/**
+ * Why a launch line may not start in `mode`, or null when it may.
+ *
+ * `manual` must make the agent ask, and wmux knows how only for an agent whose
+ * row declares it (`permissions` for Claude's permission mode, or `askMode`):
+ * any other agent (or a wrapper wmux cannot see through) would run on its own
  * settings, so it is refused instead.
+ *
+ * A claude line's own deny rules are carried onto the worker's line
+ * (applyWorkerPermissionFlags). One that cannot be quoted there is refused
+ * rather than dropped, which would leave that tool allowed. The refusal does
+ * not repeat the rule.
  */
 export function workerModeRefusal(command: string, mode: FanoutWorkerPermissionMode): string | null {
-  if (mode !== 'manual') return null;
-  const stem = launcherStemOf(spans(command));
+  const words = spans(command);
+  const stem = launcherStemOf(words);
   const row = rowOfStem(stem);
-  if (row?.permissions === 'permission-mode' || row?.askMode) return null;
-  return `the manual worker mode makes the agent ask before it acts, and wmux knows no flag that does that for ${stem ? `\`${stem}\`` : 'this launch line'}; it was not started. Choose another worker mode, or an agent it can make ask`;
+  if (mode === 'manual' && !(row?.permissions === 'permission-mode' || row?.askMode)) {
+    return `the manual worker mode makes the agent ask before it acts, and wmux knows no flag that does that for ${stem ? `\`${stem}\`` : 'this launch line'}; it was not started. Choose another worker mode, or an agent it can make ask`;
+  }
+  if (!workerLineKind(stem, mode).lists) return null;
+  const flags = lineFlags(command, words);
+  if (flags.unquotable.size > 0) {
+    const kinds = [...flags.unquotable];
+    const listed = kinds.length === 1 ? kinds[0] : `${kinds.slice(0, -1).join(', ')} or ${kinds[kinds.length - 1]}`;
+    const path = flags.unquotable.has('a backslash') ? ' (in a Windows path, use forward slashes)' : '';
+    return `the launch line denies a tool with a rule that holds ${listed}, which wmux cannot carry onto the worker's line as written; it was not started, so that tool is not left allowed. Write the rule without it${path}`;
+  }
+  if (flags.strayWord) {
+    return 'the launch line has a word right after its --disallowedTools rules that is neither a rule nor a flag, and claude would read it as one more rule; it was not started, so that deny is not dropped. Put the deny rules last on the launch line, or write them as one quoted comma list with = (--disallowedTools="Bash,Read"), so the next word is not read as a rule';
+  }
+  return null;
+}
+
+/**
+ * How applyWorkerPermissionFlags treats a line with this launcher: `ask`, the
+ * ask flags of a `manual` agent that declares them (manualOnLine); `lists`,
+ * a claude line that gets the worker's permission flag and tool lists.
+ * Anything else is left as it is.
+ */
+function workerLineKind(stem: string, mode: FanoutWorkerPermissionMode): { ask?: NonNullable<AgentIdentityRow['askMode']>; lists: boolean } {
+  const ask = mode === 'manual' ? rowOfStem(stem)?.askMode : undefined;
+  return { ask, lists: !ask && stem === 'claude' };
 }
 
 /** `line` without the words in `cut`, each with the whitespace in front of it; nothing else is re-spaced. */
@@ -387,6 +609,10 @@ function manualOnLine(command: string, words: readonly Span[], ask: NonNullable<
  *
  * Any permission or tool-list flag already on the line (a role binding's args,
  * a typed agentCmd) is removed first so the setting is the one that applies.
+ * The line's own deny rules are the exception: they join wmux's deny list, so
+ * a tool the launcher denied stays denied for its workers (a deny only
+ * narrows; its allow list and permission mode are still replaced). A rule
+ * that cannot be quoted there is refused by workerModeRefusal first.
  * Removal is word-based: a flag spelled inside a quoted argument (a prompt, an
  * --append-system-prompt value) is part of that word and is never matched.
  * The tool lists are applied in every mode. `extraDisallowed` adds deny rules to
@@ -399,36 +625,15 @@ export function applyWorkerPermissionFlags(
   extraDisallowed: readonly string[] = [],
 ): string {
   const words = spans(command);
-  const stem = launcherStemOf(words);
-  const ask = mode === 'manual' ? rowOfStem(stem)?.askMode : undefined;
+  const { ask, lists } = workerLineKind(launcherStemOf(words), mode);
   if (ask) return manualOnLine(command, words, ask);
-  if (stem !== 'claude') return command;
+  if (!lists) return command;
 
-  const cut: Span[] = [];
-  /** The line's own `--permission-mode` words and values. */
-  const modes: { words: Span[]; value: string }[] = [];
-  let bypass = false;
-  for (let k = 1; k < words.length; k++) {
-    const v = words[k].value;
-    const flag = v.includes('=') ? v.slice(0, v.indexOf('=')) : v;
-    const hasValue = v.includes('=');
-    if (BARE_PERMISSION_FLAGS.has(v)) {
-      cut.push(words[k]);
-      bypass = true;
-    } else if (VALUE_FLAGS.has(flag)) {
-      const own = [words[k]];
-      if (!hasValue && k + 1 < words.length) own.push(words[++k]);
-      modes.push({ words: own, value: hasValue ? v.slice(v.indexOf('=') + 1) : own[1]?.value ?? '' });
-    } else if (LIST_FLAGS.has(flag)) {
-      cut.push(words[k]);
-      if (!hasValue) {
-        while (k + 1 < words.length && TOOL_RULE.test(words[k + 1].value)) cut.push(words[++k]);
-      }
-    }
-  }
+  const { cut, modes, bypass, carriable } = lineFlags(command, words);
   // Manual keeps a mode of the line's own that already asks (a resumed `plan` worker stays in plan); any other mode,
   // or one beside a bypass, gives way to the worker's.
   const keep = mode === 'manual' && !bypass && modes.length > 0 && modes.every((m) => ASKING_CLAUDE_MODES.has(m.value));
   if (!keep) for (const m of modes) cut.push(...m.words);
-  return `${withoutWords(command, cut)} ${launchFlags(keep ? '' : PERMISSION_FLAG_FOR_WORKER[mode], extraDisallowed)}`;
+  // Never written unquotable: such a line does not launch (workerModeRefusal).
+  return `${withoutWords(command, cut)} ${launchFlags(keep ? '' : PERMISSION_FLAG_FOR_WORKER[mode], [...extraDisallowed, ...carriable])}`;
 }

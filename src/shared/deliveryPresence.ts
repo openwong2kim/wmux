@@ -19,11 +19,18 @@ export interface DeliveryCheck {
    *  agent's collapsed form of a long paste names (`+N lines`, `N chars`). */
   shownLines?: number;
   shownChars?: number;
+  /** At the Enter: the whole pasted text, which an uncollapsed paste must
+   *  match as the input box's entire content. */
+  shownText?: string;
 }
 
+/** The longest `shownText` sent: the remote A2A body cap (32 KiB) with room. */
+export const SHOWN_TEXT_MAX = 64 * 1024;
+
 /** What a delivery typed, as DeliveryCheck carries it at the Enter. */
-export function shownOf(typed: string): Required<Pick<DeliveryCheck, 'shownProbe' | 'shownLines' | 'shownChars'>> {
+export function shownOf(typed: string): Required<Pick<DeliveryCheck, 'shownProbe' | 'shownLines' | 'shownChars'>> & Pick<DeliveryCheck, 'shownText'> {
   return {
+    ...(typed.length <= SHOWN_TEXT_MAX ? { shownText: typed } : {}),
     shownProbe: (typed.split('\n').find((line) => line.trim()) ?? '').trim().slice(0, 24),
     shownLines: (typed.match(/\n/g) ?? []).length,
     shownChars: [...typed].length,

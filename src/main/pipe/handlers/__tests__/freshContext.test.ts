@@ -285,11 +285,31 @@ describe('runFreshContext — the typed command', () => {
     expect(pane.writes).toEqual(['/clear', '\x7f'.repeat(6)]);
   });
 
-  it('erases the command when it never shows on the cursor row', async () => {
+  // DELs remove whatever sits before the cursor: with the command not shown
+  // there, they would remove someone else's characters.
+  it('erases nothing when the command never shows on the cursor row', async () => {
     const pane = scriptedPane({ noEcho: true });
     const out = await runFreshContext(CLAUDE, pane.probe, pane.opts);
     expect(out).toMatchObject({ freshContext: 'skipped_unobservable', freshContextReason: expect.stringMatching(/^command_not_seen/) });
-    expect(pane.writes).toEqual(['/clear', '\x7f'.repeat(6)]);
+    expect(out.freshContextReason).toMatch(/nothing was erased$/);
+    expect(pane.writes).toEqual(['/clear']);
+  });
+
+  // Not taken back, the refusal must not say "nothing was typed": the
+  // command may still be in the input line.
+  it('refused before the Enter with the command gone from the cursor row: nothing is erased, and the failure says the command may remain', async () => {
+    const pane = scriptedPane();
+    pane.probe.verify = async (stage) => {
+      if (stage !== 'enter') return;
+      // The pane redrew without the command (it was cleared some other way).
+      pane.probe.readScreen = async () => CLAUDE_IDLE;
+      throw new Error('delivery: the agent\'s input box already holds a draft, so nothing was typed there');
+    };
+    const err = await runFreshContext(CLAUDE, pane.probe, pane.opts).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FreshContextTimeout);
+    expect((err as Error).message).toMatch(/^typed \/clear, and the check before its Enter refused \(delivery: /);
+    expect((err as Error).message).toMatch(/the command may still be in the input line\)$/);
+    expect(pane.writes).toEqual(['/clear']);
   });
 });
 
@@ -458,6 +478,23 @@ describe('runFreshContext — evidence after Enter', () => {
       freshContextReason: expect.stringMatching(/^state_unreadable/),
     });
     expect(pane.writes).toEqual(['/clear', '\x7f'.repeat(6)]);
+  });
+
+  // Unread, the command may still be in the input line: skipping would type
+  // the task next to it, so the send fails with nothing more written.
+  it('a screen that cannot be read to take the command back fails the step, nothing more written', async () => {
+    const pane = scriptedPane();
+    const readState = pane.probe.readAgentState;
+    let reads = 0;
+    pane.probe.readAgentState = async () => {
+      if (++reads !== 2) return readState();
+      pane.probe.readScreen = async () => '';
+      return null;
+    };
+    const err = await runFreshContext(CLAUDE, pane.probe, pane.opts).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FreshContextTimeout);
+    expect((err as Error).message).toMatch(/the command may still be in the input line/);
+    expect(pane.writes).toEqual(['/clear']);
   });
 
   it('claude without hooks: applied on the settled screen', async () => {

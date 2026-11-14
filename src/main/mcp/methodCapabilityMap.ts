@@ -657,6 +657,8 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // prompt is additionally enforced in the handler; the capability only
   // decides whether a plugin may reach the surface at all.
   'task.fanout.start': { capability: 'a2a.execute', riskClass: 'a2a' },
+  // Writes a branch into the owner's repository from another PC's work: the same lane as starting that work.
+  'task.fanout.bringBack': { capability: 'a2a.execute', riskClass: 'a2a' },
 
   // --- Task ledger (pipe/handlers/ledger.rpc.ts) --- same read/mutation
   // split as task.mission.*; actor/transition authz is enforced in the ledger.
