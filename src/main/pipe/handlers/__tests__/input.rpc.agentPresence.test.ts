@@ -263,6 +263,12 @@ describe('an agent whose plain prompt wmux does not know: its pointer line only'
     expect(writes[0]).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
   });
 
+  it('plain keys keep printable text in any script (Hangul, CJK, emoji)', async () => {
+    answers = [{ ...PROCESS, bracketedPaste: false }];
+    await deliver({ senderTaskIds: ['task-1'] }, 'Claude Code', '작업 완료\x07 — 検証 ✅ 다음 단계');
+    expect(writes[0]).toBe('작업 완료 — 検証 ✅ 다음 단계');
+  });
+
   it('the Enter goes only to the grant the paste had: another agent or another way of taking text gets none', async () => {
     answers = [PROCESS, PROCESS, POINTER_ONLY];
     expect(await deliver({ senderTaskIds: ['task-1'] }, null, BODY)).toMatchObject({ ok: false, reason: 'agent_changed', pasted: true, cleared: false });

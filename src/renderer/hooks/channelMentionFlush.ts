@@ -276,6 +276,15 @@ export class MentionNudgeRefused extends Error {
   }
 }
 
+/**
+ * Whether a nudge's delivery is settled: submitted, or left in the agent's
+ * input box unsent (pasted, not taken back). The second is not retried: the
+ * pane already shows the line, and a retry would only find it there and hold.
+ */
+export function mentionNudgeSettled(result: { ok: boolean; pasted?: boolean; cleared?: boolean }): boolean {
+  return result.ok || (result.pasted === true && result.cleared !== true);
+}
+
 /** The first retry of a refused nudge, and the longest wait between retries. */
 export const MENTION_RETRY_MIN_MS = 1_000;
 export const MENTION_RETRY_MAX_MS = 30_000;

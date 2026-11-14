@@ -7,6 +7,7 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   isChannelMentionTask,
   MENTION_RETRY_MAX_MS,
+  mentionNudgeSettled,
   MentionNudgeRefused,
   resetMentionBackoff,
   buildChannelMentionNudge,
@@ -296,6 +297,13 @@ describe('flushMentions', () => {
     await flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
     expect(tries.at(-1)).toBe(92_500);
     warn.mockRestore();
+  });
+
+  it('a nudge left unsent in the input box is settled, not retried; one refused before any write is retried', () => {
+    expect(mentionNudgeSettled({ ok: true })).toBe(true);
+    expect(mentionNudgeSettled({ ok: false, pasted: true, cleared: false })).toBe(true);
+    expect(mentionNudgeSettled({ ok: false, pasted: true, cleared: true })).toBe(false);
+    expect(mentionNudgeSettled({ ok: false })).toBe(false);
   });
 
   it('two flushes racing on the same mention paste it once', async () => {

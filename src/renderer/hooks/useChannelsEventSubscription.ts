@@ -67,7 +67,7 @@ import { isNudgeRateLimited, recordNudge, shouldWarnLoopSuspect } from './channe
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import { panePrincipalId } from '../../shared/principals';
 import { publishA2aTask } from '../events/publisher';
-import { flushMentions, MentionNudgeRefused, type FlushOpts } from './channelMentionFlush';
+import { flushMentions, mentionNudgeSettled, MentionNudgeRefused, type FlushOpts } from './channelMentionFlush';
 import { gatedSubmitToPty } from '../utils/ptyMessageDelivery';
 import { noteAgentTurnEnd, sweepTurnEndReminders } from './a2aTurnEndReminder';
 import { noteFanoutCallerLifecycle, sweepFanoutCallerNudges } from './fanoutCallerNudge';
@@ -363,6 +363,7 @@ export function useChannelsEventSubscription(): void {
             agent: useStore.getState().surfaceAgent[ptyId]?.slug,
             senderMentions: mentions,
           });
+          if (mentionNudgeSettled(result)) return;
           if (!result.ok) throw new MentionNudgeRefused(result.reason, result.detail);
         },
         markDelivered: st.markChannelMentionDelivered,
