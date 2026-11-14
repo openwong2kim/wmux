@@ -69,3 +69,11 @@ describe('recordTaskState — the final report is kept on the link', () => {
     expect(parsed?.result?.summary).toBe('a'.repeat(max - 1));
   });
 });
+
+describe('workLinkResultFromTask — a failed remote task as a query returns it (#3344)', () => {
+  it('takes the reason from untrusted.reason when status.evidence has none; a summary there still wins', () => {
+    const failed = { status: { state: 'failed', evidence: { items: [] } }, untrusted: { reason: 'the other PC refused it: too many new tasks' } };
+    expect(workLinkResultFromTask(failed, 1)?.summary).toBe('the other PC refused it: too many new tasks');
+    expect(workLinkResultFromTask({ ...failed, status: { state: 'failed', evidence: { summary: 'local reason', items: [] } } }, 1)?.summary).toBe('local reason');
+  });
+});

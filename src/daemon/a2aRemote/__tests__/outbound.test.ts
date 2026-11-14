@@ -357,6 +357,50 @@ describe('sendRemoteReply / sendRemoteState', () => {
     expect(marks).toEqual([{ taskId: task.id, stateSync: 'canceled' }]);
   });
 
+  it('a task this PC sent that failed because the other PC refused a reply of ours tells it canceled, from the ledger, once, with no text', async () => {
+    const linkId = activeLink({ outbound: true, inbound: true }, 'codex', 'pane-c');
+    const task: Task = {
+      kind: 'task',
+      id: remoteTaskId(linkId, 'sent-1'),
+      status: { state: 'failed', timestamp: '2026-11-01T00:00:00.000Z', evidence: { summary: 'refused by the other PC: bad-request', items: [] } },
+      history: [{ kind: 'message', messageId: 'sent-1', role: 'user', parts: [{ kind: 'text', text: 'ship it' }] }],
+      artifacts: [],
+      metadata: {
+        title: 't',
+        from: FROM,
+        to: { workspaceId: `remote:${linkId}`, name: 'pc-b/ws-b/codex' },
+        createdAt: '2026-11-01T00:00:00.000Z',
+        updatedAt: '2026-11-01T00:00:00.000Z',
+        remote: { v: 1, linkId, hostId: HOST, messageId: 'sent-1', direction: 'outbound', kind: 'pane', stateSync: 'working', cancelOwed: true } as Task['metadata']['remote'],
+      },
+    };
+    const fake: StateDeps = {
+      linkStore: links,
+      outbox,
+      taskService: {
+        getTask: () => task,
+        markRemote: async (input) => {
+          if (input.stateSync) (task.metadata.remote as { stateSync?: string }).stateSync = input.stateSync;
+          return { ok: true as const, task };
+        },
+      },
+    };
+    const states = (taskId: string) => outbox.pending(HOST).filter((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId);
+    // As after a restart: the cancel is read from the task, not from the refusal that set it.
+    expect(await syncRemoteTask(fake, task.id)).toEqual({ ok: true, queued: 1 });
+    const [told] = states(task.id);
+    expect(told.envelope).toMatchObject({ state: 'canceled' });
+    // A cancel carries no text, and no evidence of the failure here.
+    expect(told.envelope).not.toHaveProperty('text');
+    expect(told.envelope).not.toHaveProperty('evidence');
+    expect(told.envelope).not.toHaveProperty('message');
+    expect(await syncRemoteTask(fake, task.id)).toEqual({ ok: true, queued: 0 });
+    // Without that record, a failed task this PC sent tells the other PC nothing.
+    delete (task.metadata.remote as { cancelOwed?: true }).cancelOwed;
+    (task.metadata.remote as { stateSync?: string }).stateSync = 'working';
+    expect(await syncRemoteTask(fake, task.id)).toEqual({ ok: true, queued: 0 });
+  });
+
   it('nothing is queued on a revoked link', async () => {
     const { linkId, id } = await outboundTask();
     links.revoke(linkId, 'local');

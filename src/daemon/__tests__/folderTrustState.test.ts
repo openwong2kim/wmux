@@ -625,7 +625,7 @@ describe("the daemon's writers and their folder-trust policy", () => {
     ['the usage-limit continue: only the armed one', "'usage-limit continue', { refuseUnknown: armed, onRefused: () => { refused = true; } });"],
     ['the usage-limit continue: a refusal after the paste stays final', "return refused && result !== 'error' ? 'folder_trust' : result;"],
     ['the scheduled-run retry continue: unknown too', "'automation retry', { refuseUnknown: true })"],
-    ['both continues through the shared trust-checked delivery', "}, writer, trust);"],
+    ['both continues through the shared trust-checked delivery', "}, writer, 'wmux', trust);"],
     ['writeIfUnchanged: all but a line a person asked for', "const trustOpts = human ? { once: true } : { once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS };"],
     ['writeIfUnchanged: the check, with those options', "trustRefusal(sessionManager, sessionId, human ? 'sample command' : 'launch line', !human, trustOpts)"],
     ['an automation key: Escape only at a prompt seen', "trustRefusal(sessionManager, id, 'automation key', sequence !== '\\x1b', { once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS })"],

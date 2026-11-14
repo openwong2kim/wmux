@@ -11,6 +11,7 @@
 // An agent picks with `a2a.task.send` and a `handOutId` param: the send runs
 // on the agent's own lane (a company brief keeps its holds and cap), and main
 // makes the link from it. The app picks with HandOutPickRequest over IPC.
+import { neutralName, TYPED_TITLE_MAX } from './typedLineName';
 import type { HandoffPrepNotice, HandoffTarget } from './gitHandoff';
 import { issueBranchName, sanitizeHandoffNote, sanitizeHandoffTitle } from './gitHandoff';
 import type { SubmitAssurance } from './ptyMessageDelivery';
@@ -226,7 +227,7 @@ export function handOutAddedByLine(by: HandOutAddedBy): string {
  */
 export function buildHandOutMessage(item: HandOutItem, opts: { company?: boolean } = {}): string {
   const lines = [
-    `[wmux] To hand out: "${sanitizeHandoffTitle(item.title)}"`,
+    `[wmux] To hand out: "${neutralName(sanitizeHandoffTitle(item.title), TYPED_TITLE_MAX)}"`,
     `Folder: ${oneLine(item.folder, HAND_OUT_LIMITS.MAX_FOLDER)}`,
     `Added by ${handOutAddedByLine(item.addedBy)}${item.agent ? `; asks for ${item.agent}` : ''}.`,
   ];

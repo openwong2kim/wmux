@@ -4997,7 +4997,7 @@ export const pl = {
   'git.handoff.notSent': 'Nie wysłano {kind} {ref} do {agent} w {workspace}.',
   'git.handoff.why.user_typing': 'Ktoś pisał w tym panelu; spróbuj ponownie, gdy będzie wolny.',
   'git.handoff.why.agent_changed': 'Agent opuścił ten panel lub został zastąpiony.',
-  'git.handoff.why.agent_unverified': 'wmux nie mógł odczytać agenta tego panelu; spróbuj za chwilę.',
+  'git.handoff.why.agent_unverified': 'wmux nie potwierdził działającego agenta w tym panelu. Uruchom tam agenta i spróbuj ponownie.',
   'git.handoff.why.deadline': 'Zbyt długo czekano, aż panel będzie wolny.',
   'git.handoff.why.no_agent_pane': 'W tym panelu nie ma aktywnego agenta.',
   'git.handoff.why.approval_pending': 'Ten panel czeka na zatwierdzenie.',

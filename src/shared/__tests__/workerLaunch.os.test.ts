@@ -16,7 +16,14 @@ import {
   reattachModelEnvMarker,
   shellSupportsModelEnvMarker,
   splitModelEnvMarker,
+  workerModeRefusal,
+  FANOUT_WORKER_PERMISSION_MODES,
 } from '../workerLaunch';
+import { FANOUT_AGENTS } from '../fanoutPreset';
+import { AGENT_ROWS, agentRow } from '../agentIdentity';
+
+const CODEX_MANUAL_FLAGS = '-a on-request -s read-only -c approvals_reviewer=user';
+const GROK_MANUAL_FLAGS = '--permission-mode default';
 
 describe('MODEL_ENV_MARKER', () => {
   it('unsets the model in the SAME shell, so an aliased launcher still resolves', () => {
@@ -168,9 +175,76 @@ describe('applyWorkerPermissionFlags', () => {
     expect(applyWorkerPermissionFlags(spaced, 'auto').startsWith(spaced + ' ')).toBe(true);
   });
 
-  it("manual adds no permission flag and keeps the line's own, but still applies the tool lists", () => {
-    const line = `claude --permission-mode plan ${PROMPT}`;
-    expect(applyWorkerPermissionFlags(line, 'manual')).toBe(`${line} ${LISTS}`);
+  it("manual makes claude ask: a mode of the line's own that does not ask is replaced, and the tool lists still apply", () => {
+    for (const own of ['--permission-mode auto', '--permission-mode=acceptEdits', '--permission-mode dontAsk', '--permission-mode bypassPermissions', '--dangerously-skip-permissions', '--permission-mode plan --dangerously-skip-permissions', '--permission-mode plan --permission-mode auto']) {
+      expect(applyWorkerPermissionFlags(`claude ${own} ${PROMPT}`, 'manual')).toBe(`claude ${PROMPT} --permission-mode default ${LISTS}`);
+    }
+  });
+
+  it("manual keeps a mode of the line's own that already asks: a resumed plan worker stays in plan", () => {
+    for (const own of ['--permission-mode plan', '--permission-mode=plan', '--permission-mode default', '--permission-mode manual']) {
+      expect(applyWorkerPermissionFlags(`claude --resume 0b6f ${own}`, 'manual')).toBe(`claude --resume 0b6f ${own} ${LISTS}`);
+    }
+    // Any other worker mode still replaces it.
+    expect(applyWorkerPermissionFlags('claude --resume 0b6f --permission-mode plan', 'acceptEdits')).toBe(`claude --resume 0b6f --permission-mode acceptEdits ${LISTS}`);
+  });
+
+  it('each mode gives claude its own permission flag', () => {
+    const flags = {
+      auto: '--permission-mode auto',
+      acceptEdits: '--permission-mode acceptEdits',
+      bypassPermissions: '--dangerously-skip-permissions',
+      manual: '--permission-mode default',
+    } as const;
+    expect(Object.keys(flags).sort()).toEqual([...FANOUT_WORKER_PERMISSION_MODES].sort());
+    for (const mode of FANOUT_WORKER_PERMISSION_MODES) {
+      expect(applyWorkerPermissionFlags(`claude ${PROMPT}`, mode)).toBe(`claude ${PROMPT} ${flags[mode]} ${LISTS}`);
+      expect(workerModeRefusal(`claude ${PROMPT}`, mode)).toBeNull();
+    }
+  });
+
+  it('manual makes codex ask: every permission choice on its line goes, and its ask flags go before the prompt', () => {
+    expect(agentRow('codex')?.askMode?.flags).toBe(CODEX_MANUAL_FLAGS);
+    const trust = `-c 'projects={"/w"={trust_level="trusted"}}'`;
+    for (const own of ['-a never -s workspace-write', '--ask-for-approval=never --sandbox danger-full-access', '--yolo', '--dangerously-bypass-approvals-and-sandbox', '-c approval_policy=never -c sandbox_mode=workspace-write', `-c 'sandbox_permissions=["disk-full-read-access"]'`, `-c 'approvals_reviewer="auto_review"'`, '--config approvals_reviewer=guardian_subagent', '--approve-for-me', '']) {
+      const line = `codex ${trust} ${own} ${PROMPT}`.replace(/  +/g, ' ');
+      expect(applyWorkerPermissionFlags(line, 'manual')).toBe(`codex ${CODEX_MANUAL_FLAGS} ${trust} ${PROMPT}`);
+      expect(workerModeRefusal(line, 'manual')).toBeNull();
+    }
+    // The other modes still leave a codex line as it is (a separate item).
+    expect(applyWorkerPermissionFlags(`codex -a never ${PROMPT}`, 'auto')).toBe(`codex -a never ${PROMPT}`);
+  });
+
+  it('manual makes grok ask: its permission mode and always-approve go, and its ask mode goes before the prompt', () => {
+    expect(agentRow('grok')?.askMode?.flags).toBe(GROK_MANUAL_FLAGS);
+    for (const own of ['--permission-mode bypassPermissions', '--permission-mode=auto', '--always-approve', '--permission-mode dontAsk --always-approve', '']) {
+      const line = `grok ${own} ${PROMPT}`.replace(/  +/g, ' ');
+      expect(applyWorkerPermissionFlags(line, 'manual')).toBe(`grok ${GROK_MANUAL_FLAGS} ${PROMPT}`);
+      expect(workerModeRefusal(line, 'manual')).toBeNull();
+    }
+    expect(applyWorkerPermissionFlags(`grok --always-approve ${PROMPT}`, 'auto')).toBe(`grok --always-approve ${PROMPT}`);
+  });
+
+  it('manual is taken exactly for the agents whose row declares how to make them ask (claude, codex, grok)', () => {
+    const asks = AGENT_ROWS.filter((r) => r.permissions === 'permission-mode' || r.askMode).map((r) => r.slug).sort();
+    expect(asks).toEqual(['claude', 'codex', 'grok']);
+    for (const row of AGENT_ROWS) {
+      const stem = row.launcher ?? row.slug;
+      expect(workerModeRefusal(`${stem} ${PROMPT}`, 'manual') === null).toBe(asks.includes(row.slug));
+    }
+  });
+
+  it('manual is refused for every agent but claude, codex and grok (agy included), and for a wrapped line; the other modes are never refused', () => {
+    const agents = FANOUT_AGENTS.map((a) => a.stem);
+    expect(agents).toEqual(expect.arrayContaining(['claude', 'codex', 'grok', 'agy']));
+    expect(workerModeRefusal(`agy ${PROMPT}`, 'manual')).toContain('`agy`');
+    for (const stem of agents.filter((a) => a !== 'claude' && a !== 'codex' && a !== 'grok')) {
+      expect(workerModeRefusal(`${stem} ${PROMPT}`, 'manual')).toContain(`\`${stem}\``);
+      for (const mode of FANOUT_WORKER_PERMISSION_MODES.filter((m) => m !== 'manual')) expect(workerModeRefusal(`${stem} ${PROMPT}`, mode)).toBeNull();
+    }
+    for (const line of [`env FOO=1 claude ${PROMPT}`, `sh -c 'claude hi'`]) expect(workerModeRefusal(line, 'manual')).not.toBeNull();
+    // A quoted Windows path keeps its backslashes, and its extension is dropped.
+    expect(workerModeRefusal(`'C:\\tools\\claude.exe' ${PROMPT}`, 'manual')).toBeNull();
   });
 
   it('does not touch a non-claude launch or a wrapped one', () => {

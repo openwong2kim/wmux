@@ -1,3 +1,4 @@
+import { neutralName, TYPED_TITLE_MAX } from '../../shared/typedLineName';
 import { pluginAgentSnapshot, pluginAllAgentSnapshot } from '../plugins/pluginAgentSnapshot';
 import { activatePaneTarget } from './useNotificationListener';
 import { isPhoneWorkspaceId, PHONE_WORKSPACE_REQUEST_LIMIT } from '../../shared/phoneWorkspaceRequests';
@@ -43,10 +44,11 @@ import {
   isFanoutWorkerPermissionMode,
   reattachModelEnvMarker,
   splitModelEnvMarker,
+  workerModeRefusal,
 } from '../../shared/workerLaunch';
 import { t } from '../i18n';
 import { parseRemoteSpawnedBy, remoteSpawnToastMessage } from '../utils/remoteSpawnedBy';
-import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName, type A2aFormatOptions } from '../utils/a2aFormat';
+import { formatA2aMessage, formatA2aBroadcast, type A2aFormatOptions } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
 import { findPendingExecuteRequest, requestExecuteApproval, requestFanOutApproval, requestTaskApproval } from '../utils/executeApprovalGate';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
@@ -68,7 +70,7 @@ import {
 } from '../utils/searchEngine';
 import { gatedSubmitToPty, submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { isTerminalDirty, isTerminalRetained } from '../terminal/terminalOutputScheduler';
-import type { GatedSubmitRefusal, GatedSubmitResult } from '../../shared/ptyMessageDelivery';
+import { NO_BACKGROUND_SERVICE_DETAIL, type GatedSubmitRefusal, type GatedSubmitResult } from '../../shared/ptyMessageDelivery';
 import type { FreshContextReply } from '../../shared/freshContext';
 import { paneAddressOfPty, paneHasOtherOpenA2aTask } from './a2aFreshContext';
 import { publishA2aTask } from '../events/publisher';
@@ -78,6 +80,7 @@ import {
   A2A_REMOTE_NOTIFY_METHOD,
   deliveredImageParts,
   deliveredImagesOf,
+  heldNoticeText,
   imagesNudgeSuffix,
   isRemoteWorkspaceId,
   localSideOf,
@@ -407,6 +410,8 @@ async function deliverA2aText(
   // A reply's task, so main can read who sent it (a new task names the key
   // main gave its send instead).
   replyTaskId?: string,
+  // The task the text is about, when it is neither (a remote reply's).
+  pointerTaskId?: string,
 ): Promise<A2aPtyWrite> {
   // The operator's own deliveries are excluded from fresh context in v1.
   if (operator) {
@@ -423,6 +428,7 @@ async function deliverA2aText(
   const pane = newTask ? paneAddressOfPty(s.workspaces, ptyId) : undefined;
   const result = await gatedSubmitToPty(ptyId, text, {
     agent: ptyAgent(ptyId).name,
+    ...((pointerTaskId ?? newTask?.taskId ?? replyTaskId) ? { pointerTaskId: pointerTaskId ?? newTask?.taskId ?? replyTaskId } : {}),
     ...(newTask?.senderKey ? { senderSendKey: newTask.senderKey } : {}),
     ...(!newTask && replyTaskId ? { senderTaskIds: [replyTaskId] } : {}),
     ...(newTask ? { newTask: true, taskId: newTask.taskId, ...keep, ...(pane ? { pane } : {}) } : {}),
@@ -445,6 +451,10 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
     'The target pane is waiting on an approval, so the message was not submitted there: an Enter would ' +
     'answer the prompt. The task is stored; the receiver can find it with a2a_task_query. Send again once ' +
     'the approval has been answered.',
+  input_mode:
+    "The target agent's input box is not a plain prompt right now (for example a shell mode, a dialog or a " +
+    'draft in it), or wmux could not confirm it is one, so nothing was typed there. The task is stored; an ' +
+    'agent there can read it with a2a_task_query. Send again once its input box is back to a plain prompt.',
   gate_unavailable:
     'wmux could not check the target pane for an approval (its screen or the gate was unavailable), so ' +
     'the message was not submitted. The task is stored; the receiver can find it with a2a_task_query. ' +
@@ -471,8 +481,9 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
     'The agent this was sent to left the target pane or was replaced before the message could be submitted, ' +
     'so nothing was submitted there. The task is stored. Pick the pane again and resend.',
   agent_unverified:
-    "wmux could not read the target pane's agent, so it could not confirm the message would reach that agent " +
-    'and submitted nothing. The task is stored. Retry in a few seconds.',
+    'No agent is running in the target pane, or wmux could not confirm one, so nothing was typed there: it ' +
+    'waits for an agent in the pane. The task is stored; an agent there can read it with a2a_task_query. Send ' +
+    'again once an agent runs in that pane.',
   deadline:
     'The delivery waited too long (someone kept typing, or the pane was busy) and gave up without submitting. ' +
     'The task is stored. Send again once the pane is idle.',
@@ -501,7 +512,13 @@ function refusedDelivery(mode: string, refused: GatedSubmitRefusal): Record<stri
     notified: false,
     mode,
     reason: refused.reason,
-    hint: refused.stored ? STORED_FOR_LATER_HINT : DELIVERY_REFUSED_HINTS[refused.reason],
+    // Stored: main types it later. No background service: a retry in a few
+    // seconds would not help.
+    hint: refused.stored
+      ? STORED_FOR_LATER_HINT
+      : refused.detail.endsWith(NO_BACKGROUND_SERVICE_DETAIL)
+      ? `This PC's wmux is running without its background service; deliveries wait until it is running. The task is stored; the receiver can find it with a2a_task_query.`
+      : DELIVERY_REFUSED_HINTS[refused.reason],
     detail: refused.detail,
     ...(refused.stored ? { storedForLater: true } : {}),
     ...(refused.pasted ? (refused.cleared ? { pastedCleared: true } : { pastedNotSubmitted: true, hint: PASTED_NOT_SUBMITTED_HINT }) : {}),
@@ -732,6 +749,9 @@ export async function deliverPtyNotification(
   operator = false,
   newTask?: NewTaskDelivery,
   replyTaskId?: string,
+  // wmux's own line, put before the sender's block and never inside it.
+  leadLine?: string,
+  pointerTaskId?: string,
 ): Promise<A2aPtyWrite> {
   // getWorkspaceLeafPanes puts VISIBLE leaves first, so the "first leaf with a
   // live terminal" fallback still prefers something on screen (#977); a stashed
@@ -739,12 +759,14 @@ export async function deliverPtyNotification(
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
   if (ptyId) {
+    const block = formatA2aMessage(senderName, a2aPartyName(targetWs, useStore.getState().paneLabel, useStore.getState().surfaceAgent, ptyId, useStore.getState().a2aTerminalNames), typeof message === 'function' ? message(ptyId) : message, undefined, a2aFormatOptionsFor(ptyId));
     return deliverA2aText(
       ptyId,
-      formatA2aMessage(senderName, a2aPartyName(targetWs, useStore.getState().paneLabel, useStore.getState().surfaceAgent, ptyId, useStore.getState().a2aTerminalNames), typeof message === 'function' ? message(ptyId) : message, undefined, a2aFormatOptionsFor(ptyId)),
+      leadLine ? `${leadLine}\n${block}` : block,
       operator,
       newTask,
       replyTaskId,
+      pointerTaskId,
     );
   }
   return { ptyId: null };
@@ -768,13 +790,14 @@ async function deliverPtyNudge(
   operator = false,
   newTask?: NewTaskDelivery,
   replyTaskId?: string,
+  pointerTaskId?: string,
 ): Promise<A2aPtyWrite> {
   // getWorkspaceLeafPanes puts VISIBLE leaves first, so the "first leaf with a
   // live terminal" fallback still prefers something on screen (#977); a stashed
   // pane only catches the message when nothing visible can take it, which beats
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
-  if (ptyId) return deliverA2aText(ptyId, typeof nudge === 'function' ? nudge(ptyId) : nudge, operator, newTask, replyTaskId);
+  if (ptyId) return deliverA2aText(ptyId, typeof nudge === 'function' ? nudge(ptyId) : nudge, operator, newTask, replyTaskId, pointerTaskId);
   return { ptyId: null };
 }
 
@@ -913,7 +936,7 @@ const NUDGE_TITLE_MAX_CHARS = 60;
  * space. Cut by code point so a surrogate pair is never split.
  */
 export function nudgeTitlePreview(title: string): string {
-  const clean = title.replace(/[^\p{L}\p{N} .,:_/-]/gu, ' ').replace(/ +/g, ' ').trim();
+  const clean = neutralName(title, TYPED_TITLE_MAX);
   const chars = Array.from(clean);
   return chars.length <= NUDGE_TITLE_MAX_CHARS
     ? clean
@@ -966,7 +989,7 @@ export function buildA2aNudge(
   // `\r\r`) and inject text into the very live-agent prompt this path protects.
   if (kind === 'reported') {
     // A company task another PC finished: held here as a report for this side to mark done.
-    return `[wmux] ${sanitizeA2aName(senderName)} reported A2A task ${id8} done on its PC: check the report, then mark it done `
+    return `[wmux] ${neutralName(senderName)} reported A2A task ${id8} done on its PC: check the report, then mark it done `
       + `(a2a_task_update completed) — a2a_task_query task_id:${safeId}`;
   }
   // Company mode, to the CEO pane: a task held on its blockers needs a person
@@ -982,7 +1005,7 @@ export function buildA2aNudge(
     const why = company?.held ? COMPANY_HOLD_REASON_TEXT[company.held] : 'its blockers are done, but it was not written to its pane';
     return `[wmux] A2A task ${safeId} is held: ${why} — a2a_task_query task_id:${safeId}`;
   }
-  return `[wmux] ${what} ${id8} from ${sanitizeA2aName(senderName)}${about} — a2a_task_query task_id:${safeId}`;
+  return `[wmux] ${what} ${id8} from ${neutralName(senderName)}${about} — a2a_task_query task_id:${safeId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1228,8 +1251,8 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
     const pointer = buildA2aNudge(task.id, sanitizeRemoteText(task.metadata.to.name), ended);
     const liveMeta = deliveryLiveMeta(useStore.getState().surfaceAgent, target.pty, target.ws.metadata);
     const written = await writeRemoteDelivery({ ...task.metadata.from, ptyId: target.pty }, target, () => (isLiveTuiAgent(liveMeta)
-      ? deliverPtyNudge(target.ws, pointer, target.pty, false)
-      : deliverPtyNotification(target.ws, sanitizeRemoteText(task.metadata.to.name), pointer, target.pty, false)));
+      ? deliverPtyNudge(target.ws, pointer, target.pty, false, undefined, undefined, task.id)
+      : deliverPtyNotification(target.ws, sanitizeRemoteText(task.metadata.to.name), pointer, target.pty, false, undefined, undefined, undefined, task.id)));
     return 'delivered' in written && written.delivered ? written : { ok: true, delivered: true };
   }
 
@@ -1238,14 +1261,36 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
   if ('held' in target) return { ok: true, delivered: false, held: target.held };
   const msg = task.history.find((h) => h.messageId === messageId);
   const part = msg?.parts.find((p) => p.kind === 'text');
+  const liveMeta = deliveryLiveMeta(useStore.getState().surfaceAgent, target.pty, target.ws.metadata);
+  if (item.kind === 'notice') {
+    // The other host's notice about one of this side's messages: its words are built here from this PC's
+    // own record (the message id it names and the time this PC sent it), never read from stored text, so it
+    // goes in as one line in wmux's own voice, unquoted, and never as the agent's reply.
+    const notice = msg?.metadata?.['wmuxNotice'] as { messageId?: unknown; unconfirmed?: unknown } | undefined;
+    const about = typeof notice?.messageId === 'string' ? notice.messageId : '';
+    const sentAt = (task.metadata.remote as A2aRemoteTaskState | undefined)?.sentAt?.[about];
+    const line = about ? oneLine(sanitizeRemoteText(heldNoticeText(about, sentAt, notice?.unconfirmed === true))) : '';
+    if (!line) return { error: `${A2A_REMOTE_NOTIFY_METHOD}: the notice has no text` };
+    return writeRemoteDelivery({ ...anchor, ptyId: target.pty }, target, () => (isLiveTuiAgent(liveMeta)
+      ? deliverPtyNudge(target.ws, line, target.pty, false, undefined, undefined, task.id)
+      : deliverPtyNotification(target.ws, 'wmux', line, target.pty, false, undefined, undefined, undefined, task.id)));
+  }
   const text = sanitizeRemoteMessage(part && part.kind === 'text' ? part.text : '');
   const images = deliveredImagesOf(msg?.parts);
   if (!text && images.length === 0) return { error: `${A2A_REMOTE_NOTIFY_METHOD}: the reply has no text` };
   const senderName = sanitizeRemoteText(task.metadata[side === 'from' ? 'to' : 'from'].name);
-  const liveMeta = deliveryLiveMeta(useStore.getState().surfaceAgent, target.pty, target.ws.metadata);
+  // A held reply offered late (main's fixed words and a time): said first, on its own line.
+  const delayed = typeof params.delayed === 'string' && /^\[wmux\] delayed: [ -~]{1,120}$/.test(params.delayed) ? params.delayed : '';
   return writeRemoteDelivery({ ...anchor, ptyId: target.pty }, target, () => (isLiveTuiAgent(liveMeta)
-    ? deliverPtyNudge(target.ws, buildA2aNudge(task.id, senderName, 'reply') + imagesNudgeSuffix(images), target.pty, false)
-    : deliverPtyNotification(target.ws, senderName, bodyWithImages(text, images), target.pty, false)));
+    ? deliverPtyNudge(target.ws, (delayed ? `${delayed}. ` : '') + buildA2aNudge(task.id, senderName, 'reply') + imagesNudgeSuffix(images), target.pty, false, undefined, undefined, task.id)
+    // wmux's line goes before the sender's block, never inside it (the held text's own `[wmux]` lines are
+    // already quoted by sanitizeRemoteMessage).
+    : deliverPtyNotification(target.ws, senderName, bodyWithImages(text, images), target.pty, false, undefined, undefined, delayed || undefined, task.id)));
+}
+
+/** One line: control characters and line breaks folded to spaces. */
+function oneLine(text: string): string {
+  return text.replace(/[\p{Cc}\s]+/gu, ' ').trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -1380,8 +1425,8 @@ async function handleCompanyCeoLine(params: RpcParams): Promise<Record<string, u
   const line = buildA2aNudge(task.id, '', kind, undefined, { ...(blocker ? { blocker } : {}), ...(held ? { held } : {}) });
   const liveMeta = deliveryLiveMeta(useStore.getState().surfaceAgent, addr.ptyId, ws.metadata);
   const write = isLiveTuiAgent(liveMeta)
-    ? await deliverPtyNudge(ws, line, addr.ptyId, false)
-    : await deliverPtyNotification(ws, 'wmux', line, addr.ptyId, false);
+    ? await deliverPtyNudge(ws, line, addr.ptyId, false, undefined, undefined, task.id)
+    : await deliverPtyNotification(ws, 'wmux', line, addr.ptyId, false, undefined, undefined, undefined, task.id);
   if (write.ptyId) return { ok: true, delivered: true, ptyId: write.ptyId };
   if (write.refused?.pasted && !write.refused.cleared) return { ok: true, delivered: true, ptyId: addr.ptyId };
   return { ok: true, delivered: false, reason: write.refused?.reason ?? 'no_target_pty' };
@@ -1971,6 +2016,14 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       workerMode && roleBound.initialCommand
         ? { ...roleBound, initialCommand: applyWorkerPermissionFlags(roleBound.initialCommand, workerMode) }
         : roleBound;
+    // A mode the final launcher cannot be held to (manual on an agent with no ask flag) starts nothing.
+    const modeRefusal = workerMode && roleBound.initialCommand ? workerModeRefusal(roleBound.initialCommand, workerMode) : null;
+    if (modeRefusal) {
+      const rollback = useStore.getState();
+      rollback.removeWorkspace(newWsId);
+      rollback.setActiveWorkspace(previousActiveId);
+      return { error: `fanout.spawnWorkspace: ${modeRefusal}` };
+    }
     // `bound.initialCommand` stays undefined for the "environment only" launch,
     // and it has to: withWorkspaceProfile fills a MISSING command from the
     // profile's defaultPaneCommand, and an empty string is not missing.

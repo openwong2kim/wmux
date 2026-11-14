@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { handleRpcMethod } from '../useRpcBridge';
+import { NO_BACKGROUND_SERVICE_DETAIL } from '../../../shared/ptyMessageDelivery';
 
 const PTY = 'pty-gate-target';
 const BODY = 'please continue';
@@ -144,6 +145,14 @@ describe('A2A delivery approval gate', () => {
     expect(hint).toMatch(/usage limit waits for the limit to reset/);
     expect(hint).toMatch(/dropped, with no word back, after 24 hours/);
     expect(hint).toMatch(/check the task with a2a_task_query first/);
+  });
+
+  it('no background service: the hint says so in plain words, not "retry in a few seconds"', async () => {
+    gateRefusal = { ok: false, reason: 'gate_unavailable', detail: `delivery: ${NO_BACKGROUND_SERVICE_DETAIL}` };
+    const result = await send({ silent: false });
+    expect(writesToTarget()).toEqual([]);
+    expect(String(result.delivery?.hint)).toContain("This PC's wmux is running without its background service; deliveries wait until it is running.");
+    expect(String(result.delivery?.hint)).not.toMatch(/Retry/);
   });
 
   it('an Enter withheld after the paste is reported as pasted, not submitted', async () => {

@@ -18,7 +18,7 @@ describe('hand-off message', () => {
 
   it('a PR: gh pr view and gh pr diff; no note line when empty', () => {
     expect(buildHandoffMessage({ kind: 'pr', ref: pr }, '   ')).toBe(
-      '[wmux] PR Acme/Widgets#7: "feat: x" — https://github.com/Acme/Widgets/pull/7\n'
+      '[wmux] PR Acme/Widgets#7: "feat_ x" — https://github.com/Acme/Widgets/pull/7\n'
       + 'Read it with: gh pr view 7 --repo Acme/Widgets and gh pr diff 7 --repo Acme/Widgets',
     );
   });

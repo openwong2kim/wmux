@@ -218,8 +218,33 @@ The **Remote** page has a **Messages between PCs** section:
 
   Each held item has **Reject**, which ends it and tells the other PC, and
   **Send to the current agent**, which
-  delivers it to the agent in that pane now. Held work that nobody handles
-  is rejected automatically after 24 hours.
+  delivers it to the agent in that pane now.
+  - A reply held because the pane had no agent is offered again on its own
+    once a later reply on the same task is about to be written to that pane.
+    It goes first, in order, under the line `[wmux] delayed: sent <time>,
+    held because no agent was in the pane`, which stands before the sender's
+    block. If it still cannot be written it stays held, keeping the time it
+    was first held, the ones after it wait, and the new reply goes anyway. At most three are offered
+    again at a time; the rest, and the newer reply behind them, go on a later
+    pass. One whose paste was started and never confirmed reads as
+    `delivery-unconfirmed` and is never pasted again on its own.
+  - After 24 hours a held reply is dropped on its own; its task stays open on
+    both PCs. When the other PC's build knows it (feature `held-notice.1`),
+    it is told once, in wmux's own words, which of its messages was dropped
+    and when it was sent (or, for one whose paste was never confirmed, that it
+    may not have arrived); that notice is never an answer and never moves the
+    task, and only one is taken per message. An older build is told nothing,
+    and a notice is checked again as it goes out.
+  - A task whose own first message was never delivered still ends after 24
+    hours, as before.
+  - `a2a_task_query` lists a remote task's held and dropped messages as
+    `heldUnits` (id, reason, since when; the text stays in the task's
+    history).
+- **Ended tasks.** A remote task that failed or was canceled stays in
+  `a2a_task_query` for 24 hours (any other ended task for 30 minutes), with
+  its reason under `untrusted.reason` in every view. Asked for by id after
+  that, within another 24 hours, the answer is that it ended (and when) and
+  is no longer kept, rather than "not found".
 
 ## Company tasks across PCs
 
@@ -279,15 +304,54 @@ PCs and the folder ids (`root`) each one allows.
   expire (each request waits 1 hour), or started it. Once started, the row
   holds the task its replies arrive on. The agent is asked to commit and to
   end its last reply with its branch and commit; the branch stays on that PC.
+- **Following it.** Once started, the row follows that task (read every
+  10 seconds while such a task is open):
+  - its report → `review_requested` (it stops there; only the owner marks a
+    task completed);
+  - the agent asking you → `input_required`;
+  - the task failing or being cancelled there → the same here.
+
+  A headless box (`wmux headless`) also reports what its agent is doing, and
+  the row follows that too. A PC running the app reports none of this yet, so
+  there the row stays `working` through these:
+  - a question on the agent's screen → `input_required`, naming only the kind
+    (permission, plan, menu, dialog, trust) and the PC;
+  - an agent that stopped with no reply and no report → `input_required`;
+  - a usage limit → still `working`, with `pending.waitingOn: 'usage-limit'`
+    and the reset time in the poll (that PC resumes it by itself);
+  - an agent gone (below).
+
+  A report comes only from a PC running the app (a headless box answers with
+  `input-required` and its reply instead). A follow-up after a report reaches
+  the agent, but its answer cannot come back on that task yet, and the row
+  stays `review_requested`. An
+  agent that PC reports gone, or a task this PC no longer lists, fails the row
+  after a minute if nothing ended the task meanwhile, and it stays failed.
+  Tasks on a headless box end when its daemon stops; they are not resumed.
+  Nothing the other PC writes goes into the row.
+- **Being told.** The pane that started the fan-out gets the one-line fan-out
+  nudge when a row needs input or fails. The report itself arrives there as
+  the agent's reply.
+- **Following up.** `send_message task_id=<the row's A2A task>` reaches the
+  agent; the poll shows this as `followUp`. From a headless box its replies
+  come back to your pane. From a PC running the app, after its report, the
+  follow-up reaches the agent, but its answer cannot come back on that task
+  yet. A question on the agent's screen is the exception: a reply on
+  the task is never typed into it, so it is answered only in that PC's pane
+  (a headless box ends the task if the question is still there after 10
+  minutes). A post in the task's mission channel is kept, but nobody on the
+  other PC reads it: the reply says so.
 - **Ending it.** Closing the mission (or cancelling or finishing its row)
-  ends the agent on the other PC: its link is revoked now, or as soon as a
-  late start arrives.
+  revokes the agent's link now, or as soon as a late start arrives, and its
+  task ends on both PCs. A headless box then ends the agent. On a PC running
+  the app the agent's pane keeps running there, owned by that PC's person:
+  nothing more reaches it from here.
 - **After a rollback.** A wmux from before this feature keeps the task row
   but does not revoke links. Closing the mission closes the row; an agent
   that already started on the other PC keeps running until you revoke its
   link by hand on the Remote page.
-- **Not yet.** No review gate, no work brought back beyond the branch name
-  and commit in the agent's reply, and no follow-up message to the task.
+- **Not yet.** No review gate, and no work brought back beyond the branch
+  name and commit in the agent's reply.
 
 ## Network and firewall
 

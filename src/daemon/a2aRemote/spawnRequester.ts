@@ -116,6 +116,7 @@ export class A2aSpawnRequester {
       from: { workspaceId: request.from.workspaceId, paneId: request.from.paneId },
       callerKey: input.callerKey, ...(input.requestKey !== undefined ? { requestKey: input.requestKey } : {}),
       text: request.text, ...(input.label ? { label: input.label } : {}),
+      ...(input.budget === 'fanout' ? { fanout: true as const } : {}),
       state: 'sent', createdAt: at, updatedAt: at, expiresAt: request.expiresAt,
     };
     try {
@@ -230,7 +231,7 @@ export class A2aSpawnRequester {
           to: { workspaceId: remoteWorkspaceId(linkId), name: this.deps.aliasFor(link) },
           history: [{ kind: 'message', messageId, role: 'user', parts: [{ kind: 'text', text }] }],
           // Sent already, as the request: the outbound sync never sends a task's own first message.
-          remote: { v: 1, linkId, hostId, messageId, direction: 'outbound', kind: 'pane' },
+          remote: { v: 1, linkId, hostId, messageId, direction: 'outbound', kind: 'pane', ...(rec.fanout ? { fanout: true as const } : {}) },
         });
         if (!created.ok) throw new Error(`the first task was not recorded: ${created.error}`);
       }

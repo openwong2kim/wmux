@@ -10,6 +10,7 @@
 // The scope rule is ADVISORY. Pane identity is the caller's senderPtyId, which
 // a same-user process can forge (the #113 ceiling), so these checks are a brake
 // on runaway agents, not a security boundary.
+import { neutralName } from './typedLineName';
 import type { Message, WmuxTaskMetadata } from './types';
 
 /**
@@ -182,7 +183,7 @@ export function companyHireNotice(input: CompanyHireNoticeInput): string {
   const owns = input.owns?.replace(/\s+/g, ' ').trim().replace(/\.+$/, '');
   const branch = input.branch?.trim();
   const notes = [owns && `owns ${owns}`, branch && `branch ${branch}`].filter(Boolean);
-  return `wmux: #${input.label.trim()} joined the company${notes.length > 0 ? ` (${notes.join('; ')})` : ''}. Brief it like your other seats.`;
+  return `wmux: #${neutralName(input.label)} joined the company${notes.length > 0 ? ` (${notes.join('; ')})` : ''}. Brief it like your other seats.`;
 }
 
 /** True when the task's first message carries a brief: a company task. */

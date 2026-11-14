@@ -197,6 +197,8 @@ pub struct NativeTerminal {
     term: Option<Term<VoidListener>>,
     parser: Processor,
     scrollback: u32,
+    /// xterm's scrollback in the last `feed_xterm` (this grid's until then).
+    requested_scrollback: u32,
     /// `feed_xterm` state besides the grid.
     feed: XtermFeed,
     /// Why the ANSI snapshot of this stream cannot match xterm's, for good
@@ -241,6 +243,8 @@ const ROUND_TRIP: &str =
     "unsupported-state-mode: more than kitty keyboard controls between ?47h and ?47l";
 const OPEN_ROUND_TRIP: &str = "unsupported-state-mode: the stream ends between ?47h and ?47l";
 /// Not counted past a first refusal: `scan` has no screen to read.
+const RESTORE_ROW_ALT: &str = "unsupported-state-restore-row: a DECRC or SCORC on the alternate screen after a resize xterm skipped there, so its saved cursor cannot be placed";
+
 const RESTORE_ROW: &str =
     "unsupported-state-restore-row: a DECRC or SCORC on a screen this tracker and Alacritty disagree on, so xterm's row cannot be placed";
 
@@ -371,6 +375,16 @@ struct XtermFeed {
     dec_slots: [bool; 4],
     /// xterm's saved cursor on the main and the alternate screen.
     saved: [SavedCursor; 2],
+    /// The length of xterm's alternate buffer (`lines.maxLength`): the rows
+    /// at its last leave or reset, or at a resize while it is shown, and
+    /// only ever more at a resize while it is not (an empty buffer's resize
+    /// grows it and returns). Past the screen rows, the alternate screen
+    /// keeps rows above it there.
+    alt_rows: usize,
+    /// The alternate screen was shown with `alt_rows` past the screen rows
+    /// since it was last left: its saved row may count rows above the screen
+    /// that Alacritty's alternate grid never keeps.
+    alt_overhang: bool,
 }
 
 /// What xterm's DECRC restores and Alacritty's does not (Buffer.saved*),
@@ -388,10 +402,14 @@ struct SavedCursor {
     dec_slots: [bool; 4],
     no_wraparound: bool,
     origin: bool,
-    /// The main screen's history (rows above the screen) at the save, on the
-    /// main screen only: the alternate screen keeps none. xterm saves an
-    /// absolute row, Alacritty a screen row (place_like_xterm).
+    /// The screen's history (rows above it) at the save: xterm saves an
+    /// absolute row, Alacritty a screen row (place_like_xterm). The
+    /// alternate screen keeps none, so there it starts at 0. A resize then
+    /// carries the rows the two move their saved rows apart by (RowStep).
     history: i64,
+    /// A narrower resize clamped Alacritty's saved column on the alternate
+    /// screen while xterm's, in its emptied buffer, kept it (resize).
+    unplaceable: bool,
 }
 
 /// A byte of a printed character (not a C0 control or DEL).
@@ -635,9 +653,9 @@ impl XtermFeed {
                 self.origin = false;
                 self.charset_slots = 0;
                 self.dec_slots = [false; 4];
-                if screen == 0 {
-                    self.saved[0].history = history() as i64;
-                }
+                self.saved[screen].history = if screen == 0 { history() as i64 } else { 0 };
+                // Column 0 is placeable whatever a narrower resize clamped.
+                self.saved[screen].unplaceable = false;
             }
             b"\x1b%@" | b"\x1b%G" => self.designate(0, false),
             [0x1b, slot @ (b'(' | b')' | b'*' | b'+' | b'-' | b'.'), set @ (b'B' | b'0')] => self
@@ -673,6 +691,7 @@ impl XtermFeed {
             no_wraparound: self.no_wraparound,
             origin: self.origin,
             history: if screen == 0 { history() as i64 } else { 0 },
+            unplaceable: false,
         };
     }
 
@@ -921,6 +940,15 @@ impl XtermFeed {
                     Some(ContextRule::AltLeave { mode_47: true }) => self.round_trip = false,
                     _ => {}
                 }
+                // Whether Alacritty shows its alternate screen before a control
+                // that may leave it (xterm's alternate buffer length, below).
+                let shown_before = (sequence == b"\x1bc"
+                    || (sequence.starts_with(b"\x1b[?") && sequence.ends_with(b"l")))
+                    && {
+                        parser.advance(term, &data[from..at]);
+                        from = at;
+                        alternate_shown(parser, term)
+                    };
                 // Read only at a save, so the parser runs through the
                 // sequence just for those (`from` moves with it): a C0 inside
                 // runs first and may scroll, and a save itself never does.
@@ -948,18 +976,38 @@ impl XtermFeed {
                 }
                 if let Some(screen) = restore {
                     // A DECRC or SCORC Alacritty runs itself, onto its saved
-                    // screen row: on the main screen, move it to xterm's row.
+                    // screen row: move it to xterm's row.
                     parser.advance(term, &data[from..at + len]);
                     from = at + len;
-                    let history = self.saved[0].history;
+                    let history = self.saved[screen].history;
                     let placed = with_sync_flushed(parser, term, |term| {
                         let alt = term.mode().contains(TermMode::ALT_SCREEN);
-                        if !alt && screen == 0 {
+                        let placed = alt == (screen == 1);
+                        if placed {
                             place_like_xterm(term, history);
                         }
-                        alt == (screen == 1)
+                        placed
                     });
                     self.refuse(!placed, RESTORE_ROW);
+                    self.refuse(
+                        screen == 1
+                            && (self.saved[1].unplaceable
+                                || self.alt_overhang
+                                || self.alt_rows > rows),
+                        RESTORE_ROW_ALT,
+                    );
+                }
+                if self.may_leave_alt {
+                    // xterm empties its alternate buffer on leaving it, which
+                    // sets the buffer's length back to the screen rows; RIS
+                    // makes new buffers. Decided by Alacritty's own mode, as
+                    // below.
+                    parser.advance(term, &data[from..at + len]);
+                    from = at + len;
+                    if sequence == b"\x1bc" || (shown_before && !alternate_shown(parser, term)) {
+                        self.alt_rows = rows;
+                        self.alt_overhang = false;
+                    }
                 }
                 if self.alt_reflow && self.may_leave_alt {
                     // Leaving the alternate screen, or a reset there, drops
@@ -1139,6 +1187,74 @@ fn place_like_xterm(term: &mut Term<VoidListener>, history: i64) {
     let cursor = &mut term.grid_mut().cursor;
     let row = i64::from(cursor.point.line.0) + history - now;
     cursor.point.line = Line(row.clamp(top, bottom) as i32);
+}
+
+/// xterm's saved row on one screen across the row step of a resize, while
+/// that step runs on its own (`Term::resize` at the old width).
+///
+/// The save stays placeable while xterm's absolute saved row equals the save's
+/// history plus Alacritty's saved screen row (place_like_xterm). Alacritty's
+/// own rule is observed: `shrink_lines` clamps its saved row onto the new
+/// screen, and `grow_lines` moves it down by the history rows it pulls.
+/// xterm's is computed (`Buffer.resize`): its saved row stays absolute. A
+/// shorter screen pushes the rows the cursor needs into history, then trims
+/// the rows past the cap from the top and moves the saved row up with them
+/// (`savedY = Math.max(savedY - amountToTrim, 0)`). The alternate screen is
+/// the same with no history and a cap of 0.
+struct RowStep {
+    /// xterm's saved row, absolute in this grid's rows, once trimmed.
+    xterm_saved: i64,
+}
+
+impl RowStep {
+    fn before(grid: &Grid<Cell>, saved_history: i64, target: usize, cap: usize) -> Self {
+        let rows = grid.screen_lines() as i64;
+        let target = target as i64;
+        let history = grid.history_size() as i64;
+        let saved = saved_history + i64::from(grid.saved_cursor.point.line.0);
+        let trimmed = if target < rows {
+            let pushed = (i64::from(grid.cursor.point.line.0) + 1 - target).max(0);
+            (history + pushed - cap as i64).max(0)
+        } else {
+            0
+        };
+        RowStep {
+            xterm_saved: (saved - trimmed).max(0),
+        }
+    }
+
+    /// A screen xterm's resize skips: its alternate buffer while another is
+    /// shown, emptied when it was left. The saved row stays as it is.
+    fn untouched(grid: &Grid<Cell>, saved_history: i64) -> Self {
+        RowStep {
+            xterm_saved: saved_history + i64::from(grid.saved_cursor.point.line.0),
+        }
+    }
+
+    /// The save's history once Alacritty's grid has run the step.
+    fn after(&self, grid: &Grid<Cell>) -> i64 {
+        self.xterm_saved - i64::from(grid.saved_cursor.point.line.0)
+    }
+}
+
+/// The alternate screen's grid, whichever screen is shown.
+fn alt_grid(term: &Term<VoidListener>) -> &Grid<Cell> {
+    if term.mode().contains(TermMode::ALT_SCREEN) {
+        term.grid()
+    } else {
+        term.inactive_grid()
+    }
+}
+
+const HISTORY_LIMIT: &str = "unsupported-history-limit: history reached the native grid cap";
+
+/// Past the native cap xterm keeps rows this grid trimmed (its own cap,
+/// `requested`, is larger), so the history and the saved rows part.
+fn history_at_native_cap(term: &Term<VoidListener>, requested: u32, cap: u32) -> bool {
+    requested > cap
+        && [term.grid(), term.inactive_grid()]
+            .iter()
+            .any(|grid| grid.history_size() >= cap as usize)
 }
 
 /// A DECRST that resets 1049, read as `track` reads it (C0 controls inside
@@ -1343,7 +1459,11 @@ impl NativeTerminal {
             term: Some(Term::new(config, &size, VoidListener)),
             parser: Processor::new(),
             scrollback,
-            feed: XtermFeed::default(),
+            requested_scrollback: scrollback,
+            feed: XtermFeed {
+                alt_rows: rows as usize,
+                ..XtermFeed::default()
+            },
             refusal: None,
             scanned: 0,
             text_held: Vec::new(),
@@ -1383,6 +1503,7 @@ impl NativeTerminal {
             self.scanned += take;
             return Ok(self.scanned >= REFUSAL_SCAN_BYTES);
         }
+        self.requested_scrollback = requested_scrollback;
         self.feed.feed(&mut self.parser, term, &bytes);
         if self.feed.divergent {
             self.refusal = Some(
@@ -1390,12 +1511,8 @@ impl NativeTerminal {
                     .refused
                     .unwrap_or("unsupported-state: a control Alacritty parses differently"),
             );
-        } else if requested_scrollback > self.scrollback
-            && [term.grid(), term.inactive_grid()]
-                .iter()
-                .any(|grid| grid.history_size() >= self.scrollback as usize)
-        {
-            self.refusal = Some("unsupported-history-limit: history reached the native grid cap");
+        } else if history_at_native_cap(term, requested_scrollback, self.scrollback) {
+            self.refusal = Some(HISTORY_LIMIT);
         }
         // Refused in these bytes: the scan of the next ones comes first.
         Ok(false)
@@ -1442,11 +1559,22 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+        // The row step runs at the old width first (below).
+        if (rows as u64 + self.scrollback as u64) * term.columns() as u64 > 4_000_000 {
+            return Err(Error::from_reason(
+                "Experiment grid exceeds four million cells",
+            ));
+        }
         // vte holds bytes back inside a synchronized update; xterm parsed them
         // at the old size. Apply them first, then re-enter the update.
         let synchronized = self.parser.sync_timeout().pending_timeout();
         if synchronized {
             self.parser.stop_sync(term);
+            // The held bytes can trim at the cap at the old width, and a
+            // width-only widen can take the history back under it.
+            if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
+                self.refusal.get_or_insert(HISTORY_LIMIT);
+            }
         }
         // xterm never reflows or cuts the alternate screen: its rows keep
         // their cells and wrap flags across a resize. The vendored grid keeps
@@ -1491,12 +1619,59 @@ impl NativeTerminal {
             self.feed.alt_margins = false;
         }
         // A resize moves rows between the screen and the history on both
-        // terminals, and each adjusts its saved row by its own rules. Carry
-        // the change, so a later restore counts only the rows the stream
-        // scrolled (place_like_xterm).
-        let before = primary.history_size() as i64;
+        // terminals, and each moves its saved rows by its own rules. Both
+        // change rows before they reflow columns (Alacritty's Grid::resize;
+        // xterm's Buffer.resize runs _reflow last), so the row step runs on
+        // its own first and each screen's save is carried across it
+        // (RowStep). Then the column step's history change is carried, so a
+        // later restore counts only the rows the stream scrolled
+        // (place_like_xterm).
+        let target = size.screen_lines();
+        let alt = term.mode().contains(TermMode::ALT_SCREEN);
+        // xterm's alternate buffer, emptied whenever it is left, is skipped by
+        // its resize: it keeps the length it had, so shown again on fewer
+        // rows it keeps rows above the screen that Alacritty's has none of,
+        // and its saved column is not clamped.
+        if alt && self.feed.alt_rows > term.screen_lines() {
+            self.feed.alt_overhang = true;
+        }
+        if !alt && alt_grid(term).saved_cursor.point.column.0 >= size.columns() {
+            self.feed.saved[1].unplaceable = true;
+        }
+        self.feed.alt_rows = if alt {
+            target
+        } else {
+            self.feed.alt_rows.max(target)
+        };
+        if term.screen_lines() != target {
+            let main_step = RowStep::before(
+                main_grid(term),
+                self.feed.saved[0].history,
+                target,
+                self.scrollback as usize,
+            );
+            let alt_step = if alt {
+                RowStep::before(alt_grid(term), self.feed.saved[1].history, target, 0)
+            } else {
+                RowStep::untouched(alt_grid(term), self.feed.saved[1].history)
+            };
+            term.resize(dimensions(term.columns() as u32, rows)?);
+            self.feed.saved[0].history = main_step.after(main_grid(term));
+            self.feed.saved[1].history = alt_step.after(alt_grid(term));
+            // Checked here too: a wider reflow next can take history back
+            // under the cap after the row step trimmed at it.
+            if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
+                self.refusal.get_or_insert(HISTORY_LIMIT);
+            }
+        }
+        let before = main_grid(term).history_size() as i64;
         term.resize(size);
         self.feed.saved[0].history += main_grid(term).history_size() as i64 - before;
+        // feed_xterm checks the same after a chunk, where the chunk's own
+        // ED 3 could hide a resize's trim.
+        if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
+            self.refusal.get_or_insert(HISTORY_LIMIT);
+        }
         if synchronized {
             self.parser.advance(term, b"\x1b[?2026h");
         }
@@ -2466,6 +2641,66 @@ mod tests {
             feed.refused.map(|r| r.split(':').next().unwrap_or(r)),
             term.grid().cursor.point.line.0,
         )
+    }
+
+    /// The save's history after a row-only resize of `text` at 10x6 to
+    /// `target` rows, from `history` at the save.
+    fn row_step(text: &str, scrollback: usize, history: i64, target: usize, alt: bool) -> i64 {
+        let config = Config {
+            scrolling_history: scrollback,
+            ..Config::default()
+        };
+        let mut term = Term::new(config, &Size { cols: 10, rows: 6 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, text.as_bytes());
+        let cap = if alt { 0 } else { scrollback };
+        let step = super::RowStep::before(term.grid(), history, target, cap);
+        term.resize(Size {
+            cols: 10,
+            rows: target,
+        });
+        step.after(term.grid())
+    }
+
+    #[test]
+    fn a_row_step_keeps_xterm_s_saved_row() {
+        // Saved on row 3 (index 2), cursor on the bottom row, 6 rows to 4: two
+        // rows go to history on both; Alacritty's saved row stays on index 2,
+        // xterm's absolute row too.
+        assert_eq!(row_step("a\x1b[3;1H\x1b7\x1b[6;1H", 100, 0, 4, false), 0);
+        // Saved on the bottom row with the cursor above: Alacritty clamps the
+        // saved row to index 3; xterm keeps index 5.
+        assert_eq!(row_step("a\x1b[6;1H\x1b7\x1b[2;1H", 100, 0, 4, false), 2);
+        // Full history (cap 2): xterm trims the two rows pushed and moves its
+        // saved row up, but not above 0 (Math.max(savedY - amountToTrim, 0)).
+        let full = "\x1b7".to_owned() + &"x\r\n".repeat(7);
+        assert_eq!(row_step(&full, 2, 0, 4, false), 0);
+        assert_eq!(
+            row_step(
+                &("x\r\n".repeat(7) + "\x1b[1;1H\x1b7\x1b[6;1H"),
+                2,
+                2,
+                4,
+                false
+            ),
+            0
+        );
+        // Taller with the cursor on the bottom row: both pull history down;
+        // Alacritty moves its saved row with it, xterm keeps its row.
+        assert_eq!(
+            row_step(
+                &("x\r\n".repeat(7) + "\x1b[2;1H\x1b7\x1b[6;1H"),
+                100,
+                2,
+                8,
+                false
+            ),
+            0
+        );
+        // The alternate screen keeps no history: xterm trims the rows the
+        // cursor pushes and moves its saved row up by them, Alacritty clamps.
+        let alt = "\x1b[?1049h\x1b[3;1H\x1b7\x1b[6;1H";
+        assert_eq!(row_step(alt, 100, 0, 4, true), -2);
     }
 
     #[test]

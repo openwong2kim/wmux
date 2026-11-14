@@ -49,6 +49,7 @@ import { isOriginPin } from '../../shared/originPin';
 import * as path from 'node:path';
 import {
   LEDGER_GATE_TAIL_MAX_BYTES,
+  LEDGER_REMOTE_QUESTIONS,
   LEDGER_REMOTE_STATES,
   LEDGER_SCHEMA_VERSION,
   REMOTE_TASK_WORKSPACE_PREFIX,
@@ -65,9 +66,11 @@ import {
   type LedgerEntry,
   type LedgerGateResult,
   type LedgerRemote,
+  type LedgerRemoteWaiting,
   type LedgerStatus,
 } from '../../shared/ledger';
 import { sanitizeTaskCriteria, gradeNonCodeEvidence } from '../../shared/nonCodeTaskEvidence';
+import { A2A_REMOTE_MESSAGE_ID_RE } from '../../shared/a2aRemote';
 import type { CompletionEvidence } from '../../shared/types';
 
 export const LEDGER_FILENAME = 'task-ledger.jsonl';
@@ -321,6 +324,25 @@ export function copyRemote(r: unknown): LedgerRemote | null {
     ...(o.withdrawn === true ? { withdrawn: true as const } : {}),
     ...(o.revoked === true ? { revoked: true as const } : {}),
     ...(typeof o.requestDigest === 'string' && /^[0-9a-f]{64}$/.test(o.requestDigest) ? { requestDigest: o.requestDigest } : {}),
+    ...(o.from && typeof o.from === 'object' && typeof (o.from as { paneId?: unknown }).paneId === 'string' && PANE_ID_RE.test((o.from as { paneId: string }).paneId)
+      ? { from: { paneId: (o.from as { paneId: string }).paneId } } : {}),
+    ...(copyWaiting(o.waiting) ? { waiting: copyWaiting(o.waiting)! } : {}),
+    ...(typeof o.goneSeenAt === 'number' && Number.isFinite(o.goneSeenAt) && o.goneSeenAt > 0 ? { goneSeenAt: o.goneSeenAt } : {}),
+    ...(typeof o.reportId === 'string' && A2A_REMOTE_MESSAGE_ID_RE.test(o.reportId) ? { reportId: o.reportId } : {}),
+  };
+}
+
+const PANE_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+const isIso = (v: unknown): v is string => typeof v === 'string' && v.length <= 40 && Number.isFinite(Date.parse(v));
+
+function copyWaiting(w: unknown): LedgerRemoteWaiting | null {
+  if (!w || typeof w !== 'object') return null;
+  const o = w as Record<string, unknown>;
+  if ((o.on !== 'question' && o.on !== 'usage-limit') || !isIso(o.since)) return null;
+  return {
+    on: o.on, since: o.since,
+    ...(o.on === 'question' && (LEDGER_REMOTE_QUESTIONS as readonly unknown[]).includes(o.question) ? { question: o.question as LedgerRemoteWaiting['question'] } : {}),
+    ...(o.on === 'usage-limit' && isIso(o.resetsAt) ? { resetsAt: o.resetsAt } : {}),
   };
 }
 
@@ -765,17 +787,32 @@ export class TaskLedger {
   }
 
   /** What this PC learned of a task another PC runs: its request's state,
-   *  link, or that it was withdrawn here. SYSTEM write; bumps the
-   *  rev; no status change, no transition event. Resolves with the row as it
-   *  is afterwards, or null for a row that is not remote. */
-  updateRemote(id: string, patch: Partial<Omit<LedgerRemote, 'hostId' | 'spawnId'>>): Promise<LedgerEntry | null> {
+   *  link, or that it was withdrawn here. SYSTEM write; bumps the rev; no
+   *  status change, no transition event. Resolves with the row as it is
+   *  afterwards, or null for a row that is not remote.
+   *
+   *  `text`: why the row waits, when only that changed, written with the
+   *  patch in one write. Only onto an input_required row as it was read
+   *  (`expectedRev`): otherwise only the patch is written, and the next pass
+   *  reads the row again. */
+  updateRemote(
+    id: string,
+    patch: Partial<Omit<LedgerRemote, 'hostId' | 'spawnId'>>,
+    text?: { summary: string; expectedRev: number },
+  ): Promise<LedgerEntry | null> {
     return this.serialize(async () => {
       const entry = this.entries.get(id);
       if (!entry?.remote) return null;
       const remote = copyRemote({ ...entry.remote, ...patch });
       if (!remote) throw new Error(`ledger: the remote record of task ${id} would not be valid`);
-      if (JSON.stringify(remote) === JSON.stringify(entry.remote)) return entry;
-      const updated: LedgerEntry = this.redact({ ...entry, remote, rev: entry.rev + 1, updatedAt: this.now(), updatedBy: SYSTEM_ACTOR() });
+      const current = text !== undefined && entry.rev === text.expectedRev && entry.status === 'input_required';
+      const summary = current && text.summary.trim().length > 0
+        ? truncateHead(this.redact(text.summary.trim()), LEDGER_SUMMARY_MAX_BYTES)
+        : entry.summary;
+      if (JSON.stringify(remote) === JSON.stringify(entry.remote) && summary === entry.summary) return entry;
+      const updated: LedgerEntry = this.redact({
+        ...entry, remote, ...(summary !== undefined ? { summary } : {}), rev: entry.rev + 1, updatedAt: this.now(), updatedBy: SYSTEM_ACTOR(),
+      });
       await this.append({ op: 'entry', entry: updated });
       this.entries.set(id, updated);
       return updated;

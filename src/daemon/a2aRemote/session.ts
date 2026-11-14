@@ -1,3 +1,4 @@
+import type { Readable } from 'node:stream';
 import {
   A2A_FEATURE_STREAM_PING,
   A2A_REDIAL_BACKOFF_MIN_MS,
@@ -32,7 +33,9 @@ import { errMsg, isPlainObject } from './storeFile';
  *   pump   — POSTs this host's outbox to the server strictly in seq order
  *            (an ack covers every seq up to it, so N+1 never goes before N):
  *              ok / duplicate          → ack
- *              terminal refusal        → refuse + `onRefused` (the task fails)
+ *              terminal refusal        → refuse + `onRefused` (the task fails;
+ *                                        a state the server disagrees with is
+ *                                        only recorded on it)
  *              written, no answer      → outcome-unknown; the SAME envelope is
  *                                        resent later (idempotent by key)
  *              not sent / unavailable  → retried later
@@ -47,7 +50,7 @@ import { errMsg, isPlainObject } from './storeFile';
  * `livenessMs` is dropped and redialled.
  */
 
-/** Refusals resending can never fix: the record is dropped and its task failed. */
+/** Refusals resending can never fix: the record is dropped, and `onRefused` ends what it was about (see delivery.ts). */
 export const TERMINAL_REFUSALS: ReadonlySet<A2aRemoteErrorCode> = new Set<A2aRemoteErrorCode>([
   'unknown-link',
   'link-not-active',
@@ -89,7 +92,15 @@ export interface SessionClient {
   headStatus?(path: string, timeoutMs: number, signal?: AbortSignal): Promise<number>;
   getBytes?(path: string, opts: { maxBytes: number; timeoutMs: number; signal?: AbortSignal }): Promise<Buffer>;
   getStream?<T>(path: string, opts: { timeoutMs: number; signal?: AbortSignal; acceptEncoding?: string }, consume: (res: PinnedStreamedBody) => Promise<T>): Promise<T>;
+  putStream?(path: string, body: Readable, opts: { bytes: number; timeoutMs: number; signal?: AbortSignal }): Promise<{ status: number; json: unknown }>;
 }
+
+/** A PUT of exactly `opts.bytes` read from `body` as it is sent (JoinerSession.sendStream). */
+export type StreamedPut = (
+  path: string,
+  body: Readable,
+  opts: { bytes: number; timeoutMs: number; signal: AbortSignal },
+) => Promise<{ status: number; json: unknown }>;
 
 /** A GET whose body `consume` reads as it arrives (JoinerSession.fetchStream). */
 export type StreamedGet = <T>(
@@ -123,6 +134,11 @@ export interface JoinerSessionDeps {
   accept: (envelope: unknown, peer: { hostId: HostId; pull?: ImagePull }) => Promise<A2aRemoteDeliverResponse>;
   /** The server refused a record for good (or its images could not be sent): end what it was about. */
   onRefused: (record: A2aOutboxRecordV1, code: A2aRemoteErrorCode, detail?: string) => void | Promise<void>;
+  /**
+   * Checked as each record is about to go: true keeps it from the server (the
+   * caller refuses it, or it stays owed and is checked again next time).
+   */
+  withhold?: (rec: A2aOutboxRecordV1) => boolean;
   /** This PC's copies of the images it queued (`A2aImageStore.readOutgoing`). */
   images?: { readOutgoing(sha256: string): Promise<Buffer | null> };
   /** The stream came up (or 5 minutes passed): fold the server's view of our links in. */
@@ -224,6 +240,23 @@ export class JoinerSession {
     if (!client?.getStream) throw new PinnedClientError('connect-failed', 'that PC cannot be reached from here now', { sent: false });
     try {
       return await client.getStream(path, { ...opts, signal: AbortSignal.any([opts.signal, this.halt.signal]) }, consume);
+    } catch (err) {
+      if (err instanceof PinnedClientError && err.code === 'fingerprint-mismatch') this.identityChanged(err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * A PUT to the server of a body too large to hold (a bundle that PC asked
+   * this one for), as fetchStream: through a pinned client to the host as it
+   * is now, ended by `opts.signal` or by stop(). Throws as the pinned client
+   * does; a certificate that is not the pinned one stops the session.
+   */
+  async sendStream(path: string, body: Readable, opts: { bytes: number; timeoutMs: number; signal: AbortSignal }): Promise<{ status: number; json: unknown }> {
+    const client = this.status.state === 'identity-changed' ? null : this.client();
+    if (!client?.putStream) throw new PinnedClientError('connect-failed', 'that PC cannot be reached from here now', { sent: false });
+    try {
+      return await client.putStream(path, body, { ...opts, signal: AbortSignal.any([opts.signal, this.halt.signal]) });
     } catch (err) {
       if (err instanceof PinnedClientError && err.code === 'fingerprint-mismatch') this.identityChanged(err.message);
       throw err;
@@ -393,6 +426,8 @@ export class JoinerSession {
     const { hostId } = this.deps;
     // This send's own stop: a start() after a stop() gives the session a new one.
     const halt = this.halt.signal;
+    // Kept from the server: refused by the caller (the next record is due), or still owed (later).
+    if (this.deps.withhold?.(rec)) return this.deps.outbox.head(hostId)?.seq === rec.seq ? 'retry' : 'next';
     try {
       this.deps.outbox.markSent(hostId, rec.seq);
     } catch (err) {

@@ -193,6 +193,18 @@ describe('starting an approved request', () => {
     expect(calls(r, A2A_SPAWN_RPC.started)).toEqual([{ hostId: HOST, spawnId: SPAWN, workspaceId: 'ws-new', paneId: 'pane-new' }]);
   });
 
+  it('the mode this PC set reaches the launch for every mode, manual included (the renderer turns it into the flag)', async () => {
+    for (const permissionMode of ['auto', 'acceptEdits', 'bypassPermissions', 'manual'] as const) {
+      const r = rig(() => ({ ...empty(), approved: [{ hostId: HOST, spawnId: SPAWN }] }), { claim: () => ({ ok: true, claim: { ...claim, permissionMode } }) });
+      r.coord.start();
+      // eslint-disable-next-line no-await-in-loop -- one start at a time
+      await vi.waitFor(() => expect(r.render).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+      const [, params] = r.render.mock.calls[0] as unknown as [string, Record<string, unknown>];
+      expect(params['workerPermissionMode']).toBe(permissionMode);
+      r.coord.stop();
+    }
+  });
+
   it('each failure ends the request with a code and leaves nothing running: the workspace closed, the worktree removed', async () => {
     const cases: Array<[Parameters<typeof rig>[1], string, { closed: boolean; removed: boolean }]> = [
       [{ worktree: () => ({ ok: false, code: 'folder-not-allowed', detail: 'filter driver' }) }, 'folder-not-allowed', { closed: false, removed: false }],

@@ -219,8 +219,15 @@ export class PendingDeliveries {
         reason: 'write_failed',
         detail: `delivery: ${err instanceof Error ? err.message : String(err)}`,
       }));
-      // Dropped while the write ran: that is the newer state.
-      if (!this.entries.includes(entry)) return;
+      // Dropped while the write ran: that is the newer state. What the
+      // write did is still logged: text may have reached the pane.
+      if (!this.entries.includes(entry)) {
+        if (result.ok || result.pasted) {
+          const what = result.ok ? 'typed' : `pasted but not submitted (${result.reason})`;
+          this.deps.log(`[delivery] stored task ${JSON.stringify(entry.taskId)} was ${what} into pane ${JSON.stringify(ptyId)} after it was dropped`);
+        }
+        return;
+      }
       if (result.ok) {
         this.remove(entry);
         this.deps.log(`[delivery] typed stored task ${JSON.stringify(entry.taskId)} into pane ${JSON.stringify(ptyId)}`);
@@ -230,7 +237,7 @@ export class PendingDeliveries {
         // Its text sits in the pane's composer: typing it again would paste it twice.
         this.remove(entry);
         this.deps.log(`[delivery] stored task ${JSON.stringify(entry.taskId)} was pasted into pane ${JSON.stringify(ptyId)} but not submitted (${result.reason}); not typed again`);
-      } else if (result.pasted || !RETRYABLE.has(result.reason)) {
+      } else if (result.pasted || !(RETRYABLE.has(result.reason) || result.composerNotPlain === true)) {
         this.drop(entry, 'refused', result.reason);
       } else {
         entry.reason = result.reason;

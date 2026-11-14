@@ -38,6 +38,7 @@
 import type { CompletionEvidence, TaskState } from './types';
 import type { A2aSpawnRequestV1, A2aSpawnResultV1, A2aSpawnTargetsV1 } from './a2aSpawn';
 import type { A2aContinueLinkState, A2aContinueManifestV1, A2aContinueRequestV1, A2aContinueResultV1, A2aContinueStatusQueryV1 } from './a2aContinue';
+import type { A2aBundleAskV1, A2aBundleLinkState, A2aBundleMadeV1 } from './a2aBundle';
 
 // ─── Versions ───────────────────────────────────────────────────────────────
 
@@ -93,6 +94,12 @@ export const A2A_ROUTES = Object.freeze({
    */
   continue: '/api/a2a/continue',
   /**
+   * A git bundle a PC made of the work an agent did there for this one
+   * (bring-back), by its id: `GET` — the asking PC, the joiner, fetches it
+   * from the PC that made it. Path: /api/a2a/bundle/:bundleId
+   */
+  bundle: '/api/a2a/bundle',
+  /**
    * Tailnet discovery, answered only while this PC is discoverable and only
    * to a same-user tailnet node; otherwise every route answers exactly as an
    * unauthenticated request does. `GET` — the probe (A2aDiscoverProbe).
@@ -135,6 +142,11 @@ export const A2A_FEATURE_SPAWN = 'spawn.1';
  */
 export const A2A_FEATURE_CONTINUE = 'continue.1';
 /**
+ * The PC hands back, as a git bundle, the work an agent it started for
+ * another PC did (`shared/a2aBundle.ts`). Not advertised yet.
+ */
+export const A2A_FEATURE_BUNDLE = 'bundle.1';
+/**
  * Stream liveness both ways. A joiner with it acks its stream cursor every
  * `A2A_STREAM_PING_MS` while the stream is up (to a server whose hello lists
  * it); a server whose joiner advertised it ends that stream after
@@ -149,6 +161,39 @@ export const A2A_FEATURE_STREAM_PING = 'stream-ping.1';
  * an older one would refuse the kind.
  */
 export const A2A_FEATURE_STATUS = 'status.1';
+/**
+ * The PC takes a host's notice on a `reply` envelope (`A2aRemoteEnvelope.notice`):
+ * one of its own messages was held on the other PC and has now been dropped
+ * there, the task left open. A host sends one only to a PC that advertises it:
+ * an older one would take it as a plain reply (and a headless one with
+ * follow-ups on `ask` would end the task on it).
+ */
+export const A2A_FEATURE_HELD_NOTICE = 'held-notice.1';
+/** A host's notice about one message the receiver sent (`held-notice.1`). Nothing in it is shown as written. */
+export interface A2aRemoteNoticeV1 {
+  kind: 'held-expired';
+  /** The receiver's own message that was dropped. */
+  messageId: string;
+  /** When the host dropped it. */
+  sentAt: string;
+  /** A paste of it was started there and never confirmed: it may have reached the pane. */
+  unconfirmed?: true;
+}
+const NOTICE_KINDS: ReadonlySet<string> = new Set(['held-expired']);
+/** Strict: a known kind, a message id, an ISO time; anything else is dropped. Null: not a notice. */
+export function parseA2aRemoteNotice(raw: unknown): A2aRemoteNoticeV1 | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const kind = r['kind'];
+  const messageId = r['messageId'];
+  const sentAt = r['sentAt'];
+  if (typeof kind !== 'string' || !NOTICE_KINDS.has(kind)) return null;
+  if (typeof messageId !== 'string' || !A2A_REMOTE_MESSAGE_ID_RE.test(messageId)) return null;
+  if (typeof sentAt !== 'string' || sentAt.length > 40 || !/^\d{4}-\d{2}-\d{2}T/.test(sentAt) || Number.isNaN(Date.parse(sentAt))) return null;
+  const unconfirmed = r['unconfirmed'];
+  if (unconfirmed !== undefined && unconfirmed !== true) return null;
+  return { kind: 'held-expired', messageId, sentAt: new Date(Date.parse(sentAt)).toISOString(), ...(unconfirmed ? { unconfirmed: true as const } : {}) };
+}
 /** Whether a menu's labels leave this PC in a worker's status, or only how many there are. */
 export type A2aStatusLabels = 'send' | 'keep';
 export function isA2aStatusLabels(v: unknown): v is A2aStatusLabels {
@@ -901,7 +946,7 @@ export interface A2aRemoteEnvelope {
    * payload is in `offer`. An older receiver refuses them as an unknown link.
    */
   link?: {
-    state: 'active' | 'revoked' | 'broken' | 'offer' | 'offer-withdrawn' | 'spawn' | 'spawn-result' | 'spawn-targets' | A2aContinueLinkState;
+    state: 'active' | 'revoked' | 'broken' | 'offer' | 'offer-withdrawn' | 'spawn' | 'spawn-result' | 'spawn-targets' | A2aContinueLinkState | A2aBundleLinkState;
     version: number;
     reason?: A2aLinkRecordV1['endedReason'];
   };
@@ -925,10 +970,24 @@ export interface A2aRemoteEnvelope {
   continueManifest?: A2aContinueManifestV1;
   continueResult?: A2aContinueResultV1;
   continueStatus?: A2aContinueStatusQueryV1;
+  /**
+   * Bringing back an agent's work as a git bundle (`shared/a2aBundle.ts`), on
+   * a 'link' envelope of the state `bundle-ask` or `bundle-made`. `linkId` is
+   * the ask's id; these never touch a link record. Sent only to a peer that
+   * advertises `A2A_FEATURE_BUNDLE`.
+   */
+  bundleAsk?: A2aBundleAskV1;
+  bundleMade?: A2aBundleMadeV1;
   /** For 'receipt' (with `taskId`). */
   receipt?: A2aRemoteReceipt;
   /** For 'status' (with `taskId`), only to a peer that advertises `A2A_FEATURE_STATUS`. */
   status?: A2aRemoteStatusV1;
+  /**
+   * For 'reply', only to a peer that advertises `A2A_FEATURE_HELD_NOTICE`: this
+   * reply is the host's notice, not a message from its agent. The receiver
+   * shows its own fixed text, never `text`.
+   */
+  notice?: A2aRemoteNoticeV1;
   /**
    * For 'task' / 'reply', only to a peer that advertises `A2A_FEATURE_IMAGES`:
    * the images the message carries. The bytes travel on `A2A_ROUTES.blobs`,
@@ -1194,11 +1253,17 @@ export interface A2aRemoteTaskMarkerV1 {
    */
   kind?: A2aEndpointKind;
   /**
-   * Outbound company task: the peer's state messageId of the `completed` held
-   * here as a report (the task is input-required) until this host marks it
-   * done. Cleared by the peer's next state that is not a report.
+   * Outbound company or fan-out task: the peer's state messageId of the
+   * `completed` held here as a report (the task is input-required) until this
+   * host marks it done. Cleared by the peer's next state that is not a report.
    */
   reported?: string;
+  /**
+   * Outbound: the first task of an agent `fanout_start` asked another PC to
+   * start, set here when the task was made (never from anything the peer
+   * sends). The peer's `completed` is held as a report, as on a company task.
+   */
+  fanout?: true;
 }
 
 /**

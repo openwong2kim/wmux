@@ -3,6 +3,7 @@ import {
   A2A_BRAIN_ALIAS,
   A2A_REMOTE_BODY_MAX,
   parseA2aRemoteImageRefs,
+  parseA2aRemoteNotice,
   parseA2aRemoteStatus,
   type A2aRemoteImageRef,
   A2A_REMOTE_MESSAGE_ID_RE,
@@ -17,7 +18,7 @@ import {
   type A2aRemoteTaskMarkerV1,
   type HostId,
 } from '../../shared/a2aRemote';
-import { A2A_REMOTE_INBOUND_EVENT, remoteWorkspaceId, sanitizeRemoteMessage, type A2aRemoteInboundEvent } from '../../shared/a2aRemoteDelivery';
+import { A2A_REMOTE_INBOUND_EVENT, heldNoticeText, remoteWorkspaceId, sanitizeRemoteMessage, type A2aRemoteInboundEvent, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 import { normalizeCompletionEvidenceWire } from '../../shared/completionEvidence';
 import { isTaskState, TERMINAL_STATES, type CompletionEvidence, type EvidenceItem, type Message, type Part } from '../../shared/types';
 import type { A2aImageStore, ImageNotReceived } from './imageStore';
@@ -26,6 +27,7 @@ import { remoteTaskId } from './ids';
 import type { BrokenReason, LinkStore } from './linkStore';
 import { isPlainObject, isSafeId } from './storeFile';
 import { isSpawnEnvelope } from './spawnReceiver';
+import { heldNoticeMessageId } from './outbound';
 import { isContinueEnvelope } from './continueReceiver';
 
 /**
@@ -64,6 +66,10 @@ export interface InboundDeps {
   spawn?: { applyInbound(env: A2aRemoteEnvelope, peer: { hostId: HostId }): A2aRemoteDeliverResponse | Promise<A2aRemoteDeliverResponse> };
   /** Continuing a conversation from another PC (the `link` states `continue*`); absent, they are an unknown link. */
   continue?: { applyInbound(env: A2aRemoteEnvelope, peer: { hostId: HostId }): A2aRemoteDeliverResponse | Promise<A2aRemoteDeliverResponse> };
+  /** Asks to bring back an agent's work as a bundle (the `link` state `bundle-ask`; the box side); absent, they are an unknown link. */
+  bundles?: { applyInbound(env: A2aRemoteEnvelope, peer: { hostId: HostId }): A2aRemoteDeliverResponse | Promise<A2aRemoteDeliverResponse> };
+  /** The box's answers to this PC's asks (the `link` state `bundle-made`; the asking side); absent, they are an unknown link. */
+  bundleAsks?: { applyInbound(env: A2aRemoteEnvelope, peer: { hostId: HostId }): A2aRemoteDeliverResponse | Promise<A2aRemoteDeliverResponse> };
   /**
    * Where a worker's status on a task this PC sent goes (`kind: 'status'`): the newest per task, in memory.
    * Absent, a status is refused as unknown.
@@ -76,6 +82,16 @@ export interface InboundDeps {
     /** True the first time a task's `gone` is seen (its log line); false after, until the task is forgotten. */
     firstGone?(taskId: string): boolean;
     forget(taskId: string): void;
+  };
+  /**
+   * A host's notice about one of our own messages (`held-notice.1`): how many
+   * a link may bring (past it they are taken and dropped, one log line per
+   * window), and the one log line for a notice that names no message of ours.
+   * Absent: a notice is taken with no limit.
+   */
+  remoteNotice?: {
+    admit(linkId: string): boolean;
+    unknownOnce(linkId: string): boolean;
   };
   /** New tasks each PC may send this one (`PeerTaskBudget`); absent, no limit. */
   taskBudget?: PeerTaskBudget;
@@ -178,6 +194,9 @@ async function applyInbound(
   // A spawn or continue request names no link: it is answered before any link check.
   if (deps.spawn && isSpawnEnvelope(env)) return deps.spawn.applyInbound(env, peer);
   if (deps.continue && isContinueEnvelope(env)) return deps.continue.applyInbound(env, peer);
+  // Bringing back a bundle (shared/a2aBundle.ts): an ask goes to the box side, its answer to the asking side.
+  if (env.kind === 'link' && env.link?.state === 'bundle-ask' && deps.bundles) return deps.bundles.applyInbound(env, peer);
+  if (env.kind === 'link' && env.link?.state === 'bundle-made' && deps.bundleAsks) return deps.bundleAsks.applyInbound(env, peer);
   if (env.kind === 'link' && deps.offers && (env.link?.state === 'offer' || env.link?.state === 'offer-withdrawn')) {
     return deps.offers.applyInbound(env, peer);
   }
@@ -271,6 +290,46 @@ async function applyInbound(
     if (!res.ok) return fail('unavailable', res.error);
     return { ok: true, taskId, duplicate: false };
   }
+  if (env.kind === 'reply' && env.notice) {
+    // The other host's notice about a message WE sent on this task: never an answer, never a state.
+    const task = deps.taskService.getTask(taskId);
+    const marker = task?.metadata.remote as A2aRemoteTaskState | undefined;
+    if (deps.remoteNotice && !deps.remoteNotice.admit(link.linkId)) return { ok: true, taskId, duplicate: true };
+    if (!task || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: true, taskId, duplicate: true };
+    const about = env.notice.messageId;
+    // A notice's id is derived from the message it is about, so there is one per message; the task must be
+    // this link's, and the message one this PC sent on it. Any other notice is answered like every drop.
+    // The link test cannot fail here: checkMessage above already refused (unknown-task) a task that is not
+    // this link's, a local one included. It stays as defense in depth, and is not tested for that reason.
+    if (env.messageId !== heldNoticeMessageId(about) || marker?.linkId !== link.linkId || !marker.sent?.includes(about)) {
+      // Only this PC's ids in the line; nothing the peer wrote.
+      if (deps.remoteNotice?.unknownOnce(link.linkId) ?? true) {
+        deps.log?.('warn', `[a2a-remote] link ${link.linkId}: a notice about a message this PC did not send on task ${taskId}; dropped`);
+      }
+      return { ok: true, taskId, duplicate: true };
+    }
+    // Once per message, ever: a notice about it already stored is not shown again.
+    const noticeId = heldNoticeMessageId(about);
+    const seen = task.history.some((m) => m.messageId === noticeId || noticeAbout(m.metadata) === about)
+      || (marker.inbox ?? []).some((i) => i.kind === 'notice' && i.messageId === noticeId);
+    if (seen) return { ok: true, taskId, duplicate: true };
+    const role: Message['role'] = task.metadata.from.workspaceId === remoteWs ? 'user' : 'agent';
+    const res = await deps.taskService.appendRemoteMessage({
+      taskId,
+      linkId: link.linkId,
+      actorWorkspaceId: remoteWs,
+      // The words are this PC's own, with its own record of when it sent the message.
+      message: {
+        kind: 'message',
+        messageId: env.messageId,
+        role,
+        parts: [{ kind: 'text', text: heldNoticeText(about, marker.sentAt?.[about], env.notice.unconfirmed === true) }],
+        metadata: { wmuxNotice: { kind: env.notice.kind, messageId: about, ...(env.notice.unconfirmed ? { unconfirmed: true } : {}) } },
+      },
+    });
+    if (!res.ok) return fail('conflict' in res ? 'conflict' : 'unavailable', res.error);
+    return { ok: true, taskId, duplicate: res.duplicate };
+  }
   if (env.kind === 'reply') {
     const task = deps.taskService.getTask(taskId);
     // The peer is the sender of an inbound task and the receiver of an outbound one.
@@ -341,6 +400,14 @@ function stateErrorCode(res: { error: string; conflict?: true }): A2aRemoteError
 type Parsed = { envelope: A2aRemoteEnvelope } | { error: A2aRemoteErrorCode };
 
 /** Shape and size checks before anything touches the link store or the ledger. */
+/** The message id a stored host notice is about (`metadata.wmuxNotice.messageId`), if it is one. */
+function noticeAbout(metadata: Record<string, unknown> | undefined): string | undefined {
+  const notice = metadata?.['wmuxNotice'];
+  if (!notice || typeof notice !== 'object' || Array.isArray(notice)) return undefined;
+  const about = (notice as Record<string, unknown>)['messageId'];
+  return typeof about === 'string' ? about : undefined;
+}
+
 function parseEnvelope(raw: unknown): Parsed {
   if (!isPlainObject(raw)) return { error: 'bad-request' };
   if (raw['protocol'] !== A2A_REMOTE_PROTOCOL) return { error: 'protocol' };
@@ -376,6 +443,13 @@ function parseEnvelope(raw: unknown): Parsed {
   const envelope = { ...raw } as unknown as A2aRemoteEnvelope;
   if (images) envelope.images = images;
   else delete envelope.images;
+  // A host's notice rides on a reply only, checked strictly: one that does not parse is refused, never
+  // taken as a plain reply (its fixed text would then reach the agent as a message).
+  if (raw['notice'] !== undefined) {
+    const notice = kind === 'reply' ? parseA2aRemoteNotice(raw['notice']) : null;
+    if (!notice) return { error: 'bad-request' };
+    envelope.notice = notice;
+  }
   // A state's message and evidence are optional extras: one that is malformed
   // or too large is left off and the state still applies, as from an older peer.
   const message = raw['message'];

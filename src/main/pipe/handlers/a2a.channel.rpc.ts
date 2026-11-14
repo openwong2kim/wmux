@@ -55,7 +55,7 @@ import type { DaemonClient } from '../../DaemonClient';
 import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { MISSION_LIST_BATCH_NOT_ALLOWED } from '../../../shared/missionListBatch';
-import { noteWorkTaskClosed } from '../../deck/taskLedgerHost';
+import { getMissionTaskId, getTaskLedger, noteWorkTaskClosed } from '../../deck/taskLedgerHost';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -92,6 +92,21 @@ async function resolveCallerWorkspace(getWindow: GetWindow, params: unknown): Pr
  * but FIRST stamps a server-resolved `verifiedWorkspaceId` (D5) so the
  * daemon's authz gates run against an identity the caller cannot forge.
  */
+/**
+ * A post into the mission channel of a task another PC runs: nobody there
+ * reads this channel. The post stands; the caller is told where the agent is
+ * reached (nothing is forwarded either way).
+ */
+function remoteMissionWarning(channelId: unknown): string | null {
+  if (typeof channelId !== 'string') return null;
+  const taskId = getMissionTaskId(channelId);
+  const remote = taskId ? getTaskLedger().get(taskId)?.remote : undefined;
+  if (!remote) return null;
+  return remote.a2aTaskId
+    ? `nobody on ${remote.pc} reads this channel; reach the agent with send_message task_id=${remote.a2aTaskId}`
+    : `nobody on ${remote.pc} reads this channel, and the agent there has not started yet`;
+}
+
 export function registerA2aChannelRpc(
   router: RpcRouter,
   getDaemonClient: () => DaemonClient | null,
@@ -365,8 +380,13 @@ export function registerA2aChannelRpc(
   router.register('a2a.channel.leave', (p, ctx) => forward('a2a.channel.leave', p, true, ctx));
   // A pinned mention lands in an agent's prompt, so a post may not carry the
   // hand-off line either (moaHandoff.ts; a label, not authentication).
-  router.register('a2a.channel.post', async (p, ctx) =>
-    refuseHandoffMarker('a2a.channel.post', p.text, ctx) ?? forward('a2a.channel.post', p, true, ctx));
+  router.register('a2a.channel.post', async (p, ctx) => {
+    const refused = refuseHandoffMarker('a2a.channel.post', p.text, ctx);
+    if (refused) return refused;
+    const res = await forward('a2a.channel.post', p, true, ctx);
+    const warning = remoteMissionWarning(p.channelId);
+    return warning && res && typeof res === 'object' && (res as { ok?: unknown }).ok === true ? { ...res, warning } : res;
+  });
   router.register('a2a.channel.invite', (p, ctx) => forward('a2a.channel.invite', p, true, ctx));
 
   // Mission RPCs (J0 §3) — same forwarder, same D5 stamp discipline: mutating

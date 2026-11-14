@@ -18,6 +18,7 @@ import type { TaskLedger } from '../../../../daemon/ledger/TaskLedger';
 import type { RpcContext } from '../../../../shared/rpc';
 import type { FanoutOwnerAnswers } from '../../../../shared/workerLaunch';
 import type { FolderTrustState } from '../../../../daemon/folderTrustState';
+import type { DeliveryPresence } from '../../../../shared/deliveryPresence';
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
 vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
@@ -109,6 +110,8 @@ interface WireOpts {
   draft?: boolean;
   /** Time and sleeps on a virtual clock. */
   virtualClock?: boolean;
+  /** The daemon's delivery-presence answer (default: a tracked Claude in plain input mode). */
+  presence?: DeliveryPresence;
 }
 
 function wire(initial: WireOpts = {}): Wiring {
@@ -167,6 +170,8 @@ function wire(initial: WireOpts = {}): Wiring {
       ownerLaneNotice: (ws) => notices.push(ws),
       log: (line) => logs.push(line),
       answerPolicy: async () => ({ allowed: false, reason: 'autonomy-off' }),
+      // A tracked agent process in the pane (deliveries wait for one).
+      deliveryPresence: async () => opts.presence ?? { tier: 'process', slug: 'claude', input: 'full', bracketedPaste: true },
       daemonFolderTrust: async () => opts.daemonTrust ?? null,
       queryDaemonTasks: async () => opts.tasks ?? [],
       readTaskState: async (_ws: string, taskId: string): Promise<PendingTaskState> => {
@@ -1348,5 +1353,20 @@ describe('a refused local delivery, stored and typed later', () => {
     expect(await handoff.gatedSubmit('pty-task', 'hello', 'claude', { newTask: true, taskId: 't-h', waitQuiet: true })).not.toHaveProperty('stored');
     const reply = wire(UNPASSABLE);
     expect(await reply.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t1'] })).toMatchObject({ stored: true });
+  });
+
+  it("is stored when the agent's input box is not a plain prompt, never when no agent is verified", async () => {
+    for (const reason of ['composer-busy', 'composer-mode', 'composer-unknown'] as const) {
+      const w = wire({ ...UNPASSABLE, daemonTrust: PASSABLE, presence: { tier: 'none', reason } });
+      expect(await w.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t1'] }))
+        .toMatchObject({ ok: false, reason: 'input_mode', composerNotPlain: true, stored: true });
+      expect(pasted(w)).toEqual([]);
+    }
+    for (const reason of ['no-agent', 'agent-ended', 'shell-at-prompt'] as const) {
+      const w = wire({ ...UNPASSABLE, daemonTrust: PASSABLE, presence: { tier: 'none', reason } });
+      const res = await w.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t1'] });
+      expect(res).toMatchObject({ ok: false, reason: 'agent_unverified' });
+      expect(res).not.toHaveProperty('stored');
+    }
   });
 });

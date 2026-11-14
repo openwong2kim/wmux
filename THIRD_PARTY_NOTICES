@@ -572,7 +572,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-@hono/node-server@2.1.5
+@hono/node-server@2.1.8
 License: MIT
 Author: Yusuke Wada <yusuke@kamawada.com> (https://github.com/yusukebe)
 Repository: https://github.com/honojs/node-server
@@ -4974,7 +4974,7 @@ SOFTWARE.
 
 ================================================================================
 
-hono@4.13.13
+hono@4.13.18
 License: MIT
 Author: Yusuke Wada <yusuke@kamawada.com> (https://github.com/yusukebe)
 Repository: https://github.com/honojs/hono

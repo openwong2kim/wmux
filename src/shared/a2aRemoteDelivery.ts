@@ -8,7 +8,7 @@
 //
 // Pure module: no node:* imports (the renderer imports it).
 
-import { A2A_BRAIN_ALIAS, isRemoteTaskId, type A2aEndpointKind, type A2aRemoteReceipt, type A2aRemoteStatusShown, type A2aRemoteTaskMarkerV1, type HostId } from './a2aRemote';
+import { A2A_BRAIN_ALIAS, isRemoteTaskId, type A2aEndpointKind, type A2aRemoteErrorCode, type A2aRemoteReceipt, type A2aRemoteStatusShown, type A2aRemoteTaskMarkerV1, type HostId } from './a2aRemote';
 import type { CompanyBriefV1 } from './company';
 import type { GatedSubmitRefusal } from './ptyMessageDelivery';
 import { isTaskState, type Part, type Task, type TaskState } from './types';
@@ -257,7 +257,7 @@ export type A2aRemoteWaitingCause = 'agent-prompt' | 'user-typing';
 export type A2aRemoteMissKind = 'no-agent' | A2aRemoteWaitingCause | 'retry';
 
 /** Every gated refusal, decided here: a new one fails the type check until it is. */
-const GATED_MISS: Readonly<Record<GatedSubmitRefusal['reason'], A2aRemoteWaitingCause | 'retry'>> = {
+const GATED_MISS: Readonly<Record<GatedSubmitRefusal['reason'], A2aRemoteMissKind>> = {
   approval_pending: 'agent-prompt',
   user_typing: 'user-typing',
   // The agent may well be there; none of these says it is gone.
@@ -267,7 +267,10 @@ const GATED_MISS: Readonly<Record<GatedSubmitRefusal['reason'], A2aRemoteWaiting
   fresh_context_busy: 'retry',
   usage_limited: 'retry',
   agent_changed: 'retry',
-  agent_unverified: 'retry',
+  // Main confirmed no agent in the pane: held as no-agent until one is there.
+  agent_unverified: 'no-agent',
+  // The agent is there; its input box is not a plain prompt yet.
+  input_mode: 'retry',
   deadline: 'retry',
   guard_refused: 'retry',
 };
@@ -294,7 +297,10 @@ export function isLegacyHeldReason(held: string): boolean {
  */
 export interface A2aRemoteInboxItem {
   messageId: string;
-  kind: 'reply' | 'state';
+  /** `notice`: the other host's notice about one of our own messages (`held-notice.1`), shown in wmux's voice. */
+  kind: 'reply' | 'state' | 'notice';
+  /** When it arrived here. */
+  at?: string;
   /** For a 'state' item: the state the peer moved the task to. */
   state?: TaskState;
   /** For a 'state' item: the peer's `completed`, held here as a report (the task is input-required). */
@@ -305,6 +311,18 @@ export interface A2aRemoteInboxItem {
   heldAt?: string;
   /** main started a paste and has not confirmed it yet. */
   attempted?: boolean;
+  /**
+   * Dropped here without being delivered (its hold expired): the task stays
+   * open. `notice`: whether the PC that sent it was told (`held-notice.1`);
+   * `not-sent` when that PC does not take a notice.
+   */
+  rejected?: {
+    reason: 'held-expired';
+    at: string;
+    notice: 'pending' | 'sent' | 'not-sent';
+    /** The hold it had when it was dropped: `delivery-unconfirmed` means it may have reached the pane. */
+    held?: A2aRemoteHeldReason;
+  };
 }
 
 /**
@@ -316,8 +334,20 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
   attempted?: boolean;
   /** The last task state exchanged with the peer (sent, or applied from it). */
   stateSync?: TaskState;
+  /**
+   * The peer refused a state of ours (`code`: bad-request or conflict): the two PCs differ about this task. The
+   * task keeps its own state, and that state is not sent again. Cleared once the peer takes a later state.
+   */
+  stateRefused?: { state: TaskState; code: A2aRemoteErrorCode; at: string };
+  /**
+   * Outbound task that failed here because the other PC refused a reply of ours: that PC is owed `canceled`, so its
+   * copy ends too. The outbound sync sends it (and records it in `stateSync`), also after a restart.
+   */
+  cancelOwed?: true;
   /** Our own replies on this task already queued for the peer (messageIds). */
   sent?: string[];
+  /** When each of `sent` was queued (a notice about one of them names this time, never one the peer gives). */
+  sentAt?: Record<string, string>;
   /** Inbound task: when our side first read it (a2a_task_query). */
   readAt?: string;
   /** Inbound task: the furthest receipt already queued for the peer. */
@@ -346,6 +376,23 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
 
 /** A hold older than this is rejected automatically (`held-expired`). */
 export const A2A_REMOTE_HOLD_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * What a pane is shown for a notice: fixed words, this PC's own send time and the message id only.
+ * `unconfirmed`: a paste was started there and never confirmed, so it may have reached the pane.
+ */
+export function heldNoticeText(messageId: string, sentAt: string | undefined, unconfirmed = false): string {
+  const when = sentAt && !Number.isNaN(Date.parse(sentAt)) ? new Date(Date.parse(sentAt)).toISOString() : 'an unknown time';
+  return unconfirmed
+    ? `[wmux] Your message ${messageId} sent ${when} may not have been delivered: the other PC started writing it to the pane but never confirmed it, and stopped trying after 24 hours. The task stays open.`
+    : `[wmux] Your message ${messageId} sent ${when} was not delivered: the other PC held it, could not write it to the pane, and dropped it after 24 hours. The task stays open.`;
+}
+
+/** The line put before a held message that is offered again once its pane has an agent. */
+export function heldDelayPrefix(at: string | undefined): string {
+  const when = at && !Number.isNaN(Date.parse(at)) ? new Date(Date.parse(at)).toISOString() : 'earlier';
+  return `[wmux] delayed: sent ${when}, held because no agent was in the pane`;
+}
 
 /** The local side of a remote task: the party whose workspace is not `remote:`. */
 export function localSideOf(task: Pick<Task, 'metadata'>): 'from' | 'to' {

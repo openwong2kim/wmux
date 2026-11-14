@@ -276,6 +276,48 @@ describe('PendingDeliveries', () => {
     }
   });
 
+  it("an input box that is not a plain prompt (a draft, a mode) keeps the entry; a text the pane cannot take drops it", async () => {
+    const waits = harness({ result: { ok: false, reason: 'input_mode', detail: 'x', composerNotPlain: true } });
+    waits.queue.store(waits.entry('t1'));
+    await waits.queue.retry('pty-1');
+    expect(waits.queue.size).toBe(1);
+    const never = harness({ result: { ok: false, reason: 'input_mode', detail: 'x' } });
+    never.queue.store(never.entry('t1'));
+    await never.queue.retry('pty-1');
+    expect(never.queue.size).toBe(0);
+    expect(never.logs.at(-1)).toContain(': refused (input_mode);');
+  });
+
+  it('a retry that typed or pasted after its entry was dropped says so in the log', async () => {
+    for (const [result, said] of [
+      [{ ok: true }, 'was typed into pane'],
+      [{ ok: false, reason: 'user_typing', detail: 'x', pasted: true }, 'was pasted but not submitted (user_typing) into pane'],
+    ] as Array<[GatedSubmitResult, string]>) {
+      let release: (r: GatedSubmitResult) => void = () => undefined;
+      const h = harness({ submit: () => new Promise((resolve) => { release = resolve; }) });
+      h.queue.store(h.entry('t1'));
+      const running = h.queue.retry('pty-1');
+      await Promise.resolve();
+      await Promise.resolve();
+      withdrawStoredDeliveries('t1');
+      release(result);
+      await running;
+      expect(h.logs.at(-1)).toContain(said);
+      expect(h.logs.at(-1)).toMatch(/after it was dropped$/);
+    }
+    // Nothing written: nothing more to say than the drop.
+    let release: (r: GatedSubmitResult) => void = () => undefined;
+    const quiet = harness({ submit: () => new Promise((resolve) => { release = resolve; }) });
+    quiet.queue.store(quiet.entry('t1'));
+    const running = quiet.queue.retry('pty-1');
+    await Promise.resolve();
+    await Promise.resolve();
+    withdrawStoredDeliveries('t1');
+    release({ ok: false, reason: 'guard_refused', detail: 'withdrawn' });
+    await running;
+    expect(quiet.logs.at(-1)).toContain('dropped stored task');
+  });
+
   it('a text left in the composer is not typed again', async () => {
     const h = harness({ result: { ok: false, reason: 'approval_pending', detail: 'x', pasted: true } });
     h.queue.store(h.entry('t1'));

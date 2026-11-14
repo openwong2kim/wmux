@@ -1,3 +1,4 @@
+import { neutralName } from '../../shared/typedLineName';
 import { sanitizePtyText } from '../../shared/types';
 
 export type A2aPriority = 'low' | 'normal' | 'high';
@@ -40,8 +41,9 @@ export function sanitizeA2aName(name: string): string {
     .slice(0, 100);
 }
 
+/** A name on the envelope's From/To lines: through the one neutraliser for typed lines. */
 function safeName(name: string): string {
-  return sanitizeA2aName(name);
+  return neutralName(sanitizeA2aName(name));
 }
 
 // CR is dropped BEFORE escapes are stripped: dropped after, `\x1b\r[201~`

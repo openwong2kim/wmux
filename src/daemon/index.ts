@@ -172,7 +172,7 @@ import { A2A_REMOTE_RPC } from '../shared/a2aRemoteDelivery';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
-import { A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
+import { A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
@@ -192,7 +192,10 @@ import { listMissionsBatch } from './worktask/missionListBatch';
 import { viewerVisibilityUpdates } from '../shared/viewerVisibilityBatch';
 import { isTaskState, type AgentStatus, type Message, type Task } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
-import { AgentProcessTracker, agentProcessExitEvent } from './AgentProcessTracker';
+import { processHoldsForeground } from './agentForeground';
+import type { DeliveryCheck, DeliveryPresence } from '../shared/deliveryPresence';
+import { deliveryPresence, promptGrant, type DeliveryPresenceDeps, type PromptAuthor } from './deliveryPresence';
+import { AgentProcessTracker, agentProcessExitEvent, type LiveCheck } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
 import { liveRecoveryHint, markCwdMissing, namedAgentAlive, recordedTurnStillOpen, recordWasMidTurn, screenShowsLiveAgent, sightedRecoveredAgent } from './recoveryHint';
 import { checkWslAgentRunning, reportedAgentForPane, stopWslAgent, WslPidWatcher } from './wslAgentProcess';
@@ -344,6 +347,11 @@ import { chatProviders } from './chat/providers';
 import { record as chatRecord } from './chat/adapter';
 import type { ChatInteractionAnswer } from '../shared/transcript/chatSession';
 import { selfCheckPeerPid } from '../shared/peerPid';
+
+// A delivery asks whether the agent the tracker attributes still runs there,
+// not where its binary lives: the image rule (isAgentImage) would refuse a live
+// agent installed under another HOME or in a layout it does not know.
+const BY_ATTRIBUTION: LiveCheck = { byImage: false };
 
 // wmux web — read-only-by-default browser terminal. Instantiated lazily in
 // registerRpcHandlers; nothing listens until a `daemon.web.start` RPC arrives
@@ -540,6 +548,8 @@ let headlessStarterRef: A2aHeadlessStarter | null = null;
 let idleHoldForRemoteStarts: () => boolean = () => false;
 // What types a remote task into a headless agent's session (a2aRemote/headlessDelivery.ts).
 let headlessDeliverRef: HeadlessDeliveryDeps['deliver'] | null = null;
+/** daemon.deliveryPresence, for the channel wake worker built in another scope. */
+let deliveryPresenceRef: ((id: string, check: DeliveryCheck) => Promise<DeliveryPresence>) | null = null;
 let headlessDeliveryRef: HeadlessDelivery | null = null;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 let noteCodexServerLost: ((id:string)=>void) | undefined;
@@ -5354,7 +5364,7 @@ function registerRpcHandlers(
     atFolderTrust: async (id, writer) => (await trustRefusal(sessionManager, id, writer, false)) !== null,
     agentProcessAlive: async (id, slug) => {
       if (!isAgentSlug(slug)) return false;
-      return agentProcessTracker.isAgentRunning(id, slug, (pid) => ProcessMonitor.isRunning(pid));
+      return agentProcessTracker.isAgentRunning(id, slug, (pid) => ProcessMonitor.isRunning(pid), BY_ATTRIBUTION);
     },
     write: (id, data) => {
       const managed = sessionManager.getSession(id);
@@ -6255,6 +6265,51 @@ function registerRpcHandlers(
       settledAgoMs: bridge.settledAgoMs(),
     };
   }
+  // Deliveries wait for a verified agent process (deliveryPresence.ts): what
+  // main, and the channel wake worker, ask right before the paste and the
+  // Enter of any text typed on someone's behalf.
+  const presenceDeps: DeliveryPresenceDeps = {
+    session: (sid) => {
+      const managed = sessionManager.getSession(sid);
+      if (!managed || (managed.meta.state !== 'attached' && managed.meta.state !== 'detached')) return undefined;
+      const named = readDaemonAgentState(sid).agentName;
+      return {
+        shellPid: managed.meta.pid,
+        exec: !!managed.meta.exec,
+        commandRunning: managed.promptLog.commandRunningIfKnown(),
+        namedSlug: named ? agentDisplayToSlug(named) : undefined,
+        bracketedPaste: managed.bridge.outputModes?.isSet(2004) === true,
+      };
+    },
+    tracked: (sid) => agentProcessTracker.identityFor(sid),
+    probe: (sid, shellPid, timeoutMs) => agentProcessTracker.probeNamedAgentNow(sid, shellPid, timeoutMs),
+    agentRunning: (sid, slug) => agentProcessTracker.isAgentRunning(sid, slug, (pid) => ProcessMonitor.isRunning(pid), BY_ATTRIBUTION),
+    ownedRoot: (sid, pid, slug) => agentProcessTracker.verifyOwnedRoot(sid, pid, slug, BY_ATTRIBUTION),
+    processRunning: (pid) => ProcessMonitor.isRunning(pid),
+    agentPid: (sid) => agentProcessTracker.pidFor(sid),
+    holdsForeground: (pid) => processHoldsForeground(pid),
+    frame: async (sid) => {
+      const outcome = await queuedScreenText(sessionManager, sid, true);
+      if (!outcome?.ok) return null;
+      const rows = Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) });
+      return { rows, cursorRow: rows.length - 1 - outcome.rowsBelowCursor };
+    },
+    platform: process.platform,
+  };
+  pipeServer.onRpc('daemon.deliveryPresence', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const expectAgent = isAgentSlug(params['expectAgent']) ? params['expectAgent'] : undefined;
+    const shownProbe = typeof params['shownProbe'] === 'string' ? params['shownProbe'].slice(0, 64) : undefined;
+    const count = (v: unknown): number | undefined => (Number.isSafeInteger(v) && (v as number) >= 0 ? (v as number) : undefined);
+    const shownLines = count(params['shownLines']);
+    const shownChars = count(params['shownChars']);
+    const check: DeliveryCheck = params['phase'] === 'enter'
+      ? { phase: 'enter', ...(shownProbe ? { shownProbe } : {}), ...(shownLines !== undefined ? { shownLines } : {}), ...(shownChars !== undefined ? { shownChars } : {}) }
+      : { phase: 'paste' };
+    return deliveryPresence(presenceDeps, id, expectAgent, check);
+  });
+  deliveryPresenceRef = (id, check) => deliveryPresence(presenceDeps, id, undefined, check);
+
   // #1594 — what main's terminal_send needs to paste into a session: the agent
   // and DECSET 2004 from the live output stream. A hidden pane's renderer xterm
   // may not have seen the bytes that set or cleared the mode; this stream has.
@@ -6331,7 +6386,7 @@ function registerRpcHandlers(
     id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string, bypassUsageHold = false,
   ): Promise<SessionPromptScheduleResult> => {
     if (!bypassUsageHold && usageLimits?.holds(id)) return 'busy';
-    return deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, {}, 'scheduled prompt');
+    return deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, {}, 'scheduled prompt', 'owner');
   };
   // Every caller is automated input (a schedule, a run, a nudge, a usage-limit
   // continue), so a screen that cannot rule out a folder-trust prompt stops it
@@ -6340,10 +6395,29 @@ function registerRpcHandlers(
     id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string,
     opts: Pick<ScheduledPromptDeliveryDeps, 'acceptError' | 'authorized' | 'onWrite'>,
     writer: string,
+    author: PromptAuthor,
     trust: { refuseUnknown?: boolean; onRefused?: (verdict: ScreenBlock) => void } = {},
   ) =>
     deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
       ...opts,
+      // Deliveries wait for a verified agent in plain input mode
+      // (deliveryPresence.ts): before the first write, and as the last await
+      // before the submit. A peer's text needs the agent's plain prompt on
+      // screen; the owner's own prompt, or wmux's own fixed line, also goes to
+      // an agent wmux has no plain-prompt reader for, on the process tier. A
+      // refusal before anything is written is not final: the caller comes
+      // back as it would at a busy pane.
+      authorized: async (stage) => {
+        if (opts.authorized) {
+          const granted = await opts.authorized(stage);
+          if (granted !== true) return granted;
+        }
+        const presence = await deliveryPresence(presenceDeps, id, agentSlug, { phase: stage === 'first-write' ? 'paste' : 'enter' });
+        const grant = promptGrant(presence, author);
+        // The caller's grant again: it may have been withdrawn during that
+        // check (each caller's is a synchronous read, so nothing waits after it).
+        return grant === true && opts.authorized ? opts.authorized(stage) : grant;
+      },
       // Each of these is tried again later: one log line per pane while the
       // refusal holds. No person waits on them, so the read may take longer.
       // Each presses Enter on its own, so any dialog on screen stops it too.
@@ -6371,7 +6445,7 @@ function registerRpcHandlers(
           // #1307 — a reused pid is no longer the pane's agent descendant, and
           // a stopped (Ctrl+Z) or zombie agent is not running. #1727 — a WSL
           // pane's agent is checked inside its distro the same way.
-          return await agentProcessTracker.isAgentRunning(id, agentSlug, (pid) => ProcessMonitor.isRunning(pid));
+          return await agentProcessTracker.isAgentRunning(id, agentSlug, (pid) => ProcessMonitor.isRunning(pid), BY_ATTRIBUTION);
         } catch {
           return false;
         }
@@ -6389,7 +6463,7 @@ function registerRpcHandlers(
   headlessDeliverRef = async (id, agent, prompt, authorized, onWrite) => {
     const incarnationId = readDaemonAgentState(id).incarnationId;
     if (!incarnationId) return 'unavailable';
-    return deliverPromptToSessionNow(id, agent, incarnationId, prompt, { authorized: async () => authorized(), onWrite: () => onWrite(), acceptError: false }, 'headless-delivery', { refuseUnknown: true });
+    return deliverPromptToSessionNow(id, agent, incarnationId, prompt, { authorized: async () => authorized(), onWrite: () => onWrite(), acceptError: false }, 'headless-delivery', 'peer', { refuseUnknown: true });
   };
   pipeServer.onRpc('daemon.deliverScheduledPromptV2', async (params) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';
@@ -6420,7 +6494,7 @@ function registerRpcHandlers(
     return deliverCallerNudge(prompt, {
       usageHeld: () => usageLimits?.holds(id) === true,
       input: () => sessionManager.getSession(id)?.bridge,
-      deliver: (opts) => deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, opts, 'caller nudge'),
+      deliver: (opts) => deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, opts, 'caller nudge', 'wmux'),
     });
   });
 
@@ -6442,7 +6516,7 @@ function registerRpcHandlers(
       // composer (the input-revision proof covers the gap after the paste).
       authorized: async (stage) => stillWanted()
         && (stage === 'submit' || sessionManager.getSession(id)?.bridge.hasDraft() !== true),
-    }, writer, trust);
+    }, writer, 'wmux', trust);
   };
   usageLimits = new UsageLimitRegistry({
     broadcast: (event) => pipeServer.broadcast(event),
@@ -6618,7 +6692,7 @@ function registerRpcHandlers(
     // engine needs to tell "nothing written" from "pasted, not submitted".
     deliverPrompt: async (id, slug, incarnationId, prompt, onWrite) => (usageLimits?.holds(id)
       ? 'busy'
-      : deliverPromptToSessionNow(id, slug, incarnationId, prompt, onWrite ? { onWrite } : {}, 'automation run')),
+      : deliverPromptToSessionNow(id, slug, incarnationId, prompt, onWrite ? { onWrite } : {}, 'automation run', 'owner')),
     // A pane held at a usage limit is that registry's to resume. The trust
     // checks run before the paste and before Enter: 'unknown' or another
     // dialog before any write answers 'busy' (the engine asks again within
@@ -7605,7 +7679,16 @@ function registerRpcHandlers(
     // A task this PC sent: with the newest status its worker there sent (never a reply, never a state).
     const remote = a2aDeliveryRef;
     const shown = remote ? tasks.map((t) => (isRemoteTaskId(t.id) ? remote.withRemoteStatus(t) : t)) : tasks;
-    return { ok: true, workspaceId, tasks: applyTaskQueryView(shown, p), ...(withheld.length > 0 ? { withheld } : {}) };
+    // A task named by id that ended and was collected since: said so, with when it ended, rather than a bare "not found".
+    const named = typeof p.taskId === 'string' && p.taskId ? p.taskId : '';
+    const collectedAt = named && !shown.some((t) => t.id === named) ? a2aTaskService.evictedAt(named, workspaceId) : undefined;
+    return {
+      ok: true,
+      workspaceId,
+      tasks: applyTaskQueryView(shown, p),
+      ...(withheld.length > 0 ? { withheld } : {}),
+      ...(collectedAt ? { collected: { taskId: named, at: collectedAt } } : {}),
+    };
   });
 
   // Company mode: tasks held on their blockers (main's delivery RPCs).
@@ -10300,6 +10383,13 @@ async function main(): Promise<void> {
       if (!frame || frame.rows.every((row) => !row.trim())) return null;
       return screenShowsAgentDialog(frame.rows);
     },
+    // Deliveries wait for a verified agent process, the same check main runs.
+    // Unanswerable (the RPC scope not set up yet) holds the nudge.
+    agentPresent: async (id, check) => {
+      const p = deliveryPresenceRef ? await deliveryPresenceRef(id, check) : null;
+      if (!p) return { present: false };
+      return p.tier === 'none' ? { present: false, ...(p.pasteShown ? { pasteShown: true } : {}) } : { present: true, full: p.input === 'full' };
+    },
   });
   // app-weight P1-1: cadence from config (default 15 s; clamped 5–120 s), or
   // 3 s (clamped 2–120 s) while the native process table serves the sweep.
@@ -10982,7 +11072,7 @@ async function main(): Promise<void> {
         // This build shows and accepts share offers, takes images on
         // messages and pings its streams: tell the servers it joins, and the
         // joiners in its hello.
-        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS],
+        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE],
         uploadsRoot: path.join(wmuxDir, 'uploads'),
         // A live terminal of the sender's workspace (stamped at spawn by main), else none.
         spawnCwdOf: (ptyId, workspaceId) => {

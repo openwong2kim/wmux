@@ -92,7 +92,7 @@ import { getVerdictedTasks } from './verdictedTasks';
 import { verdictedTaskIds } from './openBotWorkers';
 import type { FanOutService } from '../worktask/FanOutService';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
-import { isFanoutWorkerPermissionMode } from '../../shared/workerLaunch';
+import { respawnWorkerMode } from '../../shared/workerLaunch';
 import { createWorkerLaunchRecovery } from './workerLaunchRecovery';
 import { LAUNCH_PROBE_CONFIRM_TIMEOUT_MS, LAUNCH_PROBE_TIMEOUT_MS } from '../worktask/fanoutLaunchProbe';
 import type { PermissionMode } from '../../shared/agentResume';
@@ -682,7 +682,7 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
             title: input.title,
             cwd: input.cwd,
             command: input.line,
-            workerPermissionMode: isFanoutWorkerPermissionMode(input.permissionMode) ? input.permissionMode : 'manual',
+            workerPermissionMode: respawnWorkerMode(input.permissionMode),
             // Unknown taint counts as tainted.
             tainted: ledger.get(input.taskId)?.dispatch?.origin.tainted !== false,
             ...(connectors.length > 0 ? { connectors } : {}),

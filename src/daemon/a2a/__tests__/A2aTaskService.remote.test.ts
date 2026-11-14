@@ -217,7 +217,7 @@ describe('A2aTaskService — remote.mark and listRemotePending', () => {
     await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's-1', to: 'working' });
     const inbox = () => (svc.getTask('rt-out')?.metadata.remote as { inbox?: unknown[] }).inbox;
     expect(inbox()).toEqual([
-      { messageId: 'r-1', kind: 'reply', delivered: false },
+      { messageId: 'r-1', kind: 'reply', at: expect.any(String), delivered: false },
       { messageId: 's-1', kind: 'state', state: 'working', delivered: false },
     ]);
     expect(svc.listRemotePending().map((t) => t.id)).toEqual(['rt-out']);
@@ -231,7 +231,7 @@ describe('A2aTaskService — remote.mark and listRemotePending', () => {
     const restored = newService(log);
     restored.restoreFromLog();
     expect((restored.getTask('rt-out')?.metadata.remote as { inbox?: unknown[] }).inbox).toEqual([
-      { messageId: 'r-1', kind: 'reply', delivered: false, held: 'occupant-changed', heldAt: expect.any(String) },
+      { messageId: 'r-1', kind: 'reply', at: expect.any(String), delivered: false, held: 'occupant-changed', heldAt: expect.any(String) },
       { messageId: 's-1', kind: 'state', state: 'working', delivered: true },
     ]);
     // Delivering it later (a person retried) records the new occupant on our side.
@@ -442,6 +442,32 @@ describe('A2aTaskService — a company task\'s remote completion is held as a re
     restored.restoreFromLog();
     expect(remoteOf(restored, 'rt-co').inbox?.at(-1)).toEqual(report);
     expect(remoteOf(restored, 'rt-out').inbox?.at(-1)).toEqual(plain);
+  });
+
+  it('a fan-out task (marked when this host made it) holds the peer\'s completed as a report, and a follow-up\'s working replaces it', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'rt-fo',
+      title: 'T',
+      from: { workspaceId: 'ws-local', name: 'Local', paneId: 'pane-l' },
+      to: { workspaceId: REMOTE_WS, name: 'pc-b/ws/pane' },
+      history: [msg('m-0', 'please')],
+      remote: { ...marker('outbound'), fanout: true },
+    });
+    await svc.applyRemoteState({ taskId: 'rt-fo', linkId: LINK, messageId: 's1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-fo', linkId: LINK, messageId: 's2', to: 'completed', summary: 'done', message: 'Done.' });
+    expect(svc.getTask('rt-fo')?.status.state).toBe('input-required');
+    expect(remoteOf(svc, 'rt-fo')).toMatchObject({ reported: 's2', fanout: true });
+    expect(lastPayload(log)).toMatchObject({ to: 'input-required', remoteAsked: 'completed', remoteMessageId: 's2' });
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(restored.getTask('rt-fo')?.status.state).toBe('input-required');
+    expect(remoteOf(restored, 'rt-fo')).toMatchObject({ reported: 's2', fanout: true });
+    // A follow-up sets the agent working again: the task is still open and the report is gone.
+    expect((await svc.applyRemoteState({ taskId: 'rt-fo', linkId: LINK, messageId: 's3', to: 'working' })).ok).toBe(true);
+    expect(svc.getTask('rt-fo')?.status.state).toBe('working');
+    expect(remoteOf(svc, 'rt-fo')).not.toHaveProperty('reported');
   });
 
   it('a non-company remote task keeps today\'s completion', async () => {
@@ -720,5 +746,169 @@ describe('statusMessageFromWire (a2a.task.update)', () => {
     const handler = src.slice(src.indexOf("pipeServer.onRpc('a2a.task.update'"), src.indexOf("pipeServer.onRpc('a2a.task.cancel'"));
     expect(handler).toMatch(/statusMessageFromWire\(p\.message, randomUUID\)/);
     expect(handler).toMatch(/\.\.\.\(message \? \{ message \} : \{\}\)/);
+  });
+});
+
+describe('a refused state and an owed cancel on the record', () => {
+  it('replay restores a refusal, its clearing, and a cancel owed with the failure', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await outbound(svc);
+    await inbound(svc, 'rt-in2');
+    expect((await svc.markRemote({ taskId: 'rt-in2', stateRefused: { state: 'working', code: 'bad-request' } })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in2', stateAccepted: true })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in2', stateRefused: { state: 'completed', code: 'conflict' } })).ok).toBe(true);
+    expect(await svc.forceFailRemote({ taskId: 'rt-out', reason: 'refused by the other PC: bad-request', forced: 'remote_refused', peerCanceled: true }))
+      .toMatchObject({ ok: true, failed: true });
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(remoteOf(restored, 'rt-in2').stateRefused).toEqual(remoteOf(svc, 'rt-in2').stateRefused);
+    expect(remoteOf(restored, 'rt-in2').stateRefused).toMatchObject({ state: 'completed', code: 'conflict' });
+    expect(remoteOf(restored, 'rt-out')).toMatchObject({ cancelOwed: true });
+    expect(restored.getTask('rt-out')!.status.state).toBe('failed');
+  });
+
+  it('no cancel is owed for a task this PC received, nor for a report held here', async () => {
+    const svc = newService(newLog());
+    await inbound(svc, 'rt-in3');
+    expect(await svc.forceFailRemote({ taskId: 'rt-in3', reason: 'x', forced: 'remote_refused', peerCanceled: true })).toMatchObject({ ok: true, failed: true });
+    expect(remoteOf(svc, 'rt-in3')).not.toHaveProperty('cancelOwed');
+    await companyOutbound(svc);
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's2', to: 'completed', summary: 'merged', evidence: PEER_EVIDENCE });
+    expect(await svc.forceFailRemote({ taskId: 'rt-co', reason: 'x', forced: 'remote_refused', peerCanceled: true })).toMatchObject({ ok: true, failed: false });
+    expect(remoteOf(svc, 'rt-co')).not.toHaveProperty('cancelOwed');
+  });
+
+  it('the GC keeps an ended task past its 24 h until its cancel is told, while its link can carry it; without the link the 24 h keep still holds', async () => {
+    const H = 60 * 60 * 1000;
+    let now = Date.now();
+    const svc = new A2aTaskService({ log: newLog(), origin: { machineId: 'm1', daemonEpoch: 1 }, now: () => now });
+    await outbound(svc);
+    await svc.forceFailRemote({ taskId: 'rt-out', reason: 'x', forced: 'remote_refused', peerCanceled: true });
+    now += 25 * H;
+    svc.gcTerminalTasks();
+    expect(svc.getTask('rt-out')).toBeDefined();
+    // The link is gone: nothing can carry it any more, and its 24 h are over.
+    svc.keepEndedWhile(() => false);
+    svc.gcTerminalTasks();
+    expect(svc.getTask('rt-out')).toBeUndefined();
+
+    // With the link gone from the start, the owed cancel does not cut the failed task's 24 h short.
+    let later = Date.now();
+    const gone = new A2aTaskService({ log: newLog(), origin: { machineId: 'm1', daemonEpoch: 1 }, now: () => later });
+    gone.keepEndedWhile(() => false);
+    await outbound(gone);
+    await gone.forceFailRemote({ taskId: 'rt-out', reason: 'x', forced: 'remote_refused', peerCanceled: true });
+    later += 2 * H;
+    gone.gcTerminalTasks();
+    expect(gone.getTask('rt-out')).toBeDefined();
+    later += 23 * H;
+    gone.gcTerminalTasks();
+    expect(gone.getTask('rt-out')).toBeUndefined();
+  });
+
+  it('once the cancel is told, the failed task is kept its 24 h like any failed remote task, then goes', async () => {
+    const H = 60 * 60 * 1000;
+    let now = Date.now();
+    const svc = new A2aTaskService({ log: newLog(), origin: { machineId: 'm1', daemonEpoch: 1 }, now: () => now });
+    await outbound(svc);
+    await svc.forceFailRemote({ taskId: 'rt-out', reason: 'x', forced: 'remote_refused', peerCanceled: true });
+    expect((await svc.markRemote({ taskId: 'rt-out', stateSync: 'canceled' })).ok).toBe(true);
+    now += 2 * H;
+    svc.gcTerminalTasks();
+    expect(svc.getTask('rt-out')).toBeDefined();
+    now += 23 * H;
+    svc.gcTerminalTasks();
+    expect(svc.getTask('rt-out')).toBeUndefined();
+  });
+});
+
+describe('A2aTaskService — how long an ended task is kept (#3326)', () => {
+  it('a failed or canceled remote task is kept 24 h, any other ended task 30 min; a collected id is known as ended to its two sides only', async () => {
+    let clock = Date.parse('2026-11-13T00:00:00.000Z');
+    const log = newLog();
+    const svc = new A2aTaskService({ log, origin: { machineId: 'm1', daemonEpoch: 1 }, now: () => clock });
+    await inbound(svc, 'rt-failed');
+    await svc.forceFailRemote({ taskId: 'rt-failed', reason: 'rejected on the receiving host: held-expired', forced: 'remote_held_rejected' });
+    await svc.createTask({ id: 'task-local', title: 'L', from: { workspaceId: 'ws-local', name: 'Local' }, to: { workspaceId: 'ws-other', name: 'Other' }, history: [msg('l-0', 'hi')] });
+    await svc.cancelTask({ taskId: 'task-local', callerWorkspaceId: 'ws-local' });
+
+    clock += 31 * 60 * 1000;
+    svc.gcTerminalTasks();
+    expect(svc.getTask('task-local')).toBeUndefined();
+    expect(svc.getTask('rt-failed')?.status.evidence?.summary).toMatch(/held-expired/);
+    // Known by when it ended, not when it was collected.
+    expect(svc.evictedAt('task-local', 'ws-local')).toBe(new Date(clock - 31 * 60 * 1000).toISOString());
+    expect(svc.evictedAt('task-local', 'ws-stranger')).toBeUndefined();
+
+    clock += 24 * 60 * 60 * 1000;
+    svc.gcTerminalTasks();
+    expect(svc.getTask('rt-failed')).toBeUndefined();
+    expect(svc.evictedAt('rt-failed', 'ws-local')).toBeDefined();
+    // The same rule after a restart: the log brings the failed remote task back only while it is kept.
+    const restored = new A2aTaskService({ log, origin: { machineId: 'm1', daemonEpoch: 2 }, now: () => clock });
+    restored.restoreFromLog();
+    expect(restored.getTask('rt-failed')).toBeUndefined();
+    // Known as ended for 24 h after it was collected, then not at all.
+    clock += 24 * 60 * 60 * 1000 + 1;
+    expect(svc.evictedAt('rt-failed', 'ws-local')).toBeUndefined();
+  });
+});
+
+describe('A2aTaskService — collected ids after a restart (#3344)', () => {
+  it('the boot GC notes only tasks still within their window, each with its real end time, never the boot time', async () => {
+    let clock = Date.parse('2026-11-13T00:00:00.000Z');
+    const log = newLog();
+    const svc = new A2aTaskService({ log, origin: { machineId: 'm1', daemonEpoch: 1 }, now: () => clock });
+    const local = async (id: string) => {
+      await svc.createTask({ id, title: id, from: { workspaceId: 'ws-local', name: 'Local' }, to: { workspaceId: 'ws-other', name: 'Other' }, history: [msg(`${id}-0`, 'hi')] });
+      await svc.cancelTask({ taskId: id, callerWorkspaceId: 'ws-local' });
+    };
+    await local('task-old');
+    const oldEnded = clock;
+    clock += 3 * 24 * 60 * 60 * 1000;
+    await local('task-recent');
+    const recentEnded = clock;
+
+    // A restart an hour later: the log brings both back, and the boot GC collects both.
+    clock += 60 * 60 * 1000;
+    const restored = new A2aTaskService({ log, origin: { machineId: 'm1', daemonEpoch: 2 }, now: () => clock });
+    restored.restoreFromLog();
+    expect(restored.getTask('task-old')).toBeUndefined();
+    expect(restored.getTask('task-recent')).toBeUndefined();
+    // Ended three days ago: long past its window, so not known at all.
+    expect(restored.evictedAt('task-old', 'ws-local')).toBeUndefined();
+    expect(oldEnded).toBeLessThan(recentEnded);
+    // Ended an hour ago: known, with that end time.
+    expect(restored.evictedAt('task-recent', 'ws-local')).toBe(new Date(recentEnded).toISOString());
+  });
+});
+
+describe('A2aTaskService — a held message keeps its first hold time, and its hold when dropped (#3344)', () => {
+  it('a change of reason or the unconfirmed mark keeps heldAt; the dropped record keeps the hold it had', async () => {
+    let clock = Date.parse('2026-11-13T00:00:00.000Z');
+    const log = newLog();
+    const svc = new A2aTaskService({ log, origin: { machineId: 'm1', daemonEpoch: 1 }, now: () => clock });
+    await outbound(svc);
+    await svc.appendRemoteMessage({ taskId: 'rt-out', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('r-1', 'answer', 'agent') });
+    const item = (s: A2aTaskService = svc) => (s.getTask('rt-out')?.metadata.remote as { inbox: Array<Record<string, unknown>> }).inbox.find((i) => i.messageId === 'r-1')!;
+    await svc.markRemote({ taskId: 'rt-out', messageId: 'r-1', held: 'no-agent' });
+    const first = item().heldAt;
+    expect(first).toBe(new Date(clock).toISOString());
+    clock += 60 * 60 * 1000;
+    await svc.markRemote({ taskId: 'rt-out', messageId: 'r-1', held: 'pane-missing' });
+    clock += 60 * 60 * 1000;
+    await svc.markRemote({ taskId: 'rt-out', messageId: 'r-1', held: 'delivery-unconfirmed' });
+    expect(item()).toMatchObject({ held: 'delivery-unconfirmed', heldAt: first });
+
+    await svc.markRemote({ taskId: 'rt-out', messageId: 'r-1', rejected: 'held-expired' });
+    expect(item().rejected).toEqual({ reason: 'held-expired', at: new Date(clock).toISOString(), notice: 'pending', held: 'delivery-unconfirmed' });
+    expect(item().held).toBeUndefined();
+
+    // The same after a restart: the log replays to the same record.
+    const restored = new A2aTaskService({ log, origin: { machineId: 'm1', daemonEpoch: 2 }, now: () => clock });
+    restored.restoreFromLog();
+    expect(item(restored).rejected).toMatchObject({ held: 'delivery-unconfirmed' });
   });
 });

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import {
   A2A_FEATURE_IMAGES,
+  A2A_FEATURE_HELD_NOTICE,
   A2A_FEATURE_STATUS,
   A2A_REMOTE_IMAGE_LIMITS,
   A2A_REMOTE_PROTOCOL,
@@ -23,7 +24,7 @@ import { prepareA2aImage, type A2aImageInfo, type A2aImageRefusal } from '../../
 import { companyBriefOf } from '../../shared/company';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
 import type { A2aTaskService } from '../a2a/A2aTaskService';
-import { failTasksForLink, expireHeld, rejectHeld, type HeldDeps } from './held';
+import { failTasksForLink, expireHeld, rejectHeld, sendHeldNotices, type HeldDeps } from './held';
 import { remoteTaskId } from './ids';
 import { A2aImageStore, sha256 } from './imageStore';
 import { registerImageRoutes } from './imageRoutes';
@@ -79,6 +80,10 @@ export interface A2aRemoteDeliveryDeps {
   spawn?: InboundDeps['spawn'];
   /** Conversations other PCs continue here (link envelopes; see `continueReceiver.ts`). */
   continue?: InboundDeps['continue'];
+  /** Asks to bring back an agent's work as a bundle (the box side; link state `bundle-ask`). */
+  bundles?: InboundDeps['bundles'];
+  /** The box's answers to this PC's bundle asks (the asking side; link state `bundle-made`). */
+  bundleAsks?: InboundDeps['bundleAsks'];
   /** Their bytes (continueBundle.ts): the routes a PC that joined this one uploads them to. */
   continueBytes?: { registerRoutes(table: A2aRouteTable): void };
   /** Links a remote start made here (spawnStarter.ts): redacted, no images, follow-ups held for their card. */
@@ -126,6 +131,19 @@ export const WAITING_SUMMARY: Readonly<Record<A2aRemoteWaitingCause, string>> = 
 };
 const STATES: ReadonlySet<string> = new Set(['working', 'input-required', 'completed', 'failed', 'canceled']);
 const TERMINAL_LINK: ReadonlySet<string> = new Set(['revoked', 'broken']);
+/** A state refused as a disagreement: the other PC has the task and the link, and differs about where the task is. */
+const STATE_DISAGREEMENTS: ReadonlySet<A2aRemoteErrorCode> = new Set<A2aRemoteErrorCode>(['bad-request', 'conflict']);
+/**
+ * A state the other PC refused as a disagreement, short of a final one: it does not keep the task from counting as
+ * received there. A refused `completed` or `failed` does (its evidence never landed).
+ */
+const disagreement = (r: A2aOutboxRecordV1): boolean =>
+  r.envelope.kind === 'state' && r.lastError !== undefined && STATE_DISAGREEMENTS.has(r.lastError)
+  && r.envelope.state !== 'completed' && r.envelope.state !== 'failed';
+/** Refusals that say the link, or the task, is gone on the other PC: nothing more is sent to it there. */
+const GONE_THERE: ReadonlySet<A2aRemoteErrorCode> = new Set<A2aRemoteErrorCode>([
+  'unknown-link', 'link-not-active', 'stale-link-version', 'direction-not-allowed', 'forbidden', 'unknown-task',
+]);
 
 /**
  * The `features` a share offer (`A2aOffers`) gates on: what `hostId`
@@ -162,6 +180,8 @@ export const REMOTE_STATUS_PER_WINDOW = 1500;
  * span is over, never dropped; `question`, `usage-limit` and `gone` apply at once.
  */
 export const REMOTE_STATUS_TASK_GAP_MS = 2_000;
+/** Host notices one link may bring in a window (one per dropped message, so few in honest use). */
+export const REMOTE_NOTICES_PER_WINDOW = 60;
 const REMOTE_STATUS_AT_ONCE: ReadonlySet<A2aRemoteStatusV1['kind']> = new Set(['question', 'usage-limit', 'gone']);
 
 export class A2aRemoteDelivery {
@@ -203,6 +223,7 @@ export class A2aRemoteDelivery {
         deps.offers?.onPeerFeatures(hostId, features);
       },
       ...(this.features ? { features: this.features } : {}),
+      withhold: (hostId, rec) => this.withholdNotice(hostId, rec),
       ...(deps.heartbeatMs !== undefined ? { heartbeatMs: deps.heartbeatMs } : {}),
       log: deps.log,
     });
@@ -311,6 +332,11 @@ export class A2aRemoteDelivery {
 
   start(): void {
     if (this.syncTimer) return;
+    // An ended task that still owes the other PC its cancel stays while its link can still carry it.
+    this.deps.taskService.keepEndedWhile((task) => {
+      const linkId = (task.metadata.remote as A2aRemoteTaskState | undefined)?.linkId;
+      return linkId !== undefined && this.deps.links.get(linkId)?.state === 'active';
+    });
     this.syncSessions();
     this.syncTimer = setInterval(() => this.syncSessions(), this.deps.syncMs ?? SYNC_MS);
     this.syncTimer.unref?.();
@@ -426,9 +452,16 @@ export class A2aRemoteDelivery {
     }
     try {
       const expired = await expireHeld(this.heldDeps());
-      if (expired.length > 0) this.deps.log('info', `[a2a-remote] ${expired.length} held remote task(s) expired`);
+      const units = expired.filter((id) => id.includes('#')).length;
+      if (expired.length > units) this.deps.log('info', `[a2a-remote] ${expired.length - units} held remote task(s) expired`);
+      if (units > 0) this.deps.log('info', `[a2a-remote] ${units} held remote message(s) expired; their tasks stay open`);
     } catch (err) {
       this.deps.log('warn', `[a2a-remote] hold expiry failed: ${errMsg(err)}`);
+    }
+    try {
+      await sendHeldNotices(this.heldDeps());
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] held notices failed: ${errMsg(err)}`);
     }
     // Expiry, put-backs still owed, and claims a restart (or the app's absence) left unfinished.
     this.deps.offers?.recover();
@@ -504,6 +537,8 @@ export class A2aRemoteDelivery {
         ...(typeof held === 'string' ? { held: readHeldReason(held) } : {}),
         ...(typeof p['attempted'] === 'boolean' && p['delivered'] !== true && held === undefined ? { attempted: p['attempted'] } : {}),
         ...(typeof p['ptyId'] === 'string' && isSafeId(p['ptyId']) ? { ptyId: p['ptyId'] } : {}),
+        // main offering a held reply again (only with an attempt, on an item).
+        ...(p['reoffer'] === true && typeof p['attempted'] === 'boolean' && messageId !== undefined ? { reoffer: true as const } : {}),
       });
       // A reply that could not go now is tried again by `maintain`.
       if (res.ok && held === 'no-agent' && messageId === undefined) await this.tellSender(taskId, NO_AGENT_SUMMARY);
@@ -647,6 +682,7 @@ export class A2aRemoteDelivery {
       outbox: this.outbox,
       accept: (env, peer) => this.accept(env, peer),
       onRefused: (rec, code, detail) => this.onRefused(rec, code, detail),
+      withhold: (rec) => this.withholdNotice(hostId, rec),
       ...(this.images ? { images: this.images } : {}),
       reconcileLinks: () => this.reconcileLinks(hostId),
       onStatus: (status) => this.deps.broadcast({ type: 'a2a.remote.hosts.status', sessionId: '', data: status }),
@@ -667,15 +703,58 @@ export class A2aRemoteDelivery {
     }
   }
 
-  /** The other PC refused a message for good (or its images could not be sent): the task it carried fails here. */
+  /**
+   * The other PC refused a message for good (or its images could not be sent): the task it carried fails here. A
+   * state it refused as a disagreement (STATE_DISAGREEMENTS) does not: the refusal is recorded on the task, which
+   * keeps its own state, and that state is not sent again. A refused reply on a task this PC sent also tells the
+   * other PC the task is cancelled, unless the link or the task is gone there.
+   */
   private async onRefused(rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode, detail?: string): Promise<void> {
     this.deps.log('warn', `[a2a-remote] ${rec.hostId} refused ${rec.envelope.kind} on link ${rec.envelope.linkId}: ${code}`);
     this.deps.offers?.onRefused(rec.hostId, rec.envelope, code);
     this.deps.spawnAsks?.onRefused(rec.hostId, rec.envelope, code);
     const taskId = taskOfEnvelope(rec.envelope, remoteTaskId);
     if (!taskId || !this.deps.taskService.getTask(taskId)) return;
+    const { state } = rec.envelope;
+    if (rec.envelope.kind === 'state' && state && STATE_DISAGREEMENTS.has(code)) {
+      const res = await this.deps.taskService.markRemote({ taskId, stateRefused: { state, code } });
+      if (!res.ok) this.deps.log('warn', `[a2a-remote] ${taskId}: refused state not recorded: ${res.error}`);
+      return;
+    }
     const reason = code === 'attachment-failed' ? `not sent to the other PC: ${detail ?? 'its images could not be uploaded'}` : `refused by the other PC: ${code}`;
-    await this.deps.taskService.forceFailRemote({ taskId, reason, forced: 'remote_refused' });
+    // A reply on a task this PC sent that did not reach the other PC (refused there, or its images not sent): the task
+    // fails here, and the other PC, which still has its copy, is owed a cancel (sent by the sync).
+    const peerCanceled = rec.envelope.kind === 'reply' && !GONE_THERE.has(code);
+    const failed = await this.deps.taskService.forceFailRemote({ taskId, reason, forced: 'remote_refused', ...(peerCanceled ? { peerCanceled: true as const } : {}) });
+    if (peerCanceled && failed.ok && failed.failed) await this.syncTask(taskId);
+  }
+
+  /**
+   * A host notice about to go to a peer that does not take one now (it was
+   * checked when queued; the peer may have changed since): refused here, never
+   * sent, and its dropped message marked `not-sent`. False for anything else,
+   * which goes as usual. True with the record still owed when the peer's
+   * features are not known yet (a session before the server's hello) or the
+   * refusal could not be written: it is checked again next time.
+   */
+  private withholdNotice(hostId: HostId, rec: A2aOutboxRecordV1): boolean {
+    const notice = rec.envelope.notice;
+    if (!notice) return false;
+    const features = this.liveFeatures(hostId);
+    if (features === undefined) return true;
+    if (features.has(A2A_FEATURE_HELD_NOTICE)) return false;
+    try {
+      this.outbox.refuse(hostId, rec.seq, 'protocol');
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] ${hostId}: a notice the peer no longer takes was not refused: ${errMsg(err)}`);
+      return true;
+    }
+    const taskId = taskOfEnvelope(rec.envelope, remoteTaskId);
+    if (taskId) {
+      void this.deps.taskService.markRemote({ taskId, messageId: notice.messageId, notice: 'not-sent' })
+        .catch((err: unknown) => this.deps.log('warn', `[a2a-remote] ${taskId}: notice not marked not-sent: ${errMsg(err)}`));
+    }
+    return true;
   }
 
   private onEnqueue(rec: A2aOutboxRecordV1): void {
@@ -690,11 +769,22 @@ export class A2aRemoteDelivery {
    */
   private onAck(recs: A2aOutboxRecordV1[]): void {
     const tasks = new Set<string>();
+    const statesTaken = new Set<string>();
     for (const rec of recs) {
       const taskId = replyOrStateTask(rec);
       if (taskId) tasks.add(taskId);
+      if (taskId && rec.envelope.kind === 'state') statesTaken.add(taskId);
     }
     for (const taskId of tasks) void this.markReplyAcked(taskId, recs[0].hostId);
+    // The peer took a later state: a refusal recorded before is over.
+    for (const taskId of statesTaken) {
+      if ((this.deps.taskService.getTask(taskId)?.metadata.remote as A2aRemoteTaskState | undefined)?.stateRefused) {
+        void this.deps.taskService.markRemote({ taskId, stateAccepted: true }).then(
+          (res) => { if (!res.ok) this.deps.log('warn', `[a2a-remote] ${taskId}: a cleared refusal not recorded: ${res.error}`); },
+          (err: unknown) => this.deps.log('warn', `[a2a-remote] ${taskId}: a cleared refusal not recorded: ${errMsg(err)}`),
+        );
+      }
+    }
   }
 
   /** Mark every task whose acked replies / states have no mark yet (see `maintain`). */
@@ -720,7 +810,7 @@ export class A2aRemoteDelivery {
     if (!this.deps.taskService.getTask(taskId)) return;
     const notAll = (): boolean =>
       this.outbox.pending(hostId).some((r) => replyOrStateTask(r) === taskId) ||
-      this.outbox.settled().some((r) => r.hostId === hostId && r.state === 'refused' && replyOrStateTask(r) === taskId);
+      this.outbox.settled().some((r) => r.hostId === hostId && r.state === 'refused' && replyOrStateTask(r) === taskId && !disagreement(r));
     try {
       const res = await this.deps.taskService.markRemote({ taskId, replyAcked: true, stillOwed: notAll });
       if (!res.ok) this.deps.log('warn', `[a2a-remote] ${taskId}: peer ack not recorded: ${res.error}`);
@@ -761,6 +851,8 @@ export class A2aRemoteDelivery {
       ...(this.deps.offers ? { offers: this.deps.offers } : {}),
       ...(this.deps.spawn ? { spawn: this.deps.spawn } : {}),
       ...(this.deps.continue ? { continue: this.deps.continue } : {}),
+      ...(this.deps.bundles ? { bundles: this.deps.bundles } : {}),
+      ...(this.deps.bundleAsks ? { bundleAsks: this.deps.bundleAsks } : {}),
       ...(this.deps.spawnLinks ? { spawnLinks: this.deps.spawnLinks } : {}),
       ...(this.images ? { images: { store: this.images, pullAttempts: this.pullAttempts } } : {}),
       remoteStatus: {
@@ -769,9 +861,44 @@ export class A2aRemoteDelivery {
         firstGone: (taskId) => this.firstGone(taskId),
         forget: (taskId) => { this.remoteStatuses.delete(taskId); this.statusGates.delete(taskId); this.goneSeen.delete(taskId); },
       },
+      remoteNotice: {
+        admit: (linkId) => this.noticeWindow(linkId, true),
+        unknownOnce: (linkId) => this.noticeWindow(linkId, false),
+      },
       taskBudget: this.taskBudget,
       log: this.deps.log,
     };
+  }
+
+  /** Notices taken per link in the current window, and which log lines it has had. */
+  private readonly noticeWindows = new Map<string, { start: number; count: number; logged: boolean; unknownLogged: boolean }>();
+
+  /**
+   * `admit`: one more notice from this link is taken now (past
+   * REMOTE_NOTICES_PER_WINDOW it is dropped, one log line per window).
+   * Otherwise: whether the "names no message of ours" line is due (once per window).
+   */
+  private noticeWindow(linkId: string, admit: boolean): boolean {
+    const now = Date.now();
+    let w = this.noticeWindows.get(linkId);
+    if (!w || now - w.start >= REMOTE_STATUS_WINDOW_MS) {
+      w = { start: now, count: 0, logged: false, unknownLogged: false };
+      this.noticeWindows.delete(linkId);
+      this.noticeWindows.set(linkId, w);
+      while (this.noticeWindows.size > REMOTE_STATUSES_MAX) this.noticeWindows.delete(this.noticeWindows.keys().next().value as string);
+    }
+    if (!admit) {
+      if (w.unknownLogged) return false;
+      w.unknownLogged = true;
+      return true;
+    }
+    w.count += 1;
+    if (w.count <= REMOTE_NOTICES_PER_WINDOW) return true;
+    if (!w.logged) {
+      w.logged = true;
+      this.deps.log('warn', `[a2a-remote] link ${linkId}: more than ${REMOTE_NOTICES_PER_WINDOW} notices in a minute; the rest are dropped`);
+    }
+    return false;
   }
 
   // --- worker status (`status.1`) -------------------------------------------
@@ -994,6 +1121,7 @@ export class A2aRemoteDelivery {
       linkStore: this.deps.links,
       outbox: this.outbox,
       ...(this.deps.spawnLinks ? { spawnLink: (id: string) => this.deps.spawnLinks!.isSpawnLink(id) } : {}),
+      takesNotice: (hostId: string) => this.liveFeatures(hostId as HostId)?.has(A2A_FEATURE_HELD_NOTICE),
     };
   }
 }
@@ -1015,5 +1143,7 @@ function imagePaths(v: unknown): string[] | undefined | null {
 
 /** The task a reply / state record is about; null for any other kind. */
 function replyOrStateTask(rec: A2aOutboxRecordV1): string | null {
+  // A host notice is not this side's reply: its ack or refusal says nothing about replyDeliveredAt.
+  if (rec.envelope.notice) return null;
   return rec.envelope.kind === 'reply' || rec.envelope.kind === 'state' ? taskOfEnvelope(rec.envelope, remoteTaskId) : null;
 }

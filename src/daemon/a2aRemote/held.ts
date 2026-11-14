@@ -1,16 +1,21 @@
 import { A2A_REMOTE_HOLD_TTL_MS, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
-import type { Task } from '../../shared/types';
+import { TERMINAL_STATES, type Task } from '../../shared/types';
 import type { A2aTaskService } from '../a2a/A2aTaskService';
 import type { LinkStore } from './linkStore';
 import type { OutboxStore } from './outboxStore';
-import { syncRemoteTask } from './outbound';
+import { sendHeldNotice, syncRemoteTask } from './outbound';
 
 /**
  * Cross-host A2A: ending remote work that cannot be delivered.
  *
  *   rejectHeld        — a person rejected a held task (or its hold expired):
  *                       our copy ends and the peer is told.
- *   expireHeld        — the 24 h hold TTL, as rejectHeld(…, 'held-expired').
+ *   expireHeld        — the 24 h hold TTL. A task whose own first message was
+ *                       never delivered ends, as rejectHeld(…, 'held-expired').
+ *                       A held reply or state is dropped on its own; the task
+ *                       stays open on both sides.
+ *   sendHeldNotices   — tells the PC that sent a dropped reply, once, if it
+ *                       takes a notice (`held-notice.1`).
  *   failTasksForLink  — the link was revoked or broke: every open remote task
  *                       on it fails, and what the outbox still owes the peer
  *                       for those tasks is dropped. (The `link` notice itself
@@ -21,12 +26,17 @@ import { syncRemoteTask } from './outbound';
  */
 
 export interface HeldDeps {
-  taskService: Pick<A2aTaskService, 'getTask' | 'cancelTask' | 'forceFailRemote' | 'listRemoteHeld' | 'listRemoteByLink' | 'listRemotePending' | 'markRemote'>;
+  taskService: Pick<A2aTaskService, 'getTask' | 'cancelTask' | 'forceFailRemote' | 'listRemoteHeld' | 'listRemoteByLink' | 'listRemotePending' | 'listRemote' | 'markRemote'>;
   linkStore: Pick<LinkStore, 'get' | 'list' | 'checkMessage'>;
   outbox: Pick<OutboxStore, 'enqueue' | 'pending' | 'refuse'>;
   now?: () => number;
   /** A link a remote start made (outbound.ts redacts what goes out on it). */
   spawnLink?: (linkId: string) => boolean;
+  /**
+   * Whether `hostId` takes a host's notice (`held-notice.1`), from its live
+   * connection. Undefined: not connected now, so not known yet.
+   */
+  takesNotice?: (hostId: string) => boolean | undefined;
 }
 
 export type RejectHeldResult =
@@ -62,18 +72,70 @@ export async function rejectHeld(deps: HeldDeps, taskId: string, reason: string)
   return { ok: true, taskId, state, queued: queued.ok };
 }
 
-/** Reject every hold older than `ttlMs`. Returns the ids rejected. */
+/**
+ * Every hold older than `ttlMs`. A task whose own first message is held (it
+ * was never delivered) ends, as before. A held reply or state is dropped on
+ * its own and the task stays open: a later message on the task may well have
+ * been delivered, and one message's hold says nothing about the thread.
+ * Returns what was dropped: task ids, and `taskId#messageId` for a unit.
+ */
 export async function expireHeld(deps: HeldDeps, ttlMs = A2A_REMOTE_HOLD_TTL_MS): Promise<string[]> {
   const now = (deps.now ?? Date.now)();
   const expired: string[] = [];
+  const past = (at: string | undefined): boolean => {
+    const t = at ? Date.parse(at) : NaN;
+    return !Number.isNaN(t) && now - t > ttlMs;
+  };
   for (const task of deps.taskService.listRemoteHeld()) {
-    const since = oldestHold(task);
-    if (since === null || now - since <= ttlMs) continue;
-    // eslint-disable-next-line no-await-in-loop -- one task at a time keeps the log order readable
-    const res = await rejectHeld(deps, task.id, 'held-expired');
-    if (res.ok) expired.push(task.id);
+    const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
+    if (!marker) continue;
+    if (marker.held && past(marker.heldAt)) {
+      // eslint-disable-next-line no-await-in-loop -- one task at a time keeps the log order readable
+      const res = await rejectHeld(deps, task.id, 'held-expired');
+      if (res.ok) expired.push(task.id);
+      continue;
+    }
+    for (const item of marker.inbox ?? []) {
+      if (!item.held || !past(item.heldAt)) continue;
+      // eslint-disable-next-line no-await-in-loop -- one unit at a time, in the task's order
+      const res = await deps.taskService.markRemote({ taskId: task.id, messageId: item.messageId, rejected: 'held-expired' });
+      if (res.ok) expired.push(`${task.id}#${item.messageId}`);
+    }
   }
   return expired;
+}
+
+/**
+ * The notice for each dropped reply still `pending`, at most once: sent to a
+ * peer connected now that takes it, marked `not-sent` for one that does not
+ * (or for a state, or a task that ended), left pending while the peer is away.
+ * The notice's id is derived from the message's, so a crash between queueing
+ * and marking queues the same message again, which the peer takes once.
+ */
+export async function sendHeldNotices(deps: HeldDeps): Promise<number> {
+  let sent = 0;
+  for (const task of deps.taskService.listRemote()) {
+    const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
+    for (const item of marker?.inbox ?? []) {
+      if (item.rejected?.notice !== 'pending') continue;
+      const ended = (TERMINAL_STATES as readonly string[]).includes(task.status.state);
+      const takes = item.kind === 'reply' && !ended ? deps.takesNotice?.(marker!.hostId) : false;
+      if (takes === undefined) continue;
+      if (takes) {
+        const res = sendHeldNotice(deps, {
+          taskId: task.id,
+          messageId: item.messageId,
+          at: item.rejected.at,
+          ...(item.rejected.held === 'delivery-unconfirmed' ? { unconfirmed: true } : {}),
+        });
+        if (!res.ok) continue;
+        sent += 1;
+      }
+      // eslint-disable-next-line no-await-in-loop -- one mark at a time
+      await deps.taskService.markRemote({ taskId: task.id, messageId: item.messageId, notice: takes ? 'sent' : 'not-sent' });
+    }
+  }
+  return sent;
 }
 
 /**
@@ -121,14 +183,4 @@ export async function failTasksForLink(
 
 function isHeld(marker: A2aRemoteTaskState): boolean {
   return !!marker.held || (marker.inbox ?? []).some((i) => !!i.held);
-}
-
-function oldestHold(task: Task): number | null {
-  const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
-  if (!marker) return null;
-  const stamps = [marker.held ? marker.heldAt : undefined, ...(marker.inbox ?? []).map((i) => (i.held ? i.heldAt : undefined))]
-    .filter((v): v is string => typeof v === 'string')
-    .map((v) => Date.parse(v))
-    .filter((v) => !Number.isNaN(v));
-  return stamps.length ? Math.min(...stamps) : null;
 }

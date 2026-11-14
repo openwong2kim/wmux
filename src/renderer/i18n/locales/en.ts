@@ -5054,7 +5054,7 @@ export const en = {
   'git.handoff.notSent': 'Did not send {kind} {ref} to {agent} in {workspace}.',
   'git.handoff.why.user_typing': 'Someone was typing in that pane; try again once it is idle.',
   'git.handoff.why.agent_changed': 'The agent left that pane or was replaced.',
-  'git.handoff.why.agent_unverified': "wmux could not read that pane's agent; try again in a moment.",
+  'git.handoff.why.agent_unverified': 'wmux could not confirm an agent running in that pane. Start the agent there, then try again.',
   'git.handoff.why.deadline': 'It waited too long for the pane to be free.',
   'git.handoff.why.no_agent_pane': 'No live agent is in that pane.',
   'git.handoff.why.approval_pending': 'That pane is waiting on an approval.',
