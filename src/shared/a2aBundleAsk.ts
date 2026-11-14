@@ -100,7 +100,7 @@ export type HomeRepoConfigKind = keyof typeof HOME_REPO_CONFIG_KIND_TEXT;
 /** The fixed words for each refusal: what happened and what the caller can do. */
 export function bringBackRefusalText(reason: BundleBringBackRefusal, configKind?: HomeRepoConfigKind): string {
   switch (reason) {
-    case 'not-supported': return 'the other PC cannot hand back this task\'s work (it was not started headless there, or its wmux is too old)';
+    case 'not-supported': return 'the other PC cannot hand back this task\'s work (it was not started headless there, bringing work back is off there, or its wmux is too old)';
     case 'unknown-spawn': return 'the other PC has no task with that id from this PC';
     case 'origin-mismatch': return 'the task\'s folder on the other PC is not of the same repository as the home repository';
     case 'base-missing': return 'the commit the task started from is not on its branch on the other PC';

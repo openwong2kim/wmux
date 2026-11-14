@@ -2519,6 +2519,9 @@ describe('fanout_bring_back (task.fanout.bringBack)', () => {
     expect(String(odd.text)).not.toMatch(/IGNORE/);
     answer = { ok: true, state: 'refused', reason: 'uncommitted-only' };
     expect(String((await call(h)).text)).toMatch(/ask the agent to commit/);
+    // A box that does not advertise bundles: the words name every reason it may not.
+    answer = { ok: true, state: 'refused', reason: 'not-supported' };
+    expect(String((await call(h)).text)).toContain('(it was not started headless there, bringing work back is off there, or its wmux is too old)');
 
     // A staged file that is not the bundle: refused at import, released, and nothing of it shown.
     const bogus = nodePath.join(home, 'x.bundle');
