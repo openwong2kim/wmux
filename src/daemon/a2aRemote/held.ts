@@ -16,17 +16,22 @@ import { sendHeldNotice, syncRemoteTask } from './outbound';
  *                       stays open on both sides.
  *   sendHeldNotices   — tells the PC that sent a dropped reply, once, if it
  *                       takes a notice (`held-notice.1`).
+ *   undoDroppedReopens — a task its remote sender reopened goes back to
+ *                       `completed` once the message that reopened it was
+ *                       dropped (its hold expired) and its notice settled,
+ *                       and the sender is told.
  *   failTasksForLink  — the link was revoked or broke: every open remote task
- *                       on it fails, and what the outbox still owes the peer
- *                       for those tasks is dropped. (The `link` notice itself
- *                       is the transport's job.)
+ *                       on it fails (a reopen whose message never got here is
+ *                       undone instead), and what the outbox still owes the
+ *                       peer for those tasks is dropped. (The `link` notice
+ *                       itself is the transport's job.)
  *
  * The person-approved RETRY of a hold needs the renderer (a new pty snapshot),
  * so it lives in main's RemoteA2aBridge.retryHeld.
  */
 
 export interface HeldDeps {
-  taskService: Pick<A2aTaskService, 'getTask' | 'cancelTask' | 'forceFailRemote' | 'listRemoteHeld' | 'listRemoteByLink' | 'listRemotePending' | 'listRemote' | 'markRemote'>;
+  taskService: Pick<A2aTaskService, 'getTask' | 'cancelTask' | 'forceFailRemote' | 'listRemoteHeld' | 'listRemoteByLink' | 'listRemotePending' | 'listRemote' | 'markRemote' | 'undoReopen'>;
   linkStore: Pick<LinkStore, 'get' | 'list' | 'checkMessage'>;
   outbox: Pick<OutboxStore, 'enqueue' | 'pending' | 'refuse'>;
   now?: () => number;
@@ -106,6 +111,30 @@ export async function expireHeld(deps: HeldDeps, ttlMs = A2A_REMOTE_HOLD_TTL_MS)
 }
 
 /**
+ * A task its remote sender reopened, whose reopening message was dropped when its hold expired, goes back to
+ * `completed` (A2aTaskService.undoReopen checks the rest), and the sender is told. Only once that message's notice
+ * is settled (sent, or not to be sent): the notice goes to the sender before the state, and a task already ended
+ * would send none. Returns the task ids undone.
+ */
+export async function undoDroppedReopens(deps: HeldDeps): Promise<string[]> {
+  const undone: string[] = [];
+  for (const task of deps.taskService.listRemote()) {
+    const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
+    const by = marker?.reopenedBy?.messageId;
+    if (!by || marker?.direction !== 'inbound' || task.status.state !== 'working') continue;
+    const item = (marker.inbox ?? []).find((i) => i.messageId === by);
+    if (item?.rejected?.reason !== 'held-expired' || item.rejected.notice === 'pending') continue;
+    // eslint-disable-next-line no-await-in-loop -- per-task lock order
+    const res = await deps.taskService.undoReopen({ taskId: task.id, messageId: by, reason: 'held-expired' });
+    if (!res.ok || !res.undone) continue;
+    undone.push(task.id);
+    // eslint-disable-next-line no-await-in-loop -- one task at a time
+    await syncRemoteTask(deps, task.id);
+  }
+  return undone;
+}
+
+/**
  * The notice for each dropped reply still `pending`, at most once: sent to a
  * peer connected now that takes it, marked `not-sent` for one that does not
  * (or for a state, or a task that ended), left pending while the peer is away.
@@ -151,6 +180,14 @@ export async function failTasksForLink(
 ): Promise<{ failed: string[]; refused: number }> {
   const failed: string[] = [];
   for (const task of deps.taskService.listRemoteByLink(linkId)) {
+    // Reopened by its sender for a message that never reached the agent: completed again, here only (the link is
+    // gone, so the sender's copy stays as it was).
+    const reopenedBy = (task.metadata.remote as A2aRemoteTaskState | undefined)?.reopenedBy?.messageId;
+    if (reopenedBy) {
+      // eslint-disable-next-line no-await-in-loop -- per-task lock order
+      const undo = await deps.taskService.undoReopen({ taskId: task.id, messageId: reopenedBy, reason: 'link-ended' });
+      if (undo.ok && undo.undone) continue;
+    }
     // eslint-disable-next-line no-await-in-loop -- per-task lock order
     const res = await deps.taskService.forceFailRemote({ taskId: task.id, reason, forced: 'remote_link_ended' });
     if (res.ok && res.failed) failed.push(task.id);

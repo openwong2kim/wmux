@@ -97,6 +97,14 @@ export interface A2aTaskTransitionPayload {
    * told to the peer even if it was told before).
    */
   reopened?: 'sender_message';
+  /** With `reopened` on an inbound task its remote sender wrote to again: the message that reopened it. */
+  reopenedBy?: string;
+  /**
+   * The reopen undone: the message that reopened the task never reached an
+   * agent (its hold expired, or the link ended), so it is `completed` again,
+   * with the status it had before.
+   */
+  reopenUndone?: 'held-expired' | 'link-ended';
 }
 
 /** 취소(canceled) — sender/receiver 모두 가능(권한은 서비스가 판정). */
@@ -158,6 +166,13 @@ export interface A2aRemoteMarkPayload {
   stateRefused?: { state: TaskState; code: A2aRemoteErrorCode };
   /** Task-level: the peer took a state of ours again; a refusal recorded before is over. */
   stateAccepted?: true;
+  /**
+   * Task-level, outbound: the peer's `completed` (this messageId) on a task
+   * that is still `completed` here took a follow-up of ours: it followed the
+   * task again and ended it before we saw its `working`. One is taken off
+   * `followUpsOpen`; the state does not change.
+   */
+  followUpTaken?: string;
   /** Item-level: dropped undelivered (its hold expired); the task stays open. Its notice starts `pending`. */
   rejected?: 'held-expired';
   /** Item-level, after `rejected`: whether the PC that sent it was told. */

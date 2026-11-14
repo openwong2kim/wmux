@@ -185,7 +185,13 @@ is the one that will accept connections, and PC A is the one that joins it.
    stays completed. A task
    opened again stays `working` until PC B's agent ends it again, as a task
    on one PC does when its sender writes after it ended: an agent that only
-   answers, or is gone, leaves it open.
+   answers, or is gone, leaves it open. The exception is a follow-up that
+   never reached the agent: when PC B drops it unread (its 24 h hold
+   expired), the task goes back to `completed` there with the result it had,
+   and PC A is told (after the notice about the dropped message). When the
+   link ends before that follow-up was delivered, PC B's copy goes back to
+   `completed` too, and PC A's copy stays as it was (`working`), as for any
+   task when a link ends.
 
 The two PCs do not need to be paired both ways. One pairing carries traffic
 in both directions over the joiner's connection.
