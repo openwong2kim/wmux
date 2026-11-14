@@ -302,7 +302,7 @@ describe('A2aTaskService — remote messages and states', () => {
     expect(await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's1', to: 'working' }))
       .toMatchObject({ ok: true, duplicate: false });
     const done = await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's2', to: 'completed', summary: 'merged' });
-    expect(done.ok).toBe(true);
+    expect(done.ok ? 'ok' : done.error).toBe('ok');
     const task = svc.getTask('rt-out')!;
     expect(task.status.state).toBe('completed');
     expect(task.status.evidence).toEqual({ summary: 'merged', items: [] });
@@ -336,7 +336,7 @@ describe('A2aTaskService — remote messages and states', () => {
     const done = await svc.applyRemoteState({
       taskId: 'rt-out', linkId: LINK, messageId: 's2', to: 'completed', summary: 'merged', message: 'Full report.', evidence,
     });
-    expect(done.ok).toBe(true);
+    expect(done.ok ? 'ok' : done.error).toBe('ok');
     const task = svc.getTask('rt-out')!;
     expect(task.status.evidence).toEqual(evidence);
     expect(task.status.message?.parts).toEqual([{ kind: 'text', text: 'Full report.' }]);
@@ -409,7 +409,9 @@ describe('A2aTaskService — the sender writing again on a completed inbound tas
 
   it('a new message from the sender takes a completed task back to working, once; the agent can then complete it again', async () => {
     const log = newLog();
-    const svc = newService(log);
+    // Each step a millisecond apart: the state id hashes the state's time.
+    let clock = Date.now();
+    const svc = new A2aTaskService({ log, origin: { machineId: 'm1', daemonEpoch: 1 }, now: () => (clock += 1) });
     await ended(svc, 'completed');
     const firstCompleted = stateMessageId(svc.getTask('rt-in')!);
     const follow = msg('f-1', 'one more thing');
@@ -679,7 +681,7 @@ describe('A2aTaskService — the sending PC marks a remote company task\'s repor
     expect(!bare.ok && bare.error).toContain('completion_evidence_missing');
 
     const done = await svc.transition({ taskId: 'rt-co', to: 'completed', ...CEO, evidence: DONE_EVIDENCE, idempotencyKey: 'k1' });
-    expect(done.ok).toBe(true);
+    expect(done.ok ? 'ok' : done.error).toBe('ok');
     expect(svc.getTask('rt-co')!.status).toMatchObject({ state: 'completed', evidence: DONE_EVIDENCE });
     const last = records(log).at(-1)!;
     expect(last.payload).toMatchObject({ kind: 'task.transition', to: 'completed' });
@@ -712,7 +714,7 @@ describe('A2aTaskService — the sending PC marks a remote company task\'s repor
     const elsewhere = await svc.transition({ taskId: 'rt-co', to: 'completed', callerWorkspaceId: 'ws-other', trustedLane: true, evidence: DONE_EVIDENCE });
     expect(!elsewhere.ok && elsewhere.error).toContain('is not the receiver');
     const done = await svc.transition({ taskId: 'rt-co', to: 'completed', callerWorkspaceId: 'ws-local', trustedLane: true, evidence: DONE_EVIDENCE });
-    expect(done.ok).toBe(true);
+    expect(done.ok ? 'ok' : done.error).toBe('ok');
     // As for a local trusted completion: the receiver side's principal, here the sending workspace (no receiver pane on this PC).
     expect(records(log).at(-1)!.authContext?.principalId).toBe('ws-local');
   });
@@ -724,7 +726,7 @@ describe('A2aTaskService — the sending PC marks a remote company task\'s repor
     const done = await svc.transition({
       taskId: 'rt-co', to: 'completed', callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-new-ceo' }, callerCompanySeat: 'coordinator', evidence: DONE_EVIDENCE,
     });
-    expect(done.ok).toBe(true);
+    expect(done.ok ? 'ok' : done.error).toBe('ok');
     expect(records(log).at(-1)!.authContext?.principalId).toBe(panePrincipalId('ws-local', 'pane-new-ceo'));
     // The done ends the report, live and after a replay.
     expect((svc.getTask('rt-co')!.metadata.remote as { reported?: string }).reported).toBeUndefined();
@@ -1035,5 +1037,31 @@ describe('the peer following a task again, on the sender\'s copy', () => {
     expect(remoteOf(svc, 'rt-out')).not.toHaveProperty('followUpsOpen');
     expect((await peer(svc, 's5', 'working')).ok).toBe(true);
     expect(remoteOf(svc, 'rt-out')).not.toHaveProperty('followUpsOpen');
+  });
+});
+
+describe('a follow-up on a fan-out report held here', () => {
+  async function held(): Promise<A2aTaskService> {
+    const svc = newService(newLog());
+    await svc.createTask({
+      id: 'rt-fo', title: 'T',
+      from: { workspaceId: 'ws-local', name: 'Local', paneId: 'pane-l' },
+      to: { workspaceId: REMOTE_WS, name: 'pc-b/ws/pane' },
+      history: [msg('m-0', 'please')],
+      remote: { ...marker('outbound'), fanout: true },
+    });
+    await svc.applyRemoteState({ taskId: 'rt-fo', linkId: LINK, messageId: 's1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-fo', linkId: LINK, messageId: 's2', to: 'completed', summary: 'done', message: 'Done.' });
+    expect(svc.getTask('rt-fo')!.status.state).toBe('input-required');
+    expect((await svc.appendRemoteMessage({ taskId: 'rt-fo', linkId: LINK, actorWorkspaceId: 'ws-local', message: msg('f-1', 'one more thing') })).ok).toBe(true);
+    // Counted on the same rule as the request the sync sends with it.
+    expect(remoteOf(svc, 'rt-fo').followUpsOpen).toBe(1);
+    return svc;
+  }
+
+  it('the peer\'s working takes it while the report is still held here', async () => {
+    const svc = await held();
+    expect((await svc.applyRemoteState({ taskId: 'rt-fo', linkId: LINK, messageId: 's3', to: 'working', peerReopens: true })).ok).toBe(true);
+    expect(remoteOf(svc, 'rt-fo')).not.toHaveProperty('followUpsOpen');
   });
 });

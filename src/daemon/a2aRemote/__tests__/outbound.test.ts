@@ -440,7 +440,7 @@ describe('sendRemoteReply / sendRemoteState', () => {
     // Completed there and here, with our follow-up after it.
     expect(await flagOf({ state: 'completed', marker: { followUpsOpen: 1 } })).toBe(true);
     // A fan-out report held here: the task ended there.
-    expect(await flagOf({ state: 'input-required', marker: { fanout: true, reported: 'done' } })).toBe(true);
+    expect(await flagOf({ state: 'input-required', marker: { fanout: true, reported: 'done', followUpsOpen: 1 } })).toBe(true);
     // Not for a company task, nor to a PC that does not follow a task again, nor on a task still open there.
     expect(await flagOf({ state: 'completed', marker: { followUpsOpen: 1 }, company: true })).toBeUndefined();
     expect(await flagOf({ state: 'completed', marker: { followUpsOpen: 1 }, peerReopens: false })).toBeUndefined();

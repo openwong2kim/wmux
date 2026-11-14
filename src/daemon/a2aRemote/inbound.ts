@@ -356,7 +356,8 @@ async function applyInbound(
     linkId: link.linkId,
     messageId: env.messageId,
     to: env.state as NonNullable<A2aRemoteEnvelope['state']>,
-    peerReopens: deps.peerReopens?.(peer.hostId) === true,
+    // Only a `working` can follow a task again: the peer's features are read for that one alone.
+    peerReopens: env.state === 'working' && deps.peerReopens?.(peer.hostId) === true,
     ...(env.text ? { summary: env.text } : {}),
     ...(env.message ? { message: env.message } : {}),
     ...(env.evidence ? { evidence: env.evidence } : {}),

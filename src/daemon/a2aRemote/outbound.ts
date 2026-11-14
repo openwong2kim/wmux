@@ -34,7 +34,7 @@ import {
   type A2aRemoteTaskState,
 } from '../../shared/a2aRemoteDelivery';
 import { TERMINAL_STATES, type CompletionEvidence, type EvidenceItem, type Message, type Part, type Task } from '../../shared/types';
-import type { A2aTaskService } from '../a2a/A2aTaskService';
+import { endedThere, type A2aTaskService } from '../a2a/A2aTaskService';
 import type { LinkStore } from './linkStore';
 import type { OutboxStore } from './outboxStore';
 import { remoteTaskId } from './ids';
@@ -376,8 +376,7 @@ export async function syncRemoteTask(
   // Our follow-up on a task we sent that ended there (completed here after it, or a fan-out report held here) asks
   // that PC to follow it again, when both builds do so. Never for a company task: its seat's working slots are that
   // PC's to give.
-  const followAgain = marker.direction === 'outbound'
-    && ((task.status.state === 'completed' && (marker.followUpsOpen ?? 0) > 0) || (marker.fanout === true && marker.reported !== undefined))
+  const followAgain = (marker.followUpsOpen ?? 0) > 0 && endedThere(task)
     && !isCompanyTask(task.history) && deps.peerReopens?.(link.remote.hostId) === true;
   let queued = 0;
   try {

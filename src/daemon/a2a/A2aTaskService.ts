@@ -1204,10 +1204,9 @@ export class A2aTaskService {
         message: input.message,
         timestamp: this.isoNow(),
         ...(input.actorWorkspaceId === `remote:${input.linkId}` ? { remoteInbound: true as const } : {}),
-        // Ours, on a task this PC sent that ended `completed`: the peer may follow it again for this follow-up.
-        ...(input.actorWorkspaceId !== `remote:${input.linkId}` && remoteMarkerOf(task)?.direction === 'outbound' && task.status.state === 'completed'
-          ? { followUp: true as const }
-          : {}),
+        // Ours, on a task this PC sent that ended there (completed here, or a fan-out report held here): the peer may
+        // follow it again for this follow-up. The same rule as the request the outbound sync sends with it.
+        ...(input.actorWorkspaceId !== `remote:${input.linkId}` && endedThere(task) ? { followUp: true as const } : {}),
       };
       const side = task.metadata.from.workspaceId === input.actorWorkspaceId ? 'from' : 'to';
       const committed = await this.log.append(
@@ -1337,7 +1336,11 @@ export class A2aTaskService {
         ...(verdict?.ok ? { verifiedItemCount: verdict.verifiedItemCount } : {}),
         remoteMessageId: input.messageId,
         ...(report ? { remoteAsked: 'completed' as const } : {}),
-        ...(followedAgain ? { followedAgain: true as const } : {}),
+        // A `working` that answers a follow-up of ours takes it: the task followed again after it completed here, or
+        // a fan-out report held here that the peer's agent took up again.
+        ...(followedAgain || (input.to === 'working' && remoteMarkerOf(task)?.reported !== undefined && (remoteMarkerOf(task)?.followUpsOpen ?? 0) > 0)
+          ? { followedAgain: true as const }
+          : {}),
       };
       const committed = await this.log.append(this.envelope(payload, remoteWs, this.derivePrincipalId(task, 'to', remoteWs)));
       if (!committed) return { ok: false, error: 'a2a.remote.state: daemon log append failed (uncommitted)' };
@@ -1800,6 +1803,16 @@ export class A2aTaskService {
     });
     return run;
   }
+}
+
+/**
+ * A task this PC sent that ended on the other PC: completed here, or a fan-out
+ * report held here. A follow-up of ours on it may have the task followed again
+ * there (outbound.ts sends the request on the same rule).
+ */
+export function endedThere(task: Task): boolean {
+  const m = remoteMarkerOf(task);
+  return m?.direction === 'outbound' && (task.status.state === 'completed' || (m.fanout === true && m.reported !== undefined));
 }
 
 /** The cross-host marker on a task, or undefined (only a well-formed v1 marker counts). */
