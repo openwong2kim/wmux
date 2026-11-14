@@ -276,7 +276,7 @@ describe('openHomeRepo (real git)', () => {
     execFileSync('git', ['init', '-q', '-b', 'main', repo]);
     expect(await openHomeRepo(repo)).toEqual({ ok: false, reason: 'no-home-repo' });
     g(repo, 'remote', 'add', 'origin', 'https://github.com/o/r.git');
-    expect(await openHomeRepo(repo)).toEqual({ ok: true, top: repo, origin: 'github.com/o/r' });
+    expect(await openHomeRepo(repo)).toEqual({ ok: true, top: fs.realpathSync.native(repo), origin: 'github.com/o/r' });
     fs.mkdirSync(path.join(repo, 'sub'));
     expect(await openHomeRepo(path.join(repo, 'sub'))).toEqual({ ok: false, reason: 'no-home-repo' });
     expect(await openHomeRepo(path.join(root, 'gone'))).toEqual({ ok: false, reason: 'no-home-repo' });

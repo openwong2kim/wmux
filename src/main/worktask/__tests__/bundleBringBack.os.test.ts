@@ -1,20 +1,21 @@
 // Bring-back end to end on one machine: a real headless start's worktree, the
 // real box (bundleBox.ts, bundleMaker.ts) and the real asker (bundleAsker.ts),
 // their envelopes handed straight to each other, the transfer a file copy in
-// place of the PUT, and the real import (main/worktask/bundleImport.ts).
+// place of the PUT, and the real import (bundleImport.ts). It lives with main's tests: the daemon's
+// compile does not take main's import graph.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { A2aRemoteEnvelope, HostId } from '../../../shared/a2aRemote';
 import type { A2aBundleManifestV1 } from '../../../shared/a2aBundle';
-import { BundleAsker } from '../bundleAsker';
-import { BundleBox } from '../bundleBox';
-import { bundleStagedFile, type BundlePull } from '../bundleIntake';
-import type { BundleOffer, BundleSend } from '../bundleOutbox';
-import { headlessTreeId } from '../headlessStarter';
-import type { HeadlessStartRecordV1 } from '../headlessStartStore';
-import { BUNDLE_IMPORT_GIT_FLOOR, importBundle } from '../../../main/worktask/bundleImport';
+import { BundleAsker } from '../../../daemon/a2aRemote/bundleAsker';
+import { BundleBox } from '../../../daemon/a2aRemote/bundleBox';
+import { bundleStagedFile, type BundlePull } from '../../../daemon/a2aRemote/bundleIntake';
+import type { BundleOffer, BundleSend } from '../../../daemon/a2aRemote/bundleOutbox';
+import { headlessTreeId } from '../../../daemon/a2aRemote/headlessStarter';
+import type { HeadlessStartRecordV1 } from '../../../daemon/a2aRemote/headlessStartStore';
+import { BUNDLE_IMPORT_GIT_FLOOR, importBundle } from '../bundleImport';
 import { trackedTempDir } from '../../../test-utils/trackedTempDir';
 
 const ASKER = '0f1e2d3c-4b5a-4968-8776-655443322110' as HostId;

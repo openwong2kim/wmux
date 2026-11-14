@@ -122,14 +122,15 @@ export async function openHomeRepo(homeRepo: string, git: TaskPushGit = defaultG
   let real: string;
   try {
     if (!fs.lstatSync(homeRepo).isDirectory()) return noRepo;
-    real = fs.realpathSync(homeRepo);
+    // The native realpath: it also expands a Windows short (8.3) name, as git's own path does.
+    real = fs.realpathSync.native(homeRepo);
   } catch {
     return noRepo;
   }
   const top = await git(['-c', 'core.fsmonitor=false', 'rev-parse', '--show-toplevel'], real, IMPORT_ENV, { timeoutMs: BUNDLE_IMPORT_TIMEOUT_MS });
   let topReal = '';
   try {
-    topReal = top.code === 0 ? fs.realpathSync(top.stdout.trim()) : '';
+    topReal = top.code === 0 ? fs.realpathSync.native(top.stdout.trim()) : '';
   } catch {
     topReal = '';
   }
