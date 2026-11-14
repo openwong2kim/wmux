@@ -51,6 +51,7 @@ function harness(over: Partial<BundleAskerDeps> = {}, dir = trackedTempDir('wmux
     },
     log: () => undefined,
     random: () => 0,
+    harden: () => undefined,
     ...over,
   };
   const asker = new BundleAsker(deps);

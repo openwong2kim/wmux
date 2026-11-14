@@ -92,6 +92,8 @@ function wire() {
     enabled: () => true,
     peerTakes: () => true,
     selfHostId: () => ASKER,
+    // No file-permission pass in a test: on Windows it runs after the test and logs.
+    harden: () => undefined,
     enqueue: (_hostId: HostId, env: A2aRemoteEnvelope) => {
       asks.push({ op: env.bundleAsk!.op, askId: env.linkId });
       box!.applyInbound(env, { hostId: ASKER });
