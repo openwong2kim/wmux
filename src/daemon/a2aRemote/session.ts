@@ -33,7 +33,9 @@ import { errMsg, isPlainObject } from './storeFile';
  *   pump   — POSTs this host's outbox to the server strictly in seq order
  *            (an ack covers every seq up to it, so N+1 never goes before N):
  *              ok / duplicate          → ack
- *              terminal refusal        → refuse + `onRefused` (the task fails)
+ *              terminal refusal        → refuse + `onRefused` (the task fails;
+ *                                        a state the server disagrees with is
+ *                                        only recorded on it)
  *              written, no answer      → outcome-unknown; the SAME envelope is
  *                                        resent later (idempotent by key)
  *              not sent / unavailable  → retried later
@@ -48,7 +50,7 @@ import { errMsg, isPlainObject } from './storeFile';
  * `livenessMs` is dropped and redialled.
  */
 
-/** Refusals resending can never fix: the record is dropped and its task failed. */
+/** Refusals resending can never fix: the record is dropped, and `onRefused` ends what it was about (see delivery.ts). */
 export const TERMINAL_REFUSALS: ReadonlySet<A2aRemoteErrorCode> = new Set<A2aRemoteErrorCode>([
   'unknown-link',
   'link-not-active',
