@@ -311,6 +311,8 @@ export interface A2aRemoteInboxItem {
   heldAt?: string;
   /** main started a paste and has not confirmed it yet. */
   attempted?: boolean;
+  /** A paste of it was once left unconfirmed (`delivery-unconfirmed`): it may be in the pane, whatever hold follows. */
+  unconfirmed?: true;
   /**
    * Dropped here without being delivered (its hold expired): the task stays
    * open. `notice`: whether the PC that sent it was told (`held-notice.1`);
@@ -350,6 +352,20 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
    * reopen per follow-up. Only from a peer that advertises `reopen.1`.
    */
   followUpsOpen?: number;
+  /**
+   * Inbound task its sender reopened (`working` again after it ended `completed`), while nothing has moved it since:
+   * the message that reopened it, and the status it had before. Gone with the next transition.
+   */
+  reopenedBy?: {
+    messageId: string;
+    status: Task['status'];
+    /**
+     * Since the reopen, something may have reached the agent or come from it: a message on the task was delivered,
+     * a paste of one was left unconfirmed, or the agent wrote on the task. The reopen is then never undone. (A refused
+     * attempt, cleared with nothing written, does not count; one in flight blocks the undo while it is.)
+     */
+    touched?: true;
+  };
   /** Our own replies on this task already queued for the peer (messageIds). */
   sent?: string[];
   /** When each of `sent` was queued (a notice about one of them names this time, never one the peer gives). */
