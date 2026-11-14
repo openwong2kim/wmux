@@ -75,23 +75,32 @@ jobs:
           npm install --package-lock-only --ignore-scripts
           git diff --exit-code package-lock.json
 
-      # Every type-check program except mcp and daemon, which CI compiles with
-      # the same tsconfig anyway: `build:mcp` and `build:daemon` below both
-      # start with `tsc -p` (so a daemon type error fails the daemon build).
-      # cli has no build step here, so it is checked.
+      - name: Daemon program file counts (temporary, for the PR body)
+        continue-on-error: true
+        run: |
+          for c in tsconfig.daemon.json tsconfig.daemon.build.json; do
+            npx tsc --listFilesOnly -p "$c" > "/tmp/$c.files"
+            echo "$c: $(wc -l < "/tmp/$c.files") files, $(grep -c '/src/' "/tmp/$c.files") under src/"
+          done
+
+      # Every type-check program except mcp, which CI compiles with the same
+      # tsconfig anyway: `build:mcp` below starts with `tsc -p`. The daemon
+      # program is checked here: `build:daemon` compiles a build-only config
+      # without the tests (tsconfig.daemon.build.json), so this is where the
+      # daemon and shared tests meet the daemon's ES2022 target.
       # Locally, `npm run typecheck` still runs all of them.
       # scripts/__tests__/typecheckSlices.test.mjs ties this list to those
       # build steps.
       - name: Type check
-        run: node scripts/typecheck.mjs --skip mcp,daemon
+        run: node scripts/typecheck.mjs --skip mcp
 
       - name: Build and probe MCP protocol
         run: npm run build:mcp && npm run probe:mcp
 
       # The daemon bundle the runtime suite drives. That suite left the pull
-      # request path (runtime.yml), but the build did not: it compiles the
-      # daemon program the type check above skips, and a bundle that no longer
-      # builds must fail the pull request that broke it, not the next nightly.
+      # request path (runtime.yml), but the build did not: a bundle that no
+      # longer builds must fail the pull request that broke it, not the next
+      # nightly.
       - name: Build daemon bundle
         run: npm run build:daemon
 
