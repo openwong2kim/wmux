@@ -10,6 +10,7 @@ import { registerInputRpc } from '../input.rpc';
 import { paneDeliveryLocksForTest } from '../freshContext';
 import type { GatedSubmitResult } from '../../../../shared/ptyMessageDelivery';
 import type { DeliveryCheck, DeliveryPresence } from '../../../../shared/deliveryPresence';
+import type { RoleBinding } from '../../../../shared/orchestratorRole';
 import type { BrowserWindow } from 'electron';
 import type { PTYManager } from '../../../pty/PTYManager';
 
@@ -35,7 +36,7 @@ let draftOnNextRead: boolean;
 /** Runs after each write that went through. */
 let afterWrite: (data: string) => void;
 
-function harness(lockWaitMs?: number) {
+function harness(lockWaitMs?: number, binding?: RoleBinding) {
   const dc = {
     isConnected: true,
     rpc: async (method: string) => (method === 'daemon.approvals.list' ? { pending: [] } : { ok: true }),
@@ -60,7 +61,7 @@ function harness(lockWaitMs?: number) {
     { get: () => undefined } as unknown as PTYManager,
     () => ({}) as BrowserWindow,
     () => dc as never,
-    undefined,
+    binding ? async () => binding : undefined,
     undefined,
     {
       answerPolicy: async () => ({ allowed: false, reason: 'autonomy-off' }),
@@ -73,6 +74,7 @@ function harness(lockWaitMs?: number) {
       now: () => clock,
       log: () => undefined,
       ...(lockWaitMs !== undefined ? { freshContextLockWaitMs: lockWaitMs } : {}),
+      ...(binding ? { queryDaemonTasks: async () => [] } : {}),
     },
   );
 }
@@ -229,6 +231,49 @@ describe('one delivery at a time into a pane', () => {
     expect(await mention).toEqual({ ok: true });
     expect(await handOff).toMatchObject({ ok: false, reason: 'user_typing' });
     expect(on('pty-a')).toEqual([paste('nudge'), '\r']);
+  });
+
+  it('a new-task hand-off that gets the pane past its deadline stops before its fresh-context step', async () => {
+    let letGo: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => { letGo = resolve; });
+    let first = true;
+    answer = async () => {
+      if (first) { first = false; await held; }
+      return PROCESS;
+    };
+    // The pane's role asks for a fresh conversation per task: a step that ran
+    // would type `/clear`.
+    const rpc = harness(50, { agent: 'claude', freshContext: true });
+    const holder = rpc.gatedSubmit('pty-d', 'first', 'Claude Code');
+    const handOff = rpc.gatedSubmit('pty-d', 'task', 'Claude Code', { waitQuiet: true, newTask: true, deadlineAt: clock + 30_000 });
+    await vi.waitFor(() => expect(agentReads).toBeGreaterThan(0), { timeout: 5_000 });
+    // The holder outlasts the hand-off's deadline.
+    clock += 60_000;
+    letGo();
+    expect(await holder).toEqual({ ok: true });
+    expect(await handOff).toMatchObject({ ok: false, reason: 'deadline' });
+    // Only the holder's three checks: the hand-off asked nothing and wrote
+    // nothing, `/clear` included.
+    expect(asked).toHaveLength(3);
+    expect(on('pty-d')).toEqual([paste('first'), '\r']);
+    expect(on('pty-d')).not.toContain('/clear');
+  });
+
+  it('a hand-off never waits for the pane past its deadline, even when the plain wait is longer', async () => {
+    let letGo: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => { letGo = resolve; });
+    let first = true;
+    answer = async () => {
+      if (first) { first = false; await held; }
+      return PROCESS;
+    };
+    const rpc = harness(60_000);
+    const holder = rpc.gatedSubmit('pty-e', 'first', 'Claude Code');
+    const handOff = await rpc.gatedSubmit('pty-e', 'task', 'Claude Code', { waitQuiet: true, deadlineAt: clock + 30 });
+    expect(handOff).toMatchObject({ ok: false, reason: 'fresh_context_busy' });
+    expect(on('pty-e')).toEqual([]);
+    letGo();
+    expect(await holder).toEqual({ ok: true });
   });
 
   it('a plain delivery and a new task on one pane go one after the other, whichever came first', async () => {

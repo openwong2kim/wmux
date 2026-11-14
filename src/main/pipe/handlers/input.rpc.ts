@@ -2603,7 +2603,7 @@ export function registerInputRpc(
   const prepareHandoffGuard = async (
     ptyId: string,
     opts: GatedSubmitOptions,
-  ): Promise<{ ok: true; guard: DeliveryGuard; noteOwnWrite: () => void; rebase: () => Promise<void>; deadlineAt: number } | { ok: false; refusal: GatedSubmitRefusal }> => {
+  ): Promise<{ ok: true; guard: DeliveryGuard; noteOwnWrite: () => void; onLocked: () => Promise<GatedSubmitRefusal | null>; deadlineAt: number } | { ok: false; refusal: GatedSubmitRefusal }> => {
     const refusal = (reason: GatedSubmitRefusal['reason'], detail: string) => ({ ok: false as const, refusal: { ok: false as const, reason, detail } });
     const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
     // No answer is not "no agent": held for a retry.
@@ -2648,13 +2648,18 @@ export function registerInputRpc(
       noteOwnWrite: () => {
         if (expectedRevision !== undefined) expectedRevision += 1;
       },
-      // Run once the pane's delivery lock is held: a delivery ahead of this one
+      // Run once the pane's delivery lock is held. A hand-off that got the
+      // pane past its deadline stops here, before a new task's fresh-context
+      // step could clear the pane. Otherwise: a delivery ahead of this one
       // pasted and pressed Enter while it waited, and those keys are not a
       // person's. With no draft in the box the count restarts from here; a
       // draft keeps the old count, so the check before the paste refuses it.
-      rebase: async () => {
+      onLocked: async () => {
+        const late = pastDeadline();
+        if (late) return late;
         const s = await read().catch(() => null);
         if (s && s.hasDraft !== true && typeof s.keyInputRevision === 'number') expectedRevision = s.keyInputRevision;
+        return null;
       },
       deadlineAt,
     };
@@ -2825,21 +2830,23 @@ export function registerInputRpc(
       // agent they chose is still the one there.
       let guard: DeliveryGuard | undefined;
       let noteOwnWrite = (): void => undefined;
-      /** Runs once the pane's delivery lock is held (a hand-off's key count). */
-      let onLocked = async (): Promise<void> => undefined;
+      /** Runs once the pane's delivery lock is held (a hand-off's deadline and
+       *  key count); a refusal there ends the delivery with nothing written. */
+      let onLocked = async (): Promise<GatedSubmitRefusal | null> => null;
       // The wait for the pane's delivery lock: a new task keeps the
       // fresh-context wait, any other delivery waits a little longer. A
       // hand-off with a deadline of its own may wait for the pane until
-      // shortly before that deadline.
+      // shortly before that deadline, and never past it.
       let lockWaitMs = deps.freshContextLockWaitMs ?? (opts?.newTask ? FRESH_CONTEXT_LOCK_WAIT_MS : PANE_DELIVERY_LOCK_WAIT_MS);
       if (opts?.waitQuiet) {
         const prepared = await prepareHandoffGuard(ptyId, opts);
         if (!prepared.ok) return prepared.refusal;
         guard = withRegisteredCheck(prepared.guard, opts.guardKey);
         noteOwnWrite = prepared.noteOwnWrite;
-        onLocked = prepared.rebase;
-        const untilDeadline = prepared.deadlineAt - (deps.now ?? Date.now)() - DELIVERY_RESERVE_MS;
-        lockWaitMs = Math.max(lockWaitMs, untilDeadline);
+        onLocked = prepared.onLocked;
+        // Never past the deadline itself: a pane freed after it is no use.
+        const leftMs = prepared.deadlineAt - (deps.now ?? Date.now)();
+        lockWaitMs = Math.min(Math.max(lockWaitMs, leftMs - DELIVERY_RESERVE_MS), Math.max(0, leftMs));
       }
       // Deliveries wait for a verified agent in plain input mode
       // (gatedPasteSubmit asks before anything is written, after a
@@ -2903,7 +2910,8 @@ export function registerInputRpc(
         return withPaneDeliveryLock(
           ptyId,
           async () => {
-            await onLocked();
+            const late = await onLocked();
+            if (late) return late;
             return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt);
           },
           lockWaitMs,
@@ -2919,7 +2927,8 @@ export function registerInputRpc(
       return withPaneDeliveryLock(
         ptyId,
         async () => {
-          await onLocked();
+          const late = await onLocked();
+          if (late) return late;
           return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
             const workspaceId = (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ?? undefined;
             const binding = await bindingFor(ptyId);
