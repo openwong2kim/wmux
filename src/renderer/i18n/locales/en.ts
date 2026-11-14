@@ -4650,6 +4650,7 @@ export const en = {
   'sessionSchedule.statusSent': 'sent',
   'sessionSchedule.statusError': 'delivery error',
   'sessionSchedule.statusPaused': 'paused',
+  'sessionSchedule.statusGaveUpBusy': 'not sent: input box stayed busy for an hour',
   'sessionSchedule.daemonRequired': "Scheduling needs wmux's background service, which is not connected. Try again once it reconnects.",
   'sessionSchedule.promptLabel': 'Scheduled prompt',
   'sessionSchedule.whenLabel': 'Delivery time',

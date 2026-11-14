@@ -44,6 +44,7 @@
 
 import { agentRow } from '../../shared/agentIdentity';
 import { shownOf, type DeliveryCheck } from '../../shared/deliveryPresence';
+import { printableLine } from '../../shared/ptyMessageDelivery';
 import { neutralName } from '../../shared/typedLineName';
 
 export interface WakeUnreadEntry {
@@ -608,7 +609,8 @@ export class ChannelWakeWorker {
     // sanitize + cap the FINAL line, not its pieces: the cap has to bound what
     // actually reaches the PTY, and concatenation is exactly where a bounded
     // hint and a bounded preview stop being bounded.
-    const line = sanitizeLine(preview ? `${hint} — ${preview}` : hint);
+    // Typed as keys: printableLine also drops the C1 controls sanitizeLine keeps.
+    const line = printableLine(sanitizeLine(preview ? `${hint} — ${preview}` : hint));
     const report = (ok: boolean): void => {
       this.deps.onNudgeOutcome?.({
         workspaceId,

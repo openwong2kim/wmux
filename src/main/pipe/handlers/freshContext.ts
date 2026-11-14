@@ -67,7 +67,7 @@
 //     receipt left by an earlier run of the agent, or hooks that stopped
 //     reaching wmux, cost a few seconds, never the task.
 
-import { resolveAgentSlug } from '../../../shared/ptyMessageDelivery';
+import { printableLine, resolveAgentSlug } from '../../../shared/ptyMessageDelivery';
 import { isFreshSessionSource } from '../../../shared/hooks/signal-types';
 import type { SessionStartReceipt } from '../../../shared/hooks/HookSignalRouter';
 import { freshContextGrammarFor } from '../../../shared/agentLaunchOptions';
@@ -305,7 +305,8 @@ export async function runFreshContext(
         : `no_command_for_agent: "${agent ?? 'no agent'}" has no verified fresh-context command`,
     );
   }
-  const command = grammar.command;
+  // Typed as keys: only printable characters reach the pane.
+  const command = printableLine(grammar.command);
   const keep = typeof opts.keepContext === 'function' ? await opts.keepContext() : opts.keepContext;
   if (keep) return skip('skipped_busy', KEEP_CONTEXT_REASONS[keep]);
 
@@ -366,9 +367,28 @@ export async function runFreshContext(
     state.hookReports !== true && (agent !== 'codex' || codexConversationLooksEmpty(before));
 
   // 5. Type the command, without Enter, and check what it landed next to.
-  const erase = (reason: string, result: FreshContextReply['freshContext'] = 'skipped_busy'): FreshContextReply => {
+  // Only while the cursor row ends with the command: DELs remove the
+  // characters before the cursor, which are someone else's otherwise.
+  const eraseIfShown = async (): Promise<'erased' | 'not-shown' | 'unreadable'> => {
+    const screen = await probe.readScreen();
+    if (!screen) return 'unreadable';
+    if (!squash(cursorRow(screen)).endsWith(squash(command))) return 'not-shown';
     probe.write('\x7f'.repeat(command.length));
-    return skip(result, reason);
+    return 'erased';
+  };
+  const erase = async (reason: string, result: FreshContextReply['freshContext'] = 'skipped_busy'): Promise<FreshContextReply> => {
+    const erased = await eraseIfShown();
+    // Unread, the command may still sit in the input line: the task text
+    // must not be typed next to it, so the send fails with nothing more written.
+    if (erased === 'unreadable') {
+      throw new FreshContextTimeout(
+        `typed ${command}, and the pane could not be read to take it back (${reason}); nothing further was written ` +
+          '(the command may still be in the input line)',
+        command,
+        'timeout',
+      );
+    }
+    return skip(result, `${reason}; ${erased === 'erased' ? 'it was erased' : 'it was not shown at the cursor, so nothing was erased'}`);
   };
   await probe.verify?.('command', command);
   probe.write(command);
@@ -380,10 +400,10 @@ export async function runFreshContext(
     if (screen) placement = commandOnCursorRow(screen, command);
   }
   if (placement === 'with_draft') {
-    return erase('draft_in_composer: the composer held other text; the command was erased');
+    return erase('draft_in_composer: the composer held other text');
   }
   if (placement === 'absent') {
-    return erase('command_not_seen: the typed command never showed on the cursor row; it was erased',
+    return erase('command_not_seen: the typed command never showed on the cursor row',
       'skipped_unobservable');
   }
   // Ordering note: the command went out on the session's data pipe and this
@@ -395,7 +415,7 @@ export async function runFreshContext(
   // still counts.
   const typed = await probe.readAgentState();
   if (!typed) {
-    return erase('state_unreadable: the pane state could not be read after the command was typed; it was erased',
+    return erase('state_unreadable: the pane state could not be read after the command was typed',
       'skipped_unobservable');
   }
   if (typed.incarnationId !== state.incarnationId) {
@@ -422,7 +442,7 @@ export async function runFreshContext(
   try {
     await probe.verify?.('enter', command);
   } catch (err) {
-    probe.write('\x7f'.repeat(command.length));
+    await eraseIfShown();
     throw err;
   }
   probe.write('\r');
