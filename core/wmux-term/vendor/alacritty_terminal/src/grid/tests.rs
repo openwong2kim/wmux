@@ -449,6 +449,41 @@ fn size_hint_matches_count<T>(iter: impl Iterator<Item = T>) {
 
 // https://github.com/rust-lang/rust-clippy/pull/6375
 #[allow(clippy::all)]
+#[test]
+fn shrink_cursor_paragraph_resets_a_cut_wide_glyph() {
+    // wmux: xterm's trim resets a fullwidth glyph whose lead lands in the new
+    // last column to a default cell and drops its trailing half
+    // (`BufferLine.resize`); a soft-wrapped row keeps its wrap.
+    let wide = |c: char| {
+        let mut lead = cell(c);
+        lead.flags.insert(Flags::WIDE_CHAR);
+        let mut spacer = Cell::default();
+        spacer.flags.insert(Flags::WIDE_CHAR_SPACER);
+        (lead, spacer)
+    };
+    let mut grid = Grid::<Cell>::new(2, 5, 0);
+    let (lead, spacer) = wide('한');
+    grid[Line(0)][Column(0)] = cell('a');
+    grid[Line(0)][Column(1)] = lead.clone();
+    grid[Line(0)][Column(2)] = spacer.clone();
+    grid[Line(0)][Column(3)] = cell('b');
+    grid[Line(0)][Column(4)] = wrap_cell('c');
+    grid[Line(1)][Column(0)] = cell('a');
+    grid[Line(1)][Column(1)] = lead;
+    grid[Line(1)][Column(2)] = spacer;
+    grid.cursor.point = Point::new(Line(1), Column(3));
+
+    grid.resize(true, 2, 2);
+
+    assert_eq!(grid[Line(0)].len(), 2);
+    assert_eq!(grid[Line(0)][Column(0)], cell('a'));
+    let mut wrapped_blank = Cell::default();
+    wrapped_blank.flags.insert(Flags::WRAPLINE);
+    assert_eq!(grid[Line(0)][Column(1)], wrapped_blank);
+    assert_eq!(grid[Line(1)][Column(0)], cell('a'));
+    assert_eq!(grid[Line(1)][Column(1)], Cell::default());
+}
+
 fn cell(c: char) -> Cell {
     let mut cell = Cell::default();
     cell.c = c;

@@ -34,6 +34,11 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let old = row.len();
         if row.len() > columns {
             row.shrink(columns);
+            // wmux: xterm's trim resets a fullwidth glyph cut at the new edge
+            // to a default cell (`BufferLine.resize`); its spacer is gone.
+            if row[Column(columns - 1)].flags().contains(Flags::WIDE_CHAR) {
+                row[Column(columns - 1)] = T::default();
+            }
         } else { row.grow(columns); }
         // wmux: a soft-wrapped row grown here has empty cells xterm never
         // wrote (its paragraph is not reflowed); the serializer keeps them so.
