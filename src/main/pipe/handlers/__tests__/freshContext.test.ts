@@ -295,15 +295,20 @@ describe('runFreshContext — the typed command', () => {
     expect(pane.writes).toEqual(['/clear']);
   });
 
-  it('refused before the Enter with the command gone from the cursor row: nothing is erased', async () => {
+  // Not taken back, the refusal must not say "nothing was typed": the
+  // command may still be in the input line.
+  it('refused before the Enter with the command gone from the cursor row: nothing is erased, and the failure says the command may remain', async () => {
     const pane = scriptedPane();
     pane.probe.verify = async (stage) => {
       if (stage !== 'enter') return;
       // The pane redrew without the command (it was cleared some other way).
       pane.probe.readScreen = async () => CLAUDE_IDLE;
-      throw new Error('refused');
+      throw new Error('delivery: the agent\'s input box already holds a draft, so nothing was typed there');
     };
-    await expect(runFreshContext(CLAUDE, pane.probe, pane.opts)).rejects.toThrow('refused');
+    const err = await runFreshContext(CLAUDE, pane.probe, pane.opts).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FreshContextTimeout);
+    expect((err as Error).message).toMatch(/^typed \/clear, and the check before its Enter refused \(delivery: /);
+    expect((err as Error).message).toMatch(/the command may still be in the input line\)$/);
     expect(pane.writes).toEqual(['/clear']);
   });
 });
