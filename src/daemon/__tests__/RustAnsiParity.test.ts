@@ -558,6 +558,19 @@ const wideEdges: Case[] = [
   resizedThrough('wide-lead-cut-linked', [20, 6], [[`${'a'.repeat(9)}\x1b]8;;https://example.invalid/\x1b\\한\x1b]8;;\x1b\\b`, [10, 6]]], ''),
   // Widened again, the glyph does not come back.
   resizedThrough('wide-lead-cut-then-widened', [20, 6], [[cutAtNine, [10, 6]], ['', [20, 6]]], ''),
+  // The cut row is soft-wrapped; the cursor then leaves the paragraph and a
+  // wider reflow joins it. xterm counts the reset cell as empty: before a row
+  // that starts with a fullwidth glyph it is that glyph's wrap gap
+  // (getWrappedLineTrimmedLength), elsewhere a blank cell of the line.
+  resizedThrough('wide-lead-cut-wrapped-then-joined-before-a-wide-glyph', [20, 6],
+    [[`${'a'.repeat(9)}한${'a'.repeat(9)}한x`, [10, 6]], ['\r\n', [20, 6]]], ''),
+  resizedThrough('wide-lead-cut-wrapped-then-joined', [20, 6],
+    [[`${'a'.repeat(9)}한${'a'.repeat(9)}bx`, [10, 6]], ['\r\n', [20, 6]]], ''),
+  resizedThrough('wide-lead-cut-wrapped-then-narrowed-again', [20, 6],
+    [[`${'a'.repeat(9)}한${'a'.repeat(9)}한x`, [10, 6]], ['\r\n', [8, 6]]], ''),
+  // The primary screen narrowed while the alternate one is shown.
+  resizedThrough('wide-lead-cut-under-the-alternate-screen', [20, 6], [[`${cutAtNine}\x1b[?1049hq`, [10, 6]]], ''),
+  resizedThrough('wide-lead-cut-under-the-alternate-screen-left', [20, 6], [[`${cutAtNine}\x1b[?1049hq`, [10, 6]]], '\x1b[?1049lX'),
   // A paragraph above the cursor's reflows: the glyph moves down whole, as before.
   resizedThrough('wide-lead-reflowed-above-the-cursor', [20, 6], [[`${cutAtNine}\r\nz`, [10, 6]]], ''),
 ];
