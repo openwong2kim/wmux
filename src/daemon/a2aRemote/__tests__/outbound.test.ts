@@ -401,6 +401,61 @@ describe('sendRemoteReply / sendRemoteState', () => {
     expect(await syncRemoteTask(fake, task.id)).toEqual({ ok: true, queued: 0 });
   });
 
+  it('our reply on a task we sent asks the other PC to follow it again only when it ended there, both builds do so, and it is no company task', async () => {
+    const linkId = activeLink({ outbound: true, inbound: true }, 'codex', 'pane-c');
+    const brief: CompanyBriefV1 = { kind: COMPANY_BRIEF_KIND, v: 1, goal: 'g', scope: 's', acceptance: 'a', verify: 'v', report: 'r' };
+    let n = 0;
+    const flagOf = async (o: { state: Task['status']['state']; marker?: Record<string, unknown>; company?: boolean; peerReopens?: boolean }) => {
+      n += 1;
+      const first = `sent-${n}`;
+      const task: Task = {
+        kind: 'task',
+        id: remoteTaskId(linkId, first),
+        status: { state: o.state, timestamp: '2026-11-01T00:00:00.000Z' },
+        history: [
+          { kind: 'message', messageId: first, role: 'user', parts: [{ kind: 'text', text: 'ship it' }, ...(o.company ? [{ kind: 'data' as const, data: { ...brief } }] : [])] },
+          { kind: 'message', messageId: `follow-${n}`, role: 'user', parts: [{ kind: 'text', text: 'one more thing' }] },
+        ],
+        artifacts: [],
+        metadata: {
+          title: 't',
+          from: FROM,
+          to: { workspaceId: `remote:${linkId}`, name: 'pc-b/ws-b/codex' },
+          createdAt: '2026-11-01T00:00:00.000Z',
+          updatedAt: '2026-11-01T00:00:00.000Z',
+          remote: { v: 1, linkId, hostId: HOST, messageId: first, direction: 'outbound', kind: 'pane', ...o.marker } as Task['metadata']['remote'],
+        },
+      };
+      let counted: boolean | undefined;
+      const fake: StateDeps = {
+        linkStore: links,
+        outbox,
+        peerReopens: () => o.peerReopens ?? true,
+        taskService: {
+          getTask: () => task,
+          markRemote: async (input) => {
+            if (input.sent === `follow-${n}`) counted = input.followUp === true;
+            return { ok: true as const, task };
+          },
+        },
+      };
+      expect(await syncRemoteTask(fake, task.id)).toMatchObject({ ok: true });
+      const sent = outbox.pending(HOST).find((r) => r.envelope.kind === 'reply' && r.envelope.taskId === task.id);
+      expect(sent?.envelope).toMatchObject({ text: 'one more thing' });
+      // The reply is counted for a `working` exactly when the request went with it.
+      expect(counted).toBe(sent!.envelope.reopen === true);
+      return sent!.envelope.reopen;
+    };
+    // Completed there and here, with our follow-up after it.
+    expect(await flagOf({ state: 'completed' })).toBe(true);
+    // A fan-out report held here: the task ended there.
+    expect(await flagOf({ state: 'input-required', marker: { fanout: true, reported: 'done' } })).toBe(true);
+    // Not for a company task, nor to a PC that does not follow a task again, nor on a task still open there.
+    expect(await flagOf({ state: 'completed', company: true })).toBeUndefined();
+    expect(await flagOf({ state: 'completed', peerReopens: false })).toBeUndefined();
+    expect(await flagOf({ state: 'working' })).toBeUndefined();
+  });
+
   it('nothing is queued on a revoked link', async () => {
     const { linkId, id } = await outboundTask();
     links.revoke(linkId, 'local');
