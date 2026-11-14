@@ -284,11 +284,26 @@ describe('runFreshContext — the typed command', () => {
     expect(pane.writes).toEqual(['/clear', '\x7f'.repeat(6)]);
   });
 
-  it('erases the command when it never shows on the cursor row', async () => {
+  // DELs remove whatever sits before the cursor: with the command not shown
+  // there, they would remove someone else's characters.
+  it('erases nothing when the command never shows on the cursor row', async () => {
     const pane = scriptedPane({ noEcho: true });
     const out = await runFreshContext(CLAUDE, pane.probe, pane.opts);
     expect(out).toMatchObject({ freshContext: 'skipped_unobservable', freshContextReason: expect.stringMatching(/^command_not_seen/) });
-    expect(pane.writes).toEqual(['/clear', '\x7f'.repeat(6)]);
+    expect(out.freshContextReason).toMatch(/nothing was erased$/);
+    expect(pane.writes).toEqual(['/clear']);
+  });
+
+  it('refused before the Enter with the command gone from the cursor row: nothing is erased', async () => {
+    const pane = scriptedPane();
+    pane.probe.verify = async (stage) => {
+      if (stage !== 'enter') return;
+      // The pane redrew without the command (it was cleared some other way).
+      pane.probe.readScreen = async () => CLAUDE_IDLE;
+      throw new Error('refused');
+    };
+    await expect(runFreshContext(CLAUDE, pane.probe, pane.opts)).rejects.toThrow('refused');
+    expect(pane.writes).toEqual(['/clear']);
   });
 });
 

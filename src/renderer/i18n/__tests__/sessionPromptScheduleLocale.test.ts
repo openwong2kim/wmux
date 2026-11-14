@@ -29,6 +29,7 @@ const KEYS = [
   'sessionSchedule.statusSent',
   'sessionSchedule.statusError',
   'sessionSchedule.statusPaused',
+  'sessionSchedule.statusGaveUpBusy',
   'sessionSchedule.daemonRequired',
   'sessionSchedule.promptLabel',
   'sessionSchedule.whenLabel',

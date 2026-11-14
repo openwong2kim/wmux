@@ -149,6 +149,8 @@ export function createSessionPromptScheduleHandlers(deps: SessionPromptScheduleH
         }
 
         schedules[index] = { ...current, enabled };
+        // A resumed occurrence gets a fresh busy hour.
+        if (enabled) delete schedules[index].busySince;
         return { schedules, result: { ok: true } };
       }, deps.dir);
     },

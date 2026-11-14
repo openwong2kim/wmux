@@ -81,7 +81,7 @@ export async function deliveryPresence(
 
   const shown = async (): Promise<boolean | undefined> =>
     check.phase === 'enter' && check.shownProbe
-      ? frameShowsPaste(await readFrame(), { probe: check.shownProbe, lines: check.shownLines, chars: check.shownChars })
+      ? frameShowsPaste(await readFrame(), { probe: check.shownProbe, lines: check.shownLines, chars: check.shownChars, text: check.shownText })
       : undefined;
   const refuse = async (reason: DeliveryPresenceReason): Promise<DeliveryPresence> => none(reason, await shown());
   // A yes at the Enter says it too: a guard that refuses the Enter after this

@@ -1371,6 +1371,11 @@ export async function gatedPasteSubmit(
   },
 ): Promise<GatedSubmitResult> {
   const verifyAgent = guard?.verifyAgent;
+  // A text with nothing printable would paste nothing the Enter could be
+  // checked against, and a bare Enter sends whatever the box already holds.
+  if (!printableLine(text).trim()) {
+    return { ok: false, reason: 'input_mode', detail: 'delivery: the text is blank, so nothing was typed' };
+  }
   // What is typed: the text, or (for an agent whose plain prompt wmux does not
   // know) its pointer line, and whether as a bracketed paste.
   let typed = text;
@@ -2755,6 +2760,7 @@ export function registerInputRpc(
       ...(check.shownProbe ? { shownProbe: check.shownProbe } : {}),
       ...(check.shownLines !== undefined ? { shownLines: check.shownLines } : {}),
       ...(check.shownChars !== undefined ? { shownChars: check.shownChars } : {}),
+      ...(check.shownText !== undefined ? { shownText: check.shownText } : {}),
     }, { timeoutMs: DELIVERY_PRESENCE_RPC_TIMEOUT_MS });
   };
   const verifyAgentPresence = async (

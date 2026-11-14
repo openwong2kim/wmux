@@ -53,6 +53,9 @@ export interface SessionPromptSchedule {
   lastAttemptAt?: number;
   lastRunAt?: number;
   lastResult?: SessionPromptScheduleResult;
+  /** When the current run of `busy` answers began (ms epoch): the give-up
+   *  hour counts from here, not from a due time that may be long past. */
+  busySince?: number;
   /**
    * Persisted before PTY input begins. If wmux stops before finalization, the
    * next scheduler tick consumes the occurrence as an error instead of

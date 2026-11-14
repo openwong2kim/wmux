@@ -255,6 +255,19 @@ describe('SessionSchedulesPopover', () => {
     expect(container.querySelector('[data-session-schedule-delete]')).not.toBeNull();
   });
 
+  it('a one-shot given up after an hour busy says so; one paused while busy still reads paused', async () => {
+    const api = fakeApi([
+      schedule({ id: 'gave-up', enabled: false, lastResult: 'busy', lastAttemptAt: 5_000, lastRunAt: 5_000 }),
+      schedule({ id: 'paused', enabled: false, lastResult: 'busy', lastAttemptAt: 5_000 }),
+    ]);
+    await mount(api);
+    const status = (id: string) => query<HTMLElement>(`[data-schedule-id="${id}"] [data-session-schedule-status]`).textContent;
+    expect(status('gave-up')).toBe('not sent: input box stayed busy for an hour');
+    expect(status('paused')).toBe('paused');
+    // Resume stays offered: it makes the occurrence due again.
+    expect(query<HTMLButtonElement>('[data-schedule-id="gave-up"] [data-session-schedule-toggle]').textContent).toContain('Resume');
+  });
+
   it('explains an unavailable resume and lets the same row recover on retry', async () => {
     const api = fakeApi([schedule({ enabled: false })]);
     const update = api.update;

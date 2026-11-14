@@ -575,6 +575,7 @@ export const zhTW = {
   'sessionSchedule.statusSent': '已送出',
   'sessionSchedule.statusError': '投遞失敗',
   'sessionSchedule.statusPaused': '已暫停',
+  'sessionSchedule.statusGaveUpBusy': '未傳送：輸入框忙碌了一小時',
   'sessionSchedule.daemonRequired': '排程需要 wmux 背景服務，但目前未連線。重新連線後再試一次。',
   'sessionSchedule.promptLabel': '排程提示',
   'sessionSchedule.whenLabel': '投遞時間',

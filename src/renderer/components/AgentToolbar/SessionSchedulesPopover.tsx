@@ -55,7 +55,13 @@ function statusKey(schedule: SessionPromptSchedule): string {
   const result = schedule.lastResult;
   switch (result) {
     case undefined: return idle;
-    case 'busy': return schedule.enabled ? 'sessionSchedule.statusBusy' : idle;
+    case 'busy':
+      if (schedule.enabled) return 'sessionSchedule.statusBusy';
+      // Given up (one-shot, an hour busy) sets lastRunAt to that attempt; a
+      // Pause changes only `enabled`, so it keeps "paused".
+      return schedule.lastRunAt !== undefined && schedule.lastRunAt === schedule.lastAttemptAt
+        ? 'sessionSchedule.statusGaveUpBusy'
+        : idle;
     case 'unavailable': return schedule.enabled ? 'sessionSchedule.statusUnavailable' : idle;
     case 'folder_trust': return schedule.enabled ? 'sessionSchedule.statusFolderTrust' : idle;
     case 'session_changed': return 'sessionSchedule.statusSessionChanged';
