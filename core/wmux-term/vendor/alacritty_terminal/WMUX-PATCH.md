@@ -16,8 +16,12 @@ Local changes:
   for snapshot replay.
 - `src/grid/resize.rs` preserves the cursor paragraph without reflow, matching
   wmux's xterm configuration. Other paragraphs retain upstream reflow. Shrinking
-  clamps the cursor and clears pending wrap. Clipped fullwidth cells are retained
-  to match xterm; the ANSI serializer explicitly refuses an unrepresentable edge.
+  clamps the cursor and clears pending wrap. A fullwidth glyph whose lead a
+  narrowing leaves in the new last column of that paragraph becomes a default
+  cell, as xterm's trim resets it (`BufferLine.resize`, lines 452-455 in
+  6.1.0-beta.336); its trailing half is cut off. Added 2026-11-14. Elsewhere
+  (the alternate screen, which xterm does not trim) the ANSI serializer still
+  refuses a fullwidth glyph in the last column.
 - `src/grid/resize.rs` `grow_lines`: more rows pull history rows down only while
   the cursor is on the bottom row, as xterm does (`Buffer.ts` `resize`, the rows
   grow branch, lines 196-221 in 6.1.0-beta.336). Otherwise blank rows are added
