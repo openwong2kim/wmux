@@ -5471,6 +5471,7 @@ export const zh = {
   'remoteSpawn.code.not-allowed': "{pc} 不允许这台电脑启动代理",
   'remoteSpawn.code.agent-not-allowed': "{pc} 不允许该代理",
   'remoteSpawn.code.agent-not-installed': "{pc} 上未安装该代理",
+  'remoteSpawn.code.agent-signed-out': "{pc} 上的 Claude 未登录；请在那里登录后再发送",
   'remoteSpawn.code.folder-not-allowed': "{pc} 不允许该文件夹",
   'remoteSpawn.code.expired': "{pc} 回复前已过期",
   'remoteSpawn.code.rate-limited': "{pc} 当前请求过多",

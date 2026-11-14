@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
+import { A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
 import { asSpawnLinkId, spawnFirstMessageId, type A2aSpawnRequestState, type SpawnLinkId } from '../../../shared/a2aSpawn';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
@@ -248,6 +248,19 @@ describe('right before the start', () => {
     expect(requests.get(HOST, env.linkId)?.request?.agent).toBe('gemini');
     receiver = makeReceiver({ policy: { get: () => ({ ...policy.get(), agents: ['claude', 'gemini'] }) } });
     expect(await receiver.claim(HOST, env.linkId)).toMatchObject({ ok: false, code: 'agent-not-allowed' });
+  });
+
+  // A sign-in can lapse while a card waits: checked again right before the start.
+  it('a Claude signed out after its card was answered is not started', async () => {
+    let signedOut = false;
+    receiver.stop();
+    receiver = makeReceiver({ agentSignedOut: async () => signedOut, peerFeatures: () => new Set([A2A_FEATURE_SPAWN_SIGNED_OUT]) });
+    await allow();
+    const env = request();
+    await arrive(env);
+    await receiver.decideCard(HOST, env.linkId, 'once');
+    signedOut = true;
+    expect(await receiver.claim(HOST, env.linkId)).toMatchObject({ ok: false, code: 'agent-signed-out' });
   });
 
   it('a PC turned off after its card was answered is not started', async () => {

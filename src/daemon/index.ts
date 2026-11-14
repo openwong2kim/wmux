@@ -172,7 +172,7 @@ import { A2A_REMOTE_RPC } from '../shared/a2aRemoteDelivery';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
-import { A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
+import { A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
@@ -263,7 +263,7 @@ import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { classifyClaudeStopFailure, classifyCodexTurnCompleted, type TurnFailure } from '../shared/phoneTurnFailure';
 import { authConfigDir, isAuthLostAgent, type AgentAuthLost, type AuthLostAgent, type AuthLostOrigin } from '../shared/agentAuthLost';
 import { AgentLoginGate } from './agentLoginGate';
-import { refuseSignedOutAgent } from './web/agentSignedOut';
+import { refuseSignedOutAgent, SESSION_LOGIN_WAIT_MS } from './web/agentSignedOut';
 import { AgentSetupDetector } from '../main/firstRun/AgentSetupDetector';
 import { serveTurnFailure } from './turnFailure/serveTurnFailure';
 import { buildTurnFailedPushPayload, turnFailedPushCollapseId } from './push/turnFailedPushPayload';
@@ -10854,6 +10854,16 @@ async function main(): Promise<void> {
         if (state === 'approved') void a2aHeadless?.start(hostId, spawnId);
       },
       hostName: a2aHostName,
+      // A start for another PC refuses a Claude whose own status (`claude auth
+      // status`, the probe a phone pane and an automation run get) says the
+      // account the daemon runs as is signed out. Only a definite "signed out"
+      // refuses; no answer within the wait is "cannot tell", and the start goes
+      // on. The status answers from the local credential store; with
+      // nonessential traffic off it opens no connection at all.
+      agentSignedOut: async (agent) =>
+        agent === 'claude' &&
+        (await agentLoginGate.check(agent, { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }, { waitMs: SESSION_LOGIN_WAIT_MS })) === false,
+      peerFeatures: (hostId) => a2aDelivery?.peerFeatures(hostId),
       ...(a2aStarter
         ? { start: a2aStarter, abandon: (hostId, spawnId) => a2aStarter.abandon(hostId, spawnId) }
         : {}),
@@ -11073,7 +11083,7 @@ async function main(): Promise<void> {
         // This build shows and accepts share offers, takes images on
         // messages and pings its streams: tell the servers it joins, and the
         // joiners in its hello.
-        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE],
+        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE],
         uploadsRoot: path.join(wmuxDir, 'uploads'),
         // A live terminal of the sender's workspace (stamped at spawn by main), else none.
         spawnCwdOf: (ptyId, workspaceId) => {

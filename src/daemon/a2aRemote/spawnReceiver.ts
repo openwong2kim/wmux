@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { agentExecEnv } from '../../shared/execEnv';
 import { agentLauncherStem, agentRow, type AgentSlug } from '../../shared/agentIdentity';
-import { A2A_REMOTE_PROTOCOL, isHostId, type A2aRemoteDeliverResponse, type A2aRemoteEnvelope, type HostId } from '../../shared/a2aRemote';
+import { A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_REMOTE_PROTOCOL, isHostId, type A2aRemoteDeliverResponse, type A2aRemoteEnvelope, type HostId } from '../../shared/a2aRemote';
 import {
   A2A_SPAWN_RPC,
   SPAWN_TARGETS_LINK_ID,
@@ -59,6 +59,9 @@ import { errMsg, isPlainObject } from './storeFile';
  *   -- answered `ok` here; then, decided:
  *   4. the agent is on B's list                       else `agent-not-allowed`
  *   5. the agent is installed                         else `agent-not-installed`
+ *      and not surely signed out (Claude: its own
+ *      status says so)                                 else `agent-signed-out`
+ *      (`failed` to a PC that does not read that code)
  *   6. the root is listed, still resolves to itself,
  *      and root + sub stays inside it, as a folder    else `folder-not-allowed`
  *   7. the policy and the expiry, read again after those waits
@@ -108,6 +111,13 @@ export interface SpawnReceiverDeps {
   enqueue: (hostId: HostId, envelope: A2aRemoteEnvelope) => void;
   /** Whether this PC can run `agent` (its launcher on the login PATH). */
   agentInstalled?: (agent: AgentSlug) => Promise<boolean>;
+  /**
+   * True only when the agent's own status says this PC's account is signed
+   * out; false when signed in or when that cannot be told. Absent: not checked.
+   */
+  agentSignedOut?: (agent: AgentSlug) => Promise<boolean>;
+  /** What `hostId` last advertised (A2A features); undefined when never seen. */
+  peerFeatures?: (hostId: HostId) => ReadonlySet<string> | undefined;
   realpath?: (p: string) => Promise<string>;
   /** Whether `p` is a folder; rejects with the stat error when it cannot tell. */
   isDirectory?: (p: string) => Promise<boolean>;
@@ -438,6 +448,16 @@ export class A2aSpawnReceiver {
     });
   }
 
+  /** Only a definite "signed out" counts; a check that fails is "cannot tell". */
+  private async signedOut(agent: AgentSlug): Promise<boolean> {
+    return (await this.deps.agentSignedOut?.(agent).catch(() => false)) === true;
+  }
+
+  /** `agent-signed-out` to a PC that reads it; `failed`, which every PC reads, to any other. */
+  private signedOutCode(hostId: HostId): A2aSpawnCode {
+    return this.deps.peerFeatures?.(hostId)?.has(A2A_FEATURE_SPAWN_SIGNED_OUT) ? 'agent-signed-out' : 'failed';
+  }
+
   private async claimNow(hostId: HostId, spawnId: string): Promise<A2aSpawnClaimResult> {
     let rec: SpawnRequestRecordV1 | undefined;
     try {
@@ -461,6 +481,8 @@ export class A2aSpawnReceiver {
     if (!this.roomFor(hostId, spawnId)) return refuse('rate-limited');
     try {
       if (!(await this.checks.run(() => this.agentInstalled(req.agent)))) return refuse('agent-not-installed');
+      // Right before the start too: a sign-in can lapse while a card waits.
+      if (await this.checks.run(() => this.signedOut(req.agent))) return refuse(this.signedOutCode(hostId));
       if (!(await this.folderInside(root.path, sub))) return refuse('folder-not-allowed');
     } catch (err) {
       if (err instanceof CheckTimeout) return refuse('failed');
@@ -823,6 +845,7 @@ export class A2aSpawnReceiver {
       if (refused) return refused;
     }
     if (!(await this.checks.run(() => this.agentInstalled(req.agent)))) return 'agent-not-installed';
+    if (await this.checks.run(() => this.signedOut(req.agent))) return this.signedOutCode(hostId);
     if (!(await this.folderInside(root.path, sub))) return 'folder-not-allowed';
     // The checks above wait on the disk and the PATH: the human may have
     // turned this PC (or that root, or that agent) off meanwhile, and the
