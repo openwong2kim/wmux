@@ -5,8 +5,8 @@ import { getExecEnv } from '../../shared/execEnv';
 import { resolveExecutable } from '../../shared/exeSearch';
 import { BUNDLE_REF_PREFIX, bundleRefName, type A2aBundleRefusal } from '../../shared/a2aBundle';
 import { parseGitConfigList, workerGitConfigRefusal } from '../../main/worktask/workerGit';
-import type { Git } from '../../main/a2aRemote/spawnWorktree';
-import { buildGitEnv } from '../web/sessionDiff';
+import { filterDriverNames, type Git } from '../../main/a2aRemote/spawnWorktree';
+import { buildGitEnv, filterOverrideArgs } from '../web/sessionDiff';
 import { GIT_NULL_DEVICE } from '../web/phoneGitPush';
 import { rootOriginKey } from './continueRootGit';
 import { errMsg } from './storeFile';
@@ -134,11 +134,14 @@ function runGit(gitExe: string, argv: string[], cwd: string, env: NodeJS.Process
   });
 }
 
-/** The repository's own config names no program git would run here: null, or why not. */
-async function configRefusal(git: Git): Promise<string | null> {
+/**
+ * The repository's own config names no program git would run here: null, or
+ * why not; with the `-c` overrides that disarm every content filter it names.
+ */
+async function configRefusal(git: Git): Promise<{ refusal: string | null; disarm: string[] }> {
   const list = await git(['config', '-z', '--list', '--show-scope']);
   if (list.code !== 0) throw new Error(`git config --list failed: ${list.stderr.trim().slice(0, 300)}`);
-  return workerGitConfigRefusal(parseGitConfigList(list.stdout), 'all');
+  return { refusal: workerGitConfigRefusal(parseGitConfigList(list.stdout), 'all'), disarm: filterOverrideArgs(filterDriverNames(list.stdout)) };
 }
 
 /** The zero id of the repository's hash: as an expected old value, "no such ref". */
@@ -154,8 +157,8 @@ export async function makeBundle(input: BundleMakeInput, opts: BundleGitOptions 
   }
   const git = bundleGit(input.worktree, opts);
   try {
-    const refusal = await configRefusal(git);
-    if (refusal) return { kind: 'refused', reason: 'repo-config', detail: refusal };
+    const first = await configRefusal(git);
+    if (first.refusal) return { kind: 'refused', reason: 'repo-config', detail: first.refusal };
     const key = await rootOriginKey(git, input.worktree);
     if (key === null || key !== input.origin) return { kind: 'refused', reason: 'origin-mismatch' };
     const shallow = await git(['rev-parse', '--is-shallow-repository']);
@@ -171,7 +174,11 @@ export async function makeBundle(input: BundleMakeInput, opts: BundleGitOptions 
     if (under.code === 1) return { kind: 'refused', reason: 'base-missing', detail: 'the base is not under the branch' };
     if (under.code !== 0) return unavailable('merge-base --is-ancestor', under.stderr);
     if (head === input.base) {
-      const status = await git(['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+      // A status reads file content, which a filter could run a program on: the config is read again just
+      // before it (the agent may have changed it since), and every filter it names is disarmed for the read.
+      const now = await configRefusal(git);
+      if (now.refusal) return { kind: 'refused', reason: 'repo-config', detail: now.refusal };
+      const status = await git(['status', '--porcelain=v1', '-z', '--untracked-files=all'], now.disarm);
       if (status.code !== 0) return unavailable('status', status.stderr);
       return { kind: 'refused', reason: status.stdout.length > 0 ? 'uncommitted-only' : 'empty' };
     }
@@ -241,8 +248,12 @@ async function writeBundle(input: BundleMakeInput, head: string, opts: BundleGit
           return;
         }
         hash.update(b);
-        // In order: each write waits for the one before it.
-        writing = writing.then(() => handle.write(b));
+        // One write at a time: git waits while the disk catches up, and a failed write (a full disk) stops it.
+        child.stdout.pause();
+        writing = writing.then(() => handle.write(b)).then(
+          () => { if (!stopped) child.stdout.resume(); },
+          (err: unknown) => stop({ kind: 'refused', reason: 'unavailable', detail: `the bundle could not be written: ${errMsg(err)}` }),
+        );
       });
       child.stderr.on('data', (b: Buffer) => { if (errText.length < 4096) errText += b.toString('utf8'); });
       child.on('error', (err) => stop({ kind: 'refused', reason: 'unavailable', detail: errMsg(err) }));

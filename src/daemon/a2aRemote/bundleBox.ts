@@ -113,6 +113,9 @@ export class BundleBox {
   private readonly asks = new Map<HostId, number[]>();
   private readonly making = new Set<HostId>();
   private readonly offers = new Map<HostId, Map<string, Standing>>();
+  /** Bumped when a PC is removed: a make for it that was under way then keeps nothing. */
+  private readonly forgotten = new Map<HostId, number>();
+  private timer: ReturnType<typeof setInterval> | null = null;
   private readonly boot = crypto.randomBytes(4).toString('hex');
   private sends = 0;
 
@@ -139,14 +142,27 @@ export class BundleBox {
     await fs.promises.rm(path.join(this.deps.a2aDir, BUNDLE_OUT), { recursive: true, force: true }).catch((err: unknown) => {
       this.deps.log('warn', `[a2a-remote] bundle staging not cleared: ${errMsg(err)}`);
     });
-    const seen = new Set<string>();
+    // The refs live in the repository its worktrees share: once per repository.
+    const repos = new Map<string, string>();
     for (const rec of this.deps.starts()) {
-      if (!rec.worktreePath || seen.has(rec.worktreePath) || !fs.existsSync(rec.worktreePath)) continue;
-      seen.add(rec.worktreePath);
+      if (!rec.worktreePath || repos.has(rec.repoPath) || !fs.existsSync(rec.worktreePath)) continue;
+      repos.set(rec.repoPath, rec.worktreePath);
+    }
+    for (const worktree of repos.values()) {
       // eslint-disable-next-line no-await-in-loop -- one repository at a time
-      const removed = await sweepBundleRefs(rec.worktreePath, this.deps.git).catch(() => 0);
+      const removed = await sweepBundleRefs(worktree, this.deps.git).catch(() => 0);
       if (removed > 0) this.deps.log('info', `[a2a-remote] removed ${removed} bundle ref(s) a stopped make left`);
     }
+    // Offers past their time end on their own, not only when the next ask comes.
+    if (!this.timer) {
+      this.timer = setInterval(() => this.expire(), MINUTE_MS);
+      this.timer.unref?.();
+    }
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
   }
 
   /** A `bundle-ask` or `bundle-made` from `peer`: answered later (the make runs on its own), taken now. */
@@ -188,21 +204,29 @@ export class BundleBox {
       if (detail) this.deps.log('info', `[a2a-remote] bundle for ${hostId} (${ask.spawnId}) not made (${reason}): ${detail}`);
       this.answer(hostId, { v: 1, askId: ask.askId, op: 'refused', reason });
     };
-    const rec = this.deps.startOf(hostId, ask.spawnId);
-    if (!rec) return refuse(this.deps.startedInApp?.(hostId, ask.spawnId) ? 'not-supported' : 'unknown-spawn');
-    if (!rec.baseCommit || !rec.branch || !rec.worktreePath) return refuse('base-missing');
-    // The worktree was taken back (its start left nothing past the base): nothing to bring.
-    if (!fs.existsSync(rec.worktreePath)) return refuse('empty');
-    const limits = this.limits();
-    if (this.making.has(hostId) || this.making.size >= limits.makesAtOnce) return refuse('busy');
-    const own = this.offers.get(hostId) ?? new Map<string, Standing>();
-    this.making.add(hostId);
+    let mine = false;
     try {
-      // The same head as an offer that stands: that offer again.
+      const rec = this.deps.startOf(hostId, ask.spawnId);
+      if (!rec) return refuse(this.deps.startedInApp?.(hostId, ask.spawnId) ? 'not-supported' : 'unknown-spawn');
+      // A start recorded before tree ids: its ref would not be the one the asking PC computes.
+      if (!rec.treeId) return refuse('not-supported', 'a start recorded before tree ids');
+      if (!rec.baseCommit || !rec.branch || !rec.worktreePath) return refuse('base-missing');
+      // The worktree was taken back (its start left nothing past the base): nothing to bring.
+      if (!fs.existsSync(rec.worktreePath)) return refuse('empty');
+      const limits = this.limits();
+      if (this.making.has(hostId) || this.making.size >= limits.makesAtOnce) return refuse('busy');
+      this.making.add(hostId);
+      mine = true;
+      const generation = this.forgotten.get(hostId) ?? 0;
+      const own = this.offers.get(hostId) ?? new Map<string, Standing>();
+      // The same head as an offer that stands, which the outbox still serves: that offer again, for a fresh time.
       const standing = [...own.values()].find((o) => o.spawnId === ask.spawnId);
       if (standing) {
         const tip = await bundleGit(rec.worktreePath, this.deps.git)(['rev-parse', '--verify', '--quiet', '--end-of-options', `refs/heads/${rec.branch}^{commit}`]);
-        if (tip.code === 0 && tip.stdout.trim() === standing.head) {
+        const same = tip.code === 0 && tip.stdout.trim() === standing.head;
+        const { bundleId, sha256, bytes } = standing.manifest;
+        if (same && this.deps.outbox.offer({ hostId, bundleId, file: standing.file, sha256, bytes }, limits.ttlMs)) {
+          standing.expiresAt = this.now() + limits.ttlMs;
           this.answer(hostId, { v: 1, askId: ask.askId, op: 'made', manifest: standing.manifest });
           return;
         }
@@ -225,6 +249,11 @@ export class BundleBox {
         file,
         maxBytes: room,
       }, this.deps.git);
+      // That PC was removed while the bundle was made: nothing is kept for it, and it is not answered.
+      if ((this.forgotten.get(hostId) ?? 0) !== generation) {
+        await fs.promises.rm(file, { force: true });
+        return;
+      }
       if (made.kind === 'refused') return refuse(made.reason, made.detail);
       const manifest: A2aBundleManifestV1 = { bundleId, sha256: made.sha256, bytes: made.bytes };
       if (!this.deps.outbox.offer({ hostId, bundleId, file, sha256: made.sha256, bytes: made.bytes }, limits.ttlMs)) {
@@ -237,7 +266,7 @@ export class BundleBox {
     } catch (err) {
       refuse('unavailable', errMsg(err));
     } finally {
-      this.making.delete(hostId);
+      if (mine) this.making.delete(hostId);
     }
   }
 
@@ -281,6 +310,7 @@ export class BundleBox {
   forgetHost(hostId: HostId): void {
     for (const bundleId of [...(this.offers.get(hostId)?.keys() ?? [])]) this.drop(hostId, bundleId);
     this.asks.delete(hostId);
+    this.forgotten.set(hostId, (this.forgotten.get(hostId) ?? 0) + 1);
   }
 
   /** Test/diagnostic view: offers standing for `hostId`. */

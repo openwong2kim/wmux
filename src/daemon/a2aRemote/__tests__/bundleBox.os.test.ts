@@ -305,6 +305,54 @@ describe('BundleBox', () => {
     expect(await answerTo(ask(b, ASKER, { op: 'make', spawnId: 'sp-00000000-0000-4000-8000-000000000000', origin: ORIGIN }))).toMatchObject({ op: 'refused', reason: 'not-supported' });
   });
 
+  it('a start recorded before tree ids is `not-supported` (its ref would not be the one the asking PC computes)', async () => {
+    const rec = start();
+    starts.push({ ...rec, treeId: undefined });
+    commit(rec.worktreePath!, 'work.txt', 'done\n');
+    expect(await answerTo(ask(box(), ASKER, { op: 'make', spawnId: rec.spawnId, origin: ORIGIN }))).toMatchObject({ op: 'refused', reason: 'not-supported' });
+  });
+
+  it('a PC removed while its bundle is made: nothing is kept for it and it is not answered', async () => {
+    const rec = start();
+    starts.push(rec);
+    commit(rec.worktreePath!, 'work.txt', 'done\n');
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((r) => { release = r; });
+    let made: Promise<unknown> = Promise.resolve();
+    const b = box({ make: (inp, opts) => (made = held.then(() => makeBundle(inp, opts))) as ReturnType<typeof makeBundle> });
+    ask(b, ASKER, { op: 'make', spawnId: rec.spawnId, origin: ORIGIN });
+    await vi.waitFor(() => expect(fs.existsSync(path.join(a2aDir, 'bundle-out', ASKER))).toBe(true), { timeout: 10_000 });
+    b.forgetHost(ASKER);
+    release();
+    await made;
+    await deliberateSleep(100, 'negative: the finished make keeps nothing and answers nobody');
+    expect(b.standing(ASKER)).toEqual([]);
+    expect(answers).toEqual([]);
+    expect(fs.readdirSync(path.join(a2aDir, 'bundle-out', ASKER))).toEqual([]);
+  });
+
+  it('an offer past its time ends on its own, and its file goes', async () => {
+    const rec = start();
+    starts.push(rec);
+    commit(rec.worktreePath!, 'work.txt', 'done\n');
+    let clock = Date.now();
+    const b = box({ now: () => clock });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      await b.start();
+      const made = await answerTo(ask(b, ASKER, { op: 'make', spawnId: rec.spawnId, origin: ORIGIN }));
+      if (made.op !== 'made') throw new Error('not made');
+      const file = path.join(a2aDir, 'bundle-out', ASKER, `${made.manifest.bundleId}.bundle`);
+      clock += 61 * 60_000;
+      vi.advanceTimersByTime(60_000);
+      expect(b.standing(ASKER)).toEqual([]);
+      await vi.waitFor(() => expect(fs.existsSync(file)).toBe(false), { timeout: 10_000 });
+    } finally {
+      b.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it('a PC that does not advertise bundle.1 is not answered, and nothing is made', async () => {
     const rec = start();
     starts.push(rec);
@@ -471,6 +519,30 @@ describe('BundleBox', () => {
       // Another PC cannot fetch it.
       const stranger = new BundleIntake({ a2aDir: path.join(root, 'stranger'), enabled: () => true, fetchFrom: () => getAs(OTHER), log: () => undefined });
       expect(await stranger.pull(BOX, manifest)).toMatchObject({ kind: 'fatal' });
+    });
+
+    it('a PUT the asking PC was not waiting for (404) keeps the offer; once it waits, its next send lands it', async () => {
+      const intake = new BundleIntake({ a2aDir: askerA2a(), enabled: () => true, fetchFrom: () => null, log: () => undefined });
+      intake.registerRoutes(table);
+      putter = putAs(BOX);
+      const b = box();
+      const { manifest } = await made(b);
+      // Not waiting (the asking PC restarted): refused, and the box does not try again by itself.
+      expect(await answerTo(ask(b, ASKER, { op: 'send', bundleId: manifest.bundleId }))).toMatchObject({ op: 'refused', reason: 'unavailable' });
+      expect(b.standing(ASKER).map((m) => m.bundleId)).toEqual([manifest.bundleId]);
+      const waiting = intake.receive(BOX, manifest);
+      ask(b, ASKER, { op: 'send', bundleId: manifest.bundleId });
+      expect(await waiting).toMatchObject({ kind: 'staged' });
+    });
+
+    it('an offer the outbox no longer serves is offered again when the same head is asked for', async () => {
+      const b = box();
+      const { manifest } = await made(b);
+      outbox.withdraw(ASKER, manifest.bundleId);
+      const rec = starts[starts.length - 1];
+      expect(await answerTo(ask(b, ASKER, { op: 'make', spawnId: rec.spawnId, origin: ORIGIN }))).toMatchObject({ op: 'made', manifest });
+      const intake = new BundleIntake({ a2aDir: askerA2a(), enabled: () => true, fetchFrom: () => getAs(ASKER), log: () => undefined });
+      expect(await intake.pull(BOX, manifest)).toMatchObject({ kind: 'staged' });
     });
 
     it('put by the box (it joined the asking PC) once the asking PC waits and asks it to send', async () => {
