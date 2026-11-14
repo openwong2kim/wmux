@@ -338,21 +338,33 @@ async function applyInbound(
     const task = deps.taskService.getTask(taskId);
     // The peer is the sender of an inbound task and the receiver of an outbound one.
     const role: Message['role'] = task?.metadata.from.workspaceId === remoteWs ? 'user' : 'agent';
-    const parts = await messageParts(env, peer, deps, task?.history.some((m) => m.messageId === env.messageId) === true);
+    const seen = task?.history.some((m) => m.messageId === env.messageId) === true;
+    const parts = await messageParts(env, peer, deps, seen);
     if ('error' in parts) return fail(parts.error);
+    // The sender asking to follow the task again (`reopen`), from a PC that takes the `working` it is then told. Not
+    // on a link whose follow-ups wait for a person (a remote start's 'ask'): there the reply is delivered as it was.
+    const asked = env.reopen === true && deps.peerReopens?.(peer.hostId) === true && deps.spawnLinks?.holdsFollowUps(link.linkId) !== true;
+    // A reply that would reopen is new work: it counts against that PC's new-task budget. Past it, the reply is
+    // delivered as it was, without the reopen.
+    const marker = task?.metadata.remote as A2aRemoteTaskState | undefined;
+    const wouldReopen = asked && !seen && marker?.direction === 'inbound' && task?.status.state === 'completed'
+      && task.metadata.from.workspaceId === remoteWs;
+    const budget = wouldReopen ? deps.taskBudget : undefined;
+    const admitted = budget ? budget.admit(peer.hostId) : true;
     const res = await deps.taskService.appendRemoteMessage({
       taskId,
       linkId: link.linkId,
       actorWorkspaceId: remoteWs,
       message: { kind: 'message', messageId: env.messageId, role, parts: parts.parts },
-      // The sender asking to follow the task again (`reopen`), from a PC that takes the `working` it is then told:
-      // a task that ended `completed` here is reopened for the agent (A2aTaskService checks the rest).
-      reopenCompleted: env.reopen === true && deps.peerReopens?.(peer.hostId) === true,
+      // A task that ended `completed` here is reopened for the agent (A2aTaskService checks the rest).
+      reopenCompleted: asked && admitted,
     });
+    // Counted only for a reopen that happened.
+    if (budget && admitted && !(res.ok && res.reopened)) budget.unadmit(peer.hostId);
     if (!res.ok) return fail('conflict' in res ? 'conflict' : 'unavailable', res.error);
     // Reopened: the sender is told `working` now, as for a move the agent makes. Also when an earlier try reopened it
     // but did not keep the message: the task is working, and the sender was not told since (`stateSync` cleared).
-    const untold = env.reopen === true && res.task.status.state === 'working'
+    const untold = asked && res.task.status.state === 'working'
       && (res.task.metadata.remote as A2aRemoteTaskState | undefined)?.stateSync === undefined;
     if (res.reopened || untold) await deps.syncTask?.(taskId);
     return { ok: true, taskId, duplicate: res.duplicate };
@@ -457,6 +469,8 @@ function parseEnvelope(raw: unknown): Parsed {
   const envelope = { ...raw } as unknown as A2aRemoteEnvelope;
   if (images) envelope.images = images;
   else delete envelope.images;
+  // The request to follow a task again is a boolean: anything else is refused, not ignored.
+  if (raw['reopen'] !== undefined && typeof raw['reopen'] !== 'boolean') return { error: 'bad-request' };
   // A host's notice rides on a reply only, checked strictly: one that does not parse is refused, never
   // taken as a plain reply (its fixed text would then reach the agent as a message).
   if (raw['notice'] !== undefined) {

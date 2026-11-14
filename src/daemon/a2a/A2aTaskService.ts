@@ -379,6 +379,11 @@ export class A2aTaskService {
         ...(t.evidence ? { evidence: t.evidence } : {}),
       };
       task.metadata.updatedAt = t.timestamp;
+      // Ended here again: no follow-up of ours still waits for the peer's `working` (one left over is never taken later).
+      if ((TERMINAL_STATES as readonly string[]).includes(t.to)) {
+        const m = remoteMarkerOf(task);
+        if (m) delete m.followUpsOpen;
+      }
       // Reopened by its sender: whatever this PC tells the peer next is new to it, even a state it was told before.
       if (t.reopened === 'sender_message' && !t.remoteMessageId) {
         const m = remoteMarkerOf(task);
@@ -418,6 +423,8 @@ export class A2aTaskService {
       if (!task) return;
       task.status = { state: 'canceled', timestamp: c.timestamp };
       task.metadata.updatedAt = c.timestamp;
+      const cm = remoteMarkerOf(task);
+      if (cm) delete cm.followUpsOpen;
       if (c.remoteMessageId) {
         addInboxItem(task, c.remoteMessageId, 'state', 'canceled');
         const m = remoteMarkerOf(task);
@@ -433,8 +440,6 @@ export class A2aTaskService {
       task.history.push(m.message);
       task.metadata.updatedAt = m.timestamp;
       if (m.remoteInbound) addInboxItem(task, m.message.messageId, m.message.metadata?.['wmuxNotice'] ? 'notice' : 'reply', undefined, false, m.timestamp);
-      const fm = m.followUp ? remoteMarkerOf(task) : undefined;
-      if (fm) fm.followUpsOpen = (fm.followUpsOpen ?? 0) + 1;
       return;
     }
     if (p.kind === 'remote.mark') {
@@ -455,6 +460,8 @@ export class A2aTaskService {
         if (r.sent !== undefined && !(marker.sent ?? []).includes(r.sent)) {
           (marker.sent ??= []).push(r.sent);
           (marker.sentAt ??= {})[r.sent] = r.timestamp;
+          // Counted only for a reply that went with the request: one `working` of the peer's is taken for it.
+          if (r.followUp) marker.followUpsOpen = (marker.followUpsOpen ?? 0) + 1;
         }
         if (r.read && !marker.readAt) marker.readAt = r.timestamp;
         if (r.receiptSync !== undefined) marker.receiptSync = r.receiptSync;
@@ -938,6 +945,8 @@ export class A2aTaskService {
     attempted?: boolean;
     stateSync?: TaskState;
     sent?: string;
+    /** With `sent`: that reply went with the request to follow the task again (counted in `followUpsOpen`). */
+    followUp?: true;
     /** Inbound: our side read it (first time only). */
     read?: true;
     /** Inbound: this receipt was queued for the peer. */
@@ -985,6 +994,7 @@ export class A2aTaskService {
       const bookkeeping = input.stateSync !== undefined || input.sent !== undefined || receipts || input.replyAcked === true
         || input.stateRefused !== undefined || input.stateAccepted === true;
       if (bookkeeping && input.messageId !== undefined) return { ok: false, error: 'a2a.remote.mark: stateSync/sent/receipts are task-level' };
+      if (input.followUp && input.sent === undefined) return { ok: false, error: 'a2a.remote.mark: followUp goes with sent' };
       const itemMark = input.rejected !== undefined || input.notice !== undefined;
       if (itemMark && input.messageId === undefined) return { ok: false, error: 'a2a.remote.mark: rejected/notice are item-level' };
       if (input.delivered !== true && !input.held && input.attempted === undefined && !bookkeeping && !itemMark) {
@@ -1006,6 +1016,7 @@ export class A2aTaskService {
         body = {
           ...(input.stateSync !== undefined ? { stateSync: input.stateSync } : {}),
           ...(input.sent !== undefined ? { sent: input.sent } : {}),
+          ...(input.sent !== undefined && input.followUp ? { followUp: true as const } : {}),
           ...(input.read ? { read: true as const } : {}),
           ...(input.receiptSync !== undefined ? { receiptSync: input.receiptSync } : {}),
           ...(input.remoteReceipt !== undefined ? { remoteReceipt: input.remoteReceipt } : {}),
@@ -1204,9 +1215,6 @@ export class A2aTaskService {
         message: input.message,
         timestamp: this.isoNow(),
         ...(input.actorWorkspaceId === `remote:${input.linkId}` ? { remoteInbound: true as const } : {}),
-        // Ours, on a task this PC sent that ended there (completed here, or a fan-out report held here): the peer may
-        // follow it again for this follow-up. The same rule as the request the outbound sync sends with it.
-        ...(input.actorWorkspaceId !== `remote:${input.linkId}` && endedThere(task) ? { followUp: true as const } : {}),
       };
       const side = task.metadata.from.workspaceId === input.actorWorkspaceId ? 'from' : 'to';
       const committed = await this.log.append(
@@ -1301,7 +1309,7 @@ export class A2aTaskService {
       // can skip `working`. After a report, the peer asking a question
       // replaces it.
       // The peer follows the task again for a follow-up of ours sent after it ended `completed` (once per follow-up).
-      const followedAgain = current === 'completed' && input.to === 'working' && input.peerReopens === true
+      const followedAgain = current === 'completed' && input.to === 'working' && followsAgain(task, input.peerReopens === true)
         && (remoteMarkerOf(task)?.followUpsOpen ?? 0) > 0;
       const allowed = followedAgain
         || input.to === 'failed'
@@ -1338,7 +1346,8 @@ export class A2aTaskService {
         ...(report ? { remoteAsked: 'completed' as const } : {}),
         // A `working` that answers a follow-up of ours takes it: the task followed again after it completed here, or
         // a fan-out report held here that the peer's agent took up again.
-        ...(followedAgain || (input.to === 'working' && remoteMarkerOf(task)?.reported !== undefined && (remoteMarkerOf(task)?.followUpsOpen ?? 0) > 0)
+        ...(followedAgain || (input.to === 'working' && remoteMarkerOf(task)?.reported !== undefined && followsAgain(task, input.peerReopens === true)
+          && (remoteMarkerOf(task)?.followUpsOpen ?? 0) > 0)
           ? { followedAgain: true as const }
           : {}),
       };
@@ -1815,6 +1824,15 @@ export function endedThere(task: Task): boolean {
   return m?.direction === 'outbound' && (task.status.state === 'completed' || (m.fanout === true && m.reported !== undefined));
 }
 
+/**
+ * The one rule for following a task again, on the PC that sent it: our reply asks for it (`reopen`), is counted
+ * for it (`followUpsOpen`), and the peer's `working` is taken for it, only while this holds. The task ended there,
+ * it is not a company task (its seat's working slots are that PC's to give), and both builds take `reopen.1`.
+ */
+export function followsAgain(task: Task, peerReopens: boolean): boolean {
+  return peerReopens && endedThere(task) && !isCompanyTask(task.history);
+}
+
 /** The cross-host marker on a task, or undefined (only a well-formed v1 marker counts). */
 function remoteMarkerOf(task: Task | undefined): A2aRemoteTaskState | undefined {
   const m = task?.metadata.remote as A2aRemoteTaskState | undefined;
@@ -1822,10 +1840,13 @@ function remoteMarkerOf(task: Task | undefined): A2aRemoteTaskState | undefined 
 }
 
 /** Owe the local pane one delivery for a reply/state the peer sent (idempotent). */
-/** How long a task that ended stays in memory: a failed or canceled remote one 24 h, any other 30 min. */
+/** How long a task that ended stays in memory: a failed or canceled remote one, or one with a follow-up still open, 24 h; any other 30 min. */
 function keepEndedMs(task: Task): number {
   const remote = remoteMarkerOf(task);
-  return remote && (task.status.state === 'failed' || task.status.state === 'canceled') ? GC_REMOTE_ENDED_MAX_AGE_MS : GC_MAX_AGE_MS;
+  // A follow-up of ours still waiting for the other PC to follow the task again keeps it as long: that PC's
+  // `working` may come once the follow-up reaches it, and must find the task here.
+  const waits = (remote?.followUpsOpen ?? 0) > 0;
+  return remote && (task.status.state === 'failed' || task.status.state === 'canceled' || waits) ? GC_REMOTE_ENDED_MAX_AGE_MS : GC_MAX_AGE_MS;
 }
 
 function addInboxItem(task: Task, messageId: string, kind: A2aRemoteInboxItem['kind'], state?: TaskState, reported = false, at?: string): void {

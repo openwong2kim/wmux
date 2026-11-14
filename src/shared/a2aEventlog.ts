@@ -120,11 +120,6 @@ export interface A2aTaskMessagePayload {
   timestamp: string;
   /** The peer host wrote it: it is owed a delivery to our local pane. */
   remoteInbound?: true;
-  /**
-   * Ours, on a task this PC sent that ended `completed`: a follow-up, for
-   * which one `working` of the peer's is taken as the task followed again.
-   */
-  followUp?: true;
 }
 
 /**
@@ -146,6 +141,11 @@ export interface A2aRemoteMarkPayload {
   stateSync?: TaskState;
   /** Task-level: this reply of ours was queued for the peer. */
   sent?: string;
+  /**
+   * With `sent`: that reply went with the request to follow the task again
+   * (`reopen`), so one `working` of the peer's is taken for it.
+   */
+  followUp?: true;
   /** Task-level, inbound: our side read the task now. */
   read?: true;
   /** Task-level, inbound: this receipt was queued for the peer. */

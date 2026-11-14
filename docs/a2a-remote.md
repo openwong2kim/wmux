@@ -177,7 +177,12 @@ is the one that will accept connections, and PC A is the one that joins it.
    there again (`working`), so PC B's agent can answer on the same task. Both
    PCs need a build that knows it (feature `reopen.1`); with an older build on
    either side the follow-up still reaches the agent and the task stays
-   completed. A company task is not opened again from another PC. A task
+   completed. A company task is not opened again from another PC, and
+   neither is a task on a link whose follow-ups wait for a person (a remote
+   start with follow-ups `ask`): there the follow-up reaches the agent as
+   before. Opening a task again counts against the hourly budget of new tasks
+   PC B takes from PC A; past it, the follow-up reaches the agent and the task
+   stays completed. A task
    opened again stays `working` until PC B's agent ends it again, as a task
    on one PC does when its sender writes after it ended: an agent that only
    answers, or is gone, leaves it open.

@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
-import { A2aTaskService, REMOTE_STATE_IDS_MAX, statusMessageFromWire } from '../A2aTaskService';
+import { A2aTaskService, followsAgain, REMOTE_STATE_IDS_MAX, statusMessageFromWire } from '../A2aTaskService';
 import { stateMessageId } from '../../a2aRemote/outbound';
 import type { A2aRemoteTaskMarkerV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
@@ -1002,23 +1002,28 @@ describe('the peer following a task again, on the sender\'s copy', () => {
     expect((await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's2', to: 'completed', summary: 'merged', evidence: PEER_EVIDENCE })).ok).toBe(true);
     return svc;
   }
-  const followUp = (svc: A2aTaskService, id: string) =>
-    svc.appendRemoteMessage({ taskId: 'rt-out', linkId: LINK, actorWorkspaceId: 'ws-local', message: msg(id, 'one more thing') });
-  const peer = (svc: A2aTaskService, id: string, to: 'working' | 'completed') =>
-    svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: id, to, peerReopens: true, ...(to === 'completed' ? { summary: 'done', evidence: PEER_EVIDENCE } : {}) });
+  /** Our reply, then what the outbound sync records for it: counted only when the request goes with it (followsAgain). */
+  async function followUp(svc: A2aTaskService, id: string, taskId = 'rt-out', peerReopens = true): Promise<boolean> {
+    expect((await svc.appendRemoteMessage({ taskId, linkId: LINK, actorWorkspaceId: 'ws-local', message: msg(id, 'one more thing') })).ok).toBe(true);
+    const asks = followsAgain(svc.getTask(taskId)!, peerReopens);
+    expect((await svc.markRemote({ taskId, sent: id, ...(asks ? { followUp: true as const } : {}) })).ok).toBe(true);
+    return asks;
+  }
+  const peer = (svc: A2aTaskService, id: string, to: 'working' | 'completed', taskId = 'rt-out') =>
+    svc.applyRemoteState({ taskId, linkId: LINK, messageId: id, to, peerReopens: true, ...(to === 'completed' ? { summary: 'done', evidence: PEER_EVIDENCE } : {}) });
 
-  it('two follow-ups sent while it ended, each followed there: each working is taken, then a stray one is not', async () => {
+  it('each follow-up is taken by one working; one left over when it completes there again is cleared, so a stray working is refused', async () => {
     const log = newLog();
     const svc = await completedOut(log);
-    expect((await followUp(svc, 'f-1')).ok).toBe(true);
-    expect((await followUp(svc, 'f-2')).ok).toBe(true);
+    expect(await followUp(svc, 'f-1')).toBe(true);
+    expect(await followUp(svc, 'f-2')).toBe(true);
     expect(remoteOf(svc, 'rt-out').followUpsOpen).toBe(2);
+    // Both reached the peer while it followed the first: one working, for the two.
     expect((await peer(svc, 's3', 'working')).ok).toBe(true);
+    expect(remoteOf(svc, 'rt-out').followUpsOpen).toBe(1);
     expect((await peer(svc, 's4', 'completed')).ok).toBe(true);
-    expect((await peer(svc, 's5', 'working')).ok).toBe(true);
     expect(remoteOf(svc, 'rt-out')).not.toHaveProperty('followUpsOpen');
-    expect((await peer(svc, 's6', 'completed')).ok).toBe(true);
-    expect((await peer(svc, 's7', 'working')).ok).toBe(false);
+    expect((await peer(svc, 's5', 'working')).ok).toBe(false);
     expect(svc.getTask('rt-out')!.status.state).toBe('completed');
     // The count is in the log: a restart reads the same.
     const restored = newService(log);
@@ -1027,15 +1032,64 @@ describe('the peer following a task again, on the sender\'s copy', () => {
     expect(remoteOf(restored, 'rt-out')).not.toHaveProperty('followUpsOpen');
   });
 
-  it('a working the peer sends while the task is still open there takes no follow-up', async () => {
+  it('a reply sent while the task is still open there asks nothing and is not counted', async () => {
     const svc = await completedOut();
-    expect((await followUp(svc, 'f-1')).ok).toBe(true);
+    expect(await followUp(svc, 'f-1')).toBe(true);
     expect((await peer(svc, 's3', 'working')).ok).toBe(true);
     expect((await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's4', to: 'input-required' })).ok).toBe(true);
-    expect((await followUp(svc, 'f-2')).ok).toBe(true);
-    // Sent while it was open here: no follow-up to count.
+    expect(await followUp(svc, 'f-2')).toBe(false);
     expect(remoteOf(svc, 'rt-out')).not.toHaveProperty('followUpsOpen');
     expect((await peer(svc, 's5', 'working')).ok).toBe(true);
+    expect(remoteOf(svc, 'rt-out')).not.toHaveProperty('followUpsOpen');
+  });
+
+  it('a company task: a follow-up asks nothing and is not counted, and a stray working is refused even with a count', async () => {
+    const svc = newService(newLog());
+    await companyOutbound(svc);
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's2', to: 'completed', summary: 'merged', evidence: PEER_EVIDENCE });
+    expect((await svc.transition({ taskId: 'rt-co', to: 'completed', callerWorkspaceId: 'ws-local', trustedLane: true, evidence: { summary: 'PR checked', items: [{ kind: 'inspection' as const, status: 'unverified' as const, summary: 'PR head read' }] } })).ok).toBe(true);
+    expect(svc.getTask('rt-co')!.status.state).toBe('completed');
+    expect(await followUp(svc, 'f-1', 'rt-co')).toBe(false);
+    expect(remoteOf(svc, 'rt-co')).not.toHaveProperty('followUpsOpen');
+    // Even with a count on the task, the accept checks the same rule.
+    expect((await svc.markRemote({ taskId: 'rt-co', sent: 'f-x', followUp: true })).ok).toBe(true);
+    expect(remoteOf(svc, 'rt-co').followUpsOpen).toBe(1);
+    expect((await peer(svc, 's3', 'working', 'rt-co')).ok).toBe(false);
+    expect(svc.getTask('rt-co')!.status.state).toBe('completed');
+  });
+
+  it('a follow-up sent to a PC that did not follow tasks again is not counted, and is not taken once that PC does', async () => {
+    const svc = await completedOut();
+    expect(await followUp(svc, 'f-1', 'rt-out', false)).toBe(false);
+    expect(remoteOf(svc, 'rt-out')).not.toHaveProperty('followUpsOpen');
+    // The peer now advertises reopen.1: its working is still refused, nothing was asked of it.
+    expect((await peer(svc, 's3', 'working')).ok).toBe(false);
+    expect(svc.getTask('rt-out')!.status.state).toBe('completed');
+  });
+
+  it('the ended-task GC keeps a task with a follow-up still waiting for the peer as long as a remote end, not 30 min', async () => {
+    let clock = Date.parse('2026-11-14T00:00:00.000Z');
+    const svc = new A2aTaskService({ log: newLog(), origin: { machineId: 'm1', daemonEpoch: 1 }, now: () => clock });
+    await outbound(svc);
+    await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's2', to: 'completed', summary: 'merged', evidence: PEER_EVIDENCE });
+    expect(await followUp(svc, 'f-1')).toBe(true);
+    clock += 31 * 60 * 1000;
+    svc.gcTerminalTasks();
+    expect(svc.getTask('rt-out')).toBeDefined();
+    clock += 24 * 60 * 60 * 1000;
+    svc.gcTerminalTasks();
+    expect(svc.getTask('rt-out')).toBeUndefined();
+  });
+
+  it('a count left while the task is open here goes when the task ends here (a failure, as on a link end)', async () => {
+    const svc = await completedOut();
+    expect(await followUp(svc, 'f-1')).toBe(true);
+    expect(await followUp(svc, 'f-2')).toBe(true);
+    expect((await peer(svc, 's3', 'working')).ok).toBe(true);
+    expect(remoteOf(svc, 'rt-out').followUpsOpen).toBe(1);
+    expect((await svc.forceFailRemote({ taskId: 'rt-out', reason: 'link revoked', forced: 'remote_link_ended' })).ok).toBe(true);
     expect(remoteOf(svc, 'rt-out')).not.toHaveProperty('followUpsOpen');
   });
 });
@@ -1054,7 +1108,9 @@ describe('a follow-up on a fan-out report held here', () => {
     await svc.applyRemoteState({ taskId: 'rt-fo', linkId: LINK, messageId: 's2', to: 'completed', summary: 'done', message: 'Done.' });
     expect(svc.getTask('rt-fo')!.status.state).toBe('input-required');
     expect((await svc.appendRemoteMessage({ taskId: 'rt-fo', linkId: LINK, actorWorkspaceId: 'ws-local', message: msg('f-1', 'one more thing') })).ok).toBe(true);
-    // Counted on the same rule as the request the sync sends with it.
+    // The task ended there: the sync asks for it and counts it (followsAgain).
+    expect(followsAgain(svc.getTask('rt-fo')!, true)).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-fo', sent: 'f-1', followUp: true })).ok).toBe(true);
     expect(remoteOf(svc, 'rt-fo').followUpsOpen).toBe(1);
     return svc;
   }

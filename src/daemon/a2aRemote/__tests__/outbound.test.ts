@@ -426,25 +426,33 @@ describe('sendRemoteReply / sendRemoteState', () => {
           remote: { v: 1, linkId, hostId: HOST, messageId: first, direction: 'outbound', kind: 'pane', ...o.marker } as Task['metadata']['remote'],
         },
       };
+      let counted: boolean | undefined;
       const fake: StateDeps = {
         linkStore: links,
         outbox,
         peerReopens: () => o.peerReopens ?? true,
-        taskService: { getTask: () => task, markRemote: async () => ({ ok: true as const, task }) },
+        taskService: {
+          getTask: () => task,
+          markRemote: async (input) => {
+            if (input.sent === `follow-${n}`) counted = input.followUp === true;
+            return { ok: true as const, task };
+          },
+        },
       };
       expect(await syncRemoteTask(fake, task.id)).toMatchObject({ ok: true });
       const sent = outbox.pending(HOST).find((r) => r.envelope.kind === 'reply' && r.envelope.taskId === task.id);
       expect(sent?.envelope).toMatchObject({ text: 'one more thing' });
+      // The reply is counted for a `working` exactly when the request went with it.
+      expect(counted).toBe(sent!.envelope.reopen === true);
       return sent!.envelope.reopen;
     };
     // Completed there and here, with our follow-up after it.
-    expect(await flagOf({ state: 'completed', marker: { followUpsOpen: 1 } })).toBe(true);
+    expect(await flagOf({ state: 'completed' })).toBe(true);
     // A fan-out report held here: the task ended there.
-    expect(await flagOf({ state: 'input-required', marker: { fanout: true, reported: 'done', followUpsOpen: 1 } })).toBe(true);
+    expect(await flagOf({ state: 'input-required', marker: { fanout: true, reported: 'done' } })).toBe(true);
     // Not for a company task, nor to a PC that does not follow a task again, nor on a task still open there.
-    expect(await flagOf({ state: 'completed', marker: { followUpsOpen: 1 }, company: true })).toBeUndefined();
-    expect(await flagOf({ state: 'completed', marker: { followUpsOpen: 1 }, peerReopens: false })).toBeUndefined();
-    expect(await flagOf({ state: 'completed' })).toBeUndefined();
+    expect(await flagOf({ state: 'completed', company: true })).toBeUndefined();
+    expect(await flagOf({ state: 'completed', peerReopens: false })).toBeUndefined();
     expect(await flagOf({ state: 'working' })).toBeUndefined();
   });
 
