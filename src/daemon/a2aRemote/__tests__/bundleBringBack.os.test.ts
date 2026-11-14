@@ -21,6 +21,8 @@ const ASKER = '0f1e2d3c-4b5a-4968-8776-655443322110' as HostId;
 const BOX = '1f1e2d3c-4b5a-4968-8776-655443322111' as HostId;
 const SPAWN = 'sp-11111111-2222-4333-8444-555555555555';
 const ORIGIN = 'github.com/o/r';
+/** The import on whatever git this runner has: its floor is tested in bundleImport.os. */
+const ANY_GIT: readonly [number, number, number] = [0, 0, 0];
 
 const g = (cwd: string, ...args: string[]): string =>
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8' }).trim();
@@ -139,7 +141,7 @@ describe('bring-back end to end (real box, real asker, real git)', () => {
 
     const noHooks = path.join(root, 'no-hooks');
     fs.mkdirSync(noHooks);
-    const imported = await importBundle({ top: home, spawnId: SPAWN, file: staged.file, manifest: staged.manifest, ref: staged.ref, noHooksDir: noHooks });
+    const imported = await importBundle({ top: home, spawnId: SPAWN, file: staged.file, manifest: staged.manifest, ref: staged.ref, noHooksDir: noHooks }, undefined, ANY_GIT);
     const boxHead = g(worktree, 'rev-parse', 'HEAD');
     expect(imported).toMatchObject({ ok: true, sha: boxHead, noop: false });
     expect(g(home, 'rev-parse', `refs/heads/wmux/returned/${SPAWN}`)).toBe(boxHead);
@@ -150,7 +152,7 @@ describe('bring-back end to end (real box, real asker, real git)', () => {
     asks.length = 0;
     const again = await stagedOf(asker);
     expect(asks.map((a) => a.op)).toEqual(['make', 'send', 'done']);
-    expect(await importBundle({ top: home, spawnId: SPAWN, file: again.file, manifest: again.manifest, ref: again.ref, noHooksDir: noHooks }))
+    expect(await importBundle({ top: home, spawnId: SPAWN, file: again.file, manifest: again.manifest, ref: again.ref, noHooksDir: noHooks }, undefined, ANY_GIT))
       .toMatchObject({ ok: true, sha: boxHead, noop: true });
     await asker.release(BOX, SPAWN);
   });

@@ -172,7 +172,12 @@ export const BUNDLE_IMPORT_WARNING_TEXT: Record<BundleImportWarning, string> = {
 };
 
 /** The staged file, checked as the manifest names it, then fetched into its one branch. Never throws. */
-export async function importBundle(input: BundleImportInput, git: TaskPushGit = defaultGit): Promise<BundleImportResult> {
+export async function importBundle(
+  input: BundleImportInput,
+  git: TaskPushGit = defaultGit,
+  /** Tests of the import's other checks run on any git; the floor has its own tests. */
+  gitFloor: readonly [number, number, number] = BUNDLE_IMPORT_GIT_FLOOR,
+): Promise<BundleImportResult> {
   const unexpected = { ok: false as const, reason: 'bundle-unexpected' as const };
   if (!isSpawnId(input.spawnId)) return unexpected;
   const branch = returnedBranchName(input.spawnId);
@@ -185,7 +190,7 @@ export async function importBundle(input: BundleImportInput, git: TaskPushGit = 
   // A git older than the floor may not check the bundle's objects: nothing is fetched with it.
   const version = await run(['--version']);
   const v = version.code === 0 ? parseGitVersion(version.stdout) : null;
-  if (!v || !gitAtLeast(v)) return { ok: false, reason: 'git-too-old' };
+  if (!v || !gitAtLeast(v, gitFloor)) return { ok: false, reason: 'git-too-old' };
   const commitOf = async (rev: string): Promise<string | null> => {
     const r = await run(['rev-parse', '--verify', '--quiet', '--end-of-options', `${rev}^{commit}`]);
     return r.code === 0 ? r.stdout.trim() : null;

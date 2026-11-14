@@ -11,6 +11,8 @@ const g = (cwd: string, ...args: string[]): string =>
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8' }).trim();
 
 const SPAWN = 'sp-11111111-2222-4333-8444-555555555555';
+/** The import's checks other than the floor, on whatever git this runner has: the floor has its own tests. */
+const ANY_GIT: readonly [number, number, number] = [0, 0, 0];
 const TREE = 'sp-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const REF = `refs/wmux/bundle/${TREE}`;
 const BRANCH = `refs/heads/wmux/returned/${SPAWN}`;
@@ -98,7 +100,7 @@ describe('importBundle (real git)', () => {
   it('fetches the one ref into wmux/returned/<spawn id>, checks nothing out, and a repeat is a no-op', async () => {
     const input = bundleOf('ok');
     const headBefore = g(home, 'rev-parse', 'HEAD');
-    const res = await importBundle(input);
+    const res = await importBundle(input, defaultGit, ANY_GIT);
     const tip = g(box, 'rev-parse', 'HEAD');
     expect(res).toEqual({ ok: true, branch: `wmux/returned/${SPAWN}`, sha: tip, noop: false, warnings: [] });
     expect(tipOf(home, BRANCH)).toBe(tip);
@@ -108,7 +110,7 @@ describe('importBundle (real git)', () => {
     // Nothing but the branch: no tag, no FETCH_HEAD, no bundle ref.
     expect(tipOf(home, REF)).toBeNull();
     expect(fs.existsSync(path.join(home, '.git', 'FETCH_HEAD'))).toBe(false);
-    expect(await importBundle(input)).toMatchObject({ ok: true, sha: tip, noop: true });
+    expect(await importBundle(input, defaultGit, ANY_GIT)).toMatchObject({ ok: true, sha: tip, noop: true });
   });
 
   it('runs no hook of the home repository, the reference-transaction hook included', async () => {
@@ -117,7 +119,7 @@ describe('importBundle (real git)', () => {
     for (const name of ['reference-transaction', 'post-checkout', 'post-merge', 'pre-auto-gc', 'fsmonitor-watchman']) {
       fs.writeFileSync(path.join(hooks, name), `#!/bin/sh\necho ${name} >> '${sentinel}'\n`, { mode: 0o755 });
     }
-    const res = await importBundle(bundleOf('hooks'));
+    const res = await importBundle(bundleOf('hooks'), defaultGit, ANY_GIT);
     expect(res.ok).toBe(true);
     expect(fs.existsSync(sentinel)).toBe(false);
   });
@@ -149,7 +151,7 @@ describe('importBundle (real git)', () => {
     g(box, 'commit', '-q', '-m', 'more');
     // Its prerequisite is the box's own first commit of work, which the home repository never had.
     const input = bundleOf('prereq', [REF], 'HEAD~1');
-    expect(await importBundle(input)).toEqual({ ok: false, reason: 'base-not-local' });
+    expect(await importBundle(input, defaultGit, ANY_GIT)).toEqual({ ok: false, reason: 'base-not-local' });
     expect(tipOf(home, BRANCH)).toBeNull();
   });
 
@@ -159,7 +161,7 @@ describe('importBundle (real git)', () => {
     g(home, 'commit', '-q', '-m', 'mine');
     const mine = g(home, 'rev-parse', 'HEAD');
     g(home, 'update-ref', BRANCH, mine);
-    expect(await importBundle(bundleOf('nonff'))).toEqual({ ok: false, reason: 'not-fast-forward' });
+    expect(await importBundle(bundleOf('nonff'), defaultGit, ANY_GIT)).toEqual({ ok: false, reason: 'not-fast-forward' });
     expect(tipOf(home, BRANCH)).toBe(mine);
   });
 
@@ -168,7 +170,7 @@ describe('importBundle (real git)', () => {
     const bytes = fs.readFileSync(input.file);
     bytes[bytes.length - 1] ^= 0xff;
     fs.writeFileSync(input.file, bytes);
-    expect(await importBundle(inputFor(input.file))).toEqual({ ok: false, reason: 'import-failed' });
+    expect(await importBundle(inputFor(input.file), defaultGit, ANY_GIT)).toEqual({ ok: false, reason: 'import-failed' });
     expect(tipOf(home, BRANCH)).toBeNull();
   });
 
@@ -176,7 +178,7 @@ describe('importBundle (real git)', () => {
     fs.writeFileSync(path.join(box, '.gitmodules'), '[submodule "../../../hooks"]\n\tpath = x\n\turl = ./x\n');
     g(box, 'add', '.gitmodules');
     g(box, 'commit', '-q', '-m', 'modules');
-    expect(await importBundle(bundleOf('modules'))).toEqual({ ok: false, reason: 'import-failed' });
+    expect(await importBundle(bundleOf('modules'), defaultGit, ANY_GIT)).toEqual({ ok: false, reason: 'import-failed' });
     expect(tipOf(home, BRANCH)).toBeNull();
   });
 
@@ -222,7 +224,7 @@ describe('importBundle (real git)', () => {
     fs.writeFileSync(path.join(box, '.gitmodules'), '[submodule "../../../hooks"]\n\tpath = x\n\turl = ./x\n');
     g(box, 'add', '.gitmodules');
     g(box, 'commit', '-q', '-m', 'modules');
-    expect((await importBundle(bundleOf('fail'))).ok).toBe(false);
+    expect((await importBundle(bundleOf('fail'), defaultGit, ANY_GIT)).ok).toBe(false);
     expect(g(home, 'for-each-ref', '--format=%(refname)')).toBe(refsBefore);
     expect(fs.existsSync(path.join(home, '.git', 'FETCH_HEAD'))).toBe(false);
   });
@@ -230,12 +232,12 @@ describe('importBundle (real git)', () => {
   it('refuses, and does not move, a returned branch checked out in any worktree', async () => {
     const other = path.join(root, 'wt');
     g(home, 'worktree', 'add', '-q', '-b', `wmux/returned/${SPAWN}`, other, base);
-    expect(await importBundle(bundleOf('wt'))).toEqual({ ok: false, reason: 'import-failed' });
+    expect(await importBundle(bundleOf('wt'), defaultGit, ANY_GIT)).toEqual({ ok: false, reason: 'import-failed' });
     expect(tipOf(home, BRANCH)).toBe(base);
     g(home, 'worktree', 'remove', '--force', other);
     // Checked out in the home repository's own worktree.
     g(home, 'checkout', '-q', `wmux/returned/${SPAWN}`);
-    expect(await importBundle(bundleOf('main-wt'))).toEqual({ ok: false, reason: 'import-failed' });
+    expect(await importBundle(bundleOf('main-wt'), defaultGit, ANY_GIT)).toEqual({ ok: false, reason: 'import-failed' });
     expect(tipOf(home, BRANCH)).toBe(base);
   });
 
@@ -246,7 +248,7 @@ describe('importBundle (real git)', () => {
       return defaultGit(args, cwd, env, opts);
     };
     const input = bundleOf('argv');
-    expect((await importBundle(input, recording)).ok).toBe(true);
+    expect((await importBundle(input, recording, ANY_GIT)).ok).toBe(true);
     const fetch = calls.find((c) => c.args.includes('fetch'));
     expect(fetch).toBeDefined();
     const a = fetch!.args;
