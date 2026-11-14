@@ -101,6 +101,7 @@ describe('A2aStreamHub: a refusal on a stream ack (stream-refuse.1)', () => {
     acked: number[];
     failWrites: { on: boolean };
     post: (body: unknown) => Promise<{ status: number; json: Record<string, unknown> }>;
+    port: number;
   }> {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-hub-refuse-'));
     cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -145,7 +146,7 @@ describe('A2aStreamHub: a refusal on a stream ack (stream-refuse.1)', () => {
       req.on('error', reject);
       req.end(JSON.stringify(body));
     });
-    return { outbox, refused, acked, failWrites, post };
+    return { outbox, refused, acked, failWrites, post, port };
   }
 
   it('refuses a record still owed before the ack covers it, then ends what it was about', async () => {
@@ -179,13 +180,28 @@ describe('A2aStreamHub: a refusal on a stream ack (stream-refuse.1)', () => {
     expect(h.outbox.get(OTHER, 9)).toMatchObject({ state: 'pending' });
   });
 
-  it('takes a refusal of a record left outcome-unknown by a pump (the stream sends those too)', async () => {
+  it('takes a refusal of a record left outcome-unknown by a pump once its stream carried it to that peer', async () => {
     const h = await refusing();
     h.outbox.markOutcomeUnknown(HOST, 1);
+    // The peer's stream opens and carries it.
+    let text = '';
+    const req = http.get({ port: h.port, host: '127.0.0.1', path: A2A_ROUTES.stream });
+    req.on('response', (res) => res.on('data', (c: Buffer) => { text += c.toString(); }).on('error', () => undefined));
+    req.on('error', () => undefined);
+    cleanups.push(() => req.destroy());
+    await vi.waitFor(() => expect(text).toContain('"seq":2'), { timeout: 2_000 });
     const res = await h.post({ cursor: { epoch: h.outbox.epoch, seq: 1 }, refused: { seq: 1, code: 'conflict' } });
     expect(res.json).toMatchObject({ refused: 'applied' });
     expect(h.outbox.get(HOST, 1)).toMatchObject({ state: 'refused', lastError: 'conflict' });
     expect(h.refused).toEqual([{ seq: 1, code: 'conflict' }]);
+  });
+
+  it('ignores a refusal of an outcome-unknown record no stream to that peer carried', async () => {
+    const h = await refusing();
+    h.outbox.markOutcomeUnknown(HOST, 1);
+    const res = await h.post({ cursor: { epoch: h.outbox.epoch, seq: 1 }, refused: { seq: 1, code: 'conflict' } });
+    expect(res.json).toMatchObject({ refused: 'ignored' });
+    expect(h.refused).toEqual([]);
   });
 
   it('a refusal it cannot store acks nothing: 503, the record stays owed, nothing is ended', async () => {

@@ -232,9 +232,11 @@ export class A2aStreamHub {
     if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 1 || seq > cursor.seq) return 'ignored';
     if (typeof code !== 'string' || !TERMINAL_REFUSALS.has(code as A2aRemoteErrorCode) || cursor.epoch !== this.deps.outbox.epoch) return 'ignored';
     const rec = this.deps.outbox.get(hostId, seq);
-    // Still owed, as the stream sends it (`pending`, or `outcome-unknown` left by a pump before this host served that
-    // peer); a record of a peer this host joins was refused above (`serves`).
-    if (rec?.state !== 'pending' && rec?.state !== 'outcome-unknown') return 'ignored';
+    // Still owed, as the stream sends it: `pending`, or `outcome-unknown` (left by a pump before this host served that
+    // peer) only once this peer's stream carried it, so the refusal answers a record it really got. A record of a peer
+    // this host joins was refused above (`serves`).
+    const streamed = (this.streams.get(hostId)?.lastSent ?? 0) >= seq;
+    if (rec?.state !== 'pending' && !(rec?.state === 'outcome-unknown' && streamed)) return 'ignored';
     try {
       this.deps.outbox.refuse(hostId, seq, code as A2aRemoteErrorCode);
     } catch (err) {
