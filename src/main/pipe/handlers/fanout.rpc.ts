@@ -1350,7 +1350,13 @@ export function registerFanOutRpc(
       // a pane outside any repository still starts tasks on another PC, and bring-back then says there is no home repo.
       const homeRepo = await (deps.resolveHomeRepo ?? (async (pty, ws) => {
         const r = await deriveCallerRepoRoot(getWindow, ws, pty, { requireRepo: true, platform: deps.platform, daemonRpc });
-        return 'root' in r ? r.root : null;
+        if (!('root' in r)) return null;
+        // Kept as its native real path (a Windows short name expanded), as bring-back compares it.
+        try {
+          return fs.realpathSync.native(r.root);
+        } catch {
+          return r.root;
+        }
       }))(senderPtyId, callerWorkspaceId).catch(() => null);
       // A new key (not a poll of one already started): the owner's approval
       // switch, the hourly cap and the audit record apply as to any fan-out.

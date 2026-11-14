@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "profiles": {
     "full": {
-      "maxListBytes": 80000,
+      "maxListBytes": 81000,
       "wireResultSha256": "5d5f25a72b4392683f5dd689ecd7efc36068f185b572aa8f30dd24f6bfd5dfb3",
       "instructionSha256": "6e09a08a7038bb08f49484e3a98020ef6a35efebbebc39d33f9a514b71e7c7c1",
       "toolNames": [

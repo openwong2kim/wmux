@@ -46,6 +46,11 @@ const packageJson = JSON.parse(readFileSync(PACKAGE_PATH, 'utf8'));
 //   raise, and a 3 KB cushion buys roughly one more tool after this one
 //   before the question has to be re-argued. core (49000) is untouched;
 //   browser_replay is full-only.
+//   full: 80000 -> 81000 (fanout_bring_back, #3368). The full profile measured
+//   about 79,930 bytes before it, under one tool of headroom, and 80,576 with
+//   it. fanout_bring_back is the one way an agent brings a task's work back
+//   from another PC: about +650 bytes, some 160 tokens per full-profile
+//   client. core (49000) is untouched.
 //   commander: 45000 -> 60000 (orchestrator track, 2026-09). The commander
 //   profile measured ~43,000 bytes against 45,000 — under one tool of
 //   headroom. The task-ledger / gate / adopt tools (ledger_*, task_*,

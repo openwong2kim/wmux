@@ -262,11 +262,11 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
   if (!deps.remotePc) return;
   server.tool(
     'fanout_bring_back',
-    'Bring back the committed work of a task another PC ran for you (fanout_start with pc) into your repository, as branch wmux/returned/<spawn_id>. ' +
-      'Nothing is checked out. Call it again while it answers "asking". Only the workspace that started the task may call it.',
+    'After fanout_start with pc: import that task\'s committed work into your repository as branch wmux/returned/<spawn_id>, nothing checked out. ' +
+      'Returns the branch and sha; while it answers "asking", call again.',
     {
-      spawn_id: z.string().max(64).describe('The task\'s remote spawn id (sp-<uuid>), from its fanout_start result or ledger row.'),
-      cancel: z.boolean().optional().describe('Stop a bring-back that is under way.'),
+      spawn_id: z.string().max(64).describe('The task\'s sp-<uuid> (its row\'s remote.spawnId).'),
+      cancel: z.boolean().optional().describe('Stop one under way.'),
     },
     async ({ spawn_id, cancel }) => {
       if (deps.resolveWorkspaceId) {
