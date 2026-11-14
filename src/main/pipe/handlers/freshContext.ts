@@ -512,6 +512,11 @@ export async function runFreshContext(
 
 const paneLocks = new Map<string, Promise<void>>();
 
+/** Test-only: panes with an entry in the lock chain. */
+export function paneDeliveryLocksForTest(): string[] {
+  return [...paneLocks.keys()];
+}
+
 export async function withPaneDeliveryLock<T>(
   ptyId: string,
   fn: () => Promise<T>,
@@ -534,8 +539,11 @@ export async function withPaneDeliveryLock<T>(
   if (timer) clearTimeout(timer);
   if (!acquired) {
     // Give up our place without blocking anyone behind us: they still wait
-    // for `previous`, which is the send actually holding the pane.
+    // for `previous`, which is the send actually holding the pane. With no one
+    // behind us, the chain's end goes back to `previous`, so the holder's own
+    // release still clears the entry.
     release();
+    if (paneLocks.get(ptyId) === tail) paneLocks.set(ptyId, previous);
     throw new FreshContextBusy(
       `another delivery is still running on this pane (waited ${waitMs} ms); nothing was written`,
     );

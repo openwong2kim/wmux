@@ -91,7 +91,9 @@ function pruneReminded(tasks: Record<string, Task>): void {
 }
 
 async function remind(ptyId: string): Promise<void> {
-  if (await deliverReminder(ptyId) === 'usage_limited') turnEnded.add(ptyId); // retried after the reset
+  const refused = await deliverReminder(ptyId);
+  // Retried after the reset, or (another delivery held the pane) at the next sweep.
+  if (refused === 'usage_limited' || refused === 'fresh_context_busy') turnEnded.add(ptyId);
 }
 
 /** One reminder write; the refusal reason when the gate withheld it. */

@@ -7,6 +7,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RpcRouter } from '../../RpcRouter';
 import { registerInputRpc } from '../input.rpc';
+import { paneDeliveryLocksForTest } from '../freshContext';
 import type { GatedSubmitResult } from '../../../../shared/ptyMessageDelivery';
 import type { DeliveryCheck, DeliveryPresence } from '../../../../shared/deliveryPresence';
 import type { BrowserWindow } from 'electron';
@@ -25,6 +26,8 @@ let asked: Array<{ ptyId: string; phase: DeliveryCheck['phase'] }>;
 /** The answer for each ask; a test may hold an ask until it is let go. */
 let answer: (ptyId: string, check: DeliveryCheck) => Promise<DeliveryPresence | undefined>;
 let writeOk: (ptyId: string) => boolean;
+/** Reads of the pane's agent state (a hand-off reads its key count first). */
+let agentReads: number;
 
 function harness(lockWaitMs?: number) {
   const dc = {
@@ -35,7 +38,7 @@ function harness(lockWaitMs?: number) {
       writes.push({ ptyId, data });
       return true;
     },
-    getAgentState: async () => ({
+    getAgentState: async () => (agentReads++, {
       agentName: 'Claude Code', agentStatus: 'waiting', agentVerified: true, incarnationId: 'inc-1',
       inputQuiet: true, inputRevision: 1, hasDraft: false, keyInputIdleMs: 60_000, keyInputRevision: writes.length,
     }),
@@ -71,6 +74,7 @@ beforeEach(() => {
   asked = [];
   answer = async () => PROCESS;
   writeOk = () => true;
+  agentReads = 0;
 });
 
 describe('one delivery at a time into a pane', () => {
@@ -165,6 +169,59 @@ describe('one delivery at a time into a pane', () => {
     const a = await rpc.gatedSubmit('pty-a', 'first', 'Claude Code').catch((err: unknown) => err);
     expect(a).toBeDefined();
     expect(await rpc.gatedSubmit('pty-a', 'second', 'Claude Code')).toEqual({ ok: true });
+  });
+
+  it("a hand-off that waited behind another delivery does not read that delivery's keys as a person typing", async () => {
+    let letGo: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => { letGo = resolve; });
+    let first = true;
+    answer = async () => {
+      if (first) { first = false; await held; }
+      return PROCESS;
+    };
+    const rpc = harness();
+    const mention = rpc.gatedSubmit('pty-a', 'nudge', 'Claude Code', { senderMentions: [{ channelId: 'c', seq: 1 }] });
+    // The hand-off reads its key count before it queues for the pane.
+    const handOff = rpc.gatedSubmit('pty-a', 'hand-off', 'Claude Code', { waitQuiet: true, deadlineAt: clock + 120_000 });
+    await vi.waitFor(() => expect(agentReads).toBeGreaterThan(0), { timeout: 5_000 });
+    letGo();
+    expect(await mention).toEqual({ ok: true });
+    expect(await handOff).toEqual({ ok: true });
+    expect(on('pty-a')).toEqual([paste('nudge'), '\r', paste('hand-off'), '\r']);
+  });
+
+  it('a hand-off with a deadline of its own waits for the pane past the plain wait', async () => {
+    let letGo: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => { letGo = resolve; });
+    let first = true;
+    answer = async () => {
+      if (first) { first = false; await held; }
+      return PROCESS;
+    };
+    const rpc = harness(20);
+    const a = rpc.gatedSubmit('pty-a', 'first', 'Claude Code');
+    const handOff = rpc.gatedSubmit('pty-a', 'hand-off', 'Claude Code', { waitQuiet: true, deadlineAt: clock + 120_000 });
+    // A plain delivery keeps the plain wait and gives up first.
+    expect(await rpc.gatedSubmit('pty-a', 'plain', 'Claude Code')).toMatchObject({ ok: false, reason: 'fresh_context_busy' });
+    letGo();
+    expect(await a).toEqual({ ok: true });
+    expect(await handOff).toEqual({ ok: true });
+  });
+
+  it('a waiter that timed out leaves no lock entry behind once the holder is done', async () => {
+    let letGo: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => { letGo = resolve; });
+    let first = true;
+    answer = async () => {
+      if (first) { first = false; await held; }
+      return PROCESS;
+    };
+    const rpc = harness(20);
+    const a = rpc.gatedSubmit('pty-z', 'first', 'Claude Code');
+    expect(await rpc.gatedSubmit('pty-z', 'second', 'Claude Code')).toMatchObject({ ok: false, reason: 'fresh_context_busy' });
+    letGo();
+    await a;
+    expect(paneDeliveryLocksForTest()).not.toContain('pty-z');
   });
 
   it('the pane is released when its write fails (the pane went away)', async () => {
