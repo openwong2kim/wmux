@@ -456,9 +456,15 @@ export class A2aSpawnReceiver {
     return (await this.deps.agentSignedOut?.(agent).catch(() => false)) === true;
   }
 
-  /** `agent-signed-out` to a PC that reads it; `failed`, which every PC reads, to any other. */
-  private signedOutCode(hostId: HostId): A2aSpawnCode {
-    return this.deps.peerFeatures?.(hostId)?.has(A2A_FEATURE_SPAWN_SIGNED_OUT) ? 'agent-signed-out' : 'failed';
+  /**
+   * `agent-signed-out` to a PC that reads it; `failed`, which every PC
+   * reads, to any other. That one shows no reason (a result carries no text),
+   * so the reason is in this PC's log either way.
+   */
+  private signedOutCode(hostId: HostId, spawnId: string, agent: AgentSlug): A2aSpawnCode {
+    const code: A2aSpawnCode = this.deps.peerFeatures?.(hostId)?.has(A2A_FEATURE_SPAWN_SIGNED_OUT) ? 'agent-signed-out' : 'failed';
+    this.deps.log('warn', `[a2a-remote] spawn request ${spawnId} from ${this.deps.hostName?.(hostId) ?? hostId}: ${agent} here is not signed in, so it was not started; sign in on this PC, then the other PC can send it again (answered ${code})`);
+    return code;
   }
 
   private async claimNow(hostId: HostId, spawnId: string): Promise<A2aSpawnClaimResult> {
@@ -508,7 +514,7 @@ export class A2aSpawnReceiver {
     if (this.now() > Date.parse(rec.expiresAt)) return refuse('expired');
     if (!this.roomFor(hostId, spawnId)) return refuse('rate-limited');
     // Right before the start too: a sign-in can lapse while a card waits.
-    if (await this.signedOut(req.agent)) return refuse(this.signedOutCode(hostId));
+    if (await this.signedOut(req.agent)) return refuse(this.signedOutCode(hostId, spawnId, req.agent));
     try {
       this.deps.requests.noteClaimedRoot?.(hostId, spawnId, root.path);
     } catch (err) {
@@ -859,7 +865,7 @@ export class A2aSpawnReceiver {
     if (!this.deps.start) return 'not-supported';
     if (this.overCaps(hostId)) return 'rate-limited';
     // Last of the refusals, as it starts a process: the agent's own status.
-    if (await this.signedOut(req.agent)) return this.signedOutCode(hostId);
+    if (await this.signedOut(req.agent)) return this.signedOutCode(hostId, spawnId, req.agent);
     // Headless (no app, owner opted in): checked again on the policy as it is now; no card, no waiting for an app.
     if (this.deps.headless?.() === true) return headlessRefusal(now, hostId, root.id, req.agent, sub) ?? 'approved';
     // Nothing is shown or started before the app has caught up: the request waits for it, until it expires.

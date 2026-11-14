@@ -253,8 +253,13 @@ describe('right before the start', () => {
   it('a Claude its own status says is signed out: agent-signed-out to a PC that reads it, failed to any other', async () => {
     let features: ReadonlySet<string> | undefined = new Set([A2A_FEATURE_SPAWN_SIGNED_OUT]);
     const asked: string[] = [];
+    const logs: string[] = [];
     receiver.stop();
-    receiver = makeReceiver({ agentSignedOut: async (agent) => { asked.push(agent); return true; }, peerFeatures: () => features });
+    receiver = makeReceiver({
+      agentSignedOut: async (agent) => { asked.push(agent); return true; },
+      peerFeatures: () => features,
+      log: (_level, msg) => void logs.push(msg),
+    });
     await allow();
     const reads = request();
     await arrive(reads);
@@ -269,6 +274,8 @@ describe('right before the start', () => {
     await arrive(unseen);
     expect(codes(unseen)).toEqual(['failed']);
     expect(asked).toEqual(['claude', 'claude', 'claude']);
+    // An older PC shows no reason: this PC's log has it.
+    expect(logs.filter((l) => l.includes('claude here is not signed in')).map((l) => l.slice(l.lastIndexOf('(')))).toEqual(['(answered agent-signed-out)', '(answered failed)', '(answered failed)']);
   });
 
   it('signed in, cannot tell, or a status that throws: decided as before; a request refused earlier never asks', async () => {
