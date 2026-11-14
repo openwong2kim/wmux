@@ -299,10 +299,13 @@ describe('flushMentions', () => {
     warn.mockRestore();
   });
 
-  it('a nudge left unsent in the input box is settled, not retried; one refused before any write is retried', () => {
+  it('a nudge settles only when submitted, or refused while the input box still showed it; every other refusal is retried', () => {
     expect(mentionNudgeSettled({ ok: true })).toBe(true);
-    expect(mentionNudgeSettled({ ok: false, pasted: true, cleared: false })).toBe(true);
-    expect(mentionNudgeSettled({ ok: false, pasted: true, cleared: true })).toBe(false);
+    expect(mentionNudgeSettled({ ok: false, pasted: true, cleared: false, pasteShown: true })).toBe(true);
+    // Not found in the input box (it may never have shown), taken back, or never written.
+    expect(mentionNudgeSettled({ ok: false, pasted: true, cleared: false, pasteShown: false })).toBe(false);
+    expect(mentionNudgeSettled({ ok: false, pasted: true, cleared: false })).toBe(false);
+    expect(mentionNudgeSettled({ ok: false, pasted: true, cleared: true, pasteShown: true })).toBe(false);
     expect(mentionNudgeSettled({ ok: false })).toBe(false);
   });
 

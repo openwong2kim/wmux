@@ -22,7 +22,7 @@ import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../../shared/folderTrustWord
 import { sanitizePtyText } from '../../../shared/types';
 import { agentDisplayToSlug, agentRow, isAgentSlug } from '../../../shared/agentIdentity';
 import type { AgentSlug } from '../../../shared/events';
-import { parseDeliveryPresence, presenceRefusalDetail, shownOf, type DeliveryCheck } from '../../../shared/deliveryPresence';
+import { parseDeliveryPresence, presenceRefusalDetail, shownOf, type DeliveryCheck, type DeliveryPresenceReason } from '../../../shared/deliveryPresence';
 import { pointerForBatch } from '../../../shared/deliveryPointer';
 import {
   formatBracketedPastePayload,
@@ -1252,13 +1252,34 @@ export interface DeliveryGuard {
 export type AgentCheck =
   /** What to type now (the delivery's text, or the pointer line), and how. */
   | { ok: true; text: string; bracketed: boolean; slug: AgentSlug; input: 'full' | 'pointer'; pasteShown?: boolean }
-  /** `pasteShown` (at the Enter): the agent's input box still shows this delivery's paste. */
-  | { ok: false; refusal: GatedSubmitRefusal; pasteShown?: boolean };
+  /** `pasteShown` (at the Enter): the agent's input box still shows this
+   *  delivery's paste. `presenceReason`: the daemon's reason, when it gave one. */
+  | { ok: false; refusal: GatedSubmitRefusal; pasteShown?: boolean; presenceReason?: DeliveryPresenceReason };
 
 /** A refusal raised inside a delivery's fresh-context step. */
 export class DeliveryRefused extends Error {
   constructor(readonly refusal: GatedSubmitRefusal) {
     super(refusal.detail);
+  }
+}
+
+/** How many times, and how far apart, an Enter-time answer that may be a
+ *  start-up moment is asked again before the Enter is refused. */
+const ENTER_GRACE_ASKS = 4;
+const ENTER_GRACE_MS = 150;
+
+/** An Enter-time refusal that may only be a moment: the input box not yet
+ *  showing our paste, or the agent's process still being attributed or read. */
+function enterSettling(answer: AgentCheck | null): boolean {
+  if (!answer || answer.ok) return false;
+  switch (answer.presenceReason) {
+    case 'composer-busy': return answer.pasteShown !== true;
+    case 'attribution-pending':
+    case 'foreground-unknown':
+    case 'not-running':
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -1384,9 +1405,11 @@ export async function gatedPasteSubmit(
   const agentAtPaste = verifyAgent ? await verifyAgent({ phase: 'paste' }) : null;
   if (agentAtPaste && !agentAtPaste.ok) return withFresh(agentAtPaste.refusal);
   if (agentAtPaste?.ok) ({ text: typed, bracketed } = agentAtPaste);
-  /** The Enter goes only to the grant the paste had: the same agent, typed the same way. */
+  /** The Enter goes only to the grant the paste had: the same agent, given
+   *  the same text. Not how it takes a paste: the paste is already written,
+   *  and the Enter is a bare \r either way. */
   const sameGrant = (now: AgentCheck): boolean => !agentAtPaste?.ok || (now.ok &&
-    now.slug === agentAtPaste.slug && now.input === agentAtPaste.input && now.bracketed === agentAtPaste.bracketed && now.text === agentAtPaste.text);
+    now.slug === agentAtPaste.slug && now.input === agentAtPaste.input && now.text === agentAtPaste.text);
   const regranted: GatedSubmitRefusal = { ok: false, reason: 'agent_changed', detail: 'delivery: the target agent or how it takes text changed after the paste, so no Enter was sent' };
   try {
     // Bracketed only where the pane turned the mode on: elsewhere the markers
@@ -1407,8 +1430,10 @@ export async function gatedPasteSubmit(
     } catch {
       /* the pane went away */
     }
-    return { ...refusal, pasted: true, cleared };
+    return { ...refusal, pasted: true, cleared, pasteShown: true };
   };
+  /** Refused with the paste not found in the input box: left there, unsent. */
+  const leftUnsent = (refusal: GatedSubmitRefusal): GatedSubmitRefusal => ({ ...refusal, pasted: true, cleared: false, pasteShown: false });
   const notSubmitted = ' The text was pasted but not submitted.';
   let atEnter = await deliveryGateCheck(gate, ptyId, notSubmitted);
   if (atEnter?.reason === 'gate_unavailable') {
@@ -1425,7 +1450,7 @@ export async function gatedPasteSubmit(
   if (guardAtEnter) {
     // Taken back only while the composer shows this paste, never on a guess.
     const shown = verifyAgent ? await verifyAgent(enterCheck) : null;
-    return shown?.pasteShown ? takeBack(guardAtEnter) : { ...guardAtEnter, pasted: true, cleared: false };
+    return shown?.pasteShown ? takeBack(guardAtEnter) : leftUnsent(guardAtEnter);
   }
   // The pane while the text sits uncommitted: what the receipt diffs against.
   const probe = receipt?.probe;
@@ -1438,12 +1463,19 @@ export async function gatedPasteSubmit(
   const retryRefusal = receipt ? await receipt.armRetry() : null;
   // The last check before the Enter: the agent is still there, in plain input
   // mode. Refused, the paste is taken back only while the pane still shows it.
-  const agentAtEnter = verifyAgent ? await verifyAgent(enterCheck) : null;
+  let agentAtEnter = verifyAgent ? await verifyAgent(enterCheck) : null;
+  // An answer that can be a moment rather than a verdict (an agent just
+  // started: its frame not yet showing our paste, its process still being
+  // attributed or read) is asked again, briefly, before the Enter is refused.
+  for (let ask = 0; verifyAgent && ask < ENTER_GRACE_ASKS && enterSettling(agentAtEnter); ask++) {
+    await sleep(ENTER_GRACE_MS);
+    agentAtEnter = await verifyAgent(enterCheck);
+  }
   if (agentAtEnter && !agentAtEnter.ok) {
-    return agentAtEnter.pasteShown ? takeBack(agentAtEnter.refusal) : { ...agentAtEnter.refusal, pasted: true, cleared: false };
+    return agentAtEnter.pasteShown ? takeBack(agentAtEnter.refusal) : leftUnsent(agentAtEnter.refusal);
   }
   if (agentAtEnter && !sameGrant(agentAtEnter)) {
-    return agentAtEnter.pasteShown ? takeBack(regranted) : { ...regranted, pasted: true, cleared: false };
+    return agentAtEnter.pasteShown ? takeBack(regranted) : leftUnsent(regranted);
   }
   try {
     write(ptyId, isMultilinePtyPayload(typed) ? '\r\r' : '\r');
@@ -2729,7 +2761,7 @@ export function registerInputRpc(
     ptyId: string,
     agent: string | null | undefined,
     check: DeliveryCheck,
-  ): Promise<{ ok: true; slug: AgentSlug; input: 'full' | 'pointer'; bracketedPaste: boolean; pasteShown?: boolean } | { ok: false; refusal: GatedSubmitRefusal; pasteShown?: boolean }> => {
+  ): Promise<{ ok: true; slug: AgentSlug; input: 'full' | 'pointer'; bracketedPaste: boolean; pasteShown?: boolean } | { ok: false; refusal: GatedSubmitRefusal; pasteShown?: boolean; presenceReason?: DeliveryPresenceReason }> => {
     const expectAgent = agent ? (isAgentSlug(agent) ? agent : agentDisplayToSlug(agent)) : undefined;
     const raw = await (deps.deliveryPresence ?? readDeliveryPresence)(ptyId, expectAgent, check).catch(() => undefined);
     if (raw === NO_BACKGROUND_SERVICE) {
@@ -2753,7 +2785,12 @@ export function registerInputRpc(
         // The agent is there; its input box is not a plain prompt (yet).
         : presence.reason === 'composer-mode' || presence.reason === 'composer-busy' || presence.reason === 'composer-unknown' ? 'input_mode'
           : 'agent_unverified';
-    return { ok: false, refusal: { ok: false, reason, detail: `delivery: ${presenceRefusalDetail(presence)}` }, ...(presence.pasteShown ? { pasteShown: true } : {}) };
+    return {
+      ok: false,
+      refusal: { ok: false, reason, detail: `delivery: ${presenceRefusalDetail(presence)}` },
+      presenceReason: presence.reason,
+      ...(presence.pasteShown ? { pasteShown: true } : {}),
+    };
   };
 
   return {
@@ -2826,7 +2863,15 @@ export function registerInputRpc(
         ...(deps.now ? { now: deps.now } : {}),
         armRetry: () => armEnterRetry(ptyId),
       };
-      if (!opts?.newTask) return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt);
+      /** One log line for every delivery pasted and then not submitted. */
+      const noteUnsent = (result: GatedSubmitResult): GatedSubmitResult => {
+        if (!result.ok && result.pasted) {
+          const box = result.cleared ? 'taken back' : result.pasteShown === false ? 'left in the input box' : 'left as it is';
+          logLine(`[delivery] pane ${JSON.stringify(ptyId)}: pasted, not submitted (${result.reason}; ${box}): ${result.detail}`);
+        }
+        return result;
+      };
+      if (!opts?.newTask) return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt).then(noteUnsent);
       // #1680 — a new task: the fresh-context step runs inside the gated
       // delivery, and the pane is held through the text's Enter. The pane's
       // conversation is kept when the renderer knows of other open tasks on it,
@@ -2867,7 +2912,7 @@ export function registerInputRpc(
             );
           }, guard, receipt),
         deps.freshContextLockWaitMs,
-      ).catch((err: unknown): GatedSubmitResult => {
+      ).then(noteUnsent).catch((err: unknown): GatedSubmitResult => {
         if (!(err instanceof FreshContextBusy)) throw err;
         return { ok: false, reason: 'fresh_context_busy', detail: `delivery: ${err.message}` };
       });

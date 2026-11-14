@@ -277,12 +277,24 @@ export class MentionNudgeRefused extends Error {
 }
 
 /**
- * Whether a nudge's delivery is settled: submitted, or left in the agent's
- * input box unsent (pasted, not taken back). The second is not retried: the
- * pane already shows the line, and a retry would only find it there and hold.
+ * Whether a nudge's delivery is settled: submitted, or refused after its paste
+ * while the input box still showed that paste and only it (the take-back did
+ * not go through). Any other refusal is retried on the back-off below: a
+ * paste that may never have shown is no delivery.
  */
-export function mentionNudgeSettled(result: { ok: boolean; pasted?: boolean; cleared?: boolean }): boolean {
-  return result.ok || (result.pasted === true && result.cleared !== true);
+export function mentionNudgeSettled(result: { ok: boolean; pasted?: boolean; cleared?: boolean; pasteShown?: boolean }): boolean {
+  return result.ok || (result.pasted === true && result.cleared !== true && result.pasteShown === true);
+}
+
+/** Settled unsent nudges already logged, by pane and reason. */
+const settledUnsentLogged = new Set<string>();
+
+/** Log a nudge settled unsent, once per pane and reason. */
+export function noteSettledUnsent(ptyId: string, reason: string, detail: string): void {
+  const key = `${ptyId}\0${reason}`;
+  if (settledUnsentLogged.has(key)) return;
+  settledUnsentLogged.add(key);
+  console.warn(`[channelMentionFlush] nudge for pty ${ptyId} left in its input box, not submitted (${reason}): ${detail}`);
 }
 
 /** The first retry of a refused nudge, and the longest wait between retries. */
@@ -300,8 +312,12 @@ const refusedPanes = new Map<string, { reason: string; delayMs: number; retryAt:
 
 /** Drop a pane's back-off (its agent stopped: the next flush tries at once). */
 export function resetMentionBackoff(ptyId?: string): void {
-  if (ptyId === undefined) refusedPanes.clear();
-  else refusedPanes.delete(ptyId);
+  if (ptyId === undefined) {
+    refusedPanes.clear();
+    settledUnsentLogged.clear();
+  } else {
+    refusedPanes.delete(ptyId);
+  }
 }
 
 function noteRefusal(ptyId: string, err: unknown, now: number): void {

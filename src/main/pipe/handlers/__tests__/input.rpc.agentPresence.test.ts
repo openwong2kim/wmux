@@ -273,10 +273,36 @@ describe('an agent whose plain prompt wmux does not know: its pointer line only'
     answers = [PROCESS, PROCESS, POINTER_ONLY];
     expect(await deliver({ senderTaskIds: ['task-1'] }, null, BODY)).toMatchObject({ ok: false, reason: 'agent_changed', pasted: true, cleared: false });
     expect(writes).toHaveLength(1);
-    writes = [];
+  });
+
+  it('how the pane takes a paste is not part of the grant at the Enter: the paste is written, the Enter is a bare \\r', async () => {
     answers = [PROCESS, PROCESS, { ...PROCESS, bracketedPaste: false }];
-    expect(await deliver({ senderTaskIds: ['task-1'] })).toMatchObject({ ok: false, reason: 'agent_changed' });
+    expect(await deliver({ senderTaskIds: ['task-1'] })).toEqual({ ok: true });
+    expect(writes).toEqual(['\x1b[200~hello\x1b[201~', '\r']);
+  });
+
+  it('an agent just starting: an Enter-time answer that may be a moment is asked again before the Enter is refused', async () => {
+    // The input box does not show the paste yet, then does.
+    answers = [PROCESS, PROCESS, { tier: 'none', reason: 'composer-busy' }, { tier: 'none', reason: 'composer-busy' }, PROCESS];
+    expect(await deliver({ senderTaskIds: ['task-1'] })).toEqual({ ok: true });
+    expect(writes).toEqual(['\x1b[200~hello\x1b[201~', '\r']);
+    expect(asked.filter((a) => a.check.phase === 'enter')).toHaveLength(3);
+  });
+
+  it('the grace is bounded: four more asks, then the refusal stands, logged once', async () => {
+    const start = clock;
+    answers = [PROCESS, PROCESS, { tier: 'none', reason: 'attribution-pending' }];
+    expect(await deliver({ senderTaskIds: ['task-1'] })).toMatchObject({ ok: false, reason: 'gate_unavailable', pasted: true, cleared: false, pasteShown: false });
+    expect(asked.filter((a) => a.check.phase === 'enter')).toHaveLength(5);
+    expect(clock - start).toBeGreaterThanOrEqual(4 * 150);
     expect(writes).not.toContain('\r');
+    expect(logs.filter((l) => l.includes('pasted, not submitted'))).toHaveLength(1);
+  });
+
+  it('a verdict is not a moment: no grace for an ended agent, and the paste is taken back while it shows', async () => {
+    answers = [PROCESS, PROCESS, { tier: 'none', reason: 'agent-ended', pasteShown: true }];
+    expect(await deliver({ senderTaskIds: ['task-1'] })).toMatchObject({ ok: false, pasted: true, cleared: true, pasteShown: true });
+    expect(asked.filter((a) => a.check.phase === 'enter')).toHaveLength(1);
   });
 
   it('a pane without bracketed paste gets the line as plain keys (no markers); a text of several lines is held', async () => {
