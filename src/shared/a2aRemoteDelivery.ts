@@ -342,10 +342,11 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
    */
   cancelOwed?: true;
   /**
-   * Outbound task that ended `completed`, after a follow-up of ours: the peer's next `working` is taken as the task
-   * followed again (once; that `working` clears it). Only from a peer that advertises `reopen.1`.
+   * Outbound task that ended `completed`: how many follow-ups of ours since then the peer has not followed yet. While
+   * it is above zero the peer's `working` is taken as the task followed again, and each such `working` takes one: one
+   * reopen per follow-up. Only from a peer that advertises `reopen.1`.
    */
-  followUpOpen?: true;
+  followUpsOpen?: number;
   /** Our own replies on this task already queued for the peer (messageIds). */
   sent?: string[];
   /** When each of `sent` was queued (a notice about one of them names this time, never one the peer gives). */

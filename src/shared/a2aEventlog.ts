@@ -82,6 +82,8 @@ export interface A2aTaskTransitionPayload {
    * remote-message dedupe keys on `remoteAsked ?? to`.
    */
   remoteAsked?: 'completed';
+  /** Cross-host A2A: the peer's `working` on a task that ended `completed` here, taken for a follow-up of ours. */
+  followedAgain?: true;
   /**
    * Reopen marker. `'sender_message'` = the sender wrote to a task that had
    * already ended, so it went back to `submitted` for the receiver
@@ -120,7 +122,7 @@ export interface A2aTaskMessagePayload {
   remoteInbound?: true;
   /**
    * Ours, on a task this PC sent that ended `completed`: a follow-up, for
-   * which the peer's next `working` is taken (once) as the task followed again.
+   * which one `working` of the peer's is taken as the task followed again.
    */
   followUp?: true;
 }

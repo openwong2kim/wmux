@@ -393,7 +393,10 @@ export class A2aTaskService {
         if (m) {
           m.stateSync = t.to;
           // The peer's `working` takes the follow-up it was for: another needs another follow-up.
-          if (t.to === 'working') delete m.followUpOpen;
+          if (t.followedAgain && m.followUpsOpen !== undefined) {
+            if (m.followUpsOpen > 1) m.followUpsOpen -= 1;
+            else delete m.followUpsOpen;
+          }
           // The peer's latest state replaces a report it made earlier.
           if (report) m.reported = t.remoteMessageId;
           else delete m.reported;
@@ -431,7 +434,7 @@ export class A2aTaskService {
       task.metadata.updatedAt = m.timestamp;
       if (m.remoteInbound) addInboxItem(task, m.message.messageId, m.message.metadata?.['wmuxNotice'] ? 'notice' : 'reply', undefined, false, m.timestamp);
       const fm = m.followUp ? remoteMarkerOf(task) : undefined;
-      if (fm) fm.followUpOpen = true;
+      if (fm) fm.followUpsOpen = (fm.followUpsOpen ?? 0) + 1;
       return;
     }
     if (p.kind === 'remote.mark') {
@@ -1300,7 +1303,7 @@ export class A2aTaskService {
       // replaces it.
       // The peer follows the task again for a follow-up of ours sent after it ended `completed` (once per follow-up).
       const followedAgain = current === 'completed' && input.to === 'working' && input.peerReopens === true
-        && remoteMarkerOf(task)?.followUpOpen === true;
+        && (remoteMarkerOf(task)?.followUpsOpen ?? 0) > 0;
       const allowed = followedAgain
         || input.to === 'failed'
         || validateTransition(current, input.to)
@@ -1334,6 +1337,7 @@ export class A2aTaskService {
         ...(verdict?.ok ? { verifiedItemCount: verdict.verifiedItemCount } : {}),
         remoteMessageId: input.messageId,
         ...(report ? { remoteAsked: 'completed' as const } : {}),
+        ...(followedAgain ? { followedAgain: true as const } : {}),
       };
       const committed = await this.log.append(this.envelope(payload, remoteWs, this.derivePrincipalId(task, 'to', remoteWs)));
       if (!committed) return { ok: false, error: 'a2a.remote.state: daemon log append failed (uncommitted)' };

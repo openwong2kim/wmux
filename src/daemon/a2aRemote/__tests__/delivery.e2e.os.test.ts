@@ -1266,7 +1266,7 @@ describe('a follow-up on a task that ended completed, end to end', () => {
     await until(() => a.tasks.getTask(taskId)?.status.state === 'working');
     await moveB(b, taskId, 'completed');
     await until(() => a.tasks.getTask(taskId)?.status.state === 'completed');
-    expect(a.tasks.getTask(taskId)!.metadata.remote).not.toHaveProperty('followUpOpen');
+    expect(a.tasks.getTask(taskId)!.metadata.remote).not.toHaveProperty('followUpsOpen');
     // B tells A working again with no new follow-up: A does not take it.
     const last = [...b.delivery.outbox.settled()].reverse().find((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId);
     b.delivery.outbox.enqueue(a.hostId, { ...last!.envelope, messageId: `st-${crypto.randomBytes(16).toString('hex')}`, state: 'working' });

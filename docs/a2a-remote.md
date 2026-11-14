@@ -177,7 +177,10 @@ is the one that will accept connections, and PC A is the one that joins it.
    there again (`working`), so PC B's agent can answer on the same task. Both
    PCs need a build that knows it (feature `reopen.1`); with an older build on
    either side the follow-up still reaches the agent and the task stays
-   completed. A company task is not opened again from another PC.
+   completed. A company task is not opened again from another PC. A task
+   opened again stays `working` until PC B's agent ends it again, as a task
+   on one PC does when its sender writes after it ended: an agent that only
+   answers, or is gone, leaves it open.
 
 The two PCs do not need to be paired both ways. One pairing carries traffic
 in both directions over the joiner's connection.

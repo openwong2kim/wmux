@@ -343,8 +343,11 @@ async function applyInbound(
       reopenCompleted: env.reopen === true && deps.peerReopens?.(peer.hostId) === true,
     });
     if (!res.ok) return fail('conflict' in res ? 'conflict' : 'unavailable', res.error);
-    // Reopened: the sender is told `working` now, as for a move the agent makes.
-    if (res.reopened) await deps.syncTask?.(taskId);
+    // Reopened: the sender is told `working` now, as for a move the agent makes. Also when an earlier try reopened it
+    // but did not keep the message: the task is working, and the sender was not told since (`stateSync` cleared).
+    const untold = env.reopen === true && res.task.status.state === 'working'
+      && (res.task.metadata.remote as A2aRemoteTaskState | undefined)?.stateSync === undefined;
+    if (res.reopened || untold) await deps.syncTask?.(taskId);
     return { ok: true, taskId, duplicate: res.duplicate };
   }
 

@@ -376,8 +376,9 @@ export async function syncRemoteTask(
   // Our follow-up on a task we sent that ended there (completed here after it, or a fan-out report held here) asks
   // that PC to follow it again, when both builds do so. Never for a company task: its seat's working slots are that
   // PC's to give.
-  const followAgain = marker.direction === 'outbound' && deps.peerReopens?.(link.remote.hostId) === true && !isCompanyTask(task.history)
-    && ((task.status.state === 'completed' && marker.followUpOpen === true) || (marker.fanout === true && marker.reported !== undefined));
+  const followAgain = marker.direction === 'outbound'
+    && ((task.status.state === 'completed' && (marker.followUpsOpen ?? 0) > 0) || (marker.fanout === true && marker.reported !== undefined))
+    && !isCompanyTask(task.history) && deps.peerReopens?.(link.remote.hostId) === true;
   let queued = 0;
   try {
     for (const m of task.history) {
