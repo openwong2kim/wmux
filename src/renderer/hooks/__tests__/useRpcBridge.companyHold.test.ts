@@ -185,8 +185,10 @@ describe('a2a.company.ceoLine — one line to the company\'s CEO pane', () => {
     const r = await ceoLine({ task: heldTask('task-d1', { held: 'no-agent' }), kind: 'held', held: 'no-agent' });
     expect(r).toEqual({ ok: true, delivered: true, ptyId: CEO_PTY });
     expect(written).toEqual([{ pty: CEO_PTY, text: `[wmux] A2A task task-d1 is held: ${COMPANY_HOLD_REASON_TEXT['no-agent']} — a2a_task_query task_id:task-d1` }]);
-    // A plain write: no new-task delivery, so no fresh context for the CEO.
-    expect(gate.mock.calls[0]).toHaveLength(3);
+    // A plain write: no new-task delivery, so no fresh context for the CEO;
+    // only the task a pointer-only agent would be pointed at.
+    expect(gate.mock.calls[0][3]).toMatchObject({ pointerTaskId: 'task-d1' });
+    expect(gate.mock.calls[0][3]).not.toHaveProperty('newTask');
   });
 
   it('falls back to the pane that sent the task when the company has no coordinator', async () => {

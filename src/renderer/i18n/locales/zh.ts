@@ -4216,7 +4216,7 @@ export const zh = {
   'git.handoff.notSent': '未将{kind} {ref}发送给{workspace}中的{agent}。',
   'git.handoff.why.user_typing': '有人正在该窗格中输入；空闲后再试。',
   'git.handoff.why.agent_changed': '代理已离开该窗格或已被替换。',
-  'git.handoff.why.agent_unverified': '无法读取该窗格的代理；请稍后再试。',
+  'git.handoff.why.agent_unverified': '无法确认该窗格中有正在运行的代理。请先在那里启动代理，然后重试。',
   'git.handoff.why.deadline': '等待窗格空闲的时间过长。',
   'git.handoff.why.no_agent_pane': '该窗格中没有活动的代理。',
   'git.handoff.why.approval_pending': '该窗格正在等待审批。',

@@ -128,7 +128,8 @@ describe('readDaemonAgentState wiring (#1303)', () => {
     // #1727 — verifyLive plus a fresh process check now live in
     // isAgentRunning (Windows: ProcessMonitor; WSL: an in-distro stat), which
     // AgentProcessTracker tests cover; the wiring must still pass the Windows check.
-    expect(body).toMatch(/agentProcessTracker\.isAgentRunning\(id, agentSlug, \(pid\) => ProcessMonitor\.isRunning\(pid\)\)/);
+    // BY_ATTRIBUTION: a delivery reads the attributed agent, wherever its binary lives.
+    expect(body).toMatch(/agentProcessTracker\.isAgentRunning\(id, agentSlug, \(pid\) => ProcessMonitor\.isRunning\(pid\), BY_ATTRIBUTION\)/);
   });
 
   it('#1392 — answers no agent / idle once OSC 133 says the shell is back at its prompt', () => {

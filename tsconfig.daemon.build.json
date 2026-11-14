@@ -1,0 +1,15 @@
+{
+  // The packaged daemon build: tsconfig.daemon.json without its tests. Nothing
+  // loads compiled tests (the bundle starts at dist/daemon/daemon/index.js),
+  // and compiling them ran the build out of the default V8 heap on macOS
+  // runners. The tests are still type-checked under this target by the daemon
+  // program of scripts/typecheck.mjs, which CI runs.
+  "extends": "./tsconfig.daemon.json",
+  "exclude": [
+    "src/daemon/**/__tests__/**",
+    "src/daemon/**/*.test.*",
+    "src/daemon/__fixtures__/**",
+    "src/shared/**/__tests__/**",
+    "src/shared/**/*.test.*"
+  ]
+}

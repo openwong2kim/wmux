@@ -5,6 +5,7 @@
 // The message is a fixed reference, never the issue's own text: one line
 // naming the item (its title sanitized and cut), one line telling the agent
 // how to read it with gh, then the operator's note if one was given.
+import { neutralName, TYPED_TITLE_MAX } from './typedLineName';
 import type { IssueRef } from './issueRef';
 import type { PrDragRef } from './prDragRef';
 import type { SubmitAssurance } from './ptyMessageDelivery';
@@ -69,7 +70,8 @@ export function sanitizeHandoffNote(note: string): string {
 export function buildHandoffMessage(h: HandoffRef, note?: string): string {
   const { owner, repo, number, url } = h.ref;
   const slug = `${owner}/${repo}`;
-  const title = sanitizeHandoffTitle(h.ref.title);
+  // The title on a typed line: through the one neutraliser.
+  const title = neutralName(sanitizeHandoffTitle(h.ref.title), TYPED_TITLE_MAX);
   const lines = h.kind === 'issue'
     ? [`[wmux] Issue ${slug}#${number}: "${title}" — ${url}`, `Read it with: gh issue view ${number} --repo ${slug}`]
     : [`[wmux] PR ${slug}#${number}: "${title}" — ${url}`, `Read it with: gh pr view ${number} --repo ${slug} and gh pr diff ${number} --repo ${slug}`];

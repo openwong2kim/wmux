@@ -236,20 +236,20 @@ export function codexComposerVisible(rows: ChatScreenRows | null): boolean {
 }
 
 /** Codex's model/cwd footer under the composer: `GPT-6.1-Sol low · ~/work`. */
-const CODEX_FOOTER = /^\s*\S.+ · (?:[A-Za-z]:[\\/]|\/|~)/;
+export const CODEX_FOOTER = /^\s*\S.+ · (?:[A-Za-z]:[\\/]|\/|~)/;
 /** The shortcut hint Codex draws under its footer: `? for shortcuts` (0.157),
  * then `← for agents · ? for shortcuts` (0.158; `--no-daemon` drops the
  * agents part), which a narrow pane cuts (`? for shortcut` beside a
  * right-aligned `⚠ N warning(s) · f2 to view` badge, `? for shortcu` at 30
  * columns on 0.163). */
-const CODEX_SHORTCUT_HINT = /^\s*(?:← for agents · )?\? for shortcu(?:ts?)?(?:\s+⚠\s*\d+ warnings? · f2 to view)?$/;
+export const CODEX_SHORTCUT_HINT = /^\s*(?:← for agents · )?\? for shortcu(?:ts?)?(?:\s+⚠\s*\d+ warnings? · f2 to view)?$/;
 /** The hint Codex 0.162 draws in place of CODEX_SHORTCUT_HINT while its
  * transcript is scrolled back and new output arrived: `New activity · enter/esc
  * latest`, with ` · ? shortcuts` when the pane is wide enough. The `enter/`
  * form is drawn only over an empty composer (a draft turns it into `esc
  * latest`), and Enter then still submits a pasted prompt (captured live on
  * 0.162.1 at 40x27, 2026-10-13). */
-const CODEX_SCROLLED_HINT = /^\s*New activity · enter\/esc latest(?: · \? shortcuts?)?(?:\s+⚠\s*\d+ warnings? · f2 to view)?$/;
+export const CODEX_SCROLLED_HINT = /^\s*New activity · enter\/esc latest(?: · \? shortcuts?)?(?:\s+⚠\s*\d+ warnings? · f2 to view)?$/;
 
 /** Codex 0.156–0.163 TUI; positive evidence, not an absence-of-errors heuristic.
  * Match only the bottom composer with its own model/cwd footer. 0.157 adds a
@@ -278,6 +278,6 @@ export function codexComposerEmpty(rows: ChatScreenRows | null): boolean {
   return below.length === 1 && CODEX_FOOTER.test(below[0]);
 }
 
-function codexScreenBlocked(rows: readonly string[] | null): boolean {
+export function codexScreenBlocked(rows: readonly string[] | null): boolean {
   return screenBlocksChatSend(rows) || !!rows?.some(row => /\besc(?:ape)? (?:to )?(?:cancel|quit|close|dismiss|go back)\b/i.test(row));
 }

@@ -3,9 +3,13 @@
 // Pure-function tests: nudge formatting, ptyId target resolution, and the
 // Stop/arrival flush logic — all dependency-injected, no store/window.
 
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   isChannelMentionTask,
+  MENTION_RETRY_MAX_MS,
+  mentionNudgeSettled,
+  MentionNudgeRefused,
+  resetMentionBackoff,
   buildChannelMentionNudge,
   resolveTaskTargetPty,
   flushMentions,
@@ -66,6 +70,9 @@ function makeDeps(tasks: Task[]) {
   };
   return { deps, delivered, marked, busy, rateLimited, nudged, setThrowOn: (p: string) => { throwOn = p; } };
 }
+
+// The refusal back-off is module state: every test starts without it.
+beforeEach(() => resetMentionBackoff());
 
 describe('isChannelMentionTask', () => {
   it('matches the chmention- prefix only', async () => {
@@ -261,6 +268,45 @@ describe('flushMentions', () => {
     };
     expect(await flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' })).toEqual([]);
     expect(marked).toEqual([]);
+  });
+
+  it('a refused pane is retried after a delay that doubles to 30 s, logged once per reason; its Stop starts over', async () => {
+    const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
+    const { deps } = makeDeps([tA]);
+    let clock = 0;
+    let reason = 'input_mode';
+    const tries: number[] = [];
+    deps.now = () => clock;
+    deps.deliverNudge = async () => { tries.push(clock); throw new MentionNudgeRefused(reason, 'held'); };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // The arrival path sweeps every second for 70 s.
+    for (clock = 0; clock <= 70_000; clock += 1_000) await flushMentions('ws', leaves, deps, {});
+    expect(tries).toEqual([0, 1_000, 3_000, 7_000, 15_000, 31_000, 61_000]);
+    expect(tries[6] - tries[5]).toBe(MENTION_RETRY_MAX_MS);
+    expect(warn).toHaveBeenCalledTimes(1);
+    // Another reason is a new state: logged, and the delay starts over.
+    reason = 'agent_unverified';
+    clock = 91_000;
+    await flushMentions('ws', leaves, deps, {});
+    clock = 92_000;
+    await flushMentions('ws', leaves, deps, {});
+    expect(tries.slice(-2)).toEqual([91_000, 92_000]);
+    expect(warn).toHaveBeenCalledTimes(2);
+    // The pane's Stop tries at once, inside the back-off.
+    clock = 92_500;
+    await flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
+    expect(tries.at(-1)).toBe(92_500);
+    warn.mockRestore();
+  });
+
+  it('a nudge settles only when submitted, or refused while the input box still showed it; every other refusal is retried', () => {
+    expect(mentionNudgeSettled({ ok: true })).toBe(true);
+    expect(mentionNudgeSettled({ ok: false, pasted: true, cleared: false, pasteShown: true })).toBe(true);
+    // Not found in the input box (it may never have shown), taken back, or never written.
+    expect(mentionNudgeSettled({ ok: false, pasted: true, cleared: false, pasteShown: false })).toBe(false);
+    expect(mentionNudgeSettled({ ok: false, pasted: true, cleared: false })).toBe(false);
+    expect(mentionNudgeSettled({ ok: false, pasted: true, cleared: true, pasteShown: true })).toBe(false);
+    expect(mentionNudgeSettled({ ok: false })).toBe(false);
   });
 
   it('two flushes racing on the same mention paste it once', async () => {

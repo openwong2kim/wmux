@@ -80,6 +80,7 @@ export async function gatedSubmitToPty(
     ...(options.senderTaskIds && options.senderTaskIds.length > 0 ? { senderTaskIds: options.senderTaskIds } : {}),
     ...(options.senderSendKey ? { senderSendKey: options.senderSendKey } : {}),
     ...(options.senderMentions && options.senderMentions.length > 0 ? { senderMentions: options.senderMentions } : {}),
+    ...(options.pointerTaskId ? { pointerTaskId: options.pointerTaskId } : {}),
   };
   try {
     // `newTask` only when set, so every other delivery calls exactly as before.

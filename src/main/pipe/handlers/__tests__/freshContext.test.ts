@@ -303,6 +303,26 @@ describe('runFreshContext — evidence after Enter', () => {
     expect(pane.writes).toEqual(['/clear', '\r']);
   });
 
+  it("the caller's check is the last step before the command and before its Enter", async () => {
+    const stages: string[] = [];
+    const ok = scriptedPane({ priorReceipt: { at: 1, agent: 'claude', source: 'startup' }, sessionStartSource: 'clear' });
+    ok.probe.verify = async (stage, command) => { stages.push(`${stage}:${command}:${ok.writes.length}`); };
+    await runFreshContext(CLAUDE, ok.probe, ok.opts);
+    expect(stages).toEqual(['command:/clear:0', 'enter:/clear:1']);
+
+    // Refused before the command: nothing is written.
+    const before = scriptedPane();
+    before.probe.verify = async () => { throw new Error('refused'); };
+    await expect(runFreshContext(CLAUDE, before.probe, before.opts)).rejects.toThrow('refused');
+    expect(before.writes).toEqual([]);
+
+    // Refused before the Enter: the command is erased, and no Enter goes out.
+    const atEnter = scriptedPane();
+    atEnter.probe.verify = async (stage) => { if (stage === 'enter') throw new Error('refused'); };
+    await expect(runFreshContext(CLAUDE, atEnter.probe, atEnter.opts)).rejects.toThrow('refused');
+    expect(atEnter.writes).toEqual(['/clear', '\x7f'.repeat('/clear'.length)]);
+  });
+
   // Review P1-B: a receipt from an earlier run of claude in this pane, and a
   // relaunch whose hooks never reach wmux. The hook is preferred, never
   // required: after the grace window the settled screen is taken.

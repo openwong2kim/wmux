@@ -78,7 +78,7 @@ describe('the fixed reference', () => {
     const msg = buildHandoffMessage({ kind: 'issue', ref: { ...issue, title: 'Fix $(id) and `whoami` \\n ${HOME}\u202e\u200bx\ufeff' } });
     const line = msg.split('\n')[0];
     expect(line).not.toMatch(/[$`\\\u202e\u200b\ufeff]/);
-    expect(line).toBe(`[wmux] Issue Acme/Widgets#12: "Fix (id) and 'whoami' /n {HOME}x" — ${issue.url}`);
+    expect(line).toBe(`[wmux] Issue Acme/Widgets#12: "Fix _id_ and _whoami_ _n _HOME_x" — ${issue.url}`);
   });
 });
 
@@ -105,7 +105,7 @@ describe('sendHandoff', () => {
       title: 'Issue Acme/Widgets#12',
     });
     expect(params.message).toBe(
-      "[wmux] Issue Acme/Widgets#12: \"Crash on 'launch'\" — https://github.com/Acme/Widgets/issues/12\n"
+      "[wmux] Issue Acme/Widgets#12: \"Crash on _launch_\" — https://github.com/Acme/Widgets/issues/12\n"
       + 'Read it with: gh issue view 12 --repo Acme/Widgets\n\nstart with the logs',
     );
   });
