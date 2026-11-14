@@ -208,7 +208,12 @@ export async function importBundle(
     '--', input.file, `${input.ref}:${target}`,
   ]);
   if (fetched.code !== 0) {
-    return { ok: false, reason: before && /non-fast-forward|\[rejected\]/.test(fetched.stderr) ? 'not-fast-forward' : 'import-failed' };
+    // The branch held other work when the bundle's tip does not descend from it. A refused ref update keeps the
+    // pack, so the tip can be read; a pack refused (fsck) leaves none, and that is import-failed. Git's own words
+    // are not read: with --quiet it prints none for a refused update.
+    const notAhead = before !== null && (await commitOf(tip)) !== null
+      && (await run(['merge-base', '--is-ancestor', '--end-of-options', before, tip])).code === 1;
+    return { ok: false, reason: notAhead ? 'not-fast-forward' : 'import-failed' };
   }
   const after = await commitOf(target);
   if (after !== tip) return { ok: false, reason: 'import-failed' };

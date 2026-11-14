@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { A2aRemoteEnvelope, HostId } from '../../../shared/a2aRemote';
-import { bundleRefName, type A2aBundleMadeV1, type A2aBundleManifestV1 } from '../../../shared/a2aBundle';
+import { bundleRefName, type A2aBundleManifestV1, type A2aBundleRefusal } from '../../../shared/a2aBundle';
 import { BUNDLE_ASK_LIMITS } from '../../../shared/a2aBundleAsk';
 import { BundleAsker, type BundleAskerDeps } from '../bundleAsker';
 import { bundleStagedFile, type BundlePull } from '../bundleIntake';
@@ -34,7 +34,7 @@ function harness(over: Partial<BundleAskerDeps> = {}, dir = trackedTempDir('wmux
     }),
     cancel: vi.fn(),
     discard: vi.fn(async () => undefined),
-    sweepStaged: vi.fn(async () => 0),
+    sweepStaged: vi.fn(async (_keep: (hostId: HostId, file: string) => boolean) => 0),
     stop: vi.fn(),
     forgetHost: vi.fn(async () => undefined),
   };
@@ -55,10 +55,10 @@ function harness(over: Partial<BundleAskerDeps> = {}, dir = trackedTempDir('wmux
   };
   const asker = new BundleAsker(deps);
   const lastAsk = () => sent[sent.length - 1].env;
-  const answer = (made: Omit<A2aBundleMadeV1, 'askId' | 'v'>, from: HostId = HOST, askId = lastAsk().linkId) =>
+  const answer = (made: { op: 'made'; manifest: A2aBundleManifestV1 } | { op: 'refused'; reason: A2aBundleRefusal }, from: HostId = HOST, askId = lastAsk().linkId) =>
     asker.applyInbound({
       protocol: 1, linkId: askId, linkVersion: 0, messageId: `bm_${askId}`, kind: 'link',
-      link: { state: 'bundle-made', version: 0 }, bundleMade: { v: 1, askId, ...made } as A2aBundleMadeV1, sentAt: new Date().toISOString(),
+      link: { state: 'bundle-made', version: 0 }, bundleMade: { v: 1, askId, ...made }, sentAt: new Date().toISOString(),
     } as unknown as A2aRemoteEnvelope, { hostId: from });
   return {
     dir, asker, intake, sent, order, answer, lastAsk,
@@ -211,7 +211,7 @@ describe('BundleAsker', () => {
     expect(h.intake.stop).toHaveBeenCalled();
     h.setEnabled(true);
     expect(await h.asker.bringBack(HOST, SPAWN, ORIGIN)).toEqual({ state: 'refused', reason: 'feature-off' });
-    const keep = h.intake.sweepStaged.mock.calls[0][0] as (hostId: HostId, file: string) => boolean;
+    const keep = h.intake.sweepStaged.mock.calls[0][0];
     expect(keep(HOST, bundleStagedFile(h.dir, HOST, M))).toBe(false);
 
     const old = harness({ now: () => 0 });
