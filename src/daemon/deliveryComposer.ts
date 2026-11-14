@@ -150,12 +150,17 @@ export function cursorInComposer(frame: DeliveryFrame, read: ComposerRead): bool
 const PASTE_PLACEHOLDER = /\[Pasted (?:text #\d+(?: \+\d+ lines)?\]|Content \d+ chars\])/g;
 
 /** What a delivery pasted: the start of its first non-blank line, its line
- *  breaks and its characters. */
+ *  breaks and its characters, and the whole text when the caller sent it. */
 export interface PastedText {
   probe: string;
   lines?: number;
   chars?: number;
+  text?: string;
 }
+
+/** Text without its whitespace: the composer wraps long lines and indents its
+ *  continuation rows, so only the other characters can be compared. */
+const squash = (text: string): string => text.replace(/\s+/g, '');
 
 /** Is `placeholder` the collapsed form of `pasted`? Only the agent's own count of it says so. */
 function collapsedFormOf(placeholder: string, pasted: PastedText): boolean {
@@ -183,10 +188,14 @@ export function frameShowsPaste(frame: DeliveryFrame | null, pasted: PastedText)
   const rows = frame.rows.slice(span.from, span.to);
   const placeholders = rows.flatMap((row) => row.match(PASTE_PLACEHOLDER) ?? []);
   if (placeholders.length > 1) return false;
+  // The input without the prompt glyph.
+  const content = rows.map((row, i) => (i === 0 ? row.replace(/^\s*[❯›][ \u00a0]*/, '') : row).trim()).filter(Boolean);
   if (placeholders.length === 1) {
     // The collapsed paste is the whole input: the prompt glyph, it, and blank rows.
-    const content = rows.map((row, i) => (i === 0 ? row.replace(/^\s*[❯›][ \u00a0]*/, '') : row).trim()).filter(Boolean);
     return content.length === 1 && content[0] === placeholders[0] && collapsedFormOf(placeholders[0], pasted);
   }
+  // Uncollapsed, the whole input is this text and nothing else (rows joined,
+  // as the composer wraps them). Without the text, its start on some row.
+  if (pasted.text !== undefined) return squash(content.join('')) === squash(pasted.text);
   return rows.some((row) => row.includes(pasted.probe));
 }

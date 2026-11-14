@@ -104,6 +104,10 @@ function sanitize(raw: unknown): SessionPromptSchedule | null {
   if (isSessionPromptScheduleResult(o.lastResult)) {
     schedule.lastResult = o.lastResult;
   }
+  if (typeof o.busySince === 'number' && Number.isFinite(o.busySince)) {
+    schedule.busySince = o.busySince;
+  }
+  if (o.busyGaveUp === true) schedule.busyGaveUp = true;
   if (o.deliveryClaim && typeof o.deliveryClaim === 'object' && !Array.isArray(o.deliveryClaim)) {
     const claim = o.deliveryClaim as Record<string, unknown>;
     if (
@@ -315,12 +319,14 @@ export async function removeSessionPromptSchedulesForPty(
 
 /** How long one occurrence keeps retrying a busy pane before it is given up
  *  (a draft left in the input box for hours, an input box in another mode):
- *  an hour, and a repeating schedule no later than its next occurrence. */
+ *  an hour from its first busy answer, and for a repeating schedule no longer
+ *  than its interval. Counted from the first busy answer, so an occurrence
+ *  that waited while its agent was gone is not given up on its first one. */
 export const SESSION_PROMPT_BUSY_GIVE_UP_MS = 60 * 60_000;
 
-function busyGivenUp(schedule: SessionPromptSchedule, now: number): boolean {
+function busyGivenUp(schedule: SessionPromptSchedule, busySince: number, now: number): boolean {
   const interval = schedule.intervalMinutes && schedule.intervalMinutes > 0 ? schedule.intervalMinutes * 60_000 : Infinity;
-  return now - schedule.nextRunAt >= Math.min(SESSION_PROMPT_BUSY_GIVE_UP_MS, interval);
+  return now - busySince >= Math.min(SESSION_PROMPT_BUSY_GIVE_UP_MS, interval);
 }
 
 /**
@@ -343,12 +349,21 @@ export function advanceSessionPromptSchedule(
     lastAttemptAt: now,
     lastResult: result,
   };
+  // Only a run of busy answers keeps its start; any other answer ends it.
+  delete next.busySince;
+  delete next.busyGaveUp;
   // A folder-trust prompt waits for a person; the occurrence stays due.
   if (result === 'busy' || result === 'unavailable' || result === 'folder_trust') {
-    if (!(result === 'busy' && busyGivenUp(schedule, now))) return next;
+    if (result !== 'busy') return next;
+    const busySince = schedule.busySince ?? now;
+    if (!busyGivenUp(schedule, busySince, now)) {
+      next.busySince = busySince;
+      return next;
+    }
     next.lastRunAt = now;
     if (!schedule.intervalMinutes || schedule.intervalMinutes <= 0) {
       next.enabled = false;
+      next.busyGaveUp = true;
       return next;
     }
     // Given up: the occurrence that is due now (if any) stays due, so it runs.

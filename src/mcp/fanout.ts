@@ -257,4 +257,48 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
       }
     },
   );
+
+  // Bringing back a task another PC ran: only where tasks on another PC can be started (a pane caller).
+  if (!deps.remotePc) return;
+  server.tool(
+    'fanout_bring_back',
+    'After fanout_start with pc: import that task\'s committed work into your repository as branch wmux/returned/<spawn_id>, nothing checked out. ' +
+      'Returns the branch and sha; while it answers "asking", call again.',
+    {
+      spawn_id: z.string().max(64).describe('The task\'s sp-<uuid> (its row\'s remote.spawnId).'),
+      cancel: z.boolean().optional().describe('Stop one under way.'),
+    },
+    async ({ spawn_id, cancel }) => {
+      if (deps.resolveWorkspaceId) {
+        try {
+          await deps.resolveWorkspaceId();
+        } catch {
+          // The handler refuses an unverifiable caller with its own words.
+        }
+      }
+      const params: Record<string, unknown> = { spawnId: spawn_id };
+      if (cancel === true) params['cancel'] = true;
+      const pty = resolveSenderPtyId();
+      if (pty) params['senderPtyId'] = pty;
+      try {
+        // Waits for the other PC up to 15 s, then a local import: well past the default deadline.
+        const result = (await sendRpc('task.fanout.bringBack', params, BRING_BACK_RPC_TIMEOUT_MS)) as
+          | { ok: true; text?: unknown }
+          | { ok: false; error: { code: string; message: string } }
+          | undefined;
+        if (!result || result.ok !== true) {
+          const e = result && result.ok === false ? result.error : { code: 'UNAVAILABLE', message: 'no answer' };
+          return { content: [{ type: 'text' as const, text: `Error [${e.code}]: ${e.message}` }], isError: true };
+        }
+        // Main's fixed words, a sha and a branch name only.
+        return { content: [{ type: 'text' as const, text: typeof result.text === 'string' ? result.text : JSON.stringify(result) }] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
 }
+
+/** A bring-back call's deadline: the 15 s wait for the other PC, the bundle's hash, and the import's git (index-pack up to 120 s). */
+const BRING_BACK_RPC_TIMEOUT_MS = 300_000;

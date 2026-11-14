@@ -206,7 +206,7 @@ describe('the fence settings', () => {
   it('denies the wmux tools that act outside the sandbox, with or without it', () => {
     for (const capable of [true, false]) {
       const deny = (buildWorkerFence(input({ platformCapable: capable })).settings.permissions as { deny: string[] }).deny;
-      for (const t of ['repl_run', 'browser_repl', 'terminal_send', 'terminal_send_key', 'surface_new', 'pane_split', 'remote_spawn', 'computer', 'fanout_start', 'browser_file_upload', 'browser_download', 'browser_pdf']) {
+      for (const t of ['repl_run', 'browser_repl', 'terminal_send', 'terminal_send_key', 'surface_new', 'pane_split', 'remote_spawn', 'computer', 'fanout_start', 'fanout_bring_back', 'browser_file_upload', 'browser_download', 'browser_pdf']) {
         expect(deny).toContain(`mcp__wmux__${t}`);
       }
       for (const t of ['task_push', 'send_message', 'terminal_read', 'browser_snapshot']) expect(deny).not.toContain(`mcp__wmux__${t}`);
