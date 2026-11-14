@@ -23,6 +23,7 @@ import {
   reattachModelEnvMarker,
   splitModelEnvMarker,
   workerLaunchFlags,
+  workerModeRefusal,
 } from '../../../shared/workerLaunch';
 import { commandChoosesModel } from '../../../shared/orchestratorRole';
 import { FIRST_RUN_CLEAN_READS } from '../agentFirstRun';
@@ -488,6 +489,27 @@ describe('T3 worktree base — one fetch per fan-out, OID pinned, warning surfac
         'mcp__wmux__channel_unread, mcp__wmux__channel_ack, mcp__wmux__a2a_task_query, mcp__wmux__a2a_whoami, which a worker reports with; ' +
         'the deny stays, so this task may not report its progress or result',
     ]);
+  });
+
+  it("carries a launcher refusal into the fan-out result as the task's error", async () => {
+    // As spawnWorkspace does (useRpcBridge): the refusal is read before the
+    // flags are applied, and a refused task starts nothing.
+    const daemon = makeDaemonFake();
+    const port: FanOutRendererPort = {
+      spawnWorkspace: vi.fn(async (p) => {
+        const { command } = splitModelEnvMarker(p.initialCommand);
+        const refusal = workerModeRefusal(command.replace(/^claude/, 'claude --disallowedTools Bash "Fix the tests"'), 'auto');
+        return refusal ? { error: `fanout.spawnWorkspace: ${refusal}` } : { workspaceId: 'ws-task-1', ptyId: 'pty-1' };
+      }),
+    };
+    const svc = new FanOutService({ daemon: daemon.port, renderer: port, worktrees: makeWorktreesFake() });
+    const res = await svc.start(baseReq({ titles: ['only'] }));
+    expect(res.ok).toBe(false);
+    expect(res.tasks).toHaveLength(1);
+    expect(res.tasks[0].ok).toBe(false);
+    expect(res.tasks[0].error).toMatch(/^renderer spawn failed: fanout\.spawnWorkspace: the launch line has a word right after its --disallowedTools rules/);
+    expect(res.tasks[0].error).toContain('Put the deny rules last on the launch line');
+    expect(res.tasks[0].error).not.toContain('Fix the tests');
   });
 
   it('a base refused for submodules/LFS refuses the whole fan-out before any task exists', async () => {
