@@ -144,18 +144,45 @@ describe('sessionPromptScheduleStore', () => {
     }
   });
 
-  it('gives up a busy occurrence after an hour, and a repeating one by its next occurrence', () => {
+  it('gives up a busy occurrence an hour after its first busy answer, and a repeating one within its interval', () => {
     const due = 1_000;
-    // A one-shot: retried for an hour (240 ticks of 15 s), then consumed as busy.
-    expect(advanceSessionPromptSchedule(schedule({ nextRunAt: due }), 'busy', due + SESSION_PROMPT_BUSY_GIVE_UP_MS - 1).enabled).toBe(true);
-    const gaveUp = advanceSessionPromptSchedule(schedule({ nextRunAt: due }), 'busy', due + SESSION_PROMPT_BUSY_GIVE_UP_MS);
-    expect(gaveUp).toMatchObject({ enabled: false, lastResult: 'busy', lastRunAt: due + SESSION_PROMPT_BUSY_GIVE_UP_MS });
-    // Every 10 minutes: given up when the next occurrence is due, which then runs.
-    const every10 = schedule({ nextRunAt: due, intervalMinutes: 10 });
+    // A one-shot: the first busy answer starts the hour, kept across retries.
+    const first = advanceSessionPromptSchedule(schedule({ nextRunAt: due }), 'busy', due);
+    expect(first).toMatchObject({ enabled: true, busySince: due });
+    const later = advanceSessionPromptSchedule(first, 'busy', due + SESSION_PROMPT_BUSY_GIVE_UP_MS - 1);
+    expect(later).toMatchObject({ enabled: true, busySince: due });
+    const gaveUp = advanceSessionPromptSchedule(later, 'busy', due + SESSION_PROMPT_BUSY_GIVE_UP_MS);
+    expect(gaveUp).toMatchObject({ enabled: false, lastResult: 'busy', lastRunAt: due + SESSION_PROMPT_BUSY_GIVE_UP_MS, busyGaveUp: true });
+    expect(gaveUp.busySince).toBeUndefined();
+    // The next attempt (after a Resume) is no longer the given-up one.
+    expect(advanceSessionPromptSchedule({ ...gaveUp, enabled: true }, 'busy', due + 2 * SESSION_PROMPT_BUSY_GIVE_UP_MS).busyGaveUp).toBeUndefined();
+    // Every 10 minutes: given up ten minutes into the run, and the occurrence due then runs.
+    const every10 = schedule({ nextRunAt: due, intervalMinutes: 10, busySince: due });
     expect(advanceSessionPromptSchedule(every10, 'busy', due + 9 * 60_000).nextRunAt).toBe(due);
-    expect(advanceSessionPromptSchedule(every10, 'busy', due + 10 * 60_000)).toMatchObject({ enabled: true, nextRunAt: due + 10 * 60_000, lastResult: 'busy' });
-    // unavailable and folder_trust still wait.
-    expect(advanceSessionPromptSchedule(schedule({ nextRunAt: due }), 'unavailable', due + 10 * SESSION_PROMPT_BUSY_GIVE_UP_MS).nextRunAt).toBe(due);
+    const repeatGaveUp = advanceSessionPromptSchedule(every10, 'busy', due + 10 * 60_000);
+    expect(repeatGaveUp).toMatchObject({ enabled: true, nextRunAt: due + 10 * 60_000, lastResult: 'busy' });
+    // Only a one-shot is disabled by a give-up, so only it is marked.
+    expect(repeatGaveUp.busyGaveUp).toBeUndefined();
+    // unavailable and folder_trust still wait, and end a run of busy answers.
+    const away = advanceSessionPromptSchedule(schedule({ nextRunAt: due, busySince: due }), 'unavailable', due + 10 * SESSION_PROMPT_BUSY_GIVE_UP_MS);
+    expect(away.nextRunAt).toBe(due);
+    expect(away.busySince).toBeUndefined();
+  });
+
+  // An occurrence that waited while its agent was gone is long overdue when
+  // the pane comes back: its first busy answer must not give it up.
+  it('an overdue one-shot stays due on its first busy answer', () => {
+    const due = 1_000;
+    const now = due + 5 * SESSION_PROMPT_BUSY_GIVE_UP_MS;
+    const first = advanceSessionPromptSchedule(schedule({ nextRunAt: due }), 'busy', now);
+    expect(first).toMatchObject({ enabled: true, nextRunAt: due, busySince: now });
+    expect(first.lastRunAt).toBeUndefined();
+    expect(dueSessionPromptSchedules([first], now + 15_000).map((s) => s.id)).toEqual(['schedule-1']);
+  });
+
+  it('keeps busySince across a save and a load', async () => {
+    await saveSessionPromptSchedules([advanceSessionPromptSchedule(schedule(), 'busy', 5_000)], dir);
+    expect(loadSessionPromptSchedules(dir)[0].busySince).toBe(5_000);
   });
 
   it('keeps a folder-trust result across a save and a load (the popover reads it back)', async () => {

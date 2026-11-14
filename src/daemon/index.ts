@@ -193,7 +193,7 @@ import { viewerVisibilityUpdates } from '../shared/viewerVisibilityBatch';
 import { isTaskState, type AgentStatus, type Message, type Task } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { processHoldsForeground } from './agentForeground';
-import type { DeliveryCheck, DeliveryPresence } from '../shared/deliveryPresence';
+import { SHOWN_TEXT_MAX, type DeliveryCheck, type DeliveryPresence } from '../shared/deliveryPresence';
 import { deliveryPresence, promptGrant, type DeliveryPresenceDeps, type PromptAuthor } from './deliveryPresence';
 import { AgentProcessTracker, agentProcessExitEvent, type LiveCheck } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
@@ -6303,8 +6303,9 @@ function registerRpcHandlers(
     const count = (v: unknown): number | undefined => (Number.isSafeInteger(v) && (v as number) >= 0 ? (v as number) : undefined);
     const shownLines = count(params['shownLines']);
     const shownChars = count(params['shownChars']);
+    const shownText = typeof params['shownText'] === 'string' && params['shownText'].length <= SHOWN_TEXT_MAX ? params['shownText'] : undefined;
     const check: DeliveryCheck = params['phase'] === 'enter'
-      ? { phase: 'enter', ...(shownProbe ? { shownProbe } : {}), ...(shownLines !== undefined ? { shownLines } : {}), ...(shownChars !== undefined ? { shownChars } : {}) }
+      ? { phase: 'enter', ...(shownProbe ? { shownProbe } : {}), ...(shownLines !== undefined ? { shownLines } : {}), ...(shownChars !== undefined ? { shownChars } : {}), ...(shownText !== undefined ? { shownText } : {}) }
       : { phase: 'paste' };
     return deliveryPresence(presenceDeps, id, expectAgent, check);
   });

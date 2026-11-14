@@ -4571,6 +4571,7 @@ export const pl = {
   'sessionSchedule.statusSent': 'wysłano',
   'sessionSchedule.statusError': 'błąd dostarczenia',
   'sessionSchedule.statusPaused': 'wstrzymano',
+  'sessionSchedule.statusGaveUpBusy': 'nie wysłano: pole wprowadzania było zajęte przez godzinę',
   'sessionSchedule.daemonRequired': 'Planowanie wymaga usługi wmux w tle, która nie jest połączona. Spróbuj ponownie, gdy się połączy.',
   'sessionSchedule.promptLabel': 'Zaplanowane polecenie',
   'sessionSchedule.whenLabel': 'Czas dostarczenia',

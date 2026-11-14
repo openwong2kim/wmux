@@ -119,6 +119,8 @@ describe('deliveries wait for a verified agent in plain input mode', () => {
     expect(asked.map((a) => a.check.phase)).toEqual(['paste', 'paste', 'enter']);
     expect(asked[0].expectAgent).toBe('claude');
     expect(asked[2].check.shownProbe).toBe('hello');
+    // The whole text too: an uncollapsed paste must be the box's entire input.
+    expect(asked[2].check.shownText).toBe('hello');
   });
 
   it('the ask is the first step, the last one before the paste, and the last one before the Enter', async () => {
@@ -253,6 +255,28 @@ describe('an agent whose plain prompt wmux does not know: its pointer line only'
     answers = [POINTER_ONLY];
     expect(await deliver(undefined, null, BODY)).toMatchObject({ ok: false, reason: 'input_mode' });
     expect(writes).toEqual([]);
+  });
+
+  // A blank text pastes nothing the Enter could be checked against, and a
+  // bare Enter would send whatever the box already holds.
+  it('a blank text is refused before anything is asked or written', async () => {
+    for (const text of ['', '   ', '\n\n', '\t \x1b\x03']) {
+      asked = [];
+      expect(await deliver({ newTask: true, taskId: 't-1', senderSendKey: 'k' }, 'Claude Code', text)).toMatchObject({ ok: false, reason: 'input_mode' });
+      expect(asked).toEqual([]);
+      expect(writes).toEqual([]);
+    }
+  });
+
+  // A paste keeps a tab (only ESC is made visible); as plain keys a tab would
+  // be a key press (completion in most prompts), so it goes as a space.
+  it('a tab stays a tab in a bracketed paste and goes as a space in plain keys', async () => {
+    await deliver({ senderTaskIds: ['task-1'] }, 'Claude Code', 'a\tb');
+    expect(writes[0]).toBe('\x1b[200~a\tb\x1b[201~');
+    writes = [];
+    answers = [{ ...PROCESS, bracketedPaste: false }];
+    await deliver({ senderTaskIds: ['task-1'] }, 'Claude Code', 'a\tb');
+    expect(writes[0]).toBe('a b');
   });
 
   it('plain keys (no bracketed paste) carry printable text only', async () => {
