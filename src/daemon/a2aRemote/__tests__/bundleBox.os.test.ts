@@ -214,15 +214,17 @@ describe('makeBundle', () => {
     expect(bundleRefs()).toBe('');
   });
 
-  it('a ref a stopped make left: the next make does not take it over, and the start sweep removes it', async () => {
+  it('a ref a stopped make left: the next make of that start removes it first, and the start sweep removes any', async () => {
     const rec = start();
     const head = commit(rec.worktreePath!, 'work.txt', 'done\n');
     g(repo, 'update-ref', bundleRefName(rec.treeId!), base);
-    expect(await makeBundle(input(rec))).toMatchObject({ kind: 'refused', reason: 'unavailable' });
-    expect(g(repo, 'rev-parse', bundleRefName(rec.treeId!))).toBe(base);
+    const inp = input(rec);
+    expect(await makeBundle(inp)).toMatchObject({ kind: 'made', head });
+    expect(readBack(inp.file, rec.treeId!).head).toBe(head);
+    expect(bundleRefs()).toBe('');
+    g(repo, 'update-ref', bundleRefName(rec.treeId!), base);
     expect(await sweepBundleRefs(rec.worktreePath!)).toBe(1);
     expect(bundleRefs()).toBe('');
-    expect(await makeBundle(input(rec))).toMatchObject({ kind: 'made', head });
   });
 });
 
@@ -263,8 +265,7 @@ describe('BundleBox', () => {
   }
 
   type AskBody = { op: 'make'; spawnId: string; origin: string } | { op: 'send' | 'done'; bundleId: string };
-  function ask(b: BundleBox, hostId: HostId, a: AskBody): string {
-    const askId = askIdOf();
+  function ask(b: BundleBox, hostId: HostId, a: AskBody, askId = askIdOf()): string {
     const env: A2aRemoteEnvelope = {
       protocol: A2A_REMOTE_PROTOCOL, linkId: askId, linkVersion: 0, messageId: `m-${crypto.randomUUID()}`, kind: 'link',
       link: { state: 'bundle-ask', version: 0 }, bundleAsk: { v: 1, ...a, askId } as A2aBundleAskV1, sentAt: new Date().toISOString(),
@@ -303,6 +304,85 @@ describe('BundleBox', () => {
     expect(await answerTo(ask(b, ASKER, { op: 'make', spawnId: rec.spawnId, origin: ORIGIN }))).toMatchObject({ op: 'refused', reason: 'unknown-spawn' });
     expect(await answerTo(ask(b, ASKER, { op: 'make', spawnId: spawnIdOf(), origin: ORIGIN }))).toMatchObject({ op: 'refused', reason: 'unknown-spawn' });
     expect(await answerTo(ask(b, ASKER, { op: 'make', spawnId: 'sp-00000000-0000-4000-8000-000000000000', origin: ORIGIN }))).toMatchObject({ op: 'refused', reason: 'not-supported' });
+  });
+
+  it('an ask delivered again is worked on once, and answered again the same way', async () => {
+    const rec = start();
+    starts.push(rec);
+    commit(rec.worktreePath!, 'work.txt', 'done\n');
+    let makes = 0;
+    const b = box({ make: (inp, opts) => { makes += 1; return makeBundle(inp, opts); } });
+    const askId = ask(b, ASKER, { op: 'make', spawnId: rec.spawnId, origin: ORIGIN });
+    // Again while it is being made: nothing more is done, and no `busy` comes back under that id.
+    ask(b, ASKER, { op: 'make', spawnId: rec.spawnId, origin: ORIGIN }, askId);
+    const first = await answerTo(askId);
+    expect(first).toMatchObject({ op: 'made' });
+    ask(b, ASKER, { op: 'make', spawnId: rec.spawnId, origin: ORIGIN }, askId);
+    await vi.waitFor(() => expect(answers.filter((x) => x.made.askId === askId)).toHaveLength(2), { timeout: 10_000 });
+    expect(answers.filter((x) => x.made.askId === askId).map((x) => x.made)).toEqual([first, first]);
+    expect(makes).toBe(1);
+  });
+
+  it('the bytes all standing offers take, all PCs together, are bounded', async () => {
+    const a = start(ASKER);
+    const o = start(OTHER);
+    starts.push(a, o);
+    commit(a.worktreePath!, 'a.txt', 'a\n');
+    commit(o.worktreePath!, 'o.txt', 'o\n');
+    const b = box();
+    expect(await answerTo(ask(b, ASKER, { op: 'make', spawnId: a.spawnId, origin: ORIGIN }))).toMatchObject({ op: 'made' });
+    limits = { bytesTotal: b.standing(ASKER)[0].bytes };
+    expect(await answerTo(ask(b, OTHER, { op: 'make', spawnId: o.spawnId, origin: ORIGIN }))).toMatchObject({ op: 'refused', reason: 'busy' });
+  });
+
+  it.runIf(posix)('a git killed while it streams the bundle: the make ends, nothing of its process group is left, and the next make from that PC goes', async () => {
+    const rec = start();
+    starts.push(rec);
+    // Enough that pack-objects is still writing when it is killed (random bytes hardly compress).
+    fs.writeFileSync(path.join(rec.worktreePath!, 'big.bin'), crypto.randomBytes(24 * 1024 * 1024));
+    g(rec.worktreePath!, 'add', 'big.bin');
+    g(rec.worktreePath!, 'commit', '-q', '-m', 'big');
+    const out = path.join(a2aDir, 'bundle-out', ASKER);
+    const streaming = (): boolean => {
+      try {
+        return fs.readdirSync(out).some((n) => fs.statSync(path.join(out, n)).size > 0);
+      } catch {
+        return false;
+      }
+    };
+    let group: number | undefined;
+    let first = true;
+    const b = box({
+      git: {
+        onCreate: (kill, pid) => {
+          if (!first) return;
+          first = false;
+          group = pid;
+          // Killed once bytes are on disk: the pack is streaming then (polled for 30 s at most).
+          const until = Date.now() + 30_000;
+          const poll = (): void => {
+            if (streaming()) kill();
+            else if (Date.now() < until) setImmediate(poll);
+          };
+          poll();
+        },
+      },
+    });
+    expect(await answerTo(ask(b, ASKER, { op: 'make', spawnId: rec.spawnId, origin: ORIGIN }))).toMatchObject({ op: 'refused', reason: 'unavailable' });
+    expect(group).toBeDefined();
+    const groupAlive = (): boolean => {
+      try {
+        process.kill(-(group as number), 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    await vi.waitFor(() => expect(groupAlive()).toBe(false), { timeout: 10_000 });
+    expect(bundleRefs()).toBe('');
+    expect(fs.readdirSync(out)).toEqual([]);
+    // The make no longer holds that PC's one slot.
+    expect(await answerTo(ask(b, ASKER, { op: 'make', spawnId: rec.spawnId, origin: ORIGIN }))).toMatchObject({ op: 'made' });
   });
 
   it('a start recorded before tree ids is `not-supported` (its ref would not be the one the asking PC computes)', async () => {

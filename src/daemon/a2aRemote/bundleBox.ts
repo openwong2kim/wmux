@@ -41,6 +41,8 @@ import { errMsg } from './storeFile';
 
 const BUNDLE_OUT = 'bundle-out';
 const MINUTE_MS = 60_000;
+/** Ask ids remembered for redelivery, all PCs together (the oldest go first). */
+const ASKED_KEPT = 1000;
 
 export interface BundleBoxLimits {
   /** Asks of any kind from one PC in a minute. */
@@ -51,6 +53,8 @@ export interface BundleBoxLimits {
   offersPerHost: number;
   /** Bytes one PC's standing offers may take. */
   bytesPerHost: number;
+  /** Bytes all standing offers may take, all PCs together. */
+  bytesTotal: number;
   /** The largest bundle (a2aBundle.ts bundleBytesMax). */
   bundleBytes: number;
   /** How long an offer waits for its fetch. */
@@ -62,6 +66,7 @@ export const BUNDLE_BOX_DEFAULTS: Readonly<BundleBoxLimits> = Object.freeze({
   makesAtOnce: 2,
   offersPerHost: 4,
   bytesPerHost: 256 * 1024 * 1024,
+  bytesTotal: 1024 * 1024 * 1024,
   bundleBytes: BUNDLE_BYTES_DEFAULT,
   ttlMs: BUNDLE_TTL_DEFAULT_MS,
 });
@@ -106,6 +111,11 @@ export class BundleBox {
   private readonly asks = new Map<HostId, number[]>();
   private readonly making = new Set<HostId>();
   private readonly offers = new Map<HostId, Map<string, Standing>>();
+  /**
+   * Asks taken, by PC and ask id, with the answer sent (null while there is none yet, or none to send): an ask
+   * delivered again is answered the same way, or not at all, and is never worked on twice.
+   */
+  private readonly asked = new Map<string, A2aBundleMadeV1 | null>();
   /** Bumped when a PC is removed: a make for it that was under way then keeps nothing. */
   private readonly forgotten = new Map<HostId, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -125,6 +135,7 @@ export class BundleBox {
       makesAtOnce: whole(set.makesAtOnce, BUNDLE_BOX_DEFAULTS.makesAtOnce),
       offersPerHost: whole(set.offersPerHost, BUNDLE_BOX_DEFAULTS.offersPerHost),
       bytesPerHost: whole(set.bytesPerHost, BUNDLE_BOX_DEFAULTS.bytesPerHost),
+      bytesTotal: whole(set.bytesTotal, BUNDLE_BOX_DEFAULTS.bytesTotal),
       bundleBytes: bundleBytesMax(set.bundleBytes),
       ttlMs: whole(set.ttlMs, BUNDLE_BOX_DEFAULTS.ttlMs),
     };
@@ -166,6 +177,14 @@ export class BundleBox {
     const ask = parseBundleAsk(env.bundleAsk);
     if (!ask || ask.askId !== env.linkId) return BAD;
     const hostId = peer.hostId;
+    const key = `${hostId}:${ask.askId}`;
+    if (this.asked.has(key)) {
+      const before = this.asked.get(key);
+      if (before) this.answer(hostId, before);
+      return OK;
+    }
+    this.asked.set(key, null);
+    while (this.asked.size > ASKED_KEPT) this.asked.delete(this.asked.keys().next().value as string);
     this.expire();
     if (!this.admit(hostId)) {
       this.answer(hostId, { v: 1, askId: ask.askId, op: 'refused', reason: 'rate-limited' });
@@ -214,6 +233,8 @@ export class BundleBox {
       const standing = [...own.values()].find((o) => o.spawnId === ask.spawnId);
       if (standing) {
         const tip = await bundleGit(rec.worktreePath, this.deps.git)(['rev-parse', '--verify', '--quiet', '--end-of-options', `refs/heads/${rec.branch}^{commit}`]);
+        // That PC was removed meanwhile: nothing more for it.
+        if ((this.forgotten.get(hostId) ?? 0) !== generation) return;
         const same = tip.code === 0 && tip.stdout.trim() === standing.head;
         const { bundleId, sha256, bytes } = standing.manifest;
         if (same && this.deps.outbox.offer({ hostId, bundleId, file: standing.file, sha256, bytes }, limits.ttlMs)) {
@@ -225,7 +246,8 @@ export class BundleBox {
       }
       if (own.size >= limits.offersPerHost) return refuse('busy');
       const taken = [...own.values()].reduce((n, o) => n + o.manifest.bytes, 0);
-      const room = Math.min(limits.bundleBytes, limits.bytesPerHost - taken);
+      const takenAll = [...this.offers.values()].reduce((n, m) => n + [...m.values()].reduce((k, o) => k + o.manifest.bytes, 0), 0);
+      const room = Math.min(limits.bundleBytes, limits.bytesPerHost - taken, limits.bytesTotal - takenAll);
       if (room < 1) return refuse('busy');
 
       const bundleId = `bd-${crypto.randomUUID()}`;
@@ -235,7 +257,7 @@ export class BundleBox {
         worktree: rec.worktreePath,
         branch: rec.branch,
         base: rec.baseCommit,
-        treeId: rec.treeId ?? rec.spawnId,
+        treeId: rec.treeId,
         origin: ask.origin,
         file,
         maxBytes: room,
@@ -310,6 +332,8 @@ export class BundleBox {
   }
 
   private answer(hostId: HostId, made: A2aBundleMadeV1): void {
+    const key = `${hostId}:${made.askId}`;
+    if (this.asked.has(key)) this.asked.set(key, made);
     try {
       this.deps.enqueue(hostId, {
         protocol: A2A_REMOTE_PROTOCOL,

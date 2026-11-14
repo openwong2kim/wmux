@@ -68,8 +68,8 @@ export interface BundleGitOptions {
   createTimeoutMs?: number;
   /** Test seam: the env git runs with before it is cleaned (default: the daemon's exec env). */
   env?: NodeJS.ProcessEnv;
-  /** Test seam: called with a way to kill the bundle's git once it runs. */
-  onCreate?: (kill: () => void) => void;
+  /** Test seam: called with a way to kill the bundle's git once it runs, and its pid (its process group's id). */
+  onCreate?: (kill: () => void, pid: number | undefined) => void;
 }
 
 /** git with this module's isolation, in `at`. Never throws. */
@@ -178,7 +178,8 @@ export async function makeBundle(input: BundleMakeInput, opts: BundleGitOptions 
       // before it (the agent may have changed it since), and every filter it names is disarmed for the read.
       const now = await configRefusal(git);
       if (now.refusal) return { kind: 'refused', reason: 'repo-config', detail: now.refusal };
-      const status = await git(['status', '--porcelain=v1', '-z', '--untracked-files=all'], now.disarm);
+      // Submodules are not read: their own config could name a filter.
+      const status = await git(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=all'], now.disarm);
       if (status.code !== 0) return unavailable('status', status.stderr);
       return { kind: 'refused', reason: status.stdout.length > 0 ? 'uncommitted-only' : 'empty' };
     }
@@ -199,8 +200,12 @@ function unavailable(what: string, stderr: string): BundleMakeOutcome {
   return { kind: 'refused', reason: 'unavailable', detail: `git ${what} failed: ${stderr.trim().slice(0, 300)}` };
 }
 
-/** Run `fn` while `ref` points at `sha`: made only where no such ref is, removed after whatever happens. */
+/**
+ * Run `fn` while `ref` points at `sha`: made only where no such ref is, removed after whatever happens. A ref of
+ * that name a stopped make left (one make per PC at a time, and the name is this start's own) is removed first.
+ */
 async function withRef(git: Git, ref: string, sha: string, fn: () => Promise<BundleMakeOutcome>): Promise<BundleMakeOutcome> {
+  await git(['update-ref', '--no-deref', '-d', ref]);
   const made = await git(['update-ref', '--no-deref', ref, sha, zeroOf(sha)]);
   if (made.code !== 0) return unavailable('update-ref', made.stderr);
   try {
@@ -216,6 +221,13 @@ async function withRef(git: Git, ref: string, sha: string, fn: () => Promise<Bun
  * comes (O_EXCL, 0600), counted and hashed on the way: past `maxBytes` the
  * git is killed and the file goes. Then the bundle must name exactly that ref
  * at `head`.
+ *
+ * git hands the pack to a `pack-objects` child that writes to the same pipe,
+ * so git runs in a process group of its own and a stop kills the whole group
+ * and closes the pipe: nothing is left writing or blocked on it. A stop (the
+ * time limit, a failed write, the size cap) settles the make at once, without
+ * waiting for the pipe to close. Headless boxes are Linux and macOS; on
+ * Windows only the git process itself is killed.
  */
 async function writeBundle(input: BundleMakeInput, head: string, opts: BundleGitOptions): Promise<BundleMakeOutcome> {
   const ref = bundleRefName(input.treeId);
@@ -226,20 +238,31 @@ async function writeBundle(input: BundleMakeInput, head: string, opts: BundleGit
   try {
     outcome = await new Promise<BundleMakeOutcome>((resolve) => {
       const child = spawn(gitExe, [...SAFE_ARGS, '-C', input.worktree, 'bundle', 'create', '-q', '-', ref, `^${input.base}`], {
-        cwd: input.worktree, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: input.worktree, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32',
       });
       const hash = crypto.createHash('sha256');
       let bytes = 0;
-      let stopped: BundleMakeOutcome | null = null;
+      let stopped = false;
+      let settled = false;
       let writing: Promise<unknown> = Promise.resolve();
       let errText = '';
+      const settle = (o: BundleMakeOutcome): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        // The write under way (if any) ends before the file is closed; a failed one has stopped the make already.
+        void writing.then(() => resolve(o), () => resolve(o));
+      };
       const stop = (why: BundleMakeOutcome): void => {
         if (stopped) return;
-        stopped = why;
-        child.kill('SIGKILL');
+        stopped = true;
+        killGroup(child);
+        child.stdout.destroy();
+        child.stderr.destroy();
+        settle(why);
       };
       const timer = setTimeout(() => stop({ kind: 'refused', reason: 'unavailable', detail: 'git bundle create ran past its time' }), opts.createTimeoutMs ?? BUNDLE_GIT_CREATE_TIMEOUT_MS);
-      opts.onCreate?.(() => stop({ kind: 'refused', reason: 'unavailable', detail: 'git bundle create was killed' }));
+      opts.onCreate?.(() => stop({ kind: 'refused', reason: 'unavailable', detail: 'git bundle create was killed' }), child.pid);
       child.stdout.on('data', (b: Buffer) => {
         if (stopped) return;
         bytes += b.length;
@@ -250,21 +273,20 @@ async function writeBundle(input: BundleMakeInput, head: string, opts: BundleGit
         hash.update(b);
         // One write at a time: git waits while the disk catches up, and a failed write (a full disk) stops it.
         child.stdout.pause();
-        writing = writing.then(() => handle.write(b)).then(
+        writing = writing.then(() => writeAll(handle, b)).then(
           () => { if (!stopped) child.stdout.resume(); },
           (err: unknown) => stop({ kind: 'refused', reason: 'unavailable', detail: `the bundle could not be written: ${errMsg(err)}` }),
         );
       });
+      child.stdout.on('error', () => undefined);
+      child.stderr.on('error', () => undefined);
       child.stderr.on('data', (b: Buffer) => { if (errText.length < 4096) errText += b.toString('utf8'); });
       child.on('error', (err) => stop({ kind: 'refused', reason: 'unavailable', detail: errMsg(err) }));
       child.on('close', (code) => {
-        clearTimeout(timer);
-        void writing.then(
-          () => resolve(stopped ?? (code === 0
-            ? { kind: 'made', head, sha256: hash.digest('hex'), bytes }
-            : { kind: 'refused', reason: 'unavailable', detail: `git bundle create failed: ${errText.trim().slice(0, 300)}` })),
-          (err: unknown) => resolve({ kind: 'refused', reason: 'unavailable', detail: errMsg(err) }),
-        );
+        if (stopped) return;
+        settle(code === 0
+          ? { kind: 'made', head, sha256: hash.digest('hex'), bytes }
+          : { kind: 'refused', reason: 'unavailable', detail: `git bundle create failed: ${errText.trim().slice(0, 300)}` });
       });
     });
     if (outcome.kind === 'made') {
@@ -278,6 +300,27 @@ async function writeBundle(input: BundleMakeInput, head: string, opts: BundleGit
   }
   if (outcome.kind !== 'made') await fs.promises.rm(input.file, { force: true });
   return outcome;
+}
+
+/** Kill git and every process of its group (its pack-objects); only git itself where there are no groups. */
+function killGroup(child: ReturnType<typeof spawn>): void {
+  try {
+    if (process.platform !== 'win32' && child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+    else child.kill('SIGKILL');
+  } catch {
+    child.kill('SIGKILL');
+  }
+}
+
+/** Write all of `b`: a write may take part of it. */
+async function writeAll(handle: fs.promises.FileHandle, b: Buffer): Promise<void> {
+  let at = 0;
+  while (at < b.length) {
+    // eslint-disable-next-line no-await-in-loop -- in order
+    const { bytesWritten } = await handle.write(b, at, b.length - at);
+    if (bytesWritten <= 0) throw new Error('the disk took no bytes');
+    at += bytesWritten;
+  }
 }
 
 /** Remove every ref a make left in the repository at `worktree` (a crash between its making and its removal). */
