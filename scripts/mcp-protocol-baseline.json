@@ -2,8 +2,8 @@
   "schemaVersion": 2,
   "profiles": {
     "full": {
-      "maxListBytes": 80000,
-      "wireResultSha256": "5d5f25a72b4392683f5dd689ecd7efc36068f185b572aa8f30dd24f6bfd5dfb3",
+      "maxListBytes": 81000,
+      "wireResultSha256": "e4bef62ca601db220aaa242d626c4daed3a21c3871c38e4c15feac9a29b9381d",
       "instructionSha256": "6e09a08a7038bb08f49484e3a98020ef6a35efebbebc39d33f9a514b71e7c7c1",
       "toolNames": [
         "browser_open",
@@ -71,6 +71,7 @@
         "channel_mission_close",
         "channel_mission_list",
         "fanout_start",
+        "fanout_bring_back",
         "remote_spawn",
         "hand_out",
         "ledger_update",
@@ -91,8 +92,8 @@
       ]
     },
     "core": {
-      "maxListBytes": 49000,
-      "wireResultSha256": "fc79f2adf454ccc3000903bfe50924158d972ae30713d6738d2c04cf5fe91d91",
+      "maxListBytes": 50000,
+      "wireResultSha256": "d4357c64c28b830ea6f7533e04d33afcad0278f4b5b40d3708f05bf798aa634a",
       "instructionSha256": "4a87aa8208502b84c23fd41c6c2594b91c7e368ad187f14d4905164448548f4a",
       "toolNames": [
         "terminal_read",
@@ -128,6 +129,7 @@
         "channel_mission_close",
         "channel_mission_list",
         "fanout_start",
+        "fanout_bring_back",
         "remote_spawn",
         "hand_out",
         "ledger_update",

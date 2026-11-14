@@ -634,7 +634,7 @@ export function isFencedMode(mode: PermissionMode | undefined): boolean {
  *  (send_message without `execute` on a new task: a2a.rpc.ts). */
 export const WORKER_FENCE_REFUSED_WMUX_TOOLS: readonly string[] = [
   'repl_run', 'browser_repl', 'terminal_send', 'terminal_send_key', 'surface_new', 'pane_split', 'remote_spawn', 'computer', 'fanout_start',
-  'hand_out', 'browser_file_upload', 'browser_download', 'browser_wait_for_download', 'browser_pdf', 'browser_trace',
+  'fanout_bring_back', 'hand_out', 'browser_file_upload', 'browser_download', 'browser_wait_for_download', 'browser_pdf', 'browser_trace',
 ].map((t) => `mcp__wmux__${t}`);
 
 /** The pipe methods behind those of WORKER_FENCE_REFUSED_WMUX_TOOLS that
@@ -645,7 +645,7 @@ export const WORKER_FENCE_REFUSED_WMUX_TOOLS: readonly string[] = [
  *  an unattended worker does not rearrange or restyle the owner's app. */
 export const WORKER_FENCE_REFUSED_RPC: ReadonlySet<string> = new Set([
   'input.send', 'input.sendKey', 'surface.new', 'pane.split', 'a2a.remote.spawn', 'computer.act', 'task.fanout.start',
-  'handOut.list', 'handOut.add', 'app.action', 'app.action.list',
+  'task.fanout.bringBack', 'handOut.list', 'handOut.add', 'app.action', 'app.action.list',
 ]);
 
 /** Top-level settings keys: a sandbox of their own, or hooks turned off. */

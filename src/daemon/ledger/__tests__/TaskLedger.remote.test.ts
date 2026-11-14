@@ -92,6 +92,21 @@ describe('a remote task row', () => {
     expect(a.get(entry.id)?.taskWorkspaceId).toBe(`remote:${SPAWN}`);
   });
 
+  it('keeps the home repository fanout_start recorded: kept across a restart, never moved by an update, absent on older rows', async () => {
+    const a = open();
+    const home = path.resolve('/work/repo');
+    const entry = await registerRemote(a, { ...REMOTE, homeRepo: home });
+    expect(entry.remote?.homeRepo).toBe(home);
+    const moved = await a.updateRemote(entry.id, { state: 'started', homeRepo: '/elsewhere' } as never);
+    expect(moved?.remote).toMatchObject({ state: 'started', homeRepo: home });
+    await a.flush();
+    expect(open().get(entry.id)?.remote?.homeRepo).toBe(home);
+    // A relative path or one with a control character is not stored.
+    expect(copyRemote({ ...REMOTE, homeRepo: 'repo' })?.homeRepo).toBeUndefined();
+    expect(copyRemote({ ...REMOTE, homeRepo: `${home}\n` })?.homeRepo).toBeUndefined();
+    expect(copyRemote(REMOTE)?.homeRepo).toBeUndefined();
+  });
+
   it('takes what this PC learns of it, as a system write that bumps the rev', async () => {
     const a = open();
     const entry = await registerRemote(a);

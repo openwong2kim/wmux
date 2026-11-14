@@ -39,7 +39,7 @@ import { OutboxStore } from './outboxStore';
 import { PeerFeatureStore } from './peerFeatureStore';
 import type { A2aRouteTable } from './routes';
 import { addressPromoter } from './remoteHostStore';
-import { JoinerSession, taskOfEnvelope, type SessionClient, type SessionTiming, type StreamedGet } from './session';
+import { JoinerSession, taskOfEnvelope, type SessionClient, type SessionTiming, type StreamedGet, type StreamedPut } from './session';
 import type { PinnedClientOptions } from './pinnedClient';
 import { A2aStreamHub } from './streamHub';
 import { errMsg, isPlainObject, isSafeId } from './storeFile';
@@ -331,6 +331,12 @@ export class A2aRemoteDelivery {
   continueFetch(hostId: HostId): StreamedGet | null {
     const session = this.sessions.get(hostId)?.session;
     return session ? (route, opts, consume) => session.fetchStream(route, opts, consume) : null;
+  }
+
+  /** A streamed PUT to `hostId` while this PC joined it (a bundle that PC asked for); null when it did not. */
+  bundlePut(hostId: HostId): StreamedPut | null {
+    const session = this.sessions.get(hostId)?.session;
+    return session ? (route, body, opts) => session.sendStream(route, body, opts) : null;
   }
 
   // --- lifecycle ------------------------------------------------------------
