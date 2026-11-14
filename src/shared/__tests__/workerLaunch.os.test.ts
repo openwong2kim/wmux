@@ -211,10 +211,26 @@ describe('applyWorkerPermissionFlags', () => {
     );
   });
 
-  it('never takes a quoted sentence after a deny flag for tool rules', () => {
-    // The prompt stays an argument; only the deny flag's own rule is carried.
+  it('never takes a quoted sentence after a deny flag for tool rules, and refuses the line', () => {
+    // The sentence is not made into rules; only the deny flag's own rule is carried.
     const line = `claude --disallowedTools Bash "Read the README first"`;
     expect(applyWorkerPermissionFlags(line, 'auto')).toBe(`claude "Read the README first" --permission-mode auto ${listsDenying('Bash')}`);
+    // claude reads every word up to the next flag as a rule, so such a line is refused rather than guessed at.
+    expect(workerModeRefusal(line, 'auto')).toContain('was not started');
+  });
+
+  it('carries every rule of a deny list and its quoted space form, * included; only the prompt argument may follow', () => {
+    const own = `claude --disallowedTools Read "* Bash"`;
+    expect(workerModeRefusal(`${own} ${PROMPT}`, 'auto')).toBeNull();
+    expect(applyWorkerPermissionFlags(`${own} ${PROMPT}`, 'auto')).toBe(
+      // Bash is not repeated: the `*` before it already covers it.
+      `claude ${PROMPT} --permission-mode auto --disallowedTools "${[...FANOUT_WORKER_DISALLOWED_TOOLS, 'Read', '*'].join(',')}"`,
+    );
+    // The PowerShell prompt argument follows a deny list as well.
+    expect(workerModeRefusal(`claude --disallowedTools Bash "$(Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:/p/prompt.md')"`, 'auto')).toBeNull();
+    // Any other word after the rules is a deny wmux cannot carry.
+    expect(workerModeRefusal(`claude --disallowedTools Read "rm -rf" ${PROMPT}`, 'auto')).toContain('was not started');
+    expect(workerModeRefusal(`claude --disallowedTools Read --model opus ${PROMPT}`, 'auto')).toBeNull();
   });
 
   it("a launcher's deny that covers a reporting tool takes it off the allow list, and is named", () => {

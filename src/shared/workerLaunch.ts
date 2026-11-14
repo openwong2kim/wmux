@@ -361,7 +361,7 @@ const TOOL_RULE = /^(?:\*|[A-Za-z_][\w*-]*(\(.*\))?)(,(?:\*|[A-Za-z_][\w*-]*(\(.
 /** A quoted space-separated list (`"Bash PowerShell"`, claude splits on spaces
  *  too). Only tool-shaped names: a built-in tool's capitalised name or an MCP
  *  name, so a quoted sentence ("Read the README first") is never taken. */
-const SPACED_TOOL_RULE = /^(?:[A-Z][A-Za-z0-9]*|mcp__[\w*-]+)(\([^)]*\))?([,\s]+(?:[A-Z][A-Za-z0-9]*|mcp__[\w*-]+)(\([^)]*\))?)+$/;
+const SPACED_TOOL_RULE = /^(?:\*|(?:[A-Z][A-Za-z0-9]*|mcp__[\w*-]+)(\([^)]*\))?)([,\s]+(?:\*|(?:[A-Z][A-Za-z0-9]*|mcp__[\w*-]+)(\([^)]*\))?))+$/;
 /** Either form; `*` (claude's every-tool rule) is one in both. */
 const isToolRuleWord = (value: string): boolean => TOOL_RULE.test(value) || SPACED_TOOL_RULE.test(value);
 
@@ -432,12 +432,16 @@ function lineFlags(command: string, words: readonly Span[]): LineFlags {
         if (denies) deny(words[k], v.slice(eq + 1));
         continue;
       }
-      const first = k + 1;
       while (k + 1 < words.length && isToolRuleWord(words[k + 1].value)) {
         out.cut.push(words[++k]);
         if (denies) deny(words[k], words[k].value);
       }
-      if (denies && k + 1 === first && first < words.length && !words[first].value.startsWith('-')) out.uncarriable = true;
+      // claude's list flags are variadic: it reads every word up to the next
+      // flag as a rule. The one word wmux puts there itself is the prompt
+      // argument (`"$(cat '…')"`, `"$(Get-Content …)"`), which follows the
+      // launcher; any other word would be a deny wmux cannot carry.
+      const next = words[k + 1]?.value;
+      if (denies && next !== undefined && !next.startsWith('-') && !next.startsWith('$(')) out.uncarriable = true;
     }
   }
   return out;
