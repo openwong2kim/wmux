@@ -311,6 +311,8 @@ export interface A2aRemoteInboxItem {
   heldAt?: string;
   /** main started a paste and has not confirmed it yet. */
   attempted?: boolean;
+  /** A paste of it was once left unconfirmed (`delivery-unconfirmed`): it may be in the pane, whatever hold follows. */
+  unconfirmed?: true;
   /**
    * Dropped here without being delivered (its hold expired): the task stays
    * open. `notice`: whether the PC that sent it was told (`held-notice.1`);

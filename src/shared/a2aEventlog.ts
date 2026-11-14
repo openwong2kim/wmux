@@ -82,7 +82,11 @@ export interface A2aTaskTransitionPayload {
    * remote-message dedupe keys on `remoteAsked ?? to`.
    */
   remoteAsked?: 'completed';
-  /** Cross-host A2A: the peer's `working` on a task that ended `completed` here, taken for a follow-up of ours. */
+  /**
+   * Cross-host A2A: taken for a follow-up of ours (one off `followUpsOpen`): the peer's `working` on a task that
+   * ended `completed` here, or its `completed` on one still `completed` here (it followed the task again and ended it
+   * before its `working` reached us).
+   */
   followedAgain?: true;
   /**
    * Reopen marker. `'sender_message'` = the sender wrote to a task that had
@@ -166,13 +170,6 @@ export interface A2aRemoteMarkPayload {
   stateRefused?: { state: TaskState; code: A2aRemoteErrorCode };
   /** Task-level: the peer took a state of ours again; a refusal recorded before is over. */
   stateAccepted?: true;
-  /**
-   * Task-level, outbound: the peer's `completed` (this messageId) on a task
-   * that is still `completed` here took a follow-up of ours: it followed the
-   * task again and ended it before we saw its `working`. One is taken off
-   * `followUpsOpen`; the state does not change.
-   */
-  followUpTaken?: string;
   /** Item-level: dropped undelivered (its hold expired); the task stays open. Its notice starts `pending`. */
   rejected?: 'held-expired';
   /** Item-level, after `rejected`: whether the PC that sent it was told. */

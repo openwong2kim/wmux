@@ -1186,11 +1186,31 @@ describe('a reopen undone when the message that reopened the task never reached 
     expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-1', held: 'delivery-unconfirmed' })).ok).toBe(true);
     expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-1', rejected: 'held-expired' })).ok).toBe(true);
     expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ undone: false });
+    // Left unconfirmed once, then held for another reason: its paste may still be in the pane.
+    svc = await reopened();
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-1', held: 'delivery-unconfirmed' })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-1', held: 'no-agent' })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-1', rejected: 'held-expired' })).ok).toBe(true);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ undone: false });
+    // A later follow-up still owed: the task stays open for it, until it is dropped too.
+    svc = await reopened();
+    expect((await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('f-2', 'and this') })).ok).toBe(true);
+    await expire(svc);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ undone: false });
+    await expire(svc, 'f-2');
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'held-expired' })).toMatchObject({ undone: true });
     // Not the message that reopened it.
     svc = await reopened();
     await expire(svc);
     expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'm-0', reason: 'held-expired' })).toMatchObject({ undone: false });
     expect(svc.getTask('rt-in')!.status.state).toBe('working');
+  });
+
+  it('link-ended: a reopening message already dropped unread (its notice still owed) is undone too', async () => {
+    const svc = await reopened();
+    await expire(svc);
+    expect(await svc.undoReopen({ taskId: 'rt-in', messageId: 'f-1', reason: 'link-ended' })).toMatchObject({ ok: true, undone: true });
+    expect(svc.getTask('rt-in')!.status.state).toBe('completed');
   });
 });
 
@@ -1219,12 +1239,13 @@ describe('the sender\'s count when the peer ends a reopened task before its work
     expect(remoteOf(svc, 'rt-out')).not.toHaveProperty('followUpsOpen');
   });
 
-  it('completed only: one taken, the state unchanged, nothing refused; after a replay too', async () => {
+  it('completed only: one taken, still completed with the peer\'s result, nothing refused; after a replay too', async () => {
     const log = newLog();
     const svc = await counted(1, log);
-    const before = svc.getTask('rt-out')!.status;
-    expect(await peer(svc, 's3', 'completed')).toMatchObject({ ok: true, duplicate: false });
-    expect(svc.getTask('rt-out')!.status).toEqual(before);
+    // The peer's agent answered the follow-up before its working went out: that answer is the task's result now.
+    const res = await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's3', to: 'completed', peerReopens: true, summary: 'answered', message: 'Here is the answer.', evidence: PEER_EVIDENCE });
+    expect(res).toMatchObject({ ok: true, duplicate: false });
+    expect(svc.getTask('rt-out')!.status).toMatchObject({ state: 'completed', message: { parts: [{ kind: 'text', text: 'Here is the answer.' }] } });
     expect(remoteOf(svc, 'rt-out')).not.toHaveProperty('followUpsOpen');
     const restored = newService(log);
     restored.restoreFromLog();

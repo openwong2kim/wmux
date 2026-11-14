@@ -112,8 +112,8 @@ export async function expireHeld(deps: HeldDeps, ttlMs = A2A_REMOTE_HOLD_TTL_MS)
 
 /**
  * A task its remote sender reopened, whose reopening message was dropped when its hold expired, goes back to
- * `completed` (A2aTaskService.undoReopen checks the rest), and the sender is told. Only once that message's notice
- * is settled (sent, or not to be sent): the notice goes to the sender before the state, and a task already ended
+ * `completed` (A2aTaskService.undoReopen holds the rules), and the sender is told. Only once every notice on the
+ * task is settled (sent, or not to be sent): a notice goes to the sender before the state, and a task already ended
  * would send none. Returns the task ids undone.
  */
 export async function undoDroppedReopens(deps: HeldDeps): Promise<string[]> {
@@ -121,9 +121,8 @@ export async function undoDroppedReopens(deps: HeldDeps): Promise<string[]> {
   for (const task of deps.taskService.listRemote()) {
     const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
     const by = marker?.reopenedBy?.messageId;
-    if (!by || marker?.direction !== 'inbound' || task.status.state !== 'working') continue;
-    const item = (marker.inbox ?? []).find((i) => i.messageId === by);
-    if (item?.rejected?.reason !== 'held-expired' || item.rejected.notice === 'pending') continue;
+    // Not while a notice on the task is still owed: a task that ended sends none.
+    if (!by || (marker?.inbox ?? []).some((i) => i.rejected?.notice === 'pending')) continue;
     // eslint-disable-next-line no-await-in-loop -- per-task lock order
     const res = await deps.taskService.undoReopen({ taskId: task.id, messageId: by, reason: 'held-expired' });
     if (!res.ok || !res.undone) continue;
