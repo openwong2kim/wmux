@@ -339,6 +339,8 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // server-derived in the handler and the spawn is approval-gated, so the grant
   // is to ATTEMPT the call; an unverifiable caller still fails closed.
   'task.fanout.start',
+  // fanout_bring_back: the row's owner workspace only (server-resolved), never a fan-out task.
+  'task.fanout.bringBack',
   // remote_spawn: ask a paired PC to start an agent. The caller's pane is
   // server-resolved and depth-1 checked in the handler; the other PC decides.
   'a2a.remote.spawn',

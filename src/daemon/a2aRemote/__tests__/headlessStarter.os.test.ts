@@ -163,7 +163,7 @@ describe('headless start', () => {
     expect(input.agentBin).toBe('/home/u/.local/bin/claude');
     // The worker flags and the pinned conversation id; never the prompt.
     expect(input.command).toBe(`claude --session-id ${rec.agentSessionId} ${workerLaunchFlags('auto', HEADLESS_EXTRA_DISALLOWED_TOOLS)}`);
-    for (const tool of ['remote_spawn', 'hand_out', 'a2a_broadcast', 'pane_close', 'automation_propose', 'computer', 'repl_run', 'terminal_send', 'channel_join', 'channel_create', 'channel_invite']) {
+    for (const tool of ['remote_spawn', 'fanout_bring_back', 'hand_out', 'a2a_broadcast', 'pane_close', 'automation_propose', 'computer', 'repl_run', 'terminal_send', 'channel_join', 'channel_create', 'channel_invite']) {
       expect(input.command).toContain(`mcp__wmux__${tool}`);
     }
     expect(input.command).toContain('mcp__wmux__fanout_start');

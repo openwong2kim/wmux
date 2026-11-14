@@ -25,7 +25,7 @@ import { prepareA2aImage, type A2aImageInfo, type A2aImageRefusal } from '../../
 import { companyBriefOf } from '../../shared/company';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
 import type { A2aTaskService } from '../a2a/A2aTaskService';
-import { failTasksForLink, expireHeld, rejectHeld, sendHeldNotices, type HeldDeps } from './held';
+import { failTasksForLink, expireHeld, rejectHeld, sendHeldNotices, undoDroppedReopens, type HeldDeps } from './held';
 import { remoteTaskId } from './ids';
 import { A2aImageStore, sha256 } from './imageStore';
 import { registerImageRoutes } from './imageRoutes';
@@ -39,7 +39,7 @@ import { OutboxStore } from './outboxStore';
 import { PeerFeatureStore } from './peerFeatureStore';
 import type { A2aRouteTable } from './routes';
 import { addressPromoter } from './remoteHostStore';
-import { JoinerSession, taskOfEnvelope, type SessionClient, type SessionTiming, type StreamedGet } from './session';
+import { JoinerSession, taskOfEnvelope, type SessionClient, type SessionTiming, type StreamedGet, type StreamedPut } from './session';
 import type { PinnedClientOptions } from './pinnedClient';
 import { A2aStreamHub } from './streamHub';
 import { errMsg, isPlainObject, isSafeId } from './storeFile';
@@ -333,6 +333,12 @@ export class A2aRemoteDelivery {
     return session ? (route, opts, consume) => session.fetchStream(route, opts, consume) : null;
   }
 
+  /** A streamed PUT to `hostId` while this PC joined it (a bundle that PC asked for); null when it did not. */
+  bundlePut(hostId: HostId): StreamedPut | null {
+    const session = this.sessions.get(hostId)?.session;
+    return session ? (route, body, opts) => session.sendStream(route, body, opts) : null;
+  }
+
   // --- lifecycle ------------------------------------------------------------
 
   start(): void {
@@ -467,6 +473,13 @@ export class A2aRemoteDelivery {
       await sendHeldNotices(this.heldDeps());
     } catch (err) {
       this.deps.log('warn', `[a2a-remote] held notices failed: ${errMsg(err)}`);
+    }
+    // After the notices: a reopen whose message was dropped is undone only once its notice went (or cannot go).
+    try {
+      const undone = await undoDroppedReopens(this.heldDeps());
+      if (undone.length > 0) this.deps.log('info', `[a2a-remote] ${undone.length} reopened task(s) completed again: the message that reopened each expired unread`);
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] undoing reopens failed: ${errMsg(err)}`);
     }
     // Expiry, put-backs still owed, and claims a restart (or the app's absence) left unfinished.
     this.deps.offers?.recover();
