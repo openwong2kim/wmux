@@ -166,7 +166,7 @@ export function parseBundleHeader(buf: Buffer): BundleHeader | null {
 
 export type HomeRepoResult =
   | { ok: true; top: string; origin: string; linked: boolean }
-  | { ok: false; reason: 'no-home-repo' }
+  | { ok: false; reason: 'no-home-repo' | 'home-repo-owner' }
   | { ok: false; reason: 'home-repo-config'; kind: HomeRepoConfigKind };
 
 /** Keys that would weaken git's object checks. */
@@ -228,6 +228,8 @@ export async function openHomeRepo(homeRepo: string, git: ImportGit = importGit)
   const cwd = real;
   const run = (args: string[]): Promise<ImportGitOut> => git(['-c', 'core.fsmonitor=false', ...args], cwd);
   const top = await run(['rev-parse', '--show-toplevel']);
+  // Git's ownership check: without the global config, no safe.directory can mark another user's repository safe.
+  if (top.code !== 0 && /dubious ownership/.test(top.stderr)) return { ok: false, reason: 'home-repo-owner' };
   if (top.code !== 0 || realOrNull(top.stdout.trim()) !== real) return noRepo;
   const entries = await readOwnConfig(run);
   if (!entries) return noRepo;

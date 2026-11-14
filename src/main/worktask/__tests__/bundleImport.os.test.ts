@@ -410,4 +410,12 @@ describe('openHomeRepo (real git)', () => {
     g(repo, 'worktree', 'add', '-q', '-b', 'other', wt);
     expect(await openHomeRepo(wt)).toEqual({ ok: true, top: fs.realpathSync.native(wt), origin: 'github.com/o/r', linked: true });
   });
+
+  it('says when the home repository belongs to another user (git\'s ownership check), not that there is none', async () => {
+    const repo = fs.realpathSync(trackedTempDir('wmux-home-owner-'));
+    const owner: ImportGit = async (args) => (args.includes('--show-toplevel')
+      ? { code: 128, stdout: '', stderr: `fatal: detected dubious ownership in repository at '${repo}'\n` }
+      : { code: 1, stdout: '', stderr: 'unexpected' });
+    expect(await openHomeRepo(repo, owner)).toEqual({ ok: false, reason: 'home-repo-owner' });
+  });
 });
