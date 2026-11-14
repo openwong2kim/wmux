@@ -30,12 +30,14 @@ import { originUrlRepoKey, parseGitConfigList, workerGitConfigRefusal, workerGit
 /** The longest a git call of the import may run before it (and anything it started) is killed. */
 export const BUNDLE_IMPORT_TIMEOUT_MS = 120_000;
 /**
- * The oldest git seen to refuse a bundle whose objects fail fsck: measured,
- * never guessed. An older git may take objects without checking them, so the
- * import refuses it. It applies to the git of the PC that imports (the asking
- * PC), not to the PC that made the bundle.
+ * The oldest git seen to refuse every hostile case of the measurement: measured,
+ * never guessed (the code itself needs 2.32 and fails closed below it). An older
+ * git may take objects without checking them, so the import refuses it. It
+ * applies to the git of the PC that imports (the asking PC), not to the PC that
+ * made the bundle. Approximate: distribution builds backport fixes under the
+ * same number.
  */
-export const BUNDLE_IMPORT_GIT_FLOOR: readonly [number, number, number] = [2, 50, 1];
+export const BUNDLE_IMPORT_GIT_FLOOR: readonly [number, number, number] = [2, 43, 0];
 
 /** `git --version` output → [major, minor, patch], or null when it cannot be read. Pure. */
 export function parseGitVersion(out: string): [number, number, number] | null {
@@ -66,7 +68,15 @@ export function importGitEnv(base: NodeJS.ProcessEnv = getExecEnv()): NodeJS.Pro
   return { ...workerGitEnv(base), GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C' };
 }
 
-export interface ImportGitOut { code: number; stdout: string; stderr: string; /** No git was found on this PC: nothing ran. */ missing?: true }
+export interface ImportGitOut {
+  code: number;
+  stdout: string;
+  stderr: string;
+  /** No git was found on this PC: nothing ran. */
+  missing?: true;
+  /** The git found is inside the folder it would run in (the repository): nothing ran. */
+  inRepo?: true;
+}
 /** Runs git in `cwd` with the import's env, `stdin` piped in when given; never throws. */
 export type ImportGit = (args: string[], cwd: string, opts?: { stdin?: Readable; timeoutMs?: number }) => Promise<ImportGitOut>;
 
@@ -93,13 +103,27 @@ export function findImportGit(env: NodeJS.ProcessEnv): string | null {
   return null;
 }
 
-/** The import's git, found by `find`: past its time it is killed with its whole process group. */
+/** Whether `file` (as it resolves) is under the folder `dir`. Never throws. */
+function isInside(dir: string, file: string): boolean {
+  const rel = path.relative(realOrNull(dir) ?? path.resolve(dir), realOrNull(file) ?? path.resolve(file));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/**
+ * The import's git, found by `find`: never one inside the folder it runs in (the repository), and past its time it
+ * is killed with its whole process group.
+ */
 export const importGitWith = (find: (env: NodeJS.ProcessEnv) => string | null): ImportGit => (args, cwd, { stdin, timeoutMs = BUNDLE_IMPORT_TIMEOUT_MS } = {}) => new Promise((resolve) => {
   const env = importGitEnv();
   const exe = find(env);
   if (!exe) {
     stdin?.destroy();
     resolve({ code: 1, stdout: '', stderr: 'git was not found on this PC', missing: true });
+    return;
+  }
+  if (isInside(cwd, exe)) {
+    stdin?.destroy();
+    resolve({ code: 1, stdout: '', stderr: 'the git found is inside the repository it would run in', inRepo: true });
     return;
   }
   let stdout = '';
@@ -199,8 +223,8 @@ export function parseBundleHeader(buf: Buffer): BundleHeader | null {
 }
 
 export type HomeRepoResult =
-  | { ok: true; top: string; gitDir: string; origin: string; linked: boolean }
-  | { ok: false; reason: 'no-home-repo' | 'home-repo-owner' | 'git-missing' }
+  | { ok: true; top: string; gitDir: string; commonDir: string; origin: string; linked: boolean }
+  | { ok: false; reason: 'no-home-repo' | 'home-repo-owner' | 'git-missing' | 'git-in-repo' }
   | { ok: false; reason: 'home-repo-config'; kind: HomeRepoConfigKind };
 
 /** Keys that would weaken git's object checks. */
@@ -263,6 +287,7 @@ export async function openHomeRepo(homeRepo: string, git: ImportGit = importGit)
   const run = (args: string[]): Promise<ImportGitOut> => git(['-c', 'core.fsmonitor=false', ...args], cwd);
   const top = await run(['rev-parse', '--show-toplevel']);
   if (top.missing) return { ok: false, reason: 'git-missing' };
+  if (top.inRepo) return { ok: false, reason: 'git-in-repo' };
   // Git's ownership check: without the global config, no safe.directory can mark another user's repository safe.
   if (top.code !== 0 && /dubious ownership/.test(top.stderr)) return { ok: false, reason: 'home-repo-owner' };
   if (top.code !== 0 || realOrNull(top.stdout.trim()) !== real) return noRepo;
@@ -275,8 +300,8 @@ export async function openHomeRepo(homeRepo: string, git: ImportGit = importGit)
   if (!origin) return noRepo;
   const dirs = await run(['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir']);
   const [gitDir, commonDir] = dirs.code === 0 ? dirs.stdout.trim().split('\n').map((d) => realOrNull(d.trim())) : [null, null];
-  if (!gitDir) return noRepo;
-  return { ok: true, top: real, gitDir, origin, linked: commonDir !== null && gitDir !== commonDir };
+  if (!gitDir || !commonDir) return noRepo;
+  return { ok: true, top: real, gitDir, commonDir, origin, linked: gitDir !== commonDir };
 }
 
 /**
@@ -298,9 +323,10 @@ export function noHooksDirReady(dir: string): boolean {
 }
 
 export interface BundleImportInput {
-  /** The home repository's top level and git dir (openHomeRepo). */
+  /** The home repository's top level, git dir and common git dir (openHomeRepo). */
   top: string;
   gitDir: string;
+  commonDir: string;
   /** Checked here before it names a branch. */
   spawnId: string;
   /** The staged file and the manifest it was staged under. */
@@ -314,7 +340,7 @@ export interface BundleImportInput {
 
 export type BundleImportResult =
   | { ok: true; branch: string; sha: string; noop: boolean; warnings: BundleImportWarning[] }
-  | { ok: false; reason: Extract<BundleAskerRefusal, 'base-not-local' | 'not-fast-forward' | 'bundle-unexpected' | 'import-failed' | 'git-too-old' | 'git-missing'> }
+  | { ok: false; reason: Extract<BundleAskerRefusal, 'base-not-local' | 'not-fast-forward' | 'bundle-unexpected' | 'import-failed' | 'git-too-old' | 'git-missing' | 'git-in-repo'> }
   | { ok: false; reason: 'home-repo-config'; kind: HomeRepoConfigKind };
 
 /** What the imported work holds that a branch alone does not bring (fixed words only). */
@@ -355,6 +381,7 @@ export async function importBundle(
     // A git older than the floor may not check the objects: nothing is taken in with it.
     const version = await run(['--version']);
     if (version.missing) return { ok: false, reason: 'git-missing' };
+    if (version.inRepo) return { ok: false, reason: 'git-in-repo' };
     const v = version.code === 0 ? parseGitVersion(version.stdout) : null;
     if (!v || !gitAtLeast(v, gitFloor)) return { ok: false, reason: 'git-too-old' };
     // The bundle's object format is the repository's (a git that cannot say has only sha1).
@@ -375,10 +402,11 @@ export async function importBundle(
     if (!entries) return failed;
     const kind = homeConfigRefusal(entries);
     if (kind) return { ok: false, reason: 'home-repo-config', kind };
-    // Still the repository that was opened: its folder its own top level, its git dir the same (a swapped .git refuses).
-    const where = await run(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir']);
-    const [whereTop, whereDir] = where.code === 0 ? where.stdout.trim().split('\n').map((d) => realOrNull(d.trim())) : [null, null];
-    if (!whereTop || whereTop !== realOrNull(input.top) || whereDir !== input.gitDir) return failed;
+    // Still the repository that was opened: its folder its own top level, its git dir and common git dir the same
+    // (a swapped .git, or a linked worktree's swapped common dir, refuses).
+    const where = await run(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir']);
+    const [whereTop, whereDir, whereCommon] = where.code === 0 ? where.stdout.trim().split('\n').map((d) => realOrNull(d.trim())) : [null, null, null];
+    if (!whereTop || whereTop !== realOrNull(input.top) || whereDir !== input.gitDir || whereCommon !== input.commonDir) return failed;
     // Every object checked; a thin pack completed from the prerequisites. A refused pack is never installed
     // (at most a temporary file is left, which git's own gc removes).
     // Symlinked attribute, ignore and mailmap files are only noted by git's checks by default: here they refuse.

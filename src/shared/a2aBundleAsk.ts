@@ -33,11 +33,13 @@ export const BUNDLE_ASKER_REFUSALS = [
   'home-repo-config',
   /** No git was found on this PC (in an absolute folder of PATH). */
   'git-missing',
+  /** The git found on PATH is inside the home repository, so it is not run. */
+  'git-in-repo',
   /** The home repository belongs to another user, so git does not work in it with this user's settings. */
   'home-repo-owner',
   /** Git refused the import (a corrupt object, the branch checked out): nothing was written. */
   'import-failed',
-  /** Git on this PC is older than the version seen to check a bundle's objects on fetch, or its version is unreadable. */
+  /** Git on this PC is older than the version seen to check a bundle's objects, or its version is unreadable. */
   'git-too-old',
 ] as const;
 export type BundleAskerRefusal = (typeof BUNDLE_ASKER_REFUSALS)[number];
@@ -122,6 +124,7 @@ export function bringBackRefusalText(reason: BundleBringBackRefusal, configKind?
     case 'home-repo-config': return `the home repository's own git config (.git/config) has ${configKind ? HOME_REPO_CONFIG_KIND_TEXT[configKind] : 'a setting that runs a program'}, which wmux does not run git with: remove it there, then bring back again`;
     case 'home-repo-owner': return 'the home repository belongs to another user, and wmux runs git without the global config that could mark it safe: bring back into a repository this user owns';
     case 'git-missing': return 'git was not found on this PC';
+    case 'git-in-repo': return 'the git found on this PC is inside the home repository being imported into, so wmux did not run it: put a git outside that repository first on PATH';
     case 'git-too-old': return 'git on this PC is too old to check a returned bundle; update git, then bring back again';
     case 'import-failed': return 'git refused to import the bundle (a damaged object, or the returned branch is checked out): nothing was changed';
   }

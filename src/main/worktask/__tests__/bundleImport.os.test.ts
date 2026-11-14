@@ -84,7 +84,7 @@ describe('importBundle (real git)', () => {
   const inputFor = (file: string): BundleImportInput => {
     const bytes = fs.readFileSync(file);
     return {
-      top: home, gitDir: fs.realpathSync.native(path.join(home, '.git')), spawnId: SPAWN, file, ref: REF, noHooksDir: noHooks,
+      top: home, gitDir: fs.realpathSync.native(path.join(home, '.git')), commonDir: fs.realpathSync.native(path.join(home, '.git')), spawnId: SPAWN, file, ref: REF, noHooksDir: noHooks,
       manifest: { bundleId: 'bd-11111111-2222-4333-8444-555555555555', sha256: crypto.createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length },
     };
   };
@@ -266,7 +266,7 @@ describe('importBundle (real git)', () => {
 
   it('refuses before indexing when git is older than the floor or its version cannot be read', async () => {
     const input = bundleOf('old');
-    for (const out of ['git version 2.20.1', `git version ${BUNDLE_IMPORT_GIT_FLOOR[0]}.${BUNDLE_IMPORT_GIT_FLOOR[1]}.${BUNDLE_IMPORT_GIT_FLOOR[2] - 1}`, 'not git', '']) {
+    for (const out of ['git version 2.20.1', `git version ${BUNDLE_IMPORT_GIT_FLOOR[0]}.${BUNDLE_IMPORT_GIT_FLOOR[1] - 1}.9`, 'not git', '']) {
       const calls: string[][] = [];
       const old: ImportGit = (args, cwd, opts) => {
         calls.push(args);
@@ -345,6 +345,31 @@ describe('importBundle (real git)', () => {
     expect(await importBundle(input, importGitWith(() => null))).toEqual({ ok: false, reason: 'git-missing' });
     expect(await openHomeRepo(home, importGitWith(() => null))).toEqual({ ok: false, reason: 'git-missing' });
     expect(tipOf(home, BRANCH)).toBeNull();
+  });
+
+  it('never runs a git found inside the home repository', async () => {
+    const input = bundleOf('git-in-repo');
+    const inside = importGitWith(() => path.join(home, 'bin', 'git'));
+    expect(await importBundle(input, inside)).toEqual({ ok: false, reason: 'git-in-repo' });
+    expect(await openHomeRepo(home, inside)).toEqual({ ok: false, reason: 'git-in-repo' });
+    expect(tipOf(home, BRANCH)).toBeNull();
+  });
+
+  it('into a linked worktree: lands in the shared repository, and refuses once its common dir was swapped', async () => {
+    const wt = path.join(root, 'linked');
+    g(home, 'worktree', 'add', '-q', '-b', 'side', wt, base);
+    const opened = await openHomeRepo(wt);
+    if (!opened.ok) throw new Error(`not opened: ${opened.reason}`);
+    expect(opened).toMatchObject({ linked: true, commonDir: fs.realpathSync.native(path.join(home, '.git')) });
+    const input = { ...bundleOf('linked'), top: opened.top, gitDir: opened.gitDir, commonDir: opened.commonDir };
+    const commondirFile = path.join(opened.gitDir, 'commondir');
+    const original = fs.readFileSync(commondirFile, 'utf8');
+    fs.writeFileSync(commondirFile, `${path.join(box, '.git')}\n`);
+    expect(await importOnRunner(input)).toEqual({ ok: false, reason: 'import-failed' });
+    expect(tipOf(box, BRANCH)).toBeNull();
+    fs.writeFileSync(commondirFile, original);
+    expect(await importOnRunner(input)).toMatchObject({ ok: true, noop: false });
+    expect(tipOf(home, BRANCH)).toBe(g(box, 'rev-parse', 'HEAD'));
   });
 
   it('refuses a hooks folder that is not empty or not a folder', async () => {
@@ -435,7 +460,7 @@ describe('openHomeRepo (real git)', () => {
     execFileSync('git', ['init', '-q', '-b', 'main', repo]);
     expect(await openHomeRepo(repo)).toEqual({ ok: false, reason: 'no-home-repo' });
     g(repo, 'remote', 'add', 'origin', 'https://github.com/o/r.git');
-    expect(await openHomeRepo(repo)).toEqual({ ok: true, top: fs.realpathSync.native(repo), gitDir: fs.realpathSync.native(path.join(repo, '.git')), origin: 'github.com/o/r', linked: false });
+    expect(await openHomeRepo(repo)).toEqual({ ok: true, top: fs.realpathSync.native(repo), gitDir: fs.realpathSync.native(path.join(repo, '.git')), commonDir: fs.realpathSync.native(path.join(repo, '.git')), origin: 'github.com/o/r', linked: false });
     fs.mkdirSync(path.join(repo, 'sub'));
     expect(await openHomeRepo(path.join(repo, 'sub'))).toEqual({ ok: false, reason: 'no-home-repo' });
     expect(await openHomeRepo(path.join(root, 'gone'))).toEqual({ ok: false, reason: 'no-home-repo' });
@@ -452,7 +477,7 @@ describe('openHomeRepo (real git)', () => {
     g(repo, 'commit', '-q', '--allow-empty', '-m', 'base');
     const wt = path.join(root, 'wt');
     g(repo, 'worktree', 'add', '-q', '-b', 'other', wt);
-    expect(await openHomeRepo(wt)).toEqual({ ok: true, top: fs.realpathSync.native(wt), gitDir: fs.realpathSync.native(path.join(repo, '.git', 'worktrees', 'wt')), origin: 'github.com/o/r', linked: true });
+    expect(await openHomeRepo(wt)).toEqual({ ok: true, top: fs.realpathSync.native(wt), gitDir: fs.realpathSync.native(path.join(repo, '.git', 'worktrees', 'wt')), commonDir: fs.realpathSync.native(path.join(repo, '.git')), origin: 'github.com/o/r', linked: true });
   });
 
   it('says when the home repository belongs to another user (git\'s ownership check), not that there is none', async () => {
