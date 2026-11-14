@@ -1237,7 +1237,6 @@ impl RowStep {
     }
 }
 
-/// The alternate screen's grid, whichever screen is shown.
 /// xterm's saved row on the main screen across a narrowing that reflows
 /// (`Buffer._reflowSmaller`): for each reflowed paragraph,
 /// `savedY = min(savedY + linesToAdd, ybase + rows - 1)`, absolute. ybase
@@ -1259,6 +1258,7 @@ fn narrowed_saved_history(grid: &Grid<Cell>, history: i64) -> i64 {
     (history + grid.narrowing_trimmed as i64).min(bottom - line)
 }
 
+/// The alternate screen's grid, whichever screen is shown.
 fn alt_grid(term: &Term<VoidListener>) -> &Grid<Cell> {
     if term.mode().contains(TermMode::ALT_SCREEN) {
         term.grid()
@@ -1686,10 +1686,15 @@ impl NativeTerminal {
             }
         }
         let before = main_grid(term).history_size() as i64;
+        // The grid records a narrowing only when this resize runs one: a
+        // resize to the same size returns early and leaves the last one's.
+        let narrows = size.columns() < term.columns();
         term.resize(size);
         self.feed.saved[0].history += main_grid(term).history_size() as i64 - before;
-        self.feed.saved[0].history =
-            narrowed_saved_history(main_grid(term), self.feed.saved[0].history);
+        if narrows {
+            self.feed.saved[0].history =
+                narrowed_saved_history(main_grid(term), self.feed.saved[0].history);
+        }
         // feed_xterm checks the same after a chunk, where the chunk's own
         // ED 3 could hide a resize's trim.
         if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
@@ -3751,5 +3756,42 @@ mod alt_kept_cells_tests {
             red(&[N, Out("\x1b[41m\x1b[2;1H\x1b[L\x1b[0m"), W])[1],
             "0123456789"
         );
+    }
+}
+
+#[cfg(test)]
+mod narrowed_saved_history_tests {
+    use super::narrowed_saved_history;
+    use alacritty_terminal::grid::Grid;
+    use alacritty_terminal::index::Line;
+    use alacritty_terminal::term::cell::Cell;
+
+    /// An 8-row grid with no history, its saved row on `line`, after a
+    /// narrowing that added `added` rows and trimmed `trimmed` of them.
+    fn grid(line: i32, added: usize, trimmed: usize) -> Grid<Cell> {
+        let mut grid = Grid::<Cell>::new(8, 10, 2);
+        grid.saved_cursor.point.line = Line(line);
+        grid.narrowing_added = added;
+        grid.narrowing_trimmed = trimmed;
+        grid
+    }
+
+    #[test]
+    fn carries_the_trimmed_rows() {
+        // Row 2 + 3 trimmed = row 5, above the last row.
+        assert_eq!(narrowed_saved_history(&grid(2, 4, 3), 0), 3);
+    }
+
+    #[test]
+    fn clamps_to_the_last_row() {
+        // Row 5 + 9 trimmed would pass row 7.
+        assert_eq!(narrowed_saved_history(&grid(5, 9, 9), 0), 2);
+        // xterm clamps on every reflowed narrowing, trimmed rows or not.
+        assert_eq!(narrowed_saved_history(&grid(6, 2, 0), 3), 1);
+    }
+
+    #[test]
+    fn leaves_it_when_nothing_was_added() {
+        assert_eq!(narrowed_saved_history(&grid(5, 0, 0), 4), 4);
     }
 }
