@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { A2A_ROUTES, A2A_SHA256_RE, isHostId, type HostId } from '../../shared/a2aRemote';
 import { BUNDLE_BYTES_CEILING, BUNDLE_TTL_DEFAULT_MS, isBundleId } from '../../shared/a2aBundle';
@@ -68,6 +69,12 @@ interface Offered extends BundleOffer {
 export interface BundleOutboxDeps {
   /** The route exists only while this holds. */
   enabled: () => boolean;
+  /**
+   * Where the maker keeps its bundles (`<a2a dir>/bundle-out`): when set, only
+   * `<root>/<hostId>/<bundleId>.bundle` is offered, a plain file reached
+   * through no link.
+   */
+  root?: string;
   /** A streamed PUT to `hostId` through this PC's session with it (it joined that PC); null when it did not. */
   putTo: (hostId: HostId) => StreamedPut | null;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
@@ -83,6 +90,17 @@ function goneOrThrow(err: unknown): null {
   const code = (err as NodeJS.ErrnoException | null)?.code;
   if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'ELOOP' || code === 'ENXIO') return null;
   throw err;
+}
+
+/** `o.file` is `<root>/<hostId>/<bundleId>.bundle` once every link on the way is resolved. */
+function inMakersFolder(root: string, o: BundleOffer): boolean {
+  try {
+    const folder = fs.realpathSync.native(path.join(root, o.hostId));
+    return path.basename(o.file) === `${o.bundleId}.bundle` && fs.realpathSync.native(path.dirname(o.file)) === folder
+      && fs.realpathSync.native(o.file) === path.join(folder, `${o.bundleId}.bundle`);
+  } catch {
+    return false;
+  }
 }
 
 export class BundleOutbox {
@@ -120,6 +138,7 @@ export class BundleOutbox {
       return false;
     }
     if (!st.isFile() || st.size !== o.bytes) return false;
+    if (this.deps.root !== undefined && !inMakersFolder(this.deps.root, o)) return false;
     // Offers past their time that were never fetched go here, so the list does not grow with them.
     const now = this.now();
     for (const [k, old] of this.offers) if (now >= old.expiresAt) this.offers.delete(k);
