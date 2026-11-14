@@ -4411,6 +4411,7 @@ export const zh = {
   'sessionSchedule.statusSent': '已发送',
   'sessionSchedule.statusError': '投递错误',
   'sessionSchedule.statusPaused': '已暂停',
+  'sessionSchedule.statusGaveUpBusy': '未发送：输入框忙碌了一小时',
   'sessionSchedule.daemonRequired': '计划需要 wmux 后台服务，但目前未连接。重新连接后再试。',
   'sessionSchedule.promptLabel': '计划提示',
   'sessionSchedule.whenLabel': '投递时间',
