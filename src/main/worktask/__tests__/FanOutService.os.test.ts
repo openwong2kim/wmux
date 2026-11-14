@@ -467,6 +467,24 @@ describe('T3 worktree base — one fetch per fan-out, OID pinned, warning surfac
     }
   });
 
+  it("names a reporting tool the launcher's own deny keeps from a task, with wmux's names only", async () => {
+    // The renderer launched task 2 from a launcher that denies a reporting
+    // tool (by its server's rule); task 1's launcher denies only shells.
+    const launchers = ['claude --disallowedTools Bash', 'claude --disallowedTools mcp__wmux'];
+    let n = 0;
+    const renderer = makeRendererFake({
+      rewriteCommand: (p) => applyWorkerPermissionFlags(p.initialCommand.replace(/^claude/, launchers[n++]), 'auto'),
+    });
+    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: renderer.port, worktrees: makeWorktreesFake() });
+    const res = await svc.start(baseReq());
+    expect(res.ok).toBe(true);
+    expect(res.warnings).toEqual([
+      'task 2: its launch line denies mcp__wmux__ledger_update, mcp__wmux__task_push, mcp__wmux__task_fetch, mcp__wmux__channel_read, ' +
+        'mcp__wmux__channel_unread, mcp__wmux__channel_ack, mcp__wmux__a2a_task_query, mcp__wmux__a2a_whoami, which a worker reports with; ' +
+        'the deny stays, so this task may not report its progress or result',
+    ]);
+  });
+
   it('a base refused for submodules/LFS refuses the whole fan-out before any task exists', async () => {
     const worktrees = makeWorktreesFake();
     worktrees.resolveBase = vi.fn(async () => ({ error: 'the base refs/remotes/origin/main contains submodules' }));

@@ -248,8 +248,9 @@ export function workerLaunchFlags(mode: FanoutWorkerPermissionMode, extraDisallo
 /** `permission` (empty for none) and the tool lists, as they appear on the line. */
 function launchFlags(permission: string, extraDisallowed: readonly string[]): string {
   // Extra rules join the SAME quoted list: claude splits it on commas and
-  // spaces outside parentheses, so `Bash(git push*)` stays one rule.
-  const denied = [...FANOUT_WORKER_DISALLOWED_TOOLS, ...extraDisallowed];
+  // spaces outside parentheses, so `Bash(git push*)` stays one rule. A rule
+  // already in the list is not repeated.
+  const denied = [...new Set([...FANOUT_WORKER_DISALLOWED_TOOLS, ...extraDisallowed])];
   // A tool denied is not also allowed: the two lists never contradict.
   const allowed = FANOUT_WORKER_ALLOWED_TOOLS.filter((tool) => !denied.some((rule) => toolRuleCovers(rule, tool)));
   return [
@@ -261,10 +262,44 @@ function launchFlags(permission: string, extraDisallowed: readonly string[]): st
     .join(' ');
 }
 
-/** Whether a tool rule names `tool`: the same rule, or a `prefix*` rule it starts with. */
+/**
+ * Whether a tool rule names `tool`: the same rule, a `prefix*` rule it starts
+ * with, or an MCP server's rule (`mcp__wmux`), which claude reads as every
+ * tool of that server.
+ */
 export function toolRuleCovers(rule: string, tool: string): boolean {
-  return rule === tool || (rule.endsWith('*') && !rule.includes('(') && tool.startsWith(rule.slice(0, -1)));
+  return (
+    rule === tool ||
+    (rule.endsWith('*') && !rule.includes('(') && tool.startsWith(rule.slice(0, -1))) ||
+    (/^mcp__[^_]+(?:_[^_]+)*$/.test(rule) && tool.startsWith(`${rule}__`))
+  );
 }
+
+/** A tool-list value split into rules the way claude reads it: on commas and whitespace outside parentheses. */
+function toolRules(value: string): string[] {
+  const out: string[] = [];
+  let rule = '';
+  let depth = 0;
+  for (const c of value) {
+    if (c === '(') depth++;
+    else if (c === ')' && depth > 0) depth--;
+    if (depth === 0 && (c === ',' || /\s/.test(c))) {
+      if (rule) out.push(rule);
+      rule = '';
+    } else {
+      rule += c;
+    }
+  }
+  if (rule) out.push(rule);
+  return out;
+}
+
+/**
+ * A deny rule wmux can put inside the double-quoted list on the worker's line,
+ * in a POSIX shell and in PowerShell alike: no quote, `$`, backtick, backslash
+ * or line break.
+ */
+const CARRIABLE_RULE = /^[A-Za-z_][\w*.:-]*(\([^"`$\\\r\n“”„]*\))?$/;
 
 interface Span {
   /** Unquoted value (quotes stripped). */
@@ -315,8 +350,9 @@ const BARE_PERMISSION_FLAGS = new Set(['--dangerously-skip-permissions', '--allo
 const VALUE_FLAGS = new Set(['--permission-mode']);
 const LIST_FLAGS = new Set(['--allowedTools', '--allowed-tools', '--disallowedTools', '--disallowed-tools']);
 /** A tool rule as it appears after a space-form list flag (`Bash(git *)`,
- *  `mcp__x__y`, `Edit,Read`). The prompt argument never looks like one. */
-const TOOL_RULE = /^[A-Za-z_][\w*-]*(\(.*\))?(,[A-Za-z_][\w*-]*(\(.*\))?)*$/;
+ *  `mcp__x__y`, `Edit,Read`, a quoted `"Edit Read"`: claude splits on commas
+ *  and spaces). The prompt argument never looks like one. */
+const TOOL_RULE = /^[A-Za-z_][\w*-]*(\(.*\))?([,\s]+[A-Za-z_][\w*-]*(\(.*\))?)*$/;
 
 /** The launcher of a line: its first word's file name, lower case, without a Windows extension. */
 function launcherStemOf(words: readonly Span[]): string {
@@ -328,19 +364,68 @@ function rowOfStem(stem: string): AgentIdentityRow | undefined {
   return AGENT_ROWS.find((r) => (r.launcher ?? r.slug) === stem);
 }
 
+const DENY_FLAGS = new Set(['--disallowedTools', '--disallowed-tools']);
+
 /**
- * Why a launch line may not start in `mode`, or null when it may. `manual`
- * must make the agent ask, and wmux knows how only for an agent whose row
- * declares it (`permissions` for Claude's permission mode, or `askMode`): any
- * other agent (or a wrapper wmux cannot see through) would run on its own
+ * The rules of a line's own deny lists: `--disallowedTools` in either
+ * spelling, in the `=` form or followed by space-form rules. The words are
+ * read the way applyWorkerPermissionFlags cuts them.
+ */
+function deniedRulesOf(words: readonly Span[]): string[] {
+  const rules: string[] = [];
+  for (let k = 1; k < words.length; k++) {
+    const v = words[k].value;
+    const eq = v.indexOf('=');
+    const flag = eq >= 0 ? v.slice(0, eq) : v;
+    if (!LIST_FLAGS.has(flag)) continue;
+    const deny = DENY_FLAGS.has(flag);
+    if (eq >= 0) {
+      if (deny) rules.push(...toolRules(v.slice(eq + 1)));
+      continue;
+    }
+    while (k + 1 < words.length && TOOL_RULE.test(words[k + 1].value)) {
+      k++;
+      if (deny) rules.push(...toolRules(words[k].value));
+    }
+  }
+  return rules;
+}
+
+/**
+ * The tools a fan-out worker reports with (FANOUT_WORKER_ALLOWED_TOOLS) that
+ * a line's deny lists cover. A launcher's own deny stays on its workers'
+ * lines, so a worker launched from it may not be able to report.
+ */
+export function deniedWorkerReportTools(command: string): string[] {
+  const rules = deniedRulesOf(spans(command));
+  return FANOUT_WORKER_ALLOWED_TOOLS.filter((tool) => rules.some((rule) => toolRuleCovers(rule, tool)));
+}
+
+/**
+ * Why a launch line may not start in `mode`, or null when it may.
+ *
+ * `manual` must make the agent ask, and wmux knows how only for an agent whose
+ * row declares it (`permissions` for Claude's permission mode, or `askMode`):
+ * any other agent (or a wrapper wmux cannot see through) would run on its own
  * settings, so it is refused instead.
+ *
+ * A claude line's own deny rules are carried onto the worker's line
+ * (applyWorkerPermissionFlags). One that cannot be quoted there is refused
+ * rather than dropped, which would leave that tool allowed. The refusal does
+ * not repeat the rule.
  */
 export function workerModeRefusal(command: string, mode: FanoutWorkerPermissionMode): string | null {
-  if (mode !== 'manual') return null;
-  const stem = launcherStemOf(spans(command));
+  const words = spans(command);
+  const stem = launcherStemOf(words);
   const row = rowOfStem(stem);
-  if (row?.permissions === 'permission-mode' || row?.askMode) return null;
-  return `the manual worker mode makes the agent ask before it acts, and wmux knows no flag that does that for ${stem ? `\`${stem}\`` : 'this launch line'}; it was not started. Choose another worker mode, or an agent it can make ask`;
+  if (mode === 'manual' && !(row?.permissions === 'permission-mode' || row?.askMode)) {
+    return `the manual worker mode makes the agent ask before it acts, and wmux knows no flag that does that for ${stem ? `\`${stem}\`` : 'this launch line'}; it was not started. Choose another worker mode, or an agent it can make ask`;
+  }
+  const carried = stem === 'claude' && !(mode === 'manual' && row?.askMode);
+  if (carried && deniedRulesOf(words).some((rule) => !CARRIABLE_RULE.test(rule))) {
+    return 'the launch line denies a tool with a rule that holds a quote, `$`, a backtick or a backslash, which wmux cannot carry onto the worker\'s line; it was not started, so that tool is not left allowed. Write the rule without those characters';
+  }
+  return null;
 }
 
 /** `line` without the words in `cut`, each with the whitespace in front of it; nothing else is re-spaced. */
@@ -387,6 +472,10 @@ function manualOnLine(command: string, words: readonly Span[], ask: NonNullable<
  *
  * Any permission or tool-list flag already on the line (a role binding's args,
  * a typed agentCmd) is removed first so the setting is the one that applies.
+ * The line's own deny rules are the exception: they join wmux's deny list, so
+ * a tool the launcher denied stays denied for its workers (a deny only
+ * narrows; its allow list and permission mode are still replaced). A rule
+ * that cannot be quoted there is refused by workerModeRefusal first.
  * Removal is word-based: a flag spelled inside a quoted argument (a prompt, an
  * --append-system-prompt value) is part of that word and is never matched.
  * The tool lists are applied in every mode. `extraDisallowed` adds deny rules to
@@ -430,5 +519,7 @@ export function applyWorkerPermissionFlags(
   // or one beside a bypass, gives way to the worker's.
   const keep = mode === 'manual' && !bypass && modes.length > 0 && modes.every((m) => ASKING_CLAUDE_MODES.has(m.value));
   if (!keep) for (const m of modes) cut.push(...m.words);
-  return `${withoutWords(command, cut)} ${launchFlags(keep ? '' : PERMISSION_FLAG_FOR_WORKER[mode], extraDisallowed)}`;
+  // Never written unquotable: such a line does not launch (workerModeRefusal).
+  const own = deniedRulesOf(words).filter((rule) => CARRIABLE_RULE.test(rule));
+  return `${withoutWords(command, cut)} ${launchFlags(keep ? '' : PERMISSION_FLAG_FOR_WORKER[mode], [...extraDisallowed, ...own])}`;
 }

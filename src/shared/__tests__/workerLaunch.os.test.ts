@@ -7,6 +7,7 @@ import {
   FANOUT_WORKER_ALLOWED_TOOLS,
   FANOUT_WORKER_DISALLOWED_TOOLS,
   applyWorkerPermissionFlags,
+  deniedWorkerReportTools,
   workerLaunchFlags,
   toolRuleCovers,
   MODEL_ENV_MARKER,
@@ -133,6 +134,15 @@ describe('reattachModelEnvMarker', () => {
 describe('applyWorkerPermissionFlags', () => {
   const PROMPT = `"$(cat '/tmp/meta/task one/prompt.md')"`;
   const LISTS = `--allowedTools "${FANOUT_WORKER_ALLOWED_TOOLS.join(',')}" --disallowedTools "${FANOUT_WORKER_DISALLOWED_TOOLS.join(',')}"`;
+  /** wmux's lists with the launcher's own deny rules after wmux's. */
+  const listsDenying = (...own: string[]): string =>
+    `--allowedTools "${FANOUT_WORKER_ALLOWED_TOOLS.join(',')}" --disallowedTools "${[...FANOUT_WORKER_DISALLOWED_TOOLS, ...own].join(',')}"`;
+  const modeFlag = {
+    auto: '--permission-mode auto',
+    acceptEdits: '--permission-mode acceptEdits',
+    bypassPermissions: '--dangerously-skip-permissions',
+    manual: '--permission-mode default',
+  } as const;
 
   it('appends the mode and both tool lists after the prompt', () => {
     expect(applyWorkerPermissionFlags(`claude ${PROMPT}`, 'auto')).toBe(
@@ -162,7 +172,75 @@ describe('applyWorkerPermissionFlags', () => {
       `claude --model opus --dangerously-skip-permissions "--allow-dangerously-skip-permissions" ` +
       `--allowedTools "Bash(git *)" Edit --disallowed-tools=Read ${PROMPT} --permission-mode=plan`;
     const out = applyWorkerPermissionFlags(bound, 'acceptEdits');
-    expect(out).toBe(`claude --model opus ${PROMPT} --permission-mode acceptEdits ${LISTS}`);
+    // The binding's own deny (Read) stays denied; its allow list does not stay.
+    expect(out).toBe(`claude --model opus ${PROMPT} --permission-mode acceptEdits ${listsDenying('Read')}`);
+  });
+
+  it("keeps a launcher's own denied tools denied for its workers, in every form", () => {
+    for (const own of [
+      '--disallowedTools Bash PowerShell',
+      '--disallowedTools=Bash,PowerShell',
+      '--disallowedTools "Bash,PowerShell"',
+      '--disallowedTools "Bash PowerShell"',
+      '--disallowed-tools Bash,PowerShell',
+      '--disallowed-tools=Bash --disallowedTools PowerShell',
+    ]) {
+      for (const mode of FANOUT_WORKER_PERMISSION_MODES) {
+        const line = `claude ${own} ${PROMPT}`;
+        expect(workerModeRefusal(line, mode)).toBeNull();
+        expect(applyWorkerPermissionFlags(line, mode)).toBe(`claude ${PROMPT} ${modeFlag[mode]} ${listsDenying('Bash', 'PowerShell')}`);
+      }
+    }
+    // A rule with an argument stays one rule, spaces and all.
+    expect(applyWorkerPermissionFlags(`claude --disallowedTools "Bash(git push*),Edit" ${PROMPT}`, 'auto')).toBe(
+      `claude ${PROMPT} --permission-mode auto ${listsDenying('Bash(git push*)', 'Edit')}`,
+    );
+    // The allow list and the permission mode are still replaced.
+    expect(applyWorkerPermissionFlags(`claude --allowedTools Bash --permission-mode bypassPermissions --disallowedTools Edit ${PROMPT}`, 'auto')).toBe(
+      `claude ${PROMPT} --permission-mode auto ${listsDenying('Edit')}`,
+    );
+  });
+
+  it("does not repeat a launcher's deny that wmux already denies", () => {
+    expect(applyWorkerPermissionFlags(`claude --disallowedTools mcp__wmux__fanout_start,Bash ${PROMPT}`, 'auto')).toBe(
+      `claude ${PROMPT} --permission-mode auto ${listsDenying('Bash')}`,
+    );
+  });
+
+  it("a launcher's deny that covers a reporting tool takes it off the allow list, and is named", () => {
+    const allowed = (line: string): string[] => (line.match(/--allowedTools "([^"]*)"/)?.[1] ?? '').split(',').filter(Boolean);
+    const one = applyWorkerPermissionFlags(`claude --disallowedTools mcp__wmux__ledger_update ${PROMPT}`, 'auto');
+    expect(allowed(one)).toEqual(FANOUT_WORKER_ALLOWED_TOOLS.filter((t) => t !== 'mcp__wmux__ledger_update'));
+    expect(deniedWorkerReportTools(one)).toEqual(['mcp__wmux__ledger_update']);
+    // A server's rule denies every tool of it.
+    const all = applyWorkerPermissionFlags(`claude --disallowedTools mcp__wmux ${PROMPT}`, 'auto');
+    expect(allowed(all)).toEqual([]);
+    expect(deniedWorkerReportTools(all)).toEqual([...FANOUT_WORKER_ALLOWED_TOOLS]);
+    expect(toolRuleCovers('mcp__wmux', 'mcp__wmux__ledger_update')).toBe(true);
+    expect(toolRuleCovers('mcp__wmux__ledger_update', 'mcp__wmux__ledger_update_x')).toBe(false);
+    expect(toolRuleCovers('mcp__wmuxx', 'mcp__wmux__ledger_update')).toBe(false);
+    // wmux's own lists deny none of them.
+    expect(deniedWorkerReportTools(applyWorkerPermissionFlags(`claude ${PROMPT}`, 'auto'))).toEqual([]);
+  });
+
+  it('refuses a launch whose own deny rule cannot be quoted on the worker line, rather than dropping it', () => {
+    for (const rule of [`'Bash(echo "x")'`, `'Bash(rm $HOME)'`, `'Bash(a\`b)'`, `'Bash(a\\b)'`]) {
+      const line = `claude --disallowedTools ${rule} ${PROMPT}`;
+      for (const mode of FANOUT_WORKER_PERMISSION_MODES) {
+        const refusal = workerModeRefusal(line, mode);
+        expect(refusal).toContain('was not started');
+        // The refusal does not repeat the rule.
+        expect(refusal).not.toContain('Bash(');
+      }
+      // Never written into the quoted list either.
+      expect(applyWorkerPermissionFlags(line, 'auto')).toBe(`claude ${PROMPT} --permission-mode auto ${LISTS}`);
+    }
+  });
+
+  it('leaves the manual ask path of codex and grok as it was, own deny flags included', () => {
+    expect(applyWorkerPermissionFlags(`grok --disallowedTools Bash ${PROMPT}`, 'manual')).toBe(`grok ${GROK_MANUAL_FLAGS} --disallowedTools Bash ${PROMPT}`);
+    expect(workerModeRefusal(`grok --disallowedTools 'Bash(echo "x")' ${PROMPT}`, 'manual')).toBeNull();
+    expect(applyWorkerPermissionFlags(`codex --disallowedTools Bash ${PROMPT}`, 'manual')).toBe(`codex ${CODEX_MANUAL_FLAGS} --disallowedTools Bash ${PROMPT}`);
   });
 
   it('never edits a flag spelled inside a quoted argument', () => {
