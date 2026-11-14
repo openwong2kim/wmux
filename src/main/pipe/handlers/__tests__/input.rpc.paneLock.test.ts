@@ -28,6 +28,12 @@ let answer: (ptyId: string, check: DeliveryCheck) => Promise<DeliveryPresence | 
 let writeOk: (ptyId: string) => boolean;
 /** Reads of the pane's agent state (a hand-off reads its key count first). */
 let agentReads: number;
+/** Keys a person typed into the pane, on top of the deliveries' own writes. */
+let personKeys: number;
+/** The next agent-state read shows a draft in the input box (one read only). */
+let draftOnNextRead: boolean;
+/** Runs after each write that went through. */
+let afterWrite: (data: string) => void;
 
 function harness(lockWaitMs?: number) {
   const dc = {
@@ -36,12 +42,18 @@ function harness(lockWaitMs?: number) {
     writeToSession: (ptyId: string, data: string) => {
       if (!writeOk(ptyId)) return false;
       writes.push({ ptyId, data });
+      afterWrite(data);
       return true;
     },
-    getAgentState: async () => (agentReads++, {
-      agentName: 'Claude Code', agentStatus: 'waiting', agentVerified: true, incarnationId: 'inc-1',
-      inputQuiet: true, inputRevision: 1, hasDraft: false, keyInputIdleMs: 60_000, keyInputRevision: writes.length,
-    }),
+    getAgentState: async () => {
+      agentReads++;
+      const hasDraft = draftOnNextRead;
+      draftOnNextRead = false;
+      return {
+        agentName: 'Claude Code', agentStatus: 'waiting', agentVerified: true, incarnationId: 'inc-1',
+        inputQuiet: true, inputRevision: 1, hasDraft, keyInputIdleMs: 60_000, keyInputRevision: writes.length + personKeys,
+      };
+    },
   };
   return registerInputRpc(
     new RpcRouter(),
@@ -75,6 +87,9 @@ beforeEach(() => {
   answer = async () => PROCESS;
   writeOk = () => true;
   agentReads = 0;
+  personKeys = 0;
+  draftOnNextRead = false;
+  afterWrite = () => undefined;
 });
 
 describe('one delivery at a time into a pane', () => {
@@ -188,6 +203,48 @@ describe('one delivery at a time into a pane', () => {
     expect(await mention).toEqual({ ok: true });
     expect(await handOff).toEqual({ ok: true });
     expect(on('pty-a')).toEqual([paste('nudge'), '\r', paste('hand-off'), '\r']);
+  });
+
+  it('a hand-off that waited behind another delivery still refuses a draft a person started meanwhile', async () => {
+    let letGo: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => { letGo = resolve; });
+    let first = true;
+    answer = async () => {
+      if (first) { first = false; await held; }
+      return PROCESS;
+    };
+    // Right after the mention's Enter a person types one key: the next read
+    // (the hand-off's, once it holds the pane) shows their draft. The read
+    // after it no longer does, so only the kept key count can refuse.
+    afterWrite = (data) => {
+      if (data !== '\r' || personKeys > 0) return;
+      personKeys = 1;
+      draftOnNextRead = true;
+    };
+    const rpc = harness();
+    const mention = rpc.gatedSubmit('pty-a', 'nudge', 'Claude Code', { senderMentions: [{ channelId: 'c', seq: 1 }] });
+    const handOff = rpc.gatedSubmit('pty-a', 'hand-off', 'Claude Code', { waitQuiet: true, deadlineAt: clock + 120_000 });
+    await vi.waitFor(() => expect(agentReads).toBeGreaterThan(0), { timeout: 5_000 });
+    letGo();
+    expect(await mention).toEqual({ ok: true });
+    expect(await handOff).toMatchObject({ ok: false, reason: 'user_typing' });
+    expect(on('pty-a')).toEqual([paste('nudge'), '\r']);
+  });
+
+  it('a plain delivery and a new task on one pane go one after the other, whichever came first', async () => {
+    for (const order of [['plain', 'new'], ['new', 'plain']] as const) {
+      writes = [];
+      const rpc = harness();
+      const send = (kind: 'plain' | 'new') => (kind === 'new'
+        ? rpc.gatedSubmit('pty-n', 'task', 'Claude Code', { newTask: true })
+        : rpc.gatedSubmit('pty-n', 'reply', 'Claude Code', { senderTaskIds: ['t-1'] }));
+      const [a, b] = await Promise.all(order.map(send));
+      expect(a).toMatchObject({ ok: true });
+      expect(b).toMatchObject({ ok: true });
+      const text = (kind: 'plain' | 'new') => (kind === 'new' ? 'task' : 'reply');
+      expect(on('pty-n')).toEqual([paste(text(order[0])), '\r', paste(text(order[1])), '\r']);
+    }
+    expect(paneDeliveryLocksForTest()).not.toContain('pty-n');
   });
 
   it('a hand-off with a deadline of its own waits for the pane past the plain wait', async () => {

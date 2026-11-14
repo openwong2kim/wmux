@@ -17,7 +17,7 @@ import type { PTYManager } from '../../pty/PTYManager';
 import type { DaemonClient } from '../../DaemonClient';
 import { sendToRenderer } from './_bridge';
 import { TERMINAL_WRITE_DELIVERY_BUDGET_MS, terminalStartWindowMs } from '../../../shared/terminalWriteBudget';
-import { FRESH_CONTEXT_LOCK_WAIT_MS, TERMINAL_SEND_NEW_TASK_TIMEOUT_MS } from '../../../shared/freshContext';
+import { FRESH_CONTEXT_LOCK_WAIT_MS, PANE_DELIVERY_LOCK_WAIT_MS, TERMINAL_SEND_NEW_TASK_TIMEOUT_MS } from '../../../shared/freshContext';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../../shared/folderTrustWording';
 import { sanitizePtyText } from '../../../shared/types';
 import { agentDisplayToSlug, agentRow, isAgentSlug } from '../../../shared/agentIdentity';
@@ -2827,9 +2827,11 @@ export function registerInputRpc(
       let noteOwnWrite = (): void => undefined;
       /** Runs once the pane's delivery lock is held (a hand-off's key count). */
       let onLocked = async (): Promise<void> => undefined;
-      // The wait for the pane's delivery lock. A hand-off with a deadline of
-      // its own may wait for the pane until shortly before that deadline.
-      let lockWaitMs = deps.freshContextLockWaitMs;
+      // The wait for the pane's delivery lock: a new task keeps the
+      // fresh-context wait, any other delivery waits a little longer. A
+      // hand-off with a deadline of its own may wait for the pane until
+      // shortly before that deadline.
+      let lockWaitMs = deps.freshContextLockWaitMs ?? (opts?.newTask ? FRESH_CONTEXT_LOCK_WAIT_MS : PANE_DELIVERY_LOCK_WAIT_MS);
       if (opts?.waitQuiet) {
         const prepared = await prepareHandoffGuard(ptyId, opts);
         if (!prepared.ok) return prepared.refusal;
@@ -2837,7 +2839,7 @@ export function registerInputRpc(
         noteOwnWrite = prepared.noteOwnWrite;
         onLocked = prepared.rebase;
         const untilDeadline = prepared.deadlineAt - (deps.now ?? Date.now)() - DELIVERY_RESERVE_MS;
-        lockWaitMs = Math.max(lockWaitMs ?? FRESH_CONTEXT_LOCK_WAIT_MS, untilDeadline);
+        lockWaitMs = Math.max(lockWaitMs, untilDeadline);
       }
       // Deliveries wait for a verified agent in plain input mode
       // (gatedPasteSubmit asks before anything is written, after a

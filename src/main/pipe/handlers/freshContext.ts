@@ -510,7 +510,16 @@ export async function runFreshContext(
 // task does not take the lock, and a human or another tool typing at the same
 // moment is what the key-input guards above are for.
 
-const paneLocks = new Map<string, Promise<void>>();
+/** One pane's chain: its last link, and how many deliveries hold or wait on it. */
+interface PaneChain {
+  tail: Promise<void>;
+  members: number;
+}
+
+const paneLocks = new Map<string, PaneChain>();
+
+/** The longest timer Node keeps; a longer one fires at once. */
+const MAX_TIMER_MS = 2_147_483_647;
 
 /** Test-only: panes with an entry in the lock chain. */
 export function paneDeliveryLocksForTest(): string[] {
@@ -522,36 +531,42 @@ export async function withPaneDeliveryLock<T>(
   fn: () => Promise<T>,
   waitMs: number = FRESH_CONTEXT_LOCK_WAIT_MS,
 ): Promise<T> {
-  const previous = paneLocks.get(ptyId) ?? Promise.resolve();
+  const chain = paneLocks.get(ptyId) ?? { tail: Promise.resolve(), members: 0 };
+  paneLocks.set(ptyId, chain);
+  const previous = chain.tail;
   let release: () => void = () => undefined;
   const mine = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const tail = previous.then(() => mine);
-  paneLocks.set(ptyId, tail);
+  chain.tail = previous.then(() => mine);
+  chain.members += 1;
+  // Our link is released whichever way we leave, so whoever is behind us goes
+  // on; the entry goes once no delivery holds or waits on the pane.
+  const leave = (): void => {
+    release();
+    chain.members -= 1;
+    if (chain.members === 0 && paneLocks.get(ptyId) === chain) paneLocks.delete(ptyId);
+  };
+  const wait = Number.isNaN(waitMs) ? FRESH_CONTEXT_LOCK_WAIT_MS : Math.min(Math.max(0, waitMs), MAX_TIMER_MS);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const acquired = await Promise.race([
     previous.then(() => true),
     new Promise<boolean>((resolve) => {
-      timer = setTimeout(() => resolve(false), waitMs);
+      timer = setTimeout(() => resolve(false), wait);
     }),
   ]);
   if (timer) clearTimeout(timer);
   if (!acquired) {
     // Give up our place without blocking anyone behind us: they still wait
-    // for `previous`, which is the send actually holding the pane. With no one
-    // behind us, the chain's end goes back to `previous`, so the holder's own
-    // release still clears the entry.
-    release();
-    if (paneLocks.get(ptyId) === tail) paneLocks.set(ptyId, previous);
+    // for `previous`, which is the send actually holding the pane.
+    leave();
     throw new FreshContextBusy(
-      `another delivery is still running on this pane (waited ${waitMs} ms); nothing was written`,
+      `another delivery is still running on this pane (waited ${wait} ms); nothing was written`,
     );
   }
   try {
     return await fn();
   } finally {
-    release();
-    if (paneLocks.get(ptyId) === tail) paneLocks.delete(ptyId);
+    leave();
   }
 }
