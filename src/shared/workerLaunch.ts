@@ -405,6 +405,11 @@ interface LineFlags {
  */
 function lineFlags(command: string, words: readonly Span[]): LineFlags {
   const out: LineFlags = { cut: [], modes: [], bypass: false, denied: [], carriable: [], uncarriable: false };
+  /** The index of wmux's own prompt argument: the last word of exactly its shape (-1 when none). */
+  let promptAt = -1;
+  for (let k = words.length - 1; k > 0 && promptAt < 0; k--) {
+    if (stripPromptFileArgument(command.slice(words[k].start, words[k].end)) === '') promptAt = k;
+  }
   const deny = (word: Span, value: string): void => {
     const rules = toolRules(value);
     out.denied.push(...rules);
@@ -440,12 +445,12 @@ function lineFlags(command: string, words: readonly Span[]): LineFlags {
       // claude's list flags are variadic: it reads every word up to the next
       // flag as a rule. The one word wmux puts there itself is the prompt
       // argument, exactly as promptFileArgument builds it (`"$(cat '…')"`,
-      // `"$(Get-Content …)"`), which follows the launcher; any other word,
-      // a launcher's own `"$(…)"` included, would be a deny wmux cannot carry.
-      const next = words[k + 1];
-      if (denies && next && !next.value.startsWith('-') && stripPromptFileArgument(command.slice(next.start, next.end)) !== '') {
-        out.uncarriable = true;
-      }
+      // `"$(Get-Content …)"`), appended after the whole launcher, so it is the
+      // last word of that shape on the line. Any other word, a launcher's own
+      // `"$(…)"` included (even one of the same shape), would be a deny wmux
+      // cannot carry.
+      const next = k + 1;
+      if (denies && next < words.length && !words[next].value.startsWith('-') && next !== promptAt) out.uncarriable = true;
     }
   }
   return out;

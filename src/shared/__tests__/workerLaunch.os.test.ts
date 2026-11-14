@@ -234,6 +234,9 @@ describe('applyWorkerPermissionFlags', () => {
     // Any other word after the rules is a deny wmux cannot carry, a launcher's own `$(…)` included.
     expect(workerModeRefusal(`claude --disallowedTools Read "rm -rf" ${PROMPT}`, 'auto')).toContain('was not started');
     expect(workerModeRefusal(`claude --disallowedTools Read "$(printf Bash)" ${PROMPT}`, 'auto')).toContain('was not started');
+    // Even one of the prompt's own shape: wmux's prompt is the last one, appended after the launcher.
+    expect(workerModeRefusal(`claude --disallowedTools Read "$(cat '/tmp/denies')" ${PROMPT}`, 'auto')).toContain('was not started');
+    expect(workerModeRefusal(`claude --disallowedTools Read ${PROMPT}`, 'auto')).toBeNull();
     expect(workerModeRefusal(`claude --disallowedTools Read --model opus ${PROMPT}`, 'auto')).toBeNull();
   });
 
