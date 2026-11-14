@@ -170,7 +170,7 @@ export class FreshContextTimeout extends Error {
   }
 }
 
-/** Another new-task send held the pane for longer than
+/** Another delivery held the pane for longer than
  *  FRESH_CONTEXT_LOCK_WAIT_MS. Nothing was written. */
 export class FreshContextBusy extends Error {
   constructor(message: string) {
@@ -495,50 +495,78 @@ export async function runFreshContext(
 
 // ─── Per-pane serialization ─────────────────────────────────────────────────
 //
-// A new-task send holds its pane from the fresh-context step through the text
-// write and the Enter, so a second new-task send to the same pane cannot type
-// its command into the first one's half-delivered task. The second one waits —
-// at most FRESH_CONTEXT_LOCK_WAIT_MS, so it can never outlive its caller and
-// deliver behind a retry — and then runs its own step against the pane as it
-// is by then (usually busy with the first task, so `skipped_busy`). Past the
-// wait it fails with FreshContextBusy, before writing anything. Ordinary sends
-// do not take the lock: they never type a command, and a human or another tool
-// typing at the same moment is what the key-input guards above are for.
+// One delivery at a time into a pane. Every gated delivery holds its pane from
+// its first check before the paste through the Enter and the submit receipt
+// (or its refusal and take-back). A new-task send also holds it across its
+// fresh-context step, so a second send cannot type into the first one's
+// half-delivered task. Without the lock, two deliveries arriving together both
+// found an empty input box, both pasted, and each then refused its Enter
+// because the box held more than its own text.
+//
+// Waiters go in arrival order. One waits at most FRESH_CONTEXT_LOCK_WAIT_MS, so
+// it can never outlive its caller and deliver behind a retry, and then runs its
+// own checks against the pane as it is by then. Past the wait it fails with
+// FreshContextBusy, before writing anything. A raw `input.send` without a new
+// task does not take the lock, and a human or another tool typing at the same
+// moment is what the key-input guards above are for.
 
-const paneLocks = new Map<string, Promise<void>>();
+/** One pane's chain: its last link, and how many deliveries hold or wait on it. */
+interface PaneChain {
+  tail: Promise<void>;
+  members: number;
+}
 
-export async function withFreshContextLock<T>(
+const paneLocks = new Map<string, PaneChain>();
+
+/** The longest timer Node keeps; a longer one fires at once. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/** Test-only: panes with an entry in the lock chain. */
+export function paneDeliveryLocksForTest(): string[] {
+  return [...paneLocks.keys()];
+}
+
+export async function withPaneDeliveryLock<T>(
   ptyId: string,
   fn: () => Promise<T>,
   waitMs: number = FRESH_CONTEXT_LOCK_WAIT_MS,
 ): Promise<T> {
-  const previous = paneLocks.get(ptyId) ?? Promise.resolve();
+  const chain = paneLocks.get(ptyId) ?? { tail: Promise.resolve(), members: 0 };
+  paneLocks.set(ptyId, chain);
+  const previous = chain.tail;
   let release: () => void = () => undefined;
   const mine = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const tail = previous.then(() => mine);
-  paneLocks.set(ptyId, tail);
+  chain.tail = previous.then(() => mine);
+  chain.members += 1;
+  // Our link is released whichever way we leave, so whoever is behind us goes
+  // on; the entry goes once no delivery holds or waits on the pane.
+  const leave = (): void => {
+    release();
+    chain.members -= 1;
+    if (chain.members === 0 && paneLocks.get(ptyId) === chain) paneLocks.delete(ptyId);
+  };
+  const wait = Number.isNaN(waitMs) ? FRESH_CONTEXT_LOCK_WAIT_MS : Math.min(Math.max(0, waitMs), MAX_TIMER_MS);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const acquired = await Promise.race([
     previous.then(() => true),
     new Promise<boolean>((resolve) => {
-      timer = setTimeout(() => resolve(false), waitMs);
+      timer = setTimeout(() => resolve(false), wait);
     }),
   ]);
   if (timer) clearTimeout(timer);
   if (!acquired) {
     // Give up our place without blocking anyone behind us: they still wait
     // for `previous`, which is the send actually holding the pane.
-    release();
+    leave();
     throw new FreshContextBusy(
-      `another new-task send is still running on this pane (waited ${waitMs} ms); nothing was written`,
+      `another delivery is still running on this pane (waited ${wait} ms); nothing was written`,
     );
   }
   try {
     return await fn();
   } finally {
-    release();
-    if (paneLocks.get(ptyId) === tail) paneLocks.delete(ptyId);
+    leave();
   }
 }

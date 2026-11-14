@@ -17,7 +17,7 @@ import type { PTYManager } from '../../pty/PTYManager';
 import type { DaemonClient } from '../../DaemonClient';
 import { sendToRenderer } from './_bridge';
 import { TERMINAL_WRITE_DELIVERY_BUDGET_MS, terminalStartWindowMs } from '../../../shared/terminalWriteBudget';
-import { TERMINAL_SEND_NEW_TASK_TIMEOUT_MS } from '../../../shared/freshContext';
+import { FRESH_CONTEXT_LOCK_WAIT_MS, PANE_DELIVERY_LOCK_WAIT_MS, TERMINAL_SEND_NEW_TASK_TIMEOUT_MS } from '../../../shared/freshContext';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../../shared/folderTrustWording';
 import { sanitizePtyText } from '../../../shared/types';
 import { agentDisplayToSlug, agentRow, isAgentSlug } from '../../../shared/agentIdentity';
@@ -44,7 +44,7 @@ import {
   FreshContextBusy,
   FreshContextTimeout,
   runFreshContext,
-  withFreshContextLock,
+  withPaneDeliveryLock,
   type FreshContextOptions,
   type FreshContextProbe,
   type KeepContextCode,
@@ -2345,11 +2345,11 @@ export function registerInputRpc(
     };
 
     // A new task holds its pane from the fresh-context command through the
-    // text's Enter (see withFreshContextLock). A send that cannot get the pane
+    // text's Enter (see withPaneDeliveryLock). A send that cannot get the pane
     // in time fails before writing anything.
     if (!newTask) return deliver();
     try {
-      return await withFreshContextLock(ptyId, deliver, deps.freshContextLockWaitMs);
+      return await withPaneDeliveryLock(ptyId, deliver, deps.freshContextLockWaitMs);
     } catch (err) {
       if (!(err instanceof FreshContextBusy)) throw err;
       throw new Error(`input.send: pane "${ptyId}": ${err.message}. Send the task again once the pane is free.`);
@@ -2603,7 +2603,7 @@ export function registerInputRpc(
   const prepareHandoffGuard = async (
     ptyId: string,
     opts: GatedSubmitOptions,
-  ): Promise<{ ok: true; guard: DeliveryGuard; noteOwnWrite: () => void } | { ok: false; refusal: GatedSubmitRefusal }> => {
+  ): Promise<{ ok: true; guard: DeliveryGuard; noteOwnWrite: () => void; onLocked: () => Promise<GatedSubmitRefusal | null>; deadlineAt: number } | { ok: false; refusal: GatedSubmitRefusal }> => {
     const refusal = (reason: GatedSubmitRefusal['reason'], detail: string) => ({ ok: false as const, refusal: { ok: false as const, reason, detail } });
     const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
     // No answer is not "no agent": held for a retry.
@@ -2648,6 +2648,20 @@ export function registerInputRpc(
       noteOwnWrite: () => {
         if (expectedRevision !== undefined) expectedRevision += 1;
       },
+      // Run once the pane's delivery lock is held. A hand-off that got the
+      // pane past its deadline stops here, before a new task's fresh-context
+      // step could clear the pane. Otherwise: a delivery ahead of this one
+      // pasted and pressed Enter while it waited, and those keys are not a
+      // person's. With no draft in the box the count restarts from here; a
+      // draft keeps the old count, so the check before the paste refuses it.
+      onLocked: async () => {
+        const late = pastDeadline();
+        if (late) return late;
+        const s = await read().catch(() => null);
+        if (s && s.hasDraft !== true && typeof s.keyInputRevision === 'number') expectedRevision = s.keyInputRevision;
+        return null;
+      },
+      deadlineAt,
     };
   };
 
@@ -2816,11 +2830,23 @@ export function registerInputRpc(
       // agent they chose is still the one there.
       let guard: DeliveryGuard | undefined;
       let noteOwnWrite = (): void => undefined;
+      /** Runs once the pane's delivery lock is held (a hand-off's deadline and
+       *  key count); a refusal there ends the delivery with nothing written. */
+      let onLocked = async (): Promise<GatedSubmitRefusal | null> => null;
+      // The wait for the pane's delivery lock: a new task keeps the
+      // fresh-context wait, any other delivery waits a little longer. A
+      // hand-off with a deadline of its own may wait for the pane until
+      // shortly before that deadline, and never past it.
+      let lockWaitMs = deps.freshContextLockWaitMs ?? (opts?.newTask ? FRESH_CONTEXT_LOCK_WAIT_MS : PANE_DELIVERY_LOCK_WAIT_MS);
       if (opts?.waitQuiet) {
         const prepared = await prepareHandoffGuard(ptyId, opts);
         if (!prepared.ok) return prepared.refusal;
         guard = withRegisteredCheck(prepared.guard, opts.guardKey);
         noteOwnWrite = prepared.noteOwnWrite;
+        onLocked = prepared.onLocked;
+        // Never past the deadline itself: a pane freed after it is no use.
+        const leftMs = prepared.deadlineAt - (deps.now ?? Date.now)();
+        lockWaitMs = Math.min(Math.max(lockWaitMs, leftMs - DELIVERY_RESERVE_MS), Math.max(0, leftMs));
       }
       // Deliveries wait for a verified agent in plain input mode
       // (gatedPasteSubmit asks before anything is written, after a
@@ -2871,7 +2897,26 @@ export function registerInputRpc(
         }
         return result;
       };
-      if (!opts?.newTask) return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt).then(noteUnsent);
+      /** A delivery that could not get the pane in time wrote nothing. */
+      const paneBusy = (err: unknown): GatedSubmitResult => {
+        if (!(err instanceof FreshContextBusy)) throw err;
+        return { ok: false, reason: 'fresh_context_busy', detail: `delivery: ${err.message}` };
+      };
+      // One delivery at a time into a pane: it holds the pane from its first
+      // check before the paste through its Enter and receipt, or its refusal
+      // and take-back, so the next one checks the box only after that. A
+      // hand-off's wait for the person to stop typing (above) stays outside.
+      if (!opts?.newTask) {
+        return withPaneDeliveryLock(
+          ptyId,
+          async () => {
+            const late = await onLocked();
+            if (late) return late;
+            return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt);
+          },
+          lockWaitMs,
+        ).then(noteUnsent).catch(paneBusy);
+      }
       // #1680 — a new task: the fresh-context step runs inside the gated
       // delivery, and the pane is held through the text's Enter. The pane's
       // conversation is kept when the renderer knows of other open tasks on it,
@@ -2879,10 +2924,12 @@ export function registerInputRpc(
       // the role does ask for fresh context.
       const keepContext = async (): Promise<KeepContextCode | undefined> =>
         opts.keepContext ?? daemonOpenTaskOnPane(queryDaemonTasks, ptyId, opts.pane, opts.taskId);
-      return withFreshContextLock(
+      return withPaneDeliveryLock(
         ptyId,
-        () =>
-          gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
+        async () => {
+          const late = await onLocked();
+          if (late) return late;
+          return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
             const workspaceId = (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ?? undefined;
             const binding = await bindingFor(ptyId);
             // The last check before the step's command: an agent in plain
@@ -2910,12 +2957,10 @@ export function registerInputRpc(
                 if (again.input === 'pointer') throw new DeliveryRefused({ ok: false, reason: 'agent_changed', detail: 'delivery: the target agent changed during the fresh-context step' });
               },
             );
-          }, guard, receipt),
-        deps.freshContextLockWaitMs,
-      ).then(noteUnsent).catch((err: unknown): GatedSubmitResult => {
-        if (!(err instanceof FreshContextBusy)) throw err;
-        return { ok: false, reason: 'fresh_context_busy', detail: `delivery: ${err.message}` };
-      });
+          }, guard, receipt);
+        },
+        lockWaitMs,
+      ).then(noteUnsent).catch(paneBusy);
     },
   };
 }
