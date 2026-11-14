@@ -509,6 +509,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     usageLimitAutoResume: state.usageLimitAutoResume,
     claudeResumeOnStart: state.claudeResumeOnStart,
     fleetLayout: state.fleetLayout,
+    fleetGroupBy: state.fleetGroupBy,
     mutedNotificationCategories: state.mutedNotificationCategories,
     customKeybindings: state.customKeybindings,
     shortcutOverrides: state.shortcutOverrides,

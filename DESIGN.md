@@ -2573,6 +2573,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-11-03 | The whole file in the company review (insight 170 follow-up): a quiet **Show the whole file** below the review's groups reads wmux.json again and shows it whole, only while it holds the bytes the review opened on; each character a reader would not see is shown as its code point where it sits | Approve trusts every byte of the file, and the groups list only what wmux reads from it: a key it does not know or an entry it dropped was approved unseen. Showing the file itself covers whatever wmux does not parse; marking the invisible characters keeps the view the bytes the grant binds, and a list of dropped entries would need the parser to report each one |
 | 2026-11-03 | Owner-approved (agent marker mockup): agent identity colours, the second exception to "colour carries state only". While agents drive other apps, each one's halo, name pill and pointer on screen wear its own colour from a ten-fill palette (slot 0 the attention orange, red left out, dark ink ≥ 4.5:1 on every fill), and that pane carries the same colour as an 8px filled dot before its tab title and before its workspace's name on the sidebar row (at most three, then "+N"), once it has used computer use. The palette is used for nothing else | With several agents on one desktop, a marker on screen has to say which pane it belongs to at a glance; a name pill alone needs reading. One colour per agent, kept until wmux quits, makes the marker and the pane one thing. Red stays the error colour, and confining the palette to markers and their dots keeps every other colour a state |
 | 2026-11-04 | Owner-approved: Hangul renders in a bundled Pretendard subset after each look's Latin face | Windows' Malgun Gothic fallback was taller and had no 500 weight |
+| 2026-11-07 | Owner decision: the Fleet list can be grouped by device (Group by Status \| Device, list only, saved with the session; Status stays the default). Needs you stays one section on top with each row naming its device; the rest sits under a sentence-case device head (this computer first, then the PC rail's order) with its running rows and its own Finished and Idle folds; a disconnected PC keeps a row-less head with how long ago it answered. No map, lines, per-device colours or boxes | With agents on several PCs, the status list mixed them, so "what is running on the office PC" meant scanning every row's host glyph. The one Needs you section keeps decisions in one place and its count single |
 
 ### Desktop conversation view
 
@@ -2859,6 +2860,51 @@ differently in the two places, and in the order `fleet_triage` returns.
   non-empty column at the nearest row; Enter, Space, the row verbs, filters,
   search and the detail area are the list's. The Tickets filter stays a list.
   The list remains the default.
+- **Group by device (list only, owner decision 2026-11-07):** a Group by
+  Status | Device switch in the header, shown only with the list (not on the
+  Tickets filter) and saved with the session; Status is the default and
+  draws the sections above. The board always groups by status. By device,
+  Needs you stays one section on top across every device, each row naming
+  its device in its context line (This computer, or the PC's name, in place
+  of the "@host" glyph), so the one count is unchanged (chip, head and rail
+  badge); Final reports and Ready to review stay where they are. Every other
+  row goes under its device: This computer first, then the paired PCs in the
+  PC rail's order, under the rail's name.
+  - **Device head:** sentence-case 12px text. An 8px dot before the name,
+    `--text-muted`: filled while the PC is reached, a hollow ring (a border,
+    so it survives forced-colors) once it is not; a device is not a status,
+    so never a status colour, and no per-device colour. Then the name in
+    `--text-main`, its state and running count muted (`Online · Running 2`),
+    and on the right its folds as plain text of the same weight open or
+    closed, `Finished 1 folded ›` and `Idle 2 folded ›` (`Idle 2` while
+    open, the chevron turned): no second row repeats a count. A fold has no
+    fill, border or radius of its own; hover, selection and focus light the
+    head as a row (the fold row's fill and 2px ring), so there is one
+    boundary. Each fold is an option in the keyboard order, with its
+    `aria-expanded`; open folds list their rows after the running rows.
+    Folds are per device and kept while the app runs, like the status
+    list's; a search or a status filter shows the rows and the count as plain
+    text. A row under its own device's head drops the "@host" glyph.
+  - **A PC out of reach** (the rail cannot reach it): its rows leave the page,
+    from both groupings and the chips, since Open on them could not reach it;
+    a Needs you row from it does not go on top. By device its head reads
+    `Disconnected · 3h ago` (the age only once this run has seen it answer),
+    then one muted line: `Last seen 3 panes, 1 needed you. They show here
+    again when it reconnects.` (every pane it had, agent or plain shell; the
+    needed-you count is agents only). It turns Disconnected on the tick the
+    "Lost the connection" notice fires, never on one missed poll, and the rows
+    are back as soon as it answers. A PC whose attachments here are all stale
+    gets the same head, counting its last snapshot. fleet_triage and the rail
+    badge drop the same rows.
+  - **A PC that needs pairing** (it refused this computer's credential): the
+    same row-less head, hollow ring and muted text, no status colour,
+    `Needs pairing · 3h ago`, then one muted line: `It can't be reached until
+    it's paired again on the Remote page.`, where Remote page is a quiet
+    underlined text link to that page (an option in the keyboard order).
+  - A search or a filter narrows each device and drops row-less heads; with no
+    agents at all the page stays the empty call to action. A device with
+    nothing to draw has no head. Keyboard order is the drawn order. No map,
+    connecting lines, per-device colours or boxes around a device.
 - **Tickets:** Moa's delegated work, one row per job — a hand-off waiting for
   its click, or a WorkLink with its A2A task. A chat message is never a
   ticket. States: Queued, Working, Needs your decision (yellow), Done
