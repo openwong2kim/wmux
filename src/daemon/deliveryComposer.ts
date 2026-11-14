@@ -145,21 +145,48 @@ export function cursorInComposer(frame: DeliveryFrame, read: ComposerRead): bool
 }
 
 /** How each agent shows a long paste in its composer: Claude
- *  `[Pasted text #1 +40 lines]`, Codex `[Pasted Content 4096 chars]`. */
-const PASTE_PLACEHOLDER = /\[Pasted (?:text #\d+|Content \d+ chars)/;
+ *  `[Pasted text #1 +40 lines]` (its line breaks) or `[Pasted text #2]` (one
+ *  long line), Codex `[Pasted Content 4096 chars]`. */
+const PASTE_PLACEHOLDER = /\[Pasted (?:text #\d+(?: \+\d+ lines)?\]|Content \d+ chars\])/g;
+
+/** What a delivery pasted: the start of its first non-blank line, its line
+ *  breaks and its characters. */
+export interface PastedText {
+  probe: string;
+  lines?: number;
+  chars?: number;
+}
+
+/** Is `placeholder` the collapsed form of `pasted`? Only the agent's own count of it says so. */
+function collapsedFormOf(placeholder: string, pasted: PastedText): boolean {
+  const claude = /^\[Pasted text #\d+(?: \+(\d+) lines)?\]$/.exec(placeholder);
+  if (claude) return pasted.lines !== undefined && Number(claude[1] ?? 0) === pasted.lines;
+  const codex = /^\[Pasted Content (\d+) chars\]$/.exec(placeholder);
+  return !!codex && pasted.chars !== undefined && Number(codex[1]) === pasted.chars;
+}
 
 /**
- * Does the pane still show what this delivery pasted, where it would sit? In a
- * recognised composer, on the composer's own rows; with none (a shell took
- * over), on the cursor's row. `probe` is the start of its first non-blank
- * line. Anywhere else (the transcript above) proves nothing, and "no" leaves
- * the text where it is rather than clearing someone's line.
+ * Does the pane still show what this delivery pasted, where it would sit, and
+ * only that? In a recognised composer, on its own rows: the text's start, or
+ * the agent's collapsed form of it carrying this paste's own count, and no
+ * other collapsed paste (someone else's). With no composer (a shell took
+ * over), on the cursor's row. Anywhere else (the transcript above) proves
+ * nothing, and "no" leaves the text where it is rather than clearing or
+ * submitting someone's input.
  */
-export function frameShowsPaste(frame: DeliveryFrame | null, probe: string): boolean {
-  if (!frame || !probe) return false;
+export function frameShowsPaste(frame: DeliveryFrame | null, pasted: PastedText): boolean {
+  if (!frame || !pasted.probe) return false;
   const span = (Object.keys(PLAIN_PROMPT) as PlainPromptAgent[])
     .map((slug) => PLAIN_PROMPT[slug](frame.rows, 'enter').span)
     .find((found) => found !== undefined);
-  const rows = span ? frame.rows.slice(span.from, span.to) : frame.rows.slice(Math.max(frame.cursorRow, 0), frame.cursorRow + 1);
-  return rows.some((row) => row.includes(probe) || (span !== undefined && PASTE_PLACEHOLDER.test(row)));
+  if (!span) return frame.cursorRow >= 0 && (frame.rows[frame.cursorRow] ?? '').includes(pasted.probe);
+  const rows = frame.rows.slice(span.from, span.to);
+  const placeholders = rows.flatMap((row) => row.match(PASTE_PLACEHOLDER) ?? []);
+  if (placeholders.length > 1) return false;
+  if (placeholders.length === 1) {
+    // The collapsed paste is the whole input: the prompt glyph, it, and blank rows.
+    const content = rows.map((row, i) => (i === 0 ? row.replace(/^\s*[❯›][ \u00a0]*/, '') : row).trim()).filter(Boolean);
+    return content.length === 1 && content[0] === placeholders[0] && collapsedFormOf(placeholders[0], pasted);
+  }
+  return rows.some((row) => row.includes(pasted.probe));
 }

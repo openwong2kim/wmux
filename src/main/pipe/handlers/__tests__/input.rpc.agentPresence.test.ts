@@ -255,6 +255,24 @@ describe('an agent whose plain prompt wmux does not know: its pointer line only'
     expect(writes).toEqual([]);
   });
 
+  it('plain keys (no bracketed paste) carry printable text only', async () => {
+    answers = [{ ...PROCESS, bracketedPaste: false }];
+    await deliver({ senderTaskIds: ['task-1'] }, 'Claude Code', 'hi\x03there\x1b[2J\tx\x7f\x9b\x04!');
+    expect(writes[0]).toBe('hithere[2J x!');
+    // eslint-disable-next-line no-control-regex -- checking control characters are gone
+    expect(writes[0]).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+  });
+
+  it('the Enter goes only to the grant the paste had: another agent or another way of taking text gets none', async () => {
+    answers = [PROCESS, PROCESS, POINTER_ONLY];
+    expect(await deliver({ senderTaskIds: ['task-1'] }, null, BODY)).toMatchObject({ ok: false, reason: 'agent_changed', pasted: true, cleared: false });
+    expect(writes).toHaveLength(1);
+    writes = [];
+    answers = [PROCESS, PROCESS, { ...PROCESS, bracketedPaste: false }];
+    expect(await deliver({ senderTaskIds: ['task-1'] })).toMatchObject({ ok: false, reason: 'agent_changed' });
+    expect(writes).not.toContain('\r');
+  });
+
   it('a pane without bracketed paste gets the line as plain keys (no markers); a text of several lines is held', async () => {
     answers = [{ ...POINTER_ONLY, bracketedPaste: false }];
     await deliver({ senderTaskIds: ['task-1'] }, null, BODY);

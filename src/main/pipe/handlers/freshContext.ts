@@ -112,6 +112,12 @@ export interface FreshContextProbe {
   /** The latest SessionStart hook main received for this pane. */
   readSessionStart: () => SessionStartReceipt | undefined;
   write: (data: string) => void;
+  /**
+   * The caller's own check, as the last await before the command is typed
+   * (`command`) and before its Enter (`enter`). It throws to stop: before the
+   * command nothing is written; before the Enter the command is erased first.
+   */
+  verify?: (stage: 'command' | 'enter', command: string) => Promise<void>;
 }
 
 /** Why a caller wants the conversation kept (see KEEP_CONTEXT_REASONS). */
@@ -364,6 +370,7 @@ export async function runFreshContext(
     probe.write('\x7f'.repeat(command.length));
     return skip(result, reason);
   };
+  await probe.verify?.('command', command);
   probe.write(command);
   let placement: ReturnType<typeof commandOnCursorRow> = 'absent';
   const echoDeadline = now() + echoTimeoutMs;
@@ -412,6 +419,12 @@ export async function runFreshContext(
   }
 
   // 6. Enter, then wait for the evidence.
+  try {
+    await probe.verify?.('enter', command);
+  } catch (err) {
+    probe.write('\x7f'.repeat(command.length));
+    throw err;
+  }
   probe.write('\r');
   const enterAt = now();
   const revisionAfterEnter = revision(state) + 2;

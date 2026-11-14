@@ -24,6 +24,13 @@ export function formatBracketedPastePayload(text: string): string {
  *  verify an agent with (its local fallback): said in these words to the sender. */
 export const NO_BACKGROUND_SERVICE_DETAIL = "this PC's wmux is running without its background service; deliveries wait until it is running.";
 
+/** One line typed as plain keys (no bracketed paste): printable characters
+ *  only. Controls (C0, DEL, C1) are dropped; a tab becomes a space. */
+export function printableLine(text: string): string {
+  // eslint-disable-next-line no-control-regex -- dropping controls is the point
+  return text.replace(/\t/g, ' ').replace(/[\x00-\x1f\x7f-\x9f]/g, '');
+}
+
 export function isMultilinePtyPayload(text: string): boolean {
   return text.includes('\n') || text.includes('\r');
 }

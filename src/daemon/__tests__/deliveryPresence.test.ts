@@ -29,6 +29,7 @@ function deps(over: Partial<DeliveryPresenceDeps> & { s?: Partial<PresenceSessio
     tracked: () => ({ alive: true, slug: 'claude' as const }),
     probe: async () => { d.probes++; return true; },
     agentRunning: async () => true,
+    processRunning: async () => true,
     ownedRoot: async () => false,
     agentPid: () => 42,
     holdsForeground: async () => true as boolean | undefined,
@@ -70,7 +71,24 @@ describe('deliveryPresence: the process tier', () => {
     expect(await deliveryPresence(d, 'p', 'claude')).toEqual({ tier: 'none', reason: 'composer-busy' });
     // At the Enter a yes also says whether our paste is in the composer.
     expect(await deliveryPresence(d, 'p', 'claude', { phase: 'enter', shownProbe: 'half a thought' })).toEqual({ ...FULL, pasteShown: true });
-    expect(await deliveryPresence(d, 'p', 'claude', { phase: 'enter', shownProbe: 'not there' })).toEqual({ ...FULL, pasteShown: false });
+    // The input box holds something that is not this delivery's paste: no Enter, nothing taken back.
+    expect(await deliveryPresence(d, 'p', 'claude', { phase: 'enter', shownProbe: 'not there' })).toEqual({ tier: 'none', reason: 'composer-busy', pasteShown: false });
+  });
+
+  it('an exec root that is stopped, or not in the foreground, is not verified', async () => {
+    const exec = { s: { exec: true }, tracked: () => undefined, ownedRoot: async () => true };
+    expect(await deliveryPresence(deps({ ...exec, processRunning: async () => false }), 'p', undefined)).toEqual({ tier: 'none', reason: 'not-running' });
+    expect(await deliveryPresence(deps({ ...exec, holdsForeground: async () => false }), 'p', undefined)).toEqual({ tier: 'none', reason: 'not-foreground' });
+    expect(await deliveryPresence(deps({ ...exec, holdsForeground: async () => undefined }), 'p', undefined)).toEqual({ tier: 'none', reason: 'foreground-unknown' });
+  });
+
+  it('at the Enter, a collapsed paste counts only when it carries this paste\'s own count and is alone', async () => {
+    const collapsed = (row: string) => deps({ frame: async () => frame(['⏺ ok', RULE, `❯\u00a0${row}`, RULE]) });
+    const enter = { phase: 'enter' as const, shownProbe: '━━━ WMUX A2A ━━━', shownLines: 10, shownChars: 300 };
+    expect(await deliveryPresence(collapsed('[Pasted text #1 +10 lines]'), 'p', 'claude', enter)).toEqual({ ...FULL, pasteShown: true });
+    // Someone else's paste (another count), or theirs next to ours.
+    expect(await deliveryPresence(collapsed('[Pasted text #2 +3 lines]'), 'p', 'claude', enter)).toEqual({ tier: 'none', reason: 'composer-busy', pasteShown: false });
+    expect(await deliveryPresence(collapsed('[Pasted text #1 +10 lines][Pasted text #2 +3 lines]'), 'p', 'claude', enter)).toEqual({ tier: 'none', reason: 'composer-busy', pasteShown: false });
   });
 
   it('Codex on the process tier reads its signature alone (its cursor was not measured)', async () => {

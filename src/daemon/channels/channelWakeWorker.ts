@@ -43,7 +43,7 @@
 // back as a schema field).
 
 import { agentRow } from '../../shared/agentIdentity';
-import type { DeliveryCheck } from '../../shared/deliveryPresence';
+import { shownOf, type DeliveryCheck } from '../../shared/deliveryPresence';
 import { neutralName } from '../../shared/typedLineName';
 
 export interface WakeUnreadEntry {
@@ -662,7 +662,12 @@ export class ChannelWakeWorker {
           return;
         }
         // The last check before the Enter.
-        const presence = await this.agentPresence(sessionId, key, { phase: 'enter', shownProbe: line.slice(0, 24) });
+        const presence = await this.agentPresence(sessionId, key, { phase: 'enter', ...shownOf(line) });
+        // An approval can be raised while that was asked: re-read, with no await before the Enter.
+        if (presence.present && this.approvalHold(sessionId, key)) {
+          report(false);
+          return;
+        }
         if (presence.present) {
           commit();
           return;

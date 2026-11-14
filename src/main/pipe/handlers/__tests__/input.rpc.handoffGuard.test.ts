@@ -192,9 +192,9 @@ describe('hand-off delivery guard', () => {
     expect(writes).toEqual([]);
   });
 
-  it('a local pane (no daemon state) cannot be verified and is refused', async () => {
+  it('a local pane (no daemon state) cannot be verified: held for a retry, not "no agent"', async () => {
     local = true;
-    expect(await send()).toMatchObject({ ok: false, reason: 'agent_unverified' });
+    expect(await send()).toMatchObject({ ok: false, reason: 'gate_unavailable' });
     expect(writes).toEqual([]);
   });
 

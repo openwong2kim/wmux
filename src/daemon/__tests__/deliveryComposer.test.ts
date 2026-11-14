@@ -96,23 +96,36 @@ describe('every other agent', () => {
 
 describe('frameShowsPaste', () => {
   const footer = '  gpt-5 medium · ~/project';
-  it("finds the paste's start, or the agent's collapsed paste, on the composer's own rows", () => {
-    expect(frameShowsPaste(f([RULE, '❯\u00a0wmux: A2A task t-1 is', RULE]), 'wmux: A2A task t-1')).toBe(true);
-    expect(frameShowsPaste(f([RULE, '❯\u00a0[Pasted text #1 +12 lines]', RULE]), '━━━ WMUX A2A ━━━')).toBe(true);
-    expect(frameShowsPaste(f(['› [Pasted Content 4096 chars]', footer]), '━━━ WMUX A2A ━━━')).toBe(true);
+  const ENVELOPE = { probe: '━━━ WMUX A2A ━━━', lines: 10, chars: 600 };
+  it("finds the paste's start, or the agent's collapsed form of it, on the composer's own rows", () => {
+    expect(frameShowsPaste(f([RULE, '❯\u00a0wmux: A2A task t-1 is', RULE]), { probe: 'wmux: A2A task t-1' })).toBe(true);
+    expect(frameShowsPaste(f([RULE, '❯\u00a0[Pasted text #1 +10 lines]', RULE]), ENVELOPE)).toBe(true);
+    // One long line: Claude names no line count.
+    expect(frameShowsPaste(f([RULE, '❯\u00a0[Pasted text #2]', RULE]), { probe: 'x', lines: 0, chars: 1200 })).toBe(true);
+    expect(frameShowsPaste(f(['› [Pasted Content 600 chars]', footer]), ENVELOPE)).toBe(true);
+  });
+
+  it("someone else's paste is not this one: another count, a second paste, or keys after it", () => {
+    expect(frameShowsPaste(f([RULE, '❯\u00a0[Pasted text #1 +3 lines]', RULE]), ENVELOPE)).toBe(false);
+    expect(frameShowsPaste(f([RULE, '❯\u00a0[Pasted text #1 +10 lines] [Pasted text #2 +10 lines]', RULE]), ENVELOPE)).toBe(false);
+    expect(frameShowsPaste(f([RULE, '❯\u00a0[Pasted text #1 +10 lines] and my note', RULE]), ENVELOPE)).toBe(false);
+    expect(frameShowsPaste(f(['› [Pasted Content 599 chars]', footer]), ENVELOPE)).toBe(false);
+    // No count to compare with: never ours.
+    expect(frameShowsPaste(f([RULE, '❯\u00a0[Pasted text #1 +10 lines]', RULE]), { probe: '━━━ WMUX A2A ━━━' })).toBe(false);
   });
 
   it('the same words in the transcript above prove nothing', () => {
-    const earlier = ['❯ wmux: A2A task t-1 is waiting', '⏺ [Pasted text #1 +12 lines]'];
-    expect(frameShowsPaste(f([...earlier, RULE, '❯\u00a0my own draft', RULE]), 'wmux: A2A task t-1')).toBe(false);
-    expect(frameShowsPaste(f([...earlier, RULE, '❯\u00a0my own draft', RULE]), '━━━ WMUX A2A ━━━')).toBe(false);
+    const earlier = ['❯ wmux: A2A task t-1 is waiting', '⏺ [Pasted text #1 +10 lines]'];
+    expect(frameShowsPaste(f([...earlier, RULE, '❯\u00a0my own draft', RULE]), { probe: 'wmux: A2A task t-1' })).toBe(false);
+    expect(frameShowsPaste(f([...earlier, RULE, '❯\u00a0my own draft', RULE]), ENVELOPE)).toBe(false);
   });
 
   it('with no composer (a shell took over), only the cursor row counts', () => {
     const rows = ['user@host ~ % wmux: A2A task t-1 is', 'zsh: command not found: wmux:', 'user@host ~ % '];
-    expect(frameShowsPaste(f(rows, rows, 2), 'wmux: A2A task t-1')).toBe(false);
-    expect(frameShowsPaste(f(rows, rows, 0), 'wmux: A2A task t-1')).toBe(true);
-    expect(frameShowsPaste(f(['user@host ~ % '], undefined, -1), 'x')).toBe(false);
-    expect(frameShowsPaste(null, 'x')).toBe(false);
+    const pointer = { probe: 'wmux: A2A task t-1' };
+    expect(frameShowsPaste(f(rows, rows, 2), pointer)).toBe(false);
+    expect(frameShowsPaste(f(rows, rows, 0), pointer)).toBe(true);
+    expect(frameShowsPaste(f(['user@host ~ % '], undefined, -1), { probe: 'x' })).toBe(false);
+    expect(frameShowsPaste(null, { probe: 'x' })).toBe(false);
   });
 });

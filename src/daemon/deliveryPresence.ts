@@ -48,6 +48,8 @@ export interface DeliveryPresenceDeps {
   agentRunning(id: string, slug: AgentSlug): Promise<boolean>;
   /** Fresh: an exec unit's root process is the `slug` agent. */
   ownedRoot(id: string, pid: number, slug: AgentSlug): Promise<boolean>;
+  /** Fresh: a process is running (not stopped, not a zombie). */
+  processRunning(pid: number): Promise<boolean>;
   /** The tracked agent's pid (not for a WSL agent). */
   agentPid(id: string): number | undefined;
   /** Whether a process holds its terminal's foreground; undefined = no answer. */
@@ -78,7 +80,9 @@ export async function deliveryPresence(
   if (!session) return none('no-session');
 
   const shown = async (): Promise<boolean | undefined> =>
-    check.phase === 'enter' && check.shownProbe ? frameShowsPaste(await readFrame(), check.shownProbe) : undefined;
+    check.phase === 'enter' && check.shownProbe
+      ? frameShowsPaste(await readFrame(), { probe: check.shownProbe, lines: check.shownLines, chars: check.shownChars })
+      : undefined;
   const refuse = async (reason: DeliveryPresenceReason): Promise<DeliveryPresence> => none(reason, await shown());
   // A yes at the Enter says it too: a guard that refuses the Enter after this
   // answer takes the paste back only on it.
@@ -102,13 +106,25 @@ export async function deliveryPresence(
     // frame being drawn now, not a leftover. Codex's cursor was not measured,
     // so its screen tier holds; its process tier reads the signature alone.
     if (tier === 'screen' && !(SCREEN_TIER_AGENTS.has(slug) && current && cursorInComposer(current, read))) return refuse('no-screen-proof');
+    // At the Enter the input box must hold this delivery's paste and only it:
+    // anything else in it (someone's own paste or keys) is not ours to submit.
+    if (check.phase === 'enter' && check.shownProbe && (await shown()) !== true) return refuse('composer-busy');
     return pass(tier, slug, 'full');
   };
 
-  // An exec unit whose root is verified to be the named agent.
+  /** A verified process, as the tracked path below asks: running, and in the terminal's foreground. */
+  const runningInForeground = async (pid: number): Promise<DeliveryPresence | null> => {
+    if (deps.platform === 'win32') return null;
+    const foreground = await deps.holdsForeground(pid).catch(() => undefined);
+    if (foreground === undefined) return refuse('foreground-unknown');
+    return foreground ? null : refuse('not-foreground');
+  };
+
+  // An exec unit whose root is verified to be the named agent, running in the foreground.
   if (session.exec && session.namedSlug && (!expectAgent || session.namedSlug === expectAgent)
     && await deps.ownedRoot(id, session.shellPid, session.namedSlug).catch(() => false)) {
-    return verified('process', session.namedSlug);
+    if (!(await deps.processRunning(session.shellPid).catch(() => false))) return refuse('not-running');
+    return (await runningInForeground(session.shellPid)) ?? verified('process', session.namedSlug);
   }
 
   // Not known alive: probe once (it also records the death of a tracked agent
@@ -122,12 +138,8 @@ export async function deliveryPresence(
     if (expectAgent && tracked.slug !== expectAgent) return refuse('other-agent');
     if (!(await deps.agentRunning(id, tracked.slug).catch(() => false))) return refuse('not-running');
     const pid = deps.agentPid(id);
-    if (deps.platform !== 'win32' && pid !== undefined) {
-      const foreground = await deps.holdsForeground(pid).catch(() => undefined);
-      if (foreground === undefined) return refuse('foreground-unknown');
-      if (!foreground) return refuse('not-foreground');
-    }
-    return verified('process', tracked.slug);
+    const notForeground = pid === undefined ? null : await runningInForeground(pid);
+    return notForeground ?? verified('process', tracked.slug);
   }
 
   // Never attributed, or an unnamed (wrapper) process: only the screen can tell.

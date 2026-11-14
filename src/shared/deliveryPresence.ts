@@ -15,6 +15,19 @@ export interface DeliveryCheck {
   phase: 'paste' | 'enter';
   /** At the Enter: the start of the pasted text, to tell whether the pane still shows it. */
   shownProbe?: string;
+  /** At the Enter: the pasted text's line breaks and characters, which the
+   *  agent's collapsed form of a long paste names (`+N lines`, `N chars`). */
+  shownLines?: number;
+  shownChars?: number;
+}
+
+/** What a delivery typed, as DeliveryCheck carries it at the Enter. */
+export function shownOf(typed: string): Required<Pick<DeliveryCheck, 'shownProbe' | 'shownLines' | 'shownChars'>> {
+  return {
+    shownProbe: (typed.split('\n').find((line) => line.trim()) ?? '').trim().slice(0, 24),
+    shownLines: (typed.match(/\n/g) ?? []).length,
+    shownChars: [...typed].length,
+  };
 }
 
 export type DeliveryPresenceReason =

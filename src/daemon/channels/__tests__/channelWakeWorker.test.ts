@@ -1044,6 +1044,25 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
     expect(h.outcomes.at(-1)?.ok).toBe(false);
   });
 
+  it('withholds the Enter when an approval is raised while the agent is asked about before the Enter', async () => {
+    let blocked = false;
+    const h = makeHarness(undefined, {
+      approvalBlocked: () => blocked,
+      agentPresent: async (_id, check) => {
+        if (check.phase === 'enter') blocked = true;
+        return { present: true, full: true };
+      },
+    });
+    h.setEntries([mention()]);
+    h.setSessions([session({})]);
+    h.worker.tickOnce();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.writes).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(5);
+    expect(h.writes.map((w) => w.data)).not.toContain('\r');
+    expect(h.outcomes.at(-1)?.ok).toBe(false);
+  });
+
   it('withholds the Enter when a dialog appears between the text and the Enter', async () => {
     let screen = false;
     const h = makeHarness(undefined, { screenShowsApproval: async () => screen });

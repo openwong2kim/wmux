@@ -6285,6 +6285,7 @@ function registerRpcHandlers(
     probe: (sid, shellPid, timeoutMs) => agentProcessTracker.probeNamedAgentNow(sid, shellPid, timeoutMs),
     agentRunning: (sid, slug) => agentProcessTracker.isAgentRunning(sid, slug, (pid) => ProcessMonitor.isRunning(pid), BY_ATTRIBUTION),
     ownedRoot: (sid, pid, slug) => agentProcessTracker.verifyOwnedRoot(sid, pid, slug, BY_ATTRIBUTION),
+    processRunning: (pid) => ProcessMonitor.isRunning(pid),
     agentPid: (sid) => agentProcessTracker.pidFor(sid),
     holdsForeground: (pid) => processHoldsForeground(pid),
     frame: async (sid) => {
@@ -6299,7 +6300,12 @@ function registerRpcHandlers(
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const expectAgent = isAgentSlug(params['expectAgent']) ? params['expectAgent'] : undefined;
     const shownProbe = typeof params['shownProbe'] === 'string' ? params['shownProbe'].slice(0, 64) : undefined;
-    const check: DeliveryCheck = params['phase'] === 'enter' ? { phase: 'enter', ...(shownProbe ? { shownProbe } : {}) } : { phase: 'paste' };
+    const count = (v: unknown): number | undefined => (Number.isSafeInteger(v) && (v as number) >= 0 ? (v as number) : undefined);
+    const shownLines = count(params['shownLines']);
+    const shownChars = count(params['shownChars']);
+    const check: DeliveryCheck = params['phase'] === 'enter'
+      ? { phase: 'enter', ...(shownProbe ? { shownProbe } : {}), ...(shownLines !== undefined ? { shownLines } : {}), ...(shownChars !== undefined ? { shownChars } : {}) }
+      : { phase: 'paste' };
     return deliveryPresence(presenceDeps, id, expectAgent, check);
   });
   deliveryPresenceRef = (id, check) => deliveryPresence(presenceDeps, id, undefined, check);
@@ -6407,7 +6413,10 @@ function registerRpcHandlers(
           if (granted !== true) return granted;
         }
         const presence = await deliveryPresence(presenceDeps, id, agentSlug, { phase: stage === 'first-write' ? 'paste' : 'enter' });
-        return promptGrant(presence, author);
+        const grant = promptGrant(presence, author);
+        // The caller's grant again: it may have been withdrawn during that
+        // check (each caller's is a synchronous read, so nothing waits after it).
+        return grant === true && opts.authorized ? opts.authorized(stage) : grant;
       },
       // Each of these is tried again later: one log line per pane while the
       // refusal holds. No person waits on them, so the read may take longer.
