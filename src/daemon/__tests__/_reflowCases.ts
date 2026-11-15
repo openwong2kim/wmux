@@ -132,7 +132,37 @@ export const reflowCases: Case[] = [
   // wrapped there, so still native.
   script('alt-after-main-narrow', [80, 24], [`${rows(3, 30)}`, [40, 24], `\x1b[?1049h\x1b[H${rows(2, 30)}`, [80, 24]]),
   ...trimmedSavedRowCases(),
+  // The narrowing inserts 12 rows into a buffer of 10 with no save or
+  // restore: the cut lands inside the 90-cell line's new rows (#3372).
+  script('narrow-inserts-past-buffer', [30, 8], [
+    [`${'a'.repeat(35)}`, `${'b'.repeat(35)}`, `${'C'.repeat(90)}`, 's', `${'d'.repeat(35)}`, 'end'].join('\r\n'), [10, 8],
+  ], 'rust', 2),
+  ...fullScrollbackNarrowCases(),
 ];
+
+/**
+ * #3372: on a full scrollback, xterm's narrowing reflow placed a line's new
+ * rows past index 0 when the rows pushed off the top cut inside them, and the
+ * negative indexes landed on the bottom rows. Fixed by the reflow hunk in
+ * patches/@xterm+headless+*.patch and patches/@xterm+xterm+*.patch. Which row
+ * counts hit it depends on where the cut lands, so each sweeps 24 to 60 rows
+ * at a scrollback of 1,000; the 1,100 and 1,500 lines fill it.
+ */
+function fullScrollbackNarrowCases(): Case[] {
+  const out: Case[] = [];
+  const wide = rows(1100, 200, 'L');
+  // 0 to 189 cells after the label, so some lines gain no rows at 80.
+  const mixed = Array.from({ length: 1500 }, (_, i) => `M${i}:${'y'.repeat((i * 37) % 190)}`).join('\r\n');
+  for (let r = 24; r <= 60; r++) {
+    out.push(
+      script(`full-scrollback-200-to-60-rows${r}`, [200, r], [`${wide}\r\n${prompt}`, [60, r]], 'rust', 1000),
+      script(`full-scrollback-mixed-200-to-80-rows${r}`, [200, r], [`${mixed}\r\n${prompt}`, [80, r]], 'rust', 1000),
+      // Two Split right actions on a wide pane.
+      script(`full-scrollback-200-to-98-to-47-rows${r}`, [200, r], [`${wide}\r\n${prompt}`, [98, r], [47, r]], 'rust', 1000),
+    );
+  }
+  return out;
+}
 
 /**
  * #3354: xterm moves its saved row down by every row a narrowing's reflow
@@ -163,9 +193,10 @@ function trimmedSavedRowCases(): Case[] {
     ...[3, 4, 5, 6, 7, 100].map((sb) => script(`trim-saved-row2-sb${sb}`, [20, 6], [savedRow2, [10, 6], RESTORE], 'rust', sb)),
     // No history before the narrowing (the rows kept on screen first).
     ...[1, 2, 100].map((sb) => script(`trim-empty-history-sb${sb}`, [40, 8], [emptyHistory, [10, 8], RESTORE], 'rust', sb)),
-    // The clamp at the screen's last row, with room left partway. (At a
-    // scrollback of 1 or 2 xterm's own reflow loses rows: a known gap below.)
-    ...[3, 4, 6, 12, 100].map((sb) => script(`trim-mixed-sb${sb}`, [30, 8], [mixed, [10, 8], RESTORE], 'rust', sb)),
+    // The clamp at the screen's last row, with room left partway. At a
+    // scrollback of 1 or 2 the narrowing inserts more rows than the buffer
+    // holds (#3372, see fullScrollbackNarrowCases).
+    ...[1, 2, 3, 4, 6, 12, 100].map((sb) => script(`trim-mixed-sb${sb}`, [30, 8], [mixed, [10, 8], RESTORE], 'rust', sb)),
     // The save scrolled above the screen, and no save at all (xterm's 0).
     script('trim-save-above-screen-sb3', [20, 6], [aboveScreen, [10, 6], RESTORE], 'rust', 3),
     script('trim-no-save-sb1', [20, 6], [noSave, [10, 6], RESTORE], 'rust', 1),
@@ -210,10 +241,4 @@ export const knownGaps: Case[] = [
   // from a blank cell and drops them. Fixed by S0's print-time marker for
   // printed blanks (after its charset PR).
   script('trailing-spaces', [80, 24], [`x${' '.repeat(60)}\r\n${prompt}`, [40, 24]]),
-  // xterm's narrowing reflow, inserting more rows than its buffer holds (12
-  // into 10 here), loses the bottom rows and repeats stale ones; Alacritty
-  // keeps the content. No save or restore is involved (#3372).
-  script('narrow-inserts-past-buffer-content-diverges-today', [30, 8], [
-    [`${'a'.repeat(35)}`, `${'b'.repeat(35)}`, `${'C'.repeat(90)}`, 's', `${'d'.repeat(35)}`, 'end'].join('\r\n'), [10, 8],
-  ], 'rust', 2),
 ];
