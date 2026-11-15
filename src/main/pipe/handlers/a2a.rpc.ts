@@ -517,18 +517,27 @@ export function registerA2aRpc(
    * agent suffix) was `to` (`legacy`), so a name an agent already learned
    * still reaches its link.
    */
-  async function remoteTargetsFor(to: unknown): Promise<{ named: A2aRemoteTarget[]; legacy: A2aRemoteTarget[] }> {
+  async function remoteTargetsFor(to: unknown): Promise<{ named: A2aRemoteTarget[]; legacy: A2aRemoteTarget[]; all?: A2aRemoteTarget[] }> {
     const none = { named: [], legacy: [] };
     if (!remote || typeof to !== 'string' || (!to.includes('/') && !isRemoteWorkspaceId(to))) return none;
     try {
-      const targets = await remote.listTargets();
+      const all = await remote.listTargets();
       return {
-        named: targets.filter((t) => t.alias === to || remoteWorkspaceId(t.linkId) === to),
-        legacy: targets.filter((t) => t.legacyAlias === to),
+        named: all.filter((t) => t.alias === to || remoteWorkspaceId(t.linkId) === to),
+        legacy: all.filter((t) => t.legacyAlias === to),
+        all,
       };
     } catch {
       return none;
     }
+  }
+
+  /** Every remote target, or none once `PEER_HINTS_DEADLINE_MS` passes: for a hint that must not hold up its answer. */
+  async function remoteTargetsWithin(): Promise<A2aRemoteTarget[]> {
+    if (!remote) return [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<A2aRemoteTarget[]>((resolve) => { timer = setTimeout(() => resolve([]), PEER_HINTS_DEADLINE_MS); });
+    return Promise.race([remote.listTargets().catch(() => [] as A2aRemoteTarget[]), late]).finally(() => clearTimeout(timer));
   }
 
   /**
@@ -2050,9 +2059,12 @@ export function registerA2aRpc(
       if (params.execute === true) return { error: 'a2a.task.send: execute is only supported for new tasks' };
       return replyRemote('a2a.task.send', params.taskId, params, ctx);
     }
+    // The remote targets this send already read, for a "not found" answer (below).
+    let readTargets: A2aRemoteTarget[] | undefined;
     if (!params.taskId) {
       const found = await remoteTargetsFor(params.to);
       if (found.named.length > 0 || found.legacy.length > 0) return sendRemoteTask(params, found, ctx, handOutId);
+      readTargets = found.all;
       // A remote end's id never names a local workspace: no active link, no send.
       if (isRemoteWorkspaceId(params.to)) return { error: `a2a.task.send: "${params.to}" is not an active link to another PC` };
     }
@@ -2196,8 +2208,9 @@ export function registerA2aRpc(
     // A name nothing here answers to: the remote panes a2a.discover lists for this workspace are named too.
     if (isRecord(result) && result.targetNotFound === true) {
       delete result.targetNotFound;
-      const targets = remote ? await remote.listTargets().catch(() => [] as A2aRemoteTarget[]) : [];
-      const callerWs = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+      const targets = readTargets ?? await remoteTargetsWithin();
+      // The workspace the renderer resolved the send for (a commander's is pinned to its binding above).
+      const callerWs = typeof sendParams.workspaceId === 'string' ? sendParams.workspaceId : '';
       const remoteNames = remoteTargetsOfWorkspace(targets, callerWs).map((t) => t.alias);
       if (remoteNames.length > 0 && typeof result.error === 'string') result.error = `${result.error}; on other PCs: ${remoteNames.join(', ')}`;
     }
