@@ -193,14 +193,22 @@ describe('a2a.task.send — remote alias', () => {
       expect(await call(router, 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to, message: 'hi' })).toMatchObject({ ok: true, remote: true });
     }
     expect(remote.sendTask).toHaveBeenCalledTimes(2);
-    // An old name equal to another link's current alias names that link, never both.
-    remote.listTargets.mockResolvedValue([
-      { ...target, alias: 'pc-b/ws-b/w1-1', legacyAlias: 'pc-b/ws-b/w1-1(claude)' },
-      { ...target, linkId: '33333333-3333-4333-8333-333333333333', alias: 'pc-b/ws-b/w1-1(claude)', local: { workspaceId: 'ws-a', paneId: 'pane-other' } },
-    ]);
-    expect((await call(router, 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to: 'pc-b/ws-b/w1-1(claude)', message: 'x' })).error).toMatch(/not linked/);
-    expect(remote.sendTask).toHaveBeenCalledTimes(2);
     expect(rendererCalls('a2a.task.send')).toEqual([]);
+  });
+
+  it('a pane\'s old name that is now another link\'s alias still reaches the pane\'s own link', async () => {
+    const router = setup();
+    const OTHER = '33333333-3333-4333-8333-333333333333';
+    // The older link (another local pane) now holds the plain name; ours, linked idle, had it before.
+    remote.listTargets.mockResolvedValue([
+      { ...target, linkId: OTHER, alias: 'pc-b/ws-b/w1-1', legacyAlias: 'pc-b/ws-b/w1-1(claude)', local: { workspaceId: 'ws-a', paneId: 'pane-other' } },
+      { ...target, alias: 'pc-b/ws-b/w1-1#2', legacyAlias: 'pc-b/ws-b/w1-1' },
+    ]);
+    expect(await call(router, 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to: 'pc-b/ws-b/w1-1', message: 'x' })).toMatchObject({ ok: true, remote: true });
+    expect(remote.sendTask).toHaveBeenCalledWith(expect.objectContaining({ linkId: LINK }));
+    // A pane linked to neither is still refused.
+    expect((await call(router, 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a2', to: 'pc-b/ws-b/w1-1', message: 'x' })).error).toMatch(/not linked/);
+    expect(remote.sendTask).toHaveBeenCalledTimes(1);
   });
 
   it('a partial alias match takes the local path', async () => {

@@ -592,8 +592,17 @@ export class A2aRemoteDelivery {
     });
 
     onRpc(A2A_REMOTE_RPC.targets, async () => {
-      const legacy = aliasTable(this.deps.links.list(), (h) => this.hostName(h), true);
-      return { targets: listRemoteTargets({ linkStore: this.deps.links, aliasFor: (l) => this.aliasFor(l), legacyAliasFor: (l) => legacy.get(l.linkId) }) };
+      const all = this.deps.links.list();
+      const hostName = (h: string): string | undefined => this.hostName(h);
+      const current = aliasTable(all, hostName);
+      const legacy = aliasTable(all, hostName, true);
+      return {
+        targets: listRemoteTargets({
+          linkStore: this.deps.links,
+          aliasFor: (l) => current.get(l.linkId) ?? this.aliasFor(l),
+          legacyAliasFor: (l) => legacy.get(l.linkId),
+        }),
+      };
     });
 
     onRpc(A2A_REMOTE_RPC.sendTask, async (p) => {

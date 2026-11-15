@@ -23,6 +23,7 @@ import { redactSecrets } from '../../shared/redactSecrets';
 import {
   heldNoticeText,
   aliasPaneLabel,
+  aliasPart,
   isRemoteWorkspaceId,
   remoteAlias,
   remoteWorkspaceId,
@@ -112,7 +113,7 @@ export function linkAlias(link: A2aLinkRecordV1, hostName: string | undefined, k
   const pc = hostName || link.remote.hostId.slice(0, 8);
   if (link.remote.kind === 'brain') return `${pc.replace(/\//g, '-').trim() || '?'}/${A2A_BRAIN_ALIAS}`;
   const label = link.remote.label || link.remote.paneId || '';
-  return remoteAlias(pc, link.remote.workspaceName || link.remote.workspaceId, keepAgent ? label : aliasPaneLabel(label));
+  return remoteAlias(pc, link.remote.workspaceName || link.remote.workspaceId, keepAgent ? label : aliasPaneLabel(aliasPart(label)));
 }
 
 /**

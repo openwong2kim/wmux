@@ -108,6 +108,14 @@ describe('aliases', () => {
     expect(named('api(claude)')).toBe('DESK/ws-b/api(claude)');
     expect(named('review (prod)')).toBe('DESK/ws-b/review (prod)');
     expect(named('w1-1(prod)')).toBe('DESK/ws-b/w1-1(prod)');
+    // The auto namer writes lower case only; another casing is a person's name.
+    expect(named('W1-1(Claude)')).toBe('DESK/ws-b/W1-1(Claude)');
+  });
+
+  it('drops the agent from a label that reads as an auto name only once it is cleaned', () => {
+    const base = links.get(activeLink())!;
+    expect(linkAlias({ ...base, remote: { ...base.remote, label: 'w1-1(claude) ' } }, 'DESK')).toBe('DESK/ws-b/w1-1');
+    expect(linkAlias({ ...base, remote: { ...base.remote, label: 'w1-1\u0007(claude)' } }, 'DESK')).toBe('DESK/ws-b/w1-1');
   });
 
   it('two auto-named panes of one workspace keep distinct aliases once the agent is dropped', () => {

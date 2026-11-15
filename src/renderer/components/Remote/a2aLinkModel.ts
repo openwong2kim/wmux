@@ -1,4 +1,5 @@
 import { a2aEndpointAlias, type A2aExposedPane, type A2aLinkRecordV1 } from '../../../shared/a2aRemote';
+import { aliasPaneLabel } from '../../../shared/a2aRemoteDelivery';
 import type { Workspace } from '../../../shared/types';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { activeAgentSlug, leafDisplayName } from '../../utils/paneNaming';
@@ -62,7 +63,8 @@ export function linkDirection(allow: A2aLinkRecordV1['allow']): 'both' | 'send' 
  */
 export function remoteAlias(pcName: string, remote: A2aLinkRecordV1['remote'], brainName: string): string {
   if (remote.kind === 'brain') return `${pcName}/${brainName}`;
-  return a2aEndpointAlias(pcName, remote);
+  // The pane part as agents address it: an auto name without its agent.
+  return a2aEndpointAlias(pcName, remote.label ? { ...remote, label: aliasPaneLabel(remote.label) } : remote);
 }
 
 /**

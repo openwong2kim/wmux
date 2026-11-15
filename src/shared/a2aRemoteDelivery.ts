@@ -112,8 +112,8 @@ export function remoteAlias(hostName: string, workspaceName: string, paneLabel: 
  * auto shape, so it is kept as is.
  */
 export function aliasPaneLabel(label: string): string {
-  const m = /^(w\d+-\d+)\(([^()]+)\)$/i.exec(label);
-  return m && AGENT_SLUG_SET.has(m[2]!.toLowerCase()) ? m[1]! : label;
+  const m = /^(w\d+-\d+)\(([^()]+)\)$/.exec(label);
+  return m && AGENT_SLUG_SET.has(m[2]!) ? m[1]! : label;
 }
 
 /**

@@ -504,18 +504,22 @@ export function registerA2aRpc(
 
   /**
    * Active links `to` names EXACTLY (no trimming, no partial match): by alias,
-   * or by the `remote:<linkId>` id a2a.discover lists for the remote end. A
-   * name nothing lists now may be one an earlier build listed (with the
-   * pane's agent suffix): it still reaches that link.
+   * or by the `remote:<linkId>` id a2a.discover lists for the remote end
+   * (`named`); and those whose alias in an earlier build (with the pane's
+   * agent suffix) was `to` (`legacy`), so a name an agent already learned
+   * still reaches its link.
    */
-  async function remoteTargetsFor(to: unknown): Promise<A2aRemoteTarget[]> {
-    if (!remote || typeof to !== 'string' || (!to.includes('/') && !isRemoteWorkspaceId(to))) return [];
+  async function remoteTargetsFor(to: unknown): Promise<{ named: A2aRemoteTarget[]; legacy: A2aRemoteTarget[] }> {
+    const none = { named: [], legacy: [] };
+    if (!remote || typeof to !== 'string' || (!to.includes('/') && !isRemoteWorkspaceId(to))) return none;
     try {
       const targets = await remote.listTargets();
-      const named = targets.filter((t) => t.alias === to || remoteWorkspaceId(t.linkId) === to);
-      return named.length > 0 ? named : targets.filter((t) => t.legacyAlias === to);
+      return {
+        named: targets.filter((t) => t.alias === to || remoteWorkspaceId(t.linkId) === to),
+        legacy: targets.filter((t) => t.legacyAlias === to),
+      };
     } catch {
-      return [];
+      return none;
     }
   }
 
@@ -526,11 +530,12 @@ export function registerA2aRpc(
    */
   async function sendRemoteTask(
     params: Record<string, unknown>,
-    matches: A2aRemoteTarget[],
+    found: { named: A2aRemoteTarget[]; legacy: A2aRemoteTarget[] },
     ctx: RpcContext | undefined,
     handOutId: string | undefined,
   ): Promise<unknown> {
     const alias = params.to as string;
+    const matches = found.named.length > 0 ? found.named : found.legacy;
     if (params.execute === true) return { error: 'a2a.task.send: execute is not available for a remote pane (message only)' };
     // A task held on its blockers waits on this PC's daemon record; a task to
     // another PC has no such hold yet (v1).
@@ -590,7 +595,10 @@ export function registerA2aRpc(
     if (caller.kind !== 'resolved') {
       return { error: `a2a.task.send: "${alias}" is a remote pane; sending to it needs the caller's verified pane` };
     }
-    const link = matches.find((t) => t.kind !== 'brain' && t.local.workspaceId === workspaceId && t.local.paneId === caller.paneId);
+    // An earlier build's name for the caller's own link, now another link's
+    // current alias, still names the caller's link.
+    const ownLink = (t: A2aRemoteTarget): boolean => t.kind !== 'brain' && t.local.workspaceId === workspaceId && t.local.paneId === caller.paneId;
+    const link = matches.find(ownLink) ?? found.legacy.find(ownLink);
     if (!link) return { error: `a2a.task.send: this pane is not linked to "${alias}"` };
     if (!link.allowOutbound) return { error: `a2a.task.send: the link to "${alias}" does not allow sending from this side` };
     // A company's CEO briefs a seat on another PC as one here: the brief is
@@ -2038,8 +2046,8 @@ export function registerA2aRpc(
       return replyRemote('a2a.task.send', params.taskId, params, ctx);
     }
     if (!params.taskId) {
-      const matches = await remoteTargetsFor(params.to);
-      if (matches.length > 0) return sendRemoteTask(params, matches, ctx, handOutId);
+      const found = await remoteTargetsFor(params.to);
+      if (found.named.length > 0 || found.legacy.length > 0) return sendRemoteTask(params, found, ctx, handOutId);
       // A remote end's id never names a local workspace: no active link, no send.
       if (isRemoteWorkspaceId(params.to)) return { error: `a2a.task.send: "${params.to}" is not an active link to another PC` };
     }
