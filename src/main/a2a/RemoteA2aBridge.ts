@@ -64,6 +64,12 @@ export interface RemoteA2aBridgeDeps {
   sendToRenderer: (method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }) => Promise<unknown>;
   /** Subscribe to daemon broadcasts; returns an unsubscribe. */
   onDaemonEvent: (listener: (event: { type?: unknown; [key: string]: unknown }) => void) => () => void;
+  /**
+   * Whether the window's RPC bridge answers yet. Asked before the attempt is
+   * recorded: a unit offered to a renderer still loading would time out and
+   * read as possibly pasted, though nothing could have been.
+   */
+  rendererReady?: () => Promise<boolean>;
   /** Runs after every pull that reached the daemon; never overlaps itself. */
   afterPull?: () => Promise<void>;
   backstopMs?: number;
@@ -371,6 +377,13 @@ export class RemoteA2aBridge {
         await this.mark(unit.key, { taskId: task.id, ...(item ? { messageId: item.messageId } : {}), mark: { held: 'pane-missing' } });
       }
       return 'pane-missing';
+    }
+    // The renderer is not answering yet (main started before the window
+    // loaded): nothing is recorded, and the unit stays owed for a later pull.
+    if (this.deps.rendererReady && !(await this.deps.rendererReady().catch(() => false))) {
+      this.backoff(unit.key);
+      this.deps.log?.('info', `[a2a-remote] ${unit.key}: the window is not ready yet, delivery kept for later`);
+      return 'not-delivered';
     }
     const ref = { taskId: task.id, ...(item ? { messageId: item.messageId } : {}) };
     // Durable BEFORE the write: if main dies after the paste, the daemon knows

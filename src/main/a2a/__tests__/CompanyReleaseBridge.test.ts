@@ -258,6 +258,24 @@ describe('CompanyReleaseBridge — delivery of a released task', () => {
     expect(marksOf('task-c').at(-1)).toEqual({ held: 'delivery-unconfirmed' });
   });
 
+  it('a window still loading after a main start: no attempt recorded, nothing held, written once it answers', async () => {
+    daemon.tasks.set('task-c', companyTask('task-c', released()));
+    let ready = false;
+    const probe = vi.fn(async () => ready);
+    const b = new CompanyReleaseBridge({ daemon, sendToRenderer: renderer, rendererReady: probe, now: () => clock });
+    await pull(b);
+    clock += COMPANY_BRIDGE_RETRY_MIN_MS;
+    await pull(b);
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(writes()).toHaveLength(0);
+    expect(marksOf('task-c')).toEqual([]);
+    ready = true;
+    clock += 2 * COMPANY_BRIDGE_RETRY_MIN_MS;
+    await pull(b);
+    expect(events).toEqual(['attempted:true', 'write', 'delivered']);
+    expect(writes()).toHaveLength(1);
+  });
+
   it('with no window, nothing was written: the attempt is cleared and tried again', async () => {
     daemon.tasks.set('task-c', companyTask('task-c', released()));
     deliverAnswers.push(new Error('BrowserWindow is not available'));
@@ -339,6 +357,19 @@ describe('CompanyReleaseBridge — CEO lines', () => {
     // An app restart starts with nothing told: at most one repeat.
     await pull(bridge());
     expect(ceoLines()).toHaveLength(2);
+  });
+
+  it('a CEO line while the window is still loading is not counted as told, and goes once it answers', async () => {
+    daemon.tasks.set('task-c', stranded());
+    let ready = false;
+    const b = new CompanyReleaseBridge({ daemon, sendToRenderer: renderer, rendererReady: async () => ready, now: () => clock });
+    await pull(b);
+    expect(ceoLines()).toHaveLength(0);
+    ready = true;
+    clock += COMPANY_BRIDGE_RETRY_MIN_MS;
+    await pull(b);
+    await pull(b);
+    expect(ceoLines()).toHaveLength(1);
   });
 
   it('a refused line is tried again; a CEO pane with no agent is not', async () => {

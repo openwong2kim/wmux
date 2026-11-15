@@ -72,6 +72,12 @@ export interface CompanyReleaseBridgeDeps {
   daemon: CompanyReleaseDaemon;
   /** The renderer bridge (`sendToRenderer(getWindow, …)`). */
   sendToRenderer: (method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }) => Promise<unknown>;
+  /**
+   * Whether the window's RPC bridge answers yet. Asked before a delivery's
+   * attempt is recorded and before a CEO line: a renderer still loading would
+   * time out, and the task would read as possibly written (the line as told).
+   */
+  rendererReady?: () => Promise<boolean>;
   /** CEO lines already told, by event key; pass one set to keep it across reconnects. */
   told?: Set<string>;
   /**
@@ -220,6 +226,12 @@ export class CompanyReleaseBridge {
       await this.mark(task.id, { held: 'pane-missing' });
       return;
     }
+    // The renderer is not answering yet: nothing is recorded, the task stays owed.
+    if (!(await this.windowReady())) {
+      this.backoff(task.id);
+      this.deps.log?.('info', `[company] ${task.id}: the window is not ready yet, delivery kept for later`);
+      return;
+    }
     // Taken before the first await of this delivery, so the gate decides in pull order.
     const slot = this.deps.slots ? await this.deps.slots.take({ workspaceId: task.metadata.to.workspaceId, paneId: task.metadata.to.paneId }) : null;
     // At the cap, or the count unreadable: it stays owed, nothing marked or written.
@@ -345,6 +357,11 @@ export class CompanyReleaseBridge {
 
   /** One line to the company's CEO pane. Told once written; given up after a few misses. */
   private async tellCeo(task: Task, event: CompanyCeoEvent): Promise<void> {
+    // Not answering yet: tried again like a missing window, never counted as told.
+    if (!(await this.windowReady())) {
+      this.ceoMiss(event.key);
+      return;
+    }
     let res: unknown;
     try {
       res = await this.deps.sendToRenderer(COMPANY_RENDERER_METHOD.ceoLine, {
@@ -394,6 +411,10 @@ export class CompanyReleaseBridge {
     const prev = this.ceoRetry.get(key);
     const delayMs = prev ? Math.min(prev.delayMs * 2, COMPANY_BRIDGE_RETRY_MAX_MS) : COMPANY_BRIDGE_RETRY_MIN_MS;
     this.ceoRetry.set(key, { at: this.now() + delayMs, delayMs });
+  }
+
+  private async windowReady(): Promise<boolean> {
+    return !this.deps.rendererReady || (await this.deps.rendererReady().catch(() => false));
   }
 
   private backoff(taskId: string): void {

@@ -466,6 +466,40 @@ describe('RemoteA2aBridge', () => {
     expect(renderer).toHaveBeenCalledTimes(1);
     expect(daemon.marks).toEqual([{ taskId: id(23), held: 'delivery-unconfirmed' }]);
   });
+
+  it('a window still loading after a main start: no attempt recorded, nothing held, delivered once it answers', async () => {
+    daemon.tasks.set(id(24), remoteTask(24));
+    let ready = false;
+    const probe = vi.fn(async () => ready);
+    bridge = new RemoteA2aBridge({ daemonRpc: (m, p) => daemon.rpc(m, p), sendToRenderer: (m, p) => renderer(m, p), rendererReady: probe, onDaemonEvent: () => () => undefined });
+    bridge.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(probe.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(renderer).not.toHaveBeenCalled();
+    expect(daemon.attempts).toEqual([]);
+    expect(daemon.marks).toEqual([]);
+    expect((daemon.tasks.get(id(24))!.metadata.remote as A2aRemoteTaskState).attempted).toBeUndefined();
+    ready = true;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(renderer).toHaveBeenCalledTimes(1);
+    expect(daemon.attempts).toEqual([{ taskId: id(24), attempted: true }]);
+    expect(daemon.marks).toEqual([{ taskId: id(24), delivered: true }]);
+  });
+
+  it('a probe that throws counts as not ready', async () => {
+    daemon.tasks.set(id(25), remoteTask(25));
+    bridge = new RemoteA2aBridge({
+      daemonRpc: (m, p) => daemon.rpc(m, p),
+      sendToRenderer: (m, p) => renderer(m, p),
+      rendererReady: () => Promise.reject(new Error('BrowserWindow is not available')),
+      onDaemonEvent: () => () => undefined,
+    });
+    bridge.start();
+    await settle();
+    expect(renderer).not.toHaveBeenCalled();
+    expect(daemon.attempts).toEqual([]);
+  });
 });
 
 describe('RemoteA2aBridge — a task stored for a brain link', () => {

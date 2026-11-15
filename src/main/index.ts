@@ -3001,10 +3001,14 @@ app.on('ready', async () => {
       // Cross-host A2A — remote tasks/replies the daemon holds, pulled on the
       // daemon's nudge, on every (re)connect (start pulls at once) and on a
       // backstop; never through the router, so the approval gate applies.
+      // Any answer to a cheap read the window's RPC bridge handles means it is up.
+      const rendererReady = (): Promise<boolean> =>
+        sendToRenderer(() => mainWindow, 'workspace.current', {}, { timeoutMs: 2_000 }).then(() => true, () => false);
       remoteA2aBridge?.stop();
       remoteA2aBridge = new RemoteA2aBridge({
         daemonRpc: (method, params) => client.rpc(method, params),
         sendToRenderer: (method, params, opts) => sendToRenderer(() => mainWindow, method, params, opts),
+        rendererReady,
         onDaemonEvent: (listener) => {
           client.on('event', listener);
           return () => { client.off('event', listener); };
@@ -3021,6 +3025,7 @@ app.on('ready', async () => {
       companyReleaseBridge = new CompanyReleaseBridge({
         daemon: client,
         sendToRenderer: (method, params, opts) => sendToRenderer(() => mainWindow, method, params, opts),
+        rendererReady,
         told: companyCeoLinesTold,
         inFlight: companyDeliveriesInFlight,
         pendingMarks: companyPendingMarks,
@@ -3062,8 +3067,7 @@ app.on('ready', async () => {
           client.on('event', listener);
           return () => { client.off('event', listener); };
         },
-        // Any answer to a cheap read the window's RPC bridge handles means it is up.
-        rendererReady: () => sendToRenderer(() => mainWindow, 'workspace.current', {}, { timeoutMs: 2_000 }).then(() => true, () => false),
+        rendererReady,
         log: (level, msg) => logLine(level, 'a2a-remote', msg),
       });
       continueStarter.start();
