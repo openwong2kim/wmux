@@ -20,7 +20,7 @@ const TASK = 'rt-3378';
 const HOUR = 60 * 60 * 1000;
 
 let dir: string;
-let open: Array<{ delivery: A2aRemoteDelivery; log: AppendOnlyLog }> = [];
+const open: Array<{ delivery: A2aRemoteDelivery; log: AppendOnlyLog }> = [];
 let logged: string[] = [];
 let clock = Date.parse('2026-11-15T00:00:00.000Z');
 
@@ -91,7 +91,7 @@ async function inboundTask(tasks: A2aTaskService): Promise<void> {
 
 const base = { protocol: A2A_REMOTE_PROTOCOL, linkId: LINK, linkVersion: 1, taskId: TASK } as const;
 const reply = (messageId: string): A2aRemoteEnvelope => ({ ...base, messageId, kind: 'reply', text: 'answer', sentAt: new Date().toISOString() });
-const stateEnv = (messageId: string): A2aRemoteEnvelope => ({ ...base, messageId, kind: 'state', state: 'working', sentAt: new Date().toISOString() });
+const stateEnv = (messageId: string, to: 'working' | 'input-required' = 'working'): A2aRemoteEnvelope => ({ ...base, messageId, kind: 'state', state: to, sentAt: new Date().toISOString() });
 
 const state = (tasks: A2aTaskService): string | undefined => tasks.getTask(TASK)?.status.state;
 const stateRefused = (tasks: A2aTaskService) =>
@@ -163,29 +163,77 @@ describe('a stored refusal whose effect never ran (#3378)', () => {
     expect(state(tasks)).not.toBe('failed');
   });
 
-  it('a later record of the task the peer took, under another epoch, means the refusal is not applied again', async () => {
+  it('a task that changed after the refusal is left alone, whatever link or epoch carried the change', async () => {
+    const first = boot();
+    await inboundTask(first.tasks);
+    refusedReply(first.delivery, 'r-c');
+    await crash();
+
+    tick(1000);
+    const second = boot();
+    // The exchange went on before the replay ran: the peer's next message landed on the task.
+    await second.tasks.appendRemoteMessage({
+      taskId: TASK, linkId: LINK, actorWorkspaceId: `remote:${LINK}`,
+      message: { kind: 'message', messageId: 'r-p', role: 'user', parts: [{ kind: 'text', text: 'and another thing' }] },
+    });
+    await second.delivery.maintain();
+    expect(state(second.tasks)).not.toBe('failed');
+  });
+
+  it('a refusal already applied is not applied again after the task is reopened', async () => {
+    const first = boot();
+    await inboundTask(first.tasks);
+    refusedReply(first.delivery);
+    await crash();
+
+    const second = boot();
+    await second.delivery.maintain();
+    expect(state(second.tasks)).toBe('failed');
+    tick(1000);
+    const reopened = await second.tasks.reopenTask({ taskId: TASK, callerWorkspaceId: `remote:${LINK}` });
+    expect(reopened).toMatchObject({ ok: true, reopened: true });
+    await second.delivery.maintain();
+    expect(state(second.tasks)).toBe('submitted');
+  });
+
+  it('a notice this PC withheld after the refusal does not stand in for it: the task still fails', async () => {
+    const first = boot();
+    await inboundTask(first.tasks);
+    refusedReply(first.delivery);
+    await crash();
+
+    tick(1000);
+    const second = boot();
+    const rec = second.delivery.outbox.enqueue(HOST, { ...reply('notice-r-p'), notice: { kind: 'held-expired', messageId: 'r-p', sentAt: '2026-11-13T06:00:00.000Z' } });
+    second.delivery.outbox.refuse(HOST, rec.seq, 'protocol');
+    await second.delivery.maintain();
+    expect(state(second.tasks)).toBe('failed');
+  });
+
+  it('a refusal whose effect is being applied right now is left to that call', async () => {
     const { delivery, tasks } = boot();
     await inboundTask(tasks);
-    const seq = refusedReply(delivery, 'r-c');
-    const refused = delivery.outbox.get(HOST, seq)!;
-    // One store holds one epoch (a new one starts empty), so the later record is written out by hand: a lower seq
-    // under another epoch, created after the refusal.
-    tick(1000);
-    const later = { ...refused, epoch: 'epoch-after', seq: 1, state: 'acked' as const, envelope: reply('r-d'), lastError: undefined, createdAt: new Date().toISOString() };
-    type Owed = { refusalOwed(rec: unknown, code: string, settled: unknown[]): boolean };
-    const owed = (settled: unknown[]): boolean => (delivery as unknown as Owed).refusalOwed(refused, 'unknown-task', settled);
-    expect(owed([refused])).toBe(true);
-    expect(owed([refused, later])).toBe(false);
-    // Created before the refusal, it does not count.
-    expect(owed([refused, { ...later, createdAt: '2026-11-14T00:00:00.000Z' }])).toBe(true);
-    // A record of another task, or to another PC, does not count either.
-    expect(owed([refused, { ...later, envelope: { ...reply('r-d'), taskId: 'rt-other' } }])).toBe(true);
-    expect(owed([refused, { ...later, hostId: '33333333-3333-4333-8333-333333333333' }])).toBe(true);
+    const rec = delivery.outbox.enqueue(HOST, reply('r-1'));
+    delivery.outbox.refuse(HOST, rec.seq, 'unknown-task');
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    const real = tasks.forceFailRemote.bind(tasks);
+    const fail = vi.spyOn(tasks, 'forceFailRemote').mockImplementation(async (input) => { await gate; return real(input); });
+    type Live = { onRefused(rec: unknown, code: string): Promise<void> };
+    const live = (delivery as unknown as Live).onRefused(delivery.outbox.get(HOST, rec.seq), 'unknown-task');
+    await delivery.maintain();
+    expect(fail).toHaveBeenCalledTimes(1);
+    release();
+    await live;
+    expect(state(tasks)).toBe('failed');
   });
 
   it('a refused state is recorded once; a later state the peer took ends the replay', async () => {
     const first = boot();
     await inboundTask(first.tasks);
+    // Our agent took the task; the state that says so is refused.
+    expect(await first.tasks.transition({ taskId: TASK, to: 'working', callerWorkspaceId: 'ws-b' })).toMatchObject({ ok: true });
+    tick(1000);
     const rec = first.delivery.outbox.enqueue(HOST, stateEnv('s-1'));
     first.delivery.outbox.refuse(HOST, rec.seq, 'conflict');
     await crash();
@@ -197,10 +245,12 @@ describe('a stored refusal whose effect never ran (#3378)', () => {
     await second.delivery.maintain();
     expect(mark.mock.calls.filter(([input]) => 'stateRefused' in input)).toHaveLength(1);
 
-    // The peer takes a later state: the refusal is over and is never put back.
-    const next = second.delivery.outbox.enqueue(HOST, stateEnv('s-2'));
+    // The task moves on and the peer takes its next state: the refusal is over and is never put back.
+    tick(1000);
+    expect(await second.tasks.transition({ taskId: TASK, to: 'input-required', callerWorkspaceId: 'ws-b' })).toMatchObject({ ok: true });
+    const next = second.delivery.outbox.enqueue(HOST, stateEnv('s-2', 'input-required'));
     second.delivery.outbox.ack(HOST, { epoch: second.delivery.outbox.epoch, seq: next.seq });
-    await vi.waitFor(() => expect(stateRefused(second.tasks)).toBeUndefined());
+    await vi.waitFor(() => expect(stateRefused(second.tasks)).toBeUndefined(), { timeout: 5_000 });
     await second.delivery.maintain();
     expect(stateRefused(second.tasks)).toBeUndefined();
   });

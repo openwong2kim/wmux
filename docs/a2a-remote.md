@@ -211,9 +211,9 @@ server is not told, as before.
 The refusal is stored before the task is updated. If wmux stops between
 the two, or the task update cannot be written, the update is made again
 when wmux starts and on each regular check after that, once only. It is not
-made if the other PC has since taken a later message of that task. After a
-day without success it is dropped, with a line in the log naming the task
-and the PC.
+made if the task has changed since the refusal (a later message or state,
+or the task was reopened). After a day without success it is dropped, with
+a line in the log naming the task and the PC.
 
 ## Delivery, receipts and held work
 

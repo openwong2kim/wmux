@@ -223,6 +223,10 @@ export class A2aRemoteDelivery {
   private maintenanceTimer: ReturnType<typeof setInterval> | null = null;
   /** `EXIT_AFTER_REFUSE_ENV` (test only). */
   private readonly exitAfterRefuse = process.env[EXIT_AFTER_REFUSE_ENV] === '1';
+  /** Refused records (`<hostId>#<seq>`) whose effect `onRefused` is applying now: the replay leaves them to it. */
+  private readonly refusing = new Set<string>();
+  /** Refused records given up on (`REFUSAL_REPLAY_MS`), logged once each. */
+  private readonly refusalsGivenUp = new Set<string>();
 
   constructor(deps: A2aRemoteDeliveryDeps) {
     this.deps = deps;
@@ -761,11 +765,20 @@ export class A2aRemoteDelivery {
    * other PC the task is cancelled, unless the link or the task is gone there.
    */
   private async onRefused(rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode, detail?: string): Promise<void> {
-    if (this.exitAfterRefuse) process.kill(process.pid, 'SIGKILL');
+    if (this.exitAfterRefuse) {
+      this.deps.log('error', `[a2a-remote] ${EXIT_AFTER_REFUSE_ENV}=1 (test only): stopping after a refusal is recorded, before its effect`);
+      process.kill(process.pid, 'SIGKILL');
+    }
     this.deps.log('warn', `[a2a-remote] ${rec.hostId} refused ${rec.envelope.kind} on link ${rec.envelope.linkId}: ${code}`);
     this.deps.offers?.onRefused(rec.hostId, rec.envelope, code);
     this.deps.spawnAsks?.onRefused(rec.hostId, rec.envelope, code);
-    await this.applyRefusal(rec, code, detail);
+    const k = `${rec.hostId}#${rec.seq}`;
+    this.refusing.add(k);
+    try {
+      await this.applyRefusal(rec, code, detail);
+    } finally {
+      this.refusing.delete(k);
+    }
   }
 
   /** What a refusal does to the task its record carried. Each step is a no-op once it has landed (`refusalOwed`). */
@@ -852,18 +865,24 @@ export class A2aRemoteDelivery {
    * (`<hostId>#<seq>`), which the prune keeps.
    */
   private async reconcileRefusals(): Promise<Set<string>> {
-    const settled = this.outbox.settled();
     const owed = new Set<string>();
-    for (const rec of settled) {
+    for (const rec of this.outbox.settled()) {
       const code = rec.lastError;
-      if (rec.state !== 'refused' || !code) continue;
+      const k = `${rec.hostId}#${rec.seq}`;
+      if (rec.state !== 'refused' || !code || this.refusing.has(k)) continue;
       // Shares and spawn asks: each settles once, from its own record's state.
-      this.deps.offers?.onRefused(rec.hostId, rec.envelope, code);
-      this.deps.spawnAsks?.onRefused(rec.hostId, rec.envelope, code);
-      if (rec.envelope.notice || !this.refusalOwed(rec, code, settled)) continue;
+      if (rec.envelope.kind === 'link') {
+        this.deps.offers?.onRefused(rec.hostId, rec.envelope, code);
+        this.deps.spawnAsks?.onRefused(rec.hostId, rec.envelope, code);
+        continue;
+      }
+      if (rec.envelope.notice || !this.refusalOwed(rec, code)) continue;
       const taskId = taskOfEnvelope(rec.envelope, remoteTaskId);
       if (Date.now() - Date.parse(rec.updatedAt) >= REFUSAL_REPLAY_MS) {
-        this.deps.log('warn', `[a2a-remote] a refusal by ${rec.hostId} (${code}) was never applied to task ${taskId}; given up after 24 h`);
+        if (!this.refusalsGivenUp.has(k)) {
+          this.refusalsGivenUp.add(k);
+          this.deps.log('warn', `[a2a-remote] a refusal by ${rec.hostId} (${code}) was never applied to task ${taskId}; given up after 24 h`);
+        }
         continue;
       }
       try {
@@ -872,23 +891,22 @@ export class A2aRemoteDelivery {
       } catch (err) {
         this.deps.log('warn', `[a2a-remote] ${taskId}: applying a refusal again failed: ${errMsg(err)}`);
       }
-      if (this.refusalOwed(rec, code, settled)) owed.add(`${rec.hostId}#${rec.seq}`);
+      if (this.refusalOwed(rec, code)) owed.add(k);
     }
     return owed;
   }
 
   /**
-   * Is the effect of this refusal on its task still missing? Read from state only: the task's ledger state, and
-   * the outbox. Not when the task is gone, or when the other PC took a later record of the same task (acked, under
-   * any epoch, so a link made again counts too) or refused a later one (that refusal is the one that counts).
+   * Is the effect of this refusal on its task still missing? Read from state only. Not when the task is gone, or
+   * when it changed after the refusal (`updatedAt`: a transition, a cancel or a message, never delivery
+   * bookkeeping): the effect landed then, or the task moved on (reopened, a later message or state, through any link
+   * or epoch), and a replay must not act on it. Otherwise owed while the task is open (a fail) or while its refused
+   * state is not recorded (a disagreement).
    */
-  private refusalOwed(rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode, settled: readonly A2aOutboxRecordV1[]): boolean {
+  private refusalOwed(rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode): boolean {
     const taskId = taskOfEnvelope(rec.envelope, remoteTaskId);
     const task = taskId ? this.deps.taskService.getTask(taskId) : undefined;
-    if (!taskId || !task) return false;
-    const later = settled.some((r) => r.hostId === rec.hostId && r !== rec && taskOfEnvelope(r.envelope, remoteTaskId) === taskId
-      && (r.epoch === rec.epoch ? r.seq > rec.seq : r.createdAt > rec.createdAt));
-    if (later) return false;
+    if (!task || task.metadata.updatedAt > rec.updatedAt) return false;
     const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
     if (rec.envelope.kind === 'state' && rec.envelope.state && STATE_DISAGREEMENTS.has(code)) {
       return !(marker?.stateRefused?.state === rec.envelope.state && marker.stateRefused.code === code);
