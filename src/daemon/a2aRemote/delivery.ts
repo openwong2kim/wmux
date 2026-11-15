@@ -591,7 +591,10 @@ export class A2aRemoteDelivery {
       return { ok: true };
     });
 
-    onRpc(A2A_REMOTE_RPC.targets, async () => ({ targets: listRemoteTargets({ linkStore: this.deps.links, aliasFor: (l) => this.aliasFor(l) }) }));
+    onRpc(A2A_REMOTE_RPC.targets, async () => {
+      const legacy = aliasTable(this.deps.links.list(), (h) => this.hostName(h), true);
+      return { targets: listRemoteTargets({ linkStore: this.deps.links, aliasFor: (l) => this.aliasFor(l), legacyAliasFor: (l) => legacy.get(l.linkId) }) };
+    });
 
     onRpc(A2A_REMOTE_RPC.sendTask, async (p) => {
       const from = isPlainObject(p['from']) ? p['from'] : null;

@@ -10,6 +10,7 @@
 
 import { A2A_BRAIN_ALIAS, isRemoteTaskId, type A2aEndpointKind, type A2aRemoteErrorCode, type A2aRemoteReceipt, type A2aRemoteStatusShown, type A2aRemoteTaskMarkerV1, type HostId } from './a2aRemote';
 import type { CompanyBriefV1 } from './company';
+import { AGENT_SLUG_SET } from './agentIdentity';
 import type { GatedSubmitRefusal } from './ptyMessageDelivery';
 import { isTaskState, type Part, type Task, type TaskState } from './types';
 
@@ -105,6 +106,17 @@ export function remoteAlias(hostName: string, workspaceName: string, paneLabel: 
 }
 
 /**
+ * The pane part of an alias. A pane's auto name carries the agent running in
+ * it when the link was made (`w1-2(claude)`); the alias drops that suffix, so
+ * it names the pane whatever runs there. A user's rename never takes the
+ * auto shape, so it is kept as is.
+ */
+export function aliasPaneLabel(label: string): string {
+  const m = /^(w\d+-\d+)\(([^()]+)\)$/i.exec(label);
+  return m && AGENT_SLUG_SET.has(m[2]!.toLowerCase()) ? m[1]! : label;
+}
+
+/**
  * One alias part: printable characters only (letters, marks, digits,
  * punctuation, symbols, plain spaces), '/' as '-', bounded. A remote name
  * can never carry a control character or an escape into an agent's prompt.
@@ -180,6 +192,11 @@ export interface A2aRemoteTarget {
   remote: { workspaceId: string; paneId?: string; label?: string };
   /** `link.allow.outbound`: this side may start new tasks on the link. */
   allowOutbound: boolean;
+  /**
+   * The alias this link had while aliases kept the pane's agent suffix
+   * (`…/w1-2(claude)`), when it differs; a send to it still reaches the link.
+   */
+  legacyAlias?: string;
 }
 
 export interface A2aRemoteSendTaskInput {

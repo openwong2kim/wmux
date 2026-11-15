@@ -22,6 +22,7 @@ import {
 import { redactSecrets } from '../../shared/redactSecrets';
 import {
   heldNoticeText,
+  aliasPaneLabel,
   isRemoteWorkspaceId,
   remoteAlias,
   remoteWorkspaceId,
@@ -103,12 +104,15 @@ export interface OutboundDeps {
 /**
  * `<PC name>/<workspace>/<pane>` for a link's remote pane, `<PC name>/Moa`
  * for a brain end. The workspace part is the remote workspace's name, the
- * pane part its label; each falls back to its id when the link has no name.
+ * pane part its label without an auto name's agent suffix (`aliasPaneLabel`);
+ * each falls back to its id when the link has no name. `keepAgent`: the label
+ * as stored, the alias earlier builds listed.
  */
-export function linkAlias(link: A2aLinkRecordV1, hostName: string | undefined): string {
+export function linkAlias(link: A2aLinkRecordV1, hostName: string | undefined, keepAgent = false): string {
   const pc = hostName || link.remote.hostId.slice(0, 8);
   if (link.remote.kind === 'brain') return `${pc.replace(/\//g, '-').trim() || '?'}/${A2A_BRAIN_ALIAS}`;
-  return remoteAlias(pc, link.remote.workspaceName || link.remote.workspaceId, link.remote.label || link.remote.paneId || '');
+  const label = link.remote.label || link.remote.paneId || '';
+  return remoteAlias(pc, link.remote.workspaceName || link.remote.workspaceId, keepAgent ? label : aliasPaneLabel(label));
 }
 
 /**
@@ -117,14 +121,18 @@ export function linkAlias(link: A2aLinkRecordV1, hostName: string | undefined): 
  * alias names exactly one link. Inbound task senders and the send targets
  * read this one table, so discover and send always agree.
  */
-export function aliasTable(links: readonly A2aLinkRecordV1[], hostName: (hostId: string) => string | undefined): Map<string, string> {
+export function aliasTable(
+  links: readonly A2aLinkRecordV1[],
+  hostName: (hostId: string) => string | undefined,
+  keepAgent = false,
+): Map<string, string> {
   const active = links
     .filter((l) => l.state === 'active')
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.linkId.localeCompare(b.linkId));
   const used = new Set<string>();
   const out = new Map<string, string>();
   for (const link of active) {
-    const base = linkAlias(link, hostName(link.remote.hostId));
+    const base = linkAlias(link, hostName(link.remote.hostId), keepAgent);
     let alias = base;
     for (let n = 2; used.has(alias); n++) alias = `${base}#${n}`;
     used.add(alias);
@@ -133,24 +141,35 @@ export function aliasTable(links: readonly A2aLinkRecordV1[], hostName: (hostId:
   return out;
 }
 
-/** Every ACTIVE link as an addressable target. */
-export function listRemoteTargets(deps: Pick<OutboundDeps, 'linkStore' | 'aliasFor'>): A2aRemoteTarget[] {
+/**
+ * Every ACTIVE link as an addressable target. `legacyAliasFor`: the alias an
+ * earlier build listed for it (`aliasTable` with `keepAgent`), kept on the
+ * target when it differs.
+ */
+export function listRemoteTargets(
+  deps: Pick<OutboundDeps, 'linkStore' | 'aliasFor'> & { legacyAliasFor?: (link: A2aLinkRecordV1) => string | undefined },
+): A2aRemoteTarget[] {
   return deps.linkStore
     .list()
     .filter((l) => l.state === 'active')
-    .map((l) => ({
-      alias: deps.aliasFor(l),
-      linkId: l.linkId,
-      hostId: l.remote.hostId,
-      kind: l.local.kind,
-      local: { workspaceId: l.local.workspaceId, ...(l.local.paneId ? { paneId: l.local.paneId } : {}) },
-      remote: {
-        workspaceId: l.remote.workspaceId,
-        ...(l.remote.paneId ? { paneId: l.remote.paneId } : {}),
-        ...(l.remote.label ? { label: l.remote.label } : {}),
-      },
-      allowOutbound: l.allow.outbound,
-    }));
+    .map((l) => {
+      const alias = deps.aliasFor(l);
+      const legacy = deps.legacyAliasFor?.(l);
+      return {
+        alias,
+        linkId: l.linkId,
+        hostId: l.remote.hostId,
+        kind: l.local.kind,
+        local: { workspaceId: l.local.workspaceId, ...(l.local.paneId ? { paneId: l.local.paneId } : {}) },
+        remote: {
+          workspaceId: l.remote.workspaceId,
+          ...(l.remote.paneId ? { paneId: l.remote.paneId } : {}),
+          ...(l.remote.label ? { label: l.remote.label } : {}),
+        },
+        allowOutbound: l.allow.outbound,
+        ...(legacy && legacy !== alias ? { legacyAlias: legacy } : {}),
+      };
+    });
 }
 
 /**

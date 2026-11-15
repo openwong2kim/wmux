@@ -186,6 +186,23 @@ describe('a2a.task.send — remote alias', () => {
     expect(rendererCalls('a2a.task.send')).toEqual([]);
   });
 
+  it('a name an earlier build listed (with the pane\'s agent) still reaches its link; the current alias wins', async () => {
+    const router = setup();
+    remote.listTargets.mockResolvedValue([{ ...target, alias: 'pc-b/ws-b/w1-1', legacyAlias: 'pc-b/ws-b/w1-1(claude)' }]);
+    for (const to of ['pc-b/ws-b/w1-1', 'pc-b/ws-b/w1-1(claude)']) {
+      expect(await call(router, 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to, message: 'hi' })).toMatchObject({ ok: true, remote: true });
+    }
+    expect(remote.sendTask).toHaveBeenCalledTimes(2);
+    // An old name equal to another link's current alias names that link, never both.
+    remote.listTargets.mockResolvedValue([
+      { ...target, alias: 'pc-b/ws-b/w1-1', legacyAlias: 'pc-b/ws-b/w1-1(claude)' },
+      { ...target, linkId: '33333333-3333-4333-8333-333333333333', alias: 'pc-b/ws-b/w1-1(claude)', local: { workspaceId: 'ws-a', paneId: 'pane-other' } },
+    ]);
+    expect((await call(router, 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to: 'pc-b/ws-b/w1-1(claude)', message: 'x' })).error).toMatch(/not linked/);
+    expect(remote.sendTask).toHaveBeenCalledTimes(2);
+    expect(rendererCalls('a2a.task.send')).toEqual([]);
+  });
+
   it('a partial alias match takes the local path', async () => {
     for (const to of ['pc-b/ws-b', 'pc-b/ws-b/code', ` ${ALIAS}`, 'codex']) {
       await call(setup(), 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to, message: 'hi' });

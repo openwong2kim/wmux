@@ -504,12 +504,16 @@ export function registerA2aRpc(
 
   /**
    * Active links `to` names EXACTLY (no trimming, no partial match): by alias,
-   * or by the `remote:<linkId>` id a2a.discover lists for the remote end.
+   * or by the `remote:<linkId>` id a2a.discover lists for the remote end. A
+   * name nothing lists now may be one an earlier build listed (with the
+   * pane's agent suffix): it still reaches that link.
    */
   async function remoteTargetsFor(to: unknown): Promise<A2aRemoteTarget[]> {
     if (!remote || typeof to !== 'string' || (!to.includes('/') && !isRemoteWorkspaceId(to))) return [];
     try {
-      return (await remote.listTargets()).filter((t) => t.alias === to || remoteWorkspaceId(t.linkId) === to);
+      const targets = await remote.listTargets();
+      const named = targets.filter((t) => t.alias === to || remoteWorkspaceId(t.linkId) === to);
+      return named.length > 0 ? named : targets.filter((t) => t.legacyAlias === to);
     } catch {
       return [];
     }
