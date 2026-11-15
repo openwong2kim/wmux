@@ -151,6 +151,23 @@ describe('frameShowsPaste', () => {
       expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +40', '  lines]', NARROW]), pointer)).toBe(false);
     });
 
+    it("collapsed, its start scrolled out of a 12-column box that draws a hint under itself (w4-6's frame)", () => {
+      const RULE12 = '─'.repeat(12);
+      const hint = ['  paste', '  again to', '  expand'];
+      const frame = f([RULE12, '❯\u00a0text #2', '  +7', '  lines]', RULE12, ...hint]);
+      expect(frameShowsPaste(frame, pointer)).toBe(true);
+      // The hint rows sit under the closing rule: not the composer's, and not a mode.
+      expect(readComposer(frame, 'claude', 'enter')).toEqual({ verdict: 'plain', span: { from: 1, to: 4 } });
+      // Only `lines]` (no count), a tail with keys after it, someone else's count, or a cut that is not the placeholder's.
+      expect(frameShowsPaste(f([RULE12, '❯\u00a0lines]', RULE12, ...hint]), pointer)).toBe(false);
+      expect(frameShowsPaste(f([RULE12, '❯\u00a0text #2', '  +7', '  lines] ok', RULE12]), pointer)).toBe(false);
+      expect(frameShowsPaste(f([RULE12, '❯\u00a0text #2', '  +40', '  lines]', RULE12]), pointer)).toBe(false);
+      expect(frameShowsPaste(f([RULE12, '❯\u00a0note #2', '  +7', '  lines]', RULE12]), pointer)).toBe(false);
+      expect(frameShowsPaste(f([RULE12, '❯\u00a0text #', '  +7', '  lines]', RULE12]), pointer)).toBe(false);
+      // Its count alone, or the number's last digits, still are this placeholder's end.
+      expect(frameShowsPaste(f([RULE12, '❯\u00a0+7 lines]', RULE12]), pointer)).toBe(true);
+    });
+
     it('scrolled, its start out of view: the visible rows are the end of this text', () => {
       const scrolled = [NARROW, '❯\u00a03ac71741 from Workspace', '  1.w1-2 —', '  a2a_task_query task_id:', '  task-3ac71741-02eb-4659', '  -988e-f3cbeb63a838', NARROW];
       expect(frameShowsPaste(f(scrolled), pointer)).toBe(true);

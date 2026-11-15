@@ -188,6 +188,23 @@ function collapsedFormOf(placeholder: string, pasted: PastedText): boolean {
 /** The fewest characters (spaces aside) a scrolled composer must show of a text's end to count as showing it. */
 const SCROLLED_TAIL_MIN = 24;
 
+/** Claude's placeholder with its start scrolled out of a narrow box: the end of `[Pasted text #<n>`, then `+<m>lines]`. */
+const SCROLLED_CLAUDE_PLACEHOLDER = /^(\D*)(\d*)\+(\d+)lines\]$/;
+
+/**
+ * Is `shown` (squashed) the end of Claude's `[Pasted text #<n> +<m> lines]`, at least its `+<m>lines]`, with `m`
+ * this paste's count? A narrow box that also draws a hint under itself shrinks and scrolls the placeholder's start
+ * out of view.
+ */
+function scrolledPlaceholderOf(shown: string, pasted: PastedText): boolean {
+  const tail = SCROLLED_CLAUDE_PLACEHOLDER.exec(shown);
+  if (!tail) return false;
+  const [, head, digits, rows] = tail;
+  // Either digits of `<n>` alone (or nothing), or a cut of `[Pastedtext#` followed by all of `<n>`.
+  if (head && (!'[Pastedtext#'.endsWith(head) || !digits)) return false;
+  return collapsedFormOf(`[Pastedtext#${digits || '1'}+${rows}lines]`, pasted);
+}
+
 /**
  * Does the pane still show what this delivery pasted, where it would sit, and
  * only that? In a recognised composer, on its own rows: the text's start, or
@@ -211,6 +228,7 @@ export function frameShowsPaste(frame: DeliveryFrame | null, pasted: PastedText)
   if (placeholders.length > 1) return false;
   // The collapsed paste is the whole input: the prompt glyph, it (on one row or wrapped), and blank rows.
   if (placeholders.length === 1) return shown === placeholders[0] && collapsedFormOf(placeholders[0], pasted);
+  if (scrolledPlaceholderOf(shown, pasted)) return true;
   // Uncollapsed, the whole input is this text and nothing else. A narrow box
   // scrolls a long text: then it shows the text's end, and only that, enough
   // of it to be this text's. Without the text, its start on some row.
