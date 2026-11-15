@@ -354,6 +354,7 @@ import { chatProviders } from './chat/providers';
 import { record as chatRecord } from './chat/adapter';
 import type { ChatInteractionAnswer } from '../shared/transcript/chatSession';
 import { selfCheckPeerPid } from '../shared/peerPid';
+import { PANE_INPUT_HIGH_WATER, PANE_LOCK_DAEMON_WAIT_MS, PANE_LOCK_MAX_WAIT_MS, PaneDeliveryLocks, admitPaneInput, writeUnderLock } from './paneDeliveryLock';
 
 // A delivery asks whether the agent the tracker attributes still runs there,
 // not where its binary lives: the image rule (isAgentImage) would refuse a live
@@ -557,6 +558,8 @@ let idleHoldForRemoteStarts: () => boolean = () => false;
 let headlessDeliverRef: HeadlessDeliveryDeps['deliver'] | null = null;
 /** daemon.deliveryPresence, for the channel wake worker built in another scope. */
 let deliveryPresenceRef: ((id: string, check: DeliveryCheck) => Promise<DeliveryPresence>) | null = null;
+/** One delivery at a time into a pane, across main and the daemon (paneDeliveryLock.ts). */
+const paneLocks = new PaneDeliveryLocks({ log: (line) => log('info', line) });
 /** Whether a pane holds a draft, the screen consulted (draftScreen.ts). */
 let draftOnScreen: DraftCheck | undefined;
 let headlessDeliveryRef: HeadlessDelivery | null = null;
@@ -3320,14 +3323,9 @@ function registerRpcHandlers(
         // Past the high-water mark (other writers can fill it while this client
         // is not paused) the chunk waits in SessionPipe's retry slot instead of
         // the PTY adapter, which drops input past its own bound.
-        if (((managed.ptyProcess as TerminalPty).pendingInputBytes ?? 0) >= 6 * 1024 * 1024) return false;
-        try { managed.ptyProcess.write(data); }
-        catch (error) {
-          if (error instanceof Error && error.message.startsWith('PTY_BACKPRESSURE')) return false;
-          throw error;
-        }
+        if (!admitPaneInput((managed.ptyProcess as TerminalPty).pendingInputBytes, () => managed.ptyProcess.write(data))) return false;
         managed.bridge.noteInput(input);
-        if (((managed.ptyProcess as TerminalPty).pendingInputBytes ?? 0) >= 6 * 1024 * 1024) pipe.setInputPaused(true);
+        if (((managed.ptyProcess as TerminalPty).pendingInputBytes ?? 0) >= PANE_INPUT_HIGH_WATER) pipe.setInputPaused(true);
       });
       const inputDrain = (managed.ptyProcess as TerminalPty).onInputDrain?.(() => pipe.setInputPaused(false));
       if (inputDrain) pipe.setInputDrainSubscription(() => inputDrain.dispose());
@@ -4990,6 +4988,59 @@ function registerRpcHandlers(
     return false;
   };
 
+  // One delivery at a time into a pane, for main's gated deliveries and the
+  // daemon's own writers alike (paneDeliveryLock.ts). Main holds it over RPC
+  // and writes only through writeHeldV1, which checks the hold and writes in
+  // the same tick.
+  pipeServer.onClientClose((clientId) => paneLocks.releaseClient(clientId));
+  sessionManager.on('session:died', (payload: { id: string }) => paneLocks.dropSession(payload.id));
+  sessionManager.on('session:destroyed', (payload: { id: string }) => paneLocks.dropSession(payload.id));
+  // Only a live session takes a delivery: a suspended or dead one has no
+  // process to write to, and main reports that nothing was delivered. A
+  // detached live session (no pane shows it) does, as the daemon's own
+  // writers' deliveries do.
+  const liveSession = (id: string) => {
+    const managed = id ? sessionManager.getSession(id) : undefined;
+    return managed && (managed.meta.state === 'attached' || managed.meta.state === 'detached') ? managed : undefined;
+  };
+  pipeServer.onRpc('daemon.session.deliveryLockV1', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'daemon.session.deliveryLockV1')) return { ok: false, error: 'not allowed' };
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const nonce = typeof params['nonce'] === 'string' ? params['nonce'].slice(0, 64) : '';
+    const waitMs = typeof params['waitMs'] === 'number' && Number.isFinite(params['waitMs']) ? Math.min(Math.max(0, params['waitMs']), PANE_LOCK_MAX_WAIT_MS) : 0;
+    if (!nonce || !liveSession(id)) return { ok: false, error: 'no session' };
+    const token = await paneLocks.acquire(id, { key: `main:${ctx.clientId}`, clientId: ctx.clientId, nonce }, waitMs);
+    if (!liveSession(id)) {
+      if (token) paneLocks.release(id, token);
+      return { ok: false, error: 'no session' };
+    }
+    if (!token) return { ok: false, busy: true, holder: paneLocks.holderOf(id) ?? null };
+    // The pipe closed while it waited: not handed out.
+    if (!paneLocks.holds(id, token, ctx.clientId)) return { ok: false, busy: true };
+    return { ok: true, token };
+  });
+  pipeServer.onRpc('daemon.session.deliveryUnlockV1', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'daemon.session.deliveryUnlockV1')) return { ok: false };
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    if (typeof params['token'] === 'string' && paneLocks.holds(id, params['token'], ctx.clientId)) paneLocks.release(id, params['token']);
+    if (typeof params['nonce'] === 'string') paneLocks.releaseNonce(id, ctx.clientId, params['nonce']);
+    return { ok: true };
+  });
+  // The token check and the write are one synchronous step: nothing can end
+  // the hold in between. Accounted exactly as the session pipe's input is.
+  pipeServer.onRpc('daemon.session.writeHeldV1', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'daemon.session.writeHeldV1')) return { ok: false, error: 'not allowed' };
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const token = typeof params['token'] === 'string' ? params['token'] : '';
+    const data = typeof params['data'] === 'string' ? params['data'] : '';
+    const managed = liveSession(id);
+    return writeUnderLock(paneLocks, id, token, ctx.clientId, managed ? {
+      write: (bytes) => managed.ptyProcess.write(bytes),
+      pendingInputBytes: (managed.ptyProcess as TerminalPty).pendingInputBytes,
+      noteInput: (bytes) => managed.bridge.noteInput(bytes),
+    } : undefined, data);
+  });
+
   desktopPhoneBridge ??= new DesktopPhoneBridge((id,event) => pipeServer.sendTo(id,event));
   pipeServer.onRpc('daemon.phone.register', async (params,ctx) => {
     if (!firstPartyOnly(ctx.clientId,'daemon.phone.register')) return {ok:false};
@@ -5059,6 +5110,8 @@ function registerRpcHandlers(
       writeToPane: (id, data) => {
         const pane = sessionManager.getSession(id);
         if (!pane) return false;
+        // Another delivery holds the pane (paneDeliveryLock.ts): not written.
+        if (!paneLocks.holdSticky(id, 'chat-v2')) return false;
         pane.ptyProcess.write(data);
         pane.bridge.noteInput(data);
         return true;
@@ -5284,10 +5337,13 @@ function registerRpcHandlers(
       write: (id, data) => {
         const managed = sessionManager.getSession(id);
         if (!managed) return false;
+        // Another delivery holds the pane (paneDeliveryLock.ts): not written.
+        if (!paneLocks.holdSticky(id, 'hermes-chat')) return false;
         managed.ptyProcess.write(data);
         managed.bridge.noteInput(data);
         return true;
       },
+      paneLock: (id, send) => paneLocks.runLocked(id, 'hermes-chat', PANE_LOCK_DAEMON_WAIT_MS, send),
       emit: (id, data, clients) => {
         nativeChatBridge?.nudgeQueue(id);
         for (const client of clients) {
@@ -5382,10 +5438,13 @@ function registerRpcHandlers(
     write: (id, data) => {
       const managed = sessionManager.getSession(id);
       if (!managed) return false;
+      // Another delivery holds the pane (paneDeliveryLock.ts): not written.
+      if (!paneLocks.holdSticky(id, 'native-chat')) return false;
       managed.ptyProcess.write(data);
       managed.bridge.noteInput(data);
       return true;
     },
+    paneLock: (id, send) => paneLocks.runLocked(id, 'native-chat', PANE_LOCK_DAEMON_WAIT_MS, send),
     receipts: chatSendReceipts,
     cancelReceipts: chatCancelReceipts,
     queue: chatQueue,
@@ -6420,12 +6479,26 @@ function registerRpcHandlers(
   // Every caller is automated input (a schedule, a run, a nudge, a usage-limit
   // continue), so a screen that cannot rule out a folder-trust prompt stops it
   // too. `writer` names the caller in the refusal's log line.
-  const deliverPromptToSessionNow = (
+  const deliverPromptToSessionNow = async (
     id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string,
     opts: Pick<ScheduledPromptDeliveryDeps, 'acceptError' | 'authorized' | 'onWrite'>,
     writer: string,
     author: PromptAuthor,
     trust: { refuseUnknown?: boolean; onRefused?: (verdict: ScreenBlock) => void } = {},
+  ): Promise<SessionPromptScheduleResult> => {
+    // The pane's delivery lock, held from before the writer's first look at
+    // the pane through its Enter: no other delivery writes in between. Not
+    // granted in time: busy, which every caller already retries.
+    const result = await paneLocks.runLocked(id, `daemon:${writer}`, PANE_LOCK_DAEMON_WAIT_MS,
+      () => deliverPromptToSessionLocked(id, agentSlug, incarnationId, prompt, opts, writer, author, trust));
+    return result ?? 'busy';
+  };
+  const deliverPromptToSessionLocked = (
+    id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string,
+    opts: Pick<ScheduledPromptDeliveryDeps, 'acceptError' | 'authorized' | 'onWrite'>,
+    writer: string,
+    author: PromptAuthor,
+    trust: { refuseUnknown?: boolean; onRefused?: (verdict: ScreenBlock) => void },
   ) =>
     deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
       ...opts,
@@ -10309,6 +10382,12 @@ async function main(): Promise<void> {
   // session's PTY exactly like client keystrokes.
   channelWakeWorkerRef = new ChannelWakeWorker({
     memberWorkspaces: () => channelService.memberWorkspaces(),
+    // One delivery at a time into a pane (paneDeliveryLock.ts): a nudge does
+    // not wait for it; a held pane is tried again on a later tick.
+    paneLock: async (id) => {
+      const token = await paneLocks.acquire(id, { key: 'daemon:channel wake' }, 0);
+      return token ? () => paneLocks.release(id, token) : null;
+    },
     unreadFor: (ws) => channelService.unreadFor(ws),
     // A nudge that never landed must not leave the message it announced sitting
     // at 'pending' forever — the push half used to drop that outcome on the

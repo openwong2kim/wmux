@@ -2,7 +2,9 @@
 // Builds a real Hermes SQLite database in a temp folder (hermesFixture) and reads it.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DatabaseSync } from 'node:sqlite';
-import { HermesChatService, routeTerminalChat, type HermesChatDeps } from '../HermesChatService';
+import { HERMES_SEND_READ_MS, HermesChatService, routeTerminalChat, type HermesChatDeps } from '../HermesChatService';
+import { PaneDeliveryLocks } from '../../paneDeliveryLock';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 import { agentLaunchAt } from '../../agentLaunchAt';
 import type { TerminalChatService } from '../TerminalChatService';
 import { addMessage, addSession, hermesFixture } from './hermesFixture';
@@ -90,6 +92,38 @@ describe('HermesChatService', () => {
     writer.exec('UPDATE messages SET active = 0');
     expect(await service.send('p1', '20261029_053840_ec122e', 'x', 'm4', { expectedRawEpoch: epoch })).toEqual({ result: 'session_changed' });
     expect(writes).toEqual([]);
+  });
+
+  it("a send holds the pane's delivery lock from its readiness read through its Enter; a held pane, or a read too slow for the lock, types nothing", async () => {
+    const locks = new PaneDeliveryLocks();
+    const holders: Array<string | undefined> = [];
+    let slow = false;
+    const { service, writes, setScreen } = rig({
+      paneLock: (id, send) => locks.runLocked(id, 'hermes-chat', 0, send),
+      readScreen: async () => {
+        holders.push(locks.holderOf('p1'));
+        if (slow) await deliberateSleep(HERMES_SEND_READ_MS + 1_000, 'latency inside a stub: a screen read slower than the lock allows (fake timers)');
+        return prompt('❯ ');
+      },
+    });
+    setScreen(prompt('❯ '));
+    expect(await service.send('p1', '20261029_053840_ec122e', 'x', 'm1')).toEqual({ result: 'sent' });
+    expect(holders).toEqual(['hermes-chat']);
+    expect(writes).toHaveLength(2);
+    const other = await locks.acquire('p1', { key: 'main:c1', clientId: 'c1', nonce: 'n1' }, 0) as string;
+    expect(await service.send('p1', '20261029_053840_ec122e', 'y', 'm2')).toEqual({ result: 'busy' });
+    locks.release('p1', other);
+    vi.useFakeTimers();
+    try {
+      slow = true;
+      const sent = service.send('p1', '20261029_053840_ec122e', 'z', 'm3');
+      await vi.advanceTimersByTimeAsync(HERMES_SEND_READ_MS);
+      expect(await sent).toEqual({ result: 'busy' });
+      expect(locks.holderOf('p1')).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(writes).toHaveLength(2);
   });
 
   it('a withdrawn grant types nothing; a key typed after the paste stops the Enter', async () => {

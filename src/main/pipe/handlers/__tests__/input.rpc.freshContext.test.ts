@@ -46,6 +46,8 @@ interface PaneOptions {
   humanKeyOnGateRead?: number;
   /** The session pipe closes once `/clear` has landed: the text's write fails. */
   pipeClosesAfterClear?: boolean;
+  /** The session pipe closes once the `/clear` command is typed: its Enter fails. */
+  pipeClosesAfterCommand?: boolean;
 }
 
 const DIALOG = [' Bash command', '', '   touch probe.txt', '', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No'].join('\n');
@@ -85,6 +87,7 @@ function scriptedPane(opts: PaneOptions = {}) {
       lastKeyAt = clock;
       // A human key lands while the command is typed.
       if (opts.humanTypesDuringCommand && data === '/clear') revision += 1;
+      if (opts.pipeClosesAfterCommand && data === '/clear') pipeClosed = true;
       if (data === '\r') {
         if (composer === '/clear') {
           if (!opts.clearNeverLands) {
@@ -335,6 +338,13 @@ describe('gated submit, new-task delivery (#1680)', () => {
     // Open for the pass, ended by the check before the step.
     await retryPendingDeliveries('pty-a');
     expect(writes).toEqual([]);
+  });
+
+  it("a step key that fails after the command was typed is fresh_context_timeout, never 'nothing was pasted'", async () => {
+    const { gatedSubmit, writes } = scriptedPane({ binding: FRESH, hooks: true, pipeClosesAfterCommand: true });
+    const res = await gatedSubmit('pty-a', 'new task', 'Claude Code', NEW);
+    expect(res).toMatchObject({ ok: false, reason: 'fresh_context_timeout' });
+    expect(writes).toEqual(['/clear']);
   });
 
   it('refuses with fresh_context_timeout and pastes nothing when the command never finishes', async () => {

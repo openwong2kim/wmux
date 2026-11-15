@@ -54,6 +54,7 @@ import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { A2A_COMPANY_RPC, type A2aCompanyMarkParams, type A2aCompanyMarkResult, type A2aCompanyTasksResult } from '../shared/companyHold';
 import { A2A_SPAWN_RPC, type A2aSpawnAskInput, type A2aSpawnAskResult, type A2aSpawnOutgoingList, type A2aSpawnPolicySetResult, type A2aSpawnPolicyV1, type A2aSpawnRequestSummary } from '../shared/a2aSpawn';
 import { createSessionPipeMarkers } from '../daemon/sessionPipeMarkers';
+import { PANE_LOCK_DAEMON_WAIT_MS } from '../daemon/paneDeliveryLock';
 import type { FolderTrustState } from '../daemon/folderTrustState';
 import { SessionPipeStreamScanner } from './daemon/sessionPipeStreamScanner';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
@@ -75,6 +76,7 @@ import type { AgentSlug } from '../shared/agentIdentity';
 import { isSessionPromptScheduleResult, type SessionPromptScheduleResult } from '../shared/sessionPromptSchedule';
 import { parseToolRefusal, type ToolRefusal } from '../shared/toolRefusal';
 import { parseCommitOrigin, type CommitOrigin } from '../shared/commitOrigin';
+import { heldWriteChunks } from '../shared/heldWrite';
 
 // RCA A2 — single source of truth in shared/timeouts.ts so the renderer's
 // RECONCILE_TIMEOUT_MS can be derived from (and stay greater than) this value.
@@ -115,6 +117,21 @@ function isNotFirstParty(err: unknown): boolean {
  *   'disconnected'   — daemon control pipe disconnected
  *   'event'          — DaemonEvent from daemon broadcast
  */
+/** On top of a lock acquire's own wait: the round trip, before the reply counts as lost. */
+const PANE_LOCK_RPC_MARGIN_MS = 2_000;
+
+/** How long a held write refused for the adapter's backpressure is tried again. */
+const HELD_WRITE_BACKPRESSURE_MAX_MS = 5_000;
+/** The daemon's writer funnel may wait this long for the pane before it writes. */
+const FUNNEL_RPC_TIMEOUT_MS = DAEMON_RPC_TIMEOUT_MS + PANE_LOCK_DAEMON_WAIT_MS;
+const PASTE_START = '\x1b[200~';
+const PASTE_END = '\x1b[201~';
+
+/** Whether an RPC failed with its reply lost (sent, outcome unknown). */
+function isLostReply(message: string): boolean {
+  return message.startsWith('RPC timeout:') || message === 'DaemonClient disconnecting' || message === 'DaemonClient disconnected';
+}
+
 export class DaemonClient extends EventEmitter {
   private controlPipe: net.Socket | null = null;
   private sessionPipes: Map<string, net.Socket> = new Map();
@@ -457,7 +474,7 @@ export class DaemonClient extends EventEmitter {
         // Only an identify the daemon accepted counts against the limit: one it
         // refused (a rate limit, say) says nothing about this connection.
         if (identified && isNotFirstParty(retryErr) && ++this.firstPartyRefusals === DaemonClient.FIRST_PARTY_RECOVERY_MAX) {
-          console.warn(`[lifecycle] DaemonClient lost first-party on the daemon pipe: ${DaemonClient.FIRST_PARTY_RECOVERY_MAX} identifies did not restore it; A2A calls fail until the next connection`);
+          console.warn(`[lifecycle] DaemonClient lost first-party on the daemon pipe: ${DaemonClient.FIRST_PARTY_RECOVERY_MAX} identifies did not restore it; A2A calls and gated deliveries fail until the next connection`);
         }
         throw retryErr;
       }
@@ -1375,7 +1392,7 @@ export class DaemonClient extends EventEmitter {
     if (!this.isConnected) return 'unavailable';
 
     try {
-      const response = await this.rpc('daemon.deliverScheduledPromptV2', args) as {
+      const response = await this.rpc('daemon.deliverScheduledPromptV2', args, { timeoutMs: FUNNEL_RPC_TIMEOUT_MS }) as {
         result?: unknown;
       };
       return isSessionPromptScheduleResult(response.result) ? response.result : 'error';
@@ -1395,6 +1412,100 @@ export class DaemonClient extends EventEmitter {
     }
   }
 
+  /**
+   * The pane's delivery lock (daemon/paneDeliveryLock.ts), waiting at most
+   * `waitMs` on the daemon. `unsupported`: an older daemon without it. A lost
+   * reply may have left a grant standing: it is released by `nonce`.
+   */
+  async acquirePaneLock(id: string, nonce: string, waitMs: number): Promise<
+    { held: true; token: string } | { held: false; why: 'unsupported' | 'busy' | 'unavailable'; detail: string }
+  > {
+    if (!this.isConnected) return { held: false, why: 'unavailable', detail: 'the background service is not connected' };
+    try {
+      const r = await this.rpc('daemon.session.deliveryLockV1', { id, nonce, waitMs }, { timeoutMs: waitMs + PANE_LOCK_RPC_MARGIN_MS }) as
+        { ok?: unknown; token?: unknown; busy?: unknown; holder?: unknown; error?: unknown } | null;
+      if (r?.ok === true && typeof r.token === 'string') return { held: true, token: r.token };
+      if (r?.busy === true) {
+        return { held: false, why: 'busy', detail: typeof r.holder === 'string' ? `held by ${r.holder}` : 'held by another delivery' };
+      }
+      return { held: false, why: 'unavailable', detail: typeof r?.error === 'string' ? r.error : 'refused' };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('Unknown method')) return { held: false, why: 'unsupported', detail: message };
+      this.releasePaneLock(id, { nonce });
+      return { held: false, why: 'unavailable', detail: message };
+    }
+  }
+
+  /**
+   * Give the pane's delivery lock back, by token or by an acquire's nonce.
+   * Fire-and-forget, tried once more if the first try fails: a lost release
+   * would hold the pane until the lease, or the next acquire from this
+   * connection, reclaims it. A closed connection releases on its own.
+   */
+  releasePaneLock(id: string, by: { token: string } | { nonce: string }): void {
+    const attempt = () => (this.isConnected ? this.rpc('daemon.session.deliveryUnlockV1', { id, ...by }) : Promise.resolve());
+    void attempt().catch(() => attempt()).catch(() => undefined);
+  }
+
+  /**
+   * A delivery write under the pane's lock: the daemon writes only while
+   * `token` holds it. A long paste goes as several held writes of at most
+   * HELD_WRITE_CHUNK_MAX (shared/heldWrite.ts) each, every one under the
+   * token, so no control-pipe line nears the daemon's line cap. `uncertain`: bytes may have reached the
+   * pane (a lost reply, or a later chunk refused after earlier ones landed).
+   * `written`: the held writes the daemon took (each one moves the pane's key
+   * count by one); one whose reply was lost is not counted.
+   */
+  async writeHeld(id: string, token: string, data: string): Promise<
+    { ok: true; written: number } | { ok: false; uncertain: boolean; detail: string; written: number }
+  > {
+    if (!this.isConnected) return { ok: false, uncertain: false, detail: 'the background service is not connected', written: 0 };
+    const chunks = heldWriteChunks(data);
+    let written = 0;
+    const failed = async (uncertain: boolean, detail: string): Promise<{ ok: false; uncertain: boolean; detail: string; written: number }> => {
+      // A bracketed paste cut off after its start landed would leave the agent
+      // (and the daemon's own accounting) in paste mode: close it, best effort.
+      if (written > 0 && chunks.length > 1 && data.startsWith(PASTE_START) && data.endsWith(PASTE_END)) {
+        const closed = await this.writeHeldOnce(id, token, PASTE_END).catch(() => null);
+        if (closed?.ok === true) written += 1;
+      }
+      return { ok: false, uncertain, detail, written };
+    };
+    for (const chunk of chunks) {
+      let r: { ok?: unknown; error?: unknown } | null;
+      try {
+        r = await this.writeHeldOnce(id, token, chunk);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        // Only a reply that never came leaves the write unknown; an error
+        // reply is the daemon refusing before it wrote.
+        return failed(written > 0 || isLostReply(detail), detail);
+      }
+      if (r?.ok !== true) {
+        const why = typeof r?.error === 'string' ? r.error : 'refused';
+        return failed(written > 0, why === 'not held' ? "the pane's delivery lock was no longer held" : why);
+      }
+      written += 1;
+    }
+    return { ok: true, written };
+  }
+
+  /**
+   * One held write. Refused for the adapter's backpressure, it is tried again
+   * for up to HELD_WRITE_BACKPRESSURE_MAX_MS: each try renews the hold's lease.
+   */
+  private async writeHeldOnce(id: string, token: string, data: string): Promise<{ ok?: unknown; error?: unknown } | null> {
+    const until = Date.now() + HELD_WRITE_BACKPRESSURE_MAX_MS;
+    for (let pause = 50; ; pause = Math.min(pause * 2, 500)) {
+      // eslint-disable-next-line no-await-in-loop -- each try waits for the one before
+      const r = await this.rpc('daemon.session.writeHeldV1', { id, token, data }) as { ok?: unknown; error?: unknown } | null;
+      if (r?.ok === true || r?.error !== 'backpressure' || Date.now() + pause > until) return r;
+      // eslint-disable-next-line no-await-in-loop -- the pane drains between tries
+      await new Promise<void>((resolve) => { setTimeout(resolve, pause); });
+    }
+  }
+
   /** The fan-out caller nudge (daemon/callerNudgeDelivery.ts). An older
    *  daemon without the method answers Unknown method before any write. */
   async deliverCallerNudge(args: {
@@ -1405,7 +1516,7 @@ export class DaemonClient extends EventEmitter {
   }): Promise<{ result: 'sent' | 'held' | 'approval_pending' | 'session_changed' | 'unavailable' | 'error'; pasted: boolean }> {
     if (!this.isConnected) return { result: 'unavailable', pasted: false };
     try {
-      const response = await this.rpc('daemon.deliverCallerNudgeV1', args) as { result?: unknown; pasted?: unknown };
+      const response = await this.rpc('daemon.deliverCallerNudgeV1', args, { timeoutMs: FUNNEL_RPC_TIMEOUT_MS }) as { result?: unknown; pasted?: unknown };
       const pasted = response.pasted === true;
       const r = response.result;
       if (r === 'sent' || r === 'held' || r === 'approval_pending' || r === 'session_changed' || r === 'unavailable' || r === 'error') {
