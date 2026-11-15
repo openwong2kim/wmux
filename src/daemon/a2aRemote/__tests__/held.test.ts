@@ -8,7 +8,7 @@ import { A2A_REMOTE_HOLD_TTL_MS, type A2aRemoteTaskState } from '../../../shared
 import { COMPANY_BRIEF_KIND } from '../../../shared/company';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
-import { expireHeld, failTasksForLink, rejectHeld, sendHeldNotices, type HeldDeps } from '../held';
+import { expireHeld, failTasksForLink, rejectHeld, sendHeldNotices, undoDroppedReopens, type HeldDeps } from '../held';
 import { remoteTaskId } from '../ids';
 import { acceptInbound } from '../inbound';
 import { LinkStore } from '../linkStore';
@@ -393,5 +393,70 @@ describe('failTasksForLink — what is still owed to our pane', () => {
     expect(tasks.listRemotePending()).toEqual([]);
     const marker = tasks.getTask(outId)!.metadata.remote as { inbox?: Array<{ messageId: string; held?: string }> };
     expect(marker.inbox?.find((i) => i.messageId === reply.messageId)?.held).toBe('link-not-active');
+  });
+});
+
+describe('a reopen whose message never reached the agent is undone', () => {
+  const evidence = { summary: 'done', items: [{ kind: 'command' as const, status: 'passed' as const, command: 'npm test', summary: 'ok' }] };
+  /** A task the peer sent, completed here, then reopened by its follow-up; returns the task and that follow-up's id. */
+  async function reopened(): Promise<{ id: string; followUp: string }> {
+    const id = await inboundTask();
+    const caller = { callerWorkspaceId: 'ws-b', callerAddr: { paneId: 'pane-b' } };
+    expect((await tasks.transition({ taskId: id, to: 'working', ...caller })).ok).toBe(true);
+    expect((await tasks.transition({ taskId: id, to: 'completed', ...caller, evidence })).ok).toBe(true);
+    const followUp = crypto.randomUUID();
+    const res = await acceptInbound(
+      { protocol: A2A_REMOTE_PROTOCOL, linkId, linkVersion: 2, messageId: followUp, kind: 'reply', taskId: id, text: 'one more thing', reopen: true, sentAt: 'x' },
+      { hostId: HOST },
+      { linkStore: links, taskService: tasks, broadcast: () => undefined, aliasFor: (l) => linkAlias(l, 'pc-a'), peerReopens: () => true },
+    );
+    expect(res).toMatchObject({ ok: true });
+    expect(tasks.getTask(id)!.status.state).toBe('working');
+    // The sender was told `working` (as the inbound sync does).
+    expect((await tasks.markRemote({ taskId: id, stateSync: 'working' })).ok).toBe(true);
+    return { id, followUp };
+  }
+
+  it('held-expired: undone only once its notice went, and the notice is queued before the completed state', async () => {
+    const { id, followUp } = await reopened();
+    expect((await tasks.markRemote({ taskId: id, messageId: followUp, held: 'no-agent' })).ok).toBe(true);
+    clock += 25 * 60 * 60 * 1000;
+    expect(await expireHeld(deps)).toEqual([`${id}#${followUp}`]);
+    // The notice is still pending (the peer is not connected): nothing is undone yet.
+    expect(await undoDroppedReopens(deps)).toEqual([]);
+    expect(tasks.getTask(id)!.status.state).toBe('working');
+    const withNotice: HeldDeps = { ...deps, takesNotice: () => true };
+    expect(await sendHeldNotices(withNotice)).toBe(1);
+    expect(await undoDroppedReopens(withNotice)).toEqual([id]);
+    expect(tasks.getTask(id)!.status).toMatchObject({ state: 'completed', evidence });
+    const queued = outbox.pending(HOST).filter((r) => r.envelope.kind !== 'task').map((r) => r.envelope);
+    const notice = queued.findIndex((e) => e.kind === 'reply' && e.notice !== undefined);
+    const state = queued.findIndex((e) => e.kind === 'state' && e.state === 'completed');
+    expect(notice).toBeGreaterThanOrEqual(0);
+    expect(state).toBeGreaterThan(notice);
+    // Once.
+    expect(await undoDroppedReopens(withNotice)).toEqual([]);
+  });
+
+  it('link-ended: the reopened task is completed again here, not failed, and nothing goes to the peer', async () => {
+    const { id, followUp } = await reopened();
+    const before = outbox.pending(HOST).length;
+    links.revoke(linkId, 'local');
+    const res = await failTasksForLink(deps, linkId, 'link_revoked');
+    expect(res.failed).not.toContain(id);
+    expect(tasks.getTask(id)!.status).toMatchObject({ state: 'completed', evidence });
+    expect(outbox.pending(HOST).filter((r) => r.envelope.kind === 'state')).toHaveLength(0);
+    expect(outbox.pending(HOST).length).toBeLessThanOrEqual(before);
+    const marker = tasks.getTask(id)!.metadata.remote as { inbox?: Array<{ messageId: string; held?: string }> };
+    expect(marker.inbox?.find((i) => i.messageId === followUp)?.held).toBe('link-not-active');
+  });
+
+  it('link-ended after the follow-up reached the agent: the task fails as before', async () => {
+    const { id, followUp } = await reopened();
+    expect((await tasks.markRemote({ taskId: id, messageId: followUp, delivered: true })).ok).toBe(true);
+    links.revoke(linkId, 'local');
+    const res = await failTasksForLink(deps, linkId, 'link_revoked');
+    expect(res.failed).toContain(id);
+    expect(tasks.getTask(id)!.status.state).toBe('failed');
   });
 });

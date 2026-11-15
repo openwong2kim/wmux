@@ -351,6 +351,10 @@ describe('waiting for the person to stop typing', () => {
     expect(await waitForQuietAgent(async () => (n++ < 2 ? { ...agent, hasDraft: true } : { ...agent, agentName: null, agentStatus: 'idle' }), clock))
       .toMatchObject({ ok: false, reason: 'agent_changed' });
     expect(await waitForQuietAgent(async () => ({ ...agent, keyInputIdleMs: 60_000 }), { ...clock, expectAgent: 'Codex CLI' }))
+      .toMatchObject({ ok: false, reason: 'agent_changed' });    // A stored delivery's retry names the agent session it was meant for.
+    expect(await waitForQuietAgent(async () => ({ ...agent, keyInputIdleMs: 60_000 }), { ...clock, expectIncarnation: 'another-session' }))
       .toMatchObject({ ok: false, reason: 'agent_changed' });
+    expect(await waitForQuietAgent(async () => ({ ...agent, keyInputIdleMs: 60_000 }), { ...clock, expectIncarnation: agent.incarnationId }))
+      .toMatchObject({ ok: true });
   });
 });

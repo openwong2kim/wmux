@@ -253,9 +253,19 @@ export interface GatedSubmitRefusal {
   /** With `pasted`: whether the pasted text was cleared again (best effort:
    *  one Ctrl+U, which empties an agent's composer or a shell's line). */
   cleared?: boolean;
+  /** Main kept the text to type when the pane can take it (input.rpc
+   *  pendingDeliveries): the refusal was not about a person or a dialog. */
+  stored?: true;
+  /** A new task's fresh-context step had cleared the pane's conversation
+   *  before this refusal. */
+  freshContextApplied?: true;
   /** With `pasted`: whether the last check found this paste, and only it, in
    *  the agent's input box (undefined: not asked). */
   pasteShown?: boolean;
+  /** `input_mode` only: the agent's input box was not a plain prompt (a
+   *  mode, a draft left in it, or no way to read it), which waiting can clear.
+   *  Absent for a text the pane cannot take as typed. */
+  composerNotPlain?: true;
 }
 /** A delivered submit. A new-task delivery also says what its fresh-context
  *  step did (shared/freshContext). */
@@ -286,6 +296,10 @@ export interface GatedSubmitOptions {
   waitQuiet?: boolean;
   /** With `waitQuiet`: the agent the sender saw in the pane (display name). */
   expectAgent?: string;
+  /** With `waitQuiet`: the agent session (incarnation) the text was meant
+   *  for; another one refuses as `agent_changed`. Main-only (a stored
+   *  delivery's retry, input.rpc pendingDeliveries). */
+  expectIncarnation?: string;
   /** With `waitQuiet`: epoch ms after which nothing is written (main stamps
    *  it from the send's own timeout). */
   deadlineAt?: number;
