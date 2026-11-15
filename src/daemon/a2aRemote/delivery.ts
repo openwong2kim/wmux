@@ -793,14 +793,19 @@ export class A2aRemoteDelivery {
     this.refusing.add(k);
     try {
       await this.applyRefusal(rec, code, detail);
-      if (!this.refusalOwed(rec, code)) this.refusalsApplied.add(k);
+      // Judged on the record as stored refused (its time is the refusal's), not the copy read before it was refused.
+      if (!this.refusalOwed(this.outbox.get(rec.hostId, rec.seq) ?? rec, code)) this.refusalsApplied.add(k);
     } finally {
       this.refusing.delete(k);
     }
   }
 
-  /** What a refusal does to the task its record carried. Each step is a no-op once it has landed (`refusalOwed`). */
-  private async applyRefusal(rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode, detail?: string): Promise<void> {
+  /**
+   * What a refusal does to the task its record carried. Each step is a no-op once it has landed (`refusalOwed`).
+   * `replay`: applied again from the stored record, so a fail is checked under the task lock against the refusal's
+   * time (a change committed after it means the task moved on).
+   */
+  private async applyRefusal(rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode, detail?: string, replay = false): Promise<void> {
     const taskId = taskOfEnvelope(rec.envelope, remoteTaskId);
     if (!taskId || !this.deps.taskService.getTask(taskId)) return;
     const { state } = rec.envelope;
@@ -813,7 +818,11 @@ export class A2aRemoteDelivery {
     // A reply on a task this PC sent that did not reach the other PC (refused there, or its images not sent): the task
     // fails here, and the other PC, which still has its copy, is owed a cancel (sent by the sync).
     const peerCanceled = rec.envelope.kind === 'reply' && !GONE_THERE.has(code);
-    const failed = await this.deps.taskService.forceFailRemote({ taskId, reason, forced: 'remote_refused', ...(peerCanceled ? { peerCanceled: true as const } : {}) });
+    const failed = await this.deps.taskService.forceFailRemote({
+      taskId, reason, forced: 'remote_refused',
+      ...(peerCanceled ? { peerCanceled: true as const } : {}),
+      ...(replay ? { unchangedSince: rec.updatedAt } : {}),
+    });
     if (peerCanceled && failed.ok && failed.failed) await this.syncTask(taskId);
   }
 
@@ -905,7 +914,7 @@ export class A2aRemoteDelivery {
       }
       try {
         // eslint-disable-next-line no-await-in-loop -- one ledger append at a time
-        await this.applyRefusal(rec, code);
+        await this.applyRefusal(rec, code, undefined, true);
       } catch (err) {
         this.deps.log('warn', `[a2a-remote] ${taskId}: applying a refusal again failed: ${errMsg(err)}`);
       }

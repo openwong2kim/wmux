@@ -278,6 +278,42 @@ describe('a stored refusal whose effect never ran (#3378)', () => {
     expect(state(tasks)).toBe('submitted');
   });
 
+  it('a live call that read the record before it was refused, and whose write failed, leaves the refusal owed', async () => {
+    const { delivery, tasks } = boot();
+    await inboundTask(tasks);
+    const before = delivery.outbox.enqueue(HOST, reply('r-1'));
+    // The task changes while the record is in flight; then the peer refuses it.
+    tick(1000);
+    await tasks.appendRemoteMessage({
+      taskId: TASK, linkId: LINK, actorWorkspaceId: `remote:${LINK}`,
+      message: { kind: 'message', messageId: 'r-p', role: 'user', parts: [{ kind: 'text', text: 'meanwhile' }] },
+    });
+    tick(1000);
+    delivery.outbox.refuse(HOST, before.seq, 'unknown-task');
+    const fail = vi.spyOn(tasks, 'forceFailRemote').mockResolvedValueOnce({ ok: false, error: 'a2a.remote.fail: daemon log append failed (uncommitted)' });
+    await (delivery as unknown as Live).onRefused(before, 'unknown-task');
+    expect(state(tasks)).not.toBe('failed');
+    await delivery.maintain();
+    expect(fail).toHaveBeenCalledTimes(2);
+    expect(state(tasks)).toBe('failed');
+  });
+
+  it('a replayed fail is checked under the task lock: a task changed after the refusal is left as it is', async () => {
+    const { tasks } = boot();
+    await inboundTask(tasks);
+    const refusedAt = new Date().toISOString();
+    tick(1000);
+    await tasks.appendRemoteMessage({
+      taskId: TASK, linkId: LINK, actorWorkspaceId: `remote:${LINK}`,
+      message: { kind: 'message', messageId: 'r-p', role: 'user', parts: [{ kind: 'text', text: 'moved on' }] },
+    });
+    const res = await tasks.forceFailRemote({ taskId: TASK, reason: 'x', forced: 'remote_refused', unchangedSince: refusedAt });
+    expect(res).toMatchObject({ ok: true, failed: false });
+    expect(state(tasks)).not.toBe('failed');
+    // Without the cutoff (the live path) it fails as before.
+    expect(await tasks.forceFailRemote({ taskId: TASK, reason: 'x', forced: 'remote_refused' })).toMatchObject({ ok: true, failed: true });
+  });
+
   it('a refused state is recorded once; a later state the peer took ends the replay', async () => {
     const first = boot();
     await inboundTask(first.tasks);
