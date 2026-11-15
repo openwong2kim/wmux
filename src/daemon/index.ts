@@ -6589,13 +6589,8 @@ function registerRpcHandlers(
       sessionId: id,
       writer,
       text: prompt,
-      deliver: (onPaste) => deliverPromptToSessionLocked(id, agentSlug, incarnationId, prompt, {
-        ...opts,
-        onWrite: (stage, queued) => {
-          if (stage === 'paste') onPaste();
-          opts.onWrite?.(stage, queued);
-        },
-      }, writer, author, trust),
+      deliver: (onWrite) => deliverPromptToSessionLocked(id, agentSlug, incarnationId, prompt, { ...opts, onWrite }, writer, author, trust),
+      ...(opts.onWrite ? { onWrite: opts.onWrite } : {}),
       // #3393 — an earlier paste still in the box: busy (reason unsent-paste); one this writer leaves is taken back
       // while the box shows exactly its own text, or else held.
       presence: (check) => deliveryPresence(presenceDeps, id, agentSlug, check),

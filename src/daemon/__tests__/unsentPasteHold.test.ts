@@ -5,7 +5,7 @@
 // wires it: a real HookIngest and DaemonPTYBridge.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IPty } from 'node-pty';
-import { UnsentPasteHolds, deliverUnderHold } from '../unsentPasteHold';
+import { UnsentPasteHolds, deliverUnderHold, type HeldWriteEdge } from '../unsentPasteHold';
 import type { DeliveryPresence } from '../../shared/deliveryPresence';
 import { HookIngest } from '../hooks/HookIngest';
 import { DaemonPTYBridge } from '../DaemonPTYBridge';
@@ -161,14 +161,17 @@ describe('UnsentPasteHolds', () => {
     let shown: boolean;
     let presenceFails: boolean;
     /** A writer that pastes and then is refused before its Enter (a dialog, a key in the gap). */
-    const pasteThenRefuse = async (onPaste: () => void): Promise<'sent' | 'error'> => {
+    const pasteThenRefuse = async (onWrite: HeldWriteEdge): Promise<'sent' | 'error'> => {
       paste('SCHED 1');
       typed.push('SCHED 1');
       holds.wrote('pty-a');
-      onPaste();
+      onWrite('paste');
       return 'error';
     };
-    const run = (deliver: (onPaste: () => void) => Promise<'sent' | 'error'>, writer = 'scheduled prompt') => deliverUnderHold({
+    /** What the caller (a scheduler, a nudge) heard of the writes. */
+    const edges: string[] = [];
+    const run = (deliver: (onWrite: HeldWriteEdge) => Promise<'sent' | 'error'>, writer = 'scheduled prompt') => deliverUnderHold({
+      onWrite: (stage) => { edges.push(stage); },
       holds,
       sessionId: 'pty-a',
       writer,
@@ -183,22 +186,28 @@ describe('UnsentPasteHolds', () => {
       log: (line) => logs.push(line),
     });
 
-    beforeEach(() => { typed.length = 0; shown = true; presenceFails = false; });
+    beforeEach(() => { typed.length = 0; edges.length = 0; shown = true; presenceFails = false; });
 
-    it('a paste it left is taken back while the box shows exactly it: no hold, and the next writer delivers', async () => {
-      expect(await run(pasteThenRefuse)).toBe('error');
+    it('a paste it left is taken back while the box shows exactly it: busy (taken-back), no hold, and the next tick delivers once', async () => {
+      expect(await run(pasteThenRefuse)).toBe('busy');
       expect(typed).toEqual(['SCHED 1', '^U']);
       expect(holds.held('pty-a')).toBe(false);
-      expect(logs.some((line) => line.includes('taken back (Ctrl+U); not held'))).toBe(true);
-      let delivered = false;
-      expect(await run(async () => { delivered = true; return 'sent'; }, 'automation run')).toBe('sent');
-      expect(delivered).toBe(true);
+      expect(logs.some((line) => line.includes('taken back (Ctrl+U); not held; busy (taken-back), retried'))).toBe(true);
+      // The caller never heard of a paste: nothing of it may sit in the composer.
+      expect(edges).toEqual([]);
+      // Its retry on the next tick: delivered once.
+      let deliveries = 0;
+      expect(await run(async (onWrite) => { deliveries += 1; paste('SCHED 1'); onWrite('paste'); bridge.noteInput('\r'); onWrite('submit'); return 'sent'; })).toBe('sent');
+      expect(deliveries).toBe(1);
+      expect(edges).toEqual(['paste', 'submit']);
     });
 
     it('the person typed after the paste: nothing erased, held, and the next writer is busy with nothing written', async () => {
       shown = false;
       expect(await run(pasteThenRefuse)).toBe('error');
       expect(typed).toEqual(['SCHED 1']);
+      // Left in the box: the caller hears of the paste, so it never types it again.
+      expect(edges).toEqual(['paste']);
       expect(holds.held('pty-a')).toBe(true);
       expect(logs.some((line) => line.includes('does not show it as its own; not erased, held'))).toBe(true);
       let delivered = false;
@@ -216,11 +225,11 @@ describe('UnsentPasteHolds', () => {
 
     it('a writer that throws after its paste is handled the same; one that sent, or wrote nothing, leaves nothing', async () => {
       shown = false;
-      await expect(run(async (onPaste) => { paste(); holds.wrote('pty-a'); onPaste(); throw new Error('boom'); })).rejects.toThrow('boom');
+      await expect(run(async (onWrite) => { paste(); holds.wrote('pty-a'); onWrite('paste'); throw new Error('boom'); })).rejects.toThrow('boom');
       expect(holds.held('pty-a')).toBe(true);
       holds.sessionEnded('pty-a');
       expect(await run(async () => 'error')).toBe('error');
-      expect(await run(async (onPaste) => { onPaste(); return 'sent'; })).toBe('sent');
+      expect(await run(async (onWrite) => { onWrite('paste'); return 'sent'; })).toBe('sent');
       expect(holds.held('pty-a')).toBe(false);
       expect(typed).toEqual([]);
     });

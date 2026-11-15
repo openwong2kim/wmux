@@ -147,6 +147,9 @@ export class UnsentPasteHolds {
   }
 }
 
+/** A writer's write edge: its paste, then its Enter (`queued`: the agent's composer queued it behind a turn). */
+export type HeldWriteEdge = (stage: 'paste' | 'submit', queued?: boolean) => void;
+
 export interface HeldDeliveryOptions<R extends string> {
   holds: UnsentPasteHolds | null;
   sessionId: string;
@@ -154,8 +157,10 @@ export interface HeldDeliveryOptions<R extends string> {
   writer: string;
   /** The text pasted: what the take-back's own-text check looks for. */
   text: string;
-  /** The writer's delivery; `onPaste` is called when its paste was written. */
-  deliver: (onPaste: () => void) => Promise<R>;
+  /** The writer's delivery, reporting its write edges to `onWrite`. */
+  deliver: (onWrite: HeldWriteEdge) => Promise<R>;
+  /** The caller's write edges. Its paste is reported only once it is not taken back (see deliverUnderHold). */
+  onWrite?: HeldWriteEdge;
   /** daemon.deliveryPresence for the pane at the given check. */
   presence: (check: DeliveryCheck) => Promise<DeliveryPresence>;
   /** Ctrl+U into the pane, counted like any write; false: no session. */
@@ -166,31 +171,51 @@ export interface HeldDeliveryOptions<R extends string> {
 /**
  * A daemon writer's delivery under the pane's lock (the caller holds it): refused (busy, reason unsent-paste) while
  * the pane holds an earlier unsubmitted paste. A paste it leaves unsubmitted is taken back with Ctrl+U while the box
- * shows exactly its own text (the channel wake nudge's rule), and then no hold is left; otherwise (someone typed, the
- * box cannot be read) nothing is erased and the pane is held. A delivery that throws after its paste is treated the
- * same way.
+ * shows exactly its own text (the channel wake nudge's rule): then nothing of it is left, no hold is recorded, and the
+ * answer is `busy` (reason taken-back), which every caller retries. Otherwise (someone typed, the box cannot be read)
+ * nothing is erased and the pane is held. A delivery that throws after its paste is treated the same way.
+ *
+ * The caller hears of the paste only once it stays: before the Enter, or when it is left in the box. A paste taken
+ * back was never reported, so no caller takes it for text that may sit in the composer.
  */
 export async function deliverUnderHold<R extends string>(opts: HeldDeliveryOptions<R>): Promise<R | 'busy'> {
   const { holds, sessionId, writer } = opts;
   if (holds?.heldFor(sessionId, writer)) return 'busy';
   let pasted = false;
+  let reported = false;
+  const reportPaste = (): void => {
+    if (pasted && !reported) {
+      reported = true;
+      opts.onWrite?.('paste');
+    }
+  };
   let result: R | undefined;
+  let takenBack = false;
   try {
-    result = await opts.deliver(() => { pasted = true; });
-    return result;
+    result = await opts.deliver((stage, queued) => {
+      if (stage === 'paste') {
+        pasted = true;
+        return;
+      }
+      reportPaste();
+      opts.onWrite?.(stage, queued);
+    });
   } finally {
-    if (result !== 'sent' && pasted) await leftUnsent(opts);
+    if (result !== 'sent' && pasted) takenBack = await leftUnsent(opts);
+    if (!takenBack) reportPaste();
   }
+  return takenBack ? 'busy' : result;
 }
 
-async function leftUnsent<R extends string>(opts: HeldDeliveryOptions<R>): Promise<void> {
+/** True when the paste was taken back; false when it is left in the box and the pane is held. */
+async function leftUnsent<R extends string>(opts: HeldDeliveryOptions<R>): Promise<boolean> {
   const { holds, sessionId, writer } = opts;
   const shown = await opts.presence({ phase: 'enter', ...shownOf(opts.text) }).catch(() => null);
   if (shown?.pasteShown === true && opts.eraseLine()) {
-    opts.log(`[unsent-paste] session=${sessionId} ${writer}: its paste was not submitted and was taken back (Ctrl+U); not held`);
-    return;
+    opts.log(`[unsent-paste] session=${sessionId} ${writer}: its paste was not submitted and was taken back (Ctrl+U); not held; busy (taken-back), retried`);
+    return true;
   }
   opts.log(`[unsent-paste] session=${sessionId} ${writer}: its paste was not submitted and the box does not show it as its own; not erased, held`);
   holds?.record(sessionId, writer);
+  return false;
 }
-

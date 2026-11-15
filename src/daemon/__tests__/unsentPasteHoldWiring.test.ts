@@ -56,7 +56,8 @@ describe('unsent-paste hold daemon wiring', () => {
     expect(locked).toMatch(/^paneLocks\.runLocked\(id, `daemon:\$\{writer\}`, PANE_LOCK_DAEMON_WAIT_MS, \(\) => deliverUnderHold\(\{/);
     expect(locked).toContain('holds: unsentPasteHolds,');
     expect(locked).toContain('text: prompt,');
-    expect(locked).toContain("if (stage === 'paste') onPaste();");
+    expect(locked).toContain('deliver: (onWrite) => deliverPromptToSessionLocked(id, agentSlug, incarnationId, prompt, { ...opts, onWrite }, writer, author, trust),');
+    expect(locked).toContain('...(opts.onWrite ? { onWrite: opts.onWrite } : {}),');
     // Its own-text check is the delivery presence at the Enter, the wake nudge's; the erase is one counted Ctrl+U.
     expect(locked).toContain('presence: (check) => deliveryPresence(presenceDeps, id, agentSlug, check),');
     expect(locked).toMatch(/managed\.ptyProcess\.write\('\\x15'\);\s*managed\.bridge\.noteInput\('\\x15'\);/);
