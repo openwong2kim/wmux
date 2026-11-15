@@ -211,6 +211,50 @@ describe('a2a.task.send — remote alias', () => {
     expect(remote.sendTask).toHaveBeenCalledTimes(1);
   });
 
+  it('a name nothing answers to lists the remote panes discover lists for the caller\'s workspace', async () => {
+    const router = setup();
+    const base = sendToRendererMock.getMockImplementation();
+    sendToRendererMock.mockImplementation(async (w: unknown, method: string, p: unknown) => (method === 'a2a.task.send'
+      ? { error: 'a2a.task.send: target "pc-b/ws-b/cod" not found. Available: Local, Other', targetNotFound: true }
+      : base?.(w, method, p)));
+    remote.listTargets.mockResolvedValue([
+      target,
+      { ...target, linkId: '33333333-3333-4333-8333-333333333333', alias: 'pc-c/elsewhere/w2-1', local: { workspaceId: 'ws-other', paneId: 'pane-o' } },
+    ]);
+    const res = await call(router, 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to: 'pc-b/ws-b/cod', message: 'hi' });
+    expect(res).toEqual({ error: `a2a.task.send: target "pc-b/ws-b/cod" not found. Available: Local, Other; on other PCs: ${ALIAS}` });
+    // The alias-shaped name read the targets once; the answer reused them.
+    expect(remote.listTargets).toHaveBeenCalledTimes(1);
+    // A plain name reads them for the answer only.
+    expect(await call(router, 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to: 'nope', message: 'hi' }))
+      .toEqual({ error: `a2a.task.send: target "pc-b/ws-b/cod" not found. Available: Local, Other; on other PCs: ${ALIAS}` });
+    expect(remote.listTargets).toHaveBeenCalledTimes(2);
+    // No linked pane for that workspace, or the targets cannot be read: the renderer's answer, without the flag.
+    remote.listTargets.mockResolvedValueOnce([]);
+    expect(await call(router, 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to: 'nope', message: 'hi' }))
+      .toEqual({ error: 'a2a.task.send: target "pc-b/ws-b/cod" not found. Available: Local, Other' });
+    remote.listTargets.mockRejectedValueOnce(new Error('daemon gone'));
+    expect(await call(router, 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to: 'nope', message: 'hi' }))
+      .toEqual({ error: 'a2a.task.send: target "pc-b/ws-b/cod" not found. Available: Local, Other' });
+  });
+
+  it('a daemon slow to list the targets does not hold up a "not found" answer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const router = setup();
+      const base = sendToRendererMock.getMockImplementation();
+      sendToRendererMock.mockImplementation(async (w: unknown, method: string, p: unknown) => (method === 'a2a.task.send'
+        ? { error: 'a2a.task.send: target "nope" not found. Available: Local', targetNotFound: true }
+        : base?.(w, method, p)));
+      remote.listTargets.mockReturnValue(new Promise(() => undefined));
+      const pending = call(router, 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to: 'nope', message: 'hi' });
+      await vi.advanceTimersByTimeAsync(PEER_HINTS_DEADLINE_MS);
+      expect(await pending).toEqual({ error: 'a2a.task.send: target "nope" not found. Available: Local' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a partial alias match takes the local path', async () => {
     for (const to of ['pc-b/ws-b', 'pc-b/ws-b/code', ` ${ALIAS}`, 'codex']) {
       await call(setup(), 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to, message: 'hi' });
@@ -267,6 +311,17 @@ describe('a2a.task.send — Moa to another PC\'s Moa (brain link)', () => {
     const res = await router.dispatch({ id: 'b', method: 'a2a.task.send', params, ...(token ? { commanderToken: token } : {}) });
     return (res as { result: Record<string, unknown> }).result;
   }
+
+  it('a commander\'s "not found" names the links of its verified workspace, never the wire workspace\'s', async () => {
+    const router = setup();
+    const base = sendToRendererMock.getMockImplementation();
+    sendToRendererMock.mockImplementation(async (w: unknown, method: string, p: unknown) => (method === 'a2a.task.send'
+      ? { error: 'a2a.task.send: target "nope" not found. Available: HQ', targetNotFound: true }
+      : base?.(w, method, p)));
+    remote.listTargets.mockResolvedValue([brainTarget, target]);
+    const res = await brainCall(router, { workspaceId: 'ws-a', to: 'nope', message: 'x' }, asBrain('ws-hq'));
+    expect(res).toEqual({ error: `a2a.task.send: target "nope" not found. Available: HQ; on other PCs: ${BRAIN_ALIAS}` });
+  });
 
   it('the HQ commander sends as Moa of its verified workspace, never a wire value', async () => {
     remote.listTargets.mockResolvedValue([brainTarget]);
