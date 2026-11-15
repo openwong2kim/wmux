@@ -20,6 +20,8 @@
  * left ends with the paste still in the box. No screen read clears it either.
  */
 
+import { shownOf, type DeliveryCheck, type DeliveryPresence } from '../shared/deliveryPresence';
+
 /** What a writer asks of the holds: whether the pane is held, and to record a paste it left there. */
 export interface UnsentPasteGate {
   held(sessionId: string): boolean;
@@ -144,3 +146,51 @@ export class UnsentPasteHolds {
     if (this.records.delete(sessionId)) this.log(`[unsent-paste] session=${sessionId} clear: ${why}`);
   }
 }
+
+export interface HeldDeliveryOptions<R extends string> {
+  holds: UnsentPasteHolds | null;
+  sessionId: string;
+  /** Who writes, for the log and the busy reason. */
+  writer: string;
+  /** The text pasted: what the take-back's own-text check looks for. */
+  text: string;
+  /** The writer's delivery; `onPaste` is called when its paste was written. */
+  deliver: (onPaste: () => void) => Promise<R>;
+  /** daemon.deliveryPresence for the pane at the given check. */
+  presence: (check: DeliveryCheck) => Promise<DeliveryPresence>;
+  /** Ctrl+U into the pane, counted like any write; false: no session. */
+  eraseLine: () => boolean;
+  log: (line: string) => void;
+}
+
+/**
+ * A daemon writer's delivery under the pane's lock (the caller holds it): refused (busy, reason unsent-paste) while
+ * the pane holds an earlier unsubmitted paste. A paste it leaves unsubmitted is taken back with Ctrl+U while the box
+ * shows exactly its own text (the channel wake nudge's rule), and then no hold is left; otherwise (someone typed, the
+ * box cannot be read) nothing is erased and the pane is held. A delivery that throws after its paste is treated the
+ * same way.
+ */
+export async function deliverUnderHold<R extends string>(opts: HeldDeliveryOptions<R>): Promise<R | 'busy'> {
+  const { holds, sessionId, writer } = opts;
+  if (holds?.heldFor(sessionId, writer)) return 'busy';
+  let pasted = false;
+  let result: R | undefined;
+  try {
+    result = await opts.deliver(() => { pasted = true; });
+    return result;
+  } finally {
+    if (result !== 'sent' && pasted) await leftUnsent(opts);
+  }
+}
+
+async function leftUnsent<R extends string>(opts: HeldDeliveryOptions<R>): Promise<void> {
+  const { holds, sessionId, writer } = opts;
+  const shown = await opts.presence({ phase: 'enter', ...shownOf(opts.text) }).catch(() => null);
+  if (shown?.pasteShown === true && opts.eraseLine()) {
+    opts.log(`[unsent-paste] session=${sessionId} ${writer}: its paste was not submitted and was taken back (Ctrl+U); not held`);
+    return;
+  }
+  opts.log(`[unsent-paste] session=${sessionId} ${writer}: its paste was not submitted and the box does not show it as its own; not erased, held`);
+  holds?.record(sessionId, writer);
+}
+

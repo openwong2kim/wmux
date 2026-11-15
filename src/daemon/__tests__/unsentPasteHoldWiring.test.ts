@@ -50,11 +50,16 @@ describe('unsent-paste hold daemon wiring', () => {
     expect(block('function agentStateFor(id: string)', 3_000)).toContain('unsentPasteHeld: unsentPasteHolds?.held(id) === true,');
   });
 
-  it('the funnel records a paste it left unsubmitted, under the pane lock', () => {
+  it('the funnel runs under the hold, which takes back or records a paste it left unsubmitted, under the pane lock', () => {
     const funnel = block('const deliverPromptToSessionNow = async (', 2_000);
     const locked = funnel.slice(funnel.indexOf('paneLocks.runLocked('));
-    expect(locked).toContain("if (stage === 'paste') pasted = true;");
-    expect(locked).toContain("if (sent !== 'sent' && pasted) unsentPasteHolds?.record(id, writer);");
+    expect(locked).toMatch(/^paneLocks\.runLocked\(id, `daemon:\$\{writer\}`, PANE_LOCK_DAEMON_WAIT_MS, \(\) => deliverUnderHold\(\{/);
+    expect(locked).toContain('holds: unsentPasteHolds,');
+    expect(locked).toContain('text: prompt,');
+    expect(locked).toContain("if (stage === 'paste') onPaste();");
+    // Its own-text check is the delivery presence at the Enter, the wake nudge's; the erase is one counted Ctrl+U.
+    expect(locked).toContain('presence: (check) => deliveryPresence(presenceDeps, id, agentSlug, check),');
+    expect(locked).toMatch(/managed\.ptyProcess\.write\('\\x15'\);\s*managed\.bridge\.noteInput\('\\x15'\);/);
   });
 
   it('the chat sends and the wake nudge consult the hold', () => {

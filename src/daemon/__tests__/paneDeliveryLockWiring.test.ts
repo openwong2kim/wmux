@@ -20,11 +20,9 @@ describe('pane delivery lock daemon wiring', () => {
 
   it("the daemon's writer funnel holds the lock from before its first look at the pane through its Enter", () => {
     const funnel = block('const deliverPromptToSessionNow = async (', 2000);
-    expect(funnel).toMatch(/paneLocks\.runLocked\(id, `daemon:\$\{writer\}`, PANE_LOCK_DAEMON_WAIT_MS, async \(\) => \{/);
-    // Inside the lock: a pane holding an earlier unsubmitted paste first (#3393), then the locked body.
-    const locked = funnel.slice(funnel.indexOf('paneLocks.runLocked('));
-    expect(locked.indexOf('unsentPasteHolds?.heldFor(id, writer)')).toBeGreaterThan(0);
-    expect(locked.indexOf('unsentPasteHolds?.heldFor(id, writer)')).toBeLessThan(locked.indexOf('deliverPromptToSessionLocked('));
+    // Inside the lock: the unsent-paste hold's wrapper (#3393, unsentPasteHold.ts deliverUnderHold), then the locked body.
+    expect(funnel).toMatch(/paneLocks\.runLocked\(id, `daemon:\$\{writer\}`, PANE_LOCK_DAEMON_WAIT_MS, \(\) => deliverUnderHold\(\{/);
+    expect(funnel).toMatch(/deliver: \(onPaste\) => deliverPromptToSessionLocked\(/);
     expect(funnel).toContain("return result ?? 'busy';");
     // Only the funnel calls the locked body: every writer goes through the lock.
     expect(src.match(/deliverPromptToSessionLocked\(/g)).toHaveLength(1);

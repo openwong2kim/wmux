@@ -357,7 +357,7 @@ import { record as chatRecord } from './chat/adapter';
 import type { ChatInteractionAnswer } from '../shared/transcript/chatSession';
 import { selfCheckPeerPid } from '../shared/peerPid';
 import { PANE_INPUT_HIGH_WATER, PANE_LOCK_DAEMON_WAIT_MS, PANE_LOCK_MAX_WAIT_MS, PaneDeliveryLocks, admitPaneInput, writeUnderLock } from './paneDeliveryLock';
-import { UnsentPasteHolds } from './unsentPasteHold';
+import { UnsentPasteHolds, deliverUnderHold } from './unsentPasteHold';
 
 // A delivery asks whether the agent the tracker attributes still runs there,
 // not where its binary lives: the image rule (isAgentImage) would refuse a live
@@ -6584,26 +6584,30 @@ function registerRpcHandlers(
     // The pane's delivery lock, held from before the writer's first look at
     // the pane through its Enter: no other delivery writes in between. Not
     // granted in time: busy, which every caller already retries.
-    const result = await paneLocks.runLocked(id, `daemon:${writer}`, PANE_LOCK_DAEMON_WAIT_MS, async () => {
-      // #3393 — an earlier paste still in the box: busy (reason unsent-paste,
-      // logged once per writer), nothing written, retried like any busy pane.
-      if (unsentPasteHolds?.heldFor(id, writer)) return 'busy' as const;
-      let pasted = false;
-      let sent: SessionPromptScheduleResult | undefined;
-      try {
-        sent = await deliverPromptToSessionLocked(id, agentSlug, incarnationId, prompt, {
-          ...opts,
-          onWrite: (stage, queued) => {
-            if (stage === 'paste') pasted = true;
-            opts.onWrite?.(stage, queued);
-          },
-        }, writer, author, trust);
-        return sent;
-      } finally {
-        // Pasted and not submitted (or thrown after the paste): the text stays in the box, as no writer here takes it back.
-        if (sent !== 'sent' && pasted) unsentPasteHolds?.record(id, writer);
-      }
-    });
+    const result = await paneLocks.runLocked(id, `daemon:${writer}`, PANE_LOCK_DAEMON_WAIT_MS, () => deliverUnderHold({
+      holds: unsentPasteHolds,
+      sessionId: id,
+      writer,
+      text: prompt,
+      deliver: (onPaste) => deliverPromptToSessionLocked(id, agentSlug, incarnationId, prompt, {
+        ...opts,
+        onWrite: (stage, queued) => {
+          if (stage === 'paste') onPaste();
+          opts.onWrite?.(stage, queued);
+        },
+      }, writer, author, trust),
+      // #3393 — an earlier paste still in the box: busy (reason unsent-paste); one this writer leaves is taken back
+      // while the box shows exactly its own text, or else held.
+      presence: (check) => deliveryPresence(presenceDeps, id, agentSlug, check),
+      eraseLine: () => {
+        const managed = sessionManager.getSession(id);
+        if (!managed) return false;
+        managed.ptyProcess.write('\x15');
+        managed.bridge.noteInput('\x15');
+        return true;
+      },
+      log: (line) => log('info', line),
+    }));
     return result ?? 'busy';
   };
   const deliverPromptToSessionLocked = (
