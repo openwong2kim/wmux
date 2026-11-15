@@ -3049,6 +3049,8 @@ export function registerInputRpc(
       ...(guard ?? { beforePaste: draftAtPaste, beforeEnter: async () => null }),
       verifyAgent: checkAgent,
     };
+    /** A daemon that holds unsent pastes (#3393) whose answer did not come: whether the box is held is unknown, so nothing is typed. */
+    const unreadableHold: GatedSubmitRefusal = { ok: false, reason: 'gate_unavailable', detail: "delivery: the pane's input state could not be read, so nothing was typed" };
     /**
      * A paste left unsent in this pane's box: refused, nothing written. The daemon holds it for every writer
      * (`before.unsentPasteHeld`, #3393); main's own record (`unsentPaste`) covers an older daemon and a local pane.
@@ -3130,6 +3132,7 @@ export function registerInputRpc(
           const late = await onLocked();
           if (late) return late;
           const before = await readAgentState(ptyId);
+          if (markUnsent && !before) return unreadableHold;
           const held = await heldByUnsentPaste(before);
           if (held) return held;
           const keysBefore = typeof before?.keyInputRevision === 'number' ? before.keyInputRevision : undefined;
@@ -3152,6 +3155,7 @@ export function registerInputRpc(
         const late = await onLocked();
         if (late) return late;
         const before = await readAgentState(ptyId);
+        if (markUnsent && !before) return unreadableHold;
         const held = await heldByUnsentPaste(before);
         if (held) return held;
         const keysBefore = typeof before?.keyInputRevision === 'number' ? before.keyInputRevision : undefined;

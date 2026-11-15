@@ -5072,6 +5072,7 @@ function registerRpcHandlers(
     agentPid: (id) => agentProcessTracker.pidFor(id),
     log: (line) => log('info', line),
   });
+  paneLocks.onHeldWrite = (id) => unsentPasteHolds?.wrote(id);
   sessionManager.on('session:died', (payload: { id: string }) => unsentPasteHolds?.sessionEnded(payload.id));
   sessionManager.on('session:destroyed', (payload: { id: string }) => unsentPasteHolds?.sessionEnded(payload.id));
   // Only a live session takes a delivery: a suspended or dead one has no
@@ -5433,7 +5434,7 @@ function registerRpcHandlers(
         return true;
       },
       paneLock: (id, send) => paneLocks.runLocked(id, 'hermes-chat', PANE_LOCK_DAEMON_WAIT_MS, send),
-      unsentPaste: { held: (id) => unsentPasteHolds?.held(id) === true, record: (id, writer) => { unsentPasteHolds?.record(id, writer); } },
+      unsentPaste: { held: (id) => unsentPasteHolds?.held(id) === true, wrote: (id) => unsentPasteHolds?.wrote(id), record: (id, writer) => { unsentPasteHolds?.record(id, writer); } },
       emit: (id, data, clients) => {
         nativeChatBridge?.nudgeQueue(id);
         for (const client of clients) {
@@ -5535,7 +5536,7 @@ function registerRpcHandlers(
       return true;
     },
     paneLock: (id, send) => paneLocks.runLocked(id, 'native-chat', PANE_LOCK_DAEMON_WAIT_MS, send),
-    unsentPaste: { held: (id) => unsentPasteHolds?.held(id) === true, record: (id, writer) => { unsentPasteHolds?.record(id, writer); } },
+    unsentPaste: { held: (id) => unsentPasteHolds?.held(id) === true, wrote: (id) => unsentPasteHolds?.wrote(id), record: (id, writer) => { unsentPasteHolds?.record(id, writer); } },
     receipts: chatSendReceipts,
     cancelReceipts: chatCancelReceipts,
     queue: chatQueue,
@@ -6588,16 +6589,20 @@ function registerRpcHandlers(
       // logged once per writer), nothing written, retried like any busy pane.
       if (unsentPasteHolds?.heldFor(id, writer)) return 'busy' as const;
       let pasted = false;
-      const sent = await deliverPromptToSessionLocked(id, agentSlug, incarnationId, prompt, {
-        ...opts,
-        onWrite: (stage, queued) => {
-          if (stage === 'paste') pasted = true;
-          opts.onWrite?.(stage, queued);
-        },
-      }, writer, author, trust);
-      // Pasted and not submitted: the text stays in the box (no writer here takes it back).
-      if (sent !== 'sent' && pasted) unsentPasteHolds?.record(id, writer);
-      return sent;
+      let sent: SessionPromptScheduleResult | undefined;
+      try {
+        sent = await deliverPromptToSessionLocked(id, agentSlug, incarnationId, prompt, {
+          ...opts,
+          onWrite: (stage, queued) => {
+            if (stage === 'paste') pasted = true;
+            opts.onWrite?.(stage, queued);
+          },
+        }, writer, author, trust);
+        return sent;
+      } finally {
+        // Pasted and not submitted (or thrown after the paste): the text stays in the box, as no writer here takes it back.
+        if (sent !== 'sent' && pasted) unsentPasteHolds?.record(id, writer);
+      }
     });
     return result ?? 'busy';
   };
@@ -6665,6 +6670,7 @@ function registerRpcHandlers(
         if (!managed) return false;
         managed.ptyProcess.write(data);
         managed.bridge.noteInput(data);
+        unsentPasteHolds?.wrote(id);
         return true;
       },
     });
@@ -10497,7 +10503,7 @@ async function main(): Promise<void> {
       return token ? () => paneLocks.release(id, token) : null;
     },
     // #3393 — a pane holding an earlier paste left unsubmitted gets no nudge; a nudge left in the box records one.
-    unsentPaste: { held: (id) => unsentPasteHolds?.heldFor(id, 'channel wake nudge') === true, record: (id, writer) => { unsentPasteHolds?.record(id, writer); } },
+    unsentPaste: { held: (id) => unsentPasteHolds?.heldFor(id, 'channel wake nudge') === true, wrote: (id) => unsentPasteHolds?.wrote(id), record: (id, writer) => { unsentPasteHolds?.record(id, writer); } },
     unreadFor: (ws) => channelService.unreadFor(ws),
     // A nudge that never landed must not leave the message it announced sitting
     // at 'pending' forever — the push half used to drop that outcome on the

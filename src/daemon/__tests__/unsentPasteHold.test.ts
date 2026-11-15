@@ -131,6 +131,24 @@ describe('UnsentPasteHolds', () => {
     expect(busy[0]).toContain('scheduled prompt');
   });
 
+  it('is taken as of the writer\'s last write: a key or a submitted prompt before the record still clears it', () => {
+    paste();
+    holds.wrote('pty-a');
+    // The person submits the box while the writer still checks the pane: the Enter and the hook land before the record.
+    vi.advanceTimersByTime(500);
+    bridge.noteInput('\r');
+    ingest.handle(signal('agent.user_prompt_submit'));
+    holds.record('pty-a', 'scheduled prompt');
+    expect(holds.held('pty-a')).toBe(false);
+    // Only a submitted prompt (no key counted): cleared too.
+    paste();
+    holds.wrote('pty-a');
+    vi.advanceTimersByTime(500);
+    ingest.handle(signal('agent.user_prompt_submit'));
+    holds.record('pty-a', 'main delivery');
+    expect(holds.held('pty-a')).toBe(false);
+  });
+
   it('nothing is recorded for a session that is gone', () => {
     expect(holds.record('pty-z', 'main delivery')).toBe(false);
     expect(holds.held('pty-z')).toBe(false);

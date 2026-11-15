@@ -23,6 +23,8 @@
 /** What a writer asks of the holds: whether the pane is held, and to record a paste it left there. */
 export interface UnsentPasteGate {
   held(sessionId: string): boolean;
+  /** Right after each write the writer makes (the daemon counts it in the same tick). */
+  wrote(sessionId: string): void;
   record(sessionId: string, writer: string): void;
 }
 
@@ -56,6 +58,8 @@ export interface UnsentPasteHoldDeps {
 
 export class UnsentPasteHolds {
   private readonly records = new Map<string, UnsentPasteRecord>();
+  /** The pane's key count and time right after the lock holder's latest write: what a record is taken from. */
+  private readonly lastWrite = new Map<string, { at: number; keys: number }>();
   private readonly now: () => number;
   private readonly log: (line: string) => void;
 
@@ -65,14 +69,25 @@ export class UnsentPasteHolds {
   }
 
   /**
-   * A paste left unsent in the pane, recorded right after the writer's last
-   * write: the daemon counts each write in the tick it is made, so the key
-   * count read now includes every one of them. False: no session.
+   * A write by the pane's lock holder: the key count and time right after it, read in the tick the daemon counted it.
+   * A record taken later starts from here, so a key or a submitted prompt between that write and the record clears it.
+   */
+  wrote(sessionId: string): void {
+    const keys = this.deps.keyRevision(sessionId);
+    if (keys !== undefined) this.lastWrite.set(sessionId, { at: this.now(), keys });
+  }
+
+  /**
+   * A paste left unsent in the pane, as of the writer's last write (`wrote`), or now when none was noted. False: no
+   * session.
    */
   record(sessionId: string, writer: string): boolean {
-    const keys = this.deps.keyRevision(sessionId);
-    if (keys === undefined) return false;
-    this.records.set(sessionId, { at: this.now(), keys, pid: this.deps.agentPid(sessionId), writer, refused: new Set() });
+    const now = this.deps.keyRevision(sessionId);
+    const last = this.lastWrite.get(sessionId);
+    this.lastWrite.delete(sessionId);
+    if (now === undefined) return false;
+    const { at, keys } = last ?? { at: this.now(), keys: now };
+    this.records.set(sessionId, { at, keys, pid: this.deps.agentPid(sessionId), writer, refused: new Set() });
     this.log(`[unsent-paste] session=${sessionId} held: ${writer} left a paste unsubmitted`);
     return true;
   }
@@ -112,6 +127,7 @@ export class UnsentPasteHolds {
 
   /** The session ended. */
   sessionEnded(sessionId: string): void {
+    this.lastWrite.delete(sessionId);
     this.drop(sessionId, 'the session ended');
   }
 

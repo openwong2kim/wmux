@@ -149,7 +149,7 @@ export interface ChannelWakeWorkerDeps {
    * later tick), and a nudge whose line stays in the box records one, under
    * the pane's lock. Absent: not consulted.
    */
-  unsentPaste?: { held(sessionId: string): boolean; record(sessionId: string, writer: string): void };
+  unsentPaste?: { held(sessionId: string): boolean; wrote(sessionId: string): void; record(sessionId: string, writer: string): void };
   /** Broadcast a daemon event (nudge exhaustion → human attention). */
   broadcast(event: Record<string, unknown>): void;
   log(level: 'debug' | 'info' | 'warn', message: string): void;
@@ -662,6 +662,7 @@ export class ChannelWakeWorker {
     this.deps.log('info', `[wake] nudging ${sessionId} for ${entry.channelId}#${entry.memberId} (${entry.unread} unread)`);
     try {
       this.deps.write(sessionId, line);
+      this.deps.unsentPaste?.wrote(sessionId);
     } catch (err) {
       this.deps.log('warn', `[wake] nudge write to ${sessionId} failed (session died mid-race?): ${String(err)}`);
       report(false);

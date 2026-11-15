@@ -473,7 +473,7 @@ describe('send', () => {
     const f = fixture(); f.liveClaude();
     let held = true;
     const recorded: string[] = [];
-    const bridge = createChatBridge({ ...f.deps, unsentPaste: { held: () => held, record: (id, writer) => { recorded.push(`${id}:${writer}`); } } });
+    const bridge = createChatBridge({ ...f.deps, unsentPaste: { held: () => held, wrote: () => undefined, record: (id, writer) => { recorded.push(`${id}:${writer}`); } } });
     const req = phoneSend('held');
     const refused = await bridge.send(req);
     expect(refused).toMatchObject({ result: 'unconfirmed', error: 'input-not-provably-empty', effect: 'none' });

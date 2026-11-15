@@ -165,7 +165,11 @@ export class HermesChatService {
           : null;
       },
       isAgentProcessAlive: () => this.deps.processAlive(id),
-      write: (data) => this.deps.write(id, data),
+      write: (data) => {
+        const ok = this.deps.write(id, data);
+        if (ok) this.deps.unsentPaste?.wrote(id);
+        return ok;
+      },
       // Enter always submits in Hermes' prompt; a pasted newline stays in it.
       submitKeys: '\r',
       onWrite: (stage) => { if (stage === 'paste') pasted = true; },

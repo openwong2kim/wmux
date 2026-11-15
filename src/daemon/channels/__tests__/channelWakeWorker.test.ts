@@ -79,7 +79,7 @@ function makeHarness(
     folderTrustVerdict?: (sessionId: string) => Promise<'trust' | 'unknown' | 'clear'>;
     agentPresent?: (sessionId: string, check: DeliveryCheck) => Promise<WakePresence>;
     paneLock?: (sessionId: string) => Promise<(() => void) | null>;
-    unsentPaste?: { held(sessionId: string): boolean; record(sessionId: string, writer: string): void };
+    unsentPaste?: { held(sessionId: string): boolean; wrote(sessionId: string): void; record(sessionId: string, writer: string): void };
   } = {},
 ): Harness {
   let entries: WakeUnreadEntry[] = [];
@@ -1093,7 +1093,7 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
     const recorded: string[] = [];
     let enter: WakePresence = { present: false, pasteShown: false };
     const h = makeHarness(undefined, {
-      unsentPaste: { held: () => held, record: (id, writer) => { recorded.push(`${id}:${writer}`); } },
+      unsentPaste: { held: () => held, wrote: () => undefined, record: (id, writer) => { recorded.push(`${id}:${writer}`); } },
       agentPresent: async (_id, check) => (check.phase === 'enter' ? enter : { present: true, full: true }),
     });
     h.setEntries([mention()]);

@@ -786,7 +786,10 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
             ok = deps.write(id, data);
             return ok;
           } finally {
-            if (ok) wrote = true;
+            if (ok) {
+              wrote = true;
+              deps.unsentPaste?.wrote(id);
+            }
           }
         },
         ...(deps.delay ? { delay: deps.delay } : {}),
@@ -803,9 +806,14 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       }, req.attachments ?? []);
       const held = async (): Promise<ChatSendResult | 'unsent-paste'> => {
         if (deps.unsentPaste?.held(id)) return 'unsent-paste';
-        const sent = await send();
-        if (sent !== 'sent' && wrote) deps.unsentPaste?.record(id, 'chat send');
-        return sent;
+        let sent: ChatSendResult | undefined;
+        try {
+          sent = await send();
+          return sent;
+        } finally {
+          // Written and not submitted, or thrown after a write: what was typed stays in the box.
+          if (sent !== 'sent' && wrote) deps.unsentPaste?.record(id, 'chat send');
+        }
       };
       const result = (deps.paneLock ? await deps.paneLock(id, held) : await held()) ?? 'busy';
       if (result === 'unsent-paste') return { result: 'unconfirmed', effect: 'none', error: 'input-not-provably-empty', detail: UNSENT_PASTE_CHAT_DETAIL };

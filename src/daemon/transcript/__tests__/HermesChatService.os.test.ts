@@ -129,7 +129,7 @@ describe('HermesChatService', () => {
   it('#3393: a pane holding an earlier unsubmitted paste types nothing; a send that leaves its own paste records one', async () => {
     let held = true;
     const recorded: string[] = [];
-    const unsentPaste = { held: () => held, record: (id: string, writer: string) => { recorded.push(`${id}:${writer}`); } };
+    const unsentPaste = { held: () => held, wrote: () => undefined, record: (id: string, writer: string) => { recorded.push(`${id}:${writer}`); } };
     const refused = rig({ unsentPaste });
     expect(await refused.service.send('p1', '20261029_053840_ec122e', 'x', 'm1')).toEqual({ result: 'busy', reason: 'unsent-paste' });
     expect(refused.writes).toEqual([]);
