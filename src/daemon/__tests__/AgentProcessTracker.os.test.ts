@@ -402,6 +402,50 @@ describe('AgentProcessTracker', () => {
     expect(watcher.watches.get('agent:s1')?.pid).toBe(300);
   });
 
+  it("a delivery's re-probe names the current pick and records no death for a tracked pid still running", async () => {
+    const watcher = makeWatcher();
+    let table: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];
+    const tracker = new AgentProcessTracker(watcher, async () => table);
+    const states: Array<{ alive: boolean }> = [];
+    tracker.setStateChangeListener((_sid, state) => states.push({ alive: state.alive }));
+    tracker.arm('s1', SHELL);
+    await flush();
+    // The old pid now runs something else (reused); the new Claude is pid 300.
+    table = [entry(200, 1, 'notepad.exe'), entry(300, SHELL, 'claude.exe')];
+    expect(await tracker.reprobeNow('s1', SHELL, 1_000)).toBe(true);
+    expect(tracker.pidFor('s1')).toBe(300);
+    expect(tracker.statusFor('s1')).toBe(true);
+    expect(watcher.watches.get('agent:s1')?.pid).toBe(300);
+    expect(states.some((st) => !st.alive)).toBe(false);
+  });
+
+  it("a delivery's re-probe never names a plain command: a gone agent's death is recorded, a running pid's record is kept", async () => {
+    const watcher = makeWatcher();
+    let table: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];
+    const tracker = new AgentProcessTracker(watcher, async () => table);
+    const states: Array<{ alive: boolean; slug?: string }> = [];
+    tracker.setStateChangeListener((_sid, state) => states.push({ alive: state.alive, ...(state.slug ? { slug: state.slug } : {}) }));
+    tracker.arm('s1', SHELL);
+    await flush();
+    // Claude exited before the monitor polled; the user started vim.
+    table = [entry(300, SHELL, 'vim')];
+    expect(await tracker.reprobeNow('s1', SHELL, 1_000)).toBe(true);
+    expect(tracker.statusFor('s1')).toBe(false);
+    expect(states.at(-1)).toEqual({ alive: false, slug: 'claude' });
+    expect(watcher.watches.has('agent:s1')).toBe(false);
+
+    // Another pane: the tracked pid still runs (reused), and the command is vim.
+    const watcher2 = makeWatcher();
+    let table2: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];
+    const tracker2 = new AgentProcessTracker(watcher2, async () => table2);
+    tracker2.arm('s2', SHELL);
+    await flush();
+    table2 = [entry(200, 1, 'notepad.exe'), entry(300, SHELL, 'vim')];
+    expect(await tracker2.reprobeNow('s2', SHELL, 1_000)).toBe(true);
+    expect(tracker2.pidFor('s2')).toBe(200);
+    expect(watcher2.watches.get('agent:s2')?.pid).toBe(200);
+  });
+
   it('a re-probe of the same agent after the tree read still takes the confirmed death', async () => {
     const watcher = makeWatcher();
     let table: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];

@@ -51,6 +51,10 @@ beforeEach(() => {
     pty: { write },
     rpc: {
       gatedSubmit: async (ptyId: string, text: string) => {
+        // As main's gate answers for a pane with no agent in it: nothing written.
+        if (!useStore.getState().surfaceAgent[ptyId]?.name) {
+          return { ok: false, reason: 'agent_unverified', detail: 'delivery: no agent in the pane; nothing was written' };
+        }
         write(ptyId, formatBracketedPastePayload(text));
         write(ptyId, '\r');
         return { ok: true };

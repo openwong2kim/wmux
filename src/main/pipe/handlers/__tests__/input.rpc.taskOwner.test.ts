@@ -1038,7 +1038,7 @@ describe('a refused local delivery, stored and typed later', () => {
     await w.retryPendingDeliveries('pty-task');
     expect(pasted(w)).toHaveLength(1);
     expect(w.logs.some((l) => l.startsWith('[owner-lane] delivery from ws "ws-owner"'))).toBe(true);
-    expect(w.logs.at(-1)).toBe('[delivery] typed stored task "t-new" into pane "pty-task"');
+    expect(w.logs.at(-1)).toBe('[delivery] typed stored task "t-new" into pane "pty-task" (trigger: call)');
     // Typed once: a later pass finds nothing.
     await w.retryPendingDeliveries('pty-task');
     expect(pasted(w)).toHaveLength(1);

@@ -12,6 +12,8 @@ import type { DeliveryCheck, DeliveryPresence } from '../../../../shared/deliver
 import type { BrowserWindow } from 'electron';
 import type { PTYManager } from '../../../pty/PTYManager';
 import { registerDeliveryCheck } from '../../deliveryGuards';
+import { sendToRenderer } from '../_bridge';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 
 vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
 
@@ -29,6 +31,12 @@ let answers: Array<DeliveryPresence | undefined>;
 let asked: Array<{ ptyId: string; expectAgent: string | undefined; check: DeliveryCheck }>;
 /** The order of the presence asks, the approval-gate reads and the writes. */
 let order: string[];
+/** The wiring's "agent first named" callback (input.rpc's retry trigger). */
+let agentNamed: (ptyId: string) => void = () => undefined;
+/** The wiring's "agent record dropped" callback (pane teardown, session end). */
+let agentRecordDropped: (ptyId: string) => void = () => undefined;
+/** Each stored delivery's early try, in the order stored. */
+let earlyTries: Array<() => void> = [];
 
 function harness() {
   const dc = {
@@ -65,6 +73,17 @@ function harness() {
       sleep: async (ms: number) => { clock += ms; },
       now: () => clock,
       log: (line: string) => logs.push(line),
+      readTaskState: async () => 'open',
+      subscribeAgentStops: () => () => undefined,
+      subscribeAgentNamed: (onNamed) => {
+        agentNamed = onNamed;
+        return () => undefined;
+      },
+      pendingSetOnce: (fn) => { earlyTries.push(fn); },
+      subscribeAgentRecordDropped: (onDropped) => {
+        agentRecordDropped = onDropped;
+        return () => undefined;
+      },
     },
   );
 }
@@ -73,6 +92,7 @@ const deliver = (opts?: GatedSubmitOptions, agent: string | null = 'Claude Code'
   harness().gatedSubmit('pty-a', text, agent, opts);
 
 beforeEach(() => {
+  earlyTries = [];
   clock = 1_000_000;
   writes = [];
   logs = [];
@@ -337,6 +357,120 @@ describe('an agent whose plain prompt wmux does not know: its pointer line only'
     writes = [];
     answers = [{ ...PROCESS, bracketedPaste: false }];
     expect(await deliver({ senderTaskIds: ['task-1'] }, 'Claude Code', BODY)).toMatchObject({ ok: false, reason: 'input_mode' });
+    expect(writes).toEqual([]);
+  });
+});
+
+// A local send or reply to a pane the window names no agent in now reaches
+// this gate (the window may not have named an agent started moments ago).
+// Main decides from the pane itself: with no agent there, nothing is written.
+describe('a pane the window names no agent in', () => {
+  const LOCAL: Array<[string, GatedSubmitOptions]> = [
+    ['a local new task', { newTask: true, taskId: 't-1', senderSendKey: 'k' }],
+    ['a local reply', { senderTaskIds: ['t-1'] }],
+  ];
+  const NONE: DeliveryPresence[] = [
+    { tier: 'none', reason: 'shell-at-prompt' },
+    { tier: 'none', reason: 'no-screen-proof' },
+    { tier: 'none', reason: 'agent-ended' },
+  ];
+  for (const [name, opts] of LOCAL) {
+    for (const presence of NONE) {
+      it(`${name}, presence ${presence.tier === 'none' ? presence.reason : ''}: zero bytes, nothing stored`, async () => {
+        answers = [presence];
+        const res = await deliver(opts, null, '[wmux] new A2A task t-1 — a2a_task_query');
+        expect(res).toMatchObject({ ok: false, reason: 'agent_unverified' });
+        expect(res).not.toHaveProperty('stored');
+        expect(writes).toEqual([]);
+        expect(asked[0].expectAgent).toBeUndefined();
+      });
+    }
+  }
+
+  it('an agent not attributed yet: stored with nothing written, typed once when the agent is first named', async () => {
+    // The stored entry's task is read through the pane's workspace.
+    vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => (method === 'input.findOwnerWorkspace' ? { workspaceId: 'ws-a' } : null));
+    const wiring = harness();
+    answers = [{ tier: 'none', reason: 'attribution-pending' }];
+    const res = await wiring.gatedSubmit('pty-a', 'hello', null, { newTask: true, taskId: 't-1', senderSendKey: 'k' });
+    expect(res).toMatchObject({ ok: false, reason: 'gate_unavailable', stored: true });
+    expect(writes).toEqual([]);
+    answers = [PROCESS];
+    agentNamed('pty-a');
+    await vi.waitFor(() => expect(writes).toEqual(['\x1b[200~hello\x1b[201~', '\r']), { timeout: 5_000 });
+    // Typed: nothing is left to type on a later naming.
+    agentNamed('pty-a');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(writes).toHaveLength(2);
+  });
+
+  it('the naming retry runs once per agent: a name given again is not a new one; the agent ending arms the pane again', async () => {
+    vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => (method === 'input.findOwnerWorkspace' ? { workspaceId: 'ws-a' } : null));
+    const wiring = harness();
+    const PENDING: DeliveryPresence = { tier: 'none', reason: 'attribution-pending' };
+    answers = [PENDING];
+    expect(await wiring.gatedSubmit('pty-a', 'hello', null, { senderTaskIds: ['t-1'] })).toMatchObject({ stored: true });
+    const asks = () => asked.length;
+    const before = asks();
+    agentNamed('pty-a');
+    await vi.waitFor(() => expect(asks()).toBeGreaterThan(before), { timeout: 5_000 });
+    const afterFirst = asks();
+    // An idle spell cleared the name and the next burst named it again: no retry.
+    agentNamed('pty-a');
+    await deliberateSleep(50, 'a negative check: no second retry runs');
+    expect(asks()).toBe(afterFirst);
+    expect(writes).toEqual([]);
+    // The agent ended (its entries go), a new one is stored and named: tried.
+    wiring.agentEnded('pty-a');
+    expect(await wiring.gatedSubmit('pty-a', 'hello', null, { senderTaskIds: ['t-1'] })).toMatchObject({ stored: true });
+    answers = [PROCESS];
+    agentNamed('pty-a');
+    await vi.waitFor(() => expect(writes).toEqual(['\x1b[200~hello\x1b[201~', '\r']), { timeout: 5_000 });
+  });
+
+  it('stored after the naming signal went by: the +5 s retry types it, and the log names that trigger', async () => {
+    vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => (method === 'input.findOwnerWorkspace' ? { workspaceId: 'ws-a' } : null));
+    const wiring = harness();
+    // The agent is named before anything is stored: that retry finds nothing.
+    agentNamed('pty-a');
+    answers = [{ tier: 'none', reason: 'attribution-pending' }];
+    expect(await wiring.gatedSubmit('pty-a', 'hello', null, { senderTaskIds: ['t-1'] })).toMatchObject({ stored: true });
+    expect(earlyTries).toHaveLength(1);
+    answers = [PROCESS];
+    earlyTries[0]();
+    await vi.waitFor(() => expect(writes).toEqual(['\x1b[200~hello\x1b[201~', '\r']), { timeout: 5_000 });
+    expect(logs.some((l) => l.includes('typed stored task "t-1"') && l.endsWith('(trigger: +5s)'))).toBe(true);
+  });
+
+  it('one early try per entry: refused, the entry is kept and no new early try is armed', async () => {
+    vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => (method === 'input.findOwnerWorkspace' ? { workspaceId: 'ws-a' } : null));
+    const wiring = harness();
+    answers = [{ tier: 'none', reason: 'attribution-pending' }];
+    expect(await wiring.gatedSubmit('pty-a', 'hello', null, { senderTaskIds: ['t-1'] })).toMatchObject({ stored: true });
+    const before = asked.length;
+    earlyTries[0]();
+    await vi.waitFor(() => expect(asked.length).toBeGreaterThan(before), { timeout: 5_000 });
+    await deliberateSleep(50, 'a negative check: the refused try writes nothing and arms nothing');
+    expect(writes).toEqual([]);
+    expect(earlyTries).toHaveLength(1);
+  });
+
+  it('closing the pane clears the naming latch: a later name there is tried again', async () => {
+    vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => (method === 'input.findOwnerWorkspace' ? { workspaceId: 'ws-a' } : null));
+    const wiring = harness();
+    answers = [{ tier: 'none', reason: 'attribution-pending' }];
+    expect(await wiring.gatedSubmit('pty-a', 'hello', null, { senderTaskIds: ['t-1'] })).toMatchObject({ stored: true });
+    const before = asked.length;
+    agentNamed('pty-a');
+    await vi.waitFor(() => expect(asked.length).toBeGreaterThan(before), { timeout: 5_000 });
+    const afterFirst = asked.length;
+    agentNamed('pty-a');
+    await deliberateSleep(50, 'a negative check: the latch holds');
+    expect(asked.length).toBe(afterFirst);
+    // The pane's record is dropped (closed; an agent never process-tracked has no agentEnded).
+    agentRecordDropped('pty-a');
+    agentNamed('pty-a');
+    await vi.waitFor(() => expect(asked.length).toBeGreaterThan(afterFirst), { timeout: 5_000 });
     expect(writes).toEqual([]);
   });
 });

@@ -6299,6 +6299,7 @@ function registerRpcHandlers(
     },
     tracked: (sid) => agentProcessTracker.identityFor(sid),
     probe: (sid, shellPid, timeoutMs) => agentProcessTracker.probeNamedAgentNow(sid, shellPid, timeoutMs),
+    reprobe: (sid, shellPid, timeoutMs) => agentProcessTracker.reprobeNow(sid, shellPid, timeoutMs),
     agentRunning: (sid, slug) => agentProcessTracker.isAgentRunning(sid, slug, (pid) => ProcessMonitor.isRunning(pid), BY_ATTRIBUTION),
     ownedRoot: (sid, pid, slug) => agentProcessTracker.verifyOwnedRoot(sid, pid, slug, BY_ATTRIBUTION),
     processRunning: (pid) => ProcessMonitor.isRunning(pid),
@@ -6311,6 +6312,7 @@ function registerRpcHandlers(
       return { rows, cursorRow: rows.length - 1 - outcome.rowsBelowCursor };
     },
     platform: process.platform,
+    log: (line) => log('info', line),
   };
   pipeServer.onRpc('daemon.deliveryPresence', async (params) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';

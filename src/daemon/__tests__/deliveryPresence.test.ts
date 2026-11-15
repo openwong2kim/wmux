@@ -28,6 +28,7 @@ function deps(over: Partial<DeliveryPresenceDeps> & { s?: Partial<PresenceSessio
     session: (): PresenceSession => ({ shellPid: 10, exec: false, commandRunning: undefined, namedSlug: 'claude', bracketedPaste: true, ...over.s }),
     tracked: () => ({ alive: true, slug: 'claude' as const }),
     probe: async () => { d.probes++; return true; },
+    reprobe: async () => { d.probes++; return true; },
     agentRunning: async () => true,
     processRunning: async () => true,
     ownedRoot: async () => false,
@@ -125,6 +126,58 @@ describe('deliveryPresence: the process tier', () => {
 
   it('a gone session is none', async () => {
     expect(await deliveryPresence(deps({ session: () => undefined }), 'p', undefined)).toEqual({ tier: 'none', reason: 'no-session' });
+  });
+});
+
+// A reused pane: an earlier Claude's record still reads alive (its death was
+// missed, or the pick was made mid-launch) while a new command runs there.
+describe('deliveryPresence: a tracked agent not running under a running command', () => {
+  /** The tracker: the stale record until the probe names `next` (or nothing). */
+  function reused(next: { slug: 'claude' | 'codex'; running: boolean } | null, s: Partial<PresenceSession> = { commandRunning: true }) {
+    let current: { alive: boolean; slug: 'claude' | 'codex'; pid: number } = { alive: true, slug: 'claude', pid: 41 };
+    const lines: string[] = [];
+    const d = deps({
+      s,
+      tracked: () => ({ alive: current.alive, slug: current.slug }),
+      agentPid: () => current.pid,
+      probe: async () => { throw new Error('the named-agent probe is not the re-probe'); },
+      reprobe: async () => {
+        d.probes++;
+        if (next) current = { alive: true, slug: next.slug, pid: 77 };
+        return true;
+      },
+      agentRunning: async () => current.pid === 77 && !!next?.running,
+      log: (line) => lines.push(line),
+    });
+    return { d, lines };
+  }
+
+  it('the probe names the new agent once: verified on it, and the change is logged', async () => {
+    const { d, lines } = reused({ slug: 'claude', running: true });
+    expect(await deliveryPresence(d, 'p', undefined)).toEqual(FULL);
+    expect(d.probes).toBe(1);
+    expect(lines).toEqual(['[delivery-presence] pane "p": tracked claude pid 41 is not running under a running command; re-probe → claude pid 77']);
+  });
+
+  it('the probe names nothing yet: attribution-pending (kept, typed later), probed once, never in a loop', async () => {
+    const { d, lines } = reused(null);
+    expect(await deliveryPresence(d, 'p', 'claude')).toEqual({ tier: 'none', reason: 'attribution-pending' });
+    expect(d.probes).toBe(1);
+    expect(lines[0]).toMatch(/re-probe → still pending$/);
+  });
+
+  it('the probe names another agent than the one addressed: other-agent', async () => {
+    const { d } = reused({ slug: 'codex', running: true });
+    expect(await deliveryPresence(d, 'p', 'claude')).toEqual({ tier: 'none', reason: 'other-agent' });
+  });
+
+  it('a stopped agent with no command running (or no shell report) is not-running, with no probe', async () => {
+    for (const commandRunning of [false, undefined]) {
+      const { d, lines } = reused({ slug: 'claude', running: true }, { commandRunning });
+      expect(await deliveryPresence(d, 'p', 'claude')).toEqual({ tier: 'none', reason: 'not-running' });
+      expect(d.probes).toBe(0);
+      expect(lines).toEqual([]);
+    }
   });
 });
 

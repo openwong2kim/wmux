@@ -1176,7 +1176,7 @@ export class AgentProcessTracker {
     this.probe(sessionId, shellPid, true);
   }
 
-  private probe(sessionId: string, shellPid: number, requireSlug = false): void {
+  private probe(sessionId: string, shellPid: number, requireSlug = false, replaceRunning = false): void {
     if (this.inFlight.has(sessionId)) {
       // A hook or banner arm arriving while an armIfAgent probe runs must not
       // be swallowed: that probe discards a slugless pick, which this arm
@@ -1209,7 +1209,16 @@ export class AgentProcessTracker {
             // long command can name the pane after the background agent.
             // Narrowing to the terminal's foreground process group needs a
             // pgid column no Windows listing has.)
-            if (entries.some((e) => e.pid === cur.pid)) return;
+            if (entries.some((e) => e.pid === cur.pid)) {
+              // A delivery's re-probe (reprobeNow): a named pick other than
+              // the tracked pid takes the record, with no death recorded for
+              // a pid that still runs.
+              if (!replaceRunning || !pick?.slug || pick.pid === cur.pid) return;
+              this.watcher.unwatch(AgentProcessTracker.watchKey(sessionId));
+              this.commitPick(sessionId, pick, observedAt,
+                identity ? (identity.isCurrent() ? (ownsSnapshot ? identity.epoch : undefined) : null) : undefined, pick.slug === cur.slug);
+              return;
+            }
             // Gone before the monitor noticed: drop its watch so the monitor
             // cannot report the same death again, and record its death edge
             // now, unless the same agent already took its place (#2673: the
@@ -1382,6 +1391,27 @@ export class AgentProcessTracker {
    */
   async probeNamedAgentNow(sessionId: string, shellPid: number, timeoutMs: number): Promise<boolean> {
     this.armIfAgent(sessionId, shellPid);
+    const until = Date.now() + timeoutMs;
+    while (this.inFlight.has(sessionId) && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return !this.inFlight.has(sessionId);
+  }
+
+  /**
+   * A delivery's re-probe of a pane whose tracked agent is not the one running
+   * under its shell while a command runs there, waited for at most
+   * `timeoutMs`. Only a pick that names an agent is committed: a plain
+   * command (`vim`, `npm run dev`) leaves the record as it is. A tracked pid
+   * gone from the table has its death recorded as armIfAgent does; one still
+   * running (another process on that pid, or an earlier agent) is replaced by
+   * the named pick with no death recorded. False only while a probe runs.
+   */
+  async reprobeNow(sessionId: string, shellPid: number, timeoutMs: number): Promise<boolean> {
+    if (!this.isWsl(sessionId)) {
+      this.shellPids.set(sessionId, shellPid);
+      if (!this.inFlight.has(sessionId)) this.probe(sessionId, shellPid, true, true);
+    }
     const until = Date.now() + timeoutMs;
     while (this.inFlight.has(sessionId) && Date.now() < until) {
       await new Promise((resolve) => setTimeout(resolve, 25));

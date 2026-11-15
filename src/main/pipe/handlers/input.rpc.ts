@@ -102,6 +102,7 @@ import {
   ownerLaneScreenOf,
   type OwnerLaneScreen,
 } from './ownerLane';
+import { onAgentFirstNamed, onAgentRecordDropped } from '../../notification/agentFirstNamed';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -1579,6 +1580,14 @@ export interface InputRpcDeps {
   channelMessageAuthor?: (channelId: string, seq: number, viewerWorkspaceId: string) => Promise<string | null>;
   /** Injected in tests; calls `onStop` for each agent turn end in a pane. Defaults to main's event bus. */
   subscribeAgentStops?: (onStop: (ptyId: string) => void) => () => void;
+  /** Injected in tests; calls back once each time a pane's agent is first
+   *  named. Defaults to the metadata broadcast (onAgentFirstNamed). */
+  subscribeAgentNamed?: (onNamed: (ptyId: string) => void) => () => void;
+  /** Injected in tests: runs a stored delivery's one early try (setTimeout). */
+  pendingSetOnce?: (fn: () => void, ms: number) => void;
+  /** Injected in tests; calls back when a pane's agent record is dropped
+   *  (teardown, session end). Defaults to onAgentRecordDropped. */
+  subscribeAgentRecordDropped?: (onDropped: (ptyId: string) => void) => () => void;
   /** Injected in tests; a task's state for a stored delivery. Defaults to the
    *  daemon's `a2a.task.query` in its `state` view. */
   readTaskState?: (workspaceId: string, taskId: string) => Promise<PendingTaskState>;
@@ -3129,8 +3138,22 @@ export function registerInputRpc(
     taskState: taskStateOf,
     log: logLine,
     ...(deps.now ? { now: deps.now } : {}),
+    ...(deps.pendingSetOnce ? { setOnce: deps.pendingSetOnce } : {}),
   });
-  (deps.subscribeAgentStops ?? subscribeAgentStops)((ptyId) => void pending.retry(ptyId));
+  (deps.subscribeAgentStops ?? subscribeAgentStops)((ptyId) => void pending.retry(ptyId, 'stop'));
+  // An agent just started has no turn end yet: a delivery stored while it
+  // could not be attributed is tried when the pane's agent is named, once
+  // per agent: a name cleared by an idle spell and given again is the same
+  // agent; its process exit (agentEnded) arms the pane again.
+  const namedOnce = new Set<string>();
+  (deps.subscribeAgentNamed ?? onAgentFirstNamed)((ptyId) => {
+    if (namedOnce.has(ptyId)) return;
+    namedOnce.add(ptyId);
+    void pending.retry(ptyId, 'naming');
+  });
+  // The pane torn down or its session ended: a later name there is a new
+  // agent (one never process-tracked has no agentEnded).
+  (deps.subscribeAgentRecordDropped ?? onAgentRecordDropped)((ptyId) => { namedOnce.delete(ptyId); });
 
   /** The local task a delivery may be stored under: none for a hand-off
    *  (`waitQuiet`: its caller settles the task on the outcome), a remote
@@ -3198,7 +3221,7 @@ export function registerInputRpc(
         };
       }
       if (taskId && earlier && (await storeForLater(ptyId, taskId, text, agent, opts, earlier.reason))) {
-        void pending.retry(ptyId);
+        void pending.retry(ptyId, 'queued');
         return {
           ok: false,
           reason: earlier.reason,
@@ -3219,7 +3242,10 @@ export function registerInputRpc(
         : result;
     },
     retryPendingDeliveries: (ptyId) => pending.retry(ptyId),
-    agentEnded: (ptyId) => pending.dropPane(ptyId, 'agent changed'),
+    agentEnded: (ptyId) => {
+      namedOnce.delete(ptyId);
+      pending.dropPane(ptyId, 'agent changed');
+    },
   };
 }
 

@@ -1,10 +1,11 @@
 // Stored local deliveries (pendingDeliveries.ts): each text once, bounded, typed
 // oldest first one per pass, and dropped when their task ends, their pane
 // goes, their agent changes or they expire.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { GatedSubmitResult } from '../../../../shared/ptyMessageDelivery';
 import {
   PENDING_DELIVERY_TTL_MS,
+  PENDING_FIRST_RETRY_MS,
   PENDING_PER_PANE_CAP,
   PENDING_PER_TASK_CAP,
   PENDING_TASK_ROW_GRACE_MS,
@@ -14,12 +15,14 @@ import {
   type PendingDelivery,
   type PendingTaskState,
 } from '../pendingDeliveries';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 
 function harness(opts: { result?: GatedSubmitResult; state?: PendingTaskState; submit?: (entry: PendingDelivery) => Promise<GatedSubmitResult> } = {}) {
   let t = 1_000_000;
   const typed: string[] = [];
   const logs: string[] = [];
   let timers = 0;
+  const once: Array<{ fn: () => void; ms: number }> = [];
   const live = { result: opts.result ?? ({ ok: true } as GatedSubmitResult), state: ('state' in opts ? opts.state : 'open') as PendingTaskState };
   const reads: string[] = [];
   const queue = new PendingDeliveries({
@@ -38,11 +41,12 @@ function harness(opts: { result?: GatedSubmitResult; state?: PendingTaskState; s
       timers++;
       return { cancel: () => { timers--; } };
     },
+    setOnce: (fn, ms) => { once.push({ fn, ms }); },
   });
   const entry = (taskId: string, ptyId = 'pty-1', text = `text ${taskId}`): PendingDelivery => ({
     taskId, ptyId, text, agent: 'claude', opts: { senderTaskIds: [taskId] }, agentName: 'Claude Code', incarnationId: 'inc-1', sessionStartAt: null, storedAt: t, reason: 'gate_unavailable',
   });
-  return { queue, typed, logs, live, reads, entry, advance: (ms: number) => { t += ms; }, timers: () => timers };
+  return { queue, typed, logs, live, reads, entry, once, advance: (ms: number) => { t += ms; }, timers: () => timers };
 }
 
 describe('PendingDeliveries', () => {
@@ -323,6 +327,70 @@ describe('PendingDeliveries', () => {
     h.queue.store(h.entry('t1'));
     await h.queue.retry('pty-1');
     expect(h.queue.size).toBe(0);
+  });
+
+  it('tries each newly stored delivery once early, and not one already typed or stored again', async () => {
+    const h = harness();
+    h.queue.store(h.entry('t1'));
+    h.queue.store(h.entry('t1'));
+    expect(h.once.map((o) => o.ms)).toEqual([PENDING_FIRST_RETRY_MS]);
+    h.once[0].fn();
+    await vi.waitFor(() => expect(h.typed).toEqual(['text t1']), { timeout: 5_000 });
+    // Typed by then: a later early try for it does nothing.
+    h.queue.store(h.entry('t2'));
+    await h.queue.sweep();
+    expect(h.typed).toEqual(['text t1', 'text t2']);
+    const reads = h.reads.length;
+    h.once[1].fn();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.reads.length).toBe(reads);
+  });
+
+  it('an early try that comes while another retry runs on the pane runs after it once that entry is gone, not after a refusal about the pane', async () => {
+    /** Each submit waits for its answer, handed in by the test. */
+    const answers: Array<(r: GatedSubmitResult) => void> = [];
+    const gate = () => new Promise<GatedSubmitResult>((resolve) => { answers.push(resolve); });
+    const h = harness({ submit: gate });
+    h.queue.store(h.entry('t1'));
+    h.queue.store(h.entry('t2'));
+    h.once[0].fn();
+    await vi.waitFor(() => expect(answers).toHaveLength(1), { timeout: 5_000 });
+    // t2's early try while t1 is being typed: kept, and run once t1 is typed.
+    h.once[1].fn();
+    answers[0]({ ok: true });
+    await vi.waitFor(() => expect(answers).toHaveLength(2), { timeout: 5_000 });
+    answers[1]({ ok: true });
+    await vi.waitFor(() => expect(h.typed).toEqual(['text t1', 'text t2']), { timeout: 5_000 });
+    expect(h.logs.filter((l) => l.endsWith('(trigger: +5s)'))).toHaveLength(2);
+
+    // Refused: the waiting early try is not run.
+    const refused: Array<(r: GatedSubmitResult) => void> = [];
+    const r = harness({ submit: () => new Promise<GatedSubmitResult>((resolve) => { refused.push(resolve); }) });
+    r.queue.store(r.entry('t1'));
+    r.queue.store(r.entry('t2'));
+    r.once[0].fn();
+    await vi.waitFor(() => expect(refused).toHaveLength(1), { timeout: 5_000 });
+    r.once[1].fn();
+    refused[0]({ ok: false, reason: 'gate_unavailable', detail: 'x' });
+    await deliberateSleep(50, 'a negative check: no second try runs after the refusal');
+    expect(refused).toHaveLength(1);
+    expect(r.typed).toEqual([]);
+    // t2 stays stored: the sweep still reaches it once t1 is gone.
+    expect(r.queue.heldFor('pty-1', 't2')).toBeDefined();
+
+    // Entry 1 dropped for a reason of its own (a text the pane cannot take):
+    // entry 2's waiting early try still runs.
+    const own: Array<(r: GatedSubmitResult) => void> = [];
+    const o = harness({ submit: () => new Promise<GatedSubmitResult>((resolve) => { own.push(resolve); }) });
+    o.queue.store(o.entry('t1'));
+    o.queue.store(o.entry('t2'));
+    o.once[0].fn();
+    await vi.waitFor(() => expect(own).toHaveLength(1), { timeout: 5_000 });
+    o.once[1].fn();
+    own[0]({ ok: false, reason: 'write_failed', detail: 'x' });
+    await vi.waitFor(() => expect(own).toHaveLength(2), { timeout: 5_000 });
+    own[1]({ ok: true });
+    await vi.waitFor(() => expect(o.typed).toEqual(['text t2']), { timeout: 5_000 });
   });
 
   it('runs its sweep timer only while entries are kept', async () => {

@@ -20,6 +20,7 @@ import { PrReviewRouter } from '../../metadata/PrReviewRouter';
 import { ghPrService } from '../../github/GhPrService';
 import { publishPrOwnerEvent } from '../../deck/prOwnerNotify';
 import { clearTurnEvidence, noteBroadcastStatus } from '../../notification/turnEvidence';
+import { notifyAgentFirstNamed, notifyAgentRecordDropped } from '../../notification/agentFirstNamed';
 import { shellPromptOf } from '../../shellPrompt/shellPromptMirror';
 
 // AO-style CI feedback (owner decision 2026-07-18). Module singletons set at
@@ -112,6 +113,7 @@ export function getLastBroadcastAgentName(ptyId: string): string | undefined {
 
 /** Drop a PTY's entry on cleanup, so a reused id never inherits a stale status. */
 export function clearLastBroadcastAgentStatus(ptyId: string): void {
+  notifyAgentRecordDropped(ptyId);
   lastBroadcastAgentStatus.delete(ptyId);
   lastBroadcastAgentName.delete(ptyId);
   runningClaimOutstanding.delete(ptyId);
@@ -153,8 +155,11 @@ export function broadcastMetadataUpdate(
     else if (payload.agentStatus === 'running') runningClaimOutstanding.add(payload.ptyId);
   }
   if (payload.ptyId && payload.agentName !== undefined) {
-    if (payload.agentName) lastBroadcastAgentName.set(payload.ptyId, payload.agentName);
-    else lastBroadcastAgentName.delete(payload.ptyId);
+    if (payload.agentName) {
+      const first = !lastBroadcastAgentName.has(payload.ptyId);
+      lastBroadcastAgentName.set(payload.ptyId, payload.agentName);
+      if (first) notifyAgentFirstNamed(payload.ptyId);
+    } else lastBroadcastAgentName.delete(payload.ptyId);
   }
   if (!window || window.isDestroyed()) return;
   window.webContents.send(IPC.METADATA_UPDATE, payload);

@@ -412,6 +412,8 @@ async function deliverA2aText(
   replyTaskId?: string,
   // The task the text is about, when it is neither (a remote reply's).
   pointerTaskId?: string,
+  // No agent shown in the pane: main gets no agent name to expect.
+  agentUnknown = false,
 ): Promise<A2aPtyWrite> {
   // The operator's own deliveries are excluded from fresh context in v1.
   if (operator) {
@@ -427,13 +429,13 @@ async function deliverA2aText(
   // restart), keyed by where the pane sits; a pane it cannot place is kept.
   const pane = newTask ? paneAddressOfPty(s.workspaces, ptyId) : undefined;
   const result = await gatedSubmitToPty(ptyId, text, {
-    agent: ptyAgent(ptyId).name,
+    agent: agentUnknown ? undefined : ptyAgent(ptyId).name,
     ...((pointerTaskId ?? newTask?.taskId ?? replyTaskId) ? { pointerTaskId: pointerTaskId ?? newTask?.taskId ?? replyTaskId } : {}),
     ...(newTask?.senderKey ? { senderSendKey: newTask.senderKey } : {}),
     ...(!newTask && replyTaskId ? { senderTaskIds: [replyTaskId] } : {}),
     ...(newTask ? { newTask: true, taskId: newTask.taskId, ...keep, ...(pane ? { pane } : {}) } : {}),
     ...(newTask?.waitQuiet ? { waitQuiet: true } : {}),
-    ...(newTask?.waitQuiet && newTask.expectAgent ? { expectAgent: newTask.expectAgent } : {}),
+    ...(newTask?.waitQuiet && newTask.expectAgent && !agentUnknown ? { expectAgent: newTask.expectAgent } : {}),
     ...(newTask?.waitQuiet && newTask.deadlineAt !== undefined ? { deadlineAt: newTask.deadlineAt } : {}),
     ...(newTask?.waitQuiet && newTask.guardKey ? { guardKey: newTask.guardKey } : {}),
   });
@@ -791,13 +793,16 @@ async function deliverPtyNudge(
   newTask?: NewTaskDelivery,
   replyTaskId?: string,
   pointerTaskId?: string,
+  // No agent shown in the pane: main is not told one to expect (a name this
+  // window still has may be an ended agent's).
+  agentUnknown = false,
 ): Promise<A2aPtyWrite> {
   // getWorkspaceLeafPanes puts VISIBLE leaves first, so the "first leaf with a
   // live terminal" fallback still prefers something on screen (#977); a stashed
   // pane only catches the message when nothing visible can take it, which beats
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
-  if (ptyId) return deliverA2aText(ptyId, typeof nudge === 'function' ? nudge(ptyId) : nudge, operator, newTask, replyTaskId, pointerTaskId);
+  if (ptyId) return deliverA2aText(ptyId, typeof nudge === 'function' ? nudge(ptyId) : nudge, operator, newTask, replyTaskId, pointerTaskId, agentUnknown);
   return { ptyId: null };
 }
 
@@ -864,6 +869,35 @@ function a2aTargetHasAgent(
   return isLiveTuiAgent(targetWs.metadata)
     && wsMetadataMayStandIn(visible)
     && (!pty || isTerminalPtyInLeaves(visible, pty));
+}
+
+/**
+ * A pane this window shows no agent in, whose terminal is running: an agent
+ * started there moments ago may not be named here yet. A local send or reply
+ * to it goes to main's delivery gate, which reads the pane now (the daemon's
+ * presence check) before anything is written; with no agent there it writes
+ * nothing. This window's own maps are not consulted: the command-running and
+ * agent-alive maps are refreshed every 15 s and a cached name may outlive its
+ * agent, so any of them can be stale exactly when an agent has just started.
+ * Never the operator's own path, which skips main's gate.
+ */
+function a2aTargetMayHoldUnseenAgent(targetWs: Workspace, pty: string | undefined): boolean {
+  if (!pty || useStore.getState().ptyDeferredById?.[pty]) return false;
+  // Stashed panes too: their terminals keep running.
+  return isTerminalPtyInLeaves(getWorkspaceLeafPanes(targetWs), pty);
+}
+
+/**
+ * A send that asked main for a pane with no agent named here, and main found
+ * no agent (none there, or none it could check) and kept nothing: the sender
+ * is told what it was told before (no_agent_pane). Any other refusal is
+ * reported as main gave it, with its hint: an agent was there, and a
+ * fresh-context step may already have typed into the pane.
+ */
+function keptNothingForUnseenAgent(write: A2aPtyWrite): boolean {
+  const refused = write.refused;
+  if (!refused || refused.stored === true || refused.pasted === true || refused.freshContextApplied === true) return false;
+  return refused.reason === 'agent_unverified' || refused.reason === 'gate_unavailable';
 }
 
 /**
@@ -3788,14 +3822,18 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             // evidenced only at workspace level still gets its nudge, and a
             // pinned anchor or silent:false no longer reaches a shell (#1489).
             const replyNoAgentTarget = !a2aTargetHasAgent(targetWs, replyPty);
+            const replyAsksMain = replyNoAgentTarget && !operator && a2aTargetMayHoldUnseenAgent(targetWs, replyPty);
             // The no-agent check comes first for a same-ws sibling too: a
             // sender pane back at its shell would run the nudge line (#1573).
-            if (replyNoAgentTarget) {
+            if (replyNoAgentTarget && !replyAsksMain) {
               // Nothing written — see NO_AGENT_PANE_HINT.
               mode = 'no-agent-pane';
-            } else if (decision.sameWs) {
+            } else if (replyAsksMain || decision.sameWs) {
               // Same-ws sibling: pointer-only nudge (no full-body injection).
-              write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply') + imagesNudgeSuffix(images), replyPty, operator, undefined, taskId);
+              // An agent not named here yet gets the same, and main's gate
+              // reads the pane first.
+              write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply') + imagesNudgeSuffix(images), replyPty, operator, undefined, taskId, undefined, replyAsksMain);
+              if (replyAsksMain && keptNothingForUnseenAgent(write)) mode = 'no-agent-pane';
             } else {
               const liveMeta = deliveryLiveMeta(store.surfaceAgent, replyPty, targetWs.metadata);
               if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
@@ -4115,11 +4153,17 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       };
       let write: A2aPtyWrite = { ptyId: null };
       let mode: 'nudge' | 'notification' | 'no-agent-pane' = 'nudge';
-      if (noAgentTarget || (referenceDelivery && !referencePaneHasAgent)) {
+      const asksMain = noAgentTarget && !operator && !referenceDelivery && a2aTargetMayHoldUnseenAgent(target, explicitPty);
+      if ((noAgentTarget && !asksMain) || (referenceDelivery && !referencePaneHasAgent)) {
         // Nothing is written: a body pasted into a shell prompt is the #1336
         // hazard whether or not we press Enter. The task is stored and teed
         // onto the EventBus below, so the receiver can still poll it.
         mode = 'no-agent-pane';
+      } else if (asksMain) {
+        // An agent not named here yet: main's gate reads the pane before
+        // anything is written, and gets only the one-line pointer.
+        write = await deliverPtyNudge(target, buildA2aNudge(newTaskId, fromParty, 'new') + imagesNudgeSuffix(images), explicitPty, operator, { taskId: newTaskId, ...gated }, undefined, undefined, true);
+        if (keptNothingForUnseenAgent(write)) mode = 'no-agent-pane';
       } else if (!silentExplicit && referenceDelivery) {
         // One line for a pane that cannot take a multi-line paste.
         write = await deliverPtyNudge(target, (pty) => (a2aFormatOptionsFor(pty).multiline ? message : message.replace(/\n+/g, ' — ')), explicitPty, operator, { taskId: newTaskId, ...gated });
