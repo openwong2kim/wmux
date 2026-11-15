@@ -189,6 +189,19 @@ describe('readLoginState', () => {
     expect(readLoginState('claude', r(null, '', true))).toBeNull();
   });
 
+  // A box refuses a remote start on `false` alone, and only the signed-out
+  // shape was measured (2.1.322: rc 1 + loggedIn:false). Any other shape is
+  // "cannot tell", so the start goes on.
+  it('reads signed out only from rc 1 with loggedIn:false; any other shape cannot tell', () => {
+    const measured = '{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty", "loginExpiresAt": null}';
+    expect(readLoginState('claude', r(1, measured))).toBe(false);
+    for (const out of ['{"loggedIn":"false"}', '{"status":"signed-out"}', '{"loggedIn":null}', '[]', 'null', '']) {
+      expect(readLoginState('claude', r(1, out)), out).toBeNull();
+    }
+    expect(readLoginState('claude', r(0, '{"loggedIn":false}'))).toBeNull();
+    expect(readLoginState('claude', r(2, '{"loggedIn":false}'))).toBeNull();
+  });
+
   it('reads Codex from the exit code and its "Not logged in" line', () => {
     expect(readLoginState('codex', r(0, 'Logged in using ChatGPT'))).toBe(true);
     expect(readLoginState('codex', r(1, 'Not logged in'))).toBe(false);

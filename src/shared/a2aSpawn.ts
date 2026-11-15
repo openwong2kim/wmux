@@ -77,6 +77,9 @@ export const A2A_SPAWN_CODES = [
   'not-allowed',
   'agent-not-allowed',
   'agent-not-installed',
+  /** The agent's own status says it is signed out on this PC (Claude only);
+   *  sent only to a PC that advertises A2A_FEATURE_SPAWN_SIGNED_OUT. */
+  'agent-signed-out',
   'folder-not-allowed',
   'expired',
   'rate-limited',

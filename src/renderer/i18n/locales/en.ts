@@ -6733,6 +6733,7 @@ export const en = {
   'remoteSpawn.code.not-allowed': "{pc} does not let this PC start agents",
   'remoteSpawn.code.agent-not-allowed': "{pc} does not allow that agent",
   'remoteSpawn.code.agent-not-installed': "that agent is not installed on {pc}",
+  'remoteSpawn.code.agent-signed-out': "Claude on {pc} is not signed in; sign in there, then send again",
   'remoteSpawn.code.folder-not-allowed': "{pc} does not allow that folder",
   'remoteSpawn.code.expired': "it expired before {pc} answered",
   'remoteSpawn.code.rate-limited': "{pc} has too many requests right now",

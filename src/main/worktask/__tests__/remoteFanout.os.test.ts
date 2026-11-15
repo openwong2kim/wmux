@@ -134,6 +134,7 @@ describe('remote fan-out keys and names', () => {
     expect(remoteCodeText('not-supported', 'box')).toMatch(/starts only Claude without an app/);
     expect(remoteCodeText('not-allowed', 'box', 5000)).toContain("the prompt (4.9 KiB, wmux's footer included) is longer than it accepts (not-allowed)");
     expect(remoteCodeText('expired', 'box')).toMatch(/expired/);
+    expect(remoteCodeText('agent-signed-out', 'box')).toBe('Claude on box is not signed in; sign in there, then send again (agent-signed-out)');
     // Also when other PCs' requests filled that PC's store.
     expect(remoteCodeText('rate-limited', 'box')).toBe('box is at a limit it sets (agents running, or starts per hour or day), holds too many requests from this PC, or its request store is full (rate-limited)');
   });
