@@ -285,14 +285,15 @@ export function poolRootHash(places: Place[], root: string): string | null | 'am
 
 /**
  * The PCs a pool task may go to: online, taking start requests, offering Claude and the folder. The folder is a
- * root with origin hash `hash`, or, with no hash, the root `root` itself; labels are never compared. A PC with two
- * such roots is asked for `root` when it is one, else for the lowest id. Pure.
+ * root with origin hash `hash`, or a root with no hash under the id `root` itself (an older PC sends none, nor does
+ * one that cannot read the origin now); with no `hash`, only `root` itself. Labels are never compared. A PC with
+ * two such roots is asked for `root` when it is one, else for the lowest id. Pure.
  */
 export function poolCandidates(places: Place[], root: string, hash: string | null): PoolPlace[] {
   const out: PoolPlace[] = [];
   for (const p of places) {
     if (!p.online || !p.supported || !p.targets?.agents.includes(REMOTE_FANOUT_AGENT)) continue;
-    const ids = p.targets.roots.filter((r) => (hash ? r.originKeyHash === hash : r.id === root)).map((r) => r.id).sort();
+    const ids = p.targets.roots.filter((r) => (hash && r.originKeyHash ? r.originKeyHash === hash : r.id === root)).map((r) => r.id).sort();
     if (ids.length > 0) out.push({ ...p, poolRoot: ids.includes(root) ? root : ids[0] });
   }
   return out;

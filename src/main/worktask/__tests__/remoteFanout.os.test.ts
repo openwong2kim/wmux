@@ -1005,6 +1005,9 @@ describe('the pool (pc "any")', () => {
       ];
       expect(poolRootHash(list as never, 'r-a')).toBe(H1);
       expect(poolCandidates(list as never, 'r-a', H1).map((p) => [p.hostId, p.poolRoot])).toEqual([[A, 'r-a'], [B, 'r-b']]);
+      // A PC that sends no tag (an older one, or one that cannot read the origin now) is matched by the id itself.
+      const mixed = [...list, placeOf('0d000000-0000-4000-8000-00000000000d', { targets: roots({ id: 'r-a' }) }), placeOf('0e000000-0000-4000-8000-00000000000e', { targets: roots({ id: 'r-e' }) })];
+      expect(poolCandidates(mixed as never, 'r-a', H1).map((p) => p.poolRoot)).toEqual(['r-a', 'r-b', 'r-a']);
       // No hash: the id itself, wherever it is offered, and nothing else.
       const bare = [placeOf(A, { targets: roots({ id: 'r-a' }) }), placeOf(B, { targets: roots({ id: 'r-b' }) })];
       expect(poolRootHash(bare as never, 'r-a')).toBeNull();
