@@ -14,10 +14,12 @@ import {
   selectAgentProcess,
   selectCustomAgentProcess,
   tokenizeCmdline,
+  hasAgentCandidate,
   RESTART_MARK_MS,
   type PidWatcher,
   type ProcessTreeEntry,
 } from '../AgentProcessTracker';
+import { AGENT_SLUG_SET } from '../../shared/agentIdentity';
 import { stopAgentTree } from '../agentStop';
 import { recordPaneIdentity, reportedAgentName, resolveCanonicalAgentIdentity } from '../canonicalAgent';
 
@@ -144,6 +146,25 @@ describe('resolveAgentSlug', () => {
 });
 
 describe('selectAgentProcess', () => {
+  // #3391 pin: the slug test moved into entryAgentSlug, shared with
+  // hasAgentCandidate; what selectAgentProcess picks must not change.
+  it('picks the same agent for every slug, by image or by runtime script; none for other programs or a tie', () => {
+    const shell = entry(100, 1, 'zsh', 'zsh');
+    for (const slug of AGENT_SLUG_SET) {
+      expect(selectAgentProcess([shell, entry(200, 100, slug, slug)], 100)).toEqual({ pid: 200, slug });
+      expect(hasAgentCandidate([shell, entry(200, 100, slug, slug)], 100)).toBe(true);
+    }
+    expect(selectAgentProcess([shell, entry(200, 100, 'node', 'node /repo/scripts/fixtures/fake-agents/claude.mjs')], 100)).toEqual({ pid: 200, slug: 'claude' });
+    expect(selectAgentProcess([shell, entry(200, 100, 'node', 'node /repo/scripts/fixtures/fake-agents/codex.mjs')], 100)).toEqual({ pid: 200, slug: 'codex' });
+    for (const other of ['vim', 'python3', 'npm']) {
+      expect(selectAgentProcess([shell, entry(200, 100, other, other)], 100)).toEqual({ pid: 200 });
+      expect(hasAgentCandidate([shell, entry(200, 100, other, other)], 100)).toBe(false);
+    }
+    const tie = [shell, entry(200, 100, 'claude', 'claude'), entry(201, 100, 'codex', 'codex')];
+    expect(selectAgentProcess(tie, 100)).toEqual({ pid: 200 });
+    expect(hasAgentCandidate(tie, 100)).toBe(true);
+  });
+
   it('identifies the factory smoke launcher while leaving arbitrary Node stubs unnamed', () => {
     const shell = entry(100, 1, 'zsh', 'zsh');
     expect(selectAgentProcess([shell, entry(200, 100, 'node', 'node /repo/scripts/factory-e2e/claude.mjs --session-id stub')], 100))
