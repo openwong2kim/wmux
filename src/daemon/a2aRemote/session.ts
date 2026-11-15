@@ -1,6 +1,7 @@
 import type { Readable } from 'node:stream';
 import {
   A2A_FEATURE_STREAM_PING,
+  A2A_FEATURE_STREAM_REFUSE,
   A2A_REDIAL_BACKOFF_MIN_MS,
   A2A_ROUTES,
   A2A_STREAM_PING_MS,
@@ -20,7 +21,7 @@ import type { A2aRemoteHostStatus } from '../../shared/rpc';
 import type { OutboxStore } from './outboxStore';
 import { PinnedClientError, PinnedTlsClient, type PinnedClientOptions, type PinnedSseEvent, type PinnedStreamedBody } from './pinnedClient';
 import type { ImagePull } from './inbound';
-import { formatCursorId, parseCursorId } from './streamHub';
+import { formatCursorId, parseCursorId, TERMINAL_REFUSALS } from './streamHub';
 import { errMsg, isPlainObject } from './storeFile';
 
 /**
@@ -50,19 +51,6 @@ import { errMsg, isPlainObject } from './storeFile';
  * `livenessMs` is dropped and redialled.
  */
 
-/** Refusals resending can never fix: the record is dropped, and `onRefused` ends what it was about (see delivery.ts). */
-export const TERMINAL_REFUSALS: ReadonlySet<A2aRemoteErrorCode> = new Set<A2aRemoteErrorCode>([
-  'unknown-link',
-  'link-not-active',
-  'direction-not-allowed',
-  'forbidden',
-  'conflict',
-  'stale-link-version',
-  'unknown-task',
-  'too-large',
-  'bad-request',
-  'protocol',
-]);
 
 export interface SessionTiming {
   backoffMinMs: number;
@@ -156,6 +144,9 @@ export interface JoinerSessionDeps {
 
 const RECONCILE_EVERY_MS = 5 * 60_000;
 
+/** Refusals from this PC's own view of a link, which a reconcile may change: re-applied once after one. */
+const LINK_VIEW_REFUSALS: ReadonlySet<string> = new Set(['unknown-link', 'link-not-active', 'stale-link-version']);
+
 export class JoinerSession {
   private readonly deps: JoinerSessionDeps;
   private readonly timing: SessionTiming;
@@ -167,6 +158,8 @@ export class JoinerSession {
   private halt = new AbortController();
   private lastEventId: string | undefined;
   private streamBackoff = 0;
+  /** The last refusal sent with an ack was not taken: the stream redials with backoff until it is. */
+  private refusalBackoff = false;
   private pumpBackoff = 0;
   private pumpTimer: ReturnType<typeof setTimeout> | null = null;
   private pumping: Promise<void> | null = null;
@@ -321,7 +314,10 @@ export class JoinerSession {
               ping = setInterval(() => void this.ping(client, epoch), this.timing.pingMs);
               ping.unref?.();
             }
-            this.streamBackoff = 0;
+            // The dial after a refusal the server did not take keeps its backoff (each dial may only fail it again); the
+            // mark is spent here, so a refusal the server took but whose answer was lost does not slow later redials.
+            if (this.refusalBackoff) this.refusalBackoff = false;
+            else this.streamBackoff = 0;
             this.setState('connected');
             void this.reconcile();
             this.kick();
@@ -377,25 +373,51 @@ export class JoinerSession {
     }
     const cursor = data['cursor'];
     if (typeof cursor['epoch'] !== 'string' || typeof cursor['seq'] !== 'number') return true;
-    let result: A2aRemoteDeliverResponse;
-    try {
-      result = await this.deps.accept(data['envelope'], { hostId: this.deps.hostId, pull: (ref) => this.pull(client, ref, signal) });
-    } catch (err) {
-      this.deps.log('warn', `[a2a-remote] ${this.deps.hostId}: applying a stream event failed: ${errMsg(err)}`);
-      return false;
+    const apply = async (): Promise<A2aRemoteDeliverResponse | null> => {
+      try {
+        return await this.deps.accept(data['envelope'], { hostId: this.deps.hostId, pull: (ref) => this.pull(client, ref, signal) });
+      } catch (err) {
+        this.deps.log('warn', `[a2a-remote] ${this.deps.hostId}: applying a stream event failed: ${errMsg(err)}`);
+        return null;
+      }
+    };
+    let result = await apply();
+    if (!result) return false;
+    // Told to the server, it ends the task there: a refusal from this PC's own view of the link, which the reconcile
+    // the stream's hello started may not have caught up yet, is applied once more after one.
+    const told = this.serverFeatures?.includes(A2A_FEATURE_STREAM_REFUSE) === true;
+    if (!result.ok && told && LINK_VIEW_REFUSALS.has(result.error)) {
+      // A reconcile that failed proves nothing: the event stays owed and comes again on the next dial.
+      try {
+        await this.deps.reconcileLinks();
+      } catch (err) {
+        this.deps.log('warn', `[a2a-remote] ${this.deps.hostId}: link reconcile failed: ${errMsg(err)}`);
+        return false;
+      }
+      result = await apply();
+      if (!result) return false;
     }
     // Our own store failed: not acked, so the server sends it again.
     if (!result.ok && result.error === 'unavailable') return false;
-    if (!result.ok) {
-      // A refusal here never changes on a resend; ack so the server stops owing it.
-      this.deps.log('warn', `[a2a-remote] ${this.deps.hostId}: refused a stream message (${result.error})`);
-    }
+    if (!result.ok) this.deps.log('warn', `[a2a-remote] ${this.deps.hostId}: refused a stream message (${result.error})`);
     const c = { epoch: cursor['epoch'], seq: cursor['seq'] };
+    // A refusal resending can never change. A server that takes refusals (`stream-refuse.1`, from this connection's
+    // hello) is told in the ack itself, and nothing past the previous event counts as acked here until it took both:
+    // on any failure the stream is dialled again (backing off), the server sends this event again, and it is refused
+    // again. Any other server is acked plainly, so it stops owing the event.
+    const refused = !result.ok && told && TERMINAL_REFUSALS.has(result.error) ? { seq: c.seq, code: result.error } : null;
+    let taken = false;
     try {
-      await client.requestJson('POST', A2A_ROUTES.ack, { cursor: c });
+      const answer = await client.requestJson('POST', A2A_ROUTES.ack, { cursor: c, ...(refused ? { refused } : {}) });
+      taken = answer.status >= 200 && answer.status < 300 && isPlainObject(answer.json) && answer.json['ok'] === true;
     } catch {
-      // The resume id below acks it on the next connection.
+      // A plain ack: the resume id below acks it on the next connection.
     }
+    if (refused && !taken) {
+      this.refusalBackoff = true;
+      return false;
+    }
+    this.refusalBackoff = false;
     this.lastEventId = formatCursorId(c);
     return true;
   }
@@ -602,6 +624,8 @@ export class JoinerSession {
   private reached(): void {
     if (this.status.state === 'connected' || this.status.state === 'identity-changed') return;
     this.setState('connected');
+    // A refusal the server has not taken yet keeps the stream's redial backing off.
+    if (this.refusalBackoff) return;
     this.streamBackoff = 0;
     this.wakeStream?.();
   }

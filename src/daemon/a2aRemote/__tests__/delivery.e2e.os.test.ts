@@ -93,7 +93,7 @@ type ClientHook = (opts: PinnedClientOptions) => SessionClient;
 
 async function makePc(
   name: string,
-  opts: { dir?: string; port?: number; client?: ClientHook; render?: (method: string) => Promise<unknown>; features?: string[]; images?: boolean; reopen?: false } = {},
+  opts: { dir?: string; port?: number; client?: ClientHook; render?: (method: string) => Promise<unknown>; features?: string[]; images?: boolean; reopen?: false; streamRefuse?: false } = {},
 ): Promise<Pc> {
   const dir = opts.dir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-deliv-'));
   if (!opts.dir) dirs.push(dir);
@@ -159,6 +159,7 @@ async function makePc(
     ...(opts.client ? { client: opts.client } : {}),
     ...(opts.features ? { features: opts.features } : {}),
     ...(opts.reopen === false ? { reopen: false as const } : {}),
+    ...(opts.streamRefuse === false ? { streamRefuse: false as const } : {}),
     ...(opts.images ? { uploadsRoot: path.join(dir, 'uploads'), features: ['link-offer.1', 'images.1'] } : {}),
     // One terminal, `pty-a`, of workspace `ws-a`, spawned in `<dir>/proj`.
     spawnCwdOf: (ptyId: string, workspaceId: string) => (ptyId === 'pty-a' && workspaceId === 'ws-a' ? path.join(dir, 'proj') : undefined),
@@ -385,7 +386,7 @@ describe('cross-host delivery, end to end', () => {
     // A joined B: B's stream hello tells A; A's stream header tells B.
     await until(() => a.delivery.liveFeatures(b.hostId)?.has('images.1') === true);
     await until(() => b.delivery.liveFeatures(a.hostId)?.has('link-offer.1') === true);
-    expect(a.delivery.status()).toMatchObject([{ hostId: b.hostId, role: 'joiner', features: ['link-offer.1', 'images.1', 'reopen.1'] }]);
+    expect(a.delivery.status()).toMatchObject([{ hostId: b.hostId, role: 'joiner', features: ['link-offer.1', 'images.1', 'reopen.1', 'stream-refuse.1'] }]);
     expect(b.delivery.peerFeatures(a.hostId)?.has('images.1')).toBe(false);
     // A new daemon on A, before B's stream is back: the last seen answer.
     const restarted = new A2aRemoteDelivery({
@@ -399,7 +400,7 @@ describe('cross-host delivery, end to end', () => {
       log: () => undefined,
     });
     expect(restarted.liveFeatures(b.hostId)).toBeUndefined();
-    expect([...(restarted.peerFeatures(b.hostId) ?? [])].sort()).toEqual(['images.1', 'link-offer.1', 'reopen.1']);
+    expect([...(restarted.peerFeatures(b.hostId) ?? [])].sort()).toEqual(['images.1', 'link-offer.1', 'reopen.1', 'stream-refuse.1']);
   });
 
   it('images both ways: A stages and sends (uploaded to B), B replies with one (A fetches it)', async () => {
@@ -498,7 +499,7 @@ describe('cross-host delivery, end to end', () => {
     const a = await makePc('PC-A', { images: true });
     await pair(a, b);
     await until(() => a.delivery.liveFeatures(b.hostId) !== undefined);
-    expect([...(a.delivery.liveFeatures(b.hostId) ?? [])]).toEqual(['link-offer.1', 'reopen.1']);
+    expect([...(a.delivery.liveFeatures(b.hostId) ?? [])]).toEqual(['link-offer.1', 'reopen.1', 'stream-refuse.1']);
   });
 
   it('an older PC (no images.1) gets the text with a note instead of refs it would drop', async () => {
@@ -1273,5 +1274,108 @@ describe('a follow-up on a task that ended completed, end to end', () => {
     await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { stateRefused?: { state: string } }).stateRefused?.state === 'working');
     expect(a.tasks.getTask(taskId)!.status.state).toBe('completed');
     expect(b.tasks.getTask(taskId)!.status.state).toBe('completed');
+  });
+});
+
+describe('a record the server streamed and the joiner refused, end to end (stream-refuse.1)', () => {
+  // `linked(a, b)`: A joins B, so B is the server and B's states reach A over B's stream.
+  type Refused = { state: string; code: string } | undefined;
+  const refusedOn = (pc: Pc, taskId: string): Refused => (pc.tasks.getTask(taskId)?.metadata.remote as { stateRefused?: Refused } | undefined)?.stateRefused;
+
+  it('a reply the joiner refuses ends the task on the server; the refused record is never counted as delivered', async () => {
+    const a = await makePc('PC-A');
+    const b = await makePc('PC-B');
+    const linkId = await linked(a, b);
+    const taskId = await sendTask(a, linkId, 'one job');
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
+    expect((await b.tasks.transition({ taskId, to: 'working', callerWorkspaceId: 'ws-b' })).ok).toBe(true);
+    expect(await b.rpc(A2A_REMOTE_RPC.reply, { taskId, workspaceId: 'ws-b', text: 'a first answer' })).toMatchObject({ ok: true });
+    await until(() => a.tasks.getTask(taskId)!.history.some((m) => (m.parts[0] as { text?: string }).text === 'a first answer'));
+    await until(() => b.delivery.outbox.pending(a.hostId).length === 0);
+    // B sends A that reply again under the same id with another text: A refuses it (conflict).
+    const sent = [...b.delivery.outbox.settled()].reverse().find((r) => r.envelope.kind === 'reply' && r.envelope.taskId === taskId)!;
+    const again = b.delivery.outbox.enqueue(a.hostId, { ...sent.envelope, text: 'not what was said' });
+    await until(() => b.tasks.getTask(taskId)?.status.state === 'failed');
+    expect(b.tasks.getTask(taskId)!.status.evidence?.summary).toContain('conflict');
+    expect(b.delivery.outbox.get(a.hostId, again.seq)).toMatchObject({ state: 'refused', lastError: 'conflict' });
+    expect(a.tasks.getTask(taskId)!.history.some((m) => (m.parts[0] as { text?: string }).text === 'not what was said')).toBe(false);
+  });
+
+  it('a state the joiner refuses is recorded on the server, and the next one it takes clears it, in order', async () => {
+    const a = await makePc('PC-A');
+    const b = await makePc('PC-B');
+    const linkId = await linked(a, b);
+    const taskId = await sendTask(a, linkId, 'one job');
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
+    const evidence = { summary: 'done', items: [{ kind: 'inspection' as const, status: 'verified' as const, summary: 'read' }] };
+    const moveB = async (to: 'working' | 'input-required' | 'completed'): Promise<void> => {
+      expect((await b.tasks.transition({ taskId, to, callerWorkspaceId: 'ws-b', ...(to === 'completed' ? { evidence } : {}) })).ok).toBe(true);
+      expect(await b.rpc(A2A_REMOTE_RPC.state, { taskId, state: to })).toMatchObject({ ok: true });
+    };
+    await moveB('working');
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'working');
+    // B tells A `working` again: no move there, so A refuses it.
+    const last = [...b.delivery.outbox.settled()].reverse().find((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId)!;
+    b.delivery.outbox.enqueue(a.hostId, { ...last.envelope, messageId: `st-${crypto.randomBytes(16).toString('hex')}`, state: 'working' });
+    await until(() => refusedOn(b, taskId) !== undefined);
+    expect(refusedOn(b, taskId)).toMatchObject({ state: 'working', code: 'bad-request' });
+    expect(b.tasks.getTask(taskId)!.status.state).toBe('working');
+    await moveB('input-required');
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
+    await until(() => refusedOn(b, taskId) === undefined);
+  });
+
+  it('a server without it gets plain acks: the record is acked and the server learns nothing, as before', async () => {
+    const a = await makePc('PC-A');
+    const b = await makePc('PC-B', { streamRefuse: false });
+    const linkId = await linked(a, b);
+    const taskId = await sendTask(a, linkId, 'one job');
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
+    expect((await b.tasks.transition({ taskId, to: 'working', callerWorkspaceId: 'ws-b' })).ok).toBe(true);
+    expect(await b.rpc(A2A_REMOTE_RPC.state, { taskId, state: 'working' })).toMatchObject({ ok: true });
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'working');
+    const last = [...b.delivery.outbox.settled()].reverse().find((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId)!;
+    b.delivery.outbox.enqueue(a.hostId, { ...last.envelope, messageId: `st-${crypto.randomBytes(16).toString('hex')}`, state: 'working' });
+    await until(() => b.delivery.outbox.pending(a.hostId).length === 0);
+    await deliberateSleep(300, 'negative: no refusal is recorded');
+    expect(refusedOn(b, taskId)).toBeUndefined();
+    expect(b.delivery.outbox.settled().filter((r) => r.state === 'refused')).toHaveLength(0);
+  });
+
+  it('a refusal whose ack failed is not lost: after the joiner restarts, the record comes again, is refused again and recorded', async () => {
+    let failRefusals = true;
+    const failingRefusal: ClientHook = (opts) => {
+      const real = new PinnedTlsClient(opts);
+      return {
+        requestJson: async (method, p, body) => {
+          if (failRefusals && p === A2A_ROUTES.ack && (body as { refused?: unknown } | undefined)?.refused !== undefined) throw new Error('connection reset');
+          return real.requestJson(method, p, body);
+        },
+        openStream: (p, o) => real.openStream(p, o),
+      };
+    };
+    const a = await makePc('PC-A', { client: failingRefusal });
+    const b = await makePc('PC-B');
+    const linkId = await linked(a, b);
+    const taskId = await sendTask(a, linkId, 'one job');
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
+    expect((await b.tasks.transition({ taskId, to: 'working', callerWorkspaceId: 'ws-b' })).ok).toBe(true);
+    expect(await b.rpc(A2A_REMOTE_RPC.state, { taskId, state: 'working' })).toMatchObject({ ok: true });
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'working');
+    const last = [...b.delivery.outbox.settled()].reverse().find((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId)!;
+    const stray = b.delivery.outbox.enqueue(a.hostId, { ...last.envelope, messageId: `st-${crypto.randomBytes(16).toString('hex')}`, state: 'working' });
+    // A refuses it, but its ack never lands: the record stays owed on B, however often A dials again.
+    await deliberateSleep(500, 'negative: several failed refusal acks');
+    expect(b.delivery.outbox.get(a.hostId, stray.seq)).toMatchObject({ state: 'pending' });
+    expect(refusedOn(b, taskId)).toBeUndefined();
+    // A restarts (same data, same port), now able to send it.
+    const { dir, port } = a;
+    await a.stop();
+    pcs.splice(pcs.indexOf(a), 1);
+    failRefusals = false;
+    await makePc('PC-A', { dir, port });
+    await until(() => refusedOn(b, taskId) !== undefined);
+    expect(refusedOn(b, taskId)).toMatchObject({ state: 'working', code: 'bad-request' });
+    expect(b.delivery.outbox.get(a.hostId, stray.seq)).toMatchObject({ state: 'refused', lastError: 'bad-request' });
   });
 });
