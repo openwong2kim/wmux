@@ -581,8 +581,10 @@ let noteAuthLost: ((sessionId: string, agent: AuthLostAgent, env: Record<string,
 let noteAuthWorks: ((agent: AuthLostAgent, env: Record<string, string> | undefined) => void) | undefined;
 /** N4 — one status probe per agent and account a minute, before a scheduled run and as an agent starts. */
 const agentLoginGate = new AgentLoginGate((agent, env) => new AgentSetupDetector().loginState(agent, env));
-/** The check a box runs before it starts an agent for another PC (offlineEnv only). */
-const boxLoginGate = new AgentLoginGate((agent, env) => new AgentSetupDetector().loginState(agent, env));
+/** The check a box runs before it starts an agent for another PC (offlineEnv
+ *  only). Nothing cached: the claim right before a start must not take the
+ *  answer read when its card was shown; a probe in flight is still shared. */
+const boxLoginGate = new AgentLoginGate((agent, env) => new AgentSetupDetector().loginState(agent, env), { ttlMs: 0 });
 /** Re-run a pane's awaiting verification (#1901), set by wireEvents. */
 let reverifyAwaiting: ((sessionId: string) => void) | undefined;
 /**

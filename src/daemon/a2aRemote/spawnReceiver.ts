@@ -501,6 +501,9 @@ export class A2aSpawnReceiver {
       }
       return { ok: false, error: `not checked now, try again: ${errMsg(err)}` };
     }
+    // Right before the start too: a sign-in can lapse while a card waits. Off
+    // the disk/PATH gate, and before the reads below, which then cover its wait.
+    if (await this.signedOut(req.agent)) return refuse(this.signedOutCode(hostId, spawnId, req.agent));
     // The checks waited: the policy, the expiry and the room are read once more.
     const now = this.deps.policy.get();
     if (!spawnHostAllowed(now, hostId) || !now.agents.includes(req.agent) || !now.roots.some((r) => r.id === root.id && r.path === root.path)) {
@@ -513,8 +516,6 @@ export class A2aSpawnReceiver {
     }
     if (this.now() > Date.parse(rec.expiresAt)) return refuse('expired');
     if (!this.roomFor(hostId, spawnId)) return refuse('rate-limited');
-    // Right before the start too: a sign-in can lapse while a card waits.
-    if (await this.signedOut(req.agent)) return refuse(this.signedOutCode(hostId, spawnId, req.agent));
     try {
       this.deps.requests.noteClaimedRoot?.(hostId, spawnId, root.path);
     } catch (err) {
