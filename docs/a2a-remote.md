@@ -146,9 +146,11 @@ is the one that will accept connections, and PC A is the one that joins it.
 7. **Send work.** Agents in the linked pane's workspace on PC A now see the
    remote pane in `a2a_discover` under an alias of the form
    `<PC>/<workspace>/<pane>`. The pane part is the pane's header name on
-   PC B: its label if someone renamed it, otherwise its automatic name, for
-   example `office-pc/api-server/w1-2(claude)`. The names are taken when the
-   link is made; renaming a pane later does not change the alias. The entry
+   PC B: its label if someone renamed it, otherwise its automatic name
+   without the agent running in it, for example `office-pc/api-server/w1-2`
+   (not `w1-2(claude)`). The names are taken when the link is made; renaming
+   a pane later does not change the alias. A name that still carries the
+   agent, as earlier versions listed it, keeps working as a target. The entry
    also carries an id of the form `remote:<linkId>`, which works as a
    target too. If two links would have the same alias, the newer one gets
    `#2`, `#3` and so on.

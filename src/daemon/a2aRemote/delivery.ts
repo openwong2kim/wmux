@@ -603,7 +603,19 @@ export class A2aRemoteDelivery {
       return { ok: true };
     });
 
-    onRpc(A2A_REMOTE_RPC.targets, async () => ({ targets: listRemoteTargets({ linkStore: this.deps.links, aliasFor: (l) => this.aliasFor(l) }) }));
+    onRpc(A2A_REMOTE_RPC.targets, async () => {
+      const all = this.deps.links.list();
+      const hostName = (h: string): string | undefined => this.hostName(h);
+      const current = aliasTable(all, hostName);
+      const legacy = aliasTable(all, hostName, true);
+      return {
+        targets: listRemoteTargets({
+          linkStore: this.deps.links,
+          aliasFor: (l) => current.get(l.linkId) ?? this.aliasFor(l),
+          legacyAliasFor: (l) => legacy.get(l.linkId),
+        }),
+      };
+    });
 
     onRpc(A2A_REMOTE_RPC.sendTask, async (p) => {
       const from = isPlainObject(p['from']) ? p['from'] : null;
