@@ -179,6 +179,19 @@ export interface LedgerRemote {
    *  id, A2A_REMOTE_MESSAGE_ID_RE), the one this row moved to review_requested
    *  on: another id is a new report, after a follow-up. Not a time. */
   reportId?: string;
+  /** Set on a task fanout_start placed itself (`pc: "any"`): it may be moved
+   *  to another PC while no request for it is out (state `held`). */
+  pool?: LedgerRemotePool;
+}
+
+export interface LedgerRemotePool {
+  /** The placement this row is on (0 first): each one has its own spawn id. */
+  attempt: number;
+  /** While held: the PC that last answered it was full, and when (epoch ms). */
+  heldFrom?: string;
+  heldAt?: number;
+  /** When it was first held (epoch ms): a row held past the limit fails. */
+  heldSince?: number;
 }
 
 export const LEDGER_REMOTE_QUESTIONS = ['permission', 'plan', 'menu', 'dialog', 'trust'] as const;
@@ -192,7 +205,8 @@ export interface LedgerRemoteWaiting {
   resetsAt?: string;
 }
 
-export const LEDGER_REMOTE_STATES = ['sent', 'waiting', 'started', 'refused', 'expired'] as const;
+/** `held`: a placed-by-wmux task with no request out, waiting for a PC with room (LedgerRemote.pool). */
+export const LEDGER_REMOTE_STATES = ['sent', 'waiting', 'started', 'refused', 'expired', 'held'] as const;
 export type LedgerRemoteState = typeof LEDGER_REMOTE_STATES[number];
 
 /** The `taskWorkspaceId` of a remote task: never a workspace id (none holds a ':'). */

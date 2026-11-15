@@ -41,6 +41,15 @@ export const REMOTE_FANOUT_EXPIRES_HOURS = 1;
  */
 export const REMOTE_ASK_GRACE_MS = 10 * 60 * 1000;
 
+/** `pc` value that lets wmux place each task on a paired PC itself (the pool). */
+export const ANY_PC = 'any';
+
+/** How long a PC that answered a pool task "full" is passed over when placing (epoch ms). */
+export const POOL_REFUSING_MS = 5 * 60 * 1000;
+
+/** How long a pool task may be held for a PC with room before it fails. */
+export const POOL_HOLD_MAX_MS = REMOTE_FANOUT_EXPIRES_HOURS * 60 * 60 * 1000;
+
 /** Appended to every remote task's prompt: v1 brings back only the branch and its head. */
 export const REMOTE_TASK_FOOTER =
   'When you are done, commit your work on the current branch, and end your last reply with the branch name and the commit sha.';
@@ -86,7 +95,7 @@ export function remoteTaskViewOf(raw: unknown): RemoteTaskView[] {
   return [{ id: t.id, state: t.status.state, ...(typeof remote?.reported === 'string' ? { reportId: remote.reported } : {}), ...(status ? { status } : {}) }];
 }
 
-export type RemoteLedger = Pick<TaskLedger, 'get' | 'list' | 'register' | 'update' | 'updateRemote' | 'closeTask' | 'onTransition'>;
+export type RemoteLedger = Pick<TaskLedger, 'get' | 'list' | 'register' | 'update' | 'updateRemote' | 'placeRemote' | 'closeTask' | 'onTransition'>;
 
 export interface RemoteFanoutDeps {
   daemon: RemoteFanoutDaemon;
@@ -130,8 +139,11 @@ export interface RemoteTaskResult {
   branchOnPc?: string;
   /** Why it failed or will not run, in words. */
   reason?: string;
-  /** What the agent waits on while the task stays open (kinds only). */
-  pending?: { waitingOn: 'question' | 'usage-limit'; question?: string; resetsAt?: string };
+  /** What the agent waits on while the task stays open (kinds only); `pc-full`: wmux holds it for a PC with room. */
+  pending?: { waitingOn: 'question' | 'usage-limit' | 'pc-full'; question?: string; resetsAt?: string };
+  /** With `pc: "any"`: the PC this task is placed on (or was last tried on, while held). */
+  pc?: string;
+  hostId?: string;
   /** How to reach the agent once it started. */
   followUp?: string;
 }
@@ -139,12 +151,23 @@ export interface RemoteTaskResult {
 const sha256 = (s: string): string => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 
 /** The keys of one remote fan-out: one caller key, one request key and one mission key per task. */
-export function remoteFanoutKeys(scopedKey: string): { callerKey: string; requestKey: (k: number) => string; missionKey: (k: number) => string; spawnId: (k: number) => string } {
+export function remoteFanoutKeys(scopedKey: string): {
+  callerKey: string;
+  requestKey: (k: number) => string;
+  missionKey: (k: number) => string;
+  spawnId: (k: number) => string;
+  /** A pool task's spawn id and request key for one placement: placement 0 keeps the task's own spawn id. */
+  poolSpawnId: (k: number, attempt: number) => string;
+  poolRequestKey: (k: number, hostId: string, attempt: number) => string;
+} {
+  const spawnId = (k: number): string => `sp-${uuidOf(sha256(`${scopedKey}\0${k}\0spawn`))}`;
   return {
     callerKey: sha256(scopedKey).slice(0, 32),
     requestKey: (k) => sha256(`${scopedKey}\0${k}`),
     missionKey: (k) => `remote-${sha256(`${scopedKey}\0${k}`).slice(0, 48)}`,
-    spawnId: (k) => `sp-${uuidOf(sha256(`${scopedKey}\0${k}\0spawn`))}`,
+    spawnId,
+    poolSpawnId: (k, attempt) => (attempt === 0 ? spawnId(k) : `sp-${uuidOf(sha256(`${scopedKey}\0${k}\0spawn\0${attempt}`))}`),
+    poolRequestKey: (k, hostId, attempt) => sha256(`${scopedKey}\0${k}\0${hostId}\0${attempt}`),
   };
 }
 
@@ -201,6 +224,7 @@ export function remoteCodeText(code: string | undefined, pc: string, promptBytes
     case 'rate-limited': return `${pc} is at a limit it sets (agents running, or starts per hour or day), holds too many requests from this PC, or its request store is full (rate-limited)`;
     case 'declined': return `${pc}'s owner declined it (declined)`;
     case 'app-not-ready': return `${pc} could not take it: its wmux was not ready (app-not-ready)`;
+    case 'pc-full': return `no paired PC had room for it within ${REMOTE_FANOUT_EXPIRES_HOURS} hour (pc-full)`;
     default: return `${pc} could not start the agent (${code ?? 'failed'})`;
   }
 }
@@ -241,6 +265,36 @@ export function resolvePlace(places: Place[], pc: string): Place | 'unknown-pc' 
   return named[0] ?? 'unknown-pc';
 }
 
+/** The PCs a pool task may go to: online, taking start requests, and offering `root` for Claude. Pure. */
+export function poolCandidates(places: Place[], root: string): Place[] {
+  return places.filter((p) => p.online && p.supported && p.targets !== undefined
+    && p.targets.roots.some((r) => r.id === root) && p.targets.agents.includes(REMOTE_FANOUT_AGENT));
+}
+
+/**
+ * The PC a pool task goes to: of `candidates`, the one this PC has the fewest open tasks on (rows with a request out
+ * or a started agent; other PCs' tasks on it are not seen), skipping PCs that answered "full" within
+ * POOL_REFUSING_MS; ties go to the lowest host id. Null when every candidate is passed over. Pure.
+ */
+export function pickPoolHost(candidates: Place[], rows: readonly LedgerEntry[], now: number): Place | null {
+  const load = new Map<string, number>();
+  const refusing = new Set<string>();
+  for (const e of rows) {
+    const r = e.remote;
+    if (!r || !isOpenLedgerStatus(e.status)) continue;
+    if (r.state === 'sent' || r.state === 'waiting' || r.state === 'started') load.set(r.hostId, (load.get(r.hostId) ?? 0) + 1);
+    if (r.pool?.heldFrom && r.pool.heldAt !== undefined && now - r.pool.heldAt < POOL_REFUSING_MS) refusing.add(r.pool.heldFrom);
+  }
+  const open = candidates.filter((p) => !refusing.has(p.hostId));
+  open.sort((a, b) => (load.get(a.hostId) ?? 0) - (load.get(b.hostId) ?? 0) || (a.hostId < b.hostId ? -1 : a.hostId > b.hostId ? 1 : 0));
+  return open[0] ?? null;
+}
+
+const placeName = (p: Place): string => {
+  const named = p.name?.trim() ?? '';
+  return storableName(named) ? named : p.hostId;
+};
+
 function resultOf(index: number, title: string, entry: LedgerEntry, channelId: string | undefined, promptBytes: number): RemoteTaskResult {
   const r = entry.remote;
   const failed = entry.status === 'failed' || entry.status === 'cancelled';
@@ -255,6 +309,8 @@ function resultOf(index: number, title: string, entry: LedgerEntry, channelId: s
       ...(r.branchOnPc ? { branchOnPc: r.branchOnPc } : {}),
       ...(r.state === 'refused' || r.state === 'expired' ? { reason: remoteCodeText(r.code, r.pc, promptBytes) } : {}),
       ...(r.waiting && !failed ? { pending: { waitingOn: r.waiting.on, ...(r.waiting.question ? { question: r.waiting.question } : {}), ...(r.waiting.resetsAt ? { resetsAt: r.waiting.resetsAt } : {}) } } : {}),
+      ...(r.state === 'held' && !failed ? { pending: { waitingOn: 'pc-full' as const } } : {}),
+      ...(r.pool ? { pc: r.pc, hostId: r.hostId } : {}),
       ...(r.a2aTaskId && !failed ? { followUp: followUpText(r) } : {}),
     } : {}),
     ...(failed && !r?.code ? { reason: entry.summary ?? entry.status } : {}),
@@ -283,8 +339,15 @@ const storableName = (name: string): boolean => name.length > 0 && name.length <
  * Start (or, for a key already used, answer) a remote fan-out. Refusals of the
  * whole call come back as `{ error }`; a task that fails alone is a result
  * with `ok: false`.
+ *
+ * With `pc: "any"` (the pool) each task is placed by wmux: on the online PC
+ * that offers the folder and has the fewest of this PC's open tasks. A task
+ * that PC answers "full" (rate-limited) is held, with no request out, and the
+ * same call again places it anew. A task is asked of one PC at a time: it is
+ * moved only while held (TaskLedger.placeRemote), that is after its request
+ * ended refused.
  */
-export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFanoutDeps): Promise<{ hostId: string; pc: string; tasks: RemoteTaskResult[] } | { error: string; retry?: true }> {
+export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFanoutDeps): Promise<{ hostId?: string; pc: string; tasks: RemoteTaskResult[] } | { error: string; retry?: true }> {
   // Everything the row will hold is checked before anything is sent.
   if (!ROOT_ID_RE.test(req.root)) return { error: 'root is a folder id the other PC offers (lowercase letters, digits and dashes, at most 32)' };
   let list: A2aSpawnOutgoingList;
@@ -293,11 +356,18 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
   } catch (err) {
     return { error: `the background service could not list the paired PCs (${(err as Error).message}); nothing was sent, so send the same idempotency_key again`, retry: true };
   }
-  const place = resolvePlace(list.places, req.pc);
-  if (place === 'unknown-pc' || place === 'ambiguous-pc') return { error: askErrorText(place, req.pc) };
-  const named = place.name?.trim() ?? '';
-  const pcName = storableName(named) ? named : place.hostId;
-  if (!place.supported) return { error: askErrorText('not-supported', pcName) };
+  const pool = req.pc.trim().toLowerCase() === ANY_PC;
+  let place: Place | null = null;
+  let candidates: Place[] = [];
+  if (pool) {
+    candidates = poolCandidates(list.places, req.root);
+    if (candidates.length === 0) return { error: `no paired PC that is online offers the folder ${req.root} for Claude, so no task could be placed (pc "${ANY_PC}")` };
+  } else {
+    const found = resolvePlace(list.places, req.pc);
+    if (found === 'unknown-pc' || found === 'ambiguous-pc') return { error: askErrorText(found, req.pc) };
+    if (!found.supported) return { error: askErrorText('not-supported', placeName(found)) };
+    place = found;
+  }
   // A task whose mission was closed is over: the same key never asks for it
   // again, whatever its row says (the WorkTask log is the durable fact).
   let closed: ReadonlySet<string>;
@@ -307,6 +377,7 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
     return { error: `the background service could not list your missions (${(err as Error).message}); nothing was sent, so send the same idempotency_key again`, retry: true };
   }
 
+  const now = deps.now ?? Date.now;
   const keys = remoteFanoutKeys(req.scopedKey);
   const held = new Set(list.requests.map((r) => r.spawnId));
   const tasks: RemoteTaskResult[] = [];
@@ -325,11 +396,22 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
     }
     const { taskId, channelId } = mission;
     deps.rememberChannel(taskId, channelId);
-    const existing = deps.ledger.get(taskId);
+    let existing = deps.ledger.get(taskId);
     if (closed.has(taskId)) {
       // Its mission was closed: never asked for again.
       tasks.push(existing ? resultOf(k, title, existing, channelId, promptBytes) : { index: k, title, ok: false, taskId, channelId, reason: 'this task\'s mission was closed, so it is not asked for again; send a new key' });
       continue;
+    }
+    // A held pool task (no request out) is placed anew: on a PC with room, or it stays held.
+    if (existing?.remote?.pool && existing.remote.state === 'held' && isOpenLedgerStatus(existing.status)) {
+      const to = pickPoolHost(candidates, deps.ledger.list(), now());
+      const attempt = existing.remote.pool.attempt + 1;
+      const moved = to ? await deps.ledger.placeRemote(taskId, { hostId: to.hostId, pc: placeName(to), spawnId: keys.poolSpawnId(k, attempt), attempt }).catch(() => null) : null;
+      if (!moved) {
+        tasks.push(resultOf(k, title, deps.ledger.get(taskId) ?? existing, channelId, promptBytes));
+        continue;
+      }
+      existing = moved;
     }
     // A retry of a task whose request never reached the daemon (its row is
     // still `sent` and open, and this PC holds no such request) asks again:
@@ -344,41 +426,57 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
     // always has a row to withdraw, even when the request's answer is lost.
     let row: LedgerEntry;
     try {
-      row = existing ?? await deps.ledger.register({
-        id: taskId,
-        taskWorkspaceId: remoteTaskWorkspaceId(keys.spawnId(k)),
-        ownerWorkspaceId: req.ownerWorkspaceId,
-        title,
-        remote: { hostId: place.hostId, pc: pcName, spawnId: keys.spawnId(k), root: req.root, state: 'sent', requestDigest: req.digest, from: { paneId: req.paneId }, ...(req.homeRepo ? { homeRepo: req.homeRepo } : {}) },
-      });
+      if (existing) {
+        row = existing;
+      } else {
+        // A pool task with every candidate passed over is written held, on the least loaded of them, with no request.
+        const to = pool ? pickPoolHost(candidates, deps.ledger.list(), now()) : place;
+        const on = to ?? pickPoolHost(candidates, [], now())!;
+        row = await deps.ledger.register({
+          id: taskId,
+          taskWorkspaceId: remoteTaskWorkspaceId(keys.spawnId(k)),
+          ownerWorkspaceId: req.ownerWorkspaceId,
+          title,
+          remote: {
+            hostId: on.hostId, pc: placeName(on), spawnId: keys.spawnId(k), root: req.root, state: to ? 'sent' : 'held',
+            requestDigest: req.digest, from: { paneId: req.paneId }, ...(req.homeRepo ? { homeRepo: req.homeRepo } : {}),
+            ...(pool ? { pool: to ? { attempt: 0 } : { attempt: 0, heldSince: now() } } : {}),
+          },
+        });
+      }
     } catch (err) {
       tasks.push({ index: k, title, ok: false, taskId, channelId, reason: `the task row could not be written (${(err as Error).message}); nothing was sent, so send the same idempotency_key again` });
+      continue;
+    }
+    const r = row.remote!;
+    if (r.state === 'held') {
+      tasks.push(resultOf(k, title, row, channelId, promptBytes));
       continue;
     }
     let asked: A2aSpawnAskResult;
     try {
       asked = await deps.daemon.ask({
-        pc: place.hostId,
+        pc: r.hostId,
         agent: REMOTE_FANOUT_AGENT,
         folder: { root: req.root, ...(req.sub ? { sub: req.sub } : {}) },
         text,
         expiresInHours: REMOTE_FANOUT_EXPIRES_HOURS,
         from: { kind: 'pane', workspaceId: req.ownerWorkspaceId, paneId: req.paneId },
         callerKey: keys.callerKey,
-        requestKey: keys.requestKey(k),
+        requestKey: r.pool ? keys.poolRequestKey(k, r.hostId, r.pool.attempt) : keys.requestKey(k),
         budget: 'fanout',
-        spawnId: row.remote!.spawnId,
+        spawnId: r.spawnId,
       });
     } catch (err) {
       // No answer: the request may be stored and on its way. The row stays
       // `sent` (a close withdraws it); the same key again asks again.
-      tasks.push({ index: k, title, ok: false, taskId, channelId, spawnId: row.remote!.spawnId, state: 'sent', reason: `the request got no answer (${(err as Error).message}); send the same idempotency_key again` });
+      tasks.push({ index: k, title, ok: false, taskId, channelId, spawnId: r.spawnId, state: 'sent', reason: `the request got no answer (${(err as Error).message}); send the same idempotency_key again` });
       continue;
     }
     if (!asked.ok) {
       // Refused here, so nothing was sent: the row fails with the reason,
       // which answers the same key from now on, and the mission is closed.
-      const reason = askErrorText(asked.error, pcName, asked.message);
+      const reason = askErrorText(asked.error, r.pc, asked.message);
       const failed = await deps.ledger.update({ id: taskId, status: 'failed', actor: { kind: 'system', workspaceId: 'main' }, expectedRev: row.rev, summary: reason }).catch(() => null);
       if (!failed?.ok) deps.log?.(`[remote-fanout] ${taskId}: the refused task's row could not be failed`);
       await deps.daemon.missionClose(taskId, req.ownerWorkspaceId).catch(() => undefined);
@@ -392,12 +490,12 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
   // States that arrived meanwhile (a refusal, a start) are on the rows before the answer.
   await reconcileRemoteTasks(deps).catch((err: unknown) => deps.log?.(`[remote-fanout] reconcile failed: ${String(err)}`));
   for (const t of tasks) {
-    // A task that failed here keeps its reason; one that was asked shows its row now.
-    if (!t.ok || !t.taskId || !t.spawnId) continue;
+    // A task that failed here keeps its reason; one that was asked (or held) shows its row now.
+    if (!t.ok || !t.taskId) continue;
     const entry = deps.ledger.get(t.taskId);
-    if (entry) Object.assign(t, resultOf(t.index, t.title, entry, t.channelId, Buffer.byteLength(req.prompts[t.index], 'utf8')));
+    if (entry && (t.spawnId || entry.remote?.pool)) Object.assign(t, resultOf(t.index, t.title, entry, t.channelId, Buffer.byteLength(req.prompts[t.index], 'utf8')));
   }
-  return { hostId: place.hostId, pc: pcName, tasks };
+  return place ? { hostId: place.hostId, pc: placeName(place), tasks } : { pc: ANY_PC, tasks };
 }
 
 /** Revoke a withdrawn task's link once; a failure is retried on the next pass. */
@@ -461,7 +559,15 @@ async function reconcileOnce(deps: RemoteFanoutDeps): Promise<void> {
     const r = row.remote!;
     const rec = bySpawn.get(r.spawnId);
     let next: LedgerEntry | null = row;
-    if (!rec) {
+    if (r.state === 'held') {
+      // No request is out for a held row: only its time runs (placing it again is the caller's next poll).
+      const since = r.pool?.heldSince ?? row.updatedAt;
+      if (isOpenLedgerStatus(row.status) && (deps.now ?? Date.now)() - since >= POOL_HOLD_MAX_MS) next = await deps.ledger.updateRemote(row.id, { state: 'expired', code: 'pc-full' });
+    } else if (r.pool && rec?.state === 'refused' && rec.code === 'rate-limited' && isOpenLedgerStatus(row.status)) {
+      // That PC is full: the pool task is held, with its request ended, until a later call places it on one with room.
+      const at = (deps.now ?? Date.now)();
+      next = await deps.ledger.updateRemote(row.id, { state: 'held', code: undefined, pool: { ...r.pool, heldFrom: r.hostId, heldAt: at, heldSince: r.pool.heldSince ?? at } });
+    } else if (!rec) {
       // Not held any more: a waiting row ends here and is never asked again.
       // A row written just before its request is given time for it to land.
       const young = r.state === 'sent' && (deps.now ?? Date.now)() - row.updatedAt < REMOTE_ASK_GRACE_MS;
