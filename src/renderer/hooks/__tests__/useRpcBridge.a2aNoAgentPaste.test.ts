@@ -229,6 +229,27 @@ describe('a2a.task.send to a pane with no agent named here yet', () => {
     expect(writesToTarget()).toEqual([]);
   });
 
+  it('a refusal main neither typed nor kept (no background service, say) is reported as no_agent_pane, as before', async () => {
+    mainAnswer = { ok: false, reason: 'gate_unavailable', detail: 'delivery: no background service' };
+    const result = await send({ paneId: TARGET_PANE });
+    expect(gated).toHaveBeenCalledTimes(1);
+    expect(result.delivery).toMatchObject(NO_AGENT);
+    expect(writesToTarget()).toEqual([]);
+  });
+
+  it('a pane known to be at its shell prompt, or whose agent ended, or still named after an ended agent, never asks main', async () => {
+    const s = useStore.getState();
+    s.hydrateCommandRunning({ [PTY]: false });
+    expect((await send({ paneId: TARGET_PANE })).delivery).toMatchObject(NO_AGENT);
+    s.hydrateCommandRunning({});
+    s.hydrateAgentAlive({ [PTY]: false });
+    expect((await send({ paneId: TARGET_PANE })).delivery).toMatchObject(NO_AGENT);
+    s.setSurfaceAgent(PTY, 'Claude Code', 'idle', 'claude');
+    expect((await send({ paneId: TARGET_PANE })).delivery).toMatchObject(NO_AGENT);
+    expect(gated).not.toHaveBeenCalled();
+    expect(writesToTarget()).toEqual([]);
+  });
+
   it('a terminal not started (deferred) never asks main', async () => {
     useStore.getState().setPtyDeferred(PTY, true);
     const result = await send({ paneId: TARGET_PANE });

@@ -870,20 +870,29 @@ function a2aTargetHasAgent(
  * A pane this window names no agent in, whose terminal is running: an agent
  * started there moments ago may not be named here yet. A local send or reply
  * to it still goes to main's delivery gate, which reads the pane before
- * anything is written. Main decides: with no agent there it writes nothing
- * (agent_unverified, reported as no_agent_pane as before); an agent it cannot
- * attribute yet may be stored and typed once it is named. Never the operator's
- * own path, which skips main's gate.
+ * anything is written; with no agent there it writes nothing. A pane this
+ * window knows is at its shell prompt, or whose agent ended, is not asked,
+ * and neither is a pane that still carries a name (the agent behind it ended:
+ * main would check against that old name). Never the operator's own path,
+ * which skips main's gate.
  */
 function a2aTargetMayHoldUnseenAgent(targetWs: Workspace, pty: string | undefined): boolean {
-  if (!pty || useStore.getState().ptyDeferredById?.[pty]) return false;
+  if (!pty) return false;
+  const s = useStore.getState();
+  if (s.ptyDeferredById?.[pty] || s.surfaceAgent[pty]?.name) return false;
+  if (s.agentAliveByPtyId[pty] === false || s.commandRunningByPtyId[pty] === false) return false;
   // Stashed panes too: their terminals keep running.
   return isTerminalPtyInLeaves(getWorkspaceLeafPanes(targetWs), pty);
 }
 
-/** A send main's gate found no agent for: nothing was written, as with no agent seen here. */
-function wroteNothingForNoAgent(write: A2aPtyWrite): boolean {
-  return write.refused?.reason === 'agent_unverified' && write.refused.pasted !== true;
+/**
+ * A send that asked main for a pane with no agent named here: unless main
+ * typed it or kept it to type later, the sender is told what it was told
+ * before (no_agent_pane). A paste main made and did not submit is reported
+ * as it is: text reached the pane.
+ */
+function keptNothingForUnseenAgent(write: A2aPtyWrite): boolean {
+  return !!write.refused && write.refused.stored !== true && write.refused.pasted !== true;
 }
 
 /**
@@ -3814,13 +3823,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             if (replyNoAgentTarget && !replyAsksMain) {
               // Nothing written — see NO_AGENT_PANE_HINT.
               mode = 'no-agent-pane';
-            } else if (replyAsksMain) {
-              // An agent not named here yet: main's gate reads the pane first.
-              write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply') + imagesNudgeSuffix(images), replyPty, operator, undefined, taskId);
-              if (wroteNothingForNoAgent(write)) mode = 'no-agent-pane';
-            } else if (decision.sameWs) {
+            } else if (replyAsksMain || decision.sameWs) {
               // Same-ws sibling: pointer-only nudge (no full-body injection).
+              // An agent not named here yet gets the same, and main's gate
+              // reads the pane first.
               write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply') + imagesNudgeSuffix(images), replyPty, operator, undefined, taskId);
+              if (replyAsksMain && keptNothingForUnseenAgent(write)) mode = 'no-agent-pane';
             } else {
               const liveMeta = deliveryLiveMeta(store.surfaceAgent, replyPty, targetWs.metadata);
               if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
@@ -4149,7 +4157,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         // An agent not named here yet: main's gate reads the pane before
         // anything is written, and gets only the one-line pointer.
         write = await deliverPtyNudge(target, buildA2aNudge(newTaskId, fromParty, 'new') + imagesNudgeSuffix(images), explicitPty, operator, { taskId: newTaskId, ...gated });
-        if (wroteNothingForNoAgent(write)) mode = 'no-agent-pane';
+        if (keptNothingForUnseenAgent(write)) mode = 'no-agent-pane';
       } else if (!silentExplicit && referenceDelivery) {
         // One line for a pane that cannot take a multi-line paste.
         write = await deliverPtyNudge(target, (pty) => (a2aFormatOptionsFor(pty).multiline ? message : message.replace(/\n+/g, ' — ')), explicitPty, operator, { taskId: newTaskId, ...gated });

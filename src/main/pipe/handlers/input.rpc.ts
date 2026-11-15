@@ -3136,8 +3136,15 @@ export function registerInputRpc(
   });
   (deps.subscribeAgentStops ?? subscribeAgentStops)((ptyId) => void pending.retry(ptyId));
   // An agent just started has no turn end yet: a delivery stored while it
-  // could not be attributed is tried once when the pane's agent is named.
-  (deps.subscribeAgentNamed ?? onAgentFirstNamed)((ptyId) => void pending.retry(ptyId));
+  // could not be attributed is tried when the pane's agent is named, once
+  // per agent: a name cleared by an idle spell and given again is the same
+  // agent; its process exit (agentEnded) arms the pane again.
+  const namedOnce = new Set<string>();
+  (deps.subscribeAgentNamed ?? onAgentFirstNamed)((ptyId) => {
+    if (namedOnce.has(ptyId)) return;
+    namedOnce.add(ptyId);
+    void pending.retry(ptyId);
+  });
 
   /** The local task a delivery may be stored under: none for a hand-off
    *  (`waitQuiet`: its caller settles the task on the outcome), a remote
@@ -3226,7 +3233,10 @@ export function registerInputRpc(
         : result;
     },
     retryPendingDeliveries: (ptyId) => pending.retry(ptyId),
-    agentEnded: (ptyId) => pending.dropPane(ptyId, 'agent changed'),
+    agentEnded: (ptyId) => {
+      namedOnce.delete(ptyId);
+      pending.dropPane(ptyId, 'agent changed');
+    },
   };
 }
 

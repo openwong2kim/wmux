@@ -392,4 +392,28 @@ describe('a pane the window names no agent in', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(writes).toHaveLength(2);
   });
+
+  it('the naming retry runs once per agent: a name given again is not a new one; the agent ending arms the pane again', async () => {
+    vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => (method === 'input.findOwnerWorkspace' ? { workspaceId: 'ws-a' } : null));
+    const wiring = harness();
+    const PENDING: DeliveryPresence = { tier: 'none', reason: 'attribution-pending' };
+    answers = [PENDING];
+    expect(await wiring.gatedSubmit('pty-a', 'hello', null, { senderTaskIds: ['t-1'] })).toMatchObject({ stored: true });
+    const asks = () => asked.length;
+    const before = asks();
+    agentNamed('pty-a');
+    await vi.waitFor(() => expect(asks()).toBeGreaterThan(before), { timeout: 5_000 });
+    const afterFirst = asks();
+    // An idle spell cleared the name and the next burst named it again: no retry.
+    agentNamed('pty-a');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(asks()).toBe(afterFirst);
+    expect(writes).toEqual([]);
+    // The agent ended (its entries go), a new one is stored and named: tried.
+    wiring.agentEnded('pty-a');
+    expect(await wiring.gatedSubmit('pty-a', 'hello', null, { senderTaskIds: ['t-1'] })).toMatchObject({ stored: true });
+    answers = [PROCESS];
+    agentNamed('pty-a');
+    await vi.waitFor(() => expect(writes).toEqual(['\x1b[200~hello\x1b[201~', '\r']), { timeout: 5_000 });
+  });
 });
