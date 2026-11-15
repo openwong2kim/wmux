@@ -6,6 +6,7 @@ import type { GitSyncStatus, PrStatus, WorkspaceMetadata } from '../../../shared
 import { useStore } from '../../stores';
 import { useRowStore } from '../../stores/rowStore';
 import { remoteAgentKey } from '../../../shared/remoteHosts';
+import { revealablePath, focusedPtyId } from '../../utils/revealPath';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
 import { formatStaleMinutes, selectWorkspaceAgentStatus, selectWorkspaceUnverifiableMinutes } from '../../stores/selectors/fleet';
@@ -851,6 +852,17 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, multiviewGroup, ind
   };
 
   /**
+   * Resolve the cwd to a host-openable path (a WSL pane's Linux cwd becomes its
+   * \\wsl$ share), then open it; a cwd that cannot be translated is reported
+   * through the same open-failure toast.
+   */
+  const withRevealable = async (cwd: string, open: (path: string) => Promise<{ ok: boolean; error?: string }>) => {
+    const target = await revealablePath(cwd, focusedPtyId(workspace), window.electronAPI.pty);
+    if ('error' in target) { notifyOpenFailed(t, target.error); return; }
+    reportOpen(open(target.path));
+  };
+
+  /**
    * Detach this dependent child task from its parent. Non-destructive: the
    * mission is closed with a workspace-detached marker and its channel archived,
    * but this workspace, its worktree/branch/PTY and running agent stay exactly as
@@ -873,16 +885,18 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, multiviewGroup, ind
 
   /** Open the workspace's current working directory in the OS file explorer. */
   const handleOpenExplorer = () => {
-    if (!metadata?.cwd) return;
-    reportOpen(window.electronAPI.shell.openPath(metadata.cwd));
+    const cwd = metadata?.cwd;
+    if (!cwd) return;
+    void withRevealable(cwd, (path) => window.electronAPI.shell.openPath(path));
   };
 
   /** Open cwd with a specific detected app (VS Code, Terminal, etc.). */
   const handleOpenWith = (appId: string) => {
-    if (!metadata?.cwd) return;
+    const cwd = metadata?.cwd;
+    if (!cwd) return;
     setMenuPos(null);
     setOwOpen(false);
-    reportOpen(window.electronAPI.shell.openWith(appId, metadata.cwd));
+    void withRevealable(cwd, (path) => window.electronAPI.shell.openWith(appId, path));
   };
 
   // Detect available apps when the context menu opens, and clear when closed.
