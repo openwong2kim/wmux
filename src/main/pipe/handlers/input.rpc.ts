@@ -2952,10 +2952,10 @@ export function registerInputRpc(
     };
     // Without a hand-off (which reads it itself): the daemon's draft flag, a
     // second "no" beside the screen read, right before the paste.
-    // Claude's only: its flag is cleared again from its screen (draftScreen); another agent's stays set until a key
-    // submits or clears the box, and would hold every delivery.
+    // Only an agent whose flag is cleared again from its screen (`draftScreenChecked`); another agent's stays set
+    // until a key submits or clears the box, and would hold every delivery.
     const expectSlug = expectAgent ? (isAgentSlug(expectAgent) ? expectAgent : agentDisplayToSlug(expectAgent)) : undefined;
-    const draftAtPaste = async (): Promise<GatedSubmitRefusal | null> => (expectSlug === 'claude' && (await readHasDraft(ptyId)) === true
+    const draftAtPaste = async (): Promise<GatedSubmitRefusal | null> => (agentRow(expectSlug)?.draftScreenChecked === true && (await readHasDraft(ptyId)) === true
       ? { ok: false, reason: 'input_mode', detail: "delivery: the agent's input box already holds a draft, so nothing was typed", composerNotPlain: true }
       : null);
     guard = {
