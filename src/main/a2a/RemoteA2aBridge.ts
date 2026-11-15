@@ -64,6 +64,12 @@ export interface RemoteA2aBridgeDeps {
   sendToRenderer: (method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }) => Promise<unknown>;
   /** Subscribe to daemon broadcasts; returns an unsubscribe. */
   onDaemonEvent: (listener: (event: { type?: unknown; [key: string]: unknown }) => void) => () => void;
+  /**
+   * Whether the window's RPC bridge answers yet. Asked before the attempt is
+   * recorded: a unit offered to a renderer still loading would time out and
+   * read as possibly pasted, though nothing could have been.
+   */
+  rendererReady?: () => Promise<boolean>;
   /** Runs after every pull that reached the daemon; never overlaps itself. */
   afterPull?: () => Promise<void>;
   backstopMs?: number;
@@ -372,6 +378,14 @@ export class RemoteA2aBridge {
       }
       return 'pane-missing';
     }
+    // The renderer is not answering yet (main started before the window
+    // loaded): nothing is recorded, and the unit stays owed for a later pull.
+    // The base delay, not the doubling backoff: nothing was tried.
+    if (!(await this.windowReady())) {
+      this.retry.set(unit.key, { at: this.now() + REMOTE_BRIDGE_RETRY_MIN_MS, delayMs: REMOTE_BRIDGE_RETRY_MIN_MS });
+      this.deps.log?.('info', `[a2a-remote] ${unit.key}: the window is not ready yet, delivery kept for later`);
+      return 'not-delivered';
+    }
     const ref = { taskId: task.id, ...(item ? { messageId: item.messageId } : {}) };
     // Durable BEFORE the write: if main dies after the paste, the daemon knows
     // a paste may have happened and the unit is not pasted again on its own.
@@ -517,11 +531,34 @@ export class RemoteA2aBridge {
     }
   }
 
+  private async windowReady(): Promise<boolean> {
+    return !this.deps.rendererReady || (await this.deps.rendererReady().catch(() => false));
+  }
+
   private backoff(key: string): void {
     const prev = this.retry.get(key);
     const delayMs = prev ? Math.min(prev.delayMs * 2, REMOTE_BRIDGE_RETRY_MAX_MS) : REMOTE_BRIDGE_RETRY_MIN_MS;
     this.retry.set(key, { at: this.now() + delayMs, delayMs });
   }
+}
+
+/**
+ * Whether the window's RPC bridge takes calls yet, for the bridges' `rendererReady`:
+ * a cheap read it handles. No answer (still loading), a failure, or its
+ * "still starting" refusal (panes not restored yet) is not ready. Calls made
+ * while one read is out share it.
+ */
+export function rendererReadyProbe(
+  send: (method: string, params: Record<string, unknown>, opts: { timeoutMs: number }) => Promise<unknown>,
+  timeoutMs = 2_000,
+): () => Promise<boolean> {
+  let inFlight: Promise<boolean> | null = null;
+  return () => {
+    inFlight ??= send('workspace.current', {}, { timeoutMs })
+      .then((res) => !(isRecord(res) && 'error' in res), () => false)
+      .finally(() => { inFlight = null; });
+    return inFlight;
+  };
 }
 
 /** The deliverable, unheld units of one listed task, the task itself first. */

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { A2aRemoteTaskMarkerV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteDeliveryResult, A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
 import type { Task } from '../../../shared/types';
-import { REMOTE_BRIDGE_REOFFER_PER_PASS, REMOTE_BRIDGE_RETRY_MIN_MS, RemoteA2aBridge } from '../RemoteA2aBridge';
+import { REMOTE_BRIDGE_REOFFER_PER_PASS, REMOTE_BRIDGE_RETRY_MIN_MS, RemoteA2aBridge, rendererReadyProbe } from '../RemoteA2aBridge';
 
 const LINK = '11111111-1111-4111-8111-111111111111';
 const HOST = '22222222-2222-4222-8222-222222222222';
@@ -466,6 +466,55 @@ describe('RemoteA2aBridge', () => {
     expect(renderer).toHaveBeenCalledTimes(1);
     expect(daemon.marks).toEqual([{ taskId: id(23), held: 'delivery-unconfirmed' }]);
   });
+
+  it('a window still loading after a main start: no attempt recorded, nothing held, delivered once it answers', async () => {
+    daemon.tasks.set(id(24), remoteTask(24));
+    let ready = false;
+    const probe = vi.fn(async () => ready);
+    bridge = new RemoteA2aBridge({ daemonRpc: (m, p) => daemon.rpc(m, p), sendToRenderer: (m, p) => renderer(m, p), rendererReady: probe, onDaemonEvent: () => () => undefined });
+    bridge.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(probe.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(renderer).not.toHaveBeenCalled();
+    expect(daemon.attempts).toEqual([]);
+    expect(daemon.marks).toEqual([]);
+    expect((daemon.tasks.get(id(24))?.metadata.remote as A2aRemoteTaskState).attempted).toBeUndefined();
+    ready = true;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(renderer).toHaveBeenCalledTimes(1);
+    expect(daemon.attempts).toEqual([{ taskId: id(24), attempted: true }]);
+    expect(daemon.marks).toEqual([{ taskId: id(24), delivered: true }]);
+  });
+
+  it('a held task a person sends again while the window is not ready: not written, its hold and attempt untouched', async () => {
+    daemon.tasks.set(id(26), remoteTask(26));
+    answer = () => ({ ok: true, delivered: false, held: 'occupant-changed' });
+    bridge.start();
+    await settle();
+    expect(daemon.marks).toEqual([{ taskId: id(26), held: 'occupant-changed' }]);
+    const attempts = daemon.attempts.length;
+    bridge.stop();
+    bridge = new RemoteA2aBridge({ daemonRpc: (m, p) => daemon.rpc(m, p), sendToRenderer: (m, p) => renderer(m, p), rendererReady: async () => false, onDaemonEvent: () => () => undefined });
+    expect(await bridge.retryHeld(id(26))).toEqual({ ok: true, results: [{ outcome: 'not-delivered' }] });
+    expect(renderer).toHaveBeenCalledTimes(1);
+    expect(daemon.attempts).toHaveLength(attempts);
+    expect(daemon.marks).toEqual([{ taskId: id(26), held: 'occupant-changed' }]);
+  });
+
+  it('a probe that throws counts as not ready', async () => {
+    daemon.tasks.set(id(25), remoteTask(25));
+    bridge = new RemoteA2aBridge({
+      daemonRpc: (m, p) => daemon.rpc(m, p),
+      sendToRenderer: (m, p) => renderer(m, p),
+      rendererReady: () => Promise.reject(new Error('BrowserWindow is not available')),
+      onDaemonEvent: () => () => undefined,
+    });
+    bridge.start();
+    await settle();
+    expect(renderer).not.toHaveBeenCalled();
+    expect(daemon.attempts).toEqual([]);
+  });
 });
 
 describe('RemoteA2aBridge — a task stored for a brain link', () => {
@@ -707,5 +756,32 @@ describe('RemoteA2aBridge — a reply held for want of an agent is offered again
     await bridge.trigger();
     await settle();
     expect(notified()).toEqual([]);
+  });
+});
+
+describe('rendererReadyProbe', () => {
+  it('a read the window answers is ready, even an empty one', async () => {
+    expect(await rendererReadyProbe(async () => null)()).toBe(true);
+    expect(await rendererReadyProbe(async () => ({ id: 'ws-1', name: 'main' }))()).toBe(true);
+  });
+
+  it('no answer, a failure, or the window still restoring its panes is not ready', async () => {
+    expect(await rendererReadyProbe(() => Promise.reject(new Error('RPC timeout: workspace.current (2000ms)')))()).toBe(false);
+    expect(await rendererReadyProbe(async () => ({ error: 'wmux is still starting (paneGate=pending)', retryable: true }))()).toBe(false);
+  });
+
+  it('asks the window once for calls made while a read is out, and again after', async () => {
+    let release: (v: unknown) => void = () => undefined;
+    const send = vi.fn(() => new Promise<unknown>((resolve) => { release = resolve; }));
+    const probe = rendererReadyProbe(send);
+    const both = Promise.all([probe(), probe()]);
+    release(null);
+    expect(await both).toEqual([true, true]);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith('workspace.current', {}, { timeoutMs: 2_000 });
+    const third = probe();
+    release(null);
+    await third;
+    expect(send).toHaveBeenCalledTimes(2);
   });
 });

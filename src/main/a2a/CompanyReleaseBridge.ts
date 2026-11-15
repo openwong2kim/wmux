@@ -72,6 +72,12 @@ export interface CompanyReleaseBridgeDeps {
   daemon: CompanyReleaseDaemon;
   /** The renderer bridge (`sendToRenderer(getWindow, …)`). */
   sendToRenderer: (method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }) => Promise<unknown>;
+  /**
+   * Whether the window's RPC bridge answers yet. Asked before a delivery's
+   * attempt is recorded and before a CEO line: a renderer still loading would
+   * time out, and the task would read as possibly written (the line as told).
+   */
+  rendererReady?: () => Promise<boolean>;
   /** CEO lines already told, by event key; pass one set to keep it across reconnects. */
   told?: Set<string>;
   /**
@@ -225,6 +231,13 @@ export class CompanyReleaseBridge {
     // At the cap, or the count unreadable: it stays owed, nothing marked or written.
     if (slot && slot.kind !== 'go') return;
     try {
+      // The renderer is not answering yet: nothing is recorded, the task stays
+      // owed, and it is tried at the base delay (nothing was tried).
+      if (!(await this.windowReady())) {
+        this.retry.set(task.id, { at: this.now() + COMPANY_BRIDGE_RETRY_MIN_MS, delayMs: COMPANY_BRIDGE_RETRY_MIN_MS });
+        this.deps.log?.('info', `[company] ${task.id}: the window is not ready yet, delivery kept for later`);
+        return;
+      }
       await this.write(task);
     } finally {
       slot?.release();
@@ -345,6 +358,11 @@ export class CompanyReleaseBridge {
 
   /** One line to the company's CEO pane. Told once written; given up after a few misses. */
   private async tellCeo(task: Task, event: CompanyCeoEvent): Promise<void> {
+    // Not answering yet: tried again at the base delay, never counted as a miss or as told.
+    if (!(await this.windowReady())) {
+      this.ceoRetry.set(event.key, { at: this.now() + COMPANY_BRIDGE_RETRY_MIN_MS, delayMs: COMPANY_BRIDGE_RETRY_MIN_MS });
+      return;
+    }
     let res: unknown;
     try {
       res = await this.deps.sendToRenderer(COMPANY_RENDERER_METHOD.ceoLine, {
@@ -394,6 +412,10 @@ export class CompanyReleaseBridge {
     const prev = this.ceoRetry.get(key);
     const delayMs = prev ? Math.min(prev.delayMs * 2, COMPANY_BRIDGE_RETRY_MAX_MS) : COMPANY_BRIDGE_RETRY_MIN_MS;
     this.ceoRetry.set(key, { at: this.now() + delayMs, delayMs });
+  }
+
+  private async windowReady(): Promise<boolean> {
+    return !this.deps.rendererReady || (await this.deps.rendererReady().catch(() => false));
   }
 
   private backoff(taskId: string): void {
