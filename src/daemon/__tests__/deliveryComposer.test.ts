@@ -127,6 +127,34 @@ describe('frameShowsPaste', () => {
     expect(frameShowsPaste(f([RULE, '❯\u00a0wmux: A2A task t-1 is waiting', RULE]), pasted)).toBe(false);
   });
 
+  describe('a one-line pointer in a narrow box (#3390)', () => {
+    const NARROW = '─'.repeat(27);
+    const text = '[wmux] new A2A task 3ac71741 from Workspace 1.w1-2 — a2a_task_query task_id:task-3ac71741-02eb-4659-988e-f3cbeb63a838';
+    const pointer = { probe: '[wmux] new A2A task 3ac7', lines: 0, chars: [...text].length, text };
+
+    it('collapsed with the rows it takes as its count, the placeholder wrapped over two rows', () => {
+      expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +7', '  lines]', NARROW]), pointer)).toBe(true);
+      // On one row too.
+      expect(frameShowsPaste(f([RULE, '❯\u00a0[Pasted text #1 +7 lines]', RULE]), pointer)).toBe(true);
+      // Two placeholders, or one with keys after it, still are not ours.
+      expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +7', '  lines] [Pasted text #2', '  +7 lines]', NARROW]), pointer)).toBe(false);
+      expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +7', '  lines] ok', NARROW]), pointer)).toBe(false);
+    });
+
+    it('scrolled, its start out of view: the visible rows are the end of this text', () => {
+      const scrolled = [NARROW, '❯\u00a03ac71741 from Workspace', '  1.w1-2 —', '  a2a_task_query task_id:', '  task-3ac71741-02eb-4659', '  -988e-f3cbeb63a838', NARROW];
+      expect(frameShowsPaste(f(scrolled), pointer)).toBe(true);
+    });
+
+    it('scrolled, but not ours: a key typed after it, too short a tail, or another task id', () => {
+      const typedAfter = [NARROW, '❯\u00a0a2a_task_query task_id:', '  task-3ac71741-02eb-4659', '  -988e-f3cbeb63a838x', NARROW];
+      expect(frameShowsPaste(f(typedAfter), pointer)).toBe(false);
+      expect(frameShowsPaste(f([NARROW, '❯\u00a0-f3cbeb63a838', NARROW]), pointer)).toBe(false);
+      const other = [NARROW, '❯\u00a0a2a_task_query task_id:', '  task-99999999-02eb-4659', '  -988e-f3cbeb63a838', NARROW];
+      expect(frameShowsPaste(f(other), pointer)).toBe(false);
+    });
+  });
+
   it('the same words in the transcript above prove nothing', () => {
     const earlier = ['❯ wmux: A2A task t-1 is waiting', '⏺ [Pasted text #1 +10 lines]'];
     expect(frameShowsPaste(f([...earlier, RULE, '❯\u00a0my own draft', RULE]), { probe: 'wmux: A2A task t-1' })).toBe(false);
