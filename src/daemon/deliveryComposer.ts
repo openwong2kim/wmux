@@ -170,8 +170,8 @@ const NARROWEST_BOX_COLS = 8;
 /**
  * Is `placeholder` (squashed) the collapsed form of `pasted`? Only the agent's own count of it says so. Claude's
  * `+N lines` counts the rows the text takes in its box, so a narrow box counts more than the text's line breaks,
- * never fewer, and no more than its characters can fill at `NARROWEST_BOX_COLS`. Without the character count, the
- * line breaks alone. Codex counts characters.
+ * never fewer, and no more than its characters can fill at `NARROWEST_BOX_COLS`, each counted as two columns (a
+ * double-width character takes two). Without the character count, the line breaks alone. Codex counts characters.
  */
 function collapsedFormOf(placeholder: string, pasted: PastedText): boolean {
   const claude = /^\[Pastedtext#\d+(?:\+(\d+)lines)?\]$/.exec(placeholder);
@@ -179,7 +179,7 @@ function collapsedFormOf(placeholder: string, pasted: PastedText): boolean {
     if (pasted.lines === undefined) return false;
     const rows = Number(claude[1] ?? 0);
     if (pasted.chars === undefined) return rows === pasted.lines;
-    return rows >= pasted.lines && rows <= pasted.lines + Math.ceil(pasted.chars / NARROWEST_BOX_COLS);
+    return rows >= pasted.lines && rows <= pasted.lines + Math.ceil((2 * pasted.chars) / NARROWEST_BOX_COLS);
   }
   const codex = /^\[PastedContent(\d+)chars\]$/.exec(placeholder);
   return !!codex && pasted.chars !== undefined && Number(codex[1]) === pasted.chars;

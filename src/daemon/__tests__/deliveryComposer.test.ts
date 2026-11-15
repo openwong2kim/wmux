@@ -168,6 +168,13 @@ describe('frameShowsPaste', () => {
       expect(frameShowsPaste(f([RULE12, '❯\u00a0+7 lines]', RULE12]), pointer)).toBe(true);
     });
 
+    it('a double-width text counts two columns a character: 40 Hangul characters take up to 10 rows of 8 columns', () => {
+      const wide = '가'.repeat(40);
+      const pasted = { probe: wide.slice(0, 24), lines: 0, chars: 40, text: wide };
+      expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +10', '  lines]', NARROW]), pasted)).toBe(true);
+      expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +11', '  lines]', NARROW]), pasted)).toBe(false);
+    });
+
     it('scrolled, its start out of view: the visible rows are the end of this text', () => {
       const scrolled = [NARROW, '❯\u00a03ac71741 from Workspace', '  1.w1-2 —', '  a2a_task_query task_id:', '  task-3ac71741-02eb-4659', '  -988e-f3cbeb63a838', NARROW];
       expect(frameShowsPaste(f(scrolled), pointer)).toBe(true);
