@@ -402,6 +402,23 @@ describe('AgentProcessTracker', () => {
     expect(watcher.watches.get('agent:s1')?.pid).toBe(300);
   });
 
+  it("a delivery's re-probe names the current pick and records no death for a tracked pid still running", async () => {
+    const watcher = makeWatcher();
+    let table: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];
+    const tracker = new AgentProcessTracker(watcher, async () => table);
+    const states: Array<{ alive: boolean }> = [];
+    tracker.setStateChangeListener((_sid, state) => states.push({ alive: state.alive }));
+    tracker.arm('s1', SHELL);
+    await flush();
+    // The old pid now runs something else (reused); the new Claude is pid 300.
+    table = [entry(200, 1, 'notepad.exe'), entry(300, SHELL, 'claude.exe')];
+    expect(await tracker.reprobeNow('s1', SHELL, 1_000)).toBe(true);
+    expect(tracker.pidFor('s1')).toBe(300);
+    expect(tracker.statusFor('s1')).toBe(true);
+    expect(watcher.watches.get('agent:s1')?.pid).toBe(300);
+    expect(states.some((st) => !st.alive)).toBe(false);
+  });
+
   it('a re-probe of the same agent after the tree read still takes the confirmed death', async () => {
     const watcher = makeWatcher();
     let table: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];

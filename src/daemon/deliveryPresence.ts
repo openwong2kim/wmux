@@ -44,6 +44,9 @@ export interface DeliveryPresenceDeps {
   tracked(id: string): { alive: boolean; slug?: AgentSlug } | undefined;
   /** Run the tracker's named-agent probe and wait for it, bounded: false while it still runs. */
   probe(id: string, shellPid: number, timeoutMs: number): Promise<boolean>;
+  /** Name the current pick under the shell, replacing the tracked record
+   *  without recording a death for a pid still running; bounded like probe. */
+  reprobe(id: string, shellPid: number, timeoutMs: number): Promise<boolean>;
   /** Fresh: the tracked agent is still this pane's `slug` agent and running. */
   agentRunning(id: string, slug: AgentSlug): Promise<boolean>;
   /** Fresh: an exec unit's root process is the `slug` agent. */
@@ -57,6 +60,8 @@ export interface DeliveryPresenceDeps {
   /** The pane's current visible grid and cursor row, or null. */
   frame(id: string): Promise<DeliveryFrame | null>;
   platform: NodeJS.Platform;
+  /** A debug line (the re-probe of a tracked agent that is not running). */
+  log?: (line: string) => void;
 }
 
 /** Agents a screen alone may verify (no attributed process): their prompt and
@@ -134,12 +139,31 @@ export async function deliveryPresence(
   if (tracked && !tracked.alive) return refuse('agent-ended');
   // A probe still running is not "nothing to attribute": the screen does not decide yet.
   if (!tracked && !settled) return refuse('attribution-pending');
-  if (tracked?.slug) {
-    if (expectAgent && tracked.slug !== expectAgent) return refuse('other-agent');
-    if (!(await deps.agentRunning(id, tracked.slug).catch(() => false))) return refuse('not-running');
+  /** The tracked agent, running: the foreground, then the composer. */
+  const trackedRunning = async (slug: AgentSlug): Promise<DeliveryPresence> => {
     const pid = deps.agentPid(id);
     const notForeground = pid === undefined ? null : await runningInForeground(pid);
-    return notForeground ?? verified('process', tracked.slug);
+    return notForeground ?? verified('process', slug);
+  };
+
+  if (tracked?.slug) {
+    if (expectAgent && tracked.slug !== expectAgent) return refuse('other-agent');
+    if (await deps.agentRunning(id, tracked.slug).catch(() => false)) return trackedRunning(tracked.slug);
+    // The tracked agent is not the one running under the shell. With no
+    // command running it stopped: not-running. With a command running, the
+    // record is an earlier one (an agent whose death was missed, or a pick
+    // made while the new one was launching): name the current pick once and
+    // decide on that. The re-probe only names; it records no death for a pid
+    // still running (a gone one dies through the monitor as before).
+    if (session.commandRunning !== true) return refuse('not-running');
+    const oldPid = deps.agentPid(id);
+    const named = await deps.reprobe(id, session.shellPid, DELIVERY_PRESENCE_PROBE_MS).catch(() => false);
+    const now = deps.tracked(id);
+    const nowSlug = named && now?.alive ? now.slug : undefined;
+    const running = !!nowSlug && (!expectAgent || nowSlug === expectAgent) && await deps.agentRunning(id, nowSlug).catch(() => false);
+    deps.log?.(`[delivery-presence] pane ${JSON.stringify(id)}: tracked ${tracked.slug} pid ${oldPid ?? '?'} is not running under a running command; re-probe → ${running ? `${nowSlug} pid ${deps.agentPid(id) ?? '?'}` : nowSlug && expectAgent && nowSlug !== expectAgent ? `another agent (${nowSlug})` : 'still pending'}`);
+    if (nowSlug && expectAgent && nowSlug !== expectAgent) return refuse('other-agent');
+    return running && nowSlug ? trackedRunning(nowSlug) : refuse('attribution-pending');
   }
 
   // Never attributed, or an unnamed (wrapper) process: only the screen can tell.

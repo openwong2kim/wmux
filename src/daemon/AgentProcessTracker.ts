@@ -1389,6 +1389,22 @@ export class AgentProcessTracker {
     return !this.inFlight.has(sessionId);
   }
 
+  /**
+   * A delivery's re-probe of a pane whose tracked agent is not the one running
+   * under its shell while a command runs there: names the current pick
+   * (rearm: it replaces the record, and never records a death for a pid that
+   * is still running; a gone one dies through the monitor as before), waited
+   * for at most `timeoutMs`. False only while the probe still runs.
+   */
+  async reprobeNow(sessionId: string, shellPid: number, timeoutMs: number): Promise<boolean> {
+    this.rearm(sessionId, shellPid);
+    const until = Date.now() + timeoutMs;
+    while (this.inFlight.has(sessionId) && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return !this.inFlight.has(sessionId);
+  }
+
   /** true = agent process observed alive; false = it was observed and DIED
    *  (the edge); undefined = never attributed → caller falls back. */
   statusFor(sessionId: string): boolean | undefined {
