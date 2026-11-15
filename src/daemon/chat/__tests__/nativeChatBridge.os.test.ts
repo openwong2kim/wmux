@@ -469,6 +469,22 @@ describe('send', () => {
     expect(f.written).toEqual(['busy', 'blocked', 'unconfirmed', 'unavailable', 'session_changed', 'error'].map((t) => `\x1b[200~${t}\x1b[201~`));
   });
 
+  it('#3393: a pane holding an earlier unsubmitted paste is refused with how to clear it; a send that leaves its paste records one', async () => {
+    const f = fixture(); f.liveClaude();
+    let held = true;
+    const recorded: string[] = [];
+    const bridge = createChatBridge({ ...f.deps, unsentPaste: { held: () => held, record: (id, writer) => { recorded.push(`${id}:${writer}`); } } });
+    const req = phoneSend('held');
+    const refused = await bridge.send(req);
+    expect(refused).toMatchObject({ result: 'unconfirmed', error: 'input-not-provably-empty', effect: 'none' });
+    expect((refused as { detail?: string }).detail).toContain('press Enter on the waiting text, or Ctrl+U to clear it');
+    expect(f.written).toEqual([]);
+    held = false;
+    delivery.override = pasteThen('error');
+    expect(await bridge.send(phoneSend('left'))).toMatchObject({ error: 'send-interrupted', effect: 'uncertain' });
+    expect(recorded).toEqual(['pane:chat send']);
+  });
+
   it('is uncertain when the agent state is gone right after the first paste', async () => {
     const f = fixture(); f.liveClaude();
     f.state.screen = ['● done', '─'.repeat(40), '❯ ', '─'.repeat(40)];

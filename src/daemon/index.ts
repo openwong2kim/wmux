@@ -357,6 +357,7 @@ import { record as chatRecord } from './chat/adapter';
 import type { ChatInteractionAnswer } from '../shared/transcript/chatSession';
 import { selfCheckPeerPid } from '../shared/peerPid';
 import { PANE_INPUT_HIGH_WATER, PANE_LOCK_DAEMON_WAIT_MS, PANE_LOCK_MAX_WAIT_MS, PaneDeliveryLocks, admitPaneInput, writeUnderLock } from './paneDeliveryLock';
+import { UnsentPasteHolds } from './unsentPasteHold';
 
 // A delivery asks whether the agent the tracker attributes still runs there,
 // not where its binary lives: the image rule (isAgentImage) would refuse a live
@@ -562,6 +563,8 @@ let headlessDeliverRef: HeadlessDeliveryDeps['deliver'] | null = null;
 let deliveryPresenceRef: ((id: string, check: DeliveryCheck) => Promise<DeliveryPresence>) | null = null;
 /** One delivery at a time into a pane, across main and the daemon (paneDeliveryLock.ts). */
 const paneLocks = new PaneDeliveryLocks({ log: (line) => log('info', line) });
+/** #3393 — panes holding a delivery's paste left unsubmitted (unsentPasteHold.ts); built in registerRpcHandlers. */
+let unsentPasteHolds: UnsentPasteHolds | null = null;
 /** Whether a pane holds a draft, the screen consulted (draftScreen.ts). */
 let draftOnScreen: DraftCheck | undefined;
 let headlessDeliveryRef: HeadlessDelivery | null = null;
@@ -5063,6 +5066,14 @@ function registerRpcHandlers(
   pipeServer.onClientClose((clientId) => paneLocks.releaseClient(clientId));
   sessionManager.on('session:died', (payload: { id: string }) => paneLocks.dropSession(payload.id));
   sessionManager.on('session:destroyed', (payload: { id: string }) => paneLocks.dropSession(payload.id));
+  unsentPasteHolds = new UnsentPasteHolds({
+    keyRevision: (id) => sessionManager.getSession(id)?.bridge.getKeyInputRevision(),
+    promptSubmittedAt: (id) => hookIngest?.promptSubmittedAt(id),
+    agentPid: (id) => agentProcessTracker.pidFor(id),
+    log: (line) => log('info', line),
+  });
+  sessionManager.on('session:died', (payload: { id: string }) => unsentPasteHolds?.sessionEnded(payload.id));
+  sessionManager.on('session:destroyed', (payload: { id: string }) => unsentPasteHolds?.sessionEnded(payload.id));
   // Only a live session takes a delivery: a suspended or dead one has no
   // process to write to, and main reports that nothing was delivered. A
   // detached live session (no pane shows it) does, as the daemon's own
@@ -5107,6 +5118,16 @@ function registerRpcHandlers(
       pendingInputBytes: (managed.ptyProcess as TerminalPty).pendingInputBytes,
       noteInput: (bytes) => managed.bridge.noteInput(bytes),
     } : undefined, data);
+  });
+  // #3393 — main's delivery left its paste in the box. Sent while main still
+  // holds the pane, after its last held write: this pipe carried those writes
+  // first, so the pane's key count already has every one of them.
+  pipeServer.onRpc('daemon.session.unsentPasteV1', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'daemon.session.unsentPasteV1')) return { ok: false, error: 'not allowed' };
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const token = typeof params['token'] === 'string' ? params['token'] : '';
+    if (!token || !paneLocks.holds(id, token, ctx.clientId)) return { ok: false, error: 'not held' };
+    return { ok: unsentPasteHolds?.record(id, 'main delivery') === true };
   });
 
   desktopPhoneBridge ??= new DesktopPhoneBridge((id,event) => pipeServer.sendTo(id,event));
@@ -5412,6 +5433,7 @@ function registerRpcHandlers(
         return true;
       },
       paneLock: (id, send) => paneLocks.runLocked(id, 'hermes-chat', PANE_LOCK_DAEMON_WAIT_MS, send),
+      unsentPaste: { held: (id) => unsentPasteHolds?.held(id) === true, record: (id, writer) => { unsentPasteHolds?.record(id, writer); } },
       emit: (id, data, clients) => {
         nativeChatBridge?.nudgeQueue(id);
         for (const client of clients) {
@@ -5513,6 +5535,7 @@ function registerRpcHandlers(
       return true;
     },
     paneLock: (id, send) => paneLocks.runLocked(id, 'native-chat', PANE_LOCK_DAEMON_WAIT_MS, send),
+    unsentPaste: { held: (id) => unsentPasteHolds?.held(id) === true, record: (id, writer) => { unsentPasteHolds?.record(id, writer); } },
     receipts: chatSendReceipts,
     cancelReceipts: chatCancelReceipts,
     queue: chatQueue,
@@ -6406,6 +6429,9 @@ function registerRpcHandlers(
       // restart: how long ago the pane's last result settled (null: none
       // since its agent started), so its idle window runs from that end.
       settledAgoMs: bridge.settledAgoMs(),
+      // #3393 — additive: the input box holds a delivery's paste left
+      // unsubmitted (unsentPasteHold.ts), with its clears applied now.
+      unsentPasteHeld: unsentPasteHolds?.held(id) === true,
     };
   }
   // Deliveries wait for a verified agent process (deliveryPresence.ts): what
@@ -6557,8 +6583,22 @@ function registerRpcHandlers(
     // The pane's delivery lock, held from before the writer's first look at
     // the pane through its Enter: no other delivery writes in between. Not
     // granted in time: busy, which every caller already retries.
-    const result = await paneLocks.runLocked(id, `daemon:${writer}`, PANE_LOCK_DAEMON_WAIT_MS,
-      () => deliverPromptToSessionLocked(id, agentSlug, incarnationId, prompt, opts, writer, author, trust));
+    const result = await paneLocks.runLocked(id, `daemon:${writer}`, PANE_LOCK_DAEMON_WAIT_MS, async () => {
+      // #3393 — an earlier paste still in the box: busy (reason unsent-paste,
+      // logged once per writer), nothing written, retried like any busy pane.
+      if (unsentPasteHolds?.heldFor(id, writer)) return 'busy' as const;
+      let pasted = false;
+      const sent = await deliverPromptToSessionLocked(id, agentSlug, incarnationId, prompt, {
+        ...opts,
+        onWrite: (stage, queued) => {
+          if (stage === 'paste') pasted = true;
+          opts.onWrite?.(stage, queued);
+        },
+      }, writer, author, trust);
+      // Pasted and not submitted: the text stays in the box (no writer here takes it back).
+      if (sent !== 'sent' && pasted) unsentPasteHolds?.record(id, writer);
+      return sent;
+    });
     return result ?? 'busy';
   };
   const deliverPromptToSessionLocked = (
@@ -10456,6 +10496,8 @@ async function main(): Promise<void> {
       const token = await paneLocks.acquire(id, { key: 'daemon:channel wake' }, 0);
       return token ? () => paneLocks.release(id, token) : null;
     },
+    // #3393 — a pane holding an earlier paste left unsubmitted gets no nudge; a nudge left in the box records one.
+    unsentPaste: { held: (id) => unsentPasteHolds?.heldFor(id, 'channel wake nudge') === true, record: (id, writer) => { unsentPasteHolds?.record(id, writer); } },
     unreadFor: (ws) => channelService.unreadFor(ws),
     // A nudge that never landed must not leave the message it announced sitting
     // at 'pending' forever — the push half used to drop that outcome on the
@@ -10742,6 +10784,8 @@ async function main(): Promise<void> {
   // pane's shell started a command since that agent was picked.
   agentProcessTracker.setLaunchCounter((sessionId) => sessionManager.getSession(sessionId)?.bridge.getCommandStarts());
   agentProcessTracker.setStateChangeListener((sessionId, state) => {
+    // #3393 — the death edge, or a launch of a different process, clears a held pane.
+    unsentPasteHolds?.agentState(sessionId, state.alive);
     if (!state.alive) hookIngest?.expireAuthorityFor(sessionId, state.slug);
     // #2673 — a launch edge that replaced a live process (the tracker found a
     // relaunch where its watched agent died) carries no death edge, so the

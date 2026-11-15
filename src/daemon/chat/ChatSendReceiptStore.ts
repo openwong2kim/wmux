@@ -34,6 +34,8 @@ export interface StoredChatOutcome {
   historyEpoch?: string;
   /** `sent` while the turn ran: the agent's composer queued the prompt. */
   queued?: true;
+  /** #3393 — what the person can do about the refusal (`input-not-provably-empty` for a held pane). */
+  detail?: string;
   /**
    * The check that refused it before any dispatch (`insertFinal`), for the
    * daemon log and diagnostics only; never on the wire. An older daemon
@@ -73,7 +75,7 @@ function validOutcome(value: unknown): value is StoredChatOutcome {
     (row.limit === undefined || row.limit === 'units' || row.limit === 'bytes') &&
     (row.maxSendBytes === undefined || Number.isSafeInteger(row.maxSendBytes) && Number(row.maxSendBytes) > 0) &&
     optionalString(row.agentSessionId, RECEIPT_AGENT_SESSION_ID_MAX) && optionalString(row.historyEpoch, RECEIPT_HISTORY_EPOCH_MAX) &&
-    (row.queued === undefined || typeof row.queued === 'boolean') && optionalString(row.gate, 64);
+    (row.queued === undefined || typeof row.queued === 'boolean') && optionalString(row.gate, 64) && optionalString(row.detail, 512);
 }
 
 function validEntry(key: string, value: unknown): value is ChatSendReceipt {

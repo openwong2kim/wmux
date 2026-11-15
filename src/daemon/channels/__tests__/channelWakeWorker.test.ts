@@ -79,6 +79,7 @@ function makeHarness(
     folderTrustVerdict?: (sessionId: string) => Promise<'trust' | 'unknown' | 'clear'>;
     agentPresent?: (sessionId: string, check: DeliveryCheck) => Promise<WakePresence>;
     paneLock?: (sessionId: string) => Promise<(() => void) | null>;
+    unsentPaste?: { held(sessionId: string): boolean; record(sessionId: string, writer: string): void };
   } = {},
 ): Harness {
   let entries: WakeUnreadEntry[] = [];
@@ -1085,6 +1086,37 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
     expect(looks.slice(1)).toEqual(['paste:daemon:channel wake', 'enter:daemon:channel wake']);
     expect(locks.holderOf('pty-1')).toBeUndefined();
     expect(h.outcomes.at(-1)?.ok).toBe(true);
+  });
+
+  it('#3393: a pane holding an earlier unsubmitted paste gets no nudge; a nudge left in the box is recorded, one taken back is not', async () => {
+    let held = true;
+    const recorded: string[] = [];
+    let enter: WakePresence = { present: false, pasteShown: false };
+    const h = makeHarness(undefined, {
+      unsentPaste: { held: () => held, record: (id, writer) => { recorded.push(`${id}:${writer}`); } },
+      agentPresent: async (_id, check) => (check.phase === 'enter' ? enter : { present: true, full: true }),
+    });
+    h.setEntries([mention()]);
+    h.setSessions([session({})]);
+    h.worker.tickOnce();
+    await vi.advanceTimersByTimeAsync(5);
+    expect(h.writes).toEqual([]);
+    expect(h.logs.some((line) => line.includes('still holds an earlier paste'))).toBe(true);
+    // Clear now: the line goes in, and at the Enter the box no longer shows it as ours: left there, recorded.
+    held = false;
+    h.worker.tickOnce();
+    await vi.advanceTimersByTimeAsync(5);
+    expect(h.writes.map((w) => w.data)).not.toContain('\r');
+    expect(h.writes.map((w) => w.data)).not.toContain('\x15');
+    expect(recorded).toEqual(['pty-1:channel wake nudge']);
+    expect(h.outcomes.at(-1)?.ok).toBe(false);
+    // Shown as ours but not submitted: taken back with Ctrl+U, nothing recorded.
+    enter = { present: false, pasteShown: true };
+    h.setNow(2_000_000);
+    h.worker.tickOnce();
+    await vi.advanceTimersByTimeAsync(5);
+    expect(h.writes.at(-1)?.data).toBe('\x15');
+    expect(recorded).toHaveLength(1);
   });
 
   it('withholds the Enter when an approval is raised while the agent is asked about before the Enter', async () => {

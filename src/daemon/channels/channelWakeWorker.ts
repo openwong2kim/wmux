@@ -143,6 +143,13 @@ export interface ChannelWakeWorkerDeps {
    * delivery holds the pane (the nudge waits for a later tick). Absent: no lock.
    */
   paneLock?(sessionId: string): Promise<(() => void) | null>;
+  /**
+   * #3393 — panes whose input box holds a delivery's paste left unsubmitted
+   * (daemon/unsentPasteHold.ts): a held pane gets no nudge (it waits for a
+   * later tick), and a nudge whose line stays in the box records one, under
+   * the pane's lock. Absent: not consulted.
+   */
+  unsentPaste?: { held(sessionId: string): boolean; record(sessionId: string, writer: string): void };
   /** Broadcast a daemon event (nudge exhaustion → human attention). */
   broadcast(event: Record<string, unknown>): void;
   log(level: 'debug' | 'info' | 'warn', message: string): void;
@@ -592,6 +599,10 @@ export class ChannelWakeWorker {
     // Past a nudge that went in, its Enter (or take-back) gives the pane back.
     let handedOn = false;
     try {
+      if (this.deps.unsentPaste?.held(target.id)) {
+        this.deps.log('debug', `[wake] holding nudge for ${key}: ${target.id} still holds an earlier paste that was not submitted`);
+        return;
+      }
       if (!(await this.screenIsFree(target.id, key))) return;
       // The last await before the write: the agent is still there, in plain input mode.
       const presence = await this.agentPresence(target.id, key, { phase: 'paste' });
@@ -656,6 +667,11 @@ export class ChannelWakeWorker {
       report(false);
       return false;
     }
+    /** Not submitted and not taken back: the line stays in the box, recorded before the pane's lock goes back. */
+    const leftInBox = (): void => {
+      this.deps.unsentPaste?.record(sessionId, 'channel wake nudge');
+      report(false);
+    };
     const commit = (): void => {
       try {
         this.deps.write(sessionId, '\r');
@@ -676,7 +692,7 @@ export class ChannelWakeWorker {
       // would take it. Withheld, the hint stays uncommitted in the composer.
       const key = keyOf(workspaceId, entry);
       if (this.approvalHold(sessionId, key)) {
-        report(false);
+        leftInBox();
         return;
       }
       if (!this.deps.screenShowsApproval && !this.deps.folderTrustVerdict && !this.deps.agentPresent) {
@@ -686,14 +702,14 @@ export class ChannelWakeWorker {
       void (async () => {
         const free = (!this.deps.screenShowsApproval && !this.deps.folderTrustVerdict) || await this.screenIsFree(sessionId, key);
         if (!free || this.approvalHold(sessionId, key)) {
-          report(false);
+          leftInBox();
           return;
         }
         // The last check before the Enter.
         const presence = await this.agentPresence(sessionId, key, { phase: 'enter', ...shownOf(line) });
         // An approval can be raised while that was asked: re-read, with no await before the Enter.
         if (presence.present && this.approvalHold(sessionId, key)) {
-          report(false);
+          leftInBox();
           return;
         }
         if (presence.present) {
@@ -702,12 +718,14 @@ export class ChannelWakeWorker {
         }
         // Not submitted. Take the hint back (Ctrl+U), but only while the pane
         // still shows it: never anything else.
-        if (presence.pasteShown) {
-          try {
-            this.deps.write(sessionId, '\x15');
-          } catch {
-            /* the session went away */
-          }
+        if (!presence.pasteShown) {
+          leftInBox();
+          return;
+        }
+        try {
+          this.deps.write(sessionId, '\x15');
+        } catch {
+          /* the session went away */
         }
         report(false);
       })();
