@@ -14,6 +14,7 @@ import {
   selectAgentProcess,
   selectCustomAgentProcess,
   tokenizeCmdline,
+  RESTART_MARK_MS,
   type PidWatcher,
   type ProcessTreeEntry,
 } from '../AgentProcessTracker';
@@ -444,6 +445,57 @@ describe('AgentProcessTracker', () => {
     expect(await tracker2.reprobeNow('s2', SHELL, 1_000)).toBe(true);
     expect(tracker2.pidFor('s2')).toBe(200);
     expect(watcher2.watches.get('agent:s2')?.pid).toBe(200);
+  });
+
+  it("a delivery's re-probe says whether any agent was in the shell's tree, from an enumeration started after the ask", async () => {
+    const watcher = makeWatcher();
+    let table: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];
+    const tracker = new AgentProcessTracker(watcher, async () => table);
+    tracker.arm('s1', SHELL);
+    await flush();
+    // Claude exited; vim runs: no agent anywhere under the shell.
+    table = [entry(300, SHELL, 'vim')];
+    const askedAt = Date.now();
+    expect(await tracker.reprobeNow('s1', SHELL, 1_000)).toBe(true);
+    expect(tracker.reprobeSawNoAgent('s1', askedAt)).toBe(true);
+    // An enumeration older than the ask proves nothing.
+    expect(tracker.reprobeSawNoAgent('s1', Date.now() + 60_000)).toBe(false);
+    // Two agents at one depth: no slug is named (ambiguous), yet agents are there.
+    table = [entry(300, SHELL, 'claude.exe'), entry(301, SHELL, 'codex')];
+    const again = Date.now();
+    expect(await tracker.reprobeNow('s1', SHELL, 1_000)).toBe(true);
+    expect(tracker.reprobeSawNoAgent('s1', again)).toBe(false);
+    // Never re-probed: false.
+    expect(tracker.reprobeSawNoAgent('s2', 0)).toBe(false);
+  });
+
+  it("an agent restart re-attributes the pane at once, and its mark lasts until the pane's next record (at most 10 s)", async () => {
+    const watcher = makeWatcher();
+    let table: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];
+    const tracker = new AgentProcessTracker(watcher, async () => table);
+    tracker.arm('s1', SHELL);
+    await flush();
+    // A new Claude replaced the old one before the monitor polled.
+    table = [entry(300, SHELL, 'claude.exe')];
+    tracker.noteAgentRestart('s1');
+    expect(tracker.restartedSince('s1')).toBe(true);
+    await flush();
+    expect(tracker.pidFor('s1')).toBe(300);
+    // The new record spent the mark.
+    expect(tracker.restartedSince('s1')).toBe(false);
+
+    // A restart whose re-probe names nothing new keeps the mark, then it lapses.
+    vi.useFakeTimers();
+    try {
+      table = [entry(300, SHELL, 'claude.exe')];
+      tracker.noteAgentRestart('s1');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tracker.restartedSince('s1')).toBe(true);
+      await vi.advanceTimersByTimeAsync(RESTART_MARK_MS + 1);
+      expect(tracker.restartedSince('s1')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a re-probe of the same agent after the tree read still takes the confirmed death', async () => {

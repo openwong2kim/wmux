@@ -1027,6 +1027,33 @@ describe('HookIngest', () => {
     });
   });
 
+  describe('agent restart (#3391)', () => {
+    const NEW_ID = '0a1b2c3d-0000-4000-8000-0000000000aa';
+    const OLD_ID = '0a1b2c3d-0000-4000-8000-0000000000bb';
+    const restarts = (sessions: HookIngestSession[], signal: Partial<AgentSignal>): Array<[string, string]> => {
+      const f = makeDeps(sessions);
+      const seen: Array<[string, string]> = [];
+      const i = new HookIngest({ ...f.deps, onAgentRestart: (id: string, agent: string) => { seen.push([id, agent]); } });
+      i.handle(makeSignal({ kind: 'agent.session_start', agentSessionId: NEW_ID, ...signal }));
+      return seen;
+    };
+    const bound = [session({ id: 'pty-a', resumeBinding: { agent: 'claude', sessionId: OLD_ID } })];
+
+    it('a pane-exact SessionStart from a process start (startup, resume) that binds a new session id is a restart', () => {
+      for (const source of ['startup', 'resume']) {
+        expect(restarts(bound, { ptyId: 'pty-a', payload: { source } })).toEqual([['pty-a', 'claude']]);
+      }
+    });
+
+    it('a clear or a compaction (the same process), the same session id, or a guessed route is not', () => {
+      for (const source of ['clear', 'compact', undefined]) {
+        expect(restarts(bound, { ptyId: 'pty-a', payload: source ? { source } : {} })).toEqual([]);
+      }
+      expect(restarts(bound, { ptyId: 'pty-a', agentSessionId: OLD_ID, payload: { source: 'startup' } })).toEqual([]);
+      expect(restarts(bound, { payload: { source: 'startup' } })).toEqual([]);
+    });
+  });
+
   describe('transcript nudge (Chat View)', () => {
     // All five kinds a resolved signal can carry. Chat View needs every one:
     // the stop kinds are turn boundaries (and the first nudge that can carry a

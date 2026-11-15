@@ -47,6 +47,17 @@ export interface DeliveryPresenceDeps {
   /** Name the current pick under the shell, replacing the tracked record
    *  without recording a death for a pid still running; bounded like probe. */
   reprobe(id: string, shellPid: number, timeoutMs: number): Promise<boolean>;
+  /**
+   * The pane's agent restarted since the tracked record was taken: a
+   * pane-exact SessionStart from a process start (`startup`, `resume`, never a
+   * clear or a compaction) with a new session id, not yet followed by the
+   * tracker's next record for the pane (HookIngest onAgentRestart). The
+   * record is superseded: it is named again even with no command known to run.
+   */
+  restartedSince?(id: string): boolean;
+  /** A re-probe whose enumeration started at or after `since` found no agent
+   *  anywhere under the shell, settled or not (AgentProcessTracker.reprobeSawNoAgent). */
+  noAgentUnderShell?(id: string, since: number): boolean;
   /** Fresh: the tracked agent is still this pane's `slug` agent and running. */
   agentRunning(id: string, slug: AgentSlug): Promise<boolean>;
   /** Fresh: an exec unit's root process is the `slug` agent. */
@@ -155,13 +166,20 @@ export async function deliveryPresence(
     // made while the new one was launching): name the current pick once and
     // decide on that. The re-probe only names; it records no death for a pid
     // still running (a gone one dies through the monitor as before).
-    if (session.commandRunning !== true) return refuse('not-running');
+    if (session.commandRunning !== true && deps.restartedSince?.(id) !== true) return refuse('not-running');
     const oldPid = deps.agentPid(id);
+    const askedAt = Date.now();
     const named = await deps.reprobe(id, session.shellPid, DELIVERY_PRESENCE_PROBE_MS).catch(() => false);
     const now = deps.tracked(id);
     const nowSlug = named && now?.alive ? now.slug : undefined;
     const running = !!nowSlug && (!expectAgent || nowSlug === expectAgent) && await deps.agentRunning(id, nowSlug).catch(() => false);
-    deps.log?.(`[delivery-presence] pane ${JSON.stringify(id)}: tracked ${tracked.slug} pid ${oldPid ?? '?'} is not running under a running command; re-probe → ${running ? `${nowSlug} pid ${deps.agentPid(id) ?? '?'}` : nowSlug && expectAgent && nowSlug !== expectAgent ? `another agent (${nowSlug})` : 'still pending'}`);
+    // The pane has no agent only when the re-probe ran, recorded the tracked
+    // pid's death (gone from the table), and saw no agent at all under the
+    // shell: a plain command runs there. Any agent in the tree, even one still
+    // settling (a fast relaunch), keeps it pending, so no send is dropped.
+    const ended = named && !!now && !now.alive && deps.noAgentUnderShell?.(id, askedAt) === true;
+    deps.log?.(`[delivery-presence] pane ${JSON.stringify(id)}: tracked ${tracked.slug} pid ${oldPid ?? '?'} is not running ${session.commandRunning === true ? 'under a running command' : 'after the agent restarted'}; re-probe → ${running ? `${nowSlug} pid ${deps.agentPid(id) ?? '?'}` : nowSlug && expectAgent && nowSlug !== expectAgent ? `another agent (${nowSlug})` : ended ? 'its exit, no agent named' : 'still pending'}`);
+    if (ended) return refuse('agent-ended');
     if (nowSlug && expectAgent && nowSlug !== expectAgent) return refuse('other-agent');
     return running && nowSlug ? trackedRunning(nowSlug) : refuse('attribution-pending');
   }
