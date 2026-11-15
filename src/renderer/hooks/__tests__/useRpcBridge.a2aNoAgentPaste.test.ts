@@ -173,7 +173,7 @@ describe('a2a.broadcast', () => {
 // main's gate, which reads the pane before anything is written; with no agent
 // there, nothing is (agent_unverified, reported as no_agent_pane as before).
 describe('a2a.task.send to a pane with no agent named here yet', () => {
-  type Gated = ReturnType<typeof vi.fn<(ptyId: string, text: string, opts: Record<string, unknown>) => Promise<Record<string, unknown>>>>;
+  type Gated = ReturnType<typeof vi.fn<(ptyId: string, text: string, agent?: string | null, opts?: Record<string, unknown>) => Promise<Record<string, unknown>>>>;
   let gated: Gated;
   /** Main's answer for the target pane. */
   let mainAnswer: Record<string, unknown>;
@@ -246,16 +246,26 @@ describe('a2a.task.send to a pane with no agent named here yet', () => {
     expect((await send({ paneId: TARGET_PANE })).delivery).toMatchObject({ notified: false, reason: 'gate_unavailable' });
   });
 
-  it('a pane known to be at its shell prompt, or whose agent ended, or still named after an ended agent, never asks main', async () => {
+  it("this window's maps say the pane is at its shell prompt (they refresh every 15 s), main's presence says agent: it goes to main and is typed", async () => {
+    useStore.getState().hydrateCommandRunning({ [PTY]: false });
+    const result = await send({ paneId: TARGET_PANE });
+    expect(gated).toHaveBeenCalledTimes(1);
+    expect(result.delivery).toMatchObject({ notified: true, mode: 'nudge' });
+    expect(writesToTarget().join('')).toContain('[wmux] new A2A task');
+  });
+
+  it('a stale ended-agent flag or a leftover name does not stop the ask, and main is given no agent name to expect', async () => {
     const s = useStore.getState();
-    s.hydrateCommandRunning({ [PTY]: false });
-    expect((await send({ paneId: TARGET_PANE })).delivery).toMatchObject(NO_AGENT);
-    s.hydrateCommandRunning({});
     s.hydrateAgentAlive({ [PTY]: false });
-    expect((await send({ paneId: TARGET_PANE })).delivery).toMatchObject(NO_AGENT);
     s.setSurfaceAgent(PTY, 'Claude Code', 'idle', 'claude');
-    expect((await send({ paneId: TARGET_PANE })).delivery).toMatchObject(NO_AGENT);
-    expect(gated).not.toHaveBeenCalled();
+    mainAnswer = { ok: false, reason: 'agent_unverified', detail: 'delivery: shell at its prompt' };
+    const result = await send({ paneId: TARGET_PANE, gatedDelivery: true, deliveryDeadlineAt: Date.now() + 60_000 });
+    expect(gated).toHaveBeenCalledTimes(1);
+    const [, , agent, opts] = gated.mock.calls[0] as unknown as [string, string, string | null | undefined, Record<string, unknown> | undefined];
+    expect(agent ?? undefined).toBeUndefined();
+    expect(opts?.expectAgent).toBeUndefined();
+    // Main found no agent: nothing written, reported as before.
+    expect(result.delivery).toMatchObject(NO_AGENT);
     expect(writesToTarget()).toEqual([]);
   });
 
