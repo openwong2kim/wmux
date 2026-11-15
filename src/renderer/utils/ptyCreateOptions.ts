@@ -4,6 +4,8 @@ import type { FanoutOrigin } from '../../shared/fanoutOrigin';
 import { applyRoleBinding, type RoleBinding, type WmuxTools } from '../../shared/orchestratorRole';
 import type { CustomAgent } from '../../shared/customAgents';
 import { commandLauncherStem } from '../../shared/fanoutPreset';
+import { isLinuxCwd } from '../../shared/wslTarget';
+import { wslShareToLinux } from '../../shared/wslPaths';
 
 export interface PtyCreateOptions {
   /** A role binding's wmux MCP tool level; main splices the flags into
@@ -189,6 +191,21 @@ export function withRoleBinding<T extends PtyCreateOptions>(
 }
 
 /**
+ * A WSL share cwd the pty create handler turned into a WSL shell is stored on
+ * the surface as the Linux path (`/home/me/repo`). A split seeded from it
+ * carries no source shell, so main would see a bare Linux cwd and not know the
+ * distro. When the workspace default is a WSL share, put the seed back inside
+ * that share (`\\\\wsl.localhost\\<distro>\\home\\me\\repo`) so main converts
+ * it the same way. Any other seed or profile is returned untouched.
+ */
+function rebaseLinuxSeed(seed: string, profileCwd: string | undefined): string {
+  if (!profileCwd || !seed.startsWith('/') || !isLinuxCwd(seed)) return seed;
+  const share = wslShareToLinux(profileCwd);
+  if (!share) return seed;
+  return `\\\\wsl.localhost\\${share.distro}${seed.replace(/\//g, '\\')}`;
+}
+
+/**
  * Resolve the starting directory for a NEW terminal (issues #173/#174/#175).
  *
  * Priority: split-inherited cwd (when the toggle is on) > workspace
@@ -203,7 +220,7 @@ export function resolveStartupCwd(args: {
   profile?: WorkspaceProfile;
   startupDirectory?: string;
 }): string | undefined {
-  if (args.splitInheritsCwd && args.splitSeed) return args.splitSeed;
+  if (args.splitInheritsCwd && args.splitSeed) return rebaseLinuxSeed(args.splitSeed, args.profile?.startupCwd);
   if (args.profile?.startupCwd) return args.profile.startupCwd;
   if (args.startupDirectory && args.startupDirectory.trim().length > 0) return args.startupDirectory.trim();
   return undefined;

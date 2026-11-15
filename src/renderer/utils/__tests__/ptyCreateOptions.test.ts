@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { wslShareToLinux } from '../../../shared/wslPaths';
 import { resolveRespawnCwd, resolveStartupCwd, shouldHealSurfaceCwd, withDefaultShell, withWorkspaceProfile, withRoleBinding } from '../ptyCreateOptions';
 
 describe('withRoleBinding (D2)', () => {
@@ -174,6 +175,39 @@ describe('resolveStartupCwd', () => {
       startupDirectory: 'C:\\global',
     })).toBe('C:\\global');
     expect(resolveStartupCwd({ splitInheritsCwd: true })).toBeUndefined();
+  });
+
+  describe('split seed that is a Linux path (WSL share workspace)', () => {
+    const share = '\\\\wsl.localhost\\Debian\\home\\me';
+
+    it('rebases a Linux seed into the profile WSL share so main converts it', () => {
+      const out = resolveStartupCwd({
+        splitSeed: '/home/me/repo',
+        splitInheritsCwd: true,
+        profile: { startupCwd: share },
+      });
+      expect(out).toBe('\\\\wsl.localhost\\Debian\\home\\me\\repo');
+      expect(wslShareToLinux(out!)).toEqual({ distro: 'Debian', linuxPath: '/home/me/repo' });
+    });
+
+    it('rebases the Linux root', () => {
+      const out = resolveStartupCwd({ splitSeed: '/', splitInheritsCwd: true, profile: { startupCwd: share } });
+      expect(wslShareToLinux(out!)).toEqual({ distro: 'Debian', linuxPath: '/' });
+    });
+
+    it('leaves a Linux seed alone when the profile startupCwd is not a share', () => {
+      expect(resolveStartupCwd({ splitSeed: '/home/me/repo', splitInheritsCwd: true, profile: { startupCwd: 'C:\\ws' } })).toBe('/home/me/repo');
+      expect(resolveStartupCwd({ splitSeed: '/home/me/repo', splitInheritsCwd: true })).toBe('/home/me/repo');
+    });
+
+    it('leaves a non-Linux seed alone', () => {
+      expect(resolveStartupCwd({ splitSeed: 'D:\\proj', splitInheritsCwd: true, profile: { startupCwd: share } })).toBe('D:\\proj');
+      expect(resolveStartupCwd({ splitSeed: '//host/x', splitInheritsCwd: true, profile: { startupCwd: share } })).toBe('//host/x');
+    });
+
+    it('ignores the seed entirely when splitInheritsCwd is false', () => {
+      expect(resolveStartupCwd({ splitSeed: '/home/me/repo', splitInheritsCwd: false, profile: { startupCwd: share } })).toBe(share);
+    });
   });
 
   it('ignores an empty-string split seed and falls to profile.startupCwd (#515 healthy path)', () => {
