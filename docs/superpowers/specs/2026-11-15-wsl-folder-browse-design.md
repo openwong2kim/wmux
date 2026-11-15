@@ -1,6 +1,6 @@
 # WSL folder browse and reveal — design
 
-Status: draft, awaiting owner approval. Size: small-to-medium (~6–8 files).
+Status: approved 2026-11-15, implemented. Size: small-to-medium (~6–8 files).
 No upstream issue exists (searched openwong2kim/wmux 2026-11-15).
 
 ## Intent
@@ -48,10 +48,20 @@ WSL folder or (b) reveal a WSL pane's folder in Explorer.
   `externalSessionPlacement.ts:46-61` and the `WSL_SHARE` regex in
   `cwdShape.ts:51`; accept both `\\wsl$\` and `\\wsl.localhost\`
   (case-insensitive host, as `normalizeHostPath` does). Reuse by those callers.
-- **Spawn:** in the renderer's `resolveStartupCwd` / `ptyCreateOptions.ts`
-  path, when `startupCwd` is a WSL share, create the pane with a WSL shell, the
-  distro as `wslTarget`, and the Linux cwd so `validatePtyCwdForShell` accepts
-  it. Unknown distro → clear toast, not a silent home start.
+- **Spawn:** lives in main's pty create handler, not the renderer. When the
+  create's `cwd` is a WSL share, `withWslShareCwd` (`pty.handler.ts`, first
+  step of both the daemon and local create paths) calls the pure
+  `applyWslShareCwd` (`src/shared/wslShareSpawn.ts`), which rewrites the
+  options to a WSL shell, the distro as `wslDistro`, and the Linux cwd so
+  `validatePtyCwdForShell` accepts it. The installed-distro check uses the
+  known-distro cache and enumerates `wsl.exe --list` only on a miss.
+- **Unknown distro:** the pane opens in the default WSL shell at its home (never
+  the Windows home), with one warning notification per workspace per session.
+- **Split inherit:** a pane opened from a share stores the Linux cwd on its
+  surface, so a split seeded from it would hand main a bare Linux path.
+  `resolveStartupCwd` (`ptyCreateOptions.ts`) rebases a Linux split seed into
+  the profile's WSL share (`\\wsl.localhost\<distro>` + seed) so main converts
+  it the same way; any other seed/profile is unchanged.
 - **Picker:** new `PresetPicker.tsx` row "Browse WSL folder…" (label +
   description, per DESIGN.md `+` menu rows; visible only on win32 with ≥1
   distro). Distros from `shell.wslDistros()` (`SHELL_WSL_DISTROS`). One distro
