@@ -153,7 +153,9 @@ is the one that will accept connections, and PC A is the one that joins it.
    agent, as earlier versions listed it, keeps working as a target. The entry
    also carries an id of the form `remote:<linkId>`, which works as a
    target too. If two links would have the same alias, the newer one gets
-   `#2`, `#3` and so on.
+   `#2`, `#3` and so on. A send to a name that matches nothing answers
+   with this PC's workspaces and, after them, the remote panes
+   `a2a_discover` lists for the sender's workspace.
 
    Until a pane is linked, `a2a_discover` lists the paired PC under
    `remotePeers` instead (the field is left out when there is none): its

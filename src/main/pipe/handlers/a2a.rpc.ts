@@ -503,6 +503,14 @@ export function registerA2aRpc(
   const handOuts = (): Pick<HandOutStore, 'get' | 'reserve' | 'release'> => opts.handOuts ?? getHandOutStore();
 
   /**
+   * The remote ends a2a.discover lists for a caller in `workspaceId`: the links of that workspace, every link when
+   * none is named. A remote pane is addressable only from its linked local pane.
+   */
+  function remoteTargetsOfWorkspace(targets: A2aRemoteTarget[], workspaceId: string): A2aRemoteTarget[] {
+    return targets.filter((t) => !workspaceId || t.local.workspaceId === workspaceId);
+  }
+
+  /**
    * Active links `to` names EXACTLY (no trimming, no partial match): by alias,
    * or by the `remote:<linkId>` id a2a.discover lists for the remote end
    * (`named`); and those whose alias in an earlier build (with the pane's
@@ -1352,10 +1360,7 @@ export function registerA2aRpc(
       return res;
     }
     const [targets, remotePeers] = await Promise.all([remote.listTargets().catch(() => [] as A2aRemoteTarget[]), peersP]);
-    // A remote pane is addressable only from its linked local pane: list the
-    // links of the caller's workspace (every link when no workspace is named).
-    const entries = targets
-      .filter((t) => !ws || t.local.workspaceId === ws)
+    const entries = remoteTargetsOfWorkspace(targets, ws)
       .map((t) => ({
         name: t.alias,
         description: t.kind === 'brain'
@@ -2188,6 +2193,14 @@ export function registerA2aRpc(
           })
         : sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: A2A_PASTE_MAIN_TIMEOUT_MS });
     const result = await Promise.resolve(sending).finally(() => sendRecord?.end());
+    // A name nothing here answers to: the remote panes a2a.discover lists for this workspace are named too.
+    if (isRecord(result) && result.targetNotFound === true) {
+      delete result.targetNotFound;
+      const targets = remote ? await remote.listTargets().catch(() => [] as A2aRemoteTarget[]) : [];
+      const callerWs = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+      const remoteNames = remoteTargetsOfWorkspace(targets, callerWs).map((t) => t.alias);
+      if (remoteNames.length > 0 && typeof result.error === 'string') result.error = `${result.error}; on other PCs: ${remoteNames.join(', ')}`;
+    }
 
     // 데몬 정본 미러-생성(신규 태스크 브랜치에서만 — 렌더러가 task 스냅샷 동반).
     // 실패는 soft-degrade: 이후 전이가 'task not found'로 렌더러 폴백을 탄다.

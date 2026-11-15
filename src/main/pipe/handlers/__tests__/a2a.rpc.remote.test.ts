@@ -211,6 +211,24 @@ describe('a2a.task.send — remote alias', () => {
     expect(remote.sendTask).toHaveBeenCalledTimes(1);
   });
 
+  it('a name nothing answers to lists the remote panes discover lists for the caller\'s workspace', async () => {
+    const router = setup();
+    const base = sendToRendererMock.getMockImplementation();
+    sendToRendererMock.mockImplementation(async (w: unknown, method: string, p: unknown) => (method === 'a2a.task.send'
+      ? { error: 'a2a.task.send: target "pc-b/ws-b/cod" not found. Available: Local, Other', targetNotFound: true }
+      : base?.(w, method, p)));
+    remote.listTargets.mockResolvedValue([
+      target,
+      { ...target, linkId: '33333333-3333-4333-8333-333333333333', alias: 'pc-c/elsewhere/w2-1', local: { workspaceId: 'ws-other', paneId: 'pane-o' } },
+    ]);
+    const res = await call(router, 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to: 'pc-b/ws-b/cod', message: 'hi' });
+    expect(res).toEqual({ error: `a2a.task.send: target "pc-b/ws-b/cod" not found. Available: Local, Other; on other PCs: ${ALIAS}` });
+    // No linked pane for that workspace (or no remote layer): the answer is the renderer's, without the flag.
+    remote.listTargets.mockResolvedValue([]);
+    expect(await call(router, 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to: 'nope', message: 'hi' }))
+      .toEqual({ error: 'a2a.task.send: target "pc-b/ws-b/cod" not found. Available: Local, Other' });
+  });
+
   it('a partial alias match takes the local path', async () => {
     for (const to of ['pc-b/ws-b', 'pc-b/ws-b/code', ` ${ALIAS}`, 'codex']) {
       await call(setup(), 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to, message: 'hi' });
