@@ -16,6 +16,7 @@ import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 import { registerLedgerRpc } from '../../pipe/handlers/ledger.rpc';
 import type { RpcContext } from '../../../shared/rpc';
 import {
+  POOL_HOLD_MAX_MS, POOL_REFUSING_MS, pickPoolHost, poolCandidates, poolHoldOverride, poolRootHash,
   REMOTE_ASK_GRACE_MS, REMOTE_FOLLOW_INTERVAL_MS, REMOTE_GONE_GRACE_MS, type RemoteTaskView, branchOnPc, remoteTaskReconciler, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal, remoteKeyRows,
   startRemoteFanout, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
 } from '../remoteFanout';
@@ -822,5 +823,439 @@ describe('a started task follows its A2A task', () => {
   it('keeps the caller pane on the row', async () => {
     const s = await started(1);
     expect(s.row(0).remote?.from).toEqual({ paneId: 'pane-1' });
+  });
+});
+
+
+describe('the pool (pc "any")', () => {
+  const A = '0a000000-0000-4000-8000-00000000000a';
+  const B = '0b000000-0000-4000-8000-00000000000b';
+  const C = '0c000000-0000-4000-8000-00000000000c';
+  const targets = (roots = ['repo'], agents: ('claude' | 'codex')[] = ['claude']) => ({ v: 1 as const, version: 1, roots: roots.map((id) => ({ id, label: id })), agents });
+  const placeOf = (hostId: string, over: Record<string, unknown> = {}) => ({ hostId, name: `pc-${hostId.slice(1, 2)}`, online: true, supported: true, targets: targets(), ...over });
+
+  /** Several PCs, the requester's contract: a request key answers with the stored request, keyed by PC and spawn id. */
+  function poolDaemon(places: ReturnType<typeof placeOf>[]) {
+    const requests = new Map<string, A2aSpawnOutgoingSummary>(); // hostId:spawnId
+    const byKey = new Map<string, string>();
+    const asks: A2aSpawnAskInput[] = [];
+    const missions = new Map<string, { taskId: string; channelId: string }>();
+    const closedSet = new Set<string>();
+    const local: { error?: 'unavailable' | 'not-supported' } = {};
+    const daemon: RemoteFanoutDaemon = {
+      ask: vi.fn(async (input: A2aSpawnAskInput) => {
+        asks.push(input);
+        if (local.error) return { ok: false as const, error: local.error };
+        const k = `${input.callerKey}:${input.requestKey}`;
+        const known = byKey.get(k);
+        if (known) return { ok: true as const, spawn: requests.get(known)!, online: true };
+        const at = new Date(0).toISOString();
+        const id = `${input.pc}:${input.spawnId}`;
+        if (requests.has(id)) throw new Error(`spawn request ${input.spawnId}: already recorded`);
+        const spawn: A2aSpawnOutgoingSummary = {
+          hostId: input.pc as never, hostName: input.pc, spawnId: input.spawnId!, agent: 'claude', rootId: input.folder.root, from: input.from,
+          state: 'sent', createdAt: at, updatedAt: at, expiresAt: at,
+        };
+        requests.set(id, spawn);
+        byKey.set(k, id);
+        return { ok: true as const, spawn, online: true };
+      }),
+      outgoing: async () => ({ requests: [...requests.values()], places: places as never }),
+      revokeLink: vi.fn(async () => undefined),
+      missionStart: async ({ idempotencyKey }) => {
+        let m = missions.get(idempotencyKey);
+        if (!m) {
+          const i = missions.size + 1;
+          m = { taskId: `wtask-p${i}`, channelId: `ch-p${i}` };
+          missions.set(idempotencyKey, m);
+        }
+        return m;
+      },
+      missionClose: async () => undefined,
+      closedMissions: async () => closedSet,
+      selfHostId: async () => SELF,
+      linkRemoteWorkspace: async () => null,
+      taskStates: vi.fn(async () => []),
+    };
+    /** That PC answers the request "full". */
+    const refuseFull = (hostId: string, spawnId: string) => {
+      const id = `${hostId}:${spawnId}`;
+      requests.set(id, { ...requests.get(id)!, state: 'refused', code: 'rate-limited' });
+    };
+    return { daemon, asks, requests, refuseFull, local, closedSet };
+  }
+
+  /** Timers held here: `fire` runs the one scheduled pass and waits for it. */
+  function heldTimers(deps: RemoteFanoutDeps) {
+    const scheduled: Array<{ fn: () => void; ms: number }> = [];
+    const timers = { set: (fn: () => void, ms: number) => { scheduled.push({ fn, ms }); return scheduled.length; }, clear: () => { scheduled.length = 0; } };
+    const fire = async () => {
+      const next = scheduled.shift();
+      if (!next) throw new Error('no pass is scheduled');
+      next.fn();
+      await reconcileRemoteTasks(deps);
+      await new Promise((r) => setImmediate(r));
+    };
+    return { scheduled, timers, fire };
+  }
+
+  it('a held task fails at its limit with nobody calling again: a pass is scheduled for it', async () => {
+    let now = 1_000_000;
+    const p = poolDaemon([placeOf(A)]);
+    const deps: RemoteFanoutDeps = { ...depsOf(p.daemon), now: () => now, poolHoldMs: 25_000 };
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    const id = deps.ledger.list()[0].id;
+    p.refuseFull(A, deps.ledger.get(id)!.remote!.spawnId);
+    const t = heldTimers(deps);
+    const reconcile = remoteTaskReconciler(() => deps, t.timers);
+    await reconcile();
+    await new Promise((r) => setImmediate(r));
+    expect(deps.ledger.get(id)!.remote?.state).toBe('held');
+    expect(t.scheduled.map((x) => x.ms)).toEqual([REMOTE_FOLLOW_INTERVAL_MS]);
+    while (deps.ledger.get(id)!.status !== 'failed') {
+      now += t.scheduled[0].ms;
+      await t.fire();
+    }
+    // The last wait was cut to the limit, not a whole follow interval.
+    expect(now).toBe(1_000_000 + 25_000);
+    expect(deps.ledger.get(id)!.summary).toBe(remoteCodeText('pc-full', 'pc-a'));
+    expect(t.scheduled).toEqual([]);
+    expect(p.asks).toHaveLength(1);
+    reconcile.stop();
+  });
+
+  it('a task that ran out of time keeps its own reason on later passes', async () => {
+    let now = 1_000_000;
+    const p = poolDaemon([placeOf(A)]);
+    const deps = { ...depsOf(p.daemon), now: () => now };
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    const id = deps.ledger.list()[0].id;
+    p.refuseFull(A, deps.ledger.get(id)!.remote!.spawnId);
+    await reconcileRemoteTasks(deps);
+    now += POOL_HOLD_MAX_MS;
+    await reconcileRemoteTasks(deps);
+    await reconcileRemoteTasks(deps);
+    expect(deps.ledger.get(id)).toMatchObject({ status: 'failed', summary: remoteCodeText('pc-full', 'pc-a'), remote: { state: 'expired', code: 'pc-full' } });
+  });
+
+  it('a placement this PC cannot store or queue waits held; one its daemon refuses outright fails', async () => {
+    const now = 1_000_000;
+    const p = poolDaemon([placeOf(A)]);
+    const deps = { ...depsOf(p.daemon), now: () => now };
+    p.local.error = 'unavailable';
+    const res = await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    if ('error' in res) throw new Error(res.error);
+    expect(res.tasks[0]).toMatchObject({ ok: true, state: 'held', pending: { waitingOn: 'pc-full' } });
+    expect(deps.ledger.list()[0].status).not.toBe('failed');
+    p.local.error = 'not-supported';
+    const other = await startRemoteFanout(request(1, { pc: 'any', idempotencyKey: 'k2', scopedKey: 'ws-owner::k2' }), deps);
+    if ('error' in other) throw new Error(other.error);
+    expect(other.tasks[0]).toMatchObject({ ok: false });
+  });
+
+  it('a paired PC named "any" is reached by its host id, as a named PC', async () => {
+    const p = poolDaemon([placeOf(A, { name: 'any' })]);
+    const deps = depsOf(p.daemon);
+    const res = await startRemoteFanout(request(1, { pc: A }), deps);
+    if ('error' in res) throw new Error(res.error);
+    expect(res).toMatchObject({ hostId: A, pc: 'any' });
+    expect(deps.ledger.list()[0].remote?.pool).toBeUndefined();
+  });
+
+  it('the test-only hold limit is read only when set to a shorter whole number of ms', () => {
+    const before = process.env['WMUX_TEST_POOL_HOLD_MS'];
+    try {
+      delete process.env['WMUX_TEST_POOL_HOLD_MS'];
+      expect(poolHoldOverride()).toEqual({});
+      for (const bad of ['', '0', '-5', '1.5', 'abc', String(POOL_HOLD_MAX_MS * 2)]) {
+        process.env['WMUX_TEST_POOL_HOLD_MS'] = bad;
+        expect(poolHoldOverride()).toEqual({});
+      }
+      process.env['WMUX_TEST_POOL_HOLD_MS'] = '60000';
+      expect(poolHoldOverride()).toEqual({ poolHoldMs: 60_000 });
+    } finally {
+      if (before === undefined) delete process.env['WMUX_TEST_POOL_HOLD_MS'];
+      else process.env['WMUX_TEST_POOL_HOLD_MS'] = before;
+    }
+  });
+
+  it('takes only online PCs that start Claude in that folder', () => {
+    const list = [
+      placeOf(A), placeOf(B, { online: false }), placeOf(C, { supported: false }),
+      placeOf('0d000000-0000-4000-8000-00000000000d', { targets: undefined }),
+      placeOf('0e000000-0000-4000-8000-00000000000e', { targets: targets(['other']) }),
+      placeOf('0f000000-0000-4000-8000-00000000000f', { targets: targets(['repo'], ['codex']) }),
+    ];
+    expect(poolCandidates(list as never, 'repo', null).map((p) => p.hostId)).toEqual([A]);
+  });
+
+  describe('the folder across PCs (each PC names its folders itself)', () => {
+    const H1 = '1'.repeat(32);
+    const H2 = '2'.repeat(32);
+    const roots = (...rs: Array<{ id: string; label?: string; originKeyHash?: string }>) => ({
+      v: 1 as const, version: 1, roots: rs.map((r) => ({ label: 'r', ...r })), agents: ['claude' as const],
+    });
+
+    it('matches by origin hash, never by label, and a folder with no hash by its id alone', () => {
+      const list = [
+        placeOf(A, { targets: roots({ id: 'r-a', originKeyHash: H1 }) }),
+        placeOf(B, { targets: roots({ id: 'r-b', originKeyHash: H1 }, { id: 'r-x', originKeyHash: H2 }) }),
+        // Same label, another repository: never a candidate.
+        placeOf(C, { targets: roots({ id: 'r-c', originKeyHash: H2 }) }),
+      ];
+      expect(poolRootHash(list as never, 'r-a')).toBe(H1);
+      expect(poolCandidates(list as never, 'r-a', H1).map((p) => [p.hostId, p.poolRoot])).toEqual([[A, 'r-a'], [B, 'r-b']]);
+      // A PC that sends no tag (an older one, or one that cannot read the origin now) is matched by the id itself.
+      const mixed = [...list, placeOf('0d000000-0000-4000-8000-00000000000d', { targets: roots({ id: 'r-a' }) }), placeOf('0e000000-0000-4000-8000-00000000000e', { targets: roots({ id: 'r-e' }) })];
+      expect(poolCandidates(mixed as never, 'r-a', H1).map((p) => p.poolRoot)).toEqual(['r-a', 'r-b', 'r-a']);
+      // No hash: the id itself, wherever it is offered, and nothing else.
+      const bare = [placeOf(A, { targets: roots({ id: 'r-a' }) }), placeOf(B, { targets: roots({ id: 'r-b' }) })];
+      expect(poolRootHash(bare as never, 'r-a')).toBeNull();
+      expect(poolCandidates(bare as never, 'r-a', null).map((p) => [p.hostId, p.poolRoot])).toEqual([[A, 'r-a']]);
+      // One id with two different hashes cannot be told apart.
+      expect(poolRootHash([placeOf(A, { targets: roots({ id: 'r-a', originKeyHash: H1 }) }), placeOf(B, { targets: roots({ id: 'r-a', originKeyHash: H2 }) })] as never, 'r-a')).toBe('ambiguous');
+    });
+
+    it('places tasks on PCs with different ids for the same repository, each asked with its own id', async () => {
+      const p = poolDaemon([placeOf(A, { targets: roots({ id: 'r-a', originKeyHash: H1 }) }), placeOf(B, { targets: roots({ id: 'r-b', originKeyHash: H1 }) })]);
+      const deps = depsOf(p.daemon);
+      const res = await startRemoteFanout(request(2, { pc: 'any', root: 'r-a' }), deps);
+      if ('error' in res) throw new Error(res.error);
+      expect(p.asks.map((a) => [a.pc, a.folder.root])).toEqual([[A, 'r-a'], [B, 'r-b']]);
+      const rows = remoteKeyRows(deps.ledger, 'ws-owner::k1');
+      expect(rows.map((e) => [e.remote?.hostId, e.remote?.root, e.remote?.pool?.rootHash])).toEqual([[A, 'r-a', H1], [B, 'r-b', H1]]);
+    });
+
+    it('refuses the call when one id carries two different hashes, before anything is written', async () => {
+      const p = poolDaemon([placeOf(A, { targets: roots({ id: 'r-a', originKeyHash: H1 }) }), placeOf(B, { targets: roots({ id: 'r-a', originKeyHash: H2 }) })]);
+      const deps = depsOf(p.daemon);
+      expect(await startRemoteFanout(request(1, { pc: 'any', root: 'r-a' }), deps)).toEqual({ error: expect.stringMatching(/different repositories/) });
+      expect(deps.ledger.list()).toEqual([]);
+      expect(p.asks).toEqual([]);
+    });
+
+    it('a held task placed anew asks with the new PC\'s own id, by the hash kept on the row even with the first PC gone', async () => {
+      let now = 1_000_000;
+      const places = [placeOf(A, { targets: roots({ id: 'r-a', originKeyHash: H1 }) }), placeOf(B, { targets: roots({ id: 'r-b', originKeyHash: H1 }) })];
+      const p = poolDaemon(places);
+      const deps = { ...depsOf(p.daemon), now: () => now };
+      await startRemoteFanout(request(1, { pc: 'any', root: 'r-a' }), deps);
+      const first = deps.ledger.list()[0];
+      p.refuseFull(A, first.remote!.spawnId);
+      now += 1000;
+      await reconcileRemoteTasks(deps);
+      // The PC that minted r-a goes offline: the row's hash still finds B's folder.
+      places[0] = placeOf(A, { online: false, targets: undefined });
+      await startRemoteFanout(request(1, { pc: 'any', root: 'r-a' }), deps);
+      expect(p.asks[p.asks.length - 1]).toMatchObject({ pc: B, folder: { root: 'r-b' } });
+      // Bring-back, cancel and the follow-up read this row: it names B and B's id for the folder.
+      expect(deps.ledger.get(first.id)!.remote).toMatchObject({ hostId: B, root: 'r-b', state: 'sent', pool: { attempt: 1, rootHash: H1 } });
+    });
+  });
+
+  it('picks the PC with the fewest of this PC\'s open tasks, the lowest host id on a tie, and passes over one that was full lately', () => {
+    const now = 10 * POOL_REFUSING_MS;
+    const row = (hostId: string, state: string, pool?: Record<string, unknown>, status = 'working') => ({ status, remote: { hostId, state, ...(pool ? { pool } : {}) } });
+    const places = [placeOf(B), placeOf(A), placeOf(C)] as never;
+    expect(pickPoolHost(places, [], now)?.hostId).toBe(A);
+    expect(pickPoolHost(places, [row(A, 'started'), row(B, 'sent')] as never, now)?.hostId).toBe(C);
+    // Closed rows and held rows carry no load.
+    expect(pickPoolHost(places, [row(A, 'started', undefined, 'completed'), row(A, 'held')] as never, now)?.hostId).toBe(A);
+    // A PC that answered full within POOL_REFUSING_MS is passed over; after that it is taken again.
+    const full = row(B, 'held', { attempt: 0, refusals: [{ hostId: A, at: now - 1 }] });
+    expect(pickPoolHost(places, [full] as never, now)?.hostId).toBe(B);
+    expect(pickPoolHost(places, [row(B, 'held', { attempt: 0, refusals: [{ hostId: A, at: now - POOL_REFUSING_MS }] })] as never, now)?.hostId).toBe(A);
+    expect(pickPoolHost([placeOf(A)] as never, [full] as never, now)).toBeNull();
+  });
+
+  it('refuses the call when no PC can take it, before anything is written', async () => {
+    const p = poolDaemon([placeOf(A, { online: false })]);
+    const deps = depsOf(p.daemon);
+    expect(await startRemoteFanout(request(1, { pc: 'any' }), deps)).toEqual({ error: expect.stringMatching(/no paired PC that is online offers the folder repo/) });
+    expect(deps.ledger.list()).toEqual([]);
+    expect(p.asks).toEqual([]);
+  });
+
+  it('spreads the tasks over the PCs by this PC\'s open tasks, one request each, and names each task\'s PC', async () => {
+    const p = poolDaemon([placeOf(B), placeOf(A)]);
+    const deps = depsOf(p.daemon);
+    const res = await startRemoteFanout(request(3, { pc: 'any' }), deps);
+    if ('error' in res) throw new Error(res.error);
+    expect(res.pc).toBe('any');
+    expect(res.hostId).toBeUndefined();
+    expect(p.asks.map((a) => a.pc)).toEqual([A, B, A]);
+    expect(res.tasks.map((t) => [t.hostId, t.pc, t.state])).toEqual([[A, 'pc-a', 'sent'], [B, 'pc-b', 'sent'], [A, 'pc-a', 'sent']]);
+    const keys = remoteFanoutKeys('ws-owner::k1');
+    expect(p.asks.map((a) => a.spawnId)).toEqual([0, 1, 2].map((k) => keys.spawnId(k)));
+    expect(p.asks.every((a) => SPAWN_REQUEST_KEY_RE.test(a.requestKey!))).toBe(true);
+    // The same call again is a poll: nothing is asked twice.
+    await startRemoteFanout(request(3, { pc: 'any' }), deps);
+    expect(p.asks).toHaveLength(3);
+  });
+
+  it('a task a PC answers full is held with no request out, then the next call places it on a PC with room, asked of one PC at a time', async () => {
+    let now = 1_000_000;
+    const p = poolDaemon([placeOf(A), placeOf(B)]);
+    const deps = { ...depsOf(p.daemon), now: () => now };
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    const first = deps.ledger.list()[0];
+    expect(first.remote).toMatchObject({ hostId: A, state: 'sent', pool: { attempt: 0 } });
+    // A placed request is never moved: a task is asked of one PC at a time.
+    expect(await deps.ledger.placeRemote(first.id, { hostId: B, pc: 'pc-b', spawnId: remoteFanoutKeys('ws-owner::k1').poolSpawnId(0, 1), root: 'repo', attempt: 1 })).toBeNull();
+
+    p.refuseFull(A, first.remote!.spawnId);
+    now += 1000;
+    await reconcileRemoteTasks(deps);
+    const held = deps.ledger.get(first.id)!;
+    expect(held.status).not.toBe('failed');
+    expect(held.remote).toMatchObject({ hostId: A, state: 'held', pool: { attempt: 0, refusals: [{ hostId: A, at: now }], heldSince: now } });
+    expect(held.remote?.code).toBeUndefined();
+
+    // The next call: A answered full lately, so the task goes to B, under a new spawn id and request key.
+    const asksBefore = p.asks.length;
+    const res = await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    if ('error' in res) throw new Error(res.error);
+    expect(p.asks.length).toBe(asksBefore + 1);
+    const again = p.asks[p.asks.length - 1];
+    const keys = remoteFanoutKeys('ws-owner::k1');
+    expect(again).toMatchObject({ pc: B, spawnId: keys.poolSpawnId(0, 1), requestKey: keys.poolRequestKey(0, B, 1) });
+    expect(again.spawnId).not.toBe(first.remote!.spawnId);
+    // Its earlier request had ended (refused) before this one was sent.
+    expect(p.requests.get(`${A}:${first.remote!.spawnId}`)?.state).toBe('refused');
+    const placed = deps.ledger.get(first.id)!;
+    expect(placed.remote).toMatchObject({ hostId: B, pc: 'pc-b', spawnId: keys.poolSpawnId(0, 1), state: 'sent', pool: { attempt: 1 }, requestDigest: 'd'.repeat(64) });
+    // The row is still found from the key alone.
+    expect(remoteKeyRows(deps.ledger, 'ws-owner::k1').map((e) => e.id)).toEqual([first.id]);
+    expect(res.tasks[0]).toMatchObject({ ok: true, hostId: B, state: 'sent' });
+  });
+
+  it('keeps every PC that answered full: with both full lately, the task stays held', async () => {
+    let now = 1_000_000;
+    const p = poolDaemon([placeOf(A), placeOf(B)]);
+    const deps = { ...depsOf(p.daemon), now: () => now };
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    const id = deps.ledger.list()[0].id;
+    p.refuseFull(A, deps.ledger.get(id)!.remote!.spawnId);
+    await reconcileRemoteTasks(deps);
+    now += 1000;
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    expect(deps.ledger.get(id)!.remote).toMatchObject({ hostId: B, state: 'sent' });
+    p.refuseFull(B, deps.ledger.get(id)!.remote!.spawnId);
+    now += 1000;
+    await reconcileRemoteTasks(deps);
+    expect(deps.ledger.get(id)!.remote?.pool?.refusals?.map((f) => f.hostId)).toEqual([A, B]);
+    const asks = p.asks.length;
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    expect(deps.ledger.get(id)!.remote?.state).toBe('held');
+    expect(p.asks).toHaveLength(asks);
+  });
+
+  it('a held task whose mission was closed answers closed with its reason, not held', async () => {
+    let now = 1_000_000;
+    const p = poolDaemon([placeOf(A)]);
+    const deps = { ...depsOf(p.daemon), now: () => now };
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    const id = deps.ledger.list()[0].id;
+    p.refuseFull(A, deps.ledger.get(id)!.remote!.spawnId);
+    now += 1000;
+    await reconcileRemoteTasks(deps);
+    expect(deps.ledger.get(id)!.remote?.state).toBe('held');
+    await (deps.ledger as TaskLedger).closeTask(id);
+    p.closedSet.add(id);
+    const asks = p.asks.length;
+    const res = await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    if ('error' in res) throw new Error(res.error);
+    expect(res.tasks[0]).toMatchObject({ ok: false, taskId: id, reason: 'WorkTask closed' });
+    expect(res.tasks[0].state).toBeUndefined();
+    expect(res.tasks[0].pending).toBeUndefined();
+    expect(p.asks).toHaveLength(asks);
+  });
+
+  it('answers the tasks it placed when no PC can take a new one, and refuses only a call with none', async () => {
+    const places = [placeOf(A)];
+    const p = poolDaemon(places);
+    const deps = depsOf(p.daemon);
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    places[0] = placeOf(A, { online: false });
+    const res = await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    if ('error' in res) throw new Error(res.error);
+    expect(res.tasks[0]).toMatchObject({ ok: true, hostId: A, state: 'sent' });
+    expect(p.asks).toHaveLength(1);
+  });
+
+  it('a held task polled past its time is not placed again, and fails', async () => {
+    let now = 1_000_000;
+    const p = poolDaemon([placeOf(A), placeOf(B)]);
+    const deps = { ...depsOf(p.daemon), now: () => now };
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    const id = deps.ledger.list()[0].id;
+    p.refuseFull(A, deps.ledger.get(id)!.remote!.spawnId);
+    await reconcileRemoteTasks(deps);
+    now += POOL_HOLD_MAX_MS;
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    expect(p.asks).toHaveLength(1);
+    expect(deps.ledger.get(id)!.status).toBe('failed');
+  });
+
+  it('the ledger expires only the placement it was asked about, and caps placements', async () => {
+    const now = 1_000_000;
+    const p = poolDaemon([placeOf(A), placeOf(B)]);
+    const deps = { ...depsOf(p.daemon), now: () => now };
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    const first = deps.ledger.list()[0];
+    p.refuseFull(A, first.remote!.spawnId);
+    await reconcileRemoteTasks(deps);
+    const keys = remoteFanoutKeys('ws-owner::k1');
+    const ledger = deps.ledger as TaskLedger;
+    expect(await ledger.placeRemote(first.id, { hostId: B, pc: 'pc-b', spawnId: keys.poolSpawnId(0, 1001), root: 'repo', attempt: 1001 })).toBeNull();
+    const placed = await ledger.placeRemote(first.id, { hostId: B, pc: 'pc-b', spawnId: keys.poolSpawnId(0, 1), root: 'repo', attempt: 1 });
+    expect(placed?.remote?.state).toBe('sent');
+    // An expiry read against the earlier, held placement leaves the new one alone.
+    const after = await ledger.updateRemote(first.id, { state: 'expired', code: 'pc-full' }, undefined, { state: 'held', spawnId: first.remote!.spawnId });
+    expect(after?.remote).toMatchObject({ state: 'sent', spawnId: keys.poolSpawnId(0, 1) });
+  });
+
+  it('stays held while every PC is full, and fails once held past the limit', async () => {
+    let now = 1_000_000;
+    const p = poolDaemon([placeOf(A)]);
+    const deps = { ...depsOf(p.daemon), now: () => now };
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    const id = deps.ledger.list()[0].id;
+    p.refuseFull(A, deps.ledger.get(id)!.remote!.spawnId);
+    await reconcileRemoteTasks(deps);
+    const res = await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    if ('error' in res) throw new Error(res.error);
+    expect(res.tasks[0]).toMatchObject({ ok: true, state: 'held', pending: { waitingOn: 'pc-full' } });
+    expect(p.asks).toHaveLength(1);
+    now += POOL_HOLD_MAX_MS;
+    await reconcileRemoteTasks(deps);
+    const row = deps.ledger.get(id)!;
+    expect(row.status).toBe('failed');
+    expect(row.summary).toBe(remoteCodeText('pc-full', 'pc-a'));
+    expect(p.asks).toHaveLength(1);
+  });
+
+  it('a new task with every PC full lately is written held, with no request', async () => {
+    const now = 1_000_000;
+    const p = poolDaemon([placeOf(A)]);
+    const deps = { ...depsOf(p.daemon), now: () => now };
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    p.refuseFull(A, deps.ledger.list()[0].remote!.spawnId);
+    await reconcileRemoteTasks(deps);
+    const res = await startRemoteFanout(request(1, { pc: 'any', idempotencyKey: 'k2', scopedKey: 'ws-owner::k2' }), deps);
+    if ('error' in res) throw new Error(res.error);
+    expect(res.tasks[0]).toMatchObject({ ok: true, state: 'held', pending: { waitingOn: 'pc-full' }, hostId: A });
+    expect(p.asks).toHaveLength(1);
+  });
+
+  it('a task with a PC named keeps today\'s behaviour: a full answer fails it', async () => {
+    const p = poolDaemon([placeOf(A)]);
+    const deps = depsOf(p.daemon);
+    await startRemoteFanout(request(1, { pc: A }), deps);
+    const row = deps.ledger.list()[0];
+    expect(row.remote?.pool).toBeUndefined();
+    p.refuseFull(A, row.remote!.spawnId);
+    await reconcileRemoteTasks(deps);
+    expect(deps.ledger.get(row.id)?.status).toBe('failed');
   });
 });

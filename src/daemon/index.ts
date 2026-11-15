@@ -146,6 +146,7 @@ import { A2aOffers } from './a2aRemote/offers';
 import { OfferStore } from './a2aRemote/offerStore';
 import { A2aRemoteDelivery, shareOfferFeatures } from './a2aRemote/delivery';
 import { A2aSpawnReceiver, registerSpawnRpc } from './a2aRemote/spawnReceiver';
+import { SpawnRootKeys } from './a2aRemote/spawnRootHash';
 import { SpawnPolicyStore } from './a2aRemote/spawnPolicyStore';
 import { SpawnRequestStore } from './a2aRemote/spawnRequestStore';
 import { SpawnLinkStore } from './a2aRemote/spawnLinkStore';
@@ -177,7 +178,7 @@ import { A2A_REMOTE_RPC } from '../shared/a2aRemoteDelivery';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
-import { A2A_FEATURE_BUNDLE, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
+import { A2A_FEATURE_BUNDLE, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
@@ -10863,9 +10864,14 @@ async function main(): Promise<void> {
         log: a2aLog,
       })
       : null;
+    // Each allowed folder's origin, read at start, on a save and on each sweep: a PC that places tasks
+    // across PCs finds the same repository by it (sent as a tag keyed per requester).
+    const a2aRootKeys = new SpawnRootKeys(() => a2aSpawnPolicy.get());
+    const a2aRootKeysRead = a2aRootKeys.refresh();
     const a2aSpawn = new A2aSpawnReceiver({
       policy: a2aSpawnPolicy,
       requests: a2aSpawnRequests,
+      rootHash: (requester, rootPath) => a2aRootKeys.hashFor(requester, rootPath),
       enqueue: (hostId, envelope) => {
         if (!a2aDelivery) throw new Error('messages between PCs are not carried this run');
         a2aDelivery.outbox.enqueue(hostId, envelope);
@@ -11100,7 +11106,7 @@ async function main(): Promise<void> {
     registerSpawnRpc(onA2aRpc, {
       policy: a2aSpawnPolicy,
       requests: a2aSpawnRequests,
-      onSaved: (previous) => a2aSpawn.sendTargets(previous),
+      onSaved: (previous) => void a2aRootKeys.refresh().then(() => a2aSpawn.sendTargets(previous)),
       outsideApp: {
         isApp: (clientId) => pipeServer.isFirstParty(clientId),
         isPaired: (hostId) => (isHostId(hostId) && a2aRemoteHosts.get(hostId) !== undefined)
@@ -11144,6 +11150,12 @@ async function main(): Promise<void> {
       const refresh = a2aLinkHandlers.get('a2a.remote.links.refresh');
       a2aDelivery = new A2aRemoteDelivery({
         dir: a2aDir,
+        // A PC that now reads folder origin tags gets its targets again, with them (the policy version unchanged).
+        onPeerFeatures: (hostId, before, after) => {
+          if (!before?.has(A2A_FEATURE_SPAWN_ROOT_HASH) && after?.has(A2A_FEATURE_SPAWN_ROOT_HASH)) {
+            void a2aRootKeysRead.then(() => a2aSpawn.sendRootHashes(hostId));
+          }
+        },
         links: a2aLinks,
         taskService: a2aTaskService,
         peers: a2aPeers,
@@ -11163,7 +11175,7 @@ async function main(): Promise<void> {
         // messages and pings its streams: tell the servers it joins, and the
         // joiners in its hello.
         // `bundle.1` only while bundles are on (read at start: a change takes effect on the next one).
-        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE, ...(a2aBundlesOn() ? [A2A_FEATURE_BUNDLE] : [])],
+        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE, ...(a2aBundlesOn() ? [A2A_FEATURE_BUNDLE] : [])],
         uploadsRoot: path.join(wmuxDir, 'uploads'),
         // A live terminal of the sender's workspace (stamped at spawn by main), else none.
         spawnCwdOf: (ptyId, workspaceId) => {
@@ -11196,13 +11208,15 @@ async function main(): Promise<void> {
       a2aStarter?.reconcile();
       a2aSpawn.recover();
       a2aContinue.recover();
-      // Each PC allowed to ask learns what it may ask for (unless that is still queued for it).
-      a2aSpawn.sendTargets();
+      // Each PC allowed to ask learns what it may ask for (unless that is still queued for it), with the origins read.
+      void a2aRootKeysRead.then(() => a2aSpawn.sendTargets());
       // Cards and approved starts past their expiry end `expired` even with nobody looking.
       // Put-backs of ended spawn links that could not be done yet are retried here too.
       // A removed PC's send allow whose write failed is written here once it can be, before a restart could read it back.
       const spawnSweep = setInterval(() => {
         a2aSpawn.sweep();
+        // A folder whose origin changed (or can no longer be read) is sent again to the PCs that read origin tags.
+        void a2aRootKeys.refresh().then((changed) => { if (changed) a2aSpawn.sendRootHashes(); });
         a2aContinue.sweep();
         try {
           a2aContinuePolicy.retainHosts(() => true, 'an earlier removal');

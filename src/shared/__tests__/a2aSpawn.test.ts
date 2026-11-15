@@ -11,6 +11,7 @@ import {
   normalizeSpawnSub,
   parseSpawnRequest,
   parseSpawnResult,
+  parseSpawnTargets,
   spawnClockOk,
   spawnTargetsFor,
 } from '../a2aSpawn';
@@ -58,6 +59,17 @@ describe('spawnClockOk (B\'s clock)', () => {
     // Sent long ago with a far expiry: over 72 h from its own send time.
     expect(spawnClockOk(at(now - 48 * 3600_000), at(now + 30 * 3600_000), now)).toBe(false);
     expect(spawnClockOk(at(now - 7200_000), at(now - 1000), now)).toBe(false);
+  });
+});
+
+describe('parseSpawnTargets', () => {
+  it('takes an origin tag on a root, validated, and still refuses any other extra key', () => {
+    const t = (root: Record<string, unknown>) => ({ v: 1, version: 3, roots: [{ id: 'web', label: 'Web', ...root }], agents: ['claude'] });
+    const tag = '0123456789abcdef'.repeat(2);
+    expect(parseSpawnTargets(t({}))).toEqual(t({}));
+    expect(parseSpawnTargets(t({ originKeyHash: tag }))).toEqual(t({ originKeyHash: tag }));
+    for (const bad of ['', tag.toUpperCase(), tag.slice(1), `${tag}0`, 7]) expect(parseSpawnTargets(t({ originKeyHash: bad }))).toBeNull();
+    expect(parseSpawnTargets(t({ origin: 'github.com/o/r' }))).toBeNull();
   });
 });
 
