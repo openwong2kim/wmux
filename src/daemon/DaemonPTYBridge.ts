@@ -851,6 +851,16 @@ export class DaemonPTYBridge extends EventEmitter {
     return this.draftPending;
   }
 
+  /**
+   * The screen showed the composer empty (draftScreen.ts): clear the draft
+   * mark, unless a key arrived since `keyRevision` was read before that frame.
+   */
+  clearDraftIfUnchanged(keyRevision: number): boolean {
+    if (this.keyInputRevision !== keyRevision) return false;
+    this.draftPending = false;
+    return true;
+  }
+
   /** Every mouse report: SGR (press, release, wheel, motion) and X10. */
   // eslint-disable-next-line no-control-regex -- terminal mouse reports contain ESC bytes
   private static readonly ANY_MOUSE = /\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[M[\s\S]{3}/g;
