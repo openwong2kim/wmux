@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DatabaseSync } from 'node:sqlite';
 import { HERMES_SEND_READ_MS, HermesChatService, routeTerminalChat, type HermesChatDeps } from '../HermesChatService';
 import { PaneDeliveryLocks } from '../../paneDeliveryLock';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 import { agentLaunchAt } from '../../agentLaunchAt';
 import type { TerminalChatService } from '../TerminalChatService';
 import { addMessage, addSession, hermesFixture } from './hermesFixture';
@@ -101,7 +102,7 @@ describe('HermesChatService', () => {
       paneLock: (id, send) => locks.runLocked(id, 'hermes-chat', 0, send),
       readScreen: async () => {
         holders.push(locks.holderOf('p1'));
-        if (slow) await new Promise((resolve) => setTimeout(resolve, HERMES_SEND_READ_MS + 1_000));
+        if (slow) await deliberateSleep(HERMES_SEND_READ_MS + 1_000, 'latency inside a stub: a screen read slower than the lock allows (fake timers)');
         return prompt('❯ ');
       },
     });
