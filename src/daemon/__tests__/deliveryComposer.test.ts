@@ -25,6 +25,14 @@ describe('Claude Code', () => {
     expect(readComposer(f(['! ls', '  ⎿  file', RULE, '❯\u00a0', RULE]), 'claude', 'paste').verdict).toBe('plain');
   });
 
+  it("a collapsed paste wrapped in a narrow box is a draft, as w4-6's Windows frames draw it (#3390)", () => {
+    // Default foreground (no dim), the placeholder wrapped over 2 rows at 27 columns and over 4 at 12.
+    const R27 = '─'.repeat(27);
+    const R12 = '─'.repeat(12);
+    expect(readComposer(f(['⏺ Done.', '', R27, '❯ [Pasted text #1 +7', '  lines]', R27, '  ? for shortcuts']), 'claude', 'paste').verdict).toBe('busy');
+    expect(readComposer(f(['⏺ Done.', '', R12, '❯ [Pasted', '  text #1', '  +7', '  lines]', R12, '  ? for']), 'claude', 'paste').verdict).toBe('busy');
+  });
+
   it('a dialog, a draft, or no prompt at all', () => {
     expect(readComposer(f(['Do you want to proceed?', '❯ 1. Yes', '  2. No', 'Esc to cancel']), 'claude', 'paste').verdict).toBe('mode');
     expect(readComposer(f([RULE, '❯\u00a0my draft', RULE]), 'claude', 'paste').verdict).toBe('busy');
@@ -125,6 +133,60 @@ describe('frameShowsPaste', () => {
     expect(frameShowsPaste(f([RULE, `❯\u00a0note: ${text}`, RULE]), pasted)).toBe(false);
     // Only part of it shown (the rest never arrived): not this paste either.
     expect(frameShowsPaste(f([RULE, '❯\u00a0wmux: A2A task t-1 is waiting', RULE]), pasted)).toBe(false);
+  });
+
+  describe('a one-line pointer in a narrow box (#3390)', () => {
+    const NARROW = '─'.repeat(27);
+    const text = '[wmux] new A2A task 3ac71741 from Workspace 1.w1-2 — a2a_task_query task_id:task-3ac71741-02eb-4659-988e-f3cbeb63a838';
+    const pointer = { probe: '[wmux] new A2A task 3ac7', lines: 0, chars: [...text].length, text };
+
+    it('collapsed with the rows it takes as its count, the placeholder wrapped over two rows', () => {
+      expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +7', '  lines]', NARROW]), pointer)).toBe(true);
+      // On one row too.
+      expect(frameShowsPaste(f([RULE, '❯\u00a0[Pasted text #1 +7 lines]', RULE]), pointer)).toBe(true);
+      // Two placeholders, or one with keys after it, still are not ours.
+      expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +7', '  lines] [Pasted text #2', '  +7 lines]', NARROW]), pointer)).toBe(false);
+      expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +7', '  lines] ok', NARROW]), pointer)).toBe(false);
+      // More rows than its characters could fill in any box: someone else's paste.
+      expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +40', '  lines]', NARROW]), pointer)).toBe(false);
+    });
+
+    it("collapsed, its start scrolled out of a 12-column box that draws a hint under itself (w4-6's frame)", () => {
+      const RULE12 = '─'.repeat(12);
+      const hint = ['  paste', '  again to', '  expand'];
+      const frame = f([RULE12, '❯\u00a0text #2', '  +7', '  lines]', RULE12, ...hint]);
+      expect(frameShowsPaste(frame, pointer)).toBe(true);
+      // The hint rows sit under the closing rule: not the composer's, and not a mode.
+      expect(readComposer(frame, 'claude', 'enter')).toEqual({ verdict: 'plain', span: { from: 1, to: 4 } });
+      // Only `lines]` (no count), a tail with keys after it, someone else's count, or a cut that is not the placeholder's.
+      expect(frameShowsPaste(f([RULE12, '❯\u00a0lines]', RULE12, ...hint]), pointer)).toBe(false);
+      expect(frameShowsPaste(f([RULE12, '❯\u00a0text #2', '  +7', '  lines] ok', RULE12]), pointer)).toBe(false);
+      expect(frameShowsPaste(f([RULE12, '❯\u00a0text #2', '  +40', '  lines]', RULE12]), pointer)).toBe(false);
+      expect(frameShowsPaste(f([RULE12, '❯\u00a0note #2', '  +7', '  lines]', RULE12]), pointer)).toBe(false);
+      expect(frameShowsPaste(f([RULE12, '❯\u00a0text #', '  +7', '  lines]', RULE12]), pointer)).toBe(false);
+      // Its count alone, or the number's last digits, still are this placeholder's end.
+      expect(frameShowsPaste(f([RULE12, '❯\u00a0+7 lines]', RULE12]), pointer)).toBe(true);
+    });
+
+    it('a double-width text counts two columns a character: 40 Hangul characters take up to 10 rows of 8 columns', () => {
+      const wide = '가'.repeat(40);
+      const pasted = { probe: wide.slice(0, 24), lines: 0, chars: 40, text: wide };
+      expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +10', '  lines]', NARROW]), pasted)).toBe(true);
+      expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +11', '  lines]', NARROW]), pasted)).toBe(false);
+    });
+
+    it('scrolled, its start out of view: the visible rows are the end of this text', () => {
+      const scrolled = [NARROW, '❯\u00a03ac71741 from Workspace', '  1.w1-2 —', '  a2a_task_query task_id:', '  task-3ac71741-02eb-4659', '  -988e-f3cbeb63a838', NARROW];
+      expect(frameShowsPaste(f(scrolled), pointer)).toBe(true);
+    });
+
+    it('scrolled, but not ours: a key typed after it, too short a tail, or another task id', () => {
+      const typedAfter = [NARROW, '❯\u00a0a2a_task_query task_id:', '  task-3ac71741-02eb-4659', '  -988e-f3cbeb63a838x', NARROW];
+      expect(frameShowsPaste(f(typedAfter), pointer)).toBe(false);
+      expect(frameShowsPaste(f([NARROW, '❯\u00a0-f3cbeb63a838', NARROW]), pointer)).toBe(false);
+      const other = [NARROW, '❯\u00a0a2a_task_query task_id:', '  task-99999999-02eb-4659', '  -988e-f3cbeb63a838', NARROW];
+      expect(frameShowsPaste(f(other), pointer)).toBe(false);
+    });
   });
 
   it('the same words in the transcript above prove nothing', () => {

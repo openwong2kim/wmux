@@ -35,7 +35,7 @@ describe('DaemonClient held writes', () => {
       return { ok: true };
     });
     const paste = 'p'.repeat(HELD_WRITE_CHUNK_MAX * 2 + 10);
-    expect(await c.writeHeld('s', 'tok', paste)).toEqual({ ok: true });
+    expect(await c.writeHeld('s', 'tok', paste)).toEqual({ ok: true, written: 3 });
     expect(sent).toHaveLength(3);
     expect(sent.every((p) => p['token'] === 'tok' && (p['data'] as string).length <= HELD_WRITE_CHUNK_MAX)).toBe(true);
     expect(sent.map((p) => p['data']).join('')).toBe(paste);
@@ -53,7 +53,7 @@ describe('DaemonClient held writes', () => {
 
     let calls = 0;
     const refuseSecond = client(async () => (++calls === 1 ? { ok: true } : { ok: false, error: 'not held' }));
-    expect(await refuseSecond.writeHeld('s', 'tok', 'q'.repeat(HELD_WRITE_CHUNK_MAX + 1))).toMatchObject({ ok: false, uncertain: true });
+    expect(await refuseSecond.writeHeld('s', 'tok', 'q'.repeat(HELD_WRITE_CHUNK_MAX + 1))).toMatchObject({ ok: false, uncertain: true, written: 1 });
   });
 
   it('a release that fails is tried once more', async () => {
@@ -77,7 +77,7 @@ describe('DaemonClient held writes under pressure', () => {
       datas.push(params['data'] as string);
       return refusals-- > 0 ? { ok: false, error: 'backpressure' } : { ok: true };
     });
-    expect(await c.writeHeld('s', 'tok', 'x')).toEqual({ ok: true });
+    expect(await c.writeHeld('s', 'tok', 'x')).toEqual({ ok: true, written: 1 });
     expect(datas).toEqual(['x', 'x', 'x']);
   });
 
@@ -89,7 +89,8 @@ describe('DaemonClient held writes under pressure', () => {
       return { ok: true };
     });
     const paste = `\x1b[200~${'p'.repeat(HELD_WRITE_CHUNK_MAX * 2)}\x1b[201~`;
-    expect(await c.writeHeld('s', 'tok', paste)).toMatchObject({ ok: false, uncertain: true });
+    // The first chunk and the closing ESC[201~ landed: both moved the pane's key count.
+    expect(await c.writeHeld('s', 'tok', paste)).toMatchObject({ ok: false, uncertain: true, written: 2 });
     expect(datas.at(-1)).toBe('\x1b[201~');
     expect(datas).toHaveLength(3);
   });

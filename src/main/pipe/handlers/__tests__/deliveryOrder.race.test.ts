@@ -21,6 +21,7 @@ import { DaemonPTYBridge } from '../../../../daemon/DaemonPTYBridge';
 import { RingBuffer } from '../../../../daemon/RingBuffer';
 import { deliverScheduledPrompt } from '../../../../daemon/sessionPromptDelivery';
 import { PANE_LOCK_DAEMON_WAIT_MS, PaneDeliveryLocks, writeUnderLock } from '../../../../daemon/paneDeliveryLock';
+import { HELD_WRITE_CHUNK_MAX, heldWriteChunks } from '../../../../shared/heldWrite';
 
 vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
 
@@ -56,7 +57,9 @@ type MainLock =
   | { held: false; why: 'unsupported' | 'busy' | 'unavailable'; detail: string };
 
 /** Main's gated delivery into `bridge`, written as the daemon notes it. */
-function mainDelivery(p: ReturnType<typeof pane>, lock: MainLock) {
+function mainDelivery(p: ReturnType<typeof pane>, lock: MainLock, opts: { refuseAtEnter?: boolean } = {}) {
+  /** Who held the pane's lock at each read of the pane's agent state, and how many writes had landed by then. */
+  const stateReads: Array<{ holder: string | undefined; writes: number; keys: number }> = [];
   const lockMethods = lock === 'none' ? {} : lock === 'shared' ? {
     acquirePaneLock: async (id: string, nonce: string, waitMs: number) => {
       const token = await p.locks.acquire(id, { key: `main:${CLIENT}`, clientId: CLIENT, nonce }, waitMs);
@@ -66,14 +69,20 @@ function mainDelivery(p: ReturnType<typeof pane>, lock: MainLock) {
       if (by.token && p.locks.holds(id, by.token, CLIENT)) p.locks.release(id, by.token);
       if (by.nonce) p.locks.releaseNonce(id, CLIENT, by.nonce);
     },
+    // As DaemonClient.writeHeld: one held write per chunk, each under the token.
     writeHeld: async (id: string, token: string, data: string) => {
-      const r = writeUnderLock(p.locks, id, token, CLIENT, { write: (d) => p.land('main-held', d), noteInput: (d) => p.bridge.noteInput(d) }, data);
-      return r.ok ? r : { ok: false as const, uncertain: false, detail: r.error };
+      let written = 0;
+      for (const chunk of heldWriteChunks(data)) {
+        const r = writeUnderLock(p.locks, id, token, CLIENT, { write: (d) => p.land('main-held', d), noteInput: (d) => p.bridge.noteInput(d) }, chunk);
+        if (!r.ok) return { ok: false as const, uncertain: written > 0, detail: r.error, written };
+        written += 1;
+      }
+      return { ok: true as const, written };
     },
   } : {
     acquirePaneLock: async () => lock,
     releasePaneLock: () => undefined,
-    writeHeld: async () => ({ ok: false as const, uncertain: false, detail: 'not held' }),
+    writeHeld: async () => ({ ok: false as const, uncertain: false, detail: 'not held', written: 0 }),
   };
   const dc = {
     isConnected: true,
@@ -83,7 +92,7 @@ function mainDelivery(p: ReturnType<typeof pane>, lock: MainLock) {
       p.bridge.noteInput(data);
       return true;
     },
-    getAgentState: async () => ({
+    getAgentState: async () => (stateReads.push({ holder: p.locks.holderOf('sess-1'), writes: p.writes.length, keys: p.bridge.getKeyInputRevision() }), {
       agentName: 'Claude Code', agentStatus: 'waiting', agentVerified: true, incarnationId: 'inc-1',
       inputQuiet: p.bridge.isKeyInputQuiet(), inputRevision: p.bridge.getInputRevision(), hasDraft: p.bridge.hasDraft(),
       keyInputIdleMs: p.bridge.isKeyInputQuiet() ? 60_000 : 0,
@@ -91,7 +100,7 @@ function mainDelivery(p: ReturnType<typeof pane>, lock: MainLock) {
     }),
     ...lockMethods,
   };
-  return registerInputRpc(
+  const api = registerInputRpc(
     new RpcRouter(),
     { get: () => undefined } as unknown as PTYManager,
     () => ({}) as BrowserWindow,
@@ -103,6 +112,8 @@ function mainDelivery(p: ReturnType<typeof pane>, lock: MainLock) {
       // As the daemon's composer read answers: a plain prompt only while the
       // box is empty (before the paste) or holds this paste alone (at the Enter).
       deliveryPresence: async (_id, _agent, check) => {
+        // Refused at the Enter with the paste not shown: left in the box as it is.
+        if (opts.refuseAtEnter && check.phase === 'enter') return { tier: 'none', reason: 'composer-busy', pasteShown: false };
         const plain = check.phase === 'paste' ? p.box.text === '' : p.box.text === MAIN_TEXT;
         return plain ? PROCESS : { tier: 'none', reason: 'composer-busy', ...(check.phase === 'enter' ? { pasteShown: p.box.text.includes(MAIN_TEXT) } : {}) };
       },
@@ -114,6 +125,7 @@ function mainDelivery(p: ReturnType<typeof pane>, lock: MainLock) {
       pendingSetOnce: () => undefined,
     },
   );
+  return Object.assign(api, { stateReads });
 }
 
 /**
@@ -262,6 +274,29 @@ describe("delivery order under the daemon's per-pane lock", () => {
     expect(p.writes.map(([who, data]) => [who, data.startsWith('\r') ? 'enter' : 'paste'])).toEqual([
       ['main-held', 'paste'], ['main-held', 'enter'], ['main-held', 'paste'], ['main-held', 'enter'],
     ]);
+    p.bridge.cleanup();
+  });
+});
+
+describe("a paste left unsent (#3394) under the daemon's lock", () => {
+  it('is recorded while the daemon token is still held, with the key count after its last held chunk, so the next delivery types nothing over it', async () => {
+    const p = pane();
+    const main = mainDelivery(p, 'shared', { refuseAtEnter: true });
+    const long = `${MAIN_TEXT} ${'x'.repeat(HELD_WRITE_CHUNK_MAX * 2)}`;
+    expect(await main.gatedSubmit('sess-1', long, 'Claude Code', { senderTaskIds: ['t-1'] })).toMatchObject({ ok: false, pasted: true });
+    // The paste went as three held chunks, and no Enter.
+    expect(p.writes.map(([who]) => who)).toEqual(['main-held', 'main-held', 'main-held']);
+    const keysAfterPaste = p.bridge.getKeyInputRevision();
+    // (a) Every read for the record came after the last chunk and while main still held the pane.
+    const recordReads = main.stateReads.filter((r) => r.writes === 3);
+    expect(recordReads.length).toBeGreaterThan(0);
+    expect(recordReads.every((r) => r.holder === 'main:c1')).toBe(true);
+    expect(p.locks.holderOf('sess-1')).toBeUndefined();
+    // (b) The record's count is the count after the last chunk: nothing since
+    // reads as untouched, so the next delivery is refused and writes nothing.
+    expect(recordReads.at(-1)?.keys).toBe(keysAfterPaste);
+    expect(await main.gatedSubmit('sess-1', MAIN_TEXT, 'Claude Code', { senderTaskIds: ['t-2'] })).toMatchObject({ ok: false, reason: 'input_mode' });
+    expect(p.writes).toHaveLength(3);
     p.bridge.cleanup();
   });
 });

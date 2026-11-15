@@ -1454,18 +1454,23 @@ export class DaemonClient extends EventEmitter {
    * HELD_WRITE_CHUNK_MAX (shared/heldWrite.ts) each, every one under the
    * token, so no control-pipe line nears the daemon's line cap. `uncertain`: bytes may have reached the
    * pane (a lost reply, or a later chunk refused after earlier ones landed).
+   * `written`: the held writes the daemon took (each one moves the pane's key
+   * count by one); one whose reply was lost is not counted.
    */
-  async writeHeld(id: string, token: string, data: string): Promise<{ ok: true } | { ok: false; uncertain: boolean; detail: string }> {
-    if (!this.isConnected) return { ok: false, uncertain: false, detail: 'the background service is not connected' };
+  async writeHeld(id: string, token: string, data: string): Promise<
+    { ok: true; written: number } | { ok: false; uncertain: boolean; detail: string; written: number }
+  > {
+    if (!this.isConnected) return { ok: false, uncertain: false, detail: 'the background service is not connected', written: 0 };
     const chunks = heldWriteChunks(data);
-    let landed = false;
-    const failed = async (uncertain: boolean, detail: string): Promise<{ ok: false; uncertain: boolean; detail: string }> => {
+    let written = 0;
+    const failed = async (uncertain: boolean, detail: string): Promise<{ ok: false; uncertain: boolean; detail: string; written: number }> => {
       // A bracketed paste cut off after its start landed would leave the agent
       // (and the daemon's own accounting) in paste mode: close it, best effort.
-      if (landed && chunks.length > 1 && data.startsWith(PASTE_START) && data.endsWith(PASTE_END)) {
-        await this.writeHeldOnce(id, token, PASTE_END).catch(() => undefined);
+      if (written > 0 && chunks.length > 1 && data.startsWith(PASTE_START) && data.endsWith(PASTE_END)) {
+        const closed = await this.writeHeldOnce(id, token, PASTE_END).catch(() => null);
+        if (closed?.ok === true) written += 1;
       }
-      return { ok: false, uncertain, detail };
+      return { ok: false, uncertain, detail, written };
     };
     for (const chunk of chunks) {
       let r: { ok?: unknown; error?: unknown } | null;
@@ -1475,15 +1480,15 @@ export class DaemonClient extends EventEmitter {
         const detail = error instanceof Error ? error.message : String(error);
         // Only a reply that never came leaves the write unknown; an error
         // reply is the daemon refusing before it wrote.
-        return failed(landed || isLostReply(detail), detail);
+        return failed(written > 0 || isLostReply(detail), detail);
       }
       if (r?.ok !== true) {
         const why = typeof r?.error === 'string' ? r.error : 'refused';
-        return failed(landed, why === 'not held' ? "the pane's delivery lock was no longer held" : why);
+        return failed(written > 0, why === 'not held' ? "the pane's delivery lock was no longer held" : why);
       }
-      landed = true;
+      written += 1;
     }
-    return { ok: true };
+    return { ok: true, written };
   }
 
   /**
