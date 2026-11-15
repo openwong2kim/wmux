@@ -226,17 +226,18 @@ export class CompanyReleaseBridge {
       await this.mark(task.id, { held: 'pane-missing' });
       return;
     }
-    // The renderer is not answering yet: nothing is recorded, the task stays owed.
-    if (!(await this.windowReady())) {
-      this.backoff(task.id);
-      this.deps.log?.('info', `[company] ${task.id}: the window is not ready yet, delivery kept for later`);
-      return;
-    }
     // Taken before the first await of this delivery, so the gate decides in pull order.
     const slot = this.deps.slots ? await this.deps.slots.take({ workspaceId: task.metadata.to.workspaceId, paneId: task.metadata.to.paneId }) : null;
     // At the cap, or the count unreadable: it stays owed, nothing marked or written.
     if (slot && slot.kind !== 'go') return;
     try {
+      // The renderer is not answering yet: nothing is recorded, the task stays
+      // owed, and it is tried at the base delay (nothing was tried).
+      if (!(await this.windowReady())) {
+        this.retry.set(task.id, { at: this.now() + COMPANY_BRIDGE_RETRY_MIN_MS, delayMs: COMPANY_BRIDGE_RETRY_MIN_MS });
+        this.deps.log?.('info', `[company] ${task.id}: the window is not ready yet, delivery kept for later`);
+        return;
+      }
       await this.write(task);
     } finally {
       slot?.release();
@@ -357,9 +358,9 @@ export class CompanyReleaseBridge {
 
   /** One line to the company's CEO pane. Told once written; given up after a few misses. */
   private async tellCeo(task: Task, event: CompanyCeoEvent): Promise<void> {
-    // Not answering yet: tried again like a missing window, never counted as told.
+    // Not answering yet: tried again at the base delay, never counted as a miss or as told.
     if (!(await this.windowReady())) {
-      this.ceoMiss(event.key);
+      this.ceoRetry.set(event.key, { at: this.now() + COMPANY_BRIDGE_RETRY_MIN_MS, delayMs: COMPANY_BRIDGE_RETRY_MIN_MS });
       return;
     }
     let res: unknown;

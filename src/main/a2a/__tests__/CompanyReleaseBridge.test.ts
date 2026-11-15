@@ -464,6 +464,23 @@ describe('CompanyReleaseBridge — the cap on working seats', () => {
     expect(written()).toEqual(['task-c']);
   });
 
+  it('the window check comes after the slot is taken, so a slow answer for the older task does not hand its slot to a newer one', async () => {
+    busy = [];
+    daemon.tasks.set('task-new', companyTask('task-new', released({ releasedAt: '2026-11-01T00:02:00.000Z' }), { paneId: 'pane-dev2' }));
+    daemon.tasks.set('task-old', companyTask('task-old', released({ releasedAt: '2026-11-01T00:01:00.000Z' }), { paneId: 'pane-dev3' }));
+    const answers: Array<(ready: boolean) => void> = [];
+    const rendererReady = () => new Promise<boolean>((resolve) => { answers.push(resolve); });
+    const b = new CompanyReleaseBridge({ daemon, sendToRenderer: renderer, now: () => clock, slots: slots(), rendererReady });
+    const run = pull(b);
+    await vi.waitFor(() => expect(answers.length).toBeGreaterThan(0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Only the task holding the slot asks. Answered newest first, as a late reply would.
+    [...answers].reverse().forEach((answer) => answer(true));
+    await run;
+    expect(written()).toEqual(['task-old']);
+    expect(marksOf('task-new')).toEqual([]);
+  });
+
   it('gives a freed slot to the task released first', async () => {
     busy = [];
     daemon.tasks.set('task-new', companyTask('task-new', released({ releasedAt: '2026-11-01T00:02:00.000Z' }), { paneId: 'pane-dev2' }));

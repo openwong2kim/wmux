@@ -380,8 +380,9 @@ export class RemoteA2aBridge {
     }
     // The renderer is not answering yet (main started before the window
     // loaded): nothing is recorded, and the unit stays owed for a later pull.
-    if (this.deps.rendererReady && !(await this.deps.rendererReady().catch(() => false))) {
-      this.backoff(unit.key);
+    // The base delay, not the doubling backoff: nothing was tried.
+    if (!(await this.windowReady())) {
+      this.retry.set(unit.key, { at: this.now() + REMOTE_BRIDGE_RETRY_MIN_MS, delayMs: REMOTE_BRIDGE_RETRY_MIN_MS });
       this.deps.log?.('info', `[a2a-remote] ${unit.key}: the window is not ready yet, delivery kept for later`);
       return 'not-delivered';
     }
@@ -530,11 +531,34 @@ export class RemoteA2aBridge {
     }
   }
 
+  private async windowReady(): Promise<boolean> {
+    return !this.deps.rendererReady || (await this.deps.rendererReady().catch(() => false));
+  }
+
   private backoff(key: string): void {
     const prev = this.retry.get(key);
     const delayMs = prev ? Math.min(prev.delayMs * 2, REMOTE_BRIDGE_RETRY_MAX_MS) : REMOTE_BRIDGE_RETRY_MIN_MS;
     this.retry.set(key, { at: this.now() + delayMs, delayMs });
   }
+}
+
+/**
+ * Whether the window's RPC bridge takes calls yet, for the bridges' `rendererReady`:
+ * a cheap read it handles. No answer (still loading), a failure, or its
+ * "still starting" refusal (panes not restored yet) is not ready. Calls made
+ * while one read is out share it.
+ */
+export function rendererReadyProbe(
+  send: (method: string, params: Record<string, unknown>, opts: { timeoutMs: number }) => Promise<unknown>,
+  timeoutMs = 2_000,
+): () => Promise<boolean> {
+  let inFlight: Promise<boolean> | null = null;
+  return () => {
+    inFlight ??= send('workspace.current', {}, { timeoutMs })
+      .then((res) => !(isRecord(res) && 'error' in res), () => false)
+      .finally(() => { inFlight = null; });
+    return inFlight;
+  };
 }
 
 /** The deliverable, unheld units of one listed task, the task itself first. */
