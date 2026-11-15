@@ -318,6 +318,11 @@ export interface AgentIdentityRow {
    *  folder-trust dialog, so a pane wmux launched that way may count as clear
    *  of one (input.rpc trustProvenClear). */
   readonly sandboxedNoTrustDialog?: true;
+  /** The daemon's draft flag (`hasDraft`) is checked against the screen and
+   *  cleared once the composer is drawn empty (daemon/draftScreen.ts), so a
+   *  delivery may refuse on it (input.rpc). Without this, a draft erased with
+   *  Backspace keeps the flag set. */
+  readonly draftScreenChecked?: true;
 }
 
 /**
@@ -339,6 +344,7 @@ export const AGENT_IDENTITIES = [
     display: 'Claude Code',
     firstRunWatch: 'all',
     sandboxedNoTrustDialog: true,
+    draftScreenChecked: true,
     connectorLaunch: 'mcp-json',
     modelFlag: '--model',
     resume: { picker: '--resume', exact: '--resume {id}', pin: '--session-id', idFormat: 'uuid' },

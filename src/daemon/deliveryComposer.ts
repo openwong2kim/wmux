@@ -144,10 +144,6 @@ export function cursorInComposer(frame: DeliveryFrame, read: ComposerRead): bool
   return !!read.span && frame.cursorRow >= read.span.from && frame.cursorRow < read.span.to;
 }
 
-/** How each agent shows a long paste in its composer: Claude
- *  `[Pasted text #1 +40 lines]` (its line breaks) or `[Pasted text #2]` (one
- *  long line), Codex `[Pasted Content 4096 chars]`. */
-const PASTE_PLACEHOLDER = /\[Pasted (?:text #\d+(?: \+\d+ lines)?\]|Content \d+ chars\])/g;
 
 /** What a delivery pasted: the start of its first non-blank line, its line
  *  breaks and its characters, and the whole text when the caller sent it. */
@@ -162,12 +158,51 @@ export interface PastedText {
  *  continuation rows, so only the other characters can be compared. */
 const squash = (text: string): string => text.replace(/\s+/g, '');
 
-/** Is `placeholder` the collapsed form of `pasted`? Only the agent's own count of it says so. */
+/** How each agent shows a long paste in its composer: Claude
+ *  `[Pasted text #1 +40 lines]` (the rows it takes) or `[Pasted text #2]` (one
+ *  long line), Codex `[Pasted Content 4096 chars]`. Matched with whitespace
+ *  removed (see `squash`): the composer may wrap one over rows. */
+const SQUASHED_PLACEHOLDER = /\[Pasted(?:text#\d+(?:\+\d+lines)?\]|Content\d+chars\])/g;
+
+/** The narrowest input box a count is allowed for: a text of `chars` characters takes no more rows than that. */
+const NARROWEST_BOX_COLS = 8;
+
+/**
+ * Is `placeholder` (squashed) the collapsed form of `pasted`? Only the agent's own count of it says so. Claude's
+ * `+N lines` counts the rows the text takes in its box, so a narrow box counts more than the text's line breaks,
+ * never fewer, and no more than its characters can fill at `NARROWEST_BOX_COLS`, each counted as two columns (a
+ * double-width character takes two). Without the character count, the line breaks alone. Codex counts characters.
+ */
 function collapsedFormOf(placeholder: string, pasted: PastedText): boolean {
-  const claude = /^\[Pasted text #\d+(?: \+(\d+) lines)?\]$/.exec(placeholder);
-  if (claude) return pasted.lines !== undefined && Number(claude[1] ?? 0) === pasted.lines;
-  const codex = /^\[Pasted Content (\d+) chars\]$/.exec(placeholder);
+  const claude = /^\[Pastedtext#\d+(?:\+(\d+)lines)?\]$/.exec(placeholder);
+  if (claude) {
+    if (pasted.lines === undefined) return false;
+    const rows = Number(claude[1] ?? 0);
+    if (pasted.chars === undefined) return rows === pasted.lines;
+    return rows >= pasted.lines && rows <= pasted.lines + Math.ceil((2 * pasted.chars) / NARROWEST_BOX_COLS);
+  }
+  const codex = /^\[PastedContent(\d+)chars\]$/.exec(placeholder);
   return !!codex && pasted.chars !== undefined && Number(codex[1]) === pasted.chars;
+}
+
+/** The fewest characters (spaces aside) a scrolled composer must show of a text's end to count as showing it. */
+const SCROLLED_TAIL_MIN = 24;
+
+/** Claude's placeholder with its start scrolled out of a narrow box: the end of `[Pasted text #<n>`, then `+<m>lines]`. */
+const SCROLLED_CLAUDE_PLACEHOLDER = /^(\D*)(\d*)\+(\d+)lines\]$/;
+
+/**
+ * Is `shown` (squashed) the end of Claude's `[Pasted text #<n> +<m> lines]`, at least its `+<m>lines]`, with `m`
+ * this paste's count? A narrow box that also draws a hint under itself shrinks and scrolls the placeholder's start
+ * out of view.
+ */
+function scrolledPlaceholderOf(shown: string, pasted: PastedText): boolean {
+  const tail = SCROLLED_CLAUDE_PLACEHOLDER.exec(shown);
+  if (!tail) return false;
+  const [, head, digits, rows] = tail;
+  // Either digits of `<n>` alone (or nothing), or a cut of `[Pastedtext#` followed by all of `<n>`.
+  if (head && (!'[Pastedtext#'.endsWith(head) || !digits)) return false;
+  return collapsedFormOf(`[Pastedtext#${digits || '1'}+${rows}lines]`, pasted);
 }
 
 /**
@@ -186,16 +221,20 @@ export function frameShowsPaste(frame: DeliveryFrame | null, pasted: PastedText)
     .find((found) => found !== undefined);
   if (!span) return frame.cursorRow >= 0 && (frame.rows[frame.cursorRow] ?? '').includes(pasted.probe);
   const rows = frame.rows.slice(span.from, span.to);
-  const placeholders = rows.flatMap((row) => row.match(PASTE_PLACEHOLDER) ?? []);
-  if (placeholders.length > 1) return false;
-  // The input without the prompt glyph.
+  // The input without the prompt glyph, its rows joined as the composer wraps them.
   const content = rows.map((row, i) => (i === 0 ? row.replace(/^\s*[❯›][ \u00a0]*/, '') : row).trim()).filter(Boolean);
-  if (placeholders.length === 1) {
-    // The collapsed paste is the whole input: the prompt glyph, it, and blank rows.
-    return content.length === 1 && content[0] === placeholders[0] && collapsedFormOf(placeholders[0], pasted);
+  const shown = squash(content.join(''));
+  const placeholders = shown.match(SQUASHED_PLACEHOLDER) ?? [];
+  if (placeholders.length > 1) return false;
+  // The collapsed paste is the whole input: the prompt glyph, it (on one row or wrapped), and blank rows.
+  if (placeholders.length === 1) return shown === placeholders[0] && collapsedFormOf(placeholders[0], pasted);
+  if (scrolledPlaceholderOf(shown, pasted)) return true;
+  // Uncollapsed, the whole input is this text and nothing else. A narrow box
+  // scrolls a long text: then it shows the text's end, and only that, enough
+  // of it to be this text's. Without the text, its start on some row.
+  if (pasted.text !== undefined) {
+    const whole = squash(pasted.text);
+    return shown === whole || (shown.length >= Math.min(whole.length, SCROLLED_TAIL_MIN) && whole.endsWith(shown));
   }
-  // Uncollapsed, the whole input is this text and nothing else (rows joined,
-  // as the composer wraps them). Without the text, its start on some row.
-  if (pasted.text !== undefined) return squash(content.join('')) === squash(pasted.text);
   return rows.some((row) => row.includes(pasted.probe));
 }
