@@ -38,7 +38,7 @@ function pane() {
     if (data.startsWith('\r')) {
       box.submitted.push(box.text);
       box.text = '';
-    } else box.text += data.replace(/\x1b\[20[01]~/g, '');
+    } else box.text += data.split('\x1b[200~').join('').split('\x1b[201~').join('');
   };
   return { bridge, writes, box, type };
 }
