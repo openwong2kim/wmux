@@ -25,6 +25,14 @@ describe('Claude Code', () => {
     expect(readComposer(f(['! ls', '  ⎿  file', RULE, '❯\u00a0', RULE]), 'claude', 'paste').verdict).toBe('plain');
   });
 
+  it("a collapsed paste wrapped in a narrow box is a draft, as w4-6's Windows frames draw it (#3390)", () => {
+    // Default foreground (no dim), the placeholder wrapped over 2 rows at 27 columns and over 4 at 12.
+    const R27 = '─'.repeat(27);
+    const R12 = '─'.repeat(12);
+    expect(readComposer(f(['⏺ Done.', '', R27, '❯ [Pasted text #1 +7', '  lines]', R27, '  ? for shortcuts']), 'claude', 'paste').verdict).toBe('busy');
+    expect(readComposer(f(['⏺ Done.', '', R12, '❯ [Pasted', '  text #1', '  +7', '  lines]', R12, '  ? for']), 'claude', 'paste').verdict).toBe('busy');
+  });
+
   it('a dialog, a draft, or no prompt at all', () => {
     expect(readComposer(f(['Do you want to proceed?', '❯ 1. Yes', '  2. No', 'Esc to cancel']), 'claude', 'paste').verdict).toBe('mode');
     expect(readComposer(f([RULE, '❯\u00a0my draft', RULE]), 'claude', 'paste').verdict).toBe('busy');

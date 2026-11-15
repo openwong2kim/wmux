@@ -2838,6 +2838,23 @@ export function registerInputRpc(
     };
   };
 
+  /**
+   * Panes whose input box got a delivery's paste that was not submitted (left there), and when (#3390). Nothing more
+   * is typed there while it may still sit in the box: a screen read alone cannot tell, as one taken while the agent
+   * redraws can miss it. The pane is clear again once a turn starts after it (someone submitted the box), the
+   * agent's session ends, or the composer reads empty and the daemon's draft flag agrees. A turn's end does not
+   * clear it: a turn already running when the paste was left ends with the paste still in the box.
+   */
+  const unsentPaste = new Map<string, number>();
+  const UNSENT_PASTE_DETAIL = "delivery: the agent's input box still holds an earlier message wmux pasted and did not submit; nothing was typed";
+  /** The daemon's draft flag for a pane's input box; undefined when it cannot be read. */
+  const readHasDraft = async (ptyId: string): Promise<boolean | undefined> => {
+    const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
+    if (!dc?.isConnected || typeof dc.getAgentState !== 'function') return undefined;
+    const state = await dc.getAgentState(ptyId, { timeoutMs: 1_000 }).catch(() => null);
+    return typeof state?.hasDraft === 'boolean' ? state.hasDraft : undefined;
+  };
+
   /** The gated delivery itself: every check, the paste and the Enter. */
   const deliverGated = async (ptyId: string, text: string, agent: string | null | undefined, opts: GatedSubmitOptions | undefined): Promise<GatedSubmitResult> => {
     const senders: DeliverySenders = {
@@ -2904,9 +2921,27 @@ export function registerInputRpc(
         ...(presence.pasteShown ? { pasteShown: true } : {}),
       };
     };
+    // Without a hand-off (which reads it itself): the daemon's draft flag, a
+    // second "no" beside the screen read, right before the paste.
+    const draftAtPaste = async (): Promise<GatedSubmitRefusal | null> => ((await readHasDraft(ptyId)) === true
+      ? { ok: false, reason: 'input_mode', detail: "delivery: the agent's input box already holds a draft, so nothing was typed", composerNotPlain: true }
+      : null);
     guard = {
-      ...(guard ?? { beforePaste: async () => null, beforeEnter: async () => null }),
+      ...(guard ?? { beforePaste: draftAtPaste, beforeEnter: async () => null }),
       verifyAgent: checkAgent,
+    };
+    /** A paste of ours left unsent in this pane's box (see `unsentPaste`): refused, nothing written, unless it is clear now. */
+    const heldByUnsentPaste = async (): Promise<GatedSubmitRefusal | null> => {
+      const leftAt = unsentPaste.get(ptyId);
+      if (leftAt === undefined) return null;
+      const turnAt = deps.readTurnStartedAt?.(ptyId);
+      const clear = (turnAt !== undefined && turnAt > leftAt)
+        || ((await checkAgent({ phase: 'paste' })).ok && (await readHasDraft(ptyId)) === false);
+      if (clear) {
+        unsentPaste.delete(ptyId);
+        return null;
+      }
+      return { ok: false, reason: 'input_mode', detail: UNSENT_PASTE_DETAIL, composerNotPlain: true };
     };
     // The submit receipt's workspace, from main's mirror only: a renderer
     // round-trip here would add a wait before the paste. With none, the
@@ -2924,6 +2959,7 @@ export function registerInputRpc(
       if (!result.ok && result.pasted) {
         const box = result.cleared ? 'taken back' : result.pasteShown === false ? 'left in the input box' : 'left as it is';
         logLine(`[delivery] pane ${JSON.stringify(ptyId)}: pasted, not submitted (${result.reason}; ${box}): ${result.detail}`);
+        if (!result.cleared) unsentPaste.set(ptyId, (deps.now ?? Date.now)());
       }
       return result;
     };
@@ -2942,6 +2978,8 @@ export function registerInputRpc(
         async () => {
           const late = await onLocked();
           if (late) return late;
+          const held = await heldByUnsentPaste();
+          if (held) return held;
           return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt);
         },
         lockWaitMs,
@@ -2959,6 +2997,8 @@ export function registerInputRpc(
       async () => {
         const late = await onLocked();
         if (late) return late;
+        const held = await heldByUnsentPaste();
+        if (held) return held;
         return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
           const before = opts.guardKey ? getDeliveryCheck(opts.guardKey)?.beforeFreshContext : undefined;
           const why = before ? await before() : null;
@@ -3153,7 +3193,10 @@ export function registerInputRpc(
   });
   // The pane torn down or its session ended: a later name there is a new
   // agent (one never process-tracked has no agentEnded).
-  (deps.subscribeAgentRecordDropped ?? onAgentRecordDropped)((ptyId) => { namedOnce.delete(ptyId); });
+  (deps.subscribeAgentRecordDropped ?? onAgentRecordDropped)((ptyId) => {
+    namedOnce.delete(ptyId);
+    unsentPaste.delete(ptyId);
+  });
 
   /** The local task a delivery may be stored under: none for a hand-off
    *  (`waitQuiet`: its caller settles the task on the outcome), a remote
@@ -3244,6 +3287,7 @@ export function registerInputRpc(
     retryPendingDeliveries: (ptyId) => pending.retry(ptyId),
     agentEnded: (ptyId) => {
       namedOnce.delete(ptyId);
+      unsentPaste.delete(ptyId);
       pending.dropPane(ptyId, 'agent changed');
     },
   };
