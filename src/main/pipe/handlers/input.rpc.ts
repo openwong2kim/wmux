@@ -1333,6 +1333,15 @@ export function withRegisteredCheck(guard: DeliveryGuard, key: string | undefine
 }
 
 /**
+ * A delivery write whose outcome is unknown (its reply was lost): the bytes
+ * may have reached the pane, so it counts as written.
+ */
+export class HeldWriteUncertain extends Error {}
+
+/** How a gated delivery writes to its pane: the session pipe, or under the pane's lock. */
+export type DeliveryWrite = (ptyId: string, data: string) => void | Promise<void>;
+
+/**
  * Paste `text` into `ptyId` and submit it, gated as one operation in main. The
  * gate runs before the paste AND again right before the Enter, because the
  * Enter follows the paste after an agent-specific delay and a dialog drawn in
@@ -1350,15 +1359,6 @@ export function withRegisteredCheck(guard: DeliveryGuard, key: string | undefine
  * that `input.send` uses. A receipt that never comes is still `ok`: the text
  * may have been submitted, and pasting it again would duplicate it.
  */
-/**
- * A delivery write whose outcome is unknown (its reply was lost): the bytes
- * may have reached the pane, so it counts as written.
- */
-export class HeldWriteUncertain extends Error {}
-
-/** How a gated delivery writes to its pane: the session pipe, or under the pane's lock. */
-export type DeliveryWrite = (ptyId: string, data: string) => void | Promise<void>;
-
 export async function gatedPasteSubmit(
   gate: ApprovalInputGate,
   write: DeliveryWrite,
@@ -1410,7 +1410,9 @@ export async function gatedPasteSubmit(
     } catch (err) {
       if (err instanceof DeliveryRefused) return err.refusal;
       const detail = err instanceof Error ? err.message : String(err);
-      if (err instanceof FreshContextTimeout) {
+      // A key of the step whose reply was lost may have been typed: as when
+      // the step never saw its command finish, nothing is pasted.
+      if (err instanceof FreshContextTimeout || err instanceof HeldWriteUncertain) {
         return { ok: false, reason: 'fresh_context_timeout', detail: `delivery: ${detail}` };
       }
       // The step's own writes failed (the pane went away): nothing was pasted.
@@ -1506,7 +1508,13 @@ export async function gatedPasteSubmit(
   try {
     await write(ptyId, isMultilinePtyPayload(typed) ? '\r\r' : '\r');
   } catch (err) {
-    return { ok: false, reason: 'write_failed', detail: err instanceof Error ? err.message : String(err), pasted: true };
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      reason: 'write_failed',
+      detail: err instanceof HeldWriteUncertain ? `${detail}; the text may have been submitted` : detail,
+      pasted: true,
+    };
   }
   if (probe && retryRefusal) {
     const now = receipt?.now ?? Date.now;

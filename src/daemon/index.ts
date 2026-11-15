@@ -354,7 +354,7 @@ import { chatProviders } from './chat/providers';
 import { record as chatRecord } from './chat/adapter';
 import type { ChatInteractionAnswer } from '../shared/transcript/chatSession';
 import { selfCheckPeerPid } from '../shared/peerPid';
-import { PANE_LOCK_DAEMON_WAIT_MS, PANE_LOCK_MAX_WAIT_MS, PaneDeliveryLocks, writeUnderLock } from './paneDeliveryLock';
+import { PANE_INPUT_HIGH_WATER, PANE_LOCK_DAEMON_WAIT_MS, PANE_LOCK_MAX_WAIT_MS, PaneDeliveryLocks, admitPaneInput, writeUnderLock } from './paneDeliveryLock';
 
 // A delivery asks whether the agent the tracker attributes still runs there,
 // not where its binary lives: the image rule (isAgentImage) would refuse a live
@@ -3323,14 +3323,9 @@ function registerRpcHandlers(
         // Past the high-water mark (other writers can fill it while this client
         // is not paused) the chunk waits in SessionPipe's retry slot instead of
         // the PTY adapter, which drops input past its own bound.
-        if (((managed.ptyProcess as TerminalPty).pendingInputBytes ?? 0) >= 6 * 1024 * 1024) return false;
-        try { managed.ptyProcess.write(data); }
-        catch (error) {
-          if (error instanceof Error && error.message.startsWith('PTY_BACKPRESSURE')) return false;
-          throw error;
-        }
+        if (!admitPaneInput((managed.ptyProcess as TerminalPty).pendingInputBytes, () => managed.ptyProcess.write(data))) return false;
         managed.bridge.noteInput(input);
-        if (((managed.ptyProcess as TerminalPty).pendingInputBytes ?? 0) >= 6 * 1024 * 1024) pipe.setInputPaused(true);
+        if (((managed.ptyProcess as TerminalPty).pendingInputBytes ?? 0) >= PANE_INPUT_HIGH_WATER) pipe.setInputPaused(true);
       });
       const inputDrain = (managed.ptyProcess as TerminalPty).onInputDrain?.(() => pipe.setInputPaused(false));
       if (inputDrain) pipe.setInputDrainSubscription(() => inputDrain.dispose());
@@ -5336,6 +5331,7 @@ function registerRpcHandlers(
         managed.bridge.noteInput(data);
         return true;
       },
+      paneLock: (id, send) => paneLocks.runLocked(id, 'hermes-chat', PANE_LOCK_DAEMON_WAIT_MS, send),
       emit: (id, data, clients) => {
         nativeChatBridge?.nudgeQueue(id);
         for (const client of clients) {
@@ -5436,6 +5432,7 @@ function registerRpcHandlers(
       managed.bridge.noteInput(data);
       return true;
     },
+    paneLock: (id, send) => paneLocks.runLocked(id, 'native-chat', PANE_LOCK_DAEMON_WAIT_MS, send),
     receipts: chatSendReceipts,
     cancelReceipts: chatCancelReceipts,
     queue: chatQueue,
@@ -10373,6 +10370,12 @@ async function main(): Promise<void> {
   // session's PTY exactly like client keystrokes.
   channelWakeWorkerRef = new ChannelWakeWorker({
     memberWorkspaces: () => channelService.memberWorkspaces(),
+    // One delivery at a time into a pane (paneDeliveryLock.ts): a nudge does
+    // not wait for it; a held pane is tried again on a later tick.
+    paneLock: async (id) => {
+      const token = await paneLocks.acquire(id, { key: 'daemon:channel wake' }, 0);
+      return token ? () => paneLocks.release(id, token) : null;
+    },
     unreadFor: (ws) => channelService.unreadFor(ws),
     // A nudge that never landed must not leave the message it announced sitting
     // at 'pending' forever — the push half used to drop that outcome on the

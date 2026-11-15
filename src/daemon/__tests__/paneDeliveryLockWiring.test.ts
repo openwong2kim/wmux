@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isAppOnlyDaemonMethod } from '../../shared/daemonFirstParty';
 
 describe('pane delivery lock daemon wiring', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf-8');
@@ -33,6 +34,12 @@ describe('pane delivery lock daemon wiring', () => {
     }
   });
 
+  it('the Hermes and native-bridge sends hold the pane through their Enter; the wake nudge takes it without waiting', () => {
+    expect(src).toContain("paneLock: (id, send) => paneLocks.runLocked(id, 'hermes-chat', PANE_LOCK_DAEMON_WAIT_MS, send),");
+    expect(src).toContain("paneLock: (id, send) => paneLocks.runLocked(id, 'native-chat', PANE_LOCK_DAEMON_WAIT_MS, send),");
+    expect(block('channelWakeWorkerRef = new ChannelWakeWorker({', 600)).toContain("paneLocks.acquire(id, { key: 'daemon:channel wake' }, 0)");
+  });
+
   it("a hold ends with its client's control pipe and with its session", () => {
     expect(src).toContain('pipeServer.onClientClose((clientId) => paneLocks.releaseClient(clientId));');
     expect(src).toContain("sessionManager.on('session:died', (payload: { id: string }) => paneLocks.dropSession(payload.id));");
@@ -44,5 +51,9 @@ describe('pane delivery lock daemon wiring', () => {
       expect(block(`pipeServer.onRpc('${method}'`, 300)).toContain(`firstPartyOnly(ctx.clientId, '${method}')`);
     }
     expect(block("pipeServer.onRpc('daemon.session.writeHeldV1'", 900)).toContain('return writeUnderLock(paneLocks, id, token, ctx.clientId,');
+    // App-only on the pipe too, so main identifies again and retries on a refusal.
+    for (const method of ['daemon.session.deliveryLockV1', 'daemon.session.deliveryUnlockV1', 'daemon.session.writeHeldV1']) {
+      expect(isAppOnlyDaemonMethod(method)).toBe(true);
+    }
   });
 });

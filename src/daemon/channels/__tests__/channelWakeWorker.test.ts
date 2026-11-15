@@ -24,6 +24,7 @@ import {
   wakeHint,
 } from '../channelWakeWorker';
 import type { DeliveryCheck } from '../../../shared/deliveryPresence';
+import { PaneDeliveryLocks } from '../../paneDeliveryLock';
 import {
   PrincipalService,
   type PrincipalWriterLike,
@@ -77,6 +78,7 @@ function makeHarness(
     screenShowsApproval?: (sessionId: string) => Promise<boolean | null>;
     folderTrustVerdict?: (sessionId: string) => Promise<'trust' | 'unknown' | 'clear'>;
     agentPresent?: (sessionId: string, check: DeliveryCheck) => Promise<WakePresence>;
+    paneLock?: (sessionId: string) => Promise<(() => void) | null>;
   } = {},
 ): Harness {
   let entries: WakeUnreadEntry[] = [];
@@ -1042,6 +1044,47 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
     expect(checks.map((c) => c.phase)).toEqual(['paste', 'enter']);
     expect(checks[1].shownProbe).toBe(h.writes[0].data.slice(0, 24));
     expect(h.outcomes.at(-1)?.ok).toBe(false);
+  });
+
+  it("holds the pane's delivery lock from before its first look through its Enter, and leaves a held pane for a later tick", async () => {
+    const locks = new PaneDeliveryLocks();
+    const looks: string[] = [];
+    let present = false;
+    const h = makeHarness(undefined, {
+      paneLock: async (id) => {
+        const token = await locks.acquire(id, { key: 'daemon:channel wake' }, 0);
+        return token ? () => locks.release(id, token) : null;
+      },
+      agentPresent: async (id, check) => {
+        looks.push(`${check.phase}:${locks.holderOf(id) ?? 'free'}`);
+        return { present, full: true };
+      },
+    });
+    h.setEntries([mention()]);
+    h.setSessions([session({})]);
+    // No agent: nothing goes in, and the pane is given back.
+    h.worker.tickOnce();
+    await vi.advanceTimersByTimeAsync(5);
+    expect(h.writes).toEqual([]);
+    expect(locks.holderOf('pty-1')).toBeUndefined();
+    // Another delivery holds the pane: not even a look this tick.
+    present = true;
+    const other = await locks.acquire('pty-1', { key: 'main:c1', clientId: 'c1', nonce: 'n1' }, 0) as string;
+    h.worker.tickOnce();
+    await vi.advanceTimersByTimeAsync(5);
+    expect(h.writes).toEqual([]);
+    expect(looks).toEqual(['paste:daemon:channel wake']);
+    locks.release('pty-1', other);
+    h.worker.tickOnce();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.writes).toHaveLength(1);
+    // Between the text and its Enter the pane stays the nudge's.
+    expect(locks.holderOf('pty-1')).toBe('daemon:channel wake');
+    await vi.advanceTimersByTimeAsync(5);
+    expect(h.writes.at(-1)?.data).toBe('\r');
+    expect(looks.slice(1)).toEqual(['paste:daemon:channel wake', 'enter:daemon:channel wake']);
+    expect(locks.holderOf('pty-1')).toBeUndefined();
+    expect(h.outcomes.at(-1)?.ok).toBe(true);
   });
 
   it('withholds the Enter when an approval is raised while the agent is asked about before the Enter', async () => {

@@ -136,6 +136,13 @@ export interface ChannelWakeWorkerDeps {
   principalPtyIdOf?(principalId: string): string | undefined;
   /** Write raw bytes into a session's PTY stdin. */
   write(sessionId: string, data: string): void;
+  /**
+   * The pane's delivery lock (daemon/paneDeliveryLock.ts), taken without
+   * waiting before the nudge's first look at the pane and held through its
+   * Enter or take-back: a function that gives it back, or null when another
+   * delivery holds the pane (the nudge waits for a later tick). Absent: no lock.
+   */
+  paneLock?(sessionId: string): Promise<(() => void) | null>;
   /** Broadcast a daemon event (nudge exhaustion → human attention). */
   broadcast(event: Record<string, unknown>): void;
   log(level: 'debug' | 'info' | 'warn', message: string): void;
@@ -482,7 +489,7 @@ export class ChannelWakeWorker {
         // An approval in front of the pane: the nudge's Enter would answer it.
         // Hold without spending budget; the next tick looks again.
         if (this.approvalHold(target.id, key)) continue;
-        if (this.deps.screenShowsApproval || this.deps.folderTrustVerdict || this.deps.agentPresent) {
+        if (this.deps.screenShowsApproval || this.deps.folderTrustVerdict || this.deps.agentPresent || this.deps.paneLock) {
           if (this.screenChecks.has(key)) continue;
           this.screenChecks.add(key);
           void this.injectAfterScreenCheck(key, ws, entry, target, wantMention, state)
@@ -493,7 +500,7 @@ export class ChannelWakeWorker {
 
         // A failed write must not burn the nudge budget (G5 spirit: never
         // spend nudges into a void) — retry on a later tick instead.
-        if (!this.inject(target.id, ws, entry, target)) continue;
+        if (!this.inject(target.id, ws, entry, target, undefined, () => undefined)) continue;
         this.spend(key, state, entry, wantMention);
       }
     }
@@ -577,14 +584,26 @@ export class ChannelWakeWorker {
       this.deps.log('debug', `[wake] holding nudge for ${key}: ${target.id} is held at a usage limit`);
       return;
     }
-    if (!(await this.screenIsFree(target.id, key))) return;
-    // The last await before the write: the agent is still there, in plain input mode.
-    const presence = await this.agentPresence(target.id, key, { phase: 'paste' });
-    if (!presence.present) return;
-    // The checks took time: the pane may have raised an approval since.
-    if (this.approvalHold(target.id, key)) return;
-    if (!this.inject(target.id, ws, entry, target, this.deps.agentPresent ? presence.full === true : undefined)) return;
-    this.spend(key, this.tracker.get(key) ?? state, entry, wantMention);
+    const release = this.deps.paneLock ? await this.deps.paneLock(target.id) : () => undefined;
+    if (!release) {
+      this.deps.log('debug', `[wake] holding nudge for ${key}: another delivery holds ${target.id}`);
+      return;
+    }
+    // Past a nudge that went in, its Enter (or take-back) gives the pane back.
+    let handedOn = false;
+    try {
+      if (!(await this.screenIsFree(target.id, key))) return;
+      // The last await before the write: the agent is still there, in plain input mode.
+      const presence = await this.agentPresence(target.id, key, { phase: 'paste' });
+      if (!presence.present) return;
+      // The checks took time: the pane may have raised an approval since.
+      if (this.approvalHold(target.id, key)) return;
+      if (!this.inject(target.id, ws, entry, target, this.deps.agentPresent ? presence.full === true : undefined, release)) return;
+      handedOn = true;
+      this.spend(key, this.tracker.get(key) ?? state, entry, wantMention);
+    } finally {
+      if (!handedOn) release();
+    }
   }
 
   /**
@@ -593,7 +612,8 @@ export class ChannelWakeWorker {
    * target selection and the write — a PTY write to a destroyed stream
    * throws synchronously); the caller then keeps the nudge budget intact.
    */
-  private inject(sessionId: string, workspaceId: string, entry: WakeUnreadEntry, target: WakeSessionView, plainPrompt?: boolean): boolean {
+  private inject(sessionId: string, workspaceId: string, entry: WakeUnreadEntry, target: WakeSessionView, plainPrompt: boolean | undefined,
+    release: () => void): boolean {
     const hint = wakeHint(entry);
     if (!hint) return false;
     // The body's first line rides AFTER the hint. Every nudge used to read the
@@ -611,7 +631,13 @@ export class ChannelWakeWorker {
     // hint and a bounded preview stop being bounded.
     // Typed as keys: printableLine also drops the C1 controls sanitizeLine keeps.
     const line = printableLine(sanitizeLine(preview ? `${hint} — ${preview}` : hint));
+    // Every way the nudge ends reports once: the pane's lock goes with it.
+    let released = false;
     const report = (ok: boolean): void => {
+      if (!released) {
+        released = true;
+        release();
+      }
       this.deps.onNudgeOutcome?.({
         workspaceId,
         channelId: entry.channelId,

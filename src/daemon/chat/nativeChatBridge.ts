@@ -122,6 +122,12 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
   agentProcessAlive(id: string, slug: string): Promise<boolean>;
   /** Writes to the pane PTY and notes the input; false when the pane is gone. */
   write(id: string, data: string): boolean;
+  /**
+   * A send under the pane's delivery lock (daemon/paneDeliveryLock.ts), held
+   * from before its first look at the pane through its Enter; null when
+   * another delivery kept the pane (busy). Absent: no lock.
+   */
+  paneLock?<T>(id: string, send: () => Promise<T>): Promise<T | null>;
   /** Null when the store could not be loaded: the phone refuses, the desktop sends without dedup. */
   receipts: ChatSendReceiptStore | null;
   /** Null when the store could not be loaded: phone cancels are refused. */
@@ -747,7 +753,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       // lone ESC (any source) land on its own first.
       const sinceEsc = lastEscAt(id) > 0 ? now() - lastEscAt(id) : Infinity;
       if (sinceEsc < ESC_QUIET_MS) await (deps.delay ?? sleep)(ESC_QUIET_MS - sinceEsc);
-      const result = await deliverChatPrompt(req.agentSessionId, req.text, {
+      const send = () => deliverChatPrompt(req.agentSessionId, req.text, {
         getTranscriptSessionId: () => deps.projector.status(id).agentSessionId,
         hasOpenApproval: () => hasOpenApproval(id),
         readScreen: () => deps.readScreen(id),
@@ -787,6 +793,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         } } : {}),
         onWrite: (stage, running) => { if (stage === 'submit') queued = !!running; },
       }, req.attachments ?? []);
+      const result = (deps.paneLock ? await deps.paneLock(id, send) : await send()) ?? 'busy';
       if (denied) return { result: 'error', effect: denied === 'submit' ? 'uncertain' : 'none', error: 'authorization-expired' };
       if (result === 'sent') return { result, effect: 'submitted', ...(queued ? { queued: true as const } : {}) };
       if (wrote) return { result: 'error', effect: 'uncertain', error: 'send-interrupted' };

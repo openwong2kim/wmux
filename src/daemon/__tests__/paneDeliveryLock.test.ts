@@ -6,12 +6,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IPty } from 'node-pty';
 import {
+  PANE_INPUT_HIGH_WATER,
   PANE_LOCK_LEASE_MS,
   PANE_LOCK_STICKY_MS,
   PaneDeliveryLocks,
+  admitPaneInput,
   writeUnderLock,
   type HeldWriteTarget,
 } from '../paneDeliveryLock';
+import { HELD_WRITE_CHUNK_MAX, heldWriteChunks } from '../../shared/heldWrite';
 import { DaemonPTYBridge } from '../DaemonPTYBridge';
 import { RingBuffer } from '../RingBuffer';
 
@@ -48,7 +51,8 @@ describe('PaneDeliveryLocks', () => {
     const late = locks.acquire('s', { key: 'daemon:x' }, 500);
     await vi.advanceTimersByTimeAsync(500);
     expect(await late).toBeNull();
-    expect(locks.busyFor('s', 'main:c1')).toBe(false);
+    // The waiter that gave up is gone: the holder's release frees the pane.
+    expect(locks.holderOf('s')).toBe('main:c1');
   });
 
   it("a held write: refused once the lease ended with no write, and the daemon writer's paste stays intact", async () => {
@@ -136,10 +140,51 @@ describe('PaneDeliveryLocks', () => {
     expect(locks.holdSticky('s', 'chat-v2')).toBe(false);
   });
 
+  it("main's acquire on a pane its own connection still holds (a lost release) ends that hold and queues behind the waiters", async () => {
+    const locks = new PaneDeliveryLocks();
+    const stale = await locks.acquire('s', MAIN, 0) as string;
+    const daemon = locks.acquire('s', { key: 'daemon:scheduled prompt' }, 4_000);
+    const next = locks.acquire('s', { ...MAIN, nonce: 'n2' }, 4_000);
+    // The stale hold is over: its token writes nothing, and the waiter ahead goes first.
+    expect(writeUnderLock(locks, 's', stale, 'c1', target(), 'x')).toEqual({ ok: false, error: 'not held' });
+    const daemonToken = await daemon;
+    expect(locks.holderOf('s')).toBe('daemon:scheduled prompt');
+    locks.release('s', daemonToken as string);
+    expect(await next).toBeTruthy();
+    expect(locks.holderOf('s')).toBe('main:c1');
+    // Another connection's acquire never ends main's hold.
+    const other = locks.acquire('s', { key: 'main:c2', clientId: 'c2', nonce: 'n1' }, 300);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(await other).toBeNull();
+  });
+
+  it('a chat send under its own span writes through the sticky check without cutting the span short', async () => {
+    const locks = new PaneDeliveryLocks();
+    const sent = locks.runLocked('s', 'native-chat', 0, async () => {
+      expect(locks.holdSticky('s', 'native-chat')).toBe(true);
+      // Well past a sticky hold's life: the span still holds the pane.
+      await vi.advanceTimersByTimeAsync(PANE_LOCK_STICKY_MS * 3);
+      expect(locks.holderOf('s')).toBe('native-chat');
+      expect(locks.holdSticky('s', 'chat-v2')).toBe(false);
+      return 'sent';
+    });
+    expect(await sent).toBe('sent');
+    expect(locks.holderOf('s')).toBeUndefined();
+  });
+
+  it('a held write longer than one chunk is refused with nothing written', async () => {
+    const locks = new PaneDeliveryLocks();
+    const token = await locks.acquire('s', MAIN, 0) as string;
+    const t = target();
+    expect(writeUnderLock(locks, 's', token, 'c1', t, 'x'.repeat(HELD_WRITE_CHUNK_MAX + 1))).toEqual({ ok: false, error: 'too large' });
+    expect(writeUnderLock(locks, 's', token, 'c1', t, 'x'.repeat(HELD_WRITE_CHUNK_MAX)).ok).toBe(true);
+    expect(t.written.map((w) => w.length)).toEqual([HELD_WRITE_CHUNK_MAX]);
+  });
+
   it('nothing is written past the high-water mark or on the adapter backpressure', async () => {
     const locks = new PaneDeliveryLocks();
     const token = await locks.acquire('s', MAIN, 0) as string;
-    const full = { ...target(), pendingInputBytes: 6 * 1024 * 1024 };
+    const full = { ...target(), pendingInputBytes: PANE_INPUT_HIGH_WATER };
     expect(writeUnderLock(locks, 's', token, 'c1', full, 'x')).toEqual({ ok: false, error: 'backpressure' });
     expect(full.written).toEqual([]);
     const refusing = { ...target(), write: () => { throw new Error('PTY_BACKPRESSURE: full'); } };
@@ -169,5 +214,24 @@ describe('writeUnderLock accounting', () => {
     expect(viaHeld.getKeyInputRevision()).toBe(2);
     viaPipe.cleanup();
     viaHeld.cleanup();
+  });
+});
+
+describe('held-write chunks', () => {
+  it('a long paste goes as chunks no longer than one held write, whole again when joined, never splitting a surrogate pair', () => {
+    const astral = '\u{1F600}';
+    const text = `${'x'.repeat(HELD_WRITE_CHUNK_MAX - 1)}${astral}${'y'.repeat(HELD_WRITE_CHUNK_MAX)}`;
+    const chunks = heldWriteChunks(text);
+    expect(chunks.join('')).toBe(text);
+    expect(chunks.every((c) => c.length <= HELD_WRITE_CHUNK_MAX)).toBe(true);
+    expect(chunks[1].startsWith(astral)).toBe(true);
+    expect(heldWriteChunks('short')).toEqual(['short']);
+  });
+
+  it('the pane input admit refuses past the high-water mark and on backpressure, and rethrows anything else', () => {
+    expect(admitPaneInput(0, () => undefined)).toBe(true);
+    expect(admitPaneInput(PANE_INPUT_HIGH_WATER, () => { throw new Error('never called'); })).toBe(false);
+    expect(admitPaneInput(undefined, () => { throw new Error('PTY_BACKPRESSURE: full'); })).toBe(false);
+    expect(() => admitPaneInput(undefined, () => { throw new Error('EIO'); })).toThrow('EIO');
   });
 });

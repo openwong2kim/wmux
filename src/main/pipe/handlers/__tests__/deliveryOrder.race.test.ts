@@ -149,7 +149,8 @@ function daemonPrompt(p: ReturnType<typeof pane>, locked: boolean, hooks: { betw
 
 /** Let the other delivery reach its wait for the lock. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-const MAIN_SEND = ['sess-1', MAIN_TEXT, 'Claude Code', { senderTaskIds: ['t-1'] }] as const;
+/** Main's gated delivery of MAIN_TEXT into the pane. */
+const mainSend = (main: ReturnType<typeof mainDelivery>) => main.gatedSubmit('sess-1', MAIN_TEXT, 'Claude Code', { senderTaskIds: ['t-1'] });
 
 describe('delivery order with no lock both take (an older daemon)', () => {
   it("main's delivery lands inside the daemon's check-to-write gap: the daemon pastes after it and withholds its Enter", async () => {
@@ -158,7 +159,7 @@ describe('delivery order with no lock both take (an older daemon)', () => {
     let mainResult: unknown;
     const daemonResult = await daemonPrompt(p, false, {
       between: async () => {
-        mainResult = await main.gatedSubmit(...MAIN_SEND);
+        mainResult = await mainSend(main);
       },
     });
     expect(mainResult).toEqual({ ok: true });
@@ -174,7 +175,7 @@ describe('delivery order with no lock both take (an older daemon)', () => {
     let mainResult: { ok: boolean; reason?: string; pasted?: boolean } | undefined;
     const daemonResult = await daemonPrompt(p, false, {
       afterPaste: async () => {
-        mainResult = await main.gatedSubmit(...MAIN_SEND) as typeof mainResult;
+        mainResult = await mainSend(main) as typeof mainResult;
       },
     });
     expect(mainResult).toMatchObject({ ok: false, reason: 'input_mode' });
@@ -192,7 +193,7 @@ describe("delivery order under the daemon's per-pane lock", () => {
     let mainRun: Promise<unknown> | undefined;
     const daemonResult = await daemonPrompt(p, true, {
       between: async () => {
-        mainRun = main.gatedSubmit(...MAIN_SEND);
+        mainRun = mainSend(main);
         await settle();
       },
     });
@@ -210,7 +211,7 @@ describe("delivery order under the daemon's per-pane lock", () => {
     let mainRun: Promise<unknown> | undefined;
     const daemonResult = await daemonPrompt(p, true, {
       afterPaste: async () => {
-        mainRun = main.gatedSubmit(...MAIN_SEND);
+        mainRun = mainSend(main);
         await settle();
       },
     });
@@ -229,8 +230,22 @@ describe("delivery order under the daemon's per-pane lock", () => {
     expect(p.writes).toEqual([]);
     p.locks.release('sess-1', token as string);
     expect(await daemonRun).toBe('sent');
-    expect(await main.gatedSubmit(...MAIN_SEND)).toEqual({ ok: true });
+    expect(await mainSend(main)).toEqual({ ok: true });
     expect(p.box.submitted).toEqual([DAEMON_TEXT, MAIN_TEXT]);
+    p.bridge.cleanup();
+  });
+
+  it("two of main's deliveries to one pane: main's own chain lets the second ask the daemon only after the first released, so it never takes over a hold still writing", async () => {
+    const p = pane();
+    const main = mainDelivery(p, 'shared');
+    // Same connection: an acquire while that connection holds the pane would
+    // end the hold (a lost release). The second must not reach it mid-delivery.
+    expect(await Promise.all([mainSend(main), mainSend(main)])).toEqual([{ ok: true }, { ok: true }]);
+    expect(p.box.submitted).toEqual([MAIN_TEXT, MAIN_TEXT]);
+    // Paste, Enter, paste, Enter: each delivery whole, all under the lock.
+    expect(p.writes.map(([who, data]) => [who, data.startsWith('\r') ? 'enter' : 'paste'])).toEqual([
+      ['main-held', 'paste'], ['main-held', 'enter'], ['main-held', 'paste'], ['main-held', 'enter'],
+    ]);
     p.bridge.cleanup();
   });
 });
@@ -239,7 +254,7 @@ describe("main when the daemon's lock cannot be taken", () => {
   it('an older daemon (Unknown method): delivered on main\'s own lock, through the session pipe', async () => {
     const p = pane();
     const main = mainDelivery(p, { held: false, why: 'unsupported', detail: 'Unknown method: daemon.session.deliveryLockV1' });
-    expect(await main.gatedSubmit(...MAIN_SEND)).toEqual({ ok: true });
+    expect(await mainSend(main)).toEqual({ ok: true });
     expect(p.writes.every(([who]) => who === 'main')).toBe(true);
     p.bridge.cleanup();
   });
@@ -248,7 +263,7 @@ describe("main when the daemon's lock cannot be taken", () => {
     for (const [why, reason] of [['busy', 'fresh_context_busy'], ['unavailable', 'gate_unavailable']] as const) {
       const p = pane();
       const main = mainDelivery(p, { held: false, why, detail: 'x' });
-      expect(await main.gatedSubmit(...MAIN_SEND)).toMatchObject({ ok: false, reason });
+      expect(await mainSend(main)).toMatchObject({ ok: false, reason });
       expect(p.writes).toEqual([]);
       p.bridge.cleanup();
     }

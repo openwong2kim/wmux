@@ -13,11 +13,17 @@
  * - A hold ends on release, on its holder's control pipe closing, on the
  *   session ending, or when its lease runs out: renewed on every held write,
  *   a lease reclaims an orphan (a holder that hung) after LEASE_MS.
- * - Writers with no span of their own (the chat writers' per-write
- *   callbacks) hold it stickily: each write takes or renews a short hold.
+ * - Main's next acquire on a pane its own connection still holds ends that
+ *   hold: main's in-process chain (freshContext.ts withPaneDeliveryLock) lets
+ *   one delivery per pane reach this lock at a time, so such a hold is one
+ *   whose release was lost.
+ * - Writers with no span of their own (chatV2's per-write callback, the chat
+ *   bridges' keys outside a send) hold it stickily: each write takes or
+ *   renews a short hold.
  */
 
 import { randomUUID } from 'node:crypto';
+import { HELD_WRITE_CHUNK_MAX } from '../shared/heldWrite';
 
 /** A hold no write renewed for this long is reclaimed. */
 export const PANE_LOCK_LEASE_MS = 60_000;
@@ -40,7 +46,8 @@ export interface PaneLockHolder {
 interface Grant {
   token: string;
   holder: PaneLockHolder;
-  expiresAt: number;
+  /** A per-write hold (holdSticky): it ends PANE_LOCK_STICKY_MS after its last write. */
+  sticky: boolean;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -56,19 +63,16 @@ interface PaneEntry {
 }
 
 export interface PaneDeliveryLocksOptions {
-  now?: () => number;
   leaseMs?: number;
   log?: (line: string) => void;
 }
 
 export class PaneDeliveryLocks {
   private readonly panes = new Map<string, PaneEntry>();
-  private readonly now: () => number;
   private readonly leaseMs: number;
   private readonly log: (line: string) => void;
 
   constructor(opts: PaneDeliveryLocksOptions = {}) {
-    this.now = opts.now ?? Date.now;
     this.leaseMs = opts.leaseMs ?? PANE_LOCK_LEASE_MS;
     this.log = opts.log ?? (() => undefined);
   }
@@ -77,6 +81,13 @@ export class PaneDeliveryLocks {
   acquire(sessionId: string, holder: PaneLockHolder, waitMs: number): Promise<string | null> {
     const pane = this.entry(sessionId);
     if (!pane.grant && pane.waiters.length === 0) return Promise.resolve(this.grant(sessionId, pane, holder));
+    // Held by this same connection: its release was lost (see the header).
+    // That hold ends, and this acquire takes its turn behind any waiter.
+    if (holder.clientId !== undefined && pane.grant?.holder.clientId === holder.clientId) {
+      this.log(`[pane-lock] session=${sessionId} hold by ${pane.grant.holder.key} ended by the same connection's next acquire`);
+      this.handOn(sessionId, pane);
+      return this.acquire(sessionId, holder, waitMs);
+    }
     const wait = Math.min(Math.max(0, waitMs), PANE_LOCK_MAX_WAIT_MS);
     if (wait === 0) return Promise.resolve(null);
     return new Promise<string | null>((resolve) => {
@@ -103,27 +114,21 @@ export class PaneDeliveryLocks {
     return true;
   }
 
-  /** Whether someone other than `key` holds the pane or waits for it. */
-  busyFor(sessionId: string, key: string): boolean {
-    const pane = this.panes.get(sessionId);
-    if (!pane) return false;
-    return (!!pane.grant && pane.grant.holder.key !== key) || (!pane.grant && pane.waiters.length > 0);
-  }
-
   /**
    * A writer with no span of its own: take the pane for a short hold, or
-   * renew the one it has. False when another writer holds it: nothing may be
-   * written.
+   * renew the one it has. Inside the same writer's span (runLocked with the
+   * same key) it writes under that hold, which it leaves as it is. False
+   * when another writer holds it: nothing may be written.
    */
   holdSticky(sessionId: string, key: string): boolean {
     const pane = this.entry(sessionId);
     if (pane.grant) {
       if (pane.grant.holder.key !== key) return false;
-      this.arm(sessionId, pane.grant, PANE_LOCK_STICKY_MS);
+      if (pane.grant.sticky) this.arm(sessionId, pane.grant, PANE_LOCK_STICKY_MS);
       return true;
     }
     if (pane.waiters.length > 0) return false;
-    this.grant(sessionId, pane, { key }, PANE_LOCK_STICKY_MS);
+    this.grant(sessionId, pane, { key }, true);
     return true;
   }
 
@@ -201,21 +206,21 @@ export class PaneDeliveryLocks {
     return pane;
   }
 
-  private grant(sessionId: string, pane: PaneEntry, holder: PaneLockHolder, leaseMs = this.leaseMs): string {
-    const grant: Grant = { token: randomUUID(), holder, expiresAt: 0, timer: null };
+  private grant(sessionId: string, pane: PaneEntry, holder: PaneLockHolder, sticky = false): string {
+    if (pane.grant?.timer) clearTimeout(pane.grant.timer);
+    const grant: Grant = { token: randomUUID(), holder, sticky, timer: null };
     pane.grant = grant;
-    this.arm(sessionId, grant, leaseMs);
+    this.arm(sessionId, grant, sticky ? PANE_LOCK_STICKY_MS : this.leaseMs);
     return grant.token;
   }
 
   /** (Re)start the grant's lease: it is reclaimed once `ms` pass with no renewal. */
   private arm(sessionId: string, grant: Grant, ms: number): void {
-    grant.expiresAt = this.now() + ms;
     if (grant.timer) clearTimeout(grant.timer);
     grant.timer = setTimeout(() => {
       const pane = this.panes.get(sessionId);
       if (pane?.grant !== grant) return;
-      if (ms >= this.leaseMs) this.log(`[pane-lock] session=${sessionId} hold by ${grant.holder.key} reclaimed after ${ms} ms with no write`);
+      if (!grant.sticky) this.log(`[pane-lock] session=${sessionId} hold by ${grant.holder.key} reclaimed after ${ms} ms with no write`);
       this.handOn(sessionId, pane);
     }, ms);
     grant.timer.unref?.();
@@ -247,14 +252,31 @@ export interface HeldWriteTarget {
   noteInput(data: string): void;
 }
 
-/** The session pipe's input high-water mark (index.ts pipe.onInput). */
-export const HELD_WRITE_HIGH_WATER = 6 * 1024 * 1024;
+/** The session pipe's input high-water mark: past it a pane takes no more input. */
+export const PANE_INPUT_HIGH_WATER = 6 * 1024 * 1024;
+
+/**
+ * One write into a pane's PTY adapter, as the session pipe's input makes it:
+ * refused, with nothing written, past the high-water mark or on the adapter's
+ * backpressure.
+ */
+export function admitPaneInput(pendingInputBytes: number | undefined, write: () => void): boolean {
+  if ((pendingInputBytes ?? 0) >= PANE_INPUT_HIGH_WATER) return false;
+  try {
+    write();
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('PTY_BACKPRESSURE')) return false;
+    throw error;
+  }
+  return true;
+}
 
 /**
  * main's write under the pane's lock (`daemon.session.writeHeldV1`): the
  * hold is checked and the bytes written in one synchronous step, and noted
  * exactly as the session pipe's input is. Nothing is written past the
- * high-water mark or on the adapter's backpressure.
+ * high-water mark, on the adapter's backpressure, or for a write longer than
+ * one held-write chunk (main splits a long paste).
  */
 export function writeUnderLock(
   locks: PaneDeliveryLocks,
@@ -263,17 +285,12 @@ export function writeUnderLock(
   clientId: string,
   target: HeldWriteTarget | undefined,
   data: string,
-): { ok: true } | { ok: false; error: 'no session' | 'not held' | 'backpressure' } {
+): { ok: true } | { ok: false; error: 'no session' | 'not held' | 'backpressure' | 'too large' } {
   if (!target) return { ok: false, error: 'no session' };
   if (!locks.holds(sessionId, token, clientId)) return { ok: false, error: 'not held' };
   if (!data) return { ok: true };
-  if ((target.pendingInputBytes ?? 0) >= HELD_WRITE_HIGH_WATER) return { ok: false, error: 'backpressure' };
-  try {
-    target.write(data);
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('PTY_BACKPRESSURE')) return { ok: false, error: 'backpressure' };
-    throw error;
-  }
+  if (data.length > HELD_WRITE_CHUNK_MAX) return { ok: false, error: 'too large' };
+  if (!admitPaneInput(target.pendingInputBytes, () => target.write(data))) return { ok: false, error: 'backpressure' };
   target.noteInput(data);
   return { ok: true };
 }

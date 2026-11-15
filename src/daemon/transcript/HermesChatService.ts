@@ -38,6 +38,12 @@ export interface HermesChatDeps {
   processAlive(id: string): Promise<boolean>;
   /** Writes to the pane's PTY; false when the pane is gone. */
   write(id: string, data: string): boolean;
+  /**
+   * `send` under the pane's delivery lock (daemon/paneDeliveryLock.ts), held
+   * from before its first look at the pane through its Enter; null when
+   * another delivery kept the pane (busy). Absent: no lock.
+   */
+  paneLock?<T>(id: string, send: () => Promise<T>): Promise<T | null>;
   emit(id: string, data: TranscriptAppendData, clients: readonly string[]): void;
   delay?: (ms: number) => Promise<void>;
   /** Tests: the database opener. */
@@ -118,7 +124,7 @@ export class HermesChatService {
     let pasted = false;
     let denied = false;
     const authorize = opts.authorized;
-    const result = await deliverScheduledPrompt('hermes', incarnationId, text, {
+    const deliver = () => deliverScheduledPrompt('hermes', incarnationId, text, {
       getAgentState: () => {
         const keys = this.deps.keyInput(id);
         const pane = this.deps.pane(id);
@@ -141,6 +147,7 @@ export class HermesChatService {
         return ok;
       } } : {}),
     });
+    const result = (this.deps.paneLock ? await this.deps.paneLock(id, deliver) : await deliver()) ?? 'busy';
     switch (result) {
       case 'sent': return { result: 'sent' };
       case 'busy': return { result: 'busy' };

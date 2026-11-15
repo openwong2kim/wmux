@@ -75,6 +75,7 @@ import type { AgentSlug } from '../shared/agentIdentity';
 import { isSessionPromptScheduleResult, type SessionPromptScheduleResult } from '../shared/sessionPromptSchedule';
 import { parseToolRefusal, type ToolRefusal } from '../shared/toolRefusal';
 import { parseCommitOrigin, type CommitOrigin } from '../shared/commitOrigin';
+import { heldWriteChunks } from '../shared/heldWrite';
 
 // RCA A2 — single source of truth in shared/timeouts.ts so the renderer's
 // RECONCILE_TIMEOUT_MS can be derived from (and stay greater than) this value.
@@ -117,6 +118,11 @@ function isNotFirstParty(err: unknown): boolean {
  */
 /** On top of a lock acquire's own wait: the round trip, before the reply counts as lost. */
 const PANE_LOCK_RPC_MARGIN_MS = 2_000;
+
+/** Whether an RPC failed with its reply lost (sent, outcome unknown). */
+function isLostReply(message: string): boolean {
+  return message.startsWith('RPC timeout:') || message === 'DaemonClient disconnecting' || message === 'DaemonClient disconnected';
+}
 
 export class DaemonClient extends EventEmitter {
   private controlPipe: net.Socket | null = null;
@@ -1423,27 +1429,43 @@ export class DaemonClient extends EventEmitter {
     }
   }
 
-  /** Give the pane's delivery lock back, by token or by an acquire's nonce. Fire-and-forget. */
+  /**
+   * Give the pane's delivery lock back, by token or by an acquire's nonce.
+   * Fire-and-forget, tried once more if the first try fails: a lost release
+   * would hold the pane until the lease, or the next acquire from this
+   * connection, reclaims it. A closed connection releases on its own.
+   */
   releasePaneLock(id: string, by: { token: string } | { nonce: string }): void {
-    if (!this.isConnected) return;
-    void this.rpc('daemon.session.deliveryUnlockV1', { id, ...by }).catch(() => undefined);
+    const attempt = () => (this.isConnected ? this.rpc('daemon.session.deliveryUnlockV1', { id, ...by }) : Promise.resolve());
+    void attempt().catch(() => attempt()).catch(() => undefined);
   }
 
   /**
    * A delivery write under the pane's lock: the daemon writes only while
-   * `token` holds it. `uncertain`: the reply was lost, so the bytes may have
-   * reached the pane.
+   * `token` holds it. A long paste goes as several held writes of at most
+   * HELD_WRITE_CHUNK_MAX (shared/heldWrite.ts) each, every one under the
+   * token, so no control-pipe line nears the daemon's line cap. `uncertain`: bytes may have reached the
+   * pane (a lost reply, or a later chunk refused after earlier ones landed).
    */
   async writeHeld(id: string, token: string, data: string): Promise<{ ok: true } | { ok: false; uncertain: boolean; detail: string }> {
     if (!this.isConnected) return { ok: false, uncertain: false, detail: 'the background service is not connected' };
-    try {
-      const r = await this.rpc('daemon.session.writeHeldV1', { id, token, data }) as { ok?: unknown; error?: unknown } | null;
-      if (r?.ok === true) return { ok: true };
-      const why = typeof r?.error === 'string' ? r.error : 'refused';
-      return { ok: false, uncertain: false, detail: why === 'not held' ? "the pane's delivery lock was no longer held" : why };
-    } catch (error) {
-      return { ok: false, uncertain: true, detail: error instanceof Error ? error.message : String(error) };
+    let landed = false;
+    for (const chunk of heldWriteChunks(data)) {
+      try {
+        const r = await this.rpc('daemon.session.writeHeldV1', { id, token, data: chunk }) as { ok?: unknown; error?: unknown } | null;
+        if (r?.ok !== true) {
+          const why = typeof r?.error === 'string' ? r.error : 'refused';
+          return { ok: false, uncertain: landed, detail: why === 'not held' ? "the pane's delivery lock was no longer held" : why };
+        }
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        // Only a reply that never came leaves the write unknown; an error
+        // reply is the daemon refusing before it wrote.
+        return { ok: false, uncertain: landed || isLostReply(detail), detail };
+      }
+      landed = true;
     }
+    return { ok: true };
   }
 
   /** The fan-out caller nudge (daemon/callerNudgeDelivery.ts). An older
