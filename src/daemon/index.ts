@@ -327,6 +327,7 @@ import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, ty
 import { handleLiveness } from '../shared/processHandleLiveness';
 import { deliverScheduledPrompt, deliveryInputFence, type ScheduledPromptDeliveryDeps, type ScreenBlock } from './sessionPromptDelivery';
 import { deliverCallerNudge } from './callerNudgeDelivery';
+import { draftScreenCheck, type DraftCheck } from './draftScreen';
 import { paneTurnClosed, stopAgentTree } from './agentStop';
 import { continueOnAccount } from './continueOnAccount';
 import { paneFree } from './paneFree';
@@ -555,6 +556,8 @@ let idleHoldForRemoteStarts: () => boolean = () => false;
 let headlessDeliverRef: HeadlessDeliveryDeps['deliver'] | null = null;
 /** daemon.deliveryPresence, for the channel wake worker built in another scope. */
 let deliveryPresenceRef: ((id: string, check: DeliveryCheck) => Promise<DeliveryPresence>) | null = null;
+/** Whether a pane holds a draft, the screen consulted (draftScreen.ts). */
+let draftOnScreen: DraftCheck | undefined;
 let headlessDeliveryRef: HeadlessDelivery | null = null;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 let noteCodexServerLost: ((id:string)=>void) | undefined;
@@ -6248,6 +6251,9 @@ function registerRpcHandlers(
     const state = readDaemonAgentState(id);
     const bridge = sessionManager.getSession(id)?.bridge;
     if (!bridge) return state;
+    // A set draft mark asks the screen in the background: the next read has its answer.
+    const draft = bridge.hasDraft();
+    if (draft) void draftOnScreen?.(id);
     // #1680 — additive, for main's fresh-context step: the key-only input
     // counter and quiet flag (focus and pointer-motion reports do not move
     // them), and whether the CURRENT agent's hooks have reported (reset when
@@ -6260,7 +6266,7 @@ function registerRpcHandlers(
       hookReports: bridge.hasHookReports(),
       // Additive, for a delivery that waits for the person to stop typing:
       // whether the composer holds a draft, and how long keys have been quiet.
-      hasDraft: bridge.hasDraft(),
+      hasDraft: draft,
       keyInputIdleMs: bridge.keyInputIdleMs(),
       // #2263 — additive, for main's resync after it subscribes to events
       // again: the latest window title, which it may have missed meanwhile,
@@ -6319,6 +6325,16 @@ function registerRpcHandlers(
     return deliveryPresence(presenceDeps, id, expectAgent, check);
   });
   deliveryPresenceRef = (id, check) => deliveryPresence(presenceDeps, id, undefined, check);
+  // A draft mark the key path left after the draft was erased (Backspace), cleared
+  // by a fresh frame of the agent's empty prompt (draftScreen.ts).
+  draftOnScreen = draftScreenCheck({
+    bridge: (sid) => sessionManager.getSession(sid)?.bridge,
+    slug: (sid) => {
+      const named = readDaemonAgentState(sid).agentName;
+      return named ? agentDisplayToSlug(named) : undefined;
+    },
+    frame: presenceDeps.frame,
+  });
 
   // #1594 — what main's terminal_send needs to paste into a session: the agent
   // and DECSET 2004 from the live output stream. A hidden pane's renderer xterm
@@ -6504,6 +6520,7 @@ function registerRpcHandlers(
     return deliverCallerNudge(prompt, {
       usageHeld: () => usageLimits?.holds(id) === true,
       input: () => sessionManager.getSession(id)?.bridge,
+      refreshDraft: async () => draftOnScreen?.(id),
       deliver: (opts) => deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, opts, 'caller nudge', 'wmux'),
     });
   });
@@ -6517,7 +6534,7 @@ function registerRpcHandlers(
   ): Promise<SessionPromptScheduleResult> => {
     // A human draft in the composer is a wait, not a failure: answering
     // 'busy' keeps the pane armed and retries once the draft is sent or cleared.
-    if (sessionManager.getSession(id)?.bridge.hasDraft() === true) return 'busy';
+    if (sessionManager.getSession(id)?.bridge.hasDraft() === true && (await draftOnScreen?.(id)) !== false) return 'busy';
     return deliverPromptToSessionNow(id, slug, incarnationId, USAGE_LIMIT_CONTINUE_PROMPT, {
       // A turn that died on the limit (or on a provider error) leaves the pane at `error`.
       acceptError: true,

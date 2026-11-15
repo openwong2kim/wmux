@@ -81,6 +81,26 @@ describe('deliverCallerNudge', () => {
     expect((await run()).result).toBe('sent');
   });
 
+  // Backspace never clears the key path's mark; the screen check may (draftScreen.ts).
+  it('a draft erased with Backspace: the screen check runs first and clears the mark, so it goes', async () => {
+    vi.advanceTimersByTime(CALLER_NUDGE_QUIET_MS);
+    bridge.noteInput('half a th');
+    bridge.noteInput('\x7f'.repeat(9));
+    vi.advanceTimersByTime(CALLER_NUDGE_QUIET_MS);
+    expect(bridge.hasDraft()).toBe(true);
+    const refreshDraft = vi.fn(async () => bridge.clearDraftIfUnchanged(bridge.getKeyInputRevision()));
+    expect(await deliverCallerNudge(LINE, { usageHeld: () => false, input: () => bridge, refreshDraft, deliver })).toEqual({ result: 'sent', pasted: true });
+    expect(refreshDraft).toHaveBeenCalled();
+  });
+
+  it('a key after the screen was read keeps the mark: clearDraftIfUnchanged refuses', () => {
+    bridge.noteInput('abc');
+    const before = bridge.getKeyInputRevision();
+    bridge.noteInput('d');
+    expect(bridge.clearDraftIfUnchanged(before)).toBe(false);
+    expect(bridge.hasDraft()).toBe(true);
+  });
+
   it('waits for 10 s of no key input', async () => {
     bridge.noteInput('\x1b[A'); // an arrow key: no draft, but a person is there
     vi.advanceTimersByTime(CALLER_NUDGE_QUIET_MS - 1000);
