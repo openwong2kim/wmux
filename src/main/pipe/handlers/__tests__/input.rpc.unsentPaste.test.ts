@@ -29,6 +29,9 @@ let draft: Record<string, boolean>;
 let keys: Record<string, number>;
 /** Reads of a pane's input count still to come back one short: a write of ours counted late. */
 let lagReads: Record<string, number>;
+/** How many reads each write to a pane stays uncounted for. */
+let lagAfterWrite: Record<string, number>;
+let logs: string[];
 /** The daemon reports no input count (an older daemon). */
 let noCount: boolean;
 let turnStartedAt: number | undefined;
@@ -41,6 +44,7 @@ function harness() {
     rpc: async (method: string) => (method === 'daemon.approvals.list' ? { pending: [] } : { ok: true }),
     writeToSession: (id: string, data: string) => {
       writes.push({ id, data });
+      if (lagAfterWrite[id]) lagReads[id] = lagAfterWrite[id];
       return true;
     },
     getAgentState: async (id: string) => {
@@ -68,7 +72,7 @@ function harness() {
       readTurnStartedAt: () => turnStartedAt,
       sleep: async (ms: number) => { clock += ms; },
       now: () => clock,
-      log: () => undefined,
+      log: (line: string) => { logs.push(line); },
       readTaskState: async () => 'open',
       subscribeAgentStops: (onStop) => {
         stops = onStop;
@@ -107,6 +111,8 @@ beforeEach(() => {
   draft = {};
   keys = {};
   lagReads = {};
+  lagAfterWrite = {};
+  logs = [];
   noCount = false;
   turnStartedAt = undefined;
   vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => (method === 'input.findOwnerWorkspace' ? { workspaceId: 'ws-a' } : null));
@@ -162,11 +168,27 @@ describe('a paste left unsent in the input box (#3390)', () => {
   it("the delivery's own write counted after the record is not a touch: still held", async () => {
     const wiring = harness();
     // The paste reaches the daemon's count only after the first read of it.
-    lagReads['pty-a'] = 1;
+    lagAfterWrite['pty-a'] = 1;
     await leaveUnsent(wiring);
     answers = [PROCESS];
     expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Claude Code')).toMatchObject({ ok: false, detail: expect.stringMatching(/still holds an earlier message/) });
     expect(written()).toEqual(['\x1b[200~pointer\x1b[201~']);
+  });
+
+  it('a paste not yet counted when it is recorded: held, logged once, and counting it later does not clear it', async () => {
+    const wiring = harness();
+    // Uncounted through every settle read.
+    lagAfterWrite['pty-a'] = 100;
+    await leaveUnsent(wiring);
+    expect(logs.filter((line) => line.includes('recorded before its writes were counted'))).toHaveLength(1);
+    // The daemon counts it now: still held.
+    lagReads['pty-a'] = 0;
+    answers = [PROCESS];
+    expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Claude Code')).toMatchObject({ ok: false, detail: expect.stringMatching(/still holds an earlier message/) });
+    expect(written()).toEqual(['\x1b[200~pointer\x1b[201~']);
+    // A key after it still clears it.
+    keys['pty-a'] = 1;
+    expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Claude Code')).toMatchObject({ ok: true });
   });
 
   it('with no input count from the daemon it stays held until a turn starts; a task meanwhile is stored', async () => {

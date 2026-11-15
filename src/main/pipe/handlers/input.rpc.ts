@@ -2866,11 +2866,12 @@ export function registerInputRpc(
     return typeof state?.keyInputRevision === 'number' ? state.keyInputRevision : undefined;
   };
   /**
-   * The input count once this delivery's own writes are in it: a write reaches the session over its own pipe and
-   * may be counted after a read, so the count is read again, a moment apart, until two reads agree (at most
-   * `KEY_SETTLE_READS`). An unreadable count is undefined.
+   * The input count once this delivery's own writes are in it. A write reaches the session over its own pipe and is
+   * counted when the daemon takes it, which may be after a read: the count is read again, a moment apart, until it
+   * reaches `floor` (the count before the paste plus this delivery's writes, each counted at least once) and two reads
+   * agree, at most `KEY_SETTLE_READS` times. Still short of `floor` by then: `floor`, logged. Unreadable: undefined.
    */
-  const settledKeyRevision = async (ptyId: string): Promise<number | undefined> => {
+  const settledKeyRevision = async (ptyId: string, floor: number | undefined): Promise<number | undefined> => {
     const pause = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
     let last = await readKeyRevision(ptyId);
     for (let read = 1; read < KEY_SETTLE_READS && last !== undefined; read++) {
@@ -2878,10 +2879,13 @@ export function registerInputRpc(
       await pause(KEY_SETTLE_MS);
       // eslint-disable-next-line no-await-in-loop -- each read waits for the one before
       const now = await readKeyRevision(ptyId);
-      if (now === last) return last;
+      if (now === last && (floor === undefined || now >= floor)) return last;
       last = now;
     }
-    return last;
+    if (last === undefined || floor === undefined || last >= floor) return last;
+    // Our writes not counted yet: wait for them in the count, so that counting them later is not a touch.
+    logLine(`[delivery] pane ${JSON.stringify(ptyId)}: unsent paste recorded before its writes were counted (input count ${last}, expected ${floor}); held until the count passes ${floor}`);
+    return floor;
   };
 
   /** The gated delivery itself: every check, the paste and the Enter. */
@@ -2991,11 +2995,18 @@ export function registerInputRpc(
       armRetry: () => armEnterRetry(ptyId),
     };
     /** A paste left in the box, recorded while the pane's delivery lock is still held, so the next delivery sees it. */
-    const rememberUnsent = async (result: GatedSubmitResult): Promise<GatedSubmitResult> => {
+    /** This delivery's writes to the pane, counted for the record below. */
+    let ownWrites = 0;
+    const ownWrite = (id: string, data: string): void => {
+      ownWrites += 1;
+      writeToPty(id, data);
+    };
+    const rememberUnsent = async (result: GatedSubmitResult, keysBefore: number | undefined): Promise<GatedSubmitResult> => {
       if (!result.ok && result.pasted && !result.cleared) {
         // After this delivery's last write (an Enter retry only follows a sent Enter, and such a delivery is not unsent).
         const at = (deps.now ?? Date.now)();
-        unsentPaste.set(ptyId, { at, keys: await settledKeyRevision(ptyId) });
+        const floor = keysBefore === undefined ? undefined : keysBefore + ownWrites;
+        unsentPaste.set(ptyId, { at, keys: await settledKeyRevision(ptyId, floor) });
       }
       return result;
     };
@@ -3024,7 +3035,8 @@ export function registerInputRpc(
           if (late) return late;
           const held = await heldByUnsentPaste();
           if (held) return held;
-          return await rememberUnsent(await gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt));
+          const keysBefore = await readKeyRevision(ptyId);
+          return await rememberUnsent(await gatedPasteSubmit(gate, ownWrite, ptyId, text, agent, deps.sleep, undefined, guard, receipt), keysBefore);
         },
         lockWaitMs,
       ).then(noteUnsent).catch(paneBusy);
@@ -3043,7 +3055,8 @@ export function registerInputRpc(
         if (late) return late;
         const held = await heldByUnsentPaste();
         if (held) return held;
-        return await rememberUnsent(await gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
+        const keysBefore = await readKeyRevision(ptyId);
+        return await rememberUnsent(await gatedPasteSubmit(gate, ownWrite, ptyId, text, agent, deps.sleep, async () => {
           const before = opts.guardKey ? getDeliveryCheck(opts.guardKey)?.beforeFreshContext : undefined;
           const why = before ? await before() : null;
           if (why) throw new Error(`delivery: ${why}; nothing was written`);
@@ -3062,7 +3075,7 @@ export function registerInputRpc(
             // person typing: the guard counts each, one key apiece, as the
             // step itself verifies.
             (data) => {
-              writeToPty(ptyId, data);
+              ownWrite(ptyId, data);
               noteOwnWrite();
             },
             keepContext,
@@ -3074,7 +3087,7 @@ export function registerInputRpc(
               if (again.input === 'pointer') throw new DeliveryRefused({ ok: false, reason: 'agent_changed', detail: 'delivery: the target agent changed during the fresh-context step' });
             },
           );
-        }, guard, receipt));
+        }, guard, receipt), keysBefore);
       },
       lockWaitMs,
     ).then(noteUnsent).catch(paneBusy);
@@ -3338,7 +3351,7 @@ export function registerInputRpc(
 }
 
 /** Reads of a pane's input count, and the pause between them, before an unsent paste's count is taken as settled. */
-const KEY_SETTLE_READS = 4;
+const KEY_SETTLE_READS = 8;
 const KEY_SETTLE_MS = 50;
 
 /** Refusals that store a live local delivery to type later. */
