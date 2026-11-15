@@ -242,11 +242,11 @@ export class OutboxStore {
     return hits.length;
   }
 
-  /** Drop acked / refused records older than `keepMs`. Returns how many went. */
-  prune(keepMs = OUTBOX_DONE_KEEP_MS): number {
+  /** Drop acked / refused records older than `keepMs`, except those `keep` holds on to. Returns how many went. */
+  prune(keepMs = OUTBOX_DONE_KEEP_MS, keep?: (r: A2aOutboxRecordV1) => boolean): number {
     this.assertWritable();
     const cutoff = this.now() - keepMs;
-    const stale = [...this.records.entries()].filter(([, r]) => !OPEN.has(r.state) && Date.parse(r.updatedAt) < cutoff);
+    const stale = [...this.records.entries()].filter(([, r]) => !OPEN.has(r.state) && Date.parse(r.updatedAt) < cutoff && !keep?.(r));
     if (stale.length === 0) return 0;
     this.mutate(() => {
       for (const [k] of stale) this.records.delete(k);

@@ -208,6 +208,13 @@ refuses on the server's connection is told back with its acknowledgement
 (feature `stream-refuse.1`); with an older build on either side the
 server is not told, as before.
 
+The refusal is stored before the task is updated. If wmux stops between
+the two, or the task update cannot be written, the update is made again
+when wmux starts and on each regular check after that, once only. It is not
+made if the other PC has since taken a later message of that task. After a
+day without success it is dropped, with a line in the log naming the task
+and the PC.
+
 ## Delivery, receipts and held work
 
 The **Remote** page has a **Messages between PCs** section:
