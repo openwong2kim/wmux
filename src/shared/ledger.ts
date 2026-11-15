@@ -191,6 +191,9 @@ export interface LedgerRemotePool {
   refusals?: { hostId: string; at: number }[];
   /** When it was first held (epoch ms): a row held past the limit fails. */
   heldSince?: number;
+  /** The folder's origin hash (32 hex) as the PCs advertised it at the first placement: each later placement
+   *  goes to a folder with this hash. Absent: the folder had none, and only its root id is matched. */
+  rootHash?: string;
 }
 
 /** The most placements one pool row may have. */

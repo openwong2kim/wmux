@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { A2A_REMOTE_MESSAGE_ID_RE, A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
+import { A2A_FEATURE_SPAWN_ROOT_HASH, A2A_REMOTE_MESSAGE_ID_RE, A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope, type HostId } from '../../../shared/a2aRemote';
 import { SPAWN_PENDING_PER_HOST_DEFAULT, SPAWN_REQUEST_KEEP_MS, SPAWN_REQUESTS_MAX, SPAWN_TARGETS_LINK_ID } from '../../../shared/a2aSpawn';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
@@ -16,6 +16,7 @@ import { LinkStore } from '../linkStore';
 import { linkAlias } from '../outbound';
 import { A2aSpawnReceiver, registerSpawnRpc, unpairedHostNamed, type SpawnReceiverDeps } from '../spawnReceiver';
 import { SpawnPolicyStore, samePath } from '../spawnPolicyStore';
+import { SpawnRootKeys, spawnRootHashFor } from '../spawnRootHash';
 import { SPAWN_REQUESTS_FILE, SpawnRequestStore } from '../spawnRequestStore';
 import { CheckBusy, CheckTimeout, SpawnChecks, realpathNative } from '../spawnChecks';
 import { deliberateSleep } from '../../../test-utils/waitFor';
@@ -666,6 +667,15 @@ describe('as the asker: answers and targets', () => {
     asker.applyInbound(targets(1), { hostId: HOST });
     asker.applyInbound(targets(2), { hostId: HOST });
     expect(got).toHaveLength(3);
+    // The same version with other content (the other PC added its folders' origin tags) is handed on; once.
+    const tagged: A2aRemoteEnvelope = {
+      ...targets(2), messageId: 'st-2-0123abcd',
+      spawnTargets: { v: 1, version: 2, roots: [{ id: 'web', label: 'Web', originKeyHash: 'a'.repeat(32) }], agents: [] },
+    };
+    asker.applyInbound(tagged, { hostId: HOST });
+    asker.applyInbound(tagged, { hostId: HOST });
+    expect(got).toHaveLength(4);
+    expect(got[3]).toEqual(tagged.spawnTargets);
   });
 });
 
@@ -702,6 +712,57 @@ describe('as the PC asked: telling other PCs what they may ask for', () => {
     // Without an agent, or with one that cannot be started from another PC: the policy only.
     expect(await get({})).toEqual({ policy: policy.get() });
     expect(await get({ agent: 'not-an-agent' })).toEqual({ policy: policy.get() });
+  });
+
+  it('folder origin tags go only to a PC that reads them, keyed per requester, under a message id naming the content', async () => {
+    await allowHost({ hosts: { [HOST]: { allowed: true }, [OTHER]: { allowed: true } } });
+    const KEY = 'github.com/owner/repo';
+    const reads = new Map<string, Set<string>>();
+    const r = makeReceiver({
+      peerFeatures: (h) => reads.get(h),
+      rootHash: (h, p) => (p === repo ? spawnRootHashFor(h, KEY) : undefined),
+    });
+    const version = policy.get().version;
+    // Neither PC reads them yet: plain targets, under the plain id, as an older PC expects.
+    r.sendTargets();
+    expect(targetsSent().map((t) => t.targets)).toEqual([0, 1].map(() => ({ v: 1, version, roots: [{ id: 'web', label: 'Web' }], agents: ['claude', 'codex'] })));
+    expect(sent.map((x) => x.env.messageId)).toEqual([`st-${version}`, `st-${version}`]);
+    sent.length = 0;
+    r.sendRootHashes();
+    expect(targetsSent()).toEqual([]);
+    // HOST now says it reads them: it alone gets its targets again, same version, with its own tag.
+    reads.set(HOST, new Set([A2A_FEATURE_SPAWN_ROOT_HASH]));
+    r.sendRootHashes(HOST);
+    const tag = spawnRootHashFor(HOST as HostId, KEY);
+    expect(targetsSent()).toEqual([{ hostId: HOST, targets: { v: 1, version, roots: [{ id: 'web', label: 'Web', originKeyHash: tag }], agents: ['claude', 'codex'] } }]);
+    const id = sent[0].env.messageId;
+    expect(id).toMatch(new RegExp(`^st-${version}-[0-9a-f]{8}$`));
+    expect(A2A_REMOTE_MESSAGE_ID_RE.test(id)).toBe(true);
+    // Another requester gets another tag for the same folder; the same requester always the same one.
+    expect(spawnRootHashFor(OTHER as HostId, KEY)).not.toBe(tag);
+    expect(tag).toMatch(/^[0-9a-f]{32}$/);
+    expect(spawnRootHashFor(HOST as HostId, KEY)).toBe(tag);
+  });
+
+  it('a folder\'s origin is read again on each refresh: a change is reported, and one that cannot be read is dropped', async () => {
+    await allowHost();
+    const origins = new Map<string, string | Error>([[repo, 'github.com/owner/repo']]);
+    const keys = new SpawnRootKeys(() => policy.get(), async (p) => {
+      const o = origins.get(p);
+      if (o instanceof Error) throw o;
+      return o ?? null;
+    });
+    expect(await keys.refresh()).toBe(true);
+    const first = keys.hashFor(HOST as HostId, repo);
+    expect(first).toBe(spawnRootHashFor(HOST as HostId, 'github.com/owner/repo'));
+    expect(await keys.refresh()).toBe(false);
+    origins.set(repo, 'github.com/owner/fork');
+    expect(await keys.refresh()).toBe(true);
+    expect(keys.hashFor(HOST as HostId, repo)).not.toBe(first);
+    // A read that fails leaves no tag, never the one read before.
+    origins.set(repo, new Error('git timed out'));
+    expect(await keys.refresh()).toBe(true);
+    expect(keys.hashFor(HOST as HostId, repo)).toBeUndefined();
   });
 
   it('on start, each allowed PC gets its targets unless they are still queued for it', async () => {

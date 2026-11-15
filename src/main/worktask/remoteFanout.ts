@@ -270,10 +270,32 @@ export function resolvePlace(places: Place[], pc: string): Place | 'unknown-pc' 
   return named[0] ?? 'unknown-pc';
 }
 
-/** The PCs a pool task may go to: online, taking start requests, and offering `root` for Claude. Pure. */
-export function poolCandidates(places: Place[], root: string): Place[] {
-  return places.filter((p) => p.online && p.supported && p.targets !== undefined
-    && p.targets.roots.some((r) => r.id === root) && p.targets.agents.includes(REMOTE_FANOUT_AGENT));
+/** A PC a pool task may go to, with that PC's own root id for the folder (each PC names its folders itself). */
+export type PoolPlace = Place & { poolRoot: string };
+
+/**
+ * The origin hash of the folder `root` names, as the PCs advertise it on their roots with that id: null when none
+ * gives one (the pool then matches the id alone), 'ambiguous' when they give different ones. Pure.
+ */
+export function poolRootHash(places: Place[], root: string): string | null | 'ambiguous' {
+  const seen = new Set<string>();
+  for (const p of places) for (const r of p.targets?.roots ?? []) if (r.id === root && r.originKeyHash) seen.add(r.originKeyHash);
+  return seen.size > 1 ? 'ambiguous' : ([...seen][0] ?? null);
+}
+
+/**
+ * The PCs a pool task may go to: online, taking start requests, offering Claude and the folder. The folder is a
+ * root with origin hash `hash`, or, with no hash, the root `root` itself; labels are never compared. A PC with two
+ * such roots is asked for `root` when it is one, else for the lowest id. Pure.
+ */
+export function poolCandidates(places: Place[], root: string, hash: string | null): PoolPlace[] {
+  const out: PoolPlace[] = [];
+  for (const p of places) {
+    if (!p.online || !p.supported || !p.targets?.agents.includes(REMOTE_FANOUT_AGENT)) continue;
+    const ids = p.targets.roots.filter((r) => (hash ? r.originKeyHash === hash : r.id === root)).map((r) => r.id).sort();
+    if (ids.length > 0) out.push({ ...p, poolRoot: ids.includes(root) ? root : ids[0] });
+  }
+  return out;
 }
 
 /**
@@ -281,7 +303,7 @@ export function poolCandidates(places: Place[], root: string): Place[] {
  * or a started agent; other PCs' tasks on it are not seen), skipping PCs that answered "full" within
  * POOL_REFUSING_MS; ties go to the lowest host id. Null when every candidate is passed over. Pure.
  */
-export function pickPoolHost(candidates: Place[], rows: readonly LedgerEntry[], now: number): Place | null {
+export function pickPoolHost<P extends Place>(candidates: P[], rows: readonly LedgerEntry[], now: number): P | null {
   const load = new Map<string, number>();
   const refusing = new Set<string>();
   for (const e of rows) {
@@ -363,12 +385,22 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
   }
   const pool = req.pc.trim().toLowerCase() === ANY_PC;
   let place: Place | null = null;
-  let candidates: Place[] = [];
-  const noPcText = `no paired PC that is online offers the folder ${req.root} for Claude, so no task could be placed (pc "${ANY_PC}")`;
+  let candidates: PoolPlace[] = [];
+  let rootHash: string | null = null;
+  const noPcText = `no paired PC that is online offers the folder ${req.root} for Claude, so no task could be placed (pc "${ANY_PC}"); `
+    + 'a pool finds the folder on other PCs by its git origin, so a folder without one is found only under that same id';
   if (pool) {
-    candidates = poolCandidates(list.places, req.root);
+    const keyRows = remoteKeyRows(deps.ledger, req.scopedKey);
+    // The folder this key's tasks went to at their first placement; a new key reads it from the PCs.
+    const prior = keyRows.find((e) => e.remote?.pool);
+    const hash = prior ? (prior.remote!.pool!.rootHash ?? null) : poolRootHash(list.places, req.root);
+    if (hash === 'ambiguous') {
+      return { error: `paired PCs offer the folder id ${req.root} for different repositories, so wmux cannot tell which folder it is (pc "${ANY_PC}"); name the PC with pc instead` };
+    }
+    rootHash = hash;
+    candidates = poolCandidates(list.places, req.root, hash);
     // Tasks this key placed already are still answered (a poll): the call is refused only when it has none.
-    if (candidates.length === 0 && remoteKeyRows(deps.ledger, req.scopedKey).length === 0) return { error: noPcText };
+    if (candidates.length === 0 && keyRows.length === 0) return { error: noPcText };
   } else {
     const found = resolvePlace(list.places, req.pc);
     if (found === 'unknown-pc' || found === 'ambiguous-pc') return { error: askErrorText(found, req.pc) };
@@ -414,7 +446,9 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
       const to = pickPoolHost(candidates, deps.ledger.list(), now());
       const attempt = existing.remote.pool.attempt + 1;
       // Held past its time: not placed (the pass below fails it).
-      const moved = to ? await deps.ledger.placeRemote(taskId, { hostId: to.hostId, pc: placeName(to), spawnId: keys.poolSpawnId(k, attempt), attempt }, now() - holdMsOf(deps)).catch(() => null) : null;
+      const moved = to
+        ? await deps.ledger.placeRemote(taskId, { hostId: to.hostId, pc: placeName(to), spawnId: keys.poolSpawnId(k, attempt), root: to.poolRoot, attempt }, now() - holdMsOf(deps)).catch(() => null)
+        : null;
       if (!moved) {
         tasks.push(resultOf(k, title, deps.ledger.get(taskId) ?? existing, channelId, promptBytes));
         continue;
@@ -450,9 +484,9 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
           ownerWorkspaceId: req.ownerWorkspaceId,
           title,
           remote: {
-            hostId: on.hostId, pc: placeName(on), spawnId: keys.spawnId(k), root: req.root, state: to ? 'sent' : 'held',
+            hostId: on.hostId, pc: placeName(on), spawnId: keys.spawnId(k), root: pool ? (on as PoolPlace).poolRoot : req.root, state: to ? 'sent' : 'held',
             requestDigest: req.digest, from: { paneId: req.paneId }, ...(req.homeRepo ? { homeRepo: req.homeRepo } : {}),
-            ...(pool ? { pool: to ? { attempt: 0 } : { attempt: 0, heldSince: now() } } : {}),
+            ...(pool ? { pool: { attempt: 0, ...(to ? {} : { heldSince: now() }), ...(rootHash ? { rootHash } : {}) } } : {}),
           },
         });
       }
@@ -470,7 +504,8 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
       asked = await deps.daemon.ask({
         pc: r.hostId,
         agent: REMOTE_FANOUT_AGENT,
-        folder: { root: req.root, ...(req.sub ? { sub: req.sub } : {}) },
+        // The row's root: the placed PC's own id for the folder (a pool task's may differ from the caller's).
+        folder: { root: r.root, ...(req.sub ? { sub: req.sub } : {}) },
         text,
         expiresInHours: REMOTE_FANOUT_EXPIRES_HOURS,
         from: { kind: 'pane', workspaceId: req.ownerWorkspaceId, paneId: req.paneId },

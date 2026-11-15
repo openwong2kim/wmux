@@ -353,6 +353,7 @@ function copyPool(p: unknown): LedgerRemotePool | null {
     attempt: o.attempt,
     ...(refusals.length > 0 ? { refusals } : {}),
     ...(epochMs(o.heldSince) ? { heldSince: o.heldSince } : {}),
+    ...(typeof o.rootHash === 'string' && /^[0-9a-f]{32}$/.test(o.rootHash) ? { rootHash: o.rootHash } : {}),
   };
 }
 
@@ -851,13 +852,14 @@ export class TaskLedger {
   }
 
   /** A held pool row (`remote.pool`, state `held`, still open) placed on
-   *  another PC: its host, name and spawn id change and it is `sent` again,
+   *  another PC: its host, name, spawn id and root id (that PC's id for the
+   *  folder) change and it is `sent` again,
    *  as one write. Any other row is left as it is: a row with a request out
    *  is never moved, so a task is asked of one PC at a time. Resolves with
    *  the row afterwards, or null when it was not moved. */
   placeRemote(
     id: string,
-    place: { hostId: string; pc: string; spawnId: string; attempt: number },
+    place: { hostId: string; pc: string; spawnId: string; root: string; attempt: number },
     /** A row first held at or before this (epoch ms) is past its time: it is not moved. */
     heldNotBefore?: number,
   ): Promise<LedgerEntry | null> {
@@ -869,7 +871,7 @@ export class TaskLedger {
       if (heldNotBefore !== undefined && r.pool.heldSince !== undefined && r.pool.heldSince <= heldNotBefore) return null;
       // The new placement starts clean: no code, no link, no waiting from the one before.
       const remote = copyRemote({
-        hostId: place.hostId, pc: place.pc, spawnId: place.spawnId, root: r.root, state: 'sent',
+        hostId: place.hostId, pc: place.pc, spawnId: place.spawnId, root: place.root, state: 'sent',
         ...(r.requestDigest ? { requestDigest: r.requestDigest } : {}), ...(r.from ? { from: r.from } : {}), ...(r.homeRepo ? { homeRepo: r.homeRepo } : {}),
         pool: { ...r.pool, attempt: place.attempt },
       });

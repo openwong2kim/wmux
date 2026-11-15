@@ -16,7 +16,7 @@ import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 import { registerLedgerRpc } from '../../pipe/handlers/ledger.rpc';
 import type { RpcContext } from '../../../shared/rpc';
 import {
-  POOL_HOLD_MAX_MS, POOL_REFUSING_MS, pickPoolHost, poolCandidates, poolHoldOverride,
+  POOL_HOLD_MAX_MS, POOL_REFUSING_MS, pickPoolHost, poolCandidates, poolHoldOverride, poolRootHash,
   REMOTE_ASK_GRACE_MS, REMOTE_FOLLOW_INTERVAL_MS, REMOTE_GONE_GRACE_MS, type RemoteTaskView, branchOnPc, remoteTaskReconciler, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal, remoteKeyRows,
   startRemoteFanout, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
 } from '../remoteFanout';
@@ -985,7 +985,68 @@ describe('the pool (pc "any")', () => {
       placeOf('0e000000-0000-4000-8000-00000000000e', { targets: targets(['other']) }),
       placeOf('0f000000-0000-4000-8000-00000000000f', { targets: targets(['repo'], ['codex']) }),
     ];
-    expect(poolCandidates(list as never, 'repo').map((p) => p.hostId)).toEqual([A]);
+    expect(poolCandidates(list as never, 'repo', null).map((p) => p.hostId)).toEqual([A]);
+  });
+
+  describe('the folder across PCs (each PC names its folders itself)', () => {
+    const H1 = '1'.repeat(32);
+    const H2 = '2'.repeat(32);
+    const roots = (...rs: Array<{ id: string; label?: string; originKeyHash?: string }>) => ({
+      v: 1 as const, version: 1, roots: rs.map((r) => ({ label: 'r', ...r })), agents: ['claude' as const],
+    });
+
+    it('matches by origin hash, never by label, and a folder with no hash by its id alone', () => {
+      const list = [
+        placeOf(A, { targets: roots({ id: 'r-a', originKeyHash: H1 }) }),
+        placeOf(B, { targets: roots({ id: 'r-b', originKeyHash: H1 }, { id: 'r-x', originKeyHash: H2 }) }),
+        // Same label, another repository: never a candidate.
+        placeOf(C, { targets: roots({ id: 'r-c', originKeyHash: H2 }) }),
+      ];
+      expect(poolRootHash(list as never, 'r-a')).toBe(H1);
+      expect(poolCandidates(list as never, 'r-a', H1).map((p) => [p.hostId, p.poolRoot])).toEqual([[A, 'r-a'], [B, 'r-b']]);
+      // No hash: the id itself, wherever it is offered, and nothing else.
+      const bare = [placeOf(A, { targets: roots({ id: 'r-a' }) }), placeOf(B, { targets: roots({ id: 'r-b' }) })];
+      expect(poolRootHash(bare as never, 'r-a')).toBeNull();
+      expect(poolCandidates(bare as never, 'r-a', null).map((p) => [p.hostId, p.poolRoot])).toEqual([[A, 'r-a']]);
+      // One id with two different hashes cannot be told apart.
+      expect(poolRootHash([placeOf(A, { targets: roots({ id: 'r-a', originKeyHash: H1 }) }), placeOf(B, { targets: roots({ id: 'r-a', originKeyHash: H2 }) })] as never, 'r-a')).toBe('ambiguous');
+    });
+
+    it('places tasks on PCs with different ids for the same repository, each asked with its own id', async () => {
+      const p = poolDaemon([placeOf(A, { targets: roots({ id: 'r-a', originKeyHash: H1 }) }), placeOf(B, { targets: roots({ id: 'r-b', originKeyHash: H1 }) })]);
+      const deps = depsOf(p.daemon);
+      const res = await startRemoteFanout(request(2, { pc: 'any', root: 'r-a' }), deps);
+      if ('error' in res) throw new Error(res.error);
+      expect(p.asks.map((a) => [a.pc, a.folder.root])).toEqual([[A, 'r-a'], [B, 'r-b']]);
+      const rows = remoteKeyRows(deps.ledger, 'ws-owner::k1');
+      expect(rows.map((e) => [e.remote?.hostId, e.remote?.root, e.remote?.pool?.rootHash])).toEqual([[A, 'r-a', H1], [B, 'r-b', H1]]);
+    });
+
+    it('refuses the call when one id carries two different hashes, before anything is written', async () => {
+      const p = poolDaemon([placeOf(A, { targets: roots({ id: 'r-a', originKeyHash: H1 }) }), placeOf(B, { targets: roots({ id: 'r-a', originKeyHash: H2 }) })]);
+      const deps = depsOf(p.daemon);
+      expect(await startRemoteFanout(request(1, { pc: 'any', root: 'r-a' }), deps)).toEqual({ error: expect.stringMatching(/different repositories/) });
+      expect(deps.ledger.list()).toEqual([]);
+      expect(p.asks).toEqual([]);
+    });
+
+    it('a held task placed anew asks with the new PC\'s own id, by the hash kept on the row even with the first PC gone', async () => {
+      let now = 1_000_000;
+      const places = [placeOf(A, { targets: roots({ id: 'r-a', originKeyHash: H1 }) }), placeOf(B, { targets: roots({ id: 'r-b', originKeyHash: H1 }) })];
+      const p = poolDaemon(places);
+      const deps = { ...depsOf(p.daemon), now: () => now };
+      await startRemoteFanout(request(1, { pc: 'any', root: 'r-a' }), deps);
+      const first = deps.ledger.list()[0];
+      p.refuseFull(A, first.remote!.spawnId);
+      now += 1000;
+      await reconcileRemoteTasks(deps);
+      // The PC that minted r-a goes offline: the row's hash still finds B's folder.
+      places[0] = placeOf(A, { online: false, targets: undefined });
+      await startRemoteFanout(request(1, { pc: 'any', root: 'r-a' }), deps);
+      expect(p.asks[p.asks.length - 1]).toMatchObject({ pc: B, folder: { root: 'r-b' } });
+      // Bring-back, cancel and the follow-up read this row: it names B and B's id for the folder.
+      expect(deps.ledger.get(first.id)!.remote).toMatchObject({ hostId: B, root: 'r-b', state: 'sent', pool: { attempt: 1, rootHash: H1 } });
+    });
   });
 
   it('picks the PC with the fewest of this PC\'s open tasks, the lowest host id on a tie, and passes over one that was full lately', () => {
@@ -1036,7 +1097,7 @@ describe('the pool (pc "any")', () => {
     const first = deps.ledger.list()[0];
     expect(first.remote).toMatchObject({ hostId: A, state: 'sent', pool: { attempt: 0 } });
     // A placed request is never moved: a task is asked of one PC at a time.
-    expect(await deps.ledger.placeRemote(first.id, { hostId: B, pc: 'pc-b', spawnId: remoteFanoutKeys('ws-owner::k1').poolSpawnId(0, 1), attempt: 1 })).toBeNull();
+    expect(await deps.ledger.placeRemote(first.id, { hostId: B, pc: 'pc-b', spawnId: remoteFanoutKeys('ws-owner::k1').poolSpawnId(0, 1), root: 'repo', attempt: 1 })).toBeNull();
 
     p.refuseFull(A, first.remote!.spawnId);
     now += 1000;
@@ -1121,8 +1182,8 @@ describe('the pool (pc "any")', () => {
     await reconcileRemoteTasks(deps);
     const keys = remoteFanoutKeys('ws-owner::k1');
     const ledger = deps.ledger as TaskLedger;
-    expect(await ledger.placeRemote(first.id, { hostId: B, pc: 'pc-b', spawnId: keys.poolSpawnId(0, 1001), attempt: 1001 })).toBeNull();
-    const placed = await ledger.placeRemote(first.id, { hostId: B, pc: 'pc-b', spawnId: keys.poolSpawnId(0, 1), attempt: 1 });
+    expect(await ledger.placeRemote(first.id, { hostId: B, pc: 'pc-b', spawnId: keys.poolSpawnId(0, 1001), root: 'repo', attempt: 1001 })).toBeNull();
+    const placed = await ledger.placeRemote(first.id, { hostId: B, pc: 'pc-b', spawnId: keys.poolSpawnId(0, 1), root: 'repo', attempt: 1 });
     expect(placed?.remote?.state).toBe('sent');
     // An expiry read against the earlier, held placement leaves the new one alone.
     const after = await ledger.updateRemote(first.id, { state: 'expired', code: 'pc-full' }, undefined, { state: 'held', spawnId: first.remote!.spawnId });
