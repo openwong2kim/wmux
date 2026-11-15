@@ -176,4 +176,11 @@ describe('a paste left unsent in the input box (#3390)', () => {
     expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Claude Code')).toMatchObject({ ok: false, reason: 'input_mode', composerNotPlain: true });
     expect(writes).toEqual([]);
   });
+
+  it("another agent's draft flag is not read there: it stays set until a key submits or clears the box", async () => {
+    const wiring = harness();
+    answers = [{ tier: 'process', slug: 'codex', input: 'full', bracketedPaste: true }];
+    draft['pty-a'] = true;
+    expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Codex')).toMatchObject({ ok: true });
+  });
 });

@@ -2923,7 +2923,10 @@ export function registerInputRpc(
     };
     // Without a hand-off (which reads it itself): the daemon's draft flag, a
     // second "no" beside the screen read, right before the paste.
-    const draftAtPaste = async (): Promise<GatedSubmitRefusal | null> => ((await readHasDraft(ptyId)) === true
+    // Claude's only: its flag is cleared again from its screen (draftScreen); another agent's stays set until a key
+    // submits or clears the box, and would hold every delivery.
+    const expectSlug = expectAgent ? (isAgentSlug(expectAgent) ? expectAgent : agentDisplayToSlug(expectAgent)) : undefined;
+    const draftAtPaste = async (): Promise<GatedSubmitRefusal | null> => (expectSlug === 'claude' && (await readHasDraft(ptyId)) === true
       ? { ok: false, reason: 'input_mode', detail: "delivery: the agent's input box already holds a draft, so nothing was typed", composerNotPlain: true }
       : null);
     guard = {
@@ -2935,8 +2938,11 @@ export function registerInputRpc(
       const leftAt = unsentPaste.get(ptyId);
       if (leftAt === undefined) return null;
       const turnAt = deps.readTurnStartedAt?.(ptyId);
-      const clear = (turnAt !== undefined && turnAt > leftAt)
-        || ((await checkAgent({ phase: 'paste' })).ok && (await readHasDraft(ptyId)) === false);
+      const reads = async (): Promise<boolean> => {
+        const [box, draft] = await Promise.all([checkAgent({ phase: 'paste' }), readHasDraft(ptyId)]);
+        return box.ok && draft === false;
+      };
+      const clear = (turnAt !== undefined && turnAt > leftAt) || (await reads());
       if (clear) {
         unsentPaste.delete(ptyId);
         return null;
@@ -2954,12 +2960,16 @@ export function registerInputRpc(
       ...(deps.now ? { now: deps.now } : {}),
       armRetry: () => armEnterRetry(ptyId),
     };
+    /** A paste left in the box, recorded while the pane's delivery lock is still held, so the next delivery sees it. */
+    const rememberUnsent = (result: GatedSubmitResult): GatedSubmitResult => {
+      if (!result.ok && result.pasted && !result.cleared) unsentPaste.set(ptyId, (deps.now ?? Date.now)());
+      return result;
+    };
     /** One log line for every delivery pasted and then not submitted. */
     const noteUnsent = (result: GatedSubmitResult): GatedSubmitResult => {
       if (!result.ok && result.pasted) {
         const box = result.cleared ? 'taken back' : result.pasteShown === false ? 'left in the input box' : 'left as it is';
         logLine(`[delivery] pane ${JSON.stringify(ptyId)}: pasted, not submitted (${result.reason}; ${box}): ${result.detail}`);
-        if (!result.cleared) unsentPaste.set(ptyId, (deps.now ?? Date.now)());
       }
       return result;
     };
@@ -2980,7 +2990,7 @@ export function registerInputRpc(
           if (late) return late;
           const held = await heldByUnsentPaste();
           if (held) return held;
-          return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt);
+          return rememberUnsent(await gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt));
         },
         lockWaitMs,
       ).then(noteUnsent).catch(paneBusy);
@@ -2999,7 +3009,7 @@ export function registerInputRpc(
         if (late) return late;
         const held = await heldByUnsentPaste();
         if (held) return held;
-        return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
+        return rememberUnsent(await gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
           const before = opts.guardKey ? getDeliveryCheck(opts.guardKey)?.beforeFreshContext : undefined;
           const why = before ? await before() : null;
           if (why) throw new Error(`delivery: ${why}; nothing was written`);
@@ -3030,7 +3040,7 @@ export function registerInputRpc(
               if (again.input === 'pointer') throw new DeliveryRefused({ ok: false, reason: 'agent_changed', detail: 'delivery: the target agent changed during the fresh-context step' });
             },
           );
-        }, guard, receipt);
+        }, guard, receipt));
       },
       lockWaitMs,
     ).then(noteUnsent).catch(paneBusy);

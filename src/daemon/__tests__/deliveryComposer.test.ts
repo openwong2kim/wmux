@@ -147,6 +147,8 @@ describe('frameShowsPaste', () => {
       // Two placeholders, or one with keys after it, still are not ours.
       expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +7', '  lines] [Pasted text #2', '  +7 lines]', NARROW]), pointer)).toBe(false);
       expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +7', '  lines] ok', NARROW]), pointer)).toBe(false);
+      // More rows than its characters could fill in any box: someone else's paste.
+      expect(frameShowsPaste(f([NARROW, '❯\u00a0[Pasted text #1 +40', '  lines]', NARROW]), pointer)).toBe(false);
     });
 
     it('scrolled, its start out of view: the visible rows are the end of this text', () => {
