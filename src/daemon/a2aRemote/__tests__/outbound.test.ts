@@ -90,6 +90,50 @@ describe('aliases', () => {
     expect(table.get(older.linkId)).toBe('pc-b/ws-b/codex');
     expect(table.get(newer.linkId)).toBe('pc-b/ws-b/codex#2');
   });
+
+  it('names an auto-named pane the same whether an agent ran in it at link time', () => {
+    const base = links.get(activeLink())!;
+    const named = (label: string, keepAgent?: boolean): string =>
+      linkAlias({ ...base, remote: { ...base.remote, workspaceName: 'Workspace 1', label } }, 'DESK', keepAgent);
+    expect(named('w1-1')).toBe('DESK/Workspace 1/w1-1');
+    expect(named('w1-1(claude)')).toBe('DESK/Workspace 1/w1-1');
+    expect(named('w1-1(codex)')).toBe('DESK/Workspace 1/w1-1');
+    // The name an earlier build listed.
+    expect(named('w1-1(claude)', true)).toBe('DESK/Workspace 1/w1-1(claude)');
+  });
+
+  it('keeps a user label as it is, parentheses and all', () => {
+    const base = links.get(activeLink())!;
+    const named = (label: string): string => linkAlias({ ...base, remote: { ...base.remote, label } }, 'DESK');
+    expect(named('api(claude)')).toBe('DESK/ws-b/api(claude)');
+    expect(named('review (prod)')).toBe('DESK/ws-b/review (prod)');
+    expect(named('w1-1(prod)')).toBe('DESK/ws-b/w1-1(prod)');
+    // The auto namer writes lower case only; another casing is a person's name.
+    expect(named('W1-1(Claude)')).toBe('DESK/ws-b/W1-1(Claude)');
+  });
+
+  it('drops the agent from a label that reads as an auto name only once it is cleaned', () => {
+    const base = links.get(activeLink())!;
+    expect(linkAlias({ ...base, remote: { ...base.remote, label: 'w1-1(claude) ' } }, 'DESK')).toBe('DESK/ws-b/w1-1');
+    expect(linkAlias({ ...base, remote: { ...base.remote, label: 'w1-1\u0007(claude)' } }, 'DESK')).toBe('DESK/ws-b/w1-1');
+  });
+
+  it('two auto-named panes of one workspace keep distinct aliases once the agent is dropped', () => {
+    const first = links.get(activeLink(undefined, 'w1-1(claude)', 'pane-b'))!;
+    const second = links.get(activeLink(undefined, 'w1-2(claude)', 'pane-c'))!;
+    const table = aliasTable([first, second], () => 'pc-b');
+    expect(table.get(first.linkId)).toBe('pc-b/ws-b/w1-1');
+    expect(table.get(second.linkId)).toBe('pc-b/ws-b/w1-2');
+  });
+
+  it('a target carries the alias an earlier build listed only when it differs', () => {
+    const suffixed = activeLink(undefined, 'w1-1(claude)', 'pane-b');
+    const plain = activeLink(undefined, 'w1-2', 'pane-c');
+    const legacy = aliasTable(links.list(), () => 'pc-b', true);
+    const targets = listRemoteTargets({ ...deps, legacyAliasFor: (l) => legacy.get(l.linkId) });
+    expect(targets.find((t) => t.linkId === suffixed)).toMatchObject({ alias: 'pc-b/ws-b/w1-1', legacyAlias: 'pc-b/ws-b/w1-1(claude)' });
+    expect(targets.find((t) => t.linkId === plain)).not.toHaveProperty('legacyAlias');
+  });
 });
 
 describe('sendRemoteTask', () => {

@@ -63,6 +63,8 @@ describe('rankExposedPanes', () => {
 
   it('builds the <PC>/<workspace>/<pane> alias', () => {
     expect(remoteAlias('DESK', { hostId: HOST, kind: 'pane', workspaceId: 'w', paneId: 'p', workspaceName: 'API', label: 'w1-1' }, 'Coordinator')).toBe('DESK/API/w1-1');
+    // The card reads as agents address the pane: without the agent it had at link time.
+    expect(remoteAlias('DESK', { hostId: HOST, kind: 'pane', workspaceId: 'w', paneId: 'p', workspaceName: 'API', label: 'w1-1(claude)' }, 'Coordinator')).toBe('DESK/API/w1-1');
     expect(remoteAlias('DESK', { hostId: HOST, kind: 'pane', workspaceId: 'w', paneId: 'p' }, 'Coordinator')).toBe('DESK/w/p');
     // A brain end shows the word it is given, never the wire alias "Moa".
     expect(remoteAlias('DESK', { hostId: HOST, kind: 'brain', workspaceId: 'hq' }, 'Coordinator')).toBe('DESK/Coordinator');
