@@ -1,3 +1,4 @@
+// @wmux-lane unit — process.platform and path.basename are stubbed in-test; the result is host-independent.
 // A create whose cwd is a WSL share folder spawns a WSL shell at the Linux
 // path in that distro, on both the local and the daemon path; an unknown
 // distro falls back to the default WSL shell's home with one toast per workspace.

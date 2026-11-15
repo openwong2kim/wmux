@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+// @wmux-lane unit
+// process.platform is stubbed in-test; the result is host-independent.
 //
 // "Browse WSL folder…" in the + menu: win32 only, and only with at least one
 // WSL distro. It opens the native folder dialog on the distro's share and makes

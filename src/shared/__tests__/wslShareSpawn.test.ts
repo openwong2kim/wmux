@@ -1,3 +1,4 @@
+// @wmux-lane unit — 'win32' is only a platform string passed to a pure function; nothing reaches the OS.
 import { describe, expect, it } from 'vitest';
 import { applyWslShareCwd } from '../wslShareSpawn';
 

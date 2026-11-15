@@ -276,6 +276,7 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
                   className="w-full text-left px-5 py-1 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
                   onClick={() => void browseWslFolder(name)}
                   data-wsl-distro
+                  aria-label={name}
                 >
                   {name}
                 </button>
