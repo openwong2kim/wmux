@@ -71,8 +71,7 @@
   refused at once. `wmux daemon headless status` shows whether it is in
   effect, how many agents run and which worktrees ended agents left; `off`
   turns it off. If the desktop app is ever used on that install, the mode
-  turns off for good. In this version the agent is started but the asking
-  PC's prompt is not typed into it yet. (#3292)
+  turns off for good. (#3292)
 
 - **Fan-out depth and tasks per fan-out are settings.** Under Settings ›
   Roles & fan-out, "Fan-out depth" (1–3, default 1) sets how many levels deep
@@ -99,8 +98,8 @@
   answer goes back to that PC as the reply. The answer is read from the
   agent's own conversation, so no hooks are installed on the host. If the
   agent is given other input on the host, is interrupted, hits an error, or
-  ends before answering, the asking PC sees why. Only the first task is
-  typed in for now. (#3305)
+  ends before answering, the asking PC sees why. Later tasks follow the
+  `--follow-ups` setting (below). (#3305)
 
 - **A host without the desktop app now takes what another PC sends after
   the first task.** With `--follow-ups direct`, a new task or a reply on a
