@@ -105,12 +105,15 @@ export class PaneDeliveryLocks {
     });
   }
 
-  /** Whether `token` holds the pane now (and, for main, from `clientId`); renews its lease. */
-  holds(sessionId: string, token: string, clientId?: string): boolean {
+  /**
+   * Whether `token` holds the pane now (and, for main, from `clientId`).
+   * `renew`: a write under it renews its lease; a check alone does not.
+   */
+  holds(sessionId: string, token: string, clientId?: string, renew = true): boolean {
     const grant = this.panes.get(sessionId)?.grant;
     if (!grant || grant.token !== token) return false;
     if (clientId !== undefined && grant.holder.clientId !== clientId) return false;
-    this.arm(sessionId, grant, this.leaseMs);
+    if (renew) this.arm(sessionId, grant, this.leaseMs);
     return true;
   }
 
@@ -287,7 +290,8 @@ export function writeUnderLock(
   data: string,
 ): { ok: true } | { ok: false; error: 'no session' | 'not held' | 'backpressure' | 'too large' } {
   if (!target) return { ok: false, error: 'no session' };
-  if (!locks.holds(sessionId, token, clientId)) return { ok: false, error: 'not held' };
+  // Nothing to write renews nothing: only a write keeps a hold alive.
+  if (!locks.holds(sessionId, token, clientId, data.length > 0)) return { ok: false, error: 'not held' };
   if (!data) return { ok: true };
   if (data.length > HELD_WRITE_CHUNK_MAX) return { ok: false, error: 'too large' };
   if (!admitPaneInput(target.pendingInputBytes, () => target.write(data))) return { ok: false, error: 'backpressure' };

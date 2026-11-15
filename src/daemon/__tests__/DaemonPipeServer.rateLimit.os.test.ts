@@ -329,6 +329,20 @@ describe('DaemonPipeServer stream push budget', () => {
     expect(all.filter((r) => !r.ok).every((r) => r.error === 'rate limited (stream)')).toBe(true);
   });
 
+  it("main's gated delivery still takes the pane's lock and writes after a background flood used up the global budget", async () => {
+    server.onRpc('daemon.session.deliveryLockV1', async () => ({ ok: true, token: 'tok' }));
+    server.onRpc('daemon.session.writeHeldV1', async () => ({ ok: true }));
+    server.onRpc('daemon.session.deliveryUnlockV1', async () => ({ ok: true }));
+    const delivery: Call[] = [
+      { method: 'daemon.session.deliveryLockV1', params: { id: 's', nonce: 'n', waitMs: 0 } },
+      ...Array.from({ length: 9 }, () => ({ method: 'daemon.session.writeHeldV1', params: { id: 's', token: 'tok', data: 'x' } })),
+      { method: 'daemon.session.deliveryUnlockV1', params: { id: 's', token: 'tok' } },
+    ];
+    const replies = await sendBatch(pipeName, ['test.firstParty', ...Array.from({ length: 250 }, () => 'task.mission.list'), ...delivery]);
+    expect(replies.get('250')).toMatchObject({ ok: false, error: 'rate limited (global)' });
+    expect(Array.from({ length: delivery.length }, (_, k) => replies.get(String(251 + k))!).every((r) => r.ok)).toBe(true);
+  });
+
   it('charges a non-first-party client\'s pushes to the ordinary counters', async () => {
     const methods: Call[] = [
       ...Array.from({ length: 150 }, () => ({ method: 'daemon.phone.browserStream', params: { kind: 'ping' } })),

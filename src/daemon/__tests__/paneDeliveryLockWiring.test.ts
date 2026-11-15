@@ -51,6 +51,10 @@ describe('pane delivery lock daemon wiring', () => {
       expect(block(`pipeServer.onRpc('${method}'`, 300)).toContain(`firstPartyOnly(ctx.clientId, '${method}')`);
     }
     expect(block("pipeServer.onRpc('daemon.session.writeHeldV1'", 900)).toContain('return writeUnderLock(paneLocks, id, token, ctx.clientId,');
+    // Only a live session takes a delivery: suspended or dead answer `no session`.
+    expect(src).toContain("return managed && (managed.meta.state === 'attached' || managed.meta.state === 'detached') ? managed : undefined;");
+    expect(block("pipeServer.onRpc('daemon.session.deliveryLockV1'", 900)).toContain("if (!nonce || !liveSession(id)) return { ok: false, error: 'no session' };");
+    expect(block("pipeServer.onRpc('daemon.session.writeHeldV1'", 900)).toContain('const managed = liveSession(id);');
     // App-only on the pipe too, so main identifies again and retries on a refusal.
     for (const method of ['daemon.session.deliveryLockV1', 'daemon.session.deliveryUnlockV1', 'daemon.session.writeHeldV1']) {
       expect(isAppOnlyDaemonMethod(method)).toBe(true);

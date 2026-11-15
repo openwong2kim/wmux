@@ -54,6 +54,7 @@ import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { A2A_COMPANY_RPC, type A2aCompanyMarkParams, type A2aCompanyMarkResult, type A2aCompanyTasksResult } from '../shared/companyHold';
 import { A2A_SPAWN_RPC, type A2aSpawnAskInput, type A2aSpawnAskResult, type A2aSpawnOutgoingList, type A2aSpawnPolicySetResult, type A2aSpawnPolicyV1, type A2aSpawnRequestSummary } from '../shared/a2aSpawn';
 import { createSessionPipeMarkers } from '../daemon/sessionPipeMarkers';
+import { PANE_LOCK_DAEMON_WAIT_MS } from '../daemon/paneDeliveryLock';
 import type { FolderTrustState } from '../daemon/folderTrustState';
 import { SessionPipeStreamScanner } from './daemon/sessionPipeStreamScanner';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
@@ -118,6 +119,13 @@ function isNotFirstParty(err: unknown): boolean {
  */
 /** On top of a lock acquire's own wait: the round trip, before the reply counts as lost. */
 const PANE_LOCK_RPC_MARGIN_MS = 2_000;
+
+/** How long a held write refused for the adapter's backpressure is tried again. */
+const HELD_WRITE_BACKPRESSURE_MAX_MS = 5_000;
+/** The daemon's writer funnel may wait this long for the pane before it writes. */
+const FUNNEL_RPC_TIMEOUT_MS = DAEMON_RPC_TIMEOUT_MS + PANE_LOCK_DAEMON_WAIT_MS;
+const PASTE_START = '\x1b[200~';
+const PASTE_END = '\x1b[201~';
 
 /** Whether an RPC failed with its reply lost (sent, outcome unknown). */
 function isLostReply(message: string): boolean {
@@ -466,7 +474,7 @@ export class DaemonClient extends EventEmitter {
         // Only an identify the daemon accepted counts against the limit: one it
         // refused (a rate limit, say) says nothing about this connection.
         if (identified && isNotFirstParty(retryErr) && ++this.firstPartyRefusals === DaemonClient.FIRST_PARTY_RECOVERY_MAX) {
-          console.warn(`[lifecycle] DaemonClient lost first-party on the daemon pipe: ${DaemonClient.FIRST_PARTY_RECOVERY_MAX} identifies did not restore it; A2A calls fail until the next connection`);
+          console.warn(`[lifecycle] DaemonClient lost first-party on the daemon pipe: ${DaemonClient.FIRST_PARTY_RECOVERY_MAX} identifies did not restore it; A2A calls and gated deliveries fail until the next connection`);
         }
         throw retryErr;
       }
@@ -1384,7 +1392,7 @@ export class DaemonClient extends EventEmitter {
     if (!this.isConnected) return 'unavailable';
 
     try {
-      const response = await this.rpc('daemon.deliverScheduledPromptV2', args) as {
+      const response = await this.rpc('daemon.deliverScheduledPromptV2', args, { timeoutMs: FUNNEL_RPC_TIMEOUT_MS }) as {
         result?: unknown;
       };
       return isSessionPromptScheduleResult(response.result) ? response.result : 'error';
@@ -1449,23 +1457,48 @@ export class DaemonClient extends EventEmitter {
    */
   async writeHeld(id: string, token: string, data: string): Promise<{ ok: true } | { ok: false; uncertain: boolean; detail: string }> {
     if (!this.isConnected) return { ok: false, uncertain: false, detail: 'the background service is not connected' };
+    const chunks = heldWriteChunks(data);
     let landed = false;
-    for (const chunk of heldWriteChunks(data)) {
+    const failed = async (uncertain: boolean, detail: string): Promise<{ ok: false; uncertain: boolean; detail: string }> => {
+      // A bracketed paste cut off after its start landed would leave the agent
+      // (and the daemon's own accounting) in paste mode: close it, best effort.
+      if (landed && chunks.length > 1 && data.startsWith(PASTE_START) && data.endsWith(PASTE_END)) {
+        await this.writeHeldOnce(id, token, PASTE_END).catch(() => undefined);
+      }
+      return { ok: false, uncertain, detail };
+    };
+    for (const chunk of chunks) {
+      let r: { ok?: unknown; error?: unknown } | null;
       try {
-        const r = await this.rpc('daemon.session.writeHeldV1', { id, token, data: chunk }) as { ok?: unknown; error?: unknown } | null;
-        if (r?.ok !== true) {
-          const why = typeof r?.error === 'string' ? r.error : 'refused';
-          return { ok: false, uncertain: landed, detail: why === 'not held' ? "the pane's delivery lock was no longer held" : why };
-        }
+        r = await this.writeHeldOnce(id, token, chunk);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         // Only a reply that never came leaves the write unknown; an error
         // reply is the daemon refusing before it wrote.
-        return { ok: false, uncertain: landed || isLostReply(detail), detail };
+        return failed(landed || isLostReply(detail), detail);
+      }
+      if (r?.ok !== true) {
+        const why = typeof r?.error === 'string' ? r.error : 'refused';
+        return failed(landed, why === 'not held' ? "the pane's delivery lock was no longer held" : why);
       }
       landed = true;
     }
     return { ok: true };
+  }
+
+  /**
+   * One held write. Refused for the adapter's backpressure, it is tried again
+   * for up to HELD_WRITE_BACKPRESSURE_MAX_MS: each try renews the hold's lease.
+   */
+  private async writeHeldOnce(id: string, token: string, data: string): Promise<{ ok?: unknown; error?: unknown } | null> {
+    const until = Date.now() + HELD_WRITE_BACKPRESSURE_MAX_MS;
+    for (let pause = 50; ; pause = Math.min(pause * 2, 500)) {
+      // eslint-disable-next-line no-await-in-loop -- each try waits for the one before
+      const r = await this.rpc('daemon.session.writeHeldV1', { id, token, data }) as { ok?: unknown; error?: unknown } | null;
+      if (r?.ok === true || r?.error !== 'backpressure' || Date.now() + pause > until) return r;
+      // eslint-disable-next-line no-await-in-loop -- the pane drains between tries
+      await new Promise<void>((resolve) => { setTimeout(resolve, pause); });
+    }
   }
 
   /** The fan-out caller nudge (daemon/callerNudgeDelivery.ts). An older
@@ -1478,7 +1511,7 @@ export class DaemonClient extends EventEmitter {
   }): Promise<{ result: 'sent' | 'held' | 'approval_pending' | 'session_changed' | 'unavailable' | 'error'; pasted: boolean }> {
     if (!this.isConnected) return { result: 'unavailable', pasted: false };
     try {
-      const response = await this.rpc('daemon.deliverCallerNudgeV1', args) as { result?: unknown; pasted?: unknown };
+      const response = await this.rpc('daemon.deliverCallerNudgeV1', args, { timeoutMs: FUNNEL_RPC_TIMEOUT_MS }) as { result?: unknown; pasted?: unknown };
       const pasted = response.pasted === true;
       const r = response.result;
       if (r === 'sent' || r === 'held' || r === 'approval_pending' || r === 'session_changed' || r === 'unavailable' || r === 'error') {

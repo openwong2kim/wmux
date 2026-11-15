@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import type { RpcRequest, RpcResponse } from '../shared/rpc';
 import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../shared/security';
 import { getDaemonAuthTokenPath } from '../shared/constants';
-import { NOT_FIRST_PARTY, isAppOnlyDaemonMethod } from '../shared/daemonFirstParty';
+import { NOT_FIRST_PARTY, PANE_DELIVERY_LOCK_METHODS, isAppOnlyDaemonMethod } from '../shared/daemonFirstParty';
 import { A2A_SPAWN_RPC } from '../shared/a2aSpawn';
 import { A2A_STATUS_LABELS_RPC } from '../shared/a2aRemote';
 
@@ -125,6 +125,9 @@ export class DaemonPipeServer {
   // Per-socket and aggregate budgets for STREAM_PUSH_METHODS.
   private readonly streamPushRateLimits = new Map<net.Socket, { count: number; resetAt: number }>();
   private streamPushGlobalRate = { count: 0, resetAt: 0 };
+  // Per-socket and aggregate budgets for PANE_DELIVERY_LOCK_METHODS.
+  private readonly paneDeliveryRateLimits = new Map<net.Socket, { count: number; resetAt: number }>();
+  private paneDeliveryGlobalRate = { count: 0, resetAt: 0 };
   // Stream pushes refused per socket since its last log line (noteStreamPushRefused).
   private readonly streamPushRefusals = new Map<net.Socket, { refused: number; loggedAt: number; trailing: ReturnType<typeof setTimeout> | null }>();
   private connectionRate = { count: 0, resetAt: 0 };
@@ -230,6 +233,13 @@ export class DaemonPipeServer {
   private static readonly STREAM_PUSH_PER_SOCKET_RATE_LIMIT = 120;
   private static readonly STREAM_PUSH_GLOBAL_RATE_LIMIT = 240;
   private static readonly STREAM_PUSH_REFUSAL_LOG_MS = 10_000;
+  // main's gated deliveries (shared/daemonFirstParty.ts PANE_DELIVERY_LOCK_METHODS):
+  // the pane's lock, its held writes and its release. They replace writes on
+  // the session pipe, which has no RPC budget, so a restore storm or a poll
+  // flood that used up the budgets above must not refuse them, nor cut a
+  // chunked paste in half. Only a first-party client gets this class.
+  private static readonly PANE_DELIVERY_PER_SOCKET_RATE_LIMIT = 400;
+  private static readonly PANE_DELIVERY_GLOBAL_RATE_LIMIT = 400;
   private static readonly MAX_NEW_CONNECTIONS_PER_SEC = 20;
 
   private activePipeName: string;
@@ -450,6 +460,7 @@ export class DaemonPipeServer {
           this.rateLimits.delete(socket);
           this.interactiveRateLimits.delete(socket);
           this.streamPushRateLimits.delete(socket);
+          this.paneDeliveryRateLimits.delete(socket);
           this.flushStreamPushRefusals(socket);
           this.streamPushRefusals.delete(socket);
           this.clientIds.delete(socket);
@@ -572,6 +583,7 @@ export class DaemonPipeServer {
     this.rateLimits.clear();
     this.interactiveRateLimits.clear();
     this.streamPushRateLimits.clear();
+    this.paneDeliveryRateLimits.clear();
     for (const note of this.streamPushRefusals.values()) if (note.trailing) clearTimeout(note.trailing);
     this.streamPushRefusals.clear();
     // Forced drop-to-zero — keep idle-window accounting consistent.
@@ -789,6 +801,28 @@ export class DaemonPipeServer {
       }
       push.count++;
       this.streamPushGlobalRate.count++;
+      this.dispatchAndReply(socket, request);
+      return;
+    }
+
+    if (PANE_DELIVERY_LOCK_METHODS.has(method) && this.isFirstParty(this.clientIds.get(socket) ?? '')) {
+      let own = this.paneDeliveryRateLimits.get(socket);
+      if (!own || now > own.resetAt) {
+        own = { count: 0, resetAt: now + 1000 };
+        this.paneDeliveryRateLimits.set(socket, own);
+      }
+      if (now > this.paneDeliveryGlobalRate.resetAt) {
+        this.paneDeliveryGlobalRate = { count: 0, resetAt: now + 1000 };
+      }
+      if (
+        own.count >= DaemonPipeServer.PANE_DELIVERY_PER_SOCKET_RATE_LIMIT ||
+        this.paneDeliveryGlobalRate.count >= DaemonPipeServer.PANE_DELIVERY_GLOBAL_RATE_LIMIT
+      ) {
+        socket.write(JSON.stringify({ id: request.id, ok: false, error: 'rate limited (delivery)' }) + '\n');
+        return;
+      }
+      own.count++;
+      this.paneDeliveryGlobalRate.count++;
       this.dispatchAndReply(socket, request);
       return;
     }

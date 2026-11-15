@@ -3048,15 +3048,24 @@ export function registerInputRpc(
           const now = await checkAgent({ phase: 'paste' });
           if (!now.ok) throw new DeliveryRefused(now.refusal);
           if (now.input === 'pointer') return { freshContext: 'skipped_unobservable', freshContextReason: 'pointer_only: the target agent gets only a pointer line' };
+          let stepTyped = false;
           return runFreshContextOn(
             ptyId,
             binding,
             workspaceId,
             // The step's own keys (its command, Enter or erase) are not the
             // person typing: the guard counts each, one key apiece, as the
-            // step itself verifies.
+            // step itself verifies. Once one has landed, a later one that
+            // fails leaves the command typed: reported as the step not
+            // finishing, never as nothing written.
             async (data) => {
-              await write(ptyId, data);
+              try {
+                await write(ptyId, data);
+              } catch (err) {
+                if (!stepTyped || err instanceof HeldWriteUncertain) throw err;
+                throw new HeldWriteUncertain(`${err instanceof Error ? err.message : String(err)} (after the step's command was typed)`);
+              }
+              stepTyped = true;
               noteOwnWrite();
             },
             keepContext,

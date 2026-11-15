@@ -4995,15 +4995,27 @@ function registerRpcHandlers(
   pipeServer.onClientClose((clientId) => paneLocks.releaseClient(clientId));
   sessionManager.on('session:died', (payload: { id: string }) => paneLocks.dropSession(payload.id));
   sessionManager.on('session:destroyed', (payload: { id: string }) => paneLocks.dropSession(payload.id));
+  // Only a live session takes a delivery: a suspended or dead one has no
+  // process to write to, and main reports that nothing was delivered. A
+  // detached live session (no pane shows it) does, as the daemon's own
+  // writers' deliveries do.
+  const liveSession = (id: string) => {
+    const managed = id ? sessionManager.getSession(id) : undefined;
+    return managed && (managed.meta.state === 'attached' || managed.meta.state === 'detached') ? managed : undefined;
+  };
   pipeServer.onRpc('daemon.session.deliveryLockV1', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'daemon.session.deliveryLockV1')) return { ok: false, error: 'not allowed' };
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const nonce = typeof params['nonce'] === 'string' ? params['nonce'].slice(0, 64) : '';
     const waitMs = typeof params['waitMs'] === 'number' && Number.isFinite(params['waitMs']) ? Math.min(Math.max(0, params['waitMs']), PANE_LOCK_MAX_WAIT_MS) : 0;
-    if (!id || !nonce || !sessionManager.getSession(id)) return { ok: false, error: 'no session' };
+    if (!nonce || !liveSession(id)) return { ok: false, error: 'no session' };
     const token = await paneLocks.acquire(id, { key: `main:${ctx.clientId}`, clientId: ctx.clientId, nonce }, waitMs);
+    if (!liveSession(id)) {
+      if (token) paneLocks.release(id, token);
+      return { ok: false, error: 'no session' };
+    }
     if (!token) return { ok: false, busy: true, holder: paneLocks.holderOf(id) ?? null };
-    // The pipe closed or the session ended while it waited: not handed out.
+    // The pipe closed while it waited: not handed out.
     if (!paneLocks.holds(id, token, ctx.clientId)) return { ok: false, busy: true };
     return { ok: true, token };
   });
@@ -5021,7 +5033,7 @@ function registerRpcHandlers(
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const token = typeof params['token'] === 'string' ? params['token'] : '';
     const data = typeof params['data'] === 'string' ? params['data'] : '';
-    const managed = sessionManager.getSession(id);
+    const managed = liveSession(id);
     return writeUnderLock(paneLocks, id, token, ctx.clientId, managed ? {
       write: (bytes) => managed.ptyProcess.write(bytes),
       pendingInputBytes: (managed.ptyProcess as TerminalPty).pendingInputBytes,

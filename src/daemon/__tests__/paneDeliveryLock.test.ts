@@ -69,6 +69,15 @@ describe('PaneDeliveryLocks', () => {
     expect(t.written).toEqual(['one', 'DAEMON PASTE']);
   });
 
+  it('a held write with nothing to write does not renew the lease', async () => {
+    const locks = new PaneDeliveryLocks();
+    const token = await locks.acquire('s', MAIN, 0) as string;
+    await vi.advanceTimersByTimeAsync(PANE_LOCK_LEASE_MS - 1_000);
+    expect(writeUnderLock(locks, 's', token, 'c1', target(), '')).toEqual({ ok: true });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(writeUnderLock(locks, 's', token, 'c1', target(), '')).toEqual({ ok: false, error: 'not held' });
+  });
+
   it('every held write renews the lease', async () => {
     const locks = new PaneDeliveryLocks();
     const token = await locks.acquire('s', MAIN, 0) as string;

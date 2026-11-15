@@ -10,7 +10,7 @@ export const NOT_FIRST_PARTY = 'not_first_party';
  * The pane delivery lock's RPCs (daemon/paneDeliveryLock.ts): only main's
  * gated delivery holds a pane's lock and writes under it.
  */
-const PANE_DELIVERY_LOCK_METHODS: ReadonlySet<string> = new Set([
+export const PANE_DELIVERY_LOCK_METHODS: ReadonlySet<string> = new Set([
   'daemon.session.deliveryLockV1',
   'daemon.session.deliveryUnlockV1',
   'daemon.session.writeHeldV1',
