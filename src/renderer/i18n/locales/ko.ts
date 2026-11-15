@@ -6255,6 +6255,7 @@ export const ko = {
   'remoteSpawn.code.not-allowed': "{pc}은(는) 이 PC가 에이전트를 시작하도록 허용하지 않습니다",
   'remoteSpawn.code.agent-not-allowed': "{pc}은(는) 그 에이전트를 허용하지 않습니다",
   'remoteSpawn.code.agent-not-installed': "{pc}에 그 에이전트가 설치되어 있지 않습니다",
+  'remoteSpawn.code.agent-signed-out': "{pc}의 Claude가 로그인되어 있지 않습니다. 그 PC에서 로그인한 뒤 다시 보내세요",
   'remoteSpawn.code.folder-not-allowed': "{pc}은(는) 그 폴더를 허용하지 않습니다",
   'remoteSpawn.code.expired': "{pc}이(가) 답하기 전에 만료되었습니다",
   'remoteSpawn.code.rate-limited': "{pc}에 지금 요청이 너무 많습니다",

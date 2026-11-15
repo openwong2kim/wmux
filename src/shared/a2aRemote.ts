@@ -136,6 +136,13 @@ export const A2A_FEATURE_IMAGES = 'images.1';
  */
 export const A2A_FEATURE_SPAWN = 'spawn.1';
 /**
+ * The PC reads `agent-signed-out` in a spawn result. A PC that would start
+ * an agent whose sign-in it knows to be gone sends that code only to a PC
+ * that advertises it; any other gets `failed`, which it reads today (an
+ * unknown code is dropped, and the request would wait until it expires).
+ */
+export const A2A_FEATURE_SPAWN_SIGNED_OUT = 'spawn-signed-out.1';
+/**
  * The PC takes a Claude conversation another PC continues here
  * (`shared/a2aContinue.ts`). A requester sends one only to a PC that
  * advertises it.

@@ -17,6 +17,19 @@ describe('AgentLoginGate', () => {
     expect(probe).toHaveBeenCalledTimes(2);
   });
 
+  // The box's gate (daemon index.ts boxLoginGate): a claim right before a start
+  // must not take the answer read when the request's card was shown.
+  it('with no cache window, every check probes again; a probe in flight is still shared', async () => {
+    let signedIn = true;
+    const probe = vi.fn(async () => signedIn);
+    const gate = new AgentLoginGate(probe, { now: () => 0, ttlMs: 0 });
+    await Promise.all([gate.check('claude', account()), gate.check('claude', account())]);
+    expect(probe).toHaveBeenCalledTimes(1);
+    signedIn = false;
+    expect(await gate.check('claude', account())).toBe(false);
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
   it('asks each agent and account at most once a minute while it is signed in, and shares a probe in flight', async () => {
     const clock = { t: 0 };
     const probe = vi.fn(async () => true);

@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
+import { A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
 import { asSpawnLinkId, spawnFirstMessageId, type A2aSpawnRequestState, type SpawnLinkId } from '../../../shared/a2aSpawn';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
@@ -248,6 +248,67 @@ describe('right before the start', () => {
     expect(requests.get(HOST, env.linkId)?.request?.agent).toBe('gemini');
     receiver = makeReceiver({ policy: { get: () => ({ ...policy.get(), agents: ['claude', 'gemini'] }) } });
     expect(await receiver.claim(HOST, env.linkId)).toMatchObject({ ok: false, code: 'agent-not-allowed' });
+  });
+
+  it('a Claude its own status says is signed out: agent-signed-out to a PC that reads it, failed to any other', async () => {
+    let features: ReadonlySet<string> | undefined = new Set([A2A_FEATURE_SPAWN_SIGNED_OUT]);
+    const asked: string[] = [];
+    const logs: string[] = [];
+    receiver.stop();
+    receiver = makeReceiver({
+      agentSignedOut: async (agent) => { asked.push(agent); return true; },
+      peerFeatures: () => features,
+      log: (_level, msg) => void logs.push(msg),
+    });
+    await allow();
+    const reads = request();
+    await arrive(reads);
+    expect(codes(reads)).toEqual(['agent-signed-out']);
+    // A PC on a build that does not read the code would drop it and wait until expiry.
+    features = new Set(['spawn.1']);
+    const older = request();
+    await arrive(older);
+    expect(codes(older)).toEqual(['failed']);
+    features = undefined;
+    const unseen = request();
+    await arrive(unseen);
+    expect(codes(unseen)).toEqual(['failed']);
+    expect(asked).toEqual(['claude', 'claude', 'claude']);
+    // An older PC shows no reason: this PC's log has it.
+    expect(logs.filter((l) => l.includes('claude here is not signed in')).map((l) => l.slice(l.lastIndexOf('(')))).toEqual(['(answered agent-signed-out)', '(answered failed)', '(answered failed)']);
+  });
+
+  it('signed in, cannot tell, or a status that throws: decided as before; a request refused earlier never asks', async () => {
+    await allow();
+    const baseline = request();
+    await arrive(baseline);
+    for (const agentSignedOut of [async () => false, async () => { throw new Error('status unreadable'); }]) {
+      receiver.stop();
+      receiver = makeReceiver({ agentSignedOut, peerFeatures: () => new Set([A2A_FEATURE_SPAWN_SIGNED_OUT]) });
+      const env = request();
+      await arrive(env);
+      expect(codes(env)).toEqual(codes(baseline));
+    }
+    let asked = 0;
+    receiver.stop();
+    receiver = makeReceiver({ agentInstalled: async () => false, agentSignedOut: async () => { asked++; return true; } });
+    const notInstalled = request();
+    await arrive(notInstalled);
+    expect(codes(notInstalled)).toEqual(['agent-not-installed']);
+    expect(asked).toBe(0);
+  });
+
+  // A sign-in can lapse while a card waits: checked again right before the start.
+  it('a Claude signed out after its card was answered is not started', async () => {
+    let signedOut = false;
+    receiver.stop();
+    receiver = makeReceiver({ agentSignedOut: async () => signedOut, peerFeatures: () => new Set([A2A_FEATURE_SPAWN_SIGNED_OUT]) });
+    await allow();
+    const env = request();
+    await arrive(env);
+    await receiver.decideCard(HOST, env.linkId, 'once');
+    signedOut = true;
+    expect(await receiver.claim(HOST, env.linkId)).toMatchObject({ ok: false, code: 'agent-signed-out' });
   });
 
   it('a PC turned off after its card was answered is not started', async () => {
