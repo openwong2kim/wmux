@@ -1,8 +1,8 @@
 // #3390: a delivery's paste left unsent in an agent's input box keeps every
-// later delivery out of that pane, nothing written, until the box is clear
-// again: a turn started after it, the agent's session ended, or the composer
-// reads empty and the daemon's draft flag agrees. A turn's end does not clear
-// it (the turn-end reminder fires right then).
+// later delivery out of that pane, nothing written, until the box may be clear
+// again: a turn started after it, the agent's session ended, or input reached
+// the pane after it (the daemon's input count). No screen read clears it, and
+// a turn's end does not (the turn-end reminder fires right then).
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RpcRouter } from '../../RpcRouter';
@@ -25,6 +25,12 @@ let writes: Array<{ id: string; data: string }>;
 let answers: DeliveryPresence[];
 /** The daemon's draft flag per pane. */
 let draft: Record<string, boolean>;
+/** Input on each pane's pipe that is not a delivery's write (a person's key, an agent's terminal_send). */
+let keys: Record<string, number>;
+/** Reads of a pane's input count still to come back one short: a write of ours counted late. */
+let lagReads: Record<string, number>;
+/** The daemon reports no input count (an older daemon). */
+let noCount: boolean;
 let turnStartedAt: number | undefined;
 let stops: (ptyId: string) => void = () => undefined;
 let dropped: (ptyId: string) => void = () => undefined;
@@ -37,10 +43,16 @@ function harness() {
       writes.push({ id, data });
       return true;
     },
-    getAgentState: async (id: string) => ({
-      agentName: 'Claude Code', agentStatus: 'waiting', agentVerified: true, incarnationId: 'inc-1',
-      inputQuiet: true, inputRevision: 1, hasDraft: draft[id] ?? false, keyInputIdleMs: 60_000, keyInputRevision: writes.length,
-    }),
+    getAgentState: async (id: string) => {
+      const lag = (lagReads[id] ?? 0) > 0 ? 1 : 0;
+      if (lag) lagReads[id] -= 1;
+      const count = writes.filter((w) => w.id === id).length + (keys[id] ?? 0) - lag;
+      return {
+        agentName: 'Claude Code', agentStatus: 'waiting', agentVerified: true, incarnationId: 'inc-1',
+        inputQuiet: true, inputRevision: 1, hasDraft: draft[id] ?? false, keyInputIdleMs: 60_000,
+        ...(noCount ? {} : { keyInputRevision: count }),
+      };
+    },
   };
   return registerInputRpc(
     new RpcRouter(),
@@ -93,6 +105,9 @@ beforeEach(() => {
   writes = [];
   answers = [PROCESS];
   draft = {};
+  keys = {};
+  lagReads = {};
+  noCount = false;
   turnStartedAt = undefined;
   vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => (method === 'input.findOwnerWorkspace' ? { workspaceId: 'ws-a' } : null));
 });
@@ -132,17 +147,38 @@ describe('a paste left unsent in the input box (#3390)', () => {
     await vi.waitFor(() => expect(written()).toEqual(['\x1b[200~pointer\x1b[201~', '\x1b[200~second\x1b[201~', '\r']), { timeout: 5_000 });
   });
 
-  it('clear again when the composer reads empty and the draft flag agrees, and only then', async () => {
+  it('no screen read clears it; input reaching the pane after it does, and then the usual checks decide', async () => {
     const wiring = harness();
     await leaveUnsent(wiring);
-    // Screen empty, draft flag set: still held.
+    // The composer reads empty and the draft flag is clear: still held (both come from screen reads).
     answers = [PROCESS];
-    draft['pty-a'] = true;
-    expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Claude Code')).toMatchObject({ ok: false, reason: 'input_mode' });
-    // Both say empty: typed.
-    draft['pty-a'] = false;
+    expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Claude Code')).toMatchObject({ ok: false, detail: expect.stringMatching(/still holds an earlier message/) });
+    // The person pressed a key in the pane (Ctrl+U): touched. The box reads empty, so the reminder is typed.
+    keys['pty-a'] = 1;
     expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Claude Code')).toMatchObject({ ok: true });
     expect(written()).toEqual(['\x1b[200~pointer\x1b[201~', `\x1b[200~${REMINDER}\x1b[201~`, '\r']);
+  });
+
+  it("the delivery's own write counted after the record is not a touch: still held", async () => {
+    const wiring = harness();
+    // The paste reaches the daemon's count only after the first read of it.
+    lagReads['pty-a'] = 1;
+    await leaveUnsent(wiring);
+    answers = [PROCESS];
+    expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Claude Code')).toMatchObject({ ok: false, detail: expect.stringMatching(/still holds an earlier message/) });
+    expect(written()).toEqual(['\x1b[200~pointer\x1b[201~']);
+  });
+
+  it('with no input count from the daemon it stays held until a turn starts; a task meanwhile is stored', async () => {
+    const wiring = harness();
+    noCount = true;
+    await leaveUnsent(wiring);
+    keys['pty-a'] = 5;
+    answers = [PROCESS];
+    expect(await wiring.gatedSubmit('pty-a', 'later', 'Claude Code', { senderTaskIds: ['t-3'] })).toMatchObject({ ok: false, stored: true });
+    clock += 1_000;
+    turnStartedAt = clock;
+    expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Claude Code')).toMatchObject({ ok: true });
   });
 
   it("another pane is never held by it; the agent's session ending, or the pane torn down, clears it", async () => {
