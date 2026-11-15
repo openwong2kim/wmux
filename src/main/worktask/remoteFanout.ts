@@ -20,7 +20,7 @@ import type { A2aSpawnAskError, A2aSpawnAskInput, A2aSpawnAskResult, A2aSpawnOut
 import { asSpawnLinkId, spawnFirstMessageId } from '../../shared/a2aSpawn';
 import { isHostId } from '../../shared/a2aRemote';
 import type { AgentSlug } from '../../shared/agentIdentity';
-import { LEDGER_REMOTE_QUESTIONS, type LedgerEntry, type LedgerRemote, type LedgerRemoteWaiting, type LedgerStatus, remoteTaskWorkspaceId } from '../../shared/ledger';
+import { LEDGER_POOL_REFUSALS_MAX, LEDGER_REMOTE_QUESTIONS, type LedgerEntry, type LedgerRemote, type LedgerRemoteWaiting, type LedgerStatus, remoteTaskWorkspaceId } from '../../shared/ledger';
 import { STATE_VIEW_IDS_MAX } from '../../shared/a2aTaskQueryView';
 import { FANOUT_MAX_TASKS } from '../../shared/workTask';
 import { isOpenLedgerStatus, type LedgerTransition, type TaskLedger } from '../../daemon/ledger/TaskLedger';
@@ -283,7 +283,7 @@ export function pickPoolHost(candidates: Place[], rows: readonly LedgerEntry[], 
     const r = e.remote;
     if (!r || !isOpenLedgerStatus(e.status)) continue;
     if (r.state === 'sent' || r.state === 'waiting' || r.state === 'started') load.set(r.hostId, (load.get(r.hostId) ?? 0) + 1);
-    if (r.pool?.heldFrom && r.pool.heldAt !== undefined && now - r.pool.heldAt < POOL_REFUSING_MS) refusing.add(r.pool.heldFrom);
+    for (const f of r.pool?.refusals ?? []) if (now - f.at < POOL_REFUSING_MS) refusing.add(f.hostId);
   }
   const open = candidates.filter((p) => !refusing.has(p.hostId));
   open.sort((a, b) => (load.get(a.hostId) ?? 0) - (load.get(b.hostId) ?? 0) || (a.hostId < b.hostId ? -1 : a.hostId > b.hostId ? 1 : 0));
@@ -359,9 +359,11 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
   const pool = req.pc.trim().toLowerCase() === ANY_PC;
   let place: Place | null = null;
   let candidates: Place[] = [];
+  const noPcText = `no paired PC that is online offers the folder ${req.root} for Claude, so no task could be placed (pc "${ANY_PC}")`;
   if (pool) {
     candidates = poolCandidates(list.places, req.root);
-    if (candidates.length === 0) return { error: `no paired PC that is online offers the folder ${req.root} for Claude, so no task could be placed (pc "${ANY_PC}")` };
+    // Tasks this key placed already are still answered (a poll): the call is refused only when it has none.
+    if (candidates.length === 0 && remoteKeyRows(deps.ledger, req.scopedKey).length === 0) return { error: noPcText };
   } else {
     const found = resolvePlace(list.places, req.pc);
     if (found === 'unknown-pc' || found === 'ambiguous-pc') return { error: askErrorText(found, req.pc) };
@@ -406,7 +408,8 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
     if (existing?.remote?.pool && existing.remote.state === 'held' && isOpenLedgerStatus(existing.status)) {
       const to = pickPoolHost(candidates, deps.ledger.list(), now());
       const attempt = existing.remote.pool.attempt + 1;
-      const moved = to ? await deps.ledger.placeRemote(taskId, { hostId: to.hostId, pc: placeName(to), spawnId: keys.poolSpawnId(k, attempt), attempt }).catch(() => null) : null;
+      // Held past its time: not placed (the pass below fails it).
+      const moved = to ? await deps.ledger.placeRemote(taskId, { hostId: to.hostId, pc: placeName(to), spawnId: keys.poolSpawnId(k, attempt), attempt }, now() - POOL_HOLD_MAX_MS).catch(() => null) : null;
       if (!moved) {
         tasks.push(resultOf(k, title, deps.ledger.get(taskId) ?? existing, channelId, promptBytes));
         continue;
@@ -429,6 +432,10 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
       if (existing) {
         row = existing;
       } else {
+        if (pool && candidates.length === 0) {
+          tasks.push({ index: k, title, ok: false, taskId, channelId, reason: `${noPcText}; send the same idempotency_key again` });
+          continue;
+        }
         // A pool task with every candidate passed over is written held, on the least loaded of them, with no request.
         const to = pool ? pickPoolHost(candidates, deps.ledger.list(), now()) : place;
         const on = to ?? pickPoolHost(candidates, [], now())!;
@@ -562,11 +569,15 @@ async function reconcileOnce(deps: RemoteFanoutDeps): Promise<void> {
     if (r.state === 'held') {
       // No request is out for a held row: only its time runs (placing it again is the caller's next poll).
       const since = r.pool?.heldSince ?? row.updatedAt;
-      if (isOpenLedgerStatus(row.status) && (deps.now ?? Date.now)() - since >= POOL_HOLD_MAX_MS) next = await deps.ledger.updateRemote(row.id, { state: 'expired', code: 'pc-full' });
+      // Only the placement read here: one a poll made meanwhile is left alone.
+      if (isOpenLedgerStatus(row.status) && (deps.now ?? Date.now)() - since >= POOL_HOLD_MAX_MS) {
+        next = await deps.ledger.updateRemote(row.id, { state: 'expired', code: 'pc-full' }, undefined, { state: 'held', spawnId: r.spawnId });
+      }
     } else if (r.pool && rec?.state === 'refused' && rec.code === 'rate-limited' && isOpenLedgerStatus(row.status)) {
       // That PC is full: the pool task is held, with its request ended, until a later call places it on one with room.
       const at = (deps.now ?? Date.now)();
-      next = await deps.ledger.updateRemote(row.id, { state: 'held', code: undefined, pool: { ...r.pool, heldFrom: r.hostId, heldAt: at, heldSince: r.pool.heldSince ?? at } });
+      const refusals = [...(r.pool.refusals ?? []).filter((f) => f.hostId !== r.hostId), { hostId: r.hostId, at }].slice(-LEDGER_POOL_REFUSALS_MAX);
+      next = await deps.ledger.updateRemote(row.id, { state: 'held', code: undefined, pool: { ...r.pool, refusals, heldSince: r.pool.heldSince ?? at } }, undefined, { state: r.state, spawnId: r.spawnId });
     } else if (!rec) {
       // Not held any more: a waiting row ends here and is never asked again.
       // A row written just before its request is given time for it to land.

@@ -187,12 +187,16 @@ export interface LedgerRemote {
 export interface LedgerRemotePool {
   /** The placement this row is on (0 first): each one has its own spawn id. */
   attempt: number;
-  /** While held: the PC that last answered it was full, and when (epoch ms). */
-  heldFrom?: string;
-  heldAt?: number;
+  /** The PCs that answered it full, each with when (epoch ms), newest last; at most LEDGER_POOL_REFUSALS_MAX. */
+  refusals?: { hostId: string; at: number }[];
   /** When it was first held (epoch ms): a row held past the limit fails. */
   heldSince?: number;
 }
+
+/** The most placements one pool row may have. */
+export const LEDGER_POOL_ATTEMPTS_MAX = 1000;
+/** The most PC refusals one pool row keeps. */
+export const LEDGER_POOL_REFUSALS_MAX = 16;
 
 export const LEDGER_REMOTE_QUESTIONS = ['permission', 'plan', 'menu', 'dialog', 'trust'] as const;
 
