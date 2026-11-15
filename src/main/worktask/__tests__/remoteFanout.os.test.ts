@@ -840,6 +840,7 @@ describe('the pool (pc "any")', () => {
     const byKey = new Map<string, string>();
     const asks: A2aSpawnAskInput[] = [];
     const missions = new Map<string, { taskId: string; channelId: string }>();
+    const closedSet = new Set<string>();
     const local: { error?: 'unavailable' | 'not-supported' } = {};
     const daemon: RemoteFanoutDaemon = {
       ask: vi.fn(async (input: A2aSpawnAskInput) => {
@@ -871,7 +872,7 @@ describe('the pool (pc "any")', () => {
         return m;
       },
       missionClose: async () => undefined,
-      closedMissions: async () => new Set<string>(),
+      closedMissions: async () => closedSet,
       selfHostId: async () => SELF,
       linkRemoteWorkspace: async () => null,
       taskStates: vi.fn(async () => []),
@@ -881,7 +882,7 @@ describe('the pool (pc "any")', () => {
       const id = `${hostId}:${spawnId}`;
       requests.set(id, { ...requests.get(id)!, state: 'refused', code: 'rate-limited' });
     };
-    return { daemon, asks, requests, refuseFull, local };
+    return { daemon, asks, requests, refuseFull, local, closedSet };
   }
 
   /** Timers held here: `fire` runs the one scheduled pass and waits for it. */
@@ -1143,6 +1144,27 @@ describe('the pool (pc "any")', () => {
     const asks = p.asks.length;
     await startRemoteFanout(request(1, { pc: 'any' }), deps);
     expect(deps.ledger.get(id)!.remote?.state).toBe('held');
+    expect(p.asks).toHaveLength(asks);
+  });
+
+  it('a held task whose mission was closed answers closed with its reason, not held', async () => {
+    let now = 1_000_000;
+    const p = poolDaemon([placeOf(A)]);
+    const deps = { ...depsOf(p.daemon), now: () => now };
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    const id = deps.ledger.list()[0].id;
+    p.refuseFull(A, deps.ledger.get(id)!.remote!.spawnId);
+    now += 1000;
+    await reconcileRemoteTasks(deps);
+    expect(deps.ledger.get(id)!.remote?.state).toBe('held');
+    await (deps.ledger as TaskLedger).closeTask(id);
+    p.closedSet.add(id);
+    const asks = p.asks.length;
+    const res = await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    if ('error' in res) throw new Error(res.error);
+    expect(res.tasks[0]).toMatchObject({ ok: false, taskId: id, reason: 'WorkTask closed' });
+    expect(res.tasks[0].state).toBeUndefined();
+    expect(res.tasks[0].pending).toBeUndefined();
     expect(p.asks).toHaveLength(asks);
   });
 

@@ -329,7 +329,8 @@ function resultOf(index: number, title: string, entry: LedgerEntry, channelId: s
     index, title, ok: !failed, taskId: entry.id,
     ...(channelId ? { channelId } : {}),
     ...(r ? {
-      spawnId: r.spawnId, state: r.state,
+      // A closed row that was held has no request anywhere: it answers closed (its reason), not held.
+      spawnId: r.spawnId, ...(failed && r.state === 'held' ? {} : { state: r.state }),
       ...(r.code ? { code: r.code } : {}),
       ...(r.linkId ? { linkId: r.linkId } : {}),
       ...(r.a2aTaskId ? { a2aTaskId: r.a2aTaskId } : {}),
