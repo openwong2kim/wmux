@@ -346,7 +346,7 @@ describe('PendingDeliveries', () => {
     expect(h.reads.length).toBe(reads);
   });
 
-  it('an early try that comes while another retry runs on the pane runs after it once that one typed, not after a refusal', async () => {
+  it('an early try that comes while another retry runs on the pane runs after it once that entry is gone, not after a refusal about the pane', async () => {
     /** Each submit waits for its answer, handed in by the test. */
     const answers: Array<(r: GatedSubmitResult) => void> = [];
     const gate = () => new Promise<GatedSubmitResult>((resolve) => { answers.push(resolve); });
@@ -375,6 +375,22 @@ describe('PendingDeliveries', () => {
     await deliberateSleep(50, 'a negative check: no second try runs after the refusal');
     expect(refused).toHaveLength(1);
     expect(r.typed).toEqual([]);
+    // t2 stays stored: the sweep still reaches it once t1 is gone.
+    expect(r.queue.heldFor('pty-1', 't2')).toBeDefined();
+
+    // Entry 1 dropped for a reason of its own (a text the pane cannot take):
+    // entry 2's waiting early try still runs.
+    const own: Array<(r: GatedSubmitResult) => void> = [];
+    const o = harness({ submit: () => new Promise<GatedSubmitResult>((resolve) => { own.push(resolve); }) });
+    o.queue.store(o.entry('t1'));
+    o.queue.store(o.entry('t2'));
+    o.once[0].fn();
+    await vi.waitFor(() => expect(own).toHaveLength(1), { timeout: 5_000 });
+    o.once[1].fn();
+    own[0]({ ok: false, reason: 'write_failed', detail: 'x' });
+    await vi.waitFor(() => expect(own).toHaveLength(2), { timeout: 5_000 });
+    own[1]({ ok: true });
+    await vi.waitFor(() => expect(o.typed).toEqual(['text t2']), { timeout: 5_000 });
   });
 
   it('runs its sweep timer only while entries are kept', async () => {

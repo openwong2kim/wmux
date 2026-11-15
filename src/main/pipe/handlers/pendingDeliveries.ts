@@ -127,8 +127,12 @@ export class PendingDeliveries {
   /** Oldest first. */
   private entries: PendingDelivery[] = [];
   private readonly busy = new Set<string>();
-  /** Panes whose early try came while another retry ran there: it runs once
-   *  that one typed its entry (the next is due); after a refusal it does not. */
+  /** Panes whose early try came while another retry ran there. It runs once
+   *  that retry's entry is no longer kept (typed, or dropped for a reason of
+   *  its own: its task ended, it expired), so the next entry is due. When the
+   *  entry is still kept, the refusal was about the pane (no agent, the gate,
+   *  a person typing) and the next entry would meet it too: it does not run,
+   *  and that entry stays stored for the Stop or the sweep. */
   private readonly earlyWaiting = new Set<string>();
   private timer: { cancel: () => void } | null = null;
   private readonly now: () => number;
@@ -220,11 +224,12 @@ export class PendingDeliveries {
       return;
     }
     this.busy.add(ptyId);
-    let typed = false;
+    let tried: PendingDelivery | undefined;
     try {
       this.expire();
       const entry = this.entries.find((e) => e.ptyId === ptyId);
       if (!entry) return;
+      tried = entry;
       const state = await this.deps.taskState(entry).catch(() => null);
       if (state === 'pane gone') {
         entry.goneSince ??= this.now();
@@ -252,7 +257,6 @@ export class PendingDeliveries {
         return;
       }
       if (result.ok) {
-        typed = true;
         this.remove(entry);
         this.deps.log(`[delivery] typed stored task ${JSON.stringify(entry.taskId)} into pane ${JSON.stringify(ptyId)} (trigger: ${trigger})`);
       } else if (result.reason === 'agent_changed') {
@@ -275,7 +279,7 @@ export class PendingDeliveries {
       }
     } finally {
       this.busy.delete(ptyId);
-      if (this.earlyWaiting.delete(ptyId) && typed) void this.retry(ptyId, '+5s');
+      if (this.earlyWaiting.delete(ptyId) && tried && !this.entries.includes(tried)) void this.retry(ptyId, '+5s');
     }
   }
 
