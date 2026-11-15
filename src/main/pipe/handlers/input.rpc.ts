@@ -102,6 +102,7 @@ import {
   ownerLaneScreenOf,
   type OwnerLaneScreen,
 } from './ownerLane';
+import { onAgentFirstNamed } from '../../notification/agentFirstNamed';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -1579,6 +1580,9 @@ export interface InputRpcDeps {
   channelMessageAuthor?: (channelId: string, seq: number, viewerWorkspaceId: string) => Promise<string | null>;
   /** Injected in tests; calls `onStop` for each agent turn end in a pane. Defaults to main's event bus. */
   subscribeAgentStops?: (onStop: (ptyId: string) => void) => () => void;
+  /** Injected in tests; calls back once each time a pane's agent is first
+   *  named. Defaults to the metadata broadcast (onAgentFirstNamed). */
+  subscribeAgentNamed?: (onNamed: (ptyId: string) => void) => () => void;
   /** Injected in tests; a task's state for a stored delivery. Defaults to the
    *  daemon's `a2a.task.query` in its `state` view. */
   readTaskState?: (workspaceId: string, taskId: string) => Promise<PendingTaskState>;
@@ -3131,6 +3135,9 @@ export function registerInputRpc(
     ...(deps.now ? { now: deps.now } : {}),
   });
   (deps.subscribeAgentStops ?? subscribeAgentStops)((ptyId) => void pending.retry(ptyId));
+  // An agent just started has no turn end yet: a delivery stored while it
+  // could not be attributed is tried once when the pane's agent is named.
+  (deps.subscribeAgentNamed ?? onAgentFirstNamed)((ptyId) => void pending.retry(ptyId));
 
   /** The local task a delivery may be stored under: none for a hand-off
    *  (`waitQuiet`: its caller settles the task on the outcome), a remote

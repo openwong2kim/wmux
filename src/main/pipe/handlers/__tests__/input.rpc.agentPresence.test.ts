@@ -12,6 +12,7 @@ import type { DeliveryCheck, DeliveryPresence } from '../../../../shared/deliver
 import type { BrowserWindow } from 'electron';
 import type { PTYManager } from '../../../pty/PTYManager';
 import { registerDeliveryCheck } from '../../deliveryGuards';
+import { sendToRenderer } from '../_bridge';
 
 vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
 
@@ -29,6 +30,8 @@ let answers: Array<DeliveryPresence | undefined>;
 let asked: Array<{ ptyId: string; expectAgent: string | undefined; check: DeliveryCheck }>;
 /** The order of the presence asks, the approval-gate reads and the writes. */
 let order: string[];
+/** The wiring's "agent first named" callback (input.rpc's retry trigger). */
+let agentNamed: (ptyId: string) => void = () => undefined;
 
 function harness() {
   const dc = {
@@ -65,6 +68,12 @@ function harness() {
       sleep: async (ms: number) => { clock += ms; },
       now: () => clock,
       log: (line: string) => logs.push(line),
+      readTaskState: async () => 'open',
+      subscribeAgentStops: () => () => undefined,
+      subscribeAgentNamed: (onNamed) => {
+        agentNamed = onNamed;
+        return () => undefined;
+      },
     },
   );
 }
@@ -338,5 +347,49 @@ describe('an agent whose plain prompt wmux does not know: its pointer line only'
     answers = [{ ...PROCESS, bracketedPaste: false }];
     expect(await deliver({ senderTaskIds: ['task-1'] }, 'Claude Code', BODY)).toMatchObject({ ok: false, reason: 'input_mode' });
     expect(writes).toEqual([]);
+  });
+});
+
+// A local send or reply to a pane the window names no agent in now reaches
+// this gate (the window may not have named an agent started moments ago).
+// Main decides from the pane itself: with no agent there, nothing is written.
+describe('a pane the window names no agent in', () => {
+  const LOCAL: Array<[string, GatedSubmitOptions]> = [
+    ['a local new task', { newTask: true, taskId: 't-1', senderSendKey: 'k' }],
+    ['a local reply', { senderTaskIds: ['t-1'] }],
+  ];
+  const NONE: DeliveryPresence[] = [
+    { tier: 'none', reason: 'shell-at-prompt' },
+    { tier: 'none', reason: 'no-screen-proof' },
+    { tier: 'none', reason: 'agent-ended' },
+  ];
+  for (const [name, opts] of LOCAL) {
+    for (const presence of NONE) {
+      it(`${name}, presence ${presence.tier === 'none' ? presence.reason : ''}: zero bytes, nothing stored`, async () => {
+        answers = [presence];
+        const res = await deliver(opts, null, '[wmux] new A2A task t-1 — a2a_task_query');
+        expect(res).toMatchObject({ ok: false, reason: 'agent_unverified' });
+        expect(res).not.toHaveProperty('stored');
+        expect(writes).toEqual([]);
+        expect(asked[0].expectAgent).toBeUndefined();
+      });
+    }
+  }
+
+  it('an agent not attributed yet: stored with nothing written, typed once when the agent is first named', async () => {
+    // The stored entry's task is read through the pane's workspace.
+    vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => (method === 'input.findOwnerWorkspace' ? { workspaceId: 'ws-a' } : null));
+    const wiring = harness();
+    answers = [{ tier: 'none', reason: 'attribution-pending' }];
+    const res = await wiring.gatedSubmit('pty-a', 'hello', null, { newTask: true, taskId: 't-1', senderSendKey: 'k' });
+    expect(res).toMatchObject({ ok: false, reason: 'gate_unavailable', stored: true });
+    expect(writes).toEqual([]);
+    answers = [PROCESS];
+    agentNamed('pty-a');
+    await vi.waitFor(() => expect(writes).toEqual(['\x1b[200~hello\x1b[201~', '\r']), { timeout: 5_000 });
+    // Typed: nothing is left to type on a later naming.
+    agentNamed('pty-a');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(writes).toHaveLength(2);
   });
 });

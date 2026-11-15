@@ -62,6 +62,10 @@ beforeEach(() => {
     pty: { write },
     rpc: {
       gatedSubmit: async (ptyId: string, text: string) => {
+        // As main's gate answers for a pane with no agent in it: nothing written.
+        if (!useStore.getState().surfaceAgent[ptyId]?.name) {
+          return { ok: false, reason: 'agent_unverified', detail: 'delivery: no agent in the pane; nothing was written' };
+        }
         write(ptyId, formatBracketedPastePayload(text));
         write(ptyId, '\r');
         return { ok: true };
@@ -160,6 +164,82 @@ describe('a2a.broadcast', () => {
   it('skips a workspace whose only pane is a shell', async () => {
     const result = await handleRpcMethod('a2a.broadcast', { workspaceId: SENDER.id, message: BODY });
     expect(result).toMatchObject({ ok: true, sent: 0, skipped: 1 });
+    expect(writesToTarget()).toEqual([]);
+  });
+});
+
+// A pane this window names no agent in, whose terminal runs: an agent started
+// there moments ago may not be named here yet. A local send or reply goes to
+// main's gate, which reads the pane before anything is written; with no agent
+// there, nothing is (agent_unverified, reported as no_agent_pane as before).
+describe('a2a.task.send to a pane with no agent named here yet', () => {
+  type Gated = ReturnType<typeof vi.fn<(ptyId: string, text: string, opts: Record<string, unknown>) => Promise<Record<string, unknown>>>>;
+  let gated: Gated;
+  /** Main's answer for the target pane. */
+  let mainAnswer: Record<string, unknown>;
+
+  beforeEach(() => {
+    mainAnswer = { ok: true };
+    gated = vi.fn(async (ptyId: string, text: string) => {
+      if (mainAnswer.ok !== true) return mainAnswer;
+      write(ptyId, formatBracketedPastePayload(text));
+      write(ptyId, '\r');
+      return { ok: true };
+    });
+    (window as unknown as { electronAPI: { rpc: { gatedSubmit: unknown } } }).electronAPI.rpc.gatedSubmit = gated;
+  });
+
+  afterEach(() => {
+    useStore.getState().setPtyDeferred(PTY, false);
+  });
+
+  it('asks main with the one-line pointer only; with no agent there it writes nothing and reports no_agent_pane', async () => {
+    mainAnswer = { ok: false, reason: 'agent_unverified', detail: 'delivery: no agent' };
+    const result = await send({ paneId: TARGET_PANE });
+    expect(gated).toHaveBeenCalledTimes(1);
+    const [, text] = gated.mock.calls[0];
+    expect(text).toContain('[wmux] new A2A task');
+    expect(text).not.toContain('New-Item');
+    expect(result.delivery).toMatchObject(NO_AGENT);
+    expect(writesToTarget()).toEqual([]);
+  });
+
+  it('an agent main verifies gets the pointer typed, never the body', async () => {
+    const result = await send({ paneId: TARGET_PANE, silent: false });
+    expect(result.delivery).toMatchObject({ notified: true, mode: 'nudge' });
+    const typed = writesToTarget().join('');
+    expect(typed).toContain('[wmux] new A2A task');
+    expect(typed).not.toContain('New-Item');
+  });
+
+  it('an agent main cannot attribute yet: reported as stored for later, nothing written', async () => {
+    mainAnswer = { ok: false, reason: 'gate_unavailable', detail: 'delivery: not attributed yet', stored: true };
+    const result = await send({ paneId: TARGET_PANE });
+    expect(result.delivery).toMatchObject({ notified: false, reason: 'gate_unavailable', storedForLater: true });
+    expect(writesToTarget()).toEqual([]);
+  });
+
+  it('a reply to a task pinned there asks main too, and writes nothing when main finds no agent', async () => {
+    const created = await send({ paneId: TARGET_PANE, silent: true });
+    mainAnswer = { ok: false, reason: 'agent_unverified', detail: 'delivery: no agent' };
+    gated.mockClear();
+    const reply = await send({ taskId: created.taskId });
+    expect(gated).toHaveBeenCalledTimes(1);
+    expect(reply.delivery).toMatchObject(NO_AGENT);
+    expect(writesToTarget()).toEqual([]);
+  });
+
+  it('a terminal not started (deferred) never asks main', async () => {
+    useStore.getState().setPtyDeferred(PTY, true);
+    const result = await send({ paneId: TARGET_PANE });
+    expect(gated).not.toHaveBeenCalled();
+    expect(result.delivery).toMatchObject(NO_AGENT);
+  });
+
+  it("the operator's own send, which skips main's gate, never writes there", async () => {
+    const result = await send({ paneId: TARGET_PANE, operatorOrigin: true });
+    expect(gated).not.toHaveBeenCalled();
+    expect(result.delivery).toMatchObject(NO_AGENT);
     expect(writesToTarget()).toEqual([]);
   });
 });
