@@ -886,13 +886,16 @@ function a2aTargetMayHoldUnseenAgent(targetWs: Workspace, pty: string | undefine
 }
 
 /**
- * A send that asked main for a pane with no agent named here: unless main
- * typed it or kept it to type later, the sender is told what it was told
- * before (no_agent_pane). A paste main made and did not submit is reported
- * as it is: text reached the pane.
+ * A send that asked main for a pane with no agent named here, and main found
+ * no agent (none there, or none it could check) and kept nothing: the sender
+ * is told what it was told before (no_agent_pane). Any other refusal is
+ * reported as main gave it, with its hint: an agent was there, and a
+ * fresh-context step may already have typed into the pane.
  */
 function keptNothingForUnseenAgent(write: A2aPtyWrite): boolean {
-  return !!write.refused && write.refused.stored !== true && write.refused.pasted !== true;
+  const refused = write.refused;
+  if (!refused || refused.stored === true || refused.pasted === true || refused.freshContextApplied === true) return false;
+  return refused.reason === 'agent_unverified' || refused.reason === 'gate_unavailable';
 }
 
 /**

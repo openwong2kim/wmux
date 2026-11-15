@@ -33,6 +33,8 @@ let asked: Array<{ ptyId: string; expectAgent: string | undefined; check: Delive
 let order: string[];
 /** The wiring's "agent first named" callback (input.rpc's retry trigger). */
 let agentNamed: (ptyId: string) => void = () => undefined;
+/** The wiring's "agent record dropped" callback (pane teardown, session end). */
+let agentRecordDropped: (ptyId: string) => void = () => undefined;
 /** Each stored delivery's early try, in the order stored. */
 let earlyTries: Array<() => void> = [];
 
@@ -78,6 +80,10 @@ function harness() {
         return () => undefined;
       },
       pendingSetOnce: (fn) => { earlyTries.push(fn); },
+      subscribeAgentRecordDropped: (onDropped) => {
+        agentRecordDropped = onDropped;
+        return () => undefined;
+      },
     },
   );
 }
@@ -447,5 +453,24 @@ describe('a pane the window names no agent in', () => {
     await deliberateSleep(50, 'a negative check: the refused try writes nothing and arms nothing');
     expect(writes).toEqual([]);
     expect(earlyTries).toHaveLength(1);
+  });
+
+  it('closing the pane clears the naming latch: a later name there is tried again', async () => {
+    vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => (method === 'input.findOwnerWorkspace' ? { workspaceId: 'ws-a' } : null));
+    const wiring = harness();
+    answers = [{ tier: 'none', reason: 'attribution-pending' }];
+    expect(await wiring.gatedSubmit('pty-a', 'hello', null, { senderTaskIds: ['t-1'] })).toMatchObject({ stored: true });
+    const before = asked.length;
+    agentNamed('pty-a');
+    await vi.waitFor(() => expect(asked.length).toBeGreaterThan(before), { timeout: 5_000 });
+    const afterFirst = asked.length;
+    agentNamed('pty-a');
+    await deliberateSleep(50, 'a negative check: the latch holds');
+    expect(asked.length).toBe(afterFirst);
+    // The pane's record is dropped (closed; an agent never process-tracked has no agentEnded).
+    agentRecordDropped('pty-a');
+    agentNamed('pty-a');
+    await vi.waitFor(() => expect(asked.length).toBeGreaterThan(afterFirst), { timeout: 5_000 });
+    expect(writes).toEqual([]);
   });
 });

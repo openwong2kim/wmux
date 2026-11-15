@@ -237,6 +237,15 @@ describe('a2a.task.send to a pane with no agent named here yet', () => {
     expect(writesToTarget()).toEqual([]);
   });
 
+  it("an agent was there: a fresh-context timeout, or a refusal after the step ran, is reported as main gave it, never as no agent", async () => {
+    mainAnswer = { ok: false, reason: 'fresh_context_timeout', detail: 'delivery: /clear did not finish' };
+    expect((await send({ paneId: TARGET_PANE })).delivery).toMatchObject({ notified: false, reason: 'fresh_context_timeout' });
+    mainAnswer = { ok: false, reason: 'approval_pending', detail: 'delivery: an approval', freshContextApplied: true };
+    expect((await send({ paneId: TARGET_PANE })).delivery).toMatchObject({ notified: false, reason: 'approval_pending' });
+    mainAnswer = { ok: false, reason: 'gate_unavailable', detail: 'delivery: screen unreadable', freshContextApplied: true };
+    expect((await send({ paneId: TARGET_PANE })).delivery).toMatchObject({ notified: false, reason: 'gate_unavailable' });
+  });
+
   it('a pane known to be at its shell prompt, or whose agent ended, or still named after an ended agent, never asks main', async () => {
     const s = useStore.getState();
     s.hydrateCommandRunning({ [PTY]: false });

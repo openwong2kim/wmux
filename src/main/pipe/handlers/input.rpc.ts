@@ -102,7 +102,7 @@ import {
   ownerLaneScreenOf,
   type OwnerLaneScreen,
 } from './ownerLane';
-import { onAgentFirstNamed } from '../../notification/agentFirstNamed';
+import { onAgentFirstNamed, onAgentRecordDropped } from '../../notification/agentFirstNamed';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -1585,6 +1585,9 @@ export interface InputRpcDeps {
   subscribeAgentNamed?: (onNamed: (ptyId: string) => void) => () => void;
   /** Injected in tests: runs a stored delivery's one early try (setTimeout). */
   pendingSetOnce?: (fn: () => void, ms: number) => void;
+  /** Injected in tests; calls back when a pane's agent record is dropped
+   *  (teardown, session end). Defaults to onAgentRecordDropped. */
+  subscribeAgentRecordDropped?: (onDropped: (ptyId: string) => void) => () => void;
   /** Injected in tests; a task's state for a stored delivery. Defaults to the
    *  daemon's `a2a.task.query` in its `state` view. */
   readTaskState?: (workspaceId: string, taskId: string) => Promise<PendingTaskState>;
@@ -3148,6 +3151,9 @@ export function registerInputRpc(
     namedOnce.add(ptyId);
     void pending.retry(ptyId, 'naming');
   });
+  // The pane torn down or its session ended: a later name there is a new
+  // agent (one never process-tracked has no agentEnded).
+  (deps.subscribeAgentRecordDropped ?? onAgentRecordDropped)((ptyId) => { namedOnce.delete(ptyId); });
 
   /** The local task a delivery may be stored under: none for a hand-off
    *  (`waitQuiet`: its caller settles the task on the outcome), a remote

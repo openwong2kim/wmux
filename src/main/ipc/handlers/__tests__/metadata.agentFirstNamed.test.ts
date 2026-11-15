@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => ({ ipcMain: { handle: vi.fn(), on: vi.fn(), removeHandler: vi.fn(), removeAllListeners: vi.fn() }, BrowserWindow: class {} }));
 
 import { broadcastMetadataUpdate, clearLastBroadcastAgentStatus, resetLastBroadcastAgentStatusForTests } from '../metadata.handler';
-import { onAgentFirstNamed } from '../../../notification/agentFirstNamed';
+import { onAgentFirstNamed, onAgentRecordDropped } from '../../../notification/agentFirstNamed';
 
 let off: () => void = () => undefined;
 
@@ -47,5 +47,15 @@ describe('onAgentFirstNamed', () => {
     broadcastMetadataUpdate(null, { ptyId: 'p1', agentName: 'Claude Code' });
     offFirst();
     expect(second).toHaveBeenCalledWith('p1');
+  });
+
+  it('a pane torn down reports its record dropped; an idle broadcast that clears the name does not', () => {
+    const dropped = vi.fn();
+    off = onAgentRecordDropped(dropped);
+    broadcastMetadataUpdate(null, { ptyId: 'p1', agentName: 'Claude Code' });
+    broadcastMetadataUpdate(null, { ptyId: 'p1', agentStatus: 'idle', agentName: '' });
+    expect(dropped).not.toHaveBeenCalled();
+    clearLastBroadcastAgentStatus('p1');
+    expect(dropped.mock.calls).toEqual([['p1']]);
   });
 });

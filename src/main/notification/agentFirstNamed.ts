@@ -23,3 +23,25 @@ export function notifyAgentFirstNamed(ptyId: string): void {
     }
   }
 }
+
+const unnamedListeners = new Set<(ptyId: string) => void>();
+
+/**
+ * Calls `listener` when a PTY's record is dropped (pane teardown, session
+ * end): a later name there is a new agent. Not on an idle broadcast that
+ * clears the name only. Returns the unsubscribe.
+ */
+export function onAgentRecordDropped(listener: (ptyId: string) => void): () => void {
+  unnamedListeners.add(listener);
+  return () => { unnamedListeners.delete(listener); };
+}
+
+export function notifyAgentRecordDropped(ptyId: string): void {
+  for (const listener of unnamedListeners) {
+    try {
+      listener(ptyId);
+    } catch {
+      // One listener's failure never stops the teardown or the others.
+    }
+  }
+}
