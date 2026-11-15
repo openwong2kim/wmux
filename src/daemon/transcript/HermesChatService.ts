@@ -39,7 +39,7 @@ export interface HermesChatDeps {
   /** Writes to the pane's PTY; false when the pane is gone. */
   write(id: string, data: string): boolean;
   /**
-   * `send` under the pane's delivery lock (daemon/paneDeliveryLock.ts), held
+   * A send under the pane's delivery lock (daemon/paneDeliveryLock.ts), held
    * from before its first look at the pane through its Enter; null when
    * another delivery kept the pane (busy). Absent: no lock.
    */
@@ -55,6 +55,12 @@ interface Watch { clients: Set<string>; timer: ReturnType<typeof setInterval>; b
 const AGENT_STATUS: Record<HermesPromptState, AgentStatus | undefined> = {
   'idle-empty': 'complete', 'idle-typed': 'complete', running: 'running', dialog: 'awaiting_input', unknown: undefined,
 };
+
+/**
+ * The longest a send's readiness read may take. It runs under the pane's
+ * delivery lock, which other deliveries wait for; a slower read answers busy.
+ */
+export const HERMES_SEND_READ_MS = 3_000;
 
 export class HermesChatService {
   private watches = new Map<string, Watch>();
@@ -112,7 +118,20 @@ export class HermesChatService {
    */
   async send(id: string, sessionId: string, text: string, _requestId: string,
     opts: { expectedRawEpoch?: string; authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean> } = {}): Promise<TerminalChatSendOutcome> {
-    const read = await this.read(id);
+    // The pane's delivery lock from before the readiness read through the
+    // Enter: a delivery that submitted while this one waited is seen here.
+    const run = () => this.sendLocked(id, sessionId, text, opts);
+    return (this.deps.paneLock ? await this.deps.paneLock(id, run) : await run()) ?? { result: 'busy' };
+  }
+
+  private async sendLocked(id: string, sessionId: string, text: string,
+    opts: { expectedRawEpoch?: string; authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean> }): Promise<TerminalChatSendOutcome> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = await Promise.race([
+      this.read(id),
+      new Promise<'slow'>((resolve) => { timer = setTimeout(() => resolve('slow'), HERMES_SEND_READ_MS); }),
+    ]).finally(() => clearTimeout(timer));
+    if (read === 'slow') return { result: 'busy' };
     if (!read?.status.available) return { result: 'unavailable' };
     if (read.status.agentSessionId !== sessionId) return { result: 'session_changed' };
     if (opts.expectedRawEpoch !== undefined && opts.expectedRawEpoch !== (read.page.cursor.historyEpoch ?? '')) return { result: 'session_changed' };
@@ -124,7 +143,7 @@ export class HermesChatService {
     let pasted = false;
     let denied = false;
     const authorize = opts.authorized;
-    const deliver = () => deliverScheduledPrompt('hermes', incarnationId, text, {
+    const result = await deliverScheduledPrompt('hermes', incarnationId, text, {
       getAgentState: () => {
         const keys = this.deps.keyInput(id);
         const pane = this.deps.pane(id);
@@ -147,7 +166,6 @@ export class HermesChatService {
         return ok;
       } } : {}),
     });
-    const result = (this.deps.paneLock ? await this.deps.paneLock(id, deliver) : await deliver()) ?? 'busy';
     switch (result) {
       case 'sent': return { result: 'sent' };
       case 'busy': return { result: 'busy' };

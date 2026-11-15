@@ -1505,6 +1505,9 @@ export async function gatedPasteSubmit(
   if (agentAtEnter && !sameGrant(agentAtEnter)) {
     return agentAtEnter.pasteShown ? takeBack(regranted) : leftUnsent(regranted);
   }
+  // Taken before the write: a held write's reply can arrive after the
+  // receipt its Enter caused.
+  const enterAt = (receipt?.now ?? Date.now)();
   try {
     await write(ptyId, isMultilinePtyPayload(typed) ? '\r\r' : '\r');
   } catch (err) {
@@ -1534,7 +1537,7 @@ export async function gatedPasteSubmit(
         if (agentAgain && !sameGrant(agentAgain)) throw new EnterRetryRefused(`${regranted.detail}; the retried Enter was not sent.`);
         await write(ptyId, '\r');
       },
-      { enterAt: now(), sleep, now },
+      { enterAt, sleep, now },
     );
   }
   return fresh ? { ok: true, ...fresh } : { ok: true };
@@ -3012,11 +3015,13 @@ export function registerInputRpc(
     if (!opts?.newTask) {
       return withPaneDeliveryLock(
         ptyId,
-        async () => {
+        // Both locks held before onLocked: a delivery that went while this
+        // one waited for either is not a person typing.
+        async () => underPaneLock(async (write) => {
           const late = await onLocked();
           if (late) return late;
-          return underPaneLock((write) => gatedPasteSubmit(gate, write, ptyId, text, agent, deps.sleep, undefined, guard, receipt));
-        },
+          return gatedPasteSubmit(gate, write, ptyId, text, agent, deps.sleep, undefined, guard, receipt);
+        }),
         lockWaitMs,
       ).then(noteUnsent).catch(paneBusy);
     }
@@ -3029,10 +3034,10 @@ export function registerInputRpc(
       opts.keepContext ?? daemonOpenTaskOnPane(queryDaemonTasks, ptyId, opts.pane, opts.taskId);
     return withPaneDeliveryLock(
       ptyId,
-      async () => {
+      async () => underPaneLock(async (write) => {
         const late = await onLocked();
         if (late) return late;
-        return underPaneLock((write) => gatedPasteSubmit(gate, write, ptyId, text, agent, deps.sleep, async () => {
+        return gatedPasteSubmit(gate, write, ptyId, text, agent, deps.sleep, async () => {
           const before = opts.guardKey ? getDeliveryCheck(opts.guardKey)?.beforeFreshContext : undefined;
           const why = before ? await before() : null;
           if (why) throw new Error(`delivery: ${why}; nothing was written`);
@@ -3063,8 +3068,8 @@ export function registerInputRpc(
               if (again.input === 'pointer') throw new DeliveryRefused({ ok: false, reason: 'agent_changed', detail: 'delivery: the target agent changed during the fresh-context step' });
             },
           );
-        }, guard, receipt));
-      },
+        }, guard, receipt);
+      }),
       lockWaitMs,
     ).then(noteUnsent).catch(paneBusy);
   };

@@ -453,8 +453,10 @@ export async function runFreshContext(
       'timeout',
     );
   }
-  await probe.write('\r');
+  // Taken before the write: a held write's reply can arrive after the
+  // SessionStart its Enter caused.
   const enterAt = now();
+  await probe.write('\r');
   const revisionAfterEnter = revision(state) + 2;
   const deadline = enterAt + timeoutMs;
   let lastScreen: string | undefined;

@@ -221,6 +221,22 @@ describe("delivery order under the daemon's per-pane lock", () => {
     p.bridge.cleanup();
   });
 
+  it("a hand-off that waited for the daemon writer's hold counts that writer's keys as a delivery, not a person typing", async () => {
+    const p = pane();
+    const main = mainDelivery(p, 'shared');
+    let mainRun: Promise<unknown> | undefined;
+    const daemonResult = await daemonPrompt(p, true, {
+      between: async () => {
+        mainRun = main.gatedSubmit('sess-1', MAIN_TEXT, 'Claude Code', { senderTaskIds: ['t-1'], waitQuiet: true, deadlineAt: Date.now() + 60_000 });
+        await settle();
+      },
+    });
+    expect(daemonResult).toBe('sent');
+    expect(await mainRun).toEqual({ ok: true });
+    expect(p.box.submitted).toEqual([DAEMON_TEXT, MAIN_TEXT]);
+    p.bridge.cleanup();
+  });
+
   it('a daemon writer arriving while main holds the pane waits for main, then goes', async () => {
     const p = pane();
     const main = mainDelivery(p, 'shared');

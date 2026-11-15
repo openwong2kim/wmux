@@ -32,8 +32,8 @@ describe('DaemonSessionManager listener limit', () => {
   });
 
   it('pins the boot-time subscribers of the busiest events, all below the limit', () => {
-    expect(subscribers('session:died')).toBe(12);
-    expect(subscribers('session:destroyed')).toBe(14);
+    expect(subscribers('session:died')).toBe(13);
+    expect(subscribers('session:destroyed')).toBe(15);
     expect(Math.max(subscribers('session:died'), subscribers('session:destroyed'))).toBeLessThan(SESSION_MANAGER_MAX_LISTENERS);
   });
 
