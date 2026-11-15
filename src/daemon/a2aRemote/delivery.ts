@@ -80,6 +80,8 @@ export interface A2aRemoteDeliveryDeps {
   offers?: A2aOffers;
   /** Remote spawn requests, results and targets (link envelopes; see `spawnReceiver.ts`). */
   spawn?: InboundDeps['spawn'];
+  /** A paired PC advertised its features (either role): what `peerFeatures` answered before, and after. */
+  onPeerFeatures?: (hostId: HostId, before: ReadonlySet<string> | undefined, after: ReadonlySet<string> | undefined) => void;
   /** Conversations other PCs continue here (link envelopes; see `continueReceiver.ts`). */
   continue?: InboundDeps['continue'];
   /** Asks to bring back an agent's work as a bundle (the box side; link state `bundle-ask`). */
@@ -250,7 +252,7 @@ export class A2aRemoteDelivery {
       serves: (hostId) => !deps.remoteHosts.get(hostId),
       onStatus: (hostId) => this.announceServed(hostId),
       onFeatures: (hostId, features) => {
-        this.peerFeatureStore.record(hostId, 'asJoiner', features);
+        this.recordFeatures(hostId, 'asJoiner', features);
         deps.offers?.onPeerFeatures(hostId, features);
       },
       features: this.features,
@@ -336,6 +338,16 @@ export class A2aRemoteDelivery {
     return seen ? new Set(seen) : undefined;
   }
 
+
+  private recordFeatures(hostId: HostId, role: 'asJoiner' | 'asServer', features: readonly string[]): void {
+    const before = this.peerFeatures(hostId);
+    this.peerFeatureStore.record(hostId, role, features);
+    try {
+      this.deps.onPeerFeatures?.(hostId, before, this.peerFeatures(hostId));
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] peer features listener failed: ${errMsg(err)}`);
+    }
+  }
 
   /** Both roles' features from the streams since this daemon started; undefined when neither came up. */
   liveFeatures(hostId: HostId): ReadonlySet<string> | undefined {
@@ -746,7 +758,7 @@ export class A2aRemoteDelivery {
       ...(this.images ? { images: this.images } : {}),
       reconcileLinks: () => this.reconcileLinks(hostId),
       onStatus: (status) => this.deps.broadcast({ type: 'a2a.remote.hosts.status', sessionId: '', data: status }),
-      onServerFeatures: (features) => this.peerFeatureStore.record(hostId, 'asServer', features),
+      onServerFeatures: (features) => this.recordFeatures(hostId, 'asServer', features),
       features: this.features,
       ...(this.deps.timing ? { timing: this.deps.timing } : {}),
       ...(this.deps.client ? { client: this.deps.client } : {}),

@@ -323,6 +323,22 @@ it is linked to, the way it briefs a staff pane on this PC:
 paired PC instead of in worktrees here. `remote_spawn` with no `pc` lists the
 PCs and the folder ids (`root`) each one allows.
 
+With `pc: "any"`, wmux places each task itself: on the online paired PC that
+offers that folder for Claude and has the fewest of this PC's open tasks
+(tasks other PCs sent to it are not seen). A task that PC answers full is
+held, with no request out, and the same call again places it on a PC with
+room; a task held for an hour fails. A paired PC whose name is `any` is
+reached by its host id.
+
+Each PC names its folders itself, so `root` is the id one PC gave, and the
+pool finds the same folder on the other PCs by its git origin: a PC that
+allows a folder of the same repository is a candidate, whatever its id or
+label. **A pool across PCs needs the folder to have a git origin.** A folder
+with none is found only under that same id. PCs send each other a tag of
+the origin, keyed per requester, never the remote URL. An older wmux on
+either side does not send or read the tag, and its folders are matched by
+id alone.
+
 - **What runs where.** Each task is a mission (with its channel) and a task
   row on this PC, plus one start request to the other PC. The other PC
   starts Claude (only Claude, with its own settings) in a worktree of that

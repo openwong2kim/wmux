@@ -164,7 +164,8 @@ export interface A2aSpawnTargetsV1 {
   v: 1;
   /** Bumped on every change; A keeps the highest. */
   version: number;
-  roots: { id: string; label: string }[];
+  /** `originKeyHash` (daemon/a2aRemote/spawnRootHash.ts): sent only to a PC that advertises A2A_FEATURE_SPAWN_ROOT_HASH, and only for a folder with one origin. */
+  roots: { id: string; label: string; originKeyHash?: string }[];
   agents: AgentSlug[];
 }
 
@@ -720,8 +721,10 @@ export function parseSpawnTargets(raw: unknown): A2aSpawnTargetsV1 | null {
   if (!Array.isArray(roots) || roots.length > SPAWN_ROOTS_MAX || !Array.isArray(agents) || agents.length > SPAWN_ROOTS_MAX) return null;
   const cleanRoots: A2aSpawnTargetsV1['roots'] = [];
   for (const r of roots) {
-    if (!isPlain(r) || !onlyKeys(r, ['id', 'label']) || !isSpawnRootId(r['id']) || !isLabel(r['label'])) return null;
-    cleanRoots.push({ id: r['id'] as string, label: r['label'] as string });
+    if (!isPlain(r) || !onlyKeys(r, ['id', 'label', 'originKeyHash']) || !isSpawnRootId(r['id']) || !isLabel(r['label'])) return null;
+    const hash = r['originKeyHash'];
+    if (hash !== undefined && !(typeof hash === 'string' && SPAWN_ROOT_HASH_RE.test(hash))) return null;
+    cleanRoots.push({ id: r['id'] as string, label: r['label'] as string, ...(typeof hash === 'string' ? { originKeyHash: hash } : {}) });
   }
   if (!agents.every(isAgentSlug)) return null;
   return { v: 1, version, roots: cleanRoots, agents: [...new Set(agents as AgentSlug[])] };
@@ -809,12 +812,24 @@ export function spawnHostAllowed(policy: A2aSpawnPolicyV1, hostId: HostId): bool
 }
 
 /** What `hostId` may ask for, or null when it may not ask at all. */
-export function spawnTargetsFor(policy: A2aSpawnPolicyV1, hostId: HostId): A2aSpawnTargetsV1 | null {
+export function spawnTargetsFor(
+  policy: A2aSpawnPolicyV1,
+  hostId: HostId,
+  /** Each root folder's origin tag for `hostId` (daemon/a2aRemote/spawnRootHash.ts), when that PC reads it (A2A_FEATURE_SPAWN_ROOT_HASH). */
+  hashOf?: (rootPath: string) => string | undefined,
+): A2aSpawnTargetsV1 | null {
   if (!spawnHostAllowed(policy, hostId)) return null;
   return {
     v: 1,
     version: policy.version,
-    roots: policy.roots.map((r) => ({ id: r.id, label: r.label })),
+    roots: policy.roots.map((r) => {
+      const hash = hashOf?.(r.path);
+      return { id: r.id, label: r.label, ...(hash && SPAWN_ROOT_HASH_RE.test(hash) ? { originKeyHash: hash } : {}) };
+    }),
     agents: [...policy.agents],
   };
 }
+
+/** A root folder's origin tag (daemon/a2aRemote/spawnRootHash.ts): equal for the same repository, never the URL. */
+export const SPAWN_ROOT_HASH_RE = /^[0-9a-f]{32}$/;
+

@@ -143,6 +143,12 @@ export const A2A_FEATURE_SPAWN = 'spawn.1';
  */
 export const A2A_FEATURE_SPAWN_SIGNED_OUT = 'spawn-signed-out.1';
 /**
+ * The PC reads `originKeyHash` on the roots of spawn targets
+ * (A2aSpawnTargetsV1). A PC adds it only for a PC that advertises this: an
+ * older PC's reader refuses a targets message with any key it does not know.
+ */
+export const A2A_FEATURE_SPAWN_ROOT_HASH = 'spawn-root-hash.1';
+/**
  * The PC takes a Claude conversation another PC continues here
  * (`shared/a2aContinue.ts`). A requester sends one only to a PC that
  * advertises it.

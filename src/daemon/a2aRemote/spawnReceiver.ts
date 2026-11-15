@@ -1,8 +1,9 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { agentExecEnv } from '../../shared/execEnv';
 import { agentLauncherStem, agentRow, type AgentSlug } from '../../shared/agentIdentity';
-import { A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_REMOTE_PROTOCOL, isHostId, type A2aRemoteDeliverResponse, type A2aRemoteEnvelope, type HostId } from '../../shared/a2aRemote';
+import { A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_REMOTE_PROTOCOL, isHostId, type A2aRemoteDeliverResponse, type A2aRemoteEnvelope, type HostId } from '../../shared/a2aRemote';
 import {
   A2A_SPAWN_RPC,
   SPAWN_TARGETS_LINK_ID,
@@ -153,6 +154,8 @@ export interface SpawnReceiverDeps {
   /** End the link (and its exposure) a start of `spawnId` made, if any: the start did not finish. */
   abandon?: (hostId: HostId, spawnId: string) => void;
   onTargets?: (hostId: HostId, targets: A2aSpawnTargetsV1) => void;
+  /** A root folder's origin tag for `requester` (spawnRootHash.ts); undefined when it has none. Sent only to a PC that reads it. */
+  rootHash?: (requester: HostId, rootPath: string) => string | undefined;
   /** Targets for `hostId` are still in the outbox (so a start does not queue them again). */
   targetsQueued?: (hostId: HostId) => boolean;
   now?: () => number;
@@ -205,8 +208,8 @@ export class A2aSpawnReceiver {
   private readonly answeredAt = new Map<string, number>();
   /** As A: host:spawnId whose final answer was handed on. */
   private readonly answered = new Set<string>();
-  /** As A: the newest targets version each PC sent. */
-  private readonly targetsVersion = new Map<HostId, number>();
+  /** As A: the newest targets each PC sent (version, and content as JSON). */
+  private readonly targetsSeen = new Map<HostId, { version: number; json: string }>();
 
   constructor(deps: SpawnReceiverDeps) {
     this.deps = deps;
@@ -232,8 +235,11 @@ export class A2aSpawnReceiver {
     if (state === 'spawn-targets') {
       const targets = parseSpawnTargets(env.spawnTargets);
       if (!targets || env.linkId !== SPAWN_TARGETS_LINK_ID) return { ok: false, error: 'bad-request' };
-      if (targets.version > (this.targetsVersion.get(peer.hostId) ?? -1)) {
-        this.targetsVersion.set(peer.hostId, targets.version);
+      // The same version with other content is taken too: the other PC adds its folders' origin tags without a policy change.
+      const seen = this.targetsSeen.get(peer.hostId);
+      const json = JSON.stringify(targets);
+      if (!seen || targets.version > seen.version || (targets.version === seen.version && json !== seen.json)) {
+        this.targetsSeen.set(peer.hostId, { version: targets.version, json });
         this.deps.onTargets?.(peer.hostId, targets);
       }
       return OK;
@@ -273,15 +279,42 @@ export class A2aSpawnReceiver {
     }
   }
 
+  /**
+   * Targets again to `hostId`, or to every PC allowed to ask, that reads
+   * folder origin tags: it just said it reads them, or a tag changed. The
+   * version is unchanged; such a PC takes the same version with other content.
+   */
+  sendRootHashes(hostId?: HostId): void {
+    const policy = this.deps.policy.get();
+    for (const h of hostId ? [hostId] : Object.keys(policy.hosts)) {
+      if (!isHostId(h) || !this.readsRootHash(h)) continue;
+      const env = this.targetsEnvelope(h);
+      try {
+        if (env) this.deps.enqueue(h, env);
+      } catch (err) {
+        this.deps.log('warn', `[a2a-remote] spawn targets for ${h} not queued: ${errMsg(err)}`);
+      }
+    }
+  }
+
+  private readsRootHash(hostId: HostId): boolean {
+    return this.deps.rootHash !== undefined && this.deps.peerFeatures?.(hostId)?.has(A2A_FEATURE_SPAWN_ROOT_HASH) === true;
+  }
+
   /** What `hostId` may ask for (or `targets`), as an envelope; null when it may not ask. */
   targetsEnvelope(hostId: HostId, empty?: A2aSpawnTargetsV1): A2aRemoteEnvelope | null {
-    const targets = empty ?? spawnTargetsFor(this.deps.policy.get(), hostId);
+    // Folder origin tags only for a PC that reads them: an older PC refuses targets with a key it does not know.
+    const tags = this.readsRootHash(hostId);
+    const rootHash = this.deps.rootHash;
+    const targets = empty ?? spawnTargetsFor(this.deps.policy.get(), hostId, tags && rootHash ? (p) => rootHash(hostId, p) : undefined);
     if (!targets) return null;
+    // For such a PC the id also names the content, so new tags under the same version are not taken for a duplicate.
+    const digest = tags ? `-${crypto.createHash('sha256').update(JSON.stringify(targets)).digest('hex').slice(0, 8)}` : '';
     return {
       protocol: A2A_REMOTE_PROTOCOL,
       linkId: SPAWN_TARGETS_LINK_ID,
       linkVersion: 0,
-      messageId: `st-${targets.version}`,
+      messageId: `st-${targets.version}${digest}`,
       kind: 'link',
       link: { state: 'spawn-targets', version: 0 },
       spawnTargets: targets,
@@ -678,7 +711,7 @@ export class A2aSpawnReceiver {
     for (const k of [...this.deciding.keys()]) if (mine(k)) this.deciding.delete(k);
     for (const k of [...this.answeredAt.keys()]) if (mine(k)) this.answeredAt.delete(k);
     for (const k of [...this.answered]) if (mine(k)) this.answered.delete(k);
-    this.targetsVersion.delete(hostId);
+    this.targetsSeen.delete(hostId);
   }
 
   /** Settle every decision in flight (tests). Retries waiting on a timer are not waited for. */
