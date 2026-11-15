@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { getExecEnv } from '../../shared/execEnv';
-import { resolveExecutable } from '../../shared/exeSearch';
+import { GIT_NOT_FOUND_TEXT, gitToRunIn } from '../../shared/gitExe';
 import { BUNDLE_REF_PREFIX, bundleRefName, type A2aBundleRefusal } from '../../shared/a2aBundle';
 import { parseGitConfigList, workerGitConfigRefusal } from '../../main/worktask/workerGit';
 import { filterDriverNames, type Git } from '../../main/a2aRemote/spawnWorktree';
@@ -72,12 +72,25 @@ export interface BundleGitOptions {
   onCreate?: (kill: () => void, pid: number | undefined) => void;
 }
 
+/**
+ * The git this module runs in `dir`, or why none is run: found by absolute path only (a bare name could be looked up
+ * in `dir` first), and never one inside `dir`. Never throws.
+ */
+function gitIn(dir: string, env: NodeJS.ProcessEnv): { exe: string } | { why: string } {
+  const found = gitToRunIn(dir, env);
+  if ('exe' in found) return found;
+  return { why: found.why === 'missing' ? GIT_NOT_FOUND_TEXT : 'the git found on this PC is inside the worktree, so it was not run' };
+}
+
 /** git with this module's isolation, in `at`. Never throws. */
 export function bundleGit(at: string, opts: BundleGitOptions = {}): Git {
   const env = isolatedEnv(opts.env ?? getExecEnv());
-  const gitExe = resolveExecutable('git', { env });
   const timeoutMs = opts.readTimeoutMs ?? BUNDLE_GIT_READ_TIMEOUT_MS;
-  return (args, pre = [], dir = at) => runGit(gitExe, [...SAFE_ARGS, ...pre, '-C', dir, ...args], dir, env, timeoutMs);
+  return (args, pre = [], dir = at) => {
+    const found = gitIn(dir, env);
+    if ('why' in found) return Promise.resolve({ code: 1, stdout: '', stderr: found.why });
+    return runGit(found.exe, [...SAFE_ARGS, ...pre, '-C', dir, ...args], dir, env, timeoutMs);
+  };
 }
 
 const SAFE_ARGS: readonly string[] = [
@@ -155,6 +168,9 @@ export async function makeBundle(input: BundleMakeInput, opts: BundleGitOptions 
   if (!BRANCH_RE.test(input.branch) || !COMMIT_RE.test(input.base) || !TREE_ID_RE.test(input.treeId)) {
     return { kind: 'refused', reason: 'base-missing', detail: 'the start record does not name a branch and base this takes' };
   }
+  // No git is run when none may be: a bare name, or one inside the worktree.
+  const found = gitIn(input.worktree, isolatedEnv(opts.env ?? getExecEnv()));
+  if ('why' in found) return { kind: 'refused', reason: 'unavailable', detail: found.why };
   const git = bundleGit(input.worktree, opts);
   try {
     const first = await configRefusal(git);
@@ -232,7 +248,9 @@ async function withRef(git: Git, ref: string, sha: string, fn: () => Promise<Bun
 async function writeBundle(input: BundleMakeInput, head: string, opts: BundleGitOptions): Promise<BundleMakeOutcome> {
   const ref = bundleRefName(input.treeId);
   const env = isolatedEnv(opts.env ?? getExecEnv());
-  const gitExe = resolveExecutable('git', { env });
+  const found = gitIn(input.worktree, env);
+  if ('why' in found) return { kind: 'refused', reason: 'unavailable', detail: found.why };
+  const gitExe = found.exe;
   const handle = await fs.promises.open(input.file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
   let outcome: BundleMakeOutcome;
   try {
