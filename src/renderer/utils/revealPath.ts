@@ -41,3 +41,24 @@ export function focusedPtyId(ws: Workspace | null | undefined): string | undefin
   const active: Surface | undefined = pane.surfaces?.find((s) => s.id === pane.activeSurfaceId);
   return (active?.ptyId || pane.surfaces?.find((s) => s.ptyId)?.ptyId) || undefined;
 }
+
+/**
+ * Reveal `dir` through `openPath`, translating a WSL pane's Linux path first.
+ * Every failure (untranslatable path, rejected open) goes to `onError`, which
+ * the caller shows as the open-failure toast.
+ */
+export async function revealInHost(
+  dir: string,
+  ptyId: string | undefined,
+  api: Pick<PaneForegroundApi, 'list'>,
+  openPath: (path: string) => Promise<unknown> | undefined,
+  onError: (message: string) => void,
+): Promise<void> {
+  try {
+    const target = await revealablePath(dir, ptyId, api);
+    if ('error' in target) { onError(target.error); return; }
+    await openPath(target.path);
+  } catch (err) {
+    onError(String((err as { message?: string })?.message ?? err));
+  }
+}

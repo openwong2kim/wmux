@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { revealablePath } from '../revealPath';
+import { describe, it, expect, vi } from 'vitest';
+import { revealablePath, revealInHost } from '../revealPath';
 
 const api = (session: Record<string, unknown> | undefined) => ({
   list: async () => (session ? [{ id: 'p1', ...session }] : []),
@@ -28,5 +28,25 @@ describe('revealablePath', () => {
     expect(await revealablePath('/home/x', 'p1', api({ shell: 'bash' }))).toEqual({ path: '/home/x' });
     expect(await revealablePath('/home/x', 'p1', api(undefined))).toEqual({ path: '/home/x' });
     expect(await revealablePath('/home/x', undefined, wsl('Ubuntu'))).toEqual({ path: '/home/x' });
+  });
+});
+
+describe('revealInHost', () => {
+  it('reports the error text and does not open when the path cannot be translated', async () => {
+    const open = vi.fn();
+    const onError = vi.fn();
+    await revealInHost('/home/a:b', 'p1', wsl('Ubuntu'), open, onError);
+    expect(open).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('/home/a:b'));
+  });
+  it('opens the translated path', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true });
+    await revealInHost('/home/me', 'p1', wsl('Ubuntu'), open, vi.fn());
+    expect(open).toHaveBeenCalledWith('\\\\wsl$\\Ubuntu\\home\\me');
+  });
+  it('reports a rejected open', async () => {
+    const onError = vi.fn();
+    await revealInHost('C:\\x', 'p1', wsl('Ubuntu'), () => Promise.reject(new Error('boom')), onError);
+    expect(onError).toHaveBeenCalledWith('boom');
   });
 });
