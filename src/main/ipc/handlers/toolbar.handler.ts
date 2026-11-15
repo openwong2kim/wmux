@@ -32,11 +32,14 @@ export function registerToolbarHandlers(): () => void {
   }));
 
   ipcMain.removeHandler(IPC.DIALOG_PICK_FOLDER);
-  ipcMain.handle(IPC.DIALOG_PICK_FOLDER, wrapHandler(IPC.DIALOG_PICK_FOLDER, async (event: Electron.IpcMainInvokeEvent): Promise<string[]> => {
+  ipcMain.handle(IPC.DIALOG_PICK_FOLDER, wrapHandler(IPC.DIALOG_PICK_FOLDER, async (event: Electron.IpcMainInvokeEvent, defaultPath?: string): Promise<string[]> => {
     const win = BrowserWindow.fromWebContents(event.sender);
     const opts = {
       properties: ['openDirectory'] as Array<'openDirectory'>,
-      ...(lastPickedFolder ? { defaultPath: path.dirname(lastPickedFolder) } : {}),
+      // A caller-supplied start folder (e.g. a WSL share) wins over the last pick.
+      ...(typeof defaultPath === 'string' && defaultPath
+        ? { defaultPath }
+        : lastPickedFolder ? { defaultPath: path.dirname(lastPickedFolder) } : {}),
     };
     const result = win
       ? await dialog.showOpenDialog(win, opts)

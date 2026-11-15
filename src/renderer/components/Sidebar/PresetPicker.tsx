@@ -15,6 +15,8 @@ import { probeProjectConfig } from '../../utils/projectConfigProbe';
 import { shortDir } from '../../utils/shortDir';
 import CompanyPresetDialog from './CompanyPresetDialog';
 import CompanyFileReviewDialog from './CompanyFileReviewDialog';
+import { isValidWslDistroName } from '../../../shared/wslDistro';
+import { wslShareToLinux } from '../../../shared/wslPaths';
 
 interface PresetPickerProps {
   onClose: () => void;
@@ -154,6 +156,38 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
     }
   }, [addWorkspace, onClose]);
 
+  // "Browse WSL folder…": Windows only, and only while `wsl --list` names at
+  // least one distro. A rejected read (or a name that is not a plain distro
+  // name) leaves the row out, like the paired-host probe above.
+  const [wslDistros, setWslDistros] = useState<string[]>([]);
+  const [wslListOpen, setWslListOpen] = useState(false);
+  useEffect(() => {
+    if (window.electronAPI?.platform !== 'win32') return;
+    let cancelled = false;
+    window.electronAPI?.shell?.wslDistros?.()
+      .then((names) => { if (!cancelled) setWslDistros(names.filter(isValidWslDistroName)); })
+      .catch(() => { /* no row */ });
+    return () => { cancelled = true; };
+  }, []);
+  const browseWslFolder = useCallback(async (distro: string) => {
+    if (!isValidWslDistroName(distro)) return;
+    const folders = await window.electronAPI?.dialog?.pickFolder(`\\\\wsl.localhost\\${distro}\\home`);
+    if (folders && folders.length > 0) {
+      const folderPath = folders[0];
+      const share = wslShareToLinux(folderPath);
+      const folderName = (share && share.linuxPath === '/')
+        ? share.distro
+        : folderPath.split(/[/\\]/).filter(Boolean).pop() || 'Workspace';
+      addWorkspace(folderName, { startupCwd: folderPath });
+      showWorkspaces(useStore.getState());
+      onClose();
+    }
+  }, [addWorkspace, onClose]);
+  const handleBrowseWsl = useCallback(() => {
+    if (wslDistros.length === 1) void browseWslFolder(wslDistros[0]);
+    else setWslListOpen((open) => !open);
+  }, [wslDistros, browseWslFolder]);
+
   // Close on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -221,6 +255,35 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
         <div className="font-semibold">{t('sidebar.browseFolder')}</div>
         <div className="text-[var(--text-sub)] text-[11px]">{t('sidebar.browseFolderDesc')}</div>
       </button>
+
+      {wslDistros.length > 0 && (
+        <>
+          <button
+            className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
+            onClick={handleBrowseWsl}
+            data-browse-wsl
+            aria-expanded={wslDistros.length > 1 ? wslListOpen : undefined}
+          >
+            <div className="font-semibold">{t('sidebar.browseWslFolder')}</div>
+            <div className="text-[var(--text-sub)] text-[11px]">{t('sidebar.browseWslFolderDesc')}</div>
+          </button>
+          {wslListOpen && wslDistros.length > 1 && (
+            <>
+              <div className="px-3 pt-1 text-[11px] text-[var(--text-muted)]">{t('sidebar.browseWslFolderPick')}</div>
+              {wslDistros.map((name) => (
+                <button
+                  key={name}
+                  className="w-full text-left px-5 py-1 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
+                  onClick={() => void browseWslFolder(name)}
+                  data-wsl-distro
+                >
+                  {name}
+                </button>
+              ))}
+            </>
+          )}
+        </>
+      )}
 
       <div className="border-t border-[var(--bg-surface)] my-0.5" />
 

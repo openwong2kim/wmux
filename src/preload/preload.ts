@@ -1922,7 +1922,7 @@ const electronAPI = {
       >,
   },
   dialog: {
-    pickFolder: () => ipcRenderer.invoke(IPC.DIALOG_PICK_FOLDER) as Promise<string[]>,
+    pickFolder: (defaultPath?: string) => ipcRenderer.invoke(IPC.DIALOG_PICK_FOLDER, defaultPath) as Promise<string[]>,
   },
   // Project config (X5 wmux.json). `get` resolves a workspace cwd to the
   // nearest wmux.json + trust state; `setTrust` persists a user decision
