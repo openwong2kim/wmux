@@ -479,7 +479,7 @@ describe('RemoteA2aBridge', () => {
     expect(renderer).not.toHaveBeenCalled();
     expect(daemon.attempts).toEqual([]);
     expect(daemon.marks).toEqual([]);
-    expect((daemon.tasks.get(id(24))!.metadata.remote as A2aRemoteTaskState).attempted).toBeUndefined();
+    expect((daemon.tasks.get(id(24))?.metadata.remote as A2aRemoteTaskState).attempted).toBeUndefined();
     ready = true;
     await vi.advanceTimersByTimeAsync(60_000);
     expect(renderer).toHaveBeenCalledTimes(1);

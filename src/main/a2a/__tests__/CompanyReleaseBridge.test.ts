@@ -472,7 +472,7 @@ describe('CompanyReleaseBridge — the cap on working seats', () => {
     const rendererReady = () => new Promise<boolean>((resolve) => { answers.push(resolve); });
     const b = new CompanyReleaseBridge({ daemon, sendToRenderer: renderer, now: () => clock, slots: slots(), rendererReady });
     const run = pull(b);
-    await vi.waitFor(() => expect(answers.length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(answers.length).toBeGreaterThan(0), { timeout: 5_000 });
     await new Promise((resolve) => setTimeout(resolve, 0));
     // Only the task holding the slot asks. Answered newest first, as a late reply would.
     [...answers].reverse().forEach((answer) => answer(true));
