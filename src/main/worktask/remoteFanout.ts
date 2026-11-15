@@ -219,6 +219,7 @@ export function remoteCodeText(code: string | undefined, pc: string, promptBytes
     }
     case 'agent-not-allowed': return `${pc} does not let this PC start Claude (agent-not-allowed)`;
     case 'agent-not-installed': return `Claude is not installed on ${pc} (agent-not-installed)`;
+    case 'agent-signed-out': return `Claude on ${pc} is not signed in; sign in there, then send again (agent-signed-out)`;
     case 'folder-not-allowed': return `${pc} does not let this PC use that folder (folder-not-allowed)`;
     case 'expired': return `${pc} did not start it within ${REMOTE_FANOUT_EXPIRES_HOURS} hour (expired)`;
     case 'rate-limited': return `${pc} is at a limit it sets (agents running, or starts per hour or day), holds too many requests from this PC, or its request store is full (rate-limited)`;

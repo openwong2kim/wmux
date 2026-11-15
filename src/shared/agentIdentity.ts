@@ -162,11 +162,15 @@ export interface AgentSetupSpec {
    * account (shared/agentAuthLost). `unseenCredentials` are ways the agent
    * runs that its status command does not report (an API key in the
    * environment, another model provider in its config): while one is present a
-   * "signed out" answer is read as "cannot tell".
+   * "signed out" answer is read as "cannot tell". `offlineEnv`: variables under
+   * which the status command was measured to open no network connection and
+   * give the same answer; a check that must not contact the vendor (a box's
+   * check before it starts the agent for another PC) runs only for an agent
+   * that declares it, and with it.
    */
   readonly loginStatus:
-    | { readonly args: readonly string[]; readonly read: 'json-logged-in'; readonly accountEnv?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; readonly unseenCredentials?: UnseenCredentials }
-    | { readonly args: readonly string[]; readonly read: 'exit-code'; readonly signedOutText: string; readonly accountEnv?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; readonly unseenCredentials?: UnseenCredentials }
+    | { readonly args: readonly string[]; readonly read: 'json-logged-in'; readonly accountEnv?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; readonly unseenCredentials?: UnseenCredentials; readonly offlineEnv?: Readonly<Record<string, string>> }
+    | { readonly args: readonly string[]; readonly read: 'exit-code'; readonly signedOutText: string; readonly accountEnv?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; readonly unseenCredentials?: UnseenCredentials; readonly offlineEnv?: Readonly<Record<string, string>> }
     | { readonly read: 'none' };
   /** Below this version the card says "update recommended" (never forced). */
   readonly updateFloor: string;
@@ -366,7 +370,13 @@ export const AGENT_IDENTITIES = [
       npm: { package: ['@anthropic-ai', 'claude-code'], winEntries: [['bin', 'claude.exe'], ['cli.js']] },
       // `claude auth status --help`: "--json  Output as JSON (default)".
       // Measured on 2.1.305: exit 0 + "loggedIn": true / exit 1 + false.
-      loginStatus: { args: ['auth', 'status', '--json'], read: 'json-logged-in', accountEnv: 'CLAUDE_CONFIG_DIR' },
+      // offlineEnv measured on 2.1.322 (Linux, strace): without it every run
+      // opens one TLS connection to the vendor, signed out too; with it none,
+      // and the same rc 1 + loggedIn:false.
+      loginStatus: {
+        args: ['auth', 'status', '--json'], read: 'json-logged-in', accountEnv: 'CLAUDE_CONFIG_DIR',
+        offlineEnv: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' },
+      },
       // The interrupt / Stop hook findings the hook bridge is built on
       // (src/shared/hooks/interruptKeystroke.ts, HookSignalRouter.ts).
       updateFloor: '2.1.236',

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { agentExecEnv } from '../../shared/execEnv';
 import { agentLauncherStem, agentRow, type AgentSlug } from '../../shared/agentIdentity';
-import { A2A_REMOTE_PROTOCOL, isHostId, type A2aRemoteDeliverResponse, type A2aRemoteEnvelope, type HostId } from '../../shared/a2aRemote';
+import { A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_REMOTE_PROTOCOL, isHostId, type A2aRemoteDeliverResponse, type A2aRemoteEnvelope, type HostId } from '../../shared/a2aRemote';
 import {
   A2A_SPAWN_RPC,
   SPAWN_TARGETS_LINK_ID,
@@ -64,6 +64,9 @@ import { errMsg, isPlainObject } from './storeFile';
  *   7. the policy and the expiry, read again after those waits
  *   8. room: starts per PC per hour and per day, and
  *      agents running at once, per PC and in all       else `rate-limited`
+ *   8b. the agent is not surely signed out (its own
+ *      status, where it answers offline: Claude)       else `agent-signed-out`
+ *      (`failed` to a PC that does not read that code)
  *   9. the app is up (it waits for it, until expiry)  else `app-not-ready`
  *  10. a rule allows it (allow-list mode)             → approved
  *      otherwise                                      → its card; `waiting-for-approval`
@@ -108,6 +111,14 @@ export interface SpawnReceiverDeps {
   enqueue: (hostId: HostId, envelope: A2aRemoteEnvelope) => void;
   /** Whether this PC can run `agent` (its launcher on the login PATH). */
   agentInstalled?: (agent: AgentSlug) => Promise<boolean>;
+  /**
+   * True only when the agent's own status says this PC's account is signed
+   * out; false when signed in or when that cannot be told. Absent: not checked.
+   * Asked last, after every other refusal, as it starts a process.
+   */
+  agentSignedOut?: (agent: AgentSlug) => Promise<boolean>;
+  /** What `hostId` last advertised (A2A features); undefined when never seen. */
+  peerFeatures?: (hostId: HostId) => ReadonlySet<string> | undefined;
   realpath?: (p: string) => Promise<string>;
   /** Whether `p` is a folder; rejects with the stat error when it cannot tell. */
   isDirectory?: (p: string) => Promise<boolean>;
@@ -438,6 +449,24 @@ export class A2aSpawnReceiver {
     });
   }
 
+  /** Only a definite "signed out" counts; a check that fails is "cannot tell".
+   *  Not on the disk/PATH gate: the status bounds its own wait (a few seconds)
+   *  and would hold the gate's few slots that long. */
+  private async signedOut(agent: AgentSlug): Promise<boolean> {
+    return (await this.deps.agentSignedOut?.(agent).catch(() => false)) === true;
+  }
+
+  /**
+   * `agent-signed-out` to a PC that reads it; `failed`, which every PC
+   * reads, to any other. That one shows no reason (a result carries no text),
+   * so the reason is in this PC's log either way.
+   */
+  private signedOutCode(hostId: HostId, spawnId: string, agent: AgentSlug): A2aSpawnCode {
+    const code: A2aSpawnCode = this.deps.peerFeatures?.(hostId)?.has(A2A_FEATURE_SPAWN_SIGNED_OUT) ? 'agent-signed-out' : 'failed';
+    this.deps.log('warn', `[a2a-remote] spawn request ${spawnId} from ${this.deps.hostName?.(hostId) ?? hostId}: ${agent} here is not signed in, so it was not started; sign in on this PC, then the other PC can send it again (answered ${code})`);
+    return code;
+  }
+
   private async claimNow(hostId: HostId, spawnId: string): Promise<A2aSpawnClaimResult> {
     let rec: SpawnRequestRecordV1 | undefined;
     try {
@@ -472,6 +501,9 @@ export class A2aSpawnReceiver {
       }
       return { ok: false, error: `not checked now, try again: ${errMsg(err)}` };
     }
+    // Right before the start too: a sign-in can lapse while a card waits. Off
+    // the disk/PATH gate, and before the reads below, which then cover its wait.
+    if (await this.signedOut(req.agent)) return refuse(this.signedOutCode(hostId, spawnId, req.agent));
     // The checks waited: the policy, the expiry and the room are read once more.
     const now = this.deps.policy.get();
     if (!spawnHostAllowed(now, hostId) || !now.agents.includes(req.agent) || !now.roots.some((r) => r.id === root.id && r.path === root.path)) {
@@ -833,6 +865,8 @@ export class A2aSpawnReceiver {
     if (this.now() > Date.parse(rec.expiresAt)) return 'expired';
     if (!this.deps.start) return 'not-supported';
     if (this.overCaps(hostId)) return 'rate-limited';
+    // Last of the refusals, as it starts a process: the agent's own status.
+    if (await this.signedOut(req.agent)) return this.signedOutCode(hostId, spawnId, req.agent);
     // Headless (no app, owner opted in): checked again on the policy as it is now; no card, no waiting for an app.
     if (this.deps.headless?.() === true) return headlessRefusal(now, hostId, root.id, req.agent, sub) ?? 'approved';
     // Nothing is shown or started before the app has caught up: the request waits for it, until it expires.

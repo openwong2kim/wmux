@@ -136,6 +136,13 @@ export const A2A_FEATURE_IMAGES = 'images.1';
  */
 export const A2A_FEATURE_SPAWN = 'spawn.1';
 /**
+ * The PC reads `agent-signed-out` in a spawn result. A PC that would start
+ * an agent whose sign-in it knows to be gone sends that code only to a PC
+ * that advertises it; any other gets `failed`, which it reads today (an
+ * unknown code is dropped, and the request would wait until it expires).
+ */
+export const A2A_FEATURE_SPAWN_SIGNED_OUT = 'spawn-signed-out.1';
+/**
  * The PC takes a Claude conversation another PC continues here
  * (`shared/a2aContinue.ts`). A requester sends one only to a PC that
  * advertises it.
@@ -153,6 +160,13 @@ export const A2A_FEATURE_BUNDLE = 'bundle.1';
  * peer that advertises it.
  */
 export const A2A_FEATURE_REOPEN = 'reopen.1';
+/**
+ * A server that takes a refusal on the stream ack. A joiner that refuses a
+ * record the server streamed it sends the refusal with the ack of that record
+ * (`A2aStreamAck.refused`), only to a server whose hello lists this, and the
+ * server ends what the record was about as when its own POST is refused.
+ */
+export const A2A_FEATURE_STREAM_REFUSE = 'stream-refuse.1';
 /**
  * Stream liveness both ways. A joiner with it acks its stream cursor every
  * `A2A_STREAM_PING_MS` while the stream is up (to a server whose hello lists
@@ -1128,6 +1142,19 @@ export interface A2aStreamEvent {
 
 export interface A2aStreamAck {
   cursor: A2aStreamCursor;
+  /**
+   * `stream-refuse.1`: the joiner refused the record at `seq` (at most one per
+   * ack, `seq` ≤ `cursor.seq`, a terminal code). The server takes it only for
+   * a record still owed to that joiner, before the ack.
+   */
+  refused?: { seq: number; code: A2aRemoteErrorCode };
+}
+
+/** The server's answer to an ack. `refused`: what it did with the refusal on it, when there was one. */
+export interface A2aStreamAckAnswer {
+  ok: true;
+  acked: number;
+  refused?: 'applied' | 'ignored';
 }
 
 // ─── Outbox (both sides) ────────────────────────────────────────────────────

@@ -64,6 +64,8 @@ describe('spawnClockOk (B\'s clock)', () => {
 describe('parseSpawnResult', () => {
   it('carries a code, and an endpoint only with started', () => {
     expect(parseSpawnResult({ v: 1, spawnId: ID, code: 'not-allowed' })).toEqual({ v: 1, spawnId: ID, code: 'not-allowed' });
+    // Read by a PC that advertises spawn-signed-out.1 (the only kind it is sent to).
+    expect(parseSpawnResult({ v: 1, spawnId: ID, code: 'agent-signed-out' })).toEqual({ v: 1, spawnId: ID, code: 'agent-signed-out' });
     expect(parseSpawnResult({ v: 1, spawnId: ID, code: 'not-allowed', message: '/home/x' })).toBeNull();
     expect(parseSpawnResult({ v: 1, spawnId: ID, code: 'started' })).toBeNull();
     const linkId = '0b5e2a4c-9d1f-4e3a-8b7c-6d5e4f3a2b1c';

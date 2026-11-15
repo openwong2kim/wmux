@@ -6661,6 +6661,7 @@ export const pl = {
   'remoteSpawn.code.not-allowed': "{pc} nie pozwala temu komputerowi uruchamiać agentów",
   'remoteSpawn.code.agent-not-allowed': "{pc} nie zezwala na tego agenta",
   'remoteSpawn.code.agent-not-installed': "ten agent nie jest zainstalowany na {pc}",
+  'remoteSpawn.code.agent-signed-out': "Claude na {pc} nie jest zalogowany; zaloguj się tam i wyślij ponownie",
   'remoteSpawn.code.folder-not-allowed': "{pc} nie zezwala na ten folder",
   'remoteSpawn.code.expired': "wygasło, zanim {pc} odpowiedział",
   'remoteSpawn.code.rate-limited': "{pc} ma teraz zbyt wiele żądań",

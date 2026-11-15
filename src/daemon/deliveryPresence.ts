@@ -61,7 +61,7 @@ export interface DeliveryPresenceDeps {
 
 /** Agents a screen alone may verify (no attributed process): their prompt and
  *  where they keep the cursor are both known. */
-const SCREEN_TIER_AGENTS: ReadonlySet<AgentSlug> = new Set(['claude']);
+export const SCREEN_TIER_AGENTS: ReadonlySet<AgentSlug> = new Set(['claude']);
 
 const none = (reason: DeliveryPresenceReason, pasteShown?: boolean): DeliveryPresence =>
   ({ tier: 'none', reason, ...(pasteShown !== undefined ? { pasteShown } : {}) });

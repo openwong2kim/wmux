@@ -177,7 +177,7 @@ import { A2A_REMOTE_RPC } from '../shared/a2aRemoteDelivery';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
-import { A2A_FEATURE_BUNDLE, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
+import { A2A_FEATURE_BUNDLE, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
@@ -268,7 +268,7 @@ import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { classifyClaudeStopFailure, classifyCodexTurnCompleted, type TurnFailure } from '../shared/phoneTurnFailure';
 import { authConfigDir, isAuthLostAgent, type AgentAuthLost, type AuthLostAgent, type AuthLostOrigin } from '../shared/agentAuthLost';
 import { AgentLoginGate } from './agentLoginGate';
-import { refuseSignedOutAgent } from './web/agentSignedOut';
+import { refuseSignedOutAgent, SESSION_LOGIN_WAIT_MS } from './web/agentSignedOut';
 import { AgentSetupDetector } from '../main/firstRun/AgentSetupDetector';
 import { serveTurnFailure } from './turnFailure/serveTurnFailure';
 import { buildTurnFailedPushPayload, turnFailedPushCollapseId } from './push/turnFailedPushPayload';
@@ -327,6 +327,7 @@ import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, ty
 import { handleLiveness } from '../shared/processHandleLiveness';
 import { deliverScheduledPrompt, deliveryInputFence, type ScheduledPromptDeliveryDeps, type ScreenBlock } from './sessionPromptDelivery';
 import { deliverCallerNudge } from './callerNudgeDelivery';
+import { draftScreenCheck, type DraftCheck } from './draftScreen';
 import { paneTurnClosed, stopAgentTree } from './agentStop';
 import { continueOnAccount } from './continueOnAccount';
 import { paneFree } from './paneFree';
@@ -555,6 +556,8 @@ let idleHoldForRemoteStarts: () => boolean = () => false;
 let headlessDeliverRef: HeadlessDeliveryDeps['deliver'] | null = null;
 /** daemon.deliveryPresence, for the channel wake worker built in another scope. */
 let deliveryPresenceRef: ((id: string, check: DeliveryCheck) => Promise<DeliveryPresence>) | null = null;
+/** Whether a pane holds a draft, the screen consulted (draftScreen.ts). */
+let draftOnScreen: DraftCheck | undefined;
 let headlessDeliveryRef: HeadlessDelivery | null = null;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 let noteCodexServerLost: ((id:string)=>void) | undefined;
@@ -581,6 +584,10 @@ let noteAuthLost: ((sessionId: string, agent: AuthLostAgent, env: Record<string,
 let noteAuthWorks: ((agent: AuthLostAgent, env: Record<string, string> | undefined) => void) | undefined;
 /** N4 — one status probe per agent and account a minute, before a scheduled run and as an agent starts. */
 const agentLoginGate = new AgentLoginGate((agent, env) => new AgentSetupDetector().loginState(agent, env));
+/** The check a box runs before it starts an agent for another PC (offlineEnv
+ *  only). Nothing cached: the claim right before a start must not take the
+ *  answer read when its card was shown; a probe in flight is still shared. */
+const boxLoginGate = new AgentLoginGate((agent, env) => new AgentSetupDetector().loginState(agent, env), { ttlMs: 0 });
 /** Re-run a pane's awaiting verification (#1901), set by wireEvents. */
 let reverifyAwaiting: ((sessionId: string) => void) | undefined;
 /**
@@ -6244,6 +6251,9 @@ function registerRpcHandlers(
     const state = readDaemonAgentState(id);
     const bridge = sessionManager.getSession(id)?.bridge;
     if (!bridge) return state;
+    // A set draft mark asks the screen in the background: the next read has its answer.
+    const draft = bridge.hasDraft();
+    if (draft) void draftOnScreen?.(id);
     // #1680 — additive, for main's fresh-context step: the key-only input
     // counter and quiet flag (focus and pointer-motion reports do not move
     // them), and whether the CURRENT agent's hooks have reported (reset when
@@ -6256,7 +6266,7 @@ function registerRpcHandlers(
       hookReports: bridge.hasHookReports(),
       // Additive, for a delivery that waits for the person to stop typing:
       // whether the composer holds a draft, and how long keys have been quiet.
-      hasDraft: bridge.hasDraft(),
+      hasDraft: draft,
       keyInputIdleMs: bridge.keyInputIdleMs(),
       // #2263 — additive, for main's resync after it subscribes to events
       // again: the latest window title, which it may have missed meanwhile,
@@ -6315,6 +6325,16 @@ function registerRpcHandlers(
     return deliveryPresence(presenceDeps, id, expectAgent, check);
   });
   deliveryPresenceRef = (id, check) => deliveryPresence(presenceDeps, id, undefined, check);
+  // A draft mark the key path left after the draft was erased (Backspace), cleared
+  // by a fresh frame of the agent's empty prompt (draftScreen.ts).
+  draftOnScreen = draftScreenCheck({
+    bridge: (sid) => sessionManager.getSession(sid)?.bridge,
+    slug: (sid) => {
+      const named = readDaemonAgentState(sid).agentName;
+      return named ? agentDisplayToSlug(named) : undefined;
+    },
+    frame: presenceDeps.frame,
+  });
 
   // #1594 — what main's terminal_send needs to paste into a session: the agent
   // and DECSET 2004 from the live output stream. A hidden pane's renderer xterm
@@ -6500,6 +6520,7 @@ function registerRpcHandlers(
     return deliverCallerNudge(prompt, {
       usageHeld: () => usageLimits?.holds(id) === true,
       input: () => sessionManager.getSession(id)?.bridge,
+      refreshDraft: async () => draftOnScreen?.(id),
       deliver: (opts) => deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, opts, 'caller nudge', 'wmux'),
     });
   });
@@ -6513,7 +6534,7 @@ function registerRpcHandlers(
   ): Promise<SessionPromptScheduleResult> => {
     // A human draft in the composer is a wait, not a failure: answering
     // 'busy' keeps the pane armed and retries once the draft is sent or cleared.
-    if (sessionManager.getSession(id)?.bridge.hasDraft() === true) return 'busy';
+    if (sessionManager.getSession(id)?.bridge.hasDraft() === true && (await draftOnScreen?.(id)) !== false) return 'busy';
     return deliverPromptToSessionNow(id, slug, incarnationId, USAGE_LIMIT_CONTINUE_PROMPT, {
       // A turn that died on the limit (or on a provider error) leaves the pane at `error`.
       acceptError: true,
@@ -10859,6 +10880,27 @@ async function main(): Promise<void> {
         if (state === 'approved') void a2aHeadless?.start(hostId, spawnId);
       },
       hostName: a2aHostName,
+      // A start for another PC refuses an agent whose own status (the probe a
+      // phone pane and an automation run get) says the account the daemon runs
+      // as is signed out. Only an agent whose status was measured to answer
+      // with no network connection (`offlineEnv` on its row: Claude) is
+      // asked, and with that env, so the check never contacts the vendor. Only
+      // a definite "signed out" refuses; no answer within the wait is "cannot
+      // tell", and the start goes on.
+      // Its own gate: an answer taken with offlineEnv is never shared with,
+      // or taken from, a probe that ran without it. The PATH is the agent's
+      // login PATH, as for a phone pane; the owner here gets the same
+      // sign-in notice as for a refused phone pane.
+      agentSignedOut: async (agent) => {
+        const status = agentRow(agent)?.setup?.loginStatus;
+        const offlineEnv = status && status.read !== 'none' ? status.offlineEnv : undefined;
+        if (!offlineEnv || !isAuthLostAgent(agent)) return false;
+        const env = { ...process.env, PATH: (await agentExecEnv(process.env)).PATH ?? process.env.PATH, ...offlineEnv };
+        if ((await boxLoginGate.check(agent, env, { waitMs: SESSION_LOGIN_WAIT_MS })) !== false) return false;
+        noteAuthLost?.('', agent, env as Record<string, string>, 'start');
+        return true;
+      },
+      peerFeatures: (hostId) => a2aDelivery?.peerFeatures(hostId),
       ...(a2aStarter
         ? { start: a2aStarter, abandon: (hostId, spawnId) => a2aStarter.abandon(hostId, spawnId) }
         : {}),
@@ -11121,7 +11163,7 @@ async function main(): Promise<void> {
         // messages and pings its streams: tell the servers it joins, and the
         // joiners in its hello.
         // `bundle.1` only while bundles are on (read at start: a change takes effect on the next one).
-        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE, ...(a2aBundlesOn() ? [A2A_FEATURE_BUNDLE] : [])],
+        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE, ...(a2aBundlesOn() ? [A2A_FEATURE_BUNDLE] : [])],
         uploadsRoot: path.join(wmuxDir, 'uploads'),
         // A live terminal of the sender's workspace (stamped at spawn by main), else none.
         spawnCwdOf: (ptyId, workspaceId) => {
