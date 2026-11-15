@@ -1,12 +1,15 @@
-// Two writers on one pane, as main has them today: main's gated delivery
-// (input.rpc.ts, which holds a pane lock only main's own deliveries take) and
-// a daemon writer (a scheduled prompt, sessionPromptDelivery.ts), which takes
-// no lock. Both guard on the pane's key revision, so neither submits the
-// other's text; but each checks and then writes, and a write by the other in
-// between leaves a paste in the input box with its Enter withheld.
+// Two writers on one pane: main's gated delivery (input.rpc.ts) and a daemon
+// writer (a scheduled prompt, sessionPromptDelivery.ts). Both guard on the
+// pane's key revision, so neither submits the other's text; but each checks
+// and then writes. Without a lock both take, a write by the other in between
+// leaves a paste in the input box with its Enter withheld.
 //
-// This pins today's outcome on a real DaemonPTYBridge. It is the baseline for
-// one per-pane delivery lock shared by both processes.
+// With the daemon's per-pane delivery lock (daemon/paneDeliveryLock.ts) the
+// daemon writer holds the pane from its first look through its Enter, and
+// main holds it over RPC and writes only through writeHeld: one delivery
+// waits for the other. Run on a real DaemonPTYBridge, with the agent's input
+// box modelled: main's presence answers from it, as the daemon's composer
+// read does.
 import { describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
 import type { IPty } from 'node-pty';
@@ -17,6 +20,7 @@ import type { DeliveryPresence } from '../../../../shared/deliveryPresence';
 import { DaemonPTYBridge } from '../../../../daemon/DaemonPTYBridge';
 import { RingBuffer } from '../../../../daemon/RingBuffer';
 import { deliverScheduledPrompt } from '../../../../daemon/sessionPromptDelivery';
+import { PANE_LOCK_DAEMON_WAIT_MS, PaneDeliveryLocks, writeUnderLock } from '../../../../daemon/paneDeliveryLock';
 
 vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
 
@@ -24,32 +28,59 @@ const PROCESS: DeliveryPresence = { tier: 'process', slug: 'claude', input: 'ful
 const FREE = '⏺ Done.\n\n──────────\n❯ ';
 const MAIN_TEXT = '[wmux] new A2A task t-1 — a2a_task_query';
 const DAEMON_TEXT = 'scheduled: run the nightly check';
+const CLIENT = 'c1';
 
 function pane() {
   const bridge = new DaemonPTYBridge();
   bridge.setupDataForwarding({ onData: () => ({ dispose: () => undefined }), onExit: () => ({ dispose: () => undefined }) } as unknown as IPty, new RingBuffer(65536), 'sess-1');
-  /** Every byte that reached the pane, by writer, in order. */
-  const writes: Array<[who: 'main' | 'daemon', data: string]> = [];
+  /** Every byte that reached the pane, by writer and route, in order. */
+  const writes: Array<[who: 'main' | 'main-held' | 'daemon', data: string]> = [];
   /** The agent's input box: a paste adds to it, an Enter submits and empties it. */
   const box = { text: '', submitted: [] as string[] };
-  const type = (who: 'main' | 'daemon', data: string) => {
+  /** Bytes reaching the PTY; the bridge notes them on its own path. */
+  const land = (who: 'main' | 'main-held' | 'daemon', data: string) => {
     writes.push([who, data]);
-    bridge.noteInput(data);
     if (data.startsWith('\r')) {
       box.submitted.push(box.text);
       box.text = '';
     } else box.text += data.split('\x1b[200~').join('').split('\x1b[201~').join('');
   };
-  return { bridge, writes, box, type };
+  return { bridge, writes, box, land, locks: new PaneDeliveryLocks() };
 }
 
-/** Main's gated delivery into `bridge`, as the daemon's session write path notes it. */
-function mainDelivery(p: ReturnType<typeof pane>) {
+type MainLock =
+  /** The daemon's lock, over the RPCs main uses (DaemonClient). */
+  | 'shared'
+  /** A client with no lock methods: main's own lock only. */
+  | 'none'
+  | { held: false; why: 'unsupported' | 'busy' | 'unavailable'; detail: string };
+
+/** Main's gated delivery into `bridge`, written as the daemon notes it. */
+function mainDelivery(p: ReturnType<typeof pane>, lock: MainLock) {
+  const lockMethods = lock === 'none' ? {} : lock === 'shared' ? {
+    acquirePaneLock: async (id: string, nonce: string, waitMs: number) => {
+      const token = await p.locks.acquire(id, { key: `main:${CLIENT}`, clientId: CLIENT, nonce }, waitMs);
+      return token ? { held: true as const, token } : { held: false as const, why: 'busy' as const, detail: 'held' };
+    },
+    releasePaneLock: (id: string, by: { token?: string; nonce?: string }) => {
+      if (by.token && p.locks.holds(id, by.token, CLIENT)) p.locks.release(id, by.token);
+      if (by.nonce) p.locks.releaseNonce(id, CLIENT, by.nonce);
+    },
+    writeHeld: async (id: string, token: string, data: string) => {
+      const r = writeUnderLock(p.locks, id, token, CLIENT, { write: (d) => p.land('main-held', d), noteInput: (d) => p.bridge.noteInput(d) }, data);
+      return r.ok ? r : { ok: false as const, uncertain: false, detail: r.error };
+    },
+  } : {
+    acquirePaneLock: async () => lock,
+    releasePaneLock: () => undefined,
+    writeHeld: async () => ({ ok: false as const, uncertain: false, detail: 'not held' }),
+  };
   const dc = {
     isConnected: true,
     rpc: async (method: string) => (method === 'daemon.approvals.list' ? { pending: [] } : { ok: true }),
     writeToSession: (_id: string, data: string) => {
-      p.type('main', data);
+      p.land('main', data);
+      p.bridge.noteInput(data);
       return true;
     },
     getAgentState: async () => ({
@@ -58,6 +89,7 @@ function mainDelivery(p: ReturnType<typeof pane>) {
       keyInputIdleMs: p.bridge.isKeyInputQuiet() ? 60_000 : 0,
       keyInputRevision: p.bridge.getKeyInputRevision(),
     }),
+    ...lockMethods,
   };
   return registerInputRpc(
     new RpcRouter(),
@@ -85,13 +117,14 @@ function mainDelivery(p: ReturnType<typeof pane>) {
 }
 
 /**
- * The daemon's scheduled prompt into the same pane. `between` runs after its
- * checks and before its paste; `afterPaste` runs in its submit delay.
+ * The daemon's scheduled prompt into the same pane, under the pane's lock as
+ * the daemon's writer funnel takes it (`locked`), or with none. `between` runs
+ * after its checks and before its paste; `afterPaste` in its submit delay.
  */
-function daemonPrompt(p: ReturnType<typeof pane>, hooks: { between?: () => Promise<void>; afterPaste?: () => Promise<void> }) {
+function daemonPrompt(p: ReturnType<typeof pane>, locked: boolean, hooks: { between?: () => Promise<void>; afterPaste?: () => Promise<void> }) {
   let raced = false;
   let delayed = false;
-  return deliverScheduledPrompt('claude', 'inc-1', DAEMON_TEXT, {
+  const run = () => deliverScheduledPrompt('claude', 'inc-1', DAEMON_TEXT, {
     getAgentState: () => ({ slug: 'claude', incarnationId: 'inc-1', status: 'idle', inputQuiet: true, inputRevision: p.bridge.getKeyInputRevision() }),
     isAgentProcessAlive: async () => {
       if (!raced) {
@@ -101,7 +134,8 @@ function daemonPrompt(p: ReturnType<typeof pane>, hooks: { between?: () => Promi
       return true;
     },
     write: (data) => {
-      p.type('daemon', data);
+      p.land('daemon', data);
+      p.bridge.noteInput(data);
       return true;
     },
     delay: async () => {
@@ -110,27 +144,25 @@ function daemonPrompt(p: ReturnType<typeof pane>, hooks: { between?: () => Promi
       await hooks.afterPaste?.();
     },
   });
+  return locked ? p.locks.runLocked('sess-1', 'daemon:scheduled prompt', PANE_LOCK_DAEMON_WAIT_MS, run).then((r) => r ?? 'busy') : run();
 }
 
-describe('delivery order: main and a daemon writer on one pane (no shared lock)', () => {
+/** Let the other delivery reach its wait for the lock. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+const MAIN_SEND = ['sess-1', MAIN_TEXT, 'Claude Code', { senderTaskIds: ['t-1'] }] as const;
+
+describe('delivery order with no lock both take (an older daemon)', () => {
   it("main's delivery lands inside the daemon's check-to-write gap: the daemon pastes after it and withholds its Enter", async () => {
     const p = pane();
-    const main = mainDelivery(p);
+    const main = mainDelivery(p, { held: false, why: 'unsupported', detail: 'Unknown method' });
     let mainResult: unknown;
-    const daemonResult = await daemonPrompt(p, {
+    const daemonResult = await daemonPrompt(p, false, {
       between: async () => {
-        mainResult = await main.gatedSubmit('sess-1', MAIN_TEXT, 'Claude Code', { senderTaskIds: ['t-1'] });
+        mainResult = await main.gatedSubmit(...MAIN_SEND);
       },
     });
-    // Main's text went in whole and was submitted.
     expect(mainResult).toEqual({ ok: true });
-    // The daemon then pasted into the box and, its revision proof broken, kept its Enter back.
     expect(daemonResult).toBe('error');
-    expect(p.writes.map(([who, data]) => [who, data.includes(MAIN_TEXT) ? 'MAIN' : data.includes(DAEMON_TEXT) ? 'DAEMON' : JSON.stringify(data)])).toEqual([
-      ['main', 'MAIN'],
-      ['main', '"\\r"'],
-      ['daemon', 'DAEMON'],
-    ]);
     // What is left: the scheduled prompt sits unsent in the input box.
     expect(p.box).toEqual({ text: DAEMON_TEXT, submitted: [MAIN_TEXT] });
     p.bridge.cleanup();
@@ -138,11 +170,11 @@ describe('delivery order: main and a daemon writer on one pane (no shared lock)'
 
   it("main's delivery arrives while the daemon's paste waits for its Enter: main sees the box taken and writes nothing; the daemon submits", async () => {
     const p = pane();
-    const main = mainDelivery(p);
+    const main = mainDelivery(p, 'none');
     let mainResult: { ok: boolean; reason?: string; pasted?: boolean } | undefined;
-    const daemonResult = await daemonPrompt(p, {
+    const daemonResult = await daemonPrompt(p, false, {
       afterPaste: async () => {
-        mainResult = await main.gatedSubmit('sess-1', MAIN_TEXT, 'Claude Code', { senderTaskIds: ['t-1'] }) as typeof mainResult;
+        mainResult = await main.gatedSubmit(...MAIN_SEND) as typeof mainResult;
       },
     });
     expect(mainResult).toMatchObject({ ok: false, reason: 'input_mode' });
@@ -150,5 +182,75 @@ describe('delivery order: main and a daemon writer on one pane (no shared lock)'
     expect(daemonResult).toBe('sent');
     expect(p.box).toEqual({ text: '', submitted: [DAEMON_TEXT] });
     p.bridge.cleanup();
+  });
+});
+
+describe("delivery order under the daemon's per-pane lock", () => {
+  it("main's delivery in the daemon writer's check-to-write gap waits for it: both are submitted, one after the other", async () => {
+    const p = pane();
+    const main = mainDelivery(p, 'shared');
+    let mainRun: Promise<unknown> | undefined;
+    const daemonResult = await daemonPrompt(p, true, {
+      between: async () => {
+        mainRun = main.gatedSubmit(...MAIN_SEND);
+        await settle();
+      },
+    });
+    expect(daemonResult).toBe('sent');
+    expect(await mainRun).toEqual({ ok: true });
+    expect(p.box).toEqual({ text: '', submitted: [DAEMON_TEXT, MAIN_TEXT] });
+    // Main wrote only under the lock, never through the session pipe.
+    expect(p.writes.filter(([who]) => who === 'main')).toEqual([]);
+    p.bridge.cleanup();
+  });
+
+  it("main's delivery during the daemon's submit delay waits too", async () => {
+    const p = pane();
+    const main = mainDelivery(p, 'shared');
+    let mainRun: Promise<unknown> | undefined;
+    const daemonResult = await daemonPrompt(p, true, {
+      afterPaste: async () => {
+        mainRun = main.gatedSubmit(...MAIN_SEND);
+        await settle();
+      },
+    });
+    expect(daemonResult).toBe('sent');
+    expect(await mainRun).toEqual({ ok: true });
+    expect(p.box).toEqual({ text: '', submitted: [DAEMON_TEXT, MAIN_TEXT] });
+    p.bridge.cleanup();
+  });
+
+  it('a daemon writer arriving while main holds the pane waits for main, then goes', async () => {
+    const p = pane();
+    const main = mainDelivery(p, 'shared');
+    const token = await p.locks.acquire('sess-1', { key: `main:${CLIENT}`, clientId: CLIENT, nonce: 'held' }, 0);
+    const daemonRun = daemonPrompt(p, true, {});
+    await settle();
+    expect(p.writes).toEqual([]);
+    p.locks.release('sess-1', token as string);
+    expect(await daemonRun).toBe('sent');
+    expect(await main.gatedSubmit(...MAIN_SEND)).toEqual({ ok: true });
+    expect(p.box.submitted).toEqual([DAEMON_TEXT, MAIN_TEXT]);
+    p.bridge.cleanup();
+  });
+});
+
+describe("main when the daemon's lock cannot be taken", () => {
+  it('an older daemon (Unknown method): delivered on main\'s own lock, through the session pipe', async () => {
+    const p = pane();
+    const main = mainDelivery(p, { held: false, why: 'unsupported', detail: 'Unknown method: daemon.session.deliveryLockV1' });
+    expect(await main.gatedSubmit(...MAIN_SEND)).toEqual({ ok: true });
+    expect(p.writes.every(([who]) => who === 'main')).toBe(true);
+    p.bridge.cleanup();
+  });
+
+  it('a lock that answered busy, or did not answer in time: nothing written, never a silent run on main\'s lock alone', async () => {
+    for (const [why, reason] of [['busy', 'fresh_context_busy'], ['unavailable', 'gate_unavailable']] as const) {
+      const p = pane();
+      const main = mainDelivery(p, { held: false, why, detail: 'x' });
+      expect(await main.gatedSubmit(...MAIN_SEND)).toMatchObject({ ok: false, reason });
+      expect(p.writes).toEqual([]);
+      p.bridge.cleanup();
+    }
   });
 });

@@ -111,7 +111,7 @@ export interface FreshContextProbe {
   readScreen: () => Promise<string>;
   /** The latest SessionStart hook main received for this pane. */
   readSessionStart: () => SessionStartReceipt | undefined;
-  write: (data: string) => void;
+  write: (data: string) => void | Promise<void>;
   /**
    * The caller's own check, as the last await before the command is typed
    * (`command`) and before its Enter (`enter`). It throws to stop: before the
@@ -373,7 +373,7 @@ export async function runFreshContext(
     const screen = await probe.readScreen();
     if (!screen) return 'unreadable';
     if (!squash(cursorRow(screen)).endsWith(squash(command))) return 'not-shown';
-    probe.write('\x7f'.repeat(command.length));
+    await probe.write('\x7f'.repeat(command.length));
     return 'erased';
   };
   const erase = async (reason: string, result: FreshContextReply['freshContext'] = 'skipped_busy'): Promise<FreshContextReply> => {
@@ -391,7 +391,7 @@ export async function runFreshContext(
     return skip(result, `${reason}; ${erased === 'erased' ? 'it was erased' : 'it was not shown at the cursor, so nothing was erased'}`);
   };
   await probe.verify?.('command', command);
-  probe.write(command);
+  await probe.write(command);
   let placement: ReturnType<typeof commandOnCursorRow> = 'absent';
   const echoDeadline = now() + echoTimeoutMs;
   while (placement === 'absent' && now() < echoDeadline) {
@@ -453,7 +453,7 @@ export async function runFreshContext(
       'timeout',
     );
   }
-  probe.write('\r');
+  await probe.write('\r');
   const enterAt = now();
   const revisionAfterEnter = revision(state) + 2;
   const deadline = enterAt + timeoutMs;

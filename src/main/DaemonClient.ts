@@ -115,6 +115,9 @@ function isNotFirstParty(err: unknown): boolean {
  *   'disconnected'   — daemon control pipe disconnected
  *   'event'          — DaemonEvent from daemon broadcast
  */
+/** On top of a lock acquire's own wait: the round trip, before the reply counts as lost. */
+const PANE_LOCK_RPC_MARGIN_MS = 2_000;
+
 export class DaemonClient extends EventEmitter {
   private controlPipe: net.Socket | null = null;
   private sessionPipes: Map<string, net.Socket> = new Map();
@@ -1392,6 +1395,54 @@ export class DaemonClient extends EventEmitter {
       // The daemon may have accepted part of the occurrence before the control
       // reply was lost. Consume it as error; automatic retry could duplicate.
       return 'error';
+    }
+  }
+
+  /**
+   * The pane's delivery lock (daemon/paneDeliveryLock.ts), waiting at most
+   * `waitMs` on the daemon. `unsupported`: an older daemon without it. A lost
+   * reply may have left a grant standing: it is released by `nonce`.
+   */
+  async acquirePaneLock(id: string, nonce: string, waitMs: number): Promise<
+    { held: true; token: string } | { held: false; why: 'unsupported' | 'busy' | 'unavailable'; detail: string }
+  > {
+    if (!this.isConnected) return { held: false, why: 'unavailable', detail: 'the background service is not connected' };
+    try {
+      const r = await this.rpc('daemon.session.deliveryLockV1', { id, nonce, waitMs }, { timeoutMs: waitMs + PANE_LOCK_RPC_MARGIN_MS }) as
+        { ok?: unknown; token?: unknown; busy?: unknown; holder?: unknown; error?: unknown } | null;
+      if (r?.ok === true && typeof r.token === 'string') return { held: true, token: r.token };
+      if (r?.busy === true) {
+        return { held: false, why: 'busy', detail: typeof r.holder === 'string' ? `held by ${r.holder}` : 'held by another delivery' };
+      }
+      return { held: false, why: 'unavailable', detail: typeof r?.error === 'string' ? r.error : 'refused' };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('Unknown method')) return { held: false, why: 'unsupported', detail: message };
+      this.releasePaneLock(id, { nonce });
+      return { held: false, why: 'unavailable', detail: message };
+    }
+  }
+
+  /** Give the pane's delivery lock back, by token or by an acquire's nonce. Fire-and-forget. */
+  releasePaneLock(id: string, by: { token: string } | { nonce: string }): void {
+    if (!this.isConnected) return;
+    void this.rpc('daemon.session.deliveryUnlockV1', { id, ...by }).catch(() => undefined);
+  }
+
+  /**
+   * A delivery write under the pane's lock: the daemon writes only while
+   * `token` holds it. `uncertain`: the reply was lost, so the bytes may have
+   * reached the pane.
+   */
+  async writeHeld(id: string, token: string, data: string): Promise<{ ok: true } | { ok: false; uncertain: boolean; detail: string }> {
+    if (!this.isConnected) return { ok: false, uncertain: false, detail: 'the background service is not connected' };
+    try {
+      const r = await this.rpc('daemon.session.writeHeldV1', { id, token, data }) as { ok?: unknown; error?: unknown } | null;
+      if (r?.ok === true) return { ok: true };
+      const why = typeof r?.error === 'string' ? r.error : 'refused';
+      return { ok: false, uncertain: false, detail: why === 'not held' ? "the pane's delivery lock was no longer held" : why };
+    } catch (error) {
+      return { ok: false, uncertain: true, detail: error instanceof Error ? error.message : String(error) };
     }
   }
 

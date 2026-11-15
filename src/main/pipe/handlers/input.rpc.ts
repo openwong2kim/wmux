@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { BrowserWindow } from 'electron';
 import { getDeliveryCheck, registerDeliveryCheck } from '../deliveryGuards';
 import { refuseHandoffMarker } from '../handoffMarkerTripwire';
@@ -1349,9 +1350,18 @@ export function withRegisteredCheck(guard: DeliveryGuard, key: string | undefine
  * that `input.send` uses. A receipt that never comes is still `ok`: the text
  * may have been submitted, and pasting it again would duplicate it.
  */
+/**
+ * A delivery write whose outcome is unknown (its reply was lost): the bytes
+ * may have reached the pane, so it counts as written.
+ */
+export class HeldWriteUncertain extends Error {}
+
+/** How a gated delivery writes to its pane: the session pipe, or under the pane's lock. */
+export type DeliveryWrite = (ptyId: string, data: string) => void | Promise<void>;
+
 export async function gatedPasteSubmit(
   gate: ApprovalInputGate,
-  write: (ptyId: string, data: string) => void,
+  write: DeliveryWrite,
   ptyId: string,
   text: string,
   agent: string | null | undefined,
@@ -1425,21 +1435,26 @@ export async function gatedPasteSubmit(
   try {
     // Bracketed only where the pane turned the mode on: elsewhere the markers
     // would arrive as keys.
-    write(ptyId, bracketed ? formatBracketedPastePayload(typed) : typed);
+    await write(ptyId, bracketed ? formatBracketedPastePayload(typed) : typed);
   } catch (err) {
-    return { ok: false, reason: 'write_failed', detail: err instanceof Error ? err.message : String(err) };
+    const detail = err instanceof Error ? err.message : String(err);
+    return err instanceof HeldWriteUncertain
+      ? { ok: false, reason: 'write_failed', detail, pasted: true, cleared: false, pasteShown: false }
+      : { ok: false, reason: 'write_failed', detail };
   }
   // A large paste needs time to drain before the Enter.
   await sleep(pasteSubmitDelayMs(agent ?? null, typed.length));
   /** Not submitted; take the text back out (Ctrl+U empties an agent's
-   *  composer or a shell's line — best effort, reported as such). */
-  const takeBack = (refusal: GatedSubmitRefusal): GatedSubmitRefusal => {
+   *  composer or a shell's line — best effort, reported as such). Only under
+   *  the pane's delivery lock: once that ended, the write is refused and the
+   *  text is left as it is. */
+  const takeBack = async (refusal: GatedSubmitRefusal): Promise<GatedSubmitRefusal> => {
     let cleared = false;
     try {
-      write(ptyId, '\x15');
+      await write(ptyId, '\x15');
       cleared = true;
     } catch {
-      /* the pane went away */
+      /* the pane went away, or its lock ended */
     }
     return { ...refusal, pasted: true, cleared, pasteShown: true };
   };
@@ -1489,7 +1504,7 @@ export async function gatedPasteSubmit(
     return agentAtEnter.pasteShown ? takeBack(regranted) : leftUnsent(regranted);
   }
   try {
-    write(ptyId, isMultilinePtyPayload(typed) ? '\r\r' : '\r');
+    await write(ptyId, isMultilinePtyPayload(typed) ? '\r\r' : '\r');
   } catch (err) {
     return { ok: false, reason: 'write_failed', detail: err instanceof Error ? err.message : String(err), pasted: true };
   }
@@ -1509,7 +1524,7 @@ export async function gatedPasteSubmit(
         const agentAgain = verifyAgent ? await verifyAgent(enterCheck) : null;
         if (agentAgain && !agentAgain.ok) throw new EnterRetryRefused(`${agentAgain.refusal.detail}; the retried Enter was not sent.`);
         if (agentAgain && !sameGrant(agentAgain)) throw new EnterRetryRefused(`${regranted.detail}; the retried Enter was not sent.`);
-        write(ptyId, '\r');
+        await write(ptyId, '\r');
       },
       { enterAt: now(), sleep, now },
     );
@@ -2623,6 +2638,51 @@ export function registerInputRpc(
     // #2398 — no pipe took it: never answered as delivered.
     if (dc.writeToSession(ptyId, data) === false) throw new Error(`delivery: the session "${ptyId}" has no open pipe — nothing was delivered`);
   };
+
+  let localOnlyLogged = false;
+  /**
+   * `run` under the daemon's delivery lock on the pane (daemon/
+   * paneDeliveryLock.ts), waiting at most `waitMs` for it: every write it
+   * makes goes through writeHeld, which the daemon refuses once the hold has
+   * ended. Taken after main's own chain and released after `run`. An older
+   * daemon (or a client without the lock) runs on main's own lock alone, as
+   * before; a lock that cannot be taken in time writes nothing.
+   */
+  const withDaemonPaneLock = async (
+    ptyId: string,
+    waitMs: number,
+    run: (write: DeliveryWrite) => Promise<GatedSubmitResult>,
+  ): Promise<GatedSubmitResult> => {
+    const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
+    // A local pane, a disconnected client (writeToPty refuses), or a client
+    // shape without the lock.
+    if (!dc?.isConnected || typeof dc.acquirePaneLock !== 'function') return run(writeToPty);
+    const held = await dc.acquirePaneLock(ptyId, randomUUID(), waitMs);
+    if (!held.held) {
+      if (held.why === 'unsupported') {
+        if (!localOnlyLogged) {
+          localOnlyLogged = true;
+          logLine('[delivery] the background service has no pane delivery lock (an older version): deliveries hold main\'s own lock only');
+        }
+        return run(writeToPty);
+      }
+      return held.why === 'busy'
+        ? { ok: false, reason: 'fresh_context_busy', detail: `delivery: another delivery is being written to the pane (${held.detail}), so nothing was written` }
+        : { ok: false, reason: 'gate_unavailable', detail: `delivery: the pane's delivery lock could not be taken (${held.detail}), so nothing was written` };
+    }
+    const write: DeliveryWrite = async (id, data) => {
+      noteInterruptInput?.(id, data);
+      const result = await dc.writeHeld(id, held.token, data);
+      if (result.ok) return;
+      if (result.uncertain) throw new HeldWriteUncertain(`delivery: the write's reply was lost (${result.detail}); it may have reached the pane`);
+      throw new Error(`delivery: ${result.detail}; nothing more was written`);
+    };
+    try {
+      return await run(write);
+    } finally {
+      dc.releasePaneLock(ptyId, { token: held.token });
+    }
+  };
   /**
    * The hand-off's wait and guard. A pane whose agent main cannot read (a
    * local pty, no daemon) is refused: its agent cannot be verified. The wait
@@ -2936,13 +2996,18 @@ export function registerInputRpc(
     // check before the paste through its Enter and receipt, or its refusal
     // and take-back, so the next one checks the box only after that. A
     // hand-off's wait for the person to stop typing (above) stays outside.
+    // Main's own chain first, then the daemon's lock on the pane, which the
+    // daemon's writers take too, out of the same wait.
+    const lockFrom = (deps.now ?? Date.now)();
+    const underPaneLock = (run: (write: DeliveryWrite) => Promise<GatedSubmitResult>): Promise<GatedSubmitResult> =>
+      withDaemonPaneLock(ptyId, Math.max(0, lockWaitMs - ((deps.now ?? Date.now)() - lockFrom)), run);
     if (!opts?.newTask) {
       return withPaneDeliveryLock(
         ptyId,
         async () => {
           const late = await onLocked();
           if (late) return late;
-          return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt);
+          return underPaneLock((write) => gatedPasteSubmit(gate, write, ptyId, text, agent, deps.sleep, undefined, guard, receipt));
         },
         lockWaitMs,
       ).then(noteUnsent).catch(paneBusy);
@@ -2959,7 +3024,7 @@ export function registerInputRpc(
       async () => {
         const late = await onLocked();
         if (late) return late;
-        return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
+        return underPaneLock((write) => gatedPasteSubmit(gate, write, ptyId, text, agent, deps.sleep, async () => {
           const before = opts.guardKey ? getDeliveryCheck(opts.guardKey)?.beforeFreshContext : undefined;
           const why = before ? await before() : null;
           if (why) throw new Error(`delivery: ${why}; nothing was written`);
@@ -2977,8 +3042,8 @@ export function registerInputRpc(
             // The step's own keys (its command, Enter or erase) are not the
             // person typing: the guard counts each, one key apiece, as the
             // step itself verifies.
-            (data) => {
-              writeToPty(ptyId, data);
+            async (data) => {
+              await write(ptyId, data);
               noteOwnWrite();
             },
             keepContext,
@@ -2990,7 +3055,7 @@ export function registerInputRpc(
               if (again.input === 'pointer') throw new DeliveryRefused({ ok: false, reason: 'agent_changed', detail: 'delivery: the target agent changed during the fresh-context step' });
             },
           );
-        }, guard, receipt);
+        }, guard, receipt));
       },
       lockWaitMs,
     ).then(noteUnsent).catch(paneBusy);
