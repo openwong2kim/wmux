@@ -205,10 +205,15 @@ export class SpawnOutgoingStore {
     return t ? structuredClone(t) : undefined;
   }
 
-  /** What `hostId` says this PC may ask for; an older version than the one kept changes nothing. */
+  /**
+   * What `hostId` says this PC may ask for; an older version than the one
+   * kept, or the same one with the same content, changes nothing. The same
+   * version with other content is taken: that PC added (or dropped) its
+   * folders' origin tags without a policy change.
+   */
   setTargets(hostId: HostId, targets: A2aSpawnTargetsV1): boolean {
     const had = this.targetsBy.get(hostId);
-    if (had && had.version >= targets.version) return false;
+    if (had && (had.version > targets.version || (had.version === targets.version && JSON.stringify(had) === JSON.stringify(targets)))) return false;
     if (!this.writable) throw storeUnavailable(SPAWN_OUTGOING_FILE);
     const next = new Map(this.targetsBy);
     next.set(hostId, structuredClone(targets));

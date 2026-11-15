@@ -66,6 +66,9 @@ import {
   type LedgerEntry,
   type LedgerGateResult,
   type LedgerRemote,
+  type LedgerRemotePool,
+  LEDGER_POOL_ATTEMPTS_MAX,
+  LEDGER_POOL_REFUSALS_MAX,
   type LedgerRemoteWaiting,
   type LedgerStatus,
 } from '../../shared/ledger';
@@ -330,6 +333,27 @@ export function copyRemote(r: unknown): LedgerRemote | null {
     ...(copyWaiting(o.waiting) ? { waiting: copyWaiting(o.waiting)! } : {}),
     ...(typeof o.goneSeenAt === 'number' && Number.isFinite(o.goneSeenAt) && o.goneSeenAt > 0 ? { goneSeenAt: o.goneSeenAt } : {}),
     ...(typeof o.reportId === 'string' && A2A_REMOTE_MESSAGE_ID_RE.test(o.reportId) ? { reportId: o.reportId } : {}),
+    ...(copyPool(o.pool) ? { pool: copyPool(o.pool)! } : {}),
+  };
+}
+
+const epochMs = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
+
+function copyPool(p: unknown): LedgerRemotePool | null {
+  if (!p || typeof p !== 'object') return null;
+  const o = p as Record<string, unknown>;
+  if (typeof o.attempt !== 'number' || !Number.isInteger(o.attempt) || o.attempt < 0 || o.attempt > LEDGER_POOL_ATTEMPTS_MAX) return null;
+  const refusals = Array.isArray(o.refusals)
+    ? o.refusals.flatMap((x: unknown) => {
+      const r = x && typeof x === 'object' ? x as { hostId?: unknown; at?: unknown } : null;
+      return r && typeof r.hostId === 'string' && UUID_RE.test(r.hostId) && epochMs(r.at) ? [{ hostId: r.hostId, at: r.at }] : [];
+    }).slice(-LEDGER_POOL_REFUSALS_MAX)
+    : [];
+  return {
+    attempt: o.attempt,
+    ...(refusals.length > 0 ? { refusals } : {}),
+    ...(epochMs(o.heldSince) ? { heldSince: o.heldSince } : {}),
+    ...(typeof o.rootHash === 'string' && /^[0-9a-f]{32}$/.test(o.rootHash) ? { rootHash: o.rootHash } : {}),
   };
 }
 
@@ -803,10 +827,13 @@ export class TaskLedger {
     id: string,
     patch: Partial<Omit<LedgerRemote, 'hostId' | 'spawnId' | 'homeRepo'>>,
     text?: { summary: string; expectedRev: number },
+    /** Only while the row is still in this state on this spawn id: otherwise it is left as it is. */
+    expect?: { state: LedgerRemote['state']; spawnId: string },
   ): Promise<LedgerEntry | null> {
     return this.serialize(async () => {
       const entry = this.entries.get(id);
       if (!entry?.remote) return null;
+      if (expect && (entry.remote.state !== expect.state || entry.remote.spawnId !== expect.spawnId)) return entry;
       // The home repository is the one fanout_start recorded: no patch moves it.
       const remote = copyRemote({ ...entry.remote, ...patch, homeRepo: entry.remote.homeRepo });
       if (!remote) throw new Error(`ledger: the remote record of task ${id} would not be valid`);
@@ -818,6 +845,38 @@ export class TaskLedger {
       const updated: LedgerEntry = this.redact({
         ...entry, remote, ...(summary !== undefined ? { summary } : {}), rev: entry.rev + 1, updatedAt: this.now(), updatedBy: SYSTEM_ACTOR(),
       });
+      await this.append({ op: 'entry', entry: updated });
+      this.entries.set(id, updated);
+      return updated;
+    });
+  }
+
+  /** A held pool row (`remote.pool`, state `held`, still open) placed on
+   *  another PC: its host, name, spawn id and root id (that PC's id for the
+   *  folder) change and it is `sent` again,
+   *  as one write. Any other row is left as it is: a row with a request out
+   *  is never moved, so a task is asked of one PC at a time. Resolves with
+   *  the row afterwards, or null when it was not moved. */
+  placeRemote(
+    id: string,
+    place: { hostId: string; pc: string; spawnId: string; root: string; attempt: number },
+    /** A row first held at or before this (epoch ms) is past its time: it is not moved. */
+    heldNotBefore?: number,
+  ): Promise<LedgerEntry | null> {
+    return this.serialize(async () => {
+      const entry = this.entries.get(id);
+      const r = entry?.remote;
+      if (!entry || !r?.pool || r.state !== 'held' || !isOpenLedgerStatus(entry.status)) return null;
+      if (place.attempt <= r.pool.attempt || place.attempt > LEDGER_POOL_ATTEMPTS_MAX) return null;
+      if (heldNotBefore !== undefined && r.pool.heldSince !== undefined && r.pool.heldSince <= heldNotBefore) return null;
+      // The new placement starts clean: no code, no link, no waiting from the one before.
+      const remote = copyRemote({
+        hostId: place.hostId, pc: place.pc, spawnId: place.spawnId, root: place.root, state: 'sent',
+        ...(r.requestDigest ? { requestDigest: r.requestDigest } : {}), ...(r.from ? { from: r.from } : {}), ...(r.homeRepo ? { homeRepo: r.homeRepo } : {}),
+        pool: { ...r.pool, attempt: place.attempt },
+      });
+      if (!remote) throw new Error(`ledger: the remote record of task ${id} would not be valid`);
+      const updated: LedgerEntry = this.redact({ ...entry, remote, rev: entry.rev + 1, updatedAt: this.now(), updatedBy: SYSTEM_ACTOR() });
       await this.append({ op: 'entry', entry: updated });
       this.entries.set(id, updated);
       return updated;

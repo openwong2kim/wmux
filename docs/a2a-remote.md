@@ -146,12 +146,16 @@ is the one that will accept connections, and PC A is the one that joins it.
 7. **Send work.** Agents in the linked pane's workspace on PC A now see the
    remote pane in `a2a_discover` under an alias of the form
    `<PC>/<workspace>/<pane>`. The pane part is the pane's header name on
-   PC B: its label if someone renamed it, otherwise its automatic name, for
-   example `office-pc/api-server/w1-2(claude)`. The names are taken when the
-   link is made; renaming a pane later does not change the alias. The entry
+   PC B: its label if someone renamed it, otherwise its automatic name
+   without the agent running in it, for example `office-pc/api-server/w1-2`
+   (not `w1-2(claude)`). The names are taken when the link is made; renaming
+   a pane later does not change the alias. A name that still carries the
+   agent, as earlier versions listed it, keeps working as a target. The entry
    also carries an id of the form `remote:<linkId>`, which works as a
    target too. If two links would have the same alias, the newer one gets
-   `#2`, `#3` and so on.
+   `#2`, `#3` and so on. A send to a name that matches nothing answers
+   with this PC's workspaces and, after them, the remote panes
+   `a2a_discover` lists for the sender's workspace.
 
    Until a pane is linked, `a2a_discover` lists the paired PC under
    `remotePeers` instead (the field is left out when there is none): its
@@ -205,6 +209,13 @@ state on it, whichever way the message travelled. A message the joiner
 refuses on the server's connection is told back with its acknowledgement
 (feature `stream-refuse.1`); with an older build on either side the
 server is not told, as before.
+
+The refusal is stored before the task is updated. If wmux stops between
+the two, or the task update cannot be written, the update is made again
+when wmux starts and on each regular check after that, once only. It is not
+made if the task has changed since the refusal (a later message or state,
+or the task was reopened). After a day without success it is dropped, with
+a line in the log naming the task and the PC.
 
 ## Delivery, receipts and held work
 
@@ -313,6 +324,22 @@ it is linked to, the way it briefs a staff pane on this PC:
 `fanout_start` with `pc` and `root` runs every task of one fan-out on a
 paired PC instead of in worktrees here. `remote_spawn` with no `pc` lists the
 PCs and the folder ids (`root`) each one allows.
+
+With `pc: "any"`, wmux places each task itself: on the online paired PC that
+offers that folder for Claude and has the fewest of this PC's open tasks
+(tasks other PCs sent to it are not seen). A task that PC answers full is
+held, with no request out, and the same call again places it on a PC with
+room; a task held for an hour fails. A paired PC whose name is `any` is
+reached by its host id.
+
+Each PC names its folders itself, so `root` is the id one PC gave, and the
+pool finds the same folder on the other PCs by its git origin: a PC that
+allows a folder of the same repository is a candidate, whatever its id or
+label. **A pool across PCs needs the folder to have a git origin.** A folder
+with none is found only under that same id. PCs send each other a tag of
+the origin, keyed per requester, never the remote URL. An older wmux on
+either side does not send or read the tag, and its folders are matched by
+id alone.
 
 - **What runs where.** Each task is a mission (with its channel) and a task
   row on this PC, plus one start request to the other PC. The other PC

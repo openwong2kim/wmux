@@ -3902,7 +3902,8 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         : undefined;
     if (!target) {
       const available = store.workspaces.map((w) => w.name).join(', ');
-      return { error: `a2a.task.send: target "${to}" not found. Available: ${available}` };
+      // targetNotFound: main adds the remote panes linked from the caller's workspace, then drops the flag.
+      return { error: `a2a.task.send: target "${to}" not found. Available: ${available}`, targetNotFound: true };
     }
     // The same-workspace self-guard moved BELOW pane-address resolution (see
     // decideSameWsSend) so a precise sibling-pane address is honored. A same-ws

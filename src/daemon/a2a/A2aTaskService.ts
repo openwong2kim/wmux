@@ -1149,11 +1149,14 @@ export class A2aTaskService {
     forced: 'remote_held_rejected' | 'remote_link_ended' | 'remote_refused';
     /** A task this PC sent: the other PC is owed a cancel once it has failed here (recorded in the same write). */
     peerCanceled?: true;
+    /** A refusal applied again (delivery `reconcileRefusals`): a task that changed after this time has moved on and is left as it is. */
+    unchangedSince?: string;
   }): Promise<{ ok: true; task: Task; failed: boolean } | OpErr> {
     const res = await this.withTaskLock<{ ok: true; task: Task; failed: boolean } | OpErr>(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
       if (!task || !remoteMarkerOf(task)) return { ok: false, error: `a2a.remote.fail: remote task not found: ${input.taskId}` };
       if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: true, task, failed: false };
+      if (input.unchangedSince !== undefined && task.metadata.updatedAt > input.unchangedSince) return { ok: true, task, failed: false };
       if (remoteMarkerOf(task)?.reported !== undefined) return { ok: true, task, failed: false };
       const payload: A2aTaskTransitionPayload = {
         kind: 'task.transition',

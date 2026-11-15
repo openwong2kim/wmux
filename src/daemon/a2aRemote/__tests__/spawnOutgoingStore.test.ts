@@ -89,3 +89,19 @@ describe('SpawnOutgoingStore: the asker\'s label', () => {
     }
   });
 });
+
+describe('SpawnOutgoingStore: targets', () => {
+  it('keeps a newer version, and the same version only when its content differs', () => {
+    const store = new SpawnOutgoingStore({ dir: path.join(os.tmpdir(), 'unused'), write: () => undefined, scheduleHarden: () => undefined });
+    const t = (version: number, originKeyHash?: string) => ({
+      v: 1 as const, version, roots: [{ id: 'web', label: 'Web', ...(originKeyHash ? { originKeyHash } : {}) }], agents: ['claude' as const],
+    });
+    expect(store.setTargets(B, t(2))).toBe(true);
+    expect(store.setTargets(B, t(1))).toBe(false);
+    expect(store.setTargets(B, t(2))).toBe(false);
+    // The other PC added its folders' origin tags without a policy change.
+    expect(store.setTargets(B, t(2, 'a'.repeat(32)))).toBe(true);
+    expect(store.targets(B)).toEqual(t(2, 'a'.repeat(32)));
+    expect(store.setTargets(B, t(2, 'a'.repeat(32)))).toBe(false);
+  });
+});

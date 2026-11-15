@@ -503,16 +503,41 @@ export function registerA2aRpc(
   const handOuts = (): Pick<HandOutStore, 'get' | 'reserve' | 'release'> => opts.handOuts ?? getHandOutStore();
 
   /**
-   * Active links `to` names EXACTLY (no trimming, no partial match): by alias,
-   * or by the `remote:<linkId>` id a2a.discover lists for the remote end.
+   * The remote ends a2a.discover lists for a caller in `workspaceId`: the links of that workspace, every link when
+   * none is named. A remote pane is addressable only from its linked local pane.
    */
-  async function remoteTargetsFor(to: unknown): Promise<A2aRemoteTarget[]> {
-    if (!remote || typeof to !== 'string' || (!to.includes('/') && !isRemoteWorkspaceId(to))) return [];
+  function remoteTargetsOfWorkspace(targets: A2aRemoteTarget[], workspaceId: string): A2aRemoteTarget[] {
+    return targets.filter((t) => !workspaceId || t.local.workspaceId === workspaceId);
+  }
+
+  /**
+   * Active links `to` names EXACTLY (no trimming, no partial match): by alias,
+   * or by the `remote:<linkId>` id a2a.discover lists for the remote end
+   * (`named`); and those whose alias in an earlier build (with the pane's
+   * agent suffix) was `to` (`legacy`), so a name an agent already learned
+   * still reaches its link.
+   */
+  async function remoteTargetsFor(to: unknown): Promise<{ named: A2aRemoteTarget[]; legacy: A2aRemoteTarget[]; all?: A2aRemoteTarget[] }> {
+    const none = { named: [], legacy: [] };
+    if (!remote || typeof to !== 'string' || (!to.includes('/') && !isRemoteWorkspaceId(to))) return none;
     try {
-      return (await remote.listTargets()).filter((t) => t.alias === to || remoteWorkspaceId(t.linkId) === to);
+      const all = await remote.listTargets();
+      return {
+        named: all.filter((t) => t.alias === to || remoteWorkspaceId(t.linkId) === to),
+        legacy: all.filter((t) => t.legacyAlias === to),
+        all,
+      };
     } catch {
-      return [];
+      return none;
     }
+  }
+
+  /** Every remote target, or none once `PEER_HINTS_DEADLINE_MS` passes: for a hint that must not hold up its answer. */
+  async function remoteTargetsWithin(): Promise<A2aRemoteTarget[]> {
+    if (!remote) return [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<A2aRemoteTarget[]>((resolve) => { timer = setTimeout(() => resolve([]), PEER_HINTS_DEADLINE_MS); });
+    return Promise.race([remote.listTargets().catch(() => [] as A2aRemoteTarget[]), late]).finally(() => clearTimeout(timer));
   }
 
   /**
@@ -522,11 +547,12 @@ export function registerA2aRpc(
    */
   async function sendRemoteTask(
     params: Record<string, unknown>,
-    matches: A2aRemoteTarget[],
+    found: { named: A2aRemoteTarget[]; legacy: A2aRemoteTarget[] },
     ctx: RpcContext | undefined,
     handOutId: string | undefined,
   ): Promise<unknown> {
     const alias = params.to as string;
+    const matches = found.named.length > 0 ? found.named : found.legacy;
     if (params.execute === true) return { error: 'a2a.task.send: execute is not available for a remote pane (message only)' };
     // A task held on its blockers waits on this PC's daemon record; a task to
     // another PC has no such hold yet (v1).
@@ -586,7 +612,10 @@ export function registerA2aRpc(
     if (caller.kind !== 'resolved') {
       return { error: `a2a.task.send: "${alias}" is a remote pane; sending to it needs the caller's verified pane` };
     }
-    const link = matches.find((t) => t.kind !== 'brain' && t.local.workspaceId === workspaceId && t.local.paneId === caller.paneId);
+    // An earlier build's name for the caller's own link, now another link's
+    // current alias, still names the caller's link.
+    const ownLink = (t: A2aRemoteTarget): boolean => t.kind !== 'brain' && t.local.workspaceId === workspaceId && t.local.paneId === caller.paneId;
+    const link = matches.find(ownLink) ?? found.legacy.find(ownLink);
     if (!link) return { error: `a2a.task.send: this pane is not linked to "${alias}"` };
     if (!link.allowOutbound) return { error: `a2a.task.send: the link to "${alias}" does not allow sending from this side` };
     // A company's CEO briefs a seat on another PC as one here: the brief is
@@ -1340,10 +1369,7 @@ export function registerA2aRpc(
       return res;
     }
     const [targets, remotePeers] = await Promise.all([remote.listTargets().catch(() => [] as A2aRemoteTarget[]), peersP]);
-    // A remote pane is addressable only from its linked local pane: list the
-    // links of the caller's workspace (every link when no workspace is named).
-    const entries = targets
-      .filter((t) => !ws || t.local.workspaceId === ws)
+    const entries = remoteTargetsOfWorkspace(targets, ws)
       .map((t) => ({
         name: t.alias,
         description: t.kind === 'brain'
@@ -2033,9 +2059,12 @@ export function registerA2aRpc(
       if (params.execute === true) return { error: 'a2a.task.send: execute is only supported for new tasks' };
       return replyRemote('a2a.task.send', params.taskId, params, ctx);
     }
+    // The remote targets this send already read, for a "not found" answer (below).
+    let readTargets: A2aRemoteTarget[] | undefined;
     if (!params.taskId) {
-      const matches = await remoteTargetsFor(params.to);
-      if (matches.length > 0) return sendRemoteTask(params, matches, ctx, handOutId);
+      const found = await remoteTargetsFor(params.to);
+      if (found.named.length > 0 || found.legacy.length > 0) return sendRemoteTask(params, found, ctx, handOutId);
+      readTargets = found.all;
       // A remote end's id never names a local workspace: no active link, no send.
       if (isRemoteWorkspaceId(params.to)) return { error: `a2a.task.send: "${params.to}" is not an active link to another PC` };
     }
@@ -2176,6 +2205,15 @@ export function registerA2aRpc(
           })
         : sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: A2A_PASTE_MAIN_TIMEOUT_MS });
     const result = await Promise.resolve(sending).finally(() => sendRecord?.end());
+    // A name nothing here answers to: the remote panes a2a.discover lists for this workspace are named too.
+    if (isRecord(result) && result.targetNotFound === true) {
+      delete result.targetNotFound;
+      const targets = readTargets ?? await remoteTargetsWithin();
+      // The workspace the renderer resolved the send for (a commander's is pinned to its binding above).
+      const callerWs = typeof sendParams.workspaceId === 'string' ? sendParams.workspaceId : '';
+      const remoteNames = remoteTargetsOfWorkspace(targets, callerWs).map((t) => t.alias);
+      if (remoteNames.length > 0 && typeof result.error === 'string') result.error = `${result.error}; on other PCs: ${remoteNames.join(', ')}`;
+    }
 
     // 데몬 정본 미러-생성(신규 태스크 브랜치에서만 — 렌더러가 task 스냅샷 동반).
     // 실패는 soft-degrade: 이후 전이가 'task not found'로 렌더러 폴백을 탄다.

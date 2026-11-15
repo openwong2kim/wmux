@@ -244,7 +244,7 @@ export class A2aSpawnRequester {
     }
   }
 
-  /** What `hostId` says this PC may ask for (only a newer version is kept). */
+  /** What `hostId` says this PC may ask for (only a newer version, or the same one with other content, is kept). */
   onTargets(hostId: HostId, targets: A2aSpawnTargetsV1): void {
     try {
       if (this.deps.store.setTargets(hostId, targets)) this.deps.broadcast({ type: A2A_SPAWN_OUTGOING_EVENT, hostId });
