@@ -2,6 +2,7 @@ import { ipcMain, dialog, BrowserWindow } from 'electron';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { IPC } from '../../../shared/constants';
+import { wslShareToLinux } from '../../../shared/wslPaths';
 import { wrapHandler } from '../wrapHandler';
 import { resolveAccessiblePath } from './fs.handler';
 
@@ -36,8 +37,10 @@ export function registerToolbarHandlers(): () => void {
     const win = BrowserWindow.fromWebContents(event.sender);
     const opts = {
       properties: ['openDirectory'] as Array<'openDirectory'>,
-      // A caller-supplied start folder (e.g. a WSL share) wins over the last pick.
-      ...(typeof defaultPath === 'string' && defaultPath
+      // A caller-supplied start folder wins over the last pick, but only a WSL
+      // share: any other UNC path would make Windows authenticate over SMB
+      // when the dialog opens (NTLM leak), and the renderer is untrusted.
+      ...(typeof defaultPath === 'string' && wslShareToLinux(defaultPath)
         ? { defaultPath }
         : lastPickedFolder ? { defaultPath: path.dirname(lastPickedFolder) } : {}),
     };
