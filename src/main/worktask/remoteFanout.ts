@@ -104,7 +104,11 @@ export interface RemoteFanoutDeps {
   log?: (line: string) => void;
   /** Injected in tests; default Date.now. */
   now?: () => number;
+  /** How long a pool task may be held (default POOL_HOLD_MAX_MS); see WMUX_TEST_POOL_HOLD_MS. */
+  poolHoldMs?: number;
 }
+
+const holdMsOf = (deps: RemoteFanoutDeps): number => deps.poolHoldMs ?? POOL_HOLD_MAX_MS;
 
 export interface RemoteFanoutRequest {
   /** The caller's own key, and the workspace-scoped key it stands for. */
@@ -410,7 +414,7 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
       const to = pickPoolHost(candidates, deps.ledger.list(), now());
       const attempt = existing.remote.pool.attempt + 1;
       // Held past its time: not placed (the pass below fails it).
-      const moved = to ? await deps.ledger.placeRemote(taskId, { hostId: to.hostId, pc: placeName(to), spawnId: keys.poolSpawnId(k, attempt), attempt }, now() - POOL_HOLD_MAX_MS).catch(() => null) : null;
+      const moved = to ? await deps.ledger.placeRemote(taskId, { hostId: to.hostId, pc: placeName(to), spawnId: keys.poolSpawnId(k, attempt), attempt }, now() - holdMsOf(deps)).catch(() => null) : null;
       if (!moved) {
         tasks.push(resultOf(k, title, deps.ledger.get(taskId) ?? existing, channelId, promptBytes));
         continue;
@@ -479,6 +483,13 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
       // No answer: the request may be stored and on its way. The row stays
       // `sent` (a close withdraws it); the same key again asks again.
       tasks.push({ index: k, title, ok: false, taskId, channelId, spawnId: r.spawnId, state: 'sent', reason: `the request got no answer (${(err as Error).message}); send the same idempotency_key again` });
+      continue;
+    }
+    if (!asked.ok && r.pool && asked.error === 'unavailable') {
+      // This PC could not store or queue it (its request store full, say): a pool task waits held, as for a full PC.
+      const at = now();
+      const back = await deps.ledger.updateRemote(taskId, { state: 'held', pool: { ...r.pool, heldSince: r.pool.heldSince ?? at } }, undefined, { state: 'sent', spawnId: r.spawnId }).catch(() => null);
+      tasks.push(resultOf(k, title, back ?? row, channelId, promptBytes));
       continue;
     }
     if (!asked.ok) {
@@ -571,10 +582,10 @@ async function reconcileOnce(deps: RemoteFanoutDeps): Promise<void> {
       // No request is out for a held row: only its time runs (placing it again is the caller's next poll).
       const since = r.pool?.heldSince ?? row.updatedAt;
       // Only the placement read here: one a poll made meanwhile is left alone.
-      if (isOpenLedgerStatus(row.status) && (deps.now ?? Date.now)() - since >= POOL_HOLD_MAX_MS) {
+      if (isOpenLedgerStatus(row.status) && (deps.now ?? Date.now)() - since >= holdMsOf(deps)) {
         next = await deps.ledger.updateRemote(row.id, { state: 'expired', code: 'pc-full' }, undefined, { state: 'held', spawnId: r.spawnId });
       }
-    } else if (r.pool && rec?.state === 'refused' && rec.code === 'rate-limited' && isOpenLedgerStatus(row.status)) {
+    } else if (r.pool && r.state !== 'expired' && rec?.state === 'refused' && rec.code === 'rate-limited' && isOpenLedgerStatus(row.status)) {
       // That PC is full: the pool task is held, with its request ended, until a later call places it on one with room.
       const at = (deps.now ?? Date.now)();
       const refusals = [...(r.pool.refusals ?? []).filter((f) => f.hostId !== r.hostId), { hostId: r.hostId, at }].slice(-LEDGER_POOL_REFUSALS_MAX);
@@ -588,7 +599,8 @@ async function reconcileOnce(deps: RemoteFanoutDeps): Promise<void> {
       const linkId = asSpawnLinkId(rec.linkId)!;
       const branch = r.branchOnPc ?? await branchOf(linkId, r.spawnId);
       next = await deps.ledger.updateRemote(row.id, { state: 'started', linkId, a2aTaskId: remoteTaskId(linkId, spawnFirstMessageId(linkId)), ...(branch ? { branchOnPc: branch } : {}) });
-    } else if (rec.state !== r.state || rec.code !== r.code) {
+    } else if ((rec.state !== r.state || rec.code !== r.code) && !(r.state === 'expired' && r.code === 'pc-full')) {
+      // A pool task that ran out of time keeps its own reason: the request of its last placement says nothing of it.
       next = await deps.ledger.updateRemote(row.id, { state: rec.state, ...(rec.code ? { code: rec.code } : {}) });
     }
     if (!next?.remote) continue;
@@ -768,12 +780,17 @@ export function remoteTaskReconciler(getDeps: () => RemoteFanoutDeps | null, tim
   let timer: unknown = null;
   const schedule = (deps: RemoteFanoutDeps): void => {
     if (timer !== null) return;
-    const following = deps.ledger.list().some((e) => e.remote?.state === 'started' && isOpenLedgerStatus(e.status));
-    if (!following) return;
+    const open = deps.ledger.list().filter((e) => isOpenLedgerStatus(e.status));
+    const following = open.some((e) => e.remote?.state === 'started');
+    // A held pool task fails at its limit even when nobody calls again: a pass is due by then.
+    const now = (deps.now ?? Date.now)();
+    const holdEnds = open.flatMap((e) => (e.remote?.state === 'held' ? [(e.remote.pool?.heldSince ?? e.updatedAt) + holdMsOf(deps) - now] : []));
+    if (!following && holdEnds.length === 0) return;
+    const delay = Math.max(0, Math.min(REMOTE_FOLLOW_INTERVAL_MS, ...holdEnds));
     timer = timers.set(() => {
       timer = null;
       void run();
-    }, REMOTE_FOLLOW_INTERVAL_MS);
+    }, delay);
   };
   const run = (): Promise<void> => {
     const deps = getDeps();
@@ -835,5 +852,13 @@ export function remoteFanoutDepsOf(getDaemonClient: () => DaemonClient | null): 
     ledger: getTaskLedger(),
     rememberChannel: rememberMissionChannel,
     log: (line) => console.warn(line),
+    ...poolHoldOverride(),
   };
+}
+
+/** Test seam for a live run: WMUX_TEST_POOL_HOLD_MS (a positive integer of ms) shortens the pool hold limit; unset, the limit is POOL_HOLD_MAX_MS. */
+export function poolHoldOverride(): { poolHoldMs?: number } {
+  const raw = process.env['WMUX_TEST_POOL_HOLD_MS'];
+  const ms = raw !== undefined && /^[1-9][0-9]{0,9}$/.test(raw) ? Number(raw) : null;
+  return ms !== null && ms < POOL_HOLD_MAX_MS ? { poolHoldMs: ms } : {};
 }

@@ -314,6 +314,13 @@ it is linked to, the way it briefs a staff pane on this PC:
 paired PC instead of in worktrees here. `remote_spawn` with no `pc` lists the
 PCs and the folder ids (`root`) each one allows.
 
+With `pc: "any"`, wmux places each task itself: on the online paired PC that
+offers that folder for Claude and has the fewest of this PC's open tasks
+(tasks other PCs sent to it are not seen). A task that PC answers full is
+held, with no request out, and the same call again places it on a PC with
+room; a task held for an hour fails. A paired PC whose name is `any` is
+reached by its host id.
+
 - **What runs where.** Each task is a mission (with its channel) and a task
   row on this PC, plus one start request to the other PC. The other PC
   starts Claude (only Claude, with its own settings) in a worktree of that

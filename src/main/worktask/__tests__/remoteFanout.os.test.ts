@@ -16,7 +16,7 @@ import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 import { registerLedgerRpc } from '../../pipe/handlers/ledger.rpc';
 import type { RpcContext } from '../../../shared/rpc';
 import {
-  POOL_HOLD_MAX_MS, POOL_REFUSING_MS, pickPoolHost, poolCandidates,
+  POOL_HOLD_MAX_MS, POOL_REFUSING_MS, pickPoolHost, poolCandidates, poolHoldOverride,
   REMOTE_ASK_GRACE_MS, REMOTE_FOLLOW_INTERVAL_MS, REMOTE_GONE_GRACE_MS, type RemoteTaskView, branchOnPc, remoteTaskReconciler, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal, remoteKeyRows,
   startRemoteFanout, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
 } from '../remoteFanout';
@@ -840,9 +840,11 @@ describe('the pool (pc "any")', () => {
     const byKey = new Map<string, string>();
     const asks: A2aSpawnAskInput[] = [];
     const missions = new Map<string, { taskId: string; channelId: string }>();
+    const local: { error?: 'unavailable' | 'not-supported' } = {};
     const daemon: RemoteFanoutDaemon = {
       ask: vi.fn(async (input: A2aSpawnAskInput) => {
         asks.push(input);
+        if (local.error) return { ok: false as const, error: local.error };
         const k = `${input.callerKey}:${input.requestKey}`;
         const known = byKey.get(k);
         if (known) return { ok: true as const, spawn: requests.get(known)!, online: true };
@@ -879,8 +881,102 @@ describe('the pool (pc "any")', () => {
       const id = `${hostId}:${spawnId}`;
       requests.set(id, { ...requests.get(id)!, state: 'refused', code: 'rate-limited' });
     };
-    return { daemon, asks, requests, refuseFull };
+    return { daemon, asks, requests, refuseFull, local };
   }
+
+  /** Timers held here: `fire` runs the one scheduled pass and waits for it. */
+  function heldTimers(deps: RemoteFanoutDeps) {
+    const scheduled: Array<{ fn: () => void; ms: number }> = [];
+    const timers = { set: (fn: () => void, ms: number) => { scheduled.push({ fn, ms }); return scheduled.length; }, clear: () => { scheduled.length = 0; } };
+    const fire = async () => {
+      const next = scheduled.shift();
+      if (!next) throw new Error('no pass is scheduled');
+      next.fn();
+      await reconcileRemoteTasks(deps);
+      await new Promise((r) => setImmediate(r));
+    };
+    return { scheduled, timers, fire };
+  }
+
+  it('a held task fails at its limit with nobody calling again: a pass is scheduled for it', async () => {
+    let now = 1_000_000;
+    const p = poolDaemon([placeOf(A)]);
+    const deps: RemoteFanoutDeps = { ...depsOf(p.daemon), now: () => now, poolHoldMs: 25_000 };
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    const id = deps.ledger.list()[0].id;
+    p.refuseFull(A, deps.ledger.get(id)!.remote!.spawnId);
+    const t = heldTimers(deps);
+    const reconcile = remoteTaskReconciler(() => deps, t.timers);
+    await reconcile();
+    await new Promise((r) => setImmediate(r));
+    expect(deps.ledger.get(id)!.remote?.state).toBe('held');
+    expect(t.scheduled.map((x) => x.ms)).toEqual([REMOTE_FOLLOW_INTERVAL_MS]);
+    while (deps.ledger.get(id)!.status !== 'failed') {
+      now += t.scheduled[0].ms;
+      await t.fire();
+    }
+    // The last wait was cut to the limit, not a whole follow interval.
+    expect(now).toBe(1_000_000 + 25_000);
+    expect(deps.ledger.get(id)!.summary).toBe(remoteCodeText('pc-full', 'pc-a'));
+    expect(t.scheduled).toEqual([]);
+    expect(p.asks).toHaveLength(1);
+    reconcile.stop();
+  });
+
+  it('a task that ran out of time keeps its own reason on later passes', async () => {
+    let now = 1_000_000;
+    const p = poolDaemon([placeOf(A)]);
+    const deps = { ...depsOf(p.daemon), now: () => now };
+    await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    const id = deps.ledger.list()[0].id;
+    p.refuseFull(A, deps.ledger.get(id)!.remote!.spawnId);
+    await reconcileRemoteTasks(deps);
+    now += POOL_HOLD_MAX_MS;
+    await reconcileRemoteTasks(deps);
+    await reconcileRemoteTasks(deps);
+    expect(deps.ledger.get(id)).toMatchObject({ status: 'failed', summary: remoteCodeText('pc-full', 'pc-a'), remote: { state: 'expired', code: 'pc-full' } });
+  });
+
+  it('a placement this PC cannot store or queue waits held; one its daemon refuses outright fails', async () => {
+    const now = 1_000_000;
+    const p = poolDaemon([placeOf(A)]);
+    const deps = { ...depsOf(p.daemon), now: () => now };
+    p.local.error = 'unavailable';
+    const res = await startRemoteFanout(request(1, { pc: 'any' }), deps);
+    if ('error' in res) throw new Error(res.error);
+    expect(res.tasks[0]).toMatchObject({ ok: true, state: 'held', pending: { waitingOn: 'pc-full' } });
+    expect(deps.ledger.list()[0].status).not.toBe('failed');
+    p.local.error = 'not-supported';
+    const other = await startRemoteFanout(request(1, { pc: 'any', idempotencyKey: 'k2', scopedKey: 'ws-owner::k2' }), deps);
+    if ('error' in other) throw new Error(other.error);
+    expect(other.tasks[0]).toMatchObject({ ok: false });
+  });
+
+  it('a paired PC named "any" is reached by its host id, as a named PC', async () => {
+    const p = poolDaemon([placeOf(A, { name: 'any' })]);
+    const deps = depsOf(p.daemon);
+    const res = await startRemoteFanout(request(1, { pc: A }), deps);
+    if ('error' in res) throw new Error(res.error);
+    expect(res).toMatchObject({ hostId: A, pc: 'any' });
+    expect(deps.ledger.list()[0].remote?.pool).toBeUndefined();
+  });
+
+  it('the test-only hold limit is read only when set to a shorter whole number of ms', () => {
+    const before = process.env['WMUX_TEST_POOL_HOLD_MS'];
+    try {
+      delete process.env['WMUX_TEST_POOL_HOLD_MS'];
+      expect(poolHoldOverride()).toEqual({});
+      for (const bad of ['', '0', '-5', '1.5', 'abc', String(POOL_HOLD_MAX_MS * 2)]) {
+        process.env['WMUX_TEST_POOL_HOLD_MS'] = bad;
+        expect(poolHoldOverride()).toEqual({});
+      }
+      process.env['WMUX_TEST_POOL_HOLD_MS'] = '60000';
+      expect(poolHoldOverride()).toEqual({ poolHoldMs: 60_000 });
+    } finally {
+      if (before === undefined) delete process.env['WMUX_TEST_POOL_HOLD_MS'];
+      else process.env['WMUX_TEST_POOL_HOLD_MS'] = before;
+    }
+  });
 
   it('takes only online PCs that start Claude in that folder', () => {
     const list = [

@@ -155,7 +155,7 @@ const FANOUT_START_SHAPE = {
 
 /** fanout_start's tasks on another PC (pane callers only). */
 const FANOUT_REMOTE_SHAPE = {
-  pc: z.string().max(256).optional().describe('Run every task on this paired PC, or "any": each on the online PC offering root with fewest of your open tasks, held while full (Claude only; needs root). remote_spawn with no pc lists PCs.'),
+  pc: z.string().max(256).optional().describe('Run every task on this paired PC, or "any": each on the online PC offering root with fewest of your open tasks, held while full; a PC named any: its host id (Claude only; needs root). remote_spawn with no pc lists PCs.'),
   root: z.string().max(64).optional().describe('With pc: a folder id it allows (same list).'),
 };
 
