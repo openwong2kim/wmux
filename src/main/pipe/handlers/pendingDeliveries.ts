@@ -127,6 +127,9 @@ export class PendingDeliveries {
   /** Oldest first. */
   private entries: PendingDelivery[] = [];
   private readonly busy = new Set<string>();
+  /** Panes whose early try came while another retry ran there: it runs once
+   *  that one typed its entry (the next is due); after a refusal it does not. */
+  private readonly earlyWaiting = new Set<string>();
   private timer: { cancel: () => void } | null = null;
   private readonly now: () => number;
 
@@ -212,8 +215,12 @@ export class PendingDeliveries {
    * paste per pass: the next one waits for the next stop or sweep.
    */
   async retry(ptyId: string, trigger: PendingRetryTrigger = 'call'): Promise<void> {
-    if (this.busy.has(ptyId)) return;
+    if (this.busy.has(ptyId)) {
+      if (trigger === '+5s') this.earlyWaiting.add(ptyId);
+      return;
+    }
     this.busy.add(ptyId);
+    let typed = false;
     try {
       this.expire();
       const entry = this.entries.find((e) => e.ptyId === ptyId);
@@ -245,6 +252,7 @@ export class PendingDeliveries {
         return;
       }
       if (result.ok) {
+        typed = true;
         this.remove(entry);
         this.deps.log(`[delivery] typed stored task ${JSON.stringify(entry.taskId)} into pane ${JSON.stringify(ptyId)} (trigger: ${trigger})`);
       } else if (result.reason === 'agent_changed') {
@@ -267,6 +275,7 @@ export class PendingDeliveries {
       }
     } finally {
       this.busy.delete(ptyId);
+      if (this.earlyWaiting.delete(ptyId) && typed) void this.retry(ptyId, '+5s');
     }
   }
 

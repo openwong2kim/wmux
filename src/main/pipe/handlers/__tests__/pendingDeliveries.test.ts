@@ -15,6 +15,7 @@ import {
   type PendingDelivery,
   type PendingTaskState,
 } from '../pendingDeliveries';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 
 function harness(opts: { result?: GatedSubmitResult; state?: PendingTaskState; submit?: (entry: PendingDelivery) => Promise<GatedSubmitResult> } = {}) {
   let t = 1_000_000;
@@ -343,6 +344,37 @@ describe('PendingDeliveries', () => {
     h.once[1].fn();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(h.reads.length).toBe(reads);
+  });
+
+  it('an early try that comes while another retry runs on the pane runs after it once that one typed, not after a refusal', async () => {
+    /** Each submit waits for its answer, handed in by the test. */
+    const answers: Array<(r: GatedSubmitResult) => void> = [];
+    const gate = () => new Promise<GatedSubmitResult>((resolve) => { answers.push(resolve); });
+    const h = harness({ submit: gate });
+    h.queue.store(h.entry('t1'));
+    h.queue.store(h.entry('t2'));
+    h.once[0].fn();
+    await vi.waitFor(() => expect(answers).toHaveLength(1), { timeout: 5_000 });
+    // t2's early try while t1 is being typed: kept, and run once t1 is typed.
+    h.once[1].fn();
+    answers[0]({ ok: true });
+    await vi.waitFor(() => expect(answers).toHaveLength(2), { timeout: 5_000 });
+    answers[1]({ ok: true });
+    await vi.waitFor(() => expect(h.typed).toEqual(['text t1', 'text t2']), { timeout: 5_000 });
+    expect(h.logs.filter((l) => l.endsWith('(trigger: +5s)'))).toHaveLength(2);
+
+    // Refused: the waiting early try is not run.
+    const refused: Array<(r: GatedSubmitResult) => void> = [];
+    const r = harness({ submit: () => new Promise<GatedSubmitResult>((resolve) => { refused.push(resolve); }) });
+    r.queue.store(r.entry('t1'));
+    r.queue.store(r.entry('t2'));
+    r.once[0].fn();
+    await vi.waitFor(() => expect(refused).toHaveLength(1), { timeout: 5_000 });
+    r.once[1].fn();
+    refused[0]({ ok: false, reason: 'gate_unavailable', detail: 'x' });
+    await deliberateSleep(50, 'a negative check: no second try runs after the refusal');
+    expect(refused).toHaveLength(1);
+    expect(r.typed).toEqual([]);
   });
 
   it('runs its sweep timer only while entries are kept', async () => {
