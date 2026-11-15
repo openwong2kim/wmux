@@ -91,7 +91,7 @@ import { agentDisplayToSlug } from '../../../shared/agentIdentity';
 import { wslShareToLinux } from '../../../shared/wslPaths';
 import { applyWslShareCwd, defaultWslShellPath } from '../../../shared/wslShareSpawn';
 import { wslDistroArgs, isWslDistroSpawnArgs, isValidWslDistroName } from '../../../shared/wslDistro';
-import { getDefaultWslDistro, enumerateWslDistros } from '../../pty/defaultWslDistro';
+import { getDefaultWslDistro, getKnownWslDistros, enumerateWslDistros } from '../../pty/defaultWslDistro';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
 import { recordFanoutTaskPane, stampFanoutTaskPane, stampRemoteSpawnPane, taskOfWorkspace } from '../../worktask/fanoutGuards';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
@@ -409,7 +409,15 @@ async function withWslShareCwd(
   getWindow: (() => BrowserWindow | null) | undefined,
 ): Promise<PtyCreateOptions | undefined> {
   if (!options || process.platform !== 'win32' || typeof options.cwd !== 'string' || !wslShareToLinux(options.cwd)) return options;
-  const result = applyWslShareCwd(options, process.platform, await enumerateWslDistros());
+  // The known-distro cache answers the common case; only a miss (a distro
+  // installed since the last enumeration, or no enumeration yet) pays for
+  // `wsl.exe --list`.
+  const share = wslShareToLinux(options.cwd)!;
+  const cached = getKnownWslDistros();
+  const known = cached?.some((d) => d.toLowerCase() === share.distro.toLowerCase())
+    ? [...cached]
+    : await enumerateWslDistros();
+  const result = applyWslShareCwd(options, process.platform, known);
   if ('options' in result) return result.options;
   const { cwd: _dropped, wslDistro: _unused, ...rest } = options;
   const key = options.workspaceId ?? '';

@@ -34,6 +34,11 @@ export function noteKnownWslDistros(distros: string[]): void {
   if (distros.length > 0) knownWslDistros = [...distros];
 }
 
+/** The distros from the last successful enumeration, or null if none yet. */
+export function getKnownWslDistros(): readonly string[] | null {
+  return knownWslDistros;
+}
+
 export function getDefaultWslDistro(): string | null {
   if (!defaultWslDistro) return null;
   if (knownWslDistros && !knownWslDistros.includes(defaultWslDistro)) {

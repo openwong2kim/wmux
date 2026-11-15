@@ -7,6 +7,8 @@ import path from 'node:path';
 const captured = new Map<string, (...args: unknown[]) => unknown>();
 const notify = vi.fn();
 let distros: string[] = [];
+let known: string[] | null = null;
+const enumerate = vi.fn(async () => distros);
 vi.mock('electron', () => ({
   app: { isPackaged: false, getAppPath: () => '/repo', getPath: () => '/home', on: () => undefined },
   ipcMain: {
@@ -23,7 +25,8 @@ vi.mock('../../../screenReaderService', () => ({ isScreenReaderOn: () => false, 
 vi.mock('../../../notification/dispatchNotification', () => ({ dispatchNotification: (...a: unknown[]) => notify(...a) }));
 vi.mock('../../../pty/defaultWslDistro', () => ({
   getDefaultWslDistro: () => null,
-  enumerateWslDistros: async () => distros,
+  enumerateWslDistros: () => enumerate(),
+  getKnownWslDistros: () => known,
 }));
 
 import { registerPTYHandlers } from '../pty.handler';
@@ -32,7 +35,7 @@ import type { PTYManager } from '../../../pty/PTYManager';
 import type { PTYBridge } from '../../../pty/PTYBridge';
 
 const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
-beforeEach(() => { vi.spyOn(path, 'basename').mockImplementation(path.win32.basename); Object.defineProperty(process, 'platform', { value: 'win32' }); notify.mockClear(); distros = []; });
+beforeEach(() => { vi.spyOn(path, 'basename').mockImplementation(path.win32.basename); Object.defineProperty(process, 'platform', { value: 'win32' }); notify.mockClear(); enumerate.mockClear(); distros = []; known = null; });
 afterEach(() => { vi.restoreAllMocks(); Object.defineProperty(process, 'platform', realPlatform); });
 
 async function create(opts: Record<string, unknown>[]): Promise<Array<{ shell?: string; cwd?: string; shellArgs?: string[] }>> {
@@ -62,6 +65,18 @@ describe('pty:create with a WSL share cwd', () => {
     expect(s.cwd).toBe('/home/me/repo');
     expect(s.shellArgs).toEqual(['-d', 'Ubuntu']);
     expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('a distro in the known-distro cache skips the wsl.exe enumeration (case-insensitive); a miss enumerates', async () => {
+    known = ['ubuntu', 'Debian'];
+    const [hit] = await create([{ cwd: share, workspaceId: 'w1' }]);
+    expect(hit.shellArgs).toEqual(['-d', 'ubuntu']);
+    expect(enumerate).not.toHaveBeenCalled();
+    known = ['Debian'];
+    distros = ['Ubuntu'];
+    const [miss] = await create([{ cwd: share, workspaceId: 'w1' }]);
+    expect(enumerate).toHaveBeenCalledTimes(1);
+    expect(miss.shellArgs).toEqual(['-d', 'Ubuntu']);
   });
 
   it('an unknown distro opens the default WSL shell at home (no Windows home) and toasts once per workspace', async () => {
