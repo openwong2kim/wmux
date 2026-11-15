@@ -13,6 +13,7 @@ import type { BrowserWindow } from 'electron';
 import type { PTYManager } from '../../../pty/PTYManager';
 import { registerDeliveryCheck } from '../../deliveryGuards';
 import { sendToRenderer } from '../_bridge';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 
 vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
 
@@ -410,7 +411,7 @@ describe('a pane the window names no agent in', () => {
     const afterFirst = asks();
     // An idle spell cleared the name and the next burst named it again: no retry.
     agentNamed('pty-a');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await deliberateSleep(50, 'a negative check: no second retry runs');
     expect(asks()).toBe(afterFirst);
     expect(writes).toEqual([]);
     // The agent ended (its entries go), a new one is stored and named: tried.
@@ -443,7 +444,7 @@ describe('a pane the window names no agent in', () => {
     const before = asked.length;
     earlyTries[0]();
     await vi.waitFor(() => expect(asked.length).toBeGreaterThan(before), { timeout: 5_000 });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await deliberateSleep(50, 'a negative check: the refused try writes nothing and arms nothing');
     expect(writes).toEqual([]);
     expect(earlyTries).toHaveLength(1);
   });
