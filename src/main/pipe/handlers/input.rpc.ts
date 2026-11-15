@@ -1583,6 +1583,8 @@ export interface InputRpcDeps {
   /** Injected in tests; calls back once each time a pane's agent is first
    *  named. Defaults to the metadata broadcast (onAgentFirstNamed). */
   subscribeAgentNamed?: (onNamed: (ptyId: string) => void) => () => void;
+  /** Injected in tests: runs a stored delivery's one early try (setTimeout). */
+  pendingSetOnce?: (fn: () => void, ms: number) => void;
   /** Injected in tests; a task's state for a stored delivery. Defaults to the
    *  daemon's `a2a.task.query` in its `state` view. */
   readTaskState?: (workspaceId: string, taskId: string) => Promise<PendingTaskState>;
@@ -3133,8 +3135,9 @@ export function registerInputRpc(
     taskState: taskStateOf,
     log: logLine,
     ...(deps.now ? { now: deps.now } : {}),
+    ...(deps.pendingSetOnce ? { setOnce: deps.pendingSetOnce } : {}),
   });
-  (deps.subscribeAgentStops ?? subscribeAgentStops)((ptyId) => void pending.retry(ptyId));
+  (deps.subscribeAgentStops ?? subscribeAgentStops)((ptyId) => void pending.retry(ptyId, 'stop'));
   // An agent just started has no turn end yet: a delivery stored while it
   // could not be attributed is tried when the pane's agent is named, once
   // per agent: a name cleared by an idle spell and given again is the same
@@ -3143,7 +3146,7 @@ export function registerInputRpc(
   (deps.subscribeAgentNamed ?? onAgentFirstNamed)((ptyId) => {
     if (namedOnce.has(ptyId)) return;
     namedOnce.add(ptyId);
-    void pending.retry(ptyId);
+    void pending.retry(ptyId, 'naming');
   });
 
   /** The local task a delivery may be stored under: none for a hand-off
@@ -3212,7 +3215,7 @@ export function registerInputRpc(
         };
       }
       if (taskId && earlier && (await storeForLater(ptyId, taskId, text, agent, opts, earlier.reason))) {
-        void pending.retry(ptyId);
+        void pending.retry(ptyId, 'queued');
         return {
           ok: false,
           reason: earlier.reason,

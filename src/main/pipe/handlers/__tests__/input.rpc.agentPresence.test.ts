@@ -32,6 +32,8 @@ let asked: Array<{ ptyId: string; expectAgent: string | undefined; check: Delive
 let order: string[];
 /** The wiring's "agent first named" callback (input.rpc's retry trigger). */
 let agentNamed: (ptyId: string) => void = () => undefined;
+/** Each stored delivery's early try, in the order stored. */
+let earlyTries: Array<() => void> = [];
 
 function harness() {
   const dc = {
@@ -74,6 +76,7 @@ function harness() {
         agentNamed = onNamed;
         return () => undefined;
       },
+      pendingSetOnce: (fn) => { earlyTries.push(fn); },
     },
   );
 }
@@ -82,6 +85,7 @@ const deliver = (opts?: GatedSubmitOptions, agent: string | null = 'Claude Code'
   harness().gatedSubmit('pty-a', text, agent, opts);
 
 beforeEach(() => {
+  earlyTries = [];
   clock = 1_000_000;
   writes = [];
   logs = [];
@@ -415,5 +419,32 @@ describe('a pane the window names no agent in', () => {
     answers = [PROCESS];
     agentNamed('pty-a');
     await vi.waitFor(() => expect(writes).toEqual(['\x1b[200~hello\x1b[201~', '\r']), { timeout: 5_000 });
+  });
+
+  it('stored after the naming signal went by: the +5 s retry types it, and the log names that trigger', async () => {
+    vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => (method === 'input.findOwnerWorkspace' ? { workspaceId: 'ws-a' } : null));
+    const wiring = harness();
+    // The agent is named before anything is stored: that retry finds nothing.
+    agentNamed('pty-a');
+    answers = [{ tier: 'none', reason: 'attribution-pending' }];
+    expect(await wiring.gatedSubmit('pty-a', 'hello', null, { senderTaskIds: ['t-1'] })).toMatchObject({ stored: true });
+    expect(earlyTries).toHaveLength(1);
+    answers = [PROCESS];
+    earlyTries[0]();
+    await vi.waitFor(() => expect(writes).toEqual(['\x1b[200~hello\x1b[201~', '\r']), { timeout: 5_000 });
+    expect(logs.some((l) => l.includes('typed stored task "t-1"') && l.endsWith('(trigger: +5s)'))).toBe(true);
+  });
+
+  it('one early try per entry: refused, the entry is kept and no new early try is armed', async () => {
+    vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => (method === 'input.findOwnerWorkspace' ? { workspaceId: 'ws-a' } : null));
+    const wiring = harness();
+    answers = [{ tier: 'none', reason: 'attribution-pending' }];
+    expect(await wiring.gatedSubmit('pty-a', 'hello', null, { senderTaskIds: ['t-1'] })).toMatchObject({ stored: true });
+    const before = asked.length;
+    earlyTries[0]();
+    await vi.waitFor(() => expect(asked.length).toBeGreaterThan(before), { timeout: 5_000 });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(writes).toEqual([]);
+    expect(earlyTries).toHaveLength(1);
   });
 });

@@ -1,10 +1,11 @@
 // Stored local deliveries (pendingDeliveries.ts): each text once, bounded, typed
 // oldest first one per pass, and dropped when their task ends, their pane
 // goes, their agent changes or they expire.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { GatedSubmitResult } from '../../../../shared/ptyMessageDelivery';
 import {
   PENDING_DELIVERY_TTL_MS,
+  PENDING_FIRST_RETRY_MS,
   PENDING_PER_PANE_CAP,
   PENDING_PER_TASK_CAP,
   PENDING_TASK_ROW_GRACE_MS,
@@ -20,6 +21,7 @@ function harness(opts: { result?: GatedSubmitResult; state?: PendingTaskState; s
   const typed: string[] = [];
   const logs: string[] = [];
   let timers = 0;
+  const once: Array<{ fn: () => void; ms: number }> = [];
   const live = { result: opts.result ?? ({ ok: true } as GatedSubmitResult), state: ('state' in opts ? opts.state : 'open') as PendingTaskState };
   const reads: string[] = [];
   const queue = new PendingDeliveries({
@@ -38,11 +40,12 @@ function harness(opts: { result?: GatedSubmitResult; state?: PendingTaskState; s
       timers++;
       return { cancel: () => { timers--; } };
     },
+    setOnce: (fn, ms) => { once.push({ fn, ms }); },
   });
   const entry = (taskId: string, ptyId = 'pty-1', text = `text ${taskId}`): PendingDelivery => ({
     taskId, ptyId, text, agent: 'claude', opts: { senderTaskIds: [taskId] }, agentName: 'Claude Code', incarnationId: 'inc-1', sessionStartAt: null, storedAt: t, reason: 'gate_unavailable',
   });
-  return { queue, typed, logs, live, reads, entry, advance: (ms: number) => { t += ms; }, timers: () => timers };
+  return { queue, typed, logs, live, reads, entry, once, advance: (ms: number) => { t += ms; }, timers: () => timers };
 }
 
 describe('PendingDeliveries', () => {
@@ -323,6 +326,23 @@ describe('PendingDeliveries', () => {
     h.queue.store(h.entry('t1'));
     await h.queue.retry('pty-1');
     expect(h.queue.size).toBe(0);
+  });
+
+  it('tries each newly stored delivery once early, and not one already typed or stored again', async () => {
+    const h = harness();
+    h.queue.store(h.entry('t1'));
+    h.queue.store(h.entry('t1'));
+    expect(h.once.map((o) => o.ms)).toEqual([PENDING_FIRST_RETRY_MS]);
+    h.once[0].fn();
+    await vi.waitFor(() => expect(h.typed).toEqual(['text t1']), { timeout: 5_000 });
+    // Typed by then: a later early try for it does nothing.
+    h.queue.store(h.entry('t2'));
+    await h.queue.sweep();
+    expect(h.typed).toEqual(['text t1', 'text t2']);
+    const reads = h.reads.length;
+    h.once[1].fn();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.reads.length).toBe(reads);
   });
 
   it('runs its sweep timer only while entries are kept', async () => {

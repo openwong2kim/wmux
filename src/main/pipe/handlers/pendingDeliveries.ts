@@ -34,6 +34,10 @@ export const PENDING_TOTAL_CAP = 64;
 export const PENDING_TEXT_MAX = A2A_REMOTE_BODY_MAX;
 /** How often stored deliveries are retried while any are kept. */
 export const PENDING_SWEEP_MS = 60_000;
+/** One early try per stored delivery, this long after it was stored: by then
+ *  the send that stored it has returned (a new task's row exists) and an
+ *  agent still being attributed has usually been named. */
+export const PENDING_FIRST_RETRY_MS = 5_000;
 /** A task the daemon does not list yet may still be being written (a new
  *  task's row lands after its delivery), and a pane may read as ownerless
  *  while the window reloads: either counts only after this long. */
@@ -60,6 +64,9 @@ export interface PendingDelivery {
   /** When the pane first read as gone, while that lasts. */
   goneSince?: number;
 }
+
+/** What started a retry, named in the log line of a delivery it typed. */
+export type PendingRetryTrigger = 'naming' | '+5s' | 'stop' | 'sweep' | 'queued' | 'call';
 
 export type PendingDropReason = 'cap' | 'expired' | 'task ended' | 'pane gone' | 'agent changed' | 'refused' | 'withdrawn';
 
@@ -95,7 +102,13 @@ export interface PendingDeliveryDeps {
   log: (line: string) => void;
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => { cancel: () => void };
+  /** Runs `fn` once after `ms` (the early try). */
+  setOnce?: (fn: () => void, ms: number) => void;
 }
+
+const defaultOnce = (fn: () => void, ms: number): void => {
+  setTimeout(fn, ms).unref?.();
+};
 
 const defaultTimer = (fn: () => void, ms: number): { cancel: () => void } => {
   const t = setInterval(fn, ms);
@@ -168,6 +181,9 @@ export class PendingDeliveries {
     this.entries.push(entry);
     this.deps.log(`[delivery] stored task ${JSON.stringify(entry.taskId)} for pane ${JSON.stringify(entry.ptyId)}; it is typed when the pane can take it`);
     this.timer ??= (this.deps.setTimer ?? defaultTimer)(() => void this.sweep(), PENDING_SWEEP_MS);
+    (this.deps.setOnce ?? defaultOnce)(() => {
+      if (this.entries.includes(entry)) void this.retry(entry.ptyId, '+5s');
+    }, PENDING_FIRST_RETRY_MS);
     return true;
   }
 
@@ -195,7 +211,7 @@ export class PendingDeliveries {
    * Try the pane's oldest stored delivery once, through the full gate. One
    * paste per pass: the next one waits for the next stop or sweep.
    */
-  async retry(ptyId: string): Promise<void> {
+  async retry(ptyId: string, trigger: PendingRetryTrigger = 'call'): Promise<void> {
     if (this.busy.has(ptyId)) return;
     this.busy.add(ptyId);
     try {
@@ -230,7 +246,7 @@ export class PendingDeliveries {
       }
       if (result.ok) {
         this.remove(entry);
-        this.deps.log(`[delivery] typed stored task ${JSON.stringify(entry.taskId)} into pane ${JSON.stringify(ptyId)}`);
+        this.deps.log(`[delivery] typed stored task ${JSON.stringify(entry.taskId)} into pane ${JSON.stringify(ptyId)} (trigger: ${trigger})`);
       } else if (result.reason === 'agent_changed') {
         this.drop(entry, 'agent changed');
       } else if (result.pasted && !result.cleared) {
@@ -258,7 +274,7 @@ export class PendingDeliveries {
   async sweep(): Promise<void> {
     this.expire();
     const panes = [...new Set(this.entries.map((e) => e.ptyId))];
-    await Promise.all(panes.map((ptyId) => this.retry(ptyId)));
+    await Promise.all(panes.map((ptyId) => this.retry(ptyId, 'sweep')));
   }
 
   private expire(): void {
