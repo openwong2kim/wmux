@@ -8,6 +8,7 @@ import {
   type A2aOutboxRecordV1,
   type A2aRemoteDeliverResponse,
   type A2aRemoteErrorCode,
+  type A2aStreamAckAnswer,
   type A2aStreamCursor,
   type A2aStreamEvent,
   type A2aStreamHello,
@@ -46,11 +47,35 @@ import { errMsg, isPlainObject } from './storeFile';
  * up after minutes of retransmits.
  */
 
+/**
+ * Refusals resending can never fix: the record is dropped, and `onRefused` ends what it was about (see delivery.ts).
+ * The joiner's pump reads the server's answers with them; a server takes only these on a stream ack
+ * (`stream-refuse.1`).
+ */
+export const TERMINAL_REFUSALS: ReadonlySet<A2aRemoteErrorCode> = new Set<A2aRemoteErrorCode>([
+  'unknown-link',
+  'link-not-active',
+  'direction-not-allowed',
+  'forbidden',
+  'conflict',
+  'stale-link-version',
+  'unknown-task',
+  'too-large',
+  'bad-request',
+  'protocol',
+]);
+
 export const STREAM_HEARTBEAT_MS = 15_000;
 const ACK_WARN_EVERY_MS = 60_000;
 
 export interface A2aStreamHubDeps {
-  outbox: Pick<OutboxStore, 'epoch' | 'pending' | 'ack'>;
+  outbox: Pick<OutboxStore, 'epoch' | 'pending' | 'ack' | 'get' | 'refuse'>;
+  /**
+   * `stream-refuse.1`: the joiner refused a record this host streamed it. Called once the refusal is stored, before
+   * the ack, to end what the record was about as when a POST of it is refused (delivery.ts `onRefused`). Absent:
+   * a refusal on an ack is ignored.
+   */
+  onRefused?: (record: A2aOutboxRecordV1, code: A2aRemoteErrorCode) => void | Promise<void>;
   /** Apply one envelope from `peer` (`acceptInbound`). */
   accept: (envelope: unknown, peer: { hostId: HostId }) => Promise<A2aRemoteDeliverResponse>;
   /**
@@ -159,6 +184,15 @@ export class A2aStreamHub {
       if (!cursor || typeof cursor['epoch'] !== 'string' || typeof cursor['seq'] !== 'number' || !Number.isSafeInteger(cursor['seq'])) {
         return sendJson(res, 400, { ok: false, error: 'bad-request' });
       }
+      // `stream-refuse.1`: a refusal of one record goes with the ack that covers it. It is stored and what it was
+      // about is ended before that ack, so a later record's ack never overtakes it.
+      let refused: A2aStreamAckAnswer['refused'];
+      const onRefused = this.deps.onRefused;
+      if (onRefused && (body as Record<string, unknown>)['refused'] !== undefined) {
+        const taken = await this.takeRefusal(peer.hostId, { epoch: cursor['epoch'], seq: cursor['seq'] }, (body as Record<string, unknown>)['refused'], onRefused);
+        if (taken === 'unavailable') return sendJson(res, 503, { ok: false, error: 'unavailable' });
+        refused = taken;
+      }
       let acked = 0;
       try {
         acked = this.deps.outbox.ack(peer.hostId, { epoch: cursor['epoch'], seq: cursor['seq'] });
@@ -171,10 +205,51 @@ export class A2aStreamHub {
         }
         return sendJson(res, 503, { ok: false, error: 'unavailable' });
       }
-      sendJson(res, 200, { ok: true, acked });
+      const answer: A2aStreamAckAnswer = { ok: true, acked, ...(refused ? { refused } : {}) };
+      sendJson(res, 200, answer);
     });
 
     table.add('GET', A2A_ROUTES.stream, ({ req, res, peer }) => this.open(req, res, peer.hostId));
+  }
+
+  /**
+   * A joiner's refusal of one record on its ack. Taken only for a record this host streams to that joiner (it serves
+   * it), of the current epoch, still owed (any state the stream sends), at or below the ack's cursor, with a terminal
+   * code: it is refused in
+   * the outbox, then `onRefused` ends what it was about (awaited; its failure is logged and the ack goes on).
+   * Anything else is `ignored`, and the ack goes on as a plain one; a record already refused (a repeat of the same
+   * ack) is one of those. `unavailable`: the refusal could not be stored, so nothing is acked.
+   */
+  private async takeRefusal(
+    hostId: HostId,
+    cursor: A2aStreamCursor,
+    raw: unknown,
+    onRefused: NonNullable<A2aStreamHubDeps['onRefused']>,
+  ): Promise<'applied' | 'ignored' | 'unavailable'> {
+    if (!isPlainObject(raw) || this.deps.serves?.(hostId) === false) return 'ignored';
+    const seq = raw['seq'];
+    const code = raw['code'];
+    if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 1 || seq > cursor.seq) return 'ignored';
+    if (typeof code !== 'string' || !TERMINAL_REFUSALS.has(code as A2aRemoteErrorCode) || cursor.epoch !== this.deps.outbox.epoch) return 'ignored';
+    const rec = this.deps.outbox.get(hostId, seq);
+    // Still owed, as the stream sends it: `pending`, or `outcome-unknown` (left by a pump before this host served that
+    // peer) only once this peer's stream carried it, so the refusal answers a record it really got. A record of a peer
+    // this host joins was refused above (`serves`).
+    const streamed = (this.streams.get(hostId)?.lastSent ?? 0) >= seq;
+    if (rec?.state !== 'pending' && !(rec?.state === 'outcome-unknown' && streamed)) return 'ignored';
+    try {
+      this.deps.outbox.refuse(hostId, seq, code as A2aRemoteErrorCode);
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] refusal from ${hostId} of #${seq} not stored: ${errMsg(err)}`);
+      return 'unavailable';
+    }
+    this.deps.log('info', `[a2a-remote] ${hostId} refused streamed record #${seq} (${rec.envelope.kind}): ${code}`);
+    try {
+      await onRefused(rec, code as A2aRemoteErrorCode);
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] ${hostId}: ending a refused record's task failed: ${errMsg(err)}`);
+    }
+    return 'applied';
   }
 
   /** New records are owed to `hostId`: write them to its stream, if one is open. */
