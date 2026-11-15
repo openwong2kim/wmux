@@ -113,6 +113,8 @@ describe('a stored refusal whose effect never ran (#3378)', () => {
 
     const second = boot();
     expect(state(second.tasks)).not.toBe('failed');
+    // Same ms (the clock is frozen): equal counts as not changed since, so the refusal is owed.
+    expect(second.tasks.getTask(TASK)?.metadata.updatedAt).toBe(second.delivery.outbox.get(HOST, 1)?.updatedAt);
     const fail = vi.spyOn(second.tasks, 'forceFailRemote');
     await second.delivery.maintain();
     expect(state(second.tasks)).toBe('failed');
@@ -219,13 +221,61 @@ describe('a stored refusal whose effect never ran (#3378)', () => {
     const gate = new Promise<void>((r) => { release = r; });
     const real = tasks.forceFailRemote.bind(tasks);
     const fail = vi.spyOn(tasks, 'forceFailRemote').mockImplementation(async (input) => { await gate; return real(input); });
-    type Live = { onRefused(rec: unknown, code: string): Promise<void> };
     const live = (delivery as unknown as Live).onRefused(delivery.outbox.get(HOST, rec.seq), 'unknown-task');
     await delivery.maintain();
     expect(fail).toHaveBeenCalledTimes(1);
     release();
     await live;
     expect(state(tasks)).toBe('failed');
+  });
+
+  type Live = { onRefused(rec: unknown, code: string): Promise<void> };
+
+  it('an effect that landed in the same ms as its refusal is not applied again after a restart', async () => {
+    const first = boot();
+    await inboundTask(first.tasks);
+    const seq = refusedReply(first.delivery);
+    // The live call applies it at once, in the same ms as the record.
+    await (first.delivery as unknown as Live).onRefused(first.delivery.outbox.get(HOST, seq), 'unknown-task');
+    expect(first.tasks.getTask(TASK)?.metadata.updatedAt).toBe(first.delivery.outbox.get(HOST, seq)?.updatedAt);
+    await crash();
+
+    const second = boot();
+    const fail = vi.spyOn(second.tasks, 'forceFailRemote');
+    await second.delivery.maintain();
+    expect(fail).not.toHaveBeenCalled();
+    expect(state(second.tasks)).toBe('failed');
+  });
+
+  it('a refused state recorded in the same ms as its refusal is not recorded again after a restart', async () => {
+    const first = boot();
+    await inboundTask(first.tasks);
+    expect(await first.tasks.transition({ taskId: TASK, to: 'working', callerWorkspaceId: 'ws-b' })).toMatchObject({ ok: true });
+    const rec = first.delivery.outbox.enqueue(HOST, stateEnv('s-1'));
+    first.delivery.outbox.refuse(HOST, rec.seq, 'conflict');
+    await (first.delivery as unknown as Live).onRefused(first.delivery.outbox.get(HOST, rec.seq), 'conflict');
+    expect(stateRefused(first.tasks)).toMatchObject({ state: 'working', code: 'conflict' });
+    expect(first.tasks.getTask(TASK)?.metadata.updatedAt).toBe(first.delivery.outbox.get(HOST, rec.seq)?.updatedAt);
+    await crash();
+
+    const second = boot();
+    const mark = vi.spyOn(second.tasks, 'markRemote');
+    await second.delivery.maintain();
+    expect(mark.mock.calls.filter(([input]) => 'stateRefused' in input)).toEqual([]);
+  });
+
+  it('a clock stepped back before a reopen does not bring back a refusal applied in this run', async () => {
+    const { delivery, tasks } = boot();
+    await inboundTask(tasks);
+    const seq = refusedReply(delivery);
+    await (delivery as unknown as Live).onRefused(delivery.outbox.get(HOST, seq), 'unknown-task');
+    expect(state(tasks)).toBe('failed');
+    // The clock steps back an hour: the reopen is dated before the refusal.
+    tick(-HOUR);
+    expect(await tasks.reopenTask({ taskId: TASK, callerWorkspaceId: `remote:${LINK}` })).toMatchObject({ ok: true, reopened: true });
+    expect((tasks.getTask(TASK)?.metadata.updatedAt ?? '') < (delivery.outbox.get(HOST, seq)?.updatedAt ?? '')).toBe(true);
+    await delivery.maintain();
+    expect(state(tasks)).toBe('submitted');
   });
 
   it('a refused state is recorded once; a later state the peer took ends the replay', async () => {

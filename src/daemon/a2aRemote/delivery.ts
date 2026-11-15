@@ -227,6 +227,11 @@ export class A2aRemoteDelivery {
   private readonly refusing = new Set<string>();
   /** Refused records given up on (`REFUSAL_REPLAY_MS`), logged once each. */
   private readonly refusalsGivenUp = new Set<string>();
+  /**
+   * Refused records whose effect landed in this run (live or replayed): never replayed again, whatever the clock
+   * says later (a clock stepped back could date a later change of the task before the refusal).
+   */
+  private readonly refusalsApplied = new Set<string>();
 
   constructor(deps: A2aRemoteDeliveryDeps) {
     this.deps = deps;
@@ -776,6 +781,7 @@ export class A2aRemoteDelivery {
     this.refusing.add(k);
     try {
       await this.applyRefusal(rec, code, detail);
+      if (!this.refusalOwed(rec, code)) this.refusalsApplied.add(k);
     } finally {
       this.refusing.delete(k);
     }
@@ -869,7 +875,7 @@ export class A2aRemoteDelivery {
     for (const rec of this.outbox.settled()) {
       const code = rec.lastError;
       const k = `${rec.hostId}#${rec.seq}`;
-      if (rec.state !== 'refused' || !code || this.refusing.has(k)) continue;
+      if (rec.state !== 'refused' || !code || this.refusing.has(k) || this.refusalsApplied.has(k)) continue;
       // Shares and spawn asks: each settles once, from its own record's state.
       if (rec.envelope.kind === 'link') {
         this.deps.offers?.onRefused(rec.hostId, rec.envelope, code);
@@ -892,6 +898,7 @@ export class A2aRemoteDelivery {
         this.deps.log('warn', `[a2a-remote] ${taskId}: applying a refusal again failed: ${errMsg(err)}`);
       }
       if (this.refusalOwed(rec, code)) owed.add(k);
+      else this.refusalsApplied.add(k);
     }
     return owed;
   }
