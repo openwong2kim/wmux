@@ -665,6 +665,14 @@ export default function PhoneConnectWizard({
       // Look again first, like the hub's Start: the popover may be a poll behind.
       let current = await api.status();
       const wantRemote = remote;
+      // The one click checked what was on screen. Input may have been turned
+      // off since: a raise that would now reach other devices is confirmed
+      // on step 2 first, never done silently here.
+      if (quick && wantRemote && sharedImpacts(current, roster, true, current.running && current.allowUpload === true).length > 0) {
+        onInfo(current);
+        setStep('permissions');
+        return;
+      }
       const wantUpload = quick ? current.running && current.allowUpload === true : upload;
       if (!current.running) {
         // Every grant the screen shows is sent as shown, so nothing the
@@ -718,7 +726,7 @@ export default function PhoneConnectWizard({
       if (!minted) await restoreGrants(restore);
       setBusy(false);
     }
-  }, [api, name, remote, upload, onInfo, restoreGrants, session, t]);
+  }, [api, name, remote, upload, roster, onInfo, restoreGrants, session, t]);
 
   // While the QR is up, follow the CODE: as long as the daemon still holds it
   // under this name, keep waiting; once it is gone, the device it minted is

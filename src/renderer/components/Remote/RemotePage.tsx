@@ -761,7 +761,11 @@ export default function RemotePage() {
             <>
               {/* A grandfathered grant can type but not approve: setting it makes it explicit. */}
               {(d.access === 'view' || d.grantImplicit) && (
-                <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => setConfirming({ kind: 'grant', id: d.key })} data-remote-grant={d.id}>{t('remotePage.allowTyping')}</Button>
+                <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => {
+                  // An older failure on this row would share the line the question uses.
+                  if (error?.key === d.key) setError(null);
+                  setConfirming({ kind: 'grant', id: d.key });
+                }} data-remote-grant={d.id}>{t('remotePage.allowTyping')}</Button>
               )}
               {d.access !== 'view' && (
                 <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => void setTyping(d, false)} data-remote-view-only={d.id}>{t('remotePage.makeViewOnly')}</Button>

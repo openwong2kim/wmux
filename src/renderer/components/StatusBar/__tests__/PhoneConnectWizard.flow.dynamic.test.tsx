@@ -213,6 +213,21 @@ describe('phone wizard — mounted', () => {
     expect(pairStart).not.toHaveBeenCalled();
   });
 
+  it('Can type on step 1 re-reads the server: input turned off since the screen was drawn goes to step 2, raised by nobody', async () => {
+    status = { ...FRONTED, allowInput: true };
+    roster = [{ deviceId: 'dev-old', name: 'Old phone', createdAt: 1, lastSeenAt: 1, allowInput: true, kind: 'phone' }];
+    await mountAndOpen();
+    // A roster with a device opens the popover's body; the wizard is one link away.
+    await click('Connect a phone step by step');
+    await click('Can type');
+    // Someone turns input off between the screen and the click.
+    status = { ...status, allowInput: false };
+    await click('Pair a phone');
+    expect(stepText()).toBe('Step 2 of 4');
+    expect(setGrants).not.toHaveBeenCalled();
+    expect(pairStart).not.toHaveBeenCalled();
+  });
+
   it('Pair a phone on step 1 leaves a running server\'s grants as they are', async () => {
     status = { ...FRONTED, allowUpload: true };
     await mountAndOpen();
