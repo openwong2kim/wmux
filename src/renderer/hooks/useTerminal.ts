@@ -1127,6 +1127,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // DOM renderer's cell, which the build is about to replace, so the PTY would
   // get a size the pane never shows. Whatever ends the wait fits and sends.
   const revealHoldRef = useRef<object | null>(null);
+  // Set by the main effect: its container-resize fit (runFit) and a reset of
+  // its last-sent cache. The hold's release fits through runFit, so the size
+  // it sends is the one cached, and resets the cache first: sends dropped
+  // during the wait (a reattach's re-assert) must not dedupe a later fit.
+  const runFitRef = useRef<(() => boolean) | null>(null);
+  const resetSentRef = useRef<(() => void) | null>(null);
   const firstShowReattachRef = useRef<(() => Promise<void> | undefined) | null>(null);
   // #1002 — set by the main effect when this mount adopted a parked terminal.
   // Read by the daemon reattach effect (which runs later in the same commit)
@@ -1242,8 +1248,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         const term = terminalRef.current;
         // Bail if the terminal was disposed or the pane swapped PTYs meanwhile.
         if (!term || ptyIdRef.current !== targetPtyId) return;
-        // A reveal's hold is on: its release sends the live size.
-        if (revealHoldRef.current) return;
         const { cols: c, rows: r } = term;
         if (c > 0 && r > 0) {
           window.electronAPI.pty.resize(targetPtyId, c, r).catch(() => { /* give up quietly */ });
@@ -2643,6 +2647,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Track last sent dimensions to avoid redundant resizes
     let lastSentCols = 0;
     let lastSentRows = 0;
+    resetSentRef.current = () => { lastSentCols = 0; lastSentRows = 0; };
 
     // The container-resize fit, extracted so the selection-release retry below
     // runs the SAME path — including scroll preservation and sendResize —
@@ -2778,6 +2783,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         return false;
       }
     };
+    runFitRef.current = () => runFit();
 
     // Auto-copy on selection (debounced) — selection survives just long enough
     // for the user to release the mouse, then we push it to the clipboard.
@@ -4599,6 +4605,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
       resizeScheduler.dispose();
       if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
+      runFitRef.current = null;
+      resetSentRef.current = null;
       if (isMac) { container.removeEventListener('paste', blockNativePaste, true); }
       detachAltClickGuard();
       detachPlainDragSelect();
@@ -5161,6 +5169,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       let cancelUpgrade: (() => void) | null = null;
       let upgradeFitRaf: number | null = null;
       let showAfterUpgrade: ((settled?: boolean, refit?: boolean) => void) | null = null;
+      let revealHold: object | null = null;
+      let paintOnRelease = false;
+      // The container-resize fit: it caches what it sends and keeps the #1436
+      // order on a shrink. The direct fit only before the main effect has run.
+      const fitLikeLayout = (): boolean => {
+        if (runFitRef.current) return runFitRef.current();
+        if (!claimFit(terminalRef.current, pendingFitRef)) return false;
+        fit();
+        return true;
+      };
       if (
         loadWebglRef.current &&
         disposeWebglRef.current &&
@@ -5187,21 +5205,32 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // A fresh mount's closed first-resize gate already waits for this
           // build, under its own bound: no second hold over it.
           const hold = {};
-          if (!resizeGateRef.current || resizeGateRef.current.isOpen) revealHoldRef.current = hold;
+          if (!resizeGateRef.current || resizeGateRef.current.isOpen) {
+            revealHold = hold;
+            revealHoldRef.current = hold;
+          }
           // `settled`: the upgrade job ran to an end (built, skipped or
           // failed), which is what an adoption's first fit waits for. The
           // bounded wait and the effect's cleanup only show the pane: the
           // renderer is still to come, or another reveal will build it.
           // `refit`: release the hold with the size the pane shows from now
           // on. Not from the cleanup: a pane hidden again sends nothing.
+          // Either way the last-sent cache is cleared, as when the first-resize
+          // gate opens: sends dropped meanwhile must not dedupe a later fit.
           showAfterUpgrade = (settled = false, refit = false) => {
             if (hideTimer !== null) { clearTimeout(hideTimer); hideTimer = null; }
             const held = revealHoldRef.current === hold;
-            if (held) revealHoldRef.current = null;
+            if (held) {
+              revealHoldRef.current = null;
+              resetSentRef.current?.();
+            }
             try {
               // Before the adoption settles: an adoption's first fit is still
-              // held then (fit() returns at once), and the settle runs it.
-              if (held && refit && isVisibleRef.current && claimFit(terminalRef.current, pendingFitRef)) fit();
+              // held then (runFit returns at once), and the settle runs it.
+              // The cold frame the reveal's frame held back paints after it.
+              if (held && refit && isVisibleRef.current && fitLikeLayout() && paintOnRelease) {
+                coldFrameRevealRef.current?.paint();
+              }
               if (settled) adoptSettleRef.current?.(true);
             } finally {
               if (el) el.style.opacity = '';
@@ -5243,7 +5272,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
               // pane invisible. Still held: the release fits and sends. Released
               // by the bounded wait: that fit used the DOM cell, so refit here.
               try {
-                if (revealHoldRef.current !== hold && claimFit(terminalRef.current, pendingFitRef)) fit();
+                if (revealHoldRef.current !== hold) fitLikeLayout();
               } finally {
                 show(true, true);
               }
@@ -5268,6 +5297,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // where the pool kept the old (possibly stale) context alive instead of
         // rebuilding it.
         glyphRepaintRef.current?.onVisible();
+        // The WebGL build is still queued: the hold's release fits, then
+        // paints the cold frame into the grid it keeps.
+        if (revealHold && revealHoldRef.current === revealHold) {
+          paintOnRelease = true;
+          return;
+        }
         if (!claimFit(terminalRef.current, pendingFitRef)) {
           console.debug('[Terminal] visibility fit deferred — active selection');
           return;

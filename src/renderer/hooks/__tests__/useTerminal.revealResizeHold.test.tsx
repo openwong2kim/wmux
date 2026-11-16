@@ -184,6 +184,34 @@ describe('useTerminal reveal holds the PTY size until the WebGL build', { timeou
     expect(new Set(sends('p-hold-reattach'))).toEqual(new Set(['57x30']));
   });
 
+  it('after a release, a fit landing on the size sent before the wait still goes out', async () => {
+    // The release fits like the layout does, so what it sends is what the
+    // dedup cache holds. A release that sent past that cache left it at the
+    // size from before the wait, and a later fit back to that size went unsent.
+    const { Harness, jobs, setDomCols } = await revealHiddenPane('p-hold-cache');
+    webgl.fail = true;
+    await act(async () => { jobs.at(-1)!(); });
+    await sendsReach('p-hold-cache', 1);
+    setDomCols(54);
+    await fireLayoutResize();
+    await sendsReach('p-hold-cache', 2);
+    expect(sends('p-hold-cache')).toEqual(['56x30', '54x30']);
+    // Hidden, then revealed again: no renderer yet (the build failed), so a
+    // new build is queued and held. This one succeeds: 57.
+    await act(async () => { root!.render(<Harness visible={false} />); });
+    webgl.fail = false;
+    const queued = jobs.length;
+    await act(async () => { root!.render(<Harness visible />); });
+    await act(async () => { await waitFor(() => jobs.length > queued, 4000, 'the second reveal queued a build'); });
+    await act(async () => { jobs.at(-1)!(); });
+    await sendsReach('p-hold-cache', 3);
+    expect(sends('p-hold-cache').at(-1)).toBe('57x30');
+    setDomCols(54);
+    await fireLayoutResize();
+    await sendsReach('p-hold-cache', 4);
+    expect(sends('p-hold-cache').at(-1)).toBe('54x30');
+  });
+
   it('sends the DOM cell size, once, when the build fails', async () => {
     const { jobs } = await revealHiddenPane('p-hold-failed');
     webgl.fail = true;
