@@ -8,6 +8,7 @@ vi.mock('../wmux-client', () => ({
 
 import { sendRpc } from '../wmux-client';
 import { registerRemoteAnswerTool, registerRemoteSpawnTools } from '../remoteSpawn';
+import { FIRST_PARTY_METHODS } from '../../main/mcp/firstParty';
 
 const mockSendRpc = sendRpc as unknown as ReturnType<typeof vi.fn>;
 
@@ -68,6 +69,10 @@ describe('remote_answer', () => {
     expect(mockSendRpc).toHaveBeenCalledWith('a2a.remote.answer', { taskId: 'rt-1', pickerId: '0123456789abcdef', option: 2, senderPtyId: 'pty-mine' });
     expect(res.isError).toBeUndefined();
     expect(JSON.parse(res.content[0]!.text)).toEqual({ ok: true, taskId: 'rt-1', messageId: 'an-1' });
+  });
+
+  it('its pipe method is first-party, so the bundled server is not held as unconfirmed', () => {
+    expect(FIRST_PARTY_METHODS.has('a2a.remote.answer')).toBe(true);
   });
 
   it('a refusal is an error result, with its reason', async () => {
