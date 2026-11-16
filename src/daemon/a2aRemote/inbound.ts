@@ -3,6 +3,7 @@ import {
   A2A_BRAIN_ALIAS,
   A2A_REMOTE_BODY_MAX,
   parseA2aRemoteImageRefs,
+  parseA2aRemoteAnswer,
   parseA2aRemoteNotice,
   parseA2aRemoteStatus,
   type A2aRemoteImageRef,
@@ -14,6 +15,7 @@ import {
   type A2aRemoteEnvelope,
   type A2aRemoteReceipt,
   type A2aRemoteStatusV1,
+  type A2aRemoteAnswerV1,
   type A2aRemoteErrorCode,
   type A2aRemoteTaskMarkerV1,
   type HostId,
@@ -86,6 +88,15 @@ export interface InboundDeps {
     /** True the first time a task's `gone` is seen (its log line); false after, until the task is forgotten. */
     firstGone?(taskId: string): boolean;
     forget(taskId: string): void;
+  };
+  /**
+   * Where the asking PC's answer to the question its task's worker shows goes
+   * (`kind: 'answer'`, headless delivery): taken at once, typed (or refused) in
+   * the background, and told back in the task's status. Absent, an answer is
+   * refused as unknown.
+   */
+  remoteAnswer?: {
+    take(taskId: string, messageId: string, answer: A2aRemoteAnswerV1): void;
   };
   /**
    * A host's notice about one of our own messages (`held-notice.1`): how many
@@ -212,7 +223,7 @@ async function applyInbound(
   }
 
   let onThisLink = false;
-  if (env.kind === 'reply' || env.kind === 'state' || env.kind === 'receipt' || env.kind === 'status') {
+  if (env.kind === 'reply' || env.kind === 'state' || env.kind === 'receipt' || env.kind === 'status' || env.kind === 'answer') {
     const marker = deps.taskService.getTask(env.taskId as string)?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
     onThisLink = marker?.v === 1 && marker.linkId === env.linkId;
   }
@@ -284,6 +295,17 @@ async function applyInbound(
     }
     // A task that ended has no worker status any more: taken, and dropped.
     if (open) deps.remoteStatus.note(taskId, env.status as A2aRemoteStatusV1, peer.hostId);
+    return { ok: true, taskId, duplicate: false };
+  }
+  if (env.kind === 'answer') {
+    // The sender's answer to the question its task's worker shows here: never a reply, never a state.
+    const task = deps.taskService.getTask(taskId);
+    const marker = task?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
+    if (!deps.remoteAnswer) return fail('bad-request', 'this PC takes no answer');
+    if (marker?.direction !== 'inbound' || task!.metadata.from.workspaceId !== remoteWs) {
+      return fail('forbidden', 'an answer is only for a task that host sent');
+    }
+    deps.remoteAnswer.take(taskId, env.messageId, env.answer as A2aRemoteAnswerV1);
     return { ok: true, taskId, duplicate: false };
   }
   if (env.kind === 'receipt') {
@@ -465,10 +487,18 @@ function parseEnvelope(raw: unknown): Parsed {
     case 'status':
       if (!isSafeId(taskId) || !parseA2aRemoteStatus(raw['status'])) return { error: 'bad-request' };
       break;
+    case 'answer':
+      // A picker id and a number; no text rides on it.
+      if (!isSafeId(taskId) || text !== undefined || !parseA2aRemoteAnswer(raw['answer'])) return { error: 'bad-request' };
+      break;
   }
   const envelope = { ...raw } as unknown as A2aRemoteEnvelope;
   if (images) envelope.images = images;
   else delete envelope.images;
+  // An answer only on its own kind, rebuilt from its checked shape.
+  const answer = kind === 'answer' ? parseA2aRemoteAnswer(raw['answer']) : null;
+  if (answer) envelope.answer = answer;
+  else delete envelope.answer;
   // The request to follow a task again is a boolean: anything else is refused, not ignored.
   if (raw['reopen'] !== undefined && typeof raw['reopen'] !== 'boolean') return { error: 'bad-request' };
   // A host's notice rides on a reply only, checked strictly: one that does not parse is refused, never

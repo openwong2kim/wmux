@@ -172,13 +172,15 @@ import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessSessionPort } from 
 import { createHeadlessSessions } from './a2aRemote/headlessSessions';
 import { endHeadlessOnStop, HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
 import { HeadlessStatusReporter } from './a2aRemote/headlessStatus';
+import { answerPicker, screenPicker } from './a2aRemote/headlessAnswer';
+import { AnswersStore } from './a2aRemote/answersStore';
 import { StatusLabelsStore } from './a2aRemote/statusLabelsStore';
 import { QUESTION_RECORD_KIND, screenQuestionOf } from './approvals/screenQuestion';
 import { A2A_REMOTE_RPC } from '../shared/a2aRemoteDelivery';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
-import { A2A_FEATURE_BUNDLE, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
+import { A2A_ANSWER_RPC, A2A_FEATURE_ANSWER, isA2aAnswersSetting, A2A_FEATURE_BUNDLE, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
@@ -306,7 +308,7 @@ import {
   shouldSuppressPush,
   type PushPresenceSuppressionConfig,
 } from './push/presence';
-import { ApprovalRegistry } from './approvals/ApprovalRegistry';
+import { ApprovalRegistry, type PromptScreenMark } from './approvals/ApprovalRegistry';
 import { WorkspaceFactStore, type WorkspaceFactRowInput } from './approvals/workspaceFacts';
 import { MoaPaneRpc, resolveMoaPane } from './web/moaPane';
 import { MoaPromptSync } from './web/moaPrompt';
@@ -563,6 +565,8 @@ const paneLocks = new PaneDeliveryLocks({ log: (line) => log('info', line) });
 /** Whether a pane holds a draft, the screen consulted (draftScreen.ts). */
 let draftOnScreen: DraftCheck | undefined;
 let headlessDeliveryRef: HeadlessDelivery | null = null;
+/** When the last "answer dropped: no headless agents" line was logged (once a minute at most). */
+let answersDroppedLoggedAt = 0;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 let noteCodexServerLost: ((id:string)=>void) | undefined;
 /** Contract v-next item 1: a Codex turn on a daemon-owned relay failed (set at boot). */
@@ -843,6 +847,51 @@ function sessionTextReader(sessionManager: DaemonSessionManager) {
 }
 
 /**
+ * A pane's visible grid at its live geometry, and the pane's state (output
+ * bytes, key-carrying input, incarnation) at the instant the ring was read.
+ * renderPaneScreen reads the ring synchronously before its first await, so
+ * the revision and incarnation below are the same instant. Shared by the
+ * approval registry's `terminal_prompt` and a headless answer.
+ */
+async function readPromptScreenOf(
+  sessionManager: DaemonSessionManager,
+  sessionId: string,
+): Promise<{ rows: readonly string[]; mark: PromptScreenMark; cols?: number; unknown?: readonly string[] } | null> {
+  const managed = sessionManager.getSession(sessionId);
+  if (!managed) return null;
+  const keyInputRevision = managed.bridge.getKeyInputRevision();
+  const incarnation = managed.meta.incarnationId ?? null;
+  const cols = managed.ptyProcess.cols ?? managed.meta.cols;
+  const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot, { reuse: true });
+  if (!frame) return null;
+  return {
+    rows: frame.rows,
+    mark: { bytes: frame.mark, keyInputRevision, incarnation },
+    ...(typeof cols === 'number' ? { cols } : {}),
+    ...(frame.unknown ? { unknown: frame.unknown } : {}),
+  };
+}
+
+/** A pane's state right now, read synchronously just before a driver's write. */
+function promptScreenMarkOf(sessionManager: DaemonSessionManager, sessionId: string): PromptScreenMark | null {
+  const managed = sessionManager.getSession(sessionId);
+  if (!managed) return null;
+  return {
+    bytes: managed.ringBuffer.totalBytesWritten,
+    keyInputRevision: managed.bridge.getKeyInputRevision(),
+    incarnation: managed.meta.incarnationId ?? null,
+  };
+}
+
+/** A driver's own key: the pane's new key revision, in the same synchronous block as the write, or null. */
+function writeStepKeyOf(sessionManager: DaemonSessionManager, sessionId: string, data: string): number | null {
+  const managed = sessionManager.getSession(sessionId);
+  if (!managed) return null;
+  managed.ptyProcess.write(data);
+  return managed.bridge.noteInput(data, { selfWrite: true });
+}
+
+/**
  * Build the registry. Split out of main() only so the two dependencies that
  * need a live sessionManager can be closures over it.
  *
@@ -891,12 +940,7 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
     win32Input: () => process.platform === 'win32',
     // The stepwise driver's own keys: the new key revision comes back in the
     // same synchronous block as the write (see DaemonPTYBridge.noteInput).
-    writeStepKey: (sessionId, data) => {
-      const managed = sessionManager.getSession(sessionId);
-      if (!managed) return null;
-      managed.ptyProcess.write(data);
-      return managed.bridge.noteInput(data, { selfWrite: true });
-    },
+    writeStepKey: (sessionId, data) => writeStepKeyOf(sessionManager, sessionId, data),
     noteSubmitted: (sessionId) => {
       sessionManager.getSession(sessionId)?.bridge.noteSubmitted();
     },
@@ -904,21 +948,7 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
     // state (output bytes, key-carrying input, incarnation) at the instant the
     // ring was read. renderPaneScreen reads the ring synchronously before its
     // first await, so the revision and incarnation below are the same instant.
-    readPromptScreen: async (sessionId) => {
-      const managed = sessionManager.getSession(sessionId);
-      if (!managed) return null;
-      const keyInputRevision = managed.bridge.getKeyInputRevision();
-      const incarnation = managed.meta.incarnationId ?? null;
-      const cols = managed.ptyProcess.cols ?? managed.meta.cols;
-      const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot, { reuse: true });
-      if (!frame) return null;
-      return {
-        rows: frame.rows,
-        mark: { bytes: frame.mark, keyInputRevision, incarnation },
-        ...(typeof cols === 'number' ? { cols } : {}),
-        ...(frame.unknown ? { unknown: frame.unknown } : {}),
-      };
-    },
+    readPromptScreen: (sessionId) => readPromptScreenOf(sessionManager, sessionId),
     // The pane's own Claude transcript (the projector's containment-checked
     // path): its latest tool call still waiting for a result.
     pendingToolUse: (sessionId) => {
@@ -931,15 +961,7 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       const base = transcriptPath ? path.basename(transcriptPath) : '';
       return base.endsWith('.jsonl') ? base.slice(0, -'.jsonl'.length) : null;
     },
-    promptScreenMark: (sessionId) => {
-      const managed = sessionManager.getSession(sessionId);
-      if (!managed) return null;
-      return {
-        bytes: managed.ringBuffer.totalBytesWritten,
-        keyInputRevision: managed.bridge.getKeyInputRevision(),
-        incarnation: managed.meta.incarnationId ?? null,
-      };
-    },
+    promptScreenMark: (sessionId) => promptScreenMarkOf(sessionManager, sessionId),
     // #783 — wake the GateBroker waiter when a gate record is resolved by the
     // phone. The broker holds the bridge RPC open; this call closes it.
     notifyGateResolved: (gateId, decision) => {
@@ -10892,6 +10914,8 @@ async function main(): Promise<void> {
     const a2aSpawnPolicy = new SpawnPolicyStore({ dir: a2aDir, log: a2aLog });
     // Whether a menu's labels leave this PC in a worker's status (`wmux remote status-labels`).
     const a2aStatusLabels = new StatusLabelsStore({ dir: a2aDir, log: a2aLog });
+    // Whether another PC's answer is typed into a headless worker's question (`wmux remote answers`).
+    const a2aAnswers = new AnswersStore({ dir: a2aDir, log: a2aLog });
     const a2aSpawnRequests = new SpawnRequestStore({ dir: a2aDir, log: a2aLog });
     // Continuing a conversation from another PC: off until this PC's human opts in.
     const a2aContinuePolicy = new ContinuePolicyStore({ dir: a2aDir, log: a2aLog });
@@ -11184,6 +11208,17 @@ async function main(): Promise<void> {
       if (res.ok) log('info', `[a2a-remote] status labels: ${labels}`);
       return res;
     });
+    onA2aRpc(A2A_ANSWER_RPC.get, async () => ({
+      ...a2aAnswers.get(),
+      effective: a2aAnswers.effective(a2aSpawnPolicy.get().followUps === 'direct'),
+    }));
+    onA2aRpc(A2A_ANSWER_RPC.set, async (params) => {
+      const answers = params['answers'];
+      if (!isA2aAnswersSetting(answers)) return { ok: false, error: "answers must be 'on', 'off' or 'default'" };
+      const res = a2aAnswers.set(answers);
+      if (res.ok) log('info', `[a2a-remote] answers: ${answers}`);
+      return res;
+    });
     registerSpawnRpc(onA2aRpc, {
       policy: a2aSpawnPolicy,
       requests: a2aSpawnRequests,
@@ -11249,6 +11284,25 @@ async function main(): Promise<void> {
         continueBytes: a2aContinueBytes,
         ...(a2aStarter ? { spawnLinks: a2aStarter } : {}),
         ...(a2aAsks ? { spawnAsks: a2aAsks } : {}),
+        // Typed (or refused) by the headless delivery; how it went goes back in the task's status.
+        answers: {
+          take: (taskId, messageId, answer) => {
+            const delivery = headlessDeliveryRef;
+            // No headless delivery this run: no agent here was started for that PC, and no status goes back.
+            if (!delivery) {
+              // Once a minute at most: a peer that keeps sending does not fill the log.
+              const now = Date.now();
+              if (now - answersDroppedLoggedAt >= 60_000) {
+                answersDroppedLoggedAt = now;
+                log('info', `[headless] task ${taskId}: answer ${messageId} dropped: this PC runs no headless agents`);
+              }
+              return;
+            }
+            void delivery.answer(taskId, messageId, answer).then((res) => {
+              if (res !== 'duplicate') log('info', `[headless] task ${taskId}: answer ${messageId}: ${res.outcome}${res.outcome === 'not-answered' ? ` (${res.reason})` : ''}`);
+            }).catch((err: unknown) => log('warn', `[headless] task ${taskId}: answer ${messageId} failed: ${String(err)}`));
+          },
+        },
         bundleAsks: a2aBundleAsker,
         // No box this run (no headless starts kept here): an ask is taken and dropped, as by a box that is off.
         bundles: { applyInbound: (env, peer) => a2aBundleBox?.applyInbound(env, peer) ?? { ok: true, duplicate: false } },
@@ -11256,7 +11310,7 @@ async function main(): Promise<void> {
         // messages and pings its streams: tell the servers it joins, and the
         // joiners in its hello.
         // `bundle.1` only while bundles are on (read at start: a change takes effect on the next one).
-        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE, ...(a2aBundlesOn() ? [A2A_FEATURE_BUNDLE] : [])],
+        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_ANSWER, ...(a2aBundlesOn() ? [A2A_FEATURE_BUNDLE] : [])],
         uploadsRoot: path.join(wmuxDir, 'uploads'),
         // A live terminal of the sender's workspace (stamped at spawn by main), else none.
         spawnCwdOf: (ptyId, workspaceId) => {
@@ -11380,6 +11434,23 @@ async function main(): Promise<void> {
             });
             return kind === 'none' || kind === 'unknown' ? 'dialog' : kind;
           },
+          // The picker an answer from the asking PC is typed into, read as the answer reads it (headlessAnswer.ts).
+          pickerOnScreen: async (sessionId) => {
+            const screen = await readPromptScreenOf(sessionManager, sessionId);
+            if (!screen) return null;
+            const found = screenPicker(sessionId, screen.rows);
+            return 'refused' in found ? null : { pickerId: found.pickerId, optionCount: found.optionCount };
+          },
+          answers: () => a2aAnswers.effective(a2aSpawnPolicy.get().followUps === 'direct'),
+          // One digit, under the pane's delivery lock and the stepwise answer's fences.
+          answerOnScreen: (sessionId, answer, stillAllowed) => answerPicker({
+            readPromptScreen: (sid) => readPromptScreenOf(sessionManager, sid),
+            promptScreenMark: (sid) => promptScreenMarkOf(sessionManager, sid),
+            writeStepKey: (sid, data) => writeStepKeyOf(sessionManager, sid, data),
+            lock: (sid) => paneLocks.acquire(sid, { key: 'headless-answer' }, PANE_LOCK_DAEMON_WAIT_MS),
+            unlock: (sid, token) => paneLocks.release(sid, token),
+            stillAllowed,
+          }, sessionId, answer),
           status: headlessStatus,
           // The hold from the transcript's own limit line: a headless session has no hook, and its
           // bridge may not count the turn as open, which the API-error stand-in needs.

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { A2A_REMOTE_BODY_MAX, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
+import { A2A_REMOTE_BODY_MAX, ANSWER_OUTCOMES_MAX, type A2aRemoteAnswerOutcome, type A2aRemoteAnswerV1, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
 import { truncateUtf8 } from '../../shared/chatv2/limits';
 import type { SessionPromptScheduleResult } from '../../shared/sessionPromptSchedule';
 import { sanitizeBracketedPastePayload } from '../../shared/ptyMessageDelivery';
@@ -12,6 +12,9 @@ import { apiErrorFromTranscriptLine } from '../transcript/apiErrorTurnEnd';
 import { parseTranscriptLine } from '../transcript/parseEntry';
 import { readTranscriptDelta } from '../transcript/readTail';
 import { SUBAGENT_COUNTERS, type SubagentCounter } from '../transcript/subagentCount';
+import type { HeadlessAnswerResult } from './headlessAnswer';
+
+type HeadlessAnswerReason = Extract<HeadlessAnswerResult, { outcome: 'not-answered' }>['reason'];
 import type { HeadlessStartRecordV1 } from './headlessStartStore';
 import { LINK_ENDED_REASON } from './headlessStarter';
 import { errMsg } from './storeFile';
@@ -202,6 +205,16 @@ export interface HeadlessDeliveryDeps {
    */
   questionKind?(sessionId: string, asking: boolean): Promise<A2aRemoteQuestionKind>;
   /**
+   * The one-question single-select picker on the session's screen, the only
+   * shape an answer from the asking PC is typed into (headlessAnswer.ts): its
+   * id and number of choices, or null.
+   */
+  pickerOnScreen?(sessionId: string): Promise<{ pickerId: string; optionCount: number } | null>;
+  /** This PC's answers setting (answersStore.ts): `damaged` reads as off. */
+  answers?(): 'on' | 'off' | 'damaged';
+  /** Type an answer into the session's picker (headlessAnswer.ts `answerPicker`). Never throws. */
+  answerOnScreen?(sessionId: string, answer: A2aRemoteAnswerV1, stillAllowed: () => HeadlessAnswerReason | null): Promise<HeadlessAnswerResult>;
+  /**
    * Where each task's status goes (headlessStatus.ts): every pass, the tasks
    * this delivery works on; and `gone`, before a start's tasks are ended.
    */
@@ -228,6 +241,9 @@ export interface HeadlessTaskStatus {
     question?: A2aRemoteQuestionKind;
     menuId?: string;
     options?: string[];
+    optionCount?: number;
+    pickerId?: string;
+    answers?: A2aRemoteAnswerOutcome[];
     resetsAt?: string;
     provider?: string;
     background?: number;
@@ -556,7 +572,25 @@ export class HeadlessDelivery {
   /** Sessions whose start is ending: nothing more is typed into them. */
   private readonly ending = new Set<string>();
   /** The question clock of each session's current task (owed, or in its turn). */
-  private readonly questions = new Map<string, { since: number | null; probedAt: number; noticedTask: string | null; taskId?: string; kind?: A2aRemoteQuestionKind | null }>();
+  private readonly questions = new Map<string, {
+    since: number | null;
+    probedAt: number;
+    noticedTask: string | null;
+    taskId?: string;
+    kind?: A2aRemoteQuestionKind | null;
+    /**
+     * Minted each time a question appears on the screen: the picker id the
+     * asking PC sees binds to it, so an answer meant for an earlier showing
+     * of the same question (queued while its link was down) is refused.
+     */
+    nonce?: string;
+    /** `pickerId`: the id sent in the status (with the nonce); `screenId`: the screen's own (headlessAnswer.ts). */
+    picker?: { pickerId: string; screenId: string; optionCount: number } | null;
+  }>();
+  /** How the latest answers from the asking PC went, by task (at most ANSWER_OUTCOMES_MAX): sent with each status. */
+  private readonly answered = new Map<string, A2aRemoteAnswerOutcome[]>();
+  /** Answers being typed now (`taskId \0 messageId`): the same message is never typed twice. */
+  private readonly answering = new Set<string>();
   /** After an answer, by session: the transcript read on for turns nothing on this PC started. */
   private readonly afterwards = new Map<string, Episode>();
   /** Replies sent on each task besides its answers (progress, later turns): bounded by FURTHER_REPLIES_MAX. */
@@ -787,17 +821,32 @@ export class HeadlessDelivery {
     if (inTurn?.limitStopped || this.deps.limitHeld?.(sessionId)) {
       q.since = null;
       q.kind = null;
+      q.picker = null;
       return;
     }
     const seen = await this.deps.questionOnScreen(sessionId);
     if (seen === 'clear') {
       q.since = null;
       q.kind = null;
+      q.picker = null;
     }
     if (seen !== 'dialog') return;
-    q.since ??= now;
+    if (q.since == null) {
+      q.since = now;
+      q.nonce = crypto.randomUUID();
+    }
     // Which question, for the asking PC's status: read with the same pass, never acted on.
     q.kind = this.deps.questionKind ? await this.deps.questionKind(sessionId, !!inTurn?.ask).catch(() => 'dialog' as const) : 'dialog';
+    // A picker the asking PC can answer, only while answers are on here: read off the screen, since in auto
+    // mode the transcript has no call yet.
+    const screen = this.deps.pickerOnScreen && this.deps.answers?.() === 'on' ? await this.deps.pickerOnScreen(sessionId).catch(() => null) : null;
+    q.picker = screen
+      ? {
+        pickerId: crypto.createHash('sha256').update(`${screen.pickerId}\n${q.nonce ?? ''}`).digest('hex').slice(0, 16),
+        screenId: screen.pickerId,
+        optionCount: screen.optionCount,
+      }
+      : null;
     const waited = now - q.since;
     if (waited >= QUESTION_TIMEOUT_MS) {
       this.deps.log('warn', `[headless] task ${taskId}: ${QUESTION_REASON}`);
@@ -814,12 +863,84 @@ export class HeadlessDelivery {
   /** The status of each open task a live start of this run works on. */
   private statuses(starts: readonly HeadlessStartRecordV1[]): HeadlessTaskStatus[] {
     const out: HeadlessTaskStatus[] = [];
+    for (const taskId of [...this.answered.keys()]) if (this.ended(taskId)) this.answered.delete(taskId);
     for (const task of this.deps.tasks.remote()) {
       if ((task.metadata.remote as A2aRemoteTaskState | undefined)?.direction !== 'inbound' || this.ended(task.id)) continue;
       const rec = this.ownerOf(task, starts);
-      if (rec) out.push({ taskId: task.id, ...this.statusOf(task, rec) });
+      if (!rec) continue;
+      const status = this.statusOf(task, rec);
+      // The latest answers' outcomes go with whatever the worker does now.
+      const answers = this.answered.get(task.id);
+      out.push({ taskId: task.id, ...(answers && status.kind !== null ? { ...status, detail: { ...status.detail, answers: [...answers] } } : status) });
     }
     return out;
+  }
+
+  /**
+   * The asking PC's answer to the question its task's worker shows. Only for
+   * an open task this PC received from that PC, owned by one of this run's live
+   * headless starts, while this PC's answers setting is on; the key goes in
+   * through `answerOnScreen`. The outcome is kept for the task's status. The
+   * same message is taken once: a resend of one being typed, or of the last
+   * one, changes nothing.
+   */
+  async answer(taskId: string, messageId: string, answer: A2aRemoteAnswerV1): Promise<HeadlessAnswerResult | 'duplicate'> {
+    const key = `${taskId}\0${messageId}`;
+    if (this.answering.has(key) || this.answered.get(taskId)?.some((o) => o.messageId === messageId)) return 'duplicate';
+    // One answer at a time per task: another arriving meanwhile is not typed, and says so.
+    if ([...this.answering].some((k) => k.startsWith(`${taskId}\0`))) {
+      const busy: HeadlessAnswerResult = { outcome: 'not-answered', reason: 'lock-busy' };
+      this.record(taskId, messageId, busy);
+      return busy;
+    }
+    this.answering.add(key);
+    try {
+      const result = await this.answerOnce(taskId, answer);
+      this.record(taskId, messageId, result);
+      return result;
+    } finally {
+      this.answering.delete(key);
+    }
+  }
+
+  /** Kept for the task's status only while one of this run's live starts owns it: no status goes for any other. */
+  private record(taskId: string, messageId: string, result: HeadlessAnswerResult): void {
+    const task = this.deps.tasks.get(taskId);
+    if (!task || this.ended(taskId) || !this.ownerOf(task, this.deps.starts.list())) return;
+    const list = [...(this.answered.get(taskId) ?? []), { messageId, ...result }];
+    this.answered.set(taskId, list.slice(-ANSWER_OUTCOMES_MAX));
+  }
+
+  private async answerOnce(taskId: string, answer: A2aRemoteAnswerV1): Promise<HeadlessAnswerResult> {
+    const no = (reason: HeadlessAnswerReason): HeadlessAnswerResult => ({ outcome: 'not-answered', reason });
+    const refused = this.answerRefusal(taskId);
+    if (refused) return no(refused);
+    const task = this.deps.tasks.get(taskId)!;
+    const rec = this.ownerOf(task, this.deps.starts.list());
+    if (!rec || !this.deps.answerOnScreen) return no('not-headless');
+    // The picker this PC last told the asking PC about, on this task, in this showing of the question.
+    const q = this.questions.get(rec.sessionId);
+    if (!q?.picker || q.since == null || q.taskId !== taskId) return no('no-picker');
+    if (q.picker.pickerId !== answer.pickerId) return no('picker-changed');
+    const sessionId = rec.sessionId;
+    // Asked again right before the key: the task may have ended, its start changed, or answers gone off since.
+    const stillAllowed = (): HeadlessAnswerReason | null => this.answerRefusal(taskId)
+      ?? (this.ownerOf(this.deps.tasks.get(taskId)!, this.deps.starts.list())?.sessionId === sessionId ? null : 'not-headless');
+    const result = await this.deps.answerOnScreen(sessionId, { pickerId: q.picker.screenId, option: answer.option }, stillAllowed);
+    // Answered: this showing of the question is over, whatever the next probe sees.
+    if (result.outcome === 'answered' && this.questions.get(sessionId) === q) q.picker = null;
+    return result;
+  }
+
+  /** Why no answer may be typed for this task now (answers setting, task state, headless mode), or null. */
+  private answerRefusal(taskId: string): HeadlessAnswerReason | null {
+    const setting = this.deps.answers?.() ?? 'off';
+    if (setting === 'damaged') return 'answers-damaged';
+    if (setting !== 'on') return 'answers-off';
+    const task = this.deps.tasks.get(taskId);
+    if (!task || (task.metadata.remote as A2aRemoteTaskState | undefined)?.direction !== 'inbound' || this.ended(taskId)) return 'not-open';
+    if (this.stopped || !this.deps.mode.active()) return 'not-headless';
+    return null;
   }
 
   /** At its usage limit, then a question it waits on, then in a turn, then waiting for more. */
@@ -833,11 +954,17 @@ export class HeadlessDelivery {
       const resetsAt = limitResetOf(active.limit);
       return { kind: 'usage-limit', detail: { provider: rec.agent, ...(resetsAt != null ? { resetsAt: new Date(resetsAt).toISOString() } : {}) } };
     }
-    if (active?.ask) {
-      return { kind: 'question', detail: { question: 'menu', menuId: active.ask.id, ...(active.ask.options.length > 0 ? { options: active.ask.options } : {}) } };
-    }
     const q = this.questions.get(rec.sessionId);
-    if (q?.since != null && q.taskId === task.id) return { kind: 'question', detail: { question: q.kind ?? 'dialog' } };
+    // The picker read off the screen, for an answer from the asking PC: its id and how many choices.
+    const picker = q?.since != null && q.taskId === task.id && q.picker ? q.picker : null;
+    const answerable = picker ? { pickerId: picker.pickerId, optionCount: picker.optionCount } : {};
+    if (active?.ask) {
+      return {
+        kind: 'question',
+        detail: { question: 'menu', menuId: active.ask.id, ...(active.ask.options.length > 0 ? { options: active.ask.options } : {}), ...answerable },
+      };
+    }
+    if (q?.since != null && q.taskId === task.id) return { kind: 'question', detail: { question: picker ? 'menu' : q.kind ?? 'dialog', ...answerable } };
     if ((inTurn && !inTurn.outcome) || (!inTurn && active?.busy)) {
       const background = active?.work?.background ?? 0;
       return { kind: 'working', ...(background > 0 ? { detail: { background } } : {}) };

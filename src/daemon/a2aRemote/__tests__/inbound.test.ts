@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope, type A2aRemoteStatusV1 } from '../../../shared/a2aRemote';
+import { A2A_REMOTE_PROTOCOL, shownRemoteStatus, type A2aRemoteAnswerV1, type A2aRemoteEnvelope, type A2aRemoteStatusV1 } from '../../../shared/a2aRemote';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { remoteTaskId } from '../ids';
@@ -683,6 +683,23 @@ describe('a worker\'s status on a task this PC sent', () => {
     expect(noted).toEqual([]);
   });
 
+  it('a picker id and an answer outcome are kept only in their checked shapes; the reason\'s words are this PC\'s own', async () => {
+    const linkId = activeLink();
+    const out = await sentTask(linkId);
+    await acceptInbound(env(linkId, {
+      ...status({ kind: 'question', detail: { question: 'menu', pickerId: '0123456789abcdef', optionCount: 2, answers: [{ messageId: 'an-1', outcome: 'not-answered', reason: 'picker-changed' }] } }),
+      taskId: out,
+    }), peer, withStatus);
+    const got = noted[0]![1];
+    expect(got.detail).toEqual({ question: 'menu', pickerId: '0123456789abcdef', optionCount: 2, answers: [{ messageId: 'an-1', outcome: 'not-answered', reason: 'picker-changed' }] });
+    expect(shownRemoteStatus(got).detail?.answers?.[0]?.reasonText).toMatch(/not the one answered/);
+    await acceptInbound(env(linkId, {
+      ...status({ kind: 'working', detail: { pickerId: 'NOT-HEX-0123456', answers: [{ messageId: 'an-2', outcome: 'not-answered', reason: 'PEER TEXT' }] } as never }),
+      taskId: out,
+    }), peer, withStatus);
+    expect(noted[1]![1]).toEqual({ kind: 'working', since: '2026-11-13T06:00:00.000Z' });
+  });
+
   it('a task that ended keeps none: one sent after is taken and dropped; its ending state forgets the one kept', async () => {
     const linkId = activeLink();
     const out = await sentTask(linkId);
@@ -885,5 +902,53 @@ describe('a host notice about one of our messages (held-notice.1, #3326)', () =>
     await acceptInbound(env(linkId, { kind: 'reply', taskId, messageId: 'plain-1', text: 'a reply' }), peer, noticeDeps);
     const item = (tasks.getTask(taskId)!.metadata.remote as { inbox: Array<{ messageId: string; kind: string }> }).inbox.find((i) => i.messageId === 'plain-1')!;
     expect(item.kind).toBe('reply');
+  });
+});
+
+describe('an answer from the sender of a task, to the question its worker shows here (answer.1)', () => {
+  let taken: Array<[string, string, A2aRemoteAnswerV1]>;
+  let withAnswer: InboundDeps;
+  const ANSWER: A2aRemoteAnswerV1 = { pickerId: '0123456789abcdef', option: 2 };
+  beforeEach(() => {
+    taken = [];
+    withAnswer = { ...deps, remoteAnswer: { take: (taskId, messageId, answer) => { taken.push([taskId, messageId, answer]); } } };
+  });
+  async function receivedTask(linkId: string): Promise<string> {
+    const e = env(linkId, {});
+    await acceptInbound(e, peer, withAnswer);
+    return remoteTaskId(linkId, e.messageId);
+  }
+  const answerEnv = (linkId: string, taskId: string, o: Record<string, unknown> = {}): A2aRemoteEnvelope =>
+    ({ ...env(linkId, { kind: 'answer', text: undefined, taskId }), answer: ANSWER, ...o } as unknown as A2aRemoteEnvelope);
+
+  it('is handed on for a task that host sent, never stored as a message or a state', async () => {
+    const linkId = activeLink();
+    const taskId = await receivedTask(linkId);
+    const before = structuredClone(tasks.getTask(taskId));
+    const e = answerEnv(linkId, taskId);
+    expect(await acceptInbound(e, peer, withAnswer)).toMatchObject({ ok: true, taskId });
+    expect(taken).toEqual([[taskId, e.messageId, ANSWER]]);
+    expect(tasks.getTask(taskId)).toEqual(before);
+  });
+
+  it('is refused for a task this PC sent, with text on it, malformed, or on a PC that takes none', async () => {
+    const linkId = activeLink();
+    const taskId = await receivedTask(linkId);
+    const mine = remoteTaskId(linkId, 'mine-1');
+    await tasks.createTask({
+      id: mine,
+      title: 'mine',
+      from: { workspaceId: 'ws-b', name: 'Backend', paneId: 'pane-b' },
+      to: { workspaceId: `remote:${linkId}`, name: 'pc-a/ws-a/claude' },
+      history: [{ kind: 'message', messageId: 'mine-1', role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+      remote: { v: 1, linkId, hostId: HOST, messageId: 'mine-1', direction: 'outbound', kind: 'pane' },
+    });
+    expect(await acceptInbound(answerEnv(linkId, mine), peer, withAnswer)).toMatchObject({ ok: false, error: 'forbidden' });
+    expect(await acceptInbound(answerEnv(linkId, taskId, { text: 'type this' }), peer, withAnswer)).toMatchObject({ ok: false, error: 'bad-request' });
+    for (const answer of [{ pickerId: 'nothex', option: 1 }, { pickerId: '0123456789abcdef', option: 0 }, { pickerId: '0123456789abcdef', option: 10 }, { pickerId: '0123456789abcdef', option: 1.5 }, null]) {
+      expect(await acceptInbound(answerEnv(linkId, taskId, { answer }), peer, withAnswer)).toMatchObject({ ok: false, error: 'bad-request' });
+    }
+    expect(await acceptInbound(answerEnv(linkId, taskId), peer, deps)).toMatchObject({ ok: false, error: 'bad-request' });
+    expect(taken).toEqual([]);
   });
 });

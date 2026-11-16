@@ -252,18 +252,33 @@ With headless mode on:
   for more, on a question, at its usage limit, gone) as `remoteStatus` in
   `a2a_task_query`, when its build knows it. For the agent's own question
   menu the choices are sent along, but only once the agent's transcript
-  holds the menu. With Claude Code 2.1.323 and the real service (observed
-  on macOS) the menu was not in the transcript for at least 1 min 45 s while
-  it was open; for as long as it is not there, an open menu shows as
-  `question` with `dialog` and no choices. To keep them on this host and send only
+  holds the menu. In auto permission mode, which headless sessions use,
+  Claude Code writes the menu to the transcript only when it closes
+  (observed with the real service on macOS); for as long as it is not
+  there, an open menu shows as `question` with `dialog` and no choices. To keep them on this host and send only
   how many there are, run `wmux remote status-labels keep` (`send` turns
   it back; with no argument it prints the setting). The setting has its own
   file, `a2a-remote-status.json`, next to the other remote settings; if that
   file is there but cannot be read, the choices are kept. It is a setting for
   this host's owner, not a limit on the host's own agents, which can change it
   like the other remote settings.
-- An agent that stops on a question (a permission prompt, say) cannot be
-  answered here. After about a minute the asking PC is told so, once. If
+- One kind of question can be answered from the asking PC: the agent's own
+  question menu (AskUserQuestion) when it holds a single single-choice
+  question. Its status then carries `pickerId` and `optionCount`, read off
+  this host's screen (no screen text is sent). The agent that sent the task
+  runs `wmux remote answer <task-id> <option> --picker <picker-id>` from its
+  own pane; this host types that choice's number only while the same menu
+  is still on screen and nobody has touched it, and says how it went in the
+  next status (`detail.answers`: `answered`, or `not-answered` with a reason
+  in plain words). Answers are on where follow-ups reach the agent directly
+  (`--follow-ups direct`) and off where they wait for approval here;
+  `wmux remote answers on|off|default` changes that (with no argument it
+  prints the setting). The setting has its own file,
+  `a2a-remote-answers.json`; if that file is there but cannot be read,
+  answers are off and the asking PC is told why.
+- Any other question (a permission prompt, a menu of several questions or
+  several choices, the folder-trust prompt) cannot be answered here. After
+  about a minute the asking PC is told so, once. If
   the question is still there after 10 minutes, the task ends with that
   reason: canceled if it was never typed in, failed if the agent was working
   on it. A task waiting behind the same question ends at once. The agent
