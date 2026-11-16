@@ -1115,7 +1115,12 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   know; the UI never says "A2A") and a
   **Details** toggle. While phone access is off, Share & pair sits on
   the line (its popover leads with Pair a phone, which starts sharing and
-  shows the QR in the same click. It is offered only once the address will
+  shows the QR in the same click. Under the phone's name, before the pair
+  button, a two-option choice says what the phone may do: View only (the
+  default) or Can type, the wizard's own two words, with one line under it.
+  Can type there also ticks this computer's Allow input, as the wizard does;
+  the running card's choice leaves the server's input alone and says when it
+  is off. A computer being paired gets the same choice. It is offered only once the address will
   be reachable: a usable tailnet ticks HTTPS over Tailscale visibly first,
   never the LAN; otherwise the popover says why, as the wizard's first step
   does. Start stays as a secondary that starts exactly what the boxes show).

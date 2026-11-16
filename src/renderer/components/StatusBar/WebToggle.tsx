@@ -23,6 +23,7 @@ import Popover, { PopoverSection } from '../ui/Popover';
 import Button from '../ui/Button';
 import Checkbox from '../ui/Checkbox';
 import Field from '../ui/Field';
+import SegmentedControl from '../ui/SegmentedControl';
 import Input from '../ui/Input';
 import Badge from '../ui/Badge';
 import { DECK_ICON_BUTTON, deckIconTone } from '../Deck/deckIconStyles';
@@ -649,6 +650,25 @@ export function WebPopoverBody({
       />
     </>
   );
+  // What the device being paired may do, chosen right where it is paired, the
+  // same two words as the wizard and the Remote page. `hint` says it in a line
+  // under the choice (the phone card); `inputOff` warns that this computer's
+  // own input is off, so a device that may type cannot yet.
+  const accessChoice = (allow: boolean, onToggle: () => void, testId: string, hint: string | null, inputOff: boolean) => (
+    <>
+      <SegmentedControl<'view' | 'type'>
+        value={allow ? 'type' : 'view'}
+        options={[
+          { value: 'view', label: t('web.wizardViewOnly'), disabled: busy },
+          { value: 'type', label: t('web.wizardRemoteControl'), disabled: busy },
+        ]}
+        onValueChange={(v) => { if ((v === 'type') !== allow) onToggle(); }}
+        ariaLabel={t('web.pairAllowInput')}
+        data-testid={testId}
+      />
+      {allow && inputOff ? <p className="ui-note">{t('web.pairInputOff')}</p> : hint ? <p className="ui-note">{hint}</p> : null}
+    </>
+  );
   // Quoted tool output (tailscale's own lines), with its one URL clickable,
   // and the one button that fixes it when there is one (open Tailscale, or
   // its download page) — never a command run on the person's behalf.
@@ -687,6 +707,7 @@ export function WebPopoverBody({
             start but are not required for it. */}
         <PopoverSection title={t('web.connectPhone')}>
           {phoneNameInput}
+          {accessChoice(pairAllowInput, onTogglePairAllowInput, 'pair-access', t(pairAllowInput ? 'web.wizardRemoteHint' : 'web.wizardViewOnlyHint'), false)}
           <div className="flex flex-wrap items-center gap-2">
             {/* In flight or blocked it is not the primary: DESIGN.md keeps
                 the warm fill off disabled and running actions. */}
@@ -875,11 +896,9 @@ export function WebPopoverBody({
                 default — read-only is the mistake you can fix from the roster,
                 where a keyboard handed out by accident is not noticed until
                 something has been typed. */}
+            {accessChoice(pairAllowInput, onTogglePairAllowInput, 'pair-access', t(pairAllowInput ? 'web.pairCanTypeHint' : 'web.wizardViewOnlyHint'), info.allowInput !== true)}
             {/* What the device will reach, said where its typing grant is chosen. */}
             <PairingScope />
-            <Field label={t('web.pairAllowInput')}>
-              <Checkbox checked={pairAllowInput} onCheckedChange={() => onTogglePairAllowInput()} />
-            </Field>
             <Button
               variant={busy || deviceName.trim().length === 0 ? 'secondary' : 'primary'}
               size="sm"
@@ -966,12 +985,10 @@ export function WebPopoverBody({
               aria-label={t('web.computerNameHint')}
               className="w-full text-[13px]"
             />
+            {accessChoice(computerAllowInput, onToggleComputerAllowInput, 'computer-access', null, info.allowInput !== true)}
             {/* What the other computer will reach, said where its typing
                 grant is chosen. */}
             <PairingScope />
-            <Field label={t('web.pairAllowInput')}>
-              <Checkbox checked={computerAllowInput} onCheckedChange={() => onToggleComputerAllowInput()} />
-            </Field>
             <Button
               size="sm"
               onClick={onStartComputerPairing}
@@ -1462,6 +1479,28 @@ export default function WebToggle({ variant = 'icon', compact = false, onOpenCha
   const webProblem = useListenProblem('web', open && listenError ? `${listenError.code}:${listenError.port}` : null);
 
   /**
+   * The phone card's View only / Can type. Stopped, Can type also ticks this
+   * computer's Allow input (shown below it), as the wizard's choice does, so
+   * the phone can type once paired; going back to View only unticks it only
+   * if this choice was what ticked it. Running, the server's input is left as
+   * it is and the card says when it is off.
+   */
+  const inputTickedForPair = useRef(false);
+  const handleTogglePairAccess = useCallback(() => {
+    const next = !pairAllowInput;
+    setPairAllowInput(next);
+    if (info.running) return;
+    if (next && !allowInput) {
+      touchedGrants.current.add('allowInput');
+      inputTickedForPair.current = true;
+      setAllowInput(true);
+    } else if (!next && inputTickedForPair.current) {
+      inputTickedForPair.current = false;
+      setAllowInput(false);
+    }
+  }, [pairAllowInput, allowInput, info.running]);
+
+  /**
    * A grant row was toggled. Stopped, it only changes what the next Start
    * sends. Running, it is applied to the server in place and the rows then
    * show whatever the server reports back — never an optimistic value.
@@ -1470,7 +1509,11 @@ export default function WebToggle({ variant = 'icon', compact = false, onOpenCha
     async (key: keyof WebGrantArgs) => {
       if (!info.running) {
         touchedGrants.current.add(key);
-        if (key === 'allowInput') setAllowInput((v) => !v);
+        if (key === 'allowInput') {
+          // The operator chose it by hand: Can type no longer owns it.
+          inputTickedForPair.current = false;
+          setAllowInput((v) => !v);
+        }
         else if (key === 'allowTranscript') setAllowTranscript((v) => !v);
         else if (key === 'allowUpload') setAllowUpload((v) => !v);
         else setAllowDangerousLaunch((v) => !v);
@@ -1803,7 +1846,7 @@ export default function WebToggle({ variant = 'icon', compact = false, onOpenCha
             onStartPairing={handleStartPairing}
             onOpenDevices={handleOpenDevices}
             pairAllowInput={pairAllowInput}
-            onTogglePairAllowInput={() => setPairAllowInput((v) => !v)}
+            onTogglePairAllowInput={handleTogglePairAccess}
             qr={qr}
             roster={roster}
             computerDeviceName={effectiveComputerName}

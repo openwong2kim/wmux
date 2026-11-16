@@ -2,7 +2,7 @@
 //
 // The phone wizard as the mounted Remote popover drives it: shown on its own
 // when nothing is paired, reachable by link when something is, and mapped onto
-// the existing permission model — Remote control raises the server's input
+// the existing permission model — Can type raises the server's input
 // ceiling only after the operator confirms who else that reaches, and a
 // pairing abandoned before a phone arrives puts the ceiling back.
 
@@ -163,7 +163,7 @@ describe('phone wizard — mounted', () => {
 
     await click('Options…');
     expect(stepText()).toBe('Step 2 of 4');
-    await click('Remote control');
+    await click('Can type');
     await typeName('my phone');
     await click('Show QR code');
 
@@ -226,14 +226,14 @@ describe('phone wizard — mounted', () => {
     expect(pairStart).toHaveBeenCalledWith('tablet', false, 'phone');
   });
 
-  it('Remote control on a running read-only server: confirm who else can type, raise, and put it back on Cancel', async () => {
+  it('Can type on a running read-only server: confirm who else can type, raise, and put it back on Cancel', async () => {
     status = { ...FRONTED, allowInput: false };
     await mountAndOpen();
     // Nothing paired yet → wizard; but a legacy device shows up in the roster
     // read on step 2 and would start typing too.
     roster = [{ deviceId: 'old', name: 'old', createdAt: 1, lastSeenAt: 1, allowInput: true }];
     await click('Options…');
-    await click('Remote control');
+    await click('Can type');
     await typeName('tablet');
     const impacts = document.querySelector('[data-testid="wizard-impacts"]')?.textContent ?? '';
     expect(impacts).toContain('1 paired device(s) already allowed to type');
@@ -271,7 +271,7 @@ describe('phone wizard — mounted', () => {
   it('a code that lapses without a phone goes back to step 2 and restores the ceiling', async () => {
     await mountAndOpen();
     await click('Options…');
-    await click('Remote control');
+    await click('Can type');
     await typeName('my phone');
     await click('Show QR code');
     status = withoutPending(status); // cancelled from elsewhere, nobody paired

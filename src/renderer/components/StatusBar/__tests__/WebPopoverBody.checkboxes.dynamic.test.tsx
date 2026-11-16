@@ -126,11 +126,25 @@ describe('Remote popover options', () => {
     expect(box.getAttribute('aria-checked')).toBe('true');
   });
 
-  it('"Let this device type" toggles from its label text in the running body', () => {
+  it('the phone card asks View only or Can type, View only first, above the scope paragraph', () => {
     act(() => root.render(createElement(Harness, { running: true })));
-    const { label, box } = checkboxFor('web.pairAllowInput');
-    act(() => label.click());
-    expect(box.getAttribute('aria-checked')).toBe('true');
+    const group = container.querySelector('[data-testid="pair-access"]')!;
+    expect(group.getAttribute('role')).toBe('radiogroup');
+    const radios = Array.from(group.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
+    expect(radios.map((r) => [r.textContent, r.getAttribute('aria-checked')])).toEqual([['web.wizardViewOnly', 'true'], ['web.wizardRemoteControl', 'false']]);
+    act(() => radios[1]!.click());
+    expect(radios[1]!.getAttribute('aria-checked')).toBe('true');
+    // Picking the chosen option again changes nothing.
+    act(() => radios[1]!.click());
+    expect(radios[1]!.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('the one-click card asks it too while stopped, with the line saying what each allows', () => {
+    act(() => root.render(createElement(Harness)));
+    const group = container.querySelector('[data-testid="pair-access"]')!;
+    expect(group.nextElementSibling?.textContent).toBe('web.wizardViewOnlyHint');
+    act(() => group.querySelectorAll<HTMLButtonElement>('[role="radio"]')[1]!.click());
+    expect(container.querySelector('[data-testid="pair-access"]')!.nextElementSibling?.textContent).toBe('web.wizardRemoteHint');
   });
 
   it('Photo & file upload reads off and disabled, with the reason, while input is off', () => {
