@@ -2,7 +2,7 @@
 import '../shared/exeSearchGuard';
 import { isInternalForkPayload } from '../shared/hooks/internalFork';
 import { releaseDaemonFiles, replaceFileOrWrite, unlinkIfContent } from '../shared/daemon/daemonFiles';
-import { terminalCoreRuntime, terminalCoreSelection } from '../shared/terminalCoreSettings';
+import { terminalCoreLoadError, terminalCoreRuntime, terminalCoreSelection } from '../shared/terminalCoreSettings';
 import { labsSettingsAtStartup } from '../shared/labsSettings';
 import { collectDaemonMemoryDiagnostics } from './memoryDiagnostics';
 import { createStartupRecovery } from './startupRecovery';
@@ -100,7 +100,7 @@ import { usageLimitMenuOnScreen, usageLimitWaitOnScreen } from './usageLimit/lim
 import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, readFolderTrust, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
 import { HOST_WINDOW_RPC, createHostWindowRpc } from './hostWindowRpc';
-import type { TerminalPty } from '../shared/terminalPty';
+import { isTerminalCoreMissing, TERMINAL_CORE_MISSING, type TerminalPty } from '../shared/terminalPty';
 import { serializeSession } from './sessionSerialize';
 import { AwaitingScreenVerifier, AWAITING_NARROW_DIALOG_COLS, questionInFlight, renderPaneScreen, renderPaneTail } from './AwaitingScreenVerifier';
 import { screenBlocksChatSend, screenShowsAgentDialog, screenShowsActiveDialog, screenShowsPermissionDialog, screenShowsRunningTurn, titleShowsRunningTurn } from './transcript/chatScreenGate';
@@ -2170,6 +2170,13 @@ async function recoverSessions(
   const state = stateWriter.load();
   let changed = false;
   const recoveredIds = new Set<string>();
+  // No Rust terminal module: nothing can start on this boot (there is no other
+  // engine). Every session is held below with its scrollback, and recovered
+  // on the next boot that has the module.
+  const terminalCoreMissing = terminalCoreLoadError();
+  if (terminalCoreMissing !== null) {
+    log('warn', `[recovery] the terminal core did not load (${terminalCoreMissing}); holding every session until it does`);
+  }
   // X6 ③ (CodeRabbit): pre-read the spool (no consume) so an exec/supervised agent
   // pane whose exact binding only exists in the spool replays as `--resume <id>`,
   // not `--continue`. The post-recovery ingestResumeSpool still does the durable
@@ -2307,6 +2314,19 @@ async function recoverSessions(
     }
     // Before anything is recreated: the exec relaunch below reads this binding.
     settleStoredBinding(session);
+    // Held, not attempted: no recoveryError, so no retention clock, and the
+    // holdReason keeps every TTL off it (StateWriter). Its ring dump stays (the
+    // orphan-buffer sweep below keeps every non-dead session's). A pane that
+    // asks for it gets TERMINAL_CORE_MISSING from promote, and the reason.
+    if (terminalCoreMissing !== null) {
+      session.state = 'suspended';
+      session.bufferDumpPath ??= stateWriter.getBufferDumpPath(session.id);
+      sessionManager.holdPendingRecovery(session);
+      changed = true;
+      continue;
+    }
+    // A boot with the module: an earlier hold is over, recover as usual.
+    delete session.holdReason;
     // Publish every WSL placeholder, including cap-skipped panes. Boot must
     // publish RPC/panes without
     // waiting for a cold distro, and one unavailable target must not lose its
@@ -3913,6 +3933,15 @@ function registerRpcHandlers(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log('error', `[promote] Failed to promote session ${sessionId}: ${msg}`);
+      // No terminal core: the placeholder stays held (no clock, no TTL), with
+      // its scrollback, whatever kind of session it was. The pane shows why.
+      if (isTerminalCoreMissing(err)) {
+        if (!shuttingDown) {
+          sessionManager.holdPendingRecovery(sessionManager.dropPendingRecovery(sessionId) ?? session);
+          stateWriter.saveImmediate(buildState(sessionManager));
+        }
+        return { ok: false, error: { code: TERMINAL_CORE_MISSING, message: msg } };
+      }
       if (isWslShell(session.cmd) && !shuttingDown && sessionManager.getPendingRecovery(sessionId)) {
         sessionManager.keepPendingRecovery(session, msg);
         stateWriter.saveImmediate(buildState(sessionManager));

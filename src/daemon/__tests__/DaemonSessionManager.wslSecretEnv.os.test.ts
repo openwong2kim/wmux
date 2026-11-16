@@ -17,6 +17,7 @@ const { spawnMock, probeMock } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
   probeMock: vi.fn((): string => 'Ubuntu\0developer\0/home/developer/project\0'),
 }));
+vi.mock('../../shared/terminalPty', async (importOriginal) => (await import('../../test-utils/ptyTransportStub')).routeSpawnToNodePtyMock(importOriginal));
 vi.mock('node-pty', () => ({ default: { spawn: spawnMock }, spawn: spawnMock }));
 vi.mock('../../shared/wsl', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../shared/wsl')>();

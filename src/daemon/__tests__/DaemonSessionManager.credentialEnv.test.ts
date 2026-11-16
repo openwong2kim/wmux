@@ -22,6 +22,7 @@ class MockPty extends EventEmitter {
 }
 
 const spawned: MockPty[] = [];
+vi.mock('../../shared/terminalPty', async (importOriginal) => (await import('../../test-utils/ptyTransportStub')).routeSpawnToNodePtyMock(importOriginal));
 vi.mock('node-pty', () => {
   const spawn = (cmd: string, args: string[], opts: Record<string, unknown>) => {
     const p = new MockPty(cmd, args, opts as { cols: number; rows: number; env?: Record<string, string> });

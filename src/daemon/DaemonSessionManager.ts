@@ -455,6 +455,16 @@ export class DaemonSessionManager extends EventEmitter {
     this.pendingRecovery.set(session.id, pending);
   }
 
+  /**
+   * Hold `session` as a pending recovery because the terminal core did not
+   * load (DaemonSession.holdReason). Unlike keepPendingRecovery it touches
+   * neither recoveryError nor recoveryPendingSince: a hold starts no retention
+   * clock, and a WSL entry's own clock, if it had one, stays as it was.
+   */
+  holdPendingRecovery(session: DaemonSession): void {
+    this.pendingRecovery.set(session.id, { ...session, state: 'suspended', holdReason: 'terminal-core-missing' });
+  }
+
   getPendingRecovery(id: string): DaemonSession | undefined {
     return this.pendingRecovery.get(id);
   }

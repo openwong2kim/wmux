@@ -7,6 +7,7 @@ const { spawn, resolveWslCwd, buildWslInjection } = vi.hoisted(() => ({
   resolveWslCwd: vi.fn(),
   buildWslInjection: vi.fn(() => ({ args: [], env: {} })),
 }));
+vi.mock('../../../shared/terminalPty', async (importOriginal) => (await import('../../../test-utils/ptyTransportStub')).routeSpawnToNodePtyMock(importOriginal));
 vi.mock('node-pty', () => ({ spawn, default: { spawn } }));
 vi.mock('../../../shared/wsl', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../shared/wsl')>()),

@@ -23,6 +23,7 @@ const { spawnMock, injectionMock, probeMock } = vi.hoisted(() => ({
     return `${distro}\0${user}\0/home/${user}/project\0`;
   }),
 }));
+vi.mock('../../shared/terminalPty', async (importOriginal) => (await import('../../test-utils/ptyTransportStub')).routeSpawnToNodePtyMock(importOriginal));
 vi.mock('node-pty', () => ({ default: { spawn: spawnMock }, spawn: spawnMock }));
 vi.mock('../../shared/wsl', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../shared/wsl')>();

@@ -998,3 +998,22 @@ it('heals a pending recovery with a corrupt lastActivity instead of pruning it',
   expect(loaded).toHaveLength(1);
   expect(Number.isNaN(Date.parse(loaded[0].lastActivity))).toBe(false);
 });
+
+// R2 (a) — a session held because the terminal core did not load (holdReason)
+// waits for a boot that has the module. No TTL applies meanwhile: not the
+// suspended one, and not the pending-recovery one, which it never started.
+it('keeps a session held for a missing terminal core past every TTL, with its buffer reference', () => {
+  const held = makeSession({
+    state: 'suspended', holdReason: 'terminal-core-missing',
+    lastActivity: new Date(Date.now() - 400 * DAY_MS).toISOString(),
+    bufferDumpPath: '/saved/held.buf',
+  });
+  const plain = makeSession({ state: 'suspended', lastActivity: held.lastActivity });
+  writer.saveImmediate(makeState([held, plain]));
+  expect(writer.load().sessions).toMatchObject([{ id: held.id, holdReason: 'terminal-core-missing', bufferDumpPath: '/saved/held.buf' }]);
+});
+
+it('keeps a held WSL entry whose own pending clock ran out, until the hold ends', () => {
+  writer.saveImmediate(makeState([makePending(60 * DAY_MS, { holdReason: 'terminal-core-missing' })]));
+  expect(writer.load().sessions).toHaveLength(1);
+});

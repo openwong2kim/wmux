@@ -1,10 +1,9 @@
-import { terminalCoreSelection } from './terminalCoreSettings';
 import type { IPty, IPtyForkOptions, IWindowsPtyForkOptions } from 'node-pty';
 import { StringDecoder } from 'node:string_decoder';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { loadNativeTerminalCore, reportNativeFallback, type NativeTransport, type NativeOutputChunk } from './nativeTerminalCore';
+import { loadNativeTerminalCore, type NativeTransport, type NativeOutputChunk } from './nativeTerminalCore';
 
 export interface TerminalPty extends IPty {
   readonly backend?: 'node' | 'rust';
@@ -26,14 +25,31 @@ export function bundledConptyPath(packageFile: string, arch: string): string {
     .replace(/\.asar([\\/])/g, '.asar.unpacked$1');
 }
 
-/** Only loader failures are eligible for automatic fallback. Once spawn is
- * attempted, never replay a potentially side-effectful command in node-pty. */
-export function spawnTerminalPty(command: string, args: string[], options: SpawnOptions,
-  nodeSpawn: (command: string, args: string[], options: SpawnOptions) => IPty): IPty {
-  if (terminalCoreSelection() !== 'rust') return nodeSpawn(command, args, options);
+/** The code a refused create carries (daemon RPC `code`, main's create result). */
+export const TERMINAL_CORE_MISSING = 'TERMINAL_CORE_MISSING';
+
+/** The Rust terminal module does not load, so no terminal can start. There is
+ *  no other engine to fall back to. The message is what the pane shows. */
+export class TerminalCoreMissingError extends Error {
+  readonly code = TERMINAL_CORE_MISSING;
+  constructor(readonly reason: string) {
+    super(`wmux's terminal core is missing or failed to load (${reason}). Reinstall wmux.`);
+    this.name = 'TerminalCoreMissingError';
+  }
+}
+
+/** Also matches the error after a structured clone or an RPC hop, by its code. */
+export function isTerminalCoreMissing(error: unknown): boolean {
+  return error instanceof TerminalCoreMissingError
+    || (typeof error === 'object' && error !== null && (error as { code?: unknown }).code === TERMINAL_CORE_MISSING);
+}
+
+/** Spawn a pane's PTY on the Rust core, the only engine. A module that does
+ *  not load is a TerminalCoreMissingError, never a quiet node-pty spawn. */
+export function spawnTerminalPty(command: string, args: string[], options: SpawnOptions): IPty {
   let native;
   try { native = loadNativeTerminalCore('pty-v1'); }
-  catch { reportNativeFallback('pty'); return nodeSpawn(command, args, options); }
+  catch (error) { throw new TerminalCoreMissingError(error instanceof Error ? error.message : String(error)); }
   const result = new RustPty(command, args, options, native.NativeTransport);
   backends.set(result, 'rust');
   return result;

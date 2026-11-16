@@ -19,8 +19,10 @@ const srcRoot = path.join(__dirname, '..', '..');
 /** Files allowed to do what the patterns below look for, and why. */
 const ALLOWED: Record<string, string> = {
   'shared/spawnPty.ts': 'the seam',
-  // Defines spawnTerminalPty and takes node-pty's spawn as a parameter.
+  // Defines spawnTerminalPty (the Rust core only).
   'shared/terminalPty.ts': 'defines spawnTerminalPty',
+  // Test helper: routes spawnTerminalPty to a test file's node-pty mock.
+  'test-utils/ptyTransportStub.ts': 'test helper, never loaded by production code',
   // Defines spawnWithConptyPolicy; never imports node-pty.
   'shared/conptyWindows.ts': 'defines spawnWithConptyPolicy',
 };
