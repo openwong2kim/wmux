@@ -199,7 +199,7 @@ export const A2A_FEATURE_HELD_NOTICE = 'held-notice.1';
 /**
  * The PC takes an answer to the question its worker shows (`kind: 'answer'`,
  * `A2aRemoteAnswerV1`), and says how it went in the task's status
- * (`detail.answer`). An asker sends one only to a PC that advertises it: an
+ * (`detail.answers`). An asker sends one only to a PC that advertises it: an
  * older one would refuse the kind.
  */
 export const A2A_FEATURE_ANSWER = 'answer.1';
@@ -859,6 +859,8 @@ const STATUS_PROVIDER_RE = /^[a-z][a-z0-9-]{0,31}$/;
 const STATUS_MENU_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 /** A picker id: 16 hex characters of a sha256. */
 export const A2A_REMOTE_PICKER_ID_RE = /^[0-9a-f]{16}$/;
+/** Answer outcomes a status carries. */
+export const ANSWER_OUTCOMES_MAX = 4;
 
 /** The sender's answer to the one-question picker its worker shows: the option's number, 1-based. */
 export interface A2aRemoteAnswerV1 {
@@ -951,8 +953,12 @@ export interface A2aRemoteStatusV1 {
      * answer names it, and is refused when the screen shows another.
      */
     pickerId?: string;
-    /** How the last answer to this task went there (`A2A_FEATURE_ANSWER`), until the next one. */
-    answer?: A2aRemoteAnswerOutcome;
+    /**
+     * How the latest answers to this task went there (`A2A_FEATURE_ANSWER`),
+     * oldest first, at most ANSWER_OUTCOMES_MAX: the asker finds its own by
+     * message id, even when two outcomes fall between two statuses.
+     */
+    answers?: A2aRemoteAnswerOutcome[];
     /** `usage-limit`: when the provider's window resets (ISO), once known. */
     resetsAt?: string;
     /** `usage-limit`: whose limit, as a slug (`claude`). */
@@ -979,16 +985,16 @@ function statusLabelLine(label: string): string {
 export interface A2aRemoteStatusShown {
   kind: A2aRemoteStatusKind;
   since: string;
-  /** `answer.reasonText`: this PC's own fixed words for the reason (A2A_REMOTE_ANSWER_REASON_TEXT), never the peer's. */
-  detail?: Omit<NonNullable<A2aRemoteStatusV1['detail']>, 'options' | 'answer'> & { answer?: A2aRemoteAnswerOutcome & { reasonText?: string } };
+  /** `answers[].reasonText`: this PC's own fixed words for the reason (A2A_REMOTE_ANSWER_REASON_TEXT), never the peer's. */
+  detail?: Omit<NonNullable<A2aRemoteStatusV1['detail']>, 'options' | 'answers'> & { answers?: Array<A2aRemoteAnswerOutcome & { reasonText?: string }> };
   untrusted?: { options: string[] };
 }
 
 export function shownRemoteStatus(status: A2aRemoteStatusV1): A2aRemoteStatusShown {
-  const { options, answer, ...rest } = status.detail ?? {};
+  const { options, answers, ...rest } = status.detail ?? {};
   const detail: NonNullable<A2aRemoteStatusShown['detail']> = {
     ...rest,
-    ...(answer ? { answer: { ...answer, ...(answer.reason ? { reasonText: A2A_REMOTE_ANSWER_REASON_TEXT[answer.reason] } : {}) } } : {}),
+    ...(answers ? { answers: answers.map((a) => ({ ...a, ...(a.reason ? { reasonText: A2A_REMOTE_ANSWER_REASON_TEXT[a.reason] } : {}) })) } : {}),
   };
   return {
     kind: status.kind,
@@ -1025,8 +1031,10 @@ export function parseA2aRemoteStatus(raw: unknown): A2aRemoteStatusV1 | null {
   if (typeof d.provider === 'string' && STATUS_PROVIDER_RE.test(d.provider)) detail.provider = d.provider;
   if (typeof d.background === 'number' && Number.isInteger(d.background) && d.background > 0) detail.background = Math.min(d.background, 999);
   if (typeof d.pickerId === 'string' && A2A_REMOTE_PICKER_ID_RE.test(d.pickerId)) detail.pickerId = d.pickerId;
-  const answer = parseAnswerOutcome(d.answer);
-  if (answer) detail.answer = answer;
+  if (Array.isArray(d.answers)) {
+    const answers = d.answers.slice(-ANSWER_OUTCOMES_MAX).map(parseAnswerOutcome).filter((a): a is A2aRemoteAnswerOutcome => a !== null);
+    if (answers.length > 0) detail.answers = answers;
+  }
   if (Object.keys(detail).length > 0) out.detail = detail;
   return out;
 }

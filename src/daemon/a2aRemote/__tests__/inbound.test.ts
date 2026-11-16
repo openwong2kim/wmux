@@ -687,14 +687,14 @@ describe('a worker\'s status on a task this PC sent', () => {
     const linkId = activeLink();
     const out = await sentTask(linkId);
     await acceptInbound(env(linkId, {
-      ...status({ kind: 'question', detail: { question: 'menu', pickerId: '0123456789abcdef', optionCount: 2, answer: { messageId: 'an-1', outcome: 'not-answered', reason: 'picker-changed' } } }),
+      ...status({ kind: 'question', detail: { question: 'menu', pickerId: '0123456789abcdef', optionCount: 2, answers: [{ messageId: 'an-1', outcome: 'not-answered', reason: 'picker-changed' }] } }),
       taskId: out,
     }), peer, withStatus);
     const got = noted[0]![1];
-    expect(got.detail).toEqual({ question: 'menu', pickerId: '0123456789abcdef', optionCount: 2, answer: { messageId: 'an-1', outcome: 'not-answered', reason: 'picker-changed' } });
-    expect(shownRemoteStatus(got).detail?.answer?.reasonText).toMatch(/not the one answered/);
+    expect(got.detail).toEqual({ question: 'menu', pickerId: '0123456789abcdef', optionCount: 2, answers: [{ messageId: 'an-1', outcome: 'not-answered', reason: 'picker-changed' }] });
+    expect(shownRemoteStatus(got).detail?.answers?.[0]?.reasonText).toMatch(/not the one answered/);
     await acceptInbound(env(linkId, {
-      ...status({ kind: 'working', detail: { pickerId: 'NOT-HEX-0123456', answer: { messageId: 'an-2', outcome: 'not-answered', reason: 'PEER TEXT' } } as never }),
+      ...status({ kind: 'working', detail: { pickerId: 'NOT-HEX-0123456', answers: [{ messageId: 'an-2', outcome: 'not-answered', reason: 'PEER TEXT' }] } as never }),
       taskId: out,
     }), peer, withStatus);
     expect(noted[1]![1]).toEqual({ kind: 'working', since: '2026-11-13T06:00:00.000Z' });

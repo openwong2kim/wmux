@@ -1851,69 +1851,122 @@ describe('the status this delivery reports for each task (headlessStatus.ts send
   it('a picker read off the screen, with no AskUserQuestion call in the transcript (auto mode): a menu question with its picker id and choices count', async () => {
     const d = new HeadlessDelivery(statusDeps({
       questionKind: async () => 'dialog',
+      answers: () => 'on',
       pickerOnScreen: async () => ({ pickerId: '0123456789abcdef', optionCount: 2 }),
     }));
     await d.tick();
     write(userLine(PROMPT));
     screen = 'dialog';
     await advance(d, QUESTION_PROBE_MS);
-    expect(last()).toEqual({ taskId: TASK, kind: 'question', detail: { question: 'menu', pickerId: '0123456789abcdef', optionCount: 2 } });
+    expect(last()).toMatchObject({ taskId: TASK, kind: 'question', detail: { question: 'menu', optionCount: 2 } });
+    // The id sent is bound to this showing of the question, not the screen's own.
+    expect(last()?.detail?.pickerId).toMatch(/^[0-9a-f]{16}$/);
+    expect(last()?.detail?.pickerId).not.toBe('0123456789abcdef');
     screen = 'clear';
     await advance(d, QUESTION_PROBE_MS);
     expect(last()).toEqual({ taskId: TASK, kind: 'working' });
   });
 
-  describe('an answer from the asking PC', () => {
-    const ANSWER = { pickerId: '0123456789abcdef', option: 2 };
+  it('with answers off here, no picker is read or sent', async () => {
+    let reads = 0;
+    const d = new HeadlessDelivery(statusDeps({
+      questionKind: async () => 'dialog',
+      answers: () => 'off',
+      pickerOnScreen: async () => { reads += 1; return { pickerId: '0123456789abcdef', optionCount: 2 }; },
+    }));
+    await d.tick();
+    write(userLine(PROMPT));
+    screen = 'dialog';
+    await advance(d, QUESTION_PROBE_MS);
+    expect(last()).toEqual({ taskId: TASK, kind: 'question', detail: { question: 'dialog' } });
+    expect(reads).toBe(0);
+  });
 
-    it('is typed into its task\'s own session, once per message, and its outcome rides on the task\'s status', async () => {
-      const typed: Array<{ sessionId: string; option: number }> = [];
-      const d = new HeadlessDelivery(statusDeps({
-        answers: () => 'on',
-        answerOnScreen: async (sessionId, a) => { typed.push({ sessionId, option: a.option }); return { outcome: 'answered' }; },
-      }));
+  describe('an answer from the asking PC', () => {
+    const typed: Array<{ sessionId: string; pickerId: string; option: number }> = [];
+    let answers: 'on' | 'off' | 'damaged';
+    let result: () => Promise<{ outcome: 'answered' }>;
+    beforeEach(() => {
+      typed.length = 0;
+      answers = 'on';
+      result = async () => ({ outcome: 'answered' });
+    });
+    const answering = (): HeadlessDelivery => new HeadlessDelivery(statusDeps({
+      questionKind: async () => 'dialog',
+      answers: () => answers,
+      pickerOnScreen: async () => ({ pickerId: '0123456789abcdef', optionCount: 2 }),
+      answerOnScreen: async (sessionId, a) => { typed.push({ sessionId, pickerId: a.pickerId, option: a.option }); return result(); },
+    }));
+    /** The task's worker shows the picker; the id its status carries. */
+    async function showing(d: HeadlessDelivery): Promise<string> {
       await d.tick();
       write(userLine(PROMPT));
+      screen = 'dialog';
+      await advance(d, QUESTION_PROBE_MS);
+      return last()!.detail!.pickerId!;
+    }
+
+    it('is typed into its task\'s own session against the screen\'s picker, once per message, and its outcome rides on the status', async () => {
+      const d = answering();
+      const pickerId = await showing(d);
+      expect(await d.answer(TASK, 'an-1', { pickerId, option: 2 })).toEqual({ outcome: 'answered' });
+      expect(await d.answer(TASK, 'an-1', { pickerId, option: 2 })).toBe('duplicate');
+      expect(typed).toEqual([{ sessionId: rec.sessionId, pickerId: '0123456789abcdef', option: 2 }]);
       await d.tick();
-      expect(await d.answer(TASK, 'an-1', ANSWER)).toEqual({ outcome: 'answered' });
-      expect(await d.answer(TASK, 'an-1', ANSWER)).toBe('duplicate');
-      expect(typed).toEqual([{ sessionId: rec.sessionId, option: 2 }]);
-      await d.tick();
-      expect(last()).toEqual({ taskId: TASK, kind: 'working', detail: { answer: { messageId: 'an-1', outcome: 'answered' } } });
+      expect(last()?.detail?.answers).toEqual([{ messageId: 'an-1', outcome: 'answered' }]);
     });
 
-    it('is not typed while answers are off, or off because their file is damaged', async () => {
-      let typed = 0;
-      const answerOnScreen = async (): Promise<{ outcome: 'answered' }> => { typed += 1; return { outcome: 'answered' }; };
-      const off = new HeadlessDelivery(statusDeps({ answers: () => 'off', answerOnScreen }));
-      await off.tick();
-      expect(await off.answer(TASK, 'an-1', ANSWER)).toEqual({ outcome: 'not-answered', reason: 'answers-off' });
-      const damaged = new HeadlessDelivery(statusDeps({ answers: () => 'damaged', answerOnScreen }));
-      await damaged.tick();
-      expect(await damaged.answer(TASK, 'an-2', ANSWER)).toEqual({ outcome: 'not-answered', reason: 'answers-damaged' });
-      expect(typed).toBe(0);
+    it('an answer meant for an earlier showing of the same question is refused', async () => {
+      const d = answering();
+      const first = await showing(d);
+      screen = 'clear';
+      await advance(d, QUESTION_PROBE_MS);
+      screen = 'dialog';
+      await advance(d, QUESTION_PROBE_MS);
+      const second = last()!.detail!.pickerId!;
+      expect(second).not.toBe(first);
+      expect(await d.answer(TASK, 'an-1', { pickerId: first, option: 2 })).toEqual({ outcome: 'not-answered', reason: 'picker-changed' });
+      expect(typed).toEqual([]);
     });
 
-    it('is not typed for a task that ended', async () => {
-      let typed = 0;
-      const d = new HeadlessDelivery(statusDeps({ answers: () => 'on', answerOnScreen: async () => { typed += 1; return { outcome: 'answered' }; } }));
+    it('is not typed while answers are off, or off because their file is damaged; the status says why', async () => {
+      const d = answering();
+      const pickerId = await showing(d);
+      answers = 'off';
+      expect(await d.answer(TASK, 'an-1', { pickerId, option: 2 })).toEqual({ outcome: 'not-answered', reason: 'answers-off' });
+      answers = 'damaged';
+      expect(await d.answer(TASK, 'an-2', { pickerId, option: 2 })).toEqual({ outcome: 'not-answered', reason: 'answers-damaged' });
+      expect(typed).toEqual([]);
       await d.tick();
-      task.status = { state: 'canceled', timestamp: stamp() };
-      expect(await d.answer(TASK, 'an-1', ANSWER)).toEqual({ outcome: 'not-answered', reason: 'not-open' });
-      expect(typed).toBe(0);
+      expect(last()?.detail?.answers).toEqual([
+        { messageId: 'an-1', outcome: 'not-answered', reason: 'answers-off' },
+        { messageId: 'an-2', outcome: 'not-answered', reason: 'answers-damaged' },
+      ]);
     });
 
-    it('a second answer on the task while one is being typed is not typed', async () => {
+    it('is not typed for a task that ended, and nothing is kept for it', async () => {
+      const d = answering();
+      const pickerId = await showing(d);
+      task.status = { state: 'canceled', timestamp: new Date().toISOString() };
+      expect(await d.answer(TASK, 'an-1', { pickerId, option: 2 })).toEqual({ outcome: 'not-answered', reason: 'not-open' });
+      expect(typed).toEqual([]);
+    });
+
+    it('a second answer while one is being typed is not typed, and both outcomes reach the status', async () => {
       let release: () => void = () => undefined;
-      const d = new HeadlessDelivery(statusDeps({
-        answers: () => 'on',
-        answerOnScreen: () => new Promise((resolve) => { release = () => resolve({ outcome: 'answered' }); }),
-      }));
-      await d.tick();
-      const first = d.answer(TASK, 'an-1', ANSWER);
-      expect(await d.answer(TASK, 'an-2', ANSWER)).toEqual({ outcome: 'not-answered', reason: 'lock-busy' });
+      result = () => new Promise((resolve) => { release = () => resolve({ outcome: 'answered' }); });
+      const d = answering();
+      const pickerId = await showing(d);
+      const first = d.answer(TASK, 'an-1', { pickerId, option: 2 });
+      await Promise.resolve();
+      expect(await d.answer(TASK, 'an-2', { pickerId, option: 1 })).toEqual({ outcome: 'not-answered', reason: 'lock-busy' });
       release();
       expect(await first).toEqual({ outcome: 'answered' });
+      await d.tick();
+      expect(last()?.detail?.answers).toEqual([
+        { messageId: 'an-2', outcome: 'not-answered', reason: 'lock-busy' },
+        { messageId: 'an-1', outcome: 'answered' },
+      ]);
     });
   });
 

@@ -269,7 +269,7 @@ With headless mode on:
   runs `wmux remote answer <task-id> <option> --picker <picker-id>` from its
   own pane; this host types that choice's number only while the same menu
   is still on screen and nobody has touched it, and says how it went in the
-  next status (`detail.answer`: `answered`, or `not-answered` with a reason
+  next status (`detail.answers`: `answered`, or `not-answered` with a reason
   in plain words). Answers are on where follow-ups reach the agent directly
   (`--follow-ups direct`) and off where they wait for approval here;
   `wmux remote answers on|off|default` changes that (with no argument it

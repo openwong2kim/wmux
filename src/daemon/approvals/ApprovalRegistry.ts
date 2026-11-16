@@ -3224,7 +3224,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         const revision = at === 0 ? read.mark.keyInputRevision : step!.expectedRevision;
         const incarnation = at === 0 ? read.mark.incarnation : step!.incarnation;
         const since = markSince(now, revision, incarnation, read.mark.bytes);
-        if (!now || since !== 'same') return { result: since === 'same' ? 'moved' : since };
+        if (!now) return { result: 'moved' };
+        if (since !== 'same') return { result: since };
         let written: number | null = null;
         try {
           written = writeStepKey(sessionId, keys[at]!);
@@ -3682,7 +3683,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         const revision = at === 0 ? read.mark.keyInputRevision : step!.expectedRevision;
         const incarnation = at === 0 ? read.mark.incarnation : step!.incarnation;
         const since = markSince(now, revision, incarnation, read.mark.bytes);
-        if (!now || since !== 'same') return { result: since === 'same' ? 'moved' : since };
+        if (!now) return { result: 'moved' };
+        if (since !== 'same') return { result: since };
         let written: number | null = null;
         try {
           written = writeStepKey(sessionId, steps[at]!.key);

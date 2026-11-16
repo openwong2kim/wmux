@@ -11286,7 +11286,11 @@ async function main(): Promise<void> {
         answers: {
           take: (taskId, messageId, answer) => {
             const delivery = headlessDeliveryRef;
-            if (!delivery) return;
+            // No headless delivery this run: no agent here was started for that PC, and no status goes back.
+            if (!delivery) {
+              log('info', `[headless] task ${taskId}: answer ${messageId} dropped: this PC runs no headless agents`);
+              return;
+            }
             void delivery.answer(taskId, messageId, answer).then((res) => {
               if (res !== 'duplicate') log('info', `[headless] task ${taskId}: answer ${messageId}: ${res.outcome}${res.outcome === 'not-answered' ? ` (${res.reason})` : ''}`);
             }).catch((err: unknown) => log('warn', `[headless] task ${taskId}: answer ${messageId} failed: ${String(err)}`));

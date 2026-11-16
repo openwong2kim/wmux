@@ -83,9 +83,10 @@ wmux remote — pair with other PCs and ask them to start agents
       Answer the question the worker on a task you sent shows on the other
       PC: <option> is the choice's number, <picker-id> the pickerId in the
       task's remoteStatus (a2a_task_query). How it went shows in the same
-      status (detail.answer). Run it from the pane that sent the task.
+      status (detail.answers). Run it from the pane that sent the task; it
+      goes through the desktop app, unlike the other verbs.
 
-  These verbs talk to the wmux daemon directly, so they work on a host that
+  The other verbs talk to the wmux daemon directly, so they work on a host that
   runs only the daemon (no desktop app). Exit code 1 on any failure. --json
   prints the raw RPC payload.
 `;
@@ -716,7 +717,7 @@ async function remoteAnswer(args: string[], jsonMode: boolean): Promise<void> {
     console.log(JSON.stringify(res, null, 2));
     return;
   }
-  console.log(`Answer ${String(res['messageId'])} sent. How it went shows in the task's status (detail.answer) once that PC has typed it.`);
+  console.log(`Answer ${String(res['messageId'])} sent. How it went shows in the task's status (detail.answers, by this message id) once that PC has typed it.`);
 }
 
 async function remoteAllowed(jsonMode: boolean): Promise<void> {

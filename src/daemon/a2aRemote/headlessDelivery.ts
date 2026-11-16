@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { A2A_REMOTE_BODY_MAX, type A2aRemoteAnswerOutcome, type A2aRemoteAnswerV1, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
+import { A2A_REMOTE_BODY_MAX, ANSWER_OUTCOMES_MAX, type A2aRemoteAnswerOutcome, type A2aRemoteAnswerV1, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
 import { truncateUtf8 } from '../../shared/chatv2/limits';
 import type { SessionPromptScheduleResult } from '../../shared/sessionPromptSchedule';
 import { sanitizeBracketedPastePayload } from '../../shared/ptyMessageDelivery';
@@ -241,7 +241,7 @@ export interface HeadlessTaskStatus {
     options?: string[];
     optionCount?: number;
     pickerId?: string;
-    answer?: A2aRemoteAnswerOutcome;
+    answers?: A2aRemoteAnswerOutcome[];
     resetsAt?: string;
     provider?: string;
     background?: number;
@@ -576,10 +576,17 @@ export class HeadlessDelivery {
     noticedTask: string | null;
     taskId?: string;
     kind?: A2aRemoteQuestionKind | null;
-    picker?: { pickerId: string; optionCount: number } | null;
+    /**
+     * Minted each time a question appears on the screen: the picker id the
+     * asking PC sees binds to it, so an answer meant for an earlier showing
+     * of the same question (queued while its link was down) is refused.
+     */
+    nonce?: string;
+    /** `pickerId`: the id sent in the status (with the nonce); `screenId`: the screen's own (headlessAnswer.ts). */
+    picker?: { pickerId: string; screenId: string; optionCount: number } | null;
   }>();
-  /** How the last answer from the asking PC went, by task: sent with each status until the next one. */
-  private readonly answered = new Map<string, A2aRemoteAnswerOutcome>();
+  /** How the latest answers from the asking PC went, by task (at most ANSWER_OUTCOMES_MAX): sent with each status. */
+  private readonly answered = new Map<string, A2aRemoteAnswerOutcome[]>();
   /** Answers being typed now (`taskId \0 messageId`): the same message is never typed twice. */
   private readonly answering = new Set<string>();
   /** After an answer, by session: the transcript read on for turns nothing on this PC started. */
@@ -822,11 +829,22 @@ export class HeadlessDelivery {
       q.picker = null;
     }
     if (seen !== 'dialog') return;
-    q.since ??= now;
+    if (q.since == null) {
+      q.since = now;
+      q.nonce = crypto.randomUUID();
+    }
     // Which question, for the asking PC's status: read with the same pass, never acted on.
     q.kind = this.deps.questionKind ? await this.deps.questionKind(sessionId, !!inTurn?.ask).catch(() => 'dialog' as const) : 'dialog';
-    // A picker the asking PC can answer: read off the screen, since in auto mode the transcript has no call yet.
-    q.picker = this.deps.pickerOnScreen ? await this.deps.pickerOnScreen(sessionId).catch(() => null) : null;
+    // A picker the asking PC can answer, only while answers are on here: read off the screen, since in auto
+    // mode the transcript has no call yet.
+    const screen = this.deps.pickerOnScreen && this.deps.answers?.() === 'on' ? await this.deps.pickerOnScreen(sessionId).catch(() => null) : null;
+    q.picker = screen
+      ? {
+        pickerId: crypto.createHash('sha256').update(`${screen.pickerId}\n${q.nonce ?? ''}`).digest('hex').slice(0, 16),
+        screenId: screen.pickerId,
+        optionCount: screen.optionCount,
+      }
+      : null;
     const waited = now - q.since;
     if (waited >= QUESTION_TIMEOUT_MS) {
       this.deps.log('warn', `[headless] task ${taskId}: ${QUESTION_REASON}`);
@@ -849,9 +867,9 @@ export class HeadlessDelivery {
       const rec = this.ownerOf(task, starts);
       if (!rec) continue;
       const status = this.statusOf(task, rec);
-      // The last answer's outcome goes with whatever the worker does now.
-      const answer = this.answered.get(task.id);
-      out.push({ taskId: task.id, ...(answer && status.kind !== null ? { ...status, detail: { ...status.detail, answer } } : status) });
+      // The latest answers' outcomes go with whatever the worker does now.
+      const answers = this.answered.get(task.id);
+      out.push({ taskId: task.id, ...(answers && status.kind !== null ? { ...status, detail: { ...status.detail, answers: [...answers] } } : status) });
     }
     return out;
   }
@@ -866,17 +884,29 @@ export class HeadlessDelivery {
    */
   async answer(taskId: string, messageId: string, answer: A2aRemoteAnswerV1): Promise<HeadlessAnswerResult | 'duplicate'> {
     const key = `${taskId}\0${messageId}`;
-    if (this.answering.has(key) || this.answered.get(taskId)?.messageId === messageId) return 'duplicate';
-    // One answer at a time per task: another arriving meanwhile is not typed.
-    if ([...this.answering].some((k) => k.startsWith(`${taskId}\0`))) return { outcome: 'not-answered', reason: 'lock-busy' };
+    if (this.answering.has(key) || this.answered.get(taskId)?.some((o) => o.messageId === messageId)) return 'duplicate';
+    // One answer at a time per task: another arriving meanwhile is not typed, and says so.
+    if ([...this.answering].some((k) => k.startsWith(`${taskId}\0`))) {
+      const busy: HeadlessAnswerResult = { outcome: 'not-answered', reason: 'lock-busy' };
+      this.record(taskId, messageId, busy);
+      return busy;
+    }
     this.answering.add(key);
     try {
       const result = await this.answerOnce(taskId, answer);
-      this.answered.set(taskId, { messageId, ...result });
+      this.record(taskId, messageId, result);
       return result;
     } finally {
       this.answering.delete(key);
     }
+  }
+
+  /** Kept for the task's status only while one of this run's live starts owns it: no status goes for any other. */
+  private record(taskId: string, messageId: string, result: HeadlessAnswerResult): void {
+    const task = this.deps.tasks.get(taskId);
+    if (!task || this.ended(taskId) || !this.ownerOf(task, this.deps.starts.list())) return;
+    const list = [...(this.answered.get(taskId) ?? []), { messageId, ...result }];
+    this.answered.set(taskId, list.slice(-ANSWER_OUTCOMES_MAX));
   }
 
   private async answerOnce(taskId: string, answer: A2aRemoteAnswerV1): Promise<HeadlessAnswerResult> {
@@ -889,7 +919,11 @@ export class HeadlessDelivery {
     if (this.stopped || !this.deps.mode.active() || !this.deps.answerOnScreen) return no('not-headless');
     const rec = this.ownerOf(task, this.deps.starts.list());
     if (!rec) return no('not-headless');
-    return this.deps.answerOnScreen(rec.sessionId, answer);
+    // The picker this PC last told the asking PC about, on this task, in this showing of the question.
+    const q = this.questions.get(rec.sessionId);
+    if (!q?.picker || q.since == null || q.taskId !== taskId) return no('no-picker');
+    if (q.picker.pickerId !== answer.pickerId) return no('picker-changed');
+    return this.deps.answerOnScreen(rec.sessionId, { pickerId: q.picker.screenId, option: answer.option });
   }
 
   /** At its usage limit, then a question it waits on, then in a turn, then waiting for more. */

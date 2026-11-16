@@ -257,9 +257,12 @@ The **Remote** page has a **Messages between PCs** section:
   <picker-id>` from its own pane; only the task's sender can. The host types
   that choice's number only while the same menu is on screen, untouched,
   under the pane's delivery lock, then waits for Claude Code to confirm it.
-  How it went comes back in the next status as `detail.answer`: `answered`,
-  or `not-answered` with a `reason` and, on this PC, its plain words in
-  `reasonText`. Anything else (several questions or choices, free text, a
+  How it went comes back in the next status, in `detail.answers` (the
+  latest few, by message id): `answered`, or `not-answered` with a `reason`
+  and, on this PC, its plain words in `reasonText`. The picker id changes
+  each time the question appears, so an answer meant for an earlier showing
+  of the same question is refused. Answering needs the desktop app on the
+  asking PC. Anything else (several questions or choices, free text, a
   permission prompt) is refused whole, before a key is typed. Answers are on
   where that host's follow-ups reach the agent directly and off where they
   wait for a person; `wmux remote answers on|off|default` on the host
