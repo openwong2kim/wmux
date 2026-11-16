@@ -702,7 +702,6 @@ export const pl = {
   'sidebar.browseFolderDesc': 'Wybierz dowolny folder na dysku',
   'sidebar.browseWslFolder': 'Przeglądaj folder WSL…',
   'sidebar.browseWslFolderDesc': 'Wybierz folder w dystrybucji WSL',
-  'sidebar.browseWslFolderPick': 'Dystrybucja',
   'sidebar.emptyWorkspace': 'Pusty',
   'sidebar.orphanSessions': 'Sesje odłączone',
   'sidebar.orphanAdopt': 'Przywróć do panelu — sesja nadal działa',

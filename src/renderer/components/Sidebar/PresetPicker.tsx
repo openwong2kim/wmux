@@ -17,6 +17,8 @@ import CompanyPresetDialog from './CompanyPresetDialog';
 import CompanyFileReviewDialog from './CompanyFileReviewDialog';
 import { isValidWslDistroName } from '../../../shared/wslDistro';
 import { wslShareToLinux } from '../../../shared/wslPaths';
+import { keepSubmenuInWindow } from '../../utils/keepSubmenuInWindow';
+import { IconChevron } from '../icons';
 
 interface PresetPickerProps {
   onClose: () => void;
@@ -161,6 +163,23 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   // name) leaves the row out, like the paired-host probe above.
   const [wslDistros, setWslDistros] = useState<string[]>([]);
   const [wslListOpen, setWslListOpen] = useState(false);
+  const wslListOpenRef = useRef(false);
+  wslListOpenRef.current = wslListOpen;
+  const wslTriggerRef = useRef<HTMLButtonElement>(null);
+  const wslFlyoutRef = useRef<HTMLDivElement>(null);
+  // Stable so the flyout is fitted to the window once, not on every render.
+  const wslFlyoutCallbackRef = useCallback((el: HTMLDivElement | null) => {
+    wslFlyoutRef.current = el;
+    return keepSubmenuInWindow(el);
+  }, []);
+  // Keyboard opens move focus into the flyout; hover opens leave it alone.
+  const wslFocusFirst = useRef(false);
+  useEffect(() => {
+    if (wslListOpen && wslFocusFirst.current) {
+      wslFocusFirst.current = false;
+      wslFlyoutRef.current?.querySelector<HTMLButtonElement>('[data-wsl-distro]')?.focus();
+    }
+  }, [wslListOpen]);
   useEffect(() => {
     if (window.electronAPI?.platform !== 'win32') return;
     let cancelled = false;
@@ -185,7 +204,7 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   }, [addWorkspace, onClose]);
   const handleBrowseWsl = useCallback(() => {
     if (wslDistros.length === 1) void browseWslFolder(wslDistros[0]);
-    else setWslListOpen((open) => !open);
+    else setWslListOpen(true);
   }, [wslDistros, browseWslFolder]);
 
   // Close on outside click
@@ -208,7 +227,14 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   // Close on ESC
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key !== 'Escape') return;
+      // An open distro flyout folds first; the next Escape closes the menu.
+      if (wslListOpenRef.current) {
+        setWslListOpen(false);
+        wslTriggerRef.current?.focus();
+        return;
+      }
+      onClose();
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
@@ -257,23 +283,59 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
       </button>
 
       {wslDistros.length > 0 && (
-        <>
+        <div
+          className="relative"
+          onMouseEnter={wslDistros.length > 1 ? () => setWslListOpen(true) : undefined}
+          onMouseLeave={wslDistros.length > 1 ? () => setWslListOpen(false) : undefined}
+        >
           <button
+            ref={wslTriggerRef}
             className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
             onClick={handleBrowseWsl}
+            onKeyDown={wslDistros.length > 1 ? (e) => {
+              if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'ArrowRight') return;
+              e.preventDefault();
+              wslFocusFirst.current = true;
+              setWslListOpen(true);
+            } : undefined}
             data-browse-wsl
+            aria-haspopup={wslDistros.length > 1 ? 'menu' : undefined}
             aria-expanded={wslDistros.length > 1 ? wslListOpen : undefined}
           >
-            <div className="font-semibold">{t('sidebar.browseWslFolder')}</div>
-            <div className="text-[var(--text-sub)] text-[11px]">{t('sidebar.browseWslFolderDesc')}</div>
+            <div className="flex items-center gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold">{t('sidebar.browseWslFolder')}</div>
+                <div className="text-[var(--text-sub)] text-[11px]">{t('sidebar.browseWslFolderDesc')}</div>
+              </div>
+              {wslDistros.length > 1 && <span className="text-[var(--text-muted)]"><IconChevron /></span>}
+            </div>
           </button>
           {wslListOpen && wslDistros.length > 1 && (
-            <>
-              <div className="px-3 pt-1 text-[11px] text-[var(--text-muted)]">{t('sidebar.browseWslFolderPick')}</div>
+            <div
+              ref={wslFlyoutCallbackRef}
+              role="menu"
+              className="absolute top-0 left-full ml-0.5 min-w-[140px] py-1 rounded-xl shadow-xl sidebar-popover-enter"
+              style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
+              onKeyDown={(e) => {
+                const items = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[data-wsl-distro]')];
+                const at = items.indexOf(document.activeElement as HTMLButtonElement);
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  const step = e.key === 'ArrowDown' ? 1 : -1;
+                  items[(at + step + items.length) % items.length]?.focus();
+                } else if (e.key === 'ArrowLeft') {
+                  e.preventDefault();
+                  setWslListOpen(false);
+                  wslTriggerRef.current?.focus();
+                }
+              }}
+            >
               {wslDistros.map((name) => (
                 <button
                   key={name}
-                  className="w-full text-left px-5 py-1 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
+                  role="menuitem"
+                  className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                  style={{ color: 'var(--text-main)' }}
                   onClick={() => void browseWslFolder(name)}
                   data-wsl-distro
                   aria-label={name}
@@ -281,9 +343,9 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
                   {name}
                 </button>
               ))}
-            </>
+            </div>
           )}
-        </>
+        </div>
       )}
 
       <div className="border-t border-[var(--bg-surface)] my-0.5" />

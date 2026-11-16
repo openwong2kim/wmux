@@ -471,7 +471,6 @@ export const zh = {
   'sidebar.browseFolderDesc': '选择磁盘上的任意文件夹',
   'sidebar.browseWslFolder': '浏览 WSL 文件夹…',
   'sidebar.browseWslFolderDesc': '选择 WSL 发行版中的文件夹',
-  'sidebar.browseWslFolderPick': '发行版',
   'sidebar.emptyWorkspace': '空',
   'sidebar.blankSinglePane': '空白单面板',
   'sidebar.emptyRemote': '空 — 远程',

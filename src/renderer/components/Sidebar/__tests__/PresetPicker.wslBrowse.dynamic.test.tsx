@@ -5,7 +5,8 @@
 // "Browse WSL folder…" in the + menu: win32 only, and only with at least one
 // WSL distro. It opens the native folder dialog on the distro's share and makes
 // a workspace whose startupCwd is the picked share path (main turns that into
-// a WSL shell in that distro). With several distros a short list comes first.
+// a WSL shell in that distro). With several distros the row carries a › arrow
+// and opens a flyout submenu of distros (hover, click, or keyboard).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
@@ -100,7 +101,29 @@ describe('Browse WSL folder row', () => {
     expect(addWorkspace).toHaveBeenCalledWith('Ubuntu', { startupCwd: '\\\\wsl.localhost\\Ubuntu\\' });
   });
 
-  it('with several distros lists them first, then opens the dialog on the chosen one', async () => {
+  it('with several distros shows an arrow and no flyout until hovered', async () => {
+    install('win32', ['Ubuntu', 'Debian']);
+    await mount();
+    expect(row()!.getAttribute('aria-haspopup')).toBe('menu');
+    expect(row()!.getAttribute('aria-expanded')).toBe('false');
+    expect(row()!.querySelector('svg')).not.toBeNull();
+    expect(container.querySelector('[data-wsl-distro]')).toBeNull();
+    await act(async () => { row()!.parentElement!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+    expect(container.querySelectorAll('[data-wsl-distro]')).toHaveLength(2);
+    expect(row()!.getAttribute('aria-expanded')).toBe('true');
+    await act(async () => { row()!.parentElement!.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body })); });
+    expect(container.querySelector('[data-wsl-distro]')).toBeNull();
+  });
+
+  it('with one distro there is no arrow and no popup attributes', async () => {
+    install('win32', ['Ubuntu']);
+    await mount();
+    expect(row()!.getAttribute('aria-haspopup')).toBeNull();
+    expect(row()!.getAttribute('aria-expanded')).toBeNull();
+    expect(row()!.querySelector('svg')).toBeNull();
+  });
+
+  it('with several distros a click opens the flyout, then the chosen distro opens the dialog', async () => {
     install('win32', ['Ubuntu', 'Debian']);
     pickFolder.mockResolvedValue(['\\\\wsl.localhost\\Debian\\srv\\app']);
     await mount();
@@ -111,6 +134,24 @@ describe('Browse WSL folder row', () => {
     await flush();
     expect(pickFolder).toHaveBeenCalledWith('\\\\wsl.localhost\\Debian\\home');
     expect(addWorkspace).toHaveBeenCalledWith('app', { startupCwd: '\\\\wsl.localhost\\Debian\\srv\\app' });
+  });
+
+  it('ArrowRight opens the flyout and focuses the first distro', async () => {
+    install('win32', ['Ubuntu', 'Debian']);
+    await mount();
+    await act(async () => { row()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
+    expect(document.activeElement).toBe(distroRow('Ubuntu'));
+  });
+
+  it('Escape folds the flyout first and only the next Escape closes the menu', async () => {
+    install('win32', ['Ubuntu', 'Debian']);
+    const onClose = await mount();
+    await act(async () => row()!.click());
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(container.querySelector('[data-wsl-distro]')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('adds nothing when the dialog is cancelled', async () => {

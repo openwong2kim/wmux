@@ -720,7 +720,6 @@ export const ko = {
   'sidebar.browseFolderDesc': '디스크의 아무 폴더나 선택',
   'sidebar.browseWslFolder': 'WSL 폴더 찾아보기…',
   'sidebar.browseWslFolderDesc': 'WSL 배포판 안의 폴더 선택',
-  'sidebar.browseWslFolderPick': '배포판',
 
   // Workspace
   'workspace.agentRunning': '실행 중',
