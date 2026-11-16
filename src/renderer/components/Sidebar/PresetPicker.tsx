@@ -212,6 +212,9 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   }, []);
   const browseWslFolder = useCallback(async (distro: string) => {
     if (!isValidWslDistroName(distro)) return;
+    // Close the menu on the click, not after the dialog: the dialog is modal
+    // and a cancelled pick would otherwise leave the menu open behind it.
+    onClose();
     const folders = await window.electronAPI?.dialog?.pickFolder(`\\\\wsl.localhost\\${distro}\\home`);
     if (folders && folders.length > 0) {
       const folderPath = folders[0];
@@ -221,7 +224,6 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
         : folderPath.split(/[/\\]/).filter(Boolean).pop() || 'Workspace';
       addWorkspace(folderName, { startupCwd: folderPath });
       showWorkspaces(useStore.getState());
-      onClose();
     }
   }, [addWorkspace, onClose]);
   const handleBrowseWsl = useCallback(() => {

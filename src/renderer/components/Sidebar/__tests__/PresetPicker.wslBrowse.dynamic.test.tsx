@@ -165,14 +165,15 @@ describe('Browse WSL folder row', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('adds nothing when the dialog is cancelled', async () => {
+  it('closes the menu on the click and adds nothing when the dialog is cancelled', async () => {
     install('win32', ['Ubuntu']);
     pickFolder.mockResolvedValue([]);
     const onClose = await mount();
     await act(async () => row()!.click());
     await flush();
     expect(addWorkspace).not.toHaveBeenCalled();
-    expect(onClose).not.toHaveBeenCalled();
+    // The menu closes on the click, even when the dialog is then cancelled.
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('ignores a distro name that is not a valid distro name', async () => {
