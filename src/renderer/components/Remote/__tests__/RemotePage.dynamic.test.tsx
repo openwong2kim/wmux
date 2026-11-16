@@ -52,6 +52,7 @@ function stub(devices: unknown[], a2a: A2aSeed = {}, extra: { remoteHosts?: unkn
       })),
       deviceList: vi.fn(async () => ({ devices })),
       deviceRevoke: vi.fn(async () => ({ ok: true })),
+      deviceSetInput: vi.fn(async () => ({ ok: true, changed: true })),
     },
     remote: {
       hostsList: vi.fn(async () => extra.remoteHosts ?? []),
@@ -208,6 +209,30 @@ describe('Remote page', () => {
     expect(api.web.deviceRevoke).not.toHaveBeenCalled();
     await act(async () => { $<HTMLButtonElement>('[data-remote-confirm="computer"]')!.click(); });
     expect(api.web.deviceRevoke).toHaveBeenCalledWith(DEVICE_ID);
+  });
+
+  it('lets a view-only phone type after one confirmation that says what typing allows', async () => {
+    stub([{ deviceId: DEVICE_ID, name: 'Demo iPhone', kind: 'phone', createdAt: 1, lastSeenAt: 1, allowInput: false }]);
+    await render();
+    act(() => $<HTMLButtonElement>(`[data-remote-grant="${DEVICE_ID}"]`)!.click());
+    expect(api.web.deviceSetInput).not.toHaveBeenCalled();
+    expect($('.wmux-remote-row-note')?.textContent).toBe('Demo iPhone will then approve requests and type into panes on this computer.');
+    // Revoke steps aside while the grant is asked for.
+    expect($('[data-remote-remove="phone"]')).toBeNull();
+    await act(async () => { $<HTMLButtonElement>(`[data-remote-grant-confirm="${DEVICE_ID}"]`)!.click(); });
+    expect(api.web.deviceSetInput).toHaveBeenCalledWith(DEVICE_ID, true);
+    expect($('.wmux-remote-row-note')).toBeNull();
+    // The row re-reads the roster afterwards.
+    expect(api.web.deviceList).toHaveBeenCalledTimes(2);
+  });
+
+  it('makes a phone view-only at once, and says why under the row when that fails', async () => {
+    stub([{ deviceId: DEVICE_ID, name: 'Demo iPhone', kind: 'phone', createdAt: 1, lastSeenAt: 1, allowInput: true }]);
+    api.web.deviceSetInput.mockResolvedValueOnce({ ok: false, reason: 'persist-failed', changed: true });
+    await render();
+    await act(async () => { $<HTMLButtonElement>(`[data-remote-view-only="${DEVICE_ID}"]`)!.click(); });
+    expect(api.web.deviceSetInput).toHaveBeenCalledWith(DEVICE_ID, false);
+    expect($('[data-remote-entry="phone"] [role="alert"]')?.textContent).toBe('The change could not be written to disk — it applies now but reverts when the daemon restarts');
   });
 
   it('explains how to connect a PC when nothing is, and re-reads on an interval', async () => {

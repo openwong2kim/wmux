@@ -1022,6 +1022,8 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-remote-row[data-live="true"] .wmux-remote-st { color: var(--text-main); }
 .wmux-remote-acts { grid-area: acts; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
 .wmux-remote-row-error { grid-area: err; margin: 0 0 4px; font-size: 12px; color: var(--accent-red); }
+/* What a confirmation is about to allow, said under the row it asks for. */
+.wmux-remote-row-note { grid-area: err; margin: 0 0 4px; font-size: 12px; color: var(--text-main); }
 .wmux-remote-link { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 32px; padding: 2px 6px 2px 40px; font-size: 12px; color: var(--text-sub); }
 .wmux-remote-link-ln { display: grid; place-items: center; color: var(--text-muted); }
 .wmux-remote-link-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

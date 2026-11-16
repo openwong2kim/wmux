@@ -1259,7 +1259,12 @@ Settings › LAN keeps only the listener switches. Top to bottom:
     connected is not known to the renderer, so LAN is never guessed.
   - **Phones** — paired web devices: what each is viewing ("Viewing api /
     build", from the daemon's live streams, named here), whether it may
-    type, and a direct Revoke asking twice (no ⋯ menu).
+    type, and a direct Revoke asking twice (no ⋯ menu). Before Revoke, a
+    ghost that changes the typing grant in place, with no re-pairing: Make
+    view-only applies at once; Allow typing asks once in the row (Cancel,
+    then Allow typing as a neutral secondary, never the red), with one line
+    under the row saying what it allows: approving requests and typing into
+    panes on this computer.
   - **Message links** — LanLink peers, messages only (a revoked one says
     Revoked in its meta). Paired from Connect a PC's LAN tab.
   - Status words are three: Connected, Disconnected (with "Disconnected 3h
