@@ -17,7 +17,7 @@ import CompanyPresetDialog from './CompanyPresetDialog';
 import CompanyFileReviewDialog from './CompanyFileReviewDialog';
 import { isValidWslDistroName } from '../../../shared/wslDistro';
 import { wslShareToLinux } from '../../../shared/wslPaths';
-import { keepSubmenuInWindow } from '../../utils/keepSubmenuInWindow';
+import { fixedFlyoutPosition } from '../../utils/fixedFlyoutPosition';
 import { IconChevron } from '../icons';
 
 interface PresetPickerProps {
@@ -167,11 +167,33 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   wslListOpenRef.current = wslListOpen;
   const wslTriggerRef = useRef<HTMLButtonElement>(null);
   const wslFlyoutRef = useRef<HTMLDivElement>(null);
-  // Stable so the flyout is fitted to the window once, not on every render.
-  const wslFlyoutCallbackRef = useCallback((el: HTMLDivElement | null) => {
-    wslFlyoutRef.current = el;
-    return keepSubmenuInWindow(el);
+  // The menu clips overflow (it scrolls), which would hide an absolute flyout,
+  // so the flyout is position: fixed and placed from the trigger row's
+  // viewport rect: when it opens, and again on window resize or menu scroll.
+  const placeWslFlyout = useCallback(() => {
+    const flyout = wslFlyoutRef.current;
+    const trigger = wslTriggerRef.current;
+    if (!flyout || !trigger) return;
+    const r = trigger.getBoundingClientRect();
+    const pos = fixedFlyoutPosition(
+      { left: r.left, right: r.right, top: r.top },
+      { width: flyout.offsetWidth, height: flyout.offsetHeight },
+      { width: window.innerWidth, height: window.innerHeight },
+    );
+    flyout.style.left = `${pos.left}px`;
+    flyout.style.top = `${pos.top}px`;
   }, []);
+  useEffect(() => {
+    if (!wslListOpen) return;
+    placeWslFlyout();
+    const menu = ref.current;
+    window.addEventListener('resize', placeWslFlyout);
+    menu?.addEventListener('scroll', placeWslFlyout);
+    return () => {
+      window.removeEventListener('resize', placeWslFlyout);
+      menu?.removeEventListener('scroll', placeWslFlyout);
+    };
+  }, [wslListOpen, placeWslFlyout]);
   // Keyboard opens move focus into the flyout; hover opens leave it alone.
   const wslFocusFirst = useRef(false);
   useEffect(() => {
@@ -312,10 +334,10 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
           </button>
           {wslListOpen && wslDistros.length > 1 && (
             <div
-              ref={wslFlyoutCallbackRef}
+              ref={wslFlyoutRef}
               role="menu"
-              className="absolute top-0 left-full ml-0.5 min-w-[140px] py-1 rounded-xl shadow-xl sidebar-popover-enter"
-              style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
+              className="fixed z-50 min-w-[140px] py-1 rounded-xl shadow-xl sidebar-popover-enter"
+              style={{ position: 'fixed', background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
               onKeyDown={(e) => {
                 const items = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[data-wsl-distro]')];
                 const at = items.indexOf(document.activeElement as HTMLButtonElement);

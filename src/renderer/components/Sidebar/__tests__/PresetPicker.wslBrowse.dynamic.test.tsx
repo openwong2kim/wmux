@@ -136,6 +136,17 @@ describe('Browse WSL folder row', () => {
     expect(addWorkspace).toHaveBeenCalledWith('app', { startupCwd: '\\\\wsl.localhost\\Debian\\srv\\app' });
   });
 
+  it('renders the flyout position: fixed, placed from the trigger row rect', async () => {
+    install('win32', ['Ubuntu', 'Debian']);
+    await mount();
+    vi.spyOn(row()!, 'getBoundingClientRect').mockReturnValue({ left: 20, right: 228, top: 90, bottom: 130, width: 208, height: 40, x: 20, y: 90, toJSON: () => ({}) });
+    await act(async () => row()!.click());
+    const flyout = container.querySelector<HTMLElement>('[role="menu"]')!;
+    expect(flyout.style.position).toBe('fixed');
+    expect(flyout.style.left).toBe('228px');
+    expect(flyout.style.top).toBe('90px');
+  });
+
   it('ArrowRight opens the flyout and focuses the first distro', async () => {
     install('win32', ['Ubuntu', 'Debian']);
     await mount();
