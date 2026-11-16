@@ -17,14 +17,27 @@ export const PANE_DELIVERY_LOCK_METHODS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Daemon methods that act for whichever workspace or pane the call names, so
- * the daemon answers them only on the app's own connection: A2A tasks,
- * channels, principals and remote links, fan-out task missions, and the pane
- * delivery lock. The exceptions are listed in DaemonPipeServer: the channel
- * calls a pane's own tools make, and the pairing calls of `wmux remote` on a
- * host the app does not use.
+ * Changing a paired device's grant (`wmux web`'s roster): only the app's
+ * Remote page and Paired devices dialog do it, through main.
+ */
+export const DEVICE_GRANT_METHODS: ReadonlySet<string> = new Set([
+  'daemon.web.deviceSetInput',
+]);
+
+/**
+ * Daemon methods the daemon answers only on the app's own connection: A2A
+ * tasks, channels, principals and remote links, fan-out task missions and the
+ * pane delivery lock, which act for whichever workspace or pane the call
+ * names, and a device's grant. The exceptions are listed in DaemonPipeServer:
+ * the channel calls a pane's own tools make, and the pairing calls of
+ * `wmux remote` on a host the app does not use.
  */
 export function isAppOnlyDaemonMethod(method: string): boolean {
-  return method.startsWith('a2a.') || method.startsWith('task.mission.') || PANE_DELIVERY_LOCK_METHODS.has(method);
+  return (
+    method.startsWith('a2a.') ||
+    method.startsWith('task.mission.') ||
+    PANE_DELIVERY_LOCK_METHODS.has(method) ||
+    DEVICE_GRANT_METHODS.has(method)
+  );
 }
 

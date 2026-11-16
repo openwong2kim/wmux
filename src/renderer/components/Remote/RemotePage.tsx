@@ -5,7 +5,7 @@ import { useT } from '../../hooks/useT';
 import Button from '../ui/Button';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import WebToggle, { webPairUrl } from '../StatusBar/WebToggle';
-import { revokeFailureMessage } from '../StatusBar/PairedDevicesModal';
+import { grantFailureMessage, revokeFailureMessage } from '../StatusBar/PairedDevicesModal';
 import { A2aExposureChecklist } from '../Settings/A2aExposureChecklist';
 import { IconChevron, IconComputer, IconCopy, IconElbow, IconMessage, IconPhone, IconServer } from '../icons';
 import { FOCUS_RING } from '../focusRing';
@@ -95,7 +95,7 @@ interface PcRow {
   links: A2aLinkRecordV1[];
 }
 
-type Confirm = { kind: 'entry' | 'pc' | 'link'; id: string } | null;
+type Confirm = { kind: 'entry' | 'pc' | 'link' | 'grant'; id: string } | null;
 
 /**
  * How many of this PC's panes an exposure lets that PC see now: a listed pane
@@ -375,11 +375,13 @@ export default function RemotePage() {
     } catch {
       if (mounted.current) setError({ key, message: t('a2aLink.error.failed') });
     } finally {
+      // Busy until the roster is read back, so a row is never offered again
+      // in the state the action just changed.
+      await refresh();
       if (mounted.current) {
         setBusy(null);
         setConfirming(null);
       }
-      await refresh();
     }
   }, [refresh, t]);
 
@@ -425,6 +427,16 @@ export default function RemotePage() {
     if (!api?.web?.deviceRevoke) return t('web.revokeUnavailable');
     const res = await api.web.deviceRevoke(entry.id);
     return res.ok ? null : revokeFailureMessage(t, res);
+  });
+
+  // A phone's typing grant, changed in place: no re-pairing. Taking it away
+  // also drops that device's open streams (the daemon does it), so the phone
+  // re-reads its smaller grant at once.
+  const setTyping = (entry: RemoteEntry, allowInput: boolean) => run(entry.key, async () => {
+    const api = window.electronAPI?.web;
+    if (!api?.deviceSetInput) return t('web.grantUnavailable');
+    const res = await api.deviceSetInput(entry.id, allowInput);
+    return res.ok ? null : grantFailureMessage(t, res);
   });
 
   // A PC paired either way is dropped on both records this PC holds for it.
@@ -742,8 +754,33 @@ export default function RemotePage() {
         <span className="wmux-remote-meta" data-remote-viewing>{meta}</span>
         {statusCell(d.live ? 'connected' : 'disconnected', d.live, d.live ? null : d.lastSeenAt)}
         <span className="wmux-remote-acts">
-          {twoStep(d.key, 'entry', t('web.revoke'), t('web.revokeConfirm'), () => void removeEntry(d), d.kind)}
+          {isConfirming('grant', d.key) ? (
+            <>
+              <Button size="sm" variant="ghost" onClick={() => setConfirming(null)} autoFocus>{t('remotePage.cancel')}</Button>
+              <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void setTyping(d, true)} data-remote-grant-confirm={d.id}>{t('remotePage.allowTyping')}</Button>
+            </>
+          ) : !isConfirming('entry', d.key) && (
+            <>
+              {/* A grandfathered grant can type but not approve: setting it makes it explicit. */}
+              {(d.access === 'view' || d.grantImplicit) && (
+                <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => {
+                  // An older failure on this row would share the line the question uses.
+                  if (error?.key === d.key) setError(null);
+                  setConfirming({ kind: 'grant', id: d.key });
+                }} data-remote-grant={d.id}>{t('remotePage.allowTyping')}</Button>
+              )}
+              {d.access !== 'view' && (
+                <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => void setTyping(d, false)} data-remote-view-only={d.id}>{t('remotePage.makeViewOnly')}</Button>
+              )}
+            </>
+          )}
+          {!isConfirming('grant', d.key) && twoStep(d.key, 'entry', t('web.revoke'), t('web.revokeConfirm'), () => void removeEntry(d), d.kind)}
         </span>
+        {isConfirming('grant', d.key) && (
+          <p className="wmux-remote-row-note" role="status">
+            {t(info?.allowInput ? 'remotePage.allowTypingAsk' : 'remotePage.allowTypingAskInputOff', { name: d.name || t('web.deviceUnnamed') })}
+          </p>
+        )}
         {rowError(d.key)}
       </li>
     );

@@ -121,7 +121,7 @@ describe('phone channels — input grant', () => {
     expect(join.status).toBe(403);
     expect(await join.json()).toEqual({
       error: 'read-only: this device was paired without permission to type',
-      detail: 'Joining a channel requires input permission. Grant it from "Paired devices" on the machine running wmux web.',
+      detail: 'Joining a channel requires input permission. Allow typing for this device on the Remote page, under Phones, on the machine running wmux web.',
     });
     expect(h.calls.join).toEqual([]);
 

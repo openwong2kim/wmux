@@ -5574,7 +5574,8 @@ closing a pull request without merging, or a release; the request shows as an
   input grant is on **and was set explicitly** — the rule of
   [Phone git write actions](#phone-git-write-actions-push-pr-create-merge-not-served-yet).
   A device paired before grants existed reads as allowed for typing but is
-  refused here until the desktop sets its grant in "Paired devices". A server
+  refused here until the desktop sets its grant (the Remote page, under
+  Phones: Allow typing). A server
   started without `--allow-input` takes no decision from anyone. These checks
   run before the body is read and again once it is in, on the credential the
   request carries: it must still be the same caller (the operator token, or

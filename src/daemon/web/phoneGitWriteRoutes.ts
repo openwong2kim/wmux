@@ -160,7 +160,7 @@ export class PhoneGitWriteRoutes {
     if (principal.kind === 'device' && !this.host.explicitInputGrant(principal.deviceId)) {
       return this.host.json(res, 403, {
         error: 'read-only: this device has no explicit input grant',
-        detail: 'Git write needs an input grant set for this device. Set it from "Paired devices" on the machine running wmux web.',
+        detail: 'Git write needs an input grant set for this device. Allow typing for this device on the Remote page, under Phones, on the machine running wmux web.',
       });
     }
     const sessionId = decode(route.rawSessionId);

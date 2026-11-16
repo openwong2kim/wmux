@@ -268,6 +268,13 @@ export interface WebDeviceSummary {
    * switched on", which is what the roster has to display to be operable.
    */
   allowInput: boolean;
+  /**
+   * The desktop's roster only (`daemon.web.deviceList`): `allowInput` is the
+   * grandfathered `true` of a record written before grants existed, never set
+   * by anyone. Bot approvals, browser help and git writes refuse such a device
+   * until its grant is set explicitly.
+   */
+  inputGrantImplicit?: true;
   /** Set once and never cleared — revocation is permanent; a device re-pairs to return. */
   revokedAt?: number;
   /** What the device said it was when it paired. Display only. */

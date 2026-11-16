@@ -23,6 +23,7 @@ import Popover, { PopoverSection } from '../ui/Popover';
 import Button from '../ui/Button';
 import Checkbox from '../ui/Checkbox';
 import Field from '../ui/Field';
+import SegmentedControl from '../ui/SegmentedControl';
 import Input from '../ui/Input';
 import Badge from '../ui/Badge';
 import { DECK_ICON_BUTTON, deckIconTone } from '../Deck/deckIconStyles';
@@ -649,6 +650,26 @@ export function WebPopoverBody({
       />
     </>
   );
+  // What the device being paired may do, chosen right where it is paired, the
+  // same two words as the wizard and the Remote page. `hint` says it in a line
+  // under the choice (the phone card); `inputOff` warns that this computer's
+  // own input is off (stopped: what the next Start sends), so a device that
+  // may type cannot yet.
+  const accessChoice = (allow: boolean, onToggle: () => void, testId: string, hint: string | null, inputOff: boolean) => (
+    <>
+      <SegmentedControl<'view' | 'type'>
+        value={allow ? 'type' : 'view'}
+        options={[
+          { value: 'view', label: t('web.wizardViewOnly'), disabled: busy },
+          { value: 'type', label: t('web.wizardRemoteControl'), disabled: busy },
+        ]}
+        onValueChange={(v) => { if ((v === 'type') !== allow) onToggle(); }}
+        ariaLabel={t('web.pairAllowInput')}
+        data-testid={testId}
+      />
+      {allow && inputOff ? <p className="ui-note">{t('web.pairInputOff')}</p> : hint ? <p className="ui-note">{hint}</p> : null}
+    </>
+  );
   // Quoted tool output (tailscale's own lines), with its one URL clickable,
   // and the one button that fixes it when there is one (open Tailscale, or
   // its download page) — never a command run on the person's behalf.
@@ -687,6 +708,9 @@ export function WebPopoverBody({
             start but are not required for it. */}
         <PopoverSection title={t('web.connectPhone')}>
           {phoneNameInput}
+          {/* The server's input is never raised from here (the wizard does that,
+              with its notice of who else can type): the line says when it is off. */}
+          {accessChoice(pairAllowInput, onTogglePairAllowInput, 'pair-access', t(pairAllowInput ? 'web.pairCanTypeHint' : 'web.wizardViewOnlyHint'), !allowInput)}
           <div className="flex flex-wrap items-center gap-2">
             {/* In flight or blocked it is not the primary: DESIGN.md keeps
                 the warm fill off disabled and running actions. */}
@@ -875,11 +899,9 @@ export function WebPopoverBody({
                 default — read-only is the mistake you can fix from the roster,
                 where a keyboard handed out by accident is not noticed until
                 something has been typed. */}
+            {accessChoice(pairAllowInput, onTogglePairAllowInput, 'pair-access', t(pairAllowInput ? 'web.pairCanTypeHint' : 'web.wizardViewOnlyHint'), info.allowInput !== true)}
             {/* What the device will reach, said where its typing grant is chosen. */}
             <PairingScope />
-            <Field label={t('web.pairAllowInput')}>
-              <Checkbox checked={pairAllowInput} onCheckedChange={() => onTogglePairAllowInput()} />
-            </Field>
             <Button
               variant={busy || deviceName.trim().length === 0 ? 'secondary' : 'primary'}
               size="sm"
@@ -966,12 +988,10 @@ export function WebPopoverBody({
               aria-label={t('web.computerNameHint')}
               className="w-full text-[13px]"
             />
+            {accessChoice(computerAllowInput, onToggleComputerAllowInput, 'computer-access', null, info.allowInput !== true)}
             {/* What the other computer will reach, said where its typing
                 grant is chosen. */}
             <PairingScope />
-            <Field label={t('web.pairAllowInput')}>
-              <Checkbox checked={computerAllowInput} onCheckedChange={() => onToggleComputerAllowInput()} />
-            </Field>
             <Button
               size="sm"
               onClick={onStartComputerPairing}

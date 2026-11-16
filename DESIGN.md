@@ -1115,7 +1115,14 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   know; the UI never says "A2A") and a
   **Details** toggle. While phone access is off, Share & pair sits on
   the line (its popover leads with Pair a phone, which starts sharing and
-  shows the QR in the same click. It is offered only once the address will
+  shows the QR in the same click. Above that button a two-option choice
+  says what the phone may do: View only (the default) or Can type, step 2's
+  own two words, with one line under it. Can type raises this computer's
+  input as step 2 does; when that would let other devices type too, the
+  click opens step 2 instead, so its notice is confirmed first. The
+  sidebar's phone and computer cards carry the same choice above their
+  scope paragraph, and never raise the input: with it off, Can type says so
+  in that line. It is offered only once the address will
   be reachable: a usable tailnet ticks HTTPS over Tailscale visibly first,
   never the LAN; otherwise the popover says why, as the wizard's first step
   does. Start stays as a secondary that starts exactly what the boxes show).
@@ -1259,7 +1266,12 @@ Settings › LAN keeps only the listener switches. Top to bottom:
     connected is not known to the renderer, so LAN is never guessed.
   - **Phones** — paired web devices: what each is viewing ("Viewing api /
     build", from the daemon's live streams, named here), whether it may
-    type, and a direct Revoke asking twice (no ⋯ menu).
+    type, and a direct Revoke asking twice (no ⋯ menu). Before Revoke, a
+    ghost that changes the typing grant in place, with no re-pairing: Make
+    view-only applies at once; Allow typing asks once in the row (Cancel,
+    then Allow typing as a neutral secondary, never the red), with one line
+    under the row saying what it allows: approving requests and typing into
+    panes on this computer.
   - **Message links** — LanLink peers, messages only (a revoked one says
     Revoked in its meta). Paired from Connect a PC's LAN tab.
   - Status words are three: Connected, Disconnected (with "Disconnected 3h

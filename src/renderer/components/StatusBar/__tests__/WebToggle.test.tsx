@@ -518,7 +518,7 @@ describe('WebPopoverBody — phone grants', () => {
     });
     expect(html).toContain('web.phoneAccess');
     const checked = [...html.matchAll(/role="checkbox"[^>]*aria-checked="(true|false)"/g)].map((m) => m[1]);
-    // Order: pairAllowInput (name form), transcript, upload.
+    // Order: transcript, upload (the device grant is a choice now, not a box).
     expect(checked.slice(-2)).toEqual(['true', 'false']);
   });
 

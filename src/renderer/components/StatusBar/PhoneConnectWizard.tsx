@@ -292,11 +292,28 @@ export function PhoneWizardView(p: PhoneWizardViewProps) {
               <TailscaleProblemFix problem={p.diagnosis.tailscale.problem} testId="wizard-shared" />
             </>
           ) : null}
+          {/* What the phone may do, chosen before the one click, in step 2's
+              words; View only stays the default. */}
+          {ok ? (
+            <>
+              <SegmentedControl<'view' | 'remote'>
+                value={p.remote ? 'remote' : 'view'}
+                options={[
+                  { value: 'view', label: t('web.wizardViewOnly'), disabled: p.busy },
+                  { value: 'remote', label: t('web.wizardRemoteControl'), disabled: p.busy },
+                ]}
+                onValueChange={(v) => p.onRemoteChange(v === 'remote')}
+                ariaLabel={t('web.phoneAccess')}
+                data-testid="wizard-quick-access"
+              />
+              <p className="ui-note">{t(p.remote ? 'web.wizardRemoteHint' : 'web.wizardViewOnlyHint')}</p>
+            </>
+          ) : null}
           {p.errorLines.length > 0 ? <Lines lines={p.errorLines} onOpenLink={p.onOpenLink} /> : null}
         </PopoverSection>
-        {/* Ready means one click to the QR: the defaults (view only, the
-            server's grants untouched, a prefilled name) need no step 2, which
-            stays one click away for anyone who wants to choose. */}
+        {/* Ready means one click to the QR: a prefilled name, the server's
+            upload grant untouched, and the access chosen above. Step 2 stays
+            one click away for anyone who wants the rest. */}
         {ok
           ? footer(
               <Button
@@ -577,9 +594,10 @@ export default function PhoneConnectWizard({
     }
   }, [api]);
 
-  // Step 2 needs the roster to say who else a server-wide change reaches.
+  // Steps 1 and 2 need the roster to say who else a server-wide change
+  // reaches (step 1's Can type, step 2's notice).
   useEffect(() => {
-    if (step !== 'permissions') return;
+    if (step !== 'permissions' && step !== 'check') return;
     let live = true;
     void readRoster().then((r) => {
       if (live) setRoster(r);
@@ -590,6 +608,11 @@ export default function PhoneConnectWizard({
   }, [step, readRoster]);
 
   const impacts = useMemo(() => sharedImpacts(info, roster, remote, upload), [info, roster, remote, upload]);
+  // Step 1's one click keeps the upload grant as it stands.
+  const quickImpacts = useMemo(
+    () => sharedImpacts(info, roster, remote, info.running === true && info.allowUpload === true),
+    [info, roster, remote],
+  );
   // A confirmation covers one attempt with the choices it was given for.
   useEffect(() => setAcknowledged(false), [remote, upload, step]);
 
@@ -625,8 +648,10 @@ export default function PhoneConnectWizard({
 
   /**
    * Start if needed, widen what was chosen, mint. `quick` is step 1's Pair a
-   * phone: view only and the server's upload grant as it stands, so it
-   * changes nothing server-wide and has no shared impact to confirm.
+   * phone: the access chosen there and the server's upload grant as it
+   * stands. View only changes nothing server-wide; Can type raises input as
+   * step 2 does, and reaches here only when that raise has no shared impact
+   * to confirm (otherwise step 1 sends the operator to step 2 to confirm it).
    */
   const handleConnect = useCallback(async (quick = false) => {
     const trimmed = name.trim();
@@ -639,7 +664,15 @@ export default function PhoneConnectWizard({
     try {
       // Look again first, like the hub's Start: the popover may be a poll behind.
       let current = await api.status();
-      const wantRemote = quick ? false : remote;
+      const wantRemote = remote;
+      // The one click checked what was on screen. Input may have been turned
+      // off since: a raise that would now reach other devices is confirmed
+      // on step 2 first, never done silently here.
+      if (quick && wantRemote && sharedImpacts(current, roster, true, current.running && current.allowUpload === true).length > 0) {
+        onInfo(current);
+        setStep('permissions');
+        return;
+      }
       const wantUpload = quick ? current.running && current.allowUpload === true : upload;
       if (!current.running) {
         // Every grant the screen shows is sent as shown, so nothing the
@@ -647,7 +680,7 @@ export default function PhoneConnectWizard({
         // path showed none, so it leaves them to the daemon, like the hub's
         // Start: input stays off, the rest is inherited.
         const args: WebStartArgs = quick
-          ? { tailscale: true, allowInput: false }
+          ? { tailscale: true, allowInput: wantRemote }
           : { tailscale: true, allowInput: wantRemote, allowUpload: wantUpload };
         current = await api.start(args);
         onInfo(current);
@@ -693,7 +726,7 @@ export default function PhoneConnectWizard({
       if (!minted) await restoreGrants(restore);
       setBusy(false);
     }
-  }, [api, name, remote, upload, onInfo, restoreGrants, session, t]);
+  }, [api, name, remote, upload, roster, onInfo, restoreGrants, session, t]);
 
   // While the QR is up, follow the CODE: as long as the daemon still holds it
   // under this name, keep waiting; once it is gone, the device it minted is
@@ -799,7 +832,12 @@ export default function PhoneConnectWizard({
       onToggleAcknowledged={() => setAcknowledged((v) => !v)}
       notice={notice}
       onRetry={() => void runCheck()}
-      onPairNow={() => void handleConnect(true)}
+      onPairNow={() => {
+        // Can type that would let others type too (input is server-wide) is
+        // confirmed on step 2, where its notice and checkbox are.
+        if (remote && quickImpacts.length > 0) setStep('permissions');
+        else void handleConnect(true);
+      }}
       onNext={() => setStep('permissions')}
       onBack={() => setStep('check')}
       onRemoteChange={setRemote}
