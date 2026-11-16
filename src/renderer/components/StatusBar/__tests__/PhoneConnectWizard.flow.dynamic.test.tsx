@@ -194,6 +194,25 @@ describe('phone wizard — mounted', () => {
     expect(document.querySelector('[aria-label="QR code that pairs this phone"]')).not.toBeNull();
   });
 
+  it('Can type on step 1: one click starts with input on and pairs a phone that can type', async () => {
+    await mountAndOpen();
+    await click('Can type');
+    await click('Pair a phone');
+    expect(start).toHaveBeenCalledWith({ tailscale: true, allowInput: true });
+    expect(pairStart).toHaveBeenCalledWith('Phone', true, 'phone');
+    expect(stepText()).toBe('Step 3 of 4');
+  });
+
+  it('Can type on step 1 that would let others type too goes to step 2 to confirm it first', async () => {
+    status = { ...FRONTED, allowInput: false };
+    await mountAndOpen();
+    await click('Can type');
+    await click('Pair a phone');
+    expect(stepText()).toBe('Step 2 of 4');
+    expect(setGrants).not.toHaveBeenCalled();
+    expect(pairStart).not.toHaveBeenCalled();
+  });
+
   it('Pair a phone on step 1 leaves a running server\'s grants as they are', async () => {
     status = { ...FRONTED, allowUpload: true };
     await mountAndOpen();
