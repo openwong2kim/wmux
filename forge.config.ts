@@ -22,10 +22,16 @@ import * as path from 'path';
 // runs with continue-on-error.
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf-8')) as { version: string };
 const SQUIRREL_SETUP_EXE = `wmux-${pkg.version}.Setup.exe`;
-const shipsTerminalCore = process.env.WMUX_PACKAGE_TERMINAL_CORE === '1';
+// The Rust terminal core is wmux's only terminal engine, so every package
+// ships it (the WMUX_PACKAGE_TERMINAL_CORE opt-in is gone; release.yml still
+// sets it, harmlessly). It is staged for the target first; postPackage checks
+// the copy and loads it with the packaged runtime, PTY included
+// (scripts/verify-native-terminal-package.cjs). An unqualified target fails in
+// scripts/build-native-terminal.mjs (scripts/lib/native-terminal-targets.mjs).
+const shipsTerminalCore = true;
 const TERMINAL_CORE_STAGE = './dist/wmux-native';
-if (shipsTerminalCore && !fs.existsSync(path.join(__dirname, TERMINAL_CORE_STAGE, 'manifest.json'))) {
-  throw new Error('Build the opt-in terminal module with node scripts/build-native-terminal.mjs before packaging');
+if (!fs.existsSync(path.join(__dirname, TERMINAL_CORE_STAGE, 'manifest.json'))) {
+  throw new Error('Stage the Rust terminal core first: npm run build:terminal-core (wmux has no other terminal engine)');
 }
 // The release job writes the wmux-server manifest (scripts/build-server-artifact.mjs)
 // before packaging; it ships as resources/server-manifest.json so "Add PC over
