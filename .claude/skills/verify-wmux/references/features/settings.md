@@ -53,7 +53,7 @@ Preconditions:
   Restore with `control-wmux click --role radio --name Tint`.
 - **Search.** Run `control-wmux click --testid settings-search`, `control-wmux type --text theme --testid settings-search`. `control-wmux wait-settle --testid settings-search-results` passes. `type` appends, so clear first (`control-wmux press --key Meta+a --testid settings-search`, `press --key Backspace`); a nonsense query such as `zzzqqq` shows `settings-search-empty` ("No settings match “zzzqqq”.").
 - **Proof.** `control-wmux screenshot --as settings-general` shows the Settings page with the General tab.
-- **Terminal engine.** Open Terminal, then `control-wmux select --label "Terminal engine" --value rust` and `control-wmux wait-settle`. Inspect `window.electronAPI.settings.getTerminalCore()` (read-only): `selected` becomes `rust` while a running Node host stays `node` and `restartRequired` is true. Read `~/.wmux<suffix>/terminal-core.json` independently. `stop` without purge, then `launch` with the same executable and suffix restarts both hosts; verify `host: daemon`, effective `rust`, and no restart required. Repeat with `--value node` to prove rollback. `restart` alone retains the daemon, so it proves reconnect rather than engine application. Hover the engine control before a screenshot to bring it into view.
+- **Terminal engine.** A read-only status row (the Rust core is the only engine; there is no picker). Open Terminal and hover the row before a screenshot to bring it into view. It shows a **Rust** badge; read `window.electronAPI.settings.getTerminalCore()`: `host: daemon`, `runtime.effective` `rust`, `runtime.available` true. With the packaged module renamed away (a test build only), the row says the module is missing and shows the reason, `available` is false, and a new pane shows the typed error instead of a shell.
 
 ## Plugins lifecycle in an isolated profile
 
@@ -92,4 +92,4 @@ button or a mocked OAuth test as a completed provider sign-in.
 - All labels are translated. After switching Language, English names stop matching; use `data-settings-tab` and test ids. Switch back to English before the next recipe.
 - The font-size slider is on Appearance, not Terminal.
 - Settings that write outside the profile: Claude Code tab installers (hooks, statusline), Accounts (CLI logins), Remote & phone and LAN pairing, Computer use permissions. Read them, do not toggle them.
-- `~/.wmux<suffix>/config.json` is daemon config; the Settings UI does not write UI preferences there. The terminal engine is a separate host setting in `terminal-core.json`, not `session.json`.
+- `~/.wmux<suffix>/config.json` is daemon config; the Settings UI does not write UI preferences there. A `terminal-core.json` from an older build is ignored (Rust is the only terminal engine).

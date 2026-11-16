@@ -131,8 +131,8 @@ describe('release.yml server artifacts', () => {
     const wrapper = read('scripts', 'prove-server-artifact.sh');
     expect(wrapper).toMatch(/\nIMAGE=debian:11-slim@sha256:[0-9a-f]{64}\n/);
     const proof = read('scripts', 'prove-server-artifact.mjs');
-    // Rust is the default: the proof starts with no engine choice saved, then
-    // checks the saved node choice the server docs give to switch back.
+    // Rust is the only engine: the proof starts with no engine choice saved,
+    // then checks that an older server's saved node choice is ignored and kept.
     expect(proof).toContain("if (fs.existsSync(path.join(wmuxDir, 'terminal-core.json'))) {");
     expect(proof).not.toContain("engine: 'rust'");
     expect(proof).toContain("terminalCore.effective !== 'rust'");
@@ -141,7 +141,8 @@ describe('release.yml server artifacts', () => {
     const wait = proof.indexOf('await waitForExit(started.pid, started.pipeName);');
     expect(wait).toBeGreaterThan(0);
     expect(wait).toBeLessThan(proof.indexOf("JSON.stringify({ engine: 'node' })"));
-    expect(proof).toContain("terminalCore.effective !== 'node'");
+    expect(proof).not.toContain("terminalCore.effective !== 'node'");
+    expect(proof).toContain("throw new Error('the daemon deleted the saved engine choice')");
     expect(proof).not.toContain('WMUX_TERMINAL_CORE:');
   });
 

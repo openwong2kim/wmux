@@ -148,10 +148,13 @@ describe('twenty-pane stability engine verification', () => {
 
   it('accepts the engine the daemon reports running', () => {
     expect(verifyEngine('rust', ping(rust))).toMatchObject({ effective: 'rust' });
-    expect(verifyEngine('node', ping(node))).toMatchObject({ effective: 'node' });
   });
 
-  it('aborts when the daemon runs the other engine, so an A/B never compares node with node', () => {
+  it('refuses a run that asks for node: the Node engine is removed', () => {
+    expect(() => verifyEngine('node', ping(node))).toThrow(/Node terminal engine is removed/);
+  });
+
+  it('aborts when an older daemon runs node', () => {
     expect(() => verifyEngine('rust', ping(node))).toThrow(/started with the node engine, not rust/);
     expect(() => verifyEngine('rust', ping({ ...rust, effective: 'node' }))).toThrow(/runs node/);
   });
@@ -160,12 +163,8 @@ describe('twenty-pane stability engine verification', () => {
     expect(() => verifyEngine('rust', ping({ ...rust, effective: 'node', rustAvailable: false }))).toThrow(/Rust terminal module is unavailable/);
   });
 
-  it('lets a node run proceed on a build without the Rust module', () => {
-    expect(verifyEngine('node', ping({ ...node, rustAvailable: false }))).toMatchObject({ effective: 'node', rustAvailable: false });
-  });
-
-  it('aborts when an environment override decides the engine', () => {
-    expect(() => verifyEngine('node', ping({ ...node, environmentOverride: true }))).toThrow(/WMUX_TERMINAL_CORE/);
+  it('aborts when an older daemon reports an environment override', () => {
+    expect(() => verifyEngine('rust', ping({ ...rust, environmentOverride: true }))).toThrow(/WMUX_TERMINAL_CORE/);
   });
 
   it('aborts when the daemon cannot report its engine, unless none was requested', () => {
@@ -174,10 +173,11 @@ describe('twenty-pane stability engine verification', () => {
     expect(verifyEngine(null, ping(node))).toMatchObject({ effective: 'node' });
   });
 
-  it('parses --engine and rejects anything else', () => {
+  it('parses --engine rust and rejects anything else, node included', () => {
     expect(parseArgs(['--engine', 'rust']).engine).toBe('rust');
     expect(parseArgs([]).engine).toBeNull();
-    expect(() => parseArgs(['--engine', 'wasm'])).toThrow(/node or rust/);
+    expect(() => parseArgs(['--engine', 'node'])).toThrow(/Node terminal engine is removed/);
+    expect(() => parseArgs(['--engine', 'wasm'])).toThrow(/must be rust/);
   });
 });
 
