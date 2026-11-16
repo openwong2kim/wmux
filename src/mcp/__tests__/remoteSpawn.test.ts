@@ -7,7 +7,7 @@ vi.mock('../wmux-client', () => ({
 }));
 
 import { sendRpc } from '../wmux-client';
-import { registerRemoteSpawnTools } from '../remoteSpawn';
+import { registerRemoteAnswerTool, registerRemoteSpawnTools } from '../remoteSpawn';
 
 const mockSendRpc = sendRpc as unknown as ReturnType<typeof vi.fn>;
 
@@ -52,5 +52,28 @@ describe('remote_spawn', () => {
     const res = await tool({ pc: 'DESK', agent: 'claude', root: 'web', prompt: 'again' });
     expect(res.isError).toBe(true);
     expect(JSON.parse(res.content[0].text)).toEqual({ ok: false, error: 'rate-limited', message: 'at most 3' });
+  });
+});
+
+describe('remote_answer', () => {
+  let answer: ToolHandler;
+  registerRemoteAnswerTool(
+    { tool: (_n: string, _d: string, _s: unknown, h: ToolHandler) => { answer = h; } } as never,
+    { getSenderPtyId: () => pty, resolveWorkspaceId: warmed },
+  );
+
+  it('answers through main with the verified ptyId, found before the call', async () => {
+    mockSendRpc.mockResolvedValueOnce({ ok: true, taskId: 'rt-1', messageId: 'an-1' });
+    const res = await answer({ task_id: 'rt-1', picker_id: '0123456789abcdef', option: 2 });
+    expect(mockSendRpc).toHaveBeenCalledWith('a2a.remote.answer', { taskId: 'rt-1', pickerId: '0123456789abcdef', option: 2, senderPtyId: 'pty-mine' });
+    expect(res.isError).toBeUndefined();
+    expect(JSON.parse(res.content[0]!.text)).toEqual({ ok: true, taskId: 'rt-1', messageId: 'an-1' });
+  });
+
+  it('a refusal is an error result, with its reason', async () => {
+    mockSendRpc.mockResolvedValueOnce({ ok: false, error: { code: 'NOT_AUTHORIZED', message: 'run it from the pane that sent the task' } });
+    const res = await answer({ task_id: 'rt-1', picker_id: '0123456789abcdef', option: 1 });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain('NOT_AUTHORIZED');
   });
 });

@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { sendRpc } from './wmux-client';
 import type { RpcMethod } from '../shared/rpc';
 import { A2A_SPAWN_PIPE_RPC } from '../shared/a2aSpawn';
+import { A2A_ANSWER_RPC } from '../shared/a2aRemote';
 
 export interface RemoteSpawnToolDeps {
   /** The verified (PID-walk) ptyId; never the env hint. */
@@ -29,6 +30,49 @@ const SHAPE = {
   expires_in_hours: z.number().int().min(1).max(72).optional().describe('How long it may wait for that PC (default 24).'),
   spawn_id: z.string().max(64).optional().describe('Read this request (never asks). With neither pc nor spawn_id, lists every request and what each PC allows.'),
 };
+
+const ANSWER_SHAPE = {
+  task_id: z.string(),
+  picker_id: z.string(),
+  option: z.number().int().min(1).max(9),
+};
+
+/**
+ * remote_answer — the agent that sent a task to another PC answers the
+ * single-choice menu that task's (headless) worker shows there, by number.
+ * Main resolves the caller's pane from the verified ptyId and the daemon
+ * takes it only from the task's sender; how it went comes back in the task's
+ * status (`remoteStatus.detail.answers`).
+ */
+export function registerRemoteAnswerTool(server: McpServer, deps: RemoteSpawnToolDeps): void {
+  server.tool(
+    'remote_answer',
+    'Answer the single-choice menu the worker on a task you sent to another PC shows (remoteStatus.detail.pickerId, optionCount in a2a_task_query). The outcome shows in detail.answers.',
+    ANSWER_SHAPE,
+    async ({ task_id, picker_id, option }) => {
+      try {
+        if (deps.resolveWorkspaceId) {
+          try {
+            await deps.resolveWorkspaceId();
+          } catch {
+            // An unresolvable caller is the handler's refusal to make.
+          }
+        }
+        const params: Record<string, unknown> = { taskId: task_id, pickerId: picker_id, option };
+        const pty = deps.getSenderPtyId();
+        if (pty) params['senderPtyId'] = pty;
+        const result = await sendRpc(A2A_ANSWER_RPC.ask as RpcMethod, params);
+        const failed = typeof result === 'object' && result !== null && (result as { ok?: unknown }).ok === false;
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result ?? {}, null, 2) }],
+          ...(failed ? { isError: true as const } : {}),
+        };
+      } catch (err) {
+        return { content: [{ type: 'text' as const, text: `Error: ${(err as Error).message}` }], isError: true as const };
+      }
+    },
+  );
+}
 
 export function registerRemoteSpawnTools(server: McpServer, deps: RemoteSpawnToolDeps): void {
   server.tool(

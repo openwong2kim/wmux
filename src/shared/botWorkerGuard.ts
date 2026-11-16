@@ -633,7 +633,7 @@ export function isFencedMode(mode: PermissionMode | undefined): boolean {
  *  To hand out list. The reads, task_push and send_message stay
  *  (send_message without `execute` on a new task: a2a.rpc.ts). */
 export const WORKER_FENCE_REFUSED_WMUX_TOOLS: readonly string[] = [
-  'repl_run', 'browser_repl', 'terminal_send', 'terminal_send_key', 'surface_new', 'pane_split', 'remote_spawn', 'computer', 'fanout_start',
+  'repl_run', 'browser_repl', 'terminal_send', 'terminal_send_key', 'surface_new', 'pane_split', 'remote_spawn', 'remote_answer', 'computer', 'fanout_start',
   'fanout_bring_back', 'hand_out', 'browser_file_upload', 'browser_download', 'browser_wait_for_download', 'browser_pdf', 'browser_trace',
 ].map((t) => `mcp__wmux__${t}`);
 
@@ -644,7 +644,7 @@ export const WORKER_FENCE_REFUSED_WMUX_TOOLS: readonly string[] = [
  *  actions (shared/appActions.ts) have no tool yet and are refused here too:
  *  an unattended worker does not rearrange or restyle the owner's app. */
 export const WORKER_FENCE_REFUSED_RPC: ReadonlySet<string> = new Set([
-  'input.send', 'input.sendKey', 'surface.new', 'pane.split', 'a2a.remote.spawn', 'computer.act', 'task.fanout.start',
+  'input.send', 'input.sendKey', 'surface.new', 'pane.split', 'a2a.remote.spawn', 'a2a.remote.answer', 'computer.act', 'task.fanout.start',
   'task.fanout.bringBack', 'handOut.list', 'handOut.add', 'app.action', 'app.action.list',
 ]);
 
