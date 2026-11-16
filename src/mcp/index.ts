@@ -54,7 +54,7 @@ import { registerUtilityTools } from './playwright/tools/utility';
 import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
 import { registerFanOutTools } from './fanout';
-import { registerRemoteSpawnTools } from './remoteSpawn';
+import { registerRemoteAnswerTool, registerRemoteSpawnTools } from './remoteSpawn';
 import { registerHandOutTools } from './handOut';
 import { registerLedgerUpdateTool, registerLedgerListTool, registerLedgerBrainUpdateTool } from './ledger';
 import { registerTaskFetchTool, registerTaskPushTool } from './taskPush';
@@ -2470,6 +2470,13 @@ registerFanOutTools(server, {
 // Same walk-hit-only provenance as fan-out: the handler resolves the caller's
 // pane from the ptyId and refuses a caller started for someone (depth 1).
 registerRemoteSpawnTools(server, {
+  getSenderPtyId: () => verifiedPtyId(),
+  resolveWorkspaceId: requireWorkspaceId,
+});
+
+// === Remote answer (full + core) — answer the menu a worker on another PC shows ===
+// Same provenance: main resolves the caller's pane; the daemon takes it only from the task's sender.
+registerRemoteAnswerTool(server, {
   getSenderPtyId: () => verifiedPtyId(),
   resolveWorkspaceId: requireWorkspaceId,
 });

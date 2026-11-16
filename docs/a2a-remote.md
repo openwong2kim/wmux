@@ -253,8 +253,9 @@ The **Remote** page has a **Messages between PCs** section:
   (headless) shows its own question menu with a single single-choice
   question, its status carries `pickerId` (a hash of the session, the
   question and its choices; no text) and `optionCount`. The agent that sent
-  the task answers with `wmux remote answer <task-id> <option> --picker
-  <picker-id>` from its own pane; only the task's sender can. The host types
+  the task answers with the MCP tool `remote_answer` (`task_id`,
+  `picker_id`, `option`), or `wmux remote answer <task-id> <option>
+  --picker <picker-id>` from its own pane; only the task's sender can. The host types
   that choice's number only while the same menu is on screen, untouched,
   under the pane's delivery lock, then waits for Claude Code to confirm it.
   How it went comes back in the next status, in `detail.answers` (the
