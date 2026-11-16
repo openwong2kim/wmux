@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import {
+  A2A_ANSWER_RPC,
+  A2A_FEATURE_ANSWER,
   A2A_FEATURE_IMAGES,
   A2A_FEATURE_HELD_NOTICE,
   A2A_FEATURE_REOPEN,
@@ -16,6 +18,7 @@ import {
   type A2aRemoteErrorCode,
   type A2aRemoteHostRecordV1,
   type A2aRemoteStatusV1,
+  type A2aRemoteTaskMarkerV1,
   type HostId,
   type PeerCredential,
   shownRemoteStatus,
@@ -35,7 +38,7 @@ import { PeerTaskBudget, acceptInbound, type ImagePull, type InboundDeps } from 
 import type { NotifyLinkChange } from './linkRpc';
 import type { LinkStore } from './linkStore';
 import type { A2aOffers } from './offers';
-import { aliasTable, imageRefsOf, linkAlias, listRemoteTargets, sendRemoteReply, sendRemoteState, sendRemoteStatus, sendRemoteTask, syncRemoteTask, type ImageCaller, type OutboundDeps, type PreparedImage } from './outbound';
+import { aliasTable, imageRefsOf, linkAlias, listRemoteTargets, sendRemoteAnswer, sendRemoteReply, sendRemoteState, sendRemoteStatus, sendRemoteTask, syncRemoteTask, type ImageCaller, type OutboundDeps, type PreparedImage } from './outbound';
 import { OutboxStore } from './outboxStore';
 import { PeerFeatureStore } from './peerFeatureStore';
 import type { A2aRouteTable } from './routes';
@@ -92,6 +95,8 @@ export interface A2aRemoteDeliveryDeps {
   continueBytes?: { registerRoutes(table: A2aRouteTable): void };
   /** Links a remote start made here (spawnStarter.ts): redacted, no images, follow-ups held for their card. */
   spawnLinks?: NonNullable<InboundDeps['spawnLinks']>;
+  /** The asking PC's answers to a headless worker's question (headless delivery); absent, one is refused. */
+  answers?: NonNullable<InboundDeps['remoteAnswer']>;
   /** This PC's requests to start agents on other PCs (spawnRequester.ts): told when the other PC refuses one for good. */
   spawnAsks?: { onRefused(hostId: HostId, envelope: A2aRemoteEnvelope, code: A2aRemoteErrorCode): void };
   /** Optional features this PC advertises: on its streams to the servers it joined, and in its own streams' `hello`. */
@@ -680,6 +685,21 @@ export class A2aRemoteDelivery {
       });
     });
 
+    // An answer to the question the worker on a task this PC sent shows: only to a PC connected now that takes one.
+    onRpc(A2A_ANSWER_RPC.send, async (p) => {
+      const taskId = str(p, 'taskId');
+      const marker = this.deps.taskService.getTask(taskId)?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
+      if (!marker) return { ok: false, error: 'unknown-task' };
+      const features = this.liveFeatures(marker.hostId);
+      if (!features) return { ok: false, error: 'unavailable: that PC is not connected now' };
+      if (!features.has(A2A_FEATURE_ANSWER)) return { ok: false, error: 'unsupported: that PC runs an older wmux that takes no answer' };
+      return sendRemoteAnswer(this.outboundDeps(), {
+        taskId,
+        workspaceId: str(p, 'workspaceId'),
+        answer: { pickerId: str(p, 'pickerId'), option: typeof p['option'] === 'number' ? p['option'] : Number.NaN },
+      });
+    });
+
     // An agent's images for a pane on THIS PC: checked and kept like a
     // remote send's, in `uploads/a2a/local`, whose paths the receiver reads.
     onRpc(A2A_REMOTE_RPC.stageImages, async (p) => {
@@ -1017,6 +1037,7 @@ export class A2aRemoteDelivery {
       ...(this.deps.bundles ? { bundles: this.deps.bundles } : {}),
       ...(this.deps.bundleAsks ? { bundleAsks: this.deps.bundleAsks } : {}),
       ...(this.deps.spawnLinks ? { spawnLinks: this.deps.spawnLinks } : {}),
+      ...(this.deps.answers ? { remoteAnswer: this.deps.answers } : {}),
       ...(this.images ? { images: { store: this.images, pullAttempts: this.pullAttempts } } : {}),
       remoteStatus: {
         admit: (hostId) => this.admitRemoteStatus(hostId),

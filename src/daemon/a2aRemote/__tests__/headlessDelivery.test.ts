@@ -1848,6 +1848,75 @@ describe('the status this delivery reports for each task (headlessStatus.ts send
     expect(last()).toEqual({ taskId: TASK, kind: 'working' });
   });
 
+  it('a picker read off the screen, with no AskUserQuestion call in the transcript (auto mode): a menu question with its picker id and choices count', async () => {
+    const d = new HeadlessDelivery(statusDeps({
+      questionKind: async () => 'dialog',
+      pickerOnScreen: async () => ({ pickerId: '0123456789abcdef', optionCount: 2 }),
+    }));
+    await d.tick();
+    write(userLine(PROMPT));
+    screen = 'dialog';
+    await advance(d, QUESTION_PROBE_MS);
+    expect(last()).toEqual({ taskId: TASK, kind: 'question', detail: { question: 'menu', pickerId: '0123456789abcdef', optionCount: 2 } });
+    screen = 'clear';
+    await advance(d, QUESTION_PROBE_MS);
+    expect(last()).toEqual({ taskId: TASK, kind: 'working' });
+  });
+
+  describe('an answer from the asking PC', () => {
+    const ANSWER = { pickerId: '0123456789abcdef', option: 2 };
+
+    it('is typed into its task\'s own session, once per message, and its outcome rides on the task\'s status', async () => {
+      const typed: Array<{ sessionId: string; option: number }> = [];
+      const d = new HeadlessDelivery(statusDeps({
+        answers: () => 'on',
+        answerOnScreen: async (sessionId, a) => { typed.push({ sessionId, option: a.option }); return { outcome: 'answered' }; },
+      }));
+      await d.tick();
+      write(userLine(PROMPT));
+      await d.tick();
+      expect(await d.answer(TASK, 'an-1', ANSWER)).toEqual({ outcome: 'answered' });
+      expect(await d.answer(TASK, 'an-1', ANSWER)).toBe('duplicate');
+      expect(typed).toEqual([{ sessionId: rec.sessionId, option: 2 }]);
+      await d.tick();
+      expect(last()).toEqual({ taskId: TASK, kind: 'working', detail: { answer: { messageId: 'an-1', outcome: 'answered' } } });
+    });
+
+    it('is not typed while answers are off, or off because their file is damaged', async () => {
+      let typed = 0;
+      const answerOnScreen = async (): Promise<{ outcome: 'answered' }> => { typed += 1; return { outcome: 'answered' }; };
+      const off = new HeadlessDelivery(statusDeps({ answers: () => 'off', answerOnScreen }));
+      await off.tick();
+      expect(await off.answer(TASK, 'an-1', ANSWER)).toEqual({ outcome: 'not-answered', reason: 'answers-off' });
+      const damaged = new HeadlessDelivery(statusDeps({ answers: () => 'damaged', answerOnScreen }));
+      await damaged.tick();
+      expect(await damaged.answer(TASK, 'an-2', ANSWER)).toEqual({ outcome: 'not-answered', reason: 'answers-damaged' });
+      expect(typed).toBe(0);
+    });
+
+    it('is not typed for a task that ended', async () => {
+      let typed = 0;
+      const d = new HeadlessDelivery(statusDeps({ answers: () => 'on', answerOnScreen: async () => { typed += 1; return { outcome: 'answered' }; } }));
+      await d.tick();
+      task.status = { state: 'canceled', timestamp: stamp() };
+      expect(await d.answer(TASK, 'an-1', ANSWER)).toEqual({ outcome: 'not-answered', reason: 'not-open' });
+      expect(typed).toBe(0);
+    });
+
+    it('a second answer on the task while one is being typed is not typed', async () => {
+      let release: () => void = () => undefined;
+      const d = new HeadlessDelivery(statusDeps({
+        answers: () => 'on',
+        answerOnScreen: () => new Promise((resolve) => { release = () => resolve({ outcome: 'answered' }); }),
+      }));
+      await d.tick();
+      const first = d.answer(TASK, 'an-1', ANSWER);
+      expect(await d.answer(TASK, 'an-2', ANSWER)).toEqual({ outcome: 'not-answered', reason: 'lock-busy' });
+      release();
+      expect(await first).toEqual({ outcome: 'answered' });
+    });
+  });
+
   it('at its usage limit: usage-limit, with whose limit and when it resets', async () => {
     clock = Date.UTC(2026, 10, 13, 0, 5);
     const d = new HeadlessDelivery(statusDeps());

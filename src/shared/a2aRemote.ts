@@ -196,6 +196,13 @@ export const A2A_FEATURE_STATUS = 'status.1';
  * follow-ups on `ask` would end the task on it).
  */
 export const A2A_FEATURE_HELD_NOTICE = 'held-notice.1';
+/**
+ * The PC takes an answer to the question its worker shows (`kind: 'answer'`,
+ * `A2aRemoteAnswerV1`), and says how it went in the task's status
+ * (`detail.answer`). An asker sends one only to a PC that advertises it: an
+ * older one would refuse the kind.
+ */
+export const A2A_FEATURE_ANSWER = 'answer.1';
 /** A host's notice about one message the receiver sent (`held-notice.1`). Nothing in it is shown as written. */
 export interface A2aRemoteNoticeV1 {
   kind: 'held-expired';
@@ -230,6 +237,28 @@ export function isA2aStatusLabels(v: unknown): v is A2aStatusLabels {
 export const A2A_STATUS_LABELS_RPC = Object.freeze({
   get: 'a2a.remote.statusLabels.get',
   set: 'a2a.remote.statusLabels.set',
+} as const);
+/**
+ * Whether this PC types another PC's answer into a headless worker's question
+ * (`wmux remote answers`): `on`, `off`, or `default` (no setting: on where
+ * follow-ups go straight to the agent, off where they wait for a person).
+ */
+export type A2aAnswersSetting = 'on' | 'off' | 'default';
+export function isA2aAnswersSetting(v: unknown): v is A2aAnswersSetting {
+  return v === 'on' || v === 'off' || v === 'default';
+}
+/**
+ * Answers to a worker's question (`A2A_FEATURE_ANSWER`):
+ *   - `ask`: the CLI's pipe method on the asking PC (local origin; main checks
+ *     the caller is a pane and passes its workspace on);
+ *   - `send`: the daemon's, `{ taskId, workspaceId, pickerId, option }` → `{ ok, taskId, messageId }`;
+ *   - `get` / `set`: this PC's own setting, `{ answers, damaged, effective }` / `{ answers }`.
+ */
+export const A2A_ANSWER_RPC = Object.freeze({
+  ask: 'a2a.remote.answer',
+  send: 'a2a.remote.answer.send',
+  get: 'a2a.remote.answers.get',
+  set: 'a2a.remote.answers.set',
 } as const);
 export const A2A_STREAM_PING_MS = 15_000;
 /** No sign of the other end for this long ends a stream, on either side. */
@@ -796,9 +825,11 @@ export type A2aRemoteMessageKind =
   /** The receiver's acknowledgement of a task it got: handed over, or read. Never a state change. */
   | 'receipt'
   /** What the receiver's worker is doing on a task (`A2aRemoteStatusV1`). Never a reply, never a state change. */
-  | 'status';
+  | 'status'
+  /** The sender's answer to the question the receiver's worker shows (`A2aRemoteAnswerV1`). Never a reply, never a state change. */
+  | 'answer';
 
-export const A2A_REMOTE_MESSAGE_KINDS: readonly A2aRemoteMessageKind[] = Object.freeze(['task', 'reply', 'state', 'link', 'receipt', 'status']);
+export const A2A_REMOTE_MESSAGE_KINDS: readonly A2aRemoteMessageKind[] = Object.freeze(['task', 'reply', 'state', 'link', 'receipt', 'status', 'answer']);
 
 /** How far the receiver got with a task: handed to its agent (or Moa), or read by it. */
 export type A2aRemoteReceipt = 'delivered' | 'read';
@@ -826,6 +857,74 @@ export const A2A_REMOTE_STATUS_LIMITS = Object.freeze({
 const STATUS_PROVIDER_RE = /^[a-z][a-z0-9-]{0,31}$/;
 /** A menu id is the agent's tool call id (`toolu_…`): an id, never free text. */
 const STATUS_MENU_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+/** A picker id: 16 hex characters of a sha256. */
+export const A2A_REMOTE_PICKER_ID_RE = /^[0-9a-f]{16}$/;
+
+/** The sender's answer to the one-question picker its worker shows: the option's number, 1-based. */
+export interface A2aRemoteAnswerV1 {
+  pickerId: string;
+  option: number;
+}
+
+/** Strict: a picker id and an option 1..OPTIONS_MAX; null when it is not one. */
+export function parseA2aRemoteAnswer(raw: unknown): A2aRemoteAnswerV1 | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const { pickerId, option } = r;
+  if (typeof pickerId !== 'string' || !A2A_REMOTE_PICKER_ID_RE.test(pickerId)) return null;
+  if (typeof option !== 'number' || !Number.isInteger(option) || option < 1 || option > A2A_REMOTE_STATUS_LIMITS.OPTIONS_MAX) return null;
+  return { pickerId, option };
+}
+
+/** Why an answer was not given. Each has fixed words (`A2A_REMOTE_ANSWER_REASON_TEXT`). */
+export type A2aRemoteAnswerReason =
+  | 'answers-off'
+  | 'answers-damaged'
+  | 'not-open'
+  | 'no-agent'
+  | 'not-headless'
+  | 'no-picker'
+  | 'picker-changed'
+  | 'not-single-select'
+  | 'option-out-of-range'
+  | 'unreadable'
+  | 'lock-busy'
+  | 'typed-meanwhile'
+  | 'unconfirmed';
+
+/** What the asker should know, and what it can do next, for each reason. */
+export const A2A_REMOTE_ANSWER_REASON_TEXT: Readonly<Record<A2aRemoteAnswerReason, string>> = Object.freeze({
+  'answers-off': 'answers are off on that PC (wmux remote answers); ask a person there',
+  'answers-damaged': 'answers are off on that PC because its answers setting file is damaged; a person there can set it again with wmux remote answers',
+  'not-open': 'the task is no longer open there',
+  'no-agent': 'the agent for this task is not running there',
+  'not-headless': 'that PC answers only for an agent it started without a desktop (headless) for this PC; ask a person there',
+  'no-picker': 'no question picker is on the agent\'s screen there now',
+  'picker-changed': 'the question on the screen there is not the one answered; read the task\'s status again for its picker id',
+  'not-single-select': 'the question there is not one single-choice question (several questions, several choices, or a layout this version does not answer); ask a person there',
+  'option-out-of-range': 'that option number is not one of the question\'s choices',
+  'unreadable': 'the screen there could not be read',
+  'lock-busy': 'something else was typing into that pane; try again',
+  'typed-meanwhile': 'the screen there changed while the answer was being typed; nothing was typed',
+  'unconfirmed': 'the key was typed there but the screen did not confirm the answer; read the task\'s status before trying again',
+});
+const ANSWER_REASONS: ReadonlySet<string> = new Set(Object.keys(A2A_REMOTE_ANSWER_REASON_TEXT));
+
+/** How one answer went on the worker's PC: the answer's message id, and the reason when it was not given. */
+export interface A2aRemoteAnswerOutcome {
+  messageId: string;
+  outcome: 'answered' | 'not-answered';
+  reason?: A2aRemoteAnswerReason;
+}
+
+function parseAnswerOutcome(raw: unknown): A2aRemoteAnswerOutcome | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.messageId !== 'string' || !A2A_REMOTE_MESSAGE_ID_RE.test(r.messageId)) return null;
+  if (r.outcome === 'answered') return { messageId: r.messageId, outcome: 'answered' };
+  if (r.outcome !== 'not-answered' || typeof r.reason !== 'string' || !ANSWER_REASONS.has(r.reason)) return null;
+  return { messageId: r.messageId, outcome: 'not-answered', reason: r.reason as A2aRemoteAnswerReason };
+}
 
 /**
  * A worker's status on one task. `since`: when it began on the receiving PC
@@ -844,8 +943,16 @@ export interface A2aRemoteStatusV1 {
      * link). Text from the other PC: shown, never followed as instructions.
      */
     options?: string[];
-    /** A menu's number of choices, when its labels are kept on that PC. */
+    /** A menu's number of choices: when its labels are kept on that PC, or when it was read off the screen (`pickerId`). */
     optionCount?: number;
+    /**
+     * A one-question, single-select picker read off the worker's screen: its
+     * id (a hash of the session, the question and its labels; no text). An
+     * answer names it, and is refused when the screen shows another.
+     */
+    pickerId?: string;
+    /** How the last answer to this task went there (`A2A_FEATURE_ANSWER`), until the next one. */
+    answer?: A2aRemoteAnswerOutcome;
     /** `usage-limit`: when the provider's window resets (ISO), once known. */
     resetsAt?: string;
     /** `usage-limit`: whose limit, as a slug (`claude`). */
@@ -872,12 +979,17 @@ function statusLabelLine(label: string): string {
 export interface A2aRemoteStatusShown {
   kind: A2aRemoteStatusKind;
   since: string;
-  detail?: Omit<NonNullable<A2aRemoteStatusV1['detail']>, 'options'>;
+  /** `answer.reasonText`: this PC's own fixed words for the reason (A2A_REMOTE_ANSWER_REASON_TEXT), never the peer's. */
+  detail?: Omit<NonNullable<A2aRemoteStatusV1['detail']>, 'options' | 'answer'> & { answer?: A2aRemoteAnswerOutcome & { reasonText?: string } };
   untrusted?: { options: string[] };
 }
 
 export function shownRemoteStatus(status: A2aRemoteStatusV1): A2aRemoteStatusShown {
-  const { options, ...detail } = status.detail ?? {};
+  const { options, answer, ...rest } = status.detail ?? {};
+  const detail: NonNullable<A2aRemoteStatusShown['detail']> = {
+    ...rest,
+    ...(answer ? { answer: { ...answer, ...(answer.reason ? { reasonText: A2A_REMOTE_ANSWER_REASON_TEXT[answer.reason] } : {}) } } : {}),
+  };
   return {
     kind: status.kind,
     since: status.since,
@@ -912,6 +1024,9 @@ export function parseA2aRemoteStatus(raw: unknown): A2aRemoteStatusV1 | null {
   if (typeof d.resetsAt === 'string' && Number.isFinite(Date.parse(d.resetsAt))) detail.resetsAt = new Date(Date.parse(d.resetsAt)).toISOString();
   if (typeof d.provider === 'string' && STATUS_PROVIDER_RE.test(d.provider)) detail.provider = d.provider;
   if (typeof d.background === 'number' && Number.isInteger(d.background) && d.background > 0) detail.background = Math.min(d.background, 999);
+  if (typeof d.pickerId === 'string' && A2A_REMOTE_PICKER_ID_RE.test(d.pickerId)) detail.pickerId = d.pickerId;
+  const answer = parseAnswerOutcome(d.answer);
+  if (answer) detail.answer = answer;
   if (Object.keys(detail).length > 0) out.detail = detail;
   return out;
 }
@@ -1016,6 +1131,8 @@ export interface A2aRemoteEnvelope {
   receipt?: A2aRemoteReceipt;
   /** For 'status' (with `taskId`), only to a peer that advertises `A2A_FEATURE_STATUS`. */
   status?: A2aRemoteStatusV1;
+  /** For 'answer' (with `taskId`, from the task's sender), only to a peer that advertises `A2A_FEATURE_ANSWER`. */
+  answer?: A2aRemoteAnswerV1;
   /**
    * For 'reply', only to a peer that advertises `A2A_FEATURE_HELD_NOTICE`: this
    * reply is the host's notice, not a message from its agent. The receiver

@@ -158,6 +158,45 @@ export interface PromptScreenMark {
   incarnation: string | null;
 }
 
+/**
+ * The pane's state now, against the read a key is about to be typed over:
+ * `moved` (another PTY incarnation, or a key typed since the read), `retry`
+ * (only output since: read again before writing), or `same`. Checked in the
+ * same synchronous block as the write.
+ */
+export function markSince(now: PromptScreenMark | null, revision: number, incarnation: string | null, bytes: number): 'moved' | 'retry' | 'same' {
+  if (!now || (now.incarnation ?? '') !== (incarnation ?? '') || now.keyInputRevision !== revision) return 'moved';
+  return now.bytes !== bytes ? 'retry' : 'same';
+}
+
+/**
+ * After the key that may close an AskUserQuestion picker: does the screen
+ * confirm the answer within ASK_CONFIRM_WAIT_MS? Another PTY incarnation is a
+ * no; a failed read is looked at again until the window ends; one more look
+ * after the window, then no.
+ */
+export async function awaitAnswerConfirmed(opts: {
+  read: () => Promise<{ rows: readonly string[]; mark: PromptScreenMark } | null>;
+  baseline: AskConfirmBaseline;
+  questions: readonly AskFormQuestion[];
+  answers: readonly AskAnswer[];
+  incarnation: string;
+  now: () => number;
+  delay: (ms: number) => Promise<void>;
+}): Promise<boolean> {
+  const until = opts.now() + ASK_CONFIRM_WAIT_MS;
+  let lastLook = false;
+  for (;;) {
+    const screen = await opts.read();
+    // A key typed after the answer does not change what the screen shows of it.
+    if (screen && (screen.mark.incarnation ?? '') !== opts.incarnation) return false;
+    if (screen && answersConfirmed(screen.rows, opts.baseline, opts.questions, opts.answers)) return true;
+    if (lastLook) return false;
+    if (opts.now() >= until) lastLook = true;
+    await opts.delay(STEP_POLL_MS);
+  }
+}
+
 /** No remote answer to a `terminal_prompt` this soon after it appeared (reflex / script guard). */
 export const TERMINAL_PROMPT_MIN_ANSWER_AGE_MS = 1_500;
 /** How long after a dialog key at the desk a dismissed question's record is looked for (see noteDialogKey). */
@@ -3184,8 +3223,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         const now = this.deps.promptScreenMark?.(sessionId) ?? null;
         const revision = at === 0 ? read.mark.keyInputRevision : step!.expectedRevision;
         const incarnation = at === 0 ? read.mark.incarnation : step!.incarnation;
-        if (!now || (now.incarnation ?? '') !== (incarnation ?? '') || now.keyInputRevision !== revision) return { result: 'moved' };
-        if (now.bytes !== read.mark.bytes) return { result: 'retry' };
+        const since = markSince(now, revision, incarnation, read.mark.bytes);
+        if (!now || since !== 'same') return { result: since === 'same' ? 'moved' : since };
         let written: number | null = null;
         try {
           written = writeStepKey(sessionId, keys[at]!);
@@ -3597,21 +3636,15 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     };
 
     /** After the last key: does the screen confirm the answer within ASK_CONFIRM_WAIT_MS? */
-    const confirmed = async (baseline: AskConfirmBaseline, incarnation: string): Promise<boolean> => {
-      const until = this.now() + ASK_CONFIRM_WAIT_MS;
-      let lastLook = false;
-      for (;;) {
-        const screen = await this.readQuestionScreen(sessionId);
-        // Another pane incarnation: this answer's screen is gone. A failed
-        // read is looked at again until the window ends. A key typed after
-        // the answer does not change what the screen shows of it.
-        if (screen && (screen.mark.incarnation ?? '') !== incarnation) return false;
-        if (screen && answersConfirmed(screen.rows, baseline, questions, answers)) return true;
-        if (lastLook) return false;
-        if (this.now() >= until) lastLook = true;
-        await delay(STEP_POLL_MS);
-      }
-    };
+    const confirmed = (baseline: AskConfirmBaseline, incarnation: string): Promise<boolean> => awaitAnswerConfirmed({
+      read: () => this.readQuestionScreen(sessionId),
+      baseline,
+      questions,
+      answers,
+      incarnation,
+      now: () => this.now(),
+      delay,
+    });
 
     let read: Screen = first;
     // "User answered" blocks on the screen the key that may close the picker was typed over.
@@ -3648,8 +3681,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         const now = this.deps.promptScreenMark?.(sessionId) ?? null;
         const revision = at === 0 ? read.mark.keyInputRevision : step!.expectedRevision;
         const incarnation = at === 0 ? read.mark.incarnation : step!.incarnation;
-        if (!now || (now.incarnation ?? '') !== (incarnation ?? '') || now.keyInputRevision !== revision) return { result: 'moved' };
-        if (now.bytes !== read.mark.bytes) return { result: 'retry' };
+        const since = markSince(now, revision, incarnation, read.mark.bytes);
+        if (!now || since !== 'same') return { result: since === 'same' ? 'moved' : since };
         let written: number | null = null;
         try {
           written = writeStepKey(sessionId, steps[at]!.key);

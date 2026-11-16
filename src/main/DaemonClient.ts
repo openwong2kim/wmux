@@ -53,6 +53,7 @@ import type {
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { A2A_COMPANY_RPC, type A2aCompanyMarkParams, type A2aCompanyMarkResult, type A2aCompanyTasksResult } from '../shared/companyHold';
 import { A2A_SPAWN_RPC, type A2aSpawnAskInput, type A2aSpawnAskResult, type A2aSpawnOutgoingList, type A2aSpawnPolicySetResult, type A2aSpawnPolicyV1, type A2aSpawnRequestSummary } from '../shared/a2aSpawn';
+import { A2A_ANSWER_RPC } from '../shared/a2aRemote';
 import { createSessionPipeMarkers } from '../daemon/sessionPipeMarkers';
 import { PANE_LOCK_DAEMON_WAIT_MS } from '../daemon/paneDeliveryLock';
 import type { FolderTrustState } from '../daemon/folderTrustState';
@@ -980,6 +981,11 @@ export class DaemonClient extends EventEmitter {
   /** As the asking PC: store a request and queue it for the other PC (no network wait). */
   async a2aSpawnAsk(input: A2aSpawnAskInput): Promise<A2aSpawnAskResult> {
     return (await this.rpc(A2A_SPAWN_RPC.ask, { ...input })) as A2aSpawnAskResult;
+  }
+
+  /** An answer to the question the worker on a task this PC sent shows (A2A_FEATURE_ANSWER). */
+  async a2aRemoteAnswer(input: { taskId: string; workspaceId: string; pickerId: string; option: number }): Promise<{ ok: true; taskId: string; messageId: string } | { ok: false; error: string }> {
+    return (await this.rpc(A2A_ANSWER_RPC.send, { ...input })) as { ok: true; taskId: string; messageId: string } | { ok: false; error: string };
   }
 
   async a2aSpawnOutgoing(spawnId?: string): Promise<A2aSpawnOutgoingList> {

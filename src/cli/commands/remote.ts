@@ -25,7 +25,7 @@ import {
   type A2aSpawnPolicySetResult,
   type A2aSpawnPolicyV1,
 } from '../../shared/a2aSpawn';
-import { A2A_STATUS_LABELS_RPC, INVITE_CODE_RE, isA2aStatusLabels, isHostId, parseInvite, type A2aPeerRecordV1, type A2aRemoteHostRecordV1, type HostId } from '../../shared/a2aRemote';
+import { A2A_ANSWER_RPC, A2A_STATUS_LABELS_RPC, INVITE_CODE_RE, isA2aAnswersSetting, isA2aStatusLabels, isHostId, parseInvite, type A2aPeerRecordV1, type A2aRemoteHostRecordV1, type HostId } from '../../shared/a2aRemote';
 import { AGENT_ROWS, type AgentSlug } from '../../shared/agentIdentity';
 import { NOT_FIRST_PARTY } from '../../shared/daemonFirstParty';
 import { isNestingMarker } from '../../shared/envFilter';
@@ -74,6 +74,16 @@ wmux remote — pair with other PCs and ask them to start agents
       Whether the choices of a question an agent started from another PC asks
       here go to that PC with its status (send, the default), or only how
       many there are (keep). With no argument, prints the current setting.
+  wmux remote answers [on|off|default]
+      Whether an answer from the PC that asked is typed into the question an
+      agent it started here shows (a single single-choice question only).
+      default: on where follow-ups reach the agent directly, off where they
+      wait for approval here. With no argument, prints the current setting.
+  wmux remote answer <task-id> <option> --picker <picker-id>
+      Answer the question the worker on a task you sent shows on the other
+      PC: <option> is the choice's number, <picker-id> the pickerId in the
+      task's remoteStatus (a2a_task_query). How it went shows in the same
+      status (detail.answer). Run it from the pane that sent the task.
 
   These verbs talk to the wmux daemon directly, so they work on a host that
   runs only the daemon (no desktop app). Exit code 1 on any failure. --json
@@ -666,6 +676,49 @@ async function remoteStatusLabels(args: string[], jsonMode: boolean): Promise<vo
     : 'Status labels: send (a question\'s choices go to the PC that asked, with its status)');
 }
 
+/** `wmux remote answers [on|off|default]`: this PC's setting, printed or saved. */
+async function remoteAnswers(args: string[], jsonMode: boolean): Promise<void> {
+  const value = args.find((a) => !a.startsWith('-'));
+  if (value !== undefined && !isA2aAnswersSetting(value)) fail(`answers takes on, off or default, not ${value}`);
+  if (value !== undefined) {
+    const saved = (await daemonCall(A2A_ANSWER_RPC.set as RpcMethod, { answers: value })) as { ok?: unknown; error?: unknown };
+    if (saved.ok === false) fail(`the daemon did not save it: ${String(saved.error)}`);
+  }
+  const res = (await daemonCall(A2A_ANSWER_RPC.get as RpcMethod, {})) as { answers?: unknown; damaged?: unknown; effective?: unknown };
+  if (jsonMode) {
+    console.log(JSON.stringify({ answers: res.answers, damaged: res.damaged === true, effective: res.effective }, null, 2));
+    return;
+  }
+  const now = res.effective === 'on' ? 'on' : 'off';
+  if (res.damaged === true) {
+    console.log('Answers: off (its settings file was damaged; set it again with wmux remote answers on|off|default)');
+  } else if (res.answers === 'default') {
+    console.log(`Answers: default, ${now} now (on where follow-ups reach the agent directly, off where they wait for approval here)`);
+  } else {
+    console.log(`Answers: ${now} (an answer from the PC that asked ${now === 'on' ? 'is typed into' : 'is not typed into'} the question an agent it started here shows)`);
+  }
+}
+
+/** `wmux remote answer <task-id> <option> --picker <id>`: from the pane that sent the task. */
+async function remoteAnswer(args: string[], jsonMode: boolean): Promise<void> {
+  const picker = parseFlag(args, '--picker');
+  const positional = args.filter((a, i) => !a.startsWith('-') && args[i - 1] !== '--picker');
+  const [taskId, optionText] = positional;
+  const option = Number(optionText);
+  if (!taskId || !picker || !Number.isInteger(option) || option < 1) {
+    console.error('Usage: wmux remote answer <task-id> <option> --picker <picker-id>');
+    process.exit(1);
+  }
+  const pty = await senderPtyId();
+  if (!pty) fail('not inside a wmux pane (no resolvable pane identity). Only the agent that sent the task can answer, so run this from its pane.');
+  const res = await call(A2A_ANSWER_RPC.ask as RpcMethod, { taskId, pickerId: picker, option, senderPtyId: pty }, jsonMode);
+  if (jsonMode) {
+    console.log(JSON.stringify(res, null, 2));
+    return;
+  }
+  console.log(`Answer ${String(res['messageId'])} sent. How it went shows in the task's status (detail.answer) once that PC has typed it.`);
+}
+
 async function remoteAllowed(jsonMode: boolean): Promise<void> {
   if (jsonMode) {
     console.log(JSON.stringify({ policy: await readPolicy() }, null, 2));
@@ -834,5 +887,7 @@ export async function handleRemote(sub: string | undefined, args: string[], json
   if (sub === 'allowed') return remoteAllowed(jsonMode);
   if (sub === 'revoke') return remoteRevoke(args, jsonMode);
   if (sub === 'status-labels') return remoteStatusLabels(args, jsonMode);
+  if (sub === 'answers') return remoteAnswers(args, jsonMode);
+  if (sub === 'answer') return remoteAnswer(args, jsonMode);
   console.log(REMOTE_HELP);
 }

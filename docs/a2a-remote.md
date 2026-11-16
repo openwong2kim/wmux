@@ -249,6 +249,22 @@ The **Remote** page has a **Messages between PCs** section:
   side no status is sent, and
   replies and states work as before. `gone` is sent only right before that
   host ends the task's agent, never because a link dropped.
+- **Answering a worker's question.** When the agent a host started for you
+  (headless) shows its own question menu with a single single-choice
+  question, its status carries `pickerId` (a hash of the session, the
+  question and its choices; no text) and `optionCount`. The agent that sent
+  the task answers with `wmux remote answer <task-id> <option> --picker
+  <picker-id>` from its own pane; only the task's sender can. The host types
+  that choice's number only while the same menu is on screen, untouched,
+  under the pane's delivery lock, then waits for Claude Code to confirm it.
+  How it went comes back in the next status as `detail.answer`: `answered`,
+  or `not-answered` with a `reason` and, on this PC, its plain words in
+  `reasonText`. Anything else (several questions or choices, free text, a
+  permission prompt) is refused whole, before a key is typed. Answers are on
+  where that host's follow-ups reach the agent directly and off where they
+  wait for a person; `wmux remote answers on|off|default` on the host
+  changes it. Both PCs need a build that knows it (feature `answer.1`); the
+  answer is sent only while the host is connected.
 - **Held remote work.** Work is held for you, never sent to another pane on
   its own, when:
   - the pane it was meant for is gone,

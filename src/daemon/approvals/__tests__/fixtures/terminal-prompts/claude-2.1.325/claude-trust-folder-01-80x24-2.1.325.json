@@ -1,0 +1,39 @@
+{
+ "tui": "claude",
+ "version": "Claude Code 2.1.325",
+ "cols": 80,
+ "rows": 24,
+ "modes": [
+  "?1004h",
+  "?2004h",
+  "?2031h"
+ ],
+ "keysSent": "",
+ "note": "The folder-trust prompt for a new folder, 80x24: unnumbered `❯ No, exit` / `Yes, I trust this folder` and \"Enter to confirm · Esc to cancel\". Not an AskUserQuestion picker. The temp folder's random path segments are replaced at the same length.",
+ "screen": [
+  "",
+  "────────────────────────────────────────────────────────────────────────────────",
+  " Accessing workspace:",
+  "",
+  " /private/var/folders/xx/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/T/wmux-task-XXXXXXwmux-",
+  " trust-probe.XXXXXX",
+  "",
+  " Quick safety check: Is this a project you created or one you trust? (Like your",
+  " own code, a well-known open source project, or work from your team). If not,",
+  " take a moment to review what's in this folder first.",
+  "",
+  " Claude Code'll be able to read, edit, and execute files here.",
+  "",
+  " Security guide",
+  "",
+  " ❯ No, exit",
+  "   Yes, I trust this folder",
+  "",
+  " Enter to confirm · Esc to cancel",
+  "",
+  "",
+  "",
+  "",
+  ""
+ ]
+}
