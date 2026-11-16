@@ -236,6 +236,17 @@ describe('Remote page', () => {
     expect(api.web.deviceSetInput).toHaveBeenCalledWith(DEVICE_ID, true);
   });
 
+  it('keeps the row busy until the roster is read back after a grant change', async () => {
+    stub([{ deviceId: DEVICE_ID, name: 'Demo iPhone', kind: 'phone', createdAt: 1, lastSeenAt: 1, allowInput: true }]);
+    await render();
+    let release: () => void = () => undefined;
+    api.web.deviceList.mockImplementationOnce(() => new Promise((r) => { release = () => r({ devices: [] }); }));
+    await act(async () => { $<HTMLButtonElement>(`[data-remote-view-only="${DEVICE_ID}"]`)!.click(); });
+    expect($<HTMLButtonElement>(`[data-remote-view-only="${DEVICE_ID}"]`)!.disabled).toBe(true);
+    await act(async () => { release(); });
+    expect($(`[data-remote-view-only="${DEVICE_ID}"]`)).toBeNull();
+  });
+
   it('makes a phone view-only at once, and says why under the row when that fails', async () => {
     stub([{ deviceId: DEVICE_ID, name: 'Demo iPhone', kind: 'phone', createdAt: 1, lastSeenAt: 1, allowInput: true }]);
     api.web.deviceSetInput.mockResolvedValueOnce({ ok: false, reason: 'persist-failed', changed: true });

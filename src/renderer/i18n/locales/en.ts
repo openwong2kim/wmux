@@ -1797,6 +1797,7 @@ export const en = {
   'web.grantPersistFailed': 'The change could not be written to disk — it applies now but reverts when the daemon restarts',
   'web.grantRevoked': 'That device has been revoked, so its permissions cannot be changed',
   'web.grantUnknown': 'No answer from the daemon, so it is not known whether the change took effect',
+  'web.grantUnavailable': "The background daemon is not running, so the permission was not changed",
   'web.pairAllowInput': 'What this device can do',
   'web.pairCanTypeHint': 'The phone can approve requests and type into panes.',
   'web.pairInputOff': "This computer's input is off: until Allow input below is on, nothing paired here can type.",

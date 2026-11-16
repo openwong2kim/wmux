@@ -607,6 +607,8 @@ export function registerWebHandlers(
       // full of read-only badges for devices that are typing right now.
       allowInput: typeof d['allowInput'] === 'boolean' ? d['allowInput'] : true,
       ...(typeof d['revokedAt'] === 'number' ? { revokedAt: d['revokedAt'] } : {}),
+      // A grandfathered grant (the Remote page offers to set it); absent otherwise.
+      ...(d['inputGrantImplicit'] === true ? { inputGrantImplicit: true as const } : {}),
       // Display-only, and optional: a daemon too old to send either still
       // yields a complete roster rather than a 'malformed' one.
       kind: normalizeDeviceKind(d['kind']),

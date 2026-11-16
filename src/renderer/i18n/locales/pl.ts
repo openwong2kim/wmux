@@ -1745,6 +1745,7 @@ export const pl = {
   'web.grantPersistFailed': 'Zmiany nie udało się zapisać na dysku — obowiązuje teraz, ale cofnie się po restarcie demona',
   'web.grantRevoked': 'To urządzenie zostało odwołane, więc jego uprawnień nie można zmienić',
   'web.grantUnknown': 'Brak odpowiedzi od demona, więc nie wiadomo, czy zmiana zadziałała',
+  'web.grantUnavailable': "Demon w tle nie działa, więc uprawnienie nie zostało zmienione",
   'web.pairAllowInput': 'Co może to urządzenie',
   'web.devicesClose': 'Zamknij',
   'web.deviceUnnamed': 'Urządzenie bez nazwy',

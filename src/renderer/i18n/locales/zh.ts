@@ -2029,6 +2029,7 @@ export const zh = {
   'web.grantPersistFailed': '更改无法写入磁盘 — 现在生效，但守护进程重启后会还原',
   'web.grantRevoked': '该设备已被撤销，因此无法更改其权限',
   'web.grantUnknown': '守护进程没有应答，因此无法确认更改是否生效',
+  'web.grantUnavailable': "后台守护进程未运行，因此权限没有更改",
   'web.pairAllowInput': '此设备可以做什么',
   'web.devicesClose': '关闭',
   'web.deviceUnnamed': '未命名设备',

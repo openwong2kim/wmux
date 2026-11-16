@@ -639,6 +639,19 @@ describe('web.handler — device roster', () => {
     ]);
   });
 
+  it('deviceList carries a grant nobody set, and only as exactly true', async () => {
+    installConnected({
+      devices: [
+        { deviceId: 'd1', name: 'Old phone', createdAt: 1, lastSeenAt: 2, allowInput: true, inputGrantImplicit: true },
+        { deviceId: 'd2', name: 'Phone', createdAt: 1, lastSeenAt: 2, allowInput: true, inputGrantImplicit: 'yes' },
+        { deviceId: 'd3', name: 'Tablet', createdAt: 1, lastSeenAt: 2, allowInput: true },
+      ],
+    });
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: { inputGrantImplicit?: true }[] };
+    expect(res.devices.map((d) => d.inputGrantImplicit)).toEqual([true, undefined, undefined]);
+    expect('inputGrantImplicit' in res.devices[1]).toBe(false);
+  });
+
   it('deviceList carries the panes each device is viewing, and leaves the field absent for an older daemon', async () => {
     installConnected({
       devices: [

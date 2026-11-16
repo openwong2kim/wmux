@@ -375,11 +375,13 @@ export default function RemotePage() {
     } catch {
       if (mounted.current) setError({ key, message: t('a2aLink.error.failed') });
     } finally {
+      // Busy until the roster is read back, so a row is never offered again
+      // in the state the action just changed.
+      await refresh();
       if (mounted.current) {
         setBusy(null);
         setConfirming(null);
       }
-      await refresh();
     }
   }, [refresh, t]);
 
@@ -432,7 +434,7 @@ export default function RemotePage() {
   // re-reads its smaller grant at once.
   const setTyping = (entry: RemoteEntry, allowInput: boolean) => run(entry.key, async () => {
     const api = window.electronAPI?.web;
-    if (!api?.deviceSetInput) return t('web.revokeUnavailable');
+    if (!api?.deviceSetInput) return t('web.grantUnavailable');
     const res = await api.deviceSetInput(entry.id, allowInput);
     return res.ok ? null : grantFailureMessage(t, res);
   });

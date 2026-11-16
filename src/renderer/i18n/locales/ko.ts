@@ -4591,6 +4591,7 @@ export const ko = {
   'web.grantPersistFailed': '변경을 디스크에 쓰지 못했습니다. 지금은 적용되지만 데몬이 다시 시작되면 되돌아갑니다',
   'web.grantRevoked': '해제된 기기라 권한을 바꿀 수 없습니다',
   'web.grantUnknown': '데몬이 응답하지 않아 변경이 적용됐는지 알 수 없습니다',
+  'web.grantUnavailable': "백그라운드 데몬이 실행 중이 아니라 권한을 바꾸지 못했습니다",
   'web.headline': '판을 브라우저로 내보내기',
   'web.inputEnabled': '입력 켜짐',
   'web.label': '웹',

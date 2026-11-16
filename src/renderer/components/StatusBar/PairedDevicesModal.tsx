@@ -63,7 +63,7 @@ export function grantFailureMessage(t: (key: string) => string, res: WebDeviceSe
   return res.reason === 'persist-failed'
     ? t('web.grantPersistFailed')
     : res.reason === 'unavailable'
-      ? t('web.revokeUnavailable')
+      ? t('web.grantUnavailable')
       : res.reason === 'revoked'
         ? t('web.grantRevoked')
         : res.reason === 'not-found'
@@ -150,7 +150,7 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
     const api = window.electronAPI?.web;
     // A silent return leaves the checkbox flipped with nothing having happened.
     if (!api?.deviceSetInput) {
-      setRevokeError({ deviceId, message: t('web.revokeUnavailable') });
+      setRevokeError({ deviceId, message: t('web.grantUnavailable') });
       return;
     }
     setRevokeError(null);
