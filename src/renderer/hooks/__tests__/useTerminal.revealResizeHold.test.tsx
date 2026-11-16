@@ -34,6 +34,7 @@ vi.mock('@xterm/addon-webgl', () => ({
 
 const unsub = () => () => undefined;
 const observers: Array<() => void> = [];
+const box = { hidden: false };
 const fireLayoutResize = () => act(async () => { for (const cb of observers) cb(); });
 const reconnect = vi.fn(async (_id: string, _opts?: unknown): Promise<{ success: boolean; cols?: number; rows?: number }> => ({ success: true }));
 const resize = vi.fn(async (_id: string, _cols: number, _rows: number) => undefined);
@@ -73,8 +74,9 @@ beforeAll(() => {
     unobserve() { /* inert */ }
     disconnect() { /* inert */ }
   } as unknown as typeof ResizeObserver;
-  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get: () => 800 });
-  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 600 });
+  // `box.hidden` reads every box as unmeasurable (display:none), as a pane mid-hide does.
+  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get: () => (box.hidden ? 0 : 800) });
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => (box.hidden ? 0 : 600) });
   (document as unknown as { fonts: unknown }).fonts ??= {
     ready: Promise.resolve(),
     addEventListener: () => undefined,
@@ -92,6 +94,7 @@ afterEach(() => {
   host = null;
   webgl.fail = false;
   observers.length = 0;
+  box.hidden = false;
   setDaemonModeActive(false);
   reconnect.mockReset();
   reconnect.mockImplementation(async () => ({ success: true }));
@@ -110,9 +113,10 @@ async function revealHiddenPane(ptyId: string) {
   const { useTerminal } = await import('../useTerminal');
   // The DOM renderer's cell gives 56 columns; the WebGL one, once built, 57.
   let cols = 56;
-  vi.spyOn(FitAddon.prototype, 'proposeDimensions').mockImplementation(() => ({ cols, rows: 30 }));
+  let rows = 30;
+  vi.spyOn(FitAddon.prototype, 'proposeDimensions').mockImplementation(() => ({ cols, rows }));
   const fitSpy = vi.spyOn(FitAddon.prototype, 'fit').mockImplementation(function (this: FitAddon) {
-    (this as unknown as { _terminal?: { resize(c: number, r: number): void } })._terminal?.resize(cols, 30);
+    (this as unknown as { _terminal?: { resize(c: number, r: number): void } })._terminal?.resize(cols, rows);
   });
   const jobs: Array<() => void> = [];
   vi.spyOn(webglUpgradeQueue, 'enqueue').mockImplementation((run) => {
@@ -133,7 +137,7 @@ async function revealHiddenPane(ptyId: string) {
   fitSpy.mockClear();
   await act(async () => { root!.render(<Harness visible />); });
   await quiet(FRAMES_MS, 'the reveal frame must fit and send nothing while the build is queued');
-  return { Harness, jobs, fitSpy, setDomCols: (c: number) => { cols = c; } };
+  return { Harness, jobs, fitSpy, setDomCols: (c: number) => { cols = c; }, setDomRows: (r: number) => { rows = r; } };
 }
 
 describe('useTerminal reveal holds the PTY size until the WebGL build', { timeout: 60_000 }, () => {
@@ -210,6 +214,52 @@ describe('useTerminal reveal holds the PTY size until the WebGL build', { timeou
     await fireLayoutResize();
     await sendsReach('p-hold-cache', 4);
     expect(sends('p-hold-cache').at(-1)).toBe('54x30');
+  });
+
+  it('a reattach that lands during the wait, then a hide before it ends: the session still gets its stored size', async () => {
+    // The re-assert is held; the pane hides before the build or the bounded
+    // wait. Nothing fits then, so the session's stored size goes out instead:
+    // the desk's first resize, which unmutes a recovered session (#1847).
+    setDaemonModeActive(true);
+    let land: (v: { success: boolean; cols?: number; rows?: number }) => void = () => undefined;
+    reconnect.mockImplementation(() => new Promise((r) => { land = r; }));
+    const { Harness } = await revealHiddenPane('p-hold-reattach-hide');
+    await act(async () => { await waitFor(() => reconnect.mock.calls.length > 0, 4000, 'the reattach started'); });
+    await act(async () => { land({ success: true, cols: 70, rows: 20 }); });
+    await quiet(FRAMES_MS, 'the re-assert is held while the build is queued');
+    expect(sends('p-hold-reattach-hide')).toEqual([]);
+    await act(async () => { root!.render(<Harness visible={false} />); });
+    await sendsReach('p-hold-reattach-hide', 1);
+    expect(sends('p-hold-reattach-hide')).toEqual(['70x20']);
+  });
+
+  it('a stored-size send passes during the wait', async () => {
+    // A reattach that finds the box unmeasurable sends the session's stored
+    // size (#1847): no DOM cell in it, so the hold lets it through.
+    setDaemonModeActive(true);
+    let land: (v: { success: boolean; cols?: number; rows?: number }) => void = () => undefined;
+    reconnect.mockImplementation(() => new Promise((r) => { land = r; }));
+    await revealHiddenPane('p-hold-stored');
+    await act(async () => { await waitFor(() => reconnect.mock.calls.length > 0, 4000, 'the reattach started'); });
+    box.hidden = true;
+    await act(async () => { land({ success: true, cols: 70, rows: 20 }); });
+    // Well inside the bounded wait: the send went through the hold, not out
+    // of the release's fallback a second later.
+    await act(async () => { await waitFor(() => sends('p-hold-stored').length > 0, WEBGL_UPGRADE_HIDE_MAX_MS / 2, 'the stored size went out during the wait'); });
+    box.hidden = false;
+    expect(sends('p-hold-stored')).toEqual(['70x20']);
+  });
+
+  it('a release that shrinks the rows tells the PTY before xterm shrinks (#1436)', async () => {
+    const { jobs, fitSpy, setDomRows } = await revealHiddenPane('p-hold-shrink');
+    setDomRows(20);
+    fitSpy.mockClear();
+    await act(async () => { jobs.at(-1)!(); });
+    await sendsReach('p-hold-shrink', 1);
+    await act(async () => { await waitFor(() => fitSpy.mock.calls.length > 0, 4000, 'the local fit ran'); });
+    expect(sends('p-hold-shrink')).toEqual(['57x20']);
+    const sent = resize.mock.invocationCallOrder[resize.mock.calls.findIndex(([id]) => id === 'p-hold-shrink')];
+    expect(sent).toBeLessThan(fitSpy.mock.invocationCallOrder[0]);
   });
 
   it('sends the DOM cell size, once, when the build fails', async () => {

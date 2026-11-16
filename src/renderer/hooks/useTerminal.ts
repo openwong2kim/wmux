@@ -1133,6 +1133,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // during the wait (a reattach's re-assert) must not dedupe a later fit.
   const runFitRef = useRef<(() => boolean) | null>(null);
   const resetSentRef = useRef<(() => void) | null>(null);
+  // A measured send the hold dropped, with the size to send instead if the
+  // hold ends without a fit (the pane hidden again first): the session's
+  // stored size when a reattach recorded one, else the grid the pane had.
+  // Sent then as a stored-size send: the desk's first resize, which unmutes a
+  // recovered session (#1847), must not be lost to the hold.
+  const revealDroppedRef = useRef<{ ptyId: string; cols: number; rows: number } | null>(null);
   const firstShowReattachRef = useRef<(() => Promise<void> | undefined) | null>(null);
   // #1002 — set by the main effect when this mount adopted a parked terminal.
   // Read by the daemon reattach effect (which runs later in the same commit)
@@ -1224,6 +1230,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // Returns the in-flight resize so a caller that must not touch xterm before
   // the daemon has applied the geometry (#1436's shrink path) can wait on it.
   // Every other caller ignores it, exactly as before.
+  // Records a measured send the reveal hold dropped (revealDroppedRef). A size
+  // already recorded (a reattach's stored size) is kept.
+  const noteDroppedSend = useCallback((targetPtyId: string): void => {
+    if (revealDroppedRef.current?.ptyId === targetPtyId) return;
+    const term = terminalRef.current;
+    if (term && isSafeGeometry(term.cols, term.rows)) revealDroppedRef.current = { ptyId: targetPtyId, cols: term.cols, rows: term.rows };
+  }, []);
+  // A reattach's re-assert about to be held: the session's own size is what
+  // goes out if the pane is hidden again before the release fits.
+  const noteHeldStoredSize = useCallback((targetPtyId: string, stored: { cols: number; rows: number } | null | undefined): void => {
+    if (revealHoldRef.current && stored && isSafeGeometry(stored.cols, stored.rows)) {
+      revealDroppedRef.current = { ptyId: targetPtyId, cols: stored.cols, rows: stored.rows };
+    }
+  }, []);
   const sendResize = useCallback((targetPtyId: string, cols: number, rows: number, storedSize = false): Promise<void> => {
     // The grid belongs to someone else (see `fixedGeometry`): never resize the
     // PTY. Gated here, not at the callers, so no fit path can get around it.
@@ -1240,7 +1260,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // proposals sent meanwhile (a reattach's re-assert, a resync's end)
     // measure the DOM cell. A stored size is the session's own, so it is no
     // SIGWINCH, and it unmutes a recovered session (#1847): that one goes.
-    if (revealHoldRef.current && !storedSize) return Promise.resolve();
+    if (revealHoldRef.current && !storedSize) {
+      noteDroppedSend(targetPtyId);
+      return Promise.resolve();
+    }
     return window.electronAPI.pty.resize(targetPtyId, cols, rows).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('rate limited')) return; // not-found / other: handled upstream
@@ -1248,13 +1271,19 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         const term = terminalRef.current;
         // Bail if the terminal was disposed or the pane swapped PTYs meanwhile.
         if (!term || ptyIdRef.current !== targetPtyId) return;
+        // Through the reveal hold like any measured send: its release (or,
+        // hidden again first, the dropped-send fallback) sends instead.
+        if (revealHoldRef.current) {
+          noteDroppedSend(targetPtyId);
+          return;
+        }
         const { cols: c, rows: r } = term;
         if (c > 0 && r > 0) {
           window.electronAPI.pty.resize(targetPtyId, c, r).catch(() => { /* give up quietly */ });
         }
       }, 1100);
     });
-  }, []);
+  }, [noteDroppedSend]);
 
   // Phase 3 resync state — shared between the mount effect (pty listeners),
   // the visibility effect (dirty reveal) and the hydrate registry entry.
@@ -4901,6 +4930,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // the resize goes out unconditionally via sendResize (no dedup).
           const dims = proposedSafeDimensions(fitAddonRef.current, containerRef.current);
           if (dims) {
+            noteHeldStoredSize(id, stored); // the reveal hold's fallback (#1847)
             sendResize(id, dims.cols, dims.rows);
             return;
           }
@@ -5220,16 +5250,24 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           showAfterUpgrade = (settled = false, refit = false) => {
             if (hideTimer !== null) { clearTimeout(hideTimer); hideTimer = null; }
             const held = revealHoldRef.current === hold;
+            const dropped = held ? revealDroppedRef.current : null;
             if (held) {
               revealHoldRef.current = null;
+              revealDroppedRef.current = null;
               resetSentRef.current?.();
             }
             try {
               // Before the adoption settles: an adoption's first fit is still
               // held then (runFit returns at once), and the settle runs it.
               // The cold frame the reveal's frame held back paints after it.
-              if (held && refit && isVisibleRef.current && fitLikeLayout() && paintOnRelease) {
-                coldFrameRevealRef.current?.paint();
+              const fitted = held && refit && isVisibleRef.current && fitLikeLayout();
+              if (fitted && paintOnRelease) coldFrameRevealRef.current?.paint();
+              // No fit now (hidden again, an adoption or a selection still
+              // pending): a measured send the hold dropped goes out as the
+              // session's own size, so a recovered session still gets the
+              // desk's first resize (#1847). Same size, so no SIGWINCH.
+              if (!fitted && dropped && dropped.ptyId === ptyIdRef.current) {
+                void sendResize(dropped.ptyId, dropped.cols, dropped.rows, true);
               }
               if (settled) adoptSettleRef.current?.(true);
             } finally {
@@ -5321,7 +5359,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Hidden: keep the WebGL context ("A hidden terminal KEEPS its WebGL
     // context", near the top of this file). The pool evicts it if a visible
     // terminal needs the slot.
-  }, [isVisible, fit, startResync]);
+  }, [isVisible, fit, startResync, sendResize]);
 
   // #766 — visibility-based size ownership. Report to the daemon whether this
   // pane is actually on screen: `isVisible` (workspace shown + active tab) AND
