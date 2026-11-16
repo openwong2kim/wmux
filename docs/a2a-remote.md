@@ -240,10 +240,11 @@ The **Remote** page has a **Messages between PCs** section:
   the other PC: they are shown apart, under `remoteStatus.untrusted`, and
   are never instructions. The menu's detail (its id, choices or how many
   there are) is sent only when the agent's transcript already holds its
-  AskUserQuestion call. With Claude Code 2.1.323 and the real service
-  (observed on macOS) the call was not in the transcript while the menu was
-  open, for at least 1 min 45 s; for as long as it is not there, an open
-  menu shows as `question` with `dialog` and no menu detail. Both PCs need
+  AskUserQuestion call. In auto permission mode, which headless sessions
+  use, Claude Code writes that call to the transcript only when the menu
+  closes (observed with the real service on macOS); for as long as it is
+  not there, an open menu shows as `question` with `dialog` and no menu
+  detail. Both PCs need
   a build that knows it (feature `status.1`); with an older build on either
   side no status is sent, and
   replies and states work as before. `gone` is sent only right before that
