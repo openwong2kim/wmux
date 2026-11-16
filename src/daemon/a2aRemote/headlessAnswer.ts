@@ -72,7 +72,7 @@ export function screenPicker(sessionId: string, rows: readonly string[]): Screen
   const header = screen.tabs[0]!.label;
   const question: AskFormQuestion = { id: 'q0', header, text: screen.question, multiSelect: false, allowOther: true, options };
   const pickerId = crypto.createHash('sha256')
-    .update([sessionId, header, screen.question, ...options.map((o) => o.label)].join('\n'))
+    .update([sessionId, header, screen.question, ...options.map((o) => `${o.label}\t${o.description ?? ''}`)].join('\n'))
     .digest('hex')
     .slice(0, 16);
   return { pickerId, optionCount: options.length, question, screen };
@@ -87,6 +87,11 @@ export interface HeadlessAnswerDeps {
   /** The session's delivery lock (paneDeliveryLock.ts): its token, or null when another writer kept it. */
   lock(sessionId: string): Promise<string | null>;
   unlock(sessionId: string, token: string): void;
+  /**
+   * Asked again right before the key, after the lock and the last read: the
+   * task still open and owned, answers still on. A reason refuses the key.
+   */
+  stillAllowed?: () => A2aRemoteAnswerReason | null;
   now?: () => number;
   delay?: (ms: number) => Promise<void>;
 }
@@ -135,6 +140,8 @@ async function typeAnswer(deps: HeadlessAnswerDeps, sessionId: string, answer: A
     // The "User answered" blocks already on screen, so only a new one confirms this answer.
     const baseline = askConfirmBaseline(read.rows);
     // ── Synchronous from here to the write: nothing can move in between. ──
+    const refused = deps.stillAllowed?.() ?? null;
+    if (refused) return no(refused);
     const since = markSince(deps.promptScreenMark(sessionId), read.mark.keyInputRevision, read.mark.incarnation, read.mark.bytes);
     if (since === 'moved') return no('typed-meanwhile');
     if (since === 'retry') {

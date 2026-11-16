@@ -42,6 +42,12 @@ describe('screenPicker', () => {
     expect(pickerIdOf(OPEN, 'daemon-bbbb2222')).not.toBe(found.pickerId);
   });
 
+  it('a choice\'s description is part of the id: the same labels with other descriptions are another picker', () => {
+    const other = OPEN.map((row) => row.replace('Deploy now   ', 'Deploy later ').replace(/^(\s+)Deploy now$/, '$1Deploy later'));
+    expect(other).not.toEqual(OPEN);
+    expect(pickerIdOf(other)).not.toBe(pickerIdOf(OPEN));
+  });
+
   it('refuses a multi-select question whole', () => {
     expect(screenPicker(SESSION, MULTI_SELECT)).toEqual({ refused: 'not-single-select' });
   });
@@ -153,6 +159,14 @@ describe('answerPicker', () => {
     };
     expect(await answerPicker(deps, SESSION, { pickerId: pickerIdOf(OPEN), option: 2 })).toEqual({ outcome: 'answered' });
     expect(deps.written).toEqual(['2']);
+  });
+
+  it('types nothing when the task or the setting changed by the time the key would go', async () => {
+    const deps = fakeSession([OPEN, ANSWERED]);
+    deps.stillAllowed = () => 'answers-off';
+    expect(await answerPicker(deps, SESSION, { pickerId: pickerIdOf(OPEN), option: 2 })).toEqual({ outcome: 'not-answered', reason: 'answers-off' });
+    expect(deps.written).toEqual([]);
+    expect(deps.unlocked).toEqual(['token-1']);
   });
 
   it('says unconfirmed when the screen never shows the answer after the key', async () => {

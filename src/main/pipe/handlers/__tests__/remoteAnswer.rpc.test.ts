@@ -37,4 +37,11 @@ describe('a2a.remote.answer', () => {
     expect(await call({ ...answer, option: '2' })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
     expect(daemon.a2aRemoteAnswer).not.toHaveBeenCalled();
   });
+
+  it('a hosted caller answers only from a pane of its own workspace, and an unbound one from none', async () => {
+    expect(await call(answer, { origin: 'local', hostedWorkspace: 'ws-other' } as RpcContext)).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
+    expect(await call(answer, { origin: 'local', hostedWorkspace: null } as RpcContext)).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
+    expect(daemon.a2aRemoteAnswer).not.toHaveBeenCalled();
+    expect(await call(answer, { origin: 'local', hostedWorkspace: 'ws-a' } as RpcContext)).toMatchObject({ ok: true });
+  });
 });

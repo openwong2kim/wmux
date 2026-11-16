@@ -4,11 +4,12 @@
 // one of the choices of the one-question picker that task's worker shows
 // there. Identity is server-resolved, never taken from params: the caller's
 // senderPtyId resolves to its workspace, and the daemon then accepts the
-// answer only from the task's local party (the same check as a reply).
+// answer only from the task's local party (the same check as a reply). A
+// hosted caller (a plugin) answers only from a pane of its bound workspace.
 
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
-import type { RpcContext } from '../../../shared/rpc';
+import { hostedBindingOf, isHostedCaller, type RpcContext } from '../../../shared/rpc';
 import { A2A_ANSWER_RPC } from '../../../shared/a2aRemote';
 import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import type { DaemonClient } from '../../DaemonClient';
@@ -47,6 +48,10 @@ export function registerRemoteAnswerRpc(router: RpcRouter, getWindow: GetWindow,
     const caller = senderPtyId ? await resolveCaller(senderPtyId) : null;
     if (!caller) return deny('NOT_AUTHORIZED', `${A2A_ANSWER_RPC.ask} requires a verifiable caller (no resolvable senderPtyId): run it from the pane that sent the task`);
     if (caller.workspaceId === HUMAN_WORKSPACE_ID) return deny('NOT_AUTHORIZED', `'${HUMAN_WORKSPACE_ID}' cannot answer from the pipe`);
+    // A plugin bound to one workspace never answers for a pane of another; unbound, it answers for none.
+    if (isHostedCaller(ctx) && hostedBindingOf(ctx) !== caller.workspaceId) {
+      return deny('NOT_AUTHORIZED', `${A2A_ANSWER_RPC.ask}: a hosted caller answers only from a pane of its own workspace`);
+    }
     const taskId = str(params['taskId']);
     const pickerId = str(params['pickerId']);
     const option = params['option'];

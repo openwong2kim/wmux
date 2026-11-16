@@ -565,6 +565,8 @@ const paneLocks = new PaneDeliveryLocks({ log: (line) => log('info', line) });
 /** Whether a pane holds a draft, the screen consulted (draftScreen.ts). */
 let draftOnScreen: DraftCheck | undefined;
 let headlessDeliveryRef: HeadlessDelivery | null = null;
+/** When the last "answer dropped: no headless agents" line was logged (once a minute at most). */
+let answersDroppedLoggedAt = 0;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 let noteCodexServerLost: ((id:string)=>void) | undefined;
 /** Contract v-next item 1: a Codex turn on a daemon-owned relay failed (set at boot). */
@@ -11288,7 +11290,12 @@ async function main(): Promise<void> {
             const delivery = headlessDeliveryRef;
             // No headless delivery this run: no agent here was started for that PC, and no status goes back.
             if (!delivery) {
-              log('info', `[headless] task ${taskId}: answer ${messageId} dropped: this PC runs no headless agents`);
+              // Once a minute at most: a peer that keeps sending does not fill the log.
+              const now = Date.now();
+              if (now - answersDroppedLoggedAt >= 60_000) {
+                answersDroppedLoggedAt = now;
+                log('info', `[headless] task ${taskId}: answer ${messageId} dropped: this PC runs no headless agents`);
+              }
               return;
             }
             void delivery.answer(taskId, messageId, answer).then((res) => {
@@ -11436,12 +11443,13 @@ async function main(): Promise<void> {
           },
           answers: () => a2aAnswers.effective(a2aSpawnPolicy.get().followUps === 'direct'),
           // One digit, under the pane's delivery lock and the stepwise answer's fences.
-          answerOnScreen: (sessionId, answer) => answerPicker({
+          answerOnScreen: (sessionId, answer, stillAllowed) => answerPicker({
             readPromptScreen: (sid) => readPromptScreenOf(sessionManager, sid),
             promptScreenMark: (sid) => promptScreenMarkOf(sessionManager, sid),
             writeStepKey: (sid, data) => writeStepKeyOf(sessionManager, sid, data),
             lock: (sid) => paneLocks.acquire(sid, { key: 'headless-answer' }, PANE_LOCK_DAEMON_WAIT_MS),
             unlock: (sid, token) => paneLocks.release(sid, token),
+            stillAllowed,
           }, sessionId, answer),
           status: headlessStatus,
           // The hold from the transcript's own limit line: a headless session has no hook, and its

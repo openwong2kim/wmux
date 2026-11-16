@@ -689,10 +689,13 @@ export class A2aRemoteDelivery {
     onRpc(A2A_ANSWER_RPC.send, async (p) => {
       const taskId = str(p, 'taskId');
       const marker = this.deps.taskService.getTask(taskId)?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
-      if (!marker) return { ok: false, error: 'unknown-task' };
-      const features = this.liveFeatures(marker.hostId);
-      if (!features) return { ok: false, error: 'unavailable: that PC is not connected now' };
-      if (!features.has(A2A_FEATURE_ANSWER)) return { ok: false, error: 'unsupported: that PC runs an older wmux that takes no answer' };
+      const peer = this.statusPeer(taskId);
+      if (!marker || !peer) return { ok: false, error: 'unknown-task' };
+      // Connected now, on either stream: an answer is never queued for a PC that is away, since its question may be gone by then.
+      if (!peer.connected) return { ok: false, error: 'unavailable: that PC is not connected now; nothing was queued' };
+      if (this.liveFeatures(marker.hostId)?.has(A2A_FEATURE_ANSWER) !== true) {
+        return { ok: false, error: 'unsupported: that PC runs an older wmux that takes no answer' };
+      }
       return sendRemoteAnswer(this.outboundDeps(), {
         taskId,
         workspaceId: str(p, 'workspaceId'),

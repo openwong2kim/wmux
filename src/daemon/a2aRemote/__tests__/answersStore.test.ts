@@ -39,11 +39,34 @@ describe('the answers setting', () => {
     expect(store().effective(true)).toBe('off');
   });
 
-  it('default removes the file', () => {
+  it('default is saved as such, so a damaged file set aside earlier does not read as one later', () => {
+    fs.writeFileSync(path.join(dir, `${ANSWERS_FILE}.corrupt-1`), 'old');
     const s = store();
-    s.set('on');
     expect(s.set('default')).toEqual({ ok: true, answers: 'default' });
+    expect(JSON.parse(fs.readFileSync(path.join(dir, ANSWERS_FILE), 'utf8'))).toEqual({ v: 1, answers: 'default' });
+    expect(store().effective(true)).toBe('on');
+  });
+
+  it('a damaged file whose repair write fails still reads as off on the next start', () => {
+    fs.writeFileSync(path.join(dir, ANSWERS_FILE), 'not json');
+    const failing = new AnswersStore({ dir, log: () => undefined, scheduleHarden: () => undefined, write: () => { throw new Error('disk full'); } });
+    expect(failing.effective(true)).toBe('damaged');
     expect(fs.existsSync(path.join(dir, ANSWERS_FILE))).toBe(false);
+    // The next start: no file in place, the damaged one set aside.
+    const next = store();
+    expect(next.effective(true)).toBe('damaged');
+    expect(JSON.parse(fs.readFileSync(path.join(dir, ANSWERS_FILE), 'utf8'))).toMatchObject({ v: 1, answers: 'off' });
+  });
+
+  it('a folder that cannot be searched reads as a file there: off, never the default', () => {
+    if (process.platform === 'win32' || process.getuid?.() === 0) return;
+    store().set('off');
+    fs.chmodSync(dir, 0o600);
+    try {
+      expect(store().effective(true)).toBe('damaged');
+    } finally {
+      fs.chmodSync(dir, 0o700);
+    }
   });
 
   it('a damaged file reads as off and says so, the next start too, until a person sets it again', () => {

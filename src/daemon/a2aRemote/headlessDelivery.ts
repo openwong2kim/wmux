@@ -13,6 +13,8 @@ import { parseTranscriptLine } from '../transcript/parseEntry';
 import { readTranscriptDelta } from '../transcript/readTail';
 import { SUBAGENT_COUNTERS, type SubagentCounter } from '../transcript/subagentCount';
 import type { HeadlessAnswerResult } from './headlessAnswer';
+
+type HeadlessAnswerReason = Extract<HeadlessAnswerResult, { outcome: 'not-answered' }>['reason'];
 import type { HeadlessStartRecordV1 } from './headlessStartStore';
 import { LINK_ENDED_REASON } from './headlessStarter';
 import { errMsg } from './storeFile';
@@ -211,7 +213,7 @@ export interface HeadlessDeliveryDeps {
   /** This PC's answers setting (answersStore.ts): `damaged` reads as off. */
   answers?(): 'on' | 'off' | 'damaged';
   /** Type an answer into the session's picker (headlessAnswer.ts `answerPicker`). Never throws. */
-  answerOnScreen?(sessionId: string, answer: A2aRemoteAnswerV1): Promise<HeadlessAnswerResult>;
+  answerOnScreen?(sessionId: string, answer: A2aRemoteAnswerV1, stillAllowed: () => HeadlessAnswerReason | null): Promise<HeadlessAnswerResult>;
   /**
    * Where each task's status goes (headlessStatus.ts): every pass, the tasks
    * this delivery works on; and `gone`, before a start's tasks are ended.
@@ -910,20 +912,35 @@ export class HeadlessDelivery {
   }
 
   private async answerOnce(taskId: string, answer: A2aRemoteAnswerV1): Promise<HeadlessAnswerResult> {
-    const no = (reason: Extract<HeadlessAnswerResult, { outcome: 'not-answered' }>['reason']): HeadlessAnswerResult => ({ outcome: 'not-answered', reason });
-    const setting = this.deps.answers?.() ?? 'off';
-    if (setting === 'damaged') return no('answers-damaged');
-    if (setting !== 'on') return no('answers-off');
-    const task = this.deps.tasks.get(taskId);
-    if (!task || (task.metadata.remote as A2aRemoteTaskState | undefined)?.direction !== 'inbound' || this.ended(taskId)) return no('not-open');
-    if (this.stopped || !this.deps.mode.active() || !this.deps.answerOnScreen) return no('not-headless');
+    const no = (reason: HeadlessAnswerReason): HeadlessAnswerResult => ({ outcome: 'not-answered', reason });
+    const refused = this.answerRefusal(taskId);
+    if (refused) return no(refused);
+    const task = this.deps.tasks.get(taskId)!;
     const rec = this.ownerOf(task, this.deps.starts.list());
-    if (!rec) return no('not-headless');
+    if (!rec || !this.deps.answerOnScreen) return no('not-headless');
     // The picker this PC last told the asking PC about, on this task, in this showing of the question.
     const q = this.questions.get(rec.sessionId);
     if (!q?.picker || q.since == null || q.taskId !== taskId) return no('no-picker');
     if (q.picker.pickerId !== answer.pickerId) return no('picker-changed');
-    return this.deps.answerOnScreen(rec.sessionId, { pickerId: q.picker.screenId, option: answer.option });
+    const sessionId = rec.sessionId;
+    // Asked again right before the key: the task may have ended, its start changed, or answers gone off since.
+    const stillAllowed = (): HeadlessAnswerReason | null => this.answerRefusal(taskId)
+      ?? (this.ownerOf(this.deps.tasks.get(taskId)!, this.deps.starts.list())?.sessionId === sessionId ? null : 'not-headless');
+    const result = await this.deps.answerOnScreen(sessionId, { pickerId: q.picker.screenId, option: answer.option }, stillAllowed);
+    // Answered: this showing of the question is over, whatever the next probe sees.
+    if (result.outcome === 'answered' && this.questions.get(sessionId) === q) q.picker = null;
+    return result;
+  }
+
+  /** Why no answer may be typed for this task now (answers setting, task state, headless mode), or null. */
+  private answerRefusal(taskId: string): HeadlessAnswerReason | null {
+    const setting = this.deps.answers?.() ?? 'off';
+    if (setting === 'damaged') return 'answers-damaged';
+    if (setting !== 'on') return 'answers-off';
+    const task = this.deps.tasks.get(taskId);
+    if (!task || (task.metadata.remote as A2aRemoteTaskState | undefined)?.direction !== 'inbound' || this.ended(taskId)) return 'not-open';
+    if (this.stopped || !this.deps.mode.active()) return 'not-headless';
+    return null;
   }
 
   /** At its usage limit, then a question it waits on, then in a turn, then waiting for more. */
