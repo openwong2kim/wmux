@@ -4379,7 +4379,13 @@ function registerRpcHandlers(
     // `activeNow` is computed here, at list time, from the store's in-memory
     // `lastSeenAt` and the server's live streams. Never persisted. Same for
     // `viewingSessions`: the panes each device is streaming right now.
-    const devices = withActivity(getDeviceStore().list(), webServer.liveDeviceIds(), Date.now());
+    const store = getDeviceStore();
+    // A grandfathered grant says so, for the desktop only: the routes that need
+    // an explicit one refuse it, and the Remote page offers to set it.
+    const listed = store.list().map((d) => (d.allowInput && d.revokedAt === undefined && !store.hasExplicitInputGrant(d.deviceId)
+      ? { ...d, inputGrantImplicit: true as const }
+      : d));
+    const devices = withActivity(listed, webServer.liveDeviceIds(), Date.now());
     return { devices: withViewingSessions(devices, webServer.liveSessionsByDevice()) };
   });
 

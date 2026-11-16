@@ -33,6 +33,8 @@ export interface RemoteEntry {
   viewing: string[] | null;
   /** May it type? null when unknown; 'messages' for message-only peers. */
   access: 'input' | 'input-when-on' | 'view' | 'messages' | null;
+  /** A device whose typing grant was never set (a record older than grants). */
+  grantImplicit?: boolean;
   /** Host rows: the address, scheme and host only (never a credential). */
   address?: string;
 }
@@ -97,6 +99,7 @@ export function buildRemoteEntries(src: RemoteSources): RemoteEntry[] {
         ? null
         : [...new Set(d.viewingSessions.map((id) => src.paneNameByPty?.[id]).filter((n): n is string => !!n))],
       access: !d.allowInput ? 'view' : serverInput ? 'input' : 'input-when-on',
+      ...(d.inputGrantImplicit ? { grantImplicit: true } : {}),
     }));
   const hosts: RemoteEntry[] = (src.hosts ?? []).map((h) => {
     const raw = src.hostStatus[h.id] ?? 'reachable';

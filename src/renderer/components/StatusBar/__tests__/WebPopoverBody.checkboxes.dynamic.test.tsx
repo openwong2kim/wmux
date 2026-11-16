@@ -139,12 +139,16 @@ describe('Remote popover options', () => {
     expect(radios[1]!.getAttribute('aria-checked')).toBe('true');
   });
 
-  it('the one-click card asks it too while stopped, with the line saying what each allows', () => {
+  it('the one-click card asks it too while stopped, says what each allows, and never raises the server\'s input', () => {
     act(() => root.render(createElement(Harness)));
-    const group = container.querySelector('[data-testid="pair-access"]')!;
-    expect(group.nextElementSibling?.textContent).toBe('web.wizardViewOnlyHint');
-    act(() => group.querySelectorAll<HTMLButtonElement>('[role="radio"]')[1]!.click());
-    expect(container.querySelector('[data-testid="pair-access"]')!.nextElementSibling?.textContent).toBe('web.wizardRemoteHint');
+    const group = () => container.querySelector('[data-testid="pair-access"]')!;
+    expect(group().nextElementSibling?.textContent).toBe('web.wizardViewOnlyHint');
+    act(() => group().querySelectorAll<HTMLButtonElement>('[role="radio"]')[1]!.click());
+    // This computer's input is off for the next Start, so Can type says so.
+    expect(group().nextElementSibling?.textContent).toBe('web.pairInputOff');
+    expect(checkboxFor('web.allowInput').box.getAttribute('aria-checked')).toBe('false');
+    act(() => checkboxFor('web.allowInput').label.click());
+    expect(group().nextElementSibling?.textContent).toBe('web.pairCanTypeHint');
   });
 
   it('Photo & file upload reads off and disabled, with the reason, while input is off', () => {

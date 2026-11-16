@@ -1118,9 +1118,9 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   shows the QR in the same click. Under the phone's name, before the pair
   button, a two-option choice says what the phone may do: View only (the
   default) or Can type, the wizard's own two words, with one line under it.
-  Can type there also ticks this computer's Allow input, as the wizard does;
-  the running card's choice leaves the server's input alone and says when it
-  is off. A computer being paired gets the same choice. It is offered only once the address will
+  It never raises this computer's own Allow input (the wizard does, with
+  its notice of who else can type): with that off, Can type says so in that
+  line. A computer being paired gets the same choice. It is offered only once the address will
   be reachable: a usable tailnet ticks HTTPS over Tailscale visibly first,
   never the LAN; otherwise the popover says why, as the wizard's first step
   does. Start stays as a secondary that starts exactly what the boxes show).

@@ -653,7 +653,8 @@ export function WebPopoverBody({
   // What the device being paired may do, chosen right where it is paired, the
   // same two words as the wizard and the Remote page. `hint` says it in a line
   // under the choice (the phone card); `inputOff` warns that this computer's
-  // own input is off, so a device that may type cannot yet.
+  // own input is off (stopped: what the next Start sends), so a device that
+  // may type cannot yet.
   const accessChoice = (allow: boolean, onToggle: () => void, testId: string, hint: string | null, inputOff: boolean) => (
     <>
       <SegmentedControl<'view' | 'type'>
@@ -707,7 +708,9 @@ export function WebPopoverBody({
             start but are not required for it. */}
         <PopoverSection title={t('web.connectPhone')}>
           {phoneNameInput}
-          {accessChoice(pairAllowInput, onTogglePairAllowInput, 'pair-access', t(pairAllowInput ? 'web.wizardRemoteHint' : 'web.wizardViewOnlyHint'), false)}
+          {/* The server's input is never raised from here (the wizard does that,
+              with its notice of who else can type): the line says when it is off. */}
+          {accessChoice(pairAllowInput, onTogglePairAllowInput, 'pair-access', t(pairAllowInput ? 'web.pairCanTypeHint' : 'web.wizardViewOnlyHint'), !allowInput)}
           <div className="flex flex-wrap items-center gap-2">
             {/* In flight or blocked it is not the primary: DESIGN.md keeps
                 the warm fill off disabled and running actions. */}
@@ -1479,28 +1482,6 @@ export default function WebToggle({ variant = 'icon', compact = false, onOpenCha
   const webProblem = useListenProblem('web', open && listenError ? `${listenError.code}:${listenError.port}` : null);
 
   /**
-   * The phone card's View only / Can type. Stopped, Can type also ticks this
-   * computer's Allow input (shown below it), as the wizard's choice does, so
-   * the phone can type once paired; going back to View only unticks it only
-   * if this choice was what ticked it. Running, the server's input is left as
-   * it is and the card says when it is off.
-   */
-  const inputTickedForPair = useRef(false);
-  const handleTogglePairAccess = useCallback(() => {
-    const next = !pairAllowInput;
-    setPairAllowInput(next);
-    if (info.running) return;
-    if (next && !allowInput) {
-      touchedGrants.current.add('allowInput');
-      inputTickedForPair.current = true;
-      setAllowInput(true);
-    } else if (!next && inputTickedForPair.current) {
-      inputTickedForPair.current = false;
-      setAllowInput(false);
-    }
-  }, [pairAllowInput, allowInput, info.running]);
-
-  /**
    * A grant row was toggled. Stopped, it only changes what the next Start
    * sends. Running, it is applied to the server in place and the rows then
    * show whatever the server reports back — never an optimistic value.
@@ -1509,11 +1490,7 @@ export default function WebToggle({ variant = 'icon', compact = false, onOpenCha
     async (key: keyof WebGrantArgs) => {
       if (!info.running) {
         touchedGrants.current.add(key);
-        if (key === 'allowInput') {
-          // The operator chose it by hand: Can type no longer owns it.
-          inputTickedForPair.current = false;
-          setAllowInput((v) => !v);
-        }
+        if (key === 'allowInput') setAllowInput((v) => !v);
         else if (key === 'allowTranscript') setAllowTranscript((v) => !v);
         else if (key === 'allowUpload') setAllowUpload((v) => !v);
         else setAllowDangerousLaunch((v) => !v);
@@ -1846,7 +1823,7 @@ export default function WebToggle({ variant = 'icon', compact = false, onOpenCha
             onStartPairing={handleStartPairing}
             onOpenDevices={handleOpenDevices}
             pairAllowInput={pairAllowInput}
-            onTogglePairAllowInput={handleTogglePairAccess}
+            onTogglePairAllowInput={() => setPairAllowInput((v) => !v)}
             qr={qr}
             roster={roster}
             computerDeviceName={effectiveComputerName}

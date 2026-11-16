@@ -755,17 +755,25 @@ export default function RemotePage() {
           {isConfirming('grant', d.key) ? (
             <>
               <Button size="sm" variant="ghost" onClick={() => setConfirming(null)} autoFocus>{t('remotePage.cancel')}</Button>
-              <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void setTyping(d, true)} data-remote-grant-confirm={d.id}>{t('remotePage.allowTypingYes')}</Button>
+              <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void setTyping(d, true)} data-remote-grant-confirm={d.id}>{t('remotePage.allowTyping')}</Button>
             </>
           ) : !isConfirming('entry', d.key) && (
-            d.access === 'view'
-              ? <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => setConfirming({ kind: 'grant', id: d.key })} data-remote-grant={d.id}>{t('remotePage.allowTyping')}</Button>
-              : <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => void setTyping(d, false)} data-remote-view-only={d.id}>{t('remotePage.makeViewOnly')}</Button>
+            <>
+              {/* A grandfathered grant can type but not approve: setting it makes it explicit. */}
+              {(d.access === 'view' || d.grantImplicit) && (
+                <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => setConfirming({ kind: 'grant', id: d.key })} data-remote-grant={d.id}>{t('remotePage.allowTyping')}</Button>
+              )}
+              {d.access !== 'view' && (
+                <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => void setTyping(d, false)} data-remote-view-only={d.id}>{t('remotePage.makeViewOnly')}</Button>
+              )}
+            </>
           )}
           {!isConfirming('grant', d.key) && twoStep(d.key, 'entry', t('web.revoke'), t('web.revokeConfirm'), () => void removeEntry(d), d.kind)}
         </span>
         {isConfirming('grant', d.key) && (
-          <p className="wmux-remote-row-note" role="status">{t('remotePage.allowTypingAsk', { name: d.name || t('web.deviceUnnamed') })}</p>
+          <p className="wmux-remote-row-note" role="status">
+            {t(info?.allowInput ? 'remotePage.allowTypingAsk' : 'remotePage.allowTypingAskInputOff', { name: d.name || t('web.deviceUnnamed') })}
+          </p>
         )}
         {rowError(d.key)}
       </li>

@@ -216,7 +216,8 @@ describe('Remote page', () => {
     await render();
     act(() => $<HTMLButtonElement>(`[data-remote-grant="${DEVICE_ID}"]`)!.click());
     expect(api.web.deviceSetInput).not.toHaveBeenCalled();
-    expect($('.wmux-remote-row-note')?.textContent).toBe('Demo iPhone will then approve requests and type into panes on this computer.');
+    // This computer serves read-only (status allowInput false): the note says when it takes effect.
+    expect($('.wmux-remote-row-note')?.textContent).toBe("Demo iPhone will approve requests and type into panes on this computer once this computer's input is on.");
     // Revoke steps aside while the grant is asked for.
     expect($('[data-remote-remove="phone"]')).toBeNull();
     await act(async () => { $<HTMLButtonElement>(`[data-remote-grant-confirm="${DEVICE_ID}"]`)!.click(); });
@@ -224,6 +225,15 @@ describe('Remote page', () => {
     expect($('.wmux-remote-row-note')).toBeNull();
     // The row re-reads the roster afterwards.
     expect(api.web.deviceList).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers Allow typing for a grant nobody set (older than grants), beside Make view-only', async () => {
+    stub([{ deviceId: DEVICE_ID, name: 'Old phone', kind: 'phone', createdAt: 1, lastSeenAt: 1, allowInput: true, inputGrantImplicit: true }]);
+    await render();
+    expect($(`[data-remote-view-only="${DEVICE_ID}"]`)).not.toBeNull();
+    act(() => $<HTMLButtonElement>(`[data-remote-grant="${DEVICE_ID}"]`)!.click());
+    await act(async () => { $<HTMLButtonElement>(`[data-remote-grant-confirm="${DEVICE_ID}"]`)!.click(); });
+    expect(api.web.deviceSetInput).toHaveBeenCalledWith(DEVICE_ID, true);
   });
 
   it('makes a phone view-only at once, and says why under the row when that fails', async () => {
