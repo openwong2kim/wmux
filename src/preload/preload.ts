@@ -11,7 +11,7 @@ import {
 } from '../shared/browserBackend';
 import { WORKFLOW_OWNER_IPC } from '../shared/botWorkflow';
 import type { BrokerSetting, BrokerSettingPayload } from '../shared/mcpBroker';
-import type { TerminalCoreSettings, TerminalEngine } from '../shared/terminalCoreSettings';
+import type { TerminalCoreSettings } from '../shared/terminalCoreSettings';
 import type { LabsSettings, LabsStatus } from '../shared/labsSettings';
 import { CHAT_IPC } from '../shared/transcript/chatIpc';
 import type { ChatBridgeApi } from '../shared/transcript/turnEvents';
@@ -648,7 +648,6 @@ const electronAPI = {
   },
   settings: {
     getTerminalCore: () => ipcRenderer.invoke(IPC.TERMINAL_CORE_SETTINGS_GET) as Promise<TerminalCoreSettings>,
-    setTerminalCore: (engine: TerminalEngine) => ipcRenderer.invoke(IPC.TERMINAL_CORE_SETTINGS_SET, engine) as Promise<TerminalCoreSettings>,
     getLabs: () => ipcRenderer.invoke(IPC.LABS_SETTINGS_GET) as Promise<LabsStatus>,
     setLabs: (settings: LabsSettings) => ipcRenderer.invoke(IPC.LABS_SETTINGS_SET, settings) as Promise<LabsStatus>,
     getWongttyWasm: () => ipcRenderer.invoke(IPC.LABS_WONGTTY_WASM) as Promise<{ engine: Uint8Array; frontEnd: Uint8Array }>,

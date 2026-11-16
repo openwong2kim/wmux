@@ -24,13 +24,13 @@ describe('opt-in Rust text delivery', () => {
     expect(reference).not.toHaveBeenCalled();
   });
 
-  it('reads the removed shadow mode as unset: xterm on the node engine, and never runs native', async () => {
+  it('reads the removed shadow mode as unset: Rust with WMUX_TERMINAL_CORE=node too (the Node engine is removed)', async () => {
     vi.stubEnv('WMUX_RUST_SNAPSHOT', 'shadow');
     vi.stubEnv('WMUX_TERMINAL_CORE', 'node');
+    native.mockResolvedValueOnce(success);
     const reference = vi.fn(async () => success);
-    expect(await selectTextSnapshot(req, reference)).toBe(success);
-    expect(reference).toHaveBeenCalledTimes(1);
-    expect(native).not.toHaveBeenCalled();
+    expect(await selectTextSnapshot(req, reference)).toMatchObject({ ...success, durationMs: expect.any(Number) });
+    expect(reference).not.toHaveBeenCalled();
   });
 
   it.each(['', 'off', 'unknown'])('leaves the reference authoritative with mode %s', async mode => {

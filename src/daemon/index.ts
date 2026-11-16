@@ -9582,7 +9582,7 @@ function logExitHandoff(via: string): void {
 // === Main entry point ===
 
 async function main(): Promise<void> {
-  terminalCoreSelection();
+  terminalCoreSelection((line) => log('info', line));
   labsSettingsAtStartup();
   const startTime = Date.now();
   markDaemonBoot('main-start');
