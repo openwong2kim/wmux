@@ -15,7 +15,8 @@ import { act, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { FitAddon } from '@xterm/addon-fit';
 import { WEBGL_UPGRADE_HIDE_MAX_MS, webglUpgradeQueue } from '../../terminal/webglUpgradeQueue';
-import { deliberateSleep } from '../../../test-utils/waitFor';
+import { deliberateSleep, waitFor } from '../../../test-utils/waitFor';
+import { setDaemonModeActive } from '../../daemon/daemonMode';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -34,6 +35,7 @@ vi.mock('@xterm/addon-webgl', () => ({
 const unsub = () => () => undefined;
 const observers: Array<() => void> = [];
 const fireLayoutResize = () => act(async () => { for (const cb of observers) cb(); });
+const reconnect = vi.fn(async (_id: string, _opts?: unknown): Promise<{ success: boolean; cols?: number; rows?: number }> => ({ success: true }));
 const resize = vi.fn(async (_id: string, _cols: number, _rows: number) => undefined);
 
 beforeAll(() => {
@@ -49,7 +51,7 @@ beforeAll(() => {
         setViewerVisibility: vi.fn(),
         write: vi.fn(async () => undefined),
         list: vi.fn(async () => []),
-        reconnect: vi.fn(async () => ({ success: true })),
+        reconnect,
       },
       daemon: { onConnected: unsub },
       shell: { openPath: vi.fn(async () => ({ ok: true })) },
@@ -89,11 +91,19 @@ afterEach(() => {
   root = null;
   host = null;
   webgl.fail = false;
+  observers.length = 0;
+  setDaemonModeActive(false);
+  reconnect.mockReset();
+  reconnect.mockImplementation(async () => ({ success: true }));
   vi.restoreAllMocks();
 });
 
-const settle = (ms = 50) => act(async () => { await deliberateSleep(ms, 'not yet converted (#2363): settle helper under act; callers assert after it'); });
+// A span for something that must NOT happen (a send, a fit): nothing to wait for.
+const quiet = (ms: number, why: string) => act(async () => { await deliberateSleep(ms, `quiet window: ${why}`); });
 const sends = (ptyId: string) => resize.mock.calls.filter(([id]) => id === ptyId).map(([, c, r]) => `${c}x${r}`);
+const sendsReach = (ptyId: string, n: number) => act(async () => { await waitFor(() => sends(ptyId).length >= n, 4000, `${n} sends for ${ptyId}`); });
+/** Past the reveal's frame, the fit scheduler's 100 ms debounce and its frame. */
+const FRAMES_MS = 300;
 
 /** Mounts the pane hidden (its first-resize gate opens at once), then reveals it. */
 async function revealHiddenPane(ptyId: string) {
@@ -118,12 +128,11 @@ async function revealHiddenPane(ptyId: string) {
   document.body.appendChild(host);
   root = createRoot(host);
   await act(async () => { root!.render(<Harness visible={false} />); });
-  await settle();
+  await quiet(FRAMES_MS, 'the hidden mount settles before the reveal is measured');
   resize.mockClear();
   fitSpy.mockClear();
   await act(async () => { root!.render(<Harness visible />); });
-  // The reveal's frame runs here: it fits nothing while the build is queued.
-  await settle();
+  await quiet(FRAMES_MS, 'the reveal frame must fit and send nothing while the build is queued');
   return { Harness, jobs, fitSpy, setDomCols: (c: number) => { cols = c; } };
 }
 
@@ -135,59 +144,81 @@ describe('useTerminal reveal holds the PTY size until the WebGL build', { timeou
     expect(fitSpy).not.toHaveBeenCalled();
     expect(sends('p-hold-built')).toEqual([]);
     await act(async () => { jobs.at(-1)!(); });
-    await settle();
+    await sendsReach('p-hold-built', 1);
+    await quiet(FRAMES_MS, 'no second size may follow');
     expect(sends('p-hold-built')).toEqual(['57x30']);
   });
 
-  it('a layout resize during the wait fits locally but sends nothing', async () => {
-    const { jobs, setDomCols } = await revealHiddenPane('p-hold-layout');
-    // The box changed meanwhile: a fit now gives a size the PTY never had.
+  it('a layout resize during the wait neither fits nor sends; later fits still send', async () => {
+    const { jobs, fitSpy, setDomCols } = await revealHiddenPane('p-hold-layout');
+    // The box changed meanwhile: a fit now would give a size the PTY never had.
     setDomCols(55);
     await fireLayoutResize();
-    // Past the fit scheduler's 100 ms debounce and its frame: the layout fit ran.
-    await settle(300);
+    await quiet(FRAMES_MS, 'the layout fit must wait for the build');
+    expect(fitSpy).not.toHaveBeenCalled();
     expect(sends('p-hold-layout')).toEqual([]);
     await act(async () => { jobs.at(-1)!(); });
-    await settle();
-    // The release and the layout's own fit may both send; only the kept size goes out.
-    expect(sends('p-hold-layout').length).toBeGreaterThan(0);
+    await sendsReach('p-hold-layout', 1);
+    await quiet(FRAMES_MS, 'no other size may follow');
     expect(new Set(sends('p-hold-layout'))).toEqual(new Set(['57x30']));
+    // Nothing the wait skipped is cached as sent: a later fit at 55 goes out.
+    setDomCols(55);
+    await fireLayoutResize();
+    await act(async () => { await waitFor(() => sends('p-hold-layout').includes('55x30'), 4000, 'the later layout fit sends 55x30'); });
+  });
+
+  it('a reattach that lands during the wait does not send its DOM-cell re-assert', async () => {
+    // The daemon reattach resolves after the reveal, while the build is still
+    // queued: its #1255 re-assert measures the DOM cell, and must wait too.
+    setDaemonModeActive(true);
+    let land: (v: { success: boolean }) => void = () => undefined;
+    reconnect.mockImplementation(() => new Promise((r) => { land = r; }));
+    const { jobs } = await revealHiddenPane('p-hold-reattach');
+    await act(async () => { await waitFor(() => reconnect.mock.calls.length > 0, 4000, 'the reattach started'); });
+    await act(async () => { land({ success: true }); });
+    await quiet(FRAMES_MS, 'the re-assert must not send the DOM cell while the build is queued');
+    expect(sends('p-hold-reattach')).toEqual([]);
+    await act(async () => { jobs.at(-1)!(); });
+    await sendsReach('p-hold-reattach', 1);
+    await quiet(FRAMES_MS, 'no other size may follow');
+    expect(new Set(sends('p-hold-reattach'))).toEqual(new Set(['57x30']));
   });
 
   it('sends the DOM cell size, once, when the build fails', async () => {
     const { jobs } = await revealHiddenPane('p-hold-failed');
     webgl.fail = true;
     await act(async () => { jobs.at(-1)!(); });
-    await settle();
+    await sendsReach('p-hold-failed', 1);
+    await quiet(FRAMES_MS, 'no second size may follow');
     expect(sends('p-hold-failed')).toEqual(['56x30']);
   });
 
   it('sends the cell it has after the bounded wait, then the WebGL cell when the build comes late', async () => {
     const { jobs } = await revealHiddenPane('p-hold-timeout');
-    await act(async () => { await deliberateSleep(WEBGL_UPGRADE_HIDE_MAX_MS + 50, 'real timer: the bounded upgrade hide must expire'); });
+    await sendsReach('p-hold-timeout', 1);
     expect(sends('p-hold-timeout')).toEqual(['56x30']);
     await act(async () => { jobs.at(-1)!(); });
-    await settle();
+    await sendsReach('p-hold-timeout', 2);
     expect(sends('p-hold-timeout')).toEqual(['56x30', '57x30']);
   });
 
   it('sends nothing when the pane is hidden again before the bounded wait or the build ends', async () => {
     const { Harness, jobs } = await revealHiddenPane('p-hold-rehidden');
     await act(async () => { root!.render(<Harness visible={false} />); });
-    await act(async () => { await deliberateSleep(WEBGL_UPGRADE_HIDE_MAX_MS + 50, 'real timer: the bounded upgrade hide would have expired'); });
+    await quiet(WEBGL_UPGRADE_HIDE_MAX_MS + 50, 'real timer: the bounded upgrade hide would have expired, and must send nothing');
     await act(async () => { jobs.at(-1)!(); });
-    await settle();
+    await quiet(FRAMES_MS, 'a build that runs anyway must send nothing');
     expect(sends('p-hold-rehidden')).toEqual([]);
   });
 
   it('a reveal that needs no build fits and sends at once', async () => {
     const { Harness, jobs } = await revealHiddenPane('p-hold-second');
     await act(async () => { jobs.at(-1)!(); });
-    await settle();
+    await sendsReach('p-hold-second', 1);
     resize.mockClear();
     await act(async () => { root!.render(<Harness visible={false} />); });
     await act(async () => { root!.render(<Harness visible />); });
-    await settle();
+    await sendsReach('p-hold-second', 1);
     expect(sends('p-hold-second')).toEqual(['57x30']);
   });
 });

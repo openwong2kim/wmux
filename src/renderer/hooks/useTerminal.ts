@@ -1123,9 +1123,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // kept: they are the fallback font's, and the gate refits instead.
   const heldResizeRef = useRef<{ ptyId: string; cols: number; rows: number } | null>(null);
   // Set while a reveal's WebGL build is still queued (the visibility effect):
-  // no PTY resize goes out meanwhile. The fits that run then measure the DOM
-  // renderer's cell, which the build is about to replace, so the PTY would get
-  // a size the pane never shows. Whatever ends the wait sends the size it keeps.
+  // no fit runs and no measured size goes out meanwhile. Either would use the
+  // DOM renderer's cell, which the build is about to replace, so the PTY would
+  // get a size the pane never shows. Whatever ends the wait fits and sends.
   const revealHoldRef = useRef<object | null>(null);
   const firstShowReattachRef = useRef<(() => Promise<void> | undefined) | null>(null);
   // #1002 — set by the main effect when this mount adopted a parked terminal.
@@ -1230,8 +1230,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (storedSize) heldResizeRef.current = { ptyId: targetPtyId, cols, rows };
       return Promise.resolve();
     }
-    // A reveal's WebGL build is still due: the release refits and sends.
-    if (revealHoldRef.current) return Promise.resolve();
+    // A reveal's WebGL build is still due: the release refits and sends. The
+    // proposals sent meanwhile (a reattach's re-assert, a resync's end)
+    // measure the DOM cell. A stored size is the session's own, so it is no
+    // SIGWINCH, and it unmutes a recovered session (#1847): that one goes.
+    if (revealHoldRef.current && !storedSize) return Promise.resolve();
     return window.electronAPI.pty.resize(targetPtyId, cols, rows).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('rate limited')) return; // not-found / other: handled upstream
@@ -1239,6 +1242,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         const term = terminalRef.current;
         // Bail if the terminal was disposed or the pane swapped PTYs meanwhile.
         if (!term || ptyIdRef.current !== targetPtyId) return;
+        // A reveal's hold is on: its release sends the live size.
+        if (revealHoldRef.current) return;
         const { cols: c, rows: r } = term;
         if (c > 0 && r > 0) {
           window.electronAPI.pty.resize(targetPtyId, c, r).catch(() => { /* give up quietly */ });
@@ -1581,6 +1586,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     if (!fitAddonRef.current || !terminalRef.current || !container) return;
     // An adoption's first fit runs once its layout and renderer are in.
     if (holdForAdopt()) return;
+    // So does a revealed pane's whose WebGL build is queued: the release fits.
+    if (revealHoldRef.current) return;
     // Guard: skip fit entirely when the container is hidden (zero dimensions).
     // Calling fit() on a display:none element produces 0 cols/rows which
     // corrupts the xterm buffer and causes the "infinite copy downward" bug.
@@ -2671,6 +2678,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
         // An adoption's first fit runs once its layout and renderer are in.
         if (!adoptFirst && holdForAdopt()) return false;
+        // Nor while a reveal's WebGL build is queued: a fit now measures the
+        // DOM cell, and leaves xterm at a grid the PTY is not given. The
+        // release fits whatever the box is by then.
+        if (revealHoldRef.current) return false;
 
         if (container.offsetWidth === 0 || container.offsetHeight === 0) return false;
 
@@ -5150,8 +5161,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       let cancelUpgrade: (() => void) | null = null;
       let upgradeFitRaf: number | null = null;
       let showAfterUpgrade: ((settled?: boolean, refit?: boolean) => void) | null = null;
-      let revealHold: object | null = null;
-      let paintOnRelease = false;
       if (
         loadWebglRef.current &&
         disposeWebglRef.current &&
@@ -5169,18 +5178,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // callbacks, so the queued build may never run: show the pane after
           // a bounded wait whatever happens.
           let hideTimer: ReturnType<typeof setTimeout> | null = null;
-          // Until the build is done no PTY resize goes out (revealHoldRef):
-          // the first reveal of a pane mounted hidden (a background workspace
-          // after start) used to send the DOM cell's grid, then the WebGL
-          // cell's a frame later. Two sizes, two SIGWINCHes, and a stretch of
-          // the ring written at a width the pane never showed.
+          // Until the build is done no fit runs and no measured size goes out
+          // (revealHoldRef): the first reveal of a pane mounted hidden (a
+          // background workspace after start) used to send the DOM cell's
+          // grid, then the WebGL cell's a frame later. Two sizes, two
+          // SIGWINCHes, and a stretch of the ring written at a width the pane
+          // never showed. The reveal's own frame below fits nothing meanwhile.
           // A fresh mount's closed first-resize gate already waits for this
           // build, under its own bound: no second hold over it.
           const hold = {};
-          if (!resizeGateRef.current || resizeGateRef.current.isOpen) {
-            revealHold = hold;
-            revealHoldRef.current = hold;
-          }
+          if (!resizeGateRef.current || resizeGateRef.current.isOpen) revealHoldRef.current = hold;
           // `settled`: the upgrade job ran to an end (built, skipped or
           // failed), which is what an adoption's first fit waits for. The
           // bounded wait and the effect's cleanup only show the pane: the
@@ -5194,10 +5201,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             try {
               // Before the adoption settles: an adoption's first fit is still
               // held then (fit() returns at once), and the settle runs it.
-              if (held && refit && isVisibleRef.current && claimFit(terminalRef.current, pendingFitRef)) {
-                fit();
-                if (paintOnRelease) coldFrameRevealRef.current?.paint();
-              }
+              if (held && refit && isVisibleRef.current && claimFit(terminalRef.current, pendingFitRef)) fit();
               if (settled) adoptSettleRef.current?.(true);
             } finally {
               if (el) el.style.opacity = '';
@@ -5264,12 +5268,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // where the pool kept the old (possibly stale) context alive instead of
         // rebuilding it.
         glyphRepaintRef.current?.onVisible();
-        // The WebGL build is still queued: the hold's release fits (and
-        // paints the cold frame) at the cell the pane keeps.
-        if (revealHold && revealHoldRef.current === revealHold) {
-          paintOnRelease = true;
-          return;
-        }
         if (!claimFit(terminalRef.current, pendingFitRef)) {
           console.debug('[Terminal] visibility fit deferred — active selection');
           return;
