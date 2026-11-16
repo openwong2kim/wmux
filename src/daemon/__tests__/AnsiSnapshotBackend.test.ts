@@ -8,6 +8,8 @@ const request = { cols: 80, rows: 24, initial: Buffer.from('hello'), budgetMs: 1
 const success = { ok: true as const, payload: Buffer.from('hello'), bytesIn: 5, durationMs: 1 };
 let moduleId = 0;
 beforeEach(() => {
+  // CI names the built core in WMUX_TERMINAL_CORE_MODULE, which nativeCorePath reads first: unset it here so the stub is the module.
+  vi.stubEnv('WMUX_TERMINAL_CORE_MODULE', undefined);
   vi.stubEnv('WMUX_RUST_SNAPSHOT', 'ansi');
   vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', `/test/native-${++moduleId}.cjs`);
 });

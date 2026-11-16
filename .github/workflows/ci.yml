@@ -123,9 +123,67 @@ jobs:
       - name: ESLint (cross-platform files, strict)
         run: npx eslint --max-warnings=0 src/shared/platform.ts src/shared/__tests__/platform.os.test.ts src/shared/ShellDetector.ts src/shared/__tests__/ShellDetector.os.test.ts src/shared/shellResolution.ts src/shared/__tests__/shellResolution.os.test.ts src/main/notification/__tests__/ToastManager.test.ts
 
+  # The Rust terminal core, built once per OS that consumes it and shared as an
+  # artifact (core/wmux-term/dist/native-core for the tests, dist/wmux-native
+  # for packaging). wmux has no other terminal engine: the test lanes start
+  # real terminals on it and `npm run package` refuses to run without it.
+  native-core:
+    name: native core (${{ matrix.os }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15]
+    steps:
+      # Same pins and toolchain as validate; see the comments there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        id: node
+        with:
+          node-version: '>=24.21.0 <25'
+          cache: npm
+
+      - name: Use npm 11
+        run: npm install -g npm@11
+
+      # See the checks job for the key. Restore only, like first-run-e2e: the
+      # jobs that run the tree save it.
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json', 'patches/**', 'scripts/fix-node-pty.js', 'scripts/apply-patches.mjs') }}
+
+      - name: Install dependencies
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Build the terminal core
+        uses: ./.github/actions/terminal-core
+
+      - name: Upload the terminal core
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: terminal-core-${{ runner.os }}
+          path: |
+            core/wmux-term/dist/native-core/
+            dist/wmux-native/
+          retention-days: 3
+          if-no-files-found: error
+
   validate:
     name: validate (${{ matrix.shard }}/2)
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # Runs when native-core failed too (not cancelled), so a broken core fails
+    # this job at the download instead of skipping it: a skipped job reads as
+    # passed in a required check.
+    needs: native-core
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    env:
+      WMUX_TERMINAL_CORE_MODULE: ${{ github.workspace }}/core/wmux-term/dist/native-core/index.cjs
     # The unit lane: pure, OS-agnostic tests (scripts/lib/test-lanes.mjs; every
     # file that touches the OS or so much as mentions win32 is in the
     # integration job below, on Windows). Linux spawns and reads files several
@@ -177,6 +235,13 @@ jobs:
       - name: Install dependencies
         if: steps.node-modules.outputs.cache-hit != 'true'
         run: npm ci
+
+      # Restores core/wmux-term/dist/native-core and dist/wmux-native, where
+      # the native-core job built them. Fails when that job failed.
+      - name: Download the terminal core
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: terminal-core-${{ runner.os }}
 
       # The type checks, builds and lint run on the checks job above. The
       # runtime suites (`*.runtime.test.*`) run in runtime.yml.
@@ -291,7 +356,11 @@ jobs:
   # Linux. Together the two jobs run what `npm run test:parallel` runs.
   integration:
     name: integration (${{ matrix.shard }}/2)
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # See validate for the needs/if pair.
+    needs: native-core
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    env:
+      WMUX_TERMINAL_CORE_MODULE: ${{ github.workspace }}/core/wmux-term/dist/native-core/index.cjs
     runs-on: windows-latest
     # Before the win32 rule the lane was ~8.6% of the files but ~64% of the
     # suite's test time on windows-latest (main, 2026-10-17: 826 s of
@@ -336,6 +405,11 @@ jobs:
       - name: Install the Electron binary
         run: npx install-electron
 
+      - name: Download the terminal core
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: terminal-core-${{ runner.os }}
+
       - name: Test (integration lane, shard ${{ matrix.shard }}/2)
         run: npm run test:integration -- --shard=${{ matrix.shard }}/2
 
@@ -373,7 +447,9 @@ jobs:
   # same packaging config.
   first-run-e2e:
     name: first-run e2e (${{ matrix.os }})
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # See validate for the needs/if pair.
+    needs: native-core
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     runs-on: ${{ matrix.os }}
     # `npm ci` and `npm run package` run installed code: give it a read-only
     # token, and keep the token out of the checkout.
@@ -417,6 +493,12 @@ jobs:
       - name: Install dependencies
         if: steps.node-modules.outputs.cache-hit != 'true'
         run: npm ci
+
+      # dist/wmux-native, which `npm run package` ships and requires.
+      - name: Download the terminal core
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: terminal-core-${{ runner.os }}
 
       - name: Package
         run: npm run package

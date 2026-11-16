@@ -1,0 +1,33 @@
+name: Build the terminal core
+description: >-
+  Builds and stages the Rust terminal core (npm run build:terminal-core) with a
+  cargo cache. Tests find the module through WMUX_TERMINAL_CORE_MODULE, set by
+  the job (core/wmux-term/dist/native-core/index.cjs under the workspace).
+  wmux has no other terminal engine, so a job that starts a real terminal, runs
+  the daemon or packages the app needs this first. Run it after npm ci: the
+  build uses @napi-rs/cli from node_modules.
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain
+      shell: bash
+      run: rustup toolchain install stable --profile minimal
+
+    # Cargo's downloads and the crate's target dir. The key moves with the
+    # lockfile and the manifests; restore-keys reuse an older target dir, which
+    # cargo rebuilds incrementally.
+    - name: Restore the cargo cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          core/wmux-term/target
+        key: terminal-core-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('core/wmux-term/Cargo.lock', 'core/wmux-term/Cargo.toml', 'core/wmux-term/vendor/**/Cargo.toml') }}
+        restore-keys: terminal-core-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Build and stage the terminal core
+      shell: bash
+      run: npm run build:terminal-core
+

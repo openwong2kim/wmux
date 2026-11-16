@@ -58,6 +58,10 @@ jobs:
     name: native-hooks (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    # No test here starts a terminal, so the suite's setup does not ask for
+    # the Rust terminal core (src/test-utils/requireRustEngine.ts).
+    env:
+      WMUX_TERMINAL_CORE_NOT_NEEDED: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.changes.outputs.relevant != 'false'

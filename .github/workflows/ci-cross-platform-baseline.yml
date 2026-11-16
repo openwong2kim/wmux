@@ -41,6 +41,8 @@ jobs:
     # The macos leg takes 26-29 min, the ubuntu leg less; a hung test must
     # not hold a runner for the 6 h default.
     timeout-minutes: ${{ startsWith(matrix.os, 'macos') && 45 || 30 }}
+    env:
+      WMUX_TERMINAL_CORE_MODULE: ${{ github.workspace }}/core/wmux-term/dist/native-core/index.cjs
     strategy:
       # Per DX/Eng review T1 (per-OS independent publish policy): keep all
       # matrix legs running so we can see the full cross-platform picture
@@ -160,6 +162,12 @@ jobs:
           start=$(date +%s)
           if [ -d /opt/google/chrome ]; then find /opt/google/chrome -type f -exec cat {} + > /dev/null; fi
           echo "read in $(( $(date +%s) - start )) s"
+
+      # The Rust terminal core, wmux's only terminal engine, built on this
+      # leg's own OS image (ubuntu-22.04 is older than ci.yml's native-core
+      # runner, so that artifact's glibc may not load here).
+      - name: Build the terminal core
+        uses: ./.github/actions/terminal-core
 
       - name: Test (cross-platform)
         run: npm test

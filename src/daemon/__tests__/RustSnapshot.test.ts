@@ -1,10 +1,12 @@
-import { afterAll, afterEach, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { generateRustSnapshot } from '../RustSnapshot';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-native-abi-'));
+// CI names the built core in WMUX_TERMINAL_CORE_MODULE, which nativeCorePath reads first: unset it so the stubbed file is the module.
+beforeEach(() => { vi.stubEnv('WMUX_TERMINAL_CORE_MODULE', undefined); });
 afterEach(() => vi.unstubAllEnvs());
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 
