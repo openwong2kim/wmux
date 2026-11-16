@@ -592,3 +592,19 @@ describe('the app-host signals of a daemon (appHostMarker)', () => {
     expect([...ran].sort()).toEqual(['a2a.remote.hosts.list', 'a2a.remote.peers.list']);
   });
 });
+
+describe('a paired device\'s grant and the app\'s connection', () => {
+  it('only the app\'s own connection may change it', async () => {
+    const method = 'daemon.web.deviceSetInput';
+    const { pipe, token, ran } = await startServer('device-grant', [method]);
+    const other = await callEach(pipe, token, [method], { deviceId: 'd1', allowInput: true });
+    expect(other.get(method)).toMatchObject({ ok: false, error: `${NOT_FIRST_PARTY}: ${method} is accepted only from the app's own connection` });
+    expect(ran.size).toBe(0);
+
+    const app = await connect(pipe);
+    app.socket.write(line('id', 'daemon.client.identify', token, { role: 'main' }) + line('set', method, token, { deviceId: 'd1', allowInput: true }));
+    await waitFor(() => app.replies.has('set'));
+    expect(app.replies.get('set')).toMatchObject({ ok: true });
+    expect(ran.get(method)).toEqual({ deviceId: 'd1', allowInput: true });
+  });
+});
