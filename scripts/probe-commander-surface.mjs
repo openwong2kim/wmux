@@ -51,7 +51,7 @@ const packageJson = JSON.parse(readFileSync(PACKAGE_PATH, 'utf8'));
 //   it. fanout_bring_back is the one way an agent brings a task's work back
 //   from another PC: about +650 bytes, some 160 tokens per full-profile
 //   client.
-//   full: 81000 -> 82000 (remote_answer, #3404). The full profile measured
+//   full: 81000 -> 82000 (remote_answer, #3403). The full profile measured
 //   80,594 bytes before it, 406 bytes of headroom, and 81,016 with it.
 //   remote_answer is how an agent answers the single-choice menu a worker it
 //   started on another PC shows: +422 bytes, some 105 tokens per full or
