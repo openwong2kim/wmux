@@ -19,14 +19,16 @@ describe('normalizeForPromptMatch', () => {
 });
 
 describe('unwrapPastedContent (what user_text shows)', () => {
-  const wrap = (inner: string, id = '3de0', nl = '\n') => `<pasted_content id="${id}">${nl}${inner}${nl}</pasted_content id="${id}">`;
+  const wrap = (inner: string, id = '3de0') => `<pasted_content id="${id}">\n${inner}\n</pasted_content id="${id}">`;
 
   it('removes a matched pair and the one line break inside each tag, keeping the inner text byte-exact', () => {
     expect(unwrapPastedContent(wrap('line one\nline two'))).toEqual({ text: 'line one\nline two', pasted: true });
   });
 
-  it('keeps CRLF inside, removing only the CRLF right inside each tag', () => {
-    expect(unwrapPastedContent(wrap('a\r\nb\r\n', '3de0', '\r\n')).text).toBe('a\r\nb\r\n');
+  it('keeps CRLF inside: only the \\n Claude Code writes next to each tag goes, never a \\r the user typed', () => {
+    expect(unwrapPastedContent(wrap('a\r\nb\r\n')).text).toBe('a\r\nb\r\n');
+    expect(unwrapPastedContent(wrap('ends in a carriage return\r')).text).toBe('ends in a carriage return\r');
+    expect(unwrapPastedContent(wrap('\r\nstarts with CRLF')).text).toBe('\r\nstarts with CRLF');
   });
 
   it('keeps trailing spaces and a leading blank line inside the paste', () => {

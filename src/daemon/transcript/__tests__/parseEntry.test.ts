@@ -1020,9 +1020,20 @@ describe('a message Claude Code stored as a paste: user_text is the pasted text 
     expect(parseTranscriptLine(userLine(literal), 0)).toEqual([{ id: 'u1', kind: 'user_text', text: literal }]);
   });
 
-  it('a system reminder beside the paste is still dropped', () => {
+  it('a system reminder beside the paste is still dropped; one inside the paste is the user\'s text and stays', () => {
     const [ev] = parseTranscriptLine(userLine(`${pasteOf('the real prompt')}<system-reminder>internal</system-reminder>`), 0);
-    expect(ev).toMatchObject({ kind: 'user_text', text: 'the real prompt', pasted: true });
+    expect(ev).toEqual({ id: 'u1', kind: 'user_text', text: 'the real prompt', pasted: true });
+    const log = 'a log I pasted:\n<system-reminder>quoted</system-reminder>\nend';
+    expect(parseTranscriptLine(userLine(pasteOf(log)), 0)[0]).toMatchObject({ text: log, pasted: true });
+    // An unclosed reminder inside the paste cannot reach a real one after it.
+    const half = 'quoted <system-reminder> only';
+    expect(parseTranscriptLine(userLine(`${pasteOf(half)}<system-reminder>real</system-reminder>`), 0)[0])
+      .toMatchObject({ text: half, pasted: true });
+  });
+
+  it('an empty or blank paste gives no row (no blank "You" card, no reminder chip)', () => {
+    expect(parseTranscriptLine(userLine(pasteOf('   ')), 0)).toEqual([]);
+    expect(parseTranscriptLine(JSON.stringify({ type: 'attachment', uuid: 'q', attachment: { type: 'queued_command', commandMode: 'prompt', prompt: pasteOf('') } }), 0)).toEqual([]);
   });
 
   it('recorded form (fixture): the Korean multi-line paste reads as the exact text, as /turns serves it', () => {

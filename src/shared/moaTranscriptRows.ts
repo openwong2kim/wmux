@@ -70,7 +70,7 @@ export function rewritePastedPrompts<P extends { at: number; text: string }>(
       if (used.has(keyOf(p)) || !text || !tail.endsWith(text) || (ts !== null && !before(p))) continue;
       if (!match || p.at > match.at) match = p;
     }
-    if (!match && (e.pasted === true || e.text.includes('<pasted_content'))) {
+    if (!match && e.pasted === true) {
       for (const p of prompts) {
         if (!used.has(keyOf(p)) && before(p) && (!match || p.at > match.at)) match = p;
       }
@@ -144,6 +144,6 @@ export function moaPhoneRows<P extends { at: number; text: string }>(
   assigned: Map<string, P>,
 ): TurnEvent[] {
   const shown = hideMoaWakes(rewritePastedPrompts(events, prompts, assigned))
-    .map((e) => (e.kind === 'user_text' && (e.pasted === true || e.text.includes('<pasted_content')) ? asTurnStart(e) : e));
+    .map((e) => (e.kind === 'user_text' && e.pasted === true ? asTurnStart(e) : e));
   return foldMoaInternals(shown);
 }

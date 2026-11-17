@@ -761,12 +761,16 @@ Claude Code records a long or multi-line message as a paste: the text inside
 right inside each tag (2.1.326 writes
 `"\n\n<pasted_content id=\"3de0\">\n…\n</pasted_content id=\"3de0\">\n"`).
 The daemon removes each matched pair before the row is served: an opening tag
-and the later closing tag with the same id, with at most one line break (`\n`
-or `\r\n`) right inside each tag. The text between them is kept byte for byte:
-no trim, no re-wrap, so CRLF, trailing spaces, blank lines and Korean text
-reach the client exactly as typed, and a client can settle its outbox by
-comparing `user_text.text` with what it sent. An unmatched tag, or a pair whose
-id is not the hex id Claude Code writes, stays in the text. Such a row carries
+and the later closing tag with the same id, with the one `\n` Claude Code
+writes right inside each tag. The text between them is kept byte for byte: no
+trim, no re-wrap, so a `\r` or CRLF, trailing spaces, blank lines and Korean
+text reach the client exactly as typed, and a client can settle its outbox by
+comparing `user_text.text` with what it sent. A `<system-reminder>` block inside
+a paste is the user's text and stays; one Claude Code adds outside it is
+dropped as before. An unmatched tag, or a pair whose id is not the hex id
+Claude Code writes, stays in the text. This is the layout Claude Code 2.1.326
+writes; a row the transcript cut at its length cap (8000 characters and an
+ellipsis) is only the start of what was sent. Such a row carries
 `pasted: true` (absent otherwise). This holds for every read of
 `GET /api/sessions/:id/turns` (a snapshot, an older page, or what a
 `transcript.nudge` on `/api/stream` sends the client back for), and for host
