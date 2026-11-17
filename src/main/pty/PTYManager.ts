@@ -1,5 +1,6 @@
 import { isWslShell, resolveWslCwd, type WslTarget, type ResolvedWslCwd } from '../../shared/wsl';
 import { buildWslInjection } from '../../shared/wslIntegration';
+import { accountSourcedKeys, setWslAccountKeys } from '../../shared/wslAccountHome';
 import { BASH_INIT } from '../../daemon/shell-integration';
 import { getWmuxDir } from '../../daemon/config';
 import { claudeFileSendEnv } from '../../shared/claudeFileSend';
@@ -392,6 +393,9 @@ export class PTYManager {
     const shellType = this.detectShellType(shell);
     // #2231 — a fan-out task pane's worktree git location (main/agents/wslWorkerGit.ts).
     if (wsl && options?.wslTaskGit) applyWslWorkerGit(env, options.wslTaskGit.plan, options.wslTaskGit.config);
+    // A bound account gets its own home in the distro (shared/wslAccountHome.ts),
+    // only for the variables the binding still decides (a profile's own wins).
+    if (wsl) setWslAccountKeys(env, accountSourcedKeys(env, accountEnv));
     const hookInjection = wsl
       ? buildWslInjection({ target: wsl.target, cwd, env, integrationDir: getWmuxDir(), bashInit: BASH_INIT, wslAccountLoginEnvKey: options?.wslAccountLoginEnvKey })
       : this.buildHookInjection(shellType, env, shell);

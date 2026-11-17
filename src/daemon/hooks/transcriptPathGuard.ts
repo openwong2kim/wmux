@@ -30,6 +30,7 @@ import path from 'node:path';
 import type { WslTarget } from '../../shared/wslTarget';
 import { isValidWslDistroName } from '../../shared/wslDistro';
 import { win32AliasedName, wslPathToHost } from '../../mcp/wslPaths';
+import { wslAccountLinuxHome } from '../../shared/wslAccountHome';
 import { agentRow } from '../../shared/agentIdentity';
 
 /** Separator-agnostic last segment. Windows paths relayed to a POSIX daemon (or
@@ -250,7 +251,9 @@ export function checkTranscriptPath(
 /**
  * Is this the `transcript_path` a WSL pane's own Claude reports: the Linux path
  * `~/.claude/projects/<project>/<session id>.jsonl` of the pane's distro user
- * (`/home/<user>/…`, or `/root/…` for root)?
+ * (`/home/<user>/…`, or `/root/…` for root)? A pane whose workspace binds a
+ * Claude account (`env`, the pane's environment) runs on that account's own
+ * home in the distro (shared/wslAccountHome.ts), whose `projects/` counts too.
  *
  * Never stored as `transcriptPath`: this process cannot open a distro path as
  * given (on Windows `/home/u/…` names `C:\home\u\…`, a different file). The
@@ -263,13 +266,16 @@ export function isWslOwnTranscriptPath(
   transcriptPath: string,
   agentSessionId: string,
   target: Partial<WslTarget> | undefined,
+  env?: Readonly<Record<string, string | undefined>>,
 ): boolean {
   const user = target?.user;
   if (typeof user !== 'string' || !user || user.includes('/') || user === '.' || user === '..') return false;
   // eslint-disable-next-line no-control-regex
   if (!agentSessionId || typeof transcriptPath !== 'string' || /[\u0000-\u001f\u007f\\]/.test(transcriptPath)) return false;
-  const root = `${user === 'root' ? '/root' : `/home/${user}`}/.claude/projects/`;
-  if (!transcriptPath.startsWith(root)) return false;
+  const accountHome = wslAccountLinuxHome(env, 'claude', user);
+  const root = [`${user === 'root' ? '/root' : `/home/${user}`}/.claude/projects/`, ...(accountHome ? [`${accountHome}/projects/`] : [])]
+    .find((candidate) => transcriptPath.startsWith(candidate));
+  if (!root) return false;
   const rest = transcriptPath.slice(root.length).split('/');
   if (rest.some((segment) => !segment || segment === '.' || segment === '..')) return false;
   return rest.length === 2 && rest[1] === `${agentSessionId}.jsonl`;
@@ -278,14 +284,16 @@ export function isWslOwnTranscriptPath(
 /**
  * The writer half for `wslTranscriptPath`: kept only when it is the pane's own
  * Claude transcript (`target` is the pane's recorded WSL target, absent for any
- * other pane); otherwise the binding goes without it. `dropped` says so.
+ * other pane, and `env` its environment); otherwise the binding goes without
+ * it. `dropped` says so.
  */
 export function keepOwnWslTranscriptPath<B extends { agent: string; sessionId: string; wslTranscriptPath?: string }>(
   binding: B,
   target: Partial<WslTarget> | undefined,
+  env?: Readonly<Record<string, string | undefined>>,
 ): { binding: B; dropped: boolean } {
   if (binding.wslTranscriptPath === undefined) return { binding, dropped: false };
-  if (agentRow(binding.agent)?.wslTranscript && isWslOwnTranscriptPath(binding.wslTranscriptPath, binding.sessionId, target)) {
+  if (agentRow(binding.agent)?.wslTranscript && isWslOwnTranscriptPath(binding.wslTranscriptPath, binding.sessionId, target, env)) {
     return { binding, dropped: false };
   }
   const rest = { ...binding };
@@ -305,18 +313,19 @@ export type WslSharePath = { ok: true; file: string; share: string } | { ok: fal
  * Windows. `share` is the share prefix the file sits under.
  *
  * `shareRoot` exists for tests, which stand a temporary folder in for the share.
+ * `env` is the pane's environment (isWslOwnTranscriptPath).
  */
 export function wslTranscriptSharePath(
   wslPath: string,
   agentSessionId: string,
   target: Partial<WslTarget> | undefined,
-  opts: { platform?: NodeJS.Platform; shareRoot?: (distro: string) => string } = {},
+  opts: { platform?: NodeJS.Platform; shareRoot?: (distro: string) => string; env?: Readonly<Record<string, string | undefined>> } = {},
 ): WslSharePath {
   if ((opts.platform ?? process.platform) !== 'win32') return { ok: false, reason: 'not a Windows host' };
   const distro = target?.distribution;
   // A trailing dot or space would name another share once Windows trims it.
   if (!isValidWslDistroName(distro) || win32AliasedName(distro) !== undefined) return { ok: false, reason: 'no valid distro' };
-  if (!isWslOwnTranscriptPath(wslPath, agentSessionId, target)) return { ok: false, reason: 'not this pane\'s transcript' };
+  if (!isWslOwnTranscriptPath(wslPath, agentSessionId, target, opts.env)) return { ok: false, reason: 'not this pane\'s transcript' };
   const host = wslPathToHost(wslPath, distro);
   if ('error' in host) return { ok: false, reason: 'a name Windows reads differently' };
   // A path inside the distro comes back as its share prefix plus the Linux path.

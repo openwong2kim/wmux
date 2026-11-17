@@ -19,6 +19,7 @@ import { stripPassiveInput } from '../../../shared/terminal/passiveInput';
 import { sanitizePtyText } from '../../../shared/types';
 import { isShadowWorkspaceId } from '../../../shared/pcRail/shadowId';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
+import { accountSourcedKeys, setWslAccountKeys } from '../../../shared/wslAccountHome';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore, type Account } from '../../account/accountStore';
 import { appAccountVault, createAccountOverride, mergeVaultSecretEnv, noteVaultSignInPane, vaultAccountsForCreate, vaultOnlyClaudeAccount, withAccountFolderEnv } from '../../account/accountVault';
@@ -918,6 +919,10 @@ export function registerPTYHandlers(
       // native-terminal freshness. No-op off win32 / on failure. (Recovery replays
       // the persisted create-time env verbatim; refreshing that is a follow-up.)
       const resolvedEnv = closingLeases(() => resolveSpawnEnv(withFreshWindowsPath(globalThis.process.env), options?.env, identity, getShellUtf8Locale(), envPolicy, accountEnv));
+      // A bound account gets its own home in the distro (shared/wslAccountHome.ts),
+      // only for the variables the binding still decides (a profile's own wins).
+      // It rides in the env the daemon persists, so a recovered pane keeps it.
+      if (isWslShell(shell)) setWslAccountKeys(resolvedEnv, accountSourcedKeys(resolvedEnv, accountEnv));
       // #2231 — a fan-out task pane in WSL on a Windows-drive worktree: Linux
       // git gets the worktree's gitdir by its Linux path (wslWorkerGit.ts).
       if ((botWorker || options?.fanoutTaskOf) && isWslShell(shell) && safeCwd) {

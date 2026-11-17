@@ -61,6 +61,16 @@ describe('createSession — WSL distro selection and recovery target', () => {
     expect(injectionMock).toHaveBeenLastCalledWith(expect.objectContaining({ wslAccountLoginEnvKey: undefined }));
   });
 
+  it('marks the phone/web create\'s account variables for a WSL pane only, and keeps a replayed mark', async () => {
+    const env = { CODEX_HOME: 'C:\\accounts\\codex', CLAUDE_CONFIG_DIR: 'C:\\accounts\\claude' };
+    await manager.createSessionAsync({ id: 'phone', cmd: 'wsl.exe', cwd: '~', env: { ...env }, wslAccountKeys: ['CLAUDE_CONFIG_DIR'] });
+    expect(injectionMock.mock.lastCall?.[0].env.WMUX_WSL_ACCOUNT_KEYS).toBe('CLAUDE_CONFIG_DIR');
+    await manager.createSessionAsync({ id: 'replayed', cmd: 'wsl.exe', cwd: '~', env: { ...env, WMUX_WSL_ACCOUNT_KEYS: 'CODEX_HOME' } });
+    expect(injectionMock.mock.lastCall?.[0].env.WMUX_WSL_ACCOUNT_KEYS).toBe('CODEX_HOME');
+    await manager.createSessionAsync({ id: 'windows', cmd: 'cmd.exe', cwd: os.tmpdir(), env: { ...env }, wslAccountKeys: ['CLAUDE_CONFIG_DIR'] });
+    expect(manager.getSession('windows')?.meta.env?.WMUX_WSL_ACCOUNT_KEYS).toBeUndefined();
+  });
+
   it('uses the picker selection to resolve the actual target and persisted args', async () => {
     await manager.createSessionAsync({ id: 'selected', cmd: 'wsl.exe', args: ['-d', 'My Ubuntu'], cwd: '~' });
     expect(probeMock.mock.calls[0][0].slice(0, 2)).toEqual(['-d', 'My Ubuntu']);

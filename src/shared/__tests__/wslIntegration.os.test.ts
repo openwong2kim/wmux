@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { accountHomeWslFlags, buildWslInjection, WSL_CLAUDE_SHIM, WSL_HOOK, wslClaudeHooks } from '../wslIntegration';
+import { accountHomeWslFlags, buildWslInjection, WSL_ACCOUNT_SH, WSL_CLAUDE_SHIM, WSL_HOOK, wslClaudeHooks } from '../wslIntegration';
+import { wslAccountHomeKey } from '../wslAccountHome';
 import { HOOK_SPECS } from '../../cli/commands/setupHooks';
 import { parseWslAgentReport, pickReportedAgent } from '../../daemon/wslAgentProcess';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -215,6 +216,140 @@ describe('WSL per-launch Claude integration', () => {
     it('ignores an unsupported account key from an untyped IPC caller', () => {
       const injected = inject({ CODEX_HOME: 'C:\\accounts\\bound', OTHER_CONFIG_DIR: 'C:\\accounts\\other' }, 'OTHER_CONFIG_DIR' as 'CODEX_HOME');
       expect(injected.env.WSLENV.split(':').some((entry) => /^(CODEX_HOME|OTHER_CONFIG_DIR)(\/|$)/.test(entry))).toBe(false);
+    });
+  });
+
+  // A bound workspace's account runs on its own home in the distro: only its
+  // key crosses over, never the Windows folder (shared/wslAccountHome.ts).
+  describe('bound account homes in WSL', () => {
+    function inject(env: Record<string, string>, opts: { login?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; exec?: string } = {}) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-bound-')); dirs.push(dir);
+      const injected = buildWslInjection({
+        target: { distribution: 'Ubuntu', user: 'developer' }, cwd: '/home/developer',
+        env, integrationDir: dir, bashInit: '', mcpEntryPath: null, wslAccountLoginEnvKey: opts.login, execCommand: opts.exec,
+      });
+      return { ...injected, dir, wslenv: injected.env.WSLENV.split(':') };
+    }
+
+    it('sends each marked account as its key, and the account folder never', () => {
+      const env = { CLAUDE_CONFIG_DIR: 'C:\\accounts\\work', CODEX_HOME: 'C:\\accounts\\codex', WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR,CODEX_HOME' };
+      const { env: out, wslenv, dir } = inject(env);
+      expect(out.WMUX_WSL_ACCOUNT_CLAUDE).toBe(wslAccountHomeKey('C:\\accounts\\work'));
+      expect(out.WMUX_WSL_ACCOUNT_CODEX).toBe(wslAccountHomeKey('C:\\accounts\\codex'));
+      expect(wslenv).toEqual(expect.arrayContaining(['WMUX_WSL_ACCOUNT_CLAUDE', 'WMUX_WSL_ACCOUNT_CODEX', 'WMUX_WSL_ACCOUNT_SH/p']));
+      expect(wslenv.some((entry) => /^(CODEX_HOME|CLAUDE_CONFIG_DIR)(\/|$)/.test(entry))).toBe(false);
+      expect(out.WMUX_WSL_ACCOUNT_SH).toBe(path.join(dir, 'wsl', 'account.sh'));
+      expect(fs.readFileSync(out.WMUX_WSL_ACCOUNT_SH, 'utf8')).toBe(WSL_ACCOUNT_SH);
+      expect(out.WMUX_WSL_ACCOUNT_CLAUDE_SHARE).toBeUndefined();
+    });
+
+    it('leaves an unmarked account variable (a profile\'s or an inherited one) alone', () => {
+      const { env: out, wslenv } = inject({ CLAUDE_CONFIG_DIR: 'C:\\profile\\claude', CODEX_HOME: 'C:\\accounts\\codex', WMUX_WSL_ACCOUNT_KEYS: 'CODEX_HOME' });
+      expect(out.WMUX_WSL_ACCOUNT_CLAUDE).toBeUndefined();
+      expect(out.WMUX_WSL_ACCOUNT_CODEX).toBe(wslAccountHomeKey('C:\\accounts\\codex'));
+      expect(wslenv).not.toContain('WMUX_WSL_ACCOUNT_CLAUDE');
+    });
+
+    it('lets a Settings login tab keep the Windows folder for its own variable', () => {
+      const env = { CLAUDE_CONFIG_DIR: 'C:\\accounts\\work', CODEX_HOME: 'C:\\accounts\\codex', WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR,CODEX_HOME' };
+      const { env: out, wslenv } = inject(env, { login: 'CLAUDE_CONFIG_DIR' });
+      expect(wslenv).toContain('CLAUDE_CONFIG_DIR/pu');
+      expect(out.WMUX_WSL_ACCOUNT_CLAUDE).toBeUndefined();
+      expect(out.WMUX_WSL_ACCOUNT_CODEX).toBe(wslAccountHomeKey('C:\\accounts\\codex'));
+    });
+
+    it('redoes a recovered pane\'s replayed account variables from its mark', () => {
+      const replayed = {
+        CLAUDE_CONFIG_DIR: 'C:\\accounts\\work', WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR',
+        WMUX_WSL_ACCOUNT_CLAUDE: '0000000000000000', WMUX_WSL_ACCOUNT_CLAUDE_SHARE: '1', WMUX_WSL_ACCOUNT_CODEX: '1111111111111111',
+        WSLENV: 'WMUX_WSL_ACCOUNT_CLAUDE:WMUX_WSL_ACCOUNT_CLAUDE_SHARE:WMUX_WSL_ACCOUNT_CODEX',
+      };
+      const { env: out } = inject(replayed);
+      expect(out.WMUX_WSL_ACCOUNT_CLAUDE).toBe(wslAccountHomeKey('C:\\accounts\\work'));
+      expect(out.WMUX_WSL_ACCOUNT_CLAUDE_SHARE).toBeUndefined();
+      expect(out.WMUX_WSL_ACCOUNT_CODEX).toBeUndefined();
+    });
+
+    it('marks a shared account folder (a linked skills folder) for mirroring', () => {
+      const account = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-share-')); dirs.push(account);
+      const source = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-share-src-')); dirs.push(source);
+      fs.symlinkSync(source, path.join(account, 'skills'), process.platform === 'win32' ? 'junction' : 'dir');
+      const { env: out, wslenv } = inject({ CLAUDE_CONFIG_DIR: account, WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR' });
+      expect(out.WMUX_WSL_ACCOUNT_CLAUDE_SHARE).toBe('1');
+      expect(wslenv).toContain('WMUX_WSL_ACCOUNT_CLAUDE_SHARE');
+    });
+
+    it('adds nothing for an unbound pane', () => {
+      const { env: out, wslenv } = inject({ CLAUDE_CONFIG_DIR: 'C:\\inherited' });
+      expect(out.WMUX_WSL_ACCOUNT_SH).toBeUndefined();
+      expect(wslenv.some((entry) => entry.startsWith('WMUX_WSL_ACCOUNT'))).toBe(false);
+    });
+
+    it('sets up the account before an exec unit\'s command and fails the run when it cannot', () => {
+      const { args } = inject({ CLAUDE_CONFIG_DIR: 'C:\\accounts\\work', WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR' }, { exec: 'claude' });
+      const bootstrap = args[args.indexOf('-c') + 1];
+      expect(bootstrap).toContain('! . "$WMUX_WSL_ACCOUNT_SH" exec; then exit 1; fi\neval "$1"');
+    });
+
+    // The script itself, in a real bash (Linux and macOS CI; Windows runs it in
+    // WSL through wslAccountEnv.runtime.test.ts).
+    describe.skipIf(process.platform === 'win32')('account.sh', () => {
+      function source(home: string, mode: 'interactive' | 'exec', env: Record<string, string>) {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-acsh-')); dirs.push(dir);
+        fs.writeFileSync(path.join(dir, 'account.sh'), WSL_ACCOUNT_SH);
+        return spawnSync('bash', ['--noprofile', '--norc', '-c',
+          `. "$1" ${mode}; rc=$?; printf '%s|%s|%s' "$rc" "\${CLAUDE_CONFIG_DIR:-}" "\${CODEX_HOME:-}"`, 'x', path.join(dir, 'account.sh')], {
+          env: { PATH: process.env.PATH ?? '', HOME: home, ...env }, encoding: 'utf8',
+        });
+      }
+      const home = () => { const h = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-home-')); dirs.push(h); return h; };
+
+      it('makes a private home per account and says once that it has no sign-in yet', () => {
+        const h = home();
+        const ran = source(h, 'interactive', { WMUX_DATA_SUFFIX: '-t1', WMUX_WSL_ACCOUNT_CLAUDE: 'aaaaaaaaaaaaaaaa', WMUX_WSL_ACCOUNT_CODEX: 'bbbbbbbbbbbbbbbb' });
+        const claude = path.join(h, '.wmux-t1', 'accounts', 'claude-aaaaaaaaaaaaaaaa');
+        expect(ran.stdout).toBe(`0|${claude}|${path.join(h, '.wmux-t1', 'accounts', 'codex-bbbbbbbbbbbbbbbb')}`);
+        expect(fs.statSync(claude).mode & 0o777).toBe(0o700);
+        expect(ran.stderr).toContain('this pane\'s claude account has no sign-in in this WSL distro yet');
+        fs.writeFileSync(path.join(claude, '.credentials.json'), '{}');
+        expect(source(h, 'interactive', { WMUX_DATA_SUFFIX: '-t1', WMUX_WSL_ACCOUNT_CLAUDE: 'aaaaaaaaaaaaaaaa' }).stderr).toBe('');
+      });
+
+      it('logs the no-sign-in note in an exec run instead of printing it', () => {
+        const h = home();
+        const ran = source(h, 'exec', { WMUX_WSL_ACCOUNT_CLAUDE: 'cccccccccccccccc' });
+        expect(ran.stderr).toBe('');
+        expect(fs.readFileSync(path.join(h, '.wmux', 'accounts', 'notices.log'), 'utf8')).toContain('has no sign-in in this WSL distro yet');
+      });
+
+      it('mirrors the distro\'s own default folder into a new shared home, once', () => {
+        const h = home();
+        fs.mkdirSync(path.join(h, '.claude', 'skills'), { recursive: true });
+        fs.writeFileSync(path.join(h, '.claude', 'settings.json'), '{"linux":true}');
+        source(h, 'exec', { WMUX_WSL_ACCOUNT_CLAUDE: 'dddddddddddddddd', WMUX_WSL_ACCOUNT_CLAUDE_SHARE: '1' });
+        const account = path.join(h, '.wmux', 'accounts', 'claude-dddddddddddddddd');
+        expect(fs.readlinkSync(path.join(account, 'skills'))).toBe(path.join(h, '.claude', 'skills'));
+        expect(fs.readFileSync(path.join(account, 'settings.json'), 'utf8')).toBe('{"linux":true}');
+        fs.writeFileSync(path.join(h, '.claude', 'settings.json'), '{"later":true}');
+        source(h, 'exec', { WMUX_WSL_ACCOUNT_CLAUDE: 'dddddddddddddddd', WMUX_WSL_ACCOUNT_CLAUDE_SHARE: '1' });
+        expect(fs.readFileSync(path.join(account, 'settings.json'), 'utf8')).toBe('{"linux":true}');
+      });
+
+      it('fails, without exporting, when the home cannot be made or the suffix cannot name a folder', () => {
+        const h = home();
+        fs.mkdirSync(path.join(h, '.wmux'));
+        fs.writeFileSync(path.join(h, '.wmux', 'accounts'), 'not a folder');
+        const blocked = source(h, 'interactive', { WMUX_WSL_ACCOUNT_CLAUDE: 'eeeeeeeeeeeeeeee' });
+        expect(blocked.stdout).toBe('1||');
+        expect(blocked.stderr).toContain('cannot create');
+        const bad = source(home(), 'exec', { WMUX_DATA_SUFFIX: '/../x', WMUX_WSL_ACCOUNT_CLAUDE: 'eeeeeeeeeeeeeeee' });
+        expect(bad.stdout).toBe('1||');
+        expect(bad.stderr).toContain('cannot name a folder');
+      });
+
+      it('ignores a key that is not 16-character hex', () => {
+        expect(source(home(), 'exec', { WMUX_WSL_ACCOUNT_CLAUDE: '../../etc' }).stdout).toBe('0||');
+      });
     });
   });
 

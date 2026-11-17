@@ -1,5 +1,6 @@
 import { isWslShell, mergeWslEnv, resolveWslCwd, type WslTarget, type ResolvedWslCwd } from '../shared/wsl';
 import { buildWslInjection } from '../shared/wslIntegration';
+import { setWslAccountKeys, type AccountEnvKey } from '../shared/wslAccountHome';
 import { getWmuxDir } from './config';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -709,6 +710,13 @@ export class DaemonSessionManager extends EventEmitter {
     handoffFrom?: StoredHandoffFrom;
     /** Vendor of the account chosen for this phone pane (its directory is in `env`). */
     paneAccount?: { vendor: PaneAccountVendor };
+    /**
+     * In-process only (the phone/web create): the account variables of `env`
+     * that came from an account, which a WSL pane runs on its own Linux home
+     * (shared/wslAccountHome.ts). Desktop creates mark `env` in main instead,
+     * and a replay carries the mark in its persisted env.
+     */
+    wslAccountKeys?: readonly AccountEnvKey[];
     /** Created through the web API: the longer detached retention applies. */
     remoteDurable?: true;
     /**
@@ -859,6 +867,10 @@ export class DaemonSessionManager extends EventEmitter {
     // Phone workspace panes: a gone account directory is dropped with a warning
     // (recovery), never handed to the CLI to recreate as an empty config.
     dropMissingAccountDirs(params.id, env, (message) => console.warn(message));
+
+    // The phone/web create names its account variables here; only a WSL pane
+    // is marked (the mark means nothing to a Windows shell).
+    if (wsl && params.wslAccountKeys) setWslAccountKeys(env, params.wslAccountKeys);
 
     let spawnArgs: string[] = isWslDistroSpawnArgs(cmd, params.args) ? [...params.args] : [];
     // An exec unit runs a program with no shell prompt; a shell given wmux's

@@ -7,7 +7,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { checkTranscriptPath, claudeProjectRoots, isHostAbsolute, isWslOwnTranscriptPath } from '../transcriptPathGuard';
+import { checkTranscriptPath, claudeProjectRoots, isHostAbsolute, isWslOwnTranscriptPath, keepOwnWslTranscriptPath } from '../transcriptPathGuard';
+import { wslAccountHomeKey } from '../../../shared/wslAccountHome';
 
 const SID = '920b9112-1111-4222-8333-444455556666';
 const root = path.join(os.homedir(), '.claude', 'projects');
@@ -171,5 +172,28 @@ describe('isWslOwnTranscriptPath', () => {
     expect(isWslOwnTranscriptPath(`/home/dev/.claude/projects/a\\b/${SID}.jsonl`, SID, dev)).toBe(false);
     expect(isWslOwnTranscriptPath(own, SID, undefined)).toBe(false);
     expect(isWslOwnTranscriptPath(own, SID, { user: '' })).toBe(false);
+  });
+
+  // A bound workspace's Claude account runs on its own home in the distro (shared/wslAccountHome.ts).
+  describe('a pane on a bound account', () => {
+    const folder = 'C:\\accounts\\work';
+    const env = { CLAUDE_CONFIG_DIR: folder, WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR', WMUX_DATA_SUFFIX: '-s1' };
+    const accountFile = `/home/dev/.wmux-s1/accounts/claude-${wslAccountHomeKey(folder)}/projects/-home-dev-repo/${SID}.jsonl`;
+
+    it('accepts the account home\'s projects file, and still the default one', () => {
+      expect(isWslOwnTranscriptPath(accountFile, SID, dev, env)).toBe(true);
+      expect(isWslOwnTranscriptPath(own, SID, dev, env)).toBe(true);
+      expect(keepOwnWslTranscriptPath({ agent: 'claude', sessionId: SID, wslTranscriptPath: accountFile }, dev, env).dropped).toBe(false);
+    });
+
+    it('refuses it without the mark, for another account, suffix or user, and outside projects/', () => {
+      expect(isWslOwnTranscriptPath(accountFile, SID, dev)).toBe(false);
+      expect(isWslOwnTranscriptPath(accountFile, SID, dev, { ...env, WMUX_WSL_ACCOUNT_KEYS: '' })).toBe(false);
+      expect(isWslOwnTranscriptPath(accountFile, SID, dev, { ...env, CLAUDE_CONFIG_DIR: 'C:\\accounts\\other' })).toBe(false);
+      expect(isWslOwnTranscriptPath(accountFile, SID, dev, { ...env, WMUX_DATA_SUFFIX: '' })).toBe(false);
+      expect(isWslOwnTranscriptPath(accountFile.replace('/home/dev/', '/home/other/'), SID, { distribution: 'Ubuntu', user: 'dev' }, env)).toBe(false);
+      expect(isWslOwnTranscriptPath(accountFile.replace('/projects/', '/sessions/'), SID, dev, env)).toBe(false);
+      expect(isWslOwnTranscriptPath(accountFile, SID, dev, { ...env, WMUX_DATA_SUFFIX: '/../x' })).toBe(false);
+    });
   });
 });

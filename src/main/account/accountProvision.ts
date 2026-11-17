@@ -24,22 +24,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { Vendor } from './accountStore';
+import { ACCOUNT_SHARE_MANIFEST } from '../../shared/wslAccountHome';
 
-// Per-vendor share manifests. Codex stores user settings + MCP in config.toml
-// (NOT settings.json/CLAUDE.md) and its login lives in auth.json, which must
-// NEVER be shared (Codex review P2). Directories that the CLI reads but doesn't
+// Per-vendor share manifests (shared/wslAccountHome, which a new WSL account home
+// mirrors too). Codex stores user settings + MCP in config.toml (NOT
+// settings.json/CLAUDE.md) and its login lives in auth.json, which must NEVER be
+// shared (Codex review P2). Directories that the CLI reads but doesn't
 // atomic-rewrite are LINKED (live share); rewritten files are COPIED (snapshot).
-const SHARE_MANIFEST: Record<Vendor, { linkDirs: readonly string[]; copyFiles: readonly string[] }> = {
-  claude: {
-    linkDirs: ['commands', 'skills', 'agents', 'plugins'],
-    copyFiles: ['settings.json', 'CLAUDE.md'],
-  },
-  codex: {
-    // Codex keeps prompts/ shareable; config.toml holds settings + MCP servers.
-    linkDirs: ['prompts'],
-    copyFiles: ['config.toml', 'AGENTS.md'],
-  },
-};
+const SHARE_MANIFEST = ACCOUNT_SHARE_MANIFEST;
 /** Back-compat export for tests / callers that referenced the claude manifest. */
 const SHARED_LINK_DIRS = SHARE_MANIFEST.claude.linkDirs;
 const SHARED_COPY_FILES = SHARE_MANIFEST.claude.copyFiles;
