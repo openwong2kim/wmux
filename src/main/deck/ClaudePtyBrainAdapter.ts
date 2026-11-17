@@ -29,6 +29,7 @@
 // one `turn-end` per clean turn, a live `sessionId` getter, and a dispose() that
 // terminates an in-flight iterator instead of hanging it.
 
+import { normalizeForPromptMatch } from '../../shared/promptMatch';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -668,17 +669,9 @@ export function flattenPromptForPty(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/ {2,}/g, ' ').trim();
 }
 
-// The TUI treats a long write as a paste and reports part of it wrapped in
-// these markers, with line breaks around them that can fall mid-word
-// (measured on Claude Code 2.1.289: "…blo\n</pasted_content id=\"bc9f\">\n\ncked…").
-const PASTE_MARKER_RE = /<\/?pasted_content(?:\s[^>]*)?>/g;
-
-/** The form used to recognise our own prompt when Claude Code reports it back
- *  through UserPromptSubmit: paste markers and ALL whitespace removed, since
- *  the TUI inserts breaks inside words around a paste. */
-export function normalizeForPromptMatch(text: string): string {
-  return text.replace(PASTE_MARKER_RE, '').replace(/\s+/g, '');
-}
+// How our own prompt is recognised when Claude Code reports it back through
+// UserPromptSubmit: shared with the daemon's transcript checks (shared/promptMatch.ts).
+export { normalizeForPromptMatch } from '../../shared/promptMatch';
 
 /** Bracketed-paste delimiters (DECSET 2004). */
 const PASTE_START = '\u001b[200~';

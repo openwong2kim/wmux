@@ -1,3 +1,4 @@
+import { normalizeForPromptMatch } from '../../shared/promptMatch';
 import { LiveSettingsError, type LiveAgentSettings } from './codexLiveSettings';
 import type { PaneSettingsChoice } from './paneCodexSettings';
 import { buildAgentLaunch, type AgentLaunchChoice, type AgentLaunchOptions } from './agentLaunch';
@@ -5302,7 +5303,10 @@ export class WebTerminalServer {
       const text = event.text.trim();
       const ts = typeof event.ts === 'number' ? event.ts : undefined;
       const inTime = (m: ChatDeliveredMessage) => ts === undefined || ts >= m.at - CHAT_DELIVERY_SKEW_MS;
-      let index = unused.findIndex((m) => m.text.trim() === text && inTime(m));
+      // Compared in the shared normal form: Claude Code stores a long or
+      // multi-line message inside paste markers (shared/promptMatch.ts).
+      const normal = normalizeForPromptMatch(text);
+      let index = unused.findIndex((m) => normalizeForPromptMatch(m.text) === normal && inTime(m));
       // A photo row reads `[Image #N]` where the typed text held the upload path.
       // Photo sends of the same count read alike, so a row takes the unclaimed
       // send nearest its own time: one sent before the row first, then one in

@@ -569,6 +569,40 @@ describe('the reply, from the transcript', () => {
     expect(replies.map((r) => r.text)).toEqual(['PONG']);
   });
 
+  // Claude Code 2.1.326 stores a long or multi-line prompt as a paste: inside
+  // `<pasted_content id="…">` markers, with line breaks around them (#3412).
+  const asPasted = (text: string, id = '3de0'): string =>
+    `\n\n<pasted_content id="${id}">\n${text}\n</pasted_content id="${id}">\n`;
+
+  it('the prompt stored inside paste markers is its own entry: the turn is answered (#3412)', async () => {
+    const multi = 'Reply with PONG.\nThen run uname -s\nand say what it printed.';
+    task = inboundTask(multi);
+    const d = await delivering();
+    expect(delivered.map((x) => x.prompt)).toEqual([multi]);
+    write(userLine(asPasted(multi)), toolUseLine(), toolResultLine(), assistantLine('PONG Linux'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG Linux']);
+    expect(moves.at(-1)).toEqual({ to: 'input-required' });
+  });
+
+  it('a paste break inside a word still matches; a different pasted text is still input from this PC', async () => {
+    const long = 'Summarise the last three commits in this repository';
+    task = inboundTask(long);
+    let d = await delivering();
+    write(userLine(asPasted('Summarise the last three com\nmits in this repository')), assistantLine('done'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['done']);
+
+    task = inboundTask(long);
+    moves = [];
+    replies = [];
+    d = await delivering();
+    write(userLine(asPasted('Summarise the last three tags in this repository')));
+    await d.tick();
+    expect(replies).toEqual([]);
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: 'the agent was given other input on this PC before the task' });
+  });
+
   it('input from this PC before the prompt, or inside its turn: failed, no reply', async () => {
     let d = await delivering();
     write(userLine('something typed over ssh'));

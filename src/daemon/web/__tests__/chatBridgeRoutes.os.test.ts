@@ -1594,6 +1594,23 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect((await turns({ ...device('dev-3'), ...QUEUE_CAP })).body.events[0]).not.toHaveProperty('clientMessageId');
     });
 
+    it('/turns: a row Claude Code stored inside paste markers still carries its clientMessageId (#3412)', async () => {
+      const info = await start();
+      const h = { ...bearer(info.token as string), ...QUEUE_CAP };
+      const fns = wireQueue();
+      const [pasted, other] = [freshId(), freshId()];
+      fns.delivered.mockImplementation(() => [
+        { clientMessageId: pasted, text: 'fix the failing test\nthen run the suite', at: 0 },
+        { clientMessageId: other, text: 'something else', at: 0 },
+      ]);
+      projectorMock.snapshot.mockReturnValue(page([
+        { id: 'p1', kind: 'user_text', text: '\n\n<pasted_content id="3de0">\nfix the failing test\nthen run the suite\n</pasted_content id="3de0">\n', ts: 10 },
+        { id: 'p2', kind: 'user_text', text: 'a different message', ts: 10 },
+      ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
+      const events = (await turns(h)).body.events as Array<Record<string, unknown>>;
+      expect(events.map((e) => e.clientMessageId)).toEqual([pasted, undefined]);
+    });
+
     it('/turns: a photo row pairs by its placeholders with the upload paths the daemon typed', async () => {
       const dir = '/Users/me/.wmux/uploads/phone';
       Object.assign((server as unknown as { deps: Record<string, unknown> }).deps, { uploadsDir: dir });
