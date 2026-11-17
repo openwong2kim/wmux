@@ -60,7 +60,7 @@ export function rewritePastedPrompts<P extends { at: number; text: string }>(
   return events.map((e) => {
     if (e.kind !== 'user_text') return e;
     const known = assigned.get(e.id);
-    if (known) return known.text === e.text ? e : { ...e, text: known.text };
+    if (known) return asPrompt(e, known.text);
     const ts = typeof e.ts === 'number' ? e.ts : null;
     const before = (p: P) => ts !== null && p.at <= ts && ts - p.at <= PROMPT_MATCH_WINDOW_MS;
     const tail = e.text.trimEnd();
@@ -70,7 +70,7 @@ export function rewritePastedPrompts<P extends { at: number; text: string }>(
       if (used.has(keyOf(p)) || !text || !tail.endsWith(text) || (ts !== null && !before(p))) continue;
       if (!match || p.at > match.at) match = p;
     }
-    if (!match && e.text.includes('<pasted_content')) {
+    if (!match && (e.pasted === true || e.text.includes('<pasted_content'))) {
       for (const p of prompts) {
         if (!used.has(keyOf(p)) && before(p) && (!match || p.at > match.at)) match = p;
       }
@@ -79,8 +79,15 @@ export function rewritePastedPrompts<P extends { at: number; text: string }>(
     used.add(keyOf(match));
     assigned.set(e.id, match);
     if (assigned.size > ASSIGNED_MEMORY) assigned.delete(assigned.keys().next().value as string);
-    return match.text === e.text ? e : { ...e, text: match.text };
+    return asPrompt(e, match.text);
   });
+}
+
+/** A row shown as the prompt main sent: that text, and no longer a paste of Moa's (moaPhoneRows hides those). */
+function asPrompt(e: Extract<TurnEvent, { kind: 'user_text' }>, text: string): TurnEvent {
+  if (e.text === text && e.pasted !== true) return e;
+  const { pasted: _pasted, ...rest } = e;
+  return { ...rest, text };
 }
 
 /**
@@ -137,6 +144,6 @@ export function moaPhoneRows<P extends { at: number; text: string }>(
   assigned: Map<string, P>,
 ): TurnEvent[] {
   const shown = hideMoaWakes(rewritePastedPrompts(events, prompts, assigned))
-    .map((e) => (e.kind === 'user_text' && e.text.includes('<pasted_content') ? asTurnStart(e) : e));
+    .map((e) => (e.kind === 'user_text' && (e.pasted === true || e.text.includes('<pasted_content')) ? asTurnStart(e) : e));
   return foldMoaInternals(shown);
 }

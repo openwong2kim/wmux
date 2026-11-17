@@ -32,6 +32,21 @@ describe('moaPhoneRows — the Moa transcript as the phone reads it', () => {
     expect(out[5]).toEqual({ id: 'moa-wake:u2', kind: 'meta', subtype: 'turn_started', label: '', ts: T + 60_000 });
   });
 
+  it('the same, now that the parser unwraps a paste and marks it `pasted`', () => {
+    const events: TurnEvent[] = [
+      { id: 'u1', kind: 'user_text', ts: T, text: '[active-work] … leave this work active. 뭐하냐 ', pasted: true },
+      { id: 'u2', kind: 'user_text', ts: T + 60_000, text: '[active-work] id: w1 — unchanged since your last turn', pasted: true },
+      { id: 'u3', kind: 'user_text', ts: T + 80_000, text: 'typed straight into the TUI' },
+    ];
+    const out = moaPhoneRows(events, [{ at: T - 1_000, text: '뭐하냐', hq: 'ws-hq' }], new Map());
+    expect(out).toEqual([
+      // Shown as main's prompt, and no longer marked as a paste.
+      { id: 'u1', kind: 'user_text', ts: T, text: '뭐하냐' },
+      { id: 'moa-wake:u2', kind: 'meta', subtype: 'turn_started', label: '', ts: T + 60_000 },
+      { id: 'u3', kind: 'user_text', ts: T + 80_000, text: 'typed straight into the TUI' },
+    ]);
+  });
+
   it('uses each prompt once even when the prompts are re-read from disk on every call', () => {
     const read = (): NotedPrompt[] => [{ at: T - 1_000, text: '뭐하냐', hq: 'ws-hq' }];
     const assigned = new Map<string, NotedPrompt>();

@@ -22,6 +22,7 @@
 // The `[]` default is why a future Claude Code entry type cannot leak into the
 // chat as if the agent had said it.
 
+import { unwrapPastedContent } from '../../shared/promptMatch';
 import path from 'node:path';
 import { summarizeActivity } from '../../shared/activitySummary';
 import type { EntryLink } from './rewind';
@@ -158,7 +159,10 @@ function parseEntryObject(entry: Record<string, unknown>, offsetHint: number): P
     const prompt = attachment?.['prompt'];
     if (attachment?.['type'] === 'queued_command' && attachment['commandMode'] === 'prompt') {
       if (typeof prompt === 'string' && prompt.trim()) {
-        return single({ id: baseId, kind: 'user_text', text: capText(stripNul(prompt)), ...tsOf(ts) }, empty);
+        const shown = unwrapPastedContent(prompt);
+        // A paste's outside is Claude Code's own line breaks: the text is what was typed.
+        const text = shown.pasted ? unwrapPastedContent(prompt.trim()).text : prompt;
+        return single({ id: baseId, kind: 'user_text', text: capText(stripNul(text)), ...(shown.pasted ? { pasted: true as const } : {}), ...tsOf(ts) }, empty);
       }
       // With photos the prompt is content blocks (2.1.312), read as a user entry's.
       if (Array.isArray(prompt)) return parseUserEntry(entry, prompt, baseId, ts, offsetHint, true);
@@ -229,7 +233,8 @@ function parseUserEntry(
         ? single(metaEvent(baseId, ts, 'system_reminder', 'System reminder'), empty)
         : empty;
     }
-    const ev: UserTextEvent = { id: baseId, kind: 'user_text', text: capText(stripNul(clean)), ...tsOf(ts) };
+    const shown = unwrapPastedContent(clean);
+    const ev: UserTextEvent = { id: baseId, kind: 'user_text', text: capText(stripNul(shown.text)), ...(shown.pasted ? { pasted: true } : {}), ...tsOf(ts) };
     return single(ev, empty);
   }
 
@@ -280,10 +285,12 @@ function parseUserEntry(
   } else {
     const clean = stripSystemReminders(prose);
     if (clean || hasImage) {
+      const shown = unwrapPastedContent(clean);
       const ev: UserTextEvent = {
         id: baseId,
         kind: 'user_text',
-        text: capText(stripNul(clean)),
+        text: capText(stripNul(shown.text)),
+        ...(shown.pasted ? { pasted: true } : {}),
         ...(hasImage ? { hasImage: true } : {}),
         ...(hasImage && images.length ? { images: images.slice(0, 8) } : {}),
         ...tsOf(ts),

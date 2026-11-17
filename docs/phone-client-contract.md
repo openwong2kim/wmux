@@ -755,6 +755,24 @@ and `!` shell mode: the command (`bash_input`, labelled with the command line)
 and what it printed (`bash_output`, a fixed label; the output itself is not
 sent). The subtype set is additive: render an unknown one as a neutral meta row.
 
+**A message Claude Code stored as a paste is shown as the pasted text.**
+Claude Code records a long or multi-line message as a paste: the text inside
+`<pasted_content id="…">` and `</pasted_content id="…">`, with a line break
+right inside each tag (2.1.326 writes
+`"\n\n<pasted_content id=\"3de0\">\n…\n</pasted_content id=\"3de0\">\n"`).
+The daemon removes each matched pair before the row is served: an opening tag
+and the later closing tag with the same id, with at most one line break (`\n`
+or `\r\n`) right inside each tag. The text between them is kept byte for byte:
+no trim, no re-wrap, so CRLF, trailing spaces, blank lines and Korean text
+reach the client exactly as typed, and a client can settle its outbox by
+comparing `user_text.text` with what it sent. An unmatched tag, or a pair whose
+id is not the hex id Claude Code writes, stays in the text. Such a row carries
+`pasted: true` (absent otherwise). This holds for every read of
+`GET /api/sessions/:id/turns` (a snapshot, an older page, or what a
+`transcript.nudge` on `/api/stream` sends the client back for), and for host
+search, which matches and quotes the unwrapped text. Daemons before this served
+the markers in `text`.
+
 **A linked pull request is a `pr_link` row.** When Claude Code records that the
 session opened or linked a PR, the row is
 

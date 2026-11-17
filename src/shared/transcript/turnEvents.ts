@@ -44,6 +44,11 @@ export interface UserTextEvent extends TurnEventBase {
   hasImage?: boolean;
   /** Absolute source paths Claude Code recorded for attached images, when it did. */
   images?: string[];
+  /**
+   * Claude Code stored this message as a paste; `text` is the paste's own
+   * text, its `<pasted_content>` markers removed (transcript/parseEntry.ts).
+   */
+  pasted?: true;
 }
 
 /**
