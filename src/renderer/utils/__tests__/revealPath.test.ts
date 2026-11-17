@@ -17,8 +17,11 @@ describe('revealablePath', () => {
   it('errors on an untranslatable name', async () => {
     expect(await revealablePath('/home/a:b', 'p1', wsl('Ubuntu'))).toHaveProperty('error');
   });
-  it('errors for a WSL pane with no distro', async () => {
+  it('errors for a distro-local path of a WSL pane with no distro', async () => {
     expect(await revealablePath('/home/me', 'p1', wsl())).toHaveProperty('error');
+  });
+  it('still maps /mnt/c for a WSL pane with no distro', async () => {
+    expect(await revealablePath('/mnt/c/x', 'p1', wsl())).toEqual({ path: 'C:\\x' });
   });
   it('leaves Windows paths and shares unchanged', async () => {
     expect(await revealablePath('C:\\x', 'p1', wsl('Ubuntu'))).toEqual({ path: 'C:\\x' });
@@ -32,6 +35,16 @@ describe('revealablePath', () => {
 });
 
 describe('revealInHost', () => {
+  it('reports a resolved {ok:false} openPath result', async () => {
+    const onError = vi.fn();
+    await revealInHost('C:\\x', undefined, wsl(), async () => ({ ok: false, error: 'NOT_FOUND' }), onError);
+    expect(onError).toHaveBeenCalledWith('NOT_FOUND');
+  });
+  it('stays quiet on {ok:true}', async () => {
+    const onError = vi.fn();
+    await revealInHost('C:\\x', undefined, wsl(), async () => ({ ok: true }), onError);
+    expect(onError).not.toHaveBeenCalled();
+  });
   it('reports the error text and does not open when the path cannot be translated', async () => {
     const open = vi.fn();
     const onError = vi.fn();

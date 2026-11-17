@@ -24,9 +24,8 @@ export async function revealablePath(
   if (!ptyId || !cwd.startsWith('/') || cwd.startsWith('//')) return { path: cwd };
   const session = await paneWslSession(ptyId, api);
   if (!session.wsl) return { path: cwd };
-  if (!session.distro) {
-    return { error: `${JSON.stringify(cwd)} is a WSL path and the pane's distro is unknown` };
-  }
+  // With no distro, wslPathToHost still maps /mnt/<drive> paths and rejects
+  // distro-local ones with its own error.
   return wslPathToHost(cwd, session.distro);
 }
 
@@ -51,13 +50,16 @@ export async function revealInHost(
   dir: string,
   ptyId: string | undefined,
   api: Pick<PaneForegroundApi, 'list'>,
-  openPath: (path: string) => Promise<unknown> | undefined,
+  openPath: (path: string) => Promise<{ ok?: boolean; error?: string } | unknown> | undefined,
   onError: (message: string) => void,
 ): Promise<void> {
   try {
     const target = await revealablePath(dir, ptyId, api);
     if ('error' in target) { onError(target.error); return; }
-    await openPath(target.path);
+    const res = await openPath(target.path);
+    if (res && typeof res === 'object' && (res as { ok?: unknown }).ok === false) {
+      onError(String((res as { error?: unknown }).error ?? 'open failed'));
+    }
   } catch (err) {
     onError(String((err as { message?: string })?.message ?? err));
   }
