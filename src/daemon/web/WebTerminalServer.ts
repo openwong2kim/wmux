@@ -5312,8 +5312,10 @@ export class WebTerminalServer {
       // longer one and an ellipsis: that row matches by its start.
       let index = unused.findIndex((m) => m.text.trim() === text && inTime(m));
       if (index < 0) {
-        const capped = (event.text as string).length > CAPPED_ROW_CHARS && text.endsWith('…');
-        const normal = normalizeForPromptMatch(capped ? text.slice(0, -1).replace(/<\/?p[^>]*$/, '') : text);
+        // At or over the cap: parseEntry backs off one unit rather than split an emoji.
+        const capped = (event.text as string).length >= CAPPED_ROW_CHARS && text.endsWith('…');
+        // A cut can leave part of the closing marker, down to a bare `<` or `</`.
+        const normal = normalizeForPromptMatch(capped ? text.slice(0, -1).replace(/<\/?p[^>]*$|<\/?$/, '') : text);
         index = unused.findIndex((m) => (capped ? normal.length > 0 && m.normal.startsWith(normal) : m.normal === normal) && inTime(m));
       }
       // A photo row reads `[Image #N]` where the typed text held the upload path.

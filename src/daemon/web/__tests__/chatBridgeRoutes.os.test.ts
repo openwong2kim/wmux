@@ -1634,6 +1634,35 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(events.map((e) => e.clientMessageId)).toEqual([joined, spaced, long]);
     });
 
+    it('/turns: a capped row cut before an emoji, or at a bare `<`/`</`, still pairs by its start', async () => {
+      const info = await start();
+      const h = { ...bearer(info.token as string), ...QUEUE_CAP };
+      const fns = wireQueue();
+      const [emoji, lt, slash] = [freshId(), freshId(), freshId()];
+      const open = (id: string) => `\n\n<pasted_content id="${id}">\n`;
+      // An emoji whose two units would straddle the cut: parseEntry keeps 7999 units and the ellipsis.
+      const emojiBody = 'y'.repeat(8_000 - open('e1').length - 1) + '😀' + 'tail';
+      const emojiRow = `${(open('e1') + emojiBody).slice(0, 7_999)}…`;
+      // Bodies that end the kept text exactly at `<` or `</` of the closing marker.
+      const ltBody = 'z'.repeat(8_000 - open('l1').length - 2);
+      const ltRow = `${`${open('l1')}${ltBody}\n</pasted_content id="l1">\n`.slice(0, 8_000)}…`;
+      const slashBody = 'w'.repeat(8_000 - open('s1').length - 3);
+      const slashRow = `${`${open('s1')}${slashBody}\n</pasted_content id="s1">\n`.slice(0, 8_000)}…`;
+      expect([emojiRow.length, ltRow.endsWith('<…'), slashRow.endsWith('</…')]).toEqual([8_000, true, true]);
+      fns.delivered.mockImplementation(() => [
+        { clientMessageId: emoji, text: emojiBody, at: 0 },
+        { clientMessageId: lt, text: ltBody, at: 0 },
+        { clientMessageId: slash, text: slashBody, at: 0 },
+      ]);
+      projectorMock.snapshot.mockReturnValue(page([
+        { id: 'c1', kind: 'user_text', text: emojiRow, ts: 10 },
+        { id: 'c2', kind: 'user_text', text: ltRow, ts: 10 },
+        { id: 'c3', kind: 'user_text', text: slashRow, ts: 10 },
+      ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
+      const events = (await turns(h)).body.events as Array<Record<string, unknown>>;
+      expect(events.map((e) => e.clientMessageId)).toEqual([emoji, lt, slash]);
+    });
+
     it('/turns: a photo whose caption Claude Code stored as a paste still pairs', async () => {
       const dir = '/Users/me/.wmux/uploads/phone';
       Object.assign((server as unknown as { deps: Record<string, unknown> }).deps, { uploadsDir: dir });
