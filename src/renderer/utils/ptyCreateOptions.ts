@@ -198,10 +198,13 @@ export function withRoleBinding<T extends PtyCreateOptions>(
  * that share (`\\\\wsl.localhost\\<distro>\\home\\me\\repo`) so main converts
  * it the same way. Any other seed or profile is returned untouched.
  */
-function rebaseLinuxSeed(seed: string, profileCwd: string | undefined): string {
+function rebaseLinuxSeed(seed: string, profileCwd: string | undefined): string | undefined {
   if (!profileCwd || !seed.startsWith('/') || !isLinuxCwd(seed)) return seed;
   const share = wslShareToLinux(profileCwd);
   if (!share) return seed;
+  // A literal backslash is an ordinary Linux name character but a separator in
+  // the share path, so rebasing would open a different directory: not inherited.
+  if (seed.includes('\\')) return undefined;
   return `\\\\wsl.localhost\\${share.distro}${seed.replace(/\//g, '\\')}`;
 }
 
@@ -220,7 +223,10 @@ export function resolveStartupCwd(args: {
   profile?: WorkspaceProfile;
   startupDirectory?: string;
 }): string | undefined {
-  if (args.splitInheritsCwd && args.splitSeed) return rebaseLinuxSeed(args.splitSeed, args.profile?.startupCwd);
+  if (args.splitInheritsCwd && args.splitSeed) {
+    const seed = rebaseLinuxSeed(args.splitSeed, args.profile?.startupCwd);
+    if (seed !== undefined) return seed;
+  }
   if (args.profile?.startupCwd) return args.profile.startupCwd;
   if (args.startupDirectory && args.startupDirectory.trim().length > 0) return args.startupDirectory.trim();
   return undefined;

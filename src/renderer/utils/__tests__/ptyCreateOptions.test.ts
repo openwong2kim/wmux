@@ -180,6 +180,15 @@ describe('resolveStartupCwd', () => {
   describe('split seed that is a Linux path (WSL share workspace)', () => {
     const share = '\\\\wsl.localhost\\Debian\\home\\me';
 
+    it('does not inherit a seed with a literal backslash; falls back to the profile cwd', () => {
+      const out = resolveStartupCwd({
+        splitSeed: '/home/me/a\\b',
+        splitInheritsCwd: true,
+        profile: { startupCwd: share } as never,
+      });
+      expect(out).toBe(share);
+    });
+
     it('rebases a Linux seed into the profile WSL share so main converts it', () => {
       const out = resolveStartupCwd({
         splitSeed: '/home/me/repo',
