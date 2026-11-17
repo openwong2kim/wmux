@@ -77,6 +77,15 @@ describe('useIpc / createInvoke', () => {
       if (!result.ok) expect(result.error.message).toBe(sentence);
     });
 
+    it('passes the missing terminal core\'s sentence through, reason and all', async () => {
+      const missing = "wmux's terminal core is missing or failed to load (Cannot find module 'C:\\wmux\\resources\\wmux-native\\index.cjs'). Reinstall wmux.";
+      const invoke = createInvoke(undefined, toastSpy);
+      const result = await invoke(async () => {
+        throw new Error(`Error invoking remote method 'pty:create': Error: [UNKNOWN] ${missing}`);
+      });
+      if (!result.ok) expect(result.error.message).toBe(missing);
+    });
+
     it('leaves any other unknown error on the fixed message', async () => {
       const invoke = createInvoke(undefined, toastSpy);
       const result = await invoke(async () => {
