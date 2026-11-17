@@ -3,6 +3,7 @@ import { A2A_REMOTE_BODY_MAX, ANSWER_OUTCOMES_MAX, type A2aRemoteAnswerOutcome, 
 import { truncateUtf8 } from '../../shared/chatv2/limits';
 import type { SessionPromptScheduleResult } from '../../shared/sessionPromptSchedule';
 import { sanitizeBracketedPastePayload } from '../../shared/ptyMessageDelivery';
+import { normalizeForPromptMatch } from '../../shared/promptMatch';
 import { localSideOf, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 import { spawnFirstMessageId, type SpawnLinkId } from '../../shared/a2aSpawn';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
@@ -255,7 +256,11 @@ export interface Episode {
   taskId: string;
   sessionId: string;
   workspaceId: string;
-  /** sha256 of the prompt as typed (sanitized, CRLF→LF, trimmed). */
+  /**
+   * sha256 of the prompt as typed (sanitized), in the shared normal form
+   * (shared/promptMatch.ts: paste markers and whitespace removed), which the
+   * transcript's user entry is compared in too.
+   */
   promptHash: string;
   sentAt: number;
   /** Agent messages the task held at the write (more later: the agent replied itself). */
@@ -353,9 +358,19 @@ function turnEnd(ep: Episode): { kind: 'answered'; text: string } | { kind: 'pro
   return (ep.work?.background ?? 0) > 0 ? { kind: 'progress', text } : { kind: 'answered', text };
 }
 
-/** The hash a delivered prompt is recognized by in the transcript. */
+/**
+ * The hash a delivered prompt is recognized by in the transcript. Both sides
+ * are compared in the shared normal form (shared/promptMatch.ts): Claude Code
+ * stores a long or multi-line prompt inside paste markers with line breaks
+ * around them.
+ */
 export function promptHash(prompt: string): string {
-  return hashOf(sanitizeBracketedPastePayload(prompt));
+  return hashOf(normalizeForPromptMatch(sanitizeBracketedPastePayload(prompt)));
+}
+
+/** The hash of a transcript user entry, in the same form as promptHash. */
+function userEntryHash(text: string): string {
+  return hashOf(normalizeForPromptMatch(text));
 }
 
 /**
@@ -452,7 +467,7 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
   if (raw?.type === 'assistant' || raw?.type === 'user') ep.busy = true;
   if (!ep.opened) {
     const text = raw?.type === 'user' ? textOfContent(raw.content) : null;
-    if (text !== null && hashOf(text) === ep.promptHash) {
+    if (text !== null && userEntryHash(text) === ep.promptHash) {
       ep.opened = true;
       return null;
     }
