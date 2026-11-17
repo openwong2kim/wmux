@@ -7,7 +7,8 @@ import { canConnectBrokerPipe } from './brokerProbe';
 import { brokerOffEffects, type BrokerOffEffects } from './brokerOffMarker';
 import { parseBrokerConnectionsReport, type BrokerDownReason, type BrokerStampMessage, type BrokerStatus } from '../../shared/mcpSessions';
 import { processStartTime } from '../../shared/processStartTime';
-import { brokerDefault } from '../../shared/mcpBroker';
+import { brokerDecision, type BrokerDecision, type BrokerSetting } from '../../shared/mcpBroker';
+import { readBrokerSetting, type BrokerSettingRead } from '../../shared/brokerSetting';
 import { BROKER_LIMITS_ENV, type BrokerLimits } from '../../shared/brokerLimits';
 import { readBrokerLimitsConfig } from './brokerConfig';
 
@@ -17,12 +18,34 @@ import { readBrokerLimitsConfig } from './brokerConfig';
  * pattern: Electron's own binary with ELECTRON_RUN_AS_NODE=1, restart with
  * backoff on crash, no restart on the "pipe already owned" exit (75).
  *
- * Rollout flag: WMUX_MCP_BROKER (shared/mcpBroker.ts; off unless set to 1
- * today). While off nothing here runs and registration keeps pointing agents
- * at the single-child bundle — the pre-broker world, byte for byte.
+ * On or off by the rule in shared/mcpBroker.ts: WMUX_MCP_BROKER, then the
+ * Settings choice, then the platform default (off everywhere today). While
+ * off nothing here runs and registration keeps pointing agents at the
+ * single-child bundle — the pre-broker world, byte for byte.
  */
+let settingAtStart: BrokerSettingRead | null = null;
+
+/**
+ * The Settings choice as this app read it, once: a change made in Settings
+ * applies from the next wmux start, like the environment variable, so the
+ * broker and the registrations never disagree within one run.
+ */
+export function brokerSettingAtStart(): BrokerSettingRead {
+  if (!settingAtStart) settingAtStart = readBrokerSetting();
+  return settingAtStart;
+}
+
+/** Tests only: forget the choice read at start. */
+export function resetBrokerSettingForTests(read: BrokerSettingRead | null = null): void {
+  settingAtStart = read;
+}
+
+export function mcpBrokerDecision(setting: BrokerSetting = brokerSettingAtStart().setting): BrokerDecision {
+  return brokerDecision(process.platform, process.env.WMUX_MCP_BROKER, setting);
+}
+
 export function isMcpBrokerEnabled(): boolean {
-  return brokerDefault(process.platform, process.env.WMUX_MCP_BROKER);
+  return mcpBrokerDecision().on;
 }
 
 const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];

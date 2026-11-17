@@ -2628,6 +2628,18 @@ export const ko = {
   // Settings — MCP targets (feat: register opt-in targets)
   'settings.mcpRegister': '등록',
   'settings.mcpTargetRegistered': '{name} 등록됨',
+  'settings.mcpBroker': "공유 MCP 프로세스",
+  'settings.mcpBrokerDesc': "에이전트마다 MCP 프로세스를 따로 띄우지 않고 wmux MCP 프로세스 하나를 함께 씁니다. 메모리를 덜 씁니다. 다음에 wmux를 시작할 때부터 적용됩니다.",
+  'settings.mcpBrokerDefaultOff': "기본값 (꺼짐)",
+  'settings.mcpBrokerDefaultOn': "기본값 (켜짐)",
+  'settings.mcpBrokerOn': "켜기",
+  'settings.mcpBrokerOff': "끄기",
+  'settings.mcpBrokerEnvOn': "앱에 WMUX_MCP_BROKER=1이 설정되어 있어 그 값이 우선합니다: 켜짐.",
+  'settings.mcpBrokerEnvOff': "앱에 WMUX_MCP_BROKER=0이 설정되어 있어 그 값이 우선합니다: 꺼짐.",
+  'settings.mcpBrokerRestartOn': "wmux를 다시 시작하면 켜집니다.",
+  'settings.mcpBrokerRestartOff': "wmux를 다시 시작하면 꺼집니다.",
+  'settings.mcpBrokerFileProblem': "저장된 선택을 읽지 못해 기본값을 씁니다. 다시 고르면 바뀝니다.",
+  'settings.mcpBrokerSaveFailed': "선택을 저장하지 못했습니다.",
   // Settings — Token usage (quotas, custom surface switches, saved profiles)
   'settings.tokenUsage.surfaceDefault': '표면: 기본값',
   'settings.tokenUsage.surfaceOff': '표면: {n}개 해제됨',

@@ -6,6 +6,7 @@ import { IconCheck } from '../icons';
 import Badge from '../ui/Badge';
 import Button from '../ui/Button';
 import { SettingsSection, SettingNote } from './SettingsLayout';
+import { BrokerSettingRow } from './BrokerSettingRow';
 import { MCP_STATUS_CHANGED_EVENT } from './IntegrationSetupSection';
 import type {
   McpStatusPayload,
@@ -234,6 +235,7 @@ export function McpStatusSection({ api }: { api?: ElectronMcpApi } = {}) {
       ) : status ? (
         <>
           {status.targets.map((target: McpTargetStatusPayload) => renderTarget(target))}
+          <BrokerSettingRow />
           <div className="settings-row">
             <div className="flex justify-end">{actions}</div>
           </div>

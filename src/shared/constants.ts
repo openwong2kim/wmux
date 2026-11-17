@@ -794,6 +794,9 @@ export const IPC = {
   MCP_REREGISTER: 'mcp:reregister',
   MCP_UNREGISTER: 'mcp:unregister',
   MCP_REGISTER_TARGET: 'mcp:register-target',
+  // The shared MCP broker's Settings choice (shared/brokerSetting.ts): main reads and writes it.
+  MCP_BROKER_SETTING_GET: 'mcp:broker-setting:get',
+  MCP_BROKER_SETTING_SET: 'mcp:broker-setting:set',
   // Settings -> Token usage: quota (manual refresh only) and the CLI "surface" inventory / toggles.
   TOKEN_QUOTA_READ: 'tokenUsage:quota:read',
   TOKEN_QUOTA_SENSOR_STATUS: 'tokenUsage:quota:sensor-status',

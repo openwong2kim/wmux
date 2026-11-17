@@ -191,8 +191,28 @@ describe('doctor broker rule', () => {
       label: 'broker',
       value: 'off (the default)',
       verdict: 'OK',
-      hint: "WMUX_MCP_BROKER=1 in the app's environment turns it on, from the next wmux start.",
+      hint: "Settings > Claude Code > Shared MCP process, or WMUX_MCP_BROKER=1 in the app's environment, turns it on, from the next wmux start.",
     });
+  });
+
+  it('off by the Settings choice: names it, and where to turn it on', async () => {
+    expect(await line({ enabled: false, flag: 'unset', setting: 'off' })).toEqual({
+      label: 'broker',
+      value: 'off (Settings)',
+      verdict: 'OK',
+      hint: 'Settings > Claude Code > Shared MCP process turns it on, from the next wmux start.',
+    });
+  });
+
+  it('on by the Settings choice: names it and the way back', async () => {
+    expect((await line({ enabled: true, flag: 'unset', setting: 'on' }))?.hint).toContain(
+      'On because Settings > Claude Code > Shared MCP process is On. Off there turns it off, from the next wmux start.',
+    );
+  });
+
+  it('the environment still names itself over a Settings choice', async () => {
+    expect((await line({ enabled: false, flag: 'off', setting: 'on' }))?.value).toBe('off (WMUX_MCP_BROKER=0)');
+    expect((await line({ enabled: true, flag: 'on', setting: 'off' }))?.hint).toContain('On because WMUX_MCP_BROKER=1');
   });
 
   it('off by WMUX_MCP_BROKER=0: names it', async () => {

@@ -2,12 +2,14 @@ import type { RpcRouter } from '../RpcRouter';
 import type { McpSessionTracker } from '../../mcp/mcpSessionTracker';
 import type { BrokerStatus, McpSessionsSummary } from '../../../shared/mcpSessions';
 import type { IdentityClaimsSummary } from '../../../shared/identityClaims';
-import type { BrokerFlag } from '../../../shared/mcpBroker';
+import type { BrokerFlag, BrokerSetting } from '../../../shared/mcpBroker';
 
 export interface McpSessionsRpcDeps {
   brokerEnabled: () => boolean;
   /** WMUX_MCP_BROKER as the app read it, so doctor can say why the broker is on or off. */
   brokerFlag?: () => BrokerFlag;
+  /** The Settings choice the app read at start. */
+  brokerSetting?: () => BrokerSetting;
   brokerStatus: () => BrokerStatus;
   tracker: McpSessionTracker;
   /** How main takes pid claims (peerPidShadow.identitySummary). */
@@ -23,7 +25,12 @@ export function registerMcpSessionsRpc(router: RpcRouter, deps: McpSessionsRpcDe
    */
   router.register('mcp.sessions.summary', () => {
     const summary: McpSessionsSummary = {
-      broker: { enabled: deps.brokerEnabled(), ...(deps.brokerFlag && { flag: deps.brokerFlag() }), ...deps.brokerStatus() },
+      broker: {
+        enabled: deps.brokerEnabled(),
+        ...(deps.brokerFlag && { flag: deps.brokerFlag() }),
+        ...(deps.brokerSetting && { setting: deps.brokerSetting() }),
+        ...deps.brokerStatus(),
+      },
       bundle: deps.tracker.summary(),
       ...(deps.identity && { identity: deps.identity() }),
     };

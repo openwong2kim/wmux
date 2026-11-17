@@ -3,6 +3,9 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { McpRegistrar, McpRegistrarStatus } from '../../mcp/McpRegistrar';
 import { externalRegistrationSkipReason } from '../../../shared/mcpTargets';
+import { brokerDecision, brokerFlag, isBrokerSetting, type BrokerSetting, type BrokerSettingPayload } from '../../../shared/mcpBroker';
+import { readBrokerSetting, writeBrokerSetting } from '../../../shared/brokerSetting';
+import { mcpBrokerDecision } from '../../mcp/BrokerSupervisor';
 
 /**
  * Serializable shape returned to the renderer. Mirrors {@link McpRegistrarStatus}
@@ -141,7 +144,43 @@ export function registerMcpHandlers(
     ),
   );
 
+  /**
+   * The broker's Settings choice. `saved` is the file now; `running` is what
+   * this app decided at start, which a saved change reaches only after a
+   * restart; `next` is what the next start would decide with `saved`.
+   */
+  const brokerPayload = (): BrokerSettingPayload => {
+    const read = readBrokerSetting();
+    const running = mcpBrokerDecision();
+    return {
+      saved: read.setting,
+      ...(read.problem ? { problem: read.problem } : {}),
+      env: brokerFlag(process.env.WMUX_MCP_BROKER),
+      running,
+      next: brokerDecision(process.platform, process.env.WMUX_MCP_BROKER, read.setting),
+      platformDefaultOn: brokerDecision(process.platform, undefined, 'default').on,
+    };
+  };
+
+  ipcMain.removeHandler(IPC.MCP_BROKER_SETTING_GET);
+  ipcMain.handle(
+    IPC.MCP_BROKER_SETTING_GET,
+    wrapHandler(IPC.MCP_BROKER_SETTING_GET, async (): Promise<BrokerSettingPayload> => brokerPayload()),
+  );
+
+  ipcMain.removeHandler(IPC.MCP_BROKER_SETTING_SET);
+  ipcMain.handle(
+    IPC.MCP_BROKER_SETTING_SET,
+    wrapHandler(IPC.MCP_BROKER_SETTING_SET, async (_event: unknown, setting: unknown): Promise<BrokerSettingPayload> => {
+      if (!isBrokerSetting(setting)) throw new Error('mcp broker setting: expected default, on or off');
+      writeBrokerSetting(setting as BrokerSetting);
+      return brokerPayload();
+    }),
+  );
+
   return () => {
+    ipcMain.removeHandler(IPC.MCP_BROKER_SETTING_GET);
+    ipcMain.removeHandler(IPC.MCP_BROKER_SETTING_SET);
     ipcMain.removeHandler(IPC.MCP_CHECK);
     ipcMain.removeHandler(IPC.MCP_REREGISTER);
     ipcMain.removeHandler(IPC.MCP_UNREGISTER);

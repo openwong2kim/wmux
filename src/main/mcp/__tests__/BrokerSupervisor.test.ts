@@ -9,7 +9,7 @@ vi.mock('../brokerProbe', () => ({ canConnectBrokerPipe: vi.fn() }));
 import * as fs from 'fs';
 import { spawn } from 'child_process';
 import { canConnectBrokerPipe } from '../brokerProbe';
-import { BrokerSupervisor, isMcpBrokerEnabled } from '../BrokerSupervisor';
+import { BrokerSupervisor, isMcpBrokerEnabled, resetBrokerSettingForTests } from '../BrokerSupervisor';
 
 interface FakeChild extends EventEmitter {
   pid: number;
@@ -35,6 +35,8 @@ beforeEach(() => {
 });
 
 describe('isMcpBrokerEnabled', () => {
+  beforeEach(() => resetBrokerSettingForTests({ setting: 'default' }));
+
   // On whichever OS runs the suite (CI covers all three): today's behaviour,
   // where only WMUX_MCP_BROKER=1 turns the broker on.
   it.each([[undefined, false], ['0', false], ['1', true], ['true', false]] as const)(
@@ -51,6 +53,27 @@ describe('isMcpBrokerEnabled', () => {
       }
     },
   );
+});
+
+describe('isMcpBrokerEnabled with a Settings choice', () => {
+  it.each([
+    ['on', undefined, true],
+    ['off', undefined, false],
+    ['on', '0', false],
+    ['off', '1', true],
+  ] as const)('Settings %s, WMUX_MCP_BROKER=%s → %s', (setting, value, on) => {
+    const saved = process.env.WMUX_MCP_BROKER;
+    try {
+      resetBrokerSettingForTests({ setting });
+      if (value === undefined) delete process.env.WMUX_MCP_BROKER;
+      else process.env.WMUX_MCP_BROKER = value;
+      expect(isMcpBrokerEnabled()).toBe(on);
+    } finally {
+      resetBrokerSettingForTests();
+      if (saved === undefined) delete process.env.WMUX_MCP_BROKER;
+      else process.env.WMUX_MCP_BROKER = saved;
+    }
+  });
 });
 
 describe('BrokerSupervisor.whenReady', () => {

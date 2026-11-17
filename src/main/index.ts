@@ -223,7 +223,7 @@ import { keepOneStartMenuEntry, shouldWriteStartMenuEntry } from './notification
 import { readDaemonPid } from './updater/installTeardown';
 import { isAltF4Held, isAltF4KeyDown } from './altF4';
 import { McpRegistrar } from './mcp/McpRegistrar';
-import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
+import { BrokerSupervisor, brokerSettingAtStart, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { startBrokerAndRegister } from './mcp/brokerBoot';
 import { brokerFlag } from '../shared/mcpBroker';
 import { identitySummary, notePeerReadCheck, setBrokerIdentitySource, setBrokerStampSource, setUnownedBrokerSource } from './pipe/handlers/peerPidShadow';
@@ -1377,6 +1377,7 @@ rpcRouter.setMcpSessionSink(mcpSessionTracker);
 registerMcpSessionsRpc(rpcRouter, {
   brokerEnabled: isMcpBrokerEnabled,
   brokerFlag: () => brokerFlag(process.env.WMUX_MCP_BROKER),
+  brokerSetting: () => brokerSettingAtStart().setting,
   brokerStatus: () => mcpBrokerSupervisor.status(),
   tracker: mcpSessionTracker,
   identity: () => identitySummary(),
