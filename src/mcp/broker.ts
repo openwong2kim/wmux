@@ -38,7 +38,7 @@ import {
 } from './connectionScope';
 import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
-import { socketIdentity, staleSocketKind } from './brokerSocketPath';
+import { socketIdentity, staleSocketAction, staleSocketKind } from './brokerSocketPath';
 import { BROKER_EXIT_PATH_OCCUPIED } from '../shared/mcpBroker';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
 import { peerPidOf, selfCheckPeerPid } from '../shared/peerPid';
@@ -400,35 +400,27 @@ function main(): void {
       staleRetried = true;
       // Remove only a socket: a regular file, a link or a folder at this path
       // is not a broker's leftover, so the broker stops and says so instead
-      // (an exit the supervisor does not restart).
+      // (an exit the supervisor does not restart). Only ECONNREFUSED counts
+      // as stale; another error (a timeout, EAGAIN) may be a live broker.
+      // ECONNREFUSED is not proof on its own: on macOS a live listener whose
+      // backlog is full refuses too, which the identity recheck below cannot
+      // tell apart either, so that case stays a known gap.
       const kind = staleSocketKind(pipeName);
-      if (kind === 'unreadable') {
-        // Not known to be anything: leave it, and exit as a failure the
-        // supervisor retries with its backoff.
-        console.error(`[wmux-mcp-broker] could not inspect ${pipeName}; leaving it`);
-        process.exit(1);
-        return;
-      }
-      if (kind !== 'socket' && kind !== 'missing') {
-        console.error(`[wmux-mcp-broker] ${pipeName} is a ${kind}, not a socket; refusing to remove it`);
-        process.exit(BROKER_EXIT_PATH_OCCUPIED);
-        return;
-      }
-      // Only a refused connect shows nothing listens. Any other error (a full
-      // backlog, a timeout) may be a live broker: stand down rather than
-      // remove its socket.
-      if (kind === 'socket' && err.code !== 'ECONNREFUSED') {
-        console.error(`[wmux-mcp-broker] socket at ${pipeName} did not refuse (${err.code ?? 'error'}); standing down`);
-        process.exit(75);
-        return;
-      }
-      if (kind === 'socket' && (before === null || socketIdentity(pipeName) !== before)) {
-        console.error(`[wmux-mcp-broker] the socket at ${pipeName} changed during the check; standing down`);
-        process.exit(75);
+      const decision = staleSocketAction({
+        pipeName,
+        kind,
+        errCode: err.code,
+        before,
+        now: kind === 'socket' ? socketIdentity(pipeName) : null,
+        pathOccupiedCode: BROKER_EXIT_PATH_OCCUPIED,
+      });
+      if (decision.action === 'exit') {
+        console.error(`[wmux-mcp-broker] ${decision.message}`);
+        process.exit(decision.code);
         return;
       }
       try {
-        if (kind === 'socket') fs.unlinkSync(pipeName);
+        if (decision.unlink) fs.unlinkSync(pipeName);
       } catch { /* already gone — listen retry decides */ }
       server.listen(pipeName, () => {
         console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid} (after stale-socket cleanup)`);

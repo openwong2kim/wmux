@@ -20,15 +20,55 @@ export function staleSocketKind(p: string): 'socket' | 'missing' | 'unreadable' 
 }
 
 /**
- * The device and inode of the socket at `p`, or null when there is no socket
- * there. Taken before the stale probe and again before the unlink, so a socket
- * another broker bound in between is never the one removed.
+ * The identity of the socket at `p`, or null when there is no socket there:
+ * device, inode, and the change and birth times, since a filesystem such as
+ * ext4 can hand a freed inode to the next file at once. Taken before the stale
+ * probe and again before the unlink, so a socket another broker bound in
+ * between is never the one removed.
  */
 export function socketIdentity(p: string): string | null {
   try {
     const st = fs.lstatSync(p);
-    return st.isSocket() ? `${st.dev}:${st.ino}` : null;
+    return st.isSocket() ? `${st.dev}:${st.ino}:${st.ctimeMs}:${st.birthtimeMs}` : null;
   } catch {
     return null;
   }
+}
+
+/** What the broker does after its probe of an in-use socket path failed. */
+export type StaleSocketAction =
+  | { action: 'listen'; unlink: boolean }
+  | { action: 'exit'; code: number; message: string };
+
+/**
+ * The stale-socket decision, given what the probe saw:
+ * - `unreadable` → exit 1, path left alone (the supervisor retries);
+ * - not a socket → exit 78 (`pathOccupiedCode`), path left alone, no restart;
+ * - a socket whose connect was not refused → exit 75 (stand down);
+ * - a socket that changed between the probe and now → exit 75;
+ * - otherwise unlink the stale socket (or nothing, when it is gone) and listen.
+ */
+export function staleSocketAction(input: {
+  pipeName: string;
+  kind: ReturnType<typeof staleSocketKind>;
+  errCode: string | undefined;
+  before: string | null;
+  now: string | null;
+  pathOccupiedCode: number;
+}): StaleSocketAction {
+  const { pipeName, kind, errCode, before, now } = input;
+  if (kind === 'unreadable') {
+    return { action: 'exit', code: 1, message: `could not inspect ${pipeName}; leaving it` };
+  }
+  if (kind !== 'socket' && kind !== 'missing') {
+    return { action: 'exit', code: input.pathOccupiedCode, message: `${pipeName} is a ${kind}, not a socket; refusing to remove it` };
+  }
+  if (kind === 'missing') return { action: 'listen', unlink: false };
+  if (errCode !== 'ECONNREFUSED') {
+    return { action: 'exit', code: 75, message: `socket at ${pipeName} did not refuse (${errCode ?? 'error'}); standing down` };
+  }
+  if (before === null || now !== before) {
+    return { action: 'exit', code: 75, message: `the socket at ${pipeName} changed during the check; standing down` };
+  }
+  return { action: 'listen', unlink: true };
 }
