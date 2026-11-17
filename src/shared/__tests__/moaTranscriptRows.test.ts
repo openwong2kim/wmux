@@ -3,17 +3,18 @@ import { moaPhoneRows, rewritePastedPrompts, type NotedPrompt } from '../moaTran
 import type { TurnEvent } from '../transcript/turnEvents';
 
 const T = 1_700_000_000_000;
-const pasted = (body: string) => `<pasted_content id="4d08">${body}</pasted_content id="4d08">`;
+// A paste as the parser serves it: unwrapped, and marked.
+const pasted = (body: string) => ({ text: body, pasted: true as const });
 
 describe('moaPhoneRows — the Moa transcript as the phone reads it', () => {
   it('shows the sent text, turns injection-only rows into turn starts, and folds Moa\'s working', () => {
     const events: TurnEvent[] = [
-      { id: 'u1', kind: 'user_text', ts: T, text: pasted('[active-work] … leave this work active. 뭐하냐 ') },
+      { id: 'u1', kind: 'user_text', ts: T, ...pasted('[active-work] … leave this work active. 뭐하냐 ') },
       { id: 'a1', kind: 'assistant_text', text: 'checking the fleet' },
       { id: 't1', kind: 'tool_use', toolUseId: 'x', name: 'mcp__wmux__fleet_triage', argSummary: '' },
       { id: 'r1', kind: 'tool_result', toolUseId: 'x', ok: true, bytes: 2 },
       { id: 'a2', kind: 'assistant_text', text: 'All quiet.', turnComplete: true },
-      { id: 'u2', kind: 'user_text', ts: T + 60_000, text: pasted('[active-work] id: w1 — unchanged since your last turn') },
+      { id: 'u2', kind: 'user_text', ts: T + 60_000, ...pasted('[active-work] id: w1 — unchanged since your last turn') },
       { id: 'u3', kind: 'user_text', ts: T + 70_000, text: '[pane-events] (UNTRUSTED terminal/A2A signals' },
       { id: 'u4', kind: 'user_text', ts: T + 80_000, text: 'typed straight into the TUI' },
     ];
@@ -32,14 +33,35 @@ describe('moaPhoneRows — the Moa transcript as the phone reads it', () => {
     expect(out[5]).toEqual({ id: 'moa-wake:u2', kind: 'meta', subtype: 'turn_started', label: '', ts: T + 60_000 });
   });
 
+  it('the same, now that the parser unwraps a paste and marks it `pasted`', () => {
+    const events: TurnEvent[] = [
+      { id: 'u1', kind: 'user_text', ts: T, text: '[active-work] … leave this work active. 뭐하냐 ', pasted: true },
+      { id: 'u2', kind: 'user_text', ts: T + 60_000, text: '[active-work] id: w1 — unchanged since your last turn', pasted: true },
+      { id: 'u3', kind: 'user_text', ts: T + 80_000, text: 'typed straight into the TUI' },
+    ];
+    const out = moaPhoneRows(events, [{ at: T - 1_000, text: '뭐하냐', hq: 'ws-hq' }], new Map());
+    expect(out).toEqual([
+      // Shown as main's prompt, and no longer marked as a paste.
+      { id: 'u1', kind: 'user_text', ts: T, text: '뭐하냐' },
+      { id: 'moa-wake:u2', kind: 'meta', subtype: 'turn_started', label: '', ts: T + 60_000 },
+      { id: 'u3', kind: 'user_text', ts: T + 80_000, text: 'typed straight into the TUI' },
+    ]);
+  });
+
+  it('a tag the operator typed (no pair, so no pasted flag) is shown as typed', () => {
+    const typed = 'how do I write <pasted_content id="3de0"> in a test?';
+    const out = moaPhoneRows([{ id: 'u1', kind: 'user_text', ts: T, text: typed }], [{ at: T - 1_000, text: 'other', hq: 'ws-hq' }], new Map());
+    expect(out).toEqual([{ id: 'u1', kind: 'user_text', ts: T, text: typed }]);
+  });
+
   it('uses each prompt once even when the prompts are re-read from disk on every call', () => {
     const read = (): NotedPrompt[] => [{ at: T - 1_000, text: '뭐하냐', hq: 'ws-hq' }];
     const assigned = new Map<string, NotedPrompt>();
-    const first = rewritePastedPrompts([{ id: 'u1', kind: 'user_text', ts: T, text: pasted('ctx 뭐하냐') }], read(), assigned);
-    const second = rewritePastedPrompts([{ id: 'u2', kind: 'user_text', ts: T + 5_000, text: pasted('ctx only') }], read(), assigned);
+    const first = rewritePastedPrompts([{ id: 'u1', kind: 'user_text', ts: T, ...pasted('ctx 뭐하냐') }], read(), assigned);
+    const second = rewritePastedPrompts([{ id: 'u2', kind: 'user_text', ts: T + 5_000, ...pasted('ctx only') }], read(), assigned);
     expect(first[0]).toMatchObject({ text: '뭐하냐' });
-    expect(second[0]).toMatchObject({ text: pasted('ctx only') });
+    expect(second[0]).toMatchObject({ ...pasted('ctx only') });
     // A read that finds no prompts still shows what an entry was already matched to.
-    expect(rewritePastedPrompts([{ id: 'u1', kind: 'user_text', ts: T, text: pasted('ctx 뭐하냐') }], [], assigned)[0]).toMatchObject({ text: '뭐하냐' });
+    expect(rewritePastedPrompts([{ id: 'u1', kind: 'user_text', ts: T, ...pasted('ctx 뭐하냐') }], [], assigned)[0]).toMatchObject({ text: '뭐하냐' });
   });
 });
