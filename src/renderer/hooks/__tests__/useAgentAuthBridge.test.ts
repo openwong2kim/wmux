@@ -55,6 +55,21 @@ describe('lost sign-in bridge', () => {
     expect(useStore.getState().toasts).toEqual([]);
   });
 
+  // A WSL pane on a bound account signed out of the account's Linux home (shared/wslAccountMark.ts).
+  it('signs a WSL account home in again in that distro, and waits for the pane\'s own report', async () => {
+    const lost = entry({ configDir: 'wsl:Ubuntu-24.04:C:\\acc\\work', key: 'claude:wsl:Ubuntu-24.04:C:\\acc\\work' });
+    applyAuthLostEntries([lost]);
+    // main cannot read that sign-in: "cannot tell" until the entry goes.
+    loginState.mockResolvedValueOnce({ known: true, signedIn: null }).mockResolvedValueOnce({ known: false });
+    await signInAgain(lost, { sleep: async () => undefined });
+    expect(openTerminalTab).toHaveBeenCalledWith(expect.objectContaining({
+      plainEnv: true, shell: 'wsl.exe', wslDistro: 'Ubuntu-24.04',
+      env: { CLAUDE_CONFIG_DIR: 'C:\\acc\\work' }, wslAccountHomeKey: 'CLAUDE_CONFIG_DIR', initialCommand: 'claude auth login',
+    }));
+    expect(openTerminalTab).not.toHaveBeenCalledWith(expect.objectContaining({ wslAccountLoginEnvKey: expect.anything() }));
+    expect(loginState).toHaveBeenCalledTimes(2);
+  });
+
   it('offers the toast again when the sign-in tab cannot open, and only once', async () => {
     applyAuthLostEntries([entry()]);
     const press = async () => {

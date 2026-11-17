@@ -19,22 +19,12 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { ACCOUNT_VENDOR_ENV, WSL_ACCOUNT_KEYS_ENV, parseWslAccountKeys, type AccountVendor } from './wslAccountMark';
 
-export type AccountEnvKey = 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
-export type AccountVendor = 'claude' | 'codex';
-
-/**
- * Set by a spawn path on a pane's env: the account variables (comma-separated)
- * whose value came from an account (a workspace binding, a pane's chosen
- * account, a re-sign-in for an account). Only these get a Linux home in WSL; a
- * profile's or an inherited CLAUDE_CONFIG_DIR does not. It rides in the
- * persisted env, so a recovered pane keeps its Linux home.
- */
-export const WSL_ACCOUNT_KEYS_ENV = 'WMUX_WSL_ACCOUNT_KEYS';
-
-export const ACCOUNT_ENV_KEYS: readonly AccountEnvKey[] = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME'];
-
-export const ACCOUNT_ENV_VENDOR: Record<AccountEnvKey, AccountVendor> = { CLAUDE_CONFIG_DIR: 'claude', CODEX_HOME: 'codex' };
+export {
+  ACCOUNT_ENV_KEYS, ACCOUNT_ENV_VENDOR, WSL_ACCOUNT_DISTRO_ENV, WSL_ACCOUNT_KEYS_ENV, accountSourcedKeys, parseWslAccountKeys, setWslAccountKeys,
+  type AccountEnvKey, type AccountVendor,
+} from './wslAccountMark';
 
 /**
  * What an account folder shares with the vendor's default folder when it was
@@ -48,33 +38,6 @@ export const ACCOUNT_SHARE_MANIFEST: Record<AccountVendor, { linkDirs: readonly 
   // is never shared.
   codex: { linkDirs: ['prompts'], copyFiles: ['config.toml', 'AGENTS.md'] },
 };
-
-/** The marked account variables, in a fixed order; anything unknown is ignored. */
-export function parseWslAccountKeys(value: string | undefined): AccountEnvKey[] {
-  const named = new Set((value ?? '').split(',').map((s) => s.trim()));
-  return ACCOUNT_ENV_KEYS.filter((key) => named.has(key));
-}
-
-/**
- * Mark `keys` on `env` (in place) as account-sourced, or drop the marker when
- * none is left. Keys without a value in `env` are not marked.
- */
-export function setWslAccountKeys(env: Record<string, string>, keys: Iterable<AccountEnvKey>): void {
-  const wanted = new Set(keys);
-  const marked = ACCOUNT_ENV_KEYS.filter((key) => wanted.has(key) && !!env[key]);
-  if (marked.length) env[WSL_ACCOUNT_KEYS_ENV] = marked.join(',');
-  else delete env[WSL_ACCOUNT_KEYS_ENV];
-}
-
-/**
- * The account variables of `env` that still hold the value `accountEnv` gave
- * them: a profile that set its own CLAUDE_CONFIG_DIR afterwards wins on Windows
- * and is not an account in WSL.
- */
-export function accountSourcedKeys(env: Record<string, string>, accountEnv: Record<string, string> | undefined): AccountEnvKey[] {
-  if (!accountEnv) return [];
-  return ACCOUNT_ENV_KEYS.filter((key) => !!accountEnv[key] && env[key] === accountEnv[key]);
-}
 
 /** The Linux home's key for an account folder: 16 hex digits of its SHA-256, case- and separator-insensitive like Windows paths. */
 export function wslAccountHomeKey(configDir: string): string {
@@ -98,7 +61,7 @@ export function wslAccountLinuxHome(
   vendor: AccountVendor,
   user: string | undefined,
 ): string | null {
-  const key: AccountEnvKey = vendor === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR';
+  const key = ACCOUNT_VENDOR_ENV[vendor];
   const dir = env?.[key];
   if (!env || !dir || !parseWslAccountKeys(env[WSL_ACCOUNT_KEYS_ENV]).includes(key)) return null;
   if (typeof user !== 'string' || !user || user.includes('/') || user === '.' || user === '..') return null;

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { mergeWslEnv, wslTargetArgs, type WslTarget } from './wsl';
 import { CLAUDE_FILE_SEND_ENV } from './claudeFileSend';
 import {
-  ACCOUNT_ENV_VENDOR, ACCOUNT_SHARE_MANIFEST, WSL_ACCOUNT_KEYS_ENV, accountFolderShares, parseWslAccountKeys,
+  ACCOUNT_ENV_VENDOR, ACCOUNT_SHARE_MANIFEST, WSL_ACCOUNT_DISTRO_ENV, WSL_ACCOUNT_KEYS_ENV, accountFolderShares, parseWslAccountKeys,
   wslAccountHomeKey, type AccountVendor,
 } from './wslAccountHome';
 
@@ -594,7 +594,7 @@ fi
   // (shared/wslAccountHome.ts): the Windows folder never crosses over, only
   // its key. A login tab's own variable stays the Windows folder (above).
   // Recomputed on every spawn, so a recovered pane's replayed env is redone.
-  for (const name of [...WSL_ACCOUNT_VARS, 'WMUX_WSL_ACCOUNT_SH']) delete env[name];
+  for (const name of [...WSL_ACCOUNT_VARS, 'WMUX_WSL_ACCOUNT_SH', WSL_ACCOUNT_DISTRO_ENV]) delete env[name];
   let accountHomes = false;
   for (const key of parseWslAccountKeys(env[WSL_ACCOUNT_KEYS_ENV])) {
     const folder = env[key];
@@ -612,6 +612,8 @@ fi
   if (accountHomes) {
     write(path.join(dir, 'account.sh'), WSL_ACCOUNT_SH);
     env.WMUX_WSL_ACCOUNT_SH = path.join(dir, 'account.sh');
+    // Kept on the pane's env only (not in WSLENV): its sign-in key names the distro (shared/wslAccountMark.ts).
+    env[WSL_ACCOUNT_DISTRO_ENV] = target.distribution;
     entries.push('WMUX_WSL_ACCOUNT_SH/p');
   }
   const home = loginKey ? env[loginKey] : undefined;

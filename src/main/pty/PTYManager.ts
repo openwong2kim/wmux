@@ -1,6 +1,7 @@
 import { isWslShell, resolveWslCwd, type WslTarget, type ResolvedWslCwd } from '../../shared/wsl';
 import { buildWslInjection } from '../../shared/wslIntegration';
 import { accountSourcedKeys, setWslAccountKeys } from '../../shared/wslAccountHome';
+import { paneAccountKeys } from '../account/wslAccountSpawn';
 import { BASH_INIT } from '../../daemon/shell-integration';
 import { getWmuxDir } from '../../daemon/config';
 import { claudeFileSendEnv } from '../../shared/claudeFileSend';
@@ -285,6 +286,8 @@ export class PTYManager {
 
   private prepareSpawn(options?: {
     wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
+    /** A re-sign-in tab for a WSL account home (see pty.handler PtyCreateOptions). */
+    wslAccountHomeKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
     /** Agent-setup panes: no bound-account env (see pty.handler PtyCreateOptions). */
     ignoreAccountBinding?: boolean;
     /** #2231 — a WSL fan-out task pane's worktree git location. */
@@ -395,7 +398,12 @@ export class PTYManager {
     if (wsl && options?.wslTaskGit) applyWslWorkerGit(env, options.wslTaskGit.plan, options.wslTaskGit.config);
     // A bound account gets its own home in the distro (shared/wslAccountHome.ts),
     // only for the variables the binding still decides (a profile's own wins).
-    if (wsl) setWslAccountKeys(env, accountSourcedKeys(env, accountEnv));
+    if (wsl) {
+      setWslAccountKeys(env, [...accountSourcedKeys(env, accountEnv), ...paneAccountKeys(env, {
+        requested: options?.wslAccountHomeKey, supplied: options?.env,
+        accounts: () => getAccountStore().listAccounts(),
+      })]);
+    }
     const hookInjection = wsl
       ? buildWslInjection({ target: wsl.target, cwd, env, integrationDir: getWmuxDir(), bashInit: BASH_INIT, wslAccountLoginEnvKey: options?.wslAccountLoginEnvKey })
       : this.buildHookInjection(shellType, env, shell);

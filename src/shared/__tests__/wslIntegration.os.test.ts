@@ -241,6 +241,9 @@ describe('WSL per-launch Claude integration', () => {
       expect(out.WMUX_WSL_ACCOUNT_SH).toBe(path.join(dir, 'wsl', 'account.sh'));
       expect(fs.readFileSync(out.WMUX_WSL_ACCOUNT_SH, 'utf8')).toBe(WSL_ACCOUNT_SH);
       expect(out.WMUX_WSL_ACCOUNT_CLAUDE_SHARE).toBeUndefined();
+      // The distro names the pane's sign-in key; it stays on the Windows side.
+      expect(out.WMUX_WSL_ACCOUNT_DISTRO).toBe('Ubuntu');
+      expect(wslenv.some((entry) => entry.startsWith('WMUX_WSL_ACCOUNT_DISTRO'))).toBe(false);
     });
 
     it('leaves an unmarked account variable (a profile\'s or an inherited one) alone', () => {

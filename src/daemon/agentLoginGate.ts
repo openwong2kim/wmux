@@ -1,4 +1,4 @@
-import { authConfigDir, authLostKey, type AuthLostAgent } from '../shared/agentAuthLost';
+import { authConfigDir, authLostKey, isWindowsReadableAccount, type AuthLostAgent } from '../shared/agentAuthLost';
 
 /**
  * The agent's own status command, run with this env: true / false, or null
@@ -53,9 +53,13 @@ export class AgentLoginGate {
   }
 
   private answer(agent: AuthLostAgent, env: NodeJS.ProcessEnv): Promise<boolean | null> {
-    const key = authLostKey(agent, authConfigDir(agent, env));
+    const configDir = authConfigDir(agent, env);
+    const key = authLostKey(agent, configDir);
     const hit = this.cache.get(key);
     if (hit && this.now() - hit.at < this.ttlMs) return Promise.resolve(hit.signedIn);
+    // A WSL account home: the Windows status command would read the Windows
+    // folder, a different sign-in. Only a turn of that pane tells (markWorks).
+    if (!isWindowsReadableAccount(configDir)) return Promise.resolve(null);
     const running = this.inflight.get(key);
     if (running) return running;
     const started = this.generation.get(key) ?? 0;

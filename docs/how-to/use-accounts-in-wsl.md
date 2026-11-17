@@ -19,6 +19,10 @@ folder inside the distro, and you sign in to it there once.
   prints one line saying so. Sign in from a bound pane (`/login` in `claude`,
   or `codex login`). That signs in this account only; other workspaces and
   unbound panes keep their own sign-ins.
+- **Signed out later.** If the agent in a bound WSL pane loses its sign-in,
+  **Sign in again** on the notice opens the sign-in in a WSL tab of the same
+  distro, for that account's WSL folder. A Windows pane of the same account
+  has its own notice.
 - **Shared settings.** If the account was created with sharing on, its new WSL
   folder links the distro's own skills, commands, agents and plugins (Codex:
   prompts) and copies its `settings.json` and `CLAUDE.md` (Codex: `config.toml`

@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { t } from '../i18n';
 import { authConfigEnvKey, type AuthLostEntry } from '../../shared/agentAuthLost';
+import { parseWslAuthRef } from '../../shared/wslAccountMark';
 import { loginInitialCommand, openTerminalTab } from '../utils/accountLogin';
 
 // ─── Lost sign-in bridge (N4) ────────────────────────────────────────────────
@@ -71,11 +72,16 @@ export async function signInAgain(
   let settled = false;
   try {
     const envKey = authConfigEnvKey(entry.agent);
+    // A WSL pane on a bound account signed out of that account's Linux home:
+    // sign in there, in the same distro, not in the Windows folder.
+    const wsl = parseWslAuthRef(entry.configDir);
     const tab = await openTerminalTab({
       // The account's own folder, or nothing: never the workspace's bound account,
       // which is not necessarily the one that was signed out.
       plainEnv: true,
-      ...(entry.configDir ? { env: { [envKey]: entry.configDir }, wslAccountLoginEnvKey: envKey } : {}),
+      ...(wsl
+        ? { env: { [envKey]: wsl.configDir }, wslAccountHomeKey: envKey, shell: 'wsl.exe', wslDistro: wsl.distro }
+        : entry.configDir ? { env: { [envKey]: entry.configDir }, wslAccountLoginEnvKey: envKey } : {}),
       initialCommand: loginInitialCommand(entry.agent),
       title: t('agentAuth.signInTabTitle', { agent: AGENT_NAME[entry.agent] }),
       cwd: null,
