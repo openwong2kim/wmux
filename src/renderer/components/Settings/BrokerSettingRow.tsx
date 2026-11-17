@@ -40,8 +40,10 @@ export function BrokerSettingRow() {
   ];
 
   return (
-    <SettingRow id="mcpbroker" label={t('settings.mcpBroker')} description={t('settings.mcpBrokerDesc')} data-testid="settings-mcp-broker">
-      <SegmentedControl value={state.saved} options={options} onValueChange={(v) => void change(v)} ariaLabel={t('settings.mcpBroker')} />
+    <>
+      <SettingRow id="mcpbroker" label={t('settings.mcpBroker')} description={t('settings.mcpBrokerDesc')} data-testid="settings-mcp-broker">
+        <SegmentedControl value={state.saved} options={options} onValueChange={(v) => void change(v)} ariaLabel={t('settings.mcpBroker')} />
+      </SettingRow>
       {state.env !== 'unset' ? (
         <SettingNote data-testid="settings-mcp-broker-env">
           {t(state.env === 'on' ? 'settings.mcpBrokerEnvOn' : 'settings.mcpBrokerEnvOff')}
@@ -53,6 +55,6 @@ export function BrokerSettingRow() {
       ) : null}
       {state.problem && <SettingNote tone="warning">{t('settings.mcpBrokerFileProblem')}</SettingNote>}
       {error && <SettingNote tone="danger" role="alert">{error}</SettingNote>}
-    </SettingRow>
+    </>
   );
 }
