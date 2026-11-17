@@ -116,6 +116,13 @@ describe('doctor mcp section', () => {
       expect(line.hint).toMatch(/native launcher start the full bundle themselves/);
     });
 
+    it('names an occupied socket path instead of a crash loop, and what to do', async () => {
+      const line = await down('path-occupied', ['wmux-native']);
+      expect(line.value).toBe('not running: something that is not a socket sits at its socket path, off until wmux restarts');
+      expect(line.hint).toMatch(/Move it away from the broker socket path \(the app log names it\), then restart wmux\./);
+      expect(line.value).not.toMatch(/kept failing/);
+    });
+
     it('says a missing script will not start, and that Node-shim agents cannot connect', async () => {
       const line = await down('script-missing', ['shim.js']);
       expect(line.value).toBe('not running: this build has no broker script');

@@ -677,6 +677,10 @@ function brokerLine(b: McpSessionsSummary['broker'], kinds: ReadonlySet<string>)
       value: `not running: it kept failing (crash exits ${b.crashExits}, spawn failures ${b.spawnFailures}), off until wmux restarts`,
       next: lastCrash(b),
     },
+    'path-occupied': {
+      value: 'not running: something that is not a socket sits at its socket path, off until wmux restarts',
+      next: 'Move it away from the broker socket path (the app log names it), then restart wmux.',
+    },
     'script-missing': { value: 'not running: this build has no broker script', next: 'It will not start in this session.' },
     stopped: { value: 'not running: stopped by the app' },
   };

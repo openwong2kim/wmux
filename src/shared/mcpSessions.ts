@@ -79,7 +79,7 @@ export const MCP_SESSION_ID_RE = /^[0-9a-f]{32}$/;
  * scheduled after an exit, it failed too often and is off until wmux
  * restarts, or it was never started.
  */
-export type BrokerDownReason = 'stopped' | 'script-missing' | 'standing-down' | 'restarting' | 'crash-loop' | 'not-started';
+export type BrokerDownReason = 'stopped' | 'script-missing' | 'standing-down' | 'restarting' | 'crash-loop' | 'path-occupied' | 'not-started';
 
 export interface BrokerStatus {
   running: boolean;

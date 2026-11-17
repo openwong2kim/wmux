@@ -34,7 +34,7 @@ import { peekRecentPendingRequests } from './pageCapture';
 import { evaluateIsolated, isolatedProbeTarget } from './isolated-eval';
 import { ancestorContext } from '../../shared/browserReplay/actionTrace';
 import { emptyDomFacts, getDomFacts } from './ownAttributes';
-import { getConnectionScope } from '../connectionScope';
+import { scopeOrRefuse } from '../connectionScope';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -965,7 +965,7 @@ type ScopeFrameRefs = Map<number, RpcFrameRef | null>;
 let moduleFrameRefs: Map<string, ScopeFrameRefs> | undefined;
 
 function frameRefStore(): Map<string, ScopeFrameRefs> {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the snapshot frame refs');
   if (scope) {
     const existing = scope.frameRefs as Map<string, ScopeFrameRefs> | undefined;
     if (existing) return existing;

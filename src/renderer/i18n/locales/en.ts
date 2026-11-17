@@ -1900,6 +1900,7 @@ export const en = {
   'settings.mcpBrokerFileProblem': "The saved choice could not be read, so the default applies. Choose again to replace it.",
   'settings.mcpBrokerSaveFailed': "The choice was not saved.",
   'settings.mcpBrokerUnavailable': "The current choice could not be read from wmux.",
+  'settings.mcpBrokerIdleHere': "On Windows the shared process does not host agents yet: each agent keeps its own MCP server, so On only adds an idle process.",
   'settings.mcpRegistered': 'registered',
   'settings.mcpNotRegistered': 'not registered',
   'settings.mcpExperimentalTitle': 'Integration not yet verified end-to-end',

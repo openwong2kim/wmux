@@ -3,11 +3,20 @@ import {
   createConnectionScope,
   runInConnectionScope,
   getConnectionScope,
+  markBrokerHost,
+  resetBrokerHostForTests,
+  scopeOrRefuse,
 } from '../connectionScope';
 import {
   setClientIdentity,
   getClientIdentity,
   clearClientIdentity,
+  getCallerPtyId,
+  getWorkspaceToken,
+  runWithCallerPtyIdSource,
+  setCallerPtyId,
+  setCommanderRole,
+  setWorkspaceToken,
 } from '../wmux-client';
 import {
   claimPinnedRoute,
@@ -16,6 +25,7 @@ import {
   __resetPaneResolverForTesting,
 } from '../paneResolver';
 import { PlaywrightEngine } from '../playwright/PlaywrightEngine';
+import { getOpenerKey } from '../playwright/surfaceRouting';
 import { deliberateSleep } from '../../test-utils/waitFor';
 
 // Broker isolation invariants (Option A). The broker hosts N MCP server
@@ -27,6 +37,7 @@ import { deliberateSleep } from '../../test-utils/waitFor';
 // security-adjacent).
 
 afterEach(() => {
+  resetBrokerHostForTests();
   clearClientIdentity();
   __resetPaneResolverForTesting();
 });
@@ -136,5 +147,69 @@ describe('connectionScope isolation', () => {
     expect(result).toBe(a);
     expect(a.rpcIdentity.clientName).toBe('late-writer');
     expect(getClientIdentity().name).toBeUndefined();
+  });
+});
+
+describe('in the broker, a call with no connection scope is refused', () => {
+  const refused = /no MCP connection scope is active/;
+
+  it('scopeOrRefuse: undefined in a single-child server, the scope inside one, a refusal in the broker', () => {
+    expect(scopeOrRefuse('x')).toBeUndefined();
+    markBrokerHost();
+    expect(() => scopeOrRefuse('this call')).toThrow(/this call cannot be attributed/);
+    const scope = createConnectionScope();
+    expect(runInConnectionScope(scope, () => scopeOrRefuse('x'))).toBe(scope);
+  });
+
+  it('wmux-client identity, claim, caller pane and role refuse instead of using the process globals', () => {
+    markBrokerHost();
+    expect(() => setClientIdentity('a', '1')).toThrow(refused);
+    expect(() => getClientIdentity()).toThrow(refused);
+    expect(() => setWorkspaceToken('tok')).toThrow(refused);
+    expect(() => getWorkspaceToken()).toThrow(refused);
+    expect(() => setCallerPtyId('pty-1')).toThrow(refused);
+    expect(() => getCallerPtyId()).toThrow(refused);
+    expect(() => setCommanderRole('t')).toThrow(refused);
+  });
+
+  it('a per-call caller pane still answers without a scope (shared Codex app-server calls)', () => {
+    markBrokerHost();
+    expect(runWithCallerPtyIdSource(() => 'pty-9', () => getCallerPtyId())).toBe('pty-9');
+  });
+
+  it('teardown stays tolerant: clearing the identity with no scope does not throw', () => {
+    markBrokerHost();
+    expect(() => clearClientIdentity()).not.toThrow();
+  });
+
+  it('inside a scope everything works as before', () => {
+    markBrokerHost();
+    const scope = createConnectionScope();
+    runInConnectionScope(scope, () => {
+      setClientIdentity('agent-a', '1.0');
+      setWorkspaceToken('tok-a');
+      expect(getClientIdentity()).toEqual({ name: 'agent-a', version: '1.0' });
+      expect(getWorkspaceToken()).toBe('tok-a');
+    });
+  });
+
+  it('the pinned pane route and the browser opener refuse too, and work inside a scope', () => {
+    markBrokerHost();
+    expect(() => getPinnedRoute()).toThrow(/the pinned pane route cannot be attributed/);
+    expect(() => getOpenerKey()).toThrow(/the browser opener cannot be attributed/);
+    const scope = createConnectionScope();
+    expect(runInConnectionScope(scope, () => getPinnedRoute())).toBeNull();
+    expect(runInConnectionScope(scope, () => getOpenerKey())).toBe(runInConnectionScope(scope, () => getOpenerKey()));
+  });
+
+  it('PlaywrightEngine.getInstance refuses with no scope, and gives each scope its own engine', () => {
+    markBrokerHost();
+    expect(() => PlaywrightEngine.getInstance()).toThrow(/this browser call cannot be attributed/);
+    const a = createConnectionScope();
+    const b = createConnectionScope();
+    const ea = runInConnectionScope(a, () => PlaywrightEngine.getInstance());
+    const eb = runInConnectionScope(b, () => PlaywrightEngine.getInstance());
+    expect(ea).not.toBe(eb);
+    expect(runInConnectionScope(a, () => PlaywrightEngine.getInstance())).toBe(ea);
   });
 });

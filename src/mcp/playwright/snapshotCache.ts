@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import { getConnectionScope } from '../connectionScope';
+import { scopeOrRefuse } from '../connectionScope';
 
 // ---------------------------------------------------------------------------
 // Per-surface snapshot baselines for browser_snapshot's auto-diff mode.
@@ -36,7 +36,7 @@ const BASELINE_TTL_MS = 5 * 60 * 1000;
 let moduleBaselines: Map<string, SnapshotBaseline> | undefined;
 
 function getStore(): Map<string, SnapshotBaseline> {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the snapshot baselines');
   if (scope) {
     const existing = scope.snapshotCache as Map<string, SnapshotBaseline> | undefined;
     if (existing) return existing;
@@ -125,7 +125,7 @@ const CAPTURE_TTL_MS = 5 * 60 * 1000;
 let moduleCaptures: Map<string, SnapshotCapture> | undefined;
 
 function getCaptureStore(): Map<string, SnapshotCapture> {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the snapshot captures');
   if (scope) {
     const existing = scope.snapshotCaptures as Map<string, SnapshotCapture> | undefined;
     if (existing) return existing;

@@ -12,6 +12,21 @@ export const BROKER_DEFAULT_ON: readonly NodeJS.Platform[] = [];
 
 export type BrokerFlag = 'on' | 'off' | 'unset';
 
+/**
+ * The broker's exit code when something that is not a socket sits at its
+ * socket path: a condition a restart cannot fix, so the supervisor stops.
+ */
+export const BROKER_EXIT_PATH_OCCUPIED = 78;
+
+/**
+ * Whether the broker can host agents on `platform`. Not on win32, where it
+ * reads no peer pid to verify a session against (src/mcp/brokerPeer.ts) and
+ * refuses every one, so On only adds an idle process there.
+ */
+export function brokerHostsSessions(platform: NodeJS.Platform): boolean {
+  return platform !== 'win32';
+}
+
 /** The Settings choice: `default` follows the platform. */
 export type BrokerSetting = 'on' | 'off' | 'default';
 
@@ -41,6 +56,11 @@ export interface BrokerSettingPayload {
   next: BrokerDecision;
   /** Whether this platform's default is on. */
   platformDefaultOn: boolean;
+  /**
+   * False where the broker refuses every session (win32: no peer pid to
+   * verify, src/mcp/brokerPeer.ts), so On only adds an idle process there.
+   */
+  hostsSessions: boolean;
 }
 
 /** What WMUX_MCP_BROKER asks for: '1' → on, '0' → off, anything else → unset. */

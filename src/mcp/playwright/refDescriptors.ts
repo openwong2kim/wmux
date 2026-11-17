@@ -1,4 +1,4 @@
-import { getConnectionScope } from '../connectionScope';
+import { getConnectionScope, scopeOrRefuse } from '../connectionScope';
 
 // ---------------------------------------------------------------------------
 // Element descriptors — what a ref number MEANS, kept across snapshots.
@@ -199,7 +199,7 @@ interface SurfaceHistory {
 let moduleStore: Map<string, SurfaceHistory> | undefined;
 
 function getStore(): Map<string, SurfaceHistory> {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the snapshot ref history');
   if (scope) {
     const existing = scope.refDescriptors as Map<string, SurfaceHistory> | undefined;
     if (existing) return existing;

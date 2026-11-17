@@ -4,7 +4,7 @@ import * as crypto from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import type { RpcMethod, RpcResponse } from '../shared/rpc';
 import { getPipeName, getAuthTokenPath, getTcpPortPath } from '../shared/constants';
-import { getConnectionScope } from './connectionScope';
+import { getConnectionScope, scopeOrRefuse } from './connectionScope';
 import { brokerStampFor } from './brokerStamp';
 
 /**
@@ -55,7 +55,7 @@ export function brokerStampForTarget(
 export function setClientIdentity(name?: string, version?: string): void {
   const trimmedName = typeof name === 'string' ? name.trim() : '';
   const trimmedVersion = typeof version === 'string' ? version.trim() : '';
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the client identity');
   if (scope) {
     scope.rpcIdentity.clientName = trimmedName.length > 0 ? trimmedName : undefined;
     scope.rpcIdentity.clientVersion = trimmedVersion.length > 0 ? trimmedVersion : undefined;
@@ -88,7 +88,7 @@ export function clearClientIdentity(): void {
 }
 
 export function getClientIdentity(): { name?: string; version?: string } {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the client identity');
   if (scope) {
     return { name: scope.rpcIdentity.clientName, version: scope.rpcIdentity.clientVersion };
   }
@@ -110,7 +110,7 @@ let WORKSPACE_TOKEN: string | undefined;
 export function setWorkspaceToken(token: string | undefined): void {
   const trimmed = typeof token === 'string' ? token.trim() : '';
   const value = trimmed.length > 0 ? trimmed : undefined;
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the workspace claim');
   if (scope) {
     scope.rpcIdentity.workspaceToken = value;
     return;
@@ -119,7 +119,7 @@ export function setWorkspaceToken(token: string | undefined): void {
 }
 
 export function getWorkspaceToken(): string | undefined {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the workspace claim');
   if (scope) return scope.rpcIdentity.workspaceToken;
   return WORKSPACE_TOKEN;
 }
@@ -141,7 +141,7 @@ const callerPtyIdSource = new AsyncLocalStorage<() => string | undefined>();
 export function setCallerPtyId(ptyId: string | undefined): void {
   const trimmed = typeof ptyId === 'string' ? ptyId.trim() : '';
   const value = trimmed.length > 0 ? trimmed : undefined;
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the caller pane');
   if (scope) {
     scope.rpcIdentity.callerPtyId = value;
     return;
@@ -154,7 +154,7 @@ export function getCallerPtyId(): string | undefined {
   const source = callerPtyIdSource.getStore();
   const fromCall = source ? source() : undefined;
   if (fromCall !== undefined) return fromCall.length > 0 ? fromCall : undefined;
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the caller pane');
   if (scope) return scope.rpcIdentity.callerPtyId;
   return CALLER_PTY_ID;
 }
@@ -251,7 +251,7 @@ function envelopeWorkspaceToken(connectionToken: string | undefined): string | u
 let COMMANDER_TOKEN: string | undefined;
 
 export function setCommanderRole(token: string): void {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the commander role');
   if (scope) {
     scope.rpcIdentity.commanderToken = token;
     return;
@@ -282,7 +282,7 @@ function currentEnvelopeIdentity(): {
   commanderToken?: string;
   workspaceToken?: string;
 } {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('an outbound call');
   if (scope) return scope.rpcIdentity;
   return {
     clientName: CLIENT_NAME,

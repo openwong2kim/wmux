@@ -1,6 +1,6 @@
 import type { Locator, Page } from 'playwright-core';
 import type { JsonEvaluator } from './page-eval';
-import { getConnectionScope } from '../connectionScope';
+import { scopeOrRefuse } from '../connectionScope';
 import {
   PASSWORD_FIELD_PREDICATE_JS,
   REDACTED_PASSWORD,
@@ -470,7 +470,7 @@ const EMPTY_RECORD: SmartSnapshotRecord = {
 let moduleElementCache: SmartSnapshotRecord = EMPTY_RECORD;
 
 function getSnapshotRecord(): SmartSnapshotRecord {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the smart snapshot cache');
   if (scope) return (scope.elementCache as SmartSnapshotRecord | undefined) ?? EMPTY_RECORD;
   return moduleElementCache;
 }
@@ -480,7 +480,7 @@ function getElementCache(): IndexedElement[] {
 }
 
 function setSnapshotRecord(record: SmartSnapshotRecord): void {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the smart snapshot cache');
   if (scope) scope.elementCache = record;
   else moduleElementCache = record;
 }

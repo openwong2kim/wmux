@@ -32,11 +32,14 @@ import { getMcpBrokerPipeName, getAuthTokenPath } from '../shared/constants';
 import { createWmuxServer } from './index';
 import {
   createConnectionScope,
+  markBrokerHost,
   runInConnectionScope,
   type ConnectionScope,
 } from './connectionScope';
 import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
+import { socketIdentity, staleSocketKind } from './brokerSocketPath';
+import { BROKER_EXIT_PATH_OCCUPIED } from '../shared/mcpBroker';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
 import { peerPidOf, selfCheckPeerPid } from '../shared/peerPid';
 import { decidePeer, retryingSelfCheck } from './brokerPeer';
@@ -215,6 +218,7 @@ function main(): void {
   // a connection scope must fail rather than fall back to a shared registry.
   setReplBrokerMode();
   setBrowserReplBrokerMode();
+  markBrokerHost();
   setBrokerEnvelopeMode();
   const ownUid = typeof process.getuid === 'function' ? process.getuid() : null;
   const tokenSource = brokerTokenSource(getAuthTokenPath(), process.env.WMUX_AUTH_TOKEN, ownUid);
@@ -382,18 +386,50 @@ function main(): void {
       process.exit(75);
       return;
     }
+    // What is at the path before the probe: the unlink below must remove this
+    // same socket, not one another broker bound while the probe ran.
+    const before = socketIdentity(pipeName);
     const probe = net.connect(pipeName);
     probe.once('connect', () => {
       probe.destroy();
       console.error('[wmux-mcp-broker] another broker is live; standing down');
       process.exit(75);
     });
-    probe.once('error', () => {
+    probe.once('error', (err: NodeJS.ErrnoException) => {
       probe.destroy();
       staleRetried = true;
+      // Remove only a socket: a regular file, a link or a folder at this path
+      // is not a broker's leftover, so the broker stops and says so instead
+      // (an exit the supervisor does not restart).
+      const kind = staleSocketKind(pipeName);
+      if (kind === 'unreadable') {
+        // Not known to be anything: leave it, and exit as a failure the
+        // supervisor retries with its backoff.
+        console.error(`[wmux-mcp-broker] could not inspect ${pipeName}; leaving it`);
+        process.exit(1);
+        return;
+      }
+      if (kind !== 'socket' && kind !== 'missing') {
+        console.error(`[wmux-mcp-broker] ${pipeName} is a ${kind}, not a socket; refusing to remove it`);
+        process.exit(BROKER_EXIT_PATH_OCCUPIED);
+        return;
+      }
+      // Only a refused connect shows nothing listens. Any other error (a full
+      // backlog, a timeout) may be a live broker: stand down rather than
+      // remove its socket.
+      if (kind === 'socket' && err.code !== 'ECONNREFUSED') {
+        console.error(`[wmux-mcp-broker] socket at ${pipeName} did not refuse (${err.code ?? 'error'}); standing down`);
+        process.exit(75);
+        return;
+      }
+      if (kind === 'socket' && (before === null || socketIdentity(pipeName) !== before)) {
+        console.error(`[wmux-mcp-broker] the socket at ${pipeName} changed during the check; standing down`);
+        process.exit(75);
+        return;
+      }
       try {
-        fs.unlinkSync(pipeName);
-      } catch { /* already gone / not a filesystem path — listen retry decides */ }
+        if (kind === 'socket') fs.unlinkSync(pipeName);
+      } catch { /* already gone — listen retry decides */ }
       server.listen(pipeName, () => {
         console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid} (after stale-socket cleanup)`);
       });

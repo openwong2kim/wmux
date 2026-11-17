@@ -103,6 +103,24 @@ describe('BrokerSupervisor.whenReady', () => {
   });
 });
 
+describe('BrokerSupervisor: something that is not a socket at the broker path', () => {
+  it('does not restart a broker that exited for it (78), and reports the broker down', async () => {
+    vi.useFakeTimers();
+    const first = makeChild();
+    vi.mocked(spawn).mockReturnValue(first as never);
+    vi.mocked(canConnectBrokerPipe).mockResolvedValue(false);
+    const sup = new BrokerSupervisor();
+    sup.start();
+    first.emit('exit', 78, null);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(sup.status().running).toBe(false);
+    expect(sup.status().downReason).toBe('path-occupied');
+    sup.stop();
+    vi.useRealTimers();
+  });
+});
+
 describe('BrokerSupervisor exit-75 reclaim (W2)', () => {
   it('reclaims the pipe when a probe finds the other broker gone', async () => {
     vi.useFakeTimers();

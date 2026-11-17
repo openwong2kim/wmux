@@ -2641,6 +2641,7 @@ export const ko = {
   'settings.mcpBrokerFileProblem': "저장된 선택을 읽지 못해 기본값을 씁니다. 다시 고르면 바뀝니다.",
   'settings.mcpBrokerSaveFailed': "선택을 저장하지 못했습니다.",
   'settings.mcpBrokerUnavailable': "wmux에서 현재 선택을 읽지 못했습니다.",
+  'settings.mcpBrokerIdleHere': "Windows에서는 아직 공유 프로세스가 에이전트를 맡지 않습니다. 에이전트마다 자기 MCP 서버를 그대로 쓰므로, 켜도 쉬는 프로세스 하나만 늘어납니다.",
   // Settings — Token usage (quotas, custom surface switches, saved profiles)
   'settings.tokenUsage.surfaceDefault': '표면: 기본값',
   'settings.tokenUsage.surfaceOff': '표면: {n}개 해제됨',

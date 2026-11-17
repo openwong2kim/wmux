@@ -7,7 +7,7 @@ import { canConnectBrokerPipe } from './brokerProbe';
 import { brokerOffEffects, type BrokerOffEffects } from './brokerOffMarker';
 import { parseBrokerConnectionsReport, type BrokerDownReason, type BrokerStampMessage, type BrokerStatus } from '../../shared/mcpSessions';
 import { processStartTime } from '../../shared/processStartTime';
-import { brokerDecision, type BrokerDecision, type BrokerSetting } from '../../shared/mcpBroker';
+import { BROKER_EXIT_PATH_OCCUPIED, brokerDecision, type BrokerDecision, type BrokerSetting } from '../../shared/mcpBroker';
 import { readBrokerSetting, type BrokerSettingRead } from '../../shared/brokerSetting';
 import { BROKER_LIMITS_ENV, type BrokerLimits } from '../../shared/brokerLimits';
 import { readBrokerLimitsConfig } from './brokerConfig';
@@ -93,6 +93,8 @@ export class BrokerSupervisor {
   private failureTimes: number[] = [];
   /** Set once the breaker trips; cleared only by a new supervisor (an app restart). */
   private tripped = false;
+  /** The broker exited 78: something that is not a socket sits at its path. */
+  private pathOccupied = false;
   /** Tool calls in flight, as the current child last reported them. */
   private inflight: string[] = [];
   private lastCrashTools: string[] = [];
@@ -161,6 +163,7 @@ export class BrokerSupervisor {
     if (this.stopped) return 'stopped';
     if (this.scriptMissing) return 'script-missing';
     if (this.reclaimTimer) return 'standing-down';
+    if (this.pathOccupied) return 'path-occupied';
     if (this.tripped) return 'crash-loop';
     if (this.restartTimer) return 'restarting';
     return 'not-started';
@@ -312,6 +315,20 @@ export class BrokerSupervisor {
         this.standDowns++;
         console.log('[BrokerSupervisor] pipe already served by another broker; standing down');
         this.startReclaimProbe();
+        return;
+      }
+      if (code === BROKER_EXIT_PATH_OCCUPIED) {
+        // Something that is not a socket sits at the broker's path: no restart
+        // can fix that, so stop the way a tripped breaker does.
+        this.clearChild();
+        settled = true;
+        this.tripped = true;
+        this.pathOccupied = true;
+        console.error(
+          '[BrokerSupervisor] the broker socket path holds something that is not a socket; ' +
+            'not restarting it until wmux restarts (agents use their own MCP server)',
+        );
+        void this.brokerOff.tripped().catch(() => undefined);
         return;
       }
       scheduleRestart(`broker exited code=${code} signal=${signal}`, 'crash');

@@ -1,7 +1,7 @@
 import type { Browser, BrowserContext, Page, CDPSession } from 'playwright-core';
 import { loadPlaywright } from './lazyPlaywright';
 import { sendRpc } from '../wmux-client';
-import { getConnectionScope } from '../connectionScope';
+import { scopeOrRefuse } from '../connectionScope';
 import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 import type { BrowserBackend } from '../../shared/browserBackend';
@@ -425,8 +425,10 @@ export class PlaywrightEngine {
     // engine so two panes driving two browser sessions cannot bleed CDP
     // state, auto-open scope, or the shell-URL cache into each other. The
     // nine tool modules keep calling getInstance() unchanged — the scope,
-    // when active, redirects them to the per-connection instance.
-    const scope = getConnectionScope();
+    // when active, redirects them to the per-connection instance. In the
+    // broker a call with no scope is refused: the singleton below would be
+    // one browser session shared by every connection.
+    const scope = scopeOrRefuse('this browser call');
     if (scope) {
       if (!scope.playwright) scope.playwright = new PlaywrightEngine();
       return scope.playwright as PlaywrightEngine;
