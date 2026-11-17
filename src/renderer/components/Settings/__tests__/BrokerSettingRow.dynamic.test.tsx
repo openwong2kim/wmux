@@ -22,6 +22,7 @@ const payload = (p: Partial<BrokerSettingPayload> = {}): BrokerSettingPayload =>
   running: { on: false, source: 'default' },
   next: { on: false, source: 'default' },
   platformDefaultOn: false,
+  hostsSessions: true,
   ...p,
 });
 
@@ -99,6 +100,19 @@ describe('BrokerSettingRow', () => {
     await render();
     expect(container.querySelector('[data-testid=settings-mcp-broker-env]')).not.toBeNull();
     expect(text()).not.toContain('The saved choice could not be read');
+  });
+
+  it('says where the shared process hosts no agents yet (Windows), and only there', async () => {
+    stub(payload({ hostsSessions: false }), async () => payload());
+    await render();
+    expect(container.querySelector('[data-testid=settings-mcp-broker-idle]')?.textContent).toBe(
+      'On Windows the shared process does not host agents yet: each agent keeps its own MCP server, so On only adds an idle process.',
+    );
+    act(() => root.unmount());
+    root = createRoot(container);
+    stub(payload(), async () => payload());
+    await render();
+    expect(container.querySelector('[data-testid=settings-mcp-broker-idle]')).toBeNull();
   });
 
   it('renders nothing on an app without the channel', async () => {

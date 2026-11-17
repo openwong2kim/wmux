@@ -70,6 +70,11 @@ describe('mcp:broker-setting', () => {
     expect(res).toMatchObject({ saved: 'off', env: 'on', next: { on: true, source: 'env' } });
   });
 
+  it('says whether this platform hosts sessions (not on win32)', async () => {
+    const res = (await (await handler(IPC.MCP_BROKER_SETTING_GET))({})) as BrokerSettingPayload;
+    expect(res.hostsSessions).toBe(process.platform !== 'win32');
+  });
+
   it('a file that was not used reports why', async () => {
     store.problem = 'mcp-broker.json: not valid JSON';
     const res = (await (await handler(IPC.MCP_BROKER_SETTING_GET))({})) as BrokerSettingPayload;

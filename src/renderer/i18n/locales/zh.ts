@@ -868,6 +868,7 @@ export const zh = {
   'settings.mcpBrokerFileProblem': "无法读取已保存的选择，因此使用默认值。重新选择即可替换。",
   'settings.mcpBrokerSaveFailed': "选择未保存。",
   'settings.mcpBrokerUnavailable': "无法从 wmux 读取当前选择。",
+  'settings.mcpBrokerIdleHere': "在 Windows 上，共享进程暂时还不承载代理：每个代理仍使用自己的 MCP 服务器，所以开启只会多出一个空闲进程。",
   'settings.mcpRegistered': '已注册',
   'settings.mcpNotRegistered': '未注册',
   'settings.mcpExperimentalTitle': '集成尚未端到端验证',

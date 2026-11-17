@@ -84,7 +84,7 @@ const EXPLICIT: Record<string, unknown> = {
     reregister: () => Promise.resolve(MCP_STATUS),
     unregister: () => Promise.resolve(MCP_STATUS),
     brokerSetting: () => Promise.resolve({
-      saved: 'default', env: 'unset', platformDefaultOn: false,
+      saved: 'default', env: 'unset', platformDefaultOn: false, hostsSessions: true,
       running: { on: false, source: 'default' }, next: { on: false, source: 'default' },
     }),
     setBrokerSetting: () => Promise.reject(new Error('not in this test')),

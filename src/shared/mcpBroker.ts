@@ -41,6 +41,11 @@ export interface BrokerSettingPayload {
   next: BrokerDecision;
   /** Whether this platform's default is on. */
   platformDefaultOn: boolean;
+  /**
+   * False where the broker refuses every session (win32: no peer pid to
+   * verify, src/mcp/brokerPeer.ts), so On only adds an idle process there.
+   */
+  hostsSessions: boolean;
 }
 
 /** What WMUX_MCP_BROKER asks for: '1' → on, '0' → off, anything else → unset. */

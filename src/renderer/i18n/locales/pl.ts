@@ -1845,6 +1845,7 @@ export const pl = {
   'settings.mcpBrokerFileProblem': "Nie udało się odczytać zapisanego wyboru, więc obowiązuje domyślny. Wybierz ponownie, aby go zastąpić.",
   'settings.mcpBrokerSaveFailed': "Wybór nie został zapisany.",
   'settings.mcpBrokerUnavailable': "Nie udało się odczytać bieżącego wyboru z wmux.",
+  'settings.mcpBrokerIdleHere': "W systemie Windows wspólny proces nie obsługuje jeszcze agentów: każdy agent zachowuje własny serwer MCP, więc Wł. dodaje tylko bezczynny proces.",
   'settings.mcpRegistered': 'zarejestrowano',
   'settings.mcpNotRegistered': 'nie zarejestrowano',
   'settings.mcpExperimentalTitle': 'Integracja jeszcze nie zweryfikowana end-to-end',

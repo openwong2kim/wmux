@@ -57,6 +57,9 @@ export function BrokerSettingRow({ api }: { api?: BrokerSettingApi }) {
       <SettingRow id="mcpbroker" label={t('settings.mcpBroker')} description={t('settings.mcpBrokerDesc')} data-testid="settings-mcp-broker">
         <SegmentedControl value={state.saved} options={options} onValueChange={(v) => void change(v)} ariaLabel={t('settings.mcpBroker')} />
       </SettingRow>
+      {state.hostsSessions === false && (
+        <SettingNote data-testid="settings-mcp-broker-idle">{t('settings.mcpBrokerIdleHere')}</SettingNote>
+      )}
       {state.env !== 'unset' ? (
         <SettingNote data-testid="settings-mcp-broker-env">
           {t(state.env === 'on' ? 'settings.mcpBrokerEnvOn' : 'settings.mcpBrokerEnvOff')}

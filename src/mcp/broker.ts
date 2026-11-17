@@ -32,11 +32,13 @@ import { getMcpBrokerPipeName, getAuthTokenPath } from '../shared/constants';
 import { createWmuxServer } from './index';
 import {
   createConnectionScope,
+  markBrokerHost,
   runInConnectionScope,
   type ConnectionScope,
 } from './connectionScope';
 import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
+import { staleSocketKind } from './brokerSocketPath';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
 import { peerPidOf, selfCheckPeerPid } from '../shared/peerPid';
 import { decidePeer, retryingSelfCheck } from './brokerPeer';
@@ -215,6 +217,7 @@ function main(): void {
   // a connection scope must fail rather than fall back to a shared registry.
   setReplBrokerMode();
   setBrowserReplBrokerMode();
+  markBrokerHost();
   setBrokerEnvelopeMode();
   const ownUid = typeof process.getuid === 'function' ? process.getuid() : null;
   const tokenSource = brokerTokenSource(getAuthTokenPath(), process.env.WMUX_AUTH_TOKEN, ownUid);
@@ -391,9 +394,17 @@ function main(): void {
     probe.once('error', () => {
       probe.destroy();
       staleRetried = true;
+      // Remove only a socket: a regular file, a link or a folder at this path
+      // is not a broker's leftover, so the broker stops and says so instead.
+      const kind = staleSocketKind(pipeName);
+      if (kind !== 'socket' && kind !== 'missing') {
+        console.error(`[wmux-mcp-broker] ${pipeName} is a ${kind}, not a socket; refusing to remove it`);
+        process.exit(1);
+        return;
+      }
       try {
-        fs.unlinkSync(pipeName);
-      } catch { /* already gone / not a filesystem path — listen retry decides */ }
+        if (kind === 'socket') fs.unlinkSync(pipeName);
+      } catch { /* already gone — listen retry decides */ }
       server.listen(pipeName, () => {
         console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid} (after stale-socket cleanup)`);
       });

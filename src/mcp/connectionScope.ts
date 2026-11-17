@@ -151,3 +151,37 @@ export function getConnectionScope(): ConnectionScope | undefined {
 export function runInConnectionScope<T>(scope: ConnectionScope, fn: () => T): T {
   return storage.run(scope, fn);
 }
+
+/**
+ * Set once by broker.ts at startup: this process hosts more than one agent's
+ * connection. The single-child stdio entry never sets it.
+ */
+let brokerHost = false;
+
+export function markBrokerHost(): void {
+  brokerHost = true;
+}
+
+/**
+ * The active connection's scope; in the broker, refuse when there is none.
+ *
+ * The module-global fallback is right for the single-child server, whose
+ * process belongs to one agent. In the broker the globals are shared by every
+ * connection, so a call that lost its scope must fail rather than read or
+ * write state another connection may own (as replRegistry already does).
+ */
+export function scopeOrRefuse(what: string): ConnectionScope | undefined {
+  const scope = storage.getStore();
+  if (!scope && brokerHost) {
+    throw new Error(
+      `internal: no MCP connection scope is active, so ${what} cannot be attributed to a caller. ` +
+        'Refusing rather than use state shared by every connection.',
+    );
+  }
+  return scope;
+}
+
+/** Tests only. */
+export function resetBrokerHostForTests(): void {
+  brokerHost = false;
+}

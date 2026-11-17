@@ -159,6 +159,7 @@ export function registerMcpHandlers(
       running,
       next: brokerDecision(process.platform, process.env.WMUX_MCP_BROKER, read.setting),
       platformDefaultOn: brokerDecision(process.platform, undefined, 'default').on,
+      hostsSessions: process.platform !== 'win32',
     };
   };
 
