@@ -25,7 +25,13 @@ import {
   __resetPaneResolverForTesting,
 } from '../paneResolver';
 import { PlaywrightEngine } from '../playwright/PlaywrightEngine';
-import { getOpenerKey } from '../playwright/surfaceRouting';
+import { getOpenerKey, getPinnedSurface, noteOpenedSurface } from '../playwright/surfaceRouting';
+import { getSnapshotBaseline, getSnapshotCapture } from '../playwright/snapshotCache';
+import { isOutstandingFrameRef } from '../playwright/snapshot';
+import { nextRefFor } from '../playwright/refDescriptors';
+import { getSmartElementByRef } from '../playwright/dom-intelligence';
+import { takeGuideAnnouncement } from '../playwright/guideAnnounce';
+import { sendRpc } from '../wmux-client';
 import { deliberateSleep } from '../../test-utils/waitFor';
 
 // Broker isolation invariants (Option A). The broker hosts N MCP server
@@ -200,6 +206,38 @@ describe('in the broker, a call with no connection scope is refused', () => {
     const scope = createConnectionScope();
     expect(runInConnectionScope(scope, () => getPinnedRoute())).toBeNull();
     expect(runInConnectionScope(scope, () => getOpenerKey())).toBe(runInConnectionScope(scope, () => getOpenerKey()));
+  });
+
+  it('every other per-connection store refuses with no scope and answers inside one', () => {
+    markBrokerHost();
+    const stores: [string, () => unknown, RegExp][] = [
+      ['snapshot baselines', () => getSnapshotBaseline('ws:s', ''), /the snapshot baselines/],
+      ['snapshot captures', () => getSnapshotCapture('cap-1'), /the snapshot captures/],
+      ['frame refs', () => isOutstandingFrameRef('ws:s', '12'), /the snapshot frame refs/],
+      ['ref history', () => nextRefFor('ws:s', 0), /the snapshot ref history/],
+      ['smart-snapshot cache', () => getSmartElementByRef(1), /the smart snapshot cache/],
+      ['site guide state', () => takeGuideAnnouncement('ws', 's', [], null), /the site guide state/],
+      ['surface pin (read)', () => getPinnedSurface(), /the browser surface pin/],
+      ['surface pin (write)', () => noteOpenedSurface('ws', 's'), /the browser surface pin/],
+    ];
+    for (const [name, call, refusal] of stores) {
+      expect(call, name).toThrow(refusal);
+      expect(() => runInConnectionScope(createConnectionScope(), call), name).not.toThrow();
+    }
+  });
+
+  it('sendRpc refuses to build an outbound envelope with no scope', async () => {
+    markBrokerHost();
+    const saved = process.env.WMUX_AUTH_TOKEN;
+    process.env.WMUX_AUTH_TOKEN = 'test-token';
+    try {
+      await expect(sendRpc('workspace.list' as Parameters<typeof sendRpc>[0], {}, 200)).rejects.toThrow(
+        /an outbound call cannot be attributed/,
+      );
+    } finally {
+      if (saved === undefined) delete process.env.WMUX_AUTH_TOKEN;
+      else process.env.WMUX_AUTH_TOKEN = saved;
+    }
   });
 
   it('PlaywrightEngine.getInstance refuses with no scope, and gives each scope its own engine', () => {
