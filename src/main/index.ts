@@ -223,7 +223,7 @@ import { keepOneStartMenuEntry, shouldWriteStartMenuEntry } from './notification
 import { readDaemonPid } from './updater/installTeardown';
 import { isAltF4Held, isAltF4KeyDown } from './altF4';
 import { McpRegistrar } from './mcp/McpRegistrar';
-import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
+import { BrokerSupervisor, brokerSettingAtStart, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { startBrokerAndRegister } from './mcp/brokerBoot';
 import { brokerFlag } from '../shared/mcpBroker';
 import { identitySummary, notePeerReadCheck, setBrokerIdentitySource, setBrokerStampSource, setUnownedBrokerSource } from './pipe/handlers/peerPidShadow';
@@ -948,6 +948,9 @@ const mcpRegistrar = new McpRegistrar();
 // be) listening when the first shim spawns — the shim retries connect with
 // backoff, so start order is a latency nicety, not a correctness gate.
 const mcpBrokerSupervisor = new BrokerSupervisor();
+// The Settings choice is read now, at start, so a change made in Settings
+// later never reaches this run (it applies from the next start).
+brokerSettingAtStart();
 setBrokerIdentitySource(() => mcpBrokerSupervisor.identity);
 setBrokerStampSource((stamp) => mcpBrokerSupervisor.stampMatches(stamp));
 setUnownedBrokerSource(() => mcpBrokerSupervisor.standingDown);
@@ -1377,6 +1380,7 @@ rpcRouter.setMcpSessionSink(mcpSessionTracker);
 registerMcpSessionsRpc(rpcRouter, {
   brokerEnabled: isMcpBrokerEnabled,
   brokerFlag: () => brokerFlag(process.env.WMUX_MCP_BROKER),
+  brokerSetting: () => brokerSettingAtStart().setting,
   brokerStatus: () => mcpBrokerSupervisor.status(),
   tracker: mcpSessionTracker,
   identity: () => identitySummary(),

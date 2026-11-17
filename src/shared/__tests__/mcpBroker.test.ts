@@ -1,7 +1,7 @@
 // @wmux-lane unit
 // Pure functions of the platform name passed in: the OS running the test cannot change a result.
 import { describe, expect, it } from 'vitest';
-import { BROKER_DEFAULT_ON, brokerDefault, brokerFlag } from '../mcpBroker';
+import { BROKER_DEFAULT_ON, brokerDecision, brokerDefault, brokerFlag, brokerMayRun, isBrokerSetting, type BrokerSetting } from '../mcpBroker';
 
 const PLATFORMS: NodeJS.Platform[] = ['darwin', 'linux', 'win32'];
 const VALUES: (string | undefined)[] = [undefined, '0', '1'];
@@ -59,5 +59,46 @@ describe('brokerFlag', () => {
     expect(brokerFlag('0')).toBe('off');
     expect(brokerFlag(undefined)).toBe('unset');
     expect(brokerFlag('true')).toBe('unset');
+  });
+});
+
+describe('brokerDecision: environment, then Settings, then the platform', () => {
+  const SETTINGS: BrokerSetting[] = ['default', 'on', 'off'];
+  for (const platform of PLATFORMS) {
+    for (const value of VALUES) {
+      for (const setting of SETTINGS) {
+        const want = value === '1' ? { on: true, source: 'env' }
+          : value === '0' ? { on: false, source: 'env' }
+            : setting === 'on' ? { on: true, source: 'setting' }
+              : setting === 'off' ? { on: false, source: 'setting' }
+                : { on: false, source: 'default' };
+        it(`${platform}, WMUX_MCP_BROKER=${String(value)}, Settings ${setting} → ${want.on ? 'on' : 'off'} by ${want.source}`, () => {
+          expect(brokerDecision(platform, value, setting)).toEqual(want);
+        });
+      }
+    }
+  }
+
+  it('Default follows a platform default that is on', () => {
+    expect(brokerDecision('darwin', undefined, 'default', ['darwin'])).toEqual({ on: true, source: 'default' });
+    expect(brokerDecision('darwin', undefined, 'off', ['darwin'])).toEqual({ on: false, source: 'setting' });
+  });
+});
+
+describe('brokerMayRun (wmux mcp register probes only when this is true)', () => {
+  it('is false only when the environment or Settings turns it off', () => {
+    expect(brokerMayRun('darwin', '0', 'on')).toBe(false);
+    expect(brokerMayRun('darwin', undefined, 'off')).toBe(false);
+    expect(brokerMayRun('darwin', '1', 'off')).toBe(true);
+    expect(brokerMayRun('darwin', undefined, 'on')).toBe(true);
+    // The app may have WMUX_MCP_BROKER=1 that this shell does not see.
+    expect(brokerMayRun('win32', undefined, 'default')).toBe(true);
+  });
+});
+
+describe('isBrokerSetting', () => {
+  it('takes default, on and off only', () => {
+    for (const v of ['default', 'on', 'off']) expect(isBrokerSetting(v)).toBe(true);
+    for (const v of ['', 'ON', '1', 1, null, undefined, {}]) expect(isBrokerSetting(v)).toBe(false);
   });
 });

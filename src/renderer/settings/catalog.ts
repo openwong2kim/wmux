@@ -187,6 +187,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'clauderesumeonstart', tab: 'claude-integration', labelKey: 'claudeIntegration.resumeOnStart', descKey: 'claudeIntegration.resumeOnStartDesc', synonyms: 'resume restart recover continue launch boot session 재시작 이어가기 복원' },
   { id: 'claudefilesend', tab: 'claude-integration', labelKey: 'claudeIntegration.fileSend', descKey: 'claudeIntegration.fileSendDesc', synonyms: 'send file attachment phone mobile SendUserFile remote control 파일 보내기 첨부 휴대폰 폰' },
   { id: 'mcp', tab: 'claude-integration', labelKey: 'settings.mcpServers', synonyms: 'mcp plugin tools broker register codex' },
+  { id: 'mcpbroker', tab: 'claude-integration', labelKey: 'settings.mcpBroker', descKey: 'settings.mcpBrokerDesc', synonyms: 'mcp broker shared process memory WMUX_MCP_BROKER 공유 프로세스 메모리 브로커' },
 
   { id: 'claudeacct', tab: 'accounts', labelKey: 'accounts.title', synonyms: 'claude account login subscription max usage quota 계정' },
 

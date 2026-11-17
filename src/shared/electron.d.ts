@@ -1,5 +1,6 @@
 import type { ElectronAPI, McpRegisterTargetResult, McpTargetStatusPayload } from '../preload/preload';
 import type { QuickLaunchAPI } from '../preload/quickLaunchPreload';
+import type { BrokerSetting, BrokerSettingPayload } from './mcpBroker';
 import type {
   AgySensorInstallResult,
   AgySensorStatus,
@@ -125,6 +126,8 @@ declare global {
         reregister: () => Promise<{ targets: McpTargetStatusPayload[] }>;
         unregister: () => Promise<{ targets: McpTargetStatusPayload[] }>;
         registerTarget: (targetId: string) => Promise<McpRegisterTargetResult>;
+        brokerSetting?: () => Promise<BrokerSettingPayload>;
+        setBrokerSetting?: (setting: BrokerSetting) => Promise<BrokerSettingPayload>;
       };
       tokenUsage?: {
         readQuota: (request?: QuotaReadRequest) => Promise<QuotaReadResult>;

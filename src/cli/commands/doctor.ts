@@ -607,7 +607,10 @@ function downConsequences(kinds: ReadonlySet<string>): string[] {
 }
 
 /** Why the broker is on, and the way back, for an app that says what it read. */
-function brokerRule(flag: McpSessionsSummary['broker']['flag']): string | undefined {
+function brokerRule(flag: McpSessionsSummary['broker']['flag'], setting?: McpSessionsSummary['broker']['setting']): string | undefined {
+  if (flag === 'unset' && setting === 'on') {
+    return 'On because Settings > Claude Code > Shared MCP process is On. Off there turns it off, from the next wmux start.';
+  }
   if (flag === 'on') {
     return 'On because WMUX_MCP_BROKER=1 is set for the app. To turn it off, remove it (or set it to 0) and restart wmux: '
       + 'agents then run their own MCP server, and the entries the app registers go back to the full bundle at that start.';
@@ -626,17 +629,28 @@ function brokerRule(flag: McpSessionsSummary['broker']['flag']): string | undefi
 function brokerLine(b: McpSessionsSummary['broker'], kinds: ReadonlySet<string>): CheckLine {
   if (!b.enabled) {
     if (b.flag === 'off') return { label: 'broker', value: 'off (WMUX_MCP_BROKER=0)', verdict: 'OK' };
+    if (b.flag === 'unset' && b.setting === 'off') {
+      return {
+        label: 'broker',
+        value: 'off (Settings)',
+        verdict: 'OK',
+        hint: 'Settings > Claude Code > Shared MCP process turns it on, from the next wmux start.',
+      };
+    }
     if (b.flag === 'unset') {
       return {
         label: 'broker',
         value: 'off (the default)',
         verdict: 'OK',
-        hint: "WMUX_MCP_BROKER=1 in the app's environment turns it on, from the next wmux start.",
+        // An app that sends no `setting` has no such Settings row.
+        hint: b.setting === undefined
+          ? "WMUX_MCP_BROKER=1 in the app's environment turns it on, from the next wmux start."
+          : "Settings > Claude Code > Shared MCP process, or WMUX_MCP_BROKER=1 in the app's environment, turns it on, from the next wmux start.",
       };
     }
     return { label: 'broker', value: 'off', verdict: 'OK' };
   }
-  const rule = brokerRule(b.flag);
+  const rule = brokerRule(b.flag, b.setting);
   if (b.running) {
     return {
       label: 'broker',

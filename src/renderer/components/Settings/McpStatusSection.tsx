@@ -6,6 +6,8 @@ import { IconCheck } from '../icons';
 import Badge from '../ui/Badge';
 import Button from '../ui/Button';
 import { SettingsSection, SettingNote } from './SettingsLayout';
+import { BrokerSettingRow } from './BrokerSettingRow';
+import type { BrokerSetting, BrokerSettingPayload } from '../../../shared/mcpBroker';
 import { MCP_STATUS_CHANGED_EVENT } from './IntegrationSetupSection';
 import type {
   McpStatusPayload,
@@ -18,6 +20,8 @@ export interface ElectronMcpApi {
   reregister: () => Promise<McpStatusPayload>;
   unregister: () => Promise<McpStatusPayload>;
   registerTarget?: (targetId: string) => Promise<McpRegisterTargetResult>;
+  brokerSetting?: () => Promise<BrokerSettingPayload>;
+  setBrokerSetting?: (setting: BrokerSetting) => Promise<BrokerSettingPayload>;
 }
 
 export const KNOWN_MCP_REGISTRATION_ERRORS: readonly string[] = [
@@ -241,6 +245,7 @@ export function McpStatusSection({ api }: { api?: ElectronMcpApi } = {}) {
       ) : (
         <SettingNote>{t('settings.mcpUnavailable')}</SettingNote>
       )}
+      <BrokerSettingRow api={mcpApi} />
     </SettingsSection>
   );
 }

@@ -10,6 +10,7 @@ import {
   type AllowPrivateNetworkState,
 } from '../shared/browserBackend';
 import { WORKFLOW_OWNER_IPC } from '../shared/botWorkflow';
+import type { BrokerSetting, BrokerSettingPayload } from '../shared/mcpBroker';
 import type { TerminalCoreSettings, TerminalEngine } from '../shared/terminalCoreSettings';
 import type { LabsSettings, LabsStatus } from '../shared/labsSettings';
 import { CHAT_IPC } from '../shared/transcript/chatIpc';
@@ -2108,6 +2109,9 @@ const electronAPI = {
     unregister: () => ipcRenderer.invoke(IPC.MCP_UNREGISTER) as Promise<McpStatusPayload>,
     registerTarget: (targetId: string) =>
       ipcRenderer.invoke(IPC.MCP_REGISTER_TARGET, targetId) as Promise<McpRegisterTargetResult>,
+    brokerSetting: () => ipcRenderer.invoke(IPC.MCP_BROKER_SETTING_GET) as Promise<BrokerSettingPayload>,
+    setBrokerSetting: (setting: BrokerSetting) =>
+      ipcRenderer.invoke(IPC.MCP_BROKER_SETTING_SET, setting) as Promise<BrokerSettingPayload>,
   },
   tokenUsage: {
     readQuota: (request?: QuotaReadRequest) =>

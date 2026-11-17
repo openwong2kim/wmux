@@ -19,6 +19,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const { connectMock } = vi.hoisted(() => ({ connectMock: vi.fn() }));
 vi.mock('net', () => ({ connect: connectMock, default: { connect: connectMock } }));
 vi.mock('fs');
+const brokerSettingMock = vi.hoisted(() => vi.fn(() => ({ setting: 'default' as 'default' | 'on' | 'off' })));
+vi.mock('../../../shared/brokerSetting', () => ({ readBrokerSetting: brokerSettingMock }));
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -95,6 +97,20 @@ describe('resolveWmuxScript', () => {
     expect(connectMock).not.toHaveBeenCalled();
     expect(resolved).toMatch(/index\.js$|entry\.js$/);
     expect(resolved).not.toMatch(/shim\.js$/);
+  });
+
+  it('Off in Settings skips the probe like WMUX_MCP_BROKER=0, unless the environment turns it on', async () => {
+    brokerSettingMock.mockReturnValue({ setting: 'off' });
+    scriptConnect('connect');
+    existsFor(['shim', 'bundle']);
+    try {
+      expect(await resolveWmuxScript()).not.toMatch(/shim\.js$/);
+      expect(connectMock).not.toHaveBeenCalled();
+      process.env.WMUX_MCP_BROKER = '1';
+      expect(await resolveWmuxScript()).toMatch(/shim\.js$/);
+    } finally {
+      brokerSettingMock.mockReturnValue({ setting: 'default' });
+    }
   });
 
   it('probe succeeds and shim exists: returns the shim path', async () => {
