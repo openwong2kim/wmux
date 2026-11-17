@@ -5,7 +5,7 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { staleSocketKind } from '../brokerSocketPath';
+import { socketIdentity, staleSocketKind } from '../brokerSocketPath';
 
 let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wsk-')); });
@@ -29,4 +29,37 @@ describe.skipIf(process.platform === 'win32')('staleSocketKind', () => {
     fs.symlinkSync(path.join(dir, 'f'), path.join(dir, 'l'));
     expect(staleSocketKind(path.join(dir, 'l'))).toBe('symlink');
   });
+
+  it('gives a socket a stable identity, a new one once rebound, and none to anything else', async () => {
+    const sock = path.join(dir, 'id.sock');
+    const listen = async () => { const s = net.createServer(); await new Promise<void>((r) => s.listen(sock, r)); return s; };
+    const first = await listen();
+    const a = socketIdentity(sock);
+    expect(a).toMatch(/^\d+:\d+$/);
+    expect(socketIdentity(sock)).toBe(a);
+    await new Promise<void>((r) => first.close(() => r()));
+    const second = await listen();
+    try {
+      expect(socketIdentity(sock)).not.toBe(a);
+    } finally {
+      await new Promise<void>((r) => second.close(() => r()));
+    }
+    fs.writeFileSync(path.join(dir, 'f2'), 'x');
+    expect(socketIdentity(path.join(dir, 'f2'))).toBeNull();
+    expect(socketIdentity(path.join(dir, 'gone'))).toBeNull();
+  });
+
+  it('reads a path it cannot look at as unreadable, not as a non-socket', () => {
+    const locked = path.join(dir, 'locked');
+    fs.mkdirSync(locked);
+    fs.writeFileSync(path.join(locked, 'x'), 'x');
+    fs.chmodSync(locked, 0o000);
+    try {
+      if (process.getuid?.() === 0) return; // root reads through the mode
+      expect(staleSocketKind(path.join(locked, 'x'))).toBe('unreadable');
+    } finally {
+      fs.chmodSync(locked, 0o700);
+    }
+  });
 });
+

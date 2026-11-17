@@ -93,6 +93,8 @@ export class BrokerSupervisor {
   private failureTimes: number[] = [];
   /** Set once the breaker trips; cleared only by a new supervisor (an app restart). */
   private tripped = false;
+  /** The broker exited 78: something that is not a socket sits at its path. */
+  private pathOccupied = false;
   /** Tool calls in flight, as the current child last reported them. */
   private inflight: string[] = [];
   private lastCrashTools: string[] = [];
@@ -161,6 +163,7 @@ export class BrokerSupervisor {
     if (this.stopped) return 'stopped';
     if (this.scriptMissing) return 'script-missing';
     if (this.reclaimTimer) return 'standing-down';
+    if (this.pathOccupied) return 'path-occupied';
     if (this.tripped) return 'crash-loop';
     if (this.restartTimer) return 'restarting';
     return 'not-started';
@@ -320,6 +323,7 @@ export class BrokerSupervisor {
         this.clearChild();
         settled = true;
         this.tripped = true;
+        this.pathOccupied = true;
         console.error(
           '[BrokerSupervisor] the broker socket path holds something that is not a socket; ' +
             'not restarting it until wmux restarts (agents use their own MCP server)',

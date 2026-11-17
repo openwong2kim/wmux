@@ -38,7 +38,7 @@ import {
 } from './connectionScope';
 import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
-import { staleSocketKind } from './brokerSocketPath';
+import { socketIdentity, staleSocketKind } from './brokerSocketPath';
 import { BROKER_EXIT_PATH_OCCUPIED } from '../shared/mcpBroker';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
 import { peerPidOf, selfCheckPeerPid } from '../shared/peerPid';
@@ -386,6 +386,9 @@ function main(): void {
       process.exit(75);
       return;
     }
+    // What is at the path before the probe: the unlink below must remove this
+    // same socket, not one another broker bound while the probe ran.
+    const before = socketIdentity(pipeName);
     const probe = net.connect(pipeName);
     probe.once('connect', () => {
       probe.destroy();
@@ -399,6 +402,13 @@ function main(): void {
       // is not a broker's leftover, so the broker stops and says so instead
       // (an exit the supervisor does not restart).
       const kind = staleSocketKind(pipeName);
+      if (kind === 'unreadable') {
+        // Not known to be anything: leave it, and exit as a failure the
+        // supervisor retries with its backoff.
+        console.error(`[wmux-mcp-broker] could not inspect ${pipeName}; leaving it`);
+        process.exit(1);
+        return;
+      }
       if (kind !== 'socket' && kind !== 'missing') {
         console.error(`[wmux-mcp-broker] ${pipeName} is a ${kind}, not a socket; refusing to remove it`);
         process.exit(BROKER_EXIT_PATH_OCCUPIED);
@@ -409,6 +419,11 @@ function main(): void {
       // remove its socket.
       if (kind === 'socket' && err.code !== 'ECONNREFUSED') {
         console.error(`[wmux-mcp-broker] socket at ${pipeName} did not refuse (${err.code ?? 'error'}); standing down`);
+        process.exit(75);
+        return;
+      }
+      if (kind === 'socket' && (before === null || socketIdentity(pipeName) !== before)) {
+        console.error(`[wmux-mcp-broker] the socket at ${pipeName} changed during the check; standing down`);
         process.exit(75);
         return;
       }

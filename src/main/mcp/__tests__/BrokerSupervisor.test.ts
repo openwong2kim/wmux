@@ -115,6 +115,7 @@ describe('BrokerSupervisor: something that is not a socket at the broker path', 
     await vi.advanceTimersByTimeAsync(60_000);
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(sup.status().running).toBe(false);
+    expect(sup.status().downReason).toBe('path-occupied');
     sup.stop();
     vi.useRealTimers();
   });
