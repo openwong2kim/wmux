@@ -319,6 +319,11 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
             onKeyDown={wslDistros.length > 1 ? (e) => {
               if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'ArrowRight') return;
               e.preventDefault();
+              // Already open (hover): the effect will not re-run, so focus now.
+              if (wslListOpenRef.current) {
+                wslFlyoutRef.current?.querySelector<HTMLButtonElement>('[data-wsl-distro]')?.focus();
+                return;
+              }
               wslFocusFirst.current = true;
               setWslListOpen(true);
             } : undefined}

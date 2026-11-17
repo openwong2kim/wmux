@@ -154,6 +154,15 @@ describe('Browse WSL folder row', () => {
     expect(document.activeElement).toBe(distroRow('Ubuntu'));
   });
 
+  it('ArrowRight on the trigger focuses the first distro when hover already opened the flyout', async () => {
+    install('win32', ['Ubuntu', 'Debian']);
+    await mount();
+    await act(async () => row()!.click());
+    expect(document.activeElement).not.toBe(distroRow('Ubuntu'));
+    await act(async () => { row()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
+    expect(document.activeElement).toBe(distroRow('Ubuntu'));
+  });
+
   it('Escape folds the flyout first and only the next Escape closes the menu', async () => {
     install('win32', ['Ubuntu', 'Debian']);
     const onClose = await mount();
