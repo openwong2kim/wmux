@@ -1611,6 +1611,45 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(events.map((e) => e.clientMessageId)).toEqual([pasted, undefined]);
     });
 
+    it('/turns: the exact text wins over a spacing-only match, and a capped pasted row matches by its start', async () => {
+      const info = await start();
+      const h = { ...bearer(info.token as string), ...QUEUE_CAP };
+      const fns = wireQueue();
+      const [spaced, joined, long] = [freshId(), freshId(), freshId()];
+      const body = 'x'.repeat(9_000);
+      fns.delivered.mockImplementation(() => [
+        { clientMessageId: spaced, text: 'a b', at: 0 },
+        { clientMessageId: joined, text: 'ab', at: 0 },
+        { clientMessageId: long, text: body, at: 0 },
+      ]);
+      // As parseEntry keeps it: the first 8000 characters (the opening marker
+      // included), then an ellipsis; the closing marker is cut off.
+      const capped = `${`\n\n<pasted_content id="9a9a">\n${body}\n</pasted_content id="9a9a">\n`.slice(0, 8_000)}…`;
+      projectorMock.snapshot.mockReturnValue(page([
+        { id: 'r1', kind: 'user_text', text: 'ab', ts: 10 },
+        { id: 'r2', kind: 'user_text', text: 'a b', ts: 10 },
+        { id: 'r3', kind: 'user_text', text: capped, ts: 10 },
+      ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
+      const events = (await turns(h)).body.events as Array<Record<string, unknown>>;
+      expect(events.map((e) => e.clientMessageId)).toEqual([joined, spaced, long]);
+    });
+
+    it('/turns: a photo whose caption Claude Code stored as a paste still pairs', async () => {
+      const dir = '/Users/me/.wmux/uploads/phone';
+      Object.assign((server as unknown as { deps: Record<string, unknown> }).deps, { uploadsDir: dir });
+      const info = await start();
+      const h = { ...bearer(info.token as string), ...QUEUE_CAP };
+      const fns = wireQueue();
+      const cmid = freshId();
+      const shot = `${dir}/photo-2026-11-17T20-53-51-000Z-0a1b2c31.jpg`;
+      fns.delivered.mockImplementation(() => [{ clientMessageId: cmid, text: `${shot} why does this\ncrash on start`, at: 0 }]);
+      projectorMock.snapshot.mockReturnValue(page([
+        { id: 'ph', kind: 'user_text', text: '[Image #1] \n\n<pasted_content id="77aa">\nwhy does this\ncrash on start\n</pasted_content id="77aa">\n', hasImage: true, ts: 10 },
+      ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
+      const events = (await turns(h)).body.events as Array<Record<string, unknown>>;
+      expect(events.map((e) => e.clientMessageId)).toEqual([cmid]);
+    });
+
     it('/turns: a photo row pairs by its placeholders with the upload paths the daemon typed', async () => {
       const dir = '/Users/me/.wmux/uploads/phone';
       Object.assign((server as unknown as { deps: Record<string, unknown> }).deps, { uploadsDir: dir });

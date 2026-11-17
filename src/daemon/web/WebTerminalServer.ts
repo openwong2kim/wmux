@@ -1,4 +1,4 @@
-import { normalizeForPromptMatch } from '../../shared/promptMatch';
+import { normalizeForPromptMatch, stripPasteMarkers } from '../../shared/promptMatch';
 import { LiveSettingsError, type LiveAgentSettings } from './codexLiveSettings';
 import type { PaneSettingsChoice } from './paneCodexSettings';
 import { buildAgentLaunch, type AgentLaunchChoice, type AgentLaunchOptions } from './agentLaunch';
@@ -1173,6 +1173,8 @@ const CHAT_LAUNCH_MAX_BODY_BYTES = 16 * 1024;
 const CHAT_CANCEL_MAX_BODY_BYTES = 4 * 1024;
 /** A transcript row may carry a timestamp slightly before the daemon noted the delivery. */
 const CHAT_DELIVERY_SKEW_MS = 5_000;
+/** The transcript keeps this many characters of a user row, then an ellipsis (transcript/parseEntry.ts MAX_TEXT_CHARS). */
+const CAPPED_ROW_CHARS = 8_000;
 /** Same 1 Hz floor as the nudge: a blocked badge must be right, not instant. */
 const CHAT_BLOCKED_COALESCE_MS = 1000;
 /** Moa card ids remembered until they settle (see `moaCardIds`). */
@@ -5296,17 +5298,24 @@ export class WebTerminalServer {
       ...this.moaWakeRows(sessionId, owner),
     ];
     if (!Array.isArray(events) || delivered.length === 0) return events;
-    const unused = [...delivered];
+    // Each delivery with its normal form (shared/promptMatch.ts), worked out once.
+    const unused = delivered.map((m) => ({ ...m, normal: normalizeForPromptMatch(m.text) }));
     const photoMatches = typedPhotoTextMatcher(this.deps.uploadsDir);
     return events.map((event: Record<string, unknown>) => {
       if (event?.kind !== 'user_text' || typeof event.text !== 'string') return event;
       const text = event.text.trim();
       const ts = typeof event.ts === 'number' ? event.ts : undefined;
       const inTime = (m: ChatDeliveredMessage) => ts === undefined || ts >= m.at - CHAT_DELIVERY_SKEW_MS;
-      // Compared in the shared normal form: Claude Code stores a long or
-      // multi-line message inside paste markers (shared/promptMatch.ts).
-      const normal = normalizeForPromptMatch(text);
-      let index = unused.findIndex((m) => normalizeForPromptMatch(m.text) === normal && inTime(m));
+      // The exact text first; then the normal form, since Claude Code stores a
+      // long or multi-line message inside paste markers with breaks around
+      // them. The transcript keeps the first CAPPED_ROW_CHARS characters of a
+      // longer one and an ellipsis: that row matches by its start.
+      let index = unused.findIndex((m) => m.text.trim() === text && inTime(m));
+      if (index < 0) {
+        const capped = (event.text as string).length > CAPPED_ROW_CHARS && text.endsWith('…');
+        const normal = normalizeForPromptMatch(capped ? text.slice(0, -1).replace(/<\/?p[^>]*$/, '') : text);
+        index = unused.findIndex((m) => (capped ? normal.length > 0 && m.normal.startsWith(normal) : m.normal === normal) && inTime(m));
+      }
       // A photo row reads `[Image #N]` where the typed text held the upload path.
       // Photo sends of the same count read alike, so a row takes the unclaimed
       // send nearest its own time: one sent before the row first, then one in
@@ -5322,7 +5331,7 @@ export class WebTerminalServer {
           return k >= 0 && x[k] < y[k];
         };
         unused.forEach((m, i) => {
-          if (inTime(m) && photoMatches(m.text, text) && (index < 0 || better(m, unused[index]))) index = i;
+          if (inTime(m) && photoMatches(m.text, stripPasteMarkers(text)) && (index < 0 || better(m, unused[index]))) index = i;
         });
       }
       if (index < 0) return event;

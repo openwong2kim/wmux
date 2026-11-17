@@ -256,7 +256,11 @@ export interface Episode {
   taskId: string;
   sessionId: string;
   workspaceId: string;
-  /** sha256 of the prompt as typed (sanitized, CRLF→LF, trimmed). */
+  /**
+   * sha256 of the prompt as typed (sanitized), in the shared normal form
+   * (shared/promptMatch.ts: paste markers and whitespace removed), which the
+   * transcript's user entry is compared in too.
+   */
   promptHash: string;
   sentAt: number;
   /** Agent messages the task held at the write (more later: the agent replied itself). */
@@ -500,7 +504,7 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
   for (const event of events) {
     if (event.kind === 'user_text') {
       if (!ep.opened) return { kind: 'failed', reason: 'the agent was given other input on this PC before the task' };
-      if (ep.limitStopped && normalizeForPromptMatch(event.text) === normalizeForPromptMatch(USAGE_LIMIT_CONTINUE_PROMPT)) {
+      if (ep.limitStopped && event.text.trim() === USAGE_LIMIT_CONTINUE_PROMPT) {
         ep.limitStopped = false;
         ep.limit = undefined;
         ep.limitResumed = true;

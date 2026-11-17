@@ -670,8 +670,8 @@ export function flattenPromptForPty(text: string): string {
 }
 
 // How our own prompt is recognised when Claude Code reports it back through
-// UserPromptSubmit: shared with the daemon's transcript checks (shared/promptMatch.ts).
-export { normalizeForPromptMatch } from '../../shared/promptMatch';
+// UserPromptSubmit: normalizeForPromptMatch, shared with the daemon's
+// transcript checks (shared/promptMatch.ts).
 
 /** Bracketed-paste delimiters (DECSET 2004). */
 const PASTE_START = '\u001b[200~';
