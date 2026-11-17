@@ -35,8 +35,11 @@ import { IPC } from '../../../../shared/constants';
 import type { PTYManager } from '../../../pty/PTYManager';
 import type { PTYBridge } from '../../../pty/PTYBridge';
 
+// Captured before the spy: on real Windows path === path.win32, so referencing
+// path.win32.basename inside the mock would call the spy itself.
+const winBasename = path.win32.basename;
 const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
-beforeEach(() => { vi.spyOn(path, 'basename').mockImplementation(path.win32.basename); Object.defineProperty(process, 'platform', { value: 'win32' }); notify.mockClear(); enumerate.mockClear(); distros = []; known = null; });
+beforeEach(() => { vi.spyOn(path, 'basename').mockImplementation(winBasename); Object.defineProperty(process, 'platform', { value: 'win32' }); notify.mockClear(); enumerate.mockClear(); distros = []; known = null; });
 afterEach(() => { vi.restoreAllMocks(); Object.defineProperty(process, 'platform', realPlatform); });
 
 async function create(opts: Record<string, unknown>[]): Promise<Array<{ shell?: string; cwd?: string; shellArgs?: string[] }>> {
