@@ -39,6 +39,7 @@ import {
 import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
 import { staleSocketKind } from './brokerSocketPath';
+import { BROKER_EXIT_PATH_OCCUPIED } from '../shared/mcpBroker';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
 import { peerPidOf, selfCheckPeerPid } from '../shared/peerPid';
 import { decidePeer, retryingSelfCheck } from './brokerPeer';
@@ -391,15 +392,24 @@ function main(): void {
       console.error('[wmux-mcp-broker] another broker is live; standing down');
       process.exit(75);
     });
-    probe.once('error', () => {
+    probe.once('error', (err: NodeJS.ErrnoException) => {
       probe.destroy();
       staleRetried = true;
       // Remove only a socket: a regular file, a link or a folder at this path
-      // is not a broker's leftover, so the broker stops and says so instead.
+      // is not a broker's leftover, so the broker stops and says so instead
+      // (an exit the supervisor does not restart).
       const kind = staleSocketKind(pipeName);
       if (kind !== 'socket' && kind !== 'missing') {
         console.error(`[wmux-mcp-broker] ${pipeName} is a ${kind}, not a socket; refusing to remove it`);
-        process.exit(1);
+        process.exit(BROKER_EXIT_PATH_OCCUPIED);
+        return;
+      }
+      // Only a refused connect shows nothing listens. Any other error (a full
+      // backlog, a timeout) may be a live broker: stand down rather than
+      // remove its socket.
+      if (kind === 'socket' && err.code !== 'ECONNREFUSED') {
+        console.error(`[wmux-mcp-broker] socket at ${pipeName} did not refuse (${err.code ?? 'error'}); standing down`);
+        process.exit(75);
         return;
       }
       try {

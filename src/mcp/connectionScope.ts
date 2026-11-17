@@ -12,10 +12,11 @@
  *
  * AsyncLocalStorage is the seam that avoids that: the broker wraps each
  * connection's transport dispatch in `runInConnectionScope(scope, ...)`, and
- * the three stateful modules consult `getConnectionScope()` first, falling
- * back to their module globals when no scope is active. The single-child
- * entry never establishes a scope, so its behavior is byte-for-byte the
- * legacy path.
+ * the stateful modules read their state through `scopeOrRefuse(...)`: the
+ * connection's own state when a scope is active, their module globals in the
+ * single-child entry (which never establishes a scope, so its behavior is
+ * byte-for-byte the legacy path), and a refusal in the broker. A new
+ * per-connection store follows the same pattern.
  */
 import { AsyncLocalStorage } from 'async_hooks';
 import type { PinnedRoute } from './paneResolver';

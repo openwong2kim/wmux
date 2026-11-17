@@ -7,7 +7,7 @@ import { canConnectBrokerPipe } from './brokerProbe';
 import { brokerOffEffects, type BrokerOffEffects } from './brokerOffMarker';
 import { parseBrokerConnectionsReport, type BrokerDownReason, type BrokerStampMessage, type BrokerStatus } from '../../shared/mcpSessions';
 import { processStartTime } from '../../shared/processStartTime';
-import { brokerDecision, type BrokerDecision, type BrokerSetting } from '../../shared/mcpBroker';
+import { BROKER_EXIT_PATH_OCCUPIED, brokerDecision, type BrokerDecision, type BrokerSetting } from '../../shared/mcpBroker';
 import { readBrokerSetting, type BrokerSettingRead } from '../../shared/brokerSetting';
 import { BROKER_LIMITS_ENV, type BrokerLimits } from '../../shared/brokerLimits';
 import { readBrokerLimitsConfig } from './brokerConfig';
@@ -312,6 +312,19 @@ export class BrokerSupervisor {
         this.standDowns++;
         console.log('[BrokerSupervisor] pipe already served by another broker; standing down');
         this.startReclaimProbe();
+        return;
+      }
+      if (code === BROKER_EXIT_PATH_OCCUPIED) {
+        // Something that is not a socket sits at the broker's path: no restart
+        // can fix that, so stop the way a tripped breaker does.
+        this.clearChild();
+        settled = true;
+        this.tripped = true;
+        console.error(
+          '[BrokerSupervisor] the broker socket path holds something that is not a socket; ' +
+            'not restarting it until wmux restarts (agents use their own MCP server)',
+        );
+        void this.brokerOff.tripped().catch(() => undefined);
         return;
       }
       scheduleRestart(`broker exited code=${code} signal=${signal}`, 'crash');

@@ -23,7 +23,7 @@ vi.mock('../../../mcp/BrokerSupervisor', () => ({ mcpBrokerDecision: () => ({ on
 import { IPC } from '../../../../shared/constants';
 import { registerMcpHandlers } from '../mcp.handler';
 import type { McpRegistrar } from '../../../mcp/McpRegistrar';
-import type { BrokerSettingPayload } from '../../../../shared/mcpBroker';
+import { brokerHostsSessions, type BrokerSettingPayload } from '../../../../shared/mcpBroker';
 
 async function handler(channel: string) {
   const electron = (await import('electron')) as unknown as { __handlers: Map<string, (...a: unknown[]) => unknown> };
@@ -72,7 +72,7 @@ describe('mcp:broker-setting', () => {
 
   it('says whether this platform hosts sessions (not on win32)', async () => {
     const res = (await (await handler(IPC.MCP_BROKER_SETTING_GET))({})) as BrokerSettingPayload;
-    expect(res.hostsSessions).toBe(process.platform !== 'win32');
+    expect(res.hostsSessions).toBe(brokerHostsSessions(process.platform));
   });
 
   it('a file that was not used reports why', async () => {

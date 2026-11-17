@@ -25,6 +25,7 @@ import {
   __resetPaneResolverForTesting,
 } from '../paneResolver';
 import { PlaywrightEngine } from '../playwright/PlaywrightEngine';
+import { getOpenerKey } from '../playwright/surfaceRouting';
 import { deliberateSleep } from '../../test-utils/waitFor';
 
 // Broker isolation invariants (Option A). The broker hosts N MCP server
@@ -190,6 +191,15 @@ describe('in the broker, a call with no connection scope is refused', () => {
       expect(getClientIdentity()).toEqual({ name: 'agent-a', version: '1.0' });
       expect(getWorkspaceToken()).toBe('tok-a');
     });
+  });
+
+  it('the pinned pane route and the browser opener refuse too, and work inside a scope', () => {
+    markBrokerHost();
+    expect(() => getPinnedRoute()).toThrow(/the pinned pane route cannot be attributed/);
+    expect(() => getOpenerKey()).toThrow(/the browser opener cannot be attributed/);
+    const scope = createConnectionScope();
+    expect(runInConnectionScope(scope, () => getPinnedRoute())).toBeNull();
+    expect(runInConnectionScope(scope, () => getOpenerKey())).toBe(runInConnectionScope(scope, () => getOpenerKey()));
   });
 
   it('PlaywrightEngine.getInstance refuses with no scope, and gives each scope its own engine', () => {

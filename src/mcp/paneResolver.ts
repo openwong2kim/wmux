@@ -25,7 +25,7 @@
  */
 
 import type { RpcMethod } from '../shared/rpc';
-import { getConnectionScope } from './connectionScope';
+import { scopeOrRefuse } from './connectionScope';
 
 export interface PinnedRoute {
   readonly ptyId: string;
@@ -62,7 +62,7 @@ interface PinSlots {
 }
 
 function slots(): PinSlots {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the pinned pane route');
   if (scope) {
     return {
       get: () => scope.pinnedRoute,

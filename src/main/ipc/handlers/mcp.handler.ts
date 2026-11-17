@@ -3,7 +3,7 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { McpRegistrar, McpRegistrarStatus } from '../../mcp/McpRegistrar';
 import { externalRegistrationSkipReason } from '../../../shared/mcpTargets';
-import { brokerDecision, brokerFlag, isBrokerSetting, type BrokerSettingPayload } from '../../../shared/mcpBroker';
+import { brokerDecision, brokerFlag, brokerHostsSessions, isBrokerSetting, type BrokerSettingPayload } from '../../../shared/mcpBroker';
 import { readBrokerSetting, writeBrokerSetting } from '../../../shared/brokerSetting';
 import { mcpBrokerDecision } from '../../mcp/BrokerSupervisor';
 
@@ -159,7 +159,7 @@ export function registerMcpHandlers(
       running,
       next: brokerDecision(process.platform, process.env.WMUX_MCP_BROKER, read.setting),
       platformDefaultOn: brokerDecision(process.platform, undefined, 'default').on,
-      hostsSessions: process.platform !== 'win32',
+      hostsSessions: brokerHostsSessions(process.platform),
     };
   };
 

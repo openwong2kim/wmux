@@ -1,4 +1,4 @@
-import { getConnectionScope } from '../connectionScope';
+import { scopeOrRefuse } from '../connectionScope';
 import { snapshotSurfaceKey } from './snapshotCache';
 import {
   guideSetKey,
@@ -29,7 +29,7 @@ const MAX_SURFACES = 64;
 let moduleState: Map<string, string> | undefined;
 
 function getState(): Map<string, string> {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the site guide state');
   if (scope) {
     const existing = scope.siteGuideAnnounce as Map<string, string> | undefined;
     if (existing) return existing;
