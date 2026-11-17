@@ -1097,6 +1097,19 @@ const resultLine = (id: string, text: string): string => JSON.stringify({ type: 
 const wakeLine = (): string => JSON.stringify({ type: 'user', uuid: `w${seq}`, timestamp: stamp(), isMeta: true, turnOrigin: 'scheduled', promptSource: 'system',
   message: { role: 'user', content: 'scheduled wake' } });
 
+describe('a prompt Claude Code stored as a paste (#3412)', () => {
+  it('recorded form: the paste-wrapped prompt opens the episode and the turn end is the reply', async () => {
+    task = inboundTask('Reply with PONG.\nThen run uname -s and say what it printed.');
+    const lines = fs.readFileSync(path.join(__dirname, 'fixtures', 'pasted', 'prompt.jsonl'), 'utf8').split('\n').filter(Boolean);
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(...lines);
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG. `uname -s` printed `Linux`.']);
+    expect(moves).toEqual([{ to: 'working' }, { to: 'input-required' }]);
+  });
+});
+
 describe('background work the agent leaves running', () => {
   for (const name of ['hooks', 'nohooks']) {
     it(`real transcript (${name}): the turn that leaves the command running is progress, the task stays working; the next turn end is the answer`, async () => {
