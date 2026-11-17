@@ -66,7 +66,8 @@ export function BrokerSettingRow({ api }: { api?: BrokerSettingApi }) {
           {t(state.next.on ? 'settings.mcpBrokerRestartOn' : 'settings.mcpBrokerRestartOff')}
         </SettingNote>
       ) : null}
-      {state.problem && <SettingNote tone="warning">{t('settings.mcpBrokerFileProblem')}</SettingNote>}
+      {/* With WMUX_MCP_BROKER set the default does not apply, so the file note would be wrong. */}
+      {state.problem && state.env === 'unset' && <SettingNote tone="warning">{t('settings.mcpBrokerFileProblem')}</SettingNote>}
       {error && <SettingNote tone="danger" role="alert">{error}</SettingNote>}
     </>
   );

@@ -94,6 +94,13 @@ describe('BrokerSettingRow', () => {
     expect(text()).toContain('The saved choice could not be read, so the default applies.');
   });
 
+  it('leaves the file note out while WMUX_MCP_BROKER decides', async () => {
+    stub(payload({ problem: 'mcp-broker.json: not valid JSON', env: 'on', running: { on: true, source: 'env' }, next: { on: true, source: 'env' } }), async () => payload());
+    await render();
+    expect(container.querySelector('[data-testid=settings-mcp-broker-env]')).not.toBeNull();
+    expect(text()).not.toContain('The saved choice could not be read');
+  });
+
   it('renders nothing on an app without the channel', async () => {
     api = {};
     await render();
