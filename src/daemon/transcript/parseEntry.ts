@@ -22,7 +22,7 @@
 // The `[]` default is why a future Claude Code entry type cannot leak into the
 // chat as if the agent had said it.
 
-import { pasteSegments } from '../../shared/promptMatch';
+import { findPaste, type PasteSegment } from '../../shared/promptMatch';
 import path from 'node:path';
 import { summarizeActivity } from '../../shared/activitySummary';
 import type { EntryLink } from './rewind';
@@ -405,27 +405,42 @@ function injectedLabel(head: string, tag: string): string {
   return '';
 }
 
-/**
- * Drop `<system-reminder>` blocks appended to an otherwise real user message,
- * so the human's words render and the reminder does not. An UNCLOSED reminder
- * is left alone on purpose — the parser would otherwise have to guess where
- * it ends and could swallow real prose.
- */
-function dropSystemReminders(text: string): string {
-  if (!text.includes('<system-reminder>')) return text;
-  return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '');
-}
+const REMINDER_OPEN = '<system-reminder>';
+const REMINDER_CLOSE = '</system-reminder>';
+
 
 /**
  * What a user message shows: each paste Claude Code recorded as its own text,
- * byte for byte (shared/promptMatch.ts pasteSegments), and around them the
- * text with injected reminders dropped and the message's two ends trimmed.
- * A reminder-like block inside a paste is the user's own text and stays.
- * With no paste this is stripSystemReminders exactly.
+ * byte for byte (shared/promptMatch.ts findPaste), and around them the text
+ * with injected reminders dropped and the message's two ends trimmed. Read
+ * left to right, whichever starts first wins: a closed `<system-reminder>`
+ * block is dropped whole, paste-tag text inside it included (a reminder can
+ * quote the wrapper), and a paste is kept whole, a reminder-like block inside
+ * it included (the user's text). An unclosed reminder is left alone. With no
+ * paste this is the old reminder strip and trim exactly.
  */
 function shownUserText(text: string): { text: string; pasted: boolean } {
-  const segments = pasteSegments(text);
-  const parts = segments.map((s) => (s.pasted ? s.text : dropSystemReminders(s.text)));
+  const segments: PasteSegment[] = [];
+  let at = 0;
+  while (at < text.length) {
+    const open = text.indexOf(REMINDER_OPEN, at);
+    const close = open < 0 ? -1 : text.indexOf(REMINDER_CLOSE, open + REMINDER_OPEN.length);
+    const reminder = close < 0 ? -1 : open;
+    const paste = text.includes('<pasted_content', at) ? findPaste(text, at) : null;
+    if (paste && (reminder < 0 || paste.start < reminder)) {
+      if (paste.start > at) segments.push({ text: text.slice(at, paste.start), pasted: false });
+      segments.push({ text: paste.inner, pasted: true });
+      at = paste.end;
+    } else if (reminder >= 0) {
+      if (reminder > at) segments.push({ text: text.slice(at, reminder), pasted: false });
+      at = close + REMINDER_CLOSE.length;
+    } else {
+      segments.push({ text: text.slice(at), pasted: false });
+      at = text.length;
+    }
+  }
+  if (segments.length === 0) return { text: '', pasted: false };
+  const parts = segments.map((s) => s.text);
   if (!segments[0].pasted) parts[0] = parts[0].trimStart();
   const last = parts.length - 1;
   if (!segments[last].pasted) parts[last] = parts[last].trimEnd();

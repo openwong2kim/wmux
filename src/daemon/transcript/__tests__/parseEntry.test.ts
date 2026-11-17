@@ -1031,6 +1031,24 @@ describe('a message Claude Code stored as a paste: user_text is the pasted text 
       .toMatchObject({ text: half, pasted: true });
   });
 
+  it('a reminder outside any paste is dropped whole, even when it quotes the paste wrapper', () => {
+    // CodeRabbit's case (#3415): paste-tag text inside a reminder, one tag unmatched.
+    const quoted = 'hello<system-reminder>example <pasted_content id="a">\ninternal\n</pasted_content id="a"> tail</system-reminder>';
+    expect(parseTranscriptLine(userLine(quoted), 0)).toEqual([{ id: 'u1', kind: 'user_text', text: 'hello' }]);
+    // A reminder holding a full matched pair in Claude Code's own id shape.
+    const pair = `hello<system-reminder>pastes look like ${pasteOf('secret body', 'ab12')} in transcripts</system-reminder>`;
+    expect(parseTranscriptLine(userLine(pair), 0)).toEqual([{ id: 'u1', kind: 'user_text', text: 'hello' }]);
+    // The same, after a real paste: the paste shows, the reminder does not.
+    const after = `${pasteOf('the real prompt')}<system-reminder>see ${pasteOf('quoted', 'cd34')}</system-reminder>`;
+    expect(parseTranscriptLine(userLine(after), 0)).toEqual([{ id: 'u1', kind: 'user_text', text: 'the real prompt', pasted: true }]);
+  });
+
+  it('a real paste holding a reminder-like line keeps it, byte for byte', () => {
+    const inner = 'from the log:\n<system-reminder>a line I copied</system-reminder>\nend of log';
+    expect(parseTranscriptLine(userLine(`${pasteOf(inner)}<system-reminder>injected</system-reminder>`), 0))
+      .toEqual([{ id: 'u1', kind: 'user_text', text: inner, pasted: true }]);
+  });
+
   it('an empty or blank paste gives no row (no blank "You" card, no reminder chip)', () => {
     expect(parseTranscriptLine(userLine(pasteOf('   ')), 0)).toEqual([]);
     expect(parseTranscriptLine(JSON.stringify({ type: 'attachment', uuid: 'q', attachment: { type: 'queued_command', commandMode: 'prompt', prompt: pasteOf('') } }), 0)).toEqual([]);
