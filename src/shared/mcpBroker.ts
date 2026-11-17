@@ -68,6 +68,11 @@ export function brokerDecision(
  * that the broker's pipe answers. No when WMUX_MCP_BROKER=0 or the Settings
  * choice turns it off. An unset default still probes: the app may have been
  * started with WMUX_MCP_BROKER=1, which this shell does not see.
+ *
+ * It follows the saved choice, not the running app: after Off is saved, a
+ * broker the app started earlier may still run until the next start. The
+ * full bundle this then registers works with or without a broker, so the
+ * two differ only in memory until the app's next start re-registers.
  */
 export function brokerMayRun(platform: NodeJS.Platform, envValue: string | undefined, setting: BrokerSetting): boolean {
   const decision = brokerDecision(platform, envValue, setting);

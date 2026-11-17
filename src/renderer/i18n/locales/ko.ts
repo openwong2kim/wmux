@@ -2640,6 +2640,7 @@ export const ko = {
   'settings.mcpBrokerRestartOff': "wmux를 다시 시작하면 꺼집니다.",
   'settings.mcpBrokerFileProblem': "저장된 선택을 읽지 못해 기본값을 씁니다. 다시 고르면 바뀝니다.",
   'settings.mcpBrokerSaveFailed': "선택을 저장하지 못했습니다.",
+  'settings.mcpBrokerUnavailable': "wmux에서 현재 선택을 읽지 못했습니다.",
   // Settings — Token usage (quotas, custom surface switches, saved profiles)
   'settings.tokenUsage.surfaceDefault': '표면: 기본값',
   'settings.tokenUsage.surfaceOff': '표면: {n}개 해제됨',

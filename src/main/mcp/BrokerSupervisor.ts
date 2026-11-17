@@ -26,7 +26,8 @@ import { readBrokerLimitsConfig } from './brokerConfig';
 let settingAtStart: BrokerSettingRead | null = null;
 
 /**
- * The Settings choice as this app read it, once: a change made in Settings
+ * The Settings choice as this app read it, once (main/index.ts reads it at
+ * start, before any window or IPC can save a new one): a change made in Settings
  * applies from the next wmux start, like the environment variable, so the
  * broker and the registrations never disagree within one run.
  */

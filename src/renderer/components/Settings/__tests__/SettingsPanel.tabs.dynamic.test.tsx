@@ -83,6 +83,11 @@ const EXPLICIT: Record<string, unknown> = {
     check: () => { mcpChecks += 1; return Promise.resolve(MCP_STATUS); },
     reregister: () => Promise.resolve(MCP_STATUS),
     unregister: () => Promise.resolve(MCP_STATUS),
+    brokerSetting: () => Promise.resolve({
+      saved: 'default', env: 'unset', platformDefaultOn: false,
+      running: { on: false, source: 'default' }, next: { on: false, source: 'default' },
+    }),
+    setBrokerSetting: () => Promise.reject(new Error('not in this test')),
   },
   accounts: { list: resolved({ accounts: [] }), usageList: resolved([]), onUsageUpdate: () => () => undefined },
   lanlink: {

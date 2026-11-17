@@ -948,6 +948,9 @@ const mcpRegistrar = new McpRegistrar();
 // be) listening when the first shim spawns — the shim retries connect with
 // backoff, so start order is a latency nicety, not a correctness gate.
 const mcpBrokerSupervisor = new BrokerSupervisor();
+// The Settings choice is read now, at start, so a change made in Settings
+// later never reaches this run (it applies from the next start).
+brokerSettingAtStart();
 setBrokerIdentitySource(() => mcpBrokerSupervisor.identity);
 setBrokerStampSource((stamp) => mcpBrokerSupervisor.stampMatches(stamp));
 setUnownedBrokerSource(() => mcpBrokerSupervisor.standingDown);

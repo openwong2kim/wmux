@@ -3,7 +3,7 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { McpRegistrar, McpRegistrarStatus } from '../../mcp/McpRegistrar';
 import { externalRegistrationSkipReason } from '../../../shared/mcpTargets';
-import { brokerDecision, brokerFlag, isBrokerSetting, type BrokerSetting, type BrokerSettingPayload } from '../../../shared/mcpBroker';
+import { brokerDecision, brokerFlag, isBrokerSetting, type BrokerSettingPayload } from '../../../shared/mcpBroker';
 import { readBrokerSetting, writeBrokerSetting } from '../../../shared/brokerSetting';
 import { mcpBrokerDecision } from '../../mcp/BrokerSupervisor';
 
@@ -173,7 +173,7 @@ export function registerMcpHandlers(
     IPC.MCP_BROKER_SETTING_SET,
     wrapHandler(IPC.MCP_BROKER_SETTING_SET, async (_event: unknown, setting: unknown): Promise<BrokerSettingPayload> => {
       if (!isBrokerSetting(setting)) throw new Error('mcp broker setting: expected default, on or off');
-      writeBrokerSetting(setting as BrokerSetting);
+      writeBrokerSetting(setting);
       return brokerPayload();
     }),
   );

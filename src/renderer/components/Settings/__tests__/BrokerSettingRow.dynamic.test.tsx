@@ -14,6 +14,7 @@ import type { BrokerSetting, BrokerSettingPayload } from '../../../../shared/mcp
 let container: HTMLDivElement;
 let root: Root;
 let setBrokerSetting: ReturnType<typeof vi.fn>;
+let api: Record<string, unknown> | undefined;
 
 const payload = (p: Partial<BrokerSettingPayload> = {}): BrokerSettingPayload => ({
   saved: 'default',
@@ -26,13 +27,13 @@ const payload = (p: Partial<BrokerSettingPayload> = {}): BrokerSettingPayload =>
 
 function stub(initial: BrokerSettingPayload, set: (s: BrokerSetting) => Promise<BrokerSettingPayload>) {
   setBrokerSetting = vi.fn(set);
-  vi.stubGlobal('electronAPI', { mcp: { brokerSetting: vi.fn(async () => initial), setBrokerSetting } });
+  api = { brokerSetting: vi.fn(async () => initial), setBrokerSetting };
 }
 async function settle() {
   for (let i = 0; i < 6; i++) await act(async () => { await Promise.resolve(); });
 }
 async function render() {
-  await act(async () => root.render(<BrokerSettingRow />));
+  await act(async () => root.render(<BrokerSettingRow api={api} />));
   await settle();
 }
 const radio = (label: string) =>
@@ -44,6 +45,7 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
 });
+beforeEach(() => { api = undefined; });
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
@@ -93,8 +95,15 @@ describe('BrokerSettingRow', () => {
   });
 
   it('renders nothing on an app without the channel', async () => {
-    vi.stubGlobal('electronAPI', { mcp: {} });
+    api = {};
     await render();
     expect(container.innerHTML).toBe('');
+  });
+
+  it('keeps the row, and says so, when the choice cannot be read', async () => {
+    api = { brokerSetting: vi.fn(async () => { throw new Error('ipc'); }), setBrokerSetting: vi.fn() };
+    await render();
+    expect(container.querySelector('[data-setting-id=mcpbroker]')).not.toBeNull();
+    expect(text()).toContain('The current choice could not be read from wmux.');
   });
 });

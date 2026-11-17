@@ -1844,6 +1844,7 @@ export const pl = {
   'settings.mcpBrokerRestartOff': "Wyłączy się po ponownym uruchomieniu wmux.",
   'settings.mcpBrokerFileProblem': "Nie udało się odczytać zapisanego wyboru, więc obowiązuje domyślny. Wybierz ponownie, aby go zastąpić.",
   'settings.mcpBrokerSaveFailed': "Wybór nie został zapisany.",
+  'settings.mcpBrokerUnavailable': "Nie udało się odczytać bieżącego wyboru z wmux.",
   'settings.mcpRegistered': 'zarejestrowano',
   'settings.mcpNotRegistered': 'nie zarejestrowano',
   'settings.mcpExperimentalTitle': 'Integracja jeszcze nie zweryfikowana end-to-end',

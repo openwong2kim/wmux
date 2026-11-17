@@ -642,7 +642,10 @@ function brokerLine(b: McpSessionsSummary['broker'], kinds: ReadonlySet<string>)
         label: 'broker',
         value: 'off (the default)',
         verdict: 'OK',
-        hint: "Settings > Claude Code > Shared MCP process, or WMUX_MCP_BROKER=1 in the app's environment, turns it on, from the next wmux start.",
+        // An app that sends no `setting` has no such Settings row.
+        hint: b.setting === undefined
+          ? "WMUX_MCP_BROKER=1 in the app's environment turns it on, from the next wmux start."
+          : "Settings > Claude Code > Shared MCP process, or WMUX_MCP_BROKER=1 in the app's environment, turns it on, from the next wmux start.",
       };
     }
     return { label: 'broker', value: 'off', verdict: 'OK' };

@@ -1899,6 +1899,7 @@ export const en = {
   'settings.mcpBrokerRestartOff': "Turns off when wmux restarts.",
   'settings.mcpBrokerFileProblem': "The saved choice could not be read, so the default applies. Choose again to replace it.",
   'settings.mcpBrokerSaveFailed': "The choice was not saved.",
+  'settings.mcpBrokerUnavailable': "The current choice could not be read from wmux.",
   'settings.mcpRegistered': 'registered',
   'settings.mcpNotRegistered': 'not registered',
   'settings.mcpExperimentalTitle': 'Integration not yet verified end-to-end',

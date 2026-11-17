@@ -186,8 +186,14 @@ describe('doctor broker rule', () => {
     return section.lines.find((l) => l.label === 'broker');
   };
 
+  it('off by default on an app with no Settings choice: names only the environment variable', async () => {
+    expect((await line({ enabled: false, flag: 'unset' }))?.hint).toBe(
+      "WMUX_MCP_BROKER=1 in the app's environment turns it on, from the next wmux start.",
+    );
+  });
+
   it('off by default: says so, and how to turn it on', async () => {
-    expect(await line({ enabled: false, flag: 'unset' })).toEqual({
+    expect(await line({ enabled: false, flag: 'unset', setting: 'default' })).toEqual({
       label: 'broker',
       value: 'off (the default)',
       verdict: 'OK',
