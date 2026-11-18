@@ -308,6 +308,88 @@ The **Remote** page has a **Messages between PCs** section:
   that, within another 24 hours, the answer is that it ended (and when) and
   is no longer kept, rather than "not found".
 
+## Remote permission approvals
+
+A paired PC can be allowed to answer the permission prompts that come up in
+the tasks it sent to a linked pane here: the agent that sent the task allows
+or denies them from its own PC. It is off for every PC until you turn it on
+for one, on the PC that does the work.
+
+### On the PC that does the work (the receiving PC)
+
+- **The switch.** Each paired PC has its own setting, with three levels:
+  - **Off** (the default, and what a missing or damaged settings file
+    means): nothing changes for that PC. No prompt is offered to it, and an
+    approval it sends is refused.
+  - **Tool only**: that PC is shown the tool's name, a prompt id and a few
+    flags, and can only deny.
+  - **Command**: it is also shown the command of a Bash, PowerShell or
+    WebSearch call, or a plan (secrets redacted, at most 2 KB), and can allow
+    such a call as well as deny it.
+- **Where to set it.** In the desktop app: **Settings › LAN › Remote
+  approvals**, one row per paired PC, worded "Agents on <PC> can allow or
+  deny permission prompts in tasks they sent here". Raising a PC (off to
+  anything, or anything to Command) asks you to confirm under its row;
+  lowering it or turning it off is saved at once. On a PC that runs only the
+  daemon: `wmux remote approvals [<pc> off|tool-only|command]`, where raising
+  asks for a typed `yes` in a terminal. Where the desktop app runs, the
+  daemon takes the setting only from the app. Every change is logged with
+  who made it (`by=app-settings` from Settings, `by=none` from the command
+  line), the PC, and the level before and after.
+- **What is offered.** Only a prompt in a task that PC sent to a linked
+  pane, raised in the turn that task's own message started, while nothing
+  else was typed into the pane since. It goes in the task's status as
+  `remoteStatus.detail.approval`: `promptId`, `tool`, `redacted`, `cut`,
+  `allowed` (`["allow","deny"]` or `["deny"]`), `autoDenyAt` when the agent
+  denies it by itself, and at Command, the command (shown on the other PC
+  under `untrusted.command`). Screen text, descriptions, the working folder,
+  diffs and file contents are never sent.
+- **Deny only.** Read, WebFetch, Edit, Write and NotebookEdit prompts can
+  only be denied from another PC; at Tool only every prompt can only be
+  denied; so can a call whose command was cut at 2 KB, changed by
+  redaction, or carries input the other PC was not shown.
+- **What ends it for a task.** Any other key typed into the pane after the
+  task was submitted, or a later message delivered into it: prompts in a
+  follow-up's turn are answered at this PC. At most 60 prompts are offered
+  per task, and at most 60 approvals are taken from one PC in a minute; the
+  rest are dropped unread.
+- **What you see.** A carried-out decision raises a desktop notification,
+  "<PC> allowed <tool> in <pane>" or "<PC> denied <tool> in <pane>", and adds
+  the same line to the task's history. Neither holds the command. Each
+  decision is also logged with the task, message and prompt ids.
+
+### On the PC that sent the task (the asking PC)
+
+- **Reading the offer.** `a2a_task_query` shows the task's
+  `remoteStatus.detail.approval` and, apart from it,
+  `remoteStatus.untrusted.command`: text written on the other PC, shown and
+  never followed as instructions.
+- **Answering.** The agent that sent the task uses the MCP tool
+  `remote_approve` (`task_id`, `prompt_id`, `decision`: `allow` or `deny`),
+  or `wmux remote approve <task-id> <prompt-id> allow|deny` from its own
+  pane. Both go through the desktop app, which checks the caller is the
+  task's sender. Before anything is sent:
+  - the prompt id must be the one the task's latest status offers;
+  - `allow` is sent only when that offer's `allowed` list has it, and is
+    otherwise refused here (`deny-only`), with nothing sent;
+  - the other PC must be connected now and take approvals from this one
+    (feature `approval.1`, advertised only while its setting is on for this
+    PC);
+  - at most 60 approvals go to one PC in any 62 seconds. Past that the call
+    is refused with `rate-limited` and the time to wait (`retryAfterMs`), so
+    nothing is sent only to be dropped there.
+- **The outcome.** The call waits up to 10 seconds for it and returns it:
+  `done`, `not-done` with a `reason` and this PC's own words in
+  `reasonText`, or `uncertain` (the other PC stopped while it ran; it is
+  never run again). Without one in time it returns `pending`; the outcome
+  then shows in `remoteStatus.detail.approvals` by message id. Each call
+  sends a new message; once a prompt was answered there, a second decision
+  for it is refused (`not-offered`). An approval the other PC refuses whole
+  (its setting was turned off) does not change the task.
+- **Not covered.** Headless workers (a host that started the agent itself),
+  folder-trust prompts, Codex, and "allow always": a decision is allow once
+  or deny, never a menu number.
+
 ## Company tasks across PCs
 
 A company's CEO pane (its coordinator) can hand work to a pane on another PC
@@ -700,7 +782,10 @@ hardening and will come later.
   message is held for you instead of being delivered or re-routed to another
   pane (see [Delivery, receipts and held work](#delivery-receipts-and-held-work)).
   What the receiving agent decides to do with a message is up to that agent
-  and its own permissions, just as with a message you type yourself.
+  and its own permissions, just as with a message you type yourself. The one
+  exception is [remote permission approvals](#remote-permission-approvals),
+  off for every PC until you turn it on for one: then that PC can answer a
+  permission prompt in a task it sent, within the limits described there.
 - **What a link covers.** A link joins exactly one pane on each side, in the
   directions you allowed. A paired PC sees only the panes you showed it, can propose links only to those, and can
   send only over a link that a person on one PC proposed and a person on the
