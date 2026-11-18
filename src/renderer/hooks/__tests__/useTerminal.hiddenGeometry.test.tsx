@@ -17,7 +17,6 @@ import type { Terminal } from '@xterm/xterm';
 import { createRoot, type Root } from 'react-dom/client';
 import { FitAddon } from '@xterm/addon-fit';
 import { setDaemonModeActive } from '../../daemon/daemonMode';
-import { deliberateSleep } from '../../../test-utils/waitFor';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -28,6 +27,9 @@ vi.mock('@xterm/addon-webgl', () => ({
 
 const resize = vi.fn(async () => undefined);
 const reconnect = vi.fn(async (): Promise<{ success: boolean; cols?: number; rows?: number }> => ({ success: true }));
+const setViewerVisibility = vi.fn();
+/** Visibility reports made before the last reconnect answered; null before any answer. */
+let reportsAtAnswer: number | null = null;
 const unsub = () => () => undefined;
 // Laid-out size of every element; 0 models a display:none workspace.
 let layoutSize = 0;
@@ -41,8 +43,13 @@ beforeAll(() => {
       windowsBuildNumber: null,
       pty: {
         onData: unsub, onExit: unsub, onFlushComplete: unsub, onRestarted: unsub,
-        resize, reconnect,
-        setViewerVisibility: vi.fn(),
+        resize,
+        // Notes when the answer reaches the hook, for reattachSettled.
+        reconnect: (...args: Parameters<typeof reconnect>) => reconnect(...args).then((answer) => {
+          reportsAtAnswer = setViewerVisibility.mock.calls.length;
+          return answer;
+        }),
+        setViewerVisibility,
         write: vi.fn(async () => undefined),
         list: vi.fn(async () => []),
       },
@@ -79,6 +86,8 @@ afterEach(() => {
   root = null;
   host = null;
   resize.mockClear();
+  setViewerVisibility.mockClear();
+  reportsAtAnswer = null;
   reconnect.mockReset();
   reconnect.mockImplementation(async () => ({ success: true }));
   setDaemonModeActive(false);
@@ -96,7 +105,22 @@ async function mount(ptyId: string, visible: boolean) {
   document.body.appendChild(host);
   root = createRoot(host);
   await act(async () => { root!.render(<Harness />); });
-  await act(async () => { await deliberateSleep(50, 'not yet converted (#2363): lets the mount settle under act; nothing polled'); });
+}
+
+/** Wait, under act, until `check` holds. */
+async function until(check: () => void): Promise<void> {
+  await act(async () => { await vi.waitFor(check, { timeout: 10_000 }); });
+}
+
+/**
+ * The daemon reattach has settled: once the reconnect answered, the hook's
+ * result handler replays the viewer visibility first and decides on a resize
+ * in the same synchronous step, so a visibility report after the answer means
+ * that decision is made.
+ */
+function reattachSettled(): void {
+  expect(reportsAtAnswer, 'the reconnect has not answered').not.toBeNull();
+  expect(setViewerVisibility.mock.calls.length, 'the reattach has not settled').toBeGreaterThan(reportsAtAnswer ?? Infinity);
 }
 
 // The first case pays for importing the whole hook under jsdom.
@@ -108,6 +132,7 @@ describe('useTerminal geometry of a hidden pane', { timeout: 60_000 }, () => {
       layoutSize = 0;
       setDaemonModeActive(true);
       await mount('p-hidden', false);
+      await until(reattachSettled);
       expect(reconnect).toHaveBeenCalledWith('p-hidden', { promote: true });
       expect(resize.mock.calls).toEqual([]);
     } finally {
@@ -129,7 +154,11 @@ describe('useTerminal geometry of a hidden pane', { timeout: 60_000 }, () => {
       layoutSize = 0;
       setDaemonModeActive(true);
       await mount('p-recovered', false);
-      expect(resize.mock.calls).toEqual([['p-recovered', 283, 81]]);
+      // A fresh mount's first-resize gate may hold the stored size until it opens.
+      await until(() => {
+        reattachSettled();
+        expect(resize.mock.calls).toEqual([['p-recovered', 283, 81]]);
+      });
     } finally {
       propose.mockRestore();
     }
@@ -142,6 +171,7 @@ describe('useTerminal geometry of a hidden pane', { timeout: 60_000 }, () => {
       layoutSize = 0;
       setDaemonModeActive(true);
       await mount('p-backlog', false);
+      await until(reattachSettled);
       expect(termRef?.current?.cols).toBe(283);
       expect(termRef?.current?.rows).toBe(81);
     } finally {
@@ -155,8 +185,11 @@ describe('useTerminal geometry of a hidden pane', { timeout: 60_000 }, () => {
       layoutSize = 800;
       setDaemonModeActive(true);
       await mount('p-shown', true);
+      await until(() => {
+        reattachSettled();
+        expect(resize).toHaveBeenCalledWith('p-shown', 90, 20);
+      });
       expect(reconnect).toHaveBeenCalledWith('p-shown', { promote: true });
-      expect(resize).toHaveBeenCalledWith('p-shown', 90, 20);
     } finally {
       propose.mockRestore();
     }

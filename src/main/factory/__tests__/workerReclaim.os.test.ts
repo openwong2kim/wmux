@@ -335,12 +335,22 @@ describe('reclaimWorker', () => {
 describe('installWorkerReclaim', () => {
   it('reclaims on completion, never on a move to an open status, and catches up on a recent end at install', async () => {
     const store = ReclaimedWorkers.at(dir);
+    // The catch-up's record is in memory from the start of its write, and its
+    // stop comes after that write: hold the write, so the record is there
+    // while the stop is not yet made (as on a slow disk).
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const put = store.put.bind(store);
+    store.put = async (rec) => { const written = put(rec); await held; return written; };
     const { ports, stopAgent, fire } = reclaimPorts(store, [session()], {
       allRows: () => [row('completed', { id: 'wtask-old-00000001', updatedAt: 4_000 }), row('completed', { id: 'wtask-ancient-0001', updatedAt: -1e9 })],
     });
     const off = installWorkerReclaim(ports);
     await vi.waitFor(() => expect(store.get('wtask-old-00000001')).not.toBeNull(), { timeout: 10_000 });
     expect(store.get('wtask-ancient-0001')).toBeNull();
+    release();
+    // The record alone doesn't say the catch-up is done: its stop is.
+    await vi.waitFor(() => expect(stopAgent).toHaveBeenCalledTimes(1), { timeout: 10_000 });
     stopAgent.mockClear();
     fire(row('review_requested'), 'review_requested');
     fire(row('input_required'), 'input_required');

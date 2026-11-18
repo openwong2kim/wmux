@@ -23,11 +23,17 @@ import { CASE_TIMEOUT_MS, expectKnownGap, openPage, serveCorpus } from './_suppo
 const SELECT_OPTION_WAIT = /^TimeoutError: elementHandle\.selectOption: Timeout \d+ms exceeded/;
 
 /**
- * Playwright's actionability reasons, as they appear in the call log of the
- * timeout it raises. A zero-size box is reported as not visible.
+ * The action was refused: it gave up with Playwright's TimeoutError instead of
+ * acting. The reason (not visible, not enabled) is not read from the call log:
+ * the log names it only once the actionability check has run inside the
+ * bound, which a loaded runner does not promise. What the action did not do
+ * is asserted on the page instead.
  */
-const NOT_VISIBLE = /element is not visible/;
-const NOT_ENABLED = /element is not enabled/;
+async function refused(action: Promise<unknown>): Promise<void> {
+  const error = await action.then(() => null, (err: unknown) => err);
+  expect(error, 'the action went through').toBeInstanceOf(Error);
+  expect((error as Error).name, String(error)).toBe('TimeoutError');
+}
 
 /** Bound on a click that is expected to be refused. */
 const REFUSAL_TIMEOUT_MS = 300;
@@ -75,6 +81,8 @@ async function setUpFixture(page: Page): Promise<void> {
   await page.evaluate((html) => {
     document.body.innerHTML = html;
     const state: Record<string, number | boolean> = {
+      hiddenClicks: 0,
+      zeroSizeClicks: 0,
       nestedClicks: 0,
       nativeClicks: 0,
       ariaBlockedClicks: 0,
@@ -99,6 +107,8 @@ async function setUpFixture(page: Page): Promise<void> {
     const count = (key: string) => () => {
       (state[key] as number)++;
     };
+    on('#hidden-action', 'click', count('hiddenClicks'));
+    on('#zero-size-action', 'click', count('zeroSizeClicks'));
     on('#nested-disabled', 'click', count('nestedClicks'));
     on('#native-disabled', 'click', count('nativeClicks'));
     on('#aria-blocked', 'click', count('ariaBlockedClicks'));
@@ -166,10 +176,10 @@ for (const mode of MODES) {
       const page = await openPage(h, '/no-frame');
       try {
         await setUpFixture(page);
-        await expect(click(page, await handle(page, '#hidden-action'))).rejects.toThrow(NOT_VISIBLE);
-        await expect(click(page, await handle(page, '#zero-size-action'))).rejects.toThrow(NOT_VISIBLE);
-        await expect(click(page, await handle(page, '#nested-disabled span'))).rejects.toThrow(NOT_ENABLED);
-        expect((await state(page)).nestedClicks).toBe(0);
+        await refused(click(page, await handle(page, '#hidden-action')));
+        await refused(click(page, await handle(page, '#zero-size-action')));
+        await refused(click(page, await handle(page, '#nested-disabled span')));
+        expect(await state(page)).toMatchObject({ hiddenClicks: 0, zeroSizeClicks: 0, nestedClicks: 0 });
 
         // The ref lane runs the same final check.
         const snapshot = await generateSnapshot(page);
@@ -177,7 +187,7 @@ for (const mode of MODES) {
         const ref = line?.match(/ref="([^"]+)"/)?.[1];
         expect(ref, snapshot).toBeTruthy();
         const el = await resolveRef(page, ref!);
-        await expect(click(page, el!)).rejects.toThrow(NOT_ENABLED);
+        await refused(click(page, el!));
         expect((await state(page)).nestedClicks).toBe(0);
 
         // A click waits for a control that becomes enabled within its bound.
@@ -190,7 +200,7 @@ for (const mode of MODES) {
         expect((await state(page)).nestedClicks).toBe(1);
 
         // aria-disabled="false" does not undo the native disabled state.
-        await expect(click(page, await handle(page, '#native-disabled'))).rejects.toThrow(NOT_ENABLED);
+        await refused(click(page, await handle(page, '#native-disabled')));
         expect((await state(page)).nativeClicks).toBe(0);
       } finally {
         await page.close();
@@ -202,12 +212,12 @@ for (const mode of MODES) {
       const page = await openPage(h, '/no-frame');
       try {
         await setUpFixture(page);
-        await expect(click(page, await handle(page, '#aria-blocked'))).rejects.toThrow(NOT_ENABLED);
+        await refused(click(page, await handle(page, '#aria-blocked')));
         await click(page, await handle(page, '#aria-override'), 1_000);
-        await expect(click(page, await handle(page, '#aria-owner span'))).rejects.toThrow(NOT_ENABLED);
+        await refused(click(page, await handle(page, '#aria-owner span')));
         // aria-disabled means nothing on an element without a role that supports it.
         await click(page, await handle(page, '#unsupported-aria'), 1_000);
-        await expect(click(page, await handle(page, '#shadow-blocked'))).rejects.toThrow(NOT_ENABLED);
+        await refused(click(page, await handle(page, '#shadow-blocked')));
         await click(page, await handle(page, '#shadow-override'), 1_000);
         expect(await state(page)).toMatchObject({
           ariaBlockedClicks: 0,
@@ -219,7 +229,7 @@ for (const mode of MODES) {
         });
 
         const shadowFill = await handle(page, '#shadow-fill-blocked');
-        await expect(shadowFill.fill('must not appear', { timeout: REFUSAL_TIMEOUT_MS })).rejects.toThrow(NOT_ENABLED);
+        await refused(shadowFill.fill('must not appear', { timeout: REFUSAL_TIMEOUT_MS }));
         expect(await shadowFill.inputValue()).toBe('');
       } finally {
         await page.close();
@@ -235,7 +245,7 @@ for (const mode of MODES) {
         await click(page, await handle(page, '#legend-action'), 1_000);
 
         const fieldsetInput = await handle(page, '#fieldset-input');
-        await expect(fieldsetInput.fill('early', { timeout: REFUSAL_TIMEOUT_MS })).rejects.toThrow(NOT_ENABLED);
+        await refused(fieldsetInput.fill('early', { timeout: REFUSAL_TIMEOUT_MS }));
         expect(await fieldsetInput.inputValue()).toBe('');
         await page.evaluate(() => {
           setTimeout(() => {
@@ -247,7 +257,7 @@ for (const mode of MODES) {
         expect(await fieldsetInput.inputValue()).toBe('ready');
 
         const ariaInput = await handle(page, '#aria-fill-blocked');
-        await expect(ariaInput.fill('early', { timeout: REFUSAL_TIMEOUT_MS })).rejects.toThrow(NOT_ENABLED);
+        await refused(ariaInput.fill('early', { timeout: REFUSAL_TIMEOUT_MS }));
         expect(await ariaInput.inputValue()).toBe('');
         await page.evaluate(() => {
           setTimeout(() => {
@@ -282,9 +292,9 @@ for (const mode of MODES) {
         expect(dragged.dragUp).toBeGreaterThan(0);
         expect(dragged.dragTrusted).toBe(true);
 
-        await expect(
+        await refused(
           (await handle(page, '#disabled-select')).selectOption('value', { timeout: REFUSAL_TIMEOUT_MS }),
-        ).rejects.toThrow(NOT_ENABLED);
+        );
         const options = await handle(page, '#option-states');
         // A programmatic pick may choose a disabled option, and option ARIA
         // state does not disable an enabled select; the live-page lane of

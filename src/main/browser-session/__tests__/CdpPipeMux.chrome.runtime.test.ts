@@ -20,7 +20,7 @@ import { chromium, type Browser, type Page } from 'playwright-core';
 import WebSocket, { WebSocketServer } from 'ws';
 import { CdpPipeMux, type CallerIdentity } from '../CdpPipeMux';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay';
-import { ChromeLauncher, setPipeRelayForTests } from '../ChromeLauncher';
+import { ChromeLauncher, PIPE_KILL_GRACE_MS, PIPE_KILL_WAIT_MS, QUIT_GRACE_MS, setPipeRelayForTests } from '../ChromeLauncher';
 import { DownloadRelayPolicy, removeDownloadRelayDir } from '../DownloadRelayPolicy';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -28,8 +28,17 @@ import { deliberateSleep } from '../../../test-utils/waitFor';
 import { chromeForRuntimeSuite } from '../../../test-utils/runtimeChrome';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 import { newRelayProofNonce, RELAY_PROOF_METHOD, relayProofMatches } from '../../../shared/relayProof';
+import { CHROME_START_CEILING_MS } from '../../../shared/chromeStart';
 
 const CHROME = chromeForRuntimeSuite();
+
+/**
+ * How long a Chrome whose pipe closed may take to exit before the product
+ * would no longer wait for it: the launcher gives a Chrome asked to quit
+ * QUIT_GRACE_MS, then SIGTERM, SIGKILL PIPE_KILL_GRACE_MS later, and waits
+ * PIPE_KILL_WAIT_MS more for the exit.
+ */
+const PIPE_EXIT_BOUND_MS = QUIT_GRACE_MS + PIPE_KILL_GRACE_MS + PIPE_KILL_WAIT_MS;
 
 interface Started { child: ChildProcess; profile: string; mux: CdpPipeMux; route: RelayRoute; exited: Promise<void> }
 const started: Started[] = [];
@@ -186,23 +195,47 @@ function sessionsOf(frames: Array<Record<string, unknown>>): { given: Set<string
   return { given, seen };
 }
 
-afterEach(async () => {
-  vi.unstubAllEnvs();
-  for (const b of browsers.splice(0)) await b.close().catch(() => undefined);
-  for (const r of relays.splice(0)) r.close();
+/** Whether `s`'s Chrome exited within `ms`. */
+function exitedWithin(s: Started, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    s.exited.then(() => true),
+    new Promise<boolean>((r) => { timer = setTimeout(() => r(false), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/** Close every started Chrome's pipe, and kill the ones still running `graceMs` later. */
+async function stopStarted(graceMs = 5_000): Promise<void> {
   for (const s of started.splice(0)) {
     s.route.close();
     s.mux.close();
-    const gone = await Promise.race([s.exited.then(() => true), new Promise((r) => setTimeout(() => r(false), 5_000))]);
-    if (!gone) {
+    if (!await exitedWithin(s, graceMs)) {
       s.child.kill('SIGKILL');
       await s.exited;
     }
   }
   await Promise.all(profiles.splice(0).map((p) => p.remove()));
+}
+
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  for (const b of browsers.splice(0)) await b.close().catch(() => undefined);
+  for (const r of relays.splice(0)) r.close();
+  await stopStarted();
 }, CHROME_TEARDOWN_TIMEOUT_MS);
 
 describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
+  // A runner's first Chrome start pays for a cold disk cache and first-run
+  // setup, which the first test would otherwise spend out of its own budget.
+  beforeAll(async () => {
+    try {
+      const s = await startChrome();
+      await s.mux.connect({ label: 'warm-up' }).send('Browser.getVersion');
+    } finally {
+      await stopStarted();
+    }
+  }, CHROME_START_CEILING_MS + CHROME_TEARDOWN_TIMEOUT_MS);
+
   it('Playwright connects over CDP through the relay, which proves itself, and drives a page', async () => {
     const grant = await (await startChrome()).route.grant({ workspaceId: 'ws-a' });
     const browser = await connectThrough(grant);
@@ -281,11 +314,8 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
     const browser = await connectTo(s);
     browsers.push(browser);
     expect(browser.version()).toMatch(/\d+\./);
-    const started = Date.now();
     s.mux.close();
-    const gone = await Promise.race([s.exited.then(() => true), new Promise((r) => setTimeout(() => r(false), 5_000))]);
-    expect(gone).toBe(true);
-    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(await exitedWithin(s, PIPE_EXIT_BOUND_MS), `Chrome still running ${PIPE_EXIT_BOUND_MS} ms after its pipe closed`).toBe(true);
     // Singleton* on macOS and Linux, lockfile on Windows.
     expect(fs.readdirSync(s.profile).filter((f) => /^(Singleton|lockfile$)/.test(f))).toEqual([]);
   }, 60_000);

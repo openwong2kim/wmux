@@ -20,7 +20,9 @@ describe('daemon runtime staging', () => {
     fs.writeFileSync(path.join(appDir, 'resources', 'daemon-bundle', 'index.js'), 'daemon');
   });
 
-  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+  // On Windows an exe that just exited (the running-copy case) can stay locked
+  // for a moment after its 'exit': rmSync retries EBUSY/EPERM for that.
+  afterEach(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
   const stage = () => stageDaemonRuntime({ appDir, exeName: 'wmux.exe', stageRoot, version: '4.13.0' });
 

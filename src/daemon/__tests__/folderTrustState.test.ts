@@ -358,13 +358,18 @@ describe('a ring that outgrew the tail window, on a pane that went idle (#2855)'
     return s;
   }
 
+  // A verdict that needs the whole ring parsed is asked on a delivery budget,
+  // as the daemon's deliveries ask it: on the 250 ms default a loaded runner
+  // can still be parsing, and the answer is 'timeout' rather than the verdict.
+  const onBudget = { timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS };
+
   it("is 'clear' for an idle prompt the tail never redrew, and 'trust' for a dialog it never redrew", async () => {
     // The turn ends: its spinner row is cleared, the prompt box stays as drawn.
     const idle = longAfter(frame(IDLE), spinner, '\x1b[31;1H\x1b[K');
-    expect(await folderTrustState(deps(idle), 'pty-1')).toBe('clear');
+    expect(await folderTrustState(deps(idle, onBudget), 'pty-1')).toBe('clear');
     const yes = CLAUDE.findIndex((row) => row.includes('Yes, I trust this folder')) + 1;
     const dialog = longAfter(frame(CLAUDE), () => `\x1b[${yes};1H   Yes, I trust this folder`);
-    expect(await folderTrustState(deps(dialog), 'pty-1')).toBe('trust');
+    expect(await folderTrustState(deps(dialog, onBudget), 'pty-1')).toBe('trust');
   });
 
   it('a printing pane whose mark moved since the last verdict still gets one decided', async () => {
@@ -504,7 +509,7 @@ describe('a ring that outgrew the tail window, on a pane that went idle (#2855)'
     // The tail alone reads the cut choices: the dialog under them is cells it never drew.
     const tail = await renderPaneTail(() => s, generateTextSnapshotUnqueued);
     expect(tail && readFolderTrustScreen(tail)).toBe('unreadable');
-    expect(await readFolderTrust(deps(s), 'pty-1')).toEqual({ state: 'trust' });
+    expect(await readFolderTrust(deps(s, onBudget), 'pty-1')).toEqual({ state: 'trust' });
   });
 
   it('a whole-ring parse runs in a lane of its own: it decides within a delivery budget while attach flushes hold the small slots, and leaves those slots free', async () => {
@@ -548,7 +553,7 @@ describe('a ring that outgrew the tail window, on a pane that went idle (#2855)'
       fed += Buffer.byteLength(chunk);
     }
     m.feed('\x1b[31;1H\x1b[K');
-    expect(await folderTrustState(deps(m.session), 'pty-1')).toBe('clear');
+    expect(await folderTrustState(deps(m.session, onBudget), 'pty-1')).toBe('clear');
     await enqueueSnapshotJob(async () => undefined);
   });
 });

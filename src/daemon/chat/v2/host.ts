@@ -270,6 +270,8 @@ class Host implements ChatV2Host {
   private readonly pushListeners = new Set<(push: ChatV2EventsPush) => void>();
   private started: Promise<void> | null = null;
   private disposed = false;
+  /** Work started without an await (a terminal takeover, decisions expiring) that dispose() still waits for. */
+  private readonly background = new Set<Promise<void>>();
 
   constructor(private readonly deps: ChatV2HostDeps) {
     this.store = new ChatV2Store(path.join(deps.wmuxDir, 'chat-sessions', 'v2'));
@@ -344,12 +346,17 @@ class Host implements ChatV2Host {
     if (this.disposed) return;
     this.disposed = true;
     const lives = [...this.byPane.values()];
-    const stops = Promise.all(lives.map(async (live) => {
-      live.generation += 1;
-      if (!(await this.stopDriver(live))) this.deps.log('warn', `[chatv2] the driver of ${live.record.paneId} did not exit`);
-      live.batcher.flush();
-      await this.persistNow(live);
-    }));
+    const stops = (async () => {
+      await Promise.all(lives.map(async (live) => {
+        live.generation += 1;
+        if (!(await this.stopDriver(live))) this.deps.log('warn', `[chatv2] the driver of ${live.record.paneId} did not exit`);
+        live.batcher.flush();
+        await this.persistNow(live);
+      }));
+      // A takeover's last save or an expiry the stops set off may still be
+      // writing; what they start in turn is waited for too.
+      while (this.background.size) await Promise.all([...this.background]);
+    })();
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       stops,
@@ -394,7 +401,7 @@ class Host implements ChatV2Host {
     for (const live of this.byPane.values()) {
       const { record } = live;
       if (live.closed || record.state !== 'active' || record.paneId === paneId || record.agent !== agent || record.providerSessionId !== sessionId) continue;
-      void this.yieldToTerminal(live, paneId, paneExact).catch((error) => {
+      void this.track(this.yieldToTerminal(live, paneId, paneExact)).catch((error) => {
         this.deps.log('error', `[chatv2] ${record.paneId} could not give way to ${paneId}: ${String(error)}`);
       });
     }
@@ -1491,7 +1498,15 @@ class Host implements ChatV2Host {
       live.error = { code: 'driver-failed', message: code === null || code === undefined ? 'The agent stopped.' : `The agent exited (code ${code}).` };
     }
     live.stopping = false;
-    void this.expireDecisions(live, 'pane-gone');
+    void this.track(this.expireDecisions(live, 'pane-gone'));
+  }
+
+  /** Keep `work` for dispose() to wait for until it settles; its result and error stay the caller's. */
+  private track<T>(work: Promise<T>): Promise<T> {
+    const settled = work.then(() => undefined, () => undefined);
+    this.background.add(settled);
+    void settled.then(() => { this.background.delete(settled); });
+    return work;
   }
 
   // --- intake: driver output in order, decisions recorded before their events
@@ -1580,7 +1595,7 @@ class Host implements ChatV2Host {
               : { type: 'question.resolved', requestId: event.requestId, decision: 'cancelled' });
           }
         }
-        if (event.type === 'turn.ended') void this.expireDecisions(live, 'turn-ended');
+        if (event.type === 'turn.ended') void this.track(this.expireDecisions(live, 'turn-ended'));
       }
     }
   }

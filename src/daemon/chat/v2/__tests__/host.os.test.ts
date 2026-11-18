@@ -314,6 +314,58 @@ describe('chat v2 host', () => {
     await r.host.dispose();
   });
 
+  it('dispose waits for the expiry its own stop sets off, past the record\'s last save', async () => {
+    const r = rig();
+    // The stop's expiry holds in the registry until released.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const expire = r.registry!.expireNative.bind(r.registry!);
+    const expiring = vi.spyOn(r.registry!, 'expireNative').mockImplementation(async (...args) => { await gate; return expire(...args); });
+    // Every save of the chat record from the start: begun (the store's
+    // mkdir), begun after the expiry, and finished (its rename).
+    const chatDir = path.join(dir, 'chat-sessions', 'v2');
+    const saves = { begun: 0, afterExpiry: 0, done: 0 };
+    const mkdir = fs.promises.mkdir.bind(fs.promises);
+    const rename = fs.promises.rename.bind(fs.promises);
+    const mkdirs = vi.spyOn(fs.promises, 'mkdir').mockImplementation(async (target, options) => {
+      if (String(target) === chatDir) {
+        saves.begun++;
+        if (expiring.mock.calls.length) saves.afterExpiry++;
+      }
+      return mkdir(target, options);
+    });
+    const renames = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      try {
+        await rename(from, to);
+      } finally {
+        if (path.dirname(String(to)) === chatDir) saves.done++;
+      }
+    });
+    try {
+      await created(r);
+      await sent(r);
+      r.fake().canUseTool('req-6', 'Bash', { command: 'ls' }, 'toolu_6');
+      await until(() => r.host.statusForPane(PANE) === 'needs-input');
+      let disposed = false;
+      const disposing = r.host.dispose().then(() => { disposed = true; });
+      await until(() => expiring.mock.calls.length === 1);
+      // The stop set the expiry off before dispose's own save. Once a save
+      // begun after it has finished and none is left running or queued (a
+      // queued one begins within the same turn as the last one ends),
+      // nothing but the expiry holds dispose.
+      await until(() => saves.afterExpiry > 0 && saves.begun === saves.done);
+      expect(disposed).toBe(false);
+      release();
+      await disposing;
+      expect(r.registry!.list().pending).toHaveLength(0);
+    } finally {
+      release();
+      expiring.mockRestore();
+      mkdirs.mockRestore();
+      renames.mockRestore();
+    }
+  });
+
   it('leaves no orphan across a daemon restart, and kills only an identity match', async () => {
     const first = rig();
     await created(first);
@@ -839,8 +891,9 @@ describe('chat v2 host: Stop always ends the turn', () => {
     const binding = await created(r);
     await sent(r);
     r.fake().canUseTool('req-9', 'Bash', { command: 'sleep 1000' }, 'toolu_9');
-    await until(() => r.registry!.list().pending.length === 1);
-    expect(r.host.statusForPane(PANE)).toBe('needs-input');
+    // The registry record lands before the card is stamped: wait for the card.
+    await until(() => r.host.statusForPane(PANE) === 'needs-input');
+    expect(r.registry!.list().pending).toHaveLength(1);
     const hung = r.fake();
     hung.ignoresEof = true;
     const pid = hung.pid!;

@@ -384,6 +384,10 @@ function runPwshInit(script: string): string {
       '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
       '-Command', `. '${init}'; ${script}`,
     ], { encoding: 'utf-8', timeout: 30_000, env: { ...process.env, WMUX_SHELL_INTEGRATION: '1' } });
+    // The run itself first, so a failure names its cause (a spawn error, the
+    // timeout's kill, an exit code) rather than showing as missing marks.
+    expect(out.error, `powershell.exe did not run: ${String(out.error)}`).toBeUndefined();
+    expect(out.status, `powershell.exe exited ${out.status} (signal ${out.signal}); stderr:\n${out.stderr}`).toBe(0);
     return out.stdout ?? '';
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

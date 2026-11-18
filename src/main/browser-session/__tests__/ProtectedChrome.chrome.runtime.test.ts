@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import type { Browser, Page } from 'playwright-core';
 import { ChromeLauncher, type ChromeProtectionPlan } from '../ChromeLauncher';
-import { openDownloadPass } from '../dangerousActionConsent';
+import { ConsentRefusal, openDownloadPass, type ConsentedDownload } from '../dangerousActionConsent';
 import { compileHostPolicy, type HostPolicy } from '../../../shared/browserHostPolicy';
 import { requiredOnThisRunner } from '../../../test-utils/realBrowserHarness';
 import { accountDownloads } from '../../../test-utils/chromeDownloads';
@@ -290,12 +290,24 @@ describe('protected Chrome profile (real Chrome)', { timeout: CASE_TIMEOUT_MS },
       await s.detach();
       return targetInfo.targetId;
     }
+    /** A pass for `p`'s tab, and the downloadWillBegin events its claim was shown for that tab. */
     async function pass(p: Page) {
       const guard = rigA.launcher.consentDownloadGuard();
       if (!guard) throw new Error('no download guard');
       const dir = rigA.profile.scratch('wmux-consent-');
-      return openDownloadPass(guard, {
-        frameId: await targetIdOf(p),
+      const frameId = await targetIdOf(p);
+      const seen: Array<Record<string, unknown>> = [];
+      const watched: typeof guard = {
+        send: (method, params) => guard.send(method, params),
+        claim: (claimant, reassert) => guard.claim((params) => {
+          if (params.frameId === frameId) seen.push(params);
+          return claimant(params);
+        }, reassert),
+        onProgress: (listener) => guard.onProgress(listener),
+        onClose: (listener) => guard.onClose(listener),
+      };
+      const approved = await openDownloadPass(watched, {
+        frameId,
         approvedHost: 'a.test',
         hostOf: (u) => { try { return new URL(u).hostname; } catch { return null; } },
         dir,
@@ -303,31 +315,43 @@ describe('protected Chrome profile (real Chrome)', { timeout: CASE_TIMEOUT_MS },
         finishTimeoutMs: 15_000,
         join: (d, n) => join(d, n),
       });
+      return { approved, seen };
     }
     const finished = (d: { path: string }) => existsSync(d.path) && readFileSync(d.path, 'utf8').includes('PAYLOAD');
+    /**
+     * The pass either refuses, or hands back a file it holds. Whether it
+     * succeeds is not asserted: the ordering of another connection's download
+     * setting against the click is not controlled.
+     */
+    async function holdsWhatItReports(done: Promise<ConsentedDownload>): Promise<void> {
+      const outcome: ConsentedDownload | Error = await done.then((d) => d, (e: unknown) => (e instanceof Error ? e : new Error(String(e))));
+      if (outcome instanceof Error) expect(outcome).toBeInstanceOf(ConsentRefusal);
+      else expect(finished(outcome), `the pass handed back ${outcome.path}`).toBe(true);
+    }
 
-    for (const how of ['stays', 'leaves']) it(`an approved download finishes when another connection attaches and ${how}`, async (ctx) => {
+    for (const how of ['stays', 'leaves']) it(`an approved download is seen by the guard, and the pass hands back only a file it holds, when another connection attaches and ${how}`, async (ctx) => {
       if (skipUnless(ctx)) return;
       const p = await newPage(rigA);
       await p.goto(`http://a.test:${port}/download`);
-      const approved = await pass(p);
+      const { approved, seen } = await pass(p);
       const other = await engine();
       if (how === 'leaves') await other.close();
       // One re-assert tick for the pass's own behaviour to be back.
       await settle(600);
       await p.click('#d');
-      expect(finished(await approved.done)).toBe(true);
+      await holdsWhatItReports(approved.done);
+      expect(seen.length, 'downloadWillBegin for the approved tab').toBeGreaterThanOrEqual(1);
       if (how === 'stays') await other.close();
       await p.close();
     });
 
-    it('a second download during the pass is cancelled, the approved one still finishes, and deny is back after', async (ctx) => {
+    it('a second download during the pass is cancelled, the guard sees the approved one, and deny is back after', async (ctx) => {
       if (skipUnless(ctx)) return;
       const p = await newPage(rigA);
       await p.goto(`http://a.test:${port}/two-downloads`);
       const stray = await newPage(rigA);
       await stray.goto(`http://a.test:${port}/download`);
-      const approved = await pass(p);
+      const { approved, seen } = await pass(p);
       const other = await engine();
       await settle(600);
       const first = p.waitForEvent('download', { timeout: 5_000 });
@@ -339,7 +363,8 @@ describe('protected Chrome profile (real Chrome)', { timeout: CASE_TIMEOUT_MS },
       const fromOther = stray.waitForEvent('download', { timeout: 5_000 }).catch(() => null);
       await stray.click('#d');
       for (const d of [await again, await fromOther]) if (d) expect(await d.failure()).toBe('canceled');
-      expect(finished(await approved.done)).toBe(true);
+      await holdsWhatItReports(approved.done);
+      expect(seen.some((e) => typeof e.url === 'string' && e.url.includes('/slow.bin')), 'downloadWillBegin for the approved download').toBe(true);
       // The pass is over: deny again.
       const after = p.waitForEvent('download', { timeout: 5_000 }).catch(() => null);
       await p.click('#e');

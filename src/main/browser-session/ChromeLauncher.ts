@@ -119,9 +119,9 @@ function maskHomes(text: string, homes: string[]): string {
  */
 const PIPE_MISSES_BEFORE_STOP = 3;
 /** A let-go pipe Chrome's time between SIGTERM and SIGKILL. */
-const PIPE_KILL_GRACE_MS = 2_000;
+export const PIPE_KILL_GRACE_MS = 2_000;
 /** How long a launch waits for a let-go pipe Chrome to exit after SIGKILL. */
-const PIPE_KILL_WAIT_MS = 3_000;
+export const PIPE_KILL_WAIT_MS = 3_000;
 /** A check that took this much longer than its timeout spanned a sleep (or a stalled main), and doesn't count. */
 const PIPE_SLEEP_SLACK_MS = 5_000;
 /** How long a Chrome asked to quit through Browser.close gets before a signal. */

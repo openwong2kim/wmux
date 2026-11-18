@@ -79,6 +79,22 @@ const afterStart = (fn: string, thenMs = 50) => `
   setTimeout(() => { ${fn}; setTimeout(() => process.exit(0), ${thenMs}); }, 1000);
 `;
 
+/**
+ * Every dump of a run kept (no gap, room for many), for a case that looks for
+ * one stall's dump: a slow runner can stall the child at start too, and with
+ * the default gap that earlier dump would take the place of the one sought.
+ */
+const KEEP_ALL = { minGapMs: 0, keptPerRun: 50 };
+
+/**
+ * A short stall in JavaScript before the one a case is about, as a slow
+ * runner's start makes: under the default gap its dump would be the only one.
+ */
+const EARLIER_STALL = 'setTimeout(() => { const end = Date.now() + 300; while (Date.now() < end); }, 550);';
+
+/** What a run left, for a failure message. */
+const told = (run: Run) => `log:\n${run.log}\ndumps:\n${run.dumps.map((d) => d.split('\n').slice(0, 4).join(' | ')).join('\n')}`;
+
 const STUCK_IN_JS = `
   function outerCaller(argSecret) {
     const scopeSecret = 'SCOPE-SECRET-' + argSecret;
@@ -128,21 +144,22 @@ describe('hang watchdog', () => {
     const home = fs.mkdtempSync(path.join(root, 'home-'));
     const script = path.join(home, 'stuck.js');
     fs.writeFileSync(script, 'module.exports = function stuckInHome() { const end = Date.now() + 3000; while (Date.now() < end); };\n');
-    const run = await runChild(afterStart(`require(${JSON.stringify(script)})()`), {}, { HOME: home, USERPROFILE: home });
-    expect(run.dumps).toHaveLength(1);
-    expect(run.dumps[0]).toMatch(/stuckInHome ~\/stuck\.js:1:\d+/);
-    expect(run.dumps[0]).not.toContain(path.basename(home));
+    const run = await runChild(EARLIER_STALL + afterStart(`require(${JSON.stringify(script)})()`), KEEP_ALL, { HOME: home, USERPROFILE: home });
+    const dump = run.dumps.find((d) => d.includes('stuckInHome'));
+    expect(dump, told(run)).toBeDefined();
+    expect(dump).toMatch(/stuckInHome ~\/stuck\.js:1:\d+/);
+    for (const d of run.dumps) expect(d).not.toContain(path.basename(home));
   }, 30_000);
 
   it('a main thread stuck below JavaScript leaves that fact, and returns normally', async () => {
     const run = await runChild(`
       const { spawnSync } = require('child_process');
-    ` + afterStart(`spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'], { stdio: 'ignore', windowsHide: true })`));
+    ` + EARLIER_STALL + afterStart(`spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'], { stdio: 'ignore', windowsHide: true })`), KEEP_ALL);
     expect(run.code).toBe(0);
-    expect(run.dumps).toHaveLength(1);
-    expect(run.dumps[0]).toContain('state: below JavaScript');
-    expect(run.dumps[0]).toMatch(/process cpu in that wait: \d+ ms/);
-    expect(run.dumps[0]).not.toContain('frames:');
+    const dump = run.dumps.find((d) => d.includes('state: below JavaScript'));
+    expect(dump, told(run)).toBeDefined();
+    expect(dump).toMatch(/process cpu in that wait: \d+ ms/);
+    expect(dump).not.toContain('frames:');
   }, 30_000);
 
   it('a healthy loop is never dumped', async () => {
@@ -166,9 +183,9 @@ describe('hang watchdog', () => {
       setTimeout(next, 1000);
     `;
     const inGap = await runChild(twoStalls.replace('${N}', '3'), { minGapMs: 60_000 });
-    expect(inGap.dumps).toHaveLength(1);
+    expect(inGap.dumps, told(inGap)).toHaveLength(1);
     const pastGap = await runChild(twoStalls.replace('${N}', '4'), { minGapMs: 0, keptPerRun: 2 });
-    expect(pastGap.dumps).toHaveLength(2);
+    expect(pastGap.dumps, told(pastGap)).toHaveLength(2);
   }, 30_000);
 
   it('a watchdog does not keep the process alive, whatever it is doing', async () => {
