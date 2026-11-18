@@ -1059,7 +1059,7 @@ export interface A2aRemoteApprovalOffer {
   promptId: string;
   /** The tool the prompt is for (`Bash`, `ExitPlanMode`, …). */
   tool: string;
-  /** The bound call's command (secrets redacted, at most A2A_REMOTE_APPROVAL_COMMAND_MAX bytes); only at exposure `command`. */
+  /** The bound call's command (known credential shapes masked, at most A2A_REMOTE_APPROVAL_COMMAND_MAX bytes); only at exposure `command`. */
   command?: string;
   /** The command shown is not the call's own text (a secret masked, or characters that cannot be shown dropped): allow is not offered. */
   redacted: boolean;

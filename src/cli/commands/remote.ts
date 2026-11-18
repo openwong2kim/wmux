@@ -83,8 +83,9 @@ wmux remote — pair with other PCs and ask them to start agents
       Whether agents on that PC can allow or deny permission prompts in the
       tasks they sent to a linked pane here. Off for every PC unless set
       here. tool-only: that PC sees the tool's name and can only deny.
-      command: it also sees the command (secrets redacted) and can allow a
-      Bash, PowerShell or WebSearch prompt, or a plan. Turning a PC on, or
+      command: it also sees the command (known credential shapes are masked;
+      other secrets are not) and can allow a Bash, PowerShell or WebSearch
+      prompt, or a plan. Turning a PC on, or
       to command, asks you to type yes first, so run it in a terminal;
       lowering it or turning it off does not ask. With no argument, prints
       the setting for each paired PC. On a PC where the desktop app runs,
@@ -747,7 +748,7 @@ async function remoteApprovals(args: string[], jsonMode: boolean): Promise<void>
       if (!policyIo.stdinIsTty()) fail('raising approvals for a PC asks for a typed confirmation. Run this in a terminal and confirm.');
       const say = (line: string): void => { if (jsonMode) console.error(line); else console.log(line); };
       say(value === 'command'
-        ? `Agents on ${pcLabel(pc)} will see the command of a permission prompt in a task they sent to a linked pane here (secrets redacted), and can allow a Bash, PowerShell or WebSearch call or a plan, or deny any prompt offered.`
+        ? `Agents on ${pcLabel(pc)} will see the command of a permission prompt in a task they sent to a linked pane here (known credential shapes are masked; other secrets are not), and can allow a Bash, PowerShell or WebSearch call or a plan, or deny any prompt offered.`
         : `Agents on ${pcLabel(pc)} will see the tool name of a permission prompt in a task they sent to a linked pane here, and can deny it.`);
       const answer = (await policyIo.ask(`Type ${CONFIRM_WORD} to save this: `, jsonMode)).trim().toLowerCase();
       if (answer !== CONFIRM_WORD) fail('not confirmed; nothing was saved.');

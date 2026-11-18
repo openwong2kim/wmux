@@ -4563,7 +4563,7 @@ export const zh = {
   'remotePage.approvals.level.tool-only': "仅工具名",
   'remotePage.approvals.level.command': "命令",
   'remotePage.approvals.askToolOnly': "{pc} 上的智能体将看到它们发送到本机关联窗格的任务中权限请求的工具名，并可以拒绝它。",
-  'remotePage.approvals.askCommand': "{pc} 上的智能体将看到它们发送到本机关联窗格的任务中权限请求的命令（密钥已隐去），并可以允许 Bash、PowerShell 或 WebSearch 调用或计划，或拒绝任何提供的请求。",
+  'remotePage.approvals.askCommand': "{pc} 上的智能体将看到它们发送到本机关联窗格的任务中权限请求的命令（仅隐去已知格式的凭据，其他密钥不会隐去），并可以允许 Bash、PowerShell 或 WebSearch 调用或计划，或拒绝任何提供的请求。",
   'remotePage.approvals.confirm': "确认",
   'remotePage.approvals.changed': "这台 PC 的设置在此期间已更改。请检查后重试。",
   'remotePage.approvals.damaged': "审批设置文件已损坏，因此对所有 PC 都已关闭。选择一个级别即可保存新文件。",

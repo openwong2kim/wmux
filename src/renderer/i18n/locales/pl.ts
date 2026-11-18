@@ -5639,7 +5639,7 @@ export const pl = {
   'remotePage.approvals.level.tool-only': "Tylko narzędzie",
   'remotePage.approvals.level.command': "Polecenie",
   'remotePage.approvals.askToolOnly': "Agenci na {pc} zobaczą nazwę narzędzia w prośbie o uprawnienia w zadaniu wysłanym do połączonego panelu na tym komputerze i będą mogli ją odrzucić.",
-  'remotePage.approvals.askCommand': "Agenci na {pc} zobaczą polecenie w prośbie o uprawnienia w zadaniu wysłanym do połączonego panelu na tym komputerze (z ukrytymi sekretami) i będą mogli zezwolić na wywołanie Bash, PowerShell lub WebSearch albo plan, lub odrzucić każdą przedstawioną prośbę.",
+  'remotePage.approvals.askCommand': "Agenci na {pc} zobaczą polecenie w prośbie o uprawnienia w zadaniu wysłanym do połączonego panelu na tym komputerze (ukryte są tylko znane formaty danych uwierzytelniających, inne sekrety nie) i będą mogli zezwolić na wywołanie Bash, PowerShell lub WebSearch albo plan, lub odrzucić każdą przedstawioną prośbę.",
   'remotePage.approvals.confirm': "Potwierdź",
   'remotePage.approvals.changed': "Ustawienie tego komputera zmieniło się w międzyczasie. Sprawdź je i spróbuj ponownie.",
   'remotePage.approvals.damaged': "Wyłączone dla każdego komputera: plik ustawień zatwierdzania był uszkodzony. Wybranie poziomu zapisze nowy plik.",

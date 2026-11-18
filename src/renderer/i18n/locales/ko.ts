@@ -5291,7 +5291,7 @@ export const ko = {
   'remotePage.approvals.level.tool-only': "도구 이름만",
   'remotePage.approvals.level.command': "명령",
   'remotePage.approvals.askToolOnly': "{pc}의 에이전트가 이 PC의 연결된 판으로 보낸 작업에서 권한 요청의 도구 이름을 보고, 거부할 수 있게 됩니다.",
-  'remotePage.approvals.askCommand': "{pc}의 에이전트가 이 PC의 연결된 판으로 보낸 작업에서 권한 요청의 명령(비밀값은 가림)을 보고, Bash·PowerShell·WebSearch 호출이나 계획을 허용하거나, 제시된 요청을 거부할 수 있게 됩니다.",
+  'remotePage.approvals.askCommand': "{pc}의 에이전트가 이 PC의 연결된 판으로 보낸 작업에서 권한 요청의 명령(알려진 형식의 자격 증명만 가리고, 그 밖의 비밀값은 가리지 않음)을 보고, Bash·PowerShell·WebSearch 호출이나 계획을 허용하거나, 제시된 요청을 거부할 수 있게 됩니다.",
   'remotePage.approvals.confirm': "확인",
   'remotePage.approvals.changed': "그 사이 이 PC의 설정이 바뀌었습니다. 확인하고 다시 시도하세요.",
   'remotePage.approvals.damaged': "승인 설정 파일이 손상되어 모든 PC가 꺼져 있습니다. 단계를 고르면 새로 저장됩니다.",

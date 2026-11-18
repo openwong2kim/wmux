@@ -187,6 +187,7 @@ describe('wmux remote approvals', () => {
     expect(await run('approvals', [DESK, 'command'])).toBe(0);
     expect(askSpy).toHaveBeenCalledTimes(2);
     expect(printed()).toContain('can allow a Bash, PowerShell or WebSearch call or a plan');
+    expect(printed()).toContain('(known credential shapes are masked; other secrets are not)');
     expect(approvalHosts).toEqual({ [DESK]: 'command' });
   });
 

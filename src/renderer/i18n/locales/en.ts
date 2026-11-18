@@ -5711,7 +5711,7 @@ export const en = {
   'remotePage.approvals.level.tool-only': "Tool only",
   'remotePage.approvals.level.command': "Command",
   'remotePage.approvals.askToolOnly': "Agents on {pc} will see the tool name of a permission prompt in a task they sent to a linked pane here, and can deny it.",
-  'remotePage.approvals.askCommand': "Agents on {pc} will see the command of a permission prompt in a task they sent to a linked pane here (secrets redacted), and can allow a Bash, PowerShell or WebSearch call or a plan, or deny any prompt offered.",
+  'remotePage.approvals.askCommand': "Agents on {pc} will see the command of a permission prompt in a task they sent to a linked pane here (known credential shapes are masked; other secrets are not), and can allow a Bash, PowerShell or WebSearch call or a plan, or deny any prompt offered.",
   'remotePage.approvals.confirm': "Confirm",
   'remotePage.approvals.changed': "The setting for that PC changed meanwhile. Check it and try again.",
   'remotePage.approvals.damaged': "Off for every PC: the approvals settings file was damaged. Choosing a level saves a new one.",

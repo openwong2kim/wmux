@@ -7,6 +7,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useStore } from '../../../stores';
 import RemotePage, { REMOTE_PAGE_POLL_MS } from '../RemotePage';
+import { ko } from '../../../i18n/locales/ko';
+import { zh } from '../../../i18n/locales/zh';
+import { pl } from '../../../i18n/locales/pl';
 import type { A2aLinkOfferRecordV1, A2aLinkRecordV1 } from '../../../../shared/a2aRemote';
 import type { A2aRemoteHostStatus } from '../../../../shared/rpc';
 import type { Task } from '../../../../shared/types';
@@ -544,6 +547,8 @@ describe('Remote page: remote approvals under each paired PC', () => {
     expect(api.a2aRemote.approvalsSet).not.toHaveBeenCalled();
     await act(async () => { level(PEER_HOST, 'Command').click(); });
     expect(row(PEER_HOST).querySelector('[data-remote-approvals-ask]')?.textContent).toContain('will see the command');
+    // Only known credential shapes are masked: the confirmation must not say every secret is.
+    expect(row(PEER_HOST).querySelector('[data-remote-approvals-ask]')?.textContent).toContain('(known credential shapes are masked; other secrets are not)');
     const ok = row(PEER_HOST).querySelector<HTMLButtonElement>('[data-remote-approvals-confirm]')!;
     expect(ok.className).not.toContain('ui-btn-primary');
     await act(async () => { ok.click(); });
@@ -658,6 +663,12 @@ describe('Remote page: remote approvals under each paired PC', () => {
     await act(async () => { vi.advanceTimersByTime(REMOTE_PAGE_POLL_MS); });
     await settle();
     expect(row(HOST).getAttribute('data-level')).toBe('command');
+  });
+
+  it('no translation of the Command confirmation says every secret is hidden', () => {
+    expect(ko['remotePage.approvals.askCommand']).toContain('알려진 형식의 자격 증명만 가리고');
+    expect(zh['remotePage.approvals.askCommand']).toContain('仅隐去已知格式的凭据');
+    expect(pl['remotePage.approvals.askCommand']).toContain('ukryte są tylko znane formaty');
   });
 
   it('a damaged settings file: off for every PC, and each row says why', async () => {

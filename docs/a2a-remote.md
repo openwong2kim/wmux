@@ -324,8 +324,10 @@ for one, on the PC that does the work.
   - **Tool only**: that PC is shown the tool's name, a prompt id and a few
     flags, and can only deny.
   - **Command**: it is also shown the command of a Bash, PowerShell or
-    WebSearch call, or a plan (secrets redacted, at most 2 KB), and can allow
-    such a call as well as deny it.
+    WebSearch call, or a plan (at most 2 KB), and can allow such a call as
+    well as deny it. Values shaped like known credentials (tokens, keys,
+    password assignments) are masked before it is sent; a secret with no
+    such shape, a plain passphrase say, is sent as it is.
 - **Where to set it.** In the desktop app: the **Remote** page, under each
   PC in **Other PCs**, one row worded "Agents on <PC> can allow or deny
   permission prompts in tasks they sent here" with Off, Tool only and
