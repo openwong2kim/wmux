@@ -8,7 +8,7 @@ use super::sys::*;
 use super::{Notify, Worker};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
 /// The most accepted conns: one more instance (the listening one) must stay
@@ -182,9 +182,18 @@ impl Drop for PipeInstance {
 struct Shared {
     /// Manual-reset stop signal; closed by the accept thread as it exits.
     stop: Mutex<Option<OwnedHandle>>,
+    /// Accepted conns not taken yet. `closed` is set before close() drains
+    /// this under its lock, and the accept thread checks `closed` under the
+    /// same lock before it adds one, so none is left behind.
     accepted: Mutex<VecDeque<Arc<Conn>>>,
+    /// Untaken conns close() destroyed without waiting, for close_and_join.
+    discarded: Mutex<Vec<Arc<Conn>>>,
     failure: Mutex<Option<String>>,
     closed: AtomicBool,
+    /// Set as the accept thread's last act (after its listening instance is
+    /// closed), whoever holds its JoinHandle.
+    exited: Mutex<bool>,
+    exited_signal: Condvar,
     /// Taken when the accept thread ends, so a closed listener no longer
     /// holds the wake callback (its conns keep their own clones).
     notify: Mutex<Option<Notify>>,
@@ -224,15 +233,18 @@ impl Listener {
         let shared = Arc::new(Shared {
             stop: Mutex::new(Some(event(true).map_err(ListenError::Other)?)),
             accepted: Mutex::new(VecDeque::new()),
+            discarded: Mutex::new(Vec::new()),
             failure: Mutex::new(None),
             closed: AtomicBool::new(false),
+            exited: Mutex::new(false),
+            exited_signal: Condvar::new(),
             notify: Mutex::new(Some(notify)),
         });
         let worker_shared = shared.clone();
         let thread = std::thread::Builder::new()
             .name("wmux-pipe-accept".into())
             .spawn(move || {
-                let _worker = Worker::enter();
+                let worker = Worker::enter();
                 let stop = worker_shared
                     .stop
                     .lock()
@@ -252,6 +264,12 @@ impl Listener {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .take();
+                drop(worker);
+                *worker_shared
+                    .exited
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = true;
+                worker_shared.exited_signal.notify_all();
             })
             .map_err(|e| ListenError::Other(e.to_string()))?;
         Ok(Arc::new(Self {
@@ -276,34 +294,63 @@ impl Listener {
             .clone()
     }
 
-    /// Stops accepting and closes the pending instance; the join runs off
-    /// the caller's thread. Taken conns stay open; conns not taken by then
-    /// are destroyed, so none is left holding the wake callback.
+    /// Stops accepting and closes the listening instance; the join runs off
+    /// the caller's thread. Taken conns stay open; conns not taken are
+    /// destroyed now (without waiting), so none is left holding the wake
+    /// callback.
     pub(crate) fn close(&self) {
         if !self.signal_close() {
             return;
         }
-        let thread = self.take_thread();
-        let shared = self.shared.clone();
-        let _ = std::thread::Builder::new()
-            .name("wmux-pipe-join".into())
-            .spawn(move || {
-                let _worker = Worker::enter();
-                if let Some(thread) = thread {
+        let untaken = drain_untaken(&self.shared);
+        for conn in &untaken {
+            conn.destroy();
+        }
+        self.shared
+            .discarded
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .extend(untaken);
+        if let Some(thread) = self.take_thread() {
+            // If the reaper cannot start, the handle is dropped (detached);
+            // close_and_join still waits on the exit flag.
+            let _ = std::thread::Builder::new()
+                .name("wmux-pipe-join".into())
+                .spawn(move || {
+                    let _worker = Worker::enter();
                     let _ = thread.join();
-                }
-                destroy_untaken(&shared);
-            });
+                });
+        }
     }
 
-    /// As `close`, joining on the caller's thread; also destroys conns not
-    /// taken yet.
+    /// As `close`, waiting on the caller's thread until the accept thread
+    /// has exited (the name released) and every untaken conn has closed,
+    /// even after an earlier close().
     pub(crate) fn close_and_join(&self) {
         self.signal_close();
         if let Some(thread) = self.take_thread() {
             let _ = thread.join();
         }
-        destroy_untaken(&self.shared);
+        let mut exited = self.shared.exited.lock().unwrap_or_else(|p| p.into_inner());
+        while !*exited {
+            exited = self
+                .shared
+                .exited_signal
+                .wait(exited)
+                .unwrap_or_else(|p| p.into_inner());
+        }
+        drop(exited);
+        let mut untaken = drain_untaken(&self.shared);
+        untaken.extend(std::mem::take(
+            &mut *self
+                .shared
+                .discarded
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
+        ));
+        for conn in untaken {
+            conn.destroy_and_join();
+        }
     }
 
     fn signal_close(&self) -> bool {
@@ -334,18 +381,13 @@ impl Drop for Listener {
     }
 }
 
-fn destroy_untaken(shared: &Shared) {
-    loop {
-        let conn = shared
-            .accepted
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .pop_front();
-        match conn {
-            Some(conn) => conn.destroy_and_join(),
-            None => break,
-        }
-    }
+fn drain_untaken(shared: &Shared) -> Vec<Arc<Conn>> {
+    shared
+        .accepted
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .drain(..)
+        .collect()
 }
 
 enum Connect {
@@ -452,11 +494,20 @@ fn accept_loop(shared: &Shared, stop: Handle, instances: &Arc<Instances>, first:
             .clone();
         match notify.map(|notify| Conn::start(accepted, peer, process, notify)) {
             Some(Ok(conn)) => {
-                shared
-                    .accepted
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .push_back(conn);
+                let mut accepted = shared.accepted.lock().unwrap_or_else(|p| p.into_inner());
+                if shared.closed.load(Ordering::Acquire) {
+                    // close() has drained the queue already: nobody takes it.
+                    drop(accepted);
+                    conn.destroy();
+                    shared
+                        .discarded
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(conn);
+                    return;
+                }
+                accepted.push_back(conn);
+                drop(accepted);
                 shared.wake();
             }
             Some(Err(message)) => return shared.fail(message),

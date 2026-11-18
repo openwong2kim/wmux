@@ -662,7 +662,8 @@ fn end_gives_up_on_a_client_that_never_reads() {
     let started = Instant::now();
     wait_until("the bounded close", || conn.closed());
     assert!(started.elapsed() >= END_DRAIN_LIMIT - Duration::from_millis(100));
-    assert!(conn.take_written().contains(&id));
+    // A canceled write is an error, never reported as written.
+    assert!(!conn.take_written().contains(&id));
     let error = conn.error().unwrap();
     assert!(error.contains("read none"), "{error}");
     drop(client);
@@ -867,4 +868,52 @@ fn finished_conns_release_their_handles_while_still_referenced() {
     );
     drop(owners);
     listener.close_and_join();
+}
+
+/// A write that fails is never reported by take_written(); error() is set.
+#[test]
+fn a_failed_write_is_not_reported_as_written() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    let client = Client::open(&name);
+    let conn = accept(&listener);
+    let sent = conn.write(b"before".to_vec());
+    wait_until("the first write", || conn.take_written().contains(&sent));
+    drop(client);
+    let failed = conn.write(b"after the client left".to_vec());
+    wait_until("the write error", || conn.error().is_some());
+    let error = conn.error().unwrap();
+    assert!(error.contains("WriteFile"), "{error}");
+    // Later writes are refused at once, also without a report.
+    let refused = conn.write(b"more".to_vec());
+    std::thread::sleep(Duration::from_millis(50));
+    let written = conn.take_written();
+    assert!(!written.contains(&failed), "{written:?}");
+    assert!(!written.contains(&refused), "{written:?}");
+    conn.destroy_and_join();
+    listener.close_and_join();
+}
+
+/// close() then close_and_join(): the second call still waits for the
+/// accept thread (whose handle the first moved to its reaper) and for the
+/// untaken conns, so the name is free when it returns.
+#[test]
+fn close_and_join_after_close_waits_for_the_accept_thread_and_untaken_conns() {
+    let _serial = serial();
+    wait_until("idle workers", || worker_count() == 0);
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    let _client = Client::open(&name);
+    wait_until("an accepted conn", || worker_count() >= 2);
+    listener.close();
+    listener.close_and_join();
+    // Untaken conns were destroyed and have closed; the name is released.
+    assert!(listener.take_accepted().is_none());
+    let (notify, _rx) = notifier();
+    let again = Listener::bind(&name, 4, notify).unwrap();
+    again.close_and_join();
+    wait_until("every worker to end", || worker_count() == 0);
 }

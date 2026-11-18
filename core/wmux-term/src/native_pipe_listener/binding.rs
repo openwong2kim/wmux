@@ -256,7 +256,9 @@ impl NativePipeConn {
         self.inner.write(data.to_vec())
     }
 
-    /// Ids whose write completed (or failed: see error()).
+    /// Ids of writes that completed (every byte is in the pipe). A write
+    /// that failed or was canceled is never listed: error() is set instead,
+    /// so the caller fails its pending writes rather than settling them.
     #[napi(catch_unwind)]
     pub fn take_written(&self) -> Vec<u32> {
         self.inner.take_written()

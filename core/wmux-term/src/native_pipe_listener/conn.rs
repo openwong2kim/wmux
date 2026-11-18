@@ -211,16 +211,14 @@ impl Conn {
     }
 
     /// Queues `data`; returns its write id. After a failed write or a
-    /// close, the id is reported as done at once (see `error`).
+    /// close the write is not queued: error() says why, and the id is never
+    /// reported by take_written().
     pub(crate) fn write(&self, data: Vec<u8>) -> u32 {
         let mut state = self.shared.lock();
         state.next_write_id = state.next_write_id.wrapping_add(1);
         let id = state.next_write_id;
         if state.write_failed || state.ending || state.destroying || state.closed {
-            if state.error.is_none() && !state.write_failed {
-                state.error = Some("write after end".into());
-            }
-            state.written.push(id);
+            state.error.get_or_insert_with(|| "write after end".into());
             drop(state);
             self.shared.wake();
             return id;
@@ -231,6 +229,9 @@ impl Conn {
         id
     }
 
+    /// Ids of writes that completed: every byte is in the pipe. A write
+    /// that failed or was canceled is never listed; error() is set instead,
+    /// so its caller fails it rather than settling it as sent.
     pub(crate) fn take_written(&self) -> Vec<u32> {
         std::mem::take(&mut self.shared.lock().written)
     }
@@ -393,7 +394,9 @@ fn run(
                 break;
             }
             let deadline = *drain_deadline.get_or_insert_with(|| Instant::now() + END_DRAIN_LIMIT);
-            if Instant::now() >= deadline {
+            // A write that already completed is collected (by the wait
+            // below, which returns at once) before the deadline counts.
+            if Instant::now() >= deadline && !(write_pending && is_set(write_event.raw())) {
                 state.error.get_or_insert_with(|| {
                     format!(
                         "end: the client read none of the queued writes for {} s",
@@ -479,16 +482,14 @@ fn run(
             // Rounded up, so the deadline has passed when the wait times out.
             (left + 1).min(u128::from(INFINITE - 1)) as u32
         });
-        let signalled = match wait_any(&handles, timeout) {
-            Ok(Some(index)) => handles[index],
-            Ok(None) => continue,
-            Err(message) => {
-                shared.lock().error = Some(message);
-                shared.wake();
-                break;
-            }
-        };
-        if read_pending && signalled == read_event.raw() {
+        if let Err(message) = wait_any(&handles, timeout) {
+            shared.lock().error = Some(message);
+            shared.wake();
+            break;
+        }
+        // Each completion by its event's state, not by which handle the wait
+        // named: control can win the wait while a write is already done.
+        if read_pending && is_set(read_event.raw()) {
             read_pending = false;
             let mut n = 0;
             // SAFETY: the read has completed (its event is set).
@@ -510,7 +511,8 @@ fn run(
             }
             drop(state);
             shared.wake();
-        } else if write_pending && signalled == write_event.raw() {
+        }
+        if write_pending && is_set(write_event.raw()) {
             write_pending = false;
             let mut n = 0;
             // SAFETY: the write has completed (its event is set).
@@ -544,29 +546,44 @@ fn run(
     if read_pending {
         cancel_and_wait(pipe, &mut read_ov);
     }
-    if write_pending {
-        cancel_and_wait(pipe, &mut write_ov);
-    }
+    let completed = if write_pending {
+        cancel_and_wait(pipe, &mut write_ov)
+    } else {
+        None
+    };
     let mut state = shared.lock();
     if let Some(current) = sending.take() {
-        state.written.push(current.id);
-        state.error.get_or_insert_with(|| "write canceled".into());
+        // The cancel can lose to the completion: a write whose last chunk
+        // went through is a completed write.
+        if completed.is_some_and(|n| current.sent + n as usize >= current.data.len()) {
+            state.written.push(current.id);
+        } else {
+            state.error.get_or_insert_with(|| "write canceled".into());
+        }
     }
     if !state.writes.is_empty() {
-        let ids: Vec<u32> = state.writes.drain(..).map(|(id, _)| id).collect();
-        state.written.extend(ids);
+        state.writes.clear();
         state.error.get_or_insert_with(|| "write canceled".into());
     }
 }
 
-fn cancel_and_wait(pipe: Handle, overlapped: &mut Overlapped) {
+/// Whether a manual-reset event is set.
+fn is_set(event: Handle) -> bool {
+    // SAFETY: a valid event handle; a zero timeout never blocks.
+    unsafe { WaitForSingleObject(event, 0) == WAIT_OBJECT_0 }
+}
+
+/// Cancels this OVERLAPPED's operation and waits for it; Some(bytes) when
+/// it completed successfully anyway.
+fn cancel_and_wait(pipe: Handle, overlapped: &mut Overlapped) -> Option<u32> {
     let mut n = 0;
     // SAFETY: cancels this OVERLAPPED's operation, then waits for it to
     // complete either way.
-    unsafe {
+    let ok = unsafe {
         CancelIoEx(pipe, overlapped);
-        GetOverlappedResult(pipe, overlapped, &mut n, 1);
-    }
+        GetOverlappedResult(pipe, overlapped, &mut n, 1)
+    };
+    (ok != 0).then_some(n)
 }
 
 fn finish_read_error(state: &mut State, code: u32) {
@@ -579,12 +596,11 @@ fn finish_read_error(state: &mut State, code: u32) {
     }
 }
 
-/// A failed write fails it and every write queued after it.
-fn fail_writes(state: &mut State, id: u32, code: u32) {
+/// A failed write fails it and every write queued after it: none of their
+/// ids is reported as written; error() is set instead.
+fn fail_writes(state: &mut State, _id: u32, code: u32) {
     state.write_failed = true;
-    state.written.push(id);
-    let ids: Vec<u32> = state.writes.drain(..).map(|(id, _)| id).collect();
-    state.written.extend(ids);
+    state.writes.clear();
     if state.error.is_none() {
         state.error = Some(if is_eof(code) {
             format!("EPIPE: {}", os_error("WriteFile", code))
