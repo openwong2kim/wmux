@@ -232,7 +232,8 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
       // A stopped root holds its SIGHUP until it runs: the tree kill's SIGKILL ends it.
       "  if (mode !== 'stop-cont') process.kill(pid, 'SIGKILL');",
       '  let exits = 0; let first;',
-      '  for (let i = 0; i < 400 && !first; i++) { const r = t.read(); if (r.childExited) { exits++; first = r; } else await sleep(25); }',
+      // The exit's code and signal come with the output's end (eof).
+      '  for (let i = 0; i < 400 && !first; i++) { const r = t.read(); if (r.childExited && r.eof) { exits++; first = r; } else await sleep(25); }',
       // Once seen, the exit stays: later reads report the same one, and kill() is a no-op.
       '  for (let i = 0; i < 4; i++) { await sleep(25); const r = t.read(); if (!r.childExited || r.signal !== first?.signal) exits++; }',
       '  at = Date.now(); t.kill(); const again = Date.now() - at;',

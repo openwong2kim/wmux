@@ -421,12 +421,17 @@ impl NativeTransport {
                         .exited
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
-                    let sweep_at = waiter_state
-                        .sweep_at
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .take();
-                    if let (Some(at), true) = (sweep_at, observed.is_ok()) {
+                    // A sweep needs the observed exit: only then is its deadline taken.
+                    let sweep_at = if observed.is_ok() {
+                        waiter_state
+                            .sweep_at
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .take()
+                    } else {
+                        None
+                    };
+                    if let Some(at) = sweep_at {
                         // Unlocked, so kill() never waits out the grace.
                         drop(guard);
                         std::thread::sleep(at.saturating_duration_since(Instant::now()));
@@ -863,13 +868,14 @@ fn observe_exit(pid: i32) -> std::io::Result<()> {
         } == 0
         {
             match info.si_code {
-                libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED => return Ok(()),
-                _ => {
-                    // Asked again a moment later: while the root stays stopped,
-                    // the same report comes back at once.
+                // Asked again a moment later: while the root stays stopped, the
+                // same report comes back at once.
+                libc::CLD_STOPPED | libc::CLD_CONTINUED | libc::CLD_TRAPPED => {
                     std::thread::sleep(EXIT_POLL);
                     continue;
                 }
+                // Any other report is an exit; the waiter's try_wait confirms it.
+                _ => return Ok(()),
             }
         }
         let error = std::io::Error::last_os_error();
