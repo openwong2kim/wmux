@@ -190,6 +190,23 @@ describe('retryingSelfCheck', () => {
     }
   });
 
+  it('still gives up on schedule while sessions keep arriving', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn(async () => 'unavailable (koffi unavailable: no binary)');
+      const gaveUp = vi.fn();
+      const check = retryingSelfCheck(run, () => undefined, [1000, 2000], gaveUp);
+      // A session every 400 ms, each finding the last check failed.
+      for (let t = 0; t < 4000 && !gaveUp.mock.calls.length; t += 400) {
+        await vi.advanceTimersByTimeAsync(400);
+        await check.verdict();
+      }
+      expect(gaveUp).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('never gives up on a transient failure, however long it lasts', async () => {
     vi.useFakeTimers();
     try {

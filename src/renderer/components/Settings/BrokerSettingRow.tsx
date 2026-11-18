@@ -4,6 +4,9 @@ import SegmentedControl from '../ui/SegmentedControl';
 import { SettingNote, SettingRow } from './SettingsLayout';
 import type { BrokerSetting, BrokerSettingPayload } from '../../../shared/mcpBroker';
 
+/** How often an open row reads the payload again while the broker could still stop. */
+export const BROKER_ROW_REFRESH_MS = 15_000;
+
 interface BrokerSettingApi {
   brokerSetting?: () => Promise<BrokerSettingPayload>;
   setBrokerSetting?: (setting: BrokerSetting) => Promise<BrokerSettingPayload>;
@@ -29,6 +32,18 @@ export function BrokerSettingRow({ api }: { api?: BrokerSettingApi }) {
     );
     return () => { live = false; };
   }, [api]);
+
+  // The broker can stop after the row loaded (its self-check gives up about a
+  // minute after start), so re-read while it runs and has not stopped.
+  const mayStop = !!state && state.running.on && state.hostsSessions && !state.peerUnavailable;
+  useEffect(() => {
+    if (!mayStop || !api?.brokerSetting) return;
+    let live = true;
+    const timer = setInterval(() => {
+      void api.brokerSetting?.().then((s) => { if (live) setState(s); }, () => undefined);
+    }, BROKER_ROW_REFRESH_MS);
+    return () => { live = false; clearInterval(timer); };
+  }, [api, mayStop]);
 
   if (!api?.brokerSetting || !api.setBrokerSetting) return null;
   if (!state) {

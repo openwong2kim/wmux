@@ -108,7 +108,8 @@ export interface PeerSelfCheck {
  * for a reason that is not transient (`isTransientSelfCheckFailure`), no
  * further check starts and `onGiveUp` gets that verdict. Only the backoff
  * timer counts toward it, so sessions that arrive in a burst and each start a
- * check cannot end it early. (An available check is never run again.)
+ * check cannot end it early, and since a session's check leaves that timer
+ * running, sessions that keep arriving cannot hold it off either. (An available check is never run again.)
  */
 export function retryingSelfCheck(
   run: () => Promise<string | null>,
@@ -121,11 +122,22 @@ export function retryingSelfCheck(
   let running = false;
   let failed = false;
   let stopped = false;
-  /** Checks the backoff timer started, as opposed to a session. */
+  /** Backoff retries that came due, as opposed to checks a session started. */
   let timedRetries = 0;
   let current: Promise<string | null>;
+  // The backoff runs on its own: a session's check never clears or restarts
+  // it, so sessions that keep arriving cannot hold off the give-up.
+  const scheduleRetry = (n: number): void => {
+    timer = setTimeout(() => {
+      timer = undefined;
+      if (stopped || !failed) return;
+      timedRetries++;
+      // A session's check already running counts as this retry.
+      if (!running) start();
+    }, delays[Math.min(n - 1, delays.length - 1)]);
+    timer.unref?.();
+  };
   const start = (): void => {
-    clearTimeout(timer);
     running = true;
     const n = ++attempt;
     current = Promise.resolve()
@@ -141,10 +153,7 @@ export function retryingSelfCheck(
           onGiveUp(verdict, n);
           return verdict;
         }
-        if (failed && !stopped) {
-          timer = setTimeout(() => { timedRetries++; start(); }, delays[Math.min(n - 1, delays.length - 1)]);
-          timer.unref?.();
-        }
+        if (failed && !stopped && timer === undefined) scheduleRetry(n);
         return verdict;
       });
   };

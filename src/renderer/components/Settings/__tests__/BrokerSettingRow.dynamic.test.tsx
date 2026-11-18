@@ -6,7 +6,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BrokerSettingRow } from '../BrokerSettingRow';
+import { BROKER_ROW_REFRESH_MS, BrokerSettingRow } from '../BrokerSettingRow';
 import type { BrokerSetting, BrokerSettingPayload } from '../../../../shared/mcpBroker';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -94,6 +94,39 @@ describe('BrokerSettingRow', () => {
     expect(container.querySelector('[data-testid=settings-mcp-broker-peer]')?.textContent).toBe(
       'wmux could not confirm which process connects to the shared process on this system, so it is stopped until wmux restarts. Each agent uses its own MCP server.',
     );
+  });
+
+  it('shows the stop note when the broker stops while the row is open, then stops re-reading', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const on = { running: { on: true, source: 'default' as const }, next: { on: true, source: 'default' as const } };
+      const read = vi.fn<() => Promise<BrokerSettingPayload>>()
+        .mockResolvedValueOnce(payload(on))
+        .mockResolvedValue(payload({ ...on, peerUnavailable: true }));
+      api = { brokerSetting: read, setBrokerSetting: vi.fn() };
+      await render();
+      expect(container.querySelector('[data-testid=settings-mcp-broker-peer]')).toBeNull();
+      await act(async () => { vi.advanceTimersByTime(BROKER_ROW_REFRESH_MS); });
+      await settle();
+      expect(container.querySelector('[data-testid=settings-mcp-broker-peer]')).not.toBeNull();
+      await act(async () => { vi.advanceTimersByTime(BROKER_ROW_REFRESH_MS * 3); });
+      await settle();
+      expect(read).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not re-read while the broker is off', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      stub(payload(), async () => payload());
+      await render();
+      await act(async () => { vi.advanceTimersByTime(BROKER_ROW_REFRESH_MS * 3); });
+      expect(api?.brokerSetting).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('says a failed save, and keeps the last saved choice', async () => {
