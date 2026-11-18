@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import { spawn } from 'child_process';
 import { canConnectBrokerPipe } from '../brokerProbe';
 import { BrokerSupervisor, isMcpBrokerEnabled, resetBrokerSettingForTests } from '../BrokerSupervisor';
+import { BROKER_DEFAULT_ON } from '../../../shared/mcpBroker';
 
 interface FakeChild extends EventEmitter {
   pid: number;
@@ -37,9 +38,11 @@ beforeEach(() => {
 describe('isMcpBrokerEnabled', () => {
   beforeEach(() => resetBrokerSettingForTests({ setting: 'default' }));
 
-  // On whichever OS runs the suite (CI covers all three): today's behaviour,
-  // where only WMUX_MCP_BROKER=1 turns the broker on.
-  it.each([[undefined, false], ['0', false], ['1', true], ['true', false]] as const)(
+  // On whichever OS runs the suite (CI covers all three): '1' and '0' win, and
+  // unset (or any other value) follows the platform default — on for macOS
+  // and Linux, off for Windows.
+  const platformOn = BROKER_DEFAULT_ON.includes(process.platform);
+  it.each([[undefined, platformOn], ['0', false], ['false', false], ['1', true], ['true', platformOn]] as const)(
     'WMUX_MCP_BROKER=%s → %s',
     (value, on) => {
       const saved = process.env.WMUX_MCP_BROKER;

@@ -37,6 +37,8 @@ import { McpRegistrar } from '../McpRegistrar';
 import { stabilizeMcpBundle } from '../stabilizeBundle';
 import { nativeLauncherPath, type SelfTestVerdict } from '../../../shared/mcpLauncher';
 import { getMcpServerEntry, parseConfig } from '../../../shared/configIO';
+import { BROKER_DEFAULT_ON } from '../../../shared/mcpBroker';
+import { resetBrokerSettingForTests } from '../BrokerSupervisor';
 
 const stableDir = () => path.join(tmpHome, '.wmux', 'mcp');
 const nativeCopy = () => nativeLauncherPath(stableDir());
@@ -170,9 +172,23 @@ describe('McpRegistrar — the native launcher (broker flag on, packaged)', () =
     expect(selfTest).not.toHaveBeenCalled();
   });
 
-  it('with the broker flag off, never installs or runs the launcher', async () => {
+  it('with the flag unset and Settings on Default, follows the platform: the native launcher on macOS and Linux, the bundle on Windows', async () => {
     ship('good');
     delete process.env.WMUX_MCP_BROKER;
+    resetBrokerSettingForTests({ setting: 'default' });
+    try {
+      await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok');
+      expect(claudeEntry()).toEqual(BROKER_DEFAULT_ON.includes(process.platform)
+        ? { command: nativeCopy(), args: ['mcp-shim'] }
+        : { command: 'node', args: [path.join(stableDir(), 'index.js')] });
+    } finally {
+      resetBrokerSettingForTests();
+    }
+  });
+
+  it('with the broker flag off, never installs or runs the launcher', async () => {
+    ship('good');
+    process.env.WMUX_MCP_BROKER = '0';
     const selfTest = vi.fn(runsIfGood);
     await new McpRegistrar({ nativeSelfTest: selfTest }).register('tok');
     expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'index.js')] });
@@ -182,7 +198,7 @@ describe('McpRegistrar — the native launcher (broker flag on, packaged)', () =
 
   it('with the broker flag off, an explicit useShim still registers the bundle', async () => {
     ship('good');
-    delete process.env.WMUX_MCP_BROKER;
+    process.env.WMUX_MCP_BROKER = '0';
     await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: true });
     expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'index.js')] });
   });
@@ -236,7 +252,7 @@ describe('McpRegistrar — upgrade and rollback across several agent CLIs', () =
     fs.writeFileSync(file, text);
   };
 
-  it('flag on moves the owned entries to the native launcher, leaves the hand-edited one byte for byte, and flag unset writes the bundle back', async () => {
+  it('flag on moves the owned entries to the native launcher, leaves the hand-edited one byte for byte, and flag off writes the bundle back', async () => {
     ship('good');
     const f = files();
     const bundle = path.join(stableDir(), 'index.js');
@@ -261,8 +277,8 @@ describe('McpRegistrar — upgrade and rollback across several agent CLIs', () =
     expect(fs.readFileSync(f.codex, 'utf8')).toContain('model = "o3"');
     expect(fs.readFileSync(f.codex, 'utf8')).toContain('[mcp_servers.mine]');
 
-    // The way back: the flag unset, the next start writes the bundle again.
-    delete process.env.WMUX_MCP_BROKER;
+    // The way back: the flag off (or Off in Settings), the next start writes the bundle again.
+    process.env.WMUX_MCP_BROKER = '0';
     await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: false });
     for (const [file, format] of [[f.claude, 'json'], [f.codex, 'toml'], [f.gemini, 'json']] as const) {
       expect(entry(file, format), file).toMatchObject({ command: 'node', args: [bundle] });

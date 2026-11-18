@@ -493,7 +493,7 @@ export class McpRegistrar {
   private getShimScriptPath(): string | null {
     const shim = path.join(app.getAppPath(), 'dist', 'mcp', 'mcp', 'shim.js');
     if (fs.existsSync(shim)) return shim;
-    console.error('[McpRegistrar] WMUX_MCP_BROKER=1 but shim.js missing — falling back to full bundle');
+    console.error('[McpRegistrar] the broker is on but shim.js is missing — falling back to full bundle');
     return null;
   }
 

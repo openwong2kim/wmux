@@ -4,11 +4,15 @@
  * In order: WMUX_MCP_BROKER=1 turns it on and WMUX_MCP_BROKER=0 turns it off
  * on every platform; otherwise the Settings choice (`mcp-broker.json`, see
  * brokerSetting.ts) decides when it is `on` or `off`; otherwise the platform
- * default, which is off everywhere today (BROKER_DEFAULT_ON is empty).
+ * default (BROKER_DEFAULT_ON): on for macOS and Linux, off for Windows.
  */
 
-/** The platforms where an unset WMUX_MCP_BROKER means on. Empty: off everywhere. */
-export const BROKER_DEFAULT_ON: readonly NodeJS.Platform[] = [];
+/**
+ * The platforms where an unset WMUX_MCP_BROKER and a Default Settings choice
+ * mean on. Not win32: the broker reads no peer pid there and would refuse
+ * every session (brokerHostsSessions).
+ */
+export const BROKER_DEFAULT_ON: readonly NodeJS.Platform[] = ['darwin', 'linux'];
 
 export type BrokerFlag = 'on' | 'off' | 'unset';
 
@@ -63,10 +67,17 @@ export interface BrokerSettingPayload {
   hostsSessions: boolean;
 }
 
-/** What WMUX_MCP_BROKER asks for: '1' → on, '0' → off, anything else → unset. */
+/**
+ * Values read as off. Unset means on for macOS and Linux, so a value someone
+ * set to keep the broker off ('false', 'off', 'no', any case or padding) must
+ * not fall through to that default.
+ */
+const OFF_VALUES: ReadonlySet<string> = new Set(['0', 'false', 'off', 'no']);
+
+/** What WMUX_MCP_BROKER asks for: '1' → on, '0' (or false/off/no) → off, anything else → unset. */
 export function brokerFlag(value: string | undefined): BrokerFlag {
   if (value === '1') return 'on';
-  if (value === '0') return 'off';
+  if (value !== undefined && OFF_VALUES.has(value.trim().toLowerCase())) return 'off';
   return 'unset';
 }
 

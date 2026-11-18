@@ -19,7 +19,7 @@ import { readBrokerLimitsConfig } from './brokerConfig';
  * backoff on crash, no restart on the "pipe already owned" exit (75).
  *
  * On or off by the rule in shared/mcpBroker.ts: WMUX_MCP_BROKER, then the
- * Settings choice, then the platform default (off everywhere today). While
+ * Settings choice, then the platform default (on for macOS and Linux). While
  * off nothing here runs and registration keeps pointing agents at the
  * single-child bundle — the pre-broker world, byte for byte.
  */

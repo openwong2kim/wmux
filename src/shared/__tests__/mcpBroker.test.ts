@@ -1,31 +1,40 @@
 // @wmux-lane unit
 // Pure functions of the platform name passed in: the OS running the test cannot change a result.
 import { describe, expect, it } from 'vitest';
-import { BROKER_DEFAULT_ON, brokerDecision, brokerDefault, brokerFlag, brokerMayRun, isBrokerSetting, type BrokerSetting } from '../mcpBroker';
+import { BROKER_DEFAULT_ON, brokerDecision, brokerDefault, brokerFlag, brokerHostsSessions, brokerMayRun, isBrokerSetting, type BrokerSetting } from '../mcpBroker';
 
 const PLATFORMS: NodeJS.Platform[] = ['darwin', 'linux', 'win32'];
 const VALUES: (string | undefined)[] = [undefined, '0', '1'];
 
 describe('brokerDefault with the shipped BROKER_DEFAULT_ON', () => {
   // Changing the default is a separate, deliberate change: it edits this test.
-  it('is empty: unset means off on every platform', () => {
-    expect(BROKER_DEFAULT_ON).toEqual([]);
+  it('is macOS and Linux: unset means on there, off on Windows', () => {
+    expect(BROKER_DEFAULT_ON).toEqual(['darwin', 'linux']);
   });
 
-  // Today's behaviour, before shared/mcpBroker.ts: only '1' turns the broker on.
-  const today = (value: string | undefined) => value === '1';
+  // '1' and '0' win everywhere; unset follows the platform.
+  const shipped = (platform: NodeJS.Platform, value: string | undefined) =>
+    value === '1' || (value !== '0' && BROKER_DEFAULT_ON.includes(platform));
   for (const platform of PLATFORMS) {
     for (const value of VALUES) {
-      it(`${platform}, WMUX_MCP_BROKER=${String(value)} → ${today(value) ? 'on' : 'off'} (today's behaviour)`, () => {
-        expect(brokerDefault(platform, value)).toBe(today(value));
+      it(`${platform}, WMUX_MCP_BROKER=${String(value)} → ${shipped(platform, value) ? 'on' : 'off'}`, () => {
+        expect(brokerDefault(platform, value)).toBe(shipped(platform, value));
       });
     }
   }
 
-  it('any other value counts as unset (off), as before', () => {
+  it('an off spelling turns it off everywhere: unset meaning on must not swallow it', () => {
+    for (const platform of PLATFORMS) {
+      for (const value of ['0', 'false', 'FALSE', 'off', 'Off', 'no', ' 0 ', ' false']) {
+        expect(brokerDefault(platform, value), `${platform} ${JSON.stringify(value)}`).toBe(false);
+      }
+    }
+  });
+
+  it('any other value counts as unset, so it follows the platform', () => {
     for (const platform of PLATFORMS) {
       for (const value of ['', 'true', 'on', 'yes', ' 1', '01']) {
-        expect(brokerDefault(platform, value), `${platform} ${JSON.stringify(value)}`).toBe(false);
+        expect(brokerDefault(platform, value), `${platform} ${JSON.stringify(value)}`).toBe(BROKER_DEFAULT_ON.includes(platform));
       }
     }
   });
@@ -54,9 +63,11 @@ describe('brokerDefault with a platform default passed in', () => {
 });
 
 describe('brokerFlag', () => {
-  it('reads 1 as on, 0 as off and anything else as unset', () => {
+  it('reads 1 as on, 0 (or false/off/no) as off and anything else as unset', () => {
     expect(brokerFlag('1')).toBe('on');
     expect(brokerFlag('0')).toBe('off');
+    expect(brokerFlag(' False ')).toBe('off');
+    expect(brokerFlag('')).toBe('unset');
     expect(brokerFlag(undefined)).toBe('unset');
     expect(brokerFlag('true')).toBe('unset');
   });
@@ -71,7 +82,7 @@ describe('brokerDecision: environment, then Settings, then the platform', () => 
           : value === '0' ? { on: false, source: 'env' }
             : setting === 'on' ? { on: true, source: 'setting' }
               : setting === 'off' ? { on: false, source: 'setting' }
-                : { on: false, source: 'default' };
+                : { on: BROKER_DEFAULT_ON.includes(platform), source: 'default' };
         it(`${platform}, WMUX_MCP_BROKER=${String(value)}, Settings ${setting} → ${want.on ? 'on' : 'off'} by ${want.source}`, () => {
           expect(brokerDecision(platform, value, setting)).toEqual(want);
         });
@@ -79,9 +90,11 @@ describe('brokerDecision: environment, then Settings, then the platform', () => 
     }
   }
 
-  it('Default follows a platform default that is on', () => {
+  it('Default follows the platform default, and Off in Settings turns it off', () => {
     expect(brokerDecision('darwin', undefined, 'default', ['darwin'])).toEqual({ on: true, source: 'default' });
     expect(brokerDecision('darwin', undefined, 'off', ['darwin'])).toEqual({ on: false, source: 'setting' });
+    expect(brokerDecision('linux', undefined, 'off')).toEqual({ on: false, source: 'setting' });
+    expect(brokerDecision('win32', undefined, 'default', [])).toEqual({ on: false, source: 'default' });
   });
 });
 
@@ -97,6 +110,10 @@ describe('brokerMayRun (wmux mcp register probes only when this is true)', () =>
 });
 
 describe('isBrokerSetting', () => {
+  it('the default is on exactly where the broker can host sessions', () => {
+    for (const platform of PLATFORMS) expect(BROKER_DEFAULT_ON.includes(platform)).toBe(brokerHostsSessions(platform));
+  });
+
   it('takes default, on and off only', () => {
     for (const v of ['default', 'on', 'off']) expect(isBrokerSetting(v)).toBe(true);
     for (const v of ['', 'ON', '1', 1, null, undefined, {}]) expect(isBrokerSetting(v)).toBe(false);

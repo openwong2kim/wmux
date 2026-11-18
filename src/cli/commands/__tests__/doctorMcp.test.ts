@@ -235,14 +235,18 @@ describe('doctor broker rule', () => {
   it('on by WMUX_MCP_BROKER=1: names it and the way back, running or down', async () => {
     const running = await line({ enabled: true, flag: 'on' });
     expect(running?.verdict).toBe('OK');
-    expect(running?.hint).toContain('On because WMUX_MCP_BROKER=1 is set for the app. To turn it off, remove it (or set it to 0) and restart wmux');
+    expect(running?.hint).toContain('On because WMUX_MCP_BROKER=1 is set for the app. To turn it off, set it to 0 and restart wmux');
     const down = await line({ enabled: true, flag: 'on', running: false, pid: null, uptimeS: null, downReason: 'restarting' });
     expect(down?.verdict).toBe('WARN');
     expect(down?.hint).toContain('The app restarts it with a backoff.');
     expect(down?.hint).toContain('On because WMUX_MCP_BROKER=1');
   });
 
-  it('on with the flag unset (a platform default): says so, and that WMUX_MCP_BROKER=0 turns it off', async () => {
+  it('on with the flag unset (a platform default): says so, and names the Settings switch only where the app has one', async () => {
+    expect((await line({ enabled: true, flag: 'unset', setting: 'default' }))?.hint).toBe(
+      'On by default on this platform. Settings > Claude Code > Shared MCP process: Off turns it off '
+        + '(or WMUX_MCP_BROKER=0 for the app), from the next wmux start.',
+    );
     expect((await line({ enabled: true, flag: 'unset' }))?.hint).toBe(
       'On by default on this platform. WMUX_MCP_BROKER=0 for the app turns it off, from the next wmux start.',
     );
