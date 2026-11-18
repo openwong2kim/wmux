@@ -212,3 +212,57 @@ describe('a2a.remote.approve.send', () => {
     expect(tasks.getTask(taskId)!.status.state).toBe('submitted');
   });
 });
+
+describe('a refusal of every other kind is applied exactly as before; only `approval` is set apart', () => {
+  type Refusing = {
+    onRefused(r: A2aOutboxRecordV1, c: string): Promise<void>;
+    refusalOwed(r: A2aOutboxRecordV1, c: string): boolean;
+  };
+  const refusing = (): Refusing => delivery as unknown as Refusing;
+
+  /** A record of `kind` on `taskId`, queued and refused there with `code`. */
+  function refused(linkId: string, taskId: string, kind: A2aRemoteEnvelope['kind'], code: string): A2aOutboxRecordV1 {
+    const body: Partial<A2aRemoteEnvelope> = kind === 'reply' ? { text: 'hi' }
+      : kind === 'answer' ? { answer: { pickerId: PROMPT, option: 1 } }
+      : kind === 'status' ? { status: { kind: 'working', since: new Date().toISOString() } }
+      : { approval: { promptId: PROMPT, decision: 'deny' } };
+    const rec = delivery.outbox.enqueue(HOST, {
+      protocol: A2A_REMOTE_PROTOCOL, linkId, linkVersion: 2, messageId: crypto.randomUUID(), kind, taskId, sentAt: new Date().toISOString(), ...body,
+    } as A2aRemoteEnvelope);
+    return delivery.outbox.refuse(HOST, rec.seq, code as never);
+  }
+
+  it('reply: owed, then the task fails with the refusal\'s code, and nothing is owed after', async () => {
+    const { linkId, taskId } = await sentTask();
+    const rec = refused(linkId, taskId, 'reply', 'forbidden');
+    expect(refusing().refusalOwed(rec, 'forbidden')).toBe(true);
+    await refusing().onRefused(rec, 'forbidden');
+    const task = tasks.getTask(taskId)!;
+    expect(task.status.state).toBe('failed');
+    expect(JSON.stringify(task.status)).toContain('refused by the other PC: forbidden');
+    expect(refusing().refusalOwed(delivery.outbox.get(HOST, rec.seq)!, 'forbidden')).toBe(false);
+  });
+
+  for (const kind of ['answer', 'status'] as const) {
+    it(`${kind}: names no ledger task, so nothing is owed and the task is left as it was`, async () => {
+      const { linkId, taskId } = await sentTask();
+      const before = structuredClone(tasks.getTask(taskId));
+      const rec = refused(linkId, taskId, kind, 'forbidden');
+      expect(refusing().refusalOwed(rec, 'forbidden')).toBe(false);
+      await refusing().onRefused(rec, 'forbidden');
+      expect(tasks.getTask(taskId)).toEqual(before);
+    });
+  }
+
+  it('approval: never owed, the task left as it was, and the refusal kept for its sender', async () => {
+    const { linkId, taskId } = await sentTask();
+    await offer(linkId, taskId);
+    const before = structuredClone(tasks.getTask(taskId));
+    const rec = refused(linkId, taskId, 'approval', 'forbidden');
+    expect(refusing().refusalOwed(rec, 'forbidden')).toBe(false);
+    await refusing().onRefused(rec, 'forbidden');
+    expect(tasks.getTask(taskId)).toEqual(before);
+    const kept = (delivery as unknown as { refusedApprovals: Map<string, unknown> }).refusedApprovals.get(rec.envelope.messageId);
+    expect(kept).toMatchObject({ outcome: 'not-done', reasonText: 'refused by the other PC (forbidden); nothing was typed' });
+  });
+});
