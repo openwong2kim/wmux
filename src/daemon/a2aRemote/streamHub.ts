@@ -65,7 +65,7 @@ export const TERMINAL_REFUSALS: ReadonlySet<A2aRemoteErrorCode> = new Set<A2aRem
   'protocol',
   // An approval the receiver's setting is off for: sent again, it is refused again.
   'approvals-off',
-  // An approval past the receiver's window: the same message is refused again; a new one is a new decision.
+  // An approval past the receiver's window: stored there as final, so the same message is refused again; a new one is a new decision.
   'rate-limited',
 ]);
 
