@@ -34,6 +34,8 @@ export interface ApprovalNoticeDeps {
   tasks: Pick<A2aTaskService, 'getTask' | 'appendRemoteMessage'>;
   /** The paired PC's name here. */
   hostName(hostId: HostId): string | undefined;
+  /** The pane's name as the app last published it (workspace and pane label); undefined: the workspace name is used. */
+  paneLabel?(workspaceId: string, paneId: string): string | undefined;
   broadcast(event: { type: string; sessionId: string; data: RemoteApprovalDoneEvent }): void;
   log(level: 'warn', msg: string): void;
 }
@@ -47,7 +49,8 @@ export async function noteRemoteApproval(
   const marker = task?.metadata.remote as A2aRemoteTaskState | undefined;
   if (!task || !marker) return;
   const local = task.metadata[localSideOf(task)];
-  const text = remoteApprovalNoticeText({ pc: deps.hostName(e.hostId), decision: e.decision, tool: e.tool, pane: local.displayName ?? local.name });
+  const pane = (local.paneId ? deps.paneLabel?.(local.workspaceId, local.paneId) : undefined) ?? local.displayName ?? local.name;
+  const text = remoteApprovalNoticeText({ pc: deps.hostName(e.hostId), decision: e.decision, tool: e.tool, pane });
   deps.broadcast({
     type: REMOTE_APPROVAL_DONE_EVENT,
     sessionId: local.ptyId ?? '',

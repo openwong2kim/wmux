@@ -95,6 +95,14 @@ describe('noteRemoteApproval', () => {
     expect(linkId).toBeTruthy();
   });
 
+  it('names the pane by the label the app published, when it has one', async () => {
+    const { taskId } = await inboundTask();
+    const events: Array<{ data: { text: string } }> = [];
+    const paneLabel = vi.fn((ws: string, pane: string) => (ws === 'ws-b' && pane === 'pane-b' ? 'Backend / claude' : undefined));
+    await noteRemoteApproval({ tasks, hostName: () => 'Mac', paneLabel, broadcast: (e) => { events.push(e as never); }, log: vi.fn() }, { hostId: HOST, taskId, messageId: 'ap-3', decision: 'deny', tool: 'Bash' });
+    expect(events[0]!.data.text).toBe('Mac denied Bash in Backend / claude');
+  });
+
   it('is given no command: the event a carried-out allow makes never holds one, whatever the call ran', async () => {
     const { taskId } = await inboundTask();
     const events: unknown[] = [];

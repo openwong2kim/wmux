@@ -11558,6 +11558,10 @@ async function main(): Promise<void> {
         carriedOut: (e) => void noteRemoteApproval({
           tasks: approvalTaskSvc,
           hostName: (hostId) => a2aHostName(hostId),
+          paneLabel: (workspaceId, paneId) => {
+            const pane = a2aExposedPanes.all().find((p) => p.kind === 'pane' && p.workspaceId === workspaceId && p.paneId === paneId);
+            return pane ? (pane.label ? `${pane.workspaceName} / ${pane.label}` : pane.workspaceName) : undefined;
+          },
           broadcast: (event) => pipeServer.broadcast(event),
           log: a2aLog,
         }, e).catch((err: unknown) => a2aLog('warn', `[a2a-remote] approval task=${e.taskId}: its notice failed: ${String(err)}`)),
