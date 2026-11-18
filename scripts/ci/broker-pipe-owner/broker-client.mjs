@@ -14,7 +14,7 @@ if (!resultPath) {
   process.exit(2);
 }
 
-const out = { pid: process.pid, connected: false, ack: null, initialized: false, tool: false, toolResult: null, error: null };
+const out = { pid: process.pid, connected: false, ack: null, initialized: false, tool: false, toolResult: null, error: null, lines: [] };
 let done = false;
 const socket = net.connect(pipe);
 const timer = setTimeout(() => finish('timed out'), 30_000);
@@ -46,6 +46,8 @@ socket.on('data', (data) => {
   for (let nl = buffer.indexOf('\n'); nl >= 0; nl = buffer.indexOf('\n')) {
     const line = buffer.slice(0, nl);
     buffer = buffer.slice(nl + 1);
+    // What the broker sent, for the job log (bounded).
+    if (out.lines.length < 8) out.lines.push(line.slice(0, 2000));
     let message;
     try { message = JSON.parse(line); } catch { continue; }
     if (message.wmuxBroker === 1) {

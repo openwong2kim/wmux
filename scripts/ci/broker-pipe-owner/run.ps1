@@ -51,6 +51,13 @@ function Wait-File([string] $path, [int] $seconds, [System.Diagnostics.Process] 
 
 function Read-Json([string] $path) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
 
+# A file another process still has open for writing (the broker's log).
+function Read-Shared([string] $path) {
+  $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+  $stream = New-Object System.IO.FileStream($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+  try { (New-Object System.IO.StreamReader($stream)).ReadToEnd() } finally { $stream.Dispose() }
+}
+
 function New-Password {
   $bytes = New-Object byte[] 24
   [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
@@ -286,7 +293,7 @@ try {
       while ($log -notmatch 'peer-pid: available') {
         if ((Get-Date) -gt $deadline) { throw "the Medium broker did not get ready: $log" }
         Start-Sleep -Milliseconds 200
-        if (Test-Path -LiteralPath $brokerLog) { $log = [System.IO.File]::ReadAllText($brokerLog) }
+        if (Test-Path -LiteralPath $brokerLog) { $log = (Read-Shared $brokerLog) }
       }
       Pass 'the broker runs at Medium integrity and its self-check passed'
 
@@ -295,7 +302,7 @@ try {
       & $node (Join-Path $here 'broker-client.mjs') $iPipe $iToken $eResult
       $e = Read-Json $eResult
       if ($e.ack.ok -eq $true -and $e.initialized -and $e.tool) { Pass 'an elevated client of the Medium broker is hosted and a tool answers' }
-      else { Fail "elevated client: $(Get-Content -LiteralPath $eResult -Raw); broker log: $([System.IO.File]::ReadAllText($brokerLog))" }
+      else { Fail "elevated client: $(Get-Content -LiteralPath $eResult -Raw); broker log: $((Read-Shared $brokerLog))" }
 
       # The same through wmux-native mcp-shim, as an elevated agent pane runs it.
       $session = Invoke-ShimSession $iHome $iSuffix @(
@@ -304,7 +311,11 @@ try {
         '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"repl_sessions","arguments":{}}}'
       ) 2
       Write-Host "elevated shim (exit $($session.code)) stderr: $($session.stderr.Trim())"
-      if ($session.stdout -match '"id":2,"result"' -and $session.stderr -notmatch 'broker not ours|running the full') {
+      # The tool call's response, parsed (its keys come in no fixed order).
+      $answer = $session.stdout -split "`n" | Where-Object { $_.Trim() } | ForEach-Object {
+        try { $_ | ConvertFrom-Json } catch { $null }
+      } | Where-Object { $_ -and $_.id -eq 2 } | Select-Object -First 1
+      if ($answer -and $answer.result -and -not $answer.result.isError -and $session.stderr -notmatch 'broker not ours|running the full') {
         Pass 'an elevated wmux-native mcp-shim is hosted by the Medium broker and a tool answers'
       } else {
         Fail "elevated shim: stdout $($session.stdout.Trim()); stderr $($session.stderr.Trim())"
@@ -323,7 +334,7 @@ try {
       $low = Read-Json $lowResult
       if (-not $low.connected -and ($low.error -eq 'EPERM' -or $low.error -eq 'EACCES')) { Pass "a Low integrity client is refused at open ($($low.error))" }
       else { Fail "a Low integrity client: $(Get-Content -LiteralPath $lowResult -Raw)" }
-      if ([System.IO.File]::ReadAllText($brokerLog) -match 'peer refused') { Write-Host "broker log: $([System.IO.File]::ReadAllText($brokerLog))" }
+      if ((Read-Shared $brokerLog) -match 'peer refused') { Write-Host "broker log: $((Read-Shared $brokerLog))" }
     }
   }
 
