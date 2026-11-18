@@ -41,6 +41,7 @@ import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsE
 import { ENV_KEYS } from '../shared/constants';
 import { containsControlChars } from '../shared/cwdShape';
 import { createDefaultConfig } from './config';
+import { ringBytes } from './ringLimits';
 import { getProcessCreatedAtFt, getProcessStartTime, isPhantomExit, isPidAlive } from './phantomExit';
 import { kernelStartOf } from '../shared/processStartTime';
 
@@ -1110,7 +1111,7 @@ export class DaemonSessionManager extends EventEmitter {
 
     // Ring buffer for scrollback — use config's bufferSizeMb if available
     const bufferSize = this.config
-      ? this.config.session.bufferSizeMb * 1024 * 1024
+      ? ringBytes(this.config.session.bufferSizeMb, DEFAULT_BUFFER_SIZE)
       : DEFAULT_BUFFER_SIZE;
     const ringBuffer = new RingBuffer(bufferSize, ptyBackend(ptyProcess), {
       compress: this.ringCompressionEnabled(),
