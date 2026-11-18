@@ -2,8 +2,7 @@ import crypto from 'node:crypto';
 import { A2A_REMOTE_BODY_MAX, ANSWER_OUTCOMES_MAX, type A2aRemoteAnswerOutcome, type A2aRemoteAnswerV1, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
 import { truncateUtf8 } from '../../shared/chatv2/limits';
 import type { SessionPromptScheduleResult } from '../../shared/sessionPromptSchedule';
-import { sanitizeBracketedPastePayload } from '../../shared/ptyMessageDelivery';
-import { normalizeForPromptMatch } from '../../shared/promptMatch';
+import { promptHash, userEntryHash } from '../../shared/promptHash';
 import { localSideOf, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 import { spawnFirstMessageId, type SpawnLinkId } from '../../shared/a2aSpawn';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
@@ -359,21 +358,6 @@ function turnEnd(ep: Episode): { kind: 'answered'; text: string } | { kind: 'pro
 }
 
 /**
- * The hash a delivered prompt is recognized by in the transcript. Both sides
- * are compared in the shared normal form (shared/promptMatch.ts): Claude Code
- * stores a long or multi-line prompt inside paste markers with line breaks
- * around them.
- */
-export function promptHash(prompt: string): string {
-  return hashOf(normalizeForPromptMatch(sanitizeBracketedPastePayload(prompt)));
-}
-
-/** The hash of a transcript user entry, in the same form as promptHash. */
-function userEntryHash(text: string): string {
-  return hashOf(normalizeForPromptMatch(text));
-}
-
-/**
  * A reply within the body limit: the start of `text`, cut on a code point,
  * then a marker naming the bytes left out. The marker counts in the limit.
  */
@@ -389,10 +373,6 @@ export function cutReply(text: string, max = A2A_REMOTE_BODY_MAX): string {
 /** Oldest first (when each reached this PC), so follow-ups are typed in the order they were sent. */
 function oldestFirst(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => a.metadata.createdAt.localeCompare(b.metadata.createdAt) || a.id.localeCompare(b.id));
-}
-
-function hashOf(text: string): string {
-  return crypto.createHash('sha256').update(text.replace(/\r\n?/g, '\n').trim()).digest('hex');
 }
 
 /** Claude Code's system notice when it goes on by itself after a usage limit reset. */
