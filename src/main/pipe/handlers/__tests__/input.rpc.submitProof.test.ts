@@ -44,6 +44,8 @@ let composer: string;
 let offsetAsks: number;
 /** The transcript-size read fails (a slow transcript path past its timeout). */
 let offsetFails: boolean;
+/** When each state read started and answered. */
+let reads: string[];
 
 function harness() {
   const dc = {
@@ -57,6 +59,10 @@ function harness() {
       const count = writes.filter((w) => w.id === id).length;
       if (failAfterPaste && count === 1) throw new Error('timeout');
       if (opts.transcriptOffset) offsetAsks += 1;
+      const kind = opts.transcriptOffset ? 'size' : 'plain';
+      reads.push(`ask ${kind}`);
+      await Promise.resolve();
+      reads.push(`answer ${kind}`);
       if (opts.transcriptOffset && offsetFails) throw new Error('timeout');
       return {
         agentName: 'Claude Code', agentStatus: 'waiting', agentVerified: true, incarnationId: 'inc-1',
@@ -114,6 +120,7 @@ beforeEach(() => {
   composer = '';
   offsetAsks = 0;
   offsetFails = false;
+  reads = [];
   vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => {
     if (method === 'input.findOwnerWorkspace') return { workspaceId: 'ws-a' };
     if (method === 'input.readScreen') return { text: composer };
@@ -131,6 +138,9 @@ describe('the submit proof of a gated delivery', () => {
       submit: { ptyId: 'pty-a', incarnation: 'inc-1', keyEpoch: 'epoch-1', submitRevision: 2, promptHash: promptHash(TEXT), transcriptOffsetAtBase: 4096 },
     });
     expect(offsetAsks).toBe(1);
+    // The size is asked only once the plain read has answered: a slow size never holds the baseline's reply.
+    const sizeAt = reads.indexOf('ask size');
+    expect(reads.slice(sizeAt - 2, sizeAt + 2)).toEqual(['ask plain', 'answer plain', 'ask size', 'answer size']);
   });
 
   it('a retried Enter counts too', async () => {

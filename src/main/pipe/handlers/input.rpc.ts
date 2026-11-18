@@ -2841,8 +2841,10 @@ export function registerInputRpc(
    * That same read is the submit proof's base (`proof`: asked for): the
    * session's incarnation, key count and its epoch, when the daemon reports
    * them (null otherwise). The transcript's size is a read of its own, sent
-   * after it and awaited before the Enter, so a slow transcript path costs
-   * the proof its floor, never the retry its baseline.
+   * once that one has answered (the daemon starts both handlers of frames
+   * that arrive together before either replies) and awaited before the Enter,
+   * so a slow transcript path costs the proof its floor, never the retry its
+   * baseline.
    */
   const armEnterRetry = async (ptyId: string, proof = false): Promise<ArmedEnterRetry> => {
     const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
@@ -2850,7 +2852,8 @@ export function registerInputRpc(
       dc?.isConnected
         ? Promise.resolve().then(() => dc.getAgentState(ptyId, { timeoutMs: 1_000, ...(transcriptOffset ? { transcriptOffset: true } : {}) })).catch(() => null)
         : Promise.resolve(null);
-    const [atEnter, sized] = await Promise.all([read(), proof ? read(true) : Promise.resolve(null)]);
+    const atEnter = await read();
+    const sized = proof && atEnter ? await read(true) : null;
     const base: SubmitProofBase | null = proof && atEnter && typeof atEnter.keyInputRevision === 'number' && atEnter.incarnationId && atEnter.keyEpoch
       ? {
         incarnation: atEnter.incarnationId,
