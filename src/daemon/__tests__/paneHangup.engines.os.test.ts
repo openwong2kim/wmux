@@ -283,7 +283,9 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
       // Judged only well inside the grace: a slow runner may have used it up already.
       if (Date.now() - hungUpAt < HANGUP_GRACE_MS - 1_000) expect(alive(program)).toBe(true);
       await waitFor(() => !alive(program), HANGUP_GRACE_MS + WAIT_MS, 'the sweep at the deadline');
+      // At the deadline: not before it, and not long after (a CI scheduling allowance).
       expect(Date.now() - hungUpAt).toBeGreaterThanOrEqual(HANGUP_GRACE_MS - 250);
+      expect(Date.now() - hungUpAt).toBeLessThan(HANGUP_GRACE_MS + 3_000);
       await waitFor(() => !pidListed(root), WAIT_MS, 'the root to be reaped after the sweep');
       forget(root);
     }, TEST_MS);
