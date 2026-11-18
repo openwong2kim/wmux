@@ -5,7 +5,7 @@ import { getWmuxDir } from '../../daemon/config';
 import { claudeFileSendEnv } from '../../shared/claudeFileSend';
 import { readClaudeFileSend } from '../../daemon/claudeFileSendSetting';
 import type { IPty } from 'node-pty';
-import type { TerminalPty } from '../../shared/terminalPty';
+import { isTerminalCoreMissing, type TerminalPty } from '../../shared/terminalPty';
 import { spawnPty, spawnPtySync, type SpawnPtyRequest } from '../../shared/spawnPty';
 import { applyParentWindow } from '../../shared/conptyParentWindow';
 import os from 'node:os';
@@ -440,6 +440,8 @@ export class PTYManager {
   }
 
   private spawnFailure(prepared: PreparedSpawn, err: unknown): Error {
+    // Kept as is (its code and its message): see DaemonSessionManager.spawnFailure.
+    if (isTerminalCoreMissing(err) && err instanceof Error) return err;
     const detail = err instanceof Error ? err.message : String(err);
     return new Error(`Failed to start shell "${prepared.shell}" in "${prepared.cwd}": ${detail}`);
   }

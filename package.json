@@ -10,7 +10,7 @@
   },
   "scripts": {
     "postinstall": "node scripts/fix-node-pty.js && node scripts/apply-patches.mjs",
-    "start": "npm run build:daemon && npm run build:mcp && electron-forge start",
+    "start": "npm run build:terminal-core && npm run build:daemon && npm run build:mcp && electron-forge start",
     "package": "npm run build:daemon && npm run build:mcp && npm run build:cli && electron-forge package",
     "make": "npm run build:daemon && npm run build:mcp && npm run build:cli && electron-forge make",
     "lint": "eslint --ext .ts,.tsx .",

@@ -93,7 +93,7 @@ if (ARGS.help) {
   --rate-kib N           producer output per streaming pane, KiB/s (default 16)
   --probe-timeout-ms N / --key-timeout-ms N   echo wait (default 3000)
   --app PATH             wmux executable or macOS .app to run (default: packaged build under out/)
-  --engine node|rust     terminal engine for the instance; verified after launch, the run aborts on a mismatch
+  --engine rust          verify after launch that the daemon runs the Rust terminal core (the only engine); the run aborts otherwise
   --claude N             panes running Claude Code on a light prompt loop (default 0)
   --claude-config-dir DIR  another Claude Code config dir (default: your real profile; see the doc)
   --claude-cmd CMD       command typed to start Claude Code (default "claude")
@@ -306,9 +306,9 @@ function makeInstance() {
     },
   }, null, 2), 'utf8');
   fs.writeFileSync(path.join(wmuxDir, 'config.json'), JSON.stringify({ mcp: { mode: 'enforce' } }, null, 2), 'utf8');
-  // Settings > Terminal > Performance > Terminal engine writes this file
-  // (src/shared/terminalCoreSettings.ts); the daemon reads it once at start.
-  // This instance's daemon has not started yet, so no restart is needed.
+  // A current daemon ignores this file (Rust is its only engine); an older
+  // build's daemon reads it once at start, so a run against one still gets
+  // the engine it asked for. This instance's daemon has not started yet.
   if (ARGS.engine) fs.writeFileSync(path.join(wmuxDir, 'terminal-core.json'), JSON.stringify({ engine: ARGS.engine }), 'utf8');
 
   // The first-run wizard would swallow focus; seed its marker in userData.

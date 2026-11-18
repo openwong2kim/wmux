@@ -14,6 +14,8 @@ npm test        # run tests
 
 Requires Node.js 22+ (on Windows, avoid 24.16–24.20 and 26.0–26.7, whose libuv mishandles `fs.watch` on 8.3 short paths such as the CI runner's `%TEMP%`; 24.21.0+ and 26.8.0+ carry the fix, #984) with **npm 11** (`npm install -g npm@11` if your Node bundles npm 10 — npm 11 owns the lockfile lineage, and `npm ci` under npm 10 rejects the lock) and Windows 10/11 (ConPTY).
 
+Also requires a Rust toolchain (`rustup`, stable): the terminal core in `core/wmux-term` is wmux's only terminal engine. `npm run start` builds it first (`npm run build:terminal-core`; a no-op when nothing changed), and `npm run package` refuses to package without it. Tests that start a real terminal need it too: set `WMUX_TERMINAL_CORE_MODULE` to the absolute path of `core/wmux-term/dist/native-core/index.cjs`.
+
 ## Pull Requests
 
 ### One PR, One Purpose

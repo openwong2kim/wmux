@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const { spawn } = vi.hoisted(() => ({ spawn: vi.fn(() => ({ pid: 4242, kill: vi.fn() })) }));
+vi.mock('../../../shared/terminalPty', async (importOriginal) => (await import('../../../test-utils/ptyTransportStub')).routeSpawnToNodePtyMock(importOriginal));
 vi.mock('node-pty', () => ({ spawn, default: { spawn } }));
 
 import { PTYManager } from '../PTYManager';

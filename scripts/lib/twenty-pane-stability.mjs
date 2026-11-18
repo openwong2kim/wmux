@@ -62,7 +62,9 @@ export function parseArgs(argv) {
     else if (flag === '--app') out.app = value();
     else if (flag === '--engine') {
       const v = value();
-      if (v !== 'node' && v !== 'rust') throw new Error('--engine must be node or rust');
+      // The Node engine is removed: rust is the only engine a run can ask for.
+      if (v === 'node') throw new Error('--engine node: the Node terminal engine is removed; only rust remains');
+      if (v !== 'rust') throw new Error('--engine must be rust');
       out.engine = v;
     } else if (flag === '--claude-config-dir') out.claudeConfigDir = value();
     else if (flag === '--claude-cmd') {
@@ -118,10 +120,12 @@ export function assignClasses(panes, streaming, claude = 0) {
 /**
  * Check the daemon's own report of its terminal engine
  * (`daemon.ping {includeTerminalCore}` -> `terminalCore`) against the engine
- * the run asked for. Throws, so an A/B can never compare an engine with
- * itself. With no requested engine it only records what is running.
+ * the run asked for. Throws on a mismatch. With no requested engine it only
+ * records what is running (an older daemon may still report node). Asking
+ * for node is an error: the Node engine is removed.
  */
 export function verifyEngine(requested, ping) {
+  if (requested === 'node') throw new Error('cannot ask for the node engine: the Node terminal engine is removed; only rust remains');
   const core = ping && typeof ping === 'object' ? ping.terminalCore : undefined;
   if (!core || (core.effective !== 'node' && core.effective !== 'rust')) {
     if (!requested) return null;

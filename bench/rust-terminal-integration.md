@@ -148,32 +148,18 @@ WMUX_NATIVE_SOAK_MS=300000 node scripts/native-core-verify.mjs --skip-build --re
 ```sh
 npm run build:terminal-core
 npm run build:daemon
-WMUX_DATA_SUFFIX=-rust-test WMUX_TERMINAL_CORE=rust node dist/daemon-bundle/index.js
+WMUX_DATA_SUFFIX=-rust-test node dist/daemon-bundle/index.js
 ```
 
-The desktop picker lives in **Settings → Terminal → Performance → Terminal engine**.
-It saves `engine: "node" | "rust"` in `~/.wmux{suffix}/terminal-core.json`, shared
-by the daemon and local Electron PTY host. With nothing saved, Rust is the
-default on Windows, macOS and Linux when the module loads, and Node otherwise
-(`defaultTerminalEngine`). The picker
-shows the current host's effective backend separately from the saved choice,
-disables Rust when the combined native module cannot load, and displays load
-fallbacks. Settings search also finds Rust, Node, PTY and memory.
-
-Each host reads the preference once at startup. Changing it leaves ordinary and
-team sessions intact. After finishing sessions, quit wmux, run `wmux daemon stop`
-with the same instance/profile suffix, then reopen wmux. Reopening the app alone
-can reconnect to its existing daemon. In local mode, restarting the app applies
-it. There is no automatic restart or session teardown on selection.
-
-An explicit `WMUX_TERMINAL_CORE` environment variable takes precedence and locks
-the picker until removed from both app and daemon launches. No saved setting is
-copied into the launch environment, so a respawn reads the latest file. The
-existing `daemon.ping` gains an opt-in `includeTerminalCore` diagnostic; older or
+The Rust core is wmux's only terminal engine; the Node engine and the
+desktop picker are removed. **Settings → Terminal → Performance → Terminal
+engine** is a read-only status row: it shows the engine the daemon reports, and
+says the module is missing, with the reason, when it did not load. A
+`terminal-core.json` or `WMUX_TERMINAL_CORE` from an older build is ignored and
+left in place. The existing `daemon.ping` keeps its opt-in
+`includeTerminalCore` diagnostic (now with `available` and `reason`); older or
 unreachable daemons display an unknown current engine rather than guessing.
 
-Use a new isolated daemon for benchmarks. Without a saved Rust choice or
-`WMUX_TERMINAL_CORE=rust`, node-pty and the JS ring remain selected.
 `WMUX_TERMINAL_CORE_MODULE` can name an absolute module path; otherwise the
 loader looks only where wmux installs it: packaged `wmux-native` resources, or
 beside the bundle (the server runtime, and the `dist/wmux-native` that
@@ -188,8 +174,10 @@ alone selects eligible immutable text requests; ANSI and live tee requests keep
 xterm. ANSI delivery refuses known unsupported state: overline, OSC, saved
 cursors, character-set/tab configuration, clipped wide-character edges and margins.
 
-Load/ABI/capability failures before spawn fall back to node-pty. A failed native
-spawn is never retried through node-pty. The existing Windows ConPTY policy can
+Load/ABI/capability failures before spawn fail the spawn with
+`TERMINAL_CORE_MISSING` (the pane shows the error; restored sessions are held
+until a daemon with the module starts). A failed native spawn is never retried
+through node-pty. The existing Windows ConPTY policy can
 retry a pre-spawn bundled-DLL failure or use inbox ConPTY. Runtime faults terminate
 the affected session; commands are never replayed.
 

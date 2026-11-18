@@ -28,7 +28,7 @@ const request = (made: unknown, extra: Partial<SpawnPtyRequest> = {}): SpawnPtyR
   options: { cols: 80, rows: 24 },
   useBundledConpty: false,
   onNotice: () => { /* noop */ },
-  nodeSpawn: () => asPty(made),
+  testSpawn: () => asPty(made),
   ...extra,
 });
 
@@ -118,10 +118,10 @@ describe('spawnPty — the one PTY spawn seam (#2398)', () => {
   });
 
   it('runs the spawn through the ConPTY policy with the backend it picked', async () => {
-    const nodeSpawn = vi.fn(() => asPty({ pid: 5, kill: vi.fn() }));
+    const testSpawn = vi.fn(() => asPty({ pid: 5, kill: vi.fn() }));
     const onBackend = vi.fn();
-    await spawnPty(request(undefined, { nodeSpawn, useBundledConpty: true, onBackend }));
-    expect(nodeSpawn).toHaveBeenCalledWith('cmd.exe', [], expect.objectContaining({ useConpty: true, useConptyDll: true }));
+    await spawnPty(request(undefined, { testSpawn, useBundledConpty: true, onBackend }));
+    expect(testSpawn).toHaveBeenCalledWith('cmd.exe', [], expect.objectContaining({ useConpty: true, useConptyDll: true }));
     expect(onBackend).toHaveBeenCalledWith('bundled');
   });
 });
@@ -175,9 +175,9 @@ describe('spawnPty — console window owner (Windows sign-in pickers)', () => {
   it('passes the window in the spawn options, so the Rust core can apply it before the shell starts', async () => {
     const ready = { pid: 9, onExit: vi.fn(), kill: vi.fn(), setParentWindow: vi.fn(() => true) };
     const seen: unknown[] = [];
-    const nodeSpawn: SpawnPtyRequest['nodeSpawn'] = (_c, _a, options) => { seen.push((options as { parentWindow?: Buffer }).parentWindow); return asPty(ready); };
-    await spawnPty(request(ready, { parentWindow: () => hwnd, nodeSpawn }));
-    await spawnPty(request(ready, { parentWindow: () => null, nodeSpawn }));
+    const testSpawn: SpawnPtyRequest['testSpawn'] = (_c, _a, options) => { seen.push((options as { parentWindow?: Buffer }).parentWindow); return asPty(ready); };
+    await spawnPty(request(ready, { parentWindow: () => hwnd, testSpawn }));
+    await spawnPty(request(ready, { parentWindow: () => null, testSpawn }));
     expect(seen).toEqual([hwnd, undefined]);
   });
 

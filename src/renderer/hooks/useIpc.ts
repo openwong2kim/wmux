@@ -127,7 +127,12 @@ function classifyCode(err: unknown): IpcErrorCode {
  * unknown error occurred." and drop what to do. #2388: a pane refused in a
  * task folder whose removal did not finish names the folder and the ways out.
  */
-const OWN_SENTENCE_REFUSALS: readonly RegExp[] = [/a task folder whose removal did not finish/];
+// A missing Rust terminal core (shared/terminalPty TerminalCoreMissingError)
+// says why and to reinstall: there is no other engine to fall back to.
+const OWN_SENTENCE_REFUSALS: readonly RegExp[] = [
+  /a task folder whose removal did not finish/,
+  /wmux's terminal core is missing or failed to load/,
+];
 
 /** The main-side sentence of such a refusal, without Electron's envelope or
  *  wrapHandler's code token; null for any other error. */

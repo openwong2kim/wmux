@@ -15,6 +15,7 @@ class MockPty extends EventEmitter {
   kill(): void { /* noop */ }
 }
 
+vi.mock('../../shared/terminalPty', async (importOriginal) => (await import('../../test-utils/ptyTransportStub')).routeSpawnToNodePtyMock(importOriginal));
 vi.mock('node-pty', () => ({
   default: { spawn: () => new MockPty() },
   spawn: () => new MockPty(),

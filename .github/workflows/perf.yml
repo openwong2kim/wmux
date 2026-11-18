@@ -68,6 +68,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The Rust terminal core: `npm run package` ships and requires it.
+      - name: Build the terminal core
+        uses: ./.github/actions/terminal-core
+
       - name: Package app
         run: npm run package
 
@@ -307,6 +311,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # The Rust terminal core: `npm run package` ships and requires it.
+      - name: Build the terminal core
+        uses: ./.github/actions/terminal-core
 
       - name: Package app
         run: npm run package

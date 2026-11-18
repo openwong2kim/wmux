@@ -47,7 +47,8 @@ function pidIn(file: string): number {
   try { return Number(fs.readFileSync(file, 'utf8').trim()) || 0; } catch { return 0; }
 }
 
-const ENGINES: TerminalEngine[] = ['node', 'rust'];
+// The Node engine is removed: a "node" leg would be a second Rust run.
+const ENGINES: TerminalEngine[] = ['rust'];
 
 describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (engine) => {
   const skip = engine === 'rust' && !rustAvailable && !RUST_PROMISED;

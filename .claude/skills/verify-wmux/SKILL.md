@@ -61,7 +61,7 @@ node scripts/control-wmux.mjs click --text "Skip for now" [--nth 0]
 node scripts/control-wmux.mjs press --key Meta+Comma                # Playwright key syntax
 node scripts/control-wmux.mjs press --key Enter --label "Terminal input"   # focus target first
 node scripts/control-wmux.mjs type --text 'echo hi' --label "Terminal input" # keyboard.type into the target (appends)
-node scripts/control-wmux.mjs select --label "Terminal engine" --value rust # native select user control
+node scripts/control-wmux.mjs select --label "<select label>" --value <option> # native select user control
 node scripts/control-wmux.mjs hover --selector '[data-sidebar-row]' --nth 0    # reveal hover-only controls
 node scripts/control-wmux.mjs wait-settle --testid settings-page-title [--state visible|hidden] [--timeout 10000]
 node scripts/control-wmux.mjs eval --js "document.querySelector('[data-testid=settings-page-title]')?.textContent"

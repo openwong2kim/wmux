@@ -7,6 +7,7 @@ import { getDaemonAuthTokenPath } from '../shared/constants';
 import { NOT_FIRST_PARTY, PANE_DELIVERY_LOCK_METHODS, isAppOnlyDaemonMethod } from '../shared/daemonFirstParty';
 import { A2A_SPAWN_RPC } from '../shared/a2aSpawn';
 import { A2A_ANSWER_RPC, A2A_STATUS_LABELS_RPC } from '../shared/a2aRemote';
+import { isTerminalCoreMissing, TERMINAL_CORE_MISSING } from '../shared/terminalPty';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
@@ -1154,7 +1155,9 @@ export class DaemonPipeServer {
       return { id: request.id, ok: true, result };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return { id: request.id, ok: false, error: message };
+      // A missing terminal core says so by code too: main and the CLI branch
+      // on it rather than on the wording.
+      return { id: request.id, ok: false, error: message, ...(isTerminalCoreMissing(err) ? { code: TERMINAL_CORE_MISSING } : {}) };
     }
   }
 }

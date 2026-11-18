@@ -18,7 +18,6 @@
  * A pid that is already known (node-pty on macOS/Linux, the Rust core) is
  * returned with no listener and no timer.
  */
-import * as pty from 'node-pty';
 import type { IPty, IPtyForkOptions, IWindowsPtyForkOptions } from 'node-pty';
 import { ptyBackend, spawnTerminalPty } from './terminalPty';
 import { spawnWithConptyPolicy, type ConptyBackend } from './conptyWindows';
@@ -27,7 +26,7 @@ import { applyParentWindow } from './conptyParentWindow';
 /** node-pty's own bound on the ConPTY connect (its CONNECTION_TIMEOUT). */
 export const PTY_PID_TIMEOUT_MS = 5000;
 
-type NodeSpawn = (command: string, args: string[], options: IPtyForkOptions & IWindowsPtyForkOptions) => IPty;
+type TestSpawn = (command: string, args: string[], options: IPtyForkOptions & IWindowsPtyForkOptions) => IPty;
 
 export interface SpawnPtyRequest {
   command: string;
@@ -43,22 +42,22 @@ export interface SpawnPtyRequest {
    * conptyParentWindow.ts), read at spawn. Absent or null: none.
    */
   parentWindow?: () => Buffer | null;
-  /** Tests only. */
-  nodeSpawn?: NodeSpawn;
+  /** Tests only: stands in for the Rust core's spawn (spawnTerminalPty). */
+  testSpawn?: TestSpawn;
   /** Tests only. */
   pidTimeoutMs?: number;
 }
 
 function start(req: SpawnPtyRequest): { p: IPty; parent: Buffer | null } {
-  const nodeSpawn = req.nodeSpawn ?? pty.spawn;
+  const spawn = req.testSpawn ?? spawnTerminalPty;
   const parent = req.parentWindow?.() ?? null;
   const p = spawnWithConptyPolicy(
-    (useBundled) => spawnTerminalPty(req.command, req.args, {
+    (useBundled) => spawn(req.command, req.args, {
       ...req.options,
       useConpty: true,
       ...(useBundled ? { useConptyDll: true } : {}),
       ...(parent ? { parentWindow: parent } : {}),
-    }, nodeSpawn),
+    }),
     req.useBundledConpty,
     req.onNotice,
     req.onBackend,

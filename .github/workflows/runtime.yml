@@ -40,6 +40,8 @@ jobs:
     runs-on: windows-latest
     # The runtime suite takes ~4-5 min plus setup; the cap only stops a hang.
     timeout-minutes: 25
+    env:
+      WMUX_TERMINAL_CORE_MODULE: ${{ github.workspace }}/core/wmux-term/dist/native-core/index.cjs
     steps:
       # Same pins and toolchain as validate in ci.yml; see the comments there.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,6 +66,11 @@ jobs:
       - name: Install dependencies
         if: steps.node-modules.outputs.cache-hit != 'true'
         run: npm ci
+
+      # The Rust terminal core, wmux's only terminal engine: the bundled daemon
+      # loads it from dist/wmux-native, the tests from WMUX_TERMINAL_CORE_MODULE.
+      - name: Build the terminal core
+        uses: ./.github/actions/terminal-core
 
       # Two runtime suites drive the REAL bundled daemon (#546 boot marker,
       # #596 web restore). Both skip when `dist/daemon-bundle/index.js` is

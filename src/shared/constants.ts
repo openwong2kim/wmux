@@ -388,7 +388,6 @@ export const IPC = {
   // mirrored to main, which runs those paths (main/git/secretGuardSetting.ts).
   SECRET_GUARD_ENABLED: 'settings:secret-guard-enabled',
   TERMINAL_CORE_SETTINGS_GET: 'settings:terminal-core:get',
-  TERMINAL_CORE_SETTINGS_SET: 'settings:terminal-core:set',
   LABS_SETTINGS_GET: 'settings:labs:get',
   LABS_SETTINGS_SET: 'settings:labs:set',
   LABS_WONGTTY_WASM: 'settings:labs:wongtty-wasm',

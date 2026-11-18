@@ -140,7 +140,8 @@ function ringText(mgr: DaemonSessionManager, id: string): string {
 const say = (name: string) => `printf '%s-%s\\n' rx ${name}\n`;
 const out = (name: string) => `rx-${name}`;
 
-const ENGINES: TerminalEngine[] = ['node', 'rust'];
+// The Node engine is removed: a "node" leg would be a second Rust run.
+const ENGINES: TerminalEngine[] = ['rust'];
 
 describe.skipIf(!posix).each(ENGINES)('a real shell session on the %s engine', (engine) => {
   const skip = engine === 'rust' && !rustAvailable && !RUST_PROMISED;

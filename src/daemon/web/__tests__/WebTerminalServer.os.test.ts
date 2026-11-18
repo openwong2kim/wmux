@@ -1036,7 +1036,7 @@ describe('WebTerminalServer', () => {
     vi.mocked(loadNativeTerminalCore).mockReturnValueOnce({ NativeTransport: class {
       constructor(...args: unknown[]) { wake = args[6] as () => void; return transport; }
     } } as unknown as NativeTerminalCore);
-    const pty = spawnTerminalPty('sh', [], {}, () => { throw new Error('node-pty must not spawn'); });
+    const pty = spawnTerminalPty('sh', [], {});
     Object.assign(managed, { ptyProcess: pty });
     try {
       const post = (body: string) => fetch(`${base()}/api/input?session=s1`, { method: 'POST', headers: bearer(info.token as string), body });

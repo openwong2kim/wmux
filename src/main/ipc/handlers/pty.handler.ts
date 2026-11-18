@@ -1655,6 +1655,8 @@ export function registerPTYHandlers(
         supervisionRuntime?: { status: 'armed' | 'stopped'; restartCount: number };
         // An exec unit's command (#2398: read only for whether it is one).
         exec?: unknown;
+        // R2 (a) — held because the terminal core is missing.
+        holdReason?: 'terminal-core-missing';
         // #1101 — origin identity for the orphaned-session list: the workspace
         // the session was spawned in (env-stamped by main force-stamps) and
         // the agent identity the daemon already derives for /api/sessions.
@@ -1736,6 +1738,8 @@ export function registerPTYHandlers(
           // or not its pane is shown (recoversInBackground): the reconcile
           // must not hold a cap-skipped one as a plain shell.
           ...(s.exec ? { exec: true as const } : {}),
+          // R2 (a) — a held session (no terminal core) starts by itself nowhere.
+          ...(s.holdReason ? { holdReason: s.holdReason } : {}),
           // X6 ② — carry the resume hint (agent slug) for the renderer pill.
           ...(s.resumeAgent ? { resumeAgent: s.resumeAgent } : {}),
           ...(s.resumeAgent && typeof s.resumeAgentOnScreen === 'boolean' ? { resumeAgentOnScreen: s.resumeAgentOnScreen } : {}),
@@ -1830,6 +1834,7 @@ export function registerPTYHandlers(
           resumeBinding?: ResumeBinding;
           exec?: unknown;
           supervision?: unknown;
+          holdReason?: 'terminal-core-missing';
           incarnationId?: string;
           startPending?: boolean;
         }>;

@@ -355,12 +355,13 @@ good, and the agents the daemon started end.
   ```
 
   Start `wmux web` with the same flags it had before.
-- **Terminal engine.** Terminals run on the Rust engine, which the server
-  ships, by default. To run them on the Node engine, write
-  `{"engine": "node"}` to `~/.wmux/terminal-core.json` (or start the daemon
-  with `WMUX_TERMINAL_CORE=node` set), then restart the daemon as above. The
-  daemon reads it once when it starts, and uses Node if the Rust engine cannot
-  load.
+- **Terminal engine.** Terminals run on the Rust engine the server ships. It
+  is the only engine: a `~/.wmux/terminal-core.json` or a
+  `WMUX_TERMINAL_CORE` setting from an older install is ignored (and left in
+  place). If the engine cannot load, terminals show an error instead of a
+  shell. To replace a damaged version, stop the daemon (this ends the
+  processes in its terminals), remove `~/.wmux/runtime/<version>`, then
+  repeat steps 2 to 4 for that version.
 - **Logging out may stop the daemon.** On systemd hosts with
   `KillUserProcesses=yes` in `logind.conf`, the daemon dies when your last SSH
   session ends, taking its terminals with it. Check with

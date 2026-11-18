@@ -1,13 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { IPty } from 'node-pty';
-import { spawnTerminalPty, ptyBackend, bundledConptyPath, type TerminalPty } from '../terminalPty';
+import { spawnTerminalPty, ptyBackend, bundledConptyPath, isTerminalCoreMissing, TerminalCoreMissingError, TERMINAL_CORE_MISSING, type TerminalPty } from '../terminalPty';
 import path from 'node:path';
 import { loadNativeTerminalCore, type NativeTerminalCore } from '../nativeTerminalCore';
 
-vi.mock('../nativeTerminalCore', () => ({ loadNativeTerminalCore: vi.fn(), reportNativeFallback: vi.fn() }));
+vi.mock('../nativeTerminalCore', () => ({ loadNativeTerminalCore: vi.fn() }));
 let wake: () => void;
 const transport = { pid: 101, pendingInputBytes: 0, read: vi.fn(), write: vi.fn(), resize: vi.fn(), clear: vi.fn(), kill: vi.fn(), close: vi.fn() };
-const nodeSpawn = vi.fn(() => ({ pid: 202 }) as IPty);
 const idle = { data: Buffer.alloc(0), eof: false, childExited: false, pendingInputBytes: 0 };
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 beforeEach(() => {
@@ -23,33 +21,35 @@ describe('terminal backend selection and transport contract', () => {
     expect(bundledConptyPath(path.join('/resources', 'app.asar', 'node_modules', 'node-pty', 'package.json'), 'x64'))
       .toBe(path.join('/resources', 'app.asar.unpacked', 'node_modules', 'node-pty', 'prebuilds', 'win32-x64', 'conpty', 'conpty.dll'));
   });
-  it('keeps node-pty authoritative without an explicit opt-in', () => {
-    vi.stubEnv('WMUX_TERMINAL_CORE', '');
-    expect(ptyBackend(spawnTerminalPty('sh', [], {}, nodeSpawn))).toBe('node');
-    expect(loadNativeTerminalCore).not.toHaveBeenCalled();
+  it('spawns on the Rust core whatever WMUX_TERMINAL_CORE says (the Node engine is removed)', () => {
+    vi.stubEnv('WMUX_TERMINAL_CORE', 'node');
+    expect(ptyBackend(spawnTerminalPty('sh', [], {}))).toBe('rust');
   });
-  it('falls back on a loader error before spawning', () => {
-    vi.mocked(loadNativeTerminalCore).mockImplementation(() => { throw new Error('ABI mismatch'); });
-    spawnTerminalPty('sh', [], {}, nodeSpawn);
-    expect(nodeSpawn).toHaveBeenCalledOnce();
+  it('throws TerminalCoreMissingError on a loader error, and spawns nothing', () => {
+    vi.mocked(loadNativeTerminalCore).mockImplementationOnce(() => { throw new Error('Native terminal core lacks pty-v1'); });
+    let thrown: unknown;
+    try { spawnTerminalPty('sh', [], {}); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(TerminalCoreMissingError);
+    expect(isTerminalCoreMissing(thrown)).toBe(true);
+    expect((thrown as Error).message).toContain('Native terminal core lacks pty-v1');
+    expect(isTerminalCoreMissing({ code: TERMINAL_CORE_MISSING })).toBe(true);
+    expect(isTerminalCoreMissing(new Error('spawn failed'))).toBe(false);
   });
   it('never executes a second command when the native spawn fails', () => {
     vi.mocked(loadNativeTerminalCore).mockReturnValue({ NativeTransport: class { constructor() { throw new Error('spawn failed'); } } } as unknown as NativeTerminalCore);
-    expect(() => spawnTerminalPty('sh', [], {}, nodeSpawn)).toThrow('spawn failed');
-    expect(nodeSpawn).not.toHaveBeenCalled();
+    expect(() => spawnTerminalPty('sh', [], {})).toThrow('spawn failed');
   });
   it('contains a catchable native read fault within the affected session', async () => {
-    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn); const exit = vi.fn(); pty.onExit(exit);
+    const pty = spawnTerminalPty('sh', [], {}); const exit = vi.fn(); pty.onExit(exit);
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     transport.read.mockImplementation(() => { throw new Error('native read failed'); });
     try {
       wake(); await tick(); wake(); await tick();
       expect(exit).toHaveBeenCalledExactlyOnceWith({ exitCode: 1 }); expect(transport.close).toHaveBeenCalledOnce();
-      expect(nodeSpawn).not.toHaveBeenCalled();
     } finally { log.mockRestore(); }
   });
   it('decodes split UTF-8 and delivers all tail output before exactly one exit', async () => {
-    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn);
+    const pty = spawnTerminalPty('sh', [], {});
     const bytes = Buffer.from('한글🙂'); const events: string[] = [];
     transport.read.mockReturnValueOnce({ ...idle, data: bytes.subarray(0, 2) })
       .mockReturnValueOnce({ ...idle, data: bytes.subarray(2), childExited: true, eof: true, exitCode: 7 });
@@ -58,19 +58,19 @@ describe('terminal backend selection and transport contract', () => {
     expect(events).toEqual(['한글🙂', 'exit:7']); expect(transport.close).toHaveBeenCalledOnce();
   });
   it('observes exit without requiring a data subscriber', async () => {
-    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn); const exit = vi.fn(); pty.onExit(exit);
+    const pty = spawnTerminalPty('sh', [], {}); const exit = vi.fn(); pty.onExit(exit);
     transport.read.mockReturnValue({ ...idle, eof: true, childExited: true, exitCode: 0 });
     wake(); await tick(); expect(exit).toHaveBeenCalledOnce();
   });
   it('resumes a paused stream to drain final output after child exit', async () => {
-    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn); pty.pause();
+    const pty = spawnTerminalPty('sh', [], {}); pty.pause();
     transport.read.mockReturnValueOnce({ ...idle, childExited: true });
     wake(); await tick(); await tick();
     expect(transport.read).toHaveBeenNthCalledWith(1, true);
     expect(transport.read).toHaveBeenNthCalledWith(2, false);
   });
   it('does not change dimensions on failed resize', () => {
-    const pty = spawnTerminalPty('sh', [], { cols: 80, rows: 24 }, nodeSpawn);
+    const pty = spawnTerminalPty('sh', [], { cols: 80, rows: 24 });
     transport.resize.mockImplementation(() => { throw new Error('resize failed'); });
     expect(() => pty.resize(100, 40)).toThrow(); expect(pty.cols).toBe(80);
   });
@@ -95,7 +95,7 @@ describe('RustPty input keeps the node-pty write contract', () => {
   afterEach(() => { Object.defineProperty(transport, 'pendingInputBytes', { configurable: true, enumerable: true, writable: true, value: 0 }); });
 
   it('drops a write after exit instead of throwing', async () => {
-    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn);
+    const pty = spawnTerminalPty('sh', [], {});
     transport.read.mockReturnValue({ ...idle, eof: true, childExited: true, exitCode: 0 });
     wake(); await tick();
     expect(() => pty.write('late\r')).not.toThrow();
@@ -104,7 +104,7 @@ describe('RustPty input keeps the node-pty write contract', () => {
 
   it('drops input once the native writer has closed, before the exit is observed', () => {
     const input = nativeInput(); input.state.closed = true;
-    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn);
+    const pty = spawnTerminalPty('sh', [], {});
     expect(() => pty.write('a')).not.toThrow();
     expect(() => pty.write('b')).not.toThrow();
     // The closed side is final: nothing is retried or held.
@@ -114,7 +114,7 @@ describe('RustPty input keeps the node-pty write contract', () => {
 
   it('queues input under backpressure and delivers it in order once the native queue drains', async () => {
     const input = nativeInput(4);
-    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+    const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
     pty.write('abc');
     expect(() => pty.write('def')).not.toThrow();
     // The native queue has room for this byte, but it must not overtake 'def'.
@@ -128,7 +128,7 @@ describe('RustPty input keeps the node-pty write contract', () => {
 
   it('splits a write larger than the native queue and keeps SessionPipe paused until the bytes drain', async () => {
     const input = nativeInput();
-    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+    const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
     const drained = vi.fn(); pty.onInputDrain?.(drained);
     const payload = Buffer.alloc(12 * MiB, 'p');
     expect(() => pty.write(payload)).not.toThrow();
@@ -149,7 +149,7 @@ describe('RustPty input keeps the node-pty write contract', () => {
     const input = nativeInput();
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
-      const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+      const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
       pty.write(Buffer.alloc(8 * MiB, 'a'));
       pty.write(Buffer.alloc(8 * MiB, 'b'));
       expect(pty.pendingInputBytes).toBe(16 * MiB);
@@ -172,7 +172,7 @@ describe('RustPty input keeps the node-pty write contract', () => {
     const input = nativeInput();
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
-      const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+      const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
       pty.write(Buffer.alloc(8 * MiB, 'a'));
       pty.write(Buffer.alloc(8 * MiB, 'b'));
       pty.write('X');
@@ -193,7 +193,7 @@ describe('RustPty input keeps the node-pty write contract', () => {
   /** 'abc' reaches the native queue (limit 4), 'def' is held. */
   async function holdInput() {
     const input = nativeInput(4);
-    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+    const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
     pty.write('abc'); pty.write('def');
     expect(pty.pendingInputBytes).toBe(6);
     return { input, pty };
@@ -243,7 +243,7 @@ describe('native output chunks', () => {
         wake = callback; return { ...transport, readChunk };
       }
     } } as unknown as NativeTerminalCore);
-    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+    const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
     pty.onNativeData?.(value => { expect(value).toBe(chunk); order.push('data'); });
     pty.onExit(() => order.push('exit'));
     await tick(); await tick();
@@ -260,7 +260,7 @@ describe('RustPty console window owner (Windows sign-in pickers)', () => {
   it('forwards the window handle to the native transport and returns what it reports', () => {
     const setParentWindow = vi.fn(() => true);
     Object.assign(transport, { setParentWindow });
-    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+    const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
     expect(pty.setParentWindow?.(hwnd)).toBe(true);
     expect(setParentWindow).toHaveBeenCalledWith(hwnd);
   });
@@ -270,20 +270,20 @@ describe('RustPty console window owner (Windows sign-in pickers)', () => {
     vi.mocked(loadNativeTerminalCore).mockReturnValue({ NativeTransport: class {
       constructor(...args: unknown[]) { received.push(args[8]); return transport; }
     } } as unknown as NativeTerminalCore);
-    spawnTerminalPty('sh', [], { parentWindow: hwnd }, nodeSpawn);
-    spawnTerminalPty('sh', [], {}, nodeSpawn);
+    spawnTerminalPty('sh', [], { parentWindow: hwnd });
+    spawnTerminalPty('sh', [], {});
     expect(received).toEqual([hwnd, undefined]);
   });
 
   it('reports false on a native module built before the call', () => {
-    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+    const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
     expect(pty.setParentWindow?.(hwnd)).toBe(false);
   });
 
   it('reports false once the pty has ended, without touching the transport', async () => {
     const setParentWindow = vi.fn(() => true);
     Object.assign(transport, { setParentWindow });
-    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+    const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
     transport.read.mockReturnValue({ ...idle, eof: true, childExited: true, exitCode: 0 });
     wake(); await tick();
     expect(pty.setParentWindow?.(hwnd)).toBe(false);
