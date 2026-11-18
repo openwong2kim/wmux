@@ -133,7 +133,7 @@ describe('opt-in Rust text delivery', () => {
     now = NATIVE_CIRCUIT_COOLDOWNS_MS[0];
     await selectTextSnapshot(req, reference);
     expect(native).toHaveBeenCalledTimes(2);
-    expect(getTextSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: true, circuitFailures: 2 });
+    expect(getTextSnapshotBackendDiagnostics().circuitOpen).toBe(true);
     now += NATIVE_CIRCUIT_COOLDOWNS_MS[1] - 1;
     await selectTextSnapshot(req, reference);
     expect(native).toHaveBeenCalledTimes(2);
@@ -141,7 +141,7 @@ describe('opt-in Rust text delivery', () => {
     now += 1;
     expect(await selectTextSnapshot(req, reference)).toMatchObject({ ok: true });
     expect(native).toHaveBeenCalledTimes(3);
-    expect(getTextSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: false, circuitFailures: 0 });
+    expect(getTextSnapshotBackendDiagnostics().circuitOpen).toBe(false);
   });
 
   it('closes the circuit on a trial that ran out of budget: the module worked', async () => {

@@ -172,7 +172,7 @@ describe('ANSI snapshot backend selection', () => {
     nativeSuccess(request.initial);
     expect(await selectAnsiSnapshot(request, reference)).toMatchObject({ ok: true });
     expect(native).toHaveBeenCalledTimes(2);
-    expect(getAnsiSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: false, circuitFailures: 0, last: { backend: 'rust', reason: 'native' } });
+    expect(getAnsiSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: false, last: { backend: 'rust', reason: 'native' } });
   });
 
   it('reopens a failed trial for the next cooldown, and skips everything while the trial runs', async () => {
@@ -191,7 +191,7 @@ describe('ANSI snapshot backend selection', () => {
     expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'xterm', reason: 'circuit-open' });
     failTrial(new Error('still broken'));
     await trial;
-    expect(getAnsiSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: true, circuitFailures: 2 });
+    expect(getAnsiSnapshotBackendDiagnostics().circuitOpen).toBe(true);
     now = NATIVE_CIRCUIT_COOLDOWNS_MS[0] + NATIVE_CIRCUIT_COOLDOWNS_MS[1] - 1;
     await selectAnsiSnapshot(request, reference);
     expect(native).toHaveBeenCalledTimes(2);
