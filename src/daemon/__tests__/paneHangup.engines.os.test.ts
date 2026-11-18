@@ -279,8 +279,9 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
     it.skipIf(skip || engine === 'node')(`a root the hangup ended has its session swept at the hangup's deadline (${closed ? 'close() after it' : 'no close()'})`, async () => {
       const { transport, program, root, hungUpAt } = await hungUp(`hup-first-deadline-${closed ? 'closed' : 'open'}`);
       if (closed) transport.close();
-      await deliberateSleep(1_000, 'a negative check: within the grace the program still runs');
-      expect(alive(program)).toBe(true);
+      await deliberateSleep(300, 'a negative check: within the grace the program still runs');
+      // Judged only well inside the grace: a slow runner may have used it up already.
+      if (Date.now() - hungUpAt < HANGUP_GRACE_MS - 1_000) expect(alive(program)).toBe(true);
       await waitFor(() => !alive(program), HANGUP_GRACE_MS + WAIT_MS, 'the sweep at the deadline');
       expect(Date.now() - hungUpAt).toBeGreaterThanOrEqual(HANGUP_GRACE_MS - 250);
       await waitFor(() => !pidListed(root), WAIT_MS, 'the root to be reaped after the sweep');

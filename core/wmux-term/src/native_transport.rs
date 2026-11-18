@@ -633,6 +633,10 @@ impl NativeTransport {
             .is_some_and(|master| master.set_parent_window(hwnd))
     }
 
+    /// Signals the child (SIGHUP by default) and, on Unix, its foreground group.
+    /// A SIGHUP is a hangup: it arms the session sweep HANGUP_GRACE later, which
+    /// runs once the root's exit is seen, also with no close() after it. Only
+    /// close() SIGKILLs a root that ignored it. A SIGKILL sweeps the session now.
     #[napi(catch_unwind)]
     pub fn kill(&self, signal: Option<u32>) -> Result<()> {
         let exited = self.state.exited.lock().map_err(error)?;
@@ -865,20 +869,22 @@ enum Sweep {
     Done,
 }
 
-/// Arms the sweep HANGUP_GRACE from now, once: the deadline it has, if armed
-/// already, or none once it ran. The caller holds `exited` and found the child
-/// unreaped.
+/// Arms the sweep HANGUP_GRACE from now: the deadline it has, if armed already
+/// and still ahead, so a later hangup never puts it off, or none once it ran.
+/// A deadline already past (a hangup whose root lived on) is armed again, so
+/// this hangup still gets its grace. The caller holds `exited` and found the
+/// child unreaped.
 #[cfg(unix)]
 fn arm(sweep: &Mutex<Sweep>) -> Option<Instant> {
     let mut sweep = sweep.lock().unwrap_or_else(|p| p.into_inner());
     match *sweep {
-        Sweep::None => {
+        Sweep::Armed(at) if at > Instant::now() => Some(at),
+        Sweep::Done => None,
+        Sweep::None | Sweep::Armed(_) => {
             let at = Instant::now() + HANGUP_GRACE;
             *sweep = Sweep::Armed(at);
             Some(at)
         }
-        Sweep::Armed(at) => Some(at),
-        Sweep::Done => None,
     }
 }
 
