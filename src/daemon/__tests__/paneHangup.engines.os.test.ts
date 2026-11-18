@@ -43,6 +43,15 @@ function alive(pid: number): boolean {
   }
 }
 
+/** In the process table at all, a zombie included. */
+function pidListed(pid: number): boolean {
+  try {
+    return execFileSync('ps', ['-o', 'pid=', '-p', String(pid)], { encoding: 'utf8' }).trim() !== '';
+  } catch {
+    return false;
+  }
+}
+
 function pidIn(file: string): number {
   try { return Number(fs.readFileSync(file, 'utf8').trim()) || 0; } catch { return 0; }
 }
@@ -70,12 +79,17 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const m of managers.splice(0)) m.disposeAll();
-    for (const pid of started.splice(0)) {
+    const pids = started.splice(0);
+    for (const pid of pids) {
       try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
     }
-  });
+    // Nothing a test started outlives it, a zombie included: the engine keeps
+    // a dead root unreaped until its session is swept (up to the grace), and a
+    // process-table walk running beside this file would meet it.
+    await waitFor(() => pids.every((pid) => !pidListed(pid)), HANGUP_GRACE_MS + WAIT_MS, 'every process the test started to be reaped');
+  }, HANGUP_GRACE_MS + WAIT_MS + 5_000);
 
   async function shell(id: string): Promise<DaemonSessionManager> {
     const mgr = new DaemonSessionManager();
@@ -84,6 +98,8 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
       id, cmd: SHELL, cwd, cols: 80, rows: 24,
       env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: cwd, PS1: '$ ', TERM: 'xterm-256color', LC_ALL: 'C' },
     });
+    // Its root is the test's too: reaped before the test ends (afterEach).
+    started.push(mgr.getSession(id)!.ptyProcess.pid);
     // The engine actually in use: a load failure falls back to node silently.
     expect(ptyBackend(mgr.getSession(id)!.ptyProcess)).toBe(engine);
     return mgr;

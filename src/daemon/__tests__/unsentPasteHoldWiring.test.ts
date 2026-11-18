@@ -10,7 +10,8 @@ import path from 'node:path';
 import { isAppOnlyDaemonMethod } from '../../shared/daemonFirstParty';
 
 describe('unsent-paste hold daemon wiring', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf-8');
+  // A Windows checkout has CRLF line ends (core.autocrlf): the line matches below need LF.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf-8').replace(/\r\n/g, '\n');
 
   function block(start: string, length = 2_000): string {
     const at = src.indexOf(start);
