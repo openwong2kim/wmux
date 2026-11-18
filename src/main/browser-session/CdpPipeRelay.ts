@@ -550,21 +550,19 @@ export class CdpPipeRelay {
     });
     this.wss.handleUpgrade(req, socket, head, (ws) => {
       settle();
-      this.accept(route, identity, key, grantSettled, ws);
+      this.accept(route, identity, key, grantSettled, ws, socket);
     });
   }
 
-  private accept(route: RelayRoute, identity: CallerIdentity, key: Buffer, grantSettled: () => void, ws: WebSocket): void {
+  private accept(route: RelayRoute, identity: CallerIdentity, key: Buffer, grantSettled: () => void, ws: WebSocket, socket: Duplex): void {
     // The Chrome may have gone during the handshake.
     if (this.closed || !route.open) { key.fill(0); grantSettled(); ws.terminate(); return; }
     const proof = proofAnswerer(key, this.proofKeyTtlMs);
     route.clients.add(ws);
     const maxBuffered = this.maxBuffered;
-    let sent = 0;
     const client = route.mux.attachExternal('relay', (text) => {
       if (ws.readyState !== ws.OPEN) return;
       ws.send(text);
-      sent += Buffer.byteLength(text);
       // A client that stopped reading: disconnect it instead of buffering on.
       if (ws.bufferedAmount > maxBuffered) ws.terminate();
       else this.holdWithinChrome(route);
@@ -572,7 +570,7 @@ export class CdpPipeRelay {
       // Signs of life for the stall watch (C2c): the client's WebSocket answers
       // a ping, and reading down a backlog moves `flushed`.
       ping: () => { if (ws.readyState === ws.OPEN) ws.ping(); },
-      drain: () => ({ buffered: ws.bufferedAmount, flushed: sent - ws.bufferedAmount }),
+      drain: () => writeProgress(ws, socket),
       identity,
       local: proof.local,
     });
@@ -589,6 +587,28 @@ export class CdpPipeRelay {
     });
     ws.on('error', () => ws.terminate());
   }
+}
+
+/** What the stall watch reads off a client's socket: its libuv handle, while it has one. */
+interface WriteQueue { readonly _handle?: { readonly bytesWritten?: unknown; readonly writeQueueSize?: unknown } | null }
+
+/**
+ * The drain sign for a relay client (C2c): what still waits for it
+ * (`buffered`), and the bytes that have left the process for it in all
+ * (`flushed`): what its socket's handle was given, less what the handle still
+ * queues. ws's bufferedAmount holds a frame whole until its write completes,
+ * so a large frame the client reads chunk by chunk doesn't move it; the
+ * handle's queue goes down with each chunk (Node's own socket timeout reads it
+ * the same way). With no handle (the socket is going), `flushed` is 0 and
+ * shows no progress.
+ */
+/** @internal Exported for tests. */
+export function writeProgress(ws: { readonly bufferedAmount: number }, socket: unknown): { buffered: number; flushed: number } {
+  const handle = (socket as WriteQueue | null | undefined)?._handle;
+  const given = handle?.bytesWritten;
+  const queued = handle?.writeQueueSize;
+  const flushed = typeof given === 'number' && typeof queued === 'number' ? given - queued : 0;
+  return { buffered: ws.bufferedAmount, flushed };
 }
 
 /**
