@@ -237,6 +237,29 @@ describe('LinkedTaskTurns', () => {
     expect(t.taskTurn(TASK)).toEqual({ messageId: 'r-1', opened: true, closed: false, toolUseIds: ['toolu_2'] });
   });
 
+  it('the latest is the one delivered last, not the one listed last: a held reply delivered late', () => {
+    const LATE = `[wmux] reply on ${TASK} from pc-a/ws/#1:\n> the held one`;
+    const floor = size();
+    write(userLine(PROMPT), callLine('toolu_1'), assistantLine('PONG'));
+    const newerFloor = size();
+    write(userLine(FOLLOW_UP), callLine('toolu_2'), assistantLine('5.15'));
+    const lateFloor = size();
+    write(userLine(LATE), callLine('toolu_3'));
+    // r-1 arrived first but was held; r-2 was delivered meanwhile, r-1 after it (a higher key count).
+    const late: A2aRemoteInboxItem = {
+      messageId: 'r-1', kind: 'reply', delivered: true,
+      submit: proof({ promptHash: promptHash(LATE), submitRevision: 20, transcriptOffsetAtBase: lateFloor }) as unknown as A2aRemoteInboxItem['submit'],
+    };
+    const newer: A2aRemoteInboxItem = {
+      messageId: 'r-2', kind: 'reply', delivered: true,
+      submit: proof({ promptHash: promptHash(FOLLOW_UP), submitRevision: 9, transcriptOffsetAtBase: newerFloor }) as unknown as A2aRemoteInboxItem['submit'],
+    };
+    tasks = [inboundTask({ submit: proof({ transcriptOffsetAtBase: floor }), inbox: [late, newer] })];
+    const t = tracker();
+    t.tick();
+    expect(t.taskTurn(TASK)).toEqual({ messageId: 'r-1', opened: true, closed: false, toolUseIds: ['toolu_3'] });
+  });
+
   it('one task that throws does not stop the others, nor the clean-up', () => {
     const floor = size();
     write(userLine(PROMPT), callLine('toolu_1'));

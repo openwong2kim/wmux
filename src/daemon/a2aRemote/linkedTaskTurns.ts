@@ -51,7 +51,7 @@ export type LinkedTaskTurn = { messageId?: string; opened: boolean; closed: bool
 interface Unit {
   taskId: string;
   messageId?: string;
-  /** Delivery order within its task: the task itself first, then its inbox items. */
+  /** Listed order within its task: the task itself first, then its inbox items (see deliveredAfter). */
   order: number;
   /** The proof this follows: another one starts over. */
   key: string;
@@ -96,7 +96,7 @@ export class LinkedTaskTurns {
   /** What was seen of the latest followed delivery of `taskId`. Reads nothing. */
   taskTurn(taskId: string): LinkedTaskTurn {
     let latest: Unit | undefined;
-    for (const u of this.units.values()) if (u.taskId === taskId && (!latest || u.order > latest.order)) latest = u;
+    for (const u of this.units.values()) if (u.taskId === taskId && (!latest || deliveredAfter(u, latest))) latest = u;
     if (!latest || latest.path === null || latest.expired) return 'unknown';
     return {
       ...(latest.messageId !== undefined ? { messageId: latest.messageId } : {}),
@@ -255,6 +255,17 @@ export class LinkedTaskTurns {
   private warn(what: string, err: unknown): void {
     this.deps.log?.('warn', `[a2a-remote] linked task turns: ${what}: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/**
+ * Whether `a` was delivered after `b`. In one session (pty, incarnation and
+ * key epoch) the key count orders them: each submit's count includes every
+ * earlier one's Enters, so a held item delivered late is told apart from the
+ * newer ones delivered before it. Across sessions, the listed order.
+ */
+function deliveredAfter(a: Unit, b: Unit): boolean {
+  const same = a.proof.ptyId === b.proof.ptyId && a.proof.incarnation === b.proof.incarnation && a.proof.keyEpoch === b.proof.keyEpoch;
+  return same ? a.proof.submitRevision > b.proof.submitRevision : a.order > b.order;
 }
 
 /** The delivered units of an open inbound task that carry a proof for the pane's current occupant. */
