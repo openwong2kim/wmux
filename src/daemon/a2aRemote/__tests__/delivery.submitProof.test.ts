@@ -132,6 +132,28 @@ describe('the submit proof on a delivered mark', () => {
     expect(open[0].log.readAllRecords().length).toBe(records);
   });
 
+  it('a later delivered mark without a valid proof clears the stored one, also on replay; without one before or after, nothing is appended', async () => {
+    const { mark, tasks } = boot();
+    await inbound(tasks, 'rt-clear');
+    await inbound(tasks, 'rt-clear-bad');
+    for (const id of ['rt-clear', 'rt-clear-bad']) {
+      expect(await mark({ taskId: id, delivered: true, ptyId: 'pty-9', submit: PROOF })).toEqual({ ok: true });
+      expect(remoteOf(tasks, id)).toMatchObject({ submit: PROOF });
+    }
+    expect(await mark({ taskId: 'rt-clear', delivered: true, ptyId: 'pty-9' })).toEqual({ ok: true });
+    // A malformed one is dropped by the RPC: the same as none.
+    expect(await mark({ taskId: 'rt-clear-bad', delivered: true, ptyId: 'pty-9', submit: { ...PROOF, submitRevision: -1 } })).toEqual({ ok: true });
+    for (const id of ['rt-clear', 'rt-clear-bad']) expect(remoteOf(tasks, id)).not.toHaveProperty('submit');
+    const records = open[0].log.readAllRecords().length;
+    expect(await mark({ taskId: 'rt-clear', delivered: true, ptyId: 'pty-9' })).toEqual({ ok: true });
+    expect(open[0].log.readAllRecords().length).toBe(records);
+    const first = open.splice(0)[0];
+    await first.delivery.stop();
+    first.log.close();
+    const again = boot();
+    for (const id of ['rt-clear', 'rt-clear-bad']) expect(remoteOf(again.tasks, id)).not.toHaveProperty('submit');
+  });
+
   it('a mark without one is recorded as before', async () => {
     const { mark, tasks } = boot();
     await inbound(tasks, 'rt-plain');

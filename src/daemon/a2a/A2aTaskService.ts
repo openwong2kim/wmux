@@ -1063,10 +1063,10 @@ export class A2aTaskService {
           body = { notice: input.notice };
         }
       } else if (input.delivered === true) {
-        // Only a proof for the pty this mark names; a mark that adds or changes one is not a repeat.
+        // Only a proof for the pty this mark names; a mark that adds, changes or clears one is not a repeat.
         const submit = input.ptyId && input.submit?.ptyId === input.ptyId ? input.submit : undefined;
         unchanged = target.delivered === true && (!input.ptyId || side.ptyId === input.ptyId)
-          && (submit === undefined || sameGatedSubmitProof(target.submit, submit));
+          && sameGatedSubmitProof(target.submit, submit);
         body = { delivered: true, ...(input.ptyId ? { ptyId: input.ptyId } : {}), ...(submit ? { submit } : {}) };
       } else if (input.held) {
         unchanged = target.delivered !== true && target.held === input.held;
