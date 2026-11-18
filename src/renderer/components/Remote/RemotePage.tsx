@@ -601,13 +601,13 @@ export default function RemotePage() {
       hostId={pc.hostId}
       name={pc.name}
       level={c.levelOf(pc.hostId)}
-      pending={c.pending?.hostId === pc.hostId ? c.pending.level : null}
-      busy={c.busy === pc.hostId}
+      pending={c.pending[pc.hostId]?.level ?? null}
+      busy={c.busy[pc.hostId] === true}
       damaged={c.damaged}
-      error={c.error?.hostId === pc.hostId ? c.error.message : null}
+      error={c.errors[pc.hostId] ?? null}
       onChange={(level) => void c.choose(pc.hostId, level)}
-      onConfirm={() => void c.confirm()}
-      onCancel={() => c.cancel()}
+      onConfirm={() => void c.confirm(pc.hostId)}
+      onCancel={() => c.cancel(pc.hostId)}
       t={t}
     />
   );

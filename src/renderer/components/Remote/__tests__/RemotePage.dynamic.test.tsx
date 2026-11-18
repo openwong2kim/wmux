@@ -561,6 +561,24 @@ describe('Remote page: remote approvals under each paired PC', () => {
     expect(row(HOST).getAttribute('data-level')).toBe('off');
   });
 
+  it('a raise waiting on one PC stays while another PC is lowered or raised', async () => {
+    stub([], { hosts: pcHosts, approvals: { hosts: { [HOST]: 'command' } } });
+    await render();
+    await act(async () => { level(PEER_HOST, 'Command').click(); });
+    expect(row(PEER_HOST).querySelector('[data-remote-approvals-ask]')).not.toBeNull();
+    await act(async () => { level(HOST, 'Off').click(); });
+    await settle();
+    expect(api.a2aRemote.approvalsSet).toHaveBeenLastCalledWith(HOST, 'off');
+    expect(row(PEER_HOST).querySelector('[data-remote-approvals-ask]')).not.toBeNull();
+    await act(async () => { level(HOST, 'Tool only').click(); });
+    expect(row(HOST).querySelector('[data-remote-approvals-ask]')).not.toBeNull();
+    expect(row(PEER_HOST).querySelector('[data-remote-approvals-ask]')).not.toBeNull();
+    await act(async () => { row(PEER_HOST).querySelector<HTMLButtonElement>('[data-remote-approvals-confirm]')!.click(); });
+    await settle();
+    expect(api.a2aRemote.approvalsSet).toHaveBeenLastCalledWith(PEER_HOST, 'command');
+    expect(row(HOST).querySelector('[data-remote-approvals-ask]')).not.toBeNull();
+  });
+
   it('a confirmation for a level that changed meanwhile is refused, and the new level shown', async () => {
     const seed = { hosts: {} as Record<string, string> };
     stub([], { hosts: pcHosts, approvals: seed });

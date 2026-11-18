@@ -34,11 +34,12 @@ export class ApprovalsController {
   damaged = false;
   /** False until the first read answered. */
   loaded = false;
-  /** A raise waiting for its confirmation. */
-  pending: { hostId: string; level: ApprovalLevel; from: ApprovalLevel } | null = null;
-  /** The PC whose save is in flight. */
-  busy: string | null = null;
-  error: { hostId: string; message: string } | null = null;
+  /** Raises waiting for their confirmation, by PC: one PC's choice never touches another's. */
+  pending: Record<string, { level: ApprovalLevel; from: ApprovalLevel }> = {};
+  /** PCs whose save is in flight. */
+  busy: Record<string, true> = {};
+  /** The last failure, by PC. */
+  errors: Record<string, string> = {};
 
   constructor(
     private readonly api: ApprovalsApi,
@@ -70,59 +71,57 @@ export class ApprovalsController {
 
   async choose(hostId: string, level: ApprovalLevel): Promise<void> {
     const before = this.levelOf(hostId);
-    if (this.error?.hostId === hostId) this.error = null;
-    if (level === before) {
-      this.pending = null;
-    } else if (raisesApproval(before, level)) {
-      this.pending = { hostId, level, from: before };
-    } else {
-      this.pending = null;
+    delete this.errors[hostId];
+    delete this.pending[hostId];
+    if (level !== before && raisesApproval(before, level)) {
+      this.pending[hostId] = { level, from: before };
+    } else if (level !== before) {
       await this.save(hostId, level);
       return;
     }
     this.changed();
   }
 
-  cancel(): void {
-    this.pending = null;
+  cancel(hostId: string): void {
+    delete this.pending[hostId];
     this.changed();
   }
 
-  async confirm(): Promise<void> {
-    const p = this.pending;
+  async confirm(hostId: string): Promise<void> {
+    const p = this.pending[hostId];
     if (!p) return;
-    this.busy = p.hostId;
+    this.busy[hostId] = true;
     this.changed();
     try {
       // The level the confirmation was about must still be the one saved.
       const now = await this.api.approvalsGet();
-      const current = now.damaged === true ? 'off' : approvalLevelOf(now.hosts?.[p.hostId]);
-      this.pending = null;
+      const current = now.damaged === true ? 'off' : approvalLevelOf(now.hosts?.[hostId]);
+      delete this.pending[hostId];
       if (current !== p.from) {
         this.read(now);
-        this.error = { hostId: p.hostId, message: this.words.changed };
+        this.errors[hostId] = this.words.changed;
         return;
       }
-      await this.save(p.hostId, p.level);
+      await this.save(hostId, p.level);
     } catch {
-      this.error = { hostId: p.hostId, message: this.words.failed };
+      this.errors[hostId] = this.words.failed;
     } finally {
-      this.busy = null;
+      delete this.busy[hostId];
       this.changed();
     }
   }
 
   private async save(hostId: string, level: ApprovalLevel): Promise<void> {
-    this.busy = hostId;
+    this.busy[hostId] = true;
     this.changed();
     try {
       const res = await this.api.approvalsSet(hostId, level);
-      if (!res.ok) this.error = { hostId, message: `${this.words.failed} (${res.error})` };
+      if (!res.ok) this.errors[hostId] = `${this.words.failed} (${res.error})`;
       this.read(await this.api.approvalsGet());
     } catch {
-      this.error = { hostId, message: this.words.failed };
+      this.errors[hostId] = this.words.failed;
     } finally {
-      this.busy = null;
+      delete this.busy[hostId];
       this.changed();
     }
   }
