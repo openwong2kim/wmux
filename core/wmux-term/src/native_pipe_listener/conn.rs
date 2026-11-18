@@ -40,8 +40,10 @@ struct State {
 
 struct Shared {
     state: Mutex<State>,
-    /// Auto-reset: "the state changed, look again".
-    control: OwnedHandle,
+    /// Auto-reset: "the state changed, look again". Closed by the I/O
+    /// thread as it exits, so a finished conn holds no OS handle however
+    /// long its JS object lives; a later poke is a no-op.
+    control: Mutex<Option<OwnedHandle>>,
     /// Dropped once the instance is closed, so a closed conn no longer
     /// holds the (ref'd) wake callback.
     notify: Mutex<Option<Notify>>,
@@ -52,7 +54,15 @@ impl Shared {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
     fn poke(&self) {
-        set_event(&self.control);
+        // Under the lock, so the I/O thread cannot close it meanwhile.
+        if let Some(control) = self
+            .control
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            set_event(control);
+        }
     }
     fn wake(&self) {
         let notify = self
@@ -83,7 +93,7 @@ impl Conn {
     ) -> Result<Arc<Self>, String> {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
-            control: event(false)?,
+            control: Mutex::new(Some(event(false)?)),
             notify: Mutex::new(Some(notify)),
         });
         let read_event = event(true)?;
@@ -98,6 +108,11 @@ impl Conn {
                 // peer's process handle, then report closed.
                 drop(instance);
                 drop(process);
+                worker_shared
+                    .control
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take();
                 worker_shared.lock().closed = true;
                 worker_shared.wake();
                 worker_shared
@@ -186,7 +201,13 @@ impl Conn {
     }
 
     pub(crate) fn closed(&self) -> bool {
-        self.shared.lock().closed
+        let closed = self.shared.lock().closed;
+        if closed {
+            // The I/O thread is exiting on its own: release its thread
+            // handle now instead of when the JS object is collected.
+            drop(self.take_thread());
+        }
+        closed
     }
 
     /// Cancels pending I/O and closes; the join runs off the caller's thread.
@@ -251,6 +272,16 @@ fn run(
     write_event: OwnedHandle,
 ) {
     let pipe = instance.raw();
+    // Valid until this thread closes it after `run` returns.
+    let Some(control) = shared
+        .control
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .map(OwnedHandle::raw)
+    else {
+        return;
+    };
     let mut read_ov = Overlapped::with_event(read_event.raw());
     let mut write_ov = Overlapped::with_event(write_event.raw());
     let mut read_buf: Vec<u8> = Vec::new();
@@ -320,7 +351,7 @@ fn run(
         }
         drop(state);
 
-        let mut handles = vec![shared.control.raw()];
+        let mut handles = vec![control];
         if read_pending {
             handles.push(read_event.raw());
         }

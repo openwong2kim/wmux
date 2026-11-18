@@ -525,3 +525,48 @@ fn close_without_join_destroys_untaken_conns_and_ends_every_worker() {
     assert!(taken.closed());
     assert!(listener.take_accepted().is_none());
 }
+
+/// Finished conns hold no OS handle while their owners (the JS objects)
+/// are still alive: destroy() and end() + EOF both release everything.
+#[test]
+fn finished_conns_release_their_handles_while_still_referenced() {
+    let _serial = serial();
+    wait_until("idle workers", || worker_count() == 0);
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 8, notify).unwrap();
+    // Warm up lazily created process state before taking the baseline.
+    for _ in 0..3 {
+        let client = Client::open(&name);
+        accept(&listener).destroy_and_join();
+        drop(client);
+    }
+    wait_until("idle accept", || worker_count() == 1);
+    let handles = process_handle_count();
+    let mut owners = Vec::new();
+    for round in 0..100 {
+        let client = Client::open(&name);
+        let conn = accept(&listener);
+        if round % 2 == 0 {
+            conn.destroy();
+        } else {
+            conn.end();
+            assert_eq!(client.read(16).err(), Some(ERROR_BROKEN_PIPE));
+            wait_until("the close", || conn.closed());
+        }
+        drop(client);
+        owners.push(conn);
+    }
+    wait_until("every conn worker to end", || worker_count() == 1);
+    for conn in &owners {
+        assert!(conn.closed());
+    }
+    let after = process_handle_count();
+    // 100 conns that each kept one handle would exceed this.
+    assert!(
+        after <= handles + 20,
+        "handles {handles} -> {after} with 100 owners alive"
+    );
+    drop(owners);
+    listener.close_and_join();
+}
