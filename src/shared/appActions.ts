@@ -11,8 +11,15 @@
 // workspace), not a boundary against same-user code: a process of the same
 // user can already reach the pipe.
 //
+// The settings actions (`settings.*`, app-wide, no workspace) also take a
+// call from a terminal outside any wmux pane, so a person can change them
+// with `wmux settings`; main/pipe/handlers/appAction.rpc.ts says exactly
+// which callers count as that.
+//
 // Versioning is by action id: a changed meaning gets a new id, never a new
 // method name.
+
+import { APP_SETTING_KEYS, appSettingKeyRefusal, type AppSettingKey } from './appSettings';
 
 export const APP_ACTION_RPC = {
   run: 'app.action',
@@ -67,9 +74,9 @@ export interface AppActionSpec {
   description: string;
 }
 
-/** The settings `settings.get` reads and `settings.set` writes. */
-export const APP_ACTION_SETTING_KEYS = ['theme', 'locale', 'terminal.fontSize', 'terminal.fontFamily'] as const;
-export type AppActionSettingKey = (typeof APP_ACTION_SETTING_KEYS)[number];
+/** The settings `settings.get` reads and `settings.set` writes (shared/appSettings.ts). */
+export const APP_ACTION_SETTING_KEYS: readonly AppSettingKey[] = APP_SETTING_KEYS;
+export type AppActionSettingKey = AppSettingKey;
 
 /** Workspace and tab names: long enough for a real name, short enough to read in the sidebar. */
 export const APP_ACTION_NAME_MAX = 64;
@@ -122,6 +129,12 @@ export const APP_ACTIONS: readonly AppActionSpec[] = [
     description: 'Move a pane next to another pane of the same workspace. Defaults to the caller\'s own pane.',
   },
   {
+    id: 'settings.list',
+    target: 'none',
+    args: {},
+    description: 'List the settings that can change here, with their values and what each takes.',
+  },
+  {
     id: 'settings.get',
     target: 'none',
     args: {
@@ -138,10 +151,10 @@ export const APP_ACTIONS: readonly AppActionSpec[] = [
         type: 'scalar',
         required: true,
         maxLength: 128,
-        description: 'theme: a built-in theme id; locale: a supported language; terminal.fontSize: a number in the zoom range; terminal.fontFamily: a font name.',
+        description: 'What the setting takes: settings.list names it for each key (on/off, a choice, a range, a theme id, a language, a font name).',
       },
     },
-    description: 'Change one setting. The app shows that an agent changed it.',
+    description: 'Change one setting. The app shows who changed it: an agent, or the command line.',
   },
   {
     id: 'notifications.markRead',
@@ -179,6 +192,12 @@ export function checkAppActionArgs(spec: AppActionSpec, raw: unknown): AppAction
     return { ok: false, error: `${spec.id}: args must be an object` };
   }
   const given = (raw ?? {}) as Record<string, unknown>;
+  // A setting key is checked first, so a human-only one says where it is
+  // changed instead of failing the enum check.
+  if ((spec.id === 'settings.get' || spec.id === 'settings.set') && typeof given['key'] === 'string') {
+    const refusal = appSettingKeyRefusal(given['key'].trim());
+    if (refusal) return { ok: false, error: `${spec.id}: ${refusal}` };
+  }
   for (const key of Object.keys(given)) {
     if (!Object.prototype.hasOwnProperty.call(spec.args, key)) {
       const known = Object.keys(spec.args);

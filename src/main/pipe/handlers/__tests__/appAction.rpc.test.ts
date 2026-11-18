@@ -10,8 +10,14 @@ import { SHARED_SURFACE, botSurfaceRefusal } from '../../../../shared/botSurface
 import { COMMANDER_RPC_METHODS } from '../../../../shared/commanderSurface';
 import { WORKER_FENCE_REFUSED_RPC } from '../../../../shared/botWorkerGuard';
 
-const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
+const { sendToRendererMock, pidMapFiles, parents } = vi.hoisted(() => ({
+  sendToRendererMock: vi.fn(),
+  pidMapFiles: vi.fn(() => [] as Array<{ pid: string; ptyId: string }>),
+  parents: new Map<number, number | null>(),
+}));
 vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
+vi.mock('../../../pty/pidMap', () => ({ readPidMapFiles: pidMapFiles }));
+vi.mock('../../../../mcp/brokerPeer', () => ({ osParentPid: async (pid: number) => parents.get(pid) ?? null }));
 
 import { registerAppActionRpc } from '../appAction.rpc';
 
@@ -160,9 +166,108 @@ describe('app.action identity', () => {
       id: 'workspace.rename',
       args: { name: 'api' },
       target: '#w1-1',
+      source: 'agent',
       callerWorkspaceId: 'ws-a',
       callerPtyId: 'pty-a',
     });
+  });
+});
+
+describe('app.action settings from a terminal outside wmux', () => {
+  /** The CLI on the pipe with its token, outside every pane: no claim at all. */
+  const outside: RpcContext = { origin: 'local', externalWire: true, clientName: 'wmux-cli' };
+
+  it('runs the settings actions with no workspace, marked as the command line', async () => {
+    for (const params of [
+      { id: 'settings.list' },
+      { id: 'settings.get', args: { key: 'theme' } },
+      { id: 'settings.set', args: { key: 'theme', value: 'paper' } },
+    ]) {
+      expect(await run(params, outside)).toMatchObject({ ok: true, id: params.id });
+    }
+    for (const call of rendererCalls()) {
+      expect(call[2]).toMatchObject({ source: 'command-line' });
+      expect(call[2]).not.toHaveProperty('callerWorkspaceId');
+      expect(call[2]).not.toHaveProperty('callerPtyId');
+    }
+  });
+
+  it('a pane claim still decides, and is marked as an agent', async () => {
+    await run({ id: 'settings.set', args: { key: 'theme', value: 'paper' } }, claimed());
+    expect(rendererCalls()[0][2]).toMatchObject({ source: 'agent', callerWorkspaceId: 'ws-a', callerPtyId: 'pty-a' });
+  });
+
+  it('only the settings actions take it', async () => {
+    for (const id of ['layout.balance', 'notifications.clear']) {
+      expect(await run({ id }, outside)).toMatchObject({ ok: false, code: 'no_identity' });
+    }
+    expect(await run({ id: 'workspace.rename', args: { name: 'x' } }, outside)).toMatchObject({ ok: false, code: 'no_identity' });
+    expect(rendererCalls()).toEqual([]);
+  });
+
+  it('every other lane without a pane claim is still refused', async () => {
+    const set = { id: 'settings.set', args: { key: 'theme', value: 'paper' } };
+    const lanes: Array<[string, RpcContext]> = [
+      ['no external wire', { origin: 'local', clientName: 'wmux-cli' }],
+      ['the operator lane', { origin: 'local', operator: true, firstParty: true }],
+      ['the plugin host', { origin: 'local', firstParty: true, hostedWorkspace: 'ws-a' }],
+      ['a stale claim', { ...outside, workspaceClaim: { kind: 'stale' } }],
+      ['a workspace claim without a pane', { ...outside, workspaceClaim: { kind: 'bound', workspaceId: 'ws-a' } }],
+      ['a pane named on the envelope', { ...outside, callerPtyId: 'pty-a' }],
+      ['a commander token', { ...outside, commanderWorkspace: 'ws-a' }],
+      ['a bot token', { ...outside, bot: { botId: 'b1' } as unknown as RpcContext['bot'] }],
+    ];
+    for (const [, ctx] of lanes) {
+      expect(await run(set, ctx)).toMatchObject({ ok: false, code: 'no_identity' });
+    }
+    expect(await run(set, { ...outside, origin: 'remote' })).toMatchObject({ ok: false, code: 'remote_refused' });
+    expect(await run(set, { ...outside, fencedWorker: true })).toMatchObject({ ok: false, code: 'fenced' });
+    expect(rendererCalls()).toEqual([]);
+  });
+
+  it('a process in a pane does not pass for the command line by leaving its claim out', async () => {
+    const peerInPane = vi.fn(async () => true);
+    setup({ peerInPane });
+    const res = await run({ id: 'settings.set', args: { key: 'theme', value: 'paper' } }, { ...outside, peerPid: 4242 });
+    expect(res).toMatchObject({ ok: false, code: 'no_identity' });
+    expect(peerInPane).toHaveBeenCalledOnce();
+    expect(rendererCalls()).toEqual([]);
+  });
+
+  it('a peer outside every pane, or one that cannot be told, goes on; a pane claim is not walked again', async () => {
+    for (const verdict of [false, null]) {
+      setup({ peerInPane: async () => verdict });
+      expect(await run({ id: 'settings.get' }, outside)).toMatchObject({ ok: true });
+    }
+    const peerInPane = vi.fn(async () => true);
+    setup({ peerInPane });
+    expect(await run({ id: 'settings.get' }, claimed())).toMatchObject({ ok: true });
+    expect(peerInPane).not.toHaveBeenCalled();
+  });
+
+  it('by default walks the peer\'s parents to a pane\'s shell in the pid map', async () => {
+    pidMapFiles.mockReturnValue([{ pid: '400', ptyId: 'pty-a' }]);
+    parents.clear();
+    parents.set(600, 500).set(500, 400);
+    const set = { id: 'settings.set', args: { key: 'theme', value: 'paper' } };
+    // In a pane: 600 → 500 → 400, the pane's shell.
+    expect(await run(set, { ...outside, peerPid: 600 })).toMatchObject({ ok: false, code: 'no_identity' });
+    // Outside: 900 → 1.
+    parents.set(900, 1);
+    expect(await run(set, { ...outside, peerPid: 900 })).toMatchObject({ ok: true });
+    // A parent that cannot be read, or no peer pid: cannot be told, goes on.
+    expect(await run(set, { ...outside, peerPid: 700 })).toMatchObject({ ok: true });
+    expect(await run(set, outside)).toMatchObject({ ok: true });
+    pidMapFiles.mockReturnValue([]);
+  });
+
+  it('names the Settings section for a human-only key, for every caller', async () => {
+    for (const ctx of [outside, claimed()]) {
+      const res = await run({ id: 'settings.set', args: { key: 'fanout.permissionMode', value: 'bypassPermissions' } }, ctx);
+      expect(res).toMatchObject({ ok: false, code: 'invalid_args' });
+      expect((res as { error: string }).error).toMatch(/Settings › Roles & fan-out/);
+    }
+    expect(rendererCalls()).toEqual([]);
   });
 });
 

@@ -6762,6 +6762,7 @@ export const en = {
   'workspace.renameRefused.paneTag': "A workspace name cannot look like a pane tag (w1-2).",
   'workspace.renameRefused.taken': "Another workspace already has this name, so neither could be addressed by it.",
   'appAction.settingChanged': "An agent changed {setting} to {value}.",
+  'appAction.settingChangedCli': "Changed from the command line: {setting} is now {value}.",
 } as const;
 
 export type TranslationKey = keyof typeof en;

@@ -6717,4 +6717,5 @@ export const pl = {
   'workspace.renameRefused.paneTag': "Nazwa obszaru roboczego nie może wyglądać jak znacznik panelu (w1-2).",
   'workspace.renameRefused.taken': "Inny obszar roboczy ma już tę nazwę, więc żadnego nie dałoby się nią wskazać.",
   'appAction.settingChanged': "Agent zmienił ustawienie {setting} na {value}.",
+  'appAction.settingChangedCli': "Zmieniono z wiersza poleceń: {setting} ma teraz wartość {value}.",
 } as const;
