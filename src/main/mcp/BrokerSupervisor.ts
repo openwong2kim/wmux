@@ -53,6 +53,16 @@ const RESTART_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];
 /** A broker that survived this long resets the backoff ladder. */
 const STABLE_MS = 30_000;
 const EXIT_ALREADY_RUNNING = 75;
+
+interface TerminalExit {
+  reason: Extract<BrokerDownReason, 'path-occupied' | 'peer-unavailable'>;
+  message: string;
+}
+/** Broker exits that a restart cannot fix. */
+const TERMINAL_EXITS: Readonly<Record<number, TerminalExit>> = {
+  [BROKER_EXIT_PATH_OCCUPIED]: { reason: 'path-occupied', message: 'the broker socket path holds something that is not a socket' },
+  [BROKER_EXIT_PEER_UNAVAILABLE]: { reason: 'peer-unavailable', message: 'the broker could not confirm which process connects to it' },
+};
 /** How often a stood-down supervisor probes whether the pipe was orphaned. */
 const RECLAIM_PROBE_MS = 15_000;
 /** Per-probe connect timeout — Windows named-pipe connect can hang without it. */
@@ -93,10 +103,8 @@ export class BrokerSupervisor {
   private failureTimes: number[] = [];
   /** Set once the breaker trips; cleared only by a new supervisor (an app restart). */
   private tripped = false;
-  /** The broker exited 78: something that is not a socket sits at its path. */
-  private pathOccupied = false;
-  /** The broker exited 79: its peer self-check never passed. */
-  private peerUnavailable = false;
+  /** Set by an exit no restart can fix (TERMINAL_EXITS). */
+  private terminalReason: TerminalExit['reason'] | null = null;
   /** Tool calls in flight, as the current child last reported them. */
   private inflight: string[] = [];
   private lastCrashTools: string[] = [];
@@ -160,13 +168,13 @@ export class BrokerSupervisor {
     };
   }
 
-  private downReason(): BrokerDownReason | null {
+  /** Why no broker runs, or null while one does. */
+  downReason(): BrokerDownReason | null {
     if (this.child) return null;
     if (this.stopped) return 'stopped';
     if (this.scriptMissing) return 'script-missing';
     if (this.reclaimTimer) return 'standing-down';
-    if (this.pathOccupied) return 'path-occupied';
-    if (this.peerUnavailable) return 'peer-unavailable';
+    if (this.terminalReason) return this.terminalReason;
     if (this.tripped) return 'crash-loop';
     if (this.restartTimer) return 'restarting';
     return 'not-started';
@@ -320,31 +328,15 @@ export class BrokerSupervisor {
         this.startReclaimProbe();
         return;
       }
-      if (code === BROKER_EXIT_PATH_OCCUPIED) {
-        // Something that is not a socket sits at the broker's path: no restart
-        // can fix that, so stop the way a tripped breaker does.
+      const terminal = code === null ? undefined : TERMINAL_EXITS[code];
+      if (terminal) {
+        // No restart can fix it: stop the way a tripped breaker does, and mark
+        // the broker off so launchers start their own server.
         this.clearChild();
         settled = true;
         this.tripped = true;
-        this.pathOccupied = true;
-        console.error(
-          '[BrokerSupervisor] the broker socket path holds something that is not a socket; ' +
-            'not restarting it until wmux restarts (agents use their own MCP server)',
-        );
-        void this.brokerOff.tripped().catch(() => undefined);
-        return;
-      }
-      if (code === BROKER_EXIT_PEER_UNAVAILABLE) {
-        // Its self-check never passed, so a restart would refuse every session
-        // again: stop, and mark it off so launchers skip it.
-        this.clearChild();
-        settled = true;
-        this.tripped = true;
-        this.peerUnavailable = true;
-        console.error(
-          '[BrokerSupervisor] the broker could not confirm which process connects to it; ' +
-            'not restarting it until wmux restarts (agents use their own MCP server)',
-        );
+        this.terminalReason = terminal.reason;
+        console.error(`[BrokerSupervisor] ${terminal.message}; not restarting it until wmux restarts (agents use their own MCP server)`);
         void this.brokerOff.tripped().catch(() => undefined);
         return;
       }

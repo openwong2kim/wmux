@@ -1119,7 +1119,7 @@ const mcpHandlerOptions = {
   // to know whether that fallback is final.
   daemonMayReturn: (): boolean => daemonRespawnController?.daemonMayReturn ?? false,
   mcpRegistrar,
-  mcpBrokerDownReason: () => mcpBrokerSupervisor.status().downReason,
+  mcpBrokerDownReason: () => mcpBrokerSupervisor.downReason(),
   getMcpAuthToken: (): string | null => {
     try {
       return pipeServer.getAuthToken();

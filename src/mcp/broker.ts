@@ -250,8 +250,8 @@ function main(): void {
     undefined,
     (verdict, attempts) => {
       console.error(`[wmux-mcp-broker] peer-pid: still ${verdict} after ${attempts} checks; stopping (exit ${BROKER_EXIT_PEER_UNAVAILABLE})`);
-      server.close();
-      process.exit(BROKER_EXIT_PEER_UNAVAILABLE);
+      // Runs from the backoff timer, after main() has returned.
+      shutdown(BROKER_EXIT_PEER_UNAVAILABLE);
     },
   );
 
@@ -432,6 +432,8 @@ function main(): void {
         if (decision.unlink) fs.unlinkSync(pipeName);
       } catch { /* already gone — listen retry decides */ }
       server.listen(pipeName, () => {
+        // The stamp follows the bind by one tick: a check that lands between
+        // the two can still read bind-time values only (a known, narrow gap).
         stampSocket(pipeName);
         console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid} (after stale-socket cleanup)`);
       });
@@ -444,17 +446,17 @@ function main(): void {
     console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid}`);
   });
 
-  const shutdown = () => {
+  const shutdown = (code = 0) => {
     peerSelfCheck.stop();
     server.close();
-    process.exit(0);
+    process.exit(code);
   };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', () => shutdown());
+  process.on('SIGINT', () => shutdown());
   // Started by main with an IPC channel: when main goes (a crash, a kill), the
   // channel closes and the broker goes too, rather than living on without a
   // supervisor. A broker started by hand has no channel and is unaffected.
-  if (process.send) process.on('disconnect', shutdown);
+  if (process.send) process.on('disconnect', () => shutdown());
 }
 
 main();

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pickPs, psPath } from '../../shared/psPath';
-import { checkPeer, decidePeer, osParentPid, PARENT_READ_TIMEOUT_MS, retryingSelfCheck, type PeerCheckInput } from '../brokerPeer';
+import { checkPeer, decidePeer, isTransientSelfCheckFailure, osParentPid, PARENT_READ_TIMEOUT_MS, retryingSelfCheck, type PeerCheckInput } from '../brokerPeer';
 
 const ok: PeerCheckInput = { selfCheckOk: true, peer: { pid: 4242, uid: 501 }, claimedPid: 4242, ownUid: 501 };
 
@@ -187,6 +187,30 @@ describe('retryingSelfCheck', () => {
       check.stop();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('never gives up on a transient failure, however long it lasts', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn(async () => 'unavailable (listen EMFILE: too many open files)');
+      const gaveUp = vi.fn();
+      const check = retryingSelfCheck(run, () => undefined, [1000, 2000], gaveUp);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(run.mock.calls.length).toBeGreaterThan(20);
+      expect(gaveUp).not.toHaveBeenCalled();
+      check.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads load failures as transient and the rest as lasting', () => {
+    for (const v of ['unavailable (self-check timed out)', 'unavailable (listen EMFILE: too many open files)', 'unavailable (connect EAGAIN /x.pc)', 'unavailable (ENOMEM)']) {
+      expect(isTransientSelfCheckFailure(v)).toBe(true);
+    }
+    for (const v of ['unavailable (koffi unavailable: no binary)', 'unavailable (read pid 0, expected 7)', 'unavailable (no peer pid)', 'unavailable (unsupported platform aix)']) {
+      expect(isTransientSelfCheckFailure(v)).toBe(false);
     }
   });
 
