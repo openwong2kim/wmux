@@ -80,6 +80,22 @@ describe('BrokerSettingRow', () => {
     expect(container.querySelector('[data-testid=settings-mcp-broker-restart]')).toBeNull();
   });
 
+  it('names the WMUX_MCP_BROKER value as set', async () => {
+    stub(payload({ env: 'off', envValue: 'off', running: { on: false, source: 'env' }, next: { on: false, source: 'env' } }), async () => payload());
+    await render();
+    expect(container.querySelector('[data-testid=settings-mcp-broker-env]')?.textContent).toBe(
+      'WMUX_MCP_BROKER=off is set for the app and decides this: off.',
+    );
+  });
+
+  it('says when the app stopped the broker for its peer self-check', async () => {
+    stub(payload({ peerUnavailable: true }), async () => payload());
+    await render();
+    expect(container.querySelector('[data-testid=settings-mcp-broker-peer]')?.textContent).toBe(
+      'wmux could not confirm which process connects to the shared process on this system, so it is stopped until wmux restarts. Each agent uses its own MCP server.',
+    );
+  });
+
   it('says a failed save, and keeps the last saved choice', async () => {
     stub(payload({ saved: 'off' }), async () => { throw new Error('EACCES'); });
     await render();

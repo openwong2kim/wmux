@@ -156,6 +156,40 @@ describe('retryingSelfCheck', () => {
     }
   });
 
+  it('gives up on a check that never passes, once the whole schedule has run', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn(async () => 'unavailable (koffi unavailable: no binary)');
+      const gaveUp = vi.fn();
+      retryingSelfCheck(run, () => undefined, [1000, 2000], gaveUp);
+      // Checks at 0, 1 s and 3 s: three failed checks over the 3 s schedule.
+      await vi.advanceTimersByTimeAsync(2999);
+      expect(gaveUp).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(gaveUp).toHaveBeenCalledExactlyOnceWith('unavailable (koffi unavailable: no binary)', 3);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(run).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not give up early for a burst of sessions', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn(async () => 'unavailable (EMFILE)');
+      const gaveUp = vi.fn();
+      const check = retryingSelfCheck(run, () => undefined, [1000, 2000], gaveUp);
+      await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 5; i++) await check.verdict();
+      expect(run.mock.calls.length).toBeGreaterThan(3);
+      expect(gaveUp).not.toHaveBeenCalled();
+      check.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('takes a platform with no peer pids as final', async () => {
     vi.useFakeTimers();
     try {

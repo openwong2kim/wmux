@@ -3,9 +3,10 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { McpRegistrar, McpRegistrarStatus } from '../../mcp/McpRegistrar';
 import { externalRegistrationSkipReason } from '../../../shared/mcpTargets';
-import { brokerDecision, brokerFlag, brokerHostsSessions, isBrokerSetting, type BrokerSettingPayload } from '../../../shared/mcpBroker';
+import { brokerDecision, brokerFlag, brokerFlagValue, brokerHostsSessions, isBrokerSetting, type BrokerSettingPayload } from '../../../shared/mcpBroker';
 import { readBrokerSetting, writeBrokerSetting } from '../../../shared/brokerSetting';
 import { mcpBrokerDecision } from '../../mcp/BrokerSupervisor';
+import type { BrokerDownReason } from '../../../shared/mcpSessions';
 
 /**
  * Serializable shape returned to the renderer. Mirrors {@link McpRegistrarStatus}
@@ -64,10 +65,13 @@ function serialize(status: McpRegistrarStatus): McpStatusPayload {
  *                     so this handler can be wired up before the pipe server
  *                     finishes starting (it logs and refuses gracefully if the
  *                     token isn't available yet).
+ * @param brokerDownReason Why the broker is not running, for the Settings note
+ *                     (BrokerSupervisor.status().downReason).
  */
 export function registerMcpHandlers(
   registrar: McpRegistrar,
   getAuthToken: () => string | null,
+  brokerDownReason?: () => BrokerDownReason | null,
 ): () => void {
   // wrapHandler is variadic and treats its first argument (the IpcMainInvokeEvent)
   // as transport plumbing; we can omit the parameter entirely on the inner
@@ -152,10 +156,13 @@ export function registerMcpHandlers(
   const brokerPayload = (): BrokerSettingPayload => {
     const read = readBrokerSetting();
     const running = mcpBrokerDecision();
+    const envValue = brokerFlagValue(process.env.WMUX_MCP_BROKER);
     return {
       saved: read.setting,
       ...(read.problem ? { problem: read.problem } : {}),
       env: brokerFlag(process.env.WMUX_MCP_BROKER),
+      ...(envValue !== undefined ? { envValue } : {}),
+      ...(brokerDownReason?.() === 'peer-unavailable' ? { peerUnavailable: true } : {}),
       running,
       next: brokerDecision(process.platform, process.env.WMUX_MCP_BROKER, read.setting),
       platformDefaultOn: brokerDecision(process.platform, undefined, 'default').on,

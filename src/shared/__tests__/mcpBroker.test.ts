@@ -1,7 +1,7 @@
 // @wmux-lane unit
 // Pure functions of the platform name passed in: the OS running the test cannot change a result.
 import { describe, expect, it } from 'vitest';
-import { BROKER_DEFAULT_ON, brokerDecision, brokerDefault, brokerFlag, brokerHostsSessions, brokerMayRun, isBrokerSetting, type BrokerSetting } from '../mcpBroker';
+import { BROKER_DEFAULT_ON, brokerDecision, brokerDefault, brokerFlag, brokerFlagValue, brokerHostsSessions, brokerMayRun, isBrokerSetting, type BrokerSetting } from '../mcpBroker';
 
 const PLATFORMS: NodeJS.Platform[] = ['darwin', 'linux', 'win32'];
 const VALUES: (string | undefined)[] = [undefined, '0', '1'];
@@ -31,9 +31,17 @@ describe('brokerDefault with the shipped BROKER_DEFAULT_ON', () => {
     }
   });
 
-  it('any other value counts as unset, so it follows the platform', () => {
+  it('an on spelling turns it on everywhere, the same way', () => {
     for (const platform of PLATFORMS) {
-      for (const value of ['', 'true', 'on', 'yes', ' 1', '01']) {
+      for (const value of ['1', 'true', 'TRUE', 'on', 'On', 'yes', ' 1 ', ' yes']) {
+        expect(brokerDefault(platform, value), `${platform} ${JSON.stringify(value)}`).toBe(true);
+      }
+    }
+  });
+
+  it('an empty value, and any other value, counts as unset, so it follows the platform', () => {
+    for (const platform of PLATFORMS) {
+      for (const value of ['', '   ', '01', '2', 'enabled', 'y']) {
         expect(brokerDefault(platform, value), `${platform} ${JSON.stringify(value)}`).toBe(BROKER_DEFAULT_ON.includes(platform));
       }
     }
@@ -62,14 +70,27 @@ describe('brokerDefault with a platform default passed in', () => {
   }
 });
 
+describe('brokerFlagValue', () => {
+  it('is the value as set (trimmed) when it decides, and nothing otherwise', () => {
+    expect(brokerFlagValue(' false ')).toBe('false');
+    expect(brokerFlagValue('ON')).toBe('ON');
+    expect(brokerFlagValue('0')).toBe('0');
+    expect(brokerFlagValue('')).toBeUndefined();
+    expect(brokerFlagValue('maybe')).toBeUndefined();
+    expect(brokerFlagValue(undefined)).toBeUndefined();
+  });
+});
+
 describe('brokerFlag', () => {
-  it('reads 1 as on, 0 (or false/off/no) as off and anything else as unset', () => {
+  it('reads 1/true/on/yes as on, 0/false/off/no as off, and an empty or any other value as unset', () => {
     expect(brokerFlag('1')).toBe('on');
     expect(brokerFlag('0')).toBe('off');
     expect(brokerFlag(' False ')).toBe('off');
+    expect(brokerFlag(' Yes ')).toBe('on');
     expect(brokerFlag('')).toBe('unset');
     expect(brokerFlag(undefined)).toBe('unset');
-    expect(brokerFlag('true')).toBe('unset');
+    expect(brokerFlag('true')).toBe('on');
+    expect(brokerFlag('enabled')).toBe('unset');
   });
 });
 

@@ -23,6 +23,13 @@ export type BrokerFlag = 'on' | 'off' | 'unset';
 export const BROKER_EXIT_PATH_OCCUPIED = 78;
 
 /**
+ * The broker's exit code when its peer self-check never came back available
+ * through the whole retry schedule (src/mcp/brokerPeer.ts): it would refuse
+ * every session, so the supervisor stops it the way it does for 78.
+ */
+export const BROKER_EXIT_PEER_UNAVAILABLE = 79;
+
+/**
  * Whether the broker can host agents on `platform`. Not on win32, where it
  * reads no peer pid to verify a session against (src/mcp/brokerPeer.ts) and
  * refuses every one, so On only adds an idle process there.
@@ -54,6 +61,8 @@ export interface BrokerSettingPayload {
   /** Set when mcp-broker.json is there but was not used. */
   problem?: string;
   env: BrokerFlag;
+  /** The WMUX_MCP_BROKER value as set (trimmed), when it decides (brokerFlagValue). */
+  envValue?: string;
   /** What this app decided at start. */
   running: BrokerDecision;
   /** What the next start decides with `saved`. */
@@ -65,20 +74,39 @@ export interface BrokerSettingPayload {
    * verify, src/mcp/brokerPeer.ts), so On only adds an idle process there.
    */
   hostsSessions: boolean;
+  /** Set when this app stopped the broker because its peer self-check never passed. */
+  peerUnavailable?: boolean;
 }
 
 /**
- * Values read as off. Unset means on for macOS and Linux, so a value someone
- * set to keep the broker off ('false', 'off', 'no', any case or padding) must
- * not fall through to that default.
+ * The spellings WMUX_MCP_BROKER takes, compared trimmed and in any case. Off
+ * matters most: unset means on for macOS and Linux, so a value someone set to
+ * keep the broker off must not fall through to that default.
  */
+const ON_VALUES: ReadonlySet<string> = new Set(['1', 'true', 'on', 'yes']);
 const OFF_VALUES: ReadonlySet<string> = new Set(['0', 'false', 'off', 'no']);
 
-/** What WMUX_MCP_BROKER asks for: '1' → on, '0' (or false/off/no) → off, anything else → unset. */
+/**
+ * What WMUX_MCP_BROKER asks for: 1/true/on/yes → on, 0/false/off/no → off,
+ * trimmed and in any case. Anything else is unset, and so is an empty value
+ * (`WMUX_MCP_BROKER=` with nothing after it): both follow Settings, then the
+ * platform default.
+ */
 export function brokerFlag(value: string | undefined): BrokerFlag {
-  if (value === '1') return 'on';
-  if (value !== undefined && OFF_VALUES.has(value.trim().toLowerCase())) return 'off';
+  const v = value?.trim().toLowerCase();
+  if (v === undefined || v === '') return 'unset';
+  if (ON_VALUES.has(v)) return 'on';
+  if (OFF_VALUES.has(v)) return 'off';
   return 'unset';
+}
+
+/**
+ * The WMUX_MCP_BROKER value as it was set (trimmed), for saying what decided
+ * the broker; undefined when it decides nothing. Bounded by the spellings
+ * above, since only those decide.
+ */
+export function brokerFlagValue(value: string | undefined): string | undefined {
+  return brokerFlag(value) === 'unset' ? undefined : value?.trim();
 }
 
 /** The rule above, with what decided it. */

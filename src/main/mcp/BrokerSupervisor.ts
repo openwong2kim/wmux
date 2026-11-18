@@ -7,7 +7,7 @@ import { canConnectBrokerPipe } from './brokerProbe';
 import { brokerOffEffects, type BrokerOffEffects } from './brokerOffMarker';
 import { parseBrokerConnectionsReport, type BrokerDownReason, type BrokerStampMessage, type BrokerStatus } from '../../shared/mcpSessions';
 import { processStartTime } from '../../shared/processStartTime';
-import { BROKER_EXIT_PATH_OCCUPIED, brokerDecision, type BrokerDecision, type BrokerSetting } from '../../shared/mcpBroker';
+import { BROKER_EXIT_PATH_OCCUPIED, BROKER_EXIT_PEER_UNAVAILABLE, brokerDecision, type BrokerDecision, type BrokerSetting } from '../../shared/mcpBroker';
 import { readBrokerSetting, type BrokerSettingRead } from '../../shared/brokerSetting';
 import { BROKER_LIMITS_ENV, type BrokerLimits } from '../../shared/brokerLimits';
 import { readBrokerLimitsConfig } from './brokerConfig';
@@ -95,6 +95,8 @@ export class BrokerSupervisor {
   private tripped = false;
   /** The broker exited 78: something that is not a socket sits at its path. */
   private pathOccupied = false;
+  /** The broker exited 79: its peer self-check never passed. */
+  private peerUnavailable = false;
   /** Tool calls in flight, as the current child last reported them. */
   private inflight: string[] = [];
   private lastCrashTools: string[] = [];
@@ -164,6 +166,7 @@ export class BrokerSupervisor {
     if (this.scriptMissing) return 'script-missing';
     if (this.reclaimTimer) return 'standing-down';
     if (this.pathOccupied) return 'path-occupied';
+    if (this.peerUnavailable) return 'peer-unavailable';
     if (this.tripped) return 'crash-loop';
     if (this.restartTimer) return 'restarting';
     return 'not-started';
@@ -326,6 +329,20 @@ export class BrokerSupervisor {
         this.pathOccupied = true;
         console.error(
           '[BrokerSupervisor] the broker socket path holds something that is not a socket; ' +
+            'not restarting it until wmux restarts (agents use their own MCP server)',
+        );
+        void this.brokerOff.tripped().catch(() => undefined);
+        return;
+      }
+      if (code === BROKER_EXIT_PEER_UNAVAILABLE) {
+        // Its self-check never passed, so a restart would refuse every session
+        // again: stop, and mark it off so launchers skip it.
+        this.clearChild();
+        settled = true;
+        this.tripped = true;
+        this.peerUnavailable = true;
+        console.error(
+          '[BrokerSupervisor] the broker could not confirm which process connects to it; ' +
             'not restarting it until wmux restarts (agents use their own MCP server)',
         );
         void this.brokerOff.tripped().catch(() => undefined);

@@ -57,12 +57,17 @@ export function BrokerSettingRow({ api }: { api?: BrokerSettingApi }) {
       <SettingRow id="mcpbroker" label={t('settings.mcpBroker')} description={t('settings.mcpBrokerDesc')} data-testid="settings-mcp-broker">
         <SegmentedControl value={state.saved} options={options} onValueChange={(v) => void change(v)} ariaLabel={t('settings.mcpBroker')} />
       </SettingRow>
+      {state.peerUnavailable && (
+        <SettingNote tone="warning" data-testid="settings-mcp-broker-peer">{t('settings.mcpBrokerPeerUnavailable')}</SettingNote>
+      )}
       {state.hostsSessions === false && (
         <SettingNote data-testid="settings-mcp-broker-idle">{t('settings.mcpBrokerIdleHere')}</SettingNote>
       )}
       {state.env !== 'unset' ? (
         <SettingNote data-testid="settings-mcp-broker-env">
-          {t(state.env === 'on' ? 'settings.mcpBrokerEnvOn' : 'settings.mcpBrokerEnvOff')}
+          {/* The value as set: false, off or no decide just as 0 does. An app
+              that sends no value set 0 or 1. */}
+          {t(state.env === 'on' ? 'settings.mcpBrokerEnvOn' : 'settings.mcpBrokerEnvOff', { value: state.envValue ?? (state.env === 'on' ? '1' : '0') })}
         </SettingNote>
       ) : state.next.on !== state.running.on ? (
         <SettingNote data-testid="settings-mcp-broker-restart">

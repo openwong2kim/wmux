@@ -91,17 +91,25 @@ export interface PeerSelfCheck {
  * not available (a transient EMFILE, say), and at once when a session finds it
  * failed. A null verdict (no peer pids on this platform) is final. `onVerdict`
  * sees every verdict with its attempt number, from 1.
+ *
+ * `onGiveUp`, when given, ends a check that has never come back available:
+ * once more checks than `delays` has entries have failed, and the whole
+ * schedule's time has passed since the first, no further check starts and
+ * `onGiveUp` gets the last verdict. (An available check is never run again.)
  */
 export function retryingSelfCheck(
   run: () => Promise<string | null>,
   onVerdict: (verdict: string | null, attempt: number) => void,
   delays: readonly number[] = SELF_CHECK_RETRY_MS,
+  onGiveUp?: (verdict: string, attempts: number) => void,
 ): PeerSelfCheck {
   let attempt = 0;
   let timer: NodeJS.Timeout | undefined;
   let running = false;
   let failed = false;
   let stopped = false;
+  let firstFailureAt: number | undefined;
+  const schedule = delays.reduce((sum, d) => sum + d, 0);
   let current: Promise<string | null>;
   const start = (): void => {
     clearTimeout(timer);
@@ -114,6 +122,17 @@ export function retryingSelfCheck(
         running = false;
         failed = verdict !== 'available' && verdict !== null;
         onVerdict(verdict, n);
+        if (verdict !== null && failed && !stopped && onGiveUp) {
+          firstFailureAt ??= Date.now();
+          // Counted and timed both: sessions that arrive in a burst each start
+          // a check, and that alone must not end it early.
+          if (n > delays.length && Date.now() - firstFailureAt >= schedule) {
+            stopped = true;
+            clearTimeout(timer);
+            onGiveUp(verdict, n);
+            return verdict;
+          }
+        }
         if (failed && !stopped) {
           timer = setTimeout(start, delays[Math.min(n - 1, delays.length - 1)]);
           timer.unref?.();

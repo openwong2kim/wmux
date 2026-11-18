@@ -5,7 +5,7 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { socketIdentity, staleSocketAction, staleSocketKind } from '../brokerSocketPath';
+import { socketIdentity, stampSocket, staleSocketAction, staleSocketKind } from '../brokerSocketPath';
 
 let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wsk-')); });
@@ -32,13 +32,20 @@ describe.skipIf(process.platform === 'win32')('staleSocketKind', () => {
 
   it('gives a socket a stable identity, a new one once rebound, and none to anything else', async () => {
     const sock = path.join(dir, 'id.sock');
-    const listen = async () => { const s = net.createServer(); await new Promise<void>((r) => s.listen(sock, r)); return s; };
-    const first = await listen();
+    // Stamped as the broker stamps each bind, with fixed times so the test does
+    // not rest on the clock moving between the two binds.
+    const listen = async (stampS: number) => {
+      const s = net.createServer();
+      await new Promise<void>((r) => s.listen(sock, r));
+      stampSocket(sock, stampS);
+      return s;
+    };
+    const first = await listen(1_700_000_000.25);
     const a = socketIdentity(sock);
-    expect(a).toMatch(/^\d+:\d+:[\d.]+:[\d.]+$/);
+    expect(a).toMatch(/^\d+:\d+:\d+:\d+:\d+$/);
     expect(socketIdentity(sock)).toBe(a);
     await new Promise<void>((r) => first.close(() => r()));
-    const second = await listen();
+    const second = await listen(1_700_000_000.5);
     try {
       expect(socketIdentity(sock)).not.toBe(a);
     } finally {
@@ -47,6 +54,25 @@ describe.skipIf(process.platform === 'win32')('staleSocketKind', () => {
     fs.writeFileSync(path.join(dir, 'f2'), 'x');
     expect(socketIdentity(path.join(dir, 'f2'))).toBeNull();
     expect(socketIdentity(path.join(dir, 'gone'))).toBeNull();
+  });
+
+  it('tells two stamps of one socket apart, so a rebind that reuses the inode and the times still differs', async () => {
+    const sock = path.join(dir, 'st.sock');
+    const s = net.createServer();
+    await new Promise<void>((r) => s.listen(sock, r));
+    try {
+      stampSocket(sock, 1_700_000_000.25);
+      const a = socketIdentity(sock) ?? '';
+      stampSocket(sock, 1_700_000_000.5);
+      const b = socketIdentity(sock) ?? '';
+      expect(a).not.toBe('');
+      expect(b).not.toBe(a);
+      // Same device and inode: only the stamp (and the change time it moves) differ.
+      expect(b.split(':').slice(0, 2)).toEqual(a.split(':').slice(0, 2));
+      expect(b.split(':')[4]).not.toBe(a.split(':')[4]);
+    } finally {
+      await new Promise<void>((r) => s.close(() => r()));
+    }
   });
 
   it('reads a path it cannot look at as unreadable, not as a non-socket', () => {
@@ -87,13 +113,13 @@ describe('staleSocketAction: what the broker does after its probe of an in-use p
 });
 
 describe.skipIf(process.platform === 'win32')('socketIdentity carries the times', () => {
-  it('includes the change and birth times beside device and inode', async () => {
+  it('includes the change, birth and modification times in nanoseconds beside device and inode', async () => {
     const sock = path.join(dir, 't.sock');
     const s = net.createServer();
     await new Promise<void>((r) => s.listen(sock, r));
     try {
-      const st = fs.lstatSync(sock);
-      expect(socketIdentity(sock)).toBe(`${st.dev}:${st.ino}:${st.ctimeMs}:${st.birthtimeMs}`);
+      const st = fs.lstatSync(sock, { bigint: true });
+      expect(socketIdentity(sock)).toBe(`${st.dev}:${st.ino}:${st.ctimeNs}:${st.birthtimeNs}:${st.mtimeNs}`);
     } finally {
       await new Promise<void>((r) => s.close(() => r()));
     }

@@ -21,18 +21,35 @@ export function staleSocketKind(p: string): 'socket' | 'missing' | 'unreadable' 
 
 /**
  * The identity of the socket at `p`, or null when there is no socket there:
- * device, inode, and the change and birth times, since a filesystem such as
- * ext4 can hand a freed inode to the next file at once. Taken before the stale
- * probe and again before the unlink, so a socket another broker bound in
- * between is never the one removed.
+ * device, inode, and the change, birth and modification times in nanoseconds,
+ * since a filesystem such as ext4 can hand a freed inode to the next file at
+ * once. Taken before the stale probe and again before the unlink, so a socket
+ * another broker bound in between is never the one removed.
+ *
+ * The times alone can still match: Linux stamps files from a coarse clock, so
+ * two binds a few milliseconds apart can share every one of them. The broker
+ * therefore gives each socket it binds a random modification time
+ * (`stampSocket`), which a rebind does not repeat.
  */
 export function socketIdentity(p: string): string | null {
   try {
-    const st = fs.lstatSync(p);
-    return st.isSocket() ? `${st.dev}:${st.ino}:${st.ctimeMs}:${st.birthtimeMs}` : null;
+    const st = fs.lstatSync(p, { bigint: true });
+    return st.isSocket() ? `${st.dev}:${st.ino}:${st.ctimeNs}:${st.birthtimeNs}:${st.mtimeNs}` : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Give the socket the broker just bound at `p` a modification time with a
+ * random fraction of a second, so `socketIdentity` tells it apart from the one
+ * it replaced. `stampS` is that time in seconds; tests pass their own. Best
+ * effort: a socket left unstamped keeps its bind-time identity.
+ */
+export function stampSocket(p: string, stampS: number = Math.floor(Date.now() / 1000) + Math.random()): void {
+  try {
+    fs.utimesSync(p, stampS, stampS);
+  } catch { /* the identity falls back to the bind times */ }
 }
 
 /** What the broker does after its probe of an in-use socket path failed. */

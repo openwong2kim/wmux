@@ -1,4 +1,5 @@
 import { registerTerminalCoreHandlers } from './handlers/terminalCore.handler';
+import type { BrokerDownReason } from '../../shared/mcpSessions';
 import { registerLabsHandlers } from './handlers/labs.handler';
 import { registerQuickCommandHandlers } from './handlers/quickCommand.handler';
 import { registerUsageLimitHandlers } from '../usageLimit/usageLimit.handler';
@@ -178,6 +179,8 @@ export interface RegisterHandlersOptions {
   mcpRegistrar?: McpRegistrar;
   /** Lazy accessor for the live pipe-server auth token, used by mcp:reregister. */
   getMcpAuthToken?: () => string | null;
+  /** Why the MCP broker is not running (BrokerSupervisor), for Settings. */
+  mcpBrokerDownReason?: () => BrokerDownReason | null;
   /**
    * Renderer-initiated RPC entrypoint. Wired in main/index to the live
    * `RpcRouter` so the in-renderer `__wmuxEventsPoll` /
@@ -267,7 +270,7 @@ export function registerAllHandlers(
   // Owner approvals of bots' requests: decided only from the main window.
   const cleanupApprovals = registerApprovalIpcHandlers(getWindow);
   const cleanupMcp = options.mcpRegistrar
-    ? registerMcpHandlers(options.mcpRegistrar, options.getMcpAuthToken ?? (() => null))
+    ? registerMcpHandlers(options.mcpRegistrar, options.getMcpAuthToken ?? (() => null), options.mcpBrokerDownReason)
     : null;
   const cleanupTokenUsageQuota = registerTokenUsageQuotaHandlers();
   const cleanupTokenUsageSurface = registerTokenUsageSurfaceHandlers();
