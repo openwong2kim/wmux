@@ -4,6 +4,7 @@ import type { SnapshotRequest, TextSnapshotOutcome } from './HeadlessSnapshot';
 import { generateRustSnapshot } from './RustSnapshot';
 import { snapshotModeOverride } from './snapshotMode';
 import { countReason, refusalFamily, type SnapshotReasons } from './snapshotBackendReasons';
+import { NATIVE_SNAPSHOT_MAX_INPUT_BYTES, nativeScrollbackCap, nativeSizesAccepted } from './nativeSnapshotLimits';
 
 type Reference = (req: SnapshotRequest) => Promise<TextSnapshotOutcome>;
 type Reason = 'native' | 'error' | 'budget' | 'live-drain' | 'limits' | 'circuit-open';
@@ -23,11 +24,12 @@ export function getTextSnapshotBackendDiagnostics(): Diagnostics & { circuitOpen
     circuitOpen: !!failedModule && failedModule.path === (process.env.WMUX_TERMINAL_CORE_MODULE ?? process.env.WMUX_RUST_SNAPSHOT_MODULE) };
 }
 
+/** Any ring the daemon allows, and a grid the native terminal holds at every
+ * replayed size with the whole requested history (text keeps every row). */
 export function nativeSnapshotEligible(req: SnapshotRequest): boolean {
   const scrollback = req.scrollback ?? 5000;
-  if (inputLength(req) > 8 * 1024 * 1024 || !Number.isInteger(scrollback) || scrollback < 0 || scrollback > 100000) return false;
-  return [req, ...(req.geometry ? [req.geometry.start, ...req.geometry.changes] : [])].every(({ cols, rows }) =>
-    Number.isInteger(cols) && Number.isInteger(rows) && cols >= 2 && cols <= 1000 && rows >= 1 && rows <= 1000 && cols * (rows + scrollback) <= 1_000_000);
+  if (inputLength(req) > NATIVE_SNAPSHOT_MAX_INPUT_BYTES || !Number.isInteger(scrollback) || scrollback < 0 || scrollback > 100000) return false;
+  return nativeSizesAccepted(req) && scrollback <= nativeScrollbackCap(req);
 }
 
 function validText(out: Extract<TextSnapshotOutcome, { ok: true }>, req: SnapshotRequest): boolean {

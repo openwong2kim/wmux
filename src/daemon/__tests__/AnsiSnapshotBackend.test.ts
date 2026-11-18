@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getAnsiSnapshotBackendDiagnostics, selectAnsiSnapshot } from '../AnsiSnapshotBackend';
 import type { SnapshotOutcome, SnapshotRequest } from '../HeadlessSnapshot';
 import { generateRustSnapshot } from '../RustSnapshot';
+import { NATIVE_SNAPSHOT_MAX_INPUT_BYTES } from '../nativeSnapshotLimits';
 vi.mock('../RustSnapshot', () => ({ generateRustSnapshot: vi.fn() }));
 const native = vi.mocked(generateRustSnapshot);
 const request = { cols: 80, rows: 24, initial: Buffer.from('hello'), budgetMs: 1000 };
@@ -128,8 +129,17 @@ describe('ANSI snapshot backend selection', () => {
     expect(native).toHaveBeenCalledOnce(); expect(reference).not.toHaveBeenCalled();
   });
 
+  it('takes a ring above the old 8 MiB cap: any ring the daemon allows', async () => {
+    const initial = Buffer.alloc(16 * 1024 * 1024, 0x61);
+    nativeSuccess(initial);
+    const reference = vi.fn();
+    await selectAnsiSnapshot({ ...request, initial }, reference);
+    expect(native).toHaveBeenCalledOnce(); expect(reference).not.toHaveBeenCalled();
+  });
+
   it.each([
-    ['an oversized input', { initial: Buffer.alloc(9 * 1024 * 1024) }],
+    // Only its length is read before the skip: a ring above the daemon's largest.
+    ['an oversized input', { initial: { length: NATIVE_SNAPSHOT_MAX_INPUT_BYTES + 1 } as Buffer }],
     ['a scrollback above 100k', { scrollback: 100001 }],
     ['a recorded size above 1000 columns', { geometry: { start: { cols: 1001, rows: 24 }, changes: [] } }],
   ])('keeps xterm for %s', async (_name, change) => {

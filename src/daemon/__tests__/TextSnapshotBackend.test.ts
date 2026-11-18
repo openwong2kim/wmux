@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateRustSnapshot } from '../RustSnapshot';
 import { selectTextSnapshot, getTextSnapshotBackendDiagnostics } from '../TextSnapshotBackend';
 import { generateTextSnapshot, generateSnapshot, type SnapshotRequest, type TextSnapshotOutcome } from '../HeadlessSnapshot';
+import { NATIVE_CELL_LIMIT, NATIVE_SNAPSHOT_MAX_INPUT_BYTES } from '../nativeSnapshotLimits';
 
 vi.mock('../RustSnapshot', () => ({ generateRustSnapshot: vi.fn() }));
 const native = vi.mocked(generateRustSnapshot);
@@ -62,12 +63,28 @@ describe('opt-in Rust text delivery', () => {
   });
 
   it.each([
-    { cols: 1 }, { scrollback: 100000 }, { initial: Buffer.alloc(8 * 1024 * 1024 + 1) },
+    // Only its length is read before the skip: a ring above the daemon's largest.
+    { cols: 1 }, { scrollback: 100000 }, { initial: { length: NATIVE_SNAPSHOT_MAX_INPUT_BYTES + 1 } as Buffer },
+    // 1000 × (1000 + 5000) cells, and a 4M-cell grid reached only on the way through a resize.
     { geometry: { start: { cols: 1000, rows: 1000 }, changes: [] } },
+    { cols: 200, rows: 30, scrollback: 19000, geometry: { start: { cols: 1000, rows: 30 }, changes: [{ offset: 0, cols: 200, rows: 30 }] } },
   ])('keeps requests outside the native limits on xterm', async extra => {
     const reference = vi.fn(async () => success);
     expect(await selectTextSnapshot({ ...req, ...extra }, reference)).toBe(success);
     expect(native).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a ring above the old 8 MiB cap', { initial: Buffer.alloc(16 * 1024 * 1024, 0x61) }],
+    ['a 200-column pane with 5000 rows of history (past the old 1M cells)', { cols: 200, rows: 30, scrollback: 5000 }],
+    ['a grid at the native cell limit', { cols: 400, rows: 30, scrollback: NATIVE_CELL_LIMIT / 400 - 30 }],
+  ])('takes %s natively', async (_name, extra) => {
+    const request = { ...req, ...extra };
+    native.mockResolvedValue({ ...success, bytesIn: request.initial.length });
+    const reference = vi.fn(async () => success);
+    await selectTextSnapshot(request, reference);
+    expect(native).toHaveBeenCalledOnce();
+    expect(reference).not.toHaveBeenCalled();
   });
 
   it('replays the original bytes and geometry through real xterm on native failure', async () => {
