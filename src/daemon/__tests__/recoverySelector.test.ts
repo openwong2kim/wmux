@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { heldForCredentials, recoversInBackground, selectRecoverableSessions, startLeftoverShellReaps, startsAtBootInBackground } from '../recoverySelector';
+import { heldForCredentials, recoversInBackground, selectRecoverableSessions, startLeftoverShellReaps } from '../recoverySelector';
 import type { DaemonSession, DaemonSessionState } from '../types';
 import { deliberateSleep } from '../../test-utils/waitFor';
 
@@ -205,10 +205,11 @@ describe('recoversInBackground', () => {
     expect(recoversInBackground({})).toBe(false);
   });
 
-  // R2 (a): a held session (no terminal core) is not attempted at boot.
-  it('does not start a held exec unit at boot', () => {
-    expect(startsAtBootInBackground({ exec: { command: 'claude' } })).toBe(true);
-    expect(startsAtBootInBackground({ exec: { command: 'claude' }, holdReason: 'terminal-core-missing' })).toBe(false);
+  // R2 (a): a held session (no terminal core) starts by itself nowhere: not at
+  // boot, not on main's reconnect, not on the renderer's reconcile.
+  it('does not start a held exec unit or supervised session', () => {
+    expect(recoversInBackground({ exec: { command: 'claude' }, holdReason: 'terminal-core-missing' })).toBe(false);
+    expect(recoversInBackground({ supervision: { status: 'armed' }, holdReason: 'terminal-core-missing' })).toBe(false);
   });
 });
 

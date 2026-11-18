@@ -215,7 +215,7 @@ import { inspectLaunchPresence } from './launchPresence';
 import { promptLineState } from '../shared/promptLineState';
 import { parseWriteExpectation, writeIfUnchanged } from './writeIfUnchanged';
 import { Watchdog } from './Watchdog';
-import { heldForCredentials, selectRecoverableSessions, startLeftoverShellReaps, startsAtBootInBackground } from './recoverySelector';
+import { heldForCredentials, recoversInBackground, selectRecoverableSessions, startLeftoverShellReaps } from './recoverySelector';
 import { readUserShellHolds, USER_SHELL_HOLDS_FILE } from '../shared/userShellHolds';
 import { createHeldStartFallback, HELD_START_FALLBACK_MS, promoteNeedsFirstParty, type HeldStartFallback } from './heldUserShellStart';
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
@@ -2330,7 +2330,7 @@ async function recoverSessions(
     // so a pane the recovery cap skips is not pruned at the next load.
     if (session.holdReason) {
       delete session.holdReason;
-      stampHeld(session, Date.now());
+      session.heldAt = new Date().toISOString();
       changed = true;
     }
     // Publish every WSL placeholder, including cap-skipped panes. Boot must
@@ -4019,7 +4019,7 @@ function registerRpcHandlers(
     try {
       const pending = sessionManager.listSessions().filter(s => {
         const placeholder = sessionManager.getPendingRecovery(s.id);
-        return !!placeholder && startsAtBootInBackground(placeholder);
+        return !!placeholder && recoversInBackground(placeholder);
       });
       const selected = selectRecoverableSessions(pending, Math.min(loadConfig().session.maxSessions, MAX_RECOVER_SESSIONS));
       for (const session of pending.filter(s => selected.recoverableIds.has(s.id))) {

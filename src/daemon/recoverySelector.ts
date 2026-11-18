@@ -47,15 +47,6 @@ export function selectRecoverableSessions(
 export { recoversInBackground } from '../shared/suspendedSession';
 
 /**
- * The boot-time background promote: what must run unwatched, unless it is held
- * (a missing terminal core: it cannot start, and an attempt would only record
- * an error and, for a WSL entry, start its retention clock).
- */
-export function startsAtBootInBackground(placeholder: Pick<DaemonSession, 'exec' | 'supervision' | 'holdReason'>): boolean {
-  return !placeholder.holdReason && recoversInBackground(placeholder);
-}
-
-/**
  * #3049 — whether boot recovery holds this session as a placeholder for main
  * to start with its credentials: main listed it as a user shell (`holds`, the
  * hold list), and it is a plain shell. An exec unit or a supervised session is
@@ -66,7 +57,7 @@ export function heldForCredentials(
   session: Pick<DaemonSession, 'id' | 'cmd' | 'exec' | 'supervision'>,
   holds: ReadonlySet<string>,
 ): boolean {
-  return holds.has(session.id) && !recoversInBackground(session) && !isWslShell(session.cmd);
+  return holds.has(session.id) && !recoversInBackground({ exec: session.exec, supervision: session.supervision }) && !isWslShell(session.cmd);
 }
 
 /**

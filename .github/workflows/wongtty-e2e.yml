@@ -26,6 +26,9 @@ on:
       - 'package.json'
       - 'e2e/wongtty-*'
       - 'e2e/lib.mjs'
+      # The dev app's panes need the core it builds and finds.
+      - 'src/shared/nativeTerminalCore.ts'
+      - '.github/actions/terminal-core/**'
       - '.github/workflows/wongtty-e2e.yml'
   workflow_dispatch:
 

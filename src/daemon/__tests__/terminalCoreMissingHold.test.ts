@@ -53,10 +53,13 @@ describe('a create that meets the missing module', () => {
   // spawn wrapper must hand the error on as it is, not as a plain Error.
   it('rejects with the missing-core error itself, code and sentence', async () => {
     const manager = new DaemonSessionManager();
-    const failed = await manager.createSessionAsync({ id: 'fresh', cmd: 'cmd.exe', cwd: os.tmpdir() }).then(() => null, (err: unknown) => err);
-    expect(isTerminalCoreMissing(failed)).toBe(true);
-    expect(String((failed as Error).message)).toContain('Reinstall wmux');
-    manager.disposeAll();
+    try {
+      const failed = await manager.createSessionAsync({ id: 'fresh', cmd: 'cmd.exe', cwd: os.tmpdir() }).then(() => null, (err: unknown) => err);
+      expect(isTerminalCoreMissing(failed)).toBe(true);
+      expect(String((failed as Error).message)).toContain('Reinstall wmux');
+    } finally {
+      manager.disposeAll();
+    }
   });
 });
 
