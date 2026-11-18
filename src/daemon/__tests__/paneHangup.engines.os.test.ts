@@ -43,6 +43,15 @@ function alive(pid: number): boolean {
   }
 }
 
+/** In the process table at all, a zombie included. */
+function pidListed(pid: number): boolean {
+  try {
+    return execFileSync('ps', ['-o', 'pid=', '-p', String(pid)], { encoding: 'utf8' }).trim() !== '';
+  } catch {
+    return false;
+  }
+}
+
 function pidIn(file: string): number {
   try { return Number(fs.readFileSync(file, 'utf8').trim()) || 0; } catch { return 0; }
 }
@@ -95,6 +104,8 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
   async function start(mgr: DaemonSessionManager, id: string, name: string, line: (script: string, pidFile: string) => string, body: string): Promise<number> {
     const script = path.join(cwd, `${id}-${name}.sh`);
     const pidFile = path.join(cwd, `${id}-${name}.pid`);
+    // A retry reuses the names: never read an earlier attempt's pid.
+    fs.rmSync(pidFile, { force: true });
     fs.writeFileSync(script, body);
     type(mgr, id, line(script, pidFile));
     await waitFor(() => pidIn(pidFile) > 0, WAIT_MS, `${name} to start`);
@@ -196,6 +207,7 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
     started.push(transport.pid);
     const script = path.join(cwd, 'sigkill.sh');
     const pidFile = path.join(cwd, 'sigkill.pid');
+    fs.rmSync(pidFile, { force: true });
     fs.writeFileSync(script, 'trap \'\' HUP; echo $$ > "$1"; exec sleep 60\n');
     transport.write(Buffer.from(`sh ${script} ${pidFile}\n`));
     await waitFor(() => pidIn(pidFile) > 0, WAIT_MS, 'the program to start');
@@ -209,8 +221,81 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
     const killedAt = Date.now();
     transport.kill(os.constants.signals.SIGKILL);
     await waitFor(() => !alive(program), HANGUP_GRACE_MS - 1_500, 'the SIGKILL sweep');
+    forget(program);
     expect(Date.now() - killedAt).toBeLessThan(HANGUP_GRACE_MS - 1_500);
   }, TEST_MS);
+
+  // The order a race could give: the hangup ends the root, and its exit is in
+  // before close() runs, or no close() comes at all. The hangup armed the
+  // sweep, so the root stays unreaped until its session was swept: at once by
+  // an explicit SIGKILL, else at the hangup's deadline (#3434).
+  const transports: Array<{ close(): void }> = [];
+  afterEach(() => {
+    for (const t of transports.splice(0)) {
+      try { t.close(); } catch { /* closed */ }
+    }
+  });
+  /** A reaped pid is no longer this test's: afterEach must not signal it. */
+  const forget = (pid: number) => { const at = started.indexOf(pid); if (at >= 0) started.splice(at, 1); };
+
+  const hungUp = async (name: string) => {
+    const { NativeTransport } = loadNativeTerminalCore('pty-v1');
+    const script = path.join(cwd, `${name}.sh`);
+    const pidFile = path.join(cwd, `${name}.pid`);
+    fs.rmSync(pidFile, { force: true });
+    fs.writeFileSync(script, 'trap \'\' HUP; echo $$ > "$1"; exec sleep 60\n');
+    // The root dies of the hangup (an interactive shell may wait out its
+    // foreground job first); the program beside it in the session ignores it.
+    const transport = new NativeTransport('/bin/sh', ['-c', `sh ${script} ${pidFile} & exec sleep 60`], cwd,
+      { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: cwd, LC_ALL: 'C' }, 80, 24, () => undefined);
+    transports.push(transport);
+    const root = transport.pid;
+    started.push(root);
+    await waitFor(() => pidIn(pidFile) > 0, WAIT_MS, 'the program to start');
+    const program = pidIn(pidFile);
+    started.push(program);
+    const hungUpAt = Date.now();
+    transport.kill();
+    await waitFor(() => !alive(root), WAIT_MS, 'the hangup to end the root');
+    await deliberateSleep(300, 'a negative check: the waiter has had the time to reap the root');
+    // Unreaped (a zombie): reaped, its session id would be free and nothing could sweep it.
+    // Judged only well inside the grace: a slow runner may have used it up already.
+    if (Date.now() - hungUpAt < HANGUP_GRACE_MS - 1_000) {
+      expect(pidListed(root), 'the root is still in the process table').toBe(true);
+      expect(alive(program)).toBe(true);
+    }
+    return { transport, program, root, hungUpAt };
+  };
+
+  it.skipIf(skip || engine === 'node')('a root the hangup ended before close() is swept at once by an explicit SIGKILL, then reaped', async () => {
+    const { transport, program, root } = await hungUp('hup-first-sigkill');
+    transport.close();
+    const killedAt = Date.now();
+    transport.kill(os.constants.signals.SIGKILL);
+    await waitFor(() => !alive(program), HANGUP_GRACE_MS - 1_500, 'the SIGKILL sweep');
+    forget(program);
+    expect(Date.now() - killedAt).toBeLessThan(HANGUP_GRACE_MS - 1_500);
+    // Reaped by the deadline at the latest: a waiter already waiting for it reaps then.
+    await waitFor(() => !pidListed(root), HANGUP_GRACE_MS + WAIT_MS, 'the root to be reaped');
+    forget(root);
+  }, TEST_MS);
+
+  for (const closed of [true, false]) {
+    it.skipIf(skip || engine === 'node')(`a root the hangup ended has its session swept at the hangup's deadline (${closed ? 'close() after it' : 'no close()'})`, async () => {
+      const { transport, program, root, hungUpAt } = await hungUp(`hup-first-deadline-${closed ? 'closed' : 'open'}`);
+      if (closed) transport.close();
+      await deliberateSleep(300, 'a negative check: within the grace the program still runs');
+      // Judged only well inside the grace: a slow runner may have used it up already.
+      if (Date.now() - hungUpAt < HANGUP_GRACE_MS - 1_000) expect(alive(program)).toBe(true);
+      await waitFor(() => !alive(program), HANGUP_GRACE_MS + WAIT_MS, 'the sweep at the deadline');
+      forget(program);
+      // At the deadline: not before it, and not long after (a CI scheduling allowance).
+      expect(Date.now() - hungUpAt).toBeGreaterThanOrEqual(HANGUP_GRACE_MS - 250);
+      expect(Date.now() - hungUpAt).toBeLessThan(HANGUP_GRACE_MS + 3_000);
+      await waitFor(() => !pidListed(root), WAIT_MS, 'the root to be reaped after the sweep');
+      forget(root);
+    }, TEST_MS);
+  }
 
   // A tree capture SIGSTOPs a pane's root before it kills the tree, and macOS
   // answers the waiter's waitid(WEXITED) with that stop. kill() on a stopped (or
