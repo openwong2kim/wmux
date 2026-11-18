@@ -515,6 +515,24 @@ export function pickStashedRepresentativeSurface(
 }
 
 /**
+ * The tab a pane's Fleet row is keyed on. Stashed panes use the shared #977
+ * picker so the card and the sidebar roster can never disagree; visible panes
+ * keep the plain active-tab rule, except that a work tab (browser, editor,
+ * board…) draws beside the terminal column, which stays on screen, so the row
+ * stays on that column's terminal. Every reader that asks which host a row
+ * runs on (selectFleetPanes, selectDownHostAway) asks this.
+ */
+function fleetRowSurface(
+  leaf: PaneLeaf,
+  stashed: boolean,
+  surfaceAgent: Record<string, { name?: string } | undefined>,
+): Surface | undefined {
+  if (stashed) return pickStashedRepresentativeSurface(leaf, surfaceAgent);
+  const active = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
+  return (isWorkSurfaceType(active?.surfaceType) && splitShownTerminal(leaf)) || active;
+}
+
+/**
  * ptyId → true for every pane the hook derivation currently calls 'running'.
  *
  * The clock-dependent half of `selectFleetPanes`, pulled out so a consumer can
@@ -597,15 +615,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
     const visibleIds = new Set(getLeafPanes(ws.rootPane).map((l) => l.id));
     for (const leaf of getWorkspaceLeafPanes(ws)) {
       const stashed = !visibleIds.has(leaf.id);
-      // Stashed rows use the shared #977 picker (see above) so this card and
-      // the sidebar roster can never disagree; visible rows keep the plain
-      // active-tab rule the tests pin, except that a work tab (browser, editor,
-      // board…) draws beside the terminal column, which stays on screen, so
-      // the row stays on that column's terminal.
-      const active = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
-      const surf = stashed
-        ? pickStashedRepresentativeSurface(leaf, state.surfaceAgent ?? {})
-        : (isWorkSurfaceType(active?.surfaceType) && splitShownTerminal(leaf)) || active;
+      const surf = fleetRowSurface(leaf, stashed, state.surfaceAgent ?? {});
       const ptyId = surf?.ptyId ?? '';
       // A remote row that can't be opened leaves, with or without an agent: a
       // plain remote shell there is no more reachable than an agent.
@@ -1458,21 +1468,24 @@ export function fleetRowDevice(
  * the drop notice fires (selectDownHostIds). Empty while no host is down.
  */
 export function selectDownHostAway(
-  state: Pick<FleetSelectorState, 'workspaces' | 'remoteWorkspaces' | 'downHostIds' | 'pcRailHostStatus' | 'pcRailFeeds'>,
+  state: Pick<FleetSelectorState, 'workspaces' | 'surfaceAgent' | 'remoteWorkspaces' | 'downHostIds' | 'pcRailHostStatus' | 'pcRailFeeds'>,
 ): Record<string, FleetAwayCounts> {
   const away: Record<string, FleetAwayCounts> = {};
   const down = fleetDownHostIds(state);
   if (!down || down.size === 0) return away;
   for (const ws of state.workspaces) {
+    const visibleIds = new Set(getLeafPanes(ws.rootPane).map((l) => l.id));
     for (const leaf of getWorkspaceLeafPanes(ws)) {
-      let hostId: string | undefined;
+      // The row's own tab decides its host, as in selectFleetPanes: a pane
+      // whose row is a local tab stays on the board, so it is not counted here.
+      const surf = fleetRowSurface(leaf, !visibleIds.has(leaf.id), state.surfaceAgent ?? {});
+      if (surf?.surfaceType !== 'remote-terminal' || !surf.remoteHostId || !down.has(surf.remoteHostId)) continue;
+      const hostId = surf.remoteHostId;
       let neededYou = false;
       for (const s of leaf.surfaces) {
-        if (s.surfaceType !== 'remote-terminal' || !s.remoteHostId || !down.has(s.remoteHostId)) continue;
-        hostId ??= s.remoteHostId;
+        if (s.surfaceType !== 'remote-terminal' || s.remoteHostId !== hostId) continue;
         if (resolveRemoteAgent(state.remoteWorkspaces, s.remoteHostId, s.remoteSessionId)?.status === 'awaiting_input') neededYou = true;
       }
-      if (!hostId) continue;
       const counts = (away[hostId] ??= { panes: 0, neededYou: 0 });
       counts.panes++;
       if (neededYou) counts.neededYou++;

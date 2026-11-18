@@ -198,4 +198,29 @@ describe('groupFleetByDevice', () => {
     // It answers: no note.
     expect(selectDownHostAway({ ...at(0), pcRailHostStatus: { 'host-x': 'reachable' as const } })).toEqual({});
   });
+
+  it('a pane is counted for a down PC only when its row is that PC\'s, never as well as a local row', () => {
+    const ws: Workspace = {
+      id: 'ws-mixed', name: 'mixed', activePaneId: 'p-mixed',
+      rootPane: {
+        id: 'p-mixed', type: 'leaf', activeSurfaceId: 's-local',
+        surfaces: [
+          { id: 's-local', ptyId: 'pty-local', title: 'shell', shell: 'zsh', cwd: '' },
+          { id: 's-remote', ptyId: '', title: 'shell', shell: 'zsh', cwd: '', surfaceType: 'remote-terminal', remoteHostId: 'host-x', remoteSessionId: 'sess' },
+        ],
+      },
+    };
+    const state = {
+      workspaces: [ws], surfaceAgentStatus: {}, surfaceActivity: {}, remoteWorkspaces: [],
+      pcRailHostStatus: { 'host-x': 'unreachable' as const },
+      pcRailFeeds: { 'host-x': { workspaces: [], fetchedAt: 1, failedTicks: 2 } },
+    };
+    // The active tab is local: the row stays on the board, so the down PC's note does not count it.
+    expect(selectFleetPanes(state).map((row) => row.paneId)).toEqual(['p-mixed']);
+    expect(selectDownHostAway(state)).toEqual({});
+    // With the remote tab active the row is the down PC's: it leaves the board and is counted there.
+    const remoteActive = { ...state, workspaces: [{ ...ws, rootPane: { ...ws.rootPane, activeSurfaceId: 's-remote' } as Workspace['rootPane'] }] };
+    expect(selectFleetPanes(remoteActive)).toEqual([]);
+    expect(selectDownHostAway(remoteActive)).toEqual({ 'host-x': { panes: 1, neededYou: 0 } });
+  });
 });

@@ -256,8 +256,8 @@ export default function FleetView() {
   // (only the list grouped by device draws one). Its rows are already off the
   // board, as they are for fleet_triage.
   const away = useMemo(() => (fleetLayout === 'list' && fleetGroupBy === 'device'
-    ? selectDownHostAway({ workspaces, remoteWorkspaces, downHostIds })
-    : NO_AWAY), [fleetLayout, fleetGroupBy, workspaces, remoteWorkspaces, downHostIds]);
+    ? selectDownHostAway({ workspaces, surfaceAgent, remoteWorkspaces, downHostIds })
+    : NO_AWAY), [fleetLayout, fleetGroupBy, workspaces, surfaceAgent, remoteWorkspaces, downHostIds]);
   // Every row, unfiltered: where the Hand out… popover reads a pane's state.
   const allRows = useMemo(() => [...groups.needsYou, ...groups.finished, ...groups.running, ...groups.idle], [groups]);
   // On close (unmount), remember what each pane's status was, so the next open
