@@ -959,9 +959,12 @@ export function selectAllWorkspaceAgentStatus(
  * has heard anything". Returns 0 unless the workspace's roll-up status IS
  * 'running' (so any attention state — needs-you, error, a finished turn —
  * outranks the ring exactly as it outranks the running dot) AND every running
- * pane in it is unverifiable. One live pane working alongside a wedged one
- * means the workspace really is being worked on; claiming "no update for 30m+"
- * over it would be false. The reported number is the FRESHEST stale pane's, the
+ * pane in it is unverifiable AND no other pane in it was heard from within
+ * UNVERIFIABLE_AFTER_MS. One live pane working alongside a wedged one means the
+ * workspace really is being worked on; claiming "no update for 30m+" over it
+ * would be false. That holds between that pane's turns too: its turn end or
+ * last activity counts as live, so the row does not swap between the running
+ * dot and the ring at every turn end. The reported number is the FRESHEST stale pane's, the
  * only figure true of the workspace as a whole.
  */
 export function selectWorkspaceUnverifiableMinutes(
@@ -1016,6 +1019,14 @@ interface WorkspaceRollups {
  */
 const rollupCache = new WeakMap<FleetSelectorState, WorkspaceRollups>();
 
+/** Whether the pane at `ptyId` ended a turn or reported activity within
+ *  UNVERIFIABLE_AFTER_MS of the agent clock. */
+function heardWithinUnverifiableWindow(state: FleetSelectorState, ptyId: string): boolean {
+  if (!ptyId || state.agentClockMs === undefined) return false;
+  const heardAt = Math.max(state.surfaceActivityAt?.[ptyId] ?? 0, state.surfaceTurnEndAt?.[ptyId] ?? 0);
+  return heardAt > 0 && state.agentClockMs - heardAt <= UNVERIFIABLE_AFTER_MS;
+}
+
 function workspaceRollups(state: FleetSelectorState): WorkspaceRollups {
   const cached = rollupCache.get(state);
   if (cached) return cached;
@@ -1023,7 +1034,9 @@ function workspaceRollups(state: FleetSelectorState): WorkspaceRollups {
   const unverifiableByWorkspace: Record<string, number> = {};
   const unverifiableByPty: Record<string, number> = {};
   const quietest: Record<string, number> = {};
-  const verifiableRunning = new Set<string>();
+  /** Workspaces with a pane that is running and heard from, or was heard from
+   *  within UNVERIFIABLE_AFTER_MS (a turn end, an activity stamp). */
+  const live = new Set<string>();
   for (const pane of selectFleetPanes(state)) {
     // A stopped turn without a question is idle in the sidebar. Normalize
     // before ranking so it cannot hide a sibling's running indicator.
@@ -1031,15 +1044,18 @@ function workspaceRollups(state: FleetSelectorState): WorkspaceRollups {
     const paneStatus = pane.agentStatus === 'waiting' ? 'idle' : pane.agentStatus;
     const cur = status[pane.workspaceId] ?? 'idle';
     if (STATUS_RANK[paneStatus] < STATUS_RANK[cur]) status[pane.workspaceId] = paneStatus;
-    if (pane.agentStatus !== 'running') continue;
-    if (!pane.unverifiable) { verifiableRunning.add(pane.workspaceId); continue; }
+    if (pane.agentStatus !== 'running') {
+      if (heardWithinUnverifiableWindow(state, pane.ptyId)) live.add(pane.workspaceId);
+      continue;
+    }
+    if (!pane.unverifiable) { live.add(pane.workspaceId); continue; }
     const mins = Math.floor((pane.staleForMs ?? 0) / 60_000);
     if (pane.ptyId) unverifiableByPty[pane.ptyId] = mins;
     const prev = quietest[pane.workspaceId];
     if (prev === undefined || mins < prev) quietest[pane.workspaceId] = mins;
   }
   for (const workspaceId in quietest) {
-    if (status[workspaceId] !== 'running' || verifiableRunning.has(workspaceId)) continue;
+    if (status[workspaceId] !== 'running' || live.has(workspaceId)) continue;
     unverifiableByWorkspace[workspaceId] = quietest[workspaceId];
   }
   const out = { status, unverifiableByWorkspace, unverifiableByPty };
