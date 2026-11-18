@@ -1041,7 +1041,7 @@ describe('an approval from the sender of a task, for a prompt offered in its sta
     expect(taken).toEqual([]);
   });
 
-  it('past its PC\'s window: refused rate-limited and told in the status (never carried out); one that fails a check is still dropped unread', async () => {
+  it('past its PC\'s window: refused rate-limited and told in the status (never carried out); one that fails a check is refused rate-limited too, unread', async () => {
     const linkId = activeLink();
     const taskId = await receivedTask(linkId);
     let admit: { ok: true } | { ok: false; retryAfterMs: number } = { ok: false, retryAfterMs: 12_000 };
@@ -1054,9 +1054,10 @@ describe('an approval from the sender of a task, for a prompt offered in its sta
     expect(await acceptInbound(e, peer, guarded)).toEqual({ ok: false, error: 'rate-limited' });
     expect(taken).toEqual([]);
     expect(limited).toEqual([[HOST, taskId, e.messageId, APPROVAL, 12_000]]);
-    // Past the window and for a task that host did not send: dropped, with no refusal for it to retry.
+    // Past the window and for a task that host did not send: refused rate-limited unread, so the asker
+    // gets a final answer instead of an ack it reads as delivered; nothing noted in a status.
     const mine = remoteTaskId(linkId, 'not-there');
-    expect(await acceptInbound(approvalEnv(linkId, mine), peer, guarded)).toEqual({ ok: true, taskId: mine, duplicate: true });
+    expect(await acceptInbound(approvalEnv(linkId, mine), peer, guarded)).toEqual({ ok: false, error: 'rate-limited' });
     expect(limited).toHaveLength(1);
     admit = { ok: true };
     expect(await acceptInbound(approvalEnv(linkId, taskId), peer, guarded)).toMatchObject({ ok: true, duplicate: false });

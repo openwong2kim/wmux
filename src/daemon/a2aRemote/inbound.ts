@@ -246,9 +246,10 @@ async function applyInbound(
     return { ok: true, taskId: env.taskId as string, duplicate: true };
   }
   // An approval past its PC's window: checked like any other, then answered `rate-limited` (below). One that
-  // fails a check is dropped as before, so a flood of bad ones brings neither a refusal nor a log line each.
+  // fails a check is answered `rate-limited` too, unread and with no log line, so the asker always hears a
+  // final answer for it and a flood of bad ones brings no log line each.
   const overWindow = env.kind === 'approval' && deps.remoteApproval?.admit ? deps.remoteApproval.admit(peer.hostId, env.messageId) : { ok: true as const };
-  const dropped = (): A2aRemoteDeliverResponse => ({ ok: true, taskId: env.taskId as string, duplicate: true });
+  const dropped = (): A2aRemoteDeliverResponse => fail('rate-limited');
 
   let onThisLink = false;
   if (env.kind === 'reply' || env.kind === 'state' || env.kind === 'receipt' || env.kind === 'status' || env.kind === 'answer' || env.kind === 'approval') {
