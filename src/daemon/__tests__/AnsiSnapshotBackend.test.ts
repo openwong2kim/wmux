@@ -244,6 +244,27 @@ describe('ANSI snapshot backend selection', () => {
     expect(reference).not.toHaveBeenCalled();
   });
 
+  // R2 (b) prep 4: the refusal rates. Each native try by its outcome, counted when it settles.
+  it('counts each native try by its outcome, and nothing for a skip', async () => {
+    const before = getAnsiSnapshotBackendDiagnostics().tried;
+    const delta = () => {
+      const now = getAnsiSnapshotBackendDiagnostics().tried;
+      return Object.fromEntries(Object.entries(now).map(([k, n]) => [k, n - (before[k] ?? 0)]).filter(([, n]) => n));
+    };
+    const reference = vi.fn(async () => success);
+    nativeSuccess(request.initial);
+    await selectAnsiSnapshot(request, reference);
+    native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'unsupported-wide-edge' });
+    await selectAnsiSnapshot(request, reference);
+    // Limits and an open circuit are skips: native never ran.
+    await selectAnsiSnapshot({ ...request, scrollback: 100001 }, reference);
+    native.mockRejectedValueOnce(new Error('load failed'));
+    await selectAnsiSnapshot(request, reference);
+    await selectAnsiSnapshot(request, reference);
+    expect(delta()).toEqual({ native: 1, 'unsupported-wide-edge': 1, error: 1 });
+    expect(getAnsiSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: true, circuitFailures: 1 });
+  });
+
   // `wmux doctor` shows these, so the next native gap is picked by how often
   // real panes hit it.
   it('counts each fallback and skip by reason, a native refusal by its family', async () => {

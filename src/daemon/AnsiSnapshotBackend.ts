@@ -9,6 +9,8 @@ import { createNativeCircuit, snapshotModulePath } from './nativeCircuit';
 type Reference = (req: SnapshotRequest) => Promise<SnapshotOutcome>;
 type Reason = 'native' | 'error' | 'budget' | 'unsupported' | 'limits' | 'state' | 'circuit-open';
 interface Diagnostics {
+  /** Each native try by its outcome (native, a refusal family, margins, budget, error), counted when it settles: the refusal rates. Skips are not tries. */
+  tried: SnapshotReasons;
   native: number;
   fallbacks: number;
   skipped: number;
@@ -18,12 +20,12 @@ interface Diagnostics {
   reasonsSeen: SnapshotReasons;
   last?: { backend: 'rust' | 'xterm'; reason: Reason };
 }
-const diagnostics: Diagnostics = { native: 0, fallbacks: 0, skipped: 0, reasons: {}, reasonsSeen: {} };
+const diagnostics: Diagnostics = { tried: {}, native: 0, fallbacks: 0, skipped: 0, reasons: {}, reasonsSeen: {} };
 const circuit = createNativeCircuit();
 
-export function getAnsiSnapshotBackendDiagnostics(): Diagnostics & { circuitOpen: boolean } {
-  return { ...diagnostics, reasons: { ...diagnostics.reasons }, reasonsSeen: { ...diagnostics.reasonsSeen }, last: diagnostics.last && { ...diagnostics.last },
-    circuitOpen: circuit.isOpen(snapshotModulePath(), performance.now()) };
+export function getAnsiSnapshotBackendDiagnostics(): Diagnostics & { circuitOpen: boolean; circuitFailures: number } {
+  return { ...diagnostics, tried: { ...diagnostics.tried }, reasons: { ...diagnostics.reasons }, reasonsSeen: { ...diagnostics.reasonsSeen }, last: diagnostics.last && { ...diagnostics.last },
+    circuitOpen: circuit.isOpen(snapshotModulePath(), performance.now()), circuitFailures: circuit.failures(snapshotModulePath(), performance.now()) };
 }
 
 /** Sizes the native grid accepts, and any ring the daemon allows. Its history
@@ -93,6 +95,7 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
       // spent either way, and the alternative is no snapshot.
       circuit.settle(ticket, true, performance.now());
       diagnostics.native++;
+      countReason(diagnostics.tried, 'native');
       diagnostics.last = { backend: 'rust', reason: 'native' };
       return { ...native, durationMs: performance.now() - started };
     } else if (!native.ok) {
@@ -102,6 +105,7 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
         circuit.settle(ticket, true, performance.now());
         diagnostics.fallbacks++;
         countReason(diagnostics.reasons, native.reason);
+        countReason(diagnostics.tried, native.reason);
         diagnostics.last = { backend: 'rust', reason: 'unsupported' };
         return native;
       }
@@ -119,6 +123,7 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
   circuit.settle(ticket, failure !== 'error', performance.now());
   const counted = failure === 'state' || failure === 'unsupported' ? refusalFamily(refusal, failure) : failure;
   countReason(diagnostics.reasons, counted);
+  countReason(diagnostics.tried, counted);
   // The native list is already families, the reported one first; a module
   // built before it gives none, and the counted family stands alone.
   if (counted.startsWith('unsupported-')) {

@@ -39,8 +39,8 @@ export interface NativeCircuit {
   settle(ticket: CircuitTicket, sound: boolean, now: number): void;
   /** Skipping native for `path` at `now` (cooling down, or a trial is out). */
   isOpen(path: string | undefined, now: number): boolean;
-  /** Consecutive module failures for `path` (0 when closed). */
-  failures(path: string | undefined): number;
+  /** Module errors in a row for `path`, a trial that timed out by `now` included; 0 once a trial found the module working. */
+  failures(path: string | undefined, now: number): number;
 }
 
 interface Opened {
@@ -94,6 +94,10 @@ export function createNativeCircuit(
       const trialExpired = opened.trialAt !== undefined && now - opened.trialAt >= trialTimeoutMs;
       return (opened.trialAt !== undefined && !trialExpired) || now < opened.retryAt;
     },
-    failures: (path) => (opened && opened.path === path ? opened.failures : 0),
+    failures(path, now) {
+      if (!opened || opened.path !== path) return 0;
+      const trialExpired = opened.trialAt !== undefined && now - opened.trialAt >= trialTimeoutMs;
+      return opened.failures + (trialExpired ? 1 : 0);
+    },
   };
 }

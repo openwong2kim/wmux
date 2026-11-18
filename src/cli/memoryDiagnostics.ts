@@ -146,7 +146,21 @@ export function renderMemoryDiagnostics(
           .map(([family, n]) => `${family} ${n}`)
           .join(', ');
         const detail = [reasons, alsoSeen && `also seen: ${alsoSeen}`].filter(Boolean).join('; ');
-        lines.push(`  native ${name} snapshots: ${c.native} native, ${c.fallbacks} not served natively, ${c.skipped} skipped${detail ? ` (${detail})` : ''}${c.circuitOpen ? '; native module bypassed after an error' : ''}`);
+        // An older daemon sends no error count; the cooldown retry is the same.
+        const errors = c.circuitFailures ?? 0;
+        const inRow = errors > 0 ? `${errors} error${errors === 1 ? '' : 's'} in a row` : 'an error';
+        const circuit = c.circuitOpen ? `; native module bypassed after ${inRow}, retried after a cooldown`
+          : errors > 0 ? `; native module retry due after ${inRow}`
+          : '';
+        lines.push(`  native ${name} snapshots: ${c.native} native, ${c.fallbacks} not served natively, ${c.skipped} skipped${detail ? ` (${detail})` : ''}${circuit}`);
+        // A daemon that counts its native tries by outcome: each one's share.
+        const tries = Object.values(c.tried ?? {}).reduce((sum, n) => sum + n, 0);
+        if (tries > 0) {
+          const outcomes = Object.entries(c.tried!)
+            .sort((a, b) => b[1] - a[1])
+            .map(([outcome, n]) => `${outcome} ${n} (${(100 * n / tries).toFixed(1)}%)`);
+          lines.push(`    of ${tries} native tries: ${outcomes.join(', ')}`);
+        }
       }
     }
     for (const [site, c] of Object.entries(daemon.tailReads ?? {})) {
