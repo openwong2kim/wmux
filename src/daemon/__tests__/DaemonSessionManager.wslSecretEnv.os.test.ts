@@ -28,10 +28,11 @@ vi.mock('../../shared/wsl', async (importOriginal) => {
   };
 });
 // The injection's own WSLENV entries, as the real one adds them.
-vi.mock('../../shared/wslIntegration', async () => {
+vi.mock('../../shared/wslIntegration', async (importOriginal) => {
   const { wslTargetArgs } = await import('../../shared/wslTarget');
   const { mergeWslEnv } = await import('../../shared/wsl');
-  return { buildWslInjection: (opts: { target: Parameters<typeof wslTargetArgs>[0]; cwd: string; env: Record<string, string> }) => ({
+  // The real module's exports (WSL_ACCOUNT_INJECTED_VARS), with only the injection stubbed.
+  return { ...(await importOriginal<typeof import('../../shared/wslIntegration')>()), buildWslInjection: (opts: { target: Parameters<typeof wslTargetArgs>[0]; cwd: string; env: Record<string, string> }) => ({
     args: [...wslTargetArgs(opts.target), '--cd', opts.cwd, '--exec', '/bin/bash'],
     env: { ...opts.env, WSLENV: mergeWslEnv(opts.env.WSLENV, ['WMUX_PTY_ID', 'WMUX_WSL_BIN/p']) },
   }) };

@@ -306,6 +306,11 @@ describe('WSL per-launch Claude integration', () => {
 
     // The bootstrap and rc file around the script, in a real bash (review of #3418).
     describe.skipIf(process.platform === 'win32')('around the user\'s startup files', () => {
+      // Node's stdio pipes are sockets, and `bash -c` on a socket stdin takes
+      // itself for a remote shell and sources ~/.bashrc before the command,
+      // which would run the user's file ahead of the rc under test. A real
+      // pane's stdin is a terminal.
+      const NO_STDIN: ['ignore', 'pipe', 'pipe'] = ['ignore', 'pipe', 'pipe'];
       function pane(bashrc: string, opts: { exec?: string; integration?: '0' | '1' } = {}) {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-rc-')); dirs.push(dir);
         fs.writeFileSync(path.join(dir, '.bashrc'), bashrc);
@@ -320,14 +325,14 @@ describe('WSL per-launch Claude integration', () => {
 
       it.each(['0', '1'] as const)('hands the account to a shell the user\'s .bashrc execs (integration=%s)', (integration) => {
         const { home, env } = pane('exec /bin/sh -c \'printf "%s" "$CLAUDE_CONFIG_DIR"\'\n', { integration });
-        const ran = spawnSync('/bin/bash', ['-c', '. "$WMUX_WSL_BASHRC"; printf never'], { encoding: 'utf8', env });
+        const ran = spawnSync('/bin/bash', ['-c', '. "$WMUX_WSL_BASHRC"; printf never'], { encoding: 'utf8', env, stdio: NO_STDIN });
         expect(ran.stdout).toBe(home);
         expect(ran.stderr).toBe('');
       });
 
       it('wins over an export in the user\'s .bashrc and says the first-use line once', () => {
         const { home, env } = pane('export CLAUDE_CONFIG_DIR=/elsewhere\n');
-        const ran = spawnSync('/bin/bash', ['-c', '. "$WMUX_WSL_BASHRC"; printf "%s|%s" "$CLAUDE_CONFIG_DIR" "${__wmux_accounts-unset}"'], { encoding: 'utf8', env });
+        const ran = spawnSync('/bin/bash', ['-c', '. "$WMUX_WSL_BASHRC"; printf "%s|%s" "$CLAUDE_CONFIG_DIR" "${__wmux_accounts-unset}"'], { encoding: 'utf8', env, stdio: NO_STDIN });
         expect(ran.stdout).toBe(`${home}|unset`);
         expect(ran.stderr.match(/has no sign-in in this WSL distro yet/g)).toHaveLength(1);
       });
@@ -335,15 +340,15 @@ describe('WSL per-launch Claude integration', () => {
       it('says so, and never runs an exec unit, when the account script did not cross over', () => {
         const interactive = pane('');
         const { WMUX_WSL_ACCOUNT_SH: _dropped, ...dropped } = interactive.env;
-        const ran = spawnSync('/bin/bash', ['-c', '. "$WMUX_WSL_BASHRC"; printf "%s" "${CLAUDE_CONFIG_DIR-}"'], { encoding: 'utf8', env: dropped });
+        const ran = spawnSync('/bin/bash', ['-c', '. "$WMUX_WSL_BASHRC"; printf "%s" "${CLAUDE_CONFIG_DIR-}"'], { encoding: 'utf8', env: dropped, stdio: NO_STDIN });
         expect(ran.stderr).toContain('cannot reach its account script');
         const exec = pane('', { exec: 'printf ran' });
         const { WMUX_WSL_ACCOUNT_SH: _gone, ...noScript } = exec.env;
-        const refused = spawnSync('/bin/bash', exec.bashArgs, { encoding: 'utf8', env: noScript });
+        const refused = spawnSync('/bin/bash', exec.bashArgs, { encoding: 'utf8', env: noScript, stdio: NO_STDIN });
         expect(refused.status).toBe(1);
         expect(refused.stdout).toBe('');
         expect(refused.stderr).toContain('does not run on the default account');
-        const allowed = spawnSync('/bin/bash', exec.bashArgs, { encoding: 'utf8', env: exec.env });
+        const allowed = spawnSync('/bin/bash', exec.bashArgs, { encoding: 'utf8', env: exec.env, stdio: NO_STDIN });
         expect(allowed.status).toBe(0);
         expect(allowed.stdout).toBe('ran');
       });
