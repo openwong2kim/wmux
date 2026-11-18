@@ -154,6 +154,8 @@ export class LinkedTaskTurns {
   private pathToRead(u: Unit, now: number): string | null {
     if (u.turn.closed) return null;
     const s = this.deps.session(u.proof.ptyId);
+    // The turn is read in Claude Code's own transcript grammar (taskTurn.ts, parseEntry.ts): this module is that
+    // agent's adapter, so the slug is named here (agentSlugBranches.allowlist.json).
     if (!s || s.incarnationId !== u.proof.incarnation || s.keyEpoch !== u.proof.keyEpoch || s.agent !== 'claude') {
       u.turn.closed = true;
       return null;
