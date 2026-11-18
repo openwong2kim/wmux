@@ -32,4 +32,29 @@ describe('DIALOG_PICK_FOLDER', () => {
     await expect(pick({ sender: {} })).resolves.toEqual([]);
     expect(electron.showOpenDialog.mock.calls[1][0]).toMatchObject({ defaultPath: '/Users/o/code' });
   });
+
+  it('uses a WSL share defaultPath and ignores any other renderer string (no SMB auth)', async () => {
+    registerToolbarHandlers();
+    const pick = electron.handlers.get(IPC.DIALOG_PICK_FOLDER) as (event: unknown, d?: unknown) => Promise<string[]>;
+    const call = async (d: unknown) => {
+      electron.showOpenDialog.mockClear();
+      electron.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] });
+      await pick({ sender: {} }, d);
+      return electron.showOpenDialog.mock.calls[0][0] as { defaultPath?: string };
+    };
+    const share = '\\\\wsl.localhost\\Ubuntu\\home\\me';
+    expect((await call(share)).defaultPath).toBe(share);
+    for (const bad of ['\\\\host\\share', '\\\\wsl$\\..', 'relative/dir', '', 42, null, {}]) {
+      expect((await call(bad)).defaultPath).not.toBe(bad);
+    }
+  });
+
+  it('hands the dialog the checked share, rebuilt, never the renderer\'s string', async () => {
+    registerToolbarHandlers();
+    const pick = electron.handlers.get(IPC.DIALOG_PICK_FOLDER) as (event: unknown, d?: unknown) => Promise<string[]>;
+    electron.showOpenDialog.mockClear();
+    electron.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] });
+    await pick({ sender: {} }, '\\\\wsl$\\Ubuntu/home//me\\.\\repo\\..');
+    expect((electron.showOpenDialog.mock.calls[0][0] as { defaultPath?: string }).defaultPath).toBe('\\\\wsl.localhost\\Ubuntu\\home\\me');
+  });
 });

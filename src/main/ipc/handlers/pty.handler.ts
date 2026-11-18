@@ -90,8 +90,10 @@ import { isWslShell, type WslTarget } from '../../../shared/wsl';
 import { resolvePtyCreateCwdForShell, type PtyCwdSource, type ResolvedPtyCwd } from '../../pty/resolvePtyCwd';
 import { FANOUT_TASK_PORT_ENV } from '../../worktask/fanoutEnvironment';
 import { agentDisplayToSlug } from '../../../shared/agentIdentity';
+import { wslShareToLinux } from '../../../shared/wslPaths';
+import { applyWslShareCwd, defaultWslShellPath } from '../../../shared/wslShareSpawn';
 import { wslDistroArgs, isWslDistroSpawnArgs, isValidWslDistroName } from '../../../shared/wslDistro';
-import { getDefaultWslDistro } from '../../pty/defaultWslDistro';
+import { getDefaultWslDistro, getKnownWslDistros, enumerateWslDistros } from '../../pty/defaultWslDistro';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
 import { recordFanoutTaskPane, stampFanoutTaskPane, stampRemoteSpawnPane, taskOfWorkspace } from '../../worktask/fanoutGuards';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
@@ -408,6 +410,56 @@ function resolveSupervisionPolicy(input: PtyCreateSupervisionInput): DaemonSuper
  * per pane in local mode (decision ②: warn, don't spam). */
 let localSupervisionWarned = false;
 
+/** Workspaces already told their WSL share folder could not be opened (one toast each per app run). */
+const wslShareToasted = new Set<string>();
+
+/**
+ * A create whose cwd is a WSL share folder becomes a WSL shell in that
+ * distro at the Linux path. Runs first in both create paths (daemon and
+ * local), so everything after (shell allow-list, cwd validation, distro args,
+ * the daemon forward) sees the rewritten options. A distro that is not
+ * installed opens the pane in the default WSL shell at its home and toasts
+ * once per workspace, so a restore that respawns every pane does not repeat it.
+ */
+async function withWslShareCwd(
+  options: PtyCreateOptions | undefined,
+  getWindow: (() => BrowserWindow | null) | undefined,
+): Promise<PtyCreateOptions | undefined> {
+  if (!options || process.platform !== 'win32' || typeof options.cwd !== 'string' || !wslShareToLinux(options.cwd)) return options;
+  // The known-distro cache answers the common case; only a miss (a distro
+  // installed since the last enumeration, or no enumeration yet) pays for
+  // `wsl.exe --list`.
+  const share = wslShareToLinux(options.cwd)!;
+  const cached = getKnownWslDistros();
+  const hit = cached?.some((d) => d.toLowerCase() === share.distro.toLowerCase()) ?? false;
+  // A hit is trusted for this create and refreshed behind it, so a distro
+  // unregistered since then is caught by the next one.
+  if (hit) void enumerateWslDistros();
+  const known = hit && cached ? [...cached] : await enumerateWslDistros();
+  const result = applyWslShareCwd(options, process.platform, known);
+  if ('options' in result) return result.options;
+  const { cwd: _dropped, wslDistro: _unused, ...rest } = options;
+  const key = options.workspaceId ?? '';
+  const toastOnce = (title: string, body: string): void => {
+    if (wslShareToasted.has(key)) return;
+    wslShareToasted.add(key);
+    dispatchNotification(
+      getWindow?.() ?? null,
+      null,
+      { type: 'warning', title, body, workspaceId: options.workspaceId, category: 'system' },
+      { workspaceId: options.workspaceId ?? null },
+    );
+  };
+  if ('needsWslShell' in result) {
+    // A named PowerShell or cmd keeps its shell, in its usual folder: the
+    // share is not a folder it can start in.
+    toastOnce('WSL folder needs a WSL shell', `${share.linuxPath} in ${share.distro} opens in a WSL shell; this pane's shell started in its usual folder instead.`);
+    return rest as PtyCreateOptions;
+  }
+  toastOnce('WSL folder unavailable', `${result.error} - opened the default WSL shell in its home instead.`);
+  return { ...rest, shell: defaultWslShellPath() };
+}
+
 /**
  * Recovery PTY mute race retry (v2.9.0-rc.2 fix for the symptom reported
  * during v2.9.0-rc.1 dogfood).
@@ -722,6 +774,7 @@ export function registerPTYHandlers(
   ipcMain.removeHandler(IPC.PTY_CREATE);
   if (useDaemon && daemonClient) {
     ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: PtyCreateOptions) => {
+      options = await withWslShareCwd(options, getWindow);
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
@@ -1143,6 +1196,7 @@ export function registerPTYHandlers(
     }));
   } else {
     ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: PtyCreateOptions) => {
+      options = await withWslShareCwd(options, getWindow);
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }

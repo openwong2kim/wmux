@@ -2238,8 +2238,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     const created = await window.electronAPI.pty.create(
       withWorkspaceProfile(
         {
-          ...withDefaultShell({ shell: shell || undefined }, store.defaultShell),
-          cwd: cwd || undefined,
+          // The cwd goes through withDefaultShell so a WSL share folder picks
+          // the WSL shell, as Ctrl+T, splits and pane.split do.
+          ...withDefaultShell({ shell: shell || undefined, cwd: cwd || undefined }, store.defaultShell),
           workspaceId: ws.id,
           ...(initialCommand ? { initialCommand, spawnKind: 'user-shell' as const } : {}),
         },

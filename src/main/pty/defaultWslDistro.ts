@@ -34,6 +34,11 @@ export function noteKnownWslDistros(distros: string[]): void {
   if (distros.length > 0) knownWslDistros = [...distros];
 }
 
+/** The distros from the last successful enumeration, or null if none yet. */
+export function getKnownWslDistros(): readonly string[] | null {
+  return knownWslDistros;
+}
+
 export function getDefaultWslDistro(): string | null {
   if (!defaultWslDistro) return null;
   if (knownWslDistros && !knownWslDistros.includes(defaultWslDistro)) {
@@ -51,8 +56,16 @@ export function getDefaultWslDistro(): string | null {
  * process for up to the full timeout. Every successful answer refreshes the
  * known-distro cache getDefaultWslDistro checks.
  */
-export async function enumerateWslDistros(): Promise<string[]> {
-  if (process.platform !== 'win32') return [];
+/** The enumeration in flight, shared by every caller that asks meanwhile. */
+let enumerating: Promise<string[]> | null = null;
+
+export function enumerateWslDistros(): Promise<string[]> {
+  if (process.platform !== 'win32') return Promise.resolve([]);
+  enumerating ??= enumerateOnce().finally(() => { enumerating = null; });
+  return enumerating;
+}
+
+async function enumerateOnce(): Promise<string[]> {
   const wslPath = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'wsl.exe');
   const stdout = await new Promise<Buffer | null>((resolve) => {
     try {

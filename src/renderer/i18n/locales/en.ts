@@ -718,6 +718,8 @@ export const en = {
   'sidebar.screenOffFailed': 'Could not toggle the built-in display.',
   'sidebar.browseFolder': 'Browse Folder…',
   'sidebar.browseFolderDesc': 'Choose any folder on disk',
+  'sidebar.browseWslFolder': 'Browse WSL folder…',
+  'sidebar.browseWslFolderDesc': 'Choose a folder inside a WSL distro',
   'sidebar.emptyWorkspace': 'Empty',
   // Detached daemon sessions (#1101) — running, owned by no pane.
   'sidebar.orphanSessions': 'Detached sessions',

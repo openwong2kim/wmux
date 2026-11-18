@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useRef, useCallback, useState, type CSSProperties } from 'react';
 import { LAYOUT_PRESETS } from '../../../shared/layoutPresets';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -15,6 +15,10 @@ import { probeProjectConfig } from '../../utils/projectConfigProbe';
 import { shortDir } from '../../utils/shortDir';
 import CompanyPresetDialog from './CompanyPresetDialog';
 import CompanyFileReviewDialog from './CompanyFileReviewDialog';
+import { isValidWslDistroName } from '../../../shared/wslDistro';
+import { wslShareToLinux } from '../../../shared/wslPaths';
+import { fixedFlyoutPosition } from '../../utils/fixedFlyoutPosition';
+import { IconChevron } from '../icons';
 
 interface PresetPickerProps {
   onClose: () => void;
@@ -154,6 +158,80 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
     }
   }, [addWorkspace, onClose]);
 
+  // "Browse WSL folder…": Windows only, and only while `wsl --list` names at
+  // least one distro. A rejected read (or a name that is not a plain distro
+  // name) leaves the row out, like the paired-host probe above.
+  const [wslDistros, setWslDistros] = useState<string[]>([]);
+  const [wslListOpen, setWslListOpen] = useState(false);
+  const wslListOpenRef = useRef(false);
+  wslListOpenRef.current = wslListOpen;
+  const wslTriggerRef = useRef<HTMLButtonElement>(null);
+  const wslFlyoutRef = useRef<HTMLDivElement>(null);
+  // The menu clips overflow (it scrolls), which would hide an absolute flyout,
+  // so the flyout is position: fixed and placed from the trigger row's
+  // viewport rect: when it opens, and again on window resize or menu scroll.
+  const placeWslFlyout = useCallback(() => {
+    const flyout = wslFlyoutRef.current;
+    const trigger = wslTriggerRef.current;
+    if (!flyout || !trigger) return;
+    const r = trigger.getBoundingClientRect();
+    const pos = fixedFlyoutPosition(
+      { left: r.left, right: r.right, top: r.top },
+      { width: flyout.offsetWidth, height: flyout.offsetHeight },
+      { width: window.innerWidth, height: window.innerHeight },
+    );
+    flyout.style.left = `${pos.left}px`;
+    flyout.style.top = `${pos.top}px`;
+  }, []);
+  // Before paint, so the flyout's first frame is already beside its row.
+  useLayoutEffect(() => {
+    if (!wslListOpen) return;
+    placeWslFlyout();
+    const menu = ref.current;
+    window.addEventListener('resize', placeWslFlyout);
+    menu?.addEventListener('scroll', placeWslFlyout);
+    return () => {
+      window.removeEventListener('resize', placeWslFlyout);
+      menu?.removeEventListener('scroll', placeWslFlyout);
+    };
+  }, [wslListOpen, placeWslFlyout]);
+  // Keyboard opens move focus into the flyout; hover opens leave it alone.
+  const wslFocusFirst = useRef(false);
+  useEffect(() => {
+    if (wslListOpen && wslFocusFirst.current) {
+      wslFocusFirst.current = false;
+      wslFlyoutRef.current?.querySelector<HTMLButtonElement>('[data-wsl-distro]')?.focus();
+    }
+  }, [wslListOpen]);
+  useEffect(() => {
+    if (window.electronAPI?.platform !== 'win32') return;
+    let cancelled = false;
+    window.electronAPI?.shell?.wslDistros?.()
+      .then((names) => { if (!cancelled) setWslDistros(names.filter(isValidWslDistroName)); })
+      .catch(() => { /* no row */ });
+    return () => { cancelled = true; };
+  }, []);
+  const browseWslFolder = useCallback(async (distro: string) => {
+    if (!isValidWslDistroName(distro)) return;
+    // Close the menu on the click, not after the dialog: the dialog is modal
+    // and a cancelled pick would otherwise leave the menu open behind it.
+    onClose();
+    const folders = await window.electronAPI?.dialog?.pickFolder(`\\\\wsl.localhost\\${distro}\\home`);
+    if (folders && folders.length > 0) {
+      const folderPath = folders[0];
+      const share = wslShareToLinux(folderPath);
+      const folderName = (share && share.linuxPath === '/')
+        ? share.distro
+        : folderPath.split(/[/\\]/).filter(Boolean).pop() || 'Workspace';
+      addWorkspace(folderName, { startupCwd: folderPath });
+      showWorkspaces(useStore.getState());
+    }
+  }, [addWorkspace, onClose]);
+  const handleBrowseWsl = useCallback(() => {
+    if (wslDistros.length === 1) void browseWslFolder(wslDistros[0]);
+    else setWslListOpen(true);
+  }, [wslDistros, browseWslFolder]);
+
   // Close on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -174,7 +252,14 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   // Close on ESC
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key !== 'Escape') return;
+      // An open distro flyout folds first; the next Escape closes the menu.
+      if (wslListOpenRef.current) {
+        setWslListOpen(false);
+        wslTriggerRef.current?.focus();
+        return;
+      }
+      onClose();
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
@@ -221,6 +306,77 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
         <div className="font-semibold">{t('sidebar.browseFolder')}</div>
         <div className="text-[var(--text-sub)] text-[11px]">{t('sidebar.browseFolderDesc')}</div>
       </button>
+
+      {wslDistros.length > 0 && (
+        <div
+          className="relative"
+          onMouseEnter={wslDistros.length > 1 ? () => setWslListOpen(true) : undefined}
+          onMouseLeave={wslDistros.length > 1 ? () => setWslListOpen(false) : undefined}
+        >
+          <button
+            ref={wslTriggerRef}
+            className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
+            onClick={handleBrowseWsl}
+            onKeyDown={wslDistros.length > 1 ? (e) => {
+              if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'ArrowRight') return;
+              e.preventDefault();
+              // Already open (hover): the effect will not re-run, so focus now.
+              if (wslListOpenRef.current) {
+                wslFlyoutRef.current?.querySelector<HTMLButtonElement>('[data-wsl-distro]')?.focus();
+                return;
+              }
+              wslFocusFirst.current = true;
+              setWslListOpen(true);
+            } : undefined}
+            data-browse-wsl
+            aria-haspopup={wslDistros.length > 1 ? 'menu' : undefined}
+            aria-expanded={wslDistros.length > 1 ? wslListOpen : undefined}
+          >
+            <div className="flex items-center gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold">{t('sidebar.browseWslFolder')}</div>
+                <div className="text-[var(--text-sub)] text-[11px]">{t('sidebar.browseWslFolderDesc')}</div>
+              </div>
+              {wslDistros.length > 1 && <span className="text-[var(--text-muted)]"><IconChevron /></span>}
+            </div>
+          </button>
+          {wslListOpen && wslDistros.length > 1 && (
+            <div
+              ref={wslFlyoutRef}
+              role="menu"
+              className="fixed z-50 min-w-[140px] py-1 rounded-xl shadow-xl sidebar-popover-enter"
+              style={{ position: 'fixed', background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
+              onKeyDown={(e) => {
+                const items = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[data-wsl-distro]')];
+                const at = items.indexOf(document.activeElement as HTMLButtonElement);
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  const step = e.key === 'ArrowDown' ? 1 : -1;
+                  items[(at + step + items.length) % items.length]?.focus();
+                } else if (e.key === 'ArrowLeft') {
+                  e.preventDefault();
+                  setWslListOpen(false);
+                  wslTriggerRef.current?.focus();
+                }
+              }}
+            >
+              {wslDistros.map((name) => (
+                <button
+                  key={name}
+                  role="menuitem"
+                  className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                  style={{ color: 'var(--text-main)' }}
+                  onClick={() => void browseWslFolder(name)}
+                  data-wsl-distro
+                  aria-label={name}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="border-t border-[var(--bg-surface)] my-0.5" />
 

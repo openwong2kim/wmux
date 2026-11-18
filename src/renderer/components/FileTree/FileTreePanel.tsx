@@ -7,6 +7,7 @@ import { findLeaf } from '../../../shared/paneUtils';
 import type { Pane, Surface, Workspace } from '../../../shared/types';
 import { IconChevron, IconFile, IconFolder, IconRefresh, IconSearch, IconX } from '../icons';
 import { FOCUS_RING } from '../focusRing';
+import { revealInHost } from '../../utils/revealPath';
 import { insertPathsIntoPty } from '../AgentToolbar/inject';
 import { tokenAttrs } from '../../themes';
 import FileTreeResizeHandle from './FileTreeResizeHandle';
@@ -617,7 +618,14 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
             type="button"
             role="menuitem"
             onClick={() => runMenu(() => {
-              void window.electronAPI?.shell?.openPath(menu.node.isDirectory ? menu.node.path : dirname(menu.node.path));
+              const dir = menu.node.isDirectory ? menu.node.path : dirname(menu.node.path);
+              void revealInHost(
+                dir,
+                ptyId,
+                window.electronAPI.pty,
+                (path) => window.electronAPI?.shell?.openPath(path),
+                (detail) => useStore.getState().pushToast({ level: 'warn', message: `${t('workspace.openFailed')}: ${detail}` }),
+              );
             })}
             data-file-tree-action="reveal"
           >

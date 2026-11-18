@@ -82,7 +82,7 @@ import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 import { markRendererNotificationListenerReady } from '../notification/rendererNotificationReadiness';
 import { setMutedNotificationCategories } from '../notification/mutedCategories';
-import { setDefaultWslDistro } from '../pty/defaultWslDistro';
+import { setDefaultWslDistro, enumerateWslDistros } from '../pty/defaultWslDistro';
 import { setSecretGuardEnabled } from '../git/secretGuardSetting';
 import { updateUnreadBadge } from '../tray';
 import { eventBus } from '../events/EventBus';
@@ -215,6 +215,8 @@ export function registerAllHandlers(
   // main/index.ts) and intentionally NOT in this swap cycle. See the
   // import-block note above for the race rationale.
   const cleanupShell = registerShellHandlers();
+  // Warm the WSL distro cache once so the first + menu answers from it.
+  if (process.platform === 'win32') void enumerateWslDistros();
   const cleanupTerminalCore = registerTerminalCoreHandlers(daemonClient);
   const cleanupLabs = registerLabsHandlers(daemonClient);
   const cleanupFonts = registerFontHandlers();

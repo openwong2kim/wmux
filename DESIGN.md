@@ -1643,6 +1643,7 @@ leaves the page.
 - Opens on a plain **"Workspaces"** title with a muted count and icon
   buttons (new workspace, filter). 264px by default, resizable 220–400px from
   the inner edge.
+- **`+` menu, Browse WSL folder… (proposed):** a plain label + description row under Browse Folder, shown only on Windows with at least one WSL distro; one distro opens the folder dialog on its share; several give the row a trailing `›` and open a flyout submenu of the distros as plain rows (the sidebar's "Open with" submenu pattern: hover, click or ArrowRight/Enter opens it, Escape folds it before the menu). No new colour.
 - **Workspace filter:** the filter button (or Ctrl/Cmd+F) opens a popover —
   the text search on top, then checks for **bookmarks** (Bookmarked only),
   **status** (Needs you, Running,

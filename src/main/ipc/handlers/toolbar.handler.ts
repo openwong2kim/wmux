@@ -2,6 +2,7 @@ import { ipcMain, dialog, BrowserWindow } from 'electron';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { IPC } from '../../../shared/constants';
+import { wslShareToLinux } from '../../../shared/wslPaths';
 import { wrapHandler } from '../wrapHandler';
 import { resolveAccessiblePath } from './fs.handler';
 
@@ -32,11 +33,19 @@ export function registerToolbarHandlers(): () => void {
   }));
 
   ipcMain.removeHandler(IPC.DIALOG_PICK_FOLDER);
-  ipcMain.handle(IPC.DIALOG_PICK_FOLDER, wrapHandler(IPC.DIALOG_PICK_FOLDER, async (event: Electron.IpcMainInvokeEvent): Promise<string[]> => {
+  ipcMain.handle(IPC.DIALOG_PICK_FOLDER, wrapHandler(IPC.DIALOG_PICK_FOLDER, async (event: Electron.IpcMainInvokeEvent, defaultPath?: string): Promise<string[]> => {
     const win = BrowserWindow.fromWebContents(event.sender);
+    // The checked share, rebuilt: the dialog gets the validated form, never
+    // the renderer's string.
+    const share = typeof defaultPath === 'string' ? wslShareToLinux(defaultPath) : null;
     const opts = {
       properties: ['openDirectory'] as Array<'openDirectory'>,
-      ...(lastPickedFolder ? { defaultPath: path.dirname(lastPickedFolder) } : {}),
+      // A caller-supplied start folder wins over the last pick, but only a WSL
+      // share: any other UNC path would make Windows authenticate over SMB
+      // when the dialog opens (NTLM leak), and the renderer is untrusted.
+      ...(share
+        ? { defaultPath: `\\\\wsl.localhost\\${share.distro}${share.linuxPath.replace(/\//g, '\\')}` }
+        : lastPickedFolder ? { defaultPath: path.dirname(lastPickedFolder) } : {}),
     };
     const result = win
       ? await dialog.showOpenDialog(win, opts)
