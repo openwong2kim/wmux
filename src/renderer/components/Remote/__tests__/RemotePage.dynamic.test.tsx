@@ -650,6 +650,16 @@ describe('Remote page: remote approvals under each paired PC', () => {
     expect(row(HOST).getAttribute('data-level')).toBe('command');
   });
 
+  it('a first read that fails (the background service not connected yet) draws no row; the next poll draws it', async () => {
+    stub([], { hosts: pcHosts, approvals: { hosts: { [HOST]: 'command' } } });
+    api.a2aRemote.approvalsGet.mockRejectedValueOnce(new Error('not connected'));
+    await render();
+    expect($('[data-remote-approvals]')).toBeNull();
+    await act(async () => { vi.advanceTimersByTime(REMOTE_PAGE_POLL_MS); });
+    await settle();
+    expect(row(HOST).getAttribute('data-level')).toBe('command');
+  });
+
   it('a damaged settings file: off for every PC, and each row says why', async () => {
     stub([], { hosts: pcHosts, approvals: { hosts: { [HOST]: 'command' }, damaged: true } });
     await render();
