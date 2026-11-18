@@ -437,7 +437,7 @@ fn end_with_a_write_larger_than_the_pipe_buffer_keeps_every_byte() {
 #[test]
 fn destroy_during_a_pending_read_joins_the_worker() {
     let _serial = serial();
-    let baseline = worker_count();
+    wait_until("idle workers", || worker_count() == 0);
     let name = pipe_name();
     let (notify, _rx) = notifier();
     let listener = Listener::bind(&name, 4, notify).unwrap();
@@ -452,7 +452,7 @@ fn destroy_during_a_pending_read_joins_the_worker() {
     assert!(conn.error().is_some(), "the canceled write is reported");
     drop(client);
     listener.close_and_join();
-    assert_eq!(worker_count(), baseline);
+    assert_eq!(worker_count(), 0);
 }
 
 #[test]
@@ -498,6 +498,30 @@ fn connect_and_disconnect_cycles_return_to_baseline() {
     }
     assert_eq!(worker_count(), workers);
     let after = process_handle_count();
-    assert!(after <= handles + 4, "handles {handles} -> {after}");
+    // Process-wide: other tests' handles come and go; a leak over 200
+    // cycles would exceed this.
+    assert!(after <= handles + 50, "handles {handles} -> {after}");
     listener.close_and_join();
+}
+
+#[test]
+fn close_without_join_destroys_untaken_conns_and_ends_every_worker() {
+    let _serial = serial();
+    wait_until("idle workers", || worker_count() == 0);
+    let name = pipe_name();
+    let (notify, rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    let taken_client = Client::open(&name);
+    let taken = accept(&listener);
+    let _untaken_client = Client::open(&name);
+    // The second conn is queued (a wake for it arrives) but never taken.
+    wait_until("the second accept", || {
+        rx.try_iter().count() > 0 && worker_count() >= 3
+    });
+    listener.close();
+    taken.destroy();
+    drop(taken_client);
+    wait_until("every worker to end", || worker_count() == 0);
+    assert!(taken.closed());
+    assert!(listener.take_accepted().is_none());
 }

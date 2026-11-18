@@ -248,19 +248,23 @@ impl Listener {
     }
 
     /// Stops accepting and closes the pending instance; the join runs off
-    /// the caller's thread. Accepted conns stay open.
+    /// the caller's thread. Taken conns stay open; conns not taken by then
+    /// are destroyed, so none is left holding the wake callback.
     pub(crate) fn close(&self) {
         if !self.signal_close() {
             return;
         }
-        if let Some(thread) = self.take_thread() {
-            let _ = std::thread::Builder::new()
-                .name("wmux-pipe-join".into())
-                .spawn(move || {
-                    let _worker = Worker::enter();
+        let thread = self.take_thread();
+        let shared = self.shared.clone();
+        let _ = std::thread::Builder::new()
+            .name("wmux-pipe-join".into())
+            .spawn(move || {
+                let _worker = Worker::enter();
+                if let Some(thread) = thread {
                     let _ = thread.join();
-                });
-        }
+                }
+                destroy_untaken(&shared);
+            });
     }
 
     /// As `close`, joining on the caller's thread; also destroys conns not
@@ -270,9 +274,7 @@ impl Listener {
         if let Some(thread) = self.take_thread() {
             let _ = thread.join();
         }
-        while let Some(conn) = self.take_accepted() {
-            conn.destroy_and_join();
-        }
+        destroy_untaken(&self.shared);
     }
 
     fn signal_close(&self) -> bool {
@@ -291,6 +293,20 @@ impl Listener {
 impl Drop for Listener {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+fn destroy_untaken(shared: &Shared) {
+    loop {
+        let conn = shared
+            .accepted
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .pop_front();
+        match conn {
+            Some(conn) => conn.destroy_and_join(),
+            None => break,
+        }
     }
 }
 
