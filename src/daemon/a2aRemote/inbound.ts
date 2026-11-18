@@ -90,6 +90,8 @@ export interface InboundDeps {
     /** True the first time a task's `gone` is seen (its log line); false after, until the task is forgotten. */
     firstGone?(taskId: string): boolean;
     forget(taskId: string): void;
+    /** A status for a task that ended here: not kept, but a send still waiting for an outcome it carries has it. */
+    ended?(taskId: string, status: A2aRemoteStatusV1): void;
   };
   /**
    * Where the asking PC's answer to the question its task's worker shows goes
@@ -319,8 +321,9 @@ async function applyInbound(
     if ((env.status as A2aRemoteStatusV1).kind === 'gone' && open && (deps.remoteStatus.firstGone?.(taskId) ?? true)) {
       deps.log?.('info', `[a2a-remote] task ${taskId} on link ${link.linkId}: the agent on that PC is gone`);
     }
-    // A task that ended has no worker status any more: taken, and dropped.
+    // A task that ended has no worker status any more: taken, and dropped (an approval's outcome still reaches its wait).
     if (open) deps.remoteStatus.note(taskId, env.status as A2aRemoteStatusV1, peer.hostId);
+    else deps.remoteStatus.ended?.(taskId, env.status as A2aRemoteStatusV1);
     return { ok: true, taskId, duplicate: false };
   }
   if (env.kind === 'answer') {

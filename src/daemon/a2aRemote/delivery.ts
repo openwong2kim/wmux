@@ -1259,6 +1259,7 @@ export class A2aRemoteDelivery {
         note: (taskId, status, hostId) => this.takeRemoteStatus(taskId, status, hostId),
         firstGone: (taskId) => this.firstGone(taskId),
         forget: (taskId) => { this.remoteStatuses.delete(taskId); this.statusGates.delete(taskId); this.goneSeen.delete(taskId); },
+        ended: (taskId, status) => this.wakeApprovalWaiters(taskId, status),
       },
       remoteNotice: {
         admit: (linkId) => this.noticeWindow(linkId, true),

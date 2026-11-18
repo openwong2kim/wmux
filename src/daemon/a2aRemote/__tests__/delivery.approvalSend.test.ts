@@ -276,6 +276,22 @@ describe('the receiving PC\'s window, as the asking PC sees it', () => {
     expect(status.detail.approvals).toContainEqual(expect.objectContaining({ messageId: rec.envelope.messageId, outcome: 'not-done', reason: 'approvals-off' }));
   });
 
+  it('an outcome that arrives after the task ended here still answers the waiting send', async () => {
+    const { linkId, taskId } = await sentTask();
+    await offer(linkId, taskId);
+    const pending = send({ taskId, workspaceId: 'ws-a', promptId: PROMPT, decision: 'deny', waitMs: 5_000 });
+    await vi.waitFor(() => expect(approvalsQueued()).toHaveLength(1), { timeout: 5_000 });
+    const messageId = approvalsQueued()[0]!.messageId;
+    expect(await tasks.cancelTask({ taskId, callerWorkspaceId: 'ws-a' })).toMatchObject({ ok: true });
+    const started = Date.now();
+    await delivery.accept(statusEnv(linkId, taskId, { kind: 'working', detail: { approvals: [{ messageId, outcome: 'done' }] } as A2aRemoteStatusV1['detail'] }), { hostId: HOST });
+    expect(await pending).toMatchObject({ ok: true, outcome: { messageId, outcome: 'done' } });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    // The ended task keeps no status.
+    expect((tasks.getTask(taskId)!.metadata.remote as { status?: unknown }).status).toBeUndefined();
+    expect((delivery.withRemoteStatus(tasks.getTask(taskId) as Task).metadata.remote as { status?: unknown }).status).toBeUndefined();
+  });
+
   it('a status for another task naming the same message id does not answer the waiting send', async () => {
     const a = await sentTask();
     const b = await sentTask();
