@@ -1,11 +1,16 @@
 # Integrity-level helpers for run.ps1 (dot-sourced). Windows PowerShell 5.1.
 #
 #   [IntegrityLaunch]::Start(commandLine, cwd, integritySid)
-#       starts a command line with a copy of this process's token lowered to
-#       the given integrity level (S-1-16-8192 Medium, S-1-16-4096 Low) and
-#       returns its pid. The child inherits this process's environment.
+#       starts a command line with the filtered (non-elevated) form of this
+#       process's token, as UAC gives a standard process: CreateRestrictedToken
+#       with LUA_TOKEN (the Administrators group deny-only, the admin
+#       privileges removed), then labelled with the given integrity level
+#       (S-1-16-8192 Medium, S-1-16-4096 Low). Returns its pid. The child
+#       inherits this process's environment.
 #   [IntegrityLaunch]::ProcessIntegrity(pid)
 #       the integrity RID of a running process (0x2000 Medium, 0x3000 High).
+#   [IntegrityLaunch]::ProcessElevated(pid)
+#       whether a running process's token is elevated (TokenElevation).
 #
 # Only for CI runners: run.ps1 calls Start only when it runs elevated there.
 Add-Type -TypeDefinition @'
@@ -38,7 +43,8 @@ public static class IntegrityLaunch {
   [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr LocalFree(IntPtr mem);
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
   [DllImport("advapi32.dll", SetLastError = true)]
-  static extern bool DuplicateTokenEx(IntPtr existing, uint access, IntPtr attributes, int impersonationLevel, int tokenType, out IntPtr token);
+  static extern bool CreateRestrictedToken(IntPtr existing, uint flags, uint disableCount, IntPtr sidsToDisable,
+    uint deleteCount, IntPtr privilegesToDelete, uint restrictedCount, IntPtr sidsToRestrict, out IntPtr token);
   [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertStringSidToSid(string sid, out IntPtr psid);
   [DllImport("advapi32.dll")] static extern int GetLengthSid(IntPtr sid);
   [DllImport("advapi32.dll", SetLastError = true)]
@@ -55,6 +61,8 @@ public static class IntegrityLaunch {
   const uint TOKEN_ALL_ACCESS = 0xF01FF;
   const uint TOKEN_QUERY = 0x0008;
   const int TokenIntegrityLevel = 25;
+  const int TokenElevation = 20;
+  const uint LUA_TOKEN = 0x4;
   const uint SE_GROUP_INTEGRITY = 0x20;
   const uint CREATE_NO_WINDOW = 0x08000000;
   const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
@@ -65,8 +73,11 @@ public static class IntegrityLaunch {
     IntPtr own = IntPtr.Zero, lowered = IntPtr.Zero, sid = IntPtr.Zero;
     try {
       if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, out own)) throw Fail("OpenProcessToken");
-      // SecurityImpersonation (2), TokenPrimary (1).
-      if (!DuplicateTokenEx(own, TOKEN_ALL_ACCESS, IntPtr.Zero, 2, 1, out lowered)) throw Fail("DuplicateTokenEx");
+      // The filtered token of a UAC standard process: a restricted copy of
+      // this primary token, so CreateProcessAsUser needs no extra privilege.
+      if (!CreateRestrictedToken(own, LUA_TOKEN, 0, IntPtr.Zero, 0, IntPtr.Zero, 0, IntPtr.Zero, out lowered)) {
+        throw Fail("CreateRestrictedToken");
+      }
       if (!ConvertStringSidToSid(integritySid, out sid)) throw Fail("ConvertStringSidToSid");
       TOKEN_MANDATORY_LABEL label = new TOKEN_MANDATORY_LABEL();
       label.Label.Sid = sid;
@@ -88,6 +99,23 @@ public static class IntegrityLaunch {
       if (sid != IntPtr.Zero) LocalFree(sid);
       if (lowered != IntPtr.Zero) CloseHandle(lowered);
       if (own != IntPtr.Zero) CloseHandle(own);
+    }
+  }
+
+  public static bool ProcessElevated(int pid) {
+    IntPtr process = IntPtr.Zero, token = IntPtr.Zero, buffer = IntPtr.Zero;
+    try {
+      process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+      if (process == IntPtr.Zero) throw Fail("OpenProcess");
+      if (!OpenProcessToken(process, TOKEN_QUERY, out token)) throw Fail("OpenProcessToken");
+      buffer = Marshal.AllocHGlobal(4);
+      int length;
+      if (!GetTokenInformation(token, TokenElevation, buffer, 4, out length)) throw Fail("GetTokenInformation");
+      return Marshal.ReadInt32(buffer) != 0;
+    } finally {
+      if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
+      if (token != IntPtr.Zero) CloseHandle(token);
+      if (process != IntPtr.Zero) CloseHandle(process);
     }
   }
 

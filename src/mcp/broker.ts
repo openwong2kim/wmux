@@ -44,15 +44,14 @@ import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/too
 import { peerPidOf, selfCheckPeerPid } from '../shared/peerPid';
 import {
   decidePeer,
-  decideWin32Peer,
+  decideWin32Session,
   PreAuthGate,
   retryingSelfCheck,
   selfCheckNativePipe,
-  TOKEN_FACTS_TIMEOUT_MS,
   win32SelfCheckPipeName,
   type HostDecision,
+  type PeerSelfCheck,
   type Win32HostDecision,
-  type Win32TokenFacts,
 } from './brokerPeer';
 import { listenNativePipe, loadNativePipe, NATIVE_PIPE_MAX_INSTANCES, type NativePipeModule, type PipeOwnerVerdict } from './nativePipe';
 import type { NativePipeSocket } from './nativePipeSocket';
@@ -378,7 +377,9 @@ function main(): void {
       }
       if (!tokenMatches(handshake.authToken, expected.token)) {
         console.error('[wmux-mcp-broker] auth failed, dropping connection');
-        if (wantsAck) socket.end(brokerAckLine(false, 'auth'), () => socket.destroy());
+        // Windows: closed with no ack line, as for every refusal there, so the
+        // shim runs its own full server instead of ending the session.
+        if (wantsAck && process.platform !== 'win32') socket.end(brokerAckLine(false, 'auth'), () => socket.destroy());
         else socket.destroy();
         return;
       }
@@ -439,7 +440,7 @@ function main(): void {
   if (process.send) process.on('disconnect', () => shutdown());
 
   if (pipeModule) {
-    closeServer = listenWin32(pipeModule, pipeName, admitRate, serveConnection, () => peerSelfCheck.verdict(), (reason) => {
+    closeServer = listenWin32(pipeModule, pipeName, admitRate, serveConnection, peerSelfCheck, (reason) => {
       console.error(`[wmux-mcp-broker] the pipe listener stopped accepting (${reason}); exiting (exit ${EXIT_LISTENER_STOPPED})`);
       shutdown(EXIT_LISTENER_STOPPED);
     });
@@ -530,16 +531,18 @@ function main(): void {
 /**
  * Windows: listen on the broker's pipe with the native listener and return
  * how to close it. A name already taken ends the broker: 75 when this user
- * holds it (another broker; the supervisor stands down and probes), 78 when
- * another owner does (a restart cannot fix that), and a crash exit when the
- * name went away meanwhile (the supervisor restarts the broker).
+ * holds it, or when its owner cannot be read because every instance is in use
+ * (the supervisor stands down and probes; a holder that stays busy ends in its
+ * terminal state there), 78 when another owner does (a restart cannot fix
+ * that), and a crash exit when the name went away meanwhile (the supervisor
+ * restarts the broker).
  */
 function listenWin32(
   module: NativePipeModule,
   pipeName: string,
   admitRate: (socket: BrokerSocket) => boolean,
   serveConnection: (socket: BrokerSocket, decide: DecideHost) => void,
-  selfCheckVerdict: () => Promise<string | null>,
+  selfCheck: Pick<PeerSelfCheck, 'latest' | 'verdict'>,
   onFailure: (reason: string) => void,
 ): () => void {
   // Idle clients that never send a handshake cannot hold the pipe's
@@ -547,6 +550,7 @@ function listenWin32(
   const preAuth = new PreAuthGate();
   let capLogged = 0;
   const onConnection = (socket: NativePipeSocket): void => {
+    const acceptedAt = Date.now();
     if (!admitRate(socket)) return;
     const release = preAuth.admit();
     if (!release) {
@@ -559,16 +563,19 @@ function listenWin32(
       return;
     }
     socket.once('close', release);
+    // Decided within a budget from accept, on the last self-check verdict
+    // (brokerPeer.ts decideWin32Session). The token facts are asked only now,
+    // after the handshake line was read: the client's token can be read once
+    // it has sent something.
     serveConnection(socket, async (claimed) => {
       try {
-        const verdict = await selfCheckVerdict();
-        const selfCheckOk = verdict === 'available';
-        // Asked only after the handshake line was read: the client's token
-        // can be read once it has sent something.
-        const facts: Win32TokenFacts = selfCheckOk
-          ? await socket.tokenFacts(TOKEN_FACTS_TIMEOUT_MS)
-          : { ok: false, reason: 'not read' };
-        return decideWin32Peer({ selfCheckOk, peer: socket.peer, facts, claimedPid: claimed.callerPid });
+        return await decideWin32Session({
+          acceptedAt,
+          selfCheck,
+          tokenFacts: (timeoutMs) => socket.tokenFacts(timeoutMs),
+          peer: socket.peer,
+          claimedPid: claimed.callerPid,
+        });
       } finally {
         release();
       }
@@ -597,7 +604,9 @@ function listenWin32(
       console.error(`[wmux-mcp-broker] the broker pipe is held by another owner; stopping (exit ${BROKER_EXIT_PATH_OCCUPIED})`);
       process.exit(BROKER_EXIT_PATH_OCCUPIED);
     } else if (code === 'EADDRINUSE' && owner !== 'none') {
-      console.error('[wmux-mcp-broker] pipe in use by a live broker; standing down');
+      console.error(owner === 'ours'
+        ? '[wmux-mcp-broker] pipe in use by a live broker; standing down'
+        : `[wmux-mcp-broker] pipe in use, owner not readable (${owner}); standing down`);
       process.exit(75);
     } else {
       console.error(`[wmux-mcp-broker] could not listen on ${pipeName} (${err instanceof Error ? err.message : String(err)}; owner ${owner}); exiting`);

@@ -300,9 +300,9 @@ describe.runIf(hostable)('broker handshake ack', () => {
     for (const s of sessions) s.socket.destroy();
   });
 
-  it('a wrong token with ack: 1 gets ok:false and the connection closes', async () => {
+  it('a wrong token with ack: 1 gets ok:false and the connection closes (Windows: closed with no bytes)', async () => {
     const s = await open(handshake({ ack: 1 }, 'wrong-token'));
-    expect(await s.closed).toBe('{"wmuxBroker":1,"ok":false,"error":"auth"}\n');
+    expect(await s.closed).toBe(isWin ? '' : '{"wmuxBroker":1,"ok":false,"error":"auth"}\n');
   });
 
   it('a wrong token without ack is dropped with no bytes, as before', async () => {
@@ -343,10 +343,15 @@ describe.runIf(hostable)('broker handshake ack', () => {
     }
   });
 
-  it('the node shim ends on a wrong token and runs no full server', async () => {
+  it('the node shim ends on a wrong token and runs no full server (Windows: it runs the full server)', async () => {
     const dir = fs.mkdtempSync(path.join(isWin ? os.tmpdir() : '/tmp', 'nsh-'));
     try {
       const run = await runShim(buildShim(dir), home, SUFFIX, 'wrong-token');
+      if (isWin) {
+        expect(run.stderr).toContain('[wmux-mcp-shim] the broker closed the connection before its ack; running the full server');
+        expect(run.stdout).toBe(`FULL SERVER pid=${run.pid}\n`);
+        return;
+      }
       expect(run.stderr).toContain('[wmux-mcp-shim] broker refused the session: auth');
       expect(run.stdout).not.toContain('FULL SERVER');
       expect(run.code).toBe(1);
