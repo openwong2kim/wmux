@@ -12,6 +12,8 @@ on:
       - 'core/**'
       - 'src/mcp/**'
       - 'src/shared/nativeTerminalCore.ts'
+      - '.github/actions/terminal-core/**'
+      - 'scripts/build-native-hooks.mjs'
       - 'scripts/ci/broker-pipe-owner/**'
       - '.github/workflows/broker-pipe-owner.yml'
   workflow_dispatch:
