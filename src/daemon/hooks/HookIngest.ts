@@ -1495,7 +1495,7 @@ export class HookIngest {
       let transcriptPath: string | undefined;
       let wslTranscriptPath: string | undefined;
       const routed = sessions.find((s) => s.id === sessionId);
-      if (claimedPath && routed?.wslTarget && isWslOwnTranscriptPath(claimedPath, signal.agentSessionId, routed.wslTarget)) {
+      if (claimedPath && routed?.wslTarget && isWslOwnTranscriptPath(claimedPath, signal.agentSessionId, routed.wslTarget, routed.env)) {
         // #2270: the WSL pane's own transcript, inside its distro. This process
         // cannot open that path as given, so it is kept as the Linux path only;
         // the projector reads it through the distro share.

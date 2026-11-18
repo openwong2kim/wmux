@@ -805,7 +805,7 @@ export class TranscriptProjector {
     }
     const key = this.wslKey(sessionId, binding);
     const wslPath = binding.wslTranscriptPath;
-    const at = wslTranscriptSharePath(wslPath, binding.sessionId, this.deps.getWslTarget?.(sessionId), this.wslShare);
+    const at = wslTranscriptSharePath(wslPath, binding.sessionId, this.deps.getWslTarget?.(sessionId), { ...this.wslShare, env: this.deps.getSessionEnv?.(sessionId) });
     if (!at.ok) {
       // Decided without the disk: the caller reads it next, no refresh needed.
       this.settleWsl(sessionId, key, wslPath, at, false);

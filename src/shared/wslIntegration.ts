@@ -2,6 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mergeWslEnv, wslTargetArgs, type WslTarget } from './wsl';
 import { CLAUDE_FILE_SEND_ENV } from './claudeFileSend';
+import {
+  ACCOUNT_ENV_VENDOR, ACCOUNT_SHARE_MANIFEST, WSL_ACCOUNT_DISTRO_ENV, WSL_ACCOUNT_KEYS_ENV, accountFolderShares, parseWslAccountKeys,
+  wslAccountHomeKey, type AccountVendor,
+} from './wslAccountHome';
 
 // Per-launch settings only. Never edit ~/.claude/settings.json in either OS.
 // Use the existing bridge in its Windows runtime: this preserves the named-pipe
@@ -182,6 +186,92 @@ if [ -n "\${WMUX_WSL_GIT_DIR:-}" ] && [ -n "\${WMUX_WSL_GIT_WORK_TREE:-}" ]; the
   __wmux_git_config user.email "\${WMUX_WSL_GIT_USER_EMAIL:-}"
   unset -f __wmux_git_config
 fi`;
+
+/**
+ * Every variable buildWslInjection sets for a bound account. It drops them all
+ * before redoing them, and a caller merging the result into a replayed env
+ * must drop the ones the result leaves out (DaemonSessionManager).
+ */
+export const WSL_ACCOUNT_INJECTED_VARS: readonly string[] = [
+  'WMUX_WSL_ACCOUNT_CLAUDE', 'WMUX_WSL_ACCOUNT_CLAUDE_SHARE', 'WMUX_WSL_ACCOUNT_CODEX', 'WMUX_WSL_ACCOUNT_CODEX_SHARE',
+  'WMUX_WSL_ACCOUNT_SH', WSL_ACCOUNT_DISTRO_ENV,
+];
+
+const shareList = (vendor: AccountVendor, kind: 'linkDirs' | 'copyFiles') => ACCOUNT_SHARE_MANIFEST[vendor][kind].join(' ');
+
+/**
+ * Sourced by bash before the command (exec), and twice in an interactive pane:
+ * `quiet` before the user's startup files, so one that execs zsh or tmux still
+ * hands the variables on, then `interactive` after them, so they win over an
+ * export there. Each account the pane runs gets its own home in this distro
+ * (shared/wslAccountHome.ts), exported as CLAUDE_CONFIG_DIR / CODEX_HOME. A new
+ * home with sharing on mirrors the distro's own default folder, never the
+ * Windows one. With no sign-in there yet, the `interactive` pass says so once
+ * per start, an exec run logs it instead of writing into the command's output,
+ * and `quiet` says nothing. A home that cannot be made returns 1: the exec
+ * bootstrap exits, an interactive shell says so and stays on the default account.
+ */
+export const WSL_ACCOUNT_SH = `# wmux: a bound workspace's agent accounts, each with its own home in this distro.
+__wmux_account_home() {
+  __wmux_vendor=$1 __wmux_key=$2 __wmux_share=$3 __wmux_var=$4 __wmux_mode=$5
+  case "$__wmux_key" in ''|*[!0-9a-f]*) return 0 ;; esac
+  case "\${WMUX_DATA_SUFFIX:-}" in *[!A-Za-z0-9._-]*|*..*)
+    printf 'wmux: the data suffix "%s" cannot name a folder, so this pane does not use its %s account.\\n' "$WMUX_DATA_SUFFIX" "$__wmux_vendor" >&2
+    return 1 ;;
+  esac
+  __wmux_root="$HOME/.wmux\${WMUX_DATA_SUFFIX:-}/accounts"
+  __wmux_home="$__wmux_root/$__wmux_vendor-$__wmux_key"
+  # A home exists only complete: it is seeded in a private folder beside it and
+  # renamed into place, so a pane starting at the same moment never runs on a
+  # half-mirrored one. A pane that loses the race drops its seed and uses the
+  # winner's home; an existing home is never written again.
+  if [ ! -d "$__wmux_home" ]; then
+    __wmux_seed=$( (umask 077 && mkdir -p "$__wmux_root" && mktemp -d "$__wmux_root/.seed-$__wmux_vendor-XXXXXX") 2>/dev/null )
+    if [ -z "$__wmux_seed" ]; then
+      printf 'wmux: cannot create %s, so this pane does not use its %s account.\\n' "$__wmux_home" "$__wmux_vendor" >&2
+      return 1
+    fi
+    if [ "$__wmux_share" = 1 ]; then
+      if [ "$__wmux_vendor" = codex ]; then
+        __wmux_src="$HOME/.codex" __wmux_links="${shareList('codex', 'linkDirs')}" __wmux_copies="${shareList('codex', 'copyFiles')}"
+      else
+        __wmux_src="$HOME/.claude" __wmux_links="${shareList('claude', 'linkDirs')}" __wmux_copies="${shareList('claude', 'copyFiles')}"
+      fi
+      for __wmux_name in $__wmux_links; do
+        [ ! -e "$__wmux_src/$__wmux_name" ] || ln -sn "$__wmux_src/$__wmux_name" "$__wmux_seed/$__wmux_name" 2>/dev/null
+      done
+      for __wmux_name in $__wmux_copies; do
+        [ ! -f "$__wmux_src/$__wmux_name" ] || cp "$__wmux_src/$__wmux_name" "$__wmux_seed/$__wmux_name" 2>/dev/null
+      done
+    fi
+    # mv renames onto a missing name; onto a home that appeared meanwhile it
+    # moves the seed inside instead, which the check below takes back out.
+    __wmux_name=\${__wmux_seed##*/}
+    mv "$__wmux_seed" "$__wmux_home" 2>/dev/null
+    rm -rf -- "$__wmux_seed" "$__wmux_home/$__wmux_name" 2>/dev/null
+    if [ ! -d "$__wmux_home" ]; then
+      printf 'wmux: cannot create %s, so this pane does not use its %s account.\\n' "$__wmux_home" "$__wmux_vendor" >&2
+      return 1
+    fi
+  fi
+  if [ "$__wmux_vendor" = codex ]; then __wmux_login=auth.json __wmux_how="codex login"; else __wmux_login=.credentials.json __wmux_how="/login in claude"; fi
+  if [ ! -e "$__wmux_home/$__wmux_login" ]; then
+    __wmux_note="wmux: this pane's $__wmux_vendor account has no sign-in in this WSL distro yet; signing in here ($__wmux_how) signs in this account only, other panes keep theirs."
+    if [ "$__wmux_mode" = interactive ]; then
+      printf '%s\\n' "$__wmux_note" >&2
+    elif [ "$__wmux_mode" = exec ]; then
+      printf '%s %s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$__wmux_note" >> "$__wmux_root/notices.log" 2>/dev/null
+    fi
+  fi
+  export "$__wmux_var=$__wmux_home"
+}
+__wmux_account_rc=0
+[ -z "\${WMUX_WSL_ACCOUNT_CLAUDE:-}" ] || __wmux_account_home claude "$WMUX_WSL_ACCOUNT_CLAUDE" "\${WMUX_WSL_ACCOUNT_CLAUDE_SHARE:-}" CLAUDE_CONFIG_DIR "\${1:-interactive}" || __wmux_account_rc=1
+[ -z "\${WMUX_WSL_ACCOUNT_CODEX:-}" ] || __wmux_account_home codex "$WMUX_WSL_ACCOUNT_CODEX" "\${WMUX_WSL_ACCOUNT_CODEX_SHARE:-}" CODEX_HOME "\${1:-interactive}" || __wmux_account_rc=1
+unset -f __wmux_account_home
+unset __wmux_vendor __wmux_key __wmux_share __wmux_var __wmux_mode __wmux_root __wmux_home __wmux_seed __wmux_src __wmux_links __wmux_copies __wmux_name __wmux_login __wmux_how __wmux_note
+eval "unset __wmux_account_rc; return $__wmux_account_rc"
+`;
 
 export const WSL_CODEX_HOOK = `#!/bin/sh
 export ELECTRON_RUN_AS_NODE=1
@@ -466,6 +556,17 @@ export function buildWslInjection(options: {
   if (mcpEntry) write(path.join(dir, 'claude-mcp.json'), wslMcpConfig());
   write(path.join(dir, 'bashrc.integration'), options.bashInit);
   write(path.join(dir, 'bashrc'), `
+# The pane's accounts, before the user's startup files: one that execs zsh or
+# tmux still hands them on. A pane that has accounts but cannot reach their
+# script says so instead of running on the distro's default account unnoticed.
+__wmux_accounts=
+if [ -n "\${WMUX_WSL_ACCOUNT_CLAUDE:-}\${WMUX_WSL_ACCOUNT_CODEX:-}" ]; then
+  if [ -z "\${WMUX_WSL_ACCOUNT_SH:-}" ] || [ ! -r "$WMUX_WSL_ACCOUNT_SH" ]; then
+    printf 'wmux: this pane cannot reach its account script from this WSL distro, so it runs on the default account here; signing in here would sign in the default account.\\n' >&2
+  elif . "$WMUX_WSL_ACCOUNT_SH" quiet; then
+    __wmux_accounts=1
+  fi
+fi
 # Keep the user's shell setup even when wmux hooks are disabled.
 if [ "\${WMUX_SHELL_INTEGRATION:-1}" = 0 ]; then
   [ ! -r "$HOME/.bashrc" ] || . "$HOME/.bashrc"
@@ -477,6 +578,9 @@ fi
 if [ -n "$WMUX_WSL_ACCOUNT_HOME_UNREACHABLE" ]; then
   printf 'wmux: %s cannot be opened from this WSL distro, so this login will not be saved to the selected account. Use an account folder on a local drive or inside this distro.\\n' "$WMUX_WSL_ACCOUNT_HOME_UNREACHABLE" >&2
 fi
+# And again after them, so they win over an export there; this pass prints the first-use line.
+[ -z "$__wmux_accounts" ] || . "$WMUX_WSL_ACCOUNT_SH" interactive
+unset __wmux_accounts
 ${WSL_TASK_GIT_ENV}
 # An explicit workspace directory wins over a cd in the user's startup files.
 if [ -z "$WMUX_WSL_CWD" ] || ! builtin cd -- "$WMUX_WSL_CWD"; then
@@ -520,6 +624,34 @@ fi
   // Ordinary WSL panes keep their Linux profiles: copied Windows config can
   // contain Windows-only notify/MCP/hooks. Only forward the login's vendor.
   const loginKey = options.wslAccountLoginEnvKey;
+  // A bound workspace's accounts get their own home in the distro instead
+  // (shared/wslAccountHome.ts): the Windows folder never crosses over, only
+  // its key. A login tab's own variable stays the Windows folder (above).
+  // Recomputed on every spawn, so a recovered pane's replayed env is redone.
+  for (const name of WSL_ACCOUNT_INJECTED_VARS) delete env[name];
+  // And their WSLENV names a replayed env still lists: only this spawn's go back in.
+  if (env.WSLENV) env.WSLENV = env.WSLENV.split(':').filter((entry) => !WSL_ACCOUNT_INJECTED_VARS.includes(entry.split('/')[0].toUpperCase())).join(':');
+  let accountHomes = false;
+  for (const key of parseWslAccountKeys(env[WSL_ACCOUNT_KEYS_ENV])) {
+    const folder = env[key];
+    if (!folder || key === loginKey) continue;
+    const vendor = ACCOUNT_ENV_VENDOR[key];
+    const name = `WMUX_WSL_ACCOUNT_${vendor.toUpperCase()}`;
+    env[name] = wslAccountHomeKey(folder);
+    entries.push(name);
+    if (accountFolderShares(folder, vendor)) {
+      env[`${name}_SHARE`] = '1';
+      entries.push(`${name}_SHARE`);
+    }
+    accountHomes = true;
+  }
+  if (accountHomes) {
+    write(path.join(dir, 'account.sh'), WSL_ACCOUNT_SH);
+    env.WMUX_WSL_ACCOUNT_SH = path.join(dir, 'account.sh');
+    // Kept on the pane's env only (not in WSLENV): its sign-in key names the distro (shared/wslAccountMark.ts).
+    env[WSL_ACCOUNT_DISTRO_ENV] = target.distribution;
+    entries.push('WMUX_WSL_ACCOUNT_SH/p');
+  }
   const home = loginKey ? env[loginKey] : undefined;
   let unreachableKey: string | null = null;
   if ((loginKey === 'CODEX_HOME' || loginKey === 'CLAUDE_CONFIG_DIR') && home) {
@@ -548,6 +680,15 @@ fi
   exit 1
 fi
 if [ "\${WMUX_SHELL_INTEGRATION:-1}" != 0 ]; then export PATH="$WMUX_WSL_BIN:$PATH"; fi
+# An account that cannot get its home fails the run, never runs it on the default account:
+# gated on the account ids, which always arrive, not on the script path, which wsl.exe can drop.
+if [ -n "\${WMUX_WSL_ACCOUNT_CLAUDE:-}\${WMUX_WSL_ACCOUNT_CODEX:-}" ]; then
+  if [ -z "\${WMUX_WSL_ACCOUNT_SH:-}" ] || [ ! -r "$WMUX_WSL_ACCOUNT_SH" ]; then
+    printf 'wmux: this run cannot reach its account script from this WSL distro, so it does not run on the default account.\\n' >&2
+    exit 1
+  fi
+  . "$WMUX_WSL_ACCOUNT_SH" exec || exit 1
+fi
 eval "$1"`;
   return {
     args: [...wslTargetArgs(target), '--cd', cwd, '--exec', '/bin/bash', '--noprofile', '--norc', '-c', bootstrap,

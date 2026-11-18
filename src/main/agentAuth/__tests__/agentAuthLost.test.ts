@@ -53,6 +53,20 @@ describe('answerLoginState', () => {
   });
 });
 
+describe('answerLoginState for a WSL account home', () => {
+  it('does not ask the Windows status, so the wait ends on the pane\'s own report or times out', async () => {
+    const board = new AuthLostBoard();
+    const lost: AgentAuthLost = { agent: 'claude', configDir: 'wsl:Ubuntu:C:\\acc\\work', origin: 'turn', at: 1 };
+    board.report('pty-1', lost);
+    const key = authLostKey('claude', lost.configDir);
+    const probe = vi.fn(async () => true);
+    expect(await answerLoginState(board, key, probe)).toEqual({ known: true, signedIn: null, cleared: false });
+    expect(probe).not.toHaveBeenCalled();
+    board.accountWorks('claude', lost.configDir);
+    expect(await answerLoginState(board, key, probe)).toEqual({ known: false });
+  });
+});
+
 describe('answerLoginState generations', () => {
   it('keeps a loss reported while the status check ran, even when that check said signed in', async () => {
     const board = new AuthLostBoard();

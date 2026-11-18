@@ -11,6 +11,7 @@ import { IPC } from '../../shared/constants';
 import {
   authConfigEnvKey,
   authLostKey,
+  isWindowsReadableAccount,
   parseAgentAuthLost,
   parseAuthAccount,
   type AgentAuthLost,
@@ -93,7 +94,10 @@ export function loginProbeEnv(entry: Pick<AuthLostEntry, 'agent' | 'configDir'>,
 /**
  * [Sign in again]'s check: the agent's own status for an entry the board holds.
  * Signed in drops the entry (returned as `cleared`). An unknown key is not
- * probed, so the renderer can only ask about accounts the daemon reported.
+ * probed, so the renderer can only ask about accounts the daemon reported. A
+ * WSL account home is not probed either: the Windows status command would read
+ * the Windows folder, another sign-in. Its entry goes when that pane's agent is
+ * seen to work (the daemon's report), and the wait ends then or times out.
  */
 export async function answerLoginState(
   board: AuthLostBoard,
@@ -102,6 +106,7 @@ export async function answerLoginState(
 ): Promise<{ known: false } | { known: true; signedIn: boolean | null; cleared: boolean }> {
   const entry = typeof key === 'string' ? board.get(key) : undefined;
   if (!entry) return { known: false };
+  if (!isWindowsReadableAccount(entry.configDir)) return { known: true, signedIn: null, cleared: false };
   const started = board.generation(entry.key);
   const signedIn = await loginState(entry).catch(() => null);
   // A newer report arrived while the status ran: that loss stands.

@@ -36,8 +36,8 @@ describe('WSL transcript wiring in the daemon', () => {
     expect(body).not.toMatch(/else if \(p\.resumeBinding\.transcriptPath\)/);
   });
 
-  it('keeps a WSL path only for the pane\'s own recorded target', () => {
-    expect(applyBody()).toMatch(/keepOwnWslTranscriptPath\(vetted, managed\.meta\.wslTarget\)/);
+  it('keeps a WSL path only for the pane\'s own recorded target (and its bound account\'s home)', () => {
+    expect(applyBody()).toMatch(/keepOwnWslTranscriptPath\(vetted, managed\.meta\.wslTarget, managed\.meta\.env\)/);
   });
 
   it('decides the search exactness on the vetted binding, after both writer checks', () => {

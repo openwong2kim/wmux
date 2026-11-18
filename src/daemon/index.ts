@@ -4574,7 +4574,7 @@ function registerRpcHandlers(
     }
     // The same writer half for a WSL pane's Linux transcript path: only that
     // pane's own Claude transcript is kept (the projector re-checks on read).
-    const ownWsl = keepOwnWslTranscriptPath(vetted, managed.meta.wslTarget);
+    const ownWsl = keepOwnWslTranscriptPath(vetted, managed.meta.wslTarget, managed.meta.env);
     if (ownWsl.dropped) log('warn', `[resume] refused WSL transcript path for ${id}`);
     vetted = ownWsl.binding;
     // A capture left without a path (none sent, or one refused above) may

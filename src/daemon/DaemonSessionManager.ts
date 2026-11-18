@@ -1,5 +1,5 @@
 import { isWslShell, mergeWslEnv, resolveWslCwd, type WslTarget, type ResolvedWslCwd } from '../shared/wsl';
-import { buildWslInjection } from '../shared/wslIntegration';
+import { buildWslInjection, WSL_ACCOUNT_INJECTED_VARS } from '../shared/wslIntegration';
 import { getWmuxDir } from './config';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -881,6 +881,9 @@ export class DaemonSessionManager extends EventEmitter {
         execCommand: params.exec ? (params.execLaunchCommand ?? params.exec.command) : undefined,
       });
       spawnArgs = injection.args;
+      // A replayed env's account variables that this spawn no longer sends
+      // (the account folder is gone, or the mark dropped) must not survive the merge.
+      for (const name of WSL_ACCOUNT_INJECTED_VARS) if (!(name in injection.env)) delete env[name];
       Object.assign(env, injection.env);
       if (!params.exec) shellMarks = 'integrated';
     } else if (params.exec) {

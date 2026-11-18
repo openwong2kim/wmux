@@ -36,9 +36,13 @@ vi.mock('../../shared/wsl', async (importOriginal) => {
 });
 vi.mock('../../shared/wslIntegration', async () => {
   const { wslTargetArgs } = await import('../../shared/wslTarget');
-  return { buildWslInjection: (opts: { target: Parameters<typeof wslTargetArgs>[0]; cwd: string; env: Record<string, string> }) => {
+  // The real list; this injection, like a spawn with no account left, sends none of them.
+  const WSL_ACCOUNT_INJECTED_VARS = ['WMUX_WSL_ACCOUNT_CLAUDE', 'WMUX_WSL_ACCOUNT_CLAUDE_SHARE', 'WMUX_WSL_ACCOUNT_CODEX',
+    'WMUX_WSL_ACCOUNT_CODEX_SHARE', 'WMUX_WSL_ACCOUNT_SH', 'WMUX_WSL_ACCOUNT_DISTRO'];
+  return { WSL_ACCOUNT_INJECTED_VARS, buildWslInjection: (opts: { target: Parameters<typeof wslTargetArgs>[0]; cwd: string; env: Record<string, string> }) => {
     injectionMock(opts);
-    return { args: [...wslTargetArgs(opts.target), '--cd', opts.cwd, '--exec', '/bin/bash'], env: opts.env };
+    const env = Object.fromEntries(Object.entries(opts.env).filter(([name]) => !WSL_ACCOUNT_INJECTED_VARS.includes(name)));
+    return { args: [...wslTargetArgs(opts.target), '--cd', opts.cwd, '--exec', '/bin/bash'], env };
   } };
 });
 import { DaemonSessionManager } from '../DaemonSessionManager';
@@ -60,6 +64,21 @@ describe('createSession — WSL distro selection and recovery target', () => {
     expect(injectionMock).toHaveBeenLastCalledWith(expect.objectContaining({ wslAccountLoginEnvKey: vendor }));
     await manager.createSessionAsync({ id: 'ordinary', cmd: 'wsl.exe', cwd: '~', env });
     expect(injectionMock).toHaveBeenLastCalledWith(expect.objectContaining({ wslAccountLoginEnvKey: undefined }));
+  });
+
+  // A recovered WSL pane replays its persisted env: account variables the
+  // injection no longer sends (the account folder is gone) must not survive.
+  it('drops a replayed env\'s account variables that the injection no longer sends, and keeps its mark', async () => {
+    const replayed = {
+      WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR', WMUX_WSL_ACCOUNT_CLAUDE: '0123456789abcdef', WMUX_WSL_ACCOUNT_CLAUDE_SHARE: '1',
+      WMUX_WSL_ACCOUNT_SH: '/x/account.sh', WMUX_WSL_ACCOUNT_DISTRO: 'Ubuntu', KEEP_ME: 'yes',
+    };
+    await manager.createSessionAsync({ id: 'replayed', cmd: 'wsl.exe', cwd: '~', env: replayed });
+    const env = manager.getSession('replayed')?.meta.env ?? {};
+    for (const name of ['WMUX_WSL_ACCOUNT_CLAUDE', 'WMUX_WSL_ACCOUNT_CLAUDE_SHARE', 'WMUX_WSL_ACCOUNT_SH', 'WMUX_WSL_ACCOUNT_DISTRO']) {
+      expect(env).not.toHaveProperty(name);
+    }
+    expect(env).toMatchObject({ WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR', KEEP_ME: 'yes' });
   });
 
   it('uses the picker selection to resolve the actual target and persisted args', async () => {

@@ -131,7 +131,7 @@ When Claude Code or Codex hits its usage limit, the pane pauses: its header and 
 | Schedules | Queue an exact prompt for one agent session; it waits until the session is idle — [prompt schedules](docs/how-to/session-prompt-scheduling.md). |
 | Remote | `wmux web` serves your panes to a browser, read-only and loopback-only by default; attach another machine's workspaces — [remote workspaces](docs/how-to/remote-workspaces.md). |
 | Browser flows | Record a web flow once and replay it — [replay browser flows](docs/how-to/replay-browser-flows.md). |
-| Workspaces | Per-workspace environment and startup command, e.g. for separate accounts — [workspace profiles](docs/workspace-profiles.md). |
+| Workspaces | Per-workspace environment and startup command, e.g. for separate accounts — [workspace profiles](docs/workspace-profiles.md); a bound account in WSL panes — [accounts in WSL](docs/how-to/use-accounts-in-wsl.md). |
 | Recovery | Daemon restarts and WSL sessions — [daemon restart](docs/how-to/handle-daemon-restart.md), [WSL recovery](docs/how-to/wsl-session-recovery.md). |
 | Performance | What runs while a pane is hidden, and `wmux doctor` — [performance](docs/performance.md). |
 | Look & language | Light and dark UI themes, terminal palettes, 23 locales — [translations welcome](https://github.com/openwong2kim/wmux/labels/good%20first%20issue). |

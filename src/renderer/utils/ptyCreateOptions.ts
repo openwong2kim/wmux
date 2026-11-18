@@ -44,6 +44,8 @@ export interface PtyCreateOptions {
   env?: Record<string, string>;
   /** Account-login tabs only; ordinary WSL panes retain their Linux profiles. */
   wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
+  /** A re-sign-in tab for a WSL account home: this variable runs as that account in WSL (main checks it). */
+  wslAccountHomeKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
   /** Agent-setup panes: main skips the workspace's bound-account env. */
   ignoreAccountBinding?: boolean;
   /** Run on this registered account instead of the workspace's bound one of

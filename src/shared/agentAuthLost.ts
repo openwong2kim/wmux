@@ -8,6 +8,7 @@
  */
 
 import { agentRow } from './agentIdentity';
+import { parseWslAuthRef, wslAccountAuthRef } from './wslAccountMark';
 
 export type AuthLostAgent = 'claude' | 'codex';
 
@@ -16,7 +17,12 @@ export type AuthLostOrigin = 'turn' | 'start' | 'schedule';
 
 export interface AgentAuthLost {
   agent: AuthLostAgent;
-  /** The account's config dir (CLAUDE_CONFIG_DIR / CODEX_HOME), or null for the agent's default. */
+  /**
+   * The account's config dir (CLAUDE_CONFIG_DIR / CODEX_HOME), or null for the
+   * agent's default. A WSL pane on a bound account reports its sign-in key
+   * instead ('wsl:<distro>:<folder>', shared/wslAccountMark.ts): that account's
+   * Linux home has its own sign-in.
+   */
   configDir: string | null;
   origin: AuthLostOrigin;
   /** The provider's own error code when a turn failed (`authentication_failed`, `unauthorized`, …). */
@@ -55,10 +61,25 @@ export function authConfigEnvKey(agent: AuthLostAgent): 'CLAUDE_CONFIG_DIR' | 'C
   return key;
 }
 
-/** The account a pane or run uses, read from its env; null = the agent's default. */
+/**
+ * The account a pane or run uses, read from its env; null = the agent's default.
+ * A WSL pane on a bound account runs it on the account's Linux home, which has
+ * its own sign-in: that is its sign-in key (wslAccountAuthRef), never the folder.
+ */
 export function authConfigDir(agent: AuthLostAgent, env: Readonly<Record<string, string | undefined>> | undefined): string | null {
-  const dir = env?.[authConfigEnvKey(agent)]?.trim();
+  const key = authConfigEnvKey(agent);
+  const wsl = wslAccountAuthRef(env, key);
+  if (wsl) return wsl;
+  const dir = env?.[key]?.trim();
   return dir ? dir : null;
+}
+
+/**
+ * Whether wmux on Windows can ask the agent's own status about this account: not
+ * for a WSL account home, which only the Linux agent in that distro can read.
+ */
+export function isWindowsReadableAccount(configDir: string | null): boolean {
+  return parseWslAuthRef(configDir) === null;
 }
 
 /** Dedup key: one notice per agent and account. */
