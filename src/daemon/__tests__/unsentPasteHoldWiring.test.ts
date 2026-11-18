@@ -55,7 +55,7 @@ describe('unsent-paste hold daemon wiring', () => {
   });
 
   it('the agent state read carries the hold, its clears applied', () => {
-    expect(block('function agentStateFor(id: string)', 3_000)).toContain('unsentPasteHeld: unsentPasteHolds?.held(id) === true,');
+    expect(block('function agentStateFor(id: string, withTranscriptOffset = false)', 3_000)).toContain('unsentPasteHeld: unsentPasteHolds?.held(id) === true,');
   });
 
   it('the funnel runs under the hold, which takes back or records a paste it left unsubmitted, under the pane lock', () => {
