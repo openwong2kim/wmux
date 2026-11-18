@@ -4,7 +4,7 @@ import { getWmuxDir } from './config';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import type { IPty } from 'node-pty';
-import { ptyBackend, type TerminalPty } from '../shared/terminalPty';
+import { isTerminalCoreMissing, ptyBackend, type TerminalPty } from '../shared/terminalPty';
 import { spawnPty, spawnPtySync, type SpawnPtyRequest } from '../shared/spawnPty';
 import { applyParentWindow } from '../shared/conptyParentWindow';
 import type { PaneJob } from './paneJob';
@@ -998,6 +998,9 @@ export class DaemonSessionManager extends EventEmitter {
   }
 
   private spawnFailure(prepared: PreparedSpawn, err: unknown): Error {
+    // Kept as is: its code is what holds a restored session (promote) and tags
+    // the pipe answer, and its message already says what failed and what to do.
+    if (isTerminalCoreMissing(err) && err instanceof Error) return err;
     const detail = err instanceof Error ? err.message : String(err);
     return new Error(`Failed to start shell "${prepared.cmd}" in "${prepared.cwd}": ${detail}`);
   }

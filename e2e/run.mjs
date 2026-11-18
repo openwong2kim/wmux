@@ -11,6 +11,8 @@ const run = (cmd, args) => {
 };
 
 if (process.env.WMUX_E2E_SKIP_BUILD !== '1') {
+  // The Rust terminal core, staged in dist/wmux-native: the only engine.
+  run('npm', ['run', '-s', 'build:terminal-core']);
   run('npm', ['run', '-s', 'build:daemon']);
   run('npm', ['run', '-s', 'build:mcp']);
   run('node', ['e2e/build.mjs']);

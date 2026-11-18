@@ -4,11 +4,18 @@
 // covered in StateWriter.test.ts). A create or promote that meets the missing
 // module answers TERMINAL_CORE_MISSING. The boot wiring (recoverSessions,
 // promoteSession in index.ts) is checked live: module renamed away, then back.
-import { describe, expect, it } from 'vitest';
+import os from 'node:os';
+import { describe, expect, it, vi } from 'vitest';
+
+// Every spawn here meets a missing module, as spawnTerminalPty does then.
+vi.mock('../../shared/terminalPty', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../shared/terminalPty')>();
+  return { ...actual, spawnTerminalPty: () => { throw new actual.TerminalCoreMissingError('Cannot find module wmux-native'); } };
+});
 import { DaemonSessionManager } from '../DaemonSessionManager';
 import { DaemonPipeServer } from '../DaemonPipeServer';
 import type { DaemonSession } from '../types';
-import { TerminalCoreMissingError, TERMINAL_CORE_MISSING } from '../../shared/terminalPty';
+import { isTerminalCoreMissing, TerminalCoreMissingError, TERMINAL_CORE_MISSING } from '../../shared/terminalPty';
 
 function session(overrides: Partial<DaemonSession> = {}): DaemonSession {
   return {
@@ -38,6 +45,18 @@ describe('holdPendingRecovery', () => {
     expect(manager.getPendingRecovery('daemon-held')).toMatchObject({
       holdReason: 'terminal-core-missing', recoveryError: 'distro unavailable', recoveryPendingSince: since,
     });
+  });
+});
+
+describe('a create that meets the missing module', () => {
+  // promoteSession's hold and the pipe's code read the error's code: the
+  // spawn wrapper must hand the error on as it is, not as a plain Error.
+  it('rejects with the missing-core error itself, code and sentence', async () => {
+    const manager = new DaemonSessionManager();
+    const failed = await manager.createSessionAsync({ id: 'fresh', cmd: 'cmd.exe', cwd: os.tmpdir() }).then(() => null, (err: unknown) => err);
+    expect(isTerminalCoreMissing(failed)).toBe(true);
+    expect(String((failed as Error).message)).toContain('Reinstall wmux');
+    manager.disposeAll();
   });
 });
 

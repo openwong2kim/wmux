@@ -215,7 +215,7 @@ import { inspectLaunchPresence } from './launchPresence';
 import { promptLineState } from '../shared/promptLineState';
 import { parseWriteExpectation, writeIfUnchanged } from './writeIfUnchanged';
 import { Watchdog } from './Watchdog';
-import { heldForCredentials, recoversInBackground, selectRecoverableSessions, startLeftoverShellReaps } from './recoverySelector';
+import { heldForCredentials, selectRecoverableSessions, startLeftoverShellReaps, startsAtBootInBackground } from './recoverySelector';
 import { readUserShellHolds, USER_SHELL_HOLDS_FILE } from '../shared/userShellHolds';
 import { createHeldStartFallback, HELD_START_FALLBACK_MS, promoteNeedsFirstParty, type HeldStartFallback } from './heldUserShellStart';
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
@@ -2325,8 +2325,14 @@ async function recoverSessions(
       changed = true;
       continue;
     }
-    // A boot with the module: an earlier hold is over, recover as usual.
-    delete session.holdReason;
+    // A boot with the module: an earlier hold is over, recover as usual. Its
+    // suspended clock starts now (heldAt), not from activity before the hold,
+    // so a pane the recovery cap skips is not pruned at the next load.
+    if (session.holdReason) {
+      delete session.holdReason;
+      stampHeld(session, Date.now());
+      changed = true;
+    }
     // Publish every WSL placeholder, including cap-skipped panes. Boot must
     // publish RPC/panes without
     // waiting for a cold distro, and one unavailable target must not lose its
@@ -4013,7 +4019,7 @@ function registerRpcHandlers(
     try {
       const pending = sessionManager.listSessions().filter(s => {
         const placeholder = sessionManager.getPendingRecovery(s.id);
-        return !!placeholder && recoversInBackground(placeholder);
+        return !!placeholder && startsAtBootInBackground(placeholder);
       });
       const selected = selectRecoverableSessions(pending, Math.min(loadConfig().session.maxSessions, MAX_RECOVER_SESSIONS));
       for (const session of pending.filter(s => selected.recoverableIds.has(s.id))) {

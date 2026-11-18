@@ -108,6 +108,10 @@ jobs:
       - name: Install the Electron binary
         run: npx install-electron
 
+      # The Rust terminal core (staged in dist/wmux-native), the only engine.
+      - name: Build the terminal core
+        uses: ./.github/actions/terminal-core
+
       # bash: a failing command stops the step (PowerShell would go on).
       - name: Build the app (dev build, as e2e/run.mjs does)
         shell: bash

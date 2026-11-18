@@ -100,6 +100,9 @@ export function nativeCorePath(): string {
     ...(resources ? [path.join(resources, 'wmux-native/index.cjs')] : []),
     path.join(__dirname, '../wmux-native/index.cjs'),
     path.join(__dirname, 'wmux-native/index.cjs'),
+    // `npm start`: main runs from .vite/build, and the core is staged in
+    // dist/wmux-native (as for the dev daemon bundle). Absent from a package.
+    path.join(__dirname, '../../dist/wmux-native/index.cjs'),
   ];
   return candidates.find(p => fs.existsSync(p)) ?? candidates[0];
 }
