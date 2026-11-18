@@ -65,10 +65,9 @@ describe.skipIf(!posix)('the headless pane port, for real', () => {
       'exec sleep 300',
       '',
     ].join('\n'), { mode: 0o755 });
-    for (const key of ['HOME', 'PATH', 'WMUX_TERMINAL_CORE', PLANTED]) saved[key] = process.env[key];
+    for (const key of ['HOME', 'PATH', PLANTED]) saved[key] = process.env[key];
     process.env.HOME = home;
     process.env.PATH = '/usr/bin:/bin';
-    process.env.WMUX_TERMINAL_CORE = 'node';
     process.env[PLANTED] = 'planted-not-a-real-key';
   });
 
