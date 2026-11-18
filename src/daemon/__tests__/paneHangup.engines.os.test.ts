@@ -220,18 +220,23 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
   type StoppedRootRun = { killMs: number; again: number; exits: number; signal?: number; error?: string; closeMs?: number; reapedMs?: number };
   const stoppedRootRun = (mode: 'stop' | 'stop-now' | 'stop-cont' | 'stop-close'): Promise<StoppedRootRun> => {
     const child = [
-      'const [file, mode] = process.argv.slice(1);',
-      "const { execFileSync } = require('node:child_process');",
+      'const [file, mode, ready, pidFile] = process.argv.slice(1);',
+      "const fs = require('node:fs');",
       'const core = require(file);',
       // macOS ends even a stopped process on SIGHUP, so a root meant to stay stopped through kill() and
-      // close() ignores it (as an agent can), and only the tree kill's SIGKILL ends it.
-      "const root = mode === 'stop-cont' ? 'exec sleep 60' : \"trap '' HUP; exec sleep 60\";",
-      "const t = new core.NativeTransport('/bin/sh', ['-c', root], process.cwd(), { PATH: '/usr/bin:/bin' }, 80, 24, () => {});",
+      // close() ignores it (as an agent can), and only the tree kill's SIGKILL ends it. It says when its
+      // hangup disposition is in place, so the stop never lands before it.
+      "const root = (mode === 'stop-cont' ? '' : \"trap '' HUP; \") + ': > \"$READY\"; exec sleep 60';",
+      "const t = new core.NativeTransport('/bin/sh', ['-c', root], process.cwd(), { PATH: '/usr/bin:/bin', READY: ready }, 80, 24, () => {});",
+      // The parent ends the root itself if this process times out in a blocking kill().
+      'fs.writeFileSync(pidFile, String(t.pid));',
       "const sigkill = () => { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } };",
       'const pid = t.pid; const sleep = (ms) => new Promise((r) => setTimeout(r, ms));',
       '(async () => {',
+      "  for (let i = 0; i < 400 && !fs.existsSync(ready); i++) await sleep(25);",
+      "  if (!fs.existsSync(ready)) throw new Error('the root never started');",
       // 'stop-now' is the tree kill's own timing: the SIGKILL follows the stop at once.
-      "  await sleep(300); process.kill(pid, 'SIGSTOP'); if (mode !== 'stop-now') await sleep(400);",
+      "  process.kill(pid, 'SIGSTOP'); if (mode !== 'stop-now') await sleep(400);",
       "  if (mode === 'stop-cont') { process.kill(pid, 'SIGCONT'); await sleep(400); }",
       '  let at = Date.now(); t.kill(); const killMs = Date.now() - at;',
       // The tree kill's own order: the pane's kill() and close() (which arms the sweep) on the stopped
@@ -239,7 +244,8 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
       "  if (mode === 'stop-close') {",
       '    at = Date.now(); t.close(); const closeMs = Date.now() - at;',
       '    sigkill(); at = Date.now(); let gone = false;',
-      "    while (!gone && Date.now() - at < 12000) { try { gone = execFileSync('ps', ['-o', 'pid=', '-p', String(pid)]).toString().trim() === ''; } catch { gone = true; } if (!gone) await sleep(50); }",
+      // Reaped is gone from the process table; a zombie still answers signal 0. Only ESRCH means gone.
+      "    while (!gone && Date.now() - at < 12000) { try { process.kill(pid, 0); } catch (e) { if (e.code !== 'ESRCH') throw e; gone = true; } if (!gone) await sleep(50); }",
       '    process.stdout.write(JSON.stringify({ killMs, closeMs, reapedMs: gone ? Date.now() - at : -1, again: 0, exits: 1 }));',
       '    process.exit(0);',
       '  }',
@@ -254,12 +260,31 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
       '  t.close();',
       '  process.stdout.write(JSON.stringify({ killMs, again, exits, signal: first?.signal, error: first?.error ?? undefined }));',
       '  process.exit(0);',
-      '})();',
+      '})().catch((e) => { process.stderr.write(String(e?.stack ?? e)); process.exit(1); });',
     ].join('\n');
+    const ready = path.join(cwd, `stopped-${mode}.ready`);
+    const pidFile = path.join(cwd, `stopped-${mode}.pid`);
+    fs.rmSync(ready, { force: true });
+    fs.rmSync(pidFile, { force: true });
     return new Promise((resolve, reject) => {
-      execFile(process.execPath, ['-e', child, nativeCorePath(), mode], { cwd, timeout: 20_000, killSignal: 'SIGKILL' }, (error, stdout) => {
-        if (error) reject(new Error(`the child timed out or failed (a kill() that blocks on a stopped root): ${error.message}`));
-        else resolve(JSON.parse(stdout) as StoppedRootRun);
+      execFile(process.execPath, ['-e', child, nativeCorePath(), mode, ready, pidFile], { cwd, timeout: 20_000, killSignal: 'SIGKILL' }, (error, stdout, stderr) => {
+        if (error) {
+          // A child killed while blocked left its root stopped in its own session: end it here, if
+          // that pid is still this fixture's sleep.
+          const root = pidIn(pidFile);
+          if (root > 0) {
+            let comm = '';
+            try { comm = execFileSync('ps', ['-o', 'comm=', '-p', String(root)], { encoding: 'utf8' }).trim(); } catch { /* gone */ }
+            if (path.basename(comm) === 'sleep') started.push(root);
+          }
+          reject(new Error(`the child timed out or failed (a kill() that blocks on a stopped root): ${error.message}\n${stderr}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout) as StoppedRootRun);
+        } catch {
+          reject(new Error(`the child's report is not JSON: ${stdout}\n${stderr}`));
+        }
       });
     });
   };
