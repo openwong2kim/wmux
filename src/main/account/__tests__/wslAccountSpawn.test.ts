@@ -37,7 +37,7 @@ describe('requestedAccountRefusal', () => {
   });
 
   it('refuses the tab of an account removed since its pane signed out', () => {
-    const removed = 'C:\Users\dev\.wmux\accounts\gone';
+    const removed = 'C:\\Users\\dev\\.wmux\\accounts\\gone';
     const keys = paneAccountKeys({ CLAUDE_CONFIG_DIR: removed }, { requested: 'CLAUDE_CONFIG_DIR', supplied: { CLAUDE_CONFIG_DIR: removed }, accounts });
     expect(requestedAccountRefusal('CLAUDE_CONFIG_DIR', keys)).not.toBeNull();
   });

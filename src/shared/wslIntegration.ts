@@ -221,8 +221,13 @@ __wmux_account_home() {
   esac
   __wmux_root="$HOME/.wmux\${WMUX_DATA_SUFFIX:-}/accounts"
   __wmux_home="$__wmux_root/$__wmux_vendor-$__wmux_key"
+  # A home exists only complete: it is seeded in a private folder beside it and
+  # renamed into place, so a pane starting at the same moment never runs on a
+  # half-mirrored one. A pane that loses the race drops its seed and uses the
+  # winner's home; an existing home is never written again.
   if [ ! -d "$__wmux_home" ]; then
-    if ! (umask 077 && mkdir -p "$__wmux_home"); then
+    __wmux_seed=$( (umask 077 && mkdir -p "$__wmux_root" && mktemp -d "$__wmux_root/.seed-$__wmux_vendor-XXXXXX") 2>/dev/null )
+    if [ -z "$__wmux_seed" ]; then
       printf 'wmux: cannot create %s, so this pane does not use its %s account.\\n' "$__wmux_home" "$__wmux_vendor" >&2
       return 1
     fi
@@ -233,11 +238,20 @@ __wmux_account_home() {
         __wmux_src="$HOME/.claude" __wmux_links="${shareList('claude', 'linkDirs')}" __wmux_copies="${shareList('claude', 'copyFiles')}"
       fi
       for __wmux_name in $__wmux_links; do
-        [ ! -e "$__wmux_src/$__wmux_name" ] || [ -e "$__wmux_home/$__wmux_name" ] || ln -sn "$__wmux_src/$__wmux_name" "$__wmux_home/$__wmux_name" 2>/dev/null
+        [ ! -e "$__wmux_src/$__wmux_name" ] || ln -sn "$__wmux_src/$__wmux_name" "$__wmux_seed/$__wmux_name" 2>/dev/null
       done
       for __wmux_name in $__wmux_copies; do
-        [ ! -f "$__wmux_src/$__wmux_name" ] || [ -e "$__wmux_home/$__wmux_name" ] || cp "$__wmux_src/$__wmux_name" "$__wmux_home/$__wmux_name" 2>/dev/null
+        [ ! -f "$__wmux_src/$__wmux_name" ] || cp "$__wmux_src/$__wmux_name" "$__wmux_seed/$__wmux_name" 2>/dev/null
       done
+    fi
+    # mv renames onto a missing name; onto a home that appeared meanwhile it
+    # moves the seed inside instead, which the check below takes back out.
+    __wmux_name=\${__wmux_seed##*/}
+    mv "$__wmux_seed" "$__wmux_home" 2>/dev/null
+    rm -rf -- "$__wmux_seed" "$__wmux_home/$__wmux_name" 2>/dev/null
+    if [ ! -d "$__wmux_home" ]; then
+      printf 'wmux: cannot create %s, so this pane does not use its %s account.\\n' "$__wmux_home" "$__wmux_vendor" >&2
+      return 1
     fi
   fi
   if [ "$__wmux_vendor" = codex ]; then __wmux_login=auth.json __wmux_how="codex login"; else __wmux_login=.credentials.json __wmux_how="/login in claude"; fi
@@ -255,7 +269,7 @@ __wmux_account_rc=0
 [ -z "\${WMUX_WSL_ACCOUNT_CLAUDE:-}" ] || __wmux_account_home claude "$WMUX_WSL_ACCOUNT_CLAUDE" "\${WMUX_WSL_ACCOUNT_CLAUDE_SHARE:-}" CLAUDE_CONFIG_DIR "\${1:-interactive}" || __wmux_account_rc=1
 [ -z "\${WMUX_WSL_ACCOUNT_CODEX:-}" ] || __wmux_account_home codex "$WMUX_WSL_ACCOUNT_CODEX" "\${WMUX_WSL_ACCOUNT_CODEX_SHARE:-}" CODEX_HOME "\${1:-interactive}" || __wmux_account_rc=1
 unset -f __wmux_account_home
-unset __wmux_vendor __wmux_key __wmux_share __wmux_var __wmux_mode __wmux_root __wmux_home __wmux_src __wmux_links __wmux_copies __wmux_name __wmux_login __wmux_how __wmux_note
+unset __wmux_vendor __wmux_key __wmux_share __wmux_var __wmux_mode __wmux_root __wmux_home __wmux_seed __wmux_src __wmux_links __wmux_copies __wmux_name __wmux_login __wmux_how __wmux_note
 eval "unset __wmux_account_rc; return $__wmux_account_rc"
 `;
 

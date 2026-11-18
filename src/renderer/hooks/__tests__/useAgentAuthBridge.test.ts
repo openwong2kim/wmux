@@ -59,9 +59,12 @@ describe('lost sign-in bridge', () => {
   it('signs a WSL account home in again in that distro, and leaves the rest to the pane\'s own report', async () => {
     const lost = entry({ configDir: 'wsl:Ubuntu 24.04:C:\\acc\\work', key: 'claude:wsl:Ubuntu 24.04:C:\\acc\\work' });
     applyAuthLostEntries([lost]);
-    useStore.getState().clearToasts();
-    let clock = 0;
-    await signInAgain(lost, { sleep: async () => undefined, now: () => (clock += 60_000) });
+    // Pressed on the toast, as a user does (the container dismisses it after the action runs).
+    const toast = useStore.getState().toasts[0];
+    useStore.getState().dismissToast(toast.id);
+    toast.action!.onClick();
+    await vi.waitFor(() => expect(openTerminalTab).toHaveBeenCalled(), { timeout: 5_000 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(openTerminalTab).toHaveBeenCalledWith(expect.objectContaining({
       plainEnv: true, shell: 'wsl.exe', wslDistro: 'Ubuntu 24.04',
       env: { CLAUDE_CONFIG_DIR: 'C:\\acc\\work' }, wslAccountHomeKey: 'CLAUDE_CONFIG_DIR', initialCommand: 'claude auth login',
@@ -70,6 +73,25 @@ describe('lost sign-in bridge', () => {
     // Windows cannot read that sign-in: no polling, and no toast coming back after the wait.
     expect(loginState).not.toHaveBeenCalled();
     expect(useStore.getState().toasts).toEqual([]);
+    // Another account's report while this one signs in does not bring its toast back.
+    const other = entry({ key: 'codex:', agent: 'codex', ptyIds: [] });
+    applyAuthLostEntries([lost, other]);
+    expect(useStore.getState().toasts).toHaveLength(1);
+    expect(useStore.getState().agentAuthLost.map((e) => e.key)).toEqual([lost.key, other.key]);
+    // Once its entry clears, a later loss of the same account is offered again.
+    applyAuthLostEntries([other]);
+    applyAuthLostEntries([other, lost]);
+    expect(useStore.getState().toasts).toHaveLength(2);
+  });
+
+  it('offers a WSL account\'s toast again when its sign-in tab cannot open', async () => {
+    const lost = entry({ configDir: 'wsl:Ubuntu:C:\\acc\\gone', key: 'claude:wsl:Ubuntu:C:\\acc\\gone' });
+    applyAuthLostEntries([lost]);
+    openTerminalTab.mockResolvedValueOnce(null);
+    const toast = useStore.getState().toasts[0];
+    useStore.getState().dismissToast(toast.id); // the container dismisses after the action runs
+    toast.action!.onClick();
+    await vi.waitFor(() => expect(useStore.getState().toasts.map((t) => t.action?.label)).toEqual(['Sign in again']), { timeout: 5_000 });
   });
 
   it('offers the toast again when the sign-in tab cannot open, and only once', async () => {

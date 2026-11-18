@@ -398,6 +398,30 @@ describe('WSL per-launch Claude integration', () => {
         expect(fs.readFileSync(path.join(account, 'settings.json'), 'utf8')).toBe('{"linux":true}');
       });
 
+      it('makes a shared home appear only complete when two panes start on it at once', () => {
+        const h = home();
+        fs.mkdirSync(path.join(h, '.claude'), { recursive: true });
+        fs.writeFileSync(path.join(h, '.claude', 'settings.json'), '{"linux":true}');
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-race-')); dirs.push(dir);
+        const script = path.join(dir, 'account.sh');
+        fs.writeFileSync(script, WSL_ACCOUNT_SH);
+        // A slow copy holds the first pane mid-mirror while the second one starts.
+        const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
+        fs.writeFileSync(path.join(bin, 'cp'), '#!/bin/sh\nsleep 0.4\nexec /bin/cp "$@"\n', { mode: 0o755 });
+        const pane = '( . "$1" exec; if [ -f "$CLAUDE_CONFIG_DIR/settings.json" ]; then echo complete; else echo incomplete; fi )';
+        const key = 'f'.repeat(16);
+        const ran = spawnSync('bash', ['--noprofile', '--norc', '-c', `${pane} & sleep 0.1; ${pane} & wait`, 'x', script], {
+          env: { PATH: `${bin}:${process.env.PATH ?? ''}`, HOME: h, WMUX_WSL_ACCOUNT_CLAUDE: key, WMUX_WSL_ACCOUNT_CLAUDE_SHARE: '1' },
+          encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        expect(ran.stdout.trim().split('\n')).toEqual(['complete', 'complete']);
+        const root = path.join(h, '.wmux', 'accounts');
+        // One home, and no seed left beside it or inside it.
+        expect(fs.readdirSync(root).filter((name) => name !== 'notices.log')).toEqual([`claude-${key}`]);
+        expect(fs.readdirSync(path.join(root, `claude-${key}`)).filter((name) => name.startsWith('.seed'))).toEqual([]);
+        expect(fs.statSync(path.join(root, `claude-${key}`)).mode & 0o777).toBe(0o700);
+      });
+
       it('fails, without exporting, when the home cannot be made or the suffix cannot name a folder', () => {
         const h = home();
         fs.mkdirSync(path.join(h, '.wmux'));

@@ -70,6 +70,7 @@ export async function signInAgain(
   waiting.set(entry.key, token);
   const mine = () => waiting.get(entry.key) === token;
   let settled = false;
+  let keepWaiting = false;
   try {
     const envKey = authConfigEnvKey(entry.agent);
     // A WSL pane on a bound account signed out of that account's Linux home:
@@ -89,9 +90,12 @@ export async function signInAgain(
     if (!tab) return;
     // wmux cannot ask about a WSL home's sign-in from Windows, so there is
     // nothing to wait on: the entry (and the sidebar's "Signed out") goes when
-    // that pane's agent is next seen to work, and no toast comes back meanwhile.
+    // that pane's agent is next seen to work, and no toast comes back meanwhile:
+    // the key stays in `waiting` until then (applyAuthLostEntries drops it with
+    // the entry), so another account's report does not bring this toast back.
     if (wsl) {
       settled = true;
+      keepWaiting = true;
       return;
     }
     const until = now() + SIGN_IN_WAIT_MS;
@@ -108,7 +112,7 @@ export async function signInAgain(
     // The tab or the check failed: the toast comes back below.
   } finally {
     // Only this wait's own state: a newer one (the entry went and came back) is left alone.
-    if (mine()) {
+    if (mine() && !keepWaiting) {
       waiting.delete(entry.key);
       if (!settled && stillLost(entry.key)) offerSignIn(entry);
     }
