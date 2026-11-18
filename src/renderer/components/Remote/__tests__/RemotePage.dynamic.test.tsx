@@ -10,6 +10,7 @@ import RemotePage, { REMOTE_PAGE_POLL_MS } from '../RemotePage';
 import { ko } from '../../../i18n/locales/ko';
 import { zh } from '../../../i18n/locales/zh';
 import { pl } from '../../../i18n/locales/pl';
+import { ApprovalsController, raisesApproval, type ApprovalLevel } from '../remoteApprovals';
 import type { A2aLinkOfferRecordV1, A2aLinkRecordV1 } from '../../../../shared/a2aRemote';
 import type { A2aRemoteHostStatus } from '../../../../shared/rpc';
 import type { Task } from '../../../../shared/types';
@@ -91,14 +92,15 @@ function stub(devices: unknown[], a2a: A2aSeed = {}, extra: { remoteHosts?: unkn
       ...(a2a.approvals ? {
         approvalsGet: vi.fn(async () => structuredClone(a2a.approvals)),
         approvalsSet: vi.fn(async (hostId: string, level: string, expected?: string) => {
-          // The daemon's compare-and-set: a PC set otherwise since the page looked is refused.
-          if (expected !== undefined && (a2a.approvals!.hosts[hostId] ?? 'off') !== expected) {
+          // The daemon's compare-and-set, on a raise only: a PC set otherwise since the page looked is refused.
+          const now = a2a.approvals!.hosts[hostId] ?? 'off';
+          if (expected !== undefined && raisesApproval(now as ApprovalLevel, level as ApprovalLevel) && now !== expected) {
             return { ok: false, error: 'the setting for that PC changed meanwhile', conflict: true };
           }
           if (level === 'off') delete a2a.approvals!.hosts[hostId];
           else a2a.approvals!.hosts[hostId] = level;
           a2a.approvals!.damaged = false;
-          return { ok: true };
+          return { ok: true, hosts: { ...a2a.approvals!.hosts } };
         }),
       } : {}),
     },
@@ -669,6 +671,48 @@ describe('Remote page: remote approvals under each paired PC', () => {
     expect(ko['remotePage.approvals.askCommand']).toContain('알려진 형식의 자격 증명만 가리고');
     expect(zh['remotePage.approvals.askCommand']).toContain('仅隐去已知格式的凭据');
     expect(pl['remotePage.approvals.askCommand']).toContain('ukryte są tylko znane formaty');
+  });
+
+  it('a saved raise shows the level the save returned, even when a read after it would fail', async () => {
+    stub([], { hosts: pcHosts, approvals: { hosts: {} } });
+    await render();
+    await act(async () => { level(HOST, 'Tool only').click(); });
+    // The confirmation's own read answers; any read after the save would fail.
+    api.a2aRemote.approvalsGet.mockImplementation(async () => { throw new Error('not connected'); });
+    api.a2aRemote.approvalsGet.mockImplementationOnce(async () => ({ hosts: {} }));
+    await act(async () => { row(HOST).querySelector<HTMLButtonElement>('[data-remote-approvals-confirm]')!.click(); });
+    await settle();
+    expect(api.a2aRemote.approvalsSet).toHaveBeenCalledWith(HOST, 'tool-only', 'off');
+    expect(row(HOST).getAttribute('data-level')).toBe('tool-only');
+    expect(row(HOST).querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('a confirmation that ended early (cancelled, then raised again) leaves the newer one busy', async () => {
+    const reads: Array<(v: { hosts: Record<string, unknown> }) => void> = [];
+    const sets: string[] = [];
+    let ticks = 0;
+    const c = new ApprovalsController(
+      {
+        approvalsGet: () => new Promise((resolve) => { reads.push(resolve); }),
+        approvalsSet: async (hostId, level) => { sets.push(`${hostId}:${level}`); return { ok: true, hosts: { [hostId]: level } }; },
+      },
+      { failed: 'failed', changed: 'changed' },
+      () => { ticks += 1; },
+    );
+    await c.choose(HOST, 'command');
+    const first = c.confirm(HOST);
+    c.cancel(HOST);
+    await c.choose(HOST, 'command');
+    const second = c.confirm(HOST);
+    // The first confirmation's read answers: it ends, and the second is still in flight.
+    reads[0]!({ hosts: {} });
+    await first;
+    expect(c.busy[HOST]).toBeDefined();
+    reads[1]!({ hosts: {} });
+    await second;
+    expect(c.busy[HOST]).toBeUndefined();
+    expect(sets).toEqual([`${HOST}:command`]);
+    expect(ticks).toBeGreaterThan(0);
   });
 
   it('a damaged settings file: off for every PC, and each row says why', async () => {

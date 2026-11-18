@@ -29,7 +29,7 @@ export function approvalLevelOf(v: unknown): ApprovalLevel {
 
 export interface ApprovalsApi {
   approvalsGet: () => Promise<{ hosts?: Record<string, unknown>; damaged?: boolean }>;
-  approvalsSet: (hostId: string, exposure: ApprovalLevel, expected: ApprovalLevel) => Promise<{ ok: true } | { ok: false; error: string; conflict?: true }>;
+  approvalsSet: (hostId: string, exposure: ApprovalLevel, expected: ApprovalLevel) => Promise<{ ok: true; hosts: Record<string, unknown> } | { ok: false; error: string; conflict?: true }>;
 }
 
 export class ApprovalsController {
@@ -39,8 +39,8 @@ export class ApprovalsController {
   loaded = false;
   /** Raises waiting for their confirmation, by PC: one PC's choice never touches another's. */
   pending: Record<string, { level: ApprovalLevel; from: ApprovalLevel }> = {};
-  /** PCs whose save is in flight. */
-  busy: Record<string, true> = {};
+  /** PCs with a confirmation or a save in flight, by the token of the call that owns it. */
+  busy: Record<string, object> = {};
   /** The last failure, by PC. */
   errors: Record<string, string> = {};
 
@@ -93,7 +93,7 @@ export class ApprovalsController {
   async confirm(hostId: string): Promise<void> {
     const p = this.pending[hostId];
     if (!p) return;
-    this.busy[hostId] = true;
+    this.busy[hostId] = p;
     this.changed();
     try {
       // The level the confirmation was about must still be the one saved.
@@ -111,22 +111,30 @@ export class ApprovalsController {
     } catch {
       this.errors[hostId] = this.words.failed;
     } finally {
-      delete this.busy[hostId];
+      // Only its own: a confirmation that ended early leaves a newer one's busy alone.
+      if (this.busy[hostId] === p) delete this.busy[hostId];
       this.changed();
     }
   }
 
   private async save(hostId: string, level: ApprovalLevel, expected: ApprovalLevel): Promise<void> {
-    this.busy[hostId] = true;
+    const token = {};
+    this.busy[hostId] = token;
     this.changed();
     try {
       const res = await this.api.approvalsSet(hostId, level, expected);
-      if (!res.ok) this.errors[hostId] = res.conflict ? this.words.changed : `${this.words.failed} (${res.error})`;
-      this.read(await this.api.approvalsGet());
+      if (res.ok) {
+        // What the save itself returned: no second read that could fail after it was saved.
+        this.read({ hosts: res.hosts, damaged: false });
+      } else {
+        this.errors[hostId] = res.conflict ? this.words.changed : `${this.words.failed} (${res.error})`;
+        // The level there now; a failed read keeps what was shown.
+        this.read(await this.api.approvalsGet().catch(() => ({ hosts: this.levels, damaged: this.damaged })));
+      }
     } catch {
       this.errors[hostId] = this.words.failed;
     } finally {
-      delete this.busy[hostId];
+      if (this.busy[hostId] === token) delete this.busy[hostId];
       this.changed();
     }
   }

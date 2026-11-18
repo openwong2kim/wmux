@@ -602,7 +602,7 @@ export default function RemotePage() {
       name={pc.name}
       level={c.levelOf(pc.hostId)}
       pending={c.pending[pc.hostId]?.level ?? null}
-      busy={c.busy[pc.hostId] === true}
+      busy={c.busy[pc.hostId] !== undefined}
       damaged={c.damaged}
       error={c.errors[pc.hostId] ?? null}
       onChange={(level) => void c.choose(pc.hostId, level)}
