@@ -9,7 +9,7 @@ import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { remoteTaskId } from '../ids';
 import { PeerTaskBudget, acceptInbound, type InboundDeps } from '../inbound';
 import { LinkStore } from '../linkStore';
-import { linkAlias, syncRemoteTask } from '../outbound';
+import { linkAlias, sendRemoteApproval, syncRemoteTask } from '../outbound';
 import { OutboxStore } from '../outboxStore';
 
 const HOST = '11111111-1111-4111-8111-111111111111';
@@ -988,6 +988,45 @@ describe('an approval from the sender of a task, for a prompt offered in its sta
     expect(await acceptInbound(good, peer, withApproval)).toMatchObject({ ok: true, taskId });
     expect(taken).toEqual([[HOST, taskId, good.messageId, APPROVAL]]);
     expect(tasks.getTask(taskId)).toEqual(before);
+  });
+
+  it('what the asking PC builds (sendRemoteApproval) is taken here as sent: the prompt id and the decision, nothing else', async () => {
+    const linkId = activeLink();
+    const taskId = await receivedTask(linkId);
+    // The asking PC (A): the same link, its own end of it, and the task it sent under the same id.
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-inbound-asker-'));
+    try {
+      const logA = new AppendOnlyLog({ dir: path.join(dirA, 'log'), fsync: () => undefined });
+      logA.open();
+      const tasksA = new A2aTaskService({ log: logA, origin: { machineId: 'pc-a', daemonEpoch: 1 } });
+      const linksA = new LinkStore({ dir: path.join(dirA, 'a2a'), scheduleHarden: () => undefined });
+      linksA.receiveProposal({
+        linkId,
+        local: { kind: 'pane', workspaceId: 'ws-a', paneId: 'pane-a' },
+        remote: { hostId: '33333333-3333-4333-8333-333333333333', kind: 'pane', workspaceId: 'ws-b', paneId: 'pane-b', label: 'claude' },
+        allow: { outbound: true, inbound: true },
+      });
+      linksA.accept(linkId);
+      expect((await tasksA.createTask({
+        id: taskId,
+        title: 'mine',
+        from: { workspaceId: 'ws-a', name: 'Frontend', paneId: 'pane-a' },
+        to: { workspaceId: `remote:${linkId}`, name: 'pc-b/ws-b/claude' },
+        history: [{ kind: 'message', messageId: 'm-1', role: 'user', parts: [{ kind: 'text', text: 'please review' }] }],
+        remote: { v: 1, linkId, hostId: '33333333-3333-4333-8333-333333333333', messageId: 'm-1', direction: 'outbound', kind: 'pane' },
+      })).ok).toBe(true);
+      const sent: A2aRemoteEnvelope[] = [];
+      const res = sendRemoteApproval(
+        { linkStore: linksA, taskService: tasksA, outbox: { enqueue: (_h: string, e: A2aRemoteEnvelope) => { sent.push(e); return {} as never; } } as never },
+        { taskId, workspaceId: 'ws-a', approval: { promptId: '0123456789abcdef', decision: 'deny' } },
+      );
+      expect(res).toMatchObject({ ok: true, taskId });
+      logA.close();
+      expect(await acceptInbound(JSON.parse(JSON.stringify(sent[0])), peer, withApproval)).toMatchObject({ ok: true, taskId });
+      expect(taken).toEqual([[HOST, taskId, sent[0]!.messageId, { promptId: '0123456789abcdef', decision: 'deny' }]]);
+    } finally {
+      fs.rmSync(dirA, { recursive: true, force: true });
+    }
   });
 
   it('off for that PC (or no approvals here at all): approvals-off before its shape, link or task is read', async () => {
