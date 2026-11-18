@@ -75,7 +75,7 @@ public static class IntegrityLaunch {
   [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
   [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid, uint index);
   [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-  static extern bool CreateProcessAsUser(IntPtr token, string application, string commandLine, IntPtr processAttributes,
+  static extern bool CreateProcessAsUser(IntPtr token, string application, System.Text.StringBuilder commandLine, IntPtr processAttributes,
     IntPtr threadAttributes, bool inheritHandles, uint flags, IntPtr environment, string cwd, ref STARTUPINFO startup,
     out PROCESS_INFORMATION info);
 
@@ -154,7 +154,8 @@ public static class IntegrityLaunch {
       STARTUPINFO startup = new STARTUPINFO();
       startup.cb = Marshal.SizeOf(startup);
       PROCESS_INFORMATION info;
-      if (!CreateProcessAsUser(lowered, null, commandLine, IntPtr.Zero, IntPtr.Zero, false, CREATE_NO_WINDOW,
+      // A writable copy: CreateProcessAsUserW may write to its command line.
+      if (!CreateProcessAsUser(lowered, null, new System.Text.StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, false, CREATE_NO_WINDOW,
           IntPtr.Zero, cwd, ref startup, out info)) {
         throw Fail("CreateProcessAsUser");
       }

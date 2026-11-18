@@ -1257,8 +1257,10 @@ mod sys {
     /// back. Since the native pipe listener (#3430) the broker keeps an
     /// instance listening on top of the ones it accepted, so its name is busy
     /// only between two clients reaching the same instance and the listener
-    /// creating the next one. A name that stays busy is held by something else,
-    /// never by the broker, and is not worth a longer wait.
+    /// creating the next one, or while it is at its connection cap, where a
+    /// client would be turned away after its own wait anyway. A name that
+    /// stays busy is otherwise held by something else, and is not worth a
+    /// longer wait.
     const PIPE_BUSY_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
     const INFINITE: u32 = 0xFFFF_FFFF;
     const WAIT_TIMEOUT: u32 = 258;

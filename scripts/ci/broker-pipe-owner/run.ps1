@@ -103,10 +103,12 @@ function Invoke-Shim([string] $shimHome, [string] $suffix) {
   [pscustomobject]@{ code = $p.ExitCode; stderr = $err.Result; stdout = $out.Result }
 }
 
-# wmux-native mcp-shim for one MCP session: `$lines` go to its stdin, its
-# stdout is read until the response with id `$waitId` (or 30 s), then stdin
-# closes. Its stdout and stderr.
-function Invoke-ShimSession([string] $exe, [string] $shimHome, [string] $suffix, [string[]] $lines, [int] $waitId) {
+# wmux-native mcp-shim for one MCP session: `$initLine` (an initialize with
+# id 1) goes to its stdin first, and `$lines` only once a result for id 1
+# came back; its stdout is read until the response with id `$waitId` (30 s in
+# all), then stdin closes. Its stdout and stderr, and whether the initialize
+# got a result (`initOk`).
+function Invoke-ShimSession([string] $exe, [string] $shimHome, [string] $suffix, [string] $initLine, [string[]] $lines, [int] $waitId) {
   $info = New-Object System.Diagnostics.ProcessStartInfo
   $info.FileName = $exe
   $info.Arguments = 'mcp-shim'
@@ -122,11 +124,12 @@ function Invoke-ShimSession([string] $exe, [string] $shimHome, [string] $suffix,
   $p = [System.Diagnostics.Process]::Start($info)
   $err = $p.StandardError.ReadToEndAsync()
   $p.StandardInput.NewLine = "`n"
-  foreach ($line in $lines) { $p.StandardInput.WriteLine($line) }
+  $p.StandardInput.WriteLine($initLine)
   $p.StandardInput.Flush()
   $stdout = New-Object System.Text.StringBuilder
   $deadline = (Get-Date).AddSeconds(30)
   $read = $null
+  $initOk = $false
   while ((Get-Date) -lt $deadline) {
     if (-not $read) { $read = $p.StandardOutput.ReadLineAsync() }
     if (-not $read.Wait(500)) { continue }
@@ -134,19 +137,38 @@ function Invoke-ShimSession([string] $exe, [string] $shimHome, [string] $suffix,
     $read = $null
     if ($null -eq $got) { break }
     [void]$stdout.AppendLine($got)
-    if ($got -match ('"id":' + $waitId + '[,}]')) { break }
+    $msg = try { $got | ConvertFrom-Json } catch { $null }
+    if (-not $initOk -and $msg -and $msg.id -eq 1) {
+      # Only an initialize result lets the session go on.
+      if (-not $msg.result) { break }
+      $initOk = $true
+      foreach ($line in $lines) { $p.StandardInput.WriteLine($line) }
+      $p.StandardInput.Flush()
+      continue
+    }
+    if ($initOk -and $msg -and $msg.id -eq $waitId) { break }
   }
   $p.StandardInput.Close()
   if (-not $p.WaitForExit(30000)) { $p.Kill(); $p.WaitForExit() }
-  [pscustomobject]@{ pid = $p.Id; code = $p.ExitCode; stderr = $err.Result; stdout = $stdout.ToString() }
+  [pscustomobject]@{ pid = $p.Id; code = $p.ExitCode; stderr = $err.Result; stdout = $stdout.ToString(); initOk = $initOk }
 }
 
 # The refusals the broker logged for the client with pid $clientPid: each
 # "peer refused (<reason>)" or "session refused (<reason>)" line that names
-# "peer <pid>". Their reasons, in log order.
+# "peer <pid>". Their reasons, in log order. A token-unreadable refusal whose
+# read never gave an answer (timed out, no read yet, closed, unsupported)
+# carries that state, "token-unreadable (timed-out)", so it is no expected
+# refusal.
 function Get-Refusals([string] $log, [int] $clientPid) {
-  $pattern = '(?:peer|session) refused \(([^)]+)\):.*\bpeer ' + $clientPid + '\b'
-  @(($log -split "`n") | ForEach-Object { if ($_ -match $pattern) { $Matches[1] } })
+  $pattern = '(?:peer|session) refused \(([^)]+)\):.*\bpeer ' + $clientPid + '\b(.*)'
+  @(($log -split "`n") | ForEach-Object {
+    if ($_ -match $pattern) {
+      $reason = $Matches[1]
+      $rest = $Matches[2]
+      if ($reason -eq 'token-unreadable' -and $rest -match '^: (timed-out|no-read-yet|closed|unsupported)\b') { "$reason ($($Matches[1]))" }
+      else { $reason }
+    }
+  })
 }
 
 # A shim home holding the auth token for $suffix (so the shim dials), and no
@@ -318,7 +340,8 @@ try {
       # Fail fast: a broker that exits, or writes no log, says so at once.
       $waitFrom = Get-Date
       $log = ''
-      while ($log -notmatch 'peer-pid: available') {
+      # "peer-pid: available", or "peer-pid (check N): available" after a retry.
+      while ($log -notmatch 'peer-pid(?: \(check \d+\))?: available') {
         Start-Sleep -Milliseconds 200
         $log = Get-BrokerLog
         if (-not (Get-Process -Id $brokerPid -ErrorAction SilentlyContinue)) {
@@ -371,11 +394,12 @@ try {
       $cShim = Join-Path $cShimDir 'wmux-native.exe'
       Copy-Item -LiteralPath $ShimExe -Destination $cShim -Force
       Copy-Item -LiteralPath (Join-Path $here 'stand-in-bundle.js') -Destination (Join-Path $cBundleDir 'index.js') -Force
-      $session = Invoke-ShimSession $cShim $iHome $iSuffix @(
-        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"broker-ci","version":"0"}}}',
+      $session = Invoke-ShimSession -exe $cShim -shimHome $iHome -suffix $iSuffix -waitId 2 `
+        -initLine '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"broker-ci","version":"0"}}}' `
+        -lines @(
         '{"jsonrpc":"2.0","method":"notifications/initialized"}',
         '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"repl_sessions","arguments":{}}}'
-      ) 2
+      )
       Write-Host "elevated shim pid $($session.pid) (exit $($session.code)) stderr: $($session.stderr.Trim())"
       # Read after the session, so its refusal (if any) is in the log.
       $sReasons = Get-Refusals (Get-BrokerLog) $session.pid
@@ -383,7 +407,7 @@ try {
       $answer = $session.stdout -split "`n" | Where-Object { $_.Trim() } | ForEach-Object {
         try { $_ | ConvertFrom-Json } catch { $null }
       } | Where-Object { $_ -and $_.id -eq 2 } | Select-Object -First 1
-      $answered = $answer -and $answer.result -and -not $answer.result.isError
+      $answered = $session.initOk -and $answer -and $answer.result -and -not $answer.result.isError
       $fromBundle = $answered -and (@($answer.result.content) | Where-Object { $_.text -like 'FULL BUNDLE*' })
       $handedOver = $session.stderr -match 'running the full server for the rest of the session'
       $preAckFallback = $session.stderr -match '\[wmux-mcp-shim\] closed before ack'

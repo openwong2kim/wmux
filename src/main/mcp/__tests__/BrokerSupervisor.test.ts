@@ -182,7 +182,7 @@ describe('BrokerSupervisor: a pipe another owner holds (Windows owner verdicts)'
     vi.useRealTimers();
   });
 
-  it('a pipe that stays busy for 8 probes in a row counts as held elsewhere (path-occupied, marked off)', async () => {
+  it('a pipe that stays busy for 8 probes in a row counts as held elsewhere (path-occupied), without marking the broker off', async () => {
     vi.useFakeTimers();
     const first = makeChild();
     vi.mocked(spawn).mockReturnValue(first as never);
@@ -193,7 +193,9 @@ describe('BrokerSupervisor: a pipe another owner holds (Windows owner verdicts)'
     first.emit('exit', 75, null);
     await vi.advanceTimersByTimeAsync(8 * 15_000 + 1000);
     expect(sup.status()).toMatchObject({ running: false, standingDown: false, downReason: 'path-occupied' });
-    expect(off.tripped).toHaveBeenCalledTimes(1);
+    // A busy pipe may be our own broker at its instance cap: launchers keep
+    // dialling it (a busy name costs them at most a short wait).
+    expect(off.tripped).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(probeBrokerPipe).toHaveBeenCalledTimes(8);
     expect(spawn).toHaveBeenCalledTimes(1);
@@ -201,20 +203,36 @@ describe('BrokerSupervisor: a pipe another owner holds (Windows owner verdicts)'
     vi.useRealTimers();
   });
 
-  it('an owner check that cannot run (unknown) never ends in the terminal state, however long it lasts', async () => {
+  it('an owner check that cannot run (unknown) never ends in the terminal state; 8 in a row start a broker to bind the pipe', async () => {
     vi.useFakeTimers();
     const first = makeChild();
-    vi.mocked(spawn).mockReturnValue(first as never);
+    const second = makeChild();
+    const third = makeChild();
+    vi.mocked(spawn)
+      .mockReturnValueOnce(first as never)
+      .mockReturnValueOnce(second as never)
+      .mockReturnValueOnce(third as never);
     vi.mocked(probeBrokerPipe).mockResolvedValue('unknown');
     const off = { clear: vi.fn(), tripped: vi.fn(async () => undefined) };
     const sup = new BrokerSupervisor({ brokerOff: off });
     sup.start();
     first.emit('exit', 75, null);
-    await vi.advanceTimersByTimeAsync(20 * 15_000 + 1000);
-    expect(probeBrokerPipe).toHaveBeenCalledTimes(20);
-    expect(sup.status().downReason).toBe('standing-down');
-    expect(off.tripped).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(7 * 15_000 + 1000);
+    expect(probeBrokerPipe).toHaveBeenCalledTimes(7);
     expect(spawn).toHaveBeenCalledTimes(1);
+    expect(sup.status().downReason).toBe('standing-down');
+    // The 8th: the broker's own check decides. It finds the pipe held and
+    // stands down again, and the count starts over.
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(spawn).toHaveBeenCalledTimes(2);
+    second.emit('exit', 75, null);
+    expect(sup.status().downReason).toBe('standing-down');
+    await vi.advanceTimersByTimeAsync(7 * 15_000 + 1000);
+    expect(spawn).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(spawn).toHaveBeenCalledTimes(3);
+    expect(off.tripped).not.toHaveBeenCalled();
+    expect(sup.status().downReason).not.toBe('path-occupied');
     sup.stop();
     vi.useRealTimers();
   });
