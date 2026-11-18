@@ -172,7 +172,7 @@ describe('McpRegistrar — the native launcher (broker flag on, packaged)', () =
 
   it('with the broker flag off, never installs or runs the launcher', async () => {
     ship('good');
-    delete process.env.WMUX_MCP_BROKER;
+    process.env.WMUX_MCP_BROKER = '0';
     const selfTest = vi.fn(runsIfGood);
     await new McpRegistrar({ nativeSelfTest: selfTest }).register('tok');
     expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'index.js')] });
@@ -182,7 +182,7 @@ describe('McpRegistrar — the native launcher (broker flag on, packaged)', () =
 
   it('with the broker flag off, an explicit useShim still registers the bundle', async () => {
     ship('good');
-    delete process.env.WMUX_MCP_BROKER;
+    process.env.WMUX_MCP_BROKER = '0';
     await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: true });
     expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'index.js')] });
   });
@@ -236,7 +236,7 @@ describe('McpRegistrar — upgrade and rollback across several agent CLIs', () =
     fs.writeFileSync(file, text);
   };
 
-  it('flag on moves the owned entries to the native launcher, leaves the hand-edited one byte for byte, and flag unset writes the bundle back', async () => {
+  it('flag on moves the owned entries to the native launcher, leaves the hand-edited one byte for byte, and flag off writes the bundle back', async () => {
     ship('good');
     const f = files();
     const bundle = path.join(stableDir(), 'index.js');
@@ -261,8 +261,8 @@ describe('McpRegistrar — upgrade and rollback across several agent CLIs', () =
     expect(fs.readFileSync(f.codex, 'utf8')).toContain('model = "o3"');
     expect(fs.readFileSync(f.codex, 'utf8')).toContain('[mcp_servers.mine]');
 
-    // The way back: the flag unset, the next start writes the bundle again.
-    delete process.env.WMUX_MCP_BROKER;
+    // The way back: the flag off (or Off in Settings), the next start writes the bundle again.
+    process.env.WMUX_MCP_BROKER = '0';
     await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: false });
     for (const [file, format] of [[f.claude, 'json'], [f.codex, 'toml'], [f.gemini, 'json']] as const) {
       expect(entry(file, format), file).toMatchObject({ command: 'node', args: [bundle] });

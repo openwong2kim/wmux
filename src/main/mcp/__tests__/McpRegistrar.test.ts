@@ -212,6 +212,8 @@ describe('McpRegistrar.register (broker topology selection)', () => {
   });
 
   it('flag off → full bundle, no probe (byte-identical to pre-broker)', async () => {
+    // Unset follows the platform default, which is on for macOS and Linux.
+    process.env.WMUX_MCP_BROKER = '0';
     await new McpRegistrar().register('tok');
     expect(canConnectBrokerPipe).not.toHaveBeenCalled();
     expect(registeredPath()).toBe(entryPath());
