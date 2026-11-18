@@ -34,6 +34,10 @@ describe('unsent-paste hold daemon wiring', () => {
     expect(body).toMatch(/const exitEvent = agentProcessExitEvent\(sessionId, state\);\s*if \(exitEvent\) pipeServer\.broadcast\(exitEvent\);/);
   });
 
+  it("the headless answer's digit passes over a hold instead of clearing it", () => {
+    expect(src).toContain("if (revision !== null) unsentPasteHolds?.passedOver(sid, revision, 'headless answer');");
+  });
+
   it('a session ending clears its hold', () => {
     expect(src).toContain("sessionManager.on('session:died', (payload: { id: string }) => unsentPasteHolds?.sessionEnded(payload.id));");
     expect(src).toContain("sessionManager.on('session:destroyed', (payload: { id: string }) => unsentPasteHolds?.sessionEnded(payload.id));");

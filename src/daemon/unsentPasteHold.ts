@@ -115,6 +115,20 @@ export class UnsentPasteHolds {
     return true;
   }
 
+  /**
+   * A key the pane's lock holder typed into a picker drawn over the input box: the remote answer of a headless
+   * worker's question (a2aRemote/headlessAnswer.ts). Claude Code hides the box while a picker is up and the key goes
+   * to the picker, so a paste queued in the box before the picker opened is still there when it closes. The record
+   * moves past that one key rather than reading it as input that cleared the box. A record another key has already
+   * cleared (its count is behind by more than this key) is left alone, so that key still clears it.
+   */
+  passedOver(sessionId: string, revisionAfter: number, writer: string): void {
+    const record = this.records.get(sessionId);
+    if (!record || record.keys !== revisionAfter - 1) return;
+    record.keys = revisionAfter;
+    this.log(`[unsent-paste] session=${sessionId} kept: ${writer} typed into a picker over the box, not into it`);
+  }
+
   /** The tracker's edge for the pane: a death, or a launch whose process differs from the recorded one, clears it. */
   agentState(sessionId: string, alive: boolean): void {
     const record = this.records.get(sessionId);

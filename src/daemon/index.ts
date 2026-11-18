@@ -11541,7 +11541,14 @@ async function main(): Promise<void> {
           answerOnScreen: (sessionId, answer, stillAllowed) => answerPicker({
             readPromptScreen: (sid) => readPromptScreenOf(sessionManager, sid),
             promptScreenMark: (sid) => promptScreenMarkOf(sessionManager, sid),
-            writeStepKey: (sid, data) => writeStepKeyOf(sessionManager, sid, data),
+            // The answer types only while askPicker reads a picker on screen, and a picker
+            // replaces the input box: its digit cannot submit a paste waiting there. So it is
+            // not refused by an unsent-paste hold, and it does not clear one either (#3393).
+            writeStepKey: (sid, data) => {
+              const revision = writeStepKeyOf(sessionManager, sid, data);
+              if (revision !== null) unsentPasteHolds?.passedOver(sid, revision, 'headless answer');
+              return revision;
+            },
             lock: (sid) => paneLocks.acquire(sid, { key: 'headless-answer' }, PANE_LOCK_DAEMON_WAIT_MS),
             unlock: (sid, token) => paneLocks.release(sid, token),
             stillAllowed,

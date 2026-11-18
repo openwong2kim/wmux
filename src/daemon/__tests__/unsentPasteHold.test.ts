@@ -76,6 +76,22 @@ describe('UnsentPasteHolds', () => {
     expect(holds.held('pty-a')).toBe(false);
   });
 
+  it('a key typed into a picker over the box (a headless answer) keeps it; a key before that one still clears it', () => {
+    paste();
+    holds.record('pty-a', 'main delivery');
+    // The answer's digit, counted as the daemon counts it.
+    const after = bridge.noteInput('1', { selfWrite: true });
+    holds.passedOver('pty-a', after, 'headless answer');
+    expect(holds.held('pty-a')).toBe(true);
+    expect(logs.some((l) => l.includes('kept: headless answer'))).toBe(true);
+
+    // A person's key between the hold and the answer: the hold is cleared, and the answer does not bring it back.
+    bridge.noteInput('x');
+    const later = bridge.noteInput('2', { selfWrite: true });
+    holds.passedOver('pty-a', later, 'headless answer');
+    expect(holds.held('pty-a')).toBe(false);
+  });
+
   it('input after it (a person\'s key, any other writer) clears it', () => {
     paste();
     holds.record('pty-a', 'main delivery');
