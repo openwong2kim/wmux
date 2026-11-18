@@ -1,6 +1,7 @@
 import { BrowserWindow, ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { A2A_REMOTE_RPC } from '../../../shared/a2aRemoteDelivery';
+import { A2A_APPROVALS_SET_BY_APP, isA2aApprovalExposure, isHostId } from '../../../shared/a2aRemote';
 import { A2A_SPAWN_OUTGOING_EVENT, SPAWN_REQUEST_KEY_RE, coerceSpawnPolicy, type A2aSpawnUiAsk } from '../../../shared/a2aSpawn';
 import { isAgentSlug } from '../../../shared/agentIdentity';
 import { getFanOutGuards, lineageDepth } from '../../worktask/fanoutGuards';
@@ -197,6 +198,18 @@ export function registerA2aRemoteHandlers(daemonClient: DaemonClient | null, opt
       },
     ],
     [IPC.A2A_REMOTE_SPAWN_REQUESTS_LIST, async () => (await client()).a2aSpawnRequestsList()],
+    // Remote approvals per paired PC. Only a host id and one of the three levels go through; the daemon
+    // logs the set as the app's own (`by=app-settings`): Settings is not a pane, and no name the renderer
+    // sends is written in that line.
+    [IPC.A2A_REMOTE_APPROVALS_GET, async () => (await client()).a2aRemoteApprovalsGet()],
+    [
+      IPC.A2A_REMOTE_APPROVALS_SET,
+      async (hostId, exposure) => {
+        const id = str(hostId).toLowerCase();
+        if (!isHostId(id) || (exposure !== 'off' && !isA2aApprovalExposure(exposure))) return { ok: false, error: 'bad-request' };
+        return (await clientNow()).a2aRemoteApprovalsSet({ hostId: id, exposure, by: A2A_APPROVALS_SET_BY_APP });
+      },
+    ],
     [
       IPC.A2A_REMOTE_SPAWN_ASK,
       async (params) => {

@@ -24,6 +24,7 @@ import { localHostNameFromArgv } from '../shared/localHostName';
 import { IPC } from '../shared/constants';
 import { CLAUDE_FILE_SEND_IPC } from '../shared/claudeFileSend';
 import type { A2aSpawnAskResult, A2aSpawnOutgoingList, A2aSpawnPolicySetResult, A2aSpawnPolicyV1, A2aSpawnRequestSummary, A2aSpawnUiAsk } from '../shared/a2aSpawn';
+import type { A2aApprovalExposure } from '../shared/a2aRemote';
 import type { SleepPreventionMode, SleepWindow } from '../shared/sleepPrevention';
 import { ROOM_EVENT } from '../shared/room';
 import { BOT_EVENT } from '../shared/bot';
@@ -2707,6 +2708,10 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.invoke(IPC.A2A_REMOTE_SPAWN_POLICY_SET, policy) as Promise<A2aSpawnPolicySetResult>,
   spawnRequestsList: () =>
     ipcRenderer.invoke(IPC.A2A_REMOTE_SPAWN_REQUESTS_LIST) as Promise<{ requests: A2aSpawnRequestSummary[] }>,
+  approvalsGet: () =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_APPROVALS_GET) as Promise<{ hosts: Record<string, A2aApprovalExposure>; damaged: boolean }>,
+  approvalsSet: (hostId: string, exposure: 'off' | A2aApprovalExposure) =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_APPROVALS_SET, hostId, exposure) as Promise<{ ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string }>,
   spawnAsk: (ask: A2aSpawnUiAsk) => ipcRenderer.invoke(IPC.A2A_REMOTE_SPAWN_ASK, ask) as Promise<A2aSpawnAskResult>,
   spawnOutgoing: () => ipcRenderer.invoke(IPC.A2A_REMOTE_SPAWN_OUTGOING) as Promise<A2aSpawnOutgoingList>,
   hostsExposed: (hostId: string) =>

@@ -884,6 +884,9 @@ export const IPC = {
   A2A_REMOTE_SPAWN_POLICY_GET: 'a2aRemote:spawnPolicy:get',
   A2A_REMOTE_SPAWN_POLICY_SET: 'a2aRemote:spawnPolicy:set',
   A2A_REMOTE_SPAWN_REQUESTS_LIST: 'a2aRemote:spawnRequests:list',
+  // Which paired PCs may allow or deny permission prompts in the tasks they sent here (the app's own set).
+  A2A_REMOTE_APPROVALS_GET: 'a2aRemote:approvals:get',
+  A2A_REMOTE_APPROVALS_SET: 'a2aRemote:approvals:set',
   // Asking another PC to start an agent: the ask, and what this PC sent.
   A2A_REMOTE_SPAWN_ASK: 'a2aRemote:spawn:ask',
   A2A_REMOTE_SPAWN_OUTGOING: 'a2aRemote:spawn:outgoing',
