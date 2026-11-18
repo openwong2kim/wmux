@@ -3,6 +3,7 @@ import { generateRustSnapshot } from '../RustSnapshot';
 import { selectTextSnapshot, getTextSnapshotBackendDiagnostics } from '../TextSnapshotBackend';
 import { generateTextSnapshot, generateSnapshot, type SnapshotRequest, type TextSnapshotOutcome } from '../HeadlessSnapshot';
 import { NATIVE_CELL_LIMIT, NATIVE_SNAPSHOT_MAX_INPUT_BYTES } from '../nativeSnapshotLimits';
+import { NATIVE_CIRCUIT_COOLDOWNS_MS } from '../nativeCircuit';
 
 vi.mock('../RustSnapshot', () => ({ generateRustSnapshot: vi.fn() }));
 const native = vi.mocked(generateRustSnapshot);
@@ -115,6 +116,42 @@ describe('opt-in Rust text delivery', () => {
     await selectTextSnapshot(req, reference);
     expect(native).toHaveBeenCalledTimes(2);
     expect(reference).toHaveBeenCalledTimes(2);
+    expect(getTextSnapshotBackendDiagnostics().circuitOpen).toBe(false);
+  });
+
+  // R2 (b) prep: the circuit no longer stays open for the life of the daemon (nativeCircuit.ts).
+  it('retries a broken module once its cooldown ran out, and closes the circuit when it works', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockResolvedValueOnce({ ok: false, reason: 'error' }).mockResolvedValueOnce({ ok: false, reason: 'error' }).mockResolvedValueOnce(success);
+    const reference = vi.fn(async () => success);
+    await selectTextSnapshot(req, reference);
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0] - 1;
+    await selectTextSnapshot(req, reference);
+    expect(native).toHaveBeenCalledTimes(1);
+    // The trial fails: open again, for the second cooldown.
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0];
+    await selectTextSnapshot(req, reference);
+    expect(native).toHaveBeenCalledTimes(2);
+    expect(getTextSnapshotBackendDiagnostics().circuitOpen).toBe(true);
+    now += NATIVE_CIRCUIT_COOLDOWNS_MS[1] - 1;
+    await selectTextSnapshot(req, reference);
+    expect(native).toHaveBeenCalledTimes(2);
+    // The next trial works: closed.
+    now += 1;
+    expect(await selectTextSnapshot(req, reference)).toMatchObject({ ok: true });
+    expect(native).toHaveBeenCalledTimes(3);
+    expect(getTextSnapshotBackendDiagnostics().circuitOpen).toBe(false);
+  });
+
+  it('closes the circuit on a trial that ran out of budget: the module worked', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockResolvedValueOnce({ ok: false, reason: 'error' }).mockResolvedValueOnce({ ok: false, reason: 'budget' });
+    const reference = vi.fn(async () => success);
+    await selectTextSnapshot(req, reference);
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0];
+    await selectTextSnapshot(req, reference);
     expect(getTextSnapshotBackendDiagnostics().circuitOpen).toBe(false);
   });
 

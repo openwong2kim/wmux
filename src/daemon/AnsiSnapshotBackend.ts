@@ -4,6 +4,7 @@ import { generateRustSnapshot } from './RustSnapshot';
 import { snapshotModeOverride } from './snapshotMode';
 import { countReason, refusalFamily, type SnapshotReasons } from './snapshotBackendReasons';
 import { NATIVE_SNAPSHOT_MAX_INPUT_BYTES, nativeSizesAccepted } from './nativeSnapshotLimits';
+import { createNativeCircuit, snapshotModulePath } from './nativeCircuit';
 
 type Reference = (req: SnapshotRequest) => Promise<SnapshotOutcome>;
 type Reason = 'native' | 'error' | 'budget' | 'unsupported' | 'limits' | 'state' | 'circuit-open';
@@ -18,11 +19,11 @@ interface Diagnostics {
   last?: { backend: 'rust' | 'xterm'; reason: Reason };
 }
 const diagnostics: Diagnostics = { native: 0, fallbacks: 0, skipped: 0, reasons: {}, reasonsSeen: {} };
-let failedModule: { path: string | undefined } | undefined;
+const circuit = createNativeCircuit();
 
 export function getAnsiSnapshotBackendDiagnostics(): Diagnostics & { circuitOpen: boolean } {
   return { ...diagnostics, reasons: { ...diagnostics.reasons }, reasonsSeen: { ...diagnostics.reasonsSeen }, last: diagnostics.last && { ...diagnostics.last },
-    circuitOpen: !!failedModule && failedModule.path === (process.env.WMUX_TERMINAL_CORE_MODULE ?? process.env.WMUX_RUST_SNAPSHOT_MODULE) };
+    circuitOpen: circuit.isOpen(snapshotModulePath(), performance.now()) };
 }
 
 /** Sizes the native grid accepts, and any ring the daemon allows. Its history
@@ -53,18 +54,19 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
   const input = materialize(req);
   const mode = snapshotModeOverride() ?? (terminalCoreSelection() === 'rust' ? 'ansi' : undefined);
   if (mode !== 'ansi' && mode !== 'all') return xterm(input);
-  const modulePath = process.env.WMUX_TERMINAL_CORE_MODULE ?? process.env.WMUX_RUST_SNAPSHOT_MODULE;
-  if (failedModule && failedModule.path !== modulePath) failedModule = undefined;
-  const skip = !eligible(input) ? 'limits' : failedModule ? 'circuit-open' : undefined;
-  if (skip) {
+  const skipTo = (skip: 'limits' | 'circuit-open'): Promise<SnapshotOutcome> => {
     diagnostics.skipped++;
     countReason(diagnostics.reasons, skip);
     diagnostics.last = { backend: 'xterm', reason: skip };
     return xterm(input);
-  }
+  };
+  if (!eligible(input)) return skipTo('limits');
   const budget = input.budgetMs ?? 4000;
   // xterm's own budget check reports where an exhausted parse stopped.
   if (!Number.isFinite(budget) || budget <= 0) return xterm(input);
+  // Skipped while open after a module error; one trial once its cooldown ran out (nativeCircuit.ts).
+  const ticket = circuit.admit(snapshotModulePath(), performance.now());
+  if (!ticket) return skipTo('circuit-open');
   const started = performance.now();
   const overBudget = (): SnapshotOutcome =>
     ({ ok: false, reason: 'budget', detail: `backend=rust elapsedMs=${Math.round(performance.now() - started)}` });
@@ -89,6 +91,7 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
       // A complete snapshot is delivered even when its serialization (which
       // runs after the last budget check) ends past the deadline: the time is
       // spent either way, and the alternative is no snapshot.
+      circuit.settle(ticket, true, performance.now());
       diagnostics.native++;
       diagnostics.last = { backend: 'rust', reason: 'native' };
       return { ...native, durationMs: performance.now() - started };
@@ -96,6 +99,7 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
       // Both backends run the same stream trackers on the same bytes, so
       // margins and an oversized partial tail fail the reference identically.
       if (native.reason === 'margins' || native.reason === 'partial-tail-overflow') {
+        circuit.settle(ticket, true, performance.now());
         diagnostics.fallbacks++;
         countReason(diagnostics.reasons, native.reason);
         diagnostics.last = { backend: 'rust', reason: 'unsupported' };
@@ -111,7 +115,8 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
       else if (native.detail?.startsWith('unsupported-')) failure = 'unsupported';
     }
   } catch { /* Module or disposal errors also use the intact xterm input. */ }
-  if (failure === 'error') failedModule = { path: modulePath };
+  // A refusal or a budget run-out means the module worked; only an error opens (or reopens) the circuit.
+  circuit.settle(ticket, failure !== 'error', performance.now());
   const counted = failure === 'state' || failure === 'unsupported' ? refusalFamily(refusal, failure) : failure;
   countReason(diagnostics.reasons, counted);
   // The native list is already families, the reported one first; a module
