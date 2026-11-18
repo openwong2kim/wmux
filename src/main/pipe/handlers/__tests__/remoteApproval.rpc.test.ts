@@ -64,6 +64,9 @@ describe('a2a.remote.approve', () => {
       expect(await call(approve, ctx)).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
     }
     expect(daemon.a2aRemoteApprove).not.toHaveBeenCalled();
+    // In the words the MCP server drops a stale identity on.
+    expect(JSON.stringify(await call(approve, { origin: 'local', workspaceClaim: { kind: 'bound', workspaceId: 'ws-b' } } as RpcContext))).toMatch(/not owned by workspace ws-b/);
+    expect(JSON.stringify(await call(approve, { origin: 'local', workspaceClaim: { kind: 'stale' } } as RpcContext))).toMatch(/the workspace you claimed is gone/);
     expect(await call(approve, { origin: 'local', workspaceClaim: { kind: 'bound', workspaceId: 'ws-a' } } as RpcContext)).toMatchObject({ ok: true });
     expect(await call(approve, { origin: 'local', commanderWorkspace: 'ws-a' } as RpcContext)).toMatchObject({ ok: true });
   });

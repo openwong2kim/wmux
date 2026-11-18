@@ -203,12 +203,15 @@ const IDENTITY_FREE_BROWSER_METHODS: ReadonlySet<string> = new Set(['browser.nav
  *   `a2a.broadcast`: `a2aCallerWorkspace` (a2a.rpc.ts `registerAsCaller`),
  *   before the handler runs;
  * - `computer.*`: `callerAgent` (computer.rpc.ts `wrap`), before the service is
- *   called (a method that takes no identity never reads the claim).
+ *   called (a method that takes no identity never reads the claim);
+ * - `a2a.remote.answer`, `a2a.remote.approve`: `remoteTaskCaller`
+ *   (remoteTaskCaller.ts), before anything reaches the daemon.
  * Methods that never read the claim (`channel.*`, `ledger.*`, …) are never
  * refused for one, so they are not here.
  */
 const CLAIM_GATED_METHODS: ReadonlySet<string> = new Set([
   'a2a.task.query', 'a2a.task.update', 'a2a.task.send', 'a2a.task.cancel', 'a2a.broadcast',
+  'a2a.remote.answer', 'a2a.remote.approve',
 ]);
 
 /** Whether main refuses `method` for a dead claim before it acts (see above). */
@@ -217,9 +220,14 @@ function isClaimGated(method: string): boolean {
   return method.startsWith('computer.') || CLAIM_GATED_METHODS.has(method);
 }
 
-/** A result that is main's refusal: an object whose `error` is its text (a2a handlers answer this way). */
+/**
+ * A result that is main's refusal: an object whose `error` is its text (a2a
+ * handlers answer this way), or `{ code, message }` (`a2a.remote.*`).
+ */
 function isRefusalResult(outcome: unknown): boolean {
-  return !!outcome && typeof outcome === 'object' && !Array.isArray(outcome) && typeof (outcome as { error?: unknown }).error === 'string';
+  if (!outcome || typeof outcome !== 'object' || Array.isArray(outcome)) return false;
+  const error = (outcome as { error?: unknown }).error;
+  return typeof error === 'string' || (!!error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string');
 }
 
 /** Hand a claim-gated RPC's outcome to the current stale-identity handler (exported for tests). */

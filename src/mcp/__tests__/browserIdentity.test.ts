@@ -440,6 +440,31 @@ describe('a2a and computer tools — a claim that is gone after a wmux restart',
     expect(delivered[0]).toMatchObject({ to: 'ws-target', message: 'hello' });
   });
 
+  it('remote_approve after a restart: refused before it acts, then sent exactly once with a fresh claim', async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const walk = walkMinting(['claim-before-restart', 'claim-after-restart']);
+    mockSendRpc.mockImplementation(async (m: string, params: Record<string, unknown>) => {
+      if (m === 'a2a.resolve.identity') return walk();
+      if (m === 'a2a.remote.approve') {
+        // main's remote-task caller check answers a dead claim as a result, before the daemon.
+        const reply = getWorkspaceToken() === 'claim-before-restart'
+          ? { ok: false, error: { code: 'NOT_AUTHORIZED', message: `${m}: the workspace you claimed is gone` } }
+          : (sent.push(params), { ok: true, taskId: 'rt-1', messageId: 'ap-1', pending: true });
+        noteScopedOutcome(m, reply, false);
+        return reply;
+      }
+      throw new Error(`rpc-down: ${m}`);
+    });
+    const client = await connect();
+
+    const res = await callTool(client, 'remote_approve', { task_id: 'rt-1', prompt_id: '0123456789abcdef', decision: 'deny' });
+
+    expect(res.isError).toBeFalsy();
+    expect(browserCalls('a2a.remote.approve')).toHaveLength(2);
+    expect(sent).toHaveLength(1);
+    expect(getWorkspaceToken()).toBe('claim-after-restart');
+  });
+
   it('which outcomes count: claim-gated methods only, and an `error` answer counts as refused', () => {
     const seen: Array<[string, boolean]> = [];
     runWithStaleIdentityHandler((outcome, failed) => seen.push([outcome, failed]), () => {
@@ -447,6 +472,7 @@ describe('a2a and computer tools — a claim that is gone after a wmux restart',
       noteScopedOutcome('a2a.task.query', { tasks: [] }, false);
       noteScopedOutcome('computer.act', 'boom', true);
       noteScopedOutcome('browser.close', { ok: true }, false);
+      noteScopedOutcome('a2a.remote.answer', { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'y' } }, false);
       // Never refused for a claim (no claim read), or answered for any caller: not judged.
       noteScopedOutcome('channel.post', { error: 'x' }, false);
       noteScopedOutcome('ledger.update', { error: 'x' }, false);
@@ -458,6 +484,7 @@ describe('a2a and computer tools — a claim that is gone after a wmux restart',
       ['{"tasks":[]}', false],
       ['boom', true],
       ['{"ok":true}', false],
+      ['{"ok":false,"error":{"code":"NOT_AUTHORIZED","message":"y"}}', true],
     ]);
   });
 });

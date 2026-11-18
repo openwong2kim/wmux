@@ -48,11 +48,9 @@ export async function remoteTaskCaller(
   }
   const claim = ctx.workspaceClaim;
   if (claim?.kind === 'stale') return deny('NOT_AUTHORIZED', `${method}: the workspace you claimed is gone`);
-  if (claim?.kind === 'bound' && claim.workspaceId !== caller.workspaceId) {
-    return deny('NOT_AUTHORIZED', `${method}: the calling pane is not owned by the workspace you claimed`);
-  }
-  if (ctx.commanderWorkspace && ctx.commanderWorkspace !== caller.workspaceId) {
-    return deny('NOT_AUTHORIZED', `${method}: the calling pane is not owned by your commander workspace`);
+  for (const bound of [claim?.kind === 'bound' ? claim.workspaceId : undefined, ctx.commanderWorkspace]) {
+    // The words the MCP server drops a stale identity on (src/mcp/index.ts isStaleIdentityResult).
+    if (bound && bound !== caller.workspaceId) return deny('NOT_AUTHORIZED', `${method}: the calling pane is not owned by workspace ${bound}`);
   }
   return { ok: true, workspaceId: caller.workspaceId };
 }
