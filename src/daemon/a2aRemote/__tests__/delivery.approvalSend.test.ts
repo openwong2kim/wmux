@@ -249,6 +249,21 @@ describe('the receiving PC\'s window, as the asking PC sees it', () => {
     expect(shown[0]!.metadata.remote.status.detail.approvals).toEqual([{ ...rateLimited(messageId, 12_000), reasonText: expect.stringMatching(/as many approvals/) }]);
   });
 
+  it('a burst past the other PC\'s window: every send is answered rate-limited by its own refusal, however few outcomes a status keeps', async () => {
+    const { linkId, taskId } = await sentTask();
+    await offer(linkId, taskId);
+    const sends = Array.from({ length: 6 }, () => send({ taskId, workspaceId: 'ws-a', promptId: PROMPT, decision: 'deny', waitMs: 5_000 }));
+    await vi.waitFor(() => expect(approvalsQueued()).toHaveLength(6), { timeout: 5_000 });
+    for (const rec of delivery.outbox.pending(HOST).filter((r) => r.envelope.kind === 'approval')) {
+      delivery.outbox.refuse(HOST, rec.seq, 'rate-limited');
+      await (delivery as unknown as { onRefused(r: A2aOutboxRecordV1, c: string): Promise<void> }).onRefused(rec, 'rate-limited');
+    }
+    for (const res of await Promise.all(sends)) {
+      expect(res).toMatchObject({ ok: true, outcome: { outcome: 'not-done', reason: 'rate-limited', retryAfterMs: 60_000 } });
+    }
+    expect(tasks.getTask(taskId)!.status.state).toBe('submitted');
+  });
+
   it('never pending for ever: a send whose message is refused whole after its wait shows that outcome in the task\'s status', async () => {
     const { linkId, taskId } = await sentTask();
     await offer(linkId, taskId);

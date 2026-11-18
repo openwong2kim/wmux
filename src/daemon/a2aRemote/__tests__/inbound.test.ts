@@ -1041,7 +1041,7 @@ describe('an approval from the sender of a task, for a prompt offered in its sta
     expect(taken).toEqual([]);
   });
 
-  it('past its PC\'s window: answered rate-limited (never carried out); one that fails a check is still dropped unread', async () => {
+  it('past its PC\'s window: refused rate-limited and told in the status (never carried out); one that fails a check is still dropped unread', async () => {
     const linkId = activeLink();
     const taskId = await receivedTask(linkId);
     let admit: { ok: true } | { ok: false; retryAfterMs: number } = { ok: false, retryAfterMs: 12_000 };
@@ -1051,7 +1051,7 @@ describe('an approval from the sender of a task, for a prompt offered in its sta
       remoteApproval: { ...withApproval.remoteApproval!, admit: () => admit, limited: (...args) => { limited.push(args); } },
     };
     const e = approvalEnv(linkId, taskId);
-    expect(await acceptInbound(e, peer, guarded)).toEqual({ ok: true, taskId, duplicate: false });
+    expect(await acceptInbound(e, peer, guarded)).toEqual({ ok: false, error: 'rate-limited' });
     expect(taken).toEqual([]);
     expect(limited).toEqual([[HOST, taskId, e.messageId, APPROVAL, 12_000]]);
     // Past the window and for a task that host did not send: dropped, with no refusal for it to retry.

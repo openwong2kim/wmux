@@ -253,6 +253,8 @@ export const A2A_APPROVAL_RPC = Object.freeze({
  */
 export const A2A_APPROVALS_SENT_PER_WINDOW = 60;
 export const A2A_APPROVALS_SENT_WINDOW_MS = 62_000;
+/** The receiving PC's window for approvals from one PC: a `rate-limited` refusal is over within it. */
+export const A2A_APPROVALS_RECEIVED_WINDOW_MS = 60_000;
 /** How long `send` waits for the outcome to come back in the task's status before it answers `pending`. */
 export const A2A_APPROVAL_OUTCOME_WAIT_MS = 10_000;
 /** Why the asking PC sent nothing. */
@@ -1521,7 +1523,12 @@ export type A2aRemoteErrorCode =
    */
   | 'attachment-failed'
   /** An `approval` from a PC whose approvals setting is off on the receiver (no file, damaged, or not on for it). */
-  | 'approvals-off';
+  | 'approvals-off'
+  /**
+   * An `approval` past the receiver's per-PC window (A2A_APPROVALS_RECEIVED_WINDOW_MS):
+   * not carried out; a resend of the same message is answered the same.
+   */
+  | 'rate-limited';
 
 export type A2aRemoteDeliverResponse =
   | { ok: true; taskId?: string; duplicate: boolean }

@@ -343,8 +343,10 @@ async function applyInbound(
       return overWindow.ok ? fail('forbidden', 'an approval is only for a task that host sent') : dropped();
     }
     if (!overWindow.ok) {
+      // Answered to the message itself (each one, however many came in a burst), and in the task's status
+      // with the exact time left.
       deps.remoteApproval.limited?.(peer.hostId, taskId, env.messageId, env.approval as A2aRemoteApprovalV1, overWindow.retryAfterMs);
-      return { ok: true, taskId, duplicate: false };
+      return fail('rate-limited');
     }
     deps.remoteApproval.take(peer.hostId, taskId, env.messageId, env.approval as A2aRemoteApprovalV1);
     return { ok: true, taskId, duplicate: false };

@@ -4,6 +4,7 @@ import {
   A2A_ANSWER_RPC,
   A2A_APPROVAL_OUTCOME_WAIT_MS,
   A2A_APPROVAL_RPC,
+  A2A_APPROVALS_RECEIVED_WINDOW_MS,
   A2A_APPROVALS_SENT_PER_WINDOW,
   A2A_APPROVALS_SENT_WINDOW_MS,
   A2A_FEATURE_ANSWER,
@@ -910,14 +911,15 @@ export class A2aRemoteDelivery {
   private noteRefusedApproval(rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode): void {
     const messageId = rec.envelope.messageId;
     this.refusedApprovals.delete(messageId);
+    const named = code === 'approvals-off' || code === 'link-not-active' || code === 'rate-limited';
     this.refusedApprovals.set(messageId, {
       taskId: rec.envelope.taskId ?? '',
       messageId,
       outcome: 'not-done',
-      ...(code === 'approvals-off' || code === 'link-not-active' ? { reason: code } : {}),
-      reasonText: code === 'approvals-off' || code === 'link-not-active'
-        ? A2A_REMOTE_APPROVAL_REASON_TEXT[code]
-        : `refused by the other PC (${code}); nothing was typed`,
+      ...(named ? { reason: code } : {}),
+      // The refusal names no time: the other PC's window is over within a minute of it.
+      ...(code === 'rate-limited' ? { retryAfterMs: A2A_APPROVALS_RECEIVED_WINDOW_MS } : {}),
+      reasonText: named ? A2A_REMOTE_APPROVAL_REASON_TEXT[code] : `refused by the other PC (${code}); nothing was typed`,
     });
     while (this.refusedApprovals.size > REFUSED_APPROVALS_MAX) this.refusedApprovals.delete(this.refusedApprovals.keys().next().value as string);
     const kept = this.refusedApprovals.get(messageId);
@@ -1164,7 +1166,6 @@ export class A2aRemoteDelivery {
    * state is not recorded (a disagreement).
    */
   private refusalOwed(rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode): boolean {
-    if (rec.envelope.kind === 'approval') return false;
     const taskId = taskOfEnvelope(rec.envelope, remoteTaskId);
     const task = taskId ? this.deps.taskService.getTask(taskId) : undefined;
     if (!task || task.metadata.updatedAt > rec.updatedAt) return false;
@@ -1405,11 +1406,10 @@ export class A2aRemoteDelivery {
     this.settleRemoteStatus(task.id);
     const kept = this.remoteStatuses.get(task.id);
     // An approval the other PC refused whole shows with the outcomes its worker sent, so none stays pending.
-    const refused = [...this.refusedApprovals.values()].filter((r) => r.taskId === task.id)
-      .map(({ taskId: _t, reasonText: _r, ...o }): A2aRemoteApprovalOutcome => o);
-    const status = refused.length > 0
-      ? withRefusedApprovals(kept ?? { kind: 'working', since: new Date().toISOString() }, refused)
-      : kept;
+    // Only beside a status that PC sent: none is made up.
+    const refused = kept ? [...this.refusedApprovals.values()].filter((r) => r.taskId === task.id)
+      .map(({ taskId: _t, reasonText: _r, ...o }): A2aRemoteApprovalOutcome => o) : [];
+    const status = kept && refused.length > 0 ? withRefusedApprovals(kept, refused) : kept;
     if (!status) return task;
     const remote = task.metadata.remote as A2aRemoteTaskState | undefined;
     if (!remote) return task;

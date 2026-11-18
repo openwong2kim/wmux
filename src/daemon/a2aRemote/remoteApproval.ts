@@ -24,6 +24,7 @@
 
 import crypto from 'node:crypto';
 import {
+  A2A_APPROVALS_RECEIVED_WINDOW_MS,
   ANSWER_OUTCOMES_MAX,
   A2A_REMOTE_APPROVAL_COMMAND_MAX,
   approvalCommandText,
@@ -91,7 +92,7 @@ export const APPROVALS_PER_WINDOW = 60;
 export const APPROVAL_IDS_REMEMBERED_MAX = 4096;
 /** Refusal audit lines per PC in a window; past it one line says how many were left out. */
 export const APPROVAL_AUDIT_REFUSALS_PER_WINDOW = 30;
-export const APPROVAL_WINDOW_MS = 60_000;
+export const APPROVAL_WINDOW_MS = A2A_APPROVALS_RECEIVED_WINDOW_MS;
 /** Outcomes kept in memory for message ids whose receipt could not be written. */
 export const APPROVAL_TOMBSTONES_MAX = 4096;
 /** The file the outcomes are stored in. */
