@@ -69,7 +69,7 @@ describe('ApprovalPacer', () => {
     for (clock.now = 60_000; clock.now < 120_000; clock.now += 100) {
       if (pacer.waitMs(HOST_A) === 0) { pacer.note(HOST_A); sentAt.push(clock.now); }
     }
-    // However the receiving PC's one-minute window falls on them, it holds at most 60.
+    // However a one-minute window falls on the send times, it holds at most 60 (arrival times can differ).
     for (const start of sentAt) {
       expect(sentAt.filter((t) => t >= start && t < start + 60_000).length).toBeLessThanOrEqual(60);
     }
