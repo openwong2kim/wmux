@@ -50,7 +50,7 @@ describe('opt-in Rust text delivery', () => {
     const before = getTextSnapshotBackendDiagnostics().native;
     expect(await selectTextSnapshot(req, reference)).toMatchObject({ ...success, durationMs: expect.any(Number) });
     expect(reference).not.toHaveBeenCalled();
-    expect(native).toHaveBeenCalledWith({ ...req, budgetMs: 500 }, 'text');
+    expect(native).toHaveBeenCalledWith({ ...req, budgetMs: 1000 }, 'text');
     expect(getTextSnapshotBackendDiagnostics().native).toBe(before + 1);
   });
 

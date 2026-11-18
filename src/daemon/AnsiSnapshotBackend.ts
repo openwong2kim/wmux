@@ -45,8 +45,9 @@ function materialize(req: SnapshotRequest): SnapshotRequest {
 /**
  * Rust is the ANSI backend when the terminal engine is rust (or with an
  * explicit WMUX_RUST_SNAPSHOT=ansi|all); `off` keeps xterm. Any refusal,
- * error, invalid result or spent half-budget falls back to xterm on the same
- * bytes, a live tee's drained chunks included.
+ * error or invalid result falls back to xterm on the same bytes, a live tee's
+ * drained chunks included, with what is left of the budget. Native gets the
+ * whole budget: one that spends it ends the snapshot with `budget`.
  */
 export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference): Promise<SnapshotOutcome> {
   const input = materialize(req);
@@ -81,8 +82,9 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
   let refusal: string | undefined;
   let families: string[] | undefined;
   try {
-    // Half of the caller's total budget stays reserved for the fallback.
-    const native = await generateRustSnapshot({ ...input, drainQueue: record, budgetMs: budget / 2 }, 'ansi');
+    // The whole budget: the native path is the one that delivers (R2 b), and
+    // a refusal still hands the fallback whatever time is left.
+    const native = await generateRustSnapshot({ ...input, drainQueue: record, budgetMs: budget }, 'ansi');
     if (native.ok && Buffer.isBuffer(native.payload) && native.bytesIn === input.initial.length + drainedBytes) {
       if (performance.now() - started > budget) return overBudget();
       diagnostics.native++;

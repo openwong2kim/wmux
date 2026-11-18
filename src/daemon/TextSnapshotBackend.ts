@@ -69,9 +69,11 @@ export async function selectTextSnapshot(req: SnapshotRequest, xterm: Reference)
   let failure: 'error' | 'budget' = 'error';
   let refusal: string | undefined;
   try {
-    // Reserve half of the caller's total budget for fallback. Neither retry
-    // restarts the original deadline; the shared snapshot queue stays held.
-    const native = await generateRustSnapshot({ ...req, budgetMs: budget / 2 }, 'text');
+    // The whole budget: the native path is the one that delivers (R2 b). A
+    // refusal hands the fallback what is left; one that spent it all ends with
+    // `budget`. Neither restarts the original deadline; the shared snapshot
+    // queue stays held.
+    const native = await generateRustSnapshot({ ...req, budgetMs: budget }, 'text');
     if (native.ok && validText(native, req)) {
       if (performance.now() - started > budget) return { ok: false, reason: 'budget' };
       diagnostics.native++;
