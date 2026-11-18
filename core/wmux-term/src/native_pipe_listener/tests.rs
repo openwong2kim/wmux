@@ -1,4 +1,4 @@
-use super::conn::{Conn, ReadResult};
+use super::conn::{Conn, ReadResult, END_DRAIN_LIMIT};
 use super::listener::{Instances, ListenError, Listener};
 use super::peer::ppid_rule;
 use super::security::{current_user, owner_only_sddl};
@@ -299,9 +299,7 @@ fn a_second_listener_on_the_same_name_fails_with_eaddrinuse() {
 fn instance_handles_are_not_inheritable() {
     let _serial = serial();
     let instances = Instances::new(&pipe_name(), 2).unwrap();
-    assert!(instances.try_slot());
     let first = instances.create().unwrap();
-    assert!(instances.try_slot());
     let second = instances.create().unwrap();
     for instance in [&first, &second] {
         let mut flags = u32::MAX;
@@ -382,20 +380,98 @@ fn clients_past_the_instance_cap_wait_for_a_slot() {
     let first = accept(&listener);
     let _second_client = Client::open(&name);
     let second = accept(&listener);
-    // Both instances are taken and none is pending.
+    // At the cap the listening instance still takes one client, which waits
+    // unaccepted; past it the name is busy.
+    let _third_client = Client::open(&name);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(listener.take_accepted().is_none(), "accepted past the cap");
     assert_eq!(Client::try_open(&name).err(), Some(ERROR_PIPE_BUSY));
     first.destroy_and_join();
     drop(first_client);
-    let mut third_client = None;
-    wait_until("a freed slot", || {
-        third_client = Client::try_open(&name).ok();
-        third_client.is_some()
-    });
     let third = accept(&listener);
     assert_eq!(third.peer().pid, std::process::id());
     second.destroy_and_join();
     third.destroy_and_join();
     listener.close_and_join();
+}
+
+/// While a listener runs, its name always exists: a create of the name as a
+/// first instance fails throughout, at the cap and as conns come and go.
+#[test]
+fn the_name_never_disappears_while_listening() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 1, notify).unwrap();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let probe_stop = stop.clone();
+    let probe_name = wide(&name);
+    let probe = std::thread::spawn(move || {
+        let (mut attempts, mut created) = (0u32, 0u32);
+        while !probe_stop.load(Ordering::Acquire) {
+            // SAFETY: NUL-terminated name; default security.
+            let raw = unsafe {
+                CreateNamedPipeW(
+                    probe_name.as_ptr(),
+                    PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                    PIPE_TYPE_BYTE,
+                    1,
+                    0,
+                    0,
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            attempts += 1;
+            if OwnedHandle::from_raw(raw).is_some() {
+                created += 1;
+            }
+        }
+        (attempts, created)
+    });
+    for _ in 0..20 {
+        let client = Client::open(&name);
+        let conn = accept(&listener);
+        // At the cap (1): a second client waits on the listening instance.
+        let waiting = Client::open(&name);
+        conn.destroy_and_join();
+        drop(client);
+        let next = accept(&listener);
+        drop(waiting);
+        next.destroy_and_join();
+    }
+    stop.store(true, Ordering::Release);
+    let (attempts, created) = probe.join().unwrap();
+    assert!(attempts > 0);
+    assert_eq!(
+        created, 0,
+        "the name was absent {created} of {attempts} times"
+    );
+    listener.close_and_join();
+}
+
+/// An ended conn whose client never reads gives up after END_DRAIN_LIMIT:
+/// it cancels the write, closes and reports why.
+#[test]
+fn end_gives_up_on_a_client_that_never_reads() {
+    let _serial = serial();
+    wait_until("idle workers", || worker_count() == 0);
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    let client = Client::open(&name);
+    let conn = accept(&listener);
+    let id = conn.write(pattern(200 * 1000));
+    conn.end();
+    let started = Instant::now();
+    wait_until("the bounded close", || conn.closed());
+    assert!(started.elapsed() >= END_DRAIN_LIMIT - Duration::from_millis(100));
+    assert!(conn.take_written().contains(&id));
+    let error = conn.error().unwrap();
+    assert!(error.contains("did not read"), "{error}");
+    drop(client);
+    listener.close_and_join();
+    wait_until("every worker to end", || worker_count() == 0);
 }
 
 /// end() closes after its writes complete; a slow client still reads every

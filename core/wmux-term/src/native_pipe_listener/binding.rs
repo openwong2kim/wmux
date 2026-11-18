@@ -56,19 +56,49 @@ fn wake(notify: Function<(), ()>) -> Result<Notify> {
 /// the process exiting): cancel, join and close what is still open.
 trait Shutdown: Send + Sync {
     fn shutdown(&self);
+    /// Nothing is left to shut down.
+    fn finished(&self) -> bool;
 }
 impl Shutdown for Listener {
     fn shutdown(&self) {
         self.close_and_join();
+    }
+    fn finished(&self) -> bool {
+        false
     }
 }
 impl Shutdown for Conn {
     fn shutdown(&self) {
         self.destroy_and_join();
     }
+    fn finished(&self) -> bool {
+        self.closed()
+    }
 }
 
-type Registry = Mutex<HashMap<usize, Vec<Weak<dyn Shutdown>>>>;
+/// Objects are tracked weakly, so a collected JS object still runs its
+/// Drop. An ended conn is tracked strongly until it has closed: its JS
+/// object may be gone while it still drains.
+enum Tracked {
+    Weak(Weak<dyn Shutdown>),
+    Strong(Arc<dyn Shutdown>),
+}
+impl Tracked {
+    fn live(&self) -> Option<Arc<dyn Shutdown>> {
+        match self {
+            Self::Weak(item) => item.upgrade(),
+            Self::Strong(item) => Some(item.clone()),
+        }
+    }
+    fn keep(&self) -> bool {
+        match self {
+            Self::Weak(item) => item.strong_count() > 0,
+            Self::Strong(item) => !item.finished(),
+        }
+    }
+}
+
+type Registry = Mutex<HashMap<usize, Vec<Tracked>>>;
 
 fn registry() -> &'static Registry {
     static REGISTRY: OnceLock<Registry> = OnceLock::new();
@@ -76,12 +106,12 @@ fn registry() -> &'static Registry {
 }
 
 /// Tracks an object for its environment's cleanup; one hook per environment.
-fn track(env: &Env, item: Weak<dyn Shutdown>) {
+fn track(env: &Env, item: Tracked) {
     let key = env.raw() as usize;
     let mut map = registry().lock().unwrap_or_else(|p| p.into_inner());
     let first = !map.contains_key(&key);
     let items = map.entry(key).or_default();
-    items.retain(|item| item.strong_count() > 0);
+    items.retain(Tracked::keep);
     items.push(item);
     drop(map);
     if first {
@@ -92,7 +122,7 @@ fn track(env: &Env, item: Weak<dyn Shutdown>) {
                 .remove(&key)
                 .unwrap_or_default();
             for item in items {
-                if let Some(item) = item.upgrade() {
+                if let Some(item) = item.live() {
                     item.shutdown();
                 }
             }
@@ -127,7 +157,7 @@ impl NativePipeListener {
         match Listener::bind(&name, max_instances, notify) {
             Ok(inner) => {
                 let weak: Weak<dyn Shutdown> = Arc::downgrade(&inner) as Weak<Listener>;
-                track(&env, weak);
+                track(&env, Tracked::Weak(weak));
                 Ok(Self { inner })
             }
             Err(ListenError::AddressInUse(message)) => {
@@ -142,7 +172,7 @@ impl NativePipeListener {
     pub fn take_accepted(&self, env: Env) -> Option<NativePipeConn> {
         let inner = self.inner.take_accepted()?;
         let weak: Weak<dyn Shutdown> = Arc::downgrade(&inner) as Weak<Conn>;
-        track(&env, weak);
+        track(&env, Tracked::Weak(weak));
         Some(NativePipeConn { inner })
     }
 
@@ -228,7 +258,10 @@ impl NativePipeConn {
     /// Closes once queued writes complete; the client can still read what
     /// is buffered. Wakes when closed.
     #[napi(catch_unwind)]
-    pub fn end(&self) {
+    pub fn end(&self, env: Env) {
+        if !self.inner.ending() && !self.inner.closed() {
+            track(&env, Tracked::Strong(self.inner.clone()));
+        }
         self.inner.end();
     }
 
