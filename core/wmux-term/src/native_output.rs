@@ -166,8 +166,9 @@ fn incomplete_suffix(bytes: &[u8]) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{lossy, NativeOutputDecoder};
-    use crate::fallible::{fail_from, ALLOC_FAILED};
+    use super::{lossy, NativeOutputChunk, NativeOutputDecoder};
+    use crate::fallible::{fail_from, fail_what, ALLOC_FAILED};
+    use napi::bindgen_prelude::Uint8Array;
 
     fn decode(decoder: &mut NativeOutputDecoder, bytes: &[u8], finish: bool) -> Vec<u8> {
         decoder
@@ -244,5 +245,39 @@ mod tests {
             assert_eq!(back, b"\x28");
         }
         assert_eq!(decode(&mut decoder, b"\x28", false), "\u{fffd}(".as_bytes());
+    }
+
+    #[test]
+    fn a_refused_chunk_copy_is_an_error_and_the_chunk_reads_after() {
+        let chunk = NativeOutputChunk {
+            bytes: b"abc".to_vec(),
+        };
+        {
+            let _fail = fail_from(1);
+            let error = chunk.read_bytes().err().expect("the copy is refused");
+            assert!(error.reason.starts_with(ALLOC_FAILED), "{}", error.reason);
+            assert_eq!(error.status, napi::Status::GenericFailure);
+        }
+        assert_eq!(&chunk.read_bytes().unwrap()[..], b"abc");
+        assert_eq!(chunk.byte_length(), 3);
+    }
+
+    #[test]
+    fn a_refused_input_copy_leaves_the_decoder() {
+        let mut decoder = NativeOutputDecoder::default();
+        let smile = "😀".as_bytes();
+        assert_eq!(decode(&mut decoder, &smile[..2], false), b"");
+        {
+            let _fail = fail_what("PTY output to decode");
+            let error = decoder
+                .feed(Uint8Array::new(smile[2..].to_vec()), false)
+                .err()
+                .expect("the copy is refused");
+            assert!(error.reason.starts_with(ALLOC_FAILED), "{}", error.reason);
+        }
+        let chunk = decoder
+            .feed(Uint8Array::new(smile[2..].to_vec()), false)
+            .unwrap();
+        assert_eq!(chunk.text(), "😀");
     }
 }

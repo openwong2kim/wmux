@@ -6,6 +6,10 @@ use crate::output_interpreter::OutputInterpreter;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
+/// The batch's codes and texts: one each per event, at most the chunk's OSC
+/// count.
+const BATCH: &str = "an OSC event batch";
+
 // Batch codes as one typed array: a native object conversion for every OSC
 // dominates event-heavy streams. The adapter constructs ordinary event objects.
 #[napi(object)]
@@ -89,7 +93,6 @@ impl NativeOutputInterpreter {
             return Ok(None);
         }
         // One code per event: at most the chunk's OSC count.
-        const BATCH: &str = "an OSC event batch";
         let mut codes: Vec<f64> = fallible::try_with_capacity(events.len(), BATCH)?;
         let mut data: Vec<String> = fallible::try_with_capacity(events.len(), BATCH)?;
         for event in events {
@@ -100,5 +103,29 @@ impl NativeOutputInterpreter {
             codes: codes.into(),
             data,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NativeOutputInterpreter, BATCH};
+    use crate::fallible::{fail_what, ALLOC_FAILED};
+
+    #[test]
+    fn a_refused_event_batch_is_an_error_and_the_next_feed_reads() {
+        let mut interpreter = NativeOutputInterpreter::new();
+        {
+            let _fail = fail_what(BATCH);
+            let error = interpreter
+                .feed("\x1b]2;a\x07".into(), 0.0, true)
+                .err()
+                .expect("the batch is refused");
+            assert!(error.reason.starts_with(ALLOC_FAILED), "{}", error.reason);
+        }
+        let batch = interpreter
+            .feed("\x1b]2;b\x07".into(), 6.0, true)
+            .unwrap()
+            .expect("one event");
+        assert_eq!(batch.data, ["b"]);
     }
 }

@@ -318,9 +318,11 @@ const FEED_JOIN: &str = "a terminal feed's input";
 /// The held sequence's room, reserved before parsing so that holding one
 /// never allocates mid-feed (MAX_HELD).
 const HELD: &str = "a terminal feed's held sequence";
+/// The tracker's copy of a control without its C0 bytes (`track`).
+const TRACKED_C0: &str = "a control the feed tracks, without its C0 bytes";
 /// Why the ANSI snapshot is refused when the feed could not allocate a
 /// buffer partway through a call (the call itself reports ALLOC_FAILED).
-const ALLOC_REFUSED: &str =
+pub(crate) const ALLOC_REFUSED: &str =
     "unsupported-alloc: a buffer the ANSI feed needed could not be allocated";
 
 fn check_feed_len(len: usize) -> Result<()> {
@@ -585,7 +587,14 @@ impl XtermFeed {
             Some(rule) => alt.is_some_and(|alt| !self.allows(rule, alt)),
             // xterm forgets the preceding character at any control;
             // Alacritty repeats whatever was printed last.
-            None => crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed),
+            None => match crate::native_serialize::try_divergent(sequence) {
+                Ok(divergent) => divergent || (is_rep(sequence) && !printed),
+                Err(failed) => {
+                    // Unread, the control cannot be trusted: refused.
+                    self.refuse_alloc(failed);
+                    return;
+                }
+            },
         };
         if refused {
             self.refuse(true, crate::native_serialize::refusal(sequence));
@@ -790,16 +799,14 @@ impl XtermFeed {
         let mut filtered: Vec<u8>;
         let sequence = if sequence[1..].iter().any(|&b| b < 0x20) {
             // At most the sequence, which is at most the feed's input.
-            filtered =
-                match fallible::try_with_capacity(sequence.len(), "a control without its C0 bytes")
-                {
-                    Ok(buffer) => buffer,
-                    Err(failed) => {
-                        // Untracked, the snapshot cannot be trusted: refused.
-                        self.refuse_alloc(failed);
-                        return None;
-                    }
-                };
+            filtered = match fallible::try_with_capacity(sequence.len(), TRACKED_C0) {
+                Ok(buffer) => buffer,
+                Err(failed) => {
+                    // Untracked, the snapshot cannot be trusted: refused.
+                    self.refuse_alloc(failed);
+                    return None;
+                }
+            };
             filtered.push(sequence[0]);
             filtered.extend(sequence[1..].iter().filter(|&&b| b >= 0x20));
             &filtered[..]
@@ -1363,32 +1370,43 @@ fn history_at_native_cap(term: &Term<VoidListener>, requested: u32, cap: u32) ->
 /// A DECRST that resets 1049, read as `track` reads it (C0 controls inside
 /// run and are not part of it): `Some(true)` with 1049 as its only mode in
 /// plain digits, `Some(false)` in a list (`divergent` refuses a sub-parameter
-/// or a list past 32 parameters before this runs).
+/// or a list past 32 parameters before this runs). The C0 bytes are
+/// skipped in place: the read allocates nothing.
 fn resets_1049(sequence: &[u8]) -> Option<bool> {
-    let filtered: Vec<u8>;
-    let sequence = if sequence[1..].iter().any(|&b| b < 0x20) {
-        filtered = sequence[..1]
-            .iter()
-            .chain(sequence[1..].iter().filter(|&&b| b >= 0x20))
-            .copied()
-            .collect();
-        &filtered[..]
-    } else {
-        sequence
-    };
-    let params = sequence.strip_prefix(b"\x1b[?")?.strip_suffix(b"l")?;
-    if params.is_empty() || !params.iter().all(|&b| b.is_ascii_digit() || b == b';') {
+    let (&first, rest) = sequence.split_first()?;
+    let mut body = rest.iter().copied().filter(|&b| b >= 0x20);
+    if first != 0x1b || body.next() != Some(b'[') || body.next() != Some(b'?') {
         return None;
     }
-    let mut count = 0;
-    let mut found = false;
-    for mode in params.split(|&b| b == b';') {
-        count += 1;
-        let value = mode.iter().fold(0u32, |n, &d| {
-            n.saturating_mul(10).saturating_add(u32::from(d - b'0'))
-        });
-        found |= value == 1049 && !mode.is_empty();
+    let (mut count, mut found, mut params, mut ended) = (0, false, false, false);
+    let (mut value, mut digits) = (0u32, 0usize);
+    for b in body {
+        if ended {
+            return None;
+        }
+        match b {
+            b'0'..=b'9' => {
+                value = value.saturating_mul(10).saturating_add(u32::from(b - b'0'));
+                digits += 1;
+            }
+            b';' => {
+                count += 1;
+                found |= digits > 0 && value == 1049;
+                (value, digits) = (0, 0);
+            }
+            b'l' => {
+                ended = true;
+                continue;
+            }
+            _ => return None,
+        }
+        params = true;
     }
+    if !ended || !params {
+        return None;
+    }
+    count += 1;
+    found |= digits > 0 && value == 1049;
     found.then_some(count == 1)
 }
 
@@ -3959,7 +3977,7 @@ mod narrowed_saved_history_tests {
 #[cfg(test)]
 mod alloc_failure_tests {
     use super::*;
-    use crate::fallible::{fail_from, ALLOC_FAILED};
+    use crate::fallible::{fail_from, fail_what, ALLOC_FAILED};
 
     fn bytes(data: &[u8]) -> Uint8Array {
         Uint8Array::new(data.to_vec())
@@ -4133,5 +4151,61 @@ mod alloc_failure_tests {
         }
         let payload = terminal.ansi_snapshot(None).unwrap();
         assert!(payload.ends_with(b"\x1b]0;tit"));
+    }
+
+    #[test]
+    fn a_refused_initial_ring_buffer_is_an_error() {
+        {
+            let _fail = fail_what("the output ring");
+            assert_alloc_failed(NativeRing::new(1024).err());
+        }
+        let mut ring = NativeRing::new(1024).unwrap();
+        ring.write_bytes(b"after").unwrap();
+        assert_eq!(ring.copy_bytes().unwrap(), b"after");
+    }
+
+    #[test]
+    fn a_refused_copy_of_a_control_with_c0_inside_refuses_the_snapshot() {
+        for what in [TRACKED_C0, crate::native_serialize::WITHOUT_C0] {
+            let mut terminal = terminal();
+            terminal.feed_xterm(bytes(b"ok"), 100).unwrap();
+            {
+                let _fail = fail_what(what);
+                assert_alloc_failed(terminal.feed_xterm(bytes(b"\x1b[3\x081m"), 100).err());
+            }
+            assert_eq!(terminal.refusal, Some(ALLOC_REFUSED), "{what}");
+            assert_eq!(terminal.refusal_families().unwrap(), ["unsupported-alloc"]);
+            assert!(!terminal.feed_xterm(bytes(b"more"), 100).unwrap());
+            assert_eq!(text(&mut terminal), ["ok"]);
+        }
+    }
+
+    #[test]
+    fn a_control_the_classifier_cannot_copy_reads_as_an_allocation_refusal() {
+        use crate::native_serialize::{divergent, refusal, try_divergent, WITHOUT_C0};
+        let _fail = fail_what(WITHOUT_C0);
+        assert!(try_divergent(b"\x1b[3\x081m").is_err());
+        assert_eq!(refusal(b"\x1b[3\x081m"), ALLOC_REFUSED);
+        assert!(
+            !divergent(b"\x1b[31m"),
+            "a control without C0 inside is not copied"
+        );
+    }
+
+    #[test]
+    fn resets_1049_reads_a_control_with_c0_inside_in_place() {
+        assert_eq!(resets_1049(b"\x1b[?1049l"), Some(true));
+        assert_eq!(resets_1049(b"\x1b[?10\x0849l"), Some(true));
+        assert_eq!(resets_1049(b"\x1b[?01049l"), Some(true));
+        assert_eq!(resets_1049(b"\x1b[?1;1049l"), Some(false));
+        assert_eq!(resets_1049(b"\x1b[?1049;l"), Some(false));
+        assert_eq!(resets_1049(b"\x1b[?1049h"), None);
+        assert_eq!(resets_1049(b"\x1b[?1047l"), None);
+        assert_eq!(resets_1049(b"\x1b[?l"), None);
+        assert_eq!(resets_1049(b"\x1b[?;l"), None);
+        assert_eq!(resets_1049(b"\x1b[?104l9l"), None);
+        assert_eq!(resets_1049(b"\x1b[1049l"), None);
+        assert_eq!(resets_1049(b"\x1b[?1049:1l"), None);
+        assert_eq!(resets_1049(b"\x1b"), None);
     }
 }

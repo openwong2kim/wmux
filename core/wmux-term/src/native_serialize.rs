@@ -9,6 +9,9 @@ use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{CharsetIndex, Color, NamedColor, StandardCharset};
 use std::fmt::Write;
 
+/// A control's copy without its C0 bytes (`without_c0`).
+pub(crate) const WITHOUT_C0: &str = "a control the feed classifies, without its C0 bytes";
+
 /// The rendition `style` gives a default cell.
 const RESET: &str = "\x1b[0m";
 /// What the payload's allocations are for.
@@ -533,15 +536,16 @@ pub(crate) fn xterm_control(sequence: &[u8]) -> Option<XtermControl> {
 }
 
 /// `sequence` without the C0 controls inside it, which execute and are not
-/// part of it (rare); None when it has none.
-fn without_c0(sequence: &[u8]) -> Option<Vec<u8>> {
-    sequence[1..].iter().any(|&b| b < 0x20).then(|| {
-        sequence[..1]
-            .iter()
-            .chain(sequence[1..].iter().filter(|&&b| b >= 0x20))
-            .copied()
-            .collect()
-    })
+/// part of it (rare); None when it has none. At most the sequence, which is
+/// at most the feed's input.
+fn without_c0(sequence: &[u8]) -> Result<Option<Vec<u8>>, AllocFailed> {
+    if !sequence[1..].iter().any(|&b| b < 0x20) {
+        return Ok(None);
+    }
+    let mut plain = fallible::try_with_capacity(sequence.len(), WITHOUT_C0)?;
+    plain.push(sequence[0]);
+    plain.extend(sequence[1..].iter().filter(|&&b| b >= 0x20));
+    Ok(Some(plain))
 }
 
 /// IND, NEL, ED 1/2 or a control in `xterm_control`, spelled without C0:
@@ -562,12 +566,23 @@ fn run_by_the_feed(plain: &[u8]) -> bool {
 /// `CSI 2 J`, the modes 2, 9, 20, 45, 47, 66, 1047 and 1048, SGR 21/53 or
 /// malformed colors, and a control the feed runs as xterm does
 /// (`run_by_the_feed`) with a C0 control inside. `sequence` is complete.
-pub(crate) fn divergent(sequence: &[u8]) -> bool {
-    let filtered = without_c0(sequence);
+/// Reading a control with a C0 control inside copies it (`without_c0`).
+pub(crate) fn try_divergent(sequence: &[u8]) -> Result<bool, AllocFailed> {
+    let filtered = without_c0(sequence)?;
     if filtered.as_deref().is_some_and(run_by_the_feed) {
-        return true;
+        return Ok(true);
     }
     let body = filtered.as_deref().unwrap_or(sequence);
+    Ok(plain_divergent(body))
+}
+
+#[cfg(test)]
+pub(crate) fn divergent(sequence: &[u8]) -> bool {
+    try_divergent(sequence).expect("no allocation is refused")
+}
+
+/// `divergent` for a control without C0 controls inside.
+fn plain_divergent(body: &[u8]) -> bool {
     match body[1..].split_first() {
         Some((b'[', rest)) => csi_divergent(rest),
         // ASCII and DEC line drawing replay alike in G0-G3 (vte designates
@@ -586,7 +601,9 @@ pub(crate) fn divergent(sequence: &[u8]) -> bool {
 /// fallbacks under (`wmux doctor --performance`), so the controls that send
 /// panes to the xterm path can be told apart.
 pub(crate) fn refusal(sequence: &[u8]) -> &'static str {
-    let filtered = without_c0(sequence);
+    let Ok(filtered) = without_c0(sequence) else {
+        return crate::native_core::ALLOC_REFUSED;
+    };
     if filtered.as_deref().is_some_and(run_by_the_feed) {
         return "unsupported-state-c0-inside: a C0 control inside a control the snapshot runs as xterm does";
     }

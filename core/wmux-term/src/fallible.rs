@@ -53,6 +53,9 @@ thread_local! {
     /// Test injection: every allocation of at least this many bytes on this
     /// thread is refused.
     static FAIL_FROM: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// Test injection: every allocation for this purpose on this thread is
+    /// refused, whatever its size.
+    static FAIL_WHAT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
 }
 
 /// Refuses every allocation of at least `bytes` bytes on this thread until
@@ -72,10 +75,29 @@ impl Drop for FailGuard {
     }
 }
 
-fn injected(_bytes: usize) -> bool {
+/// Refuses every allocation for `what` on this thread until the guard
+/// drops (tests only), so a test can reach one site past smaller and
+/// larger allocations before it.
+#[cfg(test)]
+pub(crate) fn fail_what(what: &'static str) -> WhatGuard {
+    WhatGuard(FAIL_WHAT.with(|f| f.replace(Some(what))))
+}
+
+#[cfg(test)]
+pub(crate) struct WhatGuard(Option<&'static str>);
+
+#[cfg(test)]
+impl Drop for WhatGuard {
+    fn drop(&mut self) {
+        FAIL_WHAT.with(|f| f.set(self.0));
+    }
+}
+
+fn injected(_failed: &AllocFailed) -> bool {
     #[cfg(test)]
     {
-        FAIL_FROM.with(|f| f.get().is_some_and(|from| _bytes >= from))
+        FAIL_FROM.with(|f| f.get().is_some_and(|from| _failed.bytes >= from))
+            || FAIL_WHAT.with(|f| f.get() == Some(_failed.what))
     }
     #[cfg(not(test))]
     {
@@ -110,7 +132,7 @@ pub(crate) fn try_reserve<T>(
         what,
         bytes: bytes_of::<T>(amortized(v.len(), v.capacity(), additional)),
     };
-    if injected(failed.bytes) {
+    if injected(&failed) {
         return Err(failed);
     }
     v.try_reserve(additional).map_err(|_| failed)
@@ -129,7 +151,7 @@ pub(crate) fn try_reserve_exact<T>(
         what,
         bytes: bytes_of::<T>(v.len().saturating_add(additional)),
     };
-    if injected(failed.bytes) {
+    if injected(&failed) {
         return Err(failed);
     }
     v.try_reserve_exact(additional).map_err(|_| failed)
@@ -148,7 +170,7 @@ pub(crate) fn try_reserve_str(
         what,
         bytes: amortized(s.len(), s.capacity(), additional),
     };
-    if injected(failed.bytes) {
+    if injected(&failed) {
         return Err(failed);
     }
     s.try_reserve(additional).map_err(|_| failed)
@@ -167,7 +189,7 @@ pub(crate) fn try_reserve_deque<T>(
         what,
         bytes: bytes_of::<T>(amortized(d.len(), d.capacity(), additional)),
     };
-    if injected(failed.bytes) {
+    if injected(&failed) {
         return Err(failed);
     }
     d.try_reserve(additional).map_err(|_| failed)
@@ -288,6 +310,22 @@ mod tests {
             assert!(try_copy(&[0; 8], "outer").is_err());
         }
         assert!(try_copy(&[0; 8], "none").is_ok());
+    }
+
+    #[test]
+    fn injection_by_purpose_refuses_only_that_purpose() {
+        {
+            let _fail = fail_what("target");
+            assert!(try_copy(&[0; 1], "other").is_ok());
+            assert_eq!(
+                try_copy(&[0; 1], "target"),
+                Err(AllocFailed {
+                    what: "target",
+                    bytes: 1
+                })
+            );
+        }
+        assert!(try_copy(&[0; 1], "target").is_ok());
     }
 
     #[test]

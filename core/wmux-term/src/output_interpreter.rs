@@ -32,6 +32,10 @@ const CARRY_UNITS: usize = 256;
 /// (at most 3x for the lossy carry); an OSC by MAX_OSC units; the events
 /// by the chunk's OSC count.
 const INTERPRETER: &str = "the output interpreter";
+/// An OSC event's text: at most MAX_OSC units.
+const OSC_EVENT: &str = "an OSC event's text";
+/// A chunk's events: at most its OSC count.
+const OSC_EVENTS: &str = "a chunk's OSC events";
 
 #[derive(Debug, PartialEq)]
 pub struct OscEvent {
@@ -127,7 +131,7 @@ impl OutputInterpreter {
         }
         let scan = chunk.contains('\x1b') || self.carry.contains(&ESC);
         let combined = if scan && !self.carry.is_empty() {
-            let mut combined = from_utf16_lossy(&self.carry, chunk.len())?;
+            let mut combined = from_utf16_lossy(&self.carry, chunk.len(), INTERPRETER)?;
             combined.push_str(chunk);
             Some(combined)
         } else {
@@ -230,9 +234,9 @@ impl OutputInterpreter {
                 if c == 7 || st {
                     if let Some(split) = self.osc.iter().position(|c| *c == b';' as u16) {
                         if let Some(code) = parse_decimal_prefix(&self.osc[..split]) {
-                            let event =
-                                from_utf16_lossy(&self.osc[split + 1..], 0).and_then(|data| {
-                                    fallible::try_reserve(&mut events, 1, INTERPRETER)?;
+                            let event = from_utf16_lossy(&self.osc[split + 1..], 0, OSC_EVENT)
+                                .and_then(|data| {
+                                    fallible::try_reserve(&mut events, 1, OSC_EVENTS)?;
                                     Ok(data)
                                 });
                             match event {
@@ -338,13 +342,17 @@ fn is_digit(c: u16) -> bool {
 }
 /// `String::from_utf16_lossy(units)` with room for `extra` more bytes, in
 /// one fallible allocation of its exact size.
-fn from_utf16_lossy(units: &[u16], extra: usize) -> Result<String, AllocFailed> {
+fn from_utf16_lossy(
+    units: &[u16],
+    extra: usize,
+    what: &'static str,
+) -> Result<String, AllocFailed> {
     let chars = || char::decode_utf16(units.iter().copied());
     let len = chars()
         .map(|c| c.map_or(char::REPLACEMENT_CHARACTER, |c| c).len_utf8())
         .fold(extra, usize::saturating_add);
     let mut text = String::new();
-    fallible::try_reserve_str(&mut text, len, INTERPRETER)?;
+    fallible::try_reserve_str(&mut text, len, what)?;
     text.extend(chars().map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)));
     Ok(text)
 }
@@ -509,8 +517,29 @@ mod tests {
     fn lossy_utf16_matches_the_standard_library() {
         for units in [&[0x61, 0xd83d, 0xde00][..], &[0xd800, 0x62], &[0xdc00], &[]] {
             assert_eq!(
-                from_utf16_lossy(units, 0).unwrap(),
+                from_utf16_lossy(units, 0, INTERPRETER).unwrap(),
                 String::from_utf16_lossy(units)
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_osc_event_drops_that_osc_and_the_next_one_is_read() {
+        use crate::fallible::fail_what;
+        for what in [super::OSC_EVENT, super::OSC_EVENTS] {
+            let mut p = OutputInterpreter::default();
+            assert!(p.feed("\x1b]2;title", 0.0, true).unwrap().is_empty());
+            {
+                let _fail = fail_what(what);
+                assert_eq!(p.feed("\x07", 0.0, true).unwrap_err().what, what);
+            }
+            assert!(
+                p.feed("tail\x07", 0.0, true).unwrap().is_empty(),
+                "the refused OSC is gone"
+            );
+            assert_eq!(
+                p.feed("\x1b]2;next\x07", 0.0, true).unwrap()[0].data,
+                "next"
             );
         }
     }
