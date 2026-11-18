@@ -84,6 +84,14 @@ describe('withRoleBinding (D2)', () => {
 });
 
 describe('withDefaultShell', () => {
+  it('leaves a WSL share folder without the default shell, so the folder picks WSL; a named shell stays', () => {
+    const share = '\\\\wsl.localhost\\Ubuntu\\home\\me';
+    const pwsh = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+    expect(withDefaultShell({ workspaceId: 'ws-1', cwd: share }, pwsh)).toEqual({ workspaceId: 'ws-1', cwd: share });
+    expect(withDefaultShell({ workspaceId: 'ws-1', cwd: share, shell: pwsh }, 'C:\\x\\cmd.exe')).toMatchObject({ shell: pwsh });
+    expect(withDefaultShell({ workspaceId: 'ws-1', cwd: 'C:\\code' }, pwsh)).toMatchObject({ shell: pwsh });
+  });
+
   it('uses the stored detected shell path when no shell is specified', () => {
     expect(withDefaultShell({ workspaceId: 'ws-1' }, 'C:\\Program Files\\PowerShell\\7\\pwsh.exe')).toEqual({
       workspaceId: 'ws-1',

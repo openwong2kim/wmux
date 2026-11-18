@@ -423,15 +423,23 @@ async function withWslShareCwd(
   if ('options' in result) return result.options;
   const { cwd: _dropped, wslDistro: _unused, ...rest } = options;
   const key = options.workspaceId ?? '';
-  if (!wslShareToasted.has(key)) {
+  const toastOnce = (title: string, body: string): void => {
+    if (wslShareToasted.has(key)) return;
     wslShareToasted.add(key);
     dispatchNotification(
       getWindow?.() ?? null,
       null,
-      { type: 'warning', title: 'WSL folder unavailable', body: `${result.error} - opened the default WSL shell in its home instead.`, workspaceId: options.workspaceId, category: 'system' },
+      { type: 'warning', title, body, workspaceId: options.workspaceId, category: 'system' },
       { workspaceId: options.workspaceId ?? null },
     );
+  };
+  if ('needsWslShell' in result) {
+    // A named PowerShell or cmd keeps its shell, in its usual folder: the
+    // share is not a folder it can start in.
+    toastOnce('WSL folder needs a WSL shell', `${share.linuxPath} in ${share.distro} opens in a WSL shell; this pane's shell started in its usual folder instead.`);
+    return rest as PtyCreateOptions;
   }
+  toastOnce('WSL folder unavailable', `${result.error} - opened the default WSL shell in its home instead.`);
   return { ...rest, shell: defaultWslShellPath() };
 }
 

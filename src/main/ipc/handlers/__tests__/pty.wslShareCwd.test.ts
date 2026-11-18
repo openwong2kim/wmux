@@ -62,6 +62,19 @@ async function create(opts: Record<string, unknown>[]): Promise<Array<{ shell?: 
 const share = '\\\\wsl.localhost\\Ubuntu\\home\\me\\repo';
 
 describe('pty:create with a WSL share cwd', () => {
+  it('a named PowerShell keeps its shell, starts outside the share, and says so once per workspace', async () => {
+    distros = ['Ubuntu'];
+    const pwsh = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+    const spawned = await create([{ cwd: share, shell: pwsh, workspaceId: 'w-pwsh' }, { cwd: share, shell: pwsh, workspaceId: 'w-pwsh' }]);
+    for (const s of spawned) {
+      expect(s.shell).toBe(pwsh);
+      expect(s.cwd ?? '').not.toContain('wsl');
+      expect(s.shellArgs ?? []).not.toContain('-d');
+    }
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(notify.mock.calls[0])).toContain('needs a WSL shell');
+  });
+
   it('spawns a WSL shell in that distro at the Linux cwd', async () => {
     distros = ['Ubuntu'];
     const [s] = await create([{ cwd: share, workspaceId: 'w1' }]);

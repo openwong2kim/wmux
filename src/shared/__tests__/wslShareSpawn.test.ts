@@ -24,10 +24,15 @@ describe('applyWslShareCwd', () => {
     expect(r).toHaveProperty('error');
     expect((r as { error: string }).error).toContain('Ubuntu');
   });
-  it('keeps a caller-set WSL shell and replaces a non-WSL one', () => {
+  it('keeps a caller-set WSL shell, and starts WSL when no shell is named', () => {
     expect(applyWslShareCwd({ cwd: share, shell: 'C:\\x\\wsl.exe' }, 'win32', [])).toMatchObject({ options: { shell: 'C:\\x\\wsl.exe' } });
-    const r = applyWslShareCwd({ cwd: share, shell: 'pwsh.exe' }, 'win32', []) as { options: { shell: string } };
+    const r = applyWslShareCwd({ cwd: share }, 'win32', []) as { options: { shell: string } };
     expect(r.options.shell).toMatch(/wsl\.exe$/i);
+  });
+  it('a named non-WSL shell (a PowerShell or cmd profile) is kept: it needs a WSL shell for the share', () => {
+    for (const shell of ['pwsh.exe', 'C:\\Windows\\System32\\cmd.exe']) {
+      expect(applyWslShareCwd({ cwd: share, shell }, 'win32', ['Ubuntu'])).toEqual({ needsWslShell: true });
+    }
   });
   it('returns the same options off Windows or for any other cwd', () => {
     const a = { cwd: share };

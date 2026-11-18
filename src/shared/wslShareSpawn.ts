@@ -17,15 +17,20 @@ export function defaultWslShellPath(env: NodeJS.ProcessEnv = process.env): strin
  * Windows only. `knownDistros` is `wsl --list`'s answer; empty means the
  * enumeration failed, so the distro is trusted as written (it already passed
  * the distro-name check). Any other platform or cwd returns `options` as is.
+ *
+ * A shell the caller named that is not WSL (a profile's PowerShell or cmd)
+ * is kept: its commands are written for it. That answers `needsWslShell`,
+ * and the caller starts it outside the share and says why.
  */
 export function applyWslShareCwd<T extends { cwd?: string; shell?: string; wslDistro?: string }>(
   options: T,
   platform: NodeJS.Platform,
   knownDistros: string[],
-): { options: T } | { error: string } {
+): { options: T } | { error: string } | { needsWslShell: true } {
   if (platform !== 'win32' || typeof options.cwd !== 'string') return { options };
   const share = wslShareToLinux(options.cwd);
   if (!share) return { options };
+  if (options.shell && !isWslShellPath(options.shell)) return { needsWslShell: true };
   let distro = share.distro;
   if (knownDistros.length > 0) {
     const match = knownDistros.find((d) => d.toLowerCase() === distro.toLowerCase());

@@ -93,11 +93,18 @@ function isExecutableShellValue(shell: string | undefined): shell is string {
   return shell.includes('\\') || shell.includes('/') || shell.toLowerCase().endsWith('.exe');
 }
 
+/**
+ * Fill in the Settings default shell when the create names none. Not for a
+ * WSL share folder: the folder itself picks the shell (main starts WSL in
+ * that distro), and the default is a choice made for Windows folders. A shell
+ * the create or its profile names is still kept.
+ */
 export function withDefaultShell<T extends PtyCreateOptions>(
   options: T,
   defaultShell: string | undefined,
 ): T & { shell?: string } {
   if (options.shell || !isExecutableShellValue(defaultShell)) return options;
+  if (typeof options.cwd === 'string' && wslShareToLinux(options.cwd)) return options;
   return { ...options, shell: defaultShell };
 }
 
