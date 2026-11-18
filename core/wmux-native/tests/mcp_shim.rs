@@ -1496,6 +1496,41 @@ fn with_the_broker_down_the_full_bundle_serves_the_session() {
     let _ = child.wait();
 }
 
+/// A broker name held busy by another process (its only instance connected,
+/// which the broker's own listener never leaves): the shim waits out its short
+/// busy budget (2 s) once, then the full bundle serves the session as
+/// `no broker`. It used to wait 30 s per connect try, three tries.
+#[cfg(windows)]
+#[test]
+fn a_name_held_busy_gets_the_fallback_within_the_busy_budget() {
+    let sb = Sandbox::new();
+    sb.write_token("tok");
+    let Some(install) = Install::new(&sb, Layout::Marked) else {
+        return;
+    };
+    // The stub's handle stays open for the test's life (Listener has no Drop).
+    let _listener = stub::bind(&sb.pipe());
+    // Take the only instance, so every further open is PIPE_BUSY.
+    let holder = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(sb.pipe())
+        .expect("hold the only instance");
+    let started = Instant::now();
+    let mut child = spawn(&mut install.shim(&sb, &[])).expect("spawn shim");
+    let err = lines(child.stderr.take().unwrap());
+    let out = lines(child.stdout.take().unwrap());
+    let mut stdin = child.stdin.take().unwrap();
+    serves(&mut stdin, &out, true);
+    let elapsed = started.elapsed();
+    assert_eq!(recv_line_with(&err, "[wmux-mcp-shim]"), "[wmux-mcp-shim] no broker");
+    assert!(elapsed >= Duration::from_millis(1900), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
+    drop(holder);
+    child.kill().expect("kill the shim's pid");
+    let _ = child.wait();
+}
+
 /// A broker that takes the handshake and never answers: after ACK_DEADLINE
 /// (5 s) the full bundle serves the session, including the bytes the host sent
 /// while the shim was waiting (none were read).

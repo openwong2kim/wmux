@@ -267,11 +267,6 @@ try {
     if ($ownRid -lt 0x3000) {
       Fail ('the runner is not elevated (integrity 0x{0:x}); the integrity checks need it' -f $ownRid)
     } else {
-      # Children on the filtered token start on a window station and desktop
-      # of their own: the runner's own may not admit them (their DLL
-      # initialization then fails with 0xc0000142).
-      Write-Host "runner's own $([IntegrityLaunch]::DescribeOwnDesktop())"
-      Write-Host "integrity children start on $([IntegrityLaunch]::UseOwnDesktop($runnerSid, 'wmux-ci-integrity'))"
       $iSuffix = New-Suffix
       # The broker runs on the filtered token, where Administrators is
       # deny-only: what this elevated runner created is not its to read or

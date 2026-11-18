@@ -498,6 +498,25 @@ fn foreign_owner(e: &std::io::Error) -> bool {
     e.get_ref().is_some_and(|inner| inner.is::<ForeignPipeOwner>())
 }
 
+/// The connect error of a broker pipe name that stayed busy (every instance
+/// connected) past the short wait: not retried, the session falls back as
+/// `no broker`.
+#[derive(Debug)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub struct BusyPipe;
+
+impl std::fmt::Display for BusyPipe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the broker pipe name stayed busy")
+    }
+}
+
+impl std::error::Error for BusyPipe {}
+
+fn busy_pipe(e: &std::io::Error) -> bool {
+    e.get_ref().is_some_and(|inner| inner.is::<BusyPipe>())
+}
+
 /// The owner check's outcome as a connect result. Another owner is
 /// ForeignPipeOwner (not retried, `broker not ours`). A check that could not
 /// run keeps its OS error, which is retried and then falls back as `no
@@ -518,7 +537,7 @@ fn owner_verdict(owned: std::io::Result<bool>) -> std::io::Result<()> {
 /// nothing is listening, so the session falls back at once. Any other failure,
 /// such as a socket file whose broker is restarting, is tried CONNECT_RETRIES
 /// times, CONNECT_RETRY_DELAY apart.
-/// A pipe with another owner is not retried.
+/// A pipe with another owner, or a name that stayed busy, is not retried.
 fn connect_with_retry(pipe: &str) -> Result<sys::Conn, std::io::Error> {
     let mut tries = 0;
     loop {
@@ -526,7 +545,11 @@ fn connect_with_retry(pipe: &str) -> Result<sys::Conn, std::io::Error> {
             Ok(conn) => return Ok(conn),
             Err(e) => {
                 tries += 1;
-                if e.kind() == std::io::ErrorKind::NotFound || foreign_owner(&e) || tries >= CONNECT_RETRIES {
+                if e.kind() == std::io::ErrorKind::NotFound
+                    || foreign_owner(&e)
+                    || busy_pipe(&e)
+                    || tries >= CONNECT_RETRIES
+                {
                     return Err(e);
                 }
                 std::thread::sleep(CONNECT_RETRY_DELAY);
@@ -1228,8 +1251,15 @@ mod sys {
     const ERROR_INVALID_FUNCTION: i32 = 1;
     const ERROR_BROKEN_PIPE: i32 = 109;
     const ERROR_PIPE_BUSY: i32 = 231;
+    const ERROR_SEM_TIMEOUT: i32 = 121;
     const ERROR_IO_PENDING: i32 = 997;
-    const PIPE_BUSY_WAIT_MS: u32 = 30_000;
+    /// How long a busy broker name is waited out before the session falls
+    /// back. Since the native pipe listener (#3430) the broker keeps an
+    /// instance listening on top of the ones it accepted, so its name is busy
+    /// only between two clients reaching the same instance and the listener
+    /// creating the next one. A name that stays busy is held by something else,
+    /// never by the broker, and is not worth a longer wait.
+    const PIPE_BUSY_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
     const INFINITE: u32 = 0xFFFF_FFFF;
     const WAIT_TIMEOUT: u32 = 258;
 
@@ -1541,10 +1571,12 @@ mod sys {
     }
 
     /// Open the client end of the broker pipe. All instances busy is waited
-    /// out with WaitNamedPipeW and retried, as libuv does; a name that resolves
-    /// to anything but a pipe is refused before the token is written.
+    /// out with WaitNamedPipeW and retried for PIPE_BUSY_BUDGET in all, then
+    /// fails as BusyPipe; a name that resolves to anything but a pipe is
+    /// refused before the token is written.
     pub fn connect(pipe: &str) -> std::io::Result<Conn> {
         let wide: Vec<u16> = pipe.encode_utf16().chain(Some(0)).collect();
+        let deadline = Instant::now() + PIPE_BUSY_BUDGET;
         let handle = loop {
             let handle = open(&wide);
             if handle != INVALID_HANDLE_VALUE {
@@ -1554,9 +1586,18 @@ mod sys {
             if e.raw_os_error() != Some(ERROR_PIPE_BUSY) {
                 return Err(e);
             }
+            // At least 1 ms: a timeout of 0 asks for the pipe's own default.
+            let left = deadline.saturating_duration_since(Instant::now()).as_millis();
+            if left == 0 {
+                return Err(Error::other(super::BusyPipe));
+            }
             // SAFETY: `wide` is NUL-terminated.
-            if unsafe { WaitNamedPipeW(wide.as_ptr(), PIPE_BUSY_WAIT_MS) } == 0 {
-                return Err(Error::last_os_error());
+            if unsafe { WaitNamedPipeW(wide.as_ptr(), left.min(u128::from(u32::MAX)) as u32) } == 0 {
+                let e = Error::last_os_error();
+                if e.raw_os_error() == Some(ERROR_SEM_TIMEOUT) {
+                    return Err(Error::other(super::BusyPipe));
+                }
+                return Err(e);
             }
         };
         let conn = Conn(handle);
@@ -1963,6 +2004,15 @@ mod tests {
     }
 
     #[test]
+    fn a_busy_pipe_is_its_own_connect_error() {
+        let busy = std::io::Error::other(BusyPipe);
+        assert!(busy_pipe(&busy));
+        assert!(!foreign_owner(&busy));
+        assert!(!busy_pipe(&std::io::Error::from_raw_os_error(231)));
+        assert!(!busy_pipe(&std::io::Error::other("no broker")));
+    }
+
+    #[test]
     fn the_owner_check_writes_nothing_unless_the_owner_is_ours() {
         assert!(owner_verdict(Ok(true)).is_ok());
         // Another owner: refused for good, as `broker not ours`.
@@ -2177,6 +2227,25 @@ mod pipe_owner_tests {
         assert!(live >= 1, "the user-owned vector always runs on a real pipe");
         assert!(!sys::owner_is_user(std::ptr::null_mut(), own.0));
         assert!(!sys::owner_is_user(own.0, std::ptr::null_mut()));
+    }
+
+    /// A name whose only instance is connected (held by another process, as
+    /// the broker never leaves it) fails as BusyPipe once PIPE_BUSY_BUDGET is
+    /// spent, not after the default 30 s waits.
+    #[test]
+    fn a_name_that_stays_busy_fails_as_busy_within_the_budget() {
+        let user = own_sid_string(TOKEN_USER);
+        let name = pipe_name();
+        let server = Server::create(&name, Some(&format!("O:{user}D:P(A;;GA;;;{user})"))).unwrap();
+        let holder = sys::connect(&name).expect("the only instance");
+        let started = std::time::Instant::now();
+        let err = sys::connect(&name).err().expect("a held name is busy");
+        let elapsed = started.elapsed();
+        assert!(super::busy_pipe(&err), "{err:?}");
+        assert!(elapsed >= std::time::Duration::from_millis(1900), "{elapsed:?}");
+        assert!(elapsed < std::time::Duration::from_secs(4), "{elapsed:?}");
+        drop(holder);
+        drop(server);
     }
 
     #[test]

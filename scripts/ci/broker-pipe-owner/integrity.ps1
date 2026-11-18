@@ -4,7 +4,8 @@
 #       starts a command line with the filtered (non-elevated) form of this
 #       process's token, as UAC gives a standard process: CreateRestrictedToken
 #       with LUA_TOKEN (the Administrators group deny-only, the admin
-#       privileges removed), then labelled with the given integrity level
+#       privileges removed), owned by the user with a default DACL for the user
+#       and SYSTEM, then labelled with the given integrity level
 #       (S-1-16-8192 Medium, S-1-16-4096 Low). Returns its pid. The child
 #       inherits this process's environment. Its process handle is kept, so
 #       the queries below and ExitState still answer after it exits.
@@ -14,15 +15,6 @@
 #       whether a running process's token is elevated (TokenElevation).
 #   [IntegrityLaunch]::ExitState(pid)
 #       'running', or the exit code in hex, of a process Start launched.
-#   [IntegrityLaunch]::UseOwnDesktop(userSid, stationName)
-#       creates a window station and desktop for the processes Start launches
-#       from then on, and returns its name. A child on the filtered token
-#       cannot always open the runner's own window station and desktop, and
-#       then fails its DLL initialization (0xc0000142). These grant the account
-#       and SYSTEM full access and carry a Low label (no write up), so a Medium
-#       and a Low child both open them.
-#   [IntegrityLaunch]::DescribeOwnDesktop()
-#       the DACL and label of the runner's own window station and desktop.
 #
 # Only for CI runners: run.ps1 calls Start only when it runs elevated there.
 Add-Type -TypeDefinition @'
@@ -51,22 +43,19 @@ public static class IntegrityLaunch {
   struct PROCESS_INFORMATION { public IntPtr hProcess; public IntPtr hThread; public int dwProcessId; public int dwThreadId; }
 
   [StructLayout(LayoutKind.Sequential)]
-  struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSecurityDescriptor; public bool bInheritHandle; }
+  struct TOKEN_OWNER { public IntPtr Owner; }
 
-  [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-  static extern IntPtr CreateWindowStation(string name, uint flags, uint access, ref SECURITY_ATTRIBUTES attributes);
-  [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-  static extern IntPtr CreateDesktop(string name, IntPtr device, IntPtr devmode, uint flags, uint access, ref SECURITY_ATTRIBUTES attributes);
-  [DllImport("user32.dll", SetLastError = true)] static extern IntPtr GetProcessWindowStation();
-  [DllImport("user32.dll", SetLastError = true)] static extern bool SetProcessWindowStation(IntPtr station);
-  [DllImport("user32.dll", SetLastError = true)] static extern IntPtr GetThreadDesktop(uint threadId);
-  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [StructLayout(LayoutKind.Sequential)]
+  struct TOKEN_DEFAULT_DACL { public IntPtr DefaultDacl; }
+
+  [DllImport("advapi32.dll", SetLastError = true, EntryPoint = "SetTokenInformation")]
+  static extern bool SetTokenOwner(IntPtr token, int infoClass, ref TOKEN_OWNER info, int length);
+  [DllImport("advapi32.dll", SetLastError = true, EntryPoint = "SetTokenInformation")]
+  static extern bool SetTokenDefaultDacl(IntPtr token, int infoClass, ref TOKEN_DEFAULT_DACL info, int length);
   [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
   static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, uint revision, out IntPtr sd, out uint size);
-  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-  static extern bool ConvertSecurityDescriptorToStringSecurityDescriptor(IntPtr sd, uint revision, uint info, out IntPtr sddl, out uint length);
-  [DllImport("advapi32.dll")]
-  static extern uint GetSecurityInfo(IntPtr handle, int objectType, uint info, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl, out IntPtr sd);
+  [DllImport("advapi32.dll", SetLastError = true)]
+  static extern bool GetSecurityDescriptorDacl(IntPtr sd, out bool present, out IntPtr dacl, out bool defaulted);
 
   [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
@@ -94,6 +83,8 @@ public static class IntegrityLaunch {
   const uint TOKEN_QUERY = 0x0008;
   const int TokenIntegrityLevel = 25;
   const int TokenElevation = 20;
+  const int TokenOwner = 4;
+  const int TokenDefaultDacl = 6;
   const uint LUA_TOKEN = 0x4;
   const uint SE_GROUP_INTEGRITY = 0x20;
   const uint CREATE_NO_WINDOW = 0x08000000;
@@ -104,71 +95,6 @@ public static class IntegrityLaunch {
   // The handles of the processes Start launched, kept for the life of this
   // PowerShell process so a child that exits at once can still be inspected.
   static readonly Dictionary<int, IntPtr> launched = new Dictionary<int, IntPtr>();
-
-  const uint GENERIC_ALL = 0x10000000;
-  const int SE_WINDOW_OBJECT = 7;
-  const uint DACL_SECURITY_INFORMATION = 0x4;
-  const uint LABEL_SECURITY_INFORMATION = 0x10;
-
-  // The desktop Start puts its children on (null: the runner's own), and the
-  // handles that keep it alive while they run.
-  static string desktopName;
-  static IntPtr ownStation = IntPtr.Zero, ownDesktop = IntPtr.Zero;
-
-  public static string UseOwnDesktop(string userSid, string stationName) {
-    if (desktopName != null) return desktopName;
-    IntPtr sd;
-    uint size;
-    string sddl = "D:(A;;GA;;;" + userSid + ")(A;;GA;;;SY)S:(ML;;NW;;;LW)";
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out sd, out size)) {
-      throw Fail("ConvertStringSecurityDescriptorToSecurityDescriptor");
-    }
-    try {
-      SECURITY_ATTRIBUTES attributes = new SECURITY_ATTRIBUTES();
-      attributes.nLength = Marshal.SizeOf(attributes);
-      attributes.lpSecurityDescriptor = sd;
-      ownStation = CreateWindowStation(stationName, 0, GENERIC_ALL, ref attributes);
-      if (ownStation == IntPtr.Zero) throw Fail("CreateWindowStation");
-      // CreateDesktop creates in the process's window station: switch to the
-      // new one for the call only.
-      IntPtr previous = GetProcessWindowStation();
-      if (!SetProcessWindowStation(ownStation)) throw Fail("SetProcessWindowStation");
-      try {
-        ownDesktop = CreateDesktop("Default", IntPtr.Zero, IntPtr.Zero, 0, GENERIC_ALL, ref attributes);
-        if (ownDesktop == IntPtr.Zero) throw Fail("CreateDesktop");
-      } finally {
-        SetProcessWindowStation(previous);
-      }
-    } finally {
-      LocalFree(sd);
-    }
-    desktopName = stationName + "\\Default";
-    return desktopName;
-  }
-
-  public static string DescribeOwnDesktop() {
-    return "window station " + Describe(GetProcessWindowStation()) +
-      "; desktop " + Describe(GetThreadDesktop(GetCurrentThreadId()));
-  }
-
-  static string Describe(IntPtr handle) {
-    IntPtr sd;
-    uint info = DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION;
-    uint error = GetSecurityInfo(handle, SE_WINDOW_OBJECT, info, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out sd);
-    if (error != 0) return "unreadable (" + error + ")";
-    try {
-      IntPtr text;
-      uint length;
-      if (!ConvertSecurityDescriptorToStringSecurityDescriptor(sd, 1, info, out text, out length)) {
-        return "unconvertible (" + Marshal.GetLastWin32Error() + ")";
-      }
-      string sddl = Marshal.PtrToStringUni(text);
-      LocalFree(text);
-      return sddl;
-    } finally {
-      LocalFree(sd);
-    }
-  }
 
   static IntPtr Open(int pid, out bool owned) {
     IntPtr held;
@@ -188,13 +114,35 @@ public static class IntegrityLaunch {
   }
 
   public static int Start(string commandLine, string cwd, string integritySid) {
-    IntPtr own = IntPtr.Zero, lowered = IntPtr.Zero, sid = IntPtr.Zero;
+    IntPtr own = IntPtr.Zero, lowered = IntPtr.Zero, sid = IntPtr.Zero, user = IntPtr.Zero, daclSd = IntPtr.Zero;
     try {
       if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, out own)) throw Fail("OpenProcessToken");
       // The filtered token of a UAC standard process: a restricted copy of
       // this primary token, so CreateProcessAsUser needs no extra privilege.
       if (!CreateRestrictedToken(own, LUA_TOKEN, 0, IntPtr.Zero, 0, IntPtr.Zero, 0, IntPtr.Zero, out lowered)) {
         throw Fail("CreateRestrictedToken");
+      }
+      // As UAC builds a filtered token: the user owns what the child creates,
+      // and its default DACL grants the user and SYSTEM. Copied from this
+      // elevated token, both name the Administrators group, which LUA_TOKEN
+      // makes deny-only: the child could not open its own process and thread,
+      // and failed its DLL initialization (0xc0000142).
+      string userSid = System.Security.Principal.WindowsIdentity.GetCurrent().User.Value;
+      if (!ConvertStringSidToSid(userSid, out user)) throw Fail("ConvertStringSidToSid");
+      TOKEN_OWNER owner = new TOKEN_OWNER();
+      owner.Owner = user;
+      if (!SetTokenOwner(lowered, TokenOwner, ref owner, Marshal.SizeOf(owner))) throw Fail("SetTokenInformation(TokenOwner)");
+      uint sdSize;
+      if (!ConvertStringSecurityDescriptorToSecurityDescriptor("D:(A;;GA;;;" + userSid + ")(A;;GA;;;SY)", 1, out daclSd, out sdSize)) {
+        throw Fail("ConvertStringSecurityDescriptorToSecurityDescriptor");
+      }
+      bool present, defaulted;
+      IntPtr dacl;
+      if (!GetSecurityDescriptorDacl(daclSd, out present, out dacl, out defaulted) || !present) throw Fail("GetSecurityDescriptorDacl");
+      TOKEN_DEFAULT_DACL defaultDacl = new TOKEN_DEFAULT_DACL();
+      defaultDacl.DefaultDacl = dacl;
+      if (!SetTokenDefaultDacl(lowered, TokenDefaultDacl, ref defaultDacl, Marshal.SizeOf(defaultDacl))) {
+        throw Fail("SetTokenInformation(TokenDefaultDacl)");
       }
       if (!ConvertStringSidToSid(integritySid, out sid)) throw Fail("ConvertStringSidToSid");
       TOKEN_MANDATORY_LABEL label = new TOKEN_MANDATORY_LABEL();
@@ -205,7 +153,6 @@ public static class IntegrityLaunch {
       }
       STARTUPINFO startup = new STARTUPINFO();
       startup.cb = Marshal.SizeOf(startup);
-      startup.lpDesktop = desktopName;
       PROCESS_INFORMATION info;
       if (!CreateProcessAsUser(lowered, null, commandLine, IntPtr.Zero, IntPtr.Zero, false, CREATE_NO_WINDOW,
           IntPtr.Zero, cwd, ref startup, out info)) {
@@ -216,6 +163,8 @@ public static class IntegrityLaunch {
       return info.dwProcessId;
     } finally {
       if (sid != IntPtr.Zero) LocalFree(sid);
+      if (user != IntPtr.Zero) LocalFree(user);
+      if (daclSd != IntPtr.Zero) LocalFree(daclSd);
       if (lowered != IntPtr.Zero) CloseHandle(lowered);
       if (own != IntPtr.Zero) CloseHandle(own);
     }
