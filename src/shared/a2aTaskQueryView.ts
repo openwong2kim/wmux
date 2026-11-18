@@ -127,11 +127,17 @@ function remoteStatusView(status: Rec): Rec {
   // Stored already apart (A2aRemoteDelivery.withRemoteStatus); a detail's own `options` is moved too.
   const { options: inline, ...detail } = isRec(status.detail) ? status.detail : {};
   const options = isRec(status.untrusted) && Array.isArray(status.untrusted.options) ? status.untrusted.options : inline;
+  // A permission prompt's command (detail.approval): text from the other PC, kept beside the options.
+  const command = isRec(status.untrusted) && typeof status.untrusted.command === 'string' ? status.untrusted.command : undefined;
+  const untrusted = {
+    ...(Array.isArray(options) && options.length > 0 ? { options } : {}),
+    ...(command !== undefined ? { command } : {}),
+  };
   return {
     kind: status.kind,
     since: status.since,
     ...(Object.keys(detail).length > 0 ? { detail } : {}),
-    ...(Array.isArray(options) && options.length > 0 ? { untrusted: { options } } : {}),
+    ...(Object.keys(untrusted).length > 0 ? { untrusted } : {}),
   };
 }
 

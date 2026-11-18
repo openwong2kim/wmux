@@ -11,8 +11,10 @@ import {
   A2A_REMOTE_STATE_MESSAGE_MAX,
   isA2aRemoteImageMediaType,
   parseA2aRemoteAnswer,
+  parseA2aRemoteApproval,
   parseA2aRemoteStatus,
   type A2aRemoteAnswerV1,
+  type A2aRemoteApprovalV1,
   type A2aRemoteImageRef,
   type A2aRemoteNoticeV1,
   type A2aRemoteStatusV1,
@@ -358,6 +360,44 @@ export function sendRemoteAnswer(
 }
 
 /**
+ * The asking PC's allow or deny for the permission prompt the worker on a task
+ * it SENT shows (`kind: 'approval'`): a prompt id and a decision, never text.
+ * Only the task's local party may send it (the same check as a reply), only
+ * while the task is open. Not added to the task's history and no state
+ * change: how it went comes back in the task's status (`detail.approvals`).
+ * Whether the peer takes one (`A2A_FEATURE_APPROVAL`), and whether the offer
+ * allows the decision, are the caller's to check. Each call is a new message
+ * id: the receiving PC answers a reused one as `id-reused`.
+ */
+export function sendRemoteApproval(
+  deps: StateDeps,
+  input: { taskId: string; workspaceId: string; approval: A2aRemoteApprovalV1 },
+): { ok: true; taskId: string; messageId: string } | { ok: false; error: string } {
+  const found = remoteTaskAndLink(deps, input.taskId);
+  if (!found.ok) return found;
+  const { task, link } = found;
+  if ((task.metadata.remote as A2aRemoteTaskMarkerV1).direction !== 'outbound') {
+    return { ok: false, error: 'bad-request: an approval is for a task this PC sent' };
+  }
+  const localSide = isRemoteWorkspaceId(task.metadata.from.workspaceId) ? 'to' : 'from';
+  if (task.metadata[localSide].workspaceId !== input.workspaceId) {
+    return { ok: false, error: 'forbidden: only the agent that sent this task can answer its worker\'s prompts' };
+  }
+  if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: false, error: `bad-request: task ${task.id} has ended` };
+  const approval = parseA2aRemoteApproval(input.approval);
+  if (!approval) return { ok: false, error: 'bad-request: an approval is a prompt id (16 hex characters) and allow or deny' };
+  const check = deps.linkStore.checkMessage(link.linkId, link.version, link.remote.hostId, 'outbound', 'approval', undefined, { onThisLink: true });
+  if (!check.ok) return { ok: false, error: check.error };
+  const messageId = `ap-${mint(deps)}`;
+  try {
+    deps.outbox.enqueue(link.remote.hostId, envelope(deps, link, messageId, { kind: 'approval', taskId: task.id, approval }));
+  } catch (err) {
+    return { ok: false, error: `unavailable: could not queue for the peer (${errText(err)})` };
+  }
+  return { ok: true, taskId: task.id, messageId };
+}
+
+/**
  * The id of the notice about one dropped message: derived, so it is sent at
  * most once. The full message id when it fits, else a hash of it (never cut:
  * two long ids sharing a start must not share a notice).
@@ -583,7 +623,7 @@ function envelope(
   deps: Pick<OutboundDeps, 'now' | 'spawnLink'>,
   link: A2aLinkRecordV1,
   messageId: string,
-  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images' | 'status' | 'notice' | 'answer'>,
+  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images' | 'status' | 'notice' | 'answer' | 'approval'>,
 ): A2aRemoteEnvelope {
   return {
     protocol: A2A_REMOTE_PROTOCOL,
@@ -602,7 +642,7 @@ function envelope(
  * field added later cannot pass unredacted).
  */
 function spawnLinkBody(
-  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images' | 'status' | 'notice' | 'answer'>,
+  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images' | 'status' | 'notice' | 'answer' | 'approval'>,
 ): typeof body {
   const r = (v: string): string => redactSecrets(v);
   const evidence: CompletionEvidence | undefined = body.evidence
@@ -632,6 +672,8 @@ function spawnLinkBody(
     ...(body.status ? { status: spawnLinkStatus(body.status) } : {}),
     // An answer is a picker id and a number only, rebuilt from its checked shape.
     ...(body.answer ? { answer: { pickerId: body.answer.pickerId, option: body.answer.option } } : {}),
+    // An approval is a prompt id and a decision only, rebuilt from its checked shape.
+    ...(body.approval ? { approval: { promptId: body.approval.promptId, decision: body.approval.decision } } : {}),
     // A notice is ids and a time only, rebuilt from its checked shape.
     ...(body.notice ? {
       notice: { kind: body.notice.kind, messageId: body.notice.messageId, sentAt: body.notice.sentAt, ...(body.notice.unconfirmed ? { unconfirmed: true as const } : {}) },

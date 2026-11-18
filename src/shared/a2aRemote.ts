@@ -228,6 +228,74 @@ export const A2A_APPROVALS_RPC = Object.freeze({
   get: 'a2a.remote.approvals.get',
   set: 'a2a.remote.approvals.set',
 } as const);
+/**
+ * The `by=` the app's own approvals setting row passes (Settings, not a pane);
+ * the daemon logs it as written.
+ */
+export const A2A_APPROVALS_SET_BY_APP = 'app-settings';
+/**
+ * Allowing or denying a prompt the worker on a task this PC SENT shows
+ * (`A2A_FEATURE_APPROVAL`):
+ *   - `ask`: the pipe method on the asking PC (local origin; main resolves the
+ *     caller's pane and passes its workspace on);
+ *   - `send`: the daemon's, `{ taskId, workspaceId, promptId, decision }` →
+ *     `A2aApprovalSendResult`.
+ */
+export const A2A_APPROVAL_RPC = Object.freeze({
+  ask: 'a2a.remote.approve',
+  send: 'a2a.remote.approve.send',
+} as const);
+/**
+ * Approvals the asking PC sends to one PC at most in any
+ * A2A_APPROVALS_SENT_WINDOW_MS (rolling). The receiving PC takes 60 in a
+ * minute and drops the rest unread; the window is a little longer than its
+ * minute, so a short delay on the way cannot put more than 60 into one there.
+ */
+export const A2A_APPROVALS_SENT_PER_WINDOW = 60;
+export const A2A_APPROVALS_SENT_WINDOW_MS = 62_000;
+/** How long `send` waits for the outcome to come back in the task's status before it answers `pending`. */
+export const A2A_APPROVAL_OUTCOME_WAIT_MS = 10_000;
+/** Why the asking PC sent nothing. */
+export type A2aApprovalSendRefusal =
+  | 'unknown-task'
+  | 'not-offered'
+  | 'deny-only'
+  | 'unavailable'
+  | 'unsupported'
+  | 'rate-limited'
+  | 'bad-request'
+  | 'forbidden';
+export type A2aApprovalSendResult =
+  | {
+    ok: true;
+    taskId: string;
+    messageId: string;
+    promptId: string;
+    decision: A2aRemoteApprovalDecision;
+    tool: string;
+    /** How it went there, once it came back (by `messageId`); absent while `pending`. */
+    outcome?: A2aRemoteApprovalOutcome & { reasonText?: string };
+    /** Sent, with no outcome back within A2A_APPROVAL_OUTCOME_WAIT_MS: read the task's status later. */
+    pending?: true;
+  }
+  | { ok: false; error: A2aApprovalSendRefusal; message: string; retryAfterMs?: number };
+
+/** A name as one short line: controls and format characters gone, bounded; `fallback` when nothing is left. */
+function oneLineName(name: string | undefined, fallback: string): string {
+  // eslint-disable-next-line no-control-regex -- stripping them is the point
+  const clean = (name ?? '').replace(/\p{Cf}/gu, '').replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return clean.slice(0, 64) || fallback;
+}
+
+/**
+ * The one line a carried-out remote approval leaves on the receiving PC (its
+ * notification and the task's history): who, what, which tool, where. It
+ * takes no command: none is ever shown. The PC's name is the one it gave at
+ * pairing, so it is cut to one plain line.
+ */
+export function remoteApprovalNoticeText(n: { pc: string | undefined; decision: A2aRemoteApprovalDecision; tool: string; pane: string | undefined }): string {
+  return `${oneLineName(n.pc, 'Another PC')} ${n.decision === 'allow' ? 'allowed' : 'denied'} ${oneLineName(n.tool, 'a tool')} in ${oneLineName(n.pane, 'a pane')}`;
+}
 /** A host's notice about one message the receiver sent (`held-notice.1`). Nothing in it is shown as written. */
 export interface A2aRemoteNoticeV1 {
   kind: 'held-expired';
