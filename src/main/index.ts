@@ -225,7 +225,7 @@ import { isAltF4Held, isAltF4KeyDown } from './altF4';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, brokerSettingAtStart, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { startBrokerAndRegister } from './mcp/brokerBoot';
-import { brokerFlag } from '../shared/mcpBroker';
+import { brokerFlag, brokerFlagValue } from '../shared/mcpBroker';
 import { identitySummary, notePeerReadCheck, setBrokerIdentitySource, setBrokerStampSource, setUnownedBrokerSource } from './pipe/handlers/peerPidShadow';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry, releaseCdpPortOnExit } from './browser-session/cdpPort';
@@ -1119,6 +1119,7 @@ const mcpHandlerOptions = {
   // to know whether that fallback is final.
   daemonMayReturn: (): boolean => daemonRespawnController?.daemonMayReturn ?? false,
   mcpRegistrar,
+  mcpBrokerDownReason: () => mcpBrokerSupervisor.downReason(),
   getMcpAuthToken: (): string | null => {
     try {
       return pipeServer.getAuthToken();
@@ -1381,6 +1382,7 @@ rpcRouter.setMcpSessionSink(mcpSessionTracker);
 registerMcpSessionsRpc(rpcRouter, {
   brokerEnabled: isMcpBrokerEnabled,
   brokerFlag: () => brokerFlag(process.env.WMUX_MCP_BROKER),
+  brokerFlagValue: () => brokerFlagValue(process.env.WMUX_MCP_BROKER),
   brokerSetting: () => brokerSettingAtStart().setting,
   brokerStatus: () => mcpBrokerSupervisor.status(),
   tracker: mcpSessionTracker,

@@ -38,8 +38,8 @@ import {
 } from './connectionScope';
 import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
-import { socketIdentity, staleSocketAction, staleSocketKind } from './brokerSocketPath';
-import { BROKER_EXIT_PATH_OCCUPIED } from '../shared/mcpBroker';
+import { socketIdentity, staleSocketAction, staleSocketKind, stampSocket } from './brokerSocketPath';
+import { BROKER_EXIT_PATH_OCCUPIED, BROKER_EXIT_PEER_UNAVAILABLE } from '../shared/mcpBroker';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
 import { peerPidOf, selfCheckPeerPid } from '../shared/peerPid';
 import { decidePeer, retryingSelfCheck } from './brokerPeer';
@@ -234,8 +234,11 @@ function main(): void {
   const pipeName = getMcpBrokerPipeName();
   // Sessions are hosted only for a peer the OS names (src/mcp/brokerPeer.ts);
   // while this process cannot read peer pids it refuses every session, and it
-  // checks again with backoff. The check's socket sits beside the broker's,
-  // under a name no longer than the broker socket's own.
+  // checks again with backoff. A check that never passes through the whole
+  // schedule ends the broker with exit 79: the supervisor then marks it off,
+  // so launchers start their own server instead of asking it first. The
+  // check's socket sits beside the broker's, under a name no longer than the
+  // broker socket's own.
   let lastVerdict: string | null | undefined;
   const peerSelfCheck = retryingSelfCheck(
     () => selfCheckPeerPid(undefined, path.join(path.dirname(pipeName), `${path.basename(pipeName, '.sock')}.pc`)),
@@ -243,6 +246,12 @@ function main(): void {
       if (attempt > 1 && verdict === lastVerdict) return;
       lastVerdict = verdict;
       console.error(`[wmux-mcp-broker] peer-pid${attempt > 1 ? ` (check ${attempt})` : ''}: ${verdict ?? 'unavailable (no peer pids on this platform)'}${verdict === 'available' ? '' : '; every session is refused'}`);
+    },
+    undefined,
+    (verdict, attempts) => {
+      console.error(`[wmux-mcp-broker] peer-pid: still ${verdict} after ${attempts} checks; stopping (exit ${BROKER_EXIT_PEER_UNAVAILABLE})`);
+      // Runs from the backoff timer, after main() has returned.
+      shutdown(BROKER_EXIT_PEER_UNAVAILABLE);
     },
   );
 
@@ -423,26 +432,31 @@ function main(): void {
         if (decision.unlink) fs.unlinkSync(pipeName);
       } catch { /* already gone — listen retry decides */ }
       server.listen(pipeName, () => {
+        // The stamp follows the bind by one tick: a check that lands between
+        // the two can still read bind-time values only (a known, narrow gap).
+        stampSocket(pipeName);
         console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid} (after stale-socket cleanup)`);
       });
     });
   });
 
   server.listen(pipeName, () => {
+    // A named pipe has no file to stamp.
+    if (process.platform !== 'win32') stampSocket(pipeName);
     console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid}`);
   });
 
-  const shutdown = () => {
+  const shutdown = (code = 0) => {
     peerSelfCheck.stop();
     server.close();
-    process.exit(0);
+    process.exit(code);
   };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', () => shutdown());
+  process.on('SIGINT', () => shutdown());
   // Started by main with an IPC channel: when main goes (a crash, a kill), the
   // channel closes and the broker goes too, rather than living on without a
   // supervisor. A broker started by hand has no channel and is unaffected.
-  if (process.send) process.on('disconnect', shutdown);
+  if (process.send) process.on('disconnect', () => shutdown());
 }
 
 main();

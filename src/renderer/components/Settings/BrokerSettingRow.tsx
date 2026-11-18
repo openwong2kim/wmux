@@ -4,6 +4,9 @@ import SegmentedControl from '../ui/SegmentedControl';
 import { SettingNote, SettingRow } from './SettingsLayout';
 import type { BrokerSetting, BrokerSettingPayload } from '../../../shared/mcpBroker';
 
+/** How often an open row reads the payload again while the broker could still stop. */
+export const BROKER_ROW_REFRESH_MS = 15_000;
+
 interface BrokerSettingApi {
   brokerSetting?: () => Promise<BrokerSettingPayload>;
   setBrokerSetting?: (setting: BrokerSetting) => Promise<BrokerSettingPayload>;
@@ -29,6 +32,18 @@ export function BrokerSettingRow({ api }: { api?: BrokerSettingApi }) {
     );
     return () => { live = false; };
   }, [api]);
+
+  // The broker can stop after the row loaded (its self-check gives up about a
+  // minute after start), so re-read while it runs and has not stopped.
+  const mayStop = !!state && state.running.on && state.hostsSessions && !state.peerUnavailable;
+  useEffect(() => {
+    if (!mayStop || !api?.brokerSetting) return;
+    let live = true;
+    const timer = setInterval(() => {
+      void api.brokerSetting?.().then((s) => { if (live) setState(s); }, () => undefined);
+    }, BROKER_ROW_REFRESH_MS);
+    return () => { live = false; clearInterval(timer); };
+  }, [api, mayStop]);
 
   if (!api?.brokerSetting || !api.setBrokerSetting) return null;
   if (!state) {
@@ -57,12 +72,17 @@ export function BrokerSettingRow({ api }: { api?: BrokerSettingApi }) {
       <SettingRow id="mcpbroker" label={t('settings.mcpBroker')} description={t('settings.mcpBrokerDesc')} data-testid="settings-mcp-broker">
         <SegmentedControl value={state.saved} options={options} onValueChange={(v) => void change(v)} ariaLabel={t('settings.mcpBroker')} />
       </SettingRow>
+      {state.peerUnavailable && (
+        <SettingNote tone="warning" data-testid="settings-mcp-broker-peer">{t('settings.mcpBrokerPeerUnavailable')}</SettingNote>
+      )}
       {state.hostsSessions === false && (
         <SettingNote data-testid="settings-mcp-broker-idle">{t('settings.mcpBrokerIdleHere')}</SettingNote>
       )}
       {state.env !== 'unset' ? (
         <SettingNote data-testid="settings-mcp-broker-env">
-          {t(state.env === 'on' ? 'settings.mcpBrokerEnvOn' : 'settings.mcpBrokerEnvOff')}
+          {/* The value as set: false, off or no decide just as 0 does. An app
+              that sends no value set 0 or 1. */}
+          {t(state.env === 'on' ? 'settings.mcpBrokerEnvOn' : 'settings.mcpBrokerEnvOff', { value: state.envValue ?? (state.env === 'on' ? '1' : '0') })}
         </SettingNote>
       ) : state.next.on !== state.running.on ? (
         <SettingNote data-testid="settings-mcp-broker-restart">

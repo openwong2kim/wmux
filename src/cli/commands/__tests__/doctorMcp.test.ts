@@ -123,6 +123,12 @@ describe('doctor mcp section', () => {
       expect(line.value).not.toMatch(/kept failing/);
     });
 
+    it('says a broker stopped for its peer self-check is off until wmux restarts', async () => {
+      const line = await down('peer-unavailable', ['wmux-native']);
+      expect(line.value).toBe('not running: it could not confirm which process connects to it on this system, off until wmux restarts');
+      expect(line.hint).toContain('Agents use their own MCP server.');
+    });
+
     it('says a missing script will not start, and that Node-shim agents cannot connect', async () => {
       const line = await down('script-missing', ['shim.js']);
       expect(line.value).toBe('not running: this build has no broker script');
@@ -230,6 +236,11 @@ describe('doctor broker rule', () => {
 
   it('off by WMUX_MCP_BROKER=0: names it', async () => {
     expect(await line({ enabled: false, flag: 'off' })).toEqual({ label: 'broker', value: 'off (WMUX_MCP_BROKER=0)', verdict: 'OK' });
+  });
+
+  it('names the value as set, not a canonical 0 or 1', async () => {
+    expect((await line({ enabled: false, flag: 'off', flagValue: 'false' }))?.value).toBe('off (WMUX_MCP_BROKER=false)');
+    expect((await line({ enabled: true, flag: 'on', flagValue: 'Yes' }))?.hint).toContain('On because WMUX_MCP_BROKER=Yes is set for the app.');
   });
 
   it('on by WMUX_MCP_BROKER=1: names it and the way back, running or down', async () => {

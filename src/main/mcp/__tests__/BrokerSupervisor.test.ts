@@ -42,7 +42,7 @@ describe('isMcpBrokerEnabled', () => {
   // unset (or any other value) follows the platform default — on for macOS
   // and Linux, off for Windows.
   const platformOn = BROKER_DEFAULT_ON.includes(process.platform);
-  it.each([[undefined, platformOn], ['0', false], ['false', false], ['1', true], ['true', platformOn]] as const)(
+  it.each([[undefined, platformOn], ['0', false], ['false', false], ['1', true], ['true', true], ['', platformOn]] as const)(
     'WMUX_MCP_BROKER=%s → %s',
     (value, on) => {
       const saved = process.env.WMUX_MCP_BROKER;
@@ -119,6 +119,24 @@ describe('BrokerSupervisor: something that is not a socket at the broker path', 
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(sup.status().running).toBe(false);
     expect(sup.status().downReason).toBe('path-occupied');
+    sup.stop();
+    vi.useRealTimers();
+  });
+});
+
+describe('BrokerSupervisor: a broker whose peer self-check never passed', () => {
+  it('does not restart a broker that exited for it (79), marks it off, and reports why', async () => {
+    vi.useFakeTimers();
+    const first = makeChild();
+    vi.mocked(spawn).mockReturnValue(first as never);
+    const off = { clear: vi.fn(), tripped: vi.fn(async () => undefined) };
+    const sup = new BrokerSupervisor({ brokerOff: off });
+    sup.start();
+    first.emit('exit', 79, null);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(off.tripped).toHaveBeenCalledTimes(1);
+    expect(sup.status()).toMatchObject({ running: false, downReason: 'peer-unavailable', crashExits: 0 });
     sup.stop();
     vi.useRealTimers();
   });

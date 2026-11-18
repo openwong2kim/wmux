@@ -8,6 +8,8 @@ export interface McpSessionsRpcDeps {
   brokerEnabled: () => boolean;
   /** WMUX_MCP_BROKER as the app read it, so doctor can say why the broker is on or off. */
   brokerFlag?: () => BrokerFlag;
+  /** That value as set (trimmed), when it decides. */
+  brokerFlagValue?: () => string | undefined;
   /** The Settings choice the app read at start. */
   brokerSetting?: () => BrokerSetting;
   brokerStatus: () => BrokerStatus;
@@ -24,10 +26,12 @@ export function registerMcpSessionsRpc(router: RpcRouter, deps: McpSessionsRpcDe
    * Counts only, plus the broker's own pid: no session ids, paths or tokens.
    */
   router.register('mcp.sessions.summary', () => {
+    const flagValue = deps.brokerFlagValue?.();
     const summary: McpSessionsSummary = {
       broker: {
         enabled: deps.brokerEnabled(),
         ...(deps.brokerFlag && { flag: deps.brokerFlag() }),
+        ...(flagValue !== undefined && { flagValue }),
         ...(deps.brokerSetting && { setting: deps.brokerSetting() }),
         ...deps.brokerStatus(),
       },

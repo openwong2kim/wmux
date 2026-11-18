@@ -75,6 +75,17 @@ export async function decidePeer(
   return { ok: true, callerPid: checked.callerPid, callerPpid };
 }
 
+/**
+ * A self-check failure that load can cause and that clears by itself: out of
+ * descriptors or memory, or a check that ran out of time. The broker keeps
+ * checking through these however long they last; any other failure (no koffi,
+ * no libc, a pid or uid it cannot read right) does not clear while the
+ * process lives.
+ */
+export function isTransientSelfCheckFailure(verdict: string): boolean {
+  return /\b(EMFILE|ENFILE|EAGAIN|ENOMEM|ENOBUFS|EINTR)\b|timed out/.test(verdict);
+}
+
 /** The waits between self-checks after one that did not come back available. */
 export const SELF_CHECK_RETRY_MS = [1000, 2000, 5000, 15000, 30000];
 
@@ -91,20 +102,42 @@ export interface PeerSelfCheck {
  * not available (a transient EMFILE, say), and at once when a session finds it
  * failed. A null verdict (no peer pids on this platform) is final. `onVerdict`
  * sees every verdict with its attempt number, from 1.
+ *
+ * `onGiveUp`, when given, ends a check that has never come back available:
+ * once every delay in `delays` has run out and the check after it still failed
+ * for a reason that is not transient (`isTransientSelfCheckFailure`), no
+ * further check starts and `onGiveUp` gets that verdict. Only the backoff
+ * timer counts toward it, so sessions that arrive in a burst and each start a
+ * check cannot end it early, and since a session's check leaves that timer
+ * running, sessions that keep arriving cannot hold it off either. (An available check is never run again.)
  */
 export function retryingSelfCheck(
   run: () => Promise<string | null>,
   onVerdict: (verdict: string | null, attempt: number) => void,
   delays: readonly number[] = SELF_CHECK_RETRY_MS,
+  onGiveUp?: (verdict: string, attempts: number) => void,
 ): PeerSelfCheck {
   let attempt = 0;
   let timer: NodeJS.Timeout | undefined;
   let running = false;
   let failed = false;
   let stopped = false;
+  /** Backoff retries that came due, as opposed to checks a session started. */
+  let timedRetries = 0;
   let current: Promise<string | null>;
+  // The backoff runs on its own: a session's check never clears or restarts
+  // it, so sessions that keep arriving cannot hold off the give-up.
+  const scheduleRetry = (n: number): void => {
+    timer = setTimeout(() => {
+      timer = undefined;
+      if (stopped || !failed) return;
+      timedRetries++;
+      // A session's check already running counts as this retry.
+      if (!running) start();
+    }, delays[Math.min(n - 1, delays.length - 1)]);
+    timer.unref?.();
+  };
   const start = (): void => {
-    clearTimeout(timer);
     running = true;
     const n = ++attempt;
     current = Promise.resolve()
@@ -114,10 +147,13 @@ export function retryingSelfCheck(
         running = false;
         failed = verdict !== 'available' && verdict !== null;
         onVerdict(verdict, n);
-        if (failed && !stopped) {
-          timer = setTimeout(start, delays[Math.min(n - 1, delays.length - 1)]);
-          timer.unref?.();
+        if (verdict !== null && failed && !stopped && onGiveUp && timedRetries >= delays.length && !isTransientSelfCheckFailure(verdict)) {
+          stopped = true;
+          clearTimeout(timer);
+          onGiveUp(verdict, n);
+          return verdict;
         }
+        if (failed && !stopped && timer === undefined) scheduleRetry(n);
         return verdict;
       });
   };

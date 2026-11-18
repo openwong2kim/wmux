@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pickPs, psPath } from '../../shared/psPath';
-import { checkPeer, decidePeer, osParentPid, PARENT_READ_TIMEOUT_MS, retryingSelfCheck, type PeerCheckInput } from '../brokerPeer';
+import { checkPeer, decidePeer, isTransientSelfCheckFailure, osParentPid, PARENT_READ_TIMEOUT_MS, retryingSelfCheck, type PeerCheckInput } from '../brokerPeer';
 
 const ok: PeerCheckInput = { selfCheckOk: true, peer: { pid: 4242, uid: 501 }, claimedPid: 4242, ownUid: 501 };
 
@@ -153,6 +153,81 @@ describe('retryingSelfCheck', () => {
       expect(run).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('gives up on a check that never passes, once the whole schedule has run', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn(async () => 'unavailable (koffi unavailable: no binary)');
+      const gaveUp = vi.fn();
+      retryingSelfCheck(run, () => undefined, [1000, 2000], gaveUp);
+      // Checks at 0, 1 s and 3 s: three failed checks over the 3 s schedule.
+      await vi.advanceTimersByTimeAsync(2999);
+      expect(gaveUp).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(gaveUp).toHaveBeenCalledExactlyOnceWith('unavailable (koffi unavailable: no binary)', 3);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(run).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not give up early for a burst of sessions', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn(async () => 'unavailable (EMFILE)');
+      const gaveUp = vi.fn();
+      const check = retryingSelfCheck(run, () => undefined, [1000, 2000], gaveUp);
+      await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 5; i++) await check.verdict();
+      expect(run.mock.calls.length).toBeGreaterThan(3);
+      expect(gaveUp).not.toHaveBeenCalled();
+      check.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still gives up on schedule while sessions keep arriving', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn(async () => 'unavailable (koffi unavailable: no binary)');
+      const gaveUp = vi.fn();
+      const check = retryingSelfCheck(run, () => undefined, [1000, 2000], gaveUp);
+      // A session every 400 ms, each finding the last check failed.
+      for (let t = 0; t < 4000 && !gaveUp.mock.calls.length; t += 400) {
+        await vi.advanceTimersByTimeAsync(400);
+        await check.verdict();
+      }
+      expect(gaveUp).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never gives up on a transient failure, however long it lasts', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn(async () => 'unavailable (listen EMFILE: too many open files)');
+      const gaveUp = vi.fn();
+      const check = retryingSelfCheck(run, () => undefined, [1000, 2000], gaveUp);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(run.mock.calls.length).toBeGreaterThan(20);
+      expect(gaveUp).not.toHaveBeenCalled();
+      check.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads load failures as transient and the rest as lasting', () => {
+    for (const v of ['unavailable (self-check timed out)', 'unavailable (listen EMFILE: too many open files)', 'unavailable (connect EAGAIN /x.pc)', 'unavailable (ENOMEM)']) {
+      expect(isTransientSelfCheckFailure(v)).toBe(true);
+    }
+    for (const v of ['unavailable (koffi unavailable: no binary)', 'unavailable (read pid 0, expected 7)', 'unavailable (no peer pid)', 'unavailable (unsupported platform aix)']) {
+      expect(isTransientSelfCheckFailure(v)).toBe(false);
     }
   });
 
