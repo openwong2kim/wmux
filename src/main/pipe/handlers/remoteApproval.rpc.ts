@@ -10,22 +10,17 @@
 
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
-import { hostedBindingOf, isHostedCaller, type RpcContext } from '../../../shared/rpc';
+import type { RpcContext } from '../../../shared/rpc';
 import { A2A_APPROVAL_RPC, A2A_REMOTE_PROMPT_ID_RE, type A2aApprovalSendResult } from '../../../shared/a2aRemote';
-import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import type { DaemonClient } from '../../DaemonClient';
-import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
+import { defaultResolveCaller, deny, remoteTaskCaller, type ResolveCaller } from './remoteTaskCaller';
 
 type GetWindow = () => BrowserWindow | null;
 
 export interface RemoteApprovalRpcDeps {
   getDaemonClient: () => Pick<DaemonClient, 'isConnected' | 'a2aRemoteApprove'> | null;
   /** Injected in tests; default the mirror/renderer resolution. */
-  resolveCaller?: (senderPtyId: string) => Promise<{ workspaceId: string } | null>;
-}
-
-function deny(code: string, message: string): { ok: false; error: { code: string; message: string } } {
-  return { ok: false, error: { code, message } };
+  resolveCaller?: ResolveCaller;
 }
 
 function str(v: unknown): string {
@@ -47,26 +42,11 @@ export function approveArgs(params: Record<string, unknown>): { taskId: string; 
 }
 
 export function registerRemoteApprovalRpc(router: RpcRouter, getWindow: GetWindow, deps: RemoteApprovalRpcDeps): void {
-  const resolveCaller = deps.resolveCaller ?? (async (ptyId: string) => {
-    try {
-      const workspaceId = await resolvePtyOwnerWorkspace(getWindow, ptyId);
-      return workspaceId ? { workspaceId } : null;
-    } catch {
-      // Renderer unavailable (early boot / reload): unresolvable, fail closed.
-      return null;
-    }
-  });
+  const resolveCaller = deps.resolveCaller ?? defaultResolveCaller(getWindow);
 
   router.register(A2A_APPROVAL_RPC.ask, async (params, ctx?: RpcContext) => {
-    if (ctx?.origin !== 'local') return deny('NOT_AUTHORIZED', `${A2A_APPROVAL_RPC.ask} is local-origin only`);
-    const senderPtyId = str(params['senderPtyId']);
-    const caller = senderPtyId ? await resolveCaller(senderPtyId) : null;
-    if (!caller) return deny('NOT_AUTHORIZED', `${A2A_APPROVAL_RPC.ask} requires a verifiable caller (no resolvable senderPtyId): run it from the pane that sent the task`);
-    if (caller.workspaceId === HUMAN_WORKSPACE_ID) return deny('NOT_AUTHORIZED', `'${HUMAN_WORKSPACE_ID}' cannot answer from the pipe`);
-    // A plugin bound to one workspace never answers for a pane of another; unbound, it answers for none.
-    if (isHostedCaller(ctx) && hostedBindingOf(ctx) !== caller.workspaceId) {
-      return deny('NOT_AUTHORIZED', `${A2A_APPROVAL_RPC.ask}: a hosted caller answers only from a pane of its own workspace`);
-    }
+    const caller = await remoteTaskCaller(A2A_APPROVAL_RPC.ask, params, ctx, resolveCaller);
+    if (!caller.ok) return caller;
     const args = approveArgs(params);
     if (typeof args === 'string') return deny('INVALID_ARGUMENT', args);
     const dc = deps.getDaemonClient();

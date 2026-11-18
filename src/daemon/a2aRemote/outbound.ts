@@ -324,35 +324,38 @@ export function sendRemoteStatus(deps: StateDeps, input: { taskId: string; statu
 }
 
 /**
- * The asking PC's answer to the question the worker on a task it SENT shows
- * (`kind: 'answer'`): a picker id and an option number, never text. Only the
+ * A message from the asking PC to the worker of a task it SENT: only the
  * task's local party may send it (the same check as a reply), only while the
- * task is open. Not added to the task's history and no state change: how it
- * went comes back in the task's status (`detail.answer`). Whether the peer
- * takes an answer at all (`A2A_FEATURE_ANSWER`) is the caller's to check.
+ * task is open, with a body `parse` accepts; a new message id under `idPrefix`
+ * each time. Not added to the task's history and no state change: how it went
+ * comes back in the task's status. Whether the peer takes the kind at all is
+ * the caller's to check.
  */
-export function sendRemoteAnswer(
+function sendToTaskWorker<K extends 'answer' | 'approval'>(
   deps: StateDeps,
-  input: { taskId: string; workspaceId: string; answer: A2aRemoteAnswerV1 },
+  input: {
+    taskId: string;
+    workspaceId: string;
+    kind: K;
+    idPrefix: string;
+    parse: () => NonNullable<A2aRemoteEnvelope[K]> | null;
+    words: { notOurs: string; notSender: string; badBody: string };
+  },
 ): { ok: true; taskId: string; messageId: string } | { ok: false; error: string } {
   const found = remoteTaskAndLink(deps, input.taskId);
   if (!found.ok) return found;
   const { task, link } = found;
-  if ((task.metadata.remote as A2aRemoteTaskMarkerV1).direction !== 'outbound') {
-    return { ok: false, error: 'bad-request: an answer is for a task this PC sent' };
-  }
+  if ((task.metadata.remote as A2aRemoteTaskMarkerV1).direction !== 'outbound') return { ok: false, error: `bad-request: ${input.words.notOurs}` };
   const localSide = isRemoteWorkspaceId(task.metadata.from.workspaceId) ? 'to' : 'from';
-  if (task.metadata[localSide].workspaceId !== input.workspaceId) {
-    return { ok: false, error: 'forbidden: only the agent that sent this task can answer its worker' };
-  }
+  if (task.metadata[localSide].workspaceId !== input.workspaceId) return { ok: false, error: `forbidden: ${input.words.notSender}` };
   if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: false, error: `bad-request: task ${task.id} has ended` };
-  const answer = parseA2aRemoteAnswer(input.answer);
-  if (!answer) return { ok: false, error: 'bad-request: an answer is a picker id (16 hex characters) and an option number from 1 to 9' };
-  const check = deps.linkStore.checkMessage(link.linkId, link.version, link.remote.hostId, 'outbound', 'answer', undefined, { onThisLink: true });
+  const body = input.parse();
+  if (!body) return { ok: false, error: `bad-request: ${input.words.badBody}` };
+  const check = deps.linkStore.checkMessage(link.linkId, link.version, link.remote.hostId, 'outbound', input.kind, undefined, { onThisLink: true });
   if (!check.ok) return { ok: false, error: check.error };
-  const messageId = `an-${mint(deps)}`;
+  const messageId = `${input.idPrefix}${mint(deps)}`;
   try {
-    deps.outbox.enqueue(link.remote.hostId, envelope(deps, link, messageId, { kind: 'answer', taskId: task.id, answer }));
+    deps.outbox.enqueue(link.remote.hostId, envelope(deps, link, messageId, { kind: input.kind, taskId: task.id, [input.kind]: body }));
   } catch (err) {
     return { ok: false, error: `unavailable: could not queue for the peer (${errText(err)})` };
   }
@@ -360,41 +363,53 @@ export function sendRemoteAnswer(
 }
 
 /**
+ * The asking PC's answer to the question the worker on a task it SENT shows
+ * (`kind: 'answer'`): a picker id and an option number, never text. How it
+ * went comes back in the task's status (`detail.answers`). Whether the peer
+ * takes an answer at all (`A2A_FEATURE_ANSWER`) is the caller's to check.
+ */
+export function sendRemoteAnswer(
+  deps: StateDeps,
+  input: { taskId: string; workspaceId: string; answer: A2aRemoteAnswerV1 },
+): { ok: true; taskId: string; messageId: string } | { ok: false; error: string } {
+  return sendToTaskWorker(deps, {
+    taskId: input.taskId,
+    workspaceId: input.workspaceId,
+    kind: 'answer',
+    idPrefix: 'an-',
+    parse: () => parseA2aRemoteAnswer(input.answer),
+    words: {
+      notOurs: 'an answer is for a task this PC sent',
+      notSender: 'only the agent that sent this task can answer its worker',
+      badBody: 'an answer is a picker id (16 hex characters) and an option number from 1 to 9',
+    },
+  });
+}
+
+/**
  * The asking PC's allow or deny for the permission prompt the worker on a task
  * it SENT shows (`kind: 'approval'`): a prompt id and a decision, never text.
- * Only the task's local party may send it (the same check as a reply), only
- * while the task is open. Not added to the task's history and no state
- * change: how it went comes back in the task's status (`detail.approvals`).
- * Whether the peer takes one (`A2A_FEATURE_APPROVAL`), and whether the offer
- * allows the decision, are the caller's to check. Each call is a new message
- * id: the receiving PC answers a reused one as `id-reused`.
+ * How it went comes back in the task's status (`detail.approvals`). Whether
+ * the peer takes one (`A2A_FEATURE_APPROVAL`), and whether the offer allows the
+ * decision, are the caller's to check. Each call is a new message id: the
+ * receiving PC answers a reused one as `id-reused`.
  */
 export function sendRemoteApproval(
   deps: StateDeps,
   input: { taskId: string; workspaceId: string; approval: A2aRemoteApprovalV1 },
 ): { ok: true; taskId: string; messageId: string } | { ok: false; error: string } {
-  const found = remoteTaskAndLink(deps, input.taskId);
-  if (!found.ok) return found;
-  const { task, link } = found;
-  if ((task.metadata.remote as A2aRemoteTaskMarkerV1).direction !== 'outbound') {
-    return { ok: false, error: 'bad-request: an approval is for a task this PC sent' };
-  }
-  const localSide = isRemoteWorkspaceId(task.metadata.from.workspaceId) ? 'to' : 'from';
-  if (task.metadata[localSide].workspaceId !== input.workspaceId) {
-    return { ok: false, error: 'forbidden: only the agent that sent this task can answer its worker\'s prompts' };
-  }
-  if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: false, error: `bad-request: task ${task.id} has ended` };
-  const approval = parseA2aRemoteApproval(input.approval);
-  if (!approval) return { ok: false, error: 'bad-request: an approval is a prompt id (16 hex characters) and allow or deny' };
-  const check = deps.linkStore.checkMessage(link.linkId, link.version, link.remote.hostId, 'outbound', 'approval', undefined, { onThisLink: true });
-  if (!check.ok) return { ok: false, error: check.error };
-  const messageId = `ap-${mint(deps)}`;
-  try {
-    deps.outbox.enqueue(link.remote.hostId, envelope(deps, link, messageId, { kind: 'approval', taskId: task.id, approval }));
-  } catch (err) {
-    return { ok: false, error: `unavailable: could not queue for the peer (${errText(err)})` };
-  }
-  return { ok: true, taskId: task.id, messageId };
+  return sendToTaskWorker(deps, {
+    taskId: input.taskId,
+    workspaceId: input.workspaceId,
+    kind: 'approval',
+    idPrefix: 'ap-',
+    parse: () => parseA2aRemoteApproval(input.approval),
+    words: {
+      notOurs: 'an approval is for a task this PC sent',
+      notSender: 'only the agent that sent this task can answer its worker\'s prompts',
+      badBody: 'an approval is a prompt id (16 hex characters) and allow or deny',
+    },
+  });
 }
 
 /**
