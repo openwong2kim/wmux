@@ -74,8 +74,13 @@ export const SHOWN_INPUT_KEYS: Readonly<Record<string, ReadonlySet<string>>> = O
 });
 /** Prompts offered per task at most; later ones stay on this PC. */
 export const APPROVAL_PROMPTS_PER_TASK_MAX = 60;
-/** Statuses per task this producer sends at most: one per prompt and one per outcome. */
-export const APPROVAL_STATUS_CHANGES_MAX = APPROVAL_PROMPTS_PER_TASK_MAX * 2;
+/**
+ * Status changes per task that offer no new prompt (an outcome, working or
+ * waiting) sent at most. Past it the status stays as last sent until the next
+ * new prompt, which carries the latest outcomes. New prompts are bounded by
+ * APPROVAL_PROMPTS_PER_TASK_MAX instead.
+ */
+export const APPROVAL_OTHER_STATUS_CHANGES_MAX = APPROVAL_PROMPTS_PER_TASK_MAX * 2;
 /** Approvals one PC may send in a window; past it they are taken and dropped unread. */
 export const APPROVALS_PER_WINDOW = 60;
 /** Refusal audit lines per PC in a window; past it one line says how many were left out. */
@@ -241,6 +246,11 @@ interface Tracked {
   sent: Map<string, { allowed: A2aRemoteApprovalDecision[]; command: boolean }>;
   capLogged: boolean;
   outcomes: A2aRemoteApprovalOutcome[];
+  /** The last status sent: its body without `since`, its `since`, and the status. */
+  last: { key: string; since: string; status: HeadlessTaskStatus } | null;
+  /** Sent changes that offered no new prompt (APPROVAL_OTHER_STATUS_CHANGES_MAX). */
+  otherChanges: number;
+  otherCapLogged: boolean;
 }
 
 /** One offerable prompt on a task, with what it was decided from. */
@@ -299,7 +309,8 @@ export class RemoteApprovals {
       labels: () => 'send',
       log: deps.log,
       now: this.now,
-      changesMax: APPROVAL_STATUS_CHANGES_MAX,
+      // Bounded here instead: new prompts per task, and every other change on its own (statusOf).
+      changesMax: Number.POSITIVE_INFINITY,
       sent: (taskId, status) => this.noteSent(taskId, status),
     });
   }
@@ -331,8 +342,7 @@ export class RemoteApprovals {
     if (!this.deps.anyOn()) {
       this.stop();
       this.tracked.clear();
-      // A chain broken stays broken until its task ends; one that is not is started again from its proof.
-      for (const [id, chain] of [...this.chains]) if (!chain.broken) this.chains.delete(id);
+      // Chains are kept: each still holds its task's first delivery proof and baseline. Those of tasks that end are dropped on the next pass while it is on.
       this.reporter.tick([]);
       return;
     }
@@ -342,11 +352,13 @@ export class RemoteApprovals {
     }
     const statuses: HeadlessTaskStatus[] = [];
     const live = new Set<string>();
-    let tasks: Task[] = [];
+    let tasks: Task[];
     try {
       tasks = this.deps.tasks.remote();
     } catch (err) {
+      // Not an empty list: nothing is dropped or sent on this pass.
       this.deps.log('warn', `[a2a-remote] approvals: the task list: ${err instanceof Error ? err.message : String(err)}`);
+      return;
     }
     for (const task of tasks) {
       const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
@@ -411,8 +423,9 @@ export class RemoteApprovals {
       try {
         const begun = await receipts.begin(owner, messageId, approvalId, bodyHash);
         if (begun.kind === 'new') {
-          await receipts.finish(owner, messageId, 'refused', { status: 409, body: { outcome: 'not-done', reason } });
-          return { messageId, outcome: 'not-done', reason };
+          // Not on disk: a resend reads it as uncertain, and so does this answer.
+          const kept = await receipts.finish(owner, messageId, 'refused', { status: 409, body: { outcome: 'not-done', reason } });
+          return kept ? { messageId, outcome: 'not-done', reason } : { messageId, outcome: 'uncertain' };
         }
         if (begun.kind === 'in-flight') return 'running';
         if (begun.kind !== 'full') return this.storedOutcome(begun, messageId) ?? tombstone({ messageId, outcome: 'not-done', reason });
@@ -467,12 +480,13 @@ export class RemoteApprovals {
           return { messageId, outcome: 'uncertain' };
         }
         const out: A2aRemoteApprovalOutcome = result.ok ? { messageId, outcome: 'done' } : { messageId, outcome: 'not-done', reason: 'refused' };
-        await receipts.finish(owner, messageId, result.ok ? 'done' : 'refused', {
+        const kept = await receipts.finish(owner, messageId, result.ok ? 'done' : 'refused', {
           status: result.ok ? 200 : 409,
           body: { outcome: out.outcome, ...(out.reason ? { reason: out.reason } : {}) },
         });
-        this.audit(hostId, taskId, messageId, approval, result.ok ? 'done' : `not-done:refused:${result.reason}`, fp8);
-        return out;
+        this.audit(hostId, taskId, messageId, approval, `${result.ok ? 'done' : `not-done:refused:${result.reason}`}${kept ? '' : ':receipt-not-saved'}`, fp8);
+        // The receipt is still in flight on disk, which a resend reads as uncertain: this answer says the same.
+        return kept ? out : { messageId, outcome: 'uncertain' };
       } finally {
         this.deps.unlock(sessionId, token);
       }
@@ -652,13 +666,27 @@ export class RemoteApprovals {
   private trackedOf(taskId: string): Tracked {
     let t = this.tracked.get(taskId);
     if (!t) {
-      t = { sent: new Map(), capLogged: false, outcomes: [] };
+      t = { sent: new Map(), capLogged: false, outcomes: [], last: null, otherChanges: 0, otherCapLogged: false };
       this.tracked.set(taskId, t);
     }
     return t;
   }
 
+  /** The task's status now; past APPROVAL_OTHER_STATUS_CHANGES_MAX, the one last sent unless it offers a new prompt. */
   private statusOf(task: Task): HeadlessTaskStatus | null {
+    const next = this.nextStatus(task);
+    const t = this.tracked.get(task.id);
+    if (!next || !t?.last || t.otherChanges < APPROVAL_OTHER_STATUS_CHANGES_MAX) return next;
+    const offer = next.detail?.approval;
+    if (offer && !t.sent.has(offer.promptId)) return next;
+    if (!t.otherCapLogged) {
+      t.otherCapLogged = true;
+      this.deps.log('info', `[a2a-remote] approvals: task ${task.id}: ${APPROVAL_OTHER_STATUS_CHANGES_MAX} other status changes sent; the next new prompt carries the latest outcomes`);
+    }
+    return t.last.status;
+  }
+
+  private nextStatus(task: Task): HeadlessTaskStatus | null {
     let t = this.tracked.get(task.id);
     // Nothing offered yet and no open turn of the task's own: the pane's prompts are not read.
     const latest = this.deps.turn(task.id);
@@ -693,13 +721,23 @@ export class RemoteApprovals {
     };
   }
 
-  /** A status was queued for the PC: what it offers is what an answer is held to, as read on the other side. */
+  /**
+   * A status was queued for the PC: what it offers is what an answer is held
+   * to, as read on the other side. A change that offers no new prompt counts
+   * toward APPROVAL_OTHER_STATUS_CHANGES_MAX, including the same body under
+   * a new `since`; the same status again (a reconnect) does not.
+   */
   private noteSent(taskId: string, status: A2aRemoteStatusV1): void {
-    const offer = parseA2aRemoteStatus(status)?.detail?.approval;
-    if (!offer) return;
     const t = this.trackedOf(taskId);
-    if (!t.sent.has(offer.promptId) && t.sent.size >= APPROVAL_PROMPTS_PER_TASK_MAX) return;
-    t.sent.set(offer.promptId, { allowed: [...offer.allowed], command: offer.command !== undefined });
+    const key = JSON.stringify({ ...status, since: undefined });
+    if (t.last?.key === key && t.last.since === status.since) return;
+    const offer = parseA2aRemoteStatus(status)?.detail?.approval;
+    const newOffer = !!offer && !t.sent.has(offer.promptId);
+    if (offer && (!newOffer || t.sent.size < APPROVAL_PROMPTS_PER_TASK_MAX)) {
+      t.sent.set(offer.promptId, { allowed: [...offer.allowed], command: offer.command !== undefined });
+    }
+    if (!newOffer) t.otherChanges += 1;
+    t.last = { key, since: status.since, status: { taskId, kind: status.kind, ...(status.detail ? { detail: status.detail as HeadlessTaskStatus['detail'] } : {}) } };
   }
 
   /** Kept for the task's status while its sender has the setting on. */

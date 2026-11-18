@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteJSONSync } from '../util/atomicWrite';
@@ -18,12 +19,23 @@ import { isIsoString, isPlainObject, loadStore, storeUnavailable, type StoreLog 
  * fails, the file set aside (`<file>.corrupt-<time>`) with no file in its place
  * still reads as off on the next start. A file that cannot be told apart from
  * a missing one (a folder that cannot be searched) reads as there.
+ *
+ * Each entry holds a hash of the pairing it was set under (`pairing`): the PC's
+ * peer records on this PC when it was set. An entry whose pairing is not the
+ * PC's current one reads as off, so a PC paired again starts off even when the
+ * removal of its old entry was never written.
  */
 export const APPROVALS_FILE = 'a2a-remote-approvals.json';
 
+interface ApprovalEntry {
+  exposure: A2aApprovalExposure;
+  /** sha256 hex of the PC's pairing when it was set (ApprovalSwitchStoreOptions.pairing). */
+  pairing: string;
+}
+
 interface ApprovalsSettingsV1 {
   v: 1;
-  hosts: Record<HostId, { exposure: A2aApprovalExposure }>;
+  hosts: Record<HostId, ApprovalEntry>;
   /** Set when the file was found damaged and an empty list written in its place. */
   damagedAt?: string;
 }
@@ -36,6 +48,21 @@ function fileThere(filePath: string): boolean {
   } catch (err) {
     return (err as NodeJS.ErrnoException).code !== 'ENOENT';
   }
+}
+
+/**
+ * A PC's pairing here, for ApprovalSwitchStoreOptions.pairing: its unrevoked
+ * peer records (it joined this PC) and its host record (this PC joined it),
+ * by peer id. A new pairing mints a new peer id. Null: not paired.
+ */
+export function pairingOf(
+  hostId: HostId,
+  peers: ReadonlyArray<{ hostId: string; peerId: string; revokedAt?: string }>,
+  joined: { peerId: string } | undefined,
+): string | null {
+  const ids = peers.filter((p) => p.hostId === hostId && !p.revokedAt).map((p) => `peer:${p.peerId}`);
+  if (joined) ids.push(`host:${joined.peerId}`);
+  return ids.length > 0 ? ids.sort().join('\n') : null;
 }
 
 /** A damaged file set aside by an earlier start whose repair write failed. */
@@ -52,11 +79,12 @@ export function coerceApprovalsSettings(raw: unknown): ApprovalsSettingsV1 | nul
   if (!isPlainObject(raw)) return null;
   if (raw['v'] !== A2A_REMOTE_RECORD_V || !isPlainObject(raw['hosts'])) return null;
   if (Object.keys(raw).some((k) => k !== 'v' && k !== 'hosts' && k !== 'damagedAt')) return null;
-  const hosts: Record<HostId, { exposure: A2aApprovalExposure }> = {};
+  const hosts: Record<HostId, ApprovalEntry> = {};
   for (const [hostId, entry] of Object.entries(raw['hosts'])) {
     if (!isHostId(hostId) || !isPlainObject(entry) || !isA2aApprovalExposure(entry['exposure'])) return null;
-    if (Object.keys(entry).length !== 1) return null;
-    hosts[hostId] = { exposure: entry['exposure'] };
+    const pairing = entry['pairing'];
+    if (typeof pairing !== 'string' || !/^[0-9a-f]{64}$/.test(pairing) || Object.keys(entry).length !== 2) return null;
+    hosts[hostId] = { exposure: entry['exposure'], pairing };
   }
   const damagedAt = raw['damagedAt'];
   if (damagedAt !== undefined && (Object.keys(hosts).length > 0 || !isIsoString(damagedAt))) return null;
@@ -65,6 +93,8 @@ export function coerceApprovalsSettings(raw: unknown): ApprovalsSettingsV1 | nul
 
 export interface ApprovalSwitchStoreOptions {
   dir: string;
+  /** The PC's pairing here as it is now (its peer records), or null: not paired. */
+  pairing: (hostId: HostId) => string | null;
   now?: () => number;
   log?: StoreLog;
   /** Test seams. */
@@ -78,7 +108,8 @@ export class ApprovalSwitchStore {
   private readonly now: () => number;
   private readonly write: (filePath: string, data: unknown) => void;
   private readonly scheduleHarden: (filePath: string) => void;
-  private hosts: Record<HostId, { exposure: A2aApprovalExposure }>;
+  private readonly pairing: (hostId: HostId) => string | null;
+  private hosts: Record<HostId, ApprovalEntry>;
   private damaged: boolean;
   private readonly writable: boolean;
 
@@ -88,6 +119,7 @@ export class ApprovalSwitchStore {
     this.now = opts.now ?? Date.now;
     this.write = opts.write ?? ((p, d): void => atomicWriteJSONSync(p, d));
     this.scheduleHarden = opts.scheduleHarden ?? scheduleTokenFileReHarden;
+    this.pairing = opts.pairing;
     const present = fileThere(this.filePath);
     const loaded = loadStore({
       filePath: this.filePath,
@@ -125,22 +157,34 @@ export class ApprovalSwitchStore {
     }
   }
 
+  /** sha256 hex of the PC's pairing now, or null when it is not paired. */
+  private pairingHash(hostId: HostId): string | null {
+    const pairing = this.pairing(hostId);
+    return pairing === null ? null : crypto.createHash('sha256').update(pairing).digest('hex');
+  }
+
+  /** The entry, when it was set under the PC's current pairing. */
+  private current(hostId: HostId, entry: ApprovalEntry): boolean {
+    return entry.pairing === this.pairingHash(hostId);
+  }
+
   /** The PCs it is on for, and whether every PC is off because the file was damaged. */
   get(): { hosts: Record<HostId, A2aApprovalExposure>; damaged: boolean } {
     const hosts: Record<HostId, A2aApprovalExposure> = {};
-    for (const [hostId, entry] of Object.entries(this.hosts)) hosts[hostId] = entry.exposure;
+    if (!this.damaged) for (const [hostId, entry] of Object.entries(this.hosts)) if (this.current(hostId, entry)) hosts[hostId] = entry.exposure;
     return { hosts, damaged: this.damaged };
   }
 
-  /** What `hostId` sees of a prompt, or null: off (not listed, no file, or damaged). */
+  /** What `hostId` sees of a prompt, or null: off (not listed, no file, damaged, or set under another pairing). */
   exposure(hostId: HostId): A2aApprovalExposure | null {
-    if (this.damaged) return null;
-    return Object.prototype.hasOwnProperty.call(this.hosts, hostId) ? this.hosts[hostId].exposure : null;
+    if (this.damaged || !Object.prototype.hasOwnProperty.call(this.hosts, hostId)) return null;
+    const entry = this.hosts[hostId];
+    return this.current(hostId, entry) ? entry.exposure : null;
   }
 
   /** Whether it is on for any PC. */
   anyOn(): boolean {
-    return !this.damaged && Object.keys(this.hosts).length > 0;
+    return Object.keys(this.get().hosts).length > 0;
   }
 
   /** The PC is no longer paired (the revoke cascade): it is off, and stays off if it is paired again. */
@@ -149,12 +193,14 @@ export class ApprovalSwitchStore {
   }
 
   /**
-   * Keep only the PCs `paired` still knows, e.g. on start: a removal whose
-   * write failed before a restart is applied again here. Memory first: a
-   * removed PC is off even when the file cannot be written (logged).
+   * Keep only the PCs `paired` still knows under the pairing their entry was
+   * set in, e.g. on start: a removal whose write failed before a restart is
+   * applied again here. Memory first: a removed PC is off even when the file
+   * cannot be written (logged), and an entry left on disk by such a write
+   * stays off once the PC is paired again (`pairing`).
    */
   retainHosts(paired: (hostId: HostId) => boolean): boolean {
-    const gone = Object.keys(this.hosts).filter((h) => !paired(h));
+    const gone = Object.entries(this.hosts).filter(([h, entry]) => !paired(h) || !this.current(h, entry)).map(([h]) => h);
     if (gone.length === 0) return false;
     const next = { ...this.hosts };
     for (const h of gone) delete next[h];
@@ -168,10 +214,12 @@ export class ApprovalSwitchStore {
   set(hostId: HostId, exposure: A2aApprovalExposure | 'off'): { ok: true; hosts: Record<HostId, A2aApprovalExposure> } | { ok: false; error: string } {
     if (!this.writable) return { ok: false, error: storeUnavailable(APPROVALS_FILE).message };
     if (!isHostId(hostId)) return { ok: false, error: 'not a host id' };
+    const pairing = exposure === 'off' ? null : this.pairingHash(hostId);
+    if (exposure !== 'off' && pairing === null) return { ok: false, error: 'that PC is not paired with this one' };
     // A damaged file's list was never read: setting one PC starts from an empty list.
-    const next: Record<HostId, { exposure: A2aApprovalExposure }> = this.damaged ? {} : { ...this.hosts };
-    if (exposure === 'off') delete next[hostId];
-    else next[hostId] = { exposure };
+    const next: Record<HostId, ApprovalEntry> = this.damaged ? {} : { ...this.hosts };
+    if (exposure === 'off' || pairing === null) delete next[hostId];
+    else next[hostId] = { exposure, pairing };
     const error = this.persist({ v: 1, hosts: next });
     if (error) return { ok: false, error };
     this.hosts = next;

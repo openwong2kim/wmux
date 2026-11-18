@@ -10,7 +10,7 @@ import { remoteWorkspaceId } from '../../../shared/a2aRemoteDelivery';
 import { promptHash } from '../../../shared/promptHash';
 import type { GatedSubmitProof } from '../../../shared/ptyMessageDelivery';
 import type { Task } from '../../../shared/types';
-import { AnswerReceiptStore } from '../../approvals/AnswerReceiptStore';
+import { AnswerReceiptStore, receiptHash } from '../../approvals/AnswerReceiptStore';
 import { ApprovalRegistry, TERMINAL_PROMPT_MIN_ANSWER_AGE_MS, type RemoteApprovalRecordFacts } from '../../approvals/ApprovalRegistry';
 import type { ApprovalResolveParams, ApprovalResolveResult } from '../../approvals/types';
 import type { PendingToolUse } from '../../transcript/pendingToolUse';
@@ -18,6 +18,7 @@ import { parseTranscriptLine } from '../../transcript/parseEntry';
 import { ApprovalSwitchStore } from '../approvalSwitchStore';
 import {
   APPROVAL_AUDIT_REFUSALS_PER_WINDOW,
+  APPROVAL_OTHER_STATUS_CHANGES_MAX,
   APPROVAL_PROMPTS_PER_TASK_MAX,
   APPROVAL_WINDOW_MS,
   APPROVALS_PER_WINDOW,
@@ -151,7 +152,7 @@ const deny = (promptId: string) => ({ promptId, decision: 'deny' as const });
 
 describe('off: nothing changes', () => {
   const settingsDir = (): string => fs.mkdtempSync(path.join(tmpDir, 'settings-'));
-  const setting = (dir: string): ApprovalSwitchStore => new ApprovalSwitchStore({ dir, log: () => undefined, scheduleHarden: () => undefined });
+  const setting = (dir: string): ApprovalSwitchStore => new ApprovalSwitchStore({ dir, pairing: () => 'peer:1', log: () => undefined, scheduleHarden: () => undefined });
   it.each([
     ['no settings file', (dir: string) => setting(dir)],
     ['a damaged settings file', (dir: string) => {
@@ -415,6 +416,47 @@ describe('the key-revision chain, after it started', () => {
     rig.pane.keyInputRevision += 1;
     await refusedNext(rig);
   });
+
+  it('a pass whose task list could not be read keeps it: the next prompt at this channel\'s revision is offered', async () => {
+    const rig = await afterAllow();
+    const remote = rig.deps.tasks.remote;
+    rig.deps.tasks.remote = () => { throw new Error('ledger busy'); };
+    rig.approvals.tick();
+    expect(rig.logs.some((l) => l.includes('approvals: the task list: ledger busy'))).toBe(true);
+    rig.deps.tasks.remote = remote;
+    const sentBefore = rig.sent.length;
+    const next = await rig.prompt(NARROW, CALL_B);
+    expect(next.keyRevisionAtCreate).toBe(SUBMIT + 1);
+    rig.approvals.tick();
+    expect(rig.sent.slice(sentBefore).some((x) => x.status.detail?.approval?.promptId === idOf(rig, next.id))).toBe(true);
+    expect(await rig.approvals.take(HOST, TASK, 'ap-2', allow(idOf(rig, next.id)))).toEqual({ messageId: 'ap-2', outcome: 'done' });
+    expect(rig.writes).toEqual(['1', '1']);
+  });
+});
+
+describe('the key-revision chain while the setting is off for every PC', () => {
+  it('is kept: the task delivered again under a new proof meanwhile ends it once it is back on', async () => {
+    const rig = makeRig();
+    await rig.prompt();
+    rig.approvals.tick();
+    expect(rig.offered()).toBeDefined();
+    rig.state.exposure = null;
+    rig.approvals.tick();
+    // Delivered again while off: the pane took its submit, under another proof.
+    await rig.registry.expireForSession(PTY, 'prompt-gone');
+    rig.pane.keyInputRevision = SUBMIT + 1;
+    rig.state.proof = { ...rig.state.proof, submitRevision: SUBMIT + 1, promptHash: '1'.repeat(64) };
+    rig.state.turn.toolUseIds.push('toolu_b');
+    const next = await rig.prompt(NARROW, CALL_B);
+    expect(next.keyRevisionAtCreate).toBe(SUBMIT + 1);
+    rig.state.exposure = 'command';
+    const sentBefore = rig.sent.length;
+    rig.approvals.tick();
+    expect(rig.sent.slice(sentBefore).some((x) => x.status.detail?.approval)).toBe(false);
+    expect(rig.logs.some((l) => l.includes('the task was delivered again'))).toBe(true);
+    expect(await rig.approvals.take(HOST, TASK, 'ap-1', deny(idOf(rig, next.id)))).toMatchObject({ outcome: 'not-done', reason: 'chain-broken' });
+    expect(rig.writes).toEqual([]);
+  });
 });
 
 describe('carrying out an approval: what can stop it', () => {
@@ -494,6 +536,54 @@ describe('an outcome whose receipt could not be written', () => {
     expect(await approvals.take(HOST, TASK, 'ap-1', allow(id))).toEqual({ messageId: 'ap-1', outcome: 'not-done', reason: 'lock-busy' });
     expect(rig.writes).toEqual([]);
     expect(await approvals.take(HOST, TASK, 'ap-2', allow(id))).toEqual({ messageId: 'ap-2', outcome: 'done' });
+  });
+});
+
+describe('an outcome whose final receipt could not be saved', () => {
+  it('the key landed: uncertain, the same as a resend reads it, and never typed again', async () => {
+    const rig = makeRig();
+    await rig.prompt();
+    rig.approvals.tick();
+    const id = rig.offered()!;
+    const receipts = rig.deps.receipts!;
+    const approvals = new RemoteApprovals({
+      ...rig.deps,
+      registry: {
+        ...rig.deps.registry,
+        // The key lands; then the store's writes fail, so the final receipt is not saved.
+        resolve: async (params) => {
+          const res = await rig.deps.registry.resolve(params);
+          (receipts as unknown as { save: () => Promise<void> }).save = () => Promise.reject(new Error('disk full'));
+          return res;
+        },
+      },
+    });
+    approvals.tick();
+    const first = await approvals.take(HOST, TASK, 'ap-1', allow(id));
+    expect(rig.writes).toEqual(['1']);
+    expect(first).toEqual({ messageId: 'ap-1', outcome: 'uncertain' });
+    expect(await approvals.take(HOST, TASK, 'ap-1', allow(id))).toEqual(first);
+    expect(rig.writes).toEqual(['1']);
+    // On disk it is still in flight: the next start reads it as uncertain too.
+    const file = path.join(tmpDir, 'a2a-remote-approval-receipts.json');
+    expect(Object.values((JSON.parse(fs.readFileSync(file, 'utf8')) as { entries: Record<string, { state: string }> }).entries).map((e) => e.state)).toEqual(['inFlight']);
+  });
+});
+
+describe('a refusal whose receipt could not be saved', () => {
+  it('answers uncertain, the same as a resend reads it', async () => {
+    const rig = makeRig();
+    const record = await rig.prompt();
+    const receipts = rig.deps.receipts as unknown as { save: () => Promise<void> };
+    const save = receipts.save.bind(receipts);
+    let saves = 0;
+    // The in-flight receipt is saved; the refusal that follows is not.
+    receipts.save = () => (saves++ === 0 ? save() : Promise.reject(new Error('disk full')));
+    const id = idOf(rig, record.id);
+    const first = await rig.approvals.take(HOST, TASK, 'ap-1', deny(id));
+    expect(first).toEqual({ messageId: 'ap-1', outcome: 'uncertain' });
+    expect(await rig.approvals.take(HOST, TASK, 'ap-1', deny(id))).toEqual(first);
+    expect(rig.writes).toEqual([]);
   });
 });
 
@@ -727,6 +817,47 @@ describe('receipts', () => {
     expect(openApprovalReceipts(tmpDir, () => undefined)).not.toBeNull();
   });
 
+  it('a backup with no receipts file (a write stopped between its renames): unavailable, not an empty store', () => {
+    const file = path.join(tmpDir, 'a2a-remote-approval-receipts.json');
+    fs.writeFileSync(`${file}.bak`, JSON.stringify({ version: 1, entries: {} }));
+    const logs: string[] = [];
+    expect(openApprovalReceipts(tmpDir, (_l, m) => logs.push(m))).toBeNull();
+    expect(logs.join('\n')).toMatch(/could not be read; approvals from other PCs are refused/);
+    expect(fs.existsSync(file)).toBe(false);
+    // Neither file: an empty store.
+    fs.rmSync(`${file}.bak`);
+    expect(openApprovalReceipts(tmpDir, () => undefined)).not.toBeNull();
+  });
+
+  it('receipts are replaced in one rename: the file is there after every write, and no backup is kept', async () => {
+    const store = openApprovalReceipts(tmpDir, () => undefined)!;
+    const file = path.join(tmpDir, 'a2a-remote-approval-receipts.json');
+    for (const n of [1, 2]) {
+      expect(await store.begin('remote:h', `ap-${n}`, 'task:p:allow', 'a'.repeat(64))).toEqual({ kind: 'new' });
+      expect(await store.finish('remote:h', `ap-${n}`, 'done', { status: 200, body: { outcome: 'done' } })).toBe(true);
+    }
+    expect(fs.existsSync(`${file}.bak`)).toBe(false);
+    expect(Object.keys((JSON.parse(fs.readFileSync(file, 'utf8')) as { entries: object }).entries)).toHaveLength(2);
+  });
+
+  it.each([
+    ['a null body', { status: 200, body: null }],
+    ['a body that is a list', { status: 200, body: [] }],
+    ['a status that is not a number', { status: '200', body: { outcome: 'done' } }],
+    ['no status', { body: { outcome: 'done' } }],
+  ])('a stored response with %s: unavailable', (_label, result) => {
+    const row = { owner: `remote:${HOST}`, approvalId: `${TASK}:p:allow`, bodyHash: 'a'.repeat(64), state: 'done', result, createdAt: 10_000 };
+    fs.writeFileSync(path.join(tmpDir, 'a2a-remote-approval-receipts.json'), JSON.stringify({ version: 1, entries: { [receiptHash([`remote:${HOST}`, 'ap-1'])]: row } }));
+    expect(openApprovalReceipts(tmpDir, () => undefined, () => 10_000)).toBeNull();
+  });
+
+  it('an in-flight receipt with no response loads, as uncertain', () => {
+    const row = { owner: `remote:${HOST}`, approvalId: `${TASK}:p:allow`, bodyHash: 'a'.repeat(64), state: 'inFlight', createdAt: 10_000 };
+    fs.writeFileSync(path.join(tmpDir, 'a2a-remote-approval-receipts.json'), JSON.stringify({ version: 1, entries: { [receiptHash([`remote:${HOST}`, 'ap-1'])]: row } }));
+    const store = openApprovalReceipts(tmpDir, () => undefined, () => 10_000)!;
+    expect(store.peek(`remote:${HOST}`, 'ap-1', `${TASK}:p:allow`, 'a'.repeat(64))).toEqual({ kind: 'uncertain' });
+  });
+
   it('receipts that could not be loaded: nothing is typed', async () => {
     const rig = makeRig();
     await rig.prompt();
@@ -848,6 +979,44 @@ describe('the command offered at exposure command', () => {
     expect(ids.size).toBe(APPROVAL_PROMPTS_PER_TASK_MAX);
     expect(rig.logs.filter((l) => l.includes('prompts offered')).length).toBe(1);
   });
+
+  it('outcomes have their own bound: past it the status stays as sent, and the next new prompt still goes with the latest outcomes', async () => {
+    const rig = fakeRig({ command: 'ls' });
+    rig.tick();
+    const first = rig.sent.at(-1)!.detail!.approval!.promptId;
+    const n = APPROVAL_OTHER_STATUS_CHANGES_MAX + 5;
+    for (let i = 0; i < n; i++) {
+      await rig.approvals.take(HOST, TASK, `ap-${i}`, deny(first));
+      rig.tick();
+    }
+    // One status per outcome until the bound, then none.
+    expect(rig.sent).toHaveLength(1 + APPROVAL_OTHER_STATUS_CHANGES_MAX);
+    expect(rig.logs.filter((l) => l.includes('other status changes sent')).length).toBe(1);
+    rig.record.id = 'req-2';
+    rig.tick();
+    const last = rig.sent.at(-1)!;
+    expect(rig.sent).toHaveLength(2 + APPROVAL_OTHER_STATUS_CHANGES_MAX);
+    expect(last.detail?.approval?.promptId).not.toBe(first);
+    expect(last.detail?.approvals?.at(-1)).toEqual({ messageId: `ap-${n - 1}`, outcome: 'not-done', reason: 'refused' });
+  }, 30_000);
+
+  it('the same status sent again under a new `since` counts toward that bound too', () => {
+    const rig = fakeRig({ command: 'ls' });
+    rig.tick();
+    const flap = (): void => {
+      // The prompt goes and comes back between two sends: the same offer goes again, with a new `since`.
+      rig.state.pending = false;
+      rig.clock.now += 1_000;
+      rig.approvals.tick();
+      rig.state.pending = true;
+      rig.clock.now += 1_000;
+      rig.approvals.tick();
+      rig.tick();
+    };
+    for (let i = 0; i < APPROVAL_OTHER_STATUS_CHANGES_MAX + 5; i++) flap();
+    expect(new Set(rig.sent.map((s) => s.since)).size).toBe(rig.sent.length);
+    expect(rig.sent).toHaveLength(1 + APPROVAL_OTHER_STATUS_CHANGES_MAX);
+  });
 });
 
 /** The producer over a fake registry record (no screen), for what the offer carries. */
@@ -864,7 +1033,7 @@ function fakeRig(opts: { command: string; tool?: string; inputKeys?: string[]; e
   const resolves: ApprovalResolveParams[] = [];
   const logs: string[] = [];
   const t = task();
-  const state = { exposure: (opts.exposure ?? 'command') as A2aApprovalExposure | null };
+  const state = { exposure: (opts.exposure ?? 'command') as A2aApprovalExposure | null, pending: true };
   const approvals = new RemoteApprovals({
     exposure: () => state.exposure,
     anyOn: () => state.exposure !== null,
@@ -875,7 +1044,7 @@ function fakeRig(opts: { command: string; tool?: string; inputKeys?: string[]; e
     turn: () => ({ turn: { opened: true, closed: false, toolUseIds: ['toolu_a'] }, proof: { ptyId: PTY, incarnation: 'inc-1', keyEpoch: 'e', submitRevision: SUBMIT, promptHash: '0'.repeat(64) }, taskItself: true }),
     session: () => ({ incarnation: 'inc-1', keyEpoch: 'e' }),
     registry: {
-      pendingPrompts: () => [record.id],
+      pendingPrompts: () => (state.pending ? [record.id] : []),
       facts: (id) => (id === record.id ? { ...record } : null),
       resolve: async (params) => { resolves.push(params); return { ok: false, reason: 'not-found' }; },
     },

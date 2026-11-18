@@ -172,7 +172,7 @@ import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessSessionPort } from 
 import { createHeadlessSessions } from './a2aRemote/headlessSessions';
 import { endHeadlessOnStop, HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
 import { LinkedTaskTurns } from './a2aRemote/linkedTaskTurns';
-import { ApprovalSwitchStore, setApprovals } from './a2aRemote/approvalSwitchStore';
+import { ApprovalSwitchStore, pairingOf as approvalPairingOf, setApprovals } from './a2aRemote/approvalSwitchStore';
 import { openApprovalReceipts, RemoteApprovals } from './a2aRemote/remoteApproval';
 import { HeadlessStatusReporter } from './a2aRemote/headlessStatus';
 import { answerPicker, screenPicker } from './a2aRemote/headlessAnswer';
@@ -11041,7 +11041,12 @@ async function main(): Promise<void> {
     // Whether another PC's answer is typed into a headless worker's question (`wmux remote answers`).
     const a2aAnswers = new AnswersStore({ dir: a2aDir, log: a2aLog });
     // Which PCs may allow or deny prompts in the tasks they sent to a linked pane here (`wmux remote approvals`): none without the file.
-    const a2aApprovalSwitch = new ApprovalSwitchStore({ dir: a2aDir, log: a2aLog });
+    const a2aApprovalSwitch = new ApprovalSwitchStore({
+      dir: a2aDir,
+      log: a2aLog,
+      // A new pairing has new peer records, so an entry set before it reads as off.
+      pairing: (hostId) => approvalPairingOf(hostId, a2aPeers.list(), a2aRemoteHosts.get(hostId)),
+    });
     const a2aSpawnRequests = new SpawnRequestStore({ dir: a2aDir, log: a2aLog });
     // Continuing a conversation from another PC: off until this PC's human opts in.
     const a2aContinuePolicy = new ContinuePolicyStore({ dir: a2aDir, log: a2aLog });
