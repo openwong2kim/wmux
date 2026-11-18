@@ -384,6 +384,38 @@ describe('NativePipeSocket', () => {
     expect(conn.destroyCalls).toBe(1);
   });
 
+  it('a bare destroy() with a write in flight: the write fails, no error event, close', async () => {
+    const { conn, socket } = socketOver();
+    conn.holdWrites = true;
+    const written = vi.fn();
+    const onError = vi.fn();
+    socket.write('x', written);
+    await tick();
+    socket.on('error', onError);
+    socket.destroy();
+    await closeOf(socket);
+    await ticks(5);
+    expect(onError).not.toHaveBeenCalled();
+    expect(written).toHaveBeenCalledTimes(1);
+    expect(written.mock.calls[0][0]).toBeInstanceOf(Error);
+  });
+
+  it('a bare destroy() with end() in flight: no error event, close', async () => {
+    const { conn, socket } = socketOver();
+    conn.holdEnd = true;
+    const onError = vi.fn();
+    const ended = vi.fn();
+    socket.end('x', ended);
+    await ticks(5);
+    expect(conn.endCalled).toBe(true);
+    socket.on('error', onError);
+    socket.destroy();
+    await closeOf(socket);
+    await ticks(5);
+    expect(onError).not.toHaveBeenCalled();
+    expect(ended).toHaveBeenCalledTimes(1);
+  });
+
   it('a throwing requestRead destroys the socket with the error', async () => {
     const { conn, socket } = socketOver();
     conn.requestReadImpl = () => { throw new Error('read failed'); };

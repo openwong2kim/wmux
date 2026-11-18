@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import net from 'node:net';
 import { listenNativePipe, loadNativePipe, type NativePipeModule, type NativePipeServer } from '../nativePipe';
 import type { NativePipeSocket } from '../nativePipeSocket';
@@ -195,15 +196,29 @@ describe.runIf(pipe)('native pipe listener through NativePipeSocket', () => {
     expect(sawFalse).toBeGreaterThan(0);
     expect(drains).toBeGreaterThan(0);
 
-    // Client to server while the server is paused: the socket's buffer stays
-    // bounded (the native side reads only on demand), and the client backs up.
+    // Client to server: flowing until bytes arrive, then paused. The socket's
+    // buffer stays bounded (the native side reads only on demand), nothing
+    // more arrives while paused, and the client backs up.
     const up = pattern(size, 2);
-    socket.pause();
     const chunks: Buffer[] = [];
-    socket.on('data', (c: Buffer) => chunks.push(c));
+    const count = () => chunks.reduce((n, c) => n + c.length, 0);
+    let pausedOnce = false;
+    socket.on('data', (c: Buffer) => {
+      chunks.push(c);
+      if (!pausedOnce && count() >= 1024 * 1024) {
+        pausedOnce = true;
+        socket.pause();
+      }
+    });
     client.write(up);
+    await vi.waitFor(() => expect(socket.isPaused()).toBe(true), { timeout: 10_000 });
     await deliberateSleep(300, 'the client backs up against the paused server; nothing to wait for');
+    const whilePaused = count();
     expect(socket.readableLength).toBeLessThanOrEqual(socket.readableHighWaterMark + 2 * 64 * 1024);
+    await deliberateSleep(300, 'a negative check: no data events while paused');
+    expect(count()).toBe(whilePaused);
+    expect(socket.readableLength).toBeLessThanOrEqual(socket.readableHighWaterMark + 2 * 64 * 1024);
+    expect(whilePaused).toBeLessThan(size);
     expect(client.writableLength).toBeGreaterThan(0);
     socket.resume();
     await vi.waitFor(() => expect(chunks.reduce((n, c) => n + c.length, 0)).toBe(size), { timeout: 30_000 });
@@ -268,6 +283,7 @@ describe.runIf(pipe)('native pipe listener through NativePipeSocket', () => {
       const client = await connect(name);
       const socket = await next();
       client.destroy();
+      socket.resume();
       await closed(socket);
     }
     const baseWorkers = workers();
@@ -287,14 +303,17 @@ describe.runIf(pipe)('native pipe listener through NativePipeSocket', () => {
 
   it('a new listener takes the name while a client of the closed one is still open', async () => {
     const first = listen();
-    const old = await connect(first.name);
+    // A raw client handle that never reads, so nothing closes it when the
+    // server end goes away (a net client would see EOF and close itself).
+    const old = fs.openSync(first.name, 'r+');
+    cleanups.push(() => fs.closeSync(old));
     const oldSocket = await first.next();
     first.server.close();
     oldSocket.destroy();
     await closed(oldSocket);
-    // `old` keeps its handle open.
-    expect(old.destroyed).toBe(false);
-    const second = listen(first.name);
+    // The native close finishes off the JS thread: the name is free once the
+    // old server ends are closed (EADDRINUSE until then).
+    const second = await vi.waitFor(() => listen(first.name), { timeout: 10_000, interval: 20 });
     const client = await connect(second.name);
     const socket = await second.next();
     const got = readAll(client);
@@ -305,6 +324,14 @@ describe.runIf(pipe)('native pipe listener through NativePipeSocket', () => {
   it('destroy while a read is outstanding joins the workers', async () => {
     const workers = () => pipe?.nativePipeWorkerCount?.() ?? 0;
     const { name, next } = listen();
+    // Baseline with the listener's own worker running: after one connection.
+    {
+      const client = await connect(name);
+      const warm = await next();
+      client.destroy();
+      warm.resume();
+      await closed(warm);
+    }
     const base = workers();
     await connect(name);
     const socket = await next();
