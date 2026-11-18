@@ -24,6 +24,8 @@ let bound: boolean;
 let tasks: Task[];
 let live: { incarnationId: string | null; keyEpoch: string; agent: string | null } | null;
 let clock: number;
+/** Every tracker a test made: stopped after it, so none polls the next test's fixtures. */
+const made: LinkedTaskTurns[] = [];
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'linked-task-turns-'));
@@ -35,6 +37,7 @@ beforeEach(() => {
   clock = 1_000_000;
 });
 afterEach(() => {
+  for (const t of made.splice(0)) t.stop();
   vi.useRealTimers();
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -76,12 +79,14 @@ function inboundTask(over: { submit?: Proof; state?: Task['status']['state']; pt
 }
 
 function tracker(over: { tasks?: () => Task[] } = {}): LinkedTaskTurns {
-  return new LinkedTaskTurns({
+  const t = new LinkedTaskTurns({
     tasks: over.tasks ?? (() => tasks),
     transcriptPath: (sessionId) => (bound && sessionId === PTY ? transcript : null),
     session: (sessionId) => (sessionId === PTY ? live : null),
     now: () => clock,
   });
+  made.push(t);
+  return t;
 }
 
 describe('LinkedTaskTurns', () => {
@@ -160,7 +165,7 @@ describe('LinkedTaskTurns', () => {
     tasks = [inboundTask({ submit: proof({ transcriptOffsetAtBase: floor }) })];
     const t = tracker();
     t.tick();
-    expect(t.taskTurn(TASK)).not.toMatchObject({ opened: true, closed: false });
+    expect(t.taskTurn(TASK)).toBe('unknown');
   });
 
   it('another incarnation, another agent, or no session: not followed', () => {
@@ -171,7 +176,7 @@ describe('LinkedTaskTurns', () => {
       live = state;
       const t = tracker();
       t.tick();
-      expect(t.taskTurn(TASK)).not.toMatchObject({ opened: true, closed: false });
+      expect(t.taskTurn(TASK)).toBe('unknown');
     }
   });
 
