@@ -616,8 +616,11 @@ function brokerRule(flag: McpSessionsSummary['broker']['flag'], setting?: McpSes
       + 'agents then run their own MCP server, and the entries the app registers go back to the full bundle at that start.';
   }
   if (flag === 'unset') {
-    return 'On by default on this platform. Settings > Claude Code > Shared MCP process: Off turns it off '
-      + '(or WMUX_MCP_BROKER=0 for the app), from the next wmux start.';
+    // An app that sends no `setting` has no such Settings row.
+    return setting === undefined
+      ? 'On by default on this platform. WMUX_MCP_BROKER=0 for the app turns it off, from the next wmux start.'
+      : 'On by default on this platform. Settings > Claude Code > Shared MCP process: Off turns it off '
+        + '(or WMUX_MCP_BROKER=0 for the app), from the next wmux start.';
   }
   return undefined;
 }

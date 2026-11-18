@@ -943,7 +943,8 @@ registerPrivilegedSchemes();
 let pluginHostLoader: PluginHostLoader | null = null;
 let uiPluginManager: UiPluginManager | null = null;
 const mcpRegistrar = new McpRegistrar();
-// Shared MCP broker (Option A, WMUX_MCP_BROKER=1; default OFF). Started on
+// Shared MCP broker (Option A; on by default on macOS and Linux, see
+// shared/mcpBroker.ts). Started on
 // ready BEFORE mcpRegistrar.register so the broker pipe is (or is about to
 // be) listening when the first shim spawns — the shim retries connect with
 // backoff, so start order is a latency nicety, not a correctness gate.

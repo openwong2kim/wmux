@@ -242,10 +242,13 @@ describe('doctor broker rule', () => {
     expect(down?.hint).toContain('On because WMUX_MCP_BROKER=1');
   });
 
-  it('on with the flag unset (a platform default): says so, and that WMUX_MCP_BROKER=0 turns it off', async () => {
-    expect((await line({ enabled: true, flag: 'unset' }))?.hint).toBe(
+  it('on with the flag unset (a platform default): says so, and names the Settings switch only where the app has one', async () => {
+    expect((await line({ enabled: true, flag: 'unset', setting: 'default' }))?.hint).toBe(
       'On by default on this platform. Settings > Claude Code > Shared MCP process: Off turns it off '
         + '(or WMUX_MCP_BROKER=0 for the app), from the next wmux start.',
+    );
+    expect((await line({ enabled: true, flag: 'unset' }))?.hint).toBe(
+      'On by default on this platform. WMUX_MCP_BROKER=0 for the app turns it off, from the next wmux start.',
     );
   });
 

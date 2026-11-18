@@ -37,6 +37,8 @@ import { McpRegistrar } from '../McpRegistrar';
 import { stabilizeMcpBundle } from '../stabilizeBundle';
 import { nativeLauncherPath, type SelfTestVerdict } from '../../../shared/mcpLauncher';
 import { getMcpServerEntry, parseConfig } from '../../../shared/configIO';
+import { BROKER_DEFAULT_ON } from '../../../shared/mcpBroker';
+import { resetBrokerSettingForTests } from '../BrokerSupervisor';
 
 const stableDir = () => path.join(tmpHome, '.wmux', 'mcp');
 const nativeCopy = () => nativeLauncherPath(stableDir());
@@ -168,6 +170,20 @@ describe('McpRegistrar — the native launcher (broker flag on, packaged)', () =
     await new McpRegistrar({ nativeSelfTest: selfTest }).register('tok', { useShim: false });
     expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(resources, 'mcp-bundle', 'index.js')] });
     expect(selfTest).not.toHaveBeenCalled();
+  });
+
+  it('with the flag unset and Settings on Default, follows the platform: the native launcher on macOS and Linux, the bundle on Windows', async () => {
+    ship('good');
+    delete process.env.WMUX_MCP_BROKER;
+    resetBrokerSettingForTests({ setting: 'default' });
+    try {
+      await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok');
+      expect(claudeEntry()).toEqual(BROKER_DEFAULT_ON.includes(process.platform)
+        ? { command: nativeCopy(), args: ['mcp-shim'] }
+        : { command: 'node', args: [path.join(stableDir(), 'index.js')] });
+    } finally {
+      resetBrokerSettingForTests();
+    }
   });
 
   it('with the broker flag off, never installs or runs the launcher', async () => {

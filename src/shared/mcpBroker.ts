@@ -67,10 +67,17 @@ export interface BrokerSettingPayload {
   hostsSessions: boolean;
 }
 
-/** What WMUX_MCP_BROKER asks for: '1' → on, '0' → off, anything else → unset. */
+/**
+ * Values read as off. Unset means on for macOS and Linux, so a value someone
+ * set to keep the broker off ('false', 'off', 'no', any case or padding) must
+ * not fall through to that default.
+ */
+const OFF_VALUES: ReadonlySet<string> = new Set(['0', 'false', 'off', 'no']);
+
+/** What WMUX_MCP_BROKER asks for: '1' → on, '0' (or false/off/no) → off, anything else → unset. */
 export function brokerFlag(value: string | undefined): BrokerFlag {
   if (value === '1') return 'on';
-  if (value === '0') return 'off';
+  if (value !== undefined && OFF_VALUES.has(value.trim().toLowerCase())) return 'off';
   return 'unset';
 }
 
