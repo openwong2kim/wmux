@@ -12,6 +12,9 @@ import { loadNativeTerminalCore, type NativeTerminalCore } from '../shared/nativ
 import { NativePipeSocket, type NativePipeConn } from './nativePipeSocket';
 
 export const NATIVE_PIPE_CAPABILITY = 'pipe-listener-v1';
+/** The most accepted connections a listener takes at a time (the native
+ *  limit of 254 pipe instances, less the one kept listening). */
+export const NATIVE_PIPE_MAX_INSTANCES = 253;
 
 export interface NativePipeListener {
   /** The next accepted connection, or null. */
@@ -50,10 +53,13 @@ export interface NativePipeServer {
 }
 
 export interface ListenNativePipeOptions {
-  /** Accepted plus pending instances at a time. */
+  /** Accepted connections at a time, an integer in 1..=NATIVE_PIPE_MAX_INSTANCES.
+   *  The native side keeps one more instance listening on top of these. */
   maxInstances: number;
   onConnection(socket: NativePipeSocket): void;
-  /** Called once when accepting stops on its own. */
+  /** A listener failure: once when accepting stops on its own (the native
+   *  failure() reason), and whenever reading the listener throws (the reason
+   *  names the call). Logged to stderr when absent, or when it throws. */
   onFailure?(reason: string): void;
   /** onConnection threw: that socket was destroyed and the others are served
    *  on. Logged to stderr when absent. */
@@ -65,6 +71,10 @@ export interface ListenNativePipeOptions {
 /** Listen on `name` (a `\\.\pipe\...` path). Throws when the native module is
  *  unavailable, or with code 'EADDRINUSE' when the name exists. */
 export function listenNativePipe(name: string, options: ListenNativePipeOptions): NativePipeServer {
+  const max = options.maxInstances;
+  if (!Number.isInteger(max) || max < 1 || max > NATIVE_PIPE_MAX_INSTANCES) {
+    throw new RangeError(`maxInstances must be an integer from 1 to ${NATIVE_PIPE_MAX_INSTANCES} (accepted connections at a time), got ${String(max)}`);
+  }
   const module = options.module ?? loadNativePipe();
   if (!module) throw new Error('The native pipe listener is Windows only');
   const sockets = new Set<NativePipeSocket>();
@@ -73,7 +83,20 @@ export function listenNativePipe(name: string, options: ListenNativePipeOptions)
 
   // The native callback runs from the event loop, never during the
   // constructor, so `listener` is set by the time it does.
-  const listener: NativePipeListener = new module.NativePipeListener(name, options.maxInstances, () => wake());
+  const listener: NativePipeListener = new module.NativePipeListener(name, max, () => wake());
+
+  const listenerFailure = (reason: string): void => {
+    if (options.onFailure) {
+      try {
+        options.onFailure(reason);
+        return;
+      } catch (error) {
+        console.error('[native-pipe] onFailure threw:', error);
+      }
+    }
+    console.error(`[native-pipe] listener failure: ${reason}`);
+  };
+  const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
   const report = (error: unknown): void => {
     try {
@@ -111,15 +134,29 @@ export function listenNativePipe(name: string, options: ListenNativePipeOptions)
   // would leave the rest undrained, and no other wake would come for them.
   function wake(): void {
     if (!closed) {
-      try {
-        for (let conn = listener.takeAccepted(); conn !== null; conn = listener.takeAccepted()) accept(conn);
-        const failure = listener.failure();
-        if (failure && !failureReported) {
-          failureReported = true;
-          options.onFailure?.(failure);
+      // Each step on its own: a throw in one never skips the others. A
+      // takeAccepted() that throws ends this wake's draining (calling it
+      // again could throw forever); the next wake drains the rest.
+      for (;;) {
+        let conn: NativePipeConn | null;
+        try {
+          conn = listener.takeAccepted();
+        } catch (error) {
+          listenerFailure(`takeAccepted() threw: ${message(error)}`);
+          break;
         }
+        if (conn === null) break;
+        accept(conn);
+      }
+      let failure: string | null = null;
+      try {
+        failure = listener.failure();
       } catch (error) {
-        report(error);
+        listenerFailure(`failure() threw: ${message(error)}`);
+      }
+      if (failure && !failureReported) {
+        failureReported = true;
+        listenerFailure(failure);
       }
     }
     // pump() catches its own errors (they destroy that socket).
