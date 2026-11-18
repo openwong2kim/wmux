@@ -3,6 +3,8 @@ import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import { listenNativePipe, loadNativePipe, type NativePipeModule, type NativePipeServer } from '../nativePipe';
 import type { NativePipeSocket } from '../nativePipeSocket';
 import { deliberateSleep } from '../../test-utils/waitFor';
@@ -345,5 +347,64 @@ describe.runIf(pipe)('native pipe listener through NativePipeSocket', () => {
     socket.destroy();
     await closed(socket);
     await vi.waitFor(() => expect(workers()).toBeLessThanOrEqual(base), { timeout: 10_000 });
+  });
+});
+
+// pipe-listener-v2: the client's own token, read after its first bytes, and
+// the owner of a pipe by name.
+describe.runIf(pipe)('native pipe listener: token facts and pipe owners', () => {
+  it('reads this user and at least Medium integrity from a client of this process', async () => {
+    const { name, next } = listen();
+    const client = await connect(name);
+    const socket = await next();
+    client.write('hello\n');
+    await firstLine(socket);
+    const facts = await socket.tokenFacts(5000);
+    expect(facts).toMatchObject({ ok: true, sameUser: true });
+    expect(facts.ok && facts.integrityRid).toBeGreaterThanOrEqual(0x2000);
+    expect(socket.peer.pid).toBe(process.pid);
+  });
+
+  it('before any read the answer is no-read-yet, and a read after it works', async () => {
+    const { name, next } = listen();
+    const client = await connect(name);
+    const socket = await next();
+    expect(await socket.tokenFacts(5000)).toEqual({ ok: false, reason: 'no-read-yet' });
+    client.write('later\n');
+    const { line } = await firstLine(socket);
+    expect(line).toBe('later');
+    expect(await socket.tokenFacts(5000)).toMatchObject({ ok: true, sameUser: true });
+  });
+
+  it('a client that leaves while its token is read: the listener and this process carry on', async () => {
+    const { name, next } = listen();
+    for (let i = 0; i < 20; i++) {
+      const client = await connect(name);
+      const socket = await next();
+      client.write('x\n');
+      await firstLine(socket);
+      const asked = socket.tokenFacts(5000);
+      client.destroy();
+      const facts = await asked;
+      // Either read in time or not; never a hang, never another user.
+      if (facts.ok) expect(facts.sameUser).toBe(true);
+      socket.destroy();
+    }
+    // This process still runs as itself: a file it creates is its own to read.
+    const file = path.join(os.tmpdir(), `wmux-native-pipe-facts-${process.pid}.txt`);
+    fs.writeFileSync(file, 'still me');
+    expect(fs.readFileSync(file, 'utf8')).toBe('still me');
+    fs.rmSync(file, { force: true });
+    const client = await connect(name);
+    const socket = await next();
+    client.write('after\n');
+    await firstLine(socket);
+    expect(await socket.tokenFacts(5000)).toMatchObject({ ok: true, sameUser: true });
+  });
+
+  it('owner verdicts: this listener is ours, a missing name is none', () => {
+    const { name } = listen();
+    expect(pipe!.nativePipeOwnedByUs(name)).toBe('ours');
+    expect(pipe!.nativePipeOwnedByUs(`${name}-missing`)).toBe('none');
   });
 });

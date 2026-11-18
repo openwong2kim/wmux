@@ -12,6 +12,10 @@
 #       account is refused a read-only open with access denied. Read-only,
 #       because a default access list lets every account read: only the
 #       owner-only list refuses it.
+#   (c) Integrity: the broker started at Medium integrity from this elevated
+#       runner. An elevated client (this runner, High) is hosted and a tool
+#       call answers, both from a plain client and through wmux-native
+#       mcp-shim; a Low integrity client is refused when it opens the pipe.
 #
 # -SameUserOnly runs only the controls, with no second account: the form a
 # developer machine may run. Without it the script creates a temporary local
@@ -46,6 +50,13 @@ function Wait-File([string] $path, [int] $seconds, [System.Diagnostics.Process] 
 }
 
 function Read-Json([string] $path) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
+
+# A file another process still has open for writing (the broker's log).
+function Read-Shared([string] $path) {
+  $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+  $stream = New-Object System.IO.FileStream($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+  try { (New-Object System.IO.StreamReader($stream)).ReadToEnd() } finally { $stream.Dispose() }
+}
 
 function New-Password {
   $bytes = New-Object byte[] 24
@@ -90,6 +101,44 @@ function Invoke-Shim([string] $shimHome, [string] $suffix) {
   [pscustomobject]@{ code = $p.ExitCode; stderr = $err.Result; stdout = $out.Result }
 }
 
+# wmux-native mcp-shim for one MCP session: `$lines` go to its stdin, its
+# stdout is read until the response with id `$waitId` (or 30 s), then stdin
+# closes. Its stdout and stderr.
+function Invoke-ShimSession([string] $shimHome, [string] $suffix, [string[]] $lines, [int] $waitId) {
+  $info = New-Object System.Diagnostics.ProcessStartInfo
+  $info.FileName = $script:shimCopy
+  $info.Arguments = 'mcp-shim'
+  $info.UseShellExecute = $false
+  $info.RedirectStandardInput = $true
+  $info.RedirectStandardOutput = $true
+  $info.RedirectStandardError = $true
+  $info.CreateNoWindow = $true
+  $info.EnvironmentVariables['USERPROFILE'] = $shimHome
+  $info.EnvironmentVariables['HOME'] = $shimHome
+  $info.EnvironmentVariables['WMUX_DATA_SUFFIX'] = $suffix
+  $info.EnvironmentVariables.Remove('WMUX_AUTH_TOKEN')
+  $p = [System.Diagnostics.Process]::Start($info)
+  $err = $p.StandardError.ReadToEndAsync()
+  $p.StandardInput.NewLine = "`n"
+  foreach ($line in $lines) { $p.StandardInput.WriteLine($line) }
+  $p.StandardInput.Flush()
+  $stdout = New-Object System.Text.StringBuilder
+  $deadline = (Get-Date).AddSeconds(30)
+  $read = $null
+  while ((Get-Date) -lt $deadline) {
+    if (-not $read) { $read = $p.StandardOutput.ReadLineAsync() }
+    if (-not $read.Wait(500)) { continue }
+    $got = $read.Result
+    $read = $null
+    if ($null -eq $got) { break }
+    [void]$stdout.AppendLine($got)
+    if ($got -match ('"id":' + $waitId + '[,}]')) { break }
+  }
+  $p.StandardInput.Close()
+  if (-not $p.WaitForExit(30000)) { $p.Kill(); $p.WaitForExit() }
+  [pscustomobject]@{ code = $p.ExitCode; stderr = $err.Result; stdout = $stdout.ToString() }
+}
+
 # A shim home holding the auth token for $suffix (so the shim dials), and no
 # broker-off marker.
 function New-ShimHome([string] $suffix) {
@@ -119,6 +168,7 @@ Copy-Item -LiteralPath $ShimExe -Destination $script:shimCopy -Force
 $userName = $null
 $credential = $null
 $userSid = $null
+$brokerPid = $null
 try {
   # ----- (a) control: a pipe this account owns receives the handshake --------
   $suffix = New-Suffix
@@ -134,6 +184,7 @@ try {
   if ($r.connected -and $r.bytes -gt 0) { Pass "control: the shim wrote $($r.bytes) bytes to a pipe this account owns" }
   else { Fail "control: the shim did not reach a pipe this account owns ($(Get-Content -LiteralPath $result -Raw))" }
   if ($shim.stderr -match 'broker not ours') { Fail 'control: the shim called a pipe this account owns not ours' }
+  if ($r.owner -ne $runnerSid) { Fail "control: the pipe's owner is $($r.owner), not this account" }
 
   # ----- (b) control: this account opens the native listener's pipe ---------
   $nativePipe = "\\.\pipe\wmux-ci-native-listener-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
@@ -199,6 +250,92 @@ try {
     if ($u.account -ne $userSid) { Fail "the client ran as $($u.account), not as the temporary account" }
     if ($u.result -eq 'access-denied') { Pass 'the other account is refused a read-only open of the native listener''s pipe (access denied)' }
     else { Fail "the other account got '$($u.result)' opening the native listener's pipe: $($u.detail)" }
+
+    # ----- (c) integrity: a Medium broker, an elevated and a Low client -----
+    . (Join-Path $here 'integrity.ps1')
+    $ownRid = [IntegrityLaunch]::ProcessIntegrity($PID)
+    if ($ownRid -lt 0x3000) {
+      Fail ('the runner is not elevated (integrity 0x{0:x}); the integrity checks need it' -f $ownRid)
+    } else {
+      $iSuffix = New-Suffix
+      $iHome = Join-Path $WorkDir 'ihome'
+      New-Item -ItemType Directory -Force -Path $iHome | Out-Null
+      $iToken = 'ci-integrity-' + [guid]::NewGuid().ToString('N')
+      [System.IO.File]::WriteAllText((Join-Path $iHome ".wmux$iSuffix-auth-token"), $iToken)
+      $iPipe = "\\.\pipe\wmux-mcpb$iSuffix-$runnerName"
+      $brokerJs = Join-Path $WorkDir 'broker.cjs'
+      & $node (Join-Path $here 'build-broker.mjs') $brokerJs
+      if ($LASTEXITCODE -ne 0) { throw "build-broker.mjs exited $LASTEXITCODE" }
+      $brokerLog = Join-Path $WorkDir 'broker.log'
+
+      # The broker inherits this environment: point it at the throwaway home
+      # and the built core for the launch only.
+      $saved = @{}
+      foreach ($k in 'USERPROFILE', 'HOME', 'WMUX_DATA_SUFFIX', 'WMUX_TERMINAL_CORE_MODULE', 'WMUX_AUTH_TOKEN') {
+        $saved[$k] = [Environment]::GetEnvironmentVariable($k)
+      }
+      try {
+        $env:USERPROFILE = $iHome
+        $env:HOME = $iHome
+        $env:WMUX_DATA_SUFFIX = $iSuffix
+        $env:WMUX_TERMINAL_CORE_MODULE = $CoreModule
+        Remove-Item Env:\WMUX_AUTH_TOKEN -ErrorAction SilentlyContinue
+        $cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
+        $brokerLine = '"' + $cmdExe + '" /d /s /c ""' + $node + '" "' + $brokerJs + '" 2> "' + $brokerLog + '""'
+        $brokerPid = [IntegrityLaunch]::Start($brokerLine, $WorkDir, 'S-1-16-8192')
+      } finally {
+        foreach ($k in @($saved.Keys)) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
+      }
+      $brokerRid = [IntegrityLaunch]::ProcessIntegrity($brokerPid)
+      if ($brokerRid -ne 0x2000) { Fail ('the broker runs at integrity 0x{0:x}, not Medium' -f $brokerRid) }
+      $deadline = (Get-Date).AddSeconds(60)
+      $log = ''
+      while ($log -notmatch 'peer-pid: available') {
+        if ((Get-Date) -gt $deadline) { throw "the Medium broker did not get ready: $log" }
+        Start-Sleep -Milliseconds 200
+        if (Test-Path -LiteralPath $brokerLog) { $log = (Read-Shared $brokerLog) }
+      }
+      Pass 'the broker runs at Medium integrity and its self-check passed'
+
+      # An elevated plain client: hosted, initialize answered, a tool answers.
+      $eResult = Join-Path $WorkDir 'c-elevated.json'
+      & $node (Join-Path $here 'broker-client.mjs') $iPipe $iToken $eResult
+      $e = Read-Json $eResult
+      if ($e.ack.ok -eq $true -and $e.initialized -and $e.tool) { Pass 'an elevated client of the Medium broker is hosted and a tool answers' }
+      else { Fail "elevated client: $(Get-Content -LiteralPath $eResult -Raw); broker log: $((Read-Shared $brokerLog))" }
+
+      # The same through wmux-native mcp-shim, as an elevated agent pane runs it.
+      $session = Invoke-ShimSession $iHome $iSuffix @(
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"broker-ci","version":"0"}}}',
+        '{"jsonrpc":"2.0","method":"notifications/initialized"}',
+        '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"repl_sessions","arguments":{}}}'
+      ) 2
+      Write-Host "elevated shim (exit $($session.code)) stderr: $($session.stderr.Trim())"
+      # The tool call's response, parsed (its keys come in no fixed order).
+      $answer = $session.stdout -split "`n" | Where-Object { $_.Trim() } | ForEach-Object {
+        try { $_ | ConvertFrom-Json } catch { $null }
+      } | Where-Object { $_ -and $_.id -eq 2 } | Select-Object -First 1
+      if ($answer -and $answer.result -and -not $answer.result.isError -and $session.stderr -notmatch 'broker not ours|running the full') {
+        Pass 'an elevated wmux-native mcp-shim is hosted by the Medium broker and a tool answers'
+      } else {
+        Fail "elevated shim: stdout $($session.stdout.Trim()); stderr $($session.stderr.Trim())"
+      }
+
+      # A Low integrity client: refused at open. Its result goes to a folder
+      # labelled Low, the only kind it may write to.
+      $lowDir = Join-Path $WorkDir 'low'
+      New-Item -ItemType Directory -Force -Path $lowDir | Out-Null
+      & icacls.exe $lowDir /setintegritylevel '(OI)(CI)low' | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "icacls exited $LASTEXITCODE" }
+      $lowResult = Join-Path $lowDir 'c-low.json'
+      $lowLine = '"' + $node + '" "' + (Join-Path $here 'broker-client.mjs') + '" "' + $iPipe + '" "-" "' + $lowResult + '" --open-only'
+      [void][IntegrityLaunch]::Start($lowLine, $lowDir, 'S-1-16-4096')
+      Wait-File $lowResult 60 $null
+      $low = Read-Json $lowResult
+      if (-not $low.connected -and ($low.error -eq 'EPERM' -or $low.error -eq 'EACCES')) { Pass "a Low integrity client is refused at open ($($low.error))" }
+      else { Fail "a Low integrity client: $(Get-Content -LiteralPath $lowResult -Raw)" }
+      if ((Read-Shared $brokerLog) -match 'peer refused') { Write-Host "broker log: $((Read-Shared $brokerLog))" }
+    }
   }
 
   New-Item -ItemType File -Force -Path $lStop | Out-Null
@@ -210,6 +347,8 @@ try {
   else { Pass 'the native listener accepted only the control, read as this account' }
   if ($l.failure) { Fail "the native listener stopped accepting: $($l.failure)" }
 } finally {
+  # The Medium broker and the shell that started it, by pid.
+  if ($brokerPid) { & taskkill.exe /PID $brokerPid /T /F | Out-Null }
   foreach ($p in $started) {
     try { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } } catch { Write-Host "could not stop $($p.Id): $($_.Exception.Message)" }
   }

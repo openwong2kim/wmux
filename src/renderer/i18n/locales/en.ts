@@ -1883,6 +1883,7 @@ export const en = {
   'settings.mcpBrokerUnavailable': "The current choice could not be read from wmux.",
   'settings.mcpBrokerIdleHere': "On Windows the shared process does not host agents yet: each agent keeps its own MCP server, so On only adds an idle process.",
   'settings.mcpBrokerPeerUnavailable': "wmux could not confirm which process connects to the shared process on this system, so it is stopped until wmux restarts. Each agent uses its own MCP server.",
+  'settings.mcpBrokerPathOccupied': "Another program holds the shared process's connection name on this system, so the shared process is stopped until wmux restarts. Each agent uses its own MCP server.",
   'settings.mcpRegistered': 'registered',
   'settings.mcpNotRegistered': 'not registered',
   'settings.mcpExperimentalTitle': 'Integration not yet verified end-to-end',

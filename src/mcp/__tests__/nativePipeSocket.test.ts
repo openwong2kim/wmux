@@ -591,6 +591,7 @@ function fakeModule(): { module: NativePipeModule; listeners: FakeListener[]; na
       listeners.push(l);
       return l;
     } as unknown as NativePipeModule['NativePipeListener'],
+    nativePipeOwnedByUs: () => 'none',
   };
   return { module, listeners, names };
 }
