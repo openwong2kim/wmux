@@ -88,12 +88,14 @@ describe('handleSettings', () => {
       expect(rpc).toHaveBeenLastCalledWith('app.action', { id: 'settings.get', args: { key: 'theme' } });
     });
 
-    it('on Windows: stops instead of sending as the command line', async () => {
+    it('on Windows: stops instead of sending as the command line, as JSON too', async () => {
       setPlatform('win32');
       answer({ actions: [] });
       await expect(handleSettings(['set', 'theme', 'paper'], false)).rejects.toThrow(/exit 1/);
       expect(rpc).not.toHaveBeenCalledWith('app.action', expect.anything());
       expect(errors.join('\n')).toMatch(/could not confirm which one/);
+      await expect(handleSettings(['get'], true)).rejects.toThrow(/exit 1/);
+      expect(JSON.parse(out.at(-1) ?? '{}')).toMatchObject({ ok: false, code: 'no_identity' });
     });
 
     it('on Windows with the app closed: says the app is not running, not to run it again', async () => {

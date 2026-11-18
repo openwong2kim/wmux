@@ -29,6 +29,8 @@ import {
   type AppActionResult,
 } from '../../../shared/appActions';
 import { sendToRenderer } from './_bridge';
+import { readPidMapFiles } from '../../pty/pidMap';
+import { osParentPid } from '../../../mcp/brokerPeer';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -42,31 +44,31 @@ export interface AppActionRpcDeps {
   /**
    * Whether the process on the other end of a claimless call runs inside a
    * wmux pane: true, false, or null when that cannot be told (no peer pid,
-   * as on Windows). Defaults to main's own identity walk from the peer pid.
+   * as on Windows). Defaults to walking the peer pid's parents to a pane's shell.
    */
   peerInPane?: (ctx: RpcContext) => Promise<boolean | null>;
 }
 
+/** How many parents the walk reads before it gives up; a pane's shell sits a few levels up. */
+const PEER_WALK_HOPS = 32;
+
 /**
- * main's own walk from the pid the OS reports for the connection, the same
- * one `a2a.resolve.identity` runs for a pane's CLI: a pane found means the
- * caller runs in one, whatever its call left out.
+ * Whether the peer pid descends from a pane's shell (the pid map main writes
+ * for every pane), read up the OS parent chain. Null when it cannot be told:
+ * no peer pid (Windows), or a parent that could not be read.
  */
-function walkPeer(router: RpcRouter): (ctx: RpcContext) => Promise<boolean | null> {
-  return async (ctx) => {
-    if (typeof ctx.peerPid !== 'number') return null;
-    try {
-      const res = await router.dispatch(
-        { id: `app-action-peer-${ctx.peerPid}`, method: 'a2a.resolve.identity', params: { callerPid: ctx.peerPid } },
-        { externalWire: true, peerPid: ctx.peerPid, ...(ctx.peerStartedAt ? { peerStartedAt: ctx.peerStartedAt } : {}) },
-      );
-      if (!res.ok) return null;
-      const resolved = (res.result as { resolved?: { workspaceId?: unknown } | null } | null)?.resolved;
-      return typeof resolved?.workspaceId === 'string' && resolved.workspaceId.length > 0;
-    } catch {
-      return null;
-    }
-  };
+async function walkPeerToPane(ctx: RpcContext): Promise<boolean | null> {
+  if (typeof ctx.peerPid !== 'number') return null;
+  const shells = new Set(readPidMapFiles().map((f) => Number(f.pid)).filter((n) => Number.isInteger(n) && n > 1));
+  if (shells.size === 0) return false;
+  let pid: number | null = ctx.peerPid;
+  for (let hop = 0; hop < PEER_WALK_HOPS; hop++) {
+    if (pid === null) return null;
+    if (pid <= 1) return false;
+    if (shells.has(pid)) return true;
+    pid = await osParentPid(pid);
+  }
+  return null;
 }
 
 type ClaimedCaller = { ok: true; workspaceId: string; ptyId: string } | { ok: false; error: string };
@@ -111,7 +113,7 @@ function commandLineCaller(ctx: RpcContext | undefined): boolean {
 const isSettingsAction = (id: string): boolean => id.startsWith('settings.');
 
 export function registerAppActionRpc(router: RpcRouter, getWindow: GetWindow, deps: AppActionRpcDeps = {}): void {
-  const peerInPane = deps.peerInPane ?? walkPeer(router);
+  const peerInPane = deps.peerInPane ?? walkPeerToPane;
   router.register(APP_ACTION_RPC.list, async (_params, ctx) => {
     if (ctx?.origin === 'remote') {
       return appActionRefusal('remote_refused', `${APP_ACTION_RPC.list}: not available to another computer`);

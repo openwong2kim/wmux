@@ -10,8 +10,14 @@ import { SHARED_SURFACE, botSurfaceRefusal } from '../../../../shared/botSurface
 import { COMMANDER_RPC_METHODS } from '../../../../shared/commanderSurface';
 import { WORKER_FENCE_REFUSED_RPC } from '../../../../shared/botWorkerGuard';
 
-const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
+const { sendToRendererMock, pidMapFiles, parents } = vi.hoisted(() => ({
+  sendToRendererMock: vi.fn(),
+  pidMapFiles: vi.fn(() => [] as Array<{ pid: string; ptyId: string }>),
+  parents: new Map<number, number | null>(),
+}));
 vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
+vi.mock('../../../pty/pidMap', () => ({ readPidMapFiles: pidMapFiles }));
+vi.mock('../../../../mcp/brokerPeer', () => ({ osParentPid: async (pid: number) => parents.get(pid) ?? null }));
 
 import { registerAppActionRpc } from '../appAction.rpc';
 
@@ -237,6 +243,22 @@ describe('app.action settings from a terminal outside wmux', () => {
     setup({ peerInPane });
     expect(await run({ id: 'settings.get' }, claimed())).toMatchObject({ ok: true });
     expect(peerInPane).not.toHaveBeenCalled();
+  });
+
+  it('by default walks the peer\'s parents to a pane\'s shell in the pid map', async () => {
+    pidMapFiles.mockReturnValue([{ pid: '400', ptyId: 'pty-a' }]);
+    parents.clear();
+    parents.set(600, 500).set(500, 400);
+    const set = { id: 'settings.set', args: { key: 'theme', value: 'paper' } };
+    // In a pane: 600 → 500 → 400, the pane's shell.
+    expect(await run(set, { ...outside, peerPid: 600 })).toMatchObject({ ok: false, code: 'no_identity' });
+    // Outside: 900 → 1.
+    parents.set(900, 1);
+    expect(await run(set, { ...outside, peerPid: 900 })).toMatchObject({ ok: true });
+    // A parent that cannot be read, or no peer pid: cannot be told, goes on.
+    expect(await run(set, { ...outside, peerPid: 700 })).toMatchObject({ ok: true });
+    expect(await run(set, outside)).toMatchObject({ ok: true });
+    pidMapFiles.mockReturnValue([]);
   });
 
   it('names the Settings section for a human-only key, for every caller', async () => {

@@ -57,20 +57,27 @@ async function send(params: Record<string, unknown>): Promise<RpcResponse> {
   }
 }
 
+/** A refusal, as JSON with --json and as an error line otherwise. */
+function refuse(refusal: { code?: string; error: string }, jsonMode: boolean): never {
+  if (jsonMode) {
+    console.log(JSON.stringify({ ok: false, ...refusal }, null, 2));
+    process.exit(1);
+  }
+  fail(refusal.code ? `${refusal.code}: ${refusal.error}` : refusal.error);
+}
+
 const show = (v: unknown): string => (typeof v === 'boolean' ? (v ? 'on' : 'off') : String(v));
 
 export async function handleSettings(args: string[], jsonMode: boolean): Promise<void> {
   const cmd = parseSettingsArgs(args);
-  const stop = await bindPaneClaim();
-  if (stop) {
-    // No claim because main never answered is the app not running, not the claim.
-    try {
-      await sendRequest('app.action.list', {});
-    } catch (err) {
-      if (/not running/i.test(err instanceof Error ? err.message : String(err))) fail(NOT_RUNNING);
-    }
-    fail(`settings: ${stop}`);
+  let stop: string | null;
+  try {
+    stop = await bindPaneClaim();
+  } catch (err) {
+    if (/not running/i.test(err instanceof Error ? err.message : String(err))) fail(NOT_RUNNING);
+    throw err;
   }
+  if (stop) refuse({ code: 'no_identity', error: `settings: ${stop}` }, jsonMode);
 
   const params =
     cmd.verb === 'list' ? { id: 'settings.list', args: {} }
@@ -80,11 +87,7 @@ export async function handleSettings(args: string[], jsonMode: boolean): Promise
   const refusal = refusalOf(response);
   if (refusal) {
     if (refusal.code === 'no_window') refusal.error = `the wmux window is not open: settings change through the running app (${refusal.error})`;
-    if (jsonMode) {
-      console.log(JSON.stringify({ ok: false, ...refusal }, null, 2));
-      process.exit(1);
-    }
-    fail(refusal.code ? `${refusal.code}: ${refusal.error}` : refusal.error);
+    refuse(refusal, jsonMode);
   }
   const result = (response as Extract<RpcResponse, { ok: true }>).result as Record<string, unknown>;
   if (jsonMode) {

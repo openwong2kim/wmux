@@ -129,7 +129,13 @@ export async function handleAction(args: string[], jsonMode: boolean): Promise<v
   // its claim; every request after this carries it. Without one, main refuses
   // with no_identity (outside a wmux pane, or a wmux app too old to mint one).
   const stop = await bindPaneClaim();
-  if (stop) fail(`action: ${stop}`);
+  if (stop) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ ok: false, code: 'no_identity', error: `action: ${stop}` }, null, 2));
+      process.exit(1);
+    }
+    fail(`no_identity: action: ${stop}`);
+  }
 
   const params: Record<string, unknown> = { id: parsed.id, args: parsed.args };
   if (parsed.target !== undefined) params.target = parsed.target;

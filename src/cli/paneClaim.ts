@@ -9,7 +9,9 @@ import { resolveSelfContext, getParentPidDefault } from './identity';
  * On macOS and Linux main checks that itself, from the pid the OS reports for
  * the connection. On Windows it cannot, so the pane's environment decides
  * here: with it set and no claim, this stops rather than send without one.
- * Returns why it stopped, or null to go on.
+ * Returns why it stopped, or null to go on. When no claim came back because
+ * the app is not running, the request error is thrown instead, as for any
+ * other command.
  */
 export async function bindPaneClaim(): Promise<string | null> {
   const self = await resolveSelfContext({
@@ -25,5 +27,7 @@ export async function bindPaneClaim(): Promise<string | null> {
   }
   const inPaneEnv = Boolean(process.env.WMUX_WORKSPACE_ID || process.env.WMUX_PTY_ID);
   if (!inPaneEnv || process.platform !== 'win32') return null;
+  // No claim because main never answered is the app not running: this throws it.
+  await sendRequest('app.action.list', {});
   return `this runs in a wmux pane, but wmux could not confirm which one${self.claimRefused ? ` (${self.claimRefused})` : ''}; run it again`;
 }
