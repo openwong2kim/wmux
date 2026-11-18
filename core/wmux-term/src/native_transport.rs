@@ -63,9 +63,12 @@ const HANGUP_GRACE: Duration = Duration::from_secs(5);
 #[cfg(unix)]
 const EXIT_OUTPUT_GRACE: Duration = Duration::from_millis(200);
 /// How often the waiter looks again at a root that is stopped, or whose exit
-/// it cannot watch: it holds no lock meanwhile.
+/// it cannot watch: it holds no lock meanwhile. A root that stays stopped is
+/// looked at less and less often, down to EXIT_POLL_MAX.
 #[cfg(unix)]
 const EXIT_POLL: Duration = Duration::from_millis(25);
+#[cfg(unix)]
+const EXIT_POLL_MAX: Duration = Duration::from_millis(250);
 static ACTIVE_WORKERS: AtomicU32 = AtomicU32::new(0);
 struct Worker;
 impl Worker {
@@ -857,6 +860,7 @@ fn signal_number(signal: Option<&str>) -> Option<u32> {
 #[cfg(unix)]
 fn observe_exit(pid: i32) -> std::io::Result<()> {
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let mut pause = EXIT_POLL;
     loop {
         if unsafe {
             libc::waitid(
@@ -871,7 +875,8 @@ fn observe_exit(pid: i32) -> std::io::Result<()> {
                 // Asked again a moment later: while the root stays stopped, the
                 // same report comes back at once.
                 libc::CLD_STOPPED | libc::CLD_CONTINUED | libc::CLD_TRAPPED => {
-                    std::thread::sleep(EXIT_POLL);
+                    std::thread::sleep(pause);
+                    pause = (pause * 2).min(EXIT_POLL_MAX);
                     continue;
                 }
                 // Any other report is an exit; the waiter's try_wait confirms it.
