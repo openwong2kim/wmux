@@ -20,7 +20,7 @@ import { chromium, type Browser, type Page } from 'playwright-core';
 import WebSocket, { WebSocketServer } from 'ws';
 import { CdpPipeMux, type CallerIdentity } from '../CdpPipeMux';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay';
-import { ChromeLauncher, QUIT_GRACE_MS, setPipeRelayForTests } from '../ChromeLauncher';
+import { ChromeLauncher, PIPE_KILL_GRACE_MS, PIPE_KILL_WAIT_MS, QUIT_GRACE_MS, setPipeRelayForTests } from '../ChromeLauncher';
 import { DownloadRelayPolicy, removeDownloadRelayDir } from '../DownloadRelayPolicy';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -35,11 +35,10 @@ const CHROME = chromeForRuntimeSuite();
 /**
  * How long a Chrome whose pipe closed may take to exit before the product
  * would no longer wait for it: the launcher gives a Chrome asked to quit
- * QUIT_GRACE_MS, then SIGTERM, SIGKILL 2 s later (PIPE_KILL_GRACE_MS), and
- * waits 3 s more for the exit (PIPE_KILL_WAIT_MS). Those two are private to
- * ChromeLauncher.ts; their values are mirrored here.
+ * QUIT_GRACE_MS, then SIGTERM, SIGKILL PIPE_KILL_GRACE_MS later, and waits
+ * PIPE_KILL_WAIT_MS more for the exit.
  */
-const PIPE_EXIT_BOUND_MS = QUIT_GRACE_MS + 2_000 + 3_000;
+const PIPE_EXIT_BOUND_MS = QUIT_GRACE_MS + PIPE_KILL_GRACE_MS + PIPE_KILL_WAIT_MS;
 
 interface Started { child: ChildProcess; profile: string; mux: CdpPipeMux; route: RelayRoute; exited: Promise<void> }
 const started: Started[] = [];

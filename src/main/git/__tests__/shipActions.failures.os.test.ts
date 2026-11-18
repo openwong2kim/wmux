@@ -12,7 +12,7 @@ import path from 'node:path';
 vi.mock('electron', () => ({ ipcMain: { handle: vi.fn(), removeHandler: vi.fn() } }));
 
 import { ipcMain } from 'electron';
-import { ShipActions, classifyShipFailure, shipActions, signerAskEnv, spawnRun } from '../shipActions';
+import { SHIP_GIT_TIMEOUT_MS, ShipActions, classifyShipFailure, shipActions, signerAskEnv, spawnRun } from '../shipActions';
 import { setSecretGuardEnabled } from '../secretGuardSetting';
 import { registerGitShipHandlers } from '../../ipc/handlers/gitShip.handler';
 import { IPC } from '../../../shared/constants';
@@ -517,9 +517,9 @@ describe('against real git', () => {
     // timeout (or a hang) instead, and this names which one it was.
     expect(res, `after ${tookMs} ms`).toMatchObject({ ok: false, reason: 'signing' });
     // "At once" is before the product would have stopped it: ShipActions' git
-    // runs under a 30 s timeout (its private default), so a signer waiting on
-    // the prompt would take at least that long.
-    expect(tookMs, JSON.stringify(res)).toBeLessThan(30_000);
+    // runs under SHIP_GIT_TIMEOUT_MS, so a signer waiting on the prompt would
+    // take at least that long.
+    expect(tookMs, JSON.stringify(res)).toBeLessThan(SHIP_GIT_TIMEOUT_MS);
   }, 90_000);
 
   it('a folder moved away → missing-folder, for the status and for a commit', async () => {
