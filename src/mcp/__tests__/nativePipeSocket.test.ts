@@ -113,11 +113,10 @@ class FakeConn implements NativePipeConn {
 
   takeWritten(): number[] { const d = this.done; this.done = []; return d; }
 
+  /** A write failed: error() is set; the failed ids are not in takeWritten(). */
   fail(message: string): void {
     this.failure = message;
-    const batch = this.queued;
     this.queued = [];
-    for (const w of batch) this.done.push(w.id);
     this.schedule();
   }
 
@@ -331,13 +330,77 @@ describe('NativePipeSocket', () => {
     expect(conn.destroyCalls).toBeGreaterThanOrEqual(1);
   });
 
-  it('end() with no callback still closes the socket once the native side closed', async () => {
+  it('end(): data already read is still delivered, then end and close, as on net.Socket', async () => {
     const { conn, socket } = socketOver();
+    // Read into the socket's buffer while paused.
     socket.pause();
-    socket.end('bye');
-    await closeOf(socket);
+    conn.feed('buffered');
+    socket.read(0);
+    await vi.waitFor(() => expect(socket.readableLength).toBe(8), { timeout: 5_000 });
+    const events: string[] = [];
+    socket.on('end', () => events.push('end'));
+    socket.on('close', () => events.push('close'));
+    socket.end('bye', () => events.push('finish'));
+    await vi.waitFor(() => expect(events).toContain('finish'), { timeout: 5_000 });
     expect(conn.closed()).toBe(true);
-    expect(socket.destroyed).toBe(true);
+    // Not destroyed on 'finish': the buffered bytes wait for a reader.
+    expect(socket.destroyed).toBe(false);
+    const got: string[] = [];
+    socket.on('data', (c: Buffer) => got.push(c.toString()));
+    socket.resume();
+    await closeOf(socket);
+    expect(got.join('')).toBe('buffered');
+    expect(events).toEqual(['finish', 'end', 'close']);
+    expect(conn.receivedText).toBe('bye');
+  });
+
+  it('end() closes the whole pipe: bytes the client sends after the native close are not read', async () => {
+    const { conn, socket } = socketOver();
+    const got: string[] = [];
+    socket.on('data', (c: Buffer) => got.push(c.toString()));
+    socket.end();
+    await closeOf(socket);
+    conn.feed('too late');
+    await ticks(5);
+    expect(got).toEqual([]);
+  });
+
+  it('a throwing data handler propagates out of pump() and leaves the socket intact', async () => {
+    const { conn, socket } = socketOver();
+    conn.wake = noop;
+    const onError = vi.fn();
+    socket.on('error', onError);
+    const boom = (): void => { throw new Error('consumer broke'); };
+    socket.on('data', boom);
+    await ticks(2);
+    conn.feed('first');
+    expect(() => socket.pump()).toThrow('consumer broke');
+    expect(socket.destroyed).toBe(false);
+    expect(onError).not.toHaveBeenCalled();
+    expect(conn.destroyCalls).toBe(0);
+    // The socket keeps working once the handler is gone.
+    socket.off('data', boom);
+    const got: string[] = [];
+    socket.on('data', (c: Buffer) => got.push(c.toString()));
+    conn.wake = () => socket.pump();
+    conn.feed('second');
+    await vi.waitFor(() => expect(got.join('')).toBe('second'), { timeout: 5_000 });
+    expect(onError).not.toHaveBeenCalled();
+    socket.destroy();
+  });
+
+  it('a throwing write callback propagates; the socket is not destroyed with it', async () => {
+    const { conn, socket } = socketOver();
+    conn.wake = noop;
+    conn.holdWrites = true;
+    socket.write('x', () => { throw new Error('callback broke'); });
+    await tick();
+    conn.completeWrites();
+    await tick();
+    expect(() => socket.pump()).toThrow('callback broke');
+    expect(socket.destroyed).toBe(false);
+    expect(conn.destroyCalls).toBe(0);
+    socket.destroy();
   });
 
   it('EOF from the client: end, then (allowHalfOpen false) the socket ends and closes', async () => {
@@ -639,6 +702,49 @@ describe('listenNativePipe', () => {
     expect(names).toEqual([]);
     for (const good of [1, 253]) listenNativePipe('p', { maxInstances: good, module, onConnection: noop }).close();
     expect(names).toEqual([['p', 1], ['p', 253]]);
+  });
+
+  it('a throwing data handler on one socket: the others are pumped, the error is rethrown on its own', async () => {
+    vi.useFakeTimers({ toFake: ['setImmediate'] });
+    try {
+      const { module, listeners } = fakeModule();
+      const delivered: NativePipeSocket[] = [];
+      const server = listenNativePipe('p', { maxInstances: 4, module, onConnection: (s) => delivered.push(s) });
+      const [listener] = listeners;
+      const a = new FakeConn();
+      const b = new FakeConn();
+      a.wake = noop;
+      b.wake = noop;
+      listener.pending.push(a, b);
+      listener.notify();
+      expect(delivered).toHaveLength(2);
+      delivered[0].on('data', () => { throw new Error('consumer broke'); });
+      const got: string[] = [];
+      delivered[1].on('data', (c: Buffer) => got.push(c.toString()));
+      // resume() asks for the first native read on the next tick.
+      await new Promise<void>((resolve) => process.nextTick(resolve));
+      a.feed('to a');
+      b.feed('to b');
+      expect(() => listener.notify()).not.toThrow();
+      expect(got.join('')).toBe('to b');
+      expect(delivered[0].destroyed).toBe(false);
+      expect(() => vi.runOnlyPendingTimers()).toThrow('consumer broke');
+      for (const s of delivered) s.destroy();
+      server.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('close() still closes the native listener when takeAccepted() throws during it', () => {
+    const { module, listeners } = fakeModule();
+    const failures: string[] = [];
+    const server = listenNativePipe('p', { maxInstances: 2, module, onConnection: noop, onFailure: (r) => failures.push(r) });
+    const [listener] = listeners;
+    listener.takeThrows = 1;
+    expect(() => server.close()).not.toThrow();
+    expect(listener.closeCalls).toBe(1);
+    expect(failures).toEqual(['takeAccepted() threw during close: take broke']);
   });
 
   it('reports a failure once and exposes it', async () => {

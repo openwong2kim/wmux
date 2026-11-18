@@ -241,6 +241,8 @@ describe.runIf(pipe)('native pipe listener through NativePipeSocket', () => {
     const got = await received;
     expect(sha256(got)).toBe(sha256(data));
     await vi.waitFor(() => expect(cb).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    // end() closed the pipe: the socket closes once its readable side ends.
+    socket.resume();
     await closed(socket);
   });
 
@@ -271,6 +273,8 @@ describe.runIf(pipe)('native pipe listener through NativePipeSocket', () => {
     // Whether the client was still reading when cb fired (the case that
     // could lose bytes), for the log.
     console.info(`[native-pipe] ${expected.length} bytes; client finished ${got.endAt - cbAt} ms after cb (${got.end})`);
+    // The first-line read paused the socket; its readable side ends on resume.
+    socket.resume();
     await closed(socket);
   }, 60_000);
 

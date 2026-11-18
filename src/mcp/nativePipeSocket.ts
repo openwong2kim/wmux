@@ -11,6 +11,16 @@
  * callback fires only once the native side reports that write as done, so
  * 'drain' and end(data, cb) mean the bytes are in the pipe.
  *
+ * end() closes the whole pipe, not only the sending side: once the native
+ * close completes, the readable side ends too. Data already read into this
+ * socket is still delivered (then 'end', then 'close', as on net.Socket), but
+ * bytes the client sends later, or that are still unread in the pipe, are
+ * not. Read everything you need before calling end().
+ *
+ * Errors from consumer callbacks ('data' handlers, write and end callbacks)
+ * are not socket errors: they propagate out of pump(), as they would out of
+ * a net.Socket's I/O callback.
+ *
  * A connection has no wake of its own: every connection of a listener wakes
  * the listener's one callback ("something changed"), and the listener's owner
  * (listenNativePipe) then calls pump() on each live socket, which drains every
@@ -42,7 +52,8 @@ export interface NativePipeConn {
   takeRead(): Buffer | null | 'eof';
   /** Queues the bytes and returns the write's id. */
   write(data: Buffer): number;
-  /** Ids of the writes that completed (or failed: see error()). */
+  /** Ids of the writes that completed. A failed write is not listed: it
+   *  sets error(), and the socket then fails every pending write. */
   takeWritten(): number[];
   error(): string | null;
   /** Closes the pipe once the queued writes are done; wakes when closed. */
@@ -73,6 +84,8 @@ export class NativePipeSocket extends Duplex {
   private readonly writes = new Map<number, Callback>();
   /** _final's callback while the native end() is in progress. */
   private finalCallback: Callback | null = null;
+  /** Our end() completed natively. */
+  private finalDone = false;
   private pumping = false;
   private pumpAgain = false;
 
@@ -88,7 +101,9 @@ export class NativePipeSocket extends Duplex {
   }
 
   /** Drain whatever the native side finished since the last call. Called on
-   *  every wake of the connection; cheap when nothing changed. */
+   *  every wake of the connection; cheap when nothing changed. A consumer
+   *  callback that throws propagates out of here; the socket stays as it is,
+   *  and the rest of this drain runs on the next turn of the event loop. */
   pump(): void {
     if (this.pumping) {
       this.pumpAgain = true;
@@ -100,56 +115,90 @@ export class NativePipeSocket extends Duplex {
         this.pumpAgain = false;
         this.pumpOnce();
       } while (this.pumpAgain && !this.destroyed);
+    } catch (error) {
+      // No other wake may come for what this drain did not reach. A 'data'
+      // handler that threw also cut the stream's own read-ahead short:
+      // read(0) asks for the next native read if the stream still wants one.
+      setImmediate(() => {
+        this.pump();
+        if (!this.destroyed && !this.readEnded) this.read(0);
+      });
+      throw error;
     } finally {
       this.pumping = false;
     }
   }
 
-  private pumpOnce(): void {
-    if (this.destroyed) return;
+  /** One native call; a throw destroys the socket with it (undefined then). */
+  private native<T>(call: () => T): T | undefined {
     try {
-      if (this.reading) {
-        const read = this.conn.takeRead();
-        if (read !== null) {
-          this.reading = false;
-          if (read === 'eof') {
-            this.readEnded = true;
-            this.push(null);
-          } else if (read.length > 0) {
-            this.push(read);
-          } else {
-            // Nothing to hand on: ask the stream whether it still wants data.
-            this.read(0);
-          }
-        }
-        if (this.destroyed) return;
-      }
-      // Before acking writes: a failed write's id is in takeWritten() too.
-      const error = this.conn.error();
-      if (error) {
-        this.destroy(new Error(`native pipe: ${error}`));
-        return;
-      }
-      for (const id of this.conn.takeWritten()) {
-        const callback = this.writes.get(id);
-        if (!callback) continue;
-        this.writes.delete(id);
-        callback();
-        if (this.destroyed) return;
-      }
-      if (this.conn.closed()) {
-        const callback = this.finalCallback;
-        if (callback) {
-          this.finalCallback = null;
-          callback();
-        } else {
-          // Closed without our end(): nothing more can move either way.
-          this.destroy();
-        }
-      }
+      return call();
     } catch (error) {
       this.destroy(asError(error));
+      return undefined;
     }
+  }
+
+  /** Native calls are guarded one by one; consumer callbacks (push, write and
+   *  final callbacks) run outside any try. */
+  private pumpOnce(): void {
+    if (this.destroyed) return;
+    if (this.reading) {
+      const read = this.native(() => this.conn.takeRead());
+      if (read === undefined) return;
+      if (read !== null) {
+        this.reading = false;
+        if (read === 'eof') {
+          this.endReadable();
+        } else if (read.length > 0) {
+          this.push(read);
+        } else {
+          // Nothing to hand on: ask the stream whether it still wants data.
+          this.read(0);
+        }
+      }
+      if (this.destroyed) return;
+    }
+    // Before acking writes: a failed write sets error() and is destroyed with
+    // the rest (its callback fails in _destroy), never acked as done.
+    const error = this.native(() => this.conn.error());
+    if (error === undefined) return;
+    if (error) {
+      this.destroy(new Error(`native pipe: ${error}`));
+      return;
+    }
+    const written = this.native(() => this.conn.takeWritten());
+    if (written === undefined) return;
+    for (const id of written) {
+      const callback = this.writes.get(id);
+      if (!callback) continue;
+      this.writes.delete(id);
+      callback();
+      if (this.destroyed) return;
+    }
+    const closed = this.native(() => this.conn.closed());
+    if (!closed) return;
+    const callback = this.finalCallback;
+    if (callback) {
+      // Our end() completed: the pipe is closed, so the readable side ends
+      // here. Buffered data is still delivered; autoDestroy closes the socket
+      // after 'end' and 'finish'.
+      this.finalCallback = null;
+      this.finalDone = true;
+      this.endReadable();
+      callback();
+    } else if (!this.finalDone) {
+      // Closed without our end(): nothing more can move either way.
+      this.destroy();
+    }
+  }
+
+  /** No more data: push EOF once. */
+  private endReadable(): void {
+    if (this.readEnded) return;
+    this.readEnded = true;
+    this.reading = false;
+    this.push(null);
   }
 
   override _read(): void {
@@ -184,9 +233,6 @@ export class NativePipeSocket extends Duplex {
 
   override _final(callback: Callback): void {
     this.finalCallback = callback;
-    // The handle is gone once end() completes, so nothing more can be read:
-    // close the stream after 'finish' (autoDestroy would wait for 'end').
-    this.once('finish', () => this.destroy());
     try {
       this.conn.end();
     } catch (error) {
