@@ -10,14 +10,14 @@
 // Like sessionReattach.engines.os.test.ts, the rust cases skip with a warning
 // when the native module is not built, unless WMUX_REQUIRE_RUST_CORE=1.
 import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DaemonSessionManager } from '../DaemonSessionManager';
 import { rustTerminalCoreAvailable, type TerminalEngine } from '../../shared/terminalCoreSettings';
 import { ptyBackend } from '../../shared/terminalPty';
-import { loadNativeTerminalCore } from '../../shared/nativeTerminalCore';
+import { loadNativeTerminalCore, nativeCorePath } from '../../shared/nativeTerminalCore';
 import { waitFor, deliberateSleep } from '../../test-utils/waitFor';
 
 const SHELL = '/bin/sh';
@@ -210,5 +210,55 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
     transport.kill(os.constants.signals.SIGKILL);
     await waitFor(() => !alive(program), HANGUP_GRACE_MS - 1_500, 'the SIGKILL sweep');
     expect(Date.now() - killedAt).toBeLessThan(HANGUP_GRACE_MS - 1_500);
+  }, TEST_MS);
+
+  // A tree capture SIGSTOPs a pane's root before it kills the tree, and macOS
+  // answers the waiter's waitid(WEXITED) with that stop. kill() on a stopped (or
+  // stopped and continued) root must still return at once: it runs on the JS
+  // thread, so it is driven in a child process here, which a deadlock times out
+  // instead of freezing this worker. The child reports what one transport saw.
+  const stoppedRootRun = (mode: 'stop' | 'stop-cont'): Promise<{ killMs: number; again: number; exits: number; signal?: number }> => {
+    const child = [
+      'const [file, mode] = process.argv.slice(1);',
+      'const core = require(file);',
+      "const t = new core.NativeTransport('/bin/sh', ['-c', 'exec sleep 60'], process.cwd(), { PATH: '/usr/bin:/bin' }, 80, 24, () => {});",
+      'const pid = t.pid; const sleep = (ms) => new Promise((r) => setTimeout(r, ms));',
+      '(async () => {',
+      "  await sleep(300); process.kill(pid, 'SIGSTOP'); await sleep(400);",
+      "  if (mode === 'stop-cont') { process.kill(pid, 'SIGCONT'); await sleep(400); }",
+      '  let at = Date.now(); t.kill(); const killMs = Date.now() - at;',
+      // A stopped root holds its SIGHUP until it runs: the tree kill's SIGKILL ends it.
+      "  if (mode === 'stop') process.kill(pid, 'SIGKILL');",
+      '  let exits = 0; let first;',
+      '  for (let i = 0; i < 400 && !first; i++) { const r = t.read(); if (r.childExited) { exits++; first = r; } else await sleep(25); }',
+      // Once seen, the exit stays: later reads report the same one, and kill() is a no-op.
+      '  for (let i = 0; i < 4; i++) { await sleep(25); const r = t.read(); if (!r.childExited || r.signal !== first?.signal) exits++; }',
+      '  at = Date.now(); t.kill(); const again = Date.now() - at;',
+      '  t.close();',
+      '  process.stdout.write(JSON.stringify({ killMs, again, exits, signal: first?.signal }));',
+      '  process.exit(0);',
+      '})();',
+    ].join('\n');
+    return new Promise((resolve, reject) => {
+      execFile(process.execPath, ['-e', child, nativeCorePath(), mode], { cwd, timeout: 15_000, killSignal: 'SIGKILL' }, (error, stdout) => {
+        if (error) reject(new Error(`the child timed out or failed (a kill() that blocks on a stopped root): ${error.message}`));
+        else resolve(JSON.parse(stdout) as { killMs: number; again: number; exits: number; signal?: number });
+      });
+    });
+  };
+
+  it.skipIf(skip || engine === 'node')('kill() on a stopped root returns at once, and its exit is observed once', async () => {
+    const run = await stoppedRootRun('stop');
+    expect(run.killMs).toBeLessThan(1_000);
+    expect(run.exits).toBe(1);
+    expect(run.signal).toBeGreaterThan(0);
+    expect(run.again).toBeLessThan(1_000);
+  }, TEST_MS);
+
+  it.skipIf(skip || engine === 'node')('kill() on a root stopped and then continued returns at once, and its hangup exit is observed once', async () => {
+    const run = await stoppedRootRun('stop-cont');
+    expect(run.killMs).toBeLessThan(1_000);
+    expect(run.exits).toBe(1);
+    expect(run.signal).toBe(os.constants.signals.SIGHUP);
   }, TEST_MS);
 });

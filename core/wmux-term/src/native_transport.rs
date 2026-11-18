@@ -62,6 +62,10 @@ const HANGUP_GRACE: Duration = Duration::from_secs(5);
 /// One budget waits for the end; a second bounds a job that never stops writing.
 #[cfg(unix)]
 const EXIT_OUTPUT_GRACE: Duration = Duration::from_millis(200);
+/// How often the waiter looks again at a root that is stopped, or whose exit
+/// it cannot watch: it holds no lock meanwhile.
+#[cfg(unix)]
+const EXIT_POLL: Duration = Duration::from_millis(25);
 static ACTIVE_WORKERS: AtomicU32 = AtomicU32::new(0);
 struct Worker;
 impl Worker {
@@ -399,14 +403,20 @@ impl NativeTransport {
                 // excluded. Otherwise its PID can be reused before exited is set.
                 #[cfg(unix)]
                 let pid = child.process_id().unwrap() as i32;
-                #[cfg(unix)]
-                let observed = observe_exit(pid);
                 // The shell's own exit signals nothing, as with node-pty: what it
                 // left gets the terminal's hangup. Only a session whose pane was
                 // closed first is swept, at the deadline, while the unreaped root
                 // still pins its session id.
+                //
+                // Invariant: `exited` is never held across a wait that can block.
+                // kill() and close() take it, on the JS thread, before they signal
+                // the root, so a blocking reap under it would wait for a root that
+                // only their signal can end. The root is reaped under the lock
+                // (no signal can reach a freed pid), but only with try_wait, once
+                // an exit was observed; a root not reapable yet lets the lock go.
                 #[cfg(unix)]
-                let mut exit_guard = loop {
+                let (mut exit_guard, status) = loop {
+                    let observed = observe_exit(pid);
                     let guard = waiter_state
                         .exited
                         .lock()
@@ -416,16 +426,25 @@ impl NativeTransport {
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .take();
-                    match sweep_at {
-                        Some(at) if observed.is_ok() => {
-                            // Unlocked, so kill() never waits out the grace.
+                    if let (Some(at), true) = (sweep_at, observed.is_ok()) {
+                        // Unlocked, so kill() never waits out the grace.
+                        drop(guard);
+                        std::thread::sleep(at.saturating_duration_since(Instant::now()));
+                        signal_session(pid, libc::SIGKILL);
+                        continue;
+                    }
+                    match child.try_wait() {
+                        Ok(Some(status)) => break (guard, Ok(status)),
+                        Ok(None) => {
+                            // Still running: no exit could be watched (observe_exit
+                            // failed). Look again, unlocked, a moment later.
                             drop(guard);
-                            std::thread::sleep(at.saturating_duration_since(Instant::now()));
-                            signal_session(pid, libc::SIGKILL);
+                            std::thread::sleep(EXIT_POLL);
                         }
-                        _ => break guard,
+                        Err(e) => break (guard, Err(e)),
                     }
                 };
+                #[cfg(windows)]
                 let status = child.wait();
                 #[cfg(windows)]
                 let mut exit_guard = waiter_state
@@ -826,6 +845,10 @@ fn signal_number(signal: Option<&str>) -> Option<u32> {
     None
 }
 
+/// Blocks until `pid` has exited (unreaped). A stopped or continued root is
+/// not an exit: macOS answers WEXITED with a stop too (CLD_STOPPED, as a tree
+/// capture's SIGSTOP leaves the root), and WNOWAIT leaves that report in
+/// place: it is taken off, and asked again a moment later rather than at once.
 #[cfg(unix)]
 fn observe_exit(pid: i32) -> std::io::Result<()> {
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -839,7 +862,24 @@ fn observe_exit(pid: i32) -> std::io::Result<()> {
             )
         } == 0
         {
-            return Ok(());
+            match info.si_code {
+                libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED => return Ok(()),
+                _ => {
+                    // Take the stop or continue report off (it reaps nothing), so
+                    // the next look blocks until the root changes again.
+                    let mut taken: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                    unsafe {
+                        libc::waitid(
+                            libc::P_PID,
+                            pid as libc::id_t,
+                            &mut taken,
+                            libc::WSTOPPED | libc::WCONTINUED | libc::WNOHANG,
+                        );
+                    }
+                    std::thread::sleep(EXIT_POLL);
+                    continue;
+                }
+            }
         }
         let error = std::io::Error::last_os_error();
         if error.kind() != std::io::ErrorKind::Interrupted {
