@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { IPC } from '../../../shared/constants';
+import { sameFileId } from '../../../shared/sameFileId';
 import { wrapHandler } from '../wrapHandler';
 import { getWmuxDir } from '../../../daemon/config';
 import {
@@ -214,7 +215,7 @@ function dirIdentity(dir: string): DirIdentity | null {
 
 function sameDir(dir: string, expected: DirIdentity): boolean {
   const now = dirIdentity(dir);
-  return !!now && now.dev === expected.dev && now.ino === expected.ino;
+  return !!now && sameFileId(now, expected);
 }
 
 /** Remove a link itself, never its target. A directory link on Windows (a

@@ -11,6 +11,20 @@ import {createCodexTuiRelay,CodexRelayUnavailableError,CodexUpstreamError,type C
 import type {CodexDecisionRequest} from '../codexDecisions';
 import {threadIdentityEnv} from '../codexRelayPolicy';
 import { deliberateSleep } from '../../../test-utils/waitFor';
+/** The relay reads its socket through a named import, which a spy cannot
+ *  reach: this mock lets one test report a 64-bit inode for the account
+ *  socket (exact in a bigint stat, rounded in a Number one). */
+const fakeSocketIno = vi.hoisted(() => ({ ino: null as (() => bigint) | null }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const real = await importOriginal<typeof import('node:fs/promises')>();
+  const lstat = (async (p: Parameters<typeof real.lstat>[0], o?: { bigint?: boolean }) => {
+    const st = await real.lstat(p, o as never);
+    const ino = fakeSocketIno.ino;
+    if (!ino || !String(p).endsWith('app-server-control.sock')) return st;
+    return Object.assign(st, { ino: typeof st.ino === 'bigint' ? ino() : Number(ino()) });
+  }) as typeof real.lstat;
+  return { ...real, lstat, default: { ...real, lstat } };
+});
 const threadId='01234567-89ab-4cde-8123-456789abcdef';
 const systemThreadId='11111111-89ab-4cde-8123-456789abcdef';
 const otherThreadId='22222222-89ab-4cde-8123-456789abcdef';
@@ -976,6 +990,24 @@ describe.skipIf(process.platform === 'win32')('Codex relay reconnect after a los
       expect(f.relay.activeTurn(threadId)).toBe('turn-1');
       back.terminate();
     } finally {await f.cleanup();}
+  });
+  it('reads the account socket as another server when its 64-bit inode changed by less than Number precision',async()=>{
+    const serverLost=vi.fn();
+    let moved=false;
+    fakeSocketIno.ino=()=>(moved ? 2n ** 60n + 3n : 2n ** 60n + 1n);
+    try {
+      const f=await fixture({relay:{onServerLost:serverLost}});
+      try {
+        const client=await f.connect();await select(client,1);
+        const gone=closed(client);
+        f.upstream()?.terminate();await gone;
+        moved=true;
+        const back=await f.connect();
+        await expect(resume(back,2)).resolves.toMatchObject({id:2});
+        expect(serverLost).toHaveBeenCalledOnce();
+        back.terminate();
+      } finally {await f.cleanup();}
+    } finally {fakeSocketIno.ino=null;}
   });
   it('takes the running turn from the server\'s answer to a resume',async()=>{
     let turns=[{id:'t-a',status:'completed'},{id:'t-b',status:'inProgress'}];
