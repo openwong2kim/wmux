@@ -219,6 +219,26 @@ describe('app.action settings from a terminal outside wmux', () => {
     expect(rendererCalls()).toEqual([]);
   });
 
+  it('a process in a pane does not pass for the command line by leaving its claim out', async () => {
+    const peerInPane = vi.fn(async () => true);
+    setup({ peerInPane });
+    const res = await run({ id: 'settings.set', args: { key: 'theme', value: 'paper' } }, { ...outside, peerPid: 4242 });
+    expect(res).toMatchObject({ ok: false, code: 'no_identity' });
+    expect(peerInPane).toHaveBeenCalledOnce();
+    expect(rendererCalls()).toEqual([]);
+  });
+
+  it('a peer outside every pane, or one that cannot be told, goes on; a pane claim is not walked again', async () => {
+    for (const verdict of [false, null]) {
+      setup({ peerInPane: async () => verdict });
+      expect(await run({ id: 'settings.get' }, outside)).toMatchObject({ ok: true });
+    }
+    const peerInPane = vi.fn(async () => true);
+    setup({ peerInPane });
+    expect(await run({ id: 'settings.get' }, claimed())).toMatchObject({ ok: true });
+    expect(peerInPane).not.toHaveBeenCalled();
+  });
+
   it('names the Settings section for a human-only key, for every caller', async () => {
     for (const ctx of [outside, claimed()]) {
       const res = await run({ id: 'settings.set', args: { key: 'fanout.permissionMode', value: 'bypassPermissions' } }, ctx);

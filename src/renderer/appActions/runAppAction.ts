@@ -368,8 +368,9 @@ export function runAppAction(params: Record<string, unknown>): Answer | Refusal 
   if (!checked.ok) return refuse('invalid_args', checked.error);
   const args = checked.args;
   const target = typeof params.target === 'string' ? params.target.trim() : '';
-  // Only main sets `source`; a call from the command line has no workspace.
-  const fromCommandLine = params.source === 'command-line';
+  // Only main sets `source`; a call from the command line has no workspace,
+  // and one that names a workspace is not taken as one.
+  const fromCommandLine = params.source === 'command-line' && params.callerWorkspaceId === undefined;
   if (fromCommandLine && !id.startsWith('settings.')) return refuse('no_identity', `${id}: run this from a wmux pane`);
   if (fromCommandLine) {
     if (target) return refuse('invalid_args', `${id}: takes no target`);

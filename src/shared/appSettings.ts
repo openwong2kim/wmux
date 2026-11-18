@@ -7,6 +7,10 @@
 // setting that runs a command, are listed in HUMAN_ONLY_SETTINGS instead: a
 // call naming one is refused with the Settings section to use.
 
+import { TERMINAL_CURSOR_STYLES } from './terminalCursor';
+import { IMAGE_PASTE_MODES } from './imagePaste';
+import { SLEEP_PREVENTION_MODES } from './sleepPrevention';
+
 export type AppSettingSpec =
   | { kind: 'enum'; values: readonly string[] }
   | { kind: 'intChoice'; values: readonly number[] }
@@ -27,10 +31,10 @@ export const APP_SETTINGS = {
   locale: { kind: 'locale' },
   'terminal.fontSize': { kind: 'int', min: 8, max: 24 },
   'terminal.fontFamily': { kind: 'font' },
-  'terminal.cursorStyle': { kind: 'enum', values: ['block', 'bar', 'underline'] },
+  'terminal.cursorStyle': { kind: 'enum', values: TERMINAL_CURSOR_STYLES },
   'terminal.scrollbackLines': { kind: 'int', min: 1000, max: 100000 },
   'terminal.openFileLinksIn': { kind: 'enum', values: ['wmux', 'os'] },
-  'terminal.imagePaste': { kind: 'enum', values: ['auto', 'native', 'path'] },
+  'terminal.imagePaste': { kind: 'enum', values: IMAGE_PASTE_MODES },
   'terminal.splitInheritsCwd': BOOL,
   'terminal.closeTabOnExit': BOOL,
   'ui.scale': { kind: 'number', min: 0.8, max: 1.6, step: 0.05 },
@@ -48,7 +52,7 @@ export const APP_SETTINGS = {
   'notifications.paneFlash': BOOL,
   'notifications.taskbarFlash': BOOL,
   'notifications.glowOpacity': { kind: 'number', min: 0.6, max: 1, step: 0.05 },
-  'power.keepAwake': { kind: 'enum', values: ['off', 'working', 'always'] },
+  'power.keepAwake': { kind: 'enum', values: SLEEP_PREVENTION_MODES },
   'titlebar.clock': BOOL,
 } as const satisfies Record<string, AppSettingSpec>;
 
@@ -63,7 +67,9 @@ export function isAppSettingKey(key: string): key is AppSettingKey {
 
 /**
  * Settings only a person changes, in the Settings section named. An id that
- * ends in '.' covers every key under it. Checked before the table, so a key
+ * ends in '.' covers every key under it, and any other id covers itself and
+ * the keys under it; the longest id that matches names the section, so the
+ * order here does not matter. Checked before the table, so a key
  * here can never be changed by an agent or the command line, whatever is
  * added to APP_SETTINGS later (a test keeps the two apart).
  */
@@ -73,7 +79,6 @@ export const HUMAN_ONLY_SETTINGS: ReadonlyArray<{ id: string; section: string }>
   { id: 'a2a.autoApproveExecute', section: 'Roles & fan-out' },
   { id: 'fanout.', section: 'Roles & fan-out' },
   { id: 'workerFence', section: 'Roles & fan-out' },
-  { id: 'workerFence.', section: 'Roles & fan-out' },
   { id: 'roles.', section: 'Roles & fan-out' },
   { id: 'customAgents', section: 'Roles & fan-out' },
   { id: 'grants.', section: 'Roles & fan-out' },
@@ -90,7 +95,6 @@ export const HUMAN_ONLY_SETTINGS: ReadonlyArray<{ id: string; section: string }>
   { id: 'factory.', section: 'Factory' },
   // What another computer or a paired phone may reach, and how.
   { id: 'lanlink.', section: 'LAN' },
-  { id: 'a2a.listener', section: 'LAN' },
   { id: 'spawnPolicy', section: 'LAN' },
   { id: 'a2a.', section: 'LAN' },
   { id: 'remote.', section: 'Remote & phone' },
@@ -117,11 +121,13 @@ export const HUMAN_ONLY_SETTINGS: ReadonlyArray<{ id: string; section: string }>
 /** The Settings section for a human-only key, or undefined. Case-insensitive. */
 export function humanOnlySettingSection(key: string): string | undefined {
   const k = key.trim().toLowerCase();
+  let best: { length: number; section: string } | undefined;
   for (const { id, section } of HUMAN_ONLY_SETTINGS) {
     const i = id.toLowerCase();
-    if (i.endsWith('.') ? k.startsWith(i) : k === i || k.startsWith(`${i}.`)) return section;
+    const matches = i.endsWith('.') ? k.startsWith(i) : k === i || k.startsWith(`${i}.`);
+    if (matches && (!best || i.length > best.length)) best = { length: i.length, section };
   }
-  return undefined;
+  return best?.section;
 }
 
 /**

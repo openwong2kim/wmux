@@ -64,7 +64,7 @@ describe('handleSettings', () => {
     await handleSettings(['set', 'theme', 'paper'], false);
     expect(setWorkspaceToken).not.toHaveBeenCalled();
     expect(rpc).toHaveBeenLastCalledWith('app.action', { id: 'settings.set', args: { key: 'theme', value: 'paper' } });
-    expect(out).toEqual(['theme = paper (applied now, saved within 5 s)']);
+    expect(out).toEqual(['theme = paper']);
   });
 
   it('from a pane: carries the pane claim', async () => {
@@ -75,27 +75,47 @@ describe('handleSettings', () => {
     expect(out).toEqual(['titlebar.clock = on']);
   });
 
-  it('in a pane whose claim did not come back: stops instead of sending as the command line', async () => {
-    process.env.WMUX_WORKSPACE_ID = 'ws-self';
-    await expect(handleSettings(['set', 'theme', 'paper'], false)).rejects.toThrow(/exit 1/);
-    expect(rpc).not.toHaveBeenCalledWith('app.action', expect.anything());
-    expect(errors.join('\n')).toMatch(/could not confirm which one/);
+  describe('in a pane whose claim did not come back', () => {
+    const platform = process.platform;
+    const setPlatform = (p: string) => Object.defineProperty(process, 'platform', { value: p, configurable: true });
+    beforeEach(() => { process.env.WMUX_WORKSPACE_ID = 'ws-self'; });
+    afterEach(() => setPlatform(platform));
+
+    it('on macOS and Linux: sends without one, and main decides from the connection', async () => {
+      setPlatform('darwin');
+      answer({ id: 'settings.get', settings: { theme: 'tint' } });
+      await handleSettings(['get', 'theme'], false);
+      expect(rpc).toHaveBeenLastCalledWith('app.action', { id: 'settings.get', args: { key: 'theme' } });
+    });
+
+    it('on Windows: stops instead of sending as the command line', async () => {
+      setPlatform('win32');
+      answer({ actions: [] });
+      await expect(handleSettings(['set', 'theme', 'paper'], false)).rejects.toThrow(/exit 1/);
+      expect(rpc).not.toHaveBeenCalledWith('app.action', expect.anything());
+      expect(errors.join('\n')).toMatch(/could not confirm which one/);
+    });
+
+    it('on Windows with the app closed: says the app is not running, not to run it again', async () => {
+      setPlatform('win32');
+      rpc.mockRejectedValue(new Error('wmux is not running. Start the app first.'));
+      await expect(handleSettings(['list'], false)).rejects.toThrow(/exit 1/);
+      expect(errors.at(-1)).toMatch(/settings change through the running app/);
+    });
   });
 
   it('the app not running: says settings change through the running app', async () => {
-    selfContext.mockRejectedValue(new Error('wmux is not running. Start the app first.'));
-    await expect(handleSettings(['list'], false)).rejects.toThrow(/exit 1/);
-    expect(errors.join('\n')).toMatch(/settings change through the running app/);
-    selfContext.mockResolvedValue({});
     rpc.mockRejectedValue(new Error('wmux is not running. Start the app first.'));
     await expect(handleSettings(['get'], false)).rejects.toThrow(/exit 1/);
     expect(errors.at(-1)).toMatch(/settings change through the running app/);
   });
 
-  it('no window: the same rule, with the reason', async () => {
+  it('no window: the same rule, with the reason, as JSON too', async () => {
     rpc.mockResolvedValue({ id: '1', ok: true, result: { ok: false, code: 'no_window', error: 'settings.get: the wmux window is not open' } });
     await expect(handleSettings(['get'], false)).rejects.toThrow(/exit 1/);
     expect(errors.at(-1)).toMatch(/window is not open: settings change through the running app/);
+    await expect(handleSettings(['get'], true)).rejects.toThrow(/exit 1/);
+    expect(JSON.parse(out.at(-1) ?? '{}')).toMatchObject({ ok: false, code: 'no_window' });
   });
 
   it('list prints one row per setting the app returned, and nothing else', async () => {

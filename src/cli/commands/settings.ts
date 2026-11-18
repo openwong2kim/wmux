@@ -1,5 +1,5 @@
-import { sendRequest, setWorkspaceToken } from '../client';
-import { resolveSelfContext, getParentPidDefault } from '../identity';
+import { sendRequest } from '../client';
+import { bindPaneClaim } from '../paneClaim';
 import { refusalOf } from './action';
 import type { RpcResponse } from '../../shared/rpc';
 
@@ -47,28 +47,6 @@ export function parseSettingsArgs(args: string[]): SettingsCommand {
   }
 }
 
-/**
- * Inside a wmux pane, a call must carry that pane's claim: one that does not
- * would read as the command line. When the pane's environment is there but no
- * claim came back, stop rather than send it without one.
- */
-async function bindPaneClaim(): Promise<void> {
-  const self = await resolveSelfContext({
-    sendRequest,
-    env: process.env,
-    ppid: process.ppid,
-    getParentPid: getParentPidDefault,
-    callerPid: process.pid,
-  });
-  if (self.workspaceToken) {
-    setWorkspaceToken(self.workspaceToken);
-    return;
-  }
-  if (process.env.WMUX_WORKSPACE_ID || process.env.WMUX_PTY_ID) {
-    fail('settings: this runs in a wmux pane, but wmux could not confirm which one; run it again');
-  }
-}
-
 async function send(params: Record<string, unknown>): Promise<RpcResponse> {
   try {
     return await sendRequest('app.action', params);
@@ -83,12 +61,15 @@ const show = (v: unknown): string => (typeof v === 'boolean' ? (v ? 'on' : 'off'
 
 export async function handleSettings(args: string[], jsonMode: boolean): Promise<void> {
   const cmd = parseSettingsArgs(args);
-  try {
-    await bindPaneClaim();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (/not running/i.test(message)) fail(NOT_RUNNING);
-    throw err;
+  const stop = await bindPaneClaim();
+  if (stop) {
+    // No claim because main never answered is the app not running, not the claim.
+    try {
+      await sendRequest('app.action.list', {});
+    } catch (err) {
+      if (/not running/i.test(err instanceof Error ? err.message : String(err))) fail(NOT_RUNNING);
+    }
+    fail(`settings: ${stop}`);
   }
 
   const params =
@@ -98,7 +79,7 @@ export async function handleSettings(args: string[], jsonMode: boolean): Promise
   const response = await send(params);
   const refusal = refusalOf(response);
   if (refusal) {
-    if (refusal.code === 'no_window') fail(`the wmux window is not open: settings change through the running app (${refusal.error})`);
+    if (refusal.code === 'no_window') refusal.error = `the wmux window is not open: settings change through the running app (${refusal.error})`;
     if (jsonMode) {
       console.log(JSON.stringify({ ok: false, ...refusal }, null, 2));
       process.exit(1);
@@ -124,5 +105,5 @@ export async function handleSettings(args: string[], jsonMode: boolean): Promise
   }
   console.log(result['changed'] === false
     ? `${cmd.key} is already ${show(result['value'])}`
-    : `${cmd.key} = ${show(result['value'])} (applied now, saved within 5 s)`);
+    : `${cmd.key} = ${show(result['value'])}`);
 }

@@ -73,9 +73,15 @@ describe('human-only settings', () => {
   });
 
   it('covers what a paired phone or another computer may reach', () => {
-    for (const key of ['remote.shareGrant', 'remote.inputGrant', 'phone.upload', 'phone.transcript', 'tailscale', 'lanlink.enabled', 'a2a.listener']) {
+    for (const key of ['remote.shareGrant', 'remote.inputGrant', 'phone.upload', 'phone.transcript', 'tailscale', 'lanlink.enabled', 'a2a.listener', 'a2a.port']) {
       expect(humanOnlySettingSection(key)).toMatch(/Remote & phone|LAN/);
     }
+  });
+
+  it('names the most specific section whatever the list order', () => {
+    expect(humanOnlySettingSection('a2a.autoApproveExecute')).toBe('Roles & fan-out');
+    expect(humanOnlySettingSection('a2a.listener')).toBe('LAN');
+    expect(humanOnlySettingSection('workerFence.off')).toBe('Roles & fan-out');
   });
 
   it('keeps the table and the human-only list apart', () => {

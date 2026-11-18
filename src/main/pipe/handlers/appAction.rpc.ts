@@ -39,6 +39,34 @@ class AppActionTimeout extends Error {}
 
 export interface AppActionRpcDeps {
   timeoutMs?: number;
+  /**
+   * Whether the process on the other end of a claimless call runs inside a
+   * wmux pane: true, false, or null when that cannot be told (no peer pid,
+   * as on Windows). Defaults to main's own identity walk from the peer pid.
+   */
+  peerInPane?: (ctx: RpcContext) => Promise<boolean | null>;
+}
+
+/**
+ * main's own walk from the pid the OS reports for the connection, the same
+ * one `a2a.resolve.identity` runs for a pane's CLI: a pane found means the
+ * caller runs in one, whatever its call left out.
+ */
+function walkPeer(router: RpcRouter): (ctx: RpcContext) => Promise<boolean | null> {
+  return async (ctx) => {
+    if (typeof ctx.peerPid !== 'number') return null;
+    try {
+      const res = await router.dispatch(
+        { id: `app-action-peer-${ctx.peerPid}`, method: 'a2a.resolve.identity', params: { callerPid: ctx.peerPid } },
+        { externalWire: true, peerPid: ctx.peerPid, ...(ctx.peerStartedAt ? { peerStartedAt: ctx.peerStartedAt } : {}) },
+      );
+      if (!res.ok) return null;
+      const resolved = (res.result as { resolved?: { workspaceId?: unknown } | null } | null)?.resolved;
+      return typeof resolved?.workspaceId === 'string' && resolved.workspaceId.length > 0;
+    } catch {
+      return null;
+    }
+  };
 }
 
 type ClaimedCaller = { ok: true; workspaceId: string; ptyId: string } | { ok: false; error: string };
@@ -83,6 +111,7 @@ function commandLineCaller(ctx: RpcContext | undefined): boolean {
 const isSettingsAction = (id: string): boolean => id.startsWith('settings.');
 
 export function registerAppActionRpc(router: RpcRouter, getWindow: GetWindow, deps: AppActionRpcDeps = {}): void {
+  const peerInPane = deps.peerInPane ?? walkPeer(router);
   router.register(APP_ACTION_RPC.list, async (_params, ctx) => {
     if (ctx?.origin === 'remote') {
       return appActionRefusal('remote_refused', `${APP_ACTION_RPC.list}: not available to another computer`);
@@ -129,6 +158,12 @@ export function registerAppActionRpc(router: RpcRouter, getWindow: GetWindow, de
     const claimed = claimedCaller(ctx);
     const fromCommandLine = !claimed.ok && spec.target === 'none' && isSettingsAction(id) && commandLineCaller(ctx);
     if (!claimed.ok && !fromCommandLine) return appActionRefusal('no_identity', claimed.error);
+    // A process in a pane is an agent's, claim or not: it does not get the
+    // command line's label by leaving its claim out. Where the peer cannot be
+    // told (Windows), the CLI's own check stands (cli/paneClaim.ts).
+    if (fromCommandLine && ctx && (await peerInPane(ctx)) === true) {
+      return appActionRefusal('no_identity', `${method}: this runs in a wmux pane, but its claim did not come with the call; run it again`);
+    }
 
     const win = getWindow();
     if (!win || win.isDestroyed()) {

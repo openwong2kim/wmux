@@ -1,5 +1,5 @@
-import { sendRequest, setWorkspaceToken } from '../client';
-import { resolveSelfContext, getParentPidDefault } from '../identity';
+import { sendRequest } from '../client';
+import { bindPaneClaim } from '../paneClaim';
 import type { RpcResponse } from '../../shared/rpc';
 
 /**
@@ -128,14 +128,8 @@ export async function handleAction(args: string[], jsonMode: boolean): Promise<v
   // Main's own walk of this process's parents finds the pane and hands back
   // its claim; every request after this carries it. Without one, main refuses
   // with no_identity (outside a wmux pane, or a wmux app too old to mint one).
-  const self = await resolveSelfContext({
-    sendRequest,
-    env: process.env,
-    ppid: process.ppid,
-    getParentPid: getParentPidDefault,
-    callerPid: process.pid,
-  });
-  if (self.workspaceToken) setWorkspaceToken(self.workspaceToken);
+  const stop = await bindPaneClaim();
+  if (stop) fail(`action: ${stop}`);
 
   const params: Record<string, unknown> = { id: parsed.id, args: parsed.args };
   if (parsed.target !== undefined) params.target = parsed.target;
