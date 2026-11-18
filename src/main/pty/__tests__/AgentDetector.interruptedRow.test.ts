@@ -41,13 +41,25 @@ describe('isInterruptedRow', () => {
   });
 
   it("finishes at once on the reporter's long padded rows (the regex took seconds to minutes)", () => {
-    for (const cells of [60, 70, 512, 5_000, 100_000]) {
+    for (const cells of [60, 70, 512, 4_000]) {
       const row = `${SKIP.repeat(cells)} Claude will do this instead x`;
       const at = performance.now();
       expect(isInterruptedRow(row)).toBe(false);
-      // Linear: a few ms per hundred thousand cells; the bound only catches a blow-up.
+      // Linear: about a millisecond per thousand cells; the bound only catches a blow-up.
       expect(performance.now() - at).toBeLessThan(500);
     }
+  });
+
+  it('refuses a row wider than any terminal draws without walking it, even when it would otherwise match', () => {
+    const row = `${SKIP.repeat(5_000_000)}⎿ ${INTERRUPTED_SENTENCE}`;
+    const at = performance.now();
+    expect(isInterruptedRow(row)).toBe(false);
+    expect(performance.now() - at).toBeLessThan(50);
+  });
+
+  it('the drawn-count check holds only while the sentence has no character the gutter or the gaps accept', () => {
+    expect(INTERRUPTED_SENTENCE).not.toMatch(/[⎿￿]/);
+    expect(INTERRUPTED_SENTENCE.split(' ').every((word) => word.length > 0 && !/\s/.test(word))).toBe(true);
   });
 
   it('agrees with the regex it replaces on long padding around the real row and around near misses', () => {

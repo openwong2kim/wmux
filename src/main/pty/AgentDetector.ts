@@ -890,7 +890,8 @@ export const INTERRUPTED_SENTENCE = 'Interrupted · What should Claude do instea
  * linear in the row's length.
  */
 interface RowToken { run: boolean; fits: (c: string) => boolean }
-const blankOrSkipped = (c: string): boolean => c === SKIPPED_CELL || /\s/.test(c);
+const WHITESPACE = /\s/;
+const blankOrSkipped = (c: string): boolean => c === SKIPPED_CELL || WHITESPACE.test(c);
 const INTERRUPTED_TOKENS: readonly RowToken[] = [
   { run: true, fits: blankOrSkipped },
   { run: false, fits: (c) => c === '⎿' || c === SKIPPED_CELL },
@@ -906,8 +907,19 @@ function pastRuns(states: Set<number>): Set<number> {
   for (const at of states) if (at < INTERRUPTED_TOKENS.length && INTERRUPTED_TOKENS[at].run) states.add(at + 1);
   return states;
 }
-/** Whether a dialogRowText row is the interrupted-turn row. */
+/**
+ * Whether a dialogRowText row is the interrupted-turn row. A row wider than
+ * MAX_DIALOG_ROW cells is not: dialogRowText expands each `CSI n C` into
+ * skipped cells, so a few bytes can make a row millions of cells long, and
+ * no terminal draws this row that wide. The drawn count is checked before
+ * the walk, so most rows are refused without it.
+ */
 export function isInterruptedRow(row: string): boolean {
+  if (row.length > MAX_DIALOG_ROW) return false;
+  // Every drawn character but the gutter is one of the sentence's, whatever
+  // the split: the letters the row is missing are the sentence's not drawn.
+  const missing = drawnLength(INTERRUPTED_SENTENCE) - (drawnLength(row) - (row.includes('⎿') ? 1 : 0));
+  if (missing < 0 || missing > MAX_SKIPPED_QUESTION_LETTERS) return false;
   let states = pastRuns(new Set([0]));
   for (const c of row) {
     const next = new Set<number>();
@@ -918,11 +930,7 @@ export function isInterruptedRow(row: string): boolean {
     if (next.size === 0) return false;
     states = pastRuns(next);
   }
-  if (!states.has(INTERRUPTED_TOKENS.length)) return false;
-  // Every drawn character but the gutter is one of the sentence's, whatever
-  // the split: the letters the row is missing are the sentence's not drawn.
-  const sentenceDrawn = drawnLength(row) - (row.includes('⎿') ? 1 : 0);
-  return drawnLength(INTERRUPTED_SENTENCE) - sentenceDrawn <= MAX_SKIPPED_QUESTION_LETTERS;
+  return states.has(INTERRUPTED_TOKENS.length);
 }
 const ROW_BREAK_G = new RegExp(ROW_BREAK_RE.source, 'g');
 /** Longest incomplete row the dialog scan carries between chunks. */
