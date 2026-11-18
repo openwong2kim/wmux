@@ -50,7 +50,7 @@ describe('opt-in Rust text delivery', () => {
     const before = getTextSnapshotBackendDiagnostics().native;
     expect(await selectTextSnapshot(req, reference)).toMatchObject({ ...success, durationMs: expect.any(Number) });
     expect(reference).not.toHaveBeenCalled();
-    expect(native).toHaveBeenCalledWith({ ...req, budgetMs: 500 }, 'text');
+    expect(native).toHaveBeenCalledWith({ ...req, budgetMs: 1000 }, 'text');
     expect(getTextSnapshotBackendDiagnostics().native).toBe(before + 1);
   });
 
@@ -128,21 +128,38 @@ describe('opt-in Rust text delivery', () => {
   it('gives fallback only the remaining budget and counts total duration', async () => {
     let now = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => now);
-    native.mockImplementationOnce(async () => { now = 600; return { ok: false, reason: 'budget' }; });
+    // Native has the whole budget; a failure 600 ms in leaves the reference the other 400.
+    native.mockImplementationOnce(async () => { now = 600; return { ok: false, reason: 'error', detail: 'module fault' }; });
     const reference = vi.fn(async (captured: SnapshotRequest) => {
       expect(captured.budgetMs).toBe(400); now += 100; return success;
     });
     expect(await selectTextSnapshot(req, reference)).toMatchObject({ ok: true, durationMs: 700 });
-    expect(getTextSnapshotBackendDiagnostics().circuitOpen).toBe(false);
+    expect(native.mock.calls[0][0].budgetMs).toBe(1000);
   });
 
-  it('does not restart an exhausted deadline', async () => {
+  it('does not restart an exhausted deadline, and reports it as native\'s, not a fallback', async () => {
     let now = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => now);
     native.mockImplementationOnce(async () => { now = 1001; return { ok: false, reason: 'budget' }; });
     const reference = vi.fn(async () => success);
+    const before = getTextSnapshotBackendDiagnostics();
     expect(await selectTextSnapshot(req, reference)).toEqual({ ok: false, reason: 'budget' });
     expect(reference).not.toHaveBeenCalled();
+    const after = getTextSnapshotBackendDiagnostics();
+    expect(after.fallbacks).toBe(before.fallbacks);
+    expect(after.reasons.budget).toBe((before.reasons.budget ?? 0) + 1);
+    expect(after.last).toEqual({ backend: 'rust', reason: 'budget' });
+  });
+
+  it('delivers a complete native result that ended just past the deadline', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockImplementationOnce(async () => { now = 1040; return success; });
+    const reference = vi.fn(async () => success);
+    const before = getTextSnapshotBackendDiagnostics().native;
+    expect(await selectTextSnapshot(req, reference)).toMatchObject({ ok: true, durationMs: 1040 });
+    expect(reference).not.toHaveBeenCalled();
+    expect(getTextSnapshotBackendDiagnostics().native).toBe(before + 1);
   });
 
   it('does not load native code for a zero budget', async () => {

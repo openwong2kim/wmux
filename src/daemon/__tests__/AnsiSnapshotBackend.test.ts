@@ -14,7 +14,7 @@ beforeEach(() => {
   vi.stubEnv('WMUX_RUST_SNAPSHOT', 'ansi');
   vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', `/test/native-${++moduleId}.cjs`);
 });
-afterEach(() => { vi.unstubAllEnvs(); vi.resetAllMocks(); });
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.resetAllMocks(); });
 const nativeSuccess = (initial: Buffer) => native.mockResolvedValue({ ...success, bytesIn: initial.length } as never);
 /** A candidate that drains the whole tee and parses every byte. */
 const drainAll = (async (req: SnapshotRequest) => {
@@ -105,6 +105,42 @@ describe('ANSI snapshot backend selection', () => {
     await selectAnsiSnapshot(request, reference);
     expect(reference.mock.calls[0][0].budgetMs).toBeLessThanOrEqual(1000);
     expect(getAnsiSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: false, last: { backend: 'xterm', reason: 'unsupported' } });
+  });
+
+  // R2 (b) prep: native is the delivering path, so it gets the caller's whole budget.
+  it('hands native the whole budget, and the fallback what a refusal leaves of it', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockImplementationOnce(async () => { now = 700; return { ok: false, reason: 'error', detail: 'unsupported-wide-edge' }; });
+    const reference = vi.fn(async (_req: SnapshotRequest) => success);
+    await selectAnsiSnapshot(request, reference);
+    expect(native.mock.calls[0][0].budgetMs).toBe(1000);
+    expect(reference.mock.calls[0][0].budgetMs).toBe(300);
+  });
+
+  it('ends with budget, without xterm, when native spent the whole budget', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockImplementationOnce(async () => { now = 1001; return { ok: false, reason: 'budget' }; });
+    const reference = vi.fn(async () => success);
+    const before = getAnsiSnapshotBackendDiagnostics();
+    expect(await selectAnsiSnapshot(request, reference)).toMatchObject({ ok: false, reason: 'budget' });
+    expect(reference).not.toHaveBeenCalled();
+    // Native's own outcome, not an xterm fallback that never ran.
+    const after = getAnsiSnapshotBackendDiagnostics();
+    expect(after.fallbacks).toBe(before.fallbacks);
+    expect(after.reasons.budget).toBe((before.reasons.budget ?? 0) + 1);
+    expect(after.last).toEqual({ backend: 'rust', reason: 'budget' });
+  });
+
+  it('delivers a complete native snapshot whose serialization ended just past the deadline', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockImplementationOnce((async () => { now = 1040; return success; }) as never);
+    const reference = vi.fn(async () => success);
+    expect(await selectAnsiSnapshot(request, reference)).toMatchObject({ ok: true, durationMs: 1040 });
+    expect(reference).not.toHaveBeenCalled();
+    expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'rust', reason: 'native' });
   });
 
   it('opens the circuit on a module error until the module changes', async () => {

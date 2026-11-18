@@ -45,8 +45,9 @@ function materialize(req: SnapshotRequest): SnapshotRequest {
 /**
  * Rust is the ANSI backend when the terminal engine is rust (or with an
  * explicit WMUX_RUST_SNAPSHOT=ansi|all); `off` keeps xterm. Any refusal,
- * error, invalid result or spent half-budget falls back to xterm on the same
- * bytes, a live tee's drained chunks included.
+ * error or invalid result falls back to xterm on the same bytes, a live tee's
+ * drained chunks included, with what is left of the budget. Native gets the
+ * whole budget: one that spends it ends the snapshot with `budget`.
  */
 export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference): Promise<SnapshotOutcome> {
   const input = materialize(req);
@@ -81,10 +82,13 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
   let refusal: string | undefined;
   let families: string[] | undefined;
   try {
-    // Half of the caller's total budget stays reserved for the fallback.
-    const native = await generateRustSnapshot({ ...input, drainQueue: record, budgetMs: budget / 2 }, 'ansi');
+    // The whole budget: the native path is the one that delivers (R2 b), and
+    // a refusal still hands the fallback whatever time is left.
+    const native = await generateRustSnapshot({ ...input, drainQueue: record, budgetMs: budget }, 'ansi');
     if (native.ok && Buffer.isBuffer(native.payload) && native.bytesIn === input.initial.length + drainedBytes) {
-      if (performance.now() - started > budget) return overBudget();
+      // A complete snapshot is delivered even when its serialization (which
+      // runs after the last budget check) ends past the deadline: the time is
+      // spent either way, and the alternative is no snapshot.
       diagnostics.native++;
       diagnostics.last = { backend: 'rust', reason: 'native' };
       return { ...native, durationMs: performance.now() - started };
@@ -108,7 +112,6 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
     }
   } catch { /* Module or disposal errors also use the intact xterm input. */ }
   if (failure === 'error') failedModule = { path: modulePath };
-  diagnostics.fallbacks++;
   const counted = failure === 'state' || failure === 'unsupported' ? refusalFamily(refusal, failure) : failure;
   countReason(diagnostics.reasons, counted);
   // The native list is already families, the reported one first; a module
@@ -116,9 +119,14 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
   if (counted.startsWith('unsupported-')) {
     for (const family of new Set([counted, ...(families ?? [])])) countReason(diagnostics.reasonsSeen, family);
   }
-  diagnostics.last = { backend: 'xterm', reason: failure };
   const remaining = budget - (performance.now() - started);
-  if (remaining <= 0) return overBudget();
+  // Native spent the whole budget, or refused at its very end: no fallback runs.
+  if (remaining <= 0) {
+    diagnostics.last = { backend: 'rust', reason: failure };
+    return overBudget();
+  }
+  diagnostics.fallbacks++;
+  diagnostics.last = { backend: 'xterm', reason: failure };
   let replayed = false;
   const replay = source && ((): Buffer[] => {
     if (!replayed) { replayed = true; if (drained.length) return drained; }

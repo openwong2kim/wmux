@@ -69,11 +69,14 @@ export async function selectTextSnapshot(req: SnapshotRequest, xterm: Reference)
   let failure: 'error' | 'budget' = 'error';
   let refusal: string | undefined;
   try {
-    // Reserve half of the caller's total budget for fallback. Neither retry
-    // restarts the original deadline; the shared snapshot queue stays held.
-    const native = await generateRustSnapshot({ ...req, budgetMs: budget / 2 }, 'text');
+    // The whole budget: the native path is the one that delivers (R2 b). A
+    // refusal hands the fallback what is left; one that spent it all ends with
+    // `budget`. Neither restarts the original deadline; the shared snapshot
+    // queue stays held.
+    const native = await generateRustSnapshot({ ...req, budgetMs: budget }, 'text');
     if (native.ok && validText(native, req)) {
-      if (performance.now() - started > budget) return { ok: false, reason: 'budget' };
+      // A complete result is delivered even when it ends past the deadline:
+      // the time is spent either way, and the alternative is no snapshot.
       diagnostics.native++;
       diagnostics.last = { backend: 'rust', reason: 'native' };
       return { ...native, durationMs: performance.now() - started };
@@ -82,11 +85,15 @@ export async function selectTextSnapshot(req: SnapshotRequest, xterm: Reference)
     if (!native.ok) refusal = native.detail;
   } catch { /* Module or disposal errors also use the intact xterm input. */ }
   if (failure === 'error') failedModule = { path: modulePath };
-  diagnostics.fallbacks++;
   countReason(diagnostics.reasons, failure === 'budget' ? failure : refusalFamily(refusal, failure));
-  diagnostics.last = { backend: 'xterm', reason: failure };
   const remaining = budget - (performance.now() - started);
-  if (remaining <= 0) return { ok: false, reason: 'budget' };
+  // Native spent the whole budget, or failed at its very end: no fallback runs.
+  if (remaining <= 0) {
+    diagnostics.last = { backend: 'rust', reason: failure };
+    return { ok: false, reason: 'budget' };
+  }
+  diagnostics.fallbacks++;
+  diagnostics.last = { backend: 'xterm', reason: failure };
   const result = await reference({ ...req, budgetMs: remaining });
   return result.ok ? { ...result, durationMs: performance.now() - started } : result;
 }
