@@ -234,6 +234,42 @@ describe('groupFleetByDevice', () => {
     expect(selectDownHostAway({ ...at(0), pcRailHostStatus: { 'host-x': 'reachable' as const } })).toEqual({});
   });
 
+  it('a down PC\'s note does not count a Needs you the rail has since outdated', () => {
+    const ws: Workspace = {
+      id: 'ws-r', name: 'r', activePaneId: 'p-r',
+      rootPane: {
+        id: 'p-r', type: 'leaf', activeSurfaceId: 's-r',
+        surfaces: [{ id: 's-r', ptyId: '', title: 'shell', shell: 'zsh', cwd: '', surfaceType: 'remote-terminal', remoteHostId: 'host-x', remoteSessionId: 'sess' }],
+      },
+    };
+    const at = (fetchedAt: number) => selectDownHostAway({
+      workspaces: [ws],
+      remoteWorkspaces: [{
+        key: 'host-x:rw', hostId: 'host-x', hostLabel: 'x', workspaceId: 'rw', name: 'r',
+        panes: [{ sessionId: 'sess', agentName: 'Codex', agentStatus: 'awaiting_input' }],
+        stale: true, staleReason: 'unanswered', staleSince: 5,
+      }],
+      pcRailHostStatus: { 'host-x': 'unreachable' },
+      pcRailFeeds: { 'host-x': { workspaces: [], fetchedAt, failedTicks: 2 } },
+    });
+    // The snapshot is the PC's last word: it asked.
+    expect(at(1)).toEqual({ 'host-x': { panes: 1, neededYou: 1 } });
+    // The rail heard from the PC after the snapshot went stale: the ask is outdated, as on the board.
+    expect(at(10)).toEqual({ 'host-x': { panes: 1, neededYou: 0 } });
+  });
+
+  it('a PC the rail calls down keeps its head before its attachments are marked stale', () => {
+    const byDevice = groupFleetByDevice(groupFleetPanes([pane('l')]), {
+      remoteWorkspaces: [{ hostId: 'host-x', hostLabel: 'x', stale: false, panes: [
+        { sessionId: 'a', agentName: 'Codex', agentStatus: 'awaiting_input' }, { sessionId: 'b' },
+      ] }],
+      hosts: [host('host-x', 'office', { offline: true, online: false, lastSeenAt: 3 })],
+      includeDisconnected: true,
+    });
+    expect(byDevice.devices.map((d) => [d.id, d.state])).toEqual([[LOCAL_PC_ID, 'local'], ['host-x', 'disconnected']]);
+    expect(byDevice.devices[1]).toMatchObject({ label: 'office', lastSeenAt: 3, lastSeen: { panes: 2, neededYou: 1 } });
+  });
+
   it('a pane is counted for a down PC only when its row is that PC\'s, never as well as a local row', () => {
     const ws: Workspace = {
       id: 'ws-mixed', name: 'mixed', activePaneId: 'p-mixed',

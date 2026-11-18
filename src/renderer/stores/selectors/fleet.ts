@@ -590,7 +590,9 @@ function remoteRowUnopenable(
 }
 
 /** Attachments the rail has outdated (see FleetSelectorState.outdatedRemoteKeys). */
-export function fleetOutdatedRemoteKeys(state: FleetSelectorState): ReadonlySet<string> | undefined {
+export function fleetOutdatedRemoteKeys(
+  state: Pick<FleetSelectorState, 'outdatedRemoteKeys' | 'remoteWorkspaces' | 'pcRailFeeds'>,
+): ReadonlySet<string> | undefined {
   if (state.outdatedRemoteKeys) return state.outdatedRemoteKeys;
   const { remoteWorkspaces, pcRailFeeds } = state;
   return remoteWorkspaces && pcRailFeeds ? selectOutdatedRemoteKeys({ remoteWorkspaces, pcRailFeeds }) : undefined;
@@ -1468,11 +1470,15 @@ export function fleetRowDevice(
  * the drop notice fires (selectDownHostIds). Empty while no host is down.
  */
 export function selectDownHostAway(
-  state: Pick<FleetSelectorState, 'workspaces' | 'surfaceAgent' | 'remoteWorkspaces' | 'downHostIds' | 'pcRailHostStatus' | 'pcRailFeeds'>,
+  state: Pick<FleetSelectorState, 'workspaces' | 'surfaceAgent' | 'remoteWorkspaces' | 'downHostIds' | 'outdatedRemoteKeys'
+    | 'pcRailHostStatus' | 'pcRailFeeds'>,
 ): Record<string, FleetAwayCounts> {
   const away: Record<string, FleetAwayCounts> = {};
   const down = fleetDownHostIds(state);
   if (!down || down.size === 0) return away;
+  // A snapshot the rail has outdated resolves no agent, as on the board.
+  // `down` stays out: a down host's last snapshot is what this counts.
+  const outdated = fleetOutdatedRemoteKeys(state);
   for (const ws of state.workspaces) {
     const visibleIds = new Set(getLeafPanes(ws.rootPane).map((l) => l.id));
     for (const leaf of getWorkspaceLeafPanes(ws)) {
@@ -1484,7 +1490,9 @@ export function selectDownHostAway(
       let neededYou = false;
       for (const s of leaf.surfaces) {
         if (s.surfaceType !== 'remote-terminal' || s.remoteHostId !== hostId) continue;
-        if (resolveRemoteAgent(state.remoteWorkspaces, s.remoteHostId, s.remoteSessionId)?.status === 'awaiting_input') neededYou = true;
+        if (resolveRemoteAgent(state.remoteWorkspaces, s.remoteHostId, s.remoteSessionId, undefined, outdated)?.status === 'awaiting_input') {
+          neededYou = true;
+        }
       }
       const counts = (away[hostId] ??= { panes: 0, neededYou: 0 });
       counts.panes++;
@@ -1601,16 +1609,16 @@ export function groupFleetByDevice(
     for (const [hostId, counts] of Object.entries(opts.away ?? {})) {
       if (!byId.has(hostId)) disconnected(hostId, attachedLabel.get(hostId) ?? hostId, counts);
     }
-    // Every attachment stale (the PC slept before this run saw its rows):
-    // the last snapshot's panes are what it had.
+    // No rows here (the PC slept before this run saw its rows, or it has no
+    // pane here): the last snapshot's panes are what it had.
     const live = new Set<string>();
     // Hosts with an attachment stale for want of an answer (or not answered
     // yet this run). 'gone' and 'refused' are answers: the PC is up.
     const unanswered = new Set<string>();
     const snapshot = new Map<string, FleetAwayCounts>();
     for (const r of opts.remoteWorkspaces ?? []) {
-      if (!r.stale) { live.add(r.hostId); continue; }
-      if (r.staleReason !== 'gone' && r.staleReason !== 'refused') unanswered.add(r.hostId);
+      if (!r.stale) live.add(r.hostId);
+      else if (r.staleReason !== 'gone' && r.staleReason !== 'refused') unanswered.add(r.hostId);
       const counts = snapshot.get(r.hostId) ?? { panes: 0, neededYou: 0 };
       for (const p of r.panes) {
         counts.panes++;
@@ -1625,11 +1633,13 @@ export function groupFleetByDevice(
       device(host.id, host.label, 'needs-repair').lastSeenAt = host.lastSeenAt;
     }
     for (const [hostId, counts] of snapshot) {
-      // A stale attachment on a host the rail still reaches is a workspace
-      // gone from it, not a disconnected PC. A host the rail does not know
-      // is disconnected only when it did not answer.
+      // A PC the rail calls down keeps its head even before its attachments
+      // are marked stale (the two are written apart). A stale attachment on a
+      // host the rail still reaches is a workspace gone from it, not a
+      // disconnected PC. A host the rail does not know is disconnected only
+      // when every attachment is stale and one went unanswered.
       const host = railHost.get(hostId);
-      if (live.has(hostId) || byId.has(hostId) || (host ? !host.offline : !unanswered.has(hostId))) continue;
+      if (byId.has(hostId) || (host ? !host.offline : live.has(hostId) || !unanswered.has(hostId))) continue;
       disconnected(hostId, attachedLabel.get(hostId) ?? hostId, counts);
     }
   }
