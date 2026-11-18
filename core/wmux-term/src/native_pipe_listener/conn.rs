@@ -4,7 +4,9 @@
 //! bytes in the pipe and the client's writes block: backpressure.
 //!
 //! The client's token is read on a separate thread per request (`token`);
-//! this conn's I/O thread never impersonates.
+//! this conn's I/O thread never impersonates. The I/O thread waits for a
+//! running token thread as it exits, so `closed` means the instance handle
+//! is released and no thread of this conn is left running.
 
 use super::listener::PipeInstance;
 use super::peer::PeerFacts;
@@ -79,6 +81,10 @@ struct Shared {
     /// The pipe instance, for token threads. The I/O thread takes it out as
     /// it exits; a token thread holds its own clone for its call.
     instance: Mutex<Option<Arc<PipeInstance>>>,
+    /// The last token thread. Set under the `instance` lock, and read by the
+    /// exiting I/O thread under that lock after it took the instance out, so
+    /// every token thread started is joined before the conn reports closed.
+    token_thread: Mutex<Option<JoinHandle<()>>>,
     /// Auto-reset: "the state changed, look again". Closed by the I/O
     /// thread as it exits, so a finished conn holds no OS handle however
     /// long its JS object lives; a later poke is a no-op.
@@ -144,6 +150,7 @@ impl Conn {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             instance: Mutex::new(Some(instance.clone())),
+            token_thread: Mutex::new(None),
             control: Mutex::new(Some(event(false)?)),
             notify: Mutex::new(Some(notify)),
             thread: Mutex::new(None),
@@ -161,13 +168,24 @@ impl Conn {
                 run(&worker_shared, &instance, read_event, write_event);
                 // Close order: the handle (and its instance slot), then the
                 // peer's process handle, then report closed. A running token
-                // thread keeps the handle open until its call returns.
-                worker_shared
-                    .instance
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .take();
+                // thread holds the handle until its call returns: wait for it
+                // first, so the handle is released before `closed`.
+                let token_thread = {
+                    let mut slot = worker_shared
+                        .instance
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    slot.take();
+                    worker_shared
+                        .token_thread
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .take()
+                };
                 drop(instance);
+                if let Some(token_thread) = token_thread {
+                    let _ = token_thread.join();
+                }
                 drop(process);
                 worker_shared
                     .control
@@ -227,30 +245,42 @@ impl Conn {
         if state.token_pending || state.token_facts.is_some() {
             return;
         }
-        let instance = if state.closed || state.destroying {
-            None
-        } else {
-            self.shared
-                .instance
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone()
-        };
-        let Some(instance) = instance else {
+        if state.closed || state.destroying {
             return self.answer_now(state, token::CLOSED);
-        };
+        }
         if !state.read_completed {
             return self.answer_now(state, token::NO_READ_YET);
+        }
+        // Held through the spawn and the handle's store: the exiting I/O
+        // thread takes the instance out under this lock, then joins the
+        // stored thread, so a thread started here is always waited for.
+        let slot = self
+            .shared
+            .instance
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(instance) = slot.clone() else {
+            drop(slot);
+            return self.answer_now(state, token::CLOSED);
+        };
+        let mut token_thread = self
+            .shared
+            .token_thread
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // The previous thread has stored its result (none is pending), so
+        // it has ended or is about to: join it rather than leave it detached.
+        if let Some(previous) = token_thread.take() {
+            let _ = previous.join();
         }
         state.token_pending = true;
         #[cfg(test)]
         let delay = state.test.token_delay.take();
         #[cfg(not(test))]
         let delay = None;
-        drop(state);
         let shared = self.shared.clone();
-        // Its own clone, so the result wakes JS even if the conn closes
-        // during the call.
+        // Its own clone, so the result wakes JS before the conn reports
+        // closed (the I/O thread waits for this thread first).
         let notify = self
             .shared
             .notify
@@ -270,10 +300,14 @@ impl Conn {
                 notify();
             }
         });
-        if spawned.is_err() {
-            let mut state = self.shared.lock();
-            state.token_pending = false;
-            self.answer_now(state, token::IMPERSONATION_FAILED);
+        match spawned {
+            Ok(handle) => *token_thread = Some(handle),
+            Err(_) => {
+                drop(token_thread);
+                drop(slot);
+                state.token_pending = false;
+                self.answer_now(state, token::IMPERSONATION_FAILED);
+            }
         }
     }
 
