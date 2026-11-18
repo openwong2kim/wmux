@@ -248,8 +248,11 @@ export const A2A_APPROVAL_RPC = Object.freeze({
 /**
  * Approvals the asking PC sends to one PC at most in any
  * A2A_APPROVALS_SENT_WINDOW_MS (rolling). The receiving PC takes 60 in a
- * minute and drops the rest unread; the window is a little longer than its
- * minute, so a short delay on the way cannot put more than 60 into one there.
+ * minute (A2A_APPROVALS_RECEIVED_WINDOW_MS) and refuses the rest
+ * `rate-limited`. The window is a little longer than that minute, which makes
+ * such refusals rarer but does not rule them out: the two windows count at
+ * send and at arrival, so a delay that varies on the way can still put a 61st
+ * into one there.
  */
 export const A2A_APPROVALS_SENT_PER_WINDOW = 60;
 export const A2A_APPROVALS_SENT_WINDOW_MS = 62_000;

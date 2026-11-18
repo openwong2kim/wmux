@@ -7,8 +7,9 @@
 //     `allow` only when the offer's `allowed` list has it. Anything else is
 //     refused here, with nothing sent.
 //   - At most A2A_APPROVALS_SENT_PER_WINDOW approvals go to one PC in any
-//     A2A_APPROVALS_SENT_WINDOW_MS (rolling). The receiving PC drops the excess
-//     unread, so past it this PC refuses with the time to wait instead.
+//     A2A_APPROVALS_SENT_WINDOW_MS (rolling). The receiving PC refuses the
+//     excess `rate-limited`, so past it this PC refuses with the time to wait
+//     instead, with nothing sent.
 
 import {
   A2A_APPROVALS_SENT_PER_WINDOW,

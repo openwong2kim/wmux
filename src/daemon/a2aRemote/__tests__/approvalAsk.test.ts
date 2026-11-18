@@ -1,7 +1,7 @@
 // The asking PC's checks before an approval leaves it: the offer in the task's
 // latest status, and the pace per receiving PC.
 import { describe, expect, it } from 'vitest';
-import { A2A_APPROVALS_SENT_PER_WINDOW, A2A_APPROVALS_SENT_WINDOW_MS, parseA2aRemoteStatus, type A2aRemoteStatusV1 } from '../../../shared/a2aRemote';
+import { A2A_APPROVALS_RECEIVED_WINDOW_MS, A2A_APPROVALS_SENT_PER_WINDOW, A2A_APPROVALS_SENT_WINDOW_MS, parseA2aRemoteStatus, type A2aRemoteStatusV1 } from '../../../shared/a2aRemote';
 import { ApprovalPacer, checkApprovalOffer } from '../approvalAsk';
 
 const PROMPT = '0123456789abcdef';
@@ -74,6 +74,19 @@ describe('ApprovalPacer', () => {
       expect(sentAt.filter((t) => t >= start && t < start + 60_000).length).toBeLessThanOrEqual(60);
     }
     expect(A2A_APPROVALS_SENT_WINDOW_MS).toBeGreaterThanOrEqual(60_000);
+  });
+
+  it('reduces, but cannot rule out, a 61st in the receiving PC\'s minute: it counts at arrival, a delay that varies moves them closer', () => {
+    const clock = { now: 0 };
+    const pacer = new ApprovalPacer(() => clock.now);
+    const arrivals: number[] = [];
+    // 60 sent at once, held on the way for 3 s.
+    for (let i = 0; i < 60; i++) { pacer.note(HOST_A); arrivals.push(3_000); }
+    // The pace lets the 61st go once its window rolls; it arrives at once.
+    clock.now = A2A_APPROVALS_SENT_WINDOW_MS;
+    expect(pacer.waitMs(HOST_A)).toBe(0);
+    arrivals.push(clock.now);
+    expect(arrivals.filter((t) => t >= 3_000 && t < 3_000 + A2A_APPROVALS_RECEIVED_WINDOW_MS)).toHaveLength(61);
   });
 
   it('only what was noted counts: a check alone sends nothing', () => {

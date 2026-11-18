@@ -390,11 +390,14 @@ for one, on the PC that does the work.
     (feature `approval.1`, advertised only while its setting is on for this
     PC);
   - at most 60 approvals go to one PC in any 62 seconds. Past that the call
-    is refused with `rate-limited` and the time to wait (`retryAfterMs`), so
-    nothing is sent only to be dropped there. Should the other PC still
-    answer `rate-limited` (this PC's count started over after a restart,
-    say), each such message comes back `not-done` with reason
-    `rate-limited` and a `retryAfterMs` of at most a minute.
+    is refused with `rate-limited` and the time to wait (`retryAfterMs`),
+    with nothing sent. This pacing reduces how many approvals reach the
+    other PC past its own limit (60 a minute), but cannot rule it out: this
+    PC counts when it sends and that PC when it receives, so a delay on the
+    way (or this PC's count starting over after a restart) can still put
+    one past it. Each such message comes back `not-done` with reason
+    `rate-limited` and a `retryAfterMs` of at most a minute, never silently
+    dropped.
 - **The outcome.** The call waits up to 10 seconds for it and returns it:
   `done`, `not-done` with a `reason` and this PC's own words in
   `reasonText`, or `uncertain` (the other PC stopped while it ran; it is
