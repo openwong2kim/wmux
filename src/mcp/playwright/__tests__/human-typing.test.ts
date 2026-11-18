@@ -1,11 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Page } from 'playwright-core';
-import { generateHoldSchedule, typeHumanlike } from '../human-typing';
+import { generateDelaySchedule, generateHoldSchedule, typeHumanlike, type HumanTypingOptions } from '../human-typing';
 import { KEY_HOLD_MAX_MS, KEY_HOLD_MIN_MS } from '../../../shared/humanRhythm';
 
 // A keystroke is a key held DOWN and then released, not a press-and-release in
 // the same millisecond. These cover the split, the hold that sits between the
 // two events, and the fallback for characters that cannot be a key at all.
+
+/** mulberry32: a small seeded PRNG, so a draw is the same on every run. */
+function seeded(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
 
 type KeyEvent = { type: 'down' | 'up' | 'press' | 'insert'; key: string; at: number };
 
@@ -45,10 +58,10 @@ function fakePage(opts?: { downRejects?: (char: string) => boolean }): {
  * created so the loop advances without real waiting. `Date.now()` follows the
  * fake clock, so the recorded event times are the schedule itself.
  */
-async function typeOnFakeClock(page: Page, text: string): Promise<void> {
+async function typeOnFakeClock(page: Page, text: string, options?: HumanTypingOptions): Promise<void> {
   vi.useFakeTimers();
   try {
-    const done = typeHumanlike(page, '', text);
+    const done = typeHumanlike(page, '', text, options);
     // Each await in the loop resolves a microtask before the next timer is
     // scheduled, so keep pumping until the whole run settles.
     for (let i = 0; i < text.length * 8 + 8; i++) {
@@ -73,10 +86,16 @@ describe('typeHumanlike key hold', () => {
 
   it('holds every key inside the 30-150 ms band', async () => {
     const { page, events } = fakePage();
-    // Short enough that the schedule's budget is not the binding constraint:
-    // when it is, delays and holds are scaled together and a hold may land
-    // under the band's floor by design (see generateKeystrokeSchedule).
-    await typeOnFakeClock(page, 'the quick');
+    // A draw whose total stays inside the schedule's budget: past it, delays
+    // and holds are scaled together and a hold may land under the band's
+    // floor by design (see generateKeystrokeSchedule). An unseeded draw went
+    // past it for this text a few percent of the time.
+    const seed = 1;
+    const rng = seeded(seed);
+    // The same draws, in the schedule's order: every delay, then every hold.
+    const drawn = sum(generateDelaySchedule('the quick', { rng })) + sum(generateHoldSchedule('the quick', { rng }));
+    expect(drawn, 'the seed keeps the schedule unscaled').toBeLessThanOrEqual('the quick'.length * 120 + 1500);
+    await typeOnFakeClock(page, 'the quick', { rng: seeded(seed) });
 
     const holds: number[] = [];
     for (let i = 0; i < events.length; i += 2) {

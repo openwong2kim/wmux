@@ -13,7 +13,7 @@ import { tryNativeSnapshot } from '../../../main/pty/winSnapshotNative';
 
 const onWindows = process.platform === 'win32';
 
-/** Only processes this file started; each is killed by pid in afterEach. */
+/** Only processes this file started (each holder's whole tree); each is killed by pid in afterEach. */
 const started: number[] = [];
 const dirs: string[] = [];
 
@@ -35,11 +35,27 @@ async function waitFor(check: () => boolean, ms: number): Promise<boolean> {
   return check();
 }
 
+/**
+ * The holder's pid, once `ready.txt` is there. The holder writes it under
+ * another name and renames it, so the name never shows a partial write; a
+ * read that meets the file still held (EBUSY) is "not yet".
+ */
+function readReady(file: string): string | null {
+  try {
+    const text = fs.readFileSync(file, 'utf8').trim();
+    return text.length > 0 ? text : null;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'EBUSY') return null;
+    throw err;
+  }
+}
+
 /** cmd.exe → cmd.exe → powershell.exe, all in `dir`; the powershell holds
  *  `lock.bin` open with no sharing and writes its pid to `ready.txt`. */
 async function startHolder(dir: string): Promise<{ root: ChildProcess; holderPid: number }> {
   const ps = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const script = "$f=[IO.File]::Open('lock.bin','OpenOrCreate','ReadWrite','None'); Set-Content -Path ready.txt -Value $PID; Start-Sleep -Seconds 120";
+  const script = "$f=[IO.File]::Open('lock.bin','OpenOrCreate','ReadWrite','None'); Set-Content -Path ready.tmp -Value $PID; Move-Item -Path ready.tmp -Destination ready.txt; Start-Sleep -Seconds 120";
   const root = spawn('cmd.exe', ['/d', '/c', `cmd.exe /d /c ""${ps}" -NoProfile -NonInteractive -Command "${script}""`], {
     cwd: dir,
     windowsHide: true,
@@ -48,9 +64,11 @@ async function startHolder(dir: string): Promise<{ root: ChildProcess; holderPid
   });
   started.push(root.pid!);
   const ready = path.join(dir, 'ready.txt');
-  expect(await waitFor(() => fs.existsSync(ready) && fs.readFileSync(ready, 'utf8').trim().length > 0, 30_000)).toBe(true);
-  const holderPid = Number(fs.readFileSync(ready, 'utf8').trim());
-  started.push(holderPid);
+  expect(await waitFor(() => readReady(ready) !== null, 30_000)).toBe(true);
+  const holderPid = Number(readReady(ready));
+  // The whole tree while it is all alive, the cmd.exe between them included,
+  // so afterEach leaves none of it running.
+  for (const pid of [...treeOf(root.pid!), holderPid]) if (!started.includes(pid)) started.push(pid);
   return { root, holderPid };
 }
 

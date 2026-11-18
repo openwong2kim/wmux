@@ -11,6 +11,7 @@ import { BOT_SESSIONS_VERSION, BotRuntime, BotSessionStore, savedMarks, type Bot
 import type { BotEngineFactory, BotEngineSpawnInput } from '../botEngines';
 import { BotStore, botsFilePath } from '../botStore';
 import { WakeQueue, wakeQueuePath } from '../wakeQueue';
+import { persisterWritesSettled } from '../versionedFile';
 import { DEFAULT_FACTORY_SETTINGS, type FactorySettings } from '../factorySettings';
 import { __resetBotHooksForTesting, onBotHook, type BotHookEvent } from '../botHooks';
 import { HOUR_MS } from '../budget';
@@ -77,6 +78,9 @@ beforeEach(() => {
 
 afterEach(async () => {
   await Promise.all(flushers.splice(0).map((f) => f().catch(() => undefined)));
+  // And any store a test made without a flusher (a reload, a second rig):
+  // a write still on its way would land in the folder while it goes (ENOTEMPTY).
+  await persisterWritesSettled();
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -886,7 +890,7 @@ describe('BotRuntime', () => {
     const store = new BotStore(botsFilePath(dir), { now: () => clock });
     const queue = new WakeQueue(wakeQueuePath(dir), { now: () => clock });
     const sessions = new BotSessionStore(botSessionsPath(dir));
-    flushers.push(() => store.flush(), () => queue.flush());
+    flushers.push(() => store.flush(), () => queue.flush(), () => sessions.flush());
     const adapter = new FakeAdapter('hang');
     const runtime = new BotRuntime({
       store, queue, sessions, settings: () => settings, wmuxDir: dir, now: () => clock,
@@ -1107,7 +1111,7 @@ describe('BotRuntime', () => {
     const store = new BotStore(botsFilePath(dir), { now: () => clock });
     const queue = new WakeQueue(wakeQueuePath(dir), { now: () => clock });
     const sessions = new BotSessionStore(botSessionsPath(dir));
-    flushers.push(() => store.flush(), () => queue.flush());
+    flushers.push(() => store.flush(), () => queue.flush(), () => sessions.flush());
     const adapters: FakeAdapter[] = [];
     const runtime = new BotRuntime({
       store, queue, sessions, settings: () => settings, wmuxDir: dir, now: () => clock,

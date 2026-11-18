@@ -8,9 +8,11 @@
 // same selection guard as the reveal, and must not refit when the acquire
 // failed or the pane was hidden first.
 // Mounts the REAL useTerminal against a real xterm under jsdom, with the
-// queue's job captured so the test decides when it runs.
+// queue's job captured so the test decides when it runs, and animation frames
+// held until the test runs them: the upgrade's refit frame must not fall due
+// inside an act() before the check that it has not run yet.
 
-import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { installCanvas2dStub } from '../../../test-utils/canvas2dStub';
 import { act, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -76,6 +78,19 @@ beforeAll(() => {
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 
+/** Animation frames requested and not yet run; they run only in runFrames(). */
+const frames = new Map<number, FrameRequestCallback>();
+let lastFrame = 0;
+
+beforeEach(() => {
+  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+    lastFrame += 1;
+    frames.set(lastFrame, cb);
+    return lastFrame;
+  });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id); });
+});
+
 afterEach(() => {
   act(() => root?.unmount());
   host?.remove();
@@ -83,6 +98,18 @@ afterEach(() => {
   host = null;
   webgl.fail = false;
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  frames.clear();
+});
+
+/** Run, under act, the frames requested so far (not the ones they request). */
+const runFrames = () => act(async () => {
+  for (const id of [...frames.keys()]) {
+    const cb = frames.get(id);
+    if (!cb) continue; // cancelled by an earlier frame
+    frames.delete(id);
+    cb(performance.now());
+  }
 });
 
 const settle = (ms = 50) => act(async () => { await deliberateSleep(ms, 'not yet converted (#2363): settle helper under act; callers assert after it'); });
@@ -111,8 +138,9 @@ async function setup(ptyId: string) {
   document.body.appendChild(host);
   root = createRoot(host);
   await act(async () => { root!.render(<Harness visible />); });
-  // The reveal's own fit (DOM renderer) runs here.
   await settle();
+  // The reveal's own fit (DOM renderer) runs in its frame.
+  await runFrames();
   return { Harness, fitSpy, jobs, cancel };
 }
 
@@ -125,7 +153,8 @@ describe('useTerminal WebGL upgrade refit', { timeout: 60_000 }, () => {
 
     await act(async () => { jobs.at(-1)!(); });
     expect(webgl.created).toBe(created + 1);
-    await settle();
+    expect(fitSpy).not.toHaveBeenCalled();
+    await runFrames();
     expect(fitSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -136,7 +165,7 @@ describe('useTerminal WebGL upgrade refit', { timeout: 60_000 }, () => {
     fitSpy.mockClear();
 
     await act(async () => { jobs.at(-1)!(); });
-    await settle();
+    await runFrames();
     expect(fitSpy).not.toHaveBeenCalled();
   });
 
@@ -148,7 +177,7 @@ describe('useTerminal WebGL upgrade refit', { timeout: 60_000 }, () => {
     fitSpy.mockClear();
 
     await act(async () => { jobs.at(-1)!(); });
-    await settle();
+    await runFrames();
     expect(fitSpy).not.toHaveBeenCalled();
   });
 
@@ -161,7 +190,7 @@ describe('useTerminal WebGL upgrade refit', { timeout: 60_000 }, () => {
       jobs.at(-1)!();
       root!.render(<Harness visible={false} />);
     });
-    await settle();
+    await runFrames();
     expect(fitSpy).not.toHaveBeenCalled();
   });
 });
@@ -177,7 +206,7 @@ describe('useTerminal WebGL upgrade keeps the DOM frame off screen', { timeout: 
     expect(xtermEl().style.opacity).toBe('0');
     await act(async () => { jobs.at(-1)!(); });
     expect(xtermEl().style.opacity).toBe('0');
-    await settle();
+    await runFrames();
     expect(xtermEl().style.opacity).toBe('');
   });
 
