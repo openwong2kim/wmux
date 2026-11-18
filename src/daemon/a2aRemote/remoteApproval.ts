@@ -12,12 +12,15 @@
 //     pane's delivery lock through the registry's remote branch
 //     (REMOTE_* markers), which proves the dialog again and re-runs these
 //     checks before the read and right before the key;
-//   - a receipt (`in-flight`, fsynced) is on disk before the key; one left
-//     in flight by a stop is `uncertain` and never run again, and a resend
-//     of a message answers the outcome stored for it.
+//   - a decision must be one the status that actually left this PC allowed;
+//   - every outcome is stored per message id (a receipt, fsynced), a refusal
+//     too, so a resend answers the stored outcome and a retry takes a new id;
+//     a receipt is `in-flight` on disk before the key, and one a stop left in
+//     flight is `uncertain` and never run again.
 // What leaves this PC: the prompt id, the tool name, flags, the auto-deny
-// time, and at exposure `command` the bound call's command, redacted and
-// capped. Never screen rows, descriptions, the working folder or file bodies.
+// time, and at exposure `command`, for a tool that can be allowed, the bound
+// call's command, redacted and capped. Never screen rows, descriptions, the
+// working folder or file bodies. Only tasks sent to a linked pane take part.
 
 import crypto from 'node:crypto';
 import {
@@ -31,13 +34,15 @@ import {
   type A2aRemoteApprovalOutcome,
   type A2aRemoteApprovalReason,
   type A2aRemoteApprovalV1,
+  type A2aRemoteStatusV1,
   type HostId,
+  parseA2aRemoteStatus,
 } from '../../shared/a2aRemote';
 import { localSideOf, remoteWorkspaceId, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 import type { GatedSubmitProof } from '../../shared/ptyMessageDelivery';
 import { redactSecretsCounted } from '../../shared/redactSecrets';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
-import { receiptHash, type AnswerReceiptStore } from '../approvals/AnswerReceiptStore';
+import { AnswerReceiptStore, receiptHash } from '../approvals/AnswerReceiptStore';
 import { PLAN_ACTION_APPROVE, type RemoteApprovalRecordFacts } from '../approvals/ApprovalRegistry';
 import {
   REMOTE_DECISION_V2_ANSWER,
@@ -47,16 +52,51 @@ import {
   type ApprovalResolveResult,
 } from '../approvals/types';
 import { HEADLESS_DELIVERY_TICK_MS, type HeadlessTaskStatus } from './headlessDelivery';
+import { HeadlessStatusReporter } from './headlessStatus';
 import type { LinkedTaskTurn } from './linkedTaskTurns';
 
 /** Allow is offered for these tools' prompts (WebSearch: its query is the command). */
 export const APPROVE_TOOLS: ReadonlySet<string> = new Set(['Bash', 'PowerShell', 'WebSearch']);
-/** Only deny is offered for these. */
+/** Only deny is offered for these, and their command never leaves this PC. */
 export const DENY_ONLY_TOOLS: ReadonlySet<string> = new Set(['Read', 'WebFetch', 'Edit', 'Write', 'NotebookEdit']);
 /** The plan dialog: its manual-approve row and deny, only where it is answered by fenced keys. */
 export const PLAN_TOOL = 'ExitPlanMode';
+/**
+ * The input fields an allow covers, per tool: what the other PC is shown (the
+ * command, and a shell call's description, which the dialog draws). A call
+ * with any other field is offered deny only.
+ */
+export const SHOWN_INPUT_KEYS: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
+  Bash: new Set(['command', 'description']),
+  PowerShell: new Set(['command', 'description']),
+  WebSearch: new Set(['query']),
+  [PLAN_TOOL]: new Set(['plan']),
+});
 /** Prompts offered per task at most; later ones stay on this PC. */
 export const APPROVAL_PROMPTS_PER_TASK_MAX = 60;
+/** Statuses per task this producer sends at most: one per prompt and one per outcome. */
+export const APPROVAL_STATUS_CHANGES_MAX = APPROVAL_PROMPTS_PER_TASK_MAX * 2;
+/** Approvals one PC may send in a window; past it they are taken and dropped unread. */
+export const APPROVALS_PER_WINDOW = 60;
+/** Refusal audit lines per PC in a window; past it one line says how many were left out. */
+export const APPROVAL_AUDIT_REFUSALS_PER_WINDOW = 30;
+export const APPROVAL_WINDOW_MS = 60_000;
+/** The file the outcomes are stored in. */
+export const APPROVAL_RECEIPTS_FILE = 'a2a-remote-approval-receipts.json';
+
+/**
+ * The receipts store, fsynced on every write. A file that is there but cannot
+ * be read or parsed leaves it null: every approval is then refused until a
+ * person repairs or removes the file.
+ */
+export function openApprovalReceipts(dir: string, log: (level: 'error', msg: string) => void, now: () => number = Date.now): AnswerReceiptStore | null {
+  try {
+    return new AnswerReceiptStore(dir, now, undefined, APPROVAL_RECEIPTS_FILE, { durable: true, strictRead: true });
+  } catch (err) {
+    log('error', `[a2a-remote] ${APPROVAL_RECEIPTS_FILE} could not be read; approvals from other PCs are refused until it is repaired or removed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
 
 /** What decideRemoteApproval decides on. Every field is read fresh by the caller. */
 export interface RemoteApprovalFacts {
@@ -70,6 +110,8 @@ export interface RemoteApprovalFacts {
   record: Pick<RemoteApprovalRecordFacts, 'native' | 'answered' | 'matched' | 'toolUseId' | 'promptFingerprint' | 'keyRevisionAtCreate' | 'risk' | 'yesKey' | 'fencedPlan'> & {
     /** The bound call's tool. */
     tool?: string;
+    /** The keys of the bound call's whole input. */
+    inputKeys?: readonly string[];
   };
   /** The command as it would be offered: shown at all, cut at the cap, changed by redaction. */
   command: { shown: boolean; cut: boolean; redacted: boolean };
@@ -77,13 +119,19 @@ export interface RemoteApprovalFacts {
 
 export type RemoteApprovalVerdict = { ok: true; allowed: A2aRemoteApprovalDecision[] } | { ok: false; reason: A2aRemoteApprovalReason };
 
+/** Whether the command of a call of this tool may leave this PC (exposure `command`): only one that can be allowed. */
+export function carriesCommand(tool: string | undefined): boolean {
+  return tool !== undefined && (APPROVE_TOOLS.has(tool) || tool === PLAN_TOOL);
+}
+
 /**
  * Whether a prompt may be offered to (and answered by) the PC that sent the
  * task, and what it may answer. Deny and allow both need the setting on, the
  * task open and from that PC on an active link, a record bound to the agent's
  * call, that call in this task's turn, and the chain unbroken at the record's
  * revision. Allow also needs a tool that takes it, exposure `command`, the
- * command shown whole and unredacted, and no `critical` hint.
+ * command shown whole and unredacted, no input field it does not show
+ * (SHOWN_INPUT_KEYS), and no `critical` hint.
  */
 export function decideRemoteApproval(f: RemoteApprovalFacts): RemoteApprovalVerdict {
   const no = (reason: A2aRemoteApprovalReason): RemoteApprovalVerdict => ({ ok: false, reason });
@@ -97,7 +145,9 @@ export function decideRemoteApproval(f: RemoteApprovalFacts): RemoteApprovalVerd
   const t = f.turn;
   if (!t || !t.sameSession || !t.opened || t.closed || !t.toolUseIds.includes(r.toolUseId)) return no('turn-unproven');
   if (f.chain.broken || f.chain.baseline === null || r.keyRevisionAtCreate !== f.chain.baseline) return no('chain-broken');
-  const shownWhole = f.exposure === 'command' && f.command.shown && !f.command.cut && !f.command.redacted && r.risk !== 'critical';
+  const shown = SHOWN_INPUT_KEYS[r.tool];
+  const nothingHidden = !!shown && !!r.inputKeys && r.inputKeys.every((k) => shown.has(k));
+  const shownWhole = f.exposure === 'command' && f.command.shown && !f.command.cut && !f.command.redacted && nothingHidden && r.risk !== 'critical';
   if (r.tool === PLAN_TOOL) {
     if (!r.fencedPlan) return no('unsupported-tool');
     return { ok: true, allowed: shownWhole ? ['allow', 'deny'] : ['deny'] };
@@ -132,6 +182,8 @@ export interface RemoteApprovalsDeps {
   exposure(hostId: HostId): A2aApprovalExposure | null;
   anyOn(): boolean;
   tasks: { get(taskId: string): Task | undefined; remote(): Task[] };
+  /** The task was sent to a linked pane here (not a headless start's, not a spawn link's). */
+  linkedPane(task: Task): boolean;
   /** The link's state is `active`. */
   linkActive(linkId: string): boolean;
   /** The PC's display name, for the audit (`remote:<PC>/<hostId>`). */
@@ -149,11 +201,15 @@ export interface RemoteApprovalsDeps {
   /** The pane's delivery lock (paneDeliveryLock.ts): its token, or null when another writer kept it. */
   lock(sessionId: string): Promise<string | null>;
   unlock(sessionId: string, token: string): void;
-  /** Receipts (`a2a-remote-approval-receipts.json`, durable); null: it could not be loaded, and nothing is typed. */
+  /** Receipts (openApprovalReceipts); null: it could not be loaded, and nothing is typed. */
   receipts: AnswerReceiptStore | null;
-  /** The status reporter (headlessStatus.ts) this producer feeds. */
-  status: { tick(statuses: HeadlessTaskStatus[]): void };
+  /** Where this producer's statuses go (A2aRemoteDelivery.statusPeer / sendStatus), behind its own reporter. */
+  status: {
+    peer(taskId: string): { connected: boolean; takesStatus: boolean; epoch: string | null } | null;
+    send(taskId: string, status: A2aRemoteStatusV1): { ok: true } | { ok: false; error: string };
+  };
   log(level: 'info' | 'warn', msg: string): void;
+  now?: () => number;
   /** Test seam: no timer is started. */
   manualTick?: boolean;
 }
@@ -170,8 +226,8 @@ function proofKey(p: GatedSubmitProof): string {
 }
 
 interface Tracked {
-  /** Prompt ids offered on this task (APPROVAL_PROMPTS_PER_TASK_MAX). */
-  offered: Set<string>;
+  /** What left this PC for each prompt id, as last sent: the decisions it allowed. At most APPROVAL_PROMPTS_PER_TASK_MAX. */
+  sent: Map<string, { allowed: A2aRemoteApprovalDecision[]; command: boolean }>;
   capLogged: boolean;
   outcomes: A2aRemoteApprovalOutcome[];
 }
@@ -183,16 +239,52 @@ interface Offer {
   offer: A2aRemoteApprovalOffer;
 }
 
+/** A per-PC count in a window. */
+class Window {
+  private readonly counts = new Map<string, { start: number; count: number }>();
+  constructor(private readonly now: () => number) {}
+  /** This one's number in the current window (1 for the first). */
+  count(key: string): number {
+    const at = this.now();
+    let w = this.counts.get(key);
+    if (!w || at - w.start >= APPROVAL_WINDOW_MS) {
+      w = { start: at, count: 0 };
+      this.counts.delete(key);
+      this.counts.set(key, w);
+      while (this.counts.size > 1000) this.counts.delete(this.counts.keys().next().value as string);
+    }
+    w.count += 1;
+    return w.count;
+  }
+}
+
 export class RemoteApprovals {
   private readonly deps: RemoteApprovalsDeps;
+  private readonly now: () => number;
   private readonly chains = new Map<string, Chain>();
   private readonly tracked = new Map<string, Tracked>();
   /** Tasks with an approval being carried out now: one at a time each. */
   private readonly busy = new Set<string>();
+  private readonly reporter: HeadlessStatusReporter;
+  private readonly admitted: Window;
+  private readonly audited: Window;
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(deps: RemoteApprovalsDeps) {
     this.deps = deps;
+    this.now = deps.now ?? Date.now;
+    this.admitted = new Window(this.now);
+    this.audited = new Window(this.now);
+    this.reporter = new HeadlessStatusReporter({
+      peer: (taskId) => deps.status.peer(taskId),
+      send: (taskId, status) => deps.status.send(taskId, status),
+      // An offer carries no menu labels.
+      labels: () => 'send',
+      log: deps.log,
+      now: this.now,
+      changesMax: APPROVAL_STATUS_CHANGES_MAX,
+      sent: (taskId, status) => this.noteSent(taskId, status),
+    });
   }
 
   start(): void {
@@ -209,13 +301,21 @@ export class RemoteApprovals {
     this.timer = null;
   }
 
+  /** One more approval from `hostId` may be taken now (APPROVALS_PER_WINDOW); false: dropped unread, one log line per window. */
+  admit(hostId: HostId): boolean {
+    const n = this.admitted.count(hostId);
+    if (n <= APPROVALS_PER_WINDOW) return true;
+    if (n === APPROVALS_PER_WINDOW + 1) this.deps.log('warn', `[a2a-remote] ${hostId}: more than ${APPROVALS_PER_WINDOW} approvals in a minute; the rest are dropped unread`);
+    return false;
+  }
+
   /** One pass: what each task whose sender has the setting on offers now. Nothing is read while it is on for no PC. */
   tick(): void {
     if (!this.deps.anyOn()) {
       this.stop();
       this.tracked.clear();
       this.chains.clear();
-      this.deps.status.tick([]);
+      this.reporter.tick([]);
       return;
     }
     if (!this.timer && this.deps.manualTick !== true) {
@@ -234,7 +334,7 @@ export class RemoteApprovals {
       const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
       if (marker?.direction !== 'inbound' || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) continue;
       live.add(task.id);
-      if (this.deps.exposure(marker.hostId) === null) continue;
+      if (this.deps.exposure(marker.hostId) === null || !this.deps.linkedPane(task)) continue;
       try {
         const status = this.statusOf(task);
         if (status) statuses.push(status);
@@ -244,32 +344,31 @@ export class RemoteApprovals {
     }
     for (const id of [...this.chains.keys()]) if (!live.has(id)) this.chains.delete(id);
     for (const id of [...this.tracked.keys()]) if (!live.has(id)) this.tracked.delete(id);
-    this.deps.status.tick(statuses);
+    this.reporter.tick(statuses);
   }
 
   /**
    * The sender's approval of a prompt this PC offered. Never throws; how it
-   * went is kept for the task's status and logged. The setting was checked
-   * when the message was taken, and is checked again here.
+   * went is stored per message id, kept for the task's status (a linked pane's
+   * task only) and logged. `running`: a resend of one still being carried out.
    */
   async take(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1): Promise<A2aRemoteApprovalOutcome | 'running'> {
     const outcome = await this.carryOut(hostId, taskId, messageId, approval).catch((err: unknown): A2aRemoteApprovalOutcome => {
       this.deps.log('warn', `[a2a-remote] approval task=${taskId} message=${messageId}: ${err instanceof Error ? err.message : String(err)}`);
       return { messageId, outcome: 'not-done', reason: 'unavailable' };
     });
-    // A resend of one still running: its own outcome is recorded when it ends.
-    if (outcome !== 'running') this.record(taskId, outcome);
+    // A resend of one still running: its own outcome is recorded when it ends. Only a linked pane's task has a status here.
+    const task = this.deps.tasks.get(taskId);
+    if (outcome !== 'running' && task && this.deps.linkedPane(task)) this.record(taskId, outcome);
     return outcome;
   }
 
   private async carryOut(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1): Promise<A2aRemoteApprovalOutcome | 'running'> {
-    const notDone = (reason: A2aRemoteApprovalReason, fp?: string): A2aRemoteApprovalOutcome => {
-      this.audit(taskId, messageId, approval, `not-done:${reason}`, fp);
-      return { messageId, outcome: 'not-done', reason };
-    };
-    if (this.deps.exposure(hostId) === null) return notDone('approvals-off');
     const receipts = this.deps.receipts;
-    if (!receipts) return notDone('unavailable');
+    if (!receipts) {
+      this.audit(hostId, taskId, messageId, approval, 'not-done:unavailable');
+      return { messageId, outcome: 'not-done', reason: 'unavailable' };
+    }
     const owner = `remote:${hostId}`;
     const approvalId = `${taskId}:${approval.promptId}:${approval.decision}`;
     const bodyHash = receiptHash([taskId, approval.promptId, approval.decision]);
@@ -277,20 +376,42 @@ export class RemoteApprovals {
     if (seen?.kind === 'in-flight') return 'running';
     const stored = this.storedOutcome(seen, messageId);
     if (stored) {
-      this.audit(taskId, messageId, approval, `stored:${stored.outcome}${stored.reason ? `:${stored.reason}` : ''}`);
+      this.audit(hostId, taskId, messageId, approval, `stored:${stored.outcome}${stored.reason ? `:${stored.reason}` : ''}`);
       return stored;
     }
-    if (this.busy.has(taskId)) return notDone('lock-busy');
+    /** A refusal: stored for this message id first, so a resend answers it again. */
+    const refuse = async (reason: A2aRemoteApprovalReason, fp?: string): Promise<A2aRemoteApprovalOutcome | 'running'> => {
+      this.audit(hostId, taskId, messageId, approval, `not-done:${reason}`, fp);
+      try {
+        const begun = await receipts.begin(owner, messageId, approvalId, bodyHash);
+        if (begun.kind === 'new') {
+          await receipts.finish(owner, messageId, 'refused', { status: 409, body: { outcome: 'not-done', reason } });
+        } else if (begun.kind === 'in-flight') {
+          return 'running';
+        } else if (begun.kind !== 'full') {
+          return this.storedOutcome(begun, messageId) ?? { messageId, outcome: 'not-done', reason };
+        }
+      } catch {
+        // Not stored: nothing was typed either way.
+      }
+      return { messageId, outcome: 'not-done', reason };
+    };
+    if (this.deps.exposure(hostId) === null) return refuse('approvals-off');
+    const task = this.deps.tasks.get(taskId);
+    const marker = task?.metadata.remote as A2aRemoteTaskState | undefined;
+    if (!task || marker?.hostId !== hostId) return refuse('not-open');
+    if (!this.deps.linkedPane(task)) return refuse('not-linked');
+    if (this.busy.has(taskId)) return refuse('lock-busy');
     this.busy.add(taskId);
     try {
-      const task = this.deps.tasks.get(taskId);
-      const marker = task?.metadata.remote as A2aRemoteTaskState | undefined;
-      if (!task || marker?.hostId !== hostId) return notDone('not-open');
       const found = this.currentOffer(task);
-      if ('reason' in found) return notDone(found.reason);
-      if (found.promptId !== approval.promptId || !this.tracked.get(taskId)?.offered.has(found.promptId)) return notDone('not-offered');
+      if ('reason' in found) return await refuse(found.reason);
       const fp8 = found.facts.promptFingerprint?.slice(0, 8);
-      if (!found.offer.allowed.includes(approval.decision)) return notDone('deny-only', fp8);
+      if (found.promptId !== approval.promptId) return await refuse('not-offered', fp8);
+      const wire = this.tracked.get(taskId)?.sent.get(found.promptId);
+      if (!wire) return await refuse('not-offered', fp8);
+      // In what left this PC and in what holds now.
+      if (!wire.allowed.includes(approval.decision) || !found.offer.allowed.includes(approval.decision)) return await refuse('deny-only', fp8);
       const sessionId = found.facts.sessionId;
       let token: string | null = null;
       try {
@@ -298,26 +419,26 @@ export class RemoteApprovals {
       } catch {
         token = null;
       }
-      if (!token) return notDone('lock-busy', fp8);
+      if (!token) return await refuse('lock-busy', fp8);
       try {
         let begun: Awaited<ReturnType<AnswerReceiptStore['begin']>>;
         try {
           begun = await receipts.begin(owner, messageId, approvalId, bodyHash);
         } catch {
-          return notDone('unavailable', fp8);
+          this.audit(hostId, taskId, messageId, approval, 'not-done:unavailable', fp8);
+          return { messageId, outcome: 'not-done', reason: 'unavailable' };
         }
         if (begun.kind === 'in-flight') return 'running';
         if (begun.kind !== 'new') {
-          return this.storedOutcome(begun.kind === 'full' ? null : begun, messageId) ?? notDone('unavailable', fp8);
+          return this.storedOutcome(begun.kind === 'full' ? null : begun, messageId) ?? { messageId, outcome: 'not-done', reason: 'unavailable' };
         }
         let result: ApprovalResolveResult;
         try {
           result = await this.deps.registry.resolve(this.resolveParams(hostId, task, messageId, approval, found));
         } catch (err) {
           // Whether its key landed is not known: said so, and never run again.
-          const response = { status: 500, body: { outcome: 'uncertain' } };
-          await receipts.finish(owner, messageId, 'uncertain', response);
-          this.audit(taskId, messageId, approval, `uncertain:${err instanceof Error ? err.message : String(err)}`, fp8);
+          await receipts.finish(owner, messageId, 'uncertain', { status: 500, body: { outcome: 'uncertain' } });
+          this.audit(hostId, taskId, messageId, approval, `uncertain:${err instanceof Error ? err.message : String(err)}`, fp8);
           return { messageId, outcome: 'uncertain' };
         }
         const out: A2aRemoteApprovalOutcome = result.ok ? { messageId, outcome: 'done' } : { messageId, outcome: 'not-done', reason: 'refused' };
@@ -325,7 +446,7 @@ export class RemoteApprovals {
           status: result.ok ? 200 : 409,
           body: { outcome: out.outcome, ...(out.reason ? { reason: out.reason } : {}) },
         });
-        this.audit(taskId, messageId, approval, result.ok ? 'done' : `not-done:refused:${result.reason}`, fp8);
+        this.audit(hostId, taskId, messageId, approval, result.ok ? 'done' : `not-done:refused:${result.reason}`, fp8);
         return out;
       } finally {
         this.deps.unlock(sessionId, token);
@@ -352,7 +473,9 @@ export class RemoteApprovals {
     const resolvedBy = `remote:${name}/${hostId}`;
     const recheck = (record: { id: string }): boolean => {
       const now = this.offerFor(task.id, record.id);
-      return !('reason' in now) && now.promptId === approval.promptId && now.offer.allowed.includes(approval.decision);
+      const wire = this.tracked.get(task.id)?.sent.get(approval.promptId);
+      return !('reason' in now) && now.promptId === approval.promptId && now.offer.allowed.includes(approval.decision)
+        && !!wire && wire.allowed.includes(approval.decision);
     };
     const common = {
       id: facts.id,
@@ -426,6 +549,7 @@ export class RemoteApprovals {
   private offerFor(taskId: string, recordId: string): Offer | { reason: A2aRemoteApprovalReason } {
     const task = this.deps.tasks.get(taskId);
     if (!task) return { reason: 'not-open' };
+    if (!this.deps.linkedPane(task)) return { reason: 'not-linked' };
     const facts = this.deps.registry.facts(recordId);
     if (!facts) return { reason: 'not-offered' };
     return this.decide(task, facts);
@@ -441,7 +565,8 @@ export class RemoteApprovals {
     const live = latest ? this.deps.session(latest.proof.ptyId) : null;
     const sameSession = !!latest && !!live && facts.sessionId === latest.proof.ptyId && facts.sessionId === ptyId
       && live.incarnation === latest.proof.incarnation && live.keyEpoch === latest.proof.keyEpoch;
-    const command = exposure === 'command' && facts.call ? offeredCommand(facts.call.command) : null;
+    // The command leaves this PC only for a call that can be allowed.
+    const command = exposure === 'command' && facts.call && carriesCommand(facts.call.name) ? offeredCommand(facts.call.command) : null;
     const verdict = decideRemoteApproval({
       exposure,
       task: {
@@ -453,7 +578,7 @@ export class RemoteApprovals {
       },
       turn: latest ? { ...latest.turn, sameSession } : null,
       chain,
-      record: { ...facts, ...(facts.call ? { tool: facts.call.name } : {}) },
+      record: { ...facts, ...(facts.call ? { tool: facts.call.name, inputKeys: facts.call.inputKeys } : {}) },
       // An empty command (a plan call without its text) shows nothing to allow.
       command: { shown: command !== null && command.text.trim() !== '', cut: command?.cut ?? false, redacted: command?.redacted ?? false },
     });
@@ -470,7 +595,7 @@ export class RemoteApprovals {
       offer: {
         promptId,
         tool: facts.call.name,
-        ...(command ? { command: command.text } : {}),
+        ...(command && command.text.trim() !== '' ? { command: command.text } : {}),
         redacted: command?.redacted ?? false,
         cut: command?.cut ?? false,
         ...(facts.autoDenyAt ? { autoDenyAt: facts.autoDenyAt } : {}),
@@ -498,6 +623,15 @@ export class RemoteApprovals {
     return best ?? { reason: why };
   }
 
+  private trackedOf(taskId: string): Tracked {
+    let t = this.tracked.get(taskId);
+    if (!t) {
+      t = { sent: new Map(), capLogged: false, outcomes: [] };
+      this.tracked.set(taskId, t);
+    }
+    return t;
+  }
+
   private statusOf(task: Task): HeadlessTaskStatus | null {
     let t = this.tracked.get(task.id);
     // Nothing offered yet and no open turn of the task's own: the pane's prompts are not read.
@@ -505,17 +639,13 @@ export class RemoteApprovals {
     if (!t && (!latest || !latest.turn.opened || latest.turn.closed)) return null;
     const found = this.currentOffer(task);
     if (!('reason' in found)) {
-      if (!t) {
-        t = { offered: new Set(), capLogged: false, outcomes: [] };
-        this.tracked.set(task.id, t);
-      }
-      if (!t.offered.has(found.promptId) && t.offered.size >= APPROVAL_PROMPTS_PER_TASK_MAX) {
+      t = this.trackedOf(task.id);
+      if (!t.sent.has(found.promptId) && t.sent.size >= APPROVAL_PROMPTS_PER_TASK_MAX) {
         if (!t.capLogged) {
           t.capLogged = true;
           this.deps.log('info', `[a2a-remote] approvals: task ${task.id}: ${APPROVAL_PROMPTS_PER_TASK_MAX} prompts offered; later ones are answered on this PC`);
         }
       } else {
-        t.offered.add(found.promptId);
         return {
           taskId: task.id,
           kind: 'question',
@@ -537,21 +667,37 @@ export class RemoteApprovals {
     };
   }
 
+  /** A status was queued for the PC: what it offers is what an answer is held to, as read on the other side. */
+  private noteSent(taskId: string, status: A2aRemoteStatusV1): void {
+    const offer = parseA2aRemoteStatus(status)?.detail?.approval;
+    if (!offer) return;
+    const t = this.trackedOf(taskId);
+    if (!t.sent.has(offer.promptId) && t.sent.size >= APPROVAL_PROMPTS_PER_TASK_MAX) return;
+    t.sent.set(offer.promptId, { allowed: [...offer.allowed], command: offer.command !== undefined });
+  }
+
   /** Kept for the task's status while its sender has the setting on. */
   private record(taskId: string, outcome: A2aRemoteApprovalOutcome): void {
-    let t = this.tracked.get(taskId);
-    if (!t) {
-      t = { offered: new Set(), capLogged: false, outcomes: [] };
-      this.tracked.set(taskId, t);
-    }
+    const t = this.trackedOf(taskId);
     // A message id reused for another decision does not overwrite what that message did.
     if (outcome.reason === 'id-reused' && t.outcomes.some((o) => o.messageId === outcome.messageId)) return;
     const list = [...t.outcomes.filter((o) => o.messageId !== outcome.messageId), outcome];
     t.outcomes = list.slice(-ANSWER_OUTCOMES_MAX);
   }
 
-  /** One line per approval: ids, decision and outcome, the dialog hash's first 8 characters. Never the command. */
-  private audit(taskId: string, messageId: string, approval: A2aRemoteApprovalV1, outcome: string, fp8?: string): void {
+  /**
+   * One line per approval: ids, decision and outcome, the dialog hash's first
+   * 8 characters; never the command. Refusals: at most
+   * APPROVAL_AUDIT_REFUSALS_PER_WINDOW lines per PC in a window, then one line.
+   */
+  private audit(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1, outcome: string, fp8?: string): void {
+    if (outcome.startsWith('not-done') || outcome.startsWith('stored:not-done')) {
+      const n = this.audited.count(hostId);
+      if (n > APPROVAL_AUDIT_REFUSALS_PER_WINDOW) {
+        if (n === APPROVAL_AUDIT_REFUSALS_PER_WINDOW + 1) this.deps.log('info', `[a2a-remote] approvals: ${hostId}: more refusals in this minute are not logged`);
+        return;
+      }
+    }
     this.deps.log('info', `[a2a-remote] approval task=${taskId} message=${messageId} prompt=${approval.promptId} decision=${approval.decision} outcome=${outcome} fp=${fp8 || '-'}`);
   }
 }

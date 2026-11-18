@@ -84,8 +84,12 @@ wmux remote — pair with other PCs and ask them to start agents
       tasks they sent to a linked pane here. Off for every PC unless set
       here. tool-only: that PC sees the tool's name and can only deny.
       command: it also sees the command (secrets redacted) and can allow a
-      Bash, PowerShell or WebSearch prompt, or a plan. With no argument,
-      prints the setting for each paired PC.
+      Bash, PowerShell or WebSearch prompt, or a plan. Turning a PC on, or
+      to command, asks you to type yes first, so run it in a terminal;
+      lowering it or turning it off does not ask. With no argument, prints
+      the setting for each paired PC. On a PC where the desktop app runs,
+      the daemon takes this setting only from the app, so this command is
+      refused there until the app has a setting for it (a later release).
   wmux remote answer <task-id> <option> --picker <picker-id>
       Answer the question the worker on a task you sent shows on the other
       PC: <option> is the choice's number, <picker-id> the pickerId in the
@@ -707,6 +711,10 @@ async function remoteAnswers(args: string[], jsonMode: boolean): Promise<void> {
   }
 }
 
+function approvalExposureOf(v: unknown): 'off' | 'tool-only' | 'command' {
+  return isA2aApprovalExposure(v) ? v : 'off';
+}
+
 /** `wmux remote approvals [<pc> off|tool-only|command]`: this PC's setting per paired PC, printed or saved. */
 async function remoteApprovals(args: string[], jsonMode: boolean): Promise<void> {
   const [pcArg, value, ...rest] = args.filter((a) => !a.startsWith('-'));
@@ -724,6 +732,23 @@ async function remoteApprovals(args: string[], jsonMode: boolean): Promise<void>
   if (pcArg !== undefined && value !== undefined) {
     // A PC no longer paired can still be turned off.
     const { pc } = resolvePc(pcArg, pcs, value === 'off' ? Object.keys(res.hosts) : []);
+    const before = res.damaged ? 'off' : approvalExposureOf(res.hosts[pc.hostId]);
+    // Raising what that PC may do (on, or to `command`) is typed out by a person; lowering it is not asked.
+    if ((before === 'off' && value !== 'off') || (value === 'command' && before !== 'command')) {
+      const marker = agentSessionMarker(process.env);
+      if (marker) fail(`raising approvals for a PC is not done from an agent session or a wmux pane (${marker} is set). A person must run it, in a terminal outside wmux.`);
+      if (!policyIo.stdinIsTty()) fail('raising approvals for a PC asks for a typed confirmation. Run this in a terminal and confirm.');
+      const say = (line: string): void => { if (jsonMode) console.error(line); else console.log(line); };
+      say(value === 'command'
+        ? `Agents on ${pcLabel(pc)} will see the command of a permission prompt in a task they sent to a linked pane here (secrets redacted), and can allow a Bash, PowerShell or WebSearch call or a plan, or deny any prompt offered.`
+        : `Agents on ${pcLabel(pc)} will see the tool name of a permission prompt in a task they sent to a linked pane here, and can deny it.`);
+      const answer = (await policyIo.ask(`Type ${CONFIRM_WORD} to save this: `, jsonMode)).trim().toLowerCase();
+      if (answer !== CONFIRM_WORD) fail('not confirmed; nothing was saved.');
+      const now = await read();
+      if ((now.damaged ? 'off' : approvalExposureOf(now.hosts[pc.hostId])) !== before) {
+        fail('the approvals setting for that PC changed while you were confirming. Run the command again.');
+      }
+    }
     const saved = (await daemonCall(A2A_APPROVALS_RPC.set as RpcMethod, { hostId: pc.hostId, exposure: value })) as { ok?: unknown; error?: unknown };
     if (saved.ok === false) fail(`the daemon did not save it: ${String(saved.error)}`);
     res = await read();

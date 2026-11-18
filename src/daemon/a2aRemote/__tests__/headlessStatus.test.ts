@@ -180,3 +180,25 @@ describe('a headless worker\'s status to the asking PC', () => {
     expect(sent.map((s) => s.status.kind)).toEqual(['working']);
   });
 });
+
+describe('a reporter with its own cap and a sent hook', () => {
+  it('stops at its own changes cap, and is told of each status that was queued', () => {
+    const queued: string[] = [];
+    const r = new HeadlessStatusReporter({
+      peer: () => peer,
+      send: (taskId, status) => { sent.push({ taskId, status }); return { ok: true }; },
+      labels: () => 'send',
+      log: (_level, msg) => { logs.push(msg); },
+      now: () => clock,
+      changesMax: 2,
+      sent: (_taskId, status) => { queued.push(status.kind); },
+    });
+    for (const kind of ['working', 'waiting-input', 'working'] as const) {
+      r.tick(at(kind));
+      clock += STATUS_FLOOR_MS;
+    }
+    expect(sent.map((s) => s.status.kind)).toEqual(['working', 'waiting-input']);
+    expect(queued).toEqual(['working', 'waiting-input']);
+    expect(logs.some((l) => l.includes('2 status changes sent'))).toBe(true);
+  });
+});

@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { APPROVALS_FILE, ApprovalSwitchStore, coerceApprovalsSettings } from '../approvalSwitchStore';
+import { readSourceText } from '../../../test-utils/sourceText';
+import { APPROVALS_FILE, ApprovalSwitchStore, coerceApprovalsSettings, setApprovals } from '../approvalSwitchStore';
 
 const PC_A = '11111111-1111-4111-8111-111111111111';
 const PC_B = '22222222-2222-4222-8222-222222222222';
@@ -88,5 +89,65 @@ describe('the approvals setting', () => {
 
   it('refuses a value that is not a host id', () => {
     expect(store().set('pc-a', 'command')).toEqual({ ok: false, error: 'not a host id' });
+  });
+});
+
+describe('a PC no longer paired', () => {
+  it('revoked, then paired again under the same host id: off, after a restart too', () => {
+    const s = store();
+    s.set(PC_A, 'command');
+    s.set(PC_B, 'tool-only');
+    expect(s.forgetHost(PC_A)).toBe(true);
+    expect(s.exposure(PC_A)).toBeNull();
+    expect(s.exposure(PC_B)).toBe('tool-only');
+    // Paired again: nothing about it is remembered.
+    expect(store().exposure(PC_A)).toBeNull();
+    expect(store().forgetHost(PC_A)).toBe(false);
+  });
+
+  it('a start drops the PCs the pairing stores no longer know', () => {
+    store().set(PC_A, 'command');
+    store().set(PC_B, 'command');
+    const s = store();
+    expect(s.retainHosts((h) => h === PC_B)).toBe(true);
+    expect(store().get().hosts).toEqual({ [PC_B]: 'command' });
+  });
+
+  it('the daemon\'s revoke cascade forgets it, and a start keeps only paired PCs', () => {
+    const src = readSourceText(path.join(__dirname, '..', '..', 'index.ts'));
+    const cascade = src.slice(src.indexOf('const a2aCascade = (hostId: string): void => {'), src.indexOf('a2aDelivery?.onPeerRevoked(hostId);'));
+    expect(cascade).toContain('a2aApprovalSwitch.forgetHost(hostId)');
+    expect(src).toContain('a2aApprovalSwitch.retainHosts(a2aPaired);');
+  });
+});
+
+describe('approvals.set', () => {
+  const set = (s: ApprovalSwitchStore, params: Record<string, unknown>) => {
+    const lines: string[] = [];
+    const changed: Array<[string, boolean]> = [];
+    const res = setApprovals(s, params, { log: (_l, m) => lines.push(m), changed: (h, on) => changed.push([h, on]) });
+    return { res, lines, changed };
+  };
+
+  it('writes one line: who asked, the PC, the exposure before and after; nothing else', () => {
+    const s = store();
+    const first = set(s, { hostId: PC_A, exposure: 'tool-only' });
+    expect(first.res).toMatchObject({ ok: true });
+    expect(first.lines).toEqual([`[a2a-remote] approvals set by=none host=${PC_A} off->tool-only`]);
+    expect(first.changed).toEqual([[PC_A, true]]);
+    const second = set(s, { hostId: PC_A, exposure: 'command', senderPtyId: 'pty-7' });
+    expect(second.lines).toEqual([`[a2a-remote] approvals set by=pty-7 host=${PC_A} tool-only->command`]);
+    expect(second.changed).toEqual([]);
+    const third = set(s, { hostId: PC_A, exposure: 'off', senderPtyId: 'x\ny', note: 'ignored' });
+    expect(third.lines).toEqual([`[a2a-remote] approvals set by=invalid host=${PC_A} command->off`]);
+    expect(third.changed).toEqual([[PC_A, false]]);
+  });
+
+  it('a refused call is logged the same way, with no value it was given', () => {
+    const s = store();
+    const bad = set(s, { hostId: 'not\na host', exposure: 'everything' });
+    expect(bad.res).toMatchObject({ ok: false });
+    expect(bad.lines).toEqual(['[a2a-remote] approvals set by=none host=invalid off->invalid']);
+    expect(s.get().hosts).toEqual({});
   });
 });

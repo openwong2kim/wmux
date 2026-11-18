@@ -1002,6 +1002,18 @@ describe('an approval from the sender of a task, for a prompt offered in its sta
     expect(taken).toEqual([]);
   });
 
+  it('past its PC\'s flood guard: taken and dropped unread', async () => {
+    const linkId = activeLink();
+    const taskId = await receivedTask(linkId);
+    let admit = false;
+    const guarded: InboundDeps = { ...withApproval, remoteApproval: { ...withApproval.remoteApproval!, admit: () => admit } };
+    expect(await acceptInbound(approvalEnv(linkId, taskId), peer, guarded)).toEqual({ ok: true, taskId, duplicate: true });
+    expect(taken).toEqual([]);
+    admit = true;
+    expect(await acceptInbound(approvalEnv(linkId, taskId), peer, guarded)).toMatchObject({ ok: true, duplicate: false });
+    expect(taken).toHaveLength(1);
+  });
+
   it('is refused for a task this PC sent, with text on it, or malformed', async () => {
     const linkId = activeLink();
     const taskId = await receivedTask(linkId);

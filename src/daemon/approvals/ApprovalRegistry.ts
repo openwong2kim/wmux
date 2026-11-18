@@ -385,7 +385,7 @@ interface TerminalPromptIdentity {
    * The tool call the record was bound to, with its whole input's hash: by
    * its transcript id, or (no id) by the PermissionRequest hook's evidence.
    */
-  call?: { id?: string; name: string; command: string; description?: string; unsandboxed?: true; inputHash: string; promptId?: string };
+  call?: { id?: string; name: string; command: string; description?: string; unsandboxed?: true; inputHash: string; promptId?: string; inputKeys?: string[] };
   /** The dialog read at creation spelled exactly that call's command. */
   matched: boolean;
   /** Matched with its top scrolled off (see buildTerminalPrompt). */
@@ -427,7 +427,8 @@ export interface RemoteApprovalRecordFacts {
   fencedPlan: boolean;
   /** Bound at creation: the dialog spelled the call (TerminalPromptIdentity.matched). */
   matched: boolean;
-  call?: { name: string; command: string };
+  /** The bound call: its tool, whole command, and the keys of its whole input. */
+  call?: { name: string; command: string; inputKeys: string[] };
 }
 
 /**
@@ -820,7 +821,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       ...(yes ? { yesKey: yes.key } : {}),
       fencedPlan: record.form?.kind === 'plan' && record.channel === 'fenced-keys',
       matched: identity?.matched === true,
-      ...(identity?.call ? { call: { name: identity.call.name, command: identity.call.command } } : {}),
+      ...(identity?.call ? { call: { name: identity.call.name, command: identity.call.command, inputKeys: [...(identity.call.inputKeys ?? [])] } } : {}),
     };
   }
 
@@ -1846,6 +1847,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
               ...(binding?.id ? { id: binding.id } : {}),
               ...(binding?.promptId ? { promptId: binding.promptId } : {}),
               inputHash,
+              ...(binding ? { inputKeys: Object.keys(binding.input) } : {}),
             },
           }
         : {}),
@@ -1933,6 +1935,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
               ...(binding.id ? { id: binding.id } : {}),
               ...(binding.promptId ? { promptId: binding.promptId } : {}),
               inputHash,
+              inputKeys: Object.keys(binding.input),
             },
           }
         : {}),

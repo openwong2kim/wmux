@@ -106,6 +106,13 @@ export interface A2aRemoteDeliveryDeps {
   features?: readonly string[];
   /** Features advertised to one PC only, read each time a stream to or from it opens (`approval.1` while that PC's setting is on). */
   hostFeatures?: (hostId: HostId) => readonly string[];
+  /**
+   * The approvals setting for a PC now (approvalSwitchStore.ts), read as a
+   * queued status leaves: one carrying a prompt offer or approval outcomes is
+   * dropped while it is off, and one carrying a command once it is no longer
+   * `command`.
+   */
+  approvalExposure?: (hostId: HostId) => 'tool-only' | 'command' | null;
   /** false: this build neither follows a task again after it ended nor advertises `reopen.1`, as an older one; tests only. */
   reopen?: false;
   /** false: this build neither takes a refusal on a stream ack nor advertises `stream-refuse.1`, as an older one; tests only. */
@@ -266,7 +273,7 @@ export class A2aRemoteDelivery {
         deps.offers?.onPeerFeatures(hostId, features);
       },
       features: (hostId: HostId) => this.featuresFor(hostId),
-      withhold: (hostId, rec) => this.withholdNotice(hostId, rec),
+      withhold: (hostId, rec) => this.withhold(hostId, rec),
       // A joiner's refusal of a record streamed to it ends what the record was about, as a refused POST does.
       ...(streamRefuse ? { onRefused: (rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode) => this.onRefused(rec, code) } : {}),
       ...(deps.heartbeatMs !== undefined ? { heartbeatMs: deps.heartbeatMs } : {}),
@@ -807,7 +814,7 @@ export class A2aRemoteDelivery {
       outbox: this.outbox,
       accept: (env, peer) => this.accept(env, peer),
       onRefused: (rec, code, detail) => this.onRefused(rec, code, detail),
-      withhold: (rec) => this.withholdNotice(hostId, rec),
+      withhold: (rec) => this.withhold(hostId, rec),
       ...(this.images ? { images: this.images } : {}),
       reconcileLinks: () => this.reconcileLinks(hostId),
       onStatus: (status) => this.deps.broadcast({ type: 'a2a.remote.hosts.status', sessionId: '', data: status }),
@@ -887,6 +894,31 @@ export class A2aRemoteDelivery {
    * features are not known yet (a session before the server's hello) or the
    * refusal could not be written: it is checked again next time.
    */
+  /** A queued record that must not leave now (withholdApproval, withholdNotice): true holds or drops it. */
+  private withhold(hostId: HostId, rec: A2aOutboxRecordV1): boolean {
+    return this.withholdApproval(hostId, rec) || this.withholdNotice(hostId, rec);
+  }
+
+  /**
+   * A queued status about approvals that the setting no longer allows: one
+   * with a prompt offer or outcomes while it is off for that PC, or with a
+   * command once it is no longer `command`. Dropped (refused here, never
+   * sent); the producer queues the current status in its place. False for
+   * anything else.
+   */
+  private withholdApproval(hostId: HostId, rec: A2aOutboxRecordV1): boolean {
+    const detail = rec.envelope.kind === 'status' ? rec.envelope.status?.detail : undefined;
+    if (!detail || (!detail.approval && !detail.approvals)) return false;
+    const exposure = this.deps.approvalExposure?.(hostId) ?? null;
+    if (exposure !== null && (exposure === 'command' || detail.approval?.command === undefined)) return false;
+    try {
+      this.outbox.refuse(hostId, rec.seq, 'protocol');
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] ${hostId}: a status the approvals setting no longer allows was not dropped: ${errMsg(err)}`);
+    }
+    return true;
+  }
+
   private withholdNotice(hostId: HostId, rec: A2aOutboxRecordV1): boolean {
     const notice = rec.envelope.notice;
     if (!notice) return false;

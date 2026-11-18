@@ -1000,6 +1000,7 @@ export interface A2aRemoteApprovalOffer {
 export type A2aRemoteApprovalReason =
   | 'approvals-off'
   | 'not-open'
+  | 'not-linked'
   | 'link-not-active'
   | 'not-offered'
   | 'turn-unproven'
@@ -1015,6 +1016,7 @@ export type A2aRemoteApprovalReason =
 export const A2A_REMOTE_APPROVAL_REASON_TEXT: Readonly<Record<A2aRemoteApprovalReason, string>> = Object.freeze({
   'approvals-off': 'approvals for this PC are off there (wmux remote approvals); ask a person there',
   'not-open': 'the task is no longer open there',
+  'not-linked': 'that PC answers prompts only for a task sent to a linked pane there',
   'link-not-active': 'the link to that pane is not active',
   'not-offered': 'that prompt is not one that PC offered, or it is gone; read the task\'s status again',
   'turn-unproven': 'that PC could not prove the prompt belongs to this task\'s turn; ask a person there',

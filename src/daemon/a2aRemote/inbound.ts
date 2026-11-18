@@ -109,6 +109,8 @@ export interface InboundDeps {
    */
   remoteApproval?: {
     on(hostId: HostId): boolean;
+    /** One more approval from this PC may be taken now (a per-PC flood guard); false: taken and dropped unread. */
+    admit?(hostId: HostId): boolean;
     take(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1): void;
   };
   /**
@@ -234,6 +236,10 @@ async function applyInbound(
   // A status past the peer's flood guard: taken and dropped before any check, so neither a refusal
   // for the peer to retry nor a log line per message comes of it.
   if (env.kind === 'status' && deps.remoteStatus?.admit && !deps.remoteStatus.admit(peer.hostId)) {
+    return { ok: true, taskId: env.taskId as string, duplicate: true };
+  }
+  // The same for an approval past its PC's flood guard.
+  if (env.kind === 'approval' && deps.remoteApproval?.admit && !deps.remoteApproval.admit(peer.hostId)) {
     return { ok: true, taskId: env.taskId as string, duplicate: true };
   }
 

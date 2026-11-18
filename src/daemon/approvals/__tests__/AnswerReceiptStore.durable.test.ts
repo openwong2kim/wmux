@@ -14,7 +14,7 @@ beforeEach(() => { writes.length = 0; });
 
 describe('AnswerReceiptStore durable', () => {
   it('passes durable on every write when asked', async () => {
-    const store = new AnswerReceiptStore('/nowhere', () => 1_000, undefined, 'a2a-remote-approval-receipts.json', true);
+    const store = new AnswerReceiptStore('/nowhere', () => 1_000, undefined, 'a2a-remote-approval-receipts.json', { durable: true });
     expect(await store.begin('remote:h', 'ap-1', 'task:p:allow', 'a'.repeat(64))).toEqual({ kind: 'new' });
     await store.finish('remote:h', 'ap-1', 'done', { status: 200, body: { outcome: 'done' } });
     expect(writes).toHaveLength(2);

@@ -172,18 +172,18 @@ import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessSessionPort } from 
 import { createHeadlessSessions } from './a2aRemote/headlessSessions';
 import { endHeadlessOnStop, HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
 import { LinkedTaskTurns } from './a2aRemote/linkedTaskTurns';
-import { ApprovalSwitchStore } from './a2aRemote/approvalSwitchStore';
-import { RemoteApprovals } from './a2aRemote/remoteApproval';
+import { ApprovalSwitchStore, setApprovals } from './a2aRemote/approvalSwitchStore';
+import { openApprovalReceipts, RemoteApprovals } from './a2aRemote/remoteApproval';
 import { HeadlessStatusReporter } from './a2aRemote/headlessStatus';
 import { answerPicker, screenPicker } from './a2aRemote/headlessAnswer';
 import { AnswersStore } from './a2aRemote/answersStore';
 import { StatusLabelsStore } from './a2aRemote/statusLabelsStore';
 import { QUESTION_RECORD_KIND, screenQuestionOf } from './approvals/screenQuestion';
-import { A2A_REMOTE_RPC } from '../shared/a2aRemoteDelivery';
+import { A2A_REMOTE_RPC, type A2aRemoteTaskState } from '../shared/a2aRemoteDelivery';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
-import { A2A_ANSWER_RPC, A2A_APPROVALS_RPC, A2A_FEATURE_ANSWER, A2A_FEATURE_APPROVAL, isA2aApprovalExposure, isA2aAnswersSetting, A2A_FEATURE_BUNDLE, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
+import { A2A_ANSWER_RPC, A2A_APPROVALS_RPC, A2A_FEATURE_ANSWER, A2A_FEATURE_APPROVAL, isA2aAnswersSetting, A2A_FEATURE_BUNDLE, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
@@ -11059,6 +11059,7 @@ async function main(): Promise<void> {
         a2aLog('error', `[a2a-remote] ${err instanceof Error ? err.message : String(err)}`);
       }
       a2aContinueRequests.retainHosts(a2aPaired);
+      a2aApprovalSwitch.retainHosts(a2aPaired);
     }
     const a2aHostName = (hostId: string): string | undefined =>
       a2aRemoteHosts.get(hostId)?.name ?? a2aPeers.list().find((p) => p.hostId === hostId && !p.revokedAt)?.name;
@@ -11258,6 +11259,13 @@ async function main(): Promise<void> {
         a2aLog('error', `[a2a-remote] revoke cascade: spawn requests sent to ${hostId}: ${err instanceof Error ? err.message : String(err)}`);
       }
       try {
+        // Off, and still off if that PC is paired again under the same host id.
+        if (a2aApprovalSwitch.forgetHost(hostId)) a2aDelivery?.readvertise(hostId);
+        remoteApprovalsRef?.wake();
+      } catch (err) {
+        a2aLog('error', `[a2a-remote] revoke cascade: approvals setting for ${hostId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      try {
         a2aContinuePolicy.forgetHost(hostId);
       } catch (err) {
         a2aLog('error', `[a2a-remote] revoke cascade: continue policy for ${hostId}: ${err instanceof Error ? err.message : String(err)}`);
@@ -11347,16 +11355,11 @@ async function main(): Promise<void> {
     });
     onA2aRpc(A2A_APPROVALS_RPC.get, async () => a2aApprovalSwitch.get());
     onA2aRpc(A2A_APPROVALS_RPC.set, async (params) => {
-      const hostId = params['hostId'];
-      const exposure = params['exposure'];
-      if (!isHostId(hostId)) return { ok: false, error: 'hostId must be a paired PC\'s host id' };
-      if (exposure !== 'off' && !isA2aApprovalExposure(exposure)) return { ok: false, error: "exposure must be 'off', 'tool-only' or 'command'" };
-      const wasOn = a2aApprovalSwitch.exposure(hostId) !== null;
-      const res = a2aApprovalSwitch.set(hostId, exposure);
-      if (!res.ok) return res;
-      log('info', `[a2a-remote] approvals: ${hostId} ${exposure}`);
-      // `approval.1` is advertised only while it is on: the streams with that PC open again when that changes.
-      if (wasOn !== (exposure !== 'off')) a2aDelivery?.readvertise(hostId);
+      const res = setApprovals(a2aApprovalSwitch, params, {
+        log: a2aLog,
+        // `approval.1` is advertised only while it is on: the streams with that PC open again when that changes.
+        changed: (hostId) => a2aDelivery?.readvertise(hostId),
+      });
       remoteApprovalsRef?.wake();
       return res;
     });
@@ -11447,6 +11450,7 @@ async function main(): Promise<void> {
         // Carried out by the remote approvals (linked panes); refused as `approvals-off` for a PC the setting is off for.
         approvals: {
           on: (hostId) => remoteApprovalsRef !== null && a2aApprovalSwitch.exposure(hostId) !== null,
+          admit: (hostId) => remoteApprovalsRef?.admit(hostId) ?? false,
           take: (hostId, taskId, messageId, approval) => {
             const approvals = remoteApprovalsRef;
             if (!approvals) return;
@@ -11455,6 +11459,7 @@ async function main(): Promise<void> {
         },
         // `approval.1` only to a PC the approvals setting is on for.
         hostFeatures: (hostId) => (a2aApprovalSwitch.exposure(hostId) !== null ? [A2A_FEATURE_APPROVAL] : []),
+        approvalExposure: (hostId) => a2aApprovalSwitch.exposure(hostId),
         bundleAsks: a2aBundleAsker,
         // No box this run (no headless starts kept here): an ask is taken and dropped, as by a box that is off.
         bundles: { applyInbound: (env, peer) => a2aBundleBox?.applyInbound(env, peer) ?? { ok: true, duplicate: false } },
@@ -11505,19 +11510,19 @@ async function main(): Promise<void> {
         log: a2aLog,
       });
       linkedTaskTurnsRef.start();
-      // Its receipts: a file that cannot be read leaves them null, and every approval is then refused.
-      let approvalReceipts: AnswerReceiptStore | null = null;
-      try {
-        approvalReceipts = new AnswerReceiptStore(a2aDir, Date.now, undefined, 'a2a-remote-approval-receipts.json', true);
-      } catch (err) {
-        a2aLog('error', `[a2a-remote] a2a-remote-approval-receipts.json could not be read; approvals from other PCs are refused this run: ${err instanceof Error ? err.message : String(err)}`);
-      }
+      // Its receipts: a file there that cannot be read leaves them null, and every approval is then refused.
+      const approvalReceipts = openApprovalReceipts(a2aDir, a2aLog);
       const approvalTurns = linkedTaskTurnsRef;
       const approvalTaskSvc = a2aTaskService;
       remoteApprovalsRef = new RemoteApprovals({
         exposure: (hostId) => a2aApprovalSwitch.exposure(hostId),
         anyOn: () => a2aApprovalSwitch.anyOn(),
         tasks: { get: (taskId) => approvalTaskSvc.getTask(taskId), remote: () => approvalTaskSvc.listRemote() },
+        // A pane end of a link a person made: not a headless start's, not one a remote start made.
+        linkedPane: (task) => {
+          const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
+          return marker?.kind === 'pane' && a2aLinks.get(marker.linkId)?.spawned !== true && a2aStarter?.isSpawnLink(marker.linkId) !== true;
+        },
         linkActive: (linkId) => a2aLinks.get(linkId)?.state === 'active',
         hostName: (hostId) => a2aHostName(hostId),
         turn: (taskId) => approvalTurns.latestTurn(taskId),
@@ -11535,13 +11540,11 @@ async function main(): Promise<void> {
         lock: (sid) => paneLocks.acquire(sid, { key: 'remote-approval' }, PANE_LOCK_DAEMON_WAIT_MS),
         unlock: (sid, token) => paneLocks.release(sid, token),
         receipts: approvalReceipts,
-        // Its own budget (headlessStatus.ts): one status per prompt and one per outcome, the same floor.
-        status: new HeadlessStatusReporter({
+        // Behind its own reporter (one status per prompt and one per outcome, the same floor).
+        status: {
           peer: (taskId) => a2aDeliveryRef?.statusPeer(taskId) ?? null,
           send: (taskId, status) => a2aDeliveryRef?.sendStatus(taskId, status) ?? { ok: false, error: 'unavailable' },
-          labels: () => a2aStatusLabels.get(),
-          log: a2aLog,
-        }),
+        },
         log: a2aLog,
       });
       remoteApprovalsRef.start();

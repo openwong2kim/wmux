@@ -143,6 +143,27 @@ export class ApprovalSwitchStore {
     return !this.damaged && Object.keys(this.hosts).length > 0;
   }
 
+  /** The PC is no longer paired (the revoke cascade): it is off, and stays off if it is paired again. */
+  forgetHost(hostId: HostId): boolean {
+    return this.retainHosts((h) => h !== hostId);
+  }
+
+  /**
+   * Keep only the PCs `paired` still knows, e.g. on start: a removal whose
+   * write failed before a restart is applied again here. Memory first: a
+   * removed PC is off even when the file cannot be written (logged).
+   */
+  retainHosts(paired: (hostId: HostId) => boolean): boolean {
+    const gone = Object.keys(this.hosts).filter((h) => !paired(h));
+    if (gone.length === 0) return false;
+    const next = { ...this.hosts };
+    for (const h of gone) delete next[h];
+    this.hosts = next;
+    if (this.writable) this.persist({ v: 1, hosts: next });
+    else this.log('error', `[a2a-remote] ${storeUnavailable(APPROVALS_FILE).message}; removed PCs are off until it can be written`);
+    return true;
+  }
+
   /** Turn it on for `hostId` with that exposure, or off (`off`: the PC is removed from the list). */
   set(hostId: HostId, exposure: A2aApprovalExposure | 'off'): { ok: true; hosts: Record<HostId, A2aApprovalExposure> } | { ok: false; error: string } {
     if (!this.writable) return { ok: false, error: storeUnavailable(APPROVALS_FILE).message };
@@ -157,4 +178,33 @@ export class ApprovalSwitchStore {
     this.damaged = false;
     return { ok: true, hosts: this.get().hosts };
   }
+}
+
+/** A pane id as the daemon logs it; anything else is not written to the log. */
+const LOGGED_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * `a2a.remote.approvals.set`: validate, save, and write one log line naming
+ * who asked (the caller's pane, or `none`), the PC, and the exposure before
+ * and after. Nothing else goes in that line. `changed` runs after a save that
+ * turned the PC on or off.
+ */
+export function setApprovals(
+  store: ApprovalSwitchStore,
+  params: Record<string, unknown>,
+  deps: { log: StoreLog; changed?: (hostId: HostId, on: boolean) => void },
+): { ok: true; hosts: Record<HostId, A2aApprovalExposure> } | { ok: false; error: string } {
+  const hostId = params['hostId'];
+  const exposure = params['exposure'];
+  const sender = params['senderPtyId'];
+  const by = sender === undefined ? 'none' : typeof sender === 'string' && LOGGED_ID_RE.test(sender) ? sender : 'invalid';
+  const validHost = isHostId(hostId);
+  const validExposure = exposure === 'off' || isA2aApprovalExposure(exposure);
+  const before = validHost ? store.exposure(hostId) ?? 'off' : 'off';
+  deps.log('info', `[a2a-remote] approvals set by=${by} host=${validHost ? hostId : 'invalid'} ${before}->${validExposure ? exposure : 'invalid'}`);
+  if (!validHost) return { ok: false, error: 'hostId must be a paired PC\'s host id' };
+  if (!validExposure) return { ok: false, error: "exposure must be 'off', 'tool-only' or 'command'" };
+  const res = store.set(hostId, exposure);
+  if (res.ok && (before === 'off') !== (exposure === 'off')) deps.changed?.(hostId, exposure !== 'off');
+  return res;
 }

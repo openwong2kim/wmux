@@ -12,6 +12,7 @@
 // The answer text is never stored — only a hash of the whole body.
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { atomicReadJSONSync, atomicWriteJSON } from '../util/atomicWrite';
 
@@ -54,6 +55,20 @@ export interface AnswerReceiptView {
 
 const STATES: ReadonlySet<string> = new Set(['inFlight', 'done', 'partial', 'refused', 'uncertain']);
 
+/** The file's JSON; null only when it is not there. Any other failure to read or parse it throws. */
+function readStrict<T>(file: string): T | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+  const parsed: unknown = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid answer receipt storage');
+  return parsed as T;
+}
+
 /** sha256 hex of a canonical rendering — the key and the body hash share it. */
 export function receiptHash(parts: unknown): string {
   return crypto.createHash('sha256').update(JSON.stringify(parts)).digest('hex');
@@ -76,12 +91,16 @@ export class AnswerReceiptStore {
     // The phone's Moa wake keeps its own file (phone-moa-wake-receipts.json)
     // with the same rules, so its ids never meet an approval answer's.
     fileName = 'phone-answer-receipts.json',
-    // Each write fsynced before it resolves (atomicWrite's `durable`): a
-    // receipt that must be on disk before the side effect it guards.
-    private readonly durable = false,
+    // `durable`: each write fsynced before it resolves (atomicWrite's
+    // `durable`), for a receipt that must be on disk before the side effect it
+    // guards. `strictRead`: a file that is there but cannot be read or parsed
+    // throws, rather than reading as empty or as its older backup.
+    private readonly opts: { durable?: boolean; strictRead?: boolean } = {},
   ) {
     this.file = path.join(directory, fileName);
-    const saved = atomicReadJSONSync<{ version?: unknown; entries?: unknown }>(this.file);
+    const saved = opts.strictRead
+      ? readStrict<{ version?: unknown; entries?: unknown }>(this.file)
+      : atomicReadJSONSync<{ version?: unknown; entries?: unknown }>(this.file);
     if (saved === null) return;
     if (saved.version !== 1 || !saved.entries || typeof saved.entries !== 'object' || Array.isArray(saved.entries)) {
       throw new Error('Invalid answer receipt storage');
@@ -223,7 +242,7 @@ export class AnswerReceiptStore {
 
   private save(): Promise<void> {
     const run = this.writes.then(() =>
-      atomicWriteJSON(this.file, { version: 1, entries: Object.fromEntries(this.rows) }, this.durable ? { durable: true } : {}));
+      atomicWriteJSON(this.file, { version: 1, entries: Object.fromEntries(this.rows) }, this.opts.durable ? { durable: true } : {}));
     this.writes = run.catch(() => undefined);
     return run;
   }
