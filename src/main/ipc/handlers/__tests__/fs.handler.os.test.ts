@@ -140,6 +140,22 @@ describe('fs.handler security helpers', () => {
     expect(localSpelling('//b/share/repo', 'W:\\repo')).toBeNull();
   });
 
+  it('keeps a drive\'s mapping readable while the drive is read again', async () => {
+    realpathSpy.mockImplementation(async (p: fs.PathLike) => (p === 'V:\\' ? '\\\\a\\share\\' : '\\\\a\\share\\repo'));
+    await resolveAccessiblePath('V:\\repo');
+    let readRoot!: () => void;
+    realpathSpy.mockImplementation(async (p: fs.PathLike) => {
+      if (p !== 'V:\\') return '\\\\a\\share\\repo\\site';
+      await new Promise<void>((resolve) => { readRoot = resolve; });
+      return '\\\\a\\share\\';
+    });
+    const pending = resolveAccessiblePath('V:\\repo\\site');
+    await vi.waitFor(() => expect(readRoot).toBeTypeOf('function'), { timeout: 5_000 });
+    expect(localSpelling('//a/share/repo', 'V:\\repo')).toBe('V:\\repo');
+    readRoot();
+    await expect(pending).resolves.toBe('V:\\repo\\site');
+  });
+
   it('refuses a drive path whose real path is a device path', async () => {
     realpathSpy.mockResolvedValue('\\\\?\\GLOBALROOT\\Device\\x');
     await expect(resolveAccessiblePath('Z:\\x')).resolves.toBeNull();

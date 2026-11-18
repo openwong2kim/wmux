@@ -216,14 +216,19 @@ async function spelledFromDrive(inputPath: string, canonical: string): Promise<s
   const drivePath = path.win32.resolve(inputPath);
   const root = path.win32.parse(drivePath).root;
   const key = driveKey(drivePath);
-  mappedDrives.delete(key);
+  // The entry changes only once the root's read lands: a localSpelling call
+  // made while it is in flight still finds the drive as last read.
   try {
     const share = (await fs.promises.realpath(root)).replace(/[\\/]+$/, '').replace(/\//g, '\\');
     const onShare = isUncOrDevicePath(share) && !DEVICE_PATH.test(share);
-    if (!onShare) return null;
+    if (!onShare) {
+      mappedDrives.delete(key);
+      return null;
+    }
     mappedDrives.set(key, share);
     return underShare(canonical, share, root);
   } catch {
+    mappedDrives.delete(key);
     return null;
   }
 }

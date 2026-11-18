@@ -301,10 +301,11 @@ export async function resolveInsideRoot(entry: Pick<HtmlEntry, 'root' | 'pageDir
   if (segments.some((s) => s === '..' || s === '.')) return null;
   const joined = path.join(entry.root, ...segments);
   if (!sameOrInside(entry.root, joined)) return null;
-  // Canonicalized by the function the root came from (openHtmlPreview), so both
-  // are in one path space: on a mapped network drive a bare realpath answers
-  // the share's UNC spelling (\\server\share\…), while the root is spelled
-  // from the drive (Z:\…), and nothing on the drive would be inside it (#3413).
+  // Canonicalized by resolveAccessiblePath, which spelled the page's folder the
+  // root was chosen from (openHtmlPreview), so both are in one path space: on a
+  // mapped network drive a bare realpath answers the share's UNC spelling
+  // (\\server\share\…), while the root is spelled from the drive (Z:\…), and
+  // nothing on the drive would be inside it (#3413).
   const real = await resolveAccessiblePath(joined);
   if (!real) return null;
   if (!sameOrInside(entry.root, real) || isSensitivePath(real)) return null;
