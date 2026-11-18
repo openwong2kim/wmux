@@ -1117,6 +1117,13 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
     await vi.advanceTimersByTimeAsync(5);
     expect(h.writes.at(-1)?.data).toBe('\x15');
     expect(recorded).toHaveLength(1);
+    // No frame at the Enter (the agent left): nothing known to be in a box, nothing recorded.
+    enter = { present: false };
+    h.setNow(3_000_000);
+    h.worker.tickOnce();
+    await vi.advanceTimersByTimeAsync(5);
+    expect(recorded).toHaveLength(1);
+    expect(h.outcomes.at(-1)?.ok).toBe(false);
   });
 
   it('withholds the Enter when an approval is raised while the agent is asked about before the Enter', async () => {

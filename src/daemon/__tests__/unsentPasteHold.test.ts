@@ -83,7 +83,7 @@ describe('UnsentPasteHolds', () => {
     const after = bridge.noteInput('1', { selfWrite: true });
     holds.passedOver('pty-a', after, 'headless answer');
     expect(holds.held('pty-a')).toBe(true);
-    expect(logs.some((l) => l.includes('kept: headless answer'))).toBe(true);
+    expect(logs.some((l) => l.includes('kept: headless answer went to a dialog'))).toBe(true);
 
     // A person's key between the hold and the answer: the hold is cleared, and the answer does not bring it back.
     bridge.noteInput('x');
@@ -166,6 +166,14 @@ describe('UnsentPasteHolds', () => {
     expect(holds.held('pty-a')).toBe(false);
   });
 
+  it('a turn-start hook that trails the hold by less than the hook lag (an earlier submit) does not clear it', () => {
+    paste();
+    holds.record('pty-a', 'scheduled prompt');
+    vi.advanceTimersByTime(50);
+    ingest.handle(signal('agent.user_prompt_submit'));
+    expect(holds.held('pty-a')).toBe(true);
+  });
+
   it('nothing is recorded for a session that is gone', () => {
     expect(holds.record('pty-z', 'main delivery')).toBe(false);
     expect(holds.held('pty-z')).toBe(false);
@@ -230,6 +238,21 @@ describe('UnsentPasteHolds', () => {
       expect(await run(async () => { delivered = true; return 'sent'; }, 'automation run')).toBe('busy');
       expect(delivered).toBe(false);
       expect(logs.some((line) => line.includes('automation run: busy (unsent-paste)'))).toBe(true);
+    });
+
+    it('a paste whose Enter was reported counts as submitted, even when the Enter write then failed: no take-back, no hold', async () => {
+      expect(await run(async (onWrite) => { paste('SCHED 1'); holds.wrote('pty-a'); onWrite('paste'); onWrite('submit'); return 'error'; })).toBe('error');
+      expect(typed).toEqual([]);
+      expect(holds.held('pty-a')).toBe(false);
+    });
+
+    it('a multi-line paste is never taken back (Ctrl+U clears one line): held', async () => {
+      const multi = (onWrite: HeldWriteEdge) => { paste('L1\nL2'); holds.wrote('pty-a'); onWrite('paste'); return Promise.resolve('error' as const); };
+      const res = await deliverUnderHold({ holds, sessionId: 'pty-a', writer: 'scheduled prompt', text: 'L1\nL2', deliver: multi, presence: async () => ({ tier: 'process', slug: 'claude', input: 'full', bracketedPaste: true, pasteShown: true }), eraseLine: () => { typed.push('^U'); return true; }, log: (line) => logs.push(line) });
+      expect(res).toBe('error');
+      expect(typed).toEqual([]);
+      expect(holds.held('pty-a')).toBe(true);
+      expect(logs.some((line) => line.includes('more than one line'))).toBe(true);
     });
 
     it('a box that cannot be read is not erased: held', async () => {

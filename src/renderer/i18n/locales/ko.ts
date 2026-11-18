@@ -346,6 +346,7 @@ export const ko = {
   'chat.send.unavailable': "실행 중인 Claude 세션을 확인하지 못했습니다. 터미널에서 계속 작업해 주세요.",
   'chat.send.error': "전송 완료를 확인하지 못했습니다. 터미널에 내용이 입력됐을 수 있으므로 다시 보내기 전에 확인해 주세요.",
   'chat.send.refused': "아무것도 전송되지 않았습니다. 메시지는 입력창에 그대로 있으니 터미널을 확인한 뒤 다시 보내 주세요.",
+  'chat.send.unsentPaste': "아무것도 전송되지 않았습니다. 터미널 입력창에 아직 전송되지 않은 이전 메시지가 남아 있습니다. 터미널에서 Enter로 보내거나 Ctrl+U로 지운 뒤 다시 보내 주세요.",
   'chat.bodyRetry': "내용을 불러오지 못했습니다 · 다시 시도",
   'chat.code': "코드",
   'chat.lines': "줄",

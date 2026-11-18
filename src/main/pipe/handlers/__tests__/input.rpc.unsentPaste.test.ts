@@ -40,8 +40,8 @@ let turnStartedAt: number | undefined;
  * `reports` what main told it, `accept` whether it takes a report. Null: an older daemon (main's own record).
  */
 let daemonHold: { held: Record<string, boolean>; reports: Array<{ id: string; token: string }>; accept: boolean } | null;
-/** The daemon's agent-state read fails (a timeout). */
-let unreadable: boolean;
+/** How many of the daemon's next agent-state reads fail (a timeout). */
+let unreadable: number;
 let stops: (ptyId: string) => void = () => undefined;
 let dropped: (ptyId: string) => void = () => undefined;
 
@@ -55,7 +55,10 @@ function harness() {
       return true;
     },
     getAgentState: async (id: string) => {
-      if (unreadable) throw new Error('timeout');
+      if (unreadable > 0) {
+        unreadable -= 1;
+        throw new Error('timeout');
+      }
       const lag = (lagReads[id] ?? 0) > 0 ? 1 : 0;
       if (lag) lagReads[id] -= 1;
       const count = writes.filter((w) => w.id === id).length + (keys[id] ?? 0) - lag;
@@ -137,7 +140,7 @@ beforeEach(() => {
   logs = [];
   noCount = false;
   daemonHold = null;
-  unreadable = false;
+  unreadable = 0;
   turnStartedAt = undefined;
   vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => (method === 'input.findOwnerWorkspace' ? { workspaceId: 'ws-a' } : null));
 });
@@ -293,10 +296,19 @@ describe('a paste left unsent in the input box (#3390)', () => {
     it("the daemon's answer missing: whether the box is held is unknown, so nothing is typed", async () => {
       daemonHold = { held: {}, reports: [], accept: true };
       const wiring = harness();
-      unreadable = true;
+      unreadable = Infinity;
       answers = [PROCESS];
       expect(await wiring.gatedSubmit('pty-a', 'later', 'Claude Code', { senderTaskIds: ['t-4'] })).toMatchObject({ ok: false, reason: 'gate_unavailable', detail: expect.stringMatching(/input state could not be read/) });
       expect(writes).toEqual([]);
+    });
+
+    it("one missed answer from a stalled daemon is asked again, and the delivery goes on", async () => {
+      daemonHold = { held: {}, reports: [], accept: true };
+      const wiring = harness();
+      unreadable = 1;
+      answers = [PROCESS];
+      expect(await wiring.gatedSubmit('pty-a', 'later', 'Claude Code', { senderTaskIds: ['t-5'] })).toMatchObject({ ok: true });
+      expect(writes.length).toBeGreaterThan(0);
     });
 
     it('a report the daemon did not take falls back to main\'s own record', async () => {

@@ -152,6 +152,8 @@ export class HermesChatService {
     const incarnationId = this.deps.pane(id)?.incarnationId;
     if (!incarnationId) return { result: 'unavailable' };
     let pasted = false;
+    // The Enter edge was reached: the paste counts as submitted even when that write then failed.
+    let submitted = false;
     let denied = false;
     const authorize = opts.authorized;
     const result = await deliverScheduledPrompt('hermes', incarnationId, text, {
@@ -172,7 +174,10 @@ export class HermesChatService {
       },
       // Enter always submits in Hermes' prompt; a pasted newline stays in it.
       submitKeys: '\r',
-      onWrite: (stage) => { if (stage === 'paste') pasted = true; },
+      onWrite: (stage) => {
+        if (stage === 'paste') pasted = true;
+        else submitted = true;
+      },
       ...(this.deps.delay ? { delay: this.deps.delay } : {}),
       ...(authorize ? { authorized: async (stage: 'first-write' | 'submit') => {
         let ok = false;
@@ -181,7 +186,7 @@ export class HermesChatService {
         return ok;
       } } : {}),
     });
-    if (result !== 'sent' && pasted) this.deps.unsentPaste?.record(id, 'chat send');
+    if (result !== 'sent' && pasted && !submitted) this.deps.unsentPaste?.record(id, 'chat send');
     switch (result) {
       case 'sent': return { result: 'sent' };
       case 'busy': return { result: 'busy' };

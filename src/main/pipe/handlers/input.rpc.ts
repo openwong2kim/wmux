@@ -3052,6 +3052,14 @@ export function registerInputRpc(
     /** A daemon that holds unsent pastes (#3393) whose answer did not come: whether the box is held is unknown, so nothing is typed. */
     const unreadableHold: GatedSubmitRefusal = { ok: false, reason: 'gate_unavailable', detail: "delivery: the pane's input state could not be read, so nothing was typed" };
     /**
+     * The pane's agent state for the hold check. Against a daemon that holds unsent pastes, one failed read (a
+     * stalled daemon) is tried once more before the delivery is refused as unreadable.
+     */
+    const readStateForHold = async (daemonHolds: boolean): Promise<Awaited<ReturnType<typeof readAgentState>>> => {
+      const first = await readAgentState(ptyId);
+      return first || !daemonHolds ? first : readAgentState(ptyId);
+    };
+    /**
      * A paste left unsent in this pane's box: refused, nothing written. The daemon holds it for every writer
      * (`before.unsentPasteHeld`, #3393); main's own record (`unsentPaste`) covers an older daemon and a local pane.
      */
@@ -3131,7 +3139,7 @@ export function registerInputRpc(
         async () => underPaneLock(async (write, markUnsent) => {
           const late = await onLocked();
           if (late) return late;
-          const before = await readAgentState(ptyId);
+          const before = await readStateForHold(markUnsent !== undefined);
           if (markUnsent && !before) return unreadableHold;
           const held = await heldByUnsentPaste(before);
           if (held) return held;
@@ -3154,7 +3162,7 @@ export function registerInputRpc(
       async () => underPaneLock(async (write, markUnsent) => {
         const late = await onLocked();
         if (late) return late;
-        const before = await readAgentState(ptyId);
+        const before = await readStateForHold(markUnsent !== undefined);
         if (markUnsent && !before) return unreadableHold;
         const held = await heldByUnsentPaste(before);
         if (held) return held;

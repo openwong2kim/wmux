@@ -34,8 +34,12 @@ describe('unsent-paste hold daemon wiring', () => {
     expect(body).toMatch(/const exitEvent = agentProcessExitEvent\(sessionId, state\);\s*if \(exitEvent\) pipeServer\.broadcast\(exitEvent\);/);
   });
 
-  it("the headless answer's digit passes over a hold instead of clearing it", () => {
-    expect(src).toContain("if (revision !== null) unsentPasteHolds?.passedOver(sid, revision, 'headless answer');");
+  it('keys the daemon types into a dialog over the box pass over a hold instead of clearing it', () => {
+    // Stepwise keys (approvals, prompts, the headless answer's digit).
+    expect(block('function writeStepKeyOf(', 400)).toContain("passedOverByDialogKey(sessionId, revision, 'a dialog key');");
+    // An approval's answer, and the usage-limit menu's Esc.
+    expect(src).toContain("passedOverByDialogKey(sessionId, managed.bridge.getKeyInputRevision(), 'an approval answer');");
+    expect(src).toContain("passedOverByDialogKey(sessionId, managed.bridge.noteInput('\\x1b', { selfWrite: true }), 'the usage-limit menu key');");
   });
 
   it('a session ending clears its hold', () => {

@@ -719,8 +719,15 @@ export class ChannelWakeWorker {
         }
         // Not submitted. Take the hint back (Ctrl+U), but only while the pane
         // still shows it: never anything else.
-        if (!presence.pasteShown) {
+        if (presence.pasteShown === false) {
+          // The box was read and shows something else: the line is under it. Held.
           leftInBox();
+          return;
+        }
+        if (presence.pasteShown !== true) {
+          // No frame to read (the agent left, or no screen): nothing known to
+          // be in a box, so no hold that a later agent could not clear.
+          report(false);
           return;
         }
         try {

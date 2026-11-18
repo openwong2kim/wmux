@@ -58,6 +58,13 @@ export interface UnsentPasteHoldDeps {
   log?: (line: string) => void;
 }
 
+/**
+ * How long after a hold's start a turn start still reads as one that began before it. HookIngest stamps a
+ * UserPromptSubmit when the hook arrives, which trails the Enter that started the turn, so a submit made just before
+ * a delivery's paste can land just after the hold was recorded and must not clear it.
+ */
+export const TURN_HOOK_LAG_MS = 300;
+
 export class UnsentPasteHolds {
   private readonly records = new Map<string, UnsentPasteRecord>();
   /** The pane's key count and time right after the lock holder's latest write: what a record is taken from. */
@@ -126,7 +133,7 @@ export class UnsentPasteHolds {
     const record = this.records.get(sessionId);
     if (!record || record.keys !== revisionAfter - 1) return;
     record.keys = revisionAfter;
-    this.log(`[unsent-paste] session=${sessionId} kept: ${writer} typed into a picker over the box, not into it`);
+    this.log(`[unsent-paste] session=${sessionId} kept: ${writer} went to a dialog over the box, not into it`);
   }
 
   /** The tracker's edge for the pane: a death, or a launch whose process differs from the recorded one, clears it. */
@@ -151,7 +158,7 @@ export class UnsentPasteHolds {
     const keys = this.deps.keyRevision(sessionId);
     if (keys === undefined) return 'the session ended';
     const turnAt = this.deps.promptSubmittedAt(sessionId);
-    if (turnAt !== undefined && turnAt > record.at) return 'a turn started';
+    if (turnAt !== undefined && turnAt > record.at + TURN_HOOK_LAG_MS) return 'a turn started';
     if (keys > record.keys) return 'input reached the pane';
     return null;
   }
@@ -191,11 +198,21 @@ export interface HeldDeliveryOptions<R extends string> {
  *
  * The caller hears of the paste only once it stays: before the Enter, or when it is left in the box. A paste taken
  * back was never reported, so no caller takes it for text that may sit in the composer.
+ *
+ * A take-back turns the funnel's `error` (a check after the paste failed) into `busy`: the reason that error is
+ * consumed rather than retried is a paste that may still be visible, and a take-back proved it gone. Each caller
+ * bounds its `busy` retries (its own give-up window), so a check that keeps failing still ends.
+ *
+ * Two limits on that:
+ * - Once the Enter edge was reported, the paste counts as submitted, even when the write then failed (its bytes may
+ *   have reached the pane): nothing is taken back and no hold is recorded.
+ * - Ctrl+U clears one line of the composer, so a multi-line paste is never taken back: it is held.
  */
 export async function deliverUnderHold<R extends string>(opts: HeldDeliveryOptions<R>): Promise<R | 'busy'> {
   const { holds, sessionId, writer } = opts;
   if (holds?.heldFor(sessionId, writer)) return 'busy';
   let pasted = false;
+  let submitted = false;
   let reported = false;
   const reportPaste = (): void => {
     if (pasted && !reported) {
@@ -211,19 +228,25 @@ export async function deliverUnderHold<R extends string>(opts: HeldDeliveryOptio
         pasted = true;
         return;
       }
+      submitted = true;
       reportPaste();
       opts.onWrite?.(stage, queued);
     });
   } finally {
-    if (result !== 'sent' && pasted) takenBack = await leftUnsent(opts);
+    if (result !== 'sent' && pasted && !submitted) takenBack = await leftUnsent(opts);
     if (!takenBack) reportPaste();
   }
-  return takenBack ? 'busy' : result;
+  return takenBack ? 'busy' : result as R;
 }
 
 /** True when the paste was taken back; false when it is left in the box and the pane is held. */
 async function leftUnsent<R extends string>(opts: HeldDeliveryOptions<R>): Promise<boolean> {
   const { holds, sessionId, writer } = opts;
+  if (/[\r\n]/.test(opts.text)) {
+    opts.log(`[unsent-paste] session=${sessionId} ${writer}: its paste was not submitted and has more than one line, which Ctrl+U does not clear; not erased, held`);
+    holds?.record(sessionId, writer);
+    return false;
+  }
   const shown = await opts.presence({ phase: 'enter', ...shownOf(opts.text) }).catch(() => null);
   if (shown?.pasteShown === true && opts.eraseLine()) {
     opts.log(`[unsent-paste] session=${sessionId} ${writer}: its paste was not submitted and was taken back (Ctrl+U); not held; busy (taken-back), retried`);

@@ -219,7 +219,7 @@ export interface NativeChatBridge extends Omit<ChatBridge, QueueMethods>, Requir
   snapshot(id: string, before?: number): Promise<TranscriptPage | null>;
   /** `daemon.transcript.send`: never refuses a desktop request id, mints one instead. */
   desktopSend(req: { id: string; agentSessionId: string; text: string; requestId: unknown; attachments?: readonly string[] }):
-    Promise<{ result: ChatSendResult; effect?: ChatEffect; replayed: boolean; pending?: true; queued?: true }>;
+    Promise<{ result: ChatSendResult; effect?: ChatEffect; replayed: boolean; pending?: true; queued?: true; reason?: 'unsent-paste' }>;
   /**
    * `daemon.transcript.interrupt`: the desktop Stop, through the same lock,
    * once-per-turn latch and cooldown as the phone cancel. No receipt.
@@ -754,6 +754,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     // in the composer, so from then on the send is never reported as `none`.
     let wrote = false;
     let queued = false;
+    // The Enter edge was reached: the paste counts as submitted even when that write then failed.
+    let submitted = false;
     let denied: 'paste' | 'submit' | undefined;
     const authorize = req.authorized;
     try {
@@ -802,7 +804,11 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
           if (!ok) denied = wrote ? 'submit' : 'paste';
           return ok;
         } } : {}),
-        onWrite: (stage, running) => { if (stage === 'submit') queued = !!running; },
+        onWrite: (stage, running) => {
+          if (stage !== 'submit') return;
+          submitted = true;
+          queued = !!running;
+        },
       }, req.attachments ?? []);
       const held = async (): Promise<ChatSendResult | 'unsent-paste'> => {
         if (deps.unsentPaste?.held(id)) return 'unsent-paste';
@@ -811,8 +817,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
           sent = await send();
           return sent;
         } finally {
-          // Written and not submitted, or thrown after a write: what was typed stays in the box.
-          if (sent !== 'sent' && wrote) deps.unsentPaste?.record(id, 'chat send');
+          // Written and not submitted, or thrown after a write before its Enter: what was typed stays in the box.
+          if (sent !== 'sent' && wrote && !submitted) deps.unsentPaste?.record(id, 'chat send');
         }
       };
       const result = (deps.paneLock ? await deps.paneLock(id, held) : await held()) ?? 'busy';
@@ -2100,7 +2106,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       const result: ChatSendResult = outcome.pending ? 'unconfirmed'
         : outcome.result ?? (outcome.error && DESKTOP_RESULT[outcome.error]) ?? 'error';
       return { result, replayed: outcome.replayed, ...(outcome.effect ? { effect: outcome.effect } : {}),
-        ...(outcome.pending ? { pending: true as const } : {}), ...(outcome.queued ? { queued: true as const } : {}) };
+        ...(outcome.pending ? { pending: true as const } : {}), ...(outcome.queued ? { queued: true as const } : {}),
+        // The pane holds an earlier unsubmitted paste: the chat view says how to clear it (#3393).
+        ...(outcome.detail === UNSENT_PASTE_CHAT_DETAIL ? { reason: 'unsent-paste' as const } : {}) };
     },
     desktopInterrupt,
     desktopRewind,

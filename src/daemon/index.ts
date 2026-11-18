@@ -891,7 +891,18 @@ function writeStepKeyOf(sessionManager: DaemonSessionManager, sessionId: string,
   const managed = sessionManager.getSession(sessionId);
   if (!managed) return null;
   managed.ptyProcess.write(data);
-  return managed.bridge.noteInput(data, { selfWrite: true });
+  const revision = managed.bridge.noteInput(data, { selfWrite: true });
+  passedOverByDialogKey(sessionId, revision, 'a dialog key');
+  return revision;
+}
+
+/**
+ * #3393 — a key the daemon typed into a dialog drawn over the input box (an approval, a picker, the usage-limit
+ * menu: each typed only after its screen was read as that dialog). Claude Code hides the box while one is up, so the
+ * key cannot submit or change a paste waiting there: it does not clear an unsent-paste hold either.
+ */
+function passedOverByDialogKey(sessionId: string, revision: number | undefined, writer: string): void {
+  if (revision !== undefined) unsentPasteHolds?.passedOver(sessionId, revision, writer);
 }
 
 /**
@@ -934,6 +945,8 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       if (!managed) return false;
       managed.ptyProcess.write(data);
       managed.bridge.noteInput(data, true);
+      // An approval's answer, into its dialog over the input box.
+      passedOverByDialogKey(sessionId, managed.bridge.getKeyInputRevision(), 'an approval answer');
       return true;
     },
     // Every pane on a Windows daemon is a ConPTY, and ConPTY puts its own
@@ -11543,12 +11556,8 @@ async function main(): Promise<void> {
             promptScreenMark: (sid) => promptScreenMarkOf(sessionManager, sid),
             // The answer types only while askPicker reads a picker on screen, and a picker
             // replaces the input box: its digit cannot submit a paste waiting there. So it is
-            // not refused by an unsent-paste hold, and it does not clear one either (#3393).
-            writeStepKey: (sid, data) => {
-              const revision = writeStepKeyOf(sessionManager, sid, data);
-              if (revision !== null) unsentPasteHolds?.passedOver(sid, revision, 'headless answer');
-              return revision;
-            },
+            // not refused by an unsent-paste hold, and writeStepKeyOf keeps one (#3393).
+            writeStepKey: (sid, data) => writeStepKeyOf(sessionManager, sid, data),
             lock: (sid) => paneLocks.acquire(sid, { key: 'headless-answer' }, PANE_LOCK_DAEMON_WAIT_MS),
             unlock: (sid, token) => paneLocks.release(sid, token),
             stillAllowed,
@@ -11576,7 +11585,7 @@ async function main(): Promise<void> {
             if (refused || !managed || (managed.meta.state !== 'attached' && managed.meta.state !== 'detached')) return false;
             managed.ptyProcess.write('\x1b');
             // The daemon's own key: no submit, so no turn is opened for it.
-            managed.bridge.noteInput('\x1b', { selfWrite: true });
+            passedOverByDialogKey(sessionId, managed.bridge.noteInput('\x1b', { selfWrite: true }), 'the usage-limit menu key');
             return true;
           },
           deliver: (sessionId, agent, prompt, authorized, onWrite) => (headlessDeliverRef ? headlessDeliverRef(sessionId, agent, prompt, authorized, onWrite) : Promise.resolve('unavailable')),
