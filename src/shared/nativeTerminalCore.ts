@@ -140,3 +140,39 @@ export function reportNativeFallback(component: string): void {
   failures.add(component);
   console.warn(`[terminal-core] ${component}: native module unavailable; using node backend`);
 }
+
+/** Prefix of the message a refused native allocation is thrown with (one call, one session). */
+export const NATIVE_ALLOC_FAILED_PREFIX = 'ALLOC_FAILED: ';
+
+/**
+ * The native core refused an allocation for one call: its message starts with
+ * `ALLOC_FAILED: ` ("could not allocate <N> bytes for <what>"). The call left
+ * its object as it was; nothing else in the daemon is affected.
+ */
+export function isNativeAllocFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : undefined;
+  return typeof message === 'string' && message.startsWith(NATIVE_ALLOC_FAILED_PREFIX);
+}
+
+/** At most one line per reporter in this window; the lines in between are counted. */
+export const NATIVE_ALLOC_LOG_INTERVAL_MS = 60_000;
+
+/**
+ * A rate-limited log line for refused native allocations, one per owner (a
+ * session's ring or interpreter). The first refusal logs at once; later ones
+ * log at most once per interval, with the count suppressed since.
+ */
+export function createNativeAllocReporter(component: string, label: () => string | undefined,
+  log: (line: string) => void = (line) => console.error(line), now: () => number = Date.now): (error: unknown, detail?: string) => void {
+  let lastAt = Number.NEGATIVE_INFINITY;
+  let suppressed = 0;
+  return (error, detail) => {
+    const at = now();
+    if (at - lastAt < NATIVE_ALLOC_LOG_INTERVAL_MS) { suppressed++; return; }
+    const message = error instanceof Error ? error.message : String(error);
+    const more = suppressed > 0 ? ` (+${suppressed} more since the last line)` : '';
+    lastAt = at;
+    suppressed = 0;
+    log(`[terminal-core] ${component} session=${label() ?? 'unknown'}: ${message}${detail ? `; ${detail}` : ''}${more}`);
+  };
+}

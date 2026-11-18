@@ -1,12 +1,27 @@
 import { OscParser, type OscCallback } from '../main/pty/OscParser';
-import { loadNativeTerminalCore, reportNativeFallback, type NativeOutputChunk, type NativeOutputInterpreter } from '../shared/nativeTerminalCore';
+import {
+  createNativeAllocReporter,
+  isNativeAllocFailure,
+  loadNativeTerminalCore,
+  reportNativeFallback,
+  type NativeOscBatch,
+  type NativeOutputChunk,
+  type NativeOutputInterpreter,
+} from '../shared/nativeTerminalCore';
 import { OutputModeTracker } from './util/outputModeTracker';
 
 export type OutputModes = Pick<OutputModeTracker, 'isSet' | 'altScreen' | 'preamble' | 'reset'>;
 
 /** One interpreter per bridge lifetime. Feed only captured output, after the
  * ring write. Recovered history seeds modes without replaying historical OSC
- * notifications or prompt events. Native capability is optional for ABI-1 builds. */
+ * notifications or prompt events. Native capability is optional for ABI-1 builds.
+ *
+ * A native feed that refuses an allocation (isNativeAllocFailure) leaves the
+ * native interpreter as it was: that one chunk is skipped (its mode changes and
+ * OSC events are not seen) and the next chunk is interpreted as usual. The
+ * backend never switches mid-stream: `modes` is handed out by reference, and a
+ * fresh JS tracker would report power-on defaults for a pane already in an
+ * alternate screen. */
 export class OutputInterpreter {
   readonly backend: 'node' | 'rust';
   readonly modes: OutputModes;
@@ -14,8 +29,12 @@ export class OutputInterpreter {
   private readonly osc?: OscParser;
   private readonly jsModes?: OutputModeTracker;
   private readonly callbacks: OscCallback[] = [];
+  private skipped = 0;
+  private readonly reportAllocFailure: (error: unknown, detail?: string) => void;
 
-  constructor(backend: 'node' | 'rust') {
+  /** `label` names the session in log lines. */
+  constructor(backend: 'node' | 'rust', label?: string) {
+    this.reportAllocFailure = createNativeAllocReporter('output-interpreter', () => label);
     if (backend === 'rust') {
       try {
         const Constructor = loadNativeTerminalCore('output-interpreter-v1').NativeOutputInterpreter;
@@ -36,12 +55,16 @@ export class OutputInterpreter {
     else this.callbacks.push(callback);
   }
   seedModes(text: string, end: number): void {
-    if (this.native) this.native.feed(text, end, false);
-    else this.jsModes?.feed(text, end);
+    if (this.native) {
+      try { this.native.feed(text, end, false); }
+      catch (error) { this.skip(error, 'recovered history not scanned for modes'); }
+    } else this.jsModes?.feed(text, end);
   }
   feed(text: string, end: number, chunk?: NativeOutputChunk): void {
     if (this.native) {
-      const events = chunk ? this.native.feedChunk(chunk, end) : this.native.feed(text, end, true);
+      let events: NativeOscBatch | null;
+      try { events = chunk ? this.native.feedChunk(chunk, end) : this.native.feed(text, end, true); }
+      catch (error) { this.skip(error, 'output chunk not interpreted'); return; }
       // As in the JS bridge, all mode updates precede OSC callbacks, and OSC
       // callbacks precede agent interpretation and raw output forwarding.
       if (events) for (let i = 0; i < events.codes.length; i++) {
@@ -52,6 +75,15 @@ export class OutputInterpreter {
       this.jsModes?.feed(text, end);
       this.osc?.process(text);
     }
+  }
+  /** Chunks a refused native allocation kept from being interpreted. */
+  get skippedChunks(): number {
+    return this.skipped;
+  }
+  private skip(error: unknown, what: string): void {
+    if (!isNativeAllocFailure(error)) throw error;
+    this.skipped++;
+    this.reportAllocFailure(error, `${what} (${this.skipped} in all)`);
   }
   dispose(): void {
     this.callbacks.length = 0;

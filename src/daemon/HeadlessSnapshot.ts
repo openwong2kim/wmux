@@ -56,6 +56,7 @@ import { SNAPSHOT_MAX_SCROLLBACK } from '../shared/terminal/attachSnapshot';
 import type { ReplayGeometry } from './RingBuffer';
 import { selectAnsiSnapshot } from './AnsiSnapshotBackend';
 import { selectTextSnapshot } from './TextSnapshotBackend';
+import { isNativeAllocFailure } from '../shared/nativeTerminalCore';
 import {
   PartialSequenceTracker,
   MarginTracker,
@@ -291,7 +292,22 @@ export function capTextRowsToFrameBudget(
 }
 
 async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutcome> {
-  return selectTextSnapshot(req, generateXtermTextInner);
+  try {
+    return await selectTextSnapshot(req, generateXtermTextInner);
+  } catch (err) {
+    return refusedSnapshot(err);
+  }
+}
+
+/**
+ * A native allocation refused while the snapshot read its input (copying a
+ * frozen native ring into `initial`): this snapshot fails with `error`, which
+ * every caller already answers with its raw / fail-open path. Any other throw
+ * propagates as before.
+ */
+function refusedSnapshot(err: unknown): { ok: false; reason: 'error'; detail: string } {
+  if (!isNativeAllocFailure(err)) throw err;
+  return { ok: false, reason: 'error', detail: err instanceof Error ? err.message : String(err) };
 }
 
 async function generateXtermTextInner(req: SnapshotRequest): Promise<TextSnapshotOutcome> {
@@ -408,7 +424,11 @@ export function generateSnapshotUnqueued(req: SnapshotRequest): Promise<Snapshot
 }
 
 async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
-  return selectAnsiSnapshot(req, generateXtermInner);
+  try {
+    return await selectAnsiSnapshot(req, generateXtermInner);
+  } catch (err) {
+    return refusedSnapshot(err);
+  }
 }
 
 async function generateXtermInner(req: SnapshotRequest): Promise<SnapshotOutcome> {

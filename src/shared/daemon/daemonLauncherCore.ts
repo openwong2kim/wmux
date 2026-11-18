@@ -899,6 +899,52 @@ export function daemonProcessArgs(daemonScript: string): string[] {
   return [...DAEMON_V8_FLAGS, daemonScript];
 }
 
+/**
+ * The daemon's stderr, in the wmux data dir. A native abort (a Rust panic or
+ * a refused allocation in the terminal core) prints its one line to stderr
+ * and ends the process before any JS log runs; with stderr ignored, that line
+ * was lost. The file is appended to across daemons and rotated at spawn.
+ */
+export const DAEMON_STDERR_LOG = 'daemon-stderr.log';
+/** Past this size the file moves to `<name>.1` (one kept) at the next spawn. */
+export const DAEMON_STDERR_ROTATE_BYTES = 1024 * 1024;
+
+type DaemonStderrFs = Pick<typeof fs, 'statSync' | 'renameSync' | 'openSync'>;
+
+/**
+ * Rotate `<wmuxDir>/daemon-stderr.log` to `.1` when it is past
+ * DAEMON_STDERR_ROTATE_BYTES, and return its path; null when the size check
+ * or the rename failed (the caller then keeps stderr off).
+ */
+export function rotateDaemonStderrLog(wmuxDir: string, fsImpl: DaemonStderrFs = fs): string | null {
+  const file = path.join(wmuxDir, DAEMON_STDERR_LOG);
+  try {
+    const stat = fsImpl.statSync(file, { throwIfNoEntry: false });
+    // Something else at that path (a directory): leave it alone.
+    if (stat && !stat.isFile()) return null;
+    if (stat && stat.size > DAEMON_STDERR_ROTATE_BYTES) fsImpl.renameSync(file, `${file}.1`);
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The daemon's stderr for spawn: an append-mode descriptor on the rotated
+ * file, which the caller closes right after spawn (the child holds its own),
+ * or 'ignore' when the file could not be rotated or opened. Never throws: a
+ * spawn never waits on, or fails because of, this file.
+ */
+export function openDaemonStderrLog(wmuxDir: string, fsImpl: DaemonStderrFs = fs): number | 'ignore' {
+  const file = rotateDaemonStderrLog(wmuxDir, fsImpl);
+  if (file === null) return 'ignore';
+  try {
+    return fsImpl.openSync(file, 'a', 0o600);
+  } catch {
+    return 'ignore';
+  }
+}
+
 function spawnDaemon(
   deps: DaemonLauncherDeps,
   staged: { script: string; nodePath: string; dir: string } | null,
@@ -1026,14 +1072,24 @@ function spawnDaemon(
     };
 
     const spawnDirect = () => {
-      const child = spawn(nodePath, daemonProcessArgs(daemonScript), {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-        env,
-        // An open working directory inside the install root would block its removal.
-        ...(staged ? { cwd: staged.dir } : {}),
-      });
+      // stdin and stdout stay ignored; stderr goes to daemon-stderr.log.
+      const stderr = openDaemonStderrLog(getWmuxDir());
+      let child: ReturnType<typeof spawn>;
+      try {
+        child = spawn(nodePath, daemonProcessArgs(daemonScript), {
+          detached: true,
+          stdio: ['ignore', 'ignore', stderr],
+          windowsHide: true,
+          env,
+          // An open working directory inside the install root would block its removal.
+          ...(staged ? { cwd: staged.dir } : {}),
+        });
+      } finally {
+        // The child has its own handle by now; this process keeps none open.
+        if (typeof stderr === 'number') {
+          try { fs.closeSync(stderr); } catch { /* already closed */ }
+        }
+      }
 
       // `spawn` reports failures asynchronously via 'error' (e.g. EMFILE,
       // EACCES). Without a listener that emission throws an uncaught exception,
@@ -1080,6 +1136,8 @@ function spawnDaemon(
           plistDir: path.join(getWmuxDir(), 'launchd'),
           programArguments: [nodePath, ...daemonProcessArgs(daemonScript)],
           env,
+          // launchd opens it for append itself; rotated here, as for spawnDirect.
+          stderrPath: rotateDaemonStderrLog(getWmuxDir()) ?? undefined,
         },
         defaultLaunchdRuntime(log),
       ).then(
