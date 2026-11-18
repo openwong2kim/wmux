@@ -1,3 +1,4 @@
+// @wmux-lane integration — opens, rotates and checks a real stderr file in a data directory (spawn is mocked).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';

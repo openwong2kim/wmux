@@ -415,7 +415,16 @@ export class SessionPipe {
     if (socket.destroyed || this.client !== socket) return;
     const read = this.tryReadRing('attach flush');
     if (!read) {
-      // No history to replay: go live on what arrives from here on.
+      // No history to replay: go live on what arrives from here on, in the
+      // modes the stream is in (an alternate screen, bracketed paste), since
+      // the client sees none of the bytes that set them.
+      let lead = '';
+      try {
+        lead = this.getOutputModes?.()?.preamble(this.ringBuffer.totalBytesWritten) ?? '';
+      } catch (error) {
+        if (!isNativeAllocFailure(error)) throw error;
+      }
+      if (lead) this.writeOutput(socket, Buffer.from(lead, 'utf8'));
       this.writeOutput(socket, this.markers.flushDone);
       this.replayDone();
       return;

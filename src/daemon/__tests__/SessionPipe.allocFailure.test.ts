@@ -72,6 +72,16 @@ describe('SessionPipe: a refused native ring read', () => {
     expect(String(errors.mock.calls[0]?.[0])).toMatch(/session-pipe session=session-a: ALLOC_FAILED: .*attach flush: ring not read/);
   });
 
+  it('attach flush: with no history, the mode preamble still puts the client in the stream\'s modes', async () => {
+    const preamble = vi.fn(() => '\x1b[?1049h\x1b[2J\x1b[H');
+    const pipe = new SessionPipe('session-e', fakeRing([refusal()]), TOKEN, undefined, () => ({ preamble }));
+    const socket = new FakeSocket();
+    connect(pipe, socket, false);
+    await flush(pipe, socket);
+    expect(socket.text()).toBe('\x1b[?1049h\x1b[2J\x1b[H' + markers.flushDone.toString('latin1'));
+    expect(pipe.isFlushed).toBe(true);
+  });
+
   it('re-flush: a refused first read declines before announcing, and the client stays live', async () => {
     const pipe = new SessionPipe('session-b', fakeRing([refusal()]), TOKEN);
     const socket = new FakeSocket();

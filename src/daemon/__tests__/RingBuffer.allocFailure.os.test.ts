@@ -1,3 +1,4 @@
+// @wmux-lane integration — writes and reads real .buf files in a mkdtemp directory.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
