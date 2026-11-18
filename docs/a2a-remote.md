@@ -487,8 +487,8 @@ choice may not cover it, and a Group Policy may hide the prompt altogether.
 **Allow through firewall.** The Remote page checks the firewall when it
 opens (and on **Check firewall**): when no rule lets other PCs reach the A2A
 port, the line under This computer says so and offers **Allow through
-firewall**. Settings > LAN does the same for LanLink, and Share & pair for
-a phone server started with "Expose to network". Pressing it shows one
+firewall**. Settings > LAN does the same for LanLink, and Phone access settings
+for a phone server started with "Expose to network". Pressing it shows one
 Windows permission request, which names **Windows PowerShell** (the program
 that adds the rules; there is no request when wmux itself runs as
 administrator), and adds two rules in the group `wmux`, for the wmux

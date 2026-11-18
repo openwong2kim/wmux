@@ -7,7 +7,7 @@ import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import WebToggle, { webPairUrl } from '../StatusBar/WebToggle';
 import { grantFailureMessage, revokeFailureMessage } from '../StatusBar/PairedDevicesModal';
 import { A2aExposureChecklist } from '../Settings/A2aExposureChecklist';
-import { IconChevron, IconComputer, IconCopy, IconElbow, IconMessage, IconPhone, IconServer } from '../icons';
+import { IconChevron, IconComputer, IconCopy, IconElbow, IconMessage, IconPhone, IconPlus, IconServer } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { timeAgo } from '../../utils/timeAgo';
 import type { WebDeviceSummary, WebTerminalInfo } from '../../../shared/web';
@@ -172,8 +172,6 @@ export default function RemotePage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<{ key: string; message: string } | null>(null);
   const [details, setDetails] = useState(false);
-  /** The line's Share & pair popover is open (see the This computer line). */
-  const [shareOpen, setShareOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [hostWorkspaces, setHostWorkspaces] = useState<Record<string, RemoteWorkspaceSummary[] | 'loading' | 'failed'>>({});
@@ -804,11 +802,20 @@ export default function RemotePage() {
     </li>
   ));
 
+  const pairPhone = () => useStore.getState().setPhonePairOpen(true);
   const group = (id: string, title: string, rows: ReactNode[], hint?: string) => rows.length > 0 && [
     <li key={`g:${id}`} className="wmux-remote-grp" data-remote-group={id}>
       <span>{title}</span>
       <span className="wmux-remote-count">{id === 'pcs' ? pcTotal : id === 'phones' ? deviceEntries.length : peerEntries.length}</span>
       {hint && <span className="wmux-remote-hint">{hint}</span>}
+      {id === 'phones' && (
+        <>
+          <span className="flex-1" />
+          <Button variant="ghost" size="sm" onClick={pairPhone} data-remote-pair-phone-group>
+            <span className="inline-flex items-center gap-1"><IconPlus size={12} />{t('web.phonePairingAdd')}</span>
+          </Button>
+        </>
+      )}
     </li>,
     ...rows,
   ];
@@ -845,6 +852,7 @@ export default function RemotePage() {
             </Button>
           )}
           <Button variant="secondary" size="md" onClick={() => setConnect({})} data-remote-connect>{t('remotePage.connect.button')}</Button>
+          <Button variant="secondary" size="md" onClick={pairPhone} data-remote-pair-phone>{t('web.phonePairingOpen')}</Button>
         </div>
         <p className="wmux-remote-summary" data-remote-summary>
           {summary.length > 0 ? summary.join(' · ') : loaded ? t('remotePage.sumNothing') : ''}
@@ -867,11 +875,9 @@ export default function RemotePage() {
               {a2aWord}
             </span>
           )}
-          {/* Phone access off: its switch (the share popover's Start) is one click away.
-              Pair a phone starts sharing from this popover, so the next poll
-              reads phone access as on. Keep the button, and the QR it shows,
-              until the popover closes. */}
-          {(reach === 'off' || shareOpen) && <WebToggle variant="page" onOpenChange={setShareOpen} />}
+          {/* Phone access settings: sharing, its grants and Stop. Pairing a
+              phone is the Pair a phone dialog, not this button. */}
+          <WebToggle variant="page" />
           <span className="flex-1" />
           <button
             type="button"
@@ -903,13 +909,6 @@ export default function RemotePage() {
               <>
                 <dt>{t('remotePage.input')}</dt>
                 <dd>{info?.allowInput ? t('remotePage.inputOn') : t('remotePage.viewOnly')}</dd>
-                <dd />
-              </>
-            )}
-            {reach !== 'off' && (
-              <>
-                <dt>{t('remotePage.phones')}</dt>
-                <dd><WebToggle variant="page" /></dd>
                 <dd />
               </>
             )}
@@ -1043,7 +1042,12 @@ export default function RemotePage() {
       {nothing ? (
         <div className="wmux-remote-empty" data-remote-empty>
           <p>{t('remotePage.emptyBody')}</p>
-          <Button variant={needsCount > 0 ? 'secondary' : 'primary'} size="md" onClick={() => setConnect({})}>{t('remotePage.connect.button')}</Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant={needsCount > 0 ? 'secondary' : 'primary'} size="md" onClick={() => setConnect({})}>{t('remotePage.connect.button')}</Button>
+            <Button variant="ghost" size="md" onClick={pairPhone} data-remote-pair-phone-empty>
+              <span className="inline-flex items-center gap-1"><IconPlus size={12} />{t('web.phonePairingAdd')}</span>
+            </Button>
+          </div>
         </div>
       ) : (
         <ul className="wmux-remote-list" aria-label={t('remotePage.connections')} data-remote-list>

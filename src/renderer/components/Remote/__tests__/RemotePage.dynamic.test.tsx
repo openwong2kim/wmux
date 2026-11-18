@@ -415,31 +415,41 @@ describe('Remote page', () => {
     expect($('[data-remote-a2a]')?.textContent).toBe('PC messages on · port 45660');
   });
 
-  it('keeps Share & pair open when a pairing started there turns phone access on', async () => {
+  it('keeps Phone access settings on the line whether or not phone access is on', async () => {
     stub([]);
     let running = false;
     api.web.status.mockImplementation(async () => (running
       ? { running: true, host: '127.0.0.1', port: 7681, allowInput: false, token: 'SECRET-TOKEN', urls: ['http://127.0.0.1:7681/?token=SECRET-TOKEN'] }
       : { running: false }));
     await render();
-    const share = () => $<HTMLButtonElement>('[data-remote-machine] [data-testid="deck-web-toggle"]');
-    expect(share()).not.toBeNull();
-    await act(async () => { share()!.click(); });
-    for (let i = 0; i < 4; i++) await act(async () => { await Promise.resolve(); });
-    expect(container.ownerDocument.querySelector('[role="dialog"]')).not.toBeNull();
-    // Pair a phone (or Connect another computer) started sharing from the
-    // popover; the page's next poll reads phone access as on.
+    const settings = () => $<HTMLButtonElement>('[data-remote-machine] [data-testid="deck-web-toggle"]');
+    expect(settings()?.textContent).toBe('Phone access settings…');
     running = true;
     await act(async () => { vi.advanceTimersByTime(REMOTE_PAGE_POLL_MS); });
     for (let i = 0; i < 4; i++) await act(async () => { await Promise.resolve(); });
     expect($('[data-remote-server]')?.textContent).toBe('Phone access: This computer only');
-    // The popover, with the code it shows, is still there.
-    expect(share()).not.toBeNull();
-    expect(container.ownerDocument.querySelector('[role="dialog"]')).not.toBeNull();
-    // Closing it lets the line drop the button, as it does while sharing is on.
-    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
-    expect(container.ownerDocument.querySelector('[role="dialog"]')).toBeNull();
-    expect(share()).toBeNull();
+    expect(settings()).not.toBeNull();
+    // One button, not a second copy in Details.
+    await act(async () => { $<HTMLButtonElement>('[data-remote-details]')!.click(); });
+    expect(container.querySelectorAll('[data-testid="deck-web-toggle"]')).toHaveLength(1);
+  });
+
+  it('Pair a phone… in the header, on the Phones heading and in the empty state opens the one dialog', async () => {
+    stub([]);
+    await render();
+    for (const sel of ['[data-remote-pair-phone]', '[data-remote-pair-phone-empty]']) {
+      useStore.setState({ phonePairOpen: false });
+      await act(async () => { $<HTMLButtonElement>(sel)!.click(); });
+      expect(useStore.getState().phonePairOpen).toBe(true);
+    }
+    act(() => root.unmount());
+    root = createRoot(container);
+    stub([{ deviceId: DEVICE_ID, name: 'Demo iPhone', kind: 'phone', createdAt: 1, lastSeenAt: 1, allowInput: false }]);
+    await render();
+    useStore.setState({ phonePairOpen: false });
+    await act(async () => { $<HTMLButtonElement>('[data-remote-pair-phone-group]')!.click(); });
+    expect(useStore.getState().phonePairOpen).toBe(true);
+    useStore.setState({ phonePairOpen: false });
   });
 });
 
