@@ -1408,13 +1408,7 @@ function refuseUnattributedSharedServer(
   risk = 'the browser could open in another pane\'s workspace',
   alternative = 'use Claude Code or the `wmux browser` command in this pane',
 ): void {
-  if (codexParentUnverified && !codexParentClass) {
-    throw new Error(
-      `${subject} could not verify this Codex session: wmux could not inspect the process that ` +
-        'started this MCP server, so it cannot tell whether the call comes from the shared Codex ' +
-        'background server. Retry the call in a minute.',
-    );
-  }
+  if (codexParentUnverified && !codexParentClass) throw unverifiedCodexSession(subject);
   if (codexParentClass !== 'shared-server' || threadOnlyScope()) return;
   throw new Error(
     `${subject} ${subject.endsWith('s') ? 'are' : 'is'} not available in this Codex session. It runs on the shared Codex ` +
@@ -1423,15 +1417,26 @@ function refuseUnattributedSharedServer(
   );
 }
 
+function unverifiedCodexSession(subject: string): Error {
+  return new Error(
+    `${subject} could not verify this Codex session: wmux could not inspect the process that ` +
+      'started this MCP server, so it cannot tell whether the call comes from the shared Codex ' +
+      'background server. Retry the call in a minute.',
+  );
+}
+
 /**
  * The same refusal for a call that acts on a task its pane sent to another PC
  * (remote_answer, remote_approve): the sender is the calling pane, so a call
  * the server cannot tie to its pane is refused before anything is sent. Run
  * after the workspace resolution, which settles a thread-or-legacy call.
+ * Stricter than the browser tools: a call its thread does not identify, whose
+ * parent could not be inspected, is refused on every platform (not only where
+ * no owner index exists).
  */
 async function refuseUnattributedRemoteTaskCall(tool: string): Promise<void> {
-  if (!codexOwnerIndexAvailable() && !codexParentClass && !NON_CODEX_CLIENTS.has(getClientIdentity().name ?? '')) {
-    await classifyCodexParent();
+  if (!threadOnlyScope() && !codexParentClass && !NON_CODEX_CLIENTS.has(getClientIdentity().name ?? '')) {
+    if ((await classifyCodexParent()) === 'unknown') throw unverifiedCodexSession(tool);
   }
   refuseUnattributedSharedServer(
     tool,
