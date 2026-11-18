@@ -1,17 +1,29 @@
 /**
  * The native named-pipe listener (Windows; core/wmux-term, capability
- * `pipe-listener-v1`) and the server over it that hands each accepted
+ * `pipe-listener-v2`) and the server over it that hands each accepted
  * connection on as a NativePipeSocket.
  *
  * The native listener creates the pipe with an owner-only access list, a
  * handle child processes do not inherit, and a cap on its instances, and it
- * reads the client's identity at accept (NativePipeSocket.peer). Not used by
- * the broker yet.
+ * reads the client's identity at accept (NativePipeSocket.peer) and, on
+ * request, from the client's own token (NativePipeSocket.tokenFacts). The MCP
+ * broker listens with it on Windows (src/mcp/broker.ts).
  */
 import { loadNativeTerminalCore, type NativeTerminalCore } from '../shared/nativeTerminalCore';
 import { NativePipeSocket, type NativePipeConn } from './nativePipeSocket';
 
-export const NATIVE_PIPE_CAPABILITY = 'pipe-listener-v1';
+/** The listener, its connections' token reads (requestTokenFacts /
+ *  takeTokenFacts) and nativePipeOwnedByUs. The core lists v1 beside it. */
+export const NATIVE_PIPE_CAPABILITY = 'pipe-listener-v2';
+
+/**
+ * Who holds a named pipe, compared with this process's user:
+ * - 'ours': its owner is this process's user;
+ * - 'foreign': another owner, or this user may not open it at all;
+ * - 'busy': every instance is in use (unknown; ask again later);
+ * - 'none': no pipe has this name.
+ */
+export type PipeOwnerVerdict = 'ours' | 'foreign' | 'busy' | 'none';
 /** The most accepted connections a listener takes at a time (the native
  *  limit of 254 pipe instances, less the one kept listening). */
 export const NATIVE_PIPE_MAX_INSTANCES = 253;
@@ -29,6 +41,10 @@ export interface NativePipeModule {
   /** Throws with code 'EADDRINUSE' when the name exists. `notify` is woken
    *  for the listener and for every connection it accepted. */
   NativePipeListener: new (name: string, maxInstances: number, notify: () => void) => NativePipeListener;
+  /** Who holds the pipe `name` (a `\\.\pipe\...` path). Opens a client
+   *  handle that reads the owner and writes nothing, then closes it. Throws
+   *  on an error other than the ones the verdicts cover. */
+  nativePipeOwnedByUs(name: string): PipeOwnerVerdict;
   /** Test hooks. */
   nativePipeWorkerCount?(): number;
   nativePipeHandleCount?(): number;
@@ -42,6 +58,7 @@ export function loadNativePipe(): NativePipeModule | null {
   if (process.platform !== 'win32') return null;
   const core = loadNativeTerminalCore(NATIVE_PIPE_CAPABILITY) as NativeTerminalCore & Partial<NativePipeModule>;
   if (typeof core.NativePipeListener !== 'function') throw new Error('Native terminal core lacks the pipe listener');
+  if (typeof core.nativePipeOwnedByUs !== 'function') throw new Error('Native terminal core lacks the pipe owner check');
   return core as NativePipeModule;
 }
 

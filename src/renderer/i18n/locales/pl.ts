@@ -1830,6 +1830,7 @@ export const pl = {
   'settings.mcpBrokerUnavailable': "Nie udało się odczytać bieżącego wyboru z wmux.",
   'settings.mcpBrokerIdleHere': "W systemie Windows wspólny proces nie obsługuje jeszcze agentów: każdy agent zachowuje własny serwer MCP, więc Wł. dodaje tylko bezczynny proces.",
   'settings.mcpBrokerPeerUnavailable': "wmux nie może potwierdzić, który proces łączy się ze wspólnym procesem w tym systemie, więc jest on zatrzymany do ponownego uruchomienia wmux. Każdy agent używa własnego serwera MCP.",
+  'settings.mcpBrokerPathOccupied': "Inny program zajmuje w tym systemie nazwę połączenia wspólnego procesu, więc wspólny proces jest zatrzymany do ponownego uruchomienia wmux. Każdy agent używa własnego serwera MCP.",
   'settings.mcpRegistered': 'zarejestrowano',
   'settings.mcpNotRegistered': 'nie zarejestrowano',
   'settings.mcpExperimentalTitle': 'Integracja jeszcze nie zweryfikowana end-to-end',
