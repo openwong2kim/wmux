@@ -2456,11 +2456,10 @@ export default function AppLayout() {
         <PhonePairDialog
           onClose={() => useStore.getState().setPhonePairOpen(false)}
           onOpenSettings={() => {
+            // Stop lives in Phone access settings, the Remote page's button.
             const s = useStore.getState();
-            // The hub lives in the sidebar; without it, the Remote page's
-            // Phone access settings button is where Stop is.
-            if (s.remoteHubMounted > 0) s.openRemoteHub('settings');
-            else s.setAppRoute('remote');
+            s.setPhoneSettingsPending(true);
+            s.setAppRoute('remote');
           }}
         />
       )}

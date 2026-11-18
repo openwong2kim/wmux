@@ -7,7 +7,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react';
-import { buildQrPath, type QrPath } from './qrPath';
+import type { QrPath } from './qrPath';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import {
@@ -24,8 +24,6 @@ import Popover, { PopoverSection } from '../ui/Popover';
 import Button from '../ui/Button';
 import Checkbox from '../ui/Checkbox';
 import Field from '../ui/Field';
-import SegmentedControl from '../ui/SegmentedControl';
-import Input from '../ui/Input';
 import Badge from '../ui/Badge';
 import { DECK_ICON_BUTTON, deckIconTone } from '../Deck/deckIconStyles';
 import PairedDevicesModal from './PairedDevicesModal';
@@ -762,7 +760,6 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
    */
   const homeView = variant === 'page' ? 'settings' : 'menu';
   const [view, setView] = useState<'menu' | 'settings'>(homeView);
-  const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<CopyTarget>(null);
   const [anchorLeft, setAnchorLeft] = useState(8);
@@ -925,25 +922,6 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
     if (!open) setView(homeView);
   }, [open, homeView]);
 
-  // The computer link's countdown. Ticks only while the popover is open and a
-  // computer code is live; at zero it re-reads status, which shows the
-  // re-minted link (or none) instead of a clock stuck at 0:00.
-  const computerPending = pendingPairFlow(info) === 'computer';
-  useEffect(() => {
-    if (!open || !computerPending) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [open, computerPending]);
-  const expiredRefreshFor = useRef(0);
-  useEffect(() => {
-    const at = info.pairExpiresAt ?? 0;
-    if (!open || !computerPending || at === 0 || now < at) return;
-    if (expiredRefreshFor.current === at) return;
-    expiredRefreshFor.current = at;
-    void refresh();
-  }, [open, computerPending, now, info.pairExpiresAt, refresh]);
-
   /**
    * The copied computer link lives in MAIN (`writeEphemeral`), which clears
    * it at expiry and on quit, so a remount of this component (Sidebar ↔
@@ -954,7 +932,8 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
    * placeholder before the first read must not read as "nothing is pending".
    */
   const initialInfo = useRef(info);
-  const liveComputerLink = webComputerLink(info, now);
+  // Expiry itself is main's to clear; this reports consumption, on each read.
+  const liveComputerLink = webComputerLink(info);
   useEffect(() => {
     if (info === initialInfo.current) return;
     void window.clipboardAPI?.keepEphemeral?.(liveComputerLink)?.catch(() => undefined);
@@ -1006,7 +985,6 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
     return () => setRemoteHubMounted(false);
   }, [variant, setRemoteHubMounted]);
   const hubRequestSeq = useStore((s) => s.remoteHubRequestSeq);
-  const hubRequestView = useStore((s) => s.remoteHubRequestView);
   const seenHubRequest = useRef(hubRequestSeq);
   const [scrollToOthers, setScrollToOthers] = useState(false);
   useEffect(() => {
@@ -1014,11 +992,22 @@ export default function WebToggle({ variant = 'icon', compact = false }: {
     seenHubRequest.current = hubRequestSeq;
     if (variant === 'icon') return;
     anchorUnderButton();
-    // "Other computers" lives on the menu; Phone access settings is its own view.
-    setView(hubRequestView === 'settings' ? 'settings' : 'menu');
+    // "Other computers" lives on the menu.
+    setView('menu');
     setOpen(true);
-    setScrollToOthers(hubRequestView !== 'settings');
-  }, [hubRequestSeq, hubRequestView, variant, anchorUnderButton]);
+    setScrollToOthers(true);
+  }, [hubRequestSeq, variant, anchorUnderButton]);
+  // Phone access settings asked for from elsewhere (the pairing dialog): the
+  // Remote page's button answers, once, whether it was mounted already or
+  // mounts with the page the request navigated to.
+  const settingsPending = useStore((s) => s.phoneSettingsPending);
+  useEffect(() => {
+    if (variant !== 'page' || !settingsPending) return;
+    useStore.getState().setPhoneSettingsPending(false);
+    anchorUnderButton();
+    setView('settings');
+    setOpen(true);
+  }, [variant, settingsPending, anchorUnderButton]);
   useEffect(() => {
     if (!open || !scrollToOthers) return;
     setScrollToOthers(false);

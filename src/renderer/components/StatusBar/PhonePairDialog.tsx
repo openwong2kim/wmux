@@ -223,9 +223,19 @@ export function PhonePairView(p: PhonePairViewProps) {
       <>
         <DialogBody className="flex flex-col gap-3">
           {refusal ? (
-            <p className="ui-note text-[var(--text-main)]">
-              {refusal.reason === 'no-front' ? t('web.refusalNoFront') : t('web.refusalInsecure')}
-            </p>
+            // Replaces the code: a code beside "pairing is unavailable" is
+            // still one someone will read onto a phone.
+            <div className="flex flex-col gap-1.5" data-testid="pair-refusal">
+              <p className="ui-note text-[var(--text-main)]">
+                {refusal.reason === 'no-front' ? t('web.refusalNoFront') : t('web.refusalInsecure')}
+              </p>
+              <p className="ui-note" title={refusal.detail}>
+                {refusal.reason === 'no-front' ? t('web.refusalNoFrontFix') : t('web.refusalInsecureFix')}
+              </p>
+              <Button size="sm" onClick={p.onOpenSettings} className="self-start">
+                {t('web.phonePairingSettings')}
+              </Button>
+            </div>
           ) : codeIsLive(p.info, p.pairedName) ? (
             <PhonePairCode
               info={p.info}
@@ -499,8 +509,10 @@ export default function PhonePairDialog({ onClose, onOpenSettings }: PhonePairDi
     // Once per open.
   }, []);
 
+  // The check's Tailscale answer with the server as it is NOW: the dialog
+  // itself may have started it since.
   const readiness: Readiness | null = diagnosis
-    ? pairReadiness(diagnosis)
+    ? pairReadiness({ tailscale: diagnosis.tailscale, web: info })
     : statusOnly
       ? info.running
         ? webComputerPairOrigin(info) ? 'shared' : 'needs-restart'
@@ -525,7 +537,12 @@ export default function PhonePairDialog({ onClose, onOpenSettings }: PhonePairDi
     [api],
   );
 
-  /** End the pairing without a phone: burn the code, then restore grants. */
+  /**
+   * End the pairing: burn the code, then put back what it raised — unless the
+   * code's phone arrived after all (redeemed between two watcher reads, or
+   * just as the dialog closed): that phone was paired with this access, and
+   * lowering input now would take it away from it.
+   */
   const abandon = useCallback(
     async (cancelCode: boolean) => {
       const s = session.current;
@@ -538,9 +555,12 @@ export default function PhonePairDialog({ onClose, onOpenSettings }: PhonePairDi
           /* restoring still matters more than the code */
         }
       }
-      if (s) await restoreGrants(s.restore);
+      if (!s || Object.keys(s.restore).length === 0) return;
+      const list = await readRoster();
+      if (list && findPairedDevice(list, s.name, s.mintedAt)) return;
+      await restoreGrants(s.restore);
     },
-    [api, restoreGrants],
+    [api, readRoster, restoreGrants],
   );
 
   // However the dialog goes away (×, Escape, Cancel pairing, Done, the host
@@ -578,6 +598,12 @@ export default function PhonePairDialog({ onClose, onOpenSettings }: PhonePairDi
     try {
       let current = await api.status();
       setInfo(current);
+      // One code slot: a computer link Connect a PC… handed out would stop
+      // pairing anything if a phone code replaced it.
+      if (current.running && current.pairCode && current.pendingPairFlow === 'computer') {
+        setErrorLines([t('web.phonePairingBusy')]);
+        return;
+      }
       const wantRemote = remote;
       if (wantRemote && !acknowledged && sharedImpacts(current, roster, true).length > 0) return;
       if (!current.running) {

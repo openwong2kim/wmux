@@ -258,6 +258,33 @@ describe('PhonePairDialog', () => {
     restoredAfterAbandon();
   });
 
+  it('closing just after the phone redeemed the code keeps the input it was paired with', async () => {
+    await toQrWithRaise();
+    // Redeemed between two watcher reads: the code is gone, the device exists.
+    status = withoutPending(status);
+    roster = [...roster, { deviceId: 'd9', name: 'Phone 2', createdAt: Date.now() + 1, lastSeenAt: Date.now(), allowInput: true, kind: 'phone' }];
+    await act(async () => (document.querySelector('[data-testid="pair-close"]') as HTMLButtonElement).click());
+    await flush();
+    expect(setGrants).toHaveBeenCalledTimes(1);
+    expect(status.allowInput).toBe(true);
+  });
+
+  it('a computer link Connect a PC… handed out is never replaced by a phone code', async () => {
+    status = { ...FRONTED, pairCode: 'QWXZ7K9M', pendingDeviceName: 'Computer', pendingPairFlow: 'computer' };
+    await open();
+    await click('Pair');
+    expect(pairStart).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain('A computer is being paired right now');
+  });
+
+  it('readiness follows the server the dialog itself started', async () => {
+    await open();
+    expect(document.body.textContent).toContain('Ready. Tailscale can serve this computer over HTTPS.');
+    await click('Pair');
+    await click('Cancel the pairing in progress');
+    expect(document.body.textContent).toContain('Ready. This computer is already shared over HTTPS.');
+  });
+
   it('the host unmounting it during the QR does the same', async () => {
     await toQrWithRaise();
     act(() => root.unmount());

@@ -214,13 +214,15 @@ export interface RemoteWorkspacesSlice {
    *  of that host — including the one the request came from. */
   remoteRepairHostId: string | null;
   requestRemoteRepair: (hostId: string | null) => void;
-  /** Bumped to ask the Remote hub (the sidebar's Remote popover) to open:
-   *  on its "Other computers" section (the + menu's "Attach remote
-   *  workspace"), or on Phone access settings (the pairing dialog's way to
-   *  Stop a server that has no HTTPS address). */
+  /** Bumped to ask the Remote hub (the sidebar's Remote popover) to open on
+   *  its "Other computers" section — the + menu's "Attach remote workspace". */
   remoteHubRequestSeq: number;
-  remoteHubRequestView: 'others' | 'settings';
-  openRemoteHub: (view?: 'others' | 'settings') => void;
+  openRemoteHub: () => void;
+  /** Phone access settings was asked for (the pairing dialog's way to Stop a
+   *  server without an HTTPS address): the Remote page's settings button
+   *  opens on it and clears this. */
+  phoneSettingsPending: boolean;
+  setPhoneSettingsPending: (pending: boolean) => void;
   /** The Pair a phone dialog. One for the app (AppLayout mounts it): the
    *  daemon holds one pairing code, so two dialogs would rotate each other's. */
   phonePairOpen: boolean;
@@ -300,13 +302,16 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
   activeRemoteKey: null,
   remoteRepairHostId: null,
   remoteHubRequestSeq: 0,
-  remoteHubRequestView: 'others',
   remoteHubMounted: 0,
   phonePairOpen: false,
+  phoneSettingsPending: false,
 
-  openRemoteHub: (view = 'others') => set((state: StoreState) => {
+  openRemoteHub: () => set((state: StoreState) => {
     state.remoteHubRequestSeq += 1;
-    state.remoteHubRequestView = view;
+  }),
+
+  setPhoneSettingsPending: (pending) => set((state: StoreState) => {
+    state.phoneSettingsPending = pending;
   }),
 
   setPhonePairOpen: (open) => set((state: StoreState) => {

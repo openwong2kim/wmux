@@ -283,6 +283,8 @@ describe('PhonePairView — waiting', () => {
   it('★ a refusal REPLACES the pairing code rather than sitting beside it', () => {
     const html = render({ ...qrStep, info: { ...live, pairRefusal: { reason: 'insecure-transport', detail: 'plaintext bind' } } });
     expect(html).toContain('web.refusalInsecure');
+    expect(html).toContain('web.refusalInsecureFix');
+    expect(html).toContain('web.phonePairingSettings');
     expect(html).not.toContain('ABCD2345');
     expect(html).not.toContain('web.newPairCode');
   });
