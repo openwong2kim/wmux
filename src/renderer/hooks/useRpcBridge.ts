@@ -433,7 +433,7 @@ async function deliverA2aText(
   const aboutTask = pointerTaskId ?? newTask?.taskId ?? replyTaskId;
   const result = await gatedSubmitToPty(ptyId, text, {
     agent: agentUnknown ? undefined : ptyAgent(ptyId).name,
-    ...((pointerTaskId ?? newTask?.taskId ?? replyTaskId) ? { pointerTaskId: pointerTaskId ?? newTask?.taskId ?? replyTaskId } : {}),
+    ...(aboutTask ? { pointerTaskId: aboutTask } : {}),
     ...(newTask?.senderKey ? { senderSendKey: newTask.senderKey } : {}),
     ...(!newTask && replyTaskId ? { senderTaskIds: [replyTaskId] } : {}),
     ...(newTask ? { newTask: true, taskId: newTask.taskId, ...keep, ...(pane ? { pane } : {}) } : {}),
