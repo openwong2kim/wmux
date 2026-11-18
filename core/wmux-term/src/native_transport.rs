@@ -105,13 +105,10 @@ struct State {
     closed: AtomicBool,
     #[cfg(unix)]
     cancel: Mutex<Option<UnixStream>>,
-    /// When close() found the child unreaped: the session sweep's deadline.
+    /// The session sweep, armed by the hangup (kill() or close()) while the
+    /// child is unreaped. Taken under `exited` (see the waiter).
     #[cfg(unix)]
-    sweep_at: Mutex<Option<Instant>>,
-    /// When kill() hung the child up and close() has not decided on the sweep
-    /// yet: the waiter keeps the root unreaped meanwhile (see the waiter).
-    #[cfg(unix)]
-    hangup_at: Mutex<Option<Instant>>,
+    sweep: Mutex<Sweep>,
     /// The reader stops once no output is pending, without reporting an error.
     #[cfg(unix)]
     stop_reading: AtomicBool,
@@ -241,9 +238,7 @@ impl NativeTransport {
             #[cfg(unix)]
             cancel: Mutex::new(Some(cancel)),
             #[cfg(unix)]
-            sweep_at: Mutex::new(None),
-            #[cfg(unix)]
-            hangup_at: Mutex::new(None),
+            sweep: Mutex::new(Sweep::None),
             #[cfg(unix)]
             stop_reading: AtomicBool::new(false),
             #[cfg(unix)]
@@ -424,13 +419,11 @@ impl NativeTransport {
                 // (no signal can reach a freed pid), but only with try_wait, once
                 // an exit was observed; a root not reapable yet lets the lock go.
                 //
-                // Invariant: between a hangup (kill()) and close(), the root is
-                // never reaped. Its unreaped pid is what pins the session id, and
-                // close() must find it unreaped to arm the sweep, as must an
-                // explicit SIGKILL in between: reaped first, both would skip the
-                // session, and a program that ignored the hangup outlives the pane
-                // (#3434). A hangup that no close() follows holds the reap for
-                // HANGUP_GRACE at most.
+                // Invariant: a hung-up root is reaped only after its session was
+                // swept. The hangup arms the sweep under `exited` (kill()'s SIGHUP,
+                // or close()), so the waiter, which reaps under that lock too,
+                // either sees it armed or reaps before any hangup: never between
+                // the two, where nothing could sweep the session any more (#3434).
                 #[cfg(unix)]
                 let (mut exit_guard, status) = loop {
                     let observed = observe_exit(pid);
@@ -438,32 +431,18 @@ impl NativeTransport {
                         .exited
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
-                    // A sweep needs the observed exit: only then is its deadline taken.
-                    let sweep_at = if observed.is_ok() {
-                        waiter_state
-                            .sweep_at
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .take()
-                    } else {
-                        None
+                    // A sweep needs the observed exit: only then does it run.
+                    let armed = match *waiter_state.sweep.lock().unwrap_or_else(|p| p.into_inner())
+                    {
+                        Sweep::Armed(at) if observed.is_ok() => Some(at),
+                        _ => None,
                     };
-                    if let Some(at) = sweep_at {
+                    if let Some(at) = armed {
                         // Unlocked, so kill() never waits out the grace.
                         drop(guard);
                         std::thread::sleep(at.saturating_duration_since(Instant::now()));
                         signal_session(pid, libc::SIGKILL);
-                        continue;
-                    }
-                    let hung_up = waiter_state
-                        .hangup_at
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .is_some_and(|at| at.elapsed() < HANGUP_GRACE);
-                    if hung_up {
-                        // The pane is being closed: close() decides on the sweep first.
-                        drop(guard);
-                        std::thread::sleep(EXIT_POLL);
+                        *waiter_state.sweep.lock().unwrap_or_else(|p| p.into_inner()) = Sweep::Done;
                         continue;
                     }
                     match child.try_wait() {
@@ -668,13 +647,10 @@ impl NativeTransport {
             }
             if signal == libc::SIGKILL {
                 signal_session(self.pid as i32, signal);
-            } else {
-                // Under `exited`, so the waiter sees it before it could reap.
-                *self
-                    .state
-                    .hangup_at
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
+                *self.state.sweep.lock().unwrap_or_else(|p| p.into_inner()) = Sweep::Done;
+            } else if signal == libc::SIGHUP {
+                // The hangup decides the sweep, under `exited` (see the waiter).
+                arm(&self.state.sweep);
             }
             if let Some(group) = self.master.as_ref().and_then(|m| m.process_group_leader()) {
                 if group > 0 {
@@ -760,26 +736,15 @@ impl NativeTransport {
     }
 }
 impl NativeTransport {
-    /// Sets the session sweep's deadline when the child is still unreaped.
+    /// The session sweep's deadline when the child is still unreaped: the
+    /// hangup's own when kill() armed it already.
     #[cfg(unix)]
     fn arm_sweep(&self) -> Option<Instant> {
         let exited = self.state.exited.lock().unwrap_or_else(|p| p.into_inner());
         if exited.is_some() || self.pid == 0 {
             return None;
         }
-        let at = Instant::now() + HANGUP_GRACE;
-        *self
-            .state
-            .sweep_at
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some(at);
-        // The sweep is decided: the waiter may reap once it has run.
-        self.state
-            .hangup_at
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take();
-        Some(at)
+        arm(&self.state.sweep)
     }
     fn drain(&mut self, paused: Option<bool>) -> RawTransportRead {
         let mut bytes = Vec::new();
@@ -891,6 +856,32 @@ fn signal_number(signal: Option<&str>) -> Option<u32> {
     None
 }
 
+/// A pane's session sweep: not armed, armed for a deadline, or run.
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum Sweep {
+    None,
+    Armed(Instant),
+    Done,
+}
+
+/// Arms the sweep HANGUP_GRACE from now, once: the deadline it has, if armed
+/// already, or none once it ran. The caller holds `exited` and found the child
+/// unreaped.
+#[cfg(unix)]
+fn arm(sweep: &Mutex<Sweep>) -> Option<Instant> {
+    let mut sweep = sweep.lock().unwrap_or_else(|p| p.into_inner());
+    match *sweep {
+        Sweep::None => {
+            let at = Instant::now() + HANGUP_GRACE;
+            *sweep = Sweep::Armed(at);
+            Some(at)
+        }
+        Sweep::Armed(at) => Some(at),
+        Sweep::Done => None,
+    }
+}
+
 /// Blocks until `pid` has exited (unreaped). A stopped or continued root is
 /// not an exit: macOS answers WEXITED with a stop too (CLD_STOPPED, as a tree
 /// capture's SIGSTOP leaves the root). The only waits here keep WNOWAIT, so
@@ -931,9 +922,10 @@ fn observe_exit(pid: i32) -> std::io::Result<()> {
 /// portable-pty creates a fresh Unix session. Only processes still in that
 /// owned session are terminated; detached services with a new SID are separate.
 /// The root PID is not reaped until this scan finishes, so its SID cannot be reused.
-/// It runs for an explicit SIGKILL, and HANGUP_GRACE after a pane is closed
-/// while its shell is unreaped. It never runs on the shell's own exit, nor for a
-/// pane closed after the shell has exited and been reaped: once reaped, the
+/// It runs for an explicit SIGKILL, and HANGUP_GRACE after a pane is hung up
+/// (kill()'s SIGHUP, or close()) while its shell is unreaped. It never runs on
+/// the shell's own exit, nor for a pane hung up after the shell has exited and
+/// been reaped: once reaped, the
 /// session id may name another session, so what the shell left behind gets
 /// only the terminal's hangup there, as it does with node-pty.
 #[cfg(unix)]
