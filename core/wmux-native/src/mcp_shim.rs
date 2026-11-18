@@ -51,9 +51,15 @@
 //!
 //! Each fallback writes one stderr line with its reason: `broker off` (main's
 //! marker, checked before dialling), `broker refused the session: peer` (or
-//! `peer-unverified`), `no broker`, `no ack in 5 s`, `closed
-//! before ack` or `not an ack`. Bot mode (below) is the
+//! `peer-unverified`), `no broker`, `broker not ours`, `no ack in 5 s`,
+//! `closed before ack` or `not an ack`. Bot mode (below) is the
 //! designed path and writes none.
+//!
+//! Pipe owner (Windows): the handshake carries the auth token, so it is written
+//! only to a pipe whose owner is this account (the process's user, or its
+//! default owner). A pipe at the broker's name with another owner is closed
+//! unwritten and the session falls back with `broker not ours`; it is not
+//! retried. Unix sockets are not checked here.
 //!
 //! Fallback (fallback.rs): when the broker is unreachable or does not take the
 //! session, and always for `--bot*` arguments (the broker hosts no bot
@@ -472,10 +478,45 @@ fn socket_error(syscall: &str, e: &std::io::Error) -> String {
     format!("{syscall} {}", errno_name(e))
 }
 
+/// The connect error of a pipe whose owner is not this account: the handshake,
+/// which carries the auth token, is never written to it, and it is not retried.
+#[derive(Debug)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub struct ForeignPipeOwner;
+
+impl std::fmt::Display for ForeignPipeOwner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the broker pipe is not owned by this account")
+    }
+}
+
+impl std::error::Error for ForeignPipeOwner {}
+
+fn foreign_owner(e: &std::io::Error) -> bool {
+    e.get_ref().is_some_and(|inner| inner.is::<ForeignPipeOwner>())
+}
+
+/// The owner check's outcome as a connect result. Another owner is
+/// ForeignPipeOwner (not retried, `broker not ours`). A check that could not
+/// run keeps its OS error, which is retried and then falls back as `no
+/// broker`. Either way the handshake is not written.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn owner_verdict(owned: std::io::Result<bool>) -> std::io::Result<()> {
+    match owned {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            ForeignPipeOwner,
+        )),
+        Err(e) => Err(e),
+    }
+}
+
 /// No endpoint at all (ENOENT, or ERROR_FILE_NOT_FOUND for a pipe) means
 /// nothing is listening, so the session falls back at once. Any other failure,
 /// such as a socket file whose broker is restarting, is tried CONNECT_RETRIES
 /// times, CONNECT_RETRY_DELAY apart.
+/// A pipe with another owner is not retried.
 fn connect_with_retry(pipe: &str) -> Result<sys::Conn, std::io::Error> {
     let mut tries = 0;
     loop {
@@ -483,7 +524,7 @@ fn connect_with_retry(pipe: &str) -> Result<sys::Conn, std::io::Error> {
             Ok(conn) => return Ok(conn),
             Err(e) => {
                 tries += 1;
-                if e.kind() == std::io::ErrorKind::NotFound || tries >= CONNECT_RETRIES {
+                if e.kind() == std::io::ErrorKind::NotFound || foreign_owner(&e) || tries >= CONNECT_RETRIES {
                     return Err(e);
                 }
                 std::thread::sleep(CONNECT_RETRY_DELAY);
@@ -567,6 +608,8 @@ fn read_step(r: std::io::Result<usize>) -> ReadStep {
 const ACK_DEADLINE: Duration = Duration::from_secs(5);
 /// The fallback reasons, one stderr line each.
 const NO_BROKER: &str = "no broker";
+/// The pipe at the broker's name is not owned by this account (Windows).
+const BROKER_NOT_OURS: &str = "broker not ours";
 const BROKER_OFF: &str = "broker off";
 const NO_TOKEN_FILE: &str = "no auth token file";
 const NO_ACK: &str = "no ack in 5 s";
@@ -945,6 +988,7 @@ pub fn run(raw: &[OsString]) -> ! {
     let pipe = broker_pipe_name();
     let conn = match connect_with_retry(&pipe) {
         Ok(conn) => conn,
+        Err(e) if foreign_owner(&e) => no_session(BROKER_NOT_OURS, raw),
         Err(_) => no_session(NO_BROKER, raw),
     };
     let line = handshake_line(&Handshake {
@@ -1245,6 +1289,100 @@ mod sys {
     #[link(name = "advapi32")]
     extern "system" {
         fn GetUserNameW(buffer: *mut u16, size: *mut u32) -> i32;
+        fn GetSecurityInfo(
+            handle: Handle,
+            object_type: u32,
+            info: u32,
+            owner: *mut *mut c_void,
+            group: *mut *mut c_void,
+            dacl: *mut *mut c_void,
+            sacl: *mut *mut c_void,
+            descriptor: *mut *mut c_void,
+        ) -> u32;
+        fn OpenProcessToken(process: Handle, access: u32, token: *mut Handle) -> i32;
+        fn GetTokenInformation(token: Handle, class: u32, info: *mut c_void, len: u32, returned: *mut u32) -> i32;
+        fn EqualSid(a: *mut c_void, b: *mut c_void) -> i32;
+        fn IsValidSid(sid: *mut c_void) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LocalFree(memory: *mut c_void) -> *mut c_void;
+    }
+
+    const SE_KERNEL_OBJECT: u32 = 6;
+    const OWNER_SECURITY_INFORMATION: u32 = 1;
+    const TOKEN_QUERY: u32 = 8;
+    const TOKEN_USER: u32 = 1;
+    const TOKEN_OWNER: u32 = 4;
+
+    /// A token information buffer whose first field is a SID pointer
+    /// (TOKEN_USER, TOKEN_OWNER), aligned for that pointer.
+    fn token_sid(token: Handle, class: u32) -> std::io::Result<Vec<usize>> {
+        let mut len = 0u32;
+        // SAFETY: a size query: it fails with ERROR_INSUFFICIENT_BUFFER and sets `len`.
+        unsafe { GetTokenInformation(token, class, std::ptr::null_mut(), 0, &mut len) };
+        if len == 0 {
+            return Err(Error::last_os_error());
+        }
+        let mut buf = vec![0usize; (len as usize).div_ceil(std::mem::size_of::<usize>())];
+        // SAFETY: `buf` holds `len` bytes and is aligned for the structure.
+        if unsafe { GetTokenInformation(token, class, buf.as_mut_ptr().cast(), len, &mut len) } == 0 {
+            return Err(Error::last_os_error());
+        }
+        Ok(buf)
+    }
+
+    /// Whether `owner` is a valid SID equal to one of `ours`.
+    pub(super) fn sid_is_one_of(owner: *mut c_void, ours: &[*mut c_void]) -> bool {
+        // SAFETY: each pointer is checked for null; IsValidSid guards `owner`
+        // before EqualSid reads it.
+        !owner.is_null()
+            && unsafe { IsValidSid(owner) } != 0
+            && ours
+                .iter()
+                .any(|&sid| !sid.is_null() && unsafe { EqualSid(owner, sid) } != 0)
+    }
+
+    /// Whether the pipe's owner is this account: the process's user, or the
+    /// owner it gives what it creates (an elevated process's default owner is
+    /// the Administrators group, whose members can read this account's token
+    /// file anyway). A check that cannot run returns its error.
+    pub(super) fn owned_by_us(pipe: Handle) -> std::io::Result<bool> {
+        let mut owner: *mut c_void = std::ptr::null_mut();
+        let mut descriptor: *mut c_void = std::ptr::null_mut();
+        // SAFETY: `pipe` is an open handle with READ_CONTROL (GENERIC_READ);
+        // `owner` points into `descriptor`, which is freed below.
+        let rc = unsafe {
+            GetSecurityInfo(
+                pipe,
+                SE_KERNEL_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if rc != 0 {
+            return Err(Error::from_raw_os_error(rc as i32));
+        }
+        let mut token: Handle = std::ptr::null_mut();
+        // SAFETY: the current-process pseudo handle; `token` is closed below.
+        let result = if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            Err(Error::last_os_error())
+        } else {
+            let ours = token_sid(token, TOKEN_USER).and_then(|user| Ok((user, token_sid(token, TOKEN_OWNER)?)));
+            // SAFETY: the token handle is owned here and closed once.
+            unsafe { CloseHandle(token) };
+            ours.map(|(user, default_owner)| {
+                sid_is_one_of(owner, &[user[0] as *mut c_void, default_owner[0] as *mut c_void])
+            })
+        };
+        // SAFETY: the descriptor GetSecurityInfo allocated, freed once, after the last use of `owner`.
+        unsafe { LocalFree(descriptor) };
+        result
     }
 
     /// One manual-reset event per pump thread, reset before each operation.
@@ -1423,7 +1561,10 @@ mod sys {
         if unsafe { GetFileType(conn.0) } != FILE_TYPE_PIPE {
             return Err(Error::from_raw_os_error(ERROR_INVALID_FUNCTION));
         }
-        Ok(conn)
+        // The handshake carries the auth token: it goes only to a pipe this
+        // account owns, never to one another account created under this name.
+        // On any error the handle closes with `conn`, unwritten.
+        super::owner_verdict(owned_by_us(conn.0)).map(|()| conn)
     }
 
     /// A non-blocking stdio is a Unix notion; a pipe handle that reports one
@@ -1806,5 +1947,122 @@ mod tests {
             Outcome::NoToken.message().unwrap(),
             "[wmux-mcp-shim] auth token not found. Is wmux running?"
         );
+    }
+
+    #[test]
+    fn a_foreign_pipe_owner_is_its_own_connect_error() {
+        let foreign = std::io::Error::new(std::io::ErrorKind::PermissionDenied, ForeignPipeOwner);
+        assert!(foreign_owner(&foreign));
+        assert!(!foreign_owner(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied
+        )));
+        assert!(!foreign_owner(&std::io::Error::other("no broker")));
+    }
+
+    #[test]
+    fn the_owner_check_writes_nothing_unless_the_owner_is_ours() {
+        assert!(owner_verdict(Ok(true)).is_ok());
+        // Another owner: refused for good, as `broker not ours`.
+        assert!(foreign_owner(&owner_verdict(Ok(false)).unwrap_err()));
+        // A check that could not run: its own error, retried as any connect failure.
+        let failed = owner_verdict(Err(std::io::Error::from_raw_os_error(8))).unwrap_err();
+        assert!(!foreign_owner(&failed));
+        assert_eq!(failed.raw_os_error(), Some(8));
+    }
+}
+
+/// The pipe-owner check before the handshake, on real Windows pipes.
+#[cfg(all(test, windows))]
+mod pipe_owner_tests {
+    use super::sys;
+    use core::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateNamedPipeW(
+            name: *const u16,
+            open_mode: u32,
+            pipe_mode: u32,
+            max_instances: u32,
+            out_size: u32,
+            in_size: u32,
+            timeout: u32,
+            security: *mut c_void,
+        ) -> *mut c_void;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+        fn LocalFree(memory: *mut c_void) -> *mut c_void;
+    }
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn ConvertStringSidToSidW(text: *const u16, sid: *mut *mut c_void) -> i32;
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(Some(0)).collect()
+    }
+
+    /// A SID from its string form, freed on drop.
+    struct Sid(*mut c_void);
+    impl Sid {
+        fn parse(text: &str) -> Sid {
+            let mut sid = std::ptr::null_mut();
+            // SAFETY: a NUL-terminated string; the SID is freed on drop.
+            assert_ne!(
+                unsafe { ConvertStringSidToSidW(wide(text).as_ptr(), &mut sid) },
+                0,
+                "{text}"
+            );
+            Sid(sid)
+        }
+    }
+    impl Drop for Sid {
+        fn drop(&mut self) {
+            // SAFETY: allocated by ConvertStringSidToSidW, freed once.
+            unsafe { LocalFree(self.0) };
+        }
+    }
+
+    #[test]
+    fn connects_to_a_pipe_this_account_created() {
+        let name = format!(
+            r"\\.\pipe\wmux-shim-owner-test-{}-{:?}",
+            std::process::id(),
+            std::time::Instant::now()
+        );
+        // PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED, byte mode, default security:
+        // the owner is this process's default owner.
+        // SAFETY: a NUL-terminated name; the handle is closed below.
+        let server = unsafe {
+            CreateNamedPipeW(
+                wide(&name).as_ptr(),
+                0x3 | 0x4000_0000,
+                0,
+                1,
+                4096,
+                4096,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(server as isize, -1, "{}", std::io::Error::last_os_error());
+        let conn = sys::connect(&name);
+        assert!(conn.is_ok(), "{:?}", conn.err());
+        drop(conn);
+        // SAFETY: the server handle is owned here and closed once.
+        unsafe { CloseHandle(server) };
+    }
+
+    #[test]
+    fn takes_only_an_owner_among_this_accounts_sids() {
+        let (system, everyone, admins) = (
+            Sid::parse("S-1-5-18"),
+            Sid::parse("S-1-1-0"),
+            Sid::parse("S-1-5-32-544"),
+        );
+        assert!(sys::sid_is_one_of(system.0, &[everyone.0, system.0]));
+        assert!(!sys::sid_is_one_of(system.0, &[everyone.0, admins.0]));
+        assert!(!sys::sid_is_one_of(std::ptr::null_mut(), &[system.0]));
+        assert!(!sys::sid_is_one_of(system.0, &[std::ptr::null_mut()]));
     }
 }

@@ -190,6 +190,11 @@ async function main(): Promise<void> {
   // strips env from ITS children — but this shim IS the child the agent
   // spawned, so whatever hints survived to us are exactly what the old
   // full child would have seen.
+  //
+  // Dev-only on Windows: the native launcher (core/wmux-native mcp_shim.rs)
+  // writes this line only to a pipe its own account owns. Node exposes no
+  // handle for a connected pipe, so this shim cannot read the owner; a
+  // packaged build never registers it (shared/mcpLauncher.ts chooseLauncher).
   socket.write(
     JSON.stringify({
       wmuxShim: 1,
