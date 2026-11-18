@@ -120,6 +120,18 @@ describe('LinkedTaskTurns', () => {
     expect(t.taskTurn(TASK)).toEqual({ opened: false, closed: true, toolUseIds: [] });
   });
 
+  it('the prompt again inside the open turn, read later: not opened either, as in one read', () => {
+    const floor = size();
+    write(userLine(PROMPT), callLine('toolu_1'));
+    tasks = [inboundTask({ submit: proof({ transcriptOffsetAtBase: floor }) })];
+    const t = tracker();
+    t.tick();
+    expect(t.taskTurn(TASK)).toEqual({ opened: true, closed: false, toolUseIds: ['toolu_1'] });
+    write(userLine(PROMPT), callLine('toolu_2'));
+    t.tick();
+    expect(t.taskTurn(TASK)).toEqual({ opened: false, closed: true, toolUseIds: [] });
+  });
+
   it('without a floor, only an entry written after the unit was first seen counts', () => {
     write(userLine(PROMPT), callLine('toolu_old'));
     tasks = [inboundTask({ submit: proof() })];

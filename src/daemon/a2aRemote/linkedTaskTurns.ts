@@ -21,9 +21,10 @@ import { isPromptEntry, stepTaskTurn, type TaskTurn } from './taskTurn';
  * longer the incarnation, key epoch or agent (Claude Code) the proof names,
  * when the pane's occupant is another pty, when the transcript moves to
  * another file or is cut or replaced, or when the prompt is seen more than
- * once past the floor. Without a floor the unit starts at the end of the file
- * as first seen, so only an entry written after that counts. A prompt not seen
- * within LINKED_TURN_SEEK_MAX_MS gives up (`unknown`).
+ * once past the floor while the unit is read (then it is not opened at all).
+ * Without a floor the unit starts at the end of the file as first seen, so
+ * only an entry written after that counts. A prompt not seen within
+ * LINKED_TURN_SEEK_MAX_MS gives up (`unknown`).
  *
  * Read only: `taskTurn` answers what was seen, and nothing here acts on it.
  * The timer runs only while some unit is still read (`wake` starts it again,
@@ -229,6 +230,13 @@ export class LinkedTaskTurns {
       from = until;
     }
     for (let i = from; i < lines.length && !u.turn.closed; i++) {
+      // The prompt again while its turn is open (a later read): as two entries in one read, not this submit's.
+      if (u.turn.opened && isPromptEntry(lines[i].line, u.turn.promptHash)) {
+        u.turn.opened = false;
+        u.turn.toolUseIds = [];
+        u.turn.closed = true;
+        return;
+      }
       stepTaskTurn(u.turn, lines[i].line, parseTranscriptLine(lines[i].line, lines[i].start));
     }
   }
