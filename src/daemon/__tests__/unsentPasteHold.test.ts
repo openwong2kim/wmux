@@ -272,6 +272,26 @@ describe('UnsentPasteHolds', () => {
       expect(holds.held('pty-a')).toBe(false);
       expect(typed).toEqual([]);
     });
+
+    it('a writer that throws after a paste it took back answers busy, so the caller retries it', async () => {
+      expect(await run(async (onWrite) => { paste('SCHED 1'); typed.push('SCHED 1'); holds.wrote('pty-a'); onWrite('paste'); throw new Error('boom'); })).toBe('busy');
+      expect(typed).toEqual(['SCHED 1', '^U']);
+      expect(holds.held('pty-a')).toBe(false);
+      expect(edges).toEqual([]);
+      expect(logs.some((line) => line.includes('its delivery failed after the paste was taken back; busy, retried (Error: boom)'))).toBe(true);
+    });
+
+    it('an erase that throws is not a take-back: held, and the caller hears of the paste', async () => {
+      const res = await deliverUnderHold({
+        onWrite: (stage) => { edges.push(stage); }, holds, sessionId: 'pty-a', writer: 'scheduled prompt', text: 'SCHED 1', deliver: pasteThenRefuse,
+        presence: async () => ({ tier: 'process', slug: 'claude', input: 'full', bracketedPaste: true, pasteShown: true }),
+        eraseLine: () => { throw new Error('session gone'); },
+        log: (line) => logs.push(line),
+      });
+      expect(res).toBe('error');
+      expect(holds.held('pty-a')).toBe(true);
+      expect(edges).toEqual(['paste']);
+    });
   });
 });
 

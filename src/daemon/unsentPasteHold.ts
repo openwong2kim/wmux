@@ -32,7 +32,7 @@ export interface UnsentPasteGate {
 
 /** A chat send refused while the pane is held: how the person clears it. */
 export const UNSENT_PASTE_CHAT_DETAIL =
-  "the agent's input box still holds an earlier message wmux pasted and did not submit: press Enter on the waiting text, or Ctrl+U to clear it";
+  "the agent's input box still holds an earlier message wmux pasted and did not submit: press Enter on the waiting text, or clear the whole box (Ctrl+U clears one line at a time)";
 
 export interface UnsentPasteRecord {
   /** When the paste was left. */
@@ -194,7 +194,8 @@ export interface HeldDeliveryOptions<R extends string> {
  * the pane holds an earlier unsubmitted paste. A paste it leaves unsubmitted is taken back with Ctrl+U while the box
  * shows exactly its own text (the channel wake nudge's rule): then nothing of it is left, no hold is recorded, and the
  * answer is `busy` (reason taken-back), which every caller retries. Otherwise (someone typed, the box cannot be read)
- * nothing is erased and the pane is held. A delivery that throws after its paste is treated the same way.
+ * nothing is erased and the pane is held. A delivery that throws after its paste is treated the same way: taken back,
+ * it answers `busy` (the failure logged); held, the failure is rethrown. An erase that throws counts as not erased.
  *
  * The caller hears of the paste only once it stays: before the Enter, or when it is left in the box. A paste taken
  * back was never reported, so no caller takes it for text that may sit in the composer.
@@ -221,7 +222,7 @@ export async function deliverUnderHold<R extends string>(opts: HeldDeliveryOptio
     }
   };
   let result: R | undefined;
-  let takenBack = false;
+  let failure: { error: unknown } | undefined;
   try {
     result = await opts.deliver((stage, queued) => {
       if (stage === 'paste') {
@@ -232,11 +233,18 @@ export async function deliverUnderHold<R extends string>(opts: HeldDeliveryOptio
       reportPaste();
       opts.onWrite?.(stage, queued);
     });
-  } finally {
-    if (result !== 'sent' && pasted && !submitted) takenBack = await leftUnsent(opts);
-    if (!takenBack) reportPaste();
+  } catch (error) {
+    failure = { error };
   }
-  return takenBack ? 'busy' : result as R;
+  const takenBack = result !== 'sent' && pasted && !submitted ? await leftUnsent(opts) : false;
+  if (takenBack) {
+    // Its paste is gone, so a delivery that failed after it is retried like any other take-back.
+    if (failure) opts.log(`[unsent-paste] session=${sessionId} ${writer}: its delivery failed after the paste was taken back; busy, retried (${String(failure.error)})`);
+    return 'busy';
+  }
+  reportPaste();
+  if (failure) throw failure.error;
+  return result as R;
 }
 
 /** True when the paste was taken back; false when it is left in the box and the pane is held. */
@@ -248,7 +256,13 @@ async function leftUnsent<R extends string>(opts: HeldDeliveryOptions<R>): Promi
     return false;
   }
   const shown = await opts.presence({ phase: 'enter', ...shownOf(opts.text) }).catch(() => null);
-  if (shown?.pasteShown === true && opts.eraseLine()) {
+  let erased = false;
+  try {
+    erased = shown?.pasteShown === true && opts.eraseLine();
+  } catch {
+    // The erase may not have landed: treated as not erased, so the pane is held.
+  }
+  if (erased) {
     opts.log(`[unsent-paste] session=${sessionId} ${writer}: its paste was not submitted and was taken back (Ctrl+U); not held; busy (taken-back), retried`);
     return true;
   }

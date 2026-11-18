@@ -43,6 +43,18 @@ describe('ChatSendReceiptStore', () => {
     expect(second.view('device:a', 'pane-1', id(2))).toMatchObject({ state: 'submitted', result: 'sent' });
   });
 
+  it('never persists an outcome the loader would reject: the store still loads, and that receipt stays uncertain', () => {
+    const dir = tempDir();
+    const first = new ChatSendReceiptStore(dir, { now: () => NOW });
+    first.insertPending('device:a', id(1), receipt());
+    first.insertPending('device:a', id(2), receipt());
+    expect(first.complete('device:a', id(1), { result: 'unconfirmed', effect: 'none', error: 'input-not-provably-empty', detail: 'x'.repeat(513) })).toBe(false);
+    expect(first.complete('device:a', id(2), { result: 'unconfirmed', effect: 'none', error: 'input-not-provably-empty', detail: 'press Enter' })).toBe(true);
+    const second = new ChatSendReceiptStore(dir, { now: () => NOW });
+    expect(second.view('device:a', 'pane-1', id(1))).toMatchObject({ state: 'uncertain', result: 'unconfirmed' });
+    expect(second.lookup('device:a', id(2))).toMatchObject({ state: 'final', outcome: { detail: 'press Enter' } });
+  });
+
   it('keeps which limit a text-too-long hit across a restart', () => {
     const dir = tempDir();
     const first = new ChatSendReceiptStore(dir, { now: () => NOW });

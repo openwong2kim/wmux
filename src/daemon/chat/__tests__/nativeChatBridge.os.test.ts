@@ -477,12 +477,24 @@ describe('send', () => {
     const req = phoneSend('held');
     const refused = await bridge.send(req);
     expect(refused).toMatchObject({ result: 'unconfirmed', error: 'input-not-provably-empty', effect: 'none' });
-    expect((refused as { detail?: string }).detail).toContain('press Enter on the waiting text, or Ctrl+U to clear it');
+    expect((refused as { detail?: string }).detail).toContain('press Enter on the waiting text, or clear the whole box (Ctrl+U clears one line at a time)');
     expect(f.written).toEqual([]);
     held = false;
     delivery.override = pasteThen('error');
     expect(await bridge.send(phoneSend('left'))).toMatchObject({ error: 'send-interrupted', effect: 'uncertain' });
     expect(recorded).toEqual(['pane:chat send']);
+    // An Enter the writer refuses did not reach the pane: the paste is still in the box, so it is held.
+    const writeFirst = f.deps.write;
+    let writes = 0;
+    f.deps.write = (id, data) => (++writes === 2 ? false : writeFirst(id, data));
+    delivery.override = async (_session, text, deps) => {
+      if (deps.write(`\x1b[200~${text}\x1b[201~`)) deps.onWrite?.('paste');
+      deps.onWrite?.('submit');
+      return deps.write('\r') ? 'sent' : 'error';
+    };
+    expect(await createChatBridge({ ...f.deps, unsentPaste: { held: () => false, wrote: () => undefined, record: (id, writer) => { recorded.push(`${id}:${writer}`); } } }).send(phoneSend('enter refused')))
+      .toMatchObject({ error: 'send-interrupted' });
+    expect(recorded).toEqual(['pane:chat send', 'pane:chat send']);
   });
 
   it('is uncertain when the agent state is gone right after the first paste', async () => {

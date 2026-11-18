@@ -3100,8 +3100,12 @@ export function registerInputRpc(
     /** A paste left in the box, recorded while the pane's delivery locks are still held, so the next delivery sees it. */
     const rememberUnsent = async (result: GatedSubmitResult, keysBefore: number | undefined, markUnsent: (() => Promise<boolean>) | undefined): Promise<GatedSubmitResult> => {
       if (!result.ok && result.pasted && !result.cleared) {
-        // The daemon took it: its count already has this delivery's writes (#3393).
-        if (markUnsent && (await markUnsent())) return result;
+        // The daemon took it: its count already has this delivery's writes (#3393). Asked twice, so one dropped
+        // answer does not leave the daemon's own writers unaware of the paste.
+        if (markUnsent && ((await markUnsent()) || (await markUnsent()))) return result;
+        if (markUnsent) {
+          logLine(`[delivery] pane ${JSON.stringify(ptyId)}: the daemon did not take the hold on the paste left in the input box (its delivery lock lost, or no answer); only wmux's own deliveries see it`);
+        }
         // After this delivery's last write (an Enter retry only follows a sent Enter, and such a delivery is not unsent).
         const at = (deps.now ?? Date.now)();
         const floor = keysBefore === undefined ? undefined : keysBefore + ownWrites;

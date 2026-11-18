@@ -347,7 +347,7 @@ export const pl = {
   'chat.send.unavailable': 'Nie udało się zweryfikować aktywnej sesji Claude. Kontynuuj w Terminalu.',
   'chat.send.error': 'Nie udało się potwierdzić dostarczenia. Tekst może już być w Terminalu; sprawdź go przed ponowieniem.',
   'chat.send.refused': 'Nic nie zostało wysłane. Wiadomość jest nadal w polu tekstowym; sprawdź Terminal i wyślij ponownie.',
-  'chat.send.unsentPaste': "Nic nie zostało wysłane: pole wprowadzania terminala nadal zawiera wcześniejszą, niewysłaną wiadomość. W Terminalu naciśnij Enter, aby ją wysłać, lub Ctrl+U, aby ją wyczyścić, i wyślij ponownie.",
+  'chat.send.unsentPaste': "Nic nie zostało wysłane: pole wprowadzania terminala nadal zawiera wcześniejszą, niewysłaną wiadomość. W Terminalu naciśnij Enter, aby ją wysłać, lub wyczyść całe pole (Ctrl+U czyści jedną linię naraz), i wyślij ponownie.",
   'chat.bodyRetry': 'Treść niedostępna · Spróbuj ponownie',
   'chat.code': 'Kod',
   'chat.lines': 'wierszy',

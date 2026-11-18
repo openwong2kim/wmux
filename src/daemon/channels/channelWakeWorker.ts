@@ -718,22 +718,20 @@ export class ChannelWakeWorker {
           return;
         }
         // Not submitted. Take the hint back (Ctrl+U), but only while the pane
-        // still shows it: never anything else.
-        if (presence.pasteShown === false) {
-          // The box was read and shows something else: the line is under it. Held.
-          leftInBox();
-          return;
-        }
+        // still shows it: never anything else. Anything less than that sighting
+        // (the box shows other text, or could not be read) leaves the written
+        // line where it may be: held, until a key, the agent's exit or the
+        // session's end clears it.
         if (presence.pasteShown !== true) {
-          // No frame to read (the agent left, or no screen): nothing known to
-          // be in a box, so no hold that a later agent could not clear.
-          report(false);
+          leftInBox();
           return;
         }
         try {
           this.deps.write(sessionId, '\x15');
         } catch {
-          /* the session went away */
+          // The erase may not have landed: the line may still be in the box.
+          leftInBox();
+          return;
         }
         report(false);
       })();

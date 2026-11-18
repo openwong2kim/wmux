@@ -180,6 +180,8 @@ export class ChatSendReceiptStore {
     const key = this.key(owner, clientMessageId);
     const entry = this.entries[key];
     if (!entry || entry.state !== 'pending') return false;
+    // A row the loader would reject is never written: the receipt stays pending, which reads as uncertain.
+    if (!validOutcome(outcome)) return false;
     const next = { ...this.entries, [key]: { ...entry, state: 'final' as const, outcome } };
     this.entries = next;
     try { this.save(next); return true; } catch { return false; }

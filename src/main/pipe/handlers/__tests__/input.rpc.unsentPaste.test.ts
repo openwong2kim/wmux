@@ -39,7 +39,7 @@ let turnStartedAt: number | undefined;
  * #3393 — a daemon with the pane delivery lock: it holds an unsent paste itself. `held` is what it reports per pane,
  * `reports` what main told it, `accept` whether it takes a report. Null: an older daemon (main's own record).
  */
-let daemonHold: { held: Record<string, boolean>; reports: Array<{ id: string; token: string }>; accept: boolean } | null;
+let daemonHold: { held: Record<string, boolean>; reports: Array<{ id: string; token: string }>; accept: boolean; dropped?: number } | null;
 /** How many of the daemon's next agent-state reads fail (a timeout). */
 let unreadable: number;
 let stops: (ptyId: string) => void = () => undefined;
@@ -78,6 +78,11 @@ function harness() {
       },
       reportUnsentPaste: async (id: string, token: string) => {
         daemonHold?.reports.push({ id, token });
+        // An answer lost on the way (a timeout): nothing recorded.
+        if (daemonHold?.dropped) {
+          daemonHold.dropped -= 1;
+          return false;
+        }
         if (daemonHold?.accept) daemonHold.held[id] = true;
         return daemonHold?.accept === true;
       },
@@ -316,8 +321,20 @@ describe('a paste left unsent in the input box (#3390)', () => {
       daemonHold = { held: {}, reports: [], accept: false };
       const wiring = harness();
       await leaveUnsent(wiring);
+      // Asked twice, then said in the log: the daemon's own writers do not see this paste.
+      expect(daemonHold.reports).toHaveLength(2);
+      expect(logs.some((line) => line.includes('the daemon did not take the hold'))).toBe(true);
       answers = [PROCESS];
       expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Claude Code')).toMatchObject({ ok: false, detail: expect.stringMatching(/still holds an earlier message/) });
+    });
+
+    it('one lost answer to the report is asked again, and the daemon holds the paste', async () => {
+      daemonHold = { held: {}, reports: [], accept: true, dropped: 1 };
+      const wiring = harness();
+      await leaveUnsent(wiring);
+      expect(daemonHold.reports).toHaveLength(2);
+      expect(daemonHold.held['pty-a']).toBe(true);
+      expect(logs.some((line) => line.includes('the daemon did not take the hold'))).toBe(false);
     });
   });
 });

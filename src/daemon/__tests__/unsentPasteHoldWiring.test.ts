@@ -76,9 +76,4 @@ describe('unsent-paste hold daemon wiring', () => {
     expect(block("paneLock: (id, send) => paneLocks.runLocked(id, 'native-chat'", 300)).toContain('unsentPaste: { held: (id) => unsentPasteHolds?.held(id) === true');
     expect(block('channelWakeWorkerRef = new ChannelWakeWorker({', 900)).toContain("unsentPaste: { held: (id) => unsentPasteHolds?.heldFor(id, 'channel wake nudge') === true");
   });
-
-  it("the wake nudge hears a box read showing something else (pasteShown false), so it holds the pane", () => {
-    // Forwarding only a true pasteShown left the wake worker's hold branch unreachable.
-    expect(block('agentPresent: async (id, check) => {', 500)).toContain('...(p.pasteShown !== undefined ? { pasteShown: p.pasteShown } : {})');
-  });
 });

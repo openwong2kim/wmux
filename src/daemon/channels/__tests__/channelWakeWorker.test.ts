@@ -1117,13 +1117,35 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
     await vi.advanceTimersByTimeAsync(5);
     expect(h.writes.at(-1)?.data).toBe('\x15');
     expect(recorded).toHaveLength(1);
-    // No frame at the Enter (the agent left): nothing known to be in a box, nothing recorded.
+    // No frame at the Enter: the line was written and nothing saw it go, so it is held.
     enter = { present: false };
     h.setNow(3_000_000);
     h.worker.tickOnce();
     await vi.advanceTimersByTimeAsync(5);
-    expect(recorded).toHaveLength(1);
+    expect(recorded).toEqual(['pty-1:channel wake nudge', 'pty-1:channel wake nudge']);
     expect(h.outcomes.at(-1)?.ok).toBe(false);
+  });
+
+  it('#3393: a written nudge whose Enter check rejects, or whose Ctrl+U throws, is held', async () => {
+    for (const enter of ['rejects', 'erase-throws'] as const) {
+      const recorded: string[] = [];
+      const h = makeHarness(undefined, {
+        unsentPaste: { held: () => false, wrote: () => undefined, record: (id, writer) => { recorded.push(`${id}:${writer}`); } },
+        agentPresent: async (_id, check) => {
+          if (check.phase !== 'enter') return { present: true, full: true };
+          if (enter === 'rejects') throw new Error('presence unavailable');
+          h.setWriteError(new Error('session gone'));
+          return { present: false, pasteShown: true };
+        },
+      });
+      h.setEntries([mention()]);
+      h.setSessions([session({})]);
+      h.worker.tickOnce();
+      await vi.advanceTimersByTimeAsync(5);
+      h.setWriteError(null);
+      expect(recorded, enter).toEqual(['pty-1:channel wake nudge']);
+      expect(h.outcomes.at(-1)?.ok, enter).toBe(false);
+    }
   });
 
   it('withholds the Enter when an approval is raised while the agent is asked about before the Enter', async () => {

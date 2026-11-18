@@ -84,12 +84,10 @@ export async function deliveryPresence(
   const session = id ? deps.session(id) : undefined;
   if (!session) return none('no-session');
 
-  const shown = async (): Promise<boolean | undefined> => {
-    if (check.phase !== 'enter' || !check.shownProbe) return undefined;
-    const frame = await readFrame();
-    // No frame: nothing is known about the box, which is not the same as a box read showing something else.
-    return frame ? frameShowsPaste(frame, { probe: check.shownProbe, lines: check.shownLines, chars: check.shownChars, text: check.shownText }) : undefined;
-  };
+  const shown = async (): Promise<boolean | undefined> =>
+    check.phase === 'enter' && check.shownProbe
+      ? frameShowsPaste(await readFrame(), { probe: check.shownProbe, lines: check.shownLines, chars: check.shownChars, text: check.shownText })
+      : undefined;
   const refuse = async (reason: DeliveryPresenceReason): Promise<DeliveryPresence> => none(reason, await shown());
   // A yes at the Enter says it too: a guard that refuses the Enter after this
   // answer takes the paste back only on it.

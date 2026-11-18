@@ -152,8 +152,10 @@ export class HermesChatService {
     const incarnationId = this.deps.pane(id)?.incarnationId;
     if (!incarnationId) return { result: 'unavailable' };
     let pasted = false;
-    // The Enter edge was reached: the paste counts as submitted even when that write then failed.
+    // The Enter was written, or threw (it may have landed): the paste counts as submitted. An Enter the
+    // writer refused (false) did not reach the pane, so what was pasted is still in the box.
     let submitted = false;
+    let enterNext = false;
     let denied = false;
     const authorize = opts.authorized;
     const result = await deliverScheduledPrompt('hermes', incarnationId, text, {
@@ -168,15 +170,24 @@ export class HermesChatService {
       },
       isAgentProcessAlive: () => this.deps.processAlive(id),
       write: (data) => {
-        const ok = this.deps.write(id, data);
-        if (ok) this.deps.unsentPaste?.wrote(id);
-        return ok;
+        let ok = true;
+        try {
+          ok = this.deps.write(id, data);
+          if (ok) this.deps.unsentPaste?.wrote(id);
+          return ok;
+        } finally {
+          if (enterNext) {
+            enterNext = false;
+            submitted = ok;
+          }
+        }
       },
       // Enter always submits in Hermes' prompt; a pasted newline stays in it.
       submitKeys: '\r',
       onWrite: (stage) => {
         if (stage === 'paste') pasted = true;
-        else submitted = true;
+        // The next write is the Enter; its own result says whether the paste was submitted.
+        else enterNext = true;
       },
       ...(this.deps.delay ? { delay: this.deps.delay } : {}),
       ...(authorize ? { authorized: async (stage: 'first-write' | 'submit') => {

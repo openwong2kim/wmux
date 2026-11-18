@@ -754,8 +754,10 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     // in the composer, so from then on the send is never reported as `none`.
     let wrote = false;
     let queued = false;
-    // The Enter edge was reached: the paste counts as submitted even when that write then failed.
+    // The Enter was written, or threw (it may have landed): the paste counts as submitted. An Enter the
+    // writer refused (false) did not reach the pane, so what was pasted is still in the box.
     let submitted = false;
+    let enterNext = false;
     let denied: 'paste' | 'submit' | undefined;
     const authorize = req.authorized;
     try {
@@ -792,6 +794,10 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
               wrote = true;
               deps.unsentPaste?.wrote(id);
             }
+            if (enterNext) {
+              enterNext = false;
+              submitted = ok;
+            }
           }
         },
         ...(deps.delay ? { delay: deps.delay } : {}),
@@ -806,7 +812,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         } } : {}),
         onWrite: (stage, running) => {
           if (stage !== 'submit') return;
-          submitted = true;
+          // The next write is the Enter; its own result says whether the paste was submitted.
+          enterNext = true;
           queued = !!running;
         },
       }, req.attachments ?? []);
