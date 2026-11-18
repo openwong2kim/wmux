@@ -162,7 +162,8 @@ impl Drop for PipeInstance {
 }
 
 struct Shared {
-    stop: OwnedHandle,
+    /// Manual-reset stop signal; closed by the accept thread as it exits.
+    stop: Mutex<Option<OwnedHandle>>,
     accepted: Mutex<VecDeque<Arc<Conn>>>,
     failure: Mutex<Option<String>>,
     closed: AtomicBool,
@@ -206,7 +207,7 @@ impl Listener {
         }
         let first = instances.create()?;
         let shared = Arc::new(Shared {
-            stop: event(true).map_err(ListenError::Other)?,
+            stop: Mutex::new(Some(event(true).map_err(ListenError::Other)?)),
             accepted: Mutex::new(VecDeque::new()),
             failure: Mutex::new(None),
             closed: AtomicBool::new(false),
@@ -217,7 +218,20 @@ impl Listener {
             .name("wmux-pipe-accept".into())
             .spawn(move || {
                 let _worker = Worker::enter();
-                accept_loop(&worker_shared, &instances, first);
+                let stop = worker_shared
+                    .stop
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .map(OwnedHandle::raw);
+                if let Some(stop) = stop {
+                    accept_loop(&worker_shared, stop, &instances, first);
+                }
+                worker_shared
+                    .stop
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take();
                 worker_shared
                     .notify
                     .lock()
@@ -281,7 +295,16 @@ impl Listener {
         if self.shared.closed.swap(true, Ordering::AcqRel) {
             return false;
         }
-        set_event(&self.shared.stop);
+        // Under the lock, so the accept thread cannot close it meanwhile.
+        if let Some(stop) = self
+            .shared
+            .stop
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            set_event(stop);
+        }
         true
     }
 
@@ -316,7 +339,7 @@ enum Connect {
 }
 
 /// Waits for a client on `instance`, or for the stop event.
-fn connect(instance: &PipeInstance, stop: &OwnedHandle) -> Result<Connect, String> {
+fn connect(instance: &PipeInstance, stop: Handle) -> Result<Connect, String> {
     let ready = event(true)?;
     let mut overlapped = Overlapped::with_event(ready.raw());
     loop {
@@ -338,7 +361,7 @@ fn connect(instance: &PipeInstance, stop: &OwnedHandle) -> Result<Connect, Strin
             ERROR_IO_PENDING => {}
             code => return Err(os_error("ConnectNamedPipe", code)),
         }
-        let signalled = wait_any(&[stop.raw(), ready.raw()], INFINITE)?;
+        let signalled = wait_any(&[stop, ready.raw()], INFINITE)?;
         let mut n = 0;
         if signalled == Some(0) {
             // SAFETY: cancels this connect, then waits for it to complete.
@@ -363,14 +386,15 @@ fn connect(instance: &PipeInstance, stop: &OwnedHandle) -> Result<Connect, Strin
     }
 }
 
-fn accept_loop(shared: &Shared, instances: &Arc<Instances>, first: PipeInstance) {
+/// `stop` stays open until this returns.
+fn accept_loop(shared: &Shared, stop: Handle, instances: &Arc<Instances>, first: PipeInstance) {
     let mut next = Some(first);
     loop {
         let instance = match next.take() {
             Some(instance) => instance,
             None => {
                 // At the cap: wait for a slot (an instance closing) or stop.
-                match wait_any(&[shared.stop.raw(), instances.slots.raw()], INFINITE) {
+                match wait_any(&[stop, instances.slots.raw()], INFINITE) {
                     Ok(Some(1)) => {}
                     Ok(_) => return,
                     Err(message) => return shared.fail(message),
@@ -381,7 +405,7 @@ fn accept_loop(shared: &Shared, instances: &Arc<Instances>, first: PipeInstance)
                 }
             }
         };
-        match connect(&instance, &shared.stop) {
+        match connect(&instance, stop) {
             Ok(Connect::Connected) => {}
             Ok(Connect::Stopped) => return,
             Err(message) => return shared.fail(message),
