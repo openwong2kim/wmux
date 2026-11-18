@@ -3,6 +3,7 @@ import { getAnsiSnapshotBackendDiagnostics, selectAnsiSnapshot } from '../AnsiSn
 import type { SnapshotOutcome, SnapshotRequest } from '../HeadlessSnapshot';
 import { generateRustSnapshot } from '../RustSnapshot';
 import { NATIVE_SNAPSHOT_MAX_INPUT_BYTES } from '../nativeSnapshotLimits';
+import { NATIVE_CIRCUIT_COOLDOWNS_MS } from '../nativeCircuit';
 vi.mock('../RustSnapshot', () => ({ generateRustSnapshot: vi.fn() }));
 const native = vi.mocked(generateRustSnapshot);
 const request = { cols: 80, rows: 24, initial: Buffer.from('hello'), budgetMs: 1000 };
@@ -155,6 +156,57 @@ describe('ANSI snapshot backend selection', () => {
     nativeSuccess(request.initial);
     await selectAnsiSnapshot(request, reference);
     expect(native).toHaveBeenCalledTimes(2);
+  });
+
+  // R2 (b) prep: the circuit no longer stays open for the life of the daemon (nativeCircuit.ts).
+  it('lets one trial through after the cooldown, and closes the circuit when the module works', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockRejectedValueOnce(new Error('load failed'));
+    const reference = vi.fn(async () => success);
+    await selectAnsiSnapshot(request, reference);
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0] - 1;
+    await selectAnsiSnapshot(request, reference);
+    expect(native).toHaveBeenCalledOnce();
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0];
+    nativeSuccess(request.initial);
+    expect(await selectAnsiSnapshot(request, reference)).toMatchObject({ ok: true });
+    expect(native).toHaveBeenCalledTimes(2);
+    expect(getAnsiSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: false, circuitFailures: 0, last: { backend: 'rust', reason: 'native' } });
+  });
+
+  it('reopens a failed trial for the next cooldown, and skips everything while the trial runs', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockRejectedValueOnce(new Error('load failed'));
+    const reference = vi.fn(async () => success);
+    await selectAnsiSnapshot(request, reference);
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0];
+    let failTrial!: (err: Error) => void;
+    native.mockImplementationOnce(() => new Promise((_resolve, reject) => { failTrial = reject; }));
+    const trial = selectAnsiSnapshot(request, reference);
+    // A second request while the trial is out: skipped, the trial is not doubled.
+    await selectAnsiSnapshot(request, reference);
+    expect(native).toHaveBeenCalledTimes(2);
+    expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'xterm', reason: 'circuit-open' });
+    failTrial(new Error('still broken'));
+    await trial;
+    expect(getAnsiSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: true, circuitFailures: 2 });
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0] + NATIVE_CIRCUIT_COOLDOWNS_MS[1] - 1;
+    await selectAnsiSnapshot(request, reference);
+    expect(native).toHaveBeenCalledTimes(2);
+  });
+
+  it('closes the circuit on a trial that the module refuses: a refusal means it works', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockRejectedValueOnce(new Error('load failed'));
+    const reference = vi.fn(async () => success);
+    await selectAnsiSnapshot(request, reference);
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0];
+    native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'unsupported-wide-edge' });
+    await selectAnsiSnapshot(request, reference);
+    expect(getAnsiSnapshotBackendDiagnostics().circuitOpen).toBe(false);
   });
 
   it('takes an attach request: a full ring with its preamble and 100k rows of scrollback', async () => {
