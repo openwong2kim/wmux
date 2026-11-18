@@ -1,4 +1,4 @@
-import type { NativeOutputChunk } from '../shared/nativeTerminalCore';
+import { isNativeAllocFailure, type NativeOutputChunk } from '../shared/nativeTerminalCore';
 import type { TerminalPty } from '../shared/terminalPty';
 import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
@@ -2176,7 +2176,7 @@ export class DaemonPTYBridge extends EventEmitter {
      */
     shellMarks: 'exec' | 'integrated' | 'plain' = 'plain',
   ): void {
-    const interpreter = new OutputInterpreter((ptyProcess as TerminalPty).backend === 'rust' ? 'rust' : 'node');
+    const interpreter = new OutputInterpreter((ptyProcess as TerminalPty).backend === 'rust' ? 'rust' : 'node', sessionId);
     this.outputInterpreter = interpreter;
 
     // Fed from the same place the ring is written, so the tracked modes always
@@ -2191,8 +2191,15 @@ export class DaemonPTYBridge extends EventEmitter {
     // the ring, once per PTY lifetime.
     const modeTracker = interpreter.modes;
     this.modeTracker = modeTracker;
-    const prefilled = ringBuffer.readAll();
-    if (prefilled.length > 0) {
+    // A refused copy of the recovered ring leaves the tracker at its defaults:
+    // the session starts, and only the attach preamble for that old scrollback is lost.
+    let prefilled: Buffer | undefined;
+    try { prefilled = ringBuffer.readAll(); }
+    catch (error) {
+      if (!isNativeAllocFailure(error)) throw error;
+      console.error(`[pty] ${sessionId}: recovered scrollback not read for mode tracking: ${(error as Error).message}`);
+    }
+    if (prefilled && prefilled.length > 0) {
       interpreter.seedModes(prefilled.toString('utf8'), ringBuffer.totalBytesWritten);
     }
     // A bridge is built only for a freshly spawned process (a recovered

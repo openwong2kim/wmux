@@ -3,7 +3,7 @@ import { spawnTerminalPty, ptyBackend, bundledConptyPath, isTerminalCoreMissing,
 import path from 'node:path';
 import { loadNativeTerminalCore, type NativeTerminalCore } from '../nativeTerminalCore';
 
-vi.mock('../nativeTerminalCore', () => ({ loadNativeTerminalCore: vi.fn() }));
+vi.mock('../nativeTerminalCore', async (importOriginal) => ({ ...(await importOriginal<typeof import('../nativeTerminalCore')>()), loadNativeTerminalCore: vi.fn() }));
 let wake: () => void;
 const transport = { pid: 101, pendingInputBytes: 0, read: vi.fn(), write: vi.fn(), resize: vi.fn(), clear: vi.fn(), kill: vi.fn(), close: vi.fn() };
 const idle = { data: Buffer.alloc(0), eof: false, childExited: false, pendingInputBytes: 0 };
@@ -250,6 +250,38 @@ describe('native output chunks', () => {
     expect(order).toEqual(['data', 'dispose', 'exit']);
     expect(chunk.readBytes).not.toHaveBeenCalled(); expect(transport.read).not.toHaveBeenCalled();
     expect(transport.close).toHaveBeenCalledOnce();
+  });
+  function chunkTransport(chunk: object) {
+    const readChunk = vi.fn().mockReturnValueOnce({ ...idle, chunk, bytesRead: 6 }).mockReturnValue({ ...idle, bytesRead: 0 });
+    vi.mocked(loadNativeTerminalCore).mockReturnValue({ NativeTransport: class {
+      constructor(_c: string, _a: string[], _cwd: string, _env: object, _cols: number, _rows: number, callback: () => void) {
+        wake = callback; return { ...transport, readChunk };
+      }
+    } } as unknown as NativeTerminalCore);
+  }
+  it('ends only that session when a chunk text copy is refused, and disposes the chunk', async () => {
+    const chunk = { byteLength: 6, readBytes: vi.fn(), dispose: vi.fn(),
+      get text(): string { throw new Error('ALLOC_FAILED: could not allocate 288216 bytes for chunk text'); } };
+    chunkTransport(chunk);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
+      const exit = vi.fn(); pty.onExit(exit); pty.onData(() => undefined);
+      await tick(); await tick();
+      expect(exit).toHaveBeenCalledExactlyOnceWith({ exitCode: 1 });
+      expect(chunk.dispose).toHaveBeenCalledOnce(); expect(transport.close).toHaveBeenCalledOnce();
+      expect(log.mock.calls.flat().join('\n')).toContain('ALLOC_FAILED: could not allocate 288216 bytes');
+    } finally { log.mockRestore(); }
+  });
+  it('logs the reader error before ending the session', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      spawnTerminalPty('sh', [], {});
+      transport.read.mockReturnValueOnce({ ...idle, error: 'ALLOC_FAILED: could not allocate 65536 bytes for PTY read' });
+      wake(); await tick();
+      expect(log.mock.calls.flat().join('\n')).toContain('PTY reader stopped: ALLOC_FAILED: could not allocate 65536 bytes');
+      expect(transport.kill).toHaveBeenCalledOnce();
+    } finally { log.mockRestore(); }
   });
 });
 

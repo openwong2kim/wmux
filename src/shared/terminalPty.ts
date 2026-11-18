@@ -3,7 +3,7 @@ import { StringDecoder } from 'node:string_decoder';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { loadNativeTerminalCore, type NativeTransport, type NativeOutputChunk } from './nativeTerminalCore';
+import { isNativeAllocFailure, loadNativeTerminalCore, type NativeTransport, type NativeOutputChunk } from './nativeTerminalCore';
 
 export interface TerminalPty extends IPty {
   readonly backend?: 'node' | 'rust';
@@ -226,8 +226,15 @@ class RustPty implements TerminalPty {
         if (text) for (const listener of this.data) listener(text);
         this.wake();
       }
+    } catch (error) {
+      // A refused allocation (the chunk's text copy, or a listener's own copy) ends only
+      // this session; anything else is a bug and propagates as before.
+      if (!isNativeAllocFailure(error)) throw error;
+      console.error(`[terminal-core] PTY output: ${(error as Error).message}`);
+      this.fail(); return;
     } finally { chunk?.dispose(); }
     if (result.error) {
+      console.error(`[terminal-core] PTY reader stopped: ${result.error}`);
       try { this.transport.kill(globalThis.process.platform === 'win32' ? undefined : os.constants.signals.SIGKILL); }
       catch { this.fail(); return; }
     }
