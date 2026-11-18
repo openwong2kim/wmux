@@ -12,6 +12,7 @@ import FleetView from '../FleetView';
 import { useStore } from '../../../stores';
 import type { Workspace, Pane, Surface } from '../../../../shared/types';
 import type { AttachedRemoteWorkspace } from '../../../stores/slices/remoteWorkspacesSlice';
+import type { WorkTask } from '../../../../shared/workTask';
 
 const act = React.act;
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -287,6 +288,60 @@ describe('FleetView — the list grouped by device', () => {
       visited.push((document.activeElement as HTMLElement).dataset.fleetKey);
     }
     expect(visited).toEqual(drawn);
+  });
+
+  // beta's running pane goes idle, so both devices have an Idle fold.
+  const betaIdle = () => act(() => useStore.setState((s) => ({
+    remoteWorkspaces: s.remoteWorkspaces.map((w) => (w.hostId === 'host-b'
+      ? { ...w, panes: w.panes.map((p) => (p.sessionId === 'sess-c' ? { ...p, agentStatus: 'idle' as const } : p)) } : w)),
+  })));
+  const foldOf = (deviceId: string) => container.querySelector<HTMLButtonElement>(`[data-fleet-key="fleet:idle-toggle:${deviceId}"]`)!;
+
+  it('names each fold with its device, so two PCs\' folds read apart', async () => {
+    betaIdle();
+    mount();
+    await flushRaf();
+    const accessibleName = (el: HTMLElement) => (el.getAttribute('aria-labelledby') ?? '').split(' ')
+      .map((id) => document.getElementById(id)?.textContent ?? '').join(' ');
+    expect(accessibleName(foldOf('local'))).toBe('This computer Idle 1 folded');
+    expect(accessibleName(foldOf('host-b'))).toBe('beta Idle 1 folded');
+    // The visible text is unchanged.
+    expect(foldOf('host-b').textContent).toBe('Idle 1 folded');
+  });
+
+  it('Space on a focused fold is left to the button, which toggles it; on a row it still opens details', async () => {
+    mount();
+    await flushRaf();
+    const space = (el: HTMLElement) => {
+      act(() => el.focus());
+      const ev = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+      act(() => { el.dispatchEvent(ev); });
+      return ev.defaultPrevented;
+    };
+    expect(space(foldOf('local'))).toBe(false);
+    const row = container.querySelector<HTMLElement>('[data-fleet-card][data-workspace-id="ws-2"]')!;
+    expect(space(row)).toBe(true);
+  });
+
+  it('Open conversation on a local idle task opens only this computer\'s Idle fold', async () => {
+    betaIdle();
+    act(() => useStore.setState({
+      fleetIdleExpanded: false,
+      missionsByWorkspace: { 'ws-1': [{
+        id: 't3', title: 'Fix t3', status: 'open', missionChannelId: 'ch-t3', createdAt: 1, paneGroupId: 'ws-3',
+        createdBy: { principalId: 'ws-1', verifiedWorkspaceId: 'ws-1' }, owner: { principalId: 'ws-1', verifiedWorkspaceId: 'ws-1' },
+      } as unknown as WorkTask] },
+    }));
+    mount();
+    await flushRaf();
+    act(() => useStore.getState().setFleetFocusTask('t3'));
+    await flushRaf();
+    await flushRaf();
+    expect(foldOf('local').getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-fleet-card][data-workspace-id="ws-3"]')).not.toBeNull();
+    // beta's fold stays as it was.
+    expect(foldOf('host-b').getAttribute('aria-expanded')).toBe('false');
+    expect(useStore.getState().fleetIdleExpanded).toBe(false);
   });
 
   it('a PC paired over plain http says so, not Online', async () => {

@@ -104,6 +104,8 @@ const FINISHED_TOGGLE_KEY = 'fleet:finished-toggle';
 /** Roving key of one device's collapsed "Finished N" or "Idle N" row. */
 const deviceToggleKey = (kind: 'finished' | 'idle', deviceId: string) => `fleet:${kind}-toggle:${deviceId}`;
 const deviceRepairKey = (deviceId: string) => `fleet:device-repair:${deviceId}`;
+/** DOM id of a device head's name (no spaces: aria-labelledby splits on them). */
+const deviceNameId = (deviceId: string) => `fleet-device-name-${encodeURIComponent(deviceId).replace(/%/g, '_')}`;
 /** The store key of one device's Finished or Idle fold (fleetDeviceFolds). */
 const deviceFoldKey = (kind: 'finished' | 'idle', deviceId: string) => `${kind}:${deviceId}`;
 /** What no PC the rail calls down had: the note's input off the device list. */
@@ -264,8 +266,8 @@ export default function FleetView() {
   // (only the list grouped by device draws one). Its rows are already off the
   // board, as they are for fleet_triage.
   const away = useMemo(() => (fleetLayout === 'list' && fleetGroupBy === 'device'
-    ? selectDownHostAway({ workspaces, surfaceAgent, remoteWorkspaces, downHostIds })
-    : NO_AWAY), [fleetLayout, fleetGroupBy, workspaces, surfaceAgent, remoteWorkspaces, downHostIds]);
+    ? selectDownHostAway({ workspaces, surfaceAgent, remoteWorkspaces, downHostIds, outdatedRemoteKeys })
+    : NO_AWAY), [fleetLayout, fleetGroupBy, workspaces, surfaceAgent, remoteWorkspaces, downHostIds, outdatedRemoteKeys]);
   // Every row, unfiltered: where the Hand out… popover reads a pane's state.
   const allRows = useMemo(() => [...groups.needsYou, ...groups.finished, ...groups.running, ...groups.idle], [groups]);
   // On close (unmount), remember what each pane's status was, so the next open
@@ -934,10 +936,18 @@ export default function FleetView() {
     const idleRow = ws && !review && !paneRow && !finishedRow ? groups.idle.find(localRow) : undefined;
     const key = review ? reviewRowKey(review.workspaceId) : (paneRow ?? finishedRow ?? idleRow)?.pane.paneId ?? null;
     if (key) {
-      // The row is this computer's: open its device fold too, which a fold
-      // toggled there would otherwise keep shut.
-      if (finishedRow) { setFinishedExpanded(true); setDeviceFold(deviceFoldKey('finished', LOCAL_PC_ID), true); }
-      if (idleRow) { setFleetIdleExpanded(true); setDeviceFold(deviceFoldKey('idle', LOCAL_PC_ID), true); }
+      // The row is this computer's: open its device fold. Grouped by device,
+      // only that one: the status list's fold is what every other device
+      // follows until toggled, so opening it would open theirs as well.
+      const grouped = fleetLayout === 'list' && fleetGroupBy === 'device';
+      if (finishedRow) {
+        if (!grouped) setFinishedExpanded(true);
+        setDeviceFold(deviceFoldKey('finished', LOCAL_PC_ID), true);
+      }
+      if (idleRow) {
+        if (!grouped) setFleetIdleExpanded(true);
+        setDeviceFold(deviceFoldKey('idle', LOCAL_PC_ID), true);
+      }
       setPinnedTask(null);
       setFocusedPaneId(key);
     } else {
@@ -952,7 +962,7 @@ export default function FleetView() {
       focusActiveItemRef.current();
     });
   }, [fleetFocusTask, missionsByWorkspace, groups, reviewQueue, settledIds, focusedKey, setFleetFocusTask, setTab, setFleetIdleExpanded,
-    setFinishedExpanded, setDeviceFold]);
+    setFinishedExpanded, setDeviceFold, fleetLayout, fleetGroupBy]);
 
 
   // The ⋮ menu that is open, if any (its close function), so Escape closes the
@@ -1101,8 +1111,10 @@ export default function FleetView() {
         active instanceof HTMLElement && active.getAttribute('role') === 'option' &&
         !!panelRef.current?.contains(active);
       // Space shows or hides the detail area. Rows are buttons, so Space would
-      // otherwise click — and jump away.
-      if (tab === 'fleet' && onOptionRow && e.key === ' ' && plain) {
+      // otherwise click — and jump away. A Finished or Idle fold has no
+      // details: Space there clicks it, which toggles the fold.
+      const onFold = active instanceof HTMLElement && active.matches('[data-fleet-finished-toggle], [data-fleet-idle-toggle]');
+      if (tab === 'fleet' && onOptionRow && !onFold && e.key === ' ' && plain) {
         e.preventDefault();
         e.stopPropagation();
         if (focusedTicket) setExplicitTicket(focusedTicket.id);
@@ -1613,10 +1625,14 @@ export default function FleetView() {
     if (kind === 'finished' ? finishedForced : idleForced) return <span className="wmux-fleet-device-fold is-static">{summary}</span>;
     const key = deviceToggleKey(kind, device.id);
     const open = deviceFoldOpen(kind, device.id);
+    // Named with its device ("office Idle 1 folded"), so two PCs' folds differ.
+    const foldId = `${deviceNameId(device.id)}-${kind}`;
     return (
       <button
         type="button"
         role="option"
+        id={foldId}
+        aria-labelledby={`${deviceNameId(device.id)} ${foldId}`}
         aria-selected={focusedKey === key}
         aria-expanded={open}
         tabIndex={focusedKey === key ? 0 : -1}
@@ -1674,7 +1690,7 @@ export default function FleetView() {
       <div key={`device:${device.id}`} role="presentation" className="wmux-fleet-section-header wmux-fleet-device-head"
         data-fleet-device-head={device.id} data-device-state={device.state}>
         <span className="wmux-fleet-device-dot" aria-hidden="true" />
-        <span className="wmux-fleet-device-name">{name}</span>
+        <span className="wmux-fleet-device-name" id={deviceNameId(device.id)}>{name}</span>
         {meta && <span className="wmux-fleet-device-meta">{meta}</span>}
         <span className="wmux-fleet-device-folds">
           {deviceFoldButton('finished', device)}
