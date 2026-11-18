@@ -1079,10 +1079,11 @@ export type A2aRemoteApprovalReason =
   | 'lock-busy'
   | 'refused'
   | 'id-reused'
-  | 'unavailable';
+  | 'unavailable'
+  | 'rate-limited';
 
 export const A2A_REMOTE_APPROVAL_REASON_TEXT: Readonly<Record<A2aRemoteApprovalReason, string>> = Object.freeze({
-  'approvals-off': 'approvals for this PC are off there (wmux remote approvals); ask a person there',
+  'approvals-off': 'approvals for this PC are off there; a person there turns them on from the Remote page (or `wmux remote approvals` where only the daemon runs)',
   'not-open': 'the task is no longer open there',
   'not-linked': 'that PC answers prompts only for a task sent to a linked pane there',
   'link-not-active': 'the link to that pane is not active',
@@ -1096,6 +1097,7 @@ export const A2A_REMOTE_APPROVAL_REASON_TEXT: Readonly<Record<A2aRemoteApprovalR
   'refused': 'the prompt on the screen there changed or could not be proven; nothing was typed',
   'id-reused': 'that message id was already used for another decision',
   'unavailable': 'that PC could not record the decision; nothing was typed',
+  'rate-limited': 'that PC took as many approvals from this one as it takes in a minute; nothing was typed. Send it again after retryAfterMs',
 });
 const APPROVAL_REASONS: ReadonlySet<string> = new Set(Object.keys(A2A_REMOTE_APPROVAL_REASON_TEXT));
 
@@ -1108,7 +1110,12 @@ export interface A2aRemoteApprovalOutcome {
   messageId: string;
   outcome: 'done' | 'not-done' | 'uncertain';
   reason?: A2aRemoteApprovalReason;
+  /** With reason `rate-limited`: how long until that PC takes another approval from this one (ms). */
+  retryAfterMs?: number;
 }
+
+/** The longest `retryAfterMs` an outcome carries as read (a PC's window is a minute). */
+const APPROVAL_RETRY_AFTER_MAX_MS = 120_000;
 
 function parseApprovalOutcome(raw: unknown): A2aRemoteApprovalOutcome | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -1116,7 +1123,10 @@ function parseApprovalOutcome(raw: unknown): A2aRemoteApprovalOutcome | null {
   if (typeof r.messageId !== 'string' || !A2A_REMOTE_MESSAGE_ID_RE.test(r.messageId)) return null;
   if (r.outcome === 'done' || r.outcome === 'uncertain') return { messageId: r.messageId, outcome: r.outcome };
   if (r.outcome !== 'not-done' || typeof r.reason !== 'string' || !APPROVAL_REASONS.has(r.reason)) return null;
-  return { messageId: r.messageId, outcome: 'not-done', reason: r.reason as A2aRemoteApprovalReason };
+  const retry = r.reason === 'rate-limited' && typeof r.retryAfterMs === 'number' && Number.isFinite(r.retryAfterMs)
+    ? Math.min(Math.max(0, Math.round(r.retryAfterMs)), APPROVAL_RETRY_AFTER_MAX_MS)
+    : undefined;
+  return { messageId: r.messageId, outcome: 'not-done', reason: r.reason as A2aRemoteApprovalReason, ...(retry !== undefined ? { retryAfterMs: retry } : {}) };
 }
 
 /** A command as one block of text from another PC: invisible format characters gone, other controls but newline and tab dropped. */

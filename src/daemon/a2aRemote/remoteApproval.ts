@@ -81,8 +81,14 @@ export const APPROVAL_PROMPTS_PER_TASK_MAX = 60;
  * APPROVAL_PROMPTS_PER_TASK_MAX instead.
  */
 export const APPROVAL_OTHER_STATUS_CHANGES_MAX = APPROVAL_PROMPTS_PER_TASK_MAX * 2;
-/** Approvals one PC may send in a window; past it they are taken and dropped unread. */
+/**
+ * Approvals one PC may send in a window, counted by message id (a resend of
+ * one already counted is not counted again). Past it an approval is answered
+ * `rate-limited` with the time left in the window, never carried out.
+ */
 export const APPROVALS_PER_WINDOW = 60;
+/** Message ids remembered per receiving PC as counted or answered `rate-limited` (oldest dropped). */
+export const APPROVAL_IDS_REMEMBERED_MAX = 4096;
 /** Refusal audit lines per PC in a window; past it one line says how many were left out. */
 export const APPROVAL_AUDIT_REFUSALS_PER_WINDOW = 30;
 export const APPROVAL_WINDOW_MS = 60_000;
@@ -299,14 +305,18 @@ export class RemoteApprovals {
    */
   private readonly tombstones = new Map<string, A2aRemoteApprovalOutcome>();
   private readonly reporter: HeadlessStatusReporter;
-  private readonly admitted: Window;
+  /** Each PC's window: when it started and how many message ids it counted. */
+  private readonly windows = new Map<string, { start: number; count: number; logged: boolean }>();
+  /** `<hostId>\0<messageId>` counted in a window: a resend is taken without counting it again. */
+  private readonly counted = new Map<string, true>();
+  /** `<hostId>\0<messageId>` answered `rate-limited`: a resend is answered the same, never carried out. */
+  private readonly limitedIds = new Map<string, true>();
   private readonly audited: Window;
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(deps: RemoteApprovalsDeps) {
     this.deps = deps;
     this.now = deps.now ?? Date.now;
-    this.admitted = new Window(this.now);
     this.audited = new Window(this.now);
     this.reporter = new HeadlessStatusReporter({
       peer: (taskId) => deps.status.peer(taskId),
@@ -335,12 +345,52 @@ export class RemoteApprovals {
     this.timer = null;
   }
 
-  /** One more approval from `hostId` may be taken now (APPROVALS_PER_WINDOW); false: dropped unread, one log line per window. */
-  admit(hostId: HostId): boolean {
-    const n = this.admitted.count(hostId);
-    if (n <= APPROVALS_PER_WINDOW) return true;
-    if (n === APPROVALS_PER_WINDOW + 1) this.deps.log('warn', `[a2a-remote] ${hostId}: more than ${APPROVALS_PER_WINDOW} approvals in a minute; the rest are dropped unread`);
-    return false;
+  /**
+   * Whether the approval `messageId` from `hostId` is taken now: one counted
+   * in an earlier call (a resend) always is, without counting again; a new
+   * one is while the PC's window has room (APPROVALS_PER_WINDOW). Otherwise it
+   * is `rate-limited` with the time left in the window, and a resend of it is
+   * answered the same (one log line per window).
+   */
+  admit(hostId: HostId, messageId: string): { ok: true } | { ok: false; retryAfterMs: number } {
+    const key = `${hostId}\0${messageId}`;
+    const at = this.now();
+    let w = this.windows.get(hostId);
+    if (!w || at - w.start >= APPROVAL_WINDOW_MS) {
+      w = { start: at, count: 0, logged: false };
+      this.windows.delete(hostId);
+      this.windows.set(hostId, w);
+      while (this.windows.size > 1000) this.windows.delete(this.windows.keys().next().value as string);
+    }
+    const left = w.count >= APPROVALS_PER_WINDOW ? Math.max(0, w.start + APPROVAL_WINDOW_MS - at) : 0;
+    if (this.limitedIds.has(key)) return { ok: false, retryAfterMs: left };
+    if (this.counted.has(key)) return { ok: true };
+    if (w.count < APPROVALS_PER_WINDOW) {
+      w.count += 1;
+      remember(this.counted, key);
+      return { ok: true };
+    }
+    if (!w.logged) {
+      w.logged = true;
+      this.deps.log('warn', `[a2a-remote] ${hostId}: more than ${APPROVALS_PER_WINDOW} approvals in a minute; the rest are answered rate-limited`);
+    }
+    remember(this.limitedIds, key);
+    return { ok: false, retryAfterMs: left };
+  }
+
+  /**
+   * An approval past its PC's window (`admit`): nothing is read or typed. Its
+   * outcome is `rate-limited` with `retryAfterMs`, kept for the task's status
+   * like any other (a linked pane's task only).
+   */
+  limited(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1, retryAfterMs: number): A2aRemoteApprovalOutcome | null {
+    const task = this.deps.tasks.get(taskId);
+    const marker = task?.metadata.remote as A2aRemoteTaskState | undefined;
+    if (!task || marker?.hostId !== hostId || !this.deps.linkedPane(task)) return null;
+    const out: A2aRemoteApprovalOutcome = { messageId, outcome: 'not-done', reason: 'rate-limited', retryAfterMs: Math.round(retryAfterMs) };
+    this.audit(hostId, taskId, messageId, approval, 'not-done:rate-limited');
+    this.record(taskId, out);
+    return out;
   }
 
   /** One pass: what each task whose sender has the setting on offers now. Nothing is read while it is on for no PC. */
@@ -777,4 +827,11 @@ export class RemoteApprovals {
     }
     this.deps.log('info', `[a2a-remote] approval task=${taskId} message=${messageId} prompt=${approval.promptId} decision=${approval.decision} outcome=${outcome} fp=${fp8 || '-'}`);
   }
+}
+
+/** Into an insertion-ordered map, the oldest dropped past APPROVAL_IDS_REMEMBERED_MAX. */
+function remember(map: Map<string, true>, key: string): void {
+  map.delete(key);
+  map.set(key, true);
+  while (map.size > APPROVAL_IDS_REMEMBERED_MAX) map.delete(map.keys().next().value as string);
 }

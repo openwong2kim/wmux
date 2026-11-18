@@ -1041,14 +1041,24 @@ describe('an approval from the sender of a task, for a prompt offered in its sta
     expect(taken).toEqual([]);
   });
 
-  it('past its PC\'s flood guard: taken and dropped unread', async () => {
+  it('past its PC\'s window: answered rate-limited (never carried out); one that fails a check is still dropped unread', async () => {
     const linkId = activeLink();
     const taskId = await receivedTask(linkId);
-    let admit = false;
-    const guarded: InboundDeps = { ...withApproval, remoteApproval: { ...withApproval.remoteApproval!, admit: () => admit } };
-    expect(await acceptInbound(approvalEnv(linkId, taskId), peer, guarded)).toEqual({ ok: true, taskId, duplicate: true });
+    let admit: { ok: true } | { ok: false; retryAfterMs: number } = { ok: false, retryAfterMs: 12_000 };
+    const limited: unknown[][] = [];
+    const guarded: InboundDeps = {
+      ...withApproval,
+      remoteApproval: { ...withApproval.remoteApproval!, admit: () => admit, limited: (...args) => { limited.push(args); } },
+    };
+    const e = approvalEnv(linkId, taskId);
+    expect(await acceptInbound(e, peer, guarded)).toEqual({ ok: true, taskId, duplicate: false });
     expect(taken).toEqual([]);
-    admit = true;
+    expect(limited).toEqual([[HOST, taskId, e.messageId, APPROVAL, 12_000]]);
+    // Past the window and for a task that host did not send: dropped, with no refusal for it to retry.
+    const mine = remoteTaskId(linkId, 'not-there');
+    expect(await acceptInbound(approvalEnv(linkId, mine), peer, guarded)).toEqual({ ok: true, taskId: mine, duplicate: true });
+    expect(limited).toHaveLength(1);
+    admit = { ok: true };
     expect(await acceptInbound(approvalEnv(linkId, taskId), peer, guarded)).toMatchObject({ ok: true, duplicate: false });
     expect(taken).toHaveLength(1);
   });

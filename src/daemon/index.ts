@@ -11458,7 +11458,11 @@ async function main(): Promise<void> {
         // Carried out by the remote approvals (linked panes); refused as `approvals-off` for a PC the setting is off for.
         approvals: {
           on: (hostId) => remoteApprovalsRef !== null && a2aApprovalSwitch.exposure(hostId) !== null,
-          admit: (hostId) => remoteApprovalsRef?.admit(hostId) ?? false,
+          // No producer (a start that failed): past nothing, refused as approvals-off above.
+          admit: (hostId, messageId) => remoteApprovalsRef?.admit(hostId, messageId) ?? { ok: false, retryAfterMs: 0 },
+          limited: (hostId, taskId, messageId, approval, retryAfterMs) => {
+            remoteApprovalsRef?.limited(hostId, taskId, messageId, approval, retryAfterMs);
+          },
           take: (hostId, taskId, messageId, approval) => {
             const approvals = remoteApprovalsRef;
             if (!approvals) return;
