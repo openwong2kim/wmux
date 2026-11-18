@@ -267,9 +267,35 @@ export interface GatedSubmitRefusal {
    *  Absent for a text the pane cannot take as typed. */
   composerNotPlain?: true;
 }
+/**
+ * What a gated delivery into a daemon session submitted, so the turn it
+ * started can be told apart later: the session, its incarnation, the daemon's
+ * key input count once main's Enters are in it (the count read right before
+ * the Enter plus one per Enter written), and the hash of the text typed
+ * (shared/promptHash.ts `promptHash`). Recorded only; nothing acts on it yet.
+ */
+export interface GatedSubmitProof {
+  ptyId: string;
+  incarnation: string;
+  submitRevision: number;
+  promptHash: string;
+}
+
+/** A GatedSubmitProof read from untrusted input, or undefined when any field is missing or malformed. */
+export function parseGatedSubmitProof(v: unknown): GatedSubmitProof | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const p = v as Record<string, unknown>;
+  if (typeof p.ptyId !== 'string' || !p.ptyId || p.ptyId.length > 128) return undefined;
+  if (typeof p.incarnation !== 'string' || !p.incarnation || p.incarnation.length > 128) return undefined;
+  if (typeof p.submitRevision !== 'number' || !Number.isSafeInteger(p.submitRevision) || p.submitRevision < 0) return undefined;
+  if (typeof p.promptHash !== 'string' || !/^[0-9a-f]{64}$/.test(p.promptHash)) return undefined;
+  return { ptyId: p.ptyId, incarnation: p.incarnation, submitRevision: p.submitRevision, promptHash: p.promptHash };
+}
+
 /** A delivered submit. A new-task delivery also says what its fresh-context
- *  step did (shared/freshContext). */
-export type GatedSubmitSuccess = { ok: true } & Partial<FreshContextReply>;
+ *  step did (shared/freshContext). A delivery into a daemon session also
+ *  carries its submit proof when main could read one. */
+export type GatedSubmitSuccess = { ok: true; submit?: GatedSubmitProof } & Partial<FreshContextReply>;
 export type GatedSubmitResult = GatedSubmitSuccess | GatedSubmitRefusal;
 
 /** Options for a gated submit. */
@@ -307,6 +333,9 @@ export interface GatedSubmitOptions {
    *  in main). Main runs that delivery's own check before the paste and before
    *  the Enter; an unknown key refuses. Only adds checks, never removes one. */
   guardKey?: string;
+  /** Report what was submitted (GatedSubmitSuccess `submit`): a remote A2A
+   *  delivery asks, so the daemon can record it. Changes nothing written. */
+  submitProof?: boolean;
   /*
    * Who sent this delivery, for main's owner-lane check (input.rpc
    * deliveryLaneOf). Each names a record main reads the sender from; none

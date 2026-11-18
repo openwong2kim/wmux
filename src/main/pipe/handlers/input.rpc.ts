@@ -34,9 +34,11 @@ import {
   resolveAgentSlug,
   submitProfileForAgent,
   type GatedSubmitOptions,
+  type GatedSubmitProof,
   type GatedSubmitRefusal,
   type GatedSubmitResult,
 } from '../../../shared/ptyMessageDelivery';
+import { promptHash } from '../../../shared/promptHash';
 import { applyRoleBinding, type InjectedLaunchOptions, type RoleBinding } from '../../../shared/orchestratorRole';
 import { loadCustomAgents } from '../../worktask/customAgents';
 import type { FreshContextReply } from '../../../shared/freshContext';
@@ -1342,6 +1344,16 @@ export class HeldWriteUncertain extends Error {}
 export type DeliveryWrite = (ptyId: string, data: string) => void | Promise<void>;
 
 /**
+ * Read right before a delivery's first Enter: the check a retried Enter must
+ * pass, and the daemon session's incarnation and key count then (null: a pane
+ * main runs itself, a failed read, or a daemon that reports no key count).
+ */
+export interface ArmedEnterRetry {
+  check: () => Promise<string | null>;
+  base: { incarnation: string; keyInputRevision: number } | null;
+}
+
+/**
  * Paste `text` into `ptyId` and submit it, gated as one operation in main. The
  * gate runs before the paste AND again right before the Enter, because the
  * Enter follows the paste after an agent-specific delay and a dialog drawn in
@@ -1378,12 +1390,13 @@ export async function gatedPasteSubmit(
   /**
    * The submit receipt after the Enter. `armRetry` runs right before the first
    * Enter and returns the check a retried Enter must pass: why it must not be
-   * sent (someone typed, the agent changed, the pane cannot be read), or null.
+   * sent (someone typed, the agent changed, the pane cannot be read), or null;
+   * and the daemon's key count it read there, the submit proof's base.
    */
   receipt?: {
     probe: SubmitProbe;
     now?: () => number;
-    armRetry: () => Promise<() => Promise<string | null>>;
+    armRetry: () => Promise<ArmedEnterRetry>;
   },
 ): Promise<GatedSubmitResult> {
   const verifyAgent = guard?.verifyAgent;
@@ -1488,7 +1501,8 @@ export async function gatedPasteSubmit(
     agentStatus: atEnterReading?.status ?? null,
     turnStartedAt: atEnterReading?.turnStartedAt,
   };
-  const retryRefusal = receipt ? await receipt.armRetry() : null;
+  const armed = receipt ? await receipt.armRetry() : null;
+  const retryRefusal = armed?.check ?? null;
   // The last check before the Enter: the agent is still there, in plain input
   // mode. Refused, the paste is taken back only while the pane still shows it.
   let agentAtEnter = verifyAgent ? await verifyAgent(enterCheck) : null;
@@ -1508,8 +1522,11 @@ export async function gatedPasteSubmit(
   // Taken before the write: a held write's reply can arrive after the
   // receipt its Enter caused.
   const enterAt = (receipt?.now ?? Date.now)();
+  /** The Enters written for this submit: each one write, one key on the daemon's count. */
+  let enters = 0;
   try {
     await write(ptyId, isMultilinePtyPayload(typed) ? '\r\r' : '\r');
+    enters += 1;
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return {
@@ -1536,11 +1553,16 @@ export async function gatedPasteSubmit(
         if (agentAgain && !agentAgain.ok) throw new EnterRetryRefused(`${agentAgain.refusal.detail}; the retried Enter was not sent.`);
         if (agentAgain && !sameGrant(agentAgain)) throw new EnterRetryRefused(`${regranted.detail}; the retried Enter was not sent.`);
         await write(ptyId, '\r');
+        enters += 1;
       },
       { enterAt, sleep, now },
     );
   }
-  return fresh ? { ok: true, ...fresh } : { ok: true };
+  // Recorded only (nothing acts on it yet): another key between the read and an Enter makes it miss later, never match.
+  const submit: GatedSubmitProof | undefined = armed?.base
+    ? { ptyId, incarnation: armed.base.incarnation, submitRevision: armed.base.keyInputRevision + enters, promptHash: promptHash(typed) }
+    : undefined;
+  return { ok: true, ...(fresh ?? {}), ...(submit ? { submit } : {}) };
 }
 
 /**
@@ -2779,13 +2801,18 @@ export function registerInputRpc(
    * and return the check its retried Enter must pass: the same agent, and no
    * key since but that Enter (one write, one key on the daemon's counter).
    * A pane whose state cannot be read (no daemon, a failed read) gets no retry.
+   * That same read is the submit proof's base: the session's incarnation and
+   * key count, when the daemon reports both (null otherwise).
    */
-  const armEnterRetry = async (ptyId: string): Promise<() => Promise<string | null>> => {
+  const armEnterRetry = async (ptyId: string): Promise<ArmedEnterRetry> => {
     const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
     const read = (): Promise<Awaited<ReturnType<DaemonClient['getAgentState']>> | null> =>
       dc?.isConnected ? Promise.resolve().then(() => dc.getAgentState(ptyId, { timeoutMs: 1_000 })).catch(() => null) : Promise.resolve(null);
     const atEnter = await read();
-    return async () => {
+    const base = atEnter && typeof atEnter.keyInputRevision === 'number' && typeof atEnter.incarnationId === 'string' && atEnter.incarnationId
+      ? { incarnation: atEnter.incarnationId, keyInputRevision: atEnter.keyInputRevision }
+      : null;
+    const check = async (): Promise<string | null> => {
       const now = await read();
       if (!atEnter?.agentName || !now) return "the pane's agent and input could not be read";
       const baseline = { agentName: atEnter.agentName, incarnationId: atEnter.incarnationId, agentVerified: atEnter.agentVerified === true };
@@ -2794,6 +2821,7 @@ export function registerInputRpc(
       if (typedPastOwnInput(now, ownEnter)) return 'someone typed in the pane after the first Enter';
       return null;
     };
+    return { check, base };
   };
 
   const channelMessageAuthor = deps.channelMessageAuthor ?? (async (channelId: string, seq: number, viewerWorkspaceId: string): Promise<string | null> => {
@@ -3089,7 +3117,11 @@ export function registerInputRpc(
     const receipt = {
       probe: makeSubmitProbe(getWindow, ptyId, probeWs, deps.readTurnStartedAt, SUBMIT_RECEIPT_READ_LINES, true),
       ...(deps.now ? { now: deps.now } : {}),
-      armRetry: () => armEnterRetry(ptyId),
+      // The submit proof's base only for a delivery that asked for one.
+      armRetry: async () => {
+        const armed = await armEnterRetry(ptyId);
+        return opts?.submitProof === true ? armed : { ...armed, base: null };
+      },
     };
     /**
      * This delivery's writes the daemon counted, for the record below: one per
