@@ -358,10 +358,18 @@ describe('openDownloadPass', () => {
     const progress = new Set<(p: Record<string, unknown>) => void>();
     const closed = new Set<() => void>();
     const tab = { url: 'http://a.test/files' };
+    /** While set, each deny waits here for Chrome's answer (the test settles it). */
+    let holdDenies = false;
+    const denies: Array<{ ack: () => void; fail: () => void }> = [];
     const guard: DownloadGuardPort = {
       send: async (method, params) => {
         sent.push([method, params]);
         if (method === 'Target.getTargetInfo') return { targetInfo: { type: 'page', url: tab.url } };
+        if (holdDenies && method === 'Browser.setDownloadBehavior' && params.behavior === 'deny') {
+          return new Promise((resolve, reject) => {
+            denies.push({ ack: () => resolve({}), fail: () => reject(new Error('CDP error')) });
+          });
+        }
         return {};
       },
       onClose: (fn) => {
@@ -394,6 +402,11 @@ describe('openDownloadPass', () => {
       tick: () => reassert?.(),
       tab,
       close: () => closed.forEach((l) => l()),
+      holdDenies: () => {
+        holdDenies = true;
+      },
+      /** Denies sent while held, oldest first, each still waiting for its answer. */
+      denies,
     };
   }
   const opts = { frameId: 'T1', approvedHost: 'a.test', hostOf: canonicalUrlHost, dir: '/tmp/x', startTimeoutMs: 5_000, finishTimeoutMs: 5_000, join: (d: string, n: string) => `${d}/${n}` };
@@ -435,6 +448,61 @@ describe('openDownloadPass', () => {
     const count = behaviors().length;
     await g.tick();
     expect(behaviors()).toHaveLength(count);
+  });
+
+  it('done waits for Chrome to acknowledge the restored deny', async () => {
+    const g = fakeGuard();
+    const pass = await openDownloadPass(g.guard, opts);
+    g.holdDenies();
+    let settled = false;
+    void pass.done.then(() => { settled = true; }, () => { settled = true; });
+    g.begin({ guid: 'g1', frameId: 'T1', url: 'http://a.test/f', suggestedFilename: 'f.bin' });
+    g.progress({ guid: 'g1', state: 'inProgress' });
+    g.progress({ guid: 'g1', state: 'completed' });
+    // The under-way deny and the end-of-pass deny, both unanswered.
+    expect(g.denies).toHaveLength(2);
+    g.denies[0].ack();
+    await flush();
+    expect(settled).toBe(false);
+    expect(pass.denyConfirmed).toBe(false);
+    g.denies[1].ack();
+    await expect(pass.done).resolves.toEqual({ url: 'http://a.test/f', suggestedFilename: 'f.bin', path: '/tmp/x/g1' });
+    expect(pass.denyConfirmed).toBe(true);
+  });
+
+  it('a restored deny Chrome refuses fails the pass: the finished download is not handed out', async () => {
+    const g = fakeGuard();
+    const pass = await openDownloadPass(g.guard, opts);
+    g.holdDenies();
+    g.begin({ guid: 'g1', frameId: 'T1', url: 'http://a.test/f' });
+    g.progress({ guid: 'g1', state: 'inProgress' });
+    g.progress({ guid: 'g1', state: 'completed' });
+    g.denies[0].ack();
+    g.denies[1].fail();
+    await expect(pass.done).rejects.toMatchObject({
+      code: 'policy_denied',
+      message: expect.stringContaining('could not be denied again'),
+    });
+    expect(pass.denyConfirmed).toBe(false);
+    // Nothing is kept afterwards: the claim is gone, so the guard cancels every download.
+    expect(g.claimed()).toBe(false);
+    expect(g.begin({ guid: 'g2', frameId: 'T1', url: 'http://a.test/f' })).toBe(false);
+  });
+
+  it('a deny Chrome refuses while the kept download runs cancels that download', async () => {
+    const g = fakeGuard();
+    const pass = await openDownloadPass(g.guard, opts);
+    g.holdDenies();
+    g.begin({ guid: 'g1', frameId: 'T1', url: 'http://a.test/f' });
+    g.progress({ guid: 'g1', state: 'inProgress' });
+    g.denies[0].fail();
+    await flush();
+    expect(g.sent.some(([m, p]) => m === 'Browser.cancelDownload' && p.guid === 'g1')).toBe(true);
+    // Its completion afterwards is not an answer.
+    g.progress({ guid: 'g1', state: 'completed' });
+    g.denies[1].ack();
+    await expect(pass.done).rejects.toMatchObject({ code: 'policy_denied' });
+    expect(g.claimed()).toBe(false);
   });
 
   it('no download in time: refused, claim released, deny restored', async () => {
