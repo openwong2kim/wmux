@@ -217,6 +217,25 @@ describe('RemoteA2aBridge', () => {
     expect(await bridge.retryHeld(id(7))).toMatchObject({ ok: false, error: 'not-held' });
   });
 
+  it('a delivery with a submit proof passes it to the daemon; a malformed one or another pty\'s is left out', async () => {
+    const proof = { ptyId: 'pty-p', incarnation: 'inc-1', submitRevision: 7, promptHash: 'a'.repeat(64) };
+    daemon.tasks.set(id(30), remoteTask(30));
+    daemon.tasks.set(id(31), remoteTask(31));
+    daemon.tasks.set(id(32), remoteTask(32));
+    answer = (p) => (p.presetTaskId === id(30)
+      ? { ok: true, delivered: true, ptyId: 'pty-p', submit: proof }
+      : p.presetTaskId === id(31)
+        ? { ok: true, delivered: true, ptyId: 'pty-p', submit: { ...proof, promptHash: 'not-a-hash' } }
+        : { ok: true, delivered: true, ptyId: 'pty-q', submit: proof });
+    bridge.start();
+    await settle();
+    expect(daemon.marks).toEqual([
+      { taskId: id(30), delivered: true, ptyId: 'pty-p', submit: proof },
+      { taskId: id(31), delivered: true, ptyId: 'pty-p' },
+      { taskId: id(32), delivered: true, ptyId: 'pty-q' },
+    ]);
+  });
+
   it('a transient miss backs off', async () => {
     daemon.tasks.set(id(8), remoteTask(8));
     answer = () => ({ ok: true, delivered: false, reason: 'approval_pending' });
