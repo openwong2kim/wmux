@@ -8,8 +8,10 @@
  *  - the session is registered with the shell's real pid, and everything keyed
  *    on it works: the reap identity (pidCreatedAtFt), the process tree agent
  *    tracking walks, and the pid main writes into the A2A pid map;
- *  - a bad cwd still fails the create with node-pty 1.1.0's message (error
- *    267), and leaves no session behind.
+ *  - a cwd that no longer exists: the Rust engine's spawn (portable-pty) falls
+ *    back to the home folder instead of failing with error 267 as node-pty
+ *    did, so the create succeeds, the shell starts in home, and exactly one
+ *    session is registered (#3422).
  *
  * Skipped off Windows.
  */
@@ -65,17 +67,29 @@ describe.skipIf(!onWindows)('createSessionAsync on a real ConPTY (win32 only)', 
     expect(state).toEqual({ ok: false, reason: 'shell-has-children' });
   }, 60_000);
 
-  it('a cwd that does not exist fails the create with error 267 and registers nothing', async () => {
+  it('a cwd that does not exist starts the shell in the home folder and registers one session', async () => {
     const mgr = new DaemonSessionManager();
     manager = mgr;
     const id = `rt-2398-cwd-${Date.now()}`;
     const gone = path.join(os.tmpdir(), `wmux-2398-gone-${process.pid}-${Date.now()}`);
     const created: unknown[] = [];
     mgr.on('session:created', (e) => created.push(e));
-    await expect(mgr.createSessionAsync({ id, cmd: CMD_EXE, cwd: gone })).rejects.toThrow(
-      /^Failed to start shell ".*cmd\.exe" in ".*": Cannot create process, error code: 267$/,
-    );
-    expect(mgr.getSession(id)).toBeUndefined();
-    expect(created).toEqual([]);
+    const session = await mgr.createSessionAsync({ id, cmd: CMD_EXE, cwd: gone, cols: 120, rows: 24 });
+    expect(session.pid).toBeGreaterThan(0);
+    const managed = mgr.getSession(id)!;
+    expect(managed).toBeDefined();
+    expect(created).toHaveLength(1);
+
+    // cmd's prompt is the current folder followed by `>`. The temp folder sits
+    // under home, so match the prompt, not a bare home prefix. ConPTY output
+    // carries escape sequences between rows; strip them first.
+    const prompt = `${os.homedir().toLowerCase()}>`;
+    const screen = () => managed.ringBuffer.readAll().toString('utf8')
+      // eslint-disable-next-line no-control-regex -- strips OSC and CSI sequences
+      .replace(/\x1b\][^\x07]*\x07|\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+      .toLowerCase();
+    for (let i = 0; i < 40 && !screen().includes(prompt); i++) await sleep(250);
+    expect(screen()).toContain(prompt);
+    expect(screen()).not.toContain(gone.toLowerCase());
   }, 30_000);
 });
