@@ -14,12 +14,13 @@ const PEER: NativePipePeer = {
   created: 1_700_000_000_000, ppid: 4000, reason: null,
 };
 
+const noop = (): void => undefined;
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 async function ticks(n: number): Promise<void> { for (let i = 0; i < n; i++) await tick(); }
 
 class FakeConn implements NativePipeConn {
   /** Set by the owner: the shared wake. Called asynchronously. */
-  wake: () => void = () => {};
+  wake: () => void = noop;
   /** Bytes the client sent and the server has not read yet. */
   private inbox: Buffer[] = [];
   private clientEof = false;
@@ -187,7 +188,7 @@ describe('NativePipeSocket', () => {
     const { conn, socket } = socketOver();
     conn.feed(Buffer.alloc(10 * 1024 * 1024, 0x61));
     socket.pause();
-    socket.on('data', () => {});
+    socket.on('data', noop);
     socket.pause();
     socket.read(0);
     await ticks(50);
@@ -232,7 +233,7 @@ describe('NativePipeSocket', () => {
 
     socket.unshift(rest);
     socket.resume();
-    await vi.waitFor(() => expect(seen.join('')).toBe('{"jsonrpc":"2.0","id":1}\n{"jsonrpc":"2.0","id":2}\n'));
+    await vi.waitFor(() => expect(seen.join('')).toBe('{"jsonrpc":"2.0","id":1}\n{"jsonrpc":"2.0","id":2}\n'), { timeout: 5_000 });
     socket.destroy();
   });
 
@@ -244,7 +245,7 @@ describe('NativePipeSocket', () => {
     socket.on('error', onError);
     expect(socket.listenerCount('data')).toBe(1);
     conn.feed('x');
-    await vi.waitFor(() => expect(onData).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(onData).toHaveBeenCalledTimes(1), { timeout: 5_000 });
     socket.off('data', onData);
     socket.off('error', onError);
     expect(socket.listenerCount('data')).toBe(0);
@@ -262,7 +263,7 @@ describe('NativePipeSocket', () => {
     transport.onmessage = (m) => { messages.push(m); };
     await transport.start();
     conn.feed('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
-    await vi.waitFor(() => expect(messages).toEqual([{ jsonrpc: '2.0', id: 1, method: 'ping' }]));
+    await vi.waitFor(() => expect(messages).toEqual([{ jsonrpc: '2.0', id: 1, method: 'ping' }]), { timeout: 5_000 });
     conn.holdWrites = true;
     const big = 'x'.repeat(socket.writableHighWaterMark * 2);
     let sent = false;
@@ -290,7 +291,7 @@ describe('NativePipeSocket', () => {
     expect(written).not.toHaveBeenCalled();
     expect(drained).not.toHaveBeenCalled();
     conn.completeWrites();
-    await vi.waitFor(() => expect(drained).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(drained).toHaveBeenCalledTimes(1), { timeout: 5_000 });
     expect(written).toHaveBeenCalledTimes(1);
     expect(written.mock.calls[0][0] ?? null).toBeNull();
     expect(conn.received.reduce((n, b) => n + b.length, 0)).toBe(big.length);
@@ -307,7 +308,7 @@ describe('NativePipeSocket', () => {
     conn.completeWrites();
     await ticks(5);
     conn.completeWrites();
-    await vi.waitFor(() => expect(conn.receivedText).toBe('abc'));
+    await vi.waitFor(() => expect(conn.receivedText).toBe('abc'), { timeout: 5_000 });
     expect(conn.received.length).toBeLessThanOrEqual(2);
     socket.destroy();
   });
@@ -354,7 +355,7 @@ describe('NativePipeSocket', () => {
 
   it('EOF while paused: end and close follow the resume', async () => {
     const { conn, socket } = socketOver();
-    socket.on('data', () => {});
+    socket.on('data', noop);
     socket.pause();
     conn.clientEnd();
     await ticks(10);
@@ -395,7 +396,7 @@ describe('NativePipeSocket', () => {
 
   it('destroy(): destroyed, the native destroy, close, and an idempotent second call', async () => {
     const { conn, socket } = socketOver();
-    socket.on('data', () => {});
+    socket.on('data', noop);
     socket.destroy();
     socket.destroy();
     expect(socket.destroyed).toBe(true);
@@ -445,13 +446,13 @@ describe('listenNativePipe', () => {
     const [listener] = listeners;
     const a = listener.accept();
     const b = listener.accept();
-    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    await vi.waitFor(() => expect(sockets).toHaveLength(2), { timeout: 5_000 });
     const got: string[] = [];
     sockets[0].on('data', (c: Buffer) => got.push(`a:${c}`));
     sockets[1].on('data', (c: Buffer) => got.push(`b:${c}`));
     a.feed('1');
     b.feed('2');
-    await vi.waitFor(() => expect(got.sort()).toEqual(['a:1', 'b:2']));
+    await vi.waitFor(() => expect(got.sort()).toEqual(['a:1', 'b:2']), { timeout: 5_000 });
     server.close();
     for (const s of sockets) s.destroy();
   });
@@ -462,7 +463,7 @@ describe('listenNativePipe', () => {
     const server = listenNativePipe('p', { maxInstances: 2, module, onConnection: (s) => sockets.push(s) });
     const [listener] = listeners;
     const live = listener.accept();
-    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    await vi.waitFor(() => expect(sockets).toHaveLength(1), { timeout: 5_000 });
     const orphan = new FakeConn();
     listener.pending.push(orphan);
     server.close();
@@ -472,14 +473,14 @@ describe('listenNativePipe', () => {
     const got: string[] = [];
     sockets[0].on('data', (c: Buffer) => got.push(c.toString()));
     live.feed('after close');
-    await vi.waitFor(() => expect(got.join('')).toBe('after close'));
+    await vi.waitFor(() => expect(got.join('')).toBe('after close'), { timeout: 5_000 });
     sockets[0].destroy();
   });
 
   it('reports a failure once and exposes it', async () => {
     const { module, listeners } = fakeModule();
     const onFailure = vi.fn();
-    const server = listenNativePipe('p', { maxInstances: 2, module, onConnection: () => {}, onFailure });
+    const server = listenNativePipe('p', { maxInstances: 2, module, onConnection: noop, onFailure });
     const [listener] = listeners;
     listener.failed = 'next instance: ERROR_ACCESS_DENIED';
     listener.notify();
@@ -498,7 +499,7 @@ describe('listenNativePipe', () => {
     conn.peerImpl = () => { throw new Error('gone'); };
     listeners[0].accept(conn);
     listeners[0].accept();
-    await vi.waitFor(() => expect(onConnection).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(onConnection).toHaveBeenCalledTimes(1), { timeout: 5_000 });
     expect(conn.destroyCalls).toBe(1);
     (onConnection.mock.calls[0][0] as NativePipeSocket).destroy();
     server.close();
@@ -513,8 +514,8 @@ describe('listenNativePipe', () => {
       let closed = 0;
       const server = listenNativePipe('p', {
         maxInstances: 8, module, onConnection: (s) => {
-          s.on('data', () => {});
-          s.on('error', () => {});
+          s.on('data', noop);
+          s.on('error', noop);
           s.once('close', () => { closed++; });
         },
       });

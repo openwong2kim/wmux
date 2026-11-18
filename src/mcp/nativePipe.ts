@@ -65,14 +65,19 @@ export function listenNativePipe(name: string, options: ListenNativePipeOptions)
   const module = options.module ?? loadNativePipe();
   if (!module) throw new Error('The native pipe listener is Windows only');
   const sockets = new Set<NativePipeSocket>();
-  let listener: NativePipeListener | undefined;
+  let ready = false;
+  let missedWake = false;
   let closed = false;
   let failureReported = false;
 
+  const listener: NativePipeListener = new module.NativePipeListener(name, options.maxInstances, () => {
+    if (ready) wake();
+    else missedWake = true;
+  });
+
   // One wake for the listener and all its connections. It keeps running
   // after close() for the connections still open.
-  const wake = (): void => {
-    if (!listener) return;
+  function wake(): void {
     if (!closed) {
       for (let conn = listener.takeAccepted(); conn !== null; conn = listener.takeAccepted()) {
         let socket: NativePipeSocket;
@@ -98,9 +103,11 @@ export function listenNativePipe(name: string, options: ListenNativePipeOptions)
       }
     }
     for (const socket of [...sockets]) socket.pump();
-  };
+  }
 
-  listener = new module.NativePipeListener(name, options.maxInstances, wake);
+  ready = true;
+  // A wake during construction: handed on once the caller has the server.
+  if (missedWake) setImmediate(wake);
   const own = listener;
   return {
     close(): void {

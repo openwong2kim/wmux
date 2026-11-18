@@ -31,7 +31,7 @@ describe('loadNativePipe', () => {
   it('asks the core for pipe-listener-v1 on Windows', async () => {
     const { loadNativePipe } = await import('../nativePipe');
     onPlatform('win32');
-    const module = { NativePipeListener: function NativePipeListener() {} };
+    const module = { NativePipeListener: class NativePipeListener {} };
     load.mockReturnValue(module);
     expect(loadNativePipe()).toBe(module);
     expect(load).toHaveBeenCalledWith('pipe-listener-v1');
@@ -54,6 +54,6 @@ describe('loadNativePipe', () => {
   it('listenNativePipe off Windows without a module throws', async () => {
     const { listenNativePipe } = await import('../nativePipe');
     onPlatform('linux');
-    expect(() => listenNativePipe('p', { maxInstances: 1, onConnection: () => {} })).toThrow('Windows only');
+    expect(() => listenNativePipe('p', { maxInstances: 1, onConnection: () => undefined })).toThrow('Windows only');
   });
 });
