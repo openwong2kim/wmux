@@ -4,14 +4,11 @@
 // re-sign-in tab for an account a WSL pane reported signed out. Those panes
 // run the account on its own home in the distro (shared/wslAccountHome.ts).
 
-import path from 'node:path';
 import { ACCOUNT_ENV_VENDOR, ACCOUNT_VENDOR_ENV, type AccountEnvKey } from '../../shared/wslAccountMark';
+import { canonicalAccountFolder } from '../../shared/wslAccountHome';
 import type { Account } from './accountStore';
 
-const sameFolder = (a: string, b: string): boolean => {
-  const canonical = (dir: string) => path.win32.normalize(dir.trim()).replace(/[\\/]+$/, '').toLowerCase();
-  return canonical(a) === canonical(b);
-};
+const sameFolder = (a: string, b: string): boolean => canonicalAccountFolder(a) === canonicalAccountFolder(b);
 
 export function paneAccountKeys(
   env: Readonly<Record<string, string>>,

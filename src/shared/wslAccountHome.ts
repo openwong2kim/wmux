@@ -39,10 +39,14 @@ export const ACCOUNT_SHARE_MANIFEST: Record<AccountVendor, { linkDirs: readonly 
   codex: { linkDirs: ['prompts'], copyFiles: ['config.toml', 'AGENTS.md'] },
 };
 
-/** The Linux home's key for an account folder: 16 hex digits of its SHA-256, case- and separator-insensitive like Windows paths. */
+/** An account folder as Windows compares it: normalized, no trailing separator, any case. */
+export function canonicalAccountFolder(configDir: string): string {
+  return path.win32.normalize(configDir.trim()).replace(/[\\/]+$/, '').toLowerCase();
+}
+
+/** The Linux home's key for an account folder: 16 hex digits of the SHA-256 of its canonical form. */
 export function wslAccountHomeKey(configDir: string): string {
-  const canonical = path.win32.normalize(configDir.trim()).replace(/[\\/]+$/, '').toLowerCase();
-  return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
+  return createHash('sha256').update(canonicalAccountFolder(configDir)).digest('hex').slice(0, 16);
 }
 
 /** A data suffix that can be part of a Linux folder name (`.wmux<suffix>`). */
@@ -70,12 +74,16 @@ export function wslAccountLinuxHome(
   return `${user === 'root' ? '/root' : `/home/${user}`}/.wmux${suffix}/accounts/${vendor}-${wslAccountHomeKey(dir)}`;
 }
 
+/** Left in an account folder created with sharing on (provisionAccountDir); accounts store no share flag of their own. */
+export const ACCOUNT_SHARE_MARKER = '.wmux-shared';
+
 /**
- * Whether the account folder was created with sharing on: one of the vendor's
- * shared directories is a link (a junction on Windows) there, which is what
- * provisionAccountDir leaves. Accounts store no share flag of their own.
+ * Whether the account folder was created with sharing on: its marker, or, for
+ * a folder made before the marker, one of the vendor's shared directories is a
+ * link (a junction on Windows) there, which is what provisionAccountDir leaves.
  */
 export function accountFolderShares(configDir: string, vendor: AccountVendor): boolean {
+  if (fs.existsSync(path.join(configDir, ACCOUNT_SHARE_MARKER))) return true;
   return ACCOUNT_SHARE_MANIFEST[vendor].linkDirs.some((name) => {
     try {
       return fs.lstatSync(path.join(configDir, name)).isSymbolicLink();

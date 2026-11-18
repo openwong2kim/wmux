@@ -87,6 +87,13 @@ export async function signInAgain(
       cwd: null,
     });
     if (!tab) return;
+    // wmux cannot ask about a WSL home's sign-in from Windows, so there is
+    // nothing to wait on: the entry (and the sidebar's "Signed out") goes when
+    // that pane's agent is next seen to work, and no toast comes back meanwhile.
+    if (wsl) {
+      settled = true;
+      return;
+    }
     const until = now() + SIGN_IN_WAIT_MS;
     while (mine() && now() < until) {
       await sleep(SIGN_IN_POLL_MS);

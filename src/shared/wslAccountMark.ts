@@ -4,6 +4,9 @@
  * No Node imports: the renderer reads the sign-in key too.
  */
 
+import { PANE_ACCOUNT_ENV_KEY } from './phonePaneAccount';
+import { isValidWslDistroName } from './wslDistro';
+
 export type AccountEnvKey = 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
 export type AccountVendor = 'claude' | 'codex';
 
@@ -23,7 +26,8 @@ export const ACCOUNT_ENV_KEYS: readonly AccountEnvKey[] = ['CLAUDE_CONFIG_DIR', 
 
 export const ACCOUNT_ENV_VENDOR: Record<AccountEnvKey, AccountVendor> = { CLAUDE_CONFIG_DIR: 'claude', CODEX_HOME: 'codex' };
 
-export const ACCOUNT_VENDOR_ENV: Record<AccountVendor, AccountEnvKey> = { claude: 'CLAUDE_CONFIG_DIR', codex: 'CODEX_HOME' };
+/** A vendor's account variable (the same map the phone pane account uses). */
+export const ACCOUNT_VENDOR_ENV: Readonly<Record<AccountVendor, AccountEnvKey>> = PANE_ACCOUNT_ENV_KEY;
 
 /** The marked account variables, in a fixed order; anything unknown is ignored. */
 export function parseWslAccountKeys(value: string | undefined): AccountEnvKey[] {
@@ -53,7 +57,6 @@ export function accountSourcedKeys(env: Record<string, string>, accountEnv: Reco
 }
 
 const WSL_AUTH_PREFIX = 'wsl:';
-const DISTRO = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /**
  * The sign-in key of an account a WSL pane runs on its Linux home: its distro
@@ -72,7 +75,7 @@ export function parseWslAuthRef(value: string | null | undefined): { distro: str
   if (colon <= 0) return null;
   const distro = rest.slice(0, colon);
   const configDir = rest.slice(colon + 1);
-  return DISTRO.test(distro) && configDir ? { distro, configDir } : null;
+  return isValidWslDistroName(distro) && configDir ? { distro, configDir } : null;
 }
 
 /**
@@ -83,6 +86,6 @@ export function parseWslAuthRef(value: string | null | undefined): { distro: str
 export function wslAccountAuthRef(env: Readonly<Record<string, string | undefined>> | undefined, key: AccountEnvKey): string | null {
   const dir = env?.[key]?.trim();
   const distro = env?.[WSL_ACCOUNT_DISTRO_ENV];
-  if (!dir || !distro || !DISTRO.test(distro) || !parseWslAccountKeys(env?.[WSL_ACCOUNT_KEYS_ENV]).includes(key)) return null;
+  if (!dir || !isValidWslDistroName(distro) || !parseWslAccountKeys(env?.[WSL_ACCOUNT_KEYS_ENV]).includes(key)) return null;
   return wslAuthRef(distro, dir);
 }

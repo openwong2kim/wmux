@@ -24,7 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { Vendor } from './accountStore';
-import { ACCOUNT_SHARE_MANIFEST } from '../../shared/wslAccountHome';
+import { ACCOUNT_SHARE_MANIFEST, ACCOUNT_SHARE_MARKER } from '../../shared/wslAccountHome';
 
 // Per-vendor share manifests (shared/wslAccountHome, which a new WSL account home
 // mirrors too). Codex stores user settings + MCP in config.toml (NOT
@@ -91,6 +91,13 @@ export function provisionAccountDir(opts: {
   const linked: string[] = [];
   const copied: string[] = [];
   if (!share) return { configDir, linked, copied };
+  // Sharing was asked for even when the source has nothing to share yet: a WSL
+  // home for this account mirrors the distro's own folder (shared/wslAccountHome.ts).
+  try {
+    if (!fs.existsSync(path.join(configDir, ACCOUNT_SHARE_MARKER))) fs.writeFileSync(path.join(configDir, ACCOUNT_SHARE_MARKER), '');
+  } catch (err) {
+    console.warn(`[account] hybrid-share: could not mark ${configDir} as shared: ${String(err)}`);
+  }
 
   const manifest = SHARE_MANIFEST[vendor];
   for (const name of manifest.linkDirs) {

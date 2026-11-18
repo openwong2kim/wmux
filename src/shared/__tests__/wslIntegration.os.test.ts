@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { accountHomeWslFlags, buildWslInjection, WSL_ACCOUNT_SH, WSL_CLAUDE_SHIM, WSL_HOOK, wslClaudeHooks } from '../wslIntegration';
-import { wslAccountHomeKey } from '../wslAccountHome';
+import { ACCOUNT_SHARE_MARKER, wslAccountHomeKey } from '../wslAccountHome';
 import { HOOK_SPECS } from '../../cli/commands/setupHooks';
 import { parseWslAgentReport, pickReportedAgent } from '../../daemon/wslAgentProcess';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -267,10 +267,14 @@ describe('WSL per-launch Claude integration', () => {
         WMUX_WSL_ACCOUNT_CLAUDE: '0000000000000000', WMUX_WSL_ACCOUNT_CLAUDE_SHARE: '1', WMUX_WSL_ACCOUNT_CODEX: '1111111111111111',
         WSLENV: 'WMUX_WSL_ACCOUNT_CLAUDE:WMUX_WSL_ACCOUNT_CLAUDE_SHARE:WMUX_WSL_ACCOUNT_CODEX',
       };
-      const { env: out } = inject(replayed);
+      const { env: out, wslenv } = inject(replayed);
       expect(out.WMUX_WSL_ACCOUNT_CLAUDE).toBe(wslAccountHomeKey('C:\\accounts\\work'));
       expect(out.WMUX_WSL_ACCOUNT_CLAUDE_SHARE).toBeUndefined();
       expect(out.WMUX_WSL_ACCOUNT_CODEX).toBeUndefined();
+      // Only this spawn's names stay in WSLENV.
+      expect(wslenv).toContain('WMUX_WSL_ACCOUNT_CLAUDE');
+      expect(wslenv).not.toContain('WMUX_WSL_ACCOUNT_CLAUDE_SHARE');
+      expect(wslenv).not.toContain('WMUX_WSL_ACCOUNT_CODEX');
     });
 
     it('marks a shared account folder (a linked skills folder) for mirroring', () => {
@@ -280,6 +284,12 @@ describe('WSL per-launch Claude integration', () => {
       const { env: out, wslenv } = inject({ CLAUDE_CONFIG_DIR: account, WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR' });
       expect(out.WMUX_WSL_ACCOUNT_CLAUDE_SHARE).toBe('1');
       expect(wslenv).toContain('WMUX_WSL_ACCOUNT_CLAUDE_SHARE');
+    });
+
+    it('marks an account folder created with sharing on, even with nothing linked', () => {
+      const account = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-sharemark-')); dirs.push(account);
+      fs.writeFileSync(path.join(account, ACCOUNT_SHARE_MARKER), '');
+      expect(inject({ CODEX_HOME: account, WMUX_WSL_ACCOUNT_KEYS: 'CODEX_HOME' }).env.WMUX_WSL_ACCOUNT_CODEX_SHARE).toBe('1');
     });
 
     it('adds nothing for an unbound pane', () => {

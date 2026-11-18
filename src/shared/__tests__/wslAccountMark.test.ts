@@ -7,7 +7,10 @@ const wslPane = { CLAUDE_CONFIG_DIR: 'C:\\acc\\work', WMUX_WSL_ACCOUNT_KEYS: 'CL
 describe('the sign-in key of a WSL account home', () => {
   it('round-trips the distro and the Windows folder', () => {
     expect(parseWslAuthRef(wslAuthRef('Ubuntu-24.04', 'C:\\acc\\work'))).toEqual({ distro: 'Ubuntu-24.04', configDir: 'C:\\acc\\work' });
-    for (const bad of [null, 'C:\\acc\\work', 'wsl:', 'wsl::C:\\x', 'wsl:bad name:C:\\x', 'wsl:Ubuntu:']) expect(parseWslAuthRef(bad)).toBeNull();
+    // Any name WSL takes: inner spaces and non-ASCII letters too.
+    expect(parseWslAuthRef(wslAuthRef('My Distro', 'C:\\acc'))?.distro).toBe('My Distro');
+    expect(parseWslAuthRef(wslAuthRef('우분투', 'C:\\acc'))?.distro).toBe('우분투');
+    for (const bad of [null, 'C:\\acc\\work', 'wsl:', 'wsl::C:\\x', 'wsl:-bad:C:\\x', 'wsl:Ubuntu:']) expect(parseWslAuthRef(bad)).toBeNull();
   });
 
   it('is a marked WSL pane\'s only: no distro (not a WSL pane) or no mark means the folder', () => {

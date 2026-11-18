@@ -187,8 +187,15 @@ if [ -n "\${WMUX_WSL_GIT_DIR:-}" ] && [ -n "\${WMUX_WSL_GIT_WORK_TREE:-}" ]; the
   unset -f __wmux_git_config
 fi`;
 
-/** What buildWslInjection sends for a bound account (and drops before redoing it). */
-const WSL_ACCOUNT_VARS = ['WMUX_WSL_ACCOUNT_CLAUDE', 'WMUX_WSL_ACCOUNT_CLAUDE_SHARE', 'WMUX_WSL_ACCOUNT_CODEX', 'WMUX_WSL_ACCOUNT_CODEX_SHARE'];
+/**
+ * Every variable buildWslInjection sets for a bound account. It drops them all
+ * before redoing them, and a caller merging the result into a replayed env
+ * must drop the ones the result leaves out (DaemonSessionManager).
+ */
+export const WSL_ACCOUNT_INJECTED_VARS: readonly string[] = [
+  'WMUX_WSL_ACCOUNT_CLAUDE', 'WMUX_WSL_ACCOUNT_CLAUDE_SHARE', 'WMUX_WSL_ACCOUNT_CODEX', 'WMUX_WSL_ACCOUNT_CODEX_SHARE',
+  'WMUX_WSL_ACCOUNT_SH', WSL_ACCOUNT_DISTRO_ENV,
+];
 
 const shareList = (vendor: AccountVendor, kind: 'linkDirs' | 'copyFiles') => ACCOUNT_SHARE_MANIFEST[vendor][kind].join(' ');
 
@@ -225,10 +232,10 @@ __wmux_account_home() {
         __wmux_src="$HOME/.claude" __wmux_links="${shareList('claude', 'linkDirs')}" __wmux_copies="${shareList('claude', 'copyFiles')}"
       fi
       for __wmux_name in $__wmux_links; do
-        [ ! -e "$__wmux_src/$__wmux_name" ] || [ -e "$__wmux_home/$__wmux_name" ] || ln -s "$__wmux_src/$__wmux_name" "$__wmux_home/$__wmux_name"
+        [ ! -e "$__wmux_src/$__wmux_name" ] || [ -e "$__wmux_home/$__wmux_name" ] || ln -sn "$__wmux_src/$__wmux_name" "$__wmux_home/$__wmux_name" 2>/dev/null
       done
       for __wmux_name in $__wmux_copies; do
-        [ ! -f "$__wmux_src/$__wmux_name" ] || [ -e "$__wmux_home/$__wmux_name" ] || cp "$__wmux_src/$__wmux_name" "$__wmux_home/$__wmux_name"
+        [ ! -f "$__wmux_src/$__wmux_name" ] || [ -e "$__wmux_home/$__wmux_name" ] || cp "$__wmux_src/$__wmux_name" "$__wmux_home/$__wmux_name" 2>/dev/null
       done
     fi
   fi
@@ -594,7 +601,9 @@ fi
   // (shared/wslAccountHome.ts): the Windows folder never crosses over, only
   // its key. A login tab's own variable stays the Windows folder (above).
   // Recomputed on every spawn, so a recovered pane's replayed env is redone.
-  for (const name of [...WSL_ACCOUNT_VARS, 'WMUX_WSL_ACCOUNT_SH', WSL_ACCOUNT_DISTRO_ENV]) delete env[name];
+  for (const name of WSL_ACCOUNT_INJECTED_VARS) delete env[name];
+  // And their WSLENV names a replayed env still lists: only this spawn's go back in.
+  if (env.WSLENV) env.WSLENV = env.WSLENV.split(':').filter((entry) => !WSL_ACCOUNT_INJECTED_VARS.includes(entry.split('/')[0].toUpperCase())).join(':');
   let accountHomes = false;
   for (const key of parseWslAccountKeys(env[WSL_ACCOUNT_KEYS_ENV])) {
     const folder = env[key];

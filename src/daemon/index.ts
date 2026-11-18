@@ -30,7 +30,6 @@ import { agentExecEnv } from '../shared/execEnv';
 import { workspaceAccountEnv } from './phone/workspaceAccountEnv';
 import { applyPaneAccount, assertPaneAccountUsable } from './phone/paneAccount';
 import type { PaneAccountVendor, StoredHandoffFrom } from '../shared/phonePaneAccount';
-import { ACCOUNT_ENV_KEYS, type AccountEnvKey } from '../shared/wslAccountHome';
 import { DesktopPhoneBridge, keepAwakeRpc } from './phone/DesktopPhoneBridge';
 import { BrowserHelpTable } from './phone/BrowserHelpTable';
 import { BROWSER_HELP_SET_METHOD, PHONE_BROWSER_HELP_DECIDE_COMMAND, type BrowserHelpTableRow } from '../shared/phoneBrowserHelp';
@@ -2821,7 +2820,7 @@ function registerRpcHandlers(
   // (see sessionLifecycle below). A phone-spawned pane must be the same kind of
   // object as a GUI-spawned one — process-monitored, supervised, persisted,
   // snapshotted — and the only way to guarantee that is for both to run this.
-  const createSessionRpc = async (params: Record<string, unknown>, local?: {execLaunchCommand?:string;handoffFrom?:StoredHandoffFrom;paneAccount?:{vendor:PaneAccountVendor};remoteDurable?:true;wslAccountKeys?:AccountEnvKey[]}): Promise<unknown> => {
+  const createSessionRpc = async (params: Record<string, unknown>, local?: {execLaunchCommand?:string;handoffFrom?:StoredHandoffFrom;paneAccount?:{vendor:PaneAccountVendor};remoteDurable?:true}): Promise<unknown> => {
     // B′ auto-replace (Codex #1): shutdown() snapshots the managed-session
     // list once, so a session created AFTER that snapshot would be disposed
     // without any durable suspended record — silent data loss. shutdown()
@@ -2864,7 +2863,6 @@ function registerRpcHandlers(
       execLaunchCommand: local?.execLaunchCommand,
       ...(local?.handoffFrom ? { handoffFrom: local.handoffFrom } : {}),
       ...(local?.paneAccount ? { paneAccount: local.paneAccount } : {}),
-      ...(local?.wslAccountKeys?.length ? { wslAccountKeys: local.wslAccountKeys } : {}),
       ...(local?.remoteDurable ? { remoteDurable: true as const } : {}),
       supervision: p.supervision
         ? {
@@ -3085,10 +3083,6 @@ function registerRpcHandlers(
       // A per-pane account replaces only its own vendor's key, after the
       // workspace binding and before the CLI probe and the Codex relay read it.
       if (account) env = applyPaneAccount(env, account);
-      // In WSL these accounts run on their own Linux home (shared/wslAccountHome.ts).
-      // In a workspace every account variable left is an account's: the binding's
-      // (workspaceAccountEnv drops inherited ones) or the chosen one's.
-      const wslAccountKeys = workspaceId ? ACCOUNT_ENV_KEYS.filter((key) => !!env[key]) : [];
       const agentCommand = agentLaunch ? buildAgentLaunch(agentLaunch, await installedAgentLaunchOptions(env)) : undefined;
       // The pane runs `$SHELL -lc '<agent>'`, whose profile rewrites PATH and skips
       // ~/.zshrc; the spawn is pinned to the binary and PATH the probe verified
@@ -3156,7 +3150,6 @@ function registerRpcHandlers(
           ...(handoffFrom ? {handoffFrom} : {}),
           // Which vendor's key is the pane's own choice: chat/launch re-applies it.
           ...(account ? {paneAccount:{vendor:account.vendor}} : {}),
-          ...(wslAccountKeys.length ? {wslAccountKeys} : {}),
           // A remote client's pane outlives the ordinary detached TTL (bounded).
           remoteDurable: true,
         });
