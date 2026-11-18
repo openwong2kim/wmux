@@ -233,6 +233,12 @@ describe('deliveryPresence at the Enter', () => {
     expect(await deliveryPresence(deps({ ...ended, frame: async () => frame(['user@host ~ % '], 0) }), 'p', 'claude', { phase: 'enter', shownProbe: '[wmux] A2A task t-1' }))
       .toEqual({ tier: 'none', reason: 'agent-ended', pasteShown: false });
   });
+
+  it('no frame to read says nothing about the box: pasteShown is left out, not false', async () => {
+    const ended = { tracked: () => ({ alive: false, slug: 'claude' as const }) };
+    expect(await deliveryPresence(deps({ ...ended, frame: async () => null }), 'p', 'claude', { phase: 'enter', shownProbe: '[wmux] A2A task t-1' }))
+      .toEqual({ tier: 'none', reason: 'agent-ended' });
+  });
 });
 
 describe('promptGrant: a daemon-typed prompt, by its author', () => {

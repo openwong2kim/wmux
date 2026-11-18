@@ -10625,7 +10625,8 @@ async function main(): Promise<void> {
     agentPresent: async (id, check) => {
       const p = deliveryPresenceRef ? await deliveryPresenceRef(id, check) : null;
       if (!p) return { present: false };
-      return p.tier === 'none' ? { present: false, ...(p.pasteShown ? { pasteShown: true } : {}) } : { present: true, full: p.input === 'full' };
+      // pasteShown as read: false (the box shows something else) holds the pane; absent (no frame) does not.
+      return p.tier === 'none' ? { present: false, ...(p.pasteShown !== undefined ? { pasteShown: p.pasteShown } : {}) } : { present: true, full: p.input === 'full' };
     },
   });
   // app-weight P1-1: cadence from config (default 15 s; clamped 5–120 s), or
