@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { A2A_REMOTE_BODY_MAX, ANSWER_OUTCOMES_MAX, type A2aRemoteAnswerOutcome, type A2aRemoteAnswerV1, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
 import { truncateUtf8 } from '../../shared/chatv2/limits';
 import type { SessionPromptScheduleResult } from '../../shared/sessionPromptSchedule';
-import { promptHash, userEntryHash } from '../../shared/promptHash';
+import { promptHash } from '../../shared/promptHash';
 import { localSideOf, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 import { spawnFirstMessageId, type SpawnLinkId } from '../../shared/a2aSpawn';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
@@ -16,7 +16,7 @@ import type { HeadlessAnswerResult } from './headlessAnswer';
 
 type HeadlessAnswerReason = Extract<HeadlessAnswerResult, { outcome: 'not-answered' }>['reason'];
 import type { HeadlessStartRecordV1 } from './headlessStartStore';
-import { rawEntry, textOfContent } from './taskTurn';
+import { isPromptRaw, rawEntry } from './taskTurn';
 import { LINK_ENDED_REASON } from './headlessStarter';
 import { errMsg } from './storeFile';
 
@@ -413,12 +413,9 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
   if (ep.opened) noteAsk(ep, raw?.content);
   // A conversation entry after a turn end: the agent is in a turn again.
   if (raw?.type === 'assistant' || raw?.type === 'user') ep.busy = true;
-  if (!ep.opened) {
-    const text = raw?.type === 'user' ? textOfContent(raw.content) : null;
-    if (text !== null && userEntryHash(text) === ep.promptHash) {
-      ep.opened = true;
-      return null;
-    }
+  if (!ep.opened && isPromptRaw(raw, ep.promptHash)) {
+    ep.opened = true;
+    return null;
   }
   const apiError = apiErrorFromTranscriptLine(line);
   if (apiError && ep.opened) {

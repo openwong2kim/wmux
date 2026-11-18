@@ -98,6 +98,35 @@ describe('stepTaskTurn', () => {
     expect(t).toMatchObject({ opened: true, closed: true, toolUseIds: ['toolu_1'] });
   });
 
+  it('a prompt typed at the agent closes it, marked as typed or not', () => {
+    const typed = JSON.stringify({ type: 'user', uuid: `y${seq}`, timestamp: stamp(), origin: { kind: 'human' }, promptSource: 'typed',
+      message: { role: 'user', content: [{ type: 'text', text: 'and also this' }] } });
+    expect(run([userLine(PROMPT), callLine('toolu_1'), typed, callLine('toolu_2')])).toMatchObject({ opened: true, closed: true, toolUseIds: ['toolu_1'] });
+  });
+
+  it('Claude Code going on by itself after a usage limit closes it (notice or its own prompt)', () => {
+    const notice = JSON.stringify({ type: 'system', subtype: 'informational', isSidechain: false, timestamp: stamp(), content: 'Usage limit reset · Continuing automatically' });
+    const resume = JSON.stringify({ type: 'user', isSidechain: false, timestamp: stamp(), isMeta: true, origin: { kind: 'auto-continuation' }, turnOrigin: 'auto_continuation',
+      message: { role: 'user', content: 'Your usage limit has reset. Continue.' } });
+    expect(run([userLine(PROMPT), callLine('toolu_1'), notice, callLine('toolu_2')])).toMatchObject({ opened: true, closed: true, toolUseIds: ['toolu_1'] });
+    expect(run([userLine(PROMPT), callLine('toolu_1'), resume, callLine('toolu_2')])).toMatchObject({ opened: true, closed: true, toolUseIds: ['toolu_1'] });
+  });
+
+  it('a queued command closes it, and one carrying the task\'s own prompt never opens it', () => {
+    const queued = (prompt: string): string => JSON.stringify({ type: 'attachment', isSidechain: false, timestamp: stamp(), attachment: { type: 'queued_command', prompt } });
+    expect(run([userLine(PROMPT), callLine('toolu_1'), queued('next'), callLine('toolu_2')])).toMatchObject({ opened: true, closed: true, toolUseIds: ['toolu_1'] });
+    expect(run([queued(PROMPT), callLine('toolu_1')])).toMatchObject({ opened: false, closed: true, toolUseIds: [] });
+  });
+
+  it('a meta user entry (a wake, a notification) closes it; tool results do not', () => {
+    const wake = JSON.stringify({ type: 'user', timestamp: stamp(), isMeta: true, turnOrigin: 'scheduled', promptSource: 'system', message: { role: 'user', content: 'scheduled wake' } });
+    expect(run([userLine(PROMPT), callLine('toolu_1'), resultLine('toolu_1'), wake, callLine('toolu_2')])).toMatchObject({ opened: true, closed: true, toolUseIds: ['toolu_1'] });
+  });
+
+  it('the same prompt a second time closes it', () => {
+    expect(run([userLine(PROMPT), callLine('toolu_1'), userLine(PROMPT), callLine('toolu_2')])).toMatchObject({ opened: true, closed: true, toolUseIds: ['toolu_1'] });
+  });
+
   it('isPromptEntry matches the prompt\'s own user entry only', () => {
     const hash = promptHash(PROMPT);
     expect(isPromptEntry(userLine(PROMPT), hash)).toBe(true);
