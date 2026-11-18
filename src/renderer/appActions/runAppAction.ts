@@ -6,28 +6,36 @@
 // workspace explicitly and never reads `activeWorkspaceId` (the workspace the
 // human is looking at), and every handler sets a final state, so running an
 // action twice is the same as running it once.
+//
+// The settings actions are app-wide and need no workspace. Main marks a call
+// from a terminal outside any wmux pane with `source: 'command-line'`; only
+// those actions run for it, and the change is labelled as made there.
 
 import { useStore } from '../stores';
 import type { Notification, Pane, PaneLeaf, Workspace } from '../../shared/types';
 import { findParent, findPane, getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import { isShadowWorkspaceId } from '../../shared/pcRail';
 import {
-  APP_ACTION_SETTING_KEYS,
   appActionRefusal,
   checkAppActionArgs,
   findAppAction,
   type AppActionArgs,
   type AppActionErrorCode,
-  type AppActionSettingKey,
   type AppActionSpec,
 } from '../../shared/appActions';
+import {
+  APP_SETTING_KEYS,
+  describeAppSetting,
+  parseAppSetting,
+  type AppSettingKey,
+  type AppSettingValue,
+} from '../../shared/appSettings';
 import { resolvePaneName } from '../utils/paneNameResolver';
 import { nameRefusalMessage, tabNameRefusal, workspaceNameRefusal } from '../utils/addressableNames';
 import { UI_THEME_TOKENS } from '../themes';
 import { LOCALE_LOADERS } from '../i18n/localeLoaders';
 import { t, type Locale } from '../i18n';
 import { sanitizeFontFamily } from '../utils/terminalFont';
-import { FONT_SIZE_MAX, FONT_SIZE_MIN } from '../hooks/useKeyboard';
 
 type Store = ReturnType<typeof useStore.getState>;
 type Refusal = { ok: false; code: AppActionErrorCode; error: string };
@@ -141,24 +149,52 @@ function resolveTarget(
 // ─── Settings ────────────────────────────────────────────────────────────────
 
 const SUPPORTED_LOCALES: readonly string[] = ['en', ...Object.keys(LOCALE_LOADERS)];
+/** Built-in themes; `custom` is made in Settings, not named here. */
+const SETTABLE_THEMES: readonly string[] = Object.keys(UI_THEME_TOKENS).filter((id) => id !== 'custom');
 
-function readSetting(store: Store, key: AppActionSettingKey): string | number {
+/** Each setting's store field, read as the value `settings.get` reports. */
+function readSetting(store: Store, key: AppSettingKey): AppSettingValue {
   switch (key) {
     case 'theme': return store.theme;
     case 'locale': return store.locale;
     case 'terminal.fontSize': return store.terminalFontSize;
     case 'terminal.fontFamily': return store.terminalFontFamily;
+    case 'terminal.cursorStyle': return store.terminalCursorStyle;
+    case 'terminal.scrollbackLines': return store.scrollbackLines;
+    case 'terminal.openFileLinksIn': return store.terminalOpenFileLinksIn;
+    case 'terminal.imagePaste': return store.imagePasteMode;
+    case 'terminal.splitInheritsCwd': return store.splitInheritsCwd;
+    case 'terminal.closeTabOnExit': return store.closeTabOnShellExit;
+    case 'ui.scale': return store.uiScale;
+    case 'sidebar.position': return store.sidebarPosition;
+    case 'sidebar.sort': return store.sidebarSortMode;
+    case 'fleet.layout': return store.fleetLayout;
+    case 'multiview.arrangement': return store.multiviewArrangement;
+    case 'attention.blink': return store.attentionBlink;
+    case 'attention.remindMs': return store.attentionBlinkRemindMs;
+    case 'attention.finished': return store.attentionBlinkFinished;
+    case 'notifications.toast': return store.toastEnabled;
+    case 'notifications.sound': return store.notificationSoundEnabled;
+    case 'notifications.osRing': return store.notificationRingEnabled;
+    case 'notifications.paneRing': return store.paneRingEnabled;
+    case 'notifications.paneFlash': return store.paneFlashEnabled;
+    case 'notifications.taskbarFlash': return store.taskbarFlashEnabled;
+    case 'notifications.glowOpacity': return store.paneGlowOpacity;
+    case 'power.keepAwake': return store.sleepPreventionMode;
+    case 'titlebar.clock': return store.titlebarClockVisible;
   }
 }
 
-/** The value to store for `key`, or why `raw` is not one. */
-function parseSetting(key: AppActionSettingKey, raw: string | number): { value: string | number } | Refusal {
-  const text = String(raw).trim();
+/** The value to store for `key`: the shared parse, then what only the renderer knows. */
+function parseSetting(key: AppSettingKey, raw: string | number): { value: AppSettingValue } | Refusal {
+  const parsed = parseAppSetting(key, raw);
+  if (!parsed.ok) return refuse('invalid_args', `settings.set: ${parsed.error}`);
+  const text = String(parsed.value);
   switch (key) {
     case 'theme':
-      if (text === 'custom') return refuse('invalid_args', 'settings.set: theme "custom" is set in Settings, not by an agent');
-      if (!Object.prototype.hasOwnProperty.call(UI_THEME_TOKENS, text)) {
-        return refuse('invalid_args', `settings.set: no theme "${text}" (one of ${Object.keys(UI_THEME_TOKENS).join(', ')})`);
+      if (text === 'custom') return refuse('invalid_args', 'settings.set: theme "custom" is made in Settings › Appearance');
+      if (!SETTABLE_THEMES.includes(text)) {
+        return refuse('invalid_args', `settings.set: no theme "${text}" (one of ${SETTABLE_THEMES.join(', ')})`);
       }
       return { value: text };
     case 'locale':
@@ -166,27 +202,86 @@ function parseSetting(key: AppActionSettingKey, raw: string | number): { value: 
         return refuse('invalid_args', `settings.set: no language "${text}" (one of ${SUPPORTED_LOCALES.join(', ')})`);
       }
       return { value: text };
-    case 'terminal.fontSize': {
-      const n = typeof raw === 'number' ? raw : Number(text);
-      if (!Number.isInteger(n) || n < FONT_SIZE_MIN || n > FONT_SIZE_MAX) {
-        return refuse('invalid_args', `settings.set: terminal.fontSize must be a whole number from ${FONT_SIZE_MIN} to ${FONT_SIZE_MAX}`);
-      }
-      return { value: n };
-    }
     case 'terminal.fontFamily': {
       const safe = sanitizeFontFamily(text);
       if (!safe) return refuse('invalid_args', 'settings.set: terminal.fontFamily needs a font name');
       return { value: safe };
     }
+    default:
+      return { value: parsed.value };
   }
 }
 
-function writeSetting(store: Store, key: AppActionSettingKey, value: string | number): void {
+/** Apply a parsed value through the same store action Settings uses. */
+function writeSetting(store: Store, key: AppSettingKey, value: AppSettingValue): void {
   switch (key) {
     case 'theme': store.setTheme(value as string); return;
     case 'locale': store.setLocale(value as Locale); return;
     case 'terminal.fontSize': store.setTerminalFontSize(value as number); return;
     case 'terminal.fontFamily': store.setTerminalFontFamily(value as string); return;
+    case 'terminal.cursorStyle': store.setTerminalCursorStyle(value as Store['terminalCursorStyle']); return;
+    case 'terminal.scrollbackLines': store.setScrollbackLines(value as number); return;
+    case 'terminal.openFileLinksIn': store.setTerminalOpenFileLinksIn(value as Store['terminalOpenFileLinksIn']); return;
+    case 'terminal.imagePaste': store.setImagePasteMode(value as Store['imagePasteMode']); return;
+    case 'terminal.splitInheritsCwd': store.setSplitInheritsCwd(value as boolean); return;
+    case 'terminal.closeTabOnExit': store.setCloseTabOnShellExit(value as boolean); return;
+    case 'ui.scale': store.setUiScale(value as number); return;
+    case 'sidebar.position': store.setSidebarPosition(value as Store['sidebarPosition']); return;
+    case 'sidebar.sort': store.setSidebarSortMode(value as Store['sidebarSortMode']); return;
+    case 'fleet.layout': store.setFleetLayout(value as Store['fleetLayout']); return;
+    case 'multiview.arrangement': store.setMultiviewArrangement(value as Store['multiviewArrangement']); return;
+    case 'attention.blink': store.setAttentionBlink(value as Store['attentionBlink']); return;
+    case 'attention.remindMs': store.setAttentionBlinkRemindMs(value as Store['attentionBlinkRemindMs']); return;
+    case 'attention.finished': store.setAttentionBlinkFinished(value as Store['attentionBlinkFinished']); return;
+    case 'notifications.toast': store.setToastEnabled(value as boolean); return;
+    case 'notifications.sound':
+      // As the Settings switch does (applyNotificationSound): on also picks the default sound.
+      store.setNotificationSoundEnabled(value as boolean);
+      if (value) store.setNotificationSoundChoice('default');
+      return;
+    case 'notifications.osRing': store.setNotificationRingEnabled(value as boolean); return;
+    case 'notifications.paneRing': store.setPaneRingEnabled(value as boolean); return;
+    case 'notifications.paneFlash': store.setPaneFlashEnabled(value as boolean); return;
+    case 'notifications.taskbarFlash': store.setTaskbarFlashEnabled(value as boolean); return;
+    case 'notifications.glowOpacity': store.setPaneGlowOpacity(value as number); return;
+    case 'power.keepAwake': store.setSleepPreventionMode(value as Store['sleepPreventionMode']); return;
+    case 'titlebar.clock': store.setTitlebarClockVisible(value as boolean); return;
+  }
+}
+
+/** What `key` takes, in words, for `settings.list`. */
+function allowedValues(key: AppSettingKey): string {
+  if (key === 'theme') return SETTABLE_THEMES.join('|');
+  if (key === 'locale') return SUPPORTED_LOCALES.join('|');
+  return describeAppSetting(key);
+}
+
+/** The settings actions. They need no workspace: a call from the command line has none. */
+function runSettingsAction(store: Store, id: string, args: AppActionArgs, fromCommandLine: boolean): Answer | Refusal {
+  switch (id) {
+    case 'settings.list':
+      return {
+        ok: true,
+        settings: APP_SETTING_KEYS.map((key) => ({ key, value: readSetting(store, key), allowed: allowedValues(key) })),
+      };
+    case 'settings.get': {
+      const keys = args.key ? [args.key as AppSettingKey] : APP_SETTING_KEYS;
+      return { ok: true, settings: Object.fromEntries(keys.map((k) => [k, readSetting(store, k)])) };
+    }
+    case 'settings.set': {
+      const key = args.key as AppSettingKey;
+      const parsed = parseSetting(key, args.value);
+      if ('code' in parsed) return parsed;
+      const before = readSetting(store, key);
+      if (before === parsed.value) return { ok: true, key, value: parsed.value, changed: false };
+      writeSetting(store, key, parsed.value);
+      // The human sees that it changed and who changed it.
+      const message = t(fromCommandLine ? 'appAction.settingChangedCli' : 'appAction.settingChanged', { setting: key, value: String(parsed.value) });
+      store.pushToast({ level: 'info', message });
+      return { ok: true, key, value: parsed.value, changed: true };
+    }
+    default:
+      return refuse('unknown_action', `no action "${id}"`);
   }
 }
 
@@ -272,9 +367,16 @@ export function runAppAction(params: Record<string, unknown>): Answer | Refusal 
   const checked = checkAppActionArgs(spec, params.args);
   if (!checked.ok) return refuse('invalid_args', checked.error);
   const args = checked.args;
+  const target = typeof params.target === 'string' ? params.target.trim() : '';
+  // Only main sets `source`; a call from the command line has no workspace.
+  const fromCommandLine = params.source === 'command-line';
+  if (fromCommandLine && !id.startsWith('settings.')) return refuse('no_identity', `${id}: run this from a wmux pane`);
+  if (fromCommandLine) {
+    if (target) return refuse('invalid_args', `${id}: takes no target`);
+    return runSettingsAction(store, id, args, true);
+  }
   const callerWorkspaceId = typeof params.callerWorkspaceId === 'string' ? params.callerWorkspaceId : '';
   if (!callerWorkspaceId) return refuse('no_identity', `${id}: no caller workspace`);
-  const target = typeof params.target === 'string' ? params.target.trim() : '';
   const callerPtyId = typeof params.callerPtyId === 'string' && params.callerPtyId ? params.callerPtyId : undefined;
 
   const caller = callerWorkspace(store, callerWorkspaceId);
@@ -294,21 +396,10 @@ export function runAppAction(params: Record<string, unknown>): Answer | Refusal 
       return { ok: true, workspaceId: ws.id };
     case 'pane.move':
       return movePaneAction(store, ws, located.paneId as string, args);
-    case 'settings.get': {
-      const keys = args.key ? [args.key as AppActionSettingKey] : APP_ACTION_SETTING_KEYS;
-      return { ok: true, settings: Object.fromEntries(keys.map((k) => [k, readSetting(store, k)])) };
-    }
-    case 'settings.set': {
-      const key = args.key as AppActionSettingKey;
-      const parsed = parseSetting(key, args.value);
-      if ('code' in parsed) return parsed;
-      const before = readSetting(store, key);
-      if (before === parsed.value) return { ok: true, key, value: parsed.value, changed: false };
-      writeSetting(store, key, parsed.value);
-      // The human sees that it changed and who changed it.
-      store.pushToast({ level: 'info', message: t('appAction.settingChanged', { setting: key, value: String(parsed.value) }) });
-      return { ok: true, key, value: parsed.value, changed: true };
-    }
+    case 'settings.list':
+    case 'settings.get':
+    case 'settings.set':
+      return runSettingsAction(store, spec.id, args, false);
     case 'notifications.markRead': {
       const rows = store.notifications.filter((n) => n.workspaceId === ws.id && !n.read);
       const held = rows.filter((n) => holdsDecision(store, n));

@@ -6341,4 +6341,5 @@ export const ko = {
   'workspace.renameRefused.paneTag': "작업공간 이름은 페인 태그(w1-2)처럼 보일 수 없습니다.",
   'workspace.renameRefused.taken': "다른 작업공간이 이미 이 이름을 쓰고 있어 어느 쪽도 이 이름으로 가리킬 수 없습니다.",
   'appAction.settingChanged': "에이전트가 {setting} 설정을 {value}(으)로 바꿨습니다.",
+  'appAction.settingChangedCli': "명령줄에서 {setting} 설정을 {value}(으)로 바꿨습니다.",
 } as const;

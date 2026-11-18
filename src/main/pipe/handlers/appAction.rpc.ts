@@ -9,6 +9,11 @@
 // the workspace the human is looking at: no claim, no action. This guards
 // against an agent's mistake; it is not a boundary against same-user code,
 // which can reach the pipe directly.
+//
+// One exception, for the settings actions only (app-wide, no workspace): a
+// call from a terminal outside any wmux pane (`wmux settings` run by a
+// person) is taken on the pipe token alone. The app labels that change
+// "from the command line". See `commandLineCaller` for exactly who counts.
 
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
@@ -54,6 +59,29 @@ function claimedCaller(ctx: RpcContext | undefined): ClaimedCaller {
   return { ok: true, workspaceId: claim.workspaceId, ptyId: claim.ptyId };
 }
 
+/**
+ * A caller on the local pipe that is outside every wmux pane: it came over the
+ * external wire with the pipe token, carries no claim at all (not a stale one,
+ * not a workspace-only one), names no pane on its envelope, and is none of the
+ * other lanes (the operator and plugin surfaces, a bot or commander token, a
+ * fenced worker, another computer). Only the settings actions take it.
+ */
+function commandLineCaller(ctx: RpcContext | undefined): boolean {
+  return !!ctx
+    && ctx.origin === 'local'
+    && ctx.externalWire === true
+    && !ctx.operator
+    && !ctx.firstParty
+    && ctx.hostedWorkspace === undefined
+    && !ctx.bot
+    && !ctx.commanderWorkspace
+    && !ctx.fencedWorker
+    && ctx.workspaceClaim === undefined
+    && !ctx.callerPtyId;
+}
+
+const isSettingsAction = (id: string): boolean => id.startsWith('settings.');
+
 export function registerAppActionRpc(router: RpcRouter, getWindow: GetWindow, deps: AppActionRpcDeps = {}): void {
   router.register(APP_ACTION_RPC.list, async (_params, ctx) => {
     if (ctx?.origin === 'remote') {
@@ -98,8 +126,9 @@ export function registerAppActionRpc(router: RpcRouter, getWindow: GetWindow, de
     // Nothing the call names (a workspace, a sender pane, the envelope's
     // pty) stands in for the claim. The operator lane carries no claim and
     // is refused like any caller without one.
-    const caller = claimedCaller(ctx);
-    if (!caller.ok) return appActionRefusal('no_identity', caller.error);
+    const claimed = claimedCaller(ctx);
+    const fromCommandLine = !claimed.ok && spec.target === 'none' && isSettingsAction(id) && commandLineCaller(ctx);
+    if (!claimed.ok && !fromCommandLine) return appActionRefusal('no_identity', claimed.error);
 
     const win = getWindow();
     if (!win || win.isDestroyed()) {
@@ -114,8 +143,9 @@ export function registerAppActionRpc(router: RpcRouter, getWindow: GetWindow, de
           id,
           args: args.args,
           ...(target ? { target } : {}),
-          callerWorkspaceId: caller.workspaceId,
-          callerPtyId: caller.ptyId,
+          // Set here, never from the call: who the app says made the change.
+          source: claimed.ok ? 'agent' : 'command-line',
+          ...(claimed.ok ? { callerWorkspaceId: claimed.workspaceId, callerPtyId: claimed.ptyId } : {}),
         },
         { timeoutMs: deps.timeoutMs ?? RENDERER_TIMEOUT_MS, timeoutError: new AppActionTimeout() },
       );

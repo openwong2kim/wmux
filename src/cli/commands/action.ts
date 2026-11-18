@@ -68,7 +68,7 @@ export function parseActionArgs(args: string[]): ActionArgs {
 }
 
 /** The refusal in a response, with its code: the action's own, or the router's fence. */
-function refusalOf(response: RpcResponse): { code?: string; error: string } | null {
+export function refusalOf(response: RpcResponse): { code?: string; error: string } | null {
   if (!response.ok) {
     return { ...(/worker fence/.test(response.error) ? { code: 'fenced' } : {}), error: response.error };
   }

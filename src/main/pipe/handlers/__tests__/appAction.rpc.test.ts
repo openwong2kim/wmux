@@ -160,9 +160,72 @@ describe('app.action identity', () => {
       id: 'workspace.rename',
       args: { name: 'api' },
       target: '#w1-1',
+      source: 'agent',
       callerWorkspaceId: 'ws-a',
       callerPtyId: 'pty-a',
     });
+  });
+});
+
+describe('app.action settings from a terminal outside wmux', () => {
+  /** The CLI on the pipe with its token, outside every pane: no claim at all. */
+  const outside: RpcContext = { origin: 'local', externalWire: true, clientName: 'wmux-cli' };
+
+  it('runs the settings actions with no workspace, marked as the command line', async () => {
+    for (const params of [
+      { id: 'settings.list' },
+      { id: 'settings.get', args: { key: 'theme' } },
+      { id: 'settings.set', args: { key: 'theme', value: 'paper' } },
+    ]) {
+      expect(await run(params, outside)).toMatchObject({ ok: true, id: params.id });
+    }
+    for (const call of rendererCalls()) {
+      expect(call[2]).toMatchObject({ source: 'command-line' });
+      expect(call[2]).not.toHaveProperty('callerWorkspaceId');
+      expect(call[2]).not.toHaveProperty('callerPtyId');
+    }
+  });
+
+  it('a pane claim still decides, and is marked as an agent', async () => {
+    await run({ id: 'settings.set', args: { key: 'theme', value: 'paper' } }, claimed());
+    expect(rendererCalls()[0][2]).toMatchObject({ source: 'agent', callerWorkspaceId: 'ws-a', callerPtyId: 'pty-a' });
+  });
+
+  it('only the settings actions take it', async () => {
+    for (const id of ['layout.balance', 'notifications.clear']) {
+      expect(await run({ id }, outside)).toMatchObject({ ok: false, code: 'no_identity' });
+    }
+    expect(await run({ id: 'workspace.rename', args: { name: 'x' } }, outside)).toMatchObject({ ok: false, code: 'no_identity' });
+    expect(rendererCalls()).toEqual([]);
+  });
+
+  it('every other lane without a pane claim is still refused', async () => {
+    const set = { id: 'settings.set', args: { key: 'theme', value: 'paper' } };
+    const lanes: Array<[string, RpcContext]> = [
+      ['no external wire', { origin: 'local', clientName: 'wmux-cli' }],
+      ['the operator lane', { origin: 'local', operator: true, firstParty: true }],
+      ['the plugin host', { origin: 'local', firstParty: true, hostedWorkspace: 'ws-a' }],
+      ['a stale claim', { ...outside, workspaceClaim: { kind: 'stale' } }],
+      ['a workspace claim without a pane', { ...outside, workspaceClaim: { kind: 'bound', workspaceId: 'ws-a' } }],
+      ['a pane named on the envelope', { ...outside, callerPtyId: 'pty-a' }],
+      ['a commander token', { ...outside, commanderWorkspace: 'ws-a' }],
+      ['a bot token', { ...outside, bot: { botId: 'b1' } as unknown as RpcContext['bot'] }],
+    ];
+    for (const [, ctx] of lanes) {
+      expect(await run(set, ctx)).toMatchObject({ ok: false, code: 'no_identity' });
+    }
+    expect(await run(set, { ...outside, origin: 'remote' })).toMatchObject({ ok: false, code: 'remote_refused' });
+    expect(await run(set, { ...outside, fencedWorker: true })).toMatchObject({ ok: false, code: 'fenced' });
+    expect(rendererCalls()).toEqual([]);
+  });
+
+  it('names the Settings section for a human-only key, for every caller', async () => {
+    for (const ctx of [outside, claimed()]) {
+      const res = await run({ id: 'settings.set', args: { key: 'fanout.permissionMode', value: 'bypassPermissions' } }, ctx);
+      expect(res).toMatchObject({ ok: false, code: 'invalid_args' });
+      expect((res as { error: string }).error).toMatch(/Settings › Roles & fan-out/);
+    }
+    expect(rendererCalls()).toEqual([]);
   });
 });
 

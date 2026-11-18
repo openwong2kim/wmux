@@ -2,11 +2,12 @@
 // The renderer half of app.action: targets are resolved in the live store,
 // held to the caller's workspace, and acted on without reading the workspace
 // the human is looking at.
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useStore } from '../../stores';
 import type { Notification, PaneBranch, PaneLeaf, Workspace } from '../../../shared/types';
 import { FONT_SIZE_MAX, FONT_SIZE_MIN } from '../../hooks/useKeyboard';
 import { runAppAction } from '../runAppAction';
+import { APP_SETTINGS, APP_SETTING_KEYS, type AppSettingKey } from '../../../shared/appSettings';
 
 function leaf(id: string, surfaceId: string, ptyId: string, ordinal: number, userName?: string): PaneLeaf {
   return {
@@ -60,6 +61,7 @@ const act = (id: string, extra: Record<string, unknown> = {}) =>
   runAppAction({ id, args: {}, callerWorkspaceId: 'ws-a', callerPtyId: 'pty-a1', ...extra });
 
 beforeEach(seed);
+afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('ownership', () => {
   it('a target in another workspace is not_owned, by id, pane, tab or #tag', () => {
@@ -212,6 +214,102 @@ describe('settings', () => {
 
   it('takes no target', () => {
     expect(act('settings.get', { target: 'ws-a' })).toMatchObject({ code: 'invalid_args' });
+  });
+
+  it('the table\'s font-size range is the keyboard zoom range', () => {
+    expect(APP_SETTINGS['terminal.fontSize']).toEqual({ kind: 'int', min: FONT_SIZE_MIN, max: FONT_SIZE_MAX });
+  });
+
+  /** A value each key takes that differs from the seeded store's. */
+  const OTHER: Record<AppSettingKey, string> = {
+    theme: 'paper',
+    locale: 'ko',
+    'terminal.fontSize': '17',
+    'terminal.fontFamily': 'Menlo',
+    'terminal.cursorStyle': 'underline',
+    'terminal.scrollbackLines': '2500',
+    'terminal.openFileLinksIn': 'os',
+    'terminal.imagePaste': 'path',
+    'terminal.splitInheritsCwd': 'off',
+    'terminal.closeTabOnExit': 'off',
+    'ui.scale': '1.25',
+    'sidebar.position': 'right',
+    'sidebar.sort': 'recent',
+    'fleet.layout': 'board',
+    'multiview.arrangement': 'rows',
+    'attention.blink': 'continuous',
+    'attention.remindMs': '300000',
+    'attention.finished': 'pulse',
+    'notifications.toast': 'off',
+    'notifications.sound': 'off',
+    'notifications.osRing': 'off',
+    'notifications.paneRing': 'off',
+    'notifications.paneFlash': 'off',
+    'notifications.taskbarFlash': 'off',
+    'notifications.glowOpacity': '0.75',
+    'power.keepAwake': 'always',
+    'titlebar.clock': 'on',
+  };
+
+  // Locale loads its table first; it has its own case below.
+  it.each(APP_SETTING_KEYS.filter((k) => k !== 'locale'))('%s: set through the store, read back, and the same value again is unchanged', (key) => {
+    // The toast switch also tells main.
+    vi.stubGlobal('electronAPI', { settings: { setToastEnabled: vi.fn() } });
+    const before = (act('settings.get', { args: { key } }) as { settings: Record<string, unknown> }).settings[key];
+    const res = act('settings.set', { args: { key, value: OTHER[key] } }) as { ok: boolean; value: unknown; changed: boolean };
+    expect(res).toMatchObject({ ok: true });
+    expect(res.value).not.toEqual(before);
+    expect((act('settings.get', { args: { key } }) as { settings: Record<string, unknown> }).settings[key]).toEqual(res.value);
+    expect(act('settings.set', { args: { key, value: OTHER[key] } })).toMatchObject({ ok: true, changed: false });
+  });
+
+  it('locale: switches once its table has loaded', async () => {
+    expect(act('settings.set', { args: { key: 'locale', value: 'ko' } })).toMatchObject({ ok: true, value: 'ko', changed: true });
+    await vi.waitFor(() => expect(useStore.getState().locale).toBe('ko'), { timeout: 5_000 });
+    expect(act('settings.set', { args: { key: 'locale', value: 'ko' } })).toMatchObject({ ok: true, changed: false });
+    act('settings.set', { args: { key: 'locale', value: 'en' } });
+  });
+
+  it('turning the sound on picks the default sound, as the Settings switch does', () => {
+    useStore.setState({ notificationSoundEnabled: false, notificationSoundChoice: 'none' });
+    act('settings.set', { args: { key: 'notifications.sound', value: 'on' } });
+    expect(useStore.getState()).toMatchObject({ notificationSoundEnabled: true, notificationSoundChoice: 'default' });
+  });
+
+  it('lists exactly the table\'s keys, with what each takes; a theme list without custom', () => {
+    const res = act('settings.list') as { ok: true; settings: Array<{ key: string; allowed: string }> };
+    expect(res.settings.map((s) => s.key)).toEqual(APP_SETTING_KEYS);
+    const theme = res.settings.find((s) => s.key === 'theme')!;
+    expect(theme.allowed.split('|')).toContain('paper');
+    expect(theme.allowed.split('|')).not.toContain('custom');
+    expect(res.settings.find((s) => s.key === 'titlebar.clock')!.allowed).toBe('on|off');
+  });
+});
+
+describe('settings from the command line', () => {
+  const cli = (id: string, args: Record<string, unknown> = {}) => runAppAction({ id, args, source: 'command-line' });
+
+  it('runs with no workspace, and the toast says it came from the command line', () => {
+    expect(cli('settings.set', { key: 'theme', value: 'zinc' })).toMatchObject({ ok: true, changed: true });
+    expect(useStore.getState().toasts.at(-1)?.message).toMatch(/command line/i);
+    expect(cli('settings.get', { key: 'theme' })).toEqual({ ok: true, settings: { theme: 'zinc' } });
+  });
+
+  it('an agent\'s change says an agent made it', () => {
+    act('settings.set', { args: { key: 'theme', value: 'zinc' } });
+    expect(useStore.getState().toasts.at(-1)?.message).toMatch(/agent/i);
+  });
+
+  it('runs nothing but the settings actions', () => {
+    expect(cli('layout.balance')).toMatchObject({ ok: false, code: 'no_identity' });
+    expect(cli('notifications.clear')).toMatchObject({ ok: false, code: 'no_identity' });
+    expect(useStore.getState().notifications).toHaveLength(3);
+  });
+
+  it('names the Settings section for a human-only key', () => {
+    const res = cli('settings.set', { key: 'remote.inputGrant', value: 'on' });
+    expect(res).toMatchObject({ ok: false, code: 'invalid_args' });
+    expect((res as { error: string }).error).toMatch(/Settings › Remote & phone/);
   });
 });
 
