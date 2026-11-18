@@ -102,7 +102,6 @@ import { AgyAccountsSection } from './AgyAccountsSection';
 import { FanoutPresetsSection } from './FanoutPresetsSection';
 import { CustomAgentsSection } from './CustomAgentsSection';
 import { A2aRemoteSection } from './A2aRemoteSection';
-import { A2aRemoteApprovalsSection } from './A2aRemoteApprovalsSection';
 import { RemoteSpawnSection } from './RemoteSpawnSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
@@ -5790,7 +5789,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
                     {activeTab === 'browser'            && <TabBrowser />}
                     {activeTab === 'computer-use'       && <TabComputerUse />}
                     {activeTab === 'remote'             && <TabRemote />}
-                    {activeTab === 'lanlink'            && <><LanConnectionsLink /><LanLinkSection /><A2aRemoteSection /><A2aRemoteApprovalsSection /><RemoteSpawnSection /></>}
+                    {activeTab === 'lanlink'            && <><LanConnectionsLink /><LanLinkSection /><A2aRemoteSection /><RemoteSpawnSection /></>}
                     {activeTab === 'about'              && <TabAbout />}
                   </div>
                 </>

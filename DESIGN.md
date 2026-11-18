@@ -1261,6 +1261,12 @@ Settings › LAN keeps only the listener switches. Top to bottom:
     a PC drops both pairings this PC holds for it (the one it joined and the
     one that joined it); there is no one-sided removal. It says when the
     other PC was not told, and which side is left after a partial failure.
+    Right under the row sits its remote approvals row (nested, an elbow):
+    "Agents on <PC> can allow or deny permission prompts in tasks they sent
+    here" with Off / Tool only / Command as a segmented control. Raising it
+    asks in the row (Cancel, then Confirm as a neutral secondary) with one
+    line under it saying what it allows; lowering it applies at once. A
+    damaged settings file reads Off with one line saying so. No colour.
     Its live links
     sit nested under it (an elbow, `mine ↔ PC/theirs · direction`, or
     "waiting for PC to accept" with Check; Unlink asks twice). A pane this

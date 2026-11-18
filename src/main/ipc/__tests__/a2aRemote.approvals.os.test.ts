@@ -1,4 +1,4 @@
-// Settings › LAN › Remote approvals → main → the daemon's approvals.set, as the
+// The Remote page's approvals row → main → the daemon's approvals.set, as the
 // app's own call: only a host id and one of the three levels pass, and the
 // daemon's line names the app (`by=app-settings`), never a word the renderer sent.
 import fs from 'node:fs';
@@ -59,7 +59,7 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-describe('the Settings approvals row → the daemon', () => {
+describe('the Remote page\'s approvals row → the daemon', () => {
   it('a set reaches approvals.set as the app, and the daemon logs by=app-settings', async () => {
     expect(await invoke(IPC.A2A_REMOTE_APPROVALS_SET, PC, 'command')).toMatchObject({ ok: true, hosts: { [PC]: 'command' } });
     expect(rpc).toHaveBeenCalledWith(A2A_APPROVALS_RPC.set, { hostId: PC, exposure: 'command', senderPtyId: A2A_APPROVALS_SET_BY_APP });

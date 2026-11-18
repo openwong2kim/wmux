@@ -88,8 +88,8 @@ wmux remote — pair with other PCs and ask them to start agents
       to command, asks you to type yes first, so run it in a terminal;
       lowering it or turning it off does not ask. With no argument, prints
       the setting for each paired PC. On a PC where the desktop app runs,
-      the daemon takes this setting only from the app: set it there in
-      Settings > LAN, under Remote approvals.
+      the daemon takes this setting only from the app: set it there on the
+      Remote page, under each paired PC.
   wmux remote answer <task-id> <option> --picker <picker-id>
       Answer the question the worker on a task you sent shows on the other
       PC: <option> is the choice's number, <picker-id> the pickerId in the

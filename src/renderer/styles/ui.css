@@ -1031,6 +1031,8 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-remote-link > .wmux-remote-acts { grid-area: auto; }
 /* Its error line sits under the row's text, across the text and actions columns. */
 .wmux-remote-link > .wmux-remote-row-error { grid-area: auto; grid-column: 2 / -1; }
+/* So does a note under it (what a confirmation is about to allow). */
+.wmux-remote-link > .wmux-remote-row-note { grid-area: auto; grid-column: 2 / -1; }
 .wmux-remote-confirm { font-size: 12px; color: var(--text-main); }
 .wmux-remote-menu { position: relative; display: inline-flex; }
 .wmux-remote-menu-pop { position: fixed; z-index: var(--z-popover-top); display: flex; flex-direction: column; gap: 1px; min-width: 200px; padding: 6px; }

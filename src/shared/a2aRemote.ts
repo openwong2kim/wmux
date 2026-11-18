@@ -229,7 +229,7 @@ export const A2A_APPROVALS_RPC = Object.freeze({
   set: 'a2a.remote.approvals.set',
 } as const);
 /**
- * The `by=` the app's own approvals setting row passes (Settings, not a pane);
+ * The `by=` the app's own approvals setting row passes (the Remote page, not a pane);
  * the daemon logs it as written.
  */
 export const A2A_APPROVALS_SET_BY_APP = 'app-settings';

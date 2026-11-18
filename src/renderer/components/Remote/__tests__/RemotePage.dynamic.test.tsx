@@ -41,6 +41,8 @@ interface A2aSeed {
   links?: A2aLinkRecordV1[];
   hosts?: A2aRemoteHostStatus[];
   held?: Task[];
+  /** This PC's approvals setting; absent: the bridge has no approvals calls. */
+  approvals?: { hosts: Record<string, string>; damaged?: boolean };
 }
 
 function stub(devices: unknown[], a2a: A2aSeed = {}, extra: { remoteHosts?: unknown[] } = {}) {
@@ -83,6 +85,15 @@ function stub(devices: unknown[], a2a: A2aSeed = {}, extra: { remoteHosts?: unkn
       heldReject: vi.fn(async () => ({ ok: true })),
       hostsRemove: vi.fn(async () => ({ ok: true })),
       peersRevoke: vi.fn(async () => ({ ok: true })),
+      ...(a2a.approvals ? {
+        approvalsGet: vi.fn(async () => structuredClone(a2a.approvals)),
+        approvalsSet: vi.fn(async (hostId: string, level: string) => {
+          if (level === 'off') delete a2a.approvals!.hosts[hostId];
+          else a2a.approvals!.hosts[hostId] = level;
+          a2a.approvals!.damaged = false;
+          return { ok: true };
+        }),
+      } : {}),
     },
   };
   vi.stubGlobal('electronAPI', { platform: 'darwin', ...api });
@@ -493,5 +504,86 @@ describe('Remote page: the A2A port', () => {
     expect(api.a2aRemote.configure).toHaveBeenCalledWith({ port: 45661 });
     expect($('[data-remote-firewall]')?.textContent).toContain('Could not use the new port (EADDRINUSE). Still listening on port 45659.');
     expect($('[data-remote-firewall]')?.getAttribute('aria-live')).toBe('polite');
+  });
+});
+
+describe('Remote page: remote approvals under each paired PC', () => {
+  const pcHosts: A2aRemoteHostStatus[] = [
+    { hostId: HOST, name: 'DESK', role: 'joiner', state: 'connected', pending: 0 },
+    { hostId: PEER_HOST, name: 'office-win', role: 'server', state: 'connected', pending: 0 },
+  ];
+  const row = (hostId: string) => $(`[data-remote-approvals="${hostId}"]`)!;
+  const level = (hostId: string, text: string) => [...row(hostId).querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((b) => b.textContent === text)!;
+  const settle = async () => { for (let i = 0; i < 4; i++) await act(async () => { await Promise.resolve(); }); };
+
+  it('one nested row right under each PC, in its words, with the saved level checked', async () => {
+    stub([], { hosts: pcHosts, approvals: { hosts: { [HOST]: 'command' } } });
+    await render();
+    const desk = $(`[data-remote-pc="${HOST}"]`)!;
+    expect(desk.nextElementSibling?.getAttribute('data-remote-approvals')).toBe(HOST);
+    expect(row(HOST).textContent).toContain('Agents on DESK can allow or deny permission prompts in tasks they sent here');
+    expect(row(HOST).getAttribute('data-level')).toBe('command');
+    expect(level(HOST, 'Command').getAttribute('aria-checked')).toBe('true');
+    expect(row(PEER_HOST).getAttribute('data-level')).toBe('off');
+    // Neither a primary nor a coloured wash: the page's one primary is elsewhere.
+    expect(row(HOST).querySelector('.ui-btn-primary')).toBeNull();
+  });
+
+  it('raising asks under the row and saves only on Confirm; Cancel saves nothing', async () => {
+    stub([], { hosts: pcHosts, approvals: { hosts: {} } });
+    await render();
+    await act(async () => { level(PEER_HOST, 'Tool only').click(); });
+    expect(row(PEER_HOST).querySelector('[data-remote-approvals-ask]')?.textContent).toContain('Agents on office-win will see the tool name');
+    expect(api.a2aRemote.approvalsSet).not.toHaveBeenCalled();
+    await act(async () => { row(PEER_HOST).querySelector<HTMLButtonElement>('[data-remote-approvals-cancel]')!.click(); });
+    expect(row(PEER_HOST).querySelector('[data-remote-approvals-ask]')).toBeNull();
+    expect(api.a2aRemote.approvalsSet).not.toHaveBeenCalled();
+    await act(async () => { level(PEER_HOST, 'Command').click(); });
+    expect(row(PEER_HOST).querySelector('[data-remote-approvals-ask]')?.textContent).toContain('will see the command');
+    const ok = row(PEER_HOST).querySelector<HTMLButtonElement>('[data-remote-approvals-confirm]')!;
+    expect(ok.className).not.toContain('ui-btn-primary');
+    await act(async () => { ok.click(); });
+    await settle();
+    expect(api.a2aRemote.approvalsSet).toHaveBeenCalledWith(PEER_HOST, 'command');
+    expect(row(PEER_HOST).getAttribute('data-level')).toBe('command');
+  });
+
+  it('lowering or turning off saves at once, without asking', async () => {
+    stub([], { hosts: pcHosts, approvals: { hosts: { [HOST]: 'command' } } });
+    await render();
+    await act(async () => { level(HOST, 'Tool only').click(); });
+    await settle();
+    expect(row(HOST).querySelector('[data-remote-approvals-ask]')).toBeNull();
+    expect(api.a2aRemote.approvalsSet).toHaveBeenLastCalledWith(HOST, 'tool-only');
+    await act(async () => { level(HOST, 'Off').click(); });
+    await settle();
+    expect(api.a2aRemote.approvalsSet).toHaveBeenLastCalledWith(HOST, 'off');
+    expect(row(HOST).getAttribute('data-level')).toBe('off');
+  });
+
+  it('a confirmation for a level that changed meanwhile is refused, and the new level shown', async () => {
+    const seed = { hosts: {} as Record<string, string> };
+    stub([], { hosts: pcHosts, approvals: seed });
+    await render();
+    await act(async () => { level(HOST, 'Command').click(); });
+    seed.hosts[HOST] = 'tool-only';
+    await act(async () => { row(HOST).querySelector<HTMLButtonElement>('[data-remote-approvals-confirm]')!.click(); });
+    await settle();
+    expect(api.a2aRemote.approvalsSet).not.toHaveBeenCalled();
+    expect(row(HOST).querySelector('[role="alert"]')?.textContent).toBe('The setting for that PC changed meanwhile. Check it and try again.');
+    expect(row(HOST).getAttribute('data-level')).toBe('tool-only');
+  });
+
+  it('a damaged settings file: off for every PC, and each row says why', async () => {
+    stub([], { hosts: pcHosts, approvals: { hosts: { [HOST]: 'command' }, damaged: true } });
+    await render();
+    expect(row(HOST).getAttribute('data-level')).toBe('off');
+    expect(row(HOST).querySelector('[data-remote-approvals-damaged]')?.textContent).toContain('the approvals settings file was damaged');
+  });
+
+  it('with no approvals calls on the bridge (an older main), no row is drawn', async () => {
+    stub([], { hosts: pcHosts });
+    await render();
+    expect($('[data-remote-approvals]')).toBeNull();
   });
 });

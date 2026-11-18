@@ -35,7 +35,6 @@ const SOURCES = [
   'BotSecretsSection.tsx',
   'BotConnectionsSection.tsx',
   'ClaudeAuthSection.tsx',
-  'A2aRemoteApprovalsSection.tsx',
 ];
 
 function anchoredIds(): Set<string> {

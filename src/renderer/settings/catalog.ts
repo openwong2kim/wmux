@@ -238,7 +238,6 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
 
   { id: 'lanenable', tab: 'lanlink', labelKey: 'settings.lanlinkEnable', descKey: 'settings.lanlinkEnableDesc', synonyms: 'lan link network peer remote pair' },
   { id: 'lannic', tab: 'lanlink', labelKey: 'settings.lanlinkNic', descKey: 'settings.lanlinkNicDesc', synonyms: 'nic interface ethernet wifi mac' },
-  { id: 'a2aapprovals', tab: 'lanlink', labelKey: 'settings.a2aApprovals', descKey: 'settings.a2aApprovalsDesc', synonyms: 'remote approvals permission prompt allow deny paired pc agent command 원격 승인 권한' },
   { id: 'lanpair', tab: 'lanlink', labelKey: 'settings.lanlinkConnections', descKey: 'settings.lanlinkConnectionsDesc', synonyms: 'pin pair join revoke peer connections remote invite 연결 페어링' },
 
   { id: 'version', tab: 'about', labelKey: 'settings.aboutTagline', synonyms: 'version about changelog release 버전', platformKeys: { darwin: { labelKey: 'settings.aboutTagline.darwin' }, linux: { labelKey: 'settings.aboutTagline.linux' } } },
