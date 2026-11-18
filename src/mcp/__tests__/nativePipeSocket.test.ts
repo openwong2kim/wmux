@@ -509,6 +509,61 @@ describe('listenNativePipe', () => {
     sockets[0].destroy();
   });
 
+  it('an onConnection that throws costs only its own socket: the wake drains and pumps the rest', async () => {
+    const { module, listeners } = fakeModule();
+    const delivered: NativePipeSocket[] = [];
+    const errors: unknown[] = [];
+    let throwNext = false;
+    const server = listenNativePipe('p', {
+      maxInstances: 4, module, onConnectionError: (e) => errors.push(e),
+      onConnection: (s) => {
+        if (throwNext) { throwNext = false; throw new Error('handler failed'); }
+        delivered.push(s);
+      },
+    });
+    const [listener] = listeners;
+    const live = listener.accept();
+    await vi.waitFor(() => expect(delivered).toHaveLength(1), { timeout: 5_000 });
+    const got: string[] = [];
+    delivered[0].on('data', (c: Buffer) => got.push(c.toString()));
+    await ticks(5);
+
+    // Everything below rides on ONE wake: the live read completes and two
+    // connections are queued, none of them waking on their own.
+    live.wake = noop;
+    live.feed('pending read');
+    const first = new FakeConn();
+    const second = new FakeConn();
+    first.wake = noop;
+    second.wake = noop;
+    listener.pending.push(first, second);
+    throwNext = true;
+    expect(() => listener.notify()).not.toThrow();
+
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe('handler failed');
+    expect(first.destroyCalls).toBe(1);
+    expect(delivered).toHaveLength(2);
+    expect(delivered[1].peer).toEqual(PEER);
+    expect(second.destroyCalls).toBe(0);
+    expect(got.join('')).toBe('pending read');
+    for (const s of delivered) s.destroy();
+    server.close();
+  });
+
+  it('without onConnectionError a throwing onConnection is logged, not thrown', () => {
+    const { module, listeners } = fakeModule();
+    const log = vi.spyOn(console, 'error').mockImplementation(noop);
+    const server = listenNativePipe('p', { maxInstances: 2, module, onConnection: () => { throw new Error('boom'); } });
+    const conn = new FakeConn();
+    conn.wake = noop;
+    listeners[0].pending.push(conn);
+    expect(() => listeners[0].notify()).not.toThrow();
+    expect(conn.destroyCalls).toBe(1);
+    expect(log).toHaveBeenCalledTimes(1);
+    server.close();
+  });
+
   it('reports a failure once and exposes it', async () => {
     const { module, listeners } = fakeModule();
     const onFailure = vi.fn();

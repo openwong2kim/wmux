@@ -11,8 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
-/// The most instances a pipe name allows below PIPE_UNLIMITED_INSTANCES.
-pub(crate) const MAX_INSTANCES: u32 = 254;
+/// The most accepted conns: one more instance (the listening one) must stay
+/// below PIPE_UNLIMITED_INSTANCES (255).
+pub(crate) const MAX_INSTANCES: u32 = 253;
 
 #[derive(Debug)]
 pub(crate) enum ListenError {
@@ -30,7 +31,12 @@ impl std::fmt::Display for ListenError {
 }
 
 /// What every instance of the name shares: the security descriptor, the
-/// cap (a semaphore with one unit per instance) and the live count.
+/// cap (a semaphore with one unit per accepted conn) and the live count.
+///
+/// A listening instance always exists while the listener runs (the next one
+/// is created before an accepted one is handed off, and the cap counts
+/// accepted conns only), so the name never disappears and cannot be created
+/// anew by another process in between.
 pub(crate) struct Instances {
     name: Vec<u16>,
     max: u32,
@@ -77,7 +83,7 @@ impl Instances {
         self.live.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Takes a slot without waiting; false at the cap.
+    /// Takes an accepted-conn slot without waiting; false at the cap.
     pub(super) fn try_slot(&self) -> bool {
         // SAFETY: a valid semaphore.
         unsafe { WaitForSingleObject(self.slots.raw(), 0) == WAIT_OBJECT_0 }
@@ -89,8 +95,7 @@ impl Instances {
         unsafe { ReleaseSemaphore(self.slots.raw(), 1, std::ptr::null_mut()) };
     }
 
-    /// Creates an instance in a slot the caller has taken; the slot is
-    /// released on failure.
+    /// Creates an instance (listening; it takes no slot until accepted).
     pub(super) fn create(self: &Arc<Self>) -> Result<PipeInstance, ListenError> {
         let mut live = self.live();
         let first = *live == 0;
@@ -107,7 +112,8 @@ impl Instances {
                         0
                     },
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                self.max,
+                // The accepted conns plus the listening instance.
+                self.max + 1,
                 PIPE_BUFFER_BYTES,
                 PIPE_BUFFER_BYTES,
                 0,
@@ -117,7 +123,6 @@ impl Instances {
         let Some(handle) = OwnedHandle::from_raw(raw) else {
             let code = last_error();
             drop(live);
-            self.release_slot();
             let message = os_error("CreateNamedPipeW", code);
             return Err(
                 if first && (code == ERROR_ACCESS_DENIED || code == ERROR_PIPE_BUSY) {
@@ -131,16 +136,18 @@ impl Instances {
         Ok(PipeInstance {
             handle: Some(handle),
             owner: self.clone(),
+            holds_slot: false,
         })
     }
 }
 
-/// One pipe instance and its slot. Dropping it closes the handle without
+/// One pipe instance, and its slot once accepted. Dropping it closes the handle without
 /// DisconnectNamedPipe or FlushFileBuffers: the client can still read what
 /// is buffered, then sees ERROR_BROKEN_PIPE.
 pub(crate) struct PipeInstance {
     handle: Option<OwnedHandle>,
     owner: Arc<Instances>,
+    holds_slot: bool,
 }
 
 impl PipeInstance {
@@ -157,7 +164,9 @@ impl Drop for PipeInstance {
         drop(self.handle.take());
         *live -= 1;
         drop(live);
-        self.owner.release_slot();
+        if self.holds_slot {
+            self.owner.release_slot();
+        }
     }
 }
 
@@ -202,9 +211,6 @@ impl Listener {
     /// name fails here), then starts accepting.
     pub(crate) fn bind(name: &str, max: u32, notify: Notify) -> Result<Arc<Self>, ListenError> {
         let instances = Instances::new(name, max)?;
-        if !instances.try_slot() {
-            return Err(ListenError::Other("no instance slot".into()));
-        }
         let first = instances.create()?;
         let shared = Arc::new(Shared {
             stop: Mutex::new(Some(event(true).map_err(ListenError::Other)?)),
@@ -361,15 +367,20 @@ fn connect(instance: &PipeInstance, stop: Handle) -> Result<Connect, String> {
             ERROR_IO_PENDING => {}
             code => return Err(os_error("ConnectNamedPipe", code)),
         }
-        let signalled = wait_any(&[stop, ready.raw()], INFINITE)?;
+        let signalled = wait_any(&[stop, ready.raw()], INFINITE);
         let mut n = 0;
-        if signalled == Some(0) {
-            // SAFETY: cancels this connect, then waits for it to complete.
+        if signalled != Ok(Some(1)) {
+            // Stop, or a failed wait: cancel this connect and wait for it to
+            // complete before the OVERLAPPED and its event are freed.
+            // SAFETY: as above.
             unsafe {
                 CancelIoEx(instance.raw(), &mut *overlapped);
                 GetOverlappedResult(instance.raw(), &mut *overlapped, &mut n, 1);
             }
-            return Ok(Connect::Stopped);
+            return match signalled {
+                Err(message) => Err(message),
+                _ => Ok(Connect::Stopped),
+            };
         }
         // SAFETY: the connect has completed.
         if unsafe { GetOverlappedResult(instance.raw(), &mut *overlapped, &mut n, 0) } != 0 {
@@ -388,40 +399,30 @@ fn connect(instance: &PipeInstance, stop: Handle) -> Result<Connect, String> {
 
 /// `stop` stays open until this returns.
 fn accept_loop(shared: &Shared, stop: Handle, instances: &Arc<Instances>, first: PipeInstance) {
-    let mut next = Some(first);
+    let mut listening = first;
     loop {
-        let instance = match next.take() {
-            Some(instance) => instance,
-            None => {
-                // At the cap: wait for a slot (an instance closing) or stop.
-                match wait_any(&[stop, instances.slots.raw()], INFINITE) {
-                    Ok(Some(1)) => {}
-                    Ok(_) => return,
-                    Err(message) => return shared.fail(message),
-                }
-                match instances.create() {
-                    Ok(instance) => instance,
-                    Err(e) => return shared.fail(e.to_string()),
-                }
-            }
-        };
-        match connect(&instance, stop) {
+        match connect(&listening, stop) {
             Ok(Connect::Connected) => {}
             Ok(Connect::Stopped) => return,
             Err(message) => return shared.fail(message),
         }
         let accepted_at = now_ticks();
-        // The next instance exists before this one is handed off, unless
-        // the cap is reached (then it is created once a slot frees).
-        let mut create_failed = None;
-        if instances.try_slot() {
-            match instances.create() {
-                Ok(instance) => next = Some(instance),
-                Err(e) => create_failed = Some(e.to_string()),
+        // A slot for the conn. At the cap this waits for an accepted conn to
+        // close; the connected instance keeps the name meanwhile, and the
+        // client waits as it would for a busy server.
+        if !instances.try_slot() {
+            match wait_any(&[stop, instances.slots.raw()], INFINITE) {
+                Ok(Some(1)) => {}
+                Ok(_) => return,
+                Err(message) => return shared.fail(message),
             }
         }
+        let mut accepted = listening;
+        accepted.holds_slot = true;
+        // The next listening instance exists before this one is handed off.
+        let next = instances.create();
         let (peer, process) = read_peer(
-            instance.raw(),
+            accepted.raw(),
             accepted_at,
             &instances.own_user,
             instances.own_session,
@@ -431,7 +432,7 @@ fn accept_loop(shared: &Shared, stop: Handle, instances: &Arc<Instances>, first:
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
-        match notify.map(|notify| Conn::start(instance, peer, process, notify)) {
+        match notify.map(|notify| Conn::start(accepted, peer, process, notify)) {
             Some(Ok(conn)) => {
                 shared
                     .accepted
@@ -443,8 +444,9 @@ fn accept_loop(shared: &Shared, stop: Handle, instances: &Arc<Instances>, first:
             Some(Err(message)) => return shared.fail(message),
             None => return,
         }
-        if let Some(message) = create_failed {
-            return shared.fail(message);
+        match next {
+            Ok(instance) => listening = instance,
+            Err(e) => return shared.fail(e.to_string()),
         }
         if shared.closed.load(Ordering::Acquire) {
             return;

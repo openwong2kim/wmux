@@ -181,7 +181,7 @@ extern "system" {
         user: *mut FileTime,
     ) -> Bool;
     pub(super) fn GetExitCodeProcess(process: Handle, code: *mut u32) -> Bool;
-    pub(super) fn GetSystemTimeAsFileTime(time: *mut FileTime);
+    pub(super) fn GetSystemTimePreciseAsFileTime(time: *mut FileTime);
     pub(super) fn GetProcessHandleCount(process: Handle, count: *mut u32) -> Bool;
     pub(super) fn LocalFree(memory: *mut c_void) -> *mut c_void;
     pub(super) fn GetModuleHandleW(name: *const u16) -> Handle;
@@ -303,8 +303,10 @@ pub(super) fn wait_any(handles: &[Handle], milliseconds: u32) -> Result<Option<u
 
 pub(super) fn now_ticks() -> u64 {
     let mut time = FileTime::default();
+    // Precise: the coarse clock can lag a process creation time stamped
+    // just before it.
     // SAFETY: writes one FILETIME.
-    unsafe { GetSystemTimeAsFileTime(&mut time) };
+    unsafe { GetSystemTimePreciseAsFileTime(&mut time) };
     time.ticks()
 }
 

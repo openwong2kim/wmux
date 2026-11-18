@@ -42,13 +42,10 @@ pub(crate) fn read_peer(
     own_user: &Sid,
     own_session: u32,
 ) -> (PeerFacts, Option<OwnedHandle>) {
-    let mut pid = 0u32;
+    let pid = client_pid(pipe).unwrap_or(0);
     let mut session_id = u32::MAX;
-    // SAFETY: a connected server end; each call writes one u32.
-    unsafe {
-        GetNamedPipeClientProcessId(pipe, &mut pid);
-        GetNamedPipeClientSessionId(pipe, &mut session_id);
-    }
+    // SAFETY: a connected server end; writes one u32.
+    unsafe { GetNamedPipeClientSessionId(pipe, &mut session_id) };
     let mut facts = PeerFacts {
         pid,
         session_id,
@@ -63,8 +60,10 @@ pub(crate) fn read_peer(
     let process = (pid != 0)
         .then(|| unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) })
         .and_then(OwnedHandle::from_raw);
-    let Some((process, created)) =
-        process.and_then(|p| process_created(p.raw()).map(|created| (p, created)))
+    let Some((process, created)) = process
+        .and_then(|p| process_created(p.raw()).map(|created| (p, created)))
+        // The pipe still names the same client once its process is open.
+        .filter(|_| client_pid(pipe) == Some(pid))
     else {
         facts.reason = Some("process-unreadable".into());
         return (facts, None);
@@ -84,6 +83,13 @@ pub(crate) fn read_peer(
         Err(_) => facts.reason = Some("token-unreadable".into()),
     }
     (facts, Some(process))
+}
+
+fn client_pid(pipe: Handle) -> Option<u32> {
+    let mut pid = 0u32;
+    // SAFETY: a server end of our own; writes one u32.
+    let ok = unsafe { GetNamedPipeClientProcessId(pipe, &mut pid) };
+    (ok != 0 && pid != 0).then_some(pid)
 }
 
 /// The parent pid by the creation-time rule, read from the process's own

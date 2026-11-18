@@ -10,9 +10,19 @@ use super::{Notify, Worker};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 /// A single read asks for at most this much.
 const MAX_READ: usize = 1024 * 1024;
+
+/// How long end() waits for the client to take the queued writes before it
+/// cancels them and closes anyway, so a client that stops reading cannot
+/// keep an ended conn (its thread, handles and slot) open for good.
+pub(crate) const END_DRAIN_LIMIT: Duration = if cfg!(test) {
+    Duration::from_secs(5)
+} else {
+    Duration::from_secs(30)
+};
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum ReadResult {
@@ -47,6 +57,10 @@ struct Shared {
     /// Dropped once the instance is closed, so a closed conn no longer
     /// holds the (ref'd) wake callback.
     notify: Mutex<Option<Notify>>,
+    /// The I/O thread's handle: taken by destroy() to join it, or dropped
+    /// by the thread itself as it exits, so a finished conn keeps no thread
+    /// handle either.
+    thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Shared {
@@ -79,7 +93,6 @@ impl Shared {
 pub(crate) struct Conn {
     shared: Arc<Shared>,
     peer: PeerFacts,
-    thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Conn {
@@ -95,6 +108,7 @@ impl Conn {
             state: Mutex::new(State::default()),
             control: Mutex::new(Some(event(false)?)),
             notify: Mutex::new(Some(notify)),
+            thread: Mutex::new(None),
         });
         let read_event = event(true)?;
         let write_event = event(true)?;
@@ -120,13 +134,23 @@ impl Conn {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .take();
+                // Unless destroy() took it to join: dropping its own handle
+                // only closes the handle; the thread ends right after.
+                worker_shared
+                    .thread
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take();
             })
             .map_err(|e| e.to_string())?;
-        Ok(Arc::new(Self {
-            shared,
-            peer,
-            thread: Mutex::new(Some(thread)),
-        }))
+        {
+            let state = shared.lock();
+            // Already closed: the thread has (nearly) ended; keep no handle.
+            if !state.closed {
+                *shared.thread.lock().unwrap_or_else(|p| p.into_inner()) = Some(thread);
+            }
+        }
+        Ok(Arc::new(Self { shared, peer }))
     }
 
     pub(crate) fn peer(&self) -> &PeerFacts {
@@ -201,19 +225,17 @@ impl Conn {
     }
 
     pub(crate) fn closed(&self) -> bool {
-        let closed = self.shared.lock().closed;
-        if closed {
-            // The I/O thread is exiting on its own: release its thread
-            // handle now instead of when the JS object is collected.
-            drop(self.take_thread());
-        }
-        closed
+        self.shared.lock().closed
     }
 
     /// Cancels pending I/O and closes; the join runs off the caller's thread.
     pub(crate) fn destroy(&self) {
         if self.signal_destroy() {
             if let Some(thread) = self.take_thread() {
+                if thread.is_finished() {
+                    let _ = thread.join();
+                    return;
+                }
                 let _ = std::thread::Builder::new()
                     .name("wmux-pipe-join".into())
                     .spawn(move || {
@@ -244,13 +266,18 @@ impl Conn {
     }
 
     fn take_thread(&self) -> Option<JoinHandle<()>> {
-        self.thread.lock().unwrap_or_else(|p| p.into_inner()).take()
+        self.shared
+            .thread
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
     }
 }
 
 impl Drop for Conn {
     fn drop(&mut self) {
-        // An ending conn finishes its queued writes on its own.
+        // An ending conn finishes its queued writes on its own, or gives up
+        // after END_DRAIN_LIMIT.
         if !self.ending() {
             self.destroy();
         }
@@ -287,10 +314,23 @@ fn run(
     let mut read_buf: Vec<u8> = Vec::new();
     let mut read_pending = false;
     let mut write_pending: Option<(u32, Vec<u8>)> = None;
+    let mut drain_deadline: Option<Instant> = None;
     loop {
         let mut state = shared.lock();
         if state.destroying {
             break;
+        }
+        if state.ending {
+            let deadline = *drain_deadline.get_or_insert_with(|| Instant::now() + END_DRAIN_LIMIT);
+            if Instant::now() >= deadline {
+                state.error.get_or_insert_with(|| {
+                    format!(
+                        "end: the client did not read the queued writes within {} s",
+                        END_DRAIN_LIMIT.as_secs()
+                    )
+                });
+                break;
+            }
         }
         if !read_pending && !state.eof {
             if let Some(max) = state.read_request.take() {
@@ -358,7 +398,14 @@ fn run(
         if write_pending.is_some() {
             handles.push(write_event.raw());
         }
-        let signalled = match wait_any(&handles, INFINITE) {
+        let timeout = drain_deadline.map_or(INFINITE, |deadline| {
+            let left = deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis();
+            // Rounded up, so the deadline has passed when the wait times out.
+            (left + 1).min(u128::from(INFINITE - 1)) as u32
+        });
+        let signalled = match wait_any(&handles, timeout) {
             Ok(Some(index)) => handles[index],
             Ok(None) => continue,
             Err(message) => {
@@ -382,9 +429,9 @@ fn run(
                     continue;
                 }
                 state.read_result = Some(ReadResult::Data(read_buf[..n as usize].to_vec()));
-            } else if code == ERROR_OPERATION_ABORTED {
-                continue;
             } else {
+                // Includes ERROR_OPERATION_ABORTED: this thread cancels only
+                // at exit, so an abort here is reported, never left pending.
                 finish_read_error(&mut state, code);
             }
             drop(state);
