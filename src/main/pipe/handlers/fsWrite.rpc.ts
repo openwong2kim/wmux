@@ -227,7 +227,8 @@ export class FsJobQueue {
     signal.throwIfAborted();
     await accessible(src); await accessible(dest, true);
     job.current = src;
-    const s = await fs.promises.lstat(src);
+    // bigint: a 64-bit file ID (Windows) loses its low bits as a Number, so two files could compare equal.
+    const s = await fs.promises.lstat(src, { bigint: true });
     const target = await exists(dest);
     if (target) {
       if (conflict === 'fail') fail('exists');
@@ -256,14 +257,14 @@ export class FsJobQueue {
       else if (s.isFile()) {
         // Read the file the checks saw: not a link put in its place since (O_NOFOLLOW, where there is one), nor another file.
         const handle = await fs.promises.open(src, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
-        const opened = await handle.stat().catch(() => null);
+        const opened = await handle.stat({ bigint: true }).catch(() => null);
         if (!opened || opened.dev !== s.dev || opened.ino !== s.ino) {
           await handle.close();
           fail('unavailable');
         }
         await pipeline(fs.createReadStream(src, { fd: handle }), new Transform({ transform(chunk: Buffer, _encoding, callback) {
           job.doneBytes += chunk.length; callback(null, chunk);
-        } }), fs.createWriteStream(temp, { flags: 'wx', mode: s.mode & 0o777 }), { signal });
+        } }), fs.createWriteStream(temp, { flags: 'wx', mode: Number(s.mode & 0o777n) }), { signal });
         await fs.promises.utimes(temp, s.atime, s.mtime);
       } else fail('invalid');
       signal.throwIfAborted();
