@@ -7,6 +7,7 @@ import { usageWindowsText } from '../StatusBar/UsageWidget';
 import {
   selectFleetBoard,
   groupFleetByDevice,
+  fleetRowDevice,
   selectDownHostAway,
   selectHookRunningByPtyId,
   selectUnverifiablePaneMinutes,
@@ -1373,9 +1374,8 @@ export default function FleetView() {
   // again as the "@host" glyph); a row under its own device's head does not
   // repeat it at all.
   const renderNamedRow = (row: FleetRow) => {
-    const remote = row.pane.remote;
-    const name = remote ? deviceHosts.find((h) => h.id === remote.hostId)?.label ?? remote.hostLabel : t('pcRail.thisComputer');
-    return renderRowAt(row, { device: name, hideHost: true });
+    const device = fleetRowDevice(row.pane, { hosts: deviceHosts, remoteWorkspaces });
+    return renderRowAt(row, { device: device.id === LOCAL_PC_ID ? t('pcRail.thisComputer') : device.label, hideHost: true });
   };
   const renderDeviceRow = (row: FleetRow) => renderRowAt(row, { hideHost: true });
   const renderRowAt = (row: FleetRow, place: { device?: string; hideHost?: boolean }) => {

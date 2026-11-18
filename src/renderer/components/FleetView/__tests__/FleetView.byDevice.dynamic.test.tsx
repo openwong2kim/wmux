@@ -136,6 +136,25 @@ describe('FleetView — the list grouped by device', () => {
     expect(betaRunning?.querySelector('[data-fleet-device]')).toBeNull();
   });
 
+  it('names a Needs you row\'s device as the group it would sit in, even with no agent on its active tab', async () => {
+    // The active tab is a plain remote shell; a background tab on the same
+    // host asks. The row has the host's id but no resolved agent.
+    act(() => useStore.setState((s) => ({
+      pcRailHosts: [{ id: 'host-b', label: 'office' }],
+      pcRailHostStatus: { 'host-b': 'connected' },
+      workspaces: s.workspaces.map((w) => (w.id === 'ws-b'
+        ? workspace('ws-b', 'wb', leaf('pb', [remoteSurface('sx', 'host-b', 'sess-x'), remoteSurface('sb', 'host-b', 'sess-b')]), 'pb')
+        : w)),
+      remoteWorkspaces: s.remoteWorkspaces.map((w) => (w.hostId === 'host-b' ? { ...w, panes: [...w.panes, { sessionId: 'sess-x' }] } : w)),
+    })));
+    mount();
+    await flushRaf();
+    const row = container.querySelector<HTMLElement>('[data-fleet-card][data-workspace-id="ws-b"]');
+    expect(row?.dataset.status).toBe('awaiting_input');
+    expect(row?.querySelector('[data-fleet-device]')?.textContent).toBe('office');
+    expect(heads().map((h) => h.dataset.fleetDeviceHead)).toContain('host-b');
+  });
+
   it('moves the keyboard in the drawn order, through each device\'s fold', async () => {
     mount();
     await flushRaf();

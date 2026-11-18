@@ -1423,8 +1423,31 @@ export interface FleetAwayCounts {
 
 /** The host a row runs on, or undefined for this computer. A remote-terminal
  *  row whose agent did not resolve still runs on its host. */
-function rowHostId(row: FleetRow): string | undefined {
-  return row.pane.remote?.hostId || row.pane.remoteHostId || undefined;
+function rowHostId(pane: FleetPane): string | undefined {
+  return pane.remote?.hostId || pane.remoteHostId || undefined;
+}
+
+/**
+ * The device a row runs on: LOCAL_PC_ID with label '' for this computer (the
+ * UI names it), else the host's id and name. A host the rail knows carries the
+ * rail's name, then the row's snapshot, then the attachment's, then its id.
+ * The grouping and a Needs you row's device name both read this, so a row is
+ * always named after the group it would sit in.
+ */
+export function fleetRowDevice(
+  pane: FleetPane,
+  opts: {
+    hosts?: readonly Pick<FleetDeviceHost, 'id' | 'label'>[];
+    remoteWorkspaces?: readonly Pick<AttachedRemoteWorkspace, 'hostId' | 'hostLabel'>[];
+  } = {},
+): { id: string; label: string } {
+  const hostId = rowHostId(pane);
+  if (!hostId) return { id: LOCAL_PC_ID, label: '' };
+  const label = opts.hosts?.find((h) => h.id === hostId)?.label
+    ?? pane.remote?.hostLabel
+    ?? opts.remoteWorkspaces?.find((r) => r.hostId === hostId)?.hostLabel
+    ?? hostId;
+  return { id: hostId, label };
 }
 
 /**
@@ -1528,11 +1551,8 @@ export function groupFleetByDevice(
   const attachedLabel = new Map((opts.remoteWorkspaces ?? []).map((r) => [r.hostId, r.hostLabel]));
   for (const section of ['running', 'finished', 'idle'] as const) {
     for (const row of groups[section]) {
-      const hostId = rowHostId(row);
-      const d = hostId
-        ? device(hostId, railHost.get(hostId)?.label ?? row.pane.remote?.hostLabel ?? attachedLabel.get(hostId) ?? hostId, 'connected')
-        : device(LOCAL_PC_ID, '', 'local');
-      d[section].push(row);
+      const { id, label } = fleetRowDevice(row.pane, { hosts: opts.hosts, remoteWorkspaces: opts.remoteWorkspaces });
+      device(id, label, id === LOCAL_PC_ID ? 'local' : 'connected')[section].push(row);
     }
   }
   if (opts.includeDisconnected) {
