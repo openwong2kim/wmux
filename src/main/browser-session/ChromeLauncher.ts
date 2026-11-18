@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurfaceStore } from './ChromeSurfaceStore';
@@ -155,6 +155,38 @@ export function chromeTargetWatcherEnabled(): boolean {
  */
 export function chromeTransportKind(): 'port' | 'pipe' {
   return process.env.WMUX_CHROME_TRANSPORT === 'pipe' ? 'pipe' : 'port';
+}
+
+/** The transport one launch uses, and whether a protected profile runs on the port. */
+export interface ChromeTransportChoice {
+  kind: 'port' | 'pipe';
+  /** A protected profile on the port: a client of the port reaches Chrome without the pipe's rules. */
+  weaker: boolean;
+}
+
+/**
+ * The transport for a launch under `plan` (null: unprotected).
+ * `WMUX_CHROME_TRANSPORT`:
+ *  - unset: the port for every profile (the default, unchanged for now);
+ *  - `auto`: the pipe for a protected profile, the port for the rest;
+ *  - `pipe`: the pipe for every profile;
+ *  - `port`: the port, except that a protected profile stays on the pipe
+ *    unless `protectedPortAllowed` (the operator's setting) says otherwise.
+ *    The environment alone never moves a protected profile to the port.
+ */
+export function transportFor(plan: ChromeProtectionPlan | null, protectedPortAllowed = false): ChromeTransportChoice {
+  const env = process.env.WMUX_CHROME_TRANSPORT;
+  let kind: 'port' | 'pipe';
+  if (env === 'pipe') kind = 'pipe';
+  else if (env === 'auto') kind = plan ? 'pipe' : 'port';
+  else if (env === 'port') kind = plan && !protectedPortAllowed ? 'pipe' : 'port';
+  else kind = 'port';
+  return { kind, weaker: !!plan && kind === 'port' };
+}
+
+/** How status shows a transport. */
+export function transportLabel(choice: ChromeTransportChoice): 'pipe' | 'port' | 'port (weaker)' {
+  return choice.kind === 'pipe' ? 'pipe' : choice.weaker ? 'port (weaker)' : 'port';
 }
 
 export interface ChromeTargetInfo {
@@ -501,6 +533,11 @@ export interface ChromeLauncherOptions {
   proxyProbeTimeoutMs?: number;
   /** The user's download folder: where, with grants, a download no client asked for lands. Absent: those are cancelled. */
   downloadsDir?: () => string | null;
+  /**
+   * The operator's setting that lets `WMUX_CHROME_TRANSPORT=port` apply to a
+   * protected profile (BrowserBackendStore.protectedPortTransport). Read per launch.
+   */
+  protectedPortAllowed?: () => boolean;
 }
 
 /** With grants on an unprotected profile (C3b): main's own folder, rules and session for the default context's downloads. */
@@ -540,6 +577,61 @@ export interface ConsentDownloadGuard {
 
 /** A protected profile could not be brought up under its enforcement. */
 export const PROTECTION_NOT_READY = 'policy_denied: the protected browser could not be started under its site policy';
+
+/** PROTECTION_NOT_READY with its cause for the reader; the message still starts with the constant. */
+export function protectionNotReady(cause: string): Error {
+  return new Error(`${PROTECTION_NOT_READY} (${cause})`);
+}
+
+function isProtectionNotReady(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith(PROTECTION_NOT_READY);
+}
+
+/** Flags that would open a debugging port; never passed to a protected Chrome on the pipe. */
+const PORT_FLAG = /^--remote-(debugging-port|debugging-address|allow-origins)(=|$)/;
+
+/**
+ * Turn chrome://inspect's "Allow remote debugging for this browser instance"
+ * off in the profile's Local State before a protected launch: Chrome keeps it
+ * across restarts (devtools.remote_debugging.user-enabled), and with it on it
+ * starts a debugging server at launch. A file that is missing or doesn't
+ * parse holds no such setting.
+ */
+export function clearRemoteDebuggingToggle(userDataDir: string): void {
+  const file = join(userDataDir, 'Local State');
+  let state: { devtools?: { remote_debugging?: Record<string, unknown> } };
+  try {
+    state = JSON.parse(readFileSync(file, 'utf8')) as typeof state;
+  } catch {
+    return;
+  }
+  const remote = state?.devtools?.remote_debugging;
+  if (!remote || typeof remote !== 'object' || !('user-enabled' in remote)) return;
+  delete remote['user-enabled'];
+  const tmp = `${file}.wmux-tmp`;
+  writeFileSync(tmp, JSON.stringify(state), 'utf8');
+  renameSync(tmp, file);
+}
+
+/**
+ * Whether a Chrome that exited during startup handed its start to another
+ * Chrome already running on the profile (Chrome's process singleton): a
+ * windowed one exits 0 after handing it over, a headless one 21 (profile in
+ * use), and on POSIX the profile's SingletonLock names the other process.
+ */
+function handedOff(child: ChildProcess, userDataDir: string): boolean {
+  if (child.exitCode === 0 || child.exitCode === 21) return true;
+  try {
+    const owner = readlinkSync(join(userDataDir, 'SingletonLock'));
+    const pid = Number(owner.slice(owner.lastIndexOf('-') + 1));
+    return Number.isInteger(pid) && pid > 0 && pid !== child.pid;
+  } catch {
+    return false;
+  }
+}
+
+/** The cause shown when a protected start was handed to a Chrome already on the profile. */
+const HANDED_OFF = 'another Chrome is still running on this profile and took the start over; close it and try again';
 
 /** The download guard's deny for one browser context, with its download events on the guard's session. */
 const contextDeny = (browserContextId: string) => ({ behavior: 'deny', browserContextId, eventsEnabled: true });
@@ -774,6 +866,11 @@ export class ChromeLauncher implements ChromeBackendClient {
   private readonly protection: (() => ChromeProtectionPlan | null) | undefined;
   private readonly extraArgs: string[];
   private readonly downloadsDir: (() => string | null) | undefined;
+  private readonly protectedPortAllowed: (() => boolean) | undefined;
+  /** The transport the running (or launching) Chrome was started on; null before the first launch. */
+  private transport: ChromeTransportChoice | null = null;
+  /** Why the last protected pipe Chrome was closed under it (a debugging port appeared); told once to the next call. */
+  private protectionLost: string | null = null;
   /** Whether the running instance was launched behind the proxy. */
   private launchedProtected = false;
   /** False until a protected launch's download guard holds and the tabs
@@ -804,6 +901,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.protection = opts?.protection;
     this.extraArgs = opts?.extraArgs ?? [];
     this.downloadsDir = opts?.downloadsDir;
+    this.protectedPortAllowed = opts?.protectedPortAllowed;
     this.proxyProbeTimeoutMs = opts?.proxyProbeTimeoutMs;
   }
 
@@ -822,6 +920,11 @@ export class ChromeLauncher implements ChromeBackendClient {
   /** Whether this instance runs (or would run) behind the proxy. */
   isProtected(): boolean {
     return this.launchedProtected;
+  }
+
+  /** The transport the running Chrome was launched on; null when none is running. */
+  launchedTransport(): ChromeTransportChoice | null {
+    return this.isRunning() ? this.transport : null;
   }
 
   /** The hosts this profile's proxy refused recently, newest first. */
@@ -1674,6 +1777,11 @@ export class ChromeLauncher implements ChromeBackendClient {
   }
 
   private async ensureRunningOnce(): Promise<number> {
+    if (this.protectionLost) {
+      const cause = this.protectionLost;
+      this.protectionLost = null;
+      throw protectionNotReady(cause);
+    }
     const wanted = this.wantedProtection();
     if (!wanted && !this.launchedProtected) {
       // A launch in flight has published its port before it is done (restored
@@ -2100,6 +2208,17 @@ export class ChromeLauncher implements ChromeBackendClient {
     return (await this.waitEndpointGone(previous)) || this.forceKill(previous, null, recorded);
   }
 
+  /**
+   * A protected Chrome on the pipe wrote a DevToolsActivePort: a debugging port
+   * is open in it. It is stopped, and the next call is told why.
+   */
+  private closeForOpenPort(): void {
+    this.protectionLost = 'a debugging port opened in the protected browser, so it was closed';
+    console.warn(`[ChromeLauncher] ${this.protectionLost}`);
+    this.dropUnresponsive();
+    this.forgetPortFile();
+  }
+
   /** Drop the profile's DevToolsActivePort: a Chrome on a pipe writes none, so it could only name a Chrome gone by now. */
   private forgetPortFile(): void {
     try {
@@ -2227,6 +2346,17 @@ export class ChromeLauncher implements ChromeBackendClient {
       void deny().catch(() => undefined);
       void denyContexts().catch(() => undefined);
     }, DOWNLOAD_DENY_REASSERT_MS);
+    // A protected Chrome on the pipe writes no DevToolsActivePort: one that
+    // appears means a debugging port opened in it. Checked on the same tick.
+    if (this.piped) {
+      const watch = setInterval(() => {
+        if (!guard.isOpen() || !this.piped || !this.launchedProtected) return clearInterval(watch);
+        if (this.readPortFile() === null) return;
+        clearInterval(watch);
+        this.closeForOpenPort();
+      }, DOWNLOAD_DENY_REASSERT_MS);
+      watch.unref?.();
+    }
     reassert.unref?.();
     this.downloadGuard = guard;
   }
@@ -2414,7 +2544,14 @@ export class ChromeLauncher implements ChromeBackendClient {
     // A fresh Chrome starts with a fresh list: what the last one was refused
     // is not what this one will ask for.
     this.blocked.clear();
-    const pipe = chromeTransportKind() === 'pipe';
+    const transport = transportFor(plan, this.protectedPortAllowed?.() ?? false);
+    const pipe = transport.kind === 'pipe';
+    if (plan && process.env.WMUX_CHROME_TRANSPORT === 'port') {
+      console.warn(transport.weaker
+        ? '[ChromeLauncher] a protected profile starts on the DevTools port (the protected-port setting is on): a client of the port reaches it without the pipe\'s rules'
+        : '[ChromeLauncher] WMUX_CHROME_TRANSPORT=port does not apply to a protected profile without the protected-port setting; it starts on the pipe');
+    }
+    this.transport = transport;
     // A Chrome let go still holds the profile until it exits: wait for it, bounded.
     if (this.exiting) {
       const { child, exited } = this.exiting;
@@ -2427,7 +2564,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       if (this.exiting?.child === child) this.exiting = null;
     }
     if (plan) {
-      if (!(await this.evictExisting())) throw new Error(PROTECTION_NOT_READY);
+      if (!(await this.evictExisting())) throw protectionNotReady('a Chrome still running on this profile did not stop');
     } else {
       // Protection is off: the previous instance's proxy has nothing to serve.
       this.proxy?.close();
@@ -2444,6 +2581,13 @@ export class ChromeLauncher implements ChromeBackendClient {
     }
     // Once on a pipe, the recorded port could only lead to whatever took it since.
     if (pipe) this.forgetPortFile();
+    if (plan) {
+      try {
+        clearRemoteDebuggingToggle(this.userDataDir);
+      } catch (err) {
+        throw protectionNotReady(`the profile's remote debugging setting could not be turned off: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
 
     const binary = discoverChromeBinary();
     if (!binary) {
@@ -2495,7 +2639,8 @@ export class ChromeLauncher implements ChromeBackendClient {
         ...protectedArgs,
         // Edge: no implicit sign-in to the user's account, no sync.
         ...edgeArgs(binary),
-        ...this.extraArgs,
+        // A protected Chrome on the pipe opens no port, whatever else asks for one.
+        ...(pipe && plan ? this.extraArgs.filter((arg) => !PORT_FLAG.test(arg)) : this.extraArgs),
       ]),
       // The pipe: Chrome reads fd 3 and writes fd 4. stderr is read so a
       // failed start can quote Chrome (STARTUP_STDERR_TAIL).
@@ -2600,8 +2745,14 @@ export class ChromeLauncher implements ChromeBackendClient {
     // Chrome that is still running is still starting: waited on, to a ceiling.
     const startedAt = Date.now();
     let toldStarting = false;
+    /** A protected start on the pipe that failed: PROTECTION_NOT_READY with its cause, never a start on the port. */
+    const protectedFailure = async (what: string, timedOut: boolean): Promise<Error> => {
+      if (!(plan && pipe)) return startFailure(what, timedOut);
+      if (!timedOut && handedOff(child, this.userDataDir)) return protectionNotReady(HANDED_OFF);
+      return protectionNotReady((await startFailure(what, timedOut)).message.replace(/^ChromeLauncher: /, ''));
+    };
     for (;;) {
-      if (gone) throw await startFailure('Chrome exited during startup', false);
+      if (gone) throw await protectedFailure('Chrome exited during startup', false);
       let candidate = pinned;
       if (candidate === null && !piped) {
         const fresh = this.readPortFile();
@@ -2659,7 +2810,7 @@ export class ChromeLauncher implements ChromeBackendClient {
         } catch (err) {
           // Enforcement that failed is final for this launch: the child is
           // already stopped, so polling on would only wait out the deadline.
-          if (err instanceof Error && (err.message === PROTECTION_NOT_READY || err.message === DOWNLOAD_RELAY_NOT_READY)) throw err;
+          if (isProtectionNotReady(err) || (err instanceof Error && err.message === DOWNLOAD_RELAY_NOT_READY)) throw err;
           lastStartError = err instanceof Error ? err.message : String(err);
           this.unbindEndpoint();
         }
@@ -2675,7 +2826,7 @@ export class ChromeLauncher implements ChromeBackendClient {
           child.kill();
         } catch { /* already gone */ }
         this.onChildGone();
-        throw await startFailure('CDP endpoint did not become ready in time', true);
+        throw await protectedFailure('CDP endpoint did not become ready in time', true);
       }
       await new Promise((r) => setTimeout(r, READY_POLL_MS));
     }
@@ -3138,6 +3289,8 @@ export class ChromeLauncherRegistry {
       protection?: (profile: string) => ChromeProtectionPlan | null;
       /** The user's download folder (ChromeLauncherOptions.downloadsDir). */
       downloadsDir?: () => string | null;
+      /** ChromeLauncherOptions.protectedPortAllowed. */
+      protectedPortAllowed?: () => boolean;
     },
   ) {}
 
@@ -3190,6 +3343,7 @@ export class ChromeLauncherRegistry {
         ...(this.opts.surfaceStore && !this.disposed && { surfaceStore: this.opts.surfaceStore }),
         ...(this.opts.protection && { protection: () => this.opts.protection?.(name) ?? null }),
         ...(this.opts.downloadsDir && { downloadsDir: this.opts.downloadsDir }),
+        ...(this.opts.protectedPortAllowed && { protectedPortAllowed: this.opts.protectedPortAllowed }),
       },
     );
     // Asked while the app quits: a launcher outside disposeAll's snapshot
@@ -3236,14 +3390,14 @@ export class ChromeLauncherRegistry {
    */
   async statusForWorkspace(
     workspaceId: string | undefined,
-  ): Promise<{ profile: string; running: boolean; cdpPort: number | null; liveAttach?: boolean }> {
+  ): Promise<{ profile: string; running: boolean; cdpPort: number | null; liveAttach?: boolean; transport?: ReturnType<typeof transportLabel> }> {
     return this.statusForProfile(this.opts.store.profileFor(workspaceId));
   }
 
   /** `statusForWorkspace` for an already resolved profile (a pane's own). */
   async statusForProfile(
     profile: string,
-  ): Promise<{ profile: string; running: boolean; cdpPort: number | null; liveAttach?: boolean }> {
+  ): Promise<{ profile: string; running: boolean; cdpPort: number | null; liveAttach?: boolean; transport?: ReturnType<typeof transportLabel> }> {
     if (profile === LIVE_CHROME_PROFILE) {
       // `running` here means the user's remote-debugging endpoint is LISTENING —
       // not the old "did we lazily new-up a LiveChromeClient" (an object the
@@ -3263,7 +3417,8 @@ export class ChromeLauncherRegistry {
     }
     const launcher = this.launchers.get(profile);
     if (launcher instanceof ChromeLauncher && launcher.isRunning()) {
-      return { profile, running: true, cdpPort: launcher.currentPort() };
+      const transport = launcher.launchedTransport();
+      return { profile, running: true, cdpPort: launcher.currentPort(), ...(transport && { transport: transportLabel(transport) }) };
     }
     return { profile, running: false, cdpPort: null };
   }

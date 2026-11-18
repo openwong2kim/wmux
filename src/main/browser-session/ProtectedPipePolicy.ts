@@ -24,6 +24,46 @@ import type { BeforeReply, ClientCommandFilter, ClientRef, ReplyError } from './
  */
 const REFUSED_CONTEXT_OPTIONS = ['proxyServer', 'proxyBypassList', 'originsWithUniversalNetworkAccess'] as const;
 
+/**
+ * The pages an outside client of a protected profile may open, navigate to,
+ * see and drive: http:, https:, data:, blob: of an http(s) origin, and
+ * about:blank (a target with no URL yet counts as blank). Read the way Chrome
+ * reads a typed URL: surrounding whitespace dropped, the scheme in any case
+ * (`CHROME://x`, `chrome:x`), and a view-source: wrapper refused whatever it
+ * wraps. Anything that doesn't parse is refused.
+ */
+export function protectedUrlAllowed(url: string): boolean {
+  const text = url.trim();
+  if (text === '') return true;
+  let parsed: URL;
+  try {
+    parsed = new URL(text);
+  } catch {
+    return false;
+  }
+  switch (parsed.protocol) {
+    case 'http:':
+    case 'https:':
+    case 'data:':
+      return true;
+    case 'about:':
+      return parsed.pathname === 'blank';
+    case 'blob:': {
+      try {
+        const inner = new URL(parsed.pathname);
+        return inner.protocol === 'http:' || inner.protocol === 'https:';
+      } catch {
+        return false;
+      }
+    }
+    default:
+      return false;
+  }
+}
+
+/** The refusal for a URL `protectedUrlAllowed` refuses. */
+export const SCHEME_NOT_ALLOWED = { code: -32000, message: 'policy_denied: scheme not allowed on a protected profile' } as const;
+
 const policyDenied = (what: string) => ({ code: -32000, message: `policy_denied: ${what} is not available on a protected browser profile` });
 
 export interface ProtectedPipeDeps {
