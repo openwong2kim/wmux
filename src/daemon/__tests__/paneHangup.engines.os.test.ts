@@ -217,10 +217,11 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
   // stopped and continued) root must still return at once: it runs on the JS
   // thread, so it is driven in a child process here, which a deadlock times out
   // instead of freezing this worker. The child reports what one transport saw.
-  type StoppedRootRun = { killMs: number; again: number; exits: number; signal?: number; error?: string };
-  const stoppedRootRun = (mode: 'stop' | 'stop-now' | 'stop-cont'): Promise<StoppedRootRun> => {
+  type StoppedRootRun = { killMs: number; again: number; exits: number; signal?: number; error?: string; closeMs?: number; reapedMs?: number };
+  const stoppedRootRun = (mode: 'stop' | 'stop-now' | 'stop-cont' | 'stop-close'): Promise<StoppedRootRun> => {
     const child = [
       'const [file, mode] = process.argv.slice(1);',
+      "const { execFileSync } = require('node:child_process');",
       'const core = require(file);',
       "const t = new core.NativeTransport('/bin/sh', ['-c', 'exec sleep 60'], process.cwd(), { PATH: '/usr/bin:/bin' }, 80, 24, () => {});",
       'const pid = t.pid; const sleep = (ms) => new Promise((r) => setTimeout(r, ms));',
@@ -229,6 +230,15 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
       "  await sleep(300); process.kill(pid, 'SIGSTOP'); if (mode !== 'stop-now') await sleep(400);",
       "  if (mode === 'stop-cont') { process.kill(pid, 'SIGCONT'); await sleep(400); }",
       '  let at = Date.now(); t.kill(); const killMs = Date.now() - at;',
+      // The tree kill's own order: the pane's kill() and close() (which arms the sweep) on the stopped
+      // root, then its SIGKILL. This process stays up meanwhile, so only its waiter can reap the root.
+      "  if (mode === 'stop-close') {",
+      '    at = Date.now(); t.close(); const closeMs = Date.now() - at;',
+      "    process.kill(pid, 'SIGKILL'); at = Date.now(); let gone = false;",
+      "    while (!gone && Date.now() - at < 12000) { try { gone = execFileSync('ps', ['-o', 'pid=', '-p', String(pid)]).toString().trim() === ''; } catch { gone = true; } if (!gone) await sleep(50); }",
+      '    process.stdout.write(JSON.stringify({ killMs, closeMs, reapedMs: gone ? Date.now() - at : -1, again: 0, exits: 1 }));',
+      '    process.exit(0);',
+      '  }',
       // A stopped root holds its SIGHUP until it runs: the tree kill's SIGKILL ends it.
       "  if (mode !== 'stop-cont') process.kill(pid, 'SIGKILL');",
       '  let exits = 0; let first;',
@@ -243,7 +253,7 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
       '})();',
     ].join('\n');
     return new Promise((resolve, reject) => {
-      execFile(process.execPath, ['-e', child, nativeCorePath(), mode], { cwd, timeout: 15_000, killSignal: 'SIGKILL' }, (error, stdout) => {
+      execFile(process.execPath, ['-e', child, nativeCorePath(), mode], { cwd, timeout: 20_000, killSignal: 'SIGKILL' }, (error, stdout) => {
         if (error) reject(new Error(`the child timed out or failed (a kill() that blocks on a stopped root): ${error.message}`));
         else resolve(JSON.parse(stdout) as StoppedRootRun);
       });
@@ -259,6 +269,14 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
       expect(run.error, mode).toBeUndefined();
       expect(run.again, mode).toBeLessThan(1_000);
     }
+  }, TEST_MS);
+
+  it.skipIf(skip || engine === 'node')('a stopped root\'s kill() and close() return at once, and after its SIGKILL the waiter reaps it by the sweep\'s deadline', async () => {
+    const run = await stoppedRootRun('stop-close');
+    expect(run.killMs).toBeLessThan(1_000);
+    expect(run.closeMs).toBeLessThan(1_000);
+    expect(run.reapedMs).toBeGreaterThanOrEqual(0);
+    expect(run.reapedMs).toBeLessThan(HANGUP_GRACE_MS + 3_000);
   }, TEST_MS);
 
   it.skipIf(skip || engine === 'node')('kill() on a root stopped and then continued returns at once, and its hangup exit is observed once', async () => {
