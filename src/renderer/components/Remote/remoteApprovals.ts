@@ -5,8 +5,11 @@
 // call. The rules live here, apart from React, so a test drives them:
 //   - raising a PC (off to anything, or anything to `command`) waits for a
 //     confirmation, which reads the setting again and refuses when it changed
-//     meanwhile;
+//     meanwhile; Cancel, even while that read is out, saves nothing;
 //   - lowering it or turning it off is saved at once;
+//   - every save carries the level it started from (`expected`): the daemon
+//     saves only while the PC is still there, else the row shows the level
+//     now and a person chooses again;
 //   - a damaged settings file reads as off for every PC.
 
 import { isA2aApprovalExposure, type A2aApprovalExposure } from '../../../shared/a2aRemote';
@@ -26,7 +29,7 @@ export function approvalLevelOf(v: unknown): ApprovalLevel {
 
 export interface ApprovalsApi {
   approvalsGet: () => Promise<{ hosts?: Record<string, unknown>; damaged?: boolean }>;
-  approvalsSet: (hostId: string, exposure: ApprovalLevel) => Promise<{ ok: true } | { ok: false; error: string }>;
+  approvalsSet: (hostId: string, exposure: ApprovalLevel, expected: ApprovalLevel) => Promise<{ ok: true } | { ok: false; error: string; conflict?: true }>;
 }
 
 export class ApprovalsController {
@@ -76,7 +79,7 @@ export class ApprovalsController {
     if (level !== before && raisesApproval(before, level)) {
       this.pending[hostId] = { level, from: before };
     } else if (level !== before) {
-      await this.save(hostId, level);
+      await this.save(hostId, level, before);
       return;
     }
     this.changed();
@@ -95,6 +98,8 @@ export class ApprovalsController {
     try {
       // The level the confirmation was about must still be the one saved.
       const now = await this.api.approvalsGet();
+      // Cancelled (or chosen again) while the read was out: this confirmation is gone.
+      if (this.pending[hostId] !== p) return;
       const current = now.damaged === true ? 'off' : approvalLevelOf(now.hosts?.[hostId]);
       delete this.pending[hostId];
       if (current !== p.from) {
@@ -102,7 +107,7 @@ export class ApprovalsController {
         this.errors[hostId] = this.words.changed;
         return;
       }
-      await this.save(hostId, p.level);
+      await this.save(hostId, p.level, p.from);
     } catch {
       this.errors[hostId] = this.words.failed;
     } finally {
@@ -111,12 +116,12 @@ export class ApprovalsController {
     }
   }
 
-  private async save(hostId: string, level: ApprovalLevel): Promise<void> {
+  private async save(hostId: string, level: ApprovalLevel, expected: ApprovalLevel): Promise<void> {
     this.busy[hostId] = true;
     this.changed();
     try {
-      const res = await this.api.approvalsSet(hostId, level);
-      if (!res.ok) this.errors[hostId] = `${this.words.failed} (${res.error})`;
+      const res = await this.api.approvalsSet(hostId, level, expected);
+      if (!res.ok) this.errors[hostId] = res.conflict ? this.words.changed : `${this.words.failed} (${res.error})`;
       this.read(await this.api.approvalsGet());
     } catch {
       this.errors[hostId] = this.words.failed;

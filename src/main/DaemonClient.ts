@@ -1002,10 +1002,14 @@ export class DaemonClient extends EventEmitter {
     return (await this.rpc(A2A_APPROVALS_RPC.get, {})) as { hosts: Record<string, A2aApprovalExposure>; damaged: boolean };
   }
 
-  /** Set it for one PC, as the app (first party); `by` is logged by the daemon (`approvals set by=`). */
-  async a2aRemoteApprovalsSet(input: { hostId: string; exposure: 'off' | A2aApprovalExposure; by: string }): Promise<{ ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string }> {
-    return (await this.rpc(A2A_APPROVALS_RPC.set, { hostId: input.hostId, exposure: input.exposure, senderPtyId: input.by })) as
-      { ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string };
+  /**
+   * Set it for one PC, as the app (first party); `by` is logged by the daemon (`approvals set by=`).
+   * With `expected`, the daemon saves only while the PC is still at that level (else `conflict`).
+   */
+  async a2aRemoteApprovalsSet(input: { hostId: string; exposure: 'off' | A2aApprovalExposure; by: string; expected?: 'off' | A2aApprovalExposure }): Promise<{ ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string; conflict?: true }> {
+    return (await this.rpc(A2A_APPROVALS_RPC.set, {
+      hostId: input.hostId, exposure: input.exposure, senderPtyId: input.by, ...(input.expected !== undefined ? { expected: input.expected } : {}),
+    })) as { ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string; conflict?: true };
   }
 
   async a2aSpawnOutgoing(spawnId?: string): Promise<A2aSpawnOutgoingList> {

@@ -322,8 +322,8 @@ declare global {
         spawnRequestsList: () => Promise<{ requests: A2aSpawnRequestSummary[] }>;
         /** Which paired PCs may allow or deny permission prompts in the tasks they sent here (absent: off). */
         approvalsGet: () => Promise<{ hosts: Record<string, A2aApprovalExposure>; damaged: boolean }>;
-        /** Set it for one PC, as the app; a refusal carries the reason. */
-        approvalsSet: (hostId: string, exposure: 'off' | A2aApprovalExposure) => Promise<{ ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string }>;
+        /** Set it for one PC, as the app; a refusal carries the reason. With `expected` (the level shown), a PC set otherwise meanwhile is refused with `conflict`. */
+        approvalsSet: (hostId: string, exposure: 'off' | A2aApprovalExposure, expected?: 'off' | A2aApprovalExposure) => Promise<{ ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string; conflict?: true }>;
         /** Ask another PC to start an agent; replies go to `end`, a pane here. Never rejects for a refusal. */
         spawnAsk: (ask: A2aSpawnUiAsk) => Promise<A2aSpawnAskResult>;
         /** The requests this PC sent (no prompt text) and what each PC lets it ask for. */

@@ -87,7 +87,11 @@ function stub(devices: unknown[], a2a: A2aSeed = {}, extra: { remoteHosts?: unkn
       peersRevoke: vi.fn(async () => ({ ok: true })),
       ...(a2a.approvals ? {
         approvalsGet: vi.fn(async () => structuredClone(a2a.approvals)),
-        approvalsSet: vi.fn(async (hostId: string, level: string) => {
+        approvalsSet: vi.fn(async (hostId: string, level: string, expected?: string) => {
+          // The daemon's compare-and-set: a PC set otherwise since the page looked is refused.
+          if (expected !== undefined && (a2a.approvals!.hosts[hostId] ?? 'off') !== expected) {
+            return { ok: false, error: 'the setting for that PC changed meanwhile', conflict: true };
+          }
           if (level === 'off') delete a2a.approvals!.hosts[hostId];
           else a2a.approvals!.hosts[hostId] = level;
           a2a.approvals!.damaged = false;
@@ -544,7 +548,7 @@ describe('Remote page: remote approvals under each paired PC', () => {
     expect(ok.className).not.toContain('ui-btn-primary');
     await act(async () => { ok.click(); });
     await settle();
-    expect(api.a2aRemote.approvalsSet).toHaveBeenCalledWith(PEER_HOST, 'command');
+    expect(api.a2aRemote.approvalsSet).toHaveBeenCalledWith(PEER_HOST, 'command', 'off');
     expect(row(PEER_HOST).getAttribute('data-level')).toBe('command');
   });
 
@@ -554,10 +558,10 @@ describe('Remote page: remote approvals under each paired PC', () => {
     await act(async () => { level(HOST, 'Tool only').click(); });
     await settle();
     expect(row(HOST).querySelector('[data-remote-approvals-ask]')).toBeNull();
-    expect(api.a2aRemote.approvalsSet).toHaveBeenLastCalledWith(HOST, 'tool-only');
+    expect(api.a2aRemote.approvalsSet).toHaveBeenLastCalledWith(HOST, 'tool-only', 'command');
     await act(async () => { level(HOST, 'Off').click(); });
     await settle();
-    expect(api.a2aRemote.approvalsSet).toHaveBeenLastCalledWith(HOST, 'off');
+    expect(api.a2aRemote.approvalsSet).toHaveBeenLastCalledWith(HOST, 'off', 'tool-only');
     expect(row(HOST).getAttribute('data-level')).toBe('off');
   });
 
@@ -568,14 +572,14 @@ describe('Remote page: remote approvals under each paired PC', () => {
     expect(row(PEER_HOST).querySelector('[data-remote-approvals-ask]')).not.toBeNull();
     await act(async () => { level(HOST, 'Off').click(); });
     await settle();
-    expect(api.a2aRemote.approvalsSet).toHaveBeenLastCalledWith(HOST, 'off');
+    expect(api.a2aRemote.approvalsSet).toHaveBeenLastCalledWith(HOST, 'off', 'command');
     expect(row(PEER_HOST).querySelector('[data-remote-approvals-ask]')).not.toBeNull();
     await act(async () => { level(HOST, 'Tool only').click(); });
     expect(row(HOST).querySelector('[data-remote-approvals-ask]')).not.toBeNull();
     expect(row(PEER_HOST).querySelector('[data-remote-approvals-ask]')).not.toBeNull();
     await act(async () => { row(PEER_HOST).querySelector<HTMLButtonElement>('[data-remote-approvals-confirm]')!.click(); });
     await settle();
-    expect(api.a2aRemote.approvalsSet).toHaveBeenLastCalledWith(PEER_HOST, 'command');
+    expect(api.a2aRemote.approvalsSet).toHaveBeenLastCalledWith(PEER_HOST, 'command', 'off');
     expect(row(HOST).querySelector('[data-remote-approvals-ask]')).not.toBeNull();
   });
 
@@ -590,6 +594,60 @@ describe('Remote page: remote approvals under each paired PC', () => {
     expect(api.a2aRemote.approvalsSet).not.toHaveBeenCalled();
     expect(row(HOST).querySelector('[role="alert"]')?.textContent).toBe('The setting for that PC changed meanwhile. Check it and try again.');
     expect(row(HOST).getAttribute('data-level')).toBe('tool-only');
+  });
+
+  it('a lowering from a level another writer changed meanwhile is refused: the level now is shown, nothing saved', async () => {
+    const seed = { hosts: { [HOST]: 'command' } as Record<string, string> };
+    stub([], { hosts: pcHosts, approvals: seed });
+    await render();
+    // Turned off elsewhere after the page read Command: Tool only would turn it back on.
+    delete seed.hosts[HOST];
+    await act(async () => { level(HOST, 'Tool only').click(); });
+    await settle();
+    expect(api.a2aRemote.approvalsSet).toHaveBeenCalledWith(HOST, 'tool-only', 'command');
+    expect(seed.hosts[HOST]).toBeUndefined();
+    expect(row(HOST).getAttribute('data-level')).toBe('off');
+    expect(row(HOST).querySelector('[role="alert"]')?.textContent).toBe('The setting for that PC changed meanwhile. Check it and try again.');
+  });
+
+  it('a confirmation whose PC changes between its read and its save is refused by the save itself', async () => {
+    const seed = { hosts: {} as Record<string, string> };
+    stub([], { hosts: pcHosts, approvals: seed });
+    await render();
+    await act(async () => { level(HOST, 'Command').click(); });
+    // The confirmation's read still sees Off; the change lands right after it.
+    api.a2aRemote.approvalsGet.mockImplementationOnce(async () => {
+      const read = structuredClone(seed);
+      seed.hosts[HOST] = 'tool-only';
+      return read;
+    });
+    await act(async () => { row(HOST).querySelector<HTMLButtonElement>('[data-remote-approvals-confirm]')!.click(); });
+    await settle();
+    expect(api.a2aRemote.approvalsSet).toHaveBeenCalledWith(HOST, 'command', 'off');
+    expect(seed.hosts[HOST]).toBe('tool-only');
+    expect(row(HOST).getAttribute('data-level')).toBe('tool-only');
+    expect(row(HOST).querySelector('[role="alert"]')?.textContent).toBe('The setting for that PC changed meanwhile. Check it and try again.');
+  });
+
+  it('Cancel while the confirmation\'s read is out saves nothing; an uncancelled one still saves', async () => {
+    const seed = { hosts: {} as Record<string, string> };
+    stub([], { hosts: pcHosts, approvals: seed });
+    await render();
+    await act(async () => { level(HOST, 'Command').click(); });
+    let answer: (v: unknown) => void = () => undefined;
+    api.a2aRemote.approvalsGet.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    await act(async () => { row(HOST).querySelector<HTMLButtonElement>('[data-remote-approvals-confirm]')!.click(); });
+    await act(async () => { row(HOST).querySelector<HTMLButtonElement>('[data-remote-approvals-cancel]')!.click(); });
+    await act(async () => { answer(structuredClone(seed)); });
+    await settle();
+    expect(api.a2aRemote.approvalsSet).not.toHaveBeenCalled();
+    expect(row(HOST).getAttribute('data-level')).toBe('off');
+    expect(row(HOST).querySelector('[data-remote-approvals-ask]')).toBeNull();
+    await act(async () => { level(HOST, 'Command').click(); });
+    await act(async () => { row(HOST).querySelector<HTMLButtonElement>('[data-remote-approvals-confirm]')!.click(); });
+    await settle();
+    expect(api.a2aRemote.approvalsSet).toHaveBeenCalledWith(HOST, 'command', 'off');
+    expect(row(HOST).getAttribute('data-level')).toBe('command');
   });
 
   it('a damaged settings file: off for every PC, and each row says why', async () => {

@@ -192,7 +192,7 @@ export default function RemotePage() {
   const approvalsApi = window.electronAPI?.a2aRemote;
   if (!approvals.current && approvalsApi?.approvalsGet && approvalsApi.approvalsSet) {
     approvals.current = new ApprovalsController(
-      { approvalsGet: () => approvalsApi.approvalsGet(), approvalsSet: (hostId, level) => approvalsApi.approvalsSet(hostId, level) },
+      { approvalsGet: () => approvalsApi.approvalsGet(), approvalsSet: (hostId, level, expected) => approvalsApi.approvalsSet(hostId, level, expected) },
       { failed: t('remotePage.approvals.failed'), changed: t('remotePage.approvals.changed') },
       () => { if (mounted.current) setApprovalsTick((n) => n + 1); },
     );

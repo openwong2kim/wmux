@@ -1,6 +1,7 @@
 // The Remote page's approvals row → main → the daemon's approvals.set, as the
-// app's own call: only a host id and one of the three levels pass, and the
-// daemon's line names the app (`by=app-settings`), never a word the renderer sent.
+// app's own call: only a host id, one of the three levels and the level the
+// page showed pass, and the daemon's line names the app (`by=app-settings`),
+// never a word the renderer sent.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -67,8 +68,22 @@ describe('the Remote page\'s approvals row → the daemon', () => {
     expect(await invoke(IPC.A2A_REMOTE_APPROVALS_GET)).toMatchObject({ hosts: { [PC]: 'command' }, damaged: false });
   });
 
-  it('a renderer argument past the host id and level is never passed on; a bad host or level never reaches the daemon', async () => {
-    await invoke(IPC.A2A_REMOTE_APPROVALS_SET, PC, 'off', { senderPtyId: 'pty-spoof' });
+  it('the level the page showed reaches the daemon, which saves nothing when the PC was set otherwise meanwhile', async () => {
+    await invoke(IPC.A2A_REMOTE_APPROVALS_SET, PC, 'command');
+    await invoke(IPC.A2A_REMOTE_APPROVALS_SET, PC, 'off');
+    lines = [];
+    expect(await invoke(IPC.A2A_REMOTE_APPROVALS_SET, PC, 'tool-only', 'command')).toEqual({ ok: false, error: 'the setting for that PC changed meanwhile', conflict: true });
+    expect(rpc).toHaveBeenLastCalledWith(A2A_APPROVALS_RPC.set, { hostId: PC, exposure: 'tool-only', senderPtyId: A2A_APPROVALS_SET_BY_APP, expected: 'command' });
+    expect(lines).toEqual([`[a2a-remote] approvals set by=app-settings host=${PC} off->tool-only refused: changed`]);
+    expect(await invoke(IPC.A2A_REMOTE_APPROVALS_GET)).toMatchObject({ hosts: {} });
+    expect(await invoke(IPC.A2A_REMOTE_APPROVALS_SET, PC, 'tool-only', 'off')).toMatchObject({ ok: true, hosts: { [PC]: 'tool-only' } });
+    rpc.mockClear();
+    expect(await invoke(IPC.A2A_REMOTE_APPROVALS_SET, PC, 'off', 'everything')).toEqual({ ok: false, error: 'bad-request' });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('a renderer argument past the host id, level and expected level is never passed on; a bad host or level never reaches the daemon', async () => {
+    await invoke(IPC.A2A_REMOTE_APPROVALS_SET, PC, 'off', undefined, { senderPtyId: 'pty-spoof' });
     expect(rpc).toHaveBeenLastCalledWith(A2A_APPROVALS_RPC.set, { hostId: PC, exposure: 'off', senderPtyId: A2A_APPROVALS_SET_BY_APP });
     rpc.mockClear();
     expect(await invoke(IPC.A2A_REMOTE_APPROVALS_SET, 'not-a-host', 'command')).toEqual({ ok: false, error: 'bad-request' });

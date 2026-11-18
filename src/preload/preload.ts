@@ -2710,8 +2710,8 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.invoke(IPC.A2A_REMOTE_SPAWN_REQUESTS_LIST) as Promise<{ requests: A2aSpawnRequestSummary[] }>,
   approvalsGet: () =>
     ipcRenderer.invoke(IPC.A2A_REMOTE_APPROVALS_GET) as Promise<{ hosts: Record<string, A2aApprovalExposure>; damaged: boolean }>,
-  approvalsSet: (hostId: string, exposure: 'off' | A2aApprovalExposure) =>
-    ipcRenderer.invoke(IPC.A2A_REMOTE_APPROVALS_SET, hostId, exposure) as Promise<{ ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string }>,
+  approvalsSet: (hostId: string, exposure: 'off' | A2aApprovalExposure, expected?: 'off' | A2aApprovalExposure) =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_APPROVALS_SET, hostId, exposure, expected) as Promise<{ ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string; conflict?: true }>,
   spawnAsk: (ask: A2aSpawnUiAsk) => ipcRenderer.invoke(IPC.A2A_REMOTE_SPAWN_ASK, ask) as Promise<A2aSpawnAskResult>,
   spawnOutgoing: () => ipcRenderer.invoke(IPC.A2A_REMOTE_SPAWN_OUTGOING) as Promise<A2aSpawnOutgoingList>,
   hostsExposed: (hostId: string) =>

@@ -205,6 +205,23 @@ describe('approvals.set', () => {
     expect(third.changed).toEqual([[PC_A, false]]);
   });
 
+  it('with expected: saved only when the PC is still at that level; otherwise refused, logged, nothing moved', () => {
+    const s = store();
+    s.set(PC_A, 'command');
+    // Another writer turned it off after the caller last looked.
+    s.set(PC_A, 'off');
+    const stale = set(s, { hostId: PC_A, exposure: 'tool-only', expected: 'command', senderPtyId: 'app-settings' });
+    expect(stale.res).toEqual({ ok: false, error: 'the setting for that PC changed meanwhile', conflict: true });
+    expect(stale.lines).toEqual([`[a2a-remote] approvals set by=app-settings host=${PC_A} off->tool-only refused: changed`]);
+    expect(stale.changed).toEqual([]);
+    expect(s.exposure(PC_A)).toBeNull();
+    const fresh = set(s, { hostId: PC_A, exposure: 'command', expected: 'off' });
+    expect(fresh.res).toMatchObject({ ok: true });
+    expect(s.exposure(PC_A)).toBe('command');
+    expect(set(s, { hostId: PC_A, exposure: 'off', expected: 'everything' }).res).toMatchObject({ ok: false });
+    expect(s.exposure(PC_A)).toBe('command');
+  });
+
   it('a PC not paired now can be turned off but never on', () => {
     const s = store();
     s.set(PC_A, 'command');
