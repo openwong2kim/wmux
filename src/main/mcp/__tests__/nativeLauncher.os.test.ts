@@ -1,11 +1,11 @@
 import { execFileSync, spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
-import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { prepareNativeLauncher } from '../nativeLauncher';
 import { nativeLauncherPath, runNativeSelfTest } from '../../../shared/mcpLauncher';
+import { listenStubBroker, type StubBrokerServer } from '../../../test-utils/stubBrokerPipe';
 
 // A refresh while an agent is running the launcher: Windows cannot replace a
 // running exe, only rename it, so the copy goes aside, the new one takes its
@@ -27,8 +27,7 @@ let root = '';
 /** The launcher's sandbox home; on Unix under /tmp, where its socket path stays short. */
 let sandboxHome = '';
 let child: ChildProcess | null = null;
-let broker: net.Server | null = null;
-const sockets = new Set<net.Socket>();
+let broker: StubBrokerServer | null = null;
 
 /** Stop the launcher and wait for it, whether or not it already exited. */
 async function stop(proc: ChildProcess): Promise<void> {
@@ -45,8 +44,7 @@ afterEach(async () => {
   child = null;
   const srv = broker;
   broker = null;
-  for (const sock of sockets) sock.destroy();
-  if (srv) await new Promise<void>((resolve) => srv.close(() => resolve()));
+  await srv?.close();
   fs.rmSync(root, { recursive: true, force: true });
   if (sandboxHome) fs.rmSync(sandboxHome, { recursive: true, force: true });
   sandboxHome = '';
@@ -68,9 +66,7 @@ async function holdingBroker(home: string, suffix: string): Promise<{ asked: Pro
   let onForwarded: (() => void) | undefined;
   const asked = new Promise<void>((resolve) => { onAsked = resolve; });
   const forwarded = new Promise<void>((resolve) => { onForwarded = resolve; });
-  const srv = net.createServer((sock) => {
-    sockets.add(sock);
-    sock.on('close', () => sockets.delete(sock));
+  broker = await listenStubBroker(pipe, (sock) => {
     let buf = '';
     let acked = false;
     sock.on('data', (chunk) => {
@@ -90,11 +86,6 @@ async function holdingBroker(home: string, suffix: string): Promise<{ asked: Pro
     });
     sock.on('error', () => { /* launcher gone */ });
   });
-  await new Promise<void>((resolve, reject) => {
-    srv.once('error', reject);
-    srv.listen(pipe, () => resolve());
-  });
-  broker = srv;
   return { asked, forwarded };
 }
 

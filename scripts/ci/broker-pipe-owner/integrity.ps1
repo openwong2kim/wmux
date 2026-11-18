@@ -14,6 +14,15 @@
 #       whether a running process's token is elevated (TokenElevation).
 #   [IntegrityLaunch]::ExitState(pid)
 #       'running', or the exit code in hex, of a process Start launched.
+#   [IntegrityLaunch]::UseOwnDesktop(userSid, stationName)
+#       creates a window station and desktop for the processes Start launches
+#       from then on, and returns its name. A child on the filtered token
+#       cannot always open the runner's own window station and desktop, and
+#       then fails its DLL initialization (0xc0000142). These grant the account
+#       and SYSTEM full access and carry a Low label (no write up), so a Medium
+#       and a Low child both open them.
+#   [IntegrityLaunch]::DescribeOwnDesktop()
+#       the DACL and label of the runner's own window station and desktop.
 #
 # Only for CI runners: run.ps1 calls Start only when it runs elevated there.
 Add-Type -TypeDefinition @'
@@ -40,6 +49,24 @@ public static class IntegrityLaunch {
 
   [StructLayout(LayoutKind.Sequential)]
   struct PROCESS_INFORMATION { public IntPtr hProcess; public IntPtr hThread; public int dwProcessId; public int dwThreadId; }
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSecurityDescriptor; public bool bInheritHandle; }
+
+  [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern IntPtr CreateWindowStation(string name, uint flags, uint access, ref SECURITY_ATTRIBUTES attributes);
+  [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern IntPtr CreateDesktop(string name, IntPtr device, IntPtr devmode, uint flags, uint access, ref SECURITY_ATTRIBUTES attributes);
+  [DllImport("user32.dll", SetLastError = true)] static extern IntPtr GetProcessWindowStation();
+  [DllImport("user32.dll", SetLastError = true)] static extern bool SetProcessWindowStation(IntPtr station);
+  [DllImport("user32.dll", SetLastError = true)] static extern IntPtr GetThreadDesktop(uint threadId);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, uint revision, out IntPtr sd, out uint size);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern bool ConvertSecurityDescriptorToStringSecurityDescriptor(IntPtr sd, uint revision, uint info, out IntPtr sddl, out uint length);
+  [DllImport("advapi32.dll")]
+  static extern uint GetSecurityInfo(IntPtr handle, int objectType, uint info, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl, out IntPtr sd);
 
   [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
@@ -78,6 +105,71 @@ public static class IntegrityLaunch {
   // PowerShell process so a child that exits at once can still be inspected.
   static readonly Dictionary<int, IntPtr> launched = new Dictionary<int, IntPtr>();
 
+  const uint GENERIC_ALL = 0x10000000;
+  const int SE_WINDOW_OBJECT = 7;
+  const uint DACL_SECURITY_INFORMATION = 0x4;
+  const uint LABEL_SECURITY_INFORMATION = 0x10;
+
+  // The desktop Start puts its children on (null: the runner's own), and the
+  // handles that keep it alive while they run.
+  static string desktopName;
+  static IntPtr ownStation = IntPtr.Zero, ownDesktop = IntPtr.Zero;
+
+  public static string UseOwnDesktop(string userSid, string stationName) {
+    if (desktopName != null) return desktopName;
+    IntPtr sd;
+    uint size;
+    string sddl = "D:(A;;GA;;;" + userSid + ")(A;;GA;;;SY)S:(ML;;NW;;;LW)";
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out sd, out size)) {
+      throw Fail("ConvertStringSecurityDescriptorToSecurityDescriptor");
+    }
+    try {
+      SECURITY_ATTRIBUTES attributes = new SECURITY_ATTRIBUTES();
+      attributes.nLength = Marshal.SizeOf(attributes);
+      attributes.lpSecurityDescriptor = sd;
+      ownStation = CreateWindowStation(stationName, 0, GENERIC_ALL, ref attributes);
+      if (ownStation == IntPtr.Zero) throw Fail("CreateWindowStation");
+      // CreateDesktop creates in the process's window station: switch to the
+      // new one for the call only.
+      IntPtr previous = GetProcessWindowStation();
+      if (!SetProcessWindowStation(ownStation)) throw Fail("SetProcessWindowStation");
+      try {
+        ownDesktop = CreateDesktop("Default", IntPtr.Zero, IntPtr.Zero, 0, GENERIC_ALL, ref attributes);
+        if (ownDesktop == IntPtr.Zero) throw Fail("CreateDesktop");
+      } finally {
+        SetProcessWindowStation(previous);
+      }
+    } finally {
+      LocalFree(sd);
+    }
+    desktopName = stationName + "\\Default";
+    return desktopName;
+  }
+
+  public static string DescribeOwnDesktop() {
+    return "window station " + Describe(GetProcessWindowStation()) +
+      "; desktop " + Describe(GetThreadDesktop(GetCurrentThreadId()));
+  }
+
+  static string Describe(IntPtr handle) {
+    IntPtr sd;
+    uint info = DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION;
+    uint error = GetSecurityInfo(handle, SE_WINDOW_OBJECT, info, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out sd);
+    if (error != 0) return "unreadable (" + error + ")";
+    try {
+      IntPtr text;
+      uint length;
+      if (!ConvertSecurityDescriptorToStringSecurityDescriptor(sd, 1, info, out text, out length)) {
+        return "unconvertible (" + Marshal.GetLastWin32Error() + ")";
+      }
+      string sddl = Marshal.PtrToStringUni(text);
+      LocalFree(text);
+      return sddl;
+    } finally {
+      LocalFree(sd);
+    }
+  }
+
   static IntPtr Open(int pid, out bool owned) {
     IntPtr held;
     if (launched.TryGetValue(pid, out held)) { owned = false; return held; }
@@ -113,6 +205,7 @@ public static class IntegrityLaunch {
       }
       STARTUPINFO startup = new STARTUPINFO();
       startup.cb = Marshal.SizeOf(startup);
+      startup.lpDesktop = desktopName;
       PROCESS_INFORMATION info;
       if (!CreateProcessAsUser(lowered, null, commandLine, IntPtr.Zero, IntPtr.Zero, false, CREATE_NO_WINDOW,
           IntPtr.Zero, cwd, ref startup, out info)) {

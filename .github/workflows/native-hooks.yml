@@ -104,6 +104,10 @@ jobs:
         run: npx vitest run integrations/shared/__tests__/hooksBridgeNative.parity.os.test.ts src/mcp/__tests__/nativeShim.parity.os.test.ts integrations/shared/__tests__/hookFlavours.lockstep.test.ts integrations/shared/__tests__/hooksBridgeShells.os.test.ts src/shared/hooks/__tests__/compatHookInstall.os.test.ts src/main/mcp/__tests__/hookBridge.lockstep.test.ts scripts/__tests__/buildNativeHooks.os.test.mjs scripts/__tests__/nativeHooksRelease.test.mjs src/shared/__tests__/mcpLauncher.os.test.ts src/main/mcp/__tests__/nativeLauncher.os.test.ts src/shared/hooks/__tests__/claudeNativeHook.os.test.ts src/cli/commands/__tests__/setupHooks.native.os.test.ts src/mcp/__tests__/identityMatrix.os.test.ts
         env:
           WMUX_REQUIRE_NATIVE_HOOKS: '1'
+          # The Windows stub brokers listen through the core built above (an
+          # elevated runner's net pipe is owned by Administrators, which the
+          # native shim refuses); elsewhere they are net servers.
+          WMUX_TERMINAL_CORE_MODULE: ${{ matrix.name == 'windows-x64' && format('{0}/dist/wmux-native/index.cjs', github.workspace) || '' }}
           WMUX_NATIVE_HOOKS_BIN: ${{ github.workspace }}/dist/native-hooks/${{ runner.os == 'Windows' && 'wmux-native.exe' || 'wmux-native' }}
       - name: Claude hook characterisation against the native binary
         if: needs.changes.outputs.relevant != 'false'
