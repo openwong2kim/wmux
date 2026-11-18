@@ -55,6 +55,9 @@ export interface ListenNativePipeOptions {
   onConnection(socket: NativePipeSocket): void;
   /** Called once when accepting stops on its own. */
   onFailure?(reason: string): void;
+  /** onConnection threw: that socket was destroyed and the others are served
+   *  on. Logged to stderr when absent. */
+  onConnectionError?(error: unknown): void;
   /** The module to use; loadNativePipe() when absent. */
   module?: NativePipeModule;
 }
@@ -65,60 +68,74 @@ export function listenNativePipe(name: string, options: ListenNativePipeOptions)
   const module = options.module ?? loadNativePipe();
   if (!module) throw new Error('The native pipe listener is Windows only');
   const sockets = new Set<NativePipeSocket>();
-  let ready = false;
-  let missedWake = false;
   let closed = false;
   let failureReported = false;
 
-  const listener: NativePipeListener = new module.NativePipeListener(name, options.maxInstances, () => {
-    if (ready) wake();
-    else missedWake = true;
-  });
+  // The native callback runs from the event loop, never during the
+  // constructor, so `listener` is set by the time it does.
+  const listener: NativePipeListener = new module.NativePipeListener(name, options.maxInstances, () => wake());
+
+  const report = (error: unknown): void => {
+    try {
+      if (options.onConnectionError) {
+        options.onConnectionError(error);
+        return;
+      }
+    } catch (inner) {
+      error = inner;
+    }
+    console.error('[native-pipe] connection handler failed:', error);
+  };
+
+  /** Hand one accepted connection on. Never throws. */
+  const accept = (conn: NativePipeConn): void => {
+    let socket: NativePipeSocket;
+    try {
+      socket = new NativePipeSocket(conn);
+    } catch {
+      // The connection is gone already (the constructor destroyed it).
+      return;
+    }
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    try {
+      options.onConnection(socket);
+    } catch (error) {
+      socket.destroy();
+      report(error);
+    }
+  };
 
   // One wake for the listener and all its connections. It keeps running
-  // after close() for the connections still open.
+  // after close() for the connections still open. It never throws: a throw
+  // would leave the rest undrained, and no other wake would come for them.
   function wake(): void {
     if (!closed) {
-      for (let conn = listener.takeAccepted(); conn !== null; conn = listener.takeAccepted()) {
-        let socket: NativePipeSocket;
-        try {
-          socket = new NativePipeSocket(conn);
-        } catch {
-          // The connection is gone already (the constructor destroyed it).
-          continue;
+      try {
+        for (let conn = listener.takeAccepted(); conn !== null; conn = listener.takeAccepted()) accept(conn);
+        const failure = listener.failure();
+        if (failure && !failureReported) {
+          failureReported = true;
+          options.onFailure?.(failure);
         }
-        sockets.add(socket);
-        socket.once('close', () => sockets.delete(socket));
-        try {
-          options.onConnection(socket);
-        } catch (error) {
-          socket.destroy();
-          throw error;
-        }
-      }
-      const failure = listener.failure();
-      if (failure && !failureReported) {
-        failureReported = true;
-        options.onFailure?.(failure);
+      } catch (error) {
+        report(error);
       }
     }
+    // pump() catches its own errors (they destroy that socket).
     for (const socket of [...sockets]) socket.pump();
   }
 
-  ready = true;
-  // A wake during construction: handed on once the caller has the server.
-  if (missedWake) setImmediate(wake);
-  const own = listener;
   return {
     close(): void {
       if (closed) return;
       closed = true;
       // Accepted since the last wake and never handed on: closed with it.
-      for (let conn = own.takeAccepted(); conn !== null; conn = own.takeAccepted()) conn.destroy();
-      own.close();
+      for (let conn = listener.takeAccepted(); conn !== null; conn = listener.takeAccepted()) conn.destroy();
+      listener.close();
     },
     get failure(): string | null {
-      return own.failure();
+      return listener.failure();
     },
   };
 }
