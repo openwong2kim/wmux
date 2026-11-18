@@ -20,7 +20,7 @@ import { sanitizePtyText } from '../../../shared/types';
 import { isShadowWorkspaceId } from '../../../shared/pcRail/shadowId';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { accountSourcedKeys, setWslAccountKeys } from '../../../shared/wslAccountHome';
-import { paneAccountKeys } from '../../account/wslAccountSpawn';
+import { paneAccountKeys, requestedAccountRefusal } from '../../account/wslAccountSpawn';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore, type Account } from '../../account/accountStore';
 import { appAccountVault, createAccountOverride, mergeVaultSecretEnv, noteVaultSignInPane, vaultAccountsForCreate, vaultOnlyClaudeAccount, withAccountFolderEnv } from '../../account/accountVault';
@@ -270,6 +270,15 @@ function registeredClaudeLevel(): string | null {
  * its wmux level) instead of being spliced on its own, and the hint is
  * dropped. Returns what the guarded launch carried, for its session record.
  */
+/** A WSL re-sign-in tab's refusal, from what it supplied (both create modes). */
+function wslAccountTabRefusal(shell: string, options: PtyCreateOptions | undefined): string | null {
+  if (!isWslShell(shell) || options?.wslAccountHomeKey === undefined) return null;
+  const supplied = options.env ?? {};
+  return requestedAccountRefusal(options.wslAccountHomeKey, paneAccountKeys(supplied, {
+    requested: options.wslAccountHomeKey, supplied, accounts: () => getAccountStore().listAccounts(),
+  }));
+}
+
 async function stageCreate(options: PtyCreateOptions | undefined, botWorker: BotWorkerCreate | null, gateway?: WorkerGatewayLaunch): Promise<{ options: PtyCreateOptions | undefined; launch: ReturnType<typeof guardedLaunchOf> & ReturnType<typeof launchOfCodex> & { conversation?: ReturnType<typeof launchedConversation> } }> {
   // A fan-out line's prompt argument was built for the platform; the pane's
   // shell decides its form (a WSL pane runs bash).
@@ -788,6 +797,10 @@ export function registerPTYHandlers(
       // #2388: a task folder whose removal did not finish is locked.
       const pendingRefusal = pendingRemovalRefusal(cwdResolution.safeCwd);
       if (pendingRefusal) throw failCreate(pendingRefusal);
+      // A re-sign-in tab whose account can no longer run on its own WSL home,
+      // refused before anything is recorded (wslAccountSpawn.ts).
+      const accountRefusal = wslAccountTabRefusal(shell, options);
+      if (accountRefusal) throw failCreate(accountRefusal);
       if (secretEnv) {
         const refusal = secretCreateCwdRefusal(grantedCwd, cwdResolution);
         if (refusal) throw failCreate(refusal);
@@ -930,10 +943,14 @@ export function registerPTYHandlers(
       // only for the variables the binding still decides (a profile's own wins).
       // It rides in the env the daemon persists, so a recovered pane keeps it.
       if (isWslShell(shell)) {
-        setWslAccountKeys(resolvedEnv, [...accountSourcedKeys(resolvedEnv, accountEnv), ...paneAccountKeys(resolvedEnv, {
+        const paneKeys = paneAccountKeys(resolvedEnv, {
           override: accountOverride, requested: options?.wslAccountHomeKey, supplied: options?.env,
           accounts: () => getAccountStore().listAccounts(),
-        })]);
+        });
+        // Backstop: the profile-free env the tab asked for no longer names its account.
+        const refusal = requestedAccountRefusal(options?.wslAccountHomeKey, paneKeys);
+        if (refusal) throw failCreate(refusal);
+        setWslAccountKeys(resolvedEnv, [...accountSourcedKeys(resolvedEnv, accountEnv), ...paneKeys]);
       }
       // #2231 — a fan-out task pane in WSL on a Windows-drive worktree: Linux
       // git gets the worktree's gitdir by its Linux path (wslWorkerGit.ts).
@@ -1203,13 +1220,15 @@ export function registerPTYHandlers(
       if (codexCwdRefusal) throw new Error(codexCwdRefusal);
       const pendingRefusal = pendingRemovalRefusal(cwdResolution.safeCwd);
       if (pendingRefusal) throw new Error(pendingRefusal);
+      const accountRefusal = wslAccountTabRefusal(shell, options);
+      if (accountRefusal) throw new Error(accountRefusal);
       const safeCwd = cwdResolution.safeCwd;
       const effectiveCwd = safeCwd ?? undefined;
       // Split off initialCommand — it's written into the shell post-create, not
       // a spawn option. exec/supervision are daemon-only (handled above) and
       // must not reach ptyManager.create, so build a clean spawn-options object
       // from only the local-relevant fields instead of spreading the payload.
-      const { initialCommand, cols, rows, workspaceId, surfaceId, env, spawnKind, wslAccountLoginEnvKey, wslAccountHomeKey, ignoreAccountBinding } = options ?? {};
+      const { initialCommand, cols, rows, workspaceId, surfaceId, env, spawnKind, wslAccountLoginEnvKey, wslAccountHomeKey, ignoreAccountBinding, accountId } = options ?? {};
       // #1103 — same distro injection as the daemon branch, so both modes
       // boot the same WSL distro for the same setting.
       const wslArgs = wslDistroArgs(shell, requestedWslDistro(options));
@@ -1217,7 +1236,7 @@ export function registerPTYHandlers(
       const wslTaskGit = (botWorker || options?.fanoutTaskOf) && isWslShell(shell) && safeCwd
         ? await resolveWslWorkerGit(safeCwd, wslArgs?.[1] ?? null).catch(() => null)
         : null;
-      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, ...(botWorker || options?.fanoutTaskOf ? { automation: true } : {}), wslAccountLoginEnvKey, wslAccountHomeKey, ...(ignoreAccountBinding === true ? { ignoreAccountBinding: true } : {}), ...(wslTaskGit ? { wslTaskGit } : {}) });
+      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, ...(botWorker || options?.fanoutTaskOf ? { automation: true } : {}), wslAccountLoginEnvKey, wslAccountHomeKey, ...(typeof accountId === 'string' ? { accountId } : {}), ...(ignoreAccountBinding === true ? { ignoreAccountBinding: true } : {}), ...(wslTaskGit ? { wslTaskGit } : {}) });
       logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
       if (botWorker) {
         const launchTask = botWorkerLaunchTask(botWorker);

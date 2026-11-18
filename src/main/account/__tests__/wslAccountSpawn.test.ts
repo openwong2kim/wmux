@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { paneAccountKeys } from '../wslAccountSpawn';
+import { paneAccountKeys, requestedAccountRefusal } from '../wslAccountSpawn';
 
 const accounts = () => [
   { vendor: 'claude' as const, configDir: 'C:\\Users\\dev\\.wmux\\accounts\\work' },
@@ -22,5 +22,23 @@ describe('paneAccountKeys', () => {
     expect(paneAccountKeys({ CLAUDE_CONFIG_DIR: codex }, { requested: 'CLAUDE_CONFIG_DIR', supplied: { CLAUDE_CONFIG_DIR: codex }, accounts })).toEqual([]);
     expect(paneAccountKeys({ CLAUDE_CONFIG_DIR: 'C:\\profile' }, { requested: 'CLAUDE_CONFIG_DIR', supplied: { CLAUDE_CONFIG_DIR: work }, accounts })).toEqual([]);
     expect(paneAccountKeys({ PATH: work }, { requested: 'PATH', supplied: { PATH: work }, accounts })).toEqual([]);
+  });
+});
+
+describe('requestedAccountRefusal', () => {
+  it('refuses a re-sign-in tab whose account cannot run on its own WSL home', () => {
+    expect(requestedAccountRefusal('CLAUDE_CONFIG_DIR', [])).toMatch(/land in the distro's default account/);
+    expect(requestedAccountRefusal('CODEX_HOME', ['CLAUDE_CONFIG_DIR'])).toMatch(/not opened/);
+  });
+
+  it('lets an honoured tab, and any create that asked for no account home, through', () => {
+    expect(requestedAccountRefusal('CLAUDE_CONFIG_DIR', ['CLAUDE_CONFIG_DIR'])).toBeNull();
+    for (const requested of [undefined, null, 'PATH', 1]) expect(requestedAccountRefusal(requested, [])).toBeNull();
+  });
+
+  it('refuses the tab of an account removed since its pane signed out', () => {
+    const removed = 'C:\Users\dev\.wmux\accounts\gone';
+    const keys = paneAccountKeys({ CLAUDE_CONFIG_DIR: removed }, { requested: 'CLAUDE_CONFIG_DIR', supplied: { CLAUDE_CONFIG_DIR: removed }, accounts });
+    expect(requestedAccountRefusal('CLAUDE_CONFIG_DIR', keys)).not.toBeNull();
   });
 });

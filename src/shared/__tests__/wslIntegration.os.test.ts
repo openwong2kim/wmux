@@ -301,7 +301,52 @@ describe('WSL per-launch Claude integration', () => {
     it('sets up the account before an exec unit\'s command and fails the run when it cannot', () => {
       const { args } = inject({ CLAUDE_CONFIG_DIR: 'C:\\accounts\\work', WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR' }, { exec: 'claude' });
       const bootstrap = args[args.indexOf('-c') + 1];
-      expect(bootstrap).toContain('! . "$WMUX_WSL_ACCOUNT_SH" exec; then exit 1; fi\neval "$1"');
+      expect(bootstrap).toContain('. "$WMUX_WSL_ACCOUNT_SH" exec || exit 1\nfi\neval "$1"');
+    });
+
+    // The bootstrap and rc file around the script, in a real bash (review of #3418).
+    describe.skipIf(process.platform === 'win32')('around the user\'s startup files', () => {
+      function pane(bashrc: string, opts: { exec?: string; integration?: '0' | '1' } = {}) {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-rc-')); dirs.push(dir);
+        fs.writeFileSync(path.join(dir, '.bashrc'), bashrc);
+        const injected = buildWslInjection({
+          target: { distribution: 'test', user: 'test' }, cwd: dir, execCommand: opts.exec,
+          env: { HOME: dir, PATH: '/usr/bin:/bin', WMUX_SHELL_INTEGRATION: opts.integration ?? '1', CLAUDE_CONFIG_DIR: 'C:\\accounts\\work', WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR' },
+          integrationDir: dir, bashInit: BASH_INIT, runtimePath: process.execPath, bridgePath: '/unused-bridge', mcpEntryPath: null,
+        });
+        const home = path.join(dir, '.wmux', 'accounts', `claude-${wslAccountHomeKey('C:\\accounts\\work')}`);
+        return { dir, home, env: injected.env, bashArgs: injected.args.slice(injected.args.indexOf('/bin/bash') + 1) };
+      }
+
+      it.each(['0', '1'] as const)('hands the account to a shell the user\'s .bashrc execs (integration=%s)', (integration) => {
+        const { home, env } = pane('exec /bin/sh -c \'printf "%s" "$CLAUDE_CONFIG_DIR"\'\n', { integration });
+        const ran = spawnSync('/bin/bash', ['-c', '. "$WMUX_WSL_BASHRC"; printf never'], { encoding: 'utf8', env });
+        expect(ran.stdout).toBe(home);
+        expect(ran.stderr).toBe('');
+      });
+
+      it('wins over an export in the user\'s .bashrc and says the first-use line once', () => {
+        const { home, env } = pane('export CLAUDE_CONFIG_DIR=/elsewhere\n');
+        const ran = spawnSync('/bin/bash', ['-c', '. "$WMUX_WSL_BASHRC"; printf "%s|%s" "$CLAUDE_CONFIG_DIR" "${__wmux_accounts-unset}"'], { encoding: 'utf8', env });
+        expect(ran.stdout).toBe(`${home}|unset`);
+        expect(ran.stderr.match(/has no sign-in in this WSL distro yet/g)).toHaveLength(1);
+      });
+
+      it('says so, and never runs an exec unit, when the account script did not cross over', () => {
+        const interactive = pane('');
+        const { WMUX_WSL_ACCOUNT_SH: _dropped, ...dropped } = interactive.env;
+        const ran = spawnSync('/bin/bash', ['-c', '. "$WMUX_WSL_BASHRC"; printf "%s" "${CLAUDE_CONFIG_DIR-}"'], { encoding: 'utf8', env: dropped });
+        expect(ran.stderr).toContain('cannot reach its account script');
+        const exec = pane('', { exec: 'printf ran' });
+        const { WMUX_WSL_ACCOUNT_SH: _gone, ...noScript } = exec.env;
+        const refused = spawnSync('/bin/bash', exec.bashArgs, { encoding: 'utf8', env: noScript });
+        expect(refused.status).toBe(1);
+        expect(refused.stdout).toBe('');
+        expect(refused.stderr).toContain('does not run on the default account');
+        const allowed = spawnSync('/bin/bash', exec.bashArgs, { encoding: 'utf8', env: exec.env });
+        expect(allowed.status).toBe(0);
+        expect(allowed.stdout).toBe('ran');
+      });
     });
 
     // The script itself, in a real bash (Linux and macOS CI; Windows runs it in

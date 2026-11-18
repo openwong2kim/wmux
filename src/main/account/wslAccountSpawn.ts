@@ -36,3 +36,14 @@ export function paneAccountKeys(
   }
   return keys;
 }
+
+/**
+ * The refusal of a re-sign-in tab whose account cannot run on its own WSL home
+ * (removed, or its folder no longer the pane's), or null. Opening it anyway
+ * would land the sign-in in the distro's default home, for every unbound pane.
+ */
+export function requestedAccountRefusal(requested: unknown, keys: readonly AccountEnvKey[]): string | null {
+  if (requested !== 'CLAUDE_CONFIG_DIR' && requested !== 'CODEX_HOME') return null;
+  if (keys.includes(requested)) return null;
+  return 'PTY_CREATE: this sign-in tab was not opened: its account is no longer registered here, so a sign-in in WSL would land in the distro\'s default account. Add the account again, then sign in.';
+}

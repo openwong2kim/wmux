@@ -1,8 +1,9 @@
 /**
- * A bound workspace's agent account inside WSL.
+ * An agent account inside WSL: a bound workspace's, a pane's named or rotated
+ * one, or a re-sign-in tab's (the spawn paths mark which: wslAccountMark.ts).
  *
- * On Windows a pane in a bound workspace runs its agent on the account's own
- * folder (CLAUDE_CONFIG_DIR / CODEX_HOME). A WSL pane cannot use that folder:
+ * On Windows such a pane runs its agent on the account's own folder
+ * (CLAUDE_CONFIG_DIR / CODEX_HOME). A WSL pane cannot use that folder:
  * it holds Windows-only hooks, MCP servers and notify commands that fail on
  * every Linux start, and its files are world-readable through DrvFs. So each
  * account gets its own home inside the distro, `~/.wmux<suffix>/accounts/
@@ -10,10 +11,10 @@
  * one bound pane then changes that account only, never the distro's default
  * `~/.claude` / `~/.codex` that unbound WSL panes keep using.
  *
- * The key is derived from the account's Windows folder, which every spawn path
- * holds (the phone/web create has the folder, never the account id): the same
- * account gets the same Linux home from every path and after recovery. A moved
- * or renamed account folder therefore gets a new Linux home.
+ * The key is derived from the account's Windows folder, which every source of
+ * the account holds (the binding, a named or rotated account, a recovered
+ * pane's env), so the same account gets the same Linux home from each of them.
+ * A moved or renamed account folder therefore gets a new Linux home.
  */
 
 import { createHash } from 'node:crypto';
