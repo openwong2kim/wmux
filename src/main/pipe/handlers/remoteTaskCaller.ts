@@ -3,7 +3,9 @@
 // never taken from params: the caller's senderPtyId resolves to its
 // workspace, and the daemon then takes the call only from the task's local
 // party. A hosted caller (a plugin) acts only from a pane of its bound
-// workspace; an unbound one from none.
+// workspace; an unbound one from none. A caller main already binds to a
+// workspace (a commander token, a workspace claim) acts only from a pane of
+// that workspace, and a stale claim acts from none.
 
 import type { BrowserWindow } from 'electron';
 import { hostedBindingOf, isHostedCaller, type RpcContext } from '../../../shared/rpc';
@@ -43,6 +45,14 @@ export async function remoteTaskCaller(
   if (caller.workspaceId === HUMAN_WORKSPACE_ID) return deny('NOT_AUTHORIZED', `'${HUMAN_WORKSPACE_ID}' cannot answer from the pipe`);
   if (isHostedCaller(ctx) && hostedBindingOf(ctx) !== caller.workspaceId) {
     return deny('NOT_AUTHORIZED', `${method}: a hosted caller answers only from a pane of its own workspace`);
+  }
+  const claim = ctx.workspaceClaim;
+  if (claim?.kind === 'stale') return deny('NOT_AUTHORIZED', `${method}: the workspace you claimed is gone`);
+  if (claim?.kind === 'bound' && claim.workspaceId !== caller.workspaceId) {
+    return deny('NOT_AUTHORIZED', `${method}: the calling pane is not owned by the workspace you claimed`);
+  }
+  if (ctx.commanderWorkspace && ctx.commanderWorkspace !== caller.workspaceId) {
+    return deny('NOT_AUTHORIZED', `${method}: the calling pane is not owned by your commander workspace`);
   }
   return { ok: true, workspaceId: caller.workspaceId };
 }
