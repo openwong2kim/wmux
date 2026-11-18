@@ -276,6 +276,23 @@ describe('the receiving PC\'s window, as the asking PC sees it', () => {
     expect(status.detail.approvals).toContainEqual(expect.objectContaining({ messageId: rec.envelope.messageId, outcome: 'not-done', reason: 'approvals-off' }));
   });
 
+  it('refusals never push the worker\'s own outcomes out of the task\'s status: the two are bounded apart', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.parse('2026-11-19T07:00:00.000Z'));
+    const { linkId, taskId } = await sentTask();
+    await offer(linkId, taskId);
+    for (let i = 0; i < 6; i++) expect(await send({ taskId, workspaceId: 'ws-a', promptId: PROMPT, decision: 'deny', waitMs: 0 })).toMatchObject({ ok: true, pending: true });
+    vi.setSystemTime(Date.now() + REMOTE_STATUS_TASK_GAP_MS);
+    await delivery.accept(statusEnv(linkId, taskId, { kind: 'working', detail: { approvals: [{ messageId: 'ap-a', outcome: 'done' }, { messageId: 'ap-b', outcome: 'done' }] } as A2aRemoteStatusV1['detail'] }), { hostId: HOST });
+    for (const rec of delivery.outbox.pending(HOST).filter((r) => r.envelope.kind === 'approval')) {
+      delivery.outbox.refuse(HOST, rec.seq, 'approvals-off');
+      await (delivery as unknown as { onRefused(r: A2aOutboxRecordV1, c: string): Promise<void> }).onRefused(rec, 'approvals-off');
+    }
+    const approvals = (delivery.withRemoteStatus(tasks.getTask(taskId) as Task).metadata.remote as { status: { detail: { approvals: Array<{ messageId: string; outcome: string }> } } }).status.detail.approvals;
+    expect(approvals.filter((a) => a.outcome === 'done').map((a) => a.messageId)).toEqual(['ap-a', 'ap-b']);
+    expect(approvals.filter((a) => a.outcome === 'not-done')).toHaveLength(4);
+  });
+
   it('an outcome that arrives after the task ended here still answers the waiting send', async () => {
     const { linkId, taskId } = await sentTask();
     await offer(linkId, taskId);

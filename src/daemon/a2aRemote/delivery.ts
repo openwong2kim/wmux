@@ -1568,9 +1568,14 @@ function shownRefusal(r: A2aRemoteApprovalOutcome & { reasonText: string; taskId
   return o;
 }
 
-/** A status with the whole-message refusals of approvals added to its outcomes (one per message id, the latest few). */
+/**
+ * A status with the whole-message refusals of approvals added to its outcomes
+ * (one per message id). The two are bounded apart, each to its latest
+ * ANSWER_OUTCOMES_MAX: a refusal never pushes out an outcome the worker sent.
+ */
 function withRefusedApprovals(status: A2aRemoteStatusV1, refused: readonly A2aRemoteApprovalOutcome[]): A2aRemoteStatusV1 {
-  const ids = new Set(refused.map((r) => r.messageId));
-  const approvals = [...(status.detail?.approvals ?? []).filter((a) => !ids.has(a.messageId)), ...refused].slice(-ANSWER_OUTCOMES_MAX);
+  const kept = refused.slice(-ANSWER_OUTCOMES_MAX);
+  const ids = new Set(kept.map((r) => r.messageId));
+  const approvals = [...(status.detail?.approvals ?? []).filter((a) => !ids.has(a.messageId)), ...kept];
   return { ...status, detail: { ...status.detail, approvals } };
 }
