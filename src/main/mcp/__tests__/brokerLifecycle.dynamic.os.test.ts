@@ -1,6 +1,6 @@
 // Dynamic broker-lifecycle harness — exercises the REAL broker process and the
 // production connect-probe (brokerProbe.canConnectBrokerPipe) instead of mocks.
-// The unit suites (BrokerSupervisor.os.test / brokerProbe.test / McpRegistrar.test)
+// The unit suites (BrokerSupervisor.test / brokerProbe.test / McpRegistrar.test)
 // stub timers and the pipe; this file pins the contracts those stubs stand in
 // for against a broker.js spawned under plain node:
 //
