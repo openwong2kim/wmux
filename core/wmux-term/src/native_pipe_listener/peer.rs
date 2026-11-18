@@ -1,9 +1,13 @@
 //! Facts about the process at the client end of an accepted pipe instance.
 //!
-//! The peer's process handle is opened right after the accept and held for
-//! the session, so its pid cannot name another process while the session
-//! lasts. The pid is only trusted when the process behind the handle was
-//! created no later than the accept.
+//! The pid is the one the pipe recorded at connect. The process opened for
+//! it right after the accept is only taken as the peer when it was created
+//! no later than the accept (sampled as the connect wait returns), so a pid
+//! reused in between reads as 'created-after-accept'; its handle is then held
+//! for the session, so the pid cannot name another process while the session
+//! lasts. The user SID check applies on top. Among processes of the same
+//! user, the identity (and the parent pid) is advisory: such a process can
+//! name any parent, and can act for another of its user's processes.
 
 use super::security::{open_token, token_integrity_rid, token_user, Sid};
 use super::sys::*;
@@ -60,10 +64,8 @@ pub(crate) fn read_peer(
     let process = (pid != 0)
         .then(|| unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) })
         .and_then(OwnedHandle::from_raw);
-    let Some((process, created)) = process
-        .and_then(|p| process_created(p.raw()).map(|created| (p, created)))
-        // The pipe still names the same client once its process is open.
-        .filter(|_| client_pid(pipe) == Some(pid))
+    let Some((process, created)) =
+        process.and_then(|p| process_created(p.raw()).map(|created| (p, created)))
     else {
         facts.reason = Some("process-unreadable".into());
         return (facts, None);

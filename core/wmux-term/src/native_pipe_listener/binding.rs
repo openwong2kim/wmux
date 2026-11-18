@@ -136,6 +136,17 @@ fn track(env: &Env, item: Tracked) {
     }
 }
 
+/// Drops the strong entry of the conn at `address` in environment `key`.
+fn untrack_strong(key: usize, address: usize) {
+    let mut map = registry().lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(items) = map.get_mut(&key) {
+        items.retain(|item| match item {
+            Tracked::Strong(conn) => Arc::as_ptr(conn) as *const () as usize != address,
+            Tracked::Weak(_) => true,
+        });
+    }
+}
+
 #[napi]
 pub struct NativePipeListener {
     inner: Arc<Listener>,
@@ -144,8 +155,9 @@ pub struct NativePipeListener {
 #[napi]
 impl NativePipeListener {
     /// Listens on `name` (\\.\pipe\...) with at most `max_instances`
-    /// instances (pending + accepted). Throws with code EADDRINUSE when the
-    /// name already exists.
+    /// accepted conns (1..=253). One more instance always listens, so the
+    /// OS instance limit is `max_instances + 1`. Throws with code EADDRINUSE
+    /// when the name already exists.
     #[napi(constructor, catch_unwind)]
     pub fn new(
         env: Env,
@@ -260,7 +272,12 @@ impl NativePipeConn {
     #[napi(catch_unwind)]
     pub fn end(&self, env: Env) {
         if !self.inner.ending() && !self.inner.closed() {
+            let key = env.raw() as usize;
+            let address = Arc::as_ptr(&self.inner) as usize;
             track(&env, Tracked::Strong(self.inner.clone()));
+            // Dropped by the I/O thread as the conn closes.
+            self.inner
+                .on_closed(Box::new(move || untrack_strong(key, address)));
         }
         self.inner.end();
     }

@@ -1,5 +1,5 @@
 use super::conn::{Conn, ReadResult, END_DRAIN_LIMIT};
-use super::listener::{Instances, ListenError, Listener};
+use super::listener::{Instances, ListenError, Listener, AT_CAP_WAIT};
 use super::peer::ppid_rule;
 use super::security::{current_user, owner_only_sddl};
 use super::sys::*;
@@ -183,6 +183,24 @@ impl Client {
             std::thread::sleep(pause);
         }
     }
+}
+
+/// Opens once the listening instance accepts clients again.
+fn open_eventually(name: &str) -> Client {
+    let mut client = None;
+    wait_until("a listening instance", || {
+        client = Client::try_open(name).ok();
+        client.is_some()
+    });
+    client.unwrap()
+}
+
+/// Whether a client's read ends because the server end let it go.
+fn client_end(client: &Client) -> bool {
+    matches!(
+        client.read(16).err(),
+        Some(ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED)
+    )
 }
 
 fn pattern(len: usize) -> Vec<u8> {
@@ -382,10 +400,19 @@ fn clients_past_the_instance_cap_wait_for_a_slot() {
     let second = accept(&listener);
     // At the cap the listening instance still takes one client, which waits
     // unaccepted; past it the name is busy.
-    let _third_client = Client::open(&name);
+    let third_client = Client::open(&name);
     std::thread::sleep(Duration::from_millis(100));
     assert!(listener.take_accepted().is_none(), "accepted past the cap");
     assert_eq!(Client::try_open(&name).err(), Some(ERROR_PIPE_BUSY));
+    // After AT_CAP_WAIT the waiting client is disconnected unserved.
+    let started = Instant::now();
+    let ended = client_end(&third_client);
+    assert!(started.elapsed() >= AT_CAP_WAIT - Duration::from_millis(200));
+    assert!(ended, "the waiting client was not disconnected");
+    assert!(listener.take_accepted().is_none());
+    // The same instance listens again: the next client waits, and is
+    // accepted once a conn closes.
+    let _fourth_client = open_eventually(&name);
     first.destroy_and_join();
     drop(first_client);
     let third = accept(&listener);
@@ -440,6 +467,20 @@ fn the_name_never_disappears_while_listening() {
         drop(waiting);
         next.destroy_and_join();
     }
+    // A client over the cap is disconnected after AT_CAP_WAIT, and the
+    // instance listens again.
+    let client = Client::open(&name);
+    let conn = accept(&listener);
+    let waiting = Client::open(&name);
+    assert!(
+        client_end(&waiting),
+        "the waiting client was not disconnected"
+    );
+    let again = open_eventually(&name);
+    conn.destroy_and_join();
+    drop(client);
+    accept(&listener).destroy_and_join();
+    drop(again);
     stop.store(true, Ordering::Release);
     let (attempts, created) = probe.join().unwrap();
     assert!(attempts > 0);
@@ -468,10 +509,36 @@ fn end_gives_up_on_a_client_that_never_reads() {
     assert!(started.elapsed() >= END_DRAIN_LIMIT - Duration::from_millis(100));
     assert!(conn.take_written().contains(&id));
     let error = conn.error().unwrap();
-    assert!(error.contains("did not read"), "{error}");
+    assert!(error.contains("read none"), "{error}");
     drop(client);
     listener.close_and_join();
     wait_until("every worker to end", || worker_count() == 0);
+}
+
+/// END_DRAIN_LIMIT is an idle limit: a client that reads slowly but
+/// steadily for longer than the limit still receives every byte.
+#[test]
+fn end_keeps_a_steady_slow_client_past_the_drain_limit() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    let client = Client::open(&name);
+    let conn = accept(&listener);
+    let data = pattern(400 * 1000);
+    conn.write(data.clone());
+    conn.end();
+    let started = Instant::now();
+    let received = client.read_to_end(4096, Duration::from_millis(20));
+    assert!(
+        started.elapsed() > END_DRAIN_LIMIT,
+        "the read was not slow enough"
+    );
+    assert_eq!(received.len(), data.len());
+    assert!(received == data, "bytes differ");
+    wait_until("the close", || conn.closed());
+    assert_eq!(conn.error(), None);
+    listener.close_and_join();
 }
 
 /// end() closes after its writes complete; a slow client still reads every
