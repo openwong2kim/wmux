@@ -156,6 +156,22 @@ describe('fs.handler security helpers', () => {
     await expect(pending).resolves.toBe('V:\\repo\\site');
   });
 
+  it('reads the home\'s real path once, not on every check', async () => {
+    const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-fs-home-')));
+    try {
+      const file = path.join(dir, 'site', 'index.html');
+      fs.mkdirSync(path.dirname(file));
+      fs.writeFileSync(file, '');
+      vi.mocked(os.homedir).mockReturnValue(dir);
+      const readHome = vi.spyOn(fs.realpathSync, 'native');
+      for (let i = 0; i < 5; i++) await expect(resolveAccessiblePath(file)).resolves.toBe(file);
+      expect(isSensitivePath(path.join(dir, '.ssh', 'id_rsa'))).toBe(true);
+      expect(readHome.mock.calls.filter(([p]) => p === dir)).toHaveLength(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a drive path whose real path is a device path', async () => {
     realpathSpy.mockResolvedValue('\\\\?\\GLOBALROOT\\Device\\x');
     await expect(resolveAccessiblePath('Z:\\x')).resolves.toBeNull();

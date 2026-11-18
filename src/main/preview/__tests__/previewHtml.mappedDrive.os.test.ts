@@ -66,7 +66,11 @@ describe('resolveInsideRoot on a mapped network drive (#3413)', () => {
   });
 
   it('a root in share spelling serves nothing: a share is never opened by its UNC path', async () => {
-    const entry = { root: '\\\\server\\my share\\Team Docs\\site', pageDirSegments: [] };
+    // The share resolves, so only a refusal before any filesystem call gives null.
+    const unc = '\\\\server\\my share\\Team Docs\\site';
+    links.set(`${unc}\\index.html`.toLowerCase(), `${unc}\\index.html`);
+    const entry = { root: unc, pageDirSegments: [] };
     expect(await resolveInsideRoot(entry, '/index.html')).toBeNull();
+    expect(vi.mocked(fs.promises.realpath).mock.calls.filter(([p]) => String(p).startsWith('\\\\'))).toEqual([]);
   });
 });
