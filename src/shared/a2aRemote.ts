@@ -280,18 +280,23 @@ export type A2aApprovalSendResult =
   }
   | { ok: false; error: A2aApprovalSendRefusal; message: string; retryAfterMs?: number };
 
-/** A name as one short line: controls and format characters gone, bounded; `fallback` when nothing is left. */
+/** A name as one short line (statusLabelLine), at most 64 characters; `fallback` when nothing is left. */
 function oneLineName(name: string | undefined, fallback: string): string {
-  // eslint-disable-next-line no-control-regex -- stripping them is the point
-  const clean = (name ?? '').replace(/\p{Cf}/gu, '').replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
-  return clean.slice(0, 64) || fallback;
+  return statusLabelLine(name ?? '').slice(0, 64) || fallback;
 }
 
 /**
+ * The daemon event a carried-out remote approval raises on the receiving PC
+ * (data: `{ taskId, ptyId?, decision, text }`, no command); main shows it as
+ * a notification.
+ */
+export const REMOTE_APPROVAL_DONE_EVENT = 'a2a.remote.approval.done';
+
+/**
  * The one line a carried-out remote approval leaves on the receiving PC (its
- * notification and the task's history): who, what, which tool, where. It
- * takes no command: none is ever shown. The PC's name is the one it gave at
- * pairing, so it is cut to one plain line.
+ * notification and the task's record): who, what, which tool, where. It
+ * takes no command: none is ever shown. `pc` is this PC's own name for the
+ * paired PC, cut to one plain line.
  */
 export function remoteApprovalNoticeText(n: { pc: string | undefined; decision: A2aRemoteApprovalDecision; tool: string; pane: string | undefined }): string {
   return `${oneLineName(n.pc, 'Another PC')} ${n.decision === 'allow' ? 'allowed' : 'denied'} ${oneLineName(n.tool, 'a tool')} in ${oneLineName(n.pane, 'a pane')}`;

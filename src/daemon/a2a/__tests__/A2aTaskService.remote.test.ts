@@ -435,6 +435,29 @@ describe('A2aTaskService — the sender writing again on a completed inbound tas
     expect(restored.getTask('rt-in')?.history.map((h) => h.messageId)).toEqual(['m-0', 'f-1']);
   });
 
+  it('a remote approval note on a reopened task moves nothing: not the reopen, not the time, not the history', async () => {
+    const log = newLog();
+    let clock = Date.now();
+    const svc = new A2aTaskService({ log, origin: { machineId: 'm1', daemonEpoch: 1 }, now: () => (clock += 1000) });
+    await ended(svc, 'completed');
+    await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('f-1', 'more'), reopenCompleted: true });
+    const before = structuredClone(svc.getTask('rt-in')!);
+    const reopen = (before.metadata.remote as A2aRemoteTaskState).reopenedBy;
+    expect(reopen).toBeDefined();
+    expect((await svc.markRemote({ taskId: 'rt-in', approvalNote: { messageId: 'ap-1', decision: 'deny', tool: 'Bash', text: 'Mac denied Bash in api' } })).ok).toBe(true);
+    const after = svc.getTask('rt-in')!;
+    const marker = after.metadata.remote as A2aRemoteTaskState;
+    expect(marker.reopenedBy).toEqual(reopen);
+    expect(after.metadata.updatedAt).toBe(before.metadata.updatedAt);
+    expect(after.history).toEqual(before.history);
+    expect(after.status).toEqual(before.status);
+    expect(marker.approvalNotes).toHaveLength(1);
+    // Once per approval; never on an item, never on a task this PC sent.
+    expect((await svc.markRemote({ taskId: 'rt-in', approvalNote: { messageId: 'ap-1', decision: 'deny', tool: 'Bash', text: 'x' } })).ok).toBe(true);
+    expect((svc.getTask('rt-in')!.metadata.remote as A2aRemoteTaskState).approvalNotes).toHaveLength(1);
+    expect((await svc.markRemote({ taskId: 'rt-in', messageId: 'f-1', approvalNote: { messageId: 'ap-2', decision: 'deny', tool: 'Bash', text: 'x' } })).ok).toBe(false);
+  });
+
   it('a replayed log keeps the reopen; after it, the next state is told to the sender even if it was told before', async () => {
     const log = newLog();
     const svc = newService(log);

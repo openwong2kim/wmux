@@ -8,9 +8,7 @@ import type { BrowserWindow } from 'electron';
 import type { NotificationPayload } from '../notification/sendNotification';
 import { dispatchNotification } from '../notification/dispatchNotification';
 import type { DaemonClient } from '../DaemonClient';
-
-/** Mirrors daemon/a2aRemote/approvalNotice.ts (main does not import daemon code). */
-export const REMOTE_APPROVAL_DONE_EVENT = 'a2a.remote.approval.done';
+import { REMOTE_APPROVAL_DONE_EVENT } from '../../shared/a2aRemote';
 
 const PTY_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const TEXT_MAX = 300;
@@ -28,7 +26,8 @@ export function remoteApprovalNotification(data: unknown): { ptyId: string | nul
       type: 'info',
       title: d['text'],
       body: 'A paired PC answered a permission prompt in a task it sent here.',
-      category: 'approval',
+      // A record of something done, not a decision waiting: `approval` would read as needs-you and outlive a clear.
+      category: 'system',
     },
   };
 }
