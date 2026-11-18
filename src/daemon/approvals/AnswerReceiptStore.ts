@@ -76,6 +76,9 @@ export class AnswerReceiptStore {
     // The phone's Moa wake keeps its own file (phone-moa-wake-receipts.json)
     // with the same rules, so its ids never meet an approval answer's.
     fileName = 'phone-answer-receipts.json',
+    // Each write fsynced before it resolves (atomicWrite's `durable`): a
+    // receipt that must be on disk before the side effect it guards.
+    private readonly durable = false,
   ) {
     this.file = path.join(directory, fileName);
     const saved = atomicReadJSONSync<{ version?: unknown; entries?: unknown }>(this.file);
@@ -220,7 +223,7 @@ export class AnswerReceiptStore {
 
   private save(): Promise<void> {
     const run = this.writes.then(() =>
-      atomicWriteJSON(this.file, { version: 1, entries: Object.fromEntries(this.rows) }));
+      atomicWriteJSON(this.file, { version: 1, entries: Object.fromEntries(this.rows) }, this.durable ? { durable: true } : {}));
     this.writes = run.catch(() => undefined);
     return run;
   }

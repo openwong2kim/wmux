@@ -98,10 +98,14 @@ export interface A2aRemoteDeliveryDeps {
   spawnLinks?: NonNullable<InboundDeps['spawnLinks']>;
   /** The asking PC's answers to a headless worker's question (headless delivery); absent, one is refused. */
   answers?: NonNullable<InboundDeps['remoteAnswer']>;
+  /** The sending PC's approvals of prompts in a linked pane (remoteApproval.ts); absent, one is refused as `approvals-off`. */
+  approvals?: NonNullable<InboundDeps['remoteApproval']>;
   /** This PC's requests to start agents on other PCs (spawnRequester.ts): told when the other PC refuses one for good. */
   spawnAsks?: { onRefused(hostId: HostId, envelope: A2aRemoteEnvelope, code: A2aRemoteErrorCode): void };
   /** Optional features this PC advertises: on its streams to the servers it joined, and in its own streams' `hello`. */
   features?: readonly string[];
+  /** Features advertised to one PC only, read each time a stream to or from it opens (`approval.1` while that PC's setting is on). */
+  hostFeatures?: (hostId: HostId) => readonly string[];
   /** false: this build neither follows a task again after it ended nor advertises `reopen.1`, as an older one; tests only. */
   reopen?: false;
   /** false: this build neither takes a refusal on a stream ack nor advertises `stream-refuse.1`, as an older one; tests only. */
@@ -261,7 +265,7 @@ export class A2aRemoteDelivery {
         this.recordFeatures(hostId, 'asJoiner', features);
         deps.offers?.onPeerFeatures(hostId, features);
       },
-      features: this.features,
+      features: (hostId: HostId) => this.featuresFor(hostId),
       withhold: (hostId, rec) => this.withholdNotice(hostId, rec),
       // A joiner's refusal of a record streamed to it ends what the record was about, as a refused POST does.
       ...(streamRefuse ? { onRefused: (rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode) => this.onRefused(rec, code) } : {}),
@@ -353,6 +357,27 @@ export class A2aRemoteDelivery {
     } catch (err) {
       this.deps.log('warn', `[a2a-remote] peer features listener failed: ${errMsg(err)}`);
     }
+  }
+
+  /** What this PC advertises to `hostId`: its own features, and that PC's own ones (`hostFeatures`). */
+  featuresFor(hostId: HostId): readonly string[] {
+    let extra: readonly string[] = [];
+    try {
+      extra = this.deps.hostFeatures?.(hostId) ?? [];
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] features for ${hostId}: ${errMsg(err)}`);
+    }
+    return [...this.features, ...extra.filter((f) => !this.features.includes(f))];
+  }
+
+  /**
+   * What this PC advertises to `hostId` changed: its streams to and from that
+   * PC open again, so the new list is what that PC sees (each side reads the
+   * features as the stream opens).
+   */
+  readvertise(hostId: HostId): void {
+    if (this.hub.isConnected(hostId)) this.hub.close(hostId);
+    this.sessions.get(hostId)?.session.redial();
   }
 
   /** Both roles' features from the streams since this daemon started; undefined when neither came up. */
@@ -787,7 +812,7 @@ export class A2aRemoteDelivery {
       reconcileLinks: () => this.reconcileLinks(hostId),
       onStatus: (status) => this.deps.broadcast({ type: 'a2a.remote.hosts.status', sessionId: '', data: status }),
       onServerFeatures: (features) => this.recordFeatures(hostId, 'asServer', features),
-      features: this.features,
+      features: () => this.featuresFor(hostId),
       ...(this.deps.timing ? { timing: this.deps.timing } : {}),
       ...(this.deps.client ? { client: this.deps.client } : {}),
       log: this.deps.log,
@@ -1046,6 +1071,7 @@ export class A2aRemoteDelivery {
       ...(this.deps.bundleAsks ? { bundleAsks: this.deps.bundleAsks } : {}),
       ...(this.deps.spawnLinks ? { spawnLinks: this.deps.spawnLinks } : {}),
       ...(this.deps.answers ? { remoteAnswer: this.deps.answers } : {}),
+      ...(this.deps.approvals ? { remoteApproval: this.deps.approvals } : {}),
       ...(this.images ? { images: { store: this.images, pullAttempts: this.pullAttempts } } : {}),
       remoteStatus: {
         admit: (hostId) => this.admitRemoteStatus(hostId),

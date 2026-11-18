@@ -95,6 +95,15 @@ export class LinkedTaskTurns {
 
   /** What was seen of the latest followed delivery of `taskId`. Reads nothing. */
   taskTurn(taskId: string): LinkedTaskTurn {
+    return this.latestTurn(taskId)?.turn ?? 'unknown';
+  }
+
+  /**
+   * taskTurn with the submit proof that delivery was followed from, and
+   * whether it is the task's own delivery (not one of its inbox items); null
+   * when taskTurn is `unknown`. Reads nothing.
+   */
+  latestTurn(taskId: string): { turn: Exclude<LinkedTaskTurn, 'unknown'>; proof: GatedSubmitProof; taskItself: boolean } | null {
     let last: Unit | undefined;
     for (const u of this.units.values()) if (u.taskId === taskId && (!last || u.order > last.order)) last = u;
     // In the last-listed unit's session, the one delivered last (see sameSession).
@@ -102,12 +111,16 @@ export class LinkedTaskTurns {
     for (const u of this.units.values()) {
       if (latest && u.taskId === taskId && sameSession(u, latest) && u.proof.submitRevision > latest.proof.submitRevision) latest = u;
     }
-    if (!latest || latest.path === null || latest.expired) return 'unknown';
+    if (!latest || latest.path === null || latest.expired) return null;
     return {
-      ...(latest.messageId !== undefined ? { messageId: latest.messageId } : {}),
-      opened: latest.turn.opened,
-      closed: latest.turn.closed,
-      toolUseIds: [...latest.turn.toolUseIds],
+      turn: {
+        ...(latest.messageId !== undefined ? { messageId: latest.messageId } : {}),
+        opened: latest.turn.opened,
+        closed: latest.turn.closed,
+        toolUseIds: [...latest.turn.toolUseIds],
+      },
+      proof: { ...latest.proof },
+      taskItself: latest.messageId === undefined,
     };
   }
 

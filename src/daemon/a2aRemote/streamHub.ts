@@ -63,6 +63,8 @@ export const TERMINAL_REFUSALS: ReadonlySet<A2aRemoteErrorCode> = new Set<A2aRem
   'too-large',
   'bad-request',
   'protocol',
+  // An approval the receiver's setting is off for: sent again, it is refused again.
+  'approvals-off',
 ]);
 
 export const STREAM_HEARTBEAT_MS = 15_000;
@@ -88,8 +90,8 @@ export interface A2aStreamHubDeps {
   onStatus?: (hostId: HostId, connected: boolean) => void;
   /** A peer's stream came up advertising these features (possibly none). */
   onFeatures?: (hostId: HostId, features: string[]) => void;
-  /** What THIS PC takes, told to every joiner in the stream's `hello` (`A2aStreamHello.features`). */
-  features?: readonly string[];
+  /** What THIS PC takes, told to every joiner in the stream's `hello` (`A2aStreamHello.features`); a function: per joiner, read as its stream opens. */
+  features?: readonly string[] | ((hostId: HostId) => readonly string[]);
   /**
    * Checked as each record goes out: true keeps it off the stream (the
    * caller refuses it, or it stays owed and is checked again next time).
@@ -128,6 +130,7 @@ const STATUS_OF: Record<A2aRemoteErrorCode, number> = {
   'attachment-missing': 409,
   // Never answered by a peer (the sender records it); here for completeness.
   'attachment-failed': 400,
+  'approvals-off': 403,
 };
 
 /** `<epoch>:<seq>` → cursor; null when it is not one. */
@@ -327,7 +330,8 @@ export class A2aStreamHub {
       'Cache-Control': 'no-store',
       Connection: 'keep-alive',
     });
-    const hello: A2aStreamHello = { epoch, ...(this.deps.features && this.deps.features.length > 0 ? { features: [...this.deps.features] } : {}) };
+    const own = typeof this.deps.features === 'function' ? this.deps.features(hostId) : this.deps.features;
+    const hello: A2aStreamHello = { epoch, ...(own && own.length > 0 ? { features: [...own] } : {}) };
     res.write(`event: hello\ndata: ${JSON.stringify(hello)}\n\n`);
     const heartbeatMs = this.deps.heartbeatMs ?? STREAM_HEARTBEAT_MS;
     const timer = setInterval(() => {

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { A2A_REMOTE_BODY_MAX, ANSWER_OUTCOMES_MAX, type A2aRemoteAnswerOutcome, type A2aRemoteAnswerV1, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
+import { A2A_REMOTE_BODY_MAX, ANSWER_OUTCOMES_MAX, type A2aRemoteAnswerOutcome, type A2aRemoteAnswerV1, type A2aRemoteApprovalOffer, type A2aRemoteApprovalOutcome, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
 import { truncateUtf8 } from '../../shared/chatv2/limits';
 import type { SessionPromptScheduleResult } from '../../shared/sessionPromptSchedule';
 import { promptHash } from '../../shared/promptHash';
@@ -248,6 +248,9 @@ export interface HeadlessTaskStatus {
     resetsAt?: string;
     provider?: string;
     background?: number;
+    /** A linked pane's prompt offered to the PC that sent the task (remoteApproval.ts); never set by the headless delivery. */
+    approval?: A2aRemoteApprovalOffer;
+    approvals?: A2aRemoteApprovalOutcome[];
   };
 }
 
