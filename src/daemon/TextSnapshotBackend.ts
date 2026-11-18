@@ -8,10 +8,10 @@ import { NATIVE_SNAPSHOT_MAX_INPUT_BYTES, nativeScrollbackCap, nativeSizesAccept
 import { createNativeCircuit, snapshotModulePath } from './nativeCircuit';
 
 type Reference = (req: SnapshotRequest) => Promise<TextSnapshotOutcome>;
-type Reason = 'native' | 'error' | 'budget' | 'live-drain' | 'limits' | 'circuit-open';
+type Reason = 'native' | 'error' | 'budget' | 'unsupported' | 'live-drain' | 'limits' | 'circuit-open';
 interface Diagnostics {
-  /** Requests native was tried on (admitted past the limits, budget and circuit): the denominator of the refusal rates. */
-  attempts: number;
+  /** Each native try by its outcome (native, a refusal family, budget, error), counted when it settles: the refusal rates. Skips are not tries. */
+  tried: SnapshotReasons;
   native: number;
   fallbacks: number;
   skipped: number;
@@ -19,12 +19,12 @@ interface Diagnostics {
   reasons: SnapshotReasons;
   last?: { backend: 'rust' | 'xterm'; reason: Reason };
 }
-const diagnostics: Diagnostics = { attempts: 0, native: 0, fallbacks: 0, skipped: 0, reasons: {} };
+const diagnostics: Diagnostics = { tried: {}, native: 0, fallbacks: 0, skipped: 0, reasons: {} };
 const circuit = createNativeCircuit();
 
 export function getTextSnapshotBackendDiagnostics(): Diagnostics & { circuitOpen: boolean; circuitFailures: number } {
-  return { ...diagnostics, reasons: { ...diagnostics.reasons }, last: diagnostics.last && { ...diagnostics.last },
-    circuitOpen: circuit.isOpen(snapshotModulePath(), performance.now()), circuitFailures: circuit.failures(snapshotModulePath()) };
+  return { ...diagnostics, tried: { ...diagnostics.tried }, reasons: { ...diagnostics.reasons }, last: diagnostics.last && { ...diagnostics.last },
+    circuitOpen: circuit.isOpen(snapshotModulePath(), performance.now()), circuitFailures: circuit.failures(snapshotModulePath(), performance.now()) };
 }
 
 /** Any ring the daemon allows, and a grid the native terminal holds at every
@@ -71,8 +71,7 @@ export async function selectTextSnapshot(req: SnapshotRequest, xterm: Reference)
   // Skipped while open after a module error; one trial once its cooldown ran out (nativeCircuit.ts).
   const ticket = circuit.admit(snapshotModulePath(), performance.now());
   if (!ticket) return skipTo('circuit-open');
-  diagnostics.attempts++;
-  let failure: 'error' | 'budget' = 'error';
+  let failure: 'error' | 'budget' | 'unsupported' = 'error';
   let refusal: string | undefined;
   try {
     // The whole budget: the native path is the one that delivers (R2 b). A
@@ -85,15 +84,20 @@ export async function selectTextSnapshot(req: SnapshotRequest, xterm: Reference)
       // the time is spent either way, and the alternative is no snapshot.
       circuit.settle(ticket, true, performance.now());
       diagnostics.native++;
+      countReason(diagnostics.tried, 'native');
       diagnostics.last = { backend: 'rust', reason: 'native' };
       return { ...native, durationMs: performance.now() - started };
     }
     if (!native.ok && native.reason === 'budget') failure = 'budget';
+    // A refusal of a stream it cannot replay: the module worked, as on the ANSI path.
+    else if (!native.ok && native.detail?.startsWith('unsupported-')) failure = 'unsupported';
     if (!native.ok) refusal = native.detail;
   } catch { /* Module or disposal errors also use the intact xterm input. */ }
-  // A budget run-out means the module worked; only an error opens (or reopens) the circuit.
+  // A refusal or a budget run-out means the module worked; only an error opens (or reopens) the circuit.
   circuit.settle(ticket, failure !== 'error', performance.now());
-  countReason(diagnostics.reasons, failure === 'budget' ? failure : refusalFamily(refusal, failure));
+  const counted = failure === 'budget' ? failure : refusalFamily(refusal, failure);
+  countReason(diagnostics.reasons, counted);
+  countReason(diagnostics.tried, counted);
   const remaining = budget - (performance.now() - started);
   // Native spent the whole budget, or failed at its very end: no fallback runs.
   if (remaining <= 0) {

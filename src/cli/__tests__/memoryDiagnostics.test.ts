@@ -96,10 +96,11 @@ describe('memory diagnostics', () => {
 
   it('gives each outcome its share of the native tries, and the errors behind an open circuit', () => {
     const ansi = {
-      attempts: 50, native: 44, fallbacks: 5, skipped: 3, circuitOpen: false, circuitFailures: 0,
+      native: 44, fallbacks: 5, skipped: 3, circuitOpen: false, circuitFailures: 0,
       reasons: { 'unsupported-state-sgr': 4, budget: 1, error: 1, limits: 2, 'circuit-open': 1 },
+      tried: { native: 44, 'unsupported-state-sgr': 4, budget: 1, error: 1 },
     };
-    const text = { attempts: 0, native: 0, fallbacks: 0, skipped: 2, circuitOpen: true, circuitFailures: 3, reasons: { 'circuit-open': 2 } };
+    const text = { native: 0, fallbacks: 0, skipped: 2, circuitOpen: true, circuitFailures: 3, reasons: { 'circuit-open': 2 }, tried: {} };
     const daemon = {
       pid: 2, rssBytes: 0, heapUsedBytes: 0, heapTotalBytes: 0, externalBytes: 0, arrayBuffersBytes: 0, sessions: [],
       snapshots: { ansi, text },
@@ -111,7 +112,13 @@ describe('memory diagnostics', () => {
     expect(out).toContain('native text snapshots: 0 native, 0 not served natively, 2 skipped (circuit-open 2); native module bypassed after 3 errors in a row, retried after a cooldown\n');
     // No tries: no shares line.
     expect(out).not.toContain('of 0 native tries');
-    for (const bad of [{ ...ansi, attempts: -1 }, { ...ansi, circuitFailures: 'x' }]) {
+    // Cooldown over, trial not yet run: due, not bypassed.
+    const due = renderMemoryDiagnostics(undefined, { ...daemon, snapshots: { ansi, text: { ...text, circuitOpen: false, circuitFailures: 1 } } }, { available: false, reason: 'n/a' });
+    expect(due).toContain('2 skipped (circuit-open 2); native module retry due after 1 error in a row\n');
+    // An older daemon: no count, the same cooldown retry.
+    const older = renderMemoryDiagnostics(undefined, { ...daemon, snapshots: { ansi, text: { native: 0, fallbacks: 0, skipped: 2, circuitOpen: true, reasons: {} } } }, { available: false, reason: 'n/a' });
+    expect(older).toContain('native module bypassed after an error, retried after a cooldown');
+    for (const bad of [{ ...ansi, tried: { native: -1 } }, { ...ansi, tried: [] }, { ...ansi, circuitFailures: 'x' }]) {
       expect(isDaemonMemoryDiagnostics({ ...daemon, snapshots: { ansi: bad, text } })).toBe(false);
     }
   });

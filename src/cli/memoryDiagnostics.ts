@@ -2,9 +2,6 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { AppMemoryDiagnostics, DaemonMemoryDiagnostics } from '../shared/memoryDiagnostics';
 
-/** Snapshot reasons counted for a request native was never tried on. */
-const SNAPSHOT_SKIP_REASONS = new Set(['limits', 'circuit-open', 'live-drain']);
-
 interface ProcessRow { pid: number; ppid: number; rssBytes: number; browser: boolean }
 type Group = 'app' | 'daemon' | 'workloads' | 'browser' | 'appChildren';
 export interface ProcessMemorySection {
@@ -149,20 +146,20 @@ export function renderMemoryDiagnostics(
           .map(([family, n]) => `${family} ${n}`)
           .join(', ');
         const detail = [reasons, alsoSeen && `also seen: ${alsoSeen}`].filter(Boolean).join('; ');
+        // An older daemon sends no error count; the cooldown retry is the same.
         const errors = c.circuitFailures ?? 0;
-        const circuit = !c.circuitOpen ? ''
-          : errors > 0 ? `; native module bypassed after ${errors} error${errors === 1 ? '' : 's'} in a row, retried after a cooldown`
-          : '; native module bypassed after an error';
+        const inRow = errors > 0 ? `${errors} error${errors === 1 ? '' : 's'} in a row` : 'an error';
+        const circuit = c.circuitOpen ? `; native module bypassed after ${inRow}, retried after a cooldown`
+          : errors > 0 ? `; native module retry due after ${inRow}`
+          : '';
         lines.push(`  native ${name} snapshots: ${c.native} native, ${c.fallbacks} not served natively, ${c.skipped} skipped${detail ? ` (${detail})` : ''}${circuit}`);
-        // A daemon that counts its native tries: each outcome's share of them.
-        // Skips (limits, an open circuit, a live tee) were never tried.
-        if (c.attempts) {
-          const pct = (n: number) => `${(100 * n / c.attempts!).toFixed(1)}%`;
-          const outcomes = Object.entries(c.reasons)
-            .filter(([reason]) => !SNAPSHOT_SKIP_REASONS.has(reason))
+        // A daemon that counts its native tries by outcome: each one's share.
+        const tries = Object.values(c.tried ?? {}).reduce((sum, n) => sum + n, 0);
+        if (tries > 0) {
+          const outcomes = Object.entries(c.tried!)
             .sort((a, b) => b[1] - a[1])
-            .map(([reason, n]) => `${reason} ${n} (${pct(n)})`);
-          lines.push(`    of ${c.attempts} native tries: native ${c.native} (${pct(c.native)})${outcomes.length ? `, ${outcomes.join(', ')}` : ''}`);
+            .map(([outcome, n]) => `${outcome} ${n} (${(100 * n / tries).toFixed(1)}%)`);
+          lines.push(`    of ${tries} native tries: ${outcomes.join(', ')}`);
         }
       }
     }

@@ -89,10 +89,10 @@ export interface SnapshotBackendCounters {
   skipped: number;
   /** Native is skipped after a module error, until its cooldown runs out (then one trial). */
   circuitOpen: boolean;
-  /** Module errors in a row behind the open circuit; 0 when closed. Absent from older daemons. */
+  /** Module errors in a row (a trial that timed out included), kept until a trial finds the module working. Absent from older daemons. */
   circuitFailures?: number;
-  /** Requests native was tried on: the denominator of the refusal rates. Absent from older daemons. */
-  attempts?: number;
+  /** Each native try by its outcome (native, a refusal family, budget, error), counted when it settles. Skips are not tries. Absent from older daemons. */
+  tried?: Record<string, number>;
   reasons: Record<string, number>;
   /**
    * ANSI only: per native refusal, every refusal family its stream holds,
@@ -146,7 +146,8 @@ function snapshotBackendCounters(value: unknown): boolean {
   return record(value) && counters(value, ['native', 'fallbacks', 'skipped']) &&
     typeof value.circuitOpen === 'boolean' && record(value.reasons) &&
     counters(value.reasons, Object.keys(value.reasons)) &&
-    counters(value, ['attempts', 'circuitFailures'].filter((key) => value[key] !== undefined));
+    (value.circuitFailures === undefined || counters(value, ['circuitFailures'])) &&
+    (value.tried === undefined || (record(value.tried) && counters(value.tried, Object.keys(value.tried))));
 }
 
 export function isDaemonMemoryDiagnostics(value: unknown): value is DaemonMemoryDiagnostics {

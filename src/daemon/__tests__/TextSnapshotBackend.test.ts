@@ -105,6 +105,16 @@ describe('opt-in Rust text delivery', () => {
     expect(getTextSnapshotBackendDiagnostics().circuitOpen).toBe(true);
   });
 
+  // A refusal is the module working, as on the ANSI path: no circuit, a family in the tries.
+  it('falls back on a native refusal without opening the circuit, and counts it by family', async () => {
+    native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'unsupported-history-limit' });
+    const reference = vi.fn(async () => success);
+    const before = getTextSnapshotBackendDiagnostics().tried['unsupported-history-limit'] ?? 0;
+    expect(await selectTextSnapshot(req, reference)).toMatchObject({ ok: true });
+    expect(getTextSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: false, circuitFailures: 0 });
+    expect(getTextSnapshotBackendDiagnostics().tried['unsupported-history-limit']).toBe(before + 1);
+  });
+
   it('avoids repeated broken-module loads and retries a changed module path', async () => {
     native.mockResolvedValueOnce({ ok: false, reason: 'error' }).mockResolvedValueOnce(success);
     const reference = vi.fn(async () => success);

@@ -21,7 +21,7 @@ describe('the native snapshot circuit', () => {
     circuit.settle(circuit.admit('/m.cjs', 0)!, false, 0);
     circuit.settle(circuit.admit('/m.cjs', 100)!, true, 120);
     expect(circuit.isOpen('/m.cjs', 121)).toBe(false);
-    expect(circuit.failures('/m.cjs')).toBe(0);
+    expect(circuit.failures('/m.cjs', 121)).toBe(0);
     expect(circuit.admit('/m.cjs', 121)).not.toBeNull();
   });
 
@@ -33,7 +33,7 @@ describe('the native snapshot circuit', () => {
       expect(circuit.admit('/m.cjs', at + wait - 1)).toBeNull();
       expect(circuit.isOpen('/m.cjs', at + wait)).toBe(false);
     }
-    expect(circuit.failures('/m.cjs')).toBe(4);
+    expect(circuit.failures('/m.cjs', 700)).toBe(4);
   });
 
   it('lets only an attempt of the current generation change the state', () => {
@@ -43,7 +43,7 @@ describe('the native snapshot circuit', () => {
     const b = circuit.admit('/m.cjs', 0)!;
     circuit.settle(a, false, 10);
     circuit.settle(b, false, 11);
-    expect(circuit.failures('/m.cjs')).toBe(1);
+    expect(circuit.failures('/m.cjs', 11)).toBe(1);
     // A late success from before the opening does not skip the cooldown.
     const c = circuit.admit('/m.cjs', 0);
     expect(c).toBeNull();
@@ -62,9 +62,13 @@ describe('the native snapshot circuit', () => {
     circuit.settle(circuit.admit('/m.cjs', 0)!, false, 0);
     const hung = circuit.admit('/m.cjs', 100)!;
     expect(circuit.isOpen('/m.cjs', 1099)).toBe(true);
+    // A read once the timeout passed counts the hung trial before any request does.
+    expect(circuit.failures('/m.cjs', 1099)).toBe(1);
+    expect(circuit.failures('/m.cjs', 1100)).toBe(2);
+    expect(circuit.isOpen('/m.cjs', 1100)).toBe(false);
     // Timed out at 1100: reopened with the second cooldown.
     expect(circuit.admit('/m.cjs', 1100)).toBeNull();
-    expect(circuit.failures('/m.cjs')).toBe(2);
+    expect(circuit.failures('/m.cjs', 1100)).toBe(2);
     expect(circuit.admit('/m.cjs', 1299)).toBeNull();
     expect(circuit.admit('/m.cjs', 1300)).not.toBeNull();
     // The hung attempt settling late changes nothing.
@@ -77,9 +81,9 @@ describe('the native snapshot circuit', () => {
     circuit.settle(circuit.admit('/old.cjs', 0)!, false, 0);
     // Diagnostics read under another path: the old circuit is untouched.
     expect(circuit.isOpen('/new.cjs', 1)).toBe(false);
-    expect(circuit.failures('/new.cjs')).toBe(0);
+    expect(circuit.failures('/new.cjs', 1)).toBe(0);
     expect(circuit.isOpen('/old.cjs', 1)).toBe(true);
-    expect(circuit.failures('/old.cjs')).toBe(1);
+    expect(circuit.failures('/old.cjs', 1)).toBe(1);
     // A request for the new path is admitted.
     expect(circuit.admit('/new.cjs', 2)).not.toBeNull();
     expect(circuit.isOpen('/old.cjs', 2)).toBe(false);

@@ -10,8 +10,8 @@ import { tailReadCounters } from './guardedTailRead';
 
 type BackendDiagnostics = SnapshotBackendCounters & { last?: unknown };
 /** The counters without the last outcome, which says nothing a count doesn't. */
-function snapshotCounters({ attempts, native, fallbacks, skipped, circuitOpen, circuitFailures, reasons, reasonsSeen }: BackendDiagnostics): SnapshotBackendCounters {
-  return { attempts, native, fallbacks, skipped, circuitOpen, circuitFailures, reasons, ...(reasonsSeen ? { reasonsSeen } : {}) };
+function snapshotCounters({ tried, native, fallbacks, skipped, circuitOpen, circuitFailures, reasons, reasonsSeen }: BackendDiagnostics): SnapshotBackendCounters {
+  return { tried, native, fallbacks, skipped, circuitOpen, circuitFailures, reasons, ...(reasonsSeen ? { reasonsSeen } : {}) };
 }
 
 /** Read counters only: never copy terminal contents or trigger a snapshot. */
