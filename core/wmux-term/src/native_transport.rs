@@ -649,10 +649,7 @@ impl NativeTransport {
             if !(1..=64).contains(&signal) {
                 return Err(Error::from_reason("Invalid signal"));
             }
-            if signal == libc::SIGKILL {
-                signal_session(self.pid as i32, signal);
-                *self.state.sweep.lock().unwrap_or_else(|p| p.into_inner()) = Sweep::Done;
-            } else if signal == libc::SIGHUP {
+            if signal == libc::SIGHUP {
                 // The hangup decides the sweep, under `exited` (see the waiter).
                 arm(&self.state.sweep);
             }
@@ -663,8 +660,15 @@ impl NativeTransport {
                     }
                 }
             }
-            if unsafe { libc::kill(self.pid as i32, signal) } != 0 {
-                let e = std::io::Error::last_os_error();
+            let root = (unsafe { libc::kill(self.pid as i32, signal) } != 0)
+                .then(std::io::Error::last_os_error);
+            if signal == libc::SIGKILL {
+                // After the root's own SIGKILL: a child it forks during the scan
+                // is already in the session, and the root forks nothing after.
+                signal_session(self.pid as i32, signal);
+                *self.state.sweep.lock().unwrap_or_else(|p| p.into_inner()) = Sweep::Done;
+            }
+            if let Some(e) = root {
                 if e.raw_os_error() != Some(libc::ESRCH) {
                     return Err(error(e));
                 }
