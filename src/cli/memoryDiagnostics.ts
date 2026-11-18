@@ -2,6 +2,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { AppMemoryDiagnostics, DaemonMemoryDiagnostics } from '../shared/memoryDiagnostics';
 
+/** Snapshot reasons counted for a request native was never tried on. */
+const SNAPSHOT_SKIP_REASONS = new Set(['limits', 'circuit-open', 'live-drain']);
+
 interface ProcessRow { pid: number; ppid: number; rssBytes: number; browser: boolean }
 type Group = 'app' | 'daemon' | 'workloads' | 'browser' | 'appChildren';
 export interface ProcessMemorySection {
@@ -146,7 +149,21 @@ export function renderMemoryDiagnostics(
           .map(([family, n]) => `${family} ${n}`)
           .join(', ');
         const detail = [reasons, alsoSeen && `also seen: ${alsoSeen}`].filter(Boolean).join('; ');
-        lines.push(`  native ${name} snapshots: ${c.native} native, ${c.fallbacks} not served natively, ${c.skipped} skipped${detail ? ` (${detail})` : ''}${c.circuitOpen ? '; native module bypassed after an error' : ''}`);
+        const errors = c.circuitFailures ?? 0;
+        const circuit = !c.circuitOpen ? ''
+          : errors > 0 ? `; native module bypassed after ${errors} error${errors === 1 ? '' : 's'} in a row, retried after a cooldown`
+          : '; native module bypassed after an error';
+        lines.push(`  native ${name} snapshots: ${c.native} native, ${c.fallbacks} not served natively, ${c.skipped} skipped${detail ? ` (${detail})` : ''}${circuit}`);
+        // A daemon that counts its native tries: each outcome's share of them.
+        // Skips (limits, an open circuit, a live tee) were never tried.
+        if (c.attempts) {
+          const pct = (n: number) => `${(100 * n / c.attempts!).toFixed(1)}%`;
+          const outcomes = Object.entries(c.reasons)
+            .filter(([reason]) => !SNAPSHOT_SKIP_REASONS.has(reason))
+            .sort((a, b) => b[1] - a[1])
+            .map(([reason, n]) => `${reason} ${n} (${pct(n)})`);
+          lines.push(`    of ${c.attempts} native tries: native ${c.native} (${pct(c.native)})${outcomes.length ? `, ${outcomes.join(', ')}` : ''}`);
+        }
       }
     }
     for (const [site, c] of Object.entries(daemon.tailReads ?? {})) {

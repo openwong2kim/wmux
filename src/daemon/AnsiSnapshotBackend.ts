@@ -9,6 +9,8 @@ import { createNativeCircuit, snapshotModulePath } from './nativeCircuit';
 type Reference = (req: SnapshotRequest) => Promise<SnapshotOutcome>;
 type Reason = 'native' | 'error' | 'budget' | 'unsupported' | 'limits' | 'state' | 'circuit-open';
 interface Diagnostics {
+  /** Requests native was tried on (admitted past the limits, budget and circuit): the denominator of the refusal rates. */
+  attempts: number;
   native: number;
   fallbacks: number;
   skipped: number;
@@ -18,12 +20,12 @@ interface Diagnostics {
   reasonsSeen: SnapshotReasons;
   last?: { backend: 'rust' | 'xterm'; reason: Reason };
 }
-const diagnostics: Diagnostics = { native: 0, fallbacks: 0, skipped: 0, reasons: {}, reasonsSeen: {} };
+const diagnostics: Diagnostics = { attempts: 0, native: 0, fallbacks: 0, skipped: 0, reasons: {}, reasonsSeen: {} };
 const circuit = createNativeCircuit();
 
-export function getAnsiSnapshotBackendDiagnostics(): Diagnostics & { circuitOpen: boolean } {
+export function getAnsiSnapshotBackendDiagnostics(): Diagnostics & { circuitOpen: boolean; circuitFailures: number } {
   return { ...diagnostics, reasons: { ...diagnostics.reasons }, reasonsSeen: { ...diagnostics.reasonsSeen }, last: diagnostics.last && { ...diagnostics.last },
-    circuitOpen: circuit.isOpen(snapshotModulePath(), performance.now()) };
+    circuitOpen: circuit.isOpen(snapshotModulePath(), performance.now()), circuitFailures: circuit.failures(snapshotModulePath()) };
 }
 
 /** Sizes the native grid accepts, and any ring the daemon allows. Its history
@@ -67,6 +69,7 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
   // Skipped while open after a module error; one trial once its cooldown ran out (nativeCircuit.ts).
   const ticket = circuit.admit(snapshotModulePath(), performance.now());
   if (!ticket) return skipTo('circuit-open');
+  diagnostics.attempts++;
   const started = performance.now();
   const overBudget = (): SnapshotOutcome =>
     ({ ok: false, reason: 'budget', detail: `backend=rust elapsedMs=${Math.round(performance.now() - started)}` });

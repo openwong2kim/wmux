@@ -87,8 +87,12 @@ export interface SnapshotBackendCounters {
   native: number;
   fallbacks: number;
   skipped: number;
-  /** The native module failed and is bypassed until it changes. */
+  /** Native is skipped after a module error, until its cooldown runs out (then one trial). */
   circuitOpen: boolean;
+  /** Module errors in a row behind the open circuit; 0 when closed. Absent from older daemons. */
+  circuitFailures?: number;
+  /** Requests native was tried on: the denominator of the refusal rates. Absent from older daemons. */
+  attempts?: number;
   reasons: Record<string, number>;
   /**
    * ANSI only: per native refusal, every refusal family its stream holds,
@@ -141,7 +145,8 @@ function countersByKey(value: unknown, keys: string[]): boolean {
 function snapshotBackendCounters(value: unknown): boolean {
   return record(value) && counters(value, ['native', 'fallbacks', 'skipped']) &&
     typeof value.circuitOpen === 'boolean' && record(value.reasons) &&
-    counters(value.reasons, Object.keys(value.reasons));
+    counters(value.reasons, Object.keys(value.reasons)) &&
+    counters(value, ['attempts', 'circuitFailures'].filter((key) => value[key] !== undefined));
 }
 
 export function isDaemonMemoryDiagnostics(value: unknown): value is DaemonMemoryDiagnostics {

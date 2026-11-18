@@ -10,6 +10,8 @@ import { createNativeCircuit, snapshotModulePath } from './nativeCircuit';
 type Reference = (req: SnapshotRequest) => Promise<TextSnapshotOutcome>;
 type Reason = 'native' | 'error' | 'budget' | 'live-drain' | 'limits' | 'circuit-open';
 interface Diagnostics {
+  /** Requests native was tried on (admitted past the limits, budget and circuit): the denominator of the refusal rates. */
+  attempts: number;
   native: number;
   fallbacks: number;
   skipped: number;
@@ -17,12 +19,12 @@ interface Diagnostics {
   reasons: SnapshotReasons;
   last?: { backend: 'rust' | 'xterm'; reason: Reason };
 }
-const diagnostics: Diagnostics = { native: 0, fallbacks: 0, skipped: 0, reasons: {} };
+const diagnostics: Diagnostics = { attempts: 0, native: 0, fallbacks: 0, skipped: 0, reasons: {} };
 const circuit = createNativeCircuit();
 
-export function getTextSnapshotBackendDiagnostics(): Diagnostics & { circuitOpen: boolean } {
+export function getTextSnapshotBackendDiagnostics(): Diagnostics & { circuitOpen: boolean; circuitFailures: number } {
   return { ...diagnostics, reasons: { ...diagnostics.reasons }, last: diagnostics.last && { ...diagnostics.last },
-    circuitOpen: circuit.isOpen(snapshotModulePath(), performance.now()) };
+    circuitOpen: circuit.isOpen(snapshotModulePath(), performance.now()), circuitFailures: circuit.failures(snapshotModulePath()) };
 }
 
 /** Any ring the daemon allows, and a grid the native terminal holds at every
@@ -69,6 +71,7 @@ export async function selectTextSnapshot(req: SnapshotRequest, xterm: Reference)
   // Skipped while open after a module error; one trial once its cooldown ran out (nativeCircuit.ts).
   const ticket = circuit.admit(snapshotModulePath(), performance.now());
   if (!ticket) return skipTo('circuit-open');
+  diagnostics.attempts++;
   let failure: 'error' | 'budget' = 'error';
   let refusal: string | undefined;
   try {

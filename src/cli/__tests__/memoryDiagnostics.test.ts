@@ -94,6 +94,28 @@ describe('memory diagnostics', () => {
     expect(text).toContain('native text snapshots: 9 native, 0 not served natively, 0 skipped\n');
   });
 
+  it('gives each outcome its share of the native tries, and the errors behind an open circuit', () => {
+    const ansi = {
+      attempts: 50, native: 44, fallbacks: 5, skipped: 3, circuitOpen: false, circuitFailures: 0,
+      reasons: { 'unsupported-state-sgr': 4, budget: 1, error: 1, limits: 2, 'circuit-open': 1 },
+    };
+    const text = { attempts: 0, native: 0, fallbacks: 0, skipped: 2, circuitOpen: true, circuitFailures: 3, reasons: { 'circuit-open': 2 } };
+    const daemon = {
+      pid: 2, rssBytes: 0, heapUsedBytes: 0, heapTotalBytes: 0, externalBytes: 0, arrayBuffersBytes: 0, sessions: [],
+      snapshots: { ansi, text },
+    };
+    expect(isDaemonMemoryDiagnostics(daemon)).toBe(true);
+    const out = renderMemoryDiagnostics(undefined, daemon, { available: false, reason: 'n/a' });
+    // Skips were never tried: they stay out of the shares.
+    expect(out).toContain('    of 50 native tries: native 44 (88.0%), unsupported-state-sgr 4 (8.0%), budget 1 (2.0%), error 1 (2.0%)\n');
+    expect(out).toContain('native text snapshots: 0 native, 0 not served natively, 2 skipped (circuit-open 2); native module bypassed after 3 errors in a row, retried after a cooldown\n');
+    // No tries: no shares line.
+    expect(out).not.toContain('of 0 native tries');
+    for (const bad of [{ ...ansi, attempts: -1 }, { ...ansi, circuitFailures: 'x' }]) {
+      expect(isDaemonMemoryDiagnostics({ ...daemon, snapshots: { ansi: bad, text } })).toBe(false);
+    }
+  });
+
   it('names the refusal families seen behind the first refusal', () => {
     const ansi = {
       native: 2, fallbacks: 3, skipped: 0, circuitOpen: false,
