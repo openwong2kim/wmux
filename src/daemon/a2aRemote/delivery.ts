@@ -17,6 +17,7 @@ import {
   A2A_REMOTE_APPROVAL_REASON_TEXT,
   A2A_REMOTE_PROMPT_ID_RE,
   A2A_REMOTE_PROTOCOL,
+  ANSWER_OUTCOMES_MAX,
   parseA2aRemoteImageRefs,
   type A2aApprovalSendResult,
   type A2aLinkRecordV1,
@@ -230,8 +231,6 @@ export const REMOTE_NOTICES_PER_WINDOW = 60;
 const REMOTE_STATUS_AT_ONCE: ReadonlySet<A2aRemoteStatusV1['kind']> = new Set(['question', 'usage-limit', 'gone']);
 /** Refused approvals kept for their sender's wait and later sends. */
 export const REFUSED_APPROVALS_MAX = 256;
-/** How often the approval send's wait looks for the outcome. */
-const APPROVAL_OUTCOME_POLL_MS = 250;
 
 export class A2aRemoteDelivery {
   readonly outbox: OutboxStore;
@@ -255,7 +254,9 @@ export class A2aRemoteDelivery {
    * read), by message id: what `send` and its wait report. Oldest dropped past
    * REFUSED_APPROVALS_MAX.
    */
-  private readonly refusedApprovals = new Map<string, A2aRemoteApprovalOutcome & { reasonText: string }>();
+  private readonly refusedApprovals = new Map<string, A2aRemoteApprovalOutcome & { reasonText: string; taskId: string }>();
+  /** A send waiting for its outcome, by message id: resolved by the status or refusal that carries it, or by its timer. */
+  private readonly approvalWaiters = new Map<string, { taskId: string; done: (outcome: ShownApprovalOutcome | null) => void }>();
   private readonly deps: A2aRemoteDeliveryDeps;
   private readonly sessions = new Map<HostId, { session: JoinerSession; fingerprint: string; port: number }>();
   /** Server-side status, last announced. */
@@ -866,19 +867,42 @@ export class A2aRemoteDelivery {
     };
   }
 
-  /** How the approval `messageId` went, once its outcome is back (its status, or a refusal); null after `waitMs`. */
-  private async approvalOutcome(taskId: string, messageId: string, waitMs: number): Promise<(A2aRemoteApprovalOutcome & { reasonText?: string }) | null> {
-    const deadline = Date.now() + waitMs;
-    for (;;) {
-      const refused = this.refusedApprovals.get(messageId);
-      if (refused) return refused;
-      this.settleRemoteStatus(taskId);
-      const found = this.remoteStatuses.get(taskId)?.detail?.approvals?.find((a) => a.messageId === messageId);
-      if (found) return { ...found, ...(found.reason ? { reasonText: A2A_REMOTE_APPROVAL_REASON_TEXT[found.reason] } : {}) };
-      const left = deadline - Date.now();
-      if (left <= 0) return null;
-      // eslint-disable-next-line no-await-in-loop -- polling until the outcome or the deadline
-      await new Promise<void>((resolve) => { const t = setTimeout(resolve, Math.min(APPROVAL_OUTCOME_POLL_MS, left)); t.unref?.(); });
+  /** How the approval `messageId` went, once its outcome is back (a status, or a refusal); null after `waitMs`. */
+  private approvalOutcome(taskId: string, messageId: string, waitMs: number): Promise<ShownApprovalOutcome | null> {
+    const now = this.knownApprovalOutcome(taskId, messageId);
+    if (now || waitMs <= 0) return Promise.resolve(now);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.approvalWaiters.delete(messageId);
+        resolve(null);
+      }, waitMs);
+      timer.unref?.();
+      this.approvalWaiters.set(messageId, {
+        taskId,
+        done: (outcome) => {
+          clearTimeout(timer);
+          this.approvalWaiters.delete(messageId);
+          resolve(outcome);
+        },
+      });
+    });
+  }
+
+  /** The outcome this PC holds now for `messageId`: a refusal of the whole message, else the task's status. */
+  private knownApprovalOutcome(taskId: string, messageId: string): ShownApprovalOutcome | null {
+    const refused = this.refusedApprovals.get(messageId);
+    if (refused) return shownRefusal(refused);
+    this.settleRemoteStatus(taskId);
+    const found = this.remoteStatuses.get(taskId)?.detail?.approvals?.find((a) => a.messageId === messageId);
+    return found ? shownApprovalOutcome(found) : null;
+  }
+
+  /** A status on `taskId` came in (applied now or after its gap): a send on that task waiting for one of its outcomes has it. */
+  private wakeApprovalWaiters(taskId: string, status: A2aRemoteStatusV1): void {
+    if (this.approvalWaiters.size === 0) return;
+    for (const a of status.detail?.approvals ?? []) {
+      const w = this.approvalWaiters.get(a.messageId);
+      if (w?.taskId === taskId) w.done(shownApprovalOutcome(a));
     }
   }
 
@@ -887,6 +911,7 @@ export class A2aRemoteDelivery {
     const messageId = rec.envelope.messageId;
     this.refusedApprovals.delete(messageId);
     this.refusedApprovals.set(messageId, {
+      taskId: rec.envelope.taskId ?? '',
       messageId,
       outcome: 'not-done',
       ...(code === 'approvals-off' || code === 'link-not-active' ? { reason: code } : {}),
@@ -895,6 +920,8 @@ export class A2aRemoteDelivery {
         : `refused by the other PC (${code}); nothing was typed`,
     });
     while (this.refusedApprovals.size > REFUSED_APPROVALS_MAX) this.refusedApprovals.delete(this.refusedApprovals.keys().next().value as string);
+    const kept = this.refusedApprovals.get(messageId);
+    if (kept) this.approvalWaiters.get(messageId)?.done(shownRefusal(kept));
   }
 
   // --- internals ------------------------------------------------------------
@@ -1316,6 +1343,8 @@ export class A2aRemoteDelivery {
 
   /** A status that passed the checks: applied now, or kept as the task's newest until its gap is over. */
   private takeRemoteStatus(taskId: string, status: A2aRemoteStatusV1, hostId: HostId): void {
+    // Before any gap: a send waiting for an outcome this status carries is answered now.
+    this.wakeApprovalWaiters(taskId, status);
     const now = Date.now();
     const gate = this.statusGates.get(taskId);
     if (gate && now - gate.at < REMOTE_STATUS_TASK_GAP_MS && !REMOTE_STATUS_AT_ONCE.has(status.kind)) {
@@ -1374,7 +1403,13 @@ export class A2aRemoteDelivery {
       return task;
     }
     this.settleRemoteStatus(task.id);
-    const status = this.remoteStatuses.get(task.id);
+    const kept = this.remoteStatuses.get(task.id);
+    // An approval the other PC refused whole shows with the outcomes its worker sent, so none stays pending.
+    const refused = [...this.refusedApprovals.values()].filter((r) => r.taskId === task.id)
+      .map(({ taskId: _t, reasonText: _r, ...o }): A2aRemoteApprovalOutcome => o);
+    const status = refused.length > 0
+      ? withRefusedApprovals(kept ?? { kind: 'working', since: new Date().toISOString() }, refused)
+      : kept;
     if (!status) return task;
     const remote = task.metadata.remote as A2aRemoteTaskState | undefined;
     if (!remote) return task;
@@ -1518,4 +1553,23 @@ function replyOrStateTask(rec: A2aOutboxRecordV1): string | null {
   // A host notice is not this side's reply: its ack or refusal says nothing about replyDeliveredAt.
   if (rec.envelope.notice) return null;
   return rec.envelope.kind === 'reply' || rec.envelope.kind === 'state' ? taskOfEnvelope(rec.envelope, remoteTaskId) : null;
+}
+
+/** An approval outcome as `send` returns it: with this PC's own words for a reason. */
+type ShownApprovalOutcome = A2aRemoteApprovalOutcome & { reasonText?: string };
+
+function shownApprovalOutcome(o: A2aRemoteApprovalOutcome): ShownApprovalOutcome {
+  return { ...o, ...(o.reason ? { reasonText: A2A_REMOTE_APPROVAL_REASON_TEXT[o.reason] } : {}) };
+}
+
+function shownRefusal(r: A2aRemoteApprovalOutcome & { reasonText: string; taskId: string }): ShownApprovalOutcome {
+  const { taskId: _t, ...o } = r;
+  return o;
+}
+
+/** A status with the whole-message refusals of approvals added to its outcomes (one per message id, the latest few). */
+function withRefusedApprovals(status: A2aRemoteStatusV1, refused: readonly A2aRemoteApprovalOutcome[]): A2aRemoteStatusV1 {
+  const ids = new Set(refused.map((r) => r.messageId));
+  const approvals = [...(status.detail?.approvals ?? []).filter((a) => !ids.has(a.messageId)), ...refused].slice(-ANSWER_OUTCOMES_MAX);
+  return { ...status, detail: { ...status.detail, approvals } };
 }

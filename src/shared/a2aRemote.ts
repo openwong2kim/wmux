@@ -1097,7 +1097,7 @@ export const A2A_REMOTE_APPROVAL_REASON_TEXT: Readonly<Record<A2aRemoteApprovalR
   'refused': 'the prompt on the screen there changed or could not be proven; nothing was typed',
   'id-reused': 'that message id was already used for another decision',
   'unavailable': 'that PC could not record the decision; nothing was typed',
-  'rate-limited': 'that PC took as many approvals from this one as it takes in a minute; nothing was typed. Send it again after retryAfterMs',
+  'rate-limited': 'that PC took as many approvals from this one as it takes in a minute; nothing was typed. Send it again once retryAfterMs has passed',
 });
 const APPROVAL_REASONS: ReadonlySet<string> = new Set(Object.keys(A2A_REMOTE_APPROVAL_REASON_TEXT));
 

@@ -824,7 +824,7 @@ async function remoteApprove(args: string[], jsonMode: boolean): Promise<void> {
     console.log(JSON.stringify(res, null, 2));
     return;
   }
-  const outcome = res['outcome'] as { outcome?: string; reasonText?: string } | undefined;
+  const outcome = res['outcome'] as { outcome?: string; reason?: string; reasonText?: string; retryAfterMs?: number } | undefined;
   const what = `${parsed.decision === 'allow' ? 'Allow' : 'Deny'} for ${printable(String(res['tool'] ?? 'the prompt'))} (${String(res['messageId'])})`;
   if (!outcome) {
     console.log(`${what} sent. No outcome yet: it shows in the task's status (detail.approvals, by this message id) once that PC has carried it out.`);
@@ -836,7 +836,9 @@ async function remoteApprove(args: string[], jsonMode: boolean): Promise<void> {
   }
   const line = outcome.outcome === 'uncertain'
     ? `${what}: uncertain (that PC stopped while it ran; it is never run again).`
-    : `${what}: not done${outcome.reasonText ? ` (${outcome.reasonText})` : ''}.`;
+    : outcome.reason === 'rate-limited'
+      ? `${what}: not done; that PC takes no more approvals from this one for now. Try again in ${Math.max(1, Math.ceil((outcome.retryAfterMs ?? 0) / 1000))} s.`
+      : `${what}: not done${outcome.reasonText ? ` (${outcome.reasonText})` : ''}.`;
   console.error(line);
   process.exit(1);
 }

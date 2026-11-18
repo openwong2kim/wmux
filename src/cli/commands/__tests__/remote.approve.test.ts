@@ -92,6 +92,12 @@ describe('wmux remote approve', () => {
     expect(printed()).toContain('deny-only: that PC takes only deny for this prompt');
   });
 
+  it('rate-limited there: exits 1 and says when to try again', async () => {
+    mainRpc.mockResolvedValueOnce({ id: 'x', ok: true, result: { ok: true, taskId: 'rt-1', messageId: 'ap-3', promptId: PROMPT, decision: 'deny', tool: 'Bash', outcome: { messageId: 'ap-3', outcome: 'not-done', reason: 'rate-limited', retryAfterMs: 41_200 } } });
+    expect(await run(['rt-1', PROMPT, 'deny'])).toBe(1);
+    expect(printed()).toContain('Try again in 42 s.');
+  });
+
   it('pending: says where the outcome shows', async () => {
     mainRpc.mockResolvedValueOnce({ id: 'x', ok: true, result: { ok: true, taskId: 'rt-1', messageId: 'ap-2', promptId: PROMPT, decision: 'deny', tool: 'Bash', pending: true } });
     expect(await run(['rt-1', PROMPT, 'deny'])).toBe(0);

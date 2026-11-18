@@ -213,6 +213,66 @@ describe('a2a.remote.approve.send', () => {
   });
 });
 
+describe('the receiving PC\'s window, as the asking PC sees it', () => {
+  const rateLimited = (messageId: string, retryAfterMs: number) => ({ messageId, outcome: 'not-done', reason: 'rate-limited', retryAfterMs });
+
+  it('a send answered rate-limited (this PC\'s pace started over, say after a restart) returns that outcome with retryAfterMs at once, not pending', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.parse('2026-11-19T07:00:00.000Z'));
+    const { linkId, taskId } = await sentTask();
+    await offer(linkId, taskId);
+    const started = Date.now();
+    const pending = send({ taskId, workspaceId: 'ws-a', promptId: PROMPT, decision: 'deny', waitMs: 10_000 });
+    await vi.waitFor(() => expect(approvalsQueued()).toHaveLength(1), { timeout: 5_000 });
+    const messageId = approvalsQueued()[0]!.messageId;
+    // Within the per-task gap: the status is held for later, but the waiting send has its outcome now.
+    await delivery.accept(statusEnv(linkId, taskId, { kind: 'working', detail: { approvals: [rateLimited(messageId, 37_000)] } as A2aRemoteStatusV1['detail'] }), { hostId: HOST });
+    const res = await pending;
+    expect(Date.now() - started).toBeLessThan(REMOTE_STATUS_TASK_GAP_MS);
+    expect(res).toMatchObject({ ok: true, outcome: { messageId, outcome: 'not-done', reason: 'rate-limited', retryAfterMs: 37_000 } });
+    expect((res as { outcome: { reasonText: string } }).outcome.reasonText).toMatch(/as many approvals/);
+    expect(res).not.toHaveProperty('pending');
+  });
+
+  it('an outbox resend answered rate-limited again: the task\'s status keeps one outcome for the message, with the new wait', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.parse('2026-11-19T07:00:00.000Z'));
+    const { linkId, taskId } = await sentTask();
+    await offer(linkId, taskId);
+    const first = await send({ taskId, workspaceId: 'ws-a', promptId: PROMPT, decision: 'deny', waitMs: 0 });
+    expect(first).toMatchObject({ ok: true, pending: true });
+    const messageId = (first as { messageId: string }).messageId;
+    await delivery.accept(statusEnv(linkId, taskId, { kind: 'working', detail: { approvals: [rateLimited(messageId, 30_000)] } as A2aRemoteStatusV1['detail'] }), { hostId: HOST });
+    vi.setSystemTime(Date.now() + REMOTE_STATUS_TASK_GAP_MS);
+    await delivery.accept(statusEnv(linkId, taskId, { kind: 'working', detail: { approvals: [rateLimited(messageId, 12_000)] } as A2aRemoteStatusV1['detail'] }), { hostId: HOST });
+    const shown = applyTaskQueryView([delivery.withRemoteStatus(tasks.getTask(taskId) as Task)], { taskId }) as Array<{ metadata: { remote: { status: { detail: { approvals: unknown[] } } } } }>;
+    expect(shown[0]!.metadata.remote.status.detail.approvals).toEqual([{ ...rateLimited(messageId, 12_000), reasonText: expect.stringMatching(/as many approvals/) }]);
+  });
+
+  it('never pending for ever: a send whose message is refused whole after its wait shows that outcome in the task\'s status', async () => {
+    const { linkId, taskId } = await sentTask();
+    await offer(linkId, taskId);
+    const res = await send({ taskId, workspaceId: 'ws-a', promptId: PROMPT, decision: 'deny', waitMs: 0 });
+    expect(res).toMatchObject({ ok: true, pending: true });
+    const rec = delivery.outbox.pending(HOST).find((r) => r.envelope.kind === 'approval') as A2aOutboxRecordV1;
+    delivery.outbox.refuse(HOST, rec.seq, 'approvals-off');
+    await (delivery as unknown as { onRefused(r: A2aOutboxRecordV1, c: string): Promise<void> }).onRefused(rec, 'approvals-off');
+    const status = (delivery.withRemoteStatus(tasks.getTask(taskId) as Task).metadata.remote as { status: { detail: { approvals: unknown[] } } }).status;
+    expect(status.detail.approvals).toContainEqual(expect.objectContaining({ messageId: rec.envelope.messageId, outcome: 'not-done', reason: 'approvals-off' }));
+  });
+
+  it('a status for another task naming the same message id does not answer the waiting send', async () => {
+    const a = await sentTask();
+    const b = await sentTask();
+    await offer(a.linkId, a.taskId);
+    const pending = send({ taskId: a.taskId, workspaceId: 'ws-a', promptId: PROMPT, decision: 'deny', waitMs: 300 });
+    await vi.waitFor(() => expect(approvalsQueued()).toHaveLength(1), { timeout: 5_000 });
+    const messageId = approvalsQueued()[0]!.messageId;
+    await delivery.accept(statusEnv(b.linkId, b.taskId, { kind: 'working', detail: { approvals: [{ messageId, outcome: 'done' }] } as A2aRemoteStatusV1['detail'] }), { hostId: HOST });
+    expect(await pending).toMatchObject({ ok: true, pending: true });
+  });
+});
+
 describe('a refusal of every other kind is applied exactly as before; only `approval` is set apart', () => {
   type Refusing = {
     onRefused(r: A2aOutboxRecordV1, c: string): Promise<void>;
