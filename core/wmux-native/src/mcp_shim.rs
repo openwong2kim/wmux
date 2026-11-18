@@ -59,7 +59,7 @@
 //! only to a pipe whose owner is this account (the process's user, or its
 //! default owner). A pipe at the broker's name with another owner is closed
 //! unwritten and the session falls back with `broker not ours`; it is not
-//! retried. A Unix socket lives in the account's own wmux folder.
+//! retried. Unix sockets are not checked here.
 //!
 //! Fallback (fallback.rs): when the broker is unreachable or does not take the
 //! session, and always for `--bot*` arguments (the broker hosts no bot
@@ -478,10 +478,6 @@ fn socket_error(syscall: &str, e: &std::io::Error) -> String {
     format!("{syscall} {}", errno_name(e))
 }
 
-/// No endpoint at all (ENOENT, or ERROR_FILE_NOT_FOUND for a pipe) means
-/// nothing is listening, so the session falls back at once. Any other failure,
-/// such as a socket file whose broker is restarting, is tried CONNECT_RETRIES
-/// times, CONNECT_RETRY_DELAY apart.
 /// The connect error of a pipe whose owner is not this account: the handshake,
 /// which carries the auth token, is never written to it, and it is not retried.
 #[derive(Debug)]
@@ -500,6 +496,27 @@ fn foreign_owner(e: &std::io::Error) -> bool {
     e.get_ref().is_some_and(|inner| inner.is::<ForeignPipeOwner>())
 }
 
+/// The owner check's outcome as a connect result. Another owner is
+/// ForeignPipeOwner (not retried, `broker not ours`). A check that could not
+/// run keeps its OS error, which is retried and then falls back as `no
+/// broker`. Either way the handshake is not written.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn owner_verdict(owned: std::io::Result<bool>) -> std::io::Result<()> {
+    match owned {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            ForeignPipeOwner,
+        )),
+        Err(e) => Err(e),
+    }
+}
+
+/// No endpoint at all (ENOENT, or ERROR_FILE_NOT_FOUND for a pipe) means
+/// nothing is listening, so the session falls back at once. Any other failure,
+/// such as a socket file whose broker is restarting, is tried CONNECT_RETRIES
+/// times, CONNECT_RETRY_DELAY apart.
+/// A pipe with another owner is not retried.
 fn connect_with_retry(pipe: &str) -> Result<sys::Conn, std::io::Error> {
     let mut tries = 0;
     loop {
@@ -1329,7 +1346,8 @@ mod sys {
 
     /// Whether the pipe's owner is this account: the process's user, or the
     /// owner it gives what it creates (an elevated process's default owner is
-    /// the Administrators group). Anything it cannot read counts as not ours.
+    /// the Administrators group, whose members can read this account's token
+    /// file anyway). A check that cannot run returns its error.
     pub(super) fn owned_by_us(pipe: Handle) -> std::io::Result<bool> {
         let mut owner: *mut c_void = std::ptr::null_mut();
         let mut descriptor: *mut c_void = std::ptr::null_mut();
@@ -1545,13 +1563,8 @@ mod sys {
         }
         // The handshake carries the auth token: it goes only to a pipe this
         // account owns, never to one another account created under this name.
-        match owned_by_us(conn.0) {
-            Ok(true) => Ok(conn),
-            _ => Err(Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                super::ForeignPipeOwner,
-            )),
-        }
+        // On any error the handle closes with `conn`, unwritten.
+        super::owner_verdict(owned_by_us(conn.0)).map(|()| conn)
     }
 
     /// A non-blocking stdio is a Unix notion; a pipe handle that reports one
@@ -1944,6 +1957,17 @@ mod tests {
             std::io::ErrorKind::PermissionDenied
         )));
         assert!(!foreign_owner(&std::io::Error::other("no broker")));
+    }
+
+    #[test]
+    fn the_owner_check_writes_nothing_unless_the_owner_is_ours() {
+        assert!(owner_verdict(Ok(true)).is_ok());
+        // Another owner: refused for good, as `broker not ours`.
+        assert!(foreign_owner(&owner_verdict(Ok(false)).unwrap_err()));
+        // A check that could not run: its own error, retried as any connect failure.
+        let failed = owner_verdict(Err(std::io::Error::from_raw_os_error(8))).unwrap_err();
+        assert!(!foreign_owner(&failed));
+        assert_eq!(failed.raw_os_error(), Some(8));
     }
 }
 
