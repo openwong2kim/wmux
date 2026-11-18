@@ -15,6 +15,15 @@ use std::thread::JoinHandle;
 /// below PIPE_UNLIMITED_INSTANCES (255).
 pub(crate) const MAX_INSTANCES: u32 = 253;
 
+/// At the cap, how long a connected client waits unserved for a slot
+/// before it is disconnected.
+pub(crate) const AT_CAP_WAIT: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_millis(500)
+} else {
+    std::time::Duration::from_secs(10)
+};
+const AT_CAP_WAIT_MS: u32 = AT_CAP_WAIT.as_millis() as u32;
+
 #[derive(Debug)]
 pub(crate) enum ListenError {
     /// The name already exists (another listener, ours or not).
@@ -406,13 +415,22 @@ fn accept_loop(shared: &Shared, stop: Handle, instances: &Arc<Instances>, first:
             Ok(Connect::Stopped) => return,
             Err(message) => return shared.fail(message),
         }
+        // Sampled as the connect returns, before any slot wait, so the
+        // peer's creation-time check spans only the accept latency.
         let accepted_at = now_ticks();
-        // A slot for the conn. At the cap this waits for an accepted conn to
-        // close; the connected instance keeps the name meanwhile, and the
-        // client waits as it would for a busy server.
+        // A slot for the conn. At the cap this waits up to AT_CAP_WAIT for an
+        // accepted conn to close, while the connected instance keeps the
+        // name and its client waits unserved. Past that, the client is
+        // disconnected (it sees a broken pipe) and the same instance listens
+        // again, so the name never disappears.
         if !instances.try_slot() {
-            match wait_any(&[stop, instances.slots.raw()], INFINITE) {
+            match wait_any(&[stop, instances.slots.raw()], AT_CAP_WAIT_MS) {
                 Ok(Some(1)) => {}
+                Ok(None) => {
+                    // SAFETY: a server end of our own, with no I/O pending.
+                    unsafe { DisconnectNamedPipe(listening.raw()) };
+                    continue;
+                }
                 Ok(_) => return,
                 Err(message) => return shared.fail(message),
             }

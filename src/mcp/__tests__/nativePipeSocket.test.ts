@@ -450,8 +450,17 @@ class FakeListener implements NativePipeListener {
     setImmediate(this.notify);
     return conn;
   }
-  takeAccepted(): FakeConn | null { return this.pending.shift() ?? null; }
-  failure(): string | null { return this.failed; }
+  /** The next N takeAccepted() / failure() calls throw. */
+  takeThrows = 0;
+  failureThrows = 0;
+  takeAccepted(): FakeConn | null {
+    if (this.takeThrows > 0) { this.takeThrows--; throw new Error('take broke'); }
+    return this.pending.shift() ?? null;
+  }
+  failure(): string | null {
+    if (this.failureThrows > 0) { this.failureThrows--; throw new Error('failure broke'); }
+    return this.failed;
+  }
   close(): void { this.closeCalls++; }
 }
 
@@ -562,6 +571,74 @@ describe('listenNativePipe', () => {
     expect(conn.destroyCalls).toBe(1);
     expect(log).toHaveBeenCalledTimes(1);
     server.close();
+  });
+
+  it('a throwing takeAccepted() or failure() is a labelled listener failure; pumping goes on', async () => {
+    const { module, listeners } = fakeModule();
+    const delivered: NativePipeSocket[] = [];
+    const failures: string[] = [];
+    const connectionErrors: unknown[] = [];
+    const server = listenNativePipe('p', {
+      maxInstances: 4, module, onConnection: (s) => delivered.push(s),
+      onFailure: (r) => failures.push(r), onConnectionError: (e) => connectionErrors.push(e),
+    });
+    const [listener] = listeners;
+    const live = listener.accept();
+    await vi.waitFor(() => expect(delivered).toHaveLength(1), { timeout: 5_000 });
+    const got: string[] = [];
+    delivered[0].on('data', (c: Buffer) => got.push(c.toString()));
+    await ticks(5);
+
+    // One wake: takeAccepted() and failure() both throw; the live socket's
+    // completed read must still be pumped, and nothing may throw out.
+    live.wake = noop;
+    live.feed('still pumped');
+    const queued = new FakeConn();
+    queued.wake = noop;
+    listener.pending.push(queued);
+    listener.takeThrows = 1;
+    listener.failureThrows = 1;
+    expect(() => listener.notify()).not.toThrow();
+    expect(failures).toEqual(['takeAccepted() threw: take broke', 'failure() threw: failure broke']);
+    expect(connectionErrors).toEqual([]);
+    expect(got.join('')).toBe('still pumped');
+
+    // The next wake drains what the failed take left behind.
+    listener.notify();
+    expect(delivered).toHaveLength(2);
+    for (const s of delivered) s.destroy();
+    server.close();
+  });
+
+  it('an onFailure that throws is logged, not thrown, and the wake finishes', () => {
+    const { module, listeners } = fakeModule();
+    const log = vi.spyOn(console, 'error').mockImplementation(noop);
+    const delivered: NativePipeSocket[] = [];
+    const server = listenNativePipe('p', {
+      maxInstances: 2, module, onConnection: (s) => delivered.push(s),
+      onFailure: () => { throw new Error('handler broke'); },
+    });
+    const [listener] = listeners;
+    listener.failed = 'stopped';
+    const conn = new FakeConn();
+    conn.wake = noop;
+    listener.pending.push(conn);
+    expect(() => listener.notify()).not.toThrow();
+    expect(delivered).toHaveLength(1);
+    expect(log.mock.calls.map((c) => String(c[0]))).toEqual(['[native-pipe] onFailure threw:', '[native-pipe] listener failure: stopped']);
+    delivered[0].destroy();
+    server.close();
+  });
+
+  it('maxInstances is an integer from 1 to 253, checked before the native listener is made', () => {
+    const { module, names } = fakeModule();
+    for (const bad of [0, 254, 1.5, -1, Number.NaN]) {
+      expect(() => listenNativePipe('p', { maxInstances: bad, module, onConnection: noop }))
+        .toThrow(/maxInstances must be an integer from 1 to 253/);
+    }
+    expect(names).toEqual([]);
+    for (const good of [1, 253]) listenNativePipe('p', { maxInstances: good, module, onConnection: noop }).close();
+    expect(names).toEqual([['p', 1], ['p', 253]]);
   });
 
   it('reports a failure once and exposes it', async () => {

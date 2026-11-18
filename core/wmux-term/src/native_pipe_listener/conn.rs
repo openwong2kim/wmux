@@ -8,18 +8,24 @@ use super::peer::PeerFacts;
 use super::sys::*;
 use super::{Notify, Worker};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// A single read asks for at most this much.
 const MAX_READ: usize = 1024 * 1024;
 
-/// How long end() waits for the client to take the queued writes before it
-/// cancels them and closes anyway, so a client that stops reading cannot
-/// keep an ended conn (its thread, handles and slot) open for good.
+/// A write is issued in chunks of at most this much, so a long write shows
+/// progress (for END_DRAIN_LIMIT) each time a chunk completes.
+const WRITE_CHUNK: usize = 64 * 1024;
+
+/// An idle limit for end(): when no queued write makes progress for this
+/// long, the client has stopped reading, and end() cancels the writes and
+/// closes anyway, so it cannot keep an ended conn (its thread, handles and
+/// slot) open for good. A client that reads slowly but steadily is never
+/// cut off: the deadline moves forward each time a chunk completes.
 pub(crate) const END_DRAIN_LIMIT: Duration = if cfg!(test) {
-    Duration::from_secs(5)
+    Duration::from_secs(1)
 } else {
     Duration::from_secs(30)
 };
@@ -61,6 +67,13 @@ struct Shared {
     /// by the thread itself as it exits, so a finished conn keeps no thread
     /// handle either.
     thread: Mutex<Option<JoinHandle<()>>>,
+    /// Set as the I/O thread's last act, for a join whose JoinHandle the
+    /// thread already dropped.
+    exited: Mutex<bool>,
+    exited_signal: Condvar,
+    /// Runs once when the conn has closed (the binding drops its strong
+    /// cleanup entry there).
+    on_closed: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl Shared {
@@ -109,6 +122,9 @@ impl Conn {
             control: Mutex::new(Some(event(false)?)),
             notify: Mutex::new(Some(notify)),
             thread: Mutex::new(None),
+            exited: Mutex::new(false),
+            exited_signal: Condvar::new(),
+            on_closed: Mutex::new(None),
         });
         let read_event = event(true)?;
         let write_event = event(true)?;
@@ -116,7 +132,7 @@ impl Conn {
         let thread = std::thread::Builder::new()
             .name("wmux-pipe-io".into())
             .spawn(move || {
-                let _worker = Worker::enter();
+                let worker = Worker::enter();
                 run(&worker_shared, &instance, read_event, write_event);
                 // Close order: the handle (and its instance slot), then the
                 // peer's process handle, then report closed.
@@ -141,6 +157,20 @@ impl Conn {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .take();
+                let on_closed = worker_shared
+                    .on_closed
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take();
+                if let Some(on_closed) = on_closed {
+                    on_closed();
+                }
+                drop(worker);
+                *worker_shared
+                    .exited
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = true;
+                worker_shared.exited_signal.notify_all();
             })
             .map_err(|e| e.to_string())?;
         {
@@ -228,6 +258,23 @@ impl Conn {
         self.shared.lock().closed
     }
 
+    /// Runs `f` once the conn has closed (at once if it already has).
+    pub(crate) fn on_closed(&self, f: Box<dyn FnOnce() + Send>) {
+        let state = self.shared.lock();
+        if state.closed {
+            drop(state);
+            f();
+            return;
+        }
+        // Set under the state lock: the I/O thread sets `closed` before it
+        // takes this, so it always finds `f`.
+        *self
+            .shared
+            .on_closed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(f);
+    }
+
     /// Cancels pending I/O and closes; the join runs off the caller's thread.
     pub(crate) fn destroy(&self) {
         if self.signal_destroy() {
@@ -246,11 +293,22 @@ impl Conn {
         }
     }
 
-    /// As `destroy`, joining on the caller's thread.
+    /// As `destroy`, waiting on the caller's thread until the I/O thread
+    /// has exited.
     pub(crate) fn destroy_and_join(&self) {
         self.signal_destroy();
         if let Some(thread) = self.take_thread() {
             let _ = thread.join();
+            return;
+        }
+        // The thread dropped its own handle: wait for its last act.
+        let mut exited = self.shared.exited.lock().unwrap_or_else(|p| p.into_inner());
+        while !*exited {
+            exited = self
+                .shared
+                .exited_signal
+                .wait(exited)
+                .unwrap_or_else(|p| p.into_inner());
         }
     }
 
@@ -291,6 +349,13 @@ fn is_eof(code: u32) -> bool {
     )
 }
 
+/// A queued write being sent, chunk by chunk.
+struct Sending {
+    id: u32,
+    data: Vec<u8>,
+    sent: usize,
+}
+
 /// The I/O loop. Returns with no I/O outstanding on the handle.
 fn run(
     shared: &Shared,
@@ -313,7 +378,9 @@ fn run(
     let mut write_ov = Overlapped::with_event(write_event.raw());
     let mut read_buf: Vec<u8> = Vec::new();
     let mut read_pending = false;
-    let mut write_pending: Option<(u32, Vec<u8>)> = None;
+    let mut sending: Option<Sending> = None;
+    let mut write_pending = false;
+    // While ending: the last write progress plus the idle limit.
     let mut drain_deadline: Option<Instant> = None;
     loop {
         let mut state = shared.lock();
@@ -321,11 +388,15 @@ fn run(
             break;
         }
         if state.ending {
+            // All writes done wins over a deadline that passed meanwhile.
+            if sending.is_none() && (state.writes.is_empty() || state.write_failed) {
+                break;
+            }
             let deadline = *drain_deadline.get_or_insert_with(|| Instant::now() + END_DRAIN_LIMIT);
             if Instant::now() >= deadline {
                 state.error.get_or_insert_with(|| {
                     format!(
-                        "end: the client did not read the queued writes within {} s",
+                        "end: the client read none of the queued writes for {} s",
                         END_DRAIN_LIMIT.as_secs()
                     )
                 });
@@ -359,7 +430,7 @@ fn run(
                 }
             }
         }
-        if write_pending.is_none() && !state.write_failed {
+        if sending.is_none() && !state.write_failed {
             if let Some((id, data)) = state.writes.pop_front() {
                 if data.is_empty() {
                     state.written.push(id);
@@ -367,15 +438,24 @@ fn run(
                     shared.wake();
                     continue;
                 }
+                sending = Some(Sending { id, data, sent: 0 });
+            }
+        }
+        if !write_pending {
+            if let Some(current) = &sending {
+                let chunk = &current.data[current.sent..];
+                let len = chunk.len().min(WRITE_CHUNK) as u32;
                 write_ov.rearm();
                 let mut n = 0;
-                let len = data.len().min(u32::MAX as usize) as u32;
-                // SAFETY: as for the read; `data` moves into write_pending.
-                let ok = unsafe { WriteFile(pipe, data.as_ptr(), len, &mut n, &mut *write_ov) };
+                // SAFETY: as for the read; `sending` keeps the bytes alive
+                // until the write completes or is canceled and waited for.
+                let ok = unsafe { WriteFile(pipe, chunk.as_ptr(), len, &mut n, &mut *write_ov) };
                 let code = if ok != 0 { 0 } else { last_error() };
                 if ok != 0 || code == ERROR_IO_PENDING {
-                    write_pending = Some((id, data));
+                    write_pending = true;
                 } else {
+                    let id = current.id;
+                    sending = None;
                     fail_writes(&mut state, id, code);
                     drop(state);
                     shared.wake();
@@ -383,19 +463,13 @@ fn run(
                 }
             }
         }
-        if state.ending
-            && write_pending.is_none()
-            && (state.writes.is_empty() || state.write_failed)
-        {
-            break;
-        }
         drop(state);
 
         let mut handles = vec![control];
         if read_pending {
             handles.push(read_event.raw());
         }
-        if write_pending.is_some() {
+        if write_pending {
             handles.push(write_event.raw());
         }
         let timeout = drain_deadline.map_or(INFINITE, |deadline| {
@@ -436,20 +510,33 @@ fn run(
             }
             drop(state);
             shared.wake();
-        } else if signalled == write_event.raw() {
-            if let Some((id, _data)) = write_pending.take() {
-                let mut n = 0;
-                // SAFETY: the write has completed (its event is set).
-                let ok = unsafe { GetOverlappedResult(pipe, &mut *write_ov, &mut n, 0) };
+        } else if write_pending && signalled == write_event.raw() {
+            write_pending = false;
+            let mut n = 0;
+            // SAFETY: the write has completed (its event is set).
+            let ok = unsafe { GetOverlappedResult(pipe, &mut *write_ov, &mut n, 0) };
+            let code = if ok != 0 { 0 } else { last_error() };
+            let Some(mut current) = sending.take() else {
+                continue;
+            };
+            if ok == 0 {
                 let mut state = shared.lock();
-                if ok != 0 {
-                    state.written.push(id);
-                } else {
-                    fail_writes(&mut state, id, last_error());
-                }
+                fail_writes(&mut state, current.id, code);
                 drop(state);
                 shared.wake();
+                continue;
             }
+            // Progress: an ending conn's idle deadline moves forward.
+            if let Some(deadline) = drain_deadline.as_mut() {
+                *deadline = Instant::now() + END_DRAIN_LIMIT;
+            }
+            current.sent += n as usize;
+            if current.sent < current.data.len() {
+                sending = Some(current);
+                continue;
+            }
+            shared.lock().written.push(current.id);
+            shared.wake();
         }
     }
     // Cancel what is still outstanding and wait for it, so the buffers and
@@ -457,21 +544,18 @@ fn run(
     if read_pending {
         cancel_and_wait(pipe, &mut read_ov);
     }
-    if let Some((id, _data)) = write_pending.take() {
+    if write_pending {
         cancel_and_wait(pipe, &mut write_ov);
-        let mut state = shared.lock();
-        state.written.push(id);
-        if state.error.is_none() {
-            state.error = Some("write canceled".into());
-        }
     }
     let mut state = shared.lock();
+    if let Some(current) = sending.take() {
+        state.written.push(current.id);
+        state.error.get_or_insert_with(|| "write canceled".into());
+    }
     if !state.writes.is_empty() {
         let ids: Vec<u32> = state.writes.drain(..).map(|(id, _)| id).collect();
         state.written.extend(ids);
-        if state.error.is_none() {
-            state.error = Some("write canceled".into());
-        }
+        state.error.get_or_insert_with(|| "write canceled".into());
     }
 }
 
