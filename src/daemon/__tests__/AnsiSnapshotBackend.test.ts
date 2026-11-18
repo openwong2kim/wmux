@@ -123,8 +123,24 @@ describe('ANSI snapshot backend selection', () => {
     vi.spyOn(performance, 'now').mockImplementation(() => now);
     native.mockImplementationOnce(async () => { now = 1001; return { ok: false, reason: 'budget' }; });
     const reference = vi.fn(async () => success);
+    const before = getAnsiSnapshotBackendDiagnostics();
     expect(await selectAnsiSnapshot(request, reference)).toMatchObject({ ok: false, reason: 'budget' });
     expect(reference).not.toHaveBeenCalled();
+    // Native's own outcome, not an xterm fallback that never ran.
+    const after = getAnsiSnapshotBackendDiagnostics();
+    expect(after.fallbacks).toBe(before.fallbacks);
+    expect(after.reasons.budget).toBe((before.reasons.budget ?? 0) + 1);
+    expect(after.last).toEqual({ backend: 'rust', reason: 'budget' });
+  });
+
+  it('delivers a complete native snapshot whose serialization ended just past the deadline', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockImplementationOnce((async () => { now = 1040; return success; }) as never);
+    const reference = vi.fn(async () => success);
+    expect(await selectAnsiSnapshot(request, reference)).toMatchObject({ ok: true, durationMs: 1040 });
+    expect(reference).not.toHaveBeenCalled();
+    expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'rust', reason: 'native' });
   });
 
   it('opens the circuit on a module error until the module changes', async () => {
