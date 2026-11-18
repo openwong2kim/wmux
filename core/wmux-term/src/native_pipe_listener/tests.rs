@@ -1,0 +1,503 @@
+use super::conn::{Conn, ReadResult};
+use super::listener::{Instances, ListenError, Listener};
+use super::peer::ppid_rule;
+use super::security::{current_user, owner_only_sddl};
+use super::sys::*;
+use super::{worker_count, Notify};
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{channel, Receiver};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+const GENERIC_READ: u32 = 0x8000_0000;
+const GENERIC_WRITE: u32 = 0x4000_0000;
+const OPEN_EXISTING: u32 = 3;
+const HANDLE_FLAG_INHERIT: u32 = 1;
+const SE_KERNEL_OBJECT: u32 = 6;
+const OWNER_SECURITY_INFORMATION: u32 = 1;
+const DACL_SECURITY_INFORMATION: u32 = 4;
+const SE_DACL_PROTECTED: u16 = 0x1000;
+const ACL_SIZE_INFORMATION_CLASS: u32 = 2;
+const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+const MEDIUM_RID: u32 = 0x2000;
+
+#[repr(C)]
+#[derive(Default)]
+struct AclSizeInformation {
+    ace_count: u32,
+    bytes_in_use: u32,
+    bytes_free: u32,
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn CreateFileW(
+        name: *const u16,
+        access: u32,
+        share: u32,
+        attributes: *const c_void,
+        disposition: u32,
+        flags: u32,
+        template: Handle,
+    ) -> Handle;
+    fn GetHandleInformation(handle: Handle, flags: *mut u32) -> Bool;
+}
+
+#[link(name = "advapi32")]
+extern "system" {
+    fn GetSecurityInfo(
+        handle: Handle,
+        object_type: u32,
+        info: u32,
+        owner: *mut *mut c_void,
+        group: *mut *mut c_void,
+        dacl: *mut *mut c_void,
+        sacl: *mut *mut c_void,
+        descriptor: *mut *mut c_void,
+    ) -> u32;
+    fn GetSecurityDescriptorControl(
+        descriptor: *const c_void,
+        control: *mut u16,
+        revision: *mut u32,
+    ) -> Bool;
+    fn GetAclInformation(acl: *const c_void, info: *mut c_void, len: u32, class: u32) -> Bool;
+    fn GetAce(acl: *const c_void, index: u32, ace: *mut *mut c_void) -> Bool;
+    fn ConvertStringSidToSidW(sid: *const u16, out: *mut *mut c_void) -> Bool;
+}
+
+/// The I/O tests share the global worker count: run them one at a time.
+fn serial() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn pipe_name() -> String {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    format!(
+        r"\\.\pipe\wmux-pipe-listener-test-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn notifier() -> (Notify, Receiver<()>) {
+    let (tx, rx) = channel();
+    let tx = Mutex::new(tx);
+    (
+        Arc::new(move || {
+            let _ = tx.lock().unwrap().send(());
+        }),
+        rx,
+    )
+}
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn accept(listener: &Listener) -> Arc<Conn> {
+    let mut conn = None;
+    wait_until("an accepted conn", || {
+        conn = listener.take_accepted();
+        conn.is_some()
+    });
+    conn.unwrap()
+}
+
+struct Client(OwnedHandle);
+
+impl Client {
+    fn try_open(name: &str) -> Result<Self, u32> {
+        let name = wide(name);
+        // SAFETY: NUL-terminated name; synchronous (non-overlapped) handle.
+        let raw = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        OwnedHandle::from_raw(raw).map(Self).ok_or_else(last_error)
+    }
+    fn open(name: &str) -> Self {
+        Self::try_open(name).unwrap_or_else(|code| panic!("CreateFileW failed ({code})"))
+    }
+    fn write_all(&self, bytes: &[u8]) {
+        let mut n = 0;
+        // SAFETY: a synchronous write of a live slice.
+        let ok = unsafe {
+            WriteFile(
+                self.0.raw(),
+                bytes.as_ptr(),
+                bytes.len() as u32,
+                &mut n,
+                std::ptr::null_mut(),
+            )
+        };
+        assert!(
+            ok != 0 && n as usize == bytes.len(),
+            "client write failed ({})",
+            last_error()
+        );
+    }
+    /// Ok(bytes) or Err(win32 error).
+    fn read(&self, max: usize) -> Result<Vec<u8>, u32> {
+        let mut buf = vec![0u8; max];
+        let mut n = 0;
+        // SAFETY: a synchronous read into a live buffer.
+        let ok = unsafe {
+            ReadFile(
+                self.0.raw(),
+                buf.as_mut_ptr(),
+                max as u32,
+                &mut n,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(last_error());
+        }
+        buf.truncate(n as usize);
+        Ok(buf)
+    }
+    /// Reads until the server end is closed; asserts it ends in a broken pipe.
+    fn read_to_end(&self, chunk: usize, pause: Duration) -> Vec<u8> {
+        let mut all = Vec::new();
+        loop {
+            match self.read(chunk) {
+                Ok(bytes) => all.extend(bytes),
+                Err(code) => {
+                    assert_eq!(code, ERROR_BROKEN_PIPE, "client read ended with {code}");
+                    return all;
+                }
+            }
+            std::thread::sleep(pause);
+        }
+    }
+}
+
+fn pattern(len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i * 31 % 251) as u8).collect()
+}
+
+/// Reads from a conn until `len` bytes arrived.
+fn read_exact(conn: &Conn, len: usize) -> Vec<u8> {
+    let mut all = Vec::new();
+    while all.len() < len {
+        conn.request_read(64 * 1024);
+        let mut result = None;
+        wait_until("a read", || {
+            result = conn.take_read();
+            result.is_some()
+        });
+        match result.unwrap() {
+            ReadResult::Data(bytes) => all.extend(bytes),
+            ReadResult::Eof => panic!("eof after {} bytes", all.len()),
+        }
+    }
+    all
+}
+
+#[test]
+fn sddl_names_the_user_as_owner_and_grants_only_user_and_system() {
+    assert_eq!(
+        owner_only_sddl("S-1-5-21-1-2-3-1001"),
+        "O:S-1-5-21-1-2-3-1001D:P(A;;GA;;;S-1-5-21-1-2-3-1001)(A;;GA;;;SY)"
+    );
+    let sid = current_user().unwrap().to_sddl_string().unwrap();
+    assert!(sid.starts_with("S-1-"), "{sid}");
+}
+
+#[test]
+fn created_pipe_has_a_protected_two_entry_dacl_owned_by_the_user() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    let client = Client::open(&name);
+    let user = current_user().unwrap();
+    let mut owner = std::ptr::null_mut();
+    let mut dacl = std::ptr::null_mut();
+    let mut descriptor = std::ptr::null_mut();
+    // SAFETY: out-pointers into the returned descriptor, freed below.
+    unsafe {
+        let status = GetSecurityInfo(
+            client.0.raw(),
+            SE_KERNEL_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            &mut dacl,
+            std::ptr::null_mut(),
+            &mut descriptor,
+        );
+        assert_eq!(status, 0, "GetSecurityInfo");
+        assert!(EqualSid(owner, user.as_ptr()) != 0, "owner is the user");
+        let (mut control, mut revision) = (0u16, 0u32);
+        assert!(GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) != 0);
+        assert!(control & SE_DACL_PROTECTED != 0, "DACL is protected");
+        let mut size = AclSizeInformation::default();
+        assert!(
+            GetAclInformation(
+                dacl,
+                (&mut size as *mut AclSizeInformation).cast(),
+                std::mem::size_of::<AclSizeInformation>() as u32,
+                ACL_SIZE_INFORMATION_CLASS,
+            ) != 0
+        );
+        assert_eq!(size.ace_count, 2);
+        let system_text = wide("S-1-5-18");
+        let mut system = std::ptr::null_mut();
+        assert!(ConvertStringSidToSidW(system_text.as_ptr(), &mut system) != 0);
+        let mut sids = Vec::new();
+        for index in 0..2 {
+            let mut ace: *mut c_void = std::ptr::null_mut();
+            assert!(GetAce(dacl, index, &mut ace) != 0);
+            assert_eq!(*(ace as *const u8), ACCESS_ALLOWED_ACE_TYPE);
+            // ACCESS_ALLOWED_ACE: header (4 bytes), mask (4 bytes), then the SID.
+            sids.push((ace as *const u8).add(8) as *const c_void);
+        }
+        assert!(
+            sids.iter().any(|&sid| EqualSid(sid, user.as_ptr()) != 0),
+            "user ACE"
+        );
+        assert!(
+            sids.iter().any(|&sid| EqualSid(sid, system) != 0),
+            "SYSTEM ACE"
+        );
+        LocalFree(system);
+        LocalFree(descriptor);
+    }
+    drop(client);
+    listener.close_and_join();
+}
+
+#[test]
+fn a_second_listener_on_the_same_name_fails_with_eaddrinuse() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let first = Listener::bind(&name, 4, notify.clone()).unwrap();
+    match Listener::bind(&name, 4, notify) {
+        Err(ListenError::AddressInUse(message)) => assert!(message.starts_with("EADDRINUSE")),
+        Err(other) => panic!("unexpected error: {other}"),
+        Ok(_) => panic!("second listener bound"),
+    }
+    first.close_and_join();
+}
+
+#[test]
+fn instance_handles_are_not_inheritable() {
+    let _serial = serial();
+    let instances = Instances::new(&pipe_name(), 2).unwrap();
+    assert!(instances.try_slot());
+    let first = instances.create().unwrap();
+    assert!(instances.try_slot());
+    let second = instances.create().unwrap();
+    for instance in [&first, &second] {
+        let mut flags = u32::MAX;
+        // SAFETY: writes one u32.
+        assert!(unsafe { GetHandleInformation(instance.raw(), &mut flags) } != 0);
+        assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
+    }
+}
+
+#[test]
+fn self_connect_reports_this_process_as_the_peer() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    let client = Client::open(&name);
+    let conn = accept(&listener);
+    let peer = conn.peer().clone();
+    assert_eq!(peer.pid, std::process::id());
+    assert!(peer.same_session);
+    assert_eq!(peer.same_user, Some(true));
+    assert!(peer.integrity_rid.unwrap() >= MEDIUM_RID, "{peer:?}");
+    assert_eq!(peer.reason, None);
+    assert!(peer.created > 0.0);
+    let parent = crate::process_table::snapshot(false)
+        .unwrap()
+        .into_iter()
+        .find(|row| row.pid == std::process::id())
+        .map(|row| row.ppid);
+    assert!(
+        peer.ppid.is_none() || peer.ppid == parent,
+        "{peer:?} vs {parent:?}"
+    );
+
+    // Bytes round-trip both ways.
+    client.write_all(b"hello\n");
+    assert_eq!(read_exact(&conn, 6), b"hello\n");
+    let id = conn.write(b"world\n".to_vec());
+    wait_until("the write", || conn.take_written().contains(&id));
+    assert_eq!(client.read(64).unwrap(), b"world\n");
+    assert_eq!(conn.error(), None);
+
+    // The client closing reads as EOF.
+    drop(client);
+    conn.request_read(1024);
+    let mut result = None;
+    wait_until("eof", || {
+        result = conn.take_read();
+        result.is_some()
+    });
+    assert_eq!(result, Some(ReadResult::Eof));
+    conn.destroy_and_join();
+    assert!(conn.closed());
+    listener.close_and_join();
+}
+
+#[test]
+fn ppid_needs_a_live_parent_created_no_later_than_the_child() {
+    assert!(ppid_rule(true, 100, 200));
+    assert!(ppid_rule(true, 200, 200));
+    assert!(
+        !ppid_rule(true, 201, 200),
+        "a parent created after the child is a reused pid"
+    );
+    assert!(
+        !ppid_rule(false, 100, 200),
+        "an exited parent is not reported"
+    );
+}
+
+#[test]
+fn clients_past_the_instance_cap_wait_for_a_slot() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 2, notify).unwrap();
+    let first_client = Client::open(&name);
+    let first = accept(&listener);
+    let _second_client = Client::open(&name);
+    let second = accept(&listener);
+    // Both instances are taken and none is pending.
+    assert_eq!(Client::try_open(&name).err(), Some(ERROR_PIPE_BUSY));
+    first.destroy_and_join();
+    drop(first_client);
+    let mut third_client = None;
+    wait_until("a freed slot", || {
+        third_client = Client::try_open(&name).ok();
+        third_client.is_some()
+    });
+    let third = accept(&listener);
+    assert_eq!(third.peer().pid, std::process::id());
+    second.destroy_and_join();
+    third.destroy_and_join();
+    listener.close_and_join();
+}
+
+/// end() closes after its writes complete; a slow client still reads every
+/// byte, then ERROR_BROKEN_PIPE.
+fn end_keeps_every_byte(len: usize) {
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    let client = Client::open(&name);
+    let conn = accept(&listener);
+    let data = pattern(len);
+    conn.write(data.clone());
+    conn.end();
+    if len < PIPE_BUFFER_BYTES as usize {
+        // Fits the pipe buffer: the server end closes before any read.
+        wait_until("the close", || conn.closed());
+    }
+    let received = client.read_to_end(4096, Duration::from_millis(1));
+    assert_eq!(received.len(), data.len());
+    assert!(received == data, "bytes differ");
+    wait_until("the close", || conn.closed());
+    assert_eq!(conn.error(), None);
+    listener.close_and_join();
+}
+
+#[test]
+fn end_with_a_few_kilobytes_keeps_every_byte_for_a_slow_client() {
+    let _serial = serial();
+    end_keeps_every_byte(6 * 1024);
+    end_keeps_every_byte(60 * 1024);
+}
+
+#[test]
+fn end_with_a_write_larger_than_the_pipe_buffer_keeps_every_byte() {
+    let _serial = serial();
+    end_keeps_every_byte(200 * 1000);
+}
+
+#[test]
+fn destroy_during_a_pending_read_joins_the_worker() {
+    let _serial = serial();
+    let baseline = worker_count();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    let client = Client::open(&name);
+    let conn = accept(&listener);
+    conn.request_read(1024);
+    // A write that cannot complete: the client never reads.
+    conn.write(pattern(512 * 1024));
+    std::thread::sleep(Duration::from_millis(20));
+    conn.destroy_and_join();
+    assert!(conn.closed());
+    assert!(conn.error().is_some(), "the canceled write is reported");
+    drop(client);
+    listener.close_and_join();
+    assert_eq!(worker_count(), baseline);
+}
+
+#[test]
+fn a_new_listener_binds_the_name_while_an_old_client_handle_is_open() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let old = Listener::bind(&name, 4, notify.clone()).unwrap();
+    let client = Client::open(&name);
+    let conn = accept(&old);
+    conn.destroy_and_join();
+    old.close_and_join();
+    let new = Listener::bind(&name, 4, notify).unwrap();
+    // The old client sees its instance gone, not the new pipe.
+    assert_eq!(client.read(16).err(), Some(ERROR_BROKEN_PIPE));
+    let next_client = Client::open(&name);
+    let next = accept(&new);
+    next_client.write_all(b"x");
+    assert_eq!(read_exact(&next, 1), b"x");
+    next.destroy_and_join();
+    new.close_and_join();
+}
+
+#[test]
+fn connect_and_disconnect_cycles_return_to_baseline() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 8, notify).unwrap();
+    // Warm up lazily created process state before taking the baseline.
+    for _ in 0..3 {
+        let client = Client::open(&name);
+        accept(&listener).destroy_and_join();
+        drop(client);
+    }
+    let workers = worker_count();
+    let handles = process_handle_count();
+    for _ in 0..200 {
+        let client = Client::open(&name);
+        let conn = accept(&listener);
+        drop(client);
+        conn.destroy_and_join();
+    }
+    assert_eq!(worker_count(), workers);
+    let after = process_handle_count();
+    assert!(after <= handles + 4, "handles {handles} -> {after}");
+    listener.close_and_join();
+}

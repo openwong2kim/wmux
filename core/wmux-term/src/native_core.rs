@@ -42,6 +42,8 @@ pub fn native_core_capabilities() -> Vec<String> {
         "process-table-v1".into(),
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         "listen-sockets-v1".into(),
+        #[cfg(windows)]
+        "pipe-listener-v1".into(),
     ]
 }
 

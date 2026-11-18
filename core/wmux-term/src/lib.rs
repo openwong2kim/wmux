@@ -116,3 +116,6 @@ mod native_interpreter;
     )
 ))]
 mod process_table;
+
+#[cfg(all(windows, any(test, all(feature = "native-core", feature = "bindings"))))]
+mod native_pipe_listener;
