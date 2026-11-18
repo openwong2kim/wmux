@@ -970,12 +970,28 @@ describe('a state the other PC refuses, end to end', () => {
   type Refused = { state: string; code: string; at: string } | undefined;
   const refusedOn = (pc: Pc, taskId: string): Refused => (pc.tasks.getTask(taskId)?.metadata.remote as { stateRefused?: Refused } | undefined)?.stateRefused;
 
-  /** B tells A a state its own task is not in (as a peer that disagrees would): its last state envelope, re-stated. */
-  function strayState(b: Pc, a: Pc, taskId: string, state: string): void {
-    const last = [...b.delivery.outbox.settled()].reverse().find((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId);
-    expect(last).toBeDefined();
-    b.delivery.outbox.enqueue(a.hostId, { ...last!.envelope, messageId: `st-${crypto.randomBytes(16).toString('hex')}`, state: state as never });
+  /**
+   * B tells A a state its own task is not in (as a peer that disagrees would): its last state envelope, re-stated.
+   * A applies a state before it answers B's POST, so A can show it while B has not yet settled the record: wait for that.
+   */
+  async function strayState(b: Pc, a: Pc, taskId: string, state: string): Promise<void> {
+    const lastState = () => [...b.delivery.outbox.settled()].reverse().find((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId);
+    await until(() => lastState() !== undefined);
+    b.delivery.outbox.enqueue(a.hostId, { ...lastState()!.envelope, messageId: `st-${crypto.randomBytes(16).toString('hex')}`, state: state as never });
   }
+
+  /** A client for B whose answers to its state POSTs wait for `gate`: A has applied the state, B has not heard yet. */
+  const holdingStateAnswers = (gate: Promise<void>): ClientHook => (opts) => {
+    const real = new PinnedTlsClient(opts);
+    return {
+      async requestJson(method, p, body) {
+        const answer = await real.requestJson(method, p, body);
+        if (p === A2A_ROUTES.messages && (body as { kind?: string } | undefined)?.kind === 'state') await gate;
+        return answer;
+      },
+      openStream: (p, o) => real.openStream(p, o),
+    };
+  };
 
   async function moveB(b: Pc, taskId: string, to: 'working' | 'input-required' | 'completed'): Promise<void> {
     expect((await b.tasks.transition({ taskId, to, callerWorkspaceId: 'ws-b', ...(to === 'completed' ? { evidence: { summary: 'done', items: [{ kind: 'inspection' as const, status: 'verified' as const, summary: 'read' }] } } : {}) })).ok).toBe(true);
@@ -992,7 +1008,7 @@ describe('a state the other PC refuses, end to end', () => {
     await moveB(b, taskId, 'completed');
     await until(() => a.tasks.getTask(taskId)?.status.state === 'completed');
 
-    strayState(b, a, taskId, 'working');
+    await strayState(b, a, taskId, 'working');
     await until(() => refusedOn(b, taskId) !== undefined);
     expect(refusedOn(b, taskId)).toMatchObject({ state: 'working', code: 'bad-request' });
     expect(b.tasks.getTask(taskId)!.status.state).toBe('completed');
@@ -1000,16 +1016,20 @@ describe('a state the other PC refuses, end to end', () => {
   });
 
   it('after a refused state, the next state the other PC takes still goes, and the refusal is cleared', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => { release = r; });
     const a = await makePc('PC-A');
-    const b = await makePc('PC-B');
+    const b = await makePc('PC-B', { client: holdingStateAnswers(gate) });
     const linkId = await linkedReceiverJoins(a, b);
     const taskId = await sendTask(a, linkId, 'one job');
     await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
     await moveB(b, taskId, 'working');
+    // A shows working before B has heard its POST went (held here, as a slow answer would be).
     await until(() => a.tasks.getTask(taskId)?.status.state === 'working');
+    release();
 
     // A is working already: working again is no move there.
-    strayState(b, a, taskId, 'working');
+    await strayState(b, a, taskId, 'working');
     await until(() => refusedOn(b, taskId) !== undefined);
     expect(b.tasks.getTask(taskId)!.status.state).toBe('working');
 
