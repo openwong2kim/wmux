@@ -986,7 +986,7 @@ export interface A2aRemoteApprovalOffer {
   tool: string;
   /** The bound call's command (secrets redacted, at most A2A_REMOTE_APPROVAL_COMMAND_MAX bytes); only at exposure `command`. */
   command?: string;
-  /** Redaction changed the command: allow is not offered. */
+  /** The command shown is not the call's own text (a secret masked, or characters that cannot be shown dropped): allow is not offered. */
   redacted: boolean;
   /** The command was cut at the cap: allow is not offered. */
   cut: boolean;
@@ -1050,7 +1050,7 @@ function parseApprovalOutcome(raw: unknown): A2aRemoteApprovalOutcome | null {
 }
 
 /** A command as one block of text from another PC: invisible format characters gone, other controls but newline and tab dropped. */
-function approvalCommandText(text: string): string {
+export function approvalCommandText(text: string): string {
   // eslint-disable-next-line no-control-regex -- stripping them is the point
   return text.replace(/\p{Cf}/gu, '').replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '');
 }

@@ -403,6 +403,26 @@ describe('receipts', () => {
     expect(rig.writes).toEqual([]);
   });
 
+  it('a resend while the first is still running types nothing and reports nothing for it yet', async () => {
+    const rig = makeRig();
+    await rig.prompt();
+    rig.approvals.tick();
+    const id = rig.offered()!;
+    let calls = 0;
+    const slow = new RemoteApprovals({
+      ...rig.deps,
+      registry: { ...rig.deps.registry, resolve: () => { calls += 1; return new Promise<ApprovalResolveResult>(() => undefined); } },
+    });
+    slow.tick();
+    void slow.take(HOST, TASK, 'ap-1', allow(id));
+    await vi.waitFor(() => expect(calls).toBe(1), { timeout: 5_000 });
+    expect(await slow.take(HOST, TASK, 'ap-1', allow(id))).toBe('running');
+    expect(calls).toBe(1);
+    rig.clock.now += STATUS_GAP;
+    slow.tick();
+    expect(JSON.stringify(rig.sent)).not.toContain('ap-1');
+  });
+
   it('receipts that could not be loaded: nothing is typed', async () => {
     const rig = makeRig();
     await rig.prompt();
@@ -466,6 +486,7 @@ describe('decideRemoteApproval', () => {
     ['a fenced plan', facts({ record: { tool: 'ExitPlanMode', fencedPlan: true, yesKey: undefined } }), { ok: true, allowed: ['allow', 'deny'] }],
     ['a plan not answered by fenced keys', facts({ record: { tool: 'ExitPlanMode', fencedPlan: false } }), { ok: false, reason: 'unsupported-tool' }],
     ['a fenced plan cut at the cap', facts({ record: { tool: 'ExitPlanMode', fencedPlan: true }, command: { cut: true } }), { ok: true, allowed: ['deny'] }],
+    ['a fenced plan with no text to show', facts({ record: { tool: 'ExitPlanMode', fencedPlan: true }, command: { shown: false } }), { ok: true, allowed: ['deny'] }],
   ])('%s', (_label, f, verdict) => {
     expect(decideRemoteApproval(f as RemoteApprovalFacts)).toEqual(verdict);
   });
@@ -486,13 +507,22 @@ describe('the command offered at exposure command', () => {
     expect(decideRemoteApproval(facts({ command: { cut: offered.cut, redacted: offered.redacted } }))).toEqual({ ok: true, allowed: ['deny'] });
   });
 
-  it('through the producer: a long or redacted command is offered deny only, and an allow is refused before any key', async () => {
-    for (const command of [`echo ${'y'.repeat(3000)}`, 'export TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789']) {
+  it('a character the other PC would not show (a carriage return, a bidi mark): not the call\'s own text, so deny only', () => {
+    for (const command of ['echo a\r\nrm b', 'echo \u202eevil']) {
+      const offered = offeredCommand(command);
+      expect(offered.redacted).toBe(true);
+      expect(offered.text).not.toBe(command);
+    }
+    expect(offeredCommand('echo a\n\techo b')).toEqual({ text: 'echo a\n\techo b', redacted: false, cut: false });
+  });
+
+  it('through the producer: a long, redacted, unshowable or empty command is offered deny only, and an allow is refused before any key', async () => {
+    for (const command of [`echo ${'y'.repeat(3000)}`, 'export TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789', 'echo \u202eevil', '']) {
       const rig = fakeRig({ command });
       rig.approvals.tick();
       const approval = rig.sent.at(-1)!.detail!.approval!;
       expect(approval.allowed).toEqual(['deny']);
-      expect(approval.cut || approval.redacted).toBe(true);
+      expect(approval.cut || approval.redacted || command === '').toBe(true);
       expect(await rig.approvals.take(HOST, TASK, 'ap-1', allow(approval.promptId))).toMatchObject({ outcome: 'not-done', reason: 'deny-only' });
       expect(rig.resolves).toEqual([]);
     }

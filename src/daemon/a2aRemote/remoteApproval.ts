@@ -23,6 +23,7 @@ import crypto from 'node:crypto';
 import {
   ANSWER_OUTCOMES_MAX,
   A2A_REMOTE_APPROVAL_COMMAND_MAX,
+  approvalCommandText,
   capUtf8,
   type A2aApprovalExposure,
   type A2aRemoteApprovalDecision,
@@ -113,11 +114,17 @@ export function promptIdOf(facts: Pick<RemoteApprovalRecordFacts, 'id' | 'prompt
   return crypto.createHash('sha256').update(`${facts.id}\0${fp}`).digest('hex').slice(0, 16);
 }
 
-/** The bound call's command as offered at exposure `command`: redacted first, then capped. */
+/**
+ * The bound call's command as offered at exposure `command`: redacted first,
+ * then cleaned as the other PC reads it (approvalCommandText), then capped.
+ * `redacted`: what is shown is not the call's own text (a secret masked, or a
+ * character the other PC would drop, a carriage return included).
+ */
 export function offeredCommand(command: string): { text: string; redacted: boolean; cut: boolean } {
   const { text, masked } = redactSecretsCounted(command);
-  const capped = capUtf8(text, A2A_REMOTE_APPROVAL_COMMAND_MAX);
-  return { text: capped.text, redacted: masked > 0 || text !== command, cut: capped.cut };
+  const clean = approvalCommandText(text);
+  const capped = capUtf8(clean, A2A_REMOTE_APPROVAL_COMMAND_MAX);
+  return { text: capped.text, redacted: masked > 0 || clean !== command, cut: capped.cut };
 }
 
 export interface RemoteApprovalsDeps {
@@ -245,16 +252,17 @@ export class RemoteApprovals {
    * went is kept for the task's status and logged. The setting was checked
    * when the message was taken, and is checked again here.
    */
-  async take(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1): Promise<A2aRemoteApprovalOutcome> {
+  async take(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1): Promise<A2aRemoteApprovalOutcome | 'running'> {
     const outcome = await this.carryOut(hostId, taskId, messageId, approval).catch((err: unknown): A2aRemoteApprovalOutcome => {
       this.deps.log('warn', `[a2a-remote] approval task=${taskId} message=${messageId}: ${err instanceof Error ? err.message : String(err)}`);
       return { messageId, outcome: 'not-done', reason: 'unavailable' };
     });
-    this.record(taskId, outcome);
+    // A resend of one still running: its own outcome is recorded when it ends.
+    if (outcome !== 'running') this.record(taskId, outcome);
     return outcome;
   }
 
-  private async carryOut(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1): Promise<A2aRemoteApprovalOutcome> {
+  private async carryOut(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1): Promise<A2aRemoteApprovalOutcome | 'running'> {
     const notDone = (reason: A2aRemoteApprovalReason, fp?: string): A2aRemoteApprovalOutcome => {
       this.audit(taskId, messageId, approval, `not-done:${reason}`, fp);
       return { messageId, outcome: 'not-done', reason };
@@ -265,7 +273,9 @@ export class RemoteApprovals {
     const owner = `remote:${hostId}`;
     const approvalId = `${taskId}:${approval.promptId}:${approval.decision}`;
     const bodyHash = receiptHash([taskId, approval.promptId, approval.decision]);
-    const stored = this.storedOutcome(receipts.peek(owner, messageId, approvalId, bodyHash), messageId);
+    const seen = receipts.peek(owner, messageId, approvalId, bodyHash);
+    if (seen?.kind === 'in-flight') return 'running';
+    const stored = this.storedOutcome(seen, messageId);
     if (stored) {
       this.audit(taskId, messageId, approval, `stored:${stored.outcome}${stored.reason ? `:${stored.reason}` : ''}`);
       return stored;
@@ -296,6 +306,7 @@ export class RemoteApprovals {
         } catch {
           return notDone('unavailable', fp8);
         }
+        if (begun.kind === 'in-flight') return 'running';
         if (begun.kind !== 'new') {
           return this.storedOutcome(begun.kind === 'full' ? null : begun, messageId) ?? notDone('unavailable', fp8);
         }
@@ -328,9 +339,7 @@ export class RemoteApprovals {
   private storedOutcome(seen: ReturnType<AnswerReceiptStore['peek']>, messageId: string): A2aRemoteApprovalOutcome | null {
     if (!seen) return null;
     if (seen.kind === 'reused') return { messageId, outcome: 'not-done', reason: 'id-reused' };
-    // Still running: its own outcome is recorded when it ends.
-    if (seen.kind === 'in-flight') return { messageId, outcome: 'uncertain' };
-    if (seen.kind === 'uncertain') return { messageId, outcome: 'uncertain' };
+    if (seen.kind === 'in-flight' || seen.kind === 'uncertain') return { messageId, outcome: 'uncertain' };
     const body = seen.response.body;
     if (body['outcome'] === 'done') return { messageId, outcome: 'done' };
     if (body['outcome'] === 'uncertain') return { messageId, outcome: 'uncertain' };
@@ -445,7 +454,8 @@ export class RemoteApprovals {
       turn: latest ? { ...latest.turn, sameSession } : null,
       chain,
       record: { ...facts, ...(facts.call ? { tool: facts.call.name } : {}) },
-      command: { shown: command !== null, cut: command?.cut ?? false, redacted: command?.redacted ?? false },
+      // An empty command (a plan call without its text) shows nothing to allow.
+      command: { shown: command !== null && command.text.trim() !== '', cut: command?.cut ?? false, redacted: command?.redacted ?? false },
     });
     if (!verdict.ok) {
       // A prompt in this task's turn made at another revision: some other key reached the pane.
@@ -489,8 +499,11 @@ export class RemoteApprovals {
   }
 
   private statusOf(task: Task): HeadlessTaskStatus | null {
-    const found = this.currentOffer(task);
     let t = this.tracked.get(task.id);
+    // Nothing offered yet and no open turn of the task's own: the pane's prompts are not read.
+    const latest = this.deps.turn(task.id);
+    if (!t && (!latest || !latest.turn.opened || latest.turn.closed)) return null;
+    const found = this.currentOffer(task);
     if (!('reason' in found)) {
       if (!t) {
         t = { offered: new Set(), capLogged: false, outcomes: [] };
@@ -516,7 +529,7 @@ export class RemoteApprovals {
     }
     // Nothing offered on this task yet: it says nothing (a linked pane has no status otherwise).
     if (!t) return null;
-    const turn = this.deps.turn(task.id)?.turn;
+    const turn = latest?.turn;
     return {
       taskId: task.id,
       kind: turn && turn.opened && !turn.closed ? 'working' : 'waiting-input',
