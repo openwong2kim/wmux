@@ -400,8 +400,6 @@ export interface DownloadPass {
   /** Settles when the approved download completes, fails, or never starts,
    *  and only after Chrome acknowledged the deny the pass restored. */
   readonly done: Promise<ConsentedDownload>;
-  /** Whether Chrome acknowledged that restored deny (false until the pass ends, and if it never did). */
-  readonly denyConfirmed: boolean;
   /** Withdraw: cancels a running download and restores deny. Idempotent. */
   cancel(reason?: string): void;
 }
@@ -453,7 +451,6 @@ export async function openDownloadPass(
     guard.send('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: opts.dir, eventsEnabled: true });
   /** The kept download reported progress: deny is back. */
   let underWay = false;
-  let denyConfirmed = false;
   let state: 'waiting' | 'running' | 'settled' = 'waiting';
   let guid = '';
   let url = '';
@@ -484,7 +481,6 @@ export async function openDownloadPass(
     // not handed out, and the guard's own tick takes the deny over again now
     // that the claim is released.
     void deny().then((confirmed) => {
-      denyConfirmed = confirmed;
       if ('ok' in outcome && confirmed) {
         resolveDone(outcome.ok);
         return;
@@ -571,9 +567,6 @@ export async function openDownloadPass(
   if (state === 'waiting') arm(opts.startTimeoutMs, 'no download started in the approved tab in time');
   return {
     done,
-    get denyConfirmed() {
-      return denyConfirmed;
-    },
     cancel: (reason = 'the download was withdrawn') => {
       if (state === 'running' && guid) void guard.send('Browser.cancelDownload', { guid }).catch(() => undefined);
       settle({ error: reason });

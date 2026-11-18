@@ -164,6 +164,26 @@ describe('browser.consent.request', () => {
     expect(sent.at(-1)).toBe('Browser.setDownloadBehavior:deny');
   });
 
+  it.each([
+    ['the tab is not on the approved site', { url: 'http://b.test/', claimable: true, allowFails: false }],
+    ['another pass holds the claim', { url: 'http://a.test/', claimable: false, allowFails: false }],
+    ['the browser refuses the allow', { url: 'http://a.test/', claimable: true, allowFails: true }],
+  ])('a pass that cannot open leaves no download directory behind: %s', async (_why, how) => {
+    guard = {
+      send: async (m, p) => {
+        if (m === 'Target.getTargetInfo') return { targetInfo: { type: 'page', url: how.url } };
+        if (how.allowFails && p.behavior === 'allowAndName') throw new Error('CDP error');
+        return {};
+      },
+      claim: () => (how.claimable ? () => undefined : null),
+      onProgress: () => () => undefined,
+      onClose: () => () => undefined,
+    };
+    const r = await call(register(), 'browser.consent.request', { workspaceId: 'ws-1', action: 'download', url: 'http://a.test/', targetId: 'T1' }, 'pty-a');
+    expect(r.error).toMatch(/policy_denied/);
+    expect(readdirSync(dir).filter((n) => n.startsWith('pass-'))).toEqual([]);
+  });
+
   it('returns only the approved file, moved out of the pass directory, which is removed', async () => {
     let claimant: ((p: Record<string, unknown>) => boolean) | null = null;
     let progress: ((p: Record<string, unknown>) => void) | null = null;

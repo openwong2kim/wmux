@@ -450,7 +450,10 @@ describe('openDownloadPass', () => {
     expect(behaviors()).toHaveLength(count);
   });
 
-  it('done waits for Chrome to acknowledge the restored deny', async () => {
+  // Pins behaviour that already held before the deny-failure fix: done waited
+  // for the deny's answer then too. The two tests after it are the ones that
+  // fail without that fix.
+  it('done waits for Chrome to acknowledge the restored deny (pins existing behaviour)', async () => {
     const g = fakeGuard();
     const pass = await openDownloadPass(g.guard, opts);
     g.holdDenies();
@@ -464,10 +467,8 @@ describe('openDownloadPass', () => {
     g.denies[0].ack();
     await flush();
     expect(settled).toBe(false);
-    expect(pass.denyConfirmed).toBe(false);
     g.denies[1].ack();
     await expect(pass.done).resolves.toEqual({ url: 'http://a.test/f', suggestedFilename: 'f.bin', path: '/tmp/x/g1' });
-    expect(pass.denyConfirmed).toBe(true);
   });
 
   it('a restored deny Chrome refuses fails the pass: the finished download is not handed out', async () => {
@@ -481,9 +482,8 @@ describe('openDownloadPass', () => {
     g.denies[1].fail();
     await expect(pass.done).rejects.toMatchObject({
       code: 'policy_denied',
-      message: expect.stringContaining('could not be denied again'),
+      message: expect.stringContaining('downloads could not be denied again after the approved download'),
     });
-    expect(pass.denyConfirmed).toBe(false);
     // Nothing is kept afterwards: the claim is gone, so the guard cancels every download.
     expect(g.claimed()).toBe(false);
     expect(g.begin({ guid: 'g2', frameId: 'T1', url: 'http://a.test/f' })).toBe(false);
@@ -501,7 +501,10 @@ describe('openDownloadPass', () => {
     // Its completion afterwards is not an answer.
     g.progress({ guid: 'g1', state: 'completed' });
     g.denies[1].ack();
-    await expect(pass.done).rejects.toMatchObject({ code: 'policy_denied' });
+    await expect(pass.done).rejects.toMatchObject({
+      code: 'policy_denied',
+      message: expect.stringContaining('downloads could not be denied again while the approved download ran'),
+    });
     expect(g.claimed()).toBe(false);
   });
 

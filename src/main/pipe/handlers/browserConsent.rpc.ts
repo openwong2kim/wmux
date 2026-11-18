@@ -324,15 +324,22 @@ export function registerBrowserConsentRpc(router: Pick<RpcRouter, 'register'>, d
       const guard = guardFor(caller.profileId);
       if (!guard) throw refuse("the protected browser's download guard is not ready");
       const dir = deps.makeDownloadDir ? deps.makeDownloadDir() : mkdtempSync(join(tmpdir(), 'wmux-download-'));
-      const pass = await openDownloadPass(guard, {
-        frameId: targetId,
-        approvedHost: op.hosts[0],
-        hostOf: canonicalUrlHost,
-        dir,
-        startTimeoutMs: boundedMs(params['startTimeoutMs'], DOWNLOAD_START_DEFAULT_MS, BROWSER_CONSENT_DOWNLOAD_START_MAX_MS),
-        finishTimeoutMs: BROWSER_CONSENT_DOWNLOAD_FINISH_MS,
-        join,
-      });
+      let pass: DownloadPass;
+      try {
+        pass = await openDownloadPass(guard, {
+          frameId: targetId,
+          approvedHost: op.hosts[0],
+          hostOf: canonicalUrlHost,
+          dir,
+          startTimeoutMs: boundedMs(params['startTimeoutMs'], DOWNLOAD_START_DEFAULT_MS, BROWSER_CONSENT_DOWNLOAD_START_MAX_MS),
+          finishTimeoutMs: BROWSER_CONSENT_DOWNLOAD_FINISH_MS,
+          join,
+        });
+      } catch (err) {
+        // No pass was opened: the directory made for it goes too.
+        rmSync(dir, { recursive: true, force: true });
+        throw err;
+      }
       const result = pass.done.then(
         (got) => collectApproved(dir, got),
         (err: unknown) => {
