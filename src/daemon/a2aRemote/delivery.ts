@@ -24,6 +24,7 @@ import {
   shownRemoteStatus,
 } from '../../shared/a2aRemote';
 import { A2A_REMOTE_RPC, isLegacyHeldReason, isWaitingCause, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteTaskState, type A2aRemoteWaitingCause } from '../../shared/a2aRemoteDelivery';
+import { parseGatedSubmitProof } from '../../shared/ptyMessageDelivery';
 import type { A2aRemoteHostStatus, A2aRemoteHostsStatusResult } from '../../shared/rpc';
 import { prepareA2aImage, type A2aImageInfo, type A2aImageRefusal } from '../../shared/a2aImages';
 import { companyBriefOf } from '../../shared/company';
@@ -595,13 +596,17 @@ export class A2aRemoteDelivery {
         return { ok: false, error: 'bad-request: unknown held reason' };
       }
       const messageId = typeof p['messageId'] === 'string' ? p['messageId'] : undefined;
+      const ptyId = typeof p['ptyId'] === 'string' && isSafeId(p['ptyId']) ? p['ptyId'] : undefined;
+      // What main submitted for a delivery: recorded when well-formed and for the pty marked, dropped otherwise (never a refusal).
+      const submit = p['delivered'] === true ? parseGatedSubmitProof(p['submit']) : undefined;
       const res = await svc.markRemote({
         taskId,
         ...(messageId !== undefined ? { messageId } : {}),
         ...(p['delivered'] === true ? { delivered: true } : {}),
         ...(typeof held === 'string' ? { held: readHeldReason(held) } : {}),
         ...(typeof p['attempted'] === 'boolean' && p['delivered'] !== true && held === undefined ? { attempted: p['attempted'] } : {}),
-        ...(typeof p['ptyId'] === 'string' && isSafeId(p['ptyId']) ? { ptyId: p['ptyId'] } : {}),
+        ...(ptyId !== undefined ? { ptyId } : {}),
+        ...(submit && submit.ptyId === ptyId ? { submit } : {}),
         // main offering a held reply again (only with an attempt, on an item).
         ...(p['reoffer'] === true && typeof p['attempted'] === 'boolean' && messageId !== undefined ? { reoffer: true as const } : {}),
       });

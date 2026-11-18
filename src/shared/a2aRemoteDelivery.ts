@@ -330,6 +330,8 @@ export interface A2aRemoteInboxItem {
   attempted?: boolean;
   /** A paste of it was once left unconfirmed (`delivery-unconfirmed`): it may be in the pane, whatever hold follows. */
   unconfirmed?: true;
+  /** With `delivered`: what main submitted to the pane for it, when it could tell. Recorded only. */
+  submit?: GatedSubmitProof;
   /**
    * Dropped here without being delivered (its hold expired): the task stays
    * open. `notice`: whether the PC that sent it was told (`held-notice.1`);
@@ -351,6 +353,8 @@ export interface A2aRemoteInboxItem {
 export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
   /** Inbound task: main started a paste and has not confirmed it yet. */
   attempted?: boolean;
+  /** Inbound task, with `delivered`: what main submitted to the pane for it, when it could tell. Recorded only. */
+  submit?: GatedSubmitProof;
   /** The last task state exchanged with the peer (sent, or applied from it). */
   stateSync?: TaskState;
   /**
