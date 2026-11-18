@@ -5,6 +5,7 @@ import os from 'node:os';
 import { StateWriter, detachedTtlHoursFor } from '../StateWriter';
 import { REMOTE_DURABLE_MARKER, REMOTE_DURABLE_TTL_HOURS } from '../../shared/sshPcContract';
 import type { DaemonState, DaemonSession } from '../types';
+import { releaseCoreHold } from '../heldSessions';
 import { waitForCondition } from './_waitForFile';
 
 let tmpDir: string;
@@ -1016,4 +1017,30 @@ it('keeps a session held for a missing terminal core past every TTL, with its bu
 it('keeps a held WSL entry whose own pending clock ran out, until the hold ends', () => {
   writer.saveImmediate(makeState([makePending(60 * DAY_MS, { holdReason: 'terminal-core-missing' })]));
   expect(writer.load().sessions).toHaveLength(1);
+});
+
+// CodeRabbit on #3417: the outage a hold covered is not retention. Released
+// after longer than every TTL, both kinds of held record survive the next load
+// with their buffer reference: the pending one's clock and the suspended one's
+// heldAt restart at the release.
+it('keeps a record released after an outage longer than the TTL, with its buffer reference', () => {
+  const pending = makePending(60 * DAY_MS, { id: 'held-wsl', holdReason: 'terminal-core-missing', bufferDumpPath: '/saved/wsl.buf' });
+  const suspended = makeSession({
+    id: 'held-plain', state: 'suspended', holdReason: 'terminal-core-missing',
+    lastActivity: new Date(Date.now() - 400 * DAY_MS).toISOString(),
+    heldAt: new Date(Date.now() - 400 * DAY_MS).toISOString(),
+    bufferDumpPath: '/saved/plain.buf',
+  });
+  for (const s of [pending, suspended]) expect(releaseCoreHold(s, Date.now())).toBe(true);
+  writer.saveImmediate(makeState([pending, suspended]));
+  const loaded = writer.load().sessions;
+  expect(loaded).toMatchObject([
+    { id: 'held-wsl', bufferDumpPath: '/saved/wsl.buf', recoveryError: 'WSL distro unavailable' },
+    { id: 'held-plain', bufferDumpPath: '/saved/plain.buf' },
+  ]);
+  for (const s of loaded) expect(s.holdReason).toBeUndefined();
+  // Releasing only the hold, with the old pending clock, would have lost it.
+  const stale = makePending(60 * DAY_MS, { id: 'stale-wsl' });
+  writer.saveImmediate(makeState([stale]));
+  expect(writer.load().sessions).toHaveLength(0);
 });

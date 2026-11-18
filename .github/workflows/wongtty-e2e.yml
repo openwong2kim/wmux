@@ -64,7 +64,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" != pull_request ]; then echo run=true >> "$GITHUB_OUTPUT"; exit 0; fi
           files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')
-          if printf '%s\n' "$files" | grep -v '^package\.json$' | grep -Eq '^(src/renderer/terminal/wongtty/|src/renderer/web/stubs/wongtty|src/renderer/hooks/useTerminal\.ts$|src/main/ipc/handlers/labs\.handler\.ts$|vite\.renderer\.config\.ts$|forge\.config\.ts$|e2e/wongtty-|e2e/lib\.mjs$|\.github/workflows/wongtty-e2e\.yml$)'; then
+          if printf '%s\n' "$files" | grep -v '^package\.json$' | grep -Eq '^(src/renderer/terminal/wongtty/|src/renderer/web/stubs/wongtty|src/renderer/hooks/useTerminal\.ts$|src/main/ipc/handlers/labs\.handler\.ts$|vite\.renderer\.config\.ts$|forge\.config\.ts$|e2e/wongtty-|e2e/lib\.mjs$|\.github/workflows/wongtty-e2e\.yml$|src/shared/nativeTerminalCore\.ts$|\.github/actions/terminal-core/)'; then
             echo run=true >> "$GITHUB_OUTPUT"
           elif gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[] | select(.filename == "package.json") | .patch' | grep -q wongtty; then
             echo run=true >> "$GITHUB_OUTPUT"

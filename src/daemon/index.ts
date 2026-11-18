@@ -249,7 +249,7 @@ import { startHangWatchdog } from './hangWatchdog';
 import { newerTimestamp } from './util/idleAnchor';
 import type { DaemonSession, DaemonState } from './types';
 import { retireAdopted, withDiskOnlySessions } from './diskOnlySessions';
-import { stampHeld } from './heldSessions';
+import { releaseCoreHold, stampHeld } from './heldSessions';
 import { suspendedListEntry } from './suspendedListEntry';
 import { createPromoteOnce, type PromoteResult } from './promoteOnce';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonDestroySessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
@@ -2263,6 +2263,17 @@ async function recoverSessions(
         }),
       },
     );
+  // A WSL shell the previous daemon left running on this same boot: stopped,
+  // identity-checked, before its record becomes a placeholder (the reaps above
+  // leave WSL out). Whether the placeholder is then held or promoted later,
+  // nothing may start a second shell beside the first.
+  const reapWslSurvivor = async (session: DaemonSession): Promise<void> => {
+    if (rebooted || session.state === 'suspended' || !recoverableIds.has(session.id)
+      || !leftoverReapEligible(session, sameBootProven)) return;
+    await reapIfIdentityConfirmed({ pid: session.pid, cmd: session.cmd,
+      storedCreatedAtFt: session.pidCreatedAtFt, storedStartTime: session.pidStartTime, storedStartKernel: session.pidStartKernel,
+      reason: `WSL recovery of ${session.id}` });
+  };
 
   for (const session of state.sessions) {
     if (session.state === 'dead') {
@@ -2319,6 +2330,10 @@ async function recoverSessions(
     // orphan-buffer sweep below keeps every non-dead session's). A pane that
     // asks for it gets TERMINAL_CORE_MISSING from promote, and the reason.
     if (terminalCoreMissing !== null) {
+      // A same-boot shell the old daemon left is stopped first, as the paths
+      // below do: a later promote must not start a second one beside it.
+      if (isWslShell(session.cmd)) await reapWslSurvivor(session);
+      else await leftoverShells.get(session.id);
       session.state = 'suspended';
       session.bufferDumpPath ??= stateWriter.getBufferDumpPath(session.id);
       sessionManager.holdPendingRecovery(session);
@@ -2326,24 +2341,14 @@ async function recoverSessions(
       continue;
     }
     // A boot with the module: an earlier hold is over, recover as usual. Its
-    // suspended clock starts now (heldAt), not from activity before the hold,
-    // so a pane the recovery cap skips is not pruned at the next load.
-    if (session.holdReason) {
-      delete session.holdReason;
-      session.heldAt = new Date().toISOString();
-      changed = true;
-    }
+    // clocks start now (releaseCoreHold), so the outage costs no retention.
+    if (releaseCoreHold(session, Date.now())) changed = true;
     // Publish every WSL placeholder, including cap-skipped panes. Boot must
     // publish RPC/panes without
     // waiting for a cold distro, and one unavailable target must not lose its
     // identity, binding or snapshot. Attach/promote retries asynchronously.
     if (isWslShell(session.cmd)) {
-      if (!rebooted && session.state !== 'suspended' && recoverableIds.has(session.id)
-        && leftoverReapEligible(session, sameBootProven)) {
-        await reapIfIdentityConfirmed({ pid: session.pid, cmd: session.cmd,
-          storedCreatedAtFt: session.pidCreatedAtFt, storedStartTime: session.pidStartTime, storedStartKernel: session.pidStartKernel,
-          reason: `WSL recovery of ${session.id}` });
-      }
+      await reapWslSurvivor(session);
       session.state = 'suspended';
       session.bufferDumpPath ??= stateWriter.getBufferDumpPath(session.id);
       // Waiting (including recovery-cap skips) is not a failure: only a real

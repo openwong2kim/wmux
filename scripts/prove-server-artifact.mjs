@@ -150,7 +150,9 @@ if (!restarted.spawned) throw new Error('`wmux daemon start` reused a running da
 try {
   const token = fs.readFileSync(path.join(wmuxDir, 'daemon-auth-token'), 'utf8').trim();
   const { terminalCore } = await rpc(restarted.pipeName, token, 'daemon.ping', { includeTerminalCore: true });
-  if (terminalCore?.requested !== 'rust' || terminalCore.effective !== 'rust' || terminalCore.environmentOverride !== false) {
+  // The restarted daemon loads the core again: the first load proves nothing here.
+  if (terminalCore?.requested !== 'rust' || terminalCore.effective !== 'rust'
+    || terminalCore.rustAvailable !== true || terminalCore.environmentOverride !== false) {
     throw new Error(`a saved node choice moved the daemon off the rust engine: ${JSON.stringify(terminalCore)}`);
   }
   if (!fs.existsSync(path.join(wmuxDir, 'terminal-core.json'))) throw new Error('the daemon deleted the saved engine choice');
