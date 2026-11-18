@@ -14,6 +14,7 @@ import {
   fleetTargetPtyId,
   type FleetDeviceGroup,
   type FleetDeviceHost,
+  type FleetAwayCounts,
   type FleetPane,
   type FleetRow,
 } from '../../stores/selectors/fleet';
@@ -103,6 +104,10 @@ const FINISHED_TOGGLE_KEY = 'fleet:finished-toggle';
 /** Roving key of one device's collapsed "Finished N" or "Idle N" row. */
 const deviceToggleKey = (kind: 'finished' | 'idle', deviceId: string) => `fleet:${kind}-toggle:${deviceId}`;
 const deviceRepairKey = (deviceId: string) => `fleet:device-repair:${deviceId}`;
+/** The store key of one device's Finished or Idle fold (fleetDeviceFolds). */
+const deviceFoldKey = (kind: 'finished' | 'idle', deviceId: string) => `${kind}:${deviceId}`;
+/** What no PC the rail calls down had: the note's input off the device list. */
+const NO_AWAY: Readonly<Record<string, FleetAwayCounts>> = Object.freeze({});
 /** Roving key of the collapsed "To hand out N" row. */
 const HAND_OUT_TOGGLE_KEY = 'fleet:hand-out-toggle';
 /** Roving key of the list's "Add a task…" row. */
@@ -247,9 +252,12 @@ export default function FleetView() {
     surfaceAgent, surfacePendingQuestion, surfaceShellPrompt, surfaceActivityAt, surfaceTurnOpenAt,
     commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, downHostIds, outdatedRemoteKeys, unverifiableMinutes,
     surfaceLastMessage, now, fleetSortMode]);
-  // What each PC the rail calls down last had, for its device head's note.
-  // Its rows are already off the board, as they are for fleet_triage.
-  const away = useMemo(() => selectDownHostAway({ workspaces, remoteWorkspaces, downHostIds }), [workspaces, remoteWorkspaces, downHostIds]);
+  // What each PC the rail calls down last had, for its device head's note
+  // (only the list grouped by device draws one). Its rows are already off the
+  // board, as they are for fleet_triage.
+  const away = useMemo(() => (fleetLayout === 'list' && fleetGroupBy === 'device'
+    ? selectDownHostAway({ workspaces, remoteWorkspaces, downHostIds })
+    : NO_AWAY), [fleetLayout, fleetGroupBy, workspaces, remoteWorkspaces, downHostIds]);
   // Every row, unfiltered: where the Hand out… popover reads a pane's state.
   const allRows = useMemo(() => [...groups.needsYou, ...groups.finished, ...groups.running, ...groups.idle], [groups]);
   // On close (unmount), remember what each pane's status was, so the next open
@@ -348,8 +356,8 @@ export default function FleetView() {
   const deviceFolds = useStore((s) => s.fleetDeviceFolds);
   const setDeviceFold = useStore((s) => s.setFleetDeviceFold);
   const deviceFoldOpen = useCallback((kind: 'finished' | 'idle', deviceId: string) => (kind === 'finished'
-    ? finishedForced || (deviceFolds[`${kind}:${deviceId}`] ?? finishedExpanded)
-    : idleForced || (deviceFolds[`${kind}:${deviceId}`] ?? fleetIdleExpanded)),
+    ? finishedForced || (deviceFolds[deviceFoldKey(kind, deviceId)] ?? finishedExpanded)
+    : idleForced || (deviceFolds[deviceFoldKey(kind, deviceId)] ?? fleetIdleExpanded)),
   [deviceFolds, finishedForced, finishedExpanded, idleForced, fleetIdleExpanded]);
   const listRows = useMemo(
     () => (byDevice ? [
@@ -920,8 +928,8 @@ export default function FleetView() {
     if (key) {
       // The row is this computer's: open its device fold too, which a fold
       // toggled there would otherwise keep shut.
-      if (finishedRow) { setFinishedExpanded(true); setDeviceFold(`finished:${LOCAL_PC_ID}`, true); }
-      if (idleRow) { setFleetIdleExpanded(true); setDeviceFold(`idle:${LOCAL_PC_ID}`, true); }
+      if (finishedRow) { setFinishedExpanded(true); setDeviceFold(deviceFoldKey('finished', LOCAL_PC_ID), true); }
+      if (idleRow) { setFleetIdleExpanded(true); setDeviceFold(deviceFoldKey('idle', LOCAL_PC_ID), true); }
       setPinnedTask(null);
       setFocusedPaneId(key);
     } else {
@@ -1667,7 +1675,7 @@ export default function FleetView() {
     ];
   };
   const toggleDeviceFold = (kind: 'finished' | 'idle', deviceId: string) =>
-    setDeviceFold(`${kind}:${deviceId}`, !deviceFoldOpen(kind, deviceId));
+    setDeviceFold(deviceFoldKey(kind, deviceId), !deviceFoldOpen(kind, deviceId));
 
   const kbd = (keys: string, label: string) => (
     <span className="wmux-board-key"><kbd>{keys}</kbd>{label}</span>
