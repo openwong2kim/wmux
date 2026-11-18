@@ -26,6 +26,7 @@
  * variable survived when it did not writes code against a fiction.
  */
 import { spawn, type ChildProcess } from 'child_process';
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { buildGatedAutomationEnv, withheldCredentialNames } from '../../shared/envFilter';
@@ -54,10 +55,13 @@ export const RESULT_CAP_BYTES = 16 * 1024;
  * session's state is far worse than waiting an extra second for a genuine hang.
  */
 export const HARD_KILL_GRACE_MS = 2_000;
-/** Quiet window the pipes must show before an eval's output is considered complete. */
-const DRAIN_QUIET_MS = 20;
-/** Ceiling on draining, so a still-chattering background timer cannot stall the tool. */
-const DRAIN_MAX_MS = 250;
+/**
+ * How long a run waits, after its result, for its end mark on each pipe. A
+ * backstop only: a mark ends the wait as soon as its bytes are read, and a pipe
+ * that closes ends it too. It bounds the case where neither happens, such as a
+ * process the run started that still holds the pipe after the runtime died.
+ */
+const END_MARK_WAIT_MS = 2_000;
 /** How long the child gets to report `ready` before the spawn is called failed. */
 const READY_TIMEOUT_MS = 10_000;
 
@@ -174,8 +178,84 @@ export function buildReplChildEnv(
   return { env, withheldCredentials: withheldCredentialNames(base) };
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * One of the child's output pipes, split at a run's end mark.
+ *
+ * The eval result travels on the IPC channel and the output on a pipe, and
+ * nothing orders the two: on darwin a large write is still queued in the pipe
+ * when the result arrives. So the runner writes the run's mark on stdout and
+ * on stderr just before it sends a result, and a run's output is exactly what
+ * precedes the mark on each pipe. Bytes after it were written after the
+ * result, by code the run left running, and are the next run's background.
+ * The mark itself is stripped, also when it arrives split across chunks.
+ */
+export class MarkedOutput {
+  private current = new OutputBuffer(OUTPUT_CAP_BYTES);
+  /** The run's output, complete, once its mark has arrived. */
+  private sealed: OutputBuffer | null = null;
+  private mark: Buffer | null = null;
+  /** A chunk's tail that may be the start of the mark. */
+  private held = Buffer.alloc(0);
+  private ended = false;
+
+  constructor(private readonly onSettled: () => void = () => undefined) {}
+
+  /** Nothing more of the run's output can arrive: its mark did, the pipe ended, or no mark is awaited. */
+  get settled(): boolean {
+    return this.mark === null || this.ended;
+  }
+
+  /** Start a run: its output ends at `mark`. */
+  expect(mark: Buffer): void {
+    this.mark = mark;
+    this.sealed = null;
+    this.held = Buffer.alloc(0);
+  }
+
+  append(chunk: Buffer): void {
+    const mark = this.mark;
+    if (!mark) {
+      this.current.append(chunk);
+      return;
+    }
+    const data = this.held.length > 0 ? Buffer.concat([this.held, chunk]) : chunk;
+    const at = data.indexOf(mark);
+    if (at === -1) {
+      let keep = Math.min(mark.length - 1, data.length);
+      while (keep > 0 && !data.subarray(data.length - keep).equals(mark.subarray(0, keep))) keep--;
+      if (data.length > keep) this.current.append(data.subarray(0, data.length - keep));
+      this.held = Buffer.from(data.subarray(data.length - keep));
+      return;
+    }
+    if (at > 0) this.current.append(data.subarray(0, at));
+    this.sealed = this.current;
+    this.current = new OutputBuffer(OUTPUT_CAP_BYTES);
+    this.mark = null;
+    this.held = Buffer.alloc(0);
+    const rest = data.subarray(at + mark.length);
+    if (rest.length > 0) this.current.append(rest);
+    this.onSettled();
+  }
+
+  /** The pipe closed: a mark still awaited will not come. */
+  end(): void {
+    this.ended = true;
+    this.onSettled();
+  }
+
+  /**
+   * The run's output, or with no run open everything since the last take, and
+   * stop awaiting a mark. Bytes held back as a possible mark start were output.
+   */
+  take(): TruncatedText {
+    if (this.held.length > 0) this.current.append(this.held);
+    this.held = Buffer.alloc(0);
+    this.mark = null;
+    const taken = this.sealed ?? this.current;
+    if (this.sealed) this.sealed = null;
+    else this.current = new OutputBuffer(OUTPUT_CAP_BYTES);
+    return taken.render();
+  }
 }
 
 export interface ReplSessionOptions {
@@ -200,9 +280,10 @@ export class ReplSession {
   private nextEvalId = 1;
   private evalCount = 0;
   private lastUsedAt = Date.now();
-  private lastChunkAt = 0;
-  private out = new OutputBuffer(OUTPUT_CAP_BYTES);
-  private err = new OutputBuffer(OUTPUT_CAP_BYTES);
+  /** Called when a pipe settles while a run waits for its end marks. */
+  private onPipeSettled: (() => void) | null = null;
+  private readonly out = new MarkedOutput(() => this.onPipeSettled?.());
+  private readonly err = new MarkedOutput(() => this.onPipeSettled?.());
   private pending: ((message: RunnerMessage) => void) | null = null;
   /** Id of the eval in flight; only a reply carrying it may settle. */
   private pendingId: number | null = null;
@@ -259,14 +340,10 @@ export class ReplSession {
     });
     this.child = child;
 
-    child.stdout?.on('data', (chunk: Buffer) => {
-      this.lastChunkAt = Date.now();
-      this.out.append(chunk);
-    });
-    child.stderr?.on('data', (chunk: Buffer) => {
-      this.lastChunkAt = Date.now();
-      this.err.append(chunk);
-    });
+    child.stdout?.on('data', (chunk: Buffer) => this.out.append(chunk));
+    child.stderr?.on('data', (chunk: Buffer) => this.err.append(chunk));
+    child.stdout?.on('close', () => this.out.end());
+    child.stderr?.on('close', () => this.err.end());
     child.on('error', (error) => this.markDead(`failed to spawn the REPL runtime: ${error.message}`));
     child.on('exit', (code, signal) => {
       this.markDead(
@@ -470,26 +547,28 @@ export class ReplSession {
   }
 
   /**
-   * Wait for the pipes to go quiet. The IPC result and the stdout bytes travel
-   * on different channels, so the completion message can land before the last
-   * `console.log` has been read — returning immediately would drop the tail of
-   * the output the caller is asking for.
+   * Wait for the run's end mark on both pipes (see MarkedOutput). The IPC
+   * result can land before the last `console.log` has been read; finishing
+   * then would drop the tail of the output the caller is asking for and report
+   * it as the next run's background.
    */
-  private async drain(): Promise<void> {
-    const start = Date.now();
-    await delay(DRAIN_QUIET_MS);
-    while (Date.now() - start < DRAIN_MAX_MS) {
-      if (Date.now() - this.lastChunkAt >= DRAIN_QUIET_MS) return;
-      await delay(5);
-    }
+  private awaitEndMarks(): Promise<void> {
+    return new Promise((resolve) => {
+      const finish = (): void => {
+        clearTimeout(timer);
+        this.onPipeSettled = null;
+        resolve();
+      };
+      const timer = setTimeout(finish, END_MARK_WAIT_MS);
+      this.onPipeSettled = () => {
+        if (this.out.settled && this.err.settled) finish();
+      };
+      this.onPipeSettled();
+    });
   }
 
   private takeOutput(): { stdout: TruncatedText; stderr: TruncatedText } {
-    const stdout = this.out.render();
-    const stderr = this.err.render();
-    this.out = new OutputBuffer(OUTPUT_CAP_BYTES);
-    this.err = new OutputBuffer(OUTPUT_CAP_BYTES);
-    return { stdout, stderr };
+    return { stdout: this.out.take(), stderr: this.err.take() };
   }
 
   async run(
@@ -561,10 +640,11 @@ export class ReplSession {
     // rather than blended into this eval's output, where the agent would read
     // it as its own code's doing.
     const background = this.takeOutput();
-    // Reset the drain clock so quiet is measured from THIS eval. Left at the
-    // previous eval's value it is always already stale, which makes the quiet
-    // test vacuously true and defeats the drain entirely.
-    this.lastChunkAt = Date.now();
+    // Armed before the eval is sent: the mark can reach a pipe before the
+    // result reaches the IPC channel.
+    const mark = Buffer.from(`\0wmux-repl-end:${randomUUID()}\0`);
+    this.out.expect(mark);
+    this.err.expect(mark);
 
     const message = await new Promise<RunnerMessage>((resolve) => {
       this.pending = resolve;
@@ -590,6 +670,7 @@ export class ReplSession {
           id,
           code,
           timeoutMs,
+          mark: mark.toString(),
           ...(browserBinding && { browser: browserBinding.tools }),
         });
       } catch (error) {
@@ -598,7 +679,7 @@ export class ReplSession {
       }
     });
 
-    await this.drain();
+    await this.awaitEndMarks();
     const { stdout, stderr } = this.takeOutput();
     this.endBrowserRun();
     const browser = ReplSession.browserReport(browserRun);
