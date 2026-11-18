@@ -38,6 +38,15 @@ describe('idleShellState', () => {
     expect(await tracker([{ ...shell, name: 'fish' }]).idleShellState(SHELL, ENV, true)).toEqual({ ok: false, reason: 'unsupported-shell' });
   });
 
+  it('does not count a process older than the shell as its child (a reused pid)', async () => {
+    const created = 1_700_000_000_000;
+    const winShell = { ...shell, name: 'pwsh.exe', cmdline: 'pwsh.exe', created };
+    const older = { pid: 300, ppid: SHELL, name: 'node.exe', cmdline: 'node x.js', created: created - 1000 };
+    expect(await tracker([winShell, older]).idleShellState(SHELL, ENV, true)).toEqual({ ok: true });
+    expect(await tracker([winShell, older, { ...older, pid: 301, created: created + 1000 }]).idleShellState(SHELL, ENV, true))
+      .toEqual({ ok: false, reason: 'shell-has-children' });
+  });
+
   it('lets a verified gitstatusd child through, but not a second unknown child', async () => {
     expect(await tracker([shell, helper()]).idleShellState(SHELL, ENV)).toEqual({ ok: true });
     expect(await tracker([shell, helper(), { pid: 300, ppid: SHELL, name: 'sleep', cmdline: 'sleep 99' }]).idleShellState(SHELL, ENV))
