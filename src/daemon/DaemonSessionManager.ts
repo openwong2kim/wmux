@@ -1110,9 +1110,8 @@ export class DaemonSessionManager extends EventEmitter {
     }
 
     // Ring buffer for scrollback — use config's bufferSizeMb if available
-    // ringBytes again here: a config set in code (tests, an embedder) never went through the load's normalising.
     const bufferSize = this.config
-      ? ringBytes(this.config.session.bufferSizeMb)
+      ? ringBytes(this.config.session.bufferSizeMb, DEFAULT_BUFFER_SIZE)
       : DEFAULT_BUFFER_SIZE;
     const ringBuffer = new RingBuffer(bufferSize, ptyBackend(ptyProcess), {
       compress: this.ringCompressionEnabled(),

@@ -10,7 +10,7 @@ import {
 } from './approvals/gateConfig';
 import { coerceNotifySinks, type NotifySinkConfig } from './push/WebhookSink';
 import type { GateConfig } from './approvals/gateConfig';
-import { RING_HARD_CAP_MB, ringBytes } from './ringLimits';
+import { RING_HARD_CAP_MB } from './ringLimits';
 import {
   CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT,
   CHANNEL_TRASH_TTL_HOURS_DEFAULT,
@@ -658,13 +658,6 @@ export function loadConfig(): DaemonConfig {
     if (config.session.bufferSizeMb > effectiveMax) {
       console.warn(`[daemon/config] bufferSizeMb (${config.session.bufferSizeMb}) exceeds max (${effectiveMax}), capping`);
       config.session.bufferSizeMb = effectiveMax;
-    }
-    // Whole bytes, and at least the smallest ring: a megabyte count is a power
-    // of two away from bytes, so this value times 1 MiB is exactly ringBytes.
-    const wholeMb = ringBytes(config.session.bufferSizeMb) / (1024 * 1024);
-    if (wholeMb !== config.session.bufferSizeMb) {
-      console.warn(`[daemon/config] bufferSizeMb (${config.session.bufferSizeMb}) is not a whole number of bytes of at least the smallest ring, using ${wholeMb}`);
-      config.session.bufferSizeMb = wholeMb;
     }
 
     // ── Substrate 3.0 lifecycle knobs: per-field backfill + clamp ──

@@ -24,8 +24,6 @@ import {
   DESKTOP_PRESENCE_STALE_CAP_MS,
 } from '../push/presence';
 import type { DaemonConfig } from '../types';
-import { RingBuffer } from '../RingBuffer';
-import { RING_MIN_BYTES } from '../ringLimits';
 import { GATE_POWERSHELL_MIGRATION } from '../approvals/gateConfig';
 import { handleGate } from '../../cli/commands/gate';
 
@@ -587,37 +585,6 @@ describe('createDefaultConfig — lifecycle knobs', () => {
     expect(c.daemon.memWarnMb).toBe(500);
     expect(c.daemon.memReapMb).toBe(750);
     expect(c.daemon.memBlockMb).toBe(1024);
-  });
-});
-
-describe('loadConfig — session.bufferSizeMb in whole bytes (#3351)', () => {
-  const session = (bufferSizeMb: number) => ({
-    defaultShell: '/bin/zsh', defaultCols: 100, defaultRows: 40,
-    bufferSizeMb, bufferMaxMb: 64, deadSessionTtlHours: 48, deadSessionDumpBuffer: false,
-  });
-  const daemon = { pipeName: '\\\\.\\pipe\\custom', logLevel: 'info', autoStart: false, idleShutdownMinutes: 12 };
-
-  it('a fraction of a megabyte becomes whole bytes, floored, and a ring of that size is made', () => {
-    writeRawConfig({ version: 1, daemon, session: session(0.3) });
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const c = loadConfig();
-    warn.mockRestore();
-    const bytes = c.session.bufferSizeMb * 1024 * 1024;
-    expect(bytes).toBe(Math.floor(0.3 * 1024 * 1024));
-    expect(Number.isInteger(bytes)).toBe(true);
-    expect(() => new RingBuffer(bytes, 'node')).not.toThrow();
-  });
-
-  it('a size under the smallest ring, zero or negative, is raised to it; a whole size stays as it was', () => {
-    for (const mb of [0.0001, 0, -4]) {
-      writeRawConfig({ version: 1, daemon, session: session(mb) });
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      const c = loadConfig();
-      warn.mockRestore();
-      expect(c.session.bufferSizeMb * 1024 * 1024, String(mb)).toBe(RING_MIN_BYTES);
-    }
-    writeRawConfig({ version: 1, daemon, session: session(8) });
-    expect(loadConfig().session.bufferSizeMb).toBe(8);
   });
 });
 
