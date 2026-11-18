@@ -1,8 +1,15 @@
 use super::conn::{Conn, ReadResult, END_DRAIN_LIMIT};
 use super::listener::{Instances, ListenError, Listener, AT_CAP_WAIT};
 use super::peer::ppid_rule;
-use super::security::{current_user, owner_only_sddl};
+use super::security::{
+    current_user, open_token, owner_is_user, owner_only_sddl, pipe_owner_verdict, token_elevated,
+    token_integrity_rid, OwnerVerdict, SecurityDescriptor,
+};
 use super::sys::*;
+use super::token::{
+    impersonating_guard, thread_token_error, TokenFacts, CLOSED, IMPERSONATION_FAILED, NO_READ_YET,
+    TOKEN_UNREADABLE,
+};
 use super::{worker_count, Notify};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -12,10 +19,7 @@ use std::time::{Duration, Instant};
 
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
-const OPEN_EXISTING: u32 = 3;
 const HANDLE_FLAG_INHERIT: u32 = 1;
-const SE_KERNEL_OBJECT: u32 = 6;
-const OWNER_SECURITY_INFORMATION: u32 = 1;
 const DACL_SECURITY_INFORMATION: u32 = 4;
 const SE_DACL_PROTECTED: u16 = 0x1000;
 const ACL_SIZE_INFORMATION_CLASS: u32 = 2;
@@ -41,30 +45,11 @@ struct AclSizeInformation {
 
 #[link(name = "kernel32")]
 extern "system" {
-    fn CreateFileW(
-        name: *const u16,
-        access: u32,
-        share: u32,
-        attributes: *const c_void,
-        disposition: u32,
-        flags: u32,
-        template: Handle,
-    ) -> Handle;
     fn GetHandleInformation(handle: Handle, flags: *mut u32) -> Bool;
 }
 
 #[link(name = "advapi32")]
 extern "system" {
-    fn GetSecurityInfo(
-        handle: Handle,
-        object_type: u32,
-        info: u32,
-        owner: *mut *mut c_void,
-        group: *mut *mut c_void,
-        dacl: *mut *mut c_void,
-        sacl: *mut *mut c_void,
-        descriptor: *mut *mut c_void,
-    ) -> u32;
     fn GetSecurityDescriptorControl(
         descriptor: *const c_void,
         control: *mut u16,
@@ -83,7 +68,7 @@ extern "system" {
     ) -> Bool;
     fn SetTokenInformation(token: Handle, class: u32, info: *const c_void, len: u32) -> Bool;
     fn ImpersonateLoggedOnUser(token: Handle) -> Bool;
-    fn RevertToSelf() -> Bool;
+    fn ImpersonateSelf(level: u32) -> Bool;
 }
 
 /// The I/O tests share the global worker count: run them one at a time.
@@ -348,10 +333,8 @@ fn created_pipe_has_a_protected_two_entry_dacl_owned_by_the_user() {
     listener.close_and_join();
 }
 
-/// Opens `name` for read on a thread impersonating this user at Low
-/// integrity; Err carries the Win32 error.
-fn open_for_read_at_low_integrity(name: &str) -> Result<(), u32> {
-    let name = name.to_owned();
+/// Runs `f` on a thread impersonating this user at Low integrity.
+fn at_low_integrity<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
     std::thread::spawn(move || {
         // SAFETY: token calls on handles owned here; the impersonation is
         // undone before the thread ends.
@@ -392,17 +375,7 @@ fn open_for_read_at_low_integrity(name: &str) -> Result<(), u32> {
                 last_error()
             );
             assert!(ImpersonateLoggedOnUser(low.raw()) != 0);
-            let wide_name = wide(&name);
-            let raw = CreateFileW(
-                wide_name.as_ptr(),
-                GENERIC_READ,
-                0,
-                std::ptr::null(),
-                OPEN_EXISTING,
-                0,
-                std::ptr::null_mut(),
-            );
-            let result = OwnedHandle::from_raw(raw).map(drop).ok_or_else(last_error);
+            let result = f();
             assert!(RevertToSelf() != 0);
             LocalFree(low_sid);
             result
@@ -410,6 +383,26 @@ fn open_for_read_at_low_integrity(name: &str) -> Result<(), u32> {
     })
     .join()
     .unwrap()
+}
+
+/// Opens `name` for read at Low integrity; Err carries the Win32 error.
+fn open_for_read_at_low_integrity(name: &str) -> Result<(), u32> {
+    let wide_name = wide(name);
+    at_low_integrity(move || {
+        // SAFETY: NUL-terminated name; the handle is owned at once.
+        let raw = unsafe {
+            CreateFileW(
+                wide_name.as_ptr(),
+                GENERIC_READ,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        OwnedHandle::from_raw(raw).map(drop).ok_or_else(last_error)
+    })
 }
 
 /// The Medium label keeps a Low-integrity process of the same user out,
@@ -916,4 +909,465 @@ fn close_and_join_after_close_waits_for_the_accept_thread_and_untaken_conns() {
     let again = Listener::bind(&name, 4, notify).unwrap();
     again.close_and_join();
     wait_until("every worker to end", || worker_count() == 0);
+}
+
+// ---- Client token facts (pipe-listener-v2) ----
+
+const LOW_RID: u32 = 0x1000;
+const SECURITY_ANONYMOUS: u32 = 0;
+const ERROR_INVALID_OWNER: u32 = 1307;
+
+/// This process's (integrity RID, elevated).
+fn own_token_facts() -> (u32, bool) {
+    // SAFETY: the pseudo handle of this process.
+    let token = open_token(unsafe { GetCurrentProcess() }).unwrap();
+    (
+        token_integrity_rid(token.raw()).unwrap(),
+        token_elevated(token.raw()).unwrap(),
+    )
+}
+
+/// Requests the token facts and waits for the result.
+fn token_facts(conn: &Conn) -> TokenFacts {
+    conn.request_token_facts();
+    let mut facts = None;
+    wait_until("the token facts", || {
+        facts = conn.take_token_facts();
+        facts.is_some()
+    });
+    facts.unwrap()
+}
+
+/// A client opened with the given flags (security quality of service).
+fn open_with_flags(name: &str, flags: u32) -> Client {
+    let name = wide(name);
+    // SAFETY: NUL-terminated name; synchronous handle owned at once.
+    let raw = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            flags,
+            std::ptr::null_mut(),
+        )
+    };
+    Client(OwnedHandle::from_raw(raw).unwrap_or_else(|| panic!("CreateFileW ({})", last_error())))
+}
+
+#[test]
+fn token_facts_of_a_self_connect_match_this_process() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    let client = Client::open(&name);
+    let conn = accept(&listener);
+    client.write_all(b"x");
+    assert_eq!(read_exact(&conn, 1), b"x");
+    let workers = worker_count();
+    rx.try_iter().count();
+    let (integrity_rid, elevated) = own_token_facts();
+    assert_eq!(
+        token_facts(&conn),
+        TokenFacts::Read {
+            same_user: true,
+            integrity_rid,
+            elevated,
+        }
+    );
+    assert!(rx.try_iter().count() > 0, "the result woke the notify");
+    // The token thread ran as this process again after its revert, then
+    // ended.
+    assert_eq!(
+        conn.test_hooks(|hooks| hooks.token_thread_after),
+        Some(ERROR_NO_TOKEN)
+    );
+    wait_until("the token thread to end", || worker_count() == workers);
+    // Taken once.
+    assert_eq!(conn.take_token_facts(), None);
+    // The I/O thread and this thread are unaffected.
+    assert_eq!(thread_token_error(), ERROR_NO_TOKEN);
+    client.write_all(b"after\n");
+    assert_eq!(read_exact(&conn, 6), b"after\n");
+    let id = conn.write(b"reply".to_vec());
+    wait_until("the write", || conn.take_written().contains(&id));
+    assert_eq!(client.read(64).unwrap(), b"reply");
+    // A second request after the first was taken reads again.
+    assert!(matches!(token_facts(&conn), TokenFacts::Read { .. }));
+    conn.destroy_and_join();
+    listener.close_and_join();
+}
+
+#[test]
+fn token_facts_before_any_read_are_no_read_yet() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    let client = Client::open(&name);
+    let conn = accept(&listener);
+    let workers = worker_count();
+    rx.try_iter().count();
+    conn.request_token_facts();
+    // Answered on the caller's thread, with a wake, and no thread started.
+    assert_eq!(
+        conn.take_token_facts(),
+        Some(TokenFacts::Unavailable(NO_READ_YET))
+    );
+    assert!(rx.try_iter().count() > 0);
+    assert_eq!(worker_count(), workers);
+    assert_eq!(conn.take_token_facts(), None);
+    // A pending read that has not returned data is still no read.
+    conn.request_read(16);
+    assert_eq!(token_facts(&conn), TokenFacts::Unavailable(NO_READ_YET));
+    // The conn works as before afterwards.
+    client.write_all(b"ok");
+    let mut result = None;
+    wait_until("the read", || {
+        result = conn.take_read();
+        result.is_some()
+    });
+    assert_eq!(result, Some(ReadResult::Data(b"ok".to_vec())));
+    assert!(matches!(
+        token_facts(&conn),
+        TokenFacts::Read {
+            same_user: true,
+            ..
+        }
+    ));
+    assert_eq!(thread_token_error(), ERROR_NO_TOKEN);
+    conn.destroy_and_join();
+    // A closed conn answers 'closed'.
+    assert_eq!(token_facts(&conn), TokenFacts::Unavailable(CLOSED));
+    listener.close_and_join();
+}
+
+/// A Low label that lets a Low-integrity client of this user write.
+fn low_label_sddl(user: &str) -> String {
+    format!("O:{user}D:P(A;;GA;;;{user})(A;;GA;;;SY)S:(ML;;NW;;;LW)")
+}
+
+#[test]
+fn a_low_integrity_client_reads_as_integrity_low() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind_with_sddl(&name, 4, notify, low_label_sddl).unwrap();
+    let client_name = name.clone();
+    // Opens and writes while impersonating a Low duplicate of this token.
+    let client = at_low_integrity(move || {
+        let client = Client::open(&client_name);
+        client.write_all(b"x");
+        client
+    });
+    let conn = accept(&listener);
+    assert_eq!(read_exact(&conn, 1), b"x");
+    match token_facts(&conn) {
+        TokenFacts::Read {
+            same_user,
+            integrity_rid,
+            ..
+        } => {
+            assert!(same_user);
+            assert_eq!(integrity_rid, LOW_RID);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        conn.test_hooks(|hooks| hooks.token_thread_after),
+        Some(ERROR_NO_TOKEN)
+    );
+    drop(client);
+    conn.destroy_and_join();
+    listener.close_and_join();
+}
+
+#[test]
+fn an_anonymous_client_token_is_unreadable() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    let client = open_with_flags(&name, SECURITY_SQOS_PRESENT | SECURITY_ANONYMOUS);
+    let conn = accept(&listener);
+    client.write_all(b"x");
+    assert_eq!(read_exact(&conn, 1), b"x");
+    assert_eq!(
+        token_facts(&conn),
+        TokenFacts::Unavailable(TOKEN_UNREADABLE)
+    );
+    assert_eq!(
+        conn.test_hooks(|hooks| hooks.token_thread_after),
+        Some(ERROR_NO_TOKEN)
+    );
+    drop(client);
+    conn.destroy_and_join();
+    listener.close_and_join();
+}
+
+#[test]
+fn an_identification_level_client_is_read() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    let client = open_with_flags(&name, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION);
+    let conn = accept(&listener);
+    client.write_all(b"x");
+    assert_eq!(read_exact(&conn, 1), b"x");
+    assert!(matches!(
+        token_facts(&conn),
+        TokenFacts::Read {
+            same_user: true,
+            ..
+        }
+    ));
+    drop(client);
+    conn.destroy_and_join();
+    listener.close_and_join();
+}
+
+/// The client leaves and the conn is destroyed while a token thread is
+/// held before its call: the thread keeps the instance open for the call,
+/// stores a result, ends, and leaves no thread token behind.
+#[test]
+fn a_token_read_outlives_the_client_and_the_conn() {
+    let _serial = serial();
+    wait_until("idle workers", || worker_count() == 0);
+    let name = pipe_name();
+    let (notify, rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    let client = Client::open(&name);
+    let conn = accept(&listener);
+    client.write_all(b"x");
+    assert_eq!(read_exact(&conn, 1), b"x");
+    conn.test_hooks(|hooks| hooks.token_delay = Some(Duration::from_millis(300)));
+    conn.request_token_facts();
+    // Pending: a second request does nothing.
+    conn.request_token_facts();
+    assert_eq!(conn.take_token_facts(), None);
+    drop(client);
+    conn.destroy_and_join();
+    assert!(conn.closed());
+    rx.try_iter().count();
+    let mut facts = None;
+    wait_until("the token facts", || {
+        facts = conn.take_token_facts();
+        facts.is_some()
+    });
+    // The held instance still names the client that connected; whether its
+    // context is still readable is up to the OS, never an error.
+    assert!(
+        matches!(
+            facts,
+            Some(
+                TokenFacts::Read {
+                    same_user: true,
+                    ..
+                } | TokenFacts::Unavailable(IMPERSONATION_FAILED)
+            )
+        ),
+        "{facts:?}"
+    );
+    assert!(rx.try_iter().count() > 0, "the result woke the notify");
+    assert_eq!(
+        conn.test_hooks(|hooks| hooks.token_thread_after),
+        Some(ERROR_NO_TOKEN)
+    );
+    // Only the accept thread is left.
+    wait_until("the token thread to end", || worker_count() == 1);
+    assert_eq!(thread_token_error(), ERROR_NO_TOKEN);
+    // The listener and a new conn work as this process.
+    let client = Client::open(&name);
+    let next = accept(&listener);
+    client.write_all(b"next");
+    assert_eq!(read_exact(&next, 4), b"next");
+    assert!(matches!(
+        token_facts(&next),
+        TokenFacts::Read {
+            same_user: true,
+            ..
+        }
+    ));
+    drop(client);
+    next.destroy_and_join();
+    listener.close_and_join();
+}
+
+/// The guard reverts when the code under it panics.
+#[test]
+fn the_revert_guard_runs_when_the_call_panics() {
+    std::thread::spawn(|| {
+        const SECURITY_IMPERSONATION_LEVEL: u32 = 2;
+        // SAFETY: impersonates this thread's own process token.
+        assert!(unsafe { ImpersonateSelf(SECURITY_IMPERSONATION_LEVEL) } != 0);
+        assert_eq!(thread_token_error(), 0, "impersonating");
+        let result = std::panic::catch_unwind(|| {
+            let _guard = impersonating_guard();
+            panic!("a call that panics under the guard");
+        });
+        assert!(result.is_err());
+        assert_eq!(thread_token_error(), ERROR_NO_TOKEN);
+    })
+    .join()
+    .unwrap();
+}
+
+// ---- Pipe owner verdict ----
+
+/// The owner-check vectors, identical in core/wmux-native's mcp_shim
+/// tests: (owner SID, verdict). "<user>" is this process's TokenUser;
+/// Administrators is an elevated process's default owner (TokenOwner).
+const OWNER_VECTORS: &[(&str, &str)] = &[
+    ("<user>", "ours"),
+    ("S-1-5-32-544", "foreign"),
+    ("S-1-5-18", "foreign"),
+    ("S-1-5-21-1000000001-1000000002-1000000003-1001", "foreign"),
+];
+
+/// A raw pipe instance under `sddl` (listening, never connected).
+fn raw_pipe(name: &str, sddl: &str, max_instances: u32) -> Result<OwnedHandle, u32> {
+    let descriptor = SecurityDescriptor::from_sddl(sddl).unwrap();
+    let attributes = descriptor.attributes();
+    let wide_name = wide(name);
+    // SAFETY: NUL-terminated name; attributes point at a live descriptor.
+    let raw = unsafe {
+        CreateNamedPipeW(
+            wide_name.as_ptr(),
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_TYPE_BYTE | PIPE_REJECT_REMOTE_CLIENTS,
+            max_instances,
+            0,
+            0,
+            0,
+            &attributes,
+        )
+    };
+    OwnedHandle::from_raw(raw).ok_or_else(last_error)
+}
+
+#[test]
+fn owner_vectors_shared_with_the_shim() {
+    let user = current_user().unwrap().to_sddl_string().unwrap();
+    let own = current_user().unwrap();
+    let mut live = 0;
+    for &(owner, expected) in OWNER_VECTORS {
+        let owner = if owner == "<user>" {
+            user.as_str()
+        } else {
+            owner
+        };
+        let text = wide(owner);
+        let mut sid = std::ptr::null_mut();
+        // SAFETY: NUL-terminated text; freed below.
+        assert!(unsafe { ConvertStringSidToSidW(text.as_ptr(), &mut sid) } != 0);
+        let verdict = if owner_is_user(sid, &own) {
+            "ours"
+        } else {
+            "foreign"
+        };
+        // SAFETY: allocated by ConvertStringSidToSidW.
+        unsafe { LocalFree(sid) };
+        assert_eq!(verdict, expected, "{owner}");
+        // The same vector on a real pipe, where this process may set that
+        // owner (another owner needs an owner-capable group: elevated).
+        let name = pipe_name();
+        match raw_pipe(&name, &format!("O:{owner}D:P(A;;GA;;;{user})"), 1) {
+            Ok(server) => {
+                assert_eq!(
+                    pipe_owner_verdict(&name).unwrap().as_str(),
+                    expected,
+                    "{owner}"
+                );
+                live += 1;
+                drop(server);
+            }
+            Err(ERROR_INVALID_OWNER) => {
+                eprintln!("owner {owner}: not settable by this process; checked by value only")
+            }
+            Err(code) => panic!("CreateNamedPipeW ({code})"),
+        }
+    }
+    assert!(
+        live >= 1,
+        "the user-owned vector always runs on a real pipe"
+    );
+}
+
+#[test]
+fn owner_verdict_of_this_listener_is_ours() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    assert_eq!(pipe_owner_verdict(&name), Ok(OwnerVerdict::Ours));
+    // The check's open may reach the listener as a conn that ends at once
+    // (or, closed before the accept completed, as nothing): drain it.
+    std::thread::sleep(Duration::from_millis(200));
+    while let Some(probe) = listener.take_accepted() {
+        probe.destroy_and_join();
+    }
+    // The listener serves the next client as usual.
+    let client = open_eventually(&name);
+    let conn = accept(&listener);
+    client.write_all(b"next");
+    assert_eq!(read_exact(&conn, 4), b"next");
+    drop(client);
+    conn.destroy_and_join();
+    listener.close_and_join();
+}
+
+/// The check's open uses a listening instance: on a lone instance the next
+/// client finds it busy until the server end disconnects and listens again
+/// (the listener does both on its own).
+#[test]
+fn owner_verdict_uses_a_listening_instance() {
+    let user = current_user().unwrap().to_sddl_string().unwrap();
+    let name = pipe_name();
+    let server = raw_pipe(&name, &owner_only_sddl(&user), 1).unwrap();
+    assert_eq!(pipe_owner_verdict(&name), Ok(OwnerVerdict::Ours));
+    assert_eq!(Client::try_open(&name).err(), Some(ERROR_PIPE_BUSY));
+    drop(server);
+}
+
+#[test]
+fn owner_verdict_of_a_missing_name_is_none() {
+    assert_eq!(pipe_owner_verdict(&pipe_name()), Ok(OwnerVerdict::None));
+}
+
+#[test]
+fn owner_verdict_of_a_pipe_with_every_instance_in_use_is_busy() {
+    let user = current_user().unwrap().to_sddl_string().unwrap();
+    let name = pipe_name();
+    let server = raw_pipe(&name, &owner_only_sddl(&user), 1).unwrap();
+    let client = Client::open(&name);
+    assert_eq!(pipe_owner_verdict(&name), Ok(OwnerVerdict::Busy));
+    drop(client);
+    drop(server);
+}
+
+#[test]
+fn owner_verdict_of_a_pipe_that_refuses_the_open_is_foreign() {
+    let user = current_user().unwrap().to_sddl_string().unwrap();
+    let name = pipe_name();
+    // Owner rights denied: even the owner's implicit READ_CONTROL is gone.
+    let server = raw_pipe(
+        &name,
+        &format!("O:{user}D:P(D;;GA;;;OW)(D;;GA;;;{user})(A;;GA;;;SY)"),
+        1,
+    )
+    .unwrap();
+    assert_eq!(pipe_owner_verdict(&name), Ok(OwnerVerdict::Foreign));
+    drop(server);
+}
+
+#[test]
+fn owner_verdict_of_a_file_is_an_error() {
+    let path = std::env::temp_dir().join(format!("wmux-owner-verdict-{}", std::process::id()));
+    std::fs::write(&path, b"").unwrap();
+    let result = pipe_owner_verdict(path.to_str().unwrap());
+    std::fs::remove_file(&path).unwrap();
+    assert!(result.unwrap_err().contains("not a pipe"));
 }
