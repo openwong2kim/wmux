@@ -2916,8 +2916,9 @@ differently in the two places, and in the order `fleet_triage` returns.
     needed-you count is agents only). It turns Disconnected on the tick the
     "Lost the connection" notice fires, never on one missed poll, and the rows
     are back as soon as it answers. A PC whose attachments here are all stale
-    gets the same head, counting its last snapshot. fleet_triage and the rail
-    badge drop the same rows.
+    gets the same head, counting its last snapshot, unless it answered without
+    them (a workspace gone from it, or a refusal) and the rail does not call it
+    down. fleet_triage and the rail badge drop the same rows.
   - **A PC that needs pairing** (it refused this computer's credential): the
     same row-less head, hollow ring and muted text, no status colour,
     `Needs pairing · 3h ago`, then one muted line: `It can't be reached until

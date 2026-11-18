@@ -95,6 +95,25 @@ describe('groupFleetByDevice', () => {
     expect(groupFleetByDevice(groups, { remoteWorkspaces }).devices.map((d) => d.id)).toEqual([LOCAL_PC_ID]);
   });
 
+  it('a host the rail does not know, whose attachments are stale because it answered, is not drawn as disconnected', () => {
+    const groups = groupFleetPanes([pane('l')]);
+    const stale = (staleReason?: 'unanswered' | 'gone' | 'refused') => [
+      { hostId: 'host-u', hostLabel: 'u', stale: true, ...(staleReason ? { staleReason } : {}), panes: [{ sessionId: 'a', agentName: 'Codex' }] },
+    ];
+    const devices = (remoteWorkspaces: ReturnType<typeof stale>) =>
+      groupFleetByDevice(groups, { remoteWorkspaces, includeDisconnected: true }).devices.map((d) => [d.id, d.state]);
+    // Gone from it, or it refused this computer: the PC answered.
+    expect(devices(stale('gone'))).toEqual([[LOCAL_PC_ID, 'local']]);
+    expect(devices(stale('refused'))).toEqual([[LOCAL_PC_ID, 'local']]);
+    // It did not answer (or has not yet this run): disconnected.
+    expect(devices(stale('unanswered'))).toEqual([[LOCAL_PC_ID, 'local'], ['host-u', 'disconnected']]);
+    expect(devices(stale())).toEqual([[LOCAL_PC_ID, 'local'], ['host-u', 'disconnected']]);
+    // The rail calling it down wins over the reason.
+    expect(groupFleetByDevice(groups, {
+      remoteWorkspaces: stale('gone'), hosts: [host('host-u', 'u', { offline: true })], includeDisconnected: true,
+    }).devices.map((d) => [d.id, d.state])).toEqual([[LOCAL_PC_ID, 'local'], ['host-u', 'disconnected']]);
+  });
+
   it('a host with live rows is connected even when one of its attachments is stale', () => {
     const groups = groupFleetPanes([remote('r', 'host-x', 'x', { agentStatus: 'running' })]);
     const byDevice = groupFleetByDevice(groups, {

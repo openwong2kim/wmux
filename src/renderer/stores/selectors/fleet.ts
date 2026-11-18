@@ -1538,14 +1538,15 @@ export interface FleetDeviceHost {
  * computer comes first, then the hosts in the rail's order, then any other
  * host by label; a host the rail knows carries the rail's name. While
  * `includeDisconnected` is set, a PC the rail cannot reach keeps a row-less
- * head when it had rows (`away`) or every attachment from it is stale, and a
+ * head when it had rows (`away`) or every attachment from it is stale (on a
+ * host the rail does not know, only when it went unanswered), and a
  * PC that needs pairing again keeps one while it has attachments here; a
  * device with no rows is otherwise not drawn.
  */
 export function groupFleetByDevice(
   groups: FleetGroups,
   opts: {
-    remoteWorkspaces?: readonly Pick<AttachedRemoteWorkspace, 'hostId' | 'hostLabel' | 'stale' | 'panes'>[];
+    remoteWorkspaces?: readonly Pick<AttachedRemoteWorkspace, 'hostId' | 'hostLabel' | 'stale' | 'staleReason' | 'panes'>[];
     hosts?: readonly FleetDeviceHost[];
     away?: Readonly<Record<string, FleetAwayCounts>>;
     includeDisconnected?: boolean;
@@ -1580,9 +1581,13 @@ export function groupFleetByDevice(
     // Every attachment stale (the PC slept before this run saw its rows):
     // the last snapshot's panes are what it had.
     const live = new Set<string>();
+    // Hosts with an attachment stale for want of an answer (or not answered
+    // yet this run). 'gone' and 'refused' are answers: the PC is up.
+    const unanswered = new Set<string>();
     const snapshot = new Map<string, FleetAwayCounts>();
     for (const r of opts.remoteWorkspaces ?? []) {
       if (!r.stale) { live.add(r.hostId); continue; }
+      if (r.staleReason !== 'gone' && r.staleReason !== 'refused') unanswered.add(r.hostId);
       const counts = snapshot.get(r.hostId) ?? { panes: 0, neededYou: 0 };
       for (const p of r.panes) {
         counts.panes++;
@@ -1598,9 +1603,10 @@ export function groupFleetByDevice(
     }
     for (const [hostId, counts] of snapshot) {
       // A stale attachment on a host the rail still reaches is a workspace
-      // gone from it, not a disconnected PC.
+      // gone from it, not a disconnected PC. A host the rail does not know
+      // is disconnected only when it did not answer.
       const host = railHost.get(hostId);
-      if (live.has(hostId) || byId.has(hostId) || (host && !host.offline)) continue;
+      if (live.has(hostId) || byId.has(hostId) || (host ? !host.offline : !unanswered.has(hostId))) continue;
       disconnected(hostId, attachedLabel.get(hostId) ?? hostId, counts);
     }
   }
