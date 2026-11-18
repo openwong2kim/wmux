@@ -8,8 +8,8 @@
 //     meanwhile; Cancel, even while that read is out, saves nothing;
 //   - lowering it or turning it off is saved at once;
 //   - every save carries the level it started from (`expected`): the daemon
-//     saves only while the PC is still there, else the row shows the level
-//     now and a person chooses again;
+//     saves a raise only while the PC is still there, else the row shows the
+//     level now and a person chooses again; a lowering always saves;
 //   - a damaged settings file reads as off for every PC.
 
 import { isA2aApprovalExposure, type A2aApprovalExposure } from '../../../shared/a2aRemote';

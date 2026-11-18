@@ -332,9 +332,9 @@ for one, on the PC that does the work.
   PC in **Other PCs**, one row worded "Agents on <PC> can allow or deny
   permission prompts in tasks they sent here" with Off, Tool only and
   Command. Raising a PC (off to anything, or anything to Command) asks you
-  to confirm in its row, with a line saying what it allows, and reads the
-  setting again before it saves; lowering it or turning it off is saved at
-  once. A damaged settings file reads Off with a line saying so. On a PC
+  to confirm in its row, with a line saying what it allows, and is saved
+  only if the PC is still at the level the page showed; lowering it or
+  turning it off is saved at once, whatever changed meanwhile. A damaged settings file reads Off with a line saying so. On a PC
   that runs only the daemon: `wmux remote approvals [<pc>
   off|tool-only|command]`, where raising asks for a typed `yes` in a
   terminal. Where the desktop app runs, the daemon takes the setting only

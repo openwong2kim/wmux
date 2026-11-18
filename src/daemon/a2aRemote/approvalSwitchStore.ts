@@ -238,9 +238,12 @@ const LOGGED_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
  * and after. Nothing else goes in that line. `changed` runs after a save that
  * turned the PC on or off.
  *
- * `expected` (optional): the level the caller last saw. When given and the PC
- * is set otherwise now, nothing is saved, the line ends ` refused: changed`,
- * and the result says `conflict`, so a person decides again on what is there.
+ * `expected` (optional): the level the caller last saw. A raise (off to
+ * anything, or anything to `command`, from the level saved now) is saved only
+ * while the PC is still at `expected`; otherwise nothing is saved, the line
+ * ends ` refused: changed`, and the result says `conflict`, so a person
+ * decides again on what is there. A move to off or to a lower level is always
+ * saved: it never widens what the PC may do.
  */
 export function setApprovals(
   store: ApprovalSwitchStore,
@@ -256,7 +259,8 @@ export function setApprovals(
   const validExposure = exposure === 'off' || isA2aApprovalExposure(exposure);
   const validExpected = expected === undefined || expected === 'off' || isA2aApprovalExposure(expected);
   const before = validHost ? store.exposure(hostId) ?? 'off' : 'off';
-  const conflict = validHost && validExposure && expected !== undefined && validExpected && expected !== before;
+  const raise = validExposure && ((before === 'off' && exposure !== 'off') || (exposure === 'command' && before !== 'command'));
+  const conflict = validHost && raise && expected !== undefined && validExpected && expected !== before;
   deps.log('info', `[a2a-remote] approvals set by=${by} host=${validHost ? hostId : 'invalid'} ${before}->${validExposure ? exposure : 'invalid'}${conflict ? ' refused: changed' : ''}`);
   if (!validHost) return { ok: false, error: 'hostId must be a paired PC\'s host id' };
   if (!validExposure) return { ok: false, error: "exposure must be 'off', 'tool-only' or 'command'" };

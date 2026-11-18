@@ -1004,7 +1004,7 @@ export class DaemonClient extends EventEmitter {
 
   /**
    * Set it for one PC, as the app (first party); `by` is logged by the daemon (`approvals set by=`).
-   * With `expected`, the daemon saves only while the PC is still at that level (else `conflict`).
+   * With `expected`, the daemon saves a raise only while the PC is still at that level (else `conflict`); a lowering always saves.
    */
   async a2aRemoteApprovalsSet(input: { hostId: string; exposure: 'off' | A2aApprovalExposure; by: string; expected?: 'off' | A2aApprovalExposure }): Promise<{ ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string; conflict?: true }> {
     return (await this.rpc(A2A_APPROVALS_RPC.set, {

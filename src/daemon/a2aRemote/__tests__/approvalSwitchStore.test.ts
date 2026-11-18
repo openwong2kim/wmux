@@ -222,6 +222,22 @@ describe('approvals.set', () => {
     expect(s.exposure(PC_A)).toBe('command');
   });
 
+  it('with expected: a move to off or to a lower level is saved whatever the caller last saw; only a raise is compared', () => {
+    const s = store();
+    s.set(PC_A, 'command');
+    // The caller last saw tool-only; it is command now. Lowering to tool-only, then to off, both save.
+    const lower = set(s, { hostId: PC_A, exposure: 'tool-only', expected: 'off' });
+    expect(lower.res).toMatchObject({ ok: true });
+    expect(s.exposure(PC_A)).toBe('tool-only');
+    const off = set(s, { hostId: PC_A, exposure: 'off', expected: 'command' });
+    expect(off.res).toMatchObject({ ok: true });
+    expect(off.lines).toEqual([`[a2a-remote] approvals set by=none host=${PC_A} tool-only->off`]);
+    expect(s.exposure(PC_A)).toBeNull();
+    // A raise from a level the caller did not see is still refused.
+    expect(set(s, { hostId: PC_A, exposure: 'command', expected: 'tool-only' }).res).toMatchObject({ ok: false, conflict: true });
+    expect(s.exposure(PC_A)).toBeNull();
+  });
+
   it('a PC not paired now can be turned off but never on', () => {
     const s = store();
     s.set(PC_A, 'command');

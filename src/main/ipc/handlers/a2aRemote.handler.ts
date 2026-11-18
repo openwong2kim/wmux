@@ -199,7 +199,7 @@ export function registerA2aRemoteHandlers(daemonClient: DaemonClient | null, opt
     ],
     [IPC.A2A_REMOTE_SPAWN_REQUESTS_LIST, async () => (await client()).a2aSpawnRequestsList()],
     // Remote approvals per paired PC. Only a host id, one of the three levels and the level the page last
-    // showed (`expected`, which the daemon compares before it saves) go through; the daemon logs the set as
+    // showed (`expected`, which the daemon compares before it saves a raise) go through; the daemon logs the set as
     // the app's own (`by=app-settings`): the Remote page is not a pane, and no name the renderer sends is
     // written in that line.
     [IPC.A2A_REMOTE_APPROVALS_GET, async () => (await client()).a2aRemoteApprovalsGet()],
