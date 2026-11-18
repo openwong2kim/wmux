@@ -427,9 +427,10 @@ export class BrokerSupervisor {
    * pipe via start(). If two instances both stood down, both reclaim and one
    * loses the race (exit 75 again → re-arms this probe), converging to one
    * owner. A pipe another owner holds (Windows) is not another broker: the
-   * supervisor stops for good, as for exit 78. A probe that cannot tell
-   * ('busy') waits for the next tick, up to BUSY_PROBES_BEFORE_TERMINAL in a
-   * row; then the pipe counts as held elsewhere too.
+   * supervisor stops for good, as for exit 78. A pipe whose instances are all
+   * in use ('busy') waits for the next tick, up to BUSY_PROBES_BEFORE_TERMINAL
+   * in a row; then it counts as held elsewhere too. A probe whose owner check
+   * could not run ('unknown') is asked again and counts toward nothing.
    */
   private startReclaimProbe(): void {
     if (this.stopped || this.reclaimTimer) return;
@@ -441,9 +442,10 @@ export class BrokerSupervisor {
 
   private async reclaimTick(): Promise<void> {
     const state = await probeBrokerPipe(PROBE_TIMEOUT_MS);
+    if (state === 'unknown') return; // the check could not run — ask again, count nothing
     this.busyProbes = state === 'busy' ? this.busyProbes + 1 : 0;
     if (state === 'ours') return; // still owned — keep waiting
-    if (state === 'busy' && this.busyProbes < BUSY_PROBES_BEFORE_TERMINAL) return; // unknown — ask again
+    if (state === 'busy' && this.busyProbes < BUSY_PROBES_BEFORE_TERMINAL) return; // ask again
     if (this.reclaimTimer) {
       clearInterval(this.reclaimTimer);
       this.reclaimTimer = null;

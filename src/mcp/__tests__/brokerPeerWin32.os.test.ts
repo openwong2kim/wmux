@@ -10,8 +10,10 @@ import {
   PreAuthGate,
   retryingSelfCheck,
   selfCheckNativePipe,
+  SessionBudget,
   TOKEN_FACTS_TIMEOUT_MS,
   WIN32_HOST_BUDGET_MS,
+  WIN32_RECHECK_WAIT_MS,
   win32SelfCheckPipeName,
   type PeerCheckInput,
   type SelfCheckListen,
@@ -145,13 +147,38 @@ describe('decideWin32Session', () => {
     expect(tokenFacts).toHaveBeenCalledWith(TOKEN_FACTS_TIMEOUT_MS);
   });
 
-  it('a failed last verdict refuses at once, reads no token, and rechecks in the background', async () => {
-    const pending = new Promise<string | null>(() => undefined);
-    const verdict = vi.fn(() => pending);
+  it('after a failed last verdict it waits for the recheck and hosts when it passes', async () => {
+    const verdict = vi.fn(async () => 'available' as string | null);
+    const { input, tokenFacts } = session({ selfCheck: { latest: () => 'unavailable (boom)', verdict } });
+    expect(await decideWin32Session(input)).toEqual({ ok: true, callerPid: 4242, callerPpid: 4000 });
+    expect(verdict).toHaveBeenCalledTimes(1);
+    expect(tokenFacts).toHaveBeenCalledTimes(1);
+  });
+
+  it('after a failed last verdict a recheck that fails refuses, with no token read', async () => {
+    const verdict = vi.fn(async () => 'unavailable (still)' as string | null);
     const { input, tokenFacts } = session({ selfCheck: { latest: () => 'unavailable (boom)', verdict } });
     expect(await decideWin32Session(input)).toMatchObject({ ok: false, reason: 'peer-unverified' });
-    expect(verdict).toHaveBeenCalledTimes(1);
     expect(tokenFacts).not.toHaveBeenCalled();
+  });
+
+  it('a recheck still running after 2 s refuses (peer-unverified) while budget is left', async () => {
+    vi.useFakeTimers();
+    try {
+      const verdict = vi.fn(() => new Promise<string | null>(() => undefined));
+      const { input } = session({ selfCheck: { latest: () => 'unavailable (boom)', verdict }, acceptedAt: Date.now(), now: Date.now });
+      const decided = decideWin32Session(input);
+      await vi.advanceTimersByTimeAsync(WIN32_RECHECK_WAIT_MS);
+      expect(await decided).toMatchObject({ ok: false, reason: 'peer-unverified' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a recheck still running when the budget runs out refuses as budget', async () => {
+    const verdict = vi.fn(() => new Promise<string | null>(() => undefined));
+    const { input } = session({ selfCheck: { latest: () => 'unavailable (boom)', verdict }, budgetMs: 30, acceptedAt: Date.now(), now: Date.now });
+    expect(await decideWin32Session(input)).toMatchObject({ ok: false, reason: 'budget' });
   });
 
   it('before the first check finished it waits for it, within the budget', async () => {
@@ -159,14 +186,14 @@ describe('decideWin32Session', () => {
     expect(await decideWin32Session(input)).toMatchObject({ ok: true });
   });
 
-  it('a first check that does not finish within the budget refuses (peer-unverified)', async () => {
+  it('a first check that does not finish within the budget refuses as budget', async () => {
     const { input } = session({
       selfCheck: { latest: () => undefined, verdict: () => new Promise<string | null>(() => undefined) },
       budgetMs: 30,
       now: Date.now,
       acceptedAt: Date.now(),
     });
-    expect(await decideWin32Session(input)).toMatchObject({ ok: false, reason: 'peer-unverified' });
+    expect(await decideWin32Session(input)).toMatchObject({ ok: false, reason: 'budget', detail: expect.stringContaining('the first self-check had not finished') });
   });
 
   it('the token read gets only what is left of the budget', async () => {
@@ -176,14 +203,36 @@ describe('decideWin32Session', () => {
     expect(tokenFacts).toHaveBeenCalledWith(400);
   });
 
-  it('a session decided after the budget ran out is refused (too-late), so the shim falls back before its deadline', async () => {
+  it('a session decided after the budget ran out is refused as budget, so the shim falls back before its deadline', async () => {
     const clock = { t: 10_000 };
     const { input } = session({ clock });
     input.tokenFacts = async () => {
       clock.t += WIN32_HOST_BUDGET_MS + 1;
       return { ok: true, sameUser: true, integrityRid: MEDIUM_INTEGRITY_RID, elevated: false };
     };
-    expect(await decideWin32Session(input)).toMatchObject({ ok: false, reason: 'too-late' });
+    expect(await decideWin32Session(input)).toMatchObject({ ok: false, reason: 'budget' });
+  });
+
+  it('no token read when the budget is already spent', async () => {
+    const clock = { t: 10_000 };
+    const { input, tokenFacts } = session({ clock, acceptedAt: clock.t - WIN32_HOST_BUDGET_MS });
+    expect(await decideWin32Session(input)).toMatchObject({ ok: false, reason: 'budget' });
+    expect(tokenFacts).not.toHaveBeenCalled();
+  });
+});
+
+describe('SessionBudget', () => {
+  it('counts from accept, and is spent at the budget, as the broker reads it right before the ack', () => {
+    const clock = { t: 1000 };
+    const budget = new SessionBudget(1000, 3500, () => clock.t);
+    expect(budget.left()).toBe(3500);
+    expect(budget.spent()).toBe(false);
+    clock.t = 4499;
+    expect(budget.spent()).toBe(false);
+    expect(budget.elapsed()).toBe(3499);
+    clock.t = 4500;
+    expect(budget.spent()).toBe(true);
+    expect(new SessionBudget(0).budgetMs).toBe(WIN32_HOST_BUDGET_MS);
   });
 
   it('the budget stays under the native shim\'s 5 s ack deadline with room for the ack itself', () => {

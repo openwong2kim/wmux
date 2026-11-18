@@ -201,6 +201,42 @@ describe('BrokerSupervisor: a pipe another owner holds (Windows owner verdicts)'
     vi.useRealTimers();
   });
 
+  it('an owner check that cannot run (unknown) never ends in the terminal state, however long it lasts', async () => {
+    vi.useFakeTimers();
+    const first = makeChild();
+    vi.mocked(spawn).mockReturnValue(first as never);
+    vi.mocked(probeBrokerPipe).mockResolvedValue('unknown');
+    const off = { clear: vi.fn(), tripped: vi.fn(async () => undefined) };
+    const sup = new BrokerSupervisor({ brokerOff: off });
+    sup.start();
+    first.emit('exit', 75, null);
+    await vi.advanceTimersByTimeAsync(20 * 15_000 + 1000);
+    expect(probeBrokerPipe).toHaveBeenCalledTimes(20);
+    expect(sup.status().downReason).toBe('standing-down');
+    expect(off.tripped).not.toHaveBeenCalled();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    sup.stop();
+    vi.useRealTimers();
+  });
+
+  it('unknown probes between busy ones neither count nor reset: 8 busy still end it', async () => {
+    vi.useFakeTimers();
+    const first = makeChild();
+    vi.mocked(spawn).mockReturnValue(first as never);
+    const answers = ['busy', 'unknown', 'busy', 'unknown', 'busy', 'busy', 'unknown', 'busy', 'busy', 'busy', 'unknown', 'busy'] as const;
+    let i = 0;
+    vi.mocked(probeBrokerPipe).mockImplementation(async () => answers[Math.min(i++, answers.length - 1)]);
+    const sup = new BrokerSupervisor({ brokerOff: { clear: vi.fn(), tripped: vi.fn(async () => undefined) } });
+    sup.start();
+    first.emit('exit', 75, null);
+    await vi.advanceTimersByTimeAsync(11 * 15_000 + 1000);
+    expect(sup.status().downReason).toBe('standing-down');
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(sup.status().downReason).toBe('path-occupied');
+    sup.stop();
+    vi.useRealTimers();
+  });
+
   it('busy probes count only in a row: one answer in between starts the count again', async () => {
     vi.useFakeTimers();
     const first = makeChild();

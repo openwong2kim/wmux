@@ -46,6 +46,7 @@ import {
   decidePeer,
   decideWin32Session,
   PreAuthGate,
+  SessionBudget,
   retryingSelfCheck,
   selfCheckNativePipe,
   win32SelfCheckPipeName,
@@ -116,7 +117,13 @@ type BrokerSocket = net.Socket | NativePipeSocket;
 /** Decides whether a connection's session is hosted, from its handshake. */
 type DecideHost = (claimed: ShimHandshake) => Promise<HostDecision | Win32HostDecision>;
 
-async function hostConnection(socket: BrokerSocket, handshake: ShimHandshake): Promise<void> {
+/**
+ * Host the session. `beforeAck`, when given, runs right before the ack: a
+ * reason it returns refuses the session there (Windows: the connection's
+ * budget ran out), closing the just-created server and the connection with no
+ * ack. False when refused that way.
+ */
+async function hostConnection(socket: BrokerSocket, handshake: ShimHandshake, beforeAck?: () => string | null): Promise<boolean> {
   const connId = ++connSeq;
   const scope: ConnectionScope = createConnectionScope();
   // Reached only after decidePeer took the OS peer as this pid.
@@ -145,6 +152,8 @@ async function hostConnection(socket: BrokerSocket, handshake: ShimHandshake): P
   let connClosed = false;
   // Ends this connection's tool calls still in flight when it closes.
   let endToolCalls: () => void = () => undefined;
+  // Set when beforeAck refused the session.
+  let refusedBeforeAck = false;
 
   await runInConnectionScope(scope, async () => {
     const server = createWmuxServer({
@@ -171,6 +180,13 @@ async function hostConnection(socket: BrokerSocket, handshake: ShimHandshake): P
     // sends on the ack wait in the socket until the scope wrappers below are in
     // place. If connect then rejects, the caller destroys the socket: the shim,
     // already pumping, exits 1.
+    const late = beforeAck?.() ?? null;
+    if (late !== null) {
+      log(`session refused (budget): ${late}`);
+      refusedBeforeAck = true;
+      void server.close().catch(() => { /* best-effort */ });
+      return;
+    }
     if (handshake.ack === 1) socket.write(brokerAckLine(true));
 
     transport = new StdioServerTransport(socket, socket);
@@ -217,6 +233,10 @@ async function hostConnection(socket: BrokerSocket, handshake: ShimHandshake): P
         onclose?.();
       });
   });
+  if (refusedBeforeAck) {
+    socket.destroy();
+    return false;
+  }
 
   socket.on('error', (err) => log(`socket error: ${err.message}`));
 
@@ -234,6 +254,7 @@ async function hostConnection(socket: BrokerSocket, handshake: ShimHandshake): P
   socket.on('end', teardown);
   // Closed while the session was being set up: no close event is coming.
   if (socket.destroyed) teardown();
+  return true;
 }
 
 function main(): void {
@@ -326,7 +347,7 @@ function main(): void {
    * One connection, from its handshake line to the hosted session. `decide`
    * names the peer: every refusal closes the connection with no ack line.
    */
-  const serveConnection = (socket: BrokerSocket, decide: DecideHost): void => {
+  const serveConnection = (socket: BrokerSocket, decide: DecideHost, beforeAck?: () => string | null): void => {
     // Accumulate until the handshake line; hand the remainder back to the
     // socket so the MCP transport sees a clean stream from byte 0.
     let buffer = Buffer.alloc(0);
@@ -410,7 +431,7 @@ function main(): void {
           if (claimed.callerPpid !== decision.callerPpid) {
             console.error(`[wmux-mcp-broker] callerPpid ${String(claimed.callerPpid)} differs from the OS parent ${decision.callerPpid}; using the OS parent`);
           }
-          await hostConnection(socket, { ...claimed, callerPid: decision.callerPid, callerPpid: decision.callerPpid });
+          if (!(await hostConnection(socket, { ...claimed, callerPid: decision.callerPid, callerPpid: decision.callerPpid }, beforeAck))) return;
           // Replay any MCP bytes that arrived glued to the handshake, then
           // resume flow into the transport's data listener.
           if (rest.length > 0) socket.unshift(rest);
@@ -541,7 +562,7 @@ function listenWin32(
   module: NativePipeModule,
   pipeName: string,
   admitRate: (socket: BrokerSocket) => boolean,
-  serveConnection: (socket: BrokerSocket, decide: DecideHost) => void,
+  serveConnection: (socket: BrokerSocket, decide: DecideHost, beforeAck?: () => string | null) => void,
   selfCheck: Pick<PeerSelfCheck, 'latest' | 'verdict'>,
   onFailure: (reason: string) => void,
 ): () => void {
@@ -550,7 +571,7 @@ function listenWin32(
   const preAuth = new PreAuthGate();
   let capLogged = 0;
   const onConnection = (socket: NativePipeSocket): void => {
-    const acceptedAt = Date.now();
+    const budget = new SessionBudget(Date.now());
     if (!admitRate(socket)) return;
     const release = preAuth.admit();
     if (!release) {
@@ -563,14 +584,15 @@ function listenWin32(
       return;
     }
     socket.once('close', release);
-    // Decided within a budget from accept, on the last self-check verdict
-    // (brokerPeer.ts decideWin32Session). The token facts are asked only now,
-    // after the handshake line was read: the client's token can be read once
-    // it has sent something.
+    // Decided within a budget from accept (brokerPeer.ts decideWin32Session),
+    // and checked once more right before the ack. The token facts are asked
+    // only now, after the handshake line was read: the client's token can be
+    // read once it has sent something.
     serveConnection(socket, async (claimed) => {
       try {
         return await decideWin32Session({
-          acceptedAt,
+          acceptedAt: budget.acceptedAt,
+          budgetMs: budget.budgetMs,
           selfCheck,
           tokenFacts: (timeoutMs) => socket.tokenFacts(timeoutMs),
           peer: socket.peer,
@@ -579,7 +601,7 @@ function listenWin32(
       } finally {
         release();
       }
-    });
+    }, () => (budget.spent() ? `peer ${socket.peer.pid}: the ack was due ${budget.elapsed()} ms after accept` : null));
   };
 
   try {

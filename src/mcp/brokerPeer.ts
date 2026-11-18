@@ -209,8 +209,9 @@ export type Win32PeerRefusal =
   | 'pid-mismatch'
   /** The client's parent could not be read. */
   | 'no-parent'
-  /** Deciding took longer than the session's budget from accept (WIN32_HOST_BUDGET_MS). */
-  | 'too-late';
+  /** The session's budget from accept ran out (WIN32_HOST_BUDGET_MS): waiting for a
+   *  self-check, deciding, or before the ack. */
+  | 'budget';
 
 /** SECURITY_MANDATORY_MEDIUM_RID: the lowest integrity level the broker hosts. */
 export const MEDIUM_INTEGRITY_RID = 0x2000;
@@ -302,32 +303,67 @@ function within<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   });
 }
 
+/** The longest a session waits for a recheck after the last self-check failed. */
+export const WIN32_RECHECK_WAIT_MS = 2000;
+
 /**
- * A Windows session, decided within WIN32_HOST_BUDGET_MS of its accept. It
- * never waits on a fresh self-check: it takes the last verdict, and when that
- * one failed it starts a check in the background for the sessions after it.
- * Only before the first check finished (the broker just started) does it wait,
- * and only within the budget. Then the client's token facts, within what is
- * left of the budget (at most TOKEN_FACTS_TIMEOUT_MS), then decideWin32Peer.
- * A session decided after the budget ran out is refused ('too-late').
+ * One connection's budget from accept (WIN32_HOST_BUDGET_MS). The broker reads
+ * it while deciding and once more right before writing the ack.
+ */
+export class SessionBudget {
+  constructor(
+    readonly acceptedAt: number,
+    readonly budgetMs: number = WIN32_HOST_BUDGET_MS,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** Milliseconds left; zero or less once spent. */
+  left(): number {
+    return this.acceptedAt + this.budgetMs - this.now();
+  }
+
+  /** How long since accept. */
+  elapsed(): number {
+    return this.now() - this.acceptedAt;
+  }
+
+  spent(): boolean {
+    return this.left() <= 0;
+  }
+}
+
+/**
+ * A Windows session, decided within its budget from accept. It takes the last
+ * self-check verdict. When that one failed it waits for a recheck, up to
+ * WIN32_RECHECK_WAIT_MS and what is left of the budget, and hosts if the
+ * recheck passes. Before the first check finished (the broker just started) it
+ * waits for that one, within the budget. Then the client's token facts, within
+ * what is left (at most TOKEN_FACTS_TIMEOUT_MS), then decideWin32Peer. A
+ * budget that runs out on the way refuses the session as 'budget'.
  */
 export async function decideWin32Session(input: Win32SessionInput): Promise<Win32HostDecision> {
-  const now = input.now ?? Date.now;
-  const budget = input.budgetMs ?? WIN32_HOST_BUDGET_MS;
-  const left = (): number => input.acceptedAt + budget - now();
+  const budget = new SessionBudget(input.acceptedAt, input.budgetMs ?? WIN32_HOST_BUDGET_MS, input.now ?? Date.now);
+  const late = (what: string): Win32HostDecision => ({
+    ok: false, reason: 'budget', detail: `peer ${input.peer.pid}: ${what} ${budget.elapsed()} ms after accept`,
+  });
   let verdict = input.selfCheck.latest();
   if (verdict === undefined) {
-    verdict = await within<string | null | undefined>(input.selfCheck.verdict(), left(), undefined);
+    verdict = await within<string | null | undefined>(input.selfCheck.verdict(), budget.left(), undefined);
+    if (verdict === undefined) return late('the first self-check had not finished');
   } else if (verdict !== 'available') {
-    // A recheck for the sessions after this one; this one is refused now.
-    void input.selfCheck.verdict();
+    const capped = budget.left() > WIN32_RECHECK_WAIT_MS;
+    const recheck = await within<string | null | undefined>(input.selfCheck.verdict(), Math.min(WIN32_RECHECK_WAIT_MS, budget.left()), undefined);
+    if (recheck === undefined) {
+      if (!capped) return late('the self-check recheck had not finished');
+      return { ok: false, reason: 'peer-unverified', detail: `the self-check recheck took over ${WIN32_RECHECK_WAIT_MS} ms` };
+    }
+    verdict = recheck;
   }
   const selfCheckOk = verdict === 'available';
-  const facts = selfCheckOk ? await input.tokenFacts(Math.max(0, Math.min(TOKEN_FACTS_TIMEOUT_MS, left()))) : null;
+  if (selfCheckOk && budget.spent()) return late('no time left for the token read');
+  const facts = selfCheckOk ? await input.tokenFacts(Math.max(0, Math.min(TOKEN_FACTS_TIMEOUT_MS, budget.left()))) : null;
   const decision = decideWin32Peer({ selfCheckOk, peer: input.peer, facts, claimedPid: input.claimedPid });
-  if (decision.ok && left() <= 0) {
-    return { ok: false, reason: 'too-late', detail: `peer ${input.peer.pid} decided ${budget - left()} ms after accept` };
-  }
+  if (decision.ok && budget.spent()) return late('decided');
   return decision;
 }
 
