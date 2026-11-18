@@ -6,7 +6,8 @@
 //! guard's Drop, so it also runs when the call panics; a revert that fails
 //! aborts the process, since no thread may keep running as the client. The
 //! thread holds the pipe instance for the whole call, so the I/O thread
-//! closing the conn cannot close the handle under it.
+//! closing the conn cannot close the handle under it; the I/O thread joins
+//! it before the conn reports closed.
 
 use super::listener::PipeInstance;
 use super::security::{token_elevated, token_integrity_rid, token_user, Sid};
@@ -14,6 +15,7 @@ use super::sys::*;
 use super::Worker;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 pub(crate) const NO_READ_YET: &str = "no-read-yet";
@@ -96,7 +98,7 @@ pub(crate) fn spawn_read(
     instance: Arc<PipeInstance>,
     delay: Option<Duration>,
     done: impl FnOnce(TokenOutcome) + Send + 'static,
-) -> Result<(), String> {
+) -> Result<JoinHandle<()>, String> {
     std::thread::Builder::new()
         .name("wmux-pipe-token".into())
         .spawn(move || {
@@ -117,7 +119,6 @@ pub(crate) fn spawn_read(
                 thread_token_after: thread_token_error(),
             });
         })
-        .map(drop)
         .map_err(|e| e.to_string())
 }
 

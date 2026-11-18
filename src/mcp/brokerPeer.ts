@@ -11,6 +11,7 @@ import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import type { PeerPid } from '../shared/peerPid';
+import type { NativePipePeer, TokenFactsResult } from './nativePipeSocket';
 import { psPath } from '../shared/psPath';
 
 /** Why the broker refused a session. It logs the reason and closes the connection with no ack line. */
@@ -95,6 +96,9 @@ export interface PeerSelfCheck {
   /** The latest verdict. A session that arrives while a check runs waits for
    *  it; one that finds the last check failed starts a check and waits for that. */
   verdict(): Promise<string | null>;
+  /** The last verdict a finished check gave, without waiting or starting a
+   *  check; undefined before the first check finished. */
+  latest(): string | null | undefined;
   /** No check starts after this. */
   stop(): void;
 }
@@ -127,6 +131,7 @@ export function retryingSelfCheck(
   /** Backoff retries that came due, as opposed to checks a session started. */
   let timedRetries = 0;
   let current: Promise<string | null>;
+  let last: string | null | undefined;
   // The backoff runs on its own: a session's check never clears or restarts
   // it, so sessions that keep arriving cannot hold off the give-up.
   const scheduleRetry = (n: number): void => {
@@ -147,6 +152,7 @@ export function retryingSelfCheck(
       .catch((err: unknown) => `unavailable (${err instanceof Error ? err.message : String(err)})`)
       .then((verdict) => {
         running = false;
+        last = verdict;
         failed = verdict !== 'available' && verdict !== null;
         onVerdict(verdict, n);
         if (verdict !== null && failed && !stopped && onGiveUp && timedRetries >= delays.length && !isTransientSelfCheckFailure(verdict)) {
@@ -165,6 +171,7 @@ export function retryingSelfCheck(
       if (failed && !running && !stopped) start();
       return current;
     },
+    latest: () => last,
     stop: () => {
       stopped = true;
       clearTimeout(timer);
@@ -201,35 +208,28 @@ export type Win32PeerRefusal =
   /** The handshake names another pid than the client's. */
   | 'pid-mismatch'
   /** The client's parent could not be read. */
-  | 'no-parent';
+  | 'no-parent'
+  /** Deciding took longer than the session's budget from accept (WIN32_HOST_BUDGET_MS). */
+  | 'too-late';
 
 /** SECURITY_MANDATORY_MEDIUM_RID: the lowest integrity level the broker hosts. */
 export const MEDIUM_INTEGRITY_RID = 0x2000;
 
 /**
- * How long the broker waits for a client's token facts. With the self-check's
- * own 2 s this stays under the native shim's 5 s ack deadline.
+ * The longest the broker waits for a client's token facts; less when less of
+ * the session's budget is left (WIN32_HOST_BUDGET_MS).
  */
 export const TOKEN_FACTS_TIMEOUT_MS = 1500;
 
-/** What the native listener reported for the client process (NativePipePeer). */
-export interface Win32PeerFacts {
-  pid: number;
-  sameSession: boolean;
-  ppid: number | null;
-  reason: string | null;
-}
-
-/** The client's token facts, or why they were not read (TokenFactsResult). */
-export type Win32TokenFacts =
-  | { ok: true; sameUser: boolean; integrityRid: number; elevated: boolean }
-  | { ok: false; reason: string };
+/** What the native listener reported for the client process, as far as the decision reads it. */
+export type Win32PeerFacts = Pick<NativePipePeer, 'pid' | 'sameSession' | 'ppid' | 'reason'>;
 
 export interface Win32PeerInput {
   /** The broker's startup self-check passed. */
   selfCheckOk: boolean;
   peer: Win32PeerFacts;
-  facts: Win32TokenFacts;
+  /** The client's token facts; null when they were not read (the self-check had not passed). */
+  facts: TokenFactsResult | null;
   /** The pid the handshake claims. */
   claimedPid: unknown;
 }
@@ -254,7 +254,7 @@ const PID_IN_DOUBT: ReadonlySet<string> = new Set(['process-unreadable', 'create
 export function decideWin32Peer(input: Win32PeerInput): Win32HostDecision {
   if (!input.selfCheckOk) return { ok: false, reason: 'peer-unverified', detail: 'the broker could not read its own connection' };
   const { peer, facts } = input;
-  if (!facts.ok) return { ok: false, reason: 'token-unreadable', detail: `token facts for peer ${peer.pid}: ${facts.reason}` };
+  if (!facts?.ok) return { ok: false, reason: 'token-unreadable', detail: `token facts for peer ${peer.pid}: ${facts?.reason ?? 'not read'}` };
   if (!facts.sameUser) return { ok: false, reason: 'other-user', detail: `peer ${peer.pid} runs as another user` };
   if (!Number.isInteger(facts.integrityRid) || facts.integrityRid < MEDIUM_INTEGRITY_RID) {
     return { ok: false, reason: 'integrity-low', detail: `peer ${peer.pid} integrity 0x${Number(facts.integrityRid).toString(16)}` };
@@ -268,6 +268,67 @@ export function decideWin32Peer(input: Win32PeerInput): Win32HostDecision {
   }
   if (peer.ppid === null) return { ok: false, reason: 'no-parent', detail: `no parent pid for peer ${peer.pid}` };
   return { ok: true, callerPid: peer.pid, callerPpid: peer.ppid };
+}
+
+/**
+ * How long, from accept, a Windows session may take to be decided. The native
+ * shim waits 5 s for the ack from its own connect; a session not decided by
+ * this budget is closed with no ack instead, so the shim falls back well
+ * before its deadline rather than racing it.
+ */
+export const WIN32_HOST_BUDGET_MS = 3500;
+
+export interface Win32SessionInput {
+  /** When the listener handed the connection on (Date.now() clock). */
+  acceptedAt: number;
+  selfCheck: Pick<PeerSelfCheck, 'latest' | 'verdict'>;
+  /** The client's token facts within `timeoutMs` (NativePipeSocket.tokenFacts). */
+  tokenFacts(timeoutMs: number): Promise<TokenFactsResult>;
+  peer: Win32PeerFacts;
+  claimedPid: unknown;
+  /** Tests: the clock and the budget. */
+  now?: () => number;
+  budgetMs?: number;
+}
+
+/** `promise`, or `fallback` once `ms` passed. */
+function within<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), Math.max(0, ms));
+    void promise.then((value) => {
+      clearTimeout(timer);
+      resolve(value);
+    });
+  });
+}
+
+/**
+ * A Windows session, decided within WIN32_HOST_BUDGET_MS of its accept. It
+ * never waits on a fresh self-check: it takes the last verdict, and when that
+ * one failed it starts a check in the background for the sessions after it.
+ * Only before the first check finished (the broker just started) does it wait,
+ * and only within the budget. Then the client's token facts, within what is
+ * left of the budget (at most TOKEN_FACTS_TIMEOUT_MS), then decideWin32Peer.
+ * A session decided after the budget ran out is refused ('too-late').
+ */
+export async function decideWin32Session(input: Win32SessionInput): Promise<Win32HostDecision> {
+  const now = input.now ?? Date.now;
+  const budget = input.budgetMs ?? WIN32_HOST_BUDGET_MS;
+  const left = (): number => input.acceptedAt + budget - now();
+  let verdict = input.selfCheck.latest();
+  if (verdict === undefined) {
+    verdict = await within<string | null | undefined>(input.selfCheck.verdict(), left(), undefined);
+  } else if (verdict !== 'available') {
+    // A recheck for the sessions after this one; this one is refused now.
+    void input.selfCheck.verdict();
+  }
+  const selfCheckOk = verdict === 'available';
+  const facts = selfCheckOk ? await input.tokenFacts(Math.max(0, Math.min(TOKEN_FACTS_TIMEOUT_MS, left()))) : null;
+  const decision = decideWin32Peer({ selfCheckOk, peer: input.peer, facts, claimedPid: input.claimedPid });
+  if (decision.ok && left() <= 0) {
+    return { ok: false, reason: 'too-late', detail: `peer ${input.peer.pid} decided ${budget - left()} ms after accept` };
+  }
+  return decision;
 }
 
 /** The most connections that may wait for their handshake at once (Windows). */
@@ -308,7 +369,7 @@ export interface SelfCheckSocket {
   on(event: 'error', listener: (error: Error) => void): unknown;
   pause(): unknown;
   destroy(): unknown;
-  tokenFacts(timeoutMs: number): Promise<Win32TokenFacts>;
+  tokenFacts(timeoutMs: number): Promise<TokenFactsResult>;
 }
 
 /** What the self-check needs from listenNativePipe. Throws as it does. */

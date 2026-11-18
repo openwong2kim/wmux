@@ -164,16 +164,54 @@ describe('BrokerSupervisor: a pipe another owner holds (Windows owner verdicts)'
     vi.useRealTimers();
   });
 
-  it('a busy probe keeps standing down: no reclaim, no terminal state', async () => {
+  it('a busy probe keeps standing down for up to 7 probes in a row: no reclaim, no terminal state', async () => {
     vi.useFakeTimers();
     const first = makeChild();
     vi.mocked(spawn).mockReturnValue(first as never);
     vi.mocked(probeBrokerPipe).mockResolvedValue('busy');
+    const off = { clear: vi.fn(), tripped: vi.fn(async () => undefined) };
+    const sup = new BrokerSupervisor({ brokerOff: off });
+    sup.start();
+    first.emit('exit', 75, null);
+    await vi.advanceTimersByTimeAsync(7 * 15_000 + 1000);
+    expect(probeBrokerPipe).toHaveBeenCalledTimes(7);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(sup.status().downReason).toBe('standing-down');
+    expect(off.tripped).not.toHaveBeenCalled();
+    sup.stop();
+    vi.useRealTimers();
+  });
+
+  it('a pipe that stays busy for 8 probes in a row counts as held elsewhere (path-occupied, marked off)', async () => {
+    vi.useFakeTimers();
+    const first = makeChild();
+    vi.mocked(spawn).mockReturnValue(first as never);
+    vi.mocked(probeBrokerPipe).mockResolvedValue('busy');
+    const off = { clear: vi.fn(), tripped: vi.fn(async () => undefined) };
+    const sup = new BrokerSupervisor({ brokerOff: off });
+    sup.start();
+    first.emit('exit', 75, null);
+    await vi.advanceTimersByTimeAsync(8 * 15_000 + 1000);
+    expect(sup.status()).toMatchObject({ running: false, standingDown: false, downReason: 'path-occupied' });
+    expect(off.tripped).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(probeBrokerPipe).toHaveBeenCalledTimes(8);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    sup.stop();
+    vi.useRealTimers();
+  });
+
+  it('busy probes count only in a row: one answer in between starts the count again', async () => {
+    vi.useFakeTimers();
+    const first = makeChild();
+    vi.mocked(spawn).mockReturnValue(first as never);
+    const answers = ['busy', 'busy', 'busy', 'busy', 'busy', 'busy', 'busy', 'ours', 'busy', 'busy', 'busy', 'busy', 'busy', 'busy', 'busy'] as const;
+    let i = 0;
+    vi.mocked(probeBrokerPipe).mockImplementation(async () => answers[Math.min(i++, answers.length - 1)]);
     const sup = new BrokerSupervisor({ brokerOff: { clear: vi.fn(), tripped: vi.fn(async () => undefined) } });
     sup.start();
     first.emit('exit', 75, null);
-    await vi.advanceTimersByTimeAsync(46_000);
-    expect(spawn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(answers.length * 15_000 + 1000);
     expect(sup.status().downReason).toBe('standing-down');
     sup.stop();
     vi.useRealTimers();

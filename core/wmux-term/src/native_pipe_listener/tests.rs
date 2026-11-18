@@ -1131,7 +1131,9 @@ fn an_identification_level_client_is_read() {
 
 /// The client leaves and the conn is destroyed while a token thread is
 /// held before its call: the thread keeps the instance open for the call,
-/// stores a result, ends, and leaves no thread token behind.
+/// and destroy_and_join waits for it, so by its return the result is
+/// stored, the notify woke, the thread has ended, and no thread token is
+/// left behind.
 #[test]
 fn a_token_read_outlives_the_client_and_the_conn() {
     let _serial = serial();
@@ -1149,14 +1151,11 @@ fn a_token_read_outlives_the_client_and_the_conn() {
     conn.request_token_facts();
     assert_eq!(conn.take_token_facts(), None);
     drop(client);
+    rx.try_iter().count();
     conn.destroy_and_join();
     assert!(conn.closed());
-    rx.try_iter().count();
-    let mut facts = None;
-    wait_until("the token facts", || {
-        facts = conn.take_token_facts();
-        facts.is_some()
-    });
+    // Settled by the time the join returns: no waiting here.
+    let facts = conn.take_token_facts();
     // The held instance still names the client that connected; whether its
     // context is still readable is up to the OS, never an error.
     assert!(
@@ -1177,7 +1176,7 @@ fn a_token_read_outlives_the_client_and_the_conn() {
         Some(ERROR_NO_TOKEN)
     );
     // Only the accept thread is left.
-    wait_until("the token thread to end", || worker_count() == 1);
+    assert_eq!(worker_count(), 1);
     assert_eq!(thread_token_error(), ERROR_NO_TOKEN);
     // The listener and a new conn work as this process.
     let client = Client::open(&name);
@@ -1194,6 +1193,54 @@ fn a_token_read_outlives_the_client_and_the_conn() {
     drop(client);
     next.destroy_and_join();
     listener.close_and_join();
+}
+
+/// The environment cleanup path (listener close_and_join, conn
+/// destroy_and_join) during a delayed token read waits for the token
+/// thread: when it returns every worker has ended, the server end is
+/// released (the still-open client sees the pipe closed), and over many
+/// rounds the handle count stays at its baseline.
+#[test]
+fn shutdown_during_a_delayed_token_read_waits_for_it() {
+    let _serial = serial();
+    wait_until("idle workers", || worker_count() == 0);
+    // Warm up lazily created process state before taking the baseline.
+    for _ in 0..3 {
+        let name = pipe_name();
+        let (notify, _rx) = notifier();
+        let listener = Listener::bind(&name, 4, notify).unwrap();
+        let client = Client::open(&name);
+        let conn = accept(&listener);
+        client.write_all(b"x");
+        assert_eq!(read_exact(&conn, 1), b"x");
+        assert!(matches!(token_facts(&conn), TokenFacts::Read { .. }));
+        conn.destroy_and_join();
+        listener.close_and_join();
+    }
+    let handles = process_handle_count();
+    for _ in 0..20 {
+        let name = pipe_name();
+        let (notify, _rx) = notifier();
+        let listener = Listener::bind(&name, 4, notify).unwrap();
+        let client = Client::open(&name);
+        let conn = accept(&listener);
+        client.write_all(b"x");
+        assert_eq!(read_exact(&conn, 1), b"x");
+        conn.test_hooks(|hooks| hooks.token_delay = Some(Duration::from_millis(50)));
+        conn.request_token_facts();
+        // What the cleanup hook runs.
+        listener.close_and_join();
+        conn.destroy_and_join();
+        assert_eq!(worker_count(), 0, "a token thread outlived the shutdown");
+        assert!(conn.closed());
+        assert!(conn.take_token_facts().is_some());
+        assert!(client_end(&client), "the server end is still open");
+        drop(client);
+    }
+    let after = process_handle_count();
+    // 20 rounds that each kept the pipe instance (or a thread) would exceed
+    // this.
+    assert!(after <= handles + 10, "handles {handles} -> {after}");
 }
 
 /// The guard reverts when the code under it panics.

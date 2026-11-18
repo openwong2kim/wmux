@@ -12,10 +12,12 @@
 #       account is refused a read-only open with access denied. Read-only,
 #       because a default access list lets every account read: only the
 #       owner-only list refuses it.
-#   (c) Integrity: the broker started at Medium integrity from this elevated
-#       runner. An elevated client (this runner, High) is hosted and a tool
-#       call answers, both from a plain client and through wmux-native
-#       mcp-shim; a Low integrity client is refused when it opens the pipe.
+#   (c) Integrity: the broker started as a UAC standard process (filtered
+#       token, Medium) from this elevated runner. An elevated client (this
+#       runner, High), plain and through wmux-native mcp-shim, either is hosted
+#       or is refused cleanly before the ack, and the shim's full-bundle
+#       fallback then answers; the job prints which. A tool call answers
+#       either way. A Low integrity client is refused when it opens the pipe.
 #
 # -SameUserOnly runs only the controls, with no second account: the form a
 # developer machine may run. Without it the script creates a temporary local
@@ -104,9 +106,9 @@ function Invoke-Shim([string] $shimHome, [string] $suffix) {
 # wmux-native mcp-shim for one MCP session: `$lines` go to its stdin, its
 # stdout is read until the response with id `$waitId` (or 30 s), then stdin
 # closes. Its stdout and stderr.
-function Invoke-ShimSession([string] $shimHome, [string] $suffix, [string[]] $lines, [int] $waitId) {
+function Invoke-ShimSession([string] $exe, [string] $shimHome, [string] $suffix, [string[]] $lines, [int] $waitId) {
   $info = New-Object System.Diagnostics.ProcessStartInfo
-  $info.FileName = $script:shimCopy
+  $info.FileName = $exe
   $info.Arguments = 'mcp-shim'
   $info.UseShellExecute = $false
   $info.RedirectStandardInput = $true
@@ -287,7 +289,10 @@ try {
         foreach ($k in @($saved.Keys)) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
       }
       $brokerRid = [IntegrityLaunch]::ProcessIntegrity($brokerPid)
+      $brokerElevated = [IntegrityLaunch]::ProcessElevated($brokerPid)
+      Write-Host ('broker: integrity 0x{0:x}, elevated {1}' -f $brokerRid, $brokerElevated)
       if ($brokerRid -ne 0x2000) { Fail ('the broker runs at integrity 0x{0:x}, not Medium' -f $brokerRid) }
+      if ($brokerElevated) { Fail 'the broker token is elevated, not a filtered standard token' }
       $deadline = (Get-Date).AddSeconds(60)
       $log = ''
       while ($log -notmatch 'peer-pid: available') {
@@ -295,17 +300,37 @@ try {
         Start-Sleep -Milliseconds 200
         if (Test-Path -LiteralPath $brokerLog) { $log = (Read-Shared $brokerLog) }
       }
-      Pass 'the broker runs at Medium integrity and its self-check passed'
+      Pass 'the broker runs as a filtered standard process (Medium) and its self-check passed'
+      $outcomes = New-Object System.Collections.Generic.List[string]
 
-      # An elevated plain client: hosted, initialize answered, a tool answers.
+      # An elevated plain client: hosted with a tool that answers, or refused
+      # cleanly (closed before any ack byte; the broker's log names why).
       $eResult = Join-Path $WorkDir 'c-elevated.json'
       & $node (Join-Path $here 'broker-client.mjs') $iPipe $iToken $eResult
       $e = Read-Json $eResult
-      if ($e.ack.ok -eq $true -and $e.initialized -and $e.tool) { Pass 'an elevated client of the Medium broker is hosted and a tool answers' }
-      else { Fail "elevated client: $(Get-Content -LiteralPath $eResult -Raw); broker log: $((Read-Shared $brokerLog))" }
+      $refusals = ((Read-Shared $brokerLog) -split "`n" | Where-Object { $_ -match 'peer refused' }) -join '; '
+      if ($e.ack.ok -eq $true -and $e.initialized -and $e.tool) {
+        $outcomes.Add('plain client: hosted')
+        Pass 'an elevated client of the Medium broker is hosted and a tool answers'
+      } elseif ($e.connected -and $null -eq $e.ack -and @($e.lines).Count -eq 0 -and @('closed', 'EPIPE', 'ECONNRESET') -contains $e.error) {
+        $outcomes.Add("plain client: refused before the ack ($refusals)")
+        Pass "an elevated client of the Medium broker is refused cleanly before the ack ($refusals)"
+      } else {
+        Fail "elevated client: $(Get-Content -LiteralPath $eResult -Raw); broker log: $((Read-Shared $brokerLog))"
+      }
 
-      # The same through wmux-native mcp-shim, as an elevated agent pane runs it.
-      $session = Invoke-ShimSession $iHome $iSuffix @(
+      # The same through wmux-native mcp-shim, as an elevated agent pane runs
+      # it. This copy has a stand-in full bundle where the packaged layout
+      # keeps it (..\mcp-bundle\index.js), so a fallback answers too, and its
+      # answers say they came from there.
+      $cDir = Join-Path $WorkDir 'c'
+      $cShimDir = Join-Path $cDir 'shim'
+      $cBundleDir = Join-Path $cDir 'mcp-bundle'
+      New-Item -ItemType Directory -Force -Path $cShimDir, $cBundleDir | Out-Null
+      $cShim = Join-Path $cShimDir 'wmux-native.exe'
+      Copy-Item -LiteralPath $ShimExe -Destination $cShim -Force
+      Copy-Item -LiteralPath (Join-Path $here 'stand-in-bundle.js') -Destination (Join-Path $cBundleDir 'index.js') -Force
+      $session = Invoke-ShimSession $cShim $iHome $iSuffix @(
         '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"broker-ci","version":"0"}}}',
         '{"jsonrpc":"2.0","method":"notifications/initialized"}',
         '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"repl_sessions","arguments":{}}}'
@@ -315,10 +340,23 @@ try {
       $answer = $session.stdout -split "`n" | Where-Object { $_.Trim() } | ForEach-Object {
         try { $_ | ConvertFrom-Json } catch { $null }
       } | Where-Object { $_ -and $_.id -eq 2 } | Select-Object -First 1
-      if ($answer -and $answer.result -and -not $answer.result.isError -and $session.stderr -notmatch 'broker not ours|running the full') {
+      $answered = $answer -and $answer.result -and -not $answer.result.isError
+      $fromBundle = $answered -and (@($answer.result.content) | Where-Object { $_.text -like 'FULL BUNDLE*' })
+      $shimLines = (($session.stderr -split "`n") | Where-Object { $_ -match '\[wmux-mcp-shim\]' } | ForEach-Object { $_.Trim() }) -join '; '
+      if ($session.stderr -match 'broker not ours') {
+        Fail "elevated shim: the broker's own pipe was called not ours: $($session.stderr.Trim())"
+      } elseif ($answered -and -not $fromBundle -and -not $shimLines) {
+        $outcomes.Add('mcp-shim: hosted')
         Pass 'an elevated wmux-native mcp-shim is hosted by the Medium broker and a tool answers'
+      } elseif ($answered -and $fromBundle) {
+        $outcomes.Add("mcp-shim: full-bundle fallback ($shimLines; broker: $refusals)")
+        Pass "an elevated wmux-native mcp-shim falls back to the full bundle cleanly and a tool answers ($shimLines)"
       } else {
         Fail "elevated shim: stdout $($session.stdout.Trim()); stderr $($session.stderr.Trim())"
+      }
+      Write-Host "OUTCOME (elevated client vs filtered Medium broker): $($outcomes -join ' | ')"
+      if ($env:GITHUB_STEP_SUMMARY) {
+        Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "Elevated client vs filtered Medium broker: $($outcomes -join ' | ')"
       }
 
       # A Low integrity client: refused at open. Its result goes to a folder

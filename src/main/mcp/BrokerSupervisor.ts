@@ -60,6 +60,15 @@ interface TerminalExit {
 }
 /** Another owner holds the broker's Windows pipe name: no restart frees it. */
 const PIPE_HELD_ELSEWHERE: TerminalExit = { reason: 'path-occupied', message: 'another owner holds the broker pipe' };
+/** The broker's Windows pipe stayed busy with an owner no probe could read. */
+const PIPE_HELD_BUSY: TerminalExit = { reason: 'path-occupied', message: 'the broker pipe stayed busy and its owner could not be read' };
+/**
+ * Consecutive 'busy' reclaim probes (about 2 min at RECLAIM_PROBE_MS) after
+ * which the pipe counts as held elsewhere: a broker always keeps an instance
+ * listening, so only a broker at its instance cap stays busy, and a holder
+ * that keeps its one instance connected would otherwise be waited on forever.
+ */
+const BUSY_PROBES_BEFORE_TERMINAL = 8;
 
 /** Broker exits that a restart cannot fix. */
 const TERMINAL_EXITS: Readonly<Record<number, TerminalExit>> = {
@@ -92,6 +101,8 @@ export class BrokerSupervisor {
   private scriptMissing = false;
   /** Exit-75 reclaim probe (W2): live only while standing down for another broker. */
   private reclaimTimer: NodeJS.Timeout | null = null;
+  /** Reclaim probes in a row that found the pipe busy. */
+  private busyProbes = 0;
   /** When the current child was spawned; null while none runs. */
   private childStartedAt: number | null = null;
   /** The current child's start time as the OS reports it, read right after the spawn. */
@@ -417,10 +428,12 @@ export class BrokerSupervisor {
    * loses the race (exit 75 again → re-arms this probe), converging to one
    * owner. A pipe another owner holds (Windows) is not another broker: the
    * supervisor stops for good, as for exit 78. A probe that cannot tell
-   * ('busy') waits for the next tick.
+   * ('busy') waits for the next tick, up to BUSY_PROBES_BEFORE_TERMINAL in a
+   * row; then the pipe counts as held elsewhere too.
    */
   private startReclaimProbe(): void {
     if (this.stopped || this.reclaimTimer) return;
+    this.busyProbes = 0;
     this.reclaimTimer = setInterval(() => {
       void this.reclaimTick();
     }, RECLAIM_PROBE_MS);
@@ -428,14 +441,16 @@ export class BrokerSupervisor {
 
   private async reclaimTick(): Promise<void> {
     const state = await probeBrokerPipe(PROBE_TIMEOUT_MS);
-    if (state === 'ours' || state === 'busy') return; // still owned, or unknown — keep waiting
+    this.busyProbes = state === 'busy' ? this.busyProbes + 1 : 0;
+    if (state === 'ours') return; // still owned — keep waiting
+    if (state === 'busy' && this.busyProbes < BUSY_PROBES_BEFORE_TERMINAL) return; // unknown — ask again
     if (this.reclaimTimer) {
       clearInterval(this.reclaimTimer);
       this.reclaimTimer = null;
     }
     if (this.stopped) return;
-    if (state === 'foreign') {
-      this.stopForGood(PIPE_HELD_ELSEWHERE);
+    if (state === 'foreign' || state === 'busy') {
+      this.stopForGood(state === 'foreign' ? PIPE_HELD_ELSEWHERE : PIPE_HELD_BUSY);
       return;
     }
     console.log('[BrokerSupervisor] broker pipe orphaned — reclaiming');

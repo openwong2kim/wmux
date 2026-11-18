@@ -330,11 +330,24 @@ describe.runIf(isWin)('the broker on Windows over the native pipe listener (stan
     s.socket.destroy();
   });
 
-  it('a wrong token still gets the ok:false auth line', async () => {
+  it('a wrong token is closed with no bytes on Windows, even when an ack was asked for', async () => {
     setControl(rig!, { peer: selfPeer() });
+    const from = rig!.log().length;
     const s = await open(rig!.pipe, handshake({ authToken: 'wrong' }));
-    expect(await s.closed).toBe('{"wmuxBroker":1,"ok":false,"error":"auth"}\n');
+    expect(await s.closed).toBe('');
+    await until(() => since(rig!, from)().includes('auth failed, dropping connection'), 5000, since(rig!, from));
   });
+
+  it('the node shim with a wrong token falls back to its full server, and a tool answers', async () => {
+    setControl(rig!, { peer: selfPeer() });
+    // Another home under the same suffix (so the same pipe), holding another token.
+    const other = fs.mkdtempSync(path.join(work, 'wrong-'));
+    fs.writeFileSync(path.join(other, `.wmux${rig!.suffix}-auth-token`), 'not-the-token');
+    const run = await runShim(shim, { ...rig!, home: other });
+    expect(run.stderr).toContain('[wmux-mcp-shim] the broker closed the connection before its ack; running the full server');
+    expect(run.stdout).toContain('FULL SERVER tools/call');
+    expect(run.code).toBe(0);
+  }, 30_000);
 
   // The node shim reads a close before the ack as "no session" and runs the
   // full server beside it, which then answers the host's tool call. Its pid is

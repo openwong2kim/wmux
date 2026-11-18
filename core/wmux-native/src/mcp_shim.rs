@@ -56,10 +56,12 @@
 //! designed path and writes none.
 //!
 //! Pipe owner (Windows): the handshake carries the auth token, so it is written
-//! only to a pipe whose owner is this account (the process's user, or its
-//! default owner). A pipe at the broker's name with another owner is closed
-//! unwritten and the session falls back with `broker not ours`; it is not
-//! retried. Unix sockets are not checked here.
+//! only to a pipe whose owner is this process's user (TokenUser), the owner
+//! the broker's listener sets. A pipe at the broker's name with any other
+//! owner, including this process's default owner for new objects (TokenOwner,
+//! the Administrators group when elevated), is closed unwritten and the
+//! session falls back with `broker not ours`; it is not retried. Unix sockets
+//! are not checked here.
 //!
 //! Fallback (fallback.rs): when the broker is unreachable or does not take the
 //! session, and always for `--bot*` arguments (the broker hosts no bot
