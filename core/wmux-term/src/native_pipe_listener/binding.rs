@@ -1,7 +1,9 @@
-//! N-API surface: NativePipeListener, NativePipeConn and two test hooks.
+//! N-API surface: NativePipeListener, NativePipeConn, nativePipeOwnedByUs
+//! and two test hooks.
 
 use super::conn::{Conn, ReadResult};
 use super::listener::{ListenError, Listener};
+use super::token::TokenFacts;
 use super::Notify;
 use crate::wake_gate::WakeGate;
 use napi::bindgen_prelude::*;
@@ -213,6 +215,42 @@ pub struct NativePipePeer {
     pub reason: Option<String>,
 }
 
+/// `{ ok: true, sameUser, integrityRid, elevated }` or `{ ok: false, reason }`:
+/// absent fields are left out, not null.
+#[napi(object)]
+pub struct NativePipeTokenFacts {
+    pub ok: bool,
+    pub same_user: Option<bool>,
+    pub integrity_rid: Option<u32>,
+    pub elevated: Option<bool>,
+    pub reason: Option<String>,
+}
+
+impl From<TokenFacts> for NativePipeTokenFacts {
+    fn from(facts: TokenFacts) -> Self {
+        match facts {
+            TokenFacts::Read {
+                same_user,
+                integrity_rid,
+                elevated,
+            } => Self {
+                ok: true,
+                same_user: Some(same_user),
+                integrity_rid: Some(integrity_rid),
+                elevated: Some(elevated),
+                reason: None,
+            },
+            TokenFacts::Unavailable(reason) => Self {
+                ok: false,
+                same_user: None,
+                integrity_rid: None,
+                elevated: None,
+                reason: Some(reason.into()),
+            },
+        }
+    }
+}
+
 #[napi]
 pub struct NativePipeConn {
     inner: Arc<Conn>,
@@ -294,6 +332,31 @@ impl NativePipeConn {
     pub fn destroy(&self) {
         self.inner.destroy();
     }
+
+    /// Reads the client's token on a thread of its own; wakes when the
+    /// result is ready. Before any read returned data the result is
+    /// 'no-read-yet'. A call while one is pending does nothing.
+    #[napi(catch_unwind)]
+    pub fn request_token_facts(&self) {
+        self.inner.request_token_facts();
+    }
+
+    /// The result, once; null while pending or never requested.
+    #[napi(catch_unwind)]
+    pub fn take_token_facts(&self) -> Option<NativePipeTokenFacts> {
+        self.inner.take_token_facts().map(Into::into)
+    }
+}
+
+/// The owner check of the named pipe `name` against this process's user:
+/// 'ours' | 'foreign' | 'busy' | 'none'. Opens a client handle (identification
+/// level, READ_CONTROL | FILE_READ_ATTRIBUTES), reads the owner and closes it;
+/// never writes. Throws on any other error.
+#[napi(catch_unwind)]
+pub fn native_pipe_owned_by_us(name: String) -> Result<String> {
+    super::security::pipe_owner_verdict(&name)
+        .map(|verdict| verdict.as_str().to_owned())
+        .map_err(Error::from_reason)
 }
 
 /// Test hook: running pipe worker threads.

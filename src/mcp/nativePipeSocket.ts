@@ -1,6 +1,6 @@
 /**
  * A stream.Duplex over one accepted connection of the native named-pipe
- * listener (core/wmux-term, capability `pipe-listener-v1`; see nativePipe.ts).
+ * listener (core/wmux-term, capability `pipe-listener-v2`; see nativePipe.ts).
  *
  * It behaves as the parts of net.Socket that the MCP broker and the SDK's
  * StdioServerTransport use: 'data'/'end'/'close'/'error', pause/resume,
@@ -43,9 +43,23 @@ export interface NativePipePeer {
   reason: string | null;
 }
 
+/** The connected client's own token, read by impersonating the client. */
+export type ClientTokenFacts =
+  | { ok: true; sameUser: boolean; integrityRid: number; elevated: boolean }
+  | { ok: false; reason: 'no-read-yet' | 'impersonation-failed' | 'token-unreadable' | 'closed' };
+
+/** What NativePipeSocket.tokenFacts() settles with: the native answer, or why
+ *  the wait ended without one. */
+export type TokenFactsResult = ClientTokenFacts | { ok: false; reason: 'timed-out' | 'unsupported' };
+
 /** One accepted connection of NativePipeListener (design: broker (b)). */
 export interface NativePipeConn {
   peer(): NativePipePeer;
+  /** pipe-listener-v2: ask for the client's token facts. Valid only after a
+   *  read completed; at most one request outstanding; wakes when done. */
+  requestTokenFacts?(): void;
+  /** pipe-listener-v2: the result, once; null while pending or never asked. */
+  takeTokenFacts?(): ClientTokenFacts | null;
   /** At most one outstanding read; wakes when it is done. */
   requestRead(max: number): void;
   /** null: the read is not done yet; 'eof': the client closed its end. */
@@ -88,6 +102,10 @@ export class NativePipeSocket extends Duplex {
   private finalDone = false;
   private pumping = false;
   private pumpAgain = false;
+  /** A native token read is outstanding. */
+  private factsPending = false;
+  /** Callers of tokenFacts() waiting for the outstanding read. */
+  private readonly factsWaiters = new Set<(facts: TokenFactsResult) => void>();
 
   constructor(conn: NativePipeConn) {
     super({ allowHalfOpen: false });
@@ -98,6 +116,39 @@ export class NativePipeSocket extends Duplex {
       conn.destroy();
       throw error;
     }
+  }
+
+  /**
+   * The client's own token facts (user, integrity, elevation), read natively
+   * by impersonating the client. Call it after the first bytes from the client
+   * were read: before that the answer is `no-read-yet`. Settles within
+   * `timeoutMs` (`timed-out`), at once with `closed` once the socket is
+   * destroyed, and with `unsupported` on a module without the read. Callers
+   * that ask while a read is outstanding share its answer.
+   */
+  tokenFacts(timeoutMs: number): Promise<TokenFactsResult> {
+    if (this.destroyed) return Promise.resolve({ ok: false, reason: 'closed' });
+    const conn = this.conn;
+    if (typeof conn.requestTokenFacts !== 'function' || typeof conn.takeTokenFacts !== 'function') {
+      return Promise.resolve({ ok: false, reason: 'unsupported' });
+    }
+    return new Promise((resolve) => {
+      const settle = (facts: TokenFactsResult): void => {
+        clearTimeout(timer);
+        this.factsWaiters.delete(settle);
+        resolve(facts);
+      };
+      const timer = setTimeout(() => settle({ ok: false, reason: 'timed-out' }), timeoutMs);
+      this.factsWaiters.add(settle);
+      if (this.factsPending) return;
+      this.factsPending = true;
+      // A throw destroys the socket, which settles every waiter as closed.
+      this.native(() => conn.requestTokenFacts!());
+    });
+  }
+
+  private settleFacts(facts: TokenFactsResult): void {
+    for (const settle of [...this.factsWaiters]) settle(facts);
   }
 
   /** Drain whatever the native side finished since the last call. Called on
@@ -143,6 +194,15 @@ export class NativePipeSocket extends Duplex {
    *  final callbacks) run outside any try. */
   private pumpOnce(): void {
     if (this.destroyed) return;
+    if (this.factsPending) {
+      const facts = this.native(() => this.conn.takeTokenFacts!());
+      if (facts === undefined) return;
+      if (facts !== null) {
+        this.factsPending = false;
+        // Settles promises only: no consumer code runs from here.
+        this.settleFacts(facts);
+      }
+    }
     if (this.reading) {
       const read = this.native(() => this.conn.takeRead());
       if (read === undefined) return;
@@ -243,6 +303,8 @@ export class NativePipeSocket extends Duplex {
 
   override _destroy(error: Error | null, callback: Callback): void {
     this.reading = false;
+    this.factsPending = false;
+    this.settleFacts({ ok: false, reason: 'closed' });
     try {
       this.conn.destroy();
     } catch {

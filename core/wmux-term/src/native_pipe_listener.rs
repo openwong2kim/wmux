@@ -1,4 +1,6 @@
-//! Owner-only named-pipe listener for Windows (capability `pipe-listener-v1`).
+//! Owner-only named-pipe listener for Windows (capabilities `pipe-listener-v1`
+//! and `pipe-listener-v2`: v1 plus the client token read and the pipe owner
+//! check).
 //!
 //! Every instance is created with a protected DACL that grants access to this
 //! process's user and SYSTEM only, owned by that user, not inheritable, and
@@ -8,8 +10,9 @@
 //! its peer's identity (pid, session, user, integrity level, parent).
 //!
 //! Threads: one accept thread per listener, one I/O thread per accepted
-//! instance. Workers wake JS through one callback per listener (shared with
-//! its instances); JS drains with the take*() calls. Blocking teardown (I/O
+//! instance, and one short-lived thread per client token read. Workers wake
+//! JS through one callback per listener (shared with its instances); JS
+//! drains with the take*() calls. Blocking teardown (I/O
 //! cancel + join) never runs on the JS thread, except in the environment
 //! cleanup hook.
 //!
@@ -25,6 +28,7 @@ mod listener;
 mod peer;
 mod security;
 mod sys;
+mod token;
 
 #[cfg(all(feature = "native-core", feature = "bindings"))]
 mod binding;

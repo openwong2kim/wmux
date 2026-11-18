@@ -34,8 +34,9 @@ export function BrokerSettingRow({ api }: { api?: BrokerSettingApi }) {
   }, [api]);
 
   // The broker can stop after the row loaded (its self-check gives up about a
-  // minute after start), so re-read while it runs and has not stopped.
-  const mayStop = !!state && state.running.on && state.hostsSessions && !state.peerUnavailable;
+  // minute after start, or its pipe turns out held elsewhere), so re-read
+  // while it runs and has not stopped.
+  const mayStop = !!state && state.running.on && state.hostsSessions && !state.peerUnavailable && !state.pathOccupied;
   useEffect(() => {
     if (!mayStop || !api?.brokerSetting) return;
     let live = true;
@@ -74,6 +75,9 @@ export function BrokerSettingRow({ api }: { api?: BrokerSettingApi }) {
       </SettingRow>
       {state.peerUnavailable && (
         <SettingNote tone="warning" data-testid="settings-mcp-broker-peer">{t('settings.mcpBrokerPeerUnavailable')}</SettingNote>
+      )}
+      {state.pathOccupied && (
+        <SettingNote tone="warning" data-testid="settings-mcp-broker-occupied">{t('settings.mcpBrokerPathOccupied')}</SettingNote>
       )}
       {state.hostsSessions === false && (
         <SettingNote data-testid="settings-mcp-broker-idle">{t('settings.mcpBrokerIdleHere')}</SettingNote>

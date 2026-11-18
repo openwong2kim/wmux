@@ -31,10 +31,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawn, spawnSync } from 'child_process';
 import { buildSync } from 'esbuild';
 import * as fs from 'fs';
-import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { mayHaveRun } from '../shimHandover';
+import { listenStubBroker, type StubBrokerServer } from '../../test-utils/stubBrokerPipe';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const isWin = process.platform === 'win32';
@@ -70,6 +70,8 @@ interface Run {
  *  up on its next call, or not be there at all. */
 type Broker = 'hangup' | 'flood' | 'reset' | 'inflight' | 'none';
 
+/** The broker's ack of a hosted session, for a shim that asks for it. */
+const ACK_LINE = '{"wmuxBroker":1,"ok":true}\n';
 const INIT_LINE = '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}\n';
 const INIT_REPLY = '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}\n';
 const INITIALIZED_AND_CALL =
@@ -127,7 +129,7 @@ function childEnv(suffix: string, extra: Record<string, string>): NodeJS.Process
 
 /** One shim run against the stub broker the case names. */
 async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<Run> {
-  let server: net.Server | null = null;
+  let server: StubBrokerServer | null = null;
   let line: string | null = null;
   const broker = c.broker ?? 'hangup';
   const flooding = new Set<ReturnType<typeof setInterval>>();
@@ -137,7 +139,7 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
     // socket from the kernel until its buffer reaches that mark, so with the
     // default (64 KiB) the stub would drain the shim's bytes and close with an
     // empty receive queue, a plain EOF. At 1 byte it stops after one chunk.
-    const srv = net.createServer({ highWaterMark: broker === 'reset' ? 1 : undefined }, (sock) => {
+    server = await listenStubBroker(pipeName(suffix), (sock) => {
       let buf = Buffer.alloc(0);
       sock.on('data', (chunk) => {
         buf = Buffer.concat([buf, chunk]);
@@ -151,8 +153,15 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
         buf = buf.subarray(nl + 1);
         // Answer a shim that asks for the ack, as the broker does once it has
         // hosted the session (the native shim waits for it; shim.ts never asks).
-        if (JSON.parse(line).ack === 1) sock.write('{"wmuxBroker":1,"ok":true}\n');
-        if (broker === 'hangup') { sock.destroy(); return; }
+        const ack = JSON.parse(line).ack === 1;
+        if (broker === 'hangup') {
+          // Hang up once the ack is written: on Windows the stub is a native
+          // pipe socket, whose destroy drops a write still queued.
+          if (ack) sock.write(ACK_LINE, () => sock.destroy());
+          else sock.destroy();
+          return;
+        }
+        if (ack) sock.write(ACK_LINE);
         if (broker === 'inflight') {
           child?.stdin?.write(INIT_LINE);
           hostLines();
@@ -195,12 +204,7 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
         }
       };
       sock.on('error', () => { /* shim gone */ });
-    });
-    await new Promise<void>((resolve, reject) => {
-      srv.once('error', reject);
-      srv.listen(pipeName(suffix), () => resolve());
-    });
-    server = srv;
+    }, { highWaterMark: broker === 'reset' ? 1 : undefined });
   }
   const [cmd, ...args] = runtime === 'js'
     ? [process.execPath, jsShim, ...(c.args ?? [])]
@@ -216,8 +220,7 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
   const code = await new Promise<number | null>((resolve) => proc.on('close', (c2) => resolve(c2)));
   for (const timer of flooding) clearInterval(timer);
   proc.stdin.destroy();
-  const srv = server;
-  if (srv) await new Promise<void>((resolve) => srv.close(() => resolve()));
+  await server?.close();
   return { line, pid: proc.pid ?? -1, code, stdout, stderr };
 }
 

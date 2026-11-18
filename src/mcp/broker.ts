@@ -42,7 +42,20 @@ import { socketIdentity, staleSocketAction, staleSocketKind, stampSocket } from 
 import { BROKER_EXIT_PATH_OCCUPIED, BROKER_EXIT_PEER_UNAVAILABLE } from '../shared/mcpBroker';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
 import { peerPidOf, selfCheckPeerPid } from '../shared/peerPid';
-import { decidePeer, retryingSelfCheck } from './brokerPeer';
+import {
+  decidePeer,
+  decideWin32Session,
+  PreAuthGate,
+  SessionBudget,
+  retryingSelfCheck,
+  selfCheckNativePipe,
+  win32SelfCheckPipeName,
+  type HostDecision,
+  type PeerSelfCheck,
+  type Win32HostDecision,
+} from './brokerPeer';
+import { listenNativePipe, loadNativePipe, NATIVE_PIPE_MAX_INSTANCES, type NativePipeModule, type PipeOwnerVerdict } from './nativePipe';
+import type { NativePipeSocket } from './nativePipeSocket';
 import { createConnectionReporter, trackConnection, trackToolCalls, type ReportChannel } from './brokerConnectionReporter';
 import { setBrokerEnvelopeMode } from './wmux-client';
 import { acceptBrokerStamp } from './brokerStamp';
@@ -91,7 +104,26 @@ const connectionReporter = createConnectionReporter(process as unknown as Report
 /** How long a connection may sit without completing the wmuxShim handshake. */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
-async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Promise<void> {
+/**
+ * The exit when the Windows pipe listener stops accepting on its own: a crash
+ * code, so the supervisor's restart backoff and breaker take over. The broker
+ * never binds the name again in the same process.
+ */
+const EXIT_LISTENER_STOPPED = 1;
+
+/** A connection the broker serves: a unix socket, or a native pipe connection on Windows. */
+type BrokerSocket = net.Socket | NativePipeSocket;
+
+/** Decides whether a connection's session is hosted, from its handshake. */
+type DecideHost = (claimed: ShimHandshake) => Promise<HostDecision | Win32HostDecision>;
+
+/**
+ * Host the session. `beforeAck`, when given, runs right before the ack: a
+ * reason it returns refuses the session there (Windows: the connection's
+ * budget ran out), closing the just-created server and the connection with no
+ * ack. False when refused that way.
+ */
+async function hostConnection(socket: BrokerSocket, handshake: ShimHandshake, beforeAck?: () => string | null): Promise<boolean> {
   const connId = ++connSeq;
   const scope: ConnectionScope = createConnectionScope();
   // Reached only after decidePeer took the OS peer as this pid.
@@ -120,6 +152,8 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   let connClosed = false;
   // Ends this connection's tool calls still in flight when it closes.
   let endToolCalls: () => void = () => undefined;
+  // Set when beforeAck refused the session.
+  let refusedBeforeAck = false;
 
   await runInConnectionScope(scope, async () => {
     const server = createWmuxServer({
@@ -146,6 +180,13 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
     // sends on the ack wait in the socket until the scope wrappers below are in
     // place. If connect then rejects, the caller destroys the socket: the shim,
     // already pumping, exits 1.
+    const late = beforeAck?.() ?? null;
+    if (late !== null) {
+      log(`session refused (budget): ${late}`);
+      refusedBeforeAck = true;
+      void server.close().catch(() => { /* best-effort */ });
+      return;
+    }
     if (handshake.ack === 1) socket.write(brokerAckLine(true));
 
     transport = new StdioServerTransport(socket, socket);
@@ -192,6 +233,10 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
         onclose?.();
       });
   });
+  if (refusedBeforeAck) {
+    socket.destroy();
+    return false;
+  }
 
   socket.on('error', (err) => log(`socket error: ${err.message}`));
 
@@ -209,6 +254,7 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   socket.on('end', teardown);
   // Closed while the session was being set up: no close event is coming.
   if (socket.destroyed) teardown();
+  return true;
 }
 
 function main(): void {
@@ -232,16 +278,37 @@ function main(): void {
   }
 
   const pipeName = getMcpBrokerPipeName();
+  // Windows: the broker listens with the native pipe listener, which reads the
+  // client's pid, session and token (src/mcp/nativePipe.ts). A core without it
+  // cannot host any session, and no restart brings it: the exit the
+  // supervisor treats as final for a check that never passes.
+  let nativeModule: NativePipeModule | null = null;
+  if (process.platform === 'win32') {
+    try {
+      nativeModule = loadNativePipe();
+    } catch (err) {
+      console.error(`[wmux-mcp-broker] native pipe listener unavailable (${err instanceof Error ? err.message : String(err)}); stopping (exit ${BROKER_EXIT_PEER_UNAVAILABLE})`);
+      process.exit(BROKER_EXIT_PEER_UNAVAILABLE);
+      return;
+    }
+  }
+  const pipeModule = nativeModule;
   // Sessions are hosted only for a peer the OS names (src/mcp/brokerPeer.ts);
   // while this process cannot read peer pids it refuses every session, and it
   // checks again with backoff. A check that never passes through the whole
   // schedule ends the broker with exit 79: the supervisor then marks it off,
   // so launchers start their own server instead of asking it first. The
   // check's socket sits beside the broker's, under a name no longer than the
-  // broker socket's own.
+  // broker socket's own. On Windows the check listens on a private pipe name
+  // with the native listener and reads its own connection back.
   let lastVerdict: string | null | undefined;
   const peerSelfCheck = retryingSelfCheck(
-    () => selfCheckPeerPid(undefined, path.join(path.dirname(pipeName), `${path.basename(pipeName, '.sock')}.pc`)),
+    pipeModule
+      ? () => selfCheckNativePipe(
+        (name, options) => listenNativePipe(name, { ...options, module: pipeModule }),
+        win32SelfCheckPipeName(pipeName),
+      )
+      : () => selfCheckPeerPid(undefined, path.join(path.dirname(pipeName), `${path.basename(pipeName, '.sock')}.pc`)),
     (verdict, attempt) => {
       if (attempt > 1 && verdict === lastVerdict) return;
       lastVerdict = verdict;
@@ -264,19 +331,23 @@ function main(): void {
   /** Sessions admitted and not yet closed. */
   let hostedSessions = 0;
 
-  const server = net.createServer((socket) => {
-    // Read here, before anything else can close and reuse the descriptor.
-    const peer = peerPidOf(socket);
-    // Closed at once, before any byte is read: the launcher runs its own server.
-    if (!connectionRate.admit()) {
-      const now = Date.now();
-      if (now - rateLogged >= 1000) {
-        rateLogged = now;
-        console.error(`[wmux-mcp-broker] over ${BROKER_MAX_NEW_CONNECTIONS_PER_SEC} new connections in a second; closing the rest of this second's`);
-      }
-      socket.destroy();
-      return;
+  /** Closed at once, before any byte is read, when over the connection rate: the launcher runs its own server. */
+  const admitRate = (socket: BrokerSocket): boolean => {
+    if (connectionRate.admit()) return true;
+    const now = Date.now();
+    if (now - rateLogged >= 1000) {
+      rateLogged = now;
+      console.error(`[wmux-mcp-broker] over ${BROKER_MAX_NEW_CONNECTIONS_PER_SEC} new connections in a second; closing the rest of this second's`);
     }
+    socket.destroy();
+    return false;
+  };
+
+  /**
+   * One connection, from its handshake line to the hosted session. `decide`
+   * names the peer: every refusal closes the connection with no ack line.
+   */
+  const serveConnection = (socket: BrokerSocket, decide: DecideHost, beforeAck?: () => string | null): void => {
     // Accumulate until the handshake line; hand the remainder back to the
     // socket so the MCP transport sees a clean stream from byte 0.
     let buffer = Buffer.alloc(0);
@@ -327,15 +398,16 @@ function main(): void {
       }
       if (!tokenMatches(handshake.authToken, expected.token)) {
         console.error('[wmux-mcp-broker] auth failed, dropping connection');
-        if (wantsAck) socket.end(brokerAckLine(false, 'auth'), () => socket.destroy());
+        // Windows: closed with no ack line, as for every refusal there, so the
+        // shim runs its own full server instead of ending the session.
+        if (wantsAck && process.platform !== 'win32') socket.end(brokerAckLine(false, 'auth'), () => socket.destroy());
         else socket.destroy();
         return;
       }
 
       const rest = buffer.subarray(nl + 1);
       const claimed = handshake;
-      peerSelfCheck.verdict()
-        .then((verdict) => decidePeer({ selfCheckOk: verdict === 'available', peer, claimedPid: claimed.callerPid, ownUid }))
+      decide(claimed)
         .then(async (decision) => {
           if (socket.destroyed) return;
           if (!decision.ok) {
@@ -359,7 +431,7 @@ function main(): void {
           if (claimed.callerPpid !== decision.callerPpid) {
             console.error(`[wmux-mcp-broker] callerPpid ${String(claimed.callerPpid)} differs from the OS parent ${decision.callerPpid}; using the OS parent`);
           }
-          await hostConnection(socket, { ...claimed, callerPid: decision.callerPid, callerPpid: decision.callerPpid });
+          if (!(await hostConnection(socket, { ...claimed, callerPid: decision.callerPid, callerPpid: decision.callerPpid }, beforeAck))) return;
           // Replay any MCP bytes that arrived glued to the handshake, then
           // resume flow into the transport's data listener.
           if (rest.length > 0) socket.unshift(rest);
@@ -373,7 +445,37 @@ function main(): void {
 
     socket.on('data', onData);
     socket.on('error', () => { /* per-connection errors logged in hostConnection */ });
+  };
+
+  let closeServer: () => void = () => undefined;
+  const shutdown = (code = 0) => {
+    peerSelfCheck.stop();
+    closeServer();
+    process.exit(code);
+  };
+  process.on('SIGTERM', () => shutdown());
+  process.on('SIGINT', () => shutdown());
+  // Started by main with an IPC channel: when main goes (a crash, a kill), the
+  // channel closes and the broker goes too, rather than living on without a
+  // supervisor. A broker started by hand has no channel and is unaffected.
+  if (process.send) process.on('disconnect', () => shutdown());
+
+  if (pipeModule) {
+    closeServer = listenWin32(pipeModule, pipeName, admitRate, serveConnection, peerSelfCheck, (reason) => {
+      console.error(`[wmux-mcp-broker] the pipe listener stopped accepting (${reason}); exiting (exit ${EXIT_LISTENER_STOPPED})`);
+      shutdown(EXIT_LISTENER_STOPPED);
+    });
+    return;
+  }
+
+  const server = net.createServer((socket) => {
+    // Read here, before anything else can close and reuse the descriptor.
+    const peer = peerPidOf(socket);
+    if (!admitRate(socket)) return;
+    serveConnection(socket, (claimed) => peerSelfCheck.verdict()
+      .then((verdict) => decidePeer({ selfCheckOk: verdict === 'available', peer, claimedPid: claimed.callerPid, ownUid })));
   });
+  closeServer = () => server.close();
 
   let staleRetried = false;
   server.on('error', (err) => {
@@ -445,18 +547,95 @@ function main(): void {
     if (process.platform !== 'win32') stampSocket(pipeName);
     console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid}`);
   });
+}
 
-  const shutdown = (code = 0) => {
-    peerSelfCheck.stop();
-    server.close();
-    process.exit(code);
+/**
+ * Windows: listen on the broker's pipe with the native listener and return
+ * how to close it. A name already taken ends the broker: 75 when this user
+ * holds it, or when its owner cannot be read because every instance is in use
+ * (the supervisor stands down and probes; a holder that stays busy ends in its
+ * terminal state there), 78 when another owner does (a restart cannot fix
+ * that), and a crash exit when the name went away meanwhile (the supervisor
+ * restarts the broker).
+ */
+function listenWin32(
+  module: NativePipeModule,
+  pipeName: string,
+  admitRate: (socket: BrokerSocket) => boolean,
+  serveConnection: (socket: BrokerSocket, decide: DecideHost, beforeAck?: () => string | null) => void,
+  selfCheck: Pick<PeerSelfCheck, 'latest' | 'verdict'>,
+  onFailure: (reason: string) => void,
+): () => void {
+  // Idle clients that never send a handshake cannot hold the pipe's
+  // instances: past this many waiting, a new connection is closed at once.
+  const preAuth = new PreAuthGate();
+  let capLogged = 0;
+  const onConnection = (socket: NativePipeSocket): void => {
+    const budget = new SessionBudget(Date.now());
+    if (!admitRate(socket)) return;
+    const release = preAuth.admit();
+    if (!release) {
+      const now = Date.now();
+      if (now - capLogged >= 1000) {
+        capLogged = now;
+        console.error(`[wmux-mcp-broker] ${preAuth.size} connections are waiting for their handshake; closing new ones`);
+      }
+      socket.destroy();
+      return;
+    }
+    socket.once('close', release);
+    // Decided within a budget from accept (brokerPeer.ts decideWin32Session),
+    // and checked once more right before the ack. The token facts are asked
+    // only now, after the handshake line was read: the client's token can be
+    // read once it has sent something.
+    serveConnection(socket, async (claimed) => {
+      try {
+        return await decideWin32Session({
+          acceptedAt: budget.acceptedAt,
+          budgetMs: budget.budgetMs,
+          selfCheck,
+          tokenFacts: (timeoutMs) => socket.tokenFacts(timeoutMs),
+          peer: socket.peer,
+          claimedPid: claimed.callerPid,
+        });
+      } finally {
+        release();
+      }
+    }, () => (budget.spent() ? `peer ${socket.peer.pid}: the ack was due ${budget.elapsed()} ms after accept` : null));
   };
-  process.on('SIGTERM', () => shutdown());
-  process.on('SIGINT', () => shutdown());
-  // Started by main with an IPC channel: when main goes (a crash, a kill), the
-  // channel closes and the broker goes too, rather than living on without a
-  // supervisor. A broker started by hand has no channel and is unaffected.
-  if (process.send) process.on('disconnect', () => shutdown());
+
+  try {
+    const server = listenNativePipe(pipeName, {
+      maxInstances: NATIVE_PIPE_MAX_INSTANCES,
+      module,
+      onConnection,
+      onFailure,
+      onConnectionError: (error) => console.error('[wmux-mcp-broker] connection handler failed:', error),
+    });
+    console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid}`);
+    return () => server.close();
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    let owner: PipeOwnerVerdict | 'unknown';
+    try {
+      owner = module.nativePipeOwnedByUs(pipeName);
+    } catch {
+      owner = 'unknown';
+    }
+    if (owner === 'foreign') {
+      console.error(`[wmux-mcp-broker] the broker pipe is held by another owner; stopping (exit ${BROKER_EXIT_PATH_OCCUPIED})`);
+      process.exit(BROKER_EXIT_PATH_OCCUPIED);
+    } else if (code === 'EADDRINUSE' && owner !== 'none') {
+      console.error(owner === 'ours'
+        ? '[wmux-mcp-broker] pipe in use by a live broker; standing down'
+        : `[wmux-mcp-broker] pipe in use, owner not readable (${owner}); standing down`);
+      process.exit(75);
+    } else {
+      console.error(`[wmux-mcp-broker] could not listen on ${pipeName} (${err instanceof Error ? err.message : String(err)}; owner ${owner}); exiting`);
+      process.exit(EXIT_LISTENER_STOPPED);
+    }
+    return () => undefined;
+  }
 }
 
 main();
