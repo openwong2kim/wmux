@@ -71,15 +71,17 @@ describe('pty:create with a WSL share cwd', () => {
     expect(notify).not.toHaveBeenCalled();
   });
 
-  it('a distro in the known-distro cache skips the wsl.exe enumeration (case-insensitive); a miss enumerates', async () => {
+  it('a distro in the known-distro cache is used as cached (case-insensitive) and refreshed behind the create; a miss enumerates first', async () => {
     known = ['ubuntu', 'Debian'];
+    distros = [];
     const [hit] = await create([{ cwd: share, workspaceId: 'w1' }]);
     expect(hit.shellArgs).toEqual(['-d', 'ubuntu']);
-    expect(enumerate).not.toHaveBeenCalled();
+    // The refresh behind the hit, so a distro unregistered since is caught next time.
+    expect(enumerate).toHaveBeenCalledTimes(1);
     known = ['Debian'];
     distros = ['Ubuntu'];
     const [miss] = await create([{ cwd: share, workspaceId: 'w1' }]);
-    expect(enumerate).toHaveBeenCalledTimes(1);
+    expect(enumerate).toHaveBeenCalledTimes(2);
     expect(miss.shellArgs).toEqual(['-d', 'Ubuntu']);
   });
 

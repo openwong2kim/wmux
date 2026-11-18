@@ -20,7 +20,10 @@ export async function revealablePath(
   cwd: string,
   ptyId: string | undefined,
   api: Pick<PaneForegroundApi, 'list'>,
+  platform: string | undefined = typeof window === 'undefined' ? undefined : window.electronAPI?.platform,
 ): Promise<{ path: string } | { error: string }> {
+  // Only Windows hosts WSL panes; elsewhere a Linux path is the host's own.
+  if (platform !== undefined && platform !== 'win32') return { path: cwd };
   if (!ptyId || !cwd.startsWith('/') || cwd.startsWith('//')) return { path: cwd };
   const session = await paneWslSession(ptyId, api);
   if (!session.wsl) return { path: cwd };

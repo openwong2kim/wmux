@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useRef, useCallback, useState, type CSSProperties } from 'react';
 import { LAYOUT_PRESETS } from '../../../shared/layoutPresets';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -183,7 +183,8 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
     flyout.style.left = `${pos.left}px`;
     flyout.style.top = `${pos.top}px`;
   }, []);
-  useEffect(() => {
+  // Before paint, so the flyout's first frame is already beside its row.
+  useLayoutEffect(() => {
     if (!wslListOpen) return;
     placeWslFlyout();
     const menu = ref.current;

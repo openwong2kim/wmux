@@ -8,6 +8,12 @@ const wsl = (distro?: string) =>
   api({ shell: 'wsl.exe', args: distro ? ['-d', distro] : [], wslTarget: distro ? { distribution: distro } : undefined });
 
 describe('revealablePath', () => {
+  it('off Windows, a Linux path is the host\'s own: no session lookup', async () => {
+    const list = vi.fn(async () => []);
+    expect(await revealablePath('/home/me/repo', 'p1', { list } as never, 'darwin')).toEqual({ path: '/home/me/repo' });
+    expect(list).not.toHaveBeenCalled();
+  });
+
   it('translates a Linux cwd of a WSL pane to its \\\\wsl$ share', async () => {
     expect(await revealablePath('/home/me/repo', 'p1', wsl('Ubuntu'))).toEqual({ path: '\\\\wsl$\\Ubuntu\\home\\me\\repo' });
   });

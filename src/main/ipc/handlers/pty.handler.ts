@@ -414,9 +414,11 @@ async function withWslShareCwd(
   // `wsl.exe --list`.
   const share = wslShareToLinux(options.cwd)!;
   const cached = getKnownWslDistros();
-  const known = cached?.some((d) => d.toLowerCase() === share.distro.toLowerCase())
-    ? [...cached]
-    : await enumerateWslDistros();
+  const hit = cached?.some((d) => d.toLowerCase() === share.distro.toLowerCase()) ?? false;
+  // A hit is trusted for this create and refreshed behind it, so a distro
+  // unregistered since then is caught by the next one.
+  if (hit) void enumerateWslDistros();
+  const known = hit && cached ? [...cached] : await enumerateWslDistros();
   const result = applyWslShareCwd(options, process.platform, known);
   if ('options' in result) return result.options;
   const { cwd: _dropped, wslDistro: _unused, ...rest } = options;
