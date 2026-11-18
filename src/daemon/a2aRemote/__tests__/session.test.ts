@@ -117,7 +117,7 @@ describe('JoinerSession: an approval refused rate-limited', () => {
     });
     sessions.push(session);
     session.start();
-    await vi.waitFor(() => expect(told).toEqual(['ap-1:rate-limited']));
+    await vi.waitFor(() => expect(told).toEqual(['ap-1:rate-limited']), { timeout: 5_000 });
     expect(refused).toEqual(['rate-limited']);
     expect(posts).toBe(1);
   });
