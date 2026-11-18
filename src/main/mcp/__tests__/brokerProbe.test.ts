@@ -79,8 +79,9 @@ describe('probeBrokerPipe with an owner check', () => {
     expect(net.connect).not.toHaveBeenCalled();
   });
 
-  it('an owner that cannot be told is busy (ask again)', async () => {
-    await expect(probeBrokerPipe(200, 'pipe', () => 'unknown')).resolves.toBe('busy');
+  it('an owner check that could not run is unknown, apart from busy', async () => {
+    await expect(probeBrokerPipe(200, 'pipe', () => 'unknown')).resolves.toBe('unknown');
+    await expect(probeBrokerPipe(200, 'pipe', () => 'busy')).resolves.toBe('busy');
   });
 
   it('canConnectBrokerPipe is true only for a pipe of this user', async () => {

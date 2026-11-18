@@ -7,11 +7,13 @@ import { brokerNativePipe } from './brokerNativePipe';
  * What a probe of the broker pipe found:
  * - 'ours': a broker of this user serves it;
  * - 'foreign': another owner holds the name (Windows), which no restart frees;
- * - 'busy': unknown this time (every instance in use, or the owner could not
- *   be read); ask again later;
+ * - 'busy': every instance of the pipe is in use (Windows), so its owner could
+ *   not be read this time;
+ * - 'unknown': the owner check itself could not run (no native module, or it
+ *   threw); ask again later;
  * - 'none': nothing serves it.
  */
-export type BrokerPipeState = PipeOwnerVerdict;
+export type BrokerPipeState = PipeOwnerVerdict | 'unknown';
 
 /** Who holds a pipe on Windows; 'unknown' when it cannot be told. */
 export type PipeOwnerCheck = (pipeName: string) => PipeOwnerVerdict | 'unknown';
@@ -49,10 +51,7 @@ export async function probeBrokerPipe(
   pipeName: string = getMcpBrokerPipeName(),
   ownerOf: PipeOwnerCheck | null = nativePipeOwnerCheck(),
 ): Promise<BrokerPipeState> {
-  if (ownerOf) {
-    const owner = ownerOf(pipeName);
-    return owner === 'unknown' ? 'busy' : owner;
-  }
+  if (ownerOf) return ownerOf(pipeName);
   return (await connectProbe(timeoutMs, pipeName)) ? 'ours' : 'none';
 }
 

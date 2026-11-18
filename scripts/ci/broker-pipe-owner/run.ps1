@@ -138,7 +138,15 @@ function Invoke-ShimSession([string] $exe, [string] $shimHome, [string] $suffix,
   }
   $p.StandardInput.Close()
   if (-not $p.WaitForExit(30000)) { $p.Kill(); $p.WaitForExit() }
-  [pscustomobject]@{ code = $p.ExitCode; stderr = $err.Result; stdout = $stdout.ToString() }
+  [pscustomobject]@{ pid = $p.Id; code = $p.ExitCode; stderr = $err.Result; stdout = $stdout.ToString() }
+}
+
+# The refusals the broker logged for the client with pid $clientPid: each
+# "peer refused (<reason>)" or "session refused (<reason>)" line that names
+# "peer <pid>". Their reasons, in log order.
+function Get-Refusals([string] $log, [int] $clientPid) {
+  $pattern = '(?:peer|session) refused \(([^)]+)\):.*\bpeer ' + $clientPid + '\b'
+  @(($log -split "`n") | ForEach-Object { if ($_ -match $pattern) { $Matches[1] } })
 }
 
 # A shim home holding the auth token for $suffix (so the shim dials), and no
@@ -260,6 +268,15 @@ try {
       Fail ('the runner is not elevated (integrity 0x{0:x}); the integrity checks need it' -f $ownRid)
     } else {
       $iSuffix = New-Suffix
+      # The broker runs on the filtered token, where Administrators is
+      # deny-only: what this elevated runner created is not its to read or
+      # write unless the account itself is granted. The work directory (the
+      # broker bundle, its home and token file, its log), the core module's
+      # folder and these scripts (read by the Low client) are.
+      foreach ($grant in @(@($WorkDir, 'M'), @((Split-Path -Parent $CoreModule), 'RX'), @($here, 'RX'))) {
+        & icacls.exe $grant[0] /grant ("*{0}:(OI)(CI){1}" -f $runnerSid, $grant[1]) /T /Q | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "icacls $($grant[0]) exited $LASTEXITCODE" }
+      }
       $iHome = Join-Path $WorkDir 'ihome'
       New-Item -ItemType Directory -Force -Path $iHome | Out-Null
       $iToken = 'ci-integrity-' + [guid]::NewGuid().ToString('N')
@@ -269,6 +286,7 @@ try {
       & $node (Join-Path $here 'build-broker.mjs') $brokerJs
       if ($LASTEXITCODE -ne 0) { throw "build-broker.mjs exited $LASTEXITCODE" }
       $brokerLog = Join-Path $WorkDir 'broker.log'
+      function Get-BrokerLog { if (Test-Path -LiteralPath $brokerLog) { Read-Shared $brokerLog } else { '' } }
 
       # The broker inherits this environment: point it at the throwaway home
       # and the built core for the launch only.
@@ -288,41 +306,64 @@ try {
       } finally {
         foreach ($k in @($saved.Keys)) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
       }
-      $brokerRid = [IntegrityLaunch]::ProcessIntegrity($brokerPid)
-      $brokerElevated = [IntegrityLaunch]::ProcessElevated($brokerPid)
+      try {
+        $brokerRid = [IntegrityLaunch]::ProcessIntegrity($brokerPid)
+        $brokerElevated = [IntegrityLaunch]::ProcessElevated($brokerPid)
+      } catch {
+        throw "the filtered broker exited at once ($($_.Exception.Message)); its log: $(Get-BrokerLog)"
+      }
       Write-Host ('broker: integrity 0x{0:x}, elevated {1}' -f $brokerRid, $brokerElevated)
       if ($brokerRid -ne 0x2000) { Fail ('the broker runs at integrity 0x{0:x}, not Medium' -f $brokerRid) }
       if ($brokerElevated) { Fail 'the broker token is elevated, not a filtered standard token' }
-      $deadline = (Get-Date).AddSeconds(60)
+      # Fail fast: a broker that exits, or writes no log, says so at once.
+      $waitFrom = Get-Date
       $log = ''
       while ($log -notmatch 'peer-pid: available') {
-        if ((Get-Date) -gt $deadline) { throw "the Medium broker did not get ready: $log" }
         Start-Sleep -Milliseconds 200
-        if (Test-Path -LiteralPath $brokerLog) { $log = (Read-Shared $brokerLog) }
+        $log = Get-BrokerLog
+        if (-not (Get-Process -Id $brokerPid -ErrorAction SilentlyContinue)) {
+          throw "the filtered broker exited before it was ready; its log: $(Get-BrokerLog)"
+        }
+        if (-not $log -and ((Get-Date) - $waitFrom).TotalSeconds -gt 15) {
+          throw "the filtered broker wrote no log in 15 s (can it write $WorkDir and read $brokerJs?)"
+        }
+        if (((Get-Date) - $waitFrom).TotalSeconds -gt 60) { throw "the filtered broker did not get ready in 60 s; its log: $log" }
       }
       Pass 'the broker runs as a filtered standard process (Medium) and its self-check passed'
       $outcomes = New-Object System.Collections.Generic.List[string]
+      # The refusals an elevated client may get from a filtered broker: its
+      # process, its parent or its token read across the elevation boundary.
+      # Anything else (auth, budget, a handshake timeout, no reason) fails.
+      $expectedRefusals = @('process-unreadable', 'no-parent', 'token-unreadable')
+      $refusedAsExpected = {
+        param([string[]] $reasons)
+        $reasons.Count -gt 0 -and @($reasons | Where-Object { $expectedRefusals -notcontains $_ }).Count -eq 0
+      }
 
-      # An elevated plain client: hosted with a tool that answers, or refused
-      # cleanly (closed before any ack byte; the broker's log names why).
+      # An elevated plain client: (i) hosted with a tool that answers, or (ii)
+      # closed before any ack byte with the broker's log naming an expected
+      # refusal for this client's pid.
       $eResult = Join-Path $WorkDir 'c-elevated.json'
       & $node (Join-Path $here 'broker-client.mjs') $iPipe $iToken $eResult
       $e = Read-Json $eResult
-      $refusals = ((Read-Shared $brokerLog) -split "`n" | Where-Object { $_ -match 'peer refused' }) -join '; '
+      $eReasons = Get-Refusals (Get-BrokerLog) $e.pid
+      $closedNoAck = $e.connected -and $null -eq $e.ack -and @($e.lines).Count -eq 0 -and @('closed', 'EPIPE', 'ECONNRESET') -contains $e.error
       if ($e.ack.ok -eq $true -and $e.initialized -and $e.tool) {
         $outcomes.Add('plain client: hosted')
         Pass 'an elevated client of the Medium broker is hosted and a tool answers'
-      } elseif ($e.connected -and $null -eq $e.ack -and @($e.lines).Count -eq 0 -and @('closed', 'EPIPE', 'ECONNRESET') -contains $e.error) {
-        $outcomes.Add("plain client: refused before the ack ($refusals)")
-        Pass "an elevated client of the Medium broker is refused cleanly before the ack ($refusals)"
+      } elseif ($closedNoAck -and (& $refusedAsExpected $eReasons)) {
+        $outcomes.Add("plain client: refused before the ack ($($eReasons -join ', '))")
+        Pass "an elevated client of the Medium broker is refused before the ack ($($eReasons -join ', '))"
       } else {
-        Fail "elevated client: $(Get-Content -LiteralPath $eResult -Raw); broker log: $((Read-Shared $brokerLog))"
+        Fail "elevated client (refusals for pid $($e.pid): '$($eReasons -join ', ')'): $(Get-Content -LiteralPath $eResult -Raw); broker log: $(Get-BrokerLog)"
       }
 
       # The same through wmux-native mcp-shim, as an elevated agent pane runs
       # it. This copy has a stand-in full bundle where the packaged layout
       # keeps it (..\mcp-bundle\index.js), so a fallback answers too, and its
-      # answers say they came from there.
+      # answers say they came from there. Passes only (i) hosted, or (ii) the
+      # shim's fallback before the ack ("closed before ack") with an expected
+      # refusal for its pid. A handover mid-session fails.
       $cDir = Join-Path $WorkDir 'c'
       $cShimDir = Join-Path $cDir 'shim'
       $cBundleDir = Join-Path $cDir 'mcp-bundle'
@@ -335,24 +376,28 @@ try {
         '{"jsonrpc":"2.0","method":"notifications/initialized"}',
         '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"repl_sessions","arguments":{}}}'
       ) 2
-      Write-Host "elevated shim (exit $($session.code)) stderr: $($session.stderr.Trim())"
+      Write-Host "elevated shim pid $($session.pid) (exit $($session.code)) stderr: $($session.stderr.Trim())"
+      # Read after the session, so its refusal (if any) is in the log.
+      $sReasons = Get-Refusals (Get-BrokerLog) $session.pid
       # The tool call's response, parsed (its keys come in no fixed order).
       $answer = $session.stdout -split "`n" | Where-Object { $_.Trim() } | ForEach-Object {
         try { $_ | ConvertFrom-Json } catch { $null }
       } | Where-Object { $_ -and $_.id -eq 2 } | Select-Object -First 1
       $answered = $answer -and $answer.result -and -not $answer.result.isError
       $fromBundle = $answered -and (@($answer.result.content) | Where-Object { $_.text -like 'FULL BUNDLE*' })
-      $shimLines = (($session.stderr -split "`n") | Where-Object { $_ -match '\[wmux-mcp-shim\]' } | ForEach-Object { $_.Trim() }) -join '; '
-      if ($session.stderr -match 'broker not ours') {
-        Fail "elevated shim: the broker's own pipe was called not ours: $($session.stderr.Trim())"
-      } elseif ($answered -and -not $fromBundle -and -not $shimLines) {
+      $handedOver = $session.stderr -match 'running the full server for the rest of the session'
+      $preAckFallback = $session.stderr -match '\[wmux-mcp-shim\] closed before ack'
+      $otherFallback = $session.stderr -match '\[wmux-mcp-shim\] (no ack in|not an ack|broker refused the session|no broker|broker off|broker not ours|no auth token file)'
+      if ($handedOver -or $otherFallback) {
+        Fail "elevated shim: an unexpected fallback or a handover mid-session: $($session.stderr.Trim())"
+      } elseif ($answered -and -not $fromBundle -and -not $preAckFallback -and $sReasons.Count -eq 0) {
         $outcomes.Add('mcp-shim: hosted')
         Pass 'an elevated wmux-native mcp-shim is hosted by the Medium broker and a tool answers'
-      } elseif ($answered -and $fromBundle) {
-        $outcomes.Add("mcp-shim: full-bundle fallback ($shimLines; broker: $refusals)")
-        Pass "an elevated wmux-native mcp-shim falls back to the full bundle cleanly and a tool answers ($shimLines)"
+      } elseif ($answered -and $fromBundle -and $preAckFallback -and (& $refusedAsExpected $sReasons)) {
+        $outcomes.Add("mcp-shim: full-bundle fallback before the ack ($($sReasons -join ', '))")
+        Pass "an elevated wmux-native mcp-shim falls back before the ack ($($sReasons -join ', ')) and the full bundle answers"
       } else {
-        Fail "elevated shim: stdout $($session.stdout.Trim()); stderr $($session.stderr.Trim())"
+        Fail "elevated shim (refusals for pid $($session.pid): '$($sReasons -join ', ')'): stdout $($session.stdout.Trim()); stderr $($session.stderr.Trim())"
       }
       Write-Host "OUTCOME (elevated client vs filtered Medium broker): $($outcomes -join ' | ')"
       if ($env:GITHUB_STEP_SUMMARY) {
