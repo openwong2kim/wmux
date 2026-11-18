@@ -1340,6 +1340,12 @@ export function withRegisteredCheck(guard: DeliveryGuard, key: string | undefine
  */
 export class HeldWriteUncertain extends Error {}
 
+/**
+ * A delivery write the daemon refused and answered for: what landed of it is
+ * in its reply's count (`written`), so nothing went in uncounted.
+ */
+export class HeldWriteRefused extends Error {}
+
 /** How a gated delivery writes to its pane: the session pipe, or under the pane's lock. */
 export type DeliveryWrite = (ptyId: string, data: string) => void | Promise<void>;
 
@@ -1538,7 +1544,7 @@ export async function gatedPasteSubmit(
   // Taken before the write: a held write's reply can arrive after the
   // receipt its Enter caused.
   const enterAt = (receipt?.now ?? Date.now)();
-  /** A retried Enter's write threw: whether the daemon counted it is not known, so no proof. */
+  /** A retried Enter's write threw and the daemon's count of it is not known, so no proof. */
   let enterUncertain = false;
   try {
     await write(ptyId, isMultilinePtyPayload(typed) ? '\r\r' : '\r');
@@ -1570,7 +1576,8 @@ export async function gatedPasteSubmit(
         try {
           await write(ptyId, '\r');
         } catch (err) {
-          enterUncertain = true;
+          // A refusal the daemon answered for is already in its count; any other failure may not be.
+          if (!(err instanceof HeldWriteRefused)) enterUncertain = true;
           throw err;
         }
       },
@@ -2745,7 +2752,7 @@ export function registerInputRpc(
       onCounted(result.written);
       if (result.ok) return;
       if (result.uncertain) throw new HeldWriteUncertain(`delivery: the write's reply was lost (${result.detail}); it may have reached the pane`);
-      throw new Error(`delivery: ${result.detail}; nothing more was written`);
+      throw new HeldWriteRefused(`delivery: ${result.detail}; nothing more was written`);
     };
     // #3393 — a paste this delivery leaves in the box is the daemon's to hold, reported while the pane is still held.
     const markUnsent = typeof dc.reportUnsentPaste === 'function' ? () => dc.reportUnsentPaste(ptyId, held.token) : undefined;

@@ -36,6 +36,8 @@ let noLock: boolean;
 let failAfterPaste: boolean;
 /** The retried Enter's held write loses its reply (it may have landed). */
 let retryUncertain: boolean;
+/** The daemon refuses the retried Enter's held write before writing anything. */
+let retryRefused: boolean;
 /** What the pane's composer shows for the receipt: the text stays there, so the Enter is retried once. */
 let composer: string;
 /** Transcript-size asks the daemon got. */
@@ -68,6 +70,7 @@ function harness() {
     releasePaneLock: () => undefined,
     writeHeld: async (id: string, _token: string, data: string) => {
       const retry = data === '\r' && writes.filter((w) => w.id === id && w.data === '\r').length === 1;
+      if (retry && retryRefused) return { ok: false as const, uncertain: false, detail: 'the pane lock was lost', written: 0 };
       writes.push({ id, data });
       if (retry && retryUncertain) return { ok: false as const, uncertain: true, detail: 'reply lost', written: 0 };
       return { ok: true as const, written: 1 };
@@ -107,6 +110,7 @@ beforeEach(() => {
   noLock = false;
   failAfterPaste = false;
   retryUncertain = false;
+  retryRefused = false;
   composer = '';
   offsetAsks = 0;
   offsetFails = false;
@@ -154,6 +158,17 @@ describe('the submit proof of a gated delivery', () => {
     const res = await harness().gatedSubmit('pty-a', TEXT, 'Claude Code', ASK);
     expect(written()).toEqual([`\x1b[200~${TEXT}\x1b[201~`, '\r', '\r']);
     expect(res).toEqual({ ok: true });
+  });
+
+  it('a retried Enter the daemon refused before writing anything keeps the first Enter\'s proof', async () => {
+    composer = `──────────\n❯ ${TEXT}\n──────────`;
+    retryRefused = true;
+    const res = await harness().gatedSubmit('pty-a', TEXT, 'Claude Code', ASK);
+    expect(written()).toEqual([`\x1b[200~${TEXT}\x1b[201~`, '\r']);
+    expect(res).toEqual({
+      ok: true,
+      submit: { ptyId: 'pty-a', incarnation: 'inc-1', keyEpoch: 'epoch-1', submitRevision: 2, promptHash: promptHash(TEXT), transcriptOffsetAtBase: 4096 },
+    });
   });
 
   it('no proof when the key count cannot be read before the Enter', async () => {
