@@ -16,6 +16,7 @@ import type { HeadlessAnswerResult } from './headlessAnswer';
 
 type HeadlessAnswerReason = Extract<HeadlessAnswerResult, { outcome: 'not-answered' }>['reason'];
 import type { HeadlessStartRecordV1 } from './headlessStartStore';
+import { rawEntry, textOfContent } from './taskTurn';
 import { LINK_ENDED_REASON } from './headlessStarter';
 import { errMsg } from './storeFile';
 
@@ -373,39 +374,6 @@ export function cutReply(text: string, max = A2A_REMOTE_BODY_MAX): string {
 /** Oldest first (when each reached this PC), so follow-ups are typed in the order they were sent. */
 function oldestFirst(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => a.metadata.createdAt.localeCompare(b.metadata.createdAt) || a.id.localeCompare(b.id));
-}
-
-/** Claude Code's system notice when it goes on by itself after a usage limit reset. */
-const AUTO_CONTINUE_NOTICE = 'Usage limit reset · Continuing automatically';
-
-/** The entry's `type`, `stop_reason`, content and sidechain flag, from its raw line (null: not JSON). */
-function rawEntry(line: string): { type?: unknown; stopReason?: unknown; content?: unknown; messageId: string | null; sidechain: boolean; typed: boolean; autoContinued: boolean } | null {
-  let entry: unknown;
-  try {
-    entry = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  if (!entry || typeof entry !== 'object') return null;
-  const e = entry as { type?: unknown; isSidechain?: unknown; origin?: { kind?: unknown }; promptSource?: unknown; turnOrigin?: unknown; content?: unknown; message?: { id?: unknown; stop_reason?: unknown; content?: unknown } };
-  const messageId = typeof e.message?.id === 'string' ? e.message.id : null;
-  // Typed at the agent's prompt on this PC (a prompt, a slash command, a `!` command), as Claude Code 2.1 marks it.
-  const typed = e.type === 'user' && (e.origin?.kind === 'human' || e.promptSource === 'typed');
-  // Claude Code going on by itself after its usage limit reset (2.1.322): its notice, then its own prompt.
-  const autoContinued = (e.type === 'user' && (e.origin?.kind === 'auto-continuation' || e.turnOrigin === 'auto_continuation'))
-    || (e.type === 'system' && typeof e.content === 'string' && e.content.startsWith(AUTO_CONTINUE_NOTICE));
-  return { type: e.type, stopReason: e.message?.stop_reason, content: e.message?.content, messageId, sidechain: e.isSidechain === true, typed, autoContinued };
-}
-
-function textOfContent(content: unknown): string | null {
-  if (typeof content === 'string') return content.trim() ? content : null;
-  if (!Array.isArray(content)) return null;
-  const blocks = content.filter((b): b is { type: 'text'; text: string } =>
-    !!b && typeof b === 'object' && (b as { type?: unknown }).type === 'text' && typeof (b as { text?: unknown }).text === 'string');
-  // A tool result (no text block of the user's own) is not a prompt.
-  if (blocks.length === 0 || blocks.length !== content.length) return null;
-  const text = blocks.map((b) => b.text).join('\n');
-  return text.trim() ? text : null;
 }
 
 /**
