@@ -114,9 +114,13 @@ pub(crate) fn current_user() -> Result<Sid, String> {
 }
 
 /// Owner = the user; protected DACL with full access for the user and
-/// SYSTEM only. No Administrators and no Everyone entry.
+/// SYSTEM only. No Administrators and no Everyone entry. A Medium mandatory
+/// label with no-write-up and no-read-up keeps processes below Medium
+/// integrity (Low, AppContainer) from opening it at all, reading included.
+/// A label at or below the creator's own integrity needs no privilege, so a
+/// High-integrity creator sets it as well.
 pub(crate) fn owner_only_sddl(user_sid: &str) -> String {
-    format!("O:{user_sid}D:P(A;;GA;;;{user_sid})(A;;GA;;;SY)")
+    format!("O:{user_sid}D:P(A;;GA;;;{user_sid})(A;;GA;;;SY)S:(ML;;NWNR;;;ME)")
 }
 
 /// A self-relative security descriptor from SDDL, freed with LocalFree.

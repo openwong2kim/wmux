@@ -8,8 +8,10 @@
 #       bytes mean the owner check and not a shim that never dialled.
 #   (b) Owner-only access: the native listener (terminal core,
 #       pipe-listener-v1) runs as this account. A client running as this
-#       account connects (control); a client running as the other account is
-#       refused with access denied.
+#       account opens it read-only (control); a client running as the other
+#       account is refused a read-only open with access denied. Read-only,
+#       because a default access list lets every account read: only the
+#       owner-only list refuses it.
 #
 # -SameUserOnly runs only the controls, with no second account: the form a
 # developer machine may run. Without it the script creates a temporary local
@@ -143,10 +145,10 @@ try {
   $started.Add($listener)
   Wait-File $lReady 60 $listener
   $cResult = Join-Path $WorkDir 'b-control.json'
-  $client = Start-Helper 'pipe-client.ps1' @('-PipeName', $nativePipe, '-ResultPath', $cResult) $null
+  $client = Start-Helper 'pipe-client.ps1' @('-PipeName', $nativePipe, '-ResultPath', $cResult, '-Direction', 'In') $null
   Wait-File $cResult 60 $client
   $c = Read-Json $cResult
-  if ($c.result -eq 'connected') { Pass 'control: this account opens the native listener''s pipe' }
+  if ($c.result -eq 'connected') { Pass 'control: this account opens the native listener''s pipe read-only' }
   else { Fail "control: this account could not open the native listener's pipe ($(Get-Content -LiteralPath $cResult -Raw))" }
 
   if (-not $SameUserOnly) {
@@ -184,15 +186,18 @@ try {
     if ($r.owner -ne $userSid) { Fail "the pipe's owner is $($r.owner), not the temporary account" }
     if (-not $r.connected) { Fail "the shim never opened the other account's pipe ($(Get-Content -LiteralPath $result -Raw))" }
     elseif ($r.bytes -ne 0) { Fail "the shim wrote $($r.bytes) bytes to a pipe another account owns" }
+    # Zero bytes count only when the server read until the shim closed its
+    # end; a read that timed out or failed observed nothing.
+    elseif ($r.end -ne 'eof') { Fail "incomplete observation: the server's read ended with '$($r.end)', not at the shim's close" }
     else { Pass 'the shim opened the other account''s pipe and wrote nothing' }
 
     # ----- (b) the other account cannot open the native listener's pipe -----
     $uResult = Join-Path $WorkDir 'b-user.json'
-    $client = Start-Helper 'pipe-client.ps1' @('-PipeName', $nativePipe, '-ResultPath', $uResult) $credential
+    $client = Start-Helper 'pipe-client.ps1' @('-PipeName', $nativePipe, '-ResultPath', $uResult, '-Direction', 'In') $credential
     Wait-File $uResult 90 $client
     $u = Read-Json $uResult
     if ($u.account -ne $userSid) { Fail "the client ran as $($u.account), not as the temporary account" }
-    if ($u.result -eq 'access-denied') { Pass 'the other account is refused the native listener''s pipe (access denied)' }
+    if ($u.result -eq 'access-denied') { Pass 'the other account is refused a read-only open of the native listener''s pipe (access denied)' }
     else { Fail "the other account got '$($u.result)' opening the native listener's pipe: $($u.detail)" }
   }
 

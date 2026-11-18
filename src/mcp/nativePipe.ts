@@ -159,17 +159,32 @@ export function listenNativePipe(name: string, options: ListenNativePipeOptions)
         listenerFailure(failure);
       }
     }
-    // pump() catches its own errors (they destroy that socket).
-    for (const socket of [...sockets]) socket.pump();
+    // A native error destroys that socket inside pump(). A consumer callback
+    // that throws propagates out of pump(): every other socket is still
+    // pumped, and the error is rethrown on its own (an uncaught exception, as
+    // from a net.Socket's callback), never out of this native callback.
+    for (const socket of [...sockets]) {
+      try {
+        socket.pump();
+      } catch (error) {
+        setImmediate(() => { throw error; });
+      }
+    }
   }
 
   return {
     close(): void {
       if (closed) return;
       closed = true;
-      // Accepted since the last wake and never handed on: closed with it.
-      for (let conn = listener.takeAccepted(); conn !== null; conn = listener.takeAccepted()) conn.destroy();
-      listener.close();
+      try {
+        // Accepted since the last wake and never handed on: closed with it.
+        for (let conn = listener.takeAccepted(); conn !== null; conn = listener.takeAccepted()) conn.destroy();
+      } catch (error) {
+        listenerFailure(`takeAccepted() threw during close: ${message(error)}`);
+      } finally {
+        // The native side also destroys conns it never handed off.
+        listener.close();
+      }
     },
     get failure(): string | null {
       return listener.failure();
