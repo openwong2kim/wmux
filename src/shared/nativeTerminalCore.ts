@@ -96,17 +96,27 @@ export function nativeCorePath(): string {
     return override;
   }
   const resources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
-  const candidates = [
+  const candidates = nativeCoreCandidates(__dirname, resources);
+  return candidates.find(p => fs.existsSync(p)) ?? candidates[0];
+}
+
+/** Where nativeCorePath looks, in order, for a loader in `dirname`. */
+export function nativeCoreCandidates(dirname: string, resources: string | undefined): string[] {
+  const parent = path.dirname(dirname);
+  return [
     ...(resources ? [path.join(resources, 'wmux-native/index.cjs')] : []),
-    path.join(__dirname, '../wmux-native/index.cjs'),
-    path.join(__dirname, 'wmux-native/index.cjs'),
+    path.join(dirname, '../wmux-native/index.cjs'),
+    path.join(dirname, 'wmux-native/index.cjs'),
     // `npm start`: main runs from .vite/build, and the core is staged in
     // dist/wmux-native (as for the dev daemon bundle). Only for that bundle:
     // another one never reaches for a dist folder two levels up.
-    ...(path.basename(__dirname) === 'build' && path.basename(path.dirname(__dirname)) === '.vite'
-      ? [path.join(__dirname, '../../dist/wmux-native/index.cjs')] : []),
+    ...(path.basename(dirname) === 'build' && path.basename(parent) === '.vite'
+      ? [path.join(dirname, '../../dist/wmux-native/index.cjs')] : []),
+    // The dev MCP broker (dist/mcp/mcp/broker.js, tsc output): this loader
+    // runs from dist/mcp/shared, and the core is staged in dist/wmux-native.
+    ...(path.basename(dirname) === 'shared' && path.basename(parent) === 'mcp' && path.basename(path.dirname(parent)) === 'dist'
+      ? [path.join(dirname, '../../wmux-native/index.cjs')] : []),
   ];
-  return candidates.find(p => fs.existsSync(p)) ?? candidates[0];
 }
 
 export function loadNativeTerminalCore(capability: string): NativeTerminalCore {
