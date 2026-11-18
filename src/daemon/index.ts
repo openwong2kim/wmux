@@ -171,6 +171,7 @@ import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
 import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
 import { createHeadlessSessions } from './a2aRemote/headlessSessions';
 import { endHeadlessOnStop, HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
+import { LinkedTaskTurns } from './a2aRemote/linkedTaskTurns';
 import { HeadlessStatusReporter } from './a2aRemote/headlessStatus';
 import { answerPicker, screenPicker } from './a2aRemote/headlessAnswer';
 import { AnswersStore } from './a2aRemote/answersStore';
@@ -279,6 +280,7 @@ import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/h
 import { checkNativeTranscriptPath } from './transcript/providers';
 import { keepOwnWslTranscriptPath } from './hooks/transcriptPathGuard';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
+import { statTranscript } from './transcript/readTail';
 import { TranscriptActivityWatcher } from './transcript/TranscriptActivityWatcher';
 import { ToolRefusalTracker } from './transcript/toolRefusals';
 import { ShellPromptWatcher } from './shellPrompt/ShellPromptWatcher';
@@ -568,6 +570,8 @@ let unsentPasteHolds: UnsentPasteHolds | null = null;
 /** Whether a pane holds a draft, the screen consulted (draftScreen.ts). */
 let draftOnScreen: DraftCheck | undefined;
 let headlessDeliveryRef: HeadlessDelivery | null = null;
+/** The turn each remote task started in a linked pane (a2aRemote/linkedTaskTurns.ts); read only, nothing consults it yet. */
+let linkedTaskTurnsRef: LinkedTaskTurns | null = null;
 /** When the last "answer dropped: no headless agents" line was logged (once a minute at most). */
 let answersDroppedLoggedAt = 0;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
@@ -6411,8 +6415,8 @@ function registerRpcHandlers(
   // #2372 — `ids` reads several panes in one call (see agentStateBatch.ts).
   pipeServer.onRpc('daemon.getAgentState', async (params) => (params['ids'] !== undefined
     ? agentStatesFor(params['ids'], agentStateFor)
-    : agentStateFor(typeof params['id'] === 'string' ? params['id'] : '')));
-  function agentStateFor(id: string) {
+    : agentStateFor(typeof params['id'] === 'string' ? params['id'] : '', params['transcriptOffset'] === true)));
+  function agentStateFor(id: string, withTranscriptOffset = false) {
     const state = readDaemonAgentState(id);
     const bridge = sessionManager.getSession(id)?.bridge;
     if (!bridge) return state;
@@ -6424,9 +6428,15 @@ function registerRpcHandlers(
     // them), and whether the CURRENT agent's hooks have reported (reset when
     // the agent ends). Kept out of readDaemonAgentState, which also answers
     // the web roster.
+    // Asked for one pane only (a delivery's submit proof): the size of its bound transcript now.
+    const transcript = withTranscriptOffset ? transcriptProjector?.transcriptPath(id) ?? null : null;
+    const transcriptSize = transcript ? statTranscript(transcript)?.size : undefined;
     return {
       ...state,
       keyInputRevision: bridge.getKeyInputRevision(),
+      // Additive: the epoch that count is in (a recovered session's bridge counts again from 0).
+      keyEpoch: bridge.getKeyEpoch(),
+      ...(transcriptSize !== undefined ? { transcriptOffset: transcriptSize } : {}),
       keyInputQuiet: bridge.isKeyInputQuiet(),
       hookReports: bridge.hasHookReports(),
       // Additive, for a delivery that waits for the person to stop typing:
@@ -9545,6 +9555,7 @@ async function shutdown(
   // No headless start begins while the daemon goes down (its retries would only fail), nor any task is typed in.
   headlessStarterRef?.stop();
   headlessDeliveryRef?.stop();
+  linkedTaskTurnsRef?.stop();
   try { a2aServerRef?.dispose(); } catch { /* best effort */ }
   try { a2aDiscoverRef?.dispose(); } catch { /* best effort */ }
   paneSupervisorRef = null;
@@ -11434,11 +11445,33 @@ async function main(): Promise<void> {
       // Kept too: the headless delivery calls them in-process, as main does over the pipe.
       const a2aDeliveryHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
       a2aDelivery.registerRpc((method, handler) => {
-        a2aDeliveryHandlers.set(method, handler);
-        onA2aRpc(method, handler);
+        // A delivered mark that carries a submit proof: the linked-pane turns have something to follow.
+        const wrapped: typeof handler = method === A2A_REMOTE_RPC.mark
+          ? async (params) => {
+            const res = await handler(params);
+            if (params['submit'] !== undefined) linkedTaskTurnsRef?.wake();
+            return res;
+          }
+          : handler;
+        a2aDeliveryHandlers.set(method, wrapped);
+        onA2aRpc(method, wrapped);
       });
       a2aDelivery.start();
       a2aDeliveryRef = a2aDelivery;
+      // Followed from the submit main recorded on each delivered remote task; recorded only.
+      const turnsTaskSvc = a2aTaskService;
+      linkedTaskTurnsRef = new LinkedTaskTurns({
+        tasks: () => turnsTaskSvc.listRemote(),
+        transcriptPath: (sessionId) => transcriptProjector?.transcriptPath(sessionId) ?? null,
+        session: (sessionId) => {
+          const managed = sessionManager.getSession(sessionId);
+          if (!managed) return null;
+          const agentName = readAgentStateForWeb?.(sessionId).agentName ?? null;
+          return { incarnationId: managed.meta.incarnationId ?? null, keyEpoch: managed.bridge.getKeyEpoch(), agent: agentName ? agentDisplayToSlug(agentName) ?? null : null };
+        },
+        log: a2aLog,
+      });
+      linkedTaskTurnsRef.start();
       // main asks for a bundle and releases it once imported; open asks are asked again and staging is swept.
       // Main's asks are taken once the asks kept from before a restart have gone on.
       void a2aBundleIntake.sweepParts().catch(() => undefined).then(() => {

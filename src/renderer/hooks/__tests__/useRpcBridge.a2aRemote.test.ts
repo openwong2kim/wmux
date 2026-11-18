@@ -101,6 +101,19 @@ describe('remote task delivery', () => {
     expect(task.history[0]).toMatchObject({ messageId: 'msg-1', role: 'user' });
   });
 
+  it('asks main for its submit proof and hands it back with the delivery; one for another pty or malformed is dropped', async () => {
+    const proof = { ptyId: PINNED_PTY, incarnation: 'inc-1', keyEpoch: 'ep-1', submitRevision: 4, promptHash: 'b'.repeat(64) };
+    gate.mockImplementationOnce(async () => ({ ok: true, submit: proof }));
+    expect(await send()).toEqual({ ok: true, delivered: true, ptyId: PINNED_PTY, submit: proof });
+    expect(gate).toHaveBeenCalledWith(PINNED_PTY, expect.any(String), 'Claude Code', expect.objectContaining({ submitProof: true }));
+    useStore.setState({ a2aTasks: {} });
+    gate.mockImplementationOnce(async () => ({ ok: true, submit: { ...proof, ptyId: SIBLING_PTY } }));
+    expect(await send()).toEqual({ ok: true, delivered: true, ptyId: PINNED_PTY });
+    useStore.setState({ a2aTasks: {} });
+    gate.mockImplementationOnce(async () => ({ ok: true, submit: { ...proof, submitRevision: -1 } }));
+    expect(await send()).toEqual({ ok: true, delivered: true, ptyId: PINNED_PTY });
+  });
+
   it('a second trigger for a delivered task writes nothing', async () => {
     await send();
     expect(await send()).toEqual({ ok: true, delivered: true, duplicate: true });

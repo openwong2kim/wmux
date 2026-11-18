@@ -70,7 +70,7 @@ import {
 } from '../utils/searchEngine';
 import { gatedSubmitToPty, submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { isTerminalDirty, isTerminalRetained } from '../terminal/terminalOutputScheduler';
-import { NO_BACKGROUND_SERVICE_DETAIL, type GatedSubmitRefusal, type GatedSubmitResult } from '../../shared/ptyMessageDelivery';
+import { NO_BACKGROUND_SERVICE_DETAIL, parseGatedSubmitProof, type GatedSubmitProof, type GatedSubmitRefusal, type GatedSubmitResult } from '../../shared/ptyMessageDelivery';
 import type { FreshContextReply } from '../../shared/freshContext';
 import { paneAddressOfPty, paneHasOtherOpenA2aTask } from './a2aFreshContext';
 import { publishA2aTask } from '../events/publisher';
@@ -368,6 +368,8 @@ export interface A2aPtyWrite {
   /** What a new-task delivery's fresh-context step did (#1680). Absent for
    *  every other delivery, and when the pane's role does not ask for one. */
   freshContext?: FreshContextReply;
+  /** A remote task's delivery: what main submitted to `ptyId`, when it could tell. */
+  submit?: GatedSubmitProof;
 }
 
 /**
@@ -428,9 +430,10 @@ async function deliverA2aText(
   // Main also asks the daemon's task store (this list is not reloaded after a
   // restart), keyed by where the pane sits; a pane it cannot place is kept.
   const pane = newTask ? paneAddressOfPty(s.workspaces, ptyId) : undefined;
+  const aboutTask = pointerTaskId ?? newTask?.taskId ?? replyTaskId;
   const result = await gatedSubmitToPty(ptyId, text, {
     agent: agentUnknown ? undefined : ptyAgent(ptyId).name,
-    ...((pointerTaskId ?? newTask?.taskId ?? replyTaskId) ? { pointerTaskId: pointerTaskId ?? newTask?.taskId ?? replyTaskId } : {}),
+    ...(aboutTask ? { pointerTaskId: aboutTask } : {}),
     ...(newTask?.senderKey ? { senderSendKey: newTask.senderKey } : {}),
     ...(!newTask && replyTaskId ? { senderTaskIds: [replyTaskId] } : {}),
     ...(newTask ? { newTask: true, taskId: newTask.taskId, ...keep, ...(pane ? { pane } : {}) } : {}),
@@ -438,10 +441,14 @@ async function deliverA2aText(
     ...(newTask?.waitQuiet && newTask.expectAgent && !agentUnknown ? { expectAgent: newTask.expectAgent } : {}),
     ...(newTask?.waitQuiet && newTask.deadlineAt !== undefined ? { deadlineAt: newTask.deadlineAt } : {}),
     ...(newTask?.waitQuiet && newTask.guardKey ? { guardKey: newTask.guardKey } : {}),
+    // A remote task's delivery: main says what it submitted, for the daemon's record.
+    ...(aboutTask && isRemoteTaskId(aboutTask) ? { submitProof: true } : {}),
   });
   if (!result.ok) return { ptyId: null, refused: result };
   const fresh = freshContextOf(result);
-  return fresh ? { ptyId, freshContext: fresh } : { ptyId };
+  const proof = parseGatedSubmitProof(result.submit);
+  const submit = proof?.ptyId === ptyId ? { submit: proof } : {};
+  return fresh ? { ptyId, freshContext: fresh, ...submit } : { ptyId, ...submit };
 }
 
 /** Sender-facing hints for a delivery the gate withheld, by reason. */
@@ -1140,7 +1147,7 @@ async function writeRemoteDelivery(
 ): Promise<A2aRemoteDeliveryResult> {
   if (!a2aTargetHasAgent(target.ws, target.pty)) return { ok: true, delivered: false, reason: 'no_agent_pane' };
   const res = await write();
-  if (res.ptyId) return { ok: true, delivered: true, ptyId: res.ptyId };
+  if (res.ptyId) return { ok: true, delivered: true, ptyId: res.ptyId, ...(res.submit?.ptyId === res.ptyId ? { submit: res.submit } : {}) };
   if (res.refused?.pasted && !res.refused.cleared) return { ok: true, delivered: false, held: 'delivery-unconfirmed' };
   // The pane may have changed while the delivery waited.
   const after = remoteAnchorTarget({ ...anchor, ptyId: target.pty }, false);

@@ -850,6 +850,7 @@ const electronAPI = {
         ...(Array.isArray(opts?.senderTaskIds) && opts.senderTaskIds.length > 0 ? { senderTaskIds: opts.senderTaskIds } : {}),
         ...(typeof opts?.senderSendKey === 'string' ? { senderSendKey: opts.senderSendKey } : {}),
         ...(Array.isArray(opts?.senderMentions) && opts.senderMentions.length > 0 ? { senderMentions: opts.senderMentions } : {}),
+        ...(opts?.submitProof === true ? { submitProof: true } : {}),
       }) as Promise<
         import('../shared/ptyMessageDelivery').GatedSubmitResult
       >,

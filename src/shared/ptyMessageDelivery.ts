@@ -267,9 +267,62 @@ export interface GatedSubmitRefusal {
    *  Absent for a text the pane cannot take as typed. */
   composerNotPlain?: true;
 }
+/**
+ * What a gated delivery into a daemon session submitted, so the turn it
+ * started can be told apart later: the session, its incarnation, the epoch of
+ * the daemon's key input count (a session recovered after a restart counts
+ * again from 0 under a new one), that count once main's Enters are in it (the
+ * count read right before the Enter plus the Enter writes the daemon counted),
+ * the hash of the text typed (shared/promptHash.ts `promptHash`), and the size
+ * of the session's transcript read alongside that count, before the Enter,
+ * when the daemon could tell it (the prompt's own entry can only be written at
+ * or after it). Recorded only;
+ * nothing acts on it yet.
+ *
+ * A consumer must compare `submitRevision` with strict equality, and only
+ * under the same `incarnation` and `keyEpoch`: any other key in between makes
+ * it miss, which is the intended failure.
+ */
+export interface GatedSubmitProof {
+  ptyId: string;
+  incarnation: string;
+  keyEpoch: string;
+  submitRevision: number;
+  promptHash: string;
+  transcriptOffsetAtBase?: number;
+}
+
+const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+const isId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 128;
+
+/** A GatedSubmitProof read from untrusted input, or undefined when any field is missing or malformed. */
+export function parseGatedSubmitProof(v: unknown): GatedSubmitProof | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const p = v as Record<string, unknown>;
+  if (!isId(p.ptyId) || !isId(p.incarnation) || !isId(p.keyEpoch) || !isCount(p.submitRevision)) return undefined;
+  if (typeof p.promptHash !== 'string' || !/^[0-9a-f]{64}$/.test(p.promptHash)) return undefined;
+  if (p.transcriptOffsetAtBase !== undefined && !isCount(p.transcriptOffsetAtBase)) return undefined;
+  return {
+    ptyId: p.ptyId,
+    incarnation: p.incarnation,
+    keyEpoch: p.keyEpoch,
+    submitRevision: p.submitRevision,
+    promptHash: p.promptHash,
+    ...(p.transcriptOffsetAtBase !== undefined ? { transcriptOffsetAtBase: p.transcriptOffsetAtBase } : {}),
+  };
+}
+
+/** Whether two proofs are the same (every field). */
+export function sameGatedSubmitProof(a: GatedSubmitProof | undefined, b: GatedSubmitProof | undefined): boolean {
+  if (!a || !b) return a === b;
+  return a.ptyId === b.ptyId && a.incarnation === b.incarnation && a.keyEpoch === b.keyEpoch
+    && a.submitRevision === b.submitRevision && a.promptHash === b.promptHash && a.transcriptOffsetAtBase === b.transcriptOffsetAtBase;
+}
+
 /** A delivered submit. A new-task delivery also says what its fresh-context
- *  step did (shared/freshContext). */
-export type GatedSubmitSuccess = { ok: true } & Partial<FreshContextReply>;
+ *  step did (shared/freshContext). A delivery into a daemon session also
+ *  carries its submit proof when main could read one. */
+export type GatedSubmitSuccess = { ok: true; submit?: GatedSubmitProof } & Partial<FreshContextReply>;
 export type GatedSubmitResult = GatedSubmitSuccess | GatedSubmitRefusal;
 
 /** Options for a gated submit. */
@@ -307,6 +360,9 @@ export interface GatedSubmitOptions {
    *  in main). Main runs that delivery's own check before the paste and before
    *  the Enter; an unknown key refuses. Only adds checks, never removes one. */
   guardKey?: string;
+  /** Report what was submitted (GatedSubmitSuccess `submit`): a remote A2A
+   *  delivery asks, so the daemon can record it. Changes nothing written. */
+  submitProof?: boolean;
   /*
    * Who sent this delivery, for main's owner-lane check (input.rpc
    * deliveryLaneOf). Each names a record main reads the sender from; none
