@@ -447,6 +447,60 @@ describe('NativePipeSocket', () => {
     expect(conn.destroyCalls).toBe(1);
   });
 
+  it('error() set: every pending write callback fails (in flight and still buffered)', async () => {
+    const { conn, socket } = socketOver();
+    conn.holdWrites = true;
+    socket.on('error', noop);
+    const callbacks = [vi.fn(), vi.fn(), vi.fn()];
+    socket.write('one', callbacks[0]);
+    await tick();
+    // Buffered behind the one in flight (no takeWritten() ack ever comes).
+    socket.write('two', callbacks[1]);
+    socket.write('three', callbacks[2]);
+    await tick();
+    conn.fail('write: ERROR_NO_DATA');
+    await closeOf(socket);
+    for (const cb of callbacks) {
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toBeInstanceOf(Error);
+    }
+  });
+
+  it('destroy() with writes pending: every write callback fails (write canceled)', async () => {
+    const { conn, socket } = socketOver();
+    conn.holdWrites = true;
+    const callbacks = [vi.fn(), vi.fn()];
+    socket.write('one', callbacks[0]);
+    await tick();
+    socket.write('two', callbacks[1]);
+    socket.destroy();
+    await closeOf(socket);
+    await ticks(2);
+    for (const cb of callbacks) {
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toBeInstanceOf(Error);
+    }
+    expect(conn.received).toEqual([]);
+  });
+
+  it('the native end() cut-off for a client that reads nothing fails the end callback', async () => {
+    const { conn, socket } = socketOver();
+    conn.holdEnd = true;
+    const onError = vi.fn();
+    socket.on('error', onError);
+    const ended = vi.fn();
+    socket.end('ack', ended);
+    await ticks(5);
+    expect(conn.endCalled).toBe(true);
+    expect(ended).not.toHaveBeenCalled();
+    conn.fail('end: the client read none of the queued writes for 10 s');
+    await closeOf(socket);
+    await ticks(2);
+    expect(ended).toHaveBeenCalledTimes(1);
+    expect((ended.mock.calls[0][0] as Error).message).toContain('end: the client read none of the queued writes');
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
   it('a bare destroy() with a write in flight: the write fails, no error event, close', async () => {
     const { conn, socket } = socketOver();
     conn.holdWrites = true;
