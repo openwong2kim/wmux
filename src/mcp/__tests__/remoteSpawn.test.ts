@@ -7,7 +7,8 @@ vi.mock('../wmux-client', () => ({
 }));
 
 import { sendRpc } from '../wmux-client';
-import { registerRemoteAnswerTool, registerRemoteSpawnTools } from '../remoteSpawn';
+import { z } from 'zod';
+import { registerRemoteAnswerTool, registerRemoteApproveTool, registerRemoteSpawnTools } from '../remoteSpawn';
 import { FIRST_PARTY_METHODS } from '../../main/mcp/firstParty';
 
 const mockSendRpc = sendRpc as unknown as ReturnType<typeof vi.fn>;
@@ -80,5 +81,44 @@ describe('remote_answer', () => {
     const res = await answer({ task_id: 'rt-1', picker_id: '0123456789abcdef', option: 1 });
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toContain('NOT_AUTHORIZED');
+  });
+});
+
+describe('remote_approve', () => {
+  let approve: ToolHandler;
+  let shape: Record<string, z.ZodTypeAny> = {};
+  registerRemoteApproveTool(
+    { tool: (_n: string, _d: string, s: Record<string, z.ZodTypeAny>, h: ToolHandler) => { shape = s; approve = h; } } as never,
+    { getSenderPtyId: () => pty, resolveWorkspaceId: warmed },
+  );
+
+  it('takes a task id, a 16-hex prompt id and allow or deny; nothing else passes its schema', () => {
+    const schema = z.object(shape).strict();
+    expect(schema.safeParse({ task_id: 'rt-1', prompt_id: '0123456789abcdef', decision: 'allow' }).success).toBe(true);
+    for (const bad of [
+      { task_id: 'rt-1', prompt_id: '0123456789abcdef', decision: 'approve' },
+      { task_id: 'rt-1', prompt_id: '0123456789ABCDEF', decision: 'deny' },
+      { task_id: 'rt-1', prompt_id: 'p-1', decision: 'deny' },
+      { task_id: 'rt-1', decision: 'deny' },
+      { task_id: 'rt-1', prompt_id: '0123456789abcdef', decision: 'deny', option: 1 },
+    ]) {
+      expect(schema.safeParse(bad).success).toBe(false);
+    }
+  });
+
+  it('sends through main with the verified ptyId, found before the call, and a wait longer than the daemon\'s', async () => {
+    mockSendRpc.mockResolvedValueOnce({ ok: true, taskId: 'rt-1', messageId: 'ap-1', outcome: { messageId: 'ap-1', outcome: 'done' } });
+    const res = await approve({ task_id: 'rt-1', prompt_id: '0123456789abcdef', decision: 'deny' });
+    expect(mockSendRpc).toHaveBeenCalledWith('a2a.remote.approve', { taskId: 'rt-1', promptId: '0123456789abcdef', decision: 'deny', senderPtyId: 'pty-mine' }, expect.any(Number));
+    expect(mockSendRpc.mock.calls[0]![2]).toBeGreaterThan(10_000);
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('its pipe method is first-party; a refusal (deny-only) is an error result, with its reason', async () => {
+    expect(FIRST_PARTY_METHODS.has('a2a.remote.approve')).toBe(true);
+    mockSendRpc.mockResolvedValueOnce({ ok: false, error: 'deny-only', message: 'that PC takes only deny for this prompt; nothing was sent' });
+    const res = await approve({ task_id: 'rt-1', prompt_id: '0123456789abcdef', decision: 'allow' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain('deny-only');
   });
 });

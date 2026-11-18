@@ -80,7 +80,7 @@ describe('WMUX_CLI_METHODS source invariant', () => {
   });
 
   it('covers the remote verbs that name their main-pipe method through a constant (the regex above cannot see them)', () => {
-    for (const m of ['a2a.remote.spawn', 'a2a.remote.spawnStatus', 'a2a.remote.answer'] as const) {
+    for (const m of ['a2a.remote.spawn', 'a2a.remote.spawnStatus', 'a2a.remote.answer', 'a2a.remote.approve'] as const) {
       expect(WMUX_CLI_METHODS.has(m as RpcMethod)).toBe(true);
     }
   });

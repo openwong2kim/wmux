@@ -54,7 +54,7 @@ import { registerUtilityTools } from './playwright/tools/utility';
 import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
 import { registerFanOutTools } from './fanout';
-import { registerRemoteAnswerTool, registerRemoteSpawnTools } from './remoteSpawn';
+import { registerRemoteAnswerTool, registerRemoteApproveTool, registerRemoteSpawnTools } from './remoteSpawn';
 import { registerHandOutTools } from './handOut';
 import { registerLedgerUpdateTool, registerLedgerListTool, registerLedgerBrainUpdateTool } from './ledger';
 import { registerTaskFetchTool, registerTaskPushTool } from './taskPush';
@@ -2477,6 +2477,13 @@ registerRemoteSpawnTools(server, {
 // === Remote answer (full + core) — answer the menu a worker on another PC shows ===
 // Same provenance: main resolves the caller's pane; the daemon takes it only from the task's sender.
 registerRemoteAnswerTool(server, {
+  getSenderPtyId: () => verifiedPtyId(),
+  resolveWorkspaceId: requireWorkspaceId,
+});
+
+// === Remote approve (full + core) — allow or deny a prompt a worker on another PC shows ===
+// Same provenance; the daemon also holds the decision to the offer in the task's status.
+registerRemoteApproveTool(server, {
   getSenderPtyId: () => verifiedPtyId(),
   resolveWorkspaceId: requireWorkspaceId,
 });

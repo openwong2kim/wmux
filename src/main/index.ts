@@ -166,6 +166,7 @@ import { getWorkerTempDirSweeper, liveTempDirsFromSessions } from './worktask/fa
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
 import { registerRemoteSpawnRpc } from './pipe/handlers/remoteSpawn.rpc';
 import { registerRemoteAnswerRpc } from './pipe/handlers/remoteAnswer.rpc';
+import { registerRemoteApprovalRpc } from './pipe/handlers/remoteApproval.rpc';
 import { registerHandOutRpc } from './pipe/handlers/handOut.rpc';
 import { registerLedgerRpc } from './pipe/handlers/ledger.rpc';
 import { registerTaskPushRpc } from './pipe/handlers/taskPush.rpc';
@@ -1620,6 +1621,7 @@ registerHandOutHandlers({
 registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow, { getDaemonClient: () => daemonClient });
 registerRemoteSpawnRpc(rpcRouter, () => mainWindow, { getDaemonClient: () => daemonClient });
 registerRemoteAnswerRpc(rpcRouter, () => mainWindow, { getDaemonClient: () => daemonClient });
+registerRemoteApprovalRpc(rpcRouter, () => mainWindow, { getDaemonClient: () => daemonClient });
 // To hand out for agent panes (MCP hand_out): read the list, add to it.
 registerHandOutRpc(rpcRouter, () => mainWindow);
 registerLedgerRpc(rpcRouter, () => mainWindow, {
