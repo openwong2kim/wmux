@@ -1,5 +1,6 @@
 //! Additive ABI-1 output-interpreter binding. The pure implementation is also
 //! compiled without N-API so its tests run without a Node process.
+use crate::fallible;
 use crate::native_output::NativeOutputChunk;
 use crate::output_interpreter::OutputInterpreter;
 use napi::bindgen_prelude::*;
@@ -83,12 +84,18 @@ impl NativeOutputInterpreter {
         if !end.is_finite() || end < 0.0 || end.fract() != 0.0 || end > 9_007_199_254_740_991.0 {
             return Err(Error::from_reason("Invalid ring stream offset"));
         }
-        let events = self.get_mut()?.feed(text, end, osc);
+        let events = self.get_mut()?.feed(text, end, osc)?;
         if events.is_empty() {
             return Ok(None);
         }
-        let (codes, data): (Vec<f64>, Vec<String>) =
-            events.into_iter().map(|e| (e.code, e.data)).unzip();
+        // One code per event: at most the chunk's OSC count.
+        const BATCH: &str = "an OSC event batch";
+        let mut codes: Vec<f64> = fallible::try_with_capacity(events.len(), BATCH)?;
+        let mut data: Vec<String> = fallible::try_with_capacity(events.len(), BATCH)?;
+        for event in events {
+            codes.push(event.code);
+            data.push(event.data);
+        }
         Ok(Some(NativeOscBatch {
             codes: codes.into(),
             data,

@@ -1,6 +1,7 @@
 //! Opt-in native terminal core: VT state and retained history behind N-API.
 //! NativeTransport owns the production PTY; NativePty remains a spike harness.
 
+use crate::fallible::{self, AllocFailed};
 use crate::native_output::NativeOutputChunk;
 use crate::native_serialize::XtermControl;
 use alacritty_terminal::event::VoidListener;
@@ -308,6 +309,38 @@ fn is_kitty_keyboard(sequence: &[u8]) -> bool {
 }
 /// The longest unfinished sequence `feed_xterm` holds for its next bytes.
 const MAX_HELD: usize = 256;
+/// The most bytes one `feed` / `feed_xterm` call takes: the ring's 256 MiB
+/// cap (RustSnapshot feeds 256 KiB at a time). A feed joins its bytes to at
+/// most MAX_HELD held ones, so the join is bounded by this plus MAX_HELD.
+const MAX_FEED_BYTES: usize = 256 * 1024 * 1024;
+/// A feed's held bytes joined to its input (MAX_FEED_BYTES + MAX_HELD).
+const FEED_JOIN: &str = "a terminal feed's input";
+/// The held sequence's room, reserved before parsing so that holding one
+/// never allocates mid-feed (MAX_HELD).
+const HELD: &str = "a terminal feed's held sequence";
+/// Why the ANSI snapshot is refused when the feed could not allocate a
+/// buffer partway through a call (the call itself reports ALLOC_FAILED).
+const ALLOC_REFUSED: &str =
+    "unsupported-alloc: a buffer the ANSI feed needed could not be allocated";
+
+fn check_feed_len(len: usize) -> Result<()> {
+    if len > MAX_FEED_BYTES {
+        return Err(Error::from_reason(
+            "Terminal feed exceeds the 256 MiB per-call limit",
+        ));
+    }
+    Ok(())
+}
+
+/// Joins `held` (at most MAX_HELD bytes) and `bytes` into one buffer, and
+/// leaves `held` empty with room for MAX_HELD bytes. On a refusal nothing
+/// changed: the caller returns before parsing anything.
+fn join_held(held: &mut Vec<u8>, bytes: &[u8]) -> std::result::Result<Vec<u8>, AllocFailed> {
+    fallible::try_reserve(held, MAX_HELD.saturating_sub(held.len()), HELD)?;
+    let data = fallible::try_concat(held, bytes, FEED_JOIN)?;
+    held.clear();
+    Ok(data)
+}
 /// The longest unfinished string re-shipped after a snapshot, in UTF-16
 /// units (util/ansiStreamScan.ts MAX_PENDING_TAIL_CHARS).
 const MAX_TAIL_UNITS: usize = 4096;
@@ -383,6 +416,9 @@ struct XtermFeed {
     /// grows it and returns). Past the screen rows, the alternate screen
     /// keeps rows above it there.
     alt_rows: usize,
+    /// The first allocation refused partway through a feed: the snapshot is
+    /// refused (ALLOC_REFUSED) and the call reports it.
+    alloc_failed: Option<AllocFailed>,
     /// The alternate screen was shown with `alt_rows` past the screen rows
     /// since it was last left: its saved row may count rows above the screen
     /// that Alacritty's alternate grid never keeps.
@@ -480,8 +516,34 @@ impl XtermFeed {
                 }
                 self.tail_units += if b >= 0xf0 { 2 } else { 1 };
             }
+            // At most MAX_TAIL_UNITS units of up to 3 bytes (a 4-byte
+            // character counts 2), about 12 KiB. Refused, the tail is lost as
+            // when it overflows, and the snapshot refused.
+            if let Err(failed) =
+                fallible::try_reserve(&mut self.tail, 1, "the ANSI feed's pending string")
+            {
+                self.refuse_alloc(failed);
+                self.tail_overflow = true;
+                self.tail = Vec::new();
+                return;
+            }
             self.tail.push(b);
         }
+    }
+
+    /// A buffer the feed could not allocate partway through: the snapshot is
+    /// refused for good and the call reports the first refusal.
+    fn refuse_alloc(&mut self, failed: AllocFailed) {
+        self.alloc_failed.get_or_insert(failed);
+        self.refuse(true, ALLOC_REFUSED);
+    }
+
+    /// Holds `data[at..]` (at most MAX_HELD bytes, the room `join_held`
+    /// reserved) for the next feed, and cuts it from `data`.
+    fn hold(&mut self, data: &mut Vec<u8>, at: usize) {
+        debug_assert!(self.held.is_empty() && data.len() - at <= self.held.capacity());
+        self.held.extend_from_slice(&data[at..]);
+        data.truncate(at);
     }
 
     fn start_string(&mut self) {
@@ -548,9 +610,8 @@ impl XtermFeed {
     /// itself (`refuse_control`, C1, an overlong sequence); a refusal that
     /// needs the screen's state (a restore, margins, a `ContextRule` control
     /// or a round trip) counts only when first.
-    fn scan(&mut self, bytes: &[u8]) {
-        let mut data = std::mem::take(&mut self.held);
-        data.extend_from_slice(bytes);
+    fn scan(&mut self, bytes: &[u8]) -> std::result::Result<(), AllocFailed> {
+        let mut data = join_held(&mut self.held, bytes)?;
         let c1 = crate::native_serialize::c1_at(&data);
         let mut next = if self.in_string {
             self.string_payload(&mut data, 0)
@@ -571,7 +632,7 @@ impl XtermFeed {
             }
             let Some(len) = crate::native_serialize::sequence_len(&data[at..]) else {
                 if data.len() - at <= MAX_HELD {
-                    self.held = data.split_off(at);
+                    self.hold(&mut data, at);
                 } else {
                     self.refuse(true, LONG_SEQUENCE);
                 }
@@ -591,6 +652,7 @@ impl XtermFeed {
         }
         self.refuse(c1.is_some(), C1);
         self.printed = printed && self.held.is_empty() && !self.in_string;
+        Ok(())
     }
 
     /// Consume a string's payload from `data[at..]`; returns where scanning
@@ -600,7 +662,7 @@ impl XtermFeed {
         match string_end(&data[at..]).map(|end| at + end) {
             Some(end) if data[end] == 0x1b && end + 1 == data.len() => {
                 self.push_tail(&data[at..end]);
-                self.held = data.split_off(end);
+                self.hold(data, end);
                 None
             }
             Some(end) => {
@@ -725,13 +787,21 @@ impl XtermFeed {
         history: &mut dyn FnMut() -> usize,
     ) -> Option<usize> {
         // C0 controls inside a sequence execute and are not part of it.
-        let filtered: Vec<u8>;
+        let mut filtered: Vec<u8>;
         let sequence = if sequence[1..].iter().any(|&b| b < 0x20) {
-            filtered = sequence[..1]
-                .iter()
-                .chain(sequence[1..].iter().filter(|&&b| b >= 0x20))
-                .copied()
-                .collect();
+            // At most the sequence, which is at most the feed's input.
+            filtered =
+                match fallible::try_with_capacity(sequence.len(), "a control without its C0 bytes")
+                {
+                    Ok(buffer) => buffer,
+                    Err(failed) => {
+                        // Untracked, the snapshot cannot be trusted: refused.
+                        self.refuse_alloc(failed);
+                        return None;
+                    }
+                };
+            filtered.push(sequence[0]);
+            filtered.extend(sequence[1..].iter().filter(|&&b| b >= 0x20));
             &filtered[..]
         } else {
             sequence
@@ -827,9 +897,16 @@ impl XtermFeed {
 
     /// Feed `bytes`, giving ED 1 and ED 2 xterm's semantics. An unfinished
     /// sequence at the end waits in `held` for the bytes that complete it.
-    fn feed(&mut self, parser: &mut Processor, term: &mut Term<VoidListener>, bytes: &[u8]) {
-        let mut data = std::mem::take(&mut self.held);
-        data.extend_from_slice(bytes);
+    ///
+    /// A refused join returns before anything is parsed. A buffer refused
+    /// partway through is recorded in `alloc_failed` and refuses the snapshot.
+    fn feed(
+        &mut self,
+        parser: &mut Processor,
+        term: &mut Term<VoidListener>,
+        bytes: &[u8],
+    ) -> std::result::Result<(), AllocFailed> {
+        let mut data = join_held(&mut self.held, bytes)?;
         // Refused wherever it is; reported first only if it comes first.
         let c1 = crate::native_serialize::c1_at(&data);
         let mut from = 0;
@@ -858,7 +935,7 @@ impl XtermFeed {
             self.refuse(c1.is_some_and(|c1| c1 < at), C1);
             let Some(len) = crate::native_serialize::sequence_len(&data[at..]) else {
                 if data.len() - at <= MAX_HELD {
-                    self.held = data.split_off(at);
+                    self.hold(&mut data, at);
                 } else {
                     self.refuse(true, LONG_SEQUENCE);
                 }
@@ -1029,6 +1106,7 @@ impl XtermFeed {
         // A held sequence or an unfinished string ends the stream so far.
         self.printed = printed && self.held.is_empty() && !self.in_string;
         parser.advance(term, &data[from..]);
+        Ok(())
     }
 
     /// DECSTBM as xterm's setScrollRegion reads it (MarginTracker): top
@@ -1079,14 +1157,16 @@ impl XtermFeed {
 
     /// The bytes that leave a replaying parser where this one is: the
     /// unfinished string or sequence the stream ends inside.
-    fn pending_tail(&self) -> std::result::Result<Vec<u8>, &'static str> {
+    fn pending_tail(&self) -> Result<Vec<u8>> {
+        // At most MAX_HELD held bytes after a tail of about 12 KiB (push_tail).
+        const TAIL: &str = "the ANSI snapshot's pending tail";
         if !self.in_string {
-            return Ok(self.held.clone());
+            return Ok(fallible::try_copy(&self.held, TAIL)?);
         }
         if self.tail_overflow {
-            return Err("partial-tail-overflow");
+            return Err(Error::from_reason("partial-tail-overflow"));
         }
-        Ok([self.tail.as_slice(), &self.held].concat())
+        Ok(fallible::try_concat(&self.tail, &self.held, TAIL)?)
     }
 }
 
@@ -1386,19 +1466,21 @@ fn soft_reset_like_xterm(term: &mut Term<VoidListener>) {
 /// DEL between the ESC and its final byte. An ESC still waiting for that byte
 /// at the end of `bytes` waits in `held` with what follows it, up to
 /// MAX_HELD bytes as XtermFeed holds; past that it goes to the parser as is.
+///
+/// A refused join returns before anything is parsed; nothing else allocates.
 fn advance_indexing(
     parser: &mut Processor,
     term: &mut Term<VoidListener>,
     held: &mut Vec<u8>,
     bytes: &[u8],
-) {
+) -> std::result::Result<(), AllocFailed> {
     let joined;
     let bytes = if held.is_empty() {
+        // Room to hold an ESC below (MAX_HELD) without allocating then.
+        fallible::try_reserve(held, MAX_HELD, HELD)?;
         bytes
     } else {
-        let mut data = std::mem::take(held);
-        data.extend_from_slice(bytes);
-        joined = data;
+        joined = join_held(held, bytes)?;
         &joined[..]
     };
     let mut from = 0;
@@ -1415,8 +1497,9 @@ fn advance_indexing(
         match bytes.get(end) {
             None if bytes.len() - esc <= MAX_HELD => {
                 parser.advance(term, &bytes[from..esc]);
+                // Within the MAX_HELD room reserved above.
                 held.extend_from_slice(&bytes[esc..]);
-                return;
+                return Ok(());
             }
             None => break,
             Some(b'D' | b'E') => {
@@ -1429,6 +1512,7 @@ fn advance_indexing(
         }
     }
     parser.advance(term, &bytes[from..]);
+    Ok(())
 }
 
 /// xterm's ED 1 / ED 2, where Alacritty differs: its ED 2 on the primary
@@ -1461,6 +1545,65 @@ fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: 
     if synchronized {
         parser.advance(term, b"\x1b[?2026h");
     }
+}
+
+/// The most bytes `ansi_snapshot` appends after the serialized screen
+/// besides the pending tail.
+const ANSI_MODES_TAIL: usize = 32;
+
+/// The text snapshot's rows and strings.
+const TEXT_SNAPSHOT: &str = "the text snapshot";
+
+/// One grid line as text, and with dim cells blanked when `undimmed`. Each
+/// string starts with room for one byte per cell and grows fallibly from
+/// there (a cell holds its character and its zero-width ones).
+fn text_row(
+    line: &alacritty_terminal::grid::Row<Cell>,
+    columns: usize,
+    undimmed: bool,
+) -> std::result::Result<(String, Option<String>), AllocFailed> {
+    let mut text = String::new();
+    fallible::try_reserve_str(&mut text, columns, TEXT_SNAPSHOT)?;
+    let mut plain = String::new();
+    if undimmed {
+        fallible::try_reserve_str(&mut plain, columns, TEXT_SNAPSHOT)?;
+    }
+    let push = |s: &mut String, c: char| fallible::try_push(s, c, TEXT_SNAPSHOT);
+    for x in 0..columns {
+        let cell = &line[Column(x)];
+        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            continue;
+        }
+        push(&mut text, cell.c)?;
+        for &c in cell.zerowidth().unwrap_or_default() {
+            push(&mut text, c)?;
+        }
+        if undimmed {
+            if cell.flags.contains(Flags::DIM) {
+                push(&mut plain, ' ')?;
+                if cell.flags.contains(Flags::WIDE_CHAR) {
+                    push(&mut plain, ' ')?;
+                }
+            } else {
+                push(&mut plain, cell.c)?;
+                for &c in cell.zerowidth().unwrap_or_default() {
+                    push(&mut plain, c)?;
+                }
+            }
+        }
+    }
+    // Trimmed in place, without a second copy. xterm trims blank grid cells,
+    // not arbitrary Unicode whitespace; the undimmed text trims both.
+    let kept = text.trim_end_matches(' ').len();
+    text.truncate(kept);
+    Ok((
+        text,
+        undimmed.then(|| {
+            let kept = plain.trim_end().len();
+            plain.truncate(kept);
+            plain
+        }),
+    ))
 }
 
 #[napi]
@@ -1499,9 +1642,10 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+        check_feed_len(bytes.len())?;
         // Parser retains incomplete UTF-8 / escape state across feeds.
         // VoidListener intentionally discards all PTY replies and clipboard events.
-        advance_indexing(&mut self.parser, term, &mut self.text_held, &bytes);
+        advance_indexing(&mut self.parser, term, &mut self.text_held, &bytes)?;
         Ok(())
     }
 
@@ -1514,20 +1658,27 @@ impl NativeTerminal {
     /// scanned for other refusal families (refusal_families), not laid into
     /// the grid. Returns true once refused and that scan is done: the caller
     /// stops parsing then.
+    ///
+    /// A refused allocation throws ALLOC_FAILED: before any byte is parsed
+    /// (the join), or partway through, which also refuses the snapshot.
     #[napi(catch_unwind)]
     pub fn feed_xterm(&mut self, bytes: Uint8Array, requested_scrollback: u32) -> Result<bool> {
         let term = self
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+        check_feed_len(bytes.len())?;
         if self.refusal.is_some() {
             let take = bytes.len().min(REFUSAL_SCAN_BYTES - self.scanned);
-            self.feed.scan(&bytes[..take]);
+            self.feed.scan(&bytes[..take])?;
             self.scanned += take;
+            if let Some(failed) = self.feed.alloc_failed.take() {
+                return Err(failed.into());
+            }
             return Ok(self.scanned >= REFUSAL_SCAN_BYTES);
         }
         self.requested_scrollback = requested_scrollback;
-        self.feed.feed(&mut self.parser, term, &bytes);
+        self.feed.feed(&mut self.parser, term, &bytes)?;
         if self.feed.divergent {
             self.refusal = Some(
                 self.feed
@@ -1536,6 +1687,9 @@ impl NativeTerminal {
             );
         } else if history_at_native_cap(term, requested_scrollback, self.scrollback) {
             self.refusal = Some(HISTORY_LIMIT);
+        }
+        if let Some(failed) = self.feed.alloc_failed.take() {
+            return Err(failed.into());
         }
         // Refused in these bytes: the scan of the next ones comes first.
         Ok(false)
@@ -1566,7 +1720,7 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        advance_indexing(&mut self.parser, term, &mut self.text_held, bytes);
+        advance_indexing(&mut self.parser, term, &mut self.text_held, bytes)?;
         Ok(())
     }
 
@@ -1716,47 +1870,23 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        let held = std::mem::take(&mut self.text_held);
-        self.parser.advance(term, &held);
+        self.parser.advance(term, &self.text_held);
+        self.text_held.clear();
         // A text read must include bytes in an unfinished synchronized update.
         // This finalizes the batch; this API does not promise ANSI replay state.
         self.parser.stop_sync(term);
         let grid = term.grid();
         let history = grid.history_size() as i32;
-        let mut rows = Vec::with_capacity(grid.total_lines());
+        // One per grid line: at most the grid's 4M cells.
+        let mut rows = fallible::try_with_capacity(grid.total_lines(), TEXT_SNAPSHOT)?;
         let mut wrapped = false;
         for y in -history..grid.screen_lines() as i32 {
             let line = &grid[Line(y)];
-            let mut text = String::new();
-            let mut plain = String::new();
-            for x in 0..grid.columns() {
-                let cell = &line[Column(x)];
-                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                    continue;
-                }
-                text.push(cell.c);
-                if let Some(chars) = cell.zerowidth() {
-                    text.extend(chars);
-                }
-                if undimmed {
-                    if cell.flags.contains(Flags::DIM) {
-                        plain.push(' ');
-                        if cell.flags.contains(Flags::WIDE_CHAR) {
-                            plain.push(' ');
-                        }
-                    } else {
-                        plain.push(cell.c);
-                        if let Some(chars) = cell.zerowidth() {
-                            plain.extend(chars);
-                        }
-                    }
-                }
-            }
+            let (text, plain) = text_row(line, grid.columns(), undimmed)?;
             rows.push(NativeTextRow {
-                // xterm trims blank grid cells, not arbitrary Unicode whitespace.
-                text: text.trim_end_matches(' ').to_owned(),
+                text,
                 wrapped,
-                undimmed: undimmed.then(|| plain.trim_end().to_owned()),
+                undimmed: plain,
             });
             wrapped = line[Column(grid.columns() - 1)]
                 .flags
@@ -1819,13 +1949,20 @@ impl NativeTerminal {
         if self.feed.margins() {
             return Err(Error::from_reason("margins"));
         }
-        let tail = self.feed.pending_tail().map_err(Error::from_reason)?;
-        let mut result = crate::native_serialize::serialize(term, !self.feed.shifted)
-            .map_err(Error::from_reason)?;
+        let tail = self.feed.pending_tail()?;
+        let mut result = crate::native_serialize::serialize(term, !self.feed.shifted)?;
+        // The modes below (at most 30 bytes: `?100Nh`, `?1016h`, `?2026h`,
+        // `?25l`) and the tail, so neither grows the payload infallibly.
+        fallible::try_reserve_str(
+            &mut result,
+            tail.len().saturating_add(ANSI_MODES_TAIL),
+            "the ANSI snapshot",
+        )?;
         // Mouse protocol and encoding as xterm's modes tail restores them: the
         // encoding only while a protocol is on.
         if self.feed.mouse != 0 {
-            result.push_str(&format!("\x1b[?{}h", self.feed.mouse));
+            let _ =
+                std::fmt::Write::write_fmt(&mut result, format_args!("\x1b[?{}h", self.feed.mouse));
             if self.feed.sgr_pixels {
                 result.push_str("\x1b[?1016h");
             } else if self.feed.sgr_mouse {
@@ -2136,12 +2273,16 @@ impl NativeFrozenRing {
         self.written_at as f64
     }
     #[napi(getter, catch_unwind)]
-    pub fn geometry(&self) -> Option<NativeReplayGeometry> {
-        replay_geometry(&self.geometry, self.written_at - self.bytes.len() as u64)
+    pub fn geometry(&self) -> Result<Option<NativeReplayGeometry>> {
+        Ok(replay_geometry(
+            &self.geometry,
+            self.written_at - self.bytes.len() as u64,
+        )?)
     }
     #[napi(catch_unwind)]
-    pub fn read_all(&self) -> Buffer {
-        self.bytes.clone().into()
+    pub fn read_all(&self) -> Result<Buffer> {
+        // Bounded by the ring it was frozen from (256 MiB).
+        Ok(fallible::try_copy(&self.bytes, RING_COPY)?.into())
     }
     #[napi(catch_unwind)]
     pub fn dispose(&mut self) {
@@ -2149,22 +2290,35 @@ impl NativeFrozenRing {
         self.geometry.clear();
     }
 }
-fn replay_geometry(marks: &[GeometryMark], start: u64) -> Option<NativeReplayGeometry> {
-    marks.first().map(|first| NativeReplayGeometry {
+/// A copy of a ring's bytes (at most its 256 MiB capacity).
+const RING_COPY: &str = "a copy of the output ring";
+/// The ring's geometry marks: at most MAX_GEOMETRY_MARKS.
+const GEOMETRY: &str = "the output ring's geometry marks";
+/// The most geometry marks a ring keeps (prune_geometry), one more while a
+/// new mark is pruned.
+const MAX_GEOMETRY_MARKS: usize = 256;
+
+fn replay_geometry(
+    marks: &[GeometryMark],
+    start: u64,
+) -> std::result::Result<Option<NativeReplayGeometry>, AllocFailed> {
+    let Some(first) = marks.first() else {
+        return Ok(None);
+    };
+    // At most MAX_GEOMETRY_MARKS.
+    let mut changes = fallible::try_with_capacity(marks.len() - 1, GEOMETRY)?;
+    changes.extend(marks.iter().skip(1).map(|m| NativeGeometryChange {
+        offset: (m.at - start) as f64,
+        cols: m.cols,
+        rows: m.rows,
+    }));
+    Ok(Some(NativeReplayGeometry {
         start: NativeGeometrySize {
             cols: first.cols,
             rows: first.rows,
         },
-        changes: marks
-            .iter()
-            .skip(1)
-            .map(|m| NativeGeometryChange {
-                offset: (m.at - start) as f64,
-                cols: m.cols,
-                rows: m.rows,
-            })
-            .collect(),
-    })
+        changes,
+    }))
 }
 
 /// Byte retention and geometry use the same lifetime offset as the JS oracle.
@@ -2187,8 +2341,12 @@ impl NativeRing {
         if capacity == 0 || capacity > 256 * 1024 * 1024 {
             return Err(Error::from_reason("Ring capacity must be 1..256MiB"));
         }
+        // The first 64 KiB; writes grow it up to the capacity (write_bytes).
+        let initial = (capacity as usize).min(64 * 1024);
+        let mut bytes = fallible::try_with_capacity(initial, "the output ring")?;
+        bytes.resize(initial, 0);
         Ok(Self {
-            bytes: vec![0; (capacity as usize).min(64 * 1024)],
+            bytes,
             capacity: capacity as usize,
             length: 0,
             write_pos: 0,
@@ -2209,18 +2367,21 @@ impl NativeRing {
     }
 
     #[napi(catch_unwind)]
-    pub fn read_all(&self) -> Buffer {
-        self.copy_bytes().into()
+    pub fn read_all(&self) -> Result<Buffer> {
+        Ok(self.copy_bytes()?.into())
     }
 
     #[napi(catch_unwind)]
-    pub fn freeze(&mut self) -> NativeFrozenRing {
+    pub fn freeze(&mut self) -> Result<NativeFrozenRing> {
         self.prune_geometry();
-        NativeFrozenRing {
-            bytes: self.copy_bytes(),
-            geometry: self.geometry.clone(),
+        // At most MAX_GEOMETRY_MARKS after the prune.
+        let mut geometry = fallible::try_with_capacity(self.geometry.len(), GEOMETRY)?;
+        geometry.extend_from_slice(&self.geometry);
+        Ok(NativeFrozenRing {
+            bytes: self.copy_bytes()?,
+            geometry,
             written_at: self.total_written,
-        }
+        })
     }
 
     #[napi(getter, catch_unwind)]
@@ -2262,6 +2423,9 @@ impl NativeRing {
         if cols == 0 || rows == 0 {
             return Ok(());
         }
+        // Room for the mark pushed below, before anything changes: at most
+        // MAX_GEOMETRY_MARKS + 1 before its prune.
+        fallible::try_reserve(&mut self.geometry, 1, GEOMETRY)?;
         let applied = applied.unwrap_or(true);
         if let Some(last) = self.geometry.last() {
             if last.cols == cols && last.rows == rows {
@@ -2313,30 +2477,15 @@ impl NativeRing {
     }
 
     #[napi(catch_unwind)]
-    pub fn read_all_with_geometry(&mut self) -> NativeRingSnapshot {
+    pub fn read_all_with_geometry(&mut self) -> Result<NativeRingSnapshot> {
         self.prune_geometry();
         let start = self.total_written - self.length as u64;
-        let geometry = self.geometry.first().map(|first| NativeReplayGeometry {
-            start: NativeGeometrySize {
-                cols: first.cols,
-                rows: first.rows,
-            },
-            changes: self
-                .geometry
-                .iter()
-                .skip(1)
-                .map(|m| NativeGeometryChange {
-                    offset: (m.at - start) as f64,
-                    cols: m.cols,
-                    rows: m.rows,
-                })
-                .collect(),
-        });
-        NativeRingSnapshot {
-            data: self.read_all(),
+        let geometry = replay_geometry(&self.geometry, start)?;
+        Ok(NativeRingSnapshot {
+            data: self.read_all()?,
             written_at: self.total_written as f64,
             geometry,
-        }
+        })
     }
 
     #[napi(catch_unwind)]
@@ -2375,9 +2524,9 @@ impl NativeRing {
             while next < needed {
                 next = (next * 2).min(self.capacity);
             }
-            self.bytes
-                .try_reserve_exact(next - self.bytes.len())
-                .map_err(|e| Error::from_reason(e.to_string()))?;
+            // At most the capacity (256 MiB); a refusal leaves the ring as it was.
+            let additional = next - self.bytes.len();
+            fallible::try_reserve_exact(&mut self.bytes, additional, "the output ring")?;
             self.bytes.resize(next, 0);
             self.write_pos = self.length;
         }
@@ -2390,9 +2539,10 @@ impl NativeRing {
         Ok(())
     }
 
-    fn copy_bytes(&self) -> Vec<u8> {
+    /// The retained bytes, oldest first: at most the capacity (256 MiB).
+    fn copy_bytes(&self) -> std::result::Result<Vec<u8>, AllocFailed> {
         if self.length == 0 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let start = if self.length < self.bytes.len() {
             0
@@ -2400,10 +2550,10 @@ impl NativeRing {
             self.write_pos
         };
         let tail = self.length.min(self.bytes.len() - start);
-        let mut result = Vec::with_capacity(self.length);
+        let mut result = fallible::try_with_capacity(self.length, RING_COPY)?;
         result.extend_from_slice(&self.bytes[start..start + tail]);
         result.extend_from_slice(&self.bytes[..self.length - tail]);
-        result
+        Ok(result)
     }
 
     /// A run of marks at the newest mark's offset keeps the one with the
@@ -2443,8 +2593,8 @@ impl NativeRing {
         }
         // Past the cap, the oldest marks after the first go: the first is the
         // size the window's first bytes were written at.
-        if self.geometry.len() > 256 {
-            let excess = self.geometry.len() - 256;
+        if self.geometry.len() > MAX_GEOMETRY_MARKS {
+            let excess = self.geometry.len() - MAX_GEOMETRY_MARKS;
             self.geometry.drain(1..1 + excess);
         }
     }
@@ -2468,7 +2618,7 @@ pub(crate) fn fed_for_test(
     let mut parser: Processor = Processor::new();
     let mut feed = XtermFeed::default();
     for chunk in chunks {
-        feed.feed(&mut parser, &mut term, chunk);
+        feed.feed(&mut parser, &mut term, chunk).unwrap();
     }
     parser.advance(&mut term, &feed.held);
     (term, feed.divergent)
@@ -2478,7 +2628,7 @@ pub(crate) fn fed_for_test(
 mod tests {
     use super::{Size, XtermFeed};
     use alacritty_terminal::event::VoidListener;
-    use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
+    use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::vte::ansi::{Processor, Timeout};
@@ -2488,7 +2638,7 @@ mod tests {
         let mut parser: Processor = Processor::new();
         let mut feed = XtermFeed::default();
         for chunk in chunks {
-            feed.feed(&mut parser, &mut term, chunk.as_bytes());
+            feed.feed(&mut parser, &mut term, chunk.as_bytes()).unwrap();
         }
         (term, parser, feed)
     }
@@ -2861,12 +3011,13 @@ mod tests {
     fn the_scan_past_a_refusal_names_what_controls_show_by_themselves() {
         let mut feed = feed_with(&["\x1b(A"]).2;
         // Split across scans, inside a string, cut by DEL, and a C1.
-        feed.scan(b"\x1b]0;\x1b[53m title\x07\x1b[5");
-        feed.scan(b"3m\x1b[!\x7fp\xc2\x9b31m");
+        feed.scan(b"\x1b]0;\x1b[53m title\x07\x1b[5").unwrap();
+        feed.scan(b"3m\x1b[!\x7fp\xc2\x9b31m").unwrap();
         // A restore needs the screen's state: not seen by the scan. Neither
         // does a ContextRule control, nor text inside a round trip.
-        feed.scan(b"\x1b7\x1b*0\x1b8");
-        feed.scan(b"\x1b[?47hx\x1b[?47l\x1b[?1047l\x1b[?9l");
+        feed.scan(b"\x1b7\x1b*0\x1b8").unwrap();
+        feed.scan(b"\x1b[?47hx\x1b[?47l\x1b[?1047l\x1b[?9l")
+            .unwrap();
         assert_eq!(
             feed.seen,
             [
@@ -2929,7 +3080,7 @@ mod tests {
         assert_eq!(tail(&["hi\x1b]0;title\x1b", "\\done"]).unwrap(), "");
         assert_eq!(tail(&["hi\x1b]0;title\x07done"]).unwrap(), "");
         assert_eq!(
-            tail(&["\x1bP", &"x".repeat(5000)]).unwrap_err(),
+            tail(&["\x1bP", &"x".repeat(5000)]).unwrap_err().reason,
             "partial-tail-overflow"
         );
     }
@@ -3073,10 +3224,10 @@ mod tests {
             let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
             let mut parser: Processor = Processor::new();
             let mut feed = XtermFeed::default();
-            feed.feed(&mut parser, &mut term, b"\x1b[?1049h");
+            feed.feed(&mut parser, &mut term, b"\x1b[?1049h").unwrap();
             feed.alt_reflow = true;
             for chunk in chunks {
-                feed.feed(&mut parser, &mut term, chunk.as_bytes());
+                feed.feed(&mut parser, &mut term, chunk.as_bytes()).unwrap();
             }
             !feed.alt_reflow
         };
@@ -3224,14 +3375,14 @@ mod tests {
         let mut parser: Processor = Processor::new();
         let mut held = Vec::new();
         for chunk in [para.as_bytes(), b"\x1b", b"D"] {
-            super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
+            super::advance_indexing(&mut parser, &mut term, &mut held, chunk).unwrap();
         }
         assert!(term.grid()[Line(0)][Column(9)]
             .flags
             .contains(Flags::WRAPLINE));
         // DEL inside, split after it: both parsers ignore DEL there.
         for chunk in [para.as_bytes(), b"\x1b\x7f", b"D"] {
-            super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
+            super::advance_indexing(&mut parser, &mut term, &mut held, chunk).unwrap();
         }
         assert!(held.is_empty());
         assert!(term.grid()[Line(0)][Column(9)]
@@ -3240,11 +3391,11 @@ mod tests {
         // An ESC followed by an endless run of C0 controls and DEL, a few
         // bytes per feed: the held bytes stay under the cap, so each feed
         // rescans at most that much, and the run reaches the parser.
-        super::advance_indexing(&mut parser, &mut term, &mut held, b"\x1b");
+        super::advance_indexing(&mut parser, &mut term, &mut held, b"\x1b").unwrap();
         let mut most = 0;
         for i in 0..100_000 {
             let chunk: &[u8] = if i % 2 == 0 { b"\x00\x7f\x07" } else { b"\x7f" };
-            super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
+            super::advance_indexing(&mut parser, &mut term, &mut held, chunk).unwrap();
             most = most.max(held.len());
         }
         assert!(most <= super::MAX_HELD, "{most}");
@@ -3255,7 +3406,7 @@ mod tests {
             !feed_with(&[para, "\x1b7\u{e9}"]).2.divergent,
             "a complete escape before UTF-8"
         );
-        super::advance_indexing(&mut parser, &mut term, &mut held, b"\x1b[1;1H\n");
+        super::advance_indexing(&mut parser, &mut term, &mut held, b"\x1b[1;1H\n").unwrap();
         assert!(!term.grid()[Line(0)][Column(9)]
             .flags
             .contains(Flags::WRAPLINE));
@@ -3263,7 +3414,8 @@ mod tests {
         let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 5 }, VoidListener);
         let mut parser: Processor = Processor::new();
         let mut feed = XtermFeed::default();
-        feed.feed(&mut parser, &mut term, b"\x1b[1;2r\x1b[4;1Hxxxxxxxxxxxxxxx");
+        feed.feed(&mut parser, &mut term, b"\x1b[1;2r\x1b[4;1Hxxxxxxxxxxxxxxx")
+            .unwrap();
         assert!(term.grid()[Line(3)][Column(9)]
             .flags
             .contains(Flags::WRAPLINE));
@@ -3323,10 +3475,10 @@ mod alt_kept_cells_tests {
         let mut parser: Processor = Processor::new();
         let mut feed = XtermFeed::default();
         let start = format!("\x1b[?1049h\x1b[H{R0}\r\n{R1}\r\n{R2}\r\n{R3}");
-        feed.feed(&mut parser, &mut term, start.as_bytes());
+        feed.feed(&mut parser, &mut term, start.as_bytes()).unwrap();
         for step in steps {
             match step {
-                Out(bytes) => feed.feed(&mut parser, &mut term, bytes.as_bytes()),
+                Out(bytes) => feed.feed(&mut parser, &mut term, bytes.as_bytes()).unwrap(),
                 To(cols, rows) => {
                     parser.advance(&mut term, &std::mem::take(&mut feed.held));
                     term.resize(Size {
@@ -3799,5 +3951,187 @@ mod narrowed_saved_history_tests {
         assert_eq!(narrowed_saved_history(&grid(5, 9), 0, 5), 2);
         // xterm clamps on every reflowed narrowing, trimmed rows or not.
         assert_eq!(narrowed_saved_history(&grid(6, 2), 3, 6), 1);
+    }
+}
+
+/// Refused allocations (#3440): each call reports ALLOC_FAILED and the object
+/// stays consistent and usable.
+#[cfg(test)]
+mod alloc_failure_tests {
+    use super::*;
+    use crate::fallible::{fail_from, ALLOC_FAILED};
+
+    fn bytes(data: &[u8]) -> Uint8Array {
+        Uint8Array::new(data.to_vec())
+    }
+
+    fn assert_alloc_failed(error: Option<Error>) {
+        let error = error.expect("the call is refused");
+        assert!(error.reason.starts_with(ALLOC_FAILED), "{}", error.reason);
+    }
+
+    fn terminal() -> NativeTerminal {
+        NativeTerminal::new(20, 4, 100).unwrap()
+    }
+
+    fn text(terminal: &mut NativeTerminal) -> Vec<String> {
+        let snapshot = terminal.text_snapshot(false).ok().unwrap();
+        snapshot.rows.into_iter().map(|row| row.text).collect()
+    }
+
+    #[test]
+    fn a_refused_ring_copy_is_an_error_and_the_ring_reads_back_after() {
+        let mut ring = NativeRing::new(1024).unwrap();
+        ring.write_bytes(b"hello ring").unwrap();
+        ring.note_geometry(80, 24, None).unwrap();
+        {
+            let _fail = fail_from(10);
+            assert_alloc_failed(ring.read_all().err());
+            assert_alloc_failed(ring.freeze().err());
+            assert_alloc_failed(ring.read_all_with_geometry().err());
+        }
+        assert_eq!(&ring.read_all().unwrap()[..], b"hello ring");
+        let frozen = ring.freeze().ok().unwrap();
+        {
+            let _fail = fail_from(10);
+            assert_alloc_failed(frozen.read_all().err());
+        }
+        assert_eq!(&frozen.read_all().unwrap()[..], b"hello ring");
+        let snapshot = ring.read_all_with_geometry().ok().unwrap();
+        assert_eq!(&snapshot.data[..], b"hello ring");
+        assert_eq!(snapshot.geometry.map(|g| g.start.cols), Some(80));
+    }
+
+    #[test]
+    fn a_refused_ring_growth_leaves_the_ring_as_it_was() {
+        {
+            let _fail = fail_from(64 * 1024);
+            assert_alloc_failed(NativeRing::new(1 << 20).err());
+        }
+        let mut ring = NativeRing::new(1 << 20).unwrap();
+        ring.write_bytes(&[1; 1000]).unwrap();
+        {
+            // Growth past the first 64 KiB asks for 128 KiB.
+            let _fail = fail_from(128 * 1024);
+            assert_alloc_failed(ring.write_bytes(&[2; 70 * 1024]).err());
+        }
+        assert_eq!(ring.size(), 1000);
+        assert_eq!(ring.total_bytes_written(), 1000.0);
+        assert_eq!(&ring.read_all().unwrap()[..], &[1; 1000][..]);
+        ring.write_bytes(&[2; 70 * 1024]).unwrap();
+        assert_eq!(ring.size() as usize, 1000 + 70 * 1024);
+    }
+
+    #[test]
+    fn a_refused_geometry_mark_changes_nothing() {
+        let mut ring = NativeRing::new(1024).unwrap();
+        {
+            let _fail = fail_from(1);
+            assert_alloc_failed(ring.note_geometry(80, 24, Some(false)).err());
+        }
+        assert!(!ring.geometry_tail_provisional());
+        ring.note_geometry(80, 24, None).unwrap();
+        assert_eq!(ring.geometry.len(), 1);
+    }
+
+    #[test]
+    fn a_refused_text_feed_join_parses_nothing_and_keeps_the_held_escape() {
+        let mut terminal = terminal();
+        terminal.feed(bytes(b"ab\x1b")).unwrap();
+        assert_eq!(terminal.text_held, b"\x1b");
+        {
+            let _fail = fail_from(1);
+            assert_alloc_failed(terminal.feed(bytes(b"Dcd")).err());
+        }
+        assert_eq!(terminal.text_held, b"\x1b", "the held ESC survived");
+        // ESC D is IND, as one sequence across the two feeds.
+        terminal.feed(bytes(b"Dcd")).unwrap();
+        assert_eq!(text(&mut terminal), ["ab", "  cd"]);
+    }
+
+    #[test]
+    fn a_refused_ansi_feed_join_parses_nothing() {
+        let mut terminal = terminal();
+        {
+            let _fail = fail_from(1);
+            assert_alloc_failed(terminal.feed_xterm(bytes(b"hello"), 100).err());
+        }
+        assert!(terminal.refusal.is_none());
+        assert!(text(&mut terminal).is_empty());
+        terminal.feed_xterm(bytes(b"hello"), 100).unwrap();
+        assert_eq!(text(&mut terminal), ["hello"]);
+        assert!(terminal.ansi_snapshot(None).is_ok());
+    }
+
+    #[test]
+    fn a_buffer_refused_partway_through_an_ansi_feed_refuses_the_snapshot() {
+        let mut terminal = terminal();
+        terminal.feed_xterm(bytes(b"ok"), 100).unwrap();
+        let osc = [b"\x1b]0;".as_slice(), &[b'x'; 296]].concat();
+        {
+            // The 300-byte join fits; the pending string's growth to 512 does not.
+            let _fail = fail_from(512);
+            assert_alloc_failed(terminal.feed_xterm(bytes(&osc), 100).err());
+        }
+        assert_eq!(terminal.refusal, Some(ALLOC_REFUSED));
+        assert_eq!(terminal.refusal_families().unwrap(), ["unsupported-alloc"]);
+        assert_eq!(
+            terminal.ansi_snapshot(None).err().unwrap().reason,
+            ALLOC_REFUSED
+        );
+        // The terminal goes on: the scan past the refusal, and its text.
+        assert!(!terminal.feed_xterm(bytes(b"\x07more"), 100).unwrap());
+        assert_eq!(text(&mut terminal), ["ok"]);
+    }
+
+    #[test]
+    fn a_refused_text_snapshot_is_an_error_and_the_next_one_reads() {
+        let mut terminal = terminal();
+        terminal.feed(bytes(b"line one\r\nline two")).unwrap();
+        {
+            let _fail = fail_from(1);
+            assert_alloc_failed(terminal.text_snapshot(false).err());
+        }
+        assert_eq!(text(&mut terminal), ["line one", "line two"]);
+    }
+
+    #[test]
+    fn a_text_row_trims_in_place_as_before() {
+        let mut terminal = terminal();
+        terminal
+            .feed(bytes(
+                "a b  \r\n\x1b[2mdim\x1b[0m e\u{301} \u{3000}".as_bytes(),
+            ))
+            .unwrap();
+        let rows = terminal.text_snapshot(true).ok().unwrap().rows;
+        assert_eq!(rows[0].text, "a b");
+        assert_eq!(rows[1].text, "dim e\u{301} \u{3000}");
+        assert_eq!(rows[1].undimmed.as_deref(), Some("    e\u{301}"));
+    }
+
+    #[test]
+    fn a_refused_ansi_snapshot_is_an_error_and_the_next_one_replays() {
+        let mut terminal = terminal();
+        terminal
+            .feed_xterm(bytes(b"\x1b[31mred\x1b[0m plain"), 100)
+            .unwrap();
+        let payload = terminal.ansi_snapshot(None).unwrap().to_vec();
+        {
+            let _fail = fail_from(1);
+            assert_alloc_failed(terminal.ansi_snapshot(None).err());
+        }
+        assert_eq!(terminal.ansi_snapshot(None).unwrap().to_vec(), payload);
+    }
+
+    #[test]
+    fn a_refused_pending_tail_is_an_error_and_the_next_snapshot_ships_it() {
+        let mut terminal = terminal();
+        terminal.feed_xterm(bytes(b"ab\x1b]0;tit"), 100).unwrap();
+        {
+            let _fail = fail_from(1);
+            assert_alloc_failed(terminal.ansi_snapshot(None).err());
+        }
+        let payload = terminal.ansi_snapshot(None).unwrap();
+        assert!(payload.ends_with(b"\x1b]0;tit"));
     }
 }
