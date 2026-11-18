@@ -14,6 +14,7 @@ import { A2A_ROUTES, type HostId } from '../../../shared/a2aRemote';
 import { BUNDLE_BYTES_CEILING, BUNDLE_BYTES_DEFAULT, bundleBytesMax, type A2aBundleManifestV1 } from '../../../shared/a2aBundle';
 import { BundleIntake, bundleStagedFile, bundleStagingHostDir } from '../bundleIntake';
 import { deliberateSleep } from '../../../test-utils/waitFor';
+import { FAR_IDS, fakeFileIds } from '../../../test-utils/fileIds';
 import { BundleOutbox, type BundleSend } from '../bundleOutbox';
 import { PinnedClientError } from '../pinnedClient';
 import { A2aRouteTable } from '../routes';
@@ -89,6 +90,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   server.closeAllConnections();
   await new Promise((r) => server.close(r));
   fs.rmSync(root, { recursive: true, force: true });
@@ -193,6 +195,17 @@ describe('a returned bundle, fetched by the asking PC', () => {
     expect(partsOf()).toEqual([]);
     expect(await intake().pull(ASKER, m)).toMatchObject({ kind: 'staged' });
     expect(gets).toHaveLength(1);
+  });
+
+  it('does not serve a file whose 64-bit ID differs from the offered one only below Number precision', async () => {
+    const body = bytes(4096, 9);
+    const m = { bundleId: bundleId(), sha256: sha(body), bytes: body.length };
+    const file = path.join(boxDir, `${m.bundleId}.bundle`);
+    fs.writeFileSync(file, body);
+    fakeFileIds({ [file]: { byPath: () => FAR_IDS[0], byHandle: () => FAR_IDS[1] } });
+    expect(outbox.offer({ hostId: ASKER, file, ...m })).toBe(true);
+    expect(await intake().pull(ASKER, m)).toEqual({ kind: 'fatal', why: 'the other PC answered HTTP 404' });
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m))).toBe(false);
   });
 
   it('serves a bundle only to the PC it was made for, only while its offer stands, and only as the file offered', async () => {

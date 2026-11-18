@@ -20,6 +20,7 @@ vi.mock('electron', () => ({
 import { IPC } from '../../../shared/constants';
 import { PREVIEW_PROTOCOL_SCHEME, previewUrl, type PreviewChangedEvent } from '../../../shared/filePreview';
 import { PLUGIN_PROTOCOL_SCHEME } from '../../../shared/pluginHost';
+import { FAR_IDS, fakeFileIds } from '../../../test-utils/fileIds';
 import { closePreview, openPreview, previewStatsForTests, servePreview } from '../previewProtocol';
 import { registerPrivilegedSchemes } from '../../privilegedSchemes';
 
@@ -250,6 +251,29 @@ describe('following the file', () => {
     fs.renameSync(twin, file);
     await waitFor(() => s.sent.length >= 1);
     expect(s.sent[0]).toMatchObject({ exists: true, complete: true, version: 2 });
+  });
+
+  it('notices a swap whose 64-bit file ID differs only below Number precision', async () => {
+    const file = path.join(dir, 'far.png');
+    fs.writeFileSync(file, PNG);
+    let swapped = false;
+    fakeFileIds({ [file]: { byPath: () => (swapped ? FAR_IDS[1] : FAR_IDS[0]) } });
+    const s = sender();
+    const opened = await openPreview(asSender(s), file);
+    if (!opened.ok) throw new Error('open failed');
+    swapped = true;
+    // Nothing else changes, so only the periodic check (every 2 s) can see it.
+    await waitFor(() => s.sent.length >= 1, 6000);
+    expect(s.sent[0]).toMatchObject({ exists: true, version: 2 });
+  }, 15_000);
+
+  it('serves only the file it opened, by a 64-bit ID that differs only below Number precision', async () => {
+    const file = path.join(dir, 'served.png');
+    fs.writeFileSync(file, PNG);
+    const opened = await openPreview(asSender(sender()), file);
+    if (!opened.ok) throw new Error('open failed');
+    fakeFileIds({ [file]: { byPath: () => FAR_IDS[0], byHandle: () => FAR_IDS[1] } });
+    expect((await get(previewUrl(opened.token, file, 1))).status).toBe(404);
   });
 
   it('shows a stable file that never gets its end marker after a grace period', async () => {

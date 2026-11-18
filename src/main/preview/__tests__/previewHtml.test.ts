@@ -14,6 +14,7 @@ vi.mock('electron', () => ({
 }));
 
 import { htmlPreviewUrl } from '../../../shared/filePreview';
+import { FAR_IDS, fakeFileIds } from '../../../test-utils/fileIds';
 import {
   chooseHtmlRoot,
   closeHtmlPreview,
@@ -132,6 +133,15 @@ describe('serving a page', () => {
     expect(await css.text()).toBe('h1{color:red}');
     expect(css.headers.get('content-type')).toBe('text/css; charset=utf-8');
     expect((await get(htmlPreviewUrl(opened.token, '.env'))).status).toBe(404);
+  });
+
+  it('refuses a served file whose 64-bit ID differs from the opened one only below Number precision', async () => {
+    const opened = await openHtmlPreview(asSender(sender()), path.join(repo, 'docs', 'api', 'foo.html'));
+    if (!opened.ok) throw new Error('open failed');
+    const css = path.join(repo, 'docs', '_static', 'x.css');
+    expect((await get(htmlPreviewUrl(opened.token, 'docs/_static/x.css'))).status).toBe(200);
+    fakeFileIds({ [css]: { byPath: () => FAR_IDS[0], byHandle: () => FAR_IDS[1] } });
+    expect((await get(htmlPreviewUrl(opened.token, 'docs/_static/x.css'))).status).toBe(404);
   });
 
   it('follows a latest.html symlink on every request, so retargeting it shows the new page', async () => {

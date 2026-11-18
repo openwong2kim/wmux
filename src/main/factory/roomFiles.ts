@@ -40,6 +40,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOM_LIMITS } from '../../shared/room';
 import { ROOM_FILE_ID_RE, ROOM_FILE_LIMITS, type RoomFile } from '../../shared/roomFiles';
+import { sameFileId } from '../../shared/sameFileId';
 import { protectedPatternOf } from './botRepoRead';
 
 export const ROOM_FILES_DIRNAME = 'room-files';
@@ -337,9 +338,9 @@ export class RoomFileStore {
       .filter((r) => path.isAbsolute(r))
       .map(realpathOrNull)
       .filter((r): r is string => r !== null);
-    let lst: fs.Stats;
+    let lst: fs.BigIntStats;
     try {
-      lst = fs.lstatSync(source);
+      lst = fs.lstatSync(source, { bigint: true });
     } catch {
       return refuse('missing');
     }
@@ -352,9 +353,9 @@ export class RoomFileStore {
     if (lst.nlink > 1) return refuse('links');
     if (!writtenWithoutLinks(allowedRoots, source, inside.rel)) return refuse('linked_folder');
     if (lst.size > ROOM_FILE_LIMITS.MAX_BYTES) return refuse('size');
-    if (lst.size === 0) return refuse('empty');
+    if (lst.size === 0n) return refuse('empty');
     let data: Buffer | null;
-    let fst: fs.Stats;
+    let fst: fs.BigIntStats;
     let fd: number;
     try {
       fd = fs.openSync(real, OPEN_FLAGS);
@@ -362,8 +363,8 @@ export class RoomFileStore {
       return refuse('changed');
     }
     try {
-      fst = fs.fstatSync(fd);
-      if (!fst.isFile() || fst.dev !== lst.dev || fst.ino !== lst.ino) return refuse('changed');
+      fst = fs.fstatSync(fd, { bigint: true });
+      if (!fst.isFile() || !sameFileId(fst, lst)) return refuse('changed');
       if (fst.nlink > 1) return refuse('links');
       if (fst.size > ROOM_FILE_LIMITS.MAX_BYTES) return refuse('size');
       // Linux names the opened file itself: that path must be inside a root.
@@ -384,8 +385,8 @@ export class RoomFileStore {
     const after = realpathOrNull(source);
     if (after !== real || !containingRoot(realRoots, after)) return refuse('changed');
     try {
-      const now = fs.lstatSync(after);
-      if (now.dev !== fst.dev || now.ino !== fst.ino) return refuse('changed');
+      const now = fs.lstatSync(after, { bigint: true });
+      if (!sameFileId(now, fst)) return refuse('changed');
     } catch {
       return refuse('changed');
     }

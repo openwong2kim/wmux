@@ -13,6 +13,7 @@ vi.mock('electron', () => ({
 
 import { execFileSync } from 'node:child_process';
 import { handleFsList, handleFsReadText, handleFsStat, validatePathParam, wholeUtf8 } from '../fs.rpc';
+import { FAR_IDS, fakeFileIds } from '../../../../test-utils/fileIds';
 
 let root: string;
 let home: string;
@@ -164,6 +165,12 @@ describe('fs.readText', () => {
     if (!res.ok) throw new Error(res.reason);
     expect(res.text.length).toBe(1024 * 1024);
     expect(res.truncated).toBe(true);
+  });
+
+  it('tells the opened file from the checked one when their 64-bit IDs differ only below Number precision', async () => {
+    const file = path.join(root, 'work', 'README.md');
+    fakeFileIds({ [file]: { byPath: () => FAR_IDS[0], byHandle: () => FAR_IDS[1] } });
+    expect(await handleFsReadText({ path: file })).toEqual({ ok: false, reason: 'unavailable' });
   });
 
   it('refuses a binary file', async () => {

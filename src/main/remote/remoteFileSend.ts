@@ -8,6 +8,7 @@ import {
   type RemoteWriteResult,
 } from '../../shared/remoteUpload';
 import { sniffRoomImage } from '../../shared/roomAttachments';
+import { sameFileId } from '../../shared/sameFileId';
 import { isRemoteAuthRejected, isRemoteInsecureTransport, type RemoteUploadResult } from './RemoteHostClient';
 
 // ─── Send files to a remote-terminal pane ────────────────────────────────────
@@ -82,25 +83,26 @@ export function isLocalAbsolutePath(p: string, platform: NodeJS.Platform = proce
  */
 async function readDroppedFile(p: string): Promise<RemoteSendFile | RemoteSendFailure> {
   if (!isLocalAbsolutePath(p)) return 'not-a-file';
-  const before = await fsp.lstat(p).catch(() => null);
+  const before = await fsp.lstat(p, { bigint: true }).catch(() => null);
   if (!before || !before.isFile()) return 'not-a-file';
   if (before.size > REMOTE_UPLOAD_LIMITS.MAX_BYTES) return 'too-large';
   const noFollow = typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0;
   const handle = await fsp.open(p, fsConstants.O_RDONLY | noFollow).catch(() => null);
   if (!handle) return 'not-a-file';
   try {
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.ino !== before.ino || stat.dev !== before.dev) return 'not-a-file';
+    const stat = await handle.stat({ bigint: true });
+    if (!stat.isFile() || !sameFileId(stat, before)) return 'not-a-file';
     if (stat.size > REMOTE_UPLOAD_LIMITS.MAX_BYTES) return 'too-large';
+    const size = Number(stat.size);
     // One byte past the checked size: a file still growing is refused, not cut short.
-    const buf = Buffer.alloc(stat.size + 1);
+    const buf = Buffer.alloc(size + 1);
     let filled = 0;
     while (filled < buf.length) {
       const { bytesRead } = await handle.read(buf, filled, buf.length - filled, filled);
       if (bytesRead === 0) break;
       filled += bytesRead;
     }
-    if (filled > stat.size) return 'not-a-file';
+    if (filled > size) return 'not-a-file';
     return { name: path.basename(p), bytes: buf.subarray(0, filled) };
   } catch {
     return 'not-a-file';
