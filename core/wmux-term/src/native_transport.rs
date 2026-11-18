@@ -108,6 +108,10 @@ struct State {
     /// When close() found the child unreaped: the session sweep's deadline.
     #[cfg(unix)]
     sweep_at: Mutex<Option<Instant>>,
+    /// When kill() hung the child up and close() has not decided on the sweep
+    /// yet: the waiter keeps the root unreaped meanwhile (see the waiter).
+    #[cfg(unix)]
+    hangup_at: Mutex<Option<Instant>>,
     /// The reader stops once no output is pending, without reporting an error.
     #[cfg(unix)]
     stop_reading: AtomicBool,
@@ -238,6 +242,8 @@ impl NativeTransport {
             cancel: Mutex::new(Some(cancel)),
             #[cfg(unix)]
             sweep_at: Mutex::new(None),
+            #[cfg(unix)]
+            hangup_at: Mutex::new(None),
             #[cfg(unix)]
             stop_reading: AtomicBool::new(false),
             #[cfg(unix)]
@@ -417,6 +423,14 @@ impl NativeTransport {
                 // only their signal can end. The root is reaped under the lock
                 // (no signal can reach a freed pid), but only with try_wait, once
                 // an exit was observed; a root not reapable yet lets the lock go.
+                //
+                // Invariant: between a hangup (kill()) and close(), the root is
+                // never reaped. Its unreaped pid is what pins the session id, and
+                // close() must find it unreaped to arm the sweep, as must an
+                // explicit SIGKILL in between: reaped first, both would skip the
+                // session, and a program that ignored the hangup outlives the pane
+                // (#3434). A hangup that no close() follows holds the reap for
+                // HANGUP_GRACE at most.
                 #[cfg(unix)]
                 let (mut exit_guard, status) = loop {
                     let observed = observe_exit(pid);
@@ -439,6 +453,17 @@ impl NativeTransport {
                         drop(guard);
                         std::thread::sleep(at.saturating_duration_since(Instant::now()));
                         signal_session(pid, libc::SIGKILL);
+                        continue;
+                    }
+                    let hung_up = waiter_state
+                        .hangup_at
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .is_some_and(|at| at.elapsed() < HANGUP_GRACE);
+                    if hung_up {
+                        // The pane is being closed: close() decides on the sweep first.
+                        drop(guard);
+                        std::thread::sleep(EXIT_POLL);
                         continue;
                     }
                     match child.try_wait() {
@@ -643,6 +668,13 @@ impl NativeTransport {
             }
             if signal == libc::SIGKILL {
                 signal_session(self.pid as i32, signal);
+            } else {
+                // Under `exited`, so the waiter sees it before it could reap.
+                *self
+                    .state
+                    .hangup_at
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
             }
             if let Some(group) = self.master.as_ref().and_then(|m| m.process_group_leader()) {
                 if group > 0 {
@@ -741,6 +773,12 @@ impl NativeTransport {
             .sweep_at
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = Some(at);
+        // The sweep is decided: the waiter may reap once it has run.
+        self.state
+            .hangup_at
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
         Some(at)
     }
     fn drain(&mut self, paused: Option<bool>) -> RawTransportRead {
