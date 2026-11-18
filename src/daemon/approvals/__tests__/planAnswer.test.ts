@@ -16,6 +16,9 @@ import {
 } from '../ApprovalRegistry';
 import {
   DECISION_V2_WEB_ANSWER,
+  REMOTE_DECISION_V2_ANSWER,
+  REMOTE_TERMINAL_PROMPT_ANSWER,
+  REMOTE_TERMINAL_PROMPT_DECLINE,
   TERMINAL_PROMPT_WEB_ANSWER,
   TERMINAL_PROMPT_WEB_DECLINE,
   type ApprovalEvent,
@@ -593,5 +596,84 @@ describe('the desktop answer (daemon.approvals.answerPlan)', () => {
     const bash = { id: 'r', toolName: 'Bash', command: 'rm -rf /tmp/x', commandHash: 'h', commandBytes: 13, truncated: false };
     expect(planDetailOnly(bash)).toBeNull();
     expect(planDetailOnly(null)).toBeNull();
+  });
+});
+
+describe('an answer from a paired PC (the REMOTE_* markers)', () => {
+  const remote = (h: Harness, record: ApprovalRequest, action: string, over: Record<string, unknown> = {}) => h.registry.resolve({
+    id: record.id,
+    decision: 'approve',
+    resolvedBy: 'remote:Mac/11111111-1111-4111-8111-111111111111',
+    decisionV2Answer: REMOTE_DECISION_V2_ANSWER,
+    decisionAnswer: { formFingerprint: record.formFingerprint!, clientAnswerId: 'ap-1', action },
+    authorize: async () => 'ok',
+    authorizeNow: () => true,
+    ...over,
+  });
+
+  it('a plan\'s manual approve is its row\'s one key, and the key revision right after it is reported', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    const revisions: Array<number | null> = [];
+    const result = await remote(h, record, 'approve-manual', { onKeyWritten: (r: number | null) => revisions.push(r) });
+    expect(result).toMatchObject({ ok: true, request: { decision: 'approve', selectedChoiceKey: '2', resolvedBy: 'remote:Mac/11111111-1111-4111-8111-111111111111' } });
+    expect(h.writes).toEqual(['2']);
+    expect(revisions).toEqual([4]);
+  });
+
+  it('feedback is never taken from a paired PC: nothing typed', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    expect(await remote(h, record, 'feedback', { decisionAnswer: { formFingerprint: record.formFingerprint!, clientAnswerId: 'ap-1', action: 'feedback', text: 'no' } }))
+      .toMatchObject({ ok: false, reason: 'invalid-choice' });
+    expect(h.writes).toEqual([]);
+    expect(h.stepKeys).toEqual([]);
+  });
+
+  it('without authorize, or without authorizeNow, nothing is typed', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    expect(await remote(h, record, 'approve-manual', { authorize: undefined })).toMatchObject({ ok: false, reason: 'unauthorized' });
+    expect(await remote(h, record, 'approve-manual', { authorizeNow: undefined })).toMatchObject({ ok: false, reason: 'unauthorized' });
+    expect(h.writes).toEqual([]);
+  });
+
+  it('authorizeNow refusing in the write block: nothing typed, the record still answerable', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    let calls = 0;
+    expect(await remote(h, record, 'approve-manual', { authorizeNow: () => { calls += 1; return false; } })).toMatchObject({ ok: false, reason: 'unauthorized' });
+    expect(calls).toBe(1);
+    expect(h.writes).toEqual([]);
+    expect(stored(h, record.id)).toMatchObject({ state: 'pending' });
+    expect(stored(h, record.id).pressedAt).toBeUndefined();
+    expect(await remote(h, record, 'approve-manual')).toMatchObject({ ok: true });
+  });
+
+  it('a decline is one Esc; a remote marker beside a web one, or a Yes as a decline, types nothing', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    const base = { id: record.id, resolvedBy: 'remote:Mac/x', authorize: async () => 'ok' as const, authorizeNow: () => true };
+    expect(await h.registry.resolve({ ...base, decision: 'approve', terminalPromptDecline: REMOTE_TERMINAL_PROMPT_DECLINE })).toMatchObject({ ok: false, reason: 'invalid-choice' });
+    expect(await h.registry.resolve({ ...base, decision: 'deny', terminalPromptDecline: REMOTE_TERMINAL_PROMPT_DECLINE, terminalPromptAnswer: TERMINAL_PROMPT_WEB_ANSWER }))
+      .toMatchObject({ ok: false, reason: 'invalid-choice' });
+    expect(await h.registry.resolve({ ...base, decision: 'approve', choiceKey: '1', terminalPromptAnswer: REMOTE_TERMINAL_PROMPT_ANSWER, terminalPromptDecline: REMOTE_TERMINAL_PROMPT_DECLINE }))
+      .toMatchObject({ ok: false, reason: 'invalid-choice' });
+    expect(h.writes).toEqual([]);
+    expect(await h.registry.resolve({ ...base, decision: 'deny', terminalPromptDecline: REMOTE_TERMINAL_PROMPT_DECLINE })).toMatchObject({ ok: true });
+    expect(h.writes).toEqual(['\x1b']);
+  });
+
+  it('never reaches a gate or any record that is not a terminal prompt', async () => {
+    const h = makeRegistry();
+    const gate = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', toolName: 'Bash' });
+    await new Promise((r) => setTimeout(r, 0));
+    const result = await h.registry.resolve({
+      id: gate, decision: 'approve', choiceKey: '1', resolvedBy: 'remote:Mac/x',
+      terminalPromptAnswer: REMOTE_TERMINAL_PROMPT_ANSWER, authorize: async () => 'ok', authorizeNow: () => true,
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'answer-in-terminal' });
+    expect(stored(h, gate)).toMatchObject({ state: 'pending' });
+    expect(h.writes).toEqual([]);
   });
 });

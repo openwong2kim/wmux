@@ -90,12 +90,24 @@ describe.runIf(core && process.platform === 'win32')('native process table parit
 
 /** `ps -axo pid=,ppid=,ucomm=`: pid → (ppid, short name). `ucomm` is the
  *  kernel's name on both systems (macOS `comm` prints argv[0]); ps pads it. */
+/**
+ * One `ps -o pid=,ppid=,ucomm=` row. procps prints a zombie's name as
+ * `<name> <defunct>`, where the kernel (and the native walk) has `<name>`:
+ * that exact suffix is ps's presentation, like its padding, and is read off.
+ */
+export function parsePsRow(line: string): { pid: number; ppid: number; name: string } | null {
+  const m = line.match(/^\s*(\d+)\s+(\d+)\s(.*?)\s*$/);
+  if (!m) return null;
+  const name = m[3].trim();
+  return { pid: Number(m[1]), ppid: Number(m[2]), name: name.endsWith(' <defunct>') ? name.slice(0, -' <defunct>'.length) : name };
+}
+
 function psWalk(): Map<number, { ppid: number; name: string }> {
   const stdout = execFileSync('ps', ['-axo', 'pid=,ppid=,ucomm='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   const rows = new Map<number, { ppid: number; name: string }>();
   for (const line of stdout.split('\n')) {
-    const m = line.match(/^\s*(\d+)\s+(\d+)\s(.*?)\s*$/);
-    if (m) rows.set(Number(m[1]), { ppid: Number(m[2]), name: m[3].trim() });
+    const row = parsePsRow(line);
+    if (row) rows.set(row.pid, { ppid: row.ppid, name: row.name });
   }
   return rows;
 }
@@ -125,6 +137,16 @@ async function nativeListeners(): Promise<Set<string>> {
 /** The hosts the listener child binds, in the order it prints their ports:
  *  IPv4, a v4-mapped IPv6 address, IPv6 loopback, and dual-stack any. */
 const HOSTS = ['127.0.0.1', '::ffff:127.0.0.1', '::1', '::'];
+
+describe('a ps row as the parity check reads it', () => {
+  it('takes the padded name, reads a zombie by its own name, and keeps a real name that says defunct', () => {
+    expect(parsePsRow('  4321     1 node            ')).toEqual({ pid: 4321, ppid: 1, name: 'node' });
+    expect(parsePsRow(' 7329  7271 sh <defunct>')).toEqual({ pid: 7329, ppid: 7271, name: 'sh' });
+    expect(parsePsRow(' 88 1 defunct-reaper')).toEqual({ pid: 88, ppid: 1, name: 'defunct-reaper' });
+    expect(parsePsRow(' 89 1 x<defunct>')).toEqual({ pid: 89, ppid: 1, name: 'x<defunct>' });
+    expect(parsePsRow('not a row')).toBeNull();
+  });
+});
 
 describe.runIf(core && posix)('native process walk and listening sockets parity with ps and lsof', () => {
   let child: ChildProcess | undefined;

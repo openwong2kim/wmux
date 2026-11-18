@@ -14,6 +14,7 @@ import {
   type A2aRemoteWaitingCause,
 } from '../../shared/a2aRemoteDelivery';
 import { GATED_DELIVERY_DEADLINE_MARGIN_MS, GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../shared/freshContext';
+import { parseGatedSubmitProof, type GatedSubmitProof } from '../../shared/ptyMessageDelivery';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
 
 /**
@@ -78,7 +79,8 @@ export interface RemoteA2aBridgeDeps {
 }
 
 type Mark =
-  | { delivered: true; ptyId?: string }
+  /** `submit`: what main submitted to `ptyId` (recorded by the daemon only). */
+  | { delivered: true; ptyId?: string; submit?: GatedSubmitProof }
   | { held: A2aRemoteHeldReason }
   | { attempted: false; waiting?: A2aRemoteWaitingCause }
   | { attempted: false; reoffer: true };
@@ -423,9 +425,10 @@ export class RemoteA2aBridge {
     if (isRecord(result) && result.ok === true && result.delivered === true) {
       this.retry.delete(unit.key);
       this.misses.delete(unit.key);
+      const submit = parseGatedSubmitProof(result.submit);
       await this.mark(unit.key, {
         ...ref,
-        mark: { delivered: true, ...(result.ptyId ? { ptyId: result.ptyId } : {}) },
+        mark: { delivered: true, ...(result.ptyId ? { ptyId: result.ptyId } : {}), ...(submit && submit.ptyId === result.ptyId ? { submit } : {}) },
       });
       return 'delivered';
     }

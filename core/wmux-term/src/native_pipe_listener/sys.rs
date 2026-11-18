@@ -21,6 +21,7 @@ pub(super) const PIPE_WAIT: u32 = 0;
 pub(super) const PIPE_REJECT_REMOTE_CLIENTS: u32 = 0x0000_0008;
 pub(super) const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 
+pub(super) const ERROR_FILE_NOT_FOUND: u32 = 2;
 pub(super) const ERROR_ACCESS_DENIED: u32 = 5;
 pub(super) const ERROR_HANDLE_EOF: u32 = 38;
 pub(super) const ERROR_BROKEN_PIPE: u32 = 109;
@@ -31,12 +32,23 @@ pub(super) const ERROR_MORE_DATA: u32 = 234;
 pub(super) const ERROR_PIPE_CONNECTED: u32 = 535;
 pub(super) const ERROR_OPERATION_ABORTED: u32 = 995;
 pub(super) const ERROR_IO_PENDING: u32 = 997;
+#[cfg(test)]
+pub(super) const ERROR_NO_TOKEN: u32 = 1008;
 
 pub(super) const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 pub(super) const STILL_ACTIVE: u32 = 259;
 pub(super) const TOKEN_QUERY: u32 = 0x0008;
 pub(super) const TOKEN_USER_CLASS: u32 = 1;
 pub(super) const TOKEN_INTEGRITY_LEVEL_CLASS: u32 = 25;
+pub(super) const TOKEN_ELEVATION_CLASS: u32 = 20;
+pub(super) const READ_CONTROL: u32 = 0x0002_0000;
+pub(super) const FILE_READ_ATTRIBUTES: u32 = 0x0080;
+pub(super) const OPEN_EXISTING: u32 = 3;
+pub(super) const SECURITY_SQOS_PRESENT: u32 = 0x0010_0000;
+pub(super) const SECURITY_IDENTIFICATION: u32 = 1 << 16;
+pub(super) const FILE_TYPE_PIPE: u32 = 3;
+pub(super) const SE_KERNEL_OBJECT: u32 = 6;
+pub(super) const OWNER_SECURITY_INFORMATION: u32 = 1;
 pub(super) const SDDL_REVISION_1: u32 = 1;
 pub(super) const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;
 
@@ -184,6 +196,17 @@ extern "system" {
     pub(super) fn GetSystemTimePreciseAsFileTime(time: *mut FileTime);
     pub(super) fn GetProcessHandleCount(process: Handle, count: *mut u32) -> Bool;
     pub(super) fn LocalFree(memory: *mut c_void) -> *mut c_void;
+    pub(super) fn CreateFileW(
+        name: *const u16,
+        access: u32,
+        share: u32,
+        attributes: *const c_void,
+        disposition: u32,
+        flags: u32,
+        template: Handle,
+    ) -> Handle;
+    pub(super) fn GetFileType(file: Handle) -> u32;
+    pub(super) fn GetCurrentThread() -> Handle;
     pub(super) fn GetModuleHandleW(name: *const u16) -> Handle;
     pub(super) fn GetProcAddress(module: Handle, name: *const u8) -> *const c_void;
 }
@@ -211,6 +234,24 @@ extern "system" {
         descriptor: *mut *mut c_void,
         size: *mut u32,
     ) -> Bool;
+    pub(super) fn ImpersonateNamedPipeClient(pipe: Handle) -> Bool;
+    pub(super) fn OpenThreadToken(
+        thread: Handle,
+        access: u32,
+        open_as_self: Bool,
+        token: *mut Handle,
+    ) -> Bool;
+    pub(super) fn RevertToSelf() -> Bool;
+    pub(super) fn GetSecurityInfo(
+        handle: Handle,
+        object_type: u32,
+        info: u32,
+        owner: *mut *mut c_void,
+        group: *mut *mut c_void,
+        dacl: *mut *mut c_void,
+        sacl: *mut *mut c_void,
+        descriptor: *mut *mut c_void,
+    ) -> u32;
 }
 
 type NtQueryInformationProcess =

@@ -60,6 +60,10 @@ pub(crate) struct Instances {
 
 impl Instances {
     pub(super) fn new(name: &str, max: u32) -> Result<Arc<Self>, ListenError> {
+        Self::new_with(name, max, owner_only_sddl)
+    }
+
+    fn new_with(name: &str, max: u32, sddl: fn(&str) -> String) -> Result<Arc<Self>, ListenError> {
         if !(1..=MAX_INSTANCES).contains(&max) {
             return Err(ListenError::Other(format!(
                 "maxInstances must be 1..={MAX_INSTANCES}"
@@ -67,8 +71,7 @@ impl Instances {
         }
         let own_user = current_user().map_err(ListenError::Other)?;
         let sid = own_user.to_sddl_string().map_err(ListenError::Other)?;
-        let descriptor =
-            SecurityDescriptor::from_sddl(&owner_only_sddl(&sid)).map_err(ListenError::Other)?;
+        let descriptor = SecurityDescriptor::from_sddl(&sddl(&sid)).map_err(ListenError::Other)?;
         // SAFETY: unnamed semaphore, default security, not inheritable.
         let slots = OwnedHandle::from_raw(unsafe {
             CreateSemaphoreW(std::ptr::null(), max as i32, max as i32, std::ptr::null())
@@ -165,6 +168,10 @@ impl PipeInstance {
             .as_ref()
             .map_or(INVALID_HANDLE_VALUE, OwnedHandle::raw)
     }
+    /// This process's user, as the listener read it.
+    pub(crate) fn own_user(&self) -> &Sid {
+        &self.owner.own_user
+    }
 }
 
 impl Drop for PipeInstance {
@@ -228,7 +235,21 @@ impl Listener {
     /// Creates the name's first instance on the caller's thread (so a taken
     /// name fails here), then starts accepting.
     pub(crate) fn bind(name: &str, max: u32, notify: Notify) -> Result<Arc<Self>, ListenError> {
-        let instances = Instances::new(name, max)?;
+        Self::start(Instances::new(name, max)?, notify)
+    }
+
+    /// As `bind`, with the descriptor `sddl` makes from the user's SID.
+    #[cfg(test)]
+    pub(crate) fn bind_with_sddl(
+        name: &str,
+        max: u32,
+        notify: Notify,
+        sddl: fn(&str) -> String,
+    ) -> Result<Arc<Self>, ListenError> {
+        Self::start(Instances::new_with(name, max, sddl)?, notify)
+    }
+
+    fn start(instances: Arc<Instances>, notify: Notify) -> Result<Arc<Self>, ListenError> {
         let first = instances.create()?;
         let shared = Arc::new(Shared {
             stop: Mutex::new(Some(event(true).map_err(ListenError::Other)?)),

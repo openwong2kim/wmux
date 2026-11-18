@@ -2654,6 +2654,7 @@ export const ko = {
   'settings.mcpBrokerUnavailable': "wmux에서 현재 선택을 읽지 못했습니다.",
   'settings.mcpBrokerIdleHere': "Windows에서는 아직 공유 프로세스가 에이전트를 맡지 않습니다. 에이전트마다 자기 MCP 서버를 그대로 쓰므로, 켜도 쉬는 프로세스 하나만 늘어납니다.",
   'settings.mcpBrokerPeerUnavailable': "이 시스템에서는 공유 프로세스에 연결하는 프로세스를 확인할 수 없어 wmux를 다시 시작할 때까지 멈췄습니다. 에이전트마다 자기 MCP 서버를 씁니다.",
+  'settings.mcpBrokerPathOccupied': "이 시스템에서 다른 프로그램이 공유 프로세스의 연결 이름을 쓰고 있어 wmux를 다시 시작할 때까지 공유 프로세스를 멈췄습니다. 에이전트마다 자기 MCP 서버를 씁니다.",
   // Settings — Token usage (quotas, custom surface switches, saved profiles)
   'settings.tokenUsage.surfaceDefault': '표면: 기본값',
   'settings.tokenUsage.surfaceOff': '표면: {n}개 해제됨',

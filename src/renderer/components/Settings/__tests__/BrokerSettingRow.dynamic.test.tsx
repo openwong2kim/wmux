@@ -96,6 +96,40 @@ describe('BrokerSettingRow', () => {
     );
   });
 
+  it('says when the app stopped the broker because its pipe is held elsewhere, and only then', async () => {
+    stub(payload({ pathOccupied: true }), async () => payload());
+    await render();
+    expect(container.querySelector('[data-testid=settings-mcp-broker-occupied]')?.textContent).toBe(
+      "Another program holds the shared process's connection name on this system, so the shared process is stopped until wmux restarts. Each agent uses its own MCP server.",
+    );
+    expect(container.querySelector('[data-testid=settings-mcp-broker-peer]')).toBeNull();
+    act(() => root.unmount());
+    root = createRoot(container);
+    stub(payload(), async () => payload());
+    await render();
+    expect(container.querySelector('[data-testid=settings-mcp-broker-occupied]')).toBeNull();
+  });
+
+  it('stops re-reading once the broker stopped for a held pipe', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const on = { running: { on: true, source: 'default' as const }, next: { on: true, source: 'default' as const } };
+      const read = vi.fn<() => Promise<BrokerSettingPayload>>()
+        .mockResolvedValueOnce(payload(on))
+        .mockResolvedValue(payload({ ...on, pathOccupied: true }));
+      api = { brokerSetting: read, setBrokerSetting: vi.fn() };
+      await render();
+      await act(async () => { vi.advanceTimersByTime(BROKER_ROW_REFRESH_MS); });
+      await settle();
+      expect(container.querySelector('[data-testid=settings-mcp-broker-occupied]')).not.toBeNull();
+      await act(async () => { vi.advanceTimersByTime(BROKER_ROW_REFRESH_MS * 3); });
+      await settle();
+      expect(read).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows the stop note when the broker stops while the row is open, then stops re-reading', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     try {

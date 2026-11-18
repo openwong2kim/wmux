@@ -12,8 +12,10 @@
 // The answer text is never stored — only a hash of the whole body.
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { atomicReadJSONSync, atomicWriteJSON } from '../util/atomicWrite';
+import { writeJsonAtomic } from '../../shared/settingsFile';
 
 /** How long a receipt is kept. */
 export const ANSWER_RECEIPT_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -54,6 +56,32 @@ export interface AnswerReceiptView {
 
 const STATES: ReadonlySet<string> = new Set(['inFlight', 'done', 'partial', 'refused', 'uncertain']);
 
+function isResponse(value: unknown): value is AnswerReceiptResponse {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const { status, body } = value as { status?: unknown; body?: unknown };
+  return Number.isSafeInteger(status) && !!body && typeof body === 'object' && !Array.isArray(body);
+}
+
+/**
+ * The file's JSON; null only when neither it nor a `.bak` of it is there. Any
+ * other failure to read or parse it throws, and so does a `.bak` with no file:
+ * that is what a write that stopped between its two renames leaves, and the
+ * backup may be older than the file it replaced.
+ */
+function readStrict<T>(file: string): T | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    if (fs.existsSync(`${file}.bak`)) throw new Error('Answer receipt storage is missing but its backup is there');
+    return null;
+  }
+  const parsed: unknown = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid answer receipt storage');
+  return parsed as T;
+}
+
 /** sha256 hex of a canonical rendering — the key and the body hash share it. */
 export function receiptHash(parts: unknown): string {
   return crypto.createHash('sha256').update(JSON.stringify(parts)).digest('hex');
@@ -76,9 +104,18 @@ export class AnswerReceiptStore {
     // The phone's Moa wake keeps its own file (phone-moa-wake-receipts.json)
     // with the same rules, so its ids never meet an approval answer's.
     fileName = 'phone-answer-receipts.json',
+    // `durable`: each write fsynced before it resolves (atomicWrite's
+    // `durable`), for a receipt that must be on disk before the side effect it
+    // guards. `strictRead`: a file that is there but cannot be read or parsed,
+    // or a stored response of the wrong shape, throws rather than reading as
+    // empty or as its older backup; its writes replace the file in one rename
+    // and keep no `.bak`, so the file is never missing between two renames.
+    private readonly opts: { durable?: boolean; strictRead?: boolean } = {},
   ) {
     this.file = path.join(directory, fileName);
-    const saved = atomicReadJSONSync<{ version?: unknown; entries?: unknown }>(this.file);
+    const saved = opts.strictRead
+      ? readStrict<{ version?: unknown; entries?: unknown }>(this.file)
+      : atomicReadJSONSync<{ version?: unknown; entries?: unknown }>(this.file);
     if (saved === null) return;
     if (saved.version !== 1 || !saved.entries || typeof saved.entries !== 'object' || Array.isArray(saved.entries)) {
       throw new Error('Invalid answer receipt storage');
@@ -88,7 +125,8 @@ export class AnswerReceiptStore {
       if (!/^[a-f0-9]{64}$/.test(key) || !row || typeof row !== 'object'
         || typeof row.owner !== 'string' || typeof row.approvalId !== 'string'
         || typeof row.bodyHash !== 'string' || !/^[a-f0-9]{64}$/.test(row.bodyHash)
-        || !STATES.has(row.state) || !Number.isSafeInteger(row.createdAt)) {
+        || !STATES.has(row.state) || !Number.isSafeInteger(row.createdAt)
+        || (opts.strictRead && row.result !== undefined && !isResponse(row.result))) {
         throw new Error('Invalid answer receipt entry');
       }
       // An answer that was running when the daemon stopped may or may not have
@@ -139,26 +177,29 @@ export class AnswerReceiptStore {
 
   /**
    * Record the final response for a claimed id (`uncertain`: an answer that
-   * may or may not have landed). A failed write leaves it `uncertain`, never `done`.
+   * may or may not have landed). A failed write leaves it `uncertain`, never
+   * `done`. True when the response is on disk.
    */
   async finish(
     owner: string,
     clientAnswerId: string,
     state: Exclude<AnswerReceiptState, 'inFlight'>,
     result: AnswerReceiptResponse,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const key = receiptHash([owner, clientAnswerId]);
     const row = this.rows.get(key);
-    if (!row || row.state !== 'inFlight') return;
+    if (!row || row.state !== 'inFlight') return false;
     const next: Row = { ...row, state, result };
     this.rows.set(key, next);
     try {
       await this.save();
+      return true;
     } catch {
       // The answer happened; only its receipt did not reach disk, where it is
       // still in flight (a restart reads that as uncertain). Say the same now,
       // rather than a final result the disk does not hold.
       if (this.rows.get(key) === next) this.rows.set(key, { ...row, state: 'uncertain' });
+      return false;
     }
   }
 
@@ -219,8 +260,12 @@ export class AnswerReceiptStore {
   }
 
   private save(): Promise<void> {
-    const run = this.writes.then(() =>
-      atomicWriteJSON(this.file, { version: 1, entries: Object.fromEntries(this.rows) }));
+    const run = this.writes.then(() => {
+      const data = { version: 1, entries: Object.fromEntries(this.rows) };
+      // writeJsonAtomic: tmp, fsync, one rename over the file, directory fsync.
+      if (this.opts.strictRead) return writeJsonAtomic(this.file, data);
+      return atomicWriteJSON(this.file, data, this.opts.durable ? { durable: true } : {});
+    });
     this.writes = run.catch(() => undefined);
     return run;
   }

@@ -19,11 +19,13 @@ vi.mock('../../../../shared/brokerSetting', () => ({
   writeBrokerSetting: (s: string) => { store.writes.push(s); store.setting = s; },
 }));
 vi.mock('../../../mcp/BrokerSupervisor', () => ({ mcpBrokerDecision: () => ({ on: false, source: 'default' }) }));
+const hosts = vi.hoisted(() => ({ here: true }));
+vi.mock('../../../mcp/brokerNativePipe', () => ({ brokerHostsSessionsHere: () => hosts.here }));
 
 import { IPC } from '../../../../shared/constants';
 import { registerMcpHandlers } from '../mcp.handler';
 import type { McpRegistrar } from '../../../mcp/McpRegistrar';
-import { brokerHostsSessions, type BrokerSettingPayload } from '../../../../shared/mcpBroker';
+import type { BrokerSettingPayload } from '../../../../shared/mcpBroker';
 
 async function handler(channel: string) {
   const electron = (await import('electron')) as unknown as { __handlers: Map<string, (...a: unknown[]) => unknown> };
@@ -35,6 +37,7 @@ beforeEach(() => {
   store.setting = 'default';
   store.problem = undefined;
   store.writes = [];
+  hosts.here = true;
   delete process.env.WMUX_MCP_BROKER;
   registerMcpHandlers({ getStatus: vi.fn() } as unknown as McpRegistrar, () => null);
 });
@@ -70,9 +73,24 @@ describe('mcp:broker-setting', () => {
     expect(res).toMatchObject({ saved: 'off', env: 'on', next: { on: true, source: 'env' } });
   });
 
-  it('says whether this platform hosts sessions (not on win32)', async () => {
-    const res = (await (await handler(IPC.MCP_BROKER_SETTING_GET))({})) as BrokerSettingPayload;
-    expect(res.hostsSessions).toBe(brokerHostsSessions(process.platform));
+  it('says whether the broker can host sessions in this app (win32: only with the native pipe listener)', async () => {
+    expect(((await (await handler(IPC.MCP_BROKER_SETTING_GET))({})) as BrokerSettingPayload).hostsSessions).toBe(true);
+    hosts.here = false;
+    expect(((await (await handler(IPC.MCP_BROKER_SETTING_GET))({})) as BrokerSettingPayload).hostsSessions).toBe(false);
+  });
+
+  it('says why the broker stopped for good: peer unavailable, or its path held elsewhere', async () => {
+    const plain = (await (await handler(IPC.MCP_BROKER_SETTING_GET))({})) as BrokerSettingPayload;
+    expect(plain.peerUnavailable).toBeUndefined();
+    expect(plain.pathOccupied).toBeUndefined();
+    registerMcpHandlers({ getStatus: vi.fn() } as unknown as McpRegistrar, () => null, () => 'path-occupied');
+    const occupied = (await (await handler(IPC.MCP_BROKER_SETTING_GET))({})) as BrokerSettingPayload;
+    expect(occupied).toMatchObject({ pathOccupied: true });
+    expect(occupied.peerUnavailable).toBeUndefined();
+    registerMcpHandlers({ getStatus: vi.fn() } as unknown as McpRegistrar, () => null, () => 'peer-unavailable');
+    const peer = (await (await handler(IPC.MCP_BROKER_SETTING_GET))({})) as BrokerSettingPayload;
+    expect(peer).toMatchObject({ peerUnavailable: true });
+    expect(peer.pathOccupied).toBeUndefined();
   });
 
   it('a file that was not used reports why', async () => {

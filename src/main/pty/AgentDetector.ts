@@ -877,14 +877,60 @@ function isDialogOption(row: string): boolean {
  * gutter therefore counts drawn or skipped, but something must stand before
  * the sentence, so a reply row that starts with it does not match.
  */
-const INTERRUPTED_SENTENCE = 'Interrupted · What should Claude do instead?';
-const CLAUDE_INTERRUPTED_ROW = new RegExp(
-  `^[\\s${SKIPPED_CELL}]*[⎿${SKIPPED_CELL}]${DIALOG_GAP}(${skippable(INTERRUPTED_SENTENCE)})[\\s${SKIPPED_CELL}]*$`,
-);
-/** Whether a dialogRowText row is the interrupted-turn row. */
-function isInterruptedRow(row: string): boolean {
-  const m = CLAUDE_INTERRUPTED_ROW.exec(row);
-  return m !== null && drawnLength(INTERRUPTED_SENTENCE) - drawnLength(m[1]) <= MAX_SKIPPED_QUESTION_LETTERS;
+export const INTERRUPTED_SENTENCE = 'Interrupted · What should Claude do instead?';
+/**
+ * The row's shape, as tokens matched in order, each one character or a run:
+ * blanks or skipped cells, the gutter (`⎿` or a skipped cell), a gap, the
+ * sentence's characters (each its own or a skipped cell) with a gap between
+ * words, then blanks or skipped cells. It is the anchored pattern
+ * `^[\s￿]*[⎿￿]gap(sentence)[\s￿]*$`, read by a set-of-states walk instead
+ * of a backtracking regex: a skipped cell fits nearly every token, so on a
+ * long row of them that is not the interrupted row the regex tried an
+ * exponential number of splits and hung the daemon (#3281). This walk is
+ * linear in the row's length.
+ */
+interface RowToken { run: boolean; fits: (c: string) => boolean }
+const WHITESPACE = /\s/;
+const blankOrSkipped = (c: string): boolean => c === SKIPPED_CELL || WHITESPACE.test(c);
+const INTERRUPTED_TOKENS: readonly RowToken[] = [
+  { run: true, fits: blankOrSkipped },
+  { run: false, fits: (c) => c === '⎿' || c === SKIPPED_CELL },
+  { run: true, fits: blankOrSkipped },
+  ...INTERRUPTED_SENTENCE.split(' ').flatMap((word, i) => [
+    ...(i > 0 ? [{ run: true, fits: blankOrSkipped }] : []),
+    ...[...word].map((ch) => ({ run: false, fits: (c: string) => c === ch || c === SKIPPED_CELL })),
+  ]),
+  { run: true, fits: blankOrSkipped },
+];
+/** The states reachable from `states` without reading a character: past any run. */
+function pastRuns(states: Set<number>): Set<number> {
+  for (const at of states) if (at < INTERRUPTED_TOKENS.length && INTERRUPTED_TOKENS[at].run) states.add(at + 1);
+  return states;
+}
+/**
+ * Whether a dialogRowText row is the interrupted-turn row. A row wider than
+ * MAX_DIALOG_ROW cells is not: dialogRowText expands each `CSI n C` into
+ * skipped cells, so a few bytes can make a row millions of cells long, and
+ * no terminal draws this row that wide. The drawn count is checked before
+ * the walk, so most rows are refused without it.
+ */
+export function isInterruptedRow(row: string): boolean {
+  if (row.length > MAX_DIALOG_ROW) return false;
+  // Every drawn character but the gutter is one of the sentence's, whatever
+  // the split: the letters the row is missing are the sentence's not drawn.
+  const missing = drawnLength(INTERRUPTED_SENTENCE) - (drawnLength(row) - (row.includes('⎿') ? 1 : 0));
+  if (missing < 0 || missing > MAX_SKIPPED_QUESTION_LETTERS) return false;
+  let states = pastRuns(new Set([0]));
+  for (const c of row) {
+    const next = new Set<number>();
+    for (const at of states) {
+      const token = INTERRUPTED_TOKENS[at];
+      if (token?.fits(c)) next.add(token.run ? at : at + 1);
+    }
+    if (next.size === 0) return false;
+    states = pastRuns(next);
+  }
+  return states.has(INTERRUPTED_TOKENS.length);
 }
 const ROW_BREAK_G = new RegExp(ROW_BREAK_RE.source, 'g');
 /** Longest incomplete row the dialog scan carries between chunks. */

@@ -9,8 +9,9 @@
 
 /**
  * The platforms where an unset WMUX_MCP_BROKER and a Default Settings choice
- * mean on. Not win32: the broker reads no peer pid there and would refuse
- * every session (brokerHostsSessions).
+ * mean on. Not win32: there the broker hosts sessions only through the native
+ * pipe listener of the terminal core (brokerHostsSessions), and stays off
+ * unless it is turned on.
  */
 export const BROKER_DEFAULT_ON: readonly NodeJS.Platform[] = ['darwin', 'linux'];
 
@@ -18,24 +19,27 @@ export type BrokerFlag = 'on' | 'off' | 'unset';
 
 /**
  * The broker's exit code when something that is not a socket sits at its
- * socket path: a condition a restart cannot fix, so the supervisor stops.
+ * socket path, or (Windows) another owner holds its pipe name: a condition a
+ * restart cannot fix, so the supervisor stops.
  */
 export const BROKER_EXIT_PATH_OCCUPIED = 78;
 
 /**
  * The broker's exit code when its peer self-check never came back available
- * through the whole retry schedule (src/mcp/brokerPeer.ts): it would refuse
- * every session, so the supervisor stops it the way it does for 78.
+ * through the whole retry schedule (src/mcp/brokerPeer.ts), or (Windows) when
+ * the terminal core lacks the native pipe listener: it would refuse every
+ * session, so the supervisor stops it the way it does for 78.
  */
 export const BROKER_EXIT_PEER_UNAVAILABLE = 79;
 
 /**
- * Whether the broker can host agents on `platform`. Not on win32, where it
- * reads no peer pid to verify a session against (src/mcp/brokerPeer.ts) and
- * refuses every one, so On only adds an idle process there.
+ * Whether the broker can host agents on `platform`. On win32 only when the
+ * terminal core has the native pipe listener (`nativePipeLoads`; main asks
+ * src/main/mcp/brokerNativePipe.ts): without it the broker stops at start,
+ * so On only adds a process that exits there.
  */
-export function brokerHostsSessions(platform: NodeJS.Platform): boolean {
-  return platform !== 'win32';
+export function brokerHostsSessions(platform: NodeJS.Platform, nativePipeLoads: () => boolean = () => false): boolean {
+  return platform !== 'win32' || nativePipeLoads();
 }
 
 /** The Settings choice: `default` follows the platform. */
@@ -70,12 +74,18 @@ export interface BrokerSettingPayload {
   /** Whether this platform's default is on. */
   platformDefaultOn: boolean;
   /**
-   * False where the broker refuses every session (win32: no peer pid to
-   * verify, src/mcp/brokerPeer.ts), so On only adds an idle process there.
+   * False where the broker cannot host sessions (win32 without the native
+   * pipe listener, brokerHostsSessions), so On only adds an idle process there.
    */
   hostsSessions: boolean;
   /** Set when this app stopped the broker because its peer self-check never passed. */
   peerUnavailable?: boolean;
+  /**
+   * Set when this app stopped the broker because its pipe or socket path is
+   * held by something else (another owner's pipe on Windows): no restart
+   * frees it, and agents use their own MCP server.
+   */
+  pathOccupied?: boolean;
 }
 
 /**

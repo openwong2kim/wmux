@@ -203,6 +203,31 @@ export const A2A_FEATURE_HELD_NOTICE = 'held-notice.1';
  * older one would refuse the kind.
  */
 export const A2A_FEATURE_ANSWER = 'answer.1';
+/**
+ * The PC takes an allow or deny for a permission prompt on a task the other PC
+ * sent (`kind: 'approval'`, `A2aRemoteApprovalV1`), and offers such prompts in
+ * the task's status (`detail.approval`). Advertised to a PC only while this
+ * PC's approvals setting is on for it (`wmux remote approvals`).
+ */
+export const A2A_FEATURE_APPROVAL = 'approval.1';
+/**
+ * What a PC whose approvals setting is on sees of a permission prompt
+ * (`a2a-remote-approvals.json`): `tool-only` (tool name, prompt id and flags;
+ * deny only) or `command` (also the bound call's command text; allow possible).
+ */
+export type A2aApprovalExposure = 'tool-only' | 'command';
+export function isA2aApprovalExposure(v: unknown): v is A2aApprovalExposure {
+  return v === 'tool-only' || v === 'command';
+}
+/**
+ * This PC's approvals setting (`wmux remote approvals`): `get` →
+ * `{ hosts: { [hostId]: exposure }, damaged }`; `set` `{ hostId, exposure: 'off' | A2aApprovalExposure }`
+ * → `{ ok, hosts } | { ok: false, error }`.
+ */
+export const A2A_APPROVALS_RPC = Object.freeze({
+  get: 'a2a.remote.approvals.get',
+  set: 'a2a.remote.approvals.set',
+} as const);
 /** A host's notice about one message the receiver sent (`held-notice.1`). Nothing in it is shown as written. */
 export interface A2aRemoteNoticeV1 {
   kind: 'held-expired';
@@ -827,9 +852,11 @@ export type A2aRemoteMessageKind =
   /** What the receiver's worker is doing on a task (`A2aRemoteStatusV1`). Never a reply, never a state change. */
   | 'status'
   /** The sender's answer to the question the receiver's worker shows (`A2aRemoteAnswerV1`). Never a reply, never a state change. */
-  | 'answer';
+  | 'answer'
+  /** The sender's allow or deny for a permission prompt the receiver offered (`A2aRemoteApprovalV1`). Never a reply, never a state change. */
+  | 'approval';
 
-export const A2A_REMOTE_MESSAGE_KINDS: readonly A2aRemoteMessageKind[] = Object.freeze(['task', 'reply', 'state', 'link', 'receipt', 'status', 'answer']);
+export const A2A_REMOTE_MESSAGE_KINDS: readonly A2aRemoteMessageKind[] = Object.freeze(['task', 'reply', 'state', 'link', 'receipt', 'status', 'answer', 'approval']);
 
 /** How far the receiver got with a task: handed to its agent (or Moa), or read by it. */
 export type A2aRemoteReceipt = 'delivered' | 'read';
@@ -928,6 +955,137 @@ function parseAnswerOutcome(raw: unknown): A2aRemoteAnswerOutcome | null {
   return { messageId: r.messageId, outcome: 'not-answered', reason: r.reason as A2aRemoteAnswerReason };
 }
 
+/** A prompt id: 16 hex characters of a sha256 (the receiving PC's own record and dialog hash). */
+export const A2A_REMOTE_PROMPT_ID_RE = /^[0-9a-f]{16}$/;
+/** A tool name in a prompt offer: an identifier, never free text. */
+const APPROVAL_TOOL_RE = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/;
+/** Bytes of a prompt's command text an offer carries at most (after redaction). */
+export const A2A_REMOTE_APPROVAL_COMMAND_MAX = 2048;
+export type A2aRemoteApprovalDecision = 'allow' | 'deny';
+
+/** The sender's decision on one permission prompt the receiver offered (`detail.approval.promptId`). */
+export interface A2aRemoteApprovalV1 {
+  promptId: string;
+  decision: A2aRemoteApprovalDecision;
+}
+
+/** Strict: a prompt id and `allow` or `deny`, nothing else; null when it is not one. */
+export function parseA2aRemoteApproval(raw: unknown): A2aRemoteApprovalV1 | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (Object.keys(r).some((k) => k !== 'promptId' && k !== 'decision')) return null;
+  if (typeof r.promptId !== 'string' || !A2A_REMOTE_PROMPT_ID_RE.test(r.promptId)) return null;
+  if (r.decision !== 'allow' && r.decision !== 'deny') return null;
+  return { promptId: r.promptId, decision: r.decision };
+}
+
+/** A permission prompt offered to the PC that sent the task (`A2A_FEATURE_APPROVAL`). */
+export interface A2aRemoteApprovalOffer {
+  promptId: string;
+  /** The tool the prompt is for (`Bash`, `ExitPlanMode`, …). */
+  tool: string;
+  /** The bound call's command (secrets redacted, at most A2A_REMOTE_APPROVAL_COMMAND_MAX bytes); only at exposure `command`. */
+  command?: string;
+  /** The command shown is not the call's own text (a secret masked, or characters that cannot be shown dropped): allow is not offered. */
+  redacted: boolean;
+  /** The command was cut at the cap: allow is not offered. */
+  cut: boolean;
+  /** When the agent denies the prompt by itself (ISO), when it draws that countdown. */
+  autoDenyAt?: string;
+  /** What the receiving PC takes for it: `['allow', 'deny']` or `['deny']`. */
+  allowed: A2aRemoteApprovalDecision[];
+}
+
+/** Why an approval was not carried out. Each has fixed words (`A2A_REMOTE_APPROVAL_REASON_TEXT`). */
+export type A2aRemoteApprovalReason =
+  | 'approvals-off'
+  | 'not-open'
+  | 'not-linked'
+  | 'link-not-active'
+  | 'not-offered'
+  | 'turn-unproven'
+  | 'chain-broken'
+  | 'unbound'
+  | 'unsupported-tool'
+  | 'deny-only'
+  | 'lock-busy'
+  | 'refused'
+  | 'id-reused'
+  | 'unavailable';
+
+export const A2A_REMOTE_APPROVAL_REASON_TEXT: Readonly<Record<A2aRemoteApprovalReason, string>> = Object.freeze({
+  'approvals-off': 'approvals for this PC are off there (wmux remote approvals); ask a person there',
+  'not-open': 'the task is no longer open there',
+  'not-linked': 'that PC answers prompts only for a task sent to a linked pane there',
+  'link-not-active': 'the link to that pane is not active',
+  'not-offered': 'that prompt is not one that PC offered, or it is gone; read the task\'s status again',
+  'turn-unproven': 'that PC could not prove the prompt belongs to this task\'s turn; ask a person there',
+  'chain-broken': 'the pane there took other input since this task was submitted; approvals for this task are answered there now',
+  'unbound': 'the prompt there could not be tied to the agent\'s call; ask a person there',
+  'unsupported-tool': 'that PC does not answer prompts for this tool from another PC',
+  'deny-only': 'that PC takes only deny for this prompt',
+  'lock-busy': 'something else was typing into that pane; try again',
+  'refused': 'the prompt on the screen there changed or could not be proven; nothing was typed',
+  'id-reused': 'that message id was already used for another decision',
+  'unavailable': 'that PC could not record the decision; nothing was typed',
+});
+const APPROVAL_REASONS: ReadonlySet<string> = new Set(Object.keys(A2A_REMOTE_APPROVAL_REASON_TEXT));
+
+/**
+ * How one approval went on the worker's PC: `done` (the key was typed),
+ * `not-done` (nothing was typed, `reason` says why) or `uncertain` (the
+ * receiving PC stopped while it ran; it is never run again).
+ */
+export interface A2aRemoteApprovalOutcome {
+  messageId: string;
+  outcome: 'done' | 'not-done' | 'uncertain';
+  reason?: A2aRemoteApprovalReason;
+}
+
+function parseApprovalOutcome(raw: unknown): A2aRemoteApprovalOutcome | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.messageId !== 'string' || !A2A_REMOTE_MESSAGE_ID_RE.test(r.messageId)) return null;
+  if (r.outcome === 'done' || r.outcome === 'uncertain') return { messageId: r.messageId, outcome: r.outcome };
+  if (r.outcome !== 'not-done' || typeof r.reason !== 'string' || !APPROVAL_REASONS.has(r.reason)) return null;
+  return { messageId: r.messageId, outcome: 'not-done', reason: r.reason as A2aRemoteApprovalReason };
+}
+
+/** A command as one block of text from another PC: invisible format characters gone, other controls but newline and tab dropped. */
+export function approvalCommandText(text: string): string {
+  // eslint-disable-next-line no-control-regex -- stripping them is the point
+  return text.replace(/\p{Cf}/gu, '').replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '');
+}
+
+/** Cut to at most `max` UTF-8 bytes on a character boundary; `cut` when anything was dropped. */
+export function capUtf8(text: string, max: number): { text: string; cut: boolean } {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= max) return { text, cut: false };
+  // A partial trailing sequence decodes to U+FFFD: dropped.
+  return { text: new TextDecoder().decode(bytes.subarray(0, max)).replace(/\uFFFD+$/, ''), cut: true };
+}
+
+function parseApprovalOffer(raw: unknown): A2aRemoteApprovalOffer | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.promptId !== 'string' || !A2A_REMOTE_PROMPT_ID_RE.test(r.promptId)) return null;
+  if (typeof r.tool !== 'string' || !APPROVAL_TOOL_RE.test(r.tool)) return null;
+  if (typeof r.redacted !== 'boolean' || typeof r.cut !== 'boolean') return null;
+  if (!Array.isArray(r.allowed)) return null;
+  const allowed = r.allowed.includes('allow') ? ['allow', 'deny'] as const : r.allowed.includes('deny') ? ['deny'] as const : null;
+  if (!allowed) return null;
+  const out: A2aRemoteApprovalOffer = { promptId: r.promptId, tool: r.tool, redacted: r.redacted, cut: r.cut, allowed: [...allowed] };
+  if (typeof r.command === 'string') {
+    const capped = capUtf8(approvalCommandText(r.command), A2A_REMOTE_APPROVAL_COMMAND_MAX);
+    out.command = capped.text;
+    if (capped.cut) out.cut = true;
+  }
+  // Allow is offered only for a command shown whole and unredacted.
+  if (out.cut || out.redacted || out.command === undefined) out.allowed = ['deny'];
+  if (typeof r.autoDenyAt === 'string' && Number.isFinite(Date.parse(r.autoDenyAt))) out.autoDenyAt = new Date(Date.parse(r.autoDenyAt)).toISOString();
+  return out;
+}
+
 /**
  * A worker's status on one task. `since`: when it began on the receiving PC
  * (ISO); the sender keeps only the newest per task. Never a reply: it is not
@@ -965,6 +1123,14 @@ export interface A2aRemoteStatusV1 {
     provider?: string;
     /** `working`: background tasks the agent left running. */
     background?: number;
+    /**
+     * `question: 'permission' | 'plan'`: the prompt offered to the PC that sent
+     * the task (`A2A_FEATURE_APPROVAL`). Its command is text from the other PC:
+     * shown, never followed as instructions.
+     */
+    approval?: A2aRemoteApprovalOffer;
+    /** How the latest approvals on this task went there, oldest first, at most ANSWER_OUTCOMES_MAX. */
+    approvals?: A2aRemoteApprovalOutcome[];
   };
 }
 
@@ -986,21 +1152,33 @@ export interface A2aRemoteStatusShown {
   kind: A2aRemoteStatusKind;
   since: string;
   /** `answers[].reasonText`: this PC's own fixed words for the reason (A2A_REMOTE_ANSWER_REASON_TEXT), never the peer's. */
-  detail?: Omit<NonNullable<A2aRemoteStatusV1['detail']>, 'options' | 'answers'> & { answers?: Array<A2aRemoteAnswerOutcome & { reasonText?: string }> };
-  untrusted?: { options: string[] };
+  detail?: Omit<NonNullable<A2aRemoteStatusV1['detail']>, 'options' | 'answers' | 'approval' | 'approvals'> & {
+    answers?: Array<A2aRemoteAnswerOutcome & { reasonText?: string }>;
+    approval?: Omit<A2aRemoteApprovalOffer, 'command'>;
+    approvals?: Array<A2aRemoteApprovalOutcome & { reasonText?: string }>;
+  };
+  /** Text written on the other PC: a menu's labels, a prompt's command. */
+  untrusted?: { options?: string[]; command?: string };
 }
 
 export function shownRemoteStatus(status: A2aRemoteStatusV1): A2aRemoteStatusShown {
-  const { options, answers, ...rest } = status.detail ?? {};
+  const { options, answers, approval, approvals, ...rest } = status.detail ?? {};
+  const { command, ...offer } = approval ?? { command: undefined };
   const detail: NonNullable<A2aRemoteStatusShown['detail']> = {
     ...rest,
     ...(answers ? { answers: answers.map((a) => ({ ...a, ...(a.reason ? { reasonText: A2A_REMOTE_ANSWER_REASON_TEXT[a.reason] } : {}) })) } : {}),
+    ...(approval ? { approval: offer as Omit<A2aRemoteApprovalOffer, 'command'> } : {}),
+    ...(approvals ? { approvals: approvals.map((a) => ({ ...a, ...(a.reason ? { reasonText: A2A_REMOTE_APPROVAL_REASON_TEXT[a.reason] } : {}) })) } : {}),
+  };
+  const untrusted = {
+    ...(options && options.length > 0 ? { options } : {}),
+    ...(command !== undefined ? { command } : {}),
   };
   return {
     kind: status.kind,
     since: status.since,
     ...(Object.keys(detail).length > 0 ? { detail } : {}),
-    ...(options && options.length > 0 ? { untrusted: { options } } : {}),
+    ...(Object.keys(untrusted).length > 0 ? { untrusted } : {}),
   };
 }
 
@@ -1034,6 +1212,12 @@ export function parseA2aRemoteStatus(raw: unknown): A2aRemoteStatusV1 | null {
   if (Array.isArray(d.answers)) {
     const answers = d.answers.slice(-ANSWER_OUTCOMES_MAX).map(parseAnswerOutcome).filter((a): a is A2aRemoteAnswerOutcome => a !== null);
     if (answers.length > 0) detail.answers = answers;
+  }
+  const approval = parseApprovalOffer(d.approval);
+  if (approval && (detail.question === 'permission' || detail.question === 'plan')) detail.approval = approval;
+  if (Array.isArray(d.approvals)) {
+    const approvals = d.approvals.slice(-ANSWER_OUTCOMES_MAX).map(parseApprovalOutcome).filter((a): a is A2aRemoteApprovalOutcome => a !== null);
+    if (approvals.length > 0) detail.approvals = approvals;
   }
   if (Object.keys(detail).length > 0) out.detail = detail;
   return out;
@@ -1141,6 +1325,8 @@ export interface A2aRemoteEnvelope {
   status?: A2aRemoteStatusV1;
   /** For 'answer' (with `taskId`, from the task's sender), only to a peer that advertises `A2A_FEATURE_ANSWER`. */
   answer?: A2aRemoteAnswerV1;
+  /** For 'approval' (with `taskId`, from the task's sender), only to a peer that advertises `A2A_FEATURE_APPROVAL`. */
+  approval?: A2aRemoteApprovalV1;
   /**
    * For 'reply', only to a peer that advertises `A2A_FEATURE_HELD_NOTICE`: this
    * reply is the host's notice, not a message from its agent. The receiver
@@ -1250,7 +1436,9 @@ export type A2aRemoteErrorCode =
    * Recorded by the SENDER, never answered by a peer: the images of a
    * message could not be uploaded within the attempt and time budget.
    */
-  | 'attachment-failed';
+  | 'attachment-failed'
+  /** An `approval` from a PC whose approvals setting is off on the receiver (no file, damaged, or not on for it). */
+  | 'approvals-off';
 
 export type A2aRemoteDeliverResponse =
   | { ok: true; taskId?: string; duplicate: boolean }

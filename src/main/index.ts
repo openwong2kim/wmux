@@ -1344,6 +1344,7 @@ ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent
           : {}),
         ...gatedSubmitTaskContext(opts),
         ...gatedSubmitSenders(opts),
+        ...(typeof opts === 'object' && opts !== null && (opts as { submitProof?: unknown }).submitProof === true ? { submitProof: true } : {}),
       })
     : { ok: false, reason: 'write_failed', detail: 'delivery: missing target pty or text' },
 );

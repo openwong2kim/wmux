@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { A2aRemoteDelivery, type A2aRemoteDeliveryDeps } from '../delivery';
 import { PeerFeatureStore, PEER_FEATURES_FILE } from '../peerFeatureStore';
 
@@ -24,7 +24,7 @@ interface World {
   joined: string[];
 }
 
-function delivery(dir: string, world: World = { peers: [], joined: [] }): A2aRemoteDelivery {
+function delivery(dir: string, world: World = { peers: [], joined: [] }, extra: Partial<A2aRemoteDeliveryDeps> = {}): A2aRemoteDelivery {
   const deps = {
     dir,
     links: { list: () => [] },
@@ -38,6 +38,7 @@ function delivery(dir: string, world: World = { peers: [], joined: [] }): A2aRem
     broadcast: quiet,
     refreshLink: async () => null,
     log: quiet,
+    ...extra,
   } as unknown as A2aRemoteDeliveryDeps;
   return new A2aRemoteDelivery(deps);
 }
@@ -127,6 +128,29 @@ describe('A2aRemoteDelivery.peerFeatures', () => {
     world.peers = [{ hostId: HOST, revokedAt: '2026-10-22T00:00:00Z' }];
     d.syncSessions();
     expect(d.peerFeatures(HOST)).toBeUndefined();
+    await d.stop();
+  });
+});
+
+describe('what this PC advertises, per PC', () => {
+  const OTHER = '22222222-2222-4222-8222-222222222222';
+  it('a feature for one PC goes to that PC only, read each time; readvertise dials that PC again', async () => {
+    const on = new Set([HOST]);
+    const world: World = { peers: [], joined: [HOST] };
+    const d = delivery(tmp(), world, { features: ['link-offer.1'], hostFeatures: (h) => (on.has(h) ? ['approval.1'] : []) });
+    expect(d.featuresFor(HOST)).toEqual(expect.arrayContaining(['link-offer.1', 'approval.1']));
+    expect(d.featuresFor(OTHER)).toContain('link-offer.1');
+    expect(d.featuresFor(OTHER)).not.toContain('approval.1');
+    on.delete(HOST);
+    expect(d.featuresFor(HOST)).not.toContain('approval.1');
+    d.syncSessions();
+    const session = (d as unknown as { sessions: Map<string, { session: { redial(): void } }> }).sessions.get(HOST)!.session;
+    const redial = vi.spyOn(session, 'redial');
+    const close = vi.spyOn(d.hub, 'close');
+    d.readvertise(HOST);
+    expect(redial).toHaveBeenCalledTimes(1);
+    // No stream served to it: nothing to close.
+    expect(close).not.toHaveBeenCalled();
     await d.stop();
   });
 });
