@@ -3,6 +3,7 @@ import type { SnapshotOutcome, SnapshotRequest } from './HeadlessSnapshot';
 import { generateRustSnapshot } from './RustSnapshot';
 import { snapshotModeOverride } from './snapshotMode';
 import { countReason, refusalFamily, type SnapshotReasons } from './snapshotBackendReasons';
+import { NATIVE_SNAPSHOT_MAX_INPUT_BYTES, nativeSizesAccepted } from './nativeSnapshotLimits';
 
 type Reference = (req: SnapshotRequest) => Promise<SnapshotOutcome>;
 type Reason = 'native' | 'error' | 'budget' | 'unsupported' | 'limits' | 'state' | 'circuit-open';
@@ -24,16 +25,13 @@ export function getAnsiSnapshotBackendDiagnostics(): Diagnostics & { circuitOpen
     circuitOpen: !!failedModule && failedModule.path === (process.env.WMUX_TERMINAL_CORE_MODULE ?? process.env.WMUX_RUST_SNAPSHOT_MODULE) };
 }
 
-/** A full default (8 MiB) ring plus its mode preamble. */
-const MAX_INPUT_BYTES = 8 * 1024 * 1024 + 64 * 1024;
-
-/** Sizes the native grid accepts. Its history is capped by RustSnapshot at the
- * grid's cell limit, so the attach's 100k-row scrollback is eligible too. */
+/** Sizes the native grid accepts, and any ring the daemon allows. Its history
+ * is capped by RustSnapshot at the grid's cell limit, so the attach's 100k-row
+ * scrollback is eligible too. */
 function eligible(req: SnapshotRequest): boolean {
   const scrollback = req.scrollback ?? 5000;
-  if (req.initial.length > MAX_INPUT_BYTES || !Number.isInteger(scrollback) || scrollback < 0 || scrollback > 100000) return false;
-  return [req, ...(req.geometry ? [req.geometry.start, ...req.geometry.changes] : [])].every(({ cols, rows }) =>
-    Number.isInteger(cols) && Number.isInteger(rows) && cols >= 2 && cols <= 1000 && rows >= 1 && rows <= 1000);
+  if (req.initial.length > NATIVE_SNAPSHOT_MAX_INPUT_BYTES || !Number.isInteger(scrollback) || scrollback < 0 || scrollback > 100000) return false;
+  return nativeSizesAccepted(req);
 }
 
 /** Both backends replay the frozen native history as plain bytes. */

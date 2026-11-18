@@ -9,7 +9,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getAnsiSnapshotBackendDiagnostics } from '../AnsiSnapshotBackend';
 import { generateSnapshotUnqueued, type SnapshotRequest } from '../HeadlessSnapshot';
-import { ansiScrollbackCap, generateRustSnapshot } from '../RustSnapshot';
+import { generateRustSnapshot } from '../RustSnapshot';
+import { nativeScrollbackCap } from '../nativeSnapshotLimits';
 import { CLAUDE_WRAPPED_REPLY_80x30 } from '../../renderer/terminal/__tests__/fixtures/claudeWrappedReply';
 import { restoreSeam } from '../../shared/restoreSeam';
 import { available, expectParity, expectRustAloneDiverges, modulePath, parity, resized, synthetic, type Case } from './_rustParity';
@@ -620,7 +621,7 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     const before = '\x1b[?2026h' + Array.from({ length: 2000 }, () => 'q'.repeat(750)).join('\r\n') + '\r\nz';
     const req: SnapshotRequest = { cols: 1000, rows: 6, scrollback: 100000, initial: Buffer.from(`${before}\x1b[?2026lX`),
       geometry: { start: { cols: 500, rows: 6 }, changes: [{ offset: Buffer.byteLength(before), cols: 1000, rows: 6 }] } };
-    expect(ansiScrollbackCap(req)).toBe(3994);
+    expect(nativeScrollbackCap(req)).toBe(3994);
     expect(await generateRustSnapshot(req, 'ansi')).toMatchObject({ ok: false, detail: expect.stringMatching(/^unsupported-history-limit/) });
   });
 
@@ -628,7 +629,7 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     // 200x50 to 150x60 runs its row step at 200x60: 4M / 200 - 60 = 19940.
     const req: SnapshotRequest = { cols: 150, rows: 60, scrollback: 100000, initial: Buffer.from('a\r\nb'),
       geometry: { start: { cols: 200, rows: 50 }, changes: [{ offset: 1, cols: 150, rows: 60 }] } };
-    expect(ansiScrollbackCap(req)).toBe(19940);
+    expect(nativeScrollbackCap(req)).toBe(19940);
     expect(await generateRustSnapshot(req, 'ansi')).toMatchObject({ ok: true });
   });
 

@@ -10,6 +10,7 @@ import {
 } from './approvals/gateConfig';
 import { coerceNotifySinks, type NotifySinkConfig } from './push/WebhookSink';
 import type { GateConfig } from './approvals/gateConfig';
+import { RING_HARD_CAP_MB } from './ringLimits';
 import {
   CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT,
   CHANNEL_TRASH_TTL_HOURS_DEFAULT,
@@ -652,9 +653,8 @@ export function loadConfig(): DaemonConfig {
     }
 
     // Enforce upper bound on buffer size to prevent excessive memory usage.
-    // Hard cap at 256 MB regardless of bufferMaxMb setting.
-    const HARD_CAP_MB = 256;
-    const effectiveMax = Math.min(config.session.bufferMaxMb, HARD_CAP_MB);
+    // Hard cap at 256 MB regardless of bufferMaxMb setting (the native snapshot takes up to it).
+    const effectiveMax = Math.min(config.session.bufferMaxMb, RING_HARD_CAP_MB);
     if (config.session.bufferSizeMb > effectiveMax) {
       console.warn(`[daemon/config] bufferSizeMb (${config.session.bufferSizeMb}) exceeds max (${effectiveMax}), capping`);
       config.session.bufferSizeMb = effectiveMax;

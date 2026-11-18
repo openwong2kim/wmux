@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { nativeCorePath, type NativeFrozenRing } from '../shared/nativeTerminalCore';
 import type { SnapshotRequest, SnapshotOutcome, TextSnapshotOutcome } from './HeadlessSnapshot';
 import { incompleteUtf8SuffixLength } from './util/ansiStreamScan';
+import { nativeScrollbackCap } from './nativeSnapshotLimits';
 
 interface NativeTerminal {
   feed(bytes: Uint8Array): void;
@@ -44,19 +45,6 @@ function load(): NativeModule {
   return cached.module;
 }
 
-/** NativeTerminal refuses a grid above four million cells, history included. */
-const NATIVE_CELL_LIMIT = 4_000_000;
-/**
- * The most history rows the native grid can hold at every size the request
- * replays. A resize changes rows first, at the old width (NativeTerminal
- * resize), so each step's old width with its new rows counts too.
- */
-export function ansiScrollbackCap(req: Pick<SnapshotRequest, 'cols' | 'rows' | 'geometry'>): number {
-  const replayed = [...(req.geometry ? [req.geometry.start, ...req.geometry.changes] : []), req];
-  const steps = replayed.slice(1).map((next, i) => ({ cols: replayed[i].cols, rows: next.rows }));
-  return Math.min(...[...replayed, ...steps].map(({ cols, rows }) => Math.floor(NATIVE_CELL_LIMIT / Math.max(1, cols)) - rows));
-}
-
 export function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi'): Promise<SnapshotOutcome>;
 export function generateRustSnapshot(req: SnapshotRequest, kind: 'text'): Promise<TextSnapshotOutcome>;
 export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 'text'): Promise<SnapshotOutcome | TextSnapshotOutcome> {
@@ -69,7 +57,7 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
     // An attach asks for 100k rows of history. The native grid allocates rows
     // only as output fills them, so cap it at the grid's cell limit for every
     // recorded size; the snapshot refuses a history that reached the cap.
-    const scrollback = kind === 'ansi' ? Math.min(requested, ansiScrollbackCap(req)) : requested;
+    const scrollback = kind === 'ansi' ? Math.min(requested, nativeScrollbackCap(req)) : requested;
     const native = load();
     if (kind === 'ansi' && !native.nativeCoreCapabilities?.().includes('ansi-v3')) {
       throw new Error('Native ANSI capability missing; rebuild the native-core module');
