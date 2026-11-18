@@ -171,6 +171,7 @@ import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
 import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
 import { createHeadlessSessions } from './a2aRemote/headlessSessions';
 import { endHeadlessOnStop, HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
+import { LinkedTaskTurns } from './a2aRemote/linkedTaskTurns';
 import { HeadlessStatusReporter } from './a2aRemote/headlessStatus';
 import { answerPicker, screenPicker } from './a2aRemote/headlessAnswer';
 import { AnswersStore } from './a2aRemote/answersStore';
@@ -568,6 +569,8 @@ let unsentPasteHolds: UnsentPasteHolds | null = null;
 /** Whether a pane holds a draft, the screen consulted (draftScreen.ts). */
 let draftOnScreen: DraftCheck | undefined;
 let headlessDeliveryRef: HeadlessDelivery | null = null;
+/** The turn each remote task started in a linked pane (a2aRemote/linkedTaskTurns.ts); read only, nothing consults it yet. */
+let linkedTaskTurnsRef: LinkedTaskTurns | null = null;
 /** When the last "answer dropped: no headless agents" line was logged (once a minute at most). */
 let answersDroppedLoggedAt = 0;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
@@ -9545,6 +9548,7 @@ async function shutdown(
   // No headless start begins while the daemon goes down (its retries would only fail), nor any task is typed in.
   headlessStarterRef?.stop();
   headlessDeliveryRef?.stop();
+  linkedTaskTurnsRef?.stop();
   try { a2aServerRef?.dispose(); } catch { /* best effort */ }
   try { a2aDiscoverRef?.dispose(); } catch { /* best effort */ }
   paneSupervisorRef = null;
@@ -11439,6 +11443,14 @@ async function main(): Promise<void> {
       });
       a2aDelivery.start();
       a2aDeliveryRef = a2aDelivery;
+      // Followed from the submit main recorded on each delivered remote task; recorded only.
+      const turnsTaskSvc = a2aTaskService;
+      linkedTaskTurnsRef = new LinkedTaskTurns({
+        tasks: () => turnsTaskSvc.listRemote(),
+        transcriptPath: (sessionId) => transcriptProjector?.transcriptPath(sessionId) ?? null,
+        log: a2aLog,
+      });
+      linkedTaskTurnsRef.start();
       // main asks for a bundle and releases it once imported; open asks are asked again and staging is swept.
       // Main's asks are taken once the asks kept from before a restart have gone on.
       void a2aBundleIntake.sweepParts().catch(() => undefined).then(() => {
