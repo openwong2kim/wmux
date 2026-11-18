@@ -225,6 +225,12 @@ export interface RemoteApprovalsDeps {
     send(taskId: string, status: A2aRemoteStatusV1): { ok: true } | { ok: false; error: string };
   };
   log(level: 'info' | 'warn', msg: string): void;
+  /**
+   * A decision's key was typed into the pane (the registry said so): the
+   * receiving PC's own notice of it (a notification, a line in the task's
+   * history). Never given the command. Errors are the callee's to keep.
+   */
+  carriedOut?(e: { hostId: HostId; taskId: string; messageId: string; decision: A2aRemoteApprovalDecision; tool: string }): void;
   now?: () => number;
   /** Test seam: no timer is started. */
   manualTick?: boolean;
@@ -485,6 +491,13 @@ export class RemoteApprovals {
           body: { outcome: out.outcome, ...(out.reason ? { reason: out.reason } : {}) },
         });
         this.audit(hostId, taskId, messageId, approval, `${result.ok ? 'done' : `not-done:refused:${result.reason}`}${kept ? '' : ':receipt-not-saved'}`, fp8);
+        if (result.ok) {
+          try {
+            this.deps.carriedOut?.({ hostId, taskId, messageId, decision: approval.decision, tool: found.offer.tool });
+          } catch (err) {
+            this.deps.log('warn', `[a2a-remote] approval task=${taskId} message=${messageId}: its notice: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
         // The receipt is still in flight on disk, which a resend reads as uncertain: this answer says the same.
         return kept ? out : { messageId, outcome: 'uncertain' };
       } finally {

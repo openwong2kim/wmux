@@ -250,6 +250,21 @@ describe('on: the prompt is offered, and allowed or denied', () => {
     expect(rig.logs.join('\n')).not.toContain('echo key-test');
   });
 
+  it('a carried-out decision is told once to carriedOut, with the tool and never the command; a refusal or a resend is not', async () => {
+    const rig = makeRig();
+    const told: unknown[] = [];
+    rig.deps.carriedOut = (e) => { told.push(e); };
+    await rig.prompt();
+    rig.approvals.tick();
+    const id = rig.offered()!;
+    expect(await rig.approvals.take(HOST, TASK, 'ap-0', allow('0123456789abcdef'))).toMatchObject({ outcome: 'not-done' });
+    expect(told).toEqual([]);
+    expect(await rig.approvals.take(HOST, TASK, 'ap-1', allow(id))).toEqual({ messageId: 'ap-1', outcome: 'done' });
+    expect(await rig.approvals.take(HOST, TASK, 'ap-1', allow(id))).toEqual({ messageId: 'ap-1', outcome: 'done' });
+    expect(told).toEqual([{ hostId: HOST, taskId: TASK, messageId: 'ap-1', decision: 'allow', tool: 'Bash' }]);
+    expect(JSON.stringify(told)).not.toContain('echo key-test');
+  });
+
   it('a second prompt in the same turn is approvable: the chain moves to this channel\'s own key', async () => {
     const rig = makeRig();
     await rig.prompt();

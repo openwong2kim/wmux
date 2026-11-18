@@ -173,6 +173,7 @@ import { createHeadlessSessions } from './a2aRemote/headlessSessions';
 import { endHeadlessOnStop, HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
 import { LinkedTaskTurns } from './a2aRemote/linkedTaskTurns';
 import { ApprovalSwitchStore, pairingOf as approvalPairingOf, setApprovals } from './a2aRemote/approvalSwitchStore';
+import { noteRemoteApproval } from './a2aRemote/approvalNotice';
 import { openApprovalReceipts, RemoteApprovals } from './a2aRemote/remoteApproval';
 import { HeadlessStatusReporter } from './a2aRemote/headlessStatus';
 import { answerPicker, screenPicker } from './a2aRemote/headlessAnswer';
@@ -11553,6 +11554,13 @@ async function main(): Promise<void> {
           send: (taskId, status) => a2aDeliveryRef?.sendStatus(taskId, status, 'approvals') ?? { ok: false, error: 'unavailable' },
         },
         log: a2aLog,
+        // A notification in the app and a line in the task's history; neither carries the command.
+        carriedOut: (e) => void noteRemoteApproval({
+          tasks: approvalTaskSvc,
+          hostName: (hostId) => a2aHostName(hostId),
+          broadcast: (event) => pipeServer.broadcast(event),
+          log: a2aLog,
+        }, e).catch((err: unknown) => a2aLog('warn', `[a2a-remote] approval task=${e.taskId}: its notice failed: ${String(err)}`)),
       });
       remoteApprovalsRef.start();
       // main asks for a bundle and releases it once imported; open asks are asked again and staging is swept.
