@@ -310,7 +310,7 @@ try {
         $brokerRid = [IntegrityLaunch]::ProcessIntegrity($brokerPid)
         $brokerElevated = [IntegrityLaunch]::ProcessElevated($brokerPid)
       } catch {
-        throw "the filtered broker exited at once ($($_.Exception.Message)); its log: $(Get-BrokerLog)"
+        throw "the filtered broker could not be inspected ($($_.Exception.Message)); it is $([IntegrityLaunch]::ExitState($brokerPid)), log file present: $(Test-Path -LiteralPath $brokerLog); its log: $(Get-BrokerLog)"
       }
       Write-Host ('broker: integrity 0x{0:x}, elevated {1}' -f $brokerRid, $brokerElevated)
       if ($brokerRid -ne 0x2000) { Fail ('the broker runs at integrity 0x{0:x}, not Medium' -f $brokerRid) }
@@ -322,7 +322,7 @@ try {
         Start-Sleep -Milliseconds 200
         $log = Get-BrokerLog
         if (-not (Get-Process -Id $brokerPid -ErrorAction SilentlyContinue)) {
-          throw "the filtered broker exited before it was ready; its log: $(Get-BrokerLog)"
+          throw "the filtered broker exited before it was ready ($([IntegrityLaunch]::ExitState($brokerPid))); its log: $(Get-BrokerLog)"
         }
         if (-not $log -and ((Get-Date) - $waitFrom).TotalSeconds -gt 15) {
           throw "the filtered broker wrote no log in 15 s (can it write $WorkDir and read $brokerJs?)"

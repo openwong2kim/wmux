@@ -6,15 +6,19 @@
 #       with LUA_TOKEN (the Administrators group deny-only, the admin
 #       privileges removed), then labelled with the given integrity level
 #       (S-1-16-8192 Medium, S-1-16-4096 Low). Returns its pid. The child
-#       inherits this process's environment.
+#       inherits this process's environment. Its process handle is kept, so
+#       the queries below and ExitState still answer after it exits.
 #   [IntegrityLaunch]::ProcessIntegrity(pid)
 #       the integrity RID of a running process (0x2000 Medium, 0x3000 High).
 #   [IntegrityLaunch]::ProcessElevated(pid)
 #       whether a running process's token is elevated (TokenElevation).
+#   [IntegrityLaunch]::ExitState(pid)
+#       'running', or the exit code in hex, of a process Start launched.
 #
 # Only for CI runners: run.ps1 calls Start only when it runs elevated there.
 Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 
@@ -38,6 +42,7 @@ public static class IntegrityLaunch {
   struct PROCESS_INFORMATION { public IntPtr hProcess; public IntPtr hThread; public int dwProcessId; public int dwThreadId; }
 
   [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);
   [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
   [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr LocalFree(IntPtr mem);
@@ -69,6 +74,27 @@ public static class IntegrityLaunch {
 
   static Win32Exception Fail(string call) { return new Win32Exception(Marshal.GetLastWin32Error(), call); }
 
+  // The handles of the processes Start launched, kept for the life of this
+  // PowerShell process so a child that exits at once can still be inspected.
+  static readonly Dictionary<int, IntPtr> launched = new Dictionary<int, IntPtr>();
+
+  static IntPtr Open(int pid, out bool owned) {
+    IntPtr held;
+    if (launched.TryGetValue(pid, out held)) { owned = false; return held; }
+    owned = true;
+    IntPtr process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+    if (process == IntPtr.Zero) throw Fail("OpenProcess");
+    return process;
+  }
+
+  public static string ExitState(int pid) {
+    IntPtr held;
+    if (!launched.TryGetValue(pid, out held)) return "not launched here";
+    uint code;
+    if (!GetExitCodeProcess(held, out code)) return "unknown (" + Marshal.GetLastWin32Error() + ")";
+    return code == 259 ? "running" : "exit 0x" + code.ToString("x8");
+  }
+
   public static int Start(string commandLine, string cwd, string integritySid) {
     IntPtr own = IntPtr.Zero, lowered = IntPtr.Zero, sid = IntPtr.Zero;
     try {
@@ -93,7 +119,7 @@ public static class IntegrityLaunch {
         throw Fail("CreateProcessAsUser");
       }
       CloseHandle(info.hThread);
-      CloseHandle(info.hProcess);
+      launched[info.dwProcessId] = info.hProcess;
       return info.dwProcessId;
     } finally {
       if (sid != IntPtr.Zero) LocalFree(sid);
@@ -103,10 +129,11 @@ public static class IntegrityLaunch {
   }
 
   public static bool ProcessElevated(int pid) {
-    IntPtr process = IntPtr.Zero, token = IntPtr.Zero, buffer = IntPtr.Zero;
+    IntPtr process = IntPtr.Zero, held = IntPtr.Zero, token = IntPtr.Zero, buffer = IntPtr.Zero;
     try {
-      process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-      if (process == IntPtr.Zero) throw Fail("OpenProcess");
+      bool owned;
+      process = Open(pid, out owned);
+      if (!owned) held = process;
       if (!OpenProcessToken(process, TOKEN_QUERY, out token)) throw Fail("OpenProcessToken");
       buffer = Marshal.AllocHGlobal(4);
       int length;
@@ -115,15 +142,16 @@ public static class IntegrityLaunch {
     } finally {
       if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
       if (token != IntPtr.Zero) CloseHandle(token);
-      if (process != IntPtr.Zero) CloseHandle(process);
+      if (process != IntPtr.Zero && process != held) CloseHandle(process);
     }
   }
 
   public static int ProcessIntegrity(int pid) {
-    IntPtr process = IntPtr.Zero, token = IntPtr.Zero, buffer = IntPtr.Zero;
+    IntPtr process = IntPtr.Zero, held = IntPtr.Zero, token = IntPtr.Zero, buffer = IntPtr.Zero;
     try {
-      process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-      if (process == IntPtr.Zero) throw Fail("OpenProcess");
+      bool owned;
+      process = Open(pid, out owned);
+      if (!owned) held = process;
       if (!OpenProcessToken(process, TOKEN_QUERY, out token)) throw Fail("OpenProcessToken");
       int length;
       GetTokenInformation(token, TokenIntegrityLevel, IntPtr.Zero, 0, out length);
@@ -135,7 +163,7 @@ public static class IntegrityLaunch {
     } finally {
       if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
       if (token != IntPtr.Zero) CloseHandle(token);
-      if (process != IntPtr.Zero) CloseHandle(process);
+      if (process != IntPtr.Zero && process != held) CloseHandle(process);
     }
   }
 }
