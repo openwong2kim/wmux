@@ -2259,6 +2259,11 @@ export class HookIngest {
     return this.permissionRequests.get(sessionId) ?? 0;
   }
 
+  /** #3393 — when this pane's latest UserPromptSubmit landed (a turn started); undefined: none since the pane's agent began. */
+  promptSubmittedAt(sessionId: string): number | undefined {
+    return this.lastPromptAt.get(sessionId);
+  }
+
   /**
    * `fanOut`, unless the dialog was settled (answered, turn ended, new prompt)
    * while its firm window ran: working cues cannot rebut a firm window, so a

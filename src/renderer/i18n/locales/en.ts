@@ -346,6 +346,7 @@ export const en = {
   'chat.send.unavailable': "No active Claude session could be verified. Continue in Terminal.",
   'chat.send.error': "Delivery could not be confirmed. Text may already be in Terminal; check there before retrying.",
   'chat.send.refused': "Nothing was sent. Your message is still in the composer; check Terminal, then send again.",
+  'chat.send.unsentPaste': "Nothing was sent: the terminal's input box still holds an earlier message that was not submitted. In Terminal, press Enter on it, or clear the whole box (Ctrl+U clears one line at a time), then send again.",
   'chat.bodyRetry': "Content unavailable · Retry",
   'chat.code': "Code",
   'chat.lines': "lines",

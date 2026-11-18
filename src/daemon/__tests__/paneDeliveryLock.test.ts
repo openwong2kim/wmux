@@ -69,6 +69,17 @@ describe('PaneDeliveryLocks', () => {
     expect(t.written).toEqual(['one', 'DAEMON PASTE']);
   });
 
+  it('#3393: every held write that landed is told to the listener, after it was counted; a refused one is not', async () => {
+    const locks = new PaneDeliveryLocks();
+    const order: string[] = [];
+    locks.onHeldWrite = (id) => { order.push(`listener:${id}`); };
+    const token = await locks.acquire('s', MAIN, 0) as string;
+    const t = { ...target(), noteInput: (bytes: string) => { order.push(`counted:${bytes}`); } };
+    expect(writeUnderLock(locks, 's', token, 'c1', t, 'one')).toEqual({ ok: true });
+    expect(writeUnderLock(locks, 's', 'other', 'c1', t, 'two')).toEqual({ ok: false, error: 'not held' });
+    expect(order).toEqual(['counted:one', 'listener:s']);
+  });
+
   it('a held write with nothing to write does not renew the lease', async () => {
     const locks = new PaneDeliveryLocks();
     const token = await locks.acquire('s', MAIN, 0) as string;

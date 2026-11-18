@@ -1196,6 +1196,8 @@ export class DaemonClient extends EventEmitter {
     /** Milliseconds since the pane's last settled result. Absent on an older
      *  daemon and when none settled since its agent started. */
     settledAgoMs?: number;
+    /** #3393 — the input box holds a delivery's paste left unsubmitted. Absent on an older daemon. */
+    unsentPasteHeld?: boolean;
   } | null> {
     try {
       const result = await (opts.timeoutMs !== undefined
@@ -1216,6 +1218,7 @@ export class DaemonClient extends EventEmitter {
         turnOpen?: unknown;
         agentMidTurn?: unknown;
         settledAgoMs?: unknown;
+        unsentPasteHeld?: unknown;
       };
       const validStatuses: AgentStatus[] = [
         'running',
@@ -1261,6 +1264,7 @@ export class DaemonClient extends EventEmitter {
         ...(typeof result.settledAgoMs === 'number' && Number.isFinite(result.settledAgoMs) && result.settledAgoMs >= 0
           ? { settledAgoMs: result.settledAgoMs }
           : {}),
+        ...(typeof result.unsentPasteHeld === 'boolean' ? { unsentPasteHeld: result.unsentPasteHeld } : {}),
       };
     } catch {
       return null;
@@ -1452,6 +1456,22 @@ export class DaemonClient extends EventEmitter {
   releasePaneLock(id: string, by: { token: string } | { nonce: string }): void {
     const attempt = () => (this.isConnected ? this.rpc('daemon.session.deliveryUnlockV1', { id, ...by }) : Promise.resolve());
     void attempt().catch(() => attempt()).catch(() => undefined);
+  }
+
+  /**
+   * #3393 — this delivery left its paste in the pane's input box: the daemon
+   * holds the pane for every writer until it is clear again. Sent while
+   * `token` still holds the pane, after the delivery's last held write. False:
+   * not recorded (an older daemon, a hold that ended, no reply).
+   */
+  async reportUnsentPaste(id: string, token: string): Promise<boolean> {
+    if (!this.isConnected) return false;
+    try {
+      const r = await this.rpc('daemon.session.unsentPasteV1', { id, token }) as { ok?: unknown } | null;
+      return r?.ok === true;
+    } catch {
+      return false;
+    }
   }
 
   /**

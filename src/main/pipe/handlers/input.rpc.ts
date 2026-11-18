@@ -2662,7 +2662,7 @@ export function registerInputRpc(
   const withDaemonPaneLock = async (
     ptyId: string,
     waitMs: number,
-    run: (write: DeliveryWrite) => Promise<GatedSubmitResult>,
+    run: (write: DeliveryWrite, markUnsent?: () => Promise<boolean>) => Promise<GatedSubmitResult>,
     /** Each write the daemon counted on the pane's input: one per pipe write, one per held-write chunk that landed. */
     onCounted: (writes: number) => void = () => undefined,
   ): Promise<GatedSubmitResult> => {
@@ -2695,8 +2695,10 @@ export function registerInputRpc(
       if (result.uncertain) throw new HeldWriteUncertain(`delivery: the write's reply was lost (${result.detail}); it may have reached the pane`);
       throw new Error(`delivery: ${result.detail}; nothing more was written`);
     };
+    // #3393 — a paste this delivery leaves in the box is the daemon's to hold, reported while the pane is still held.
+    const markUnsent = typeof dc.reportUnsentPaste === 'function' ? () => dc.reportUnsentPaste(ptyId, held.token) : undefined;
     try {
-      return await run(write);
+      return await run(write, markUnsent);
     } finally {
       dc.releasePaneLock(ptyId, { token: held.token });
     }
@@ -2924,6 +2926,9 @@ export function registerInputRpc(
    * session ends, or input reached the pane after it (`keyInputRevision` past the count: a person's key, or any
    * other write on the session's pipe); then the usual checks decide. A turn's end does not clear it: a turn
    * already running when the paste was left ends with the paste still in the box.
+   * A daemon with the pane delivery lock keeps this record itself, for its own writers too (#3393,
+   * daemon/unsentPasteHold.ts): main reports the paste there (`reportUnsentPaste`) and reads `unsentPasteHeld`.
+   * This map is the fallback for an older daemon and a pane main runs itself.
    */
   const unsentPaste = new Map<string, { at: number; keys: number | undefined }>();
   const UNSENT_PASTE_DETAIL = "delivery: the agent's input box still holds an earlier message wmux pasted and did not submit; nothing was typed";
@@ -3044,8 +3049,22 @@ export function registerInputRpc(
       ...(guard ?? { beforePaste: draftAtPaste, beforeEnter: async () => null }),
       verifyAgent: checkAgent,
     };
-    /** A paste of ours left unsent in this pane's box (see `unsentPaste`): refused, nothing written, unless it is clear now. */
-    const heldByUnsentPaste = async (): Promise<GatedSubmitRefusal | null> => {
+    /** A daemon that holds unsent pastes (#3393) whose answer did not come: whether the box is held is unknown, so nothing is typed. */
+    const unreadableHold: GatedSubmitRefusal = { ok: false, reason: 'gate_unavailable', detail: "delivery: the pane's input state could not be read, so nothing was typed" };
+    /**
+     * The pane's agent state for the hold check. Against a daemon that holds unsent pastes, one failed read (a
+     * stalled daemon) is tried once more before the delivery is refused as unreadable.
+     */
+    const readStateForHold = async (daemonHolds: boolean): Promise<Awaited<ReturnType<typeof readAgentState>>> => {
+      const first = await readAgentState(ptyId);
+      return first || !daemonHolds ? first : readAgentState(ptyId);
+    };
+    /**
+     * A paste left unsent in this pane's box: refused, nothing written. The daemon holds it for every writer
+     * (`before.unsentPasteHeld`, #3393); main's own record (`unsentPaste`) covers an older daemon and a local pane.
+     */
+    const heldByUnsentPaste = async (before: Awaited<ReturnType<typeof readAgentState>>): Promise<GatedSubmitRefusal | null> => {
+      if (before?.unsentPasteHeld === true) return { ok: false, reason: 'input_mode', detail: UNSENT_PASTE_DETAIL, composerNotPlain: true };
       const leftAt = unsentPaste.get(ptyId);
       if (leftAt === undefined) return null;
       const turnAt = deps.readTurnStartedAt?.(ptyId);
@@ -3079,8 +3098,14 @@ export function registerInputRpc(
      */
     let ownWrites = 0;
     /** A paste left in the box, recorded while the pane's delivery locks are still held, so the next delivery sees it. */
-    const rememberUnsent = async (result: GatedSubmitResult, keysBefore: number | undefined): Promise<GatedSubmitResult> => {
+    const rememberUnsent = async (result: GatedSubmitResult, keysBefore: number | undefined, markUnsent: (() => Promise<boolean>) | undefined): Promise<GatedSubmitResult> => {
       if (!result.ok && result.pasted && !result.cleared) {
+        // The daemon took it: its count already has this delivery's writes (#3393). Asked twice, so one dropped
+        // answer does not leave the daemon's own writers unaware of the paste.
+        if (markUnsent && ((await markUnsent()) || (await markUnsent()))) return result;
+        if (markUnsent) {
+          logLine(`[delivery] pane ${JSON.stringify(ptyId)}: the daemon did not take the hold on the paste left in the input box (its delivery lock lost, or no answer); only wmux's own deliveries see it`);
+        }
         // After this delivery's last write (an Enter retry only follows a sent Enter, and such a delivery is not unsent).
         const at = (deps.now ?? Date.now)();
         const floor = keysBefore === undefined ? undefined : keysBefore + ownWrites;
@@ -3108,21 +3133,23 @@ export function registerInputRpc(
     // Main's own chain first, then the daemon's lock on the pane, which the
     // daemon's writers take too, out of the same wait.
     const lockFrom = (deps.now ?? Date.now)();
-    const underPaneLock = (run: (write: DeliveryWrite) => Promise<GatedSubmitResult>): Promise<GatedSubmitResult> =>
+    const underPaneLock = (run: (write: DeliveryWrite, markUnsent?: () => Promise<boolean>) => Promise<GatedSubmitResult>): Promise<GatedSubmitResult> =>
       withDaemonPaneLock(ptyId, Math.max(0, lockWaitMs - ((deps.now ?? Date.now)() - lockFrom)), run, (writes) => { ownWrites += writes; });
     if (!opts?.newTask) {
       return withPaneDeliveryLock(
         ptyId,
         // Both locks held before onLocked: a delivery that went while this
         // one waited for either is not a person typing.
-        async () => underPaneLock(async (write) => {
+        async () => underPaneLock(async (write, markUnsent) => {
           const late = await onLocked();
           if (late) return late;
-          const held = await heldByUnsentPaste();
+          const before = await readStateForHold(markUnsent !== undefined);
+          if (markUnsent && !before) return unreadableHold;
+          const held = await heldByUnsentPaste(before);
           if (held) return held;
-          const keysBefore = await readKeyRevision(ptyId);
+          const keysBefore = typeof before?.keyInputRevision === 'number' ? before.keyInputRevision : undefined;
           // Recorded before underPaneLock gives the daemon's lock back.
-          return await rememberUnsent(await gatedPasteSubmit(gate, write, ptyId, text, agent, deps.sleep, undefined, guard, receipt), keysBefore);
+          return await rememberUnsent(await gatedPasteSubmit(gate, write, ptyId, text, agent, deps.sleep, undefined, guard, receipt), keysBefore, markUnsent);
         }),
         lockWaitMs,
       ).then(noteUnsent).catch(paneBusy);
@@ -3136,12 +3163,14 @@ export function registerInputRpc(
       opts.keepContext ?? daemonOpenTaskOnPane(queryDaemonTasks, ptyId, opts.pane, opts.taskId);
     return withPaneDeliveryLock(
       ptyId,
-      async () => underPaneLock(async (write) => {
+      async () => underPaneLock(async (write, markUnsent) => {
         const late = await onLocked();
         if (late) return late;
-        const held = await heldByUnsentPaste();
+        const before = await readStateForHold(markUnsent !== undefined);
+        if (markUnsent && !before) return unreadableHold;
+        const held = await heldByUnsentPaste(before);
         if (held) return held;
-        const keysBefore = await readKeyRevision(ptyId);
+        const keysBefore = typeof before?.keyInputRevision === 'number' ? before.keyInputRevision : undefined;
         return await rememberUnsent(await gatedPasteSubmit(gate, write, ptyId, text, agent, deps.sleep, async () => {
           const before = opts.guardKey ? getDeliveryCheck(opts.guardKey)?.beforeFreshContext : undefined;
           const why = before ? await before() : null;
@@ -3182,7 +3211,7 @@ export function registerInputRpc(
               if (again.input === 'pointer') throw new DeliveryRefused({ ok: false, reason: 'agent_changed', detail: 'delivery: the target agent changed during the fresh-context step' });
             },
           );
-        }, guard, receipt), keysBefore);
+        }, guard, receipt), keysBefore, markUnsent);
       }),
       lockWaitMs,
     ).then(noteUnsent).catch(paneBusy);

@@ -6767,6 +6767,7 @@ OpenCode.
 | native id or epoch changed | 409 | `{error:"session-changed", result:"session_changed", agentSessionId?, historyEpoch?}` | `none` |
 | agent not alive or plugin unreachable before the write | 409 | `{error:"chat-unavailable", result:"unavailable"}` | `none` |
 | Claude/Codex input line not provably empty | 409 | `{error:"input-not-provably-empty", result:"unconfirmed"}` | `none` |
+| the input box holds an earlier wmux paste that was not submitted | 409 | `{error:"input-not-provably-empty", result:"unconfirmed", detail}`; `detail` says how to clear it (Enter on the waiting text, or clearing the whole box: Ctrl+U clears one line at a time) | `none` |
 | safety proof changed after the paste, before Enter | 409 | `{error:"send-interrupted", result:"error"}` | `uncertain` |
 | OpenCode dispatch outcome unknown, or the dispatch failed internally | 409 | `{error:"delivery-unconfirmed", result:"unconfirmed"}` | `uncertain` |
 | grant withdrawn between paste and Enter | 401 | `{error:"authorization-expired", result:"error"}` | `uncertain` |

@@ -13,6 +13,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { TranscriptAppendData, TranscriptPage, TranscriptStatus } from '../../shared/transcript/turnEvents';
 import type { AgentStatus } from '../../shared/types';
 import { deliverScheduledPrompt } from '../sessionPromptDelivery';
+import type { UnsentPasteGate } from '../unsentPasteHold';
 import type { TerminalChatAbortOutcome, TerminalChatFailure, TerminalChatSendOutcome, TerminalChatService } from './TerminalChatService';
 import { findHermesSession, hermesHome, hermesPromptState, readHermesHistory, withHermesDb, type HermesPromptState } from './hermesState';
 
@@ -44,6 +45,13 @@ export interface HermesChatDeps {
    * another delivery kept the pane (busy). Absent: no lock.
    */
   paneLock?<T>(id: string, send: () => Promise<T>): Promise<T | null>;
+  /**
+   * #3393 — panes whose input box holds a delivery's paste left unsubmitted
+   * (daemon/unsentPasteHold.ts): a send there is refused (busy, reason
+   * unsent-paste) with nothing written, and a send that leaves its paste
+   * unsubmitted records one. Absent: not consulted.
+   */
+  unsentPaste?: UnsentPasteGate;
   emit(id: string, data: TranscriptAppendData, clients: readonly string[]): void;
   delay?: (ms: number) => Promise<void>;
   /** Tests: the database opener. */
@@ -120,7 +128,10 @@ export class HermesChatService {
     opts: { expectedRawEpoch?: string; authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean> } = {}): Promise<TerminalChatSendOutcome> {
     // The pane's delivery lock from before the readiness read through the
     // Enter: a delivery that submitted while this one waited is seen here.
-    const run = () => this.sendLocked(id, sessionId, text, opts);
+    const run = async (): Promise<TerminalChatSendOutcome> => {
+      if (this.deps.unsentPaste?.held(id)) return { result: 'busy', reason: 'unsent-paste' };
+      return this.sendLocked(id, sessionId, text, opts);
+    };
     return (this.deps.paneLock ? await this.deps.paneLock(id, run) : await run()) ?? { result: 'busy' };
   }
 
@@ -141,6 +152,10 @@ export class HermesChatService {
     const incarnationId = this.deps.pane(id)?.incarnationId;
     if (!incarnationId) return { result: 'unavailable' };
     let pasted = false;
+    // The Enter was written, or threw (it may have landed): the paste counts as submitted. An Enter the
+    // writer refused (false) did not reach the pane, so what was pasted is still in the box.
+    let submitted = false;
+    let enterNext = false;
     let denied = false;
     const authorize = opts.authorized;
     const result = await deliverScheduledPrompt('hermes', incarnationId, text, {
@@ -154,10 +169,26 @@ export class HermesChatService {
           : null;
       },
       isAgentProcessAlive: () => this.deps.processAlive(id),
-      write: (data) => this.deps.write(id, data),
+      write: (data) => {
+        let ok = true;
+        try {
+          ok = this.deps.write(id, data);
+          if (ok) this.deps.unsentPaste?.wrote(id);
+          return ok;
+        } finally {
+          if (enterNext) {
+            enterNext = false;
+            submitted = ok;
+          }
+        }
+      },
       // Enter always submits in Hermes' prompt; a pasted newline stays in it.
       submitKeys: '\r',
-      onWrite: (stage) => { if (stage === 'paste') pasted = true; },
+      onWrite: (stage) => {
+        if (stage === 'paste') pasted = true;
+        // The next write is the Enter; its own result says whether the paste was submitted.
+        else enterNext = true;
+      },
       ...(this.deps.delay ? { delay: this.deps.delay } : {}),
       ...(authorize ? { authorized: async (stage: 'first-write' | 'submit') => {
         let ok = false;
@@ -166,6 +197,7 @@ export class HermesChatService {
         return ok;
       } } : {}),
     });
+    if (result !== 'sent' && pasted && !submitted) this.deps.unsentPaste?.record(id, 'chat send');
     switch (result) {
       case 'sent': return { result: 'sent' };
       case 'busy': return { result: 'busy' };

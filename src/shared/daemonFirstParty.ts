@@ -14,6 +14,8 @@ export const PANE_DELIVERY_LOCK_METHODS: ReadonlySet<string> = new Set([
   'daemon.session.deliveryLockV1',
   'daemon.session.deliveryUnlockV1',
   'daemon.session.writeHeldV1',
+  // #3393 — main reports a paste it left unsubmitted, while it holds the pane's lock.
+  'daemon.session.unsentPasteV1',
 ]);
 
 /**
