@@ -39,7 +39,7 @@ import { PeerTaskBudget, acceptInbound, type ImagePull, type InboundDeps } from 
 import type { NotifyLinkChange } from './linkRpc';
 import type { LinkStore } from './linkStore';
 import type { A2aOffers } from './offers';
-import { aliasTable, imageRefsOf, linkAlias, listRemoteTargets, sendRemoteAnswer, sendRemoteReply, sendRemoteState, sendRemoteStatus, sendRemoteTask, syncRemoteTask, type ImageCaller, type OutboundDeps, type PreparedImage } from './outbound';
+import { APPROVAL_STATUS_ID_PREFIX, aliasTable, imageRefsOf, linkAlias, listRemoteTargets, sendRemoteAnswer, sendRemoteReply, sendRemoteState, sendRemoteStatus, sendRemoteTask, syncRemoteTask, type ImageCaller, type OutboundDeps, type PreparedImage } from './outbound';
 import { OutboxStore } from './outboxStore';
 import { PeerFeatureStore } from './peerFeatureStore';
 import type { A2aRouteTable } from './routes';
@@ -900,17 +900,20 @@ export class A2aRemoteDelivery {
   }
 
   /**
-   * A queued status about approvals that the setting no longer allows: one
-   * with a prompt offer or outcomes while it is off for that PC, or with a
+   * A queued status about approvals that the setting no longer allows: any
+   * the approvals producer made (APPROVAL_STATUS_ID_PREFIX), or one with a
+   * prompt offer or outcomes, while it is off for that PC; or one with a
    * command once it is no longer `command`. Dropped (refused here, never
    * sent); the producer queues the current status in its place. False for
    * anything else.
    */
   private withholdApproval(hostId: HostId, rec: A2aOutboxRecordV1): boolean {
-    const detail = rec.envelope.kind === 'status' ? rec.envelope.status?.detail : undefined;
-    if (!detail || (!detail.approval && !detail.approvals)) return false;
+    if (rec.envelope.kind !== 'status') return false;
+    const detail = rec.envelope.status?.detail;
+    const fromApprovals = rec.envelope.messageId.startsWith(APPROVAL_STATUS_ID_PREFIX);
+    if (!fromApprovals && !detail?.approval && !detail?.approvals) return false;
     const exposure = this.deps.approvalExposure?.(hostId) ?? null;
-    if (exposure !== null && (exposure === 'command' || detail.approval?.command === undefined)) return false;
+    if (exposure !== null && (exposure === 'command' || detail?.approval?.command === undefined)) return false;
     try {
       this.outbox.refuse(hostId, rec.seq, 'protocol');
     } catch (err) {
@@ -1281,8 +1284,8 @@ export class A2aRemoteDelivery {
   }
 
   /** Queue the worker's status on an inbound task for its sender (`sendRemoteStatus`). */
-  sendStatus(taskId: string, status: A2aRemoteStatusV1): { ok: true } | { ok: false; error: string } {
-    const res = sendRemoteStatus(this.outboundDeps(), { taskId, status });
+  sendStatus(taskId: string, status: A2aRemoteStatusV1, source?: 'approvals'): { ok: true } | { ok: false; error: string } {
+    const res = sendRemoteStatus(this.outboundDeps(), { taskId, status, ...(source ? { source } : {}) });
     return res.ok ? { ok: true } : { ok: false, error: res.error };
   }
 

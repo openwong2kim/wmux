@@ -140,6 +140,11 @@ function makeRig(opts: { exposure?: A2aApprovalExposure | null; setting?: Approv
   return { registry, pane, writes, clock, state, sent, resolves, logs, approvals, prompt, offered, deps };
 }
 const STATUS_GAP = 6_000;
+/** The id the record would be offered under at exposure `command` with allow and its whole command. */
+const idOf = (rig: { registry: ApprovalRegistry }, recordId: string): string => {
+  const f = rig.registry.remoteApprovalFacts(recordId)!;
+  return promptIdOf(f, { exposure: 'command', allowed: ['allow', 'deny'], ...(f.call ? { command: f.call.command } : {}) })!;
+};
 
 const allow = (promptId: string) => ({ promptId, decision: 'allow' as const });
 const deny = (promptId: string) => ({ promptId, decision: 'deny' as const });
@@ -164,7 +169,7 @@ describe('off: nothing changes', () => {
     rig.approvals.tick();
     expect(rig.sent).toEqual([]);
     // Even with a prompt id the asker could not have been given.
-    const id = promptIdOf(rig.registry.remoteApprovalFacts(record.id)!)!;
+    const id = idOf(rig, record.id);
     for (const approval of [allow(id), deny(id)]) {
       expect(await rig.approvals.take(HOST, TASK, `ap-${approval.decision}`, approval)).toEqual({ messageId: `ap-${approval.decision}`, outcome: 'not-done', reason: 'approvals-off' });
     }
@@ -199,7 +204,7 @@ describe('on: the prompt is offered, and allowed or denied', () => {
     expect(status.kind).toBe('question');
     expect(status.detail?.question).toBe('permission');
     expect(status.detail?.approval).toEqual({
-      promptId: promptIdOf(rig.registry.remoteApprovalFacts(record.id)!),
+      promptId: idOf(rig, record.id),
       tool: 'Bash',
       command: 'echo key-test > fx-a.txt',
       redacted: false,
@@ -268,7 +273,7 @@ describe('on: the prompt is offered, and allowed or denied', () => {
     const record = await rig.prompt();
     rig.approvals.tick();
     expect(rig.sent).toEqual([]);
-    const id = promptIdOf(rig.registry.remoteApprovalFacts(record.id)!)!;
+    const id = idOf(rig, record.id);
     expect(await rig.approvals.take(HOST, TASK, 'ap-1', deny(id))).toMatchObject({ outcome: 'not-done', reason: 'chain-broken' });
     expect(rig.logs.some((l) => l.includes(`task ${TASK}: answered on this PC from now on`))).toBe(true);
     // A later prompt in the same turn is still not offered, even one made at the submit's own revision: broken stays broken.
@@ -280,7 +285,7 @@ describe('on: the prompt is offered, and allowed or denied', () => {
     rig.approvals.tick();
     // Only the refusal goes back; no prompt is offered.
     expect(rig.sent.map((x) => x.status.detail?.approval)).toEqual([undefined]);
-    const laterId = promptIdOf(rig.registry.remoteApprovalFacts(later.id)!)!;
+    const laterId = idOf(rig, later.id);
     expect(await rig.approvals.take(HOST, TASK, 'ap-2', deny(laterId))).toMatchObject({ outcome: 'not-done', reason: 'chain-broken' });
     expect(rig.writes).toEqual([]);
   });
@@ -304,7 +309,7 @@ describe('on: the prompt is offered, and allowed or denied', () => {
     const record = await rig.prompt();
     rig.approvals.tick();
     expect(rig.sent).toEqual([]);
-    const id = promptIdOf(rig.registry.remoteApprovalFacts(record.id)!)!;
+    const id = idOf(rig, record.id);
     expect(await rig.approvals.take(HOST, TASK, 'ap-1', deny(id))).toMatchObject({ outcome: 'not-done', reason: 'chain-broken' });
   });
 
@@ -358,7 +363,7 @@ describe('the turn proof', () => {
     const record = await rig.prompt();
     rig.approvals.tick();
     expect(rig.sent).toEqual([]);
-    const id = promptIdOf(rig.registry.remoteApprovalFacts(record.id)!)!;
+    const id = idOf(rig, record.id);
     expect(await rig.approvals.take(HOST, TASK, 'ap-1', deny(id))).toMatchObject({ outcome: 'not-done', reason: 'turn-unproven' });
     expect(rig.writes).toEqual([]);
   });
@@ -388,7 +393,7 @@ describe('the key-revision chain, after it started', () => {
     const next = await rig.prompt(NARROW, CALL_B);
     rig.approvals.tick();
     expect(rig.sent.slice(sentBefore).some((x) => x.status.detail?.approval)).toBe(false);
-    const id = promptIdOf(rig.registry.remoteApprovalFacts(next.id)!)!;
+    const id = idOf(rig, next.id);
     expect(await rig.approvals.take(HOST, TASK, 'ap-2', deny(id))).toMatchObject({ outcome: 'not-done', reason: 'chain-broken' });
     expect(rig.writes).toEqual(['1']);
   }
@@ -465,27 +470,115 @@ describe('carrying out an approval: what can stop it', () => {
   });
 });
 
-describe('an answer is held to what left this PC', () => {
-  it('tool-only, then command: an allow is refused until the status showing the command has left; a resend of the refused one replays its refusal', async () => {
-    const rig = makeRig({ exposure: 'tool-only' });
+describe('an outcome whose receipt could not be written', () => {
+  it('is answered the same to a resend while the daemon runs, even once the store and the pane would let it run', async () => {
+    const rig = makeRig();
     await rig.prompt();
     rig.approvals.tick();
     const id = rig.offered()!;
-    expect(rig.sent.at(-1)!.status.detail?.approval?.allowed).toEqual(['deny']);
-    rig.state.exposure = 'command';
-    // Not sent yet (the status floor holds it): what left still says deny only.
-    rig.state.connected = false;
+    const real = rig.deps.receipts!;
+    let failing = true;
+    const receipts = new Proxy(real, {
+      get(target, key) {
+        if (key === 'begin' && failing) return async () => { throw new Error('disk full'); };
+        const v = Reflect.get(target, key) as unknown;
+        return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    const approvals = new RemoteApprovals({ ...rig.deps, receipts });
+    approvals.tick();
+    rig.state.lock = null;
+    expect(await approvals.take(HOST, TASK, 'ap-1', allow(id))).toEqual({ messageId: 'ap-1', outcome: 'not-done', reason: 'lock-busy' });
+    failing = false;
+    rig.state.lock = 'token';
+    expect(await approvals.take(HOST, TASK, 'ap-1', allow(id))).toEqual({ messageId: 'ap-1', outcome: 'not-done', reason: 'lock-busy' });
+    expect(rig.writes).toEqual([]);
+    expect(await approvals.take(HOST, TASK, 'ap-2', allow(id))).toEqual({ messageId: 'ap-2', outcome: 'done' });
+  });
+});
+
+describe('a chain broken before the setting went off for every PC', () => {
+  it('stays broken when it comes back on', async () => {
+    const rig = makeRig();
+    await rig.prompt();
     rig.approvals.tick();
-    expect(await rig.approvals.take(HOST, TASK, 'ap-1', allow(id))).toEqual({ messageId: 'ap-1', outcome: 'not-done', reason: 'deny-only' });
-    rig.state.connected = true;
+    expect(await rig.approvals.take(HOST, TASK, 'ap-1', allow(rig.offered()!))).toMatchObject({ outcome: 'done' });
+    await rig.registry.expireForSession(PTY, 'prompt-gone');
+    rig.state.turn.toolUseIds.push('toolu_b');
+    // Delivered again under a proof at the pane's current revision: broken.
+    rig.state.proof = { ...rig.state.proof, submitRevision: SUBMIT + 1, promptHash: '1'.repeat(64) };
+    const next = await rig.prompt(NARROW, CALL_B);
+    expect(next.keyRevisionAtCreate).toBe(SUBMIT + 1);
+    rig.approvals.tick();
+    expect(rig.logs.some((l) => l.includes('the task was delivered again'))).toBe(true);
+    rig.state.exposure = null;
+    rig.approvals.tick();
+    rig.state.exposure = 'command';
     rig.clock.now += STATUS_GAP;
     rig.approvals.tick();
-    expect(rig.sent.at(-1)!.status.detail?.approval).toMatchObject({ promptId: id, command: 'echo key-test > fx-a.txt', allowed: ['allow', 'deny'] });
-    // The refused message stays refused; a retry takes a new id.
-    expect(await rig.approvals.take(HOST, TASK, 'ap-1', allow(id))).toEqual({ messageId: 'ap-1', outcome: 'not-done', reason: 'deny-only' });
-    expect(rig.writes).toEqual([]);
-    expect(await rig.approvals.take(HOST, TASK, 'ap-2', allow(id))).toEqual({ messageId: 'ap-2', outcome: 'done' });
+    expect(rig.sent.slice(1).some((x) => x.status.detail?.approval)).toBe(false);
+    expect(await rig.approvals.take(HOST, TASK, 'ap-2', deny(idOf(rig, next.id)))).toMatchObject({ outcome: 'not-done', reason: 'chain-broken' });
     expect(rig.writes).toEqual(['1']);
+  });
+});
+
+describe('the bound input\'s keys, when the registry does not know them', () => {
+  it('are passed on as not known, so allow is not offered', async () => {
+    const rig = makeRig();
+    const record = await rig.prompt();
+    const inner = (rig.registry as unknown as { requests: object[] }).requests.find((r) => (r as { id: string }).id === record.id)!;
+    const identity = Object.getOwnPropertySymbols(inner).map((k) => (inner as Record<symbol, { call?: { inputKeys?: string[] } }>)[k]).find((v) => v?.call)!;
+    delete identity.call!.inputKeys;
+    expect(rig.registry.remoteApprovalFacts(record.id)!.call).not.toHaveProperty('inputKeys');
+    rig.approvals.tick();
+    expect(rig.sent.at(-1)!.status.detail?.approval?.allowed).toEqual(['deny']);
+  });
+});
+
+describe('an answer is held to what left this PC', () => {
+  it('tool-only, then command: the allow offer is another prompt id, so an allow for the deny-only offer the asker holds is never typed', async () => {
+    const rig = makeRig({ exposure: 'tool-only' });
+    await rig.prompt();
+    rig.approvals.tick();
+    const held = rig.offered()!;
+    expect(rig.sent.at(-1)!.status.detail?.approval?.allowed).toEqual(['deny']);
+    // Raised to command: the next pass queues an allow offer for the same dialog.
+    rig.state.exposure = 'command';
+    rig.clock.now += STATUS_GAP;
+    rig.approvals.tick();
+    const raised = rig.sent.at(-1)!.status.detail!.approval!;
+    expect(raised).toMatchObject({ command: 'echo key-test > fx-a.txt', allowed: ['allow', 'deny'] });
+    expect(raised.promptId).not.toBe(held);
+    // An allow naming the offer the asker held (it has not seen the raised one yet): nothing typed.
+    expect(await rig.approvals.take(HOST, TASK, 'ap-1', allow(held))).toEqual({ messageId: 'ap-1', outcome: 'not-done', reason: 'not-offered' });
+    expect(rig.writes).toEqual([]);
+    // Lowered and raised again: the deny-only offer in between has its own id as well.
+    rig.state.exposure = 'tool-only';
+    rig.clock.now += STATUS_GAP;
+    rig.approvals.tick();
+    const lowered = rig.sent.at(-1)!.status.detail!.approval!;
+    expect(lowered.allowed).toEqual(['deny']);
+    expect(new Set([held, raised.promptId, lowered.promptId]).size).toBe(2);
+    expect(lowered.promptId).toBe(held);
+    rig.state.exposure = 'command';
+    expect(await rig.approvals.take(HOST, TASK, 'ap-2', allow(lowered.promptId))).toEqual({ messageId: 'ap-2', outcome: 'not-done', reason: 'not-offered' });
+    expect(rig.writes).toEqual([]);
+    // The offer the asker was shown with its command: allowed.
+    expect(await rig.approvals.take(HOST, TASK, 'ap-3', allow(raised.promptId))).toEqual({ messageId: 'ap-3', outcome: 'done' });
+    expect(rig.writes).toEqual(['1']);
+  });
+
+  it('an allow offer queued but held back (the PC not connected) is not answerable yet', async () => {
+    const rig = makeRig({ exposure: 'tool-only' });
+    await rig.prompt();
+    rig.approvals.tick();
+    rig.state.exposure = 'command';
+    rig.state.connected = false;
+    rig.clock.now += STATUS_GAP;
+    rig.approvals.tick();
+    const record = rig.registry.list().pending[0]!;
+    expect(await rig.approvals.take(HOST, TASK, 'ap-1', allow(idOf(rig, record.id)))).toEqual({ messageId: 'ap-1', outcome: 'not-done', reason: 'not-offered' });
+    expect(rig.writes).toEqual([]);
   });
 
   it('a prompt whose status never left (the PC not connected): not offered, so nothing typed', async () => {
@@ -494,7 +587,7 @@ describe('an answer is held to what left this PC', () => {
     const record = await rig.prompt();
     rig.approvals.tick();
     expect(rig.sent).toEqual([]);
-    const id = promptIdOf(rig.registry.remoteApprovalFacts(record.id)!)!;
+    const id = idOf(rig, record.id);
     expect(await rig.approvals.take(HOST, TASK, 'ap-1', deny(id))).toMatchObject({ outcome: 'not-done', reason: 'not-offered' });
     expect(rig.writes).toEqual([]);
   });
@@ -502,7 +595,7 @@ describe('an answer is held to what left this PC', () => {
   it('a refusal is stored per message: a resend after the prompt became answerable replays it', async () => {
     const rig = makeRig();
     const record = await rig.prompt();
-    const id = promptIdOf(rig.registry.remoteApprovalFacts(record.id)!)!;
+    const id = idOf(rig, record.id);
     // Before any status left: not offered.
     expect(await rig.approvals.take(HOST, TASK, 'ap-1', deny(id))).toMatchObject({ reason: 'not-offered' });
     rig.approvals.tick();
@@ -517,7 +610,7 @@ describe('only a linked pane\'s task', () => {
     rig.state.linked = false;
     const record = await rig.prompt();
     rig.approvals.tick();
-    const id = promptIdOf(rig.registry.remoteApprovalFacts(record.id)!)!;
+    const id = idOf(rig, record.id);
     expect(await rig.approvals.take(HOST, TASK, 'ap-1', deny(id))).toEqual({ messageId: 'ap-1', outcome: 'not-done', reason: 'not-linked' });
     rig.clock.now += STATUS_GAP;
     rig.approvals.tick();
@@ -740,7 +833,7 @@ describe('the command offered at exposure command', () => {
       const approval = rig.sent.at(-1)!.detail!.approval!;
       expect(approval.allowed).toEqual(['deny']);
       expect(approval.cut || approval.redacted || command === '').toBe(true);
-      expect(await rig.approvals.take(HOST, TASK, 'ap-1', allow(approval.promptId))).toMatchObject({ outcome: 'not-done', reason: 'deny-only' });
+      expect(await rig.approvals.take(HOST, TASK, `ap-${command.length}`, allow(approval.promptId))).toMatchObject({ outcome: 'not-done', reason: 'deny-only' });
       expect(rig.resolves).toEqual([]);
     }
   });

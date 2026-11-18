@@ -81,6 +81,8 @@ export const APPROVALS_PER_WINDOW = 60;
 /** Refusal audit lines per PC in a window; past it one line says how many were left out. */
 export const APPROVAL_AUDIT_REFUSALS_PER_WINDOW = 30;
 export const APPROVAL_WINDOW_MS = 60_000;
+/** Outcomes kept in memory for message ids whose receipt could not be written. */
+export const APPROVAL_TOMBSTONES_MAX = 4096;
 /** The file the outcomes are stored in. */
 export const APPROVAL_RECEIPTS_FILE = 'a2a-remote-approval-receipts.json';
 
@@ -157,11 +159,20 @@ export function decideRemoteApproval(f: RemoteApprovalFacts): RemoteApprovalVerd
   return no('unsupported-tool');
 }
 
-/** The id a prompt is offered under: its record and its dialog's hash (a plan's form hash). */
-export function promptIdOf(facts: Pick<RemoteApprovalRecordFacts, 'id' | 'promptFingerprint' | 'formFingerprint' | 'fencedPlan'>): string | null {
+/**
+ * The id a prompt is offered under: its record, its dialog's hash (a plan's
+ * form hash), and what the offer says: the exposure, the decisions it allows
+ * and the command it shows. An offer that changes in any of these is another
+ * id, so an answer names the offer it was given, never a later one.
+ */
+export function promptIdOf(
+  facts: Pick<RemoteApprovalRecordFacts, 'id' | 'promptFingerprint' | 'formFingerprint' | 'fencedPlan'>,
+  offer: { exposure: A2aApprovalExposure; allowed: readonly A2aRemoteApprovalDecision[]; command?: string },
+): string | null {
   const fp = facts.fencedPlan ? facts.formFingerprint : facts.promptFingerprint;
   if (!fp) return null;
-  return crypto.createHash('sha256').update(`${facts.id}\0${fp}`).digest('hex').slice(0, 16);
+  const command = offer.command === undefined ? '-' : crypto.createHash('sha256').update(offer.command, 'utf8').digest('hex');
+  return crypto.createHash('sha256').update([facts.id, fp, offer.exposure, offer.allowed.join(','), command].join('\0')).digest('hex').slice(0, 16);
 }
 
 /**
@@ -265,6 +276,12 @@ export class RemoteApprovals {
   private readonly tracked = new Map<string, Tracked>();
   /** Tasks with an approval being carried out now: one at a time each. */
   private readonly busy = new Set<string>();
+  /**
+   * Outcomes told for a message id whose receipt could not be written (the
+   * store failed or is full): answered the same to a resend while this
+   * daemon runs. Oldest dropped past APPROVAL_TOMBSTONES_MAX.
+   */
+  private readonly tombstones = new Map<string, A2aRemoteApprovalOutcome>();
   private readonly reporter: HeadlessStatusReporter;
   private readonly admitted: Window;
   private readonly audited: Window;
@@ -314,7 +331,8 @@ export class RemoteApprovals {
     if (!this.deps.anyOn()) {
       this.stop();
       this.tracked.clear();
-      this.chains.clear();
+      // A chain broken stays broken until its task ends; one that is not is started again from its proof.
+      for (const [id, chain] of [...this.chains]) if (!chain.broken) this.chains.delete(id);
       this.reporter.tick([]);
       return;
     }
@@ -374,11 +392,19 @@ export class RemoteApprovals {
     const bodyHash = receiptHash([taskId, approval.promptId, approval.decision]);
     const seen = receipts.peek(owner, messageId, approvalId, bodyHash);
     if (seen?.kind === 'in-flight') return 'running';
-    const stored = this.storedOutcome(seen, messageId);
+    const tombKey = `${owner}\0${messageId}`;
+    const stored = this.storedOutcome(seen, messageId) ?? this.tombstones.get(tombKey) ?? null;
     if (stored) {
       this.audit(hostId, taskId, messageId, approval, `stored:${stored.outcome}${stored.reason ? `:${stored.reason}` : ''}`);
       return stored;
     }
+    /** An outcome told without a receipt on disk: kept for a resend while this daemon runs. */
+    const tombstone = (out: A2aRemoteApprovalOutcome): A2aRemoteApprovalOutcome => {
+      this.tombstones.delete(tombKey);
+      this.tombstones.set(tombKey, out);
+      while (this.tombstones.size > APPROVAL_TOMBSTONES_MAX) this.tombstones.delete(this.tombstones.keys().next().value as string);
+      return out;
+    };
     /** A refusal: stored for this message id first, so a resend answers it again. */
     const refuse = async (reason: A2aRemoteApprovalReason, fp?: string): Promise<A2aRemoteApprovalOutcome | 'running'> => {
       this.audit(hostId, taskId, messageId, approval, `not-done:${reason}`, fp);
@@ -386,15 +412,14 @@ export class RemoteApprovals {
         const begun = await receipts.begin(owner, messageId, approvalId, bodyHash);
         if (begun.kind === 'new') {
           await receipts.finish(owner, messageId, 'refused', { status: 409, body: { outcome: 'not-done', reason } });
-        } else if (begun.kind === 'in-flight') {
-          return 'running';
-        } else if (begun.kind !== 'full') {
-          return this.storedOutcome(begun, messageId) ?? { messageId, outcome: 'not-done', reason };
+          return { messageId, outcome: 'not-done', reason };
         }
+        if (begun.kind === 'in-flight') return 'running';
+        if (begun.kind !== 'full') return this.storedOutcome(begun, messageId) ?? tombstone({ messageId, outcome: 'not-done', reason });
       } catch {
-        // Not stored: nothing was typed either way.
+        // Not written: kept in memory below.
       }
-      return { messageId, outcome: 'not-done', reason };
+      return tombstone({ messageId, outcome: 'not-done', reason });
     };
     if (this.deps.exposure(hostId) === null) return refuse('approvals-off');
     const task = this.deps.tasks.get(taskId);
@@ -426,11 +451,11 @@ export class RemoteApprovals {
           begun = await receipts.begin(owner, messageId, approvalId, bodyHash);
         } catch {
           this.audit(hostId, taskId, messageId, approval, 'not-done:unavailable', fp8);
-          return { messageId, outcome: 'not-done', reason: 'unavailable' };
+          return tombstone({ messageId, outcome: 'not-done', reason: 'unavailable' });
         }
         if (begun.kind === 'in-flight') return 'running';
         if (begun.kind !== 'new') {
-          return this.storedOutcome(begun.kind === 'full' ? null : begun, messageId) ?? { messageId, outcome: 'not-done', reason: 'unavailable' };
+          return this.storedOutcome(begun.kind === 'full' ? null : begun, messageId) ?? tombstone({ messageId, outcome: 'not-done', reason: 'unavailable' });
         }
         let result: ApprovalResolveResult;
         try {
@@ -587,7 +612,8 @@ export class RemoteApprovals {
       if (verdict.reason === 'chain-broken' && !chain.broken && chain.baseline !== null) this.breakChain(task.id, chain, 'the pane took a key that was not this channel\'s');
       return { reason: verdict.reason };
     }
-    const promptId = promptIdOf(facts);
+    const shownCommand = command && command.text.trim() !== '' ? command.text : undefined;
+    const promptId = exposure ? promptIdOf(facts, { exposure, allowed: verdict.allowed, ...(shownCommand !== undefined ? { command: shownCommand } : {}) }) : null;
     if (!promptId || !facts.call) return { reason: 'unbound' };
     return {
       facts,
@@ -595,7 +621,7 @@ export class RemoteApprovals {
       offer: {
         promptId,
         tool: facts.call.name,
-        ...(command && command.text.trim() !== '' ? { command: command.text } : {}),
+        ...(shownCommand !== undefined ? { command: shownCommand } : {}),
         redacted: command?.redacted ?? false,
         cut: command?.cut ?? false,
         ...(facts.autoDenyAt ? { autoDenyAt: facts.autoDenyAt } : {}),

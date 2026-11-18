@@ -184,7 +184,8 @@ export class ApprovalSwitchStore {
 const LOGGED_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
- * `a2a.remote.approvals.set`: validate, save, and write one log line naming
+ * `a2a.remote.approvals.set`: validate (only a PC `paired` knows now may be
+ * turned on), save, and write one log line naming
  * who asked (the caller's pane, or `none`), the PC, and the exposure before
  * and after. Nothing else goes in that line. `changed` runs after a save that
  * turned the PC on or off.
@@ -192,7 +193,7 @@ const LOGGED_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 export function setApprovals(
   store: ApprovalSwitchStore,
   params: Record<string, unknown>,
-  deps: { log: StoreLog; changed?: (hostId: HostId, on: boolean) => void },
+  deps: { log: StoreLog; changed?: (hostId: HostId, on: boolean) => void; paired?: (hostId: HostId) => boolean },
 ): { ok: true; hosts: Record<HostId, A2aApprovalExposure> } | { ok: false; error: string } {
   const hostId = params['hostId'];
   const exposure = params['exposure'];
@@ -204,6 +205,8 @@ export function setApprovals(
   deps.log('info', `[a2a-remote] approvals set by=${by} host=${validHost ? hostId : 'invalid'} ${before}->${validExposure ? exposure : 'invalid'}`);
   if (!validHost) return { ok: false, error: 'hostId must be a paired PC\'s host id' };
   if (!validExposure) return { ok: false, error: "exposure must be 'off', 'tool-only' or 'command'" };
+  // Turning a PC on needs it paired now; turning one off never does.
+  if (exposure !== 'off' && deps.paired && !deps.paired(hostId)) return { ok: false, error: 'that PC is not paired with this one' };
   const res = store.set(hostId, exposure);
   if (res.ok && (before === 'off') !== (exposure === 'off')) deps.changed?.(hostId, exposure !== 'off');
   return res;

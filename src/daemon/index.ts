@@ -11357,6 +11357,8 @@ async function main(): Promise<void> {
     onA2aRpc(A2A_APPROVALS_RPC.set, async (params) => {
       const res = setApprovals(a2aApprovalSwitch, params, {
         log: a2aLog,
+        // Only a PC paired now may be turned on (a revoke during the CLI's confirmation leaves it off).
+        paired: (hostId) => a2aPeers.list().some((p) => p.hostId === hostId && !p.revokedAt) || a2aRemoteHosts.get(hostId) !== undefined,
         // `approval.1` is advertised only while it is on: the streams with that PC open again when that changes.
         changed: (hostId) => a2aDelivery?.readvertise(hostId),
       });
@@ -11543,7 +11545,7 @@ async function main(): Promise<void> {
         // Behind its own reporter (one status per prompt and one per outcome, the same floor).
         status: {
           peer: (taskId) => a2aDeliveryRef?.statusPeer(taskId) ?? null,
-          send: (taskId, status) => a2aDeliveryRef?.sendStatus(taskId, status) ?? { ok: false, error: 'unavailable' },
+          send: (taskId, status) => a2aDeliveryRef?.sendStatus(taskId, status, 'approvals') ?? { ok: false, error: 'unavailable' },
         },
         log: a2aLog,
       });

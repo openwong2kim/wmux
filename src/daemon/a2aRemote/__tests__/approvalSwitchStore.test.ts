@@ -143,6 +143,24 @@ describe('approvals.set', () => {
     expect(third.changed).toEqual([[PC_A, false]]);
   });
 
+  it('a PC not paired now can be turned off but never on', () => {
+    const s = store();
+    s.set(PC_A, 'command');
+    let paired = false;
+    const lines: string[] = [];
+    const call = (exposure: string) => setApprovals(s, { hostId: PC_A, exposure }, { log: (_l, m) => lines.push(m), paired: () => paired });
+    expect(call('command')).toEqual({ ok: false, error: 'that PC is not paired with this one' });
+    expect(call('tool-only')).toMatchObject({ ok: false });
+    expect(s.exposure(PC_A)).toBe('command');
+    expect(call('off')).toMatchObject({ ok: true });
+    expect(s.exposure(PC_A)).toBeNull();
+    expect(call('tool-only')).toMatchObject({ ok: false });
+    expect(s.exposure(PC_A)).toBeNull();
+    paired = true;
+    expect(call('tool-only')).toMatchObject({ ok: true });
+    expect(lines).toHaveLength(5);
+  });
+
   it('a refused call is logged the same way, with no value it was given', () => {
     const s = store();
     const bad = set(s, { hostId: 'not\na host', exposure: 'everything' });

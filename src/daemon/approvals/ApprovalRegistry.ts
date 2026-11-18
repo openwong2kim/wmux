@@ -427,8 +427,8 @@ export interface RemoteApprovalRecordFacts {
   fencedPlan: boolean;
   /** Bound at creation: the dialog spelled the call (TerminalPromptIdentity.matched). */
   matched: boolean;
-  /** The bound call: its tool, whole command, and the keys of its whole input. */
-  call?: { name: string; command: string; inputKeys: string[] };
+  /** The bound call: its tool, whole command, and the keys of its whole input (undefined: not known). */
+  call?: { name: string; command: string; inputKeys?: string[] };
 }
 
 /**
@@ -821,7 +821,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       ...(yes ? { yesKey: yes.key } : {}),
       fencedPlan: record.form?.kind === 'plan' && record.channel === 'fenced-keys',
       matched: identity?.matched === true,
-      ...(identity?.call ? { call: { name: identity.call.name, command: identity.call.command, inputKeys: [...(identity.call.inputKeys ?? [])] } } : {}),
+      ...(identity?.call
+        ? { call: { name: identity.call.name, command: identity.call.command, ...(identity.call.inputKeys ? { inputKeys: [...identity.call.inputKeys] } : {}) } }
+        : {}),
     };
   }
 

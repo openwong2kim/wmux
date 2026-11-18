@@ -7,6 +7,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { A2A_REMOTE_PROTOCOL, type A2aApprovalExposure, type A2aOutboxRecordV1, type A2aRemoteStatusV1 } from '../../../shared/a2aRemote';
 import { A2aRemoteDelivery, type A2aRemoteDeliveryDeps } from '../delivery';
+import { APPROVAL_STATUS_ID_PREFIX, statusMessageId } from '../outbound';
 
 const HOST = '11111111-1111-4111-8111-111111111111';
 const dirs: string[] = [];
@@ -31,9 +32,9 @@ function delivery(exposure: { now: A2aApprovalExposure | null }): A2aRemoteDeliv
 }
 
 const OFFER = { promptId: '0123456789abcdef', tool: 'Bash', command: 'ls', redacted: false, cut: false, allowed: ['allow', 'deny'] as Array<'allow' | 'deny'> };
-function queue(d: A2aRemoteDelivery, status: A2aRemoteStatusV1): A2aOutboxRecordV1 {
+function queue(d: A2aRemoteDelivery, status: A2aRemoteStatusV1, source?: 'approvals'): A2aOutboxRecordV1 {
   return d.outbox.enqueue(HOST, {
-    protocol: A2A_REMOTE_PROTOCOL, linkId: 'l', linkVersion: 2, messageId: `ss-${Math.random().toString(16).slice(2)}`,
+    protocol: A2A_REMOTE_PROTOCOL, linkId: 'l', linkVersion: 2, messageId: statusMessageId(`t-${Math.random()}`, status, source),
     kind: 'status', taskId: 't', status, sentAt: new Date().toISOString(),
   });
 }
@@ -64,6 +65,21 @@ describe('a queued approvals status as it leaves', () => {
     exposure.now = 'command';
     const again = queue(d, { kind: 'question', since, detail: { question: 'permission', approval: OFFER } });
     expect(withhold(d, again)).toBe(false);
+  });
+
+  it('off for that PC now: every status the approvals producer made is dropped, its plain ones too', () => {
+    const exposure: { now: A2aApprovalExposure | null } = { now: null };
+    const d = delivery(exposure);
+    const plain = queue(d, { kind: 'waiting-input', since }, 'approvals');
+    expect(plain.envelope.messageId.startsWith(APPROVAL_STATUS_ID_PREFIX)).toBe(true);
+    expect(withhold(d, plain)).toBe(true);
+    expect(d.outbox.get(HOST, plain.seq)).toMatchObject({ state: 'refused' });
+    // Another producer's plain status (a headless worker's) goes.
+    const headless = queue(d, { kind: 'waiting-input', since });
+    expect(headless.envelope.messageId.startsWith('ss-')).toBe(true);
+    expect(withhold(d, headless)).toBe(false);
+    exposure.now = 'tool-only';
+    expect(withhold(d, queue(d, { kind: 'working', since }, 'approvals'))).toBe(false);
   });
 
   it('a status about nothing approvals-related is not touched', () => {
