@@ -477,7 +477,7 @@ describe('one invite for A2A and the workspaces', () => {
     await act(async () => { share().click(); });
     await settle();
     expect(web.pairStart).not.toHaveBeenCalled();
-    expect(q('remote-connect-share-error')?.textContent).toContain('Share & pair has a pairing code open');
+    expect(q('remote-connect-share-error')?.textContent).toContain('A phone pairing has a code open');
     expect(share().getAttribute('aria-checked')).toBe('false');
     expect(writeEphemeral).not.toHaveBeenCalled();
   });
@@ -509,7 +509,7 @@ describe('one invite for A2A and the workspaces', () => {
     await render({ initialTab: 'invite' });
     await settle();
     expect(share().getAttribute('aria-disabled') === 'true' || share().hasAttribute('disabled')).toBe(true);
-    expect(q('remote-connect-invite')?.textContent).toContain('Turn on Share & pair over Tailscale or HTTPS first.');
+    expect(q('remote-connect-invite')?.textContent).toContain('Turn on sharing over Tailscale or HTTPS in Phone access settings first.');
   });
 
   it('a pasted bundle connects both; what failed stays for another try', async () => {

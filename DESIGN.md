@@ -1103,8 +1103,8 @@ Settings › LAN keeps only the listener switches. Top to bottom:
 
 - **Header:** the 16px title, then one muted line that sums it up
   (`2 of 3 PCs connected · 1 of 1 phones connected`, or `Nothing connected
-  yet`; never orange). On the right, LAN messages (only while some wait) and
-  **Connect a PC…** (secondary).
+  yet`; never orange). On the right, LAN messages (only while some wait),
+  **Connect a PC…** and **Pair a phone…** (both secondary).
 - **This computer — one line** on a `--selection-subtle` band: this PC's
   name, phone access (`off` / this computer only / local network / Tailnet),
   the A2A state, worded for people as PC messages (`PC messages on ·
@@ -1113,23 +1113,31 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   refuses, `PC messages: no firewall rule for port 45660`, another listener
   error, or `PC messages off`; never "not reachable", which the host cannot
   know; the UI never says "A2A") and a
-  **Details** toggle. While phone access is off, Share & pair sits on
-  the line (its popover leads with Pair a phone, which starts sharing and
-  shows the QR in the same click. Above that button a two-option choice
-  says what the phone may do: View only (the default) or Can type, step 2's
-  own two words, with one line under it. Can type raises this computer's
-  input as step 2 does; when that would let other devices type too, the
-  click opens step 2 instead, so its notice is confirmed first. The
-  sidebar's phone and computer cards carry the same choice above their
-  scope paragraph, and never raise the input: with it off, Can type says so
-  in that line. It is offered only once the address will
-  be reachable: a usable tailnet ticks HTTPS over Tailscale visibly first,
-  never the LAN; otherwise the popover says why, as the wizard's first step
-  does. Start stays as a secondary that starts exactly what the boxes show).
-  A popover opened there keeps the button on the line until it closes, so
-  the QR survives sharing turning on.
+  **Details** toggle. **⚙ Phone access settings…** (a gear icon, not a
+  glyph in the label) always sits on the line and opens settings only:
+  sharing and Stop, this computer's input, conversation access, upload,
+  the transports and Advanced, Open here; nothing that pairs. Pairing a
+  phone is the **Pair a phone** dialog (owner decision 2026-11-18), one
+  modal mounted once for the app and opened from Pair a phone… in the
+  header, a ghost **+ Pair a phone** on the Phones heading and in the empty
+  state, and the sidebar's Remote menu. One screen, top to bottom: a
+  readiness line (Ready, Already shared over HTTPS, or the problem with
+  its one fix and Check again on that line; sharing without HTTPS points at
+  Phone access settings' Stop instead of restarting it), the name
+  (prefilled, unique), what the phone may do — View only (the default) or
+  Can type, one line under it — and, when Can type would let other devices
+  type too, that notice with its confirm checkbox in place; then a folded
+  "What a paired phone can see"; Cancel and **Pair** (the primary). Can
+  type raises this computer's input (never lowers it) after re-reading the
+  server at the click; the upload grant is never touched. Pair turns into
+  the QR, the code, New code and Copy link with the chosen access, and its
+  only action is Cancel the pairing in progress; then "“Name” is connected
+  · View only", a line that its access is changed on its Phones row, Pair
+  another phone and **Done**. Every way the dialog closes before a phone
+  arrives (×, Escape, cancel) burns the code and puts back any input it
+  raised.
   Details unfolds in place: the phone
-  address without its token (copy), whether input is allowed, Share & pair,
+  address without its token (copy), whether input is allowed,
   the PC messages port and the full security code (the certificate fingerprint;
   plain mono values; the code wraps anywhere, copy), and while A2A listens
   a **Firewall** line: what the last check said ("Allowed on private
@@ -1137,12 +1145,10 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   one has; "Not checked" before any check; "Could not read the firewall
   settings" after a failed one; never a bare dash), and in the actions
   column a ghost **Check firewall**, always, plus a ghost **Remove** for
-  wmux's own rule. Connecting another computer by A2A starts from
-  Connect a PC…; as a workspace share it starts from Connect a PC… or from
-  Share & pair's **Connect another computer**, which mints the pairing link
-  and copies it in one click. Connect a PC's invite tab carries **Also let
-  it see this PC's workspaces** (off by default, offered only while Share &
-  pair answers over HTTPS): ticked, the copy holds the invite and a
+  wmux's own rule. Connecting another computer starts from Connect a PC…,
+  by A2A or as a workspace share. Connect a PC's invite tab carries **Also
+  let it see this PC's workspaces** (off by default, offered only while
+  phone access answers over HTTPS): ticked, the copy holds the invite and a
   view-only pairing link on a second line, and the other PC's one paste
   connects both.
 - **Port and firewall notices** — directly under the band, drawn only
@@ -1185,8 +1191,9 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   The same rows appear in Connect a PC's invite tab (a
   bind failure; after copying, a muted "If the other PC can't connect, come
   back here and check the firewall." with a ghost Check firewall), Settings
-  › LAN (A2A and LanLink) and Share & pair (a failed start with Use port N
-  in the stopped body; the firewall row while exposed to the network);
+  › LAN (A2A and LanLink) and Phone access settings (a failed start with
+  Use port N in the stopped body; the firewall row while exposed to the
+  network);
   there their actions are always secondary.
 - **Tailscale** — inside the same band, under a `--stroke` hairline: four
   checks from one read-only `tailscale status --json`, run when the page
@@ -1203,10 +1210,10 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   the same account). Nothing ever runs `tailscale up` or installs anything.
   The failed mark is the caution yellow warning glyph; the rows stay
   neutral and no orange is spent.
-  The same button follows a Tailscale failure elsewhere: Share & pair's
-  notice and the phone wizard's first step, and every place a connection
-  to another PC starts (Connect a PC, Share & pair's Connect another
-  computer, the attach and Pair again dialog), which check Tailscale
+  The same button follows a Tailscale failure elsewhere: Phone access
+  settings' notice and the Pair a phone dialog's readiness line, and every
+  place a connection to another PC starts (Connect a PC, the attach and
+  Pair again dialog), which check Tailscale
   before connecting to a piece whose every address is in the tailnet range.
   An address that is surely Tailscale's (a `*.ts.net` name, or one its
   status lists as a peer) is not tried when the check fails, which is said
@@ -2585,6 +2592,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-11-03 | The whole file in the company review (insight 170 follow-up): a quiet **Show the whole file** below the review's groups reads wmux.json again and shows it whole, only while it holds the bytes the review opened on; each character a reader would not see is shown as its code point where it sits | Approve trusts every byte of the file, and the groups list only what wmux reads from it: a key it does not know or an entry it dropped was approved unseen. Showing the file itself covers whatever wmux does not parse; marking the invisible characters keeps the view the bytes the grant binds, and a list of dropped entries would need the parser to report each one |
 | 2026-11-03 | Owner-approved (agent marker mockup): agent identity colours, the second exception to "colour carries state only". While agents drive other apps, each one's halo, name pill and pointer on screen wear its own colour from a ten-fill palette (slot 0 the attention orange, red left out, dark ink ≥ 4.5:1 on every fill), and that pane carries the same colour as an 8px filled dot before its tab title and before its workspace's name on the sidebar row (at most three, then "+N"), once it has used computer use. The palette is used for nothing else | With several agents on one desktop, a marker on screen has to say which pane it belongs to at a glance; a name pill alone needs reading. One colour per agent, kept until wmux quits, makes the marker and the pane one thing. Red stays the error colour, and confining the palette to markers and their dots keeps every other colour a state |
 | 2026-11-04 | Owner-approved: Hangul renders in a bundled Pretendard subset after each look's Latin face | Windows' Malgun Gothic fallback was taller and had no 500 weight |
+| 2026-11-18 | Owner-approved (phone-only pairing mockup, a–c): pairing a phone is one modal, the Pair a phone dialog — readiness, name, View only / Can type with its shared-access notice in place, then the QR, then connected — mounted once and opened from the Remote page header, the Phones heading, the empty state and the sidebar's Remote menu. The Remote popover becomes Other computers plus two buttons, Pair a phone… and ⚙ Phone access settings… (settings only, no pairing; the Remote page's line button is the same settings view). The four-step wizard, the popover's phone card and its Connect another computer card are retired; a computer is connected from Connect a PC… | Pairing lived in three places (the popover's phone card, its computer card and a four-step wizard inside a 288px popover), and the popover mixed one-time pairing with standing settings. One focused dialog per pairing and one settings surface make each question one place |
 
 ### Desktop conversation view
 
@@ -2765,7 +2773,8 @@ no empty reply row or reserved gap under the latest prompt.
 ### Sidebar shortcuts and Agent dock refinement (2026-09-21)
 
 Sidebar shortcuts appear in order: Search, Remote, Fleet. Search opens the
-command palette. Remote opens the existing browser/phone pairing controls;
+command palette. Remote opens a menu: Other computers, then **Pair a
+phone…** (the app's one pairing dialog) and **⚙ Phone access settings…**;
 Agent, Git and Channels remain in the tools panel. The compact sidebar
 uses the same destinations with accessible names.
 

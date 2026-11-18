@@ -33,7 +33,6 @@ function Harness({ running = false, initialUpload = false }: { running?: boolean
   const [allowInput, setAllowInput] = useState(false);
   const [tailscale, setTailscale] = useState(false);
   const [expose, setExpose] = useState(false);
-  const [pairAllowInput, setPairAllowInput] = useState(false);
   const [allowTranscript, setAllowTranscript] = useState(false);
   const [allowUpload, setAllowUpload] = useState(initialUpload);
   const [allowDangerousLaunch, setAllowDangerousLaunch] = useState(false);
@@ -51,8 +50,6 @@ function Harness({ running = false, initialUpload = false }: { running?: boolean
     onToggleAdvanced: () => setAdvancedOpen((v) => !v),
     busy: false,
     copied: null,
-    deviceName: '',
-    qr: null,
     onToggleAllowInput: () => setAllowInput((v) => !v),
     onToggleExpose: () => setExpose((v) => !v),
     onToggleTailscale: () => setTailscale((v) => !v),
@@ -62,16 +59,9 @@ function Harness({ running = false, initialUpload = false }: { running?: boolean
     onStart: noop,
     onStop: noop,
     onCopyUrl: noop,
-    onCopyPairUrl: noop,
-    onCopyPairCode: noop,
     onOpenUrl: noop,
     onOpenLink: noop,
-    onNewPairCode: noop,
-    onDeviceNameChange: noop,
-    onStartPairing: noop,
     onOpenDevices: noop,
-    pairAllowInput,
-    onTogglePairAllowInput: () => setPairAllowInput((v) => !v),
     t,
   };
   return createElement(WebPopoverBody, props);
@@ -124,31 +114,6 @@ describe('Remote popover options', () => {
     expect(box.getAttribute('aria-checked')).toBe('false');
     press(box, ' ');
     expect(box.getAttribute('aria-checked')).toBe('true');
-  });
-
-  it('the phone card asks View only or Can type, View only first, above the scope paragraph', () => {
-    act(() => root.render(createElement(Harness, { running: true })));
-    const group = container.querySelector('[data-testid="pair-access"]')!;
-    expect(group.getAttribute('role')).toBe('radiogroup');
-    const radios = Array.from(group.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
-    expect(radios.map((r) => [r.textContent, r.getAttribute('aria-checked')])).toEqual([['web.wizardViewOnly', 'true'], ['web.wizardRemoteControl', 'false']]);
-    act(() => radios[1]!.click());
-    expect(radios[1]!.getAttribute('aria-checked')).toBe('true');
-    // Picking the chosen option again changes nothing.
-    act(() => radios[1]!.click());
-    expect(radios[1]!.getAttribute('aria-checked')).toBe('true');
-  });
-
-  it('the one-click card asks it too while stopped, says what each allows, and never raises the server\'s input', () => {
-    act(() => root.render(createElement(Harness)));
-    const group = () => container.querySelector('[data-testid="pair-access"]')!;
-    expect(group().nextElementSibling?.textContent).toBe('web.wizardViewOnlyHint');
-    act(() => group().querySelectorAll<HTMLButtonElement>('[role="radio"]')[1]!.click());
-    // This computer's input is off for the next Start, so Can type says so.
-    expect(group().nextElementSibling?.textContent).toBe('web.pairInputOff');
-    expect(checkboxFor('web.allowInput').box.getAttribute('aria-checked')).toBe('false');
-    act(() => checkboxFor('web.allowInput').label.click());
-    expect(group().nextElementSibling?.textContent).toBe('web.pairCanTypeHint');
   });
 
   it('Photo & file upload reads off and disabled, with the reason, while input is off', () => {

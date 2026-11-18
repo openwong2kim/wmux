@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 //
-// The mounted "Connect another computer" card: it pairs with ITS OWN name and
-// grant under the computer flow, cancels the other card's pairing on request,
-// and takes a copied link back off the clipboard only while the clipboard
-// still holds exactly that link.
+// A computer pairing link copied to the clipboard (Connect a PC… copies it
+// through main's ephemeral clipboard): the Remote hub takes it back off once
+// it no longer pairs anything, and only while the clipboard still holds
+// exactly that link.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
@@ -92,42 +92,16 @@ async function mountAndOpen(): Promise<void> {
   await flush();
 }
 
-function buttonNamed(text: string): HTMLButtonElement {
-  const b = Array.from(document.querySelectorAll('button')).find((x) => x.textContent === text);
-  if (!b) throw new Error(`no button ${text}`);
-  return b;
+/** The link as Connect a PC… copies it: main owns it, with its lifetime. */
+async function copyLink(ttl = 600_000): Promise<void> {
+  await act(async () => { await window.clipboardAPI!.writeEphemeral!(LINK, ttl); });
 }
 
-describe('WebToggle — Connect another computer', () => {
-  it('starts the computer flow with its own prefilled name and unticked grant, and copies the link at once', async () => {
-    status = tailnet;
-    pairStart.mockResolvedValue(computerPending);
-    await mountAndOpen();
-    await act(async () => buttonNamed('Create and copy link').click());
-    await flush();
-    expect(pairStart).toHaveBeenCalledWith('Computer', false, 'computer');
-    expect(document.querySelector('[data-testid="web-computer-link"]')?.textContent).toBe(LINK);
-    expect(writeEphemeral).toHaveBeenCalledWith(LINK, expect.any(Number));
-    expect(clipboard).toBe(LINK);
-    expect(buttonNamed('Copied')).toBeTruthy();
-  });
-
-  it('the phone card cancels a live computer pairing instead of starting over it', async () => {
-    status = computerPending;
-    pairCancel.mockResolvedValue(tailnet);
-    await mountAndOpen();
-    expect(document.body.textContent).toContain('Another computer is being paired right now');
-    await act(async () => buttonNamed('Cancel the pairing in progress').click());
-    await flush();
-    expect(pairCancel).toHaveBeenCalledTimes(1);
-    expect(pairStart).not.toHaveBeenCalled();
-  });
-
+describe('WebToggle — a copied computer link', () => {
   it('clears the copied link once it is consumed — only if the clipboard still holds it', async () => {
     status = computerPending;
     await mountAndOpen();
-    await act(async () => buttonNamed('Copy link').click());
-    await flush();
+    await copyLink(status.pairExpiresAt! - Date.now());
     expect(clipboard).toBe(LINK);
 
     // The other computer redeemed it: the next poll shows no pending pairing.
@@ -141,8 +115,7 @@ describe('WebToggle — Connect another computer', () => {
   it('survives a remount (Sidebar ↔ MiniSidebar): the link is still cleared at expiry', async () => {
     status = { ...computerPending, pairExpiresAt: Date.now() + 5_000 };
     await mountAndOpen();
-    await act(async () => buttonNamed('Copy link').click());
-    await flush();
+    await copyLink(status.pairExpiresAt! - Date.now());
     expect(writeEphemeral).toHaveBeenCalledWith(LINK, expect.any(Number));
     // The component goes away; main still owns the link and its expiry.
     act(() => root.unmount());
@@ -164,8 +137,7 @@ describe('WebToggle — Connect another computer', () => {
   it('leaves the clipboard alone when the operator copied something else since', async () => {
     status = computerPending;
     await mountAndOpen();
-    await act(async () => buttonNamed('Copy link').click());
-    await flush();
+    await copyLink(status.pairExpiresAt! - Date.now());
     clipboard = 'something the operator copied later';
     status = tailnet;
     await act(async () => { vi.advanceTimersByTime(10_000); });
@@ -176,8 +148,7 @@ describe('WebToggle — Connect another computer', () => {
   it('clears the copied link at expiry even while the popover is closed', async () => {
     status = { ...computerPending, pairExpiresAt: Date.now() + 5_000 };
     await mountAndOpen();
-    await act(async () => buttonNamed('Copy link').click());
-    await flush();
+    await copyLink(status.pairExpiresAt! - Date.now());
     // Close the popover: no polling from here on.
     const button = container.querySelector('[data-testid="deck-web-toggle"]') as HTMLButtonElement;
     await act(async () => button.click());

@@ -7,7 +7,7 @@
 // from a desktop Stop → Start with the phone Chat view silently off.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createElement, act } from 'react';
+import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import WebToggle from '../WebToggle';
 import type { WebTerminalInfo } from '../../../../shared/web';
@@ -52,7 +52,7 @@ async function flush(): Promise<void> {
 }
 
 async function mountAndOpen(): Promise<void> {
-  await act(async () => root.render(createElement(WebToggle)));
+  await act(async () => root.render(<WebToggle variant="page" />));
   await flush();
   const button = container.querySelector('[data-testid="deck-web-toggle"]') as HTMLButtonElement;
   await act(async () => button.click());

@@ -44,7 +44,7 @@ winget install openwong2kim.wmux    # or: choco install wmux
 
 **macOS** (Apple Silicon, macOS 13 Ventura or later) — [download the .dmg](https://github.com/openwong2kim/wmux/releases/latest) and drag wmux to Applications. It is Developer ID signed and notarized; on first launch the `wmux` CLI installs itself onto your PATH.
 
-**iPhone** — [wmux for iOS on the App Store](https://apps.apple.com/app/wmux-workspace-for-ai-agents/id6797904556) (free). In wmux, open **Remote** on the rail, choose **Share & pair**, turn on HTTPS over Tailscale, and scan the QR code with the app.
+**iPhone** — [wmux for iOS on the App Store](https://apps.apple.com/app/wmux-workspace-for-ai-agents/id6797904556) (free). In wmux, open **Remote** on the rail, choose **Pair a phone…**, press **Pair**, and scan the QR code with the app.
 
 **Linux** — experimental AppImage / .deb / .rpm builds are on the [releases page](https://github.com/openwong2kim/wmux/releases/latest).
 

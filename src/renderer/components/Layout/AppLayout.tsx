@@ -118,6 +118,7 @@ import WorkspacePrepDialog from '../Project/WorkspacePrepDialog';
 import { DictationHost } from '../Dictation/DictationHost';
 import { dictationAvailable } from '../Dictation/DictationButton';
 import AttachRemoteModal from '../Sidebar/AttachRemoteModal';
+import PhonePairDialog from '../StatusBar/PhonePairDialog';
 import { probeProjectConfig, maybeAutoApplyProjectLayout, workspaceProbeCwd } from '../../utils/projectConfigProbe';
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
@@ -844,6 +845,7 @@ export default function AppLayout() {
   // 6-field zustand subscription doesn't run when the panel is closed (I3).
   const searchPanelOpen = useStore((s) => s.searchPanelOpen);
   const remoteRepairHostId = useStore((s) => s.remoteRepairHostId);
+  const phonePairOpen = useStore((s) => s.phonePairOpen);
   const requestRemoteRepair = useStore((s) => s.requestRemoteRepair);
   // The rail page shown in the sheet. Anything but Workspaces covers the
   // sidebar and the panes, which stay mounted and inert underneath.
@@ -2446,6 +2448,20 @@ export default function AppLayout() {
           key={remoteRepairHostId}
           repairHostId={remoteRepairHostId}
           onClose={() => requestRemoteRepair(null)}
+        />
+      )}
+
+      {/* Pair a phone, from the Remote page or the sidebar's Remote menu. */}
+      {phonePairOpen && (
+        <PhonePairDialog
+          onClose={() => useStore.getState().setPhonePairOpen(false)}
+          onOpenSettings={() => {
+            const s = useStore.getState();
+            // The hub lives in the sidebar; without it, the Remote page's
+            // Phone access settings button is where Stop is.
+            if (s.remoteHubMounted > 0) s.openRemoteHub('settings');
+            else s.setAppRoute('remote');
+          }}
         />
       )}
 

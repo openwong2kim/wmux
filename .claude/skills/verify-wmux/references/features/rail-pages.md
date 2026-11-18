@@ -9,7 +9,7 @@ The left rail ("Navigation") switches the main area between Workspaces and five 
 - `bots-chat`: with the factory on and bots, the conversation list (`[data-bots-row]`, the HQ room first), a chat per row (`[data-bots-chat]`), the needs-you badge on a bot row (`[data-bots-needs]`) and on the rail item.
 - `fleet-empty`: "No agents running" with a "New agent" button and a List/Board layout switch.
 - `schedules-empty`: "Schedule a task" with six template buttons and "New schedule".
-- `remote-empty`: "Nothing connected yet", this computer's status, "Share & pair…", "Details", "Connect a PC…".
+- `remote-empty`: "Nothing connected yet", this computer's status, "Phone access settings…", "Details", "Connect a PC…", "Pair a phone…" (header) and "+ Pair a phone" (empty state). Pair a phone opens the `phone-pair-dialog`; pressing its Pair starts sharing with `tailscale: true`, which writes the machine's Tailscale serve config — not isolated by the suffix, so do not press it.
 - `git-no-repo`: "Not a git repository — focus a pane inside a repo." with tabs Issues, Pull Requests, Worktrees.
 - `git-repo`: with the active pane inside a repo, lists from `gh` (needs `gh` auth).
 
