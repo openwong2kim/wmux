@@ -1348,8 +1348,9 @@ export type DeliveryWrite = (ptyId: string, data: string) => void | Promise<void
  * pass, and the submit proof's base (null: a pane main runs itself, a failed
  * read, a daemon that reports no key count or epoch, or a delivery that did
  * not ask): the session's incarnation, the key count and its epoch then, the
- * transcript's size when the daemon knows it, and how many of this delivery's
- * writes the daemon had counted by then (`counted`).
+ * transcript's size read alongside it before the Enter when the daemon could
+ * tell it, and how many of this delivery's writes the daemon had counted by
+ * then (`counted`).
  */
 export interface ArmedEnterRetry {
   check: () => Promise<string | null>;
@@ -2830,23 +2831,28 @@ export function registerInputRpc(
    * and return the check its retried Enter must pass: the same agent, and no
    * key since but that Enter (one write, one key on the daemon's counter).
    * A pane whose state cannot be read (no daemon, a failed read) gets no retry.
-   * That same read is the submit proof's base (`proof`: asked for, with the
-   * transcript's size): the session's incarnation, key count and its epoch,
-   * when the daemon reports them (null otherwise).
+   * That same read is the submit proof's base (`proof`: asked for): the
+   * session's incarnation, key count and its epoch, when the daemon reports
+   * them (null otherwise). The transcript's size is a read of its own, sent
+   * after it and awaited before the Enter, so a slow transcript path costs
+   * the proof its floor, never the retry its baseline.
    */
   const armEnterRetry = async (ptyId: string, proof = false): Promise<ArmedEnterRetry> => {
     const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
-    const read = (first = false): Promise<Awaited<ReturnType<DaemonClient['getAgentState']>> | null> =>
+    const read = (transcriptOffset = false): Promise<Awaited<ReturnType<DaemonClient['getAgentState']>> | null> =>
       dc?.isConnected
-        ? Promise.resolve().then(() => dc.getAgentState(ptyId, { timeoutMs: 1_000, ...(first && proof ? { transcriptOffset: true } : {}) })).catch(() => null)
+        ? Promise.resolve().then(() => dc.getAgentState(ptyId, { timeoutMs: 1_000, ...(transcriptOffset ? { transcriptOffset: true } : {}) })).catch(() => null)
         : Promise.resolve(null);
-    const atEnter = await read(true);
+    const [atEnter, sized] = await Promise.all([read(), proof ? read(true) : Promise.resolve(null)]);
     const base: SubmitProofBase | null = proof && atEnter && typeof atEnter.keyInputRevision === 'number' && atEnter.incarnationId && atEnter.keyEpoch
       ? {
         incarnation: atEnter.incarnationId,
         keyEpoch: atEnter.keyEpoch,
         keyInputRevision: atEnter.keyInputRevision,
-        ...(atEnter.transcriptOffset !== undefined ? { transcriptOffset: atEnter.transcriptOffset } : {}),
+        // Only a size read from the same session as the base.
+        ...(sized?.transcriptOffset !== undefined && sized.incarnationId === atEnter.incarnationId && sized.keyEpoch === atEnter.keyEpoch
+          ? { transcriptOffset: sized.transcriptOffset }
+          : {}),
       }
       : null;
     const check = async (): Promise<string | null> => {

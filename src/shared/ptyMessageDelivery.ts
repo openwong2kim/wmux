@@ -274,8 +274,9 @@ export interface GatedSubmitRefusal {
  * again from 0 under a new one), that count once main's Enters are in it (the
  * count read right before the Enter plus the Enter writes the daemon counted),
  * the hash of the text typed (shared/promptHash.ts `promptHash`), and the size
- * of the session's transcript at that read when the daemon knew it (the
- * prompt's own entry can only be written at or after it). Recorded only;
+ * of the session's transcript read alongside that count, before the Enter,
+ * when the daemon could tell it (the prompt's own entry can only be written at
+ * or after it). Recorded only;
  * nothing acts on it yet.
  *
  * A consumer must compare `submitRevision` with strict equality, and only

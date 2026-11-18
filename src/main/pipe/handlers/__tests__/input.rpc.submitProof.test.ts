@@ -40,6 +40,8 @@ let retryUncertain: boolean;
 let composer: string;
 /** Transcript-size asks the daemon got. */
 let offsetAsks: number;
+/** The transcript-size read fails (a slow transcript path past its timeout). */
+let offsetFails: boolean;
 
 function harness() {
   const dc = {
@@ -53,6 +55,7 @@ function harness() {
       const count = writes.filter((w) => w.id === id).length;
       if (failAfterPaste && count === 1) throw new Error('timeout');
       if (opts.transcriptOffset) offsetAsks += 1;
+      if (opts.transcriptOffset && offsetFails) throw new Error('timeout');
       return {
         agentName: 'Claude Code', agentStatus: 'waiting', agentVerified: true, incarnationId: 'inc-1',
         inputQuiet: true, inputRevision: 1, hasDraft: false, keyInputIdleMs: 60_000,
@@ -106,6 +109,7 @@ beforeEach(() => {
   retryUncertain = false;
   composer = '';
   offsetAsks = 0;
+  offsetFails = false;
   vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => {
     if (method === 'input.findOwnerWorkspace') return { workspaceId: 'ws-a' };
     if (method === 'input.readScreen') return { text: composer };
@@ -131,6 +135,17 @@ describe('the submit proof of a gated delivery', () => {
     const res = await harness().gatedSubmit('pty-a', TEXT, 'Claude Code', ASK);
     expect(written()).toEqual([`\x1b[200~${TEXT}\x1b[201~`, '\r', '\r']);
     expect(res).toMatchObject({ ok: true, submit: { submitRevision: 3, incarnation: 'inc-1', keyEpoch: 'epoch-1', ptyId: 'pty-a' } });
+  });
+
+  it('a transcript size that cannot be read costs only the floor: the Enter retry keeps its baseline', async () => {
+    composer = `──────────\n❯ ${TEXT}\n──────────`;
+    offsetFails = true;
+    const res = await harness().gatedSubmit('pty-a', TEXT, 'Claude Code', ASK);
+    expect(written()).toEqual([`\x1b[200~${TEXT}\x1b[201~`, '\r', '\r']);
+    expect(res).toEqual({
+      ok: true,
+      submit: { ptyId: 'pty-a', incarnation: 'inc-1', keyEpoch: 'epoch-1', submitRevision: 3, promptHash: promptHash(TEXT) },
+    });
   });
 
   it('no proof when a retried Enter may or may not have landed', async () => {
