@@ -220,22 +220,101 @@ mod stub {
         ) -> *mut c_void;
         fn ConnectNamedPipe(pipe: *mut c_void, overlapped: *mut c_void) -> i32;
         fn WriteFile(file: *mut c_void, buf: *const u8, len: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
+        fn GetCurrentProcess() -> *mut c_void;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+        fn LocalFree(memory: *mut c_void) -> *mut c_void;
     }
     #[link(name = "advapi32")]
     extern "system" {
         fn GetUserNameW(buffer: *mut u16, size: *mut u32) -> i32;
+        fn OpenProcessToken(process: *mut c_void, access: u32, token: *mut *mut c_void) -> i32;
+        fn GetTokenInformation(token: *mut c_void, class: u32, info: *mut c_void, len: u32, returned: *mut u32) -> i32;
+        fn ConvertSidToStringSidW(sid: *mut c_void, text: *mut *mut u16) -> i32;
+        fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl: *const u16,
+            revision: u32,
+            descriptor: *mut *mut c_void,
+            size: *mut u32,
+        ) -> i32;
+    }
+
+    #[repr(C)]
+    struct SecurityAttributes {
+        length: u32,
+        descriptor: *mut c_void,
+        inherit_handle: i32,
     }
 
     const PIPE_ACCESS_DUPLEX: u32 = 3;
     const ERROR_PIPE_CONNECTED: i32 = 535;
+    const TOKEN_QUERY: u32 = 8;
+    const TOKEN_USER: u32 = 1;
 
     /// A synchronous server end: the test drives it from one thread.
     pub type Conn = File;
     pub struct Listener(usize);
 
+    /// This process's TokenUser SID in string form.
+    pub fn user_sid() -> String {
+        // SAFETY: token calls on handles owned and closed here; the info
+        // buffer is aligned for its leading SID pointer.
+        unsafe {
+            let mut token = std::ptr::null_mut();
+            assert_ne!(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token), 0);
+            let mut len = 0u32;
+            GetTokenInformation(token, TOKEN_USER, std::ptr::null_mut(), 0, &mut len);
+            let mut info = vec![0usize; (len as usize).div_ceil(std::mem::size_of::<usize>())];
+            assert_ne!(
+                GetTokenInformation(token, TOKEN_USER, info.as_mut_ptr().cast(), len, &mut len),
+                0
+            );
+            CloseHandle(token);
+            let mut text: *mut u16 = std::ptr::null_mut();
+            assert_ne!(ConvertSidToStringSidW(info[0] as *mut c_void, &mut text), 0);
+            let n = (0..).take_while(|&i| *text.add(i) != 0).count();
+            let sid = String::from_utf16_lossy(std::slice::from_raw_parts(text, n));
+            LocalFree(text.cast());
+            sid
+        }
+    }
+
+    /// A stub broker pipe owned by this process's user, as the broker's own
+    /// listener sets it. Default security would make the owner the default
+    /// owner instead (the Administrators group when elevated), which the shim
+    /// refuses.
     pub fn bind(pipe: &str) -> Listener {
+        bind_owned_by(pipe, &user_sid()).unwrap_or_else(|e| panic!("bind stub broker: {e}"))
+    }
+
+    /// A stub broker pipe owned by `owner` (an SDDL SID), with full access
+    /// for this user and SYSTEM. An owner other than the user needs an
+    /// owner-capable group (elevated); otherwise the create fails with
+    /// ERROR_INVALID_OWNER.
+    pub fn bind_owned_by(pipe: &str, owner: &str) -> std::io::Result<Listener> {
+        let user = user_sid();
+        let sddl: Vec<u16> = format!("O:{owner}D:P(A;;GA;;;{user})(A;;GA;;;SY)")
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let mut descriptor = std::ptr::null_mut();
+        // SAFETY: a NUL-terminated SDDL string; the descriptor is freed below.
+        let ok = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(ok, 0, "SDDL: {}", std::io::Error::last_os_error());
+        let mut attributes = SecurityAttributes {
+            length: std::mem::size_of::<SecurityAttributes>() as u32,
+            descriptor,
+            inherit_handle: 0,
+        };
         let wide: Vec<u16> = pipe.encode_utf16().chain(Some(0)).collect();
-        // SAFETY: `wide` is NUL-terminated; the handle is checked.
+        // SAFETY: `wide` is NUL-terminated; the attributes outlive the call;
+        // the handle is checked.
         let h = unsafe {
             CreateNamedPipeW(
                 wide.as_ptr(),
@@ -245,15 +324,16 @@ mod stub {
                 65536,
                 65536,
                 0,
-                std::ptr::null_mut(),
+                (&mut attributes as *mut SecurityAttributes).cast(),
             )
         };
-        assert!(
-            h as isize != -1,
-            "bind stub broker: {}",
-            std::io::Error::last_os_error()
-        );
-        Listener(h as usize)
+        let error = std::io::Error::last_os_error();
+        // SAFETY: allocated above, freed once.
+        unsafe { LocalFree(descriptor) };
+        if h as isize == -1 {
+            return Err(error);
+        }
+        Ok(Listener(h as usize))
     }
 
     impl Listener {
@@ -1042,6 +1122,9 @@ fn broker_bundle() -> Result<PathBuf, String> {
 /// directory) serves the rest of it. On Windows the broker refuses the session
 /// (a named pipe gives it no peer pid) and the full bundle serves it from the
 /// start.
+// On Windows this needs the broker on the native pipe listener (owner set to
+// the user): a net.createServer pipe of an elevated broker is owned by
+// Administrators, which the shim's owner check refuses.
 #[test]
 fn against_the_real_broker_initialize_list_call_then_a_broker_kill_hands_over_to_the_bundle() {
     let bundle = match broker_bundle() {
@@ -1161,6 +1244,32 @@ fn the_ack_line_is_consumed_and_never_forwarded() {
 
 /// An older broker answers the handshake with MCP traffic (or nothing): no
 /// session, so the shim falls back, and nothing reaches stdout.
+/// A broker pipe whose owner is only this process's default owner
+/// (Administrators, as for an elevated process with default security) is
+/// another owner: the shim writes nothing and falls back. Runs where this
+/// process may set that owner (elevated); elsewhere the shim's unit tests
+/// check the same vector by value.
+#[cfg(windows)]
+#[test]
+fn a_pipe_owned_by_administrators_alone_is_not_ours() {
+    const ERROR_INVALID_OWNER: i32 = 1307;
+    let sb = Sandbox::new();
+    sb.write_token("tok");
+    let lone = Install::new(&sb, Layout::Lone).expect("a lone binary");
+    let _listener = match stub::bind_owned_by(&sb.pipe(), "BA") {
+        Ok(listener) => listener,
+        Err(e) if e.raw_os_error() == Some(ERROR_INVALID_OWNER) => {
+            return eprintln!("skipped: this process cannot set the Administrators owner (not elevated)");
+        }
+        Err(e) => panic!("bind stub broker: {e}"),
+    };
+    let mut child = spawn(lone.shim(&sb, &[]).stdin(Stdio::null())).expect("spawn shim");
+    let err = collect(child.stderr.take().unwrap());
+    assert_eq!(wait_within(&mut child, WAIT).code(), Some(1));
+    let err = err.join().unwrap();
+    assert!(err.contains("[wmux-mcp-shim] broker not ours"), "{err}");
+}
+
 #[test]
 fn a_broker_without_the_ack_gets_no_session() {
     let sb = Sandbox::new();
