@@ -83,13 +83,13 @@ export const APPROVAL_PROMPTS_PER_TASK_MAX = 60;
  */
 export const APPROVAL_OTHER_STATUS_CHANGES_MAX = APPROVAL_PROMPTS_PER_TASK_MAX * 2;
 /**
- * Approvals one PC may send in a window, counted by message id (a resend of
- * one already counted is not counted again). Past it an approval is answered
- * `rate-limited` with the time left in the window, never carried out.
+ * Approvals one PC may send in a window. Every message counts, a resend
+ * included, unless its message id already has a final outcome here (a
+ * receipt): that one is answered from it, never run or counted again. Past it
+ * an approval is answered `rate-limited` with the time left in the window,
+ * never carried out, and that outcome is stored as final too.
  */
 export const APPROVALS_PER_WINDOW = 60;
-/** Message ids remembered per receiving PC as counted or answered `rate-limited` (oldest dropped). */
-export const APPROVAL_IDS_REMEMBERED_MAX = 4096;
 /** Refusal audit lines per PC in a window; past it one line says how many were left out. */
 export const APPROVAL_AUDIT_REFUSALS_PER_WINDOW = 30;
 export const APPROVAL_WINDOW_MS = A2A_APPROVALS_RECEIVED_WINDOW_MS;
@@ -306,12 +306,8 @@ export class RemoteApprovals {
    */
   private readonly tombstones = new Map<string, A2aRemoteApprovalOutcome>();
   private readonly reporter: HeadlessStatusReporter;
-  /** Each PC's window: when it started and how many message ids it counted. */
+  /** Each PC's window: when it started and how many approvals it counted. */
   private readonly windows = new Map<string, { start: number; count: number; logged: boolean }>();
-  /** `<hostId>\0<messageId>` counted in a window: a resend is taken without counting it again. */
-  private readonly counted = new Map<string, true>();
-  /** `<hostId>\0<messageId>` answered `rate-limited`: a resend is answered the same, never carried out. */
-  private readonly limitedIds = new Map<string, true>();
   private readonly audited: Window;
   private timer: ReturnType<typeof setInterval> | null = null;
 
@@ -347,14 +343,14 @@ export class RemoteApprovals {
   }
 
   /**
-   * Whether the approval `messageId` from `hostId` is taken now: one counted
-   * in an earlier call (a resend) always is, without counting again; a new
-   * one is while the PC's window has room (APPROVALS_PER_WINDOW). Otherwise it
-   * is `rate-limited` with the time left in the window, and a resend of it is
-   * answered the same (one log line per window).
+   * Whether the approval `messageId` from `hostId` is taken now. One whose id
+   * has a final outcome here is, without counting it (take() answers it from
+   * its receipt), unless that outcome is `rate-limited`, which is answered
+   * again. Any other is counted, a resend of one refused before its receipt
+   * included, and taken while the PC's window has room (APPROVALS_PER_WINDOW);
+   * otherwise it is `rate-limited` with the time left (one log line per window).
    */
   admit(hostId: HostId, messageId: string): { ok: true } | { ok: false; retryAfterMs: number } {
-    const key = `${hostId}\0${messageId}`;
     const at = this.now();
     let w = this.windows.get(hostId);
     if (!w || at - w.start >= APPROVAL_WINDOW_MS) {
@@ -364,33 +360,74 @@ export class RemoteApprovals {
       while (this.windows.size > 1000) this.windows.delete(this.windows.keys().next().value as string);
     }
     const left = w.count >= APPROVALS_PER_WINDOW ? Math.max(0, w.start + APPROVAL_WINDOW_MS - at) : 0;
-    if (this.limitedIds.has(key)) return { ok: false, retryAfterMs: left };
-    if (this.counted.has(key)) return { ok: true };
+    const final = this.finalOutcome(hostId, messageId);
+    if (final) return final.reason === 'rate-limited' ? { ok: false, retryAfterMs: left } : { ok: true };
     if (w.count < APPROVALS_PER_WINDOW) {
       w.count += 1;
-      remember(this.counted, key);
       return { ok: true };
     }
     if (!w.logged) {
       w.logged = true;
       this.deps.log('warn', `[a2a-remote] ${hostId}: more than ${APPROVALS_PER_WINDOW} approvals in a minute; the rest are answered rate-limited`);
     }
-    remember(this.limitedIds, key);
     return { ok: false, retryAfterMs: left };
   }
 
   /**
-   * An approval past its PC's window (`admit`): nothing is read or typed. Its
-   * outcome is `rate-limited` with `retryAfterMs`, kept for the task's status
-   * like any other (a linked pane's task only).
+   * The final outcome stored for `messageId` from `hostId` (its receipt, a
+   * rate-limited one included, or an outcome kept in memory when no receipt
+   * could be written); null while it has none (unused, or still running).
    */
-  limited(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1, retryAfterMs: number): A2aRemoteApprovalOutcome | null {
+  private finalOutcome(hostId: HostId, messageId: string): A2aRemoteApprovalOutcome | null {
+    const owner = `remote:${hostId}`;
+    const receipts = this.deps.receipts;
+    for (const o of [owner, limitedOwner(hostId)]) {
+      const seen = receipts?.lookup(o, messageId);
+      if (seen && seen.state !== 'inFlight') {
+        return this.storedOutcome(seen.state === 'uncertain' || !seen.result ? { kind: 'uncertain' } : { kind: 'replay', response: seen.result, state: seen.state }, messageId);
+      }
+    }
+    return this.tombstones.get(`${owner}\0${messageId}`) ?? this.tombstones.get(`${limitedOwner(hostId)}\0${messageId}`) ?? null;
+  }
+
+  /**
+   * An approval past its PC's window (`admit`): nothing is read or typed. Its
+   * outcome is `rate-limited` with `retryAfterMs`, stored as final for its
+   * message id (a receipt, fsynced, apart from the PC's other receipts so these
+   * never take their room; in memory when it cannot be written) and kept for
+   * the task's status like any other (a linked pane's task only). A resend of
+   * one already stored is answered the same, with no second line or write.
+   */
+  async limited(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1, retryAfterMs: number): Promise<A2aRemoteApprovalOutcome | null> {
     const task = this.deps.tasks.get(taskId);
     const marker = task?.metadata.remote as A2aRemoteTaskState | undefined;
     if (!task || marker?.hostId !== hostId || !this.deps.linkedPane(task)) return null;
     const out: A2aRemoteApprovalOutcome = { messageId, outcome: 'not-done', reason: 'rate-limited', retryAfterMs: Math.round(retryAfterMs) };
+    if (this.finalOutcome(hostId, messageId)?.reason === 'rate-limited') return out;
     this.audit(hostId, taskId, messageId, approval, 'not-done:rate-limited');
     this.record(taskId, out);
+    const owner = limitedOwner(hostId);
+    const tombstone = (): void => {
+      const key = `${owner}\0${messageId}`;
+      this.tombstones.delete(key);
+      this.tombstones.set(key, { messageId, outcome: 'not-done', reason: 'rate-limited' });
+      while (this.tombstones.size > APPROVAL_TOMBSTONES_MAX) this.tombstones.delete(this.tombstones.keys().next().value as string);
+    };
+    const receipts = this.deps.receipts;
+    if (!receipts) {
+      tombstone();
+      return out;
+    }
+    try {
+      const begun = await receipts.begin(owner, messageId, `${taskId}:${approval.promptId}:${approval.decision}`, receiptHash([taskId, approval.promptId, approval.decision]));
+      if (begun.kind === 'new') {
+        if (!(await receipts.finish(owner, messageId, 'refused', { status: 409, body: { outcome: 'not-done', reason: 'rate-limited' } }))) tombstone();
+      } else if (begun.kind === 'full') {
+        tombstone();
+      }
+    } catch {
+      tombstone();
+    }
     return out;
   }
 
@@ -462,11 +499,9 @@ export class RemoteApprovals {
     const seen = receipts.peek(owner, messageId, approvalId, bodyHash);
     if (seen?.kind === 'in-flight') return 'running';
     const tombKey = `${owner}\0${messageId}`;
-    const stored = this.storedOutcome(seen, messageId) ?? this.tombstones.get(tombKey) ?? null;
-    if (stored) {
-      this.audit(hostId, taskId, messageId, approval, `stored:${stored.outcome}${stored.reason ? `:${stored.reason}` : ''}`);
-      return stored;
-    }
+    const stored = this.storedOutcome(seen, messageId) ?? this.tombstones.get(tombKey) ?? this.finalOutcome(hostId, messageId);
+    // Answered from what it already did: never run again, and no second audit line.
+    if (stored) return stored;
     /** An outcome told without a receipt on disk: kept for a resend while this daemon runs. */
     const tombstone = (out: A2aRemoteApprovalOutcome): A2aRemoteApprovalOutcome => {
       this.tombstones.delete(tombKey);
@@ -819,7 +854,7 @@ export class RemoteApprovals {
    * APPROVAL_AUDIT_REFUSALS_PER_WINDOW lines per PC in a window, then one line.
    */
   private audit(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1, outcome: string, fp8?: string): void {
-    if (outcome.startsWith('not-done') || outcome.startsWith('stored:not-done')) {
+    if (outcome.startsWith('not-done')) {
       const n = this.audited.count(hostId);
       if (n > APPROVAL_AUDIT_REFUSALS_PER_WINDOW) {
         if (n === APPROVAL_AUDIT_REFUSALS_PER_WINDOW + 1) this.deps.log('info', `[a2a-remote] approvals: ${hostId}: more refusals in this minute are not logged`);
@@ -830,9 +865,7 @@ export class RemoteApprovals {
   }
 }
 
-/** Into an insertion-ordered map, the oldest dropped past APPROVAL_IDS_REMEMBERED_MAX. */
-function remember(map: Map<string, true>, key: string): void {
-  map.delete(key);
-  map.set(key, true);
-  while (map.size > APPROVAL_IDS_REMEMBERED_MAX) map.delete(map.keys().next().value as string);
+/** The receipts owner of a PC's `rate-limited` outcomes: apart from its others, so these never fill their room. */
+function limitedOwner(hostId: HostId): string {
+  return `remote-limited:${hostId}`;
 }

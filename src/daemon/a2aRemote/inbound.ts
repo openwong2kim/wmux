@@ -112,13 +112,14 @@ export interface InboundDeps {
   remoteApproval?: {
     on(hostId: HostId): boolean;
     /**
-     * Whether this approval from this PC is taken now (a per-PC window,
-     * counted by message id); past it, the time left in the window.
+     * Whether this approval from this PC is taken now (a per-PC window: every
+     * message counts but one whose id already has a final outcome); past it,
+     * the time left in the window.
      */
     admit?(hostId: HostId, messageId: string): { ok: true } | { ok: false; retryAfterMs: number };
     take(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1): void;
-    /** An approval past the window: answered `rate-limited` in the task's status, never carried out. */
-    limited?(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1, retryAfterMs: number): void;
+    /** An approval past the window: answered `rate-limited` in the task's status, stored as final, never carried out. */
+    limited?(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1, retryAfterMs: number): void | Promise<void>;
   };
   /**
    * A host's notice about one of our own messages (`held-notice.1`): how many
@@ -349,7 +350,8 @@ async function applyInbound(
     if (!overWindow.ok) {
       // Answered to the message itself (each one, however many came in a burst), and in the task's status
       // with the exact time left.
-      deps.remoteApproval.limited?.(peer.hostId, taskId, env.messageId, env.approval as A2aRemoteApprovalV1, overWindow.retryAfterMs);
+      // Stored before it is answered, so a resend after a restart is answered the same.
+      await deps.remoteApproval.limited?.(peer.hostId, taskId, env.messageId, env.approval as A2aRemoteApprovalV1, overWindow.retryAfterMs);
       return fail('rate-limited');
     }
     deps.remoteApproval.take(peer.hostId, taskId, env.messageId, env.approval as A2aRemoteApprovalV1);

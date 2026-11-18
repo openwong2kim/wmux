@@ -11460,8 +11460,8 @@ async function main(): Promise<void> {
           on: (hostId) => remoteApprovalsRef !== null && a2aApprovalSwitch.exposure(hostId) !== null,
           // No producer (a start that failed): past nothing, refused as approvals-off above.
           admit: (hostId, messageId) => remoteApprovalsRef?.admit(hostId, messageId) ?? { ok: false, retryAfterMs: 0 },
-          limited: (hostId, taskId, messageId, approval, retryAfterMs) => {
-            remoteApprovalsRef?.limited(hostId, taskId, messageId, approval, retryAfterMs);
+          limited: async (hostId, taskId, messageId, approval, retryAfterMs) => {
+            await remoteApprovalsRef?.limited(hostId, taskId, messageId, approval, retryAfterMs);
           },
           take: (hostId, taskId, messageId, approval) => {
             const approvals = remoteApprovalsRef;

@@ -357,12 +357,14 @@ for one, on the PC that does the work.
   task was submitted, or a later message delivered into it: prompts in a
   follow-up's turn are answered at this PC. At most 60 prompts are offered
   per task.
-- **Pace.** At most 60 approvals are taken from one PC in a minute, counted
-  by message id: a resend of one already counted (after a reconnect, say)
-  is not counted again. Past that an approval is not carried out: the
-  message is refused as `rate-limited`, its outcome in the task's status is
-  `not-done` with reason `rate-limited` and `retryAfterMs` (the time left in
-  the minute), and a resend of it is answered the same.
+- **Pace.** At most 60 approvals are taken from one PC in a minute. Every
+  message counts, a resend included, except one whose message id already
+  has a final outcome here: that one is answered from its stored outcome,
+  never carried out or counted again. Past that an approval is not carried
+  out: the message is refused as `rate-limited`, its outcome in the task's
+  status is `not-done` with reason `rate-limited` and `retryAfterMs` (the
+  time left in the minute), and that outcome is stored as final, so a resend
+  of it, after a restart too, is answered the same.
 - **What you see.** A carried-out decision raises a desktop notification,
   "<PC> allowed <tool> in <pane>" or "<PC> denied <tool> in <pane>", and
   keeps the same line as a note on the task (`metadata.remote.approvalNotes`
