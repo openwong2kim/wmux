@@ -255,11 +255,11 @@ describe('settings', () => {
   it.each(APP_SETTING_KEYS.filter((k) => k !== 'locale'))('%s: set through the store, read back, and the same value again is unchanged', (key) => {
     // The toast switch also tells main.
     vi.stubGlobal('electronAPI', { settings: { setToastEnabled: vi.fn() } });
-    const before = (act('settings.get', { args: { key } }) as { settings: Record<string, unknown> }).settings[key];
+    const before = (act('settings.get', { args: { key } }) as unknown as { settings: Record<string, unknown> }).settings[key];
     const res = act('settings.set', { args: { key, value: OTHER[key] } }) as { ok: boolean; value: unknown; changed: boolean };
     expect(res).toMatchObject({ ok: true });
     expect(res.value).not.toEqual(before);
-    expect((act('settings.get', { args: { key } }) as { settings: Record<string, unknown> }).settings[key]).toEqual(res.value);
+    expect((act('settings.get', { args: { key } }) as unknown as { settings: Record<string, unknown> }).settings[key]).toEqual(res.value);
     expect(act('settings.set', { args: { key, value: OTHER[key] } })).toMatchObject({ ok: true, changed: false });
   });
 
