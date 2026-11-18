@@ -1441,6 +1441,8 @@ const chromeRegistry = new ChromeLauncherRegistry({
     browserPolicyStore.protectionPlanFor(profile, { paneBindings: () => chromeProfileStore.getPaneBindings() }),
   // With the target grant flag, a download in a tab no agent holds lands here, as Chrome's own would.
   downloadsDir: () => app.getPath('downloads'),
+  // The operator's file setting that lets WMUX_CHROME_TRANSPORT=port apply to a protected profile.
+  protectedPortAllowed: () => browserBackendStore.protectedPortTransport(),
 });
 browserPolicyStore.onChange(() => {
   // #2063: every policy change (an Allow included) starts the recently-blocked

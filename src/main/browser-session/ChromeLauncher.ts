@@ -8,7 +8,7 @@ import type { CdpConnection } from './CdpSocket';
 import type { Readable, Writable } from 'node:stream';
 import { pipeTransport, portTransport, type ChromeTransport } from './ChromeTransport';
 import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux, type CallerIdentity, type ClientRef } from './CdpPipeMux';
-import { ProtectedPipePolicy } from './ProtectedPipePolicy';
+import { ProtectedPipePolicy, SCHEME_NOT_ALLOWED, protectedUrlAllowed } from './ProtectedPipePolicy';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from './CdpPipeRelay';
 import { browserPathOf, isRecordedBrowser, recordedBrowserPath } from './devToolsActivePort';
 import { cdpTargetGrantEnabled, recordVisibleTo } from './CdpTargetOwnership';
@@ -2718,7 +2718,13 @@ export class ChromeLauncher implements ChromeBackendClient {
             child.kill();
           } catch { /* already gone */ }
         },
-        ...(policy && { filter: policy.filter, beforeReply: policy.beforeReply, onClientGone: (client: ClientRef) => policy.forget(client) }),
+        ...(policy && {
+          filter: policy.filter,
+          beforeReply: policy.beforeReply,
+          onClientGone: (client: ClientRef) => policy.forget(client),
+          // Outside clients see and drive only pages on the URLs a protected profile allows.
+          urlGate: { allows: protectedUrlAllowed, refusal: SCHEME_NOT_ALLOWED },
+        }),
         ...(relay && { filter: relay.policy.filter, onClientGone: (client: ClientRef) => relay.policy.forget(client) }),
         // C3b: each external client sees only its own targets, by this registry
         // and what it made itself. Main's own connections are never narrowed.

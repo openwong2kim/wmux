@@ -4236,6 +4236,9 @@ export function registerBrowserRpc(
         // protected pane never sees it.
         port: protectedDecisionOf(ctx) || !canDiscloseBrowserAttachInfo(ctx) ? null : status.cdpPort,
         running: status.running,
+        // How main reaches the running Chrome: 'pipe', 'port', or 'port (weaker)'
+        // for a protected profile on the port. Absent while none runs.
+        ...(status.transport !== undefined && { transport: status.transport }),
         // Only the live profile sets liveAttach (running there = remote-debugging
         // reachable), so the agent reads running:false as "enable it at
         // chrome://inspect", not "call session.start". Additive: absent elsewhere.
@@ -4368,9 +4371,13 @@ export function registerBrowserRpc(
           ...(ctx?.operator === true && { everyTarget: true }),
         })
         : undefined;
+      // A protected pane's caller never gets the port or its WebSocket, on
+      // either transport: on the pipe it reaches Chrome through the relay (held
+      // to the profile's rules); on the port there is no such route for it.
+      const attach = disclose && !decision;
       return {
-        ...(disclose && ep.cdpPort !== undefined && { cdpPort: ep.cdpPort }),
-        ...(disclose && ep.wsEndpoint && { wsEndpoint: ep.wsEndpoint }),
+        ...(attach && ep.cdpPort !== undefined && { cdpPort: ep.cdpPort }),
+        ...(attach && ep.wsEndpoint && { wsEndpoint: ep.wsEndpoint }),
         ...(relay && { relay }),
         // Reached through the relay: an engine checking a live connection asks
         // again with relay: true only when this is set.

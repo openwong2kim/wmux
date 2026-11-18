@@ -181,4 +181,37 @@ describe('BrowserBackendStore (#517)', () => {
       expect(reloaded.liveWriteScope()).toBe('all');
     });
   });
+
+  describe('protectedPortTransport', () => {
+    const file = () => join(dir, 'browser-backend.json');
+
+    it('is off with no file, and on only for a literal true', () => {
+      expect(new BrowserBackendStore(dir).protectedPortTransport()).toBe(false);
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome', protectedPortTransport: 'true' }));
+      expect(new BrowserBackendStore(dir).protectedPortTransport()).toBe(false);
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome', protectedPortTransport: 1 }));
+      expect(new BrowserBackendStore(dir).protectedPortTransport()).toBe(false);
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome', protectedPortTransport: true }));
+      expect(new BrowserBackendStore(dir).protectedPortTransport()).toBe(true);
+    });
+
+    it('an operator edit takes effect on the next read, and a backend write keeps it', () => {
+      const store = new BrowserBackendStore(dir);
+      expect(store.protectedPortTransport()).toBe(false);
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome', protectedPortTransport: true }));
+      expect(store.protectedPortTransport()).toBe(true);
+      store.set('chrome');
+      expect(JSON.parse(readFileSync(file(), 'utf8'))).toEqual({ backend: 'chrome', protectedPortTransport: true });
+      store.setAllowPrivateNetwork(true);
+      expect(JSON.parse(readFileSync(file(), 'utf8'))).toMatchObject({ protectedPortTransport: true });
+      // Removing the key turns it off again, on the next read.
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome' }));
+      expect(store.protectedPortTransport()).toBe(false);
+    });
+
+    it('writes no key while it is off (the file keeps its shape)', () => {
+      new BrowserBackendStore(dir).set('external');
+      expect(JSON.parse(readFileSync(file(), 'utf8'))).toEqual({ backend: 'external' });
+    });
+  });
 });

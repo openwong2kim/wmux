@@ -61,6 +61,8 @@ const DEFAULT_TIMEOUT_MS = CDP_PIPE_COMMAND_TIMEOUT_MS;
 const UNKNOWN_SESSION = { code: -32001, message: 'Session with given id not found.' };
 /** Its answer when a Target command names, in its params, a session it does not know. */
 const UNKNOWN_TARGET = { code: -32602, message: 'No target with given id found' };
+/** C2d: how long a destroyed target's URL is kept, so every session hears of its end first. */
+const DESTROYED_URL_TTL_MS = 5_000;
 const UNKNOWN_PARAM_SESSION = { code: -32602, message: 'No session with given id' };
 /**
  * Commands that name a session in their params. The browser already scopes
@@ -370,6 +372,19 @@ interface Pending {
   contextId?: string;
   /** Browser.getWindowForTarget: the granted page it asked about (named, or the page session it came on). */
   windowTarget?: string;
+  /** Target.createTarget: the URL asked for, the new target's until Chrome reports one. */
+  createUrl?: string;
+}
+
+/**
+ * C2d: the pages outside clients may see and drive, by URL (a protected
+ * profile's ProtectedPipePolicy rule). A target whose URL the mux has not yet
+ * been told counts as refused.
+ */
+export interface UrlGate {
+  allows(url: string): boolean;
+  /** The answer to a command on a session whose page it refuses. */
+  refusal: { code: number; message: string };
 }
 
 /** A frame for a client, held until its createTarget's new page is named (C3b). */
@@ -469,6 +484,8 @@ export class CdpPipeMux {
   private discoverySession: string | null = null;
   /** Grants: destroyed targets whose facts go after DESTROYED_FACT_TTL_MS. */
   private readonly pruning = new Set<string>();
+  /** C2d: each target's URL as Chrome last reported it. */
+  private readonly targetUrls = new Map<string, string>();
 
   constructor(
     private readonly toBrowser: Writable,
@@ -498,6 +515,12 @@ export class CdpPipeMux {
       onClientGone?: (client: ClientRef) => void;
       /** How long a waiting target waits on a client with no sign of life (C2c); tests shorten it. */
       stallMs?: number;
+      /**
+       * C2d: outside clients see, attach to and drive only targets whose URL
+       * this allows. Their sessions on a target that moves to a refused URL
+       * are detached. Main's own connections are never narrowed.
+       */
+      urlGate?: UrlGate;
     } = {},
   ) {
     this.watch = new CdpPipeStallWatch({
@@ -508,7 +531,7 @@ export class CdpPipeMux {
     });
     this.ownership = opts.grants ? new CdpTargetOwnership(opts.grants.registry) : null;
     fromBrowser.on('data', (chunk: Buffer) => this.onData(chunk));
-    if (this.ownership) this.discover();
+    if (this.ownership || opts.urlGate) this.discover();
     const end = () => this.end('connection closed');
     fromBrowser.once('end', end);
     fromBrowser.once('close', end);
@@ -695,6 +718,16 @@ export class CdpPipeMux {
       this.refuseFor(client, clientId, UNKNOWN_SESSION);
       return;
     }
+    // C2d: a session on a page the gate refuses (or doesn't know yet) takes no command.
+    const gate = this.opts.urlGate;
+    if (gate && client.kind === 'external' && command.sessionId !== undefined) {
+      const held = client.targets.get(command.sessionId);
+      if (held && !this.urlAllowed(held.targetId)) {
+        bump(totals.refusals, 'url-gate-session');
+        this.refuseFor(client, clientId, gate.refusal, command.sessionId);
+        return;
+      }
+    }
     // wmux's own methods are answered here, by the connection's local
     // answerer (the relay's proof), and never reach the browser.
     if (command.method.startsWith(LOCAL_METHOD_PREFIX)) {
@@ -746,7 +779,10 @@ export class CdpPipeMux {
     const windowTarget = command.method === 'Browser.getWindowForTarget'
       ? (typeof target === 'string' ? target : command.sessionId !== undefined ? client.targets.get(command.sessionId)?.targetId : undefined)
       : undefined;
-    this.pending.set(id, { client, clientId, method: command.method, session, ...targetId, ...contextId, ...(windowTarget !== undefined && { windowTarget }) });
+    const createUrl = command.method === 'Target.createTarget'
+      ? { createUrl: typeof command.params.url === 'string' && command.params.url !== '' ? command.params.url : 'about:blank' }
+      : {};
+    this.pending.set(id, { client, clientId, method: command.method, session, ...targetId, ...contextId, ...(windowTarget !== undefined && { windowTarget }), ...createUrl });
     if (command.method === 'Target.createTarget') client.creatingCount++;
     // Only a resume that goes to the browser ends the watch on that session.
     if (command.method === 'Runtime.runIfWaitingForDebugger' && command.sessionId !== undefined) this.watch.resumed(client, command.sessionId);
@@ -809,7 +845,71 @@ export class CdpPipeMux {
     return attaching;
   }
 
+  /** C2d: whether the gate (if any) allows the target's last reported URL; an unknown one is refused. */
+  private urlAllowed(targetId: string): boolean {
+    const gate = this.opts.urlGate;
+    if (!gate) return true;
+    const url = this.targetUrls.get(targetId);
+    return url !== undefined && gate.allows(url);
+  }
+
+  /**
+   * C2d: a target's URL as an event or reply names it. A target that moved to
+   * a URL the gate refuses loses every outside session on it, and what was
+   * attached through them.
+   */
+  private learnUrl(info: unknown): void {
+    if (!this.opts.urlGate || !info || typeof info !== 'object') return;
+    const { targetId, url } = info as { targetId?: unknown; url?: unknown };
+    if (typeof targetId !== 'string' || typeof url !== 'string') return;
+    const was = this.targetUrls.get(targetId);
+    this.targetUrls.set(targetId, url);
+    if (was === url) return;
+    if (!this.opts.urlGate.allows(url)) this.revokeTarget(targetId);
+    else if (was === undefined || !this.opts.urlGate.allows(was)) this.reattachDenied(targetId);
+  }
+
+  /** C2d: a target an outside client's auto-attach let go is now on an allowed URL: attached for it again. */
+  private reattachDenied(targetId: string): void {
+    if (!this.open) return;
+    for (const client of this.clients) {
+      if (client.kind !== 'external' || client.closed) continue;
+      const browserSession = client.denied.get(targetId);
+      if (browserSession === undefined || this.owner.get(browserSession) !== client || !this.granted(client, targetId)) continue;
+      client.denied.delete(targetId);
+      bump(totals.absorbed, 'url-gate-reattach');
+      // Chrome answers with Target.attachedToTarget on that browser session.
+      this.ownCommand('Target.attachToTarget', { targetId, flatten: true }, browserSession).catch(() => undefined);
+    }
+  }
+
+  /** C2d: detach every outside session on `targetId`, and the sessions attached through them. */
+  private revokeTarget(targetId: string): void {
+    if (!this.open) return;
+    for (const client of this.clients) {
+      if (client.kind !== 'external' || client.closed) continue;
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const [session, held] of client.targets) {
+          if (client.revoked.has(session)) continue;
+          const parentRevoked = held.parent !== undefined && client.revoked.has(held.parent);
+          if (!parentRevoked && held.targetId !== targetId) continue;
+          client.revoked.add(session);
+          this.forgetWindowsOf(client, held.targetId);
+          grew = true;
+          bump(totals.dropped, 'url-gate-detached');
+          if (parentRevoked) continue;
+          this.ownCommand('Target.detachFromTarget', { sessionId: session }, held.parent).catch(() => undefined);
+          // Attached on a browser session: attached again there if the page comes back to an allowed URL.
+          if (held.parent !== undefined && this.isBrowserSession(client, held.parent)) this.rememberDenied(client, held.targetId, held.parent);
+        }
+      }
+    }
+  }
+
   private granted(client: Client, targetId: string): boolean {
+    if (client.kind === 'external' && !this.urlAllowed(targetId)) return false;
     if (this.ownership) {
       if (client.kind !== 'external') return true;
       const identity = client.callerIdentity ?? {};
@@ -983,6 +1083,15 @@ export class CdpPipeMux {
       this.pending.delete(frame.id);
       if (job.client.closed) return;
       if (job.method === 'Target.createTarget' && job.client.creatingCount > 0) job.client.creatingCount--;
+      if (this.opts.urlGate && !frame.error) {
+        const result = frame.result as { targetId?: unknown; targetInfos?: unknown } | undefined;
+        // A page the client just created has the URL it asked for (one the
+        // policy let through) until Chrome reports its own.
+        if (job.method === 'Target.createTarget' && typeof result?.targetId === 'string' && !this.targetUrls.has(result.targetId) && job.createUrl !== undefined) {
+          this.targetUrls.set(result.targetId, job.createUrl);
+        }
+        if (job.method === 'Target.getTargets' && Array.isArray(result?.targetInfos)) for (const info of result.targetInfos) this.learnUrl(info);
+      }
       if (this.ownership) {
         // Attributed as it arrives, before any frame held ahead of it is let go.
         this.learnReply(job, frame);
@@ -998,10 +1107,21 @@ export class CdpPipeMux {
     if (typeof frame.method !== 'string') { bump(totals.dropped, 'neither-reply-nor-event'); return; }
     if (typeof frame.sessionId !== 'string') { bump(totals.dropped, 'root-event'); return; }
     const event = frame as Frame & { method: string; sessionId: string };
-    if (this.ownership) {
-      this.learnEvent(event);
-      if (frame.sessionId === this.discoverySession) return;
+    if (this.opts.urlGate && event.method.startsWith('Target.')) {
+      const params = event.params as { targetInfo?: unknown; targetId?: unknown } | undefined;
+      if (event.method === 'Target.targetDestroyed') {
+        // Kept until every session has heard of it; a destroyed page takes no command anyway.
+        if (event.sessionId === this.discoverySession && typeof params?.targetId === 'string') {
+          const gone = params.targetId;
+          const timer = setTimeout(() => this.targetUrls.delete(gone), DESTROYED_URL_TTL_MS);
+          timer.unref?.();
+        }
+      } else {
+        this.learnUrl(params?.targetInfo);
+      }
     }
+    if (this.ownership) this.learnEvent(event);
+    if (this.discoverySession !== null && frame.sessionId === this.discoverySession) return;
     const owner = this.owner.get(frame.sessionId);
     if (!owner) { bump(totals.dropped, 'unknown-session'); return; }
     if (owner.hold) { this.holdFrame(owner, { kind: 'event', frame, text }); return; }
@@ -1055,7 +1175,7 @@ export class CdpPipeMux {
           return;
         }
       }
-      if (job.method === 'Target.getTargets' && (this.opts.targetGrant || this.ownership) && !frame.error) {
+      if (job.method === 'Target.getTargets' && (this.opts.targetGrant || this.ownership || (this.opts.urlGate && job.client.kind === 'external')) && !frame.error) {
         const infos = (frame.result as { targetInfos?: Array<{ targetId?: unknown }> } | undefined)?.targetInfos;
         if (Array.isArray(infos)) {
           const shown = { ...frame, result: { ...(frame.result as Record<string, unknown>), targetInfos: infos.filter((t) => typeof t.targetId === 'string' && this.granted(job.client, t.targetId)) } };
@@ -1110,13 +1230,17 @@ export class CdpPipeMux {
     // workers attach on that page's session and go with the page. A session
     // the client owns is always told it ended.
     const onBrowserSession = frame.sessionId === owner.browserSession || owner.ownBrowserSessions.has(frame.sessionId);
-    const checked = this.ownership ? owner.kind === 'external' : !!this.opts.targetGrant;
+    const gated = !!this.opts.urlGate && owner.kind === 'external';
+    const checked = this.ownership ? owner.kind === 'external' : !!this.opts.targetGrant || gated;
     const params0 = frame.params as { targetInfo?: { type?: unknown } } | undefined;
     // With grants, what attaches on a page session is judged too, unless it is
     // the page's own frame or worker (a service worker is the origin's, not the page's).
     const pageAttach = !!this.ownership && !onBrowserSession && frame.method === 'Target.attachedToTarget'
       && !(typeof params0?.targetInfo?.type === 'string' && FOLLOWS_PAGE.has(params0.targetInfo.type));
-    if (checked && frame.method.startsWith('Target.') && (onBrowserSession || (this.ownership && (DISCOVERY_EVENTS.has(frame.method) || pageAttach)))) {
+    // C2d: what a page session discovers or attaches is judged by URL too (a
+    // page's own frames and workers carry their own URL).
+    const urlJudged = gated && frame.method !== 'Target.targetDestroyed' && (DISCOVERY_EVENTS.has(frame.method) || frame.method === 'Target.attachedToTarget');
+    if (checked && frame.method.startsWith('Target.') && (onBrowserSession || urlJudged || (this.ownership && (DISCOVERY_EVENTS.has(frame.method) || pageAttach)))) {
       const params = frame.params as { targetId?: unknown; targetInfo?: { targetId?: unknown }; sessionId?: unknown } | undefined;
       const target = params?.targetInfo?.targetId ?? params?.targetId;
       const endsOwned = frame.method === 'Target.detachedFromTarget' && typeof params?.sessionId === 'string' && owner.owned.has(params.sessionId);
@@ -1127,8 +1251,13 @@ export class CdpPipeMux {
           // A popup is decided at once by its opener; only a page with none may be a create's.
           const mayHold = !final && !this.ownership.hasOpener(target) && this.creating(owner);
           verdict = this.ownership.decide(owner, { workspaceId: identity.workspaceId, everyTarget: identity.everyTarget }, target, mayHold);
+          if (gated && frame.method !== 'Target.targetDestroyed' && !this.urlAllowed(target)) verdict = 'deny';
         } else {
-          verdict = this.granted(owner, target) ? 'grant' : 'deny';
+          // A page's end is told to whoever heard of it, whatever its URL was.
+          const allowed = gated && frame.method === 'Target.targetDestroyed'
+            ? (this.opts.targetGrant?.(owner, target) ?? true)
+            : this.granted(owner, target);
+          verdict = allowed ? 'grant' : 'deny';
         }
         if (verdict === 'unknown') {
           this.startHold(owner, { kind: 'event', frame, text });
@@ -1139,7 +1268,7 @@ export class CdpPipeMux {
           // Auto-attached to a target the client may not have: let it go again, on the session it came on.
           if (frame.method === 'Target.attachedToTarget' && typeof params?.sessionId === 'string') {
             this.ownCommand('Target.detachFromTarget', { sessionId: params.sessionId }, frame.sessionId).catch(() => undefined);
-            if (this.ownership && onBrowserSession) this.rememberDenied(owner, target, frame.sessionId);
+            if ((this.ownership || gated) && onBrowserSession) this.rememberDenied(owner, target, frame.sessionId);
           }
           return true;
         }

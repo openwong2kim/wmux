@@ -213,3 +213,68 @@ describe('ProtectedPipePolicy', () => {
     expect(sent).toEqual([]);
   });
 });
+
+describe('ProtectedPipePolicy, the pages an outside client may open', () => {
+  const ALLOWED = ['http://a.test/', 'https://a.test/x', 'about:blank', 'about:blank#x', 'data:text/html,hi', '', '  https://a.test '];
+  const REFUSED = [
+    'chrome://inspect/#remote-debugging', 'CHROME://inspect', ' chrome://inspect', 'chrome:inspect',
+    'chrome-untrusted://x/', 'devtools://devtools/bundled/inspector.html', 'chrome-extension://abc/x.html',
+    'view-source:https://a.test/', 'view-source:chrome://inspect', 'file:///etc/hosts', 'javascript:1', 'about:inspect',
+  ];
+  const refused = (answer: ReturnType<ProtectedPipePolicy['filter']>) => !!answer && 'refuse' in answer && answer.reason === 'scheme-not-allowed';
+
+  it('opens and navigates to http(s), data: and about:blank only', () => {
+    const { policy } = rig();
+    const a = ext('a');
+    for (const url of ALLOWED) {
+      expect(policy.filter(a, { method: 'Target.createTarget', params: { url } }), url).toBeNull();
+      expect(policy.filter(a, { method: 'Page.navigate', params: { url } }), url).toBeNull();
+    }
+    expect(policy.filter(a, { method: 'Target.createTarget', params: {} })).toBeNull();
+    for (const url of REFUSED) {
+      const create = policy.filter(a, { method: 'Target.createTarget', params: { url } });
+      expect(refused(create), url).toBe(true);
+      expect(create && 'refuse' in create && create.refuse.message).toBe('policy_denied: scheme not allowed on a protected profile');
+      expect(refused(policy.filter(a, { method: 'Page.navigate', params: { url } })), url).toBe(true);
+    }
+    expect(refused(policy.filter(a, { method: 'Page.navigate', params: {} }))).toBe(true);
+    expect(refused(policy.filter(a, { method: 'Target.createTarget', params: { url: 42 } }))).toBe(true);
+  });
+
+  it('leaves main\'s own connections unfiltered', () => {
+    const { policy } = rig();
+    expect(policy.filter(main, { method: 'Target.createTarget', params: { url: 'chrome://inspect' } })).toBeNull();
+    expect(policy.filter(main, { method: 'Page.navigate', params: { url: 'chrome://settings' } })).toBeNull();
+    expect(policy.filter(main, { method: 'Page.navigateToHistoryEntry', params: { entryId: 7 } })).toBeNull();
+  });
+
+  it('goes to a history entry only when the client was shown it at a URL it may open', () => {
+    const { policy } = rig();
+    const a = ext('a');
+    const b = ext('b');
+    expect(policy.beforeReply(a, 'Page.getNavigationHistory', {
+      currentIndex: 1,
+      entries: [{ id: 1, url: 'https://a.test/' }, { id: 2, url: 'chrome://settings/' }, { id: 3, url: 'about:blank' }],
+    })).toBeNull();
+    const go = (client: ClientRef, entryId: unknown) => policy.filter(client, { method: 'Page.navigateToHistoryEntry', params: { entryId } });
+    expect(go(a, 1)).toBeNull();
+    expect(go(a, 3)).toBeNull();
+    expect(refused(go(a, 2))).toBe(true);
+    // An id it was never shown, a malformed one, and another client's.
+    expect(refused(go(a, 9))).toBe(true);
+    expect(refused(go(a, '1'))).toBe(true);
+    expect(refused(go(b, 1))).toBe(true);
+    // Main's own history replies teach nothing.
+    expect(policy.beforeReply(main, 'Page.getNavigationHistory', { entries: [{ id: 9, url: 'https://a.test/' }] })).toBeNull();
+    expect(refused(go(a, 9))).toBe(true);
+  });
+
+  it('forgets the entries a client was shown when it leaves', () => {
+    const { policy } = rig();
+    const a = ext('a');
+    policy.beforeReply(a, 'Page.getNavigationHistory', { entries: [{ id: 1, url: 'https://a.test/' }] });
+    expect(policy.filter(a, { method: 'Page.navigateToHistoryEntry', params: { entryId: 1 } })).toBeNull();
+    policy.forget(a);
+    expect(refused(policy.filter(a, { method: 'Page.navigateToHistoryEntry', params: { entryId: 1 } }))).toBe(true);
+  });
+});
