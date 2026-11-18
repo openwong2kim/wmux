@@ -11445,8 +11445,16 @@ async function main(): Promise<void> {
       // Kept too: the headless delivery calls them in-process, as main does over the pipe.
       const a2aDeliveryHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
       a2aDelivery.registerRpc((method, handler) => {
-        a2aDeliveryHandlers.set(method, handler);
-        onA2aRpc(method, handler);
+        // A delivered mark that carries a submit proof: the linked-pane turns have something to follow.
+        const wrapped: typeof handler = method === A2A_REMOTE_RPC.mark
+          ? async (params) => {
+            const res = await handler(params);
+            if (params['submit'] !== undefined) linkedTaskTurnsRef?.wake();
+            return res;
+          }
+          : handler;
+        a2aDeliveryHandlers.set(method, wrapped);
+        onA2aRpc(method, wrapped);
       });
       a2aDelivery.start();
       a2aDeliveryRef = a2aDelivery;
@@ -11455,6 +11463,12 @@ async function main(): Promise<void> {
       linkedTaskTurnsRef = new LinkedTaskTurns({
         tasks: () => turnsTaskSvc.listRemote(),
         transcriptPath: (sessionId) => transcriptProjector?.transcriptPath(sessionId) ?? null,
+        session: (sessionId) => {
+          const managed = sessionManager.getSession(sessionId);
+          if (!managed) return null;
+          const agentName = readAgentStateForWeb?.(sessionId).agentName ?? null;
+          return { incarnationId: managed.meta.incarnationId ?? null, keyEpoch: managed.bridge.getKeyEpoch(), agent: agentName ? agentDisplayToSlug(agentName) ?? null : null };
+        },
         log: a2aLog,
       });
       linkedTaskTurnsRef.start();
