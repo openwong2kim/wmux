@@ -21,6 +21,15 @@ const SE_DACL_PROTECTED: u16 = 0x1000;
 const ACL_SIZE_INFORMATION_CLASS: u32 = 2;
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
 const MEDIUM_RID: u32 = 0x2000;
+const LABEL_SECURITY_INFORMATION: u32 = 0x10;
+const SYSTEM_MANDATORY_LABEL_ACE_TYPE: u8 = 0x11;
+const SYSTEM_MANDATORY_LABEL_NO_WRITE_UP: u32 = 0x1;
+const SYSTEM_MANDATORY_LABEL_NO_READ_UP: u32 = 0x2;
+const TOKEN_DUPLICATE: u32 = 0x0002;
+const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
+const SECURITY_IMPERSONATION: u32 = 2;
+const TOKEN_IMPERSONATION: u32 = 2;
+const SE_GROUP_INTEGRITY: u32 = 0x20;
 
 #[repr(C)]
 #[derive(Default)]
@@ -64,6 +73,17 @@ extern "system" {
     fn GetAclInformation(acl: *const c_void, info: *mut c_void, len: u32, class: u32) -> Bool;
     fn GetAce(acl: *const c_void, index: u32, ace: *mut *mut c_void) -> Bool;
     fn ConvertStringSidToSidW(sid: *const u16, out: *mut *mut c_void) -> Bool;
+    fn DuplicateTokenEx(
+        existing: Handle,
+        access: u32,
+        attributes: *const c_void,
+        impersonation_level: u32,
+        token_type: u32,
+        token: *mut Handle,
+    ) -> Bool;
+    fn SetTokenInformation(token: Handle, class: u32, info: *const c_void, len: u32) -> Bool;
+    fn ImpersonateLoggedOnUser(token: Handle) -> Bool;
+    fn RevertToSelf() -> Bool;
 }
 
 /// The I/O tests share the global worker count: run them one at a time.
@@ -229,7 +249,7 @@ fn read_exact(conn: &Conn, len: usize) -> Vec<u8> {
 fn sddl_names_the_user_as_owner_and_grants_only_user_and_system() {
     assert_eq!(
         owner_only_sddl("S-1-5-21-1-2-3-1001"),
-        "O:S-1-5-21-1-2-3-1001D:P(A;;GA;;;S-1-5-21-1-2-3-1001)(A;;GA;;;SY)"
+        "O:S-1-5-21-1-2-3-1001D:P(A;;GA;;;S-1-5-21-1-2-3-1001)(A;;GA;;;SY)S:(ML;;NWNR;;;ME)"
     );
     let sid = current_user().unwrap().to_sddl_string().unwrap();
     assert!(sid.starts_with("S-1-"), "{sid}");
@@ -245,17 +265,18 @@ fn created_pipe_has_a_protected_two_entry_dacl_owned_by_the_user() {
     let user = current_user().unwrap();
     let mut owner = std::ptr::null_mut();
     let mut dacl = std::ptr::null_mut();
+    let mut sacl: *mut c_void = std::ptr::null_mut();
     let mut descriptor = std::ptr::null_mut();
     // SAFETY: out-pointers into the returned descriptor, freed below.
     unsafe {
         let status = GetSecurityInfo(
             client.0.raw(),
             SE_KERNEL_OBJECT,
-            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
             &mut owner,
             std::ptr::null_mut(),
             &mut dacl,
-            std::ptr::null_mut(),
+            &mut sacl,
             &mut descriptor,
         );
         assert_eq!(status, 0, "GetSecurityInfo");
@@ -292,11 +313,145 @@ fn created_pipe_has_a_protected_two_entry_dacl_owned_by_the_user() {
             sids.iter().any(|&sid| EqualSid(sid, system) != 0),
             "SYSTEM ACE"
         );
+        // The mandatory label: one SYSTEM_MANDATORY_LABEL_ACE, Medium, NW|NR.
+        assert!(!sacl.is_null(), "a mandatory label is present");
+        let mut size = AclSizeInformation::default();
+        assert!(
+            GetAclInformation(
+                sacl,
+                (&mut size as *mut AclSizeInformation).cast(),
+                std::mem::size_of::<AclSizeInformation>() as u32,
+                ACL_SIZE_INFORMATION_CLASS,
+            ) != 0
+        );
+        assert_eq!(size.ace_count, 1);
+        let mut ace: *mut c_void = std::ptr::null_mut();
+        assert!(GetAce(sacl, 0, &mut ace) != 0);
+        assert_eq!(*(ace as *const u8), SYSTEM_MANDATORY_LABEL_ACE_TYPE);
+        let mask = *((ace as *const u8).add(4) as *const u32);
+        assert_eq!(
+            mask,
+            SYSTEM_MANDATORY_LABEL_NO_WRITE_UP | SYSTEM_MANDATORY_LABEL_NO_READ_UP
+        );
+        let medium_text = wide("S-1-16-8192");
+        let mut medium = std::ptr::null_mut();
+        assert!(ConvertStringSidToSidW(medium_text.as_ptr(), &mut medium) != 0);
+        assert!(
+            EqualSid((ace as *const u8).add(8) as *const c_void, medium) != 0,
+            "the label is Medium"
+        );
+        LocalFree(medium);
         LocalFree(system);
         LocalFree(descriptor);
     }
     drop(client);
     listener.close_and_join();
+}
+
+/// Opens `name` for read on a thread impersonating this user at Low
+/// integrity; Err carries the Win32 error.
+fn open_for_read_at_low_integrity(name: &str) -> Result<(), u32> {
+    let name = name.to_owned();
+    std::thread::spawn(move || {
+        // SAFETY: token calls on handles owned here; the impersonation is
+        // undone before the thread ends.
+        unsafe {
+            let mut own: Handle = std::ptr::null_mut();
+            assert!(
+                OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY, &mut own) != 0
+            );
+            let own = OwnedHandle::from_raw(own).unwrap();
+            let mut low: Handle = std::ptr::null_mut();
+            assert!(
+                DuplicateTokenEx(
+                    own.raw(),
+                    MAXIMUM_ALLOWED,
+                    std::ptr::null(),
+                    SECURITY_IMPERSONATION,
+                    TOKEN_IMPERSONATION,
+                    &mut low,
+                ) != 0
+            );
+            let low = OwnedHandle::from_raw(low).unwrap();
+            let low_text = wide("S-1-16-4096");
+            let mut low_sid = std::ptr::null_mut();
+            assert!(ConvertStringSidToSidW(low_text.as_ptr(), &mut low_sid) != 0);
+            let label = SidAndAttributes {
+                sid: low_sid,
+                attributes: SE_GROUP_INTEGRITY,
+            };
+            let set = SetTokenInformation(
+                low.raw(),
+                TOKEN_INTEGRITY_LEVEL_CLASS,
+                (&label as *const SidAndAttributes).cast(),
+                std::mem::size_of::<SidAndAttributes>() as u32 + GetLengthSid(low_sid),
+            );
+            assert!(
+                set != 0,
+                "lowering the integrity level failed ({})",
+                last_error()
+            );
+            assert!(ImpersonateLoggedOnUser(low.raw()) != 0);
+            let wide_name = wide(&name);
+            let raw = CreateFileW(
+                wide_name.as_ptr(),
+                GENERIC_READ,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            );
+            let result = OwnedHandle::from_raw(raw).map(drop).ok_or_else(last_error);
+            assert!(RevertToSelf() != 0);
+            LocalFree(low_sid);
+            result
+        }
+    })
+    .join()
+    .unwrap()
+}
+
+/// The Medium label keeps a Low-integrity process of the same user out,
+/// even read-only. Without a label the same open succeeds (the control).
+#[test]
+fn a_low_integrity_client_cannot_open_the_pipe_for_read() {
+    let _serial = serial();
+    let name = pipe_name();
+    let (notify, _rx) = notifier();
+    let listener = Listener::bind(&name, 4, notify).unwrap();
+    assert_eq!(
+        open_for_read_at_low_integrity(&name).err(),
+        Some(ERROR_ACCESS_DENIED)
+    );
+    assert!(listener.take_accepted().is_none());
+    listener.close_and_join();
+
+    // Control: the same DACL with no label admits the Low-integrity read.
+    let user = current_user().unwrap().to_sddl_string().unwrap();
+    let unlabeled = super::security::SecurityDescriptor::from_sddl(&format!(
+        "O:{user}D:P(A;;GA;;;{user})(A;;GA;;;SY)"
+    ))
+    .unwrap();
+    let control_name = pipe_name();
+    let wide_name = wide(&control_name);
+    let attributes = unlabeled.attributes();
+    // SAFETY: NUL-terminated name; attributes point at a live descriptor.
+    let control = OwnedHandle::from_raw(unsafe {
+        CreateNamedPipeW(
+            wide_name.as_ptr(),
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_TYPE_BYTE | PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            0,
+            0,
+            0,
+            &attributes,
+        )
+    })
+    .unwrap();
+    assert_eq!(open_for_read_at_low_integrity(&control_name), Ok(()));
+    drop(control);
 }
 
 #[test]
