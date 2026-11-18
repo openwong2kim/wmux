@@ -265,6 +265,30 @@ describe('FleetView — the list grouped by device', () => {
     expect(useStore.getState().appRoute).toBe('remote');
   });
 
+  it('a PC that needs pairing but still has rows keeps the keyboard in the drawn order', async () => {
+    act(() => useStore.setState((s) => ({
+      pcRailHosts: [{ id: 'host-b', label: 'beta' }],
+      pcRailHostStatus: { 'host-b': 'needs-repair' },
+      pcRailFeeds: { 'host-b': { workspaces: [], fetchedAt: Date.now(), failedTicks: 1 } },
+      // Its attachment has not gone stale yet: an idle row is still listed.
+      remoteWorkspaces: s.remoteWorkspaces.map((w) => (w.hostId === 'host-b'
+        ? { ...w, panes: w.panes.map((p) => (p.sessionId === 'sess-c' ? { ...p, agentStatus: 'idle' as const } : p)) } : w)),
+    })));
+    mount();
+    await flushRaf();
+    const head = heads().find((h) => h.dataset.fleetDeviceHead === 'host-b')!;
+    expect(headText(head)).toBe('beta | Needs pairing | Idle 1 folded');
+    const drawn = [...container.querySelectorAll<HTMLElement>('[data-fleet-key]')].map((el) => el.dataset.fleetKey);
+    expect(drawn.indexOf('fleet:idle-toggle:host-b')).toBeLessThan(drawn.indexOf('fleet:device-repair:host-b'));
+    const visited = [(document.activeElement as HTMLElement).dataset.fleetKey];
+    for (let i = 1; i < drawn.length; i++) {
+      key('ArrowDown');
+      await flushRaf();
+      visited.push((document.activeElement as HTMLElement).dataset.fleetKey);
+    }
+    expect(visited).toEqual(drawn);
+  });
+
   it('a PC paired over plain http says so, not Online', async () => {
     act(() => useStore.setState({
       pcRailHosts: [{ id: 'host-b', label: 'beta' }],

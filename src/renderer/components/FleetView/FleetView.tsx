@@ -496,11 +496,11 @@ export default function FleetView() {
     ...attentionTickets.map((ticket) => ticketKey(ticket.id)),
     ...visibleReview.map((entry) => reviewRowKey(entry.workspaceId)),
     // A device's fold buttons sit in its head, before its rows; a PC that
-    // needs pairing has its note's Remote page link instead.
+    // needs pairing has its note's Remote page link after them, under the head.
     ...(byDevice ? byDevice.devices.flatMap((device) => [
-      ...(device.state === 'needs-repair' ? [deviceRepairKey(device.id)] : []),
       ...(device.finished.length > 0 && !finishedForced ? [deviceToggleKey('finished', device.id)] : []),
       ...(device.idle.length > 0 && !idleForced ? [deviceToggleKey('idle', device.id)] : []),
+      ...(device.state === 'needs-repair' ? [deviceRepairKey(device.id)] : []),
       ...device.running.map((row) => row.pane.paneId),
       ...(deviceFoldOpen('finished', device.id) ? device.finished.map((row) => row.pane.paneId) : []),
       ...(deviceFoldOpen('idle', device.id) ? device.idle.map((row) => row.pane.paneId) : []),
