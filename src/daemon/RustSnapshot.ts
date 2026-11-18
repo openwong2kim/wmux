@@ -45,9 +45,6 @@ function load(): NativeModule {
   return cached.module;
 }
 
-/** The ANSI candidate's history cap (nativeSnapshotLimits.ts). */
-export const ansiScrollbackCap = nativeScrollbackCap;
-
 export function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi'): Promise<SnapshotOutcome>;
 export function generateRustSnapshot(req: SnapshotRequest, kind: 'text'): Promise<TextSnapshotOutcome>;
 export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 'text'): Promise<SnapshotOutcome | TextSnapshotOutcome> {
@@ -60,7 +57,7 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
     // An attach asks for 100k rows of history. The native grid allocates rows
     // only as output fills them, so cap it at the grid's cell limit for every
     // recorded size; the snapshot refuses a history that reached the cap.
-    const scrollback = kind === 'ansi' ? Math.min(requested, ansiScrollbackCap(req)) : requested;
+    const scrollback = kind === 'ansi' ? Math.min(requested, nativeScrollbackCap(req)) : requested;
     const native = load();
     if (kind === 'ansi' && !native.nativeCoreCapabilities?.().includes('ansi-v3')) {
       throw new Error('Native ANSI capability missing; rebuild the native-core module');

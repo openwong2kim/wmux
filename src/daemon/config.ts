@@ -10,7 +10,7 @@ import {
 } from './approvals/gateConfig';
 import { coerceNotifySinks, type NotifySinkConfig } from './push/WebhookSink';
 import type { GateConfig } from './approvals/gateConfig';
-import { RING_HARD_CAP_MB } from './nativeSnapshotLimits';
+import { RING_HARD_CAP_MB } from './ringLimits';
 import {
   CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT,
   CHANNEL_TRASH_TTL_HOURS_DEFAULT,

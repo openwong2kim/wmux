@@ -5,11 +5,10 @@
  * wider pane costs parse time, which the caller's budget bounds.
  */
 import type { SnapshotRequest } from './HeadlessSnapshot';
+import { RING_HARD_CAP_MB } from './ringLimits';
 
-/** The largest ring a session may have: config.ts caps bufferSizeMb at it. */
-export const RING_HARD_CAP_MB = 256;
-
-/** A full ring of the largest size plus its mode preamble. */
+/** A full ring of the largest size plus its mode preamble: a bound on the
+ * request itself, which a ring-sourced one always meets. */
 export const NATIVE_SNAPSHOT_MAX_INPUT_BYTES = RING_HARD_CAP_MB * 1024 * 1024 + 64 * 1024;
 
 /** NativeTerminal refuses a grid above four million cells, history included. */

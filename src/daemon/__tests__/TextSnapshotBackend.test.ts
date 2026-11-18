@@ -65,9 +65,10 @@ describe('opt-in Rust text delivery', () => {
   it.each([
     // Only its length is read before the skip: a ring above the daemon's largest.
     { cols: 1 }, { scrollback: 100000 }, { initial: { length: NATIVE_SNAPSHOT_MAX_INPUT_BYTES + 1 } as Buffer },
-    // 1000 × (1000 + 5000) cells, and a 4M-cell grid reached only on the way through a resize.
+    // 1000 × (1000 + 5000) cells, and a grid past 4M cells reached only on the way through a
+    // resize: rows change first at the old width, so 1000 × (1000 + 3500); each recorded size fits.
     { geometry: { start: { cols: 1000, rows: 1000 }, changes: [] } },
-    { cols: 200, rows: 30, scrollback: 19000, geometry: { start: { cols: 1000, rows: 30 }, changes: [{ offset: 0, cols: 200, rows: 30 }] } },
+    { cols: 100, rows: 1000, scrollback: 3500, geometry: { start: { cols: 1000, rows: 10 }, changes: [{ offset: 0, cols: 100, rows: 1000 }] } },
   ])('keeps requests outside the native limits on xterm', async extra => {
     const reference = vi.fn(async () => success);
     expect(await selectTextSnapshot({ ...req, ...extra }, reference)).toBe(success);
