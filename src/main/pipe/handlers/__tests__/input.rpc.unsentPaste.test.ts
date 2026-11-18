@@ -293,12 +293,13 @@ describe('a paste left unsent in the input box (#3390)', () => {
       expect(writes).toEqual([]);
     });
 
-    it("the daemon's answer missing: whether the box is held is unknown, so nothing is typed", async () => {
+    it("the daemon's answer missing twice: whether the box is held is unknown, so nothing is typed and the delivery is kept", async () => {
       daemonHold = { held: {}, reports: [], accept: true };
       const wiring = harness();
-      unreadable = Infinity;
+      // Both hold reads fail; the daemon answers again by the time the delivery is stored.
+      unreadable = 2;
       answers = [PROCESS];
-      expect(await wiring.gatedSubmit('pty-a', 'later', 'Claude Code', { senderTaskIds: ['t-4'] })).toMatchObject({ ok: false, reason: 'gate_unavailable', detail: expect.stringMatching(/input state could not be read/) });
+      expect(await wiring.gatedSubmit('pty-a', 'later', 'Claude Code', { senderTaskIds: ['t-4'] })).toMatchObject({ ok: false, reason: 'gate_unavailable', stored: true, detail: expect.stringMatching(/input state could not be read/) });
       expect(writes).toEqual([]);
     });
 
