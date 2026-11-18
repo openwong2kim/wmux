@@ -19,6 +19,11 @@ export interface RemoteSpawnToolDeps {
   getSenderPtyId: () => string;
   /** Warms the walk that fills the ptyId (see fanout.ts). */
   resolveWorkspaceId?: () => Promise<string>;
+  /**
+   * Throws when this call cannot be tied to its pane (a shared Codex server
+   * without thread attribution); run after resolveWorkspaceId, nothing is sent.
+   */
+  refuseUnattributed?: () => Promise<void>;
 }
 
 const SHAPE = {
@@ -58,6 +63,7 @@ export function registerRemoteAnswerTool(server: McpServer, deps: RemoteSpawnToo
             // An unresolvable caller is the handler's refusal to make.
           }
         }
+        await deps.refuseUnattributed?.();
         const params: Record<string, unknown> = { taskId: task_id, pickerId: picker_id, option };
         const pty = deps.getSenderPtyId();
         if (pty) params['senderPtyId'] = pty;
@@ -102,6 +108,7 @@ export function registerRemoteApproveTool(server: McpServer, deps: RemoteSpawnTo
             // An unresolvable caller is the handler's refusal to make.
           }
         }
+        await deps.refuseUnattributed?.();
         const params: Record<string, unknown> = { taskId: task_id, promptId: prompt_id, decision };
         const pty = deps.getSenderPtyId();
         if (pty) params['senderPtyId'] = pty;

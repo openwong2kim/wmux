@@ -678,6 +678,46 @@ describe('shared Codex app-server on win32', () => {
     expect(getWorkspaceToken()).toBe('claim-starter');
   });
 
+  it('refuses remote_approve and remote_answer it cannot tie to a pane, before anything is sent', async () => {
+    writeOwner(T1, 'pty-a', 'ws-1');
+    const sent: Array<{ method: string; params: Record<string, unknown> }> = [];
+    extraRpc = (method, params) => {
+      if (method.startsWith('a2a.remote.')) sent.push({ method, params });
+      return { ok: true, taskId: 'rt-1', messageId: 'ap-1', pending: true };
+    };
+    const client = await connect();
+    const approve = { task_id: 'rt-1', prompt_id: '0123456789abcdef', decision: 'allow' };
+    // Threadless, and a thread with no owner record: the walk would name the starter pane.
+    const results = [
+      await call(client, 'remote_approve', approve),
+      await call(client, 'remote_approve', approve, T2),
+      await call(client, 'remote_answer', { task_id: 'rt-1', picker_id: '0123456789abcdef', option: 1 }),
+    ];
+    // A recorded thread is its own pane.
+    const owned = await call(client, 'remote_approve', approve, T1);
+    await client.close();
+    for (const res of results) {
+      expect(res.isError).toBe(true);
+      expect(res.content[0]?.text).toMatch(/shared Codex background server/);
+    }
+    expect(owned.isError).toBeFalsy();
+    expect(sent.map((c) => `${c.method}/${String(c.params.senderPtyId)}`)).toEqual(['a2a.remote.approve/pty-a']);
+  });
+
+  it('keeps remote_approve for a pane-side Codex', async () => {
+    parentChain.mockResolvedValue([MCP_ENTRY, PANE_CODEX]);
+    const sent: string[] = [];
+    extraRpc = (method, params) => {
+      if (method.startsWith('a2a.remote.')) sent.push(`${method}/${String(params.senderPtyId)}`);
+      return { ok: true, taskId: 'rt-1', messageId: 'ap-1', pending: true };
+    };
+    const client = await connect();
+    const res = await call(client, 'remote_approve', { task_id: 'rt-1', prompt_id: '0123456789abcdef', decision: 'deny' });
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect(sent).toEqual(['a2a.remote.approve/pty-s']);
+  });
+
   it('checks the parent for a client that sends no name', async () => {
     const opened: Array<Record<string, unknown>> = [];
     browserRpc(opened);
