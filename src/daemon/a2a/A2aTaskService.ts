@@ -73,7 +73,7 @@ import type {
 } from '../../shared/a2aEventlog';
 import type { A2aRemoteErrorCode, A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from '../../shared/a2aRemote';
 import { isRemoteWorkspaceId, localSideOf, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
-import { parseGatedSubmitProof, type GatedSubmitProof } from '../../shared/ptyMessageDelivery';
+import { parseGatedSubmitProof, sameGatedSubmitProof, type GatedSubmitProof } from '../../shared/ptyMessageDelivery';
 
 /** a2aSlice 현행 값 준수(캐시와 동일 시멘틱). */
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30분
@@ -1063,9 +1063,10 @@ export class A2aTaskService {
           body = { notice: input.notice };
         }
       } else if (input.delivered === true) {
-        unchanged = target.delivered === true && (!input.ptyId || side.ptyId === input.ptyId);
-        // Only a proof for the pty this mark names.
+        // Only a proof for the pty this mark names; a mark that adds or changes one is not a repeat.
         const submit = input.ptyId && input.submit?.ptyId === input.ptyId ? input.submit : undefined;
+        unchanged = target.delivered === true && (!input.ptyId || side.ptyId === input.ptyId)
+          && (submit === undefined || sameGatedSubmitProof(target.submit, submit));
         body = { delivered: true, ...(input.ptyId ? { ptyId: input.ptyId } : {}), ...(submit ? { submit } : {}) };
       } else if (input.held) {
         unchanged = target.delivered !== true && target.held === input.held;

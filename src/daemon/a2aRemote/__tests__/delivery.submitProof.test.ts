@@ -117,6 +117,21 @@ describe('the submit proof on a delivered mark', () => {
     expect(remoteOf(tasks, 'rt-held')).not.toHaveProperty('submit');
   });
 
+  it('a delivered mark that only adds or changes the proof is recorded; the same one again appends nothing', async () => {
+    const { mark, tasks } = boot();
+    await inbound(tasks, 'rt-add');
+    expect(await mark({ taskId: 'rt-add', delivered: true, ptyId: 'pty-9' })).toEqual({ ok: true });
+    expect(remoteOf(tasks, 'rt-add')).not.toHaveProperty('submit');
+    expect(await mark({ taskId: 'rt-add', delivered: true, ptyId: 'pty-9', submit: PROOF })).toEqual({ ok: true });
+    expect(remoteOf(tasks, 'rt-add')).toMatchObject({ submit: PROOF });
+    const later = { ...PROOF, submitRevision: 13 };
+    expect(await mark({ taskId: 'rt-add', delivered: true, ptyId: 'pty-9', submit: later })).toEqual({ ok: true });
+    expect(remoteOf(tasks, 'rt-add')).toMatchObject({ submit: later });
+    const records = open[0].log.readAllRecords().length;
+    expect(await mark({ taskId: 'rt-add', delivered: true, ptyId: 'pty-9', submit: later })).toEqual({ ok: true });
+    expect(open[0].log.readAllRecords().length).toBe(records);
+  });
+
   it('a mark without one is recorded as before', async () => {
     const { mark, tasks } = boot();
     await inbound(tasks, 'rt-plain');
