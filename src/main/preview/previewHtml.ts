@@ -301,12 +301,12 @@ export async function resolveInsideRoot(entry: Pick<HtmlEntry, 'root' | 'pageDir
   if (segments.some((s) => s === '..' || s === '.')) return null;
   const joined = path.join(entry.root, ...segments);
   if (!sameOrInside(entry.root, joined)) return null;
-  let real: string;
-  try {
-    real = await fs.promises.realpath(joined);
-  } catch {
-    return null;
-  }
+  // Canonicalized by the function the root came from (openHtmlPreview), so both
+  // are in one path space: on a mapped network drive a bare realpath answers
+  // the share's UNC spelling (\\server\share\…), while the root is spelled
+  // from the drive (Z:\…), and nothing on the drive would be inside it (#3413).
+  const real = await resolveAccessiblePath(joined);
+  if (!real) return null;
   if (!sameOrInside(entry.root, real) || isSensitivePath(real)) return null;
   // No dot-names (.env, .git, …), judged on the real path, except along the
   // page's own folder chain (a page under .github/ may load its neighbours).
