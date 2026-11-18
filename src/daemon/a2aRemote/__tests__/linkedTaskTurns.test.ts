@@ -265,6 +265,27 @@ describe('LinkedTaskTurns', () => {
     expect(t.taskTurn(TASK)).toEqual({ messageId: 'r-1', opened: true, closed: false, toolUseIds: ['toolu_3'] });
   });
 
+  it('a unit from another session listed between two of one session does not change which of those is latest', () => {
+    const OTHER = `[wmux] reply on ${TASK} from pc-a/ws/#1:\n> from before the restart`;
+    const itemFloor = size();
+    write(userLine(FOLLOW_UP), callLine('toolu_2'), assistantLine('5.15'));
+    const floor = size();
+    write(userLine(PROMPT), callLine('toolu_1'));
+    // The task itself went in last in this session (a higher key count than r-2); r-1 is from another key epoch.
+    const before: A2aRemoteInboxItem = {
+      messageId: 'r-1', kind: 'reply', delivered: true,
+      submit: proof({ promptHash: promptHash(OTHER), keyEpoch: 'ep-0', submitRevision: 99, transcriptOffsetAtBase: 0 }) as unknown as A2aRemoteInboxItem['submit'],
+    };
+    const item: A2aRemoteInboxItem = {
+      messageId: 'r-2', kind: 'reply', delivered: true,
+      submit: proof({ promptHash: promptHash(FOLLOW_UP), submitRevision: 5, transcriptOffsetAtBase: itemFloor }) as unknown as A2aRemoteInboxItem['submit'],
+    };
+    tasks = [inboundTask({ submit: proof({ submitRevision: 10, transcriptOffsetAtBase: floor }), inbox: [before, item] })];
+    const t = tracker();
+    t.tick();
+    expect(t.taskTurn(TASK)).toEqual({ opened: true, closed: false, toolUseIds: ['toolu_1'] });
+  });
+
   it('one task that throws does not stop the others, nor the clean-up', () => {
     const floor = size();
     write(userLine(PROMPT), callLine('toolu_1'));

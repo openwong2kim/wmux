@@ -51,7 +51,7 @@ export type LinkedTaskTurn = { messageId?: string; opened: boolean; closed: bool
 interface Unit {
   taskId: string;
   messageId?: string;
-  /** Listed order within its task: the task itself first, then its inbox items (see deliveredAfter). */
+  /** Listed order within its task: the task itself first, then its inbox items (see sameSession). */
   order: number;
   /** The proof this follows: another one starts over. */
   key: string;
@@ -95,8 +95,13 @@ export class LinkedTaskTurns {
 
   /** What was seen of the latest followed delivery of `taskId`. Reads nothing. */
   taskTurn(taskId: string): LinkedTaskTurn {
-    let latest: Unit | undefined;
-    for (const u of this.units.values()) if (u.taskId === taskId && (!latest || deliveredAfter(u, latest))) latest = u;
+    let last: Unit | undefined;
+    for (const u of this.units.values()) if (u.taskId === taskId && (!last || u.order > last.order)) last = u;
+    // In the last-listed unit's session, the one delivered last (see sameSession).
+    let latest = last;
+    for (const u of this.units.values()) {
+      if (latest && u.taskId === taskId && sameSession(u, latest) && u.proof.submitRevision > latest.proof.submitRevision) latest = u;
+    }
     if (!latest || latest.path === null || latest.expired) return 'unknown';
     return {
       ...(latest.messageId !== undefined ? { messageId: latest.messageId } : {}),
@@ -260,14 +265,15 @@ export class LinkedTaskTurns {
 }
 
 /**
- * Whether `a` was delivered after `b`. In one session (pty, incarnation and
- * key epoch) the key count orders them: each submit's count includes every
+ * Whether two units were submitted in one session (pty, incarnation and key
+ * epoch). There the key count orders them: each submit's count includes every
  * earlier one's Enters, so a held item delivered late is told apart from the
- * newer ones delivered before it. Across sessions, the listed order.
+ * newer ones delivered before it. Across sessions nothing on the proofs orders
+ * them, so `taskTurn` keeps to the last-listed unit's session: a held item
+ * delivered late in a later session is then missed, never mistaken.
  */
-function deliveredAfter(a: Unit, b: Unit): boolean {
-  const same = a.proof.ptyId === b.proof.ptyId && a.proof.incarnation === b.proof.incarnation && a.proof.keyEpoch === b.proof.keyEpoch;
-  return same ? a.proof.submitRevision > b.proof.submitRevision : a.order > b.order;
+function sameSession(a: Unit, b: Unit): boolean {
+  return a.proof.ptyId === b.proof.ptyId && a.proof.incarnation === b.proof.incarnation && a.proof.keyEpoch === b.proof.keyEpoch;
 }
 
 /** The delivered units of an open inbound task that carry a proof for the pane's current occupant. */
