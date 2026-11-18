@@ -119,7 +119,8 @@ describe('FleetView — the list grouped by device', () => {
     // The fold is a button in the head ("Idle 1 folded"), not a second row
     // repeating the count.
     expect(heads().map(headText)).toEqual([
-      'This computer | Running 1 | Idle 1 folded', 'beta | Online · Running 1 | ', 'office | Disconnected | ',
+      // beta is not on the PC rail: its head makes no claim to be online.
+      'This computer | Running 1 | Idle 1 folded', 'beta | Running 1 | ', 'office | Disconnected | ',
     ]);
     expect(container.querySelectorAll('.wmux-fleet-idle-toggle')).toHaveLength(0);
     const fold = container.querySelector<HTMLButtonElement>('[data-fleet-key="fleet:idle-toggle:local"]')!;
@@ -210,9 +211,11 @@ describe('FleetView — the list grouped by device', () => {
     mount();
     await flushRaf();
     const cards = () => [...container.querySelectorAll<HTMLElement>('[data-fleet-card]')].map((el) => el.dataset.workspaceId).sort();
-    // One missed poll is not down: the rows stay, and there is no note.
+    // One missed poll is not down: the rows stay, and there is no note. Nor
+    // is it Online: the head says nothing until the rail does.
     expect(cards()).toEqual(['ws-1', 'ws-2', 'ws-b', 'ws-c']);
     expect(note('host-b')).toBeNull();
+    expect(headText(heads()[1])).toBe('beta | Running 1 | ');
     // The second, the drop notice's tick: the rows leave and the head says what it had.
     railTick(2);
     await flushRaf();
@@ -260,6 +263,19 @@ describe('FleetView — the list grouped by device', () => {
     expect(link.textContent).toBe('Remote page');
     act(() => link.click());
     expect(useStore.getState().appRoute).toBe('remote');
+  });
+
+  it('a PC paired over plain http says so, not Online', async () => {
+    act(() => useStore.setState({
+      pcRailHosts: [{ id: 'host-b', label: 'beta' }],
+      pcRailHostStatus: { 'host-b': 'insecure' },
+      pcRailFeeds: { 'host-b': { workspaces: [], fetchedAt: null, failedTicks: 1 } },
+    }));
+    mount();
+    await flushRaf();
+    const head = heads().find((h) => h.dataset.fleetDeviceHead === 'host-b')!;
+    expect(head.dataset.deviceState).toBe('insecure');
+    expect(headText(head)).toBe('beta | Not a secure connection · Running 1 | ');
   });
 
   it('a search narrows each device and drops the row-less head', async () => {

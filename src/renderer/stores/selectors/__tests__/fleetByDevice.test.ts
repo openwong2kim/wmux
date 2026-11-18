@@ -23,7 +23,7 @@ const remote = (ptyId: string, hostId: string, hostLabel: string, overrides: Par
   pane(ptyId, { surfaceType: 'remote-terminal', remote: { hostId, hostLabel }, ...overrides });
 const ids = (rows: FleetRow[]) => rows.map((row) => row.pane.ptyId);
 const host = (id: string, label: string, over: Partial<FleetDeviceHost> = {}): FleetDeviceHost =>
-  ({ id, label, offline: false, needsRepair: false, lastSeenAt: null, ...over });
+  ({ id, label, offline: false, needsRepair: false, insecure: false, online: true, lastSeenAt: null, ...over });
 
 describe('groupFleetByDevice', () => {
   const panes = [
@@ -117,10 +117,26 @@ describe('groupFleetByDevice', () => {
   it('a host with live rows is connected even when one of its attachments is stale', () => {
     const groups = groupFleetPanes([remote('r', 'host-x', 'x', { agentStatus: 'running' })]);
     const byDevice = groupFleetByDevice(groups, {
-      remoteWorkspaces: [{ hostId: 'host-x', hostLabel: 'x', stale: true, panes: [] }], includeDisconnected: true,
+      remoteWorkspaces: [{ hostId: 'host-x', hostLabel: 'x', stale: true, panes: [] }], hosts: [host('host-x', 'x')], includeDisconnected: true,
     });
     expect(byDevice.devices).toHaveLength(1);
     expect(byDevice.devices[0]).toMatchObject({ id: 'host-x', state: 'connected' });
+  });
+
+  it('a host with rows takes its head state from the rail, and claims nothing the rail has not said', () => {
+    const groups = groupFleetPanes([remote('r', 'host-x', 'x', { agentStatus: 'running' })]);
+    const stateWith = (hosts?: FleetDeviceHost[]) => groupFleetByDevice(groups, { hosts }).devices[0];
+    expect(stateWith([host('host-x', 'x')])).toMatchObject({ state: 'connected' });
+    // Not on the rail, or on it but not online (not answered yet, one missed poll): no claim.
+    expect(stateWith()).toMatchObject({ id: 'host-x', state: 'unknown' });
+    expect(stateWith([host('host-x', 'x', { online: false })])).toMatchObject({ state: 'unknown' });
+    expect(stateWith([host('host-x', 'x', { online: false, insecure: true })])).toMatchObject({ state: 'insecure' });
+    expect(stateWith([host('host-x', 'x', { online: false, needsRepair: true, lastSeenAt: 7 })]))
+      .toMatchObject({ state: 'needs-repair', lastSeenAt: 7 });
+    expect(stateWith([host('host-x', 'x', { online: false, offline: true, lastSeenAt: 7 })]))
+      .toMatchObject({ state: 'disconnected', lastSeenAt: 7 });
+    // Its rows stay under it whatever the state.
+    expect(ids(stateWith().running)).toEqual(['r']);
   });
 
   it('a stale attachment on a host the rail still reaches is a workspace gone, not a disconnected PC', () => {

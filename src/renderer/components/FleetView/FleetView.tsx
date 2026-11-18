@@ -22,7 +22,7 @@ import { selectDownHostIds, selectOutdatedRemoteKeys } from '../../stores/select
 import { selectApprovalInbox } from '../../stores/selectors/approvalInbox';
 import { selectReviewQueue, selectReviewQueueIds, type ReviewQueueEntry } from '../../stores/selectors/reviewQueue';
 import { selectRemoteInbox } from '../../stores/selectors/remoteInbox';
-import { LOCAL_PC_ID } from '../../../shared/pcRail';
+import { LOCAL_PC_ID, isPcRailHostOnline } from '../../../shared/pcRail';
 import { resolveInboxItem } from '../../utils/resolveInboxItem';
 import {
   focusPaneByPtyId,
@@ -185,26 +185,34 @@ export default function FleetView() {
   const fleetGroupBy = useStore((s) => s.fleetGroupBy);
   const setFleetGroupBy = useStore((s) => s.setFleetGroupBy);
   // The paired PCs in the rail's order, flattened to primitives (id, name,
-  // down, needs pairing, last answer while either) so a poll tick that only
-  // moves a live host's fetch time does not re-render Fleet. Down is the drop
-  // notice's rule (selectDownHostIds), so the head turns Disconnected on its tick.
+  // down, needs pairing, insecure, online, last answer while down or needs
+  // pairing) so a poll tick that only moves a live host's fetch time does not
+  // re-render Fleet. Down is the drop notice's rule (selectDownHostIds), so
+  // the head turns Disconnected on its tick. A host with no status yet has
+  // not answered: not online.
   const deviceHostCells = useStore(useShallow((s) => {
     const down = selectDownHostIds(s);
     return s.pcRailHosts.flatMap((h) => {
+      const status = s.pcRailHostStatus[h.id];
       const offline = down.has(h.id);
-      const needsRepair = !offline && s.pcRailHostStatus[h.id] === 'needs-repair';
-      return [h.id, h.label, offline, needsRepair, offline || needsRepair ? s.pcRailFeeds[h.id]?.fetchedAt ?? null : null];
+      const needsRepair = !offline && status === 'needs-repair';
+      const insecure = !offline && status === 'insecure';
+      const online = !offline && status !== undefined && isPcRailHostOnline(status);
+      return [h.id, h.label, offline, needsRepair, insecure, online,
+        offline || needsRepair ? s.pcRailFeeds[h.id]?.fetchedAt ?? null : null];
     });
   }));
   const deviceHosts = useMemo(() => {
     const out: FleetDeviceHost[] = [];
-    for (let i = 0; i < deviceHostCells.length; i += 5) {
+    for (let i = 0; i < deviceHostCells.length; i += 7) {
       out.push({
         id: deviceHostCells[i] as string,
         label: deviceHostCells[i + 1] as string,
         offline: deviceHostCells[i + 2] as boolean,
         needsRepair: deviceHostCells[i + 3] as boolean,
-        lastSeenAt: deviceHostCells[i + 4] as number | null,
+        insecure: deviceHostCells[i + 4] as boolean,
+        online: deviceHostCells[i + 5] as boolean,
+        lastSeenAt: deviceHostCells[i + 6] as number | null,
       });
     }
     return out;
@@ -1629,7 +1637,9 @@ export default function FleetView() {
     const name = device.id === LOCAL_PC_ID ? t('pcRail.thisComputer') : device.label;
     const ago = device.lastSeenAt != null ? Math.max(0, now - device.lastSeenAt) : undefined;
     const aged = ago !== undefined && ago >= IDLE_SHOW_AFTER_MS;
+    // 'unknown' and this computer print no state: the rail has not said.
     const state = device.state === 'connected' ? t('pcRail.online')
+      : device.state === 'insecure' ? t('pcRail.insecure')
       : device.state === 'disconnected'
         ? (aged ? t('fleet.device.disconnectedAgo', { age: formatIdle(ago) }) : t('fleet.device.disconnected'))
         : device.state === 'needs-repair'

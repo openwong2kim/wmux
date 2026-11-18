@@ -1250,7 +1250,8 @@ button.wmux-ws-group-head:hover { background: var(--hover-fill); color: var(--te
 /* 8px, grey while the PC is reached, a hollow ring (a border, so it survives forced-colors) once it is not. */
 .wmux-fleet-device-dot { flex: none; width: 8px; height: 8px; border-radius: 9999px; background: var(--text-muted); }
 .wmux-fleet-device-head[data-device-state="disconnected"] .wmux-fleet-device-dot,
-.wmux-fleet-device-head[data-device-state="needs-repair"] .wmux-fleet-device-dot { background: transparent; border: 1.5px solid var(--text-muted); }
+.wmux-fleet-device-head[data-device-state="needs-repair"] .wmux-fleet-device-dot,
+.wmux-fleet-device-head[data-device-state="insecure"] .wmux-fleet-device-dot { background: transparent; border: 1.5px solid var(--text-muted); }
 .wmux-fleet-device-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmux-fleet-device-meta { flex-shrink: 0; font-weight: 400; color: var(--text-muted); }
 /* The folds are plain text on the head, open or closed: no fill, border or

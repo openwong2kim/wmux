@@ -1500,10 +1500,15 @@ export interface FleetDeviceGroup {
   id: string;
   /** The host's label; '' for this computer (the UI names it). */
   label: string;
-  /** 'disconnected': the PC rail does not reach the host. It has no rows;
-   *  `lastSeen` says what it had. 'needs-repair': the host refused this
-   *  computer's credential; it has no rows until it is paired again. */
-  state: 'local' | 'connected' | 'disconnected' | 'needs-repair';
+  /** The rail's word on the host. 'connected': the rail draws it online.
+   *  'disconnected': the rail calls it down. It has no rows; `lastSeen` says
+   *  what it had. 'needs-repair': the host refused this computer's
+   *  credential; its rows go until it is paired again. 'insecure': paired over
+   *  plain http, so this computer does not contact it. 'unknown': it has rows
+   *  here but the rail has not said it reaches it (not on the rail, not
+   *  answered yet, or one missed poll short of down), so the head claims
+   *  nothing about reachability. */
+  state: 'local' | 'connected' | 'unknown' | 'insecure' | 'disconnected' | 'needs-repair';
   /** Disconnected or needs-repair: when the host last answered, or null when not known. */
   lastSeenAt?: number | null;
   /** Disconnected only: the panes it last had here. */
@@ -1527,8 +1532,21 @@ export interface FleetDeviceHost {
   offline: boolean;
   /** It refused this computer's credential (the rail's needs-repair). */
   needsRepair: boolean;
+  /** Paired over plain http, so the rail does not contact it (the rail's insecure). */
+  insecure: boolean;
+  /** The rail draws it online (isPcRailHostOnline). */
+  online: boolean;
   /** When it last answered, or null when not known. */
   lastSeenAt: number | null;
+}
+
+/** A host's head state while it has rows here, from the rail alone. */
+function railDeviceState(host: FleetDeviceHost | undefined): FleetDeviceGroup['state'] {
+  if (!host) return 'unknown';
+  if (host.offline) return 'disconnected';
+  if (host.needsRepair) return 'needs-repair';
+  if (host.insecure) return 'insecure';
+  return host.online ? 'connected' : 'unknown';
 }
 
 /**
@@ -1566,7 +1584,12 @@ export function groupFleetByDevice(
   for (const section of ['running', 'finished', 'idle'] as const) {
     for (const row of groups[section]) {
       const { id, label } = fleetRowDevice(row.pane, { hosts: opts.hosts, remoteWorkspaces: opts.remoteWorkspaces });
-      device(id, label, id === LOCAL_PC_ID ? 'local' : 'connected')[section].push(row);
+      let d = byId.get(id);
+      if (!d) {
+        d = device(id, label, id === LOCAL_PC_ID ? 'local' : railDeviceState(railHost.get(id)));
+        if (d.state === 'needs-repair' || d.state === 'disconnected') d.lastSeenAt = railHost.get(id)?.lastSeenAt ?? null;
+      }
+      d[section].push(row);
     }
   }
   if (opts.includeDisconnected) {

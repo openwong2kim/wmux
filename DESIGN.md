@@ -2897,6 +2897,10 @@ differently in the two places, and in the order `fleet_triage` returns.
     so it survives forced-colors) once it is not; a device is not a status,
     so never a status colour, and no per-device colour. Then the name in
     `--text-main`, its state and running count muted (`Online · Running 2`),
+    the state in the PC rail's words for that PC: `Online` only while the rail
+    draws it online, `Not a secure connection` (hollow ring) while it is
+    paired over plain http, and no state at all while the rail has not said
+    (not on the rail, not answered yet, one missed poll),
     and on the right its folds as plain text of the same weight open or
     closed, `Finished 1 folded ›` and `Idle 2 folded ›` (`Idle 2` while
     open, the chevron turned): no second row repeats a count. A fold has no
