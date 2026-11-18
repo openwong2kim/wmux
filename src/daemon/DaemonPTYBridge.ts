@@ -450,6 +450,12 @@ export class DaemonPTYBridge extends EventEmitter {
    * pane is not someone answering the dialog, but a click may be.
    */
   private keyInputRevision = 0;
+  /**
+   * A random id for this count: a session recovered after a restart gets a new
+   * bridge whose count starts at 0 again under the same incarnation, so a
+   * count is only comparable with one read under the same epoch.
+   */
+  private keyEpoch = randomBytes(12).toString('hex');
   /** When `keyInputRevision` last moved (#1680): `isKeyInputQuiet` reads it so
    *  a pointer drifting over the pane does not read as someone typing. */
   private lastKeyInputAt = 0;
@@ -1024,6 +1030,11 @@ export class DaemonPTYBridge extends EventEmitter {
   /** Stdin generation counting only writes that can act on the screen (see the field). */
   getKeyInputRevision(): number {
     return this.keyInputRevision;
+  }
+
+  /** The epoch `getKeyInputRevision` counts in (see the field). */
+  getKeyEpoch(): string {
+    return this.keyEpoch;
   }
 
   /**
@@ -2942,6 +2953,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.lastInputAt = 0;
     this.inputRevision = 0;
     this.keyInputRevision = 0;
+    this.keyEpoch = randomBytes(12).toString('hex');
     this.lastKeyInputAt = 0;
     this.shellCommandRunning = false;
     this.shellPromptSeen = false;

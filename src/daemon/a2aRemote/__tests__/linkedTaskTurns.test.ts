@@ -62,7 +62,7 @@ function inboundTask(over: { submit?: unknown; state?: Task['status']['state']; 
   } as Task;
 }
 
-const proof = (text = PROMPT) => ({ ptyId: PTY, incarnation: 'inc-1', submitRevision: 3, promptHash: promptHash(text) });
+const proof = (text = PROMPT) => ({ ptyId: PTY, incarnation: 'inc-1', keyEpoch: 'ep-1', submitRevision: 3, promptHash: promptHash(text) });
 
 function tracker(): LinkedTaskTurns {
   return new LinkedTaskTurns({

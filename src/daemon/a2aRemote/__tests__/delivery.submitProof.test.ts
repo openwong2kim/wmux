@@ -17,7 +17,7 @@ import { LinkStore } from '../linkStore';
 const LINK = '11111111-1111-4111-8111-111111111111';
 const HOST = '22222222-2222-4222-8222-222222222222';
 const REMOTE_WS = `remote:${LINK}`;
-const PROOF = { ptyId: 'pty-9', incarnation: 'inc-1', submitRevision: 12, promptHash: 'c'.repeat(64) };
+const PROOF = { ptyId: 'pty-9', incarnation: 'inc-1', keyEpoch: 'ep-1', submitRevision: 12, promptHash: 'c'.repeat(64) };
 
 type Handler = (p: Record<string, unknown>) => Promise<unknown>;
 
@@ -96,6 +96,8 @@ describe('the submit proof on a delivered mark', () => {
       { ...PROOF, submitRevision: -1 },
       { ...PROOF, submitRevision: 1.5 },
       { ...PROOF, incarnation: '' },
+      { ...PROOF, keyEpoch: undefined },
+      { ...PROOF, transcriptOffsetAtBase: -5 },
       { ...PROOF, ptyId: 7 },
       { ...PROOF, ptyId: 'pty-other' },
     ];

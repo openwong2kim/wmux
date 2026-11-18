@@ -218,7 +218,7 @@ describe('RemoteA2aBridge', () => {
   });
 
   it('a delivery with a submit proof passes it to the daemon; a malformed one or another pty\'s is left out', async () => {
-    const proof = { ptyId: 'pty-p', incarnation: 'inc-1', submitRevision: 7, promptHash: 'a'.repeat(64) };
+    const proof = { ptyId: 'pty-p', incarnation: 'inc-1', keyEpoch: 'ep-1', submitRevision: 7, promptHash: 'a'.repeat(64) };
     daemon.tasks.set(id(30), remoteTask(30));
     daemon.tasks.set(id(31), remoteTask(31));
     daemon.tasks.set(id(32), remoteTask(32));

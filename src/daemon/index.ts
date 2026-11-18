@@ -280,6 +280,7 @@ import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/h
 import { checkNativeTranscriptPath } from './transcript/providers';
 import { keepOwnWslTranscriptPath } from './hooks/transcriptPathGuard';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
+import { statTranscript } from './transcript/readTail';
 import { TranscriptActivityWatcher } from './transcript/TranscriptActivityWatcher';
 import { ToolRefusalTracker } from './transcript/toolRefusals';
 import { ShellPromptWatcher } from './shellPrompt/ShellPromptWatcher';
@@ -6414,8 +6415,8 @@ function registerRpcHandlers(
   // #2372 — `ids` reads several panes in one call (see agentStateBatch.ts).
   pipeServer.onRpc('daemon.getAgentState', async (params) => (params['ids'] !== undefined
     ? agentStatesFor(params['ids'], agentStateFor)
-    : agentStateFor(typeof params['id'] === 'string' ? params['id'] : '')));
-  function agentStateFor(id: string) {
+    : agentStateFor(typeof params['id'] === 'string' ? params['id'] : '', params['transcriptOffset'] === true)));
+  function agentStateFor(id: string, withTranscriptOffset = false) {
     const state = readDaemonAgentState(id);
     const bridge = sessionManager.getSession(id)?.bridge;
     if (!bridge) return state;
@@ -6427,9 +6428,15 @@ function registerRpcHandlers(
     // them), and whether the CURRENT agent's hooks have reported (reset when
     // the agent ends). Kept out of readDaemonAgentState, which also answers
     // the web roster.
+    // Asked for one pane only (a delivery's submit proof): the size of its bound transcript now.
+    const transcript = withTranscriptOffset ? transcriptProjector?.transcriptPath(id) ?? null : null;
+    const transcriptSize = transcript ? statTranscript(transcript)?.size : undefined;
     return {
       ...state,
       keyInputRevision: bridge.getKeyInputRevision(),
+      // Additive: the epoch that count is in (a recovered session's bridge counts again from 0).
+      keyEpoch: bridge.getKeyEpoch(),
+      ...(transcriptSize !== undefined ? { transcriptOffset: transcriptSize } : {}),
       keyInputQuiet: bridge.isKeyInputQuiet(),
       hookReports: bridge.hasHookReports(),
       // Additive, for a delivery that waits for the person to stop typing:
