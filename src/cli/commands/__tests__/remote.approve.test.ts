@@ -98,6 +98,21 @@ describe('wmux remote approve', () => {
     expect(printed()).toContain('Try again in 42 s.');
   });
 
+  it('with --json: the result printed, and the same exit status as the text (1 for not done or uncertain)', async () => {
+    const result = (outcome?: Record<string, unknown>) => ({
+      id: 'x', ok: true, result: { ok: true, taskId: 'rt-1', messageId: 'ap-4', promptId: PROMPT, decision: 'deny', tool: 'Bash', ...(outcome ? { outcome: { messageId: 'ap-4', ...outcome } } : { pending: true }) },
+    });
+    mainRpc.mockResolvedValueOnce(result({ outcome: 'not-done', reason: 'rate-limited', retryAfterMs: 60_000 }));
+    expect(await run(['rt-1', PROMPT, 'deny'], true)).toBe(1);
+    expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toMatchObject({ outcome: { outcome: 'not-done', reason: 'rate-limited' } });
+    mainRpc.mockResolvedValueOnce(result({ outcome: 'uncertain' }));
+    expect(await run(['rt-1', PROMPT, 'deny'], true)).toBe(1);
+    mainRpc.mockResolvedValueOnce(result({ outcome: 'done' }));
+    expect(await run(['rt-1', PROMPT, 'deny'], true)).toBe(0);
+    mainRpc.mockResolvedValueOnce(result());
+    expect(await run(['rt-1', PROMPT, 'deny'], true)).toBe(0);
+  });
+
   it('pending: says where the outcome shows', async () => {
     mainRpc.mockResolvedValueOnce({ id: 'x', ok: true, result: { ok: true, taskId: 'rt-1', messageId: 'ap-2', promptId: PROMPT, decision: 'deny', tool: 'Bash', pending: true } });
     expect(await run(['rt-1', PROMPT, 'deny'])).toBe(0);

@@ -821,11 +821,13 @@ async function remoteApprove(args: string[], jsonMode: boolean): Promise<void> {
   const pty = await senderPtyId();
   if (!pty) fail('not inside a wmux pane (no resolvable pane identity). Only the agent that sent the task can answer its prompts, so run this from its pane.');
   const res = await call(A2A_APPROVAL_RPC.ask as RpcMethod, { ...parsed, senderPtyId: pty }, jsonMode, A2A_APPROVAL_OUTCOME_WAIT_MS + 15_000);
+  const outcome = res['outcome'] as { outcome?: string; reason?: string; reasonText?: string; retryAfterMs?: number } | undefined;
   if (jsonMode) {
     console.log(JSON.stringify(res, null, 2));
+    // The same exit status as the text: 1 when it was not done, or may not have been.
+    if (outcome && outcome.outcome !== 'done') process.exit(1);
     return;
   }
-  const outcome = res['outcome'] as { outcome?: string; reason?: string; reasonText?: string; retryAfterMs?: number } | undefined;
   const what = `${parsed.decision === 'allow' ? 'Allow' : 'Deny'} for ${printable(String(res['tool'] ?? 'the prompt'))} (${String(res['messageId'])})`;
   if (!outcome) {
     console.log(`${what} sent. No outcome yet: it shows in the task's status (detail.approvals, by this message id) once that PC has carried it out.`);
