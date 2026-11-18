@@ -847,8 +847,8 @@ fn signal_number(signal: Option<&str>) -> Option<u32> {
 
 /// Blocks until `pid` has exited (unreaped). A stopped or continued root is
 /// not an exit: macOS answers WEXITED with a stop too (CLD_STOPPED, as a tree
-/// capture's SIGSTOP leaves the root), and WNOWAIT leaves that report in
-/// place: it is taken off, and asked again a moment later rather than at once.
+/// capture's SIGSTOP leaves the root). The only waits here keep WNOWAIT, so
+/// nothing reaps the root outside the waiter's lock.
 #[cfg(unix)]
 fn observe_exit(pid: i32) -> std::io::Result<()> {
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -865,17 +865,8 @@ fn observe_exit(pid: i32) -> std::io::Result<()> {
             match info.si_code {
                 libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED => return Ok(()),
                 _ => {
-                    // Take the stop or continue report off (it reaps nothing), so
-                    // the next look blocks until the root changes again.
-                    let mut taken: libc::siginfo_t = unsafe { std::mem::zeroed() };
-                    unsafe {
-                        libc::waitid(
-                            libc::P_PID,
-                            pid as libc::id_t,
-                            &mut taken,
-                            libc::WSTOPPED | libc::WCONTINUED | libc::WNOHANG,
-                        );
-                    }
+                    // Asked again a moment later: while the root stays stopped,
+                    // the same report comes back at once.
                     std::thread::sleep(EXIT_POLL);
                     continue;
                 }
