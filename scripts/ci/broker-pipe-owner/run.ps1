@@ -121,11 +121,17 @@ function Invoke-ShimSession([string] $exe, [string] $shimHome, [string] $suffix,
   $info.EnvironmentVariables['HOME'] = $shimHome
   $info.EnvironmentVariables['WMUX_DATA_SUFFIX'] = $suffix
   $info.EnvironmentVariables.Remove('WMUX_AUTH_TOKEN')
-  $p = [System.Diagnostics.Process]::Start($info)
+  # Process.StandardInput takes the console's input encoding and, with UTF-8,
+  # writes its BOM as the process starts: the first JSON-RPC line would reach
+  # the server unparsable. Start it with a UTF-8 encoding that has no BOM.
+  $consoleIn = [Console]::InputEncoding
+  [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+  try { $p = [System.Diagnostics.Process]::Start($info) } finally { [Console]::InputEncoding = $consoleIn }
   $err = $p.StandardError.ReadToEndAsync()
-  $p.StandardInput.NewLine = "`n"
-  $p.StandardInput.WriteLine($initLine)
-  $p.StandardInput.Flush()
+  $stdin = $p.StandardInput
+  $stdin.NewLine = "`n"
+  $stdin.WriteLine($initLine)
+  $stdin.Flush()
   $stdout = New-Object System.Text.StringBuilder
   $deadline = (Get-Date).AddSeconds(30)
   $read = $null
@@ -142,13 +148,13 @@ function Invoke-ShimSession([string] $exe, [string] $shimHome, [string] $suffix,
       # Only an initialize result lets the session go on.
       if (-not $msg.result) { break }
       $initOk = $true
-      foreach ($line in $lines) { $p.StandardInput.WriteLine($line) }
-      $p.StandardInput.Flush()
+      foreach ($line in $lines) { $stdin.WriteLine($line) }
+      $stdin.Flush()
       continue
     }
     if ($initOk -and $msg -and $msg.id -eq $waitId) { break }
   }
-  $p.StandardInput.Close()
+  $stdin.Close()
   if (-not $p.WaitForExit(30000)) { $p.Kill(); $p.WaitForExit() }
   [pscustomobject]@{ pid = $p.Id; code = $p.ExitCode; stderr = $err.Result; stdout = $stdout.ToString(); initOk = $initOk }
 }
