@@ -121,6 +121,9 @@ import {
   DECISION_V2_WEB_ANSWER,
   NATIVE_ANSWER_TIMEOUT_MS,
   isNativeDecision,
+  REMOTE_DECISION_V2_ANSWER,
+  REMOTE_TERMINAL_PROMPT_ANSWER,
+  REMOTE_TERMINAL_PROMPT_DECLINE,
   TERMINAL_PROMPT_DETAIL_MAX_BYTES,
   TERMINAL_PROMPT_WEB_ANSWER,
   TERMINAL_PROMPT_WEB_DECLINE,
@@ -382,7 +385,7 @@ interface TerminalPromptIdentity {
    * The tool call the record was bound to, with its whole input's hash: by
    * its transcript id, or (no id) by the PermissionRequest hook's evidence.
    */
-  call?: { id?: string; name: string; command: string; description?: string; unsandboxed?: true; inputHash: string; promptId?: string };
+  call?: { id?: string; name: string; command: string; description?: string; unsandboxed?: true; inputHash: string; promptId?: string; inputKeys?: string[] };
   /** The dialog read at creation spelled exactly that call's command. */
   matched: boolean;
   /** Matched with its top scrolled off (see buildTerminalPrompt). */
@@ -390,6 +393,43 @@ interface TerminalPromptIdentity {
 }
 type WithIdentity = ApprovalRequest & { [IDENTITY]?: TerminalPromptIdentity };
 const identityOf = (r: ApprovalRequest): TerminalPromptIdentity | undefined => (r as WithIdentity)[IDENTITY];
+
+/** A resolve from a paired PC: it carries one of the REMOTE_* markers. */
+function remoteMarked(params: ApprovalResolveParams): boolean {
+  return params.terminalPromptAnswer === REMOTE_TERMINAL_PROMPT_ANSWER
+    || params.terminalPromptDecline === REMOTE_TERMINAL_PROMPT_DECLINE
+    || params.decisionV2Answer === REMOTE_DECISION_V2_ANSWER;
+}
+
+/**
+ * What an approval from a paired PC decides on, for a pending
+ * `terminal_prompt` record (a2aRemote/remoteApproval.ts). `call` is the bound
+ * call's tool and whole command: the caller redacts and caps it before any of
+ * it leaves this PC.
+ */
+export interface RemoteApprovalRecordFacts {
+  id: string;
+  sessionId: string;
+  agent: string;
+  toolName?: string;
+  /** A key was already written for it, or a stepwise answer started. */
+  answered: boolean;
+  native: boolean;
+  toolUseId?: string;
+  promptFingerprint?: string;
+  formFingerprint?: string;
+  keyRevisionAtCreate?: number;
+  risk?: 'critical';
+  autoDenyAt?: string;
+  /** The plain Yes this record offers, when it offers one. */
+  yesKey?: string;
+  /** A plan dialog answered by fenced keys (`form.kind: 'plan'`, channel `fenced-keys`). */
+  fencedPlan: boolean;
+  /** Bound at creation: the dialog spelled the call (TerminalPromptIdentity.matched). */
+  matched: boolean;
+  /** The bound call: its tool, whole command, and the keys of its whole input (undefined: not known). */
+  call?: { name: string; command: string; inputKeys?: string[] };
+}
 
 /**
  * The PermissionRequest hook's word that a call is waiting on its dialog: the
@@ -756,6 +796,34 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       commandHash: crypto.createHash('sha256').update(full).digest('hex'),
       commandBytes: full.length,
       truncated,
+    };
+  }
+
+  /** RemoteApprovalRecordFacts of a pending `terminal_prompt` record; null for anything else. Reads only. */
+  remoteApprovalFacts(id: string): RemoteApprovalRecordFacts | null {
+    const record = this.requests.find((r) => r.id === id);
+    if (!record || record.kind !== 'terminal_prompt' || record.state !== 'pending') return null;
+    const identity = identityOf(record);
+    const yes = record.choices?.find((c) => decisionForChoiceLabel(c.label) === 'approve');
+    return {
+      id: record.id,
+      sessionId: record.sessionId,
+      agent: record.agent,
+      ...(record.toolName !== undefined ? { toolName: record.toolName } : {}),
+      answered: record.pressedAt !== undefined || record.step !== undefined,
+      native: isNative(record),
+      ...(record.toolUseId !== undefined ? { toolUseId: record.toolUseId } : {}),
+      ...(record.promptFingerprint !== undefined ? { promptFingerprint: record.promptFingerprint } : {}),
+      ...(record.formFingerprint !== undefined ? { formFingerprint: record.formFingerprint } : {}),
+      ...(record.keyRevisionAtCreate !== undefined ? { keyRevisionAtCreate: record.keyRevisionAtCreate } : {}),
+      ...(record.risk ? { risk: record.risk } : {}),
+      ...(record.autoDenyAt !== undefined ? { autoDenyAt: record.autoDenyAt } : {}),
+      ...(yes ? { yesKey: yes.key } : {}),
+      fencedPlan: record.form?.kind === 'plan' && record.channel === 'fenced-keys',
+      matched: identity?.matched === true,
+      ...(identity?.call
+        ? { call: { name: identity.call.name, command: identity.call.command, ...(identity.call.inputKeys ? { inputKeys: [...identity.call.inputKeys] } : {}) } }
+        : {}),
     };
   }
 
@@ -1781,6 +1849,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
               ...(binding?.id ? { id: binding.id } : {}),
               ...(binding?.promptId ? { promptId: binding.promptId } : {}),
               inputHash,
+              ...(binding ? { inputKeys: Object.keys(binding.input) } : {}),
             },
           }
         : {}),
@@ -1868,6 +1937,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
               ...(binding.id ? { id: binding.id } : {}),
               ...(binding.promptId ? { promptId: binding.promptId } : {}),
               inputHash,
+              inputKeys: Object.keys(binding.input),
             },
           }
         : {}),
@@ -2077,6 +2147,12 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     // mutation chain (a render can take seconds and would hold every other
     // resolve, hook and expiry); only the CAS, the fence and the write run in it.
     const peek = this.requests.find((r) => r.id === params.id);
+    // A paired PC's approval: only the three remote branches below, each with
+    // its re-checks, and never the generic tail, a gate or a native adapter.
+    if (remoteMarked(params)) {
+      const refused = this.refuseRemoteShape(params, peek);
+      if (refused) return refused;
+    }
     // A native decision is answered by the agent's own server — before the
     // kind is even looked at, so it can never reach a screen read, a fence or
     // a keystroke.
@@ -2463,7 +2539,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     if (record.pressedAt !== undefined) return refuse('already-answered');
     if (
       (params.resolver ?? 'human') !== 'human'
-      || params.terminalPromptAnswer !== TERMINAL_PROMPT_WEB_ANSWER
+      || (params.terminalPromptAnswer !== TERMINAL_PROMPT_WEB_ANSWER && params.terminalPromptAnswer !== REMOTE_TERMINAL_PROMPT_ANSWER)
     ) {
       return answerInTerminal('no-capability');
     }
@@ -2529,6 +2605,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           return { result: { ok: false, reason: 'prompt-changed', request: copyRequest(record) } };
         }
         if (now.bytes !== live.mark.bytes) return { result: 'retry' };
+        const refusedNow = this.authorizedNow(params, record);
+        if (refusedNow) return { result: refusedNow };
         // The CAS: one write per record, ever.
         record.pressedAt = this.now();
         let delivered = false;
@@ -2537,6 +2615,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         } catch (err) {
           this.deps.log?.('warn', `[approvals] write failed for ${record.sessionId}: ${String(err)}`);
         }
+        if (delivered) this.noteKeyWritten(params, record.sessionId);
         if (!delivered) {
           delete record.pressedAt;
           record.state = 'expired';
@@ -2625,7 +2704,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
 
     if (record.state !== 'pending') return settled();
     if (record.pressedAt !== undefined || record.step) return refuse('already-answered');
-    if ((params.resolver ?? 'human') !== 'human' || params.terminalPromptDecline !== TERMINAL_PROMPT_WEB_DECLINE) {
+    if ((params.resolver ?? 'human') !== 'human'
+      || (params.terminalPromptDecline !== TERMINAL_PROMPT_WEB_DECLINE && params.terminalPromptDecline !== REMOTE_TERMINAL_PROMPT_DECLINE)) {
       audit('answer-in-terminal');
       return { ok: false, reason: 'answer-in-terminal', answerRefusal: 'no-capability', request: copyRequest(record) };
     }
@@ -2678,6 +2758,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           return { result: { ok: false, reason: 'prompt-changed', request: copyRequest(record) } };
         }
         if (now.bytes !== live.mark.bytes) return { result: 'retry' };
+        const refusedNow = this.authorizedNow(params, record);
+        if (refusedNow) return { result: refusedNow };
         record.pressedAt = this.now();
         let delivered = false;
         try {
@@ -2685,6 +2767,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         } catch (err) {
           this.deps.log?.('warn', `[approvals] write failed for ${record.sessionId}: ${String(err)}`);
         }
+        if (delivered) this.noteKeyWritten(params, record.sessionId);
         if (!delivered) {
           delete record.pressedAt;
           record.state = 'expired';
@@ -2973,7 +3056,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     }
     if (record.pressedAt !== undefined || record.step) return refuse('already-answered');
     if ((params.resolver ?? 'human') !== 'human'
-      || (origin !== 'desktop' && params.decisionV2Answer !== DECISION_V2_WEB_ANSWER) || !answer) {
+      || (origin !== 'desktop' && params.decisionV2Answer !== DECISION_V2_WEB_ANSWER && params.decisionV2Answer !== REMOTE_DECISION_V2_ANSWER)
+      || !answer) {
       return inTerminal('no-capability');
     }
     const identity = identityOf(record);
@@ -3028,6 +3112,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           return { result: { ok: false, reason: 'prompt-changed', request: copyRequest(record) } };
         }
         if (now.bytes !== live.mark.bytes) return { result: 'retry' };
+        const refusedNow = this.authorizedNow(params, record);
+        if (refusedNow) return { result: refusedNow };
         record.pressedAt = this.now();
         let delivered = false;
         try {
@@ -3035,6 +3121,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         } catch (err) {
           this.deps.log?.('warn', `[approvals] write failed for ${record.sessionId}: ${String(err)}`);
         }
+        if (delivered) this.noteKeyWritten(params, record.sessionId);
         if (!delivered) {
           delete record.pressedAt;
           record.state = 'expired';
@@ -4049,6 +4136,68 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     }
 
     return null;
+  }
+
+  /**
+   * A paired PC's approval (a REMOTE_* marker) is taken only as one of its
+   * three shapes: a pending, non-native `terminal_prompt`; `authorize` and
+   * `authorizeNow` both present; no web marker beside it; the Yes as an
+   * approve, the Esc as a deny, and on a plan dialog only `approve-manual`.
+   * Null: go on to the branch, which checks everything else.
+   */
+  private refuseRemoteShape(params: ApprovalResolveParams, record: ApprovalRequest | undefined): ApprovalResolveResult | null {
+    if (!record) return { ok: false, reason: 'not-found' };
+    const refuse = (why: string, reason: Exclude<ApprovalResolveFailure, 'answer-in-terminal'> = 'invalid-choice'): ApprovalResolveResult => {
+      this.deps.log?.('info', `[approvals] remote answer refused for ${record.id}: ${why}`);
+      return { ok: false, reason, request: copyRequest(record) };
+    };
+    if (record.kind !== 'terminal_prompt' || isNative(record)) return this.answerInTerminal(record, 'no-capability');
+    if (!params.authorize || !params.authorizeNow) return refuse('no authorize', 'unauthorized');
+    const answer = params.terminalPromptAnswer === REMOTE_TERMINAL_PROMPT_ANSWER;
+    const decline = params.terminalPromptDecline === REMOTE_TERMINAL_PROMPT_DECLINE;
+    const plan = params.decisionV2Answer === REMOTE_DECISION_V2_ANSWER;
+    if ([answer, decline, plan].filter(Boolean).length !== 1
+      || params.terminalPromptAnswer === TERMINAL_PROMPT_WEB_ANSWER
+      || params.terminalPromptDecline === TERMINAL_PROMPT_WEB_DECLINE
+      || params.decisionV2Answer === DECISION_V2_WEB_ANSWER
+      || params.resolver === 'automated' || params.lane !== undefined) {
+      return refuse('mixed markers');
+    }
+    if (answer && (params.decision !== 'approve' || params.choiceKey === undefined || params.decisionAnswer !== undefined)) return refuse('not a plain approve');
+    if (decline && (params.decision !== 'deny' || params.choiceKey !== undefined || params.decisionAnswer !== undefined)) return refuse('not a decline');
+    if (plan && (record.form?.kind !== 'plan' || params.decision !== 'approve' || params.decisionAnswer?.action !== PLAN_ACTION_APPROVE
+      || params.decisionAnswer.text !== undefined || params.decisionAnswer.answers !== undefined)) {
+      return refuse('not a manual approve');
+    }
+    return null;
+  }
+
+  /** `authorizeNow`, in the write block: a refusal, or null to write. A throw refuses. */
+  private authorizedNow(params: ApprovalResolveParams, record: ApprovalRequest): ApprovalResolveResult | null {
+    if (!params.authorizeNow) return null;
+    let ok = false;
+    try {
+      ok = params.authorizeNow(copyRequest(record)) === true;
+    } catch (err) {
+      this.deps.log?.('warn', `[approvals] authorizeNow threw for ${record.id}: ${String(err)}`);
+    }
+    return ok ? null : { ok: false, reason: 'unauthorized', request: copyRequest(record) };
+  }
+
+  /** `onKeyWritten`, right after a key landed: the pane's key revision now. */
+  private noteKeyWritten(params: ApprovalResolveParams, sessionId: string): void {
+    if (!params.onKeyWritten) return;
+    let revision: number | null = null;
+    try {
+      revision = this.deps.promptScreenMark?.(sessionId)?.keyInputRevision ?? null;
+    } catch {
+      revision = null;
+    }
+    try {
+      params.onKeyWritten(revision);
+    } catch (err) {
+      this.deps.log?.('warn', `[approvals] onKeyWritten threw for ${sessionId}: ${String(err)}`);
+    }
   }
 
   /**

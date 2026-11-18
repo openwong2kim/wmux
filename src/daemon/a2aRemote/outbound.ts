@@ -291,7 +291,16 @@ export async function sendRemoteState(deps: StateDeps, input: A2aRemoteStateInpu
  * message to the peer. Whether the peer takes a status at all
  * (`A2A_FEATURE_STATUS`) is the caller's to check.
  */
-export function sendRemoteStatus(deps: StateDeps, input: { taskId: string; status: A2aRemoteStatusV1 }): OutboundResult {
+/** The message id prefix of a status the remote approvals producer sends (remoteApproval.ts); every other status is `ss-`. */
+export const APPROVAL_STATUS_ID_PREFIX = 'sa-';
+
+/** A status's message id: derived from the task and the status itself, under its producer's prefix. */
+export function statusMessageId(taskId: string, status: A2aRemoteStatusV1, source?: 'approvals'): string {
+  const key = `${taskId}\0${status.kind}\0${status.since}\0${JSON.stringify(status.detail ?? {})}`;
+  return `${source === 'approvals' ? APPROVAL_STATUS_ID_PREFIX : 'ss-'}${crypto.createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
+}
+
+export function sendRemoteStatus(deps: StateDeps, input: { taskId: string; status: A2aRemoteStatusV1; source?: 'approvals' }): OutboundResult {
   const found = remoteTaskAndLink(deps, input.taskId);
   if (!found.ok) return found;
   const { task, link } = found;
@@ -303,8 +312,7 @@ export function sendRemoteStatus(deps: StateDeps, input: { taskId: string; statu
   if (!status) return { ok: false, error: 'bad-request: not a status' };
   const check = deps.linkStore.checkMessage(link.linkId, link.version, link.remote.hostId, 'outbound', 'status', undefined, { onThisLink: true });
   if (!check.ok) return { ok: false, error: check.error };
-  const key = `${task.id}\0${status.kind}\0${status.since}\0${JSON.stringify(status.detail ?? {})}`;
-  const messageId = `ss-${crypto.createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
+  const messageId = statusMessageId(task.id, status, input.source);
   try {
     deps.outbox.enqueue(link.remote.hostId, envelope(deps, link, messageId, { kind: 'status', taskId: task.id, status }));
   } catch (err) {

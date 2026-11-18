@@ -93,6 +93,45 @@ describe('A2aStreamHub silence deadline', () => {
   });
 });
 
+describe('A2aStreamHub hello', () => {
+  it('a per-joiner feature list is read as that joiner\'s stream opens', async () => {
+    let on = true;
+    const hub = new A2aStreamHub({
+      outbox: { epoch: 'e', pending: () => [], ack: () => 0, get: () => undefined, refuse: () => { throw new Error('unused'); } },
+      accept: async () => ({ ok: true, duplicate: false }),
+      features: (hostId) => ['link-offer.1', ...(on && hostId === HOST ? ['approval.1'] : [])],
+      log: () => undefined,
+    });
+    const routes = new Map<string, Parameters<A2aRouteTable['add']>[2]>();
+    hub.register({ add: (method: string, p: string, handler: Parameters<A2aRouteTable['add']>[2]) => routes.set(`${method} ${p}`, handler) } as unknown as A2aRouteTable);
+    const server = http.createServer((req, res) => {
+      const handler = routes.get(`${req.method} ${req.url}`);
+      if (!handler) return void res.writeHead(404).end();
+      void handler({ req, res, url: new URL(req.url ?? '/', 'http://x'), params: {}, peer: { hostId: HOST } } as never);
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    cleanups.push(() => { hub.closeAll(); server.closeAllConnections(); server.close(); });
+    const port = (server.address() as AddressInfo).port;
+    const hello = (): Promise<unknown> => new Promise((resolve) => {
+      const req = openStream(port);
+      req.on('response', (res) => {
+        let text = '';
+        res.on('data', (c: Buffer) => {
+          text += c.toString();
+          const m = /event: hello\ndata: (.*)\n/.exec(text);
+          if (m) {
+            resolve(JSON.parse(m[1]!));
+            req.destroy();
+          }
+        });
+      });
+    });
+    expect(await hello()).toMatchObject({ features: ['link-offer.1', 'approval.1'] });
+    on = false;
+    expect(await hello()).toMatchObject({ features: ['link-offer.1'] });
+  });
+});
+
 describe('A2aStreamHub: a refusal on a stream ack (stream-refuse.1)', () => {
   const OTHER = '33333333-3333-4333-8333-333333333333';
   async function refusing(): Promise<{
