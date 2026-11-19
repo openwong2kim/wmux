@@ -18,10 +18,13 @@ export type OutputModes = Pick<OutputModeTracker, 'isSet' | 'altScreen' | 'pream
  *
  * A native feed that refuses an allocation (isNativeAllocFailure) leaves the
  * native interpreter as it was, so the chunk is fed once more. A second
- * refusal skips it (its mode changes and OSC events are not seen) after
- * clearing the native OSC state (clearOsc, which never allocates): an OSC the
- * skipped chunk would have closed cannot swallow the output after it. The next
- * chunk is interpreted as usual. The backend never switches mid-stream:
+ * refusal reads the chunk for its modes only (skipChunk / skipBytes, which
+ * never allocate): its mode changes still reach `modes`, so a replay preamble
+ * stays right, while its OSC events are not read and the open OSC is dropped,
+ * so an OSC the chunk would have closed cannot swallow the output after it.
+ * The chunk is counted as skipped; the next one is interpreted as usual. A
+ * module built before skipChunk only skips the chunk. Refused recovered
+ * history is read the same way. The backend never switches mid-stream:
  * `modes` is handed out by reference, and a fresh JS tracker would report
  * power-on defaults for a pane already in an alternate screen. */
 export class OutputInterpreter {
@@ -59,7 +62,11 @@ export class OutputInterpreter {
   seedModes(text: string, end: number): void {
     if (this.native) {
       try { this.native.feed(text, end, false); }
-      catch (error) { this.skip(error, 'recovered history not scanned for modes'); }
+      catch (error) {
+        if (!isNativeAllocFailure(error)) throw error;
+        const read = this.readModesOnly(text, end);
+        this.skip(error, read ? 'recovered history read for its modes only' : 'recovered history not scanned for modes');
+      }
     } else this.jsModes?.feed(text, end);
   }
   feed(text: string, end: number, chunk?: NativeOutputChunk): void {
@@ -73,9 +80,9 @@ export class OutputInterpreter {
         // A refused feed changed nothing: the same chunk once more.
         try { events = once(); }
         catch (error) {
-          const cleared = isNativeAllocFailure(error) && typeof native.clearOsc === 'function';
-          if (cleared) native.clearOsc?.();
-          this.skip(error, cleared ? 'output chunk not interpreted; OSC state cleared' : 'output chunk not interpreted');
+          if (!isNativeAllocFailure(error)) throw error;
+          const read = this.readModesOnly(text, end, chunk);
+          this.skip(error, read ? 'output chunk read for its modes only; its OSC events were not read' : 'output chunk not interpreted');
           return;
         }
       }
@@ -93,6 +100,14 @@ export class OutputInterpreter {
   /** Chunks a refused native allocation kept from being interpreted. */
   get skippedChunks(): number {
     return this.skipped;
+  }
+  /** A refused chunk read for its modes only; false on a module without skipChunk. */
+  private readModesOnly(text: string, end: number, chunk?: NativeOutputChunk): boolean {
+    const native = this.native;
+    if (!native?.skipChunk || !native.skipBytes) return false;
+    if (chunk) native.skipChunk(chunk, end);
+    else native.skipBytes(Buffer.from(text), end);
+    return true;
   }
   private skip(error: unknown, what: string): void {
     if (!isNativeAllocFailure(error)) throw error;

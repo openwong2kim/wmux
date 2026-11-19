@@ -63,8 +63,13 @@ export interface NativeOutputInterpreter {
   readonly altScreen: boolean;
   preamble(windowStartOffset: number): string;
   reset(): void;
-  /** Drops a half-open OSC (only the OSC state; never allocates). Absent on a module built before it. */
-  clearOsc?(): void;
+  /**
+   * Read a chunk for its modes only, as feed would read them (the mode carry
+   * joins the last chunk), dropping the OSC state (the open OSC, a held ESC)
+   * and reading no OSC events. Never allocate. Absent on a module built before them.
+   */
+  skipChunk?(chunk: NativeOutputChunk, end: number): void;
+  skipBytes?(bytes: Uint8Array, end: number): void;
   dispose(): void;
 }
 export interface NativeTransport {
