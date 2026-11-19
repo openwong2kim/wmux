@@ -37,6 +37,7 @@ function ToastItem({
   target,
   persist,
   durationMs,
+  code,
 }: {
   id: string;
   message: string;
@@ -45,6 +46,7 @@ function ToastItem({
   target?: Toast['target'];
   persist?: boolean;
   durationMs?: number;
+  code?: string;
 }) {
   const t = useT();
   const dismissToast = useStore((s) => s.dismissToast);
@@ -93,7 +95,12 @@ function ToastItem({
           {message}
         </button>
       ) : (
-        <span className="flex-1 leading-snug">{message}</span>
+        <span className="flex-1 leading-snug">
+          {message}
+          {code && (
+            <code data-toast-code className="ui-code block mt-1" style={{ overflowWrap: 'anywhere' }}>{code}</code>
+          )}
+        </span>
       )}
       {/* F5 — optional action button (fan-out "diff 열기"). Runs then dismisses. */}
       {action && (
@@ -177,6 +184,7 @@ export default function ToastContainer() {
             target={toast.target}
             persist={toast.persist}
             durationMs={toast.durationMs}
+            code={toast.code}
           />
         </div>
       ))}

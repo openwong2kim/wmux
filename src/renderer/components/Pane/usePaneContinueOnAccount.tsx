@@ -73,9 +73,9 @@ const STOPPED_KEYS: Record<string, string> = {
 };
 
 /**
- * Claude stopped and the copy exists, but nothing was typed: the reason and
- * the line that resumes the copy, kept until dismissed (the pane is left at
- * its shell), with the line to copy.
+ * Claude stopped and the copy exists, but nothing was typed: the reason, and
+ * the line that resumes the copy as a block of its own, kept until dismissed
+ * (the pane is left at its shell), with the line to copy.
  */
 export function stoppedNotRelaunchedToast(
   code: string,
@@ -86,7 +86,8 @@ export function stoppedNotRelaunchedToast(
   return {
     level: 'error',
     persist: true,
-    message: t(STOPPED_KEYS[code] ?? 'pane.continueOnAccountStopped', { name: accountName, command: resumeCommand }),
+    message: t(STOPPED_KEYS[code] ?? 'pane.continueOnAccountStopped', { name: accountName }),
+    code: resumeCommand,
     action: {
       label: t('resume.copyCommand'),
       onClick: () => { void navigator.clipboard?.writeText(resumeCommand).catch(() => undefined); },
