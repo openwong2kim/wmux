@@ -62,10 +62,18 @@ describe('daemonLauncherCore: the daemon stderr file', () => {
     warn: () => { /* quiet */ },
   });
 
-  /** Ends the spawn the test looked at, so ensureDaemon settles. */
+  /**
+   * Ends the spawn the test looked at as a child that died during boot, so
+   * ensureDaemon settles and releases the daemon.pid it wrote for the fake
+   * pid. A spawn that only reported 'error' would leave that file naming a
+   * pid the next ensureDaemon in this directory judges as a live process,
+   * which it is whenever the machine runs an unrelated one with that pid.
+   */
   async function endSpawn(promise: Promise<unknown>): Promise<void> {
-    fakeChild.emit('error', new Error('spawn EACCES'));
-    await expect(promise).rejects.toThrow(/Failed to spawn daemon/);
+    fakeChild.exitCode = 1;
+    fakeChild.emit('exit', 1, null);
+    await expect(promise).rejects.toThrow(/exited during startup/);
+    expect(fs.existsSync(path.join(wmuxDir, 'daemon.pid'))).toBe(false);
   }
 
   type SpawnOptions = { stdio: unknown[]; env: Record<string, string | undefined> };
