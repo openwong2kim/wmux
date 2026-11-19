@@ -501,7 +501,7 @@ export function createPhoneChromeDeps(opts: {
   // pane moved or closed, a policy applied).
   const served = new Map<string, Set<ChromeBackendClient>>();
   // Bumped each time a client is let go of: an attach that started before cannot be used after.
-  const epochs = new Map<ChromeBackendClient, number>();
+  const epochs = new WeakMap<ChromeBackendClient, number>();
   const epochOf = (client: ChromeBackendClient) => epochs.get(client) ?? 0;
   const letGo = (client: ChromeBackendClient) => {
     epochs.set(client, epochOf(client) + 1);
@@ -550,19 +550,23 @@ export function createPhoneChromeDeps(opts: {
     serve(workspaceId, client);
     const epoch = epochOf(client);
     const still = () => epochOf(client) === epoch && outsideHolder(surfaceId, workspaceId) === client;
-    const session = await pending;
-    if (!still()) {
-      letGo(client);
+    /**
+     * A refused session ends only itself. The client is let go of by panesOf,
+     * and only when this workspace lost the profile, so a stale attach never
+     * releases the sessions a later one holds.
+     */
+    const refuse = (stale: T): never => {
+      panesOf(workspaceId);
+      void (stale as { detach?: () => Promise<void> }).detach?.();
       throw gone();
-    }
+    };
+    const session = await pending;
+    if (!still()) refuse(session);
     return new Proxy(session, {
       get(target, prop) {
         if (prop === 'send') {
           return async (method: string, params?: Record<string, unknown>) => {
-            if (!still()) {
-              letGo(client);
-              throw gone();
-            }
+            if (!still()) refuse(target);
             return target.send(method, params);
           };
         }

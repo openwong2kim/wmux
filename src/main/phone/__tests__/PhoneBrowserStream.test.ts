@@ -91,6 +91,8 @@ describe('phone browser stream (main)', () => {
   let pushes: Array<Record<string, unknown>>;
   let reply: (params: Record<string, unknown>) => Promise<unknown>;
   let owned: boolean;
+  /** Runs while a stream session attaches, before it is handed back. */
+  let attaching: (() => void) | null;
   let streams: PhoneBrowserStreams;
   let tabURL: string;
   /** What each new session's page has focused (null: the watcher cannot start there). */
@@ -110,6 +112,7 @@ describe('phone browser stream (main)', () => {
     sessions = [];
     pushes = [];
     owned = true;
+    attaching = null;
     tabURL = 'https://a.example.com/start';
     pageFocus = null;
     gates = new Map();
@@ -131,6 +134,7 @@ describe('phone browser stream (main)', () => {
           s.url = pageURL ?? tabURL;
           if (pageLayout) s.layout = pageLayout;
           sessions.push(s);
+          attaching?.();
           return s;
         },
         owns: () => owned,
@@ -790,6 +794,15 @@ describe('phone browser stream (main)', () => {
     await vi.advanceTimersByTimeAsync(500);
     expect(pushes.at(-1)).toEqual({ streamId: 'st-chrome-a', kind: 'end', error: 'browser-tab-gone' });
     expect(sessions[0].detached).toBe(true);
+  });
+
+  it('a tab that stopped being this workspace\'s while its session attached gets nothing sent on it', async () => {
+    attaching = () => { owned = false; };
+    await start();
+    await flush();
+    expect(sessions[0].sent).toEqual([]);
+    expect(sessions[0].detached).toBe(true);
+    expect(pushes.at(-1)).toEqual({ streamId: 'st-chrome-a', kind: 'end', error: 'browser-tab-gone' });
   });
 
   it('a frame from a tab no longer this workspace\'s ends the stream', async () => {

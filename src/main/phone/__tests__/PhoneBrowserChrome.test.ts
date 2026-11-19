@@ -1000,7 +1000,48 @@ describe('an outside session is held to the workspace\'s view of the profile', (
     pane.attached();
     expect(await tap).toEqual({ error: 'browser-tab-gone' });
     expect(pane.sent).toEqual([]);
-    expect(pane.client.releaseOutside.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // Let go of once, when the workspace lost it; the refused attach ends only itself.
+    expect(pane.client.releaseOutside).toHaveBeenCalledTimes(1);
+  });
+
+  it('an attach refused after a rebind never lets go of the session a later attach holds', async () => {
+    const sent: string[] = [];
+    const outside: ChromeTargetInfo[] = [{ surfaceId: 'chrome-x-login', targetId: 't-login', url: 'https://login.example.com/', title: 'Log in' }];
+    const answers: Array<() => void> = [];
+    const session = { send: vi.fn(async (method: string) => { sent.push(method); return {}; }) };
+    const client = {
+      endpoint: async () => ({}), cdpInfoTargets: async () => [], openTab: async () => { throw new Error('no'); },
+      listTargets: async () => [], closeSurface: async () => false, hasSurface: () => false, dispose: () => undefined,
+      pageSession: vi.fn(async () => session),
+      isRunning: () => true,
+      outsideTabs: vi.fn(async () => outside),
+      hasOutside: (id: string) => outside.some((t) => t.surfaceId === id),
+      outsidePageSession: vi.fn(() => new Promise<typeof session>((resolve) => { answers.push(() => resolve(session)); })),
+      releaseOutside: vi.fn(),
+    } satisfies ChromeBackendClient;
+    let bound = true;
+    const registry: PhoneChromeRegistry = {
+      profileFor: () => 'default',
+      isPaneBound: (p) => p === 'naver-blog',
+      peekLauncher: (p) => (p === 'naver-blog' ? client : undefined),
+      paneProfiles: (ws) => ({ profiles: bound && ws === 'ws-1' ? ['naver-blog'] : [], unknown: false }),
+    };
+    const deps = createPhoneChromeDeps({ registry, validateNavigation: async () => undefined });
+    const stale = deps.session('chrome-x-login', 'ws-1');
+    await vi.waitFor(() => expect(answers).toHaveLength(1), { timeout: 5_000 });
+    bound = false;
+    deps.revalidate?.();
+    bound = true;
+    deps.revalidate?.();
+    const fresh = deps.session('chrome-x-login', 'ws-1');
+    await vi.waitFor(() => expect(answers).toHaveLength(2), { timeout: 5_000 });
+    answers[1]();
+    const held = await fresh;
+    answers[0]();
+    await expect(stale).rejects.toMatchObject({ reason: 'gone' });
+    await held.send('Page.getLayoutMetrics');
+    expect(sent).toEqual(['Page.getLayoutMetrics']);
+    expect(client.releaseOutside).toHaveBeenCalledTimes(1);
   });
 
   it('a session already attached sends nothing once the workspace lost the profile, and lets it go', async () => {

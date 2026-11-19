@@ -35,7 +35,7 @@ vi.mock('node:fs', async (orig) => {
 });
 
 import {
-  ChromeLauncher, ChromePageSessionError, OPENED_OPEN_PER_OPENER, OPENED_OPEN_PER_WORKSPACE, OPENED_PER_MINUTE,
+  ChromeLauncher, ChromePageSessionError, OUTSIDE_OPENING_WAIT_MS, OPENED_OPEN_PER_OPENER, OPENED_OPEN_PER_WORKSPACE, OPENED_PER_MINUTE,
   OPENED_PER_OPENER_PER_MINUTE, OPENED_PER_WORKSPACE_PER_MINUTE, type ChromeOpenedSurface,
 } from '../ChromeLauncher';
 import { surfaceOpeners } from '../SurfaceOpeners';
@@ -1007,6 +1007,28 @@ describe('ChromeLauncher outside tabs (the phone preview only)', () => {
     expect(held.streamSessions.size).toBe(0);
   });
 
+  it('an attach after a release is its own, never the refused one still in flight', async () => {
+    const { launcher } = await spawned('/tmp/out-14');
+    tabs.set('tab-2', 'page-2');
+    listedPages = ['page-2'];
+    const [row] = await launcher.outsideTabs();
+    const ws = FakeBrowserWs.instances[0];
+    const attachesTo = () => ws.sent.filter((f) => f.method === 'Target.attachToTarget' && f.params?.targetId === 'page-2');
+    let open!: () => void;
+    FakeBrowserWs.attachGate = { targetId: 'page-2', open: new Promise<void>((resolve) => { open = resolve; }) };
+    const stale = launcher.outsidePageSession(row.surfaceId);
+    await vi.waitFor(() => expect(attachesTo()).toHaveLength(1), { timeout: 5_000 });
+    FakeBrowserWs.attachGate = null;
+    launcher.releaseOutside();
+    const fresh = launcher.outsidePageSession(row.surfaceId);
+    await vi.waitFor(() => expect(attachesTo()).toHaveLength(2), { timeout: 5_000 });
+    const session = await fresh;
+    open();
+    await expect(stale).rejects.toMatchObject({ reason: 'gone' });
+    await session.send('Page.getLayoutMetrics');
+    expect(ws.sent.at(-1)).toMatchObject({ method: 'Page.getLayoutMetrics', sessionId: 'sess-page-2-2' });
+  });
+
   it.each([['on', '1'], ['off', '0']])('never reaches an agent lane, with the target grant %s', async (_label, grant) => {
     vi.stubEnv('WMUX_CDP_TARGET_GRANT', grant);
     const { launcher, store } = await spawned('/tmp/out-2');
@@ -1054,13 +1076,55 @@ describe('ChromeLauncher outside tabs (the phone preview only)', () => {
     await vi.waitFor(() => expect(answer).not.toBeNull(), { timeout: 5_000 });
     expect(internals(launcher).pageToTab.get('page-1')).toBe('tab-1');
     let settled = false;
-    const listing = launcher.outsideTabs().then((rows) => { settled = true; return rows; });
+    const listing = launcher.outsideTabs({ waitForPairing: true }).then((rows) => { settled = true; return rows; });
     await tick();
     await tick();
     expect(settled).toBe(false);
     (answer as unknown as () => void)();
     await opening;
     expect(await listing).toEqual([]);
+  });
+
+  it('an openTab that never answers holds the list a bounded time, and only a tab first seen meanwhile is left out', async () => {
+    const { launcher } = await spawned('/tmp/out-15');
+    let answer: (() => void) | null = null;
+    fetchMock.mockImplementation(async (url: string, init?: { method?: string }) => {
+      const s = String(url);
+      if (s.includes('/json/version')) return fetchOk({ Browser: 'Chrome/151', webSocketDebuggerUrl: WS_URL });
+      if (init?.method === 'PUT') return new Promise((resolve) => { answer = () => resolve(fetchOk({ id: 'page-1', url: 'https://a.test/' })); });
+      if (s.includes('/json/list')) return fetchOk(listed());
+      return fetchOk({});
+    });
+    tabs.set('tab-known', 'page-known');
+    tabs.set('tab-1', 'page-1');
+    listedPages = ['page-known'];
+    const [known] = await launcher.outsideTabs();
+    expect(known.targetId).toBe('page-known');
+    const opening = launcher.openTab('https://a.test/', 'ws-1');
+    await vi.waitFor(() => expect(answer).not.toBeNull(), { timeout: 5_000 });
+
+    // A tab first seen while openTab is out: the list read waits for it, then leaves it out.
+    listedPages = ['page-known', 'page-1'];
+    let started = Date.now();
+    expect(await launcher.outsideTabs({ waitForPairing: true })).toEqual([known]);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(OUTSIDE_OPENING_WAIT_MS - 50);
+    expect(Date.now() - started).toBeLessThan(OUTSIDE_OPENING_WAIT_MS + 1_500);
+
+    // A read for a tab by id (a capture, an input) leaves it out without waiting.
+    started = Date.now();
+    expect(await launcher.outsideTabs()).toEqual([known]);
+    expect(Date.now() - started).toBeLessThan(OUTSIDE_OPENING_WAIT_MS / 2);
+
+    // Nothing new listed: no wait, though openTab is still out.
+    listedPages = ['page-known'];
+    started = Date.now();
+    expect(await launcher.outsideTabs({ waitForPairing: true })).toEqual([known]);
+    expect(Date.now() - started).toBeLessThan(OUTSIDE_OPENING_WAIT_MS / 2);
+
+    (answer as unknown as () => void)();
+    await opening;
+    listedPages = ['page-known', 'page-1'];
+    expect(await launcher.outsideTabs()).toEqual([known]);
   });
 
   it('lists nothing before the persisted records are bound to the running Chrome', async () => {

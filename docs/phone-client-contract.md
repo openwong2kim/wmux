@@ -3667,10 +3667,11 @@ exactly as above.
   desktop recorded under exactly this workspace; a tab with no workspace on
   record is nobody's. A tab one of these tabs opens (a `target=_blank` link
   or a script's `window.open`) is listed too, in the same workspace (contract
-  v1.7, below). A profile bound to one of this workspace's panes is listed
-  too (contract v1.8, below), unless a browser policy applies to it (a
-  protected pane's): that policy applies to the pane's own calls. A profile
-  bound to a pane of another workspace never is. Listing never starts Chrome:
+  v1.7, below). A profile bound to exactly one pane, while that pane is in
+  this workspace, is listed too (contract v1.8, below), unless a workspace
+  binding also names it, it is the default or live profile, or a browser
+  policy applies to it (a protected pane's): that policy applies to the
+  pane's own calls. A profile bound to a pane of another workspace never is. Listing never starts Chrome:
   while it is not running there are no `chrome` rows, nor while the desktop
   cannot attach to its pages (its tab watcher is off or failed); help rows
   for those tabs are then `previewable: false`.
@@ -3718,7 +3719,9 @@ exactly as above.
 #### Tabs opened outside wmux, on a pane's profile (contract v1.8)
 
 A Chrome profile bound to exactly one pane, while that pane is in this
-workspace and no browser policy applies to the profile, is that pane's alone.
+workspace, no workspace binding names the profile, it is neither the default
+nor the live profile, and no browser policy applies to it (it is
+unprotected), is that pane's alone.
 With `?chrome=1`, the list then also carries every other tab of that
 profile: the tabs a script opened over the DevTools protocol, or a person
 opened by hand. Additive; `protocolVersion` stays 1.

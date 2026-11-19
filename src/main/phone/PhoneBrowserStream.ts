@@ -784,6 +784,8 @@ class ChromeTabStream extends TabStream {
   protected async attach(swap = false): Promise<void> {
     const session = await this.chrome.streamSession(this.surfaceId, this.workspaceId);
     if (this.stopped) { void session.detach(); return; }
+    // The tab may have stopped being this workspace's while the session attached.
+    if (!this.owned()) { void session.detach(); void this.end('browser-tab-gone'); return; }
     this.session = session;
     session.on('Page.screencastFrame', (p) => {
       this.invisibleSince = null;

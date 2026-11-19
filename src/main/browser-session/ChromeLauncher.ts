@@ -557,6 +557,21 @@ export const OUTSIDE_ID_PREFIX = 'chrome-x-';
 /** How long outsideTabs waits for Chrome to name the pages behind tabs the watcher just attached. */
 export const OUTSIDE_PAIRING_WAIT_MS = 2_000;
 
+/** How long outsideTabs waits for openTab calls still creating their tab, before it leaves new tabs out. */
+export const OUTSIDE_OPENING_WAIT_MS = 1_000;
+
+/** Whether every promise settled within `ms` (they never reject). */
+function settledWithin(pending: Array<Promise<void>>, ms: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    (timer as { unref?: () => void }).unref?.();
+    void Promise.all(pending).then(() => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
 /** Tabs one tab may open in a minute and still be adopted. */
 export const OPENED_PER_OPENER_PER_MINUTE = 20;
 /** Tabs one workspace's tabs may open in a minute and still be adopted. */
@@ -1080,8 +1095,10 @@ export class ChromeLauncher implements ChromeBackendClient {
     socket: CdpConnection,
     // What `surfaceId` names now; an outside id has its own (outsidePage).
     current: () => string | null | undefined = () => this.surfaces.get(surfaceId)?.targetId,
+    // Attaches share one in flight only within one generation (an outside id's release generation).
+    generation = '',
   ): Promise<PageSessionEntry> {
-    const key = `${surfaceId}\n${targetId}`;
+    const key = `${surfaceId}\n${targetId}\n${generation}`;
     const inFlight = this.attachingPages.get(key);
     if (inFlight) return inFlight;
     const attach = (async () => {
@@ -2880,11 +2897,23 @@ export class ChromeLauncher implements ChromeBackendClient {
     } catch {
       return [];
     }
-    // A tab openTab is creating is listed before its record exists.
-    await Promise.all([...this.openingTabs]);
+    // A tab openTab is creating is listed before its record exists. Only a
+    // tab first seen now can be one. The list read waits a bounded time for
+    // those creations; a tab still undecided then is left out. A read for a
+    // tab by id does not wait: no tab first seen now carries an id yet.
+    const fresh = (t: { id: string }) => {
+      const tab = this.outsideTabOf(t.id);
+      return tab !== undefined && !this.outsideIds.has(tab);
+    };
+    const opening = [...this.openingTabs];
+    let undecided = false;
+    if (opening.length > 0 && live.some((t) => t.type === 'page' && fresh(t))) {
+      undecided = !opts?.waitForPairing || !(await settledWithin(opening, OUTSIDE_OPENING_WAIT_MS));
+    }
     const out: ChromeTargetInfo[] = [];
     for (const t of live) {
       if (t.type !== 'page') continue;
+      if (undecided && fresh(t)) continue;
       const tab = this.outsideTabOf(t.id);
       if (tab === undefined) continue;
       let id = this.outsideIds.get(tab);
@@ -2919,7 +2948,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       // Chrome swapped the page inside the tab: the old session drives a page nobody sees.
       if (cached) this.dropOutsideSession(id, cached);
       // A release while the attach is out refuses it: it detaches, and nothing is kept.
-      entry = await this.attachPage(id, page, socket, () => (generation === this.outsideGeneration ? this.outsidePage(id) : undefined));
+      entry = await this.attachPage(id, page, socket, () => (generation === this.outsideGeneration ? this.outsidePage(id) : undefined), String(generation));
     }
     return this.sessionOf(entry, () => this.outsidePage(id) === entry.targetId);
   }
