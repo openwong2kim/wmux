@@ -44,6 +44,11 @@ interface FleetCardProps {
    *  pane's shell + descendant tree, and the heaviest child's image name. Only
    *  present on Windows with a live agent; undefined ⇒ no chip. */
   resource?: { rss: number; image?: string };
+  /** The device the row runs on, named in its context line (the list grouped
+   *  by device names it on Needs you rows, which sit under no device head). */
+  device?: string;
+  /** The row sits under its own device's head: no "@host" origin glyph. */
+  hideHost?: boolean;
 }
 
 // TASK-6 — a bare process image ("claude.exe", "node.exe") shortened to a human
@@ -169,7 +174,7 @@ export function FleetCardEvidenceBadge({ task, id }: { task: Task | undefined; i
 }
 
 /** One agent's row. Terminal output belongs in the detail area, never here. */
-function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onFocus, ticketTitle, ticketLine, errorLine, onInspect }: FleetCardProps) {
+function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onFocus, ticketTitle, ticketLine, errorLine, onInspect, device, hideHost }: FleetCardProps) {
   const t = useT();
   const evidenceId = useId();
   const icon = AGENT_STATUS_ICON[card.agentStatus];
@@ -237,7 +242,7 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
       role="option"
       aria-selected={focused}
       aria-describedby={card.agentStatus === 'complete' && evidenceTask ? evidenceId : undefined}
-      aria-label={[displayName, statusLabel, card.workspaceName, card.remote?.hostLabel,
+      aria-label={[displayName, statusLabel, card.workspaceName, device ?? card.remote?.hostLabel,
         changed ? t('fleet.changedSinceSeen') : '', said].filter(Boolean).join(', ')}
       tabIndex={focused ? 0 : -1}
       onFocus={onFocus}
@@ -269,7 +274,7 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
       </span>
       <span className="wmux-fleet-identity">
         <span className="wmux-fleet-name" title={displayName}>
-          {card.remote && (
+          {card.remote && !hideHost && (
             // #1343 — origin glyph: this agent runs on another host. Identical
             // rendition to the sidebar roster's badge (#1163) so the same agent
             // reads the same in both rosters: steel, not accent (DESIGN.md — a
@@ -288,6 +293,7 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
           {changed && <span data-fleet-changed className="wmux-fleet-changed" aria-hidden="true" />}
         </span>
         <span className="wmux-fleet-context" title={card.cwd || card.workspaceName}>
+          {device && <span data-fleet-device>{device}</span>}
           {displayName !== card.workspaceName && <span>{card.workspaceName}</span>}
           {agentName && agentName !== displayName && <span>{agentName}</span>}
           {card.stashed && <span>{t('fleet.stashed')}</span>}

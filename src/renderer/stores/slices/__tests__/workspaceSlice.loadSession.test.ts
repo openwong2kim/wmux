@@ -38,6 +38,7 @@ type TestState = WorkspaceSlice & {
   usageLimitAutoResume: boolean;
   claudeResumeOnStart: boolean;
   fleetLayout: 'list' | 'board';
+  fleetGroupBy: 'status' | 'device';
   customKeybindings: unknown[];
   autoUpdateEnabled: boolean;
   customThemeColors: null;
@@ -97,6 +98,7 @@ function createTestStore() {
       usageLimitAutoResume: false,
       claudeResumeOnStart: false,
       fleetLayout: 'list',
+      fleetGroupBy: 'status',
       customKeybindings: [],
       autoUpdateEnabled: true,
       customThemeColors: null,
@@ -1682,6 +1684,19 @@ describe('loadSession — Fleet layout', () => {
     expect(store.getState().fleetLayout).toBe('board');
     store.getState().loadSession(sessionWith('list'));
     expect(store.getState().fleetLayout).toBe('list');
+  });
+
+  it('restores the list grouping (status by default) and ignores an unknown one', () => {
+    const store = createTestStore();
+    const withGroupBy = (groupBy: unknown) => ({ ...sessionWith(undefined), fleetGroupBy: groupBy }) as unknown as SessionData;
+    store.getState().loadSession(sessionWith(undefined));
+    expect(store.getState().fleetGroupBy).toBe('status');
+    store.getState().loadSession(withGroupBy('device'));
+    expect(store.getState().fleetGroupBy).toBe('device');
+    store.getState().loadSession(withGroupBy('host'));
+    expect(store.getState().fleetGroupBy).toBe('device');
+    store.getState().loadSession(withGroupBy('status'));
+    expect(store.getState().fleetGroupBy).toBe('status');
   });
 });
 

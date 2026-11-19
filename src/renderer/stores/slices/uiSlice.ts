@@ -129,6 +129,7 @@ import {
   type NotificationCategory,
   type AgentStatus,
   type FleetLayout,
+  type FleetGroupBy,
   type ChatViewAskAgent,
   type ChatViewFirstAsk,
   BUILTIN_TEMPLATES,
@@ -282,6 +283,10 @@ export interface UISlice {
   // a four-column board. Saved with the session (buildSessionData).
   fleetLayout: FleetLayout;
   setFleetLayout: (layout: FleetLayout) => void;
+  // The Fleet list's grouping below Needs you: by status (default) or by
+  // device. The board always groups by status. Saved with the session.
+  fleetGroupBy: FleetGroupBy;
+  setFleetGroupBy: (groupBy: FleetGroupBy) => void;
 
 
   // Fleet attention board — whether the Idle section shows its rows or stays
@@ -291,6 +296,11 @@ export interface UISlice {
   // The same for the Finished section (turns that ended, not yet looked at).
   fleetFinishedExpanded: boolean;
   setFleetFinishedExpanded: (expanded: boolean) => void;
+  // The list grouped by device: `${'finished' | 'idle'}:${deviceId}` → open,
+  // for the folds toggled under a device head; an absent key follows the two
+  // flags above. Session-only, like them.
+  fleetDeviceFolds: Record<string, boolean>;
+  setFleetDeviceFold: (key: string, open: boolean) => void;
   // One-shot request from the sidebar's `N to review` link: Fleet consumes it
   // (focuses the first Ready to review row) and clears it. Session-only.
   fleetFocusReview: boolean;
@@ -1396,6 +1406,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.fleetLayout = layout;
   }),
 
+  fleetGroupBy: 'status',
+
+  setFleetGroupBy: (groupBy) => set((state) => {
+    state.fleetGroupBy = groupBy;
+  }),
+
   fleetIdleExpanded: false,
 
   setFleetIdleExpanded: (expanded) => set((state) => {
@@ -1406,6 +1422,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setFleetFinishedExpanded: (expanded) => set((state) => {
     state.fleetFinishedExpanded = expanded;
+  }),
+
+  fleetDeviceFolds: {},
+
+  setFleetDeviceFold: (key, open) => set((state) => {
+    state.fleetDeviceFolds[key] = open;
   }),
 
   fleetFocusReview: false,
