@@ -146,6 +146,9 @@ export class RingBuffer {
   private appendedBytes = 0;
   private wakeFailing = false; // the current failure episode is counted
   private nextWriteWakeAt = 0; // output retries a failing wake at most this often
+  // The last wake failed because the native ring refused its allocation, not
+  // because the file could not be read: readers wait out the backoff too.
+  private wakeRefused = false;
   private wokeAt = 0;
   private mutations = 0; // bumps on every content change, including clear()
   private lastDump: { path: string; mutations: number } | null = null;
@@ -775,13 +778,16 @@ export class RingBuffer {
    * no caller can observe a half-woken ring. Returns false, and stays
    * hibernated with the file untouched, when the file exists but cannot be
    * read right now (EMFILE, a sharing violation): the next access retries,
-   * and PTY output (`retryNow` false) at most once a second.
+   * and PTY output (`retryNow` false) at most once a second. After the native
+   * ring refused its allocation, every access waits out that second: a read
+   * or dump in between serves the held output without re-reading the file or
+   * asking for the allocation again.
    * A file that is gone cannot come back, so the ring wakes without it.
    */
   wake(retryNow = true): boolean {
     const file = this.hibernatedPath;
     if (file === null) return true;
-    if (!retryNow && this.wakeFailing && Date.now() < this.nextWriteWakeAt) return false;
+    if ((!retryNow || this.wakeRefused) && this.wakeFailing && Date.now() < this.nextWriteWakeAt) return false;
     // Only the bytes the ring can still hold are read: the newest part of the
     // released history, up to `capacity` with the output held since.
     const base = this.hibernatedFileBytes;
@@ -806,6 +812,7 @@ export class RingBuffer {
       }
     } catch (err) {
       if (!this.wakeFailing) RingBuffer.wakeFailures++;
+      this.wakeRefused = false;
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
         this.wakeFailing = true;
         this.nextWriteWakeAt = Date.now() + 1000;
@@ -824,6 +831,7 @@ export class RingBuffer {
       // untouched, exactly as for an unreadable file, and retry later.
       this.reportAllocFailure(error, 'buffer stays on disk');
       this.wakeFailing = true;
+      this.wakeRefused = true;
       this.nextWriteWakeAt = Date.now() + 1000;
       return false;
     }
@@ -832,6 +840,7 @@ export class RingBuffer {
       this.lastDump = null;
     }
     this.wakeFailing = false;
+    this.wakeRefused = false;
     this.wokeAt = Date.now();
     return true;
   }

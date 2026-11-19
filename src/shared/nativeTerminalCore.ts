@@ -160,19 +160,48 @@ export const NATIVE_ALLOC_LOG_INTERVAL_MS = 60_000;
 /**
  * A rate-limited log line for refused native allocations, one per owner (a
  * session's ring or interpreter). The first refusal logs at once; later ones
- * log at most once per interval, with the count suppressed since.
+ * log at most once per interval, with the count suppressed since. Refusals
+ * suppressed inside a window are reported when it ends, even when none
+ * follows: one unref'd timer per reporter, armed only while a count is held.
  */
 export function createNativeAllocReporter(component: string, label: () => string | undefined,
   log: (line: string) => void = (line) => console.error(line), now: () => number = Date.now): (error: unknown, detail?: string) => void {
   let lastAt = Number.NEGATIVE_INFINITY;
   let suppressed = 0;
+  let lastSuppressed = '';
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const describe = (error: unknown, detail: string | undefined): string =>
+    `${error instanceof Error ? error.message : String(error)}${detail ? `; ${detail}` : ''}`;
+  const line = (text: string): void => {
+    log(`[terminal-core] ${component} session=${label() ?? 'unknown'}: ${text}`);
+  };
+  const disarm = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
+  const flushSuppressed = (): void => {
+    timer = null;
+    if (suppressed === 0) return;
+    const count = suppressed;
+    lastAt = now();
+    suppressed = 0;
+    line(`${count} more refused since the last line, the last: ${lastSuppressed}`);
+  };
   return (error, detail) => {
     const at = now();
-    if (at - lastAt < NATIVE_ALLOC_LOG_INTERVAL_MS) { suppressed++; return; }
-    const message = error instanceof Error ? error.message : String(error);
+    if (at - lastAt < NATIVE_ALLOC_LOG_INTERVAL_MS) {
+      suppressed++;
+      lastSuppressed = describe(error, detail);
+      if (!timer) {
+        timer = setTimeout(flushSuppressed, Math.max(0, lastAt + NATIVE_ALLOC_LOG_INTERVAL_MS - at));
+        timer.unref?.();
+      }
+      return;
+    }
     const more = suppressed > 0 ? ` (+${suppressed} more since the last line)` : '';
+    disarm();
     lastAt = at;
     suppressed = 0;
-    log(`[terminal-core] ${component} session=${label() ?? 'unknown'}: ${message}${detail ? `; ${detail}` : ''}${more}`);
+    line(`${describe(error, detail)}${more}`);
   };
 }

@@ -6,7 +6,9 @@ import {
   DAEMON_STDERR_ROTATE_BYTES,
   openDaemonStderrLog,
   rotateDaemonStderrLog,
+  withDaemonStderrFlag,
 } from '../daemonLauncherCore';
+import { DAEMON_STDERR_TO_FILE_ENV } from '../../../daemon/util/logSink';
 
 /**
  * #3440: the daemon's stderr goes to <wmuxDir>/daemon-stderr.log, rotated to
@@ -71,5 +73,12 @@ describe('daemon stderr log', () => {
   it('rotation alone reports the path, or null when it failed (launchd opens the file itself)', () => {
     expect(rotateDaemonStderrLog(DIR, fakeFs({ size: 10 }).impl)).toBe(FILE);
     expect(rotateDaemonStderrLog(DIR, fakeFs({ size: DAEMON_STDERR_ROTATE_BYTES + 1, rename: new Error('EPERM') }).impl)).toBeNull();
+  });
+
+  it('flags the spawn env only when stderr is the file, without changing the env it was given', () => {
+    const env = { PATH: 'bin', [DAEMON_STDERR_TO_FILE_ENV]: '1' };
+    expect(withDaemonStderrFlag({ PATH: 'bin' }, true)).toEqual({ PATH: 'bin', [DAEMON_STDERR_TO_FILE_ENV]: '1' });
+    expect(withDaemonStderrFlag(env, false)).toEqual({ PATH: 'bin' });
+    expect(env[DAEMON_STDERR_TO_FILE_ENV]).toBe('1');
   });
 });

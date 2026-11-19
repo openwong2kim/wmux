@@ -97,6 +97,31 @@ function mirrorToFile(chunk: unknown): void {
 }
 
 /**
+ * Set to '1' by the launcher (spawnDirect, the launchd job) when the daemon's
+ * stderr is the rotated `daemon-stderr.log`. The sink then writes console
+ * output to its daily log only, not also to stderr.
+ */
+export const DAEMON_STDERR_TO_FILE_ENV = 'WMUX_DAEMON_STDERR_TO_FILE';
+
+/**
+ * Read and remove the launcher's flag, so the PTYs this daemon starts (and a
+ * daemon started from one of their shells) do not inherit it.
+ */
+function stderrIsLauncherFile(): boolean {
+  const set = process.env[DAEMON_STDERR_TO_FILE_ENV] === '1';
+  delete process.env[DAEMON_STDERR_TO_FILE_ENV];
+  return set;
+}
+
+/** A stderr write that goes to the daily log only. */
+function mirrorOnly(chunk: unknown, ...rest: unknown[]): boolean {
+  try { mirrorToFile(chunk); } catch { /* file logging is best-effort */ }
+  const callback = rest.length > 0 ? rest[rest.length - 1] : undefined;
+  if (typeof callback === 'function') queueMicrotask(() => { (callback as () => void)(); });
+  return true;
+}
+
+/**
  * Append a structured log line. Goes through stderr so the tee installed
  * in `initDaemonLogSink()` mirrors it into the file. Mostly redundant
  * with the daemon's own `log()` helper, but exposed for parity with the
@@ -149,7 +174,19 @@ export function initDaemonLogSink(baseDir: string): void {
   };
 
   wrap(process.stdout, 'stdout');
-  wrap(process.stderr, 'stderr');
+  if (stderrIsLauncherFile()) {
+    // stderr is `<wmuxDir>/daemon-stderr.log`, rotated only at spawn. Teeing
+    // every console line into it would grow it for the daemon's lifetime and
+    // duplicate the daily log, so the sink keeps those lines to the daily log.
+    // The file still gets what bypasses this stream: a native abort's line,
+    // V8's fatal output.
+    process.stderr.write = mirrorOnly as typeof process.stderr.write;
+    // Errors from writes that do not go through this stream are not ours to
+    // report back onto it (see stdioErrorsConsumed).
+    process.stderr.on('error', () => { /* nothing is forwarded to this stream */ });
+  } else {
+    wrap(process.stderr, 'stderr');
+  }
 
   // Auto-prune old daily log files. Without this the logs/ directory
   // accumulates indefinitely (no rotation cap, no retention policy).

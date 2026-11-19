@@ -4,6 +4,7 @@ import * as path from 'path';
 import { spawn, execFileSync } from 'child_process';
 import * as crypto from 'crypto';
 import { getWmuxDir } from '../../daemon/config';
+import { DAEMON_STDERR_TO_FILE_ENV } from '../../daemon/util/logSink';
 import { getDaemonPipeName, readDaemonAuthToken } from '../../main/DaemonClient';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, dataSuffix } from '../constants';
 import {
@@ -945,6 +946,19 @@ export function openDaemonStderrLog(wmuxDir: string, fsImpl: DaemonStderrFs = fs
   }
 }
 
+/**
+ * The spawn env with the daemon told whether its stderr is the rotated file
+ * (DAEMON_STDERR_TO_FILE_ENV): its log sink then stops copying every console
+ * line there, so the file holds only what bypasses the sink and stays small
+ * between spawns. Without the file the flag is removed, never inherited.
+ */
+export function withDaemonStderrFlag(env: Record<string, string | undefined>, toFile: boolean): Record<string, string | undefined> {
+  const next = { ...env };
+  if (toFile) next[DAEMON_STDERR_TO_FILE_ENV] = '1';
+  else delete next[DAEMON_STDERR_TO_FILE_ENV];
+  return next;
+}
+
 function spawnDaemon(
   deps: DaemonLauncherDeps,
   staged: { script: string; nodePath: string; dir: string } | null,
@@ -1080,7 +1094,7 @@ function spawnDaemon(
           detached: true,
           stdio: ['ignore', 'ignore', stderr],
           windowsHide: true,
-          env,
+          env: withDaemonStderrFlag(env, typeof stderr === 'number'),
           // An open working directory inside the install root would block its removal.
           ...(staged ? { cwd: staged.dir } : {}),
         });
@@ -1130,14 +1144,15 @@ function spawnDaemon(
       // macOS: a launchd job is not a LaunchServices subordinate of this app,
       // so quitting the app no longer SIGTERMs the daemon. See launchdDaemonJob.ts.
       const log = deps.log ?? console.log;
+      // launchd opens it for append itself; rotated here, as for spawnDirect.
+      const stderrPath = rotateDaemonStderrLog(getWmuxDir()) ?? undefined;
       startDaemonViaLaunchd(
         {
           baseLabel: launchdBaseLabel(dataSuffix()),
           plistDir: path.join(getWmuxDir(), 'launchd'),
           programArguments: [nodePath, ...daemonProcessArgs(daemonScript)],
-          env,
-          // launchd opens it for append itself; rotated here, as for spawnDirect.
-          stderrPath: rotateDaemonStderrLog(getWmuxDir()) ?? undefined,
+          env: withDaemonStderrFlag(env, stderrPath !== undefined),
+          stderrPath,
         },
         defaultLaunchdRuntime(log),
       ).then(

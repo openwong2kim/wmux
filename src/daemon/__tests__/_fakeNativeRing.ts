@@ -8,9 +8,11 @@ import type { ReplayGeometry } from '../RingBuffer';
  */
 export type FakeRingCall = 'construct' | 'write' | 'writeChunk' | 'readAll' | 'readAllWithGeometry' | 'freeze' | 'noteGeometry';
 
-export const fakeRingControl: { refuse: Map<FakeRingCall, number | Error>; live: Set<FakeNativeRing> } = {
+export const fakeRingControl: { refuse: Map<FakeRingCall, number | Error>; live: Set<FakeNativeRing>; constructs: number } = {
   refuse: new Map(),
   live: new Set(),
+  /** Every attempt to create a ring, refused ones included. */
+  constructs: 0,
 };
 
 export function allocRefusal(what = 'ring'): Error {
@@ -25,6 +27,7 @@ export function refuseNext(call: FakeRingCall, times: number | Error = 1): void 
 export function resetFakeRing(): void {
   fakeRingControl.refuse.clear();
   fakeRingControl.live.clear();
+  fakeRingControl.constructs = 0;
 }
 
 function check(call: FakeRingCall): void {
@@ -43,6 +46,7 @@ export class FakeNativeRing implements NativeRingStorage {
   disposed = false;
 
   constructor(private readonly capacity: number) {
+    fakeRingControl.constructs++;
     check('construct');
     fakeRingControl.live.add(this);
   }
