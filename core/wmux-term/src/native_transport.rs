@@ -117,7 +117,7 @@ struct State {
 }
 impl State {
     fn new() -> Self {
-        Self {
+        let state = Self {
             input: Mutex::new(Input::default()),
             ready: Condvar::new(),
             exited: Mutex::new(None),
@@ -131,7 +131,14 @@ impl State {
             stop_reading: AtomicBool::new(false),
             #[cfg(unix)]
             reader_done: AtomicBool::new(false),
-        }
+        };
+        // A std mutex on macOS allocates its pthread mutex at its first lock,
+        // and that allocation cannot fail softly. Taking `error` once here,
+        // while memory is available, keeps the reader's give-up (`record`,
+        // which runs once memory is refused) from asking the allocator for
+        // anything.
+        drop(state.error.lock());
+        state
     }
     /// The error the next read reports.
     fn record(&self, message: String) {
@@ -1632,11 +1639,16 @@ mod tests {
         // (its first use can allocate to register its destructor).
         let mut reader = pieces(&[b"lost"]);
         crate::fallible::refill_spare();
+        // The channel is disconnected after the refusal, by the last sender:
+        // on macOS, std's channel allocates the mutex a disconnect takes at
+        // its first use, and nothing outside std can make it earlier.
+        let last_sender = tx.clone();
         crate::test_allocator::refusing(1, || {
             // This thread's spare message buffer goes first.
             drop(failed.message());
             read_all(&mut reader, tx, &state, &clock);
         });
+        drop(last_sender);
         let read = transport(rx, state).drain(None);
         assert!(read.eof);
         assert_eq!(
