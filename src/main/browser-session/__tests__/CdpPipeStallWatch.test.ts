@@ -6,6 +6,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CdpPipeMux, MUX_ID_BASE, cdpPipeCounters, resetCdpPipeCounters } from '../CdpPipeMux';
 import { FakeBrowser } from './fakePipeBrowser';
+import { CdpPipeStallWatch, type WatchedClient } from '../CdpPipeStallWatch';
+import { writeProgress } from '../CdpPipeRelay';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const STALL = 120;
@@ -329,5 +331,85 @@ describe('CdpPipeStallWatch, through the mux', () => {
     expect(browser.received.some((c) => c.method === 'Runtime.runIfWaitingForDebugger')).toBe(false);
     expect(cdpPipeCounters().watchdog).toEqual({});
     mux.close();
+  });
+});
+
+describe('CdpPipeStallWatch, over a relay socket\'s drain sign', () => {
+  const FRAME = 1 << 20;
+  const CHUNK = 1 << 16;
+
+  afterEach(() => vi.useRealTimers());
+
+  /**
+   * A relay client's socket in the middle of one large frame, as Node and ws
+   * report it: ws's bufferedAmount holds the whole frame until its write
+   * completes, while the libuv handle, given the frame at once, queues what
+   * the OS hasn't taken yet and lets one more chunk go each time the client
+   * reads.
+   */
+  function largeWrite() {
+    const ws = { bufferedAmount: FRAME + 10 };
+    const handle = { bytesWritten: FRAME + 10, writeQueueSize: FRAME + 10 - CHUNK };
+    return {
+      client: { ping: () => undefined, drain: () => writeProgress(ws, { _handle: handle }) } satisfies WatchedClient,
+      /** The client reads, and the OS takes one more chunk of the frame. */
+      chunk() {
+        handle.writeQueueSize = Math.max(0, handle.writeQueueSize - CHUNK);
+        if (handle.writeQueueSize === 0) ws.bufferedAmount = 0;
+      },
+      /** More events for the client, queued behind the frame still being written. */
+      queueBehind(bytes: number) { ws.bufferedAmount += bytes; },
+      done: () => handle.writeQueueSize === 0,
+    };
+  }
+
+  function watching() {
+    vi.useFakeTimers();
+    const resumed: string[] = [];
+    const counts: Record<string, number> = {};
+    const watch = new CdpPipeStallWatch({
+      stallMs: STALL,
+      resume: (session) => resumed.push(session),
+      count: (reason) => { counts[reason] = (counts[reason] ?? 0) + 1; },
+    });
+    return { watch, resumed, counts };
+  }
+
+  it('a client reading a large frame chunk by chunk is alive, with main blocked past every period', () => {
+    const { watch, resumed, counts } = watching();
+    const socket = largeWrite();
+    watch.waiting(socket.client, 'S');
+    let periods = 0;
+    while (!socket.done()) {
+      // Main was blocked through the period: nothing moved, and the deadline
+      // runs first once main is free.
+      vi.advanceTimersToNextTimer();
+      // Then the poll phase, before the recheck: the OS takes one more chunk.
+      socket.chunk();
+      vi.advanceTimersToNextTimer();
+      expect(resumed, `period ${periods}`).toEqual([]);
+      periods++;
+    }
+    expect(periods).toBeGreaterThan(10);
+    expect(counts['restarted-by-drain']).toBe(periods);
+    // The frame is in; the client sets itself up and resumes its own target.
+    watch.frame(socket.client);
+    watch.resumed(socket.client, 'S');
+    expect(resumed).toEqual([]);
+    expect(counts.fired).toBeUndefined();
+    expect(watch.pending()).toEqual({ sessions: 0, timers: 0 });
+  });
+
+  it('a client that stopped mid-frame is let go after one period, even with more queued behind the frame', () => {
+    const { watch, resumed, counts } = watching();
+    const socket = largeWrite();
+    watch.waiting(socket.client, 'S');
+    socket.queueBehind(4096);
+    vi.advanceTimersToNextTimer();
+    socket.queueBehind(4096);
+    vi.advanceTimersToNextTimer();
+    expect(resumed).toEqual(['S']);
+    expect(counts).toEqual({ armed: 1, fired: 1 });
+    watch.close();
   });
 });
