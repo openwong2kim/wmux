@@ -87,29 +87,76 @@ impl AllocFailed {
             + digits(self.bytes)
             + " bytes for ".len()
             + self.what.len();
-        let spare = SPARE.try_with(Cell::take).ok().flatten();
-        let mut text = match spare {
-            Some(buffer) if buffer.capacity() >= len => buffer,
-            spare => {
-                if let Some(buffer) = spare {
-                    let _ = SPARE.try_with(|cell| cell.set(Some(buffer)));
-                }
-                let mut buffer = String::new();
-                if buffer.try_reserve_exact(len).is_err() {
-                    let mut prefix = String::new();
-                    if prefix.try_reserve_exact(ALLOC_FAILED.len()).is_ok() {
-                        prefix.push_str(ALLOC_FAILED);
-                    }
-                    return prefix;
-                }
-                buffer
-            }
-        };
-        text.clear();
-        // Within the capacity checked above: no allocation.
-        let _ = write!(text, "{self}");
-        text
+        refusal_message(len, self)
     }
+}
+
+/// An OS call that failed because the system is out of memory (it reported
+/// a commit-limit or out-of-memory code): the same refusal as a refused
+/// allocation, code ALLOC_FAILED, not an error of the call itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OsRefused {
+    /// The OS call, for the diagnostic message.
+    pub call: &'static str,
+    pub code: OsCode,
+}
+
+/// The code an OS call failed with.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OsCode {
+    /// A Win32 error (GetLastError), shown in decimal.
+    Win32(u32),
+    /// An NTSTATUS, shown in hex.
+    Nt(u32),
+}
+
+impl OsRefused {
+    /// The diagnostic message, `ALLOC_FAILED: <call> failed (<code>)`, built
+    /// as AllocFailed's (`AllocFailed::message`): JS reads the code only.
+    pub(crate) fn message(&self) -> String {
+        let code = match self.code {
+            OsCode::Win32(code) => digits(code as usize),
+            OsCode::Nt(_) => "0x".len() + 8,
+        };
+        let len = ALLOC_FAILED.len() + self.call.len() + " failed ()".len() + code;
+        refusal_message(len, self)
+    }
+}
+
+impl fmt::Display for OsRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.code {
+            OsCode::Win32(code) => write!(f, "{ALLOC_FAILED}{} failed ({code})", self.call),
+            OsCode::Nt(code) => write!(f, "{ALLOC_FAILED}{} failed (0x{code:08X})", self.call),
+        }
+    }
+}
+
+/// A refusal's message of `len` bytes (`AllocFailed::message`).
+fn refusal_message(len: usize, refusal: &dyn fmt::Display) -> String {
+    let spare = SPARE.try_with(Cell::take).ok().flatten();
+    let mut text = match spare {
+        Some(buffer) if buffer.capacity() >= len => buffer,
+        spare => {
+            if let Some(buffer) = spare {
+                let _ = SPARE.try_with(|cell| cell.set(Some(buffer)));
+            }
+            let mut buffer = String::new();
+            if buffer.try_reserve_exact(len).is_err() {
+                let mut prefix = String::new();
+                if prefix.try_reserve_exact(ALLOC_FAILED.len()).is_ok() {
+                    prefix.push_str(ALLOC_FAILED);
+                }
+                return prefix;
+            }
+            buffer
+        }
+    };
+    text.clear();
+    // Within the capacity checked above: no allocation.
+    let _ = write!(text, "{refusal}");
+    text
 }
 
 impl fmt::Display for AllocFailed {
@@ -123,7 +170,8 @@ impl fmt::Display for AllocFailed {
 }
 
 /// A native call's error before it crosses to JS, where it becomes a
-/// `napi::Error<ErrorCode>`: code ALLOC_FAILED for a refusal, GenericFailure
+/// `napi::Error<ErrorCode>`: code ALLOC_FAILED for a refusal (a refused
+/// allocation or an OS call refused for want of memory), GenericFailure
 /// otherwise, with the same message. The call bodies return this rather than
 /// `napi::Error`: dropping a `napi::Error` links napi's C symbols, which only
 /// Node provides, so the unit tests that drive the bodies could not link on
@@ -131,6 +179,9 @@ impl fmt::Display for AllocFailed {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CallError {
     Alloc(AllocFailed),
+    /// Made by the Windows process table only.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    OsRefused(OsRefused),
     Reason(std::borrow::Cow<'static, str>),
 }
 
@@ -146,6 +197,7 @@ impl CallError {
     pub(crate) fn message(&self) -> String {
         match self {
             Self::Alloc(failed) => failed.message(),
+            Self::OsRefused(refused) => refused.message(),
             Self::Reason(reason) => reason.to_string(),
         }
     }
@@ -197,6 +249,7 @@ impl CallError {
     pub(crate) fn into_js(self) -> (ErrorCode, String) {
         match self {
             Self::Alloc(failed) => (ErrorCode::AllocFailed, failed.message()),
+            Self::OsRefused(refused) => (ErrorCode::AllocFailed, refused.message()),
             Self::Reason(reason) => (
                 ErrorCode::Status(napi::Status::GenericFailure),
                 reason.into_owned(),
@@ -237,8 +290,8 @@ pub(crate) fn napi_error(error: napi::Error) -> napi::Error<ErrorCode> {
 /// reuses it (napi rejects with the object an error refers to).
 #[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
 #[cfg_attr(test, allow(dead_code))]
-pub(crate) fn task_refusal(env: napi::Env, failed: AllocFailed) -> napi::Error {
-    let error: napi::Error<ErrorCode> = failed.into();
+pub(crate) fn task_refusal(env: napi::Env, refused: CallError) -> napi::Error {
+    let error: napi::Error<ErrorCode> = refused.into();
     napi::Error::from(napi::JsError::from(error).into_unknown(env))
 }
 

@@ -93,19 +93,20 @@ fn native_rows(
     Ok(out)
 }
 
-/// A table read's error as a Task's. A refusal is kept in `refused` for
-/// `reject`, which rejects with code ALLOC_FAILED (`task_refusal`): a
-/// Task's errors cannot carry it. Anything else rejects as it is.
+/// A table read's error as a Task's. A refusal (a refused allocation, or an
+/// OS call refused for want of memory) is kept in `refused` for `reject`,
+/// which rejects with code ALLOC_FAILED (`task_refusal`): a Task's errors
+/// cannot carry it. Anything else rejects as it is.
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 // Reached only through the napi export, which the test build does not call.
 #[cfg_attr(test, allow(dead_code))]
-fn task_error(refused: &mut Option<AllocFailed>, error: CallError) -> Error {
+fn task_error(refused: &mut Option<CallError>, error: CallError) -> Error {
     match error {
-        CallError::Alloc(failed) => {
-            *refused = Some(failed);
+        CallError::Reason(reason) => Error::from_reason(reason.into_owned()),
+        refusal => {
+            *refused = Some(refusal);
             Error::from_status(Status::GenericFailure)
         }
-        CallError::Reason(reason) => Error::from_reason(reason.into_owned()),
     }
 }
 
@@ -114,8 +115,8 @@ fn task_error(refused: &mut Option<AllocFailed>, error: CallError) -> Error {
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub struct ProcessTableTask {
     with_command_lines: bool,
-    /// A refused allocation in `compute`, for `reject`.
-    refused: Option<AllocFailed>,
+    /// A refusal in `compute` (`task_error`), for `reject`.
+    refused: Option<CallError>,
 }
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 impl Task for ProcessTableTask {
@@ -131,7 +132,7 @@ impl Task for ProcessTableTask {
     }
     fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
         Err(match self.refused.take() {
-            Some(failed) => fallible::task_refusal(env, failed),
+            Some(refused) => fallible::task_refusal(env, refused),
             None => error,
         })
     }
@@ -186,8 +187,8 @@ fn native_port_snapshot(
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[derive(Default)]
 pub struct PortSnapshotTask {
-    /// A refused allocation in `compute`, for `reject`.
-    refused: Option<AllocFailed>,
+    /// A refusal in `compute` (`task_error`), for `reject`.
+    refused: Option<CallError>,
 }
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Task for PortSnapshotTask {
@@ -203,7 +204,7 @@ impl Task for PortSnapshotTask {
     }
     fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
         Err(match self.refused.take() {
-            Some(failed) => fallible::task_refusal(env, failed),
+            Some(refused) => fallible::task_refusal(env, refused),
             None => error,
         })
     }
@@ -252,7 +253,9 @@ fn pty_dimensions(cols: u32, rows: u32) -> Result<()> {
     match dimensions(cols, rows) {
         Ok(_) => Ok(()),
         Err(CallError::Reason(reason)) => Err(Error::from_reason(reason)),
-        Err(CallError::Alloc(_)) => unreachable!("dimensions allocates nothing"),
+        Err(CallError::Alloc(_) | CallError::OsRefused(_)) => {
+            unreachable!("dimensions allocates nothing")
+        }
     }
 }
 

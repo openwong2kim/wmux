@@ -13,7 +13,7 @@ use std::ffi::c_void;
 use std::sync::OnceLock;
 
 use super::{ProcessRow, ROWS};
-use crate::fallible::{self, AllocFailed, CallError};
+use crate::fallible::{self, AllocFailed, CallError, OsCode, OsRefused};
 
 /// The SystemProcessInformation buffer: about 1 KiB per process, sized by
 /// the system.
@@ -36,6 +36,15 @@ const ERROR_NO_MORE_FILES: u32 = 18;
 const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xC000_0004_u32 as i32;
 const STATUS_BUFFER_OVERFLOW: i32 = 0x8000_0005_u32 as i32;
 const STATUS_BUFFER_TOO_SMALL: i32 = 0xC000_0023_u32 as i32;
+/// The Win32 errors and NTSTATUS values a call fails with when the system
+/// is out of memory (the commit limit, or the heap or pool behind the call):
+/// the same refusal as a refused allocation (`os_failure`).
+const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
+const ERROR_OUTOFMEMORY: u32 = 14;
+const ERROR_COMMITMENT_LIMIT: u32 = 1455;
+const STATUS_NO_MEMORY: u32 = 0xC000_0017;
+const STATUS_INSUFFICIENT_RESOURCES: u32 = 0xC000_009A;
+const STATUS_COMMITMENT_LIMIT: u32 = 0xC000_012D;
 /// FILETIME ticks (100 ns since 1601) at the Unix epoch.
 const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
 
@@ -129,6 +138,41 @@ fn nt_query_system() -> Option<NtQuerySystemInformation> {
     (addr != 0).then(|| unsafe { std::mem::transmute::<usize, NtQuerySystemInformation>(addr) })
 }
 
+/// A failed OS call that fails the snapshot. A code that says the system is
+/// out of memory is a refusal (code ALLOC_FAILED), as a refused allocation
+/// is: a short memory squeeze, not a broken process table. Any other code is
+/// the call's own error (GenericFailure). Either message names the call and
+/// its code.
+fn os_failure(call: &'static str, code: OsCode) -> CallError {
+    if out_of_memory(code) {
+        return CallError::OsRefused(OsRefused { call, code });
+    }
+    CallError::reason(match code {
+        OsCode::Win32(error) => format!("{call} failed ({error})"),
+        OsCode::Nt(status) => format!("{call} failed (0x{status:08X})"),
+    })
+}
+
+/// The OS reports it is out of memory.
+fn out_of_memory(code: OsCode) -> bool {
+    match code {
+        OsCode::Win32(error) => matches!(
+            error,
+            ERROR_NOT_ENOUGH_MEMORY | ERROR_OUTOFMEMORY | ERROR_COMMITMENT_LIMIT
+        ),
+        OsCode::Nt(status) => matches!(
+            status,
+            STATUS_NO_MEMORY | STATUS_INSUFFICIENT_RESOURCES | STATUS_COMMITMENT_LIMIT
+        ),
+    }
+}
+
+/// The calling thread's last Win32 error.
+fn last_error() -> OsCode {
+    // SAFETY: reads the calling thread's last-error value.
+    OsCode::Win32(unsafe { GetLastError() })
+}
+
 struct OwnedHandle(Handle);
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
@@ -138,7 +182,8 @@ impl Drop for OwnedHandle {
 }
 
 /// Walk the process table. Only a failed snapshot or a refused buffer is an
-/// error; a row whose
+/// error (a refusal, code ALLOC_FAILED, also when the OS reports it is out
+/// of memory: `os_failure`); a row whose
 /// details cannot be read, or cannot be shown to belong to the walked
 /// process, keeps pid/ppid/name with `created`/`cmdline` unset. With details,
 /// a row is left out only when its handle proves the pid now belongs to a
@@ -148,19 +193,13 @@ pub fn snapshot(with_details: bool) -> Result<Vec<ProcessRow>, CallError> {
     unsafe {
         let raw = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if raw == INVALID_HANDLE_VALUE || raw.is_null() {
-            return Err(CallError::reason(format!(
-                "CreateToolhelp32Snapshot failed ({})",
-                GetLastError()
-            )));
+            return Err(os_failure("CreateToolhelp32Snapshot", last_error()));
         }
         let snap = OwnedHandle(raw);
         let mut entry: ProcessEntry32W = std::mem::zeroed();
         entry.dw_size = std::mem::size_of::<ProcessEntry32W>() as u32;
         if Process32FirstW(snap.0, &mut entry) == 0 {
-            return Err(CallError::reason(format!(
-                "Process32FirstW failed ({})",
-                GetLastError()
-            )));
+            return Err(os_failure("Process32FirstW", last_error()));
         }
         let mut rows = fallible::try_with_capacity(512, ROWS)?;
         let listed = if with_details {
@@ -198,11 +237,9 @@ pub fn snapshot(with_details: bool) -> Result<Vec<ProcessRow>, CallError> {
             if Process32NextW(snap.0, &mut entry) == 0 {
                 // Anything but the normal end is a cut-short table: callers
                 // would read every pid past the cut as gone.
-                let error = GetLastError();
-                if error != ERROR_NO_MORE_FILES {
-                    return Err(CallError::reason(format!(
-                        "Process32NextW failed ({error})"
-                    )));
+                let error = last_error();
+                if error != OsCode::Win32(ERROR_NO_MORE_FILES) {
+                    return Err(os_failure("Process32NextW", error));
                 }
                 break;
             }
@@ -274,9 +311,10 @@ struct Listed {
 
 /// Every process by pid, from one SystemProcessInformation read: creation
 /// time needs no process handle there. None when the call fails; a refused
-/// buffer is an error, never a table without details.
+/// buffer, or the call failing for want of memory (`os_failure`), is an
+/// error, never a table without details.
 #[cfg(target_pointer_width = "64")]
-fn listed_processes() -> Result<Option<HashMap<u32, Listed>>, AllocFailed> {
+fn listed_processes() -> Result<Option<HashMap<u32, Listed>>, CallError> {
     let Some(query) = nt_query_system() else {
         return Ok(None);
     };
@@ -294,9 +332,13 @@ fn listed_processes() -> Result<Option<HashMap<u32, Listed>>, AllocFailed> {
             )
         };
         if status >= 0 {
-            return parse_process_information(&buffer, bytes as usize).map(Some);
+            return Ok(parse_process_information(&buffer, bytes as usize).map(Some)?);
         }
         if status != STATUS_INFO_LENGTH_MISMATCH || needed > 64 << 20 {
+            let code = OsCode::Nt(status as u32);
+            if out_of_memory(code) {
+                return Err(os_failure("NtQuerySystemInformation", code));
+            }
             return Ok(None);
         }
         // The table can grow between calls; leave headroom. The smaller
@@ -310,7 +352,7 @@ fn listed_processes() -> Result<Option<HashMap<u32, Listed>>, AllocFailed> {
 /// The record offsets below are the 64-bit layout; elsewhere creation times
 /// come from each process handle alone.
 #[cfg(not(target_pointer_width = "64"))]
-fn listed_processes() -> Result<Option<HashMap<u32, Listed>>, AllocFailed> {
+fn listed_processes() -> Result<Option<HashMap<u32, Listed>>, CallError> {
     Ok(None)
 }
 
@@ -403,6 +445,8 @@ fn filetime_to_epoch_ms(time: FileTime) -> Option<f64> {
         .map(|t| (t / 10_000) as f64)
 }
 
+/// None when the query fails, whatever its status (out of memory included):
+/// one process's command line is skipped, never the snapshot.
 fn command_line(process: Handle) -> Result<Option<String>, AllocFailed> {
     let Some(query) = nt_query_process() else {
         return Ok(None);
@@ -492,10 +536,10 @@ mod tests {
         assert!(
             matches!(
                 listed,
-                Err(AllocFailed {
+                Err(CallError::Alloc(AllocFailed {
                     what: KERNEL_LIST,
                     bytes: 524_288
-                })
+                }))
             ),
             "{:?}",
             listed.map(|l| l.map(|l| l.len()))
@@ -516,12 +560,78 @@ mod tests {
     }
 
     #[test]
+    fn an_os_out_of_memory_code_is_a_refusal_and_any_other_code_an_error() {
+        let refusals = [
+            OsCode::Win32(ERROR_COMMITMENT_LIMIT),
+            OsCode::Win32(ERROR_NOT_ENOUGH_MEMORY),
+            OsCode::Win32(ERROR_OUTOFMEMORY),
+            OsCode::Nt(STATUS_NO_MEMORY),
+            OsCode::Nt(STATUS_INSUFFICIENT_RESOURCES),
+            OsCode::Nt(STATUS_COMMITMENT_LIMIT),
+        ];
+        for code in refusals {
+            let call = "CreateToolhelp32Snapshot";
+            assert_eq!(
+                os_failure(call, code),
+                CallError::OsRefused(OsRefused { call, code })
+            );
+        }
+        assert_eq!(
+            os_failure(
+                "CreateToolhelp32Snapshot",
+                OsCode::Win32(ERROR_COMMITMENT_LIMIT)
+            )
+            .message(),
+            "ALLOC_FAILED: CreateToolhelp32Snapshot failed (1455)"
+        );
+        assert_eq!(
+            os_failure("NtQuerySystemInformation", OsCode::Nt(STATUS_NO_MEMORY)).message(),
+            "ALLOC_FAILED: NtQuerySystemInformation failed (0xC0000017)"
+        );
+        // ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, STATUS_ACCESS_DENIED,
+        // STATUS_INFO_LENGTH_MISMATCH: the call's own error, as before.
+        assert_eq!(
+            os_failure("Process32NextW", OsCode::Win32(5)),
+            CallError::reason("Process32NextW failed (5)")
+        );
+        assert_eq!(
+            os_failure("CreateToolhelp32Snapshot", OsCode::Win32(87)),
+            CallError::reason("CreateToolhelp32Snapshot failed (87)")
+        );
+        for status in [0xC000_0022, STATUS_INFO_LENGTH_MISMATCH as u32] {
+            assert!(matches!(
+                os_failure("NtQuerySystemInformation", OsCode::Nt(status)),
+                CallError::Reason(_)
+            ));
+        }
+    }
+
+    /// The code JS classifies a refusal by is ALLOC_FAILED for an OS
+    /// refusal too.
+    #[cfg(feature = "native-core")]
+    #[test]
+    fn an_os_refusal_reaches_js_as_alloc_failed() {
+        use crate::fallible::ErrorCode;
+        let refused = os_failure("Process32FirstW", OsCode::Win32(ERROR_OUTOFMEMORY));
+        assert_eq!(
+            refused.into_js(),
+            (
+                ErrorCode::AllocFailed,
+                "ALLOC_FAILED: Process32FirstW failed (14)".to_string()
+            )
+        );
+        let (code, message) = os_failure("Process32FirstW", OsCode::Win32(5)).into_js();
+        assert_eq!(code, ErrorCode::Status(napi::Status::GenericFailure));
+        assert_eq!(message, "Process32FirstW failed (5)");
+    }
+
+    #[test]
     fn a_refused_map_or_command_line_fails_the_detailed_table() {
         {
             let _fail = fallible::fail_what(LISTED);
             assert!(matches!(
                 listed_processes(),
-                Err(AllocFailed { what: LISTED, .. })
+                Err(CallError::Alloc(AllocFailed { what: LISTED, .. }))
             ));
         }
         {
