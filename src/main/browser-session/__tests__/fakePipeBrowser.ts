@@ -39,6 +39,10 @@ export class FakeBrowser {
   readonly discover = new Set<string>();
   /** Browser contexts created, in order. */
   readonly contexts: string[] = [];
+  /** The target each explicitly attached session is on. */
+  readonly sessionTarget = new Map<string, string>();
+  /** What Page.getNavigationHistory answers per target (default: one entry, its URL). */
+  readonly histories = new Map<string, Array<{ id: number; url: string }>>();
 
   constructor() {
     this.fromMux.on('data', (chunk: Buffer) => {
@@ -88,6 +92,7 @@ export class FakeBrowser {
     for (const parent of this.autoAttach) {
       const child = `C${++this.n}`;
       this.sessions.add(child);
+      this.sessionTarget.set(child, info.targetId);
       this.event(parent, 'Target.attachedToTarget', { sessionId: child, targetInfo: info, waitingForDebugger: this.pauseOnStart.has(parent) });
     }
   }
@@ -119,6 +124,7 @@ export class FakeBrowser {
       case 'Target.attachToTarget': {
         const s = `C${++this.n}`;
         this.sessions.add(s);
+        this.sessionTarget.set(s, String(c.params.targetId));
         if (this.announceAttach && c.sessionId && c.params.flatten === true) {
           this.event(c.sessionId, 'Target.attachedToTarget', { sessionId: s, targetInfo: { targetId: String(c.params.targetId), type: c.params.targetId === 'BROWSER' ? 'browser' : 'page', browserContextId: 'DEFAULT' }, waitingForDebugger: false });
         }
@@ -172,6 +178,13 @@ export class FakeBrowser {
       case 'Target.getTargets':
         this.reply(c, `"result":{"targetInfos":${JSON.stringify(this.targets.map((t) => ({ targetId: t.targetId, type: 'page', title: t.title, url: t.url, attached: false })))}}`);
         return;
+      case 'Page.getNavigationHistory': {
+        const target = c.sessionId !== undefined ? this.sessionTarget.get(c.sessionId) : undefined;
+        const entries = (target !== undefined && this.histories.get(target))
+          || [{ id: 1, url: this.targets.find((t) => t.targetId === target)?.url ?? '' }];
+        this.reply(c, `"result":${JSON.stringify({ currentIndex: entries.length - 1, entries })}`);
+        return;
+      }
       case 'Page.getFrameTree':
         this.reply(c, this.frameTree ? `"result":{"frameTree":${JSON.stringify(this.frameTree)}}` : `"result":{"echo":"Page.getFrameTree"}`);
         return;

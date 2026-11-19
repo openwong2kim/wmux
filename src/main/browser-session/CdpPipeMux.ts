@@ -503,6 +503,23 @@ export class CdpPipeMux {
   private readonly pruning = new Set<string>();
   /** C2d: each target's URL as Chrome last reported it. */
   private readonly targetUrls = new Map<string, string>();
+  /** C2d: each target's type and opener, as Chrome reported them. */
+  private readonly targetFacts = new Map<string, { type?: string; openerId?: string }>();
+  /**
+   * C2d: pages whose navigation history held a URL the gate refuses. Web
+   * content can't navigate forward to such a URL, so a page reaches one only
+   * through history (or the user): it stays off-limits to outside clients.
+   */
+  private readonly tainted = new Set<string>();
+  /** C2d: pages an outside client created itself (fresh history). */
+  private readonly clientCreated = new Set<string>();
+  /** C2d: a page's first history check, while it runs; commands on its sessions wait for it. */
+  private readonly firstChecks = new Map<string, Promise<void>>();
+  /** C2d: pages whose history the mux has started reading. */
+  private readonly historyRead = new Set<string>();
+  /** C2d: the mux's own session on each page it watches, both ways. */
+  private readonly watchSessions = new Map<string, string>();
+  private readonly watchSessionOf = new Map<string, string>();
 
   constructor(
     private readonly toBrowser: Writable,
@@ -735,14 +752,24 @@ export class CdpPipeMux {
       this.refuseFor(client, clientId, UNKNOWN_SESSION);
       return;
     }
-    // C2d: a session on a page the gate refuses (or doesn't know yet) takes no command.
+    // C2d: a session on a page the gate refuses (or doesn't know yet) takes no
+    // command; one on a page whose history is still being read waits for it.
+    // A frame's or worker's session follows its page.
     const gate = this.opts.urlGate;
     if (gate && client.kind === 'external' && command.sessionId !== undefined) {
-      const held = client.targets.get(command.sessionId);
-      if (held && !this.urlAllowed(held.targetId)) {
-        bump(totals.refusals, 'url-gate-session');
-        this.refuseFor(client, clientId, gate.refusal, command.sessionId);
-        return;
+      const judged = this.pageOf(client, command.sessionId);
+      if (judged !== undefined) {
+        const first = this.firstChecks.get(judged);
+        if (first) await first;
+        if (client.closed || client.revoked.has(command.sessionId)) {
+          this.refuseFor(client, clientId, UNKNOWN_SESSION);
+          return;
+        }
+        if (!this.urlAllowed(judged)) {
+          bump(totals.refusals, 'url-gate-session');
+          this.refuseFor(client, clientId, gate.refusal, command.sessionId);
+          return;
+        }
       }
     }
     // wmux's own methods are answered here, by the connection's local
@@ -862,28 +889,128 @@ export class CdpPipeMux {
     return attaching;
   }
 
-  /** C2d: whether the gate (if any) allows the target's last reported URL; an unknown one is refused. */
-  private urlAllowed(targetId: string): boolean {
+  /**
+   * C2d: whether outside clients may see and drive `targetId`: its last
+   * reported URL is allowed and its history never held one that isn't. A
+   * target with no URL yet counts only when an outside client created it, as
+   * a popup of an allowed page, as a frame or worker (which follow their
+   * page), or as the browser target; an unknown one is refused.
+   */
+  private urlAllowed(targetId: string, depth = 0): boolean {
     const gate = this.opts.urlGate;
     if (!gate) return true;
+    if (this.tainted.has(targetId)) return false;
     const url = this.targetUrls.get(targetId);
-    return url !== undefined && gate.allows(url);
+    if (url === undefined) return false;
+    if (url.trim() !== '') return gate.allows(url);
+    const facts = this.targetFacts.get(targetId);
+    // The browser target itself is no page: a session on it is a browser session.
+    if (this.clientCreated.has(targetId) || facts?.type === 'browser' || (facts?.type !== undefined && FOLLOWS_PAGE.has(facts.type))) return true;
+    const opener = facts?.openerId;
+    return opener !== undefined && opener !== targetId && depth < 8 && this.urlAllowed(opener, depth + 1);
   }
 
   /**
-   * C2d: a target's URL as an event or reply names it. A target that moved to
-   * a URL the gate refuses loses every outside session on it, and what was
-   * attached through them.
+   * C2d: a target's facts as an event or reply names them. A page is checked
+   * for history entries the gate refuses when it is first seen and on every
+   * URL change; one that moves to such a URL, or holds one, loses every
+   * outside session on it for good. One that becomes allowed is attached again
+   * for the clients whose auto-attach let it go.
    */
   private learnUrl(info: unknown): void {
     if (!this.opts.urlGate || !info || typeof info !== 'object') return;
-    const { targetId, url } = info as { targetId?: unknown; url?: unknown };
+    const { targetId, url, type, openerId } = info as { targetId?: unknown; url?: unknown; type?: unknown; openerId?: unknown };
     if (typeof targetId !== 'string' || typeof url !== 'string') return;
+    const wasAllowed = this.urlAllowed(targetId);
     const was = this.targetUrls.get(targetId);
     this.targetUrls.set(targetId, url);
-    if (was === url) return;
-    if (!this.opts.urlGate.allows(url)) this.revokeTarget(targetId);
-    else if (was === undefined || !this.opts.urlGate.allows(was)) this.reattachDenied(targetId);
+    const facts = this.targetFacts.get(targetId) ?? {};
+    if (typeof type === 'string') facts.type = type;
+    if (typeof openerId === 'string') facts.openerId = openerId;
+    this.targetFacts.set(targetId, facts);
+    if (was !== url) {
+      if (url.trim() !== '' && !this.opts.urlGate.allows(url)) this.taint(targetId);
+      else if (!wasAllowed && this.urlAllowed(targetId)) this.reattachDenied(targetId);
+    }
+    if (facts.type !== 'page' || this.tainted.has(targetId)) return;
+    if (!this.historyRead.has(targetId)) {
+      // The first read: commands on the page's sessions wait for it.
+      this.historyRead.add(targetId);
+      const check = this.checkHistory(targetId);
+      this.firstChecks.set(targetId, check);
+      void check.then(() => { if (this.firstChecks.get(targetId) === check) this.firstChecks.delete(targetId); });
+    } else if (was !== url) {
+      void this.checkHistory(targetId);
+    }
+  }
+
+  /** C2d: a page outside clients may no longer reach, for good. */
+  private taint(targetId: string): void {
+    if (!this.tainted.has(targetId)) {
+      this.tainted.add(targetId);
+      bump(totals.dropped, 'url-gate-tainted');
+    }
+    this.revokeTarget(targetId);
+  }
+
+  /**
+   * C2d: read a page's navigation history on the mux's own session (attached
+   * once, with Page events on, so a navigation start reaches the mux before
+   * the page commits). Any entry the gate refuses taints the page; a check
+   * that fails taints a page that is still there.
+   */
+  private async checkHistory(targetId: string): Promise<void> {
+    const gate = this.opts.urlGate;
+    if (!gate) return;
+    try {
+      let session = this.watchSessionOf.get(targetId);
+      if (session === undefined) {
+        const attached = await this.ownCommand('Target.attachToTarget', { targetId, flatten: true });
+        const named = (attached.result as { sessionId?: unknown } | undefined)?.sessionId;
+        if (typeof named !== 'string') throw new Error('the browser named no session');
+        session = named;
+        this.watchSessions.set(session, targetId);
+        this.watchSessionOf.set(targetId, session);
+        // Not waited on: the history (read in the browser) is what the first check needs.
+        this.ownCommand('Page.enable', {}, session).catch(() => undefined);
+      }
+      const history = await this.ownCommand('Page.getNavigationHistory', {}, session);
+      const entries = (history.result as { entries?: unknown } | undefined)?.entries;
+      if (!Array.isArray(entries)) throw new Error('no history');
+      if (entries.some((e: { url?: unknown }) => typeof e?.url === 'string' && e.url.trim() !== '' && !gate.allows(e.url))) this.taint(targetId);
+    } catch {
+      if (this.open && this.targetUrls.has(targetId)) this.taint(targetId);
+    }
+  }
+
+  /** C2d: an event on the mux's own page session: a main-frame navigation toward a refused URL taints the page at once. */
+  private watchEvent(targetId: string, method: string, params: unknown): void {
+    const gate = this.opts.urlGate;
+    if (!gate || !params || typeof params !== 'object') return;
+    let url: unknown;
+    let main = false;
+    if (method === 'Page.frameStartedNavigating' || method === 'Page.frameRequestedNavigation') {
+      const p = params as { frameId?: unknown; url?: unknown };
+      url = p.url;
+      main = p.frameId === targetId;
+    } else if (method === 'Page.frameNavigated') {
+      const frame = (params as { frame?: { parentId?: unknown; url?: unknown } }).frame;
+      url = frame?.url;
+      main = frame !== undefined && frame.parentId === undefined;
+    }
+    if (main && typeof url === 'string' && url.trim() !== '' && !gate.allows(url)) this.taint(targetId);
+  }
+
+  /** C2d: the page a session's target follows: itself, or for a frame or worker, the page it was attached through. */
+  private pageOf(client: Client, sessionId: string): string | undefined {
+    let held = client.targets.get(sessionId);
+    if (!held) return undefined;
+    for (let hops = 0; hops < 8 && held.type !== undefined && FOLLOWS_PAGE.has(held.type) && held.parent !== undefined; hops++) {
+      const up = client.targets.get(held.parent);
+      if (!up) break;
+      held = up;
+    }
+    return held.targetId;
   }
 
   /** C2d: a target an outside client's auto-attach let go is now on an allowed URL: attached for it again. */
@@ -923,6 +1050,19 @@ export class CdpPipeMux {
         }
       }
     }
+  }
+
+  /** C2d: a destroyed target's facts go (after every session heard of its end). */
+  private forgetTarget(targetId: string): void {
+    this.targetUrls.delete(targetId);
+    this.targetFacts.delete(targetId);
+    this.tainted.delete(targetId);
+    this.clientCreated.delete(targetId);
+    this.firstChecks.delete(targetId);
+    this.historyRead.delete(targetId);
+    const session = this.watchSessionOf.get(targetId);
+    if (session !== undefined) this.watchSessions.delete(session);
+    this.watchSessionOf.delete(targetId);
   }
 
   private granted(client: Client, targetId: string): boolean {
@@ -1104,8 +1244,11 @@ export class CdpPipeMux {
         const result = frame.result as { targetId?: unknown; targetInfos?: unknown } | undefined;
         // A page the client just created has the URL it asked for (one the
         // policy let through) until Chrome reports its own.
-        if (job.method === 'Target.createTarget' && typeof result?.targetId === 'string' && !this.targetUrls.has(result.targetId) && job.createUrl !== undefined) {
-          this.targetUrls.set(result.targetId, job.createUrl);
+        if (job.method === 'Target.createTarget' && typeof result?.targetId === 'string' && job.client.kind === 'external') {
+          const wasAllowed = this.urlAllowed(result.targetId);
+          this.clientCreated.add(result.targetId);
+          if (!this.targetUrls.has(result.targetId) && job.createUrl !== undefined) this.targetUrls.set(result.targetId, job.createUrl);
+          if (!wasAllowed && this.urlAllowed(result.targetId)) this.reattachDenied(result.targetId);
         }
         if (job.method === 'Target.getTargets' && Array.isArray(result?.targetInfos)) for (const info of result.targetInfos) this.learnUrl(info);
       }
@@ -1130,7 +1273,7 @@ export class CdpPipeMux {
         // Kept until every session has heard of it; a destroyed page takes no command anyway.
         if (event.sessionId === this.discoverySession && typeof params?.targetId === 'string') {
           const gone = params.targetId;
-          const timer = setTimeout(() => this.targetUrls.delete(gone), DESTROYED_URL_TTL_MS);
+          const timer = setTimeout(() => this.forgetTarget(gone), DESTROYED_URL_TTL_MS);
           timer.unref?.();
         }
       } else {
@@ -1139,6 +1282,8 @@ export class CdpPipeMux {
     }
     if (this.ownership) this.learnEvent(event);
     if (this.discoverySession !== null && frame.sessionId === this.discoverySession) return;
+    const watched = this.watchSessions.get(frame.sessionId);
+    if (watched !== undefined) { this.watchEvent(watched, event.method, event.params); return; }
     const owner = this.owner.get(frame.sessionId);
     if (!owner) { bump(totals.dropped, 'unknown-session'); return; }
     if (owner.hold) { this.holdFrame(owner, { kind: 'event', frame, text }); return; }
@@ -1147,6 +1292,19 @@ export class CdpPipeMux {
 
   /** A reply to a client's own command, as the client hears it. */
   private routeReply(job: Pending, frame: Frame, text: string): void {
+    // C2d: an outside client is shown only the history entries it may navigate to.
+    const gate = this.opts.urlGate;
+    if (gate && job.method === 'Page.getNavigationHistory' && job.client.kind === 'external' && !frame.error) {
+      const result = frame.result as { currentIndex?: unknown; entries?: unknown } | undefined;
+      if (Array.isArray(result?.entries)) {
+        const entries = result.entries as Array<{ url?: unknown }>;
+        const current = typeof result.currentIndex === 'number' ? entries[result.currentIndex] : undefined;
+        const kept = entries.filter((e) => typeof e?.url === 'string' && (e.url.trim() === '' || gate.allows(e.url)));
+        const at = current === undefined ? -1 : kept.indexOf(current);
+        frame = { ...frame, result: { ...result, entries: kept, currentIndex: at >= 0 ? at : kept.length - 1 } };
+        text = JSON.stringify(frame);
+      }
+    }
     {
       // A session attached by the client's own command is the client's.
       if ((job.method === 'Target.attachToTarget' || job.method === 'Target.attachToBrowserTarget') && !frame.error) {
@@ -1256,7 +1414,10 @@ export class CdpPipeMux {
       && !(typeof params0?.targetInfo?.type === 'string' && FOLLOWS_PAGE.has(params0.targetInfo.type));
     // C2d: what a page session discovers or attaches is judged by URL too (a
     // page's own frames and workers carry their own URL).
-    const urlJudged = gated && frame.method !== 'Target.targetDestroyed' && (DISCOVERY_EVENTS.has(frame.method) || frame.method === 'Target.attachedToTarget');
+    // A frame or worker that attaches on a page session follows its page's decision.
+    const childAttach = !onBrowserSession && frame.method === 'Target.attachedToTarget'
+      && typeof params0?.targetInfo?.type === 'string' && FOLLOWS_PAGE.has(params0.targetInfo.type);
+    const urlJudged = gated && !childAttach && frame.method !== 'Target.targetDestroyed' && (DISCOVERY_EVENTS.has(frame.method) || frame.method === 'Target.attachedToTarget');
     if (checked && frame.method.startsWith('Target.') && (onBrowserSession || urlJudged || (this.ownership && (DISCOVERY_EVENTS.has(frame.method) || pageAttach)))) {
       const params = frame.params as { targetId?: unknown; targetInfo?: { targetId?: unknown }; sessionId?: unknown } | undefined;
       const target = params?.targetInfo?.targetId ?? params?.targetId;
@@ -1268,7 +1429,7 @@ export class CdpPipeMux {
           // A popup is decided at once by its opener; only a page with none may be a create's.
           const mayHold = !final && !this.ownership.hasOpener(target) && this.creating(owner);
           verdict = this.ownership.decide(owner, { workspaceId: identity.workspaceId, everyTarget: identity.everyTarget }, target, mayHold);
-          if (gated && frame.method !== 'Target.targetDestroyed' && !this.urlAllowed(target)) verdict = 'deny';
+          if (gated && !childAttach && frame.method !== 'Target.targetDestroyed' && !this.urlAllowed(target)) verdict = 'deny';
         } else {
           // A page's end is told to whoever heard of it, whatever its URL was.
           const allowed = gated && frame.method === 'Target.targetDestroyed'

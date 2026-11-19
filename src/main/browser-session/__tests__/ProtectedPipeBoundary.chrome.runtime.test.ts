@@ -401,4 +401,70 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     expect(await listeners(again.pid)).toEqual([]);
     own.close();
   });
+
+  /** Main's own session drives `targetId` to `url` and waits until it is there. */
+  async function mainNavigates(own: CdpConnection, session: string, url: string): Promise<void> {
+    await own.send('Page.navigate', { url }, session);
+    await vi.waitFor(async () => {
+      const r = (await own.send('Runtime.evaluate', { expression: 'location.href', returnByValue: true }, session)) as { result?: { value?: string } };
+      expect(r.result?.value ?? '').toContain(url.replace(/\/$/, ''));
+    }, { timeout: 10_000 });
+  }
+
+  it('a tab with a chrome:// entry anywhere in its history is never shown to a relay client, even on an https page', { timeout: CASE_TIMEOUT_MS }, async () => {
+    const rig = await start();
+    const own = internal(rig);
+    // As a tab the user had on chrome://version before moving on to a site.
+    const { targetId } = (await own.send('Target.createTarget', { url: 'chrome://version/' })) as { targetId: string };
+    const { sessionId } = (await own.send('Target.attachToTarget', { targetId, flatten: true })) as { sessionId: string };
+    await mainNavigates(own, sessionId, `http://a.test:${port}/after-chrome`);
+    const c = await relayClient(rig);
+    await vi.waitFor(async () => {
+      const listed = await c.send('Target.getTargets');
+      expect(listed.result?.targetInfos).toBeDefined();
+      expect((listed.result?.targetInfos as Array<{ targetId: string }>).map((t) => t.targetId)).not.toContain(targetId);
+    }, { timeout: 10_000 });
+    expect((await c.send('Target.attachToTarget', { targetId, flatten: true })).error).toBeDefined();
+    const hrefOf = async () => ((await own.send('Runtime.evaluate', { expression: 'location.href', returnByValue: true }, sessionId).catch(() => null)) as { result?: { value?: string } } | null)?.result?.value;
+    // The page's own history.back(): what Chrome does with it is recorded.
+    await own.send('Runtime.evaluate', { expression: 'history.back()' }, sessionId);
+    await deliberateSleep(1_500, 'a history move the page asked for would have committed by now');
+    report(`[pipe-boundary history-back] script history.back() from an https page with a chrome:// back entry -> ${await hrefOf()}`);
+    // What Chrome kept of the tab's history; where it kept the chrome:// entry,
+    // going back to it the way the browser goes back leaves no session of the relay client's there.
+    const { entries } = (await own.send('Page.getNavigationHistory', {}, sessionId)) as { entries: Array<{ id: number; url: string }> };
+    report(`[pipe-boundary history-kept] ${entries.map((e) => e.url.replace(/:\d+\//, ':<port>/')).join(' > ')}`);
+    const back = entries.find((e) => e.url.startsWith('chrome://'));
+    if (back) {
+      await own.send('Page.navigateToHistoryEntry', { entryId: back.id }, sessionId);
+      await vi.waitFor(async () => expect(await hrefOf()).toMatch(/^chrome:\/\//), { timeout: 10_000 });
+    }
+    expect((await c.send('Target.attachToTarget', { targetId, flatten: true })).error).toBeDefined();
+    own.close();
+    c.close();
+  });
+
+  it('a relay client\'s init script never runs on a chrome:// document its tab moves to; its session is let go', { timeout: CASE_TIMEOUT_MS }, async () => {
+    const rig = await start();
+    const c = await relayClient(rig);
+    const created = await c.send('Target.createTarget', { url: `http://a.test:${port}/clean` });
+    const targetId = created.result?.targetId as string;
+    const session = (await c.send('Target.attachToTarget', { targetId, flatten: true })).result?.sessionId as string;
+    expect((await c.send('Page.addScriptToEvaluateOnNewDocument', { source: 'window.__relayInit = true' }, session)).error).toBeUndefined();
+    expect((await c.send('Runtime.addBinding', { name: '__relayBinding' }, session)).error).toBeUndefined();
+    // The tab moves to chrome:// the way only the user (or main) can move it.
+    const own = internal(rig);
+    const { sessionId } = (await own.send('Target.attachToTarget', { targetId, flatten: true })) as { sessionId: string };
+    await mainNavigates(own, sessionId, 'chrome://version/');
+    const ran = (await own.send('Runtime.evaluate', { expression: "String(window.__relayInit) + '/' + typeof window.__relayBinding", returnByValue: true }, sessionId)) as { result?: { value?: string } };
+    expect(ran.result?.value).toBe('undefined/undefined');
+    expect((await c.send('Runtime.evaluate', { expression: '1' }, session)).error).toBeDefined();
+    // Back on an https page, the tab stays off-limits: its history holds the chrome:// entry.
+    await mainNavigates(own, sessionId, `http://a.test:${port}/back-to-web`);
+    const listed = await c.send('Target.getTargets');
+    expect((listed.result?.targetInfos as Array<{ targetId: string }>).map((t) => t.targetId)).not.toContain(targetId);
+    expect((await c.send('Target.attachToTarget', { targetId, flatten: true })).error).toBeDefined();
+    own.close();
+    c.close();
+  });
 });
