@@ -575,13 +575,16 @@ export class CdpPipeRelay {
     const maxBuffered = this.maxBuffered;
     const out = relayOutbound(ws, pipe ? socket : null);
     this.outbound.set(ws, out);
-    const client = route.mux.attachExternal('relay', (text) => {
+    const send = (frame: string | Buffer) => {
       if (ws.readyState !== ws.OPEN) return;
-      out.send(text);
+      out.send(frame);
       // A client that stopped reading: disconnect it instead of buffering on.
       if (ws.bufferedAmount + out.queued > maxBuffered) ws.terminate();
       else this.holdWithinChrome(route);
-    }, () => out.end(() => ws.close(), () => ws.terminate()), {
+    };
+    const client = route.mux.attachExternal('relay', send, () => out.end(() => ws.close(), () => ws.terminate()), {
+      // Frames passed on as Chrome wrote them take the same queue.
+      sendBytes: send,
       // Signs of life for the stall watch (C2c): the client's WebSocket answers
       // a ping, and reading down a backlog moves `flushed`.
       ping: () => { if (ws.readyState === ws.OPEN) ws.ping(); },
@@ -633,7 +636,8 @@ export function writeProgress(ws: { readonly bufferedAmount: number }, socket: u
 export interface RelayOutbound {
   /** On a Windows named pipe: one write in flight, large messages in fragments. */
   readonly paced: boolean;
-  send(text: string): void;
+  /** A message, as text or as the UTF-8 bytes of its text; either way it leaves as a text message. */
+  send(frame: string | Buffer): void;
   /** Bytes taken but not yet handed to the WebSocket. */
   readonly queued: number;
   /**
@@ -660,8 +664,13 @@ export interface RelayOutbound {
  */
 /** @internal Exported for tests. */
 export function relayOutbound(ws: Pick<WebSocket, 'send'>, socket: { cork(): void; uncork(): void } | null): RelayOutbound {
-  if (!socket) return { paced: false, send: (text) => ws.send(text), queued: 0, end: (close) => close(), drop: () => undefined };
-  type Item = { text: string; size: number } | { data: Buffer; at: number };
+  // Bytes go out as a text message too (ws would send a Buffer as binary).
+  const whole = (frame: string | Buffer, cb?: (err?: Error | null) => void) => {
+    if (typeof frame === 'string') ws.send(frame, cb);
+    else ws.send(frame, { binary: false }, cb);
+  };
+  if (!socket) return { paced: false, send: (frame) => whole(frame), queued: 0, end: (close) => close(), drop: () => undefined };
+  type Item = { text: string | Buffer; size: number } | { data: Buffer; at: number };
   // A queue with a moving head: shift() on a long array costs its length.
   let waiting: Item[] = [];
   let first = 0;
@@ -699,17 +708,17 @@ export function relayOutbound(ws: Pick<WebSocket, 'send'>, socket: { cork(): voi
         try {
           let size = 0;
           for (;;) {
-            const item = waiting[first] as { text: string; size: number };
+            const item = waiting[first] as { text: string | Buffer; size: number };
             advance();
             queued -= item.size;
             size += item.size;
             const next = first < waiting.length ? waiting[first] : null;
             if (!next || 'data' in next || size + next.size > RELAY_FRAGMENT_BYTES) {
               busy = true;
-              ws.send(item.text, written);
+              whole(item.text, written);
               break;
             }
-            ws.send(item.text);
+            whole(item.text);
           }
         } finally {
           socket.uncork();
@@ -724,10 +733,10 @@ export function relayOutbound(ws: Pick<WebSocket, 'send'>, socket: { cork(): voi
   };
   return {
     paced: true,
-    send(text) {
+    send(frame) {
       if (dropped) return;
-      const size = Buffer.byteLength(text);
-      waiting.push(size > RELAY_FRAGMENT_BYTES ? { data: Buffer.from(text), at: 0 } : { text, size });
+      const size = typeof frame === 'string' ? Buffer.byteLength(frame) : frame.length;
+      waiting.push(size > RELAY_FRAGMENT_BYTES ? { data: typeof frame === 'string' ? Buffer.from(frame) : frame, at: 0 } : { text: frame, size });
       queued += size;
       pump();
     },

@@ -141,6 +141,10 @@ function unknownContext(method: string, contextId: string): { code: number; mess
 /** The mux's own ids wrap back to MUX_ID_BASE below this. */
 const MUX_ID_LIMIT = 2 ** 31 - 1;
 
+/** How a screencast frame starts and its session is named, as Chrome writes them (CdpPipeMux.forwardUnread). */
+const UNREAD_HEAD = Buffer.from('{"method":"Page.screencastFrame","params":{');
+const SESSION_TAIL = Buffer.from(',"sessionId":"');
+
 interface Frame {
   id?: unknown;
   method?: unknown;
@@ -594,8 +598,10 @@ export class CdpPipeMux {
     /**
      * For the stall watch: a WebSocket ping (its answer goes to the returned
      * `pong`) and the socket's backlog. `identity`: who the client connected as.
+     * `sendBytes`: takes a frame as the UTF-8 bytes Chrome wrote, to send as
+     * text (forwardUnread); without it such a frame goes to `send` decoded.
      */
-    watched: WatchedClient & { identity?: CallerIdentity; local?: LocalMethods } = {},
+    watched: WatchedClient & { identity?: CallerIdentity; local?: LocalMethods; sendBytes?: (bytes: Buffer) => void } = {},
   ): { receive: (text: string) => void; close: () => void; pong: () => void } {
     const client = new ExternalClient(label, send, onGone, watched);
     this.clients.add(client);
@@ -1209,6 +1215,7 @@ export class CdpPipeMux {
   }
 
   private onFrame(buf: Buffer): void {
+    if (this.forwardUnread(buf)) return;
     const started = performance.now();
     const text = buf.toString('utf8');
     let frame: Frame;
@@ -1288,6 +1295,33 @@ export class CdpPipeMux {
     if (!owner) { bump(totals.dropped, 'unknown-session'); return; }
     if (owner.hold) { this.holdFrame(owner, { kind: 'event', frame, text }); return; }
     this.routeEvent(owner, event, text, false);
+  }
+
+  /**
+   * A screencast frame for an outside client's page session, sent on as the
+   * bytes Chrome wrote: nothing a rule reads is in it (a base64 image and
+   * numbers), and it is the bulk of the pipe's traffic, so it is neither
+   * decoded nor parsed. Only its method (first) and its session (last, as
+   * Chrome writes both) are read. Anything else, or this event on any other
+   * session, takes the parsed path. True when it was sent.
+   */
+  private forwardUnread(buf: Buffer): boolean {
+    const end = buf.length - 2;
+    if (end < UNREAD_HEAD.length || buf[end] !== 0x22 || buf[end + 1] !== 0x7d) return false;
+    if (buf.compare(UNREAD_HEAD, 0, UNREAD_HEAD.length, 0, UNREAD_HEAD.length) !== 0) return false;
+    const at = buf.lastIndexOf(SESSION_TAIL, end);
+    if (at < UNREAD_HEAD.length) return false;
+    // A plain id between the tail and the end: that tail is the top-level sessionId.
+    const sessionId = buf.toString('latin1', at + SESSION_TAIL.length, end);
+    if (!/^[\w-]{1,128}$/.test(sessionId) || sessionId === this.discoverySession) return false;
+    const owner = this.owner.get(sessionId);
+    if (!(owner instanceof ExternalClient) || owner.closed || owner.hold || owner.revoked.has(sessionId)
+      || sessionId === owner.browserSession || owner.ownBrowserSessions.has(sessionId)) return false;
+    totals.frames++;
+    totals.bytes += buf.length;
+    totals.largestFrameBytes = Math.max(totals.largestFrameBytes, buf.length);
+    owner.forward(buf);
+    return true;
   }
 
   /** A reply to a client's own command, as the client hears it. */
@@ -1654,13 +1688,14 @@ class ExternalClient extends Client {
     label: string,
     private readonly sendText: (text: string) => void,
     private readonly onGone: (reason: string) => void,
-    watched: WatchedClient & { identity?: CallerIdentity; local?: LocalMethods },
+    watched: WatchedClient & { identity?: CallerIdentity; local?: LocalMethods; sendBytes?: (bytes: Buffer) => void },
   ) {
     super('external', label);
     this.ping = watched.ping;
     this.drain = watched.drain;
     this.identity = watched.identity;
     this.local = watched.local;
+    this.sendBytes = watched.sendBytes;
   }
 
   readonly identity?: CallerIdentity;
@@ -1681,6 +1716,14 @@ class ExternalClient extends Client {
 
   event(frame: Frame, text: string): void {
     this.sendText(withoutSession(frame, text, this.browserSession));
+  }
+
+  private readonly sendBytes?: (bytes: Buffer) => void;
+
+  /** An event on one of its page sessions, as the bytes Chrome wrote. */
+  forward(bytes: Buffer): void {
+    if (this.sendBytes) this.sendBytes(bytes);
+    else this.sendText(bytes.toString('utf8'));
   }
 
   gone(reason: string): void {
