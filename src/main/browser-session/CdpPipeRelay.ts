@@ -58,6 +58,8 @@ export const RELAY_MAX_BUFFERED_BYTES = 64 * 1024 * 1024;
 export const RELAY_MAX_BUFFERED_BYTES_PER_CHROME = 512 * 1024 * 1024;
 /** On a Windows named pipe, a message over this leaves as fragments of this size, one write at a time (relayOutbound). */
 export const RELAY_FRAGMENT_BYTES = 64 * 1024;
+/** On a Windows named pipe, how long a client being closed gets to take what still waits for it. */
+export const RELAY_CLOSE_DRAIN_MS = 2_000;
 /** A client's own frames are commands: small, but a script to evaluate can be large. */
 const MAX_INBOUND_BYTES = 32 * 1024 * 1024;
 const HEADER_TIMEOUT_MS = 5_000;
@@ -316,7 +318,12 @@ export class CdpPipeRelay {
     route.closed = true;
     this.routes.delete(route);
     this.forget((binding) => binding.route === route);
-    for (const ws of route.clients) ws.terminate();
+    for (const ws of route.clients) {
+      // On a Windows named pipe, what was taken for the client goes before the close.
+      const out = this.outbound.get(ws);
+      if (out?.paced) out.end(() => ws.close(), () => ws.terminate());
+      else ws.terminate();
+    }
     route.clients.clear();
     this.sizeListener();
   }
@@ -566,7 +573,7 @@ export class CdpPipeRelay {
     const proof = proofAnswerer(key, this.proofKeyTtlMs);
     route.clients.add(ws);
     const maxBuffered = this.maxBuffered;
-    const out = relayOutbound(ws, pipe);
+    const out = relayOutbound(ws, pipe ? socket : null);
     this.outbound.set(ws, out);
     const client = route.mux.attachExternal('relay', (text) => {
       if (ws.readyState !== ws.OPEN) return;
@@ -574,7 +581,7 @@ export class CdpPipeRelay {
       // A client that stopped reading: disconnect it instead of buffering on.
       if (ws.bufferedAmount + out.queued > maxBuffered) ws.terminate();
       else this.holdWithinChrome(route);
-    }, () => ws.close(), {
+    }, () => out.end(() => ws.close(), () => ws.terminate()), {
       // Signs of life for the stall watch (C2c): the client's WebSocket answers
       // a ping, and reading down a backlog moves `flushed`.
       ping: () => { if (ws.readyState === ws.OPEN) ws.ping(); },
@@ -624,74 +631,125 @@ export function writeProgress(ws: { readonly bufferedAmount: number }, socket: u
 /** How the relay sends to one client. */
 /** @internal Exported for tests. */
 export interface RelayOutbound {
+  /** On a Windows named pipe: one write in flight, large messages in fragments. */
+  readonly paced: boolean;
   send(text: string): void;
   /** Bytes taken but not yet handed to the WebSocket. */
   readonly queued: number;
+  /**
+   * Paced: `close` once everything taken has gone to ws (so the close frame
+   * follows it), and `cut` if the client is still there RELAY_CLOSE_DRAIN_MS
+   * after the call. Not paced: `close` at once.
+   */
+  end(close: () => void, cut: () => void): void;
   /** The client is gone: what still waits is dropped. */
   drop(): void;
 }
 
 /**
- * How a client's messages leave. Unless `paced`, each goes to ws whole, as one
- * frame. `paced` is for a Windows named pipe: there a write completes only
- * once all of it is in the pipe, so a large frame shows no progress
- * (writeProgress) until the client has read nearly all of it, and writes
- * queued behind it are merged into one. So a message over
- * RELAY_FRAGMENT_BYTES leaves as continuation fragments, the next sent only
- * from the previous one's write callback: one fragment is in flight, and each
- * one the client reads moves `flushed`. Messages keep their order (one sent
- * while a fragmented one is still going waits behind it); pings and pongs go
- * between fragments, as RFC 6455 allows.
+ * How a client's messages leave. Not paced (`socket` null), each goes to ws
+ * whole, as one frame, at once. Paced is for a Windows named pipe: there a
+ * write completes only once all of it is in the pipe, and Node merges every
+ * write queued behind a pending one into one, so a backlog shows no progress
+ * (writeProgress) until the client has read nearly all of it. So one write is
+ * in flight at a time, and the next goes from its callback: a message over
+ * RELAY_FRAGMENT_BYTES as continuation fragments of that size, and smaller
+ * ones whole, as many as fit in that size (at least one) corked into one
+ * write. Each write the client reads moves `flushed`. Messages keep their
+ * order; pings and pongs go between writes, as RFC 6455 allows.
  */
 /** @internal Exported for tests. */
-export function relayOutbound(ws: Pick<WebSocket, 'send'>, paced: boolean): RelayOutbound {
-  if (!paced) return { send: (text) => ws.send(text), queued: 0, drop: () => undefined };
-  const waiting: Array<{ text: string; size: number } | { data: Buffer; at: number }> = [];
+export function relayOutbound(ws: Pick<WebSocket, 'send'>, socket: { cork(): void; uncork(): void } | null): RelayOutbound {
+  if (!socket) return { paced: false, send: (text) => ws.send(text), queued: 0, end: (close) => close(), drop: () => undefined };
+  type Item = { text: string; size: number } | { data: Buffer; at: number };
+  // A queue with a moving head: shift() on a long array costs its length.
+  let waiting: Item[] = [];
+  let first = 0;
   let queued = 0;
-  /** A fragment's write is in flight. */
+  /** A write is in flight. */
   let busy = false;
   let dropped = false;
+  let ended = false;
+  /** Set by end(): `close` until it is called, the timer until the client is gone. */
+  let ending: { close: (() => void) | null; timer: ReturnType<typeof setTimeout> } | null = null;
+  const advance = () => {
+    first++;
+    if (first === waiting.length) { waiting = []; first = 0; }
+    else if (first >= 1024 && first * 2 >= waiting.length) { waiting = waiting.slice(first); first = 0; }
+  };
+  // An error means the socket is going: its close drops the rest.
+  const written = (err?: Error | null) => {
+    busy = false;
+    if (!err) pump();
+  };
   const pump = (): void => {
-    while (!busy && !dropped && waiting.length) {
-      const head = waiting[0];
-      if ('text' in head) {
-        waiting.shift();
-        queued -= head.size;
-        ws.send(head.text);
-        continue;
+    if (!busy && !dropped && first < waiting.length) {
+      const head = waiting[first];
+      if ('data' in head) {
+        const end = Math.min(head.at + RELAY_FRAGMENT_BYTES, head.data.length);
+        const chunk = head.data.subarray(head.at, end);
+        const fin = end === head.data.length;
+        head.at = end;
+        queued -= chunk.length;
+        if (fin) advance();
+        busy = true;
+        ws.send(chunk, { binary: false, fin, compress: false }, written);
+      } else {
+        socket.cork();
+        try {
+          let size = 0;
+          for (;;) {
+            const item = waiting[first] as { text: string; size: number };
+            advance();
+            queued -= item.size;
+            size += item.size;
+            const next = first < waiting.length ? waiting[first] : null;
+            if (!next || 'data' in next || size + next.size > RELAY_FRAGMENT_BYTES) {
+              busy = true;
+              ws.send(item.text, written);
+              break;
+            }
+            ws.send(item.text);
+          }
+        } finally {
+          socket.uncork();
+        }
       }
-      const end = Math.min(head.at + RELAY_FRAGMENT_BYTES, head.data.length);
-      const chunk = head.data.subarray(head.at, end);
-      const fin = end === head.data.length;
-      head.at = end;
-      queued -= chunk.length;
-      if (fin) waiting.shift();
-      busy = true;
-      ws.send(chunk, { binary: false, fin, compress: false }, (err) => {
-        busy = false;
-        // An error means the socket is going: its close drops the rest.
-        if (!err) pump();
-      });
+    }
+    if (ending?.close && first === waiting.length) {
+      const close = ending.close;
+      ending.close = null;
+      close();
     }
   };
   return {
+    paced: true,
     send(text) {
       if (dropped) return;
       const size = Buffer.byteLength(text);
-      if (size <= RELAY_FRAGMENT_BYTES) {
-        if (!busy && !waiting.length) { ws.send(text); return; }
-        waiting.push({ text, size });
-      } else {
-        waiting.push({ data: Buffer.from(text), at: 0 });
-      }
+      waiting.push(size > RELAY_FRAGMENT_BYTES ? { data: Buffer.from(text), at: 0 } : { text, size });
       queued += size;
       pump();
     },
     get queued() { return queued; },
+    end(close, cut) {
+      if (ended || dropped) return;
+      ended = true;
+      const timer = setTimeout(() => {
+        ending = null;
+        cut();
+      }, RELAY_CLOSE_DRAIN_MS);
+      timer.unref?.();
+      ending = { close, timer };
+      pump();
+    },
     drop() {
       dropped = true;
-      waiting.length = 0;
+      waiting = [];
+      first = 0;
       queued = 0;
+      if (ending) clearTimeout(ending.timer);
+      ending = null;
     },
   };
 }

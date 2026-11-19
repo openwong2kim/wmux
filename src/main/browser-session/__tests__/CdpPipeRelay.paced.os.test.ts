@@ -187,38 +187,59 @@ const isConsole = (m: Record<string, unknown>) => m.method === 'Runtime.consoleA
 const bigEvent = (browser: FakeBrowser, bytes: number) =>
   browser.event('B1', 'Runtime.consoleAPICalled', { args: [{ value: 'x'.repeat(bytes) }] });
 
-describe('CdpPipeRelay: sends on a Windows named pipe', () => {
-  it.runIf(win32)('a live slow reader moves the drain sign fragment by fragment, and the watch does not fire', async () => {
-    resetCdpPipeCounters();
-    const STALL = 400;
-    const FRAME = 2 << 20;
-    const { browser, route, drains } = await setup({}, { stallMs: STALL });
-    const a = await slowClient(await route.grant({}));
-    const autoAttach = { id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true } };
-    a.ws.send(JSON.stringify(autoAttach));
-    await a.readUntil(() => a.messages.some((m) => m.id === 1));
-    const drain = drains[0];
-    const b = await dial(await route.grant({}));
-    const flushed = [drain().flushed];
-    // The backlog first, so it is waiting for `a` when its new target arms the watch.
-    bigEvent(browser, FRAME);
-    await request(b, { id: 1, method: 'Target.createTarget', params: { url: 'about:blank' } });
-    expect(cdpPipeCounters().watchdog?.armed).toBeGreaterThanOrEqual(1);
+/**
+ * A live client that reads `chunk` bytes at a time while a target waits on it:
+ * the backlog `emit` sends goes first, so it is waiting when the new target
+ * arms the watch. Returns how often the relay's drain view rose while the
+ * client read, and whether the watch fired before it was done.
+ */
+async function readLive(leg: string, emit: (browser: FakeBrowser) => void, done: (messages: Array<Record<string, unknown>>) => boolean, chunk: number) {
+  resetCdpPipeCounters();
+  const { browser, route, drains } = await setup({}, { stallMs: 400 });
+  const a = await slowClient(await route.grant({}));
+  a.ws.send(JSON.stringify({ id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true } }));
+  await a.readUntil(() => a.messages.some((m) => m.id === 1));
+  const drain = drains[0];
+  const b = await dial(await route.grant({}));
+  const flushed = [drain().flushed];
+  const start = a.consumed;
+  emit(browser);
+  await request(b, { id: 1, method: 'Target.createTarget', params: { url: 'about:blank' } });
+  expect(cdpPipeCounters().watchdog?.armed).toBeGreaterThanOrEqual(1);
+  while (!done(a.messages)) {
+    flushed.push(drain().flushed);
+    await a.step(chunk);
+    // Far faster than one write per stall period.
+    await deliberateSleep(10, 'simulated latency: the pace of a slow but live reader');
+  }
+  const fired = cdpPipeCounters().watchdog?.fired ?? 0;
+  const rises = flushed.filter((v, i) => i > 0 && v > flushed[i - 1]).length;
+  const bytes = a.consumed - start;
+  console.log(`[relayPaced win32] ${leg} reads=${flushed.length} bytes=${bytes} rises=${rises} fired=${fired} restartedByDrain=${cdpPipeCounters().watchdog?.['restarted-by-drain'] ?? 0}`);
+  expect(browser.received.some((c) => c.method === 'Runtime.runIfWaitingForDebugger')).toBe(false);
+  expect(a.errors).toEqual([]);
+  return { a, rises, fired, bytes };
+}
 
-    while (!a.messages.some(isConsole)) {
-      flushed.push(drain().flushed);
-      await a.step(CHUNK);
-      // A live reader that takes 16 KiB at a time, far faster than one per stall period.
-      await deliberateSleep(10, 'simulated latency: the pace of a slow but live reader');
-    }
-    const firedMidMessage = cdpPipeCounters().watchdog?.fired ?? 0;
-    const rises = flushed.filter((v, i) => i > 0 && v > flushed[i - 1]).length;
-    console.log(`[relayPaced win32] live reads=${flushed.length} rises=${rises} fired=${firedMidMessage} restartedByDrain=${cdpPipeCounters().watchdog?.['restarted-by-drain'] ?? 0}`);
+describe('CdpPipeRelay: sends on a Windows named pipe', () => {
+  it.runIf(win32)('a live slow reader of one large message moves the drain sign fragment by fragment, and the watch does not fire', async () => {
+    const FRAME = 4 << 20;
+    const { a, rises, fired } = await readLive('live', (browser) => bigEvent(browser, FRAME), (messages) => messages.some(isConsole), CHUNK);
     expect(rises).toBeGreaterThanOrEqual(FRAME / RELAY_FRAGMENT_BYTES - 2);
-    expect(firedMidMessage).toBe(0);
-    expect(browser.received.some((c) => c.method === 'Runtime.runIfWaitingForDebugger')).toBe(false);
+    expect(fired).toBe(0);
     expect((a.messages.find(isConsole)?.params as { args: Array<{ value: string }> }).args[0].value).toHaveLength(FRAME);
-    expect(a.errors).toEqual([]);
+  });
+
+  it.runIf(win32)('a live slow reader of a burst of small messages moves the drain sign write by write, and the watch does not fire', async () => {
+    const COUNT = 200;
+    const EACH = 32 << 10;
+    const { a, rises, fired, bytes } = await readLive('burst', (browser) => {
+      for (let i = 0; i < COUNT; i++) browser.event('B1', 'Runtime.consoleAPICalled', { args: [{ value: String(i % 10).repeat(EACH) }] });
+    }, (messages) => messages.filter(isConsole).length === COUNT, 2 * CHUNK);
+    expect(rises).toBeGreaterThanOrEqual(Math.floor(bytes / RELAY_FRAGMENT_BYTES) - 2);
+    expect(fired).toBe(0);
+    expect(a.messages.filter(isConsole).map((m) => (m.params as { args: Array<{ value: string }> }).args[0].value[0]).join(''))
+      .toBe(Array.from({ length: COUNT }, (_, i) => String(i % 10)).join(''));
   });
 
   it.runIf(win32)('a reader that stopped is fired on time, however large the message waiting for it', async () => {
@@ -239,6 +260,29 @@ describe('CdpPipeRelay: sends on a Windows named pipe', () => {
     console.log(`[relayPaced win32] stopped fireAfterMs=${elapsed} stallMs=${STALL}`);
     expect(elapsed).toBeLessThan(STALL + 1_500);
     expect(a.messages.some(isConsole)).toBe(false);
+  });
+
+  it.runIf(win32)('when Chrome goes, what was already taken for a client reaches it before the close', async () => {
+    const { browser, mux, route } = await setup();
+    const ws = await dial(await route.grant({}));
+    await request(ws, { id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, flatten: true } });
+    const got: string[] = [];
+    let value = -1;
+    ws.on('message', (data) => {
+      const m = JSON.parse(data.toString()) as { method?: string; params?: { args?: Array<{ value: string }> } };
+      if (m.method === 'Runtime.consoleAPICalled') value = m.params?.args?.[0].value.length ?? -1;
+      if (m.method) got.push(m.method);
+    });
+    const closed = new Promise<void>((resolve) => ws.once('close', () => resolve()));
+    bigEvent(browser, 1 << 20);
+    browser.event('B1', 'Log.entryAdded', { entry: { text: 'last' } });
+    // Chrome exits: its pipe ends, then the launcher closes the route.
+    browser.toMux.end();
+    await vi.waitFor(() => expect(mux.isOpen()).toBe(false), { timeout: 5_000 });
+    route.close();
+    await closed;
+    expect(got.slice(-2)).toEqual(['Runtime.consoleAPICalled', 'Log.entryAdded']);
+    expect(value).toBe(1 << 20);
   });
 
   it.runIf(win32)('counts what its queue holds toward the per-client cap', async () => {
