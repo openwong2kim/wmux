@@ -9,7 +9,9 @@ import { fakeRingControl, fakeRingModule, refuseNext, resetFakeRing } from './_f
 /**
  * #3440, the paths that touch the ring's `.buf`: a refused full read never
  * replaces a good dump, and a native ring that cannot be re-created on wake
- * leaves the ring asleep and consistent (reads, writes and dumps agree).
+ * leaves the ring asleep and consistent (reads, writes and dumps agree): a
+ * reader retries at once and sees the refusal, a dump inside the backoff
+ * skips the wake and appends the held output to the `.buf`.
  */
 vi.mock('../../shared/nativeTerminalCore', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../shared/nativeTerminalCore')>(),
@@ -66,46 +68,52 @@ describe('RingBuffer (rust) .buf paths: a refused native allocation', () => {
     expect(() => ring.write(Buffer.from('+new'))).not.toThrow();
     expect(ring.isHibernated).toBe(true);
     expect(fs.readFileSync(file, 'utf8')).toBe('history');
-    // Past the backoff a reader retries; refused again, it still gets the
-    // held output, never a throw.
-    now += 1001;
+    // A reader retries at once, inside the backoff too; refused again, it
+    // throws the refusal rather than pass the held output off as the history.
     refuseNext('construct');
-    expect(ring.readAll().toString()).toBe('+new');
-    expect(ring.isHibernated).toBe(true);
-    expect(ring.readAll().toString()).toBe('+new');
-    now += 1001;
-    expect(ring.readAll().toString()).toBe('history+new');
+    expect(() => ring.readAll()).toThrow(/^ALLOC_FAILED: /);
+    expect(() => ring.readAllWithGeometry()).not.toThrow(); // retried at once: this one wakes
     expect(ring.isHibernated).toBe(false);
+    expect(ring.readAll().toString()).toBe('history+new');
     expect(ring.totalBytesWritten).toBe(11);
   });
 
-  it('after a refused wake, reads and dumps inside the backoff neither re-read the .buf nor retry the allocation', async () => {
+  it('readers inside the backoff retry the wake at once and throw a refusal; a snapshot copy is just not made', async () => {
+    const ring = new RingBuffer(1024, 'rust');
+    ring.write(Buffer.from('history'));
+    expect(await ring.hibernate(file, () => true)).toBeGreaterThan(0);
+    refuseNext('construct', 3);
+    expect(() => ring.readAll()).toThrow(/^ALLOC_FAILED: /);
+    const attempts = fakeRingControl.constructs;
+    expect(() => ring.readAllWithGeometry()).toThrow(/^ALLOC_FAILED: /);
+    expect(ring.freezeNative()).toBeUndefined();
+    expect(fakeRingControl.constructs).toBe(attempts + 2);
+    expect(ring.isHibernated).toBe(true);
+    expect(fs.readFileSync(file, 'utf8')).toBe('history');
+    // No clock moved: the next read wakes.
+    expect(ring.readAll().toString()).toBe('history');
+    expect(ring.isHibernated).toBe(false);
+  });
+
+  it('a dump inside the backoff after a refused wake skips the wake: no allocation, the held output is appended to the .buf', async () => {
     const ring = new RingBuffer(1024, 'rust');
     ring.write(Buffer.from('history'));
     expect(await ring.hibernate(file, () => true)).toBeGreaterThan(0);
     refuseNext('construct');
-    expect(ring.readAll().toString()).toBe('');
+    ring.write(Buffer.from('+new')); // the wake is refused: held
     const attempts = fakeRingControl.constructs;
-    // The allocation would now succeed, but every access inside the second
-    // serves what is held and leaves the file alone.
-    ring.write(Buffer.from('+new'));
-    expect(ring.readAll().toString()).toBe('+new');
-    expect(ring.readAllWithGeometry().data.toString()).toBe('+new');
     await ring.dumpToFile(file);
+    ring.dumpToFileSyncAtomic(file);
     expect(fakeRingControl.constructs).toBe(attempts);
     expect(ring.isHibernated).toBe(true);
     expect(fs.readFileSync(file, 'utf8')).toBe('history+new');
-    // The file is not opened inside the backoff: with it moved away, a read
-    // still serves the held output and the ring stays asleep (a wake that
-    // touched it would find it gone and wake without the history).
-    fs.renameSync(file, `${file}.away`);
-    expect(ring.readAll().toString()).toBe('+new');
-    expect(ring.isHibernated).toBe(true);
-    fs.renameSync(`${file}.away`, file);
+    // Past the backoff a dump wakes the ring again.
     now += 1001;
-    expect(ring.readAll().toString()).toBe('history+new');
-    expect(fakeRingControl.constructs).toBe(attempts + 1);
+    ring.write(Buffer.from('!'));
+    await ring.dumpToFile(file);
+    expect(fakeRingControl.constructs).toBeGreaterThan(attempts);
     expect(ring.isHibernated).toBe(false);
+    expect(fs.readFileSync(file, 'utf8')).toBe('history+new!');
   });
 
   it('a full held output that cannot become the ring is kept as its newest bytes, and a dump writes exactly those', async () => {

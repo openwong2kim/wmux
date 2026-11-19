@@ -109,12 +109,31 @@ function stderrIsLauncherFile(): boolean {
   return set;
 }
 
-/** A stderr write that goes to the daily log only. */
-function mirrorOnly(chunk: unknown, ...rest: unknown[]): boolean {
-  try { mirrorToFile(chunk); } catch { /* file logging is best-effort */ }
-  const callback = rest.length > 0 ? rest[rest.length - 1] : undefined;
-  if (typeof callback === 'function') queueMicrotask(() => { (callback as () => void)(); });
-  return true;
+/** Whether `chunk` reached the daily log (false: no log dir, or the append failed). */
+function writeDailyLog(chunk: unknown): boolean {
+  if (!resolveLogPath()) return false;
+  try {
+    mirrorToFile(chunk);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The stderr write when stderr is the launcher's file: a line goes to the
+ * daily log only, and to stderr (`forward`, the stream's own write) only
+ * when the daily log could not take it, so no line is lost.
+ */
+function stderrFileWrite(forward: (chunk: unknown, ...rest: unknown[]) => boolean) {
+  return (chunk: unknown, ...rest: unknown[]): boolean => {
+    if (!writeDailyLog(chunk)) {
+      try { return forward(chunk, ...rest); } catch { return true; }
+    }
+    const callback = rest.length > 0 ? rest[rest.length - 1] : undefined;
+    if (typeof callback === 'function') queueMicrotask(() => { (callback as () => void)(); });
+    return true;
+  };
 }
 
 /**
@@ -175,11 +194,12 @@ export function initDaemonLogSink(baseDir: string): void {
     // every console line into it would grow it for the daemon's lifetime and
     // duplicate the daily log, so the sink keeps those lines to the daily log.
     // The file still gets what bypasses this stream: a native abort's line,
-    // V8's fatal output.
-    process.stderr.write = mirrorOnly as typeof process.stderr.write;
-    // Errors from writes that do not go through this stream are not ours to
-    // report back onto it (see stdioErrorsConsumed).
-    process.stderr.on('error', () => { /* nothing is forwarded to this stream */ });
+    // V8's fatal output, and a line the daily log could not take.
+    const forward = process.stderr.write.bind(process.stderr) as (chunk: unknown, ...rest: unknown[]) => boolean;
+    process.stderr.write = stderrFileWrite(forward) as typeof process.stderr.write;
+    // A write error on this stream (a file) is not reported back onto it
+    // (see stdioErrorsConsumed).
+    process.stderr.on('error', () => { /* only fallback lines reach this stream */ });
   } else {
     wrap(process.stderr, 'stderr');
   }

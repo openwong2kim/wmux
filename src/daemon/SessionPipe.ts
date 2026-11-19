@@ -376,7 +376,8 @@ export class SessionPipe {
   /**
    * A replay could not re-read the ring (a refused allocation), so output
    * the client lacks was not replayed: what arrived during the attach flush's
-   * parse, or what a pipe that was behind never wrote. Pause live output and
+   * parse or since a re-flush's T0, or what a pipe that was behind never
+   * wrote. Pause live output and
    * ask for a re-flush, exactly as for a client that fell behind: the
    * re-flush repaints the client from the ring, which holds those bytes, so
    * nothing is lost. Call once the replay is done.
@@ -850,13 +851,9 @@ export class SessionPipe {
       throw new Error('RESYNC_UNAVAILABLE: no flushed client on session pipe');
     }
     const teeQueue: Buffer[] = [];
-    // Every chunk teed since T0, drained or not: what the client lacks when
-    // the raw degrade cannot re-read the ring (a refused allocation).
-    const teed: Buffer[] = [];
     const tee = (data: Buffer) => {
       const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
       teeQueue.push(chunk);
-      teed.push(chunk);
       this.resyncQueuedBytes += chunk.length;
     };
     const drainQueue = () => {
@@ -876,7 +873,7 @@ export class SessionPipe {
         if (isNativeAllocFailure(error)) this.reportAllocFailure(error, 're-flush declined: ring not read');
         throw error;
       }
-      const { replay: initial, geometry } = first;
+      const { replay: initial, geometry, writtenAt: writtenAtT0 } = first;
       this.writeOutput(socket, this.markers.resyncBegin);
       this.flushed = false;
       // This re-flush covers everything a pipe that was behind did not write.
@@ -940,18 +937,30 @@ export class SessionPipe {
       teeQueue.length = 0;
       this.resyncQueuedBytes = 0;
       const reread = this.tryReadRing('re-flush raw');
-      // A refused read keeps the client's screen (no RIS), which holds every
-      // byte up to T0 (unless the pipe was behind, below), and continues it
-      // with the bytes teed since, in order;
-      // it still ends the re-flush, so live output resumes without a gap.
-      const raw = reread?.replay ?? Buffer.concat(teed);
-      if (reread) this.writeOutput(socket, RIS);
+      if (!reread) {
+        // Refused: the flush-done marker with no replay before it. The
+        // renderer reads an empty replay as a re-flush that brought nothing
+        // and keeps its screen (no reset). What it lacks, output since T0 or
+        // the gap of a pipe that was behind, is still in the ring: stay
+        // behind and ask for another re-flush, which repaints it once the
+        // ring can be read. The lifetime counter tells without a copy.
+        this.writeOutput(socket, this.markers.flushDone);
+        this.replayDone();
+        const arrived = this.ringBuffer.totalBytesWritten > writtenAtT0;
+        if (arrived || wasBehind) {
+          this.reflushForUnreplayedOutput(socket, arrived ? 're-flush raw refused' : 're-flush raw refused after falling behind');
+        }
+        // eslint-disable-next-line no-console
+        console.log(
+          `[SessionPipe.reflush] sessionId=${this.sessionId} mode=raw fallbackReason=${outcome.reason} bytes=0 (ring not read)`,
+        );
+        return { mode: 'raw', fallbackReason: outcome.reason };
+      }
+      const raw = reread.replay;
+      this.writeOutput(socket, RIS);
       this.writeOutput(socket, raw);
       this.writeOutput(socket, this.markers.flushDone);
       this.replayDone();
-      // A pipe that was behind left a gap before T0 that only a ring read can
-      // fill: stay behind and ask for another re-flush.
-      if (!reread && wasBehind) this.reflushForUnreplayedOutput(socket, 're-flush raw refused after falling behind');
       // A3 rollout metric: fallback-rate by reason.
       // eslint-disable-next-line no-console
       console.log(

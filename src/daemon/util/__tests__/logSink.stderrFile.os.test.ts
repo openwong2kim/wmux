@@ -79,6 +79,34 @@ describe('daemon log sink: stderr as the launcher file', () => {
     expect(stdout.chunks).toEqual(['an info line\n']);
   });
 
+  it('with the flag: a line the daily log cannot take (no log dir) goes to stderr instead', async () => {
+    process.env[ENV] = '1';
+    fs.writeFileSync(path.join(dir, 'logs'), 'a file where the log dir should be');
+    const sink = await import('../logSink');
+    sink.initDaemonLogSink(dir);
+    const done = vi.fn();
+    process.stderr.write('[daemon] a warning line\n', done);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(stderr.chunks.some((c) => c.includes('daemon sink started'))).toBe(true);
+    expect(stderr.chunks).toContain('[daemon] a warning line\n');
+    expect(done).toHaveBeenCalledTimes(1);
+  });
+
+  it('with the flag: a line whose append fails goes to stderr, and the next one that fits goes to the log only', async () => {
+    process.env[ENV] = '1';
+    // Today's log path is a directory: every append to it fails.
+    const today = path.join(dir, 'logs', `daemon-${new Date().toISOString().slice(0, 10)}.log`);
+    fs.mkdirSync(today, { recursive: true });
+    const sink = await import('../logSink');
+    sink.initDaemonLogSink(dir);
+    process.stderr.write('[daemon] first line\n');
+    expect(stderr.chunks).toContain('[daemon] first line\n');
+    fs.rmdirSync(today);
+    process.stderr.write('[daemon] second line\n');
+    expect(stderr.chunks).not.toContain('[daemon] second line\n');
+    expect(dailyLog()).toContain('[daemon] second line');
+  });
+
   it('without the flag: stderr is teed as before', async () => {
     delete process.env[ENV];
     const sink = await import('../logSink');
