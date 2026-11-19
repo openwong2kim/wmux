@@ -98,7 +98,7 @@ describe('native PTY output capture', () => {
       expect(log.mock.calls.flat().join('\n')).toContain('pty-bridge session=native-output: ALLOC_FAILED');
     } finally { log.mockRestore(); }
   });
-  it('dates the modes of a chunk the ring refused before its window, so the preamble carries them', () => {
+  it('restarts the ring after a chunk it refused, so the preamble carries that chunk\'s modes and no older output is replayed without them', () => {
     const h = harness();
     h.feed('x'.repeat(100));
     h.nativeWrites.mockImplementationOnce(chunk => {
@@ -108,7 +108,12 @@ describe('native PTY output capture', () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try { h.feed('\x1b[?2004h'); } finally { log.mockRestore(); }
     expect(h.ring.droppedBytes).toBe(8);
-    expect(h.ring.readAll().toString()).toBe('x'.repeat(100));
+    expect(h.ring.readAll().toString()).toBe('');
+    expect(h.ring.totalBytesWritten).toBe(100);
+    expect(h.bridge.outputModes?.preamble(h.ring.totalBytesWritten - h.ring.size)).toContain('\x1b[?2004h');
+    // Output after the hole is stored and replayed after the preamble.
+    h.feed('after');
+    expect(h.ring.readAll().toString()).toBe('after');
     expect(h.bridge.outputModes?.preamble(h.ring.totalBytesWritten - h.ring.size)).toContain('\x1b[?2004h');
   });
   it('discards muted output when replay was not requested', () => {

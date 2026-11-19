@@ -2592,6 +2592,15 @@ export class DaemonPTYBridge extends EventEmitter {
         const droppedBefore = ringBuffer.droppedBytes;
         if (nativeChunk) ringBuffer.writeNativeChunk(nativeChunk);
         else ringBuffer.write(buf ?? Buffer.from(data));
+        // A chunk the ring refused to store leaves a hole no replay can cross:
+        // the ring's history restarts after it. Its mode changes then fall
+        // before the (empty) window, so the attach preamble carries them, and
+        // a replay never shows output from before the hole without them.
+        if (ringBuffer.droppedBytes !== droppedBefore) {
+          const had = ringBuffer.size;
+          ringBuffer.clear();
+          if (had > 0) console.error(`[pty] ${sessionId}: output not stored; replay history restarts after it (${had} bytes dropped)`);
+        }
         // AFTER the ring write: the tracker's offsets are in the ring's own
         // coordinate system, so it needs the counter this chunk already moved.
         // Before the titles in this chunk are read (see ClaudeTitleTurnEdge.noteOutput).
@@ -2608,13 +2617,7 @@ export class DaemonPTYBridge extends EventEmitter {
             else this.resetProgramStatus();
           }
         }
-        // A chunk the ring refused to store is not in its history: its mode
-        // changes are dated before the ring's window, so the attach preamble
-        // carries them instead of leaving them to a replay that lacks them.
-        const end = ringBuffer.droppedBytes === droppedBefore
-          ? ringBuffer.totalBytesWritten
-          : ringBuffer.totalBytesWritten - ringBuffer.size;
-        interpreter.feed(data, end, nativeChunk);
+        interpreter.feed(data, ringBuffer.totalBytesWritten, nativeChunk);
         if (risAfterReports) this.resetProgramStatus();
         // After the mode tracker and OSC 133 have seen this chunk (see noteCodexOutput).
         this.noteCodexOutput(data);
