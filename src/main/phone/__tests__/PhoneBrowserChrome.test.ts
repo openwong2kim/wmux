@@ -3,6 +3,7 @@ import { focusBuiltinTab, handlePhoneBrowser } from '../PhoneBrowser';
 import { chromeDriver, createPhoneChromeDeps, phoneChromeHelpTabs, phoneChromeTabs, type PhoneChromeDeps, type PhoneChromeRegistry } from '../PhoneBrowserChrome';
 import { ChromePageSessionError, type ChromeBackendClient, type ChromeOpenedSurface, type ChromeTargetInfo } from '../../browser-session/ChromeLauncher';
 import type { RpcResponse } from '../../../shared/rpc';
+import { browserHelpRow } from '../PhoneBrowserHelp';
 
 const METRICS = { cssVisualViewport: { clientWidth: 1000, clientHeight: 700, pageX: 0, pageY: 40, scale: 1 } };
 
@@ -819,5 +820,132 @@ describe('which Chrome tabs a workspace has (phoneChromeTabs)', () => {
       delete process.env.WMUX_CHROME_TARGET_WATCHER;
     }
     expect(await deps.tabs('ws-live')).toEqual([]);
+  });
+});
+
+describe('a profile bound to one of the workspace\'s panes (tabs opened outside wmux included)', () => {
+  const tabOf = (surfaceId: string, workspaceId?: string): ChromeTargetInfo => ({ surfaceId, targetId: `t-${surfaceId}`, url: `https://${surfaceId}.example.com/`, title: surfaceId, ...(workspaceId ? { workspaceId } : {}) });
+
+  function paneClient(opts: { recorded?: ChromeTargetInfo[]; outside?: ChromeTargetInfo[]; running?: boolean } = {}) {
+    const sent: string[] = [];
+    const send = vi.fn(async (method: string) => {
+      sent.push(method);
+      if (method === 'Page.getLayoutMetrics') return METRICS;
+      if (method === 'Page.captureScreenshot') return { data: 'aGVsbG8=' };
+      return {};
+    });
+    let outside = opts.outside ?? [tabOf('chrome-x-login')];
+    const recorded = opts.recorded ?? [tabOf('chrome-mine', 'ws-1'), tabOf('chrome-theirs', 'ws-2')];
+    const client = {
+      endpoint: async () => ({}), cdpInfoTargets: async () => [], openTab: async () => { throw new Error('no'); },
+      listTargets: vi.fn(async () => recorded), closeSurface: async () => false, hasSurface: () => true, dispose: () => undefined,
+      recordFor: (surfaceId: string) => {
+        const found = recorded.find((t) => t.surfaceId === surfaceId);
+        return found ? { surfaceId, targetId: found.targetId, url: found.url, createdAt: 0, lastSeenAt: 0, ...(found.workspaceId ? { workspaceId: found.workspaceId } : {}) } : undefined;
+      },
+      pageSession: vi.fn(async () => ({ send })),
+      isRunning: () => opts.running ?? true,
+      outsideTabs: vi.fn(async () => outside),
+      hasOutside: (id: string) => outside.some((t) => t.surfaceId === id),
+      outsidePageSession: vi.fn(async () => ({ send })),
+      outsideStreamSession: vi.fn(async () => ({ send, on: () => undefined, onClosed: () => undefined, closed: false, detach: async () => undefined })),
+      selectOutside: vi.fn(async () => true),
+      releaseOutside: vi.fn(),
+    } satisfies ChromeBackendClient;
+    return { client, sent, setOutside: (next: ChromeTargetInfo[]) => { outside = next; } };
+  }
+
+  function setup(pane = paneClient(), workspaceProfile = 'default') {
+    let bound = { profiles: ['naver-blog'], unknown: false };
+    const registry: PhoneChromeRegistry = {
+      profileFor: () => workspaceProfile,
+      isPaneBound: (p) => p === 'naver-blog',
+      peekLauncher: (p) => (p === 'naver-blog' ? pane.client : undefined),
+      paneProfiles: (ws) => (ws === 'ws-1' ? bound : { profiles: [], unknown: false }),
+    };
+    const deps = createPhoneChromeDeps({ registry, validateNavigation: async () => undefined });
+    return { pane, registry, deps, rebind: (next: typeof bound) => { bound = next; } };
+  }
+
+  it('lists the pane profile\'s recorded tabs of this workspace, then its outside tabs, labelled', async () => {
+    const { deps } = setup();
+    const reply = await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, fixture(deps)) as { pages: unknown[]; chromeOutside?: string };
+    expect(reply.pages).toEqual([
+      { id: 'pane', title: 'Pane', url: 'https://pane.example.com/', backend: 'builtin' },
+      { id: 'chrome-mine', title: 'chrome-mine', url: 'https://chrome-mine.example.com/', backend: 'chrome' },
+      { id: 'chrome-x-login', title: 'chrome-x-login', url: 'https://chrome-x-login.example.com/', backend: 'chrome', openedBy: 'outside' },
+    ]);
+    expect(reply.chromeOutside).toBeUndefined();
+    // Without the opt-in, nothing about Chrome changes shape.
+    expect(await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1' }, fixture(deps))).toEqual({ pages: [{ id: 'pane', title: 'Pane', url: 'https://pane.example.com/' }] });
+  });
+
+  it('drives an outside tab through its own session, and focuses it', async () => {
+    const { deps, pane } = setup();
+    const capture = await handlePhoneBrowser('browser.capture', { workspaceId: 'ws-1', surfaceId: 'chrome-x-login' }, fixture(deps));
+    expect(capture).toMatchObject({ data: 'aGVsbG8=', mimeType: 'image/jpeg' });
+    expect(pane.client.outsidePageSession).toHaveBeenCalledWith('chrome-x-login');
+    expect(pane.client.pageSession).not.toHaveBeenCalled();
+    expect(await deps.focus('chrome-x-login', 'ws-1')).toBe(true);
+    expect(pane.client.selectOutside).toHaveBeenCalledWith('chrome-x-login');
+    expect(deps.owns?.('chrome-x-login', 'ws-1')).toBe(true);
+    expect(deps.owns?.('chrome-x-login', 'ws-2')).toBe(false);
+    await expect(deps.session('chrome-x-login', 'ws-2')).rejects.toMatchObject({ reason: 'gone' });
+  });
+
+  it('once the workspace may no longer see the profile, its outside sessions are let go and no input goes out', async () => {
+    const { deps, pane, rebind } = setup();
+    const scopeX = { workspaceId: 'ws-1', surfaceId: 'chrome-x-login' };
+    await handlePhoneBrowser('browser.capture', scopeX, fixture(deps));
+    const sentBefore = pane.sent.length;
+    rebind({ profiles: [], unknown: false });
+    expect(await handlePhoneBrowser('browser.tap', { ...scopeX, expectedURL: 'https://chrome-x-login.example.com/', geometry, x: 0.5, y: 0.5 }, fixture(deps)))
+      .toEqual({ error: 'browser-tab-gone' });
+    expect(pane.client.releaseOutside).toHaveBeenCalledTimes(1);
+    expect(pane.sent.length).toBe(sentBefore);
+    expect(deps.owns?.('chrome-x-login', 'ws-1')).toBe(false);
+    await expect(deps.streamSession?.('chrome-x-login', 'ws-1')).rejects.toMatchObject({ reason: 'gone' });
+    expect(await deps.tabs('ws-1')).toEqual([]);
+  });
+
+  it('revalidate lets go of a workspace that lost the profile without waiting for its next call', async () => {
+    const { deps, pane, rebind } = setup();
+    await deps.session('chrome-x-login', 'ws-1');
+    deps.revalidate?.();
+    expect(pane.client.releaseOutside).not.toHaveBeenCalled();
+    rebind({ profiles: [], unknown: false });
+    deps.revalidate?.();
+    expect(pane.client.releaseOutside).toHaveBeenCalledTimes(1);
+  });
+
+  it('says why no outside tab is listed', async () => {
+    const reason = async (deps: PhoneChromeDeps, ws = 'ws-1') =>
+      (await handlePhoneBrowser('browser.list', { workspaceId: ws, chrome: true }, fixture(deps)) as { chromeOutside?: string }).chromeOutside;
+    const { deps, rebind } = setup();
+    expect(await reason(deps)).toBeUndefined();
+    rebind({ profiles: [], unknown: true });
+    expect(await reason(deps)).toBe('pane-unknown');
+    rebind({ profiles: [], unknown: false });
+    expect(await reason(deps)).toBe('not-bound');
+    expect(await reason(setup(paneClient(), 'live').deps, 'ws-2')).toBe('live');
+    // A bound profile whose Chrome is not running, or that has no launcher yet.
+    expect(await reason(setup(paneClient({ running: false })).deps)).toBe('not-running');
+    const noLauncher = setup();
+    noLauncher.registry.peekLauncher = () => undefined;
+    expect(await reason(createPhoneChromeDeps({ registry: noLauncher.registry, validateNavigation: async () => undefined }))).toBe('not-running');
+    // Nothing about outside tabs on a desktop whose setting is not Chrome.
+    expect(await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, { ...fixture(deps), backend: () => 'builtin' })).not.toHaveProperty('chromeOutside');
+  });
+
+  it('help rows: the pane profile\'s recorded tabs join, previewable; an outside tab never does', async () => {
+    const { registry } = setup();
+    const rows = await phoneChromeHelpTabs('ws-1', registry);
+    expect(rows.map((r) => [r.surfaceId, r.previewable])).toEqual([['chrome-mine', true]]);
+    // An agent's request naming an outside tab by its target id finds no previewable row.
+    const row = await browserHelpRow(
+      { requestId: 'r1', workspaceId: 'ws-1', surfaceId: 't-chrome-x-login', prompt: 'log in', createdAt: 0, deadlineAt: 1 } as Parameters<typeof browserHelpRow>[0],
+      { backend: () => 'chrome', builtinUrl: () => null, mayBeLiveChrome: () => false, chromeTabs: (ws) => phoneChromeHelpTabs(ws, registry) },
+    );
+    expect(row.previewable).toBe(false);
   });
 });

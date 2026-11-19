@@ -3665,13 +3665,15 @@ exactly as above.
   new-page action then.
 - **Which tabs**: tabs of the workspace's own wmux Chrome profile that the
   desktop recorded under exactly this workspace; a tab with no workspace on
-  record is nobody's. A profile bound to one pane only (a protected pane's,
-  say) is not listed: its policy applies to that pane's calls. Listing never
-  starts Chrome: while it is not running there are no `chrome` rows, nor while
-  the desktop cannot attach to its pages (its tab watcher is off or failed);
-  help rows for those tabs are then `previewable: false`. A tab one of these
-  tabs opens (a `target=_blank` link or a script's `window.open`) is listed
-  too, in the same workspace (contract v1.7, below).
+  record is nobody's. A tab one of these tabs opens (a `target=_blank` link
+  or a script's `window.open`) is listed too, in the same workspace (contract
+  v1.7, below). A profile bound to one of this workspace's panes is listed
+  too (contract v1.8, below), unless a browser policy applies to it (a
+  protected pane's): that policy applies to the pane's own calls. A profile
+  bound to a pane of another workspace never is. Listing never starts Chrome:
+  while it is not running there are no `chrome` rows, nor while the desktop
+  cannot attach to its pages (its tab watcher is off or failed); help rows
+  for those tabs are then `previewable: false`.
 - **The same actions** take a `chrome` row's `id` as `surfaceId`: capture,
   `navigate`, `type`, `key`, `tap`, `scroll`, with the same checks
   (`expectedURL`, `geometry`, http(s) only). A Chrome capture has the builtin
@@ -3712,6 +3714,51 @@ exactly as above.
 | `409 {error:"browser-help-origin-changed"}` | Help-card typing: the tab is no longer at the request's origin, or the request has none. Nothing was typed. |
 | `404 {error:"browser-help-not-found"}` / `409 {error:"browser-help-closed"}` | Help-card typing: no request with that id for this workspace and tab (open or closed), or this tab's request already ended. |
 | `503 {error:"browser-preview-unavailable"}` | Any other failure, as before. Never retry input automatically. |
+
+#### Tabs opened outside wmux, on a pane's profile (contract v1.8)
+
+A Chrome profile bound to exactly one pane, while that pane is in this
+workspace and no browser policy applies to the profile, is that pane's alone.
+With `?chrome=1`, the list then also carries every other tab of that
+profile: the tabs a script opened over the DevTools protocol, or a person
+opened by hand. Additive; `protocolVersion` stays 1.
+
+- **Rows**: such a tab is a `chrome` row with `openedBy: "outside"`, after the
+  recorded rows, within the same 30. Its `id` starts `chrome-x-`, is opaque,
+  and lasts as long as the tab: a desktop restart, Chrome restarting, or the
+  desktop losing its connection to Chrome gives the tab a new id. Re-list on
+  `404 browser-tab-gone`. Every row without the field is as before.
+- **Actions**: the same as any `chrome` row (capture, `navigate`, `type`,
+  `key`, `tap`, `scroll`, `focus`, the stream), under the same permissions and
+  checks. A tap that opens a tab from such a tab never carries `opened`
+  (v1.7); refresh the list instead.
+- **`chromeOutside`** on the list reply, only with `?chrome=1` and the desktop
+  setting Chrome, says why no outside tab can be listed; absent when one can
+  (even when there is none right now):
+  - `not-bound`: no profile is bound to one of this workspace's panes (or
+    only one a browser policy applies to);
+  - `live`: the workspace uses Live Chrome;
+  - `not-running`: the bound profile's Chrome is not running, or the desktop
+    cannot attach to its pages;
+  - `pane-unknown`: the desktop does not know yet which workspace a bound
+    pane is in (a pane with no terminal, or a layout not sent yet).
+  An older desktop never sends it, nor `openedBy`.
+- **Moves**: a pane moved to another workspace, unbound, closed, or a policy
+  applied takes its profile off this workspace's list at once; a stream on
+  one of its tabs ends with `browser-tab-gone`, and input answers `404
+  browser-tab-gone` without reaching the tab.
+- **Help requests** never name such a tab: an agent's help request is always
+  about a tab the desktop recorded.
+
+Suggested copy (English / Korean):
+
+| Where | English | Korean |
+| --- | --- | --- |
+| Row label (`openedBy: "outside"`) | Opened outside wmux | wmux 밖에서 연 탭 |
+| `not-bound` | No Chrome profile is bound to one of this workspace's panes. | 이 워크스페이스의 판에 연결된 Chrome 프로필이 없어요. |
+| `live` | This workspace uses your own Chrome, which is never shown here. | 이 워크스페이스는 내 Chrome을 써서 여기엔 나오지 않아요. |
+| `not-running` | That profile's Chrome isn't running. | 그 프로필의 Chrome이 꺼져 있어요. |
+| `pane-unknown` | This pane's workspace isn't known yet. Try again in a moment. | 이 판의 워크스페이스를 아직 알 수 없어요. 잠시 후 다시 시도하세요. |
 
 #### Live browser stream (`browserStream`)
 

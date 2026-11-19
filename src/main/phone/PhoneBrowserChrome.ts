@@ -17,11 +17,12 @@
 // Typed text is sent once, to Chrome, and is never echoed or put in an error.
 
 import type { PhoneBrowserDriver } from './PhoneBrowser';
-import { ChromePageSessionError, chromeTargetWatcherEnabled, type ChromeBackendClient, type ChromePageSession, type ChromeStreamSession, type ChromeTargetInfo } from '../browser-session/ChromeLauncher';
+import { ChromePageSessionError, OUTSIDE_ID_PREFIX, chromeTargetWatcherEnabled, type ChromeBackendClient, type ChromePageSession, type ChromeStreamSession, type ChromeTargetInfo } from '../browser-session/ChromeLauncher';
 import { LIVE_CHROME_PROFILE } from '../browser-session/ChromeProfileStore';
 import { parseKeyPress } from '../pipe/handlers/cdpKeys';
 import { readFocus } from './PhoneBrowserFocus';
-import { PhoneBrowserError } from '../../shared/phoneBrowserPreview';
+import { PhoneBrowserError, type PhoneChromeOutsideReason } from '../../shared/phoneBrowserPreview';
+import type { PhonePaneProfiles } from './phonePaneProfiles';
 
 /** How long a whole Chrome capture, or one input, may take before the tab reads as hidden. */
 export const PHONE_CHROME_CAPTURE_MS = 5_000;
@@ -29,16 +30,23 @@ export const PHONE_CHROME_CAPTURE_MS = 5_000;
 /** How long a tap waits to start hearing the page ask for a window before it goes ahead without. */
 export const PHONE_WATCH_SETUP_MS = 500;
 
-export interface PhoneChromeTab { surfaceId: string; url: string; title: string }
+/** `openedBy: 'outside'`: a tab of a pane's profile that wmux holds no record of (ChromeLauncher.outsideTabs). */
+export interface PhoneChromeTab { surfaceId: string; url: string; title: string; openedBy?: 'outside' }
 
 /** Main's dedicated Chrome profiles, as the phone preview may see them. */
 export interface PhoneChromeDeps {
   /**
-   * The tabs wmux opened in the workspace's own dedicated profile whose
-   * recorded workspace is exactly `workspaceId`. Never Live Chrome, never a
-   * pane's exclusive profile, never a launch: [] while no Chrome is running.
+   * The tabs wmux opened in the workspace's own dedicated profile, or in a
+   * profile bound to one of its panes, whose recorded workspace is exactly
+   * `workspaceId`; then every other tab of those pane profiles (`openedBy:
+   * 'outside'`). Never Live Chrome, never a protected pane's profile, never a
+   * launch: [] while no Chrome is running.
    */
   tabs(workspaceId: string): Promise<PhoneChromeTab[]>;
+  /** Why tabs() lists no outside tab for this workspace, or null when it may. */
+  outsideReason?(workspaceId: string): PhoneChromeOutsideReason | null;
+  /** Re-check every workspace holding outside sessions, and let go of those it may no longer see. */
+  revalidate?(): void;
   /** A page session on one of those tabs; throws ChromePageSessionError. */
   session(surfaceId: string, workspaceId: string): Promise<ChromePageSession>;
   /** A session of its own on one of those tabs, for the stream's screencast; throws ChromePageSessionError. */
@@ -362,6 +370,8 @@ export interface PhoneChromeRegistry {
   profileFor(workspaceId: string | undefined): string;
   isPaneBound(profile: string): boolean;
   peekLauncher(profile: string): ChromeBackendClient | undefined;
+  /** The profiles bound to one of this workspace's panes that the phone may show (phonePaneProfiles). Absent: none. */
+  paneProfiles?(workspaceId: string): PhonePaneProfiles;
 }
 
 function isLive(profile: string): boolean {
@@ -369,12 +379,19 @@ function isLive(profile: string): boolean {
 }
 
 /**
+ * A client the preview can attach pages through: dedicated (no write scope:
+ * that is Live), and with a tab watcher that is on and has not failed.
+ */
+function attachable(client: ChromeBackendClient | undefined): client is ChromeBackendClient {
+  return !!client && !client.writeScope && !!client.pageSession && client.canPageSession?.() !== false;
+}
+
+/**
  * The dedicated Chrome client the workspace's own tabs are in: the profile
  * the workspace (not one of its panes) is bound to, exactly what an operator
  * call with no pane resolves to. Not Live Chrome, not a client with a write
- * scope (that is Live), and not a pane's exclusive profile — a protected
- * pane's browser policy is enforced on its pane's calls, and the phone
- * speaks CDP past it. Never one that does not exist yet: reading a tab must
+ * scope (that is Live), and not a pane's exclusive profile, which only
+ * paneClients may add. Never one that does not exist yet: reading a tab must
  * not start a browser.
  */
 function clientFor(workspaceId: string, registry: PhoneChromeRegistry): ChromeBackendClient | undefined {
@@ -383,21 +400,44 @@ function clientFor(workspaceId: string, registry: PhoneChromeRegistry): ChromeBa
   const client = registry.peekLauncher(profile);
   // A launcher whose tab watcher is off or failed cannot attach a page: its
   // tabs are not the preview's (and help rows say not previewable).
-  return client && !client.writeScope && client.pageSession && client.canPageSession?.() !== false ? client : undefined;
+  return attachable(client) ? client : undefined;
 }
 
 /**
- * The workspace's dedicated-profile tabs, each with the client that holds it:
- * only tabs whose recorded workspace is exactly this one (listTargets lets a
- * tab with no workspace through). The help table (PhoneBrowserHelp) reads the
- * same list, so a row is previewable exactly when the preview can drive it.
+ * The clients of the profiles bound to one of this workspace's panes, when
+ * no browser policy applies to them (phonePaneProfiles: a protected pane's
+ * policy rides on that pane's calls, which the phone's CDP would skip). Such
+ * a profile is that one pane's alone, so every tab in it belongs here.
+ */
+function paneClients(workspaceId: string, registry: PhoneChromeRegistry, own: ChromeBackendClient | undefined): ChromeBackendClient[] {
+  const out: ChromeBackendClient[] = [];
+  for (const profile of registry.paneProfiles?.(workspaceId).profiles ?? []) {
+    const client = registry.peekLauncher(profile);
+    if (attachable(client) && client !== own && !out.includes(client)) out.push(client);
+  }
+  return out;
+}
+
+function clientsFor(workspaceId: string, registry: PhoneChromeRegistry): { own: ChromeBackendClient | undefined; panes: ChromeBackendClient[] } {
+  const own = clientFor(workspaceId, registry);
+  return { own, panes: paneClients(workspaceId, registry, own) };
+}
+
+const isOutsideId = (surfaceId: string) => surfaceId.startsWith(OUTSIDE_ID_PREFIX);
+
+/**
+ * The workspace's dedicated-profile tabs wmux recorded, each with the client
+ * that holds it: only tabs whose recorded workspace is exactly this one
+ * (listTargets lets a tab with no workspace through). The help table
+ * (PhoneBrowserHelp) reads the same records, so a row is previewable exactly
+ * when the preview can drive it.
  */
 export async function phoneChromeTabs(
   workspaceId: string,
   registry: PhoneChromeRegistry,
 ): Promise<Array<{ tab: ChromeTargetInfo; client: ChromeBackendClient }>> {
-  const client = clientFor(workspaceId, registry);
-  return client ? strictTabs(client, workspaceId) : [];
+  const { own, panes } = clientsFor(workspaceId, registry);
+  return (await Promise.all([own, ...panes].filter(attachable).map((client) => strictTabs(client, workspaceId)))).flat();
 }
 
 async function strictTabs(client: ChromeBackendClient, workspaceId: string): Promise<Array<{ tab: ChromeTargetInfo; client: ChromeBackendClient }>> {
@@ -410,21 +450,39 @@ async function strictTabs(client: ChromeBackendClient, workspaceId: string): Pro
   return tabs.filter((tab) => tab.workspaceId === workspaceId).map((tab) => ({ tab, client }));
 }
 
+async function outsideTabs(clients: ChromeBackendClient[]): Promise<Array<{ tab: ChromeTargetInfo; client: ChromeBackendClient }>> {
+  const lists = await Promise.all(clients.map(async (client) => {
+    if (!client.outsideTabs) return [];
+    try {
+      return (await client.outsideTabs()).map((tab) => ({ tab, client }));
+    } catch {
+      return [];
+    }
+  }));
+  return lists.flat();
+}
+
 /**
- * The help table's read of the same tabs: the workspace's own dedicated
+ * The help table's read of the recorded tabs: the workspace's own dedicated
  * profile even when a pane is bound to it too (the row still shows where the
- * tab is), each marked with whether the preview may drive it.
+ * tab is), each marked with whether the preview may drive it, then the
+ * recorded tabs of its pane profiles. Never an outside tab: a help request
+ * names its tab by an id an agent supplied, and an agent on the port knows
+ * the target ids of tabs it opened itself.
  */
 export async function phoneChromeHelpTabs(
   workspaceId: string,
   registry: PhoneChromeRegistry,
 ): Promise<Array<ChromeTargetInfo & { previewable: boolean }>> {
+  const rows: Array<ChromeTargetInfo & { previewable: boolean }> = [];
+  const { own, panes } = clientsFor(workspaceId, registry);
   const profile = registry.profileFor(workspaceId);
-  if (isLive(profile)) return [];
-  const client = registry.peekLauncher(profile);
-  if (!client || client.writeScope) return [];
-  const previewable = clientFor(workspaceId, registry) === client;
-  return (await strictTabs(client, workspaceId)).map(({ tab }) => ({ ...tab, previewable }));
+  const client = isLive(profile) ? undefined : registry.peekLauncher(profile);
+  if (client && !client.writeScope) {
+    rows.push(...(await strictTabs(client, workspaceId)).map(({ tab }) => ({ ...tab, previewable: own === client })));
+  }
+  for (const pane of panes) rows.push(...(await strictTabs(pane, workspaceId)).map(({ tab }) => ({ ...tab, previewable: true })));
+  return rows;
 }
 
 /** main's PhoneChromeDeps over the Chrome registry. */
@@ -432,38 +490,85 @@ export function createPhoneChromeDeps(opts: {
   registry: PhoneChromeRegistry;
   validateNavigation: (url: string) => Promise<void>;
 }): PhoneChromeDeps {
-  const holder = async (surfaceId: string, workspaceId: string) =>
-    (await phoneChromeTabs(workspaceId, opts.registry)).find(({ tab }) => tab.surfaceId === surfaceId);
+  // The pane-profile clients each workspace holds outside sessions on, let go
+  // of as soon as that workspace may no longer see the profile (unbound, the
+  // pane moved or closed, a policy applied).
+  const served = new Map<string, Set<ChromeBackendClient>>();
+  const panesOf = (workspaceId: string): ChromeBackendClient[] => {
+    const panes = clientsFor(workspaceId, opts.registry).panes;
+    const held = served.get(workspaceId);
+    for (const client of held ? [...held] : []) {
+      if (panes.includes(client)) continue;
+      held?.delete(client);
+      client.releaseOutside?.();
+    }
+    if (held?.size === 0) served.delete(workspaceId);
+    return panes;
+  };
+  const serve = (workspaceId: string, client: ChromeBackendClient) => {
+    const held = served.get(workspaceId) ?? new Set<ChromeBackendClient>();
+    held.add(client);
+    served.set(workspaceId, held);
+  };
+  /** The client holding an outside tab for this workspace now. */
+  const outsideHolder = (surfaceId: string, workspaceId: string) =>
+    panesOf(workspaceId).find((client) => client.hasOutside?.(surfaceId) === true);
+  /** The client whose record of the tab names exactly this workspace. */
+  const recordHolder = (surfaceId: string, workspaceId: string) => {
+    const { own, panes } = clientsFor(workspaceId, opts.registry);
+    return [own, ...panes].find((client) => client?.recordFor?.(surfaceId)?.workspaceId === workspaceId);
+  };
+  const gone = () => new ChromePageSessionError('gone', 'not a tab of this workspace');
   return {
-    tabs: async (workspaceId) => (await phoneChromeTabs(workspaceId, opts.registry))
-      .map(({ tab }) => ({ surfaceId: tab.surfaceId, url: tab.url, title: tab.title })),
+    tabs: async (workspaceId) => {
+      const recorded = (await phoneChromeTabs(workspaceId, opts.registry))
+        .map(({ tab }): PhoneChromeTab => ({ surfaceId: tab.surfaceId, url: tab.url, title: tab.title }));
+      const outside = (await outsideTabs(panesOf(workspaceId)))
+        .map(({ tab }): PhoneChromeTab => ({ surfaceId: tab.surfaceId, url: tab.url, title: tab.title, openedBy: 'outside' }));
+      return [...recorded, ...outside];
+    },
     // The preview found the tab in this workspace's strict list just before;
     // the session is attached on that same client, with no second list read.
     session: async (surfaceId, workspaceId) => {
-      const client = clientFor(workspaceId, opts.registry);
-      // The record's own workspace, not only the order of calls before this one.
-      if (!client?.pageSession || client.recordFor?.(surfaceId)?.workspaceId !== workspaceId) {
-        throw new ChromePageSessionError('gone', 'not a tab of this workspace');
+      if (isOutsideId(surfaceId)) {
+        const client = outsideHolder(surfaceId, workspaceId);
+        if (!client?.outsidePageSession) throw gone();
+        serve(workspaceId, client);
+        return client.outsidePageSession(surfaceId);
       }
+      // The record's own workspace, not only the order of calls before this one.
+      const client = recordHolder(surfaceId, workspaceId);
+      if (!client?.pageSession) throw gone();
       return client.pageSession(surfaceId);
     },
     // The same checks for the stream's own session.
     streamSession: async (surfaceId, workspaceId) => {
-      const client = clientFor(workspaceId, opts.registry);
-      if (!client?.streamSession || client.recordFor?.(surfaceId)?.workspaceId !== workspaceId) {
-        throw new ChromePageSessionError('gone', 'not a tab of this workspace');
+      if (isOutsideId(surfaceId)) {
+        const client = outsideHolder(surfaceId, workspaceId);
+        if (!client?.outsideStreamSession) throw gone();
+        serve(workspaceId, client);
+        return client.outsideStreamSession(surfaceId);
       }
+      const client = recordHolder(surfaceId, workspaceId);
+      if (!client?.streamSession) throw gone();
       return client.streamSession(surfaceId);
     },
-    owns: (surfaceId, workspaceId) => clientFor(workspaceId, opts.registry)?.recordFor?.(surfaceId)?.workspaceId === workspaceId,
+    owns: (surfaceId, workspaceId) => isOutsideId(surfaceId)
+      ? outsideHolder(surfaceId, workspaceId) !== undefined
+      : recordHolder(surfaceId, workspaceId) !== undefined,
     onTabOpened: (surfaceId, workspaceId, listener) => {
-      const off = clientFor(workspaceId, opts.registry)?.onSurfaceOpened?.((opened) => {
+      const { own, panes } = clientsFor(workspaceId, opts.registry);
+      const offs = [own, ...panes].map((client) => client?.onSurfaceOpened?.((opened) => {
         if (opened.openerSurfaceId === surfaceId && opened.workspaceId === workspaceId) listener({ surfaceId: opened.surfaceId, url: opened.url });
-      });
-      return off ?? (() => undefined);
+      }));
+      return () => { for (const off of offs) off?.(); };
     },
     focus: async (surfaceId, workspaceId) => {
-      const found = await holder(surfaceId, workspaceId);
+      if (isOutsideId(surfaceId)) {
+        const client = outsideHolder(surfaceId, workspaceId);
+        return !!client?.selectOutside && (await client.selectOutside(surfaceId));
+      }
+      const found = (await phoneChromeTabs(workspaceId, opts.registry)).find(({ tab }) => tab.surfaceId === surfaceId);
       if (!found?.client.selectSurface || !(await found.client.selectSurface(surfaceId))) return false;
       // The phone's tap is a person's explicit "show me": un-minimize too.
       await found.client.restoreWindow?.(surfaceId);
@@ -477,6 +582,16 @@ export function createPhoneChromeDeps(opts: {
       if (isLive(profile) || opts.registry.isPaneBound(profile)) return false;
       const client = opts.registry.peekLauncher(profile);
       return client ? !client.writeScope && client.canPageSession?.() !== false : chromeTargetWatcherEnabled();
+    },
+    outsideReason: (workspaceId) => {
+      if (panesOf(workspaceId).some((client) => !!client.outsideTabs && client.isRunning?.() !== false)) return null;
+      const bound = opts.registry.paneProfiles?.(workspaceId) ?? { profiles: [], unknown: false };
+      if (bound.unknown) return 'pane-unknown';
+      if (bound.profiles.length > 0) return 'not-running';
+      return isLive(opts.registry.profileFor(workspaceId)) ? 'live' : 'not-bound';
+    },
+    revalidate: () => {
+      for (const workspaceId of [...served.keys()]) panesOf(workspaceId);
     },
     validateNavigation: opts.validateNavigation,
   };
