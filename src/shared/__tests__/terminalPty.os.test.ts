@@ -284,6 +284,52 @@ describe('native output chunks', () => {
       expect(transport.kill).toHaveBeenCalledOnce();
     } finally { log.mockRestore(); }
   });
+  it('retries a read the core refused to decode, and delivers the kept bytes without ending the session', async () => {
+    const chunk = { text: 'kept', byteLength: 4, readBytes: vi.fn(), dispose: vi.fn() };
+    const readChunk = vi.fn()
+      .mockImplementationOnce(() => { throw new Error('ALLOC_FAILED: could not allocate 4099 bytes for decoded output'); })
+      .mockReturnValueOnce({ ...idle, chunk, bytesRead: 4 })
+      .mockReturnValue({ ...idle, bytesRead: 0 });
+    vi.mocked(loadNativeTerminalCore).mockReturnValue({ NativeTransport: class {
+      constructor(_c: string, _a: string[], _cwd: string, _env: object, _cols: number, _rows: number, callback: () => void) {
+        wake = callback; return { ...transport, readChunk };
+      }
+    } } as unknown as NativeTerminalCore);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    try {
+      const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
+      pty.label = 'session-r';
+      const exit = vi.fn(); pty.onExit(exit);
+      const got: string[] = []; pty.onData(text => got.push(text));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(readChunk).toHaveBeenCalledTimes(1); expect(got).toEqual([]);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(got).toEqual(['kept']); expect(exit).not.toHaveBeenCalled(); expect(transport.close).not.toHaveBeenCalled();
+      expect(log.mock.calls.flat().join('\n')).toContain('PTY output session=session-r: ALLOC_FAILED: could not allocate 4099 bytes for decoded output; retrying the read');
+    } finally { vi.useRealTimers(); log.mockRestore(); }
+  });
+  it('ends the session once reads have been refused for 30 s', async () => {
+    const readChunk = vi.fn(() => { throw new Error('ALLOC_FAILED: could not allocate 4099 bytes for decoded output'); });
+    vi.mocked(loadNativeTerminalCore).mockReturnValue({ NativeTransport: class {
+      constructor(_c: string, _a: string[], _cwd: string, _env: object, _cols: number, _rows: number, callback: () => void) {
+        wake = callback; return { ...transport, readChunk };
+      }
+    } } as unknown as NativeTerminalCore);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    try {
+      const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
+      const exit = vi.fn(); pty.onExit(exit); pty.onData(() => undefined);
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(exit).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(exit).toHaveBeenCalledExactlyOnceWith({ exitCode: 1 }); expect(transport.close).toHaveBeenCalledOnce();
+      const calls = readChunk.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(readChunk.mock.calls.length).toBe(calls);
+    } finally { vi.useRealTimers(); log.mockRestore(); }
+  });
 });
 
 describe('RustPty console window owner (Windows sign-in pickers)', () => {

@@ -69,6 +69,11 @@ const INPUT_COALESCE_BYTES = 4 * 1024;
  *  small payloads). From then on every write is dropped whole, logged once, until the held
  *  queue empties, so the program never gets a later write without an earlier one. */
 const INPUT_QUEUE_LIMIT = 8 * 1024 * 1024;
+/** A read the core refused to decode keeps its bytes for the next read (native_transport
+ *  read_chunk). It is retried this often while memory stays short, and the session ends
+ *  only once refusals have lasted READ_REFUSED_GIVE_UP_MS without a successful read. */
+const READ_REFUSED_RETRY_MS = 100;
+const READ_REFUSED_GIVE_UP_MS = 30_000;
 
 class RustPty implements TerminalPty {
   readonly backend = 'rust';
@@ -94,6 +99,9 @@ class RustPty implements TerminalPty {
   private inputClosed = false;
   /** Set by the first dropped write; held until the queue empties. */
   private dropping = false;
+  /** When the current run of refused reads began; undefined after a read succeeds. */
+  private readRefusedSince: number | undefined;
+  private readRetry: ReturnType<typeof setTimeout> | undefined;
   private readonly wake = () => {
     if (this.scheduled || this.ended) return;
     this.scheduled = true;
@@ -197,7 +205,7 @@ class RustPty implements TerminalPty {
     this.transport.kill(number);
   }
   dispose(): void {
-    this.ended = true; this.releaseInput(); this.transport.close();
+    this.ended = true; this.releaseInput(); this.clearReadRetry(); this.transport.close();
     this.data.clear(); this.nativeData.clear(); this.exit.clear(); this.drain.clear();
   }
   private pump(): void {
@@ -214,7 +222,20 @@ class RustPty implements TerminalPty {
         result = read;
       } else result = this.transport.read(this.paused);
     }
-    catch { this.fail(); return; }
+    catch (error) {
+      if (!isNativeAllocFailure(error)) { this.fail(); return; }
+      // Nothing was consumed: the core kept the bytes. Read again shortly.
+      const now = Date.now();
+      this.readRefusedSince ??= now;
+      if (now - this.readRefusedSince >= READ_REFUSED_GIVE_UP_MS) {
+        console.error(`[terminal-core] PTY output session=${this.name}: reads refused for ${READ_REFUSED_GIVE_UP_MS} ms: ${(error as Error).message}`);
+        this.fail(); return;
+      }
+      if (this.readRefusedSince === now) console.error(`[terminal-core] PTY output session=${this.name}: ${(error as Error).message}; retrying the read`);
+      this.readRetry ??= setTimeout(() => { this.readRetry = undefined; this.wake(); }, READ_REFUSED_RETRY_MS);
+      return;
+    }
+    this.readRefusedSince = undefined;
     try {
       if (result.pendingInputBytes + this.queuedBytes < 4 * 1024 * 1024) for (const listener of this.drain) listener();
       if (chunk) {
@@ -247,15 +268,19 @@ class RustPty implements TerminalPty {
       if (tail) for (const listener of this.data) listener(tail);
       this.ended = true;
       this.releaseInput();
+      this.clearReadRetry();
       this.transport.close();
       for (const listener of this.exit) listener({ exitCode: result.exitCode, ...(result.signal != null ? { signal: result.signal } : {}) });
       this.data.clear(); this.nativeData.clear(); this.exit.clear(); this.drain.clear();
     }
   }
+  private clearReadRetry(): void {
+    if (this.readRetry) { clearTimeout(this.readRetry); this.readRetry = undefined; }
+  }
   private get name(): string { return this.label ?? `pid-${this.pid}`; }
   private fail(): void {
     if (this.ended) return;
-    this.ended = true; this.releaseInput();
+    this.ended = true; this.releaseInput(); this.clearReadRetry();
     console.error(`[terminal-core] PTY transport failed session=${this.name}; terminating the affected session`);
     try { this.transport.close(); } catch { /* A second native exception must not replay the command. */ }
     for (const listener of this.exit) listener({ exitCode: 1 });

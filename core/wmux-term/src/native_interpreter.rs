@@ -14,8 +14,9 @@ const BATCH: &str = "an OSC event batch";
 /// MAX_FEED_BYTES + 1.
 const FEED_TEXT: &str = "output text to interpret";
 /// The longest text (in UTF-8 bytes) `feed` takes in one call: the ring's
-/// 256 MiB cap.
-const MAX_FEED_BYTES: usize = 256 * 1024 * 1024;
+/// 256 MiB cap, decoded. The daemon seeds a recovered ring as one string,
+/// and each invalid byte there becomes U+FFFD (3 bytes of UTF-8).
+const MAX_FEED_BYTES: usize = 3 * 256 * 1024 * 1024;
 
 // Batch codes as one typed array: a native object conversion for every OSC
 // dominates event-heavy streams. The adapter constructs ordinary event objects.
@@ -154,7 +155,7 @@ fn string_from_js(text: &JsString) -> Result<String> {
 fn copy_utf8(len: usize, fill: impl FnOnce(*mut u8, usize) -> Result<usize>) -> Result<String> {
     if len > MAX_FEED_BYTES {
         return Err(Error::from_reason(
-            "Output interpreter input exceeds the 256 MiB per-call limit",
+            "Output interpreter input exceeds the 768 MiB per-call limit",
         ));
     }
     // At most MAX_FEED_BYTES + 1: no overflow.

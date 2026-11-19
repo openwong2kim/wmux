@@ -1,4 +1,4 @@
-import { isNativeAllocFailure, type NativeOutputChunk } from '../shared/nativeTerminalCore';
+import { createNativeAllocReporter, isNativeAllocFailure, type NativeOutputChunk } from '../shared/nativeTerminalCore';
 import type { TerminalPty } from '../shared/terminalPty';
 import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
@@ -2563,6 +2563,20 @@ export class DaemonPTYBridge extends EventEmitter {
     // Prompt-based CWD detection state
     let promptBuffer = '';
 
+    // The chunk's bytes for a JS consumer. A refused native copy falls back to
+    // the chunk's text, which is the same output (invalid UTF-8 already
+    // replaced), so a viewer copy never ends the session.
+    const reportCopyRefused = createNativeAllocReporter('pty-bridge', () => sessionId);
+    const bytesOf = (data: string, nativeChunk?: NativeOutputChunk): Buffer => {
+      if (!nativeChunk) return Buffer.from(data);
+      try { return nativeChunk.readBytes(); }
+      catch (error) {
+        if (!isNativeAllocFailure(error)) throw error;
+        reportCopyRefused(error, 'chunk copy refused; sending its text instead');
+        return Buffer.from(data);
+      }
+    };
+
     const capture = (data: string, buf?: Buffer, nativeChunk?: NativeOutputChunk): void => {
       // Detached sessions need retention/analysis, but no JS byte copy. Snapshot
       // tees and live clients subscribe to data and materialize exactly once.
@@ -2570,11 +2584,12 @@ export class DaemonPTYBridge extends EventEmitter {
       const forward = () => {
         this.emit('outputActivity');
         if (this.listenerCount('data') > 0) {
-          delivery ??= nativeChunk?.readBytes() ?? Buffer.from(data);
+          delivery ??= bytesOf(data, nativeChunk);
           this.emit('data', delivery);
         }
       };
       try {
+        const droppedBefore = ringBuffer.droppedBytes;
         if (nativeChunk) ringBuffer.writeNativeChunk(nativeChunk);
         else ringBuffer.write(buf ?? Buffer.from(data));
         // AFTER the ring write: the tracker's offsets are in the ring's own
@@ -2593,7 +2608,13 @@ export class DaemonPTYBridge extends EventEmitter {
             else this.resetProgramStatus();
           }
         }
-        interpreter.feed(data, ringBuffer.totalBytesWritten, nativeChunk);
+        // A chunk the ring refused to store is not in its history: its mode
+        // changes are dated before the ring's window, so the attach preamble
+        // carries them instead of leaving them to a replay that lacks them.
+        const end = ringBuffer.droppedBytes === droppedBefore
+          ? ringBuffer.totalBytesWritten
+          : ringBuffer.totalBytesWritten - ringBuffer.size;
+        interpreter.feed(data, end, nativeChunk);
         if (risAfterReports) this.resetProgramStatus();
         // After the mode tracker and OSC 133 have seen this chunk (see noteCodexOutput).
         this.noteCodexOutput(data);
@@ -2705,7 +2726,7 @@ export class DaemonPTYBridge extends EventEmitter {
         }
         if (this.heldWhileMuted && this.heldFull) {
           this.heldTail ??= new RingBuffer(DaemonPTYBridge.MAX_HELD_TAIL_BYTES, 'node');
-          this.heldTail.write(buf ?? nativeChunk?.readBytes() ?? Buffer.from(data));
+          this.heldTail.write(buf ?? bytesOf(data, nativeChunk));
         }
         return;
       }

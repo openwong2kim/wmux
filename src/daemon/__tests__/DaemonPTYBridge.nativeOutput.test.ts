@@ -20,7 +20,7 @@ function harness(shellMarks?: 'exec' | 'integrated' | 'plain') {
   return { bridge, ring, legacy, nativeWrites, feed(text: string) {
     const chunk = { text, byteLength: Buffer.byteLength(text), readBytes: vi.fn(() => Buffer.from(text)), dispose: vi.fn() };
     handler?.(chunk); return chunk;
-  } };
+  }, feedChunk(chunk: NativeOutputChunk) { handler?.(chunk); } };
 }
 
 describe('native PTY output capture', () => {
@@ -80,6 +80,36 @@ describe('native PTY output capture', () => {
     expect(h.nativeWrites).toHaveBeenCalledWith(chunk);
     expect(chunk.readBytes).not.toHaveBeenCalled();
     expect(h.ring.readAll().toString()).toBe('\x1b]133;C\x07\x1b]133;A\x07kimi> ');
+  });
+  it('a refused delivery copy sends the chunk text instead, and the session goes on', () => {
+    const h = harness(); const data = vi.fn(), activity = vi.fn();
+    h.bridge.on('data', data); h.bridge.on('outputActivity', activity);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const text = 'out 한글';
+      const chunk = { text, byteLength: Buffer.byteLength(text), dispose: vi.fn(),
+        readBytes: vi.fn(() => { throw new Error('ALLOC_FAILED: could not allocate 10 bytes for an output chunk copy'); }) };
+      // The ring keeps its own copy (the fixture writes the text); only the viewer's copy is refused.
+      h.feedChunk(chunk as unknown as NativeOutputChunk);
+      expect(h.ring.readAll().toString()).toBe(text);
+      expect(activity).toHaveBeenCalledOnce();
+      expect(data).toHaveBeenCalledOnce();
+      expect(data.mock.calls[0][0].toString()).toBe(text);
+      expect(log.mock.calls.flat().join('\n')).toContain('pty-bridge session=native-output: ALLOC_FAILED');
+    } finally { log.mockRestore(); }
+  });
+  it('dates the modes of a chunk the ring refused before its window, so the preamble carries them', () => {
+    const h = harness();
+    h.feed('x'.repeat(100));
+    h.nativeWrites.mockImplementationOnce(chunk => {
+      (h.ring as unknown as { dropRefused(e: unknown, n: number): void })
+        .dropRefused(new Error('ALLOC_FAILED: could not allocate 8 bytes for ring growth'), chunk.byteLength);
+    });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try { h.feed('\x1b[?2004h'); } finally { log.mockRestore(); }
+    expect(h.ring.droppedBytes).toBe(8);
+    expect(h.ring.readAll().toString()).toBe('x'.repeat(100));
+    expect(h.bridge.outputModes?.preamble(h.ring.totalBytesWritten - h.ring.size)).toContain('\x1b[?2004h');
   });
   it('discards muted output when replay was not requested', () => {
     const h = harness(); h.bridge.setMuted(true); h.feed('discard'); h.bridge.setMuted(false);
