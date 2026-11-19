@@ -342,9 +342,12 @@ async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, c
   let revision: number | null = null;
   let running = false;
   for (;;) {
+    // Any key after the mark is the person's: even one submitted and run to
+    // an empty prompt again, so the pane is no longer wmux's to type into.
+    if (keys?.typedSince()) return blocked('shell_typed');
     const atPrompt = deps.promptRevision(id) !== null;
     running = atPrompt && !(await deps.paneFree(id));
-    revision = atPrompt && !running ? deps.promptRevision(id) : null;
+    revision = atPrompt && !running && !keys?.typedSince() ? deps.promptRevision(id) : null;
     if (revision !== null || now() >= deadline) break;
     await sleep(100);
   }
@@ -358,7 +361,7 @@ async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, c
   if (!undo) return blocked('save_failed');
   let typed = false;
   try {
-    typed = deps.promptRevision(id) === revision && deps.write(id, line);
+    typed = !keys?.typedSince() && deps.promptRevision(id) === revision && deps.write(id, line);
   } catch {
     typed = false;
   }

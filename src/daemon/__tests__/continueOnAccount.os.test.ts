@@ -269,6 +269,23 @@ describe('continueOnAccount on a real bridge (#3437)', { timeout: 10_000 }, () =
     expect(typed.writes).toEqual([]);
   });
 
+  it('a command typed and run after the mark refuses the relaunch, though its prompt reads empty again', async () => {
+    const typedAndRan = real({
+      onStop: () => {
+        feed(PROMPT);
+        // The person types a command at the new prompt; it runs and ends.
+        bridge.noteInput('ls\r');
+        feed('\x1b]133;C\x07');
+        feed(PROMPT);
+      },
+    });
+    // The prompt it ends at reads empty: readiness alone would let the line through.
+    expect(await continueOnAccount(typedAndRan.d, 'p1', accountB)).toEqual({
+      ok: false, code: 'shell_typed', resumeCommand: line().slice(0, -1),
+    });
+    expect(typedAndRan.writes).toEqual([]);
+  });
+
   it('a relaunch blocked after the copy says why, with the line that resumes the copy; one blocked before it carries none', async () => {
     const target = path.join(accountB, 'projects', '-work-repo', `${SID}.jsonl`);
     const resumeCommand = line().slice(0, -1);
