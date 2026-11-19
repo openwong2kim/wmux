@@ -284,15 +284,94 @@ pub(crate) fn napi_error(error: napi::Error) -> napi::Error<ErrorCode> {
     )
 }
 
-/// A refusal as an AsyncTask's rejection. A Task's `compute`, `resolve` and
-/// `reject` return `napi::Error<Status>`, which cannot carry ALLOC_FAILED,
-/// so the JS error object is made here with that code, and the rejection
-/// reuses it (napi rejects with the object an error refers to).
+/// One value kept on this thread for its next refusal, made while memory
+/// was available. Taking it and keeping it allocate nothing. It is never
+/// dropped at thread exit (`ManuallyDrop`): a kept rejection refers to a JS
+/// object whose environment is gone by then.
+pub(crate) struct ReadySlot<T>(Cell<Option<std::mem::ManuallyDrop<T>>>);
+
+impl<T> ReadySlot<T> {
+    pub(crate) const fn new() -> Self {
+        Self(Cell::new(None))
+    }
+
+    pub(crate) fn take(&self) -> Option<T> {
+        self.0.take().map(std::mem::ManuallyDrop::into_inner)
+    }
+
+    /// Keeps `value` for the next `take`; if one is kept already, that one
+    /// stays and `value` is dropped.
+    pub(crate) fn keep(&self, value: T) {
+        match self.0.take() {
+            Some(kept) => self.0.set(Some(kept)),
+            None => self.0.set(Some(std::mem::ManuallyDrop::new(value))),
+        }
+    }
+}
+
+/// The rejection made ready, or `make` when there is none.
+pub(crate) fn ready_or<T>(ready: Option<T>, make: impl FnOnce() -> T) -> T {
+    ready.unwrap_or_else(make)
+}
+
+#[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
+thread_local! {
+    /// The rejection a finished AsyncTask did not use, for the next one.
+    static READY_REJECTION: ReadySlot<napi::Error> = const { ReadySlot::new() };
+}
+
+/// What a rejection made ready says. Its `code` is ALLOC_FAILED; the size and
+/// purpose of the refused allocation are not in it, since nothing may be
+/// allocated to write them once the refusal happened.
+#[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
+const READY_MESSAGE: &str = "ALLOC_FAILED: a native read was refused for want of memory";
+
+/// A rejection for an AsyncTask that `compute` may refuse, made on the JS
+/// thread when the task is created, while memory is available: this
+/// thread's kept one, or a new one. A Task's `reject` returns
+/// `napi::Error<Status>`, which cannot carry ALLOC_FAILED, so it is a JS
+/// error object with that code which the rejection reuses (napi rejects with
+/// the object an error refers to). Turning a JS object into a `napi::Error`
+/// copies its text and allocates the reference, so it is done here and not
+/// after the refusal.
 #[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
 #[cfg_attr(test, allow(dead_code))]
-pub(crate) fn task_refusal(env: napi::Env, refused: CallError) -> napi::Error {
-    let error: napi::Error<ErrorCode> = refused.into();
-    napi::Error::from(napi::JsError::from(error).into_unknown(env))
+pub(crate) fn ready_rejection(env: napi::Env) -> Option<napi::Error> {
+    if let Some(kept) = READY_REJECTION.try_with(ReadySlot::take).ok().flatten() {
+        return Some(kept);
+    }
+    let error = coded_error(ErrorCode::AllocFailed, READY_MESSAGE.to_owned());
+    let mut ready = napi::Error::from(napi::JsError::from(error).into_unknown(env));
+    // The JS object holds the message.
+    ready.reason = String::new();
+    ready.cause = None;
+    Some(ready)
+}
+
+/// Keeps a finished task's unused rejection for the next task on this
+/// thread (`Task::finally`).
+#[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn keep_rejection(ready: Option<napi::Error>) {
+    if let Some(ready) = ready {
+        let _ = READY_REJECTION.try_with(|slot| slot.keep(ready));
+    }
+}
+
+/// A refusal as an AsyncTask's rejection: the one made ready when the task
+/// was created (`ready_rejection`), which allocates nothing now. Only
+/// without one is a JS error made here, with the refusal's message.
+#[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn task_refusal(
+    env: napi::Env,
+    refused: CallError,
+    ready: Option<napi::Error>,
+) -> napi::Error {
+    ready_or(ready, || {
+        let error: napi::Error<ErrorCode> = refused.into();
+        napi::Error::from(napi::JsError::from(error).into_unknown(env))
+    })
 }
 
 #[cfg(test)]
@@ -577,6 +656,41 @@ pub(crate) fn try_push_str(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An AsyncTask's refusal is rejected with the error made ready when the
+    /// task was created: once memory is refused, taking it, rejecting with
+    /// it and dropping the refusal allocate nothing, and the conversion that
+    /// copies text and allocates (`make`, standing in for the napi one) is
+    /// not run. A finished task's unused one is kept for the next.
+    #[test]
+    fn a_refusal_rejects_with_the_error_made_ready_without_allocating() {
+        let slot = ReadySlot::new();
+        slot.keep(String::from("made ready"));
+        let refused = CallError::Alloc(AllocFailed {
+            what: "the process rows for JS",
+            bytes: 4096,
+        });
+        let mut made = false;
+        let rejected = crate::test_allocator::refusing(1, || {
+            ready_or(slot.take(), || {
+                made = true;
+                refused.message()
+            })
+        });
+        assert_eq!(crate::test_allocator::refused(), 0);
+        assert!(!made);
+        assert_eq!(rejected, "made ready");
+        // Nothing kept: the conversion runs.
+        assert_eq!(
+            ready_or(slot.take(), || String::from("made now")),
+            "made now"
+        );
+        // A finished task keeps its unused one; a second one is dropped.
+        slot.keep(String::from("first"));
+        slot.keep(String::from("second"));
+        assert_eq!(slot.take().as_deref(), Some("first"));
+        assert_eq!(slot.take(), None);
+    }
 
     #[test]
     fn the_seam_message_names_the_bytes_and_the_purpose() {

@@ -117,6 +117,9 @@ pub struct ProcessTableTask {
     with_command_lines: bool,
     /// A refusal in `compute` (`task_error`), for `reject`.
     refused: Option<CallError>,
+    /// The rejection for a refusal, made when the task was created
+    /// (`fallible::ready_rejection`).
+    ready: Option<Error>,
 }
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 impl Task for ProcessTableTask {
@@ -132,9 +135,13 @@ impl Task for ProcessTableTask {
     }
     fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
         Err(match self.refused.take() {
-            Some(refused) => fallible::task_refusal(env, refused),
+            Some(refused) => fallible::task_refusal(env, refused, self.ready.take()),
             None => error,
         })
+    }
+    fn finally(mut self, _env: Env) -> Result<()> {
+        fallible::keep_rejection(self.ready.take());
+        Ok(())
     }
 }
 
@@ -142,10 +149,11 @@ impl Task for ProcessTableTask {
 /// row also carries its creation time and command line where readable.
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 #[napi(catch_unwind)]
-pub fn process_table(with_command_lines: bool) -> AsyncTask<ProcessTableTask> {
+pub fn process_table(env: Env, with_command_lines: bool) -> AsyncTask<ProcessTableTask> {
     AsyncTask::new(ProcessTableTask {
         with_command_lines,
         refused: None,
+        ready: fallible::ready_rejection(env),
     })
 }
 
@@ -185,10 +193,11 @@ fn native_port_snapshot(
 
 /// Built off the JS thread, as ProcessTableTask.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-#[derive(Default)]
 pub struct PortSnapshotTask {
     /// A refusal in `compute` (`task_error`), for `reject`.
     refused: Option<CallError>,
+    /// As ProcessTableTask's.
+    ready: Option<Error>,
 }
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Task for PortSnapshotTask {
@@ -204,9 +213,13 @@ impl Task for PortSnapshotTask {
     }
     fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
         Err(match self.refused.take() {
-            Some(refused) => fallible::task_refusal(env, refused),
+            Some(refused) => fallible::task_refusal(env, refused, self.ready.take()),
             None => error,
         })
+    }
+    fn finally(mut self, _env: Env) -> Result<()> {
+        fallible::keep_rejection(self.ready.take());
+        Ok(())
     }
 }
 
@@ -215,8 +228,11 @@ impl Task for PortSnapshotTask {
 /// one walk.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[napi(catch_unwind)]
-pub fn port_snapshot() -> AsyncTask<PortSnapshotTask> {
-    AsyncTask::new(PortSnapshotTask::default())
+pub fn port_snapshot(env: Env) -> AsyncTask<PortSnapshotTask> {
+    AsyncTask::new(PortSnapshotTask {
+        refused: None,
+        ready: fallible::ready_rejection(env),
+    })
 }
 
 struct Size {
@@ -1059,6 +1075,8 @@ fn refusal_family(why: &'static str) -> &'static str {
 
 /// Room for every refusal family the feed has (about 25).
 const MAX_FAMILIES: usize = 40;
+/// What a refused list of refusal families for JS is called.
+const REFUSAL_FAMILIES: &str = "the refusal families for JS";
 
 /// The refusal families a feed met, each once, in the order met, in fixed
 /// storage: keeping one never allocates, not even right after a refused
@@ -2254,8 +2272,8 @@ impl NativeTerminal {
     /// Every refusal family the ANSI feed met, the reported one first, each
     /// once. Empty while the snapshot is not refused.
     #[napi(catch_unwind)]
-    pub fn refusal_families(&self) -> Vec<String> {
-        self.families()
+    pub fn refusal_families(&self) -> Result<Vec<&'static str>, ErrorCode> {
+        Ok(self.families()?)
     }
 
     /// Replay an immutable native ring copy without a full JS Buffer round trip.
@@ -2423,10 +2441,9 @@ impl NativeTerminal {
     }
 
     /// The reported refusal's family first, then the others in the order
-    /// met (`XtermFeed::seen`, fixed storage). The list JS gets is a small
-    /// fixed allocation, as an error's code is: at most MAX_FAMILIES short
-    /// strings, never sized by the session.
-    pub(crate) fn families(&self) -> Vec<String> {
+    /// met (`XtermFeed::seen`, fixed storage). The names are static; the list
+    /// is reserved fallibly, since it is read right after a refusal.
+    pub(crate) fn families(&self) -> std::result::Result<Vec<&'static str>, AllocFailed> {
         let reported = self.refusal.map(refusal_family);
         let rest = self
             .feed
@@ -2435,11 +2452,12 @@ impl NativeTerminal {
             .iter()
             .copied()
             .filter(|family| Some(*family) != reported);
-        reported
-            .into_iter()
-            .chain(rest)
-            .map(str::to_owned)
-            .collect()
+        let mut families = fallible::try_with_capacity(
+            usize::from(reported.is_some()) + self.feed.seen.as_slice().len(),
+            REFUSAL_FAMILIES,
+        )?;
+        families.extend(reported.into_iter().chain(rest));
+        Ok(families)
     }
 
     pub(crate) fn feed_frozen_range(
@@ -4913,7 +4931,7 @@ mod alloc_failure_tests {
             assert_alloc_failed(terminal.feed_xterm_bytes(&osc, 100).err());
         }
         assert_eq!(terminal.refusal, Some(ALLOC_REFUSED));
-        assert_eq!(terminal.families(), ["unsupported-alloc"]);
+        assert_eq!(terminal.families().unwrap(), ["unsupported-alloc"]);
         assert_eq!(
             terminal.ansi_snapshot_bytes(None).err().unwrap().message(),
             ALLOC_REFUSED
@@ -5013,7 +5031,7 @@ mod alloc_failure_tests {
                 assert_alloc_failed(terminal.feed_xterm_bytes(b"\x1b[3\x081m", 100).err());
             }
             assert_eq!(terminal.refusal, Some(ALLOC_REFUSED), "{what}");
-            assert_eq!(terminal.families(), ["unsupported-alloc"]);
+            assert_eq!(terminal.families().unwrap(), ["unsupported-alloc"]);
             assert!(!terminal.feed_xterm_bytes(b"more", 100).unwrap());
             assert_eq!(text(&mut terminal), ["ok"]);
         }
@@ -5047,6 +5065,33 @@ mod alloc_failure_tests {
         assert_eq!(resets_1049(b"\x1b[?1049:1l"), None);
         assert_eq!(resets_1049(b"\x1b"), None);
     }
+
+    /// The families are read right after a refusal (RustSnapshot), so the
+    /// list is refused, not aborted, when nothing may allocate; with memory
+    /// the whole list comes back.
+    #[test]
+    fn the_refusal_families_are_refused_not_aborted_when_nothing_may_allocate() {
+        let mut terminal = terminal();
+        terminal.feed_xterm_bytes(b"ok", 100).unwrap();
+        let osc = [b"\x1bPq".as_slice(), &[b'x'; 297]].concat();
+        {
+            let _fail = fail_from(512);
+            assert_alloc_failed(terminal.feed_xterm_bytes(&osc, 100).err());
+        }
+        let refused = test_allocator::refusing(1, || terminal.families());
+        assert!(
+            matches!(
+                refused,
+                Err(AllocFailed {
+                    what: REFUSAL_FAMILIES,
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(test_allocator::refused(), 1);
+        assert_eq!(terminal.families().unwrap(), ["unsupported-alloc"]);
+    }
 }
 
 #[cfg(test)]
@@ -5067,7 +5112,7 @@ mod grid_refusal_tests {
         assert!(matches!(error, CallError::Alloc(_)), "{error:?}");
         assert_eq!(error.message(), seam);
         assert!(terminal.term.is_none(), "the terminal is dropped");
-        assert_eq!(terminal.families(), ["unsupported-alloc"]);
+        assert_eq!(terminal.families().unwrap(), ["unsupported-alloc"]);
         let later = [
             terminal.feed_bytes(b"x").err(),
             terminal.feed_xterm_bytes(b"x", 100).err(),
@@ -5222,7 +5267,7 @@ mod seam_message_tests {
         refill_spare();
         let error = test_allocator::refusing(64, || terminal.resize_grid(205, 24).err());
         assert!(matches!(error, Some(CallError::Alloc(_))), "{error:?}");
-        assert_eq!(terminal.families(), ["unsupported-alloc"]);
+        assert_eq!(terminal.families().unwrap(), ["unsupported-alloc"]);
         assert_eq!(
             terminal.feed_bytes(b"x"),
             Err(CallError::reason(GRID_REFUSED))
@@ -5760,7 +5805,11 @@ mod osc_cap_tests {
             fallible::fail_next("", 0);
         }
         terminal.feed_xterm_bytes(last, 0).unwrap();
-        (text(&mut terminal), terminal.families())
+        let families = terminal.families().unwrap();
+        (
+            text(&mut terminal),
+            families.into_iter().map(str::to_owned).collect(),
+        )
     }
 
     #[test]
@@ -5903,7 +5952,10 @@ mod osc_cap_tests {
         let mut terminal = NativeTerminal::create(20, 3, 0).unwrap();
         terminal.feed_xterm_bytes(&stream, 0).unwrap();
         assert_eq!(terminal.refusal, Some(LONG_OSC));
-        assert_eq!(terminal.families()[0], "unsupported-state-long-sequence");
+        assert_eq!(
+            terminal.families().unwrap()[0],
+            "unsupported-state-long-sequence"
+        );
     }
 
     #[test]
