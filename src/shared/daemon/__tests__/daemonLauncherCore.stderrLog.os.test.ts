@@ -6,11 +6,13 @@ import path from 'path';
 import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
 import { ensureDaemon, DAEMON_STDERR_LOG, DAEMON_STDERR_ROTATE_BYTES, type DaemonLauncherDeps } from '../daemonLauncherCore';
+import { DAEMON_STDERR_TO_FILE_ENV } from '../../../daemon/util/logSink';
 
 /**
  * #3440: the direct spawn (Windows, Linux) hands the daemon an append-mode
  * stderr file and closes its own copy right after; when the file cannot be
- * opened the daemon is still spawned, with stderr ignored as before.
+ * opened the daemon is still spawned, with stderr ignored as before. The
+ * daemon is told (DAEMON_STDERR_TO_FILE_ENV) only when stderr is the file.
  */
 class FakeChildProcess extends EventEmitter {
   pid: number | undefined = 4343;
@@ -66,13 +68,15 @@ describe('daemonLauncherCore: the daemon stderr file', () => {
     await expect(promise).rejects.toThrow(/Failed to spawn daemon/);
   }
 
-  async function spawnedStdio(): Promise<unknown[]> {
+  type SpawnOptions = { stdio: unknown[]; env: Record<string, string | undefined> };
+  async function spawned(): Promise<SpawnOptions> {
     const promise = ensureDaemon(deps());
     await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(1), { timeout: 10_000 });
-    const [, , options] = vi.mocked(spawn).mock.calls[0] as unknown as [string, string[], { stdio: unknown[] }];
+    const [, , options] = vi.mocked(spawn).mock.calls[0] as unknown as [string, string[], SpawnOptions];
     await endSpawn(promise);
-    return options.stdio;
+    return options;
   }
+  const spawnedStdio = async (): Promise<unknown[]> => (await spawned()).stdio;
 
   it('spawns with stdin and stdout ignored and stderr on the file, and closes its own descriptor', async () => {
     const stdio = await spawnedStdio();
@@ -82,6 +86,25 @@ describe('daemonLauncherCore: the daemon stderr file', () => {
     expect(fs.existsSync(stderrFile)).toBe(true);
     // Closed in the parent right after spawn.
     expect(() => fs.fstatSync(fd as number)).toThrow();
+  });
+
+  it('tells the daemon its stderr is the file, and only then', async () => {
+    const prev = process.env[DAEMON_STDERR_TO_FILE_ENV];
+    // An inherited value never reaches a daemon whose stderr is ignored.
+    process.env[DAEMON_STDERR_TO_FILE_ENV] = '1';
+    try {
+      expect((await spawned()).env[DAEMON_STDERR_TO_FILE_ENV]).toBe('1');
+      vi.mocked(spawn).mockClear();
+      fakeChild = new FakeChildProcess();
+      fs.rmSync(stderrFile, { force: true });
+      fs.mkdirSync(stderrFile); // the file cannot be opened: stderr is ignored
+      const ignored = await spawned();
+      expect(ignored.stdio[2]).toBe('ignore');
+      expect(DAEMON_STDERR_TO_FILE_ENV in ignored.env).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env[DAEMON_STDERR_TO_FILE_ENV];
+      else process.env[DAEMON_STDERR_TO_FILE_ENV] = prev;
+    }
   });
 
   it('rotates a file past 1 MiB to .1 at spawn', async () => {
