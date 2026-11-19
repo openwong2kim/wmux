@@ -4,6 +4,7 @@ import {
   closeSync,
   constants as fsConstants,
   fstatSync,
+  fsyncSync,
   ftruncateSync,
   openSync,
   readFileSync,
@@ -976,10 +977,14 @@ export class RingBuffer {
    * positional at the committed length: a retry after a partial write
    * overwrites it rather than repeating it. The file stays under
    * 2 × capacity, since `pending` replaces it once it fills the ring.
+   * When `pending` replaced the file's history (fileRewriteDue), the file is
+   * replaced whole instead: written next to it, synced, renamed over it, so a
+   * failed or interrupted write leaves the previous `.buf` as it was.
    * Throws when the write fails, like any failed dump.
    */
   private appendPendingTo(filePath: string): void {
     if (this.hibernatedPath !== filePath) throw new Error('hibernated ring buffer could not be read back');
+    if (this.fileRewriteDue) { this.rewritePendingTo(filePath); return; }
     const unwritten = Buffer.concat(this.pending).subarray(this.appendedBytes);
     const offset = this.hibernatedFileBytes + this.appendedBytes;
     const fd = openSync(filePath, fsConstants.O_WRONLY); // no read access needed, no truncate, no append mode
@@ -993,6 +998,32 @@ export class RingBuffer {
     } finally {
       closeSync(fd);
     }
+    this.appendedBytes = this.pendingBytes;
+    this.fileRewriteDue = false;
+  }
+
+  /**
+   * appendPendingTo when `pending` is the whole history (the file's bytes
+   * were dropped: hibernatedFileBytes is 0): temp file, fsync, rename.
+   */
+  private rewritePendingTo(filePath: string): void {
+    const data = Buffer.concat(this.pending);
+    const tmpPath = `${filePath}.tmp.${crypto.randomBytes(6).toString('hex')}`;
+    try {
+      const fd = openSync(tmpPath, 'w', 0o600);
+      try {
+        let done = 0;
+        while (done < data.length) done += writeSync(fd, data, done, data.length - done);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(tmpPath, filePath);
+    } catch (err) {
+      try { unlinkSync(tmpPath); } catch { /* tmp may already be gone */ }
+      throw err;
+    }
+    this.hibernatedFileBytes = 0;
     this.appendedBytes = this.pendingBytes;
     this.fileRewriteDue = false;
   }

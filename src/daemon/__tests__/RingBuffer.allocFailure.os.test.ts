@@ -1,6 +1,6 @@
 // @wmux-lane integration — writes and reads real .buf files in a mkdtemp directory.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import fs from 'node:fs';
+import fs, { fsyncSync, renameSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { RingBuffer } from '../RingBuffer';
@@ -11,8 +11,14 @@ import { fakeRingControl, fakeRingModule, refuseNext, resetFakeRing } from './_f
  * replaces a good dump, and a native ring that cannot be re-created on wake
  * leaves the ring asleep and consistent (reads, writes and dumps agree): a
  * reader retries at once and sees the refusal, a dump inside the backoff
- * skips the wake and appends the held output to the `.buf`.
+ * skips the wake and appends the held output to the `.buf`, or replaces it
+ * whole (temp file, rename) when the held output replaced its history.
  */
+// Pass-through, so a test can fail one call or count the renames.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, fsyncSync: vi.fn(actual.fsyncSync), renameSync: vi.fn(actual.renameSync) };
+});
 vi.mock('../../shared/nativeTerminalCore', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../shared/nativeTerminalCore')>(),
   loadNativeTerminalCore: vi.fn(() => fakeRingModule),
@@ -102,9 +108,12 @@ describe('RingBuffer (rust) .buf paths: a refused native allocation', () => {
     refuseNext('construct');
     ring.write(Buffer.from('+new')); // the wake is refused: held
     const attempts = fakeRingControl.constructs;
+    const renames = vi.mocked(renameSync).mock.calls.length;
     await ring.dumpToFile(file);
     ring.dumpToFileSyncAtomic(file);
     expect(fakeRingControl.constructs).toBe(attempts);
+    // An ordinary append is a positional write into the `.buf`, no rename.
+    expect(vi.mocked(renameSync).mock.calls.length).toBe(renames);
     expect(ring.isHibernated).toBe(true);
     expect(fs.readFileSync(file, 'utf8')).toBe('history+new');
     // Past the backoff a dump wakes the ring again.
@@ -130,6 +139,35 @@ describe('RingBuffer (rust) .buf paths: a refused native allocation', () => {
     expect(ring.readAll().toString()).toBe('efghijklmnopqrst');
     expect(ring.isHibernated).toBe(false);
     expect(ring.totalBytesWritten).toBe(31);
+  });
+
+  it('a held output that replaced the history is written whole: temp file, fsync, rename; a failed write leaves the previous .buf intact', async () => {
+    const ring = new RingBuffer(16, 'rust');
+    ring.write(Buffer.from('old-history'));
+    expect(await ring.hibernate(file, () => true)).toBeGreaterThan(0);
+    refuseNext('construct', 2);
+    ring.write(Buffer.from('abcdefghij'));
+    ring.write(Buffer.from('klmnopqrst')); // held output fills the ring: the next dump rewrites the file
+    vi.mocked(fsyncSync).mockImplementationOnce(() => { throw Object.assign(new Error('EIO: i/o error, fsync'), { code: 'EIO' }); });
+    await expect(ring.dumpToFile(file)).rejects.toThrow(/EIO/);
+    expect(fs.readFileSync(file, 'utf8')).toBe('old-history');
+    expect(fs.readdirSync(dir)).toEqual(['session.buf']); // the temp file is gone
+    const renames = vi.mocked(renameSync).mock.calls.length;
+    ring.dumpToFileSyncAtomic(file); // retried: still asleep inside the backoff
+    expect(ring.isHibernated).toBe(true);
+    expect(fs.readFileSync(file, 'utf8')).toBe('efghijklmnopqrst');
+    expect(fs.readdirSync(dir)).toEqual(['session.buf']);
+    const [from, to] = vi.mocked(renameSync).mock.calls[renames] as [string, string];
+    expect(path.dirname(from)).toBe(dir);
+    expect(path.basename(from)).toMatch(/^session\.buf\.tmp\./);
+    expect(to).toBe(file);
+    // Nothing left to write: a dump inside the backoff leaves the file.
+    await ring.dumpToFile(file);
+    expect(vi.mocked(renameSync).mock.calls.length).toBe(renames + 1);
+    // The wake reads the rewritten file as the whole history.
+    now += 1001;
+    expect(ring.readAll().toString()).toBe('efghijklmnopqrst');
+    expect(ring.isHibernated).toBe(false);
   });
 
   it('a clear while asleep that cannot re-create the ring empties it, and the next dump empties the .buf', async () => {
