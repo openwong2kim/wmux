@@ -949,3 +949,102 @@ describe('a profile bound to one of the workspace\'s panes (tabs opened outside 
     expect(row.previewable).toBe(false);
   });
 });
+
+describe('an outside session is held to the workspace\'s view of the profile', () => {
+  function deferredClient() {
+    const sent: string[] = [];
+    const outside: ChromeTargetInfo[] = [{ surfaceId: 'chrome-x-login', targetId: 't-login', url: 'https://login.example.com/', title: 'Log in' }];
+    let attached!: () => void;
+    const ready = new Promise<void>((resolve) => { attached = resolve; });
+    const session = {
+      send: vi.fn(async (method: string) => {
+        sent.push(method);
+        return method === 'Page.getLayoutMetrics' ? METRICS : method === 'Page.captureScreenshot' ? { data: 'aGVsbG8=' } : {};
+      }),
+    };
+    const client = {
+      endpoint: async () => ({}), cdpInfoTargets: async () => [], openTab: async () => { throw new Error('no'); },
+      listTargets: async () => [], closeSurface: async () => false, hasSurface: () => false, dispose: () => undefined,
+      pageSession: vi.fn(async () => session),
+      isRunning: () => true,
+      outsideTabs: vi.fn(async () => outside),
+      hasOutside: (id: string) => outside.some((t) => t.surfaceId === id),
+      outsidePageSession: vi.fn(async () => { await ready; return session; }),
+      releaseOutside: vi.fn(),
+    } satisfies ChromeBackendClient;
+    return { client, sent, attached };
+  }
+
+  // What the predicate (phonePaneProfiles) answers once the workspace lost the profile, by cause.
+  const lost = {
+    'a policy applied to the pane': (ws: string) => ({ profiles: [] as string[], unknown: false, ws }),
+    'the pane unbound': (ws: string) => ({ profiles: [] as string[], unknown: false, ws }),
+    'the pane moved to another workspace': (ws: string) => ({ profiles: ws === 'ws-2' ? ['naver-blog'] : [], unknown: false, ws }),
+  };
+
+  it.each(Object.keys(lost))('%s while the attach is out: no input goes out, and the session is let go of', async (cause) => {
+    const pane = deferredClient();
+    let after: ((ws: string) => { profiles: string[]; unknown: boolean }) | null = null;
+    const registry: PhoneChromeRegistry = {
+      profileFor: () => 'default',
+      isPaneBound: (p) => p === 'naver-blog',
+      peekLauncher: (p) => (p === 'naver-blog' ? pane.client : undefined),
+      paneProfiles: (ws) => (after ? after(ws) : { profiles: ws === 'ws-1' ? ['naver-blog'] : [], unknown: false }),
+    };
+    const deps = createPhoneChromeDeps({ registry, validateNavigation: async () => undefined });
+    const tap = handlePhoneBrowser('browser.tap', { workspaceId: 'ws-1', surfaceId: 'chrome-x-login', expectedURL: 'https://login.example.com/', geometry, x: 0.5, y: 0.5 }, fixture(deps));
+    await vi.waitFor(() => expect(pane.client.outsidePageSession).toHaveBeenCalled(), { timeout: 5_000 });
+    after = lost[cause as keyof typeof lost];
+    deps.revalidate?.();
+    expect(pane.client.releaseOutside).toHaveBeenCalledTimes(1);
+    pane.attached();
+    expect(await tap).toEqual({ error: 'browser-tab-gone' });
+    expect(pane.sent).toEqual([]);
+    expect(pane.client.releaseOutside.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('a session already attached sends nothing once the workspace lost the profile, and lets it go', async () => {
+    const pane = deferredClient();
+    let bound = true;
+    const registry: PhoneChromeRegistry = {
+      profileFor: () => 'default',
+      isPaneBound: (p) => p === 'naver-blog',
+      peekLauncher: (p) => (p === 'naver-blog' ? pane.client : undefined),
+      paneProfiles: (ws) => ({ profiles: bound && ws === 'ws-1' ? ['naver-blog'] : [], unknown: false }),
+    };
+    const deps = createPhoneChromeDeps({ registry, validateNavigation: async () => undefined });
+    pane.attached();
+    const session = await deps.session('chrome-x-login', 'ws-1');
+    await session.send('Page.getLayoutMetrics');
+    bound = false;
+    await expect(session.send('Input.dispatchMouseEvent')).rejects.toMatchObject({ reason: 'gone' });
+    expect(pane.sent).toEqual(['Page.getLayoutMetrics']);
+    expect(pane.client.releaseOutside).toHaveBeenCalled();
+  });
+
+  it('a capture or input on a recorded tab never reads the outside tabs; only the list waits for them', async () => {
+    const outsideTabs = vi.fn(async () => [] as ChromeTargetInfo[]);
+    const recorded: ChromeTargetInfo = { surfaceId: 'chrome-mine', targetId: 't-mine', workspaceId: 'ws-1', url: 'https://mine.example.com/', title: 'Mine' };
+    const client = {
+      endpoint: async () => ({}), cdpInfoTargets: async () => [], openTab: async () => { throw new Error('no'); },
+      listTargets: async () => [recorded], closeSurface: async () => false, hasSurface: () => true, dispose: () => undefined,
+      recordFor: (id: string) => (id === 'chrome-mine' ? { surfaceId: id, targetId: 't-mine', workspaceId: 'ws-1', url: recorded.url, createdAt: 0, lastSeenAt: 0 } : undefined),
+      pageSession: vi.fn(async () => ({ send: async (method: string) => (method === 'Page.getLayoutMetrics' ? METRICS : method === 'Page.captureScreenshot' ? { data: 'aGVsbG8=' } : {}) })),
+      isRunning: () => true,
+      outsideTabs,
+      hasOutside: () => false,
+    } satisfies ChromeBackendClient;
+    const registry: PhoneChromeRegistry = {
+      profileFor: () => 'default',
+      isPaneBound: (p) => p === 'naver-blog',
+      peekLauncher: (p) => (p === 'naver-blog' ? client : undefined),
+      paneProfiles: (ws) => ({ profiles: ws === 'ws-1' ? ['naver-blog'] : [], unknown: false }),
+    };
+    const deps = createPhoneChromeDeps({ registry, validateNavigation: async () => undefined });
+    expect(await handlePhoneBrowser('browser.capture', { workspaceId: 'ws-1', surfaceId: 'chrome-mine' }, fixture(deps))).toMatchObject({ data: 'aGVsbG8=' });
+    await handlePhoneBrowser('browser.tap', { workspaceId: 'ws-1', surfaceId: 'chrome-mine', expectedURL: recorded.url, geometry, x: 0.5, y: 0.5 }, fixture(deps));
+    expect(outsideTabs).not.toHaveBeenCalled();
+    await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, fixture(deps));
+    expect(outsideTabs.mock.calls).toEqual([[{ waitForPairing: true }]]);
+  });
+});

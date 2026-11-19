@@ -322,7 +322,7 @@ export interface ChromeBackendClient {
    * cdpInfoTargets, recordFor, the surface store or the pipe's grants. Starts
    * the tab watcher while Chrome runs; never launches Chrome.
    */
-  outsideTabs?(): Promise<ChromeTargetInfo[]>;
+  outsideTabs?(opts?: { waitForPairing?: boolean }): Promise<ChromeTargetInfo[]>;
   /** Whether an outside id still names an open tab that has no record. */
   hasOutside?(id: string): boolean;
   /** pageSession for an outside id. */
@@ -331,7 +331,7 @@ export interface ChromeBackendClient {
   outsideStreamSession?(id: string): Promise<ChromeStreamSession>;
   /** selectSurface for an outside id. */
   selectOutside?(id: string): Promise<boolean>;
-  /** Detach every outside page and stream session this launcher holds. */
+  /** Detach every outside page and stream session this launcher holds, and refuse the attaches still in flight. */
   releaseOutside?(): void;
   /** Live attach only: the agent-window write policy. Absent = dedicated. */
   readonly writeScope?: LiveWriteScopeApi;
@@ -711,6 +711,10 @@ export class ChromeLauncher implements ChromeBackendClient {
   private readonly outsideTabsById = new Map<string, string>();
   /** Told on every tab ↔ page pairing: outsideTabs waits on them for tabs just attached. */
   private readonly pairingWaiters = new Set<() => void>();
+  /** When the watcher attached each tab: only a tab attached that recently is worth waiting for. */
+  private readonly tabAttachedAt = new Map<string, number>();
+  /** Bumped by releaseOutside and forgetOutside: an outside attach that started before them cannot finish. */
+  private outsideGeneration = 0;
 
   // ── Tab-target watcher state (all of it optional; see TARGET_WATCHER_ENV) ──
   private watcher: CdpConnection | null = null;
@@ -1231,6 +1235,7 @@ export class ChromeLauncher implements ChromeBackendClient {
         this.pageToTab.delete(targetId);
         if (this.tabToPage.get(pagesTab) === targetId) this.tabToPage.delete(pagesTab);
       }
+      this.tabAttachedAt.delete(targetId);
       const outsideId = this.outsideIds.get(targetId);
       if (outsideId) {
         this.outsideIds.delete(targetId);
@@ -1365,6 +1370,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       if (!sessionId || this.watcher !== socket) return;
       this.tabSessions.set(tabTargetId, sessionId);
       this.sessionTabs.set(sessionId, tabTargetId);
+      this.tabAttachedAt.set(tabTargetId, Date.now());
       await socket.send(
         'Target.setAutoAttach',
         { autoAttach: true, flatten: true, waitForDebuggerOnStart: false },
@@ -2859,14 +2865,15 @@ export class ChromeLauncher implements ChromeBackendClient {
   // Kept apart from the records on purpose: nothing here is in `surfaces`,
   // `byTargetId`, the store or the grants, so no agent lane can see it.
 
-  async outsideTabs(): Promise<ChromeTargetInfo[]> {
+  async outsideTabs(opts?: { waitForPairing?: boolean }): Promise<ChromeTargetInfo[]> {
     // Until the persisted records are bound, a tab of ours would look like nobody's.
     if (!this.isRunning() || (this.surfaceStore && !this.recordsSettled)) return [];
     // The tab topology comes from the watcher; starting it never starts Chrome.
     await this.ensureTargetWatcher();
     if (!this.watcher?.isOpen()) return [];
-    // Chrome names the page behind a tab just attached after it answers the attach.
-    await this.tabPagesKnown(OUTSIDE_PAIRING_WAIT_MS);
+    // Chrome names the page behind a tab just attached after it answers the
+    // attach. Only the phone's list waits for that; a capture or input does not.
+    if (opts?.waitForPairing) await this.tabPagesKnown(OUTSIDE_PAIRING_WAIT_MS);
     let live: Array<{ id: string; url: string; title: string; type: string }>;
     try {
       live = (await this.reach().listTargets()) as typeof live;
@@ -2903,6 +2910,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (!socket?.isOpen()) throw new ChromePageSessionError('unavailable', 'ChromeLauncher: no browser CDP socket');
     const page = this.outsidePage(id);
     if (page === undefined) throw new ChromePageSessionError('gone', 'ChromeLauncher: no page for this tab');
+    const generation = this.outsideGeneration;
     const cached = this.pageSessions.get(id);
     let entry: PageSessionEntry;
     if (cached && cached.valid && cached.socket === socket && cached.targetId === page) {
@@ -2910,13 +2918,15 @@ export class ChromeLauncher implements ChromeBackendClient {
     } else {
       // Chrome swapped the page inside the tab: the old session drives a page nobody sees.
       if (cached) this.dropOutsideSession(id, cached);
-      entry = await this.attachPage(id, page, socket, () => this.outsidePage(id));
+      // A release while the attach is out refuses it: it detaches, and nothing is kept.
+      entry = await this.attachPage(id, page, socket, () => (generation === this.outsideGeneration ? this.outsidePage(id) : undefined));
     }
     return this.sessionOf(entry, () => this.outsidePage(id) === entry.targetId);
   }
 
   outsideStreamSession(id: string): Promise<ChromeStreamSession> {
-    return this.openStream(() => this.outsidePage(id), true);
+    const generation = this.outsideGeneration;
+    return this.openStream(() => (generation === this.outsideGeneration ? this.outsidePage(id) : undefined), true);
   }
 
   async selectOutside(id: string): Promise<boolean> {
@@ -2931,6 +2941,7 @@ export class ChromeLauncher implements ChromeBackendClient {
   }
 
   releaseOutside(): void {
+    this.outsideGeneration++;
     for (const [id, entry] of [...this.pageSessions]) {
       if (id.startsWith(OUTSIDE_ID_PREFIX)) this.dropOutsideSession(id, entry);
     }
@@ -2943,7 +2954,9 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   /** Until every tab the watcher attached has its page named, or `ms` passed. */
   private async tabPagesKnown(ms: number): Promise<void> {
-    const pending = () => [...this.tabSessions.keys()].some((tab) => !this.tabToPage.has(tab));
+    // A tab whose page closed with no successor is not named again: only tabs attached within `ms` are waited for.
+    const since = Date.now() - ms;
+    const pending = () => [...this.tabSessions.keys()].some((tab) => !this.tabToPage.has(tab) && (this.tabAttachedAt.get(tab) ?? 0) >= since);
     if (!pending()) return;
     await new Promise<void>((resolve) => {
       const done = () => {
@@ -2979,8 +2992,10 @@ export class ChromeLauncher implements ChromeBackendClient {
   }
 
   private forgetOutside(): void {
+    this.outsideGeneration++;
     this.outsideIds.clear();
     this.outsideTabsById.clear();
+    this.tabAttachedAt.clear();
   }
 
   /**

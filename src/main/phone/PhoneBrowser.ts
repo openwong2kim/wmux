@@ -287,7 +287,7 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
     // Why no tab opened outside wmux can be listed here (contract v1.8); absent when one can.
     let outside: PhoneChromeOutsideReason | null = null;
     if (withChrome && deps.chrome && deps.backend() === 'chrome') {
-      for (const tab of await deps.chrome.tabs(workspaceId)) {
+      for (const tab of await deps.chrome.tabs(workspaceId, { list: true })) {
         if (pages.length >= 30) break;
         const url = pageURL(tab.url);
         if (url && url.length <= PAGE_URL_LIMIT) pages.push({ id: tab.surfaceId, title: tab.title.slice(0, 200), url, backend: 'chrome', ...(tab.openedBy ? { openedBy: tab.openedBy } : {}) });
@@ -477,7 +477,7 @@ async function driverFor(surfaceId: string, workspaceId: string, targets: CdpTar
   const target = targets.find(target => target.surfaceId === surfaceId);
   if (target) return webviewDriver(target, workspaceId, deps);
   if (deps.chrome && deps.backend() === 'chrome') {
-    const tab = (await deps.chrome.tabs(workspaceId)).find(tab => tab.surfaceId === surfaceId);
+    const tab = (await deps.chrome.tabs(workspaceId, { surfaceId })).find(tab => tab.surfaceId === surfaceId);
     if (tab) return chromeDriver(surfaceId, workspaceId, deps.chrome);
   }
   // A dedicated Chrome surface (`chrome-<uuid>`) that is not this workspace's

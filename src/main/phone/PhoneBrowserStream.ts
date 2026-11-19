@@ -116,7 +116,7 @@ export interface PhoneStreamTabView {
 
 /** Main's dedicated Chrome tabs, as the stream needs them (PhoneBrowserChrome deps). */
 export interface PhoneStreamChromeDeps {
-  tabs(workspaceId: string): Promise<Array<{ surfaceId: string; url: string }>>;
+  tabs(workspaceId: string, opts?: { surfaceId?: string }): Promise<Array<{ surfaceId: string; url: string }>>;
   streamSession?(surfaceId: string, workspaceId: string): Promise<ChromeStreamSession>;
   /** Whether the tab's record still names this workspace. */
   owns?(surfaceId: string, workspaceId: string): boolean;
@@ -888,6 +888,8 @@ class ChromeTabStream extends TabStream {
   }
 
   protected poll(now: number): void {
+    // No longer this workspace's (the profile unbound, its pane moved): a still page sends no frame to check it on.
+    if (!this.owned()) { void this.end('browser-tab-gone'); return; }
     if (now - this.lastFrameAt < ZOOM_POLL_MS && now - this.lastZoomAt >= ZOOM_POLL_MS) void this.readZoom();
     if (this.hidden) return;
     // Chrome said the tab is not visible, and nothing was painted since.
@@ -1250,7 +1252,7 @@ export function createPhoneBrowserStreams(deps: PhoneBrowserStreamDeps): PhoneBr
     if (surfaceId.startsWith('chrome-')) {
       const chrome = deps.chrome;
       if (!chrome?.streamSession || deps.backend() !== 'chrome') throw new PhoneBrowserError('browser-backend-unavailable');
-      const tab = (await chrome.tabs(workspaceId)).find((t) => t.surfaceId === surfaceId);
+      const tab = (await chrome.tabs(workspaceId, { surfaceId })).find((t) => t.surfaceId === surfaceId);
       if (!tab) throw new PhoneBrowserError('browser-tab-gone');
       if (!httpURL(tab.url)) throw new Error('Only HTTP browser previews are supported');
       const session = { ...chrome, streamSession: chrome.streamSession.bind(chrome) };

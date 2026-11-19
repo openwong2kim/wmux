@@ -33,6 +33,13 @@ export const PHONE_WATCH_SETUP_MS = 500;
 /** `openedBy: 'outside'`: a tab of a pane's profile that wmux holds no record of (ChromeLauncher.outsideTabs). */
 export interface PhoneChromeTab { surfaceId: string; url: string; title: string; openedBy?: 'outside' }
 
+/**
+ * `surfaceId`: one tab is looked up, so only the list it can be in is read.
+ * `list`: the phone's list, which waits briefly for the tabs Chrome's watcher
+ * has just attached (ChromeLauncher.outsideTabs).
+ */
+export interface PhoneChromeTabsOptions { surfaceId?: string; list?: boolean }
+
 /** Main's dedicated Chrome profiles, as the phone preview may see them. */
 export interface PhoneChromeDeps {
   /**
@@ -42,7 +49,7 @@ export interface PhoneChromeDeps {
    * 'outside'`). Never Live Chrome, never a protected pane's profile, never a
    * launch: [] while no Chrome is running.
    */
-  tabs(workspaceId: string): Promise<PhoneChromeTab[]>;
+  tabs(workspaceId: string, opts?: PhoneChromeTabsOptions): Promise<PhoneChromeTab[]>;
   /** Why tabs() lists no outside tab for this workspace, or null when it may. */
   outsideReason?(workspaceId: string): PhoneChromeOutsideReason | null;
   /** Re-check every workspace holding outside sessions, and let go of those it may no longer see. */
@@ -113,7 +120,7 @@ export function viewportOf(metrics: unknown): Viewport {
 
 export function chromeDriver(surfaceId: string, workspaceId: string, deps: PhoneChromeDeps): PhoneBrowserDriver {
   // The tab as the workspace's strict list has it now: null once it is not.
-  const tab = async () => (await deps.tabs(workspaceId)).find(t => t.surfaceId === surfaceId) ?? null;
+  const tab = async () => (await deps.tabs(workspaceId, { surfaceId })).find(t => t.surfaceId === surfaceId) ?? null;
   // One session per request; a dead one answers `gone` rather than being re-found.
   let session: Promise<ChromePageSession> | null = null;
   // Set when a capture ran out of budget: whatever that capture still had
@@ -450,11 +457,11 @@ async function strictTabs(client: ChromeBackendClient, workspaceId: string): Pro
   return tabs.filter((tab) => tab.workspaceId === workspaceId).map((tab) => ({ tab, client }));
 }
 
-async function outsideTabs(clients: ChromeBackendClient[]): Promise<Array<{ tab: ChromeTargetInfo; client: ChromeBackendClient }>> {
+async function outsideTabs(clients: ChromeBackendClient[], waitForPairing: boolean): Promise<Array<{ tab: ChromeTargetInfo; client: ChromeBackendClient }>> {
   const lists = await Promise.all(clients.map(async (client) => {
     if (!client.outsideTabs) return [];
     try {
-      return (await client.outsideTabs()).map((tab) => ({ tab, client }));
+      return (await client.outsideTabs({ waitForPairing })).map((tab) => ({ tab, client }));
     } catch {
       return [];
     }
@@ -493,13 +500,20 @@ export function createPhoneChromeDeps(opts: {
   // of as soon as that workspace may no longer see the profile (unbound, the
   // pane moved or closed, a policy applied).
   const served = new Map<string, Set<ChromeBackendClient>>();
+  // Bumped each time a client is let go of: an attach that started before cannot be used after.
+  const epochs = new Map<ChromeBackendClient, number>();
+  const epochOf = (client: ChromeBackendClient) => epochs.get(client) ?? 0;
+  const letGo = (client: ChromeBackendClient) => {
+    epochs.set(client, epochOf(client) + 1);
+    client.releaseOutside?.();
+  };
   const panesOf = (workspaceId: string): ChromeBackendClient[] => {
     const panes = clientsFor(workspaceId, opts.registry).panes;
     const held = served.get(workspaceId);
     for (const client of held ? [...held] : []) {
       if (panes.includes(client)) continue;
       held?.delete(client);
-      client.releaseOutside?.();
+      letGo(client);
     }
     if (held?.size === 0) served.delete(workspaceId);
     return panes;
@@ -518,23 +532,59 @@ export function createPhoneChromeDeps(opts: {
     return [own, ...panes].find((client) => client?.recordFor?.(surfaceId)?.workspaceId === workspaceId);
   };
   const gone = () => new ChromePageSessionError('gone', 'not a tab of this workspace');
+  /**
+   * A session on an outside tab, held to the workspace's view of the profile
+   * before the attach, after it, and on every send: a profile the workspace
+   * lost meanwhile (unbound, the pane moved, a policy applied) is let go of,
+   * and nothing more is sent.
+   */
+  const outsideAttach = async <T extends { send(method: string, params?: Record<string, unknown>): Promise<unknown> }>(
+    surfaceId: string,
+    workspaceId: string,
+    attach: (client: ChromeBackendClient) => Promise<T> | undefined,
+  ): Promise<T> => {
+    const client = outsideHolder(surfaceId, workspaceId);
+    const pending = client ? attach(client) : undefined;
+    if (!client || !pending) throw gone();
+    // Served before the attach resolves, so a revalidate meanwhile lets go of it too.
+    serve(workspaceId, client);
+    const epoch = epochOf(client);
+    const still = () => epochOf(client) === epoch && outsideHolder(surfaceId, workspaceId) === client;
+    const session = await pending;
+    if (!still()) {
+      letGo(client);
+      throw gone();
+    }
+    return new Proxy(session, {
+      get(target, prop) {
+        if (prop === 'send') {
+          return async (method: string, params?: Record<string, unknown>) => {
+            if (!still()) {
+              letGo(client);
+              throw gone();
+            }
+            return target.send(method, params);
+          };
+        }
+        const value: unknown = Reflect.get(target, prop, target);
+        return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+  };
   return {
-    tabs: async (workspaceId) => {
-      const recorded = (await phoneChromeTabs(workspaceId, opts.registry))
+    tabs: async (workspaceId, tabsOpts) => {
+      // One tab asked for by id: only the list it can be in is read.
+      const only = tabsOpts?.surfaceId;
+      const recorded = only !== undefined && isOutsideId(only) ? [] : (await phoneChromeTabs(workspaceId, opts.registry))
         .map(({ tab }): PhoneChromeTab => ({ surfaceId: tab.surfaceId, url: tab.url, title: tab.title }));
-      const outside = (await outsideTabs(panesOf(workspaceId)))
+      const outside = only !== undefined && !isOutsideId(only) ? [] : (await outsideTabs(panesOf(workspaceId), tabsOpts?.list === true))
         .map(({ tab }): PhoneChromeTab => ({ surfaceId: tab.surfaceId, url: tab.url, title: tab.title, openedBy: 'outside' }));
       return [...recorded, ...outside];
     },
     // The preview found the tab in this workspace's strict list just before;
     // the session is attached on that same client, with no second list read.
     session: async (surfaceId, workspaceId) => {
-      if (isOutsideId(surfaceId)) {
-        const client = outsideHolder(surfaceId, workspaceId);
-        if (!client?.outsidePageSession) throw gone();
-        serve(workspaceId, client);
-        return client.outsidePageSession(surfaceId);
-      }
+      if (isOutsideId(surfaceId)) return outsideAttach(surfaceId, workspaceId, (client) => client.outsidePageSession?.(surfaceId));
       // The record's own workspace, not only the order of calls before this one.
       const client = recordHolder(surfaceId, workspaceId);
       if (!client?.pageSession) throw gone();
@@ -542,12 +592,7 @@ export function createPhoneChromeDeps(opts: {
     },
     // The same checks for the stream's own session.
     streamSession: async (surfaceId, workspaceId) => {
-      if (isOutsideId(surfaceId)) {
-        const client = outsideHolder(surfaceId, workspaceId);
-        if (!client?.outsideStreamSession) throw gone();
-        serve(workspaceId, client);
-        return client.outsideStreamSession(surfaceId);
-      }
+      if (isOutsideId(surfaceId)) return outsideAttach(surfaceId, workspaceId, (client) => client.outsideStreamSession?.(surfaceId));
       const client = recordHolder(surfaceId, workspaceId);
       if (!client?.streamSession) throw gone();
       return client.streamSession(surfaceId);

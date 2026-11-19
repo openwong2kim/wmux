@@ -2305,10 +2305,14 @@ ipcMain.handle(
     if (!paneId || !workspaceId || profileName === undefined) return { ok: false, error: 'invalid payload' };
     try {
       await chromeProfileStore.setPaneBinding(paneId, workspaceId, profileName);
-      // A protected pane rebound to another profile (or unbound) stays
-      // protected and refuses every host until the user confirms it again.
-      await browserPolicyStore.onPaneRebind(paneId);
-      phoneChromeDeps.revalidate?.();
+      try {
+        // A protected pane rebound to another profile (or unbound) stays
+        // protected and refuses every host until the user confirms it again.
+        await browserPolicyStore.onPaneRebind(paneId);
+      } finally {
+        // The binding changed even when the policy step failed.
+        phoneChromeDeps.revalidate?.();
+      }
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };

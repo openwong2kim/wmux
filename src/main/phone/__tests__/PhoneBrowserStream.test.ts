@@ -782,6 +782,16 @@ describe('phone browser stream (main)', () => {
     });
   });
 
+  it('a still tab no longer this workspace\'s ends on the next tick, with no frame to check it on', async () => {
+    await start();
+    sessions[0].frame(1);
+    await flush();
+    owned = false;
+    await vi.advanceTimersByTimeAsync(500);
+    expect(pushes.at(-1)).toEqual({ streamId: 'st-chrome-a', kind: 'end', error: 'browser-tab-gone' });
+    expect(sessions[0].detached).toBe(true);
+  });
+
   it('a frame from a tab no longer this workspace\'s ends the stream', async () => {
     await start();
     owned = false;

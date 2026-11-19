@@ -65,6 +65,8 @@ class FakeBrowserWs {
   static failConnect = false;
   /** Runs inside setDiscoverTargets, before its reply: Chrome's replay of the targets that exist. */
   static onDiscover: ((ws: FakeBrowserWs) => void) | null = null;
+  /** When set, the reply to an attach to this target waits for `open`. */
+  static attachGate: { targetId: string; open: Promise<void> } | null = null;
   /** When set, setAutoAttach's page announcements wait here until the test runs them (Chrome may name a tab's page after it answers). */
   static heldPages: Array<() => void> | null = null;
   readyState = 0;
@@ -97,9 +99,15 @@ class FakeBrowserWs {
     const frame = JSON.parse(data) as Frame;
     this.sent.push(frame);
     const result = this.handle(frame);
+    const reply = () => this.emit('message', { data: JSON.stringify({ id: frame.id, result }) });
+    const gate = FakeBrowserWs.attachGate;
+    if (gate && frame.method === 'Target.attachToTarget' && frame.params?.targetId === gate.targetId) {
+      void gate.open.then(reply);
+      return;
+    }
     // The reply lands after any event the command triggered, exactly as
     // Chrome orders auto-attach announcements against setAutoAttach's reply.
-    queueMicrotask(() => this.emit('message', { data: JSON.stringify({ id: frame.id, result }) }));
+    queueMicrotask(reply);
   }
 
   close(): void {
@@ -252,6 +260,7 @@ beforeEach(() => {
   FakeBrowserWs.failConnect = false;
   FakeBrowserWs.onDiscover = null;
   FakeBrowserWs.heldPages = null;
+  FakeBrowserWs.attachGate = null;
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
   vi.stubGlobal('WebSocket', FakeBrowserWs);
@@ -944,14 +953,62 @@ describe('ChromeLauncher outside tabs (the phone preview only)', () => {
     listedPages = ['page-out'];
     const held: Array<() => void> = [];
     FakeBrowserWs.heldPages = held;
-    const listing = launcher.outsideTabs();
+    const listing = launcher.outsideTabs({ waitForPairing: true });
     await vi.waitFor(() => expect(held).toHaveLength(1), { timeout: 5_000 });
     for (const announce of held) announce();
     expect((await listing).map((row) => row.targetId)).toEqual(['page-out']);
   });
 
-  it.each([['on', '1'], ['off', undefined]])('never reaches an agent lane, with the target grant %s', async (_label, grant) => {
-    if (grant) vi.stubEnv('WMUX_CDP_TARGET_GRANT', grant);
+  it('waits only when asked, and never for a tab attached long ago whose page is gone', async () => {
+    const { launcher } = await spawned('/tmp/out-12');
+    tabs.set('tab-out', 'page-out');
+    tabs.set('tab-orphan', 'page-orphan');
+    listedPages = ['page-out'];
+    FakeBrowserWs.heldPages = [];
+    // Not asked (a capture or an input): no wait, though no page is named yet.
+    let settled = false;
+    void launcher.outsideTabs().then(() => { settled = true; });
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 1_500 });
+    // The orphan's page never comes back; once its attach is old, the list does not wait for it.
+    for (const announce of FakeBrowserWs.heldPages.splice(0)) announce();
+    FakeBrowserWs.heldPages = null;
+    FakeBrowserWs.instances[0].event('Target.targetDestroyed', { targetId: 'page-orphan' });
+    const later = Date.now() + 10_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(later);
+    try {
+      settled = false;
+      void launcher.outsideTabs({ waitForPairing: true }).then(() => { settled = true; });
+      await vi.waitFor(() => expect(settled).toBe(true), { timeout: 1_500 });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('a release while an attach is out refuses it: detached, nothing kept, nothing sent on it', async () => {
+    const { launcher } = await spawned('/tmp/out-13');
+    tabs.set('tab-2', 'page-2');
+    listedPages = ['page-2'];
+    const [row] = await launcher.outsideTabs();
+    const ws = FakeBrowserWs.instances[0];
+    let open!: () => void;
+    FakeBrowserWs.attachGate = { targetId: 'page-2', open: new Promise<void>((resolve) => { open = resolve; }) };
+    const attaching = launcher.outsidePageSession(row.surfaceId);
+    const streaming = launcher.outsideStreamSession(row.surfaceId);
+    await vi.waitFor(() => expect(ws.sent.filter((f) => f.method === 'Target.attachToTarget' && f.params?.targetId === 'page-2')).toHaveLength(2), { timeout: 5_000 });
+    launcher.releaseOutside();
+    open();
+    await expect(attaching).rejects.toMatchObject({ reason: 'gone' });
+    await expect(streaming).rejects.toMatchObject({ reason: 'gone' });
+    await tick();
+    expect(ws.sent.filter((f) => f.method === 'Target.detachFromTarget').map((f) => f.params?.sessionId).sort()).toEqual(['sess-page-2', 'sess-page-2-2']);
+    expect(ws.sent.filter((f) => f.sessionId?.startsWith('sess-page-2'))).toEqual([]);
+    const held = launcher as unknown as { pageSessions: Map<string, unknown>; streamSessions: Set<unknown> };
+    expect([...held.pageSessions.keys()].filter((k) => k.startsWith('chrome-x-'))).toEqual([]);
+    expect(held.streamSessions.size).toBe(0);
+  });
+
+  it.each([['on', '1'], ['off', '0']])('never reaches an agent lane, with the target grant %s', async (_label, grant) => {
+    vi.stubEnv('WMUX_CDP_TARGET_GRANT', grant);
     const { launcher, store } = await spawned('/tmp/out-2');
     tabs.set('tab-1', 'page-1');
     tabs.set('tab-2', 'page-2');
