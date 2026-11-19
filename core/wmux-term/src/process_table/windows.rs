@@ -37,11 +37,17 @@ const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xC000_0004_u32 as i32;
 const STATUS_BUFFER_OVERFLOW: i32 = 0x8000_0005_u32 as i32;
 const STATUS_BUFFER_TOO_SMALL: i32 = 0xC000_0023_u32 as i32;
 /// The Win32 errors and NTSTATUS values a call fails with when the system
-/// is out of memory (the commit limit, or the heap or pool behind the call):
-/// the same refusal as a refused allocation (`os_failure`).
+/// is out of memory (the commit limit, a quota, or the heap or pool behind
+/// the call): the same refusal as a refused allocation (`os_failure`).
+/// GetLastError reports STATUS_INSUFFICIENT_RESOURCES as
+/// ERROR_NO_SYSTEM_RESOURCES.
 const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
 const ERROR_OUTOFMEMORY: u32 = 14;
+const ERROR_NO_SYSTEM_RESOURCES: u32 = 1450;
+const ERROR_WORKING_SET_QUOTA: u32 = 1453;
+const ERROR_PAGEFILE_QUOTA: u32 = 1454;
 const ERROR_COMMITMENT_LIMIT: u32 = 1455;
+const ERROR_NOT_ENOUGH_QUOTA: u32 = 1816;
 const STATUS_NO_MEMORY: u32 = 0xC000_0017;
 const STATUS_INSUFFICIENT_RESOURCES: u32 = 0xC000_009A;
 const STATUS_COMMITMENT_LIMIT: u32 = 0xC000_012D;
@@ -158,7 +164,13 @@ fn out_of_memory(code: OsCode) -> bool {
     match code {
         OsCode::Win32(error) => matches!(
             error,
-            ERROR_NOT_ENOUGH_MEMORY | ERROR_OUTOFMEMORY | ERROR_COMMITMENT_LIMIT
+            ERROR_NOT_ENOUGH_MEMORY
+                | ERROR_OUTOFMEMORY
+                | ERROR_NO_SYSTEM_RESOURCES
+                | ERROR_WORKING_SET_QUOTA
+                | ERROR_PAGEFILE_QUOTA
+                | ERROR_COMMITMENT_LIMIT
+                | ERROR_NOT_ENOUGH_QUOTA
         ),
         OsCode::Nt(status) => matches!(
             status,
@@ -565,6 +577,10 @@ mod tests {
             OsCode::Win32(ERROR_COMMITMENT_LIMIT),
             OsCode::Win32(ERROR_NOT_ENOUGH_MEMORY),
             OsCode::Win32(ERROR_OUTOFMEMORY),
+            OsCode::Win32(ERROR_NO_SYSTEM_RESOURCES),
+            OsCode::Win32(ERROR_WORKING_SET_QUOTA),
+            OsCode::Win32(ERROR_PAGEFILE_QUOTA),
+            OsCode::Win32(ERROR_NOT_ENOUGH_QUOTA),
             OsCode::Nt(STATUS_NO_MEMORY),
             OsCode::Nt(STATUS_INSUFFICIENT_RESOURCES),
             OsCode::Nt(STATUS_COMMITMENT_LIMIT),
