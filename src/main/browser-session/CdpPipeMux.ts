@@ -47,25 +47,17 @@ import { CdpTargetOwnership, type TargetInfoLike, type TargetRegistry } from './
 // frame (~0.85 ms per MB of it). Ceiling: delay p99 within +2 ms, busy within
 // +10 points at 33 MB/s, and a single-frame stall under 50 ms at 20 MiB.
 //
-// Packaged (measured 2026-11-19, Electron 45.1.0, Chrome 157, macOS arm64; a
-// real 6.1 MB/s pty stream in one pane, a protected pane's Playwright on the
-// relay in another; an in-process monitorEventLoopDelay at 10 ms resolution,
-// so every delay includes that tick, and busy is the main thread's own CPU
-// time; two runs of each case between terminal-only runs, 60 s each):
-//   terminal only                        busy  4.2-6.0% (rising over the run),
-//                                        delay p99 11.5-11.7 ms
-//   + 33 MB/s CDP (1080p screencast +    busy 16.1-18.7%, p99 11.9-12.7 ms,
-//     a ~3.9 MB reply every 0.5 s, and   max 31 ms (parse 7-10 ms/s,
-//     a screenshot and a navigation)     ~100 frames/s)
-//   + one 20 MiB frame every 4 s         busy  6.5-7.3%, p99 11.6 ms, max 36 ms
-// Delay (+0.2 and +1.2 ms) and the single frame (36 ms with the tick, and
-// terminal-only runs reach 28-30 ms too) are under the ceiling; busy is over
-// it: +11.5 and +13.5 points at 33 MB/s, of which the screenshots and
-// navigations alone are +2. Parse is under a tenth of it; the rest (frame
-// copies and decode, the relay's WebSocket send, GC) was not broken down.
-// Keystroke echo in the loaded pane: p95 15 ms terminal-only, 28-30 ms at
-// 33 MB/s. Over the ceiling, in order: route big replies by their parse-checked
-// head, then tail routing, then a separate process.
+// Packaged (measured 2026-11-19, Electron 45.1.0, Chrome 157, macOS arm64,
+// against a protected pane on the port under the same load: a 6.1 MB/s
+// terminal, a 1080p screencast, a 7 MB evaluate body every 0.5 s, and two
+// screenshots and two navigations a second, from Playwright on the relay (or
+// on the port, for the port runs); 60 s phases):
+//   main busy +10.7 points over the port (18.0% vs 7.3%), over the +10 ceiling;
+//   keystroke echo p95 at parity with the port (pipe/port 0.94-1.01);
+//   loop delay p99 13.0-13.6 ms vs 12.1-12.8 ms on the port.
+// Screencast frames pass through unparsed; what main still spends is mostly
+// native wake-ups and syscalls, not parsing or routing. The next step is a
+// separate process for the mux and the relay, not more parsing work here.
 // ---------------------------------------------------------------------------
 
 /** Ids at and above this are the mux's own commands. */
