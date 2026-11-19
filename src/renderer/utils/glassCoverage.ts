@@ -1,8 +1,10 @@
-// Windows window glass coverage (DESIGN.md "Window glass"), derived from the
-// theme's own tokens so the frame and the sidebar stay legible whatever is
-// behind the window (owner decision 2026-10-21: legibility wins).
+// Window glass coverage (DESIGN.md "Window glass"), derived from the theme's
+// own tokens so the frame and the sidebar stay legible whatever is behind the
+// window: on Windows since the owner decision of 2026-10-21 (legibility wins),
+// on macOS since #3283, where the fixed numbers left the dark Tint sidebar
+// unreadable over a white window.
 //
-// The page paints `--glass-frame` of the frame colour over the acrylic, and
+// The page paints `--glass-frame` of the frame colour over the material, and
 // the sheet adds `--glass-sheet` of the mantle under the sidebar (globals.css),
 // so on screen:
 //   frame   = f·frameBg + (1 − f)·B
@@ -51,17 +53,51 @@ const TIER_TOKEN: Record<GlassTier, keyof GlassTokens> = {
   main: 'textMain', sub2: 'textSub2', sub: 'textSub', subtle: 'textSubtle', muted: 'textMuted',
 };
 
+/** The platforms that show window glass (shared/windowGlass.ts). */
+export type GlassPlatform = 'win32' | 'darwin';
+
+type GlassFloor = Record<'dark' | 'light', Record<'soft' | 'clear', GlassCoverage>>;
+
 /**
- * Each level's floor: the fixed numbers Windows glass shipped with before the
+ * Each level's floor: the fixed numbers each platform shipped with before its
  * coverage was derived. The search only ever raises them, so Soft stays at or
- * above Clear. (The strongly hued looks had a higher floor so their colour
- * survived the grey material; a legible frame paints far more than that
- * anyway.)
+ * above Clear and no look shows more of the desktop than it used to.
  */
-export const WINDOWS_GLASS_FLOOR: Record<'dark' | 'light', Record<'soft' | 'clear', GlassCoverage>> = {
-  dark: { soft: { frame: 30, sheet: 6 }, clear: { frame: 12, sheet: 5 } },
-  light: { soft: { frame: 55, sheet: 10 }, clear: { frame: 35, sheet: 8 } },
+export const GLASS_FLOOR: Record<GlassPlatform, GlassFloor> = {
+  win32: {
+    dark: { soft: { frame: 30, sheet: 6 }, clear: { frame: 12, sheet: 5 } },
+    light: { soft: { frame: 55, sheet: 10 }, clear: { frame: 35, sheet: 8 } },
+  },
+  // The light material is milkier than the dark one, so a light look painted
+  // less over it to read as see-through as a dark look does.
+  darwin: {
+    dark: { soft: { frame: 25, sheet: 6 }, clear: { frame: 10, sheet: 5 } },
+    light: { soft: { frame: 10, sheet: 4 }, clear: { frame: 0, sheet: 3 } },
+  },
 };
+
+/**
+ * The strongly hued looks (navy, red, violet) kept more of their own colour
+ * over the grey macOS material, or their frame turned a neutral grey beside a
+ * hued sheet; their old numbers stay their floor there.
+ */
+export const MACOS_HUED_GLASS_FLOOR: { themes: readonly string[]; floor: Record<'soft' | 'clear', GlassCoverage> } = {
+  themes: ['stars-and-stripes', 'red-dynasty', 'catppuccin-mocha'],
+  floor: { soft: { frame: 55, sheet: 20 }, clear: { frame: 35, sheet: 12 } },
+};
+
+/** The floor for a look on a platform; `theme` is the `data-theme` id. */
+export function glassFloor(
+  platform: GlassPlatform,
+  appearance: 'dark' | 'light',
+  level: Exclude<WindowGlassLevel, 'off'>,
+  theme?: string | null,
+): GlassCoverage {
+  if (platform === 'darwin' && theme && MACOS_HUED_GLASS_FLOOR.themes.includes(theme)) {
+    return MACOS_HUED_GLASS_FLOOR.floor[level];
+  }
+  return GLASS_FLOOR[platform][appearance][level];
+}
 
 /** The backdrop that costs a look the most contrast: white behind dark, black behind light. */
 export function worstBackdrop(appearance: 'dark' | 'light'): string {
@@ -98,11 +134,11 @@ function legible(tokens: GlassTokens, backdrop: string, coverage: GlassCoverage)
 }
 
 /**
- * The Windows coverage for a look and a level: the smallest frame, in 1%
- * steps from the level's floor up to GLASS_MAX_COVERAGE, that keeps every
+ * The coverage for a look and a level on a platform: the smallest frame, in
+ * 1% steps from the level's floor up to GLASS_MAX_COVERAGE, that keeps every
  * text level legible over the worst backdrop in both the frame and the
- * sidebar. Null when none is: that look is opaque on Windows, as if glass
- * were Off.
+ * sidebar. Null when none is: that look is opaque there, as if glass were
+ * Off.
  *
  * The sheet stays at its floor. The sidebar's colour lies between the
  * frame's and the mantle's, so a larger sheet step only moves it towards the
@@ -110,12 +146,14 @@ function legible(tokens: GlassTokens, backdrop: string, coverage: GlassCoverage)
  * then the sidebar already passes whenever the frame does. Only the frame
  * can make a look legible.
  */
-export function windowsGlassCoverage(
+export function glassCoverage(
   tokens: GlassTokens,
   appearance: 'dark' | 'light',
   level: Exclude<WindowGlassLevel, 'off'>,
+  platform: GlassPlatform = 'win32',
+  theme?: string | null,
 ): GlassCoverage | null {
-  const floor = WINDOWS_GLASS_FLOOR[appearance][level];
+  const floor = glassFloor(platform, appearance, level, theme);
   const backdrop = worstBackdrop(appearance);
   for (let frame = floor.frame; frame <= GLASS_MAX_COVERAGE; frame++) {
     const coverage = { frame, sheet: floor.sheet };
