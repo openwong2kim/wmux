@@ -3,7 +3,7 @@ import type { PhoneBrowserInputOptions } from './PhoneBrowserInput';
 import type { CdpTargetInfo } from '../browser-session/WebviewCdpManager';
 import type { RpcResponse } from '../../shared/rpc';
 import { browserHelpOrigin } from '../../shared/phoneBrowserHelp';
-import { BROWSER_STREAM_KEYS, PhoneBrowserError, type PhoneBrowserBackend, type PhoneBrowserFocus } from '../../shared/phoneBrowserPreview';
+import { BROWSER_STREAM_KEYS, PhoneBrowserError, type PhoneBrowserBackend, type PhoneBrowserFocus, type PhoneChromeOutsideReason } from '../../shared/phoneBrowserPreview';
 import type { PhoneChromeDeps } from './PhoneBrowserChrome';
 import { chromeDriver, viewportOf } from './PhoneBrowserChrome';
 import type { PhoneStreamTabView } from './PhoneBrowserStream';
@@ -279,20 +279,23 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
     // which browser they are. Without it the reply is what it always was.
     const withChrome = payload.chrome === true;
     // A page whose URL is past PAGE_URL_LIMIT is left out, like a non-http one.
-    const pages: Array<{id:string;title:string;url:string;backend?:PhoneBrowserBackend}> = targets.slice(0, 30).flatMap(target => {
+    const pages: Array<{id:string;title:string;url:string;backend?:PhoneBrowserBackend;openedBy?:'outside'}> = targets.slice(0, 30).flatMap(target => {
       const page = deps.page(target.webContentsId);
       const url = page && pageURL(page.url);
       return page && url && url.length <= PAGE_URL_LIMIT ? [{ id: target.surfaceId, title: page.title.slice(0, 200), url, ...(withChrome ? { backend: 'builtin' as const } : {}) }] : [];
     });
+    // Why no tab opened outside wmux can be listed here (contract v1.8); absent when one can.
+    let outside: PhoneChromeOutsideReason | null = null;
     if (withChrome && deps.chrome && deps.backend() === 'chrome') {
-      for (const tab of await deps.chrome.tabs(workspaceId)) {
+      for (const tab of await deps.chrome.tabs(workspaceId, { list: true })) {
         if (pages.length >= 30) break;
         const url = pageURL(tab.url);
-        if (url && url.length <= PAGE_URL_LIMIT) pages.push({ id: tab.surfaceId, title: tab.title.slice(0, 200), url, backend: 'chrome' });
+        if (url && url.length <= PAGE_URL_LIMIT) pages.push({ id: tab.surfaceId, title: tab.title.slice(0, 200), url, backend: 'chrome', ...(tab.openedBy ? { openedBy: tab.openedBy } : {}) });
       }
+      outside = deps.chrome.outsideReason?.(workspaceId) ?? null;
     }
     const opens = withChrome ? openBackend(workspaceId, deps) : null;
-    return { pages, ...(opens ? { openBackend: opens } : {}) };
+    return { pages, ...(opens ? { openBackend: opens } : {}), ...(outside ? { chromeOutside: outside } : {}) };
   }
   // `stream:true` comes only from a daemon whose desktop announced
   // BROWSER_STREAM_CAPABILITY. It brings `history`, the stream's keys, the
@@ -474,7 +477,7 @@ async function driverFor(surfaceId: string, workspaceId: string, targets: CdpTar
   const target = targets.find(target => target.surfaceId === surfaceId);
   if (target) return webviewDriver(target, workspaceId, deps);
   if (deps.chrome && deps.backend() === 'chrome') {
-    const tab = (await deps.chrome.tabs(workspaceId)).find(tab => tab.surfaceId === surfaceId);
+    const tab = (await deps.chrome.tabs(workspaceId, { surfaceId })).find(tab => tab.surfaceId === surfaceId);
     if (tab) return chromeDriver(surfaceId, workspaceId, deps.chrome);
   }
   // A dedicated Chrome surface (`chrome-<uuid>`) that is not this workspace's

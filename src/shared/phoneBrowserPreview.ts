@@ -27,6 +27,14 @@ export const BROWSER_STREAM_KEYS: readonly string[] = ['ArrowUp','ArrowDown','Ar
 /** Which browser a preview row is. */
 export type PhoneBrowserBackend = 'builtin' | 'chrome';
 
+/**
+ * Why a `?chrome=1` list carries no tab opened outside wmux (`chromeOutside`):
+ * no unprotected profile is bound to one of the workspace's panes, the
+ * workspace uses Live Chrome, the bound profile's Chrome is not running (or
+ * cannot attach pages), or a bound pane's workspace is not known yet.
+ */
+export type PhoneChromeOutsideReason = 'not-bound' | 'live' | 'not-running' | 'pane-unknown';
+
 export const PHONE_BROWSER_ERROR_STATUS = {
   /** No browser to drive: the setting does not allow it, or Chrome's socket is not up. */
   'browser-backend-unavailable': 503,

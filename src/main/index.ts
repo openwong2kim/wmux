@@ -11,7 +11,8 @@ import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserHis
 import { focusBuiltinTab, handlePhoneBrowser } from './phone/PhoneBrowser';
 import { readFocus } from './phone/PhoneBrowserFocus';
 import { presetViewScale } from './phone/PhoneBrowserGeometry';
-import { createPhoneChromeDeps, phoneChromeHelpTabs } from './phone/PhoneBrowserChrome';
+import { createPhoneChromeDeps, phoneChromeHelpTabs, type PhoneChromeRegistry } from './phone/PhoneBrowserChrome';
+import { phonePaneProfiles } from './phone/phonePaneProfiles';
 import { validateResolvedNavigationUrl } from './security/navigationPolicy';
 import { navigationPolicyOptions } from '../shared/types';
 import { handlePhoneWorkspaces } from './phone/PhoneWorkspaces';
@@ -1503,16 +1504,32 @@ registerBrowserHelpIpc(ipcMain, { getWindow: () => mainWindow, requests: browser
 setPhoneBrowserHelpStore(browserHelpRequests);
 // The phone preview's dedicated Chrome tabs (phone/PhoneBrowserChrome.ts):
 // the workspace's own profile, strict workspace equality, never Live Chrome,
-// never a pane's exclusive profile, never a launch. The help
-// table below reads the same list, so its rows are previewable exactly when
-// the preview can drive them.
+// never a launch; and a profile bound to one of its panes alone, with no
+// browser policy on it, every tab included. The help table below reads the
+// same records, so its rows are previewable exactly when the preview can
+// drive them.
+const phoneChromeRegistry: PhoneChromeRegistry = {
+  profileFor: (workspaceId) => chromeRegistry.profileFor(workspaceId),
+  isPaneBound: (profile) => chromeRegistry.isPaneBound(profile),
+  peekLauncher: (profile) => chromeRegistry.peekLauncher(profile),
+  paneProfiles: (workspaceId) => phonePaneProfiles(workspaceId, {
+    paneBindings: () => chromeProfileStore.getPaneBindings(),
+    workspaceBindings: () => chromeProfileStore.getBindings(),
+    paneWorkspaces: () => getWorkspaceMirror().getPaneWorkspaces(),
+    sessionRestored: () => getWorkspaceMirror().isSessionRestored(),
+    isProtected: (profile) =>
+      browserPolicyStore.protectionPlanFor(profile, { paneBindings: () => chromeProfileStore.getPaneBindings() }) !== null,
+  }),
+};
 const phoneChromeDeps = createPhoneChromeDeps({
-  registry: chromeRegistry,
+  registry: phoneChromeRegistry,
   validateNavigation: async (url) => {
     const verdict = await validateResolvedNavigationUrl(url, navigationPolicyOptions(browserBackendStore.allowPrivateNetwork()));
     if (!verdict.valid) throw new Error('Navigation refused');
   },
 });
+// A policy applied to a pane's profile ends the phone's sessions on it at once.
+browserPolicyStore.onChange(() => phoneChromeDeps.revalidate?.());
 const browserHelpFeed = createBrowserHelpFeed({
   pending: () => browserHelpRequests.listPending(),
   tabs: {
@@ -1529,7 +1546,7 @@ const browserHelpFeed = createBrowserHelpFeed({
       chromeRegistry.profileFor(workspaceId) === LIVE_CHROME_PROFILE ||
       (!tabFound && chromeRegistry.hasPaneBindings(workspaceId) && chromeRegistry.peekLauncher(LIVE_CHROME_PROFILE) !== undefined),
     // Live Chrome is never listed: that is every tab the user has open.
-    chromeTabs: (workspaceId) => phoneChromeHelpTabs(workspaceId, chromeRegistry),
+    chromeTabs: (workspaceId) => phoneChromeHelpTabs(workspaceId, phoneChromeRegistry),
   },
   push: async (rows) => {
     if (!daemonClient?.isConnected) throw new Error('Daemon not connected');
@@ -2288,9 +2305,14 @@ ipcMain.handle(
     if (!paneId || !workspaceId || profileName === undefined) return { ok: false, error: 'invalid payload' };
     try {
       await chromeProfileStore.setPaneBinding(paneId, workspaceId, profileName);
-      // A protected pane rebound to another profile (or unbound) stays
-      // protected and refuses every host until the user confirms it again.
-      await browserPolicyStore.onPaneRebind(paneId);
+      try {
+        // A protected pane rebound to another profile (or unbound) stays
+        // protected and refuses every host until the user confirms it again.
+        await browserPolicyStore.onPaneRebind(paneId);
+      } finally {
+        // The binding changed even when the policy step failed.
+        phoneChromeDeps.revalidate?.();
+      }
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -2322,6 +2344,8 @@ getWorkspaceMirror().onSnapshot(() => {
   reconcileBrowserPoliciesFromMirror(browserPolicyStore, getWorkspaceMirror()).catch((err) => {
     console.warn('[browser-policy] reconcile failed:', err);
   });
+  // A pane that moved or closed takes its profile off the old workspace's phone view.
+  phoneChromeDeps.revalidate?.();
 });
 // Protected browser panes: the operator's policy editor (A-ui). Agents have no
 // path to these channels; the handler accepts the main window's top frame only.
