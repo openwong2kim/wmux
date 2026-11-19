@@ -910,7 +910,7 @@ export const DAEMON_STDERR_LOG = 'daemon-stderr.log';
 /** Past this size the file moves to `<name>.1` (one kept) at the next spawn. */
 export const DAEMON_STDERR_ROTATE_BYTES = 1024 * 1024;
 
-type DaemonStderrFs = Pick<typeof fs, 'statSync' | 'renameSync' | 'openSync'>;
+type DaemonStderrFs = Pick<typeof fs, 'statSync' | 'renameSync' | 'openSync' | 'closeSync'>;
 
 /**
  * Rotate `<wmuxDir>/daemon-stderr.log` to `.1` when it is past
@@ -944,6 +944,26 @@ export function openDaemonStderrLog(wmuxDir: string, fsImpl: DaemonStderrFs = fs
   } catch {
     return 'ignore';
   }
+}
+
+/**
+ * The daemon's stderr for a launchd job: the rotated file's path, once it
+ * was opened for append (and closed again) here, or undefined. launchd opens
+ * StandardErrorPath itself before it runs the daemon, and a file it cannot
+ * open (one that exists but is not writable) ends the job with 78 before the
+ * daemon starts. Undefined keeps the job's stderr at /dev/null. Never throws.
+ */
+export function launchdDaemonStderrPath(wmuxDir: string, fsImpl: DaemonStderrFs = fs): string | undefined {
+  const file = rotateDaemonStderrLog(wmuxDir, fsImpl);
+  if (file === null) return undefined;
+  let fd: number;
+  try {
+    fd = fsImpl.openSync(file, 'a', 0o600);
+  } catch {
+    return undefined;
+  }
+  try { fsImpl.closeSync(fd); } catch { /* opened is what launchd needs */ }
+  return file;
 }
 
 /**
@@ -1144,8 +1164,9 @@ function spawnDaemon(
       // macOS: a launchd job is not a LaunchServices subordinate of this app,
       // so quitting the app no longer SIGTERMs the daemon. See launchdDaemonJob.ts.
       const log = deps.log ?? console.log;
-      // launchd opens it for append itself; rotated here, as for spawnDirect.
-      const stderrPath = rotateDaemonStderrLog(getWmuxDir()) ?? undefined;
+      // launchd opens it for append itself; rotated here, as for spawnDirect,
+      // and opened once so a file launchd could not open is never named.
+      const stderrPath = launchdDaemonStderrPath(getWmuxDir());
       startDaemonViaLaunchd(
         {
           baseLabel: launchdBaseLabel(dataSuffix()),

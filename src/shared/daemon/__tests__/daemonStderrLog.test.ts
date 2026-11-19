@@ -4,6 +4,7 @@ import type fs from 'fs';
 import {
   DAEMON_STDERR_LOG,
   DAEMON_STDERR_ROTATE_BYTES,
+  launchdDaemonStderrPath,
   openDaemonStderrLog,
   rotateDaemonStderrLog,
   withDaemonStderrFlag,
@@ -37,8 +38,9 @@ function fakeFs(opts: { size?: number; dir?: boolean; stat?: Error; rename?: Err
       if (opts.open) throw opts.open;
       return 42;
     }),
+    closeSync: vi.fn((fd: number) => { calls.push(`close ${fd}`); }),
   };
-  return { impl: impl as unknown as Pick<typeof fs, 'statSync' | 'renameSync' | 'openSync'>, calls };
+  return { impl: impl as unknown as Pick<typeof fs, 'statSync' | 'renameSync' | 'openSync' | 'closeSync'>, calls };
 }
 
 describe('daemon stderr log', () => {
@@ -74,6 +76,27 @@ describe('daemon stderr log', () => {
   it('rotation alone reports the path, or null when it failed (launchd opens the file itself)', () => {
     expect(rotateDaemonStderrLog(DIR, fakeFs({ size: 10 }).impl)).toBe(FILE);
     expect(rotateDaemonStderrLog(DIR, fakeFs({ size: DAEMON_STDERR_ROTATE_BYTES + 1, rename: new Error('EPERM') }).impl)).toBeNull();
+  });
+
+  // launchd opens StandardErrorPath before it runs the daemon: a file it
+  // cannot open ends the job with 78. The launcher opens it first and names
+  // only a file that opened; otherwise the job's stderr stays /dev/null.
+  it('launchd: names the rotated file only once it opened for append, and closes it again', () => {
+    const { impl, calls } = fakeFs({ size: DAEMON_STDERR_ROTATE_BYTES + 1 });
+    expect(launchdDaemonStderrPath(DIR, impl)).toBe(FILE);
+    expect(calls).toEqual([`stat ${FILE}`, `rename ${FILE} -> ${FILE}.1`, `open ${FILE} a 600`, 'close 42']);
+  });
+
+  it.each([
+    ['an existing file is not writable', { size: 10, open: Object.assign(new Error('EACCES'), { code: 'EACCES' }) }],
+    ['the rotation fails', { size: DAEMON_STDERR_ROTATE_BYTES + 1, rename: Object.assign(new Error('EBUSY'), { code: 'EBUSY' }) }],
+    ['something other than a file is at its path', { dir: true }],
+  ])('launchd: names no file when %s, so the flag stays off', (_what, opts) => {
+    const { impl, calls } = fakeFs(opts);
+    const stderrPath = launchdDaemonStderrPath(DIR, impl);
+    expect(stderrPath).toBeUndefined();
+    expect(calls.some(call => call.startsWith('close'))).toBe(false);
+    expect(withDaemonStderrFlag({ PATH: 'bin' }, stderrPath !== undefined)).toEqual({ PATH: 'bin' });
   });
 
   it('flags the spawn env only when stderr is the file, without changing the env it was given', () => {
