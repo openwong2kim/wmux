@@ -94,6 +94,7 @@ import { scheduleTokenFileReHarden } from '../shared/security';
 import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
 import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import { WEB_DEFAULT_PORT, webHostIsLoopback, type WebTlsConfig } from '../shared/web';
+import { warmRustSnapshot } from './RustSnapshot';
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, runSmallSnapshotJob, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
 import { usageLimitMenuOnScreen, usageLimitWaitOnScreen } from './usageLimit/limitMenu';
@@ -12287,6 +12288,9 @@ async function main(): Promise<void> {
 
   markDaemonBoot('ready');
   log('info', `Daemon ready — pipe: ${activePipeName}`);
+  // The native snapshot parser's one fixed allocation, taken now rather than
+  // under the memory pressure a busy pane brings (#3440).
+  warmRustSnapshot();
   void selfCheckPeerPid().then((verdict) => { if (verdict) log('info', `[peer-pid] daemon: ${verdict}`); });
   // Boot summary for postmortems. nodeTiming gives the Node/V8 startup split
   // for free (all values are ms relative to nodeTiming's own timeOrigin).

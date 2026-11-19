@@ -29,6 +29,9 @@ interface NativeModule {
   nativeCoreAbiVersion(): number;
   nativeCoreCapabilities?(): string[];
   NativeTerminal: new (cols: number, rows: number, scrollback: number) => NativeTerminal;
+  /** Fills this thread's parser pool (one vte parser, its 2 MiB sync buffer).
+   *  Absent from a module built before it. */
+  warmTerminalParsers?(): void;
 }
 let cached: { file: string; module: NativeModule } | undefined;
 const requireNative = createRequire(path.join(process.cwd(), 'wmux-native-loader.cjs'));
@@ -43,6 +46,17 @@ function load(): NativeModule {
     cached = { file, module };
   }
   return cached.module;
+}
+
+/**
+ * Takes the snapshot parser's one infallible allocation (vte's 2 MiB sync
+ * buffer, reused by every later snapshot on this thread) at daemon start,
+ * while memory is not yet short (#3440). A module that cannot load, or one
+ * built before the call, is left to the snapshot path, which reports it.
+ */
+export function warmRustSnapshot(): void {
+  try { load().warmTerminalParsers?.(); }
+  catch { /* the first snapshot reports a load error itself */ }
 }
 
 export function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi'): Promise<SnapshotOutcome>;

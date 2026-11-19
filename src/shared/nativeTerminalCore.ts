@@ -146,8 +146,10 @@ export const NATIVE_ALLOC_FAILED_PREFIX = 'ALLOC_FAILED: ';
 
 /**
  * The native core refused an allocation for one call: its message starts with
- * `ALLOC_FAILED: ` ("could not allocate <N> bytes for <what>"). The call left
- * its object as it was; nothing else in the daemon is affected.
+ * `ALLOC_FAILED: ` ("could not allocate <N> bytes for <what>"). Nothing else in
+ * the daemon is affected. A ring, transport, decoder or interpreter is left as
+ * it was; a NativeTerminal whose grid was refused is unusable afterwards (later
+ * calls fail with "unsupported-alloc"), so its owner disposes it.
  */
 export function isNativeAllocFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : undefined;
