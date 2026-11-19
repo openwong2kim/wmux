@@ -43,6 +43,7 @@ interface Control {
   owner?: string;
   listenError?: string;
   failNow?: boolean;
+  holdAccept?: number;
 }
 
 interface Rig {
@@ -393,23 +394,33 @@ describe.runIf(isWin)('the broker on Windows: the pre-auth gate, each test on it
 
   it('past the cap on connections waiting for their handshake, a new one is closed at once; a freed place admits again', async ({ onTestFailed }) => {
     const rig = started();
-    let step = 'opening 32 connections that send nothing';
-    onTestFailed(() => { console.error(`[cap test] failed while ${step}`); });
+    let step = 'opening 33 connections that send nothing';
+    onTestFailed(() => { console.error(`[cap test] failed while ${step}; broker log:\n${rig.log()}`); });
+    // The listener may hand connections on in another order than they
+    // connected (libuv does, over Node's pipe server). Here the 32nd is always
+    // handed on after the 33rd, so the one closed at the cap is not the last.
+    setControl(rig, { peer: selfPeer(), holdAccept: 32 });
     const idle: Session[] = [];
     try {
-      for (let i = 0; i < 32; i++) idle.push(await open(rig.pipe, null));
+      for (let i = 0; i < 33; i++) idle.push(await open(rig.pipe, null));
       step = 'waiting for the connection past the cap to close';
+      const first = await Promise.race(idle.map((s, i) => s.closed.then((bytes) => ({ i, bytes }))));
+      expect(first.bytes).toBe('');
+      await until(() => rig.log().includes('connections are waiting for their handshake; closing new ones'), 5000, () => rig.log());
+      idle.splice(first.i, 1);
+      // The 32 left fill the cap: a connection opened now is closed at once,
+      // whatever order the listener hands it on in.
+      step = 'waiting for a connection with a handshake to close at the cap';
       const over = await open(rig.pipe, handshake());
       expect(await over.closed).toBe('');
-      step = 'waiting for the cap to be logged';
-      await until(() => rig.log().includes('connections are waiting for their handshake; closing new ones'), 5000, () => rig.log());
+      expect(idle.filter((s) => s.socket.destroyed)).toHaveLength(0);
       // The node shim falls back on that close too.
       step = 'running the node shim';
       const run = await runShim(shim, rig);
       expect(run.stdout).toContain('FULL SERVER tools/call');
       expect(run.code).toBe(0);
       step = 'waiting for a freed place to admit a session';
-      idle.pop()!.socket.destroy();
+      idle[0].socket.destroy();
       let hosted = '';
       for (let i = 0; i < 40 && hosted === ''; i++) {
         const s = await open(rig.pipe, handshake());

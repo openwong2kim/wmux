@@ -12,6 +12,9 @@
 //   owner      what nativePipeOwnedByUs answers ('none' by default)
 //   listenError  a code the broker's own listener throws with at construction
 //   failNow    true: the listener reports a failure at the next accept
+//   holdAccept N: the Nth connection this listener accepts (from 1) is handed
+//              on only after the next one, as libuv may hand pipe connections
+//              on out of order
 // The broker's self-check (a name with "-pc-") always reads this process,
 // as this user.
 import fs from 'node:fs';
@@ -176,13 +179,24 @@ class NativePipeListener {
     this.queue = [];
     this.notify = notify;
     this.failed = null;
+    this.accepted = 0;
+    this.held = null;
     this.server = net.createServer((socket) => {
       const c = control();
       const peer = selfCheck
         ? { pid: process.pid, sessionId: 1, sameSession: true, sameUser: true, integrityRid: 0x2000, created: Date.now(), ppid: process.ppid, reason: null }
         : { pid: 0, sessionId: 1, sameSession: true, sameUser: true, integrityRid: 0x2000, created: Date.now(), ppid: null, reason: null, ...c.peer };
       const facts = selfCheck ? SAME_USER_FACTS : (c.facts === undefined ? SAME_USER_FACTS : c.facts);
-      this.queue.push(new FakeConn(socket, notify, peer, facts));
+      const conn = new FakeConn(socket, notify, peer, facts);
+      if (!selfCheck && ++this.accepted === c.holdAccept) {
+        this.held = conn;
+        return;
+      }
+      this.queue.push(conn);
+      if (this.held) {
+        this.queue.push(this.held);
+        this.held = null;
+      }
       if (!selfCheck && c.failNow) this.failed = 'fake listener failure';
       setImmediate(notify);
     });
@@ -199,6 +213,8 @@ class NativePipeListener {
   }
 
   close() {
+    this.held?.destroy();
+    this.held = null;
     this.server.close();
   }
 }
