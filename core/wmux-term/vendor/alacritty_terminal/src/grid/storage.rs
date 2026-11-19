@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Row;
 use crate::index::Line;
+use crate::wmux_alloc::{self, LINES};
 
 /// Maximum number of buffered lines outside of the grid for performance optimization.
 const MAX_CACHE_SIZE: usize = 1_000;
@@ -68,7 +69,8 @@ impl<T> Storage<T> {
         T: Default,
     {
         // Initialize visible lines; the scrollback buffer is initialized dynamically.
-        let mut inner = Vec::with_capacity(visible_lines);
+        // wmux: reserved fallibly, as is every row (`Row::new`).
+        let mut inner = wmux_alloc::with_capacity(visible_lines, LINES);
         inner.resize_with(visible_lines, || Row::new(columns));
 
         Storage { inner, zero: 0, visible_lines, len: visible_lines }
@@ -130,7 +132,8 @@ impl<T> Storage<T> {
             self.rezero();
 
             let realloc_size = self.inner.len() + max(additional_rows, MAX_CACHE_SIZE);
-            self.inner.resize_with(realloc_size, || Row::new(columns));
+            // wmux: reserved fallibly, as is every row (`Row::new`).
+            wmux_alloc::resize_with(&mut self.inner, realloc_size, || Row::new(columns), LINES);
         }
 
         self.len += additional_rows;

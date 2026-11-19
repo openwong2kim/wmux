@@ -13,6 +13,7 @@ use alacritty_terminal::vte::ansi::{
     Attr, CharsetIndex, ClearMode, Handler, NamedMode, NamedPrivateMode, Processor,
     StandardCharset, Timeout,
 };
+use alacritty_terminal::wmux_alloc::{self, GridAllocFailed};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -212,6 +213,9 @@ pub struct NativeTerminal {
     scanned: usize,
     /// The text feed's trailing ESC (advance_indexing).
     text_held: Vec<u8>,
+    /// A grid allocation was refused: the terminal is gone and every call
+    /// that needs it fails with GRID_REFUSED (`settle`).
+    grid_refused: bool,
 }
 
 /// Whether narrowing to `cols` reflows a row below the cursor's paragraph on
@@ -324,6 +328,25 @@ const TRACKED_C0: &str = "a control the feed tracks, without its C0 bytes";
 /// buffer partway through a call (the call itself reports ALLOC_FAILED).
 pub(crate) const ALLOC_REFUSED: &str =
     "unsupported-alloc: a buffer the ANSI feed needed could not be allocated";
+/// Why every call after a refused grid allocation fails: the refusal may have
+/// left the grid half updated, so the terminal is dropped (`settle`).
+pub(crate) const GRID_REFUSED: &str =
+    "unsupported-alloc: the terminal grid could not allocate, so this terminal is unusable";
+
+/// Runs `f`, which drives the vendored grid. A refused grid allocation
+/// unwinds out of it (vendor `wmux_alloc`: a zero-sized payload, no panic
+/// hook) and comes back here as the refusal; any other panic goes on. Nothing
+/// `f` touches holds a lock.
+fn grid_unwind<R>(f: impl FnOnce() -> R) -> std::result::Result<R, AllocFailed> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(result) => Ok(result),
+        Err(payload) if payload.is::<GridAllocFailed>() => {
+            let (bytes, what) = wmux_alloc::take_refusal();
+            Err(AllocFailed { what, bytes })
+        }
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
 
 fn check_feed_len(len: usize) -> Result<()> {
     if len > MAX_FEED_BYTES {
@@ -1639,8 +1662,9 @@ impl NativeTerminal {
             osc52: Osc52::Disabled,
             ..Config::default()
         };
+        let term = grid_unwind(|| Term::new(config, &size, VoidListener))?;
         Ok(Self {
-            term: Some(Term::new(config, &size, VoidListener)),
+            term: Some(term),
             parser: Processor::new(),
             scrollback,
             requested_scrollback: scrollback,
@@ -1651,20 +1675,25 @@ impl NativeTerminal {
             refusal: None,
             scanned: 0,
             text_held: Vec::new(),
+            grid_refused: false,
         })
     }
 
     #[napi(catch_unwind)]
     pub fn feed(&mut self, bytes: Uint8Array) -> Result<()> {
-        let term = self
-            .term
-            .as_mut()
-            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        check_feed_len(bytes.len())?;
-        // Parser retains incomplete UTF-8 / escape state across feeds.
-        // VoidListener intentionally discards all PTY replies and clipboard events.
-        advance_indexing(&mut self.parser, term, &mut self.text_held, &bytes)?;
-        Ok(())
+        self.usable()?;
+        let result = grid_unwind(|| {
+            let term = self
+                .term
+                .as_mut()
+                .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+            check_feed_len(bytes.len())?;
+            // Parser retains incomplete UTF-8 / escape state across feeds.
+            // VoidListener intentionally discards all PTY replies and clipboard events.
+            advance_indexing(&mut self.parser, term, &mut self.text_held, &bytes)?;
+            Ok(())
+        });
+        self.settle(result)
     }
 
     /// `feed` for an ANSI snapshot replayed by xterm: ED 1 and ED 2 erase as
@@ -1681,36 +1710,40 @@ impl NativeTerminal {
     /// (the join), or partway through, which also refuses the snapshot.
     #[napi(catch_unwind)]
     pub fn feed_xterm(&mut self, bytes: Uint8Array, requested_scrollback: u32) -> Result<bool> {
-        let term = self
-            .term
-            .as_mut()
-            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        check_feed_len(bytes.len())?;
-        if self.refusal.is_some() {
-            let take = bytes.len().min(REFUSAL_SCAN_BYTES - self.scanned);
-            self.feed.scan(&bytes[..take])?;
-            self.scanned += take;
+        self.usable()?;
+        let result = grid_unwind(|| {
+            let term = self
+                .term
+                .as_mut()
+                .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+            check_feed_len(bytes.len())?;
+            if self.refusal.is_some() {
+                let take = bytes.len().min(REFUSAL_SCAN_BYTES - self.scanned);
+                self.feed.scan(&bytes[..take])?;
+                self.scanned += take;
+                if let Some(failed) = self.feed.alloc_failed.take() {
+                    return Err(failed.into());
+                }
+                return Ok(self.scanned >= REFUSAL_SCAN_BYTES);
+            }
+            self.requested_scrollback = requested_scrollback;
+            self.feed.feed(&mut self.parser, term, &bytes)?;
+            if self.feed.divergent {
+                self.refusal = Some(
+                    self.feed
+                        .refused
+                        .unwrap_or("unsupported-state: a control Alacritty parses differently"),
+                );
+            } else if history_at_native_cap(term, requested_scrollback, self.scrollback) {
+                self.refusal = Some(HISTORY_LIMIT);
+            }
             if let Some(failed) = self.feed.alloc_failed.take() {
                 return Err(failed.into());
             }
-            return Ok(self.scanned >= REFUSAL_SCAN_BYTES);
-        }
-        self.requested_scrollback = requested_scrollback;
-        self.feed.feed(&mut self.parser, term, &bytes)?;
-        if self.feed.divergent {
-            self.refusal = Some(
-                self.feed
-                    .refused
-                    .unwrap_or("unsupported-state: a control Alacritty parses differently"),
-            );
-        } else if history_at_native_cap(term, requested_scrollback, self.scrollback) {
-            self.refusal = Some(HISTORY_LIMIT);
-        }
-        if let Some(failed) = self.feed.alloc_failed.take() {
-            return Err(failed.into());
-        }
-        // Refused in these bytes: the scan of the next ones comes first.
-        Ok(false)
+            // Refused in these bytes: the scan of the next ones comes first.
+            Ok(false)
+        });
+        self.settle(result)
     }
 
     /// Every refusal family the ANSI feed met, the reported one first, each
@@ -1730,201 +1763,213 @@ impl NativeTerminal {
     /// Replay an immutable native ring copy without a full JS Buffer round trip.
     #[napi(catch_unwind)]
     pub fn feed_frozen(&mut self, source: &NativeFrozenRing, start: u32, end: u32) -> Result<()> {
-        let bytes = source
-            .bytes
-            .get(start as usize..end as usize)
-            .ok_or_else(|| Error::from_reason("Invalid frozen ring range"))?;
-        let term = self
-            .term
-            .as_mut()
-            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        advance_indexing(&mut self.parser, term, &mut self.text_held, bytes)?;
-        Ok(())
+        self.usable()?;
+        let result = grid_unwind(|| {
+            let bytes = source
+                .bytes
+                .get(start as usize..end as usize)
+                .ok_or_else(|| Error::from_reason("Invalid frozen ring range"))?;
+            let term = self
+                .term
+                .as_mut()
+                .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+            advance_indexing(&mut self.parser, term, &mut self.text_held, bytes)?;
+            Ok(())
+        });
+        self.settle(result)
     }
 
     #[napi(catch_unwind)]
     pub fn resize(&mut self, cols: u32, rows: u32) -> Result<()> {
-        let size = dimensions(cols, rows)?;
-        if (rows as u64 + self.scrollback as u64) * cols as u64 > 4_000_000 {
-            return Err(Error::from_reason(
-                "Experiment grid exceeds four million cells",
-            ));
-        }
-        let term = self
-            .term
-            .as_mut()
-            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        // The row step runs at the old width first (below).
-        if (rows as u64 + self.scrollback as u64) * term.columns() as u64 > 4_000_000 {
-            return Err(Error::from_reason(
-                "Experiment grid exceeds four million cells",
-            ));
-        }
-        // vte holds bytes back inside a synchronized update; xterm parsed them
-        // at the old size. Apply them first, then re-enter the update.
-        let synchronized = self.parser.sync_timeout().pending_timeout();
-        if synchronized {
-            self.parser.stop_sync(term);
-            // The held bytes can trim at the cap at the old width, and a
-            // width-only widen can take the history back under it.
-            if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
-                self.refusal.get_or_insert(HISTORY_LIMIT);
+        self.usable()?;
+        let result = grid_unwind(|| {
+            let size = dimensions(cols, rows)?;
+            if (rows as u64 + self.scrollback as u64) * cols as u64 > 4_000_000 {
+                return Err(Error::from_reason(
+                    "Experiment grid exceeds four million cells",
+                ));
             }
-        }
-        // xterm never reflows or cuts the alternate screen: its rows keep
-        // their cells and wrap flags across a resize. The vendored grid keeps
-        // a row's cells past a narrower width and shows them again when it
-        // widens, as xterm's does (vendor/alacritty_terminal WMUX-PATCH.md),
-        // but a width change with a soft-wrapped row on screen loses the
-        // flags, until the screen is left.
-        if term.mode().contains(TermMode::ALT_SCREEN) {
-            let grid = term.grid();
-            let old = grid.columns();
-            if old != cols as usize
-                && (0..grid.screen_lines() as i32).any(|y| {
-                    grid[Line(y)][Column(old - 1)]
-                        .flags
-                        .contains(Flags::WRAPLINE)
-                })
-            {
-                self.feed.alt_reflow = true;
+            let term = self
+                .term
+                .as_mut()
+                .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+            // The row step runs at the old width first (below).
+            if (rows as u64 + self.scrollback as u64) * term.columns() as u64 > 4_000_000 {
+                return Err(Error::from_reason(
+                    "Experiment grid exceeds four million cells",
+                ));
             }
-        }
-        // Narrower, a paragraph below the cursor's that reflows: xterm moves
-        // its cursor row by the rows that adds as if they were above it and
-        // clips a different row than Alacritty does. (A widen follows xterm's
-        // rule in the vendored grow_columns.)
-        let primary = main_grid(term);
-        // xterm resizes its alternate screen's cursor without a reflow, and
-        // the round trip's `?47l` then hands it to the main screen.
-        let resized =
-            term.columns() != size.columns() || term.screen_lines() != size.screen_lines();
-        if self.feed.round_trip && resized {
-            self.refusal
-                .get_or_insert("unsupported-state-mode: a resize between ?47h and ?47l");
-        }
-        if reflows_below_cursor(primary, cols as usize) {
-            self.refusal.get_or_insert(
-                "unsupported-reflow: a paragraph below the cursor reflows, which moves xterm's cursor off its row",
-            );
-        }
-        // Both terminals reset the margins of both screens on a size change.
-        if resized {
-            self.feed.main_margins = false;
-            self.feed.alt_margins = false;
-        }
-        // A resize moves rows between the screen and the history on both
-        // terminals, and each moves its saved rows by its own rules. Both
-        // change rows before they reflow columns (Alacritty's Grid::resize;
-        // xterm's Buffer.resize runs _reflow last), so the row step runs on
-        // its own first and each screen's save is carried across it
-        // (RowStep). Then the column step's history change is carried, so a
-        // later restore counts only the rows the stream scrolled
-        // (place_like_xterm).
-        let target = size.screen_lines();
-        let alt = term.mode().contains(TermMode::ALT_SCREEN);
-        // xterm's alternate buffer, emptied whenever it is left, is skipped by
-        // its resize: it keeps the length it had, so shown again on fewer
-        // rows it keeps rows above the screen that Alacritty's has none of,
-        // and its saved column is not clamped.
-        if alt && self.feed.alt_rows > term.screen_lines() {
-            self.feed.alt_overhang = true;
-        }
-        if !alt && alt_grid(term).saved_cursor.point.column.0 >= size.columns() {
-            self.feed.saved[1].unplaceable = true;
-        }
-        self.feed.alt_rows = if alt {
-            target
-        } else {
-            self.feed.alt_rows.max(target)
-        };
-        if term.screen_lines() != target {
-            let main_step = RowStep::before(
-                main_grid(term),
-                self.feed.saved[0].history,
-                target,
-                self.scrollback as usize,
-            );
-            let alt_step = if alt {
-                RowStep::before(alt_grid(term), self.feed.saved[1].history, target, 0)
+            // vte holds bytes back inside a synchronized update; xterm parsed them
+            // at the old size. Apply them first, then re-enter the update.
+            let synchronized = self.parser.sync_timeout().pending_timeout();
+            if synchronized {
+                self.parser.stop_sync(term);
+                // The held bytes can trim at the cap at the old width, and a
+                // width-only widen can take the history back under it.
+                if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
+                    self.refusal.get_or_insert(HISTORY_LIMIT);
+                }
+            }
+            // xterm never reflows or cuts the alternate screen: its rows keep
+            // their cells and wrap flags across a resize. The vendored grid keeps
+            // a row's cells past a narrower width and shows them again when it
+            // widens, as xterm's does (vendor/alacritty_terminal WMUX-PATCH.md),
+            // but a width change with a soft-wrapped row on screen loses the
+            // flags, until the screen is left.
+            if term.mode().contains(TermMode::ALT_SCREEN) {
+                let grid = term.grid();
+                let old = grid.columns();
+                if old != cols as usize
+                    && (0..grid.screen_lines() as i32).any(|y| {
+                        grid[Line(y)][Column(old - 1)]
+                            .flags
+                            .contains(Flags::WRAPLINE)
+                    })
+                {
+                    self.feed.alt_reflow = true;
+                }
+            }
+            // Narrower, a paragraph below the cursor's that reflows: xterm moves
+            // its cursor row by the rows that adds as if they were above it and
+            // clips a different row than Alacritty does. (A widen follows xterm's
+            // rule in the vendored grow_columns.)
+            let primary = main_grid(term);
+            // xterm resizes its alternate screen's cursor without a reflow, and
+            // the round trip's `?47l` then hands it to the main screen.
+            let resized =
+                term.columns() != size.columns() || term.screen_lines() != size.screen_lines();
+            if self.feed.round_trip && resized {
+                self.refusal
+                    .get_or_insert("unsupported-state-mode: a resize between ?47h and ?47l");
+            }
+            if reflows_below_cursor(primary, cols as usize) {
+                self.refusal.get_or_insert(
+                    "unsupported-reflow: a paragraph below the cursor reflows, which moves xterm's cursor off its row",
+                );
+            }
+            // Both terminals reset the margins of both screens on a size change.
+            if resized {
+                self.feed.main_margins = false;
+                self.feed.alt_margins = false;
+            }
+            // A resize moves rows between the screen and the history on both
+            // terminals, and each moves its saved rows by its own rules. Both
+            // change rows before they reflow columns (Alacritty's Grid::resize;
+            // xterm's Buffer.resize runs _reflow last), so the row step runs on
+            // its own first and each screen's save is carried across it
+            // (RowStep). Then the column step's history change is carried, so a
+            // later restore counts only the rows the stream scrolled
+            // (place_like_xterm).
+            let target = size.screen_lines();
+            let alt = term.mode().contains(TermMode::ALT_SCREEN);
+            // xterm's alternate buffer, emptied whenever it is left, is skipped by
+            // its resize: it keeps the length it had, so shown again on fewer
+            // rows it keeps rows above the screen that Alacritty's has none of,
+            // and its saved column is not clamped.
+            if alt && self.feed.alt_rows > term.screen_lines() {
+                self.feed.alt_overhang = true;
+            }
+            if !alt && alt_grid(term).saved_cursor.point.column.0 >= size.columns() {
+                self.feed.saved[1].unplaceable = true;
+            }
+            self.feed.alt_rows = if alt {
+                target
             } else {
-                RowStep::untouched(alt_grid(term), self.feed.saved[1].history)
+                self.feed.alt_rows.max(target)
             };
-            term.resize(dimensions(term.columns() as u32, rows)?);
-            self.feed.saved[0].history = main_step.after(main_grid(term));
-            self.feed.saved[1].history = alt_step.after(alt_grid(term));
-            // Checked here too: a wider reflow next can take history back
-            // under the cap after the row step trimmed at it.
+            if term.screen_lines() != target {
+                let main_step = RowStep::before(
+                    main_grid(term),
+                    self.feed.saved[0].history,
+                    target,
+                    self.scrollback as usize,
+                );
+                let alt_step = if alt {
+                    RowStep::before(alt_grid(term), self.feed.saved[1].history, target, 0)
+                } else {
+                    RowStep::untouched(alt_grid(term), self.feed.saved[1].history)
+                };
+                term.resize(dimensions(term.columns() as u32, rows)?);
+                self.feed.saved[0].history = main_step.after(main_grid(term));
+                self.feed.saved[1].history = alt_step.after(alt_grid(term));
+                // Checked here too: a wider reflow next can take history back
+                // under the cap after the row step trimmed at it.
+                if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
+                    self.refusal.get_or_insert(HISTORY_LIMIT);
+                }
+            }
+            let before = main_grid(term).history_size() as i64;
+            let saved_line = i64::from(main_grid(term).saved_cursor.point.line.0);
+            // The grid records a narrowing only when this resize runs one: a
+            // resize to the same size returns early and leaves the last one's.
+            let narrows = size.columns() < term.columns();
+            term.resize(size);
+            let grid = main_grid(term);
+            self.feed.saved[0].history = if narrows && grid.narrowing_added > 0 {
+                narrowed_saved_history(grid, self.feed.saved[0].history, saved_line)
+            } else {
+                self.feed.saved[0].history + grid.history_size() as i64 - before
+            };
+            // feed_xterm checks the same after a chunk, where the chunk's own
+            // ED 3 could hide a resize's trim.
             if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
                 self.refusal.get_or_insert(HISTORY_LIMIT);
             }
-        }
-        let before = main_grid(term).history_size() as i64;
-        let saved_line = i64::from(main_grid(term).saved_cursor.point.line.0);
-        // The grid records a narrowing only when this resize runs one: a
-        // resize to the same size returns early and leaves the last one's.
-        let narrows = size.columns() < term.columns();
-        term.resize(size);
-        let grid = main_grid(term);
-        self.feed.saved[0].history = if narrows && grid.narrowing_added > 0 {
-            narrowed_saved_history(grid, self.feed.saved[0].history, saved_line)
-        } else {
-            self.feed.saved[0].history + grid.history_size() as i64 - before
-        };
-        // feed_xterm checks the same after a chunk, where the chunk's own
-        // ED 3 could hide a resize's trim.
-        if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
-            self.refusal.get_or_insert(HISTORY_LIMIT);
-        }
-        if synchronized {
-            self.parser.advance(term, b"\x1b[?2026h");
-        }
-        Ok(())
+            if synchronized {
+                self.parser.advance(term, b"\x1b[?2026h");
+            }
+            Ok(())
+        });
+        self.settle(result)
     }
 
     #[napi(catch_unwind)]
     pub fn text_snapshot(&mut self, undimmed: bool) -> Result<NativeTextSnapshot> {
-        let term = self
-            .term
-            .as_mut()
-            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        self.parser.advance(term, &self.text_held);
-        self.text_held.clear();
-        // A text read must include bytes in an unfinished synchronized update.
-        // This finalizes the batch; this API does not promise ANSI replay state.
-        self.parser.stop_sync(term);
-        let grid = term.grid();
-        let history = grid.history_size() as i32;
-        // One per grid line: at most the grid's 4M cells.
-        let mut rows = fallible::try_with_capacity(grid.total_lines(), TEXT_SNAPSHOT)?;
-        let mut wrapped = false;
-        for y in -history..grid.screen_lines() as i32 {
-            let line = &grid[Line(y)];
-            let (text, plain) = text_row(line, grid.columns(), undimmed)?;
-            rows.push(NativeTextRow {
-                text,
-                wrapped,
-                undimmed: plain,
-            });
-            wrapped = line[Column(grid.columns() - 1)]
-                .flags
-                .contains(Flags::WRAPLINE);
-        }
-        while rows.last().is_some_and(|r| r.text.is_empty()) {
-            rows.pop();
-        }
-        let cursor_row = history + grid.cursor.point.line.0;
-        let rows_below_cursor = (rows.len() as i32 - 1 - cursor_row).max(0) as u32;
-        Ok(NativeTextSnapshot {
-            rows,
-            rows_below_cursor,
-            buffer_type: if term.mode().contains(TermMode::ALT_SCREEN) {
-                "alternate"
-            } else {
-                "normal"
+        self.usable()?;
+        let result = grid_unwind(|| {
+            let term = self
+                .term
+                .as_mut()
+                .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+            self.parser.advance(term, &self.text_held);
+            self.text_held.clear();
+            // A text read must include bytes in an unfinished synchronized update.
+            // This finalizes the batch; this API does not promise ANSI replay state.
+            self.parser.stop_sync(term);
+            let grid = term.grid();
+            let history = grid.history_size() as i32;
+            // One per grid line: at most the grid's 4M cells.
+            let mut rows = fallible::try_with_capacity(grid.total_lines(), TEXT_SNAPSHOT)?;
+            let mut wrapped = false;
+            for y in -history..grid.screen_lines() as i32 {
+                let line = &grid[Line(y)];
+                let (text, plain) = text_row(line, grid.columns(), undimmed)?;
+                rows.push(NativeTextRow {
+                    text,
+                    wrapped,
+                    undimmed: plain,
+                });
+                wrapped = line[Column(grid.columns() - 1)]
+                    .flags
+                    .contains(Flags::WRAPLINE);
             }
-            .into(),
-        })
+            while rows.last().is_some_and(|r| r.text.is_empty()) {
+                rows.pop();
+            }
+            let cursor_row = history + grid.cursor.point.line.0;
+            let rows_below_cursor = (rows.len() as i32 - 1 - cursor_row).max(0) as u32;
+            Ok(NativeTextSnapshot {
+                rows,
+                rows_below_cursor,
+                buffer_type: if term.mode().contains(TermMode::ALT_SCREEN) {
+                    "alternate"
+                } else {
+                    "normal"
+                }
+                .into(),
+            })
+        });
+        self.settle(result)
     }
 
     /// `requested_scrollback` above this terminal's own limit means the
@@ -1932,79 +1977,110 @@ impl NativeTerminal {
     /// cap may have dropped rows the request would have kept.
     #[napi(catch_unwind)]
     pub fn ansi_snapshot(&mut self, requested_scrollback: Option<u32>) -> Result<Buffer> {
-        let term = self
-            .term
-            .as_mut()
-            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        // An unfinished sequence is part of the stream: parse it, then ship it.
-        self.parser.advance(term, &self.feed.held);
-        // Bytes held in a synchronized update count for the checks below.
-        let synchronized = self.parser.sync_timeout().pending_timeout();
-        self.parser.stop_sync(term);
-        // xterm still shows the blank alternate screen; Alacritty the main.
-        if self.feed.round_trip && self.refusal.is_none() {
-            self.feed.refuse(true, OPEN_ROUND_TRIP);
-            self.refusal = Some(OPEN_ROUND_TRIP);
-        }
-        if let Some(refusal) = self.refusal {
-            return Err(Error::from_reason(refusal));
-        }
-        if self.feed.alt_reflow {
-            return Err(Error::from_reason(
-                "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
-            ));
-        }
-        if requested_scrollback.is_some_and(|requested| requested > self.scrollback)
-            && [term.grid(), term.inactive_grid()]
-                .iter()
-                .any(|grid| grid.history_size() >= self.scrollback as usize)
-        {
-            return Err(Error::from_reason(
-                "unsupported-history-limit: history reached the native grid cap",
-            ));
-        }
-        // xterm's SerializeAddon drops margins: both paths replay raw then.
-        if self.feed.margins() {
-            return Err(Error::from_reason("margins"));
-        }
-        let tail = self.feed.pending_tail()?;
-        let mut result = crate::native_serialize::serialize(term, !self.feed.shifted)?;
-        // The modes below (at most 30 bytes: `?100Nh`, `?1016h`, `?2026h`,
-        // `?25l`) and the tail, so neither grows the payload infallibly.
-        fallible::try_reserve_str(
-            &mut result,
-            tail.len().saturating_add(ANSI_MODES_TAIL),
-            "the ANSI snapshot",
-        )?;
-        // Mouse protocol and encoding as xterm's modes tail restores them: the
-        // encoding only while a protocol is on.
-        if self.feed.mouse != 0 {
-            let _ =
-                std::fmt::Write::write_fmt(&mut result, format_args!("\x1b[?{}h", self.feed.mouse));
-            if self.feed.sgr_pixels {
-                result.push_str("\x1b[?1016h");
-            } else if self.feed.sgr_mouse {
-                result.push_str("\x1b[?1006h");
+        self.usable()?;
+        let result = grid_unwind(|| {
+            let term = self
+                .term
+                .as_mut()
+                .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+            // An unfinished sequence is part of the stream: parse it, then ship it.
+            self.parser.advance(term, &self.feed.held);
+            // Bytes held in a synchronized update count for the checks below.
+            let synchronized = self.parser.sync_timeout().pending_timeout();
+            self.parser.stop_sync(term);
+            // xterm still shows the blank alternate screen; Alacritty the main.
+            if self.feed.round_trip && self.refusal.is_none() {
+                self.feed.refuse(true, OPEN_ROUND_TRIP);
+                self.refusal = Some(OPEN_ROUND_TRIP);
             }
-        }
-        if synchronized {
-            result.push_str("\x1b[?2026h");
-        }
-        // Asserted always: a reflush lands on a client whose cursor may be hidden.
-        result.push_str(if self.feed.cursor_hidden {
-            "\x1b[?25l"
-        } else {
-            "\x1b[?25h"
+            if let Some(refusal) = self.refusal {
+                return Err(Error::from_reason(refusal));
+            }
+            if self.feed.alt_reflow {
+                return Err(Error::from_reason(
+                    "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
+                ));
+            }
+            if requested_scrollback.is_some_and(|requested| requested > self.scrollback)
+                && [term.grid(), term.inactive_grid()]
+                    .iter()
+                    .any(|grid| grid.history_size() >= self.scrollback as usize)
+            {
+                return Err(Error::from_reason(
+                    "unsupported-history-limit: history reached the native grid cap",
+                ));
+            }
+            // xterm's SerializeAddon drops margins: both paths replay raw then.
+            if self.feed.margins() {
+                return Err(Error::from_reason("margins"));
+            }
+            let tail = self.feed.pending_tail()?;
+            let mut result = crate::native_serialize::serialize(term, !self.feed.shifted)?;
+            // The modes below (at most 30 bytes: `?100Nh`, `?1016h`, `?2026h`,
+            // `?25l`) and the tail, so neither grows the payload infallibly.
+            fallible::try_reserve_str(
+                &mut result,
+                tail.len().saturating_add(ANSI_MODES_TAIL),
+                "the ANSI snapshot",
+            )?;
+            // Mouse protocol and encoding as xterm's modes tail restores them: the
+            // encoding only while a protocol is on.
+            if self.feed.mouse != 0 {
+                let _ = std::fmt::Write::write_fmt(
+                    &mut result,
+                    format_args!("\x1b[?{}h", self.feed.mouse),
+                );
+                if self.feed.sgr_pixels {
+                    result.push_str("\x1b[?1016h");
+                } else if self.feed.sgr_mouse {
+                    result.push_str("\x1b[?1006h");
+                }
+            }
+            if synchronized {
+                result.push_str("\x1b[?2026h");
+            }
+            // Asserted always: a reflush lands on a client whose cursor may be hidden.
+            result.push_str(if self.feed.cursor_hidden {
+                "\x1b[?25l"
+            } else {
+                "\x1b[?25h"
+            });
+            let mut payload = result.into_bytes();
+            payload.extend_from_slice(&tail);
+            Ok(payload.into())
         });
-        let mut payload = result.into_bytes();
-        payload.extend_from_slice(&tail);
-        Ok(payload.into())
+        self.settle(result)
     }
 
     #[napi(catch_unwind)]
     pub fn dispose(&mut self) {
         self.term = None;
         self.parser = Processor::new();
+    }
+}
+
+impl NativeTerminal {
+    /// GRID_REFUSED once a grid allocation was refused.
+    fn usable(&self) -> Result<()> {
+        if self.grid_refused {
+            return Err(Error::from_reason(GRID_REFUSED));
+        }
+        Ok(())
+    }
+
+    /// The result of a call into the grid (`grid_unwind`). A refused grid
+    /// allocation throws ALLOC_FAILED for this call, and the terminal is
+    /// dropped: the grid may be half updated. The snapshot is refused as
+    /// unsupported-alloc, and every later call but `refusalFamilies` and
+    /// `dispose` fails with GRID_REFUSED.
+    fn settle<R>(&mut self, result: std::result::Result<Result<R>, AllocFailed>) -> Result<R> {
+        result.unwrap_or_else(|failed| {
+            self.grid_refused = true;
+            self.term = None;
+            self.feed.refuse(true, GRID_REFUSED);
+            self.refusal.get_or_insert(GRID_REFUSED);
+            Err(failed.into())
+        })
     }
 }
 
@@ -4207,5 +4283,148 @@ mod alloc_failure_tests {
         assert_eq!(resets_1049(b"\x1b[1049l"), None);
         assert_eq!(resets_1049(b"\x1b[?1049:1l"), None);
         assert_eq!(resets_1049(b"\x1b"), None);
+    }
+}
+
+#[cfg(test)]
+mod grid_refusal_tests {
+    use super::*;
+    use crate::fallible::ALLOC_FAILED;
+    use alacritty_terminal::wmux_alloc::{fail_what, DAMAGE, LINES, REFLOW, ROW, TABS};
+
+    /// One row of 205 cells (24 bytes each): the size of the abort the
+    /// capped series met.
+    const ROW_205: &str = "ALLOC_FAILED: could not allocate 4920 bytes for a grid row";
+
+    fn bytes(data: &[u8]) -> Uint8Array {
+        Uint8Array::new(data.to_vec())
+    }
+
+    /// The call threw `seam`; the terminal is dropped, the snapshot refused
+    /// as unsupported-alloc, and every later call fails with GRID_REFUSED.
+    fn assert_grid_refused(terminal: &mut NativeTerminal, error: Option<Error>, seam: &str) {
+        let error = error.expect("the call is refused");
+        assert_eq!(error.reason, seam);
+        assert_eq!(error.status, napi::Status::GenericFailure);
+        assert!(terminal.term.is_none(), "the terminal is dropped");
+        assert_eq!(terminal.refusal_families().unwrap(), ["unsupported-alloc"]);
+        let later = [
+            terminal.feed(bytes(b"x")).err(),
+            terminal.feed_xterm(bytes(b"x"), 100).err(),
+            terminal.resize(30, 5).err(),
+            terminal.text_snapshot(false).err(),
+            terminal.ansi_snapshot(None).err(),
+        ];
+        for error in later {
+            assert_eq!(error.expect("refused").reason, GRID_REFUSED);
+        }
+        terminal.dispose();
+    }
+
+    #[test]
+    fn a_refused_grid_in_new_is_an_error() {
+        for what in [LINES, ROW, TABS, DAMAGE] {
+            let _fail = fail_what(what);
+            let error = NativeTerminal::new(205, 24, 100).err().expect("refused");
+            assert!(error.reason.starts_with(ALLOC_FAILED), "{}", error.reason);
+            assert!(
+                error.reason.ends_with(&format!("bytes for {what}")),
+                "{}",
+                error.reason
+            );
+            assert_eq!(error.status, napi::Status::GenericFailure);
+        }
+        let _fail = fail_what(ROW);
+        assert_eq!(
+            NativeTerminal::new(205, 24, 100).err().unwrap().reason,
+            ROW_205
+        );
+        drop(_fail);
+        assert!(NativeTerminal::new(205, 24, 100).is_ok());
+    }
+
+    #[test]
+    fn a_refused_row_drops_the_terminal() {
+        let mut terminal = NativeTerminal::new(20, 4, 100).unwrap();
+        terminal.feed(bytes(b"hello")).unwrap();
+        let error = {
+            let _fail = fail_what(ROW);
+            terminal.resize(205, 4).err()
+        };
+        assert_grid_refused(&mut terminal, error, ROW_205);
+    }
+
+    #[test]
+    fn a_refused_history_growth_drops_the_terminal() {
+        let mut terminal = NativeTerminal::new(20, 4, 100).unwrap();
+        let error = {
+            let _fail = fail_what(LINES);
+            terminal
+                .feed_xterm(bytes(b"1\r\n2\r\n3\r\n4\r\n5"), 100)
+                .err()
+        };
+        // The history grows by 1000 rows at once, past the screen's 4.
+        let seam = "ALLOC_FAILED: could not allocate 48192 bytes for the grid's lines";
+        assert_grid_refused(&mut terminal, error, seam);
+    }
+
+    #[test]
+    fn a_refused_reflow_drops_the_terminal() {
+        let mut terminal = NativeTerminal::new(20, 4, 100).unwrap();
+        terminal.feed(bytes(b"hello")).unwrap();
+        let error = {
+            let _fail = fail_what(REFLOW);
+            terminal.resize(10, 4).err()
+        };
+        // The rows laid out again: the 4 on screen.
+        let seam = "ALLOC_FAILED: could not allocate 192 bytes for a grid reflow";
+        assert_grid_refused(&mut terminal, error, seam);
+    }
+
+    #[test]
+    fn a_panic_other_than_a_refusal_goes_on() {
+        let payload = std::panic::catch_unwind(|| grid_unwind(|| std::panic::panic_any(7u8)));
+        assert_eq!(payload.err().unwrap().downcast_ref::<u8>(), Some(&7));
+    }
+
+    /// The real allocator refusing, not the injection: every allocation of at
+    /// least 4 KiB on the armed thread fails, as one did in the capped series.
+    mod refusing_allocator {
+        use super::{NativeTerminal, ROW_205};
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        thread_local! {
+            static ARMED: Cell<bool> = const { Cell::new(false) };
+        }
+
+        struct Refusing;
+
+        // SAFETY: forwards to `System`, or refuses with a null pointer.
+        unsafe impl GlobalAlloc for Refusing {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                if layout.size() >= 4096 && ARMED.try_with(Cell::get).unwrap_or(false) {
+                    return std::ptr::null_mut();
+                }
+                System.alloc(layout)
+            }
+
+            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                System.dealloc(ptr, layout)
+            }
+        }
+
+        #[global_allocator]
+        static GLOBAL: Refusing = Refusing;
+
+        #[test]
+        fn a_refused_grid_row_is_alloc_failed_not_an_abort() {
+            let mut terminal = NativeTerminal::new(80, 24, 0).unwrap();
+            ARMED.with(|armed| armed.set(true));
+            let error = terminal.resize(205, 24).err();
+            ARMED.with(|armed| armed.set(false));
+            assert_eq!(error.expect("refused").reason, ROW_205);
+            assert!(terminal.term.is_none());
+        }
     }
 }

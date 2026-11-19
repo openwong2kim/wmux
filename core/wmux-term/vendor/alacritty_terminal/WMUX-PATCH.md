@@ -168,6 +168,20 @@ core/wmux-term/vendor/alacritty_terminal/Cargo.toml --locked`.
   row can be marked; an erase lowers `occ` to its run, and a mark dropped when
   cells move (`forget_mark`) puts `occ` back over the row, since an erase's
   run can hold its background past `occ`. Added 2026-11-12.
+- `src/wmux_alloc.rs` (registered in `src/lib.rs`): every allocation sized by
+  the grid's columns, lines or scrollback reserves with `try_reserve`
+  (#3440): `Row::new` and every row growth, split and append in
+  `src/grid/row.rs`, `Storage::with_capacity` and `Storage::initialize` (the
+  history's growth by up to 1000 rows), every vector `src/grid/resize.rs`
+  lays out in a reflow, and the tab stops and line damage in
+  `src/term/mod.rs`. A refusal unwinds with the zero-sized `GridAllocFailed`
+  through `resume_unwind` (no panic hook, no backtrace; the boxed payload
+  allocates nothing), and `take_refusal` reads its bytes and purpose from a
+  thread-local `Cell`. `native_core.rs` catches it around every call into the
+  terminal, reports ALLOC_FAILED and drops the terminal. `Row::new` fills its
+  reserved row with `resize_with` instead of upstream's unsafe writes.
+  `fail_what` is a test hook wmux-term's tests use too, so it is always
+  compiled. Added 2026-11-19.
 
 These changes are experimental compatibility policy, not upstream behavior.
 Revalidate width, resize, ANSI restoration and live continuation when upgrading.

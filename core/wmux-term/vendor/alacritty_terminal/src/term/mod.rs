@@ -20,6 +20,7 @@ use crate::selection::{Selection, SelectionRange, SelectionType};
 use crate::term::cell::{Cell, Flags, LineLength};
 use crate::term::color::Colors;
 use crate::vi_mode::{ViModeCursor, ViMotion};
+use crate::wmux_alloc::{self, DAMAGE, TABS};
 use crate::vte::ansi::{
     self, Attr, CharsetIndex, Color, CursorShape, CursorStyle, Handler, Hyperlink, KeyboardModes,
     KeyboardModesApplyBehavior, NamedColor, NamedMode, NamedPrivateMode, PrivateMode, Rgb,
@@ -227,8 +228,11 @@ struct TermDamageState {
 
 impl TermDamageState {
     fn new(num_cols: usize, num_lines: usize) -> Self {
-        let lines =
-            (0..num_lines).map(|line| LineDamageBounds::undamaged(line, num_cols)).collect();
+        // wmux: reserved fallibly (`wmux_alloc`).
+        let lines = wmux_alloc::collect(
+            (0..num_lines).map(|line| LineDamageBounds::undamaged(line, num_cols)),
+            DAMAGE,
+        );
 
         Self { full: true, lines, last_cursor: Default::default() }
     }
@@ -240,7 +244,7 @@ impl TermDamageState {
         self.full = true;
 
         self.lines.clear();
-        self.lines.reserve(num_lines);
+        wmux_alloc::reserve(&mut self.lines, num_lines, DAMAGE);
         for line in 0..num_lines {
             self.lines.push(LineDamageBounds::undamaged(line, num_cols));
         }
@@ -2633,7 +2637,9 @@ struct TabStops {
 impl TabStops {
     #[inline]
     fn new(columns: usize) -> TabStops {
-        TabStops { tabs: (0..columns).map(|i| i % INITIAL_TABSTOPS == 0).collect() }
+        // wmux: reserved fallibly (`wmux_alloc`).
+        let tabs = (0..columns).map(|i| i % INITIAL_TABSTOPS == 0);
+        TabStops { tabs: wmux_alloc::collect(tabs, TABS) }
     }
 
     /// Remove all tabstops.
@@ -2648,11 +2654,12 @@ impl TabStops {
     #[inline]
     fn resize(&mut self, columns: usize) {
         let mut index = self.tabs.len();
-        self.tabs.resize_with(columns, || {
+        let fill = || {
             let is_tabstop = index % INITIAL_TABSTOPS == 0;
             index += 1;
             is_tabstop
-        });
+        };
+        wmux_alloc::resize_with(&mut self.tabs, columns, fill, TABS);
     }
 }
 
