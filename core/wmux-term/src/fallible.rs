@@ -10,8 +10,9 @@
 //! The seam to JS: a refusal reaches JS as a thrown error whose message is
 //! `ALLOC_FAILED: could not allocate <N> bytes for <what>` (`message`).
 
+use std::cell::Cell;
 use std::collections::VecDeque;
-use std::fmt;
+use std::fmt::{self, Write as _};
 
 /// The prefix JS matches a refused allocation by.
 pub(crate) const ALLOC_FAILED: &str = "ALLOC_FAILED: ";
@@ -23,11 +24,84 @@ pub(crate) struct AllocFailed {
     pub bytes: usize,
 }
 
+/// The capacity of a thread's spare message buffer (`message`): the prefix,
+/// `could not allocate `, 20 digits, ` bytes for ` and a purpose of up to 96
+/// bytes (the longest is about 50).
+const SPARE_MESSAGE: usize = 160;
+
+thread_local! {
+    /// The buffer this thread's next seam message is written into, taken
+    /// right after a refusal without asking the allocator for anything. It
+    /// is refilled after a fallible allocation succeeds (`keep_spare`).
+    static SPARE: Cell<Option<String>> = const { Cell::new(None) };
+}
+
+/// Gives this thread a spare message buffer if it has none; a refused one
+/// is left for the next success.
+fn keep_spare() {
+    let _ = SPARE.try_with(|spare| {
+        let kept = spare.take().or_else(|| {
+            let mut buffer = String::new();
+            buffer.try_reserve_exact(SPARE_MESSAGE).ok()?;
+            Some(buffer)
+        });
+        spare.set(kept);
+    });
+}
+
+/// Fills this thread's spare message buffer now (tests).
+#[cfg(test)]
+pub(crate) fn refill_spare() {
+    keep_spare();
+}
+
+/// Decimal digits in `n`.
+fn digits(mut n: usize) -> usize {
+    let mut count = 1;
+    while n >= 10 {
+        n /= 10;
+        count += 1;
+    }
+    count
+}
+
 impl AllocFailed {
     /// The seam message, shared by the thrown error and the transport's
-    /// recorded read error.
+    /// recorded read error. Built right after a refusal, so it is written
+    /// into this thread's spare buffer, moved out without an allocation.
+    /// With no spare (a second refusal before any success on this thread),
+    /// it asks for exactly its own length; refused, for the prefix alone;
+    /// refused again, it is empty, and JS sees no `ALLOC_FAILED: ` then. An
+    /// empty message is what remains of this seam once nothing at all can be
+    /// allocated, rather than an abort.
     pub(crate) fn message(&self) -> String {
-        self.to_string()
+        let len = ALLOC_FAILED.len()
+            + "could not allocate ".len()
+            + digits(self.bytes)
+            + " bytes for ".len()
+            + self.what.len();
+        let spare = SPARE.try_with(Cell::take).ok().flatten();
+        let mut text = match spare {
+            Some(buffer) if buffer.capacity() >= len => buffer,
+            spare => {
+                if let Some(buffer) = spare {
+                    let _ = SPARE.try_with(|cell| cell.set(Some(buffer)));
+                }
+                let mut buffer = String::new();
+                if buffer.try_reserve_exact(len).is_err() {
+                    let mut prefix = String::new();
+                    if prefix.try_reserve_exact(ALLOC_FAILED.len()).is_ok() {
+                        prefix.push_str(ALLOC_FAILED);
+                    }
+                    return prefix;
+                }
+                buffer
+            }
+        };
+        text.clear();
+        // Within the capacity checked above: no allocation.
+        let _ = write!(text, "{self}");
+        text
     }
 }
 
@@ -44,7 +118,8 @@ impl fmt::Display for AllocFailed {
 #[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
 impl From<AllocFailed> for napi::Error {
     fn from(failed: AllocFailed) -> Self {
-        napi::Error::new(napi::Status::GenericFailure, failed.message())
+        // GenericFailure; the message is moved in, not copied.
+        napi::Error::from_reason(failed.message())
     }
 }
 
@@ -197,7 +272,9 @@ pub(crate) fn try_reserve<T>(
     if injected(&failed) {
         return Err(failed);
     }
-    v.try_reserve(additional).map_err(|_| failed)
+    v.try_reserve(additional).map_err(|_| failed)?;
+    keep_spare();
+    Ok(())
 }
 
 /// `Vec::try_reserve_exact`.
@@ -216,7 +293,9 @@ pub(crate) fn try_reserve_exact<T>(
     if injected(&failed) {
         return Err(failed);
     }
-    v.try_reserve_exact(additional).map_err(|_| failed)
+    v.try_reserve_exact(additional).map_err(|_| failed)?;
+    keep_spare();
+    Ok(())
 }
 
 /// `String::try_reserve` (amortized growth).
@@ -235,7 +314,9 @@ pub(crate) fn try_reserve_str(
     if injected(&failed) {
         return Err(failed);
     }
-    s.try_reserve(additional).map_err(|_| failed)
+    s.try_reserve(additional).map_err(|_| failed)?;
+    keep_spare();
+    Ok(())
 }
 
 /// `VecDeque::try_reserve` (amortized growth).
@@ -254,7 +335,9 @@ pub(crate) fn try_reserve_deque<T>(
     if injected(&failed) {
         return Err(failed);
     }
-    d.try_reserve(additional).map_err(|_| failed)
+    d.try_reserve(additional).map_err(|_| failed)?;
+    keep_spare();
+    Ok(())
 }
 
 /// An empty vector with room for exactly `capacity` elements.

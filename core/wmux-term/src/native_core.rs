@@ -498,9 +498,7 @@ impl OscCap {
                 OscScan::Osc => {
                     match string_end(&bytes[i..]) {
                         Some(end) if self.body + end <= MAX_OSC_BODY => {
-                            self.hold(&bytes[i..i + end])?;
-                            self.scan = OscScan::Text;
-                            self.flush(emit)?;
+                            self.flush(&bytes[i..i + end], emit)?;
                             from = i + end;
                             i += end;
                         }
@@ -559,8 +557,12 @@ impl OscCap {
                     (from, i) = self.end_dropped(bytes, body + end);
                 }
                 None if len - body <= MAX_OSC_BODY => {
-                    self.hold(&bytes[start..])?;
+                    // Room first, then the bytes before it: only once they
+                    // went on is the OSC held, so a refusal of either leaves
+                    // nothing held and a retry holds it once.
+                    fallible::try_reserve(&mut self.held, len - start, OSC_HELD)?;
                     emit_some(emit, &bytes[from..start])?;
+                    self.held.extend_from_slice(&bytes[start..]);
                     self.intro = body - start;
                     self.body = len - body;
                     self.scan = OscScan::Osc;
@@ -624,13 +626,29 @@ impl OscCap {
         Ok(())
     }
 
-    /// Passes the held OSC on and empties the hold.
-    fn flush(&mut self, emit: &mut OscEmit<'_>) -> std::result::Result<(), AllocFailed> {
+    /// Passes the held OSC on with `rest`, its end, and empties the hold. A
+    /// refusal (the hold's growth, or the parser's join before it parses
+    /// anything) leaves the OSC held as it was, so a retry passes it once.
+    fn flush(
+        &mut self,
+        rest: &[u8],
+        emit: &mut OscEmit<'_>,
+    ) -> std::result::Result<(), AllocFailed> {
+        let before = self.held.len();
+        self.hold(rest)?;
         let held = std::mem::take(&mut self.held);
         let result = emit(&held, false);
         self.held = held;
-        self.clear_open();
-        result
+        match result {
+            Ok(()) => {
+                self.clear_open();
+                Ok(())
+            }
+            Err(failed) => {
+                self.held.truncate(before);
+                Err(failed)
+            }
+        }
     }
 
     /// Whether an OSC was dropped since the last call.
@@ -2509,66 +2527,76 @@ impl NativeTerminal {
             // Bytes held in a synchronized update count for the checks below.
             let synchronized = self.parser.sync_timeout().pending_timeout();
             self.parser.stop_sync(term);
-            // xterm still shows the blank alternate screen; Alacritty the main.
-            if self.feed.round_trip && self.refusal.is_none() {
-                self.feed.refuse(true, OPEN_ROUND_TRIP);
-                self.refusal = Some(OPEN_ROUND_TRIP);
-            }
-            if let Some(refusal) = self.refusal {
-                return Err(CallError::reason(refusal));
-            }
-            if self.feed.alt_reflow {
-                return Err(CallError::reason(
+            let payload = (|| -> CallResult<Vec<u8>> {
+                // xterm still shows the blank alternate screen; Alacritty the main.
+                if self.feed.round_trip && self.refusal.is_none() {
+                    self.feed.refuse(true, OPEN_ROUND_TRIP);
+                    self.refusal = Some(OPEN_ROUND_TRIP);
+                }
+                if let Some(refusal) = self.refusal {
+                    return Err(CallError::reason(refusal));
+                }
+                if self.feed.alt_reflow {
+                    return Err(CallError::reason(
                     "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
                 ));
-            }
-            if requested_scrollback.is_some_and(|requested| requested > self.scrollback)
-                && [term.grid(), term.inactive_grid()]
-                    .iter()
-                    .any(|grid| grid.history_size() >= self.scrollback as usize)
-            {
-                return Err(CallError::reason(
-                    "unsupported-history-limit: history reached the native grid cap",
-                ));
-            }
-            // xterm's SerializeAddon drops margins: both paths replay raw then.
-            if self.feed.margins() {
-                return Err(CallError::reason("margins"));
-            }
-            let tail = self.feed.pending_tail()?;
-            let mut result = crate::native_serialize::serialize(term, !self.feed.shifted)?;
-            // The modes below (at most 30 bytes: `?100Nh`, `?1016h`, `?2026h`,
-            // `?25l`) and the tail, so neither grows the payload infallibly.
-            fallible::try_reserve_str(
-                &mut result,
-                tail.len().saturating_add(ANSI_MODES_TAIL),
-                "the ANSI snapshot",
-            )?;
-            // Mouse protocol and encoding as xterm's modes tail restores them: the
-            // encoding only while a protocol is on.
-            if self.feed.mouse != 0 {
-                let _ = std::fmt::Write::write_fmt(
-                    &mut result,
-                    format_args!("\x1b[?{}h", self.feed.mouse),
-                );
-                if self.feed.sgr_pixels {
-                    result.push_str("\x1b[?1016h");
-                } else if self.feed.sgr_mouse {
-                    result.push_str("\x1b[?1006h");
                 }
+                if requested_scrollback.is_some_and(|requested| requested > self.scrollback)
+                    && [term.grid(), term.inactive_grid()]
+                        .iter()
+                        .any(|grid| grid.history_size() >= self.scrollback as usize)
+                {
+                    return Err(CallError::reason(
+                        "unsupported-history-limit: history reached the native grid cap",
+                    ));
+                }
+                // xterm's SerializeAddon drops margins: both paths replay raw then.
+                if self.feed.margins() {
+                    return Err(CallError::reason("margins"));
+                }
+                let tail = self.feed.pending_tail()?;
+                let mut result = crate::native_serialize::serialize(term, !self.feed.shifted)?;
+                // The modes below (at most 30 bytes: `?100Nh`, `?1016h`, `?2026h`,
+                // `?25l`) and the tail, so neither grows the payload infallibly.
+                fallible::try_reserve_str(
+                    &mut result,
+                    tail.len().saturating_add(ANSI_MODES_TAIL),
+                    "the ANSI snapshot",
+                )?;
+                // Mouse protocol and encoding as xterm's modes tail restores them: the
+                // encoding only while a protocol is on.
+                if self.feed.mouse != 0 {
+                    let _ = std::fmt::Write::write_fmt(
+                        &mut result,
+                        format_args!("\x1b[?{}h", self.feed.mouse),
+                    );
+                    if self.feed.sgr_pixels {
+                        result.push_str("\x1b[?1016h");
+                    } else if self.feed.sgr_mouse {
+                        result.push_str("\x1b[?1006h");
+                    }
+                }
+                if synchronized {
+                    result.push_str("\x1b[?2026h");
+                }
+                // Asserted always: a reflush lands on a client whose cursor may be hidden.
+                result.push_str(if self.feed.cursor_hidden {
+                    "\x1b[?25l"
+                } else {
+                    "\x1b[?25h"
+                });
+                let mut payload = result.into_bytes();
+                payload.extend_from_slice(&tail);
+                Ok(payload)
+            })();
+            // A failed snapshot leaves the stream inside its synchronized
+            // update, as before the call: the held bytes stay applied (they
+            // are not parsed twice), and only the mode comes back, so the
+            // next snapshot still ends in ?2026h.
+            if synchronized && payload.is_err() {
+                self.parser.advance(term, b"\x1b[?2026h");
             }
-            if synchronized {
-                result.push_str("\x1b[?2026h");
-            }
-            // Asserted always: a reflush lands on a client whose cursor may be hidden.
-            result.push_str(if self.feed.cursor_hidden {
-                "\x1b[?25l"
-            } else {
-                "\x1b[?25h"
-            });
-            let mut payload = result.into_bytes();
-            payload.extend_from_slice(&tail);
-            Ok(payload)
+            payload
         });
         self.settle(result)
     }
@@ -4778,6 +4806,23 @@ mod alloc_failure_tests {
     }
 
     #[test]
+    fn a_failed_ansi_snapshot_keeps_the_synchronized_update_for_the_next() {
+        let stream: &[u8] = b"ab\x1b[?2026hcd";
+        let mut once = terminal();
+        once.feed_xterm_bytes(stream, 100).unwrap();
+        let expected = once.ansi_snapshot_bytes(None).unwrap();
+        assert!(expected.windows(8).any(|w| w == b"\x1b[?2026h"));
+        let mut terminal = terminal();
+        terminal.feed_xterm_bytes(stream, 100).unwrap();
+        {
+            let _fail = fail_what("the ANSI snapshot");
+            assert_alloc_failed(terminal.ansi_snapshot_bytes(None).err());
+        }
+        assert_eq!(terminal.ansi_snapshot_bytes(None).unwrap(), expected);
+        assert_eq!(text(&mut terminal), ["abcd"], "the held bytes parsed once");
+    }
+
+    #[test]
     fn a_refused_initial_ring_buffer_is_an_error() {
         {
             let _fail = fail_what("the output ring");
@@ -4958,6 +5003,7 @@ mod test_allocator {
 
     thread_local! {
         static REFUSE_FROM: Cell<usize> = const { Cell::new(usize::MAX) };
+        static REFUSED: Cell<usize> = const { Cell::new(0) };
         static COUNT_FROM: Cell<usize> = const { Cell::new(usize::MAX) };
         static COUNTED: Cell<usize> = const { Cell::new(0) };
     }
@@ -4969,6 +5015,7 @@ mod test_allocator {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             let size = layout.size();
             if size >= REFUSE_FROM.try_with(Cell::get).unwrap_or(usize::MAX) {
+                let _ = REFUSED.try_with(|refused| refused.set(refused.get() + 1));
                 return std::ptr::null_mut();
             }
             if size >= COUNT_FROM.try_with(Cell::get).unwrap_or(usize::MAX) {
@@ -4988,10 +5035,16 @@ mod test_allocator {
     /// `f`, with every allocation of at least `from` bytes on this thread
     /// refused.
     pub(super) fn refusing<R>(from: usize, f: impl FnOnce() -> R) -> R {
+        REFUSED.with(|refused| refused.set(0));
         REFUSE_FROM.with(|limit| limit.set(from));
         let result = f();
         REFUSE_FROM.with(|limit| limit.set(usize::MAX));
         result
+    }
+
+    /// How many allocations the last `refusing` refused.
+    pub(super) fn refused() -> usize {
+        REFUSED.with(Cell::get)
     }
 
     /// `f`, and how many allocations of at least `from` bytes it made on
@@ -5002,6 +5055,50 @@ mod test_allocator {
         let result = f();
         COUNT_FROM.with(|limit| limit.set(usize::MAX));
         (result, COUNTED.with(Cell::get))
+    }
+}
+
+#[cfg(test)]
+mod seam_message_tests {
+    use super::*;
+    use crate::fallible::{refill_spare, ALLOC_FAILED};
+
+    const ROW_205: &str = "ALLOC_FAILED: could not allocate 4920 bytes for a grid row";
+
+    #[test]
+    fn a_seam_message_after_a_refusal_asks_the_allocator_for_nothing() {
+        let failed = AllocFailed {
+            what: "a grid row",
+            bytes: 4920,
+        };
+        refill_spare();
+        let message = test_allocator::refusing(1, || failed.message());
+        assert_eq!(test_allocator::refused(), 0, "written into the spare");
+        assert_eq!(message, ROW_205);
+        // No spare now, and none to be had: the prefix alone, or nothing.
+        let prefix = test_allocator::refusing(ALLOC_FAILED.len() + 1, || failed.message());
+        assert_eq!(prefix, ALLOC_FAILED);
+        assert_eq!(test_allocator::refusing(1, || failed.message()), "");
+        // With memory back, the exact message, and a fallible allocation
+        // that succeeds gives the thread its spare again.
+        assert_eq!(failed.message(), ROW_205);
+        drop(fallible::try_with_capacity::<u8>(1, "a test buffer").unwrap());
+        assert_eq!(test_allocator::refusing(1, || failed.message()), ROW_205);
+        assert_eq!(test_allocator::refused(), 0);
+    }
+
+    #[test]
+    fn a_grid_refusal_reaches_its_caller_with_the_full_message_under_refusal() {
+        let mut terminal = NativeTerminal::create(80, 24, 0).unwrap();
+        refill_spare();
+        let error = test_allocator::refusing(4096, || terminal.resize_grid(205, 24).err());
+        assert_eq!(
+            error.expect("refused"),
+            CallError::Alloc(AllocFailed {
+                what: "a grid row",
+                bytes: 4920,
+            })
+        );
     }
 }
 
@@ -5318,6 +5415,67 @@ mod osc_cap_tests {
             &[b"a\x1b", b"\x1b]0;", &body(10), &big, b"\x07b"],
             b"a\x1b\x1b]\x18b",
         );
+    }
+
+    #[test]
+    fn a_control_in_a_dropped_osc_opener_is_executed_where_it_stands() {
+        // vte executes the LF in its escape state, before the `]`.
+        let big = body(MAX_OSC_BODY + 1);
+        let stream = [b"a\x1b\n]0;".as_slice(), &big, b"\x07b"].concat();
+        let short = screen(&[b"a\x1b\n]0;x\x18b"]);
+        assert_eq!(short, ["a", " b"]);
+        assert_eq!(screen(&[&stream]), short);
+        assert_eq!(
+            screen(&[&stream[..2], &stream[2..]]),
+            short,
+            "after the ESC"
+        );
+        assert_eq!(screen(&[&stream[..3], &stream[3..]]), short, "after the LF");
+        assert_eq!(
+            screen(&[&stream[..6], &stream[6..]]),
+            short,
+            "held, then dropped"
+        );
+    }
+
+    #[test]
+    fn a_refused_prefix_holds_the_osc_after_it_once() {
+        let mut cap = OscCap::default();
+        let mut refuse = true;
+        let mut out = Vec::new();
+        let mut emit = |part: &[u8], _: bool| {
+            if std::mem::take(&mut refuse) {
+                return Err(AllocFailed {
+                    what: "a test join",
+                    bytes: 1,
+                });
+            }
+            out.extend_from_slice(part);
+            Ok(())
+        };
+        assert!(cap.scan(b"ab\x1b]2;t", &mut emit).is_err());
+        assert!(cap.held.is_empty(), "nothing held");
+        assert_eq!(cap.scan, OscScan::Text);
+        cap.scan(b"ab\x1b]2;t", &mut emit).unwrap();
+        assert_eq!(cap.held, b"\x1b]2;t");
+        // A refused flush leaves the OSC held as it was.
+        let mut refused = |_: &[u8], _: bool| {
+            Err(AllocFailed {
+                what: "a test join",
+                bytes: 1,
+            })
+        };
+        assert!(cap.scan(b"itle\x07c", &mut refused).is_err());
+        assert_eq!(cap.held, b"\x1b]2;t");
+        assert_eq!(cap.scan, OscScan::Osc);
+        let mut out2 = Vec::new();
+        cap.scan(b"itle\x07c", &mut |part, _| {
+            out2.extend_from_slice(part);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(out, b"ab");
+        assert_eq!(out2, b"\x1b]2;title\x07c");
     }
 
     #[test]

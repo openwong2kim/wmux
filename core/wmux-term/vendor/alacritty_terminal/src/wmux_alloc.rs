@@ -24,6 +24,8 @@ use std::panic;
 
 /// A row's cells: at most the grid's columns.
 pub const ROW: &str = "a grid row";
+/// The box of a row's cells kept past a narrower width (`Row::hide_past`).
+pub const HIDDEN: &str = "a row's kept cells";
 /// The grid's rows: the screen's lines, and the history up to its cap.
 pub const LINES: &str = "the grid's lines";
 /// The rows a resize lays out again: at most the grid's rows, plus the rows a
@@ -142,6 +144,21 @@ pub(crate) fn append<T>(vec: &mut Vec<T>, other: &mut Vec<T>, what: &'static str
     vec.append(other);
 }
 
+/// `Box::new(value)`, as an array of one: a vector of exactly one element
+/// becomes the box without reallocating.
+pub(crate) fn boxed<T>(value: T, what: &'static str) -> Box<[T; 1]> {
+    let mut one = Vec::new();
+    let injected = FAIL_WHAT.with(|fail| fail.get() == Some(what));
+    if injected || one.try_reserve_exact(1).is_err() {
+        refuse(size_of::<T>(), what);
+    }
+    one.push(value);
+    match one.into_boxed_slice().try_into() {
+        Ok(boxed) => boxed,
+        Err(_) => unreachable!("a vector of one element"),
+    }
+}
+
 /// A copy of `text`.
 pub(crate) fn copy_str(text: &str, what: &'static str) -> String {
     let mut copy = String::new();
@@ -227,11 +244,11 @@ mod tests {
         use super::refusal_of;
         use crate::event::VoidListener;
         use crate::grid::Grid;
-        use crate::index::Line;
+        use crate::index::{Column, Line};
         use crate::term::cell::Cell;
         use crate::term::test::TermSize;
         use crate::term::{Config, Term};
-        use crate::wmux_alloc::{DAMAGE, LINES, REFLOW, ROW, TABS, TITLES, fail_what};
+        use crate::wmux_alloc::{DAMAGE, HIDDEN, LINES, REFLOW, ROW, TABS, TITLES, fail_what};
 
         const CELL: usize = size_of::<Cell>();
 
@@ -271,6 +288,34 @@ mod tests {
                 });
                 assert_eq!(refused.1, what);
             }
+        }
+
+        #[test]
+        fn a_refused_box_for_kept_cells_unwinds_and_a_kept_box_is_reused() {
+            let mut grid: Grid<Cell> = Grid::new(1, 10, 0);
+            for x in 0..10 {
+                grid[Line(0)][Column(x)].c = char::from(b'0' + x as u8);
+            }
+            {
+                let _fail = fail_what(HIDDEN);
+                // The cut itself is a grid row's allocation; its box is not.
+                let refused = refusal_of(|| grid.resize(false, 1, 8));
+                assert_eq!(refused, (size_of::<Vec<Cell>>(), HIDDEN));
+            }
+            let mut grid: Grid<Cell> = Grid::new(1, 10, 0);
+            for x in 0..10 {
+                grid[Line(0)][Column(x)].c = char::from(b'0' + x as u8);
+            }
+            grid.resize(false, 1, 8);
+            {
+                // The second narrowing puts its cells in the same box.
+                let _fail = fail_what(HIDDEN);
+                grid.resize(false, 1, 5);
+            }
+            assert_eq!(grid[Line(0)].hidden_len(), 5);
+            grid.resize(false, 1, 10);
+            let text: String = (0..10).map(|x| grid[Line(0)][Column(x)].c).collect();
+            assert_eq!(text, "0123456789", "visible, then kept, in order");
         }
 
         #[test]

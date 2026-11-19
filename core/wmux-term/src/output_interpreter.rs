@@ -45,10 +45,7 @@ pub struct OscEvent {
 
 pub struct OutputInterpreter {
     carry: Vec<u16>,
-    state: [bool; 14],
-    changed: [f64; 14],
-    alt_offset: f64,
-    alt_mode: u32,
+    modes: Modes,
     osc: Vec<u16>,
     in_osc: bool,
     /// The last chunk ended in an ESC whose pair (`]` or `\`) may start the next one.
@@ -59,10 +56,7 @@ impl Default for OutputInterpreter {
     fn default() -> Self {
         Self {
             carry: Vec::new(),
-            state: MODES.map(|(_, default)| default),
-            changed: [-1.0; 14],
-            alt_offset: -1.0,
-            alt_mode: 0,
+            modes: Modes::DEFAULT,
             osc: Vec::new(),
             in_osc: false,
             pending_esc: false,
@@ -70,19 +64,70 @@ impl Default for OutputInterpreter {
     }
 }
 
+/// The tracked modes: each one's state and the stream offset it last
+/// changed at, and the alternate screen's.
+#[derive(Clone, Copy)]
+struct Modes {
+    state: [bool; 14],
+    changed: [f64; 14],
+    alt_offset: f64,
+    alt_mode: u32,
+}
+
+impl Modes {
+    const DEFAULT: Self = Self {
+        state: {
+            let mut state = [false; 14];
+            let mut n = 0;
+            while n < MODES.len() {
+                state[n] = MODES[n].1;
+                n += 1;
+            }
+            state
+        },
+        changed: [-1.0; 14],
+        alt_offset: -1.0,
+        alt_mode: 0,
+    };
+}
+
+/// What a chunk's OSC scan leaves, applied once the whole feed succeeded
+/// (`commit`).
+struct OscScan {
+    in_osc: bool,
+    pending_esc: bool,
+    /// The OSC open at the end continues the one `self.osc` held.
+    on_kept: bool,
+    /// The OSCs this chunk opened, the open one last.
+    fresh: Vec<u16>,
+}
+
 impl OutputInterpreter {
-    /// A refused allocation is an error for this call. The chunk's own
-    /// buffers are taken before anything changes; an OSC or an event that
-    /// cannot be kept partway through drops the OSC being read, as one past
-    /// MAX_OSC is dropped, and the rest of the chunk goes unread for OSCs.
+    /// A refused allocation is an error for this call, and changes nothing:
+    /// the modes, the OSC being read and the held ESC are as before, so the
+    /// same chunk fed again reads as if the first feed had not happened.
+    /// An OSC past MAX_OSC is dropped. (The binding calls `feed_with`.)
+    #[cfg(test)]
     pub fn feed(
         &mut self,
         text: &str,
         end: f64,
         include_osc: bool,
     ) -> Result<Vec<OscEvent>, AllocFailed> {
+        self.feed_with(text, end, include_osc, Ok)
+    }
+
+    /// `feed`, with `finish` run on the events before anything changes: a
+    /// refusal there changes nothing either (the caller's own buffers).
+    pub fn feed_with<T>(
+        &mut self,
+        text: &str,
+        end: f64,
+        include_osc: bool,
+        finish: impl FnOnce(Vec<OscEvent>) -> Result<T, AllocFailed>,
+    ) -> Result<T, AllocFailed> {
         if text.is_empty() {
-            return Ok(Vec::new());
+            return finish(Vec::new());
         }
         let osc = include_osc
             && (self.in_osc
@@ -94,14 +139,41 @@ impl OutputInterpreter {
         } else {
             None
         };
-        self.feed_modes(text, end)?;
-        match units {
-            Some(units) => {
-                self.pending_esc = false;
-                self.feed_osc(&units)
+        let (carry, modes) = self.feed_modes(text, end)?;
+        let kept = self.osc.len();
+        let mut events = Vec::new();
+        let scanned = units
+            .map(|units| self.feed_osc(&units, &mut events))
+            .transpose()
+            .and_then(|scan| Ok((finish(events)?, scan)));
+        match scanned {
+            Ok((result, scan)) => {
+                self.carry = carry;
+                self.modes = modes;
+                if let Some(scan) = scan {
+                    self.commit(scan);
+                }
+                Ok(result)
             }
-            None => Ok(Vec::new()),
+            Err(failed) => {
+                // Only the OSC open before this chunk is added to in place.
+                if self.in_osc {
+                    self.osc.truncate(kept);
+                }
+                Err(failed)
+            }
         }
+    }
+
+    fn commit(&mut self, scan: OscScan) {
+        if !(scan.in_osc && scan.on_kept) {
+            self.osc = scan.fresh;
+        }
+        if !scan.in_osc {
+            self.clear_osc();
+        }
+        self.in_osc = scan.in_osc;
+        self.pending_esc = scan.pending_esc;
     }
 
     /// The chunk in UTF-16 units, after the ESC the last chunk ended in.
@@ -119,7 +191,8 @@ impl OutputInterpreter {
         Ok(units)
     }
 
-    fn feed_modes(&mut self, chunk: &str, end: f64) -> Result<(), AllocFailed> {
+    /// The carry and the modes after `chunk`, for `feed_with` to keep.
+    fn feed_modes(&self, chunk: &str, end: f64) -> Result<(Vec<u16>, Modes), AllocFailed> {
         // Only the suffix needs UTF-16 coordinates. Scan the actual stream as
         // UTF-8: mode sequences are ASCII and ring offsets are already bytes.
         let mut carry = utf16_tail(chunk, CARRY_UNITS)?;
@@ -138,9 +211,9 @@ impl OutputInterpreter {
             None
         };
         // Every buffer is in hand: nothing below fails.
-        self.carry = carry;
+        let mut m = self.modes;
         if !scan {
-            return Ok(());
+            return Ok((carry, m));
         }
         let text = combined.as_deref().unwrap_or(chunk).as_bytes();
         let mut changed_at = [None; 14];
@@ -152,7 +225,7 @@ impl OutputInterpreter {
                 continue;
             }
             if text.get(i + 1) == Some(&b'c') {
-                self.reset_modes();
+                m = Modes::DEFAULT;
                 i += 2;
                 continue;
             }
@@ -163,7 +236,7 @@ impl OutputInterpreter {
             if text.get(i + 2..i + 4) == Some(b"!p") {
                 for (n, (mode, default)) in MODES.iter().enumerate() {
                     if !is_alt(*mode) {
-                        self.state[n] = *default;
+                        m.state[n] = *default;
                     }
                 }
                 i += 4;
@@ -200,11 +273,11 @@ impl OutputInterpreter {
                     .enumerate()
                     .find(|(_, (m, _))| Some(*m) == mode)
                 {
-                    self.state[n] = on;
+                    m.state[n] = on;
                     changed_at[n] = Some(i);
                     if on && is_alt(*mode) {
                         alt_at = Some(i);
-                        self.alt_mode = *mode;
+                        m.alt_mode = *mode;
                     }
                 }
             }
@@ -213,76 +286,87 @@ impl OutputInterpreter {
         // A match always starts at ASCII ESC, so no offset splits UTF-8.
         for (n, index) in changed_at.iter().enumerate() {
             if let Some(index) = index {
-                self.changed[n] = end - (text.len() - index) as f64;
+                m.changed[n] = end - (text.len() - index) as f64;
             }
         }
         if let Some(index) = alt_at {
-            self.alt_offset = end - (text.len() - index) as f64;
+            m.alt_offset = end - (text.len() - index) as f64;
         }
-        Ok(())
+        Ok((carry, m))
     }
 
     /// `chunk` starts with the ESC the last chunk ended in, if any
-    /// (`osc_units`).
-    fn feed_osc(&mut self, chunk: &[u16]) -> Result<Vec<OscEvent>, AllocFailed> {
-        let mut events = Vec::new();
+    /// (`osc_units`). Its events go to `events`; the state it leaves is
+    /// returned for `commit`. Only an OSC open before the chunk is added to
+    /// in place (`self.osc`, which `feed_with` truncates back on a refusal);
+    /// the ones the chunk opens are read into a buffer of their own.
+    fn feed_osc(
+        &mut self,
+        chunk: &[u16],
+        events: &mut Vec<OscEvent>,
+    ) -> Result<OscScan, AllocFailed> {
+        let mut in_osc = self.in_osc;
+        let mut pending_esc = false;
+        let mut on_kept = self.in_osc;
+        // No OSC open: the kept buffer is empty, and lends its capacity.
+        let mut fresh = if self.in_osc {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.osc)
+        };
         let mut i = 0;
         while i < chunk.len() {
             let c = chunk[i];
-            if self.in_osc {
+            if in_osc {
                 let st = c == ESC && chunk.get(i + 1) == Some(&(b'\\' as u16));
                 if c == 7 || st {
-                    if let Some(split) = self.osc.iter().position(|c| *c == b';' as u16) {
-                        if let Some(code) = parse_decimal_prefix(&self.osc[..split]) {
-                            let event = from_utf16_lossy(&self.osc[split + 1..], 0, OSC_EVENT)
-                                .and_then(|data| {
-                                    fallible::try_reserve(&mut events, 1, OSC_EVENTS)?;
-                                    Ok(data)
-                                });
-                            match event {
-                                Ok(data) => events.push(OscEvent { code, data }),
-                                Err(failed) => {
-                                    self.clear_osc();
-                                    self.in_osc = false;
-                                    return Err(failed);
-                                }
-                            }
+                    let osc = if on_kept { &self.osc } else { &fresh };
+                    if let Some(split) = osc.iter().position(|c| *c == b';' as u16) {
+                        if let Some(code) = parse_decimal_prefix(&osc[..split]) {
+                            let data = from_utf16_lossy(&osc[split + 1..], 0, OSC_EVENT)?;
+                            fallible::try_reserve(events, 1, OSC_EVENTS)?;
+                            events.push(OscEvent { code, data });
                         }
                     }
-                    self.clear_osc();
-                    self.in_osc = false;
+                    on_kept = false;
+                    fresh.clear();
+                    in_osc = false;
                     i += if st { 2 } else { 1 };
                 } else if c == ESC && i + 1 == chunk.len() {
-                    self.pending_esc = true;
+                    pending_esc = true;
                     break;
                 } else {
+                    let osc = if on_kept { &mut self.osc } else { &mut fresh };
                     // Match the reference's UTF-16-unit cap and resumption point.
-                    if self.osc.len() == MAX_OSC {
-                        self.clear_osc();
-                        self.in_osc = false;
+                    if osc.len() == MAX_OSC {
+                        on_kept = false;
+                        fresh.clear();
+                        in_osc = false;
                     } else {
                         // At most MAX_OSC units.
-                        if let Err(failed) = fallible::try_reserve(&mut self.osc, 1, INTERPRETER) {
-                            self.clear_osc();
-                            self.in_osc = false;
-                            return Err(failed);
-                        }
-                        self.osc.push(c);
+                        fallible::try_reserve(osc, 1, INTERPRETER)?;
+                        osc.push(c);
                     }
                     i += 1;
                 }
             } else if c == ESC && chunk.get(i + 1) == Some(&(b']' as u16)) {
-                self.clear_osc();
-                self.in_osc = true;
+                on_kept = false;
+                fresh.clear();
+                in_osc = true;
                 i += 2;
             } else if c == ESC && i + 1 == chunk.len() {
-                self.pending_esc = true;
+                pending_esc = true;
                 break;
             } else {
                 i += 1;
             }
         }
-        Ok(events)
+        Ok(OscScan {
+            in_osc,
+            pending_esc,
+            on_kept,
+            fresh,
+        })
     }
 
     fn clear_osc(&mut self) {
@@ -295,40 +379,39 @@ impl OutputInterpreter {
         }
     }
 
+    /// The binding's `reset` (native-core).
+    #[cfg_attr(not(feature = "native-core"), allow(dead_code))]
     pub fn reset_modes(&mut self) {
-        self.state = MODES.map(|(_, default)| default);
-        self.changed = [-1.0; 14];
-        self.alt_offset = -1.0;
-        self.alt_mode = 0;
+        self.modes = Modes::DEFAULT;
     }
     pub fn is_set(&self, mode: u32) -> bool {
         MODES
             .iter()
             .position(|(m, _)| *m == mode)
-            .is_some_and(|n| self.state[n])
+            .is_some_and(|n| self.modes.state[n])
     }
     pub fn alt_screen(&self) -> bool {
         [47, 1047, 1049].iter().any(|m| self.is_set(*m))
     }
     pub fn preamble(&self, start: f64) -> String {
         let mut out = String::new();
-        let alt = if self.is_set(self.alt_mode) {
-            Some(self.alt_mode)
+        let alt = if self.is_set(self.modes.alt_mode) {
+            Some(self.modes.alt_mode)
         } else {
             [47, 1047, 1049].into_iter().find(|m| self.is_set(*m))
         };
         if let Some(mode) = alt {
-            if self.alt_offset < start {
+            if self.modes.alt_offset < start {
                 out.push_str(&format!("\x1b[?{mode}h\x1b[2J\x1b[H"));
             }
         }
         for (n, (mode, default)) in MODES.iter().enumerate() {
-            if is_alt(*mode) || self.state[n] == *default || self.changed[n] >= start {
+            if is_alt(*mode) || self.modes.state[n] == *default || self.modes.changed[n] >= start {
                 continue;
             }
             out.push_str(&format!(
                 "\x1b[?{mode}{}",
-                if self.state[n] { 'h' } else { 'l' }
+                if self.modes.state[n] { 'h' } else { 'l' }
             ));
         }
         out
@@ -493,7 +576,7 @@ mod tests {
         assert!(p.alt_screen());
     }
     #[test]
-    fn a_refused_osc_growth_drops_that_osc_and_the_next_one_is_read() {
+    fn a_refused_osc_growth_changes_nothing_and_the_retry_reads_it() {
         use crate::fallible::fail_from;
         let mut p = OutputInterpreter::default();
         p.feed(&format!("\x1b]2;{}", "x".repeat(600)), 0.0, true)
@@ -506,12 +589,10 @@ mod tests {
             let failed = p.feed(&"x".repeat(600), 0.0, true).unwrap_err();
             assert_eq!(failed.bytes, 4096);
         }
-        assert!(!p.in_osc);
-        assert!(p.feed("\x07", 0.0, true).unwrap().is_empty());
-        assert_eq!(
-            p.feed("\x1b]2;next\x07", 0.0, true).unwrap()[0].data,
-            "next"
-        );
+        assert!(p.in_osc);
+        assert_eq!(p.osc.len(), 602, "the OSC as it was");
+        p.feed(&"x".repeat(600), 0.0, true).unwrap();
+        assert_eq!(p.feed("\x07", 0.0, true).unwrap()[0].data, "x".repeat(1200));
     }
     #[test]
     fn lossy_utf16_matches_the_standard_library() {
@@ -523,23 +604,32 @@ mod tests {
         }
     }
 
+    /// A chunk with a mode change and an OSC refused partway, then fed
+    /// again, leaves what the chunk fed once leaves.
     #[test]
-    fn a_refused_osc_event_drops_that_osc_and_the_next_one_is_read() {
+    fn a_refused_feed_changes_nothing_and_the_retry_reads_as_once() {
         use crate::fallible::fail_what;
-        for what in [super::OSC_EVENT, super::OSC_EVENTS] {
+        let chunk = "le\x07\x1b[?1049h\x1b[?2004h\x1b]0;x\x07\x1b]7;open";
+        for what in [super::OSC_EVENT, super::OSC_EVENTS, super::INTERPRETER] {
+            let mut once = OutputInterpreter::default();
+            once.feed("\x1b]2;tit", 10.0, true).unwrap();
+            let expected = once.feed(chunk, 50.0, true).unwrap();
             let mut p = OutputInterpreter::default();
-            assert!(p.feed("\x1b]2;title", 0.0, true).unwrap().is_empty());
+            p.feed("\x1b]2;tit", 10.0, true).unwrap();
             {
                 let _fail = fail_what(what);
-                assert_eq!(p.feed("\x07", 0.0, true).unwrap_err().what, what);
+                assert_eq!(p.feed(chunk, 50.0, true).unwrap_err().what, what);
             }
-            assert!(
-                p.feed("tail\x07", 0.0, true).unwrap().is_empty(),
-                "the refused OSC is gone"
-            );
+            assert!(!p.alt_screen() && !p.is_set(2004), "no mode applied");
+            assert!(p.in_osc, "the earlier OSC is still read");
+            assert_eq!(p.osc, "2;tit".encode_utf16().collect::<Vec<_>>());
+            assert_eq!(p.feed(chunk, 50.0, true).unwrap(), expected);
+            assert_eq!(p.preamble(0.0), once.preamble(0.0));
+            assert_eq!(p.osc, once.osc);
+            assert_eq!(p.carry, once.carry);
             assert_eq!(
-                p.feed("\x1b]2;next\x07", 0.0, true).unwrap()[0].data,
-                "next"
+                p.feed("ed\x07", 60.0, true).unwrap(),
+                once.feed("ed\x07", 60.0, true).unwrap()
             );
         }
     }

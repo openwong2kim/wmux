@@ -98,18 +98,22 @@ impl NativeOutputInterpreter {
         if !end.is_finite() || end < 0.0 || end.fract() != 0.0 || end > 9_007_199_254_740_991.0 {
             return Err(CallError::reason("Invalid ring stream offset"));
         }
-        let events = self.get_mut()?.feed(text, end, osc)?;
-        if events.is_empty() {
-            return Ok(None);
-        }
-        // One code per event: at most the chunk's OSC count.
-        let mut codes: Vec<f64> = fallible::try_with_capacity(events.len(), BATCH)?;
-        let mut data: Vec<String> = fallible::try_with_capacity(events.len(), BATCH)?;
-        for event in events {
-            codes.push(event.code);
-            data.push(event.data);
-        }
-        Ok(Some(Events { codes, data }))
+        // The batch is built before the interpreter keeps the chunk's
+        // modes and OSC state: a refused batch changes nothing either.
+        let events = self.get_mut()?.feed_with(text, end, osc, |events| {
+            if events.is_empty() {
+                return Ok(None);
+            }
+            // One code per event: at most the chunk's OSC count.
+            let mut codes: Vec<f64> = fallible::try_with_capacity(events.len(), BATCH)?;
+            let mut data: Vec<String> = fallible::try_with_capacity(events.len(), BATCH)?;
+            for event in events {
+                codes.push(event.code);
+                data.push(event.data);
+            }
+            Ok(Some(Events { codes, data }))
+        })?;
+        Ok(events)
     }
 }
 
@@ -238,20 +242,35 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_event_batch_is_an_error_and_the_next_feed_reads() {
+    fn a_refused_event_batch_changes_nothing_and_the_retry_reads_as_once() {
+        let chunk = "le\x07\x1b[?1049h\x1b]0;x\x07";
+        let mut once = NativeOutputInterpreter::new();
+        once.apply("\x1b]2;tit", 0.0, true).unwrap();
+        let expected = once.apply(chunk, 10.0, true).unwrap().expect("two events");
         let mut interpreter = NativeOutputInterpreter::new();
+        interpreter.apply("\x1b]2;tit", 0.0, true).unwrap();
         {
             let _fail = fail_what(BATCH);
             let error = interpreter
-                .apply("\x1b]2;a\x07", 0.0, true)
+                .apply(chunk, 10.0, true)
                 .err()
                 .expect("the batch is refused");
+            assert!(matches!(error, CallError::Alloc(_)), "{error:?}");
             assert!(error.message().starts_with(ALLOC_FAILED), "{error:?}");
         }
+        let inner = interpreter.get().unwrap();
+        assert!(!inner.alt_screen(), "the chunk's mode change is not kept");
         let batch = interpreter
-            .apply("\x1b]2;b\x07", 6.0, true)
+            .apply(chunk, 10.0, true)
             .unwrap()
-            .expect("one event");
-        assert_eq!(batch.data, ["b"]);
+            .expect("two events");
+        assert_eq!(batch.data, ["title", "x"]);
+        assert_eq!(batch.data, expected.data);
+        assert_eq!(batch.codes, expected.codes);
+        assert!(interpreter.get().unwrap().alt_screen());
+        assert_eq!(
+            interpreter.get().unwrap().preamble(0.0),
+            once.get().unwrap().preamble(0.0)
+        );
     }
 }

@@ -197,6 +197,8 @@ pub struct NativeTransport {
 const READ_BYTES: usize = 16 * 1024;
 /// The most reads one drain joins: a batch is at most 16 x READ_BYTES (256 KiB).
 const DRAIN_READS: usize = 16;
+/// The most bytes one batch holds, carried ones included.
+const BATCH_BYTES: usize = DRAIN_READS * READ_BYTES;
 
 #[napi]
 impl NativeTransport {
@@ -743,10 +745,12 @@ impl NativeTransport {
         self.report(data, exit)
     }
 
-    /// Up to DRAIN_READS reads joined into one batch, carried ones first.
-    /// The first is moved, not copied, so a read always makes progress
-    /// without allocating; a read that cannot be joined (a refused
-    /// allocation) is carried to the next call. No byte is ever dropped.
+    /// Up to DRAIN_READS reads joined into one batch of at most BATCH_BYTES,
+    /// carried ones first. The first is moved, not copied, so a read always
+    /// makes progress without allocating; a read that cannot be joined (a
+    /// refused allocation) is carried to the next call. A carried batch (a
+    /// refused decode's) counts its bytes, not one read: a full one goes
+    /// alone. No byte is ever dropped, and none is reordered.
     fn take_output(&mut self, paused: Option<bool>) -> Vec<u8> {
         let mut bytes = Vec::new();
         if paused.unwrap_or(false) {
@@ -754,6 +758,10 @@ impl NativeTransport {
         }
         let mut taken = 0;
         while let Some(chunk) = self.carry.pop_front() {
+            if !bytes.is_empty() && bytes.len() + chunk.len() > BATCH_BYTES {
+                self.carry.push_front(chunk);
+                return bytes;
+            }
             taken += 1;
             if let Err(chunk) = join(&mut bytes, chunk) {
                 self.carry.push_front(chunk);
@@ -763,7 +771,7 @@ impl NativeTransport {
         let Some(rx) = &self.receiver else {
             return bytes;
         };
-        while taken < DRAIN_READS {
+        while taken < DRAIN_READS && bytes.len() + READ_BYTES <= BATCH_BYTES {
             match rx.try_recv() {
                 Ok(data) => {
                     taken += 1;
@@ -1300,7 +1308,7 @@ fn write_cancellable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fallible::{fail_from, fail_next, CallError, ALLOC_FAILED};
+    use crate::fallible::{fail_from, fail_next, fail_what, CallError, ALLOC_FAILED};
 
     fn transport(rx: Receiver<Vec<u8>>, state: Arc<State>) -> NativeTransport {
         NativeTransport {
@@ -1371,6 +1379,41 @@ mod tests {
         assert_eq!(read.data, b"three", "the carried read comes back next");
         assert!(read.eof);
         assert!(t.carry.is_empty());
+    }
+
+    #[test]
+    fn a_carried_batch_counts_its_bytes_toward_the_batch_limit() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let mut t = transport(rx, Arc::new(State::new()));
+        for n in 0..DRAIN_READS {
+            let mut read = vec![b'a' + n as u8; READ_BYTES];
+            if n == DRAIN_READS - 1 {
+                // An invalid byte: the decode needs its replacement copy.
+                read[READ_BYTES - 1] = 0xff;
+            }
+            tx.send(read).unwrap();
+        }
+        {
+            // A whole batch whose decode is refused comes back as one
+            // carried entry.
+            let _fail = fail_what("decoded PTY output");
+            assert!(t.read_chunk_raw(None).is_err());
+        }
+        assert_eq!(t.carry.len(), 1);
+        assert_eq!(t.carry[0].len(), BATCH_BYTES);
+        tx.send(b"after".to_vec()).unwrap();
+        // Retried alone: no read is added to a full carried batch.
+        let first = t.drain(None);
+        assert_eq!(first.data.len(), BATCH_BYTES);
+        assert_eq!(first.data[0], b'a');
+        assert_eq!(first.data[BATCH_BYTES - 1], 0xff);
+        assert_eq!(t.drain(None).data, b"after", "then the next read, in order");
+        // A carried batch and a carried read past the limit together go one
+        // after the other.
+        t.carry.push_back(vec![b'x'; BATCH_BYTES - 10]);
+        t.carry.push_back(vec![b'y'; 20]);
+        assert_eq!(t.drain(None).data.len(), BATCH_BYTES - 10);
+        assert_eq!(t.drain(None).data, [b'y'; 20]);
     }
 
     #[test]

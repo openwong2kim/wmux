@@ -179,7 +179,10 @@ core/wmux-term/vendor/alacritty_terminal/Cargo.toml --locked`.
   allocates nothing), and `take_refusal` reads its bytes and purpose from a
   thread-local `Cell`. `native_core.rs` catches it around every call into the
   terminal, reports ALLOC_FAILED and drops the terminal. `Row::new` fills its
-  reserved row with `resize_with` instead of upstream's unsafe writes.
+  reserved row with `resize_with` instead of upstream's unsafe writes. A
+  row's kept cells (`hidden`) are boxed as `Box<[Vec<T>; 1]>`, allocated by
+  `wmux_alloc::boxed` (a refusal unwinds the same way, as `HIDDEN`), and a
+  later narrowing puts its cells in the box already there.
   `fail_what` is a test hook wmux-term's tests use too, so it is always
   compiled. Added 2026-11-19.
 - Input-sized state in `src/term/` (#3440): the title stack also drops its

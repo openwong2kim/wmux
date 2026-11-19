@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::grid::GridCell;
 use crate::index::Column;
 use crate::term::cell::{Flags, ResetDiscriminant};
-use crate::wmux_alloc::{self, ROW};
+use crate::wmux_alloc::{self, HIDDEN, ROW};
 
 /// A row in the grid.
 #[derive(Default, Clone, Debug)]
@@ -33,8 +33,10 @@ pub struct Row<T> {
     /// reset row is a new line, at the current width. Not serialized: a
     /// serialized grid keeps upstream's format (the ref tests' grids), and a
     /// deserialized row has none, as a row read back at its width would.
+    /// Boxed as an array of one so the box is allocated fallibly
+    /// (`wmux_alloc::boxed`) and the field stays one pointer wide.
     #[cfg_attr(feature = "serde", serde(default, skip))]
-    hidden: Option<Box<Vec<T>>>,
+    hidden: Option<Box<[Vec<T>; 1]>>,
 
     /// wmux: one past the column where the empty cells a widen gave this
     /// soft-wrapped row, or an erase left at its edge, begin (0: none).
@@ -80,7 +82,7 @@ impl<T: Default> Row<T> {
         // wmux: kept cells come back first, up to the new width; xterm drops
         // the rest (its line takes the new width).
         if let Some(hidden) = self.hidden.take() {
-            let mut hidden = *hidden;
+            let [mut hidden] = *hidden;
             hidden.truncate(columns - self.inner.len());
             self.inner.append(&mut hidden);
             self.occ = self.inner.len();
@@ -97,11 +99,15 @@ impl<T: Default> Row<T> {
         }
 
         let mut cut = wmux_alloc::split_off(&mut self.inner, columns, ROW);
-        if let Some(mut hidden) = self.hidden.take() {
-            wmux_alloc::append(&mut cut, &mut hidden, ROW);
-        }
         self.occ = min(self.occ, columns);
-        self.hidden = Some(Box::new(cut));
+        match self.hidden.as_mut() {
+            // The box already there takes the cells: no allocation for it.
+            Some(hidden) => {
+                wmux_alloc::append(&mut cut, &mut hidden[0], ROW);
+                hidden[0] = cut;
+            },
+            None => self.hidden = Some(wmux_alloc::boxed(cut, HIDDEN)),
+        }
     }
 
     /// Reduce the number of columns in the row.
@@ -169,7 +175,7 @@ impl<T: Default> Row<T> {
         let hidden = self.hidden.take();
         self.reset(template);
         if let Some(mut hidden) = hidden {
-            for item in hidden.iter_mut() {
+            for item in hidden[0].iter_mut() {
                 item.reset(template);
             }
             self.hidden = Some(hidden);
@@ -249,7 +255,7 @@ impl<T> Row<T> {
     /// wmux: how many cells are kept past the visible width.
     #[inline]
     pub fn hidden_len(&self) -> usize {
-        self.hidden.as_ref().map_or(0, |hidden| hidden.len())
+        self.hidden.as_ref().map_or(0, |hidden| hidden[0].len())
     }
 
     /// wmux: run `f` over the row's physical cells, the visible ones then the
@@ -261,6 +267,7 @@ impl<T> Row<T> {
         match self.hidden.as_mut() {
             None => f(&mut self.inner),
             Some(hidden) => {
+                let hidden = &mut hidden[0];
                 // Both vectors keep their buffers: no allocation per edit
                 // after the first.
                 wmux_alloc::append(&mut self.inner, hidden, ROW);
