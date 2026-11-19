@@ -126,6 +126,33 @@ describe('RustPty input keeps the node-pty write contract', () => {
     expect(pty.pendingInputBytes).toBe(4);
   });
 
+  it('holds input the core refused to copy and retries it in order, without closing input', async () => {
+    const input = nativeInput();
+    const accept = transport.write.getMockImplementation() as (data: Uint8Array) => void;
+    let refusing = true;
+    transport.write.mockImplementation((data: Uint8Array) => {
+      if (refusing) throw new Error('ALLOC_FAILED: could not allocate 3 bytes for PTY input');
+      accept(data);
+    });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    try {
+      const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
+      pty.write('abc');
+      pty.write('def');
+      expect(input.text()).toBe('');
+      await vi.advanceTimersByTimeAsync(300);
+      expect(input.text()).toBe('');
+      refusing = false;
+      await vi.advanceTimersByTimeAsync(100);
+      expect(input.text()).toBe('abcdef');
+      pty.write('g');
+      expect(input.text()).toBe('abcdefg');
+      // One line per stall, not one per refused attempt.
+      expect(log.mock.calls.flat().join('\n').match(/ALLOC_FAILED/g)).toHaveLength(1);
+    } finally { vi.useRealTimers(); log.mockRestore(); }
+  });
+
   it('splits a write larger than the native queue and keeps SessionPipe paused until the bytes drain', async () => {
     const input = nativeInput();
     const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;

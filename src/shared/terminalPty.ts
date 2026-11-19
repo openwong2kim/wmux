@@ -102,6 +102,9 @@ class RustPty implements TerminalPty {
   /** When the current run of refused reads began; undefined after a read succeeds. */
   private readRefusedSince: number | undefined;
   private readRetry: ReturnType<typeof setTimeout> | undefined;
+  /** Set while the core refuses the copy of held input; cleared by the next accepted write. */
+  private inputRefused = false;
+  private inputRetry: ReturnType<typeof setTimeout> | undefined;
   private readonly wake = () => {
     if (this.scheduled || this.ended) return;
     this.scheduled = true;
@@ -165,13 +168,22 @@ class RustPty implements TerminalPty {
     this.queuedBytes += bytes.length;
     this.flushInput();
   }
-  /** False only when the native queue is full. A closed or failed input side drops the
-   *  bytes and everything held, as node-pty's write queue does on a non-EAGAIN error. */
+  /** False when the native queue is full or refused the copy (both keep the input held).
+   *  A closed or failed input side drops the bytes and everything held, as node-pty's write
+   *  queue does on a non-EAGAIN error. */
   private sendInput(bytes: Buffer): boolean {
-    try { this.transport.write(bytes); return true; }
+    try { this.transport.write(bytes); this.inputRefused = false; return true; }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.startsWith('PTY_BACKPRESSURE')) return false;
+      if (isNativeAllocFailure(error)) {
+        // The queue is unchanged (the core refused its copy). No writer wake follows a
+        // refusal, so the held input is retried on a timer; it is not dropped.
+        if (!this.inputRefused) console.error(`[terminal-core] PTY input session=${this.name}: ${message}; holding input and retrying`);
+        this.inputRefused = true;
+        this.inputRetry ??= setTimeout(() => { this.inputRetry = undefined; if (!this.ended) this.flushInput(); }, READ_REFUSED_RETRY_MS);
+        return false;
+      }
       this.inputClosed = true; this.releaseInput();
       if (!message.startsWith('PTY_CLOSED')) console.error('[terminal-core] PTY input failed; dropping input:', message);
       return true;
@@ -276,6 +288,7 @@ class RustPty implements TerminalPty {
   }
   private clearReadRetry(): void {
     if (this.readRetry) { clearTimeout(this.readRetry); this.readRetry = undefined; }
+    if (this.inputRetry) { clearTimeout(this.inputRetry); this.inputRetry = undefined; }
   }
   private get name(): string { return this.label ?? `pid-${this.pid}`; }
   private fail(): void {
