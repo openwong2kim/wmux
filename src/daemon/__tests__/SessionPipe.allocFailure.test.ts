@@ -6,6 +6,7 @@ import { generateSnapshotUnqueued } from '../HeadlessSnapshot';
 import { createSessionPipeMarkers } from '../sessionPipeMarkers';
 import { RingBuffer } from '../RingBuffer';
 import { ATTACH_SNAPSHOT_MIN_BYTES } from '../../shared/terminal/attachSnapshot';
+import { nativeAllocError } from '../../shared/__tests__/_nativeAllocError';
 
 /**
  * #3440: every full-ring read of the session pipe (attach flush, re-flush)
@@ -23,7 +24,7 @@ vi.mock('../HeadlessSnapshot', async (importOriginal) => ({
 
 const TOKEN = 'test-token';
 const markers = createSessionPipeMarkers(TOKEN);
-const refusal = () => new Error('ALLOC_FAILED: could not allocate 8388608 bytes for ring copy');
+const refusal = () => nativeAllocError('ALLOC_FAILED: could not allocate 8388608 bytes for ring copy');
 
 class FakeSocket {
   destroyed = false;

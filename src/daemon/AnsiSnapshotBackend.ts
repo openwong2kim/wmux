@@ -112,15 +112,16 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
       }
       refusal = native.detail;
       families = native.families;
-      if (native.reason === 'budget') failure = 'budget';
+      // A refused allocation (told by its code, never by the text of `detail`)
+      // is this session's memory, not the module: the circuit is daemon-wide
+      // and would turn every session to xterm (#3440).
+      if (native.allocFailed) failure = 'alloc-failed';
+      else if (native.reason === 'budget') failure = 'budget';
       // The native terminal refuses a stream or grid it cannot replay as
       // xterm would (a divergent control, a reflow, the history cap): the
       // module is sound.
       else if (native.detail?.startsWith('unsupported-state')) failure = 'state';
       else if (native.detail?.startsWith('unsupported-')) failure = 'unsupported';
-      // A refused allocation is this session's memory, not the module: the
-      // circuit is daemon-wide and would turn every session to xterm (#3440).
-      else if (isNativeAllocFailure(native.detail)) failure = 'alloc-failed';
     }
   } catch (error) {
     // Module or disposal errors also use the intact xterm input.

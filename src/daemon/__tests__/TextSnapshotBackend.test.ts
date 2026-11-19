@@ -4,6 +4,7 @@ import { selectTextSnapshot, getTextSnapshotBackendDiagnostics } from '../TextSn
 import { generateTextSnapshot, generateSnapshot, type SnapshotRequest, type TextSnapshotOutcome } from '../HeadlessSnapshot';
 import { NATIVE_CELL_LIMIT, NATIVE_SNAPSHOT_MAX_INPUT_BYTES } from '../nativeSnapshotLimits';
 import { NATIVE_CIRCUIT_COOLDOWNS_MS } from '../nativeCircuit';
+import { nativeAllocError } from '../../shared/__tests__/_nativeAllocError';
 
 vi.mock('../RustSnapshot', () => ({ generateRustSnapshot: vi.fn() }));
 const native = vi.mocked(generateRustSnapshot);
@@ -117,9 +118,12 @@ describe('opt-in Rust text delivery', () => {
 
   // #3440: one session's refused allocation must not turn native snapshots off
   // for every session (the circuit is daemon-wide).
+  // Classified by its code alone: the message is diagnostic and may be empty.
   it.each([
-    ['reported', () => native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'ALLOC_FAILED: could not allocate 64 bytes for grid' })],
-    ['thrown', () => native.mockRejectedValueOnce(new Error('ALLOC_FAILED: could not allocate 64 bytes for grid'))],
+    ['reported', () => native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'ALLOC_FAILED: could not allocate 64 bytes for grid', allocFailed: true })],
+    ['reported (empty message)', () => native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: '', allocFailed: true })],
+    ['thrown', () => native.mockRejectedValueOnce(nativeAllocError('ALLOC_FAILED: could not allocate 64 bytes for grid'))],
+    ['thrown (empty message)', () => native.mockRejectedValueOnce(nativeAllocError(''))],
   ])('falls back on a %s refused allocation without opening the circuit', async (_how, refuse) => {
     refuse();
     const reference = vi.fn(async () => success);
@@ -133,6 +137,19 @@ describe('opt-in Rust text delivery', () => {
     await selectTextSnapshot(req, reference);
     expect(native).toHaveBeenCalledTimes(2);
     expect(reference).toHaveBeenCalledOnce();
+  });
+
+  // A message that merely reads like a refusal, without the code, is a module error.
+  it.each([
+    ['reported', () => native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'ALLOC_FAILED: could not allocate 64 bytes for grid' })],
+    ['thrown', () => native.mockRejectedValueOnce(new Error('ALLOC_FAILED: could not allocate 64 bytes for grid'))],
+  ])('opens the circuit on a %s "ALLOC_FAILED:" message without the code', async (_how, fail) => {
+    fail();
+    const reference = vi.fn(async () => success);
+    const before = getTextSnapshotBackendDiagnostics().tried['alloc-failed'] ?? 0;
+    expect(await selectTextSnapshot(req, reference)).toMatchObject({ ok: true });
+    expect(getTextSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: true, circuitFailures: 1 });
+    expect(getTextSnapshotBackendDiagnostics().tried['alloc-failed'] ?? 0).toBe(before);
   });
 
   it('avoids repeated broken-module loads and retries a changed module path', async () => {

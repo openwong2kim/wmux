@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawnTerminalPty, ptyBackend, bundledConptyPath, isTerminalCoreMissing, TerminalCoreMissingError, TERMINAL_CORE_MISSING, type TerminalPty } from '../terminalPty';
 import path from 'node:path';
 import { loadNativeTerminalCore, type NativeTerminalCore } from '../nativeTerminalCore';
+import { nativeAllocError } from './_nativeAllocError';
 
 vi.mock('../nativeTerminalCore', async (importOriginal) => ({ ...(await importOriginal<typeof import('../nativeTerminalCore')>()), loadNativeTerminalCore: vi.fn() }));
 let wake: () => void;
@@ -131,7 +132,7 @@ describe('RustPty input keeps the node-pty write contract', () => {
     const accept = transport.write.getMockImplementation() as (data: Uint8Array) => void;
     let refusing = true;
     transport.write.mockImplementation((data: Uint8Array) => {
-      if (refusing) throw new Error('ALLOC_FAILED: could not allocate 3 bytes for PTY input');
+      if (refusing) throw nativeAllocError('ALLOC_FAILED: could not allocate 3 bytes for PTY input');
       accept(data);
     });
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -151,6 +152,49 @@ describe('RustPty input keeps the node-pty write contract', () => {
       // One line per stall, not one per refused attempt.
       expect(log.mock.calls.flat().join('\n').match(/ALLOC_FAILED/g)).toHaveLength(1);
     } finally { vi.useRealTimers(); log.mockRestore(); }
+  });
+
+  it('retries refused input only when its timer fires: writes, writer wakes and output wakes in between do not', async () => {
+    const input = nativeInput();
+    const accept = transport.write.getMockImplementation() as (data: Uint8Array) => void;
+    let refusing = true;
+    transport.write.mockImplementation((data: Uint8Array) => {
+      if (refusing) throw nativeAllocError('');
+      accept(data);
+    });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    try {
+      const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
+      pty.write('abc');
+      expect(transport.write).toHaveBeenCalledTimes(1);
+      refusing = false;
+      // Output arrives and the writer wakes: the held head waits for the timer.
+      transport.read.mockImplementation(() => ({ ...idle, data: Buffer.from('out') }));
+      for (let i = 0; i < 5; i++) { wake(); await vi.advanceTimersByTimeAsync(10); }
+      pty.write('def');
+      expect(transport.write).toHaveBeenCalledTimes(1);
+      expect(input.text()).toBe('');
+      await vi.advanceTimersByTimeAsync(50);
+      expect(input.text()).toBe('abcdef');
+      // An empty message still names the refusal in the log.
+      expect(log.mock.calls.flat().join('\n')).toContain('PTY input session=pid-101: ALLOC_FAILED; holding input and retrying');
+    } finally { vi.useRealTimers(); log.mockRestore(); }
+  });
+
+  it('flushes a full queue (PTY_BACKPRESSURE) on the writer wake, with no timer', async () => {
+    const input = nativeInput(4);
+    vi.useFakeTimers();
+    try {
+      const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
+      pty.write('abcd');
+      pty.write('ef');
+      expect(input.text()).toBe('abcd');
+      input.state.pending = 0;
+      wake(); await vi.advanceTimersByTimeAsync(0);
+      expect(input.text()).toBe('abcdef');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
   });
 
   it('splits a write larger than the native queue and keeps SessionPipe paused until the bytes drain', async () => {
@@ -288,7 +332,7 @@ describe('native output chunks', () => {
   }
   it('ends only that session when a chunk text copy is refused, and disposes the chunk', async () => {
     const chunk = { byteLength: 6, readBytes: vi.fn(), dispose: vi.fn(),
-      get text(): string { throw new Error('ALLOC_FAILED: could not allocate 288216 bytes for chunk text'); } };
+      get text(): string { throw nativeAllocError('ALLOC_FAILED: could not allocate 288216 bytes for chunk text'); } };
     chunkTransport(chunk);
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
@@ -311,10 +355,41 @@ describe('native output chunks', () => {
       expect(transport.kill).toHaveBeenCalledOnce();
     } finally { log.mockRestore(); }
   });
+  it('acts on a present reader error even when it is empty: kills the child, and the session ends', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const pty = spawnTerminalPty('sh', [], {});
+      const exit = vi.fn(); pty.onExit(exit);
+      transport.read.mockReturnValueOnce({ ...idle, error: '' });
+      wake(); await tick();
+      expect(transport.kill).toHaveBeenCalledOnce();
+      expect(log.mock.calls.flat().join('\n')).toContain('PTY reader stopped session=pid-101: no detail');
+      // The killed child's exit ends the session.
+      transport.read.mockReturnValueOnce({ ...idle, eof: true, childExited: true, exitCode: 1 });
+      wake(); await tick();
+      expect(exit).toHaveBeenCalledExactlyOnceWith({ exitCode: 1 });
+      expect(transport.close).toHaveBeenCalledOnce();
+    } finally { log.mockRestore(); }
+  });
+  it('a clean EOF (no reader error) kills nothing and logs nothing; the exit ends the session as before', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const pty = spawnTerminalPty('sh', [], {});
+      const exit = vi.fn(); pty.onExit(exit);
+      transport.read.mockReturnValueOnce({ ...idle, eof: true }).mockReturnValueOnce({ ...idle, eof: true, error: null });
+      wake(); await tick(); wake(); await tick();
+      expect(transport.kill).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+      expect(exit).not.toHaveBeenCalled();
+      transport.read.mockReturnValueOnce({ ...idle, eof: true, childExited: true, exitCode: 0 });
+      wake(); await tick();
+      expect(exit).toHaveBeenCalledExactlyOnceWith({ exitCode: 0 });
+    } finally { log.mockRestore(); }
+  });
   it('retries a read the core refused to decode, and delivers the kept bytes without ending the session', async () => {
     const chunk = { text: 'kept', byteLength: 4, readBytes: vi.fn(), dispose: vi.fn() };
     const readChunk = vi.fn()
-      .mockImplementationOnce(() => { throw new Error('ALLOC_FAILED: could not allocate 4099 bytes for decoded output'); })
+      .mockImplementationOnce(() => { throw nativeAllocError('ALLOC_FAILED: could not allocate 4099 bytes for decoded output'); })
       .mockReturnValueOnce({ ...idle, chunk, bytesRead: 4 })
       .mockReturnValue({ ...idle, bytesRead: 0 });
     vi.mocked(loadNativeTerminalCore).mockReturnValue({ NativeTransport: class {
@@ -337,7 +412,7 @@ describe('native output chunks', () => {
     } finally { vi.useRealTimers(); log.mockRestore(); }
   });
   it('ends the session once reads have been refused for 30 s', async () => {
-    const readChunk = vi.fn(() => { throw new Error('ALLOC_FAILED: could not allocate 4099 bytes for decoded output'); });
+    const readChunk = vi.fn(() => { throw nativeAllocError('ALLOC_FAILED: could not allocate 4099 bytes for decoded output'); });
     vi.mocked(loadNativeTerminalCore).mockReturnValue({ NativeTransport: class {
       constructor(_c: string, _a: string[], _cwd: string, _env: object, _cols: number, _rows: number, callback: () => void) {
         wake = callback; return { ...transport, readChunk };

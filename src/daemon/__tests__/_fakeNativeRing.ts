@@ -1,5 +1,6 @@
 import type { NativeFrozenRing, NativeOutputChunk, NativeRingStorage } from '../../shared/nativeTerminalCore';
 import type { ReplayGeometry } from '../RingBuffer';
+import { nativeAllocError } from '../../shared/__tests__/_nativeAllocError';
 
 /**
  * A JS stand-in for the native ring (`ring-v1`) whose calls can be told to
@@ -16,7 +17,7 @@ export const fakeRingControl: { refuse: Map<FakeRingCall, number | Error>; live:
 };
 
 export function allocRefusal(what = 'ring'): Error {
-  return new Error(`ALLOC_FAILED: could not allocate 144924 bytes for ${what}`);
+  return nativeAllocError(`ALLOC_FAILED: could not allocate 144924 bytes for ${what}`);
 }
 
 /** Refuse the next `times` calls of `call` with an ALLOC_FAILED (or the given error, once). */

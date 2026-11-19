@@ -3,6 +3,7 @@ import { DaemonPTYBridge } from '../DaemonPTYBridge';
 import { RingBuffer } from '../RingBuffer';
 import type { TerminalPty } from '../../shared/terminalPty';
 import type { NativeOutputChunk } from '../../shared/nativeTerminalCore';
+import { nativeAllocError } from '../../shared/__tests__/_nativeAllocError';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); });
@@ -88,7 +89,7 @@ describe('native PTY output capture', () => {
     try {
       const text = 'out 한글';
       const chunk = { text, byteLength: Buffer.byteLength(text), dispose: vi.fn(),
-        readBytes: vi.fn(() => { throw new Error('ALLOC_FAILED: could not allocate 10 bytes for an output chunk copy'); }) };
+        readBytes: vi.fn(() => { throw nativeAllocError('ALLOC_FAILED: could not allocate 10 bytes for an output chunk copy'); }) };
       // The ring keeps its own copy (the fixture writes the text); only the viewer's copy is refused.
       h.feedChunk(chunk as unknown as NativeOutputChunk);
       expect(h.ring.readAll().toString()).toBe(text);
@@ -103,7 +104,7 @@ describe('native PTY output capture', () => {
     h.feed('x'.repeat(100));
     h.nativeWrites.mockImplementationOnce(chunk => {
       (h.ring as unknown as { dropRefused(e: unknown, n: number): void })
-        .dropRefused(new Error('ALLOC_FAILED: could not allocate 8 bytes for ring growth'), chunk.byteLength);
+        .dropRefused(nativeAllocError('ALLOC_FAILED: could not allocate 8 bytes for ring growth'), chunk.byteLength);
     });
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try { h.feed('\x1b[?2004h'); } finally { log.mockRestore(); }

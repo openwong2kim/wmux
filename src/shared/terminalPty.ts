@@ -3,7 +3,7 @@ import { StringDecoder } from 'node:string_decoder';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { isNativeAllocFailure, loadNativeTerminalCore, type NativeTransport, type NativeOutputChunk } from './nativeTerminalCore';
+import { describeNativeError, isNativeAllocFailure, loadNativeTerminalCore, type NativeTransport, type NativeOutputChunk } from './nativeTerminalCore';
 
 export interface TerminalPty extends IPty {
   readonly backend?: 'node' | 'rust';
@@ -104,6 +104,8 @@ class RustPty implements TerminalPty {
   private readRetry: ReturnType<typeof setTimeout> | undefined;
   /** Set while the core refuses the copy of held input; cleared by the next accepted write. */
   private inputRefused = false;
+  /** Pending after a refused input copy: until it fires, nothing retries the queue head
+   *  (no write, writer wake or flush), so a refusal is retried once per interval. */
   private inputRetry: ReturnType<typeof setTimeout> | undefined;
   private readonly wake = () => {
     if (this.scheduled || this.ended) return;
@@ -174,22 +176,25 @@ class RustPty implements TerminalPty {
   private sendInput(bytes: Buffer): boolean {
     try { this.transport.write(bytes); this.inputRefused = false; return true; }
     catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.startsWith('PTY_BACKPRESSURE')) return false;
       if (isNativeAllocFailure(error)) {
-        // The queue is unchanged (the core refused its copy). No writer wake follows a
-        // refusal, so the held input is retried on a timer; it is not dropped.
-        if (!this.inputRefused) console.error(`[terminal-core] PTY input session=${this.name}: ${message}; holding input and retrying`);
+        // The queue is unchanged (the core refused its copy). It is retried on a timer, not
+        // on the writer's wakes (those follow output too), and it is not dropped.
+        if (!this.inputRefused) console.error(`[terminal-core] PTY input session=${this.name}: ${describeNativeError(error)}; holding input and retrying`);
         this.inputRefused = true;
         this.inputRetry ??= setTimeout(() => { this.inputRetry = undefined; if (!this.ended) this.flushInput(); }, READ_REFUSED_RETRY_MS);
         return false;
       }
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith('PTY_BACKPRESSURE')) return false;
       this.inputClosed = true; this.releaseInput();
       if (!message.startsWith('PTY_CLOSED')) console.error('[terminal-core] PTY input failed; dropping input:', message);
       return true;
     }
   }
   private flushInput(): void {
+    // A refused copy waits for its retry timer (the timer clears itself before it flushes).
+    // A full queue (PTY_BACKPRESSURE) arms no timer: the writer's wakes flush it as before.
+    if (this.inputRetry) return;
     while (this.queued.length) {
       const head = this.queued[0];
       if (!this.sendInput(head) || this.inputClosed) return;
@@ -240,10 +245,10 @@ class RustPty implements TerminalPty {
       const now = Date.now();
       this.readRefusedSince ??= now;
       if (now - this.readRefusedSince >= READ_REFUSED_GIVE_UP_MS) {
-        console.error(`[terminal-core] PTY output session=${this.name}: reads refused for ${READ_REFUSED_GIVE_UP_MS} ms: ${(error as Error).message}`);
+        console.error(`[terminal-core] PTY output session=${this.name}: reads refused for ${READ_REFUSED_GIVE_UP_MS} ms: ${describeNativeError(error)}`);
         this.fail(); return;
       }
-      if (this.readRefusedSince === now) console.error(`[terminal-core] PTY output session=${this.name}: ${(error as Error).message}; retrying the read`);
+      if (this.readRefusedSince === now) console.error(`[terminal-core] PTY output session=${this.name}: ${describeNativeError(error)}; retrying the read`);
       this.readRetry ??= setTimeout(() => { this.readRetry = undefined; this.wake(); }, READ_REFUSED_RETRY_MS);
       return;
     }
@@ -266,11 +271,13 @@ class RustPty implements TerminalPty {
       // A refused allocation (the chunk's text copy, or a listener's own copy) ends only
       // this session; anything else is a bug and propagates as before.
       if (!isNativeAllocFailure(error)) throw error;
-      console.error(`[terminal-core] PTY output session=${this.name}: ${(error as Error).message}`);
+      console.error(`[terminal-core] PTY output session=${this.name}: ${describeNativeError(error)}`);
       this.fail(); return;
     } finally { chunk?.dispose(); }
-    if (result.error) {
-      console.error(`[terminal-core] PTY reader stopped session=${this.name}: ${result.error}`);
+    // The reader gave up whenever `error` is present, an empty string included; it is
+    // absent (undefined or null) only on a clean EOF.
+    if (result.error != null) {
+      console.error(`[terminal-core] PTY reader stopped session=${this.name}: ${result.error || 'no detail'}`);
       try { this.transport.kill(globalThis.process.platform === 'win32' ? undefined : os.constants.signals.SIGKILL); }
       catch { this.fail(); return; }
     }
