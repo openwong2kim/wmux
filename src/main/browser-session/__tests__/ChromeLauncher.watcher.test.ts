@@ -65,6 +65,8 @@ class FakeBrowserWs {
   static failConnect = false;
   /** Runs inside setDiscoverTargets, before its reply: Chrome's replay of the targets that exist. */
   static onDiscover: ((ws: FakeBrowserWs) => void) | null = null;
+  /** When set, setAutoAttach's page announcements wait here until the test runs them (Chrome may name a tab's page after it answers). */
+  static heldPages: Array<() => void> | null = null;
   readyState = 0;
   sent: Frame[] = [];
   private listeners = new Map<string, Listener[]>();
@@ -149,7 +151,10 @@ class FakeBrowserWs {
       case 'Target.setAutoAttach': {
         const tab = frame.sessionId ? sessions.get(frame.sessionId) : undefined;
         const page = tab ? tabs.get(tab) : undefined;
-        if (tab && page) this.announcePage(tab, page);
+        if (tab && page) {
+          if (FakeBrowserWs.heldPages) FakeBrowserWs.heldPages.push(() => this.announcePage(tab, page));
+          else this.announcePage(tab, page);
+        }
         return {};
       }
       default:
@@ -246,6 +251,7 @@ beforeEach(() => {
   FakeBrowserWs.instances = [];
   FakeBrowserWs.failConnect = false;
   FakeBrowserWs.onDiscover = null;
+  FakeBrowserWs.heldPages = null;
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
   vi.stubGlobal('WebSocket', FakeBrowserWs);
@@ -930,6 +936,18 @@ describe('ChromeLauncher outside tabs (the phone preview only)', () => {
     // One id per tab, for as long as the tab lives.
     expect((await launcher.outsideTabs())[0].surfaceId).toBe(rows[0].surfaceId);
     expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for Chrome to name the page behind a tab it just attached, when that comes after the attach', async () => {
+    const { launcher } = await spawned('/tmp/out-11');
+    tabs.set('tab-out', 'page-out');
+    listedPages = ['page-out'];
+    const held: Array<() => void> = [];
+    FakeBrowserWs.heldPages = held;
+    const listing = launcher.outsideTabs();
+    await vi.waitFor(() => expect(held).toHaveLength(1), { timeout: 5_000 });
+    for (const announce of held) announce();
+    expect((await listing).map((row) => row.targetId)).toEqual(['page-out']);
   });
 
   it.each([['on', '1'], ['off', undefined]])('never reaches an agent lane, with the target grant %s', async (_label, grant) => {

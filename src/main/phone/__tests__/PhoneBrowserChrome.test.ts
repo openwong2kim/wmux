@@ -941,7 +941,7 @@ describe('a profile bound to one of the workspace\'s panes (tabs opened outside 
     const { registry } = setup();
     const rows = await phoneChromeHelpTabs('ws-1', registry);
     expect(rows.map((r) => [r.surfaceId, r.previewable])).toEqual([['chrome-mine', true]]);
-    // An agent's request naming an outside tab by its target id finds no previewable row.
+    // A request naming an outside tab, by its target id, gets no previewable row.
     const row = await browserHelpRow(
       { requestId: 'r1', workspaceId: 'ws-1', surfaceId: 't-chrome-x-login', prompt: 'log in', createdAt: 0, deadlineAt: 1 } as Parameters<typeof browserHelpRow>[0],
       { backend: () => 'chrome', builtinUrl: () => null, mayBeLiveChrome: () => false, chromeTabs: (ws) => phoneChromeHelpTabs(ws, registry) },

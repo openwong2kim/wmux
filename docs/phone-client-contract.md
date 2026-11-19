@@ -3750,15 +3750,15 @@ opened by hand. Additive; `protocolVersion` stays 1.
 - **Help requests** never name such a tab: an agent's help request is always
   about a tab the desktop recorded.
 
-Suggested copy (English / Korean):
+Suggested copy:
 
-| Where | English | Korean |
-| --- | --- | --- |
-| Row label (`openedBy: "outside"`) | Opened outside wmux | wmux 밖에서 연 탭 |
-| `not-bound` | No Chrome profile is bound to one of this workspace's panes. | 이 워크스페이스의 판에 연결된 Chrome 프로필이 없어요. |
-| `live` | This workspace uses your own Chrome, which is never shown here. | 이 워크스페이스는 내 Chrome을 써서 여기엔 나오지 않아요. |
-| `not-running` | That profile's Chrome isn't running. | 그 프로필의 Chrome이 꺼져 있어요. |
-| `pane-unknown` | This pane's workspace isn't known yet. Try again in a moment. | 이 판의 워크스페이스를 아직 알 수 없어요. 잠시 후 다시 시도하세요. |
+| Where | Text |
+| --- | --- |
+| Row label (`openedBy: "outside"`) | Opened outside wmux |
+| `not-bound` | No Chrome profile is bound to one of this workspace's panes. |
+| `live` | This workspace uses your own Chrome, which is never shown here. |
+| `not-running` | That profile's Chrome isn't running. |
+| `pane-unknown` | This pane's workspace isn't known yet. Try again in a moment. |
 
 #### Live browser stream (`browserStream`)
 

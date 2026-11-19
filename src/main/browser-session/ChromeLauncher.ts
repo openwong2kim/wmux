@@ -554,6 +554,9 @@ function newSurfaceId(): string {
 /** The id an outside tab (ChromeLauncher.outsideTabs) gets: a `chrome-` surface no record can hold. */
 export const OUTSIDE_ID_PREFIX = 'chrome-x-';
 
+/** How long outsideTabs waits for Chrome to name the pages behind tabs the watcher just attached. */
+export const OUTSIDE_PAIRING_WAIT_MS = 2_000;
+
 /** Tabs one tab may open in a minute and still be adopted. */
 export const OPENED_PER_OPENER_PER_MINUTE = 20;
 /** Tabs one workspace's tabs may open in a minute and still be adopted. */
@@ -706,6 +709,8 @@ export class ChromeLauncher implements ChromeBackendClient {
   /** Outside tabs (outsideTabs): tab targetId → phone-only id, and back. */
   private readonly outsideIds = new Map<string, string>();
   private readonly outsideTabsById = new Map<string, string>();
+  /** Told on every tab ↔ page pairing: outsideTabs waits on them for tabs just attached. */
+  private readonly pairingWaiters = new Set<() => void>();
 
   // ── Tab-target watcher state (all of it optional; see TARGET_WATCHER_ENV) ──
   private watcher: CdpConnection | null = null;
@@ -1410,6 +1415,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (previous && previous !== pageTargetId) this.pageToTab.delete(previous);
     this.tabToPage.set(tabTargetId, pageTargetId);
     this.pageToTab.set(pageTargetId, tabTargetId);
+    for (const wake of [...this.pairingWaiters]) wake();
 
     const anchored = this.byTabTargetId.get(tabTargetId);
     if (!anchored) {
@@ -2859,6 +2865,8 @@ export class ChromeLauncher implements ChromeBackendClient {
     // The tab topology comes from the watcher; starting it never starts Chrome.
     await this.ensureTargetWatcher();
     if (!this.watcher?.isOpen()) return [];
+    // Chrome names the page behind a tab just attached after it answers the attach.
+    await this.tabPagesKnown(OUTSIDE_PAIRING_WAIT_MS);
     let live: Array<{ id: string; url: string; title: string; type: string }>;
     try {
       live = (await this.reach().listTargets()) as typeof live;
@@ -2931,6 +2939,23 @@ export class ChromeLauncher implements ChromeBackendClient {
       this.endStreamSession(entry);
       if (entry.socket.isOpen()) void entry.socket.send('Target.detachFromTarget', { sessionId: entry.sessionId }).catch(() => undefined);
     }
+  }
+
+  /** Until every tab the watcher attached has its page named, or `ms` passed. */
+  private async tabPagesKnown(ms: number): Promise<void> {
+    const pending = () => [...this.tabSessions.keys()].some((tab) => !this.tabToPage.has(tab));
+    if (!pending()) return;
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.pairingWaiters.delete(check);
+        resolve();
+      };
+      const check = () => { if (!pending()) done(); };
+      const timer = setTimeout(done, ms);
+      (timer as { unref?: () => void }).unref?.();
+      this.pairingWaiters.add(check);
+    });
   }
 
   /** The tab holding `pageId` while that page is its current one and neither has a record. */

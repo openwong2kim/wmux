@@ -466,9 +466,8 @@ async function outsideTabs(clients: ChromeBackendClient[]): Promise<Array<{ tab:
  * The help table's read of the recorded tabs: the workspace's own dedicated
  * profile even when a pane is bound to it too (the row still shows where the
  * tab is), each marked with whether the preview may drive it, then the
- * recorded tabs of its pane profiles. Never an outside tab: a help request
- * names its tab by an id an agent supplied, and an agent on the port knows
- * the target ids of tabs it opened itself.
+ * recorded tabs of its pane profiles. Never an outside tab: a help request is
+ * always about a tab the desktop recorded.
  */
 export async function phoneChromeHelpTabs(
   workspaceId: string,

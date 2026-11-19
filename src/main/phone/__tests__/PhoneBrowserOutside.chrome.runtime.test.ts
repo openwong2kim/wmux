@@ -133,7 +133,14 @@ function describeMode(mode: Mode): void {
       await fetch(`http://127.0.0.1:${port}/json/new?${origin}/json-new`, { method: 'PUT' });
       await createTarget(port, `${origin}/create-target`);
 
-      const reply = await eventually(list, (r) => r.pages.filter((p) => p.openedBy === 'outside').length === 2);
+      // Chrome lists both pages before the phone asks; the phone's first list,
+      // which also starts the tab watcher, already has both.
+      await eventually(
+        async () => (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()) as Array<{ url: string }>,
+        (pages) => pages.some((p) => p.url.endsWith('/json-new')) && pages.some((p) => p.url.endsWith('/create-target')),
+      );
+      const reply = await list();
+      expect(reply.pages.filter((p) => p.openedBy === 'outside')).toHaveLength(2);
       expect(reply.chromeOutside).toBeUndefined();
       const rows = reply.pages.filter((p) => p.openedBy === 'outside');
       expect(rows.map((p) => new URL(p.url).pathname).sort()).toEqual(['/create-target', '/json-new']);
