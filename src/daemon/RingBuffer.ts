@@ -146,9 +146,10 @@ export class RingBuffer {
   private appendedBytes = 0;
   private wakeFailing = false; // the current failure episode is counted
   private nextWriteWakeAt = 0; // output retries a failing wake at most this often
-  // The last wake failed because the native ring refused its allocation, not
-  // because the file could not be read: readers wait out the backoff too.
-  private wakeRefused = false;
+  // The ALLOC_FAILED error of the last wake when the native ring refused its
+  // allocation (not when the file could not be read); null otherwise. A
+  // reader rethrows it, a dump inside the backoff skips the wake.
+  private wakeRefusal: unknown = null;
   private wokeAt = 0;
   private mutations = 0; // bumps on every content change, including clear()
   private lastDump: { path: string; mutations: number } | null = null;
@@ -371,10 +372,11 @@ export class RingBuffer {
 
   /** Capture inside the shared snapshot slot; callers own the frozen copy. */
   freezeNative() {
-    if (this.backend === 'rust') this.wake();
     let frozen: ReturnType<NativeRingStorage['freeze']> | undefined;
-    try { frozen = this.native?.freeze(); }
-    catch (error) {
+    try {
+      if (this.backend === 'rust') this.wakeForRead();
+      frozen = this.native?.freeze();
+    } catch (error) {
       // No frozen copy: the caller takes its plain read path instead.
       if (!isNativeAllocFailure(error)) throw error;
       this.reportAllocFailure(error, 'snapshot copy not made');
@@ -494,7 +496,7 @@ export class RingBuffer {
    */
   readAllWithGeometry(): { data: Buffer; geometry: ReplayGeometry | undefined; writtenAt: number } {
     // Still hibernated: serve the newest bytes, as readAll() does.
-    if (this.backend === 'rust' && !this.wake()) return { data: Buffer.concat(this.pending), geometry: undefined, writtenAt: this.totalWritten };
+    if (this.backend === 'rust' && !this.wakeForRead()) return { data: Buffer.concat(this.pending), geometry: undefined, writtenAt: this.totalWritten };
     if (this.native) {
       const snapshot = this.native.readAllWithGeometry();
       return { ...snapshot, writtenAt: this.nativeBase + snapshot.writtenAt, geometry: snapshot.geometry ?? undefined };
@@ -539,7 +541,7 @@ export class RingBuffer {
    */
   readAll(): Buffer {
     // The `.buf` is unreadable right now: serve the newest bytes, keep the file.
-    if (!this.wake()) return Buffer.concat(this.pending);
+    if (!this.wakeForRead()) return Buffer.concat(this.pending);
     if (this.native) return this.native.readAll();
     if (this.length === 0) {
       return Buffer.alloc(0);
@@ -660,7 +662,7 @@ export class RingBuffer {
     // Hibernated to this very file: it already holds the bytes. Reading them
     // back would wake the ring on every forced snapshot tick.
     if (this.hibernatedPath === filePath && this.appendedBytes === this.pendingBytes && !this.fileRewriteDue) return;
-    if (!this.wake()) { this.appendPendingTo(filePath); return; }
+    if (!this.wakeForDump()) { this.appendPendingTo(filePath); return; }
     // Captured here (inside the chain) rather than at enqueue time: a slightly
     // fresher snapshot is never wrong for recovery, and the snapshotRunner's
     // dirty-tracking captures totalBytesWritten BEFORE calling us, so a fresher
@@ -713,7 +715,7 @@ export class RingBuffer {
   dumpToFileSyncAtomic(filePath: string): void {
     if (this.disposed) return;
     if (this.hibernatedPath === filePath && this.appendedBytes === this.pendingBytes && !this.fileRewriteDue) return; // see doDumpToFile
-    if (!this.wake()) { this.appendPendingTo(filePath); return; }
+    if (!this.wakeForDump()) { this.appendPendingTo(filePath); return; }
     const data = this.readAll();
     const tmpPath = `${filePath}.tmp.${crypto.randomBytes(6).toString('hex')}`;
     try {
@@ -778,16 +780,15 @@ export class RingBuffer {
    * no caller can observe a half-woken ring. Returns false, and stays
    * hibernated with the file untouched, when the file exists but cannot be
    * read right now (EMFILE, a sharing violation): the next access retries,
-   * and PTY output (`retryNow` false) at most once a second. After the native
-   * ring refused its allocation, every access waits out that second: a read
-   * or dump in between serves the held output without re-reading the file or
-   * asking for the allocation again.
+   * and PTY output (`retryNow` false) at most once a second. The same when
+   * the native ring refused its allocation; readers see that refusal
+   * (wakeForRead), dumps inside the second skip the wake (wakeForDump).
    * A file that is gone cannot come back, so the ring wakes without it.
    */
   wake(retryNow = true): boolean {
     const file = this.hibernatedPath;
     if (file === null) return true;
-    if ((!retryNow || this.wakeRefused) && this.wakeFailing && Date.now() < this.nextWriteWakeAt) return false;
+    if (!retryNow && this.wakeFailing && Date.now() < this.nextWriteWakeAt) return false;
     // Only the bytes the ring can still hold are read: the newest part of the
     // released history, up to `capacity` with the output held since.
     const base = this.hibernatedFileBytes;
@@ -812,7 +813,7 @@ export class RingBuffer {
       }
     } catch (err) {
       if (!this.wakeFailing) RingBuffer.wakeFailures++;
-      this.wakeRefused = false;
+      this.wakeRefusal = null;
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
         this.wakeFailing = true;
         this.nextWriteWakeAt = Date.now() + 1000;
@@ -831,7 +832,7 @@ export class RingBuffer {
       // untouched, exactly as for an unreadable file, and retry later.
       this.reportAllocFailure(error, 'buffer stays on disk');
       this.wakeFailing = true;
-      this.wakeRefused = true;
+      this.wakeRefusal = error;
       this.nextWriteWakeAt = Date.now() + 1000;
       return false;
     }
@@ -840,9 +841,32 @@ export class RingBuffer {
       this.lastDump = null;
     }
     this.wakeFailing = false;
-    this.wakeRefused = false;
+    this.wakeRefusal = null;
     this.wokeAt = Date.now();
     return true;
+  }
+
+  /**
+   * wake() for a reader: retried at once, and a refused native allocation
+   * throws its ALLOC_FAILED error (the caller declines, e.g. tryReadRing),
+   * so a reader never takes the held output alone for the ring's history.
+   * False only when the `.buf` cannot be read right now (served as before).
+   */
+  private wakeForRead(): boolean {
+    if (this.wake()) return true;
+    if (this.wakeRefusal !== null) throw this.wakeRefusal;
+    return false;
+  }
+
+  /**
+   * wake() for a dump. A ring still asleep after a refused allocation does
+   * not need waking to be dumped (its `.buf` is the dump, held output is
+   * appended): inside the backoff the dump neither reads the file back nor
+   * asks for the allocation again.
+   */
+  private wakeForDump(): boolean {
+    if (this.hibernatedPath !== null && this.wakeRefusal !== null && Date.now() < this.nextWriteWakeAt) return false;
+    return this.wake();
   }
 
   /** When the ring last came back from its `.buf` (epoch ms; 0 = never). */

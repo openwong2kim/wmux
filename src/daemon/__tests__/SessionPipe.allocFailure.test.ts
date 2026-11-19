@@ -5,6 +5,7 @@ import { SessionPipe } from '../SessionPipe';
 import { generateSnapshotUnqueued } from '../HeadlessSnapshot';
 import { createSessionPipeMarkers } from '../sessionPipeMarkers';
 import type { RingBuffer } from '../RingBuffer';
+import { ATTACH_SNAPSHOT_MIN_BYTES } from '../../shared/terminal/attachSnapshot';
 
 /**
  * #3440: every full-ring read of the session pipe (attach flush, re-flush)
@@ -110,37 +111,55 @@ describe('SessionPipe: a refused native ring read', () => {
     expect(pipe.isFlushed).toBe(true);
   });
 
-  it('re-flush: a refused raw re-read still ends the re-flush, keeping the client screen (no RIS)', async () => {
+  it('re-flush: a refused raw re-read with no output since T0 ends with an empty replay and goes live, asking for nothing', async () => {
     const pipe = new SessionPipe('session-c', fakeRing(['history', refusal()]), TOKEN);
+    const asks = vi.fn();
+    pipe.onResyncNeeded = asks;
     const socket = new FakeSocket();
     connect(pipe, socket, true);
     const generate = vi.fn(async () => ({ ok: false as const, reason: 'budget' }));
     await expect(pipe.reflush({ bridge: noTee, cols: 80, rows: 24, generate })).resolves.toEqual({ mode: 'raw', fallbackReason: 'budget' });
+    // No bytes between the markers (an empty replay: the renderer keeps its screen).
     expect(socket.text()).toBe(markers.resyncBegin.toString('latin1') + markers.flushDone.toString('latin1'));
     expect(pipe.isFlushed).toBe(true);
+    expect(pipe.isBehind).toBe(false);
+    expect(asks).not.toHaveBeenCalled();
+    pipe.writeToClient(Buffer.from('live'));
+    expect(socket.text().endsWith(markers.flushDone.toString('latin1') + 'live')).toBe(true);
   });
 
-  it('re-flush: with the raw re-read refused, the bytes teed since T0 reach the client in order, drained or not', async () => {
-    const pipe = new SessionPipe('session-f', fakeRing(['history', refusal()]), TOKEN);
+  it('re-flush: a refused raw re-read with output since T0 writes no bytes before the flush-done marker, pauses live output and asks for a re-flush', async () => {
+    const ring = fakeRing(['history', refusal()]);
+    const pipe = new SessionPipe('session-f', ring, TOKEN);
+    const asks = vi.fn();
+    pipe.onResyncNeeded = asks;
     const socket = new FakeSocket();
     connect(pipe, socket, true);
     const bridge = new EventEmitter();
     const generate = vi.fn(async (req: { drainQueue: () => Buffer[] }) => {
-      bridge.emit('data', Buffer.from('one '));
-      bridge.emit('data', Buffer.from('two '));
-      // The generator consumed these before it failed.
+      // Output while the generator runs: it reaches the ring and the tee.
+      ring.grow(8);
+      bridge.emit('data', Buffer.from('one two '));
       expect(Buffer.concat(req.drainQueue()).toString()).toBe('one two ');
+      ring.grow(5);
       bridge.emit('data', Buffer.from('three'));
       return { ok: false as const, reason: 'error' };
     });
     await expect(pipe.reflush({ bridge, cols: 80, rows: 24, generate })).resolves.toEqual({ mode: 'raw', fallbackReason: 'error' });
-    expect(socket.text()).toBe(markers.resyncBegin.toString('latin1') + 'one two three' + markers.flushDone.toString('latin1'));
+    const done = markers.flushDone.toString('latin1');
+    expect(socket.text()).toBe(markers.resyncBegin.toString('latin1') + done);
     expect(pipe.isFlushed).toBe(true);
-    expect(pipe.isBehind).toBe(false);
+    expect(pipe.isBehind).toBe(true);
+    expect(asks).toHaveBeenCalledWith(1);
     expect(bridge.listenerCount('data')).toBe(0);
-    // Live output follows directly.
-    pipe.writeToClient(Buffer.from(' four'));
-    expect(socket.text().endsWith(markers.flushDone.toString('latin1') + ' four')).toBe(true);
+    // Live output waits for the re-flush, which repaints from the ring.
+    pipe.writeToClient(Buffer.from('four'));
+    expect(socket.text()).toBe(markers.resyncBegin.toString('latin1') + done);
+    ring.readAllWithGeometry = () => ({ data: Buffer.from('history one two three'), geometry: undefined, writtenAt: 20 });
+    await pipe.reflush({ bridge: noTee, cols: 80, rows: 24, generate: async () => ({ ok: false, reason: 'budget' }) });
+    expect(pipe.isBehind).toBe(false);
+    expect(socket.text().endsWith('\x1bchistory one two three' + done)).toBe(true);
+    await pipe.stop();
   });
 
   it('re-flush of a pipe that was behind: a refused raw re-read stays behind and asks for another re-flush', async () => {
@@ -210,6 +229,31 @@ describe('SessionPipe: a refused native ring read', () => {
       expect(asks).not.toHaveBeenCalled();
       pipe.writeToClient(Buffer.from('live'));
       expect(socket.text().endsWith('live')).toBe(true);
+    });
+
+    it.each([
+      [true, 'output arrived during the parse: asks for a re-flush'],
+      [false, 'nothing arrived during the parse: live output goes on'],
+    ])('no-gain snapshot (a large ring, no size change), raw re-read refused, %s', async (grew) => {
+      // Past the snapshot threshold, and a snapshot no smaller than the raw
+      // bytes: the no-gain branch, which ships raw after a re-read.
+      const history = 'h'.repeat(ATTACH_SNAPSHOT_MIN_BYTES);
+      const ring = fakeRing([history, refusal()]);
+      const pipe = new SessionPipe('session-k', ring, TOKEN, dims);
+      const asks = vi.fn();
+      pipe.onResyncNeeded = asks;
+      const socket = new FakeSocket();
+      connect(pipe, socket, false);
+      snapshot.mockImplementation(async () => {
+        if (grew) ring.grow(5);
+        return { ok: true, payload: Buffer.alloc(ATTACH_SNAPSHOT_MIN_BYTES + 1, 0x73), bytesIn: history.length, durationMs: 1 };
+      });
+      await flush(pipe, socket);
+      expect(snapshot).toHaveBeenCalledTimes(1);
+      expect(socket.text()).toBe(history + markers.flushDone.toString('latin1'));
+      expect(pipe.isBehind).toBe(grew);
+      expect(asks).toHaveBeenCalledTimes(grew ? 1 : 0);
+      await pipe.stop();
     });
 
     it('a re-read that succeeds asks for nothing', async () => {
