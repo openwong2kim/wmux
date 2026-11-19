@@ -12,7 +12,16 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
-use super::ProcessRow;
+use super::{ProcessRow, ROWS};
+use crate::fallible::{self, AllocFailed, CallError};
+
+/// The SystemProcessInformation buffer: about 1 KiB per process, sized by
+/// the system.
+const KERNEL_LIST: &str = "the kernel's process list";
+/// That list by pid: one entry per process.
+const LISTED: &str = "the kernel's process list by pid";
+/// A command line read: up to COMMAND_LINE_CAP, and its text.
+const COMMAND_LINE: &str = "a process's command line";
 
 type Handle = *mut c_void;
 
@@ -85,7 +94,17 @@ type NtQuerySystemInformation = unsafe extern "system" fn(u32, *mut c_void, u32,
 /// ntdll is mapped into every process; an export is absent only on a broken
 /// system, where rows simply carry fewer details.
 fn ntdll_export(name: &std::ffi::CStr) -> usize {
-    let module_name: Vec<u16> = "ntdll.dll\0".encode_utf16().collect();
+    const NTDLL: [u16; 10] = {
+        let name = *b"ntdll.dll\0";
+        let mut wide = [0u16; 10];
+        let mut i = 0;
+        while i < name.len() {
+            wide[i] = name[i] as u16;
+            i += 1;
+        }
+        wide
+    };
+    let module_name = NTDLL;
     // SAFETY: NUL-terminated names; a null module or proc yields 0.
     unsafe {
         let module = GetModuleHandleW(module_name.as_ptr());
@@ -118,30 +137,34 @@ impl Drop for OwnedHandle {
     }
 }
 
-/// Walk the process table. Only a failed snapshot is an error; a row whose
+/// Walk the process table. Only a failed snapshot or a refused buffer is an
+/// error; a row whose
 /// details cannot be read, or cannot be shown to belong to the walked
 /// process, keeps pid/ppid/name with `created`/`cmdline` unset. With details,
 /// a row is left out only when its handle proves the pid now belongs to a
 /// process created at another time.
-pub fn snapshot(with_details: bool) -> Result<Vec<ProcessRow>, String> {
+pub fn snapshot(with_details: bool) -> Result<Vec<ProcessRow>, CallError> {
     // SAFETY: plain Win32 calls; every out-pointer refers to a local of the declared layout.
     unsafe {
         let raw = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if raw == INVALID_HANDLE_VALUE || raw.is_null() {
-            return Err(format!(
+            return Err(CallError::reason(format!(
                 "CreateToolhelp32Snapshot failed ({})",
                 GetLastError()
-            ));
+            )));
         }
         let snap = OwnedHandle(raw);
         let mut entry: ProcessEntry32W = std::mem::zeroed();
         entry.dw_size = std::mem::size_of::<ProcessEntry32W>() as u32;
         if Process32FirstW(snap.0, &mut entry) == 0 {
-            return Err(format!("Process32FirstW failed ({})", GetLastError()));
+            return Err(CallError::reason(format!(
+                "Process32FirstW failed ({})",
+                GetLastError()
+            )));
         }
-        let mut rows = Vec::with_capacity(512);
+        let mut rows = fallible::try_with_capacity(512, ROWS)?;
         let listed = if with_details {
-            listed_processes()
+            listed_processes()?
         } else {
             None
         };
@@ -167,8 +190,9 @@ pub fn snapshot(with_details: bool) -> Result<Vec<ProcessRow>, String> {
             // Only the detailed table joins the two reads and may drop a row.
             // The liveness table (no details) keeps every Toolhelp row, so a
             // lost join can never read as a death.
-            let keep = !with_details || row.pid == 0 || fill_details(&mut row, listed.as_ref());
+            let keep = !with_details || row.pid == 0 || fill_details(&mut row, listed.as_ref())?;
             if keep {
+                fallible::try_reserve(&mut rows, 1, ROWS)?;
                 rows.push(row);
             }
             if Process32NextW(snap.0, &mut entry) == 0 {
@@ -176,7 +200,9 @@ pub fn snapshot(with_details: bool) -> Result<Vec<ProcessRow>, String> {
                 // would read every pid past the cut as gone.
                 let error = GetLastError();
                 if error != ERROR_NO_MORE_FILES {
-                    return Err(format!("Process32NextW failed ({error})"));
+                    return Err(CallError::reason(format!(
+                        "Process32NextW failed ({error})"
+                    )));
                 }
                 break;
             }
@@ -191,9 +217,12 @@ pub fn snapshot(with_details: bool) -> Result<Vec<ProcessRow>, String> {
 /// an exited or reused pid, an image name Toolhelp cut at 260 chars, a null
 /// kernel name) the row is kept with its details unset, as when the process
 /// cannot be opened. False only when the handle proves the pid reused.
-fn fill_details(row: &mut ProcessRow, listed: Option<&HashMap<u32, Listed>>) -> bool {
+fn fill_details(
+    row: &mut ProcessRow,
+    listed: Option<&HashMap<u32, Listed>>,
+) -> Result<bool, AllocFailed> {
     let Some(created) = listed.and_then(|list| listed_creation(row, list)).flatten() else {
-        return true;
+        return Ok(true);
     };
     row.created = Some(created);
     read_details(row, created)
@@ -201,11 +230,11 @@ fn fill_details(row: &mut ProcessRow, listed: Option<&HashMap<u32, Listed>>) -> 
 
 /// Read the command line from a handle whose creation time matches the
 /// listed one. False when it differs: the pid now names another process.
-fn read_details(row: &mut ProcessRow, created: f64) -> bool {
+fn read_details(row: &mut ProcessRow, created: f64) -> Result<bool, AllocFailed> {
     // SAFETY: the handle is checked and closed by OwnedHandle.
     let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, row.pid) };
     if raw.is_null() {
-        return true;
+        return Ok(true);
     }
     let process = OwnedHandle(raw);
     let (mut creation, mut exit, mut kernel, mut user) = Default::default();
@@ -219,12 +248,12 @@ fn read_details(row: &mut ProcessRow, created: f64) -> bool {
             None
         };
     match opened {
-        Some(now) if now != created => return false,
-        Some(_) => row.cmdline = command_line(process.0),
+        Some(now) if now != created => return Ok(false),
+        Some(_) => row.cmdline = command_line(process.0)?,
         // The handle cannot be dated: its command line may not be this process's.
         None => {}
     }
-    true
+    Ok(true)
 }
 
 /// The kernel list's creation time for a walked row, when both reads saw the
@@ -244,11 +273,14 @@ struct Listed {
 }
 
 /// Every process by pid, from one SystemProcessInformation read: creation
-/// time needs no process handle there. None when the call fails.
+/// time needs no process handle there. None when the call fails; a refused
+/// buffer is an error, never a table without details.
 #[cfg(target_pointer_width = "64")]
-fn listed_processes() -> Option<HashMap<u32, Listed>> {
-    let query = nt_query_system()?;
-    let mut buffer: Vec<u64> = vec![0; 64 * 1024];
+fn listed_processes() -> Result<Option<HashMap<u32, Listed>>, AllocFailed> {
+    let Some(query) = nt_query_system() else {
+        return Ok(None);
+    };
+    let mut buffer: Vec<u64> = fallible::try_zeroed(64 * 1024, KERNEL_LIST)?;
     for _ in 0..4 {
         let bytes = (buffer.len() * 8) as u32;
         let mut needed = 0u32;
@@ -262,29 +294,35 @@ fn listed_processes() -> Option<HashMap<u32, Listed>> {
             )
         };
         if status >= 0 {
-            return Some(parse_process_information(&buffer, bytes as usize));
+            return parse_process_information(&buffer, bytes as usize).map(Some);
         }
         if status != STATUS_INFO_LENGTH_MISMATCH || needed > 64 << 20 {
-            return None;
+            return Ok(None);
         }
-        // The table can grow between calls; leave headroom.
-        buffer = vec![0; (needed as usize + 64 * 1024).div_ceil(8)];
+        // The table can grow between calls; leave headroom. The smaller
+        // buffer is freed before the larger one is asked for.
+        drop(std::mem::take(&mut buffer));
+        buffer = fallible::try_zeroed((needed as usize + 64 * 1024).div_ceil(8), KERNEL_LIST)?;
     }
-    None
+    Ok(None)
 }
 
 /// The record offsets below are the 64-bit layout; elsewhere creation times
 /// come from each process handle alone.
 #[cfg(not(target_pointer_width = "64"))]
-fn listed_processes() -> Option<HashMap<u32, Listed>> {
-    None
+fn listed_processes() -> Result<Option<HashMap<u32, Listed>>, AllocFailed> {
+    Ok(None)
 }
 
 /// Walk SYSTEM_PROCESS_INFORMATION records. x64 offsets: NextEntryOffset 0,
 /// CreateTime 32, ImageName 56 (UNICODE_STRING: Length 56, Buffer 64),
 /// UniqueProcessId 80, InheritedFromUniqueProcessId 88.
+/// The map is reserved once, for the records counted first.
 #[cfg(target_pointer_width = "64")]
-fn parse_process_information(buffer: &[u64], bytes: usize) -> HashMap<u32, Listed> {
+fn parse_process_information(
+    buffer: &[u64],
+    bytes: usize,
+) -> Result<HashMap<u32, Listed>, AllocFailed> {
     let base = buffer.as_ptr() as *const u8;
     let read_u64 = |at: usize| -> Option<u64> {
         // SAFETY: bounds checked against the owned buffer; unaligned plain-data read.
@@ -303,24 +341,41 @@ fn parse_process_information(buffer: &[u64], bytes: usize) -> HashMap<u32, Liste
             return String::new();
         }
         // SAFETY: the range was checked against the owned buffer above.
-        let chars = unsafe {
-            std::slice::from_raw_parts(base.add(start), len)
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect::<Vec<u16>>()
-        };
-        String::from_utf16_lossy(&chars)
+        let name = unsafe { std::slice::from_raw_parts(base.add(start), len) };
+        // An image name: a row's own short string (see process_table).
+        char::decode_utf16(
+            name.chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]])),
+        )
+        .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect()
     };
-    let mut out = HashMap::with_capacity(512);
+    // NextEntryOffset, CreateTime, ImageName (Length, Buffer),
+    // UniqueProcessId and InheritedFromUniqueProcessId of the record at `at`.
+    let record = |at: usize| -> Option<[u64; 6]> {
+        Some([
+            read_u64(at)?,
+            read_u64(at + 32)?,
+            read_u64(at + 56)?,
+            read_u64(at + 64)?,
+            read_u64(at + 80)?,
+            read_u64(at + 88)?,
+        ])
+    };
+    let next = |head: u64| (head & 0xffff_ffff) as usize;
+    let mut count = 0usize;
     let mut at = 0usize;
-    while let (Some(head), Some(created), Some(length), Some(pointer), Some(pid), Some(ppid)) = (
-        read_u64(at),
-        read_u64(at + 32),
-        read_u64(at + 56),
-        read_u64(at + 64),
-        read_u64(at + 80),
-        read_u64(at + 88),
-    ) {
+    while let Some([head, ..]) = record(at) {
+        count += 1;
+        if next(head) == 0 {
+            break;
+        }
+        at += next(head);
+    }
+    let mut out = HashMap::new();
+    fallible::try_reserve_map(&mut out, count, LISTED)?;
+    let mut at = 0usize;
+    while let Some([head, created, length, pointer, pid, ppid]) = record(at) {
         out.insert(
             pid as u32,
             Listed {
@@ -332,13 +387,12 @@ fn parse_process_information(buffer: &[u64], bytes: usize) -> HashMap<u32, Liste
                 }),
             },
         );
-        let next = (head & 0xffff_ffff) as usize;
-        if next == 0 {
+        if next(head) == 0 {
             break;
         }
-        at += next;
+        at += next(head);
     }
-    out
+    Ok(out)
 }
 
 fn filetime_to_epoch_ms(time: FileTime) -> Option<f64> {
@@ -349,9 +403,11 @@ fn filetime_to_epoch_ms(time: FileTime) -> Option<f64> {
         .map(|t| (t / 10_000) as f64)
 }
 
-fn command_line(process: Handle) -> Option<String> {
-    let query = nt_query_process()?;
-    let (buffer, bytes) = query_growing(|buffer, bytes, needed| {
+fn command_line(process: Handle) -> Result<Option<String>, AllocFailed> {
+    let Some(query) = nt_query_process() else {
+        return Ok(None);
+    };
+    let Some((buffer, bytes)) = query_growing(|buffer, bytes, needed| {
         // SAFETY: the buffer is `bytes` long and writable.
         unsafe {
             query(
@@ -362,7 +418,10 @@ fn command_line(process: Handle) -> Option<String> {
                 needed,
             )
         }
-    })?;
+    })?
+    else {
+        return Ok(None);
+    };
     decode_command_line(&buffer, bytes)
 }
 
@@ -372,24 +431,25 @@ const COMMAND_LINE_CAP: usize = 1 << 20;
 /// Call `query` with a buffer that doubles on each "too small" status, up to
 /// the cap. The reported length is only a lower bound: a call that leaves it
 /// at 0 still gets a bigger buffer. u64 storage keeps the UNICODE_STRING
-/// header pointer-aligned.
+/// header pointer-aligned. None when the query fails; a refused buffer is
+/// an error.
 fn query_growing(
     mut query: impl FnMut(&mut [u64], u32, &mut u32) -> i32,
-) -> Option<(Vec<u64>, usize)> {
+) -> Result<Option<(Vec<u64>, usize)>, AllocFailed> {
     let mut bytes = 512usize;
     loop {
-        let mut buffer = vec![0u64; bytes / 8];
+        let mut buffer: Vec<u64> = fallible::try_zeroed(bytes / 8, COMMAND_LINE)?;
         let mut needed = 0u32;
         let status = query(&mut buffer, bytes as u32, &mut needed);
         if status >= 0 {
-            return Some((buffer, bytes));
+            return Ok(Some((buffer, bytes)));
         }
         let retry = matches!(
             status,
             STATUS_INFO_LENGTH_MISMATCH | STATUS_BUFFER_OVERFLOW | STATUS_BUFFER_TOO_SMALL
         );
         if !retry || bytes >= COMMAND_LINE_CAP {
-            return None;
+            return Ok(None);
         }
         bytes = (bytes * 2)
             .max((needed as usize).next_multiple_of(8))
@@ -399,30 +459,98 @@ fn query_growing(
 
 /// The kernel writes the UNICODE_STRING header followed by its characters
 /// into the same buffer; accept the string only if it lies inside it.
-fn decode_command_line(buffer: &[u64], bytes: usize) -> Option<String> {
+fn decode_command_line(buffer: &[u64], bytes: usize) -> Result<Option<String>, AllocFailed> {
     if bytes < std::mem::size_of::<UnicodeString>() {
-        return None;
+        return Ok(None);
     }
     // SAFETY: the buffer is at least header-sized and 8-byte aligned.
     let header = unsafe { &*(buffer.as_ptr() as *const UnicodeString) };
     let len = header.length as usize;
     if len == 0 || header.buffer.is_null() {
-        return None;
+        return Ok(None);
     }
     let base = buffer.as_ptr() as usize;
     let start = header.buffer as usize;
     if start < base || start + len > base + bytes || !len.is_multiple_of(2) {
-        return None;
+        return Ok(None);
     }
     // SAFETY: bounds checked against the owned buffer above.
     let chars = unsafe { std::slice::from_raw_parts(header.buffer, len / 2) };
-    let text = String::from_utf16_lossy(chars);
-    (!text.is_empty()).then_some(text)
+    let text = fallible::try_utf16_lossy(chars, COMMAND_LINE)?;
+    Ok((!text.is_empty()).then_some(text))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_kernel_list_buffer_is_a_refusal_not_an_abort() {
+        // Its first buffer is 512 KiB: an infallible one aborted here.
+        let listed = crate::test_allocator::refusing(1 << 16, listed_processes);
+        assert!(crate::test_allocator::refused() > 0);
+        assert!(
+            matches!(
+                listed,
+                Err(AllocFailed {
+                    what: KERNEL_LIST,
+                    bytes: 524_288
+                })
+            ),
+            "{:?}",
+            listed.map(|l| l.map(|l| l.len()))
+        );
+        let rows = crate::test_allocator::refusing(1 << 16, || snapshot(true));
+        assert!(matches!(rows, Err(CallError::Alloc(_))), "{rows:?}");
+        // The rows themselves, with or without details.
+        for details in [false, true] {
+            let rows = crate::test_allocator::refusing(1, || snapshot(details));
+            assert!(
+                matches!(rows, Err(CallError::Alloc(AllocFailed { what: ROWS, .. }))),
+                "{rows:?}"
+            );
+        }
+        // With memory back, the same reads succeed.
+        assert!(listed_processes().unwrap().is_some());
+        assert!(snapshot(true).is_ok());
+    }
+
+    #[test]
+    fn a_refused_map_or_command_line_fails_the_detailed_table() {
+        {
+            let _fail = fallible::fail_what(LISTED);
+            assert!(matches!(
+                listed_processes(),
+                Err(AllocFailed { what: LISTED, .. })
+            ));
+        }
+        {
+            let _fail = fallible::fail_what(COMMAND_LINE);
+            let rows = snapshot(true);
+            assert!(
+                matches!(
+                    rows,
+                    Err(CallError::Alloc(AllocFailed {
+                        what: COMMAND_LINE,
+                        ..
+                    }))
+                ),
+                "{rows:?}"
+            );
+            // The liveness table reads no command line.
+            assert!(snapshot(false).is_ok());
+        }
+        let refused = crate::test_allocator::refusing(1, || {
+            query_growing(|_, _, _| STATUS_BUFFER_TOO_SMALL)
+        });
+        assert!(matches!(
+            refused,
+            Err(AllocFailed {
+                what: COMMAND_LINE,
+                bytes: 512
+            })
+        ));
+    }
 
     #[test]
     fn snapshot_reads_own_row_with_details() {
@@ -458,7 +586,7 @@ mod tests {
     #[test]
     fn creation_times_agree_with_the_process_handle() {
         let me = std::process::id();
-        let listed = listed_processes().expect("kernel process list");
+        let listed = listed_processes().unwrap().expect("kernel process list");
         let own = listed.get(&me).expect("own record");
         let exe = std::env::current_exe().unwrap();
         assert_eq!(
@@ -473,7 +601,7 @@ mod tests {
             cmdline: None,
         };
         // A differing handle time would read as a reused pid (false).
-        assert!(read_details(&mut row, own.created.expect("listed time")));
+        assert!(read_details(&mut row, own.created.expect("listed time")).unwrap());
         assert!(row.cmdline.is_some());
     }
 
@@ -500,10 +628,10 @@ mod tests {
             },
         )]);
         let mut row = own_row("walked.exe");
-        assert!(fill_details(&mut row, Some(&listed)));
+        assert!(fill_details(&mut row, Some(&listed)).unwrap());
         assert_eq!((row.created, row.cmdline), (None, None));
         let mut row = own_row("walked.exe");
-        assert!(fill_details(&mut row, Some(&HashMap::new())));
+        assert!(fill_details(&mut row, Some(&HashMap::new())).unwrap());
         assert_eq!((row.created, row.cmdline), (None, None));
     }
 
@@ -512,7 +640,7 @@ mod tests {
         // Nothing dates the walked process, so the handle's process (maybe a
         // new owner of the pid) lends it nothing.
         let mut row = own_row("walked.exe");
-        assert!(fill_details(&mut row, None));
+        assert!(fill_details(&mut row, None).unwrap());
         assert_eq!((row.created, row.cmdline), (None, None));
     }
 
@@ -527,6 +655,7 @@ mod tests {
                 0
             }
         })
+        .unwrap()
         .expect("grown buffer");
         assert_eq!((bytes, calls), (8_192, 5));
         // A reported length still jumps straight there.
@@ -538,6 +667,7 @@ mod tests {
                 0
             }
         })
+        .unwrap()
         .expect("sized buffer");
         assert_eq!(bytes, 70_000);
         // Never past the cap.
@@ -546,9 +676,11 @@ mod tests {
             largest = largest.max(bytes as usize);
             STATUS_BUFFER_OVERFLOW
         });
-        assert!(read.is_none());
+        assert!(read.unwrap().is_none());
         assert_eq!(largest, COMMAND_LINE_CAP);
-        assert!(query_growing(|_, _, _| 0xC000_0022_u32 as i32).is_none());
+        assert!(query_growing(|_, _, _| 0xC000_0022_u32 as i32)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -563,7 +695,7 @@ mod tests {
             .stdout(std::process::Stdio::null())
             .spawn()
             .expect("spawn cmd");
-        let read = command_line(child.as_raw_handle() as Handle);
+        let read = command_line(child.as_raw_handle() as Handle).unwrap();
         child.kill().ok();
         child.wait().ok();
         let read = read.expect("command line");
@@ -608,7 +740,7 @@ mod tests {
         // The walk saw an earlier process on this pid: the handle's creation
         // time differs, so the open process's command line is not taken.
         let mut row = own_row("earlier.exe");
-        assert!(!read_details(&mut row, 1.0));
+        assert!(!read_details(&mut row, 1.0).unwrap());
         assert_eq!(row.cmdline, None);
     }
 

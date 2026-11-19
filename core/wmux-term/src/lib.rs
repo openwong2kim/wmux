@@ -87,6 +87,9 @@ mod native_transport;
 ))]
 mod native_output;
 
+#[cfg(test)]
+mod test_allocator;
+
 #[cfg(any(test, feature = "native-core"))]
 // Without the bindings, only the output interpreter uses it.
 #[cfg_attr(not(feature = "native-core"), allow(dead_code))]

@@ -3,7 +3,8 @@
 //! included. (`proc_pidinfo(PROC_PIDTBSDINFO)` refuses processes of other
 //! users, launchd among them, so it cannot be the walk.)
 
-use super::ProcessRow;
+use super::{ProcessRow, ROWS};
+use crate::fallible::{self, AllocFailed};
 
 /// One `struct kinfo_proc` (64-bit layout, arm64 and x86_64).
 const KINFO_SIZE: usize = 648;
@@ -20,11 +21,11 @@ fn read_i32(buf: &[u8], at: usize) -> i32 {
 
 /// The rows of a `KERN_PROC_*` read, each with its effective uid. A
 /// partial trailing record is ignored.
-pub(super) fn parse_kinfo(buf: &[u8]) -> Vec<(ProcessRow, u32)> {
-    buf.as_chunks::<KINFO_SIZE>()
-        .0
-        .iter()
-        .map(|r| {
+pub(super) fn parse_kinfo(buf: &[u8]) -> Result<Vec<(ProcessRow, u32)>, AllocFailed> {
+    let records = buf.as_chunks::<KINFO_SIZE>().0;
+    let mut rows = fallible::try_with_capacity(records.len(), ROWS)?;
+    // Within the capacity just reserved: no allocation but the names.
+    rows.extend(records.iter().map(|r| {
             let comm = &r[KINFO_COMM..KINFO_COMM + KINFO_COMM_LEN];
             let len = comm.iter().position(|&b| b == 0).unwrap_or(comm.len());
             let row = ProcessRow {
@@ -35,8 +36,8 @@ pub(super) fn parse_kinfo(buf: &[u8]) -> Vec<(ProcessRow, u32)> {
                 cmdline: None,
             };
             (row, read_i32(r, KINFO_UID) as u32)
-        })
-        .collect()
+        }));
+    Ok(rows)
 }
 
 #[cfg(target_os = "macos")]
@@ -44,9 +45,13 @@ pub use sys::{snapshot, walk};
 
 #[cfg(target_os = "macos")]
 mod sys {
-    use super::super::ProcessRow;
+    use super::super::{ProcessRow, ROWS};
     use super::{parse_kinfo, KINFO_SIZE};
+    use crate::fallible::{self, CallError};
     use std::ffi::{c_int, c_uint, c_void};
+
+    /// The KERN_PROC_ALL buffer: one kinfo_proc per process.
+    const KERNEL_TABLE: &str = "the kernel's process table";
 
     const CTL_KERN: c_int = 1;
     const KERN_PROC: c_int = 14;
@@ -71,15 +76,18 @@ mod sys {
     /// Walk the process table: pid, parent and name. macOS reads no details
     /// (creation time, command line); `_with_details` is accepted for the
     /// shared signature.
-    pub fn snapshot(_with_details: bool) -> Result<Vec<ProcessRow>, String> {
-        Ok(walk()?.into_iter().map(|(row, _)| row).collect())
+    pub fn snapshot(_with_details: bool) -> Result<Vec<ProcessRow>, CallError> {
+        let walked = walk()?;
+        let mut rows = fallible::try_with_capacity(walked.len(), ROWS)?;
+        rows.extend(walked.into_iter().map(|(row, _)| row));
+        Ok(rows)
     }
 
     /// Every process with its effective uid, from one `KERN_PROC_ALL` read.
     /// The table can grow between the size query and the read (ENOMEM); that
     /// read is retried rather than returned short, since a cut table reads
     /// pids as gone.
-    pub fn walk() -> Result<Vec<(ProcessRow, u32)>, String> {
+    pub fn walk() -> Result<Vec<(ProcessRow, u32)>, CallError> {
         let mut mib = [CTL_KERN, KERN_PROC, KERN_PROC_ALL];
         for _ in 0..4 {
             let mut len = 0usize;
@@ -95,12 +103,12 @@ mod sys {
                 )
             };
             if status != 0 {
-                return Err(format!(
+                return Err(CallError::reason(format!(
                     "sysctl(KERN_PROC_ALL) size failed (errno {})",
                     last_errno()
-                ));
+                )));
             }
-            let mut buf = vec![0u8; len + 64 * KINFO_SIZE];
+            let mut buf: Vec<u8> = fallible::try_zeroed(len + 64 * KINFO_SIZE, KERNEL_TABLE)?;
             len = buf.len();
             // SAFETY: `buf` is `len` bytes long and writable.
             let status = unsafe {
@@ -115,14 +123,16 @@ mod sys {
             };
             if status == 0 {
                 buf.truncate(len);
-                return Ok(parse_kinfo(&buf));
+                return Ok(parse_kinfo(&buf)?);
             }
             let errno = last_errno();
             if errno != ENOMEM {
-                return Err(format!("sysctl(KERN_PROC_ALL) failed (errno {errno})"));
+                return Err(CallError::reason(format!(
+                    "sysctl(KERN_PROC_ALL) failed (errno {errno})"
+                )));
             }
         }
-        Err("sysctl(KERN_PROC_ALL) kept growing".into())
+        Err(CallError::reason("sysctl(KERN_PROC_ALL) kept growing"))
     }
 }
 
@@ -145,13 +155,28 @@ mod tests {
         buf.extend(record(4242, 1, b"0123456789abcdef"));
         // A partial record (the table cut mid-entry) is not a row.
         buf.extend(&record(7, 1, b"cut")[..100]);
-        let rows = parse_kinfo(&buf);
+        let rows = parse_kinfo(&buf).unwrap();
         assert_eq!(
             rows.iter()
                 .map(|(r, uid)| (r.pid, r.ppid, r.name.as_str(), *uid))
                 .collect::<Vec<_>>(),
             vec![(1, 0, "launchd", 501), (4242, 1, "0123456789abcdef", 4742)]
         );
+    }
+
+    #[test]
+    fn a_refused_row_buffer_is_a_refusal_not_an_abort() {
+        let mut buf = Vec::new();
+        for pid in 0..100 {
+            buf.extend(record(pid, 1, b"zsh"));
+        }
+        // 100 rows of 80 bytes: refused, never aborted.
+        let rows = crate::test_allocator::refusing(4096, || parse_kinfo(&buf).map(|r| r.len()));
+        assert!(
+            matches!(rows, Err(AllocFailed { what: ROWS, bytes: 8000 })),
+            "{rows:?}"
+        );
+        assert_eq!(parse_kinfo(&buf).map(|r| r.len()), Ok(100));
     }
 
     #[cfg(target_os = "macos")]

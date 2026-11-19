@@ -1,6 +1,6 @@
 //! Additive ABI-1 output-interpreter binding. The pure implementation is also
 //! compiled without N-API so its tests run without a Node process.
-use crate::fallible::{self, CallError, CallResult};
+use crate::fallible::{self, napi_error, CallError, CallResult, ErrorCode};
 use crate::native_output::NativeOutputChunk;
 use crate::output_interpreter::OutputInterpreter;
 use napi::bindgen_prelude::*;
@@ -46,7 +46,7 @@ impl NativeOutputInterpreter {
         text: JsString,
         end: f64,
         include_osc: bool,
-    ) -> Result<Option<NativeOscBatch>> {
+    ) -> Result<Option<NativeOscBatch>, ErrorCode> {
         let text = string_from_js(&text)?;
         Ok(self.apply(&text, end, include_osc)?.map(batch))
     }
@@ -55,25 +55,25 @@ impl NativeOutputInterpreter {
         &mut self,
         chunk: &NativeOutputChunk,
         end: f64,
-    ) -> Result<Option<NativeOscBatch>> {
+    ) -> Result<Option<NativeOscBatch>, ErrorCode> {
         let text = std::str::from_utf8(&chunk.bytes)
-            .map_err(|_| Error::from_reason("Invalid normalized output"))?;
+            .map_err(|_| napi_error(Error::from_reason("Invalid normalized output")))?;
         Ok(self.apply(text, end, true)?.map(batch))
     }
     #[napi(catch_unwind)]
-    pub fn is_set(&self, mode: u32) -> Result<bool> {
+    pub fn is_set(&self, mode: u32) -> Result<bool, ErrorCode> {
         Ok(self.get()?.is_set(mode))
     }
     #[napi(getter, catch_unwind)]
-    pub fn alt_screen(&self) -> Result<bool> {
+    pub fn alt_screen(&self) -> Result<bool, ErrorCode> {
         Ok(self.get()?.alt_screen())
     }
     #[napi(catch_unwind)]
-    pub fn preamble(&self, start: f64) -> Result<String> {
+    pub fn preamble(&self, start: f64) -> Result<String, ErrorCode> {
         Ok(self.get()?.preamble(start))
     }
     #[napi(catch_unwind)]
-    pub fn reset(&mut self) -> Result<()> {
+    pub fn reset(&mut self) -> Result<(), ErrorCode> {
         self.get_mut()?.reset_modes();
         Ok(())
     }
@@ -133,11 +133,11 @@ fn batch(events: Events) -> NativeOscBatch {
 /// The UTF-8 of a JS string, as napi-rs's `String` conversion reads it
 /// (napi_get_value_string_utf8: a lone surrogate becomes U+FFFD), into a
 /// buffer reserved fallibly.
-fn string_from_js(text: &JsString) -> Result<String> {
+fn string_from_js(text: &JsString) -> Result<String, ErrorCode> {
     let value = text.value();
     let len = text
         .utf8_len()
-        .map_err(|error| Error::new(error.status, "The output text is not a string"))?;
+        .map_err(|error| Error::new(ErrorCode::Status(error.status), "The output text is not a string"))?;
     copy_utf8(len, |buffer, size| {
         let mut written = 0;
         // SAFETY: `buffer` has room for `size` bytes; napi writes at most
@@ -153,7 +153,7 @@ fn string_from_js(text: &JsString) -> Result<String> {
         };
         if status != sys::Status::napi_ok {
             return Err(Error::new(
-                Status::from(status),
+                ErrorCode::Status(Status::from(status)),
                 "Failed to read the output text",
             ));
         }

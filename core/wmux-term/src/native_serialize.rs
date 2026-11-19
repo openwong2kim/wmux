@@ -47,15 +47,6 @@ impl From<SerializeError> for crate::fallible::CallError {
     }
 }
 
-impl From<SerializeError> for napi::Error {
-    fn from(error: SerializeError) -> Self {
-        match error {
-            SerializeError::Refused(reason) => napi::Error::from_reason(reason),
-            SerializeError::Alloc(failed) => failed.into(),
-        }
-    }
-}
-
 /// The payload being written. The payload is sized by the session (every
 /// history row, and per cell an OSC 8 target or zero-width characters no
 /// per-row estimate bounds), so every append reserves fallibly, with

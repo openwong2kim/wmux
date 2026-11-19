@@ -1,6 +1,6 @@
 //! A short-lived, normalized PTY chunk. JS chooses when to retain it; bytes
 //! cross into JS only when a consumer needs them for delivery.
-use crate::fallible::{self, AllocFailed, CallError, CallResult};
+use crate::fallible::{self, AllocFailed, CallError, CallResult, ErrorCode};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -28,7 +28,7 @@ impl NativeOutputChunk {
         self.bytes.len() as u32
     }
     #[napi(catch_unwind)]
-    pub fn read_bytes(&self) -> Result<Buffer> {
+    pub fn read_bytes(&self) -> Result<Buffer, ErrorCode> {
         Ok(self.copy_bytes()?.into())
     }
     #[napi(catch_unwind)]
@@ -54,7 +54,7 @@ impl NativeOutputDecoder {
         Self::default()
     }
     #[napi(catch_unwind)]
-    pub fn feed(&mut self, bytes: Uint8Array, finish: bool) -> Result<NativeOutputChunk> {
+    pub fn feed(&mut self, bytes: Uint8Array, finish: bool) -> Result<NativeOutputChunk, ErrorCode> {
         Ok(self.feed_bytes(&bytes, finish)?)
     }
 }

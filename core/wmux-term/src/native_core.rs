@@ -1,7 +1,7 @@
 //! Opt-in native terminal core: VT state and retained history behind N-API.
 //! NativeTransport owns the production PTY; NativePty remains a spike harness.
 
-use crate::fallible::{self, AllocFailed, CallError, CallResult};
+use crate::fallible::{self, AllocFailed, CallError, CallResult, ErrorCode};
 use crate::native_output::NativeOutputChunk;
 use crate::native_serialize::XtermControl;
 use alacritty_terminal::event::VoidListener;
@@ -21,6 +21,9 @@ use std::io::{Read, Write};
 use std::ops::{Deref, DerefMut};
 use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
+
+#[cfg(test)]
+use crate::test_allocator;
 
 /// Loader contract for the opt-in daemon text backend. Bump on incompatible
 /// changes to the exposed snapshot shape or required compatibility policy.
@@ -72,28 +75,61 @@ pub struct NativeProcessRow {
     pub cmdline: Option<String>,
 }
 
+/// The rows JS receives, in one buffer reserved fallibly (one per process).
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn native_rows(
+    rows: Vec<crate::process_table::ProcessRow>,
+) -> std::result::Result<Vec<NativeProcessRow>, AllocFailed> {
+    let mut out = fallible::try_with_capacity(rows.len(), "the process table for JS")?;
+    out.extend(rows.into_iter().map(|r| NativeProcessRow {
+        pid: r.pid,
+        ppid: r.ppid,
+        name: r.name,
+        created: r.created,
+        cmdline: r.cmdline,
+    }));
+    Ok(out)
+}
+
+/// A table read's error as a Task's. A refusal is kept in `refused` for
+/// `reject`, which rejects with code ALLOC_FAILED (`task_refusal`): a
+/// Task's errors cannot carry it. Anything else rejects as it is.
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn task_error(refused: &mut Option<AllocFailed>, error: CallError) -> Error {
+    match error {
+        CallError::Alloc(failed) => {
+            *refused = Some(failed);
+            Error::from_status(Status::GenericFailure)
+        }
+        CallError::Reason(reason) => Error::from_reason(reason.into_owned()),
+    }
+}
+
+/// The JS rows are built off the JS thread too, so `resolve` allocates
+/// nothing of its own.
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub struct ProcessTableTask {
     with_command_lines: bool,
+    /// A refused allocation in `compute`, for `reject`.
+    refused: Option<AllocFailed>,
 }
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 impl Task for ProcessTableTask {
-    type Output = Vec<crate::process_table::ProcessRow>;
+    type Output = Vec<NativeProcessRow>;
     type JsValue = Vec<NativeProcessRow>;
     fn compute(&mut self) -> Result<Self::Output> {
-        crate::process_table::snapshot(self.with_command_lines).map_err(Error::from_reason)
+        crate::process_table::snapshot(self.with_command_lines)
+            .and_then(|rows| Ok(native_rows(rows)?))
+            .map_err(|error| task_error(&mut self.refused, error))
     }
     fn resolve(&mut self, _env: Env, rows: Self::Output) -> Result<Self::JsValue> {
-        Ok(rows
-            .into_iter()
-            .map(|r| NativeProcessRow {
-                pid: r.pid,
-                ppid: r.ppid,
-                name: r.name,
-                created: r.created,
-                cmdline: r.cmdline,
-            })
-            .collect())
+        Ok(rows)
+    }
+    fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
+        Err(match self.refused.take() {
+            Some(failed) => fallible::task_refusal(env, failed),
+            None => error,
+        })
     }
 }
 
@@ -102,7 +138,10 @@ impl Task for ProcessTableTask {
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 #[napi(catch_unwind)]
 pub fn process_table(with_command_lines: bool) -> AsyncTask<ProcessTableTask> {
-    AsyncTask::new(ProcessTableTask { with_command_lines })
+    AsyncTask::new(ProcessTableTask {
+        with_command_lines,
+        refused: None,
+    })
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -122,38 +161,45 @@ pub struct NativePortSnapshot {
     pub sockets: Vec<NativeListenSocket>,
 }
 
+/// The snapshot JS receives, its two lists reserved fallibly.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub struct PortSnapshotTask;
+fn native_port_snapshot(
+    snap: crate::process_table::PortSnapshot,
+) -> std::result::Result<NativePortSnapshot, AllocFailed> {
+    let processes = native_rows(snap.processes)?;
+    let mut sockets = fallible::try_with_capacity(snap.sockets.len(), "the listening sockets for JS")?;
+    sockets.extend(snap.sockets.into_iter().map(|r| NativeListenSocket {
+        pid: r.pid,
+        port: r.port.into(),
+        address: r.address,
+        family: r.family.into(),
+    }));
+    Ok(NativePortSnapshot { processes, sockets })
+}
+
+/// Built off the JS thread, as ProcessTableTask.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[derive(Default)]
+pub struct PortSnapshotTask {
+    /// A refused allocation in `compute`, for `reject`.
+    refused: Option<AllocFailed>,
+}
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Task for PortSnapshotTask {
-    type Output = crate::process_table::PortSnapshot;
+    type Output = NativePortSnapshot;
     type JsValue = NativePortSnapshot;
     fn compute(&mut self) -> Result<Self::Output> {
-        crate::process_table::port_snapshot().map_err(Error::from_reason)
+        crate::process_table::port_snapshot()
+            .and_then(|snap| Ok(native_port_snapshot(snap)?))
+            .map_err(|error| task_error(&mut self.refused, error))
     }
     fn resolve(&mut self, _env: Env, snap: Self::Output) -> Result<Self::JsValue> {
-        Ok(NativePortSnapshot {
-            processes: snap
-                .processes
-                .into_iter()
-                .map(|r| NativeProcessRow {
-                    pid: r.pid,
-                    ppid: r.ppid,
-                    name: r.name,
-                    created: r.created,
-                    cmdline: r.cmdline,
-                })
-                .collect(),
-            sockets: snap
-                .sockets
-                .into_iter()
-                .map(|r| NativeListenSocket {
-                    pid: r.pid,
-                    port: r.port.into(),
-                    address: r.address,
-                    family: r.family.into(),
-                })
-                .collect(),
+        Ok(snap)
+    }
+    fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
+        Err(match self.refused.take() {
+            Some(failed) => fallible::task_refusal(env, failed),
+            None => error,
         })
     }
 }
@@ -164,7 +210,7 @@ impl Task for PortSnapshotTask {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[napi(catch_unwind)]
 pub fn port_snapshot() -> AsyncTask<PortSnapshotTask> {
-    AsyncTask::new(PortSnapshotTask)
+    AsyncTask::new(PortSnapshotTask::default())
 }
 
 struct Size {
@@ -193,6 +239,16 @@ fn dimensions(cols: u32, rows: u32) -> CallResult<Size> {
         cols: cols as usize,
         rows: rows as usize,
     })
+}
+
+/// `dimensions` for the spike PTY: its only error is the range, never a
+/// refused allocation.
+fn pty_dimensions(cols: u32, rows: u32) -> Result<()> {
+    match dimensions(cols, rows) {
+        Ok(_) => Ok(()),
+        Err(CallError::Reason(reason)) => Err(Error::from_reason(reason)),
+        Err(CallError::Alloc(_)) => unreachable!("dimensions allocates nothing"),
+    }
 }
 
 #[napi(object)]
@@ -748,16 +804,25 @@ impl PooledParser {
         Self(Some(parsers::take()))
     }
 
+    /// Gives the processor back to this thread's pool, unless the thread is
+    /// unwinding: then it is dropped (`discard`), whatever the unwind is, a
+    /// grid refusal or any other panic, since either can leave vte partway
+    /// through a call.
     fn release(&mut self) {
+        if std::thread::panicking() {
+            self.discard();
+            return;
+        }
         if let Some(parser) = self.0.take() {
             parsers::give(parser);
         }
     }
 
-    /// Drops the processor rather than keeping it: a grid refusal unwinds
-    /// out of vte partway through a call, which can leave what `reset`
-    /// cannot put back (the synchronized-update buffer vte takes for its
-    /// replay, gone; a partial UTF-8 count past its bytes).
+    /// Drops the processor rather than keeping it: an unwind out of vte
+    /// (a grid refusal, settled by `settle`, or any other panic, `release`)
+    /// can leave what `reset` cannot put back (the synchronized-update
+    /// buffer vte takes for its replay, gone; a partial UTF-8 count past its
+    /// bytes).
     fn discard(&mut self) {
         self.0 = None;
     }
@@ -853,7 +918,7 @@ struct XtermFeed {
     /// Every refusal family met so far, each once, in the order met. The
     /// feed goes on past the first refusal, so the counters can tell what
     /// else a refused stream holds (NativeTerminal::refusal_families).
-    seen: Vec<&'static str>,
+    seen: Families,
     /// The alternate screen changed width with a soft-wrapped row on it
     /// (NativeTerminal::resize). Unlike the other refusals this one ends:
     /// leaving that screen discards the rows that differ.
@@ -949,17 +1014,58 @@ fn refusal_family(why: &'static str) -> &'static str {
     why.split(':').next().unwrap_or(why)
 }
 
+/// Room for every refusal family the feed has (about 25).
+const MAX_FAMILIES: usize = 40;
+
+/// The refusal families a feed met, each once, in the order met, in fixed
+/// storage: keeping one never allocates, not even right after a refused
+/// grid allocation (`settle`), where an allocation could abort. A family
+/// past MAX_FAMILIES is not kept; there are fewer.
+#[derive(Clone, Copy)]
+struct Families {
+    met: [&'static str; MAX_FAMILIES],
+    len: usize,
+}
+
+impl Default for Families {
+    fn default() -> Self {
+        Self {
+            met: [""; MAX_FAMILIES],
+            len: 0,
+        }
+    }
+}
+
+impl Families {
+    fn add(&mut self, family: &'static str) {
+        if !self.contains(family) && self.len < MAX_FAMILIES {
+            self.met[self.len] = family;
+            self.len += 1;
+        }
+    }
+
+    fn contains(&self, family: &str) -> bool {
+        self.as_slice().contains(&family)
+    }
+
+    fn as_slice(&self) -> &[&'static str] {
+        &self.met[..self.len]
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 impl XtermFeed {
     /// Refuse the stream, reported as `why` when it is the first refusal;
-    /// every refusal's family is kept in `seen`.
+    /// every refusal's family is kept in `seen`. Allocates nothing.
     fn refuse(&mut self, when: bool, why: &'static str) {
         if !when {
             return;
         }
-        let family = refusal_family(why);
-        if !self.seen.contains(&family) {
-            self.seen.push(family);
-        }
+        self.seen.add(refusal_family(why));
         if !self.divergent {
             self.divergent = true;
             self.refused = Some(why);
@@ -2088,18 +2194,18 @@ fn text_row(
 #[napi]
 impl NativeTerminal {
     #[napi(constructor, catch_unwind)]
-    pub fn new(cols: u32, rows: u32, scrollback: u32) -> Result<Self> {
+    pub fn new(cols: u32, rows: u32, scrollback: u32) -> Result<Self, ErrorCode> {
         Ok(Self::create(cols, rows, scrollback)?)
     }
 
     #[napi(catch_unwind)]
-    pub fn feed(&mut self, bytes: Uint8Array) -> Result<()> {
+    pub fn feed(&mut self, bytes: Uint8Array) -> Result<(), ErrorCode> {
         Ok(self.feed_bytes(&bytes)?)
     }
 
     /// See `feed_xterm_bytes`.
     #[napi(catch_unwind)]
-    pub fn feed_xterm(&mut self, bytes: Uint8Array, requested_scrollback: u32) -> Result<bool> {
+    pub fn feed_xterm(&mut self, bytes: Uint8Array, requested_scrollback: u32) -> Result<bool, ErrorCode> {
         Ok(self.feed_xterm_bytes(&bytes, requested_scrollback)?)
     }
 
@@ -2112,23 +2218,23 @@ impl NativeTerminal {
 
     /// Replay an immutable native ring copy without a full JS Buffer round trip.
     #[napi(catch_unwind)]
-    pub fn feed_frozen(&mut self, source: &NativeFrozenRing, start: u32, end: u32) -> Result<()> {
+    pub fn feed_frozen(&mut self, source: &NativeFrozenRing, start: u32, end: u32) -> Result<(), ErrorCode> {
         Ok(self.feed_frozen_range(source, start, end)?)
     }
 
     #[napi(catch_unwind)]
-    pub fn resize(&mut self, cols: u32, rows: u32) -> Result<()> {
+    pub fn resize(&mut self, cols: u32, rows: u32) -> Result<(), ErrorCode> {
         Ok(self.resize_grid(cols, rows)?)
     }
 
     #[napi(catch_unwind)]
-    pub fn text_snapshot(&mut self, undimmed: bool) -> Result<NativeTextSnapshot> {
+    pub fn text_snapshot(&mut self, undimmed: bool) -> Result<NativeTextSnapshot, ErrorCode> {
         Ok(self.text_snapshot_rows(undimmed)?)
     }
 
     /// See `ansi_snapshot_bytes`.
     #[napi(catch_unwind)]
-    pub fn ansi_snapshot(&mut self, requested_scrollback: Option<u32>) -> Result<Buffer> {
+    pub fn ansi_snapshot(&mut self, requested_scrollback: Option<u32>) -> Result<Buffer, ErrorCode> {
         Ok(self.ansi_snapshot_bytes(requested_scrollback)?.into())
     }
 
@@ -2266,15 +2372,20 @@ impl NativeTerminal {
         self.settle(result)
     }
 
+    /// The reported refusal's family first, then the others in the order
+    /// met (`XtermFeed::seen`, fixed storage). The list JS gets is a small
+    /// fixed allocation, as an error's code is: at most MAX_FAMILIES short
+    /// strings, never sized by the session.
     pub(crate) fn families(&self) -> Vec<String> {
-        let mut families: Vec<&'static str> =
-            self.refusal.map(refusal_family).into_iter().collect();
-        for family in &self.feed.seen {
-            if !families.contains(family) {
-                families.push(family);
-            }
-        }
-        families.into_iter().map(str::to_owned).collect()
+        let reported = self.refusal.map(refusal_family);
+        let rest = self
+            .feed
+            .seen
+            .as_slice()
+            .iter()
+            .copied()
+            .filter(|family| Some(*family) != reported);
+        reported.into_iter().chain(rest).map(str::to_owned).collect()
     }
 
     pub(crate) fn feed_frozen_range(
@@ -2665,7 +2776,7 @@ impl NativePty {
         cols: u32,
         rows: u32,
     ) -> Result<Self> {
-        dimensions(cols, rows)?;
+        pty_dimensions(cols, rows)?;
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: rows as u16,
@@ -2779,7 +2890,7 @@ impl NativePty {
 
     #[napi(catch_unwind)]
     pub fn resize(&self, cols: u32, rows: u32) -> Result<()> {
-        dimensions(cols, rows)?;
+        pty_dimensions(cols, rows)?;
         self.master
             .as_ref()
             .ok_or_else(|| Error::from_reason("PTY closed"))?
@@ -2913,14 +3024,14 @@ impl NativeFrozenRing {
         self.written_at as f64
     }
     #[napi(getter, catch_unwind)]
-    pub fn geometry(&self) -> Result<Option<NativeReplayGeometry>> {
+    pub fn geometry(&self) -> Result<Option<NativeReplayGeometry>, ErrorCode> {
         Ok(replay_geometry(
             &self.geometry,
             self.written_at - self.bytes.len() as u64,
         )?)
     }
     #[napi(catch_unwind)]
-    pub fn read_all(&self) -> Result<Buffer> {
+    pub fn read_all(&self) -> Result<Buffer, ErrorCode> {
         Ok(self.copy_bytes()?.into())
     }
     #[napi(catch_unwind)]
@@ -2982,27 +3093,27 @@ pub struct NativeRing {
 #[napi]
 impl NativeRing {
     #[napi(constructor, catch_unwind)]
-    pub fn new(capacity: u32) -> Result<Self> {
+    pub fn new(capacity: u32) -> Result<Self, ErrorCode> {
         Ok(Self::create(capacity)?)
     }
 
     #[napi(catch_unwind)]
-    pub fn write(&mut self, bytes: Uint8Array) -> Result<()> {
+    pub fn write(&mut self, bytes: Uint8Array) -> Result<(), ErrorCode> {
         Ok(self.write_bytes(&bytes)?)
     }
 
     #[napi(catch_unwind)]
-    pub fn write_chunk(&mut self, chunk: &NativeOutputChunk) -> Result<()> {
+    pub fn write_chunk(&mut self, chunk: &NativeOutputChunk) -> Result<(), ErrorCode> {
         Ok(self.write_bytes(&chunk.bytes)?)
     }
 
     #[napi(catch_unwind)]
-    pub fn read_all(&self) -> Result<Buffer> {
+    pub fn read_all(&self) -> Result<Buffer, ErrorCode> {
         Ok(self.copy_bytes()?.into())
     }
 
     #[napi(catch_unwind)]
-    pub fn freeze(&mut self) -> Result<NativeFrozenRing> {
+    pub fn freeze(&mut self) -> Result<NativeFrozenRing, ErrorCode> {
         Ok(self.freeze_copy()?)
     }
     #[napi(getter, catch_unwind)]
@@ -3037,7 +3148,7 @@ impl NativeRing {
     /// with no bytes between them keeps the one with the fewest rows and the
     /// newest. `applied` defaults to true.
     #[napi(catch_unwind)]
-    pub fn note_geometry(&mut self, cols: u32, rows: u32, applied: Option<bool>) -> Result<()> {
+    pub fn note_geometry(&mut self, cols: u32, rows: u32, applied: Option<bool>) -> Result<(), ErrorCode> {
         Ok(self.note_geometry_mark(cols, rows, applied)?)
     }
 
@@ -3059,7 +3170,7 @@ impl NativeRing {
     }
 
     #[napi(catch_unwind)]
-    pub fn read_all_with_geometry(&mut self) -> Result<NativeRingSnapshot> {
+    pub fn read_all_with_geometry(&mut self) -> Result<NativeRingSnapshot, ErrorCode> {
         let (data, geometry) = self.copy_with_geometry()?;
         Ok(NativeRingSnapshot {
             data: data.into(),
@@ -3632,7 +3743,7 @@ mod tests {
         // A restore on a screen this tracker and Alacritty disagree on is
         // not placed: Alacritty has no ?47.
         let (_, _, feed) = feed_with(&["a\x1b[?47h\x1b8"]);
-        assert!(feed.seen.contains(&"unsupported-state-restore-row"));
+        assert!(feed.seen.contains("unsupported-state-restore-row"));
     }
 
     #[test]
@@ -3689,7 +3800,7 @@ mod tests {
         feed.scan(b"\x1b[?47hx\x1b[?47l\x1b[?1047l\x1b[?9l")
             .unwrap();
         assert_eq!(
-            feed.seen,
+            feed.seen.as_slice(),
             [
                 "unsupported-state-charset",
                 "unsupported-state-sgr",
@@ -3705,7 +3816,7 @@ mod tests {
 
     #[test]
     fn every_refused_family_is_seen_once_in_order() {
-        let seen = |chunks: &[&str]| feed_with(chunks).2.seen;
+        let seen = |chunks: &[&str]| feed_with(chunks).2.seen.as_slice().to_vec();
         assert_eq!(
             seen(&["\x1b[?47h\x1b(Ax\x1b[?47l\x1b[53m", "\x1b(K"]),
             [
@@ -3731,7 +3842,7 @@ mod tests {
             Some("unsupported-state-sgr")
         );
         assert_eq!(
-            feed.seen,
+            feed.seen.as_slice(),
             ["unsupported-state-sgr", "unsupported-state-charset"]
         );
     }
@@ -4994,70 +5105,6 @@ mod grid_refusal_tests {
     }
 }
 
-/// The test binary's allocator: `System`, which can be told to refuse or to
-/// count large allocations on one thread.
-#[cfg(test)]
-mod test_allocator {
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::cell::Cell;
-
-    thread_local! {
-        static REFUSE_FROM: Cell<usize> = const { Cell::new(usize::MAX) };
-        static REFUSED: Cell<usize> = const { Cell::new(0) };
-        static COUNT_FROM: Cell<usize> = const { Cell::new(usize::MAX) };
-        static COUNTED: Cell<usize> = const { Cell::new(0) };
-    }
-
-    struct Watching;
-
-    // SAFETY: forwards to `System`, or refuses with a null pointer.
-    unsafe impl GlobalAlloc for Watching {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            let size = layout.size();
-            if size >= REFUSE_FROM.try_with(Cell::get).unwrap_or(usize::MAX) {
-                let _ = REFUSED.try_with(|refused| refused.set(refused.get() + 1));
-                return std::ptr::null_mut();
-            }
-            if size >= COUNT_FROM.try_with(Cell::get).unwrap_or(usize::MAX) {
-                let _ = COUNTED.try_with(|counted| counted.set(counted.get() + 1));
-            }
-            System.alloc(layout)
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            System.dealloc(ptr, layout)
-        }
-    }
-
-    #[global_allocator]
-    static GLOBAL: Watching = Watching;
-
-    /// `f`, with every allocation of at least `from` bytes on this thread
-    /// refused.
-    pub(super) fn refusing<R>(from: usize, f: impl FnOnce() -> R) -> R {
-        REFUSED.with(|refused| refused.set(0));
-        REFUSE_FROM.with(|limit| limit.set(from));
-        let result = f();
-        REFUSE_FROM.with(|limit| limit.set(usize::MAX));
-        result
-    }
-
-    /// How many allocations the last `refusing` refused.
-    pub(super) fn refused() -> usize {
-        REFUSED.with(Cell::get)
-    }
-
-    /// `f`, and how many allocations of at least `from` bytes it made on
-    /// this thread.
-    pub(super) fn counting<R>(from: usize, f: impl FnOnce() -> R) -> (R, usize) {
-        COUNTED.with(|counted| counted.set(0));
-        COUNT_FROM.with(|limit| limit.set(from));
-        let result = f();
-        COUNT_FROM.with(|limit| limit.set(usize::MAX));
-        (result, COUNTED.with(Cell::get))
-    }
-}
-
 #[cfg(test)]
 mod seam_message_tests {
     use super::*;
@@ -5088,6 +5135,70 @@ mod seam_message_tests {
     }
 
     #[test]
+    fn a_refusal_family_is_kept_without_allocating() {
+        let mut feed = XtermFeed::default();
+        test_allocator::refusing(1, || {
+            feed.refuse(true, GRID_REFUSED);
+            feed.refuse(true, ALLOC_REFUSED);
+            feed.refuse(true, GRID_REFUSED);
+        });
+        assert_eq!(test_allocator::refused(), 0);
+        assert_eq!(feed.seen.as_slice(), ["unsupported-alloc"]);
+        assert_eq!(feed.refused, Some(GRID_REFUSED));
+        // Past its room, a family is dropped, never grown into.
+        let mut families = Families::default();
+        for n in 0..=MAX_FAMILIES {
+            families.add(["a", "b"][n % 2]);
+        }
+        assert_eq!(families.as_slice(), ["a", "b"]);
+    }
+
+    /// The MSVC unwinder allocates nothing (vendor `wmux_alloc`), so every
+    /// allocation of 64 bytes or more can be refused across the whole
+    /// call; the Itanium unwinder allocates its exception header.
+    #[cfg(all(windows, target_env = "msvc"))]
+    #[test]
+    fn a_fresh_terminal_s_grid_refusal_returns_alloc_failed_without_aborting() {
+        let mut terminal = NativeTerminal::create(80, 24, 0).unwrap();
+        refill_spare();
+        let error = test_allocator::refusing(64, || terminal.resize_grid(205, 24).err());
+        assert!(matches!(error, Some(CallError::Alloc(_))), "{error:?}");
+        assert_eq!(terminal.families(), ["unsupported-alloc"]);
+        assert_eq!(
+            terminal.feed_bytes(b"x"),
+            Err(CallError::reason(GRID_REFUSED))
+        );
+    }
+
+    #[test]
+    fn a_refusal_keeps_its_code_when_its_message_cannot_be_built() {
+        let failed = AllocFailed {
+            what: "a grid row",
+            bytes: 4920,
+        };
+        // Taken outside the refusal: a thread's first use of its spare
+        // can allocate to register the buffer's destructor.
+        refill_spare();
+        let (code, message) = test_allocator::refusing(1, || {
+            // The spare goes to the first message, then nothing more is had.
+            drop(failed.message());
+            CallError::Alloc(failed).into_js()
+        });
+        assert_eq!(message, "", "the diagnostic is lost");
+        assert_eq!(code, ErrorCode::AllocFailed);
+        assert_eq!(code.as_ref(), "ALLOC_FAILED", "the classification is not");
+        // With memory back, the message is whole again.
+        let (code, message) = CallError::Alloc(failed).into_js();
+        assert_eq!((code.as_ref(), message.as_str()), ("ALLOC_FAILED", ROW_205));
+        // Any other error keeps napi's code.
+        let (code, message) = CallError::reason("Terminal disposed").into_js();
+        assert_eq!(
+            (code.as_ref(), message.as_str()),
+            ("GenericFailure", "Terminal disposed")
+        );
+    }
+
+    #[test]
     fn a_grid_refusal_reaches_its_caller_with_the_full_message_under_refusal() {
         let mut terminal = NativeTerminal::create(80, 24, 0).unwrap();
         refill_spare();
@@ -5113,6 +5224,24 @@ mod parser_pool_tests {
     /// `f` on a thread of its own: its processors are its own.
     fn on_new_thread<R: Send>(f: impl FnOnce() -> R + Send) -> R {
         std::thread::scope(|scope| scope.spawn(f).join().unwrap())
+    }
+
+    #[test]
+    fn a_parser_dropped_during_any_unwind_is_not_pooled() {
+        on_new_thread(|| {
+            let terminal = NativeTerminal::create(80, 24, 100).unwrap();
+            assert_eq!(parsers::idle(), 0);
+            // Not a grid refusal: any unwind that drops the terminal.
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let _terminal = terminal;
+                std::panic::resume_unwind(Box::new("a test unwind"));
+            }));
+            assert!(unwound.is_err());
+            assert_eq!(parsers::idle(), 0, "dropped, not given back");
+            // Dropped outside an unwind, a terminal's parser is kept.
+            drop(NativeTerminal::create(80, 24, 100).unwrap());
+            assert_eq!(parsers::idle(), 1);
+        });
     }
 
     #[test]

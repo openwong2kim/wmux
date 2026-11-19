@@ -7,15 +7,22 @@
 //! reserved through these helpers instead, and a refusal becomes an error for
 //! that one call or session (`AllocFailed`).
 //!
-//! The seam to JS: a refusal reaches JS as a thrown error whose message is
-//! `ALLOC_FAILED: could not allocate <N> bytes for <what>` (`message`).
+//! The seam to JS: a refusal reaches JS as a thrown error (or a rejected
+//! promise) whose `code` is `ALLOC_FAILED` (ALLOC_FAILED_CODE, a napi custom
+//! status, `ErrorCode`). Its message, `ALLOC_FAILED: could not allocate <N>
+//! bytes for <what>` (`message`), is for diagnostics only: once nothing at
+//! all can be allocated it is shorter, or empty, and the code still holds.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fmt::{self, Write as _};
 
-/// The prefix JS matches a refused allocation by.
+/// The prefix of a refusal's diagnostic message (`message`).
 pub(crate) const ALLOC_FAILED: &str = "ALLOC_FAILED: ";
+
+/// The `code` JS classifies a refused allocation by. A `&'static str`, set
+/// without allocating, so it survives when the message cannot be built.
+pub(crate) const ALLOC_FAILED_CODE: &str = "ALLOC_FAILED";
 
 /// A refused allocation: what it was for and how many bytes it asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,14 +73,14 @@ fn digits(mut n: usize) -> usize {
 }
 
 impl AllocFailed {
-    /// The seam message, shared by the thrown error and the transport's
-    /// recorded read error. Built right after a refusal, so it is written
-    /// into this thread's spare buffer, moved out without an allocation.
-    /// With no spare (a second refusal before any success on this thread),
-    /// it asks for exactly its own length; refused, for the prefix alone;
-    /// refused again, it is empty, and JS sees no `ALLOC_FAILED: ` then. An
-    /// empty message is what remains of this seam once nothing at all can be
-    /// allocated, rather than an abort.
+    /// The diagnostic message, shared by the thrown error and the
+    /// transport's recorded read error. Built right after a refusal, so it
+    /// is written into this thread's spare buffer, moved out without an
+    /// allocation. With no spare (a second refusal before any success on
+    /// this thread), it asks for exactly its own length; refused, for the
+    /// prefix alone; refused again, it is empty. JS classifies the refusal
+    /// by its `code` (ALLOC_FAILED_CODE), never by this text, so an empty
+    /// message loses only the diagnostic, rather than aborting.
     pub(crate) fn message(&self) -> String {
         let len = ALLOC_FAILED.len()
             + "could not allocate ".len()
@@ -115,19 +122,12 @@ impl fmt::Display for AllocFailed {
     }
 }
 
-#[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
-impl From<AllocFailed> for napi::Error {
-    fn from(failed: AllocFailed) -> Self {
-        // GenericFailure; the message is moved in, not copied.
-        napi::Error::from_reason(failed.message())
-    }
-}
-
 /// A native call's error before it crosses to JS, where it becomes a
-/// GenericFailure `napi::Error` with the same message. The call bodies return
-/// this rather than `napi::Error`: dropping a `napi::Error` links napi's C
-/// symbols, which only Node provides, so the unit tests that drive the bodies
-/// could not link on Linux or macOS.
+/// `napi::Error<ErrorCode>`: code ALLOC_FAILED for a refusal, GenericFailure
+/// otherwise, with the same message. The call bodies return this rather than
+/// `napi::Error`: dropping a `napi::Error` links napi's C symbols, which only
+/// Node provides, so the unit tests that drive the bodies could not link on
+/// Linux or macOS.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CallError {
     Alloc(AllocFailed),
@@ -157,14 +157,88 @@ impl From<AllocFailed> for CallError {
     }
 }
 
+/// The `code` of an error a native call throws or rejects with: a napi
+/// custom status. ALLOC_FAILED for a refused allocation; napi's own status
+/// (GenericFailure, InvalidArg, ...) for anything else, so those codes are
+/// unchanged. Both are `&'static str`s: a code is never built.
 #[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
-impl From<CallError> for napi::Error {
-    fn from(error: CallError) -> Self {
-        match error {
-            CallError::Alloc(failed) => failed.into(),
-            CallError::Reason(reason) => napi::Error::from_reason(reason),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCode {
+    AllocFailed,
+    Status(napi::Status),
+}
+
+#[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
+impl AsRef<str> for ErrorCode {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::AllocFailed => ALLOC_FAILED_CODE,
+            Self::Status(status) => status.as_ref(),
         }
     }
+}
+
+/// `code` with `reason` moved in: `napi::Error::new` would copy it. The
+/// error still takes a small fixed allocation on its way to JS: napi-derive's
+/// `throw_into` copies the code (`status.as_ref().to_string()`), and a
+/// `CallError::Reason` borrowed from a `&'static str` is copied into the
+/// error's `String` (`into_js`). Neither is sized by the session.
+#[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
+fn coded_error(code: ErrorCode, reason: String) -> napi::Error<ErrorCode> {
+    let mut error = napi::Error::from_status(code);
+    error.reason = reason;
+    error
+}
+
+impl CallError {
+    /// The `code` and the message JS sees. The code of a refusal is
+    /// ALLOC_FAILED whatever became of its message (`AllocFailed::message`).
+    #[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
+    pub(crate) fn into_js(self) -> (ErrorCode, String) {
+        match self {
+            Self::Alloc(failed) => (ErrorCode::AllocFailed, failed.message()),
+            Self::Reason(reason) => (
+                ErrorCode::Status(napi::Status::GenericFailure),
+                reason.into_owned(),
+            ),
+        }
+    }
+}
+
+#[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
+impl From<AllocFailed> for napi::Error<ErrorCode> {
+    fn from(failed: AllocFailed) -> Self {
+        CallError::Alloc(failed).into()
+    }
+}
+
+#[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
+impl From<CallError> for napi::Error<ErrorCode> {
+    fn from(error: CallError) -> Self {
+        let (code, message) = error.into_js();
+        coded_error(code, message)
+    }
+}
+
+/// A napi error (a JS value conversion, a threadsafe function) in a call
+/// whose errors carry an `ErrorCode`: its status and message are kept.
+#[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
+pub(crate) fn napi_error(error: napi::Error) -> napi::Error<ErrorCode> {
+    let mut error = error;
+    coded_error(
+        ErrorCode::Status(error.status),
+        std::mem::take(&mut error.reason),
+    )
+}
+
+/// A refusal as an AsyncTask's rejection. A Task's `compute`, `resolve` and
+/// `reject` return `napi::Error<Status>`, which cannot carry ALLOC_FAILED,
+/// so the JS error object is made here with that code, and the rejection
+/// reuses it (napi rejects with the object an error refers to).
+#[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
+pub(crate) fn task_refusal(env: napi::Env, failed: AllocFailed) -> napi::Error {
+    let error: napi::Error<ErrorCode> = failed.into();
+    napi::Error::from(napi::JsError::from(error).into_unknown(env))
 }
 
 #[cfg(test)]
@@ -348,6 +422,55 @@ pub(crate) fn try_with_capacity<T>(
     let mut v = Vec::new();
     try_reserve_exact(&mut v, capacity, what)?;
     Ok(v)
+}
+
+/// `len` zeroed elements (a buffer the system fills), in one allocation.
+#[cfg_attr(not(feature = "native-core"), allow(dead_code))]
+pub(crate) fn try_zeroed<T: Copy + Default>(
+    len: usize,
+    what: &'static str,
+) -> Result<Vec<T>, AllocFailed> {
+    let mut v = try_with_capacity(len, what)?;
+    // Within the capacity just reserved: no allocation.
+    v.resize(len, T::default());
+    Ok(v)
+}
+
+/// `HashMap::try_reserve`. A refusal reports the size of the entries asked
+/// for, not the table's own overhead.
+#[cfg_attr(not(feature = "native-core"), allow(dead_code))]
+pub(crate) fn try_reserve_map<K: Eq + std::hash::Hash, V>(
+    map: &mut std::collections::HashMap<K, V>,
+    additional: usize,
+    what: &'static str,
+) -> Result<(), AllocFailed> {
+    if map.capacity() - map.len() >= additional {
+        return Ok(());
+    }
+    let failed = AllocFailed {
+        what,
+        bytes: bytes_of::<(K, V)>(map.len().saturating_add(additional)),
+    };
+    if injected(&failed) {
+        return Err(failed);
+    }
+    map.try_reserve(additional).map_err(|_| failed)?;
+    keep_spare();
+    Ok(())
+}
+
+/// `String::from_utf16_lossy` into one allocation of exactly its length.
+#[cfg_attr(not(feature = "native-core"), allow(dead_code))]
+pub(crate) fn try_utf16_lossy(units: &[u16], what: &'static str) -> Result<String, AllocFailed> {
+    let chars = || {
+        char::decode_utf16(units.iter().copied())
+            .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+    };
+    let len = chars().map(char::len_utf8).sum();
+    let mut text = String::new();
+    try_reserve_str(&mut text, len, what)?;
+    text.extend(chars());
+    Ok(text)
 }
 
 /// A copy of `src`.

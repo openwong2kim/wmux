@@ -1,5 +1,5 @@
 //! Event-driven PTY transport. Blocking OS reads/writes never run on Node.
-use crate::fallible::{self, CallError, CallResult};
+use crate::fallible::{self, napi_error, CallError, CallResult, ErrorCode};
 use crate::native_output::{NativeOutputChunk, NativeOutputDecoder};
 use crate::wake_gate::WakeGate;
 use napi::bindgen_prelude::*;
@@ -299,6 +299,7 @@ impl NativeTransport {
                     &reader_state,
                     &|| reader_wake.notify(),
                     &wait_readable,
+                    &SystemClock,
                 );
             });
         if let Err(e) = reader_start {
@@ -531,7 +532,7 @@ impl NativeTransport {
     /// A refused decode throws; its bytes are kept, ahead of any later output,
     /// for the next read, and nothing else the read would report is consumed.
     #[napi(catch_unwind)]
-    pub fn read_chunk(&mut self, paused: Option<bool>) -> Result<TransportChunkRead> {
+    pub fn read_chunk(&mut self, paused: Option<bool>) -> Result<TransportChunkRead, ErrorCode> {
         Ok(self.read_chunk_raw(paused)?)
     }
 
@@ -545,8 +546,8 @@ impl NativeTransport {
     }
 
     #[napi(catch_unwind)]
-    pub fn write(&self, data: Uint8Array) -> Result<()> {
-        let mut input = self.state.input.lock().map_err(error)?;
+    pub fn write(&self, data: Uint8Array) -> Result<(), ErrorCode> {
+        let mut input = self.state.input.lock().map_err(|e| napi_error(error(e)))?;
         if enqueue(&mut input, &data)? {
             self.state.ready.notify_one();
         }
@@ -906,7 +907,8 @@ fn enqueue(input: &mut Input, data: &[u8]) -> CallResult<bool> {
 /// The reader thread: forwards each read to the channel until the output
 /// ends. A copy refused for READ_RETRY_FOR (copy_read) or a panic ends this
 /// one session's output, with the error recorded for its next read (the seam
-/// message, or the panic's); no other session sees it. On Windows the pipe is then still read to EOF and
+/// message, or the panic's; present even when that message is empty, so JS
+/// tells it from a clean EOF by its presence); no other session sees it. On Windows the pipe is then still read to EOF and
 /// discarded, as after close: older ConPTY versions block ClosePseudoConsole
 /// until their output is drained.
 fn run_reader(
@@ -915,10 +917,11 @@ fn run_reader(
     state: &State,
     notify: &dyn Fn(),
     wait_readable: &dyn Fn() -> std::io::Result<()>,
+    clock: &dyn RetryClock,
 ) {
     let mut buffer = [0; READ_BYTES];
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        read_loop(reader, &tx, &mut buffer, state, notify, wait_readable)
+        read_loop(reader, &tx, &mut buffer, state, notify, wait_readable, clock)
     }));
     let stopped = match outcome {
         Ok(stopped) => stopped,
@@ -951,6 +954,7 @@ fn read_loop(
     state: &State,
     notify: &dyn Fn(),
     wait_readable: &dyn Fn() -> std::io::Result<()>,
+    clock: &dyn RetryClock,
 ) -> bool {
     #[cfg(windows)]
     let _ = wait_readable;
@@ -972,7 +976,7 @@ fn read_loop(
                 if state.closed.load(Ordering::Acquire) {
                     continue;
                 }
-                let Some(chunk) = copy_read(&buffer[..n], state) else {
+                let Some(chunk) = copy_read(&buffer[..n], state, clock) else {
                     return true;
                 };
                 if tx.send(chunk).is_err() {
@@ -1025,19 +1029,34 @@ fn read_loop(
 
 /// How long the reader tries a refused copy of a read again before it ends
 /// the session's output: as long as JS tries a refused decode again.
-#[cfg(not(test))]
 const READ_RETRY_FOR: Duration = Duration::from_secs(30);
-#[cfg(test)]
-const READ_RETRY_FOR: Duration = Duration::from_millis(50);
 /// The longest wait between two tries of a refused read copy.
 const READ_RETRY_WAIT: Duration = Duration::from_millis(100);
 
+/// The time and the wait of the reader's retries (`copy_read`): the
+/// system's, or a test's, which moves on only when asked.
+trait RetryClock {
+    fn now(&self) -> Instant;
+    fn wait(&self, wait: Duration);
+}
+
+struct SystemClock;
+
+impl RetryClock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+    fn wait(&self, wait: Duration) {
+        std::thread::sleep(wait);
+    }
+}
+
 /// A copy of one read (at most READ_BYTES). The read is still in the
 /// reader's buffer, so a refused copy is tried again, with a wait that
-/// doubles up to READ_RETRY_WAIT, until READ_RETRY_FOR has passed: then the
-/// refusal is recorded and None returned. None too once the transport
-/// closes.
-fn copy_read(read: &[u8], state: &State) -> Option<Vec<u8>> {
+/// doubles up to READ_RETRY_WAIT, until READ_RETRY_FOR has passed on
+/// `clock`: then the refusal is recorded and None returned. None too once
+/// the transport closes.
+fn copy_read(read: &[u8], state: &State, clock: &dyn RetryClock) -> Option<Vec<u8>> {
     let mut wait = Duration::from_millis(1);
     let mut give_up_at = None;
     loop {
@@ -1048,12 +1067,13 @@ fn copy_read(read: &[u8], state: &State) -> Option<Vec<u8>> {
         if state.closed.load(Ordering::Acquire) {
             return None;
         }
-        let give_up_at = *give_up_at.get_or_insert_with(|| Instant::now() + READ_RETRY_FOR);
-        if Instant::now() >= give_up_at {
+        let give_up_at = *give_up_at.get_or_insert_with(|| clock.now() + READ_RETRY_FOR);
+        if clock.now() >= give_up_at {
+            // Recorded even when the message could not be built (empty).
             state.record(failed.message());
             return None;
         }
-        std::thread::sleep(wait);
+        clock.wait(wait);
         wait = (wait * 2).min(READ_RETRY_WAIT);
     }
 }
@@ -1346,6 +1366,41 @@ mod tests {
         Pieces(list.iter().map(|piece| piece.to_vec()).collect())
     }
 
+    /// A clock that moves on only by the waits asked of it, each taken as
+    /// `step` (no real time passes), and keeps the waits asked for.
+    struct FakeClock {
+        now: std::cell::Cell<Instant>,
+        step: Duration,
+        waits: std::cell::RefCell<Vec<Duration>>,
+    }
+
+    impl FakeClock {
+        fn new(step: Duration) -> Self {
+            Self {
+                now: std::cell::Cell::new(Instant::now()),
+                step,
+                // Room for every wait a test asks for: a test may refuse
+                // every allocation while the reader runs.
+                waits: std::cell::RefCell::new(Vec::with_capacity(16)),
+            }
+        }
+    }
+
+    impl RetryClock for FakeClock {
+        fn now(&self) -> Instant {
+            self.now.get()
+        }
+        fn wait(&self, wait: Duration) {
+            self.waits.borrow_mut().push(wait);
+            self.now.set(self.now.get() + self.step);
+        }
+    }
+
+    /// `run_reader` with nothing to notify or wait for.
+    fn read_all(reader: &mut dyn Read, tx: SyncSender<Vec<u8>>, state: &State, clock: &FakeClock) {
+        run_reader(reader, tx, state, &|| {}, &|| Ok(()), clock);
+    }
+
     #[test]
     fn a_drain_joins_its_reads_into_one_batch() {
         let (tx, rx) = sync_channel(DRAIN_READS);
@@ -1474,19 +1529,66 @@ mod tests {
     fn a_refused_reader_copy_is_tried_again_and_no_byte_is_lost() {
         let (tx, rx) = sync_channel(DRAIN_READS);
         let state = Arc::new(State::new());
+        // Each wait moves the clock 9 s: three refusals take it to 27 s,
+        // short of the 30 s give-up, and no real time passes.
+        let clock = FakeClock::new(Duration::from_secs(9));
         fail_next("a PTY read", 3);
-        run_reader(
-            &mut pieces(&[b"kept", b"next"]),
-            tx,
-            &state,
-            &|| {},
-            &|| Ok(()),
-        );
+        read_all(&mut pieces(&[b"kept", b"next"]), tx, &state, &clock);
         fail_next("", 0);
+        assert_eq!(
+            *clock.waits.borrow(),
+            [1, 2, 4].map(Duration::from_millis),
+            "the wait doubles"
+        );
         let read = transport(rx, state).drain(None);
         assert_eq!(read.data, b"keptnext");
         assert!(read.eof);
         assert_eq!(read.error, None, "nothing was recorded");
+    }
+
+    #[test]
+    fn a_reader_copy_refused_past_the_deadline_gives_up() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        // The second refusal comes 31 s after the first.
+        let clock = FakeClock::new(Duration::from_secs(31));
+        fail_next("a PTY read", 2);
+        read_all(&mut pieces(&[b"lost", b"never"]), tx, &state, &clock);
+        fail_next("", 0);
+        assert_eq!(clock.waits.borrow().len(), 1);
+        let read = transport(rx, state).drain(None);
+        assert!(read.data.is_empty() && read.eof);
+        assert_eq!(
+            read.error.as_deref(),
+            Some("ALLOC_FAILED: could not allocate 4 bytes for a PTY read")
+        );
+    }
+
+    #[test]
+    fn a_give_up_whose_message_cannot_be_built_still_reports_an_error() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        let clock = FakeClock::new(READ_RETRY_FOR);
+        let failed = crate::fallible::AllocFailed {
+            what: "a PTY read",
+            bytes: 4,
+        };
+        // Both made outside the refusal: the reader, and this thread's spare
+        // (its first use can allocate to register its destructor).
+        let mut reader = pieces(&[b"lost"]);
+        crate::fallible::refill_spare();
+        crate::test_allocator::refusing(1, || {
+            // This thread's spare message buffer goes first.
+            drop(failed.message());
+            read_all(&mut reader, tx, &state, &clock);
+        });
+        let read = transport(rx, state).drain(None);
+        assert!(read.eof);
+        assert_eq!(
+            read.error.as_deref(),
+            Some(""),
+            "an empty message is still an error, unlike a clean EOF"
+        );
     }
 
     #[test]
@@ -1496,7 +1598,7 @@ mod tests {
         let mut reader = pieces(&[b"kept", &[b'x'; 64], b"never"]);
         {
             let _fail = fail_from(64);
-            run_reader(&mut reader, tx, &state, &|| {}, &|| Ok(()));
+            read_all(&mut reader, tx, &state, &FakeClock::new(READ_RETRY_FOR));
         }
         // Windows reads the pipe to EOF so ClosePseudoConsole cannot block.
         #[cfg(windows)]
@@ -1523,6 +1625,7 @@ mod tests {
             &state,
             &|| notified.set(notified.get() + 1),
             &|| Ok(()),
+            &SystemClock,
         );
         assert!(notified.get() >= 1);
         let read = transport(rx, state).drain(None);
@@ -1537,7 +1640,7 @@ mod tests {
     fn a_reader_reaching_eof_ends_the_output_without_an_error() {
         let (tx, rx) = sync_channel(DRAIN_READS);
         let state = Arc::new(State::new());
-        run_reader(&mut pieces(&[b"a", b"b"]), tx, &state, &|| {}, &|| Ok(()));
+        read_all(&mut pieces(&[b"a", b"b"]), tx, &state, &FakeClock::new(Duration::ZERO));
         let read = transport(rx, state).drain(None);
         assert_eq!(read.data, b"ab");
         assert!(read.eof && read.error.is_none());
