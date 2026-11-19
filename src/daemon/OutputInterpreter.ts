@@ -73,8 +73,9 @@ export class OutputInterpreter {
         // A refused feed changed nothing: the same chunk once more.
         try { events = once(); }
         catch (error) {
-          if (isNativeAllocFailure(error)) native.clearOsc?.();
-          this.skip(error, 'output chunk not interpreted; OSC state cleared');
+          const cleared = isNativeAllocFailure(error) && typeof native.clearOsc === 'function';
+          if (cleared) native.clearOsc?.();
+          this.skip(error, cleared ? 'output chunk not interpreted; OSC state cleared' : 'output chunk not interpreted');
           return;
         }
       }

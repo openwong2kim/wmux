@@ -119,13 +119,15 @@ describe('OutputInterpreter: a refused native allocation', () => {
   });
 
   it('skips without clearing on a module built before clearOsc', () => {
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     fake.withoutClearOsc = true;
     const p = new OutputInterpreter('rust');
     fake.refuse = [refusal('x'), refusal('x')];
     expect(() => p.feed('x', 1)).not.toThrow();
     expect(p.skippedChunks).toBe(1);
     expect(fake.clears).toBe(0);
+    // The log line does not claim a clear that did not happen.
+    expect(String(errors.mock.calls[0]?.[0])).toMatch(/output chunk not interpreted \(1 in all\)$/);
   });
 
   it('does not throw when seeding recovered history is refused', () => {
