@@ -24,7 +24,12 @@ import { permissionFlagFor, type PermissionMode } from '../../shared/agentResume
 
 export type ContinuePaneResult =
   | { ok: true; newPane?: { accountId: string; command: string; cwd: string } }
-  | { ok: false; code: string };
+  /** `resumeCommand`: Claude stopped and the copy exists, but it was not
+   *  relaunched; the line that resumes the copy in the source pane's shell. */
+  | { ok: false; code: string; resumeCommand?: string };
+
+// eslint-disable-next-line no-control-regex -- the line is shown and copied, never typed for the person
+const CONTROL = /[\u0000-\u001f\u007f]/;
 
 /** Stop grace (5 s) + prompt wait (5 s) + the copy of a large transcript, with room to spare. */
 const CONTINUE_TIMEOUT_MS = 60_000;
@@ -62,8 +67,14 @@ export async function continuePane(
   }
   try {
     const res = await deps.rpc(newPane ? 'session.copyToAccountV1' : 'session.continueOnAccount', { sessionId: ptyId, configDir: account.configDir }) as
-      { ok?: unknown; code?: unknown; sessionId?: unknown; cwd?: unknown; permissionMode?: unknown } | null;
-    if (res?.ok !== true) return { ok: false, code: typeof res?.code === 'string' ? res.code : 'unknown' };
+      { ok?: unknown; code?: unknown; sessionId?: unknown; cwd?: unknown; permissionMode?: unknown; resumeCommand?: unknown } | null;
+    if (res?.ok !== true) {
+      const code = typeof res?.code === 'string' ? res.code : 'unknown';
+      const resume = res?.resumeCommand;
+      return typeof resume === 'string' && resume.length > 0 && resume.length <= 8192 && !CONTROL.test(resume)
+        ? { ok: false, code, resumeCommand: resume }
+        : { ok: false, code };
+    }
     if (!newPane) return { ok: true };
     if (typeof res.sessionId !== 'string' || !CHATV2_PROVIDER_SESSION_ID.test(res.sessionId) || typeof res.cwd !== 'string' || !res.cwd) {
       return { ok: false, code: 'unknown_session' };

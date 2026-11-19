@@ -18,7 +18,8 @@
 //
 // Only the pane's own exact session id is ever resumed. A step that fails
 // leaves every later step undone; a rebind whose prompt changed before the
-// write is rolled back.
+// write is rolled back. A failure after the copy carries that line
+// (`resumeCommand`), so the person can resume the copy by hand.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -29,6 +30,7 @@ import { inResumeCwd, type ResumeShell } from './chat/v2/handoff';
 import { beginPaneMove, endPaneMove } from './chat/v2/paneClaims';
 import { withChosenAccountEnv } from './phone/paneAccountSpawn';
 import type { AgentStopResult } from './agentStop';
+import type { DaemonPTYBridge } from './DaemonPTYBridge';
 
 export type ContinueOnAccountCode =
   | 'no_session'
@@ -44,13 +46,19 @@ export type ContinueOnAccountCode =
   | 'diverged'
   | 'copy_failed'
   | 'save_failed'
-  | 'shell_busy';
+  | 'shell_busy'
+  /** After the stop: the prompt was empty, but a program still ran in the shell. */
+  | 'shell_running'
+  /** After the stop: a key reached the pane while Claude stopped. */
+  | 'shell_typed';
 
 export type ContinueOnAccountResult =
   | { ok: true; sessionId: string; transcriptPath: string }
   /** Copy-only: what the new pane resumes, in which folder and mode. */
   | { ok: true; sessionId: string; transcriptPath: string; cwd: string; permissionMode?: ResumeBinding['permissionMode'] }
-  | { ok: false; code: ContinueOnAccountCode };
+  /** `resumeCommand`: Claude stopped and the copy exists, but nothing was
+   *  typed. The line that resumes the copy, in this pane's shell. */
+  | { ok: false; code: ContinueOnAccountCode; resumeCommand?: string };
 
 // eslint-disable-next-line no-control-regex -- a control character ends a typed line early
 const CONTROL = /[\u0000-\u001f\u007f]/;
@@ -150,6 +158,42 @@ export function relaunchLine(binding: ResumeBinding, configDir: string, shell: R
   return `${inResumeCwd(binding.cwd, pinned, shell)}\r`;
 }
 
+/** The keys a pane had received when it was read. */
+export interface PaneKeyMark {
+  /** A key reached the pane since the mark. */
+  typedSince: () => boolean;
+  /** After a proven stop: the keys up to the mark went to the program that
+   *  stopped, not to the shell's line editor (DaemonPTYBridge.rebaseShellKeyInput). */
+  rebase: () => void;
+}
+
+/** The parts of a daemon session the shell's prompt is read from. */
+export interface ShellPane {
+  promptLog: { readonly size: number; isCommandRunning(): boolean };
+  bridge: Pick<DaemonPTYBridge, 'isEmptyShellPrompt' | 'getInputRevision' | 'getKeyInputRevision' | 'rebaseShellKeyInput'>;
+}
+
+/** `promptRevision` and `markKeys` over the daemon's sessions. */
+export function paneShellDeps(session: (id: string) => ShellPane | undefined): Pick<ContinueOnAccountDeps, 'promptRevision' | 'markKeys'> {
+  return {
+    promptRevision: (id) => {
+      const pane = session(id);
+      if (!pane || pane.promptLog.size === 0 || pane.promptLog.isCommandRunning()) return null;
+      return pane.bridge.isEmptyShellPrompt() ? pane.bridge.getInputRevision() : null;
+    },
+    markKeys: (id) => {
+      const pane = session(id);
+      if (!pane) return undefined;
+      const mark = pane.bridge.getKeyInputRevision();
+      // Only the same session: a pane that closed meanwhile is not rebased.
+      return {
+        typedSince: () => session(id) === pane && pane.bridge.getKeyInputRevision() !== mark,
+        rebase: () => { if (session(id) === pane) pane.bridge.rebaseShellKeyInput(mark); },
+      };
+    },
+  };
+}
+
 export interface ContinueOnAccountPane {
   resumeBinding?: ResumeBinding;
   exec?: unknown;
@@ -169,6 +213,8 @@ export interface ContinueOnAccountDeps {
   paneFree: (id: string) => Promise<boolean>;
   /** The shell's input revision while it sits at an empty prompt, else null. */
   promptRevision: (id: string) => number | null;
+  /** Read right before the stop (see `paneShellDeps`). */
+  markKeys: (id: string) => PaneKeyMark | undefined;
   /** Bind the pane to `configDir` with `binding` (now at the copy), persisted; the undo, or null when it could not be saved (nothing changed). */
   rebind: (id: string, configDir: string, binding: ResumeBinding) => (() => void) | null;
   write: (id: string, data: string) => boolean;
@@ -261,8 +307,13 @@ async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, c
 
   // Stop first: Claude may still write to the transcript as it exits. The
   // turn is checked again right before the first signal.
+  const keys = deps.markKeys(id);
   const stop = await deps.stopClaude(id, () => deps.turnClosed(id));
   if (!stop.ok) return { ok: false, code: stop.code === 'turn_open' ? 'turn_open' : 'still_running' };
+  // The keys typed so far went to the Claude just stopped, not to the shell,
+  // so the prompt it leaves can read empty (#3437). A key after the mark
+  // still counts as typed at the prompt.
+  if (stop.stopped) keys?.rebase();
   // Still the same conversation: a hook may have rebound the pane meanwhile.
   const stillOwn = () => deps.pane(id)?.resumeBinding?.sessionId === binding.sessionId;
   if (!stillOwn()) return { ok: false, code: 'unknown_session' };
@@ -282,20 +333,29 @@ async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, c
   // The prompt costs nothing to read, so the pane is checked only once the
   // shell shows one.
   const deadline = now() + (deps.promptWaitMs ?? 5_000);
+  // From here the copy exists: a failure says why and how to resume it by hand.
+  const blocked = (code: ContinueOnAccountCode): ContinueOnAccountResult => ({
+    ok: false,
+    code: code === 'shell_busy' && keys?.typedSince() ? 'shell_typed' : code,
+    resumeCommand: line.replace(/\r$/, ''),
+  });
   let revision: number | null = null;
+  let running = false;
   for (;;) {
-    revision = deps.promptRevision(id) !== null && await deps.paneFree(id) ? deps.promptRevision(id) : null;
+    const atPrompt = deps.promptRevision(id) !== null;
+    running = atPrompt && !(await deps.paneFree(id));
+    revision = atPrompt && !running ? deps.promptRevision(id) : null;
     if (revision !== null || now() >= deadline) break;
     await sleep(100);
   }
-  if (revision === null) return { ok: false, code: 'shell_busy' };
-  if (!stillOwn()) return { ok: false, code: 'unknown_session' };
+  if (revision === null) return blocked(running ? 'shell_running' : 'shell_busy');
+  if (!stillOwn()) return blocked('unknown_session');
 
   // Bound before the line is typed: the new process's first hook is checked
   // against the pane's account folder. A rebind that could not be persisted
   // is undone and nothing is typed.
   const undo = deps.rebind(id, configDir, { ...binding, transcriptPath: plan.target });
-  if (!undo) return { ok: false, code: 'save_failed' };
+  if (!undo) return blocked('save_failed');
   let typed = false;
   try {
     typed = deps.promptRevision(id) === revision && deps.write(id, line);
@@ -304,7 +364,7 @@ async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, c
   }
   if (!typed) {
     undo();
-    return { ok: false, code: 'shell_busy' };
+    return blocked('shell_busy');
   }
   return { ok: true, sessionId: binding.sessionId, transcriptPath: plan.target };
 }

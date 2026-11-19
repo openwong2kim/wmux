@@ -95,4 +95,12 @@ describe('continue on an account', () => {
     expect(await continuePane(deps(), { ptyId: 'daemon-1', accountId: 'nobody' })).toEqual({ ok: false, code: 'invalid_account' });
     expect(await continuePane(deps({ connected: () => false }), { ptyId: 'daemon-1', accountId: token.id })).toEqual({ ok: false, code: 'unavailable' });
   });
+
+  it('a relaunch blocked after the stop passes its reason and the resume line through; a line with control characters is dropped (#3437)', async () => {
+    const line = `cd -- '/work' && CLAUDE_CONFIG_DIR='/acc/plain' claude --resume ${SID}`;
+    const blocked = deps({ rpc: vi.fn<ContinuePaneDeps['rpc']>(async () => ({ ok: false, code: 'shell_typed', resumeCommand: line })) });
+    expect(await continuePane(blocked, { ptyId: 'daemon-1', accountId: plain.id })).toEqual({ ok: false, code: 'shell_typed', resumeCommand: line });
+    const odd = deps({ rpc: vi.fn<ContinuePaneDeps['rpc']>(async () => ({ ok: false, code: 'shell_busy', resumeCommand: `${line}\r` })) });
+    expect(await continuePane(odd, { ptyId: 'daemon-1', accountId: plain.id })).toEqual({ ok: false, code: 'shell_busy' });
+  });
 });
