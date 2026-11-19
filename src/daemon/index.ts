@@ -174,6 +174,7 @@ import { createHeadlessSessions } from './a2aRemote/headlessSessions';
 import { endHeadlessOnStop, HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
 import { LinkedTaskTurns } from './a2aRemote/linkedTaskTurns';
 import { ApprovalSwitchStore, pairingOf as approvalPairingOf, setApprovals } from './a2aRemote/approvalSwitchStore';
+import { noteRemoteApproval } from './a2aRemote/approvalNotice';
 import { openApprovalReceipts, RemoteApprovals } from './a2aRemote/remoteApproval';
 import { HeadlessStatusReporter } from './a2aRemote/headlessStatus';
 import { answerPicker, screenPicker } from './a2aRemote/headlessAnswer';
@@ -11458,7 +11459,11 @@ async function main(): Promise<void> {
         // Carried out by the remote approvals (linked panes); refused as `approvals-off` for a PC the setting is off for.
         approvals: {
           on: (hostId) => remoteApprovalsRef !== null && a2aApprovalSwitch.exposure(hostId) !== null,
-          admit: (hostId) => remoteApprovalsRef?.admit(hostId) ?? false,
+          // No producer (a start that failed): past nothing, refused as approvals-off above.
+          admit: (hostId, messageId) => remoteApprovalsRef?.admit(hostId, messageId) ?? { ok: false, retryAfterMs: 0 },
+          limited: async (hostId, taskId, messageId, approval, retryAfterMs) => {
+            await remoteApprovalsRef?.limited(hostId, taskId, messageId, approval, retryAfterMs);
+          },
           take: (hostId, taskId, messageId, approval) => {
             const approvals = remoteApprovalsRef;
             if (!approvals) return;
@@ -11554,6 +11559,17 @@ async function main(): Promise<void> {
           send: (taskId, status) => a2aDeliveryRef?.sendStatus(taskId, status, 'approvals') ?? { ok: false, error: 'unavailable' },
         },
         log: a2aLog,
+        // A notification in the app and a line in the task's history; neither carries the command.
+        carriedOut: (e) => void noteRemoteApproval({
+          tasks: approvalTaskSvc,
+          hostName: (hostId) => a2aHostName(hostId),
+          paneLabel: (workspaceId, paneId) => {
+            const pane = a2aExposedPanes.all().find((p) => p.kind === 'pane' && p.workspaceId === workspaceId && p.paneId === paneId);
+            return pane ? (pane.label ? `${pane.workspaceName} / ${pane.label}` : pane.workspaceName) : undefined;
+          },
+          broadcast: (event) => pipeServer.broadcast(event),
+          log: a2aLog,
+        }, e).catch((err: unknown) => a2aLog('warn', `[a2a-remote] approval task=${e.taskId}: its notice failed: ${String(err)}`)),
       });
       remoteApprovalsRef.start();
       // main asks for a bundle and releases it once imported; open asks are asked again and staging is swept.

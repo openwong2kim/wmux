@@ -415,7 +415,26 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
    * link comes back).
    */
   status?: A2aRemoteStatusShown;
+  /**
+   * Inbound: another PC's decisions carried out on this task's prompts here,
+   * oldest first, at most A2A_REMOTE_APPROVAL_NOTES_MAX. This PC's own record
+   * (the line its notification showed); never a message, never sent.
+   */
+  approvalNotes?: A2aRemoteApprovalNote[];
 };
+
+/** One carried-out remote approval as the receiving task records it (no command). */
+export interface A2aRemoteApprovalNote {
+  /** The approval's message id. */
+  messageId: string;
+  decision: 'allow' | 'deny';
+  tool: string;
+  /** "<PC> allowed|denied <tool> in <pane>" in this PC's words. */
+  text: string;
+  at: string;
+}
+
+export const A2A_REMOTE_APPROVAL_NOTES_MAX = 20;
 
 /** A hold older than this is rejected automatically (`held-expired`). */
 export const A2A_REMOTE_HOLD_TTL_MS = 24 * 60 * 60 * 1000;

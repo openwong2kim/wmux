@@ -237,22 +237,35 @@ const LOGGED_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
  * who asked (the caller's pane, or `none`), the PC, and the exposure before
  * and after. Nothing else goes in that line. `changed` runs after a save that
  * turned the PC on or off.
+ *
+ * `expected` (optional): the level the caller last saw. A raise (off to
+ * anything, or anything to `command`, from the level saved now) is saved only
+ * while the PC is still at `expected`; otherwise nothing is saved, the line
+ * ends ` refused: changed`, and the result says `conflict`, so a person
+ * decides again on what is there. A move to off or to a lower level is always
+ * saved: it never widens what the PC may do.
  */
 export function setApprovals(
   store: ApprovalSwitchStore,
   params: Record<string, unknown>,
   deps: { log: StoreLog; changed?: (hostId: HostId, on: boolean) => void; paired?: (hostId: HostId) => boolean },
-): { ok: true; hosts: Record<HostId, A2aApprovalExposure> } | { ok: false; error: string } {
+): { ok: true; hosts: Record<HostId, A2aApprovalExposure> } | { ok: false; error: string; conflict?: true } {
   const hostId = params['hostId'];
   const exposure = params['exposure'];
+  const expected = params['expected'];
   const sender = params['senderPtyId'];
   const by = sender === undefined ? 'none' : typeof sender === 'string' && LOGGED_ID_RE.test(sender) ? sender : 'invalid';
   const validHost = isHostId(hostId);
   const validExposure = exposure === 'off' || isA2aApprovalExposure(exposure);
+  const validExpected = expected === undefined || expected === 'off' || isA2aApprovalExposure(expected);
   const before = validHost ? store.exposure(hostId) ?? 'off' : 'off';
-  deps.log('info', `[a2a-remote] approvals set by=${by} host=${validHost ? hostId : 'invalid'} ${before}->${validExposure ? exposure : 'invalid'}`);
+  const raise = validExposure && ((before === 'off' && exposure !== 'off') || (exposure === 'command' && before !== 'command'));
+  const conflict = validHost && raise && expected !== undefined && validExpected && expected !== before;
+  deps.log('info', `[a2a-remote] approvals set by=${by} host=${validHost ? hostId : 'invalid'} ${before}->${validExposure ? exposure : 'invalid'}${conflict ? ' refused: changed' : ''}`);
   if (!validHost) return { ok: false, error: 'hostId must be a paired PC\'s host id' };
   if (!validExposure) return { ok: false, error: "exposure must be 'off', 'tool-only' or 'command'" };
+  if (!validExpected) return { ok: false, error: "expected must be 'off', 'tool-only' or 'command'" };
+  if (conflict) return { ok: false, error: 'the setting for that PC changed meanwhile', conflict: true };
   // Turning a PC on needs it paired now; turning one off never does.
   if (exposure !== 'off' && deps.paired && !deps.paired(hostId)) return { ok: false, error: 'that PC is not paired with this one' };
   const res = store.set(hostId, exposure);

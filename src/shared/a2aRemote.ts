@@ -228,6 +228,84 @@ export const A2A_APPROVALS_RPC = Object.freeze({
   get: 'a2a.remote.approvals.get',
   set: 'a2a.remote.approvals.set',
 } as const);
+/**
+ * The `by=` the app's own approvals setting row passes (the Remote page, not a pane);
+ * the daemon logs it as written.
+ */
+export const A2A_APPROVALS_SET_BY_APP = 'app-settings';
+/**
+ * Allowing or denying a prompt the worker on a task this PC SENT shows
+ * (`A2A_FEATURE_APPROVAL`):
+ *   - `ask`: the pipe method on the asking PC (local origin; main resolves the
+ *     caller's pane and passes its workspace on);
+ *   - `send`: the daemon's, `{ taskId, workspaceId, promptId, decision }` →
+ *     `A2aApprovalSendResult`.
+ */
+export const A2A_APPROVAL_RPC = Object.freeze({
+  ask: 'a2a.remote.approve',
+  send: 'a2a.remote.approve.send',
+} as const);
+/**
+ * Approvals the asking PC sends to one PC at most in any
+ * A2A_APPROVALS_SENT_WINDOW_MS (rolling). The receiving PC takes 60 in a
+ * minute (A2A_APPROVALS_RECEIVED_WINDOW_MS) and refuses the rest
+ * `rate-limited`. The window is a little longer than that minute, which makes
+ * such refusals rarer but does not rule them out: the two windows count at
+ * send and at arrival, so a delay that varies on the way can still put a 61st
+ * into one there.
+ */
+export const A2A_APPROVALS_SENT_PER_WINDOW = 60;
+export const A2A_APPROVALS_SENT_WINDOW_MS = 62_000;
+/** The receiving PC's window for approvals from one PC: a `rate-limited` refusal is over within it. */
+export const A2A_APPROVALS_RECEIVED_WINDOW_MS = 60_000;
+/** How long `send` waits for the outcome to come back in the task's status before it answers `pending`. */
+export const A2A_APPROVAL_OUTCOME_WAIT_MS = 10_000;
+/** Why the asking PC sent nothing. */
+export type A2aApprovalSendRefusal =
+  | 'unknown-task'
+  | 'not-offered'
+  | 'deny-only'
+  | 'unavailable'
+  | 'unsupported'
+  | 'rate-limited'
+  | 'bad-request'
+  | 'forbidden';
+export type A2aApprovalSendResult =
+  | {
+    ok: true;
+    taskId: string;
+    messageId: string;
+    promptId: string;
+    decision: A2aRemoteApprovalDecision;
+    tool: string;
+    /** How it went there, once it came back (by `messageId`); absent while `pending`. */
+    outcome?: A2aRemoteApprovalOutcome & { reasonText?: string };
+    /** Sent, with no outcome back within A2A_APPROVAL_OUTCOME_WAIT_MS: read the task's status later. */
+    pending?: true;
+  }
+  | { ok: false; error: A2aApprovalSendRefusal; message: string; retryAfterMs?: number };
+
+/** A name as one short line (statusLabelLine), at most 64 characters; `fallback` when nothing is left. */
+function oneLineName(name: string | undefined, fallback: string): string {
+  return statusLabelLine(name ?? '').slice(0, 64) || fallback;
+}
+
+/**
+ * The daemon event a carried-out remote approval raises on the receiving PC
+ * (data: `{ taskId, ptyId?, decision, text }`, no command); main shows it as
+ * a notification.
+ */
+export const REMOTE_APPROVAL_DONE_EVENT = 'a2a.remote.approval.done';
+
+/**
+ * The one line a carried-out remote approval leaves on the receiving PC (its
+ * notification and the task's record): who, what, which tool, where. It
+ * takes no command: none is ever shown. `pc` is this PC's own name for the
+ * paired PC, cut to one plain line.
+ */
+export function remoteApprovalNoticeText(n: { pc: string | undefined; decision: A2aRemoteApprovalDecision; tool: string; pane: string | undefined }): string {
+  return `${oneLineName(n.pc, 'Another PC')} ${n.decision === 'allow' ? 'allowed' : 'denied'} ${oneLineName(n.tool, 'a tool')} in ${oneLineName(n.pane, 'a pane')}`;
+}
 /** A host's notice about one message the receiver sent (`held-notice.1`). Nothing in it is shown as written. */
 export interface A2aRemoteNoticeV1 {
   kind: 'held-expired';
@@ -984,7 +1062,7 @@ export interface A2aRemoteApprovalOffer {
   promptId: string;
   /** The tool the prompt is for (`Bash`, `ExitPlanMode`, …). */
   tool: string;
-  /** The bound call's command (secrets redacted, at most A2A_REMOTE_APPROVAL_COMMAND_MAX bytes); only at exposure `command`. */
+  /** The bound call's command (known credential shapes masked, at most A2A_REMOTE_APPROVAL_COMMAND_MAX bytes); only at exposure `command`. */
   command?: string;
   /** The command shown is not the call's own text (a secret masked, or characters that cannot be shown dropped): allow is not offered. */
   redacted: boolean;
@@ -1011,10 +1089,11 @@ export type A2aRemoteApprovalReason =
   | 'lock-busy'
   | 'refused'
   | 'id-reused'
-  | 'unavailable';
+  | 'unavailable'
+  | 'rate-limited';
 
 export const A2A_REMOTE_APPROVAL_REASON_TEXT: Readonly<Record<A2aRemoteApprovalReason, string>> = Object.freeze({
-  'approvals-off': 'approvals for this PC are off there (wmux remote approvals); ask a person there',
+  'approvals-off': 'approvals for this PC are off there; a person there turns them on from the Remote page (or `wmux remote approvals` where only the daemon runs)',
   'not-open': 'the task is no longer open there',
   'not-linked': 'that PC answers prompts only for a task sent to a linked pane there',
   'link-not-active': 'the link to that pane is not active',
@@ -1028,6 +1107,7 @@ export const A2A_REMOTE_APPROVAL_REASON_TEXT: Readonly<Record<A2aRemoteApprovalR
   'refused': 'the prompt on the screen there changed or could not be proven; nothing was typed',
   'id-reused': 'that message id was already used for another decision',
   'unavailable': 'that PC could not record the decision; nothing was typed',
+  'rate-limited': 'that PC took as many approvals from this one as it takes in a minute; nothing was typed. Send it again once retryAfterMs has passed',
 });
 const APPROVAL_REASONS: ReadonlySet<string> = new Set(Object.keys(A2A_REMOTE_APPROVAL_REASON_TEXT));
 
@@ -1040,7 +1120,12 @@ export interface A2aRemoteApprovalOutcome {
   messageId: string;
   outcome: 'done' | 'not-done' | 'uncertain';
   reason?: A2aRemoteApprovalReason;
+  /** With reason `rate-limited`: how long until that PC takes another approval from this one (ms). */
+  retryAfterMs?: number;
 }
+
+/** The longest `retryAfterMs` an outcome carries as read (a PC's window is a minute). */
+const APPROVAL_RETRY_AFTER_MAX_MS = 120_000;
 
 function parseApprovalOutcome(raw: unknown): A2aRemoteApprovalOutcome | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -1048,7 +1133,10 @@ function parseApprovalOutcome(raw: unknown): A2aRemoteApprovalOutcome | null {
   if (typeof r.messageId !== 'string' || !A2A_REMOTE_MESSAGE_ID_RE.test(r.messageId)) return null;
   if (r.outcome === 'done' || r.outcome === 'uncertain') return { messageId: r.messageId, outcome: r.outcome };
   if (r.outcome !== 'not-done' || typeof r.reason !== 'string' || !APPROVAL_REASONS.has(r.reason)) return null;
-  return { messageId: r.messageId, outcome: 'not-done', reason: r.reason as A2aRemoteApprovalReason };
+  const retry = r.reason === 'rate-limited' && typeof r.retryAfterMs === 'number' && Number.isFinite(r.retryAfterMs)
+    ? Math.min(Math.max(0, Math.round(r.retryAfterMs)), APPROVAL_RETRY_AFTER_MAX_MS)
+    : undefined;
+  return { messageId: r.messageId, outcome: 'not-done', reason: r.reason as A2aRemoteApprovalReason, ...(retry !== undefined ? { retryAfterMs: retry } : {}) };
 }
 
 /** A command as one block of text from another PC: invisible format characters gone, other controls but newline and tab dropped. */
@@ -1438,7 +1526,12 @@ export type A2aRemoteErrorCode =
    */
   | 'attachment-failed'
   /** An `approval` from a PC whose approvals setting is off on the receiver (no file, damaged, or not on for it). */
-  | 'approvals-off';
+  | 'approvals-off'
+  /**
+   * An `approval` past the receiver's per-PC window (A2A_APPROVALS_RECEIVED_WINDOW_MS):
+   * not carried out; a resend of the same message is answered the same.
+   */
+  | 'rate-limited';
 
 export type A2aRemoteDeliverResponse =
   | { ok: true; taskId?: string; duplicate: boolean }

@@ -703,6 +703,8 @@ export type RpcMethod =
   | 'a2a.remote.answer.send'
   | 'a2a.remote.answers.get'
   | 'a2a.remote.answers.set'
+  | 'a2a.remote.approve'
+  | 'a2a.remote.approve.send'
   | 'a2a.remote.approvals.get'
   | 'a2a.remote.approvals.set'
   | 'a2a.remote.spawnRequests.list'
@@ -1090,6 +1092,8 @@ export const ALL_RPC_METHODS = [
   'a2a.remote.answer.send',
   'a2a.remote.answers.get',
   'a2a.remote.answers.set',
+  'a2a.remote.approve',
+  'a2a.remote.approve.send',
   'a2a.remote.approvals.get',
   'a2a.remote.approvals.set',
   'a2a.remote.spawnRequests.list',

@@ -53,7 +53,7 @@ import type {
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { A2A_COMPANY_RPC, type A2aCompanyMarkParams, type A2aCompanyMarkResult, type A2aCompanyTasksResult } from '../shared/companyHold';
 import { A2A_SPAWN_RPC, type A2aSpawnAskInput, type A2aSpawnAskResult, type A2aSpawnOutgoingList, type A2aSpawnPolicySetResult, type A2aSpawnPolicyV1, type A2aSpawnRequestSummary } from '../shared/a2aSpawn';
-import { A2A_ANSWER_RPC } from '../shared/a2aRemote';
+import { A2A_ANSWER_RPC, A2A_APPROVAL_OUTCOME_WAIT_MS, A2A_APPROVAL_RPC, A2A_APPROVALS_RPC, type A2aApprovalExposure, type A2aApprovalSendResult } from '../shared/a2aRemote';
 import { createSessionPipeMarkers } from '../daemon/sessionPipeMarkers';
 import { PANE_LOCK_DAEMON_WAIT_MS } from '../daemon/paneDeliveryLock';
 import type { FolderTrustState } from '../daemon/folderTrustState';
@@ -986,6 +986,30 @@ export class DaemonClient extends EventEmitter {
   /** An answer to the question the worker on a task this PC sent shows (A2A_FEATURE_ANSWER). */
   async a2aRemoteAnswer(input: { taskId: string; workspaceId: string; pickerId: string; option: number }): Promise<{ ok: true; taskId: string; messageId: string } | { ok: false; error: string }> {
     return (await this.rpc(A2A_ANSWER_RPC.send, { ...input })) as { ok: true; taskId: string; messageId: string } | { ok: false; error: string };
+  }
+
+  /**
+   * An allow or deny for the prompt the worker on a task this PC sent shows
+   * (A2A_FEATURE_APPROVAL). The daemon waits for the outcome up to
+   * A2A_APPROVAL_OUTCOME_WAIT_MS, so this waits longer.
+   */
+  async a2aRemoteApprove(input: { taskId: string; workspaceId: string; promptId: string; decision: 'allow' | 'deny' }): Promise<A2aApprovalSendResult> {
+    return (await this.rpc(A2A_APPROVAL_RPC.send, { ...input }, { timeoutMs: A2A_APPROVAL_OUTCOME_WAIT_MS + 10_000 })) as A2aApprovalSendResult;
+  }
+
+  /** This PC's approvals setting: which paired PCs may allow or deny prompts in the tasks they sent here. */
+  async a2aRemoteApprovalsGet(): Promise<{ hosts: Record<string, A2aApprovalExposure>; damaged: boolean }> {
+    return (await this.rpc(A2A_APPROVALS_RPC.get, {})) as { hosts: Record<string, A2aApprovalExposure>; damaged: boolean };
+  }
+
+  /**
+   * Set it for one PC, as the app (first party); `by` is logged by the daemon (`approvals set by=`).
+   * With `expected`, the daemon saves a raise only while the PC is still at that level (else `conflict`); a lowering always saves.
+   */
+  async a2aRemoteApprovalsSet(input: { hostId: string; exposure: 'off' | A2aApprovalExposure; by: string; expected?: 'off' | A2aApprovalExposure }): Promise<{ ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string; conflict?: true }> {
+    return (await this.rpc(A2A_APPROVALS_RPC.set, {
+      hostId: input.hostId, exposure: input.exposure, senderPtyId: input.by, ...(input.expected !== undefined ? { expected: input.expected } : {}),
+    })) as { ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string; conflict?: true };
   }
 
   async a2aSpawnOutgoing(spawnId?: string): Promise<A2aSpawnOutgoingList> {

@@ -222,6 +222,40 @@ describe('shared Codex app-server, owner index available (pane relay, non-Window
     expect(whoamiParams()).toEqual([{ workspaceId: 'ws-s', senderPtyId: 'pty-s' }]);
   });
 
+  it('refuses remote_approve and remote_answer, never a2a_whoami, when a threadless call\'s parent cannot be inspected', async () => {
+    parentChain.mockResolvedValue([]);
+    const sent: string[] = [];
+    extraRpc = (method) => {
+      if (method.startsWith('a2a.remote.')) sent.push(method);
+      return { ok: true, taskId: 'rt-1', messageId: 'ap-1', pending: true };
+    };
+    const client = await connect();
+    const approve = await call(client, 'remote_approve', { task_id: 'rt-1', prompt_id: '0123456789abcdef', decision: 'deny' });
+    const answer = await call(client, 'remote_answer', { task_id: 'rt-1', picker_id: '0123456789abcdef', option: 1 });
+    const who = await call(client, 'a2a_whoami', {});
+    await client.close();
+    for (const res of [approve, answer]) {
+      expect(res.isError).toBe(true);
+      expect(res.content[0]?.text).toMatch(/could not inspect the process that started this MCP server/);
+    }
+    expect(sent).toEqual([]);
+    expect(who.isError).toBeFalsy();
+  });
+
+  it('keeps remote_approve for a threadless call whose parent is inspected and is not a shared server', async () => {
+    parentChain.mockResolvedValue([MCP_ENTRY, ['zsh', '-l']]);
+    const sent: string[] = [];
+    extraRpc = (method, params) => {
+      if (method.startsWith('a2a.remote.')) sent.push(`${method}/${String(params.senderPtyId)}`);
+      return { ok: true, taskId: 'rt-1', messageId: 'ap-1', pending: true };
+    };
+    const client = await connect();
+    const res = await call(client, 'remote_approve', { task_id: 'rt-1', prompt_id: '0123456789abcdef', decision: 'deny' });
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect(sent).toEqual(['a2a.remote.approve/pty-s']);
+  });
+
   it('keeps the pre-#1778 identity for a non-Codex parent', async () => {
     parentChain.mockResolvedValue([MCP_ENTRY, ['zsh', '-l']]);
     const client = await connect();
@@ -676,6 +710,46 @@ describe('shared Codex app-server on win32', () => {
     expect(parentChain).not.toHaveBeenCalled();
     expect(opened.map((p) => p.workspaceId)).toEqual(['ws-s']);
     expect(getWorkspaceToken()).toBe('claim-starter');
+  });
+
+  it('refuses remote_approve and remote_answer it cannot tie to a pane, before anything is sent', async () => {
+    writeOwner(T1, 'pty-a', 'ws-1');
+    const sent: Array<{ method: string; params: Record<string, unknown> }> = [];
+    extraRpc = (method, params) => {
+      if (method.startsWith('a2a.remote.')) sent.push({ method, params });
+      return { ok: true, taskId: 'rt-1', messageId: 'ap-1', pending: true };
+    };
+    const client = await connect();
+    const approve = { task_id: 'rt-1', prompt_id: '0123456789abcdef', decision: 'allow' };
+    // Threadless, and a thread with no owner record: the walk would name the starter pane.
+    const results = [
+      await call(client, 'remote_approve', approve),
+      await call(client, 'remote_approve', approve, T2),
+      await call(client, 'remote_answer', { task_id: 'rt-1', picker_id: '0123456789abcdef', option: 1 }),
+    ];
+    // A recorded thread is its own pane.
+    const owned = await call(client, 'remote_approve', approve, T1);
+    await client.close();
+    for (const res of results) {
+      expect(res.isError).toBe(true);
+      expect(res.content[0]?.text).toMatch(/shared Codex background server/);
+    }
+    expect(owned.isError).toBeFalsy();
+    expect(sent.map((c) => `${c.method}/${String(c.params.senderPtyId)}`)).toEqual(['a2a.remote.approve/pty-a']);
+  });
+
+  it('keeps remote_approve for a pane-side Codex', async () => {
+    parentChain.mockResolvedValue([MCP_ENTRY, PANE_CODEX]);
+    const sent: string[] = [];
+    extraRpc = (method, params) => {
+      if (method.startsWith('a2a.remote.')) sent.push(`${method}/${String(params.senderPtyId)}`);
+      return { ok: true, taskId: 'rt-1', messageId: 'ap-1', pending: true };
+    };
+    const client = await connect();
+    const res = await call(client, 'remote_approve', { task_id: 'rt-1', prompt_id: '0123456789abcdef', decision: 'deny' });
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect(sent).toEqual(['a2a.remote.approve/pty-s']);
   });
 
   it('checks the parent for a client that sends no name', async () => {

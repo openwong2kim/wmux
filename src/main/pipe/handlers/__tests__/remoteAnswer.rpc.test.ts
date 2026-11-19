@@ -38,6 +38,19 @@ describe('a2a.remote.answer', () => {
     expect(daemon.a2aRemoteAnswer).not.toHaveBeenCalled();
   });
 
+  it('a caller bound to a workspace (a claim, a commander token) acts only from a pane of it; a stale claim from none', async () => {
+    for (const ctx of [
+      { origin: 'local', workspaceClaim: { kind: 'bound', workspaceId: 'ws-b' } },
+      { origin: 'local', workspaceClaim: { kind: 'stale' } },
+      { origin: 'local', commanderWorkspace: 'ws-b' },
+    ] as RpcContext[]) {
+      expect(await call(answer, ctx)).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
+    }
+    expect(daemon.a2aRemoteAnswer).not.toHaveBeenCalled();
+    expect(await call(answer, { origin: 'local', workspaceClaim: { kind: 'bound', workspaceId: 'ws-a' } } as RpcContext)).toMatchObject({ ok: true });
+    expect(await call(answer, { origin: 'local', commanderWorkspace: 'ws-a' } as RpcContext)).toMatchObject({ ok: true });
+  });
+
   it('a hosted caller answers only from a pane of its own workspace, and an unbound one from none', async () => {
     expect(await call(answer, { origin: 'local', hostedWorkspace: 'ws-other' } as RpcContext)).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
     expect(await call(answer, { origin: 'local', hostedWorkspace: null } as RpcContext)).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });

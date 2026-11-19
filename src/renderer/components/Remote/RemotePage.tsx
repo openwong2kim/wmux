@@ -41,6 +41,8 @@ import { readSpawnPolicy, saveSpawnPolicy, type SpawnPolicySaveResult } from './
 import type { A2aSpawnOutgoingList, A2aSpawnOutgoingSummary, A2aSpawnPlace, A2aSpawnPolicyV1 } from '../../../shared/a2aSpawn';
 import { agentRow } from '../../../shared/agentIdentity';
 import RemoteSpawnAskDialog from './RemoteSpawnAskDialog';
+import RemoteApprovalsRow from './RemoteApprovalsRow';
+import { ApprovalsController } from './remoteApprovals';
 
 /** How often the page re-reads the roster, the hosts and the server state. */
 export const REMOTE_PAGE_POLL_MS = 10_000;
@@ -183,6 +185,18 @@ export default function RemotePage() {
   const lastLive = useRef<Map<string, boolean> | null>(null);
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
+  // Remote approvals per paired PC (remoteApprovals.ts): the controller holds the
+  // levels, a raise waiting for its confirmation and the save in flight.
+  const [, setApprovalsTick] = useState(0);
+  const approvals = useRef<ApprovalsController | null>(null);
+  const approvalsApi = window.electronAPI?.a2aRemote;
+  if (!approvals.current && approvalsApi?.approvalsGet && approvalsApi.approvalsSet) {
+    approvals.current = new ApprovalsController(
+      { approvalsGet: () => approvalsApi.approvalsGet(), approvalsSet: (hostId, level, expected) => approvalsApi.approvalsSet(hostId, level, expected) },
+      { failed: t('remotePage.approvals.failed'), changed: t('remotePage.approvals.changed') },
+      () => { if (mounted.current) setApprovalsTick((n) => n + 1); },
+    );
+  }
 
   // A failed read keeps the last list.
   const readOutgoing = useCallback(async () => {
@@ -218,6 +232,7 @@ export default function RemotePage() {
     // A failed read keeps the last policy.
     if (REMOTE_SPAWN_UI_ENABLED) reads.push(readSpawnPolicy().then((p) => { if (mounted.current && p) setSpawnPolicy(p); }));
     if (REMOTE_SPAWN_UI_ENABLED) reads.push(readOutgoing());
+    if (approvals.current) reads.push(approvals.current.load());
     await Promise.all(reads);
     // A PC that joined this one sees only what this PC lists for it.
     const exposureGet = api?.a2aRemote?.exposureGet;
@@ -579,6 +594,23 @@ export default function RemotePage() {
     return `${what} · ${state}`;
   };
 
+  // What agents on that PC may answer here, nested under its row.
+  const approvalsRow = (c: ApprovalsController, pc: { hostId: string; name: string }) => (
+    <RemoteApprovalsRow
+      key={`approvals:${pc.hostId}`}
+      hostId={pc.hostId}
+      name={pc.name}
+      level={c.levelOf(pc.hostId)}
+      pending={c.pending[pc.hostId]?.level ?? null}
+      busy={c.busy[pc.hostId] !== undefined}
+      damaged={c.damaged}
+      error={c.errors[pc.hostId] ?? null}
+      onChange={(level) => void c.choose(pc.hostId, level)}
+      onConfirm={() => void c.confirm(pc.hostId)}
+      onCancel={() => c.cancel(pc.hostId)}
+      t={t}
+    />
+  );
   const seeLabel = (count: number) => (count === 0 ? t('remotePage.perm.seesNone') : count === 1 ? t('remotePage.perm.seesOne') : t('remotePage.perm.sees', { count }));
 
   // Rows of the one list, by group.
@@ -638,6 +670,7 @@ export default function RemotePage() {
         </span>
         {rowError(key)}
       </li>,
+      ...(approvals.current?.loaded ? [approvalsRow(approvals.current, pc)] : []),
       ...pc.links.map((l) => (
         <A2aLinkRow
           key={l.linkId}

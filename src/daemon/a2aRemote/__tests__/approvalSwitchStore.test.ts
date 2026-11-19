@@ -205,6 +205,39 @@ describe('approvals.set', () => {
     expect(third.changed).toEqual([[PC_A, false]]);
   });
 
+  it('with expected: saved only when the PC is still at that level; otherwise refused, logged, nothing moved', () => {
+    const s = store();
+    s.set(PC_A, 'command');
+    // Another writer turned it off after the caller last looked.
+    s.set(PC_A, 'off');
+    const stale = set(s, { hostId: PC_A, exposure: 'tool-only', expected: 'command', senderPtyId: 'app-settings' });
+    expect(stale.res).toEqual({ ok: false, error: 'the setting for that PC changed meanwhile', conflict: true });
+    expect(stale.lines).toEqual([`[a2a-remote] approvals set by=app-settings host=${PC_A} off->tool-only refused: changed`]);
+    expect(stale.changed).toEqual([]);
+    expect(s.exposure(PC_A)).toBeNull();
+    const fresh = set(s, { hostId: PC_A, exposure: 'command', expected: 'off' });
+    expect(fresh.res).toMatchObject({ ok: true });
+    expect(s.exposure(PC_A)).toBe('command');
+    expect(set(s, { hostId: PC_A, exposure: 'off', expected: 'everything' }).res).toMatchObject({ ok: false });
+    expect(s.exposure(PC_A)).toBe('command');
+  });
+
+  it('with expected: a move to off or to a lower level is saved whatever the caller last saw; only a raise is compared', () => {
+    const s = store();
+    s.set(PC_A, 'command');
+    // The caller last saw tool-only; it is command now. Lowering to tool-only, then to off, both save.
+    const lower = set(s, { hostId: PC_A, exposure: 'tool-only', expected: 'off' });
+    expect(lower.res).toMatchObject({ ok: true });
+    expect(s.exposure(PC_A)).toBe('tool-only');
+    const off = set(s, { hostId: PC_A, exposure: 'off', expected: 'command' });
+    expect(off.res).toMatchObject({ ok: true });
+    expect(off.lines).toEqual([`[a2a-remote] approvals set by=none host=${PC_A} tool-only->off`]);
+    expect(s.exposure(PC_A)).toBeNull();
+    // A raise from a level the caller did not see is still refused.
+    expect(set(s, { hostId: PC_A, exposure: 'command', expected: 'tool-only' }).res).toMatchObject({ ok: false, conflict: true });
+    expect(s.exposure(PC_A)).toBeNull();
+  });
+
   it('a PC not paired now can be turned off but never on', () => {
     const s = store();
     s.set(PC_A, 'command');

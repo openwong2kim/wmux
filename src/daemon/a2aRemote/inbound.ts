@@ -90,6 +90,8 @@ export interface InboundDeps {
     /** True the first time a task's `gone` is seen (its log line); false after, until the task is forgotten. */
     firstGone?(taskId: string): boolean;
     forget(taskId: string): void;
+    /** A status for a task that ended here: not kept, but a send still waiting for an outcome it carries has it. */
+    ended?(taskId: string, status: A2aRemoteStatusV1): void;
   };
   /**
    * Where the asking PC's answer to the question its task's worker shows goes
@@ -109,9 +111,15 @@ export interface InboundDeps {
    */
   remoteApproval?: {
     on(hostId: HostId): boolean;
-    /** One more approval from this PC may be taken now (a per-PC flood guard); false: taken and dropped unread. */
-    admit?(hostId: HostId): boolean;
+    /**
+     * Whether this approval from this PC is taken now (a per-PC window: every
+     * message counts but one whose id already has a final outcome); past it,
+     * the time left in the window.
+     */
+    admit?(hostId: HostId, messageId: string): { ok: true } | { ok: false; retryAfterMs: number };
     take(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1): void;
+    /** An approval past the window: answered `rate-limited` in the task's status, stored as final, never carried out. */
+    limited?(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1, retryAfterMs: number): void | Promise<void>;
   };
   /**
    * A host's notice about one of our own messages (`held-notice.1`): how many
@@ -238,10 +246,11 @@ async function applyInbound(
   if (env.kind === 'status' && deps.remoteStatus?.admit && !deps.remoteStatus.admit(peer.hostId)) {
     return { ok: true, taskId: env.taskId as string, duplicate: true };
   }
-  // The same for an approval past its PC's flood guard.
-  if (env.kind === 'approval' && deps.remoteApproval?.admit && !deps.remoteApproval.admit(peer.hostId)) {
-    return { ok: true, taskId: env.taskId as string, duplicate: true };
-  }
+  // An approval past its PC's window: checked like any other, then answered `rate-limited` (below). One that
+  // fails a check is answered `rate-limited` too, unread and with no log line, so the asker always hears a
+  // final answer for it and a flood of bad ones brings no log line each.
+  const overWindow = env.kind === 'approval' && deps.remoteApproval?.admit ? deps.remoteApproval.admit(peer.hostId, env.messageId) : { ok: true as const };
+  const dropped = (): A2aRemoteDeliverResponse => fail('rate-limited');
 
   let onThisLink = false;
   if (env.kind === 'reply' || env.kind === 'state' || env.kind === 'receipt' || env.kind === 'status' || env.kind === 'answer' || env.kind === 'approval') {
@@ -249,7 +258,7 @@ async function applyInbound(
     onThisLink = marker?.v === 1 && marker.linkId === env.linkId;
   }
   const check = deps.linkStore.checkMessage(env.linkId, env.linkVersion, peer.hostId, 'inbound', env.kind, undefined, { onThisLink });
-  if (!check.ok) return fail(check.error);
+  if (!check.ok) return overWindow.ok ? fail(check.error) : dropped();
   const link = check.link;
   const remoteWs = remoteWorkspaceId(link.linkId);
   // A link a remote start made carries no images either way.
@@ -314,8 +323,9 @@ async function applyInbound(
     if ((env.status as A2aRemoteStatusV1).kind === 'gone' && open && (deps.remoteStatus.firstGone?.(taskId) ?? true)) {
       deps.log?.('info', `[a2a-remote] task ${taskId} on link ${link.linkId}: the agent on that PC is gone`);
     }
-    // A task that ended has no worker status any more: taken, and dropped.
+    // A task that ended has no worker status any more: taken, and dropped (an approval's outcome still reaches its wait).
     if (open) deps.remoteStatus.note(taskId, env.status as A2aRemoteStatusV1, peer.hostId);
+    else deps.remoteStatus.ended?.(taskId, env.status as A2aRemoteStatusV1);
     return { ok: true, taskId, duplicate: false };
   }
   if (env.kind === 'answer') {
@@ -335,7 +345,14 @@ async function applyInbound(
     const marker = task?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
     if (!deps.remoteApproval) return fail('approvals-off');
     if (marker?.direction !== 'inbound' || task!.metadata.from.workspaceId !== remoteWs) {
-      return fail('forbidden', 'an approval is only for a task that host sent');
+      return overWindow.ok ? fail('forbidden', 'an approval is only for a task that host sent') : dropped();
+    }
+    if (!overWindow.ok) {
+      // Answered to the message itself (each one, however many came in a burst), and in the task's status
+      // with the exact time left.
+      // Stored before it is answered, so a resend after a restart is answered the same.
+      await deps.remoteApproval.limited?.(peer.hostId, taskId, env.messageId, env.approval as A2aRemoteApprovalV1, overWindow.retryAfterMs);
+      return fail('rate-limited');
     }
     deps.remoteApproval.take(peer.hostId, taskId, env.messageId, env.approval as A2aRemoteApprovalV1);
     return { ok: true, taskId, duplicate: false };
