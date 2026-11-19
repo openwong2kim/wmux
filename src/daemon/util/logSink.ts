@@ -24,6 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { BoundedLogWriter, createResilientTee, type TeeStream } from '../../shared/logTransport';
+import { DAEMON_STDERR_TO_FILE_ENV } from '../../shared/daemon/daemonStderrFlag';
 
 export { isBrokenPipeError } from '../../shared/logTransport';
 
@@ -96,12 +97,7 @@ function mirrorToFile(chunk: unknown): void {
   boundedLogWriter.append(filePath, data);
 }
 
-/**
- * Set to '1' by the launcher (spawnDirect, the launchd job) when the daemon's
- * stderr is the rotated `daemon-stderr.log`. The sink then writes console
- * output to its daily log only, not also to stderr.
- */
-export const DAEMON_STDERR_TO_FILE_ENV = 'WMUX_DAEMON_STDERR_TO_FILE';
+export { DAEMON_STDERR_TO_FILE_ENV };
 
 /**
  * Read and remove the launcher's flag, so the PTYs this daemon starts (and a

@@ -8,7 +8,7 @@ import {
   rotateDaemonStderrLog,
   withDaemonStderrFlag,
 } from '../daemonLauncherCore';
-import { DAEMON_STDERR_TO_FILE_ENV } from '../../../daemon/util/logSink';
+import { DAEMON_STDERR_TO_FILE_ENV } from '../daemonStderrFlag';
 
 /**
  * #3440: the daemon's stderr goes to <wmuxDir>/daemon-stderr.log, rotated to

@@ -6,7 +6,7 @@ import path from 'path';
 import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
 import { ensureDaemon, DAEMON_STDERR_LOG, DAEMON_STDERR_ROTATE_BYTES, type DaemonLauncherDeps } from '../daemonLauncherCore';
-import { DAEMON_STDERR_TO_FILE_ENV } from '../../../daemon/util/logSink';
+import { DAEMON_STDERR_TO_FILE_ENV } from '../daemonStderrFlag';
 
 /**
  * #3440: the direct spawn (Windows, Linux) hands the daemon an append-mode

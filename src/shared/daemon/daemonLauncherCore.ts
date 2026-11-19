@@ -4,7 +4,7 @@ import * as path from 'path';
 import { spawn, execFileSync } from 'child_process';
 import * as crypto from 'crypto';
 import { getWmuxDir } from '../../daemon/config';
-import { DAEMON_STDERR_TO_FILE_ENV } from '../../daemon/util/logSink';
+import { DAEMON_STDERR_TO_FILE_ENV } from './daemonStderrFlag';
 import { getDaemonPipeName, readDaemonAuthToken } from '../../main/DaemonClient';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, dataSuffix } from '../constants';
 import {
