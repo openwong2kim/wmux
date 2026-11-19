@@ -29,6 +29,15 @@ pub fn native_core_abi_version() -> u32 {
     1
 }
 
+/// Builds one vte processor for this thread's NativeTerminals now, if none
+/// is idle (`parsers::warm`): its 2 MiB buffer is allocated infallibly, so
+/// the snapshot loader takes it at load, before memory runs short (#3440).
+/// Calling it again while one is idle does nothing.
+#[napi(catch_unwind)]
+pub fn warm_terminal_parsers() {
+    parsers::warm();
+}
+
 #[napi(catch_unwind)]
 pub fn native_core_capabilities() -> Vec<String> {
     vec![
@@ -653,6 +662,16 @@ mod parsers {
             .ok()
             .flatten()
             .unwrap_or_default()
+    }
+
+    /// One new processor for this thread's next terminal, if none is idle.
+    pub(super) fn warm() {
+        let _ = IDLE.try_with(|idle| {
+            let mut idle = idle.borrow_mut();
+            if idle.is_empty() && idle.try_reserve(1).is_ok() {
+                idle.push(Processor::new());
+            }
+        });
     }
 
     /// Keeps `parser` for this thread's next terminal, reset (`reset`).
@@ -4892,6 +4911,27 @@ mod parser_pool_tests {
     /// `f` on a thread of its own: its processors are its own.
     fn on_new_thread<R: Send>(f: impl FnOnce() -> R + Send) -> R {
         std::thread::scope(|scope| scope.spawn(f).join().unwrap())
+    }
+
+    #[test]
+    fn a_warmed_thread_builds_its_parser_at_the_warm() {
+        let (at_warm, after) = on_new_thread(|| {
+            let ((), at_warm) = test_allocator::counting(SYNC_BUFFER, || {
+                warm_terminal_parsers();
+                warm_terminal_parsers();
+            });
+            let ((), after) = test_allocator::counting(SYNC_BUFFER, || {
+                let mut terminal = NativeTerminal::new(80, 24, 100).unwrap();
+                terminal.feed(bytes(b"hello")).unwrap();
+                terminal.dispose();
+                warm_terminal_parsers();
+                NativeTerminal::new(80, 24, 100).unwrap().dispose();
+            });
+            assert_eq!(parsers::idle(), 1);
+            (at_warm, after)
+        });
+        assert_eq!(at_warm, 1, "the warm builds one, once");
+        assert_eq!(after, 0, "the terminals take the warmed one");
     }
 
     #[test]
