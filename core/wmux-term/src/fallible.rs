@@ -48,6 +48,50 @@ impl From<AllocFailed> for napi::Error {
     }
 }
 
+/// A native call's error before it crosses to JS, where it becomes a
+/// GenericFailure `napi::Error` with the same message. The call bodies return
+/// this rather than `napi::Error`: dropping a `napi::Error` links napi's C
+/// symbols, which only Node provides, so the unit tests that drive the bodies
+/// could not link on Linux or macOS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CallError {
+    Alloc(AllocFailed),
+    Reason(std::borrow::Cow<'static, str>),
+}
+
+pub(crate) type CallResult<T> = Result<T, CallError>;
+
+impl CallError {
+    pub(crate) fn reason(reason: impl Into<std::borrow::Cow<'static, str>>) -> Self {
+        Self::Reason(reason.into())
+    }
+
+    /// The message JS sees.
+    #[cfg(test)]
+    pub(crate) fn message(&self) -> String {
+        match self {
+            Self::Alloc(failed) => failed.message(),
+            Self::Reason(reason) => reason.to_string(),
+        }
+    }
+}
+
+impl From<AllocFailed> for CallError {
+    fn from(failed: AllocFailed) -> Self {
+        Self::Alloc(failed)
+    }
+}
+
+#[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
+impl From<CallError> for napi::Error {
+    fn from(error: CallError) -> Self {
+        match error {
+            CallError::Alloc(failed) => failed.into(),
+            CallError::Reason(reason) => napi::Error::from_reason(reason),
+        }
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     /// Test injection: every allocation of at least this many bytes on this
@@ -56,6 +100,9 @@ thread_local! {
     /// Test injection: every allocation for this purpose on this thread is
     /// refused, whatever its size.
     static FAIL_WHAT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    /// Test injection: this many more allocations for this purpose on this
+    /// thread are refused.
+    static FAIL_NEXT: std::cell::Cell<(&'static str, usize)> = const { std::cell::Cell::new(("", 0)) };
 }
 
 /// Refuses every allocation of at least `bytes` bytes on this thread until
@@ -93,10 +140,25 @@ impl Drop for WhatGuard {
     }
 }
 
+/// Refuses the next `count` allocations for `what` on this thread (tests
+/// only), so a test can see a site try again.
+#[cfg(test)]
+pub(crate) fn fail_next(what: &'static str, count: usize) {
+    FAIL_NEXT.with(|f| f.set((what, count)));
+}
+
 fn injected(_failed: &AllocFailed) -> bool {
     #[cfg(test)]
     {
-        FAIL_FROM.with(|f| f.get().is_some_and(|from| _failed.bytes >= from))
+        let next = FAIL_NEXT.with(|f| {
+            let (what, count) = f.get();
+            let refused = count > 0 && what == _failed.what;
+            if refused {
+                f.set((what, count - 1));
+            }
+            refused
+        });
+        next || FAIL_FROM.with(|f| f.get().is_some_and(|from| _failed.bytes >= from))
             || FAIL_WHAT.with(|f| f.get() == Some(_failed.what))
     }
     #[cfg(not(test))]

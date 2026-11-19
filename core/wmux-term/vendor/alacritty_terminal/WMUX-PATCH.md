@@ -182,6 +182,16 @@ core/wmux-term/vendor/alacritty_terminal/Cargo.toml --locked`.
   reserved row with `resize_with` instead of upstream's unsafe writes.
   `fail_what` is a test hook wmux-term's tests use too, so it is always
   compiled. Added 2026-11-19.
+- Input-sized state in `src/term/` (#3440): the title stack also drops its
+  bottom titles while it would hold more than `TITLE_STACK_MAX_BYTES` (1 MiB)
+  of them, and copies a title with `wmux_alloc::copy_str` (fallible, the same
+  unwind) and grows with `wmux_alloc::push`; upstream kept up to 4096 copies
+  of a title of any length. `title_stack_bytes` counts them; upstream's
+  `push_keyboard_mode` removes from the title stack without it, which can
+  only make the count high, and it is zeroed whenever the stack is empty.
+  `Cell::push_zerowidth` keeps at most `MAX_ZEROWIDTH` (32) zero-width
+  characters per cell and drops the rest; upstream had no limit. Added
+  2026-11-19.
 
 These changes are experimental compatibility policy, not upstream behavior.
 Revalidate width, resize, ANSI restoration and live continuation when upgrading.

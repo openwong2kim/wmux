@@ -33,6 +33,9 @@ pub const REFLOW: &str = "a grid reflow";
 pub const TABS: &str = "the terminal's tab stops";
 /// The damage record: one per screen line.
 pub const DAMAGE: &str = "the terminal's line damage";
+/// The title stack: its copies of titles, at most TITLE_STACK_MAX_BYTES, and
+/// one slot per title.
+pub const TITLES: &str = "the terminal's title stack";
 
 /// The payload of the unwind a refused grid allocation raises. Zero-sized:
 /// boxing it allocates nothing. What was refused is in [`take_refusal`].
@@ -139,6 +142,19 @@ pub(crate) fn append<T>(vec: &mut Vec<T>, other: &mut Vec<T>, what: &'static str
     vec.append(other);
 }
 
+/// A copy of `text`.
+pub(crate) fn copy_str(text: &str, what: &'static str) -> String {
+    let mut copy = String::new();
+    if !text.is_empty() {
+        let injected = FAIL_WHAT.with(|fail| fail.get() == Some(what));
+        if injected || copy.try_reserve_exact(text.len()).is_err() {
+            refuse(text.len(), what);
+        }
+    }
+    copy.push_str(text);
+    copy
+}
+
 /// `iter.collect()` for an iterator of known length.
 #[inline]
 pub(crate) fn collect<T>(iter: impl ExactSizeIterator<Item = T>, what: &'static str) -> Vec<T> {
@@ -193,7 +209,11 @@ mod tests {
         append(&mut v, &mut vec![5], ROW);
         assert_eq!(v, [1, 9, 9, 5]);
         assert_eq!(collect((0..3).map(|i| i * 2), ROW), [0, 2, 4]);
+        assert_eq!(copy_str("title", TITLES), "title");
         assert_eq!(take_refusal(), (0, ""));
+        let _fail = fail_what(TITLES);
+        assert_eq!(copy_str("", TITLES), "", "an empty copy allocates nothing");
+        assert_eq!(refusal_of(|| drop(copy_str("title", TITLES))), (5, TITLES));
     }
 
     #[test]
@@ -211,7 +231,7 @@ mod tests {
         use crate::term::cell::Cell;
         use crate::term::test::TermSize;
         use crate::term::{Config, Term};
-        use crate::wmux_alloc::{DAMAGE, LINES, REFLOW, ROW, TABS, fail_what};
+        use crate::wmux_alloc::{DAMAGE, LINES, REFLOW, ROW, TABS, TITLES, fail_what};
 
         const CELL: usize = size_of::<Cell>();
 
@@ -251,6 +271,15 @@ mod tests {
                 });
                 assert_eq!(refused.1, what);
             }
+        }
+
+        #[test]
+        fn a_refused_title_copy_unwinds() {
+            use crate::vte::ansi::Handler;
+            let mut term = Term::new(Config::default(), &TermSize::new(20, 4), VoidListener);
+            term.set_title(Some("title".into()));
+            let _fail = fail_what(TITLES);
+            assert_eq!(refusal_of(|| term.push_title()), (5, TITLES));
         }
     }
 

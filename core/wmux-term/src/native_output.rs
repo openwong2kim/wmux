@@ -1,6 +1,6 @@
 //! A short-lived, normalized PTY chunk. JS chooses when to retain it; bytes
 //! cross into JS only when a consumer needs them for delivery.
-use crate::fallible::{self, AllocFailed};
+use crate::fallible::{self, AllocFailed, CallError, CallResult};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -29,8 +29,7 @@ impl NativeOutputChunk {
     }
     #[napi(catch_unwind)]
     pub fn read_bytes(&self) -> Result<Buffer> {
-        // Bounded by the chunk: one decoded read batch (DECODED).
-        Ok(fallible::try_copy(&self.bytes, "a copy of a PTY output chunk")?.into())
+        Ok(self.copy_bytes()?.into())
     }
     #[napi(catch_unwind)]
     pub fn dispose(&mut self) {
@@ -56,18 +55,33 @@ impl NativeOutputDecoder {
     }
     #[napi(catch_unwind)]
     pub fn feed(&mut self, bytes: Uint8Array, finish: bool) -> Result<NativeOutputChunk> {
+        Ok(self.feed_bytes(&bytes, finish)?)
+    }
+}
+impl NativeOutputChunk {
+    pub(crate) fn copy_bytes(&self) -> std::result::Result<Vec<u8>, AllocFailed> {
+        // Bounded by the chunk: one decoded read batch (DECODED).
+        fallible::try_copy(&self.bytes, "a copy of a PTY output chunk")
+    }
+}
+impl NativeOutputDecoder {
+    /// `feed`'s body, on the bytes.
+    pub(crate) fn feed_bytes(
+        &mut self,
+        bytes: &[u8],
+        finish: bool,
+    ) -> CallResult<NativeOutputChunk> {
         if bytes.len() > MAX_FEED_BYTES {
-            return Err(Error::from_reason(
+            return Err(CallError::reason(
                 "Output decoder input exceeds the 256 MiB per-call limit",
             ));
         }
         // Bounded by MAX_FEED_BYTES.
-        let bytes = fallible::try_copy(&bytes, "PTY output to decode")?;
+        let bytes = fallible::try_copy(bytes, "PTY output to decode")?;
         self.try_decode(bytes, finish)
             .map_err(|(failed, _)| failed.into())
     }
-}
-impl NativeOutputDecoder {
+
     /// Decode `bytes` after the held prefix. All or nothing: on a refusal the
     /// decoder is unchanged and `bytes` comes back as it was passed in.
     pub(crate) fn try_decode(
@@ -167,8 +181,7 @@ fn incomplete_suffix(bytes: &[u8]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{lossy, NativeOutputChunk, NativeOutputDecoder};
-    use crate::fallible::{fail_from, fail_what, ALLOC_FAILED};
-    use napi::bindgen_prelude::Uint8Array;
+    use crate::fallible::{fail_from, fail_what, CallError, ALLOC_FAILED};
 
     fn decode(decoder: &mut NativeOutputDecoder, bytes: &[u8], finish: bool) -> Vec<u8> {
         decoder
@@ -254,11 +267,10 @@ mod tests {
         };
         {
             let _fail = fail_from(1);
-            let error = chunk.read_bytes().err().expect("the copy is refused");
-            assert!(error.reason.starts_with(ALLOC_FAILED), "{}", error.reason);
-            assert_eq!(error.status, napi::Status::GenericFailure);
+            let failed = chunk.copy_bytes().err().expect("the copy is refused");
+            assert!(failed.message().starts_with(ALLOC_FAILED), "{failed}");
         }
-        assert_eq!(&chunk.read_bytes().unwrap()[..], b"abc");
+        assert_eq!(chunk.copy_bytes().unwrap(), b"abc");
         assert_eq!(chunk.byte_length(), 3);
     }
 
@@ -270,14 +282,13 @@ mod tests {
         {
             let _fail = fail_what("PTY output to decode");
             let error = decoder
-                .feed(Uint8Array::new(smile[2..].to_vec()), false)
+                .feed_bytes(&smile[2..], false)
                 .err()
                 .expect("the copy is refused");
-            assert!(error.reason.starts_with(ALLOC_FAILED), "{}", error.reason);
+            assert!(matches!(error, CallError::Alloc(_)), "{error:?}");
+            assert!(error.message().starts_with(ALLOC_FAILED));
         }
-        let chunk = decoder
-            .feed(Uint8Array::new(smile[2..].to_vec()), false)
-            .unwrap();
+        let chunk = decoder.feed_bytes(&smile[2..], false).unwrap();
         assert_eq!(chunk.text(), "😀");
     }
 }
