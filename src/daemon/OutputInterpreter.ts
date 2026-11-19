@@ -17,11 +17,13 @@ export type OutputModes = Pick<OutputModeTracker, 'isSet' | 'altScreen' | 'pream
  * notifications or prompt events. Native capability is optional for ABI-1 builds.
  *
  * A native feed that refuses an allocation (isNativeAllocFailure) leaves the
- * native interpreter as it was: that one chunk is skipped (its mode changes and
- * OSC events are not seen) and the next chunk is interpreted as usual. The
- * backend never switches mid-stream: `modes` is handed out by reference, and a
- * fresh JS tracker would report power-on defaults for a pane already in an
- * alternate screen. */
+ * native interpreter as it was, so the chunk is fed once more. A second
+ * refusal skips it (its mode changes and OSC events are not seen) after
+ * clearing the native OSC state (clearOsc, which never allocates): an OSC the
+ * skipped chunk would have closed cannot swallow the output after it. The next
+ * chunk is interpreted as usual. The backend never switches mid-stream:
+ * `modes` is handed out by reference, and a fresh JS tracker would report
+ * power-on defaults for a pane already in an alternate screen. */
 export class OutputInterpreter {
   readonly backend: 'node' | 'rust';
   readonly modes: OutputModes;
@@ -62,9 +64,21 @@ export class OutputInterpreter {
   }
   feed(text: string, end: number, chunk?: NativeOutputChunk): void {
     if (this.native) {
+      const native = this.native;
+      const once = (): NativeOscBatch | null => (chunk ? native.feedChunk(chunk, end) : native.feed(text, end, true));
       let events: NativeOscBatch | null;
-      try { events = chunk ? this.native.feedChunk(chunk, end) : this.native.feed(text, end, true); }
-      catch (error) { this.skip(error, 'output chunk not interpreted'); return; }
+      try { events = once(); }
+      catch (first) {
+        if (!isNativeAllocFailure(first)) throw first;
+        // A refused feed changed nothing: the same chunk once more.
+        try { events = once(); }
+        catch (error) {
+          const cleared = isNativeAllocFailure(error) && typeof native.clearOsc === 'function';
+          if (cleared) native.clearOsc?.();
+          this.skip(error, cleared ? 'output chunk not interpreted; OSC state cleared' : 'output chunk not interpreted');
+          return;
+        }
+      }
       // As in the JS bridge, all mode updates precede OSC callbacks, and OSC
       // callbacks precede agent interpretation and raw output forwarding.
       if (events) for (let i = 0; i < events.codes.length; i++) {

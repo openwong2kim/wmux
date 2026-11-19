@@ -1,4 +1,4 @@
-import { createNativeAllocReporter, isNativeAllocFailure, type NativeOutputChunk } from '../shared/nativeTerminalCore';
+import { createNativeAllocReporter, describeNativeError, isNativeAllocFailure, type NativeOutputChunk } from '../shared/nativeTerminalCore';
 import type { TerminalPty } from '../shared/terminalPty';
 import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
@@ -2210,7 +2210,7 @@ export class DaemonPTYBridge extends EventEmitter {
     try { prefilled = ringBuffer.readAll(); }
     catch (error) {
       if (!isNativeAllocFailure(error)) throw error;
-      console.error(`[pty] ${sessionId}: recovered scrollback not read for mode tracking: ${(error as Error).message}`);
+      console.error(`[pty] ${sessionId}: recovered scrollback not read for mode tracking: ${describeNativeError(error)}`);
     }
     if (prefilled && prefilled.length > 0) {
       interpreter.seedModes(prefilled.toString('utf8'), ringBuffer.totalBytesWritten);

@@ -89,12 +89,13 @@ export async function selectTextSnapshot(req: SnapshotRequest, xterm: Reference)
       diagnostics.last = { backend: 'rust', reason: 'native' };
       return { ...native, durationMs: performance.now() - started };
     }
-    if (!native.ok && native.reason === 'budget') failure = 'budget';
+    // A refused allocation (told by its code, never by the text of `detail`)
+    // is this session's memory, not the module: the circuit is daemon-wide
+    // and would turn every session to xterm (#3440).
+    if (!native.ok && native.allocFailed) failure = 'alloc-failed';
+    else if (!native.ok && native.reason === 'budget') failure = 'budget';
     // A refusal of a stream it cannot replay: the module worked, as on the ANSI path.
     else if (!native.ok && native.detail?.startsWith('unsupported-')) failure = 'unsupported';
-    // A refused allocation is this session's memory, not the module: the
-    // circuit is daemon-wide and would turn every session to xterm (#3440).
-    else if (!native.ok && isNativeAllocFailure(native.detail)) failure = 'alloc-failed';
     if (!native.ok) refusal = native.detail;
   } catch (error) {
     // Module or disposal errors also use the intact xterm input.

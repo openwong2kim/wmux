@@ -63,6 +63,8 @@ export interface NativeOutputInterpreter {
   readonly altScreen: boolean;
   preamble(windowStartOffset: number): string;
   reset(): void;
+  /** Drops a half-open OSC (only the OSC state; never allocates). Absent on a module built before it. */
+  clearOsc?(): void;
   dispose(): void;
 }
 export interface NativeTransport {
@@ -141,19 +143,28 @@ export function reportNativeFallback(component: string): void {
   console.warn(`[terminal-core] ${component}: native module unavailable; using node backend`);
 }
 
-/** Prefix of the message a refused native allocation is thrown with (one call, one session). */
-export const NATIVE_ALLOC_FAILED_PREFIX = 'ALLOC_FAILED: ';
+/** The `code` a refused native allocation is thrown (or rejected) with (one call, one session). */
+export const NATIVE_ALLOC_FAILED_CODE = 'ALLOC_FAILED';
 
 /**
- * The native core refused an allocation for one call: its message starts with
- * `ALLOC_FAILED: ` ("could not allocate <N> bytes for <what>"). Nothing else in
- * the daemon is affected. A ring, transport, decoder or interpreter is left as
- * it was; a NativeTerminal whose grid was refused is unusable afterwards (later
- * calls fail with "unsupported-alloc"), so its owner disposes it.
+ * The native core refused an allocation for one call: the error carries
+ * `code === 'ALLOC_FAILED'`. Only the code decides; the message is diagnostic
+ * ("could not allocate <N> bytes for <what>") and may be empty, and a message
+ * that merely reads like one is no refusal. Nothing else in the daemon is
+ * affected. A ring, transport, decoder or interpreter is left as it was; a
+ * NativeTerminal whose grid was refused is unusable afterwards (later calls
+ * fail with "unsupported-alloc"), so its owner disposes it.
  */
 export function isNativeAllocFailure(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : undefined;
-  return typeof message === 'string' && message.startsWith(NATIVE_ALLOC_FAILED_PREFIX);
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === NATIVE_ALLOC_FAILED_CODE;
+}
+
+/** A native error for a log line or a snapshot detail: its message, or its code when the message is empty. */
+export function describeNativeError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  if (error.message) return error.message;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' && code ? code : error.name;
 }
 
 /** At most one line per reporter in this window; the lines in between are counted. */
@@ -173,7 +184,7 @@ export function createNativeAllocReporter(component: string, label: () => string
   let lastSuppressed = '';
   let timer: ReturnType<typeof setTimeout> | null = null;
   const describe = (error: unknown, detail: string | undefined): string =>
-    `${error instanceof Error ? error.message : String(error)}${detail ? `; ${detail}` : ''}`;
+    `${describeNativeError(error)}${detail ? `; ${detail}` : ''}`;
   const line = (text: string): void => {
     log(`[terminal-core] ${component} session=${label() ?? 'unknown'}: ${text}`);
   };

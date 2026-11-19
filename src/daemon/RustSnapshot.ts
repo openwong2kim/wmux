@@ -3,7 +3,7 @@ import { terminalCoreSelection } from '../shared/terminalCoreSettings';
  * gates; unsupported requests retain the reference path. */
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { nativeCorePath, type NativeFrozenRing } from '../shared/nativeTerminalCore';
+import { describeNativeError, isNativeAllocFailure, nativeCorePath, type NativeFrozenRing } from '../shared/nativeTerminalCore';
 import type { SnapshotRequest, SnapshotOutcome, TextSnapshotOutcome } from './HeadlessSnapshot';
 import { incompleteUtf8SuffixLength } from './util/ansiStreamScan';
 import { nativeScrollbackCap } from './nativeSnapshotLimits';
@@ -165,9 +165,10 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
     // An incomplete UTF-8 character at the end goes out raw, as on xterm.
     return { ok: true, payload: Buffer.concat([core, carry]), bytesIn, durationMs: performance.now() - started };
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = describeNativeError(err);
     let families: string[] | undefined;
     try { families = kind === 'ansi' ? term?.refusalFamilies?.() : undefined; } catch { /* disposed or older module */ }
-    return { ok: false, reason: 'error', detail, ...(families?.length ? { families } : {}) };
+    // A refused allocation is told apart by its code, not by the text of `detail` (#3440).
+    return { ok: false, reason: 'error', detail, ...(families?.length ? { families } : {}), ...(isNativeAllocFailure(err) ? { allocFailed: true as const } : {}) };
   } finally { term?.dispose(); }
 }

@@ -8,7 +8,8 @@ const native = vi.hoisted(() => ({ portSnapshot: vi.fn(), load: vi.fn(), fallbac
 const spawn = vi.hoisted(() => ({ execFile: vi.fn() }));
 const files = vi.hoisted(() => ({ present: new Set<string>(), checked: [] as string[] }));
 
-vi.mock('../../../shared/nativeTerminalCore', () => ({
+vi.mock('../../../shared/nativeTerminalCore', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../shared/nativeTerminalCore')>(),
   loadNativeTerminalCore: native.load,
   reportNativeFallback: native.fallback,
 }));

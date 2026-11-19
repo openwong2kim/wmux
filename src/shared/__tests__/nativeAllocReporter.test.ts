@@ -2,23 +2,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   NATIVE_ALLOC_LOG_INTERVAL_MS,
   createNativeAllocReporter,
+  describeNativeError,
   isNativeAllocFailure,
 } from '../nativeTerminalCore';
+import { nativeAllocError } from './_nativeAllocError';
 
 /**
  * #3440: a refused native allocation is logged once per window per owner,
  * and the refusals counted inside a window are reported when it ends, even
  * when no further refusal follows.
  */
-const refusal = (n: number) => new Error(`ALLOC_FAILED: could not allocate ${n} bytes for ring copy`);
+const refusal = (n: number) => nativeAllocError(`ALLOC_FAILED: could not allocate ${n} bytes for ring copy`);
 
 describe('isNativeAllocFailure', () => {
-  it('matches the ALLOC_FAILED prefix only', () => {
+  it('matches the ALLOC_FAILED code only, whatever the message', () => {
     expect(isNativeAllocFailure(refusal(8))).toBe(true);
-    expect(isNativeAllocFailure('ALLOC_FAILED: could not allocate 8 bytes for x')).toBe(true);
+    expect(isNativeAllocFailure(nativeAllocError(''))).toBe(true);
+    expect(isNativeAllocFailure({ code: 'ALLOC_FAILED' })).toBe(true);
+    // Text alone is no refusal: not a message that starts with the code, nor a bare string.
+    expect(isNativeAllocFailure(new Error('ALLOC_FAILED: could not allocate 8 bytes for x'))).toBe(false);
+    expect(isNativeAllocFailure('ALLOC_FAILED: could not allocate 8 bytes for x')).toBe(false);
+    expect(isNativeAllocFailure(Object.assign(new Error('ALLOC_FAILED: x'), { code: 'GenericFailure' }))).toBe(false);
     expect(isNativeAllocFailure(new Error('PTY_CLOSED: gone'))).toBe(false);
-    expect(isNativeAllocFailure(new Error('x ALLOC_FAILED: y'))).toBe(false);
     expect(isNativeAllocFailure(undefined)).toBe(false);
+    expect(isNativeAllocFailure(null)).toBe(false);
+  });
+
+  it('describes a refusal with an empty message by its code', () => {
+    expect(describeNativeError(nativeAllocError(''))).toBe('ALLOC_FAILED');
+    expect(describeNativeError(refusal(8))).toBe('ALLOC_FAILED: could not allocate 8 bytes for ring copy');
+    expect(describeNativeError('plain')).toBe('plain');
   });
 });
 

@@ -1,19 +1,24 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OutputInterpreter } from '../OutputInterpreter';
 import type { NativeOscBatch, NativeOutputChunk } from '../../shared/nativeTerminalCore';
+import { nativeAllocError } from '../../shared/__tests__/_nativeAllocError';
 
 /**
- * #3440: a native interpreter feed that refuses an allocation throws
- * `ALLOC_FAILED: ...`. That chunk is skipped for this session only; the next
- * chunk is interpreted as usual and nothing escapes to the caller.
+ * #3440: a native interpreter feed that refuses an allocation throws an error
+ * with `code: 'ALLOC_FAILED'` and changes nothing, so the chunk is fed once
+ * more. A second refusal clears the native OSC state (clearOsc) and skips the
+ * chunk for this session only; the next chunk is interpreted as usual and
+ * nothing escapes to the caller.
  */
-const refusal = (what: string) => new Error(`ALLOC_FAILED: could not allocate 288216 bytes for ${what}`);
-const fake = vi.hoisted(() => ({ refuse: [] as Array<Error | null>, seedRefusal: null as Error | null, feeds: 0 }));
+const refusal = (what: string) => nativeAllocError(`ALLOC_FAILED: could not allocate 288216 bytes for ${what}`);
+const fake = vi.hoisted(() => ({ refuse: [] as Array<Error | null>, seedRefusal: null as Error | null, feeds: 0, clears: 0, withoutClearOsc: false }));
 
 vi.mock('../../shared/nativeTerminalCore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../shared/nativeTerminalCore')>();
   class FakeInterpreter {
     altScreen = false;
+    // A module built before clearOsc lacks it.
+    clearOsc?: () => void = fake.withoutClearOsc ? undefined : () => { fake.clears++; };
     feed(text: string, _end: number, includeOsc: boolean): NativeOscBatch | null {
       if (!includeOsc) {
         if (fake.seedRefusal) throw fake.seedRefusal;
@@ -41,39 +46,88 @@ vi.mock('../../shared/nativeTerminalCore', async (importOriginal) => {
 
 describe('OutputInterpreter: a refused native allocation', () => {
   afterEach(() => {
-    fake.refuse = []; fake.seedRefusal = null; fake.feeds = 0;
+    fake.refuse = []; fake.seedRefusal = null; fake.feeds = 0; fake.clears = 0; fake.withoutClearOsc = false;
     vi.restoreAllMocks();
   });
 
-  it('skips the refused chunk, logs it once with the session, and interprets the next one', () => {
+  it('feeds a refused chunk once more: a refusal then a success interprets it once, nothing cleared or skipped', () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const p = new OutputInterpreter('rust', 'session-a');
     expect(p.backend).toBe('rust');
     const events: unknown[] = [];
     p.onOsc((e) => events.push(e));
+    fake.refuse = [refusal('osc batch')];
+    expect(() => p.feed('\x1b]133;C\x07', 10)).not.toThrow();
+    expect(events).toEqual([{ code: 133, data: 'C' }]);
+    expect(fake.feeds).toBe(2);
+    expect(fake.clears).toBe(0);
+    expect(p.skippedChunks).toBe(0);
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  it('two refusals clear the OSC state and skip the chunk; the next one is interpreted', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const p = new OutputInterpreter('rust', 'session-a');
+    const events: unknown[] = [];
+    p.onOsc((e) => events.push(e));
     fake.refuse = [refusal('osc batch'), refusal('osc batch')];
     expect(() => p.feed('\x1b]133;C\x07', 10)).not.toThrow();
-    expect(() => p.feed('\x1b]133;C\x07', 20)).not.toThrow();
-    p.feed('\x1b]133;D;0\x07', 30);
+    expect(fake.feeds).toBe(2);
+    expect(fake.clears).toBe(1);
+    expect(p.skippedChunks).toBe(1);
+    p.feed('\x1b]133;D;0\x07', 20);
     expect(events).toEqual([{ code: 133, data: 'D;0' }]);
-    expect(p.skippedChunks).toBe(2);
-    // Rate-limited: two refusals in a row, one line.
     expect(errors).toHaveBeenCalledTimes(1);
-    expect(String(errors.mock.calls[0][0])).toMatch(/output-interpreter session=session-a: ALLOC_FAILED: could not allocate 288216 bytes/);
+    expect(String(errors.mock.calls[0][0])).toMatch(/output-interpreter session=session-a: ALLOC_FAILED: could not allocate 288216 bytes.*OSC state cleared/);
     p.dispose();
   });
 
-  it('skips a refused native chunk feed the same way', () => {
+  it('logs skipped chunks rate-limited: two in a row, one line', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const p = new OutputInterpreter('rust', 'session-a');
+    fake.refuse = [refusal('a'), refusal('a'), refusal('b'), refusal('b')];
+    p.feed('x', 1);
+    p.feed('y', 2);
+    expect(p.skippedChunks).toBe(2);
+    expect(fake.clears).toBe(2);
+    expect(errors).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles a native chunk feed the same way', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const p = new OutputInterpreter('rust');
     const events: unknown[] = [];
     p.onOsc((e) => events.push(e));
     const chunk = { text: '\x1b]133;A\x07', byteLength: 7, readBytes: () => Buffer.alloc(0), dispose: () => undefined };
     fake.refuse = [refusal('chunk')];
-    expect(() => p.feed(chunk.text, 7, chunk)).not.toThrow();
-    p.feed(chunk.text, 14, chunk);
+    p.feed(chunk.text, 7, chunk);
     expect(events).toEqual([{ code: 133, data: 'A' }]);
+    fake.refuse = [refusal('chunk'), refusal('chunk')];
+    expect(() => p.feed(chunk.text, 14, chunk)).not.toThrow();
+    expect(events).toHaveLength(1);
+    expect(fake.clears).toBe(1);
     expect(p.skippedChunks).toBe(1);
+  });
+
+  it('a refusal with an empty message is one too', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const p = new OutputInterpreter('rust');
+    fake.refuse = [nativeAllocError(''), nativeAllocError('')];
+    expect(() => p.feed('x', 1)).not.toThrow();
+    expect(p.skippedChunks).toBe(1);
+    expect(fake.clears).toBe(1);
+  });
+
+  it('skips without clearing on a module built before clearOsc', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    fake.withoutClearOsc = true;
+    const p = new OutputInterpreter('rust');
+    fake.refuse = [refusal('x'), refusal('x')];
+    expect(() => p.feed('x', 1)).not.toThrow();
+    expect(p.skippedChunks).toBe(1);
+    expect(fake.clears).toBe(0);
+    // The log line does not claim a clear that did not happen.
+    expect(String(errors.mock.calls[0]?.[0])).toMatch(/output chunk not interpreted \(1 in all\)$/);
   });
 
   it('does not throw when seeding recovered history is refused', () => {
@@ -84,10 +138,16 @@ describe('OutputInterpreter: a refused native allocation', () => {
     expect(p.skippedChunks).toBe(1);
   });
 
-  it('still throws any other native error', () => {
+  it('still throws any other native error, on the first feed or the retry, without clearing', () => {
     const p = new OutputInterpreter('rust');
     fake.refuse = [new Error('PTY_CLOSED: gone')];
     expect(() => p.feed('x', 1)).toThrow('PTY_CLOSED');
+    fake.refuse = [refusal('x'), new Error('PTY_CLOSED: gone')];
+    expect(() => p.feed('x', 2)).toThrow('PTY_CLOSED');
+    // An "ALLOC_FAILED:" message without the code is no refusal either.
+    fake.refuse = [new Error('ALLOC_FAILED: could not allocate 8 bytes')];
+    expect(() => p.feed('x', 3)).toThrow('ALLOC_FAILED');
     expect(p.skippedChunks).toBe(0);
+    expect(fake.clears).toBe(0);
   });
 });
