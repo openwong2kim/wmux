@@ -11,6 +11,7 @@ import type { CdpPipeMux } from '../CdpPipeMux';
 import type { CdpConnection } from '../CdpSocket';
 import { compileHostPolicy } from '../../../shared/browserHostPolicy';
 import { chromeForRuntimeSuite } from '../../../test-utils/runtimeChrome';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 
 // ---------------------------------------------------------------------------
@@ -206,19 +207,19 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     const targetId = created.result?.targetId as string;
     const attached = await c.send('Target.attachToTarget', { targetId, flatten: true });
     const session = attached.result?.sessionId as string;
-    await new Promise((r) => setTimeout(r, 1_000));
+    const hrefOf = async () => ((await c.send('Runtime.evaluate', { expression: 'location.href', returnByValue: true }, session)).result?.result as { value?: string } | undefined)?.value;
+    await vi.waitFor(async () => expect(await hrefOf()).toBe(`http://a.test:${port}/web`), { timeout: 10_000 });
     for (const expression of [`location = ${JSON.stringify(INSPECT)}; 'set'`, `String(!!window.open(${JSON.stringify(INSPECT)}))`]) {
       await c.send('Runtime.evaluate', { expression, userGesture: true }, session);
-      await new Promise((r) => setTimeout(r, 1_000));
-      const here = await c.send('Runtime.evaluate', { expression: 'location.href', returnByValue: true }, session);
-      expect((here.result?.result as { value?: string } | undefined)?.value).toBe(`http://a.test:${port}/web`);
+      await deliberateSleep(1_000, 'a navigation the page asked for would have committed by now');
+      expect(await hrefOf()).toBe(`http://a.test:${port}/web`);
     }
     const own = internal(rig);
     const all = (await own.send('Target.getTargets')) as { targetInfos: Array<{ url: string }> };
     expect(all.targetInfos.filter((t) => t.url.startsWith('chrome://inspect'))).toEqual([]);
     // Back through the client's own history: an entry it was shown goes, an id it wasn't shown does not.
     await c.send('Page.navigate', { url: `http://a.test:${port}/two` }, session);
-    await new Promise((r) => setTimeout(r, 1_000));
+    await vi.waitFor(async () => expect(await hrefOf()).toBe(`http://a.test:${port}/two`), { timeout: 10_000 });
     const history = (await c.send('Page.getNavigationHistory', {}, session)).result as { entries: Array<{ id: number; url: string }> };
     expect((await c.send('Page.navigateToHistoryEntry', { entryId: history.entries[0].id }, session)).error).toBeUndefined();
     await vi.waitFor(async () => {
@@ -245,7 +246,10 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     // Main opens the page: the relay client neither sees it nor can attach.
     const own = internal(rig);
     const inspect = (await own.send('Target.createTarget', { url: INSPECT })) as { targetId: string };
-    await new Promise((r) => setTimeout(r, 1_500));
+    await vi.waitFor(async () => {
+      const mine = (await own.send('Target.getTargets')) as { targetInfos: Array<{ targetId: string; url: string }> };
+      expect(mine.targetInfos.find((t) => t.targetId === inspect.targetId)?.url).toMatch(/^chrome:\/\/inspect/);
+    }, { timeout: 10_000 });
     const listed = await c.send('Target.getTargets');
     expect((listed.result?.targetInfos as Array<{ targetId: string }>).map((t) => t.targetId)).not.toContain(inspect.targetId);
     expect((await c.send('Target.attachToTarget', { targetId: inspect.targetId, flatten: true })).error).toBeDefined();
@@ -258,12 +262,14 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
       const r = (await own.send('Runtime.evaluate', { expression: TOGGLE_STATE, returnByValue: true }, session).catch(() => null)) as { result?: { value?: string } } | null;
       return r?.result?.value ?? 'gone';
     };
+    // The page has drawn its checkbox (or never will: then the line says 'absent').
+    await vi.waitFor(async () => expect(await state()).not.toBe('absent'), { timeout: 10_000 }).catch(() => undefined);
     const before = await state();
     let toggle = before;
     if (before !== 'absent' && before !== 'gone') {
       const { x, y } = JSON.parse(before) as { x: number; y: number };
       for (const type of ['mousePressed', 'mouseReleased']) await own.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 }, session).catch(() => undefined);
-      await new Promise((r) => setTimeout(r, 1_000));
+      await vi.waitFor(async () => expect(await state()).not.toBe(before), { timeout: 5_000 }).catch(() => undefined);
       toggle = await state();
     }
     const control = await watchForPort(rig);
@@ -318,9 +324,16 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     const { browserContextId } = (await own.send('Target.createBrowserContext')) as { browserContextId: string };
     const { targetId } = (await own.send('Target.createTarget', { url: `http://a.test:${port}/dl`, browserContextId })) as { targetId: string };
     const { sessionId } = (await own.send('Target.attachToTarget', { targetId, flatten: true })) as { sessionId: string };
-    await new Promise((r) => setTimeout(r, 1_500));
+    await vi.waitFor(async () => {
+      const r = (await own.send('Runtime.evaluate', { expression: "!!document.getElementById('d')", returnByValue: true }, sessionId)) as { result?: { value?: boolean } };
+      expect(r.result?.value).toBe(true);
+    }, { timeout: 10_000 });
+    // What the guard's session saw of it.
+    const states: string[] = [];
+    const off = rig.launcher.consentDownloadGuard()?.onProgress((p) => { if (typeof p.state === 'string') states.push(p.state); });
     await own.send('Runtime.evaluate', { expression: "document.getElementById('d').click()", userGesture: true }, sessionId);
-    await new Promise((r) => setTimeout(r, 3_000));
+    await deliberateSleep(3_000, 'a download let through would have landed by now');
+    off?.();
     const landed = [rig.profile.downloads, rig.profile.dir].flatMap((dir) => {
       const found: string[] = [];
       const walk = (d: string, depth: number) => {
@@ -333,7 +346,9 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
       walk(dir, 0);
       return found;
     });
-    expect(landed).toEqual([]);
+    report(`[pipe-boundary cdp-context-download] progress=${states.join('>') || 'none'} files=${landed.map((p) => path.basename(p)).join(',') || 'none'}`);
+    expect(states).not.toContain('completed');
+    expect(landed.map((p) => path.relative(rig.profile.dir, p))).toEqual([]);
     own.close();
   });
 

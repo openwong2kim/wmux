@@ -2308,13 +2308,24 @@ export class ChromeLauncher implements ChromeBackendClient {
       await Promise.all(ids.map((browserContextId) =>
         guard.send('Browser.setDownloadBehavior', contextDeny(browserContextId)).catch(() => undefined)));
     };
+    /**
+     * Browser.cancelDownload looks for the guid in one context only (the
+     * default one when none is named), and downloadWillBegin doesn't say which:
+     * the cancel goes to the default context and to every listed one.
+     */
+    const cancelEverywhere = async (guid: string) => {
+      void guard.send('Browser.cancelDownload', { guid }).catch(() => undefined);
+      const listed = (await guard.send('Target.getBrowserContexts').catch(() => null)) as { browserContextIds?: unknown } | null;
+      const ids = Array.isArray(listed?.browserContextIds) ? listed.browserContextIds.filter((id): id is string => typeof id === 'string') : [];
+      await Promise.all(ids.map((browserContextId) => guard.send('Browser.cancelDownload', { guid, browserContextId }).catch(() => undefined)));
+    };
     guard.on('Browser.downloadWillBegin', (params) => {
       this.piped?.policy?.downloadEvent('Browser.downloadWillBegin', params);
       const guid = typeof params.guid === 'string' ? params.guid : '';
       // An operator-approved download (consent): its claimant re-denies itself.
       const claimant = this.downloadClaimant;
       if (guid && claimant?.(params) === true) return;
-      if (guid) void guard.send('Browser.cancelDownload', { guid }).catch(() => undefined);
+      if (guid) void cancelEverywhere(guid).catch(() => undefined);
       // While a claimant holds the guard it owns the behaviour (and restores
       // deny when it lets go); a stray download is cancelled by guid alone, so
       // it cannot close the window the operator approved.
