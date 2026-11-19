@@ -90,17 +90,18 @@ async function listeners(rootPid: number): Promise<string[]> {
 
 interface Rig { launcher: ChromeLauncher; profile: TempChromeProfile; pid: number }
 
-async function start(): Promise<Rig> {
-  const profile = tempChromeProfile('wmux-pipe-boundary-');
+async function start(opts: { headful?: boolean; profile?: TempChromeProfile } = {}): Promise<Rig> {
+  const profile = opts.profile ?? tempChromeProfile('wmux-pipe-boundary-');
   vi.stubEnv('WMUX_CHROME_TRANSPORT', 'auto');
   vi.stubEnv('WMUX_CHROME_PATH', CHROME as string);
   const launcher = new ChromeLauncher(profile.dir, {
     portEnvVar: null,
     profileName: 'pipe-boundary',
     protection: () => plan(),
-    extraArgs: [...(process.env.PROTECTED_HEADFUL === '1' ? [] : ['--headless=new']), '--use-mock-keychain', '--password-store=basic'],
+    extraArgs: [...(opts.headful || process.env.PROTECTED_HEADFUL === '1' ? [] : ['--headless=new']), '--use-mock-keychain', '--password-store=basic'],
   });
-  rigs.push({ launcher, profile });
+  if (!opts.profile) rigs.push({ launcher, profile });
+  else launchers.push(launcher);
   await launcher.endpoint();
   const pid = (launcher as unknown as { child: { pid: number } | null }).child?.pid as number;
   return { launcher, profile, pid };
@@ -136,6 +137,16 @@ async function relayClient(rig: Rig) {
 
 const portFile = (rig: Rig) => fs.existsSync(path.join(rig.profile.dir, 'DevToolsActivePort'));
 
+/** A line for the CI log: written straight to stderr, and to the job summary when there is one. */
+function report(line: string): void {
+  process.stderr.write(`${line}\n`);
+  const summary = process.env.GITHUB_STEP_SUMMARY;
+  if (summary) fs.appendFileSync(summary, `\n\`${line}\`\n`);
+}
+
+/** Why the launcher closed its protected browser, if it did (read before the next call takes it). */
+const closedFor = (rig: Rig) => (rig.launcher as unknown as { protectionLost: string | null }).protectionLost;
+
 /** Over WATCH_MS: any listener in Chrome's tree, and whether DevToolsActivePort appeared. */
 async function watchForPort(rig: Rig): Promise<{ listeners: string[]; portFile: boolean }> {
   const seen = new Set<string>();
@@ -153,6 +164,8 @@ const INSPECT = 'chrome://inspect/#remote-debugging';
 const TOGGLE_STATE = `(() => { const el = document.getElementById('remote-debugging-enabled'); if (!el) return 'absent'; const r = el.getBoundingClientRect(); return JSON.stringify({ checked: el.checked, x: r.x + r.width / 2, y: r.y + r.height / 2 }); })()`;
 
 const rigs: Array<{ launcher: ChromeLauncher; profile: TempChromeProfile }> = [];
+/** Launchers on a profile a rig already owns. */
+const launchers: ChromeLauncher[] = [];
 
 beforeAll(async () => {
   relayRoot = process.platform === 'win32' ? null : fs.mkdtempSync('/tmp/wmux-pb-');
@@ -164,6 +177,7 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
+  for (const launcher of launchers.splice(0)) await stopChrome(launcher);
   for (const { launcher, profile } of rigs.splice(0)) {
     await stopChrome(launcher);
     await profile.remove();
@@ -202,6 +216,17 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     const own = internal(rig);
     const all = (await own.send('Target.getTargets')) as { targetInfos: Array<{ url: string }> };
     expect(all.targetInfos.filter((t) => t.url.startsWith('chrome://inspect'))).toEqual([]);
+    // Back through the client's own history: an entry it was shown goes, an id it wasn't shown does not.
+    await c.send('Page.navigate', { url: `http://a.test:${port}/two` }, session);
+    await new Promise((r) => setTimeout(r, 1_000));
+    const history = (await c.send('Page.getNavigationHistory', {}, session)).result as { entries: Array<{ id: number; url: string }> };
+    expect((await c.send('Page.navigateToHistoryEntry', { entryId: history.entries[0].id }, session)).error).toBeUndefined();
+    await vi.waitFor(async () => {
+      const here = await c.send('Runtime.evaluate', { expression: 'location.href', returnByValue: true }, session);
+      expect((here.result?.result as { value?: string } | undefined)?.value).toBe(`http://a.test:${port}/web`);
+    }, { timeout: 10_000 });
+    const unshown = Math.max(...history.entries.map((e) => e.id)) + 1000;
+    expect((await c.send('Page.navigateToHistoryEntry', { entryId: unshown }, session)).error?.message).toContain('scheme not allowed on a protected profile');
     own.close();
     c.close();
   });
@@ -242,14 +267,14 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
       toggle = await state();
     }
     const control = await watchForPort(rig);
-    const closedByWatch = !rig.launcher.isRunning();
-    const after = await rig.launcher.endpoint().then(() => 'restarted', (e: unknown) => (e instanceof Error ? e.message : String(e)));
-    console.log(`[pipe-boundary control] ${process.platform} toggle=${toggle} listeners=${control.listeners.join(',') || 'none'} portFile=${control.portFile ? 'seen' : 'absent'} closedByWatch=${closedByWatch} next=${after}`);
-    // The backstop: a port file means the browser was closed under it, and the next call said why.
-    if (control.portFile) {
-      expect(closedByWatch).toBe(true);
-      expect(after).toContain('a debugging port opened in the protected browser');
-    }
+    const cause = closedFor(rig);
+    const closedByWatch = cause !== null;
+    const nextCall = await rig.launcher.endpoint().then(() => 'started again', (e: unknown) => (e instanceof Error ? e.message : String(e)));
+    report(`[pipe-boundary control] ${process.platform} toggle=${toggle} listeners=${control.listeners.join(',') || 'none'} portFileSeenByTest=${control.portFile} closedByWatch=${closedByWatch} nextCall=${nextCall}`);
+    // The end state: either no port ever opened, or the watch closed the browser under it and the next call said why.
+    expect(control.listeners.length === 0 || closedByWatch, `a port opened (${control.listeners.join(',')}) and the browser was not closed`).toBe(true);
+    if (control.portFile) expect(closedByWatch).toBe(true);
+    if (closedByWatch) expect(nextCall).toContain('a debugging port opened in the protected browser');
     own.close();
     c.close();
   });
@@ -265,6 +290,14 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
       const p = await browser.contexts()[0].newPage();
       await p.goto(`http://a.test:${port}/normal`);
       expect(await p.content()).toContain('/normal');
+      // A host the policy refuses: the fixture never serves it (the proxy answers
+      // or the navigation fails), and the page stays attached and usable.
+      const blocked = await p.goto(`http://b.test:${port}/blocked`).then((r) => `status ${r?.status() ?? 'none'}`, (e: unknown) => (e instanceof Error ? e.message.split('\n')[0] : String(e)));
+      const shown = await p.evaluate(() => location.href).catch((e: unknown) => `evaluate failed: ${e instanceof Error ? e.message : String(e)}`);
+      report(`[pipe-boundary blocked-host] goto=${blocked} url=${shown}`);
+      expect(await p.content()).not.toContain('/blocked</');
+      await p.goto(`http://a.test:${port}/after`);
+      expect(await p.content()).toContain('/after');
       const urls = browser.contexts().flatMap((ctx) => ctx.pages().map((pg) => pg.url()));
       expect(urls.some((u) => u.startsWith('chrome://'))).toBe(false);
       const s = await browser.newBrowserCDPSession();
@@ -276,11 +309,12 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     }
   });
 
-  it('a download in a context main did not make for a client (as a user-opened incognito window) is not let through', { timeout: CASE_TIMEOUT_MS }, async () => {
-    const rig = await start();
+  it('a download in a CDP-created context no client made (a stand-in for a user-opened incognito window) is not let through, with windows', { timeout: CASE_TIMEOUT_MS }, async () => {
+    // With windows: headless Chrome denies downloads in a new context on its own.
+    const rig = await start({ headful: true });
     const own = internal(rig);
-    // Stand-in for a user-opened incognito window: an off-the-record context
-    // made outside any client, so no client rule denied it at creation.
+    // An off-the-record context made outside any client, so no client rule
+    // denied it at creation; the guard's re-assert is what has to cover it.
     const { browserContextId } = (await own.send('Target.createBrowserContext')) as { browserContextId: string };
     const { targetId } = (await own.send('Target.createTarget', { url: `http://a.test:${port}/dl`, browserContextId })) as { targetId: string };
     const { sessionId } = (await own.send('Target.attachToTarget', { targetId, flatten: true })) as { sessionId: string };
@@ -316,11 +350,36 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     });
     rigs.push({ launcher, profile });
     const first = launcher.endpoint();
+    // The first launch has chosen the port before protection turns on.
+    await vi.waitFor(() => expect((launcher as unknown as { transport: { kind: string } | null }).transport?.kind).toBe('port'), { timeout: 10_000, interval: 5 });
     protectedNow = true;
     await launcher.reconcileProtection();
     const ep = await first.catch(() => launcher.endpoint());
     expect(ep.piped).toBe(true);
     expect(launcher.launchedTransport()).toEqual({ kind: 'pipe', weaker: false });
     expect(fs.existsSync(path.join(profile.dir, 'DevToolsActivePort'))).toBe(false);
+  });
+
+  it('a profile whose Local State has remote debugging turned on starts protected with it off', { timeout: CASE_TIMEOUT_MS }, async () => {
+    const first = await start();
+    await stopChrome(first.launcher);
+    // As Chrome stores the chrome://inspect setting once it was turned on.
+    const file = path.join(first.profile.dir, 'Local State');
+    const state = JSON.parse(fs.readFileSync(file, 'utf8')) as { devtools?: Record<string, unknown> };
+    state.devtools = { ...(state.devtools ?? {}), remote_debugging: { 'user-enabled': true } };
+    fs.writeFileSync(file, JSON.stringify(state));
+    const again = await start({ profile: first.profile });
+    const own = internal(again);
+    const { targetId } = (await own.send('Target.createTarget', { url: INSPECT })) as { targetId: string };
+    const { sessionId } = (await own.send('Target.attachToTarget', { targetId, flatten: true })) as { sessionId: string };
+    let toggle = 'absent';
+    await vi.waitFor(async () => {
+      const r = (await own.send('Runtime.evaluate', { expression: TOGGLE_STATE, returnByValue: true }, sessionId)) as { result?: { value?: string } };
+      toggle = r.result?.value ?? 'absent';
+      expect(toggle).not.toBe('absent');
+    }, { timeout: 10_000 });
+    expect((JSON.parse(toggle) as { checked: boolean }).checked).toBe(false);
+    expect(await listeners(again.pid)).toEqual([]);
+    own.close();
   });
 });
