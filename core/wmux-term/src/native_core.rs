@@ -5078,6 +5078,7 @@ mod alloc_failure_tests {
             let _fail = fail_from(512);
             assert_alloc_failed(terminal.feed_xterm_bytes(&osc, 100).err());
         }
+        crate::fallible::refill_spare();
         let refused = test_allocator::refusing(1, || terminal.families());
         assert!(
             matches!(

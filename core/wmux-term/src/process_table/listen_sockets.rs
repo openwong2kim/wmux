@@ -666,6 +666,9 @@ mod tests {
         let walked: Vec<_> = (1..=1000)
             .map(|pid| (row(pid), if pid == 7 { 501 } else { 502 }))
             .collect();
+        // This thread's spare first: on macOS its first use registers a
+        // thread-local destructor, which allocates.
+        crate::fallible::refill_spare();
         let owned = crate::test_allocator::refusing(64, || owned_by(&walked, 501));
         assert_eq!(owned, Ok(vec![7]));
         let mut list = Vec::new();
