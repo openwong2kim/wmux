@@ -18,6 +18,8 @@ const fake = vi.hoisted(() => ({
   feeds: 0,
   skips: [] as Array<{ via: 'chunk' | 'bytes'; text: string; end: number }>,
   withoutSkip: false,
+  skipThrows: null as Error | null,
+  seedBytes: [] as Uint8Array[],
 }));
 
 vi.mock('../../shared/nativeTerminalCore', async (importOriginal) => {
@@ -30,6 +32,8 @@ vi.mock('../../shared/nativeTerminalCore', async (importOriginal) => {
       this.scanModes(chunk.text);
     };
     skipBytes?: (bytes: Uint8Array, end: number) => void = fake.withoutSkip ? undefined : (bytes, end) => {
+      fake.seedBytes.push(bytes);
+      if (fake.skipThrows) throw fake.skipThrows;
       const text = Buffer.from(bytes).toString('utf8');
       fake.skips.push({ via: 'bytes', text, end });
       this.scanModes(text);
@@ -74,7 +78,7 @@ const chunkOf = (text: string): NativeOutputChunk => ({
 
 describe('OutputInterpreter: a refused native allocation', () => {
   afterEach(() => {
-    fake.refuse = []; fake.seedRefusal = null; fake.feeds = 0; fake.skips = []; fake.withoutSkip = false;
+    fake.refuse = []; fake.seedRefusal = null; fake.feeds = 0; fake.skips = []; fake.withoutSkip = false; fake.skipThrows = null; fake.seedBytes = [];
     vi.restoreAllMocks();
   });
 
@@ -186,6 +190,41 @@ describe('OutputInterpreter: a refused native allocation', () => {
     expect(fake.skips).toEqual([{ via: 'bytes', text: '\x1b[?1049h', end: 8 }]);
     expect(p.modes.altScreen).toBe(true);
     expect(p.skippedChunks).toBe(1);
+  });
+
+  it('reads refused recovered history from the ring bytes it was given, not from the text encoded again', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const p = new OutputInterpreter('rust');
+    fake.seedRefusal = refusal('history');
+    const ring = Buffer.from('\x1b[?1049h');
+    p.seedModes(ring.toString('utf8'), 8, ring);
+    expect(fake.seedBytes).toHaveLength(1);
+    expect(fake.seedBytes[0]).toBe(ring);
+    expect(p.modes.altScreen).toBe(true);
+  });
+
+  it('encodes the text again only when the ring bytes start inside a character', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const p = new OutputInterpreter('rust');
+    fake.seedRefusal = refusal('history');
+    const ring = Buffer.concat([Buffer.from([0x80]), Buffer.from('\x1b[?1049h')]);
+    p.seedModes(ring.toString('utf8'), 9, ring);
+    expect(fake.seedBytes[0]).not.toBe(ring);
+    expect(Buffer.from(fake.seedBytes[0]).toString()).toBe('\ufffd\x1b[?1049h');
+    expect(p.modes.altScreen).toBe(true);
+  });
+
+  it('a refused seed whose modes-only read throws too only skips the history', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const p = new OutputInterpreter('rust', 'session-c');
+    fake.seedRefusal = refusal('history');
+    for (const thrown of [new RangeError('Array buffer allocation failed'), new Error('Invalid normalized output'), refusal('skip')]) {
+      fake.skipThrows = thrown;
+      expect(() => p.seedModes('\x1b[?1049h', 8, Buffer.from('\x1b[?1049h'))).not.toThrow();
+    }
+    expect(p.modes.altScreen).toBe(false);
+    expect(p.skippedChunks).toBe(3);
+    expect(String(errors.mock.calls[0][0])).toMatch(/session=session-c: .*recovered history not scanned for modes \(1 in all\)$/);
   });
 
   it('still throws any other native error, on the first feed or the retry, without a modes read', () => {

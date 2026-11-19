@@ -2213,7 +2213,7 @@ export class DaemonPTYBridge extends EventEmitter {
       console.error(`[pty] ${sessionId}: recovered scrollback not read for mode tracking: ${describeNativeError(error)}`);
     }
     if (prefilled && prefilled.length > 0) {
-      interpreter.seedModes(prefilled.toString('utf8'), ringBuffer.totalBytesWritten);
+      interpreter.seedModes(prefilled.toString('utf8'), ringBuffer.totalBytesWritten, prefilled);
     }
     // A bridge is built only for a freshly spawned process (a recovered
     // ring holds the dead one's scrollback), so an integrated shell starts at

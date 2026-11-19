@@ -1,3 +1,4 @@
+import { isUtf8 } from 'node:buffer';
 import { OscParser, type OscCallback } from '../main/pty/OscParser';
 import {
   createNativeAllocReporter,
@@ -59,12 +60,20 @@ export class OutputInterpreter {
     if (this.osc) this.osc.onOsc(callback);
     else this.callbacks.push(callback);
   }
-  seedModes(text: string, end: number): void {
+  /**
+   * `bytes`, when given, are the UTF-8 bytes `text` was decoded from (the
+   * recovered ring): a refused feed reads them for their modes without
+   * encoding the text again. Nothing a refused seed does escapes: if the
+   * modes-only read fails too, the history is only skipped.
+   */
+  seedModes(text: string, end: number, bytes?: Uint8Array): void {
     if (this.native) {
       try { this.native.feed(text, end, false); }
       catch (error) {
         if (!isNativeAllocFailure(error)) throw error;
-        const read = this.readModesOnly(text, end);
+        let read = false;
+        try { read = this.readModesOnly(text, end, undefined, bytes); }
+        catch { read = false; }
         this.skip(error, read ? 'recovered history read for its modes only' : 'recovered history not scanned for modes');
       }
     } else this.jsModes?.feed(text, end);
@@ -102,11 +111,13 @@ export class OutputInterpreter {
     return this.skipped;
   }
   /** A refused chunk read for its modes only; false on a module without skipChunk. */
-  private readModesOnly(text: string, end: number, chunk?: NativeOutputChunk): boolean {
+  private readModesOnly(text: string, end: number, chunk?: NativeOutputChunk, bytes?: Uint8Array): boolean {
     const native = this.native;
     if (!native?.skipChunk || !native.skipBytes) return false;
     if (chunk) native.skipChunk(chunk, end);
-    else native.skipBytes(Buffer.from(text), end);
+    // A ring that wrapped can start inside a character; only then is the
+    // decoded text encoded again.
+    else native.skipBytes(bytes && isUtf8(bytes) ? bytes : Buffer.from(text), end);
     return true;
   }
   private skip(error: unknown, what: string): void {
