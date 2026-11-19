@@ -9,6 +9,10 @@ use crate::grid::{self, GridCell};
 use crate::index::Column;
 use crate::vte::ansi::{Color, Hyperlink as VteHyperlink, NamedColor};
 
+/// wmux: the most zero-width characters a cell keeps (#3440). Each one a
+/// stream adds to the same cell grew its list without a bound.
+pub const MAX_ZEROWIDTH: usize = 32;
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -162,8 +166,13 @@ impl Cell {
     }
 
     /// Write a new zerowidth character to this cell.
+    ///
+    /// wmux: past MAX_ZEROWIDTH, the character is dropped (#3440).
     #[inline]
     pub fn push_zerowidth(&mut self, character: char) {
+        if self.extra.as_ref().is_some_and(|extra| extra.zerowidth.len() >= MAX_ZEROWIDTH) {
+            return;
+        }
         let extra = self.extra.get_or_insert(Default::default());
         Arc::make_mut(extra).zerowidth.push(character);
     }
@@ -306,6 +315,15 @@ mod tests {
 
         // Ensure that cell size isn't growing by accident.
         assert!(mem::size_of::<Cell>() <= EXPECTED_CELL_SIZE);
+    }
+
+    #[test]
+    fn a_cell_keeps_at_most_max_zerowidth_characters() {
+        let mut cell = Cell::default();
+        for _ in 0..MAX_ZEROWIDTH + 10 {
+            cell.push_zerowidth('\u{301}');
+        }
+        assert_eq!(cell.zerowidth().map(<[char]>::len), Some(MAX_ZEROWIDTH));
     }
 
     #[test]

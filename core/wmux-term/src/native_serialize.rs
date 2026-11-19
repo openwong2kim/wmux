@@ -38,6 +38,15 @@ impl From<AllocFailed> for SerializeError {
     }
 }
 
+impl From<SerializeError> for crate::fallible::CallError {
+    fn from(error: SerializeError) -> Self {
+        match error {
+            SerializeError::Refused(reason) => Self::reason(reason),
+            SerializeError::Alloc(failed) => Self::Alloc(failed),
+        }
+    }
+}
+
 impl From<SerializeError> for napi::Error {
     fn from(error: SerializeError) -> Self {
         match error {

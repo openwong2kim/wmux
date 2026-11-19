@@ -1,5 +1,5 @@
 //! Event-driven PTY transport. Blocking OS reads/writes never run on Node.
-use crate::fallible;
+use crate::fallible::{self, CallError, CallResult};
 use crate::native_output::{NativeOutputChunk, NativeOutputDecoder};
 use crate::wake_gate::WakeGate;
 use napi::bindgen_prelude::*;
@@ -22,7 +22,6 @@ use std::sync::{
     mpsc::{sync_channel, Receiver, SyncSender, TryRecvError},
     Arc, Condvar, Mutex,
 };
-#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 /// The JS wake callback. Every worker shares one single-slot queue, so the
@@ -531,29 +530,7 @@ impl NativeTransport {
     /// for the next read, and nothing else the read would report is consumed.
     #[napi(catch_unwind)]
     pub fn read_chunk(&mut self, paused: Option<bool>) -> Result<TransportChunkRead> {
-        let data = self.take_output(paused);
-        let exit = self.exit();
-        let bytes_read = data.len() as u32;
-        // The exit is final only once the output ended (`report`).
-        let finish = self.eof && exit.is_some();
-        let chunk = match self.decoder.try_decode(data, finish) {
-            Ok(chunk) => chunk,
-            Err((failed, data)) => {
-                self.keep(data);
-                return Err(failed.into());
-            }
-        };
-        let result = self.report(Vec::new(), exit);
-        Ok(TransportChunkRead {
-            chunk,
-            bytes_read,
-            eof: result.eof,
-            child_exited: result.child_exited,
-            exit_code: result.exit_code,
-            signal: result.signal,
-            error: result.error,
-            pending_input_bytes: result.pending_input_bytes,
-        })
+        Ok(self.read_chunk_raw(paused)?)
     }
 
     #[napi(getter, catch_unwind)]
@@ -727,6 +704,39 @@ impl NativeTransport {
         }
         arm(&self.state.sweep)
     }
+    /// `read_chunk`'s body.
+    fn read_chunk_raw(&mut self, paused: Option<bool>) -> CallResult<TransportChunkRead> {
+        let data = self.take_output(paused);
+        let exit = self.exit();
+        let bytes_read = data.len() as u32;
+        // The exit is final only once the output ended (`report`).
+        let finish = self.ended() && exit.is_some();
+        let chunk = match self.decoder.try_decode(data, finish) {
+            Ok(chunk) => chunk,
+            Err((failed, data)) => {
+                self.keep(data);
+                return Err(failed.into());
+            }
+        };
+        let result = self.report(Vec::new(), exit);
+        Ok(TransportChunkRead {
+            chunk,
+            bytes_read,
+            eof: result.eof,
+            child_exited: result.child_exited,
+            exit_code: result.exit_code,
+            signal: result.signal,
+            error: result.error,
+            pending_input_bytes: result.pending_input_bytes,
+        })
+    }
+
+    /// The output ended and all of it was returned: nothing is carried (a
+    /// refused join or decode carries bytes past the reader's end).
+    fn ended(&self) -> bool {
+        self.eof && self.carry.is_empty()
+    }
+
     fn drain(&mut self, paused: Option<bool>) -> RawTransportRead {
         let data = self.take_output(paused);
         let exit = self.exit();
@@ -808,18 +818,22 @@ impl NativeTransport {
         exit
     }
 
-    /// What a read reports besides its bytes; takes the recorded error.
+    /// What a read reports besides its bytes; takes the recorded error. The
+    /// end of the output (and so the exit) is reported once nothing is
+    /// carried, or a read that takes no bytes (paused) would end the output
+    /// before the carried bytes.
     fn report(&self, data: Vec<u8>, exit: Option<Exit>) -> RawTransportRead {
+        let ended = self.ended();
         RawTransportRead {
             data,
-            eof: self.eof,
+            eof: ended,
             child_exited: exit.is_some(),
-            exit_code: if self.eof {
+            exit_code: if ended {
                 exit.as_ref().map(|e| e.code)
             } else {
                 None
             },
-            signal: if self.eof {
+            signal: if ended {
                 exit.and_then(|e| e.signal)
             } else {
                 None
@@ -861,15 +875,15 @@ fn join(bytes: &mut Vec<u8>, chunk: Vec<u8>) -> std::result::Result<(), Vec<u8>>
 
 /// Queues one write for the writer thread; whether anything was queued. A
 /// refused copy leaves the queue as it was.
-fn enqueue(input: &mut Input, data: &[u8]) -> Result<bool> {
+fn enqueue(input: &mut Input, data: &[u8]) -> CallResult<bool> {
     if input.closed {
-        return Err(Error::from_reason("PTY_CLOSED"));
+        return Err(CallError::reason("PTY_CLOSED"));
     }
     let queued = input
         .bytes
         .checked_add(data.len())
         .filter(|&n| n <= INPUT_LIMIT)
-        .ok_or_else(|| Error::from_reason("PTY_BACKPRESSURE: input queue is full"))?;
+        .ok_or_else(|| CallError::reason("PTY_BACKPRESSURE: input queue is full"))?;
     if data.is_empty() {
         return Ok(false);
     }
@@ -882,9 +896,9 @@ fn enqueue(input: &mut Input, data: &[u8]) -> Result<bool> {
 }
 
 /// The reader thread: forwards each read to the channel until the output
-/// ends. A refused copy or a panic ends this one session's output, with the
-/// error recorded for its next read (the seam message, or the panic's); no
-/// other session sees it. On Windows the pipe is then still read to EOF and
+/// ends. A copy refused for READ_RETRY_FOR (copy_read) or a panic ends this
+/// one session's output, with the error recorded for its next read (the seam
+/// message, or the panic's); no other session sees it. On Windows the pipe is then still read to EOF and
 /// discarded, as after close: older ConPTY versions block ClosePseudoConsole
 /// until their output is drained.
 fn run_reader(
@@ -950,13 +964,8 @@ fn read_loop(
                 if state.closed.load(Ordering::Acquire) {
                     continue;
                 }
-                // One read: at most READ_BYTES.
-                let chunk = match fallible::try_copy(&buffer[..n], "a PTY read") {
-                    Ok(chunk) => chunk,
-                    Err(failed) => {
-                        state.record(failed.message());
-                        return true;
-                    }
+                let Some(chunk) = copy_read(&buffer[..n], state) else {
+                    return true;
                 };
                 if tx.send(chunk).is_err() {
                     #[cfg(windows)]
@@ -1003,6 +1012,41 @@ fn read_loop(
                 return false;
             }
         }
+    }
+}
+
+/// How long the reader tries a refused copy of a read again before it ends
+/// the session's output: as long as JS tries a refused decode again.
+#[cfg(not(test))]
+const READ_RETRY_FOR: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const READ_RETRY_FOR: Duration = Duration::from_millis(50);
+/// The longest wait between two tries of a refused read copy.
+const READ_RETRY_WAIT: Duration = Duration::from_millis(100);
+
+/// A copy of one read (at most READ_BYTES). The read is still in the
+/// reader's buffer, so a refused copy is tried again, with a wait that
+/// doubles up to READ_RETRY_WAIT, until READ_RETRY_FOR has passed: then the
+/// refusal is recorded and None returned. None too once the transport
+/// closes.
+fn copy_read(read: &[u8], state: &State) -> Option<Vec<u8>> {
+    let mut wait = Duration::from_millis(1);
+    let mut give_up_at = None;
+    loop {
+        let failed = match fallible::try_copy(read, "a PTY read") {
+            Ok(chunk) => return Some(chunk),
+            Err(failed) => failed,
+        };
+        if state.closed.load(Ordering::Acquire) {
+            return None;
+        }
+        let give_up_at = *give_up_at.get_or_insert_with(|| Instant::now() + READ_RETRY_FOR);
+        if Instant::now() >= give_up_at {
+            state.record(failed.message());
+            return None;
+        }
+        std::thread::sleep(wait);
+        wait = (wait * 2).min(READ_RETRY_WAIT);
     }
 }
 
@@ -1256,7 +1300,7 @@ fn write_cancellable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fallible::{fail_from, ALLOC_FAILED};
+    use crate::fallible::{fail_from, fail_next, CallError, ALLOC_FAILED};
 
     fn transport(rx: Receiver<Vec<u8>>, state: Arc<State>) -> NativeTransport {
         NativeTransport {
@@ -1340,26 +1384,70 @@ mod tests {
         tx.send(b"next".to_vec()).unwrap();
         {
             let _fail = fail_from(1);
-            let refused = t.read_chunk(None).err().expect("the decode is refused");
-            assert!(
-                refused.reason.starts_with(ALLOC_FAILED),
-                "{}",
-                refused.reason
-            );
+            let refused = t.read_chunk_raw(None).err().expect("the decode is refused");
+            assert!(matches!(refused, CallError::Alloc(_)), "{refused:?}");
+            assert!(refused.message().starts_with(ALLOC_FAILED));
         }
         assert_eq!(
             t.carry.len(),
             2,
             "the batch comes back ahead of the carried read"
         );
-        let read = t.read_chunk(None).unwrap();
+        let read = t.read_chunk_raw(None).unwrap();
         assert_eq!(read.chunk.bytes, "bad\u{fffd}next".as_bytes());
         assert_eq!(read.bytes_read, 8);
         assert_eq!(read.error.as_deref(), Some("earlier error"));
     }
 
     #[test]
-    fn a_refused_reader_copy_ends_only_this_sessions_output_with_the_seam_error() {
+    fn a_decode_refused_after_the_output_ended_keeps_the_end_for_its_bytes() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        let mut t = transport(rx, state.clone());
+        *state.exited.lock().unwrap() = Some(Exit {
+            code: 3,
+            signal: None,
+        });
+        tx.send(b"last\xff".to_vec()).unwrap();
+        drop(tx);
+        {
+            let _fail = fail_from(1);
+            assert!(t.read_chunk_raw(None).is_err(), "the decode is refused");
+        }
+        assert!(t.eof, "the reader's end was seen");
+        // A paused read takes no bytes: the output has not ended for it.
+        let paused = t.read_chunk_raw(Some(true)).unwrap();
+        assert!(paused.chunk.bytes.is_empty());
+        assert!(!paused.eof);
+        assert_eq!(paused.exit_code, None);
+        assert!(!t.drain(Some(true)).eof, "nor for a paused byte read");
+        let read = t.read_chunk_raw(None).unwrap();
+        assert_eq!(read.chunk.bytes, "last\u{fffd}".as_bytes());
+        assert!(read.eof);
+        assert_eq!(read.exit_code, Some(3));
+    }
+
+    #[test]
+    fn a_refused_reader_copy_is_tried_again_and_no_byte_is_lost() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        fail_next("a PTY read", 3);
+        run_reader(
+            &mut pieces(&[b"kept", b"next"]),
+            tx,
+            &state,
+            &|| {},
+            &|| Ok(()),
+        );
+        fail_next("", 0);
+        let read = transport(rx, state).drain(None);
+        assert_eq!(read.data, b"keptnext");
+        assert!(read.eof);
+        assert_eq!(read.error, None, "nothing was recorded");
+    }
+
+    #[test]
+    fn a_reader_copy_refused_past_the_retries_ends_only_this_sessions_output_with_the_seam_error() {
         let (tx, rx) = sync_channel(DRAIN_READS);
         let state = Arc::new(State::new());
         let mut reader = pieces(&[b"kept", &[b'x'; 64], b"never"]);
@@ -1420,7 +1508,7 @@ mod tests {
             let _fail = fail_from(4);
             let refused = enqueue(&mut input, b"abcd").unwrap_err();
             assert_eq!(
-                refused.reason,
+                refused.message(),
                 "ALLOC_FAILED: could not allocate 4 bytes for the PTY input queue"
             );
         }
@@ -1443,10 +1531,13 @@ mod tests {
             ..Input::default()
         };
         let refused = enqueue(&mut input, b"a").unwrap_err();
-        assert!(refused.reason.starts_with("PTY_BACKPRESSURE"));
+        assert!(refused.message().starts_with("PTY_BACKPRESSURE"));
         input.bytes = INPUT_LIMIT;
         assert!(enqueue(&mut input, b"a").is_err());
         input.closed = true;
-        assert_eq!(enqueue(&mut input, b"a").unwrap_err().reason, "PTY_CLOSED");
+        assert_eq!(
+            enqueue(&mut input, b"a").unwrap_err(),
+            CallError::reason("PTY_CLOSED")
+        );
     }
 }
