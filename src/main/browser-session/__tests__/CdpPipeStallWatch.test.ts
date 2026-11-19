@@ -261,7 +261,13 @@ describe('CdpPipeStallWatch, through the mux', () => {
     // one timers pass, the deadline first, so only the recheck can see the frame.
     setTimeout(() => a.send('Browser.getVersion'), at + STALL + 2 - performance.now());
     while (performance.now() < at + STALL + 20) { /* main is busy */ }
-    await deliberateSleep(20, 'the recheck runs');
+    // Wait for the judgment itself: a timer can't stand in for it, since one
+    // due by the time main is free runs in the same timers pass as the
+    // deadline, before the recheck.
+    await until(() => {
+      const w = cdpPipeCounters().watchdog ?? {};
+      return (w['restarted-by-frame'] ?? 0) + (w.fired ?? 0) > 0;
+    }, 'the watch judges the deadline');
     expect(resumes(browser, session)).toEqual([]);
     expect(cdpPipeCounters().watchdog).toMatchObject({ armed: 1, 'restarted-by-frame': 1 });
     mux.close();
