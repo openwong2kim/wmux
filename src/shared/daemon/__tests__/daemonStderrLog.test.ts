@@ -9,6 +9,7 @@ import {
   withDaemonStderrFlag,
 } from '../daemonLauncherCore';
 import { DAEMON_STDERR_TO_FILE_ENV } from '../daemonStderrFlag';
+import { filterEnvForLaunchd } from '../launchdDaemonJob';
 
 /**
  * #3440: the daemon's stderr goes to <wmuxDir>/daemon-stderr.log, rotated to
@@ -80,5 +81,9 @@ describe('daemon stderr log', () => {
     expect(withDaemonStderrFlag({ PATH: 'bin' }, true)).toEqual({ PATH: 'bin', [DAEMON_STDERR_TO_FILE_ENV]: '1' });
     expect(withDaemonStderrFlag(env, false)).toEqual({ PATH: 'bin' });
     expect(env[DAEMON_STDERR_TO_FILE_ENV]).toBe('1');
+  });
+
+  it('the flag survives the launchd job env filter', () => {
+    expect(filterEnvForLaunchd(withDaemonStderrFlag({}, true))).toEqual({ [DAEMON_STDERR_TO_FILE_ENV]: '1' });
   });
 });

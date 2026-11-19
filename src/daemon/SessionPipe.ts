@@ -460,7 +460,9 @@ export class SessionPipe {
     );
 
     let payload = replay;
-    // Set when a re-read after the parse was refused (see reflushForUnreplayedOutput).
+    // Set when a re-read after the parse was refused and output arrived during
+    // it (the lifetime counter says so without a copy); see
+    // reflushForUnreplayedOutput. Nothing arrived: nothing to ask for.
     let unreplayed: string | null = null;
     const dims = this.getDims?.();
     // A size change inside the ring garbles a raw replay (cursor-up redraws
@@ -546,7 +548,7 @@ export class SessionPipe {
         // A refused re-read ships the pre-parse bytes, and a re-flush brings
         // the live delta.
         const after = this.tryReadRing('attach flush re-read');
-        if (!after) unreplayed = 'attach flush re-read refused';
+        if (!after && this.ringBuffer.totalBytesWritten > writtenBefore) unreplayed = 'attach flush re-read refused';
         payload = after?.replay ?? replay;
         // eslint-disable-next-line no-console
         console.log(
@@ -565,7 +567,7 @@ export class SessionPipe {
           // The snapshot without the bytes that arrived during the parse; a
           // re-flush brings them.
           payload = outcome.payload;
-          unreplayed = 'attach flush delta refused';
+          if (written > 0) unreplayed = 'attach flush delta refused';
         } else if (written > reread.raw.length) {
           const afterReplay = reread.replay;
           payload = afterReplay;
@@ -590,7 +592,7 @@ export class SessionPipe {
         // A refused re-read ships the pre-parse bytes, and a re-flush brings
         // the live delta.
         const after = this.tryReadRing('attach flush re-read');
-        if (!after) unreplayed = 'attach flush re-read refused';
+        if (!after && this.ringBuffer.totalBytesWritten > writtenBefore) unreplayed = 'attach flush re-read refused';
         payload = after?.replay ?? replay;
         // eslint-disable-next-line no-console
         console.log(

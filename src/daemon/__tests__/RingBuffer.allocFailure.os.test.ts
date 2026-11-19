@@ -95,6 +95,13 @@ describe('RingBuffer (rust) .buf paths: a refused native allocation', () => {
     expect(fakeRingControl.constructs).toBe(attempts);
     expect(ring.isHibernated).toBe(true);
     expect(fs.readFileSync(file, 'utf8')).toBe('history+new');
+    // The file is not opened inside the backoff: with it moved away, a read
+    // still serves the held output and the ring stays asleep (a wake that
+    // touched it would find it gone and wake without the history).
+    fs.renameSync(file, `${file}.away`);
+    expect(ring.readAll().toString()).toBe('+new');
+    expect(ring.isHibernated).toBe(true);
+    fs.renameSync(`${file}.away`, file);
     now += 1001;
     expect(ring.readAll().toString()).toBe('history+new');
     expect(fakeRingControl.constructs).toBe(attempts + 1);

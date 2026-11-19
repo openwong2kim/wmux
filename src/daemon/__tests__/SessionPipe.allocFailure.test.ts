@@ -193,6 +193,25 @@ describe('SessionPipe: a refused native ring read', () => {
       await pipe.stop();
     });
 
+    it.each([
+      ['the snapshot came out', { ok: true as const, payload: Buffer.from('SNAPSHOT'), bytesIn: 7, durationMs: 1 }, 'SNAPSHOT'],
+      ['the snapshot failed', { ok: false as const, reason: 'error' as const, detail: 'x' }, 'history'],
+    ])('when %s and no output arrived during the parse: nothing was lost, so live output goes on', async (_what, outcome, shipped) => {
+      const ring = fakeRing(['history', refusal()], true);
+      const pipe = new SessionPipe('session-j', ring, TOKEN, dims);
+      const asks = vi.fn();
+      pipe.onResyncNeeded = asks;
+      const socket = new FakeSocket();
+      connect(pipe, socket, false);
+      snapshot.mockResolvedValue(outcome);
+      await flush(pipe, socket);
+      expect(socket.text()).toBe(shipped + markers.flushDone.toString('latin1'));
+      expect(pipe.isBehind).toBe(false);
+      expect(asks).not.toHaveBeenCalled();
+      pipe.writeToClient(Buffer.from('live'));
+      expect(socket.text().endsWith('live')).toBe(true);
+    });
+
     it('a re-read that succeeds asks for nothing', async () => {
       const ring = fakeRing(['history', 'history+delta'], true);
       const pipe = new SessionPipe('session-i', ring, TOKEN, dims);
