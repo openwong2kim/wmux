@@ -1,3 +1,4 @@
+import { isNativeAllocFailure } from '../shared/nativeTerminalCore';
 import { terminalCoreSelection } from '../shared/terminalCoreSettings';
 /** Experimental text selection, independent of the separately gated ANSI path. */
 import type { SnapshotRequest, TextSnapshotOutcome } from './HeadlessSnapshot';
@@ -8,7 +9,7 @@ import { NATIVE_SNAPSHOT_MAX_INPUT_BYTES, nativeScrollbackCap, nativeSizesAccept
 import { createNativeCircuit, snapshotModulePath } from './nativeCircuit';
 
 type Reference = (req: SnapshotRequest) => Promise<TextSnapshotOutcome>;
-type Reason = 'native' | 'error' | 'budget' | 'unsupported' | 'live-drain' | 'limits' | 'circuit-open';
+type Reason = 'native' | 'error' | 'budget' | 'unsupported' | 'live-drain' | 'limits' | 'circuit-open' | 'alloc-failed';
 interface Diagnostics {
   /** Each native try by its outcome (native, a refusal family, budget, error), counted when it settles: the refusal rates. Skips are not tries. */
   tried: SnapshotReasons;
@@ -71,7 +72,7 @@ export async function selectTextSnapshot(req: SnapshotRequest, xterm: Reference)
   // Skipped while open after a module error; one trial once its cooldown ran out (nativeCircuit.ts).
   const ticket = circuit.admit(snapshotModulePath(), performance.now());
   if (!ticket) return skipTo('circuit-open');
-  let failure: 'error' | 'budget' | 'unsupported' = 'error';
+  let failure: 'error' | 'budget' | 'unsupported' | 'alloc-failed' = 'error';
   let refusal: string | undefined;
   try {
     // The whole budget: the native path is the one that delivers (R2 b). A
@@ -91,11 +92,17 @@ export async function selectTextSnapshot(req: SnapshotRequest, xterm: Reference)
     if (!native.ok && native.reason === 'budget') failure = 'budget';
     // A refusal of a stream it cannot replay: the module worked, as on the ANSI path.
     else if (!native.ok && native.detail?.startsWith('unsupported-')) failure = 'unsupported';
+    // A refused allocation is this session's memory, not the module: the
+    // circuit is daemon-wide and would turn every session to xterm (#3440).
+    else if (!native.ok && isNativeAllocFailure(native.detail)) failure = 'alloc-failed';
     if (!native.ok) refusal = native.detail;
-  } catch { /* Module or disposal errors also use the intact xterm input. */ }
-  // A refusal or a budget run-out means the module worked; only an error opens (or reopens) the circuit.
+  } catch (error) {
+    // Module or disposal errors also use the intact xterm input.
+    if (isNativeAllocFailure(error)) failure = 'alloc-failed';
+  }
+  // A refusal, a refused allocation or a budget run-out means the module worked; only an error opens (or reopens) the circuit.
   circuit.settle(ticket, failure !== 'error', performance.now());
-  const counted = failure === 'budget' ? failure : refusalFamily(refusal, failure);
+  const counted = failure === 'budget' || failure === 'alloc-failed' ? failure : refusalFamily(refusal, failure);
   countReason(diagnostics.reasons, counted);
   countReason(diagnostics.tried, counted);
   const remaining = budget - (performance.now() - started);

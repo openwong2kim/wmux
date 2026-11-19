@@ -144,6 +144,26 @@ describe('ANSI snapshot backend selection', () => {
     expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'rust', reason: 'native' });
   });
 
+  // #3440: one session's refused allocation must not turn native snapshots off
+  // for every session (the circuit is daemon-wide).
+  it.each([
+    ['reported', () => native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'ALLOC_FAILED: could not allocate 64 bytes for grid' })],
+    ['thrown', () => native.mockRejectedValueOnce(new Error('ALLOC_FAILED: could not allocate 64 bytes for grid'))],
+  ])('falls back on a %s refused allocation without opening the circuit', async (_how, refuse) => {
+    refuse();
+    const reference = vi.fn(async () => success);
+    const before = getAnsiSnapshotBackendDiagnostics().tried['alloc-failed'] ?? 0;
+    expect(await selectAnsiSnapshot(request, reference)).toMatchObject({ ...success, durationMs: expect.any(Number) });
+    expect(reference).toHaveBeenCalledOnce();
+    expect(getAnsiSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: false, circuitFailures: 0, last: { backend: 'xterm', reason: 'alloc-failed' } });
+    expect(getAnsiSnapshotBackendDiagnostics().tried['alloc-failed']).toBe(before + 1);
+    // The next session still gets a native snapshot.
+    nativeSuccess(request.initial);
+    await selectAnsiSnapshot(request, reference);
+    expect(native).toHaveBeenCalledTimes(2);
+    expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'rust', reason: 'native' });
+  });
+
   it('opens the circuit on a module error until the module changes', async () => {
     native.mockRejectedValueOnce(new Error('load failed'));
     const reference = vi.fn(async () => success);

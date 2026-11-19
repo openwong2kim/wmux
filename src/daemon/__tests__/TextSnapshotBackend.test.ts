@@ -115,6 +115,26 @@ describe('opt-in Rust text delivery', () => {
     expect(getTextSnapshotBackendDiagnostics().tried['unsupported-history-limit']).toBe(before + 1);
   });
 
+  // #3440: one session's refused allocation must not turn native snapshots off
+  // for every session (the circuit is daemon-wide).
+  it.each([
+    ['reported', () => native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'ALLOC_FAILED: could not allocate 64 bytes for grid' })],
+    ['thrown', () => native.mockRejectedValueOnce(new Error('ALLOC_FAILED: could not allocate 64 bytes for grid'))],
+  ])('falls back on a %s refused allocation without opening the circuit', async (_how, refuse) => {
+    refuse();
+    const reference = vi.fn(async () => success);
+    const before = getTextSnapshotBackendDiagnostics().tried['alloc-failed'] ?? 0;
+    expect(await selectTextSnapshot(req, reference)).toMatchObject({ ok: true });
+    expect(reference).toHaveBeenCalledOnce();
+    expect(getTextSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: false, circuitFailures: 0, last: { backend: 'xterm', reason: 'alloc-failed' } });
+    expect(getTextSnapshotBackendDiagnostics().tried['alloc-failed']).toBe(before + 1);
+    // The next session still gets a native snapshot.
+    native.mockResolvedValueOnce(success);
+    await selectTextSnapshot(req, reference);
+    expect(native).toHaveBeenCalledTimes(2);
+    expect(reference).toHaveBeenCalledOnce();
+  });
+
   it('avoids repeated broken-module loads and retries a changed module path', async () => {
     native.mockResolvedValueOnce({ ok: false, reason: 'error' }).mockResolvedValueOnce(success);
     const reference = vi.fn(async () => success);

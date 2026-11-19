@@ -152,6 +152,7 @@ export class RingBuffer {
   private wakeRefusal: unknown = null;
   private wokeAt = 0;
   private mutations = 0; // bumps on every content change, including clear()
+  private clears = 0; // bumps on every clear(); see clearGeneration
   private lastDump: { path: string; mutations: number } | null = null;
   // `config.session.ringCompression` (node backend only): the stored bytes are
   // closed `chunkSize` chunks, brotli-compressed, oldest first, then an open
@@ -370,6 +371,16 @@ export class RingBuffer {
     return this.totalWritten;
   }
 
+  /**
+   * Bumps on every clear(). The history restarts there while
+   * totalBytesWritten does not move, so a reader that locates bytes by the
+   * lifetime counter across an await (SessionPipe's attach flush) compares
+   * this too: a changed generation means the bytes before it are gone.
+   */
+  get clearGeneration(): number {
+    return this.clears;
+  }
+
   /** Capture inside the shared snapshot slot; callers own the frozen copy. */
   freezeNative() {
     let frozen: ReturnType<NativeRingStorage['freeze']> | undefined;
@@ -578,6 +589,7 @@ export class RingBuffer {
         // bytes and re-creates an empty native ring.
         this.reportAllocFailure(error, 'cleared while asleep');
         this.mutations++;
+        this.clears++;
         this.pending = []; this.pendingBytes = 0; this.appendedBytes = 0;
         this.hibernatedFileBytes = 0;
         this.length = 0;
@@ -587,6 +599,7 @@ export class RingBuffer {
       }
     }
     this.mutations++;
+    this.clears++;
     if (this.native) { this.native.clear(); return; }
     this.buffer.fill(0);
     for (const chunk of this.chunks) chunk.fill(0);

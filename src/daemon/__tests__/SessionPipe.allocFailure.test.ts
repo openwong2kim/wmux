@@ -4,7 +4,7 @@ import type net from 'node:net';
 import { SessionPipe } from '../SessionPipe';
 import { generateSnapshotUnqueued } from '../HeadlessSnapshot';
 import { createSessionPipeMarkers } from '../sessionPipeMarkers';
-import type { RingBuffer } from '../RingBuffer';
+import { RingBuffer } from '../RingBuffer';
 import { ATTACH_SNAPSHOT_MIN_BYTES } from '../../shared/terminal/attachSnapshot';
 
 /**
@@ -34,21 +34,25 @@ class FakeSocket {
   text(): string { return Buffer.concat(this.writes).toString('latin1'); }
 }
 
-type FakeRing = RingBuffer & { grow(n: number): void };
+type FakeRing = RingBuffer & { grow(n: number): void; wipe(): void };
 
 /**
  * A ring whose reads follow `reads`: a string is returned, an Error thrown.
  * `resized` adds a size change, which sends the attach flush through the
- * snapshot however small the ring is; `grow` counts live output.
+ * snapshot however small the ring is; `grow` counts live output, `wipe`
+ * is a clear() (the history restarts, the lifetime counter stays).
  */
 function fakeRing(reads: Array<string | Error>, resized = false): FakeRing {
   let written = 0;
+  let clears = 0;
   const geometry = resized ? { start: { cols: 80, rows: 24 }, changes: [{ offset: 0, cols: 100, rows: 30 }] } : undefined;
   return {
     size: 16,
     hasGeometryChanges: resized,
     get totalBytesWritten() { return written; },
     grow(n: number) { written += n; },
+    get clearGeneration() { return clears; },
+    wipe() { clears++; },
     settleGeometry: () => undefined,
     readAllWithGeometry: () => {
       const next = reads.shift() ?? '';
@@ -256,6 +260,29 @@ describe('SessionPipe: a refused native ring read', () => {
       await pipe.stop();
     });
 
+    // A clear alone does not move the lifetime counter: the clear generation
+    // tells the history changed, and a re-flush repaints the cleared ring.
+    it.each([
+      ['the snapshot came out (its live delta re-read refused)', { ok: true as const, payload: Buffer.from('SNAPSHOT'), bytesIn: 7, durationMs: 1 }, 'SNAPSHOT'],
+      ['the snapshot failed (the raw re-read refused)', { ok: false as const, reason: 'error' as const, detail: 'x' }, 'history'],
+    ])('when %s and the ring was cleared during the parse: asks for a re-flush', async (_what, outcome, shipped) => {
+      const ring = fakeRing(['history', refusal()], true);
+      const pipe = new SessionPipe('session-m', ring, TOKEN, dims);
+      const asks = vi.fn();
+      pipe.onResyncNeeded = asks;
+      const socket = new FakeSocket();
+      connect(pipe, socket, false);
+      snapshot.mockImplementation(async () => {
+        ring.wipe();
+        return outcome;
+      });
+      await flush(pipe, socket);
+      expect(socket.text()).toBe(shipped + markers.flushDone.toString('latin1'));
+      expect(pipe.isBehind).toBe(true);
+      expect(asks).toHaveBeenCalledWith(1);
+      await pipe.stop();
+    });
+
     it('a re-read that succeeds asks for nothing', async () => {
       const ring = fakeRing(['history', 'history+delta'], true);
       const pipe = new SessionPipe('session-i', ring, TOKEN, dims);
@@ -271,10 +298,65 @@ describe('SessionPipe: a refused native ring read', () => {
     });
   });
 
+  it('re-flush: a refused raw re-read after the ring was cleared since T0 asks for a re-flush', async () => {
+    const ring = fakeRing(['history', refusal()]);
+    const pipe = new SessionPipe('session-n', ring, TOKEN);
+    const asks = vi.fn();
+    pipe.onResyncNeeded = asks;
+    const socket = new FakeSocket();
+    connect(pipe, socket, true);
+    const generate = vi.fn(async () => { ring.wipe(); return { ok: false as const, reason: 'budget' }; });
+    await pipe.reflush({ bridge: noTee, cols: 80, rows: 24, generate });
+    expect(socket.text()).toBe(markers.resyncBegin.toString('latin1') + markers.flushDone.toString('latin1'));
+    expect(pipe.isBehind).toBe(true);
+    expect(asks).toHaveBeenCalledWith(1);
+    await pipe.stop();
+  });
+
   it('any other read error still propagates', async () => {
     const pipe = new SessionPipe('session-d', fakeRing([new Error('Ring disposed')]), TOKEN);
     const socket = new FakeSocket();
     connect(pipe, socket, false);
     await expect(flush(pipe, socket)).rejects.toThrow('Ring disposed');
+  });
+});
+
+/**
+ * #3440: the bridge clears the ring after a chunk the ring refused (its
+ * history restarts after the hole) without moving the lifetime counter. An
+ * attach flush that locates the bytes that arrived during its parse by that
+ * counter must not splice a snapshot of the history before the clear onto
+ * bytes written after it.
+ */
+describe('SessionPipe attach flush: the ring cleared during the parse', () => {
+  const snapshot = vi.mocked(generateSnapshotUnqueued);
+  const dims = () => ({ cols: 80, rows: 24 });
+  beforeEach(() => { vi.spyOn(console, 'log').mockImplementation(() => undefined); });
+  afterEach(() => { snapshot.mockReset(); vi.restoreAllMocks(); });
+
+  it.each([
+    [true, 'ships the fresh full read, no splice'],
+    [false, 'splices the live delta onto the snapshot as before'],
+  ])('cleared=%s: %s', async (cleared) => {
+    const history = 'h'.repeat(ATTACH_SNAPSHOT_MIN_BYTES);
+    const ring = new RingBuffer(ATTACH_SNAPSHOT_MIN_BYTES * 4, 'node');
+    ring.write(Buffer.from(history));
+    const pipe = new SessionPipe('session-l', ring, TOKEN, dims);
+    const asks = vi.fn();
+    pipe.onResyncNeeded = asks;
+    const socket = new FakeSocket();
+    connect(pipe, socket, false);
+    snapshot.mockImplementation(async () => {
+      if (cleared) ring.clear(); // a dropped chunk: the history restarts here
+      ring.write(Buffer.from('post'));
+      return { ok: true, payload: Buffer.from('SNAPSHOT'), bytesIn: history.length, durationMs: 1 };
+    });
+    await flush(pipe, socket);
+    const done = markers.flushDone.toString('latin1');
+    expect(socket.text()).toBe((cleared ? 'post' : 'SNAPSHOTpost') + done);
+    expect(pipe.isBehind).toBe(false);
+    expect(asks).not.toHaveBeenCalled();
+    await pipe.stop();
+    ring.dispose();
   });
 });

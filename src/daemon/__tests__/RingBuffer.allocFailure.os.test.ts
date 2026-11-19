@@ -139,6 +139,7 @@ describe('RingBuffer (rust) .buf paths: a refused native allocation', () => {
     refuseNext('construct');
     expect(() => ring.clear()).not.toThrow();
     expect(ring.size).toBe(0);
+    expect(ring.clearGeneration).toBe(1);
     await ring.dumpToFile(file);
     expect(fs.readFileSync(file, 'utf8')).toBe('');
     expect(ring.readAll().toString()).toBe('');
