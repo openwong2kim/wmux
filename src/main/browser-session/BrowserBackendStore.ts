@@ -44,8 +44,8 @@ export class BrowserBackendStore {
    */
   private privateNetwork = false;
   /**
-   * Whether `WMUX_CHROME_TRANSPORT=port` may start a protected profile on the
-   * DevTools port, where a client of the port reaches it without the pipe's
+   * Whether a protected profile starts on the DevTools port instead of the
+   * debugging pipe, where a client of the port reaches it without the pipe's
    * rules. Operator-only like the live write scope: set by editing this file,
    * never from the Settings UI or an RPC.
    */

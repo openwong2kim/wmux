@@ -150,8 +150,8 @@ export function chromeTargetWatcherEnabled(): boolean {
 }
 
 /**
- * How a launched Chrome is reached: its DevTools port (the default), or a
- * debugging pipe on fds 3 and 4 (`WMUX_CHROME_TRANSPORT=pipe`, off by default).
+ * Whether `WMUX_CHROME_TRANSPORT=pipe` puts every profile on the debugging
+ * pipe (fds 3 and 4). A launch's own transport is transportFor's.
  */
 export function chromeTransportKind(): 'port' | 'pipe' {
   return process.env.WMUX_CHROME_TRANSPORT === 'pipe' ? 'pipe' : 'port';
@@ -166,21 +166,16 @@ export interface ChromeTransportChoice {
 
 /**
  * The transport for a launch under `plan` (null: unprotected).
- * `WMUX_CHROME_TRANSPORT`:
- *  - unset: the port for every profile (the default, unchanged for now);
- *  - `auto`: the pipe for a protected profile, the port for the rest;
- *  - `pipe`: the pipe for every profile;
- *  - `port`: the port, except that a protected profile stays on the pipe
- *    unless `protectedPortAllowed` (the operator's setting) says otherwise.
- *    The environment alone never moves a protected profile to the port.
+ *  - A protected profile runs on the pipe. Only `protectedPortAllowed` (the
+ *    operator's setting) puts it on the port; the environment alone never does,
+ *    and `WMUX_CHROME_TRANSPORT=pipe` keeps it on the pipe even then.
+ *  - An unprotected profile runs on the port, or on the pipe with
+ *    `WMUX_CHROME_TRANSPORT=pipe`. Unset, `auto` and `port` all mean this
+ *    split.
  */
 export function transportFor(plan: ChromeProtectionPlan | null, protectedPortAllowed = false): ChromeTransportChoice {
-  const env = process.env.WMUX_CHROME_TRANSPORT;
-  let kind: 'port' | 'pipe';
-  if (env === 'pipe') kind = 'pipe';
-  else if (env === 'auto') kind = plan ? 'pipe' : 'port';
-  else if (env === 'port') kind = plan && !protectedPortAllowed ? 'pipe' : 'port';
-  else kind = 'port';
+  const pipeForAll = process.env.WMUX_CHROME_TRANSPORT === 'pipe';
+  const kind: 'port' | 'pipe' = pipeForAll ? 'pipe' : plan && !protectedPortAllowed ? 'pipe' : 'port';
   return { kind, weaker: !!plan && kind === 'port' };
 }
 
@@ -534,8 +529,8 @@ export interface ChromeLauncherOptions {
   /** The user's download folder: where, with grants, a download no client asked for lands. Absent: those are cancelled. */
   downloadsDir?: () => string | null;
   /**
-   * The operator's setting that lets `WMUX_CHROME_TRANSPORT=port` apply to a
-   * protected profile (BrowserBackendStore.protectedPortTransport). Read per launch.
+   * The operator's setting that puts a protected profile on the DevTools port
+   * (BrowserBackendStore.protectedPortTransport). Read per launch.
    */
   protectedPortAllowed?: () => boolean;
 }
@@ -2557,10 +2552,10 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.blocked.clear();
     const transport = transportFor(plan, this.protectedPortAllowed?.() ?? false);
     const pipe = transport.kind === 'pipe';
-    if (plan && process.env.WMUX_CHROME_TRANSPORT === 'port') {
-      console.warn(transport.weaker
-        ? '[ChromeLauncher] a protected profile starts on the DevTools port (the protected-port setting is on): a client of the port reaches it without the pipe\'s rules'
-        : '[ChromeLauncher] WMUX_CHROME_TRANSPORT=port does not apply to a protected profile without the protected-port setting; it starts on the pipe');
+    if (transport.weaker) {
+      console.warn('[ChromeLauncher] a protected profile starts on the DevTools port (the protected-port setting is on): a client of the port reaches it without the pipe\'s rules');
+    } else if (plan && process.env.WMUX_CHROME_TRANSPORT === 'port') {
+      console.warn('[ChromeLauncher] WMUX_CHROME_TRANSPORT=port does not apply to a protected profile without the protected-port setting; it starts on the pipe');
     }
     this.transport = transport;
     // A Chrome let go still holds the profile until it exits: wait for it, bounded.

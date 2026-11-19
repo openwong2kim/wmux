@@ -243,11 +243,13 @@ describe('transportFor', () => {
   it.each([
     // env, protected, setting, transport
     [undefined, false, false, 'port'],
-    [undefined, true, false, 'port (weaker)'],
+    [undefined, true, false, 'pipe'],
+    [undefined, true, true, 'port (weaker)'],
     ['auto', false, false, 'port'],
     ['auto', true, false, 'pipe'],
-    ['auto', true, true, 'pipe'],
+    ['auto', true, true, 'port (weaker)'],
     ['pipe', false, false, 'pipe'],
+    ['pipe', true, false, 'pipe'],
     ['pipe', true, true, 'pipe'],
     ['port', false, false, 'port'],
     ['port', true, false, 'pipe'],
