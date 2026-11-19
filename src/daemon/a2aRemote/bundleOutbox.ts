@@ -61,9 +61,10 @@ export interface BundleOffer {
 
 interface Offered extends BundleOffer {
   expiresAt: number;
-  /** The file as it was offered: a later file at that path is not served. */
-  ino: number;
-  mtimeMs: number;
+  /** The file as it was offered: a later file at that path is not served.
+   *  Bigint: a 64-bit file ID does not fit a Number, nor a full mtime. */
+  ino: bigint;
+  mtimeNs: bigint;
 }
 
 export interface BundleOutboxDeps {
@@ -131,18 +132,18 @@ export class BundleOutbox {
   offer(o: BundleOffer, ttlMs = BUNDLE_TTL_DEFAULT_MS): boolean {
     if (!isHostId(o.hostId) || !isBundleId(o.bundleId) || !A2A_SHA256_RE.test(o.sha256)) return false;
     if (!Number.isInteger(o.bytes) || o.bytes < 1 || o.bytes > BUNDLE_BYTES_CEILING || !(ttlMs > 0)) return false;
-    let st: fs.Stats;
+    let st: fs.BigIntStats;
     try {
-      st = fs.lstatSync(o.file);
+      st = fs.lstatSync(o.file, { bigint: true });
     } catch {
       return false;
     }
-    if (!st.isFile() || st.size !== o.bytes) return false;
+    if (!st.isFile() || Number(st.size) !== o.bytes) return false;
     if (this.deps.root !== undefined && !inMakersFolder(this.deps.root, o)) return false;
     // Offers past their time that were never fetched go here, so the list does not grow with them.
     const now = this.now();
     for (const [k, old] of this.offers) if (now >= old.expiresAt) this.offers.delete(k);
-    this.offers.set(key(o.hostId, o.bundleId), { ...o, expiresAt: now + ttlMs, ino: st.ino, mtimeMs: st.mtimeMs });
+    this.offers.set(key(o.hostId, o.bundleId), { ...o, expiresAt: now + ttlMs, ino: st.ino, mtimeNs: st.mtimeNs });
     return true;
   }
 
@@ -185,11 +186,11 @@ export class BundleOutbox {
     const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
     const pre = await fs.promises.lstat(offered.file).catch(goneOrThrow);
     const handle = pre?.isFile() ? await fs.promises.open(offered.file, flags).catch(goneOrThrow) : null;
-    const st = handle ? await handle.stat().catch(async (err: unknown) => {
+    const st = handle ? await handle.stat({ bigint: true }).catch(async (err: unknown) => {
       await handle.close().catch(() => undefined);
       throw err;
     }) : null;
-    if (handle && st?.isFile() && st.size === offered.bytes && st.ino === offered.ino && st.mtimeMs === offered.mtimeMs) return handle;
+    if (handle && st?.isFile() && Number(st.size) === offered.bytes && st.ino === offered.ino && st.mtimeNs === offered.mtimeNs) return handle;
     await handle?.close().catch(() => undefined);
     this.deps.log('warn', `[a2a-remote] ${what}: its file is not the one offered; the offer ends`);
     this.withdraw(offered.hostId, offered.bundleId);

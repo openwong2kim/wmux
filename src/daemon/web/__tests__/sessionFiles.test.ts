@@ -1,11 +1,13 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { sessionFiles, searchSessionFiles } from '../sessionFiles';
+import { FAR_IDS, fakeFileIds } from '../../../test-utils/fileIds';
 let root: string;
 beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), 'wmux-files-')); });
-afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); await fs.rm(root, { recursive: true, force: true }); });
 
 /**
  * One read-only directory just over the 200-entry page / result cap, shared by
@@ -59,6 +61,12 @@ describe('workspace file reads', () => {
     await fs.symlink(os.tmpdir(), path.join(root, 'escape'));
     await expect(sessionFiles(root, 'escape', 0, false)).rejects.toMatchObject({status:403});
     expect(await sessionFiles(root, '', 0, false)).toMatchObject({entries:[]});
+  });
+  it('refuses an opened file whose 64-bit ID differs from the checked one only below Number precision', async () => {
+    const file = path.join(fsSync.realpathSync.native(root), 'notes.txt');
+    await fs.writeFile(file, 'hello');
+    fakeFileIds({ [file]: { byPath: () => FAR_IDS[0], byHandle: () => FAR_IDS[1] } });
+    await expect(sessionFiles(root, 'notes.txt', 0, true)).rejects.toMatchObject({ status: 409 });
   });
   it('caps reads and rejects binary files', async () => {
     await fs.writeFile(path.join(root, 'large'), Buffer.alloc(1024 * 1024 + 1));

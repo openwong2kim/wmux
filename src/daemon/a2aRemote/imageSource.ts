@@ -30,6 +30,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { A2A_REMOTE_IMAGE_LIMITS } from '../../shared/a2aRemote';
+import { sameFileId } from '../../shared/sameFileId';
 import { dataSuffix } from '../../shared/constants';
 import { protectedPatternOf } from '../../main/factory/botRepoRead';
 import { isWin32UnsafeName, namesWin32Stream, strictlyInside } from '../../main/factory/roomFiles';
@@ -66,9 +67,9 @@ export async function readImageSource(source: string, roots: readonly string[], 
   // Nothing outside the roots, and no device or foreign share, ever reaches the file system.
   if (process.platform === 'win32' && shareOrDevice(source, realRoots)) return { ok: false, reason: 'outside' };
   if (!lexicallyInside(source, [...roots, ...realRoots])) return { ok: false, reason: 'outside' };
-  let lst: fs.Stats;
+  let lst: fs.BigIntStats;
   try {
-    lst = await fs.promises.lstat(source);
+    lst = await fs.promises.lstat(source, { bigint: true });
   } catch {
     return { ok: false, reason: 'missing' };
   }
@@ -83,7 +84,7 @@ export async function readImageSource(source: string, roots: readonly string[], 
   if (!lst.isFile() || lst.isSymbolicLink()) return { ok: false, reason: 'not-file' };
   if (lst.nlink > 1) return { ok: false, reason: 'links' };
   if (lst.size > A2A_REMOTE_IMAGE_LIMITS.IMAGE_MAX_BYTES) return { ok: false, reason: 'size' };
-  if (lst.size === 0) return { ok: false, reason: 'empty' };
+  if (lst.size === 0n) return { ok: false, reason: 'empty' };
   let handle: fs.promises.FileHandle;
   try {
     handle = await fs.promises.open(real, OPEN_FLAGS);
@@ -91,10 +92,10 @@ export async function readImageSource(source: string, roots: readonly string[], 
     return { ok: false, reason: 'changed' };
   }
   let bytes: Buffer | null;
-  let fst: fs.Stats;
+  let fst: fs.BigIntStats;
   try {
-    fst = await handle.stat();
-    if (!fst.isFile() || fst.dev !== lst.dev || fst.ino !== lst.ino) return { ok: false, reason: 'changed' };
+    fst = await handle.stat({ bigint: true });
+    if (!fst.isFile() || !sameFileId(fst, lst)) return { ok: false, reason: 'changed' };
     if (fst.nlink > 1) return { ok: false, reason: 'links' };
     if (fst.size > A2A_REMOTE_IMAGE_LIMITS.IMAGE_MAX_BYTES) return { ok: false, reason: 'size' };
     // Linux names the opened file itself: that path must be inside a root.
@@ -114,8 +115,8 @@ export async function readImageSource(source: string, roots: readonly string[], 
   const after = await realpathOrNull(source);
   if (after !== real || containingRel(realRoots, after) === null) return { ok: false, reason: 'changed' };
   try {
-    const now = await fs.promises.lstat(after);
-    if (now.dev !== fst.dev || now.ino !== fst.ino) return { ok: false, reason: 'changed' };
+    const now = await fs.promises.lstat(after, { bigint: true });
+    if (!sameFileId(now, fst)) return { ok: false, reason: 'changed' };
   } catch {
     return { ok: false, reason: 'changed' };
   }
@@ -188,20 +189,20 @@ async function ancestorIds(home: string): Promise<Set<string>> {
 }
 
 /** A drive or file system root, or a mount point (its parent is on another device). */
-async function isFileSystemTop(real: string, st: fs.Stats): Promise<boolean> {
+async function isFileSystemTop(real: string, st: fs.BigIntStats): Promise<boolean> {
   const up = path.dirname(real);
   if (up === real) return true;
   const parent = await statOrNull(up);
   return !parent || parent.dev !== st.dev;
 }
 
-function idOf(st: fs.Stats): string {
+function idOf(st: fs.BigIntStats): string {
   return `${st.dev}:${st.ino}`;
 }
 
-async function statOrNull(p: string): Promise<fs.Stats | null> {
+async function statOrNull(p: string): Promise<fs.BigIntStats | null> {
   try {
-    return await fs.promises.stat(p);
+    return await fs.promises.stat(p, { bigint: true });
   } catch {
     return null;
   }

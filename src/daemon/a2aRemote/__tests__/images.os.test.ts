@@ -11,6 +11,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { A2A_REMOTE_IMAGE_LIMITS, A2A_REMOTE_PROTOCOL, A2A_ROUTES, type A2aOutboxRecordV1, type A2aRemoteImageRef, type HostId } from '../../../shared/a2aRemote';
 import type { Message } from '../../../shared/types';
+import { FAR_IDS, fakeFileIds } from '../../../test-utils/fileIds';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
@@ -53,6 +54,7 @@ beforeEach(() => {
   dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-img-')));
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -88,6 +90,38 @@ describe('imageRoots / readImageSource', () => {
     expect(await readImageSource(path.join(proj, 'none.png'), roots)).toEqual({ ok: false, reason: 'missing' });
     fs.writeFileSync(path.join(proj, 'big.png'), Buffer.alloc(A2A_REMOTE_IMAGE_LIMITS.IMAGE_MAX_BYTES + 1));
     expect(await readImageSource(path.join(proj, 'big.png'), roots)).toEqual({ ok: false, reason: 'size' });
+  });
+
+  describe('64-bit file IDs that differ only below Number precision', () => {
+    const setup = () => {
+      const proj = path.join(dir, 'proj');
+      const home = path.join(dir, 'home');
+      fs.mkdirSync(proj);
+      fs.mkdirSync(home);
+      const img = png(2, 2);
+      const file = path.join(proj, 'shot.png');
+      fs.writeFileSync(file, img);
+      return { proj, home, img, file, read: () => readImageSource(file, [path.join(dir, 'uploads'), proj], home) };
+    };
+
+    it('refuses an opened file that is not the one checked', async () => {
+      const { file, read } = setup();
+      fakeFileIds({ [file]: { byPath: () => FAR_IDS[0], byHandle: () => FAR_IDS[1] } });
+      expect(await read()).toEqual({ ok: false, reason: 'changed' });
+    });
+
+    it('refuses when the path names another file after the read', async () => {
+      const { file, read } = setup();
+      let opened = false;
+      fakeFileIds({ [file]: { byPath: () => (opened ? FAR_IDS[1] : FAR_IDS[0]), byHandle: () => { opened = true; return FAR_IDS[0]; } } });
+      expect(await read()).toEqual({ ok: false, reason: 'changed' });
+    });
+
+    it('does not take a root for the home folder', async () => {
+      const { proj, home, img, read } = setup();
+      fakeFileIds({ [proj]: { byPath: () => FAR_IDS[0] }, [home]: { byPath: () => FAR_IDS[1] } });
+      expect(await read()).toEqual({ ok: true, bytes: img });
+    });
   });
 
   it('a spawn folder that resolves to home, or to a folder holding it, is not a root (a link or a junction)', async () => {
