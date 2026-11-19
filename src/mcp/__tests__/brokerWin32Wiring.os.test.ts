@@ -239,16 +239,10 @@ if (isWin) {
 describe.runIf(isWin)('the broker on Windows over the native pipe listener (stand-in core)', () => {
   let rig: Rig | undefined;
   let shim = '';
-  let emptyOpenAt = 0;
 
   beforeAll(async () => {
     shim = buildShim(fs.mkdtempSync(path.join(work, 'shim-')));
     rig = await startBroker({ peer: selfPeer() });
-    // An open that closes before any byte, as the supervisor's owner probe
-    // does: it is not a handshake timeout (checked in the last test).
-    const probe = await open(rig.pipe, null);
-    probe.socket.destroy();
-    emptyOpenAt = Date.now();
   }, 90_000);
 
   afterAll(async () => {
@@ -363,24 +357,41 @@ describe.runIf(isWin)('the broker on Windows over the native pipe listener (stan
     },
     30_000,
   );
+});
 
-  it('past the cap on connections waiting for their handshake, a new one is closed at once; a freed place admits again', async () => {
-    setControl(rig!, { peer: selfPeer() });
-    const from = rig!.log().length;
+// The pre-auth gate: each test here runs its own broker, so the connections one
+// leaves waiting for their handshake (and the timeouts they log) never reach
+// another test's gate or log.
+describe.runIf(isWin)('the broker on Windows: the pre-auth gate, each test on its own broker', () => {
+  let shim = '';
+
+  beforeAll(() => {
+    shim = buildShim(fs.mkdtempSync(path.join(work, 'shim-')));
+  }, 60_000);
+
+  it('past the cap on connections waiting for their handshake, a new one is closed at once; a freed place admits again', async ({ onTestFailed }) => {
+    let step = 'starting the broker';
+    onTestFailed(() => { console.error(`[cap test] failed while ${step}`); });
+    const own = await startBroker({ peer: selfPeer() });
     const idle: Session[] = [];
     try {
-      for (let i = 0; i < 32; i++) idle.push(await open(rig!.pipe, null));
-      const over = await open(rig!.pipe, handshake());
+      step = 'opening 32 connections that send nothing';
+      for (let i = 0; i < 32; i++) idle.push(await open(own.pipe, null));
+      step = 'waiting for the connection past the cap to close';
+      const over = await open(own.pipe, handshake());
       expect(await over.closed).toBe('');
-      await until(() => since(rig!, from)().includes('connections are waiting for their handshake; closing new ones'), 5000, since(rig!, from));
+      step = 'waiting for the cap to be logged';
+      await until(() => own.log().includes('connections are waiting for their handshake; closing new ones'), 5000, () => own.log());
       // The node shim falls back on that close too.
-      const run = await runShim(shim, rig!);
+      step = 'running the node shim against the full gate';
+      const run = await runShim(shim, own);
       expect(run.stdout).toContain('FULL SERVER tools/call');
       expect(run.code).toBe(0);
+      step = 'waiting for a freed place to admit a session';
       idle.pop()!.socket.destroy();
       let hosted = '';
       for (let i = 0; i < 40 && hosted === ''; i++) {
-        const s = await open(rig!.pipe, handshake());
+        const s = await open(own.pipe, handshake());
         const all = await Promise.race([s.lines(1).then((l) => l[0]).catch(() => ''), s.closed]);
         if (all.startsWith('{"wmuxBroker":1,"ok":true}')) hosted = all;
         s.socket.destroy();
@@ -389,23 +400,31 @@ describe.runIf(isWin)('the broker on Windows over the native pipe listener (stan
       expect(hosted).toBe('{"wmuxBroker":1,"ok":true}');
     } finally {
       for (const s of idle) s.socket.destroy();
+      await stopBroker(own);
     }
   }, 60_000);
 
   it('connections that close before any byte free their place, and are not logged as handshake timeouts', async () => {
-    setControl(rig!, { peer: selfPeer() });
-    for (let i = 0; i < 40; i++) (await open(rig!.pipe, null)).socket.destroy();
-    let hosted = false;
-    for (let i = 0; i < 40 && !hosted; i++) {
-      const s = await open(rig!.pipe, handshake());
-      hosted = await s.lines(1).then((l) => l[0] === '{"wmuxBroker":1,"ok":true}', () => false);
-      s.socket.destroy();
-      if (!hosted) await new Promise((r) => setTimeout(r, 50));
+    const own = await startBroker({ peer: selfPeer() });
+    try {
+      // An open that closes before any byte, as the supervisor's owner probe does.
+      (await open(own.pipe, null)).socket.destroy();
+      const probeAt = Date.now();
+      for (let i = 0; i < 40; i++) (await open(own.pipe, null)).socket.destroy();
+      let hosted = false;
+      for (let i = 0; i < 40 && !hosted; i++) {
+        const s = await open(own.pipe, handshake());
+        hosted = await s.lines(1).then((l) => l[0] === '{"wmuxBroker":1,"ok":true}', () => false);
+        s.socket.destroy();
+        if (!hosted) await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(hosted).toBe(true);
+      const wait = probeAt + 10_500 - Date.now();
+      if (wait > 0) await deliberateSleep(wait, 'a negative check: the 10 s handshake deadline of the empty opens must pass with no timeout logged');
+      expect(own.log()).not.toContain('handshake timeout');
+    } finally {
+      await stopBroker(own);
     }
-    expect(hosted).toBe(true);
-    const wait = emptyOpenAt + 10_500 - Date.now();
-    if (wait > 0) await deliberateSleep(wait, 'a negative check: the 10 s handshake deadline of the empty open must pass with no timeout logged');
-    expect(rig!.log()).not.toContain('handshake timeout');
   }, 30_000);
 });
 
