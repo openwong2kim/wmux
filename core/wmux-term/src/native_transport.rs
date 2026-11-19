@@ -1063,10 +1063,14 @@ impl RetryClock for SystemClock {
 /// reader's buffer, so a refused copy is tried again, with a wait that
 /// doubles up to READ_RETRY_WAIT, until READ_RETRY_FOR has passed on
 /// `clock`: then the refusal is recorded and None returned. None too once
-/// the transport closes.
+/// the transport closes. On Unix, once the shell has exited (`stop_reading`)
+/// the retries end EXIT_OUTPUT_GRACE later, as a read that never pauses does,
+/// so the exit is not held back for READ_RETRY_FOR.
 fn copy_read(read: &[u8], state: &State, clock: &dyn RetryClock) -> Option<Vec<u8>> {
     let mut wait = Duration::from_millis(1);
     let mut give_up_at = None;
+    #[cfg(unix)]
+    let mut exit_by: Option<Instant> = None;
     loop {
         let failed = match fallible::try_copy(read, "a PTY read") {
             Ok(chunk) => return Some(chunk),
@@ -1075,8 +1079,13 @@ fn copy_read(read: &[u8], state: &State, clock: &dyn RetryClock) -> Option<Vec<u
         if state.closed.load(Ordering::Acquire) {
             return None;
         }
-        let give_up_at = *give_up_at.get_or_insert_with(|| clock.now() + READ_RETRY_FOR);
-        if clock.now() >= give_up_at {
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut give_up = *give_up_at.get_or_insert_with(|| clock.now() + READ_RETRY_FOR);
+        #[cfg(unix)]
+        if state.stop_reading.load(Ordering::Acquire) {
+            give_up = give_up.min(*exit_by.get_or_insert_with(|| clock.now() + EXIT_OUTPUT_GRACE));
+        }
+        if clock.now() >= give_up {
             // Recorded even when the message could not be built (empty).
             state.record(failed.message());
             return None;
@@ -1570,6 +1579,44 @@ mod tests {
             read.error.as_deref(),
             Some("ALLOC_FAILED: could not allocate 4 bytes for a PTY read")
         );
+    }
+
+    /// Once the shell has exited, a refused read copy is tried for the exit
+    /// grace only, not READ_RETRY_FOR; a copy that succeeds within it is
+    /// still delivered.
+    #[cfg(unix)]
+    #[test]
+    fn after_the_shell_exits_a_refused_read_copy_is_retried_for_the_exit_grace_only() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        state.stop_reading.store(true, Ordering::Release);
+        let clock = FakeClock::new(Duration::from_millis(50));
+        fail_next("a PTY read", usize::MAX);
+        read_all(&mut pieces(&[b"lost"]), tx, &state, &clock);
+        fail_next("", 0);
+        let waited: Duration = clock.waits.borrow().len() as u32 * Duration::from_millis(50);
+        assert!(waited <= EXIT_OUTPUT_GRACE, "{waited:?}");
+        let read = transport(rx, state).drain(None);
+        assert!(read.data.is_empty() && read.eof);
+        assert_eq!(
+            read.error.as_deref(),
+            Some("ALLOC_FAILED: could not allocate 4 bytes for a PTY read")
+        );
+        // Within the grace, a copy that succeeds is delivered.
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        state.stop_reading.store(true, Ordering::Release);
+        fail_next("a PTY read", 2);
+        read_all(
+            &mut pieces(&[b"kept"]),
+            tx,
+            &state,
+            &FakeClock::new(Duration::from_millis(50)),
+        );
+        fail_next("", 0);
+        let read = transport(rx, state).drain(None);
+        assert_eq!(read.data, b"kept");
+        assert!(read.eof && read.error.is_none());
     }
 
     #[test]

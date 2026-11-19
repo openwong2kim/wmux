@@ -330,19 +330,26 @@ fn listed_processes() -> Result<Option<HashMap<u32, Listed>>, CallError> {
     let Some(query) = nt_query_system() else {
         return Ok(None);
     };
+    list_processes(|buffer, bytes, needed| {
+        // SAFETY: the buffer is `bytes` long and writable.
+        unsafe { query(SYSTEM_PROCESS_INFORMATION, buffer, bytes, needed) }
+    })
+}
+
+/// How many times `list_processes` asks the kernel before it gives up.
+#[cfg(target_pointer_width = "64")]
+const KERNEL_QUERIES: usize = 4;
+
+/// `listed_processes` with the kernel query passed in (tests fake it).
+#[cfg(target_pointer_width = "64")]
+fn list_processes(
+    mut query: impl FnMut(*mut std::ffi::c_void, u32, &mut u32) -> i32,
+) -> Result<Option<HashMap<u32, Listed>>, CallError> {
     let mut buffer: Vec<u64> = fallible::try_zeroed(64 * 1024, KERNEL_LIST)?;
-    for _ in 0..4 {
+    for attempt in 1..=KERNEL_QUERIES {
         let bytes = (buffer.len() * 8) as u32;
         let mut needed = 0u32;
-        // SAFETY: the buffer is `bytes` long and writable.
-        let status = unsafe {
-            query(
-                SYSTEM_PROCESS_INFORMATION,
-                buffer.as_mut_ptr().cast(),
-                bytes,
-                &mut needed,
-            )
-        };
+        let status = query(buffer.as_mut_ptr().cast(), bytes, &mut needed);
         if status >= 0 {
             return Ok(parse_process_information(&buffer, bytes as usize).map(Some)?);
         }
@@ -352,6 +359,11 @@ fn listed_processes() -> Result<Option<HashMap<u32, Listed>>, CallError> {
                 return Err(os_failure("NtQuerySystemInformation", code));
             }
             return Ok(None);
+        }
+        // No query follows the last one: a larger buffer would only be
+        // refused or thrown away.
+        if attempt == KERNEL_QUERIES {
+            break;
         }
         // The table can grow between calls; leave headroom. The smaller
         // buffer is freed before the larger one is asked for.
@@ -767,6 +779,30 @@ mod tests {
         let mut row = own_row("walked.exe");
         assert!(fill_details(&mut row, None).unwrap());
         assert_eq!((row.created, row.cmdline), (None, None));
+    }
+
+    /// After the last size mismatch no larger buffer is asked for: a refusal
+    /// there would turn a table without details into an error.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn no_buffer_is_grown_after_the_last_kernel_query() {
+        let mut calls = 0;
+        let listed = list_processes(|_, _, needed| {
+            calls += 1;
+            *needed = 100_000;
+            if calls == KERNEL_QUERIES {
+                // Whatever is asked for next is refused.
+                fallible::fail_next(KERNEL_LIST, 1);
+            }
+            STATUS_INFO_LENGTH_MISMATCH
+        });
+        fallible::fail_next("", 0);
+        assert!(
+            matches!(listed, Ok(None)),
+            "{:?}",
+            listed.map(|l| l.map(|m| m.len()))
+        );
+        assert_eq!(calls, KERNEL_QUERIES);
     }
 
     #[test]

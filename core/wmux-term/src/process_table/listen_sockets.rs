@@ -153,15 +153,37 @@ pub(super) fn owned_by(
     walked: &[(super::ProcessRow, u32)],
     uid: u32,
 ) -> Result<Vec<u32>, AllocFailed> {
-    let mut pids = fallible::try_with_capacity(walked.len(), super::ROWS)?;
-    // At most `walked.len()`: within the capacity just reserved.
-    pids.extend(
-        walked
-            .iter()
-            .filter(|(_, owner)| uid == 0 || *owner == uid)
-            .map(|(row, _)| row.pid),
-    );
+    let owned = |(_, owner): &&(super::ProcessRow, u32)| uid == 0 || *owner == uid;
+    // Reserved for the matching pids only, counted first.
+    let mut pids = fallible::try_with_capacity(walked.iter().filter(owned).count(), super::ROWS)?;
+    pids.extend(walked.iter().filter(owned).map(|(row, _)| row.pid));
     Ok(pids)
+}
+
+/// `proc_fdinfo`'s type for a socket.
+#[cfg(any(target_os = "macos", test))]
+const PROX_FDTYPE_SOCKET: u32 = 2;
+/// `struct proc_fdinfo`: fd, then its type.
+#[cfg(any(target_os = "macos", test))]
+const FDINFO_SIZE: usize = 8;
+
+/// The socket descriptors in a PROC_PIDLISTFDS list, reserved for the
+/// sockets only, counted first: a process may hold thousands of other
+/// descriptors.
+#[cfg(any(target_os = "macos", test))]
+fn socket_descriptors(list: &[u8]) -> Result<Vec<std::ffi::c_int>, AllocFailed> {
+    let entries = list.as_chunks::<FDINFO_SIZE>().0;
+    let socket = |e: &&[u8; FDINFO_SIZE]| {
+        u32::from_ne_bytes(e[4..8].try_into().unwrap()) == PROX_FDTYPE_SOCKET
+    };
+    let mut fds = fallible::try_with_capacity(entries.iter().filter(socket).count(), FD_LIST)?;
+    fds.extend(
+        entries
+            .iter()
+            .filter(socket)
+            .map(|e| std::ffi::c_int::from_ne_bytes(e[0..4].try_into().unwrap())),
+    );
+    Ok(fds)
 }
 
 /// The listening sockets of `pids` (macOS), read with `socket_fds` (the
@@ -365,16 +387,14 @@ pub use macos_sys::port_snapshot;
 #[cfg(target_os = "macos")]
 mod macos_sys {
     use super::{
-        collect_macos, fd_info_result, fdinfo, owned_by, read_growing, PortSnapshot, FD_LIST,
+        collect_macos, fd_info_result, fdinfo, owned_by, read_growing, socket_descriptors,
+        PortSnapshot, FDINFO_SIZE,
     };
     use crate::fallible::{self, AllocFailed, CallError};
     use std::ffi::{c_int, c_void};
 
     const PROC_PIDLISTFDS: c_int = 1;
     const PROC_PIDFDSOCKETINFO: c_int = 3;
-    const PROX_FDTYPE_SOCKET: u32 = 2;
-    /// `struct proc_fdinfo`: fd, then its type.
-    const FDINFO_SIZE: usize = 8;
 
     extern "C" {
         fn proc_pidinfo(
@@ -427,16 +447,7 @@ mod macos_sys {
             Ok(list) => list,
             Err(errno) => return Ok(Err(errno)),
         };
-        let entries = list.as_chunks::<FDINFO_SIZE>().0;
-        let mut fds = fallible::try_with_capacity(entries.len(), FD_LIST)?;
-        // At most one per entry: within the capacity just reserved.
-        fds.extend(
-            entries
-                .iter()
-                .filter(|e| u32::from_ne_bytes(e[4..8].try_into().unwrap()) == PROX_FDTYPE_SOCKET)
-                .map(|e| c_int::from_ne_bytes(e[0..4].try_into().unwrap())),
-        );
-        Ok(Ok(fds))
+        Ok(Ok(socket_descriptors(&list)?))
     }
 
     fn fd_info(pid: c_int, fd: c_int, buf: &mut [u8]) -> Result<(), i32> {
@@ -640,6 +651,32 @@ mod tests {
         assert_eq!(owned_by(&walked, 0), Ok(vec![1, 2, 3, 4]));
     }
 
+    /// Room is reserved for the matching pids and the socket descriptors
+    /// only: one owned pid among many, or one socket among many descriptors,
+    /// still fits when the full count would be refused.
+    #[test]
+    fn only_matching_pids_and_socket_descriptors_are_reserved() {
+        let row = |pid| crate::process_table::ProcessRow {
+            pid,
+            ppid: 1,
+            name: "x".into(),
+            created: None,
+            cmdline: None,
+        };
+        let walked: Vec<_> = (1..=1000)
+            .map(|pid| (row(pid), if pid == 7 { 501 } else { 502 }))
+            .collect();
+        let owned = crate::test_allocator::refusing(64, || owned_by(&walked, 501));
+        assert_eq!(owned, Ok(vec![7]));
+        let mut list = Vec::new();
+        for fd in 0..1000i32 {
+            list.extend_from_slice(&fd.to_ne_bytes());
+            list.extend_from_slice(&(if fd == 42 { PROX_FDTYPE_SOCKET } else { 1 }).to_ne_bytes());
+        }
+        let sockets = crate::test_allocator::refusing(64, || socket_descriptors(&list));
+        assert_eq!(sockets, Ok(vec![42]));
+    }
+
     #[test]
     fn macos_a_descriptor_reused_for_no_socket_is_skipped() {
         // ENOTSOCK: the fd was closed and reopened as a file since the listing.
@@ -742,8 +779,17 @@ mod tests {
 
     #[test]
     fn a_proc_file_is_read_into_a_fallible_buffer() {
-        let dir = std::env::temp_dir().join(format!("wmux-read-file-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // Created here or not at all: a directory that is already there is
+        // not this test's to write into or remove.
+        let dir = std::env::temp_dir().join(format!(
+            "wmux-read-file-{}-{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).expect("a fresh test directory");
         let path = dir.join("tcp");
         let text = "x".repeat(20_000);
         std::fs::write(&path, &text).unwrap();
