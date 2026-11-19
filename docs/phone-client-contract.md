@@ -3730,8 +3730,10 @@ opened by hand. Additive; `protocolVersion` stays 1.
   `404 browser-tab-gone`. Every row without the field is as before.
 - **Actions**: the same as any `chrome` row (capture, `navigate`, `type`,
   `key`, `tap`, `scroll`, `focus`, the stream), under the same permissions and
-  checks. A tap that opens a tab from such a tab never carries `opened`
-  (v1.7); refresh the list instead.
+  checks. Like every `chrome` row, the `id` alone addresses it: capture,
+  `POST …/browser` and `…/browser/stream` need no `?chrome=1`. A tap that
+  opens a tab from such a tab never carries `opened` (v1.7); refresh the list
+  instead.
 - **`chromeOutside`** on the list reply, only with `?chrome=1` and the desktop
   setting Chrome, says why no outside tab can be listed; absent when one can
   (even when there is none right now):
