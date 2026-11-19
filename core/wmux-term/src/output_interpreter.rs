@@ -379,6 +379,19 @@ impl OutputInterpreter {
         }
     }
 
+    /// The binding's `clearOsc` (native-core), after a chunk is skipped:
+    /// the next chunk does not continue it. The OSC being read and the ESC
+    /// held for the next chunk are forgotten, and so is the mode scan's
+    /// carry (the last chunk's tail, which would join across the gap). The
+    /// modes stay. Frees a large OSC, allocates nothing.
+    #[cfg_attr(not(feature = "native-core"), allow(dead_code))]
+    pub fn clear_osc_state(&mut self) {
+        self.clear_osc();
+        self.in_osc = false;
+        self.pending_esc = false;
+        self.carry.clear();
+    }
+
     /// The binding's `reset` (native-core).
     #[cfg_attr(not(feature = "native-core"), allow(dead_code))]
     pub fn reset_modes(&mut self) {
@@ -510,6 +523,47 @@ mod tests {
             .unwrap();
         assert!(p.feed("\x07", 0.0, true).unwrap().is_empty());
         assert_eq!(p.feed("\x1b]133;C\x1b\\", 0.0, true).unwrap()[0].data, "C");
+    }
+    #[test]
+    fn clearing_the_osc_state_keeps_the_modes_and_allocates_nothing() {
+        let event = |data: &str| {
+            vec![OscEvent {
+                code: 133.0,
+                data: data.into(),
+            }]
+        };
+        // What each chunk pair reads as without the clear, and with it.
+        let pairs = [
+            // An open OSC.
+            ("\x1b]133;A", "\x07"),
+            // An ESC held for the next chunk's `]`.
+            ("x\x1b", "]133;A\x07"),
+        ];
+        for (first, second) in pairs {
+            let mut p = OutputInterpreter::default();
+            p.feed(first, 0.0, true).unwrap();
+            assert_eq!(p.feed(second, 0.0, true).unwrap(), event("A"));
+            let mut p = OutputInterpreter::default();
+            p.feed("\x1b[?1049h\x1b[?2004h", 10.0, true).unwrap();
+            p.feed(first, 20.0, true).unwrap();
+            crate::test_allocator::refusing(1, || p.clear_osc_state());
+            assert_eq!(crate::test_allocator::refused(), 0);
+            assert!(p.feed(second, 30.0, true).unwrap().is_empty(), "{first:?}");
+            assert!(p.alt_screen() && p.is_set(2004), "the modes stay");
+        }
+        // The mode scan's carry: a sequence split around the skipped chunk
+        // is not joined across it.
+        let mut p = OutputInterpreter::default();
+        p.feed("\x1b[?1049h", 10.0, true).unwrap();
+        p.feed("x\x1b[?10", 20.0, true).unwrap();
+        p.feed("49l", 30.0, true).unwrap();
+        assert!(!p.alt_screen(), "joined without the clear");
+        let mut p = OutputInterpreter::default();
+        p.feed("\x1b[?1049h", 10.0, true).unwrap();
+        p.feed("x\x1b[?10", 20.0, true).unwrap();
+        p.clear_osc_state();
+        p.feed("49l", 30.0, true).unwrap();
+        assert!(p.alt_screen());
     }
     #[test]
     fn osc_introducer_and_terminator_split_across_chunks() {

@@ -77,6 +77,8 @@ pub struct NativeProcessRow {
 
 /// The rows JS receives, in one buffer reserved fallibly (one per process).
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+// Reached only through the napi export, which the test build does not call.
+#[cfg_attr(test, allow(dead_code))]
 fn native_rows(
     rows: Vec<crate::process_table::ProcessRow>,
 ) -> std::result::Result<Vec<NativeProcessRow>, AllocFailed> {
@@ -95,6 +97,8 @@ fn native_rows(
 /// `reject`, which rejects with code ALLOC_FAILED (`task_refusal`): a
 /// Task's errors cannot carry it. Anything else rejects as it is.
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+// Reached only through the napi export, which the test build does not call.
+#[cfg_attr(test, allow(dead_code))]
 fn task_error(refused: &mut Option<AllocFailed>, error: CallError) -> Error {
     match error {
         CallError::Alloc(failed) => {
@@ -167,7 +171,8 @@ fn native_port_snapshot(
     snap: crate::process_table::PortSnapshot,
 ) -> std::result::Result<NativePortSnapshot, AllocFailed> {
     let processes = native_rows(snap.processes)?;
-    let mut sockets = fallible::try_with_capacity(snap.sockets.len(), "the listening sockets for JS")?;
+    let mut sockets =
+        fallible::try_with_capacity(snap.sockets.len(), "the listening sockets for JS")?;
     sockets.extend(snap.sockets.into_iter().map(|r| NativeListenSocket {
         pid: r.pid,
         port: r.port.into(),
@@ -473,8 +478,16 @@ const OSC_DROPPED: &[u8] = b"\x18";
 /// with it; a CAN or SUB is passed on (vte executes it); another ESC begins
 /// the next sequence. 0x9C is part of the body for vte. A feed's final ESC
 /// goes on as before (the feeds below hold it).
+///
+/// Its state changes only once the bytes it stands for went on (`emit`
+/// succeeded), so a refused first emit changes nothing, and the same bytes
+/// fed again pass as if the refusal had not happened. A refusal after some
+/// bytes went on (vte advanced) leaves the state those bytes left: such a
+/// feed is partially applied, and a dropped OSC's introducer that went on
+/// is never passed again (its CAN, if refused, is owed instead).
 #[derive(Default)]
 struct OscCap {
+    /// What the bytes passed on so far leave.
     scan: OscScan,
     /// The open OSC (OscScan::Osc), from its ESC, or from its `]` when its
     /// ESC went on already.
@@ -485,6 +498,9 @@ struct OscCap {
     body: usize,
     /// An OSC was dropped since the last `take_dropped`.
     dropped: bool,
+    /// A dropped OSC's introducer went on and its OSC_DROPPED was refused:
+    /// it goes on before any other byte.
+    owed: bool,
 }
 
 /// Where OscCap passes bytes: `dropped` is true for the bytes that stand for
@@ -516,13 +532,21 @@ impl OscCap {
         bytes: &[u8],
         emit: &mut OscEmit<'_>,
     ) -> std::result::Result<(), AllocFailed> {
+        if self.owed {
+            emit(OSC_DROPPED, true)?;
+            self.owed = false;
+        }
         let len = bytes.len();
         // Where the bytes passed on as they are start, and where scanning is.
         let mut from = 0;
         let mut i = 0;
+        // What the bytes up to `i` leave; kept in `self.scan` only once the
+        // bytes up to there went on.
+        let mut scan = self.scan;
         loop {
-            // An OSC opens: held from `start`, its body after `bracket`.
-            let (start, bracket) = match self.scan {
+            // An OSC opens: held from `start`, its body after `bracket`;
+            // `before` is what the bytes up to `start` leave.
+            let (start, bracket, before) = match scan {
                 OscScan::Text => {
                     let Some(found) = bytes[i..].iter().position(|&b| b == 0x1b) else {
                         break;
@@ -530,37 +554,39 @@ impl OscCap {
                     let esc = i + found;
                     let at = past_filler(bytes, esc + 1);
                     if at == len {
-                        self.scan = OscScan::EscPassed;
+                        scan = OscScan::EscPassed;
                         break;
                     }
                     if bytes[at] != b']' {
                         i = at;
                         continue;
                     }
-                    (esc, at)
+                    (esc, at, OscScan::Text)
                 }
                 OscScan::EscPassed => {
                     let at = past_filler(bytes, i);
                     if at == len {
                         break;
                     }
-                    self.scan = OscScan::Text;
+                    scan = OscScan::Text;
                     if bytes[at] != b']' {
                         i = at;
                         continue;
                     }
-                    (at, at)
+                    // Until its `]` went on, the ESC still waits for it.
+                    (at, at, OscScan::EscPassed)
                 }
                 OscScan::Osc => {
                     match string_end(&bytes[i..]) {
                         Some(end) if self.body + end <= MAX_OSC_BODY => {
                             self.flush(&bytes[i..i + end], emit)?;
+                            scan = OscScan::Text;
                             from = i + end;
                             i += end;
                         }
                         Some(end) => {
                             self.drop_held(emit)?;
-                            (from, i) = self.end_dropped(bytes, i + end);
+                            (from, i, scan) = Self::end_dropped(bytes, i + end);
                         }
                         None if self.body + (len - i) <= MAX_OSC_BODY => {
                             self.hold(&bytes[i..])?;
@@ -570,7 +596,7 @@ impl OscCap {
                         }
                         None => {
                             self.drop_held(emit)?;
-                            self.scan = OscScan::Drop;
+                            scan = OscScan::Drop;
                             from = len;
                             break;
                         }
@@ -579,7 +605,7 @@ impl OscCap {
                 }
                 OscScan::Drop => {
                     match string_end(&bytes[i..]) {
-                        Some(end) => (from, i) = self.end_dropped(bytes, i + end),
+                        Some(end) => (from, i, scan) = Self::end_dropped(bytes, i + end),
                         None => {
                             from = len;
                             break;
@@ -592,13 +618,14 @@ impl OscCap {
                         break;
                     }
                     if bytes[i] == b'\\' {
-                        self.scan = OscScan::Text;
+                        scan = OscScan::Text;
                         i += 1;
                     } else {
                         // That ESC ended the dropped OSC and begins the next
                         // sequence, perhaps another OSC.
                         emit(&b"\x1b"[..], false)?;
-                        self.scan = OscScan::EscPassed;
+                        scan = OscScan::EscPassed;
+                        self.scan = scan;
                     }
                     from = i;
                     continue;
@@ -609,8 +636,9 @@ impl OscCap {
                 Some(end) if end <= MAX_OSC_BODY => i = body + end,
                 Some(end) => {
                     emit_some(emit, &bytes[from..start])?;
+                    self.scan = before;
                     self.drop_osc(&bytes[start..body], emit)?;
-                    (from, i) = self.end_dropped(bytes, body + end);
+                    (from, i, scan) = Self::end_dropped(bytes, body + end);
                 }
                 None if len - body <= MAX_OSC_BODY => {
                     // Room first, then the bytes before it: only once they
@@ -621,58 +649,70 @@ impl OscCap {
                     self.held.extend_from_slice(&bytes[start..]);
                     self.intro = body - start;
                     self.body = len - body;
-                    self.scan = OscScan::Osc;
+                    scan = OscScan::Osc;
                     from = len;
                     break;
                 }
                 None => {
                     emit_some(emit, &bytes[from..start])?;
+                    self.scan = before;
                     self.drop_osc(&bytes[start..body], emit)?;
-                    self.scan = OscScan::Drop;
+                    scan = OscScan::Drop;
                     from = len;
                     break;
                 }
             }
         }
-        emit_some(emit, &bytes[from..])
+        emit_some(emit, &bytes[from..])?;
+        self.scan = scan;
+        Ok(())
     }
 
     /// An OSC is dropped: its introducer (from its ESC, or its `]` when the
-    /// ESC went on already) goes on, then OSC_DROPPED.
+    /// ESC went on already) goes on, then OSC_DROPPED. A refused introducer
+    /// changes nothing.
     fn drop_osc(
         &mut self,
         intro: &[u8],
         emit: &mut OscEmit<'_>,
     ) -> std::result::Result<(), AllocFailed> {
-        self.dropped = true;
         emit(intro, true)?;
-        emit(OSC_DROPPED, true)
+        self.intro_went_on(emit)
     }
 
-    /// The held OSC is dropped (`drop_osc`), and its hold freed.
+    /// The held OSC is dropped (`drop_osc`). The hold is kept until its
+    /// introducer went on, so a refused introducer leaves the OSC held as it
+    /// was and a retry passes it once; then the hold is freed.
     fn drop_held(&mut self, emit: &mut OscEmit<'_>) -> std::result::Result<(), AllocFailed> {
-        let held = std::mem::take(&mut self.held);
-        let intro = std::mem::take(&mut self.intro);
-        self.body = 0;
-        self.drop_osc(&held[..intro], emit)
+        emit(&self.held[..self.intro], true)?;
+        self.clear_open();
+        self.intro_went_on(emit)
+    }
+
+    /// A dropped OSC's introducer went on: vte is inside it, and the bytes
+    /// after it are its body, skipped (OscScan::Drop). OSC_DROPPED follows,
+    /// owed while refused (`scan` passes it first).
+    fn intro_went_on(&mut self, emit: &mut OscEmit<'_>) -> std::result::Result<(), AllocFailed> {
+        self.dropped = true;
+        self.scan = OscScan::Drop;
+        self.owed = true;
+        emit(OSC_DROPPED, true)?;
+        self.owed = false;
+        Ok(())
     }
 
     /// The dropped OSC ends at `bytes[at]` (string_end): returns where the
-    /// bytes passed on resume and where scanning resumes.
-    fn end_dropped(&mut self, bytes: &[u8], at: usize) -> (usize, usize) {
-        self.scan = OscScan::Text;
+    /// bytes passed on resume, where scanning resumes, and the state there.
+    fn end_dropped(bytes: &[u8], at: usize) -> (usize, usize, OscScan) {
         match bytes[at] {
-            0x07 => (at + 1, at + 1),
+            0x07 => (at + 1, at + 1, OscScan::Text),
             0x1b => match bytes.get(at + 1) {
-                Some(b'\\') => (at + 2, at + 2),
-                Some(_) => (at, at),
-                None => {
-                    self.scan = OscScan::DropEsc;
-                    (bytes.len(), bytes.len())
-                }
+                Some(b'\\') => (at + 2, at + 2, OscScan::Text),
+                Some(_) => (at, at, OscScan::Text),
+                None => (bytes.len(), bytes.len(), OscScan::DropEsc),
             },
             // CAN and SUB: vte ends the OSC and executes them.
-            _ => (at, at + 1),
+            _ => (at, at + 1, OscScan::Text),
         }
     }
 
@@ -1050,11 +1090,6 @@ impl Families {
 
     fn as_slice(&self) -> &[&'static str] {
         &self.met[..self.len]
-    }
-
-    #[cfg(test)]
-    fn is_empty(&self) -> bool {
-        self.len == 0
     }
 }
 
@@ -2205,7 +2240,11 @@ impl NativeTerminal {
 
     /// See `feed_xterm_bytes`.
     #[napi(catch_unwind)]
-    pub fn feed_xterm(&mut self, bytes: Uint8Array, requested_scrollback: u32) -> Result<bool, ErrorCode> {
+    pub fn feed_xterm(
+        &mut self,
+        bytes: Uint8Array,
+        requested_scrollback: u32,
+    ) -> Result<bool, ErrorCode> {
         Ok(self.feed_xterm_bytes(&bytes, requested_scrollback)?)
     }
 
@@ -2218,7 +2257,12 @@ impl NativeTerminal {
 
     /// Replay an immutable native ring copy without a full JS Buffer round trip.
     #[napi(catch_unwind)]
-    pub fn feed_frozen(&mut self, source: &NativeFrozenRing, start: u32, end: u32) -> Result<(), ErrorCode> {
+    pub fn feed_frozen(
+        &mut self,
+        source: &NativeFrozenRing,
+        start: u32,
+        end: u32,
+    ) -> Result<(), ErrorCode> {
         Ok(self.feed_frozen_range(source, start, end)?)
     }
 
@@ -2234,7 +2278,10 @@ impl NativeTerminal {
 
     /// See `ansi_snapshot_bytes`.
     #[napi(catch_unwind)]
-    pub fn ansi_snapshot(&mut self, requested_scrollback: Option<u32>) -> Result<Buffer, ErrorCode> {
+    pub fn ansi_snapshot(
+        &mut self,
+        requested_scrollback: Option<u32>,
+    ) -> Result<Buffer, ErrorCode> {
         Ok(self.ansi_snapshot_bytes(requested_scrollback)?.into())
     }
 
@@ -2385,7 +2432,11 @@ impl NativeTerminal {
             .iter()
             .copied()
             .filter(|family| Some(*family) != reported);
-        reported.into_iter().chain(rest).map(str::to_owned).collect()
+        reported
+            .into_iter()
+            .chain(rest)
+            .map(str::to_owned)
+            .collect()
     }
 
     pub(crate) fn feed_frozen_range(
@@ -3148,7 +3199,12 @@ impl NativeRing {
     /// with no bytes between them keeps the one with the fewest rows and the
     /// newest. `applied` defaults to true.
     #[napi(catch_unwind)]
-    pub fn note_geometry(&mut self, cols: u32, rows: u32, applied: Option<bool>) -> Result<(), ErrorCode> {
+    pub fn note_geometry(
+        &mut self,
+        cols: u32,
+        rows: u32,
+        applied: Option<bool>,
+    ) -> Result<(), ErrorCode> {
         Ok(self.note_geometry_mark(cols, rows, applied)?)
     }
 
@@ -5605,6 +5661,121 @@ mod osc_cap_tests {
         .unwrap();
         assert_eq!(out, b"ab");
         assert_eq!(out2, b"\x1b]2;title\x07c");
+    }
+
+    /// What `feeds` pass on with the `nth` emit of the last feed refused
+    /// once and that feed then fed again; and whether the refused attempt
+    /// had passed bytes on first (partially applied).
+    fn retried(feeds: &[&[u8]], nth: usize) -> (Vec<u8>, bool) {
+        let (last, before) = feeds.split_last().unwrap();
+        let mut cap = OscCap::default();
+        let mut out = run(&mut cap, before);
+        let mut calls = 0;
+        let mut advanced = false;
+        let refused = cap.scan(last, &mut |part, _| {
+            calls += 1;
+            if calls == nth {
+                return Err(AllocFailed {
+                    what: "a test join",
+                    bytes: 1,
+                });
+            }
+            advanced = true;
+            out.extend_from_slice(part);
+            Ok(())
+        });
+        assert!(refused.is_err(), "emit {nth} refused");
+        out.extend(run(&mut cap, &[last]));
+        assert!(cap.take_dropped());
+        (out, advanced)
+    }
+
+    /// How many emits `feeds`' last feed makes, unrefused.
+    fn emits(feeds: &[&[u8]]) -> usize {
+        let (last, before) = feeds.split_last().unwrap();
+        let mut cap = OscCap::default();
+        run(&mut cap, before);
+        let mut count = 0;
+        cap.scan(last, &mut |_, _| {
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+        count
+    }
+
+    #[test]
+    fn a_split_opener_after_a_trailing_esc_is_retried_whole() {
+        // The ESC went on with the first feed; the `]` is the next feed's
+        // first byte, and the body passes the cap.
+        let big = body(MAX_OSC_BODY + 1);
+        let tail = [b"]0;".as_slice(), &big, b"\x07after"].concat();
+        let feeds: [&[u8]; 2] = [b"x\x1b", &tail];
+        let whole = b"x\x1b]\x18after".as_slice();
+        drops(&feeds, whole);
+        // The first emit (the `]`) refused: nothing changed, so the retry
+        // passes what one unrefused feed passes.
+        assert_eq!(retried(&feeds, 1), (whole.to_vec(), false));
+        // Refused after the `]` went on: it is not passed again (its CAN
+        // is owed), and the body stays skipped.
+        for nth in 2..=emits(&feeds) {
+            assert_eq!(retried(&feeds, nth), (whole.to_vec(), true), "emit {nth}");
+        }
+    }
+
+    #[test]
+    fn a_held_osc_keeps_its_opener_until_the_opener_went_on() {
+        // The opener holds an LF, which vte executes in its escape state.
+        let big = body(MAX_OSC_BODY + 1);
+        let rest = [big.as_slice(), b"\x07b"].concat();
+        let feeds: [&[u8]; 2] = [b"a\x1b\n]0;", &rest];
+        let whole = b"a\x1b\n]\x18b".as_slice();
+        drops(&feeds, whole);
+        assert_eq!(retried(&feeds, 1), (whole.to_vec(), false));
+        for nth in 2..=emits(&feeds) {
+            assert_eq!(retried(&feeds, nth), (whole.to_vec(), true), "emit {nth}");
+        }
+    }
+
+    /// A terminal's text and refusal families after `feeds` through
+    /// feed_xterm, the last one's first join refused once and retried.
+    fn xterm_retried(feeds: &[&[u8]], refuse: bool) -> (Vec<String>, Vec<String>) {
+        let mut terminal = NativeTerminal::create(20, 3, 0).unwrap();
+        let (last, before) = feeds.split_last().unwrap();
+        for feed in before {
+            terminal.feed_xterm_bytes(feed, 0).unwrap();
+        }
+        if refuse {
+            fallible::fail_next(FEED_JOIN, 1);
+            assert!(matches!(
+                terminal.feed_xterm_bytes(last, 0),
+                Err(CallError::Alloc(AllocFailed {
+                    what: FEED_JOIN,
+                    ..
+                }))
+            ));
+            fallible::fail_next("", 0);
+        }
+        terminal.feed_xterm_bytes(last, 0).unwrap();
+        (text(&mut terminal), terminal.families())
+    }
+
+    #[test]
+    fn a_terminal_feed_retried_after_its_first_join_reads_as_one_feed() {
+        let big = body(MAX_OSC_BODY + 1);
+        // A trailing ESC, then `]` and the body.
+        let tail = [b"]0;".as_slice(), &big, b"\x07after"].concat();
+        let feeds: [&[u8]; 2] = [b"x\x1b", &tail];
+        let unrefused = xterm_retried(&feeds, false);
+        assert_eq!(unrefused.0, ["xafter"]);
+        assert_eq!(unrefused.1, ["unsupported-state-long-sequence"]);
+        assert_eq!(xterm_retried(&feeds, true), unrefused);
+        // A held OSC with an LF in its opener, dropped by the next feed.
+        let rest = [big.as_slice(), b"\x07b"].concat();
+        let feeds: [&[u8]; 2] = [b"a\x1b\n]0;", &rest];
+        let unrefused = xterm_retried(&feeds, false);
+        assert_eq!(unrefused.0, ["a", " b"], "the LF went on");
+        assert_eq!(xterm_retried(&feeds, true), unrefused);
     }
 
     #[test]

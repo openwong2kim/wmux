@@ -54,7 +54,11 @@ impl NativeOutputDecoder {
         Self::default()
     }
     #[napi(catch_unwind)]
-    pub fn feed(&mut self, bytes: Uint8Array, finish: bool) -> Result<NativeOutputChunk, ErrorCode> {
+    pub fn feed(
+        &mut self,
+        bytes: Uint8Array,
+        finish: bool,
+    ) -> Result<NativeOutputChunk, ErrorCode> {
         Ok(self.feed_bytes(&bytes, finish)?)
     }
 }

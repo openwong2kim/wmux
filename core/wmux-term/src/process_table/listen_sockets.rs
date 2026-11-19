@@ -309,9 +309,7 @@ pub(super) fn socket_inode(link: &str) -> Option<u64> {
 pub(super) fn collect_linux(
     pids: impl IntoIterator<Item = u32>,
     listening: &std::collections::HashMap<u64, (u16, String, u8)>,
-    mut fd_links: impl FnMut(
-        u32,
-    ) -> Result<std::io::Result<Vec<std::io::Result<String>>>, AllocFailed>,
+    mut fd_links: impl FnMut(u32) -> Result<std::io::Result<Vec<std::io::Result<String>>>, AllocFailed>,
 ) -> Result<Vec<ListenSocket>, CallError> {
     let unreadable = |e: &std::io::Error| e.raw_os_error().is_some_and(unreadable_process);
     let mut out = Vec::new();
@@ -484,9 +482,7 @@ mod linux_sys {
 
     /// A pid's descriptor links, one per descriptor (each a row's own short
     /// string); the outer error is a refused list.
-    fn fd_links(
-        pid: u32,
-    ) -> Result<std::io::Result<Vec<std::io::Result<String>>>, AllocFailed> {
+    fn fd_links(pid: u32) -> Result<std::io::Result<Vec<std::io::Result<String>>>, AllocFailed> {
         let entries = match std::fs::read_dir(format!("/proc/{pid}/fd")) {
             Ok(entries) => entries,
             Err(e) => return Ok(Err(e)),
@@ -510,9 +506,8 @@ mod linux_sys {
         for (file, family) in [("/proc/net/tcp", 4), ("/proc/net/tcp6", 6)] {
             let text = match super::super::read_file(std::path::Path::new(file), NET_TCP)? {
                 // As read_to_string reads it: the kernel writes ASCII.
-                Ok(bytes) => String::from_utf8(bytes).map_err(|_| {
-                    CallError::reason(format!("read {file} failed (not UTF-8)"))
-                })?,
+                Ok(bytes) => String::from_utf8(bytes)
+                    .map_err(|_| CallError::reason(format!("read {file} failed (not UTF-8)")))?,
                 // No IPv6 in this kernel.
                 Err(e) if family == 6 && e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(CallError::reason(format!("read {file} failed ({e})"))),
@@ -718,12 +713,22 @@ mod tests {
         // The sockets found, on either OS.
         let _fail = fallible::fail_what(SOCKETS);
         let rows = collect_linux([1], &listening, |_| Ok(Ok(vec![Ok("socket:[10]".into())])));
-        assert!(matches!(rows, Err(CallError::Alloc(AllocFailed { what: SOCKETS, .. }))));
-        let rows = collect_macos([1], |_| Ok(Ok(vec![3])), |_, _, buf: &mut [u8]| {
-            buf.copy_from_slice(&listener(3000));
-            Ok(())
-        });
-        assert!(matches!(rows, Err(CallError::Alloc(AllocFailed { what: SOCKETS, .. }))));
+        assert!(matches!(
+            rows,
+            Err(CallError::Alloc(AllocFailed { what: SOCKETS, .. }))
+        ));
+        let rows = collect_macos(
+            [1],
+            |_| Ok(Ok(vec![3])),
+            |_, _, buf: &mut [u8]| {
+                buf.copy_from_slice(&listener(3000));
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            rows,
+            Err(CallError::Alloc(AllocFailed { what: SOCKETS, .. }))
+        ));
         let header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
         let tcp = format!(
             "{header}   0: {}:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 4242 1 0 100 0 0 10 0\n",
@@ -749,7 +754,13 @@ mod tests {
             crate::process_table::read_file(&path, "a test file").map(|r| r.map(|d| d.len()))
         });
         assert!(
-            matches!(refused, Err(AllocFailed { what: "a test file", .. })),
+            matches!(
+                refused,
+                Err(AllocFailed {
+                    what: "a test file",
+                    ..
+                })
+            ),
             "{refused:?}"
         );
         let missing = crate::process_table::read_file(&dir.join("none"), "a test file");
@@ -808,7 +819,10 @@ mod tests {
         // The wrong family's line, or a field short, is no listener.
         assert!(parse_net_tcp(&tcp, 6).unwrap().is_empty());
         assert!(parse_net_tcp(&tcp6([0; 16]), 4).unwrap().is_empty());
-        let short = format!("{header}   0: {}:1F90 00000000:0000 0A 0 0 0\n", hex(&[127, 0, 0, 1]));
+        let short = format!(
+            "{header}   0: {}:1F90 00000000:0000 0A 0 0 0\n",
+            hex(&[127, 0, 0, 1])
+        );
         assert!(parse_net_tcp(&short, 4).unwrap().is_empty());
     }
 

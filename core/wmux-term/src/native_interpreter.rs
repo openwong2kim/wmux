@@ -77,6 +77,15 @@ impl NativeOutputInterpreter {
         self.get_mut()?.reset_modes();
         Ok(())
     }
+    /// Forgets the OSC state (the OSC being read, the ESC held for the next
+    /// chunk, the mode scan's carry) after the caller skipped a chunk; the
+    /// modes stay. Allocates nothing, never throws (a no-op once disposed).
+    #[napi(catch_unwind)]
+    pub fn clear_osc(&mut self) {
+        if let Some(inner) = &mut self.inner {
+            inner.clear_osc_state();
+        }
+    }
     #[napi(catch_unwind)]
     pub fn dispose(&mut self) {
         self.inner = None;
@@ -135,9 +144,12 @@ fn batch(events: Events) -> NativeOscBatch {
 /// buffer reserved fallibly.
 fn string_from_js(text: &JsString) -> Result<String, ErrorCode> {
     let value = text.value();
-    let len = text
-        .utf8_len()
-        .map_err(|error| Error::new(ErrorCode::Status(error.status), "The output text is not a string"))?;
+    let len = text.utf8_len().map_err(|error| {
+        Error::new(
+            ErrorCode::Status(error.status),
+            "The output text is not a string",
+        )
+    })?;
     copy_utf8(len, |buffer, size| {
         let mut written = 0;
         // SAFETY: `buffer` has room for `size` bytes; napi writes at most

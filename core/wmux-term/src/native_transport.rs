@@ -921,7 +921,15 @@ fn run_reader(
 ) {
     let mut buffer = [0; READ_BYTES];
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        read_loop(reader, &tx, &mut buffer, state, notify, wait_readable, clock)
+        read_loop(
+            reader,
+            &tx,
+            &mut buffer,
+            state,
+            notify,
+            wait_readable,
+            clock,
+        )
     }));
     let stopped = match outcome {
         Ok(stopped) => stopped,
@@ -1640,7 +1648,12 @@ mod tests {
     fn a_reader_reaching_eof_ends_the_output_without_an_error() {
         let (tx, rx) = sync_channel(DRAIN_READS);
         let state = Arc::new(State::new());
-        read_all(&mut pieces(&[b"a", b"b"]), tx, &state, &FakeClock::new(Duration::ZERO));
+        read_all(
+            &mut pieces(&[b"a", b"b"]),
+            tx,
+            &state,
+            &FakeClock::new(Duration::ZERO),
+        );
         let read = transport(rx, state).drain(None);
         assert_eq!(read.data, b"ab");
         assert!(read.eof && read.error.is_none());

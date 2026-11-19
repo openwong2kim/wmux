@@ -26,17 +26,17 @@ pub(super) fn parse_kinfo(buf: &[u8]) -> Result<Vec<(ProcessRow, u32)>, AllocFai
     let mut rows = fallible::try_with_capacity(records.len(), ROWS)?;
     // Within the capacity just reserved: no allocation but the names.
     rows.extend(records.iter().map(|r| {
-            let comm = &r[KINFO_COMM..KINFO_COMM + KINFO_COMM_LEN];
-            let len = comm.iter().position(|&b| b == 0).unwrap_or(comm.len());
-            let row = ProcessRow {
-                pid: read_i32(r, KINFO_PID) as u32,
-                ppid: read_i32(r, KINFO_PPID) as u32,
-                name: String::from_utf8_lossy(&comm[..len]).into_owned(),
-                created: None,
-                cmdline: None,
-            };
-            (row, read_i32(r, KINFO_UID) as u32)
-        }));
+        let comm = &r[KINFO_COMM..KINFO_COMM + KINFO_COMM_LEN];
+        let len = comm.iter().position(|&b| b == 0).unwrap_or(comm.len());
+        let row = ProcessRow {
+            pid: read_i32(r, KINFO_PID) as u32,
+            ppid: read_i32(r, KINFO_PPID) as u32,
+            name: String::from_utf8_lossy(&comm[..len]).into_owned(),
+            created: None,
+            cmdline: None,
+        };
+        (row, read_i32(r, KINFO_UID) as u32)
+    }));
     Ok(rows)
 }
 
@@ -173,7 +173,13 @@ mod tests {
         // 100 rows of 80 bytes: refused, never aborted.
         let rows = crate::test_allocator::refusing(4096, || parse_kinfo(&buf).map(|r| r.len()));
         assert!(
-            matches!(rows, Err(AllocFailed { what: ROWS, bytes: 8000 })),
+            matches!(
+                rows,
+                Err(AllocFailed {
+                    what: ROWS,
+                    bytes: 8000
+                })
+            ),
             "{rows:?}"
         );
         assert_eq!(parse_kinfo(&buf).map(|r| r.len()), Ok(100));

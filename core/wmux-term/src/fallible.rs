@@ -236,6 +236,7 @@ pub(crate) fn napi_error(error: napi::Error) -> napi::Error<ErrorCode> {
 /// so the JS error object is made here with that code, and the rejection
 /// reuses it (napi rejects with the object an error refers to).
 #[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn task_refusal(env: napi::Env, failed: AllocFailed) -> napi::Error {
     let error: napi::Error<ErrorCode> = failed.into();
     napi::Error::from(napi::JsError::from(error).into_unknown(env))
@@ -463,8 +464,7 @@ pub(crate) fn try_reserve_map<K: Eq + std::hash::Hash, V>(
 #[cfg_attr(not(feature = "native-core"), allow(dead_code))]
 pub(crate) fn try_utf16_lossy(units: &[u16], what: &'static str) -> Result<String, AllocFailed> {
     let chars = || {
-        char::decode_utf16(units.iter().copied())
-            .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+        char::decode_utf16(units.iter().copied()).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
     };
     let len = chars().map(char::len_utf8).sum();
     let mut text = String::new();

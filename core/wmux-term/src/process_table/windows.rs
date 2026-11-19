@@ -540,9 +540,8 @@ mod tests {
             // The liveness table reads no command line.
             assert!(snapshot(false).is_ok());
         }
-        let refused = crate::test_allocator::refusing(1, || {
-            query_growing(|_, _, _| STATUS_BUFFER_TOO_SMALL)
-        });
+        let refused =
+            crate::test_allocator::refusing(1, || query_growing(|_, _, _| STATUS_BUFFER_TOO_SMALL));
         assert!(matches!(
             refused,
             Err(AllocFailed {

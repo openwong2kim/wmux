@@ -114,9 +114,8 @@ mod tests {
     fn a_refused_row_buffer_is_a_refusal_not_an_abort() {
         // The rows' first buffer is 36 KiB: an infallible one aborted here.
         let line = stat("zsh", 1);
-        let rows = crate::test_allocator::refusing(4096, || {
-            walk([1, 2, 3], |_| Ok(Ok(line.clone())))
-        });
+        let rows =
+            crate::test_allocator::refusing(4096, || walk([1, 2, 3], |_| Ok(Ok(line.clone()))));
         assert!(
             matches!(rows, Err(CallError::Alloc(AllocFailed { what: ROWS, .. }))),
             "{rows:?}"
@@ -126,10 +125,7 @@ mod tests {
             what: "a /proc stat line",
             bytes: 8192,
         };
-        assert_eq!(
-            walk([1], |_| Err(refused)),
-            Err(CallError::Alloc(refused))
-        );
+        assert_eq!(walk([1], |_| Err(refused)), Err(CallError::Alloc(refused)));
     }
 
     #[test]
