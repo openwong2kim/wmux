@@ -3,6 +3,10 @@
 //! Preserve their chunk semantics, including the 256 UTF-16-unit mode carry and
 //! the ESC a chunk ends on, held for the next one so an OSC introducer or
 //! terminator split across chunks is still read; this is not a new VT parser.
+//!
+//! The modes never need an allocation: the carry is inline and the scan reads
+//! carry and chunk in place. A chunk whose feed is refused can still be read
+//! for its modes (`skip`), so they move on in step with the stream.
 
 const MODES: [(u32, bool); 14] = [
     (1, false),
@@ -27,10 +31,12 @@ const MAX_OSC: usize = 64 * 1024;
 const RETAIN_OSC: usize = 2048;
 /// UTF-16 units of the mode carry: CARRY_UNITS, two bytes each.
 const CARRY_UNITS: usize = 256;
-/// What the interpreter's allocations are for. The chunk's UTF-16 copy
-/// and the mode scan's carry-plus-chunk text are bounded by the chunk
-/// (at most 3x for the lossy carry); an OSC by MAX_OSC units; the events
-/// by the chunk's OSC count.
+/// UTF-8 bytes of the carry read lossily: at most 3 per unit (a lone
+/// surrogate becomes U+FFFD; a pair, two units, is 4 bytes).
+const CARRY_UTF8: usize = 3 * CARRY_UNITS;
+/// What the interpreter's allocations are for. The chunk's UTF-16 copy is
+/// bounded by the chunk; an OSC by MAX_OSC units; the events by the
+/// chunk's OSC count.
 const INTERPRETER: &str = "the output interpreter";
 /// An OSC event's text: at most MAX_OSC units.
 const OSC_EVENT: &str = "an OSC event's text";
@@ -44,7 +50,7 @@ pub struct OscEvent {
 }
 
 pub struct OutputInterpreter {
-    carry: Vec<u16>,
+    carry: Carry,
     modes: Modes,
     osc: Vec<u16>,
     in_osc: bool,
@@ -55,7 +61,7 @@ pub struct OutputInterpreter {
 impl Default for OutputInterpreter {
     fn default() -> Self {
         Self {
-            carry: Vec::new(),
+            carry: Carry::EMPTY,
             modes: Modes::DEFAULT,
             osc: Vec::new(),
             in_osc: false,
@@ -64,9 +70,81 @@ impl Default for OutputInterpreter {
     }
 }
 
+/// The mode scan's carry: the stream's last CARRY_UNITS UTF-16 units, read
+/// again in front of the next chunk so a sequence split across chunks is
+/// still seen. Inline, so keeping it never allocates.
+#[derive(Clone, Copy)]
+struct Carry {
+    units: [u16; CARRY_UNITS],
+    len: usize,
+}
+
+impl Carry {
+    const EMPTY: Self = Self {
+        units: [0; CARRY_UNITS],
+        len: 0,
+    };
+
+    fn as_slice(&self) -> &[u16] {
+        &self.units[..self.len]
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The carry once `chunk` was read: its last CARRY_UNITS units, after
+    /// as many of this carry's last units as still fit. A surrogate pair
+    /// the limit cuts keeps its low unit only.
+    fn after(&self, chunk: &str) -> Self {
+        let mut tail = [0; CARRY_UNITS];
+        let mut at = CARRY_UNITS;
+        'chars: for ch in chunk.chars().rev() {
+            let mut units = [0; 2];
+            for unit in ch.encode_utf16(&mut units).iter().rev() {
+                if at == 0 {
+                    break 'chars;
+                }
+                at -= 1;
+                tail[at] = *unit;
+            }
+        }
+        let fresh = CARRY_UNITS - at;
+        let keep = at.min(self.len);
+        let mut next = Self::EMPTY;
+        next.units[..keep].copy_from_slice(&self.units[self.len - keep..self.len]);
+        next.units[keep..keep + fresh].copy_from_slice(&tail[at..]);
+        next.len = keep + fresh;
+        next
+    }
+
+    /// The carry as UTF-8, as `String::from_utf16_lossy` reads it, into `out`.
+    fn lossy_utf8<'a>(&self, out: &'a mut [u8; CARRY_UTF8]) -> &'a [u8] {
+        let mut len = 0;
+        for ch in char::decode_utf16(self.as_slice().iter().copied()) {
+            let ch = ch.unwrap_or(char::REPLACEMENT_CHARACTER);
+            // At most 3 bytes per unit read: within CARRY_UTF8.
+            len += ch.encode_utf8(&mut out[len..]).len();
+        }
+        &out[..len]
+    }
+}
+
+impl PartialEq for Carry {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl std::fmt::Debug for Carry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.as_slice().fmt(f)
+    }
+}
+
 /// The tracked modes: each one's state and the stream offset it last
 /// changed at, and the alternate screen's.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Modes {
     state: [bool; 14],
     changed: [f64; 14],
@@ -139,7 +217,8 @@ impl OutputInterpreter {
         } else {
             None
         };
-        let (carry, modes) = self.feed_modes(text, end)?;
+        // Kept only once the OSC scan and `finish` succeeded.
+        let (carry, modes) = self.feed_modes(text, end);
         let kept = self.osc.len();
         let mut events = Vec::new();
         let scanned = units
@@ -191,108 +270,26 @@ impl OutputInterpreter {
         Ok(units)
     }
 
-    /// The carry and the modes after `chunk`, for `feed_with` to keep.
-    fn feed_modes(&self, chunk: &str, end: f64) -> Result<(Vec<u16>, Modes), AllocFailed> {
+    /// The carry and the modes after `chunk`, for `feed_with` or `skip` to
+    /// keep. Allocates nothing.
+    fn feed_modes(&self, chunk: &str, end: f64) -> (Carry, Modes) {
         // Only the suffix needs UTF-16 coordinates. Scan the actual stream as
         // UTF-8: mode sequences are ASCII and ring offsets are already bytes.
-        let mut carry = utf16_tail(chunk, CARRY_UNITS)?;
-        if carry.len() < CARRY_UNITS {
-            let previous = &self.carry;
-            let keep = (CARRY_UNITS - carry.len()).min(previous.len());
-            // Within the CARRY_UNITS capacity utf16_tail reserved.
-            carry.splice(0..0, previous[previous.len() - keep..].iter().copied());
+        let carry = self.carry.after(chunk);
+        if !(chunk.contains('\x1b') || self.carry.as_slice().contains(&ESC)) {
+            return (carry, self.modes);
         }
-        let scan = chunk.contains('\x1b') || self.carry.contains(&ESC);
-        let combined = if scan && !self.carry.is_empty() {
-            let mut combined = from_utf16_lossy(&self.carry, chunk.len(), INTERPRETER)?;
-            combined.push_str(chunk);
-            Some(combined)
+        let mut lossy = [0; CARRY_UTF8];
+        let head = if self.carry.is_empty() {
+            &[][..]
         } else {
-            None
+            self.carry.lossy_utf8(&mut lossy)
         };
-        // Every buffer is in hand: nothing below fails.
-        let mut m = self.modes;
-        if !scan {
-            return Ok((carry, m));
-        }
-        let text = combined.as_deref().unwrap_or(chunk).as_bytes();
-        let mut changed_at = [None; 14];
-        let mut alt_at = None;
-        let mut i = 0;
-        while i < text.len() {
-            if text[i] != ESC as u8 {
-                i += 1;
-                continue;
-            }
-            if text.get(i + 1) == Some(&b'c') {
-                m = Modes::DEFAULT;
-                i += 2;
-                continue;
-            }
-            if text.get(i + 1) != Some(&b'[') {
-                i += 1;
-                continue;
-            }
-            if text.get(i + 2..i + 4) == Some(b"!p") {
-                for (n, (mode, default)) in MODES.iter().enumerate() {
-                    if !is_alt(*mode) {
-                        m.state[n] = *default;
-                    }
-                }
-                i += 4;
-                continue;
-            }
-            if text.get(i + 2) != Some(&b'?') {
-                i += 1;
-                continue;
-            }
-            let start = i + 3;
-            let mut stop = start;
-            while text
-                .get(stop)
-                .is_some_and(|c| c.is_ascii_digit() || *c == b';')
-            {
-                stop += 1;
-            }
-            let final_char = text.get(stop).copied();
-            if !matches!(final_char, Some(104 | 108)) {
-                i += 1;
-                continue;
-            }
-            let on = final_char == Some(b'h');
-            for raw in text[start..stop].split(|c| *c == b';') {
-                if raw.is_empty() {
-                    continue;
-                }
-                // Values outside the tracked set have no effect (including JS Infinity).
-                let mode = raw.iter().try_fold(0u32, |n, c| {
-                    n.checked_mul(10)?.checked_add((*c - 48) as u32)
-                });
-                if let Some((n, (mode, _))) = MODES
-                    .iter()
-                    .enumerate()
-                    .find(|(_, (m, _))| Some(*m) == mode)
-                {
-                    m.state[n] = on;
-                    changed_at[n] = Some(i);
-                    if on && is_alt(*mode) {
-                        alt_at = Some(i);
-                        m.alt_mode = *mode;
-                    }
-                }
-            }
-            i = stop + 1;
-        }
-        // A match always starts at ASCII ESC, so no offset splits UTF-8.
-        for (n, index) in changed_at.iter().enumerate() {
-            if let Some(index) = index {
-                m.changed[n] = end - (text.len() - index) as f64;
-            }
-        }
-        if let Some(index) = alt_at {
-            m.alt_offset = end - (text.len() - index) as f64;
-        }
-        Ok((carry, m))
+        let text = Joined {
+            head,
+            tail: chunk.as_bytes(),
+        };
+        (carry, scan_modes(self.modes, &text, end))
     }
 
     /// `chunk` starts with the ESC the last chunk ended in, if any
@@ -323,7 +320,7 @@ impl OutputInterpreter {
                     let osc = if on_kept { &self.osc } else { &fresh };
                     if let Some(split) = osc.iter().position(|c| *c == b';' as u16) {
                         if let Some(code) = parse_decimal_prefix(&osc[..split]) {
-                            let data = from_utf16_lossy(&osc[split + 1..], 0, OSC_EVENT)?;
+                            let data = from_utf16_lossy(&osc[split + 1..], OSC_EVENT)?;
                             fallible::try_reserve(events, 1, OSC_EVENTS)?;
                             events.push(OscEvent { code, data });
                         }
@@ -379,17 +376,21 @@ impl OutputInterpreter {
         }
     }
 
-    /// The binding's `clearOsc` (native-core), after a chunk is skipped:
-    /// the next chunk does not continue it. The OSC being read and the ESC
-    /// held for the next chunk are forgotten, and so is the mode scan's
-    /// carry (the last chunk's tail, which would join across the gap). The
-    /// modes stay. Frees a large OSC, allocates nothing.
-    #[cfg_attr(not(feature = "native-core"), allow(dead_code))]
-    pub fn clear_osc_state(&mut self) {
+    /// The binding's `skipChunk` and `skipBytes` (native-core), for a chunk
+    /// whose feed was refused: `text` is read for its modes only, exactly as
+    /// `feed` reads them (after the carry, which it then extends), so the
+    /// modes and the offsets they changed at stay in step with the stream.
+    /// The OSC state is dropped (the OSC being read, the ESC held for the
+    /// next chunk), and no event is read. Frees a large OSC, allocates
+    /// nothing, cannot fail.
+    pub fn skip(&mut self, text: &str, end: f64) {
+        // As `feed`: an empty chunk leaves the modes and the carry.
+        if !text.is_empty() {
+            (self.carry, self.modes) = self.feed_modes(text, end);
+        }
         self.clear_osc();
         self.in_osc = false;
         self.pending_esc = false;
-        self.carry.clear();
     }
 
     /// The binding's `reset` (native-core).
@@ -433,44 +434,141 @@ impl OutputInterpreter {
 fn is_alt(mode: u32) -> bool {
     matches!(mode, 47 | 1047 | 1049)
 }
+
+/// The text the mode scan reads, `head` then `tail`, without joining them.
+struct Joined<'a> {
+    head: &'a [u8],
+    tail: &'a [u8],
+}
+
+impl Joined<'_> {
+    fn len(&self) -> usize {
+        self.head.len() + self.tail.len()
+    }
+
+    fn at(&self, i: usize) -> Option<u8> {
+        match i.checked_sub(self.head.len()) {
+            None => Some(self.head[i]),
+            Some(i) => self.tail.get(i).copied(),
+        }
+    }
+
+    /// The first ESC at or after `from`.
+    fn esc_from(&self, from: usize) -> Option<usize> {
+        let esc = |part: &[u8]| part.iter().position(|c| *c == ESC as u8);
+        let head = self.head.len();
+        if from < head {
+            if let Some(at) = esc(&self.head[from..]) {
+                return Some(from + at);
+            }
+        }
+        let from = from.max(head);
+        esc(self.tail.get(from - head..)?).map(|at| from + at)
+    }
+}
+
+/// `modes` after the mode sequences in `text`, whose last byte is at stream
+/// offset `end - 1`. Allocates nothing.
+fn scan_modes(mut m: Modes, text: &Joined<'_>, end: f64) -> Modes {
+    let mut changed_at = [None; 14];
+    let mut alt_at = None;
+    let mut i = 0;
+    while let Some(esc) = text.esc_from(i) {
+        i = esc;
+        if text.at(i + 1) == Some(b'c') {
+            m = Modes::DEFAULT;
+            i += 2;
+            continue;
+        }
+        if text.at(i + 1) != Some(b'[') {
+            i += 1;
+            continue;
+        }
+        if text.at(i + 2) == Some(b'!') && text.at(i + 3) == Some(b'p') {
+            for (n, (mode, default)) in MODES.iter().enumerate() {
+                if !is_alt(*mode) {
+                    m.state[n] = *default;
+                }
+            }
+            i += 4;
+            continue;
+        }
+        if text.at(i + 2) != Some(b'?') {
+            i += 1;
+            continue;
+        }
+        let start = i + 3;
+        let mut stop = start;
+        while text
+            .at(stop)
+            .is_some_and(|c| c.is_ascii_digit() || c == b';')
+        {
+            stop += 1;
+        }
+        let final_char = text.at(stop);
+        if !matches!(final_char, Some(b'h' | b'l')) {
+            i += 1;
+            continue;
+        }
+        let on = final_char == Some(b'h');
+        // Each `;`-separated parameter; an empty one is skipped.
+        let mut digits = 0;
+        // None once past u32: outside the tracked set (including JS Infinity).
+        let mut value = Some(0u32);
+        for j in start..=stop {
+            let c = text.at(j).unwrap_or(b';');
+            if j < stop && c != b';' {
+                digits += 1;
+                value = value.and_then(|n| n.checked_mul(10)?.checked_add(u32::from(c - b'0')));
+                continue;
+            }
+            if digits > 0 {
+                if let Some((n, (mode, _))) = MODES
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (m, _))| Some(*m) == value)
+                {
+                    m.state[n] = on;
+                    changed_at[n] = Some(i);
+                    if on && is_alt(*mode) {
+                        alt_at = Some(i);
+                        m.alt_mode = *mode;
+                    }
+                }
+            }
+            digits = 0;
+            value = Some(0);
+        }
+        i = stop + 1;
+    }
+    // A match always starts at ASCII ESC, so no offset splits UTF-8.
+    let len = text.len();
+    for (n, index) in changed_at.iter().enumerate() {
+        if let Some(index) = index {
+            m.changed[n] = end - (len - index) as f64;
+        }
+    }
+    if let Some(index) = alt_at {
+        m.alt_offset = end - (len - index) as f64;
+    }
+    m
+}
 fn is_digit(c: u16) -> bool {
     (48..=57).contains(&c)
 }
-/// `String::from_utf16_lossy(units)` with room for `extra` more bytes, in
-/// one fallible allocation of its exact size.
-fn from_utf16_lossy(
-    units: &[u16],
-    extra: usize,
-    what: &'static str,
-) -> Result<String, AllocFailed> {
+/// `String::from_utf16_lossy(units)`, in one fallible allocation of its
+/// exact size.
+fn from_utf16_lossy(units: &[u16], what: &'static str) -> Result<String, AllocFailed> {
     let chars = || char::decode_utf16(units.iter().copied());
     let len = chars()
         .map(|c| c.map_or(char::REPLACEMENT_CHARACTER, |c| c).len_utf8())
-        .fold(extra, usize::saturating_add);
+        .fold(0, usize::saturating_add);
     let mut text = String::new();
     fallible::try_reserve_str(&mut text, len, what)?;
     text.extend(chars().map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)));
     Ok(text)
 }
 
-/// The last `limit` UTF-16 units of `text`, in a buffer of exactly `limit`.
-fn utf16_tail(text: &str, limit: usize) -> Result<Vec<u16>, AllocFailed> {
-    let mut reversed = fallible::try_with_capacity(limit, INTERPRETER)?;
-    for ch in text.chars().rev() {
-        let mut units = [0; 2];
-        for unit in ch.encode_utf16(&mut units).iter().rev() {
-            if reversed.len() == limit {
-                break;
-            }
-            reversed.push(*unit);
-        }
-        if reversed.len() == limit {
-            break;
-        }
-    }
-    reversed.reverse();
-    Ok(reversed)
-}
 fn js_space(c: u16) -> bool {
     matches!(c, 9..=13 | 32 | 160 | 0x1680 | 0x2000..=0x200a | 0x2028 | 0x2029 | 0x202f | 0x205f | 0x3000 | 0xfeff)
 }
@@ -524,47 +622,149 @@ mod tests {
         assert!(p.feed("\x07", 0.0, true).unwrap().is_empty());
         assert_eq!(p.feed("\x1b]133;C\x1b\\", 0.0, true).unwrap()[0].data, "C");
     }
+    /// `skip`, where nothing may allocate.
+    fn skip_refusing(p: &mut OutputInterpreter, text: &str, end: f64) {
+        crate::test_allocator::refusing(1, || p.skip(text, end));
+        assert_eq!(crate::test_allocator::refused(), 0, "{text:?}");
+    }
+
     #[test]
-    fn clearing_the_osc_state_keeps_the_modes_and_allocates_nothing() {
+    fn a_skipped_chunk_moves_the_modes_without_allocating() {
+        let mut fed = OutputInterpreter::default();
+        fed.feed("\x1b[?1049h", 100.0, true).unwrap();
+        let mut p = OutputInterpreter::default();
+        skip_refusing(&mut p, "\x1b[?1049h", 100.0);
+        assert!(p.alt_screen());
+        assert_eq!(p.preamble(101.0), "\x1b[?1049h\x1b[2J\x1b[H");
+        assert_eq!(p.modes, fed.modes);
+        assert_eq!(p.carry, fed.carry);
+        // A sequence split around the skipped chunk is joined, both ways.
+        let mut p = OutputInterpreter::default();
+        p.feed("x\x1b[?10", 20.0, true).unwrap();
+        skip_refusing(&mut p, "49h", 23.0);
+        assert!(p.alt_screen());
+        assert_eq!(p.modes.alt_offset, 15.0);
+        let mut p = OutputInterpreter::default();
+        skip_refusing(&mut p, "x\x1b[?10", 20.0);
+        p.feed("49h\x1b[?2004h", 31.0, true).unwrap();
+        assert!(p.alt_screen() && p.is_set(2004));
+        assert_eq!(p.modes.alt_offset, 15.0);
+        // An empty chunk leaves the modes and the carry, as `feed` does.
+        let before = (p.modes, p.carry);
+        skip_refusing(&mut p, "", 31.0);
+        assert_eq!((p.modes, p.carry), before);
+    }
+
+    #[test]
+    fn a_skipped_chunk_drops_the_osc_state_and_reads_no_event() {
         let event = |data: &str| {
             vec![OscEvent {
                 code: 133.0,
                 data: data.into(),
             }]
         };
-        // What each chunk pair reads as without the clear, and with it.
-        let pairs = [
-            // An open OSC.
-            ("\x1b]133;A", "\x07"),
-            // An ESC held for the next chunk's `]`.
-            ("x\x1b", "]133;A\x07"),
-        ];
-        for (first, second) in pairs {
-            let mut p = OutputInterpreter::default();
-            p.feed(first, 0.0, true).unwrap();
-            assert_eq!(p.feed(second, 0.0, true).unwrap(), event("A"));
-            let mut p = OutputInterpreter::default();
-            p.feed("\x1b[?1049h\x1b[?2004h", 10.0, true).unwrap();
-            p.feed(first, 20.0, true).unwrap();
-            crate::test_allocator::refusing(1, || p.clear_osc_state());
-            assert_eq!(crate::test_allocator::refused(), 0);
-            assert!(p.feed(second, 30.0, true).unwrap().is_empty(), "{first:?}");
-            assert!(p.alt_screen() && p.is_set(2004), "the modes stay");
-        }
-        // The mode scan's carry: a sequence split around the skipped chunk
-        // is not joined across it.
+        // An open OSC: what follows the skipped chunk is not its body.
         let mut p = OutputInterpreter::default();
-        p.feed("\x1b[?1049h", 10.0, true).unwrap();
-        p.feed("x\x1b[?10", 20.0, true).unwrap();
-        p.feed("49l", 30.0, true).unwrap();
-        assert!(!p.alt_screen(), "joined without the clear");
+        p.feed(&format!("\x1b]2;{}", "t".repeat(4000)), 10.0, true)
+            .unwrap();
+        skip_refusing(&mut p, "itle\x07\x1b]133;B", 20.0);
+        assert!(!p.in_osc && p.osc.capacity() <= RETAIN_OSC);
+        assert!(p.feed("text\x07", 30.0, true).unwrap().is_empty());
+        assert_eq!(p.feed("\x1b]133;A\x07", 40.0, true).unwrap(), event("A"));
+        // An ESC held for the next chunk's `]`.
         let mut p = OutputInterpreter::default();
-        p.feed("\x1b[?1049h", 10.0, true).unwrap();
-        p.feed("x\x1b[?10", 20.0, true).unwrap();
-        p.clear_osc_state();
-        p.feed("49l", 30.0, true).unwrap();
-        assert!(p.alt_screen());
+        p.feed("x\x1b", 10.0, true).unwrap();
+        skip_refusing(&mut p, "y", 11.0);
+        assert!(!p.pending_esc);
+        assert!(p.feed("]133;A\x07", 20.0, true).unwrap().is_empty());
+        // An OSC the skipped chunk opens is not read either.
+        let mut p = OutputInterpreter::default();
+        skip_refusing(&mut p, "\x1b]133;A", 10.0);
+        assert!(p.feed("x\x07\x1b]133;B\x07", 20.0, true).unwrap() == event("B"));
     }
+
+    /// Fed chunks and skipped chunks leave the same modes and carry, over
+    /// every split of a stream into three chunks.
+    #[test]
+    fn skipped_chunks_read_the_modes_as_fed_chunks_do() {
+        let stream = "한\x1b[?1049h\x1b]2;t\x07x\x1b[?2004h😀\x1b[?25l\x1b[!p\x1b[?1;1000h\x1bc\x1b[?47;9999999999h";
+        let cuts: Vec<usize> = (0..=stream.len())
+            .filter(|at| stream.is_char_boundary(*at))
+            .collect();
+        for (n, &a) in cuts.iter().enumerate() {
+            for &b in &cuts[n..] {
+                let chunks = [&stream[..a], &stream[a..b], &stream[b..]];
+                let mut fed = OutputInterpreter::default();
+                let mut skipped = OutputInterpreter::default();
+                let mut end = 1000.0;
+                for chunk in chunks {
+                    end += chunk.len() as f64;
+                    fed.feed(chunk, end, true).unwrap();
+                    skipped.skip(chunk, end);
+                }
+                assert_eq!(fed.modes, skipped.modes, "split at {a}, {b}");
+                assert_eq!(fed.carry, skipped.carry, "split at {a}, {b}");
+            }
+        }
+    }
+
+    /// The scan reads carry and chunk in place exactly as it reads them
+    /// joined: one String of the lossy carry and the chunk.
+    #[test]
+    fn the_scan_in_place_reads_as_the_joined_text() {
+        let mut long = "a".repeat(CARRY_UNITS - 1);
+        long.insert(0, '😀');
+        let carries = [
+            // A lone low surrogate opens the carry (a pair cut by the limit).
+            format!("x{long}"),
+            // A pair inside the carry, and ESC as its last unit.
+            format!("{}😀\x1b", "b".repeat(CARRY_UNITS - 2)),
+            "\x1b[?10".to_string(),
+            "x\x1b[!".to_string(),
+            "\x1b".to_string(),
+            "\x1b[?1;20".to_string(),
+        ];
+        let chunks = ["49h", "p\x1b[?2004h", "c\x1b[?1049h", "04h", "[?1049h"];
+        for carried in &carries {
+            let mut p = OutputInterpreter::default();
+            p.feed("\x1b[?2004h\x1b[?1h", 10.0, true).unwrap();
+            p.feed(carried, 500.0, true).unwrap();
+            let mut lossy = [0; CARRY_UTF8];
+            let head = p.carry.lossy_utf8(&mut lossy);
+            assert_eq!(
+                head,
+                String::from_utf16_lossy(p.carry.as_slice()).as_bytes()
+            );
+            for chunk in chunks {
+                let joined = format!("{}{chunk}", String::from_utf16_lossy(p.carry.as_slice()));
+                let whole = Joined {
+                    head: &[],
+                    tail: joined.as_bytes(),
+                };
+                let in_place = Joined {
+                    head,
+                    tail: chunk.as_bytes(),
+                };
+                assert_eq!(
+                    scan_modes(p.modes, &in_place, 900.0),
+                    scan_modes(p.modes, &whole, 900.0),
+                    "{carried:?} then {chunk:?}"
+                );
+                assert_eq!(
+                    p.feed_modes(chunk, 900.0).1,
+                    scan_modes(p.modes, &whole, 900.0)
+                );
+            }
+        }
+        // The longest lossy carry: every unit a lone surrogate.
+        let carry = Carry {
+            units: [0xd800; CARRY_UNITS],
+            len: CARRY_UNITS,
+        };
+        let mut lossy = [0; CARRY_UTF8];
+        assert_eq!(carry.lossy_utf8(&mut lossy).len(), CARRY_UTF8);
+    }
+
     #[test]
     fn osc_introducer_and_terminator_split_across_chunks() {
         for (osc, data) in [("\x1b]133;D;0\x07", "D;0"), ("\x1b]133;A\x1b\\", "A")] {
@@ -652,7 +852,7 @@ mod tests {
     fn lossy_utf16_matches_the_standard_library() {
         for units in [&[0x61, 0xd83d, 0xde00][..], &[0xd800, 0x62], &[0xdc00], &[]] {
             assert_eq!(
-                from_utf16_lossy(units, 0, INTERPRETER).unwrap(),
+                from_utf16_lossy(units, INTERPRETER).unwrap(),
                 String::from_utf16_lossy(units)
             );
         }

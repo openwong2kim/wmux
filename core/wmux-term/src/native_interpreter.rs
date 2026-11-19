@@ -77,14 +77,22 @@ impl NativeOutputInterpreter {
         self.get_mut()?.reset_modes();
         Ok(())
     }
-    /// Forgets the OSC state (the OSC being read, the ESC held for the next
-    /// chunk, the mode scan's carry) after the caller skipped a chunk; the
-    /// modes stay. Allocates nothing, never throws (a no-op once disposed).
+    /// For a chunk whose `feedChunk` was refused: reads it for its modes
+    /// only, as `feedChunk` would (after the carry, which it extends), so
+    /// the modes and their offsets move on; drops the OSC state (the OSC
+    /// being read, the ESC held for the next chunk); returns no events.
+    /// Allocates nothing. Throws only for a disposed interpreter, an
+    /// invalid `end`, or bytes that are not UTF-8.
     #[napi(catch_unwind)]
-    pub fn clear_osc(&mut self) {
-        if let Some(inner) = &mut self.inner {
-            inner.clear_osc_state();
-        }
+    pub fn skip_chunk(&mut self, chunk: &NativeOutputChunk, end: f64) -> Result<(), ErrorCode> {
+        Ok(self.skip(&chunk.bytes, end)?)
+    }
+    /// `skipChunk` for a chunk's UTF-8 bytes. `bytes` is borrowed: napi
+    /// reads the typed array's own memory (napi_get_typedarray_info), no
+    /// copy.
+    #[napi(catch_unwind)]
+    pub fn skip_bytes(&mut self, bytes: &[u8], end: f64) -> Result<(), ErrorCode> {
+        Ok(self.skip(bytes, end)?)
     }
     #[napi(catch_unwind)]
     pub fn dispose(&mut self) {
@@ -102,11 +110,17 @@ impl NativeOutputInterpreter {
             .as_mut()
             .ok_or_else(|| CallError::reason("Output interpreter disposed"))
     }
+    /// `skipChunk` and `skipBytes`: allocates nothing unless it fails.
+    fn skip(&mut self, bytes: &[u8], end: f64) -> CallResult<()> {
+        let text = std::str::from_utf8(bytes)
+            .map_err(|_| CallError::reason("Invalid normalized output"))?;
+        check_end(end)?;
+        self.get_mut()?.skip(text, end);
+        Ok(())
+    }
     /// The batch's codes and texts, before they become a NativeOscBatch.
     fn apply(&mut self, text: &str, end: f64, osc: bool) -> CallResult<Option<Events>> {
-        if !end.is_finite() || end < 0.0 || end.fract() != 0.0 || end > 9_007_199_254_740_991.0 {
-            return Err(CallError::reason("Invalid ring stream offset"));
-        }
+        check_end(end)?;
         // The batch is built before the interpreter keeps the chunk's
         // modes and OSC state: a refused batch changes nothing either.
         let events = self.get_mut()?.feed_with(text, end, osc, |events| {
@@ -124,6 +138,14 @@ impl NativeOutputInterpreter {
         })?;
         Ok(events)
     }
+}
+
+/// A chunk's end must be a ring stream offset: a safe integer, not negative.
+fn check_end(end: f64) -> CallResult<()> {
+    if !end.is_finite() || end < 0.0 || end.fract() != 0.0 || end > 9_007_199_254_740_991.0 {
+        return Err(CallError::reason("Invalid ring stream offset"));
+    }
+    Ok(())
 }
 
 /// A batch's codes and texts (NativeOscBatch's, without the typed array).
@@ -251,6 +273,44 @@ mod tests {
             Ok(1)
         })
         .is_err());
+    }
+
+    #[test]
+    fn a_skipped_chunk_sets_the_modes_without_allocating() {
+        use crate::native_output::NativeOutputChunk;
+        use crate::test_allocator;
+        let chunk = NativeOutputChunk {
+            bytes: b"\x1b[?1049h".to_vec(),
+        };
+        let mut interpreter = NativeOutputInterpreter::new();
+        interpreter.apply("x\x1b]2;tit", 10.0, true).unwrap();
+        let skipped = test_allocator::refusing(1, || interpreter.skip(&chunk.bytes, 18.0).is_ok());
+        assert!(skipped);
+        assert_eq!(test_allocator::refused(), 0);
+        let inner = interpreter.get().unwrap();
+        assert!(inner.alt_screen());
+        assert_eq!(inner.preamble(19.0), "\x1b[?1049h\x1b[2J\x1b[H");
+        // The open OSC was dropped: the next chunk's text is not its body.
+        assert!(interpreter.apply("le\x07", 21.0, true).unwrap().is_none());
+        // A split sequence, the second half skipped.
+        let mut interpreter = NativeOutputInterpreter::new();
+        interpreter.apply("\x1b[?20", 5.0, true).unwrap();
+        let skipped = test_allocator::refusing(1, || interpreter.skip(b"04h", 8.0).is_ok());
+        assert!(skipped && test_allocator::refused() == 0);
+        assert!(interpreter.get().unwrap().is_set(2004));
+    }
+
+    #[test]
+    fn a_skip_throws_only_the_errors_feed_throws() {
+        let mut interpreter = NativeOutputInterpreter::new();
+        for (bytes, end) in [(&b"x"[..], -1.0), (b"x", 1.5), (b"\xff", 1.0)] {
+            let error = interpreter.skip(bytes, end).unwrap_err();
+            assert!(!error.message().starts_with(ALLOC_FAILED), "{error:?}");
+        }
+        assert!(!interpreter.get().unwrap().alt_screen());
+        interpreter.dispose();
+        let error = interpreter.skip(b"\x1b[?1049h", 8.0).unwrap_err();
+        assert_eq!(error.message(), "Output interpreter disposed");
     }
 
     #[test]
