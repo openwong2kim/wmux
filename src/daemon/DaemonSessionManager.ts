@@ -1115,6 +1115,7 @@ export class DaemonSessionManager extends EventEmitter {
       : DEFAULT_BUFFER_SIZE;
     const ringBuffer = new RingBuffer(bufferSize, ptyBackend(ptyProcess), {
       compress: this.ringCompressionEnabled(),
+      label: params.id,
     });
     // Replays parse each stretch of the ring at the size it was written at.
     // Recovered scrollback below is assumed to be at the spawn size.

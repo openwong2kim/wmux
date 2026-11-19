@@ -313,6 +313,26 @@ export interface ChromeBackendClient {
   recordFor?(surfaceId: string): ChromeSurfaceRecord | undefined;
   /** Dedicated instances only: told each tab a wmux-opened tab opens; returns the unsubscribe. */
   onSurfaceOpened?(listener: (opened: ChromeOpenedSurface) => void): () => void;
+  /** Dedicated instances: whether a Chrome is bound now (never launches one). */
+  isRunning?(): boolean;
+  /**
+   * Dedicated instances, for the phone preview only: the current page of each
+   * tab wmux holds no record of (another CDP client or a person opened it),
+   * under an id of its own (`chrome-x-…`). Never in listTargets,
+   * cdpInfoTargets, recordFor, the surface store or the pipe's grants. Starts
+   * the tab watcher while Chrome runs; never launches Chrome.
+   */
+  outsideTabs?(opts?: { waitForPairing?: boolean }): Promise<ChromeTargetInfo[]>;
+  /** Whether an outside id still names an open tab that has no record. */
+  hasOutside?(id: string): boolean;
+  /** pageSession for an outside id. */
+  outsidePageSession?(id: string): Promise<ChromePageSession>;
+  /** streamSession for an outside id. */
+  outsideStreamSession?(id: string): Promise<ChromeStreamSession>;
+  /** selectSurface for an outside id. */
+  selectOutside?(id: string): Promise<boolean>;
+  /** Detach every outside page and stream session this launcher holds, and refuse the attaches still in flight. */
+  releaseOutside?(): void;
   /** Live attach only: the agent-window write policy. Absent = dedicated. */
   readonly writeScope?: LiveWriteScopeApi;
   dispose(): void | Promise<void>;
@@ -531,6 +551,27 @@ function newSurfaceId(): string {
   return `chrome-${randomUUID()}`;
 }
 
+/** The id an outside tab (ChromeLauncher.outsideTabs) gets: a `chrome-` surface no record can hold. */
+export const OUTSIDE_ID_PREFIX = 'chrome-x-';
+
+/** How long outsideTabs waits for Chrome to name the pages behind tabs the watcher just attached. */
+export const OUTSIDE_PAIRING_WAIT_MS = 2_000;
+
+/** How long outsideTabs waits for openTab calls still creating their tab, before it leaves new tabs out. */
+export const OUTSIDE_OPENING_WAIT_MS = 1_000;
+
+/** Whether every promise settled within `ms` (they never reject). */
+function settledWithin(pending: Array<Promise<void>>, ms: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    (timer as { unref?: () => void }).unref?.();
+    void Promise.all(pending).then(() => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
 /** Tabs one tab may open in a minute and still be adopted. */
 export const OPENED_PER_OPENER_PER_MINUTE = 20;
 /** Tabs one workspace's tabs may open in a minute and still be adopted. */
@@ -612,6 +653,8 @@ interface PageSessionEntry {
 interface StreamSessionEntry {
   socket: CdpConnection;
   sessionId: string;
+  /** Set on a session to an outside tab (releaseOutside ends it). */
+  outside?: true;
   closed: boolean;
   unsubscribe: Array<() => void>;
   closers: Array<() => void>;
@@ -674,6 +717,19 @@ export class ChromeLauncher implements ChromeBackendClient {
   private readonly byTabTargetId = new Map<string, string>();
   /** True once the persisted records for this profile have been merged in. */
   private restored = false;
+  /** True once those records are bound to the running Chrome, so a tab without one is not ours. */
+  private recordsSettled = false;
+  /** openTab calls between createTarget and their record: their target is not an outside one. */
+  private readonly openingTabs = new Set<Promise<void>>();
+  /** Outside tabs (outsideTabs): tab targetId → phone-only id, and back. */
+  private readonly outsideIds = new Map<string, string>();
+  private readonly outsideTabsById = new Map<string, string>();
+  /** Told on every tab ↔ page pairing: outsideTabs waits on them for tabs just attached. */
+  private readonly pairingWaiters = new Set<() => void>();
+  /** When the watcher attached each tab: only a tab attached that recently is worth waiting for. */
+  private readonly tabAttachedAt = new Map<string, number>();
+  /** Bumped by releaseOutside and forgetOutside: an outside attach that started before them cannot finish. */
+  private outsideGeneration = 0;
 
   // ── Tab-target watcher state (all of it optional; see TARGET_WATCHER_ENV) ──
   private watcher: CdpConnection | null = null;
@@ -862,6 +918,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.sessionTabs.clear();
     this.tabToPage.clear();
     this.pageToTab.clear();
+    this.forgetOutside();
     for (const entry of this.pageSessions.values()) entry.valid = false;
     this.pageSessions.clear();
     for (const entry of [...this.streamSessions]) this.endStreamSession(entry);
@@ -869,6 +926,8 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   /** The watcher's connection went away (CdpSocket re-dials in place): every page session on it is dead. */
   private dropPageSessionsOf(socket: CdpConnection): void {
+    // The tab topology the outside ids rest on is re-read on the next connection.
+    if (this.watcher === socket) this.forgetOutside();
     for (const [surfaceId, entry] of this.pageSessions) {
       if (entry.socket !== socket) continue;
       entry.valid = false;
@@ -943,13 +1002,19 @@ export class ChromeLauncher implements ChromeBackendClient {
       }
       entry = await this.attachPage(surfaceId, record.targetId, socket);
     }
+    return this.sessionOf(entry);
+  }
+
+  /** The ChromePageSession over one attached entry; dead once the entry is, or once `still` says no. */
+  private sessionOf(entry: PageSessionEntry, still: () => boolean = () => true): ChromePageSession {
+    const live = () => entry.valid && this.watcher === entry.socket && still();
     return {
       send: async (method, params = {}) => {
-        if (!entry.valid || this.watcher !== entry.socket) throw new ChromePageSessionError('gone', 'ChromeLauncher: page session ended');
+        if (!live()) throw new ChromePageSessionError('gone', 'ChromeLauncher: page session ended');
         try {
           return await entry.socket.send(method, params, entry.sessionId);
         } catch (err) {
-          if (!entry.valid || this.watcher !== entry.socket) throw new ChromePageSessionError('gone', 'ChromeLauncher: page session ended');
+          if (!live()) throw new ChromePageSessionError('gone', 'ChromeLauncher: page session ended');
           throw err;
         }
       },
@@ -967,13 +1032,18 @@ export class ChromeLauncher implements ChromeBackendClient {
    * pageSession. Ownership is the caller's check.
    */
   async streamSession(surfaceId: string): Promise<ChromeStreamSession> {
-    const record = this.surfaces.get(surfaceId);
+    return this.openStream(() => this.surfaces.get(surfaceId)?.targetId ?? undefined);
+  }
+
+  /** A stream session on the page `targetOf` names, re-read after the attach. */
+  private async openStream(targetOf: () => string | undefined, outside = false): Promise<ChromeStreamSession> {
     if (!this.isRunning()) throw new ChromePageSessionError('unavailable', 'ChromeLauncher: Chrome is not running');
-    if (!record?.targetId) throw new ChromePageSessionError('gone', 'ChromeLauncher: no page for this surface');
+    if (!targetOf()) throw new ChromePageSessionError('gone', 'ChromeLauncher: no page for this surface');
     await this.ensureTargetWatcher();
     const socket = this.watcher;
     if (!socket?.isOpen()) throw new ChromePageSessionError('unavailable', 'ChromeLauncher: no browser CDP socket');
-    const targetId = record.targetId;
+    const targetId = targetOf();
+    if (!targetId) throw new ChromePageSessionError('gone', 'ChromeLauncher: no page for this surface');
     let sessionId: string | undefined;
     try {
       const res = (await socket.send('Target.attachToTarget', { targetId, flatten: true })) as { sessionId?: unknown };
@@ -982,12 +1052,12 @@ export class ChromeLauncher implements ChromeBackendClient {
       sessionId = undefined;
     }
     if (!sessionId) throw new ChromePageSessionError('gone', 'ChromeLauncher: the page could not be attached');
-    if (this.watcher !== socket || this.surfaces.get(surfaceId)?.targetId !== targetId) {
+    if (this.watcher !== socket || targetOf() !== targetId) {
       void socket.send('Target.detachFromTarget', { sessionId }).catch(() => undefined);
       throw new ChromePageSessionError('gone', 'ChromeLauncher: the page changed while attaching');
     }
     const id = sessionId;
-    const entry: StreamSessionEntry = { socket, sessionId: id, closed: false, unsubscribe: [], closers: [] };
+    const entry: StreamSessionEntry = { socket, sessionId: id, ...(outside && { outside: true as const }), closed: false, unsubscribe: [], closers: [] };
     this.streamSessions.add(entry);
     const ended = () => new ChromePageSessionError('gone', 'ChromeLauncher: stream session ended');
     return {
@@ -1019,8 +1089,16 @@ export class ChromeLauncher implements ChromeBackendClient {
     };
   }
 
-  private attachPage(surfaceId: string, targetId: string, socket: CdpConnection): Promise<PageSessionEntry> {
-    const key = `${surfaceId}\n${targetId}`;
+  private attachPage(
+    surfaceId: string,
+    targetId: string,
+    socket: CdpConnection,
+    // What `surfaceId` names now; an outside id has its own (outsidePage).
+    current: () => string | null | undefined = () => this.surfaces.get(surfaceId)?.targetId,
+    // Attaches share one in flight only within one generation (an outside id's release generation).
+    generation = '',
+  ): Promise<PageSessionEntry> {
+    const key = `${surfaceId}\n${targetId}\n${generation}`;
     const inFlight = this.attachingPages.get(key);
     if (inFlight) return inFlight;
     const attach = (async () => {
@@ -1032,7 +1110,7 @@ export class ChromeLauncher implements ChromeBackendClient {
         sessionId = undefined;
       }
       if (!sessionId) throw new ChromePageSessionError('gone', 'ChromeLauncher: the page could not be attached');
-      if (this.watcher !== socket || this.surfaces.get(surfaceId)?.targetId !== targetId) {
+      if (this.watcher !== socket || current() !== targetId) {
         void socket.send('Target.detachFromTarget', { sessionId }).catch(() => undefined);
         throw new ChromePageSessionError('gone', 'ChromeLauncher: the page changed while attaching');
       }
@@ -1174,6 +1252,12 @@ export class ChromeLauncher implements ChromeBackendClient {
         this.pageToTab.delete(targetId);
         if (this.tabToPage.get(pagesTab) === targetId) this.tabToPage.delete(pagesTab);
       }
+      this.tabAttachedAt.delete(targetId);
+      const outsideId = this.outsideIds.get(targetId);
+      if (outsideId) {
+        this.outsideIds.delete(targetId);
+        this.outsideTabsById.delete(outsideId);
+      }
       const surfaceId = this.byTabTargetId.get(targetId);
       // A destroyed PAGE proves nothing (that is the bug this PR fixes); a
       // destroyed anchor TAB is confirmed death — no orphan grace needed.
@@ -1303,6 +1387,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       if (!sessionId || this.watcher !== socket) return;
       this.tabSessions.set(tabTargetId, sessionId);
       this.sessionTabs.set(sessionId, tabTargetId);
+      this.tabAttachedAt.set(tabTargetId, Date.now());
       await socket.send(
         'Target.setAutoAttach',
         { autoAttach: true, flatten: true, waitForDebuggerOnStart: false },
@@ -1353,6 +1438,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (previous && previous !== pageTargetId) this.pageToTab.delete(previous);
     this.tabToPage.set(tabTargetId, pageTargetId);
     this.pageToTab.set(pageTargetId, tabTargetId);
+    for (const wake of [...this.pairingWaiters]) wake();
 
     const anchored = this.byTabTargetId.get(tabTargetId);
     if (!anchored) {
@@ -1722,6 +1808,7 @@ export class ChromeLauncher implements ChromeBackendClient {
         await this.restoreFromStore();
         await this.reviveByTabAnchor();
         this.assertOpen();
+        this.recordsSettled = true;
         return port;
       } catch (err) {
         this.unbindEndpoint();
@@ -2531,6 +2618,7 @@ export class ChromeLauncher implements ChromeBackendClient {
           // revival rule can hold, so the persisted records are dropped rather
           // than left to linger as permanently unbound handles.
           this.restored = true;
+          this.recordsSettled = true;
           this.surfaces.clear();
           this.byTargetId.clear();
           this.byTabTargetId.clear();
@@ -2690,25 +2778,33 @@ export class ChromeLauncher implements ChromeBackendClient {
     // Arm the anchor watcher before the tab exists so its targetCreated is
     // seen. Never throws — a launcher without a watcher still opens tabs.
     await this.ensureTargetWatcher();
-    const created = (await this.reach().createTarget(url)) as {
-      id?: string;
-      url?: string;
-    };
-    if (!created?.id) throw new Error('ChromeLauncher: /json/new returned no target id');
-    const now = Date.now();
-    const record: ChromeSurfaceRecord = {
-      surfaceId: newSurfaceId(),
-      targetId: created.id,
-      ...(workspaceId !== undefined && { workspaceId }),
-      url: created.url ?? url,
-      createdAt: now,
-      lastSeenAt: now,
-    };
-    this.surfaces.set(record.surfaceId, record);
-    this.byTargetId.set(created.id, record.surfaceId);
+    // Chrome lists the new tab before its record exists: outsideTabs waits for this.
+    let recorded!: () => void;
+    const opening = new Promise<void>((resolve) => { recorded = resolve; });
+    this.openingTabs.add(opening);
+    let record: ChromeSurfaceRecord;
+    let created: { id?: string; url?: string };
+    try {
+      created = (await this.reach().createTarget(url)) as { id?: string; url?: string };
+      if (!created?.id) throw new Error('ChromeLauncher: /json/new returned no target id');
+      const now = Date.now();
+      record = {
+        surfaceId: newSurfaceId(),
+        targetId: created.id,
+        ...(workspaceId !== undefined && { workspaceId }),
+        url: created.url ?? url,
+        createdAt: now,
+        lastSeenAt: now,
+      };
+      this.surfaces.set(record.surfaceId, record);
+      this.byTargetId.set(created.id, record.surfaceId);
+    } finally {
+      this.openingTabs.delete(opening);
+      recorded();
+    }
     await this.anchorTab(record);
     this.persist(true);
-    return { surfaceId: record.surfaceId, targetId: created.id, url: record.url };
+    return { surfaceId: record.surfaceId, targetId: created.id as string, url: record.url };
   }
 
   /**
@@ -2780,6 +2876,155 @@ export class ChromeLauncher implements ChromeBackendClient {
       return false;
     }
     return true;
+  }
+
+  // ── Outside tabs: the phone preview's view of tabs wmux holds no record of ──
+  // Kept apart from the records on purpose: nothing here is in `surfaces`,
+  // `byTargetId`, the store or the grants, so no agent lane can see it.
+
+  async outsideTabs(opts?: { waitForPairing?: boolean }): Promise<ChromeTargetInfo[]> {
+    // Until the persisted records are bound, a tab of ours would look like nobody's.
+    if (!this.isRunning() || (this.surfaceStore && !this.recordsSettled)) return [];
+    // The tab topology comes from the watcher; starting it never starts Chrome.
+    await this.ensureTargetWatcher();
+    if (!this.watcher?.isOpen()) return [];
+    // Chrome names the page behind a tab just attached after it answers the
+    // attach. Only the phone's list waits for that; a capture or input does not.
+    if (opts?.waitForPairing) await this.tabPagesKnown(OUTSIDE_PAIRING_WAIT_MS);
+    let live: Array<{ id: string; url: string; title: string; type: string }>;
+    try {
+      live = (await this.reach().listTargets()) as typeof live;
+    } catch {
+      return [];
+    }
+    // A tab openTab is creating is listed before its record exists. Only a
+    // tab first seen now can be one. The list read waits a bounded time for
+    // those creations; a tab still undecided then is left out. A read for a
+    // tab by id does not wait: no tab first seen now carries an id yet.
+    const fresh = (t: { id: string }) => {
+      const tab = this.outsideTabOf(t.id);
+      return tab !== undefined && !this.outsideIds.has(tab);
+    };
+    const opening = [...this.openingTabs];
+    let undecided = false;
+    if (opening.length > 0 && live.some((t) => t.type === 'page' && fresh(t))) {
+      undecided = !opts?.waitForPairing || !(await settledWithin(opening, OUTSIDE_OPENING_WAIT_MS));
+    }
+    const out: ChromeTargetInfo[] = [];
+    for (const t of live) {
+      if (t.type !== 'page') continue;
+      if (undecided && fresh(t)) continue;
+      const tab = this.outsideTabOf(t.id);
+      if (tab === undefined) continue;
+      let id = this.outsideIds.get(tab);
+      if (!id) {
+        id = `${OUTSIDE_ID_PREFIX}${randomUUID()}`;
+        this.outsideIds.set(tab, id);
+        this.outsideTabsById.set(id, tab);
+      }
+      out.push({ surfaceId: id, targetId: t.id, url: t.url, title: t.title });
+    }
+    return out;
+  }
+
+  hasOutside(id: string): boolean {
+    return this.isRunning() && this.outsidePage(id) !== undefined;
+  }
+
+  async outsidePageSession(id: string): Promise<ChromePageSession> {
+    if (!this.isRunning()) throw new ChromePageSessionError('unavailable', 'ChromeLauncher: Chrome is not running');
+    if (this.outsidePage(id) === undefined) throw new ChromePageSessionError('gone', 'ChromeLauncher: no page for this tab');
+    await this.ensureTargetWatcher();
+    const socket = this.watcher;
+    if (!socket?.isOpen()) throw new ChromePageSessionError('unavailable', 'ChromeLauncher: no browser CDP socket');
+    const page = this.outsidePage(id);
+    if (page === undefined) throw new ChromePageSessionError('gone', 'ChromeLauncher: no page for this tab');
+    const generation = this.outsideGeneration;
+    const cached = this.pageSessions.get(id);
+    let entry: PageSessionEntry;
+    if (cached && cached.valid && cached.socket === socket && cached.targetId === page) {
+      entry = cached;
+    } else {
+      // Chrome swapped the page inside the tab: the old session drives a page nobody sees.
+      if (cached) this.dropOutsideSession(id, cached);
+      // A release while the attach is out refuses it: it detaches, and nothing is kept.
+      entry = await this.attachPage(id, page, socket, () => (generation === this.outsideGeneration ? this.outsidePage(id) : undefined), String(generation));
+    }
+    return this.sessionOf(entry, () => this.outsidePage(id) === entry.targetId);
+  }
+
+  outsideStreamSession(id: string): Promise<ChromeStreamSession> {
+    const generation = this.outsideGeneration;
+    return this.openStream(() => (generation === this.outsideGeneration ? this.outsidePage(id) : undefined), true);
+  }
+
+  async selectOutside(id: string): Promise<boolean> {
+    const page = this.outsidePage(id);
+    if (page === undefined || !this.isRunning()) return false;
+    try {
+      await this.reach().activateTarget(page);
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
+  releaseOutside(): void {
+    this.outsideGeneration++;
+    for (const [id, entry] of [...this.pageSessions]) {
+      if (id.startsWith(OUTSIDE_ID_PREFIX)) this.dropOutsideSession(id, entry);
+    }
+    for (const entry of [...this.streamSessions]) {
+      if (!entry.outside) continue;
+      this.endStreamSession(entry);
+      if (entry.socket.isOpen()) void entry.socket.send('Target.detachFromTarget', { sessionId: entry.sessionId }).catch(() => undefined);
+    }
+  }
+
+  /** Until every tab the watcher attached has its page named, or `ms` passed. */
+  private async tabPagesKnown(ms: number): Promise<void> {
+    // A tab whose page closed with no successor is not named again: only tabs attached within `ms` are waited for.
+    const since = Date.now() - ms;
+    const pending = () => [...this.tabSessions.keys()].some((tab) => !this.tabToPage.has(tab) && (this.tabAttachedAt.get(tab) ?? 0) >= since);
+    if (!pending()) return;
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.pairingWaiters.delete(check);
+        resolve();
+      };
+      const check = () => { if (!pending()) done(); };
+      const timer = setTimeout(done, ms);
+      (timer as { unref?: () => void }).unref?.();
+      this.pairingWaiters.add(check);
+    });
+  }
+
+  /** The tab holding `pageId` while that page is its current one and neither has a record. */
+  private outsideTabOf(pageId: string): string | undefined {
+    const tab = this.pageToTab.get(pageId);
+    if (tab === undefined || this.tabToPage.get(tab) !== pageId) return undefined;
+    return this.byTargetId.has(pageId) || this.byTabTargetId.has(tab) ? undefined : tab;
+  }
+
+  /** The page an outside id names now: its tab's current page, while still without a record. */
+  private outsidePage(id: string): string | undefined {
+    const tab = this.outsideTabsById.get(id);
+    const page = tab === undefined ? undefined : this.tabToPage.get(tab);
+    return page !== undefined && this.outsideTabOf(page) === tab ? page : undefined;
+  }
+
+  private dropOutsideSession(id: string, entry: PageSessionEntry): void {
+    entry.valid = false;
+    this.pageSessions.delete(id);
+    if (entry.socket.isOpen()) void entry.socket.send('Target.detachFromTarget', { sessionId: entry.sessionId }).catch(() => undefined);
+  }
+
+  private forgetOutside(): void {
+    this.outsideGeneration++;
+    this.outsideIds.clear();
+    this.outsideTabsById.clear();
+    this.tabAttachedAt.clear();
   }
 
   /**

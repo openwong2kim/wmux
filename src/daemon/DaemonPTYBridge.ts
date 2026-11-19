@@ -1,4 +1,4 @@
-import type { NativeOutputChunk } from '../shared/nativeTerminalCore';
+import { createNativeAllocReporter, describeNativeError, isNativeAllocFailure, type NativeOutputChunk } from '../shared/nativeTerminalCore';
 import type { TerminalPty } from '../shared/terminalPty';
 import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
@@ -2187,7 +2187,9 @@ export class DaemonPTYBridge extends EventEmitter {
      */
     shellMarks: 'exec' | 'integrated' | 'plain' = 'plain',
   ): void {
-    const interpreter = new OutputInterpreter((ptyProcess as TerminalPty).backend === 'rust' ? 'rust' : 'node');
+    // The PTY's own log lines (a refused output copy, a reader error) name this session.
+    (ptyProcess as TerminalPty).label = sessionId;
+    const interpreter = new OutputInterpreter((ptyProcess as TerminalPty).backend === 'rust' ? 'rust' : 'node', sessionId);
     this.outputInterpreter = interpreter;
 
     // Fed from the same place the ring is written, so the tracked modes always
@@ -2202,9 +2204,16 @@ export class DaemonPTYBridge extends EventEmitter {
     // the ring, once per PTY lifetime.
     const modeTracker = interpreter.modes;
     this.modeTracker = modeTracker;
-    const prefilled = ringBuffer.readAll();
-    if (prefilled.length > 0) {
-      interpreter.seedModes(prefilled.toString('utf8'), ringBuffer.totalBytesWritten);
+    // A refused copy of the recovered ring leaves the tracker at its defaults:
+    // the session starts, and only the attach preamble for that old scrollback is lost.
+    let prefilled: Buffer | undefined;
+    try { prefilled = ringBuffer.readAll(); }
+    catch (error) {
+      if (!isNativeAllocFailure(error)) throw error;
+      console.error(`[pty] ${sessionId}: recovered scrollback not read for mode tracking: ${describeNativeError(error)}`);
+    }
+    if (prefilled && prefilled.length > 0) {
+      interpreter.seedModes(prefilled.toString('utf8'), ringBuffer.totalBytesWritten, prefilled);
     }
     // A bridge is built only for a freshly spawned process (a recovered
     // ring holds the dead one's scrollback), so an integrated shell starts at
@@ -2565,6 +2574,20 @@ export class DaemonPTYBridge extends EventEmitter {
     // Prompt-based CWD detection state
     let promptBuffer = '';
 
+    // The chunk's bytes for a JS consumer. A refused native copy falls back to
+    // the chunk's text, which is the same output (invalid UTF-8 already
+    // replaced), so a viewer copy never ends the session.
+    const reportCopyRefused = createNativeAllocReporter('pty-bridge', () => sessionId);
+    const bytesOf = (data: string, nativeChunk?: NativeOutputChunk): Buffer => {
+      if (!nativeChunk) return Buffer.from(data);
+      try { return nativeChunk.readBytes(); }
+      catch (error) {
+        if (!isNativeAllocFailure(error)) throw error;
+        reportCopyRefused(error, 'chunk copy refused; sending its text instead');
+        return Buffer.from(data);
+      }
+    };
+
     const capture = (data: string, buf?: Buffer, nativeChunk?: NativeOutputChunk): void => {
       // Detached sessions need retention/analysis, but no JS byte copy. Snapshot
       // tees and live clients subscribe to data and materialize exactly once.
@@ -2572,13 +2595,23 @@ export class DaemonPTYBridge extends EventEmitter {
       const forward = () => {
         this.emit('outputActivity');
         if (this.listenerCount('data') > 0) {
-          delivery ??= nativeChunk?.readBytes() ?? Buffer.from(data);
+          delivery ??= bytesOf(data, nativeChunk);
           this.emit('data', delivery);
         }
       };
       try {
+        const droppedBefore = ringBuffer.droppedBytes;
         if (nativeChunk) ringBuffer.writeNativeChunk(nativeChunk);
         else ringBuffer.write(buf ?? Buffer.from(data));
+        // A chunk the ring refused to store leaves a hole no replay can cross:
+        // the ring's history restarts after it. Its mode changes then fall
+        // before the (empty) window, so the attach preamble carries them, and
+        // a replay never shows output from before the hole without them.
+        if (ringBuffer.droppedBytes !== droppedBefore) {
+          const had = ringBuffer.size;
+          ringBuffer.clear();
+          if (had > 0) console.error(`[pty] ${sessionId}: output not stored; replay history restarts after it (${had} bytes dropped)`);
+        }
         // AFTER the ring write: the tracker's offsets are in the ring's own
         // coordinate system, so it needs the counter this chunk already moved.
         // Before the titles in this chunk are read (see ClaudeTitleTurnEdge.noteOutput).
@@ -2707,7 +2740,7 @@ export class DaemonPTYBridge extends EventEmitter {
         }
         if (this.heldWhileMuted && this.heldFull) {
           this.heldTail ??= new RingBuffer(DaemonPTYBridge.MAX_HELD_TAIL_BYTES, 'node');
-          this.heldTail.write(buf ?? nativeChunk?.readBytes() ?? Buffer.from(data));
+          this.heldTail.write(buf ?? bytesOf(data, nativeChunk));
         }
         return;
       }

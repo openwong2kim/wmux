@@ -1,6 +1,7 @@
 //! Opt-in native terminal core: VT state and retained history behind N-API.
 //! NativeTransport owns the production PTY; NativePty remains a spike harness.
 
+use crate::fallible::{self, AllocFailed, CallError, CallResult, ErrorCode};
 use crate::native_output::NativeOutputChunk;
 use crate::native_serialize::XtermControl;
 use alacritty_terminal::event::VoidListener;
@@ -12,18 +13,32 @@ use alacritty_terminal::vte::ansi::{
     Attr, CharsetIndex, ClearMode, Handler, NamedMode, NamedPrivateMode, Processor,
     StandardCharset, Timeout,
 };
+use alacritty_terminal::wmux_alloc::{self, GridAllocFailed};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
+use std::ops::{Deref, DerefMut};
 use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
+
+#[cfg(test)]
+use crate::test_allocator;
 
 /// Loader contract for the opt-in daemon text backend. Bump on incompatible
 /// changes to the exposed snapshot shape or required compatibility policy.
 #[napi(catch_unwind)]
 pub fn native_core_abi_version() -> u32 {
     1
+}
+
+/// Builds one vte processor for this thread's NativeTerminals now, if none
+/// is idle (`parsers::warm`): its 2 MiB buffer is allocated infallibly, so
+/// the snapshot loader takes it at load, before memory runs short (#3440).
+/// Calling it again while one is idle does nothing.
+#[napi(catch_unwind)]
+pub fn warm_terminal_parsers() {
+    parsers::warm();
 }
 
 #[napi(catch_unwind)]
@@ -60,28 +75,73 @@ pub struct NativeProcessRow {
     pub cmdline: Option<String>,
 }
 
+/// The rows JS receives, in one buffer reserved fallibly (one per process).
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+// Reached only through the napi export, which the test build does not call.
+#[cfg_attr(test, allow(dead_code))]
+fn native_rows(
+    rows: Vec<crate::process_table::ProcessRow>,
+) -> std::result::Result<Vec<NativeProcessRow>, AllocFailed> {
+    let mut out = fallible::try_with_capacity(rows.len(), "the process table for JS")?;
+    out.extend(rows.into_iter().map(|r| NativeProcessRow {
+        pid: r.pid,
+        ppid: r.ppid,
+        name: r.name,
+        created: r.created,
+        cmdline: r.cmdline,
+    }));
+    Ok(out)
+}
+
+/// A table read's error as a Task's. A refusal (a refused allocation, or an
+/// OS call refused for want of memory) is kept in `refused` for `reject`,
+/// which rejects with code ALLOC_FAILED (`task_refusal`): a Task's errors
+/// cannot carry it. Anything else rejects as it is.
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+// Reached only through the napi export, which the test build does not call.
+#[cfg_attr(test, allow(dead_code))]
+fn task_error(refused: &mut Option<CallError>, error: CallError) -> Error {
+    match error {
+        CallError::Reason(reason) => Error::from_reason(reason.into_owned()),
+        refusal => {
+            *refused = Some(refusal);
+            Error::from_status(Status::GenericFailure)
+        }
+    }
+}
+
+/// The JS rows are built off the JS thread too, so `resolve` allocates
+/// nothing of its own.
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub struct ProcessTableTask {
     with_command_lines: bool,
+    /// A refusal in `compute` (`task_error`), for `reject`.
+    refused: Option<CallError>,
+    /// The rejection for a refusal, made when the task was created
+    /// (`fallible::ready_rejection`).
+    ready: Option<Error>,
 }
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 impl Task for ProcessTableTask {
-    type Output = Vec<crate::process_table::ProcessRow>;
+    type Output = Vec<NativeProcessRow>;
     type JsValue = Vec<NativeProcessRow>;
     fn compute(&mut self) -> Result<Self::Output> {
-        crate::process_table::snapshot(self.with_command_lines).map_err(Error::from_reason)
+        crate::process_table::snapshot(self.with_command_lines)
+            .and_then(|rows| Ok(native_rows(rows)?))
+            .map_err(|error| task_error(&mut self.refused, error))
     }
     fn resolve(&mut self, _env: Env, rows: Self::Output) -> Result<Self::JsValue> {
-        Ok(rows
-            .into_iter()
-            .map(|r| NativeProcessRow {
-                pid: r.pid,
-                ppid: r.ppid,
-                name: r.name,
-                created: r.created,
-                cmdline: r.cmdline,
-            })
-            .collect())
+        Ok(rows)
+    }
+    fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
+        Err(match self.refused.take() {
+            Some(refused) => fallible::task_refusal(env, refused, self.ready.take()),
+            None => error,
+        })
+    }
+    fn finally(mut self, _env: Env) -> Result<()> {
+        fallible::keep_rejection(self.ready.take());
+        Ok(())
     }
 }
 
@@ -89,8 +149,12 @@ impl Task for ProcessTableTask {
 /// row also carries its creation time and command line where readable.
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 #[napi(catch_unwind)]
-pub fn process_table(with_command_lines: bool) -> AsyncTask<ProcessTableTask> {
-    AsyncTask::new(ProcessTableTask { with_command_lines })
+pub fn process_table(env: Env, with_command_lines: bool) -> AsyncTask<ProcessTableTask> {
+    AsyncTask::new(ProcessTableTask {
+        with_command_lines,
+        refused: None,
+        ready: fallible::ready_rejection(env),
+    })
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -110,39 +174,52 @@ pub struct NativePortSnapshot {
     pub sockets: Vec<NativeListenSocket>,
 }
 
+/// The snapshot JS receives, its two lists reserved fallibly.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub struct PortSnapshotTask;
+fn native_port_snapshot(
+    snap: crate::process_table::PortSnapshot,
+) -> std::result::Result<NativePortSnapshot, AllocFailed> {
+    let processes = native_rows(snap.processes)?;
+    let mut sockets =
+        fallible::try_with_capacity(snap.sockets.len(), "the listening sockets for JS")?;
+    sockets.extend(snap.sockets.into_iter().map(|r| NativeListenSocket {
+        pid: r.pid,
+        port: r.port.into(),
+        address: r.address,
+        family: r.family.into(),
+    }));
+    Ok(NativePortSnapshot { processes, sockets })
+}
+
+/// Built off the JS thread, as ProcessTableTask.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub struct PortSnapshotTask {
+    /// A refusal in `compute` (`task_error`), for `reject`.
+    refused: Option<CallError>,
+    /// As ProcessTableTask's.
+    ready: Option<Error>,
+}
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Task for PortSnapshotTask {
-    type Output = crate::process_table::PortSnapshot;
+    type Output = NativePortSnapshot;
     type JsValue = NativePortSnapshot;
     fn compute(&mut self) -> Result<Self::Output> {
-        crate::process_table::port_snapshot().map_err(Error::from_reason)
+        crate::process_table::port_snapshot()
+            .and_then(|snap| Ok(native_port_snapshot(snap)?))
+            .map_err(|error| task_error(&mut self.refused, error))
     }
     fn resolve(&mut self, _env: Env, snap: Self::Output) -> Result<Self::JsValue> {
-        Ok(NativePortSnapshot {
-            processes: snap
-                .processes
-                .into_iter()
-                .map(|r| NativeProcessRow {
-                    pid: r.pid,
-                    ppid: r.ppid,
-                    name: r.name,
-                    created: r.created,
-                    cmdline: r.cmdline,
-                })
-                .collect(),
-            sockets: snap
-                .sockets
-                .into_iter()
-                .map(|r| NativeListenSocket {
-                    pid: r.pid,
-                    port: r.port.into(),
-                    address: r.address,
-                    family: r.family.into(),
-                })
-                .collect(),
+        Ok(snap)
+    }
+    fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
+        Err(match self.refused.take() {
+            Some(refused) => fallible::task_refusal(env, refused, self.ready.take()),
+            None => error,
         })
+    }
+    fn finally(mut self, _env: Env) -> Result<()> {
+        fallible::keep_rejection(self.ready.take());
+        Ok(())
     }
 }
 
@@ -151,8 +228,11 @@ impl Task for PortSnapshotTask {
 /// one walk.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[napi(catch_unwind)]
-pub fn port_snapshot() -> AsyncTask<PortSnapshotTask> {
-    AsyncTask::new(PortSnapshotTask)
+pub fn port_snapshot(env: Env) -> AsyncTask<PortSnapshotTask> {
+    AsyncTask::new(PortSnapshotTask {
+        refused: None,
+        ready: fallible::ready_rejection(env),
+    })
 }
 
 struct Size {
@@ -171,9 +251,9 @@ impl Dimensions for Size {
     }
 }
 
-fn dimensions(cols: u32, rows: u32) -> Result<Size> {
+fn dimensions(cols: u32, rows: u32) -> CallResult<Size> {
     if !(2..=1000).contains(&cols) || !(1..=1000).contains(&rows) {
-        return Err(Error::from_reason(
+        return Err(CallError::reason(
             "Experiment requires 2..1000 columns and 1..1000 rows",
         ));
     }
@@ -181,6 +261,18 @@ fn dimensions(cols: u32, rows: u32) -> Result<Size> {
         cols: cols as usize,
         rows: rows as usize,
     })
+}
+
+/// `dimensions` for the spike PTY: its only error is the range, never a
+/// refused allocation.
+fn pty_dimensions(cols: u32, rows: u32) -> Result<()> {
+    match dimensions(cols, rows) {
+        Ok(_) => Ok(()),
+        Err(CallError::Reason(reason)) => Err(Error::from_reason(reason)),
+        Err(CallError::Alloc(_) | CallError::OsRefused(_)) => {
+            unreachable!("dimensions allocates nothing")
+        }
+    }
 }
 
 #[napi(object)]
@@ -200,7 +292,10 @@ pub struct NativeTextSnapshot {
 #[napi]
 pub struct NativeTerminal {
     term: Option<Term<VoidListener>>,
-    parser: Processor,
+    /// From this thread's processors, given back at dispose or drop.
+    parser: PooledParser,
+    /// Drops an OSC past MAX_OSC_BODY before the parser sees it.
+    osc: OscCap,
     scrollback: u32,
     /// xterm's scrollback in the last `feed_xterm` (this grid's until then).
     requested_scrollback: u32,
@@ -214,6 +309,9 @@ pub struct NativeTerminal {
     scanned: usize,
     /// The text feed's trailing ESC (advance_indexing).
     text_held: Vec<u8>,
+    /// A grid allocation was refused: the terminal is gone and every call
+    /// that needs it fails with GRID_REFUSED (`settle`).
+    grid_refused: bool,
 }
 
 /// Whether narrowing to `cols` reflows a row below the cursor's paragraph on
@@ -311,6 +409,525 @@ fn is_kitty_keyboard(sequence: &[u8]) -> bool {
 }
 /// The longest unfinished sequence `feed_xterm` holds for its next bytes.
 const MAX_HELD: usize = 256;
+/// The most bytes one `feed` / `feed_xterm` call takes: the ring's 256 MiB
+/// cap (RustSnapshot feeds 256 KiB at a time). A feed joins its bytes to at
+/// most MAX_HELD held ones, so the join is bounded by this plus MAX_HELD.
+const MAX_FEED_BYTES: usize = 256 * 1024 * 1024;
+/// A feed's held bytes joined to its input (MAX_FEED_BYTES + MAX_HELD).
+const FEED_JOIN: &str = "a terminal feed's input";
+/// The held sequence's room, reserved before parsing so that holding one
+/// never allocates mid-feed (MAX_HELD).
+const HELD: &str = "a terminal feed's held sequence";
+/// The tracker's copy of a control without its C0 bytes (`track`).
+const TRACKED_C0: &str = "a control the feed tracks, without its C0 bytes";
+/// Why the ANSI snapshot is refused when the feed could not allocate a
+/// buffer partway through a call (the call itself reports ALLOC_FAILED).
+pub(crate) const ALLOC_REFUSED: &str =
+    "unsupported-alloc: a buffer the ANSI feed needed could not be allocated";
+/// Why every call after a refused grid allocation fails: the refusal may have
+/// left the grid half updated, so the terminal is dropped (`settle`).
+pub(crate) const GRID_REFUSED: &str =
+    "unsupported-alloc: the terminal grid could not allocate, so this terminal is unusable";
+
+/// Runs `f`, which drives the vendored grid. A refused grid allocation
+/// unwinds out of it (vendor `wmux_alloc`: a zero-sized payload, no panic
+/// hook) and comes back here as the refusal; any other panic goes on. Nothing
+/// `f` touches holds a lock.
+fn grid_unwind<R>(f: impl FnOnce() -> R) -> std::result::Result<R, AllocFailed> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(result) => Ok(result),
+        Err(payload) if payload.is::<GridAllocFailed>() => {
+            let (bytes, what) = wmux_alloc::take_refusal();
+            Err(AllocFailed { what, bytes })
+        }
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// The longest OSC body the snapshot terminal parses (OscCap). vte's OSC
+/// buffer (its std build) grows without a bound and infallibly (#3440).
+const MAX_OSC_BODY: usize = 1024 * 1024;
+/// The OSC a feed ended inside, held for the next (OscCap): at most
+/// MAX_OSC_BODY and its opening bytes.
+const OSC_HELD: &str = "an OSC held across feeds";
+/// A held buffer kept for the next OSC up to this capacity; past it, freed.
+const OSC_HELD_KEPT: usize = 64 * 1024;
+/// Why `feed_xterm` refuses a stream with a dropped OSC: xterm reads it.
+const LONG_OSC: &str =
+    "unsupported-state-long-sequence: an OSC past 1 MiB, which the native snapshot drops";
+
+/// Bytes vte reads between an ESC and the byte after it while staying in
+/// its escape state: C0 controls but CAN and SUB (executed), another ESC,
+/// DEL, and every byte from 0x80 (its escape state reads no UTF-8 and
+/// ignores them). vte reads no C1 introducer: 0x9D opens no OSC.
+fn esc_filler(b: u8) -> bool {
+    !matches!(b, 0x18 | 0x1a | 0x20..=0x7e)
+}
+
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+enum OscScan {
+    #[default]
+    Text,
+    /// The last feed ended on an ESC, perhaps with filler after it, which
+    /// went on: the feeds below hold it for the byte after it.
+    EscPassed,
+    /// The last feed ended inside an OSC body (held).
+    Osc,
+    /// Inside an OSC past MAX_OSC_BODY: skipped up to its end.
+    Drop,
+    /// The last feed ended on an ESC that ends a dropped OSC.
+    DropEsc,
+}
+
+/// What follows a dropped OSC's introducer: vte ends the OSC it opens there,
+/// empty (its dispatch does nothing), and executes the CAN (nothing).
+const OSC_DROPPED: &[u8] = b"\x18";
+
+/// The snapshot terminal's pre-scan (feed, feedXterm, feedFrozen): an OSC
+/// whose body passes MAX_OSC_BODY never reaches the parser. vte opens an OSC
+/// at an ESC, filler (esc_filler), then `]`, whatever it was inside, and
+/// dispatches it at any end (BEL, CAN, SUB, ESC), so an OSC a feed ends
+/// inside is held until it ends or passes the cap; one that starts and ends
+/// in a feed under the cap passes in place.
+///
+/// A dropped OSC leaves vte as an OSC a CAN ends leaves it: its introducer
+/// goes on (whatever vte was inside ends there as it would), then a CAN
+/// (OSC_DROPPED), where vte is in its ground state. Its body never reaches
+/// vte, and its end is skipped as vte reads it: a BEL or an ESC \ is skipped
+/// with it; a CAN or SUB is passed on (vte executes it); another ESC begins
+/// the next sequence. 0x9C is part of the body for vte. A feed's final ESC
+/// goes on as before (the feeds below hold it).
+///
+/// Its state changes only once the bytes it stands for went on (`emit`
+/// succeeded), so a refused first emit changes nothing, and the same bytes
+/// fed again pass as if the refusal had not happened. A refusal after some
+/// bytes went on (vte advanced) leaves the state those bytes left: such a
+/// feed is partially applied, and a dropped OSC's introducer that went on
+/// is never passed again (its CAN, if refused, is owed instead).
+#[derive(Default)]
+struct OscCap {
+    /// What the bytes passed on so far leave.
+    scan: OscScan,
+    /// The open OSC (OscScan::Osc), from its ESC, or from its `]` when its
+    /// ESC went on already.
+    held: Vec<u8>,
+    /// The held OSC's introducer: its first `intro` bytes, up to its `]`.
+    intro: usize,
+    /// The held OSC's body bytes so far.
+    body: usize,
+    /// An OSC was dropped since the last `take_dropped`.
+    dropped: bool,
+    /// A dropped OSC's introducer went on and its OSC_DROPPED was refused:
+    /// it goes on before any other byte.
+    owed: bool,
+}
+
+/// Where OscCap passes bytes: `dropped` is true for the bytes that stand for
+/// a dropped OSC (its introducer, then OSC_DROPPED).
+type OscEmit<'a> = dyn FnMut(&[u8], bool) -> std::result::Result<(), AllocFailed> + 'a;
+
+/// `emit(bytes)` unless empty.
+fn emit_some(emit: &mut OscEmit<'_>, bytes: &[u8]) -> std::result::Result<(), AllocFailed> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    emit(bytes, false)
+}
+
+/// Where the filler after an ESC (esc_filler) ends, from `at` on.
+fn past_filler(bytes: &[u8], mut at: usize) -> usize {
+    while at < bytes.len() && esc_filler(bytes[at]) {
+        at += 1;
+    }
+    at
+}
+
+impl OscCap {
+    /// Passes `bytes` to `emit` in order, less any OSC past the cap, holding
+    /// an OSC the bytes end inside. A refused hold returns before the bytes
+    /// it would hold are passed on.
+    fn scan(
+        &mut self,
+        bytes: &[u8],
+        emit: &mut OscEmit<'_>,
+    ) -> std::result::Result<(), AllocFailed> {
+        if self.owed {
+            emit(OSC_DROPPED, true)?;
+            self.owed = false;
+        }
+        let len = bytes.len();
+        // Where the bytes passed on as they are start, and where scanning is.
+        let mut from = 0;
+        let mut i = 0;
+        // What the bytes up to `i` leave; kept in `self.scan` only once the
+        // bytes up to there went on.
+        let mut scan = self.scan;
+        loop {
+            // An OSC opens: held from `start`, its body after `bracket`;
+            // `before` is what the bytes up to `start` leave.
+            let (start, bracket, before) = match scan {
+                OscScan::Text => {
+                    let Some(found) = bytes[i..].iter().position(|&b| b == 0x1b) else {
+                        break;
+                    };
+                    let esc = i + found;
+                    let at = past_filler(bytes, esc + 1);
+                    if at == len {
+                        scan = OscScan::EscPassed;
+                        break;
+                    }
+                    if bytes[at] != b']' {
+                        i = at;
+                        continue;
+                    }
+                    (esc, at, OscScan::Text)
+                }
+                OscScan::EscPassed => {
+                    let at = past_filler(bytes, i);
+                    if at == len {
+                        break;
+                    }
+                    scan = OscScan::Text;
+                    if bytes[at] != b']' {
+                        i = at;
+                        continue;
+                    }
+                    // Until its `]` went on, the ESC still waits for it.
+                    (at, at, OscScan::EscPassed)
+                }
+                OscScan::Osc => {
+                    match string_end(&bytes[i..]) {
+                        Some(end) if self.body + end <= MAX_OSC_BODY => {
+                            self.flush(&bytes[i..i + end], emit)?;
+                            scan = OscScan::Text;
+                            from = i + end;
+                            i += end;
+                        }
+                        Some(end) => {
+                            self.drop_held(emit)?;
+                            (from, i, scan) = Self::end_dropped(bytes, i + end);
+                        }
+                        None if self.body + (len - i) <= MAX_OSC_BODY => {
+                            self.hold(&bytes[i..])?;
+                            self.body += len - i;
+                            from = len;
+                            break;
+                        }
+                        None => {
+                            self.drop_held(emit)?;
+                            scan = OscScan::Drop;
+                            from = len;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                OscScan::Drop => {
+                    match string_end(&bytes[i..]) {
+                        Some(end) => (from, i, scan) = Self::end_dropped(bytes, i + end),
+                        None => {
+                            from = len;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                OscScan::DropEsc => {
+                    if i == len {
+                        break;
+                    }
+                    if bytes[i] == b'\\' {
+                        scan = OscScan::Text;
+                        i += 1;
+                    } else {
+                        // That ESC ended the dropped OSC and begins the next
+                        // sequence, perhaps another OSC.
+                        emit(&b"\x1b"[..], false)?;
+                        scan = OscScan::EscPassed;
+                        self.scan = scan;
+                    }
+                    from = i;
+                    continue;
+                }
+            };
+            let body = bracket + 1;
+            match string_end(&bytes[body..]) {
+                Some(end) if end <= MAX_OSC_BODY => i = body + end,
+                Some(end) => {
+                    emit_some(emit, &bytes[from..start])?;
+                    self.scan = before;
+                    self.drop_osc(&bytes[start..body], emit)?;
+                    (from, i, scan) = Self::end_dropped(bytes, body + end);
+                }
+                None if len - body <= MAX_OSC_BODY => {
+                    // Room first, then the bytes before it: only once they
+                    // went on is the OSC held, so a refusal of either leaves
+                    // nothing held and a retry holds it once.
+                    fallible::try_reserve(&mut self.held, len - start, OSC_HELD)?;
+                    emit_some(emit, &bytes[from..start])?;
+                    self.held.extend_from_slice(&bytes[start..]);
+                    self.intro = body - start;
+                    self.body = len - body;
+                    scan = OscScan::Osc;
+                    from = len;
+                    break;
+                }
+                None => {
+                    emit_some(emit, &bytes[from..start])?;
+                    self.scan = before;
+                    self.drop_osc(&bytes[start..body], emit)?;
+                    scan = OscScan::Drop;
+                    from = len;
+                    break;
+                }
+            }
+        }
+        emit_some(emit, &bytes[from..])?;
+        self.scan = scan;
+        Ok(())
+    }
+
+    /// An OSC is dropped: its introducer (from its ESC, or its `]` when the
+    /// ESC went on already) goes on, then OSC_DROPPED. A refused introducer
+    /// changes nothing.
+    fn drop_osc(
+        &mut self,
+        intro: &[u8],
+        emit: &mut OscEmit<'_>,
+    ) -> std::result::Result<(), AllocFailed> {
+        emit(intro, true)?;
+        self.intro_went_on(emit)
+    }
+
+    /// The held OSC is dropped (`drop_osc`). The hold is kept until its
+    /// introducer went on, so a refused introducer leaves the OSC held as it
+    /// was and a retry passes it once; then the hold is freed.
+    fn drop_held(&mut self, emit: &mut OscEmit<'_>) -> std::result::Result<(), AllocFailed> {
+        emit(&self.held[..self.intro], true)?;
+        self.clear_open();
+        self.intro_went_on(emit)
+    }
+
+    /// A dropped OSC's introducer went on: vte is inside it, and the bytes
+    /// after it are its body, skipped (OscScan::Drop). OSC_DROPPED follows,
+    /// owed while refused (`scan` passes it first).
+    fn intro_went_on(&mut self, emit: &mut OscEmit<'_>) -> std::result::Result<(), AllocFailed> {
+        self.dropped = true;
+        self.scan = OscScan::Drop;
+        self.owed = true;
+        emit(OSC_DROPPED, true)?;
+        self.owed = false;
+        Ok(())
+    }
+
+    /// The dropped OSC ends at `bytes[at]` (string_end): returns where the
+    /// bytes passed on resume, where scanning resumes, and the state there.
+    fn end_dropped(bytes: &[u8], at: usize) -> (usize, usize, OscScan) {
+        match bytes[at] {
+            0x07 => (at + 1, at + 1, OscScan::Text),
+            0x1b => match bytes.get(at + 1) {
+                Some(b'\\') => (at + 2, at + 2, OscScan::Text),
+                Some(_) => (at, at, OscScan::Text),
+                None => (bytes.len(), bytes.len(), OscScan::DropEsc),
+            },
+            // CAN and SUB: vte ends the OSC and executes them.
+            _ => (at, at + 1, OscScan::Text),
+        }
+    }
+
+    fn hold(&mut self, bytes: &[u8]) -> std::result::Result<(), AllocFailed> {
+        fallible::try_reserve(&mut self.held, bytes.len(), OSC_HELD)?;
+        self.held.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Passes the held OSC on with `rest`, its end, and empties the hold. A
+    /// refusal (the hold's growth, or the parser's join before it parses
+    /// anything) leaves the OSC held as it was, so a retry passes it once.
+    fn flush(
+        &mut self,
+        rest: &[u8],
+        emit: &mut OscEmit<'_>,
+    ) -> std::result::Result<(), AllocFailed> {
+        let before = self.held.len();
+        self.hold(rest)?;
+        let held = std::mem::take(&mut self.held);
+        let result = emit(&held, false);
+        self.held = held;
+        match result {
+            Ok(()) => {
+                self.clear_open();
+                Ok(())
+            }
+            Err(failed) => {
+                self.held.truncate(before);
+                Err(failed)
+            }
+        }
+    }
+
+    /// Whether an OSC was dropped since the last call.
+    fn take_dropped(&mut self) -> bool {
+        std::mem::take(&mut self.dropped)
+    }
+
+    /// The held OSC has gone on (`flush`, or the snapshot read it): empty.
+    fn clear_open(&mut self) {
+        if self.scan == OscScan::Osc {
+            self.scan = OscScan::Text;
+        }
+        self.held.clear();
+        if self.held.capacity() > OSC_HELD_KEPT {
+            self.held = Vec::new();
+        }
+        self.intro = 0;
+        self.body = 0;
+    }
+}
+
+/// vte builds a Processor with its 2 MiB synchronized-update buffer
+/// allocated infallibly (vte is not vendored, #3440). Each thread keeps the
+/// processors its terminals are done with, reset, and hands them to its next
+/// terminals: a thread builds one per terminal alive at once, not one per
+/// terminal.
+mod parsers {
+    use alacritty_terminal::vte::ansi::{Handler, Processor, Timeout};
+    use std::cell::RefCell;
+
+    /// Idle processors kept per thread (2 MiB each); more are dropped.
+    pub(super) const MAX_IDLE: usize = 4;
+
+    thread_local! {
+        static IDLE: RefCell<Vec<Processor>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// An idle processor of this thread, or a new one.
+    pub(super) fn take() -> Processor {
+        IDLE.try_with(|idle| idle.borrow_mut().pop())
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    /// One new processor for this thread's next terminal, if none is idle.
+    pub(super) fn warm() {
+        let _ = IDLE.try_with(|idle| {
+            let mut idle = idle.borrow_mut();
+            if idle.is_empty() && idle.try_reserve(1).is_ok() {
+                idle.push(Processor::new());
+            }
+        });
+    }
+
+    /// Keeps `parser` for this thread's next terminal, reset (`reset`).
+    pub(super) fn give(mut parser: Processor) {
+        reset(&mut parser);
+        let _ = IDLE.try_with(move |idle| {
+            let mut idle = idle.borrow_mut();
+            if idle.len() < MAX_IDLE && idle.try_reserve(1).is_ok() {
+                idle.push(parser);
+            }
+        });
+    }
+
+    #[cfg(test)]
+    pub(super) fn idle() -> usize {
+        IDLE.with(|idle| idle.borrow().len())
+    }
+
+    /// Takes in what a parser holds and acts on nothing.
+    struct Discard;
+    impl Handler for Discard {}
+
+    /// The ground state a new processor starts in, without allocating: an
+    /// open synchronized update ends (its bytes parsed into nothing), and
+    /// a CAN ends any sequence, string or partial UTF-8 character. One
+    /// thing cannot be put back: the character REP repeats, which vte
+    /// keeps privately from the last print. A space is printed last, so it
+    /// is a space rather than the last terminal's character.
+    pub(super) fn reset(parser: &mut Processor) {
+        let mut discard = Discard;
+        if parser.sync_timeout().pending_timeout() {
+            parser.stop_sync(&mut discard);
+        }
+        parser.advance(&mut discard, b"\x18 ");
+    }
+}
+
+/// The terminal's processor, from this thread's (`parsers`) and given back
+/// when the terminal is disposed or dropped, or its constructor fails.
+struct PooledParser(Option<Processor>);
+
+impl PooledParser {
+    fn take() -> Self {
+        Self(Some(parsers::take()))
+    }
+
+    /// Gives the processor back to this thread's pool, unless the thread is
+    /// unwinding: then it is dropped (`discard`), whatever the unwind is, a
+    /// grid refusal or any other panic, since either can leave vte partway
+    /// through a call.
+    fn release(&mut self) {
+        if std::thread::panicking() {
+            self.discard();
+            return;
+        }
+        if let Some(parser) = self.0.take() {
+            parsers::give(parser);
+        }
+    }
+
+    /// Drops the processor rather than keeping it: an unwind out of vte
+    /// (a grid refusal, settled by `settle`, or any other panic, `release`)
+    /// can leave what `reset` cannot put back (the synchronized-update
+    /// buffer vte takes for its replay, gone; a partial UTF-8 count past its
+    /// bytes).
+    fn discard(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for PooledParser {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// A disposed terminal returns before it parses ("Terminal disposed"), and
+/// one a grid refusal dropped too (GRID_REFUSED).
+const PARSER_RELEASED: &str = "the terminal's parser is used after dispose or a grid refusal";
+
+impl Deref for PooledParser {
+    type Target = Processor;
+    fn deref(&self) -> &Processor {
+        self.0.as_ref().expect(PARSER_RELEASED)
+    }
+}
+
+impl DerefMut for PooledParser {
+    fn deref_mut(&mut self) -> &mut Processor {
+        self.0.as_mut().expect(PARSER_RELEASED)
+    }
+}
+
+fn check_feed_len(len: usize) -> CallResult<()> {
+    if len > MAX_FEED_BYTES {
+        return Err(CallError::reason(
+            "Terminal feed exceeds the 256 MiB per-call limit",
+        ));
+    }
+    Ok(())
+}
+
+/// Joins `held` (at most MAX_HELD bytes) and `bytes` into one buffer, and
+/// leaves `held` empty with room for MAX_HELD bytes. On a refusal nothing
+/// changed: the caller returns before parsing anything.
+fn join_held(held: &mut Vec<u8>, bytes: &[u8]) -> std::result::Result<Vec<u8>, AllocFailed> {
+    fallible::try_reserve(held, MAX_HELD.saturating_sub(held.len()), HELD)?;
+    let data = fallible::try_concat(held, bytes, FEED_JOIN)?;
+    held.clear();
+    Ok(data)
+}
 /// The longest unfinished string re-shipped after a snapshot, in UTF-16
 /// units (util/ansiStreamScan.ts MAX_PENDING_TAIL_CHARS).
 const MAX_TAIL_UNITS: usize = 4096;
@@ -360,7 +977,7 @@ struct XtermFeed {
     /// Every refusal family met so far, each once, in the order met. The
     /// feed goes on past the first refusal, so the counters can tell what
     /// else a refused stream holds (NativeTerminal::refusal_families).
-    seen: Vec<&'static str>,
+    seen: Families,
     /// The alternate screen changed width with a soft-wrapped row on it
     /// (NativeTerminal::resize). Unlike the other refusals this one ends:
     /// leaving that screen discards the rows that differ.
@@ -386,6 +1003,9 @@ struct XtermFeed {
     /// grows it and returns). Past the screen rows, the alternate screen
     /// keeps rows above it there.
     alt_rows: usize,
+    /// The first allocation refused partway through a feed: the snapshot is
+    /// refused (ALLOC_REFUSED) and the call reports it.
+    alloc_failed: Option<AllocFailed>,
     /// The alternate screen was shown with `alt_rows` past the screen rows
     /// since it was last left: its saved row may count rows above the screen
     /// that Alacritty's alternate grid never keeps.
@@ -453,17 +1073,55 @@ fn refusal_family(why: &'static str) -> &'static str {
     why.split(':').next().unwrap_or(why)
 }
 
+/// Room for every refusal family the feed has (about 25).
+const MAX_FAMILIES: usize = 40;
+/// What a refused list of refusal families for JS is called.
+const REFUSAL_FAMILIES: &str = "the refusal families for JS";
+
+/// The refusal families a feed met, each once, in the order met, in fixed
+/// storage: keeping one never allocates, not even right after a refused
+/// grid allocation (`settle`), where an allocation could abort. A family
+/// past MAX_FAMILIES is not kept; there are fewer.
+#[derive(Clone, Copy)]
+struct Families {
+    met: [&'static str; MAX_FAMILIES],
+    len: usize,
+}
+
+impl Default for Families {
+    fn default() -> Self {
+        Self {
+            met: [""; MAX_FAMILIES],
+            len: 0,
+        }
+    }
+}
+
+impl Families {
+    fn add(&mut self, family: &'static str) {
+        if !self.contains(family) && self.len < MAX_FAMILIES {
+            self.met[self.len] = family;
+            self.len += 1;
+        }
+    }
+
+    fn contains(&self, family: &str) -> bool {
+        self.as_slice().contains(&family)
+    }
+
+    fn as_slice(&self) -> &[&'static str] {
+        &self.met[..self.len]
+    }
+}
+
 impl XtermFeed {
     /// Refuse the stream, reported as `why` when it is the first refusal;
-    /// every refusal's family is kept in `seen`.
+    /// every refusal's family is kept in `seen`. Allocates nothing.
     fn refuse(&mut self, when: bool, why: &'static str) {
         if !when {
             return;
         }
-        let family = refusal_family(why);
-        if !self.seen.contains(&family) {
-            self.seen.push(family);
-        }
+        self.seen.add(refusal_family(why));
         if !self.divergent {
             self.divergent = true;
             self.refused = Some(why);
@@ -483,8 +1141,34 @@ impl XtermFeed {
                 }
                 self.tail_units += if b >= 0xf0 { 2 } else { 1 };
             }
+            // At most MAX_TAIL_UNITS units of up to 3 bytes (a 4-byte
+            // character counts 2), about 12 KiB. Refused, the tail is lost as
+            // when it overflows, and the snapshot refused.
+            if let Err(failed) =
+                fallible::try_reserve(&mut self.tail, 1, "the ANSI feed's pending string")
+            {
+                self.refuse_alloc(failed);
+                self.tail_overflow = true;
+                self.tail = Vec::new();
+                return;
+            }
             self.tail.push(b);
         }
+    }
+
+    /// A buffer the feed could not allocate partway through: the snapshot is
+    /// refused for good and the call reports the first refusal.
+    fn refuse_alloc(&mut self, failed: AllocFailed) {
+        self.alloc_failed.get_or_insert(failed);
+        self.refuse(true, ALLOC_REFUSED);
+    }
+
+    /// Holds `data[at..]` (at most MAX_HELD bytes, the room `join_held`
+    /// reserved) for the next feed, and cuts it from `data`.
+    fn hold(&mut self, data: &mut Vec<u8>, at: usize) {
+        debug_assert!(self.held.is_empty() && data.len() - at <= self.held.capacity());
+        self.held.extend_from_slice(&data[at..]);
+        data.truncate(at);
     }
 
     fn start_string(&mut self) {
@@ -526,7 +1210,14 @@ impl XtermFeed {
             Some(rule) => alt.is_some_and(|alt| !self.allows(rule, alt)),
             // xterm forgets the preceding character at any control;
             // Alacritty repeats whatever was printed last.
-            None => crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed),
+            None => match crate::native_serialize::try_divergent(sequence) {
+                Ok(divergent) => divergent || (is_rep(sequence) && !printed),
+                Err(failed) => {
+                    // Unread, the control cannot be trusted: refused.
+                    self.refuse_alloc(failed);
+                    return;
+                }
+            },
         };
         if refused {
             self.refuse(true, crate::native_serialize::refusal(sequence));
@@ -551,9 +1242,8 @@ impl XtermFeed {
     /// itself (`refuse_control`, C1, an overlong sequence); a refusal that
     /// needs the screen's state (a restore, margins, a `ContextRule` control
     /// or a round trip) counts only when first.
-    fn scan(&mut self, bytes: &[u8]) {
-        let mut data = std::mem::take(&mut self.held);
-        data.extend_from_slice(bytes);
+    fn scan(&mut self, bytes: &[u8]) -> std::result::Result<(), AllocFailed> {
+        let mut data = join_held(&mut self.held, bytes)?;
         let c1 = crate::native_serialize::c1_at(&data);
         let mut next = if self.in_string {
             self.string_payload(&mut data, 0)
@@ -574,7 +1264,7 @@ impl XtermFeed {
             }
             let Some(len) = crate::native_serialize::sequence_len(&data[at..]) else {
                 if data.len() - at <= MAX_HELD {
-                    self.held = data.split_off(at);
+                    self.hold(&mut data, at);
                 } else {
                     self.refuse(true, LONG_SEQUENCE);
                 }
@@ -594,6 +1284,7 @@ impl XtermFeed {
         }
         self.refuse(c1.is_some(), C1);
         self.printed = printed && self.held.is_empty() && !self.in_string;
+        Ok(())
     }
 
     /// Consume a string's payload from `data[at..]`; returns where scanning
@@ -603,7 +1294,7 @@ impl XtermFeed {
         match string_end(&data[at..]).map(|end| at + end) {
             Some(end) if data[end] == 0x1b && end + 1 == data.len() => {
                 self.push_tail(&data[at..end]);
-                self.held = data.split_off(end);
+                self.hold(data, end);
                 None
             }
             Some(end) => {
@@ -728,13 +1419,19 @@ impl XtermFeed {
         history: &mut dyn FnMut() -> usize,
     ) -> Option<usize> {
         // C0 controls inside a sequence execute and are not part of it.
-        let filtered: Vec<u8>;
+        let mut filtered: Vec<u8>;
         let sequence = if sequence[1..].iter().any(|&b| b < 0x20) {
-            filtered = sequence[..1]
-                .iter()
-                .chain(sequence[1..].iter().filter(|&&b| b >= 0x20))
-                .copied()
-                .collect();
+            // At most the sequence, which is at most the feed's input.
+            filtered = match fallible::try_with_capacity(sequence.len(), TRACKED_C0) {
+                Ok(buffer) => buffer,
+                Err(failed) => {
+                    // Untracked, the snapshot cannot be trusted: refused.
+                    self.refuse_alloc(failed);
+                    return None;
+                }
+            };
+            filtered.push(sequence[0]);
+            filtered.extend(sequence[1..].iter().filter(|&&b| b >= 0x20));
             &filtered[..]
         } else {
             sequence
@@ -830,9 +1527,16 @@ impl XtermFeed {
 
     /// Feed `bytes`, giving ED 1 and ED 2 xterm's semantics. An unfinished
     /// sequence at the end waits in `held` for the bytes that complete it.
-    fn feed(&mut self, parser: &mut Processor, term: &mut Term<VoidListener>, bytes: &[u8]) {
-        let mut data = std::mem::take(&mut self.held);
-        data.extend_from_slice(bytes);
+    ///
+    /// A refused join returns before anything is parsed. A buffer refused
+    /// partway through is recorded in `alloc_failed` and refuses the snapshot.
+    fn feed(
+        &mut self,
+        parser: &mut Processor,
+        term: &mut Term<VoidListener>,
+        bytes: &[u8],
+    ) -> std::result::Result<(), AllocFailed> {
+        let mut data = join_held(&mut self.held, bytes)?;
         // Refused wherever it is; reported first only if it comes first.
         let c1 = crate::native_serialize::c1_at(&data);
         let mut from = 0;
@@ -861,7 +1565,7 @@ impl XtermFeed {
             self.refuse(c1.is_some_and(|c1| c1 < at), C1);
             let Some(len) = crate::native_serialize::sequence_len(&data[at..]) else {
                 if data.len() - at <= MAX_HELD {
-                    self.held = data.split_off(at);
+                    self.hold(&mut data, at);
                 } else {
                     self.refuse(true, LONG_SEQUENCE);
                 }
@@ -1032,6 +1736,7 @@ impl XtermFeed {
         // A held sequence or an unfinished string ends the stream so far.
         self.printed = printed && self.held.is_empty() && !self.in_string;
         parser.advance(term, &data[from..]);
+        Ok(())
     }
 
     /// DECSTBM as xterm's setScrollRegion reads it (MarginTracker): top
@@ -1082,14 +1787,16 @@ impl XtermFeed {
 
     /// The bytes that leave a replaying parser where this one is: the
     /// unfinished string or sequence the stream ends inside.
-    fn pending_tail(&self) -> std::result::Result<Vec<u8>, &'static str> {
+    fn pending_tail(&self) -> CallResult<Vec<u8>> {
+        // At most MAX_HELD held bytes after a tail of about 12 KiB (push_tail).
+        const TAIL: &str = "the ANSI snapshot's pending tail";
         if !self.in_string {
-            return Ok(self.held.clone());
+            return Ok(fallible::try_copy(&self.held, TAIL)?);
         }
         if self.tail_overflow {
-            return Err("partial-tail-overflow");
+            return Err(CallError::reason("partial-tail-overflow"));
         }
-        Ok([self.tail.as_slice(), &self.held].concat())
+        Ok(fallible::try_concat(&self.tail, &self.held, TAIL)?)
     }
 }
 
@@ -1286,32 +1993,43 @@ fn history_at_native_cap(term: &Term<VoidListener>, requested: u32, cap: u32) ->
 /// A DECRST that resets 1049, read as `track` reads it (C0 controls inside
 /// run and are not part of it): `Some(true)` with 1049 as its only mode in
 /// plain digits, `Some(false)` in a list (`divergent` refuses a sub-parameter
-/// or a list past 32 parameters before this runs).
+/// or a list past 32 parameters before this runs). The C0 bytes are
+/// skipped in place: the read allocates nothing.
 fn resets_1049(sequence: &[u8]) -> Option<bool> {
-    let filtered: Vec<u8>;
-    let sequence = if sequence[1..].iter().any(|&b| b < 0x20) {
-        filtered = sequence[..1]
-            .iter()
-            .chain(sequence[1..].iter().filter(|&&b| b >= 0x20))
-            .copied()
-            .collect();
-        &filtered[..]
-    } else {
-        sequence
-    };
-    let params = sequence.strip_prefix(b"\x1b[?")?.strip_suffix(b"l")?;
-    if params.is_empty() || !params.iter().all(|&b| b.is_ascii_digit() || b == b';') {
+    let (&first, rest) = sequence.split_first()?;
+    let mut body = rest.iter().copied().filter(|&b| b >= 0x20);
+    if first != 0x1b || body.next() != Some(b'[') || body.next() != Some(b'?') {
         return None;
     }
-    let mut count = 0;
-    let mut found = false;
-    for mode in params.split(|&b| b == b';') {
-        count += 1;
-        let value = mode.iter().fold(0u32, |n, &d| {
-            n.saturating_mul(10).saturating_add(u32::from(d - b'0'))
-        });
-        found |= value == 1049 && !mode.is_empty();
+    let (mut count, mut found, mut params, mut ended) = (0, false, false, false);
+    let (mut value, mut digits) = (0u32, 0usize);
+    for b in body {
+        if ended {
+            return None;
+        }
+        match b {
+            b'0'..=b'9' => {
+                value = value.saturating_mul(10).saturating_add(u32::from(b - b'0'));
+                digits += 1;
+            }
+            b';' => {
+                count += 1;
+                found |= digits > 0 && value == 1049;
+                (value, digits) = (0, 0);
+            }
+            b'l' => {
+                ended = true;
+                continue;
+            }
+            _ => return None,
+        }
+        params = true;
     }
+    if !ended || !params {
+        return None;
+    }
+    count += 1;
+    found |= digits > 0 && value == 1049;
     found.then_some(count == 1)
 }
 
@@ -1389,19 +2107,21 @@ fn soft_reset_like_xterm(term: &mut Term<VoidListener>) {
 /// DEL between the ESC and its final byte. An ESC still waiting for that byte
 /// at the end of `bytes` waits in `held` with what follows it, up to
 /// MAX_HELD bytes as XtermFeed holds; past that it goes to the parser as is.
+///
+/// A refused join returns before anything is parsed; nothing else allocates.
 fn advance_indexing(
     parser: &mut Processor,
     term: &mut Term<VoidListener>,
     held: &mut Vec<u8>,
     bytes: &[u8],
-) {
+) -> std::result::Result<(), AllocFailed> {
     let joined;
     let bytes = if held.is_empty() {
+        // Room to hold an ESC below (MAX_HELD) without allocating then.
+        fallible::try_reserve(held, MAX_HELD, HELD)?;
         bytes
     } else {
-        let mut data = std::mem::take(held);
-        data.extend_from_slice(bytes);
-        joined = data;
+        joined = join_held(held, bytes)?;
         &joined[..]
     };
     let mut from = 0;
@@ -1418,8 +2138,9 @@ fn advance_indexing(
         match bytes.get(end) {
             None if bytes.len() - esc <= MAX_HELD => {
                 parser.advance(term, &bytes[from..esc]);
+                // Within the MAX_HELD room reserved above.
                 held.extend_from_slice(&bytes[esc..]);
-                return;
+                return Ok(());
             }
             None => break,
             Some(b'D' | b'E') => {
@@ -1432,6 +2153,7 @@ fn advance_indexing(
         }
     }
     parser.advance(term, &bytes[from..]);
+    Ok(())
 }
 
 /// xterm's ED 1 / ED 2, where Alacritty differs: its ED 2 on the primary
@@ -1466,13 +2188,140 @@ fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: 
     }
 }
 
+/// The most bytes `ansi_snapshot` appends after the serialized screen
+/// besides the pending tail.
+const ANSI_MODES_TAIL: usize = 32;
+
+/// The text snapshot's rows and strings.
+const TEXT_SNAPSHOT: &str = "the text snapshot";
+
+/// One grid line as text, and with dim cells blanked when `undimmed`. Each
+/// string starts with room for one byte per cell and grows fallibly from
+/// there (a cell holds its character and its zero-width ones).
+fn text_row(
+    line: &alacritty_terminal::grid::Row<Cell>,
+    columns: usize,
+    undimmed: bool,
+) -> std::result::Result<(String, Option<String>), AllocFailed> {
+    let mut text = String::new();
+    fallible::try_reserve_str(&mut text, columns, TEXT_SNAPSHOT)?;
+    let mut plain = String::new();
+    if undimmed {
+        fallible::try_reserve_str(&mut plain, columns, TEXT_SNAPSHOT)?;
+    }
+    let push = |s: &mut String, c: char| fallible::try_push(s, c, TEXT_SNAPSHOT);
+    for x in 0..columns {
+        let cell = &line[Column(x)];
+        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            continue;
+        }
+        push(&mut text, cell.c)?;
+        for &c in cell.zerowidth().unwrap_or_default() {
+            push(&mut text, c)?;
+        }
+        if undimmed {
+            if cell.flags.contains(Flags::DIM) {
+                push(&mut plain, ' ')?;
+                if cell.flags.contains(Flags::WIDE_CHAR) {
+                    push(&mut plain, ' ')?;
+                }
+            } else {
+                push(&mut plain, cell.c)?;
+                for &c in cell.zerowidth().unwrap_or_default() {
+                    push(&mut plain, c)?;
+                }
+            }
+        }
+    }
+    // Trimmed in place, without a second copy. xterm trims blank grid cells,
+    // not arbitrary Unicode whitespace; the undimmed text trims both.
+    let kept = text.trim_end_matches(' ').len();
+    text.truncate(kept);
+    Ok((
+        text,
+        undimmed.then(|| {
+            let kept = plain.trim_end().len();
+            plain.truncate(kept);
+            plain
+        }),
+    ))
+}
+
 #[napi]
 impl NativeTerminal {
     #[napi(constructor, catch_unwind)]
-    pub fn new(cols: u32, rows: u32, scrollback: u32) -> Result<Self> {
+    pub fn new(cols: u32, rows: u32, scrollback: u32) -> Result<Self, ErrorCode> {
+        Ok(Self::create(cols, rows, scrollback)?)
+    }
+
+    #[napi(catch_unwind)]
+    pub fn feed(&mut self, bytes: Uint8Array) -> Result<(), ErrorCode> {
+        Ok(self.feed_bytes(&bytes)?)
+    }
+
+    /// See `feed_xterm_bytes`.
+    #[napi(catch_unwind)]
+    pub fn feed_xterm(
+        &mut self,
+        bytes: Uint8Array,
+        requested_scrollback: u32,
+    ) -> Result<bool, ErrorCode> {
+        Ok(self.feed_xterm_bytes(&bytes, requested_scrollback)?)
+    }
+
+    /// Every refusal family the ANSI feed met, the reported one first, each
+    /// once. Empty while the snapshot is not refused.
+    #[napi(catch_unwind)]
+    pub fn refusal_families(&self) -> Result<Vec<&'static str>, ErrorCode> {
+        Ok(self.families()?)
+    }
+
+    /// Replay an immutable native ring copy without a full JS Buffer round trip.
+    #[napi(catch_unwind)]
+    pub fn feed_frozen(
+        &mut self,
+        source: &NativeFrozenRing,
+        start: u32,
+        end: u32,
+    ) -> Result<(), ErrorCode> {
+        Ok(self.feed_frozen_range(source, start, end)?)
+    }
+
+    #[napi(catch_unwind)]
+    pub fn resize(&mut self, cols: u32, rows: u32) -> Result<(), ErrorCode> {
+        Ok(self.resize_grid(cols, rows)?)
+    }
+
+    #[napi(catch_unwind)]
+    pub fn text_snapshot(&mut self, undimmed: bool) -> Result<NativeTextSnapshot, ErrorCode> {
+        Ok(self.text_snapshot_rows(undimmed)?)
+    }
+
+    /// See `ansi_snapshot_bytes`.
+    #[napi(catch_unwind)]
+    pub fn ansi_snapshot(
+        &mut self,
+        requested_scrollback: Option<u32>,
+    ) -> Result<Buffer, ErrorCode> {
+        Ok(self.ansi_snapshot_bytes(requested_scrollback)?.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub fn dispose(&mut self) {
+        self.term = None;
+        // Back to this thread's processors, never a new one (#3440).
+        self.parser.release();
+        self.osc = OscCap::default();
+    }
+}
+
+/// The calls' bodies, free of napi types so the unit tests link without
+/// Node (`CallError`).
+impl NativeTerminal {
+    pub(crate) fn create(cols: u32, rows: u32, scrollback: u32) -> CallResult<Self> {
         let size = dimensions(cols, rows)?;
         if scrollback > 100_000 || (rows as u64 + scrollback as u64) * cols as u64 > 4_000_000 {
-            return Err(Error::from_reason(
+            return Err(CallError::reason(
                 "Experiment grid exceeds four million cells",
             ));
         }
@@ -1481,9 +2330,13 @@ impl NativeTerminal {
             osc52: Osc52::Disabled,
             ..Config::default()
         };
+        // Taken first: a refused grid gives it back (PooledParser's drop).
+        let parser = PooledParser::take();
+        let term = grid_unwind(|| Term::new(config, &size, VoidListener))?;
         Ok(Self {
-            term: Some(Term::new(config, &size, VoidListener)),
-            parser: Processor::new(),
+            term: Some(term),
+            parser,
+            osc: OscCap::default(),
             scrollback,
             requested_scrollback: scrollback,
             feed: XtermFeed {
@@ -1493,19 +2346,27 @@ impl NativeTerminal {
             refusal: None,
             scanned: 0,
             text_held: Vec::new(),
+            grid_refused: false,
         })
     }
 
-    #[napi(catch_unwind)]
-    pub fn feed(&mut self, bytes: Uint8Array) -> Result<()> {
-        let term = self
-            .term
-            .as_mut()
-            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        // Parser retains incomplete UTF-8 / escape state across feeds.
-        // VoidListener intentionally discards all PTY replies and clipboard events.
-        advance_indexing(&mut self.parser, term, &mut self.text_held, &bytes);
-        Ok(())
+    pub(crate) fn feed_bytes(&mut self, bytes: &[u8]) -> CallResult<()> {
+        self.usable()?;
+        let result = grid_unwind(|| {
+            let term = self
+                .term
+                .as_mut()
+                .ok_or_else(|| CallError::reason("Terminal disposed"))?;
+            check_feed_len(bytes.len())?;
+            // Parser retains incomplete UTF-8 / escape state across feeds.
+            // VoidListener intentionally discards all PTY replies and clipboard events.
+            let (parser, held) = (&mut self.parser, &mut self.text_held);
+            self.osc.scan(bytes, &mut |part, _| {
+                advance_indexing(parser, term, held, part)
+            })?;
+            Ok(())
+        });
+        self.settle(result)
     }
 
     /// `feed` for an ANSI snapshot replayed by xterm: ED 1 and ED 2 erase as
@@ -1517,342 +2378,438 @@ impl NativeTerminal {
     /// scanned for other refusal families (refusal_families), not laid into
     /// the grid. Returns true once refused and that scan is done: the caller
     /// stops parsing then.
-    #[napi(catch_unwind)]
-    pub fn feed_xterm(&mut self, bytes: Uint8Array, requested_scrollback: u32) -> Result<bool> {
-        let term = self
-            .term
-            .as_mut()
-            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        if self.refusal.is_some() {
-            let take = bytes.len().min(REFUSAL_SCAN_BYTES - self.scanned);
-            self.feed.scan(&bytes[..take]);
-            self.scanned += take;
-            return Ok(self.scanned >= REFUSAL_SCAN_BYTES);
-        }
-        self.requested_scrollback = requested_scrollback;
-        self.feed.feed(&mut self.parser, term, &bytes);
-        if self.feed.divergent {
-            self.refusal = Some(
-                self.feed
-                    .refused
-                    .unwrap_or("unsupported-state: a control Alacritty parses differently"),
-            );
-        } else if history_at_native_cap(term, requested_scrollback, self.scrollback) {
-            self.refusal = Some(HISTORY_LIMIT);
-        }
-        // Refused in these bytes: the scan of the next ones comes first.
-        Ok(false)
-    }
-
-    /// Every refusal family the ANSI feed met, the reported one first, each
-    /// once. Empty while the snapshot is not refused.
-    #[napi(catch_unwind)]
-    pub fn refusal_families(&self) -> Result<Vec<String>> {
-        let mut families: Vec<&'static str> =
-            self.refusal.map(refusal_family).into_iter().collect();
-        for family in &self.feed.seen {
-            if !families.contains(family) {
-                families.push(family);
-            }
-        }
-        Ok(families.into_iter().map(str::to_owned).collect())
-    }
-
-    /// Replay an immutable native ring copy without a full JS Buffer round trip.
-    #[napi(catch_unwind)]
-    pub fn feed_frozen(&mut self, source: &NativeFrozenRing, start: u32, end: u32) -> Result<()> {
-        let bytes = source
-            .bytes
-            .get(start as usize..end as usize)
-            .ok_or_else(|| Error::from_reason("Invalid frozen ring range"))?;
-        let term = self
-            .term
-            .as_mut()
-            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        advance_indexing(&mut self.parser, term, &mut self.text_held, bytes);
-        Ok(())
-    }
-
-    #[napi(catch_unwind)]
-    pub fn resize(&mut self, cols: u32, rows: u32) -> Result<()> {
-        let size = dimensions(cols, rows)?;
-        if (rows as u64 + self.scrollback as u64) * cols as u64 > 4_000_000 {
-            return Err(Error::from_reason(
-                "Experiment grid exceeds four million cells",
-            ));
-        }
-        let term = self
-            .term
-            .as_mut()
-            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        // The row step runs at the old width first (below).
-        if (rows as u64 + self.scrollback as u64) * term.columns() as u64 > 4_000_000 {
-            return Err(Error::from_reason(
-                "Experiment grid exceeds four million cells",
-            ));
-        }
-        // vte holds bytes back inside a synchronized update; xterm parsed them
-        // at the old size. Apply them first, then re-enter the update.
-        let synchronized = self.parser.sync_timeout().pending_timeout();
-        if synchronized {
-            self.parser.stop_sync(term);
-            // The held bytes can trim at the cap at the old width, and a
-            // width-only widen can take the history back under it.
-            if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
-                self.refusal.get_or_insert(HISTORY_LIMIT);
-            }
-        }
-        // xterm never reflows or cuts the alternate screen: its rows keep
-        // their cells and wrap flags across a resize. The vendored grid keeps
-        // a row's cells past a narrower width and shows them again when it
-        // widens, as xterm's does (vendor/alacritty_terminal WMUX-PATCH.md),
-        // but a width change with a soft-wrapped row on screen loses the
-        // flags, until the screen is left.
-        if term.mode().contains(TermMode::ALT_SCREEN) {
-            let grid = term.grid();
-            let old = grid.columns();
-            if old != cols as usize
-                && (0..grid.screen_lines() as i32).any(|y| {
-                    grid[Line(y)][Column(old - 1)]
-                        .flags
-                        .contains(Flags::WRAPLINE)
-                })
-            {
-                self.feed.alt_reflow = true;
-            }
-        }
-        // Narrower, a paragraph below the cursor's that reflows: xterm moves
-        // its cursor row by the rows that adds as if they were above it and
-        // clips a different row than Alacritty does. (A widen follows xterm's
-        // rule in the vendored grow_columns.)
-        let primary = main_grid(term);
-        // xterm resizes its alternate screen's cursor without a reflow, and
-        // the round trip's `?47l` then hands it to the main screen.
-        let resized =
-            term.columns() != size.columns() || term.screen_lines() != size.screen_lines();
-        if self.feed.round_trip && resized {
-            self.refusal
-                .get_or_insert("unsupported-state-mode: a resize between ?47h and ?47l");
-        }
-        if reflows_below_cursor(primary, cols as usize) {
-            self.refusal.get_or_insert(
-                "unsupported-reflow: a paragraph below the cursor reflows, which moves xterm's cursor off its row",
-            );
-        }
-        // Both terminals reset the margins of both screens on a size change.
-        if resized {
-            self.feed.main_margins = false;
-            self.feed.alt_margins = false;
-        }
-        // A resize moves rows between the screen and the history on both
-        // terminals, and each moves its saved rows by its own rules. Both
-        // change rows before they reflow columns (Alacritty's Grid::resize;
-        // xterm's Buffer.resize runs _reflow last), so the row step runs on
-        // its own first and each screen's save is carried across it
-        // (RowStep). Then the column step's history change is carried, so a
-        // later restore counts only the rows the stream scrolled
-        // (place_like_xterm).
-        let target = size.screen_lines();
-        let alt = term.mode().contains(TermMode::ALT_SCREEN);
-        // xterm's alternate buffer, emptied whenever it is left, is skipped by
-        // its resize: it keeps the length it had, so shown again on fewer
-        // rows it keeps rows above the screen that Alacritty's has none of,
-        // and its saved column is not clamped.
-        if alt && self.feed.alt_rows > term.screen_lines() {
-            self.feed.alt_overhang = true;
-        }
-        if !alt && alt_grid(term).saved_cursor.point.column.0 >= size.columns() {
-            self.feed.saved[1].unplaceable = true;
-        }
-        self.feed.alt_rows = if alt {
-            target
-        } else {
-            self.feed.alt_rows.max(target)
-        };
-        if term.screen_lines() != target {
-            let main_step = RowStep::before(
-                main_grid(term),
-                self.feed.saved[0].history,
-                target,
-                self.scrollback as usize,
-            );
-            let alt_step = if alt {
-                RowStep::before(alt_grid(term), self.feed.saved[1].history, target, 0)
-            } else {
-                RowStep::untouched(alt_grid(term), self.feed.saved[1].history)
-            };
-            term.resize(dimensions(term.columns() as u32, rows)?);
-            self.feed.saved[0].history = main_step.after(main_grid(term));
-            self.feed.saved[1].history = alt_step.after(alt_grid(term));
-            // Checked here too: a wider reflow next can take history back
-            // under the cap after the row step trimmed at it.
-            if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
-                self.refusal.get_or_insert(HISTORY_LIMIT);
-            }
-        }
-        let before = main_grid(term).history_size() as i64;
-        let saved_line = i64::from(main_grid(term).saved_cursor.point.line.0);
-        // The grid records a narrowing only when this resize runs one: a
-        // resize to the same size returns early and leaves the last one's.
-        let narrows = size.columns() < term.columns();
-        term.resize(size);
-        let grid = main_grid(term);
-        self.feed.saved[0].history = if narrows && grid.narrowing_added > 0 {
-            narrowed_saved_history(grid, self.feed.saved[0].history, saved_line)
-        } else {
-            self.feed.saved[0].history + grid.history_size() as i64 - before
-        };
-        // feed_xterm checks the same after a chunk, where the chunk's own
-        // ED 3 could hide a resize's trim.
-        if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
-            self.refusal.get_or_insert(HISTORY_LIMIT);
-        }
-        if synchronized {
-            self.parser.advance(term, b"\x1b[?2026h");
-        }
-        Ok(())
-    }
-
-    #[napi(catch_unwind)]
-    pub fn text_snapshot(&mut self, undimmed: bool) -> Result<NativeTextSnapshot> {
-        let term = self
-            .term
-            .as_mut()
-            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        let held = std::mem::take(&mut self.text_held);
-        self.parser.advance(term, &held);
-        // A text read must include bytes in an unfinished synchronized update.
-        // This finalizes the batch; this API does not promise ANSI replay state.
-        self.parser.stop_sync(term);
-        let grid = term.grid();
-        let history = grid.history_size() as i32;
-        let mut rows = Vec::with_capacity(grid.total_lines());
-        let mut wrapped = false;
-        for y in -history..grid.screen_lines() as i32 {
-            let line = &grid[Line(y)];
-            let mut text = String::new();
-            let mut plain = String::new();
-            for x in 0..grid.columns() {
-                let cell = &line[Column(x)];
-                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                    continue;
+    ///
+    /// A refused allocation throws ALLOC_FAILED: before any byte is parsed
+    /// (the join), or partway through, which also refuses the snapshot.
+    pub(crate) fn feed_xterm_bytes(
+        &mut self,
+        bytes: &[u8],
+        requested_scrollback: u32,
+    ) -> CallResult<bool> {
+        self.usable()?;
+        let result = grid_unwind(|| {
+            let term = self
+                .term
+                .as_mut()
+                .ok_or_else(|| CallError::reason("Terminal disposed"))?;
+            check_feed_len(bytes.len())?;
+            if self.refusal.is_some() {
+                let take = bytes.len().min(REFUSAL_SCAN_BYTES - self.scanned);
+                self.feed.scan(&bytes[..take])?;
+                self.scanned += take;
+                if let Some(failed) = self.feed.alloc_failed.take() {
+                    return Err(failed.into());
                 }
-                text.push(cell.c);
-                if let Some(chars) = cell.zerowidth() {
-                    text.extend(chars);
-                }
-                if undimmed {
-                    if cell.flags.contains(Flags::DIM) {
-                        plain.push(' ');
-                        if cell.flags.contains(Flags::WIDE_CHAR) {
-                            plain.push(' ');
-                        }
-                    } else {
-                        plain.push(cell.c);
-                        if let Some(chars) = cell.zerowidth() {
-                            plain.extend(chars);
-                        }
-                    }
-                }
+                return Ok(self.scanned >= REFUSAL_SCAN_BYTES);
             }
-            rows.push(NativeTextRow {
-                // xterm trims blank grid cells, not arbitrary Unicode whitespace.
-                text: text.trim_end_matches(' ').to_owned(),
-                wrapped,
-                undimmed: undimmed.then(|| plain.trim_end().to_owned()),
+            self.requested_scrollback = requested_scrollback;
+            // A refused join parses nothing; one after a part was parsed
+            // refuses the snapshot.
+            let mut parsed = false;
+            let (feed, parser) = (&mut self.feed, &mut self.parser);
+            let scanned = self.osc.scan(bytes, &mut |part, dropped| {
+                // Refused as LONG_OSC before the bytes in its place reach
+                // the tracker, so that refusal is the one reported.
+                feed.refuse(dropped, LONG_OSC);
+                feed.feed(parser, term, part)?;
+                parsed = true;
+                Ok(())
             });
-            wrapped = line[Column(grid.columns() - 1)]
-                .flags
-                .contains(Flags::WRAPLINE);
-        }
-        while rows.last().is_some_and(|r| r.text.is_empty()) {
-            rows.pop();
-        }
-        let cursor_row = history + grid.cursor.point.line.0;
-        let rows_below_cursor = (rows.len() as i32 - 1 - cursor_row).max(0) as u32;
-        Ok(NativeTextSnapshot {
-            rows,
-            rows_below_cursor,
-            buffer_type: if term.mode().contains(TermMode::ALT_SCREEN) {
-                "alternate"
-            } else {
-                "normal"
+            if let Err(failed) = scanned {
+                if !parsed {
+                    return Err(failed.into());
+                }
+                self.feed.refuse_alloc(failed);
             }
-            .into(),
-        })
+            self.feed.refuse(self.osc.take_dropped(), LONG_OSC);
+            if self.feed.divergent {
+                self.refusal = Some(
+                    self.feed
+                        .refused
+                        .unwrap_or("unsupported-state: a control Alacritty parses differently"),
+                );
+            } else if history_at_native_cap(term, requested_scrollback, self.scrollback) {
+                self.refusal = Some(HISTORY_LIMIT);
+            }
+            if let Some(failed) = self.feed.alloc_failed.take() {
+                return Err(failed.into());
+            }
+            // Refused in these bytes: the scan of the next ones comes first.
+            Ok(false)
+        });
+        self.settle(result)
+    }
+
+    /// The reported refusal's family first, then the others in the order
+    /// met (`XtermFeed::seen`, fixed storage). The names are static; the list
+    /// is reserved fallibly, since it is read right after a refusal.
+    pub(crate) fn families(&self) -> std::result::Result<Vec<&'static str>, AllocFailed> {
+        let reported = self.refusal.map(refusal_family);
+        let rest = self
+            .feed
+            .seen
+            .as_slice()
+            .iter()
+            .copied()
+            .filter(|family| Some(*family) != reported);
+        let mut families = fallible::try_with_capacity(
+            usize::from(reported.is_some()) + self.feed.seen.as_slice().len(),
+            REFUSAL_FAMILIES,
+        )?;
+        families.extend(reported.into_iter().chain(rest));
+        Ok(families)
+    }
+
+    pub(crate) fn feed_frozen_range(
+        &mut self,
+        source: &NativeFrozenRing,
+        start: u32,
+        end: u32,
+    ) -> CallResult<()> {
+        self.usable()?;
+        let result = grid_unwind(|| {
+            let bytes = source
+                .bytes
+                .get(start as usize..end as usize)
+                .ok_or_else(|| CallError::reason("Invalid frozen ring range"))?;
+            let term = self
+                .term
+                .as_mut()
+                .ok_or_else(|| CallError::reason("Terminal disposed"))?;
+            let (parser, held) = (&mut self.parser, &mut self.text_held);
+            self.osc.scan(bytes, &mut |part, _| {
+                advance_indexing(parser, term, held, part)
+            })?;
+            Ok(())
+        });
+        self.settle(result)
+    }
+
+    pub(crate) fn resize_grid(&mut self, cols: u32, rows: u32) -> CallResult<()> {
+        self.usable()?;
+        let result = grid_unwind(|| {
+            let size = dimensions(cols, rows)?;
+            if (rows as u64 + self.scrollback as u64) * cols as u64 > 4_000_000 {
+                return Err(CallError::reason(
+                    "Experiment grid exceeds four million cells",
+                ));
+            }
+            let term = self
+                .term
+                .as_mut()
+                .ok_or_else(|| CallError::reason("Terminal disposed"))?;
+            // The row step runs at the old width first (below).
+            if (rows as u64 + self.scrollback as u64) * term.columns() as u64 > 4_000_000 {
+                return Err(CallError::reason(
+                    "Experiment grid exceeds four million cells",
+                ));
+            }
+            // vte holds bytes back inside a synchronized update; xterm parsed them
+            // at the old size. Apply them first, then re-enter the update.
+            let synchronized = self.parser.sync_timeout().pending_timeout();
+            if synchronized {
+                self.parser.stop_sync(term);
+                // The held bytes can trim at the cap at the old width, and a
+                // width-only widen can take the history back under it.
+                if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
+                    self.refusal.get_or_insert(HISTORY_LIMIT);
+                }
+            }
+            // xterm never reflows or cuts the alternate screen: its rows keep
+            // their cells and wrap flags across a resize. The vendored grid keeps
+            // a row's cells past a narrower width and shows them again when it
+            // widens, as xterm's does (vendor/alacritty_terminal WMUX-PATCH.md),
+            // but a width change with a soft-wrapped row on screen loses the
+            // flags, until the screen is left.
+            if term.mode().contains(TermMode::ALT_SCREEN) {
+                let grid = term.grid();
+                let old = grid.columns();
+                if old != cols as usize
+                    && (0..grid.screen_lines() as i32).any(|y| {
+                        grid[Line(y)][Column(old - 1)]
+                            .flags
+                            .contains(Flags::WRAPLINE)
+                    })
+                {
+                    self.feed.alt_reflow = true;
+                }
+            }
+            // Narrower, a paragraph below the cursor's that reflows: xterm moves
+            // its cursor row by the rows that adds as if they were above it and
+            // clips a different row than Alacritty does. (A widen follows xterm's
+            // rule in the vendored grow_columns.)
+            let primary = main_grid(term);
+            // xterm resizes its alternate screen's cursor without a reflow, and
+            // the round trip's `?47l` then hands it to the main screen.
+            let resized =
+                term.columns() != size.columns() || term.screen_lines() != size.screen_lines();
+            if self.feed.round_trip && resized {
+                self.refusal
+                    .get_or_insert("unsupported-state-mode: a resize between ?47h and ?47l");
+            }
+            if reflows_below_cursor(primary, cols as usize) {
+                self.refusal.get_or_insert(
+                    "unsupported-reflow: a paragraph below the cursor reflows, which moves xterm's cursor off its row",
+                );
+            }
+            // Both terminals reset the margins of both screens on a size change.
+            if resized {
+                self.feed.main_margins = false;
+                self.feed.alt_margins = false;
+            }
+            // A resize moves rows between the screen and the history on both
+            // terminals, and each moves its saved rows by its own rules. Both
+            // change rows before they reflow columns (Alacritty's Grid::resize;
+            // xterm's Buffer.resize runs _reflow last), so the row step runs on
+            // its own first and each screen's save is carried across it
+            // (RowStep). Then the column step's history change is carried, so a
+            // later restore counts only the rows the stream scrolled
+            // (place_like_xterm).
+            let target = size.screen_lines();
+            let alt = term.mode().contains(TermMode::ALT_SCREEN);
+            // xterm's alternate buffer, emptied whenever it is left, is skipped by
+            // its resize: it keeps the length it had, so shown again on fewer
+            // rows it keeps rows above the screen that Alacritty's has none of,
+            // and its saved column is not clamped.
+            if alt && self.feed.alt_rows > term.screen_lines() {
+                self.feed.alt_overhang = true;
+            }
+            if !alt && alt_grid(term).saved_cursor.point.column.0 >= size.columns() {
+                self.feed.saved[1].unplaceable = true;
+            }
+            self.feed.alt_rows = if alt {
+                target
+            } else {
+                self.feed.alt_rows.max(target)
+            };
+            if term.screen_lines() != target {
+                let main_step = RowStep::before(
+                    main_grid(term),
+                    self.feed.saved[0].history,
+                    target,
+                    self.scrollback as usize,
+                );
+                let alt_step = if alt {
+                    RowStep::before(alt_grid(term), self.feed.saved[1].history, target, 0)
+                } else {
+                    RowStep::untouched(alt_grid(term), self.feed.saved[1].history)
+                };
+                term.resize(dimensions(term.columns() as u32, rows)?);
+                self.feed.saved[0].history = main_step.after(main_grid(term));
+                self.feed.saved[1].history = alt_step.after(alt_grid(term));
+                // Checked here too: a wider reflow next can take history back
+                // under the cap after the row step trimmed at it.
+                if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
+                    self.refusal.get_or_insert(HISTORY_LIMIT);
+                }
+            }
+            let before = main_grid(term).history_size() as i64;
+            let saved_line = i64::from(main_grid(term).saved_cursor.point.line.0);
+            // The grid records a narrowing only when this resize runs one: a
+            // resize to the same size returns early and leaves the last one's.
+            let narrows = size.columns() < term.columns();
+            term.resize(size);
+            let grid = main_grid(term);
+            self.feed.saved[0].history = if narrows && grid.narrowing_added > 0 {
+                narrowed_saved_history(grid, self.feed.saved[0].history, saved_line)
+            } else {
+                self.feed.saved[0].history + grid.history_size() as i64 - before
+            };
+            // feed_xterm checks the same after a chunk, where the chunk's own
+            // ED 3 could hide a resize's trim.
+            if history_at_native_cap(term, self.requested_scrollback, self.scrollback) {
+                self.refusal.get_or_insert(HISTORY_LIMIT);
+            }
+            if synchronized {
+                self.parser.advance(term, b"\x1b[?2026h");
+            }
+            Ok(())
+        });
+        self.settle(result)
+    }
+
+    pub(crate) fn text_snapshot_rows(&mut self, undimmed: bool) -> CallResult<NativeTextSnapshot> {
+        self.usable()?;
+        let result = grid_unwind(|| {
+            let term = self
+                .term
+                .as_mut()
+                .ok_or_else(|| CallError::reason("Terminal disposed"))?;
+            self.parser.advance(term, &self.text_held);
+            self.text_held.clear();
+            // An open OSC stays held, so a later feed cannot continue it past
+            // the cap.
+            // A text read must include bytes in an unfinished synchronized update.
+            // This finalizes the batch; this API does not promise ANSI replay state.
+            self.parser.stop_sync(term);
+            let grid = term.grid();
+            let history = grid.history_size() as i32;
+            // One per grid line: at most the grid's 4M cells.
+            let mut rows = fallible::try_with_capacity(grid.total_lines(), TEXT_SNAPSHOT)?;
+            let mut wrapped = false;
+            for y in -history..grid.screen_lines() as i32 {
+                let line = &grid[Line(y)];
+                let (text, plain) = text_row(line, grid.columns(), undimmed)?;
+                rows.push(NativeTextRow {
+                    text,
+                    wrapped,
+                    undimmed: plain,
+                });
+                wrapped = line[Column(grid.columns() - 1)]
+                    .flags
+                    .contains(Flags::WRAPLINE);
+            }
+            while rows.last().is_some_and(|r| r.text.is_empty()) {
+                rows.pop();
+            }
+            let cursor_row = history + grid.cursor.point.line.0;
+            let rows_below_cursor = (rows.len() as i32 - 1 - cursor_row).max(0) as u32;
+            Ok(NativeTextSnapshot {
+                rows,
+                rows_below_cursor,
+                buffer_type: if term.mode().contains(TermMode::ALT_SCREEN) {
+                    "alternate"
+                } else {
+                    "normal"
+                }
+                .into(),
+            })
+        });
+        self.settle(result)
     }
 
     /// `requested_scrollback` above this terminal's own limit means the
     /// caller capped the history to bound memory: a history that reached the
     /// cap may have dropped rows the request would have kept.
-    #[napi(catch_unwind)]
-    pub fn ansi_snapshot(&mut self, requested_scrollback: Option<u32>) -> Result<Buffer> {
-        let term = self
-            .term
-            .as_mut()
-            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        // An unfinished sequence is part of the stream: parse it, then ship it.
-        self.parser.advance(term, &self.feed.held);
-        // Bytes held in a synchronized update count for the checks below.
-        let synchronized = self.parser.sync_timeout().pending_timeout();
-        self.parser.stop_sync(term);
-        // xterm still shows the blank alternate screen; Alacritty the main.
-        if self.feed.round_trip && self.refusal.is_none() {
-            self.feed.refuse(true, OPEN_ROUND_TRIP);
-            self.refusal = Some(OPEN_ROUND_TRIP);
-        }
-        if let Some(refusal) = self.refusal {
-            return Err(Error::from_reason(refusal));
-        }
-        if self.feed.alt_reflow {
-            return Err(Error::from_reason(
-                "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
-            ));
-        }
-        if requested_scrollback.is_some_and(|requested| requested > self.scrollback)
-            && [term.grid(), term.inactive_grid()]
-                .iter()
-                .any(|grid| grid.history_size() >= self.scrollback as usize)
-        {
-            return Err(Error::from_reason(
-                "unsupported-history-limit: history reached the native grid cap",
-            ));
-        }
-        // xterm's SerializeAddon drops margins: both paths replay raw then.
-        if self.feed.margins() {
-            return Err(Error::from_reason("margins"));
-        }
-        let tail = self.feed.pending_tail().map_err(Error::from_reason)?;
-        let mut result = crate::native_serialize::serialize(term, !self.feed.shifted)
-            .map_err(Error::from_reason)?;
-        // Mouse protocol and encoding as xterm's modes tail restores them: the
-        // encoding only while a protocol is on.
-        if self.feed.mouse != 0 {
-            result.push_str(&format!("\x1b[?{}h", self.feed.mouse));
-            if self.feed.sgr_pixels {
-                result.push_str("\x1b[?1016h");
-            } else if self.feed.sgr_mouse {
-                result.push_str("\x1b[?1006h");
+    pub(crate) fn ansi_snapshot_bytes(
+        &mut self,
+        requested_scrollback: Option<u32>,
+    ) -> CallResult<Vec<u8>> {
+        self.usable()?;
+        let result = grid_unwind(|| {
+            let term = self
+                .term
+                .as_mut()
+                .ok_or_else(|| CallError::reason("Terminal disposed"))?;
+            // An OSC or ESC the stream ends inside reaches the feed, so its
+            // tail ships it (a dropped one refused the snapshot already).
+            // A refused join parses nothing: the OSC stays held for the next
+            // snapshot.
+            if self.osc.scan == OscScan::Osc {
+                self.feed.feed(&mut self.parser, term, &self.osc.held)?;
+                self.osc.clear_open();
+                if self.feed.divergent && self.refusal.is_none() {
+                    self.refusal = self.feed.refused;
+                }
+                if let Some(failed) = self.feed.alloc_failed.take() {
+                    return Err(failed.into());
+                }
             }
-        }
-        if synchronized {
-            result.push_str("\x1b[?2026h");
-        }
-        // Asserted always: a reflush lands on a client whose cursor may be hidden.
-        result.push_str(if self.feed.cursor_hidden {
-            "\x1b[?25l"
-        } else {
-            "\x1b[?25h"
+            // An unfinished sequence is part of the stream: parse it, then ship it.
+            self.parser.advance(term, &self.feed.held);
+            // Bytes held in a synchronized update count for the checks below.
+            let synchronized = self.parser.sync_timeout().pending_timeout();
+            self.parser.stop_sync(term);
+            let payload = (|| -> CallResult<Vec<u8>> {
+                // xterm still shows the blank alternate screen; Alacritty the main.
+                if self.feed.round_trip && self.refusal.is_none() {
+                    self.feed.refuse(true, OPEN_ROUND_TRIP);
+                    self.refusal = Some(OPEN_ROUND_TRIP);
+                }
+                if let Some(refusal) = self.refusal {
+                    return Err(CallError::reason(refusal));
+                }
+                if self.feed.alt_reflow {
+                    return Err(CallError::reason(
+                    "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
+                ));
+                }
+                if requested_scrollback.is_some_and(|requested| requested > self.scrollback)
+                    && [term.grid(), term.inactive_grid()]
+                        .iter()
+                        .any(|grid| grid.history_size() >= self.scrollback as usize)
+                {
+                    return Err(CallError::reason(
+                        "unsupported-history-limit: history reached the native grid cap",
+                    ));
+                }
+                // xterm's SerializeAddon drops margins: both paths replay raw then.
+                if self.feed.margins() {
+                    return Err(CallError::reason("margins"));
+                }
+                let tail = self.feed.pending_tail()?;
+                let mut result = crate::native_serialize::serialize(term, !self.feed.shifted)?;
+                // The modes below (at most 30 bytes: `?100Nh`, `?1016h`, `?2026h`,
+                // `?25l`) and the tail, so neither grows the payload infallibly.
+                fallible::try_reserve_str(
+                    &mut result,
+                    tail.len().saturating_add(ANSI_MODES_TAIL),
+                    "the ANSI snapshot",
+                )?;
+                // Mouse protocol and encoding as xterm's modes tail restores them: the
+                // encoding only while a protocol is on.
+                if self.feed.mouse != 0 {
+                    let _ = std::fmt::Write::write_fmt(
+                        &mut result,
+                        format_args!("\x1b[?{}h", self.feed.mouse),
+                    );
+                    if self.feed.sgr_pixels {
+                        result.push_str("\x1b[?1016h");
+                    } else if self.feed.sgr_mouse {
+                        result.push_str("\x1b[?1006h");
+                    }
+                }
+                if synchronized {
+                    result.push_str("\x1b[?2026h");
+                }
+                // Asserted always: a reflush lands on a client whose cursor may be hidden.
+                result.push_str(if self.feed.cursor_hidden {
+                    "\x1b[?25l"
+                } else {
+                    "\x1b[?25h"
+                });
+                let mut payload = result.into_bytes();
+                payload.extend_from_slice(&tail);
+                Ok(payload)
+            })();
+            // A failed snapshot leaves the stream inside its synchronized
+            // update, as before the call: the held bytes stay applied (they
+            // are not parsed twice), and only the mode comes back, so the
+            // next snapshot still ends in ?2026h.
+            if synchronized && payload.is_err() {
+                self.parser.advance(term, b"\x1b[?2026h");
+            }
+            payload
         });
-        let mut payload = result.into_bytes();
-        payload.extend_from_slice(&tail);
-        Ok(payload.into())
+        self.settle(result)
     }
 
-    #[napi(catch_unwind)]
-    pub fn dispose(&mut self) {
-        self.term = None;
-        self.parser = Processor::new();
+    /// GRID_REFUSED once a grid allocation was refused.
+    fn usable(&self) -> CallResult<()> {
+        if self.grid_refused {
+            return Err(CallError::reason(GRID_REFUSED));
+        }
+        Ok(())
+    }
+
+    /// The result of a call into the grid (`grid_unwind`). A refused grid
+    /// allocation throws ALLOC_FAILED for this call, and the terminal is
+    /// dropped: the grid may be half updated. So is its parser, never given
+    /// back to the pool (`PooledParser::discard`). The snapshot is refused as
+    /// unsupported-alloc, and every later call but `refusalFamilies` and
+    /// `dispose` fails with GRID_REFUSED.
+    fn settle<R>(
+        &mut self,
+        result: std::result::Result<CallResult<R>, AllocFailed>,
+    ) -> CallResult<R> {
+        result.unwrap_or_else(|failed| {
+            self.grid_refused = true;
+            self.term = None;
+            self.parser.discard();
+            self.feed.refuse(true, GRID_REFUSED);
+            self.refusal.get_or_insert(GRID_REFUSED);
+            Err(failed.into())
+        })
     }
 }
 
@@ -1891,7 +2848,7 @@ impl NativePty {
         cols: u32,
         rows: u32,
     ) -> Result<Self> {
-        dimensions(cols, rows)?;
+        pty_dimensions(cols, rows)?;
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: rows as u16,
@@ -2005,7 +2962,7 @@ impl NativePty {
 
     #[napi(catch_unwind)]
     pub fn resize(&self, cols: u32, rows: u32) -> Result<()> {
-        dimensions(cols, rows)?;
+        pty_dimensions(cols, rows)?;
         self.master
             .as_ref()
             .ok_or_else(|| Error::from_reason("PTY closed"))?
@@ -2139,12 +3096,15 @@ impl NativeFrozenRing {
         self.written_at as f64
     }
     #[napi(getter, catch_unwind)]
-    pub fn geometry(&self) -> Option<NativeReplayGeometry> {
-        replay_geometry(&self.geometry, self.written_at - self.bytes.len() as u64)
+    pub fn geometry(&self) -> Result<Option<NativeReplayGeometry>, ErrorCode> {
+        Ok(replay_geometry(
+            &self.geometry,
+            self.written_at - self.bytes.len() as u64,
+        )?)
     }
     #[napi(catch_unwind)]
-    pub fn read_all(&self) -> Buffer {
-        self.bytes.clone().into()
+    pub fn read_all(&self) -> Result<Buffer, ErrorCode> {
+        Ok(self.copy_bytes()?.into())
     }
     #[napi(catch_unwind)]
     pub fn dispose(&mut self) {
@@ -2152,22 +3112,41 @@ impl NativeFrozenRing {
         self.geometry.clear();
     }
 }
-fn replay_geometry(marks: &[GeometryMark], start: u64) -> Option<NativeReplayGeometry> {
-    marks.first().map(|first| NativeReplayGeometry {
+impl NativeFrozenRing {
+    fn copy_bytes(&self) -> std::result::Result<Vec<u8>, AllocFailed> {
+        // Bounded by the ring it was frozen from (256 MiB).
+        fallible::try_copy(&self.bytes, RING_COPY)
+    }
+}
+/// A copy of a ring's bytes (at most its 256 MiB capacity).
+const RING_COPY: &str = "a copy of the output ring";
+/// The ring's geometry marks: at most MAX_GEOMETRY_MARKS.
+const GEOMETRY: &str = "the output ring's geometry marks";
+/// The most geometry marks a ring keeps (prune_geometry), one more while a
+/// new mark is pruned.
+const MAX_GEOMETRY_MARKS: usize = 256;
+
+fn replay_geometry(
+    marks: &[GeometryMark],
+    start: u64,
+) -> std::result::Result<Option<NativeReplayGeometry>, AllocFailed> {
+    let Some(first) = marks.first() else {
+        return Ok(None);
+    };
+    // At most MAX_GEOMETRY_MARKS.
+    let mut changes = fallible::try_with_capacity(marks.len() - 1, GEOMETRY)?;
+    changes.extend(marks.iter().skip(1).map(|m| NativeGeometryChange {
+        offset: (m.at - start) as f64,
+        cols: m.cols,
+        rows: m.rows,
+    }));
+    Ok(Some(NativeReplayGeometry {
         start: NativeGeometrySize {
             cols: first.cols,
             rows: first.rows,
         },
-        changes: marks
-            .iter()
-            .skip(1)
-            .map(|m| NativeGeometryChange {
-                offset: (m.at - start) as f64,
-                cols: m.cols,
-                rows: m.rows,
-            })
-            .collect(),
-    })
+        changes,
+    }))
 }
 
 /// Byte retention and geometry use the same lifetime offset as the JS oracle.
@@ -2186,46 +3165,29 @@ pub struct NativeRing {
 #[napi]
 impl NativeRing {
     #[napi(constructor, catch_unwind)]
-    pub fn new(capacity: u32) -> Result<Self> {
-        if capacity == 0 || capacity > 256 * 1024 * 1024 {
-            return Err(Error::from_reason("Ring capacity must be 1..256MiB"));
-        }
-        Ok(Self {
-            bytes: vec![0; (capacity as usize).min(64 * 1024)],
-            capacity: capacity as usize,
-            length: 0,
-            write_pos: 0,
-            total_written: 0,
-            geometry: Vec::new(),
-            geometry_tail_provisional: false,
-        })
+    pub fn new(capacity: u32) -> Result<Self, ErrorCode> {
+        Ok(Self::create(capacity)?)
     }
 
     #[napi(catch_unwind)]
-    pub fn write(&mut self, bytes: Uint8Array) -> Result<()> {
-        self.write_bytes(&bytes)
+    pub fn write(&mut self, bytes: Uint8Array) -> Result<(), ErrorCode> {
+        Ok(self.write_bytes(&bytes)?)
     }
 
     #[napi(catch_unwind)]
-    pub fn write_chunk(&mut self, chunk: &NativeOutputChunk) -> Result<()> {
-        self.write_bytes(&chunk.bytes)
+    pub fn write_chunk(&mut self, chunk: &NativeOutputChunk) -> Result<(), ErrorCode> {
+        Ok(self.write_bytes(&chunk.bytes)?)
     }
 
     #[napi(catch_unwind)]
-    pub fn read_all(&self) -> Buffer {
-        self.copy_bytes().into()
+    pub fn read_all(&self) -> Result<Buffer, ErrorCode> {
+        Ok(self.copy_bytes()?.into())
     }
 
     #[napi(catch_unwind)]
-    pub fn freeze(&mut self) -> NativeFrozenRing {
-        self.prune_geometry();
-        NativeFrozenRing {
-            bytes: self.copy_bytes(),
-            geometry: self.geometry.clone(),
-            written_at: self.total_written,
-        }
+    pub fn freeze(&mut self) -> Result<NativeFrozenRing, ErrorCode> {
+        Ok(self.freeze_copy()?)
     }
-
     #[napi(getter, catch_unwind)]
     pub fn size(&self) -> u32 {
         self.length as u32
@@ -2258,13 +3220,100 @@ impl NativeRing {
     /// with no bytes between them keeps the one with the fewest rows and the
     /// newest. `applied` defaults to true.
     #[napi(catch_unwind)]
-    pub fn note_geometry(&mut self, cols: u32, rows: u32, applied: Option<bool>) -> Result<()> {
+    pub fn note_geometry(
+        &mut self,
+        cols: u32,
+        rows: u32,
+        applied: Option<bool>,
+    ) -> Result<(), ErrorCode> {
+        Ok(self.note_geometry_mark(cols, rows, applied)?)
+    }
+
+    /// A viewer's replay is out: a provisional newest mark is kept.
+    #[napi(catch_unwind)]
+    pub fn settle_geometry(&mut self) {
+        self.geometry_tail_provisional = false;
+    }
+
+    #[napi(getter, catch_unwind)]
+    pub fn geometry_tail_provisional(&self) -> bool {
+        self.geometry_tail_provisional && !self.geometry.is_empty()
+    }
+
+    #[napi(getter, catch_unwind)]
+    pub fn has_geometry_changes(&mut self) -> bool {
+        self.prune_geometry();
+        self.geometry.len() > 1
+    }
+
+    #[napi(catch_unwind)]
+    pub fn read_all_with_geometry(&mut self) -> Result<NativeRingSnapshot, ErrorCode> {
+        let (data, geometry) = self.copy_with_geometry()?;
+        Ok(NativeRingSnapshot {
+            data: data.into(),
+            written_at: self.total_written as f64,
+            geometry,
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn dispose(&mut self) {
+        self.bytes = Vec::new();
+        self.capacity = 0;
+        self.length = 0;
+        self.write_pos = 0;
+        self.geometry.clear();
+        self.geometry_tail_provisional = false;
+    }
+}
+
+impl NativeRing {
+    fn create(capacity: u32) -> CallResult<Self> {
+        if capacity == 0 || capacity > 256 * 1024 * 1024 {
+            return Err(CallError::reason("Ring capacity must be 1..256MiB"));
+        }
+        // The first 64 KiB; writes grow it up to the capacity (write_bytes).
+        let initial = (capacity as usize).min(64 * 1024);
+        let mut bytes = fallible::try_with_capacity(initial, "the output ring")?;
+        bytes.resize(initial, 0);
+        Ok(Self {
+            bytes,
+            capacity: capacity as usize,
+            length: 0,
+            write_pos: 0,
+            total_written: 0,
+            geometry: Vec::new(),
+            geometry_tail_provisional: false,
+        })
+    }
+
+    fn freeze_copy(&mut self) -> std::result::Result<NativeFrozenRing, AllocFailed> {
+        self.prune_geometry();
+        // At most MAX_GEOMETRY_MARKS after the prune.
+        let mut geometry = fallible::try_with_capacity(self.geometry.len(), GEOMETRY)?;
+        geometry.extend_from_slice(&self.geometry);
+        Ok(NativeFrozenRing {
+            bytes: self.copy_bytes()?,
+            geometry,
+            written_at: self.total_written,
+        })
+    }
+
+    fn note_geometry_mark(
+        &mut self,
+        cols: u32,
+        rows: u32,
+        applied: Option<bool>,
+    ) -> CallResult<()> {
         if self.capacity == 0 {
-            return Err(Error::from_reason("Ring disposed"));
+            return Err(CallError::reason("Ring disposed"));
         }
         if cols == 0 || rows == 0 {
             return Ok(());
         }
+        // Room for the mark pushed below, before anything changes: at most
+        // MAX_GEOMETRY_MARKS + 1 before its prune.
+        fallible::try_reserve(&mut self.geometry, 1, GEOMETRY)?;
         let applied = applied.unwrap_or(true);
         if let Some(last) = self.geometry.last() {
             if last.cols == cols && last.rows == rows {
@@ -2298,65 +3347,19 @@ impl NativeRing {
         Ok(())
     }
 
-    /// A viewer's replay is out: a provisional newest mark is kept.
-    #[napi(catch_unwind)]
-    pub fn settle_geometry(&mut self) {
-        self.geometry_tail_provisional = false;
-    }
-
-    #[napi(getter, catch_unwind)]
-    pub fn geometry_tail_provisional(&self) -> bool {
-        self.geometry_tail_provisional && !self.geometry.is_empty()
-    }
-
-    #[napi(getter, catch_unwind)]
-    pub fn has_geometry_changes(&mut self) -> bool {
-        self.prune_geometry();
-        self.geometry.len() > 1
-    }
-
-    #[napi(catch_unwind)]
-    pub fn read_all_with_geometry(&mut self) -> NativeRingSnapshot {
+    /// The retained bytes and their geometry (`readAllWithGeometry`).
+    fn copy_with_geometry(
+        &mut self,
+    ) -> std::result::Result<(Vec<u8>, Option<NativeReplayGeometry>), AllocFailed> {
         self.prune_geometry();
         let start = self.total_written - self.length as u64;
-        let geometry = self.geometry.first().map(|first| NativeReplayGeometry {
-            start: NativeGeometrySize {
-                cols: first.cols,
-                rows: first.rows,
-            },
-            changes: self
-                .geometry
-                .iter()
-                .skip(1)
-                .map(|m| NativeGeometryChange {
-                    offset: (m.at - start) as f64,
-                    cols: m.cols,
-                    rows: m.rows,
-                })
-                .collect(),
-        });
-        NativeRingSnapshot {
-            data: self.read_all(),
-            written_at: self.total_written as f64,
-            geometry,
-        }
+        let geometry = replay_geometry(&self.geometry, start)?;
+        Ok((self.copy_bytes()?, geometry))
     }
 
-    #[napi(catch_unwind)]
-    pub fn dispose(&mut self) {
-        self.bytes = Vec::new();
-        self.capacity = 0;
-        self.length = 0;
-        self.write_pos = 0;
-        self.geometry.clear();
-        self.geometry_tail_provisional = false;
-    }
-}
-
-impl NativeRing {
-    fn write_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+    fn write_bytes(&mut self, bytes: &[u8]) -> CallResult<()> {
         if self.capacity == 0 {
-            return Err(Error::from_reason("Ring disposed"));
+            return Err(CallError::reason("Ring disposed"));
         }
         if bytes.is_empty() {
             return Ok(());
@@ -2365,7 +3368,7 @@ impl NativeRing {
             .total_written
             .checked_add(bytes.len() as u64)
             .filter(|n| *n <= 9_007_199_254_740_991)
-            .ok_or_else(|| Error::from_reason("Ring byte offset exceeds JS safe integer range"))?;
+            .ok_or_else(|| CallError::reason("Ring byte offset exceeds JS safe integer range"))?;
         let input = if bytes.len() > self.capacity {
             &bytes[bytes.len() - self.capacity..]
         } else {
@@ -2378,9 +3381,9 @@ impl NativeRing {
             while next < needed {
                 next = (next * 2).min(self.capacity);
             }
-            self.bytes
-                .try_reserve_exact(next - self.bytes.len())
-                .map_err(|e| Error::from_reason(e.to_string()))?;
+            // At most the capacity (256 MiB); a refusal leaves the ring as it was.
+            let additional = next - self.bytes.len();
+            fallible::try_reserve_exact(&mut self.bytes, additional, "the output ring")?;
             self.bytes.resize(next, 0);
             self.write_pos = self.length;
         }
@@ -2393,9 +3396,10 @@ impl NativeRing {
         Ok(())
     }
 
-    fn copy_bytes(&self) -> Vec<u8> {
+    /// The retained bytes, oldest first: at most the capacity (256 MiB).
+    fn copy_bytes(&self) -> std::result::Result<Vec<u8>, AllocFailed> {
         if self.length == 0 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let start = if self.length < self.bytes.len() {
             0
@@ -2403,10 +3407,10 @@ impl NativeRing {
             self.write_pos
         };
         let tail = self.length.min(self.bytes.len() - start);
-        let mut result = Vec::with_capacity(self.length);
+        let mut result = fallible::try_with_capacity(self.length, RING_COPY)?;
         result.extend_from_slice(&self.bytes[start..start + tail]);
         result.extend_from_slice(&self.bytes[..self.length - tail]);
-        result
+        Ok(result)
     }
 
     /// A run of marks at the newest mark's offset keeps the one with the
@@ -2446,8 +3450,8 @@ impl NativeRing {
         }
         // Past the cap, the oldest marks after the first go: the first is the
         // size the window's first bytes were written at.
-        if self.geometry.len() > 256 {
-            let excess = self.geometry.len() - 256;
+        if self.geometry.len() > MAX_GEOMETRY_MARKS {
+            let excess = self.geometry.len() - MAX_GEOMETRY_MARKS;
             self.geometry.drain(1..1 + excess);
         }
     }
@@ -2471,7 +3475,7 @@ pub(crate) fn fed_for_test(
     let mut parser: Processor = Processor::new();
     let mut feed = XtermFeed::default();
     for chunk in chunks {
-        feed.feed(&mut parser, &mut term, chunk);
+        feed.feed(&mut parser, &mut term, chunk).unwrap();
     }
     parser.advance(&mut term, &feed.held);
     (term, feed.divergent)
@@ -2480,8 +3484,9 @@ pub(crate) fn fed_for_test(
 #[cfg(test)]
 mod tests {
     use super::{Size, XtermFeed};
+    use crate::fallible::CallError;
     use alacritty_terminal::event::VoidListener;
-    use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
+    use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::vte::ansi::{Processor, Timeout};
@@ -2491,7 +3496,7 @@ mod tests {
         let mut parser: Processor = Processor::new();
         let mut feed = XtermFeed::default();
         for chunk in chunks {
-            feed.feed(&mut parser, &mut term, chunk.as_bytes());
+            feed.feed(&mut parser, &mut term, chunk.as_bytes()).unwrap();
         }
         (term, parser, feed)
     }
@@ -2815,7 +3820,7 @@ mod tests {
         // A restore on a screen this tracker and Alacritty disagree on is
         // not placed: Alacritty has no ?47.
         let (_, _, feed) = feed_with(&["a\x1b[?47h\x1b8"]);
-        assert!(feed.seen.contains(&"unsupported-state-restore-row"));
+        assert!(feed.seen.contains("unsupported-state-restore-row"));
     }
 
     #[test]
@@ -2864,14 +3869,15 @@ mod tests {
     fn the_scan_past_a_refusal_names_what_controls_show_by_themselves() {
         let mut feed = feed_with(&["\x1b(A"]).2;
         // Split across scans, inside a string, cut by DEL, and a C1.
-        feed.scan(b"\x1b]0;\x1b[53m title\x07\x1b[5");
-        feed.scan(b"3m\x1b[!\x7fp\xc2\x9b31m");
+        feed.scan(b"\x1b]0;\x1b[53m title\x07\x1b[5").unwrap();
+        feed.scan(b"3m\x1b[!\x7fp\xc2\x9b31m").unwrap();
         // A restore needs the screen's state: not seen by the scan. Neither
         // does a ContextRule control, nor text inside a round trip.
-        feed.scan(b"\x1b7\x1b*0\x1b8");
-        feed.scan(b"\x1b[?47hx\x1b[?47l\x1b[?1047l\x1b[?9l");
+        feed.scan(b"\x1b7\x1b*0\x1b8").unwrap();
+        feed.scan(b"\x1b[?47hx\x1b[?47l\x1b[?1047l\x1b[?9l")
+            .unwrap();
         assert_eq!(
-            feed.seen,
+            feed.seen.as_slice(),
             [
                 "unsupported-state-charset",
                 "unsupported-state-sgr",
@@ -2887,7 +3893,7 @@ mod tests {
 
     #[test]
     fn every_refused_family_is_seen_once_in_order() {
-        let seen = |chunks: &[&str]| feed_with(chunks).2.seen;
+        let seen = |chunks: &[&str]| feed_with(chunks).2.seen.as_slice().to_vec();
         assert_eq!(
             seen(&["\x1b[?47h\x1b(Ax\x1b[?47l\x1b[53m", "\x1b(K"]),
             [
@@ -2913,7 +3919,7 @@ mod tests {
             Some("unsupported-state-sgr")
         );
         assert_eq!(
-            feed.seen,
+            feed.seen.as_slice(),
             ["unsupported-state-sgr", "unsupported-state-charset"]
         );
     }
@@ -2933,7 +3939,7 @@ mod tests {
         assert_eq!(tail(&["hi\x1b]0;title\x07done"]).unwrap(), "");
         assert_eq!(
             tail(&["\x1bP", &"x".repeat(5000)]).unwrap_err(),
-            "partial-tail-overflow"
+            CallError::reason("partial-tail-overflow")
         );
     }
 
@@ -3076,10 +4082,10 @@ mod tests {
             let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
             let mut parser: Processor = Processor::new();
             let mut feed = XtermFeed::default();
-            feed.feed(&mut parser, &mut term, b"\x1b[?1049h");
+            feed.feed(&mut parser, &mut term, b"\x1b[?1049h").unwrap();
             feed.alt_reflow = true;
             for chunk in chunks {
-                feed.feed(&mut parser, &mut term, chunk.as_bytes());
+                feed.feed(&mut parser, &mut term, chunk.as_bytes()).unwrap();
             }
             !feed.alt_reflow
         };
@@ -3227,14 +4233,14 @@ mod tests {
         let mut parser: Processor = Processor::new();
         let mut held = Vec::new();
         for chunk in [para.as_bytes(), b"\x1b", b"D"] {
-            super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
+            super::advance_indexing(&mut parser, &mut term, &mut held, chunk).unwrap();
         }
         assert!(term.grid()[Line(0)][Column(9)]
             .flags
             .contains(Flags::WRAPLINE));
         // DEL inside, split after it: both parsers ignore DEL there.
         for chunk in [para.as_bytes(), b"\x1b\x7f", b"D"] {
-            super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
+            super::advance_indexing(&mut parser, &mut term, &mut held, chunk).unwrap();
         }
         assert!(held.is_empty());
         assert!(term.grid()[Line(0)][Column(9)]
@@ -3243,11 +4249,11 @@ mod tests {
         // An ESC followed by an endless run of C0 controls and DEL, a few
         // bytes per feed: the held bytes stay under the cap, so each feed
         // rescans at most that much, and the run reaches the parser.
-        super::advance_indexing(&mut parser, &mut term, &mut held, b"\x1b");
+        super::advance_indexing(&mut parser, &mut term, &mut held, b"\x1b").unwrap();
         let mut most = 0;
         for i in 0..100_000 {
             let chunk: &[u8] = if i % 2 == 0 { b"\x00\x7f\x07" } else { b"\x7f" };
-            super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
+            super::advance_indexing(&mut parser, &mut term, &mut held, chunk).unwrap();
             most = most.max(held.len());
         }
         assert!(most <= super::MAX_HELD, "{most}");
@@ -3258,7 +4264,7 @@ mod tests {
             !feed_with(&[para, "\x1b7\u{e9}"]).2.divergent,
             "a complete escape before UTF-8"
         );
-        super::advance_indexing(&mut parser, &mut term, &mut held, b"\x1b[1;1H\n");
+        super::advance_indexing(&mut parser, &mut term, &mut held, b"\x1b[1;1H\n").unwrap();
         assert!(!term.grid()[Line(0)][Column(9)]
             .flags
             .contains(Flags::WRAPLINE));
@@ -3266,7 +4272,8 @@ mod tests {
         let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 5 }, VoidListener);
         let mut parser: Processor = Processor::new();
         let mut feed = XtermFeed::default();
-        feed.feed(&mut parser, &mut term, b"\x1b[1;2r\x1b[4;1Hxxxxxxxxxxxxxxx");
+        feed.feed(&mut parser, &mut term, b"\x1b[1;2r\x1b[4;1Hxxxxxxxxxxxxxxx")
+            .unwrap();
         assert!(term.grid()[Line(3)][Column(9)]
             .flags
             .contains(Flags::WRAPLINE));
@@ -3326,10 +4333,10 @@ mod alt_kept_cells_tests {
         let mut parser: Processor = Processor::new();
         let mut feed = XtermFeed::default();
         let start = format!("\x1b[?1049h\x1b[H{R0}\r\n{R1}\r\n{R2}\r\n{R3}");
-        feed.feed(&mut parser, &mut term, start.as_bytes());
+        feed.feed(&mut parser, &mut term, start.as_bytes()).unwrap();
         for step in steps {
             match step {
-                Out(bytes) => feed.feed(&mut parser, &mut term, bytes.as_bytes()),
+                Out(bytes) => feed.feed(&mut parser, &mut term, bytes.as_bytes()).unwrap(),
                 To(cols, rows) => {
                     parser.advance(&mut term, &std::mem::take(&mut feed.held));
                     term.resize(Size {
@@ -3802,5 +4809,1194 @@ mod narrowed_saved_history_tests {
         assert_eq!(narrowed_saved_history(&grid(5, 9), 0, 5), 2);
         // xterm clamps on every reflowed narrowing, trimmed rows or not.
         assert_eq!(narrowed_saved_history(&grid(6, 2), 3, 6), 1);
+    }
+}
+
+/// Refused allocations (#3440): each call reports ALLOC_FAILED and the object
+/// stays consistent and usable.
+#[cfg(test)]
+mod alloc_failure_tests {
+    use super::*;
+    use crate::fallible::CallError;
+    use crate::fallible::{fail_from, fail_what, ALLOC_FAILED};
+
+    fn assert_alloc_failed<E: Into<CallError>>(error: Option<E>) {
+        let error: CallError = error.expect("the call is refused").into();
+        assert!(matches!(error, CallError::Alloc(_)), "{error:?}");
+        assert!(error.message().starts_with(ALLOC_FAILED), "{error:?}");
+    }
+
+    fn terminal() -> NativeTerminal {
+        NativeTerminal::create(20, 4, 100).unwrap()
+    }
+
+    fn text(terminal: &mut NativeTerminal) -> Vec<String> {
+        let snapshot = terminal.text_snapshot_rows(false).ok().unwrap();
+        snapshot.rows.into_iter().map(|row| row.text).collect()
+    }
+
+    #[test]
+    fn a_refused_ring_copy_is_an_error_and_the_ring_reads_back_after() {
+        let mut ring = NativeRing::create(1024).unwrap();
+        ring.write_bytes(b"hello ring").unwrap();
+        ring.note_geometry_mark(80, 24, None).unwrap();
+        {
+            let _fail = fail_from(10);
+            assert_alloc_failed(ring.copy_bytes().err());
+            assert_alloc_failed(ring.freeze_copy().err());
+            assert_alloc_failed(ring.copy_with_geometry().err());
+        }
+        assert_eq!(&ring.copy_bytes().unwrap()[..], b"hello ring");
+        let frozen = ring.freeze_copy().ok().unwrap();
+        {
+            let _fail = fail_from(10);
+            assert_alloc_failed(frozen.copy_bytes().err());
+        }
+        assert_eq!(&frozen.copy_bytes().unwrap()[..], b"hello ring");
+        let (data, geometry) = ring.copy_with_geometry().ok().unwrap();
+        assert_eq!(data, b"hello ring");
+        assert_eq!(geometry.map(|g| g.start.cols), Some(80));
+    }
+
+    #[test]
+    fn a_refused_ring_growth_leaves_the_ring_as_it_was() {
+        {
+            let _fail = fail_from(64 * 1024);
+            assert_alloc_failed(NativeRing::create(1 << 20).err());
+        }
+        let mut ring = NativeRing::create(1 << 20).unwrap();
+        ring.write_bytes(&[1; 1000]).unwrap();
+        {
+            // Growth past the first 64 KiB asks for 128 KiB.
+            let _fail = fail_from(128 * 1024);
+            assert_alloc_failed(ring.write_bytes(&[2; 70 * 1024]).err());
+        }
+        assert_eq!(ring.size(), 1000);
+        assert_eq!(ring.total_bytes_written(), 1000.0);
+        assert_eq!(&ring.copy_bytes().unwrap()[..], &[1; 1000][..]);
+        ring.write_bytes(&[2; 70 * 1024]).unwrap();
+        assert_eq!(ring.size() as usize, 1000 + 70 * 1024);
+    }
+
+    #[test]
+    fn a_refused_geometry_mark_changes_nothing() {
+        let mut ring = NativeRing::create(1024).unwrap();
+        {
+            let _fail = fail_from(1);
+            assert_alloc_failed(ring.note_geometry_mark(80, 24, Some(false)).err());
+        }
+        assert!(!ring.geometry_tail_provisional());
+        ring.note_geometry_mark(80, 24, None).unwrap();
+        assert_eq!(ring.geometry.len(), 1);
+    }
+
+    #[test]
+    fn a_refused_text_feed_join_parses_nothing_and_keeps_the_held_escape() {
+        let mut terminal = terminal();
+        terminal.feed_bytes(b"ab\x1b").unwrap();
+        assert_eq!(terminal.text_held, b"\x1b");
+        {
+            let _fail = fail_from(1);
+            assert_alloc_failed(terminal.feed_bytes(b"Dcd").err());
+        }
+        assert_eq!(terminal.text_held, b"\x1b", "the held ESC survived");
+        // ESC D is IND, as one sequence across the two feeds.
+        terminal.feed_bytes(b"Dcd").unwrap();
+        assert_eq!(text(&mut terminal), ["ab", "  cd"]);
+    }
+
+    #[test]
+    fn a_refused_ansi_feed_join_parses_nothing() {
+        let mut terminal = terminal();
+        {
+            let _fail = fail_from(1);
+            assert_alloc_failed(terminal.feed_xterm_bytes(b"hello", 100).err());
+        }
+        assert!(terminal.refusal.is_none());
+        assert!(text(&mut terminal).is_empty());
+        terminal.feed_xterm_bytes(b"hello", 100).unwrap();
+        assert_eq!(text(&mut terminal), ["hello"]);
+        assert!(terminal.ansi_snapshot_bytes(None).is_ok());
+    }
+
+    #[test]
+    fn a_buffer_refused_partway_through_an_ansi_feed_refuses_the_snapshot() {
+        let mut terminal = terminal();
+        terminal.feed_xterm_bytes(b"ok", 100).unwrap();
+        // A DCS: an open OSC is held before the feed (OscCap).
+        let osc = [b"\x1bPq".as_slice(), &[b'x'; 297]].concat();
+        {
+            // The 300-byte join fits; the pending string's growth to 512 does not.
+            let _fail = fail_from(512);
+            assert_alloc_failed(terminal.feed_xterm_bytes(&osc, 100).err());
+        }
+        assert_eq!(terminal.refusal, Some(ALLOC_REFUSED));
+        assert_eq!(terminal.families().unwrap(), ["unsupported-alloc"]);
+        assert_eq!(
+            terminal.ansi_snapshot_bytes(None).err().unwrap().message(),
+            ALLOC_REFUSED
+        );
+        // The terminal goes on: the scan past the refusal, and its text.
+        assert!(!terminal.feed_xterm_bytes(b"\x07more", 100).unwrap());
+        assert_eq!(text(&mut terminal), ["ok"]);
+    }
+
+    #[test]
+    fn a_refused_text_snapshot_is_an_error_and_the_next_one_reads() {
+        let mut terminal = terminal();
+        terminal.feed_bytes(b"line one\r\nline two").unwrap();
+        {
+            let _fail = fail_from(1);
+            assert_alloc_failed(terminal.text_snapshot_rows(false).err());
+        }
+        assert_eq!(text(&mut terminal), ["line one", "line two"]);
+    }
+
+    #[test]
+    fn a_text_row_trims_in_place_as_before() {
+        let mut terminal = terminal();
+        terminal
+            .feed_bytes("a b  \r\n\x1b[2mdim\x1b[0m e\u{301} \u{3000}".as_bytes())
+            .unwrap();
+        let rows = terminal.text_snapshot_rows(true).ok().unwrap().rows;
+        assert_eq!(rows[0].text, "a b");
+        assert_eq!(rows[1].text, "dim e\u{301} \u{3000}");
+        assert_eq!(rows[1].undimmed.as_deref(), Some("    e\u{301}"));
+    }
+
+    #[test]
+    fn a_refused_ansi_snapshot_is_an_error_and_the_next_one_replays() {
+        let mut terminal = terminal();
+        terminal
+            .feed_xterm_bytes(b"\x1b[31mred\x1b[0m plain", 100)
+            .unwrap();
+        let payload = terminal.ansi_snapshot_bytes(None).unwrap().to_vec();
+        {
+            let _fail = fail_from(1);
+            assert_alloc_failed(terminal.ansi_snapshot_bytes(None).err());
+        }
+        assert_eq!(
+            terminal.ansi_snapshot_bytes(None).unwrap().to_vec(),
+            payload
+        );
+    }
+
+    #[test]
+    fn a_refused_pending_tail_is_an_error_and_the_next_snapshot_ships_it() {
+        let mut terminal = terminal();
+        terminal.feed_xterm_bytes(b"ab\x1b]0;tit", 100).unwrap();
+        {
+            let _fail = fail_from(1);
+            assert_alloc_failed(terminal.ansi_snapshot_bytes(None).err());
+        }
+        let payload = terminal.ansi_snapshot_bytes(None).unwrap();
+        assert!(payload.ends_with(b"\x1b]0;tit"));
+    }
+
+    #[test]
+    fn a_failed_ansi_snapshot_keeps_the_synchronized_update_for_the_next() {
+        let stream: &[u8] = b"ab\x1b[?2026hcd";
+        let mut once = terminal();
+        once.feed_xterm_bytes(stream, 100).unwrap();
+        let expected = once.ansi_snapshot_bytes(None).unwrap();
+        assert!(expected.windows(8).any(|w| w == b"\x1b[?2026h"));
+        let mut terminal = terminal();
+        terminal.feed_xterm_bytes(stream, 100).unwrap();
+        {
+            let _fail = fail_what("the ANSI snapshot");
+            assert_alloc_failed(terminal.ansi_snapshot_bytes(None).err());
+        }
+        assert_eq!(terminal.ansi_snapshot_bytes(None).unwrap(), expected);
+        assert_eq!(text(&mut terminal), ["abcd"], "the held bytes parsed once");
+    }
+
+    #[test]
+    fn a_refused_initial_ring_buffer_is_an_error() {
+        {
+            let _fail = fail_what("the output ring");
+            assert_alloc_failed(NativeRing::create(1024).err());
+        }
+        let mut ring = NativeRing::create(1024).unwrap();
+        ring.write_bytes(b"after").unwrap();
+        assert_eq!(ring.copy_bytes().unwrap(), b"after");
+    }
+
+    #[test]
+    fn a_refused_copy_of_a_control_with_c0_inside_refuses_the_snapshot() {
+        for what in [TRACKED_C0, crate::native_serialize::WITHOUT_C0] {
+            let mut terminal = terminal();
+            terminal.feed_xterm_bytes(b"ok", 100).unwrap();
+            {
+                let _fail = fail_what(what);
+                assert_alloc_failed(terminal.feed_xterm_bytes(b"\x1b[3\x081m", 100).err());
+            }
+            assert_eq!(terminal.refusal, Some(ALLOC_REFUSED), "{what}");
+            assert_eq!(terminal.families().unwrap(), ["unsupported-alloc"]);
+            assert!(!terminal.feed_xterm_bytes(b"more", 100).unwrap());
+            assert_eq!(text(&mut terminal), ["ok"]);
+        }
+    }
+
+    #[test]
+    fn a_control_the_classifier_cannot_copy_reads_as_an_allocation_refusal() {
+        use crate::native_serialize::{divergent, refusal, try_divergent, WITHOUT_C0};
+        let _fail = fail_what(WITHOUT_C0);
+        assert!(try_divergent(b"\x1b[3\x081m").is_err());
+        assert_eq!(refusal(b"\x1b[3\x081m"), ALLOC_REFUSED);
+        assert!(
+            !divergent(b"\x1b[31m"),
+            "a control without C0 inside is not copied"
+        );
+    }
+
+    #[test]
+    fn resets_1049_reads_a_control_with_c0_inside_in_place() {
+        assert_eq!(resets_1049(b"\x1b[?1049l"), Some(true));
+        assert_eq!(resets_1049(b"\x1b[?10\x0849l"), Some(true));
+        assert_eq!(resets_1049(b"\x1b[?01049l"), Some(true));
+        assert_eq!(resets_1049(b"\x1b[?1;1049l"), Some(false));
+        assert_eq!(resets_1049(b"\x1b[?1049;l"), Some(false));
+        assert_eq!(resets_1049(b"\x1b[?1049h"), None);
+        assert_eq!(resets_1049(b"\x1b[?1047l"), None);
+        assert_eq!(resets_1049(b"\x1b[?l"), None);
+        assert_eq!(resets_1049(b"\x1b[?;l"), None);
+        assert_eq!(resets_1049(b"\x1b[?104l9l"), None);
+        assert_eq!(resets_1049(b"\x1b[1049l"), None);
+        assert_eq!(resets_1049(b"\x1b[?1049:1l"), None);
+        assert_eq!(resets_1049(b"\x1b"), None);
+    }
+
+    /// The families are read right after a refusal (RustSnapshot), so the
+    /// list is refused, not aborted, when nothing may allocate; with memory
+    /// the whole list comes back.
+    #[test]
+    fn the_refusal_families_are_refused_not_aborted_when_nothing_may_allocate() {
+        let mut terminal = terminal();
+        terminal.feed_xterm_bytes(b"ok", 100).unwrap();
+        let osc = [b"\x1bPq".as_slice(), &[b'x'; 297]].concat();
+        {
+            let _fail = fail_from(512);
+            assert_alloc_failed(terminal.feed_xterm_bytes(&osc, 100).err());
+        }
+        crate::fallible::refill_spare();
+        let refused = test_allocator::refusing(1, || terminal.families());
+        assert!(
+            matches!(
+                refused,
+                Err(AllocFailed {
+                    what: REFUSAL_FAMILIES,
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(test_allocator::refused(), 1);
+        assert_eq!(terminal.families().unwrap(), ["unsupported-alloc"]);
+    }
+}
+
+#[cfg(test)]
+mod grid_refusal_tests {
+    use super::*;
+    use crate::fallible::CallError;
+    use crate::fallible::ALLOC_FAILED;
+    use alacritty_terminal::wmux_alloc::{fail_what, DAMAGE, LINES, REFLOW, ROW, TABS};
+
+    /// One row of 205 cells (24 bytes each): the size of the abort the
+    /// capped series met.
+    const ROW_205: &str = "ALLOC_FAILED: could not allocate 4920 bytes for a grid row";
+
+    /// The call threw `seam`; the terminal is dropped, the snapshot refused
+    /// as unsupported-alloc, and every later call fails with GRID_REFUSED.
+    fn assert_grid_refused(terminal: &mut NativeTerminal, error: Option<CallError>, seam: &str) {
+        let error = error.expect("the call is refused");
+        assert!(matches!(error, CallError::Alloc(_)), "{error:?}");
+        assert_eq!(error.message(), seam);
+        assert!(terminal.term.is_none(), "the terminal is dropped");
+        assert_eq!(terminal.families().unwrap(), ["unsupported-alloc"]);
+        let later = [
+            terminal.feed_bytes(b"x").err(),
+            terminal.feed_xterm_bytes(b"x", 100).err(),
+            terminal.resize_grid(30, 5).err(),
+            terminal.text_snapshot_rows(false).err(),
+            terminal.ansi_snapshot_bytes(None).err(),
+        ];
+        for error in later {
+            assert_eq!(error.expect("refused").message(), GRID_REFUSED);
+        }
+        terminal.dispose();
+    }
+
+    #[test]
+    fn a_refused_grid_in_new_is_an_error() {
+        for what in [LINES, ROW, TABS, DAMAGE] {
+            let _fail = fail_what(what);
+            let error = NativeTerminal::create(205, 24, 100).err().expect("refused");
+            assert!(
+                error.message().starts_with(ALLOC_FAILED),
+                "{}",
+                error.message()
+            );
+            assert!(
+                error.message().ends_with(&format!("bytes for {what}")),
+                "{}",
+                error.message()
+            );
+        }
+        let _fail = fail_what(ROW);
+        assert_eq!(
+            NativeTerminal::create(205, 24, 100)
+                .err()
+                .unwrap()
+                .message(),
+            ROW_205
+        );
+        drop(_fail);
+        assert!(NativeTerminal::create(205, 24, 100).is_ok());
+    }
+
+    #[test]
+    fn a_refused_row_drops_the_terminal() {
+        let mut terminal = NativeTerminal::create(20, 4, 100).unwrap();
+        terminal.feed_bytes(b"hello").unwrap();
+        let error = {
+            let _fail = fail_what(ROW);
+            terminal.resize_grid(205, 4).err()
+        };
+        assert_grid_refused(&mut terminal, error, ROW_205);
+    }
+
+    #[test]
+    fn a_refused_history_growth_drops_the_terminal() {
+        let mut terminal = NativeTerminal::create(20, 4, 100).unwrap();
+        let error = {
+            let _fail = fail_what(LINES);
+            terminal
+                .feed_xterm_bytes(b"1\r\n2\r\n3\r\n4\r\n5", 100)
+                .err()
+        };
+        // The history grows by 1000 rows at once, past the screen's 4.
+        let seam = "ALLOC_FAILED: could not allocate 48192 bytes for the grid's lines";
+        assert_grid_refused(&mut terminal, error, seam);
+    }
+
+    #[test]
+    fn a_refused_reflow_drops_the_terminal() {
+        let mut terminal = NativeTerminal::create(20, 4, 100).unwrap();
+        terminal.feed_bytes(b"hello").unwrap();
+        let error = {
+            let _fail = fail_what(REFLOW);
+            terminal.resize_grid(10, 4).err()
+        };
+        // The rows laid out again: the 4 on screen.
+        let seam = "ALLOC_FAILED: could not allocate 192 bytes for a grid reflow";
+        assert_grid_refused(&mut terminal, error, seam);
+    }
+
+    #[test]
+    fn a_panic_other_than_a_refusal_goes_on() {
+        let payload = std::panic::catch_unwind(|| grid_unwind(|| std::panic::panic_any(7u8)));
+        assert_eq!(payload.err().unwrap().downcast_ref::<u8>(), Some(&7));
+    }
+
+    /// The real allocator refusing, not the injection: every allocation of at
+    /// least 4 KiB on this thread fails, as one did in the capped series.
+    #[test]
+    fn a_refused_grid_row_is_alloc_failed_not_an_abort() {
+        let mut terminal = NativeTerminal::create(80, 24, 0).unwrap();
+        let error = test_allocator::refusing(4096, || terminal.resize_grid(205, 24).err());
+        assert_eq!(error.expect("refused").message(), ROW_205);
+        assert!(terminal.term.is_none());
+    }
+}
+
+#[cfg(test)]
+mod seam_message_tests {
+    use super::*;
+    use crate::fallible::{refill_spare, ALLOC_FAILED};
+
+    const ROW_205: &str = "ALLOC_FAILED: could not allocate 4920 bytes for a grid row";
+
+    #[test]
+    fn a_seam_message_after_a_refusal_asks_the_allocator_for_nothing() {
+        let failed = AllocFailed {
+            what: "a grid row",
+            bytes: 4920,
+        };
+        refill_spare();
+        let message = test_allocator::refusing(1, || failed.message());
+        assert_eq!(test_allocator::refused(), 0, "written into the spare");
+        assert_eq!(message, ROW_205);
+        // No spare now, and none to be had: the prefix alone, or nothing.
+        let prefix = test_allocator::refusing(ALLOC_FAILED.len() + 1, || failed.message());
+        assert_eq!(prefix, ALLOC_FAILED);
+        assert_eq!(test_allocator::refusing(1, || failed.message()), "");
+        // With memory back, the exact message, and a fallible allocation
+        // that succeeds gives the thread its spare again.
+        assert_eq!(failed.message(), ROW_205);
+        drop(fallible::try_with_capacity::<u8>(1, "a test buffer").unwrap());
+        assert_eq!(test_allocator::refusing(1, || failed.message()), ROW_205);
+        assert_eq!(test_allocator::refused(), 0);
+    }
+
+    #[test]
+    fn a_refusal_family_is_kept_without_allocating() {
+        let mut feed = XtermFeed::default();
+        test_allocator::refusing(1, || {
+            feed.refuse(true, GRID_REFUSED);
+            feed.refuse(true, ALLOC_REFUSED);
+            feed.refuse(true, GRID_REFUSED);
+        });
+        assert_eq!(test_allocator::refused(), 0);
+        assert_eq!(feed.seen.as_slice(), ["unsupported-alloc"]);
+        assert_eq!(feed.refused, Some(GRID_REFUSED));
+        // Past its room, a family is dropped, never grown into.
+        let mut families = Families::default();
+        for n in 0..=MAX_FAMILIES {
+            families.add(["a", "b"][n % 2]);
+        }
+        assert_eq!(families.as_slice(), ["a", "b"]);
+    }
+
+    /// The MSVC unwinder allocates nothing (vendor `wmux_alloc`), so every
+    /// allocation of 64 bytes or more can be refused across the whole
+    /// call; the Itanium unwinder allocates its exception header.
+    #[cfg(all(windows, target_env = "msvc"))]
+    #[test]
+    fn a_fresh_terminal_s_grid_refusal_returns_alloc_failed_without_aborting() {
+        let mut terminal = NativeTerminal::create(80, 24, 0).unwrap();
+        refill_spare();
+        let error = test_allocator::refusing(64, || terminal.resize_grid(205, 24).err());
+        assert!(matches!(error, Some(CallError::Alloc(_))), "{error:?}");
+        assert_eq!(terminal.families().unwrap(), ["unsupported-alloc"]);
+        assert_eq!(
+            terminal.feed_bytes(b"x"),
+            Err(CallError::reason(GRID_REFUSED))
+        );
+    }
+
+    #[test]
+    fn a_refusal_keeps_its_code_when_its_message_cannot_be_built() {
+        let failed = AllocFailed {
+            what: "a grid row",
+            bytes: 4920,
+        };
+        // Taken outside the refusal: a thread's first use of its spare
+        // can allocate to register the buffer's destructor.
+        refill_spare();
+        let (code, message) = test_allocator::refusing(1, || {
+            // The spare goes to the first message, then nothing more is had.
+            drop(failed.message());
+            CallError::Alloc(failed).into_js()
+        });
+        assert_eq!(message, "", "the diagnostic is lost");
+        assert_eq!(code, ErrorCode::AllocFailed);
+        assert_eq!(code.as_ref(), "ALLOC_FAILED", "the classification is not");
+        // With memory back, the message is whole again.
+        let (code, message) = CallError::Alloc(failed).into_js();
+        assert_eq!((code.as_ref(), message.as_str()), ("ALLOC_FAILED", ROW_205));
+        // Any other error keeps napi's code.
+        let (code, message) = CallError::reason("Terminal disposed").into_js();
+        assert_eq!(
+            (code.as_ref(), message.as_str()),
+            ("GenericFailure", "Terminal disposed")
+        );
+    }
+
+    #[test]
+    fn a_grid_refusal_reaches_its_caller_with_the_full_message_under_refusal() {
+        let mut terminal = NativeTerminal::create(80, 24, 0).unwrap();
+        refill_spare();
+        let error = test_allocator::refusing(4096, || terminal.resize_grid(205, 24).err());
+        assert_eq!(
+            error.expect("refused"),
+            CallError::Alloc(AllocFailed {
+                what: "a grid row",
+                bytes: 4920,
+            })
+        );
+    }
+}
+
+#[cfg(test)]
+mod parser_pool_tests {
+    use super::*;
+    use alacritty_terminal::term::test::TermSize;
+
+    /// vte's synchronized-update buffer (ansi.rs SYNC_BUFFER_SIZE).
+    const SYNC_BUFFER: usize = 2 * 1024 * 1024;
+
+    /// `f` on a thread of its own: its processors are its own.
+    fn on_new_thread<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+        std::thread::scope(|scope| scope.spawn(f).join().unwrap())
+    }
+
+    #[test]
+    fn a_parser_dropped_during_any_unwind_is_not_pooled() {
+        on_new_thread(|| {
+            let terminal = NativeTerminal::create(80, 24, 100).unwrap();
+            assert_eq!(parsers::idle(), 0);
+            // Not a grid refusal: any unwind that drops the terminal.
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let _terminal = terminal;
+                std::panic::resume_unwind(Box::new("a test unwind"));
+            }));
+            assert!(unwound.is_err());
+            assert_eq!(parsers::idle(), 0, "dropped, not given back");
+            // Dropped outside an unwind, a terminal's parser is kept.
+            drop(NativeTerminal::create(80, 24, 100).unwrap());
+            assert_eq!(parsers::idle(), 1);
+        });
+    }
+
+    #[test]
+    fn a_warmed_thread_builds_its_parser_at_the_warm() {
+        let (at_warm, after) = on_new_thread(|| {
+            let ((), at_warm) = test_allocator::counting(SYNC_BUFFER, || {
+                warm_terminal_parsers();
+                warm_terminal_parsers();
+            });
+            let ((), after) = test_allocator::counting(SYNC_BUFFER, || {
+                let mut terminal = NativeTerminal::create(80, 24, 100).unwrap();
+                terminal.feed_bytes(b"hello").unwrap();
+                terminal.dispose();
+                warm_terminal_parsers();
+                NativeTerminal::create(80, 24, 100).unwrap().dispose();
+            });
+            assert_eq!(parsers::idle(), 1);
+            (at_warm, after)
+        });
+        assert_eq!(at_warm, 1, "the warm builds one, once");
+        assert_eq!(after, 0, "the terminals take the warmed one");
+    }
+
+    #[test]
+    fn snapshots_in_a_row_on_one_thread_build_one_parser() {
+        let (_, built) = on_new_thread(|| {
+            test_allocator::counting(SYNC_BUFFER, || {
+                for round in 0..3 {
+                    let mut terminal = NativeTerminal::create(80, 24, 100).unwrap();
+                    // Disposed or dropped inside a synchronized update.
+                    terminal.feed_bytes(b"\x1b[?2026hhello").unwrap();
+                    if round == 1 {
+                        drop(terminal);
+                    } else {
+                        terminal.text_snapshot_rows(false).unwrap();
+                        terminal.feed_bytes(b"\x1b[?2026hmore").unwrap();
+                        terminal.dispose();
+                    }
+                }
+                // A refused grid gives its parser back too.
+                let _fail = alacritty_terminal::wmux_alloc::fail_what(
+                    alacritty_terminal::wmux_alloc::LINES,
+                );
+                assert!(NativeTerminal::create(80, 24, 100).is_err());
+                drop(_fail);
+                NativeTerminal::create(80, 24, 100).unwrap().dispose();
+                assert_eq!(parsers::idle(), 1);
+            })
+        });
+        assert_eq!(built, 1, "one 2 MiB buffer for the thread");
+    }
+
+    #[test]
+    fn a_parser_a_grid_refusal_unwound_is_dropped_not_pooled() {
+        use alacritty_terminal::wmux_alloc::{fail_what, LINES};
+        on_new_thread(|| {
+            // Partway through a synchronized update's replay: vte took its
+            // 2 MiB buffer for the replay and never put it back.
+            let mut terminal = NativeTerminal::create(20, 4, 100).unwrap();
+            terminal
+                .feed_bytes(b"\x1b[?2026h1\r\n2\r\n3\r\n4\r\n5")
+                .unwrap();
+            let error = {
+                let _fail = fail_what(LINES);
+                terminal.text_snapshot_rows(false).err()
+            };
+            assert!(matches!(error, Some(CallError::Alloc(_))), "{error:?}");
+            terminal.dispose();
+            assert_eq!(parsers::idle(), 0, "dropped, not given back");
+            // Partway through a character split across feeds: vte's count of
+            // its bytes stays behind, past what its reset reads.
+            let mut terminal = NativeTerminal::create(20, 4, 100).unwrap();
+            terminal.feed_bytes(&[b'x'; 80]).unwrap();
+            terminal.feed_bytes(b"\xe4\xb8").unwrap();
+            let error = {
+                let _fail = fail_what(LINES);
+                terminal.feed_bytes(b"\xad").err()
+            };
+            assert!(matches!(error, Some(CallError::Alloc(_))), "{error:?}");
+            terminal.dispose();
+            drop(terminal);
+            assert_eq!(parsers::idle(), 0);
+            // The next terminal builds a parser of its own.
+            let ((), built) = test_allocator::counting(SYNC_BUFFER, || {
+                NativeTerminal::create(20, 4, 100).unwrap().dispose();
+            });
+            assert_eq!(built, 1);
+            assert_eq!(parsers::idle(), 1);
+        });
+    }
+
+    #[test]
+    fn terminals_alive_at_once_have_parsers_of_their_own() {
+        let texts = on_new_thread(|| {
+            let mut a = NativeTerminal::create(20, 3, 0).unwrap();
+            let mut b = NativeTerminal::create(20, 3, 0).unwrap();
+            // Interleaved, each inside its own sequence and update.
+            a.feed_bytes(b"\x1b[?2026ha\x1b[3").unwrap();
+            b.feed_bytes(b"b\x1b]2;x").unwrap();
+            a.feed_bytes(b"1mA\x1b[?2026l").unwrap();
+            b.feed_bytes(b"\x07B").unwrap();
+            let text = |t: &mut NativeTerminal| -> Vec<String> {
+                t.text_snapshot_rows(false)
+                    .unwrap()
+                    .rows
+                    .into_iter()
+                    .map(|r| r.text)
+                    .collect()
+            };
+            let texts = (text(&mut a), text(&mut b));
+            a.dispose();
+            b.dispose();
+            assert_eq!(parsers::idle(), 2);
+            texts
+        });
+        assert_eq!(texts, (vec!["aA".to_owned()], vec!["bB".to_owned()]));
+    }
+
+    /// A fresh stream through `parser` into a new terminal: its ANSI replay.
+    fn replay(parser: &mut Processor) -> String {
+        let mut term = Term::new(Config::default(), &TermSize::new(20, 4), VoidListener);
+        parser.advance(
+            &mut term,
+            "\x1b[31mred\x1b[0m \u{e9} \u{d55c}\r\n\x1b]2;t\x07\x1b[?2026hin sync\x1b[?2026l\x1b[3;5Hx\x1b[1;20Hy"
+                .as_bytes(),
+        );
+        parser.stop_sync(&mut term);
+        crate::native_serialize::serialize(&term, true)
+            .ok()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_reused_parser_reads_a_stream_as_a_new_one() {
+        let fresh = on_new_thread(|| replay(&mut Processor::new()));
+        let leftovers: [&[u8]; 7] = [
+            b"\x1b[3",
+            b"\x1b]2;open title",
+            b"\xe2\x82",
+            b"\x1b[?2026hpending \x1b[31m",
+            b"\x1bP1$qm",
+            b"\x1b",
+            b"plain",
+        ];
+        for leftover in leftovers {
+            let (reused, built) = on_new_thread(|| {
+                let mut parser = parsers::take();
+                let mut term = Term::new(Config::default(), &TermSize::new(20, 4), VoidListener);
+                parser.advance(&mut term, leftover);
+                test_allocator::counting(SYNC_BUFFER, || {
+                    parsers::give(parser);
+                    let mut parser = parsers::take();
+                    assert!(!parser.sync_timeout().pending_timeout());
+                    assert_eq!(parser.sync_bytes_count(), 0);
+                    replay(&mut parser)
+                })
+            });
+            assert_eq!(reused, fresh, "after {leftover:?}");
+            assert_eq!(built, 0, "reset and reuse allocate no buffer");
+        }
+    }
+}
+
+#[cfg(test)]
+mod osc_cap_tests {
+    use super::*;
+
+    fn run(cap: &mut OscCap, feeds: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for feed in feeds {
+            cap.scan(feed, &mut |part, _| {
+                out.extend_from_slice(part);
+                Ok(())
+            })
+            .unwrap();
+        }
+        out
+    }
+
+    fn passes(feeds: &[&[u8]]) {
+        let mut cap = OscCap::default();
+        assert_eq!(run(&mut cap, feeds), feeds.concat());
+        assert!(!cap.take_dropped());
+    }
+
+    fn drops(feeds: &[&[u8]], left: &[u8]) {
+        let mut cap = OscCap::default();
+        assert_eq!(run(&mut cap, feeds), left);
+        assert!(cap.take_dropped());
+    }
+
+    fn body(len: usize) -> Vec<u8> {
+        vec![b'x'; len]
+    }
+
+    #[test]
+    fn an_osc_under_the_cap_passes_split_or_whole() {
+        passes(&[b"a\x1b]2;ti", b"tle\x07b"]);
+        passes(&[b"a\x1b]2;title\x07b"]);
+        passes(&[b"a\x1b", b"]2;t", b"", b"itle\x1b\\b"]);
+        passes(&[b"\x1b]2;t\x1b", b"\\b"]);
+        passes(&[b"a\x1b", b"[31mb"]);
+        passes(&[b"a\x1b\x00", b"\x00[31mb"]);
+        let max = [b"\x1b]2;".as_slice(), &body(MAX_OSC_BODY - 2), b"\x07z"].concat();
+        passes(&[&max]);
+        passes(&[&max[..10], &max[10..MAX_OSC_BODY], &max[MAX_OSC_BODY..]]);
+    }
+
+    #[test]
+    fn a_long_url_passes_unchanged() {
+        let url = [
+            b"\x1b]8;;https://example.invalid/".as_slice(),
+            &body(100 * 1024),
+            b"\x07link\x1b]8;;\x07",
+        ]
+        .concat();
+        passes(&[&url]);
+        passes(&[&url[..1000], &url[1000..60_000], &url[60_000..]]);
+    }
+
+    #[test]
+    fn an_osc_past_the_cap_is_dropped_split_or_whole() {
+        // Its introducer and a CAN stand in for it (OSC_DROPPED).
+        let big = body(MAX_OSC_BODY + 1);
+        drops(
+            &[&[b"a\x1b]0;".as_slice(), &big, b"\x07b"].concat()],
+            b"a\x1b]\x18b",
+        );
+        let half = body(MAX_OSC_BODY / 2 + 1);
+        drops(&[b"a\x1b]0;", &half, &half, b"\x07b"], b"a\x1b]\x18b");
+        // Held under the cap, then past it.
+        drops(
+            &[b"a\x1b]0;", &body(10), &big, b"tail\x07b"],
+            b"a\x1b]\x18b",
+        );
+    }
+
+    #[test]
+    fn a_dropped_osc_ends_where_vte_ends_it() {
+        let open = [b"\x1b]0;".as_slice(), &body(MAX_OSC_BODY + 1)].concat();
+        // ESC \ split across feeds.
+        drops(
+            &[&[open.as_slice(), b"\x1b"].concat(), b"\\b"],
+            b"\x1b]\x18b",
+        );
+        drops(&[&open, b"\x1b\\b"], b"\x1b]\x18b");
+        // Another sequence ends it and is read.
+        drops(
+            &[&[open.as_slice(), b"\x1b[31mx"].concat()],
+            b"\x1b]\x18\x1b[31mx",
+        );
+        drops(
+            &[&[open.as_slice(), b"\x1b"].concat(), b"[31mx"],
+            b"\x1b]\x18\x1b[31mx",
+        );
+        drops(
+            &[&[open.as_slice(), b"\x1b"].concat(), b"]2;t\x07x"],
+            b"\x1b]\x18\x1b]2;t\x07x",
+        );
+        // That next OSC is capped too: its ESC went on, its `]` and a CAN
+        // stand in for it.
+        let next = [&open[1..], b"\x07x"].concat();
+        drops(
+            &[&[open.as_slice(), b"\x1b"].concat(), &next],
+            b"\x1b]\x18\x1b]\x18x",
+        );
+        // CAN and SUB are executed.
+        drops(&[&[open.as_slice(), b"\x18x"].concat()], b"\x1b]\x18\x18x");
+        drops(&[&open, b"\x1ax"], b"\x1b]\x18\x1ax");
+        // 0x9C is body for vte.
+        drops(&[&open, b"\x9c\x07x"], b"\x1b]\x18x");
+    }
+
+    #[test]
+    fn filler_between_the_esc_and_the_bracket_does_not_hide_an_osc() {
+        let big = body(MAX_OSC_BODY + 1);
+        drops(
+            &[&[b"a\x1b\x00\x7f]0;".as_slice(), &big, b"\x07b"].concat()],
+            b"a\x1b\x00\x7f]\x18b",
+        );
+        // Another ESC, and bytes from 0x80 (0x9D among them), are filler too.
+        drops(
+            &[&[b"a\x1b\x1b\x9d\xc3]0;".as_slice(), &big, b"\x07b"].concat()],
+            b"a\x1b\x1b\x9d\xc3]\x18b",
+        );
+        // A feed's final ESC and its filler go on, then the `]` and a CAN.
+        drops(
+            &[b"a\x1b", &[b"\x00]0;".as_slice(), &big, b"\x07b"].concat()],
+            b"a\x1b\x00]\x18b",
+        );
+        drops(
+            &[
+                b"a\x1b\x00",
+                b"\x00",
+                &[b"]0;".as_slice(), &big, b"\x07b"].concat(),
+            ],
+            b"a\x1b\x00\x00]\x18b",
+        );
+        drops(
+            &[b"a\x1b", b"\x1b]0;", &body(10), &big, b"\x07b"],
+            b"a\x1b\x1b]\x18b",
+        );
+    }
+
+    #[test]
+    fn a_control_in_a_dropped_osc_opener_is_executed_where_it_stands() {
+        // vte executes the LF in its escape state, before the `]`.
+        let big = body(MAX_OSC_BODY + 1);
+        let stream = [b"a\x1b\n]0;".as_slice(), &big, b"\x07b"].concat();
+        let short = screen(&[b"a\x1b\n]0;x\x18b"]);
+        assert_eq!(short, ["a", " b"]);
+        assert_eq!(screen(&[&stream]), short);
+        assert_eq!(
+            screen(&[&stream[..2], &stream[2..]]),
+            short,
+            "after the ESC"
+        );
+        assert_eq!(screen(&[&stream[..3], &stream[3..]]), short, "after the LF");
+        assert_eq!(
+            screen(&[&stream[..6], &stream[6..]]),
+            short,
+            "held, then dropped"
+        );
+    }
+
+    #[test]
+    fn a_refused_prefix_holds_the_osc_after_it_once() {
+        let mut cap = OscCap::default();
+        let mut refuse = true;
+        let mut out = Vec::new();
+        let mut emit = |part: &[u8], _: bool| {
+            if std::mem::take(&mut refuse) {
+                return Err(AllocFailed {
+                    what: "a test join",
+                    bytes: 1,
+                });
+            }
+            out.extend_from_slice(part);
+            Ok(())
+        };
+        assert!(cap.scan(b"ab\x1b]2;t", &mut emit).is_err());
+        assert!(cap.held.is_empty(), "nothing held");
+        assert_eq!(cap.scan, OscScan::Text);
+        cap.scan(b"ab\x1b]2;t", &mut emit).unwrap();
+        assert_eq!(cap.held, b"\x1b]2;t");
+        // A refused flush leaves the OSC held as it was.
+        let mut refused = |_: &[u8], _: bool| {
+            Err(AllocFailed {
+                what: "a test join",
+                bytes: 1,
+            })
+        };
+        assert!(cap.scan(b"itle\x07c", &mut refused).is_err());
+        assert_eq!(cap.held, b"\x1b]2;t");
+        assert_eq!(cap.scan, OscScan::Osc);
+        let mut out2 = Vec::new();
+        cap.scan(b"itle\x07c", &mut |part, _| {
+            out2.extend_from_slice(part);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(out, b"ab");
+        assert_eq!(out2, b"\x1b]2;title\x07c");
+    }
+
+    /// What `feeds` pass on with the `nth` emit of the last feed refused
+    /// once and that feed then fed again; and whether the refused attempt
+    /// had passed bytes on first (partially applied).
+    fn retried(feeds: &[&[u8]], nth: usize) -> (Vec<u8>, bool) {
+        let (last, before) = feeds.split_last().unwrap();
+        let mut cap = OscCap::default();
+        let mut out = run(&mut cap, before);
+        let mut calls = 0;
+        let mut advanced = false;
+        let refused = cap.scan(last, &mut |part, _| {
+            calls += 1;
+            if calls == nth {
+                return Err(AllocFailed {
+                    what: "a test join",
+                    bytes: 1,
+                });
+            }
+            advanced = true;
+            out.extend_from_slice(part);
+            Ok(())
+        });
+        assert!(refused.is_err(), "emit {nth} refused");
+        out.extend(run(&mut cap, &[last]));
+        assert!(cap.take_dropped());
+        (out, advanced)
+    }
+
+    /// How many emits `feeds`' last feed makes, unrefused.
+    fn emits(feeds: &[&[u8]]) -> usize {
+        let (last, before) = feeds.split_last().unwrap();
+        let mut cap = OscCap::default();
+        run(&mut cap, before);
+        let mut count = 0;
+        cap.scan(last, &mut |_, _| {
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+        count
+    }
+
+    #[test]
+    fn a_split_opener_after_a_trailing_esc_is_retried_whole() {
+        // The ESC went on with the first feed; the `]` is the next feed's
+        // first byte, and the body passes the cap.
+        let big = body(MAX_OSC_BODY + 1);
+        let tail = [b"]0;".as_slice(), &big, b"\x07after"].concat();
+        let feeds: [&[u8]; 2] = [b"x\x1b", &tail];
+        let whole = b"x\x1b]\x18after".as_slice();
+        drops(&feeds, whole);
+        // The first emit (the `]`) refused: nothing changed, so the retry
+        // passes what one unrefused feed passes.
+        assert_eq!(retried(&feeds, 1), (whole.to_vec(), false));
+        // Refused after the `]` went on: it is not passed again (its CAN
+        // is owed), and the body stays skipped.
+        for nth in 2..=emits(&feeds) {
+            assert_eq!(retried(&feeds, nth), (whole.to_vec(), true), "emit {nth}");
+        }
+    }
+
+    #[test]
+    fn a_held_osc_keeps_its_opener_until_the_opener_went_on() {
+        // The opener holds an LF, which vte executes in its escape state.
+        let big = body(MAX_OSC_BODY + 1);
+        let rest = [big.as_slice(), b"\x07b"].concat();
+        let feeds: [&[u8]; 2] = [b"a\x1b\n]0;", &rest];
+        let whole = b"a\x1b\n]\x18b".as_slice();
+        drops(&feeds, whole);
+        assert_eq!(retried(&feeds, 1), (whole.to_vec(), false));
+        for nth in 2..=emits(&feeds) {
+            assert_eq!(retried(&feeds, nth), (whole.to_vec(), true), "emit {nth}");
+        }
+    }
+
+    /// A terminal's text and refusal families after `feeds` through
+    /// feed_xterm, the last one's first join refused once and retried.
+    fn xterm_retried(feeds: &[&[u8]], refuse: bool) -> (Vec<String>, Vec<String>) {
+        let mut terminal = NativeTerminal::create(20, 3, 0).unwrap();
+        let (last, before) = feeds.split_last().unwrap();
+        for feed in before {
+            terminal.feed_xterm_bytes(feed, 0).unwrap();
+        }
+        if refuse {
+            fallible::fail_next(FEED_JOIN, 1);
+            assert!(matches!(
+                terminal.feed_xterm_bytes(last, 0),
+                Err(CallError::Alloc(AllocFailed {
+                    what: FEED_JOIN,
+                    ..
+                }))
+            ));
+            fallible::fail_next("", 0);
+        }
+        terminal.feed_xterm_bytes(last, 0).unwrap();
+        let families = terminal.families().unwrap();
+        (
+            text(&mut terminal),
+            families.into_iter().map(str::to_owned).collect(),
+        )
+    }
+
+    #[test]
+    fn a_terminal_feed_retried_after_its_first_join_reads_as_one_feed() {
+        let big = body(MAX_OSC_BODY + 1);
+        // A trailing ESC, then `]` and the body.
+        let tail = [b"]0;".as_slice(), &big, b"\x07after"].concat();
+        let feeds: [&[u8]; 2] = [b"x\x1b", &tail];
+        let unrefused = xterm_retried(&feeds, false);
+        assert_eq!(unrefused.0, ["xafter"]);
+        assert_eq!(unrefused.1, ["unsupported-state-long-sequence"]);
+        assert_eq!(xterm_retried(&feeds, true), unrefused);
+        // A held OSC with an LF in its opener, dropped by the next feed.
+        let rest = [big.as_slice(), b"\x07b"].concat();
+        let feeds: [&[u8]; 2] = [b"a\x1b\n]0;", &rest];
+        let unrefused = xterm_retried(&feeds, false);
+        assert_eq!(unrefused.0, ["a", " b"], "the LF went on");
+        assert_eq!(xterm_retried(&feeds, true), unrefused);
+    }
+
+    #[test]
+    fn c1_controls_open_no_osc_and_0x9c_ends_none() {
+        // vte reads 0x9D as a stray UTF-8 byte, which it skips: no OSC opens.
+        let big = body(MAX_OSC_BODY + 1);
+        passes(&[&[b"a\x9d0;".as_slice(), &big, b"\x07b"].concat()]);
+        // Inside an OSC, 0x9C is body.
+        passes(&[b"\x1b]2;a\x9cb\x07c"]);
+        let mut terminal = NativeTerminal::create(20, 3, 0).unwrap();
+        terminal.feed_bytes(b"a\x9d0;t\x07b").unwrap();
+        assert_eq!(text(&mut terminal), ["a0;tb"]);
+        let mut terminal = NativeTerminal::create(20, 3, 0).unwrap();
+        terminal.feed_bytes(b"a\x1b]2;t\x9cb\x07c").unwrap();
+        assert_eq!(text(&mut terminal), ["ac"]);
+    }
+
+    fn text(terminal: &mut NativeTerminal) -> Vec<String> {
+        let snapshot = terminal.text_snapshot_rows(false).ok().unwrap();
+        snapshot.rows.into_iter().map(|row| row.text).collect()
+    }
+
+    #[test]
+    fn text_after_a_dropped_osc_reads() {
+        let mut terminal = NativeTerminal::create(20, 3, 0).unwrap();
+        terminal.feed_bytes(b"a\x1b]2;").unwrap();
+        terminal.feed_bytes(&body(MAX_OSC_BODY)).unwrap();
+        terminal.feed_bytes(b"xx\x07hello").unwrap();
+        assert_eq!(text(&mut terminal), ["ahello"]);
+        // Its ESC ending a feed, which went on before the OSC was dropped.
+        let mut terminal = NativeTerminal::create(20, 3, 0).unwrap();
+        terminal.feed_bytes(b"a\x1b").unwrap();
+        let rest = [b"]2;".as_slice(), &body(MAX_OSC_BODY), b"\x07hello"].concat();
+        terminal.feed_bytes(&rest).unwrap();
+        assert_eq!(text(&mut terminal), ["ahello"]);
+    }
+
+    /// The screen `feeds` leave, each fed as one call.
+    fn screen(feeds: &[&[u8]]) -> Vec<String> {
+        let mut terminal = NativeTerminal::create(20, 3, 0).unwrap();
+        for feed in feeds {
+            terminal.feed_bytes(feed).unwrap();
+        }
+        text(&mut terminal)
+    }
+
+    #[test]
+    fn a_dropped_osc_leaves_vte_where_an_osc_a_can_ends_leaves_it() {
+        let big = body(MAX_OSC_BODY + 1);
+        // What vte was inside before the OSC, and what follows its end.
+        let befores: [&[u8]; 8] = [
+            b"",
+            b"ab",
+            b"a\x1b",
+            b"a\x1b[31",
+            b"a\x1b]2;t",
+            b"a\x1bP1$q",
+            b"a\x1b\x1b",
+            b"\xe4\xb8",
+        ];
+        let ends: [(&[u8], &[u8]); 4] = [
+            (b"\x07", b""),
+            (b"\x1b\\", b""),
+            (b"", b"\x18"),
+            (b"", b"\x1a"),
+        ];
+        for before in befores {
+            for (end, executed) in ends {
+                let after = [executed, b"cd\x1b[1mz"].concat();
+                // The same stream with the OSC short, ended by a CAN.
+                let short = screen(&[&[before, b"\x1b]0;x\x18", &after].concat()]);
+                let whole = [before, b"\x1b]0;", &big, end, &after].concat();
+                assert_eq!(screen(&[&whole]), short, "{before:?} {end:?}");
+                // Split: at the OSC's start, in its body, before its end.
+                let at = before.len();
+                let split = [
+                    &whole[..at + 1],
+                    &whole[at + 1..at + 9],
+                    &whole[at + 9..at + MAX_OSC_BODY],
+                    &whole[at + MAX_OSC_BODY..whole.len() - after.len() - end.len()],
+                    &whole[whole.len() - after.len() - end.len()..],
+                ];
+                assert_eq!(screen(&split), short, "split {before:?} {end:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_dropped_osc_after_another_esc_runs_no_reset() {
+        // vte stays in its escape state at the second ESC; the OSC opens
+        // after it, and the `c` after its BEL is text, not RIS.
+        let big = body(MAX_OSC_BODY + 1);
+        let stream = [b"ab\x1b\x1b]0;".as_slice(), &big, b"\x07c"].concat();
+        assert_eq!(screen(&[&stream]), ["abc"]);
+        assert_eq!(screen(&[b"ab\x1b", &stream[3..]]), ["abc"]);
+    }
+
+    #[test]
+    fn a_dropped_osc_ends_the_csi_it_interrupts() {
+        let big = body(MAX_OSC_BODY + 1);
+        let mut terminal = NativeTerminal::create(20, 3, 0).unwrap();
+        terminal
+            .feed_bytes(&[b"a\x1b[31\x1b]0;".as_slice(), &big].concat())
+            .unwrap();
+        terminal.feed_bytes(b"\x07x").unwrap();
+        assert_eq!(text(&mut terminal), ["ax"]);
+        let grid = terminal.term.as_ref().unwrap().grid();
+        assert_eq!(grid[Line(0)][Column(1)].fg, Cell::default().fg, "not red");
+    }
+
+    #[test]
+    fn a_dropped_osc_ends_the_osc_before_it() {
+        // The short OSC 2 ends at the dropped one's ESC, so the text after
+        // it is text, not body growing vte's OSC buffer.
+        let big = body(MAX_OSC_BODY + 1);
+        let stream = [b"\x1b]2;t\x1b]1337;".as_slice(), &big, b"\x07text"].concat();
+        assert_eq!(screen(&[&stream]), ["text"]);
+        assert_eq!(
+            screen(&[&stream[..6], &stream[6..100], &stream[100..]]),
+            ["text"]
+        );
+        let mut terminal = NativeTerminal::create(20, 3, 0).unwrap();
+        terminal.feed_xterm_bytes(&stream, 0).unwrap();
+        assert_eq!(terminal.refusal, Some(LONG_OSC));
+        assert_eq!(
+            terminal.families().unwrap()[0],
+            "unsupported-state-long-sequence"
+        );
+    }
+
+    #[test]
+    fn a_dropped_osc_refuses_the_ansi_snapshot() {
+        let mut terminal = NativeTerminal::create(20, 3, 0).unwrap();
+        terminal.feed_xterm_bytes(b"a\x1b]2;", 0).unwrap();
+        terminal
+            .feed_xterm_bytes(&body(MAX_OSC_BODY + 1), 0)
+            .unwrap();
+        assert_eq!(terminal.refusal, Some(LONG_OSC));
+        assert_eq!(
+            terminal.ansi_snapshot_bytes(None).err().unwrap().message(),
+            LONG_OSC
+        );
+    }
+
+    #[test]
+    fn a_long_hyperlink_reaches_the_ansi_snapshot() {
+        let url = [b"https://example.invalid/".as_slice(), &body(100 * 1024)].concat();
+        let stream = [b"\x1b]8;;".as_slice(), &url, b"\x07link\x1b]8;;\x07"].concat();
+        let mut terminal = NativeTerminal::create(20, 3, 0).unwrap();
+        terminal.feed_xterm_bytes(&stream[..50_000], 0).unwrap();
+        terminal.feed_xterm_bytes(&stream[50_000..], 0).unwrap();
+        let payload = terminal.ansi_snapshot_bytes(None).ok().unwrap();
+        assert!(payload.windows(url.len()).any(|w| w == url.as_slice()));
+    }
+
+    #[test]
+    fn a_stream_ending_inside_an_osc_ships_it_in_the_tail() {
+        let mut terminal = NativeTerminal::create(20, 3, 0).unwrap();
+        terminal.feed_xterm_bytes(b"a\x1b]2;abc", 0).unwrap();
+        let payload = terminal.ansi_snapshot_bytes(None).ok().unwrap();
+        assert!(
+            payload.ends_with(b"\x1b]2;abc"),
+            "{:?}",
+            String::from_utf8_lossy(&payload)
+        );
+        let mut terminal = NativeTerminal::create(20, 3, 0).unwrap();
+        terminal.feed_xterm_bytes(b"a\x1b", 0).unwrap();
+        let payload = terminal.ansi_snapshot_bytes(None).ok().unwrap();
+        assert!(payload.ends_with(b"\x1b"));
     }
 }

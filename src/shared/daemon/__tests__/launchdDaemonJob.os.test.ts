@@ -85,6 +85,16 @@ describe('buildDaemonLaunchdPlist', () => {
     expect(xml).toContain('<key>StandardErrorPath</key>\n\t<string>/dev/null</string>');
   });
 
+  it('sends stderr to the given file, and to /dev/null when its path cannot be a plist string', () => {
+    const base = { label: 'com.wmux.daemon.abc', programArguments: ['/x/node'], env: {} };
+    expect(buildDaemonLaunchdPlist({ ...base, stderrPath: '/data/.wmux/daemon-stderr.log' }))
+      .toContain('<key>StandardErrorPath</key>\n\t<string>/data/.wmux/daemon-stderr.log</string>');
+    expect(buildDaemonLaunchdPlist({ ...base, stderrPath: '/data/a&b/daemon-stderr.log' }))
+      .toContain('<string>/data/a&amp;b/daemon-stderr.log</string>');
+    expect(buildDaemonLaunchdPlist({ ...base, stderrPath: '/data/\u0001/daemon-stderr.log' }))
+      .toContain('<key>StandardErrorPath</key>\n\t<string>/dev/null</string>');
+  });
+
   it.runIf(process.platform === 'darwin')('is a valid plist (plutil -lint)', async () => {
     const { execFileSync } = await vi.importActual<typeof import('child_process')>('child_process');
     const f = path.join(os.tmpdir(), `wmux-plist-lint-${process.pid}.plist`);

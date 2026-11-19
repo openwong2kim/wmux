@@ -168,6 +168,33 @@ core/wmux-term/vendor/alacritty_terminal/Cargo.toml --locked`.
   row can be marked; an erase lowers `occ` to its run, and a mark dropped when
   cells move (`forget_mark`) puts `occ` back over the row, since an erase's
   run can hold its background past `occ`. Added 2026-11-12.
+- `src/wmux_alloc.rs` (registered in `src/lib.rs`): every allocation sized by
+  the grid's columns, lines or scrollback reserves with `try_reserve`
+  (#3440): `Row::new` and every row growth, split and append in
+  `src/grid/row.rs`, `Storage::with_capacity` and `Storage::initialize` (the
+  history's growth by up to 1000 rows), every vector `src/grid/resize.rs`
+  lays out in a reflow, and the tab stops and line damage in
+  `src/term/mod.rs`. A refusal unwinds with the zero-sized `GridAllocFailed`
+  through `resume_unwind` (no panic hook, no backtrace; the boxed payload
+  allocates nothing), and `take_refusal` reads its bytes and purpose from a
+  thread-local `Cell`. `native_core.rs` catches it around every call into the
+  terminal, reports ALLOC_FAILED and drops the terminal. `Row::new` fills its
+  reserved row with `resize_with` instead of upstream's unsafe writes. A
+  row's kept cells (`hidden`) are boxed as `Box<[Vec<T>; 1]>`, allocated by
+  `wmux_alloc::boxed` (a refusal unwinds the same way, as `HIDDEN`), and a
+  later narrowing puts its cells in the box already there.
+  `fail_what` is a test hook wmux-term's tests use too, so it is always
+  compiled. Added 2026-11-19.
+- Input-sized state in `src/term/` (#3440): the title stack also drops its
+  bottom titles while it would hold more than `TITLE_STACK_MAX_BYTES` (1 MiB)
+  of them, and copies a title with `wmux_alloc::copy_str` (fallible, the same
+  unwind) and grows with `wmux_alloc::push`; upstream kept up to 4096 copies
+  of a title of any length. `title_stack_bytes` counts them; upstream's
+  `push_keyboard_mode` removes from the title stack without it, which can
+  only make the count high, and it is zeroed whenever the stack is empty.
+  `Cell::push_zerowidth` keeps at most `MAX_ZEROWIDTH` (32) zero-width
+  characters per cell and drops the rest; upstream had no limit. Added
+  2026-11-19.
 
 These changes are experimental compatibility policy, not upstream behavior.
 Revalidate width, resize, ANSI restoration and live continuation when upgrading.

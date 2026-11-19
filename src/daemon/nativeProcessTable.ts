@@ -8,11 +8,12 @@
  * whenever it is packaged with `process-table-v1`, so node-engine users get
  * it too. A missing module or capability latches the native path off for the
  * daemon's life, as do MAX_FAILURES failed calls in a row (one failure only
- * sends that read to the spawn path); callers then keep their spawn path.
+ * sends that read to the spawn path); callers then keep their spawn path. A
+ * refused native allocation (ALLOC_FAILED) fails only that read.
  * `WMUX_NATIVE_PROCESS_TABLE=off` forces the spawn path. The same latch
  * (nativeRead) serves PortWatcher's macOS and Linux snapshot.
  */
-import { loadNativeTerminalCore, reportNativeFallback, type NativeTerminalCore } from '../shared/nativeTerminalCore';
+import { isNativeAllocFailure, loadNativeTerminalCore, reportNativeFallback, type NativeTerminalCore } from '../shared/nativeTerminalCore';
 
 export interface NativeProcessRow {
   pid: number;
@@ -38,6 +39,10 @@ const MAX_FAILURES = 3;
  * within `timeoutMs`, is a failure and resolves undefined, so the caller takes
  * its spawn path for that read; MAX_FAILURES in a row latch the read off for
  * the process's life (no retry after a backoff). A success resets the count.
+ * A rejection with a refused native allocation (isNativeAllocFailure, #3440)
+ * also resolves undefined, but is no failure: it is the daemon's memory at
+ * that moment, not the read, so it neither counts toward MAX_FAILURES nor
+ * resets the count, and the next call runs natively.
  * A timed read also keeps one call in flight at most: while one has not
  * settled (a timed-out call may still hold a libuv thread), `call()` answers
  * undefined at once without starting another. That skip is no failure while
@@ -110,8 +115,8 @@ export function nativeRead<F>(opts: {
       ]));
       failures = 0;
       return result;
-    } catch {
-      fail();
+    } catch (error) {
+      if (!isNativeAllocFailure(error)) fail();
       return undefined;
     } finally {
       if (timer) clearTimeout(timer);

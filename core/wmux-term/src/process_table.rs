@@ -9,6 +9,12 @@
 //! - Windows only: a row's details are attached only when they provably
 //!   belong to the walked process, and a row is never dropped because its
 //!   details could not be read. macOS and Linux read no details.
+//! - every buffer the system sizes (the kernel's tables, a /proc file, the
+//!   rows, one per process or socket, and the command lines) is reserved
+//!   through `fallible`, and a refusal fails the whole read (`CallError::Alloc`)
+//!   rather than aborting the daemon (#3440). A row's own short strings (its
+//!   image or short name, a socket's address) stay ordinary small
+//!   allocations, as do per-entry path names and directory reads.
 
 #[cfg(windows)]
 mod windows;
@@ -33,6 +39,34 @@ mod listen_sockets;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[cfg_attr(not(feature = "native-core"), allow(unused_imports))]
 pub use listen_sockets::{port_snapshot, PortSnapshot};
+
+/// What the rows of a table are for (`fallible`).
+const ROWS: &str = "the process table";
+
+/// The whole of a file, read into a buffer reserved fallibly: a /proc table
+/// is sized by the system (every socket, every process). The outer error is
+/// a refused buffer; the inner one the read's own.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn read_file(
+    path: &std::path::Path,
+    what: &'static str,
+) -> Result<std::io::Result<Vec<u8>>, crate::fallible::AllocFailed> {
+    use std::io::Read;
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) => return Ok(Err(e)),
+    };
+    let mut data = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match file.read(&mut chunk) {
+            Ok(0) => return Ok(Ok(data)),
+            Ok(n) => crate::fallible::try_extend(&mut data, &chunk[..n], what)?,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Ok(Err(e)),
+        }
+    }
+}
 
 /// Whether a failed per-process read (errno) only means this process cannot
 /// be read now: it exited (ENOENT, ESRCH) or belongs to someone else

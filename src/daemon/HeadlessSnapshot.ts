@@ -56,6 +56,7 @@ import { SNAPSHOT_MAX_SCROLLBACK } from '../shared/terminal/attachSnapshot';
 import type { ReplayGeometry } from './RingBuffer';
 import { selectAnsiSnapshot } from './AnsiSnapshotBackend';
 import { selectTextSnapshot } from './TextSnapshotBackend';
+import { describeNativeError, isNativeAllocFailure } from '../shared/nativeTerminalCore';
 import {
   PartialSequenceTracker,
   MarginTracker,
@@ -100,8 +101,10 @@ export type SnapshotFallbackReason =
 
 export type SnapshotOutcome =
   | { ok: true; payload: Buffer; bytesIn: number; durationMs: number }
-  /** `families`: a native refusal's every family, the reported one first (RustSnapshot). */
-  | { ok: false; reason: SnapshotFallbackReason; detail?: string; families?: string[] };
+  /** `families`: a native refusal's every family, the reported one first (RustSnapshot).
+   *  `allocFailed`: the error was a refused native allocation (isNativeAllocFailure, by its
+   *  code): one session's memory, not the module. `detail` is then diagnostic only. */
+  | { ok: false; reason: SnapshotFallbackReason; detail?: string; families?: string[]; allocFailed?: true };
 
 // Measured (resync probe, 2026-07-10): chunked parse runs ~4 MB/s, so a FULL
 // 8 MB ring — the flagship flooded-pane case — needs ~2 s. A 2 s budget would
@@ -224,7 +227,7 @@ export interface TextSnapshotRow {
 
 export type TextSnapshotOutcome =
   | { ok: true; rows: TextSnapshotRow[]; bufferType: 'normal' | 'alternate'; rowsBelowCursor: number; bytesIn: number; durationMs: number }
-  | { ok: false; reason: SnapshotFallbackReason; detail?: string };
+  | { ok: false; reason: SnapshotFallbackReason; detail?: string; allocFailed?: true };
 
 /**
  * Plain-text variant of the snapshot used by the cold-park search/read
@@ -291,7 +294,22 @@ export function capTextRowsToFrameBudget(
 }
 
 async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutcome> {
-  return selectTextSnapshot(req, generateXtermTextInner);
+  try {
+    return await selectTextSnapshot(req, generateXtermTextInner);
+  } catch (err) {
+    return refusedSnapshot(err);
+  }
+}
+
+/**
+ * A native allocation refused while the snapshot read its input (copying a
+ * frozen native ring into `initial`): this snapshot fails with `error`, which
+ * every caller already answers with its raw / fail-open path. Any other throw
+ * propagates as before.
+ */
+function refusedSnapshot(err: unknown): { ok: false; reason: 'error'; detail: string; allocFailed: true } {
+  if (!isNativeAllocFailure(err)) throw err;
+  return { ok: false, reason: 'error', detail: describeNativeError(err), allocFailed: true };
 }
 
 async function generateXtermTextInner(req: SnapshotRequest): Promise<TextSnapshotOutcome> {
@@ -408,7 +426,11 @@ export function generateSnapshotUnqueued(req: SnapshotRequest): Promise<Snapshot
 }
 
 async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
-  return selectAnsiSnapshot(req, generateXtermInner);
+  try {
+    return await selectAnsiSnapshot(req, generateXtermInner);
+  } catch (err) {
+    return refusedSnapshot(err);
+  }
 }
 
 async function generateXtermInner(req: SnapshotRequest): Promise<SnapshotOutcome> {

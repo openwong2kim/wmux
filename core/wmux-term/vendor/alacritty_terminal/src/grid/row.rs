@@ -2,7 +2,7 @@
 
 use std::cmp::{max, min};
 use std::ops::{Index, IndexMut, Range, RangeFrom, RangeFull, RangeTo, RangeToInclusive};
-use std::{ptr, slice};
+use std::slice;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::grid::GridCell;
 use crate::index::Column;
 use crate::term::cell::{Flags, ResetDiscriminant};
+use crate::wmux_alloc::{self, HIDDEN, ROW};
 
 /// A row in the grid.
 #[derive(Default, Clone, Debug)]
@@ -32,8 +33,10 @@ pub struct Row<T> {
     /// reset row is a new line, at the current width. Not serialized: a
     /// serialized grid keeps upstream's format (the ref tests' grids), and a
     /// deserialized row has none, as a row read back at its width would.
+    /// Boxed as an array of one so the box is allocated fallibly
+    /// (`wmux_alloc::boxed`) and the field stays one pointer wide.
     #[cfg_attr(feature = "serde", serde(default, skip))]
-    hidden: Option<Box<Vec<T>>>,
+    hidden: Option<Box<[Vec<T>; 1]>>,
 
     /// wmux: one past the column where the empty cells a widen gave this
     /// soft-wrapped row, or an erase left at its edge, begin (0: none).
@@ -55,23 +58,14 @@ impl<T: Default> Row<T> {
     /// Create a new terminal row.
     ///
     /// Ideally the `template` should be `Copy` in all performance sensitive scenarios.
+    ///
+    /// wmux: reserved fallibly (`wmux_alloc`), then filled without the
+    /// unsafe writes upstream used.
     pub fn new(columns: usize) -> Row<T> {
         debug_assert!(columns >= 1);
 
-        let mut inner: Vec<T> = Vec::with_capacity(columns);
-
-        // This is a slightly optimized version of `std::vec::Vec::resize`.
-        unsafe {
-            let mut ptr = inner.as_mut_ptr();
-
-            for _ in 1..columns {
-                ptr::write(ptr, T::default());
-                ptr = ptr.offset(1);
-            }
-            ptr::write(ptr, T::default());
-
-            inner.set_len(columns);
-        }
+        let mut inner: Vec<T> = wmux_alloc::with_capacity(columns, ROW);
+        inner.resize_with(columns, T::default);
 
         Row { inner, occ: 0, hidden: None, empty_mark: 0 }
     }
@@ -82,11 +76,13 @@ impl<T: Default> Row<T> {
         if self.inner.len() >= columns {
             return;
         }
+        let additional = columns - self.inner.len();
+        wmux_alloc::reserve(&mut self.inner, additional, ROW);
 
         // wmux: kept cells come back first, up to the new width; xterm drops
         // the rest (its line takes the new width).
         if let Some(hidden) = self.hidden.take() {
-            let mut hidden = *hidden;
+            let [mut hidden] = *hidden;
             hidden.truncate(columns - self.inner.len());
             self.inner.append(&mut hidden);
             self.occ = self.inner.len();
@@ -102,12 +98,16 @@ impl<T: Default> Row<T> {
             return;
         }
 
-        let mut cut = self.inner.split_off(columns);
-        if let Some(hidden) = self.hidden.take() {
-            cut.extend(*hidden);
-        }
+        let mut cut = wmux_alloc::split_off(&mut self.inner, columns, ROW);
         self.occ = min(self.occ, columns);
-        self.hidden = Some(Box::new(cut));
+        match self.hidden.as_mut() {
+            // The box already there takes the cells: no allocation for it.
+            Some(hidden) => {
+                wmux_alloc::append(&mut cut, &mut hidden[0], ROW);
+                hidden[0] = cut;
+            },
+            None => self.hidden = Some(wmux_alloc::boxed(cut, HIDDEN)),
+        }
     }
 
     /// Reduce the number of columns in the row.
@@ -122,7 +122,7 @@ impl<T: Default> Row<T> {
         }
 
         // Split off cells for a new row.
-        let mut new_row = self.inner.split_off(columns);
+        let mut new_row = wmux_alloc::split_off(&mut self.inner, columns, ROW);
         let index = new_row.iter().rposition(|c| !c.is_empty()).map_or(0, |i| i + 1);
         new_row.truncate(index);
 
@@ -175,7 +175,7 @@ impl<T: Default> Row<T> {
         let hidden = self.hidden.take();
         self.reset(template);
         if let Some(mut hidden) = hidden {
-            for item in hidden.iter_mut() {
+            for item in hidden[0].iter_mut() {
                 item.reset(template);
             }
             self.hidden = Some(hidden);
@@ -255,7 +255,7 @@ impl<T> Row<T> {
     /// wmux: how many cells are kept past the visible width.
     #[inline]
     pub fn hidden_len(&self) -> usize {
-        self.hidden.as_ref().map_or(0, |hidden| hidden.len())
+        self.hidden.as_ref().map_or(0, |hidden| hidden[0].len())
     }
 
     /// wmux: run `f` over the row's physical cells, the visible ones then the
@@ -267,8 +267,11 @@ impl<T> Row<T> {
         match self.hidden.as_mut() {
             None => f(&mut self.inner),
             Some(hidden) => {
-                // Both vectors keep their buffers: no allocation per edit.
-                self.inner.append(hidden);
+                let hidden = &mut hidden[0];
+                // Both vectors keep their buffers: no allocation per edit
+                // after the first.
+                wmux_alloc::append(&mut self.inner, hidden, ROW);
+                wmux_alloc::reserve(hidden, self.inner.len() - visible, ROW);
                 let result = f(&mut self.inner);
                 hidden.extend(self.inner.drain(visible..));
                 result
@@ -302,6 +305,7 @@ impl<T> Row<T> {
     where
         T: GridCell,
     {
+        wmux_alloc::reserve(&mut self.inner, vec.len(), ROW);
         self.forget_mark();
         self.occ += vec.len();
         self.inner.append(vec);
@@ -309,6 +313,7 @@ impl<T> Row<T> {
 
     #[inline]
     pub fn append_front(&mut self, mut vec: Vec<T>) {
+        wmux_alloc::reserve(&mut vec, self.inner.len(), ROW);
         self.forget_mark();
         self.occ += vec.len();
 
@@ -330,7 +335,7 @@ impl<T> Row<T> {
         self.forget_mark();
         self.occ = self.occ.saturating_sub(at);
 
-        let mut split = self.inner.split_off(at);
+        let mut split = wmux_alloc::split_off(&mut self.inner, at, ROW);
         std::mem::swap(&mut split, &mut self.inner);
         split
     }
