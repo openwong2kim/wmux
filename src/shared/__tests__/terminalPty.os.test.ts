@@ -266,11 +266,12 @@ describe('native output chunks', () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
       const pty = spawnTerminalPty('sh', [], {}) as TerminalPty;
+      pty.label = 'session-a';
       const exit = vi.fn(); pty.onExit(exit); pty.onData(() => undefined);
       await tick(); await tick();
       expect(exit).toHaveBeenCalledExactlyOnceWith({ exitCode: 1 });
       expect(chunk.dispose).toHaveBeenCalledOnce(); expect(transport.close).toHaveBeenCalledOnce();
-      expect(log.mock.calls.flat().join('\n')).toContain('ALLOC_FAILED: could not allocate 288216 bytes');
+      expect(log.mock.calls.flat().join('\n')).toContain('PTY output session=session-a: ALLOC_FAILED: could not allocate 288216 bytes');
     } finally { log.mockRestore(); }
   });
   it('logs the reader error before ending the session', async () => {
@@ -279,7 +280,7 @@ describe('native output chunks', () => {
       spawnTerminalPty('sh', [], {});
       transport.read.mockReturnValueOnce({ ...idle, error: 'ALLOC_FAILED: could not allocate 65536 bytes for PTY read' });
       wake(); await tick();
-      expect(log.mock.calls.flat().join('\n')).toContain('PTY reader stopped: ALLOC_FAILED: could not allocate 65536 bytes');
+      expect(log.mock.calls.flat().join('\n')).toContain('PTY reader stopped session=pid-101: ALLOC_FAILED: could not allocate 65536 bytes');
       expect(transport.kill).toHaveBeenCalledOnce();
     } finally { log.mockRestore(); }
   });

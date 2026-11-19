@@ -11,6 +11,8 @@ export interface TerminalPty extends IPty {
   onInputDrain?: (listener: () => void) => { dispose(): void };
   onNativeData?: (listener: (chunk: NativeOutputChunk) => void) => { dispose(): void };
   dispose?: () => void;
+  /** Names the session in this PTY's log lines; set by its owner (absent: the pid). */
+  label?: string;
 }
 const backends = new WeakMap<IPty, 'node' | 'rust'>();
 export const ptyBackend = (pty: IPty): 'node' | 'rust' => backends.get(pty) ?? 'node';
@@ -75,6 +77,7 @@ class RustPty implements TerminalPty {
   cols: number;
   rows: number;
   handleFlowControl: boolean;
+  label?: string;
   private readonly transport: NativeTransport;
   private readonly decoder = new StringDecoder('utf8');
   private readonly data = new Set<(data: string) => void>();
@@ -230,11 +233,11 @@ class RustPty implements TerminalPty {
       // A refused allocation (the chunk's text copy, or a listener's own copy) ends only
       // this session; anything else is a bug and propagates as before.
       if (!isNativeAllocFailure(error)) throw error;
-      console.error(`[terminal-core] PTY output: ${(error as Error).message}`);
+      console.error(`[terminal-core] PTY output session=${this.name}: ${(error as Error).message}`);
       this.fail(); return;
     } finally { chunk?.dispose(); }
     if (result.error) {
-      console.error(`[terminal-core] PTY reader stopped: ${result.error}`);
+      console.error(`[terminal-core] PTY reader stopped session=${this.name}: ${result.error}`);
       try { this.transport.kill(globalThis.process.platform === 'win32' ? undefined : os.constants.signals.SIGKILL); }
       catch { this.fail(); return; }
     }
@@ -249,10 +252,11 @@ class RustPty implements TerminalPty {
       this.data.clear(); this.nativeData.clear(); this.exit.clear(); this.drain.clear();
     }
   }
+  private get name(): string { return this.label ?? `pid-${this.pid}`; }
   private fail(): void {
     if (this.ended) return;
     this.ended = true; this.releaseInput();
-    console.error('[terminal-core] PTY transport failed; terminating the affected session');
+    console.error(`[terminal-core] PTY transport failed session=${this.name}; terminating the affected session`);
     try { this.transport.close(); } catch { /* A second native exception must not replay the command. */ }
     for (const listener of this.exit) listener({ exitCode: 1 });
     this.data.clear(); this.nativeData.clear(); this.exit.clear(); this.drain.clear();

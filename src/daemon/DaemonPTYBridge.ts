@@ -2176,6 +2176,8 @@ export class DaemonPTYBridge extends EventEmitter {
      */
     shellMarks: 'exec' | 'integrated' | 'plain' = 'plain',
   ): void {
+    // The PTY's own log lines (a refused output copy, a reader error) name this session.
+    (ptyProcess as TerminalPty).label = sessionId;
     const interpreter = new OutputInterpreter((ptyProcess as TerminalPty).backend === 'rust' ? 'rust' : 'node', sessionId);
     this.outputInterpreter = interpreter;
 
