@@ -2,11 +2,22 @@
 // remote debugging for this browser instance" off in the profile's Local
 // State, where Chrome keeps it across restarts.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 vi.mock('electron', () => ({ app: { getVersion: () => '0.0.0' }, autoUpdater: {}, ipcMain: {}, net: {}, shell: {} }));
+const { failRename } = vi.hoisted(() => ({ failRename: { on: false } }));
+vi.mock('node:fs', async (orig) => {
+  const real = (await orig()) as typeof import('node:fs');
+  return {
+    ...real,
+    renameSync: (from: string, to: string) => {
+      if (failRename.on) throw Object.assign(new Error('EXDEV (unit test)'), { code: 'EXDEV' });
+      return real.renameSync(from, to);
+    },
+  };
+});
 
 import { clearRemoteDebuggingToggle } from '../ChromeLauncher';
 
@@ -20,7 +31,11 @@ function profile(localState?: string): string {
 const read = (dir: string) => JSON.parse(readFileSync(join(dir, 'Local State'), 'utf8')) as Record<string, unknown>;
 
 afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  failRename.on = false;
+  for (const dir of dirs.splice(0)) {
+    try { chmodSync(join(dir, 'Local State'), 0o600); } catch { /* none */ }
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 describe('clearRemoteDebuggingToggle', () => {
@@ -45,5 +60,25 @@ describe('clearRemoteDebuggingToggle', () => {
     const broken = profile('{not json');
     clearRemoteDebuggingToggle(broken);
     expect(readFileSync(join(broken, 'Local State'), 'utf8')).toBe('{not json');
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('throws on a Local State it cannot read, so the launch does not go on with the setting unknown', () => {
+    const dir = profile(JSON.stringify({ devtools: { remote_debugging: { 'user-enabled': true } } }));
+    chmodSync(join(dir, 'Local State'), 0o000);
+    expect(() => clearRemoteDebuggingToggle(dir)).toThrow(/EACCES/);
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps the file mode on rewrite', () => {
+    const dir = profile(JSON.stringify({ devtools: { remote_debugging: { 'user-enabled': true } } }));
+    chmodSync(join(dir, 'Local State'), 0o640);
+    clearRemoteDebuggingToggle(dir);
+    expect(statSync(join(dir, 'Local State')).mode & 0o777).toBe(0o640);
+  });
+
+  it('leaves no temp file when the rename fails, and says so', () => {
+    const dir = profile(JSON.stringify({ devtools: { remote_debugging: { 'user-enabled': true } } }));
+    failRename.on = true;
+    expect(() => clearRemoteDebuggingToggle(dir)).toThrow(/EXDEV/);
+    expect(readdirSync(dir)).toEqual(['Local State']);
   });
 });

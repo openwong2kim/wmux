@@ -115,6 +115,8 @@ export class BrowserBackendStore {
 
   setLiveWriteScope(scope: LiveWriteScope): void {
     this.liveScope = scope;
+    // persist() writes the protected-port field too: the file's value, not a stale one.
+    this.protectedPortTransport();
     this.persist();
   }
 

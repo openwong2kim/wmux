@@ -233,7 +233,8 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
   });
 
   it('a relay client cannot reach the remote-debugging toggle; turned on from main\'s own session (control), the watch closes the browser if a port opens', { timeout: CASE_TIMEOUT_MS * 2 }, async () => {
-    const rig = await start();
+    // With windows, as wmux starts Chrome.
+    const rig = await start({ headful: true });
     const c = await relayClient(rig);
     // Every way a relay client could open the page is refused.
     for (const url of [INSPECT, 'CHROME://inspect', ' chrome://inspect', 'chrome:inspect', 'view-source:chrome://inspect']) {
@@ -265,13 +266,15 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     // The page has drawn its checkbox (or never will: then the line says 'absent').
     await vi.waitFor(async () => expect(await state()).not.toBe('absent'), { timeout: 10_000 }).catch(() => undefined);
     const before = await state();
-    let toggle = before;
-    if (before !== 'absent' && before !== 'gone') {
-      const { x, y } = JSON.parse(before) as { x: number; y: number };
-      for (const type of ['mousePressed', 'mouseReleased']) await own.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 }, session).catch(() => undefined);
-      await vi.waitFor(async () => expect(await state()).not.toBe(before), { timeout: 5_000 }).catch(() => undefined);
-      toggle = await state();
-    }
+    // A control that never reached the checkbox proves nothing.
+    expect(before, 'the remote-debugging checkbox on chrome://inspect').not.toMatch(/^(absent|gone)$/);
+    expect((JSON.parse(before) as { checked: boolean }).checked).toBe(false);
+    const { x, y } = JSON.parse(before) as { x: number; y: number };
+    for (const type of ['mousePressed', 'mouseReleased']) await own.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 }, session).catch(() => undefined);
+    await vi.waitFor(async () => expect(await state()).not.toBe(before), { timeout: 5_000 }).catch(() => undefined);
+    const toggle = await state();
+    // On, or the browser is already gone under it.
+    if (toggle !== 'gone') expect((JSON.parse(toggle) as { checked: boolean }).checked).toBe(true);
     const control = await watchForPort(rig);
     const cause = closedFor(rig);
     const closedByWatch = cause !== null;
@@ -281,6 +284,7 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     expect(control.listeners.length === 0 || closedByWatch, `a port opened (${control.listeners.join(',')}) and the browser was not closed`).toBe(true);
     if (control.portFile) expect(closedByWatch).toBe(true);
     if (closedByWatch) expect(nextCall).toContain('a debugging port opened in the protected browser');
+    if (toggle === 'gone') expect(closedByWatch).toBe(true);
     own.close();
     c.close();
   });

@@ -47,7 +47,7 @@ vi.mock('node:fs', async (orig) => {
           if (s.startsWith(dir)) return content;
         }
       }
-      throw new Error('ENOENT (unit test)');
+      throw Object.assign(new Error('ENOENT (unit test)'), { code: 'ENOENT' });
     }),
     writeFileSync: () => undefined,
   };

@@ -19,7 +19,7 @@ vi.mock('node:fs', async (orig) => {
     ...real,
     existsSync: () => true,
     mkdirSync: () => undefined,
-    readFileSync: vi.fn(() => { throw new Error('ENOENT (unit test)'); }),
+    readFileSync: vi.fn(() => { throw Object.assign(new Error('ENOENT (unit test)'), { code: 'ENOENT' }); }),
     writeFileSync: () => undefined,
     unlinkSync: () => undefined,
   };
@@ -224,7 +224,7 @@ describe('ChromeLauncher: a protected profile on the pipe', () => {
     const read = vi.mocked(readFileSync);
     read.mockImplementation(((file: unknown) => {
       if (String(file).endsWith('DevToolsActivePort')) return '9222\n/devtools/browser/x';
-      throw new Error('ENOENT (unit test)');
+      throw Object.assign(new Error('ENOENT (unit test)'), { code: 'ENOENT' });
     }) as typeof readFileSync);
     try {
       await vi.waitFor(() => expect(chrome.child.exitCode).not.toBeNull(), { timeout: 5_000 });
@@ -232,8 +232,42 @@ describe('ChromeLauncher: a protected profile on the pipe', () => {
       expect(err?.message.startsWith(PROTECTION_NOT_READY)).toBe(true);
       expect(err?.message).toContain('a debugging port opened in the protected browser');
     } finally {
-      read.mockImplementation((() => { throw new Error('ENOENT (unit test)'); }) as typeof readFileSync);
+      read.mockImplementation((() => { throw Object.assign(new Error('ENOENT (unit test)'), { code: 'ENOENT' }); }) as typeof readFileSync);
     }
+    await launcher.dispose({ immediate: true });
+  });
+});
+
+describe('ChromeLauncher: the download guard on a protected pipe profile', () => {
+  /** The guard's own browser session: the one that set deny with no context. */
+  const guardSession = (chrome: ProtectedPipeChrome) =>
+    chrome.received.find((m) => m.method === 'Browser.setDownloadBehavior' && m.params.behavior === 'deny' && m.params.browserContextId === undefined)?.sessionId as string;
+
+  it('denies a new browser context the moment a target in it appears, before any tick lists it', async () => {
+    const chrome = spawnChrome();
+    const launcher = new ChromeLauncher('/tmp/pipe-protected-newctx', { profileName: 'bank', protection: () => denyAll });
+    await launcher.endpoint();
+    await vi.waitFor(() => expect(chrome.discover.has(guardSession(chrome))).toBe(true), { timeout: 5_000 });
+    // A context no list names (the fake's getBrowserContexts never lists it).
+    chrome.announce({ targetId: 'INCOG', type: 'page', browserContextId: 'CTX-NEW', url: 'about:blank' });
+    await vi.waitFor(() => expect(chrome.received.some((m) => m.method === 'Browser.setDownloadBehavior' && m.params.browserContextId === 'CTX-NEW' && m.params.behavior === 'deny')).toBe(true), { timeout: 5_000 });
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('cancels a stray download in every context it knows at once, without waiting for a list', async () => {
+    const chrome = spawnChrome();
+    const launcher = new ChromeLauncher('/tmp/pipe-protected-cancel', { profileName: 'bank', protection: () => denyAll });
+    await launcher.endpoint();
+    const session = guardSession(chrome);
+    await vi.waitFor(() => expect(chrome.discover.has(session)).toBe(true), { timeout: 5_000 });
+    chrome.announce({ targetId: 'INCOG', type: 'page', browserContextId: 'CTX-NEW', url: 'about:blank' });
+    await vi.waitFor(() => expect(chrome.received.some((m) => m.params.browserContextId === 'CTX-NEW')).toBe(true), { timeout: 5_000 });
+    // The list answer is held: only what the guard already knew can be used.
+    chrome.holdReplies.add('Target.getBrowserContexts');
+    chrome.event(session, 'Browser.downloadWillBegin', { frameId: 'INCOG', guid: 'g-new', url: 'http://a.test/f', suggestedFilename: 'f' });
+    await vi.waitFor(() => expect(chrome.received.some((m) => m.method === 'Browser.cancelDownload' && m.params.guid === 'g-new' && m.params.browserContextId === 'CTX-NEW')).toBe(true), { timeout: 5_000 });
+    chrome.holdReplies.delete('Target.getBrowserContexts');
+    chrome.releaseHeld();
     await launcher.dispose({ immediate: true });
   });
 });

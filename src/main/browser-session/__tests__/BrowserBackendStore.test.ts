@@ -209,6 +209,18 @@ describe('BrowserBackendStore (#517)', () => {
       expect(store.protectedPortTransport()).toBe(false);
     });
 
+    it('a live write scope change keeps the value the file holds now, on or off', () => {
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome', protectedPortTransport: true }));
+      const store = new BrowserBackendStore(dir);
+      // The operator turns it off by editing the file; nothing has read it since.
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome' }));
+      store.setLiveWriteScope('all');
+      expect(JSON.parse(readFileSync(file(), 'utf8')).protectedPortTransport).toBeUndefined();
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome', liveWriteScope: 'all', protectedPortTransport: true }));
+      store.setLiveWriteScope('agent');
+      expect(JSON.parse(readFileSync(file(), 'utf8')).protectedPortTransport).toBe(true);
+    });
+
     it('writes no key while it is off (the file keeps its shape)', () => {
       new BrowserBackendStore(dir).set('external');
       expect(JSON.parse(readFileSync(file(), 'utf8'))).toEqual({ backend: 'external' });

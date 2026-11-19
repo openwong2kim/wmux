@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CdpPipeMux, MUX_ID_BASE, resetCdpPipeCounters } from '../CdpPipeMux';
 import { SCHEME_NOT_ALLOWED, protectedUrlAllowed } from '../ProtectedPipePolicy';
 import { FakeBrowser } from './fakePipeBrowser';
-import { deliberateSleep } from '../../../test-utils/waitFor';
 
 type Inbox = Array<Record<string, unknown>>;
 
@@ -59,7 +58,8 @@ function navigated(browser: FakeBrowser, targetId: string, url: string): void {
   for (const s of browser.discover) browser.event(s, 'Target.targetInfoChanged', { targetInfo: { targetId, type: 'page', url, browserContextId: 'DEFAULT' } });
 }
 
-const settle = () => deliberateSleep(50, 'a negative check: nothing more arrives');
+/** Wait until the mux let a judged auto-attach go (its own Target.detachFromTarget). */
+const letGo = (browser: FakeBrowser) => vi.waitFor(() => expect(browser.received.some((c) => c.method === 'Target.detachFromTarget' && c.id >= MUX_ID_BASE)).toBe(true), { timeout: 5_000 });
 const detachesSent = (browser: FakeBrowser) => browser.received.filter((c) => c.method === 'Target.detachFromTarget' && c.id >= MUX_ID_BASE);
 
 afterEach(() => resetCdpPipeCounters());
@@ -71,7 +71,8 @@ describe('CdpPipeMux URL boundary (C2d)', () => {
     const c = await playwrightLike(mux);
     browser.targets.push({ targetId: 'NTP', title: '', url: 'chrome://new-tab-page/' });
     browser.announce({ targetId: 'NTP', type: 'page', browserContextId: 'DEFAULT', url: 'chrome://new-tab-page/' });
-    await settle();
+    // The mux judged it: its auto-attach was let go again.
+    await letGo(browser);
     expect(c.told()).not.toContain('NTP');
     // Its auto-attach was let go again.
     expect(detachesSent(browser)).toHaveLength(1);
@@ -94,7 +95,8 @@ describe('CdpPipeMux URL boundary (C2d)', () => {
     await discovering(browser);
     const c = await playwrightLike(mux);
     browser.announce({ targetId: 'X', type: 'page', browserContextId: 'DEFAULT', url });
-    await settle();
+    // The mux judged it: its auto-attach was let go again.
+    await letGo(browser);
     expect(c.told()).not.toContain('X');
     mux.close();
   });
@@ -123,7 +125,8 @@ describe('CdpPipeMux URL boundary (C2d)', () => {
     await discovering(browser);
     const c = await playwrightLike(mux);
     browser.announce({ targetId: 'U', type: 'page', browserContextId: 'DEFAULT', url: 'chrome://new-tab-page/' });
-    await settle();
+    // The mux judged it: its auto-attach was let go again.
+    await letGo(browser);
     expect(c.told()).not.toContain('U');
     navigated(browser, 'U', 'https://typed.test/');
     await vi.waitFor(() => expect(c.sessionFor('U')).toBeDefined(), { timeout: 5_000 });
@@ -149,7 +152,8 @@ describe('CdpPipeMux URL boundary (C2d)', () => {
     const parent = browser.received.find((r) => r.method === 'Target.setAutoAttach' && r.id < MUX_ID_BASE)?.sessionId as string;
     browser.sessions.add('S-NOURL');
     browser.event(parent, 'Target.attachedToTarget', { sessionId: 'S-NOURL', targetInfo: { targetId: 'NOURL', type: 'page', browserContextId: 'DEFAULT' }, waitingForDebugger: false });
-    await settle();
+    // The mux judged it: its auto-attach was let go again.
+    await letGo(browser);
     expect(c.told()).not.toContain('NOURL');
     const answer = await c.replyTo(c.send('Runtime.evaluate', { expression: '1' }, 'S-NOURL'));
     expect(answer.error).toBeDefined();

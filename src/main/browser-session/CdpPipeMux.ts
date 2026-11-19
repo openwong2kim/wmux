@@ -45,10 +45,27 @@ import { CdpTargetOwnership, type TargetInfoLike, type TargetRegistry } from './
 //   + 54 MB/s (16 MB bodies)             busy 13.3%, p99 2.05 ms, max 23.7 ms
 // JSON.parse runs ~0.8 ms per MB; the stall that matters is the largest single
 // frame (~0.85 ms per MB of it). Ceiling: delay p99 within +2 ms, busy within
-// +10 points at 33 MB/s, and a single-frame stall under 50 ms at 20 MiB. To be
-// repeated in packaged Electron main under real terminal load before the pipe
-// becomes the default. Over the ceiling, in order: route big replies by their
-// parse-checked head, then tail routing, then a separate process.
+// +10 points at 33 MB/s, and a single-frame stall under 50 ms at 20 MiB.
+//
+// Packaged (measured 2026-11-19, Electron 45.1.0, Chrome 157, macOS arm64; a
+// real 6.1 MB/s pty stream in one pane, a protected pane's Playwright on the
+// relay in another; an in-process monitorEventLoopDelay at 10 ms resolution,
+// so every delay includes that tick, and busy is the main thread's own CPU
+// time; two runs of each case between terminal-only runs, 60 s each):
+//   terminal only                        busy  4.2-6.0% (rising over the run),
+//                                        delay p99 11.5-11.7 ms
+//   + 33 MB/s CDP (1080p screencast +    busy 16.1-18.7%, p99 11.9-12.7 ms,
+//     a ~3.9 MB reply every 0.5 s, and   max 31 ms (parse 7-10 ms/s,
+//     a screenshot and a navigation)     ~100 frames/s)
+//   + one 20 MiB frame every 4 s         busy  6.5-7.3%, p99 11.6 ms, max 36 ms
+// Delay (+0.2 and +1.2 ms) and the single frame (36 ms with the tick, and
+// terminal-only runs reach 28-30 ms too) are under the ceiling; busy is over
+// it: +11.5 and +13.5 points at 33 MB/s, of which the screenshots and
+// navigations alone are +2. Parse is under a tenth of it; the rest (frame
+// copies and decode, the relay's WebSocket send, GC) was not broken down.
+// Keystroke echo in the loaded pane: p95 15 ms terminal-only, 28-30 ms at
+// 33 MB/s. Over the ceiling, in order: route big replies by their parse-checked
+// head, then tail routing, then a separate process.
 // ---------------------------------------------------------------------------
 
 /** Ids at and above this are the mux's own commands. */

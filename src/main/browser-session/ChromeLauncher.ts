@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurfaceStore } from './ChromeSurfaceStore';
@@ -589,14 +589,26 @@ const PORT_FLAG = /^--remote-(debugging-port|debugging-address|allow-origins)(=|
  * Turn chrome://inspect's "Allow remote debugging for this browser instance"
  * off in the profile's Local State before a protected launch: Chrome keeps it
  * across restarts (devtools.remote_debugging.user-enabled), and with it on it
- * starts a debugging server at launch. A file that is missing or doesn't
- * parse holds no such setting.
+ * starts a debugging server at launch.
+ *  - No file: nothing to turn off.
+ *  - A file that can't be read throws (the launch reports PROTECTION_NOT_READY):
+ *    its setting is unknown.
+ *  - A file that doesn't parse is left as it is: Chrome can't read it either,
+ *    so it starts from default local state, where the setting is off.
+ *  - The rewrite keeps the file's mode, and a failed rename leaves no temp file.
  */
 export function clearRemoteDebuggingToggle(userDataDir: string): void {
   const file = join(userDataDir, 'Local State');
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
   let state: { devtools?: { remote_debugging?: Record<string, unknown> } };
   try {
-    state = JSON.parse(readFileSync(file, 'utf8')) as typeof state;
+    state = JSON.parse(text) as typeof state;
   } catch {
     return;
   }
@@ -604,8 +616,15 @@ export function clearRemoteDebuggingToggle(userDataDir: string): void {
   if (!remote || typeof remote !== 'object' || !('user-enabled' in remote)) return;
   delete remote['user-enabled'];
   const tmp = `${file}.wmux-tmp`;
-  writeFileSync(tmp, JSON.stringify(state), 'utf8');
-  renameSync(tmp, file);
+  writeFileSync(tmp, JSON.stringify(state), { encoding: 'utf8', mode: statSync(file).mode & 0o777 });
+  try {
+    renameSync(tmp, file);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch { /* already gone */ }
+    throw err;
+  }
 }
 
 /**
@@ -2297,23 +2316,41 @@ export class ChromeLauncher implements ChromeBackendClient {
       },
     });
     const deny = () => guard.send('Browser.setDownloadBehavior', { behavior: 'deny', eventsEnabled: true });
-    const denyContexts = async () => {
+    /** Every browser context the guard has seen: listed on its tick, or named by a new target. */
+    const contexts = new Set<string>();
+    const listContexts = async (): Promise<string[]> => {
       const listed = (await guard.send('Target.getBrowserContexts')) as { browserContextIds?: unknown } | null;
       const ids = Array.isArray(listed?.browserContextIds) ? listed.browserContextIds.filter((id): id is string => typeof id === 'string') : [];
+      for (const id of ids) contexts.add(id);
+      return ids;
+    };
+    const denyContexts = async () => {
+      const ids = await listContexts();
       await Promise.all(ids.map((browserContextId) =>
         guard.send('Browser.setDownloadBehavior', contextDeny(browserContextId)).catch(() => undefined)));
     };
     /**
      * Browser.cancelDownload looks for the guid in one context only (the
      * default one when none is named), and downloadWillBegin doesn't say which:
-     * the cancel goes to the default context and to every listed one.
+     * the cancel goes at once to the default context and to every context the
+     * guard knows, then to any the list adds.
      */
     const cancelEverywhere = async (guid: string) => {
+      const sent = new Set(contexts);
       void guard.send('Browser.cancelDownload', { guid }).catch(() => undefined);
-      const listed = (await guard.send('Target.getBrowserContexts').catch(() => null)) as { browserContextIds?: unknown } | null;
-      const ids = Array.isArray(listed?.browserContextIds) ? listed.browserContextIds.filter((id): id is string => typeof id === 'string') : [];
-      await Promise.all(ids.map((browserContextId) => guard.send('Browser.cancelDownload', { guid, browserContextId }).catch(() => undefined)));
+      for (const browserContextId of sent) void guard.send('Browser.cancelDownload', { guid, browserContextId }).catch(() => undefined);
+      const ids = await listContexts().catch(() => [] as string[]);
+      await Promise.all(ids.filter((id) => !sent.has(id)).map((browserContextId) =>
+        guard.send('Browser.cancelDownload', { guid, browserContextId }).catch(() => undefined)));
     };
+    // A context is denied the moment a target in it appears, not on the next tick.
+    guard.on('Target.targetCreated', (params) => {
+      const info = params.targetInfo as { browserContextId?: unknown } | undefined;
+      const id = info?.browserContextId;
+      if (typeof id !== 'string' || contexts.has(id)) return;
+      contexts.add(id);
+      void guard.send('Browser.setDownloadBehavior', contextDeny(id)).catch(() => undefined);
+    });
     guard.on('Browser.downloadWillBegin', (params) => {
       this.piped?.policy?.downloadEvent('Browser.downloadWillBegin', params);
       const guid = typeof params.guid === 'string' ? params.guid : '';
@@ -2335,6 +2372,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     });
     try {
       await deny();
+      await guard.send('Target.setDiscoverTargets', { discover: true });
     } catch {
       guard.close();
       throw new Error(PROTECTION_NOT_READY);
