@@ -4,6 +4,7 @@ import * as path from 'path';
 import { spawn, execFileSync } from 'child_process';
 import * as crypto from 'crypto';
 import { getWmuxDir } from '../../daemon/config';
+import { DAEMON_STDERR_TO_FILE_ENV } from './daemonStderrFlag';
 import { getDaemonPipeName, readDaemonAuthToken } from '../../main/DaemonClient';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, dataSuffix } from '../constants';
 import {
@@ -899,6 +900,85 @@ export function daemonProcessArgs(daemonScript: string): string[] {
   return [...DAEMON_V8_FLAGS, daemonScript];
 }
 
+/**
+ * The daemon's stderr, in the wmux data dir. A native abort (a Rust panic or
+ * a refused allocation in the terminal core) prints its one line to stderr
+ * and ends the process before any JS log runs; with stderr ignored, that line
+ * was lost. The file is appended to across daemons and rotated at spawn.
+ */
+export const DAEMON_STDERR_LOG = 'daemon-stderr.log';
+/** Past this size the file moves to `<name>.1` (one kept) at the next spawn. */
+export const DAEMON_STDERR_ROTATE_BYTES = 1024 * 1024;
+
+type DaemonStderrFs = Pick<typeof fs, 'statSync' | 'renameSync' | 'openSync' | 'closeSync'>;
+
+/**
+ * Rotate `<wmuxDir>/daemon-stderr.log` to `.1` when it is past
+ * DAEMON_STDERR_ROTATE_BYTES, and return its path; null when the size check
+ * or the rename failed (the caller then keeps stderr off).
+ */
+export function rotateDaemonStderrLog(wmuxDir: string, fsImpl: DaemonStderrFs = fs): string | null {
+  const file = path.join(wmuxDir, DAEMON_STDERR_LOG);
+  try {
+    const stat = fsImpl.statSync(file, { throwIfNoEntry: false });
+    // Something else at that path (a directory): leave it alone.
+    if (stat && !stat.isFile()) return null;
+    if (stat && stat.size > DAEMON_STDERR_ROTATE_BYTES) fsImpl.renameSync(file, `${file}.1`);
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The daemon's stderr for spawn: an append-mode descriptor on the rotated
+ * file, which the caller closes right after spawn (the child holds its own),
+ * or 'ignore' when the file could not be rotated or opened. Never throws: a
+ * spawn never waits on, or fails because of, this file.
+ */
+export function openDaemonStderrLog(wmuxDir: string, fsImpl: DaemonStderrFs = fs): number | 'ignore' {
+  const file = rotateDaemonStderrLog(wmuxDir, fsImpl);
+  if (file === null) return 'ignore';
+  try {
+    return fsImpl.openSync(file, 'a', 0o600);
+  } catch {
+    return 'ignore';
+  }
+}
+
+/**
+ * The daemon's stderr for a launchd job: the rotated file's path, once it
+ * was opened for append (and closed again) here, or undefined. launchd opens
+ * StandardErrorPath itself before it runs the daemon, and a file it cannot
+ * open (one that exists but is not writable) ends the job with 78 before the
+ * daemon starts. Undefined keeps the job's stderr at /dev/null. Never throws.
+ */
+export function launchdDaemonStderrPath(wmuxDir: string, fsImpl: DaemonStderrFs = fs): string | undefined {
+  const file = rotateDaemonStderrLog(wmuxDir, fsImpl);
+  if (file === null) return undefined;
+  let fd: number;
+  try {
+    fd = fsImpl.openSync(file, 'a', 0o600);
+  } catch {
+    return undefined;
+  }
+  try { fsImpl.closeSync(fd); } catch { /* opened is what launchd needs */ }
+  return file;
+}
+
+/**
+ * The spawn env with the daemon told whether its stderr is the rotated file
+ * (DAEMON_STDERR_TO_FILE_ENV): its log sink then stops copying every console
+ * line there, so the file holds only what bypasses the sink and stays small
+ * between spawns. Without the file the flag is removed, never inherited.
+ */
+export function withDaemonStderrFlag(env: Record<string, string | undefined>, toFile: boolean): Record<string, string | undefined> {
+  const next = { ...env };
+  if (toFile) next[DAEMON_STDERR_TO_FILE_ENV] = '1';
+  else delete next[DAEMON_STDERR_TO_FILE_ENV];
+  return next;
+}
+
 function spawnDaemon(
   deps: DaemonLauncherDeps,
   staged: { script: string; nodePath: string; dir: string } | null,
@@ -1026,14 +1106,24 @@ function spawnDaemon(
     };
 
     const spawnDirect = () => {
-      const child = spawn(nodePath, daemonProcessArgs(daemonScript), {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-        env,
-        // An open working directory inside the install root would block its removal.
-        ...(staged ? { cwd: staged.dir } : {}),
-      });
+      // stdin and stdout stay ignored; stderr goes to daemon-stderr.log.
+      const stderr = openDaemonStderrLog(getWmuxDir());
+      let child: ReturnType<typeof spawn>;
+      try {
+        child = spawn(nodePath, daemonProcessArgs(daemonScript), {
+          detached: true,
+          stdio: ['ignore', 'ignore', stderr],
+          windowsHide: true,
+          env: withDaemonStderrFlag(env, typeof stderr === 'number'),
+          // An open working directory inside the install root would block its removal.
+          ...(staged ? { cwd: staged.dir } : {}),
+        });
+      } finally {
+        // The child has its own handle by now; this process keeps none open.
+        if (typeof stderr === 'number') {
+          try { fs.closeSync(stderr); } catch { /* already closed */ }
+        }
+      }
 
       // `spawn` reports failures asynchronously via 'error' (e.g. EMFILE,
       // EACCES). Without a listener that emission throws an uncaught exception,
@@ -1074,12 +1164,16 @@ function spawnDaemon(
       // macOS: a launchd job is not a LaunchServices subordinate of this app,
       // so quitting the app no longer SIGTERMs the daemon. See launchdDaemonJob.ts.
       const log = deps.log ?? console.log;
+      // launchd opens it for append itself; rotated here, as for spawnDirect,
+      // and opened once so a file launchd could not open is never named.
+      const stderrPath = launchdDaemonStderrPath(getWmuxDir());
       startDaemonViaLaunchd(
         {
           baseLabel: launchdBaseLabel(dataSuffix()),
           plistDir: path.join(getWmuxDir(), 'launchd'),
           programArguments: [nodePath, ...daemonProcessArgs(daemonScript)],
-          env,
+          env: withDaemonStderrFlag(env, stderrPath !== undefined),
+          stderrPath,
         },
         defaultLaunchdRuntime(log),
       ).then(

@@ -1,3 +1,4 @@
+import { isNativeAllocFailure } from '../shared/nativeTerminalCore';
 import { terminalCoreSelection } from '../shared/terminalCoreSettings';
 import type { SnapshotOutcome, SnapshotRequest } from './HeadlessSnapshot';
 import { generateRustSnapshot } from './RustSnapshot';
@@ -7,7 +8,7 @@ import { NATIVE_SNAPSHOT_MAX_INPUT_BYTES, nativeSizesAccepted } from './nativeSn
 import { createNativeCircuit, snapshotModulePath } from './nativeCircuit';
 
 type Reference = (req: SnapshotRequest) => Promise<SnapshotOutcome>;
-type Reason = 'native' | 'error' | 'budget' | 'unsupported' | 'limits' | 'state' | 'circuit-open';
+type Reason = 'native' | 'error' | 'budget' | 'unsupported' | 'limits' | 'state' | 'circuit-open' | 'alloc-failed';
 interface Diagnostics {
   /** Each native try by its outcome (native, a refusal family, margins, budget, error), counted when it settles: the refusal rates. Skips are not tries. */
   tried: SnapshotReasons;
@@ -111,15 +112,22 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
       }
       refusal = native.detail;
       families = native.families;
-      if (native.reason === 'budget') failure = 'budget';
+      // A refused allocation (told by its code, never by the text of `detail`)
+      // is this session's memory, not the module: the circuit is daemon-wide
+      // and would turn every session to xterm (#3440).
+      if (native.allocFailed) failure = 'alloc-failed';
+      else if (native.reason === 'budget') failure = 'budget';
       // The native terminal refuses a stream or grid it cannot replay as
       // xterm would (a divergent control, a reflow, the history cap): the
       // module is sound.
       else if (native.detail?.startsWith('unsupported-state')) failure = 'state';
       else if (native.detail?.startsWith('unsupported-')) failure = 'unsupported';
     }
-  } catch { /* Module or disposal errors also use the intact xterm input. */ }
-  // A refusal or a budget run-out means the module worked; only an error opens (or reopens) the circuit.
+  } catch (error) {
+    // Module or disposal errors also use the intact xterm input.
+    if (isNativeAllocFailure(error)) failure = 'alloc-failed';
+  }
+  // A refusal, a refused allocation or a budget run-out means the module worked; only an error opens (or reopens) the circuit.
   circuit.settle(ticket, failure !== 'error', performance.now());
   const counted = failure === 'state' || failure === 'unsupported' ? refusalFamily(refusal, failure) : failure;
   countReason(diagnostics.reasons, counted);

@@ -9,6 +9,15 @@
 
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
 use super::unreadable_process;
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+use crate::fallible::{self, AllocFailed, CallError};
+
+/// The sockets found: one per listening socket a process holds.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+const SOCKETS: &str = "the listening sockets";
+/// A pid's descriptor list (macOS) or its descriptor links (Linux).
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+const FD_LIST: &str = "a process's descriptor list";
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use super::ProcessRow;
 
@@ -68,31 +77,32 @@ pub(super) fn fd_info_result(got: i32, errno: i32) -> Result<(), i32> {
 /// bytes and doubles while an answer fills it (the list may have grown
 /// since its size was asked), up to 1 MiB. `read` returns (bytes, errno);
 /// 0 bytes with errno 0 is an empty list. A list that still fills 1 MiB is
-/// ENOMEM rather than a list cut short.
+/// ENOMEM rather than a list cut short. The outer error is a refused
+/// buffer; the inner one an errno.
 #[cfg(any(target_os = "macos", test))]
 pub(super) fn read_growing(
     start: usize,
     mut read: impl FnMut(&mut [u8]) -> (i32, i32),
-) -> Result<Vec<u8>, i32> {
+) -> Result<Result<Vec<u8>, i32>, AllocFailed> {
     const CAP: usize = 1 << 20;
     let mut len = start.max(64);
     loop {
-        let mut buf = vec![0u8; len];
+        let mut buf: Vec<u8> = fallible::try_zeroed(len, FD_LIST)?;
         let (got, errno) = read(&mut buf);
         if got <= 0 {
-            return if errno == 0 {
+            return Ok(if errno == 0 {
                 Ok(Vec::new())
             } else {
                 Err(errno)
-            };
+            });
         }
         let got = got as usize;
         if got < buf.len() {
             buf.truncate(got);
-            return Ok(buf);
+            return Ok(Ok(buf));
         }
         if len >= CAP {
-            return Err(fdinfo::ENOMEM);
+            return Ok(Err(fdinfo::ENOMEM));
         }
         len = (len * 2).min(CAP);
     }
@@ -139,17 +149,47 @@ pub(super) fn parse_socket_fdinfo(buf: &[u8]) -> Option<(u16, String, u8)> {
 /// processes PROC_PIDLISTFDS answers for, as lsof run as this user lists.
 /// Root reads every process.
 #[cfg(any(target_os = "macos", test))]
-pub(super) fn owned_by(walked: &[(super::ProcessRow, u32)], uid: u32) -> Vec<u32> {
-    walked
-        .iter()
-        .filter(|(_, owner)| uid == 0 || *owner == uid)
-        .map(|(row, _)| row.pid)
-        .collect()
+pub(super) fn owned_by(
+    walked: &[(super::ProcessRow, u32)],
+    uid: u32,
+) -> Result<Vec<u32>, AllocFailed> {
+    let owned = |(_, owner): &&(super::ProcessRow, u32)| uid == 0 || *owner == uid;
+    // Reserved for the matching pids only, counted first.
+    let mut pids = fallible::try_with_capacity(walked.iter().filter(owned).count(), super::ROWS)?;
+    pids.extend(walked.iter().filter(owned).map(|(row, _)| row.pid));
+    Ok(pids)
+}
+
+/// `proc_fdinfo`'s type for a socket.
+#[cfg(any(target_os = "macos", test))]
+const PROX_FDTYPE_SOCKET: u32 = 2;
+/// `struct proc_fdinfo`: fd, then its type.
+#[cfg(any(target_os = "macos", test))]
+const FDINFO_SIZE: usize = 8;
+
+/// The socket descriptors in a PROC_PIDLISTFDS list, reserved for the
+/// sockets only, counted first: a process may hold thousands of other
+/// descriptors.
+#[cfg(any(target_os = "macos", test))]
+fn socket_descriptors(list: &[u8]) -> Result<Vec<std::ffi::c_int>, AllocFailed> {
+    let entries = list.as_chunks::<FDINFO_SIZE>().0;
+    let socket = |e: &&[u8; FDINFO_SIZE]| {
+        u32::from_ne_bytes(e[4..8].try_into().unwrap()) == PROX_FDTYPE_SOCKET
+    };
+    let mut fds = fallible::try_with_capacity(entries.iter().filter(socket).count(), FD_LIST)?;
+    fds.extend(
+        entries
+            .iter()
+            .filter(socket)
+            .map(|e| std::ffi::c_int::from_ne_bytes(e[0..4].try_into().unwrap())),
+    );
+    Ok(fds)
 }
 
 /// The listening sockets of `pids` (macOS), read with `socket_fds` (the
 /// socket descriptors of a pid) and `fd_info` (one PROC_PIDFDSOCKETINFO into
-/// the buffer). Errors are errno values. A pid that cannot be read
+/// the buffer). Errors are errno values, and `socket_fds`'s outer error a
+/// refused buffer, which fails the call. A pid that cannot be read
 /// contributes nothing; a descriptor closed since the listing (EBADF), or
 /// reused for something that is no socket (ENOTSOCK), is skipped; any other
 /// errno, or a record of another size (SHORT_RECORD), fails the call. One
@@ -157,22 +197,27 @@ pub(super) fn owned_by(walked: &[(super::ProcessRow, u32)], uid: u32) -> Vec<u32
 #[cfg(any(target_os = "macos", test))]
 pub(super) fn collect_macos(
     pids: impl IntoIterator<Item = u32>,
-    mut socket_fds: impl FnMut(u32) -> Result<Vec<i32>, i32>,
+    mut socket_fds: impl FnMut(u32) -> Result<Result<Vec<i32>, i32>, AllocFailed>,
     mut fd_info: impl FnMut(u32, i32, &mut [u8]) -> Result<(), i32>,
-) -> Result<Vec<ListenSocket>, String> {
+) -> Result<Vec<ListenSocket>, CallError> {
     let mut out = Vec::new();
     let mut buf = [0u8; fdinfo::SIZE];
     for pid in pids {
-        let fds = match socket_fds(pid) {
+        let fds = match socket_fds(pid)? {
             Ok(fds) => fds,
             Err(e) if unreadable_process(e) => continue,
-            Err(e) => return Err(format!("PROC_PIDLISTFDS of {pid} failed (errno {e})")),
+            Err(e) => {
+                return Err(CallError::reason(format!(
+                    "PROC_PIDLISTFDS of {pid} failed (errno {e})"
+                )))
+            }
         };
         let kept = out.len();
         for fd in fds {
             match fd_info(pid, fd, &mut buf) {
                 Ok(()) => {
                     if let Some((port, address, family)) = parse_socket_fdinfo(&buf) {
+                        fallible::try_reserve(&mut out, 1, SOCKETS)?;
                         out.push(ListenSocket {
                             pid,
                             port,
@@ -183,18 +228,18 @@ pub(super) fn collect_macos(
                 }
                 Err(fdinfo::EBADF | fdinfo::ENOTSOCK) => {}
                 Err(fdinfo::SHORT_RECORD) => {
-                    return Err(format!(
+                    return Err(CallError::reason(format!(
                         "PROC_PIDFDSOCKETINFO of {pid}/{fd} answered a record of another size"
-                    ))
+                    )))
                 }
                 Err(e) if unreadable_process(e) => {
                     out.truncate(kept);
                     break;
                 }
                 Err(e) => {
-                    return Err(format!(
+                    return Err(CallError::reason(format!(
                         "PROC_PIDFDSOCKETINFO of {pid}/{fd} failed (errno {e})"
-                    ))
+                    )))
                 }
             }
         }
@@ -205,48 +250,67 @@ pub(super) fn collect_macos(
 /// The listening sockets of `/proc/net/tcp` or `tcp6` (state 0A), as
 /// (inode, port, address, family). Each address word is printed in host
 /// byte order. A tcp6 socket bound to a v4-mapped address is IPv4, with the
-/// dotted address lsof prints for it (as on macOS).
+/// dotted address lsof prints for it (as on macOS). A line is read in
+/// place: only the sockets found are allocated.
 #[cfg(any(target_os = "linux", test))]
-pub(super) fn parse_net_tcp(text: &str, family: u8) -> Vec<(u64, u16, String, u8)> {
+pub(super) fn parse_net_tcp(
+    text: &str,
+    family: u8,
+) -> Result<Vec<(u64, u16, String, u8)>, AllocFailed> {
     let mut out = Vec::new();
     for line in text.lines().skip(1) {
-        let fields: Vec<&str> = line.split_ascii_whitespace().collect();
-        if fields.len() < 10 || fields[3] != "0A" {
+        // sl, local_address, rem_address, st, then inode as the 10th field.
+        let mut fields = line.split_ascii_whitespace();
+        let (Some(_), Some(local), Some(_), Some(state), Some(inode)) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.nth(5),
+        ) else {
+            continue;
+        };
+        if state != "0A" {
             continue;
         }
-        let Some((addr, port)) = fields[1].split_once(':') else {
+        let Some((addr, port)) = local.split_once(':') else {
             continue;
         };
-        let (Ok(port), Ok(inode)) = (u16::from_str_radix(port, 16), fields[9].parse::<u64>())
-        else {
+        let (Ok(port), Ok(inode)) = (u16::from_str_radix(port, 16), inode.parse::<u64>()) else {
             continue;
         };
-        let words: Option<Vec<u32>> = (0..addr.len() / 8)
-            .map(|i| u32::from_str_radix(&addr[i * 8..i * 8 + 8], 16).ok())
-            .collect();
-        let Some(words) = words else {
+        // One 32-bit word for tcp, four for tcp6.
+        let words = addr.len() / 8;
+        if (family, words) != (4, 1) && (family, words) != (6, 4) {
             continue;
-        };
-        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
-        let (address, family) = match (family, bytes.len()) {
-            (4, 4) => {
-                let v4 = std::net::Ipv4Addr::from(<[u8; 4]>::try_from(bytes).unwrap());
-                (v4.to_string(), 4)
+        }
+        let mut bytes = [0u8; 16];
+        let parsed = (0..words).all(|i| match u32::from_str_radix(&addr[i * 8..i * 8 + 8], 16) {
+            Ok(word) => {
+                bytes[i * 4..i * 4 + 4].copy_from_slice(&word.to_ne_bytes());
+                true
             }
-            (6, 16) => {
-                let v6 = std::net::Ipv6Addr::from(<[u8; 16]>::try_from(bytes).unwrap());
-                match v6.to_ipv4_mapped() {
-                    Some(v4) => (v4.to_string(), 4),
-                    None => (v6.to_string(), 6),
-                }
+            Err(_) => false,
+        });
+        if !parsed {
+            continue;
+        }
+        let (address, family) = if family == 4 {
+            let v4 = std::net::Ipv4Addr::from(<[u8; 4]>::try_from(&bytes[..4]).unwrap());
+            (v4.to_string(), 4)
+        } else {
+            let v6 = std::net::Ipv6Addr::from(bytes);
+            match v6.to_ipv4_mapped() {
+                Some(v4) => (v4.to_string(), 4),
+                None => (v6.to_string(), 6),
             }
-            _ => continue,
         };
         if inode != 0 {
+            fallible::try_reserve(&mut out, 1, SOCKETS)?;
             out.push((inode, port, address, family));
         }
     }
-    out
+    Ok(out)
 }
 
 /// The inode of a `/proc/<pid>/fd/<n>` link to a socket (`socket:[1234]`).
@@ -259,25 +323,30 @@ pub(super) fn socket_inode(link: &str) -> Option<u64> {
 }
 
 /// The listening sockets of `pids` (Linux): `fd_links` lists a pid's
-/// descriptor links, each read on its own. A pid that cannot be read
-/// contributes nothing; a descriptor closed since the listing (ENOENT) is
-/// skipped; any other failure fails the call.
+/// descriptor links, each read on its own (its outer error is a refused
+/// buffer, which fails the call). A pid that cannot be read contributes
+/// nothing; a descriptor closed since the listing (ENOENT) is skipped; any
+/// other failure fails the call.
 #[cfg(any(target_os = "linux", test))]
 pub(super) fn collect_linux(
     pids: impl IntoIterator<Item = u32>,
     listening: &std::collections::HashMap<u64, (u16, String, u8)>,
-    mut fd_links: impl FnMut(u32) -> std::io::Result<Vec<std::io::Result<String>>>,
-) -> Result<Vec<ListenSocket>, String> {
+    mut fd_links: impl FnMut(u32) -> Result<std::io::Result<Vec<std::io::Result<String>>>, AllocFailed>,
+) -> Result<Vec<ListenSocket>, CallError> {
     let unreadable = |e: &std::io::Error| e.raw_os_error().is_some_and(unreadable_process);
     let mut out = Vec::new();
     if listening.is_empty() {
         return Ok(out);
     }
     for pid in pids {
-        let links = match fd_links(pid) {
+        let links = match fd_links(pid)? {
             Ok(links) => links,
             Err(e) if unreadable(&e) => continue,
-            Err(e) => return Err(format!("read /proc/{pid}/fd failed ({e})")),
+            Err(e) => {
+                return Err(CallError::reason(format!(
+                    "read /proc/{pid}/fd failed ({e})"
+                )))
+            }
         };
         let kept = out.len();
         for link in links {
@@ -286,6 +355,7 @@ pub(super) fn collect_linux(
                     if let Some((port, address, family)) =
                         socket_inode(&link).and_then(|inode| listening.get(&inode))
                     {
+                        fallible::try_reserve(&mut out, 1, SOCKETS)?;
                         out.push(ListenSocket {
                             pid,
                             port: *port,
@@ -300,7 +370,11 @@ pub(super) fn collect_linux(
                     out.truncate(kept);
                     break;
                 }
-                Err(e) => return Err(format!("read a /proc/{pid}/fd link failed ({e})")),
+                Err(e) => {
+                    return Err(CallError::reason(format!(
+                        "read a /proc/{pid}/fd link failed ({e})"
+                    )))
+                }
             }
         }
     }
@@ -312,14 +386,15 @@ pub use macos_sys::port_snapshot;
 
 #[cfg(target_os = "macos")]
 mod macos_sys {
-    use super::{collect_macos, fd_info_result, fdinfo, owned_by, read_growing, PortSnapshot};
+    use super::{
+        collect_macos, fd_info_result, fdinfo, owned_by, read_growing, socket_descriptors,
+        PortSnapshot, FDINFO_SIZE,
+    };
+    use crate::fallible::{self, AllocFailed, CallError};
     use std::ffi::{c_int, c_void};
 
     const PROC_PIDLISTFDS: c_int = 1;
     const PROC_PIDFDSOCKETINFO: c_int = 3;
-    const PROX_FDTYPE_SOCKET: u32 = 2;
-    /// `struct proc_fdinfo`: fd, then its type.
-    const FDINFO_SIZE: usize = 8;
 
     extern "C" {
         fn proc_pidinfo(
@@ -350,31 +425,29 @@ mod macos_sys {
         (got, unsafe { *__error() })
     }
 
-    /// The socket descriptors of `pid`, or the errno that refused them.
-    fn socket_fds(pid: c_int) -> Result<Vec<c_int>, i32> {
+    /// The socket descriptors of `pid`, or the errno that refused them; the
+    /// outer error is a refused buffer.
+    fn socket_fds(pid: c_int) -> Result<Result<Vec<c_int>, i32>, AllocFailed> {
         // SAFETY: a null buffer asks only for the size.
         let (needed, errno) =
             call(|| unsafe { proc_pidinfo(pid, PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0) });
         if needed <= 0 {
-            return if errno == 0 {
+            return Ok(if errno == 0 {
                 Ok(Vec::new())
             } else {
                 Err(errno)
-            };
+            });
         }
         // Headroom for descriptors opened since the size query.
-        let list = read_growing(needed as usize + 32 * FDINFO_SIZE, |buf| {
+        let list = match read_growing(needed as usize + 32 * FDINFO_SIZE, |buf| {
             let len = buf.len() as c_int;
             // SAFETY: the buffer is `len` bytes and writable.
             call(|| unsafe { proc_pidinfo(pid, PROC_PIDLISTFDS, 0, buf.as_mut_ptr().cast(), len) })
-        })?;
-        Ok(list
-            .as_chunks::<FDINFO_SIZE>()
-            .0
-            .iter()
-            .filter(|e| u32::from_ne_bytes(e[4..8].try_into().unwrap()) == PROX_FDTYPE_SOCKET)
-            .map(|e| c_int::from_ne_bytes(e[0..4].try_into().unwrap()))
-            .collect())
+        })? {
+            Ok(list) => list,
+            Err(errno) => return Ok(Err(errno)),
+        };
+        Ok(Ok(socket_descriptors(&list)?))
     }
 
     fn fd_info(pid: c_int, fd: c_int, buf: &mut [u8]) -> Result<(), i32> {
@@ -388,20 +461,19 @@ mod macos_sys {
 
     /// The walk, and the listening sockets of this user's processes (the
     /// only ones PROC_PIDLISTFDS answers for), from one KERN_PROC_ALL read.
-    pub fn port_snapshot() -> Result<PortSnapshot, String> {
+    pub fn port_snapshot() -> Result<PortSnapshot, CallError> {
         let walked = super::super::macos::walk()?;
         // SAFETY: geteuid has no preconditions.
         let me = unsafe { geteuid() };
-        let mine = owned_by(&walked, me);
+        let mine = owned_by(&walked, me)?;
         let sockets = collect_macos(
             mine,
             |pid| socket_fds(pid as c_int),
             |pid, fd, buf| fd_info(pid as c_int, fd, buf),
         )?;
-        Ok(PortSnapshot {
-            processes: walked.into_iter().map(|(row, _)| row).collect(),
-            sockets,
-        })
+        let mut processes = fallible::try_with_capacity(walked.len(), super::super::ROWS)?;
+        processes.extend(walked.into_iter().map(|(row, _)| row));
+        Ok(PortSnapshot { processes, sockets })
     }
 }
 
@@ -410,33 +482,50 @@ pub use linux_sys::port_snapshot;
 
 #[cfg(target_os = "linux")]
 mod linux_sys {
-    use super::{collect_linux, parse_net_tcp, PortSnapshot};
+    use super::{collect_linux, parse_net_tcp, PortSnapshot, FD_LIST};
+    use crate::fallible::{self, AllocFailed, CallError};
     use std::collections::HashMap;
 
-    fn fd_links(pid: u32) -> std::io::Result<Vec<std::io::Result<String>>> {
-        Ok(std::fs::read_dir(format!("/proc/{pid}/fd"))?
-            .map(|entry| {
-                let link = std::fs::read_link(entry?.path())?;
-                Ok(link.to_string_lossy().into_owned())
-            })
-            .collect())
+    /// A kernel socket table (`/proc/net/tcp`, `tcp6`): a line per socket.
+    const NET_TCP: &str = "a /proc/net/tcp table";
+    /// The listening sockets by inode.
+    const LISTENING: &str = "the listening sockets by inode";
+
+    /// A pid's descriptor links, one per descriptor (each a row's own short
+    /// string); the outer error is a refused list.
+    fn fd_links(pid: u32) -> Result<std::io::Result<Vec<std::io::Result<String>>>, AllocFailed> {
+        let entries = match std::fs::read_dir(format!("/proc/{pid}/fd")) {
+            Ok(entries) => entries,
+            Err(e) => return Ok(Err(e)),
+        };
+        let mut links = Vec::new();
+        for entry in entries {
+            let link = entry
+                .and_then(|entry| std::fs::read_link(entry.path()))
+                .map(|link| link.to_string_lossy().into_owned());
+            fallible::try_reserve(&mut links, 1, FD_LIST)?;
+            links.push(link);
+        }
+        Ok(Ok(links))
     }
 
     /// The walk, and the listening sockets of the processes this user can
     /// read: the kernel's socket tables, joined to pids through
     /// `/proc/<pid>/fd`, over one `/proc` listing.
-    pub fn port_snapshot() -> Result<PortSnapshot, String> {
+    pub fn port_snapshot() -> Result<PortSnapshot, CallError> {
         let mut listening: HashMap<u64, (u16, String, u8)> = HashMap::new();
         for (file, family) in [("/proc/net/tcp", 4), ("/proc/net/tcp6", 6)] {
-            match std::fs::read_to_string(file) {
-                Ok(text) => {
-                    for (inode, port, address, family) in parse_net_tcp(&text, family) {
-                        listening.insert(inode, (port, address, family));
-                    }
-                }
+            let text = match super::super::read_file(std::path::Path::new(file), NET_TCP)? {
+                // As read_to_string reads it: the kernel writes ASCII.
+                Ok(bytes) => String::from_utf8(bytes)
+                    .map_err(|_| CallError::reason(format!("read {file} failed (not UTF-8)")))?,
                 // No IPv6 in this kernel.
-                Err(e) if family == 6 && e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(format!("read {file} failed ({e})")),
+                Err(e) if family == 6 && e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(CallError::reason(format!("read {file} failed ({e})"))),
+            };
+            for (inode, port, address, family) in parse_net_tcp(&text, family)? {
+                fallible::try_reserve_map(&mut listening, 1, LISTENING)?;
+                listening.insert(inode, (port, address, family));
             }
         }
         let processes = super::super::linux::walk(
@@ -523,12 +612,14 @@ mod tests {
         // pid 1: another user's (EPERM); 2: exited (ESRCH); 3: fd 5 closed
         // since the listing (EBADF), fd 6 a listener; 4: exits mid-read, so
         // its earlier rows go too; 5: a listener.
-        let fds = |pid: u32| match pid {
-            1 => Err(1),
-            2 => Err(3),
-            3 => Ok(vec![5, 6]),
-            4 => Ok(vec![7, 8]),
-            _ => Ok(vec![9]),
+        let fds = |pid: u32| {
+            Ok(match pid {
+                1 => Err(1),
+                2 => Err(3),
+                3 => Ok(vec![5, 6]),
+                4 => Ok(vec![7, 8]),
+                _ => Ok(vec![9]),
+            })
         };
         let info = |pid: u32, fd: i32, buf: &mut [u8]| match (pid, fd) {
             (3, 5) => Err(9),
@@ -555,9 +646,38 @@ mod tests {
             cmdline: None,
         };
         let walked = [(row(1), 0), (row(2), 501), (row(3), 502), (row(4), 501)];
-        assert_eq!(owned_by(&walked, 501), vec![2, 4]);
+        assert_eq!(owned_by(&walked, 501), Ok(vec![2, 4]));
         // Root reads every process.
-        assert_eq!(owned_by(&walked, 0), vec![1, 2, 3, 4]);
+        assert_eq!(owned_by(&walked, 0), Ok(vec![1, 2, 3, 4]));
+    }
+
+    /// Room is reserved for the matching pids and the socket descriptors
+    /// only: one owned pid among many, or one socket among many descriptors,
+    /// still fits when the full count would be refused.
+    #[test]
+    fn only_matching_pids_and_socket_descriptors_are_reserved() {
+        let row = |pid| crate::process_table::ProcessRow {
+            pid,
+            ppid: 1,
+            name: "x".into(),
+            created: None,
+            cmdline: None,
+        };
+        let walked: Vec<_> = (1..=1000)
+            .map(|pid| (row(pid), if pid == 7 { 501 } else { 502 }))
+            .collect();
+        // This thread's spare first: on macOS its first use registers a
+        // thread-local destructor, which allocates.
+        crate::fallible::refill_spare();
+        let owned = crate::test_allocator::refusing(64, || owned_by(&walked, 501));
+        assert_eq!(owned, Ok(vec![7]));
+        let mut list = Vec::new();
+        for fd in 0..1000i32 {
+            list.extend_from_slice(&fd.to_ne_bytes());
+            list.extend_from_slice(&(if fd == 42 { PROX_FDTYPE_SOCKET } else { 1 }).to_ne_bytes());
+        }
+        let sockets = crate::test_allocator::refusing(64, || socket_descriptors(&list));
+        assert_eq!(sockets, Ok(vec![42]));
     }
 
     #[test]
@@ -570,7 +690,7 @@ mod tests {
             buf.copy_from_slice(&listener(1000 + fd as u16));
             Ok(())
         };
-        let rows = collect_macos([1], |_| Ok(vec![5, 6]), info).expect("collect");
+        let rows = collect_macos([1], |_| Ok(Ok(vec![5, 6])), info).expect("collect");
         assert_eq!(rows.iter().map(|r| r.port).collect::<Vec<_>>(), vec![1006]);
     }
 
@@ -582,7 +702,7 @@ mod tests {
         assert_eq!(fd_info_result(0, 9), Err(9));
         assert_eq!(fd_info_result(600, 0), Err(fdinfo::SHORT_RECORD));
         assert_eq!(fd_info_result(0, 0), Err(fdinfo::SHORT_RECORD));
-        let rows = collect_macos([1], |_| Ok(vec![3]), |_, _, _| fd_info_result(600, 0));
+        let rows = collect_macos([1], |_| Ok(Ok(vec![3])), |_, _, _| fd_info_result(600, 0));
         assert!(rows.is_err());
     }
 
@@ -594,23 +714,118 @@ mod tests {
             sizes.push(buf.len());
             (buf.len().min(100) as i32, 0)
         })
+        .unwrap()
         .expect("list");
         assert_eq!((list.len(), sizes), (100, vec![64, 128]));
-        assert_eq!(read_growing(64, |_| (0, 0)), Ok(Vec::new()));
-        assert_eq!(read_growing(64, |_| (0, 3)), Err(3));
+        assert_eq!(read_growing(64, |_| (0, 0)), Ok(Ok(Vec::new())));
+        assert_eq!(read_growing(64, |_| (0, 3)), Ok(Err(3)));
         // Still full at the cap: an error, never a list cut short.
         assert_eq!(
             read_growing(64, |buf| (buf.len() as i32, 0)),
-            Err(fdinfo::ENOMEM)
+            Ok(Err(fdinfo::ENOMEM))
         );
+    }
+
+    #[test]
+    fn a_refused_socket_buffer_is_a_refusal_not_an_abort() {
+        // The descriptor list grows to 1 MiB: refused, never aborted.
+        let list = crate::test_allocator::refusing(1 << 16, || {
+            read_growing(64, |buf| (buf.len() as i32, 0))
+        });
+        assert_eq!(
+            list,
+            Err(AllocFailed {
+                what: FD_LIST,
+                bytes: 1 << 16
+            })
+        );
+        let refused = AllocFailed {
+            what: FD_LIST,
+            bytes: 64,
+        };
+        let rows = collect_macos([1], |_| Err(refused), |_, _, _| Ok(()));
+        assert_eq!(rows, Err(CallError::Alloc(refused)));
+        let listening = std::collections::HashMap::from([(10, (3000, "::".to_string(), 6))]);
+        assert_eq!(
+            collect_linux([1], &listening, |_| Err(refused)),
+            Err(CallError::Alloc(refused))
+        );
+        // The sockets found, on either OS.
+        let _fail = fallible::fail_what(SOCKETS);
+        let rows = collect_linux([1], &listening, |_| Ok(Ok(vec![Ok("socket:[10]".into())])));
+        assert!(matches!(
+            rows,
+            Err(CallError::Alloc(AllocFailed { what: SOCKETS, .. }))
+        ));
+        let rows = collect_macos(
+            [1],
+            |_| Ok(Ok(vec![3])),
+            |_, _, buf: &mut [u8]| {
+                buf.copy_from_slice(&listener(3000));
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            rows,
+            Err(CallError::Alloc(AllocFailed { what: SOCKETS, .. }))
+        ));
+        let header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+        let tcp = format!(
+            "{header}   0: {}:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 4242 1 0 100 0 0 10 0\n",
+            hex(&[127, 0, 0, 1]),
+        );
+        assert!(matches!(
+            parse_net_tcp(&tcp, 4),
+            Err(AllocFailed { what: SOCKETS, .. })
+        ));
+    }
+
+    #[test]
+    fn a_proc_file_is_read_into_a_fallible_buffer() {
+        // Created here or not at all: a directory that is already there is
+        // not this test's to write into or remove.
+        let dir = std::env::temp_dir().join(format!(
+            "wmux-read-file-{}-{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).expect("a fresh test directory");
+        let path = dir.join("tcp");
+        let text = "x".repeat(20_000);
+        std::fs::write(&path, &text).unwrap();
+        let read = crate::process_table::read_file(&path, "a test file");
+        assert_eq!(read.unwrap().unwrap(), text.as_bytes());
+        // Past the first 8 KiB read, the buffer is refused, never aborted.
+        let refused = crate::test_allocator::refusing(16 * 1024, || {
+            crate::process_table::read_file(&path, "a test file").map(|r| r.map(|d| d.len()))
+        });
+        assert!(
+            matches!(
+                refused,
+                Err(AllocFailed {
+                    what: "a test file",
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+        let missing = crate::process_table::read_file(&dir.join("none"), "a test file");
+        assert_eq!(
+            missing.unwrap().unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn macos_any_other_errno_fails() {
         for errno in [5, 12, 22] {
             // EIO, ENOMEM, EINVAL on the listing, then on one descriptor.
-            assert!(collect_macos([1], |_| Err(errno), |_, _, _| Ok(())).is_err());
-            assert!(collect_macos([1], |_| Ok(vec![3]), |_, _, _| Err(errno)).is_err());
+            assert!(collect_macos([1], |_| Ok(Err(errno)), |_, _, _| Ok(())).is_err());
+            assert!(collect_macos([1], |_| Ok(Ok(vec![3])), |_, _, _| Err(errno)).is_err());
         }
     }
 
@@ -633,7 +848,7 @@ mod tests {
         );
         assert_eq!(
             parse_net_tcp(&tcp, 4),
-            vec![(4242, 8080, "127.0.0.1".into(), 4)]
+            Ok(vec![(4242, 8080, "127.0.0.1".into(), 4)])
         );
         let tcp6 = |local: [u8; 16]| {
             format!(
@@ -644,12 +859,20 @@ mod tests {
         };
         assert_eq!(
             parse_net_tcp(&tcp6([0; 16]), 6),
-            vec![(99, 3000, "::".into(), 6)]
+            Ok(vec![(99, 3000, "::".into(), 6)])
         );
         let mut loopback = [0u8; 16];
         loopback[15] = 1;
-        assert_eq!(parse_net_tcp(&tcp6(loopback), 6)[0].2, "::1");
-        assert!(parse_net_tcp("header only\n", 4).is_empty());
+        assert_eq!(parse_net_tcp(&tcp6(loopback), 6).unwrap()[0].2, "::1");
+        assert!(parse_net_tcp("header only\n", 4).unwrap().is_empty());
+        // The wrong family's line, or a field short, is no listener.
+        assert!(parse_net_tcp(&tcp, 6).unwrap().is_empty());
+        assert!(parse_net_tcp(&tcp6([0; 16]), 4).unwrap().is_empty());
+        let short = format!(
+            "{header}   0: {}:1F90 00000000:0000 0A 0 0 0\n",
+            hex(&[127, 0, 0, 1])
+        );
+        assert!(parse_net_tcp(&short, 4).unwrap().is_empty());
     }
 
     /// The lines Linux (x86_64, aarch64: little-endian) writes for listeners
@@ -665,16 +888,16 @@ mod tests {
            2: 00000000000000000000000000000000:A1B5 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1001        0 31004 1 0000000000000000 100 0 0 10 0\n";
         assert_eq!(
             parse_net_tcp(tcp, 4),
-            vec![(31001, 0xA1B2, "127.0.0.1".into(), 4)]
+            Ok(vec![(31001, 0xA1B2, "127.0.0.1".into(), 4)])
         );
         assert_eq!(
             parse_net_tcp(tcp6, 6),
-            vec![
+            Ok(vec![
                 // lsof prints a v4-mapped address dotted, without brackets.
                 (31002, 0xA1B3, "127.0.0.1".into(), 4),
                 (31003, 0xA1B4, "::1".into(), 6),
                 (31004, 0xA1B5, "::".into(), 6),
-            ]
+            ])
         );
     }
 
@@ -695,8 +918,9 @@ mod tests {
             (10, (3000, "127.0.0.1".to_string(), 4)),
             (11, (4000, "::".to_string(), 6)),
         ]);
-        let links = |pid: u32| -> std::io::Result<Vec<std::io::Result<String>>> {
-            match pid {
+        type Links = std::io::Result<Vec<std::io::Result<String>>>;
+        let links = |pid: u32| -> Result<Links, AllocFailed> {
+            Ok(match pid {
                 1 => Err(errno(13)), // EACCES: another user's
                 2 => Err(errno(2)),  // ENOENT: exited
                 // fd closed since the listing (ENOENT), then a listener.
@@ -704,7 +928,7 @@ mod tests {
                 // exits mid-read (ESRCH): its earlier rows go too.
                 4 => Ok(vec![Ok("socket:[11]".into()), Err(errno(3))]),
                 _ => Ok(vec![Ok("pipe:[10]".into()), Ok("socket:[11]".into())]),
-            }
+            })
         };
         let rows = collect_linux([1, 2, 3, 4, 5], &listening, links).expect("collect");
         assert_eq!(
@@ -718,15 +942,15 @@ mod tests {
         let listening = std::collections::HashMap::from([(10, (3000, "::".to_string(), 6))]);
         for n in [5, 23, 24] {
             // EIO, ENFILE, EMFILE on the listing, then on one link.
-            assert!(collect_linux([1], &listening, |_| Err(errno(n))).is_err());
-            assert!(collect_linux([1], &listening, |_| Ok(vec![Err(errno(n))])).is_err());
+            assert!(collect_linux([1], &listening, |_| Ok(Err(errno(n)))).is_err());
+            assert!(collect_linux([1], &listening, |_| Ok(Ok(vec![Err(errno(n))]))).is_err());
         }
         // Judged by the Linux errno alone, never by ErrorKind: an error that
         // only says NotFound (Windows maps raw 3, ESRCH on Linux, to it)
         // proves no closed descriptor.
         let kind_only = || std::io::Error::from(std::io::ErrorKind::NotFound);
-        assert!(collect_linux([1], &listening, |_| Ok(vec![Err(kind_only())])).is_err());
-        assert!(collect_linux([1], &listening, |_| Err(kind_only())).is_err());
+        assert!(collect_linux([1], &listening, |_| Ok(Ok(vec![Err(kind_only())]))).is_err());
+        assert!(collect_linux([1], &listening, |_| Ok(Err(kind_only()))).is_err());
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

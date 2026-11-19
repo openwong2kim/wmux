@@ -20,6 +20,7 @@ use crate::selection::{Selection, SelectionRange, SelectionType};
 use crate::term::cell::{Cell, Flags, LineLength};
 use crate::term::color::Colors;
 use crate::vi_mode::{ViModeCursor, ViMotion};
+use crate::wmux_alloc::{self, DAMAGE, TABS, TITLES};
 use crate::vte::ansi::{
     self, Attr, CharsetIndex, Color, CursorShape, CursorStyle, Handler, Hyperlink, KeyboardModes,
     KeyboardModesApplyBehavior, NamedColor, NamedMode, NamedPrivateMode, PrivateMode, Rgb,
@@ -40,6 +41,11 @@ pub const MIN_SCREEN_LINES: usize = 1;
 
 /// Max size of the window title stack.
 const TITLE_STACK_MAX_DEPTH: usize = 4096;
+
+/// wmux: the most bytes of titles the title stack holds (#3440). A title is
+/// an OSC's text, up to 1 MiB in wmux's snapshot terminal: 4096 of them could
+/// hold 4 GiB.
+const TITLE_STACK_MAX_BYTES: usize = 1024 * 1024;
 
 /// Default semantic escape characters.
 pub const SEMANTIC_ESCAPE_CHARS: &str = ",│`|:\"' ()[]{}<>\t";
@@ -227,8 +233,11 @@ struct TermDamageState {
 
 impl TermDamageState {
     fn new(num_cols: usize, num_lines: usize) -> Self {
-        let lines =
-            (0..num_lines).map(|line| LineDamageBounds::undamaged(line, num_cols)).collect();
+        // wmux: reserved fallibly (`wmux_alloc`).
+        let lines = wmux_alloc::collect(
+            (0..num_lines).map(|line| LineDamageBounds::undamaged(line, num_cols)),
+            DAMAGE,
+        );
 
         Self { full: true, lines, last_cursor: Default::default() }
     }
@@ -240,7 +249,7 @@ impl TermDamageState {
         self.full = true;
 
         self.lines.clear();
-        self.lines.reserve(num_lines);
+        wmux_alloc::reserve(&mut self.lines, num_lines, DAMAGE);
         for line in 0..num_lines {
             self.lines.push(LineDamageBounds::undamaged(line, num_cols));
         }
@@ -312,6 +321,10 @@ pub struct Term<T> {
     /// Stack of saved window titles. When a title is popped from this stack, the `title` for the
     /// term is set.
     title_stack: Vec<Option<String>>,
+
+    /// wmux: the bytes of the titles in `title_stack`, at most
+    /// TITLE_STACK_MAX_BYTES.
+    title_stack_bytes: usize,
 
     /// The stack for the keyboard modes.
     keyboard_mode_stack: Vec<KeyboardModes>,
@@ -433,6 +446,7 @@ impl<T> Term<T> {
             cursor_style: Default::default(),
             colors: color::Colors::default(),
             title_stack: Default::default(),
+            title_stack_bytes: 0,
             is_focused: Default::default(),
             selection: Default::default(),
             title: Default::default(),
@@ -2036,6 +2050,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
         self.tabs = TabStops::new(self.columns());
         self.title_stack = Vec::new();
+        self.title_stack_bytes = 0;
         self.title = None;
         self.selection = None;
         self.vi_mode_cursor = Default::default();
@@ -2430,14 +2445,26 @@ impl<T: EventListener> Handler for Term<T> {
     fn push_title(&mut self) {
         trace!("Pushing '{:?}' onto title stack", self.title);
 
-        if self.title_stack.len() >= TITLE_STACK_MAX_DEPTH {
+        // wmux: the bottom titles also go while the stack would pass
+        // TITLE_STACK_MAX_BYTES, and the copy is fallible (#3440).
+        let bytes = title_len(&self.title);
+        while !self.title_stack.is_empty()
+            && (self.title_stack.len() >= TITLE_STACK_MAX_DEPTH
+                || self.title_stack_bytes + bytes > TITLE_STACK_MAX_BYTES)
+        {
             let removed = self.title_stack.remove(0);
+            self.title_stack_bytes = self.title_stack_bytes.saturating_sub(title_len(&removed));
             trace!(
                 "Removing '{removed:?}' from bottom of title stack that exceeds its maximum depth"
             );
         }
+        if self.title_stack.is_empty() {
+            self.title_stack_bytes = 0;
+        }
 
-        self.title_stack.push(self.title.clone());
+        let title = self.title.as_deref().map(|title| wmux_alloc::copy_str(title, TITLES));
+        wmux_alloc::push(&mut self.title_stack, title, TITLES);
+        self.title_stack_bytes += bytes;
     }
 
     #[inline]
@@ -2445,6 +2472,7 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Attempting to pop title from stack...");
 
         if let Some(popped) = self.title_stack.pop() {
+            self.title_stack_bytes = self.title_stack_bytes.saturating_sub(title_len(&popped));
             trace!("Title '{popped:?}' popped from stack");
             self.set_title(popped);
         }
@@ -2599,6 +2627,11 @@ fn replace_cells(cells: &mut [Cell], start: usize, end: usize, fill: impl Fn() -
     }
 }
 
+/// wmux: a title's bytes on the title stack.
+fn title_len(title: &Option<String>) -> usize {
+    title.as_ref().map_or(0, String::len)
+}
+
 /// Terminal version for escape sequence reports.
 ///
 /// This returns the current terminal version as a unique number based on alacritty_terminal's
@@ -2633,7 +2666,9 @@ struct TabStops {
 impl TabStops {
     #[inline]
     fn new(columns: usize) -> TabStops {
-        TabStops { tabs: (0..columns).map(|i| i % INITIAL_TABSTOPS == 0).collect() }
+        // wmux: reserved fallibly (`wmux_alloc`).
+        let tabs = (0..columns).map(|i| i % INITIAL_TABSTOPS == 0);
+        TabStops { tabs: wmux_alloc::collect(tabs, TABS) }
     }
 
     /// Remove all tabstops.
@@ -2648,11 +2683,12 @@ impl TabStops {
     #[inline]
     fn resize(&mut self, columns: usize) {
         let mut index = self.tabs.len();
-        self.tabs.resize_with(columns, || {
+        let fill = || {
             let is_tabstop = index % INITIAL_TABSTOPS == 0;
             index += 1;
             is_tabstop
-        });
+        };
+        wmux_alloc::resize_with(&mut self.tabs, columns, fill, TABS);
     }
 }
 
@@ -3581,6 +3617,27 @@ mod tests {
             term.push_title();
         }
         assert_eq!(term.title_stack.len(), 4096);
+
+        // wmux: nor past TITLE_STACK_MAX_BYTES of titles.
+        term.reset_state();
+        let long = "t".repeat(400 * 1024);
+        term.set_title(Some(long.clone()));
+        for _ in 0..4097 {
+            term.push_title();
+        }
+        assert_eq!(term.title_stack.len(), 2, "two of 400 KiB fit in 1 MiB");
+        assert_eq!(term.title_stack_bytes, 800 * 1024);
+        term.set_title(Some("short".into()));
+        term.push_title();
+        assert_eq!(term.title_stack.len(), 3);
+        term.set_title(Some(long));
+        term.push_title();
+        assert_eq!(term.title_stack.len(), 3, "the bottom title went");
+        assert_eq!(term.title_stack_bytes, 800 * 1024 + 5);
+        term.pop_title();
+        term.pop_title();
+        assert_eq!(term.title, Some("short".into()));
+        assert_eq!(term.title_stack_bytes, 400 * 1024);
 
         // Title and title stack reset when terminal state is reset.
         term.push_title();

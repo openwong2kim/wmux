@@ -8,6 +8,7 @@ import type { RingBuffer, ReplayGeometry } from './RingBuffer';
 import type { OutputModeTracker } from './util/outputModeTracker';
 import { readRingTailWithModesAndGeometry, readRingWithModesAndGeometry } from './sessionTextReplay';
 import { enqueueSnapshotJob, generateSnapshotUnqueued, runSmallSnapshotJob, MAX_SCROLLBACK } from './HeadlessSnapshot';
+import { createNativeAllocReporter, isNativeAllocFailure } from '../shared/nativeTerminalCore';
 import {
   createSessionPipeMarkers,
   type SessionPipeMarkers,
@@ -109,6 +110,7 @@ export class SessionPipe {
   private replayEnd = 0;
   private connectionRate = { count: 0, resetAt: 0 };
   private readonly markers: SessionPipeMarkers;
+  private readonly reportAllocFailure = createNativeAllocReporter('session-pipe', () => this.sessionId);
 
   /**
    * Fired when the AUTHED client socket goes away (close or error) without a
@@ -354,6 +356,42 @@ export class SessionPipe {
     return readRingWithModesAndGeometry(this.ringBuffer, this.getOutputModes?.() ?? null);
   }
 
+  /**
+   * readRing(), or null when the native ring refused the allocation of its
+   * copy (isNativeAllocFailure; logged, rate-limited). The caller then replays
+   * what it already holds, or nothing, and still ends with the flush-done
+   * marker: the client goes live with less history instead of waiting for a
+   * replay that never comes. Any other error propagates as before.
+   */
+  private tryReadRing(what: string): ReturnType<typeof readRingWithModesAndGeometry> | null {
+    try {
+      return this.readRing();
+    } catch (error) {
+      if (!isNativeAllocFailure(error)) throw error;
+      this.reportAllocFailure(error, `${what}: ring not read`);
+      return null;
+    }
+  }
+
+  /**
+   * A replay could not re-read the ring (a refused allocation), so output
+   * the client lacks was not replayed: what arrived during the attach flush's
+   * parse or since a re-flush's T0, or what a pipe that was behind never
+   * wrote. Pause live output and
+   * ask for a re-flush, exactly as for a client that fell behind: the
+   * re-flush repaints the client from the ring, which holds those bytes, so
+   * nothing is lost. Call once the replay is done.
+   */
+  private reflushForUnreplayedOutput(socket: net.Socket, what: string): void {
+    this.behind = true;
+    this.behindAsks = 0;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[SessionPipe] sessionId=${this.sessionId} ${what}: output not replayed; live output paused until a re-flush`,
+    );
+    this.requestResync(socket);
+  }
+
   private async flushRingBuffer(socket: net.Socket): Promise<void> {
     // Waiting attaches retain only the ring, not a second full history copy.
     // Keep small rings off the queue so interactive shells do not wait behind
@@ -394,7 +432,28 @@ export class SessionPipe {
   private async flushRingBufferInSlot(socket: net.Socket): Promise<void> {
     // A queued attach may have disappeared or been replaced while waiting.
     if (socket.destroyed || this.client !== socket) return;
-    const { raw: buffered, replay, geometry, writtenAt: writtenBefore } = this.readRing();
+    const read = this.tryReadRing('attach flush');
+    if (!read) {
+      // No history to replay: go live on what arrives from here on, in the
+      // modes the stream is in (an alternate screen, bracketed paste), since
+      // the client sees none of the bytes that set them.
+      let lead = '';
+      try {
+        lead = this.getOutputModes?.()?.preamble(this.ringBuffer.totalBytesWritten) ?? '';
+      } catch (error) {
+        if (!isNativeAllocFailure(error)) throw error;
+      }
+      if (lead) this.writeOutput(socket, Buffer.from(lead, 'utf8'));
+      this.writeOutput(socket, this.markers.flushDone);
+      this.replayDone();
+      return;
+    }
+    const { raw: buffered, replay, geometry, writtenAt: writtenBefore } = read;
+    // A clear() during the parse restarts the ring's history without moving
+    // the lifetime counter: the bytes the read held are gone (#3440).
+    const clearsBefore = this.ringBuffer.clearGeneration;
+    const historyChanged = (since: number) =>
+      this.ringBuffer.clearGeneration !== since;
     // Instrumentation for #35 (scrollback-empty-after-restart). Pairs
     // with `[recovery] session X bytes=N` on daemon startup and
     // `Suspended session X (buffer: N bytes)` on shutdown. If those
@@ -407,6 +466,10 @@ export class SessionPipe {
     );
 
     let payload = replay;
+    // Set when a re-read after the parse was refused and output arrived during
+    // it (the lifetime counter says so without a copy); see
+    // reflushForUnreplayedOutput. Nothing arrived: nothing to ask for.
+    let unreplayed: string | null = null;
     const dims = this.getDims?.();
     // A size change inside the ring garbles a raw replay (cursor-up redraws
     // land on the wrong rows), so such a ring goes through the snapshot
@@ -422,6 +485,7 @@ export class SessionPipe {
       // writeToClient gates on `flushed`, so nothing reaches the socket in
       // between.
       let base = writtenBefore;
+      let baseClears = clearsBefore;
       let outcome = await generateSnapshotUnqueued({
         cols: dims.cols,
         rows: dims.rows,
@@ -449,21 +513,31 @@ export class SessionPipe {
         console.log(
           `[SessionPipe.flush] sessionId=${this.sessionId} snapshot over budget (${outcome.detail ?? ''}), retrying on the newest ${ATTACH_TAIL_SNAPSHOT_BYTES} bytes`,
         );
-        const tail = readRingTailWithModesAndGeometry(
-          this.ringBuffer,
-          this.getOutputModes?.() ?? null,
-          ATTACH_TAIL_SNAPSHOT_BYTES,
-        );
-        base = tail.writtenAt;
-        outcome = await generateSnapshotUnqueued({
-          cols: dims.cols,
-          rows: dims.rows,
-          initial: tail.replay,
-          geometry: tail.geometry,
-          scrollback: this.attachScrollback,
-          budgetMs: ATTACH_TAIL_SNAPSHOT_BUDGET_MS,
-        });
-        if (socket.destroyed || this.client !== socket) return;
+        let tail: ReturnType<typeof readRingTailWithModesAndGeometry> | null = null;
+        try {
+          tail = readRingTailWithModesAndGeometry(
+            this.ringBuffer,
+            this.getOutputModes?.() ?? null,
+            ATTACH_TAIL_SNAPSHOT_BYTES,
+          );
+        } catch (error) {
+          // No second try: the budget outcome stands and the raw path below runs.
+          if (!isNativeAllocFailure(error)) throw error;
+          this.reportAllocFailure(error, 'attach flush tail: ring not read');
+        }
+        if (tail) {
+          base = tail.writtenAt;
+          baseClears = this.ringBuffer.clearGeneration;
+          outcome = await generateSnapshotUnqueued({
+            cols: dims.cols,
+            rows: dims.rows,
+            initial: tail.replay,
+            geometry: tail.geometry,
+            scrollback: this.attachScrollback,
+            budgetMs: ATTACH_TAIL_SNAPSHOT_BUDGET_MS,
+          });
+          if (socket.destroyed || this.client !== socket) return;
+        }
       }
       // Size guard: when most of the history still fits inside the
       // serialized scrollback (buffers just past the threshold), the
@@ -479,7 +553,11 @@ export class SessionPipe {
         // that live delta until the next resync (silent output loss). `after`
         // ⊇ `buffered` by the append-only prefix property; a wrap only makes it
         // a fresh honest raw read — either way `after` is the correct payload.
-        payload = this.readRing().replay;
+        // A refused re-read ships the pre-parse bytes, and a re-flush brings
+        // the live delta.
+        const after = this.tryReadRing('attach flush re-read');
+        if (!after && (this.ringBuffer.totalBytesWritten > writtenBefore || historyChanged(clearsBefore))) unreplayed = 'attach flush re-read refused';
+        payload = after?.replay ?? replay;
         // eslint-disable-next-line no-console
         console.log(
           `[SessionPipe.flush] sessionId=${this.sessionId} mode=raw fallbackReason=no-gain snapshot=${outcome.payload.length} raw=${payload.length}`,
@@ -491,15 +569,26 @@ export class SessionPipe {
         // 8 MB ring was parsed — and threw away every busy pane's snapshot.
         // The lifetime counter locates the delta whether or not the ring
         // dropped bytes; only a delta larger than the ring itself is lost.
-        const { raw: after, replay: afterReplay } = this.readRing();
+        const reread = this.tryReadRing('attach flush delta');
         const written = this.ringBuffer.totalBytesWritten - base;
-        if (written > after.length) {
+        // The ring was cleared during the parse: the snapshot is history from
+        // before the clear, and the newest `written` bytes need not follow it.
+        const cleared = historyChanged(baseClears);
+        if (!reread) {
+          // The snapshot without the bytes that arrived during the parse; a
+          // re-flush brings them, and repaints a ring that was cleared.
+          payload = outcome.payload;
+          if (written > 0 || cleared) unreplayed = 'attach flush delta refused';
+        } else if (cleared || written > reread.raw.length) {
+          // No splice: the fresh full read is the whole history.
+          const afterReplay = reread.replay;
           payload = afterReplay;
           // eslint-disable-next-line no-console
           console.log(
-            `[SessionPipe.flush] sessionId=${this.sessionId} snapshot discarded (live delta ${written} outran the ring) bytes=${after.length}`,
+            `[SessionPipe.flush] sessionId=${this.sessionId} snapshot discarded (${cleared ? 'ring cleared during the parse' : `live delta ${written} outran the ring`}) bytes=${reread.raw.length}`,
           );
         } else {
+          const after = reread.raw;
           payload = Buffer.concat([outcome.payload, after.subarray(after.length - written)]);
           // eslint-disable-next-line no-console
           console.log(
@@ -512,7 +601,11 @@ export class SessionPipe {
         // Snapshot failed (alt-screen, margins, budget, ...) — ship raw. Same
         // live-delta hazard as the no-gain branch: re-read the ring so bytes
         // that arrived during the failed parse are retransmitted, not dropped.
-        payload = this.readRing().replay;
+        // A refused re-read ships the pre-parse bytes, and a re-flush brings
+        // the live delta.
+        const after = this.tryReadRing('attach flush re-read');
+        if (!after && (this.ringBuffer.totalBytesWritten > writtenBefore || historyChanged(clearsBefore))) unreplayed = 'attach flush re-read refused';
+        payload = after?.replay ?? replay;
         // eslint-disable-next-line no-console
         console.log(
           `[SessionPipe.flush] sessionId=${this.sessionId} mode=raw fallbackReason=${outcome.reason}${'detail' in outcome && outcome.detail ? ` detail=${outcome.detail}` : ''}`,
@@ -525,6 +618,7 @@ export class SessionPipe {
     }
     this.writeOutput(socket, this.markers.flushDone);
     this.replayDone();
+    if (unreplayed) this.reflushForUnreplayedOutput(socket, unreplayed);
   }
 
   /**
@@ -778,13 +872,25 @@ export class SessionPipe {
       return teeQueue.splice(0);
     };
     try {
-      // T0 — one synchronous block: announce, suppress live writes, capture
-      // the ring, arm the tee. Nothing can arrive between these statements.
+      // T0 — one synchronous block: capture the ring, announce, suppress live
+      // writes, arm the tee. Nothing can arrive between these statements. The
+      // ring is read first: a read the native ring refuses (an allocation)
+      // declines the re-flush before anything was announced, so the client
+      // stays live on what it has.
+      let first: ReturnType<typeof readRingWithModesAndGeometry>;
+      try {
+        first = this.readRing();
+      } catch (error) {
+        if (isNativeAllocFailure(error)) this.reportAllocFailure(error, 're-flush declined: ring not read');
+        throw error;
+      }
+      const { replay: initial, geometry, writtenAt: writtenAtT0 } = first;
+      const clearsAtT0 = this.ringBuffer.clearGeneration;
       this.writeOutput(socket, this.markers.resyncBegin);
       this.flushed = false;
       // This re-flush covers everything a pipe that was behind did not write.
+      const wasBehind = this.behind;
       this.catchUp();
-      const { replay: initial, geometry } = this.readRing();
       opts.bridge.on('data', tee);
 
       let outcome: Awaited<ReturnType<typeof opts.generate>>;
@@ -842,7 +948,28 @@ export class SessionPipe {
       // is synchronous.
       teeQueue.length = 0;
       this.resyncQueuedBytes = 0;
-      const raw = this.readRing().replay;
+      const reread = this.tryReadRing('re-flush raw');
+      if (!reread) {
+        // Refused: the flush-done marker with no replay before it. The
+        // renderer reads an empty replay as a re-flush that brought nothing
+        // and keeps its screen (no reset). What it lacks, output since T0 or
+        // the gap of a pipe that was behind, is still in the ring: stay
+        // behind and ask for another re-flush, which repaints it once the
+        // ring can be read. The lifetime counter tells without a copy.
+        this.writeOutput(socket, this.markers.flushDone);
+        this.replayDone();
+        // A clear() since T0 restarted the history: a changed one too.
+        const arrived = this.ringBuffer.totalBytesWritten > writtenAtT0 || this.ringBuffer.clearGeneration !== clearsAtT0;
+        if (arrived || wasBehind) {
+          this.reflushForUnreplayedOutput(socket, arrived ? 're-flush raw refused' : 're-flush raw refused after falling behind');
+        }
+        // eslint-disable-next-line no-console
+        console.log(
+          `[SessionPipe.reflush] sessionId=${this.sessionId} mode=raw fallbackReason=${outcome.reason} bytes=0 (ring not read)`,
+        );
+        return { mode: 'raw', fallbackReason: outcome.reason };
+      }
+      const raw = reread.replay;
       this.writeOutput(socket, RIS);
       this.writeOutput(socket, raw);
       this.writeOutput(socket, this.markers.flushDone);

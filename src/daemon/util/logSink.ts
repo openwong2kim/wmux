@@ -24,6 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { BoundedLogWriter, createResilientTee, type TeeStream } from '../../shared/logTransport';
+import { DAEMON_STDERR_TO_FILE_ENV } from '../../shared/daemon/daemonStderrFlag';
 
 export { isBrokenPipeError } from '../../shared/logTransport';
 
@@ -96,6 +97,45 @@ function mirrorToFile(chunk: unknown): void {
   boundedLogWriter.append(filePath, data);
 }
 
+export { DAEMON_STDERR_TO_FILE_ENV };
+
+/**
+ * Read and remove the launcher's flag, so the PTYs this daemon starts (and a
+ * daemon started from one of their shells) do not inherit it.
+ */
+function stderrIsLauncherFile(): boolean {
+  const set = process.env[DAEMON_STDERR_TO_FILE_ENV] === '1';
+  delete process.env[DAEMON_STDERR_TO_FILE_ENV];
+  return set;
+}
+
+/** Whether `chunk` reached the daily log (false: no log dir, or the append failed). */
+function writeDailyLog(chunk: unknown): boolean {
+  if (!resolveLogPath()) return false;
+  try {
+    mirrorToFile(chunk);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The stderr write when stderr is the launcher's file: a line goes to the
+ * daily log only, and to stderr (`forward`, the stream's own write) only
+ * when the daily log could not take it, so no line is lost.
+ */
+function stderrFileWrite(forward: (chunk: unknown, ...rest: unknown[]) => boolean) {
+  return (chunk: unknown, ...rest: unknown[]): boolean => {
+    if (!writeDailyLog(chunk)) {
+      try { return forward(chunk, ...rest); } catch { return true; }
+    }
+    const callback = rest.length > 0 ? rest[rest.length - 1] : undefined;
+    if (typeof callback === 'function') queueMicrotask(() => { (callback as () => void)(); });
+    return true;
+  };
+}
+
 /**
  * Append a structured log line. Goes through stderr so the tee installed
  * in `initDaemonLogSink()` mirrors it into the file. Mostly redundant
@@ -149,7 +189,20 @@ export function initDaemonLogSink(baseDir: string): void {
   };
 
   wrap(process.stdout, 'stdout');
-  wrap(process.stderr, 'stderr');
+  if (stderrIsLauncherFile()) {
+    // stderr is `<wmuxDir>/daemon-stderr.log`, rotated only at spawn. Teeing
+    // every console line into it would grow it for the daemon's lifetime and
+    // duplicate the daily log, so the sink keeps those lines to the daily log.
+    // The file still gets what bypasses this stream: a native abort's line,
+    // V8's fatal output, and a line the daily log could not take.
+    const forward = process.stderr.write.bind(process.stderr) as (chunk: unknown, ...rest: unknown[]) => boolean;
+    process.stderr.write = stderrFileWrite(forward) as typeof process.stderr.write;
+    // A write error on this stream (a file) is not reported back onto it
+    // (see stdioErrorsConsumed).
+    process.stderr.on('error', () => { /* only fallback lines reach this stream */ });
+  } else {
+    wrap(process.stderr, 'stderr');
+  }
 
   // Auto-prune old daily log files. Without this the logs/ directory
   // accumulates indefinitely (no rotation cap, no retention policy).

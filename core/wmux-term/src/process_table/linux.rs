@@ -4,8 +4,16 @@
 //! failed read fails the walk, since a table cut short would read every
 //! missing pid as gone.
 
-use super::ProcessRow;
+use super::{ProcessRow, ROWS};
+use crate::fallible::{self, AllocFailed, CallError};
 use std::io;
+
+/// The pids `/proc` lists: one per process.
+#[cfg(target_os = "linux")]
+const PIDS: &str = "the /proc listing";
+/// A `/proc/<pid>/stat` line.
+#[cfg(target_os = "linux")]
+const STAT: &str = "a /proc stat line";
 
 /// Parse a `/proc/<pid>/stat` line into (name, ppid). The name sits in
 /// parentheses and may itself hold spaces and `)`, so fields are counted
@@ -35,24 +43,30 @@ pub(super) fn unreadable(error: &io::Error) -> bool {
     error.raw_os_error().is_some_and(super::unreadable_process)
 }
 
-/// One row per pid, its stat line read with `read_stat`. A pid that exited,
-/// whose stat this user may not read, or whose stat came back empty while it
-/// was being reaped, is skipped; any other failure, or a stat line that does
-/// not parse, is an error.
+/// One row per pid, its stat line read with `read_stat` (a refused buffer,
+/// or the read's own result). A pid that exited, whose stat this user may
+/// not read, or whose stat came back empty while it was being reaped, is
+/// skipped; any other failure, a stat line that does not parse, or a
+/// refused buffer is an error.
 pub(super) fn walk(
     pids: impl IntoIterator<Item = u32>,
-    mut read_stat: impl FnMut(u32) -> io::Result<Vec<u8>>,
-) -> Result<Vec<ProcessRow>, String> {
-    let mut rows = Vec::with_capacity(512);
+    mut read_stat: impl FnMut(u32) -> Result<io::Result<Vec<u8>>, AllocFailed>,
+) -> Result<Vec<ProcessRow>, CallError> {
+    let mut rows = fallible::try_with_capacity(512, ROWS)?;
     for pid in pids {
-        let stat = match read_stat(pid) {
+        let stat = match read_stat(pid)? {
             Ok(stat) if stat.is_empty() => continue,
             Ok(stat) => stat,
             Err(e) if unreadable(&e) => continue,
-            Err(e) => return Err(format!("read /proc/{pid}/stat failed ({e})")),
+            Err(e) => {
+                return Err(CallError::reason(format!(
+                    "read /proc/{pid}/stat failed ({e})"
+                )))
+            }
         };
-        let (name, ppid) =
-            parse_stat(&stat).ok_or_else(|| format!("unparsable /proc/{pid}/stat"))?;
+        let (name, ppid) = parse_stat(&stat)
+            .ok_or_else(|| CallError::reason(format!("unparsable /proc/{pid}/stat")))?;
+        fallible::try_reserve(&mut rows, 1, ROWS)?;
         rows.push(ProcessRow {
             pid,
             ppid,
@@ -66,11 +80,13 @@ pub(super) fn walk(
 
 /// The pids `/proc` lists. A listing cut short is an error.
 #[cfg(target_os = "linux")]
-pub(super) fn proc_pids() -> Result<Vec<u32>, String> {
-    let mut pids = Vec::with_capacity(512);
-    for entry in std::fs::read_dir("/proc").map_err(|e| format!("read /proc failed ({e})"))? {
-        let entry = entry.map_err(|e| format!("read /proc failed ({e})"))?;
+pub(super) fn proc_pids() -> Result<Vec<u32>, CallError> {
+    let failed = |e: io::Error| CallError::reason(format!("read /proc failed ({e})"));
+    let mut pids = fallible::try_with_capacity(512, PIDS)?;
+    for entry in std::fs::read_dir("/proc").map_err(failed)? {
+        let entry = entry.map_err(failed)?;
         if let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse().ok()) {
+            fallible::try_reserve(&mut pids, 1, PIDS)?;
             pids.push(pid);
         }
     }
@@ -81,18 +97,36 @@ pub(super) fn proc_pids() -> Result<Vec<u32>, String> {
 /// details (creation time, command line); `_with_details` is accepted for the
 /// shared signature.
 #[cfg(target_os = "linux")]
-pub fn snapshot(_with_details: bool) -> Result<Vec<ProcessRow>, String> {
+pub fn snapshot(_with_details: bool) -> Result<Vec<ProcessRow>, CallError> {
     walk(proc_pids()?, stat_of)
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn stat_of(pid: u32) -> io::Result<Vec<u8>> {
-    std::fs::read(format!("/proc/{pid}/stat"))
+pub(super) fn stat_of(pid: u32) -> Result<io::Result<Vec<u8>>, AllocFailed> {
+    super::read_file(std::path::Path::new(&format!("/proc/{pid}/stat")), STAT)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_row_buffer_is_a_refusal_not_an_abort() {
+        // The rows' first buffer is 36 KiB: an infallible one aborted here.
+        let line = stat("zsh", 1);
+        let rows =
+            crate::test_allocator::refusing(4096, || walk([1, 2, 3], |_| Ok(Ok(line.clone()))));
+        assert!(
+            matches!(rows, Err(CallError::Alloc(AllocFailed { what: ROWS, .. }))),
+            "{rows:?}"
+        );
+        // A refused stat buffer fails the walk too.
+        let refused = AllocFailed {
+            what: "a /proc stat line",
+            bytes: 8192,
+        };
+        assert_eq!(walk([1], |_| Err(refused)), Err(CallError::Alloc(refused)));
+    }
 
     #[test]
     fn stat_fields_count_from_the_last_parenthesis() {
@@ -108,14 +142,16 @@ mod tests {
 
     #[test]
     fn an_exited_or_unreadable_process_is_skipped() {
-        let read = |pid: u32| match pid {
-            1 => Ok(stat("init", 0)),
-            2 => Err(io::Error::from_raw_os_error(2)), // ENOENT
-            3 => Err(io::Error::from_raw_os_error(3)), // ESRCH
-            4 => Ok(Vec::new()),                       // reaped mid-read
-            5 => Err(io::Error::from_raw_os_error(13)), // EACCES: hidepid
-            6 => Err(io::Error::from_raw_os_error(1)), // EPERM: an LSM
-            _ => Ok(stat("zsh", 1)),
+        let read = |pid: u32| {
+            Ok(match pid {
+                1 => Ok(stat("init", 0)),
+                2 => Err(io::Error::from_raw_os_error(2)), // ENOENT
+                3 => Err(io::Error::from_raw_os_error(3)), // ESRCH
+                4 => Ok(Vec::new()),                       // reaped mid-read
+                5 => Err(io::Error::from_raw_os_error(13)), // EACCES: hidepid
+                6 => Err(io::Error::from_raw_os_error(1)), // EPERM: an LSM
+                _ => Ok(stat("zsh", 1)),
+            })
         };
         let rows = walk([1, 2, 3, 4, 5, 6, 7], read).expect("walk");
         assert_eq!(
@@ -132,17 +168,17 @@ mod tests {
         // without it would read it as dead.
         for errno in [24, 23, 5] {
             let read = |pid: u32| {
-                if pid == 2 {
+                Ok(if pid == 2 {
                     Err(io::Error::from_raw_os_error(errno))
                 } else {
                     Ok(stat("zsh", 1))
-                }
+                })
             };
             assert!(walk([1, 2, 3], read).is_err(), "errno {errno}");
         }
-        assert!(walk([1], |_| Ok(b"garbage".to_vec())).is_err());
+        assert!(walk([1], |_| Ok(Ok(b"garbage".to_vec()))).is_err());
         // Judged by the Linux errno alone, never by ErrorKind.
-        assert!(walk([1], |_| Err(io::Error::from(io::ErrorKind::NotFound))).is_err());
+        assert!(walk([1], |_| Ok(Err(io::Error::from(io::ErrorKind::NotFound)))).is_err());
     }
 
     #[cfg(target_os = "linux")]
