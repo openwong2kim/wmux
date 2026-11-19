@@ -33,12 +33,18 @@ type FakeChild = EventEmitter & { kill: (signal?: string) => void; stdio: unknow
 
 class ProtectedPipeChrome extends FakeBrowser {
   proxyPort = 0;
+  /** Methods this Chrome answers with an error (the launch step that sends them fails). */
+  readonly failing = new Set<string>();
 
   constructor(readonly child: FakeChild) {
     super();
   }
 
   protected override handle(c: Command): void {
+    if (this.failing.has(c.method)) {
+      this.reply(c, '"error":{"code":-32000,"message":"refused (unit test)"}');
+      return;
+    }
     if (c.method === 'Browser.close') {
       this.reply(c, '"result":{}');
       setImmediate(() => this.exit());
@@ -269,6 +275,28 @@ describe('ChromeLauncher: the download guard on a protected pipe profile', () =>
     chrome.holdReplies.delete('Target.getBrowserContexts');
     chrome.releaseHeld();
     await launcher.dispose({ immediate: true });
+  });
+});
+
+describe('ChromeLauncher: a protected start that is not ready names the step', () => {
+  it.each([
+    ['Browser.setDownloadBehavior', 'download-guard-deny'],
+    ['Target.setDiscoverTargets', 'download-guard-discovery'],
+  ])('a failing %s: the same PROTECTION_NOT_READY message, with %s and the error as its cause, logged once', async (method, site) => {
+    const chrome = spawnChrome();
+    chrome.failing.add(method);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const launcher = new ChromeLauncher(`/tmp/pipe-protected-site-${site}`, { profileName: 'bank', protection: () => denyAll });
+      const err = await launcher.endpoint().then(() => null, (e: unknown) => e as Error & { cause?: { site?: string; error?: Error } });
+      expect(err?.message).toBe(PROTECTION_NOT_READY);
+      expect(err?.cause?.site).toBe(site);
+      expect(err?.cause?.error?.message).toContain('refused (unit test)');
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes(`protected start not ready at ${site}`))).toHaveLength(1);
+      await launcher.dispose({ immediate: true });
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

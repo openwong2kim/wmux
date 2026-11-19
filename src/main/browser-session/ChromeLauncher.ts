@@ -578,6 +578,16 @@ export function protectionNotReady(cause: string): Error {
   return new Error(`${PROTECTION_NOT_READY} (${cause})`);
 }
 
+/**
+ * PROTECTION_NOT_READY as the caller has always seen it, with the launch step
+ * that failed and what went wrong attached as its `cause`, and logged once.
+ */
+export function notReadyAt(profile: string, site: string, error?: unknown): Error {
+  const why = error instanceof Error ? error.message : error === undefined ? 'no detail' : String(error);
+  console.warn(`[ChromeLauncher] ${profile}: protected start not ready at ${site}: ${why}`);
+  return new Error(PROTECTION_NOT_READY, { cause: { site, ...(error !== undefined && { error }) } });
+}
+
 function isProtectionNotReady(err: unknown): boolean {
   return err instanceof Error && err.message.startsWith(PROTECTION_NOT_READY);
 }
@@ -1999,7 +2009,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       await this.closeBrowserAt(transport);
     }
     if (transport && !(await this.waitEndpointGone(transport)) && !(await this.forceKill(transport, child))) {
-      throw new Error(PROTECTION_NOT_READY);
+      throw notReadyAt(this.profileName, 'stop-previous', 'the previous Chrome did not exit');
     }
     this.onChildGone();
   }
@@ -2260,8 +2270,8 @@ export class ChromeLauncher implements ChromeBackendClient {
     let port: number;
     try {
       port = await proxy.start();
-    } catch {
-      throw new Error(PROTECTION_NOT_READY);
+    } catch (err) {
+      throw notReadyAt(this.profileName, 'proxy-start', err);
     }
     if (this.disposed) {
       // dispose() closed it before it was listening; close what start opened.
@@ -2370,12 +2380,14 @@ export class ChromeLauncher implements ChromeBackendClient {
       this.piped?.policy?.downloadEvent('Browser.downloadProgress', params);
       for (const listener of this.downloadProgress) listener(params);
     });
+    let step = 'download-guard-deny';
     try {
       await deny();
+      step = 'download-guard-discovery';
       await guard.send('Target.setDiscoverTargets', { discover: true });
-    } catch {
+    } catch (err) {
       guard.close();
-      throw new Error(PROTECTION_NOT_READY);
+      throw notReadyAt(this.profileName, step, err);
     }
     const reassert = setInterval(() => {
       if (!guard.isOpen()) return clearInterval(reassert);
@@ -2464,7 +2476,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     } catch {
       endpoint = null;
     }
-    if (endpoint === null) throw new Error(PROTECTION_NOT_READY);
+    if (endpoint === null) throw notReadyAt(this.profileName, 'browser-endpoint', 'no browser endpoint answered');
     return endpoint;
   }
 
@@ -2485,7 +2497,7 @@ export class ChromeLauncher implements ChromeBackendClient {
    */
   private async verifyProxyRoute(deadlineMs: number): Promise<void> {
     const proxy = this.proxy;
-    if (!proxy?.isRunning()) throw new Error(PROTECTION_NOT_READY);
+    if (!proxy?.isRunning()) throw notReadyAt(this.profileName, 'route-check', 'the proxy is not running');
     const probe = proxy.armProbe();
     const transport = this.reach();
     const url = await this.browserWsUrl(transport);
@@ -2532,8 +2544,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       socket.close();
     }
     if (why !== 'routed') {
-      console.warn(`[ChromeLauncher] ${this.profileName}: proxy route not proven (${why}); refusing the protected profile`);
-      throw new Error(PROTECTION_NOT_READY);
+      throw notReadyAt(this.profileName, 'route-check', `proxy route not proven (${why})`);
     }
   }
 
@@ -2844,7 +2855,7 @@ export class ChromeLauncher implements ChromeBackendClient {
             try {
               await this.armDownloadGuard();
               // Traffic opens only once no restored page is left to use it.
-              if (!(await this.closeRestoredTabs())) throw new Error(PROTECTION_NOT_READY);
+              if (!(await this.closeRestoredTabs())) throw notReadyAt(this.profileName, 'restored-tabs', 'a restored tab could not be closed');
               this.enforcementReady = true;
               // Its own bound from now: a slow start must not eat the probe's turn.
               await this.verifyProxyRoute(Date.now() + READY_TIMEOUT_MS);

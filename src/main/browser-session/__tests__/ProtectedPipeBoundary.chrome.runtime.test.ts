@@ -66,9 +66,14 @@ const run = (cmd: string, args: string[]) => new Promise<{ code: number; stdout:
  */
 async function listeners(rootPid: number): Promise<string[]> {
   if (process.platform === 'win32') {
+    // Windows keeps a parent's id on its children after the parent exits, and
+    // reuses ids: a child counts only if it started after its parent did, so a
+    // process whose long-gone parent had Chrome's id is not taken for Chrome's.
     const script = [
+      '$all = @(Get-CimInstance Win32_Process)',
+      '$born = @{}; foreach ($x in $all) { $born[[int]$x.ProcessId] = $x.CreationDate }',
       `$p = @(${rootPid})`,
-      'do { $n = @(Get-CimInstance Win32_Process | Where-Object { $p -contains $_.ParentProcessId -and $p -notcontains $_.ProcessId } | ForEach-Object { $_.ProcessId }); $p += $n } while ($n.Count)',
+      'do { $n = @($all | Where-Object { $p -contains $_.ParentProcessId -and $p -notcontains $_.ProcessId -and $_.CreationDate -ge $born[[int]$_.ParentProcessId] } | ForEach-Object { $_.ProcessId }); $p += $n } while ($n.Count)',
       'Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $p -contains $_.OwningProcess } | ForEach-Object { "$($_.LocalAddress):$($_.LocalPort)" }',
     ].join('; ');
     const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
@@ -162,6 +167,9 @@ async function watchForPort(rig: Rig): Promise<{ listeners: string[]; portFile: 
 }
 
 const INSPECT = 'chrome://inspect/#remote-debugging';
+/** Whether Chrome can open a window here (a Linux runner without a display can't). */
+const HAS_DISPLAY = process.platform !== 'linux' || !!process.env.DISPLAY;
+const NEEDS_DISPLAY = 'needs a display; covered by the runtime workflow on macOS/Windows';
 const TOGGLE_STATE = `(() => { const el = document.getElementById('remote-debugging-enabled'); if (!el) return 'absent'; const r = el.getBoundingClientRect(); return JSON.stringify({ checked: el.checked, x: r.x + r.width / 2, y: r.y + r.height / 2 }); })()`;
 
 const rigs: Array<{ launcher: ChromeLauncher; profile: TempChromeProfile }> = [];
@@ -232,7 +240,9 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     c.close();
   });
 
-  it('a relay client cannot reach the remote-debugging toggle; turned on from main\'s own session (control), the watch closes the browser if a port opens', { timeout: CASE_TIMEOUT_MS * 2 }, async () => {
+  it('a relay client cannot reach the remote-debugging toggle; turned on from main\'s own session (control), the watch closes the browser if a port opens', { timeout: CASE_TIMEOUT_MS * 2 }, async (ctx) => {
+    // The control drives chrome://inspect's checkbox in a window.
+    if (!HAS_DISPLAY) return ctx.skip(NEEDS_DISPLAY);
     // With windows, as wmux starts Chrome.
     const rig = await start({ headful: true });
     const c = await relayClient(rig);
@@ -319,7 +329,9 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     }
   });
 
-  it('a download in a CDP-created context no client made (a stand-in for a user-opened incognito window) is not let through, with windows', { timeout: CASE_TIMEOUT_MS }, async () => {
+  it('a download in a CDP-created context no client made (a stand-in for a user-opened incognito window) is not let through, with windows', { timeout: CASE_TIMEOUT_MS }, async (ctx) => {
+    // Headless Chrome denies downloads in a new context by itself, so only a windowed run tests the guard.
+    if (!HAS_DISPLAY) return ctx.skip(`${NEEDS_DISPLAY} (headless Chrome denies these downloads by itself)`);
     // With windows: headless Chrome denies downloads in a new context on its own.
     const rig = await start({ headful: true });
     const own = internal(rig);
