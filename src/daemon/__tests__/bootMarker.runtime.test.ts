@@ -32,6 +32,12 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 let child: ChildProcess | null = null;
 
+/** Resolves when `proc` has exited (at once if it already has). */
+function exited(proc: ChildProcess): Promise<void> {
+  if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => proc.once('exit', () => resolve()));
+}
+
 afterAll(() => {
   try { child?.kill('SIGKILL'); } catch { /* ignore */ }
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -122,10 +128,11 @@ describe.skipIf(!hasBundle)('#546 boot marker lifecycle (real daemon)', () => {
       setTimeout(() => { sock.destroy(); resolve(); }, 20_000);
     });
 
-    for (let i = 0; i < 100; i++) {
-      if (!fs.existsSync(pidFile)) break;
-      await sleep(100);
-    }
+    // The daemon's own exit, not its pid file going away: the pid file is
+    // removed during shutdown, before the process is done, and the next case
+    // must not start while this daemon is still on its way out.
+    expect(child, 'no daemon from the first case').not.toBeNull();
+    await exited(child as ChildProcess);
     expect(fs.existsSync(markerFile), 'marker survived shutdown').toBe(false);
   }, 60_000);
 

@@ -1282,6 +1282,18 @@ describe('a record the server streamed and the joiner refused, end to end (strea
   type Refused = { state: string; code: string } | undefined;
   const refusedOn = (pc: Pc, taskId: string): Refused => (pc.tasks.getTask(taskId)?.metadata.remote as { stateRefused?: Refused } | undefined)?.stateRefused;
 
+  /**
+   * B's last state record of the task. A applies a streamed state before its
+   * ack reaches B, so A can show the state while B still owes the record:
+   * read it once B's outbox to A has drained.
+   */
+  async function lastState(a: Pc, b: Pc, taskId: string) {
+    await until(() => b.delivery.outbox.pending(a.hostId).length === 0);
+    const last = [...b.delivery.outbox.settled()].reverse().find((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId);
+    expect(last).toBeDefined();
+    return last!;
+  }
+
   it('a reply the joiner refuses ends the task on the server; the refused record is never counted as delivered', async () => {
     const a = await makePc('PC-A');
     const b = await makePc('PC-B');
@@ -1302,7 +1314,19 @@ describe('a record the server streamed and the joiner refused, end to end (strea
   });
 
   it('a state the joiner refuses is recorded on the server, and the next one it takes clears it, in order', async () => {
-    const a = await makePc('PC-A');
+    // A's acks wait while `acks` is held: A has applied what B streamed, B has not heard yet.
+    let acks: Promise<void> | null = null;
+    const holdingAcks: ClientHook = (opts) => {
+      const real = new PinnedTlsClient(opts);
+      return {
+        requestJson: async (method, p, body) => {
+          if (p === A2A_ROUTES.ack && acks) await acks;
+          return real.requestJson(method, p, body);
+        },
+        openStream: (p, o) => real.openStream(p, o),
+      };
+    };
+    const a = await makePc('PC-A', { client: holdingAcks });
     const b = await makePc('PC-B');
     const linkId = await linked(a, b);
     const taskId = await sendTask(a, linkId, 'one job');
@@ -1312,10 +1336,16 @@ describe('a record the server streamed and the joiner refused, end to end (strea
       expect((await b.tasks.transition({ taskId, to, callerWorkspaceId: 'ws-b', ...(to === 'completed' ? { evidence } : {}) })).ok).toBe(true);
       expect(await b.rpc(A2A_REMOTE_RPC.state, { taskId, state: to })).toMatchObject({ ok: true });
     };
+    let release: () => void = () => undefined;
+    acks = new Promise<void>((r) => { release = r; });
     await moveB('working');
     await until(() => a.tasks.getTask(taskId)?.status.state === 'working');
+    // The window: A shows the state, and B still owes the record.
+    expect(b.delivery.outbox.pending(a.hostId).some((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId)).toBe(true);
+    acks = null;
+    release();
     // B tells A `working` again: no move there, so A refuses it.
-    const last = [...b.delivery.outbox.settled()].reverse().find((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId)!;
+    const last = await lastState(a, b, taskId);
     b.delivery.outbox.enqueue(a.hostId, { ...last.envelope, messageId: `st-${crypto.randomBytes(16).toString('hex')}`, state: 'working' });
     await until(() => refusedOn(b, taskId) !== undefined);
     expect(refusedOn(b, taskId)).toMatchObject({ state: 'working', code: 'bad-request' });
@@ -1334,7 +1364,7 @@ describe('a record the server streamed and the joiner refused, end to end (strea
     expect((await b.tasks.transition({ taskId, to: 'working', callerWorkspaceId: 'ws-b' })).ok).toBe(true);
     expect(await b.rpc(A2A_REMOTE_RPC.state, { taskId, state: 'working' })).toMatchObject({ ok: true });
     await until(() => a.tasks.getTask(taskId)?.status.state === 'working');
-    const last = [...b.delivery.outbox.settled()].reverse().find((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId)!;
+    const last = await lastState(a, b, taskId);
     b.delivery.outbox.enqueue(a.hostId, { ...last.envelope, messageId: `st-${crypto.randomBytes(16).toString('hex')}`, state: 'working' });
     await until(() => b.delivery.outbox.pending(a.hostId).length === 0);
     await deliberateSleep(300, 'negative: no refusal is recorded');
@@ -1362,7 +1392,7 @@ describe('a record the server streamed and the joiner refused, end to end (strea
     expect((await b.tasks.transition({ taskId, to: 'working', callerWorkspaceId: 'ws-b' })).ok).toBe(true);
     expect(await b.rpc(A2A_REMOTE_RPC.state, { taskId, state: 'working' })).toMatchObject({ ok: true });
     await until(() => a.tasks.getTask(taskId)?.status.state === 'working');
-    const last = [...b.delivery.outbox.settled()].reverse().find((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId)!;
+    const last = await lastState(a, b, taskId);
     const stray = b.delivery.outbox.enqueue(a.hostId, { ...last.envelope, messageId: `st-${crypto.randomBytes(16).toString('hex')}`, state: 'working' });
     // A refuses it, but its ack never lands: the record stays owed on B, however often A dials again.
     await deliberateSleep(500, 'negative: several failed refusal acks');

@@ -3,9 +3,10 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { McpRegistrar, McpRegistrarStatus } from '../../mcp/McpRegistrar';
 import { externalRegistrationSkipReason } from '../../../shared/mcpTargets';
-import { brokerDecision, brokerFlag, brokerFlagValue, brokerHostsSessions, isBrokerSetting, type BrokerSettingPayload } from '../../../shared/mcpBroker';
+import { brokerDecision, brokerFlag, brokerFlagValue, isBrokerSetting, type BrokerSettingPayload } from '../../../shared/mcpBroker';
 import { readBrokerSetting, writeBrokerSetting } from '../../../shared/brokerSetting';
 import { mcpBrokerDecision } from '../../mcp/BrokerSupervisor';
+import { brokerHostsSessionsHere } from '../../mcp/brokerNativePipe';
 import type { BrokerDownReason } from '../../../shared/mcpSessions';
 
 /**
@@ -157,16 +158,18 @@ export function registerMcpHandlers(
     const read = readBrokerSetting();
     const running = mcpBrokerDecision();
     const envValue = brokerFlagValue(process.env.WMUX_MCP_BROKER);
+    const downReason = brokerDownReason?.();
     return {
       saved: read.setting,
       ...(read.problem ? { problem: read.problem } : {}),
       env: brokerFlag(process.env.WMUX_MCP_BROKER),
       ...(envValue !== undefined ? { envValue } : {}),
-      ...(brokerDownReason?.() === 'peer-unavailable' ? { peerUnavailable: true } : {}),
+      ...(downReason === 'peer-unavailable' ? { peerUnavailable: true } : {}),
+      ...(downReason === 'path-occupied' ? { pathOccupied: true } : {}),
       running,
       next: brokerDecision(process.platform, process.env.WMUX_MCP_BROKER, read.setting),
       platformDefaultOn: brokerDecision(process.platform, undefined, 'default').on,
-      hostsSessions: brokerHostsSessions(process.platform),
+      hostsSessions: brokerHostsSessionsHere(),
     };
   };
 

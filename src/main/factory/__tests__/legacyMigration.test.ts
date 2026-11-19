@@ -13,10 +13,17 @@ import { botsDealtWith, botsTalkedTo, isLegacyMigrationBot } from '../legacyBotC
 import { atomicReadJSONSync } from '../../../daemon/util/atomicWrite';
 import { BotStore, botsFilePath } from '../botStore';
 import { FactorySettingsStore, factorySettingsPath } from '../factorySettings';
+import { persisterWritesSettled } from '../versionedFile';
 
 let dir = '';
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wp3a-legacy-')); });
-afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+afterEach(async () => {
+  // BotStore.load() writes a profile it upgraded back without waiting for the
+  // write: the folder goes only once that write is done, or the write lands in
+  // it (ENOTEMPTY) while it is being removed.
+  await persisterWritesSettled();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
 
 const write = (name: string, value: unknown) => fs.writeFileSync(path.join(dir, name), JSON.stringify(value));
 const HQ = { hqWorkspaceId: 'ws-hq', moaEnabled: true, moaTrustedAuthors: ['alice', 'bad login!'], moaAskMode: 'auto', moaLevel: 2 };

@@ -12,6 +12,7 @@
  */
 
 import fs from 'node:fs';
+import { sameFileId } from './sameFileId';
 
 /** Each daily file is capped at 16 MiB with three archives (64 MiB/day max). */
 export const MAX_LOG_FILE_BYTES = 16 * 1024 * 1024;
@@ -219,7 +220,7 @@ export class BoundedLogWriter {
         let stillOwned: boolean;
         try {
           const current = fs.fstatSync(currentFd, { bigint: true });
-          stillOwned = !owned || (current.ino === owned.ino && current.dev === owned.dev);
+          stillOwned = !owned || sameFileId(current, owned);
         } finally {
           fs.closeSync(currentFd);
         }

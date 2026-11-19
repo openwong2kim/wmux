@@ -32,6 +32,7 @@ import {
   parsePhoneRoomThreadsReply,
 } from '../../shared/phoneRooms';
 import { parseThreadId, type ThreadId } from '../../shared/room';
+import { sameFileId } from '../../shared/sameFileId';
 import { ROOM_ATTACHMENT_ID_RE, ROOM_ATTACHMENT_LIMITS, ROOM_ATTACHMENT_MEDIA_TYPE, sniffRoomImage } from '../../shared/roomAttachments';
 import { ROOM_FILE_ID_RE, ROOM_FILE_LIMITS } from '../../shared/roomFiles';
 import { DesktopPhoneError } from '../phone/DesktopPhoneBridge';
@@ -265,25 +266,25 @@ export async function roomFileResponse(
   let handle: fs.promises.FileHandle | null = null;
   try {
     // Neither the store nor the room's folder may be a link.
-    let room: fs.Stats | null = null;
+    let room: fs.BigIntStats | null = null;
     for (const dir of [opts.roomFilesDir, folder]) {
-      room = await fs.promises.lstat(dir);
+      room = await fs.promises.lstat(dir, { bigint: true });
       if (!room.isDirectory() || room.isSymbolicLink()) return FILE_NOT_FOUND;
     }
-    const st = await fs.promises.lstat(file);
-    if (!st.isFile() || st.size !== meta.bytes || st.size > ROOM_FILE_LIMITS.MAX_BYTES) return FILE_NOT_FOUND;
+    const st = await fs.promises.lstat(file, { bigint: true });
+    if (!st.isFile() || Number(st.size) !== meta.bytes || st.size > ROOM_FILE_LIMITS.MAX_BYTES) return FILE_NOT_FOUND;
     handle = await fs.promises.open(file, FILE_OPEN_FLAGS);
-    const fst = await handle.stat();
+    const fst = await handle.stat({ bigint: true });
     // O_NOFOLLOW guards only the last name and Node has no openat, so the
     // room's folder is checked again: still the directory it was, not a
     // link swapped in while the file was opened.
-    const after = await fs.promises.lstat(folder);
-    const sameRoom = !!room && after.isDirectory() && after.ino === room.ino && after.dev === room.dev;
-    if (!sameRoom || !fst.isFile() || fst.size !== meta.bytes || fst.ino !== st.ino || fst.dev !== st.dev) {
+    const after = await fs.promises.lstat(folder, { bigint: true });
+    const sameRoom = !!room && after.isDirectory() && sameFileId(after, room);
+    if (!sameRoom || !fst.isFile() || Number(fst.size) !== meta.bytes || !sameFileId(fst, st)) {
       await handle.close().catch(() => undefined);
       return FILE_NOT_FOUND;
     }
-    return { status: 200, handle, size: fst.size, name: meta.name, contentType: meta.mediaType };
+    return { status: 200, handle, size: Number(fst.size), name: meta.name, contentType: meta.mediaType };
   } catch {
     await handle?.close().catch(() => undefined);
     return FILE_NOT_FOUND;

@@ -84,6 +84,31 @@ async function spawnClient(grant: RelayGrant) {
 const fired = () => cdpPipeCounters().watchdog?.fired ?? 0;
 const armed = () => cdpPipeCounters().watchdog?.armed ?? 0;
 
+/**
+ * When the watch last started a period from idle for the client it has since
+ * let go (a waiting session, no timer running for that client). The period
+ * is per client: a session of A that paused before B asked for its tab can
+ * start it, and B's tab then joins it. Once it fires, A is stalled and starts
+ * no other period until it shows a sign of life.
+ */
+function stalledClientPeriodStart(mux: CdpPipeMux): () => number | null {
+  interface WatchState { timer: unknown; stalled: boolean }
+  const watch = (mux as unknown as {
+    watch: { waiting: (c: unknown, s: string) => void; clients: Map<unknown, WatchState> };
+  }).watch;
+  const waiting = watch.waiting.bind(watch);
+  const starts = new Map<unknown, number>();
+  watch.waiting = (c, s) => {
+    const state = watch.clients.get(c);
+    if (!state?.timer && !state?.stalled) starts.set(c, performance.now());
+    waiting(c, s);
+  };
+  return () => {
+    for (const [c, state] of watch.clients) if (state.stalled) return starts.get(c) ?? null;
+    return null;
+  };
+}
+
 let accountBefore = new Set<string>();
 beforeEach(() => {
   resetCdpPipeCounters();
@@ -121,7 +146,8 @@ afterEach(async () => {
 describe.skipIf(!CHROME)('the pipe\'s stall watch, real Chrome', () => {
   // SIGSTOP and SIGCONT: none on Windows.
   it.skipIf(process.platform === 'win32')('a stopped client no longer holds another client\'s new tab, and works again once resumed', { timeout: 60_000 }, async () => {
-    const { route } = await start();
+    const { route, mux } = await start();
+    const periodStart = stalledClientPeriodStart(mux);
     const a = await spawnClient(await route.grant({}));
     process.kill(a.proc.pid as number, 'SIGSTOP');
 
@@ -132,7 +158,11 @@ describe.skipIf(!CHROME)('the pipe\'s stall watch, real Chrome', () => {
     await page.goto('data:text/html,<title>b</title>');
     const tookMs = performance.now() - started;
     expect(await page.title()).toBe('b');
-    expect(tookMs).toBeGreaterThanOrEqual(STALL_MS - 100);
+    // Held for a whole period, counted from where that period began: it can
+    // begin before B asks, while B connects.
+    const armedAt = periodStart();
+    expect(armedAt).not.toBeNull();
+    expect(started + tookMs - (armedAt as number)).toBeGreaterThanOrEqual(STALL_MS - 100);
     expect(tookMs).toBeLessThan(5_000);
     expect(fired()).toBeGreaterThanOrEqual(1);
     console.log(`[watchdog] B's new tab with A stopped: ${Math.round(tookMs)} ms; counters ${JSON.stringify(cdpPipeCounters().watchdog)}`);

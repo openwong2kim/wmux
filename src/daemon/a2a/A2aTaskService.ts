@@ -73,6 +73,7 @@ import type {
 } from '../../shared/a2aEventlog';
 import type { A2aRemoteErrorCode, A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from '../../shared/a2aRemote';
 import { isRemoteWorkspaceId, localSideOf, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
+import { parseGatedSubmitProof, sameGatedSubmitProof, type GatedSubmitProof } from '../../shared/ptyMessageDelivery';
 
 /** a2aSlice 현행 값 준수(캐시와 동일 시멘틱). */
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30분
@@ -508,9 +509,14 @@ export class A2aTaskService {
         delete target.heldAt;
         // The pty written to is the local pane's occupant from now on.
         if (r.ptyId) task.metadata[localSideOf(task)].ptyId = r.ptyId;
+        // What main submitted for this delivery, when it said (a log line read back is parsed again).
+        const submit = parseGatedSubmitProof(r.submit);
+        if (submit && r.ptyId && submit.ptyId === r.ptyId) target.submit = submit;
+        else delete target.submit;
       } else if (r.held) {
         target.delivered = false;
         delete target.attempted;
+        delete target.submit;
         const held = readHeldReason(r.held);
         // The first hold's time stays through a change of reason, so the 24 h clock never starts again.
         if (!target.heldAt) target.heldAt = r.timestamp;
@@ -957,6 +963,8 @@ export class A2aTaskService {
     delivered?: boolean;
     held?: A2aRemoteHeldReason;
     ptyId?: string;
+    /** With `delivered` and `ptyId`: what main submitted to that pty; recorded on the unit, nothing acts on it. */
+    submit?: GatedSubmitProof;
     attempted?: boolean;
     stateSync?: TaskState;
     sent?: string;
@@ -1055,8 +1063,11 @@ export class A2aTaskService {
           body = { notice: input.notice };
         }
       } else if (input.delivered === true) {
-        unchanged = target.delivered === true && (!input.ptyId || side.ptyId === input.ptyId);
-        body = { delivered: true, ...(input.ptyId ? { ptyId: input.ptyId } : {}) };
+        // Only a proof for the pty this mark names; a mark that adds, changes or clears one is not a repeat.
+        const submit = input.ptyId && input.submit?.ptyId === input.ptyId ? input.submit : undefined;
+        unchanged = target.delivered === true && (!input.ptyId || side.ptyId === input.ptyId)
+          && sameGatedSubmitProof(target.submit, submit);
+        body = { delivered: true, ...(input.ptyId ? { ptyId: input.ptyId } : {}), ...(submit ? { submit } : {}) };
       } else if (input.held) {
         unchanged = target.delivered !== true && target.held === input.held;
         body = { held: input.held };

@@ -1,9 +1,8 @@
 import crypto from 'node:crypto';
-import { A2A_REMOTE_BODY_MAX, ANSWER_OUTCOMES_MAX, type A2aRemoteAnswerOutcome, type A2aRemoteAnswerV1, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
+import { A2A_REMOTE_BODY_MAX, ANSWER_OUTCOMES_MAX, type A2aRemoteAnswerOutcome, type A2aRemoteAnswerV1, type A2aRemoteApprovalOffer, type A2aRemoteApprovalOutcome, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
 import { truncateUtf8 } from '../../shared/chatv2/limits';
 import type { SessionPromptScheduleResult } from '../../shared/sessionPromptSchedule';
-import { sanitizeBracketedPastePayload } from '../../shared/ptyMessageDelivery';
-import { normalizeForPromptMatch } from '../../shared/promptMatch';
+import { promptHash } from '../../shared/promptHash';
 import { localSideOf, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 import { spawnFirstMessageId, type SpawnLinkId } from '../../shared/a2aSpawn';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
@@ -17,6 +16,7 @@ import type { HeadlessAnswerResult } from './headlessAnswer';
 
 type HeadlessAnswerReason = Extract<HeadlessAnswerResult, { outcome: 'not-answered' }>['reason'];
 import type { HeadlessStartRecordV1 } from './headlessStartStore';
+import { isPromptRaw, rawEntry } from './taskTurn';
 import { LINK_ENDED_REASON } from './headlessStarter';
 import { errMsg } from './storeFile';
 
@@ -248,6 +248,9 @@ export interface HeadlessTaskStatus {
     resetsAt?: string;
     provider?: string;
     background?: number;
+    /** A linked pane's prompt offered to the PC that sent the task (remoteApproval.ts); never set by the headless delivery. */
+    approval?: A2aRemoteApprovalOffer;
+    approvals?: A2aRemoteApprovalOutcome[];
   };
 }
 
@@ -359,21 +362,6 @@ function turnEnd(ep: Episode): { kind: 'answered'; text: string } | { kind: 'pro
 }
 
 /**
- * The hash a delivered prompt is recognized by in the transcript. Both sides
- * are compared in the shared normal form (shared/promptMatch.ts): Claude Code
- * stores a long or multi-line prompt inside paste markers with line breaks
- * around them.
- */
-export function promptHash(prompt: string): string {
-  return hashOf(normalizeForPromptMatch(sanitizeBracketedPastePayload(prompt)));
-}
-
-/** The hash of a transcript user entry, in the same form as promptHash. */
-function userEntryHash(text: string): string {
-  return hashOf(normalizeForPromptMatch(text));
-}
-
-/**
  * A reply within the body limit: the start of `text`, cut on a code point,
  * then a marker naming the bytes left out. The marker counts in the limit.
  */
@@ -389,43 +377,6 @@ export function cutReply(text: string, max = A2A_REMOTE_BODY_MAX): string {
 /** Oldest first (when each reached this PC), so follow-ups are typed in the order they were sent. */
 function oldestFirst(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => a.metadata.createdAt.localeCompare(b.metadata.createdAt) || a.id.localeCompare(b.id));
-}
-
-function hashOf(text: string): string {
-  return crypto.createHash('sha256').update(text.replace(/\r\n?/g, '\n').trim()).digest('hex');
-}
-
-/** Claude Code's system notice when it goes on by itself after a usage limit reset. */
-const AUTO_CONTINUE_NOTICE = 'Usage limit reset · Continuing automatically';
-
-/** The entry's `type`, `stop_reason`, content and sidechain flag, from its raw line (null: not JSON). */
-function rawEntry(line: string): { type?: unknown; stopReason?: unknown; content?: unknown; messageId: string | null; sidechain: boolean; typed: boolean; autoContinued: boolean } | null {
-  let entry: unknown;
-  try {
-    entry = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  if (!entry || typeof entry !== 'object') return null;
-  const e = entry as { type?: unknown; isSidechain?: unknown; origin?: { kind?: unknown }; promptSource?: unknown; turnOrigin?: unknown; content?: unknown; message?: { id?: unknown; stop_reason?: unknown; content?: unknown } };
-  const messageId = typeof e.message?.id === 'string' ? e.message.id : null;
-  // Typed at the agent's prompt on this PC (a prompt, a slash command, a `!` command), as Claude Code 2.1 marks it.
-  const typed = e.type === 'user' && (e.origin?.kind === 'human' || e.promptSource === 'typed');
-  // Claude Code going on by itself after its usage limit reset (2.1.322): its notice, then its own prompt.
-  const autoContinued = (e.type === 'user' && (e.origin?.kind === 'auto-continuation' || e.turnOrigin === 'auto_continuation'))
-    || (e.type === 'system' && typeof e.content === 'string' && e.content.startsWith(AUTO_CONTINUE_NOTICE));
-  return { type: e.type, stopReason: e.message?.stop_reason, content: e.message?.content, messageId, sidechain: e.isSidechain === true, typed, autoContinued };
-}
-
-function textOfContent(content: unknown): string | null {
-  if (typeof content === 'string') return content.trim() ? content : null;
-  if (!Array.isArray(content)) return null;
-  const blocks = content.filter((b): b is { type: 'text'; text: string } =>
-    !!b && typeof b === 'object' && (b as { type?: unknown }).type === 'text' && typeof (b as { text?: unknown }).text === 'string');
-  // A tool result (no text block of the user's own) is not a prompt.
-  if (blocks.length === 0 || blocks.length !== content.length) return null;
-  const text = blocks.map((b) => b.text).join('\n');
-  return text.trim() ? text : null;
 }
 
 /**
@@ -465,12 +416,9 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
   if (ep.opened) noteAsk(ep, raw?.content);
   // A conversation entry after a turn end: the agent is in a turn again.
   if (raw?.type === 'assistant' || raw?.type === 'user') ep.busy = true;
-  if (!ep.opened) {
-    const text = raw?.type === 'user' ? textOfContent(raw.content) : null;
-    if (text !== null && userEntryHash(text) === ep.promptHash) {
-      ep.opened = true;
-      return null;
-    }
+  if (!ep.opened && isPromptRaw(raw, ep.promptHash)) {
+    ep.opened = true;
+    return null;
   }
   const apiError = apiErrorFromTranscriptLine(line);
   if (apiError && ep.opened) {

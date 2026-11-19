@@ -777,7 +777,7 @@ async function verifyUpstreamSocket(upstreamPath:string):Promise<string> {
   if (process.platform === 'win32') return windowsCodexSocketIdentity(upstreamPath);
   const link = await lstat(upstreamPath);
   const target = link.isSymbolicLink() ? await realpath(upstreamPath) : upstreamPath;
-  const stat = await lstat(target);
+  const stat = await lstat(target, {bigint:true});
   if (link.isSymbolicLink()) {
     // Current Codex places its Unix socket in a private short-path directory.
     // Accept that indirection only when both directories belong to this user
@@ -787,9 +787,9 @@ async function verifyUpstreamSocket(upstreamPath:string):Promise<string> {
       if (!parent.isDirectory() || parent.mode & 0o022 || typeof process.getuid === 'function' && parent.uid !== process.getuid()) throw new Error('Unsafe Codex socket directory');
     }
   }
-  if (!stat.isSocket() || typeof process.getuid === 'function' && stat.uid !== process.getuid()) throw new Error('Codex account socket unavailable');
-  // Which socket: a restarted server binds a new one.
-  return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+  if (!stat.isSocket() || typeof process.getuid === 'function' && Number(stat.uid) !== process.getuid()) throw new Error('Codex account socket unavailable');
+  // Which socket: a restarted server binds a new one. Bigint, so an inode past 2^53 keeps its low bits.
+  return `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
 }
 
 /**

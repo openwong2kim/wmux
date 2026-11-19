@@ -7,6 +7,7 @@ import { RoomWriter, setGuestTurnProbe } from '../roomWriter';
 import { botFileRoots, handleRoomPost, type BotFileRoots, type RoomHandlerDeps } from '../../pipe/handlers/room.rpc';
 import { TaskFolders, setTaskFolderPorts, type TaskFolderPorts, type TaskMission } from '../taskFolderCleanup';
 import type { LedgerEntry } from '../../../shared/ledger';
+import { FAR_IDS, fakeFileIds } from '../../../test-utils/fileIds';
 import { ROOM_FILE_LIMITS, type RoomFile } from '../../../shared/roomFiles';
 import type { BotBinding, BotProfile } from '../../../shared/bot';
 import type { RoomCard } from '../../../shared/room';
@@ -37,6 +38,7 @@ beforeEach(() => {
   store = new RoomFileStore({ root: storeRoot(), now: () => now, log: () => undefined });
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -122,6 +124,21 @@ describe('room file rules', () => {
 });
 
 describe('RoomFileStore.copyIn', () => {
+  it('refuses an opened file whose 64-bit ID differs from the checked one only below Number precision', () => {
+    const src = write(path.join(repo(), 'report.md'));
+    fakeFileIds({ [src]: { byPath: () => FAR_IDS[0], byHandle: () => FAR_IDS[1] } });
+    expect(store.copyIn(WS, src, [repo()])).toMatchObject({ ok: false, reason: 'changed' });
+    expect(stored()).toEqual([]);
+  });
+
+  it('refuses when the path names another file after the read, by an ID that differs only below Number precision', () => {
+    const src = write(path.join(repo(), 'report.md'));
+    let opened = false;
+    fakeFileIds({ [src]: { byPath: () => (opened ? FAR_IDS[1] : FAR_IDS[0]), byHandle: () => { opened = true; return FAR_IDS[0]; } } });
+    expect(store.copyIn(WS, src, [repo()])).toMatchObject({ ok: false, reason: 'changed' });
+    expect(stored()).toEqual([]);
+  });
+
   it('copies a regular file inside an allowed root, 0600 in a 0700 folder', () => {
     const src = write(path.join(repo(), 'docs', 'report.md'), '# Report\n');
     const r = store.copyIn(WS, src, [repo()]);

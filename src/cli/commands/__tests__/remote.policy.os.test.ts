@@ -67,6 +67,9 @@ let peers: unknown[];
 let beforeSet: ((p: A2aSpawnPolicyV1) => void) | null;
 let sets: A2aSpawnPolicyV1[];
 let setRefusal: string | null;
+/** This PC's approvals setting, as the fake daemon holds it, and the saves it took. */
+let approvalHosts: Record<string, string> = {};
+let approvalSets: Array<Record<string, unknown>> = [];
 /** This PC's status labels setting, as the fake daemon holds it. */
 let statusLabels = 'send';
 /** What the daemon answers when asked whether it finds an agent; undefined: it does not say (an older daemon). */
@@ -97,6 +100,13 @@ function fakeDaemon(): void {
         if (next.version !== store.version) return ok({ ok: false, conflict: true, error: 'the settings changed in the meantime' });
         store = { ...structuredClone(next), version: store.version + 1 };
         return ok({ ok: true, policy: structuredClone(store) });
+      }
+      case 'a2a.remote.approvals.get': return ok({ hosts: { ...approvalHosts }, damaged: false });
+      case 'a2a.remote.approvals.set': {
+        approvalSets.push({ ...params });
+        if (params['exposure'] === 'off') delete approvalHosts[params['hostId'] as string];
+        else approvalHosts[params['hostId'] as string] = params['exposure'] as string;
+        return ok({ ok: true, hosts: { ...approvalHosts } });
       }
       case 'a2a.remote.statusLabels.get': return ok({ labels: statusLabels });
       case 'a2a.remote.statusLabels.set':
@@ -148,6 +158,8 @@ beforeEach(() => {
   agentFound = undefined;
   headlessOn = undefined;
   sets = [];
+  approvalHosts = {};
+  approvalSets = [];
   fakeDaemon();
   vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
     throw new ExitCalled(code);
@@ -165,6 +177,49 @@ afterEach(() => {
   }
   delete process.env['CLAUDECODE'];
   delete process.env['WMUX_PTY_ID'];
+});
+
+describe('wmux remote approvals', () => {
+  it('raising a PC (on, or to command) asks for a typed yes, then saves', async () => {
+    expect(await run('approvals', [DESK, 'tool-only'])).toBe(0);
+    expect(askSpy).toHaveBeenCalledTimes(1);
+    expect(approvalSets).toEqual([{ hostId: DESK, exposure: 'tool-only' }]);
+    expect(await run('approvals', [DESK, 'command'])).toBe(0);
+    expect(askSpy).toHaveBeenCalledTimes(2);
+    expect(printed()).toContain('can allow a Bash, PowerShell or WebSearch call or a plan');
+    expect(approvalHosts).toEqual({ [DESK]: 'command' });
+  });
+
+  it('raising it with no terminal to confirm in is refused before any save', async () => {
+    ttySpy.mockReturnValue(false);
+    expect(await run('approvals', [DESK, 'command'])).toBe(1);
+    expect(printed()).toContain('Run this in a terminal and confirm');
+    expect(askSpy).not.toHaveBeenCalled();
+    expect(approvalSets).toEqual([]);
+  });
+
+  it('an answer other than yes saves nothing', async () => {
+    askSpy.mockResolvedValue('y');
+    expect(await run('approvals', [DESK, 'tool-only'])).toBe(1);
+    expect(printed()).toContain('not confirmed; nothing was saved.');
+    expect(approvalSets).toEqual([]);
+  });
+
+  it('lowering it, or turning it off, never asks, with or without a terminal', async () => {
+    approvalHosts = { [DESK]: 'command' };
+    ttySpy.mockReturnValue(false);
+    expect(await run('approvals', [DESK, 'tool-only'])).toBe(0);
+    expect(await run('approvals', [DESK, 'off'])).toBe(0);
+    expect(askSpy).not.toHaveBeenCalled();
+    expect(approvalSets).toEqual([{ hostId: DESK, exposure: 'tool-only' }, { hostId: DESK, exposure: 'off' }]);
+    expect(approvalHosts).toEqual({});
+  });
+
+  it('raising it from an agent session is refused', async () => {
+    process.env['CLAUDECODE'] = '1';
+    expect(await run('approvals', [DESK, 'command'])).toBe(1);
+    expect(approvalSets).toEqual([]);
+  });
 });
 
 describe('wmux remote status-labels', () => {

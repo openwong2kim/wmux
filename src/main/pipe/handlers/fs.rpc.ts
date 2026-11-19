@@ -24,6 +24,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { RpcRouter } from '../RpcRouter';
 import { resolvePluginPath } from './fsRefusals';
+import { sameFileId } from '../../../shared/sameFileId';
 
 export type FsEntryKind = 'file' | 'dir' | 'symlink' | 'other';
 
@@ -162,31 +163,32 @@ export async function handleFsReadText(params: Record<string, unknown>) {
     // Non-blocking, so a FIFO with no writer cannot hold the call open; only a
     // regular file is read.
     handle = await fs.promises.open(resolved, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
-    const stat = await handle.stat();
+    const stat = await handle.stat({ bigint: true });
+    const size = Number(stat.size);
     if (stat.isDirectory()) return { ok: false as const, reason: 'is-a-directory' as FsFailure };
     if (!stat.isFile()) return { ok: false as const, reason: 'failed' as FsFailure };
     // The file opened is the one checked: a path swapped for a link between
     // the check and the open answers `unavailable`.
     const again = await resolvePluginPath(resolved);
-    const checked = again ? await fs.promises.stat(again).catch(() => null) : null;
-    if (!checked || checked.dev !== stat.dev || checked.ino !== stat.ino) {
+    const checked = again ? await fs.promises.stat(again, { bigint: true }).catch(() => null) : null;
+    if (!checked || !sameFileId(checked, stat)) {
       return { ok: false as const, reason: 'unavailable' as FsFailure };
     }
     // The first 8 KB decide binary whatever maxBytes asks for.
-    const buf = Buffer.alloc(Math.min(Math.max(limit, BINARY_SNIFF_BYTES), stat.size));
+    const buf = Buffer.alloc(Math.min(Math.max(limit, BINARY_SNIFF_BYTES), size));
     const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
     const read = buf.subarray(0, bytesRead);
     if (read.subarray(0, BINARY_SNIFF_BYTES).includes(0)) {
       return { ok: false as const, reason: 'binary' as FsFailure };
     }
-    const cut = read.length > limit || stat.size > read.length;
+    const cut = read.length > limit || size > read.length;
     const bytes = cut ? wholeUtf8(read.subarray(0, Math.min(limit, read.length))) : read;
     return {
       ok: true as const,
       path: resolved,
-      size: stat.size,
+      size,
       text: bytes.toString('utf-8'),
-      truncated: stat.size > bytes.length,
+      truncated: size > bytes.length,
     };
   } catch (err) {
     return { ok: false as const, reason: failureOf(err) };

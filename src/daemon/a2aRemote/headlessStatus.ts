@@ -28,6 +28,10 @@ export interface HeadlessStatusDeps {
   labels(): StatusLabels;
   log(level: 'info' | 'warn', msg: string): void;
   now?: () => number;
+  /** Changes sent per task at most (default STATUS_CHANGES_MAX). */
+  changesMax?: number;
+  /** Called with each status that was queued for the PC (the send answered ok). */
+  sent?: (taskId: string, status: A2aRemoteStatusV1) => void;
 }
 
 interface Current {
@@ -117,19 +121,22 @@ export class HeadlessStatusReporter {
     if (changed && !urgent) {
       // Held until the floor passed: the newest status then goes, not each one in between.
       if (t.sent && now - t.sent.at < STATUS_FLOOR_MS) return;
-      if (t.changes >= STATUS_CHANGES_MAX) {
+      const max = this.deps.changesMax ?? STATUS_CHANGES_MAX;
+      if (t.changes >= max) {
         if (!t.capped) {
           t.capped = true;
-          this.deps.log('info', `[headless] task ${taskId}: ${STATUS_CHANGES_MAX} status changes sent; only gone and usage-limit go from now on`);
+          this.deps.log('info', `[headless] task ${taskId}: ${max} status changes sent; only gone and usage-limit go from now on`);
         }
         return;
       }
     }
-    const res = this.deps.send(taskId, this.labelled(current.status));
+    const out = this.labelled(current.status);
+    const res = this.deps.send(taskId, out);
     if (!res.ok) {
       if (res.error !== 'ended') this.deps.log('warn', `[headless] task ${taskId}: its status could not be sent: ${res.error}`);
       return;
     }
+    this.deps.sent?.(taskId, out);
     if (changed) t.changes += 1;
     t.sent = { key: current.key, since: current.status.since, at: now, epoch: peer.epoch };
   }

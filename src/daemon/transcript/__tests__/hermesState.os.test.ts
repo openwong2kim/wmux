@@ -110,7 +110,11 @@ for (const schema of Object.keys(HERMES_SCHEMAS) as Array<keyof typeof HERMES_SC
     it('keeps the newest rows when the session is longer than a page', () => {
       const { db, writer } = fixture(schema);
       addSession(writer, { id: 's1', cwd: '/w/proj', startedAt: 1_000 });
+      // One transaction for the page's rows: one commit (and one sync) for all
+      // of them, rather than one each, which a slow disk spends seconds on.
+      writer.exec('BEGIN');
       for (let i = 0; i <= HERMES_PAGE_ROWS; i++) addMessage(writer, { session: 's1', role: i % 2 ? 'assistant' : 'user', content: `row ${i}` });
+      writer.exec('COMMIT');
       const history = withHermesDb(db, (conn) => readHermesHistory(conn, 's1'))!;
       expect(history.truncatedHead).toBe(true);
       expect(history.events).toHaveLength(HERMES_PAGE_ROWS);

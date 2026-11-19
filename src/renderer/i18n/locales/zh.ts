@@ -872,6 +872,7 @@ export const zh = {
   'settings.mcpBrokerUnavailable': "无法从 wmux 读取当前选择。",
   'settings.mcpBrokerIdleHere': "在 Windows 上，共享进程暂时还不承载代理：每个代理仍使用自己的 MCP 服务器，所以开启只会多出一个空闲进程。",
   'settings.mcpBrokerPeerUnavailable': "在此系统上无法确认连接到共享进程的是哪个进程，因此它已停止，直到 wmux 重启。每个代理使用自己的 MCP 服务器。",
+  'settings.mcpBrokerPathOccupied': "此系统上另一个程序占用了共享进程的连接名称，因此共享进程已停止，直到 wmux 重启。每个代理使用自己的 MCP 服务器。",
   'settings.mcpRegistered': '已注册',
   'settings.mcpNotRegistered': '未注册',
   'settings.mcpExperimentalTitle': '集成尚未端到端验证',

@@ -3,7 +3,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
-import { canConnectBrokerPipe } from './brokerProbe';
+import { probeBrokerPipe } from './brokerProbe';
 import { brokerOffEffects, type BrokerOffEffects } from './brokerOffMarker';
 import { parseBrokerConnectionsReport, type BrokerDownReason, type BrokerStampMessage, type BrokerStatus } from '../../shared/mcpSessions';
 import { processStartTime } from '../../shared/processStartTime';
@@ -58,9 +58,31 @@ interface TerminalExit {
   reason: Extract<BrokerDownReason, 'path-occupied' | 'peer-unavailable'>;
   message: string;
 }
+/** Another owner holds the broker's Windows pipe name: no restart frees it. */
+const PIPE_HELD_ELSEWHERE: TerminalExit = { reason: 'path-occupied', message: 'another owner holds the broker pipe' };
+/** The broker's Windows pipe stayed busy with an owner no probe could read. */
+const PIPE_HELD_BUSY: TerminalExit = { reason: 'path-occupied', message: 'the broker pipe stayed busy and its owner could not be read' };
+/**
+ * Consecutive 'busy' reclaim probes (about 2 min at RECLAIM_PROBE_MS) after
+ * which the pipe counts as held elsewhere: a broker always keeps an instance
+ * listening, so only a broker at its instance cap stays busy, and a holder
+ * that keeps its one instance connected would otherwise be waited on forever.
+ * Since that broker could be ours, this stop does not mark the broker off.
+ */
+const BUSY_PROBES_BEFORE_TERMINAL = 8;
+/**
+ * Consecutive 'unknown' reclaim probes (about 2 min) after which a broker is
+ * started to bind the pipe itself: its own owner check runs where main's
+ * could not, and it stands down (exit 75) or stops for good (exit 78) as the
+ * pipe warrants. An unknown probe never ends in the terminal state.
+ */
+const UNKNOWN_PROBES_BEFORE_BIND = 8;
+
 /** Broker exits that a restart cannot fix. */
 const TERMINAL_EXITS: Readonly<Record<number, TerminalExit>> = {
-  [BROKER_EXIT_PATH_OCCUPIED]: { reason: 'path-occupied', message: 'the broker socket path holds something that is not a socket' },
+  [BROKER_EXIT_PATH_OCCUPIED]: process.platform === 'win32'
+    ? PIPE_HELD_ELSEWHERE
+    : { reason: 'path-occupied', message: 'the broker socket path holds something that is not a socket' },
   [BROKER_EXIT_PEER_UNAVAILABLE]: { reason: 'peer-unavailable', message: 'the broker could not confirm which process connects to it' },
 };
 /** How often a stood-down supervisor probes whether the pipe was orphaned. */
@@ -87,6 +109,10 @@ export class BrokerSupervisor {
   private scriptMissing = false;
   /** Exit-75 reclaim probe (W2): live only while standing down for another broker. */
   private reclaimTimer: NodeJS.Timeout | null = null;
+  /** Reclaim probes in a row that found the pipe busy. */
+  private busyProbes = 0;
+  /** Reclaim probes in a row whose owner check could not run. */
+  private unknownProbes = 0;
   /** When the current child was spawned; null while none runs. */
   private childStartedAt: number | null = null;
   /** The current child's start time as the OS reports it, read right after the spawn. */
@@ -330,18 +356,25 @@ export class BrokerSupervisor {
       }
       const terminal = code === null ? undefined : TERMINAL_EXITS[code];
       if (terminal) {
-        // No restart can fix it: stop the way a tripped breaker does, and mark
-        // the broker off so launchers start their own server.
         this.clearChild();
         settled = true;
-        this.tripped = true;
-        this.terminalReason = terminal.reason;
-        console.error(`[BrokerSupervisor] ${terminal.message}; not restarting it until wmux restarts (agents use their own MCP server)`);
-        void this.brokerOff.tripped().catch(() => undefined);
+        this.stopForGood(terminal);
         return;
       }
       scheduleRestart(`broker exited code=${code} signal=${signal}`, 'crash');
     });
+  }
+
+  /**
+   * No restart can fix it: stop the way a tripped breaker does, and (unless
+   * `markOff` is false) mark the broker off so launchers start their own
+   * server.
+   */
+  private stopForGood(terminal: TerminalExit, markOff = true): void {
+    this.tripped = true;
+    this.terminalReason = terminal.reason;
+    console.error(`[BrokerSupervisor] ${terminal.message}; not restarting it until wmux restarts (agents use their own MCP server)`);
+    if (markOff) void this.brokerOff.tripped().catch(() => undefined);
   }
 
   private clearChild(): void {
@@ -377,45 +410,80 @@ export class BrokerSupervisor {
   }
 
   /**
-   * Resolve `true` once the broker pipe accepts a test connection, `false` on
+   * Resolve `true` once a broker of this user serves the pipe, `false` on
    * deadline. Never rejects and never blocks boot beyond `timeoutMs`: the caller
    * uses the result to decide whether agents get the shim (broker up) or the
    * full bundle (broker down) — a false is a fail-open, not an error (W1).
    *
    * Polls every 200ms; each probe socket carries its own 200ms connect timeout
    * so a half-open pipe (server spawned but not yet listening) can't hang us.
+   * On Windows the probe reads the pipe's owner (brokerProbe.ts), so a pipe
+   * another owner holds is never "ready"; it ends the wait at once.
    */
   async whenReady(timeoutMs = 4000): Promise<boolean> {
     // start() already gave up (script missing) — no point polling to the deadline.
     if (this.scriptMissing) return false;
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      if (await canConnectBrokerPipe(PROBE_TIMEOUT_MS)) return true;
-      if (Date.now() >= deadline) return false;
+      const state = await probeBrokerPipe(PROBE_TIMEOUT_MS);
+      if (state === 'ours') return true;
+      if (state === 'foreign' || Date.now() >= deadline) return false;
       await new Promise<void>((resolve) => setTimeout(resolve, PROBE_TIMEOUT_MS));
     }
   }
 
   /**
-   * After standing down on exit 75, poll the pipe: when a probe FAILS to
-   * connect the other broker is gone, so clear the timer and reclaim the pipe
-   * via start(). If two instances both stood down, both reclaim and one loses
-   * the race (exit 75 again → re-arms this probe), converging to one owner.
+   * After standing down on exit 75, poll the pipe: when a probe finds nothing
+   * serving it the other broker is gone, so clear the timer and reclaim the
+   * pipe via start(). If two instances both stood down, both reclaim and one
+   * loses the race (exit 75 again → re-arms this probe), converging to one
+   * owner. A pipe another owner holds (Windows) is not another broker: the
+   * supervisor stops for good, as for exit 78. A pipe whose instances are all
+   * in use ('busy') waits for the next tick, up to BUSY_PROBES_BEFORE_TERMINAL
+   * in a row; then it counts as held elsewhere too, without marking the broker
+   * off. A probe whose owner check could not run ('unknown') is asked again
+   * and counts toward neither; UNKNOWN_PROBES_BEFORE_BIND in a row start a
+   * broker, whose own check decides.
    */
   private startReclaimProbe(): void {
     if (this.stopped || this.reclaimTimer) return;
+    this.busyProbes = 0;
+    this.unknownProbes = 0;
     this.reclaimTimer = setInterval(() => {
       void this.reclaimTick();
     }, RECLAIM_PROBE_MS);
   }
 
   private async reclaimTick(): Promise<void> {
-    if (await canConnectBrokerPipe(PROBE_TIMEOUT_MS)) return; // still owned — keep waiting
+    const state = await probeBrokerPipe(PROBE_TIMEOUT_MS);
+    if (state === 'unknown') {
+      // The check could not run: ask again, without touching the busy count.
+      if (++this.unknownProbes < UNKNOWN_PROBES_BEFORE_BIND) return;
+      if (this.reclaimTimer) {
+        clearInterval(this.reclaimTimer);
+        this.reclaimTimer = null;
+      }
+      if (this.stopped) return;
+      console.log(`[BrokerSupervisor] the broker pipe's owner could not be checked ${this.unknownProbes} times; starting a broker to bind it`);
+      this.start();
+      return;
+    }
+    this.unknownProbes = 0;
+    this.busyProbes = state === 'busy' ? this.busyProbes + 1 : 0;
+    if (state === 'ours') return; // still owned — keep waiting
+    if (state === 'busy' && this.busyProbes < BUSY_PROBES_BEFORE_TERMINAL) return; // ask again
     if (this.reclaimTimer) {
       clearInterval(this.reclaimTimer);
       this.reclaimTimer = null;
     }
     if (this.stopped) return;
+    if (state === 'foreign' || state === 'busy') {
+      // Only another owner marks the broker off: a busy pipe may be our own
+      // broker at its instance cap, which would serve again later.
+      if (state === 'foreign') this.stopForGood(PIPE_HELD_ELSEWHERE);
+      else this.stopForGood(PIPE_HELD_BUSY, false);
+      return;
+    }
     console.log('[BrokerSupervisor] broker pipe orphaned — reclaiming');
     this.start();
   }

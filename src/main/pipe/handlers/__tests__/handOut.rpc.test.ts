@@ -53,8 +53,12 @@ beforeEach(() => {
   h.ownerOf.mockReset();
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 });
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
+  // An add persists without waiting: the folder goes once the stores' queued
+  // writes are done, or a write lands in it (ENOTEMPTY) while it is removed.
+  await store.flush();
+  await links.flush();
   rmSync(dir, { recursive: true, force: true });
 });
 

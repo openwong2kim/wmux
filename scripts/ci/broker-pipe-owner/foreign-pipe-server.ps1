@@ -1,7 +1,8 @@
 # A named-pipe server for broker-pipe-owner.yml, run as the temporary second
-# account. It creates the pipe (so that account owns it), lets the runner's
-# account open it, accepts one client, counts the bytes that client sends
-# until it closes, and writes the result as JSON.
+# account (or as the runner's, for the control). It creates the pipe owned by
+# the account it runs as, lets the runner's account open it, accepts one
+# client, counts the bytes that client sends until it closes, and writes the
+# result as JSON.
 #
 # Windows PowerShell 5.1 (.NET Framework: NamedPipeServerStream takes a
 # PipeSecurity there).
@@ -24,6 +25,9 @@ try {
   $short = $PipeName -replace '^\\\\\.\\pipe\\', ''
   $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
   $security = New-Object System.IO.Pipes.PipeSecurity
+  # The owner is set explicitly to this account: an elevated process would
+  # otherwise give the pipe the Administrators group as its default owner.
+  $security.SetOwner($me)
   $security.AddAccessRule((New-Object System.IO.Pipes.PipeAccessRule($me, 'FullControl', 'Allow')))
   $runner = New-Object System.Security.Principal.SecurityIdentifier($AllowSid)
   $security.AddAccessRule((New-Object System.IO.Pipes.PipeAccessRule($runner, 'FullControl', 'Allow')))

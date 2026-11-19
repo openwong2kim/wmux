@@ -683,9 +683,18 @@ describe('task_pr: the push goes where it was approved to', () => {
 });
 
 describe('the Git page\'s push check runs before the task PR push', () => {
-  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd, encoding: 'utf8' }).trim();
+  // No git process outlives its command here: an auto gc or maintenance run
+  // after a commit, or an fsmonitor daemon a runner's global config turns on,
+  // would keep the temp repo open past the test (EBUSY on Windows).
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', [
+    '-c', 'user.name=t', '-c', 'user.email=t@example.invalid',
+    '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'core.fsmonitor=false',
+    ...args,
+  ], { cwd, encoding: 'utf8' }).trim();
   let root: string;
-  afterEach(() => { if (root) fs.rmSync(root, { recursive: true, force: true }); });
+  // A git that just exited can still hold a handle in the repo for a moment on Windows.
+  const removeRoot = () => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  afterEach(() => { if (root) removeRoot(); });
 
   /** A real worktree whose task branch adds `file` on top of what origin has. */
   function repoWith(file: string, text: string): string {
@@ -720,7 +729,7 @@ describe('the Git page\'s push check runs before the task PR push', () => {
     expect(res).toMatchObject({ ok: false, reason: 'secrets', error: expect.stringContaining('deploy.pem'), secrets: [expect.objectContaining({ path: 'deploy.pem' })] });
     expect(run.calls.some((c) => c.cmd === 'git' && c.args[0] === 'push')).toBe(false);
 
-    fs.rmSync(root, { recursive: true, force: true });
+    removeRoot();
     const clean = repoWith('b.txt', 'b\n');
     run = makeExec(happyBehavior);
     res = await makeService(realRevParse(run), { scanGit: (cwd) => spawnGitLines(cwd) }).svc.createPr({ ...INPUT, worktreePath: clean });

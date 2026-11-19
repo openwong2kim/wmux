@@ -1165,8 +1165,10 @@ export class DaemonClient extends EventEmitter {
   }
 
   /** Current daemon-owned agent identity and status for reconnect-safe actions.
-   *  `opts.timeoutMs` bounds one read for a caller that polls (#1680). */
-  async getAgentState(sessionId: string, opts: { timeoutMs?: number } = {}): Promise<{
+   *  `opts.timeoutMs` bounds one read for a caller that polls (#1680).
+   *  `opts.transcriptOffset` also asks for the size of the session's bound
+   *  transcript (a delivery's submit proof); always a read of its own. */
+  async getAgentState(sessionId: string, opts: { timeoutMs?: number; transcriptOffset?: boolean } = {}): Promise<{
     agentName: string | null;
     /** #1307 — true when a live attributed process backs this pane.
      *  Missing or non-boolean parses to false, so an older daemon
@@ -1179,6 +1181,12 @@ export class DaemonClient extends EventEmitter {
     /** #1680 — the key-only input counter: focus and pointer-motion reports do
      *  not move it. Absent on an older daemon. */
     keyInputRevision?: number;
+    /** The epoch that counter is in: a recovered session counts again from 0
+     *  under a new one. Absent on an older daemon. */
+    keyEpoch?: string;
+    /** With `opts.transcriptOffset`: the bound transcript's size in bytes.
+     *  Absent when the session is not bound to one, or on an older daemon. */
+    transcriptOffset?: number;
     /** #1680 — `inputQuiet` for key input only. Absent on an older daemon. */
     keyInputQuiet?: boolean;
     /** #1680 — the pane's CURRENT agent has delivered a hook (reset when that
@@ -1200,8 +1208,8 @@ export class DaemonClient extends EventEmitter {
     unsentPasteHeld?: boolean;
   } | null> {
     try {
-      const result = await (opts.timeoutMs !== undefined
-        ? this.rpc('daemon.getAgentState', { id: sessionId }, { timeoutMs: opts.timeoutMs })
+      const result = await (opts.timeoutMs !== undefined || opts.transcriptOffset
+        ? this.rpc('daemon.getAgentState', { id: sessionId, ...(opts.transcriptOffset ? { transcriptOffset: true } : {}) }, opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : undefined)
         : this.readAgentStateRaw(sessionId)) as {
         agentName?: unknown;
         agentVerified?: unknown;
@@ -1210,6 +1218,8 @@ export class DaemonClient extends EventEmitter {
         inputRevision?: unknown;
         incarnationId?: unknown;
         keyInputRevision?: unknown;
+        keyEpoch?: unknown;
+        transcriptOffset?: unknown;
         keyInputQuiet?: unknown;
         hookReports?: unknown;
         hasDraft?: unknown;
@@ -1251,6 +1261,10 @@ export class DaemonClient extends EventEmitter {
         Number.isInteger(result.keyInputRevision) &&
         result.keyInputRevision >= 0
           ? { keyInputRevision: result.keyInputRevision }
+          : {}),
+        ...(typeof result.keyEpoch === 'string' && result.keyEpoch && result.keyEpoch.length <= 128 ? { keyEpoch: result.keyEpoch } : {}),
+        ...(typeof result.transcriptOffset === 'number' && Number.isSafeInteger(result.transcriptOffset) && result.transcriptOffset >= 0
+          ? { transcriptOffset: result.transcriptOffset }
           : {}),
         ...(typeof result.keyInputQuiet === 'boolean' ? { keyInputQuiet: result.keyInputQuiet } : {}),
         ...(typeof result.hookReports === 'boolean' ? { hookReports: result.hookReports } : {}),

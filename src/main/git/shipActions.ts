@@ -96,6 +96,8 @@ export interface ShipCommitOptions {
 
 /** Longest commit message / PR title accepted. */
 export const SHIP_TEXT_MAX = 10_000;
+/** How long one of ShipActions' git calls may run before it is stopped. */
+export const SHIP_GIT_TIMEOUT_MS = 30_000;
 /** How long a default branch read from the remote (ls-remote) is believed. */
 const DEFAULT_BRANCH_TTL_MS = 10 * 60_000;
 
@@ -310,7 +312,7 @@ export class ShipActions {
 
   /** git with its messages untranslated (LANGUAGE / LC_MESSAGES only: paths
    *  and encodings keep the user's locale), so its output can be classified. */
-  private git(args: string[], cwd: string, timeout = 30_000, extraEnv: NodeJS.ProcessEnv = {}): Promise<{ stdout: string }> {
+  private git(args: string[], cwd: string, timeout = SHIP_GIT_TIMEOUT_MS, extraEnv: NodeJS.ProcessEnv = {}): Promise<{ stdout: string }> {
     return this.run('git', args, { cwd, env: { ...getExecEnv(), LANGUAGE: 'C', LC_MESSAGES: 'C', ...extraEnv }, timeout });
   }
 

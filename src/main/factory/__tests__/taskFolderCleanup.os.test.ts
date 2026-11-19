@@ -39,6 +39,7 @@ import {
 } from '../taskFolderCleanup';
 import { ReclaimedWorkers, resumeWorker, type ReclaimedWorker, type WorkerResumePorts } from '../workerReclaim';
 import { deliberateSleep, waitFor } from '../../../test-utils/waitFor';
+import { FAR_IDS, fakeFileIds } from '../../../test-utils/fileIds';
 import { UNKNOWN_ROOT_REFUSAL } from '../../../shared/rpc';
 import { RoomFileStore } from '../roomFiles';
 
@@ -1325,6 +1326,20 @@ describe('a worktree git removed only half way', () => {
     expect(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf8')).toBe('mine');
   });
 
+  it('removeTreeNoFollow leaves a folder whose 64-bit ID changed by less than Number precision', async () => {
+    const top = path.join(dir, 'far-top');
+    fs.mkdirSync(top);
+    fs.writeFileSync(path.join(top, 'a.txt'), 'x');
+    let checked = false;
+    fakeFileIds({ [top]: { byPath: () => (checked ? FAR_IDS[1] : FAR_IDS[0]) } });
+    try {
+      await expect(removeTreeNoFollow(top, undefined, async () => { checked = true; return new Set(); })).rejects.toThrow(/left alone/);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(fs.readFileSync(path.join(top, 'a.txt'), 'utf8')).toBe('x');
+  });
+
   it('removeTreeNoFollow leaves a folder swapped for a link while it is being listed, and what the link points at', async () => {
     const top = path.join(dir, 'swap-top');
     const victim = path.join(top, 'victim');
@@ -1395,9 +1410,10 @@ describe('a worktree git removed only half way', () => {
   function fakeMounts(mounted: string[]) {
     const real = fs.promises.lstat.bind(fs.promises);
     return vi.spyOn(fs.promises, 'lstat').mockImplementation((async (p: fs.PathLike, ...rest: unknown[]) => {
-      const st = await (real as (...a: unknown[]) => Promise<fs.Stats>)(p, ...rest);
+      const st = await (real as (...a: unknown[]) => Promise<fs.Stats | fs.BigIntStats>)(p, ...rest);
       const at = path.resolve(String(p));
-      if (mounted.some((m) => at === m || at.startsWith(m + path.sep))) Object.defineProperty(st, 'dev', { value: st.dev + 1 });
+      const moved = typeof st.dev === 'bigint' ? st.dev + 1n : st.dev + 1;
+      if (mounted.some((m) => at === m || at.startsWith(m + path.sep))) Object.defineProperty(st, 'dev', { value: moved });
       return st;
     }) as never);
   }

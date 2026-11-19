@@ -49,6 +49,14 @@ jobs:
         run: rustup toolchain install stable --profile minimal
       - name: Rust interpreter and grid unit tests
         run: cargo test --manifest-path core/wmux-term/Cargo.toml --no-default-features --locked
+      # The pipe listener's tests read back its mandatory label. The hosted runner
+      # runs at High integrity, so this also covers a High creator setting a
+      # Medium label; fail if the runner is not High, so that case is never lost.
+      - name: Runner integrity is High
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (whoami /groups | Select-String -SimpleMatch 'S-1-16-12288')) { throw 'expected a High integrity runner' }
       - name: Native core unit tests
         run: cargo test --manifest-path core/wmux-term/Cargo.toml --features native-core --locked
       # The vendored crate is not a workspace member (it has dev-dependencies),

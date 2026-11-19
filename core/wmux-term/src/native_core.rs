@@ -56,6 +56,9 @@ pub fn native_core_capabilities() -> Vec<String> {
         "listen-sockets-v1".into(),
         #[cfg(windows)]
         "pipe-listener-v1".into(),
+        // v1 plus the client token read and the pipe owner check.
+        #[cfg(windows)]
+        "pipe-listener-v2".into(),
     ]
 }
 

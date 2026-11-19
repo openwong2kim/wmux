@@ -6,15 +6,34 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CdpPipeMux, MUX_ID_BASE, cdpPipeCounters, resetCdpPipeCounters } from '../CdpPipeMux';
 import { FakeBrowser } from './fakePipeBrowser';
+import { CdpPipeStallWatch, type WatchedClient } from '../CdpPipeStallWatch';
+import { writeProgress } from '../CdpPipeRelay';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const STALL = 120;
 
+/** Every mux a test made, closed after it whether it passed or not: a watch left running would count into the next test. */
+const muxes: CdpPipeMux[] = [];
+
 function setup(opts: ConstructorParameters<typeof CdpPipeMux>[2] = {}) {
   const browser = new FakeBrowser();
   const mux = new CdpPipeMux(browser.fromMux, browser.toMux, { stallMs: STALL, ...opts });
+  muxes.push(mux);
   const watch = (mux as unknown as { watch: { pending(): { sessions: number; timers: number } } }).watch;
   return { browser, mux, pending: () => watch.pending() };
+}
+
+/**
+ * Until `condition` holds, letting the fake browser's stream I/O run (it needs
+ * no timer, so this works with fake timers too, where vi.waitFor would move
+ * the clock).
+ */
+async function until(condition: () => boolean, what: string): Promise<void> {
+  for (let turn = 0; turn < 10_000; turn++) {
+    if (condition()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`never happened: ${what}`);
 }
 
 /**
@@ -46,7 +65,7 @@ function client(mux: CdpPipeMux, label: string, extra: { drain?: () => { buffere
     return id;
   };
   const replyTo = async (id: number) => {
-    await vi.waitFor(() => expect(inbox.some((m) => m.id === id)).toBe(true), { timeout: 5_000 });
+    await until(() => inbox.some((m) => m.id === id), `the reply to ${id}`);
     return inbox.find((m) => m.id === id) as { result?: Record<string, unknown> };
   };
   const answerPings = (on: boolean) => { answering = on; };
@@ -58,7 +77,7 @@ async function pausedFor(browser: FakeBrowser, a: ReturnType<typeof client>, b: 
   await a.replyTo(a.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }));
   await b.replyTo(b.send('Browser.getVersion'));
   b.send('Target.createTarget', { url: 'about:blank' });
-  await vi.waitFor(() => expect(a.inbox.some((m) => m.method === 'Target.attachedToTarget')).toBe(true), { timeout: 5_000 });
+  await until(() => a.inbox.some((m) => m.method === 'Target.attachedToTarget'), "a's paused session");
   const i = a.inbox.findIndex((m) => m.method === 'Target.attachedToTarget');
   // The watch armed in the same turn the mux relayed the event.
   return { session: (a.inbox[i].params as { sessionId: string }).sessionId, at: a.arrived[i] };
@@ -85,7 +104,10 @@ async function noResumeYet(browser: FakeBrowser, a: ReturnType<typeof client>, s
 
 const resumes = (browser: FakeBrowser, session: string) => browser.received.filter((c) => c.method === 'Runtime.runIfWaitingForDebugger' && c.sessionId === session);
 
-afterEach(() => resetCdpPipeCounters());
+afterEach(() => {
+  for (const mux of muxes.splice(0)) mux.close();
+  resetCdpPipeCounters();
+});
 
 describe('CdpPipeStallWatch, through the mux', () => {
   it('lets a target go for a client with no sign of life, on the mux\'s own id, and the client never sees the reply', async () => {
@@ -105,19 +127,31 @@ describe('CdpPipeStallWatch, through the mux', () => {
   });
 
   it('one frame and then silence: fires a fresh stall period after that frame', async () => {
-    const { browser, mux } = setup();
-    const a = client(mux, 'a');
-    const b = client(mux, 'b');
-    const { session } = await pausedFor(browser, a, b);
-    await deliberateSleep(STALL / 2, 'part of the period passes');
-    const lastFrame = performance.now();
-    a.send('Browser.getVersion');
-    await vi.waitFor(() => expect(resumes(browser, session)).toHaveLength(1), { timeout: 5_000 });
-    expect(performance.now() - lastFrame).toBeGreaterThanOrEqual(STALL - 5);
-    expect(cdpPipeCounters().watchdog).toMatchObject({ 'restarted-by-frame': 1, fired: 1 });
-    // Pings: at the arm, with the new period, and with the fire (a pong would clear stalled).
-    expect(a.pings()).toBe(3);
-    mux.close();
+    // The watch's clock is faked, so how late the runner gets here does not
+    // decide whether the frame lands inside the first period.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { browser, mux } = setup();
+      const a = client(mux, 'a');
+      const b = client(mux, 'b');
+      const { session } = await pausedFor(browser, a, b);
+      vi.advanceTimersByTime(STALL / 2);
+      await a.replyTo(a.send('Browser.getVersion'));
+      // The first deadline sees the frame and starts a fresh period from there.
+      vi.advanceTimersByTime(STALL / 2);
+      await until(() => cdpPipeCounters().watchdog?.['restarted-by-frame'] === 1, 'the period restarts on the frame');
+      vi.advanceTimersByTime(STALL - 1);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(resumes(browser, session)).toEqual([]);
+      vi.advanceTimersByTime(1);
+      await until(() => resumes(browser, session).length === 1, 'the fire after a silent period');
+      expect(cdpPipeCounters().watchdog).toMatchObject({ 'restarted-by-frame': 1, fired: 1 });
+      // Pings: at the arm, with the new period, and with the fire (a pong would clear stalled).
+      expect(a.pings()).toBe(3);
+      mux.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a pong to its ping starts a new period and does not end the wait; when pongs stop, it fires', async () => {
@@ -227,7 +261,13 @@ describe('CdpPipeStallWatch, through the mux', () => {
     // one timers pass, the deadline first, so only the recheck can see the frame.
     setTimeout(() => a.send('Browser.getVersion'), at + STALL + 2 - performance.now());
     while (performance.now() < at + STALL + 20) { /* main is busy */ }
-    await deliberateSleep(20, 'the recheck runs');
+    // Wait for the judgment itself: a timer can't stand in for it, since one
+    // due by the time main is free runs in the same timers pass as the
+    // deadline, before the recheck.
+    await until(() => {
+      const w = cdpPipeCounters().watchdog ?? {};
+      return (w['restarted-by-frame'] ?? 0) + (w.fired ?? 0) > 0;
+    }, 'the watch judges the deadline');
     expect(resumes(browser, session)).toEqual([]);
     expect(cdpPipeCounters().watchdog).toMatchObject({ armed: 1, 'restarted-by-frame': 1 });
     mux.close();
@@ -329,5 +369,85 @@ describe('CdpPipeStallWatch, through the mux', () => {
     expect(browser.received.some((c) => c.method === 'Runtime.runIfWaitingForDebugger')).toBe(false);
     expect(cdpPipeCounters().watchdog).toEqual({});
     mux.close();
+  });
+});
+
+describe('CdpPipeStallWatch, over a relay socket\'s drain sign', () => {
+  const FRAME = 1 << 20;
+  const CHUNK = 1 << 16;
+
+  afterEach(() => vi.useRealTimers());
+
+  /**
+   * A relay client's socket in the middle of one large frame, as Node and ws
+   * report it: ws's bufferedAmount holds the whole frame until its write
+   * completes, while the libuv handle, given the frame at once, queues what
+   * the OS hasn't taken yet and lets one more chunk go each time the client
+   * reads.
+   */
+  function largeWrite() {
+    const ws = { bufferedAmount: FRAME + 10 };
+    const handle = { bytesWritten: FRAME + 10, writeQueueSize: FRAME + 10 - CHUNK };
+    return {
+      client: { ping: () => undefined, drain: () => writeProgress(ws, { _handle: handle }) } satisfies WatchedClient,
+      /** The client reads, and the OS takes one more chunk of the frame. */
+      chunk() {
+        handle.writeQueueSize = Math.max(0, handle.writeQueueSize - CHUNK);
+        if (handle.writeQueueSize === 0) ws.bufferedAmount = 0;
+      },
+      /** More events for the client, queued behind the frame still being written. */
+      queueBehind(bytes: number) { ws.bufferedAmount += bytes; },
+      done: () => handle.writeQueueSize === 0,
+    };
+  }
+
+  function watching() {
+    vi.useFakeTimers();
+    const resumed: string[] = [];
+    const counts: Record<string, number> = {};
+    const watch = new CdpPipeStallWatch({
+      stallMs: STALL,
+      resume: (session) => resumed.push(session),
+      count: (reason) => { counts[reason] = (counts[reason] ?? 0) + 1; },
+    });
+    return { watch, resumed, counts };
+  }
+
+  it('a client reading a large frame chunk by chunk is alive, with main blocked past every period', () => {
+    const { watch, resumed, counts } = watching();
+    const socket = largeWrite();
+    watch.waiting(socket.client, 'S');
+    let periods = 0;
+    while (!socket.done()) {
+      // Main was blocked through the period: nothing moved, and the deadline
+      // runs first once main is free.
+      vi.advanceTimersToNextTimer();
+      // Then the poll phase, before the recheck: the OS takes one more chunk.
+      socket.chunk();
+      vi.advanceTimersToNextTimer();
+      expect(resumed, `period ${periods}`).toEqual([]);
+      periods++;
+    }
+    expect(periods).toBeGreaterThan(10);
+    expect(counts['restarted-by-drain']).toBe(periods);
+    // The frame is in; the client sets itself up and resumes its own target.
+    watch.frame(socket.client);
+    watch.resumed(socket.client, 'S');
+    expect(resumed).toEqual([]);
+    expect(counts.fired).toBeUndefined();
+    expect(watch.pending()).toEqual({ sessions: 0, timers: 0 });
+  });
+
+  it('a client that stopped mid-frame is let go after one period, even with more queued behind the frame', () => {
+    const { watch, resumed, counts } = watching();
+    const socket = largeWrite();
+    watch.waiting(socket.client, 'S');
+    socket.queueBehind(4096);
+    vi.advanceTimersToNextTimer();
+    socket.queueBehind(4096);
+    vi.advanceTimersToNextTimer();
+    expect(resumed).toEqual(['S']);
+    expect(counts).toEqual({ armed: 1, fired: 1 });
+    watch.close();
   });
 });

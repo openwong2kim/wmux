@@ -27,6 +27,7 @@ import * as net from 'net';
 import * as path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { canConnectBrokerPipe } from '../brokerProbe';
+import { loadNativePipe } from '../../../mcp/nativePipe';
 import { getMcpBrokerPipeName } from '../../../shared/constants';
 
 // npm test runs from the package root, so the bundled broker sits here. This is
@@ -40,6 +41,20 @@ const BROKER_JS = path.join(process.cwd(), 'dist', 'mcp-bundle', 'broker.js');
 // is the separate gate that guarantees the bundle is present
 // (see plans/mcp-broker-enable-plan-2026-07-24.md).
 const brokerBundleExists = fs.existsSync(BROKER_JS);
+
+// Windows: the broker listens with the terminal core's native pipe listener
+// (WMUX_TERMINAL_CORE_MODULE, passed through to the broker), and the probe
+// reads the pipe's owner with it. Without that core the broker does not start:
+// skipped here, failed instead under WMUX_REQUIRE_RUST_CORE=1.
+let brokerCanListen = true;
+if (process.platform === 'win32') {
+  try {
+    brokerCanListen = loadNativePipe() !== null;
+  } catch (error) {
+    if (brokerBundleExists && process.env.WMUX_REQUIRE_RUST_CORE === '1') throw error;
+    brokerCanListen = false;
+  }
+}
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
@@ -142,7 +157,7 @@ afterEach(async () => {
   }
 });
 
-describe.skipIf(!brokerBundleExists)('broker lifecycle (dynamic, real process)', () => {
+describe.skipIf(!brokerBundleExists || !brokerCanListen)('broker lifecycle (dynamic, real process)', () => {
   it(
     'a broker started with an IPC channel exits when its supervisor goes',
     async () => {
@@ -231,7 +246,9 @@ describe.skipIf(!brokerBundleExists)('broker lifecycle (dynamic, real process)',
       });
 
       const t0 = Date.now();
-      const okAccept = await canConnectBrokerPipe(2000, pipe);
+      // The connect probe itself (no owner check): on Windows the owner of
+      // this pipe depends on how the test runs (elevated or not).
+      const okAccept = await canConnectBrokerPipe(2000, pipe, null);
       const acceptElapsed = Date.now() - t0;
       expect(okAccept).toBe(true);
       expect(acceptElapsed).toBeLessThan(2000);
@@ -240,7 +257,7 @@ describe.skipIf(!brokerBundleExists)('broker lifecycle (dynamic, real process)',
       // connect is refused/ENOENT immediately, no timeout wait.
       const missing = pipeFor(uniqueSuffix());
       const t1 = Date.now();
-      const okMissing = await canConnectBrokerPipe(2000, missing);
+      const okMissing = await canConnectBrokerPipe(2000, missing, null);
       const missingElapsed = Date.now() - t1;
       expect(okMissing).toBe(false);
       expect(missingElapsed).toBeLessThan(2000);

@@ -95,6 +95,27 @@ pub(crate) fn token_integrity_rid(token: Handle) -> Result<u32, u32> {
     }
 }
 
+/// Whether the token is elevated (TokenElevation.TokenIsElevated).
+pub(crate) fn token_elevated(token: Handle) -> Result<bool, u32> {
+    // A fixed-size class: no size query (it fails with ERROR_BAD_LENGTH).
+    let mut elevation = 0u32;
+    let mut returned = 0u32;
+    // SAFETY: TOKEN_ELEVATION is one DWORD.
+    let ok = unsafe {
+        GetTokenInformation(
+            token,
+            TOKEN_ELEVATION_CLASS,
+            (&mut elevation as *mut u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+            &mut returned,
+        )
+    };
+    if ok == 0 {
+        return Err(last_error());
+    }
+    Ok(elevation != 0)
+}
+
 /// Opens a process's token for query; Err carries the Win32 error.
 pub(crate) fn open_token(process: Handle) -> Result<OwnedHandle, u32> {
     let mut token: Handle = std::ptr::null_mut();
@@ -165,4 +186,96 @@ impl Drop for SecurityDescriptor {
         // SAFETY: allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
         unsafe { LocalFree(self.0) };
     }
+}
+
+/// Whether `owner` is a valid SID equal to `user`.
+pub(crate) fn owner_is_user(owner: *const c_void, user: &Sid) -> bool {
+    // SAFETY: `owner` is checked for null, then IsValidSid guards EqualSid.
+    !owner.is_null()
+        && unsafe { IsValidSid(owner) } != 0
+        && unsafe { EqualSid(owner, user.as_ptr()) } != 0
+}
+
+/// The owner check of a named pipe, against this process's TokenUser.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum OwnerVerdict {
+    /// The owner SID is this process's user.
+    Ours,
+    /// Another owner, or the open was refused (access denied).
+    Foreign,
+    /// Every instance is in use; ask again later.
+    Busy,
+    /// No pipe has this name.
+    None,
+}
+
+impl OwnerVerdict {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Ours => "ours",
+            Self::Foreign => "foreign",
+            Self::Busy => "busy",
+            Self::None => "none",
+        }
+    }
+}
+
+/// Opens `name` as a client with READ_CONTROL | FILE_READ_ATTRIBUTES at the
+/// identification level, reads its owner, and closes it; never writes.
+/// The open takes one listening instance of the pipe for that moment.
+/// Errors other than the ones a verdict names are returned.
+pub(crate) fn pipe_owner_verdict(name: &str) -> Result<OwnerVerdict, String> {
+    let user = current_user()?;
+    let text = wide(name);
+    // SAFETY: NUL-terminated name; the handle is owned below.
+    let raw = unsafe {
+        CreateFileW(
+            text.as_ptr(),
+            READ_CONTROL | FILE_READ_ATTRIBUTES,
+            0,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+            std::ptr::null_mut(),
+        )
+    };
+    let Some(handle) = OwnedHandle::from_raw(raw) else {
+        return match last_error() {
+            ERROR_ACCESS_DENIED => Ok(OwnerVerdict::Foreign),
+            ERROR_PIPE_BUSY => Ok(OwnerVerdict::Busy),
+            ERROR_FILE_NOT_FOUND => Ok(OwnerVerdict::None),
+            code => Err(os_error("CreateFileW", code)),
+        };
+    };
+    // SAFETY: a valid handle.
+    if unsafe { GetFileType(handle.raw()) } != FILE_TYPE_PIPE {
+        return Err(format!("{name} is not a pipe"));
+    }
+    let mut owner: *mut c_void = std::ptr::null_mut();
+    let mut descriptor: *mut c_void = std::ptr::null_mut();
+    // SAFETY: the handle has READ_CONTROL; `owner` points into `descriptor`,
+    // which is freed below after its last use.
+    let status = unsafe {
+        GetSecurityInfo(
+            handle.raw(),
+            SE_KERNEL_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(os_error("GetSecurityInfo", status));
+    }
+    let ours = owner_is_user(owner, &user);
+    // SAFETY: allocated by GetSecurityInfo, freed once.
+    unsafe { LocalFree(descriptor) };
+    Ok(if ours {
+        OwnerVerdict::Ours
+    } else {
+        OwnerVerdict::Foreign
+    })
 }

@@ -559,6 +559,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'a2a.remote.answer.send': { capability: 'wmux.internal' },
   'a2a.remote.answers.get': { capability: 'wmux.internal' },
   'a2a.remote.answers.set': { capability: 'wmux.internal' },
+  // Which PCs may allow or deny prompts in the tasks they sent here: the same human's setting.
+  'a2a.remote.approvals.get': { capability: 'wmux.internal' },
+  'a2a.remote.approvals.set': { capability: 'wmux.internal' },
   'a2a.remote.spawnRequests.list': { capability: 'wmux.internal' },
   'a2a.remote.spawn.work': { capability: 'wmux.internal' },
   'a2a.remote.spawn.decide': { capability: 'wmux.internal' },

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { once } from 'node:events';
 import fs from 'node:fs';
@@ -6,7 +6,9 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { sendRoomFile } from '../rooms';
+import { roomFileResponse, sendRoomFile } from '../rooms';
+import { PHONE_ROOM_FILE_COMMAND } from '../../../shared/phoneRooms';
+import { FAR_IDS, fakeFileIds } from '../../../test-utils/fileIds';
 
 /**
  * sendRoomFile against a real socket: a phone that leaves mid-download and
@@ -75,5 +77,43 @@ describe('sendRoomFile', () => {
     expect(sent[0].stream()?.bytesRead).toBeLessThan(SIZE);
     expect(sent[0].stream()?.closed).toBe(true);
     await expect(sent[0].handle.stat()).rejects.toMatchObject({ code: 'EBADF' });
+  });
+});
+
+describe('roomFileResponse', () => {
+  const store = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-room-files-')));
+  const folder = path.join(store, 'ws-1');
+  const fileId = 'a'.repeat(32);
+  const stored = path.join(folder, fileId);
+  fs.mkdirSync(folder);
+  fs.writeFileSync(stored, 'hello');
+  afterAll(() => { fs.rmSync(store, { recursive: true, force: true }); });
+  afterEach(() => { vi.restoreAllMocks(); });
+  const desktop = {
+    supports: (command: string) => command === PHONE_ROOM_FILE_COMMAND,
+    request: async () => ({ file: { name: 'notes.txt', mediaType: 'text/plain', bytes: 5 } }),
+  };
+  const open = async () => {
+    const res = await roomFileResponse('ws-1', fileId, { allowTranscript: true, desktop, roomFilesDir: store });
+    if ('handle' in res) await res.handle.close();
+    return res.status;
+  };
+
+  it('serves the stored copy', async () => {
+    expect(await open()).toBe(200);
+  });
+
+  it('refuses an opened file whose 64-bit ID differs from the checked one only below Number precision', async () => {
+    fakeFileIds({ [stored]: { byPath: () => FAR_IDS[0], byHandle: () => FAR_IDS[1] } });
+    expect(await open()).toBe(404);
+  });
+
+  it("refuses when the room's folder after the open differs from before only below Number precision", async () => {
+    let opened = false;
+    fakeFileIds({
+      [folder]: { byPath: () => (opened ? FAR_IDS[1] : FAR_IDS[0]) },
+      [stored]: { byPath: () => 2n ** 61n, byHandle: () => { opened = true; return 2n ** 61n; } },
+    });
+    expect(await open()).toBe(404);
   });
 });

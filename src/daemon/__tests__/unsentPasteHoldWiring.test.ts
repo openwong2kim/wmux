@@ -10,7 +10,8 @@ import path from 'node:path';
 import { isAppOnlyDaemonMethod } from '../../shared/daemonFirstParty';
 
 describe('unsent-paste hold daemon wiring', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf-8');
+  // A Windows checkout has CRLF line ends (core.autocrlf): the line matches below need LF.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf-8').replace(/\r\n/g, '\n');
 
   function block(start: string, length = 2_000): string {
     const at = src.indexOf(start);
@@ -55,7 +56,7 @@ describe('unsent-paste hold daemon wiring', () => {
   });
 
   it('the agent state read carries the hold, its clears applied', () => {
-    expect(block('function agentStateFor(id: string)', 3_000)).toContain('unsentPasteHeld: unsentPasteHolds?.held(id) === true,');
+    expect(block('function agentStateFor(id: string, withTranscriptOffset = false)', 3_000)).toContain('unsentPasteHeld: unsentPasteHolds?.held(id) === true,');
   });
 
   it('the funnel runs under the hold, which takes back or records a paste it left unsubmitted, under the pane lock', () => {

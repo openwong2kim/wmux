@@ -172,16 +172,19 @@ import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
 import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
 import { createHeadlessSessions } from './a2aRemote/headlessSessions';
 import { endHeadlessOnStop, HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
+import { LinkedTaskTurns } from './a2aRemote/linkedTaskTurns';
+import { ApprovalSwitchStore, pairingOf as approvalPairingOf, setApprovals } from './a2aRemote/approvalSwitchStore';
+import { openApprovalReceipts, RemoteApprovals } from './a2aRemote/remoteApproval';
 import { HeadlessStatusReporter } from './a2aRemote/headlessStatus';
 import { answerPicker, screenPicker } from './a2aRemote/headlessAnswer';
 import { AnswersStore } from './a2aRemote/answersStore';
 import { StatusLabelsStore } from './a2aRemote/statusLabelsStore';
 import { QUESTION_RECORD_KIND, screenQuestionOf } from './approvals/screenQuestion';
-import { A2A_REMOTE_RPC } from '../shared/a2aRemoteDelivery';
+import { A2A_REMOTE_RPC, type A2aRemoteTaskState } from '../shared/a2aRemoteDelivery';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
-import { A2A_ANSWER_RPC, A2A_FEATURE_ANSWER, isA2aAnswersSetting, A2A_FEATURE_BUNDLE, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
+import { A2A_ANSWER_RPC, A2A_APPROVALS_RPC, A2A_FEATURE_ANSWER, A2A_FEATURE_APPROVAL, isA2aAnswersSetting, A2A_FEATURE_BUNDLE, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
@@ -280,6 +283,7 @@ import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/h
 import { checkNativeTranscriptPath } from './transcript/providers';
 import { keepOwnWslTranscriptPath } from './hooks/transcriptPathGuard';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
+import { statTranscript } from './transcript/readTail';
 import { TranscriptActivityWatcher } from './transcript/TranscriptActivityWatcher';
 import { ToolRefusalTracker } from './transcript/toolRefusals';
 import { ShellPromptWatcher } from './shellPrompt/ShellPromptWatcher';
@@ -569,6 +573,10 @@ let unsentPasteHolds: UnsentPasteHolds | null = null;
 /** Whether a pane holds a draft, the screen consulted (draftScreen.ts). */
 let draftOnScreen: DraftCheck | undefined;
 let headlessDeliveryRef: HeadlessDelivery | null = null;
+/** The turn each remote task started in a linked pane (a2aRemote/linkedTaskTurns.ts); read by the remote approvals. */
+let linkedTaskTurnsRef: LinkedTaskTurns | null = null;
+/** Prompts in linked panes answered by the PC that sent the task (a2aRemote/remoteApproval.ts). */
+let remoteApprovalsRef: RemoteApprovals | null = null;
 /** When the last "answer dropped: no headless agents" line was logged (once a minute at most). */
 let answersDroppedLoggedAt = 0;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
@@ -6412,8 +6420,8 @@ function registerRpcHandlers(
   // #2372 — `ids` reads several panes in one call (see agentStateBatch.ts).
   pipeServer.onRpc('daemon.getAgentState', async (params) => (params['ids'] !== undefined
     ? agentStatesFor(params['ids'], agentStateFor)
-    : agentStateFor(typeof params['id'] === 'string' ? params['id'] : '')));
-  function agentStateFor(id: string) {
+    : agentStateFor(typeof params['id'] === 'string' ? params['id'] : '', params['transcriptOffset'] === true)));
+  function agentStateFor(id: string, withTranscriptOffset = false) {
     const state = readDaemonAgentState(id);
     const bridge = sessionManager.getSession(id)?.bridge;
     if (!bridge) return state;
@@ -6425,9 +6433,15 @@ function registerRpcHandlers(
     // them), and whether the CURRENT agent's hooks have reported (reset when
     // the agent ends). Kept out of readDaemonAgentState, which also answers
     // the web roster.
+    // Asked for one pane only (a delivery's submit proof): the size of its bound transcript now.
+    const transcript = withTranscriptOffset ? transcriptProjector?.transcriptPath(id) ?? null : null;
+    const transcriptSize = transcript ? statTranscript(transcript)?.size : undefined;
     return {
       ...state,
       keyInputRevision: bridge.getKeyInputRevision(),
+      // Additive: the epoch that count is in (a recovered session's bridge counts again from 0).
+      keyEpoch: bridge.getKeyEpoch(),
+      ...(transcriptSize !== undefined ? { transcriptOffset: transcriptSize } : {}),
       keyInputQuiet: bridge.isKeyInputQuiet(),
       hookReports: bridge.hasHookReports(),
       // Additive, for a delivery that waits for the person to stop typing:
@@ -9546,6 +9560,8 @@ async function shutdown(
   // No headless start begins while the daemon goes down (its retries would only fail), nor any task is typed in.
   headlessStarterRef?.stop();
   headlessDeliveryRef?.stop();
+  linkedTaskTurnsRef?.stop();
+  remoteApprovalsRef?.stop();
   try { a2aServerRef?.dispose(); } catch { /* best effort */ }
   try { a2aDiscoverRef?.dispose(); } catch { /* best effort */ }
   paneSupervisorRef = null;
@@ -11025,6 +11041,13 @@ async function main(): Promise<void> {
     const a2aStatusLabels = new StatusLabelsStore({ dir: a2aDir, log: a2aLog });
     // Whether another PC's answer is typed into a headless worker's question (`wmux remote answers`).
     const a2aAnswers = new AnswersStore({ dir: a2aDir, log: a2aLog });
+    // Which PCs may allow or deny prompts in the tasks they sent to a linked pane here (`wmux remote approvals`): none without the file.
+    const a2aApprovalSwitch = new ApprovalSwitchStore({
+      dir: a2aDir,
+      log: a2aLog,
+      // A new pairing has new peer records, so an entry set before it reads as off.
+      pairing: (hostId) => approvalPairingOf(hostId, a2aPeers.list(), a2aRemoteHosts.get(hostId)),
+    });
     const a2aSpawnRequests = new SpawnRequestStore({ dir: a2aDir, log: a2aLog });
     // Continuing a conversation from another PC: off until this PC's human opts in.
     const a2aContinuePolicy = new ContinuePolicyStore({ dir: a2aDir, log: a2aLog });
@@ -11042,6 +11065,7 @@ async function main(): Promise<void> {
         a2aLog('error', `[a2a-remote] ${err instanceof Error ? err.message : String(err)}`);
       }
       a2aContinueRequests.retainHosts(a2aPaired);
+      a2aApprovalSwitch.retainHosts(a2aPaired);
     }
     const a2aHostName = (hostId: string): string | undefined =>
       a2aRemoteHosts.get(hostId)?.name ?? a2aPeers.list().find((p) => p.hostId === hostId && !p.revokedAt)?.name;
@@ -11241,6 +11265,13 @@ async function main(): Promise<void> {
         a2aLog('error', `[a2a-remote] revoke cascade: spawn requests sent to ${hostId}: ${err instanceof Error ? err.message : String(err)}`);
       }
       try {
+        // Off, and still off if that PC is paired again under the same host id.
+        if (a2aApprovalSwitch.forgetHost(hostId)) a2aDelivery?.readvertise(hostId);
+        remoteApprovalsRef?.wake();
+      } catch (err) {
+        a2aLog('error', `[a2a-remote] revoke cascade: approvals setting for ${hostId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      try {
         a2aContinuePolicy.forgetHost(hostId);
       } catch (err) {
         a2aLog('error', `[a2a-remote] revoke cascade: continue policy for ${hostId}: ${err instanceof Error ? err.message : String(err)}`);
@@ -11328,6 +11359,18 @@ async function main(): Promise<void> {
       if (res.ok) log('info', `[a2a-remote] answers: ${answers}`);
       return res;
     });
+    onA2aRpc(A2A_APPROVALS_RPC.get, async () => a2aApprovalSwitch.get());
+    onA2aRpc(A2A_APPROVALS_RPC.set, async (params) => {
+      const res = setApprovals(a2aApprovalSwitch, params, {
+        log: a2aLog,
+        // Only a PC paired now may be turned on (a revoke during the CLI's confirmation leaves it off).
+        paired: (hostId) => a2aPeers.list().some((p) => p.hostId === hostId && !p.revokedAt) || a2aRemoteHosts.get(hostId) !== undefined,
+        // `approval.1` is advertised only while it is on: the streams with that PC open again when that changes.
+        changed: (hostId) => a2aDelivery?.readvertise(hostId),
+      });
+      remoteApprovalsRef?.wake();
+      return res;
+    });
     registerSpawnRpc(onA2aRpc, {
       policy: a2aSpawnPolicy,
       requests: a2aSpawnRequests,
@@ -11412,6 +11455,19 @@ async function main(): Promise<void> {
             }).catch((err: unknown) => log('warn', `[headless] task ${taskId}: answer ${messageId} failed: ${String(err)}`));
           },
         },
+        // Carried out by the remote approvals (linked panes); refused as `approvals-off` for a PC the setting is off for.
+        approvals: {
+          on: (hostId) => remoteApprovalsRef !== null && a2aApprovalSwitch.exposure(hostId) !== null,
+          admit: (hostId) => remoteApprovalsRef?.admit(hostId) ?? false,
+          take: (hostId, taskId, messageId, approval) => {
+            const approvals = remoteApprovalsRef;
+            if (!approvals) return;
+            void approvals.take(hostId, taskId, messageId, approval);
+          },
+        },
+        // `approval.1` only to a PC the approvals setting is on for.
+        hostFeatures: (hostId) => (a2aApprovalSwitch.exposure(hostId) !== null ? [A2A_FEATURE_APPROVAL] : []),
+        approvalExposure: (hostId) => a2aApprovalSwitch.exposure(hostId),
         bundleAsks: a2aBundleAsker,
         // No box this run (no headless starts kept here): an ask is taken and dropped, as by a box that is off.
         bundles: { applyInbound: (env, peer) => a2aBundleBox?.applyInbound(env, peer) ?? { ok: true, duplicate: false } },
@@ -11435,11 +11491,71 @@ async function main(): Promise<void> {
       // Kept too: the headless delivery calls them in-process, as main does over the pipe.
       const a2aDeliveryHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
       a2aDelivery.registerRpc((method, handler) => {
-        a2aDeliveryHandlers.set(method, handler);
-        onA2aRpc(method, handler);
+        // A delivered mark that carries a submit proof: the linked-pane turns have something to follow.
+        const wrapped: typeof handler = method === A2A_REMOTE_RPC.mark
+          ? async (params) => {
+            const res = await handler(params);
+            if (params['submit'] !== undefined) linkedTaskTurnsRef?.wake();
+            return res;
+          }
+          : handler;
+        a2aDeliveryHandlers.set(method, wrapped);
+        onA2aRpc(method, wrapped);
       });
       a2aDelivery.start();
       a2aDeliveryRef = a2aDelivery;
+      // Followed from the submit main recorded on each delivered remote task; recorded only.
+      const turnsTaskSvc = a2aTaskService;
+      linkedTaskTurnsRef = new LinkedTaskTurns({
+        tasks: () => turnsTaskSvc.listRemote(),
+        transcriptPath: (sessionId) => transcriptProjector?.transcriptPath(sessionId) ?? null,
+        session: (sessionId) => {
+          const managed = sessionManager.getSession(sessionId);
+          if (!managed) return null;
+          const agentName = readAgentStateForWeb?.(sessionId).agentName ?? null;
+          return { incarnationId: managed.meta.incarnationId ?? null, keyEpoch: managed.bridge.getKeyEpoch(), agent: agentName ? agentDisplayToSlug(agentName) ?? null : null };
+        },
+        log: a2aLog,
+      });
+      linkedTaskTurnsRef.start();
+      // Its receipts: a file there that cannot be read leaves them null, and every approval is then refused.
+      const approvalReceipts = openApprovalReceipts(a2aDir, a2aLog);
+      const approvalTurns = linkedTaskTurnsRef;
+      const approvalTaskSvc = a2aTaskService;
+      remoteApprovalsRef = new RemoteApprovals({
+        exposure: (hostId) => a2aApprovalSwitch.exposure(hostId),
+        anyOn: () => a2aApprovalSwitch.anyOn(),
+        tasks: { get: (taskId) => approvalTaskSvc.getTask(taskId), remote: () => approvalTaskSvc.listRemote() },
+        // A pane end of a link a person made: not a headless start's, not one a remote start made.
+        linkedPane: (task) => {
+          const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
+          return marker?.kind === 'pane' && a2aLinks.get(marker.linkId)?.spawned !== true && a2aStarter?.isSpawnLink(marker.linkId) !== true;
+        },
+        linkActive: (linkId) => a2aLinks.get(linkId)?.state === 'active',
+        hostName: (hostId) => a2aHostName(hostId),
+        turn: (taskId) => approvalTurns.latestTurn(taskId),
+        session: (ptyId) => {
+          const managed = sessionManager.getSession(ptyId);
+          return managed ? { incarnation: managed.meta.incarnationId ?? null, keyEpoch: managed.bridge.getKeyEpoch() } : null;
+        },
+        registry: {
+          pendingPrompts: (sessionId) => (approvalRegistry?.list().pending ?? [])
+            .filter((r) => r.kind === 'terminal_prompt' && r.sessionId === sessionId)
+            .map((r) => r.id),
+          facts: (id) => approvalRegistry?.remoteApprovalFacts(id) ?? null,
+          resolve: (params) => (approvalRegistry ? approvalRegistry.resolve(params) : Promise.resolve({ ok: false, reason: 'not-found' as const })),
+        },
+        lock: (sid) => paneLocks.acquire(sid, { key: 'remote-approval' }, PANE_LOCK_DAEMON_WAIT_MS),
+        unlock: (sid, token) => paneLocks.release(sid, token),
+        receipts: approvalReceipts,
+        // Behind its own reporter (one status per prompt and one per outcome, the same floor).
+        status: {
+          peer: (taskId) => a2aDeliveryRef?.statusPeer(taskId) ?? null,
+          send: (taskId, status) => a2aDeliveryRef?.sendStatus(taskId, status, 'approvals') ?? { ok: false, error: 'unavailable' },
+        },
+        log: a2aLog,
+      });
+      remoteApprovalsRef.start();
       // main asks for a bundle and releases it once imported; open asks are asked again and staging is swept.
       // Main's asks are taken once the asks kept from before a restart have gone on.
       void a2aBundleIntake.sweepParts().catch(() => undefined).then(() => {

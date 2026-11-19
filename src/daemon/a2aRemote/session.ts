@@ -132,8 +132,8 @@ export interface JoinerSessionDeps {
   /** The stream came up (or 5 minutes passed): fold the server's view of our links in. */
   reconcileLinks: () => Promise<void>;
   onStatus: (status: A2aRemoteHostStatus) => void;
-  /** Optional features this PC advertises on every stream open (`A2A_FEATURES_HEADER`). */
-  features?: readonly string[];
+  /** Optional features this PC advertises on every stream open (`A2A_FEATURES_HEADER`); a function is read at each open. */
+  features?: readonly string[] | (() => readonly string[]);
   /** The server's stream `hello` said what it takes (none, from an older build). */
   onServerFeatures?: (features: string[]) => void;
   timing?: Partial<SessionTiming>;
@@ -256,6 +256,11 @@ export class JoinerSession {
     }
   }
 
+  /** End the open stream, if any: the loop dials again, advertising what `features` says now. */
+  redial(): void {
+    this.abort?.abort();
+  }
+
   /** New outbox records for this host: pump now (unless a backoff is pending). */
   wake(): void {
     if (!this.running || this.status.state === 'identity-changed') return;
@@ -287,6 +292,7 @@ export class JoinerSession {
       if (this.status.state !== 'connected') this.setState('connecting');
       const abort = new AbortController();
       this.abort = abort;
+      const features = typeof this.deps.features === 'function' ? this.deps.features() : this.deps.features;
       let liveness: ReturnType<typeof setTimeout> | null = null;
       const alive = (): void => {
         if (liveness) clearTimeout(liveness);
@@ -301,7 +307,7 @@ export class JoinerSession {
         for await (const ev of client.openStream(A2A_ROUTES.stream, {
           signal: abort.signal,
           ...(this.lastEventId !== undefined ? { lastEventId: this.lastEventId } : {}),
-          ...(this.deps.features && this.deps.features.length > 0 ? { features: this.deps.features } : {}),
+          ...(features && features.length > 0 ? { features } : {}),
         })) {
           alive();
           if (ev.event === 'hello') {
