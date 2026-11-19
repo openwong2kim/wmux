@@ -449,6 +449,11 @@ export class SessionPipe {
       return;
     }
     const { raw: buffered, replay, geometry, writtenAt: writtenBefore } = read;
+    // A clear() during the parse restarts the ring's history without moving
+    // the lifetime counter: the bytes the read held are gone (#3440).
+    const clearsBefore = this.ringBuffer.clearGeneration;
+    const historyChanged = (since: number) =>
+      this.ringBuffer.clearGeneration !== since;
     // Instrumentation for #35 (scrollback-empty-after-restart). Pairs
     // with `[recovery] session X bytes=N` on daemon startup and
     // `Suspended session X (buffer: N bytes)` on shutdown. If those
@@ -480,6 +485,7 @@ export class SessionPipe {
       // writeToClient gates on `flushed`, so nothing reaches the socket in
       // between.
       let base = writtenBefore;
+      let baseClears = clearsBefore;
       let outcome = await generateSnapshotUnqueued({
         cols: dims.cols,
         rows: dims.rows,
@@ -521,6 +527,7 @@ export class SessionPipe {
         }
         if (tail) {
           base = tail.writtenAt;
+          baseClears = this.ringBuffer.clearGeneration;
           outcome = await generateSnapshotUnqueued({
             cols: dims.cols,
             rows: dims.rows,
@@ -549,7 +556,7 @@ export class SessionPipe {
         // A refused re-read ships the pre-parse bytes, and a re-flush brings
         // the live delta.
         const after = this.tryReadRing('attach flush re-read');
-        if (!after && this.ringBuffer.totalBytesWritten > writtenBefore) unreplayed = 'attach flush re-read refused';
+        if (!after && (this.ringBuffer.totalBytesWritten > writtenBefore || historyChanged(clearsBefore))) unreplayed = 'attach flush re-read refused';
         payload = after?.replay ?? replay;
         // eslint-disable-next-line no-console
         console.log(
@@ -564,17 +571,21 @@ export class SessionPipe {
         // dropped bytes; only a delta larger than the ring itself is lost.
         const reread = this.tryReadRing('attach flush delta');
         const written = this.ringBuffer.totalBytesWritten - base;
+        // The ring was cleared during the parse: the snapshot is history from
+        // before the clear, and the newest `written` bytes need not follow it.
+        const cleared = historyChanged(baseClears);
         if (!reread) {
           // The snapshot without the bytes that arrived during the parse; a
-          // re-flush brings them.
+          // re-flush brings them, and repaints a ring that was cleared.
           payload = outcome.payload;
-          if (written > 0) unreplayed = 'attach flush delta refused';
-        } else if (written > reread.raw.length) {
+          if (written > 0 || cleared) unreplayed = 'attach flush delta refused';
+        } else if (cleared || written > reread.raw.length) {
+          // No splice: the fresh full read is the whole history.
           const afterReplay = reread.replay;
           payload = afterReplay;
           // eslint-disable-next-line no-console
           console.log(
-            `[SessionPipe.flush] sessionId=${this.sessionId} snapshot discarded (live delta ${written} outran the ring) bytes=${reread.raw.length}`,
+            `[SessionPipe.flush] sessionId=${this.sessionId} snapshot discarded (${cleared ? 'ring cleared during the parse' : `live delta ${written} outran the ring`}) bytes=${reread.raw.length}`,
           );
         } else {
           const after = reread.raw;
@@ -593,7 +604,7 @@ export class SessionPipe {
         // A refused re-read ships the pre-parse bytes, and a re-flush brings
         // the live delta.
         const after = this.tryReadRing('attach flush re-read');
-        if (!after && this.ringBuffer.totalBytesWritten > writtenBefore) unreplayed = 'attach flush re-read refused';
+        if (!after && (this.ringBuffer.totalBytesWritten > writtenBefore || historyChanged(clearsBefore))) unreplayed = 'attach flush re-read refused';
         payload = after?.replay ?? replay;
         // eslint-disable-next-line no-console
         console.log(
@@ -874,6 +885,7 @@ export class SessionPipe {
         throw error;
       }
       const { replay: initial, geometry, writtenAt: writtenAtT0 } = first;
+      const clearsAtT0 = this.ringBuffer.clearGeneration;
       this.writeOutput(socket, this.markers.resyncBegin);
       this.flushed = false;
       // This re-flush covers everything a pipe that was behind did not write.
@@ -946,7 +958,8 @@ export class SessionPipe {
         // ring can be read. The lifetime counter tells without a copy.
         this.writeOutput(socket, this.markers.flushDone);
         this.replayDone();
-        const arrived = this.ringBuffer.totalBytesWritten > writtenAtT0;
+        // A clear() since T0 restarted the history: a changed one too.
+        const arrived = this.ringBuffer.totalBytesWritten > writtenAtT0 || this.ringBuffer.clearGeneration !== clearsAtT0;
         if (arrived || wasBehind) {
           this.reflushForUnreplayedOutput(socket, arrived ? 're-flush raw refused' : 're-flush raw refused after falling behind');
         }

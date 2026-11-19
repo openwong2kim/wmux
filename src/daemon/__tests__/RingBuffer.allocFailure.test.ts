@@ -82,6 +82,23 @@ describe('RingBuffer (rust): a refused native allocation', () => {
     expect(ring.readAll().toString()).toBe('history');
   });
 
+  // The bridge clears the ring after a dropped chunk: the history restarts
+  // while the lifetime counter stays, so readers that locate bytes by that
+  // counter across an await check the clear generation too (SessionPipe).
+  it.each(['rust', 'node'] as const)('a clear bumps the clear generation and leaves the lifetime counter (%s)', (backend) => {
+    const ring = new RingBuffer(1024, backend);
+    ring.write(Buffer.from('history'));
+    expect(ring.clearGeneration).toBe(0);
+    ring.write(Buffer.from('+'));
+    expect(ring.clearGeneration).toBe(0);
+    ring.clear();
+    expect(ring.clearGeneration).toBe(1);
+    expect(ring.totalBytesWritten).toBe(8);
+    ring.write(Buffer.from('new'));
+    expect(ring.clearGeneration).toBe(1);
+    expect(ring.readAll().toString()).toBe('new');
+  });
+
   it('still throws any other native error from a write', () => {
     const ring = new RingBuffer(1024, 'rust');
     refuseNext('write', new Error('Ring storage poisoned'));
