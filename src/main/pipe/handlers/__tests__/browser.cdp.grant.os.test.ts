@@ -300,6 +300,14 @@ describe.skipIf(onWindows)('browser.cdp.grant', () => {
     expect((await grantAs(r.router)).ok).toBe(true);
   });
 
+  it('two grants for one pane at once leave exactly one usable token, the later one', async () => {
+    const r = rig();
+    const [first, second] = await Promise.all([grantAs(r.router), grantAs(r.router)]);
+    expect(first.ok && second.ok).toBe(true);
+    await expect(dial(first.result as RelayGrant)).rejects.toThrow('HTTP 401');
+    (await dial(second.result as RelayGrant)).close();
+  });
+
   it('keeps one unspent token per pane: a second grant revokes the first, not the second', async () => {
     const r = rig();
     const first = (await grantAs(r.router)).result as RelayGrant;

@@ -29,7 +29,8 @@ const CERT_DIR = path.join(__dirname, '..', '..', '..', 'daemon', 'a2aRemote', '
 
 /** The fenced block after the doc's `<!-- drive.mjs -->` marker, verbatim. */
 function docScript(): string {
-  const text = fs.readFileSync(DOC, 'utf8');
+  // A Windows checkout may have CRLF line ends.
+  const text = fs.readFileSync(DOC, 'utf8').replace(/\r\n/g, '\n');
   const marker = text.indexOf('<!-- drive.mjs -->');
   expect(marker).toBeGreaterThan(-1);
   const open = text.indexOf('```js\n', marker);

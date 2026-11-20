@@ -527,12 +527,12 @@ export function relayLaneOf(ctx: RpcContext | undefined): CallerIdentity['lane']
  */
 export function paneScriptGrantRefusal(ctx: RpcContext | undefined): string | null {
   if (!ctx) return 'the caller could not be identified';
-  if (ctx.origin !== 'local') return 'only a caller on this computer may ask';
-  // Not the operator or a plugin host either: the pipe marker excludes both.
+  // A local request on the pipe: not a remote one, the operator or a plugin
+  // host (the pipe marker excludes all three).
   if (!isLocalExternalWireContext(ctx)) return 'only a process in a wmux pane may ask, over the wmux pipe';
   // A bot token is a commander token too (RpcContext.bot).
   if (ctx.commanderWorkspace !== undefined) return 'a commander or bot token may not ask';
-  if (ctx.fencedWorker === true) return 'not available inside the worker fence';
+  if (ctx.fencedWorker === true) return 'a fenced bot worker may not ask';
   const claim = ctx.workspaceClaim;
   if (claim === undefined) return 'the call carries no pane claim; run it from a wmux pane';
   if (claim.kind !== 'bound') return 'the pane claim is no longer valid; run the command again';
@@ -4565,6 +4565,17 @@ export function registerBrowserRpc(
     };
   });
 
+  /** browser.cdp.grant's mint per pane, one after another (the tail of each pane's chain). */
+  const paneGrants = new Map<string, Promise<unknown>>();
+  const onePaneAtATime = <T>(ptyId: string, run: () => Promise<T>): Promise<T> => {
+    const before = paneGrants.get(ptyId) ?? Promise.resolve();
+    const next = before.then(run, run);
+    const tail = next.catch(() => undefined);
+    paneGrants.set(ptyId, tail);
+    void tail.then(() => { if (paneGrants.get(ptyId) === tail) paneGrants.delete(ptyId); });
+    return next;
+  };
+
   /**
    * The workspace of every surface the user holds (Stop or Take over), with
    * undefined for one main cannot place.
@@ -4629,10 +4640,15 @@ export function registerBrowserRpc(
     }
     const admission = relayAdmissionRefusal(identity);
     if (admission !== null) throw new Error(`${method}: no relay token: ${admission}; ask again`);
-    const grant = await launcher.relayGrant(identity);
-    withdrawIfBasisChanged(method, ctx, identity);
-    // One unspent token per pane: an earlier one this pane has not used goes.
-    revokeRelayTokens((id) => id !== identity && id.lane === 'pane-script' && id.ptyId === ptyId);
+    // One grant at a time per pane, so the newest token is always the one left.
+    const relayGrant = launcher.relayGrant.bind(launcher);
+    const grant = await onePaneAtATime(ptyId, async () => {
+      const minted = await relayGrant(identity);
+      withdrawIfBasisChanged(method, ctx, identity);
+      // One unspent token per pane: an earlier one this pane has not used goes.
+      revokeRelayTokens((id) => id !== identity && id.lane === 'pane-script' && id.ptyId === ptyId);
+      return minted;
+    });
     const transport = grant.endpoint.startsWith('ws+unix:') ? 'unix socket' : 'loopback tcp';
     console.log(`[browser.cdp.grant] pane ${ptyId} profile ${chrome.profile} protected ${decision ? 'yes' : 'no'} transport ${transport}`);
     return {

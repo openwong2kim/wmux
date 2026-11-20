@@ -7,6 +7,7 @@ relay rather than a debugging port. It gets a one-time token from
 `wmux browser cdp --json`, which you pipe into the script.
 
 ```sh
+npm install playwright-core   # once, in the script's folder
 wmux browser cdp --json | node drive.mjs https://example.com
 ```
 
@@ -44,8 +45,8 @@ Ask for a new token then.
 ## The script
 
 The script reads the grant from stdin, never from its arguments or the
-environment, where other processes could read it. Before it uses the
-connection, it checks that the other end is wmux's relay. The grant carries a
+environment, where other processes could read it. Before it sends any
+command of its own, it checks that the other end is wmux's relay. The grant carries a
 proof key that never goes over the connection. The script sends a fresh nonce
 as `Wmux.relayProof`, and the relay must answer with
 HMAC-SHA256(key, "wmux-relay-proof/v1" + nonce). If wmux opened a blank tab
@@ -64,7 +65,7 @@ const grant = JSON.parse(input);
 
 const browser = await chromium.connectOverCDP(grant.endpoint, { headers: grant.headers });
 try {
-  // Is this wmux's relay? Nothing else goes over the connection until it is.
+  // Is this wmux's relay? The script sends nothing of its own until it is.
   const session = await browser.newBrowserCDPSession();
   const nonce = randomBytes(32);
   const { proof } = await session.send('Wmux.relayProof', { nonce: nonce.toString('base64url') });

@@ -17,6 +17,8 @@ import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { registerA2aRpc } from '../a2a.rpc';
 import { registerBrowserRpc } from '../browser.rpc';
+import { defaultSnapshot } from '../../../pty/portWatch';
+import type { DaemonClient } from '../../../DaemonClient';
 import { setPaneOfPeer } from '../peerPidShadow';
 import type { ClaudeWorker } from '../../../a2a/ClaudeWorker';
 import { __resetWorkspaceClaimTrustForTesting } from '../../../workspace/workspaceClaimTrust';
@@ -43,11 +45,11 @@ vi.mock('../../../../shared/constants', async (importOriginal) => ({
 const WS = 'ws-walked';
 const PANES = ['pty-one', 'pty-two'] as const;
 
-function makeRouter() {
+function makeRouter(a2aOpts: Parameters<typeof registerA2aRpc>[3] = {}) {
   const router = new RpcRouter();
   registerA2aRpc(router, () => ({}) as BrowserWindow, {
     execute: vi.fn(), cancel: vi.fn(), isFull: false, stop: vi.fn(),
-  } as unknown as ClaudeWorker);
+  } as unknown as ClaudeWorker, a2aOpts);
   const launcher = {
     endpoint: vi.fn(async () => ({ piped: true as const })),
     relayGrant: vi.fn(async () => ({ endpoint: 'ws+unix:/tmp/x.sock:/devtools/browser/relay', headers: { Authorization: 'Bearer t' }, proofKey: 'k' })),
@@ -167,6 +169,27 @@ describe.skipIf(process.platform === 'win32')('browser.cdp.grant: the peer proce
     const answer = await grant(router, token, from(children[1]));
     expect(answer.ok).toBe(false);
     expect((answer as { error: string }).error).toContain('does not run in the pane its claim names');
+    expect(launcher.relayGrant).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the daemon reconnects while the walk waits (the shell may have been replaced)', async () => {
+    const first = {} as DaemonClient;
+    let current: DaemonClient = first;
+    const { router, launcher } = makeRouter({
+      getDaemonClient: () => current,
+      snapshot: async () => {
+        const snapshot = await defaultSnapshot();
+        // Only the grant's walk sees the swap: the claim is minted first, on `first`.
+        if (swapOnNextWalk) current = {} as DaemonClient;
+        return snapshot;
+      },
+    });
+    let swapOnNextWalk = false;
+    const token = await claimForFirstPane(router);
+    swapOnNextWalk = true;
+    const answer = await grant(router, token, from(children[0]));
+    expect(answer.ok).toBe(false);
+    expect((answer as { error: string }).error).toContain('could not trace this process');
     expect(launcher.relayGrant).not.toHaveBeenCalled();
   });
 

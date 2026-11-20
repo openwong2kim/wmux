@@ -1006,7 +1006,7 @@ export function registerA2aRpc(
     const snapshotPromise = snapshotForCaller(pid);
     const scanned = await scanPidMap();
     if (!scanned || scanned.length === 0) return null;
-    const { entries } = await keepLiveDaemonPidEntries(scanned, true);
+    const { entries, client } = await keepLiveDaemonPidEntries(scanned, true);
     if (entries.length === 0) return null;
     const snapshot = await withDeadline(snapshotPromise, RPC_SNAPSHOT_DEADLINE_MS - (Date.now() - startedAt), null);
     const ppidByPid = snapshot && snapshot.ppidByPid.has(pid)
@@ -1021,6 +1021,9 @@ export function registerA2aRpc(
     }
     const hit = walkToOwningAnchor(parentPid, ppidByPid, anchorByPid, { createdAt, child: pid });
     if (!hit) return null;
+    // The anchors were judged live over one daemon connection: a reconnect
+    // during the waits may have replaced the pane's shell.
+    if (currentDaemonClient() !== client) return null;
     return claimStillHeld('peerPid', ctx, pid, verdict) ? { workspaceId: hit.anchor.workspaceId, ptyId: hit.anchor.ptyId } : null;
   }
   setPaneOfPeer(walkPeerPane);

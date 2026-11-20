@@ -18,7 +18,7 @@ function setup(records: Map<string, { workspaceId?: string }> = new Map(), holdM
   return { browser, mux, records };
 }
 
-function client(mux: CdpPipeMux, label: string, identity: Omit<CallerIdentity, 'lane'>) {
+function client(mux: CdpPipeMux, label: string, identity: Omit<CallerIdentity, 'lane'> & { lane?: CallerIdentity['lane'] }) {
   const inbox: Inbox = [];
   let gone: string | null = null;
   const c = mux.attachExternal(label, (text) => inbox.push(JSON.parse(text) as Record<string, unknown>), (r) => { gone = r; }, { identity: { lane: 'engine', ...identity } });
@@ -98,6 +98,24 @@ describe('CdpPipeMux grants: main\'s registry', () => {
     const mine = (await none.replyTo(none.send('Target.createTarget', { url: 'about:blank' }))).result?.targetId as string;
     expect(none.attached()).toEqual([mine]);
     expect(op.attached()).toEqual(['TX', mine]);
+    mux.close();
+  });
+
+  it('a pane-script client is not given its workspace\'s pages, only what it made; an engine client of that workspace is', async () => {
+    const { browser, mux, records } = setup();
+    const script = client(mux, 'script', { lane: 'pane-script', workspaceId: 'ws-a', ptyId: 'pty-1' });
+    const engine = client(mux, 'engine', { workspaceId: 'ws-a' });
+    await script.autoAttach(false);
+    await engine.autoAttach(false);
+    records.set('TW', { workspaceId: 'ws-a' });
+    browser.targets.push({ targetId: 'TW', title: '', url: 'http://a/' });
+    browser.announce({ targetId: 'TW', type: 'page', browserContextId: 'DEFAULT' });
+    await vi.waitFor(() => expect(engine.attached()).toEqual(['TW']), { timeout: 5_000 });
+    const mine = (await script.replyTo(script.send('Target.createTarget', { url: 'about:blank' }))).result?.targetId as string;
+    expect(script.attached()).toEqual([mine]);
+    expect((await script.replyTo(script.send('Target.attachToTarget', { targetId: 'TW', flatten: true }))).error?.code).toBe(-32602);
+    const listed = ((await script.replyTo(script.send('Target.getTargets'))).result?.targetInfos as Array<{ targetId: string }>).map((t) => t.targetId);
+    expect(listed).toEqual([mine]);
     mux.close();
   });
 
