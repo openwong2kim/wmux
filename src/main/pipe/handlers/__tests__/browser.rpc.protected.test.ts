@@ -292,6 +292,30 @@ describe('protected-pane gate', () => {
     });
   }
 
+  it('hands out no relay token when the policy epoch moves while it is made', async () => {
+    await protectPaneA();
+    const router = register(profiles, policy);
+    const relayGrant = vi.fn(async () => {
+      // The operator changes the pane's policy while the token is being made.
+      await protectPaneA(['b.test']);
+      return { endpoint: 'ws+unix:/tmp/relay.sock:/cdp', headers: { Authorization: 'Bearer t' }, proofKey: 'k' };
+    });
+    const launcher = registry.forProfile('pa') as ReturnType<typeof makeLauncher> & { relayGrant?: unknown };
+    launcher.endpoint.mockResolvedValue({ piped: true } as never);
+    launcher.relayGrant = relayGrant;
+    const response = await router.dispatch({
+      id: '1',
+      method: 'browser.cdp.info',
+      params: { workspaceId: 'ws-1', relay: true },
+      callerPtyId: 'pty-a',
+      clientName: [...FIRST_PARTY_CLIENT_NAMES][0],
+      ...paneClaimOn('ws-1', 'pty-a'),
+    } as never, { externalWire: true });
+    expect(relayGrant).toHaveBeenCalledWith(expect.objectContaining({ profile: 'pa', protectedEpoch: 1 }));
+    expect(response.ok).toBe(false);
+    expect(String((response as { error?: unknown }).error)).toContain('changed while the relay token was made');
+  });
+
   it('never lets a protected pane drive a surface outside its own Chrome', async () => {
     await protectPaneA();
     const router = register(profiles, policy);

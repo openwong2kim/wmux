@@ -224,6 +224,53 @@ async function closePipeRelay(): Promise<void> {
   await relay?.close();
 }
 
+/** How long a sweep is kept for grants that were under way when it ran (relaySweptSince). */
+const RELAY_SWEEP_KEEP_MS = 5 * 60_000;
+let relaySweepSeq = 0;
+const relaySweeps: Array<{ readonly seq: number; readonly at: number; readonly match: (identity: CallerIdentity) => boolean }> = [];
+
+/**
+ * End every relay client (and unused token) whose identity `match` takes, on
+ * every Chrome on a pipe (CdpPipeRelay.closeClients). 0 before any relay was made.
+ * The sweep is kept a while, so a grant under way while it ran can be checked
+ * against it once minted (relaySweptSince).
+ */
+export function closeRelayClients(match: (identity: CallerIdentity) => boolean, reason: string): number {
+  const now = Date.now();
+  while (relaySweeps.length > 0 && relaySweeps[0].at < now - RELAY_SWEEP_KEEP_MS) relaySweeps.shift();
+  relaySweeps.push({ seq: ++relaySweepSeq, at: now, match });
+  return pipeRelay?.closeClients(match, reason) ?? 0;
+}
+
+/** What a relay grant is checked against before it is minted (relayAdmissionRefusal). */
+let relayAdmission: ((identity: CallerIdentity) => string | null) | null = null;
+
+/** Main: set (or, null, clear) the check a relay grant passes before it is minted. */
+export function setRelayAdmission(check: ((identity: CallerIdentity) => string | null) | null): void {
+  relayAdmission = check;
+}
+
+/** Why no relay token may be minted for `identity`, or null when it may (none set: null). */
+export function relayAdmissionRefusal(identity: CallerIdentity): string | null {
+  return relayAdmission?.(identity) ?? null;
+}
+
+/** Where the sweeps stand now: what relaySweptSince takes. */
+export function relaySweepMark(): number {
+  return relaySweepSeq;
+}
+
+/**
+ * Whether a sweep since `mark` would have ended a client of `identity`: a
+ * grant minted while one ran is not one it saw. Past RELAY_SWEEP_KEEP_MS a
+ * sweep is no longer kept, so a mark that old answers true.
+ */
+export function relaySweptSince(mark: number, identity: CallerIdentity): boolean {
+  const oldestKept = relaySweeps.length > 0 ? relaySweeps[0].seq : relaySweepSeq + 1;
+  if (mark < relaySweepSeq && mark + 1 < oldestKept) return true;
+  return relaySweeps.some((sweep) => sweep.seq > mark && sweep.match(identity));
+}
+
 /**
  * Tests: serve pipe Chromes through `relay` (one on a temp root of the test's
  * own, so nothing the test starts looks in a temp dir another wmux uses), or

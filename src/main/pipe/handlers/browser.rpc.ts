@@ -136,7 +136,8 @@ import type {
   BrowserScopeShadowReason,
 } from '../../audit/shadowRejectionLog';
 import type { BrowserBackendStore } from '../../browser-session/BrowserBackendStore';
-import type { ChromeBackendClient, ChromeLauncherRegistry } from '../../browser-session/ChromeLauncher';
+import { closeRelayClients, relayAdmissionRefusal, relaySweepMark, relaySweptSince, type ChromeBackendClient, type ChromeLauncherRegistry } from '../../browser-session/ChromeLauncher';
+import type { CallerIdentity } from '../../browser-session/CdpPipeMux';
 import { isLiveChromeReachable } from '../../browser-session/LiveChromeClient';
 import {
   agentWindowScopeMessage,
@@ -170,7 +171,7 @@ type GetWindow = () => BrowserWindow | null;
 /** What main wires in for protected browser panes. */
 export interface BrowserPolicyWiring {
   store: Pick<BrowserPolicyStore, 'hasAnyHistory' | 'workspaceHasHistory' | 'decisionFor' | 'entryFor'>
-    & Partial<Pick<BrowserPolicyStore, 'onChange'>>;
+    & Partial<Pick<BrowserPolicyStore, 'onChange' | 'epoch'>>;
   /** paneId → its exclusive Chrome profile binding (ChromeProfileStore). */
   paneBindings: () => ChromePaneBindings;
   /** Receives the caller-protection check below, for callers outside browser.* (computer use). */
@@ -1810,6 +1811,8 @@ export function registerBrowserRpc(
     });
   }
   const protectedDecisions = new WeakMap<RpcContext, Extract<PanePolicyDecision, { kind: 'protected' }>>();
+  /** Per call: the relay sweep mark and policy epoch at its start (browser.cdp.info's relay grant). */
+  const grantMarks = new WeakMap<RpcContext, { sweep: number; epoch: number | undefined }>();
   /** The attested pane behind a recorded protected decision (memory namespace). */
   const protectedPanes = new WeakMap<RpcContext, { workspaceId: string; paneId: string }>();
 
@@ -1955,6 +1958,8 @@ export function registerBrowserRpc(
   const router: Pick<RpcRouter, 'register'> = {
     register: (method, handler) =>
       rawRouter.register(method, (params, ctx) => {
+        // Before anything this call resolves: what browser.cdp.info checks a relay grant against.
+        if (ctx) grantMarks.set(ctx, { sweep: relaySweepMark(), epoch: browserPolicy?.store.epoch?.() });
         // Legacy (nothing ever protected): call straight through, not even a
         // microtask later than before. A scheduled run with a browser identity
         // is always gated: its grant names a protected pane.
@@ -4361,16 +4366,33 @@ export function registerBrowserRpc(
       const chromeTargets = await launcher.cdpInfoTargets(callerWorkspaceId || undefined);
       const disclose = canDiscloseBrowserAttachInfo(ctx);
       const decision = protectedDecisionOf(ctx);
-      const relay = disclose && ep.piped && params.relay === true && launcher.relayGrant
-        ? await launcher.relayGrant({
-          ...(callerWorkspaceId && { workspaceId: callerWorkspaceId }),
-          profile: chrome.profile,
-          ...(decision && { protectedEpoch: decision.epoch }),
-          // The operator lane: with grants (C3b), every target, as on the port. From the
-          // authenticated caller only, never from params.
-          ...(ctx?.operator === true && { everyTarget: true }),
-        })
-        : undefined;
+      // Every field from the authenticated caller and main's own resolution,
+      // never from params.
+      const identity: CallerIdentity = {
+        ...(callerWorkspaceId && { workspaceId: callerWorkspaceId }),
+        profile: chrome.profile,
+        ...(decision && { protectedEpoch: decision.epoch }),
+        // The operator lane: with grants (C3b), every target, as on the port.
+        ...(ctx?.operator === true && { everyTarget: true }),
+        ...(chrome.callerPtyId && { ptyId: chrome.callerPtyId }),
+        lane: ctx?.operator === true ? 'operator' : 'engine',
+      };
+      const wantsRelay = disclose && ep.piped && params.relay === true && !!launcher.relayGrant;
+      // What the caller was resolved on must still be there before a token
+      // is minted for it: a sweep that ran before this call began never sees it.
+      const refusal = wantsRelay ? relayAdmissionRefusal(identity) : null;
+      if (refusal !== null) throw new Error(`browser.cdp.info: no relay token: ${refusal}; ask again`);
+      const relay = wantsRelay && launcher.relayGrant ? await launcher.relayGrant(identity) : undefined;
+      // What the caller was resolved on went away while the token was made
+      // (the policy moved, its workspace or pane closed, a hold landed): the
+      // sweep for it (relayClientTriggers) ran before this token existed, so
+      // the token goes now.
+      const mark = ctx ? grantMarks.get(ctx) : undefined;
+      const epochNow = browserPolicy?.store.epoch?.();
+      if (relay && mark && (relaySweptSince(mark.sweep, identity) || (epochNow !== undefined && epochNow !== mark.epoch))) {
+        closeRelayClients((id) => id === identity, 'grant basis changed during the grant');
+        throw new Error('browser.cdp.info: what this caller was resolved on changed while the relay token was made; ask again');
+      }
       // A protected pane's caller never gets the port or its WebSocket, on
       // either transport: on the pipe it reaches Chrome through the relay (held
       // to the profile's rules); on the port there is no such route for it.

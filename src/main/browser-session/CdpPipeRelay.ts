@@ -233,6 +233,8 @@ export class CdpPipeRelay {
   private readonly proofKeyTtlMs: number;
   /** What each client's outbound queue holds beyond ws's own buffer. */
   private readonly outbound = new WeakMap<WebSocket, RelayOutbound>();
+  /** Who each client connected as, and how its mux client is ended (closeClients). */
+  private readonly attached = new WeakMap<WebSocket, { readonly identity: CallerIdentity; readonly end: () => void }>();
   private listener: Listener | null = null;
   private binding: Promise<Listener> | null = null;
   private swept = false;
@@ -326,6 +328,34 @@ export class CdpPipeRelay {
     }
     route.clients.clear();
     this.sizeListener();
+  }
+
+  /**
+   * End every external client whose identity `match` takes, on every Chrome,
+   * and drop the unused tokens it takes too. Each client is cut from its
+   * Chrome at once (nothing more it sends is passed on) and then closed the
+   * way the mux closes one: on a Windows named pipe, after what was already
+   * taken for it has gone. A token is spent in the same tick its connection
+   * is accepted, so no connection is between the two. Returns how many
+   * connections were ended. Logs the reason and the counts, never a token or
+   * an endpoint.
+   */
+  closeClients(match: (identity: CallerIdentity) => boolean, reason: string): number {
+    let closed = 0;
+    for (const route of this.routes) {
+      for (const ws of [...route.clients]) {
+        const attached = this.attached.get(ws);
+        if (!attached || !match(attached.identity)) continue;
+        this.attached.delete(ws);
+        attached.end();
+        closed++;
+      }
+    }
+    const before = this.tokens.size;
+    this.forget((binding) => match(binding.identity));
+    const revoked = before - this.tokens.size;
+    if (closed > 0 || revoked > 0) console.warn(`[CdpPipeRelay] ${reason}: ended ${closed} client(s), revoked ${revoked} unused token(s)`);
+    return closed;
   }
 
   /** Disconnect every client, stop listening and remove the socket dir. */
@@ -592,6 +622,7 @@ export class CdpPipeRelay {
       identity,
       local: proof.local,
     });
+    this.attached.set(ws, { identity, end: client.close });
     ws.on('pong', () => client.pong());
     ws.on('message', (data, isBinary) => {
       if (isBinary) return; // CDP is text

@@ -234,7 +234,9 @@ import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry, release
 import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { registerBrowserPrivateNetworkIpc } from './ipc/handlers/browserPrivateNetwork.handler';
-import { ChromeLauncherRegistry } from './browser-session/ChromeLauncher';
+import { ChromeLauncherRegistry, closeRelayClients, setRelayAdmission } from './browser-session/ChromeLauncher';
+import { wireRelayClientTriggers } from './browser-session/relayClientTriggers';
+import { onPaneClaimChange } from './workspace/workspaceClaimTrust';
 import { ChromeProfileStore, LIVE_CHROME_PROFILE, reconcilePaneBindingsFromMirror } from './browser-session/ChromeProfileStore';
 import { createChromeProfileUseHandler, setChromeProfileUseListener } from './browser-session/profileFallback';
 import { noteRunBrowserProfileUnbound } from './automation/runIdentity';
@@ -978,6 +980,7 @@ const browserAgentControl = new BrowserAgentControl({
   cancelInFlight: (surfaceId, error) => {
     webviewCdpManager.revokeRpcLeases(surfaceId, error);
     webviewCdpManager.stopLoading(surfaceId);
+    relayClientTriggers.userHold(surfaceId);
   },
 });
 webviewCdpManager.setLeaseObserver((surfaceId, leases) => browserAgentControl.noteLeases(surfaceId, leases));
@@ -1451,6 +1454,18 @@ browserPolicyStore.onChange(() => {
   chromeRegistry.clearBlockedHosts();
   void chromeRegistry.reconcileProtection();
 });
+// Relay clients end when what their grant was minted on goes: the policy
+// epoch, their workspace, their pane, a user hold, or their pane's claim.
+const relayClientTriggers = wireRelayClientTriggers({
+  closeClients: closeRelayClients,
+  policy: browserPolicyStore,
+  paneBindings: () => chromeProfileStore.getPaneBindings(),
+  mirror: getWorkspaceMirror(),
+  surfaceWorkspace: (surfaceId) =>
+    webviewCdpManager.getTarget(surfaceId)?.workspaceId ?? chromeRegistry.ownerOfSurface(surfaceId)?.workspaceId,
+  onPaneClaimChange,
+});
+setRelayAdmission((identity) => relayClientTriggers.admit(identity));
 // Phase 2.2 enforcement mode. Production wmux defaults to `enforce`; dev
 // (electron-forge / npm start) defaults to `shadow` so a bad delta doesn't lock
 // the developer out. Override via `mcp.mode` in `~/.wmux/config.json`.

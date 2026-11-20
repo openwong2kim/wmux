@@ -92,6 +92,39 @@ const MAX_LIVE_CLAIMS = 512;
 /** Injectable for deterministic tests. */
 let now: () => number = Date.now;
 
+/** Told the pane (ptyId) whenever a pane claim is revoked, retired or minted anew. */
+const paneClaimListeners = new Set<(ptyId: string) => void>();
+
+/**
+ * Hear of every pane claim that ends (revoked, retired, evicted, or found
+ * stale) and every new one minted for a pane; a repeat walk that keeps the
+ * same token is neither. Returns the unsubscribe.
+ */
+export function onPaneClaimChange(listener: (ptyId: string) => void): () => void {
+  paneClaimListeners.add(listener);
+  return () => {
+    paneClaimListeners.delete(listener);
+  };
+}
+
+function notePaneClaimChange(ptyId: string | undefined): void {
+  if (ptyId === undefined) return;
+  for (const listener of paneClaimListeners) {
+    try {
+      listener(ptyId);
+    } catch (err) {
+      console.warn('[workspaceClaimTrust] pane claim listener threw:', err instanceof Error ? err.message : String(err));
+    }
+  }
+}
+
+/** Remove one claim, telling the listeners when it named a pane. */
+function dropClaim(token: string): void {
+  const entry = live.get(token);
+  if (!live.delete(token)) return;
+  notePaneClaimChange(entry?.ptyId);
+}
+
 /**
  * The result of presenting (or not presenting) a claim token.
  *
@@ -148,7 +181,7 @@ export function mintWorkspaceClaimToken(workspaceId: unknown): string | null {
   if (live.size > MAX_LIVE_CLAIMS) {
     // Map preserves insertion order, so the first key is the oldest claim.
     const oldest = live.keys().next();
-    if (!oldest.done) live.delete(oldest.value);
+    if (!oldest.done) dropClaim(oldest.value);
   }
   return token;
 }
@@ -174,11 +207,14 @@ export function claimTokenForPane(workspaceId: unknown, ptyId: unknown): string 
       }
       // The pane now lives in another workspace: its old claim names a
       // workspace the pane is no longer in.
-      live.delete(token);
+      dropClaim(token);
     }
   }
   const token = mintWorkspaceClaimToken(ws);
-  if (token) live.set(token, { workspaceId: ws, ptyId: pty, mintedAt: now() });
+  if (token) {
+    live.set(token, { workspaceId: ws, ptyId: pty, mintedAt: now() });
+    notePaneClaimChange(pty);
+  }
   return token;
 }
 
@@ -201,11 +237,14 @@ export function claimTokenForRun(workspaceId: unknown, ptyId: unknown): string |
         entry.mintedAt = now();
         return token;
       }
-      live.delete(token);
+      dropClaim(token);
     }
   }
   const token = mintWorkspaceClaimToken(ws);
-  if (token) live.set(token, { workspaceId: ws, ptyId: pty, mintedAt: now(), browserOnly: true });
+  if (token) {
+    live.set(token, { workspaceId: ws, ptyId: pty, mintedAt: now(), browserOnly: true });
+    notePaneClaimChange(pty);
+  }
   return token;
 }
 
@@ -240,7 +279,7 @@ function paneClaimStillHolds(entry: { workspaceId: string; ptyId?: string; minte
 /** Revoke one token. Idempotent. */
 export function revokeWorkspaceClaimToken(token: unknown): void {
   if (typeof token !== 'string' || token.length === 0) return;
-  live.delete(token);
+  dropClaim(token);
 }
 
 /**
@@ -254,7 +293,7 @@ export function revokeWorkspaceClaimTokensFor(workspaceId: unknown): number {
   let revoked = 0;
   for (const [token, entry] of live) {
     if (entry.workspaceId === target) {
-      live.delete(token);
+      dropClaim(token);
       revoked++;
     }
   }
@@ -301,7 +340,7 @@ export function reconcileWorkspaceClaims(liveWorkspaceIds: Iterable<string>): nu
   for (const [token, entry] of live) {
     if (alive.has(entry.workspaceId)) continue;
     if (entry.mintedAt > cutoff) continue;
-    live.delete(token);
+    dropClaim(token);
     retired++;
   }
   return retired;
@@ -321,7 +360,7 @@ export function lookupWorkspaceClaim(token: unknown): WorkspaceClaimLookup {
   const entry = live.get(token);
   if (entry === undefined) return { kind: 'stale' };
   if (!paneClaimStillHolds(entry)) {
-    live.delete(token);
+    dropClaim(token);
     return { kind: 'stale' };
   }
   return {
