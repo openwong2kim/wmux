@@ -505,6 +505,8 @@ export class CdpPipeMux {
   private readonly ownership: CdpTargetOwnership | null;
   /** Grants: the mux's own browser session that discovers every target first. */
   private discoverySession: string | null = null;
+  /** Whether Chrome accepted Target.setDiscoverTargets on `discoverySession`, which is still attached. */
+  private discovering = false;
   /** Grants: destroyed targets whose facts go after DESTROYED_FACT_TTL_MS. */
   private readonly pruning = new Set<string>();
   /** C2d: each target's URL as Chrome last reported it. */
@@ -709,6 +711,15 @@ export class CdpPipeMux {
     }
   }
 
+  /**
+   * Whether the mux's own discovery session is up now: Chrome accepted
+   * Target.setDiscoverTargets on it, and it is still attached on an open pipe.
+   * False while it is still coming up.
+   */
+  discoveryLive(): boolean {
+    return this.open && this.discovering;
+  }
+
   /** Grants: a browser session of the mux's own that sees every target first. */
   private discover(attempt = 1): void {
     this.ownCommand('Target.attachToBrowserTarget', {})
@@ -716,7 +727,9 @@ export class CdpPipeMux {
         const session = (frame.result as { sessionId?: unknown } | undefined)?.sessionId;
         if (typeof session !== 'string') throw new Error('the browser named no session');
         this.discoverySession = session;
-        return this.ownCommand('Target.setDiscoverTargets', { discover: true }, session);
+        return this.ownCommand('Target.setDiscoverTargets', { discover: true }, session).then(() => {
+          if (this.discoverySession === session) this.discovering = true;
+        });
       })
       .catch(() => {
         if (!this.open) return;
@@ -1387,7 +1400,16 @@ export class CdpPipeMux {
     }
 
     if (typeof frame.method !== 'string') { bump(totals.dropped, 'neither-reply-nor-event'); return; }
-    if (typeof frame.sessionId !== 'string') { bump(totals.dropped, 'root-event'); return; }
+    if (typeof frame.sessionId !== 'string') {
+      // The mux's own discovery session ending is told on the root.
+      const ended = (frame.params as { sessionId?: unknown } | undefined)?.sessionId;
+      if (frame.method === 'Target.detachedFromTarget' && ended !== undefined && ended === this.discoverySession) {
+        this.discoverySession = null;
+        this.discovering = false;
+      }
+      bump(totals.dropped, 'root-event');
+      return;
+    }
     const event = frame as Frame & { method: string; sessionId: string };
     if (this.opts.urlGate && event.method.startsWith('Target.')) {
       const params = event.params as { targetInfo?: unknown; targetId?: unknown } | undefined;
@@ -1803,6 +1825,7 @@ export class CdpPipeMux {
   private end(reason: string): void {
     if (!this.open) return;
     this.open = false;
+    this.discovering = false;
     for (const waiter of this.own.values()) waiter.reject(new Error(reason));
     this.own.clear();
     this.watch.close();

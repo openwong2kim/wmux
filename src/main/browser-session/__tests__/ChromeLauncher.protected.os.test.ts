@@ -30,6 +30,8 @@ const { spawnMock, state, sockets } = vi.hoisted(() => ({
     onBrowserClose: null as (() => void) | null,
     /** What Target.getBrowserContexts lists: the contexts clients created. */
     browserContexts: [] as string[],
+    /** The download guard's Target.setDiscoverTargets is refused. */
+    refuseGuardDiscovery: false,
   },
   sockets: [] as Array<{ sent: Array<{ method: string; params: unknown }>; closed: boolean }>,
 }));
@@ -69,6 +71,9 @@ vi.mock('../CdpSocket', () => ({
     async send(method: string, params: unknown = {}) {
       this.rec.sent.push({ method, params });
       if (method === 'Browser.close') state.onBrowserClose?.();
+      if (method === 'Target.setDiscoverTargets' && state.refuseGuardDiscovery && this.rec.sent[0]?.method === 'Browser.setDownloadBehavior') {
+        throw new Error('refused (unit test)');
+      }
       if (method === 'Target.getBrowserContexts') return { browserContextIds: [...state.browserContexts] };
       if (method === 'Browser.setDownloadBehavior' && state.onGuardArm) {
         const hook = state.onGuardArm;
@@ -169,6 +174,7 @@ beforeEach(() => {
   state.routeViaProxy = true;
   state.probeDelayMs = 0;
   state.reportErrorPage = false;
+  state.refuseGuardDiscovery = false;
   state.onBrowserClose = null;
   state.onGuardArm = null;
   state.restoredPage = false;
@@ -220,6 +226,23 @@ describe('ChromeLauncher — protected profiles', () => {
     expect(probe?.sent.map((x) => x.method)).toEqual(['Target.setDiscoverTargets', 'Target.createTarget', 'Target.closeTarget']);
     expect(probe?.closed).toBe(true);
     await launcher.dispose({ immediate: true });
+  });
+
+  it('on the port, a guard whose discovery is refused still starts protected, with one warning naming the step', async () => {
+    state.refuseGuardDiscovery = true;
+    spawnWritesPortFile(makeChild());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const launcher = new ChromeLauncher('/tmp/prot-discovery', { protectedPortAllowed: () => true, protection: () => denyAll });
+      await launcher.ensureRunning();
+      expect(launcher.isProtected()).toBe(true);
+      const skipped = warn.mock.calls.filter((c) => String(c[0]).includes('continues without download-guard-discovery'));
+      expect(skipped).toHaveLength(1);
+      expect(String(skipped[0][0])).toContain('refused (unit test)');
+      await launcher.dispose({ immediate: true });
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('never adopts a running Chrome: closes it, waits for it to go, then launches', async () => {

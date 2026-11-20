@@ -2380,14 +2380,27 @@ export class ChromeLauncher implements ChromeBackendClient {
       this.piped?.policy?.downloadEvent('Browser.downloadProgress', params);
       for (const listener of this.downloadProgress) listener(params);
     });
-    let step = 'download-guard-deny';
     try {
       await deny();
-      step = 'download-guard-discovery';
-      await guard.send('Target.setDiscoverTargets', { discover: true });
     } catch (err) {
       guard.close();
-      throw notReadyAt(this.profileName, step, err);
+      throw notReadyAt(this.profileName, 'download-guard-deny', err);
+    }
+    try {
+      await guard.send('Target.setDiscoverTargets', { discover: true });
+    } catch (err) {
+      // Discovery here only denies a new context before the next tick. On the
+      // pipe the URL gate learns targets from the mux's own discovery session,
+      // and this session's events reach it too: the start goes on only while
+      // that session is up now (not yet up counts as down). On the port there
+      // is no gate.
+      const mux = this.piped?.mux;
+      if (mux && !mux.discoveryLive()) {
+        guard.close();
+        throw notReadyAt(this.profileName, 'download-guard-discovery', err);
+      }
+      const why = err instanceof Error ? err.message : String(err);
+      console.warn(`[ChromeLauncher] ${this.profileName}: protected start continues without download-guard-discovery: ${why}`);
     }
     const reassert = setInterval(() => {
       if (!guard.isOpen()) return clearInterval(reassert);
