@@ -57,6 +57,13 @@ const packageJson = JSON.parse(readFileSync(PACKAGE_PATH, 'utf8'));
 //   started on another PC shows: +422 bytes, some 105 tokens per full or
 //   core client. Core stays at 50000: it measures 49,859 with remote_answer,
 //   141 bytes of headroom, so the next core tool needs a raise.
+//   core: 50000 -> 51000 (remote_approve, remote permission approvals). Core
+//   measured 49,859 bytes before it and about 50,415 (wire) with it: +556
+//   bytes, some 140 tokens per full or core client. remote_approve sits with
+//   remote_answer, so an agent that sends work to another PC can answer both
+//   kinds of question its worker shows there. Full stays at 82000: it
+//   measures about 81,572 with it, 428 bytes of headroom, so the next full
+//   tool needs a raise.
 //   core: 49000 -> 50000 (fanout_bring_back, #3368). Core measured about
 //   48,790 bytes before it and 49,311 with it (the shortened tool, ~520
 //   bytes). fanout_start's remote shape and remote_spawn are already in core,

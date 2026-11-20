@@ -250,6 +250,21 @@ describe('on: the prompt is offered, and allowed or denied', () => {
     expect(rig.logs.join('\n')).not.toContain('echo key-test');
   });
 
+  it('a carried-out decision is told once to carriedOut, with the tool and never the command; a refusal or a resend is not', async () => {
+    const rig = makeRig();
+    const told: unknown[] = [];
+    rig.deps.carriedOut = (e) => { told.push(e); };
+    await rig.prompt();
+    rig.approvals.tick();
+    const id = rig.offered()!;
+    expect(await rig.approvals.take(HOST, TASK, 'ap-0', allow('0123456789abcdef'))).toMatchObject({ outcome: 'not-done' });
+    expect(told).toEqual([]);
+    expect(await rig.approvals.take(HOST, TASK, 'ap-1', allow(id))).toEqual({ messageId: 'ap-1', outcome: 'done' });
+    expect(await rig.approvals.take(HOST, TASK, 'ap-1', allow(id))).toEqual({ messageId: 'ap-1', outcome: 'done' });
+    expect(told).toEqual([{ hostId: HOST, taskId: TASK, messageId: 'ap-1', decision: 'allow', tool: 'Bash' }]);
+    expect(JSON.stringify(told)).not.toContain('echo key-test');
+  });
+
   it('a second prompt in the same turn is approvable: the chain moves to this channel\'s own key', async () => {
     const rig = makeRig();
     await rig.prompt();
@@ -710,15 +725,85 @@ describe('only a linked pane\'s task', () => {
 });
 
 describe('a flood from one PC', () => {
-  it('past the window\'s approvals the rest are dropped unread, with one log line; the next window takes them again', () => {
+  it('past the window\'s approvals the rest are rate-limited with the time left, with one log line; the next window takes new ones again', () => {
     const rig = fakeRig({ command: 'ls' });
-    for (let i = 0; i < APPROVALS_PER_WINDOW; i++) expect(rig.approvals.admit(HOST)).toBe(true);
-    expect(rig.approvals.admit(HOST)).toBe(false);
-    expect(rig.approvals.admit(HOST)).toBe(false);
-    expect(rig.approvals.admit('22222222-2222-4222-8222-222222222222')).toBe(true);
+    for (let i = 0; i < APPROVALS_PER_WINDOW; i++) expect(rig.approvals.admit(HOST, `ap-${i}`)).toEqual({ ok: true });
+    rig.clock.now += 1_000;
+    expect(rig.approvals.admit(HOST, 'ap-over')).toEqual({ ok: false, retryAfterMs: APPROVAL_WINDOW_MS - 1_000 });
+    expect(rig.approvals.admit(HOST, 'ap-over-2')).toMatchObject({ ok: false });
+    expect(rig.approvals.admit('22222222-2222-4222-8222-222222222222', 'ap-0')).toEqual({ ok: true });
     expect(rig.logs.filter((l) => l.includes('approvals in a minute'))).toHaveLength(1);
     rig.clock.now += APPROVAL_WINDOW_MS;
-    expect(rig.approvals.admit(HOST)).toBe(true);
+    expect(rig.approvals.admit(HOST, 'ap-new')).toEqual({ ok: true });
+  });
+
+  it('an id refused before it was carried out is counted again when it is resent, and capped like any other', () => {
+    const rig = fakeRig({ command: 'ls' });
+    // 60 admitted, each then refused by a check that keeps no receipt (another link, say): no final outcome.
+    for (let i = 0; i < APPROVALS_PER_WINDOW; i++) expect(rig.approvals.admit(HOST, `ap-${i}`)).toEqual({ ok: true });
+    rig.clock.now += 5_000;
+    // The same ids again, now with valid bodies: counted again, so past the cap.
+    expect(rig.approvals.admit(HOST, 'ap-0')).toEqual({ ok: false, retryAfterMs: APPROVAL_WINDOW_MS - 5_000 });
+    expect(rig.approvals.admit(HOST, 'ap-1')).toMatchObject({ ok: false });
+    rig.clock.now += APPROVAL_WINDOW_MS;
+    // A new window: counted from the start, a resend like any other.
+    for (let i = 0; i < APPROVALS_PER_WINDOW; i++) expect(rig.approvals.admit(HOST, 'ap-0')).toEqual({ ok: true });
+    expect(rig.approvals.admit(HOST, 'ap-0')).toMatchObject({ ok: false });
+  });
+
+  it('an id with a final outcome is answered from its receipt: not counted, not run, no second audit line', async () => {
+    const rig = fakeRig({ command: 'ls' });
+    // 10 carried out to a final outcome (refused there: the prompt was not offered) before the stream dropped.
+    for (let i = 0; i < 10; i++) {
+      expect(rig.approvals.admit(HOST, `ap-${i}`)).toEqual({ ok: true });
+      await rig.approvals.take(HOST, TASK, `ap-${i}`, deny('ffffffffffffffff'));
+    }
+    const lines = rig.logs.length;
+    rig.clock.now += 5_000;
+    // On reconnect the outbox sends all 10 again, then new ones.
+    for (let i = 0; i < 10; i++) {
+      expect(rig.approvals.admit(HOST, `ap-${i}`)).toEqual({ ok: true });
+      expect(await rig.approvals.take(HOST, TASK, `ap-${i}`, deny('ffffffffffffffff'))).toEqual({ messageId: `ap-${i}`, outcome: 'not-done', reason: 'not-offered' });
+    }
+    expect(rig.logs.length).toBe(lines);
+    const fresh = Array.from({ length: 55 }, (_, i) => rig.approvals.admit(HOST, `new-${i}`));
+    expect(fresh.filter((r) => r.ok)).toHaveLength(APPROVALS_PER_WINDOW - 10);
+    expect(fresh.slice(APPROVALS_PER_WINDOW - 10).every((r) => !r.ok && r.retryAfterMs === APPROVAL_WINDOW_MS - 5_000)).toBe(true);
+  });
+
+  it('rate-limited is stored as final for its PC: a resend, after a restart too, is answered the same and never carried out', async () => {
+    const rig = makeRig();
+    await rig.prompt();
+    rig.approvals.tick();
+    const id = rig.offered()!;
+    for (let i = 0; i < APPROVALS_PER_WINDOW; i++) rig.approvals.admit(HOST, `ap-${i}`);
+    const over = rig.approvals.admit(HOST, 'ap-over');
+    expect(over).toMatchObject({ ok: false });
+    await rig.approvals.limited(HOST, TASK, 'ap-over', allow(id), (over as { retryAfterMs: number }).retryAfterMs);
+    const lines = rig.logs.length;
+    // A later window, and a daemon that started again on the same file.
+    rig.clock.now += APPROVAL_WINDOW_MS;
+    const again = new RemoteApprovals({ ...rig.deps, receipts: new AnswerReceiptStore(tmpDir, () => rig.clock.now, undefined, 'a2a-remote-approval-receipts.json', { durable: true, strictRead: true }) });
+    expect(again.admit(HOST, 'ap-over')).toEqual({ ok: false, retryAfterMs: 0 });
+    expect(await again.limited(HOST, TASK, 'ap-over', allow(id), 0)).toMatchObject({ outcome: 'not-done', reason: 'rate-limited' });
+    // A take that reached it anyway answers the stored outcome: nothing typed.
+    expect(await again.take(HOST, TASK, 'ap-over', allow(id))).toEqual({ messageId: 'ap-over', outcome: 'not-done', reason: 'rate-limited' });
+    expect(rig.writes).toEqual([]);
+    expect(rig.logs.length).toBe(lines);
+    // Its own room: the PC's other receipts are not taken by it.
+    expect(rig.deps.receipts!.lookup(`remote:${HOST}`, 'ap-over')).toBeNull();
+  });
+
+  it('a rate-limited approval is told in the task\'s status with retryAfterMs, and nothing is typed', async () => {
+    const rig = makeRig();
+    await rig.prompt();
+    rig.approvals.tick();
+    const id = rig.offered()!;
+    expect(await rig.approvals.limited(HOST, TASK, 'ap-9', allow(id), 41_000)).toEqual({ messageId: 'ap-9', outcome: 'not-done', reason: 'rate-limited', retryAfterMs: 41_000 });
+    expect(rig.writes).toEqual([]);
+    rig.clock.now += STATUS_GAP;
+    rig.approvals.tick();
+    expect(rig.sent.at(-1)!.status.detail?.approvals).toEqual([{ messageId: 'ap-9', outcome: 'not-done', reason: 'rate-limited', retryAfterMs: 41_000 }]);
   });
 
   it('refusal audit lines are capped per PC in a window', async () => {

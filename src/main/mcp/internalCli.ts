@@ -64,10 +64,11 @@ export const WMUX_CLI_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'pane.list',
   'pane.split',
   'pane.focus',
-  // `wmux remote spawn` / `wmux remote spawn-status` / `wmux remote answer`
+  // `wmux remote spawn` / `wmux remote spawn-status` / `wmux remote answer` / `wmux remote approve`
   'a2a.remote.spawn',
   'a2a.remote.spawnStatus',
   'a2a.remote.answer',
+  'a2a.remote.approve',
   // terminal IO (`wmux input ...`)
   'input.send',
   'input.sendKey',

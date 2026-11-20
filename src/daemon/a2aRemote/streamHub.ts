@@ -65,6 +65,8 @@ export const TERMINAL_REFUSALS: ReadonlySet<A2aRemoteErrorCode> = new Set<A2aRem
   'protocol',
   // An approval the receiver's setting is off for: sent again, it is refused again.
   'approvals-off',
+  // An approval past the receiver's window: stored there as final, so the same message is refused again; a new one is a new decision.
+  'rate-limited',
 ]);
 
 export const STREAM_HEARTBEAT_MS = 15_000;
@@ -131,6 +133,8 @@ const STATUS_OF: Record<A2aRemoteErrorCode, number> = {
   // Never answered by a peer (the sender records it); here for completeness.
   'attachment-failed': 400,
   'approvals-off': 403,
+  // A refusal of that message like the others (the joiner reads the body's code); 429 is the upload path's busy.
+  'rate-limited': 409,
 };
 
 /** `<epoch>:<seq>` → cursor; null when it is not one. */

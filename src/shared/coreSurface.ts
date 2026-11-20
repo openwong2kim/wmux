@@ -76,6 +76,7 @@ export const CORE_TOOL_SURFACE: readonly string[] = [
   'fanout_bring_back',
   'remote_spawn',
   'remote_answer',
+  'remote_approve',
   'hand_out',
   'ledger_update',
   'task_push',

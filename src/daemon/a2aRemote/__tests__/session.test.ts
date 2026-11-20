@@ -75,6 +75,54 @@ describe('JoinerSession pump', () => {
   });
 });
 
+describe('JoinerSession: an approval refused rate-limited', () => {
+  it('is final: refused once in the outbox, its sender told, and never posted again', async () => {
+    let posts = 0;
+    let owed: A2aOutboxRecordV1 | undefined = {
+      ...record(),
+      envelope: { protocol: A2A_REMOTE_PROTOCOL, linkId: 'l', linkVersion: 2, messageId: 'ap-1', kind: 'approval', taskId: 't', approval: { promptId: '0123456789abcdef', decision: 'deny' }, sentAt: 'x' } as A2aOutboxRecordV1['envelope'],
+    };
+    const refused: string[] = [];
+    const told: string[] = [];
+    const client: SessionClient = {
+      requestJson: async (_m, p) => {
+        if (p === A2A_ROUTES.messages) posts += 1;
+        return { status: 409, json: { ok: false, error: 'rate-limited' } };
+      },
+      // eslint-disable-next-line require-yield -- a stream that never yields
+      openStream: async function* (_p, { signal }) {
+        await new Promise<void>((r) => signal.addEventListener('abort', () => r(), { once: true }));
+      },
+    };
+    const session = new JoinerSession({
+      hostId: HOST,
+      host: () => ({ v: 1, hostId: HOST, name: 'B', addresses: ['127.0.0.1'], port: 1, fingerprint256: 'AB', peerId: 'p', createdAt: 'x' }),
+      credential: () => ({ peerId: '22222222-2222-4222-8222-222222222222', secret: 'a'.repeat(43) }),
+      outbox: {
+        epoch: 'e',
+        head: () => (owed ? structuredClone(owed) : undefined),
+        openCount: () => (owed ? 1 : 0),
+        markSent: () => owed!,
+        markOutcomeUnknown: () => owed!,
+        ack: () => 1,
+        refuse: (_h, _seq, code) => { refused.push(code); const r = owed!; owed = undefined; return r; },
+      },
+      accept: async () => ({ ok: true, duplicate: false }),
+      onRefused: (rec, code) => { told.push(`${rec.envelope.messageId}:${code}`); },
+      reconcileLinks: async () => undefined,
+      onStatus: () => undefined,
+      timing: { backoffMinMs: 100, backoffMaxMs: 400, livenessMs: 60_000 },
+      client: () => client,
+      log: () => undefined,
+    });
+    sessions.push(session);
+    session.start();
+    await vi.waitFor(() => expect(told).toEqual(['ap-1:rate-limited']), { timeout: 5_000 });
+    expect(refused).toEqual(['rate-limited']);
+    expect(posts).toBe(1);
+  });
+});
+
 describe('JoinerSession status', () => {
   it('shows connected as soon as a send gets through, without waiting out the stream backoff', async () => {
     const states: string[] = [];

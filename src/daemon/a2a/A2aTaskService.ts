@@ -72,7 +72,7 @@ import type {
   A2aTaskTransitionPayload,
 } from '../../shared/a2aEventlog';
 import type { A2aRemoteErrorCode, A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from '../../shared/a2aRemote';
-import { isRemoteWorkspaceId, localSideOf, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
+import { A2A_REMOTE_APPROVAL_NOTES_MAX, isRemoteWorkspaceId, localSideOf, readHeldReason, type A2aRemoteApprovalNote, type A2aRemoteHeldReason, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 import { parseGatedSubmitProof, sameGatedSubmitProof, type GatedSubmitProof } from '../../shared/ptyMessageDelivery';
 
 /** a2aSlice 현행 값 준수(캐시와 동일 시멘틱). */
@@ -461,6 +461,12 @@ export class A2aTaskService {
         ? marker.inbox?.find((i) => i.messageId === r.messageId)
         : marker;
       if (!target) return;
+      // A note of another PC's decision: kept apart, nothing else on the task moves (updatedAt included).
+      if (r.approvalNote) {
+        if (r.messageId !== undefined || (marker.approvalNotes ?? []).some((x) => x.messageId === r.approvalNote!.messageId)) return;
+        marker.approvalNotes = [...(marker.approvalNotes ?? []), { ...r.approvalNote, at: r.timestamp }].slice(-A2A_REMOTE_APPROVAL_NOTES_MAX);
+        return;
+      }
       // Since a reopen by the sender: a delivery, or a paste left unconfirmed, of any message on the task, may have
       // reached the agent. An attempt alone does not: one refused (cleared with nothing written) reached nothing, and
       // one still in flight is read from the items when the undo is decided.
@@ -994,11 +1000,28 @@ export class A2aTaskService {
     notice?: 'sent' | 'not-sent';
     /** With `attempted` on a held item: main offers it again, or that offer wrote nothing (the hold and its time stay). */
     reoffer?: true;
+    /**
+     * Inbound, task-level: another PC's decision carried out on a prompt here.
+     * A note only: `updatedAt`, the history, holds and a reopen are left as they are. Once per message id.
+     */
+    approvalNote?: Omit<A2aRemoteApprovalNote, 'at'>;
   }): Promise<{ ok: true; task: Task } | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
       const marker = remoteMarkerOf(task);
       if (!task || !marker) return { ok: false, error: `a2a.remote.mark: remote task not found: ${input.taskId}` };
+      if (input.approvalNote !== undefined) {
+        const n = input.approvalNote;
+        if (input.messageId !== undefined || marker.direction !== 'inbound') return { ok: false, error: 'a2a.remote.mark: an approval note is task-level, on an inbound task' };
+        if ((marker.approvalNotes ?? []).some((x) => x.messageId === n.messageId)) return { ok: true, task };
+        const note = { messageId: n.messageId, decision: n.decision, tool: n.tool, text: n.text };
+        const payload: A2aRemoteMarkPayload = { kind: 'remote.mark', taskId: input.taskId, approvalNote: note, timestamp: this.isoNow() };
+        const ws = task.metadata[localSideOf(task)].workspaceId;
+        const committed = await this.log.append(this.envelope(payload, ws, this.derivePrincipalId(task, localSideOf(task), ws)));
+        if (!committed) return { ok: false, error: 'a2a.remote.mark: daemon log append failed (uncommitted)' };
+        this.applyPayload(payload);
+        return { ok: true, task };
+      }
       let target: A2aRemoteTaskState | A2aRemoteInboxItem | undefined = marker;
       if (input.messageId !== undefined) {
         target = marker.inbox?.find((i) => i.messageId === input.messageId);

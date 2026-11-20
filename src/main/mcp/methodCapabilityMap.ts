@@ -559,6 +559,7 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'a2a.remote.answer.send': { capability: 'wmux.internal' },
   'a2a.remote.answers.get': { capability: 'wmux.internal' },
   'a2a.remote.answers.set': { capability: 'wmux.internal' },
+  'a2a.remote.approve.send': { capability: 'wmux.internal' },
   // Which PCs may allow or deny prompts in the tasks they sent here: the same human's setting.
   'a2a.remote.approvals.get': { capability: 'wmux.internal' },
   'a2a.remote.approvals.set': { capability: 'wmux.internal' },
@@ -575,6 +576,8 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'a2a.remote.spawn': { capability: 'a2a.execute', riskClass: 'a2a' },
   'a2a.remote.spawnStatus': { capability: 'a2a.read', riskClass: 'a2a' },
   'a2a.remote.answer': { capability: 'a2a.send', riskClass: 'a2a' },
+  // Allowing a prompt on another PC lets a command run there: the same grant as starting work there.
+  'a2a.remote.approve': { capability: 'a2a.execute', riskClass: 'a2a' },
   // Continue on another PC: only main starts a conversation another PC handed over.
   'a2a.remote.continue.work': { capability: 'wmux.internal' },
   'a2a.remote.continue.claim': { capability: 'wmux.internal' },
