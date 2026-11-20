@@ -12,6 +12,7 @@ import {
 } from '../../../../shared/browserBackend';
 import type { BrowserBackendStore } from '../../../browser-session/BrowserBackendStore';
 import { claimOn, dispatchAsClaimedCaller, paneClaimOn } from './claimedCaller';
+import { closeRelayClients } from '../../../browser-session/ChromeLauncher';
 import { FIRST_PARTY_CLIENT_NAMES } from '../../../mcp/firstParty';
 
 /**
@@ -726,6 +727,27 @@ describe('browser.cdp.info for a Chrome on the debugging pipe (relay)', () => {
     expect(operator).toMatchObject({ profile: 'work', lane: 'operator', everyTarget: true });
     expect(operator).not.toHaveProperty('ptyId');
     expect(operator).not.toHaveProperty('protectedEpoch');
+  });
+
+  it('hands out no relay token when a sweep that takes its caller runs while it is made', async () => {
+    const { launcher, registry } = pipedRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    // The caller's workspace closes while the token is being made.
+    launcher.relayGrant.mockImplementationOnce(async () => {
+      closeRelayClients((id) => id.workspaceId === 'ws-1', 'workspace closed');
+      return grant;
+    });
+    const response = await router.dispatch({
+      id: '1', method: 'browser.cdp.info', params: { workspaceId: 'ws-1', relay: true }, clientName: [...FIRST_PARTY_CLIENT_NAMES][0], ...claimOn('ws-1'),
+    } as never, { externalWire: true });
+    expect(response.ok).toBe(false);
+    expect(String((response as { error?: unknown }).error)).toContain('changed while the relay token was made');
+    // A sweep of another workspace leaves the grant alone.
+    launcher.relayGrant.mockImplementationOnce(async () => {
+      closeRelayClients((id) => id.workspaceId === 'ws-2', 'workspace closed');
+      return grant;
+    });
+    expect((await ask(router, { workspaceId: 'ws-1', relay: true }, true)).relay).toEqual(grant);
   });
 
   it('a Chrome on a port keeps its cdpPort and mints nothing, asked or not', async () => {

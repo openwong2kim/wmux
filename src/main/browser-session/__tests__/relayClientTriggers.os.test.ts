@@ -9,6 +9,7 @@ import { CdpPipeMux, type CallerIdentity } from '../CdpPipeMux';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay';
 import { BrowserPolicyStore } from '../BrowserPolicyStore';
 import { wireRelayClientTriggers, type RelayClientTriggers } from '../relayClientTriggers';
+import { closeRelayClients, relaySweepMark, relaySweptSince } from '../ChromeLauncher';
 import { FakeBrowser } from './fakePipeBrowser';
 import { WorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import type { WorkspaceListEntry } from '../../../shared/workspaceMirror';
@@ -201,5 +202,34 @@ describe('relay client triggers', () => {
     claimTokenForPane('ws-3', 'pty-2');
     await moved.gone;
     expect(await answers(engine.ws)).toBe(true);
+  });
+
+  it('a grant under way while a trigger ran is checked against it once minted', async () => {
+    const mirror = new WorkspaceMirror();
+    const store = new BrowserPolicyStore(tempDir('wmux-rt-policy-'));
+    const bindings: ChromePaneBindings = { 'pane-a': { workspaceId: 'ws-1', profile: 'pa' } };
+    const triggers = wireRelayClientTriggers({
+      closeClients: closeRelayClients,
+      policy: store,
+      paneBindings: () => bindings,
+      mirror,
+      surfaceWorkspace: () => undefined,
+      onPaneClaimChange,
+    });
+    cleanup.push(() => triggers.dispose());
+    push(mirror, [{ id: 'ws-1', name: 'one', ptyIds: ['pty-1'] }, { id: 'ws-2', name: 'two', ptyIds: ['pty-2'] }]);
+
+    const beforeClose = relaySweepMark();
+    push(mirror, [{ id: 'ws-2', name: 'two', ptyIds: ['pty-2'] }]);
+    expect(relaySweptSince(beforeClose, { lane: 'engine', workspaceId: 'ws-1' })).toBe(true);
+    expect(relaySweptSince(beforeClose, { lane: 'engine', workspaceId: 'ws-2' })).toBe(false);
+
+    // The profile becomes protected while a grant minted with no epoch is under way.
+    const beforeProtect = relaySweepMark();
+    const epoch = await store.write({ workspaceId: 'ws-1', paneId: 'pane-a', profileId: 'pa', protected: true, hosts: hosts(['a.test']), expectedEpoch: 0 }, 'pa', true);
+    expect(relaySweptSince(beforeProtect, { lane: 'engine', workspaceId: 'ws-2', profile: 'pa' })).toBe(true);
+    expect(relaySweptSince(beforeProtect, { lane: 'engine', workspaceId: 'ws-2', profile: 'pa', protectedEpoch: epoch })).toBe(false);
+    expect(relaySweptSince(beforeProtect, { lane: 'engine', workspaceId: 'ws-2', profile: 'other' })).toBe(false);
+    expect(relaySweptSince(relaySweepMark(), { lane: 'engine', workspaceId: 'ws-1' })).toBe(false);
   });
 });

@@ -313,7 +313,7 @@ describe('protected-pane gate', () => {
     } as never, { externalWire: true });
     expect(relayGrant).toHaveBeenCalledWith(expect.objectContaining({ profile: 'pa', protectedEpoch: 1 }));
     expect(response.ok).toBe(false);
-    expect(String((response as { error?: unknown }).error)).toContain('the browser policy changed while the relay token was made');
+    expect(String((response as { error?: unknown }).error)).toContain('changed while the relay token was made');
   });
 
   it('never lets a protected pane drive a surface outside its own Chrome', async () => {
