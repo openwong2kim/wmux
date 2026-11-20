@@ -95,6 +95,8 @@ export const WMUX_CLI_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'browser.session.stop',
   'browser.session.status',
   'browser.session.list',
+  // a relay token for a script in this CLI's verified pane (`wmux browser cdp`)
+  'browser.cdp.grant',
 ]);
 
 /**

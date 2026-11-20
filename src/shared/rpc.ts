@@ -556,6 +556,7 @@ export type RpcMethod =
   | 'browser.type.humanlike'
   | 'browser.cdp.target'
   | 'browser.cdp.info'
+  | 'browser.cdp.grant'
   | 'browser.screenshot'
   | 'browser.evaluate'
   | 'browser.console.get'
@@ -968,6 +969,7 @@ export const ALL_RPC_METHODS = [
   'browser.type.humanlike',
   'browser.cdp.target',
   'browser.cdp.info',
+  'browser.cdp.grant',
   'browser.screenshot',
   'browser.evaluate',
   'browser.console.get',

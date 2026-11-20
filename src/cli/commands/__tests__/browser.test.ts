@@ -190,3 +190,69 @@ describe('wmux browser session status', () => {
     expect(lines).toEqual(['Active profile: default', 'CDP port: 19000']);
   });
 });
+
+describe('wmux browser cdp', () => {
+  const tty = (isTTY: boolean) => {
+    const was = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    Object.defineProperty(process.stdout, 'isTTY', { value: isTTY, configurable: true });
+    return () => {
+      if (was) Object.defineProperty(process.stdout, 'isTTY', was);
+      else delete (process.stdout as { isTTY?: boolean }).isTTY;
+    };
+  };
+  const exits = () => vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+    throw new Error(`exit ${code}`);
+  }) as never);
+
+  it('on a pipe, prints the grant main hands out as JSON, asking from the verified pane', async () => {
+    const restore = tty(false);
+    const grant = { endpoint: 'ws+unix:/tmp/r.sock:/devtools/browser/relay', headers: { Authorization: 'Bearer t' }, proofKey: 'k', profile: 'work' };
+    rpc.mockResolvedValue({ id: 'g', ok: true, result: grant });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      await handleBrowser(['cdp', '--json'], true);
+    } finally {
+      restore();
+    }
+    expect(setWorkspaceToken).toHaveBeenCalledWith('claim-self');
+    expect(rpc).toHaveBeenCalledWith('browser.cdp.grant', {});
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toEqual(grant);
+  });
+
+  it('refuses to print a grant to a terminal, asking for nothing', async () => {
+    const restore = tty(true);
+    const errors: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((msg: unknown) => { errors.push(String(msg)); });
+    exits();
+    try {
+      await expect(handleBrowser(['cdp', '--json'], true)).rejects.toThrow('exit 1');
+    } finally {
+      restore();
+    }
+    expect(errors.join('\n')).toContain('pipe it into your script');
+    expect(rpc).not.toHaveBeenCalled();
+    expect(selfContext).not.toHaveBeenCalled();
+  });
+
+  it('without --json prints how to use it and never a grant', async () => {
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    exits();
+    await expect(handleBrowser(['cdp'], false)).rejects.toThrow('exit 1');
+    expect(String(write.mock.calls[0]?.[0])).toContain('wmux browser cdp --json | <your script>');
+    expect(rpc).not.toHaveBeenCalled();
+    await expect(handleBrowser(['cdp', '--help'], false)).rejects.toThrow('exit 0');
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('outside a wmux pane, says how to run it and asks for nothing', async () => {
+    const restore = tty(false);
+    selfContext.mockResolvedValue({});
+    try {
+      const message = await expectRefusedOutsidePane(() => handleBrowser(['cdp', '--json'], true));
+      expect(message).toContain('Run the command from a wmux pane terminal');
+    } finally {
+      restore();
+    }
+    expect(rpc).not.toHaveBeenCalled();
+  });
+});

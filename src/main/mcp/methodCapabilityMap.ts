@@ -354,6 +354,8 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.type.humanlike':    { capability: 'browser.type',     riskClass: 'browser' },
   'browser.cdp.target':        { capability: 'browser.read',     riskClass: 'browser' },
   'browser.cdp.info':          { capability: 'browser.read',     riskClass: 'browser' },
+  // A raw CDP connection runs page script: the capability that already does.
+  'browser.cdp.grant':         { capability: 'browser.evaluate', riskClass: 'browser' },
   'browser.screenshot':        { capability: 'browser.screenshot', riskClass: 'browser' },
   'browser.evaluate':          { capability: 'browser.evaluate',   riskClass: 'browser' },
   'browser.console.get':       { capability: 'browser.read',       riskClass: 'browser' },

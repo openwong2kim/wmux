@@ -645,7 +645,7 @@ export const WORKER_FENCE_REFUSED_WMUX_TOOLS: readonly string[] = [
  *  an unattended worker does not rearrange or restyle the owner's app. */
 export const WORKER_FENCE_REFUSED_RPC: ReadonlySet<string> = new Set([
   'input.send', 'input.sendKey', 'surface.new', 'pane.split', 'a2a.remote.spawn', 'a2a.remote.answer', 'a2a.remote.approve', 'computer.act', 'task.fanout.start',
-  'task.fanout.bringBack', 'handOut.list', 'handOut.add', 'app.action', 'app.action.list',
+  'task.fanout.bringBack', 'handOut.list', 'handOut.add', 'app.action', 'app.action.list', 'browser.cdp.grant',
 ]);
 
 /** Top-level settings keys: a sandbox of their own, or hooks turned off. */

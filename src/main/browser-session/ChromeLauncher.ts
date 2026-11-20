@@ -250,9 +250,19 @@ export function setRelayAdmission(check: ((identity: CallerIdentity) => string |
   relayAdmission = check;
 }
 
-/** Why no relay token may be minted for `identity`, or null when it may (none set: null). */
+/**
+ * Why no relay token may be minted for `identity`, or null when it may. With
+ * no check set, a pane-script grant is refused (nothing could judge it) and
+ * any other passes.
+ */
 export function relayAdmissionRefusal(identity: CallerIdentity): string | null {
-  return relayAdmission?.(identity) ?? null;
+  if (!relayAdmission) return identity.lane === 'pane-script' ? 'wmux has nothing to check a pane grant against yet' : null;
+  return relayAdmission(identity);
+}
+
+/** Drop the unused relay tokens whose identity `match` takes; connected clients stay. */
+export function revokeRelayTokens(match: (identity: CallerIdentity) => boolean): number {
+  return pipeRelay?.revokeTokens(match) ?? 0;
 }
 
 /** Where the sweeps stand now: what relaySweptSince takes. */
@@ -365,6 +375,11 @@ export interface ChromeBackendClient {
   endpoint(): Promise<ChromeBackendEndpoint>;
   /** Dedicated instances on a debugging pipe (endpoint() said `piped`): a relay token for `identity`. */
   relayGrant?(identity: CallerIdentity): Promise<RelayGrant>;
+  /**
+   * Dedicated instances on a debugging pipe: whether a relay client of
+   * `identity` is kept to its own targets (C3b). A pane-script grant needs it.
+   */
+  narrowedFor?(identity: CallerIdentity): boolean;
   /** Targets reported through browser.cdp.info (page-selection seed). Live
    *  seeds only wmux-opened tabs so a random user tab can never become the
    *  default pin. */
@@ -1713,6 +1728,8 @@ export class ChromeLauncher implements ChromeBackendClient {
    */
   async relayGrant(identity: CallerIdentity): Promise<RelayGrant> {
     this.assertOpen();
+    const refusal = relayAdmissionRefusal(identity);
+    if (refusal !== null) throw new Error(`ChromeLauncher: no relay token: ${refusal}`);
     const piped = this.piped;
     if (!piped) throw new Error('ChromeLauncher: Chrome exited');
     // With grants, no client before main holds the default context's downloads.
@@ -1737,6 +1754,15 @@ export class ChromeLauncher implements ChromeBackendClient {
     }
     if (this.piped !== piped) throw new Error('ChromeLauncher: Chrome exited');
     return page !== null ? { ...grant, bootstrapTargetId: page } : grant;
+  }
+
+  /**
+   * Whether a relay client of `identity` is kept to its own targets (C3b) on
+   * the running Chrome; false off the pipe. Today that is the launch's
+   * WMUX_CDP_TARGET_GRANT switch, the same for every client.
+   */
+  narrowedFor(_identity: CallerIdentity): boolean {
+    return this.piped?.grants === true;
   }
 
   /**

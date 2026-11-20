@@ -54,7 +54,7 @@ import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFr
 import { getHandOutStore, type HandOutStore } from '../../handOut/handOutStore';
 import { isHandOutId } from '../../../shared/handOut';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
-import { checkClaim, claimHeldRefusal, claimStartTime, claimStillHeld, type ClaimVerdict } from './peerPidShadow';
+import { checkClaim, claimHeldRefusal, claimStartTime, claimStillHeld, setPaneOfPeer, type ClaimVerdict } from './peerPidShadow';
 import type { ClaimRefusal } from '../../../shared/identityClaims';
 import { A2A_BRAIN_ALIAS, A2A_REMOTE_BODY_MAX, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import { withdrawStoredDeliveries } from './pendingDeliveries';
@@ -913,55 +913,16 @@ export function registerA2aRpc(
     return { entries: liveDaemonPidEntries(entries, sessions), client };
   }
 
-  // a2a.resolve.identity — handled in main process (not renderer).
-  // Returns PID → CURRENT workspaceId mappings so an MCP server can resolve
-  // which workspace it belongs to by walking its own process tree.
-  //
-  // The on-disk pid-map stores PID → ptyId (a stable, immutable anchor). The
-  // owning workspace is resolved LIVE here, from the renderer, every time —
-  // because a workspace id can be re-minted by a daemon respawn or session
-  // restore while the shell process (and its frozen WMUX_WORKSPACE_ID env)
-  // lives on. Storing the workspace id at create time and trusting it forever
-  // is exactly what produced stale identities ("no workspace found for ws-…").
-  router.register('a2a.resolve.identity', async (params, ctx) => {
-    // PROPER multi-agent fix: a caller that can't walk its own process tree —
-    // Codex sandboxes the per-hop PowerShell spawn and strips the env hints —
-    // sends its OWN pid as `callerPid`. We then walk the tree HERE (main, where
-    // the snapshot is unsandboxed) from that pid up to the owning shell's
-    // pid-map anchor and return the resolved identity directly. Absent callerPid
-    // keeps the legacy contract verbatim (the client walks the returned map), so
-    // older MCP builds are unaffected.
-    //
-    // callerPid names the caller's own process. On macOS and Linux the claim is taken only from the process it names, as
-    // the OS reports it for the connection, or from the MCP broker main spawned
-    // on a call it stamped (peerPidShadow.checkClaim). A claim not taken gets no walk and no claim;
-    // `entries` still go back for the caller's own walk.
-    const callerPid = normalizeCallerPid((params as { callerPid?: unknown }).callerPid);
-    const callerVerdict = callerPid != null ? checkClaim('callerPid', ctx, callerPid) : null;
-    // Why the caller's claim was not taken, for the caller to say (no pid, no path).
-    let claimRefused: ClaimRefusal | undefined = callerVerdict && !callerVerdict.ok ? callerVerdict.reason : undefined;
-    const callerRefused = claimRefused !== undefined;
-    // Start the snapshot CONCURRENTLY and bound the wait (at the walk below) to the
-    // RPC budget: it feeds only the final walk, so it must never delay — or, past
-    // the client's ~10s RPC deadline, SINK — the legacy mappings/entries fallback
-    // this handler returns. Overlapping the pid-map scan + renderer resolves hides
-    // its latency in the common case; the deadline caps the degraded one
-    // (PowerShell/CIM hung → up to two 8s timeouts inside snapshotForCaller).
-    // Started only when a caller asked for server-side resolution (legacy calls
-    // pay nothing); resolves to a table containing callerPid, or null.
-    const startedAt = Date.now();
-    const snapshotPromise: Promise<PortSnapshot | null> =
-      callerPid != null && !callerRefused ? snapshotForCaller(callerPid) : Promise.resolve(null);
-
+  /**
+   * The pid-map's live-format anchors (shell pid → ptyId → the workspace that
+   * owns that pty now), or null when there is no pid-map dir. Legacy
+   * "pid → workspaceId" files are removed as they are read.
+   */
+  async function scanPidMap(): Promise<Array<{ pid: string; ptyId: string; workspaceId: string }> | null> {
     const dir = getPidMapDir();
-    const mappings: Record<string, string> = {};
-    // Additive (X4 CLI): per-PID detail including the immutable ptyId anchor,
-    // so a caller that finds its own shell PID here gets pane-level identity
-    // (ptyId) and not just the owning workspace. `mappings` is kept verbatim
-    // for existing MCP clients.
-    const entries: Array<{ pid: string; ptyId: string; workspaceId: string }> = [];
+    const scanned: Array<{ pid: string; ptyId: string; workspaceId: string }> = [];
     try {
-      if (!fs.existsSync(dir)) return { mappings, entries, resolved: null };
+      if (!fs.existsSync(dir)) return null;
 
       for (const file of fs.readdirSync(dir)) {
         let value: string;
@@ -1016,8 +977,7 @@ export function registerA2aRpc(
           // renderer round-trips into zero.
           const wsId = await resolvePtyOwnerWorkspace(getWindow, value);
           if (typeof wsId === 'string' && wsId) {
-            mappings[file] = wsId;
-            entries.push({ pid: file, ptyId: value, workspaceId: wsId });
+            scanned.push({ pid: file, ptyId: value, workspaceId: wsId });
           }
         } catch {
           // Renderer unavailable (early boot / reload) — skip this entry;
@@ -1025,6 +985,98 @@ export function registerA2aRpc(
         }
       }
     } catch { /* best-effort: identity resolution is non-critical */ }
+    return scanned;
+  }
+
+  /**
+   * The pane main's own walk finds for the process on the other end of `ctx`'s
+   * connection (its peer pid, as the OS reported it), or null: no peer pid
+   * (Windows, the TCP fallback), a peer that is not the process itself (the
+   * broker), a start time that changed, or a walk that reaches no live pane.
+   * The same walk a2a.resolve.identity runs for a pane claim: live anchors
+   * only, starting at the peer's parent, with the creation-time guard, and
+   * the peer re-checked after the awaits.
+   */
+  async function walkPeerPane(ctx: RpcContext): Promise<{ workspaceId: string; ptyId: string } | null> {
+    const pid = ctx.peerPid;
+    if (pid === undefined || process.platform === 'win32') return null;
+    const verdict = checkClaim('peerPid', ctx, pid);
+    if (!verdict.ok || verdict.via !== 'same') return null;
+    const startedAt = Date.now();
+    const snapshotPromise = snapshotForCaller(pid);
+    const scanned = await scanPidMap();
+    if (!scanned || scanned.length === 0) return null;
+    const { entries } = await keepLiveDaemonPidEntries(scanned, true);
+    if (entries.length === 0) return null;
+    const snapshot = await withDeadline(snapshotPromise, RPC_SNAPSHOT_DEADLINE_MS - (Date.now() - startedAt), null);
+    const ppidByPid = snapshot && snapshot.ppidByPid.has(pid)
+      ? snapshot.ppidByPid
+      : await readAncestry(pid, RPC_SNAPSHOT_DEADLINE_MS - (Date.now() - startedAt));
+    const parentPid = ppidByPid?.get(pid);
+    if (!ppidByPid || parentPid === undefined) return null;
+    const anchorByPid = new Map<number, OwningAnchor>();
+    for (const e of entries) {
+      const anchorPid = Number(e.pid);
+      if (Number.isInteger(anchorPid) && anchorPid > 0) anchorByPid.set(anchorPid, { ptyId: e.ptyId, workspaceId: e.workspaceId });
+    }
+    const hit = walkToOwningAnchor(parentPid, ppidByPid, anchorByPid, { createdAt, child: pid });
+    if (!hit) return null;
+    return claimStillHeld('peerPid', ctx, pid, verdict) ? { workspaceId: hit.anchor.workspaceId, ptyId: hit.anchor.ptyId } : null;
+  }
+  setPaneOfPeer(walkPeerPane);
+
+  // a2a.resolve.identity — handled in main process (not renderer).
+  // Returns PID → CURRENT workspaceId mappings so an MCP server can resolve
+  // which workspace it belongs to by walking its own process tree.
+  //
+  // The on-disk pid-map stores PID → ptyId (a stable, immutable anchor). The
+  // owning workspace is resolved LIVE here, from the renderer, every time —
+  // because a workspace id can be re-minted by a daemon respawn or session
+  // restore while the shell process (and its frozen WMUX_WORKSPACE_ID env)
+  // lives on. Storing the workspace id at create time and trusting it forever
+  // is exactly what produced stale identities ("no workspace found for ws-…").
+  router.register('a2a.resolve.identity', async (params, ctx) => {
+    // PROPER multi-agent fix: a caller that can't walk its own process tree —
+    // Codex sandboxes the per-hop PowerShell spawn and strips the env hints —
+    // sends its OWN pid as `callerPid`. We then walk the tree HERE (main, where
+    // the snapshot is unsandboxed) from that pid up to the owning shell's
+    // pid-map anchor and return the resolved identity directly. Absent callerPid
+    // keeps the legacy contract verbatim (the client walks the returned map), so
+    // older MCP builds are unaffected.
+    //
+    // callerPid names the caller's own process. On macOS and Linux the claim is taken only from the process it names, as
+    // the OS reports it for the connection, or from the MCP broker main spawned
+    // on a call it stamped (peerPidShadow.checkClaim). A claim not taken gets no walk and no claim;
+    // `entries` still go back for the caller's own walk.
+    const callerPid = normalizeCallerPid((params as { callerPid?: unknown }).callerPid);
+    const callerVerdict = callerPid != null ? checkClaim('callerPid', ctx, callerPid) : null;
+    // Why the caller's claim was not taken, for the caller to say (no pid, no path).
+    let claimRefused: ClaimRefusal | undefined = callerVerdict && !callerVerdict.ok ? callerVerdict.reason : undefined;
+    const callerRefused = claimRefused !== undefined;
+    // Start the snapshot CONCURRENTLY and bound the wait (at the walk below) to the
+    // RPC budget: it feeds only the final walk, so it must never delay — or, past
+    // the client's ~10s RPC deadline, SINK — the legacy mappings/entries fallback
+    // this handler returns. Overlapping the pid-map scan + renderer resolves hides
+    // its latency in the common case; the deadline caps the degraded one
+    // (PowerShell/CIM hung → up to two 8s timeouts inside snapshotForCaller).
+    // Started only when a caller asked for server-side resolution (legacy calls
+    // pay nothing); resolves to a table containing callerPid, or null.
+    const startedAt = Date.now();
+    const snapshotPromise: Promise<PortSnapshot | null> =
+      callerPid != null && !callerRefused ? snapshotForCaller(callerPid) : Promise.resolve(null);
+
+    const mappings: Record<string, string> = {};
+    // Additive (X4 CLI): per-PID detail including the immutable ptyId anchor,
+    // so a caller that finds its own shell PID here gets pane-level identity
+    // (ptyId) and not just the owning workspace. `mappings` is kept verbatim
+    // for existing MCP clients.
+    const entries: Array<{ pid: string; ptyId: string; workspaceId: string }> = [];
+    const scanned = await scanPidMap();
+    if (scanned === null) return { mappings, entries, resolved: null };
+    for (const e of scanned) {
+      mappings[e.pid] = e.workspaceId;
+      entries.push(e);
+    }
 
     // A pid-map hit counts only while its PID is still the pane's shell. A
     // daemon restart gives recovered sessions new shell PIDs; a file left on an
