@@ -35,6 +35,8 @@ const PAYLOAD = 'PAYLOAD-PIPE-BOUNDARY';
 let server: http.Server;
 let port = 0;
 let relayRoot: string | null = null;
+/** The test extension's id once a case has loaded it: /framed then frames its page too. */
+let frameExtensionId: string | null = null;
 
 function serve(req: http.IncomingMessage, res: http.ServerResponse): void {
   if (req.url?.endsWith('/file.bin')) {
@@ -44,8 +46,9 @@ function serve(req: http.IncomingMessage, res: http.ServerResponse): void {
   }
   res.writeHead(200, { 'content-type': 'text/html' });
   if (req.url?.endsWith('/framed')) {
-    // A frame from another allowed site: out of process, a target of its own.
-    res.end(`<!doctype html><title>framed</title><iframe id="web" src="http://c.test:${port}/child"></iframe>`);
+    // A frame from another allowed site and one of the test extension's pages: each out of process, a target of its own.
+    const ext = frameExtensionId ? `<iframe id="ext" src="chrome-extension://${frameExtensionId}/frame.html"></iframe>` : '';
+    res.end(`<!doctype html><title>framed</title><iframe id="web" src="http://c.test:${port}/child"></iframe>${ext}`);
     return;
   }
   res.end(`<!doctype html><title>page</title><a id="d" href="/file.bin">file</a>${req.url}`);
@@ -172,7 +175,7 @@ async function watchForPort(rig: Rig): Promise<{ listeners: string[]; portFile: 
 }
 
 const INSPECT = 'chrome://inspect/#remote-debugging';
-/** A test extension that adds one of its own pages to every http(s) page as an iframe. */
+/** A test extension with a page any site may load in an iframe. */
 const FRAME_EXTENSION = path.join(__dirname, 'fixtures', 'frame-extension');
 /** Whether Chrome can open a window here (a Linux runner without a display can't). */
 const HAS_DISPLAY = process.platform !== 'linux' || !!process.env.DISPLAY;
@@ -193,6 +196,7 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
+  frameExtensionId = null;
   for (const launcher of launchers.splice(0)) await stopChrome(launcher);
   for (const { launcher, profile } of rigs.splice(0)) {
     await stopChrome(launcher);
@@ -426,6 +430,7 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     const rig = await start({ allow: ['a.test', 'c.test'], args: ['--enable-unsafe-extension-debugging'] });
     const own = internal(rig);
     const { id: extensionId } = (await own.send('Extensions.loadUnpacked', { path: FRAME_EXTENSION })) as { id: string };
+    frameExtensionId = extensionId;
     const c = await relayClient(rig);
     type Info = { targetId: string; type: string; url: string; parentId?: string };
     /** The page's two frames, each a target of its own, once both are on their URLs (main sees every target). */
@@ -482,6 +487,7 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     const lateSession = (await c.send('Target.attachToTarget', { targetId: late, flatten: true })).result?.sessionId as string;
     expect((await c.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, lateSession)).error).toBeUndefined();
     await expectWebOnly(lateFrames);
+    frameExtensionId = null;
     own.close();
     c.close();
   });
