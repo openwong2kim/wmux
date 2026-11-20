@@ -242,6 +242,19 @@ export function closeRelayClients(match: (identity: CallerIdentity) => boolean, 
   return pipeRelay?.closeClients(match, reason) ?? 0;
 }
 
+/** What a relay grant is checked against before it is minted (relayAdmissionRefusal). */
+let relayAdmission: ((identity: CallerIdentity) => string | null) | null = null;
+
+/** Main: set (or, null, clear) the check a relay grant passes before it is minted. */
+export function setRelayAdmission(check: ((identity: CallerIdentity) => string | null) | null): void {
+  relayAdmission = check;
+}
+
+/** Why no relay token may be minted for `identity`, or null when it may (none set: null). */
+export function relayAdmissionRefusal(identity: CallerIdentity): string | null {
+  return relayAdmission?.(identity) ?? null;
+}
+
 /** Where the sweeps stand now: what relaySweptSince takes. */
 export function relaySweepMark(): number {
   return relaySweepSeq;

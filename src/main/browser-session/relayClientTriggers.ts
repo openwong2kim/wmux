@@ -39,6 +39,14 @@ export interface RelayClientTriggerDeps {
 export interface RelayClientTriggers {
   /** (d) A user hold landed on `surfaceId` (BrowserAgentControl's cancelInFlight). */
   userHold(surfaceId: string): void;
+  /**
+   * Before a relay token is minted for `identity`: why not, or null when it
+   * may be. A grant naming a workspace needs that workspace open in the
+   * latest push of the tree, and never closed since wiring (ids are never
+   * reused); with no push yet it is refused. A grant naming no workspace is
+   * not judged here.
+   */
+  admit(identity: CallerIdentity): string | null;
   dispose(): void;
 }
 
@@ -80,6 +88,8 @@ export function wireRelayClientTriggers(deps: RelayClientTriggerDeps): RelayClie
   // Only what an earlier push showed counts: a pane or workspace this push is
   // the first to show is new, not moved. An empty push is taken as it says.
   let last = layoutOf(deps.mirror.getEntries());
+  /** Every workspace a push has shown closing. */
+  const closedWorkspaces = new Set<string>();
   const offLayout = deps.mirror.onSnapshot(() => {
     const next = layoutOf(deps.mirror.getEntries());
     if (next === null) return;
@@ -87,6 +97,7 @@ export function wireRelayClientTriggers(deps: RelayClientTriggerDeps): RelayClie
     last = next;
     if (prev === null) return;
     const goneWorkspaces = new Set([...prev.workspaces].filter((id) => !next.workspaces.has(id)));
+    for (const id of goneWorkspaces) closedWorkspaces.add(id);
     if (goneWorkspaces.size > 0) {
       closeClients((id) => id.workspaceId !== undefined && goneWorkspaces.has(id.workspaceId), 'workspace closed');
     }
@@ -105,6 +116,14 @@ export function wireRelayClientTriggers(deps: RelayClientTriggerDeps): RelayClie
     userHold(surfaceId) {
       const workspaceId = deps.surfaceWorkspace(surfaceId);
       closeClients((id) => paneScript(id) && (workspaceId === undefined || id.workspaceId === workspaceId), 'user hold on a browser surface');
+    },
+    admit(identity) {
+      const workspaceId = identity.workspaceId;
+      if (workspaceId === undefined) return null;
+      if (closedWorkspaces.has(workspaceId)) return 'its workspace has closed';
+      const entries = deps.mirror.getEntries();
+      if (entries === null) return 'the open workspaces are not known yet';
+      return entries.some((entry) => entry.id === workspaceId) ? null : 'its workspace is not open';
     },
     dispose() {
       offPolicy();

@@ -136,7 +136,7 @@ import type {
   BrowserScopeShadowReason,
 } from '../../audit/shadowRejectionLog';
 import type { BrowserBackendStore } from '../../browser-session/BrowserBackendStore';
-import { closeRelayClients, relaySweepMark, relaySweptSince, type ChromeBackendClient, type ChromeLauncherRegistry } from '../../browser-session/ChromeLauncher';
+import { closeRelayClients, relayAdmissionRefusal, relaySweepMark, relaySweptSince, type ChromeBackendClient, type ChromeLauncherRegistry } from '../../browser-session/ChromeLauncher';
 import type { CallerIdentity } from '../../browser-session/CdpPipeMux';
 import { isLiveChromeReachable } from '../../browser-session/LiveChromeClient';
 import {
@@ -4377,9 +4377,12 @@ export function registerBrowserRpc(
         ...(chrome.callerPtyId && { ptyId: chrome.callerPtyId }),
         lane: ctx?.operator === true ? 'operator' : 'engine',
       };
-      const relay = disclose && ep.piped && params.relay === true && launcher.relayGrant
-        ? await launcher.relayGrant(identity)
-        : undefined;
+      const wantsRelay = disclose && ep.piped && params.relay === true && !!launcher.relayGrant;
+      // What the caller was resolved on must still be there before a token
+      // is minted for it: a sweep that ran before this call began never sees it.
+      const refusal = wantsRelay ? relayAdmissionRefusal(identity) : null;
+      if (refusal !== null) throw new Error(`browser.cdp.info: no relay token: ${refusal}; ask again`);
+      const relay = wantsRelay && launcher.relayGrant ? await launcher.relayGrant(identity) : undefined;
       // What the caller was resolved on went away while the token was made
       // (the policy moved, its workspace or pane closed, a hold landed): the
       // sweep for it (relayClientTriggers) ran before this token existed, so

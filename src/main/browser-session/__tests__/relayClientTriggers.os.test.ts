@@ -232,4 +232,23 @@ describe('relay client triggers', () => {
     expect(relaySweptSince(beforeProtect, { lane: 'engine', workspaceId: 'ws-2', profile: 'other' })).toBe(false);
     expect(relaySweptSince(relaySweepMark(), { lane: 'engine', workspaceId: 'ws-1' })).toBe(false);
   });
+
+  it('admits a grant for a workspace open in the latest push only, refuses a closed one for good, and refuses all before any push', () => {
+    const { triggers, mirror } = rig();
+    const named = (workspaceId: string): CallerIdentity => ({ lane: 'engine', workspaceId });
+    expect(triggers.admit(named('ws-1'))).toBe('the open workspaces are not known yet');
+    // A grant naming no workspace (the operator acting outside one) is not judged here.
+    expect(triggers.admit({ lane: 'operator', everyTarget: true })).toBeNull();
+
+    push(mirror, [{ id: 'ws-1', name: 'one' }, { id: 'ws-2', name: 'two' }]);
+    expect(triggers.admit(named('ws-1'))).toBeNull();
+    expect(triggers.admit(named('ws-3'))).toBe('its workspace is not open');
+
+    push(mirror, [{ id: 'ws-2', name: 'two' }]);
+    expect(triggers.admit(named('ws-1'))).toBe('its workspace has closed');
+    expect(triggers.admit(named('ws-2'))).toBeNull();
+    // A push that names a closed id again does not bring it back.
+    push(mirror, [{ id: 'ws-1', name: 'one' }, { id: 'ws-2', name: 'two' }]);
+    expect(triggers.admit(named('ws-1'))).toBe('its workspace has closed');
+  });
 });

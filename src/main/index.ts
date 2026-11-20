@@ -234,7 +234,7 @@ import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry, release
 import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { registerBrowserPrivateNetworkIpc } from './ipc/handlers/browserPrivateNetwork.handler';
-import { ChromeLauncherRegistry, closeRelayClients } from './browser-session/ChromeLauncher';
+import { ChromeLauncherRegistry, closeRelayClients, setRelayAdmission } from './browser-session/ChromeLauncher';
 import { wireRelayClientTriggers } from './browser-session/relayClientTriggers';
 import { onPaneClaimChange } from './workspace/workspaceClaimTrust';
 import { ChromeProfileStore, LIVE_CHROME_PROFILE, reconcilePaneBindingsFromMirror } from './browser-session/ChromeProfileStore';
@@ -1465,6 +1465,7 @@ const relayClientTriggers = wireRelayClientTriggers({
     webviewCdpManager.getTarget(surfaceId)?.workspaceId ?? chromeRegistry.ownerOfSurface(surfaceId)?.workspaceId,
   onPaneClaimChange,
 });
+setRelayAdmission((identity) => relayClientTriggers.admit(identity));
 // Phase 2.2 enforcement mode. Production wmux defaults to `enforce`; dev
 // (electron-forge / npm start) defaults to `shadow` so a bad delta doesn't lock
 // the developer out. Override via `mcp.mode` in `~/.wmux/config.json`.
