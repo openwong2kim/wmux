@@ -29,7 +29,8 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-approval-notice-'));
   log = new AppendOnlyLog({ dir: path.join(dir, 'log'), fsync: () => undefined });
   log.open();
-  tasks = new A2aTaskService({ log, origin: { machineId: 'pc-b', daemonEpoch: 1 } });
+  // The clock is read per call, so a test that fakes Date stamps the task and the outbox record on one clock.
+  tasks = new A2aTaskService({ log, origin: { machineId: 'pc-b', daemonEpoch: 1 }, now: () => Date.now() });
   links = new LinkStore({ dir: path.join(dir, 'a2a'), scheduleHarden: () => undefined });
 });
 afterEach(() => {
