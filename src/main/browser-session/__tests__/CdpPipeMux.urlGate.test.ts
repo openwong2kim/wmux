@@ -310,6 +310,20 @@ describe('CdpPipeMux URL boundary (C2d)', () => {
   });
 
   it.each([
+    ['a refused commit that names an allowed URL as unreachable', { url: 'file:///x', unreachableUrl: 'https://down.test/' }],
+    ['an error page whose unreachable URL is blank', { url: 'chrome-error://chromewebdata/', unreachableUrl: ' ' }],
+    ['an error page that names no unreachable URL', { url: 'chrome-error://chromewebdata/' }],
+  ])('%s is judged by the URL it committed, and lets the client go', async (_what, committed) => {
+    const { browser, mux } = setup();
+    await discovering(browser);
+    const c = await playwrightLike(mux);
+    const { page, session, watch } = await watchedPage(browser, c);
+    browser.event(watch, 'Page.frameNavigated', { frame: { id: page, loaderId: 'L', ...committed }, type: 'Navigation' });
+    await vi.waitFor(() => expect(detachedSession(browser, session)).toBe(true), { timeout: 5_000 });
+    mux.close();
+  });
+
+  it.each([
     ['a chrome:// redirect', 'Page.frameRequestedNavigation', 'chrome://settings/'],
     ['an unknown scheme', 'Page.frameStartedNavigating', 'web+unknown:x'],
     ['an app scheme wrapped in view-source:', 'Page.frameStartedNavigating', 'view-source:mailto:someone@a.test'],

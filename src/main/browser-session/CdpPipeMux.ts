@@ -90,6 +90,8 @@ export const GRANT_HOLD_MAX_BYTES = 16 * 1024 * 1024;
 const DESTROYED_FACT_TTL_MS = 5_000;
 /** Targets let go from a client's auto-attach and remembered for a later grant, per client. */
 const DENIED_REMEMBERED = 256;
+/** The URL Chrome's own error page commits with, for a load that failed (C2d). */
+const CHROME_ERROR_PAGE = 'chrome-error://chromewebdata/';
 /** Targets that attach on a page's own session: the page's for grants, and judged by their own URL (C2d). */
 const FOLLOWS_PAGE = new Set(['iframe', 'worker']);
 /**
@@ -1028,9 +1030,11 @@ export class CdpPipeMux {
       frameId = p.frameId;
     } else if (method === 'Page.frameNavigated') {
       const frame = (params as { frame?: { id?: unknown; parentId?: unknown; url?: unknown; unreachableUrl?: unknown } }).frame;
-      // An error page (chrome-error://chromewebdata/) stands for the URL that
-      // failed to load: judged by that one, as its history entry and target are.
-      url = typeof frame?.unreachableUrl === 'string' && frame.unreachableUrl !== '' ? frame.unreachableUrl : frame?.url;
+      // Chrome's own error page stands for the URL that failed to load: judged
+      // by that one, as its history entry and target are. Any other commit is
+      // judged by its own URL.
+      const failed = frame?.unreachableUrl;
+      url = frame?.url === CHROME_ERROR_PAGE && typeof failed === 'string' && failed.trim() !== '' ? failed : frame?.url;
       frameId = frame?.id;
       committed = true;
       topFrame = frame !== undefined && frame.parentId === undefined;
