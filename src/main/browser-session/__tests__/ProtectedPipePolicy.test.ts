@@ -279,10 +279,10 @@ describe('ProtectedPipePolicy, the pages an outside client may open', () => {
   });
 
   it('counts as handed to another app only a fixed list of schemes, read the way a typed URL is', () => {
-    for (const url of ['mailto:a@b.test', ' MAILTO:a@b.test', 'tel:+1', 'sms:+1', 'callto:x', 'facetime:x', 'search-ms:query=x', 'microsoft-edge:https://a.test/']) {
+    for (const url of ['mailto:a@b.test', ' MAILTO:a@b.test', 'tel:+1', 'sms:+1', 'callto:x', 'facetime:x']) {
       expect(appLaunchUrl(url), url).toBe(true);
     }
-    for (const url of ['view-source:mailto:a@b.test', 'chrome://settings', 'web+app:x', 'zoommtg://x', 'https://a.test/', 'not a url']) {
+    for (const url of ['view-source:mailto:a@b.test', 'chrome://settings', 'web+app:x', 'zoommtg://x', 'search-ms:query=x', 'search:x', 'microsoft-edge:https://a.test/', 'https://a.test/', 'not a url']) {
       expect(appLaunchUrl(url), url).toBe(false);
     }
   });

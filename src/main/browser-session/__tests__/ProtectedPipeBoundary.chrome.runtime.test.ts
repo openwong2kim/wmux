@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import * as http from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { createServer as createTcpServer, type AddressInfo } from 'node:net';
 import path from 'node:path';
 import WebSocket from 'ws';
 import { ChromeLauncher, setPipeRelayForTests, type ChromeProtectionPlan } from '../ChromeLauncher';
@@ -489,6 +489,30 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     await expectWebOnly(lateFrames);
     frameExtensionId = null;
     own.close();
+    c.close();
+  });
+
+  it('a page whose navigation fails at the network level stays usable to a relay client', { timeout: CASE_TIMEOUT_MS }, async () => {
+    const rig = await start();
+    const c = await relayClient(rig);
+    const targetId = (await c.send('Target.createTarget', { url: `http://a.test:${port}/before` })).result?.targetId as string;
+    const session = (await c.send('Target.attachToTarget', { targetId, flatten: true })).result?.sessionId as string;
+    const hrefOf = async () => ((await c.send('Runtime.evaluate', { expression: 'location.href', returnByValue: true }, session)).result?.result as { value?: string } | undefined)?.value;
+    await vi.waitFor(async () => expect(await hrefOf()).toBe(`http://a.test:${port}/before`), { timeout: 10_000 });
+    // An allowed host on a port nothing listens on: the proxy can't open the
+    // tunnel, and Chrome commits its own error page for the URL.
+    const closed = await new Promise<number>((resolve) => {
+      const probe = createTcpServer();
+      probe.listen(0, '127.0.0.1', () => { const p = (probe.address() as AddressInfo).port; probe.close(() => resolve(p)); });
+    });
+    const failed = await c.send('Page.navigate', { url: `https://a.test:${closed}/down` }, session);
+    await vi.waitFor(async () => expect(await hrefOf()).toBe('chrome-error://chromewebdata/'), { timeout: 10_000 });
+    report(`[pipe-boundary network-failure] errorText=${String((failed.result as { errorText?: string } | undefined)?.errorText)}`);
+    // Still the client's: it answers, is listed, and goes on to an allowed page.
+    const listed = await c.send('Target.getTargets');
+    expect((listed.result?.targetInfos as Array<{ targetId: string }>).map((t) => t.targetId)).toContain(targetId);
+    expect((await c.send('Page.navigate', { url: `http://a.test:${port}/after` }, session)).error).toBeUndefined();
+    await vi.waitFor(async () => expect(await hrefOf()).toBe(`http://a.test:${port}/after`), { timeout: 10_000 });
     c.close();
   });
 

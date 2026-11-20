@@ -994,11 +994,11 @@ export class CdpPipeMux {
       if (entries.some((e: { url?: unknown }) => typeof e?.url === 'string' && e.url.trim() !== '' && !gate.allows(e.url))) this.taint(targetId);
     } catch {
       if (!this.open || !this.targetUrls.has(targetId)) return;
-      if (urlAtStart !== undefined && urlAtStart.trim() === '') {
+      if (urlAtStart === '') {
         // Still without a URL: its first URL starts a first read. With one by
         // now: read again here, so what waits on this read waits for that one
         // (which marks the page if it fails too).
-        if (this.targetUrls.get(targetId)?.trim() === '') this.historyRead.delete(targetId);
+        if (this.targetUrls.get(targetId) === '') this.historyRead.delete(targetId);
         else await this.checkHistory(targetId);
         return;
       }
@@ -1027,8 +1027,10 @@ export class CdpPipeMux {
       url = p.url;
       frameId = p.frameId;
     } else if (method === 'Page.frameNavigated') {
-      const frame = (params as { frame?: { id?: unknown; parentId?: unknown; url?: unknown } }).frame;
-      url = frame?.url;
+      const frame = (params as { frame?: { id?: unknown; parentId?: unknown; url?: unknown; unreachableUrl?: unknown } }).frame;
+      // An error page (chrome-error://chromewebdata/) stands for the URL that
+      // failed to load: judged by that one, as its history entry and target are.
+      url = typeof frame?.unreachableUrl === 'string' && frame.unreachableUrl !== '' ? frame.unreachableUrl : frame?.url;
       frameId = frame?.id;
       committed = true;
       topFrame = frame !== undefined && frame.parentId === undefined;

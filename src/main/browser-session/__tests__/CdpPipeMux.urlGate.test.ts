@@ -295,10 +295,26 @@ describe('CdpPipeMux URL boundary (C2d)', () => {
     mux.close();
   });
 
+  it('an error page for a failed navigation is judged by the URL that failed: an allowed one keeps the page, a refused one lets the client go', async () => {
+    const { browser, mux } = setup();
+    await discovering(browser);
+    const c = await playwrightLike(mux);
+    const { page, session, watch } = await watchedPage(browser, c);
+    // As Chrome reports a load that failed at the network level.
+    browser.event(watch, 'Page.frameNavigated', { frame: { id: page, loaderId: 'L1', url: 'chrome-error://chromewebdata/', unreachableUrl: 'https://down.test/' }, type: 'Navigation' });
+    expect((await c.replyTo(c.send('Runtime.evaluate', { expression: '1' }, session))).error).toBeUndefined();
+    expect(detachedSession(browser, session)).toBe(false);
+    browser.event(watch, 'Page.frameNavigated', { frame: { id: page, loaderId: 'L2', url: 'chrome-error://chromewebdata/', unreachableUrl: 'file:///missing/x.html' }, type: 'Navigation' });
+    await vi.waitFor(() => expect(detachedSession(browser, session)).toBe(true), { timeout: 5_000 });
+    mux.close();
+  });
+
   it.each([
     ['a chrome:// redirect', 'Page.frameRequestedNavigation', 'chrome://settings/'],
     ['an unknown scheme', 'Page.frameStartedNavigating', 'web+unknown:x'],
     ['an app scheme wrapped in view-source:', 'Page.frameStartedNavigating', 'view-source:mailto:someone@a.test'],
+    ['an app scheme outside the fixed list (search-ms:)', 'Page.frameRequestedNavigation', 'search-ms:query=x'],
+    ['an app scheme outside the fixed list (microsoft-edge:)', 'Page.frameStartedNavigating', 'microsoft-edge:https://a.test/'],
   ])('%s that only starts still lets the client go at once', async (_what, method, url) => {
     const { browser, mux } = setup();
     await discovering(browser);
