@@ -70,4 +70,42 @@ describe('the toast for a relaunch blocked after the stop', () => {
     await act(async () => { copy?.click(); });
     expect(writeText).toHaveBeenCalledWith(PWSH);
   });
+
+  it('puts the action under the code block, so the message and the code use the full width', async () => {
+    act(() => { useStore.getState().pushToast(stoppedNotRelaunchedToast('shell_busy', PWSH, 'Work', t)); });
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => { root?.render(createElement(ToastContainer)); });
+
+    const block = host.querySelector('[data-toast-code]') as HTMLElement;
+    const copy = [...host.querySelectorAll('button')].find((b) => b.textContent === t('resume.copyCommand')) as HTMLElement;
+    // Same column as the code, after it — not a sibling beside the text.
+    expect(block.compareDocumentPosition(copy) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(block.parentElement?.contains(copy)).toBe(true);
+    const card = host.querySelector('[role="status"]') as HTMLElement;
+    expect(copy.parentElement).not.toBe(card);
+  });
+
+  it('keeps a toast without code laid out as before: the action beside the text, then the close button', async () => {
+    const onClick = vi.fn();
+    act(() => { useStore.getState().pushToast({ level: 'info', message: 'Diff ready', action: { label: 'Open diff', onClick } }); });
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => { root?.render(createElement(ToastContainer)); });
+
+    const card = host.querySelector('[role="status"]') as HTMLElement;
+    expect(host.querySelector('[data-toast-code]')).toBeNull();
+    const kids = [...card.children];
+    expect(kids).toHaveLength(4);
+    expect(kids[1].tagName).toBe('SPAN');
+    expect(kids[1].textContent).toBe('Diff ready');
+    expect(kids[2].textContent).toBe('Open diff');
+    expect(kids[3].getAttribute('aria-label')).toBe(t('toast.dismiss'));
+
+    await act(async () => { (kids[2] as HTMLElement).click(); });
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().toasts).toHaveLength(0);
+  });
 });
