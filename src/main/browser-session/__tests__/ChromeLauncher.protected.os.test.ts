@@ -30,8 +30,10 @@ const { spawnMock, state, sockets } = vi.hoisted(() => ({
     onBrowserClose: null as (() => void) | null,
     /** What Target.getBrowserContexts lists: the contexts clients created. */
     browserContexts: [] as string[],
-    /** The download guard's Target.setDiscoverTargets is refused. */
+    /** The download guard's Target.setDiscoverTargets is refused by Chrome. */
     refuseGuardDiscovery: false,
+    /** The download guard's connection closes before its Target.setDiscoverTargets is answered. */
+    dropGuardOnDiscovery: false,
   },
   sockets: [] as Array<{ sent: Array<{ method: string; params: unknown }>; closed: boolean }>,
 }));
@@ -54,7 +56,9 @@ vi.mock('node:fs', async (orig) => {
     writeFileSync: () => undefined,
   };
 });
-vi.mock('../CdpSocket', () => ({
+vi.mock('../CdpSocket', async () => {
+  const { CdpReplyError } = await import('../CdpReplyError');
+  return {
   CdpSocket: class {
     rec = { sent: [] as Array<{ method: string; params: unknown }>, closed: false };
     handlers = new Map<string, (p: Record<string, unknown>) => void>();
@@ -71,8 +75,13 @@ vi.mock('../CdpSocket', () => ({
     async send(method: string, params: unknown = {}) {
       this.rec.sent.push({ method, params });
       if (method === 'Browser.close') state.onBrowserClose?.();
-      if (method === 'Target.setDiscoverTargets' && state.refuseGuardDiscovery && this.rec.sent[0]?.method === 'Browser.setDownloadBehavior') {
-        throw new Error('refused (unit test)');
+      if (method === 'Target.setDiscoverTargets' && this.rec.sent[0]?.method === 'Browser.setDownloadBehavior') {
+        if (state.refuseGuardDiscovery) throw new CdpReplyError('refused (unit test)');
+        if (state.dropGuardOnDiscovery) {
+          // The guard's connection ends before Chrome answers.
+          this.rec.closed = true;
+          throw new Error('ChromeLauncher download guard: connection closed');
+        }
       }
       if (method === 'Target.getBrowserContexts') return { browserContextIds: [...state.browserContexts] };
       if (method === 'Browser.setDownloadBehavior' && state.onGuardArm) {
@@ -115,7 +124,8 @@ vi.mock('../CdpSocket', () => ({
       this.rec.closed = true;
     }
   },
-}));
+  };
+});
 
 import { ChromeLauncher, type ChromeProtectionPlan } from '../ChromeLauncher';
 import { deliberateSleep } from '../../../test-utils/waitFor';
@@ -175,6 +185,7 @@ beforeEach(() => {
   state.probeDelayMs = 0;
   state.reportErrorPage = false;
   state.refuseGuardDiscovery = false;
+  state.dropGuardOnDiscovery = false;
   state.onBrowserClose = null;
   state.onGuardArm = null;
   state.restoredPage = false;
@@ -239,6 +250,21 @@ describe('ChromeLauncher — protected profiles', () => {
       const skipped = warn.mock.calls.filter((c) => String(c[0]).includes('continues without download-guard-discovery'));
       expect(skipped).toHaveLength(1);
       expect(String(skipped[0][0])).toContain('refused (unit test)');
+      await launcher.dispose({ immediate: true });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('on the port, a guard whose connection closes before its discovery is answered fails the start', async () => {
+    state.dropGuardOnDiscovery = true;
+    spawnWritesPortFile(makeChild());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const launcher = new ChromeLauncher('/tmp/prot-discovery-drop', { protectedPortAllowed: () => true, protection: () => denyAll });
+      const err = await launcher.ensureRunning().then(() => null, (e: unknown) => e as Error & { cause?: { site?: string } });
+      expect(err?.cause?.site).toBe('download-guard-discovery');
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes('continues without download-guard-discovery'))).toEqual([]);
       await launcher.dispose({ immediate: true });
     } finally {
       warn.mockRestore();

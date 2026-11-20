@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import type { Readable, Writable } from 'node:stream';
 import type { CdpConnection, CdpEventHandler } from './CdpSocket';
+import { CdpReplyError } from './CdpReplyError';
 import type { CdpPipeDiagnostics } from '../../shared/memoryDiagnostics';
 import { CdpPipeStallWatch, STALL_MS, type WatchedClient } from './CdpPipeStallWatch';
 import { CdpTargetOwnership, type TargetInfoLike, type TargetRegistry } from './CdpTargetOwnership';
@@ -1406,6 +1407,8 @@ export class CdpPipeMux {
       if (frame.method === 'Target.detachedFromTarget' && ended !== undefined && ended === this.discoverySession) {
         this.discoverySession = null;
         this.discovering = false;
+        // A new one, with the same tries as the first.
+        if (this.open) this.discover();
       }
       bump(totals.dropped, 'root-event');
       return;
@@ -1960,7 +1963,7 @@ class InternalConnection extends Client implements CdpConnection {
   }
 
   reply(clientId: number, frame: Frame): void {
-    if (frame.error) this.settle(clientId, undefined, new Error(`${this.label}: ${String(frame.error.message ?? 'CDP error')}`));
+    if (frame.error) this.settle(clientId, undefined, new CdpReplyError(`${this.label}: ${String(frame.error.message ?? 'CDP error')}`));
     else this.settle(clientId, frame.result);
   }
 

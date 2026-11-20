@@ -40,6 +40,8 @@ class ProtectedPipeChrome extends FakeBrowser {
   readonly failingOnGuard = new Set<string>();
   /** The first Target.setDiscoverTargets (the mux's own discovery session's) is never answered. */
   holdFirstDiscovery = false;
+  /** The child exits (the pipe still open) just before a refusal on the guard's session is written. */
+  exitBeforeGuardRefusal = false;
   private guardSession: string | undefined;
   private discoveries = 0;
 
@@ -50,6 +52,10 @@ class ProtectedPipeChrome extends FakeBrowser {
   protected override handle(c: Command): void {
     if (c.method === 'Browser.setDownloadBehavior' && c.params.browserContextId === undefined && this.guardSession === undefined) this.guardSession = c.sessionId;
     if (this.failingOnGuard.has(c.method) && c.sessionId !== undefined && c.sessionId === this.guardSession) {
+      if (this.exitBeforeGuardRefusal) {
+        this.child.exitCode = 0;
+        this.child.emit('exit', 0, null);
+      }
       this.reply(c, '"error":{"code":-32000,"message":"refused (unit test)"}');
       return;
     }
@@ -346,6 +352,25 @@ describe('ChromeLauncher: the download guard\'s discovery on the pipe', () => {
       expect(err?.message).toBe(PROTECTION_NOT_READY);
       expect(err?.cause?.site).toBe('download-guard-discovery');
       expect(skipped(warn)).toEqual([]);
+      await launcher.dispose({ immediate: true });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('ChromeLauncher: the download guard\'s discovery when the child exits first', () => {
+  it('refused on the guard after the child exited, the pipe still open: decided as a pipe start, so it fails', async () => {
+    const chrome = spawnChrome();
+    chrome.holdFirstDiscovery = true;
+    chrome.exitBeforeGuardRefusal = true;
+    chrome.failingOnGuard.add('Target.setDiscoverTargets');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const launcher = new ChromeLauncher('/tmp/pipe-protected-discovery-exit', { profileName: 'bank', protection: () => denyAll });
+      const err = await launcher.endpoint().then(() => null, (e: unknown) => e as Error);
+      expect(err).not.toBeNull();
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes('continues without download-guard-discovery'))).toEqual([]);
       await launcher.dispose({ immediate: true });
     } finally {
       warn.mockRestore();

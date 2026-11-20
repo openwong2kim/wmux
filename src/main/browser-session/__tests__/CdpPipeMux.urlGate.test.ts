@@ -87,10 +87,17 @@ describe('CdpPipeMux URL boundary (C2d)', () => {
     browser.holdReplies.clear();
     browser.releaseHeld();
     await vi.waitFor(() => expect(mux.discoveryLive()).toBe(true), { timeout: 5_000 });
-    // Chrome tells the root that the session ended.
+    // Chrome tells the root that the session ended: not live, and discovery starts again on a new one.
     const session = [...browser.discover][0];
+    const discoveries = () => browser.received.filter((r) => r.method === 'Target.setDiscoverTargets').length;
+    browser.holdReplies.add('Target.setDiscoverTargets');
     browser.emit(JSON.stringify({ method: 'Target.detachedFromTarget', params: { sessionId: session } }));
-    await vi.waitFor(() => expect(mux.discoveryLive()).toBe(false), { timeout: 5_000 });
+    await vi.waitFor(() => expect(discoveries()).toBe(2), { timeout: 5_000 });
+    expect(mux.discoveryLive()).toBe(false);
+    browser.holdReplies.clear();
+    browser.releaseHeld();
+    await vi.waitFor(() => expect(mux.discoveryLive()).toBe(true), { timeout: 5_000 });
+    expect([...browser.discover].filter((s) => s !== session)).toHaveLength(1);
     mux.close();
   });
 
