@@ -2597,6 +2597,43 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
     minted = 0;
   });
 
+  it('resolves a pinned surface over the relay with no /json to ask (no port)', async () => {
+    // cdp.info names the surface's target; the relay connection has no HTTP
+    // endpoint, so the lookup must find the Page through the connection alone.
+    const target = { targetId: 'T-1', type: 'page', title: '', url: 'https://a.test/', attached: true };
+    const pageSession = {
+      send: vi.fn().mockImplementation(async (method: string) =>
+        method === 'Target.getTargets' ? { targetInfos: [target] }
+          : method === 'Target.getTargetInfo' ? { targetInfo: { targetId: 'T-1' } }
+            : {}),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    const page = { url: vi.fn().mockReturnValue('https://a.test/'), context: vi.fn(), on: vi.fn(), off: vi.fn(), once: vi.fn() };
+    const ctx = { pages: vi.fn().mockReturnValue([page]), newCDPSession: vi.fn().mockResolvedValue(pageSession), on: vi.fn(), off: vi.fn() };
+    page.context.mockReturnValue(ctx);
+    const browser = provingBrowser();
+    browser.contexts.mockReturnValue([ctx]);
+    mockConnectOverCDP.mockResolvedValue(browser);
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) =>
+      Promise.resolve(method === 'browser.cdp.info'
+        ? { ...pipeInfo('p1')(params), targets: [{ surfaceId: 'surf-A', targetId: 'T-1', workspaceId: 'ws-a' }] }
+        : {}),
+    );
+    const fetchMock = vi.fn().mockRejectedValue(new Error('no /json on the relay'));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const engine = PlaywrightEngine.getInstance();
+      const found = await (engine as unknown as { getPage(surfaceId?: string, workspaceId?: string): Promise<unknown> })
+        .getPage('surf-A', 'ws-a');
+      expect(found).toBe(page);
+      expect((engine as unknown as { cdpPort: number | null }).cdpPort).toBeNull();
+      expect(mockConnectOverCDP).toHaveBeenCalledWith(RELAY, expect.anything());
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('connects through the relay with its one-time header, preferring it over a port', async () => {
     mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) =>
       Promise.resolve(method === 'browser.cdp.info' ? { ...pipeInfo('p1')(params), cdpPort: 9222 } : {}),

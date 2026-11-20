@@ -135,6 +135,8 @@ async function makeRig(transport: Transport): Promise<Rig> {
     portEnvVar: null,
     profileName: `protected-table-${transport}`,
     protection: () => plan(),
+    // The port rows: a protected profile takes the port only with the protected-port setting.
+    ...(transport === 'port' && { protectedPortAllowed: () => true }),
     // Headless Chrome denies downloads in a new context by default, which hides
     // what row j checks; PROTECTED_HEADFUL=1 runs with windows, as wmux does.
     extraArgs: [...(process.env.PROTECTED_HEADFUL === '1' ? [] : ['--headless=new']), '--use-mock-keychain', '--password-store=basic'],

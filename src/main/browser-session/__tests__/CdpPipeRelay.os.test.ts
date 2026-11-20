@@ -286,6 +286,22 @@ describe('CdpPipeRelay', () => {
     b.close();
   });
 
+  it('a screencast frame passed on as Chrome wrote it reaches the client as a text message, byte for byte', async () => {
+    const { route, browser } = await setup();
+    const a = await dial(await route.grant({ workspaceId: 'ws-a' }));
+    const page = ((await request(a, { id: 1, method: 'Target.attachToTarget', params: { targetId: 'T0', flatten: true } })).result as { sessionId: string }).sessionId;
+    const frame = `{"method":"Page.screencastFrame","params":{"data":"${'QUJD'.repeat(64 * 1024)}","metadata":{"timestamp":1.5},"sessionId":7},"sessionId":"${page}"}`;
+    const got = new Promise<{ data: Buffer; isBinary: boolean }>((resolve) => a.on('message', (data, isBinary) => {
+      if (!isBinary && !data.toString().startsWith('{"method":"Page.screencastFrame"')) return;
+      resolve({ data: data as Buffer, isBinary });
+    }));
+    browser.emit(frame);
+    const { data, isBinary } = await got;
+    expect(isBinary).toBe(false);
+    expect(data.equals(Buffer.from(frame))).toBe(true);
+    a.close();
+  });
+
   it('when a Chrome goes, its clients are disconnected and its unused tokens refused', async () => {
     const { route } = await setup();
     const ws = await dial(await route.grant({}));

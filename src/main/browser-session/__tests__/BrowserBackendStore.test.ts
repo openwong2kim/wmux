@@ -181,4 +181,49 @@ describe('BrowserBackendStore (#517)', () => {
       expect(reloaded.liveWriteScope()).toBe('all');
     });
   });
+
+  describe('protectedPortTransport', () => {
+    const file = () => join(dir, 'browser-backend.json');
+
+    it('is off with no file, and on only for a literal true', () => {
+      expect(new BrowserBackendStore(dir).protectedPortTransport()).toBe(false);
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome', protectedPortTransport: 'true' }));
+      expect(new BrowserBackendStore(dir).protectedPortTransport()).toBe(false);
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome', protectedPortTransport: 1 }));
+      expect(new BrowserBackendStore(dir).protectedPortTransport()).toBe(false);
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome', protectedPortTransport: true }));
+      expect(new BrowserBackendStore(dir).protectedPortTransport()).toBe(true);
+    });
+
+    it('an operator edit takes effect on the next read, and a backend write keeps it', () => {
+      const store = new BrowserBackendStore(dir);
+      expect(store.protectedPortTransport()).toBe(false);
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome', protectedPortTransport: true }));
+      expect(store.protectedPortTransport()).toBe(true);
+      store.set('chrome');
+      expect(JSON.parse(readFileSync(file(), 'utf8'))).toEqual({ backend: 'chrome', protectedPortTransport: true });
+      store.setAllowPrivateNetwork(true);
+      expect(JSON.parse(readFileSync(file(), 'utf8'))).toMatchObject({ protectedPortTransport: true });
+      // Removing the key turns it off again, on the next read.
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome' }));
+      expect(store.protectedPortTransport()).toBe(false);
+    });
+
+    it('a live write scope change keeps the value the file holds now, on or off', () => {
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome', protectedPortTransport: true }));
+      const store = new BrowserBackendStore(dir);
+      // The operator turns it off by editing the file; nothing has read it since.
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome' }));
+      store.setLiveWriteScope('all');
+      expect(JSON.parse(readFileSync(file(), 'utf8')).protectedPortTransport).toBeUndefined();
+      writeFileSync(file(), JSON.stringify({ backend: 'chrome', liveWriteScope: 'all', protectedPortTransport: true }));
+      store.setLiveWriteScope('agent');
+      expect(JSON.parse(readFileSync(file(), 'utf8')).protectedPortTransport).toBe(true);
+    });
+
+    it('writes no key while it is off (the file keeps its shape)', () => {
+      new BrowserBackendStore(dir).set('external');
+      expect(JSON.parse(readFileSync(file(), 'utf8'))).toEqual({ backend: 'external' });
+    });
+  });
 });

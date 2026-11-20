@@ -43,6 +43,27 @@ const text = (bytes: number, tag = 'a') => tag.repeat(bytes);
 afterEach(() => { vi.useRealTimers(); });
 
 describe('relayOutbound', () => {
+  it('bytes passed on as Chrome wrote them leave as text, whole or as fragments of those same bytes', () => {
+    const small = Buffer.from('{"method":"Page.screencastFrame","params":{}}');
+    const large = Buffer.from(text(RELAY_FRAGMENT_BYTES * 2 + 3));
+    const plain = fakeWs();
+    relayOutbound(plain.ws, null).send(large);
+    expect(plain.calls.map(({ data, opts }) => ({ data, opts }))).toEqual([{ data: large, opts: { binary: false } }]);
+    const paced = fakeWs();
+    const out = relayOutbound(paced.ws, paced.socket);
+    out.send(small);
+    expect(paced.calls[0]).toMatchObject({ data: small, opts: { binary: false } });
+    complete(paced.calls);
+    out.send(large);
+    complete(paced.calls);
+    complete(paced.calls);
+    const fragments = paced.calls.slice(1);
+    expect(fragments.map((c) => c.opts?.binary)).toEqual([false, false, false]);
+    expect(fragments.map((c) => (c.data as Buffer).buffer === large.buffer)).toEqual([true, true, true]);
+    expect(Buffer.concat(fragments.map((c) => c.data as Buffer)).equals(large)).toBe(true);
+    expect(out.queued).toBe(0);
+  });
+
   it('not paced (a Unix socket, TCP): every message goes to ws whole and at once, as it does today', () => {
     const { ws, calls } = fakeWs();
     const out = relayOutbound(ws, null);

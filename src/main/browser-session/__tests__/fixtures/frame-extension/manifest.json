@@ -1,0 +1,7 @@
+{
+  "manifest_version": 3,
+  "name": "wmux test: framed resource",
+  "version": "1.0",
+  "description": "Test fixture: a page any site may load in an iframe.",
+  "web_accessible_resources": [{ "resources": ["frame.html"], "matches": ["<all_urls>"] }]
+}

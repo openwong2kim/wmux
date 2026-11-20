@@ -119,6 +119,8 @@ function makeRig(allow: string[]): Rig {
   rig.launcher = new ChromeLauncher(dir, {
     portEnvVar: null,
     profileName: `protected-${allow.join('-') || 'none'}`,
+    // This suite drives the protected profile on its DevTools port: the operator setting puts it there.
+    protectedPortAllowed: () => true,
     protection: () => plan(rig),
     // Headless for CI; a service worker needs a secure context, and a.test
     // over plain http is one only when Chrome is told so.

@@ -74,6 +74,8 @@ beforeAll(async () => {
   launcher = new ChromeLauncher(dir, {
     portEnvVar: null,
     profileName: 'consent-download',
+    // This suite drives the protected profile on its DevTools port: the operator setting puts it there.
+    protectedPortAllowed: () => true,
     protection: () => ({
       matcher: () => compileHostPolicy({ mode: 'allowlist', allow: ['a.test'], block: [] }),
       resolve: (_h, p) => ({ host: '127.0.0.1', port: p }),

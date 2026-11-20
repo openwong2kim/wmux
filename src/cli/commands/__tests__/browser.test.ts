@@ -176,3 +176,17 @@ describe('claimRefusalText', () => {
     expect(claimRefusalText('start-unread', 'linux')).toContain('/proc');
   });
 });
+
+describe('wmux browser session status', () => {
+  it('shows the transport when main reports one, and nothing about it when not', async () => {
+    const lines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((msg: unknown) => { lines.push(String(msg)); });
+    rpc.mockResolvedValueOnce({ id: 'rpc-ok', ok: true, result: { profile: 'pa', port: null, transport: 'port (weaker)' } });
+    await handleBrowser(['session', 'status'], false);
+    expect(lines).toEqual(['Active profile: pa', 'CDP port: none', 'Transport: port (weaker)']);
+    lines.length = 0;
+    rpc.mockResolvedValueOnce({ id: 'rpc-ok', ok: true, result: { profile: 'default', port: 19000 } });
+    await handleBrowser(['session', 'status'], false);
+    expect(lines).toEqual(['Active profile: default', 'CDP port: 19000']);
+  });
+});

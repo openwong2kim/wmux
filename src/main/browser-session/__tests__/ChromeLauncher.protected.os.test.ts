@@ -47,7 +47,7 @@ vi.mock('node:fs', async (orig) => {
           if (s.startsWith(dir)) return content;
         }
       }
-      throw new Error('ENOENT (unit test)');
+      throw Object.assign(new Error('ENOENT (unit test)'), { code: 'ENOENT' });
     }),
     writeFileSync: () => undefined,
   };
@@ -181,7 +181,8 @@ beforeEach(() => {
   nextPort = 18001;
   fetchMock.mockClear();
   vi.stubGlobal('fetch', fetchMock);
-  // These fakes are a Chrome on a DevTools port, whatever the default transport is.
+  // These fakes are a Chrome on a DevTools port, whatever the default transport is;
+  // a protected profile takes the port only with the protected-port setting (protectedPortAllowed).
   vi.stubEnv('WMUX_CHROME_TRANSPORT', 'port');
 });
 afterEach(() => {
@@ -194,7 +195,7 @@ describe('ChromeLauncher — protected profiles', () => {
     spawnWritesPortFile(makeChild());
     await new ChromeLauncher('/tmp/legacy-a').ensureRunning();
     spawnWritesPortFile(makeChild());
-    await new ChromeLauncher('/tmp/legacy-b', { protection: () => null }).ensureRunning();
+    await new ChromeLauncher('/tmp/legacy-b', { protectedPortAllowed: () => true, protection: () => null }).ensureRunning();
     const [a, b] = spawnMock.mock.calls.map((c) => (c[1] as string[]).filter((x) => !x.startsWith('--user-data-dir=')));
     expect(b).toEqual(a);
     expect(sockets).toHaveLength(0); // no download guard, no CDP session of main's own
@@ -202,7 +203,7 @@ describe('ChromeLauncher — protected profiles', () => {
 
   it('launches behind the proxy and arms the download guard before answering', async () => {
     spawnWritesPortFile(makeChild());
-    const launcher = new ChromeLauncher('/tmp/prot-a', { protection: () => denyAll });
+    const launcher = new ChromeLauncher('/tmp/prot-a', { protectedPortAllowed: () => true, protection: () => denyAll });
     await launcher.ensureRunning();
     const args = spawnMock.mock.calls[0][1] as string[];
     expect(args.some((a) => /^--proxy-server=127\.0\.0\.1:\d+$/.test(a))).toBe(true);
@@ -231,7 +232,7 @@ describe('ChromeLauncher — protected profiles', () => {
       return { ok: true, text: async () => JSON.stringify(body), json: async () => body };
     });
     spawnWritesPortFile(makeChild());
-    const launcher = new ChromeLauncher('/tmp/prot-b', { protection: () => denyAll });
+    const launcher = new ChromeLauncher('/tmp/prot-b', { protectedPortAllowed: () => true, protection: () => denyAll });
     await launcher.ensureRunning();
     expect(sockets[0].sent.map((s) => s.method)).toContain('Browser.close');
     expect(spawnMock).toHaveBeenCalledTimes(1);
@@ -245,7 +246,7 @@ describe('ChromeLauncher — protected profiles', () => {
     state.portFiles['/tmp/prot-foreign'] = '17997\n/devtools/browser/mine\n';
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     spawnWritesPortFile(makeChild());
-    const launcher = new ChromeLauncher('/tmp/prot-foreign', { protection: () => denyAll });
+    const launcher = new ChromeLauncher('/tmp/prot-foreign', { protectedPortAllowed: () => true, protection: () => denyAll });
     await launcher.ensureRunning();
     expect(sockets.some((s) => s.sent.some((m) => m.method === 'Browser.close' || m.method === 'SystemInfo.getProcessInfo'))).toBe(false);
     expect(spawnMock).toHaveBeenCalledTimes(1);
@@ -262,7 +263,7 @@ describe('ChromeLauncher — protected profiles', () => {
     const notChrome = async () => ({ ok: true, text: async () => '<html></html>', json: async () => ({}) });
     fetchMock.mockImplementationOnce(notChrome).mockImplementationOnce(notChrome);
     spawnWritesPortFile(makeChild());
-    const launcher = new ChromeLauncher('/tmp/prot-unnamed', { protection: () => denyAll });
+    const launcher = new ChromeLauncher('/tmp/prot-unnamed', { protectedPortAllowed: () => true, protection: () => denyAll });
     await launcher.ensureRunning();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('answers for another browser'));
     expect(sockets.some((x) => x.sent.some((m) => m.method === 'Browser.close' || m.method === 'SystemInfo.getProcessInfo'))).toBe(false);
@@ -280,7 +281,7 @@ describe('ChromeLauncher — protected profiles', () => {
       dead.add(firstPort);
       first.emit('exit');
     });
-    const launcher = new ChromeLauncher('/tmp/prot-d', { protection: () => plan });
+    const launcher = new ChromeLauncher('/tmp/prot-d', { protectedPortAllowed: () => true, protection: () => plan });
     const legacy = launcher.ensureRunning(); // starts unprotected
     plan = denyAll; // protection lands mid-launch
     spawnWritesPortFile(makeChild());
@@ -296,7 +297,7 @@ describe('ChromeLauncher — protected profiles', () => {
     let plan: ChromeProtectionPlan | null = null;
     const first = makeChild();
     spawnWritesPortFile(first);
-    const launcher = new ChromeLauncher('/tmp/prot-c', { protection: () => plan });
+    const launcher = new ChromeLauncher('/tmp/prot-c', { protectedPortAllowed: () => true, protection: () => plan });
     const p1 = await launcher.ensureRunning();
     expect(launcher.isProtected()).toBe(false);
     plan = denyAll;
@@ -320,7 +321,7 @@ describe('ChromeLauncher — protected profiles', () => {
     state.routeViaProxy = false; // e.g. a managed proxy policy overrides --proxy-server
     const child = makeChild();
     spawnWritesPortFile(child);
-    const launcher = new ChromeLauncher('/tmp/prot-e', { protection: () => denyAll, proxyProbeTimeoutMs: 100 });
+    const launcher = new ChromeLauncher('/tmp/prot-e', { protectedPortAllowed: () => true, protection: () => denyAll, proxyProbeTimeoutMs: 100 });
     await expect(launcher.ensureRunning()).rejects.toThrow(/policy_denied/);
     expect(child.kill).toHaveBeenCalled();
     expect(launcher.isProtected()).toBe(false);
@@ -333,7 +334,7 @@ describe('ChromeLauncher — protected profiles', () => {
     state.reportErrorPage = true;
     const child = makeChild();
     spawnWritesPortFile(child);
-    const launcher = new ChromeLauncher('/tmp/prot-g', { protection: () => denyAll });
+    const launcher = new ChromeLauncher('/tmp/prot-g', { protectedPortAllowed: () => true, protection: () => denyAll });
     const t0 = Date.now();
     await expect(launcher.ensureRunning()).rejects.toThrow(/policy_denied/);
     expect(Date.now() - t0).toBeLessThan(2_000);
@@ -344,7 +345,7 @@ describe('ChromeLauncher — protected profiles', () => {
   it('accepts a routed Chrome that is slow to issue the probe (cold start past the old 5 s cutoff)', async () => {
     state.probeDelayMs = 5_500;
     spawnWritesPortFile(makeChild());
-    const launcher = new ChromeLauncher('/tmp/prot-h', { protection: () => denyAll });
+    const launcher = new ChromeLauncher('/tmp/prot-h', { protectedPortAllowed: () => true, protection: () => denyAll });
     await expect(launcher.ensureRunning()).resolves.toBeGreaterThan(0);
     expect(launcher.isProtected()).toBe(true);
     await launcher.dispose({ immediate: true });
@@ -353,7 +354,7 @@ describe('ChromeLauncher — protected profiles', () => {
   it('the download guard also denies each context a client created, on its own session, on each re-assert', async () => {
     state.browserContexts = ['CTX-1'];
     spawnWritesPortFile(makeChild());
-    const launcher = new ChromeLauncher('/tmp/prot-ctx', { protection: () => denyAll });
+    const launcher = new ChromeLauncher('/tmp/prot-ctx', { protectedPortAllowed: () => true, protection: () => denyAll });
     await launcher.ensureRunning();
     const guard = sockets.find((x) => x.sent[0]?.method === 'Browser.setDownloadBehavior');
     const contextDenies = () => (guard?.sent ?? []).filter((m) => m.method === 'Browser.setDownloadBehavior' && (m.params as { browserContextId?: string }).browserContextId);
@@ -371,7 +372,7 @@ describe('ChromeLauncher — protected profiles', () => {
 
   it('while a consent pass holds the guard, the tick re-asserts the pass\'s behaviour instead of its own deny', async () => {
     spawnWritesPortFile(makeChild());
-    const launcher = new ChromeLauncher('/tmp/prot-claim', { protection: () => denyAll });
+    const launcher = new ChromeLauncher('/tmp/prot-claim', { protectedPortAllowed: () => true, protection: () => denyAll });
     await launcher.ensureRunning();
     const guard = sockets.find((x) => x.sent[0]?.method === 'Browser.setDownloadBehavior');
     const reassert = vi.fn(async () => undefined);
@@ -389,7 +390,7 @@ describe('ChromeLauncher — protected profiles', () => {
 
   it('concurrent callers re-arm one download guard, not two', async () => {
     spawnWritesPortFile(makeChild());
-    const launcher = new ChromeLauncher('/tmp/prot-f', { protection: () => denyAll });
+    const launcher = new ChromeLauncher('/tmp/prot-f', { protectedPortAllowed: () => true, protection: () => denyAll });
     await launcher.ensureRunning();
     const guards = () => sockets.filter((x) => x.sent[0]?.method === 'Browser.setDownloadBehavior');
     guards()[0].closed = true; // the guard's socket dropped
@@ -407,7 +408,7 @@ describe('ChromeLauncher — protected profiles', () => {
       dead.add(firstPort);
       first.emit('exit');
     });
-    const launcher = new ChromeLauncher('/tmp/prot-g', { protection: () => plan });
+    const launcher = new ChromeLauncher('/tmp/prot-g', { protectedPortAllowed: () => true, protection: () => plan });
     await launcher.ensureRunning();
     const proxyPort = state.proxyPort;
     plan = null;
@@ -435,7 +436,7 @@ describe('ChromeLauncher — protected profiles', () => {
       first.emit('exit');
       return true;
     });
-    const launcher = new ChromeLauncher('/tmp/prot-h', { protection: () => plan });
+    const launcher = new ChromeLauncher('/tmp/prot-h', { protectedPortAllowed: () => true, protection: () => plan });
     await launcher.ensureRunning();
     plan = denyAll;
     spawnWritesPortFile(makeChild());
@@ -471,7 +472,7 @@ describe('ChromeLauncher — protected launch readiness', () => {
       beforeGuard = await connect('ok.test:443');
     };
     spawnWritesPortFile(makeChild());
-    const launcher = new ChromeLauncher('/tmp/prot-ready', { protection: () => allowOk });
+    const launcher = new ChromeLauncher('/tmp/prot-ready', { protectedPortAllowed: () => true, protection: () => allowOk });
     await launcher.ensureRunning();
     try {
       expect(beforeGuard).toContain('403');
@@ -499,7 +500,7 @@ describe('ChromeLauncher — quitting during a protected launch', () => {
         dead.add(17998);
         return { ok: true, text: async () => '{}', json: async () => ({}) };
       });
-      const launcher = new ChromeLauncher('/tmp/prot-quit-evict', { protection: () => denyAll });
+      const launcher = new ChromeLauncher('/tmp/prot-quit-evict', { protectedPortAllowed: () => true, protection: () => denyAll });
       const pending = launcher.endpoint();
       await vi.waitFor(() => expect(answer).not.toBeNull(), { timeout: 5_000 });
       await launcher.dispose();
@@ -524,7 +525,7 @@ describe('ChromeLauncher — quitting during a protected launch', () => {
     });
     try {
       spawnWritesPortFile(makeChild());
-      const launcher = new ChromeLauncher('/tmp/prot-quit-proxy', { protection: () => denyAll });
+      const launcher = new ChromeLauncher('/tmp/prot-quit-proxy', { protectedPortAllowed: () => true, protection: () => denyAll });
       const pending = launcher.endpoint();
       await vi.waitFor(() => expect(release).not.toBeNull(), { timeout: 5_000 });
       await launcher.dispose();
@@ -545,7 +546,7 @@ describe('ChromeLauncher — protected launch readiness, restored pages', () => 
     state.restoredPage = true;
     const child = makeChild();
     spawnWritesPortFile(child);
-    const launcher = new ChromeLauncher('/tmp/prot-restored', { protection: () => denyAll });
+    const launcher = new ChromeLauncher('/tmp/prot-restored', { protectedPortAllowed: () => true, protection: () => denyAll });
     await expect(launcher.ensureRunning()).rejects.toThrow(/policy_denied/);
     expect(child.kill).toHaveBeenCalled();
     expect(launcher.isProtected()).toBe(false);
@@ -667,7 +668,7 @@ describe('ChromeLauncher — recently blocked hosts (#2063)', () => {
   it("records the proxy's refusals of real hosts, and starts over when Chrome launches again", async () => {
     const first = makeChild();
     const firstPort = spawnWritesPortFile(first);
-    const launcher = new ChromeLauncher('/tmp/blocked-a', { protection: () => denyAll });
+    const launcher = new ChromeLauncher('/tmp/blocked-a', { protectedPortAllowed: () => true, protection: () => denyAll });
     await launcher.ensureRunning();
     expect(await connectViaProxy('cdn.blocked.test:443')).toContain('403');
     expect(await connectViaProxy('cdn.blocked.test:443')).toContain('403');
@@ -698,6 +699,7 @@ describe('ChromeLauncher — recently blocked hosts (#2063)', () => {
       defaultDir: '/tmp/blocked-default',
       profilesDir: '/tmp/blocked-profiles',
       store: { profileFor: () => 'default', hasPaneBindings: () => true, isPaneBound: () => true },
+      protectedPortAllowed: () => true,
       protection: () => denyAll,
     });
     expect(registry.blockedHostsFor('default')).toEqual([]); // no launcher yet, none created

@@ -217,6 +217,8 @@ export async function handleBrowser(
             const r = response.result as Record<string, unknown>;
             console.log(`Active profile: ${r['profile'] ?? 'none'}`);
             console.log(`CDP port: ${r['port'] ?? 'none'}`);
+            // How main reaches the running Chrome; 'port (weaker)' is a protected profile on the port.
+            if (typeof r['transport'] === 'string') console.log(`Transport: ${r['transport']}`);
           }
           break;
         }
