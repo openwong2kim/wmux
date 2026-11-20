@@ -28,6 +28,7 @@ vi.mock('node:fs', async (orig) => {
 import { readFileSync } from 'node:fs';
 import { ChromeLauncher, PROTECTION_NOT_READY, setPipeRelayForTests, transportFor, transportLabel, type ChromeProtectionPlan } from '../ChromeLauncher';
 import { CdpPipeRelay, type RelayGrant } from '../CdpPipeRelay';
+import type { CdpPipeMux } from '../CdpPipeMux';
 
 type FakeChild = EventEmitter & { kill: (signal?: string) => void; stdio: unknown[]; killed: boolean; exitCode: number | null; signalCode: string | null };
 
@@ -35,12 +36,30 @@ class ProtectedPipeChrome extends FakeBrowser {
   proxyPort = 0;
   /** Methods this Chrome answers with an error (the launch step that sends them fails). */
   readonly failing = new Set<string>();
+  /** Methods refused only on the download guard's session (the first to set the default download behaviour). */
+  readonly failingOnGuard = new Set<string>();
+  /** The first Target.setDiscoverTargets (the mux's own discovery session's) is never answered. */
+  holdFirstDiscovery = false;
+  /** The child exits (the pipe still open) just before a refusal on the guard's session is written. */
+  exitBeforeGuardRefusal = false;
+  private guardSession: string | undefined;
+  private discoveries = 0;
 
   constructor(readonly child: FakeChild) {
     super();
   }
 
   protected override handle(c: Command): void {
+    if (c.method === 'Browser.setDownloadBehavior' && c.params.browserContextId === undefined && this.guardSession === undefined) this.guardSession = c.sessionId;
+    if (this.failingOnGuard.has(c.method) && c.sessionId !== undefined && c.sessionId === this.guardSession) {
+      if (this.exitBeforeGuardRefusal) {
+        this.child.exitCode = 0;
+        this.child.emit('exit', 0, null);
+      }
+      this.reply(c, '"error":{"code":-32000,"message":"refused (unit test)"}');
+      return;
+    }
+    if (c.method === 'Target.setDiscoverTargets' && this.holdFirstDiscovery && this.discoveries++ === 0) return;
     if (this.failing.has(c.method)) {
       this.reply(c, '"error":{"code":-32000,"message":"refused (unit test)"}');
       return;
@@ -293,6 +312,65 @@ describe('ChromeLauncher: a protected start that is not ready names the step', (
       expect(err?.cause?.site).toBe(site);
       expect(err?.cause?.error?.message).toContain('refused (unit test)');
       expect(warn.mock.calls.filter((c) => String(c[0]).includes(`protected start not ready at ${site}`))).toHaveLength(1);
+      await launcher.dispose({ immediate: true });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('ChromeLauncher: the download guard\'s discovery on the pipe', () => {
+  const muxOf = (launcher: ChromeLauncher) => (launcher as unknown as { piped: { mux: CdpPipeMux } | null }).piped?.mux;
+  const skipped = (warn: { mock: { calls: unknown[][] } }) => warn.mock.calls.filter((c) => String(c[0]).includes('continues without download-guard-discovery'));
+
+  it('refused on the guard while the mux\'s own discovery is up: the start goes on, with one warning naming the step', async () => {
+    const chrome = spawnChrome();
+    chrome.failingOnGuard.add('Target.setDiscoverTargets');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const launcher = new ChromeLauncher('/tmp/pipe-protected-discovery-up', { profileName: 'bank', protection: () => denyAll });
+      const ep = await launcher.endpoint();
+      expect(ep.piped).toBe(true);
+      expect(muxOf(launcher)?.discoveryLive()).toBe(true);
+      expect(skipped(warn)).toHaveLength(1);
+      expect(String(skipped(warn)[0][0])).toContain('refused (unit test)');
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes('protected start not ready'))).toEqual([]);
+      await launcher.dispose({ immediate: true });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('refused on the guard while the mux\'s own discovery is not up yet: the start fails with that step as its cause', async () => {
+    const chrome = spawnChrome();
+    chrome.holdFirstDiscovery = true;
+    chrome.failingOnGuard.add('Target.setDiscoverTargets');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const launcher = new ChromeLauncher('/tmp/pipe-protected-discovery-pending', { profileName: 'bank', protection: () => denyAll });
+      const err = await launcher.endpoint().then(() => null, (e: unknown) => e as Error & { cause?: { site?: string } });
+      expect(err?.message).toBe(PROTECTION_NOT_READY);
+      expect(err?.cause?.site).toBe('download-guard-discovery');
+      expect(skipped(warn)).toEqual([]);
+      await launcher.dispose({ immediate: true });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('ChromeLauncher: the download guard\'s discovery when the child exits first', () => {
+  it('refused on the guard after the child exited, the pipe still open: decided as a pipe start, so it fails', async () => {
+    const chrome = spawnChrome();
+    chrome.holdFirstDiscovery = true;
+    chrome.exitBeforeGuardRefusal = true;
+    chrome.failingOnGuard.add('Target.setDiscoverTargets');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const launcher = new ChromeLauncher('/tmp/pipe-protected-discovery-exit', { profileName: 'bank', protection: () => denyAll });
+      const err = await launcher.endpoint().then(() => null, (e: unknown) => e as Error);
+      expect(err).not.toBeNull();
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes('continues without download-guard-discovery'))).toEqual([]);
       await launcher.dispose({ immediate: true });
     } finally {
       warn.mockRestore();

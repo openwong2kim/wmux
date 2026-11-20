@@ -78,6 +78,37 @@ const detachedSession = (browser: FakeBrowser, session: string) => detachesSent(
 afterEach(() => resetCdpPipeCounters());
 
 describe('CdpPipeMux URL boundary (C2d)', () => {
+  it('reports its own discovery session as live only once Chrome accepted discovery on it, and not after it ends', async () => {
+    const browser = new FakeBrowser();
+    browser.holdReplies.add('Target.setDiscoverTargets');
+    const mux = new CdpPipeMux(browser.fromMux, browser.toMux, { urlGate: GATE });
+    await vi.waitFor(() => expect(browser.received.some((r) => r.method === 'Target.setDiscoverTargets')).toBe(true), { timeout: 5_000 });
+    expect(mux.discoveryLive()).toBe(false);
+    browser.holdReplies.clear();
+    browser.releaseHeld();
+    await vi.waitFor(() => expect(mux.discoveryLive()).toBe(true), { timeout: 5_000 });
+    // Chrome tells the root that the session ended: not live, and discovery starts again on a new one.
+    const session = [...browser.discover][0];
+    const discoveries = () => browser.received.filter((r) => r.method === 'Target.setDiscoverTargets').length;
+    browser.holdReplies.add('Target.setDiscoverTargets');
+    browser.emit(JSON.stringify({ method: 'Target.detachedFromTarget', params: { sessionId: session } }));
+    await vi.waitFor(() => expect(discoveries()).toBe(2), { timeout: 5_000 });
+    expect(mux.discoveryLive()).toBe(false);
+    browser.holdReplies.clear();
+    browser.releaseHeld();
+    await vi.waitFor(() => expect(mux.discoveryLive()).toBe(true), { timeout: 5_000 });
+    expect([...browser.discover].filter((s) => s !== session)).toHaveLength(1);
+    mux.close();
+  });
+
+  it('reports no live discovery once the pipe is closed', async () => {
+    const { browser, mux } = setup();
+    await discovering(browser);
+    await vi.waitFor(() => expect(mux.discoveryLive()).toBe(true), { timeout: 5_000 });
+    mux.close();
+    expect(mux.discoveryLive()).toBe(false);
+  });
+
   it('a user-opened chrome://new-tab-page is invisible to an outside client and cannot be attached; main still sees it', async () => {
     const { browser, mux } = setup();
     await discovering(browser);

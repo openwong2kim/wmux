@@ -8,6 +8,7 @@ import type { CdpConnection } from './CdpSocket';
 import type { Readable, Writable } from 'node:stream';
 import { pipeTransport, portTransport, type ChromeTransport } from './ChromeTransport';
 import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux, type CallerIdentity, type ClientRef } from './CdpPipeMux';
+import { CdpReplyError } from './CdpReplyError';
 import { ProtectedPipePolicy, SCHEME_NOT_ALLOWED, appLaunchUrl, protectedUrlAllowed } from './ProtectedPipePolicy';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from './CdpPipeRelay';
 import { browserPathOf, isRecordedBrowser, recordedBrowserPath } from './devToolsActivePort';
@@ -2317,6 +2318,9 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.downloadGuard?.close();
     this.downloadGuard = null;
     const transport = this.reach();
+    // The pipe's mux as the guard starts (null on the port): a child that exits
+    // meanwhile must not turn this start into a port one.
+    const mux = this.piped?.mux ?? null;
     const url = await this.browserWsUrl(transport);
     const guard = transport.connect(() => url, {
       label: 'ChromeLauncher download guard',
@@ -2380,14 +2384,28 @@ export class ChromeLauncher implements ChromeBackendClient {
       this.piped?.policy?.downloadEvent('Browser.downloadProgress', params);
       for (const listener of this.downloadProgress) listener(params);
     });
-    let step = 'download-guard-deny';
     try {
       await deny();
-      step = 'download-guard-discovery';
-      await guard.send('Target.setDiscoverTargets', { discover: true });
     } catch (err) {
       guard.close();
-      throw notReadyAt(this.profileName, step, err);
+      throw notReadyAt(this.profileName, 'download-guard-deny', err);
+    }
+    try {
+      await guard.send('Target.setDiscoverTargets', { discover: true });
+    } catch (err) {
+      // Discovery here only denies a new context before the next tick. On the
+      // pipe the URL gate learns targets from the mux's own discovery session,
+      // and this session's events reach it too: the start goes on only while
+      // that session is up now (not yet up counts as down). On the port there
+      // is no gate. Either way only Chrome refusing the call, on a guard that
+      // is still open, lets it go on: a closed guard, a timeout or an ended
+      // pipe stays fatal.
+      if (!(err instanceof CdpReplyError) || !guard.isOpen() || (mux !== null && !mux.discoveryLive())) {
+        guard.close();
+        throw notReadyAt(this.profileName, 'download-guard-discovery', err);
+      }
+      const why = err instanceof Error ? err.message : String(err);
+      console.warn(`[ChromeLauncher] ${this.profileName}: protected start continues without download-guard-discovery: ${why}`);
     }
     const reassert = setInterval(() => {
       if (!guard.isOpen()) return clearInterval(reassert);

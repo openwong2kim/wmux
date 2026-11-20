@@ -18,6 +18,8 @@
 // than kept.
 // ---------------------------------------------------------------------------
 
+import { CdpReplyError } from './CdpReplyError';
+
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** A handshake still open this long is worth telling someone about. */
@@ -312,7 +314,7 @@ export class CdpSocket implements CdpConnection {
       const waiter = this.pending.get(msg.id);
       if (!waiter) return;
       this.pending.delete(msg.id);
-      if (msg.error) waiter.reject(new Error(`${this.label}: ${msg.error.message ?? 'CDP error'}`));
+      if (msg.error) waiter.reject(new CdpReplyError(`${this.label}: ${msg.error.message ?? 'CDP error'}`));
       else waiter.resolve(msg.result);
       return;
     }
