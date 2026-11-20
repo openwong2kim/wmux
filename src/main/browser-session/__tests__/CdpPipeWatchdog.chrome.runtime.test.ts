@@ -148,10 +148,10 @@ describe.skipIf(!CHROME)('the pipe\'s stall watch, real Chrome', () => {
   it.skipIf(process.platform === 'win32')('a stopped client no longer holds another client\'s new tab, and works again once resumed', { timeout: 60_000 }, async () => {
     const { route, mux } = await start();
     const periodStart = stalledClientPeriodStart(mux);
-    const a = await spawnClient(await route.grant({}));
+    const a = await spawnClient(await route.grant({ lane: 'engine' }));
     process.kill(a.proc.pid as number, 'SIGSTOP');
 
-    const b = await connectThrough(await route.grant({}));
+    const b = await connectThrough(await route.grant({ lane: 'engine' }));
     browsers.push(b);
     const started = performance.now();
     const page = await b.contexts()[0].newPage();
@@ -175,7 +175,7 @@ describe.skipIf(!CHROME)('the pipe\'s stall watch, real Chrome', () => {
 
   it.skipIf(process.platform === 'win32')('a stopped client with a backlog, and events still coming its way, is let go within a few periods', { timeout: 90_000 }, async () => {
     const { route, mux } = await start();
-    const a = await spawnClient(await route.grant({}));
+    const a = await spawnClient(await route.grant({ lane: 'engine' }));
     // The relay's view of A's socket (only A is attached yet).
     const drainOf = () => {
       const clients = [...(mux as unknown as { clients: Set<{ drain?: () => { buffered: number; flushed: number } }> }).clients];
@@ -189,7 +189,7 @@ describe.skipIf(!CHROME)('the pipe\'s stall watch, real Chrome', () => {
     while (drainOf().buffered < (4 << 20) && performance.now() < backlogBy) await new Promise((r) => setTimeout(r, 50));
     const atArm = drainOf();
     expect(atArm.buffered, 'a backlog of at least 4 MB waits for A').toBeGreaterThanOrEqual(4 << 20);
-    const b = await connectThrough(await route.grant({}));
+    const b = await connectThrough(await route.grant({ lane: 'engine' }));
     browsers.push(b);
     const started = performance.now();
     const page = await b.contexts()[0].newPage();
@@ -204,7 +204,7 @@ describe.skipIf(!CHROME)('the pipe\'s stall watch, real Chrome', () => {
 
   it(`a healthy client is never taken for stopped: ${ROUNDS} new pages, main blocked ${BLOCK_MS} ms after each arm, large frames in flight`, { timeout: 180_000 }, async () => {
     const { route } = await start();
-    const a = await spawnClient(await route.grant({}));
+    const a = await spawnClient(await route.grant({ lane: 'engine' }));
     const started = performance.now();
     for (let round = 0; round < ROUNDS; round++) {
       const before = armed();

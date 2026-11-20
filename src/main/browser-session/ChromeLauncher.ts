@@ -225,6 +225,14 @@ async function closePipeRelay(): Promise<void> {
 }
 
 /**
+ * End every relay client (and unused token) whose identity `match` takes, on
+ * every Chrome on a pipe (CdpPipeRelay.closeClients). 0 before any relay was made.
+ */
+export function closeRelayClients(match: (identity: CallerIdentity) => boolean, reason: string): number {
+  return pipeRelay?.closeClients(match, reason) ?? 0;
+}
+
+/**
  * Tests: serve pipe Chromes through `relay` (one on a temp root of the test's
  * own, so nothing the test starts looks in a temp dir another wmux uses), or
  * back to the default with null. The relay it replaces is closed.

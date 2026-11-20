@@ -11,7 +11,7 @@ import {
   EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE,
 } from '../../../../shared/browserBackend';
 import type { BrowserBackendStore } from '../../../browser-session/BrowserBackendStore';
-import { claimOn, dispatchAsClaimedCaller } from './claimedCaller';
+import { claimOn, dispatchAsClaimedCaller, paneClaimOn } from './claimedCaller';
 import { FIRST_PARTY_CLIENT_NAMES } from '../../../mcp/firstParty';
 
 /**
@@ -688,7 +688,7 @@ describe('browser.cdp.info for a Chrome on the debugging pipe (relay)', () => {
     expect(asked.relay).toEqual(grant);
     expect(asked.piped).toBe(true);
     expect(launcher.relayGrant).toHaveBeenCalledTimes(1);
-    expect(launcher.relayGrant).toHaveBeenCalledWith({ workspaceId: 'ws-1', profile: 'work' });
+    expect(launcher.relayGrant).toHaveBeenCalledWith({ workspaceId: 'ws-1', profile: 'work', lane: 'engine' });
     // A Chrome on the pipe has no port and no ws endpoint to hand out.
     expect(asked.cdpPort).toBeUndefined();
     expect(asked.wsEndpoint).toBeUndefined();
@@ -702,6 +702,30 @@ describe('browser.cdp.info for a Chrome on the debugging pipe (relay)', () => {
       expect(answer.workspaceBackend).toBe('chrome');
     }
     expect(launcher.relayGrant).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes the relay identity from the authenticated caller, never from params', async () => {
+    const { launcher, registry } = pipedRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    const params = { workspaceId: 'ws-1', relay: true, ptyId: 'pty-other', lane: 'pane-script', everyTarget: true, protectedEpoch: 7, profile: 'other' };
+
+    // A first-party wire caller holding a pane claim: the engine lane, on the claim's pane.
+    await router.dispatch({
+      id: '1', method: 'browser.cdp.info', params, clientName: [...FIRST_PARTY_CLIENT_NAMES][0], ...paneClaimOn('ws-1', 'pty-own'),
+    } as never, { externalWire: true });
+    expect(launcher.relayGrant).toHaveBeenLastCalledWith({ workspaceId: 'ws-1', profile: 'work', ptyId: 'pty-own', lane: 'engine' });
+
+    // One holding a workspace claim only: no pane at all.
+    await ask(router, params, true);
+    expect(launcher.relayGrant).toHaveBeenLastCalledWith({ workspaceId: 'ws-1', profile: 'work', lane: 'engine' });
+
+    // The operator: its own lane, and still no pane from params.
+    await router.dispatch({ id: '1', method: 'browser.cdp.info', params } as never, { operator: true });
+    expect(launcher.relayGrant).toHaveBeenCalledTimes(3);
+    const operator = (launcher.relayGrant.mock.calls[2] as unknown[])[0] as Record<string, unknown>;
+    expect(operator).toMatchObject({ profile: 'work', lane: 'operator', everyTarget: true });
+    expect(operator).not.toHaveProperty('ptyId');
+    expect(operator).not.toHaveProperty('protectedEpoch');
   });
 
   it('a Chrome on a port keeps its cdpPort and mints nothing, asked or not', async () => {

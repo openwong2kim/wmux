@@ -196,11 +196,11 @@ const bigEvent = (browser: FakeBrowser, bytes: number) =>
 async function readLive(leg: string, emit: (browser: FakeBrowser) => void, done: (messages: Array<Record<string, unknown>>) => boolean, chunk: number) {
   resetCdpPipeCounters();
   const { browser, route, drains } = await setup({}, { stallMs: 400 });
-  const a = await slowClient(await route.grant({}));
+  const a = await slowClient(await route.grant({ lane: 'engine' }));
   a.ws.send(JSON.stringify({ id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true } }));
   await a.readUntil(() => a.messages.some((m) => m.id === 1));
   const drain = drains[0];
-  const b = await dial(await route.grant({}));
+  const b = await dial(await route.grant({ lane: 'engine' }));
   const flushed = [drain().flushed];
   const start = a.consumed;
   emit(browser);
@@ -246,10 +246,10 @@ describe('CdpPipeRelay: sends on a Windows named pipe', () => {
     resetCdpPipeCounters();
     const STALL = 400;
     const { browser, route } = await setup({}, { stallMs: STALL });
-    const a = await slowClient(await route.grant({}));
+    const a = await slowClient(await route.grant({ lane: 'engine' }));
     a.ws.send(JSON.stringify({ id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true } }));
     await a.readUntil(() => a.messages.some((m) => m.id === 1));
-    const b = await dial(await route.grant({}));
+    const b = await dial(await route.grant({ lane: 'engine' }));
     bigEvent(browser, 8 << 20);
     const before = a.consumed;
     while (a.consumed < before + (128 << 10)) await a.step(CHUNK);
@@ -264,7 +264,7 @@ describe('CdpPipeRelay: sends on a Windows named pipe', () => {
 
   it.runIf(win32)('when Chrome goes, what was already taken for a client reaches it before the close', async () => {
     const { browser, mux, route } = await setup();
-    const ws = await dial(await route.grant({}));
+    const ws = await dial(await route.grant({ lane: 'engine' }));
     await request(ws, { id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, flatten: true } });
     const got: string[] = [];
     let value = -1;
@@ -287,7 +287,7 @@ describe('CdpPipeRelay: sends on a Windows named pipe', () => {
 
   it.runIf(win32)('counts what its queue holds toward the per-client cap', async () => {
     const { browser, route } = await setup({ maxBufferedBytes: 256 << 10 });
-    const ws = await dial(await route.grant({}));
+    const ws = await dial(await route.grant({ lane: 'engine' }));
     await request(ws, { id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, flatten: true } });
     const outcome = new Promise<string>((resolve) => {
       ws.on('message', (data) => { if (isConsole(JSON.parse(data.toString()) as Record<string, unknown>)) resolve('delivered'); });
@@ -300,7 +300,7 @@ describe('CdpPipeRelay: sends on a Windows named pipe', () => {
 
   it.runIf(win32)('counts what its queue holds toward the per-Chrome budget', async () => {
     const { browser, route } = await setup({ maxBufferedBytes: 1 << 30, maxBufferedBytesPerChrome: 256 << 10 });
-    const ws = await dial(await route.grant({}));
+    const ws = await dial(await route.grant({ lane: 'engine' }));
     await request(ws, { id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, flatten: true } });
     const outcome = new Promise<string>((resolve) => {
       ws.on('message', (data) => { if (isConsole(JSON.parse(data.toString()) as Record<string, unknown>)) resolve('delivered'); });
@@ -312,7 +312,7 @@ describe('CdpPipeRelay: sends on a Windows named pipe', () => {
 
   it('keeps messages in order: a small one sent behind a large one arrives after it, both intact', async () => {
     const { browser, route } = await setup();
-    const ws = await dial(await route.grant({}));
+    const ws = await dial(await route.grant({ lane: 'engine' }));
     await request(ws, { id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, flatten: true } });
     const got: Array<Record<string, unknown>> = [];
     const both = new Promise<void>((resolve) => ws.on('message', (data) => {
@@ -333,7 +333,7 @@ describe('CdpPipeRelay: sends on a Windows named pipe', () => {
     ['loopback TCP', { windowsPipe: false, roots: [] }],
   ])('a large message on %s: fragments on a Windows named pipe only, one frame elsewhere', async (_name, opts) => {
     const { browser, route } = await setup(opts);
-    const grant = await route.grant({});
+    const grant = await route.grant({ lane: 'engine' });
     const onPipe = win32 && grant.endpoint.startsWith('ws+unix:');
     const a = await slowClient(grant);
     a.ws.send(JSON.stringify({ id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, flatten: true } }));

@@ -170,7 +170,22 @@ export interface CallerIdentity {
    * only. Set by main from the authenticated caller, never from params.
    */
   readonly everyTarget?: boolean;
+  /**
+   * The pane the caller runs in, as main attested it (a pane claim, or the
+   * operator's own pane). Set by main, never from params.
+   */
+  readonly ptyId?: string;
+  /**
+   * Which kind of caller the grant was minted for: a script in a wmux pane,
+   * the first-party MCP engine, or the operator. Set by main from the
+   * authenticated caller, never from params. The relay ends clients by it
+   * (CdpPipeRelay.closeClients).
+   */
+  readonly lane: CallerLane;
 }
+
+/** The kinds of caller a relay grant is minted for (CallerIdentity.lane). */
+export type CallerLane = 'pane-script' | 'engine' | 'operator';
 
 /** A client as a filter or hook sees it. */
 export interface ClientRef { readonly kind: 'internal' | 'external'; readonly label: string; readonly identity?: CallerIdentity }
@@ -1204,7 +1219,7 @@ export class CdpPipeMux {
     if (client.kind === 'external' && !this.urlAllowed(targetId)) return false;
     if (this.ownership) {
       if (client.kind !== 'external') return true;
-      const identity = client.callerIdentity ?? {};
+      const identity: Partial<CallerIdentity> = client.callerIdentity ?? {};
       return this.ownership.decide(client, { workspaceId: identity.workspaceId, everyTarget: identity.everyTarget }, targetId) === 'grant';
     }
     return this.opts.targetGrant?.(client, targetId) ?? true;
@@ -1635,7 +1650,7 @@ export class CdpPipeMux {
       if (typeof target === 'string' && !endsOwned) {
         let verdict: 'grant' | 'deny' | 'unknown';
         if (this.ownership) {
-          const identity = owner.callerIdentity ?? {};
+          const identity: Partial<CallerIdentity> = owner.callerIdentity ?? {};
           // A popup is decided at once by its opener; only a page with none may be a create's.
           const mayHold = !final && !this.ownership.hasOpener(target) && this.creating(owner);
           verdict = this.ownership.decide(owner, { workspaceId: identity.workspaceId, everyTarget: identity.everyTarget }, target, mayHold);

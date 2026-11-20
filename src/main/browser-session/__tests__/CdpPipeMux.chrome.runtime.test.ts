@@ -83,7 +83,7 @@ async function provenBy(browser: Browser, grant: RelayGrant): Promise<boolean> {
   }
 }
 
-const connectTo = async (s: Started, identity: CallerIdentity = {}) => connectThrough(await s.route.grant(identity));
+const connectTo = async (s: Started, identity: CallerIdentity = { lane: 'engine' }) => connectThrough(await s.route.grant(identity));
 
 /** Grants (C3b): main's registry for one Chrome, filled by the test. */
 type Registry = Map<string, { workspaceId?: string }>;
@@ -237,7 +237,7 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
   }, CHROME_START_CEILING_MS + CHROME_TEARDOWN_TIMEOUT_MS);
 
   it('Playwright connects over CDP through the relay, which proves itself, and drives a page', async () => {
-    const grant = await (await startChrome()).route.grant({ workspaceId: 'ws-a' });
+    const grant = await (await startChrome()).route.grant({ lane: 'engine', workspaceId: 'ws-a' });
     const browser = await connectThrough(grant);
     browsers.push(browser);
     expect(await provenBy(browser, grant)).toBe(true);
@@ -249,8 +249,8 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
 
   it('two Playwright clients at once, for two workspaces on one profile: targets stay visible to both, sessions stay private to each', async () => {
     const s = await startChrome();
-    const relayA = await recordingRelay(() => s.route.grant({ workspaceId: 'ws-a', profile: 'shared' }));
-    const relayB = await recordingRelay(() => s.route.grant({ workspaceId: 'ws-b', profile: 'shared' }));
+    const relayA = await recordingRelay(() => s.route.grant({ lane: 'engine', workspaceId: 'ws-a', profile: 'shared' }));
+    const relayB = await recordingRelay(() => s.route.grant({ lane: 'engine', workspaceId: 'ws-b', profile: 'shared' }));
     const a = await chromium.connectOverCDP(relayA.url);
     const b = await chromium.connectOverCDP(relayB.url);
     browsers.push(a, b);
@@ -291,7 +291,7 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
     try {
       const bundled = require(await buildPlaywrightChunk(out)) as typeof import('playwright-core');
       const s = await startChrome();
-      const grant = await s.route.grant({ workspaceId: 'ws-a' });
+      const grant = await s.route.grant({ lane: 'engine', workspaceId: 'ws-a' });
       // A Unix socket wherever the OS has them, a named pipe on Windows: the
       // path the MCP lane takes. The bundle's own ws dials the pipe spelling.
       if (process.platform === 'win32') expect(grant.endpoint.startsWith('ws+unix:\\\\.\\pipe\\')).toBe(true);
@@ -331,9 +331,9 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
     const launcher = new ChromeLauncher(dir, { portEnvVar: null, extraArgs: ['--headless=new', '--use-mock-keychain', '--password-store=basic'] });
     try {
       await launcher.endpoint();
-      const before = await connectThrough(await launcher.relayGrant({}));
+      const before = await connectThrough(await launcher.relayGrant({ lane: 'engine' }));
       // Minted for this Chrome; never used.
-      const stale = await launcher.relayGrant({});
+      const stale = await launcher.relayGrant({ lane: 'engine' });
       await before.contexts()[0].addCookies([{ name: 'kept', value: '1', domain: 'probe.invalid', path: '/', expires: Math.floor(Date.now() / 1000) + 86_400 }]);
       await before.close();
       const pid = (launcher as unknown as { child: ChildProcess }).child.pid as number;
@@ -346,7 +346,7 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
       expect(() => process.kill(pid, 0)).toThrow();
       // A token minted for the stopped Chrome does not reach the new one.
       await expect(connectThrough(stale, 5_000)).rejects.toThrow(/401/);
-      const after = await connectThrough(await launcher.relayGrant({}));
+      const after = await connectThrough(await launcher.relayGrant({ lane: 'engine' }));
       browsers.push(after);
       const cookieKept = (await after.contexts()[0].cookies('https://probe.invalid/')).some((c) => c.name === 'kept');
       // Measured, not asserted: a SIGKILL loses cookie writes Chrome had not flushed yet.
@@ -381,8 +381,8 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe, with grants (C3b)',
   it('two workspaces on one profile: each sees and drives only its own pages; the other\'s is "not there"', async () => {
     const registry: Registry = new Map();
     const s = await startChrome(registry);
-    const a = await connectThrough(await s.route.grant({ workspaceId: 'ws-a' }));
-    const b = await connectThrough(await s.route.grant({ workspaceId: 'ws-b' }));
+    const a = await connectThrough(await s.route.grant({ lane: 'engine', workspaceId: 'ws-a' }));
+    const b = await connectThrough(await s.route.grant({ lane: 'engine', workspaceId: 'ws-b' }));
     browsers.push(a, b);
     // Opened by main after both connected: reaches each through the late grant.
     const pa = await mainOpens(s, registry, 'ws-a', 'data:text/html,<title>A</title>');
@@ -404,8 +404,8 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe, with grants (C3b)',
   it('20 concurrent new pages across two clients, in the default context and in their own: each gets its own only', async () => {
     const registry: Registry = new Map();
     const s = await startChrome(registry);
-    const a = await connectThrough(await s.route.grant({ workspaceId: 'ws-a' }));
-    const b = await connectThrough(await s.route.grant({ workspaceId: 'ws-b' }));
+    const a = await connectThrough(await s.route.grant({ lane: 'engine', workspaceId: 'ws-a' }));
+    const b = await connectThrough(await s.route.grant({ lane: 'engine', workspaceId: 'ws-b' }));
     browsers.push(a, b);
     const [ctxA, ctxB] = await Promise.all([a.newContext(), b.newContext()]);
     const made = await Promise.all([
@@ -435,7 +435,7 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe, with grants (C3b)',
     const failure = (p: Promise<unknown>) => p.then(() => 'answered', (err: unknown) => String(err));
     try {
       const s = await startChrome(new Map());
-      const a = await connectThrough(await s.route.grant({ workspaceId: 'ws-a' }));
+      const a = await connectThrough(await s.route.grant({ lane: 'engine', workspaceId: 'ws-a' }));
       browsers.push(a);
       const page = await a.contexts()[0].newPage();
       await page.goto(`${origin}/`);
@@ -472,8 +472,8 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe, with grants (C3b)',
   it('a popup opened by a click goes to the client that holds its opener, with and without opener access, and the click returns', async () => {
     const registry: Registry = new Map();
     const s = await startChrome(registry);
-    const a = await connectThrough(await s.route.grant({ workspaceId: 'ws-a' }));
-    const b = await connectThrough(await s.route.grant({ workspaceId: 'ws-b' }));
+    const a = await connectThrough(await s.route.grant({ lane: 'engine', workspaceId: 'ws-a' }));
+    const b = await connectThrough(await s.route.grant({ lane: 'engine', workspaceId: 'ws-b' }));
     browsers.push(a, b);
     const page = await a.contexts()[0].newPage();
     await page.setContent('<button id=open onclick="window.open(\'about:blank\')">o</button><button id=noopener onclick="window.open(\'about:blank\', \'_blank\', \'noopener\')">n</button>');
@@ -524,8 +524,8 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe, with grants: downlo
     const registry: Registry = new Map();
     const opts: { relay?: Relay } = {};
     const s = await startChrome(registry, opts);
-    const a = await connectThrough(await s.route.grant({ workspaceId: 'ws-a' }));
-    const b = await connectThrough(await s.route.grant({ workspaceId: 'ws-b' }));
+    const a = await connectThrough(await s.route.grant({ lane: 'engine', workspaceId: 'ws-a' }));
+    const b = await connectThrough(await s.route.grant({ lane: 'engine', workspaceId: 'ws-b' }));
     browsers.push(a, b);
     const [pa, pb] = await Promise.all([a.contexts()[0].newPage(), b.contexts()[0].newPage()]);
     const seenA: string[] = [];
@@ -556,7 +556,7 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe, with grants: downlo
       const origin = `http://127.0.0.1:${(files.address() as AddressInfo).port}`;
       const opts: { relay?: Relay } = {};
       const s = await startChrome(new Map(), opts);
-      const a = await connectThrough(await s.route.grant({ workspaceId: 'ws-a' }));
+      const a = await connectThrough(await s.route.grant({ lane: 'engine', workspaceId: 'ws-a' }));
       browsers.push(a);
       const pa = await a.contexts()[0].newPage();
       const seen: string[] = [];

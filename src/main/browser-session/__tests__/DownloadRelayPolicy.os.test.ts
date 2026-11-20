@@ -26,7 +26,7 @@ afterEach(() => {
   for (const dir of roots.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const ext = (label: string, everyTarget = false): ClientRef => ({ kind: 'external', label, ...(everyTarget && { identity: { everyTarget: true } }) });
+const ext = (label: string, everyTarget = false): ClientRef => ({ kind: 'external', label, ...(everyTarget && { identity: { lane: 'operator', everyTarget: true } }) });
 
 interface Told { client: ClientRef; method: string; params: Record<string, unknown>; sessionId?: string; fileThere?: boolean }
 

@@ -18,10 +18,10 @@ function setup(records: Map<string, { workspaceId?: string }> = new Map(), holdM
   return { browser, mux, records };
 }
 
-function client(mux: CdpPipeMux, label: string, identity: CallerIdentity) {
+function client(mux: CdpPipeMux, label: string, identity: Omit<CallerIdentity, 'lane'>) {
   const inbox: Inbox = [];
   let gone: string | null = null;
-  const c = mux.attachExternal(label, (text) => inbox.push(JSON.parse(text) as Record<string, unknown>), (r) => { gone = r; }, { identity });
+  const c = mux.attachExternal(label, (text) => inbox.push(JSON.parse(text) as Record<string, unknown>), (r) => { gone = r; }, { identity: { lane: 'engine', ...identity } });
   let nextId = 0;
   const send = (method: string, params: Record<string, unknown> = {}, sessionId?: string) => {
     const id = ++nextId;

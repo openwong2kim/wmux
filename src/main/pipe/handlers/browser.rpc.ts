@@ -136,7 +136,8 @@ import type {
   BrowserScopeShadowReason,
 } from '../../audit/shadowRejectionLog';
 import type { BrowserBackendStore } from '../../browser-session/BrowserBackendStore';
-import type { ChromeBackendClient, ChromeLauncherRegistry } from '../../browser-session/ChromeLauncher';
+import { closeRelayClients, type ChromeBackendClient, type ChromeLauncherRegistry } from '../../browser-session/ChromeLauncher';
+import type { CallerIdentity } from '../../browser-session/CdpPipeMux';
 import { isLiveChromeReachable } from '../../browser-session/LiveChromeClient';
 import {
   agentWindowScopeMessage,
@@ -170,7 +171,7 @@ type GetWindow = () => BrowserWindow | null;
 /** What main wires in for protected browser panes. */
 export interface BrowserPolicyWiring {
   store: Pick<BrowserPolicyStore, 'hasAnyHistory' | 'workspaceHasHistory' | 'decisionFor' | 'entryFor'>
-    & Partial<Pick<BrowserPolicyStore, 'onChange'>>;
+    & Partial<Pick<BrowserPolicyStore, 'onChange' | 'epoch'>>;
   /** paneId → its exclusive Chrome profile binding (ChromeProfileStore). */
   paneBindings: () => ChromePaneBindings;
   /** Receives the caller-protection check below, for callers outside browser.* (computer use). */
@@ -4361,16 +4362,27 @@ export function registerBrowserRpc(
       const chromeTargets = await launcher.cdpInfoTargets(callerWorkspaceId || undefined);
       const disclose = canDiscloseBrowserAttachInfo(ctx);
       const decision = protectedDecisionOf(ctx);
+      // Every field from the authenticated caller and main's own resolution,
+      // never from params.
+      const identity: CallerIdentity = {
+        ...(callerWorkspaceId && { workspaceId: callerWorkspaceId }),
+        profile: chrome.profile,
+        ...(decision && { protectedEpoch: decision.epoch }),
+        // The operator lane: with grants (C3b), every target, as on the port.
+        ...(ctx?.operator === true && { everyTarget: true }),
+        ...(chrome.callerPtyId && { ptyId: chrome.callerPtyId }),
+        lane: ctx?.operator === true ? 'operator' : 'engine',
+      };
       const relay = disclose && ep.piped && params.relay === true && launcher.relayGrant
-        ? await launcher.relayGrant({
-          ...(callerWorkspaceId && { workspaceId: callerWorkspaceId }),
-          profile: chrome.profile,
-          ...(decision && { protectedEpoch: decision.epoch }),
-          // The operator lane: with grants (C3b), every target, as on the port. From the
-          // authenticated caller only, never from params.
-          ...(ctx?.operator === true && { everyTarget: true }),
-        })
+        ? await launcher.relayGrant(identity)
         : undefined;
+      // The policy moved while the token was made: the sweep on that move
+      // (relayClientTriggers) ran before this token existed, so it goes now.
+      const epochNow = browserPolicy?.store.epoch?.();
+      if (relay && decision && epochNow !== undefined && epochNow !== decision.epoch) {
+        closeRelayClients((id) => id === identity, 'browser policy changed during the grant');
+        throw new Error('browser.cdp.info: the browser policy changed while the relay token was made; ask again');
+      }
       // A protected pane's caller never gets the port or its WebSocket, on
       // either transport: on the pipe it reaches Chrome through the relay (held
       // to the profile's rules); on the port there is no such route for it.

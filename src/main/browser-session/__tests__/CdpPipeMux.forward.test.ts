@@ -6,14 +6,14 @@ import { CdpPipeMux, cdpPipeCounters, resetCdpPipeCounters, type CallerIdentity 
 import { FakeBrowser } from './fakePipeBrowser';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 
-function client(mux: CdpPipeMux, identity?: CallerIdentity) {
+function client(mux: CdpPipeMux, identity?: Omit<CallerIdentity, 'lane'>) {
   const inbox: Array<Record<string, unknown>> = [];
   const texts: string[] = [];
   const bytes: Buffer[] = [];
   const c = mux.attachExternal('a', (text) => {
     texts.push(text);
     inbox.push(JSON.parse(text) as Record<string, unknown>);
-  }, () => undefined, { identity, sendBytes: (b) => bytes.push(b) });
+  }, () => undefined, { identity: identity && { lane: 'engine', ...identity }, sendBytes: (b) => bytes.push(b) });
   let nextId = 0;
   const send = (method: string, params: Record<string, unknown> = {}) => {
     const id = ++nextId;

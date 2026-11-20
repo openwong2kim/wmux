@@ -170,7 +170,7 @@ describe('ChromeLauncher: a protected profile on the pipe', () => {
     const launcher = new ChromeLauncher('/tmp/pipe-protected', { profileName: 'bank', protection: () => denyAll });
     await launcher.endpoint();
     expect(launcher.isProtected()).toBe(true);
-    const c = await client(await launcher.relayGrant({ workspaceId: 'ws-bank' }));
+    const c = await client(await launcher.relayGrant({ lane: 'engine', workspaceId: 'ws-bank' }));
     const allows = () => chrome.received.filter((m) => m.method === 'Browser.setDownloadBehavior' && m.params.behavior !== 'deny');
 
     // A client's download setting is answered here and never reaches Chrome.

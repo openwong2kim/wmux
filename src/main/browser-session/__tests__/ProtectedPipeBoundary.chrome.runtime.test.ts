@@ -130,7 +130,7 @@ function internal(rig: Rig): CdpConnection {
 
 /** A bare relay client: commands by id; failures come back as the error message. */
 async function relayClient(rig: Rig) {
-  const grant = await rig.launcher.relayGrant({ workspaceId: 'ws-boundary' });
+  const grant = await rig.launcher.relayGrant({ lane: 'engine', workspaceId: 'ws-boundary' });
   const ws = new WebSocket(grant.endpoint, { headers: { ...grant.headers } });
   await new Promise<void>((resolve, reject) => { ws.once('open', () => resolve()); ws.once('error', reject); });
   const waiting = new Map<number, (m: { result?: Record<string, unknown>; error?: { message: string } }) => void>();
@@ -315,7 +315,7 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     const own = internal(rig);
     const ntp = (await own.send('Target.createTarget', { url: 'chrome://new-tab-page/' })) as { targetId: string };
     const { chromium } = await import('playwright-core');
-    const grant = await rig.launcher.relayGrant({ workspaceId: 'ws-boundary' });
+    const grant = await rig.launcher.relayGrant({ lane: 'engine', workspaceId: 'ws-boundary' });
     const browser = await chromium.connectOverCDP(grant.endpoint, { headers: { ...grant.headers } });
     try {
       const p = await browser.contexts()[0].newPage();
