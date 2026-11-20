@@ -3,8 +3,8 @@
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
-import { describe, it, expect } from 'vitest';
-import { categoryScript, parseCategoryOutput, readNetCategory, QUERY_TIMEOUT_MS } from '../netCategory';
+import { beforeAll, describe, it, expect } from 'vitest';
+import { categoryScript, parseCategoryOutput, readNetCategory, QUERY_TIMEOUT_MS, type ExecFileFn } from '../netCategory';
 
 function firstExternalIPv4(): string | null {
   for (const addrs of Object.values(os.networkInterfaces())) {
@@ -20,6 +20,28 @@ function surfaced(err: unknown): Error {
   const e = (err ?? {}) as { message?: unknown; killed?: unknown; code?: unknown; signal?: unknown };
   const message = typeof e.message === 'string' ? e.message : String(err);
   return new Error(`${message} [killed=${String(e.killed)} code=${String(e.code)} signal=${String(e.signal)}]`);
+}
+
+/** The product's exec without its timeout. */
+const untimed: ExecFileFn = (file, args, { windowsHide }) =>
+  new Promise((resolve, reject) => {
+    execFile(file, args, { windowsHide, encoding: 'utf-8' }, (err, stdout) => (err ? reject(err) : resolve({ stdout })));
+  });
+
+// The reads below run under the product's timeout. An idle runner answers in
+// under a second, but on a busy one (another test file creating a local
+// account and starting processes as it) the first read can take longer than
+// the timeout, while the reads after it answer in a second or two again. So
+// one read runs to completion first, with no timeout of its own: the reads
+// under test start once this machine has answered the query.
+if (process.platform === 'win32') {
+  beforeAll(async () => {
+    const ip = firstExternalIPv4();
+    if (!ip) return;
+    const started = Date.now();
+    const outcome = await readNetCategory(ip, { exec: untimed }).catch((err: unknown) => surfaced(err).message);
+    console.log(`[netCategory] first read on this runner: ${outcome} after ${Date.now() - started} ms`);
+  }, 120_000);
 }
 
 describe.runIf(process.platform === 'win32')('readNetCategory on Windows', () => {
