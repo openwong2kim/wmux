@@ -338,7 +338,7 @@ import { deliverScheduledPrompt, deliveryInputFence, type ScheduledPromptDeliver
 import { deliverCallerNudge } from './callerNudgeDelivery';
 import { draftScreenCheck, type DraftCheck } from './draftScreen';
 import { paneTurnClosed, stopAgentTree } from './agentStop';
-import { continueOnAccount } from './continueOnAccount';
+import { continueOnAccount, paneShellDeps } from './continueOnAccount';
 import { paneFree } from './paneFree';
 import { createOrphanSweep } from './winProcessSweep';
 import { classifyShell } from './shell-integration';
@@ -10763,11 +10763,7 @@ async function main(): Promise<void> {
           (await trustRefusal(sessionManager, sid, 'continue on account', false)) !== null,
         paneFree: (sid) => sessionPaneFree(sessionManager, agentProcessTracker, sid),
         chatOwnsPane: (sid) => chatV2Host?.ownsPane(sid) === true,
-        promptRevision: (sid) => {
-          const pane = sessionManager.getSession(sid);
-          if (!pane || pane.promptLog.size === 0 || pane.promptLog.isCommandRunning()) return null;
-          return pane.bridge.isEmptyShellPrompt() ? pane.bridge.getInputRevision() : null;
-        },
+        ...paneShellDeps((sid) => sessionManager.getSession(sid)),
         rebind: (sid, dir, binding) => {
           const meta = sessionManager.getSession(sid)?.meta;
           if (!meta) return null;

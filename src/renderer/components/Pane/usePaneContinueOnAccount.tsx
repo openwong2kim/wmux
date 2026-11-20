@@ -18,6 +18,7 @@ import type { PaneActionItem } from './PaneActionsMenu';
 import { agentRow } from '../../../shared/agentIdentity';
 import { accountGroupOf, groupAccountsBoundFirst } from '../../../shared/accountGroup';
 import { findWorkspaceSurfaceByPtyId } from '../../utils/paneTraversal';
+import type { Toast } from '../../stores/slices/toastSlice';
 
 /**
  * A new pane beside the one running `ptyId` (the workspace's active pane when
@@ -62,6 +63,37 @@ const REFUSAL_KEYS: Record<string, string> = {
   shell_busy: 'pane.continueOnAccountShellBusy',
   folder_trust: 'pane.launchAtFolderTrust',
 };
+
+/** Why Claude, once stopped and its conversation copied, was not relaunched → message key. */
+const STOPPED_KEYS: Record<string, string> = {
+  shell_busy: 'pane.continueOnAccountStoppedShellBusy',
+  shell_typed: 'pane.continueOnAccountStoppedShellTyped',
+  shell_running: 'pane.continueOnAccountStoppedShellRunning',
+  save_failed: 'pane.continueOnAccountStoppedSaveFailed',
+};
+
+/**
+ * Claude stopped and the copy exists, but nothing was typed: the reason, and
+ * the line that resumes the copy as a block of its own, kept until dismissed
+ * (the pane is left at its shell), with the line to copy.
+ */
+export function stoppedNotRelaunchedToast(
+  code: string,
+  resumeCommand: string,
+  accountName: string,
+  t: (key: string, vars?: Record<string, string>) => string,
+): Omit<Toast, 'id'> {
+  return {
+    level: 'error',
+    persist: true,
+    message: t(STOPPED_KEYS[code] ?? 'pane.continueOnAccountStopped', { name: accountName }),
+    code: resumeCommand,
+    action: {
+      label: t('resume.copyCommand'),
+      onClick: () => { void navigator.clipboard?.writeText(resumeCommand).catch(() => undefined); },
+    },
+  };
+}
 
 export function usePaneContinueOnAccount(opts: {
   ptyId: string | undefined;
@@ -118,6 +150,10 @@ export function usePaneContinueOnAccount(opts: {
       }
       if (res.ok) {
         pushToast({ level: 'info', message: t('pane.continueOnAccountDone', { name: account.name }) });
+        return;
+      }
+      if (res.resumeCommand) {
+        pushToast(stoppedNotRelaunchedToast(res.code, res.resumeCommand, account.name, t));
         return;
       }
       pushToast({ level: res.code === 'pending' ? 'warn' : 'error', message: t(REFUSAL_KEYS[res.code] ?? 'pane.continueOnAccountFailed') });

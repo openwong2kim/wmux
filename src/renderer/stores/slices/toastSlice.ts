@@ -52,6 +52,12 @@ export interface Toast {
    * the user was looking. Ignored when `persist` is set.
    */
   durationMs?: number;
+  /**
+   * Machine evidence the message points at (a command to run): drawn under
+   * the message as a mono block that wraps anywhere, so a long line stays
+   * inside the toast's width. Not drawn on a toast with a `target`.
+   */
+  code?: string;
 }
 
 export interface ToastSlice {
