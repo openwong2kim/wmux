@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "wmux test: framed resource",
+  "version": "1.0",
+  "description": "Test fixture: adds one of its own pages to http(s) pages as an iframe.",
+  "content_scripts": [{ "matches": ["http://*/*", "https://*/*"], "js": ["content.js"], "run_at": "document_end" }],
+  "web_accessible_resources": [{ "resources": ["frame.html"], "matches": ["<all_urls>"] }]
+}

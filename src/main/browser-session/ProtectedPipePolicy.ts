@@ -63,6 +63,28 @@ export function protectedUrlAllowed(url: string): boolean {
   }
 }
 
+/**
+ * Schemes Chrome hands to another application instead of loading in the tab,
+ * so a navigation toward one never commits there. A fixed list: mailto (which
+ * chrome/browser/external_protocol/external_protocol_handler.cc at 157.0.8103.79
+ * always lets through to its handler), the other common app-launch schemes,
+ * and the external-protocol schemes that file names for its request metrics.
+ * Any other scheme counts as one that may commit.
+ */
+const APP_LAUNCH_SCHEMES = new Set([
+  'mailto:', 'tel:', 'sms:', 'callto:', 'facetime:',
+  'search-ms:', 'search:', 'microsoft-edge:',
+]);
+
+/** Whether Chrome hands `url` to another application (APP_LAUNCH_SCHEMES), read as protectedUrlAllowed reads it. */
+export function appLaunchUrl(url: string): boolean {
+  try {
+    return APP_LAUNCH_SCHEMES.has(new URL(url.trim()).protocol);
+  } catch {
+    return false;
+  }
+}
+
 /** History entries remembered per client for Page.navigateToHistoryEntry. */
 const HISTORY_ENTRIES_KEPT = 500;
 

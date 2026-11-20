@@ -86,6 +86,21 @@ describe('CdpPipeMux: screencast frames', () => {
     mux.close();
   });
 
+  it('cut from a larger read, are copied out of it, so a waiting frame holds only its own bytes', async () => {
+    const browser = new FakeBrowser();
+    const mux = new CdpPipeMux(browser.fromMux, browser.toMux);
+    const a = client(mux);
+    const page = (await a.call('Target.attachToTarget', { targetId: 'T0', flatten: true })).result?.sessionId as string;
+    const small = `{"method":"Page.screencastFrame","params":{"data":"QUJD","metadata":{"offsetTop":0,"timestamp":1.5},"sessionId":7},"sessionId":"${page}"}`;
+    // One read from the pipe: the small frame, then a large one for nobody.
+    const large = `{"method":"Runtime.consoleAPICalled","params":{"text":"${'x'.repeat(1024 * 1024)}"},"sessionId":"NOBODY"}`;
+    browser.toMux.write(Buffer.from(`${small}\0${large}\0`));
+    await vi.waitFor(() => expect(a.bytes).toHaveLength(1), { timeout: 5_000 });
+    expect(a.bytes[0].equals(Buffer.from(small))).toBe(true);
+    expect(a.bytes[0].buffer.byteLength).toBeLessThanOrEqual(2 * a.bytes[0].length);
+    mux.close();
+  });
+
   it('wait behind a hold for a new page like every other frame', async () => {
     const browser = new FakeBrowser();
     browser.announceBeforeReply = true;

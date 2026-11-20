@@ -43,12 +43,17 @@ function serve(req: http.IncomingMessage, res: http.ServerResponse): void {
     return;
   }
   res.writeHead(200, { 'content-type': 'text/html' });
+  if (req.url?.endsWith('/framed')) {
+    // A frame from another allowed site: out of process, a target of its own.
+    res.end(`<!doctype html><title>framed</title><iframe id="web" src="http://c.test:${port}/child"></iframe>`);
+    return;
+  }
   res.end(`<!doctype html><title>page</title><a id="d" href="/file.bin">file</a>${req.url}`);
 }
 
-function plan(): ChromeProtectionPlan {
+function plan(allow = ['a.test']): ChromeProtectionPlan {
   return {
-    matcher: () => compileHostPolicy({ mode: 'allowlist', allow: ['a.test'], block: [] }),
+    matcher: () => compileHostPolicy({ mode: 'allowlist', allow, block: [] }),
     resolve: (_host, p) => ({ host: '127.0.0.1', port: p }),
   };
 }
@@ -96,15 +101,15 @@ async function listeners(rootPid: number): Promise<string[]> {
 
 interface Rig { launcher: ChromeLauncher; profile: TempChromeProfile; pid: number }
 
-async function start(opts: { headful?: boolean; profile?: TempChromeProfile } = {}): Promise<Rig> {
+async function start(opts: { headful?: boolean; profile?: TempChromeProfile; allow?: string[]; args?: string[] } = {}): Promise<Rig> {
   const profile = opts.profile ?? tempChromeProfile('wmux-pipe-boundary-');
   vi.stubEnv('WMUX_CHROME_TRANSPORT', 'auto');
   vi.stubEnv('WMUX_CHROME_PATH', CHROME as string);
   const launcher = new ChromeLauncher(profile.dir, {
     portEnvVar: null,
     profileName: 'pipe-boundary',
-    protection: () => plan(),
-    extraArgs: [...(opts.headful || process.env.PROTECTED_HEADFUL === '1' ? [] : ['--headless=new']), '--use-mock-keychain', '--password-store=basic'],
+    protection: () => plan(opts.allow),
+    extraArgs: [...(opts.headful || process.env.PROTECTED_HEADFUL === '1' ? [] : ['--headless=new']), '--use-mock-keychain', '--password-store=basic', ...(opts.args ?? [])],
   });
   if (!opts.profile) rigs.push({ launcher, profile });
   else launchers.push(launcher);
@@ -167,6 +172,8 @@ async function watchForPort(rig: Rig): Promise<{ listeners: string[]; portFile: 
 }
 
 const INSPECT = 'chrome://inspect/#remote-debugging';
+/** A test extension that adds one of its own pages to every http(s) page as an iframe. */
+const FRAME_EXTENSION = path.join(__dirname, 'fixtures', 'frame-extension');
 /** Whether Chrome can open a window here (a Linux runner without a display can't). */
 const HAS_DISPLAY = process.platform !== 'linux' || !!process.env.DISPLAY;
 const NEEDS_DISPLAY = 'needs a display; covered by the runtime workflow on macOS/Windows';
@@ -412,6 +419,71 @@ describe.skipIf(!CHROME)('a protected profile on the pipe (real Chrome)', () => 
     expect((JSON.parse(toggle) as { checked: boolean }).checked).toBe(false);
     expect(await listeners(again.pid)).toEqual([]);
     own.close();
+  });
+
+  it('an extension\'s frame inside an allowed page is neither shown to nor driven by a relay client; a frame from another allowed site is', { timeout: CASE_TIMEOUT_MS }, async () => {
+    // Extensions.loadUnpacked: on the pipe, with this switch.
+    const rig = await start({ allow: ['a.test', 'c.test'], args: ['--enable-unsafe-extension-debugging'] });
+    const own = internal(rig);
+    const { id: extensionId } = (await own.send('Extensions.loadUnpacked', { path: FRAME_EXTENSION })) as { id: string };
+    const c = await relayClient(rig);
+    type Info = { targetId: string; type: string; url: string; parentId?: string };
+    /** The page's two frames, each a target of its own, once both are on their URLs (main sees every target). */
+    const framesOf = async (pageId: string) => {
+      let frames: Info[] = [];
+      await vi.waitFor(async () => {
+        const all = (await own.send('Target.getTargets')) as { targetInfos: Info[] };
+        frames = all.targetInfos.filter((t) => t.type === 'iframe' && t.parentId === pageId);
+        expect(frames.map((f) => f.url).sort()).toEqual([`chrome-extension://${extensionId}/frame.html`, `http://c.test:${port}/child`]);
+      }, { timeout: 15_000 });
+      return { ext: frames.find((f) => f.url.startsWith('chrome-extension://')) as Info, web: frames.find((f) => f.url.startsWith('http://c.test')) as Info };
+    };
+    const attachedFor = (targetId: string) => c.events
+      .filter((e) => e.method === 'Target.attachedToTarget' && (e.params.targetInfo as { targetId?: string } | undefined)?.targetId === targetId)
+      .map((e) => e.params.sessionId as string);
+    const expectWebOnly = async (frames: { ext: Info; web: Info }) => {
+      // The frame from c.test: attached for the client, and it answers.
+      await vi.waitFor(() => expect(attachedFor(frames.web.targetId).length).toBeGreaterThan(0), { timeout: 10_000 });
+      const href = await c.send('Runtime.evaluate', { expression: 'location.href', returnByValue: true }, attachedFor(frames.web.targetId).at(-1));
+      expect((href.result?.result as { value?: string } | undefined)?.value).toBe(`http://c.test:${port}/child`);
+      // The extension's frame: never attached for it, not listed, and not attachable.
+      await deliberateSleep(1_000, 'an attach for the extension frame would have arrived with the other');
+      expect(attachedFor(frames.ext.targetId)).toEqual([]);
+      expect(c.events.some((e) => JSON.stringify(e.params).includes('chrome-extension://'))).toBe(false);
+      const listed = await c.send('Target.getTargets');
+      expect((listed.result?.targetInfos as Array<{ targetId: string }>).map((t) => t.targetId)).not.toContain(frames.ext.targetId);
+      expect((await c.send('Target.attachToTarget', { targetId: frames.ext.targetId, flatten: true })).error).toBeDefined();
+    };
+
+    // Attached before the page loads, paused at start as Playwright attaches: each frame
+    // attaches before its URL is known, and the client resumes it.
+    const early = (await c.send('Target.createTarget', { url: 'about:blank' })).result?.targetId as string;
+    const earlySession = (await c.send('Target.attachToTarget', { targetId: early, flatten: true })).result?.sessionId as string;
+    expect((await c.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, earlySession)).error).toBeUndefined();
+    const resumed = new Set<string>();
+    const resume = setInterval(() => {
+      for (const e of c.events) {
+        const session = e.params.sessionId as string | undefined;
+        if (e.method !== 'Target.attachedToTarget' || e.params.waitingForDebugger !== true || !session || resumed.has(session)) continue;
+        resumed.add(session);
+        void c.send('Runtime.runIfWaitingForDebugger', {}, session);
+      }
+    }, 20);
+    try {
+      expect((await c.send('Page.navigate', { url: `http://a.test:${port}/framed` }, earlySession)).error).toBeUndefined();
+      await expectWebOnly(await framesOf(early));
+    } finally {
+      clearInterval(resume);
+    }
+
+    // Attached after the page has loaded: each frame attaches on its URL.
+    const late = (await c.send('Target.createTarget', { url: `http://a.test:${port}/framed` })).result?.targetId as string;
+    const lateFrames = await framesOf(late);
+    const lateSession = (await c.send('Target.attachToTarget', { targetId: late, flatten: true })).result?.sessionId as string;
+    expect((await c.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, lateSession)).error).toBeUndefined();
+    await expectWebOnly(lateFrames);
+    own.close();
+    c.close();
   });
 
   /** Main's own session drives `targetId` to `url` and waits until it is there. */

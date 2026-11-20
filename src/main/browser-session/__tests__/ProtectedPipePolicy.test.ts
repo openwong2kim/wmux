@@ -4,7 +4,7 @@
 // for events in its context.
 import { describe, expect, it, vi } from 'vitest';
 import type { ClientRef } from '../CdpPipeMux';
-import { ProtectedPipePolicy, type ProtectedPipeDeps } from '../ProtectedPipePolicy';
+import { ProtectedPipePolicy, appLaunchUrl, type ProtectedPipeDeps } from '../ProtectedPipePolicy';
 
 const ext = (label: string): ClientRef => ({ kind: 'external', label });
 const main: ClientRef = { kind: 'internal', label: 'main' };
@@ -276,5 +276,14 @@ describe('ProtectedPipePolicy, the pages an outside client may open', () => {
     expect(policy.filter(a, { method: 'Page.navigateToHistoryEntry', params: { entryId: 1 } })).toBeNull();
     policy.forget(a);
     expect(refused(policy.filter(a, { method: 'Page.navigateToHistoryEntry', params: { entryId: 1 } }))).toBe(true);
+  });
+
+  it('counts as handed to another app only a fixed list of schemes, read the way a typed URL is', () => {
+    for (const url of ['mailto:a@b.test', ' MAILTO:a@b.test', 'tel:+1', 'sms:+1', 'callto:x', 'facetime:x', 'search-ms:query=x', 'microsoft-edge:https://a.test/']) {
+      expect(appLaunchUrl(url), url).toBe(true);
+    }
+    for (const url of ['view-source:mailto:a@b.test', 'chrome://settings', 'web+app:x', 'zoommtg://x', 'https://a.test/', 'not a url']) {
+      expect(appLaunchUrl(url), url).toBe(false);
+    }
   });
 });

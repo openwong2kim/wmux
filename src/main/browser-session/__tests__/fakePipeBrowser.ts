@@ -87,7 +87,7 @@ export class FakeBrowser {
    * A new target, told as Chrome tells it: targetCreated on every discovering
    * session, then attachedToTarget on every auto-attaching one.
    */
-  announce(info: { targetId: string; type: string; browserContextId?: string; openerId?: string; subtype?: string; url?: string }): void {
+  announce(info: { targetId: string; type: string; browserContextId?: string; openerId?: string; parentId?: string; subtype?: string; url?: string }): void {
     for (const s of this.discover) this.event(s, 'Target.targetCreated', { targetInfo: info });
     for (const parent of this.autoAttach) {
       const child = `C${++this.n}`;
