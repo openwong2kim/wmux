@@ -215,7 +215,7 @@ describe.skipIf(onWindows)('browser.cdp.grant', () => {
     const grant = answer.result as RelayGrant & { profile: string };
     expect(grant.profile).toBe('work');
     const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith('[browser.cdp.grant]'));
-    expect(lines).toEqual([`[browser.cdp.grant] pane pty-1 profile work protected no transport ${posix ? 'unix socket' : 'named pipe'}`]);
+    expect(lines).toEqual([`[browser.cdp.grant] pane pty-1 profile work protected no transport unix socket`]);
     expect(lines[0]).not.toContain(grant.endpoint);
     expect(lines[0]).not.toContain(grant.headers.Authorization.slice('Bearer '.length));
     (await dial(grant)).close();
@@ -244,7 +244,7 @@ describe.skipIf(onWindows)('browser.cdp.grant', () => {
       r.peer.current = { workspaceId: 'ws-1', ptyId: 'pty-2' };
       return grantAs(r.router);
     }, /does not run in the pane its claim names/],
-    ['another workspace named in params', (r) => grantAs(r.router, { params: { workspaceId: 'ws-2' } }), /takes no other/],
+    ['another workspace named in params', (r) => grantAs(r.router, { params: { workspaceId: 'ws-2' } }), /BROWSER_SCOPE_REFUSED|takes no other/],
     ['a profile named in params', (r) => grantAs(r.router, { params: { profile: 'other' } }), /takes no profile/],
     ['a held tab in the pane\'s workspace', (r) => {
       r.surfaces.set('surface-1', 'ws-1');

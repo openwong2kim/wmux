@@ -4589,7 +4589,9 @@ export function registerBrowserRpc(
     if (refusal !== null) throw new Error(`${method}: ${refusal}`);
     const claim = (ctx as RpcContext).workspaceClaim as { kind: 'bound'; workspaceId: string; ptyId: string };
     const { workspaceId, ptyId } = claim;
-    if (params['workspaceId'] !== undefined && params['workspaceId'] !== workspaceId) {
+    // A workspaceId in params only narrows, as on every browser call: one that
+    // is not the claim's is refused there.
+    if (scopeFor(method, params, ctx) !== workspaceId) {
       throw new Error(`${method}: the grant is for the calling pane's own workspace; it takes no other`);
     }
     if (params['profile'] !== undefined) {
@@ -4631,7 +4633,7 @@ export function registerBrowserRpc(
     withdrawIfBasisChanged(method, ctx, identity);
     // One unspent token per pane: an earlier one this pane has not used goes.
     revokeRelayTokens((id) => id !== identity && id.lane === 'pane-script' && id.ptyId === ptyId);
-    const transport = grant.endpoint.startsWith('ws+unix:') ? (process.platform === 'win32' ? 'named pipe' : 'unix socket') : 'loopback tcp';
+    const transport = grant.endpoint.startsWith('ws+unix:') ? 'unix socket' : 'loopback tcp';
     console.log(`[browser.cdp.grant] pane ${ptyId} profile ${chrome.profile} protected ${decision ? 'yes' : 'no'} transport ${transport}`);
     return {
       endpoint: grant.endpoint,
