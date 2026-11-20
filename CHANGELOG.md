@@ -45,9 +45,8 @@
   prompts in a follow-up's turn are answered at this PC. Each decision is
   typed once, logged with the PC that sent it, and a resend gets the same
   answer, also after a restart. On a PC where the desktop app runs, the
-  daemon takes this setting only from the app, so `wmux remote approvals`
-  is refused there until the app has a setting for it in a later release.
-  The sending side's command also comes in a later release. (#3445)
+  daemon takes this setting only from the app's Remote page (see below).
+  (#3445)
 
 - **An agent can allow or deny a permission prompt in a task it sent to
   another PC.** When that PC's approvals setting is on for this one, the
@@ -99,8 +98,6 @@
 - **The read-only message on a phone names the Remote page.** When a phone without permission tries to type or approve, the message now points to the Remote page, under Phones, instead of "Paired devices". (#3407)
 
 - **The Remote page switches a phone between View only and Can type.** Allow typing asks once; Make view-only applies at once. (#3407)
-
-- **Settings › Claude Code › Shared MCP process says on Windows that it hosts no agents there yet.** Each agent keeps its own MCP server on Windows, so On only adds an idle process. (#3409)
 
 - **Phone contract: a message Claude Code stored as a paste now arrives as the pasted text.** Claude Code records a long or multi-line message wrapped in `<pasted_content id="…">` markers, and `user_text` used to carry them. Each matched pair is now removed with the one line break Claude Code adds inside each tag, and the text between them is kept exactly (line endings, trailing spaces, blank lines). Such a row carries `pasted: true`. This applies to `/turns` and to host search. An unmatched tag stays in the text. See docs/phone-client-contract.md. (#3415)
 
@@ -228,7 +225,7 @@
   browser and was still reading a large CDP message while the app was busy,
   wmux could let that client's new tab start before the client had set it
   up. It now counts each part of the message the client reads as a sign of
-  life. On Windows the same reading has not been confirmed yet. (#3450)
+  life. (#3450)
 
 - **`repl_run` reports all of a large output as the run's own.** When code
   printed a lot (about a megabyte or more), part of it could still be in
