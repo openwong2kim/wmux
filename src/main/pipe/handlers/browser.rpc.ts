@@ -8,6 +8,7 @@ import { logNotificationFailure } from '../../notification/notificationFailure';
 import { osToastsAllowed } from '../../notification/osToastGate';
 import { IPC } from '../../../shared/constants';
 import { HelpRequests } from '../../browser-session/HelpRequests';
+import { grantCovers } from '../../browser-session/dangerousActionConsent';
 import { FrameTarget, FrameWorlds, evaluateInFrame, listChildFrames, type CdpSend, type Point as FramePoint } from '../../browser-session/frameAccess';
 import { buildDomSnapshotExpression, readDomSnapshotPayload } from '../../../mcp/playwright/dom-intelligence';
 import type { RefDescriptor } from '../../../mcp/playwright/refDescriptors';
@@ -172,7 +173,7 @@ type GetWindow = () => BrowserWindow | null;
 /** What main wires in for protected browser panes. */
 export interface BrowserPolicyWiring {
   store: Pick<BrowserPolicyStore, 'hasAnyHistory' | 'workspaceHasHistory' | 'decisionFor' | 'entryFor'>
-    & Partial<Pick<BrowserPolicyStore, 'onChange' | 'epoch'>>;
+    & Partial<Pick<BrowserPolicyStore, 'onChange' | 'epoch' | 'grantsFor'>>;
   /** paneId → its exclusive Chrome profile binding (ChromeProfileStore). */
   paneBindings: () => ChromePaneBindings;
   /** Receives the caller-protection check below, for callers outside browser.* (computer use). */
@@ -4628,6 +4629,15 @@ export function registerBrowserRpc(
       throw new Error(`${method}: the pane's Chrome is not on the debugging pipe`);
     }
     const decision = protectedDecisionOf(ctx);
+    // On a protected pane a connection runs page scripts, so it needs the
+    // standing consent browser.evaluate needs there (dangerousActionConsent).
+    if (decision) {
+      const pane = protectedPanes.get(ctx as RpcContext);
+      const standing = pane ? browserPolicy?.store.grantsFor?.(pane.paneId, workspaceId, decision.profileId) : null;
+      if (!standing || !grantCovers(standing.grants, { action: 'evaluate', hosts: [] })) {
+        throw new Error(policyDeniedMessage(method, "on a protected pane this needs the user's consent for page scripts first: when wmux asks to run a script on this pane, choose Always on this pane"));
+      }
+    }
     const identity: CallerIdentity = {
       workspaceId,
       profile: chrome.profile,

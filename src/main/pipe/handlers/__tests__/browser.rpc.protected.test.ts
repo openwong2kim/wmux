@@ -16,6 +16,9 @@ import { BROWSER_POLICY_FILE } from '../../../../shared/browserPolicy';
 import { dispatchAsClaimedCaller, paneClaimOn } from './claimedCaller';
 import { FIRST_PARTY_CLIENT_NAMES } from '../../../mcp/firstParty';
 import { __resetProfileNamespaceStoreForTest } from '../../../browser-session/ProfileNamespaceStore';
+import { setPaneOfPeer } from '../peerPidShadow';
+import { setRelayAdmission } from '../../../browser-session/ChromeLauncher';
+import { WMUX_CLI_CLIENT_NAME } from '../../../../shared/rpc';
 
 /**
  * Protected panes at the RPC boundary: the upstream gate. Real policy and
@@ -742,5 +745,77 @@ describe('computer use from a protected pane', () => {
     expect(await computerCall(router, 'computer.listApps', {})).toBeNull();
     expect(service.listApps).toHaveBeenCalledTimes(2);
     expect(decisionFor).not.toHaveBeenCalled();
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('browser.cdp.grant on a protected pane', () => {
+  // The grant's own conditions are covered in browser.cdp.grant.os.test; here
+  // every launcher is on the pipe with target grants, and main's peer walk
+  // finds the calling pane.
+  function withPipedChrome(router: RpcRouter) {
+    const relayGrant = vi.fn(async () => ({ endpoint: 'ws+unix:/tmp/relay.sock:/cdp', headers: { Authorization: 'Bearer t' }, proofKey: 'k' }));
+    const make = registry.forProfile.getMockImplementation() as (profile: string) => ReturnType<typeof makeLauncher>;
+    registry.forProfile.mockImplementation((profile: string) => Object.assign(make(profile), {
+      endpoint: vi.fn(async () => ({ piped: true })),
+      relayGrant,
+      narrowedFor: vi.fn(() => true),
+    }));
+    return { router, relayGrant };
+  }
+
+  /** browser.cdp.grant as the wmux CLI in that pane sends it, over the pipe. */
+  async function grantFrom(router: RpcRouter, ptyId: string) {
+    const response = await router.dispatch(
+      { id: '1', method: 'browser.cdp.grant', params: {}, clientName: WMUX_CLI_CLIENT_NAME, ...paneClaimOn('ws-1', ptyId) } as never,
+      { externalWire: true },
+    );
+    if (response.ok) return { result: (response as { result?: Record<string, unknown> }).result, error: undefined };
+    return { result: undefined, error: String((response as { error?: unknown }).error ?? '') };
+  }
+
+  beforeEach(() => {
+    setPaneOfPeer(async (ctx) => {
+      const claim = ctx.workspaceClaim as { ptyId?: string } | undefined;
+      return claim?.ptyId ? { workspaceId: 'ws-1', ptyId: claim.ptyId } : null;
+    });
+    setRelayAdmission(() => null);
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    setPaneOfPeer(null);
+    setRelayAdmission(null);
+    vi.restoreAllMocks();
+  });
+
+  it('refuses without the page-script consent, naming the step', async () => {
+    await protectPaneA();
+    const { router, relayGrant } = withPipedChrome(register(profiles, policy));
+    const answer = await grantFrom(router, 'pty-a');
+    expect(answer.error).toContain('policy_denied');
+    expect(answer.error).toContain("needs the user's consent for page scripts first");
+    expect(answer.error).toContain('Always on this pane');
+    expect(relayGrant).not.toHaveBeenCalled();
+  });
+
+  it('grants once the pane has the page-script consent, and only that consent', async () => {
+    await protectPaneA();
+    await policy.setGrants('pane-a', { workspaceId: 'ws-1', profileId: 'pa' }, (g) => ({ ...g, download: true }), policy.epoch());
+    const { router, relayGrant } = withPipedChrome(register(profiles, policy));
+    expect((await grantFrom(router, 'pty-a')).error).toContain("needs the user's consent for page scripts first");
+    await policy.setGrants('pane-a', { workspaceId: 'ws-1', profileId: 'pa' }, (g) => ({ ...g, evaluate: true }), policy.epoch());
+    const answer = await grantFrom(router, 'pty-a');
+    expect(answer.error).toBeUndefined();
+    expect(answer.result).toMatchObject({ profile: 'pa', protected: true });
+    expect(relayGrant).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unprotected pane needs no consent', async () => {
+    await protectPaneA();
+    const { router, relayGrant } = withPipedChrome(register(profiles, policy));
+    const answer = await grantFrom(router, 'pty-b');
+    expect(answer.error).toBeUndefined();
+    expect(answer.result).not.toHaveProperty('protected');
+    expect(relayGrant).toHaveBeenCalledTimes(1);
   });
 });

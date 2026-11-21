@@ -29,6 +29,8 @@ wmux browser cdp --json | node drive.mjs https://example.com
   token only into a pipe, never to a terminal: a terminal keeps what it shows.
 - **A protected profile reaches web pages only** (`http`, `https`, `data:` and
   blank pages), on the hosts its policy allows.
+- **On a protected pane, the same consent as for page scripts first.** When
+  wmux asks to run a script on that pane, the user chooses Always on this pane.
 - **No token while a tab in the workspace is paused or taken over.** Hand the
   tab back first.
 
