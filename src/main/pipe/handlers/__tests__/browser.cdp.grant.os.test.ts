@@ -4,11 +4,13 @@
 // router and claim registry; main's peer walk is stood in for (its own walk is
 // covered against a real process tree in browser.cdp.grant.walk.e2e.os.test).
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
-import { paneScriptGrantRefusal, registerBrowserRpc, relayLaneOf } from '../browser.rpc';
+import { paneScriptGrantRefusal, registerBrowserRpc, relayLaneOf, type BrowserPolicyWiring } from '../browser.rpc';
 import { setPaneOfPeer } from '../peerPidShadow';
 import type { RpcContext } from '../../../../shared/rpc';
 import { WMUX_CLI_CLIENT_NAME } from '../../../../shared/rpc';
@@ -17,7 +19,9 @@ import { CdpPipeRelay, type RelayGrant } from '../../../browser-session/CdpPipeR
 import { closeRelayClients, relayAdmissionRefusal, setPipeRelayForTests, setRelayAdmission } from '../../../browser-session/ChromeLauncher';
 import { wireRelayClientTriggers, type RelayClientTriggers } from '../../../browser-session/relayClientTriggers';
 import { FakeBrowser } from '../../../browser-session/__tests__/fakePipeBrowser';
-import { WorkspaceMirror } from '../../../workspace/WorkspaceMirror';
+import { WorkspaceMirror, getWorkspaceMirror, __resetWorkspaceMirrorForTest } from '../../../workspace/WorkspaceMirror';
+import { BrowserPolicyStore } from '../../../browser-session/BrowserPolicyStore';
+import { ChromeProfileStore } from '../../../browser-session/ChromeProfileStore';
 import {
   __resetWorkspaceClaimTrustForTesting,
   claimTokenForPane,
@@ -54,7 +58,7 @@ interface Rig {
   peer: { current: { workspaceId: string; ptyId: string } | null };
 }
 
-function rig(): Rig {
+function rig(browserPolicy?: BrowserPolicyWiring): Rig {
   const root = posix ? fs.mkdtempSync('/tmp/wmux-cg-') : null;
   if (root) fs.chmodSync(root, 0o700);
   const relay = new CdpPipeRelay({ roots: root ? [root] : [] });
@@ -100,7 +104,7 @@ function rig(): Rig {
     undefined,
     undefined,
     undefined,
-    undefined,
+    browserPolicy,
     { refusal: () => null, forget: vi.fn(), list: () => held },
   );
   const mirror = new WorkspaceMirror();
@@ -406,5 +410,79 @@ describe.runIf(onWindows)('browser.cdp.grant on Windows', () => {
     expect(answer.ok).toBe(false);
     expect(String(answer.error)).toContain("not available on Windows yet: wmux can't verify which process asked");
     expect(r.launcher.relayGrant).not.toHaveBeenCalled();
+  });
+});
+
+describe.skipIf(onWindows)('browser.cdp.grant on a protected pane', () => {
+  // Real policy and profile stores: pane-1 (pty-1) is bound to its own
+  // profile "pa" and protected; pane-2 (pty-2) in the same workspace is not.
+  let dir: string;
+  let policy: BrowserPolicyStore;
+
+  async function protectedRig(): Promise<Rig> {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cg-protected-'));
+    const profiles = new ChromeProfileStore(dir);
+    await profiles.create('pa');
+    await profiles.setPaneBinding('pane-1', 'ws-1', 'pa');
+    policy = new BrowserPolicyStore(dir);
+    await policy.write(
+      { workspaceId: 'ws-1', paneId: 'pane-1', profileId: 'pa', protected: true, hosts: { mode: 'allowlist', allow: ['a.test'], block: [] }, expectedEpoch: policy.epoch() },
+      'pa',
+      true,
+    );
+    getWorkspaceMirror().setSnapshot({
+      ts: Date.now(),
+      entries: [{ id: 'ws-1', name: 'one', ptyIds: ['pty-1', 'pty-2'] }],
+      fleets: [],
+      panePtys: { 'pty-1': 'pane-1', 'pty-2': 'pane-2' },
+    });
+    const r = rig({ store: policy, paneBindings: () => profiles.getPaneBindings() });
+    // The registry answers from the real profile store, as main's does.
+    const registry = r.registry as unknown as Record<'profileFor' | 'hasPaneBindings' | 'isPaneBound', ReturnType<typeof vi.fn>>;
+    registry.profileFor.mockImplementation((ws?: string, paneId?: string) => profiles.profileFor(ws, paneId));
+    registry.hasPaneBindings.mockImplementation((ws?: string) => profiles.hasPaneBindings(ws));
+    registry.isPaneBound.mockImplementation((profile: string) => profiles.isPaneBound(profile));
+    cleanup.push(() => {
+      __resetWorkspaceMirrorForTest();
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+    return r;
+  }
+
+  const consent = (grants: { evaluate?: boolean; download?: boolean }) =>
+    policy.setGrants('pane-1', { workspaceId: 'ws-1', profileId: 'pa' }, (g) => ({ ...g, ...grants }), policy.epoch());
+
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  it('refuses without the page-script consent, naming the step', async () => {
+    const r = await protectedRig();
+    const answer = await grantAs(r.router);
+    expect(answer.ok).toBe(false);
+    expect(answer.error).toContain('policy_denied');
+    expect(answer.error).toContain("needs the user's consent for page scripts first");
+    expect(answer.error).toContain('Always on this pane');
+    expect(r.launcher.relayGrant).not.toHaveBeenCalled();
+  });
+
+  it('grants once the pane has the page-script consent, and only that consent', async () => {
+    const r = await protectedRig();
+    await consent({ download: true });
+    expect((await grantAs(r.router)).error).toContain("needs the user's consent for page scripts first");
+    await consent({ evaluate: true });
+    const answer = await grantAs(r.router);
+    expect(answer.ok).toBe(true);
+    expect(answer.result).toMatchObject({ profile: 'pa', protected: true });
+    expect(r.launcher.relayGrant).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unprotected pane needs no consent', async () => {
+    const r = await protectedRig();
+    r.peer.current = { workspaceId: 'ws-1', ptyId: 'pty-2' };
+    const answer = await grantAs(r.router, { token: claimTokenForPane('ws-1', 'pty-2') });
+    expect(answer.ok).toBe(true);
+    expect(answer.result).not.toHaveProperty('protected');
+    expect(r.launcher.relayGrant).toHaveBeenCalledTimes(1);
   });
 });
