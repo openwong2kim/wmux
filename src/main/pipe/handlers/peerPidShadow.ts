@@ -163,6 +163,23 @@ export function claimHeldRefusal(
   return reason;
 }
 
+/** The pane main's walk finds for a connection's peer process (a2a.rpc's walkPeerPane), once registered. */
+let paneOfPeerWalk: ((ctx: RpcContext) => Promise<{ workspaceId: string; ptyId: string } | null>) | null = null;
+
+/** Register (or, null, clear) how main walks a connection's peer process to its pane. */
+export function setPaneOfPeer(walk: ((ctx: RpcContext) => Promise<{ workspaceId: string; ptyId: string } | null>) | null): void {
+  paneOfPeerWalk = walk;
+}
+
+/**
+ * The pane the process on the other end of `ctx`'s connection runs in, by
+ * main's own walk from its peer pid; null when there is none, or no walk is
+ * registered.
+ */
+export function paneOfPeer(ctx: RpcContext): Promise<{ workspaceId: string; ptyId: string } | null> {
+  return paneOfPeerWalk ? paneOfPeerWalk(ctx) : Promise.resolve(null);
+}
+
 /** main's startup peer read check (selfCheckPeerPid): null where the OS gives none. */
 export function notePeerReadCheck(verdict: string | null): void {
   if (verdict === null) peerRead = { state: 'not-read' };

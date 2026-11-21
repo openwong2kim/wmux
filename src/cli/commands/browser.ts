@@ -103,6 +103,9 @@ SUBCOMMANDS
   session stop                      Stop the active browser session
   session status                    Show active session status
   session list                      List available profiles
+  cdp --json                      A one-time connection for a script in this
+                                  pane, as JSON on stdout; pipe it into the
+                                  script (see BROWSER_CDP_HELP)
 
 EXAMPLES
   wmux browser navigate "https://example.com"
@@ -110,6 +113,26 @@ EXAMPLES
   wmux browser session start --profile login
   wmux browser session status
   wmux browser session list
+  wmux browser cdp --json | node drive.mjs
+`.trimStart();
+
+const BROWSER_CDP_HELP = `
+wmux browser cdp — a connection to this pane's Chrome for your own script
+
+USAGE
+  wmux browser cdp --json | <your script>
+
+Prints, as JSON on stdout, a one-time token (good for 30 seconds, one
+connection) and the endpoint to connect to this pane's Chrome with: its own
+Chrome profile, else its workspace's. Read it from stdin in the script; it is
+never printed to a terminal. The script sees only the tabs it opens.
+
+Needs:
+  - macOS or Linux (not yet Windows);
+  - a run from a wmux pane terminal;
+  - the Chrome backend, with that Chrome on the debugging pipe;
+  - target grants, opt-in for now: start wmux with WMUX_CDP_TARGET_GRANT=1.
+See docs/how-to/drive-chrome-from-a-script.md.
 `.trimStart();
 
 export async function handleBrowser(
@@ -243,6 +266,26 @@ export async function handleBrowser(
           console.error(`Unknown session action: "${action}". Use start, stop, status, or list.`);
           process.exit(1);
       }
+      break;
+    }
+
+    // ── browser cdp --json ───────────────────────────────────────────────────
+    case 'cdp': {
+      const help = rest.includes('--help') || rest.includes('-h');
+      if (help || !jsonMode) {
+        // Without --json there is nothing to print but how to use it.
+        process.stdout.write(BROWSER_CDP_HELP);
+        process.exit(help ? 0 : 1);
+      }
+      // A terminal keeps what it shows, and the token is good for its first use:
+      // it goes only into a pipe, to the script that reads it.
+      if (process.stdout.isTTY) {
+        console.error('Error: wmux browser cdp prints a one-time token; pipe it into your script, for example `wmux browser cdp --json | node drive.mjs`.');
+        process.exit(1);
+      }
+      await attestBrowserCaller();
+      response = await sendRequest('browser.cdp.grant', {});
+      printResult(response);
       break;
     }
 

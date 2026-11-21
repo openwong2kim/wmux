@@ -43,7 +43,8 @@ export interface RelayClientTriggers {
    * Before a relay token is minted for `identity`: why not, or null when it
    * may be. A grant naming a workspace needs that workspace open in the
    * latest push of the tree, and never closed since wiring (ids are never
-   * reused); with no push yet it is refused. A grant naming no workspace is
+   * reused); with no push yet it is refused. A pane-script grant also needs
+   * its pane in that workspace in that push. A grant naming no workspace is
    * not judged here.
    */
   admit(identity: CallerIdentity): string | null;
@@ -119,11 +120,15 @@ export function wireRelayClientTriggers(deps: RelayClientTriggerDeps): RelayClie
     },
     admit(identity) {
       const workspaceId = identity.workspaceId;
-      if (workspaceId === undefined) return null;
+      if (workspaceId === undefined) return paneScript(identity) ? 'a pane grant names no workspace' : null;
       if (closedWorkspaces.has(workspaceId)) return 'its workspace has closed';
       const entries = deps.mirror.getEntries();
       if (entries === null) return 'the open workspaces are not known yet';
-      return entries.some((entry) => entry.id === workspaceId) ? null : 'its workspace is not open';
+      const entry = entries.find((e) => e.id === workspaceId);
+      if (!entry) return 'its workspace is not open';
+      if (!paneScript(identity)) return null;
+      const ptyId = identity.ptyId;
+      return ptyId !== undefined && (entry.activePtyId === ptyId || (entry.ptyIds ?? []).includes(ptyId)) ? null : 'its pane is not open in that workspace';
     },
     dispose() {
       offPolicy();

@@ -358,6 +358,16 @@ export class CdpPipeRelay {
     return closed;
   }
 
+  /**
+   * Drop the unused tokens whose identity `match` takes, leaving connected
+   * clients alone. Returns how many went.
+   */
+  revokeTokens(match: (identity: CallerIdentity) => boolean): number {
+    const before = this.tokens.size;
+    this.forget((binding) => match(binding.identity));
+    return before - this.tokens.size;
+  }
+
   /** Disconnect every client, stop listening and remove the socket dir. */
   async close(): Promise<void> {
     if (this.closed) return;

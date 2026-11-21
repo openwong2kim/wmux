@@ -187,6 +187,15 @@ export interface CallerIdentity {
 /** The kinds of caller a relay grant is minted for (CallerIdentity.lane). */
 export type CallerLane = 'pane-script' | 'engine' | 'operator';
 
+/**
+ * What the TargetGrant judges a client by. A pane-script client is judged
+ * without its workspace: main's workspace records grant it nothing, so it
+ * reaches only what it created or opened.
+ */
+function grantIdentityOf(identity: Partial<CallerIdentity>): { workspaceId?: string; everyTarget?: boolean } {
+  return { workspaceId: identity.lane === 'pane-script' ? undefined : identity.workspaceId, everyTarget: identity.everyTarget };
+}
+
 /** A client as a filter or hook sees it. */
 export interface ClientRef { readonly kind: 'internal' | 'external'; readonly label: string; readonly identity?: CallerIdentity }
 
@@ -1220,7 +1229,7 @@ export class CdpPipeMux {
     if (this.ownership) {
       if (client.kind !== 'external') return true;
       const identity: Partial<CallerIdentity> = client.callerIdentity ?? {};
-      return this.ownership.decide(client, { workspaceId: identity.workspaceId, everyTarget: identity.everyTarget }, targetId) === 'grant';
+      return this.ownership.decide(client, grantIdentityOf(identity), targetId) === 'grant';
     }
     return this.opts.targetGrant?.(client, targetId) ?? true;
   }
@@ -1653,7 +1662,7 @@ export class CdpPipeMux {
           const identity: Partial<CallerIdentity> = owner.callerIdentity ?? {};
           // A popup is decided at once by its opener; only a page with none may be a create's.
           const mayHold = !final && !this.ownership.hasOpener(target) && this.creating(owner);
-          verdict = this.ownership.decide(owner, { workspaceId: identity.workspaceId, everyTarget: identity.everyTarget }, target, mayHold);
+          verdict = this.ownership.decide(owner, grantIdentityOf(identity), target, mayHold);
           if (gated && !childAttach && frame.method !== 'Target.targetDestroyed' && !this.urlAllowed(target)) verdict = 'deny';
         } else {
           // A page's end is told to whoever heard of it, whatever its URL was.
