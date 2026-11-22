@@ -265,18 +265,26 @@ function listen(
   // releases it, so a page logging large objects would pin them all in the
   // renderer. Console arguments and thrown values are wrapped in the 'console'
   // object group (per session: Playwright's own handles are untouched), and
-  // nothing here reads them, so the group is released after each burst. One
-  // release in flight covers every event that arrived before its reply.
+  // nothing here reads them, so the group is released after each burst: one
+  // release in flight, and one more after it when objects arrived meanwhile
+  // (a relay need not keep events and replies in the renderer's order).
   let releasing = false;
-  const release = (objects: Array<CdpRemoteObject | undefined> | undefined) => {
-    if (releasing || !objects?.some((o) => o?.objectId !== undefined)) return;
+  let stale = false;
+  const sendRelease = () => {
     releasing = true;
+    stale = false;
     session
       .send('Runtime.releaseObjectGroup', { objectGroup: 'console' })
       .catch(() => undefined)
       .then(() => {
         releasing = false;
+        if (stale) sendRelease();
       });
+  };
+  const release = (objects: Array<CdpRemoteObject | undefined> | undefined) => {
+    if (!objects?.some((o) => o?.objectId !== undefined)) return;
+    if (releasing) stale = true;
+    else sendRelease();
   };
   session.on('Runtime.consoleAPICalled', (p: CdpConsoleCall) => {
     dispatch(state, 'onConsoleCall', p);

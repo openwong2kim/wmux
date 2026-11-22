@@ -352,12 +352,19 @@ describe('attachPageCapture — console from the CDP session, not Playwright han
     expect(releases()).toHaveLength(0);
 
     const big = { type: 'object', objectId: 'big', description: 'Object', preview: { properties: [] } };
-    for (let i = 0; i < 50; i++) page.net.console('log', big);
-    expect(releases()).toEqual([{ method: 'Runtime.releaseObjectGroup', params: { objectGroup: 'console' } }]);
-
-    await tick();
     page.net.console('log', big);
+    expect(releases()).toEqual([{ method: 'Runtime.releaseObjectGroup', params: { objectGroup: 'console' } }]);
+    await tick();
+    // A single event, settled: one release and no follow-up.
+    expect(releases()).toHaveLength(1);
+
+    // A burst while one is in flight: one more release once it answers, not 50.
+    for (let i = 0; i < 50; i++) page.net.console('log', big);
     expect(releases()).toHaveLength(2);
+    await tick();
+    expect(releases()).toHaveLength(3);
+    await tick();
+    expect(releases()).toHaveLength(3);
   });
 });
 
