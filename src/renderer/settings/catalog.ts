@@ -119,6 +119,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'autoupdate', tab: 'general', labelKey: 'settings.autoUpdate', descKey: 'settings.autoUpdateDesc', synonyms: 'update upgrade version' },
   { id: 'checkupdate', tab: 'general', labelKey: 'settings.checkUpdate', synonyms: 'update now latest release' },
   { id: 'secretguard', tab: 'general', labelKey: 'settings.secretGuard', descKey: 'settings.secretGuardDesc', synonyms: 'git secret password key token env commit push pr 비밀번호 키' },
+  { id: 'siblingcollision', tab: 'general', labelKey: 'settings.siblingCollision', descKey: 'settings.siblingCollisionDesc', synonyms: 'git worktree sibling conflict merge same file fan-out 충돌 워크트리 같은 파일 머지' },
+  { id: 'siblingcollisioninterval', tab: 'general', labelKey: 'settings.siblingCollisionInterval', descKey: 'settings.siblingCollisionIntervalDesc', synonyms: 'git worktree conflict check interval minutes 충돌 확인 간격 분' },
   { id: 'startup', tab: 'general', labelKey: 'settings.startup', synonyms: 'autostart boot login launch 시작', platform: ['win32', 'darwin'] },
   { id: 'sleepprevention', tab: 'general', labelKey: 'settings.sleepPrevention', descKey: 'settings.sleepPreventionDesc', synonyms: 'sleep awake suspend standby power caffeine 절전 잠자기 대기 uśpienie czuwanie 睡眠 休眠' },
   { id: 'tutorial', tab: 'general', labelKey: 'settings.restartTutorial', descKey: 'settings.restartTutorialDesc', synonyms: 'onboarding tour help 튜토리얼' },

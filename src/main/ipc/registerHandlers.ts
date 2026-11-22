@@ -38,6 +38,7 @@ import { registerFsHandlers } from './handlers/fs.handler';
 import { registerToolbarHandlers } from './handlers/toolbar.handler';
 import { registerDiffHandlers } from './handlers/diff.handler';
 import { registerWorktreeHandlers } from './handlers/worktree.handler';
+import { registerSiblingCollisionHandlers } from './handlers/siblingCollision.handler';
 import { registerGithubHandlers } from './handlers/github.handler';
 import { registerPrReviewHandlers } from './handlers/prReview.handler';
 import { registerWorkLinkHandlers } from './handlers/workLink.handler';
@@ -250,6 +251,7 @@ export function registerAllHandlers(
   const cleanupDiff = registerDiffHandlers();
   // Deck Git 탭 — worktree list/add/remove. git 전용(데몬 무관) — 항상 등록.
   const cleanupWorktree = registerWorktreeHandlers();
+  const cleanupSiblingCollision = registerSiblingCollisionHandlers(getWindow);
   // Deck Git 탭 PR 섹션 — gh CLI 기반(미설치/미인증은 fail-closed 안내).
   const cleanupGithub = registerGithubHandlers();
   // PR review and CI on the Git page's detail pane.
@@ -644,6 +646,7 @@ export function registerAllHandlers(
     cleanupToolbar();
     cleanupDiff();
     cleanupWorktree();
+    cleanupSiblingCollision();
     cleanupGithub();
     cleanupPrReview();
     cleanupWorkLinks();

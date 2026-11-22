@@ -119,6 +119,7 @@ import UiButton from '../ui/Button';
 import Switch from '../ui/Switch';
 import Checkbox from '../ui/Checkbox';
 import Select from '../ui/Select';
+import { SIBLING_COLLISION_INTERVAL_CHOICES_MIN } from '../../../shared/siblingCollision';
 import Input from '../ui/Input';
 import SegmentedControl from '../ui/SegmentedControl';
 import { resolveAttentionRemindMs } from '../Sidebar/attentionBlink';
@@ -1672,6 +1673,10 @@ function TabGeneral() {
     storeSetSecretGuard(enabled);
     window.electronAPI.settings.setSecretGuardEnabled(enabled);
   };
+  const siblingCollisionWatch = useStore((s) => s.siblingCollisionWatch);
+  const setSiblingCollisionWatch = useStore((s) => s.setSiblingCollisionWatch);
+  const siblingCollisionIntervalMin = useStore((s) => s.siblingCollisionIntervalMin);
+  const setSiblingCollisionIntervalMin = useStore((s) => s.setSiblingCollisionIntervalMin);
 
   return (
     <div className="settings-page">
@@ -1711,6 +1716,18 @@ function TabGeneral() {
         </SettingRow>
         <SecretHookSetting />
         <CredentialEnvSetting />
+        <SettingRow id="siblingcollision" label={t('settings.siblingCollision')} description={t('settings.siblingCollisionDesc')}>
+          <Toggle checked={siblingCollisionWatch} onChange={setSiblingCollisionWatch} label={t('settings.siblingCollision')} />
+        </SettingRow>
+        <SettingRow id="siblingcollisioninterval" label={t('settings.siblingCollisionInterval')} description={t('settings.siblingCollisionIntervalDesc')}>
+          <SettingSelect
+            label={t('settings.siblingCollisionInterval')}
+            value={String(siblingCollisionIntervalMin)}
+            disabled={!siblingCollisionWatch}
+            onChange={(v) => setSiblingCollisionIntervalMin(Number(v))}
+            options={SIBLING_COLLISION_INTERVAL_CHOICES_MIN.map((m) => ({ value: String(m), label: t('settings.siblingCollisionEvery', { minutes: m }) }))}
+          />
+        </SettingRow>
       </SettingsSection>
 
       <SettingsSection title={t('settings.sectionSetupReset')}>
