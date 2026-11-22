@@ -7,21 +7,29 @@ import {
   clearConsoleCapture,
   clearNetworkCapture,
   ensurePageCapture,
+  readEntryBody,
 } from '../pageCapture';
+import { NETWORK_BUFFER } from '../pageNetwork';
+import { fakeNetwork, type FakeNetwork } from './fakeNetworkSession';
 
-// A Page stand-in: the capture module only ever calls url(), mainFrame(), on()
-// and off(), and reads the event objects Playwright hands it.
+// A Page stand-in: the capture module calls url(), mainFrame(), on() and off(),
+// and opens its network session through context().newCDPSession (pageNetwork).
 interface FakePage extends EventEmitter {
   url: () => string;
   mainFrame: () => object;
+  context: () => { newCDPSession: () => Promise<unknown> };
   __mainFrame: object;
+  net: FakeNetwork;
 }
 
 function makePage(url = 'about:blank'): FakePage {
   const page = new EventEmitter() as FakePage;
+  const { newCDPSession, net } = fakeNetwork();
   page.url = () => url;
   page.__mainFrame = { name: 'main' };
   page.mainFrame = () => page.__mainFrame;
+  page.context = () => ({ newCDPSession });
+  page.net = net;
   return page;
 }
 
@@ -31,36 +39,6 @@ function asPage(page: FakePage): Page {
 
 function consoleMessage(level: string, text: string) {
   return { type: () => level, text: () => text };
-}
-
-function request(url: string, method = 'GET') {
-  return { url: () => url, method: () => method };
-}
-
-function response(url: string, status: number, body?: string, contentType = 'application/json') {
-  return {
-    url: () => url,
-    status: () => status,
-    headers: () => ({ 'content-type': contentType }),
-    text: async () => body ?? '',
-  };
-}
-
-/** A response whose body arrives only when the returned `settle` is called. */
-function deferredResponse(url: string, contentType = 'application/json') {
-  let settle: (body: string) => void = () => undefined;
-  const body = new Promise<string>((resolve) => {
-    settle = resolve;
-  });
-  return {
-    response: {
-      url: () => url,
-      status: () => 200,
-      headers: () => ({ 'content-type': contentType }),
-      text: () => body,
-    },
-    settle: (value: string) => settle(value),
-  };
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -104,13 +82,14 @@ describe('attachPageCapture', () => {
     expect(state.console[state.console.length - 1].text).toBe(`msg-${overflow - 1}`);
   });
 
-  it('keeps the newest entries when the network ring overflows', () => {
+  it('keeps the newest entries when the network ring overflows', async () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
+    await page.net.ready();
     const overflow = CAPTURE_BOUNDS.MAX_CAPTURE_ENTRIES + 3;
 
     for (let i = 0; i < overflow; i++) {
-      page.emit('request', request(`https://x.test/${i}`));
+      page.net.request(`https://x.test/${i}`);
     }
 
     expect(state.network).toHaveLength(CAPTURE_BOUNDS.MAX_CAPTURE_ENTRIES);
@@ -128,35 +107,65 @@ describe('attachPageCapture', () => {
     expect(state.console[0].text).toContain('[truncated');
   });
 
-  it('pairs a response with its request and retains a textual body', async () => {
+  it('pairs a response with its request and copies no body until one is asked for', async () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
+    await page.net.ready();
 
-    page.emit('request', request('https://x.test/api', 'POST'));
-    page.emit('response', response('https://x.test/api', 201, '{"ok":true}'));
+    page.net.exchange('https://x.test/api', 201, { method: 'POST', body: '{"ok":true}' });
     await tick();
 
-    expect(state.network[0]).toMatchObject({ method: 'POST', status: 201 });
-    expect(state.network[0].response?.body).toBe('{"ok":true}');
+    expect(state.network[0]).toMatchObject({ method: 'POST', status: 201, bodyReadable: true });
+    expect(JSON.stringify(state.network[0])).not.toContain('"ok"');
+    expect(page.net.sent.some((c) => c.method === 'Network.getResponseBody')).toBe(false);
+
+    await expect(readEntryBody(asPage(page), state.network[0])).resolves.toEqual({ body: '{"ok":true}' });
   });
 
-  it('drops the oldest retained bodies once the total body budget is exceeded', async () => {
+  it('bounds the browser-side body buffer when it enables the Network domain', async () => {
+    const page = makePage();
+    attachPageCapture(asPage(page));
+    await page.net.ready();
+
+    expect(page.net.sent.find((c) => c.method === 'Network.enable')?.params).toEqual(NETWORK_BUFFER);
+  });
+
+  it('answers "gone" for a body the browser no longer holds', async () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
-    const body = 'y'.repeat(CAPTURE_BOUNDS.MAX_RESPONSE_BODY_BYTES);
-    const count = Math.ceil(CAPTURE_BOUNDS.MAX_TOTAL_BODY_BYTES / body.length) + 2;
+    await page.net.ready();
 
-    for (let i = 0; i < count; i++) {
-      page.emit('request', request(`https://x.test/big/${i}`));
-      page.emit('response', response(`https://x.test/big/${i}`, 200, body));
-      await tick();
-    }
+    const id = page.net.exchange('https://x.test/api', 200, { body: '{}' });
+    page.net.dropBody(id);
 
-    expect(state.totalBodyBytes).toBeLessThanOrEqual(CAPTURE_BOUNDS.MAX_TOTAL_BODY_BYTES);
-    // Metadata survives eviction — only the payload is dropped.
-    expect(state.network).toHaveLength(count);
-    expect(state.network[0].response?.body).toBeUndefined();
-    expect(state.network[count - 1].response?.body).toBeDefined();
+    await expect(readEntryBody(asPage(page), state.network[0])).resolves.toEqual({ unavailable: 'gone' });
+  });
+
+  it('caps one large body in the answer', async () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+    await page.net.ready();
+
+    page.net.exchange('https://x.test/big', 200, { body: 'y'.repeat(CAPTURE_BOUNDS.MAX_RESPONSE_BODY_BYTES * 2) });
+
+    const answer = await readEntryBody(asPage(page), state.network[0]);
+    expect('body' in answer && answer.body.length).toBeLessThan(CAPTURE_BOUNDS.MAX_RESPONSE_BODY_BYTES + 64);
+    expect('body' in answer && answer.body).toContain('[truncated');
+  });
+
+  it('does not offer the body of a request still loading, a redirect hop, or a binary response', async () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+    await page.net.ready();
+
+    const loading = page.net.request('https://x.test/slow');
+    page.net.respond(loading, 200, { body: '{}' });
+    const moved = page.net.request('https://x.test/old');
+    page.net.respond(moved, 302, { contentType: 'text/html', body: 'moved' });
+    page.net.finish(moved);
+    page.net.exchange('https://x.test/logo.png', 200, { contentType: 'image/png', body: 'png' });
+
+    expect(state.network.map((e) => e.bodyReadable ?? false)).toEqual([false, false, false]);
   });
 
   it('reports a pre-attach gap when it starts on a page that is already loaded', () => {
@@ -168,13 +177,14 @@ describe('attachPageCapture', () => {
     expect(late.networkWindow.missedBefore).toBe(true);
   });
 
-  it('restarts only the cleared buffer window', () => {
+  it('restarts only the cleared buffer window', async () => {
     const page = makePage('https://x.test/already-here');
     const state = attachPageCapture(asPage(page));
+    await page.net.ready();
     const networkWindowBefore = state.networkWindow;
 
     page.emit('console', consoleMessage('log', 'before clear'));
-    page.emit('request', request('https://x.test/keep'));
+    page.net.request('https://x.test/keep');
     clearConsoleCapture(state);
 
     expect(state.console).toEqual([]);
@@ -189,7 +199,6 @@ describe('attachPageCapture', () => {
 
     clearNetworkCapture(state);
     expect(state.network).toEqual([]);
-    expect(state.totalBodyBytes).toBe(0);
     expect(state.networkWindow.missedBefore).toBe(false);
   });
 
@@ -210,7 +219,6 @@ describe('attachPageCapture', () => {
     attachPageCapture(asPage(page));
     page.emit('close');
     expect(page.listenerCount('console')).toBe(0);
-    expect(page.listenerCount('response')).toBe(0);
     expect(page.listenerCount('close')).toBe(0);
 
     // Same Page object resolved again: the WeakMap miss re-attaches, and a
@@ -260,66 +268,42 @@ describe('attachPageCapture — uncaught exceptions (#1081)', () => {
   });
 });
 
-describe('attachPageCapture — late response bodies cannot leak the budget (#1081)', () => {
-  it('ignores a body that arrives after its entry left the ring', async () => {
+describe('attachPageCapture — the network session lives as long as the page', () => {
+  it('detaches its CDP session when the page closes', async () => {
     const page = makePage();
-    const state = attachPageCapture(asPage(page));
+    attachPageCapture(asPage(page));
+    await page.net.ready();
+    expect(page.net.detached()).toBe(false);
 
-    const { response: pending, settle } = deferredResponse('https://x.test/slow');
-    page.emit('request', request('https://x.test/slow'));
-    page.emit('response', pending);
-
-    // Push the entry out of the ring while text() is still in flight.
-    for (let i = 0; i < CAPTURE_BOUNDS.MAX_CAPTURE_ENTRIES; i++) {
-      page.emit('request', request(`https://x.test/flood/${i}`));
-    }
-    expect(state.network.some((e) => e.url.includes('/slow'))).toBe(false);
-
-    settle('a'.repeat(1000));
+    page.emit('close');
     await tick();
 
-    // Charging a dead entry would leak the budget permanently: it is no longer
-    // reachable from state.network, so evictBodies could never reclaim it.
-    expect(state.totalBodyBytes).toBe(0);
+    expect(page.net.detached()).toBe(true);
   });
 
-  it('ignores a body that arrives after clear:true replaced the buffer', async () => {
+  it('a response after clear:true touches nothing', async () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
+    await page.net.ready();
 
-    const { response: pending, settle } = deferredResponse('https://x.test/slow');
-    page.emit('request', request('https://x.test/slow'));
-    page.emit('response', pending);
-
+    const id = page.net.request('https://x.test/slow');
     clearNetworkCapture(state);
-    settle('b'.repeat(1000));
-    await tick();
+    page.net.respond(id, 200);
+    page.net.finish(id);
 
-    expect(state.totalBodyBytes).toBe(0);
     expect(state.network).toEqual([]);
+    expect(state.byRequestId.size).toBe(0);
   });
 
-  it('does not read the body of a stream that never ends', async () => {
+  it('lists a stream without offering its body', async () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
-    let readAttempted = false;
+    await page.net.ready();
 
-    page.emit('request', request('https://x.test/events'));
-    page.emit('response', {
-      url: () => 'https://x.test/events',
-      status: () => 200,
-      headers: () => ({ 'content-type': 'text/event-stream; charset=utf-8' }),
-      text: () => {
-        readAttempted = true;
-        // A real SSE stream settles only when the stream closes.
-        return new Promise<string>(() => undefined);
-      },
-    });
-    await tick();
+    page.net.exchange('https://x.test/events', 200, { contentType: 'text/event-stream; charset=utf-8', body: 'data: 1' });
 
-    expect(readAttempted).toBe(false);
-    // The request itself is still listed — only its body is skipped.
     expect(state.network[0]).toMatchObject({ url: 'https://x.test/events', status: 200 });
+    expect(state.network[0].bodyReadable).toBeUndefined();
   });
 });
 

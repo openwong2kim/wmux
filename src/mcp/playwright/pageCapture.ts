@@ -1,4 +1,5 @@
-import type { ConsoleMessage, Frame, Page, Request, Response } from 'playwright-core';
+import type { ConsoleMessage, Frame, Page } from 'playwright-core';
+import { fetchResponseBody, tapPageNetwork, type NetRequest, type NetResponse } from './pageNetwork';
 
 // ---------------------------------------------------------------------------
 // Engine-side console / network capture for the Playwright transport (#1081).
@@ -24,10 +25,14 @@ export interface NetworkEntry {
   status?: number;
   response?: {
     headers: Record<string, string>;
-    body?: string;
   };
-  /** Retained-body size, tracked so eviction can keep the budget accurate. */
-  bodyBytes?: number;
+  /**
+   * The CDP request id. The body is never copied here: browser_response_body
+   * asks Chrome for it by this id when it is called (pageNetwork).
+   */
+  requestId?: string;
+  /** Loaded in full with a textual, non-streaming body, so Chrome can be asked for it. */
+  bodyReadable?: boolean;
 }
 
 /**
@@ -47,10 +52,9 @@ export interface PageCaptureState {
    *  claim the network buffer only goes back that far. */
   consoleWindow: CaptureWindow;
   networkWindow: CaptureWindow;
-  totalBodyBytes: number;
   /**
    * Requests that have started and not yet finished or failed, keyed by the
-   * Request object with the ms timestamp of their start.
+   * CDP request id with the ms timestamp of their start.
    *
    * Deliberately NOT a counter: a counter that only ever increments on
    * 'request' leaks on every aborted/failed load, and a page that lives for an
@@ -59,7 +63,9 @@ export interface PageCaptureState {
    * (countRecentPendingRequests) so a hung request cannot pin the signal on
    * forever either.
    */
-  pendingRequests: Map<Request, number>;
+  pendingRequests: Map<string, number>;
+  /** The newest entry for each request id still in the ring, for its response and finish. */
+  byRequestId: Map<string, NetworkEntry>;
 }
 
 // Bounds. Eager attachment means these buffers now fill on every page an agent
@@ -70,10 +76,10 @@ const MAX_CAPTURE_ENTRIES = 1000;
 // megabytes on its own. Cap both so the ring's worst case is arithmetic.
 const MAX_CONSOLE_TEXT_CHARS = 4096;
 const MAX_URL_CHARS = 2048;
-// Cap each retained response body so a single large payload cannot pin
-// unbounded RAM, and cap the total so 1000 entries cannot pin 1000 of them.
+// Cap the body browser_response_body hands back. Bodies are not retained
+// here at all (see pageNetwork), so this bounds one answer, not a buffer.
 const MAX_RESPONSE_BODY_BYTES = 256 * 1024;
-const MAX_TOTAL_BODY_BYTES = 4 * 1024 * 1024;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 // Unsettled requests tracked at once (insertion-ordered eviction).
 const MAX_PENDING_REQUESTS = 500;
 
@@ -112,33 +118,17 @@ function pushNetwork(state: PageCaptureState, entry: NetworkEntry): void {
   while (state.network.length > MAX_CAPTURE_ENTRIES) {
     const old = state.network.shift();
     if (!old) break;
-    if (old.response?.body !== undefined) state.totalBodyBytes -= old.bodyBytes ?? 0;
-  }
-}
-
-/** Drop the oldest retained bodies (keeping their metadata) until under budget. */
-function evictBodies(state: PageCaptureState): void {
-  if (state.totalBodyBytes <= MAX_TOTAL_BODY_BYTES) return;
-  for (const entry of state.network) {
-    if (state.totalBodyBytes <= MAX_TOTAL_BODY_BYTES) break;
-    if (entry.response?.body !== undefined) {
-      state.totalBodyBytes -= entry.bodyBytes ?? 0;
-      entry.bodyBytes = undefined;
-      entry.response.body = undefined;
+    if (old.requestId !== undefined && state.byRequestId.get(old.requestId) === old) {
+      state.byRequestId.delete(old.requestId);
     }
   }
 }
 
 /**
- * Whether a response body is worth reading into the buffer.
+ * Whether browser_response_body answers with a response's body.
  *
- * A stream is textual but never ENDS: response.text() on an SSE or
- * multipart/x-mixed-replace response settles only when the stream closes, so
- * the pending promise pins the entry, the state and the page for as long as
- * the stream runs. That was survivable while capture started on the first
- * read; eager attachment widens the target from "a page someone called
- * browser_network on" to "every page an agent touches", so streams are
- * excluded rather than gambled on.
+ * Text only, as before: the tool returns text. A stream is textual but never
+ * ends, so what Chrome holds of one is a fragment, not the response.
  */
 function isRetainableTextBody(contentType: string): boolean {
   const ct = contentType.toLowerCase();
@@ -188,8 +178,8 @@ export function attachPageCapture(page: Page): PageCaptureState {
     network: [],
     consoleWindow: { ...window },
     networkWindow: { ...window },
-    totalBodyBytes: 0,
-    pendingRequests: new Map<Request, number>(),
+    pendingRequests: new Map<string, number>(),
+    byRequestId: new Map<string, NetworkEntry>(),
   };
   states.set(page, state);
 
@@ -224,86 +214,58 @@ export function attachPageCapture(page: Page): PageCaptureState {
     state.networkWindow.missedBefore = false;
   };
 
-  const onRequest = (request: Request) => {
+  const onRequest = (request: NetRequest) => {
     // Bound the map the same way the ring bounds entries: a page that starts
     // thousands of never-settling requests must not pin them all.
-    if (state.pendingRequests.size >= MAX_PENDING_REQUESTS) {
+    if (!state.pendingRequests.has(request.requestId) && state.pendingRequests.size >= MAX_PENDING_REQUESTS) {
       const oldest = state.pendingRequests.keys().next();
       if (!oldest.done) state.pendingRequests.delete(oldest.value);
     }
-    state.pendingRequests.set(request, Date.now());
-    pushNetwork(state, {
-      url: truncate(request.url(), MAX_URL_CHARS),
-      method: request.method(),
-    });
+    state.pendingRequests.set(request.requestId, Date.now());
+    const entry: NetworkEntry = {
+      url: truncate(request.url, MAX_URL_CHARS),
+      method: request.method,
+      requestId: request.requestId,
+    };
+    pushNetwork(state, entry);
+    state.byRequestId.set(request.requestId, entry);
   };
 
-  // Settlement. Both events must clear the entry: 'requestfinished' alone
-  // leaves every blocked/aborted request pending forever.
-  const onRequestSettled = (request: Request) => {
-    state.pendingRequests.delete(request);
+  const onResponse = (response: NetResponse) => {
+    const entry = state.byRequestId.get(response.requestId);
+    if (!entry) return;
+    entry.status = response.status;
+    entry.response = { headers: response.headers };
   };
 
-  const onResponse = (response: Response) => {
-    const url = truncate(response.url(), MAX_URL_CHARS);
-    // Find the matching request entry (last one with same URL and no status yet)
-    for (let i = state.network.length - 1; i >= 0; i--) {
-      if (state.network[i].url !== url || state.network[i].status !== undefined) continue;
-      // Capture a stable reference to the entry object: the capture array is a
-      // capped ring (pushNetwork), so positional indices can shift while the
-      // async response.text() below is in flight.
-      const entry = state.network[i];
-      entry.status = response.status();
-      const headers = response.headers();
-      entry.response = { headers };
-      // Only eagerly capture body for text-based, non-streaming content types
-      if (isRetainableTextBody(headers['content-type'] ?? '')) {
-        response
-          .text()
-          .then((body) => {
-            // Three ways this entry can be dead by now, and charging its bytes
-            // to the budget in any of them leaks the budget permanently: the
-            // state was dropped on close, the entry was shifted out of the
-            // ring, or clear:true replaced the array. `includes` covers the
-            // last two — a dead entry is not reachable from state.network, so
-            // evictBodies could never reclaim its bytes either, and the budget
-            // would drift until eviction started dropping LIVE bodies and
-            // browser_response_body answered "not found" forever.
-            if (!entry.response || states.get(page) !== state) return;
-            if (!state.network.includes(entry)) return;
-            entry.response.body =
-              body.length > MAX_RESPONSE_BODY_BYTES
-                ? body.slice(0, MAX_RESPONSE_BODY_BYTES) +
-                  `\n... [truncated ${body.length - MAX_RESPONSE_BODY_BYTES} chars]`
-                : body;
-            entry.bodyBytes = entry.response.body.length;
-            state.totalBodyBytes += entry.bodyBytes;
-            evictBodies(state);
-          })
-          .catch(() => {
-            // Body may not be available for all responses
-          });
-      }
-      break;
+  // Settlement. Both must clear the entry: finishing alone leaves every
+  // blocked/aborted request pending forever.
+  const onFinished = (requestId: string) => {
+    state.pendingRequests.delete(requestId);
+    const entry = state.byRequestId.get(requestId);
+    // A redirect hop also finishes here, and has no body of its own.
+    if (entry && !REDIRECT_STATUSES.has(entry.status ?? 0)
+      && isRetainableTextBody(entry.response?.headers['content-type'] ?? '')) {
+      entry.bodyReadable = true;
     }
   };
+  const onFailed = (requestId: string) => {
+    state.pendingRequests.delete(requestId);
+  };
+  const tap = tapPageNetwork(page, { onRequest, onResponse, onFinished, onFailed });
 
   // The WeakMap would reclaim the buffers once the Page is GC'd, but the engine
   // may retain the Page object past close, so drop them on 'close' to free the
-  // (potentially large) retained response bodies promptly. The listeners come
-  // off with them: leaving them attached would double-record everything if the
-  // same Page object is ever resolved again (the WeakMap miss re-attaches), and
-  // would keep the old state — retained bodies included — alive through the
-  // closures.
+  // buffers promptly. The listeners come off with them: leaving them attached
+  // would double-record everything if the same Page object is ever resolved
+  // again (the WeakMap miss re-attaches), and would keep the old state alive
+  // through the closures.
   const onClose = () => {
     states.delete(page);
     page.off('console', onConsole);
     page.off('pageerror', onPageError);
     page.off('framenavigated', onFrameNavigated);
-    page.off('request', onRequest);
-    page.off('requestfinished', onRequestSettled);
-    page.off('requestfailed', onRequestSettled);
-    page.off('response', onResponse);
+    tap.off();
     page.off('close', onClose);
   };
 
@@ -311,10 +273,6 @@ export function attachPageCapture(page: Page): PageCaptureState {
   page.on('console', onConsole);
   page.on('pageerror', onPageError);
   page.on('framenavigated', onFrameNavigated);
-  page.on('request', onRequest);
-  page.on('requestfinished', onRequestSettled);
-  page.on('requestfailed', onRequestSettled);
-  page.on('response', onResponse);
 
   return state;
 }
@@ -334,10 +292,10 @@ export function clearConsoleCapture(state: PageCaptureState): void {
   state.consoleWindow = { since: Date.now(), missedBefore: false };
 }
 
-/** Reset the network buffer and its retained bodies (browser_network clear:true). */
+/** Reset the network buffer (browser_network clear:true). */
 export function clearNetworkCapture(state: PageCaptureState): void {
   state.network = [];
-  state.totalBodyBytes = 0;
+  state.byRequestId.clear();
   state.pendingRequests.clear();
   state.networkWindow = { since: Date.now(), missedBefore: false };
 }
@@ -370,7 +328,7 @@ export function countRecentPendingRequests(
  * Recent pending count for a page WITHOUT attaching capture to it.
  *
  * The snapshot readiness hint is a nice-to-have; attaching a capture buffer
- * (and its retained response bodies) merely to answer it would be a real cost
+ * (and its network session) merely to answer it would be a real cost
  * charged for a hint. Pages with no capture — every page on the builtin
  * backend — simply report 0, which the hint treats as "no extra signal".
  */
@@ -379,12 +337,31 @@ export function peekRecentPendingRequests(page: Page, now = Date.now()): number 
   return state ? countRecentPendingRequests(state, now) : 0;
 }
 
+/** What browser_response_body gets for one captured entry. */
+export type EntryBody = { body: string } | { unavailable: 'not-readable' | 'gone' };
+
+/**
+ * Fetch a captured entry's body from Chrome, now. Nothing is cached: the next
+ * call asks again, so a body read once is not kept alive by having been read.
+ */
+export async function readEntryBody(page: Page, entry: NetworkEntry): Promise<EntryBody> {
+  if (!entry.bodyReadable || entry.requestId === undefined) return { unavailable: 'not-readable' };
+  const result = await fetchResponseBody(page, entry.requestId);
+  if ('unavailable' in result) return { unavailable: 'gone' };
+  const body = result.body;
+  return {
+    body:
+      body.length > MAX_RESPONSE_BODY_BYTES
+        ? body.slice(0, MAX_RESPONSE_BODY_BYTES) + `\n... [truncated ${body.length - MAX_RESPONSE_BODY_BYTES} chars]`
+        : body,
+  };
+}
+
 /** Bounds, exported so tests assert the ring's contract rather than assume it. */
 export const CAPTURE_BOUNDS = {
   MAX_CAPTURE_ENTRIES,
   MAX_CONSOLE_TEXT_CHARS,
   MAX_URL_CHARS,
   MAX_RESPONSE_BODY_BYTES,
-  MAX_TOTAL_BODY_BYTES,
   MAX_PENDING_REQUESTS,
 } as const;

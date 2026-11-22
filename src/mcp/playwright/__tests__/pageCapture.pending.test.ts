@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { fakeNetwork } from './fakeNetworkSession';
 import {
   PENDING_RECENCY_MS,
   attachPageCapture,
@@ -12,8 +13,11 @@ type Handler = (arg: unknown) => void;
 /** Minimal Page double: records listeners so the test can fire them. */
 function makePage() {
   const handlers = new Map<string, Set<Handler>>();
+  const { newCDPSession, net } = fakeNetwork();
   return {
     handlers,
+    net,
+    context: () => ({ newCDPSession }),
     on(event: string, fn: Handler) {
       const set = handlers.get(event) ?? new Set<Handler>();
       set.add(fn);
@@ -31,38 +35,32 @@ function makePage() {
   };
 }
 
-function request(url: string) {
-  return { url: () => url, method: () => 'GET' };
-}
-
 describe('pageCapture pending-request tracking', () => {
-  it('counts a started request and drops it on requestfinished', () => {
+  it('counts a started request and drops it when it finishes', async () => {
     const page = makePage();
     const state = attachPageCapture(page as never);
-    const req = request('https://example.test/a.json');
-
-    page.emit('request', req);
+    await page.net.ready();
+    const req = page.net.request('https://example.test/a.json');
     expect(countRecentPendingRequests(state)).toBe(1);
 
-    page.emit('requestfinished', req);
+    page.net.finish(req);
     expect(countRecentPendingRequests(state)).toBe(0);
   });
 
-  it('drops it on requestfailed too — a counter that only settles on success leaks', () => {
+  it('drops it on a failure too — a counter that only settles on success leaks', async () => {
     const page = makePage();
     const state = attachPageCapture(page as never);
-    const req = request('https://example.test/blocked.js');
-
-    page.emit('request', req);
-    page.emit('requestfailed', req);
+    await page.net.ready();
+    const req = page.net.request('https://example.test/blocked.js');
+    page.net.fail(req);
     expect(countRecentPendingRequests(state)).toBe(0);
   });
 
-  it('excludes a request older than the recency window', () => {
+  it('excludes a request older than the recency window', async () => {
     const page = makePage();
     const state = attachPageCapture(page as never);
-    const stream = request('https://example.test/events');
-    page.emit('request', stream);
+    await page.net.ready();
+    page.net.request('https://example.test/events');
 
     const later = Date.now() + PENDING_RECENCY_MS + 1;
     expect(countRecentPendingRequests(state, later)).toBe(0);
@@ -70,10 +68,32 @@ describe('pageCapture pending-request tracking', () => {
     expect(state.pendingRequests.size).toBe(1);
   });
 
-  it('clears pending state with the network buffer', () => {
+  it('counts a redirected request once, under its one id', async () => {
     const page = makePage();
     const state = attachPageCapture(page as never);
-    page.emit('request', request('https://example.test/a'));
+    await page.net.ready();
+    const id = page.net.request('https://example.test/old');
+    page.net.session.emit('Network.requestWillBeSent', {
+      requestId: id,
+      loaderId: 'l',
+      type: 'Fetch',
+      request: { url: 'https://example.test/new', method: 'GET' },
+      redirectResponse: { url: 'https://example.test/old', status: 302, headers: {} },
+    });
+    expect(countRecentPendingRequests(state)).toBe(1);
+    expect(state.network.map((e) => [e.url, e.status])).toEqual([
+      ['https://example.test/old', 302],
+      ['https://example.test/new', undefined],
+    ]);
+    page.net.finish(id);
+    expect(countRecentPendingRequests(state)).toBe(0);
+  });
+
+  it('clears pending state with the network buffer', async () => {
+    const page = makePage();
+    const state = attachPageCapture(page as never);
+    await page.net.ready();
+    page.net.request('https://example.test/a');
     clearNetworkCapture(state);
     expect(countRecentPendingRequests(state)).toBe(0);
   });

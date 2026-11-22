@@ -52,8 +52,10 @@ import {
   clearConsoleCapture,
   clearNetworkCapture,
   ensurePageCapture,
+  readEntryBody,
   type CaptureWindow,
   type ConsoleEntry,
+  type EntryBody,
 } from '../pageCapture';
 import { clampScreenshotCeilingBytes } from '../../resultCap';
 import {
@@ -296,7 +298,7 @@ function matchesGlob(url: string, pattern: string): boolean {
 async function readCapture<T>(
   scope: BrowserTargetScope,
   fromRpc: () => Promise<T>,
-  fromPage: (page: Page) => T,
+  fromPage: (page: Page) => T | Promise<T>,
 ): Promise<T> {
   const engine = PlaywrightEngine.getInstance();
   const resolvePage = () => engine.getPageForScope(scope).catch(allowScopedRpcFallback);
@@ -1213,7 +1215,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         }
         const what =
           requestId !== undefined ? `id ${requestId}` : `pattern "${urlPattern}"`;
-        const body = await readCapture<string | null>(
+        const found = await readCapture<EntryBody | null>(
           scope,
           async () => {
             // Main's buffer cannot be indexed over RPC, so the id / nth is
@@ -1230,24 +1232,35 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             const result = await sendScopedBrowserRpc<{ body: string | null }>('browser.responseBody.get', scope, {
               urlPattern: pattern,
             });
-            return result.body ?? null;
+            return typeof result.body === 'string' ? { body: result.body } : null;
           },
-          (page) => {
+          async (page) => {
             const state = ensurePageCapture(page);
             if (requestId !== undefined) {
               const entry = state.network[requestId - 1];
-              return entry?.response?.body ?? null;
+              return entry ? readEntryBody(page, entry) : null;
             }
-            // Only entries whose body was actually retained can be answered
-            // with, so `nth` counts over those and not over every request.
+            // Only a finished, textual response has a body to answer with, so
+            // `nth` counts over those and not over every request.
             const withBody = state.network.filter(
-              (e) => e.response?.body !== undefined && matchesGlob(e.url, urlPattern!),
+              (e) => e.bodyReadable === true && matchesGlob(e.url, urlPattern!),
             );
             const index = resolveNthIndex(withBody.length, nth);
-            return index < 0 ? null : withBody[index].response!.body!;
+            return index < 0 ? null : readEntryBody(page, withBody[index]);
           },
         );
 
+        if (found !== null && 'unavailable' in found && found.unavailable === 'gone') {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `The response body for ${what} is no longer available: the browser has since let it go (the page navigated, or newer responses filled its buffer). Repeat the request and read it right after.`,
+              },
+            ],
+          };
+        }
+        const body = found !== null && 'body' in found ? found.body : null;
         if (body === null) {
           return {
             content: [
