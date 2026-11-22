@@ -1192,6 +1192,30 @@ describe('loadConfig — one-time ring compression default', () => {
     expect(diskSession().ringCompression).toBe(false);
   });
 
+  it('leaves the migration pending in memory after a failed save, so a later save cannot pin false', () => {
+    writeRawConfig(olderConfig(false));
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
+      throw new Error('EACCES');
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let loaded: DaemonConfig;
+    try {
+      loaded = loadConfig();
+    } finally {
+      rename.mockRestore();
+      error.mockRestore();
+      resetGateMigrationSaveFailure();
+    }
+    expect(loaded.session.ringCompression).toBe(false);
+    expect(loaded.appliedMigrations).not.toContain(RING_COMPRESSION_DEFAULT_MIGRATION);
+    // A later save of that config (as `wmux gate` does) succeeds.
+    saveConfigOrThrow(loaded);
+    const disk = JSON.parse(fs.readFileSync(path.join(getWmuxDir(), 'config.json'), 'utf-8'));
+    expect(disk.session.ringCompression === false && disk.appliedMigrations.includes(RING_COMPRESSION_DEFAULT_MIGRATION)).toBe(false);
+    // The next load runs the migration and drops the false.
+    expect(loadConfig().session.ringCompression).toBeUndefined();
+  });
+
   it('keeps a stored true, and never backfills a value that is not a boolean', () => {
     writeRawConfig(olderConfig(true));
     expect(loadConfig().session.ringCompression).toBe(true);

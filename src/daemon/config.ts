@@ -672,8 +672,13 @@ export function loadConfig(): DaemonConfig {
           console.error('[daemon/config] Failed to save the gate migration; it applies in memory until a restart:', err);
         }
       }
-      // Compression is not turned on behind a file that still says false.
-      if (dropRingFalse && !saved) config.session.ringCompression = false;
+      // Compression is not turned on behind a file that still says false, and
+      // the migration stays pending: a later save (`wmux gate`) must not write
+      // that false together with the id that would keep it for good.
+      if (dropRingFalse && !saved) {
+        config.session.ringCompression = false;
+        config.appliedMigrations = config.appliedMigrations.filter((m) => m !== RING_COMPRESSION_DEFAULT_MIGRATION);
+      }
     }
 
     // Enforce upper bound on buffer size to prevent excessive memory usage.
