@@ -15,8 +15,10 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = path.resolve(import.meta.dirname, '..');
+const thisFile = fileURLToPath(import.meta.url);
+const root = path.resolve(path.dirname(thisFile), '..');
 const modulePath = process.env.WMUX_TERMINAL_CORE_MODULE || path.join(root, 'core/wmux-term/dist/native-core/index.cjs');
 const MIB = 1024 * 1024;
 const SESSIONS = 6;
@@ -111,7 +113,7 @@ if (process.argv[2] === '--child') {
   const corpusFile = path.join(dir, 'corpus.bin');
   fs.writeFileSync(corpusFile, data);
   const run = (mode) => {
-    const r = spawnSync(process.execPath, ['--expose-gc', import.meta.filename, '--child', mode, corpusFile], { encoding: 'utf8', maxBuffer: 16 * MIB });
+    const r = spawnSync(process.execPath, ['--expose-gc', thisFile, '--child', mode, corpusFile], { encoding: 'utf8', maxBuffer: 16 * MIB });
     if (r.status !== 0) throw new Error(`${mode} run failed: ${r.stderr}`);
     return JSON.parse(r.stdout);
   };
