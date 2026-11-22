@@ -98,14 +98,16 @@ function fakeGit(opts: { conflict?: boolean; dirty?: Record<string, string>; fai
     maxInFlight = Math.max(maxInFlight, inFlight);
     await Promise.resolve();
     inFlight--;
-    if (opts.fail?.()) return { code: 1, stdout: '', stderr: 'timeout', failed: true };
+    if (opts.fail?.()) return { code: 1, stdout: '', stderr: 'timeout', failed: true, timedOut: true };
+    if (cwd.startsWith('/r/gone')) return { code: 1, stdout: '', stderr: 'ENOENT', failed: true, timedOut: false };
     const cmd = args[0];
     if (cmd === 'rev-parse' && args.includes('--show-toplevel')) {
       return cwd.startsWith('/r/') ? ok(`${cwd}\n/r/.git\n`) : ok('', 128);
     }
     if (cmd === 'version') return ok('git version 2.50.1\n');
-    if (cmd === 'rev-parse') return ok(`${cwd.endsWith('a') ? 'a'.repeat(40) : 'b'.repeat(40)}\n`);
+    if (cmd === 'rev-parse') return ok(`${cwd.endsWith('a') ? 'a'.repeat(40) : cwd.endsWith('orphan') ? 'c'.repeat(40) : 'b'.repeat(40)}\n`);
     if (cmd === 'status') return ok(opts.dirty?.[cwd] ?? '');
+    if (cmd === 'merge-tree' && args.includes('c'.repeat(40))) return ok('fatal: refusing to merge unrelated histories\n', 128);
     if (cmd === 'merge-tree') return opts.conflict ? ok(`${TREE}\0f.txt\0`, 1) : ok(`${TREE}\0`);
     if (cmd === 'merge-base') return ok(`${'c'.repeat(40)}\n`);
     if (cmd === 'diff') return ok(args.at(-1)!.startsWith('a') ? 'f.txt\0a-only.txt\0' : 'f.txt\0');
@@ -215,6 +217,19 @@ describe('SiblingCollisionWatcher', () => {
     failing = false;
     await h.tick();
     expect(h.timers.map((t) => t.ms)).toEqual([60_000]);
+  });
+
+  it('a folder that is gone or a pair git refuses does not stall the others', async () => {
+    const git = fakeGit({ conflict: true });
+    const h = harness(git);
+    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: ['/r/gone', '/r/a', '/r/b', '/r/orphan'] });
+    await h.tick();
+    const last = h.emitted.at(-1)!;
+    expect(last.byCwd['/r/a'].peers.map((p) => p.worktreePath)).toEqual(['/r/b']);
+    expect(last.byCwd['/r/orphan']).toBeUndefined();
+    // Not a timeout: the next round comes on the plain interval, no back-off.
+    expect(h.timers.map((t) => t.ms)).toEqual([60_000]);
+    expect(h.watcher.snapshot()).toEqual(last);
   });
 
   it('clamps the interval', async () => {

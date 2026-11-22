@@ -11,23 +11,37 @@ import type { SiblingCollisionWatchRequest } from '../../../shared/siblingCollis
 
 const MAX_CWDS = 200;
 
-export function registerSiblingCollisionHandlers(getWindow: () => BrowserWindow | null): () => void {
-  const watcher = new SiblingCollisionWatcher({
+// One watcher for the app's lifetime: handlers can be registered again (the
+// handler swap), and the renderer only re-sends a request that changed, so a
+// fresh watcher would sit unconfigured. Emits go to the current window.
+let currentGetWindow: () => BrowserWindow | null = () => null;
+let watcher: SiblingCollisionWatcher | null = null;
+
+function getWatcher(): SiblingCollisionWatcher {
+  watcher ??= new SiblingCollisionWatcher({
     emit: (snapshot) => {
-      const win = getWindow();
+      const win = currentGetWindow();
       if (win && !win.isDestroyed()) win.webContents.send(IPC.SIBLING_COLLISION_UPDATE, snapshot);
     },
   });
+  return watcher;
+}
+
+export function registerSiblingCollisionHandlers(getWindow: () => BrowserWindow | null): () => void {
+  currentGetWindow = getWindow;
   ipcMain.removeAllListeners(IPC.SIBLING_COLLISION_WATCH);
-  ipcMain.on(IPC.SIBLING_COLLISION_WATCH, (_e: Electron.IpcMainEvent, raw: unknown) => {
+  ipcMain.on(IPC.SIBLING_COLLISION_WATCH, (e: Electron.IpcMainEvent, raw: unknown) => {
     const req = (raw && typeof raw === 'object' ? raw : {}) as Partial<SiblingCollisionWatchRequest>;
     const cwds = Array.isArray(req.cwds) ? req.cwds.filter((c): c is string => typeof c === 'string').slice(0, MAX_CWDS) : [];
-    watcher.configure({ enabled: req.enabled === true, intervalMs: Number(req.intervalMs), cwds });
+    const w = getWatcher();
+    w.configure({ enabled: req.enabled === true, intervalMs: Number(req.intervalMs), cwds });
+    // Answer every request with what is known now: a reloaded renderer sends
+    // the same request again and would otherwise start from an empty store.
+    if (!e.sender.isDestroyed()) e.sender.send(IPC.SIBLING_COLLISION_UPDATE, w.snapshot());
   });
   ipcMain.removeAllListeners(IPC.SIBLING_COLLISION_POKE);
-  ipcMain.on(IPC.SIBLING_COLLISION_POKE, () => watcher.poke());
+  ipcMain.on(IPC.SIBLING_COLLISION_POKE, () => getWatcher().poke());
   return () => {
-    watcher.dispose();
     ipcMain.removeAllListeners(IPC.SIBLING_COLLISION_WATCH);
     ipcMain.removeAllListeners(IPC.SIBLING_COLLISION_POKE);
   };

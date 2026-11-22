@@ -45,8 +45,10 @@ export interface GitRun {
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
-  /** Killed by the timeout or failed to start — never a git answer. */
+  /** Killed by the timeout or failed to start (missing folder, no git) — never a git answer. */
   readonly failed: boolean;
+  /** Killed by the timeout (the case that backs off). */
+  readonly timedOut?: boolean;
 }
 
 export type GitRunner = (args: string[], cwd: string, env?: Record<string, string>) => Promise<GitRun>;
@@ -182,7 +184,7 @@ export const runGit: GitRunner = (args, cwd, extraEnv) =>
     try {
       exe = resolveExecutable('git', { env });
     } catch {
-      done({ code: 1, stdout: '', stderr: 'git not found', failed: true });
+      done({ code: 1, stdout: '', stderr: 'git not found', failed: true, timedOut: false });
       return;
     }
     execFile(
@@ -190,10 +192,11 @@ export const runGit: GitRunner = (args, cwd, extraEnv) =>
       ['-c', 'core.fsmonitor=false', '--no-optional-locks', ...args],
       { cwd, timeout: GIT_CALL_TIMEOUT_MS, windowsHide: true, maxBuffer: 8 * 1024 * 1024, env },
       (err, stdout, stderr) => {
-        if (!err) return done({ code: 0, stdout, stderr, failed: false });
+        if (!err) return done({ code: 0, stdout, stderr, failed: false, timedOut: false });
         const e = err as NodeJS.ErrnoException & { killed?: boolean; code?: number | string };
         const exitCode = typeof e.code === 'number' ? e.code : null;
-        done({ code: exitCode ?? 1, stdout: stdout ?? '', stderr: stderr ?? String(err), failed: exitCode === null || e.killed === true });
+        const timedOut = e.killed === true;
+        done({ code: exitCode ?? 1, stdout: stdout ?? '', stderr: stderr ?? String(err), failed: exitCode === null || timedOut, timedOut });
       },
     );
   });
@@ -217,6 +220,7 @@ export interface WatcherDeps {
 }
 
 class RoundError extends Error {}
+class GitTimeout extends Error {}
 
 /**
  * Runs rounds: resolve every sent folder, then per repo (serially, one git
@@ -280,6 +284,11 @@ export class SiblingCollisionWatcher {
     this.cancelTimer();
   }
 
+  /** What was last published (a renderer that reloads asks again). */
+  snapshot(): SiblingCollisionSnapshot {
+    return JSON.parse(this.lastEmitted) as SiblingCollisionSnapshot;
+  }
+
   /** Test hook: the in-flight round, if any. */
   idle(): Promise<void> {
     return this.running ?? Promise.resolve();
@@ -329,16 +338,24 @@ export class SiblingCollisionWatcher {
       });
   }
 
-  /** One round. Resolves whether any repo has two or more siblings open. Throws on a failed git call. */
+  /**
+   * One round. Resolves whether any repo has two or more siblings open.
+   * A folder, worktree or pair git cannot read (gone, unrelated histories,
+   * not a repo) is skipped and keeps its last result; only a timed-out git
+   * call fails the round, and that is what backs off.
+   */
   private async round(): Promise<boolean> {
+    const timeouts = { count: 0 };
     const resolved: ResolvedWorktree[] = [];
     for (const cwd of this.cwds) {
       const r = await this.run(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'], cwd);
-      if (r.failed) throw new RoundError('rev-parse timed out');
-      if (r.code !== 0) continue; // not a git folder (or gone) — not a sibling
+      if (r.timedOut) timeouts.count++;
+      if (r.failed || r.code !== 0) continue; // gone, or not a git folder — not a sibling
       const [top, common] = r.stdout.split('\n').map((l) => l.trim());
       if (top && common) resolved.push({ cwd, worktreePath: resolve(top), commonDir: resolve(common) });
     }
+    // A folder that timed out may be a sibling: keep what is shown and back off.
+    if (timeouts.count) throw new RoundError('git timed out');
     const groups = siblingGroups(resolved);
     if (groups.size === 0) {
       this.pairCache.clear();
@@ -346,41 +363,51 @@ export class SiblingCollisionWatcher {
       return false;
     }
     if (this.mergeTree === null) {
-      const v = await this.run(['version'], this.cwds[0]);
-      if (v.failed) throw new RoundError('git version timed out');
-      this.mergeTree = supportsMergeTreeWriteTree(v.stdout);
+      const v = await this.run(['version'], groups.values().next().value?.[0] ?? this.cwds[0]);
+      if (v.timedOut) timeouts.count++;
+      if (!v.failed && v.code === 0) this.mergeTree = supportsMergeTreeWriteTree(v.stdout);
     }
     // Repos in parallel, each strictly serial inside.
-    const perRepo = await Promise.allSettled([...groups].map(([commonDir, paths]) => this.checkRepo(commonDir, paths)));
-    const results: PairResult[] = [];
-    let failed = false;
-    for (const r of perRepo) {
-      if (r.status === 'fulfilled') results.push(...r.value);
-      else failed = true;
-    }
-    const keep = new Set(results.map((p) => p.a + '\0' + p.b));
-    // A repo that failed this round keeps showing what it showed last.
-    if (failed) {
-      for (const p of this.pairCache.values()) if (!keep.has(p.a + '\0' + p.b)) results.push(p);
-    }
-    this.publish(buildSnapshot(resolved, dedupePairs(results)));
-    if (failed) throw new RoundError('a repo check failed');
+    const perRepo = await Promise.all([...groups].map(([commonDir, paths]) => this.checkRepo(commonDir, paths, timeouts)));
+    this.publish(buildSnapshot(resolved, perRepo.flat()));
+    if (timeouts.count) throw new RoundError('git timed out');
     return true;
   }
 
-  private async checkRepo(commonDir: string, paths: string[]): Promise<PairResult[]> {
+  /** The last result for a pair (any inputs), if one was ever made. */
+  private lastResult(a: string, b: string): PairResult | undefined {
+    for (const [k, v] of this.pairCache) if (k.startsWith(`${a}\0${b}\0`)) return v;
+    return undefined;
+  }
+
+  private async checkRepo(commonDir: string, paths: string[], timeouts: { count: number }): Promise<PairResult[]> {
     const states = new Map<string, WorktreeState>();
+    const unread = new Set<string>();
     for (const p of paths) {
       const head = await this.run(['rev-parse', '--verify', '-q', 'HEAD'], p);
-      if (head.failed) throw new RoundError('HEAD read timed out');
-      if (head.code !== 0) continue; // unborn branch: nothing committed to compare yet
+      if (head.timedOut) timeouts.count++;
+      if (head.failed || head.code !== 0) {
+        // An unborn branch has nothing to compare; a failed read keeps its last results.
+        if (head.failed) unread.add(p);
+        continue;
+      }
       const st = await this.run(['status', '--porcelain=v1', '-z', '--untracked-files=all'], p);
-      if (st.failed || st.code !== 0) throw new RoundError('status failed');
+      if (st.timedOut) timeouts.count++;
+      if (st.failed || st.code !== 0) {
+        unread.add(p);
+        continue;
+      }
       const dirty = new Set(parsePorcelainPaths(st.stdout));
       const oid = head.stdout.trim();
       states.set(p, { head: oid, dirty, key: `${oid}:${[...dirty].sort().join('\0')}` });
     }
     const out: PairResult[] = [];
+    for (const [a, b] of pairsOf(paths)) {
+      if (unread.has(a) || unread.has(b)) {
+        const last = this.lastResult(a, b);
+        if (last) out.push(last);
+      }
+    }
     let scratch: string | null = null;
     try {
       for (const [[a, sa], [b, sb]] of pairsOf([...states])) {
@@ -391,8 +418,17 @@ export class SiblingCollisionWatcher {
           continue;
         }
         if (this.mergeTree && scratch === null) scratch = await this.makeScratch();
-        const result = await this.checkPair(commonDir, scratch, a, sa, b, sb);
-        // Drop the pair's older entries so the cache holds one per pair.
+        let result: PairResult | null;
+        try {
+          result = await this.checkPair(commonDir, scratch, a, sa, b, sb);
+        } catch (e) {
+          if (e instanceof GitTimeout) timeouts.count++;
+          // Unreadable this round (e.g. unrelated histories): keep what it showed.
+          const last = this.lastResult(a, b);
+          if (last) out.push(last);
+          continue;
+        }
+        // One cache entry per pair.
         for (const k of this.pairCache.keys()) if (k.startsWith(`${a}\0${b}\0`)) this.pairCache.delete(k);
         this.pairCache.set(cacheKey, result);
         out.push(result);
@@ -403,6 +439,7 @@ export class SiblingCollisionWatcher {
     return out;
   }
 
+  /** Throws GitTimeout on a timed-out call, RoundError when git cannot answer for this pair. */
   private async checkPair(
     commonDir: string,
     scratch: string | null,
@@ -411,11 +448,16 @@ export class SiblingCollisionWatcher {
     b: string,
     sb: WorktreeState,
   ): Promise<PairResult> {
+    const must = async (args: string[], env?: Record<string, string>): Promise<GitRun> => {
+      const r = await this.run(args, a, env);
+      if (r.timedOut) throw new GitTimeout(args[0]);
+      if (r.failed) throw new RoundError(args[0]);
+      return r;
+    };
     let conflicts: string[] = [];
     if (this.mergeTree && scratch !== null) {
       const env = { GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: join(commonDir, 'objects') };
-      const mt = await this.run(['merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', sa.head, sb.head], a, env);
-      if (mt.failed) throw new RoundError('merge-tree timed out');
+      const mt = await must(['merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', sa.head, sb.head], env);
       const parsed = parseMergeTreeOutput(mt.stdout);
       // exit 0 = clean, 1 = conflicts; anything that does not parse is a failure.
       if (!parsed.ok || (mt.code !== 0 && mt.code !== 1)) throw new RoundError('merge-tree failed');
@@ -427,14 +469,13 @@ export class SiblingCollisionWatcher {
       const changedA = new Set(sa.dirty);
       const changedB = new Set(sb.dirty);
       if (sa.head !== sb.head) {
-        const mb = await this.run(['merge-base', sa.head, sb.head], a);
-        if (mb.failed) throw new RoundError('merge-base timed out');
+        const mb = await must(['merge-base', sa.head, sb.head]);
         const base = mb.code === 0 ? mb.stdout.trim() : '';
         if (base) {
           for (const [head, set] of [[sa.head, changedA], [sb.head, changedB]] as const) {
             if (head === base) continue;
-            const d = await this.run(['diff', '--name-only', '-z', '--no-renames', base, head], a);
-            if (d.failed || d.code !== 0) throw new RoundError('diff failed');
+            const d = await must(['diff', '--name-only', '-z', '--no-renames', base, head]);
+            if (d.code !== 0) throw new RoundError('diff failed');
             for (const f of parseNulList(d.stdout)) set.add(f);
           }
         }
@@ -454,10 +495,4 @@ export class SiblingCollisionWatcher {
     this.lastEmitted = json;
     this.deps.emit(snapshot);
   }
-}
-
-function dedupePairs(pairs: PairResult[]): PairResult[] {
-  const seen = new Map<string, PairResult>();
-  for (const p of pairs) seen.set(p.a + '\0' + p.b, p);
-  return [...seen.values()];
 }

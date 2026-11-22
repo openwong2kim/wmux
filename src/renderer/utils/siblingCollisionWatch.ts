@@ -119,8 +119,10 @@ export function startSiblingCollisionWatch(): () => void {
       const before = lastAgent;
       lastAgent = s.surfaceAgent;
       if (!s.siblingCollisionWatch) return;
-      for (const [ptyId, a] of Object.entries(s.surfaceAgent)) {
-        if (before[ptyId]?.status === 'running' && TURN_ENDED.has(a.status)) {
+      // A running agent whose turn closed, or that went away altogether.
+      for (const [ptyId, b] of Object.entries(before)) {
+        const now = s.surfaceAgent[ptyId];
+        if (b.status === 'running' && (!now || TURN_ENDED.has(now.status))) {
           bridge.pokeSiblings?.();
           break;
         }

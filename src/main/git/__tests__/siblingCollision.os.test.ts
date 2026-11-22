@@ -92,7 +92,7 @@ describe('SiblingCollisionWatcher (real git)', () => {
   it('two branches editing the same lines: a conflict on both panes; different files: no marker', async () => {
     const before = storeFingerprint(join(repo, '.git'));
     const indexBefore = statSync(join(repo, '.git', 'worktrees', 'wt-a', 'index')).mtimeMs;
-    const snap = await oneRound([wtA, wtB, wtC]);
+    const snap = await oneRound([wtA, wtB, wtC, join(base, 'gone')]); // a folder that no longer exists is skipped
     expect(snap).toBeDefined();
     expect(snap!.byCwd[wtA].peers).toEqual([{ worktreePath: wtB, conflicts: ['shared.txt'], overlaps: [] }]);
     expect(snap!.byCwd[wtB].peers).toEqual([{ worktreePath: wtA, conflicts: ['shared.txt'], overlaps: [] }]);
