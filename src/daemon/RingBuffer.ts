@@ -688,10 +688,17 @@ export class RingBuffer {
     // compressed 256 MB ring would otherwise hold the JS thread ~180 ms.
     const mutations = this.mutations;
     const data = this.native?.readAllAsync ? await this.native.readAllAsync() : this.readAll();
+    // Destroying a session disposes the ring, then deletes its .buf without
+    // waiting for a dump in flight: a dump that lands after that is an orphan.
+    if (this.disposed) return;
     const tmpPath = `${filePath}.tmp.${crypto.randomBytes(6).toString('hex')}`;
     try {
       // mode is a no-op on Windows; use icacls for NTFS ACLs.
       await writeFile(tmpPath, data, { mode: 0o600 });
+      if (this.disposed) {
+        await unlink(tmpPath);
+        return;
+      }
       await RingBuffer.renameWithRetry(tmpPath, filePath);
       this.lastDump = { path: filePath, mutations };
     } catch (err) {

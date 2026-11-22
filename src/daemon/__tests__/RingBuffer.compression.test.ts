@@ -137,3 +137,24 @@ describe.each([
     expect(packed.size).toBe(100_003);
   });
 });
+
+describe('a dump of a compressed rust ring', () => {
+  it.skipIf(!native)('writes nothing when the ring is disposed while its bytes are read', async () => {
+    vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', modulePath);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-rb-dispose-'));
+    dirs.push(dir);
+    const packed = new RingBuffer(4 * CHUNK, 'rust', { compress: true });
+    packed.write(output(3 * CHUNK, 1));
+    // The session is destroyed while the worker decompresses (index.ts
+    // disposes the ring, then deletes its .buf).
+    const storage = (packed as unknown as { native: { readAllAsync(): Promise<Buffer> } }).native;
+    const read = storage.readAllAsync.bind(storage);
+    storage.readAllAsync = async () => {
+      const bytes = await read();
+      packed.dispose();
+      return bytes;
+    };
+    await packed.dumpToFile(path.join(dir, 'session.buf'));
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+});
