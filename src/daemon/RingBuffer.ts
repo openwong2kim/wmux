@@ -684,8 +684,10 @@ export class RingBuffer {
     // fresher snapshot is never wrong for recovery, and the snapshotRunner's
     // dirty-tracking captures totalBytesWritten BEFORE calling us, so a fresher
     // readAll at worst leaves the session marked dirty for one extra tick.
-    const data = this.readAll();
+    // A rust ring takes its copy now and decompresses it in a worker: a
+    // compressed 256 MB ring would otherwise hold the JS thread ~180 ms.
     const mutations = this.mutations;
+    const data = this.native?.readAllAsync ? await this.native.readAllAsync() : this.readAll();
     const tmpPath = `${filePath}.tmp.${crypto.randomBytes(6).toString('hex')}`;
     try {
       // mode is a no-op on Windows; use icacls for NTFS ACLs.

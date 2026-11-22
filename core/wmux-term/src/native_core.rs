@@ -4,7 +4,7 @@
 use crate::fallible::{self, AllocFailed, CallError, CallResult, ErrorCode};
 use crate::native_output::NativeOutputChunk;
 use crate::native_serialize::XtermControl;
-use crate::ring_pack::PackedRing;
+use crate::ring_pack::{PackedRing, PackedView};
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
 use alacritty_terminal::index::{Column, Line, Point};
@@ -51,6 +51,8 @@ pub fn native_core_capabilities() -> Vec<String> {
         "frozen-ring-v1".into(),
         // `new NativeRing(capacity, compress)` keeps closed chunks compressed.
         "ring-compress-v1".into(),
+        // `ring.readAllAsync()`: readAll() decompressed off the JS thread.
+        "ring-read-async-v1".into(),
         "output-chunk-v1".into(),
         "output-interpreter-v1".into(),
         "ansi-v2".into(),
@@ -3152,6 +3154,50 @@ fn replay_geometry(
     }))
 }
 
+enum RingReadSource {
+    Copied(Vec<u8>),
+    Shared(PackedView),
+}
+
+/// `NativeRing.readAllAsync`: the bytes are put together in `compute`, on a
+/// worker thread.
+pub struct RingReadTask {
+    source: Option<RingReadSource>,
+    /// A refusal in `compute`, for `reject` (a Task's errors cannot carry
+    /// ALLOC_FAILED).
+    refused: Option<AllocFailed>,
+    /// The rejection for a refusal, made when the task was created.
+    ready: Option<Error>,
+}
+
+impl Task for RingReadTask {
+    type Output = Vec<u8>;
+    type JsValue = Buffer;
+    fn compute(&mut self) -> Result<Self::Output> {
+        match self.source.take() {
+            Some(RingReadSource::Copied(bytes)) => Ok(bytes),
+            Some(RingReadSource::Shared(view)) => view.copy(RING_COPY).map_err(|refused| {
+                self.refused = Some(refused);
+                Error::from_status(Status::GenericFailure)
+            }),
+            None => Err(Error::from_reason("Ring read already taken")),
+        }
+    }
+    fn resolve(&mut self, _env: Env, bytes: Self::Output) -> Result<Self::JsValue> {
+        Ok(bytes.into())
+    }
+    fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
+        Err(match self.refused.take() {
+            Some(refused) => fallible::task_refusal(env, refused.into(), self.ready.take()),
+            None => error,
+        })
+    }
+    fn finally(mut self, _env: Env) -> Result<()> {
+        fallible::keep_rejection(self.ready.take());
+        Ok(())
+    }
+}
+
 /// Byte retention and geometry use the same lifetime offset as the JS oracle.
 #[napi]
 pub struct NativeRing {
@@ -3195,6 +3241,23 @@ impl NativeRing {
     #[napi(catch_unwind)]
     pub fn freeze(&mut self) -> Result<NativeFrozenRing, ErrorCode> {
         Ok(self.freeze_copy()?)
+    }
+
+    /// `readAll()` as of this call, resolved off the JS thread: a compressed
+    /// ring shares its closed chunks now and decompresses them in a worker,
+    /// so later writes do not change the result. A plain ring is copied now.
+    /// A refused allocation rejects with code ALLOC_FAILED.
+    #[napi(catch_unwind)]
+    pub fn read_all_async(&self, env: Env) -> Result<AsyncTask<RingReadTask>, ErrorCode> {
+        let source = match &self.packed {
+            Some(packed) if self.length > 0 => RingReadSource::Shared(packed.share()?),
+            _ => RingReadSource::Copied(self.copy_bytes()?),
+        };
+        Ok(AsyncTask::new(RingReadTask {
+            source: Some(source),
+            refused: None,
+            ready: fallible::ready_rejection(env),
+        }))
     }
     #[napi(getter, catch_unwind)]
     pub fn size(&self) -> u32 {
@@ -6302,6 +6365,34 @@ mod ring_compression_tests {
         plain.write_bytes(&data).unwrap();
         packed.write_bytes(&data).unwrap();
         same(&plain, &packed);
+    }
+
+    #[test]
+    fn a_view_keeps_its_bytes_through_writes_evictions_and_clear_on_another_thread() {
+        let capacity = 3 * CHUNK + 999;
+        let mut ring = NativeRing::create_with(capacity as u32, true).unwrap();
+        ring.write_bytes(&output(capacity + 5_000, 1)).unwrap();
+        let want = ring.copy_bytes().unwrap();
+        let view = ring.packed.as_ref().unwrap().share().ok().unwrap();
+        // Every chunk the view holds is evicted, then the ring is cleared.
+        ring.write_bytes(&output(capacity, 2)).unwrap();
+        assert!(ring.copy_bytes().unwrap() != want);
+        ring.packed.as_mut().unwrap().clear();
+        let got = std::thread::spawn(move || view.copy(RING_COPY).ok().unwrap())
+            .join()
+            .unwrap();
+        assert!(got == want);
+    }
+
+    #[test]
+    fn clear_zeroes_the_tails_whole_buffer() {
+        let mut ring = NativeRing::create_with(4 * CHUNK as u32, true).unwrap();
+        // The tail's buffer grows to a chunk; then it holds a few bytes.
+        ring.write_bytes(&output(CHUNK - 3, 5)).unwrap();
+        ring.write_bytes(&output(13, 6)).unwrap();
+        let packed = ring.packed.as_mut().unwrap();
+        packed.clear();
+        assert!(packed.tail_buffer_is_zero());
     }
 
     #[test]

@@ -10,9 +10,12 @@
 //! Every reader gets the raw bytes back (`copy`), so the formats outside this
 //! module (frozen copies, `.buf` dumps) do not change. A write is staged
 //! before anything moves: a refused allocation leaves the ring as it was.
+//! Closed chunks never change, so a `PackedView` shares them: it is taken in
+//! microseconds and decompressed later, off the JS thread (a dump).
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use crate::fallible::{self, AllocFailed};
 
@@ -103,14 +106,20 @@ fn pack(head: &[u8], rest: &[u8]) -> Result<Chunk, AllocFailed> {
             scratch.resize(bound, 0);
         }
         let cctx = cctx.as_mut().expect("created above");
-        let packed = cctx
-            .compress(&mut scratch[..bound], raw, LEVEL)
-            .map_err(|_| codec_refused(raw.len()))?;
-        Ok(if packed < raw.len() {
-            Chunk::Zstd(fallible::try_copy(&scratch[..packed], PACKED_CHUNK)?)
-        } else {
-            Chunk::Raw(fallible::try_copy(raw, PACKED_CHUNK)?)
-        })
+        let result = match cctx.compress(&mut scratch[..bound], raw, LEVEL) {
+            Err(_) => Err(codec_refused(raw.len())),
+            Ok(packed) if packed < raw.len() => {
+                let copy = fallible::try_copy(&scratch[..packed], PACKED_CHUNK);
+                scratch[..packed].fill(0);
+                copy.map(Chunk::Zstd)
+            }
+            Ok(_) => fallible::try_copy(raw, PACKED_CHUNK).map(Chunk::Raw),
+        };
+        // The buffers are shared by every ring on the thread: keep no output
+        // in them past this chunk.
+        joined.fill(0);
+        joined.clear();
+        result
     })
 }
 
@@ -137,11 +146,71 @@ fn unpack(chunk: &Chunk, out: &mut [u8]) -> Result<(), AllocFailed> {
     }
 }
 
+/// The retained raw bytes of `chunks` (each `chunk` raw bytes, the first
+/// `skip` of them outside the window) then `tail`, oldest first.
+fn copy_out<'a>(
+    chunk: usize,
+    chunks: impl Iterator<Item = &'a Arc<Chunk>>,
+    count: usize,
+    skip: usize,
+    tail: &[u8],
+    what: &'static str,
+) -> Result<Vec<u8>, AllocFailed> {
+    let len = count * chunk - skip + tail.len();
+    let mut out = fallible::try_zeroed(len, what)?;
+    let mut at = 0;
+    for (i, packed) in chunks.enumerate() {
+        if i == 0 && skip > 0 {
+            let mut first = fallible::try_zeroed(chunk, UNPACKED)?;
+            unpack(packed, &mut first)?;
+            let kept = chunk - skip;
+            out[..kept].copy_from_slice(&first[skip..]);
+            first.fill(0);
+            at = kept;
+            continue;
+        }
+        unpack(packed, &mut out[at..at + chunk])?;
+        at += chunk;
+    }
+    out[at..].copy_from_slice(tail);
+    Ok(out)
+}
+
+/// A ring's bytes at one instant, sharing its closed chunks: later writes,
+/// evictions and a clear do not change it.
+pub(crate) struct PackedView {
+    chunk: usize,
+    chunks: Vec<Arc<Chunk>>,
+    skip: usize,
+    tail: Vec<u8>,
+}
+
+impl PackedView {
+    /// The raw bytes, oldest first. Any thread may call it.
+    pub(crate) fn copy(&self, what: &'static str) -> Result<Vec<u8>, AllocFailed> {
+        copy_out(
+            self.chunk,
+            self.chunks.iter(),
+            self.chunks.len(),
+            self.skip,
+            &self.tail,
+            what,
+        )
+    }
+}
+
+impl Drop for PackedView {
+    fn drop(&mut self) {
+        self.tail.fill(0);
+    }
+}
+
 pub(crate) struct PackedRing {
     /// Raw bytes per closed chunk: CHUNK_BYTES, or the capacity when smaller.
     chunk: usize,
     capacity: usize,
-    chunks: VecDeque<Chunk>,
+    /// Never changed once closed; shared with views (`share`).
+    chunks: VecDeque<Arc<Chunk>>,
     /// Raw bytes at the start of the oldest chunk that are outside the window.
     skip: usize,
     tail: Vec<u8>,
@@ -182,14 +251,14 @@ impl PackedRing {
         let closes = total / c;
         // Stage every chunk this write closes.
         fallible::try_reserve_deque(&mut self.chunks, closes, CHUNK_LIST)?;
-        let mut staged: Vec<Chunk> = fallible::try_with_capacity(closes, CHUNK_LIST)?;
+        let mut staged: Vec<Arc<Chunk>> = fallible::try_with_capacity(closes, CHUNK_LIST)?;
         let mut used = 0;
         if closes > 0 {
             used = c - held;
             // The tail, then the start of this write.
-            staged.push(pack(&self.tail, &input[..used])?);
+            staged.push(Arc::new(pack(&self.tail, &input[..used])?));
             for _ in 1..closes {
-                staged.push(pack(&[], &input[used..used + c])?);
+                staged.push(Arc::new(pack(&[], &input[used..used + c])?));
                 used += c;
             }
         }
@@ -228,7 +297,10 @@ impl PackedRing {
             excess -= self.chunk - self.skip;
             if let Some(mut oldest) = self.chunks.pop_front() {
                 self.packed_bytes -= oldest.stored().len();
-                oldest.wipe();
+                // A view still holding it wipes nothing; it goes with the view.
+                if let Some(oldest) = Arc::get_mut(&mut oldest) {
+                    oldest.wipe();
+                }
             }
             self.skip = 0;
         }
@@ -237,35 +309,53 @@ impl PackedRing {
 
     /// The retained raw bytes, oldest first (at most the capacity).
     pub(crate) fn copy(&self, what: &'static str) -> Result<Vec<u8>, AllocFailed> {
-        let len = self.len();
-        let mut out = fallible::try_zeroed(len, what)?;
-        let mut at = 0;
-        for (i, chunk) in self.chunks.iter().enumerate() {
-            if i == 0 && self.skip > 0 {
-                let mut first = fallible::try_zeroed(self.chunk, UNPACKED)?;
-                unpack(chunk, &mut first)?;
-                let kept = self.chunk - self.skip;
-                out[..kept].copy_from_slice(&first[self.skip..]);
-                first.fill(0);
-                at = kept;
-                continue;
-            }
-            unpack(chunk, &mut out[at..at + self.chunk])?;
-            at += self.chunk;
-        }
-        out[at..].copy_from_slice(&self.tail);
-        Ok(out)
+        copy_out(
+            self.chunk,
+            self.chunks.iter(),
+            self.chunks.len(),
+            self.skip,
+            &self.tail,
+            what,
+        )
     }
 
-    /// Drops every byte, zeroing what was stored; keeps the tail's buffer.
+    /// This instant's bytes, sharing the closed chunks: a list of pointers
+    /// and a copy of the tail (under one chunk), no decompression.
+    pub(crate) fn share(&self) -> Result<PackedView, AllocFailed> {
+        let mut chunks = fallible::try_with_capacity(self.chunks.len(), CHUNK_LIST)?;
+        chunks.extend(self.chunks.iter().cloned());
+        Ok(PackedView {
+            chunk: self.chunk,
+            chunks,
+            skip: self.skip,
+            tail: fallible::try_copy(&self.tail, TAIL)?,
+        })
+    }
+
+    /// Drops every byte, zeroing what was stored (the tail's whole buffer,
+    /// spare capacity included); keeps the tail's buffer.
     pub(crate) fn clear(&mut self) {
         for chunk in &mut self.chunks {
-            chunk.wipe();
+            if let Some(chunk) = Arc::get_mut(chunk) {
+                chunk.wipe();
+            }
         }
         self.chunks.clear();
         self.skip = 0;
         self.packed_bytes = 0;
+        // Within the capacity: no allocation.
+        self.tail.resize(self.tail.capacity(), 0);
         self.tail.fill(0);
         self.tail.clear();
+    }
+
+    /// Whether every byte of the tail's buffer is zero (tests: clear()).
+    #[cfg(test)]
+    pub(crate) fn tail_buffer_is_zero(&self) -> bool {
+        // SAFETY: the pointer and capacity are the tail's own allocation, and
+        // every byte of it was written (clear() resizes it to its capacity).
+        let buffer =
+            unsafe { std::slice::from_raw_parts(self.tail.as_ptr(), self.tail.capacity()) };
+        buffer.iter().all(|&b| b == 0)
     }
 }

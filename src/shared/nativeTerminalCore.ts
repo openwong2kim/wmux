@@ -23,6 +23,8 @@ export interface NativeRingStorage {
   readAllWithGeometry(): { data: Buffer; writtenAt: number; geometry?: ReplayGeometry | null };
   dispose(): void;
   freeze(): NativeFrozenRing;
+  /** readAll() as of the call, put together off the JS thread (`ring-read-async-v1`). Absent on an older core. */
+  readAllAsync?(): Promise<Buffer>;
 }
 /** Synchronous delivery only; the owner disposes the chunk after listeners return. */
 export interface NativeOutputChunk {
