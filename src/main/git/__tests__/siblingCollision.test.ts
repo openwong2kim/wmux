@@ -1,6 +1,7 @@
 // Sibling collision watch — the merge-tree / status parsers, the sibling
 // grouping and the round scheduler (fake git, fake timers).
 import { describe, it, expect } from 'vitest';
+import { resolve, sep } from 'node:path';
 import {
   parseMergeTreeOutput,
   parsePorcelainPaths,
@@ -88,6 +89,16 @@ describe('siblingGroups / pairsOf', () => {
 
 // ── Scheduler ────────────────────────────────────────────────────────────────
 
+// Native paths: main resolves every toplevel, so on Windows `/r/a` becomes `C:\r\a`.
+const P = {
+  root: resolve('/r') + sep,
+  a: resolve('/r/a'),
+  b: resolve('/r/b'),
+  c: resolve('/r/c'),
+  gone: resolve('/r/gone'),
+  orphan: resolve('/r/orphan'),
+};
+
 const ok = (stdout: string, code = 0): GitRun => ({ code, stdout, stderr: '', failed: false });
 
 /** A fake repo: worktrees /r/a and /r/b (and /r/c when listed), conflicting on f.txt. */
@@ -102,10 +113,10 @@ function fakeGit(opts: { conflict?: boolean; dirty?: Record<string, string>; fai
     await Promise.resolve();
     inFlight--;
     if (opts.fail?.()) return { code: 1, stdout: '', stderr: 'timeout', failed: true, timedOut: true };
-    if (cwd.startsWith('/r/gone')) return { code: 1, stdout: '', stderr: 'ENOENT', failed: true, timedOut: false };
+    if (cwd.startsWith(P.gone)) return { code: 1, stdout: '', stderr: 'ENOENT', failed: true, timedOut: false };
     const cmd = args[0];
     if (cmd === 'rev-parse' && args.includes('--show-toplevel')) {
-      return cwd.startsWith('/r/') ? ok(`${cwd}\n../.git\n`) : ok('', 128);
+      return cwd.startsWith(P.root) ? ok(`${cwd}\n../.git\n`) : ok('', 128);
     }
     if (cmd === 'version') return ok('git version 2.50.1\n');
     if (cmd === 'rev-parse') return ok(`${cwd.endsWith('a') ? 'a'.repeat(40) : cwd.endsWith('orphan') ? 'c'.repeat(40) : 'b'.repeat(40)}\n`);
@@ -153,11 +164,11 @@ describe('SiblingCollisionWatcher', () => {
   it('marks both siblings on a conflict, then re-checks on the interval', async () => {
     const git = fakeGit({ conflict: true });
     const h = harness(git);
-    h.watcher.configure({ enabled: true, intervalMs: 120_000, cwds: ['/r/a', '/r/b'] });
+    h.watcher.configure({ enabled: true, intervalMs: 120_000, cwds: [P.a, P.b] });
     expect(await h.tick()).toBe(0);
     const last = h.emitted.at(-1)!;
-    expect(last.byCwd['/r/a'].peers).toEqual([{ worktreePath: '/r/b', conflicts: ['f.txt'], overlaps: [] }]);
-    expect(last.byCwd['/r/b'].peers[0].worktreePath).toBe('/r/a');
+    expect(last.byCwd[P.a].peers).toEqual([{ worktreePath: P.b, conflicts: ['f.txt'], overlaps: [] }]);
+    expect(last.byCwd[P.b].peers[0].worktreePath).toBe(P.a);
     expect(h.timers.map((t) => t.ms)).toEqual([120_000]);
     // Never more than one git process at a time for the repo.
     expect(git.maxInFlight()).toBe(1);
@@ -168,26 +179,26 @@ describe('SiblingCollisionWatcher', () => {
   it('an unchanged pair costs no second merge-tree', async () => {
     const git = fakeGit({ conflict: true });
     const h = harness(git);
-    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: ['/r/a', '/r/b'] });
+    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: [P.a, P.b] });
     await h.tick();
     await h.tick();
     expect(git.calls.filter((c) => c.args[0] === 'merge-tree')).toHaveLength(1);
   });
 
   it('reports an uncommitted shared file as an overlap, not a conflict', async () => {
-    const git = fakeGit({ conflict: false, dirty: { '/r/b': ' M f.txt\0' } });
+    const git = fakeGit({ conflict: false, dirty: { [P.b]: ' M f.txt\0' } });
     const h = harness(git);
-    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: ['/r/a', '/r/b'] });
+    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: [P.a, P.b] });
     await h.tick();
-    expect(h.emitted.at(-1)!.byCwd['/r/a'].peers).toEqual([{ worktreePath: '/r/b', conflicts: [], overlaps: ['f.txt'] }]);
+    expect(h.emitted.at(-1)!.byCwd[P.a].peers).toEqual([{ worktreePath: P.b, conflicts: [], overlaps: ['f.txt'] }]);
   });
 
   it('no siblings, no polling: one worktree twice or a non-git folder schedules nothing', async () => {
     const git = fakeGit();
     const h = harness(git);
-    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: ['/r/a'] });
+    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: [P.a] });
     expect(h.timers).toHaveLength(0);
-    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: ['/r/a', '/elsewhere'] });
+    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: [P.a, resolve('/elsewhere')] });
     await h.tick();
     expect(h.timers).toHaveLength(0);
     h.watcher.poke(); // an idle pane asks again
@@ -197,9 +208,9 @@ describe('SiblingCollisionWatcher', () => {
   it('off clears the markers and stops the timer', async () => {
     const git = fakeGit({ conflict: true });
     const h = harness(git);
-    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: ['/r/a', '/r/b'] });
+    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: [P.a, P.b] });
     await h.tick();
-    h.watcher.configure({ enabled: false, intervalMs: 60_000, cwds: ['/r/a', '/r/b'] });
+    h.watcher.configure({ enabled: false, intervalMs: 60_000, cwds: [P.a, P.b] });
     expect(h.timers).toHaveLength(0);
     expect(h.emitted.at(-1)).toEqual({ byCwd: {}, cwdsByWorktree: {} });
   });
@@ -208,7 +219,7 @@ describe('SiblingCollisionWatcher', () => {
     let failing = false;
     const git = fakeGit({ conflict: true, fail: () => failing });
     const h = harness(git);
-    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: ['/r/a', '/r/b'] });
+    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: [P.a, P.b] });
     await h.tick();
     const shown = h.emitted.length;
     failing = true;
@@ -227,19 +238,44 @@ describe('SiblingCollisionWatcher', () => {
   it('a folder that is gone or a pair git refuses does not stall the others', async () => {
     const git = fakeGit({ conflict: true });
     const h = harness(git);
-    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: ['/r/gone', '/r/a', '/r/b', '/r/orphan'] });
+    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: [P.gone, P.a, P.b, P.orphan] });
     await h.tick();
     const last = h.emitted.at(-1)!;
-    expect(last.byCwd['/r/a'].peers.map((p) => p.worktreePath)).toEqual(['/r/b']);
-    expect(last.byCwd['/r/orphan']).toBeUndefined();
+    expect(last.byCwd[P.a].peers.map((p) => p.worktreePath)).toEqual([P.b]);
+    expect(last.byCwd[P.orphan]).toBeUndefined();
     // Not a timeout: the next round comes on the plain interval, no back-off.
     expect(h.timers.map((t) => t.ms)).toEqual([60_000]);
     expect(h.watcher.snapshot()).toEqual(last);
   });
 
+  it('a first-round timeout with no sibling resolved yet still looks again', async () => {
+    let slowB = true;
+    const git = fakeGit();
+    const run: GitRunner = (args, cwd, env) =>
+      slowB && cwd === P.b ? Promise.resolve({ code: 1, stdout: '', stderr: '', failed: true, timedOut: true }) : git.run(args, cwd, env);
+    const h = harness({ ...git, run });
+    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: [P.a, P.b] });
+    await h.tick();
+    expect(h.timers.map((t) => t.ms)).toEqual([120_000]);
+    slowB = false;
+    await h.tick();
+    expect(h.timers.map((t) => t.ms)).toEqual([60_000]);
+  });
+
+  it('a round superseded by turning the watch off publishes nothing', async () => {
+    const git = fakeGit({ conflict: true });
+    const h = harness(git);
+    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: [P.a, P.b] });
+    h.timers.shift()!.fn();
+    h.watcher.configure({ enabled: false, intervalMs: 60_000, cwds: [P.a, P.b] });
+    await h.watcher.idle();
+    expect(h.emitted).toEqual([]); // the old round's conflict never reaches the renderer
+    expect(h.watcher.snapshot()).toEqual({ byCwd: {}, cwdsByWorktree: {} });
+  });
+
   it('clamps the interval', async () => {
     const h = harness(fakeGit());
-    h.watcher.configure({ enabled: true, intervalMs: 5, cwds: ['/r/a', '/r/b'] });
+    h.watcher.configure({ enabled: true, intervalMs: 5, cwds: [P.a, P.b] });
     await h.tick();
     expect(h.timers.map((t) => t.ms)).toEqual([30_000]);
   });
@@ -247,7 +283,7 @@ describe('SiblingCollisionWatcher', () => {
   it('a poke during a round runs one more round right after', async () => {
     const git = fakeGit();
     const h = harness(git);
-    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: ['/r/a', '/r/b'] });
+    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: [P.a, P.b] });
     const t = h.timers.shift()!;
     t.fn();
     h.watcher.poke();
@@ -258,7 +294,7 @@ describe('SiblingCollisionWatcher', () => {
   it('disposed: nothing runs', () => {
     const h = harness(fakeGit());
     h.watcher.dispose();
-    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: ['/r/a', '/r/b'] });
+    h.watcher.configure({ enabled: true, intervalMs: 60_000, cwds: [P.a, P.b] });
     h.watcher.poke();
     expect(h.timers).toHaveLength(0);
   });

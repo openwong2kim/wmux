@@ -247,6 +247,8 @@ export class SiblingCollisionWatcher {
   private pairCache = new Map<string, PairResult>();
   /** Each folder's worktree as last resolved (reused for a folder whose read timed out). */
   private resolvedBefore = new Map<string, ResolvedWorktree>();
+  /** Bumped when the watch changes or stops; a round from an older generation publishes and caches nothing. */
+  private generation = 0;
 
   constructor(private readonly deps: WatcherDeps) {
     this.run = deps.run ?? runGit;
@@ -266,6 +268,7 @@ export class SiblingCollisionWatcher {
     this.intervalMs = intervalMs;
     this.cwds = cwds;
     if (!changed) return;
+    this.generation++;
     if (!enabled || cwds.length < 2) {
       this.cancelTimer();
       this.pairCache.clear();
@@ -285,6 +288,7 @@ export class SiblingCollisionWatcher {
 
   dispose(): void {
     this.disposed = true;
+    this.generation++;
     this.cancelTimer();
   }
 
@@ -317,7 +321,7 @@ export class SiblingCollisionWatcher {
 
   private startRound(): void {
     if (this.disposed || this.running) return;
-    this.running = this.round()
+    this.running = this.round(this.generation)
       .then((siblingsOpen) => {
         this.failures = 0;
         return siblingsOpen;
@@ -348,7 +352,8 @@ export class SiblingCollisionWatcher {
    * not a repo) is skipped and keeps its last result; only a timed-out git
    * call fails the round, and that is what backs off.
    */
-  private async round(): Promise<boolean> {
+  private async round(gen: number): Promise<boolean> {
+    const current = () => gen === this.generation;
     const timeouts = { count: 0 };
     const resolved: ResolvedWorktree[] = [];
     const known = new Map<string, ResolvedWorktree>();
@@ -367,16 +372,20 @@ export class SiblingCollisionWatcher {
       const [top, common] = r.stdout.split('\n').map((l) => l.trim());
       if (top && common) resolved.push({ cwd, worktreePath: resolve(top), commonDir: resolve(cwd, common) });
     }
+    if (!current()) return false;
     for (const r of resolved) known.set(r.cwd, r);
     this.resolvedBefore = known;
     const groups = siblingGroups(resolved);
     if (groups.size === 0) {
+      // A folder that timed out may still be a sibling: back off and look again.
+      if (timeouts.count) throw new RoundError('git timed out');
       this.pairCache.clear();
       this.publish(buildSnapshot(resolved, []));
       return false;
     }
     if (this.mergeTree === null) {
-      const v = await this.run(['version'], groups.values().next().value?.[0] ?? this.cwds[0]);
+      // Asked outside the watched folders, so a folder that just went away cannot fail it.
+      const v = await this.run(['version'], tmpdir());
       if (v.timedOut) timeouts.count++;
       if (!v.failed && v.code === 0) this.mergeTree = supportsMergeTreeWriteTree(v.stdout);
       // Unknown git: comparing now would cache the wrong kind of answer.
@@ -384,7 +393,8 @@ export class SiblingCollisionWatcher {
     }
     // Repos in parallel, each strictly serial inside. A repo whose check threw
     // (no scratch directory) keeps its last results.
-    const perRepo = await Promise.allSettled([...groups].map(([commonDir, paths]) => this.checkRepo(commonDir, paths, timeouts)));
+    const perRepo = await Promise.allSettled([...groups].map(([commonDir, paths]) => this.checkRepo(commonDir, paths, timeouts, current)));
+    if (!current()) return false;
     const results: PairResult[] = [];
     perRepo.forEach((r, i) => {
       if (r.status === 'fulfilled') {
@@ -408,7 +418,7 @@ export class SiblingCollisionWatcher {
     return undefined;
   }
 
-  private async checkRepo(commonDir: string, paths: string[], timeouts: { count: number }): Promise<PairResult[]> {
+  private async checkRepo(commonDir: string, paths: string[], timeouts: { count: number }, current: () => boolean): Promise<PairResult[]> {
     const states = new Map<string, WorktreeState>();
     const unread = new Set<string>();
     for (const p of paths) {
@@ -456,6 +466,7 @@ export class SiblingCollisionWatcher {
           if (last) out.push(last);
           continue;
         }
+        if (!current()) return out; // superseded: cache nothing
         // One cache entry per pair.
         for (const k of this.pairCache.keys()) if (k.startsWith(`${a}\0${b}\0`)) this.pairCache.delete(k);
         this.pairCache.set(cacheKey, result);
