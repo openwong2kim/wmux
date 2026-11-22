@@ -20,7 +20,8 @@ import {
 } from './browserScope';
 import { BrowserPolicyError, POLICY_DENIED_CODE } from '../../shared/browserPolicy';
 import { attachPageCapture } from './pageCapture';
-import { trackRequestBaseline } from './actionSettle';
+import { TAP_READY_MS, trackRequestBaseline } from './actionSettle';
+import { networkTapReady } from './pageNetwork';
 import { guardUnclaimedDownloads, isDownloadGuardArmed } from './downloadGuard';
 import {
   attachModalTracking,
@@ -1224,6 +1225,9 @@ export class PlaywrightEngine {
     if (page && this.workspaceBackend !== 'builtin') {
       attachPageCapture(page);
     }
+    // The network session opens asynchronously; a tool that navigates right
+    // after this resolve would otherwise lose the document request to it.
+    if (page) await networkTapReady(page, TAP_READY_MS);
     // Last, after every throwaway CDP session this resolution opened has
     // detached again. Chromium keeps the emulated `navigator.platform` as a
     // page-wide setting, and a detaching session clears it whether or not it

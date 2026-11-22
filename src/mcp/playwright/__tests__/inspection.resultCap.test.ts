@@ -41,6 +41,7 @@ vi.mock('../PlaywrightEngine', () => ({
 import { registerInspectionTools } from '../tools/inspection';
 import { inputSchemaDeclaresMaxBytes, wrapHandlerWithResultCap } from '../../resultCap';
 import { attachPageCapture } from '../pageCapture';
+import { fakeNetwork, type FakeNetwork } from './fakeNetworkSession';
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<{
   content: { type: string; text?: string; data?: string; mimeType?: string }[];
@@ -79,12 +80,17 @@ for (const t of [evaluateTool, consoleTool, network, responseBody, screenshot]) 
 
 interface FakePage extends EventEmitter {
   url: () => string;
+  context: () => { newCDPSession: () => Promise<unknown> };
+  net: FakeNetwork;
 }
 type FakePageWithScreenshot = FakePage & { screenshot?: () => Promise<Buffer> };
 
 function makePage(url = 'about:blank'): FakePage {
   const page = new EventEmitter() as FakePage;
+  const { newCDPSession, net } = fakeNetwork();
   page.url = () => url;
+  page.context = () => ({ newCDPSession });
+  page.net = net;
   return page;
 }
 
@@ -182,11 +188,9 @@ describe('browser_network — text cap honours maxBytes', () => {
     resolveWorkspaceBackend.mockResolvedValue('chrome');
     getPage.mockResolvedValue(asPage(page));
     attachPageCapture(asPage(page));
+    await page.net.ready();
     for (let i = 0; i < 200; i++) {
-      page.emit('request', {
-        url: () => `https://x.test/api/${i}?blob=${'u'.repeat(900)}`,
-        method: () => 'GET',
-      });
+      page.net.request(`https://x.test/api/${i}?blob=${'u'.repeat(900)}`);
     }
 
     const result = await network!({});
