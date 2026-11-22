@@ -26,10 +26,14 @@ describe('labs settings', () => {
     expect(() => labs.writeLabsSettings({ ringCompression: 'on' } as never, file)).toThrow();
   });
 
-  it('sees compression already turned on in config.json', async () => {
+  it('reads config.json\'s flag as true, false or unset', async () => {
     const labs = await import('../labsSettings');
     const config = path.join(dir, 'config.json');
-    expect(labs.ringCompressionInConfig(config)).toBe(false);
+    expect(labs.ringCompressionInConfig(config)).toBeNull();
+    fs.writeFileSync(config, '{"session":{}}');
+    expect(labs.ringCompressionInConfig(config)).toBeNull();
+    fs.writeFileSync(config, '{"session":{"ringCompression":"yes"}}');
+    expect(labs.ringCompressionInConfig(config)).toBeNull();
     fs.writeFileSync(config, '{"session":{"ringCompression":false}}');
     expect(labs.ringCompressionInConfig(config)).toBe(false);
     fs.writeFileSync(config, '{"session":{"ringCompression":true}}');

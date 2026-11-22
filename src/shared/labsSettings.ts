@@ -18,12 +18,9 @@ export interface LabsStatus {
   /** What the running terminal host started with (labs.json or config.json's
    *  flag); null when it did not answer. */
   running: LabsSettings | null;
-  /** config.json's session.ringCompression is on, so compression is on whatever labs.json says. */
-  ringCompressionInConfig: boolean;
-  /** Whether ring compression applies to the running host's engine; null when
-   *  it did not report its engine. Every engine compresses now; an older app
-   *  build still reports false for Rust (labs.handler.ts). */
-  ringCompressionApplies: boolean | null;
+  /** config.json's session.ringCompression when it is set (it then wins over
+   *  labs.json), null when it is not. */
+  ringCompressionInConfig: boolean | null;
   restartRequired: boolean;
   stopCommand: string;
 }
@@ -37,11 +34,13 @@ export function labsSettingsPath(): string {
   return path.join(dataDir(), 'labs.json');
 }
 
-export function ringCompressionInConfig(file?: string): boolean {
+/** config.json's session.ringCompression: true or false when set, null otherwise. */
+export function ringCompressionInConfig(file?: string): boolean | null {
   try {
-    return JSON.parse(stripBom(fs.readFileSync(file ?? path.join(dataDir(), 'config.json'), 'utf8')))?.session?.ringCompression === true;
+    const value = JSON.parse(stripBom(fs.readFileSync(file ?? path.join(dataDir(), 'config.json'), 'utf8')))?.session?.ringCompression;
+    return typeof value === 'boolean' ? value : null;
   } catch {
-    return false;
+    return null;
   }
 }
 

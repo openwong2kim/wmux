@@ -5,41 +5,33 @@ import { IPC } from '../../../shared/constants';
 import {
   readLabsSettings, ringCompressionInConfig, writeLabsSettings, type LabsSettings, type LabsStatus,
 } from '../../../shared/labsSettings';
-import {
-  terminalCoreStopCommand, type TerminalCoreRuntime, type TerminalEngine,
-} from '../../../shared/terminalCoreSettings';
+import { terminalCoreStopCommand } from '../../../shared/terminalCoreSettings';
 import type { DaemonClient } from '../../DaemonClient';
 import { wrapHandler } from '../wrapHandler';
 
 export function registerLabsHandlers(daemonClient?: DaemonClient): () => void {
   const status = async (): Promise<LabsStatus> => {
     let running: LabsSettings | null = null;
-    let engine: TerminalEngine | null = null;
     if (daemonClient) {
       try {
-        const ping = await daemonClient.rpc('daemon.ping', { includeLabs: true, includeTerminalCore: true }) as {
-          labs?: LabsSettings; terminalCore?: TerminalCoreRuntime;
-        };
-        // Older daemons do not report these; never guess.
+        const ping = await daemonClient.rpc('daemon.ping', { includeLabs: true }) as { labs?: LabsSettings };
+        // Older daemons do not report it; never guess.
         running = ping.labs ?? null;
-        engine = ping.terminalCore?.effective ?? null;
       } catch {
         running = null;
       }
     }
     const saved = readLabsSettings();
     const inConfig = ringCompressionInConfig();
-    // The next daemon compresses when either switch is on.
-    const wanted = saved.ringCompression || inConfig;
-    const applies = engine === null ? null : engine === 'node';
+    // What the next daemon does: config.json when it sets the flag, else
+    // labs.json (DaemonSessionManager.ringCompressionEnabled), on either engine.
+    const wanted = inConfig ?? saved.ringCompression;
     return {
       saved, running,
       ringCompressionInConfig: inConfig,
-      ringCompressionApplies: applies,
-      // A Rust host ignores the switch, so a restart changes nothing. No daemon
-      // answer (local mode, a ping failure, an older daemon): only an opt-in
-      // can be waiting for a restart; an off switch never is.
-      restartRequired: applies === false ? false : running === null ? wanted : wanted !== running.ringCompression,
+      // Without a daemon answer (local mode, a ping failure) nothing says a
+      // restart would change anything.
+      restartRequired: running !== null && wanted !== running.ringCompression,
       stopCommand: terminalCoreStopCommand(),
     };
   };

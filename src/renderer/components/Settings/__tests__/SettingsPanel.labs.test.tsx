@@ -9,8 +9,8 @@ vi.mock('../../../hooks/useT', () => ({ useT: () => (key: string) => key }));
 import { TabLabs } from '../SettingsPanel';
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const base: LabsStatus = {
-  saved: { ringCompression: false }, running: { ringCompression: false },
-  ringCompressionInConfig: false, ringCompressionApplies: true, restartRequired: false,
+  saved: { ringCompression: true }, running: { ringCompression: true },
+  ringCompressionInConfig: null, restartRequired: false,
   stopCommand: "WMUX_DATA_SUFFIX='-test' wmux daemon stop",
 };
 let root: Root;
@@ -35,15 +35,20 @@ function ringToggle(): HTMLButtonElement | HTMLInputElement {
 }
 
 describe('Settings › Labs ring compression', () => {
-  it('is enabled without a note while the daemon runs the Node engine', async () => {
+  const checked = () => ringToggle().getAttribute('aria-checked') ?? String((ringToggle() as HTMLInputElement).checked);
+  it('is on and enabled by default, with no note', async () => {
     await render(base);
     expect(ringToggle().disabled).toBe(false);
-    expect(container.textContent).not.toContain('settings.labsRingCompressionNodeOnly');
+    expect(checked()).toBe('true');
+    expect(container.textContent).not.toContain('settings.labsRingCompressionInConfig');
+    expect(container.textContent).not.toContain('settings.labsRingCompressionOffInConfig');
+    expect(container.textContent).not.toContain('settings.labsRestartDaemon');
   });
-  it('is disabled with the Node-only note while the daemon runs Rust', async () => {
-    await render({ ...base, saved: { ringCompression: true }, ringCompressionApplies: false });
+  it('reads off and disabled, with the reason, when config.json turns compression off', async () => {
+    await render({ ...base, running: { ringCompression: false }, ringCompressionInConfig: false });
     expect(ringToggle().disabled).toBe(true);
-    expect(container.textContent).toContain('settings.labsRingCompressionNodeOnly');
+    expect(checked()).toBe('false');
+    expect(container.textContent).toContain('settings.labsRingCompressionOffInConfig');
     expect(container.textContent).not.toContain('settings.labsRestartDaemon');
   });
   it('shows the restart notice when config.json turned compression on after the daemon started', async () => {
