@@ -50,6 +50,21 @@ function serve(req: IncomingMessage, res: ServerResponse): void {
     res.end('{"from":"frame"}');
     return;
   }
+  if (req.url === '/worker.js') {
+    res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-store' });
+    res.end("setTimeout(() => fetch('/from-worker.json').then((r) => r.json()), 200);");
+    return;
+  }
+  if (req.url === '/from-worker.json') {
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end('{"from":"worker"}');
+    return;
+  }
+  if (req.url === '/with-worker') {
+    res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
+    res.end("<!doctype html><title>w</title><script>new Worker('/worker.js')</script>");
+    return;
+  }
   if (req.url === '/fetches') {
     res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
     res.end("<!doctype html><title>f</title><script>fetch('/api.json').then((r) => r.json()).then(() => { document.title = 'done'; })</script>");
@@ -168,6 +183,22 @@ describe(`network capture memory against real Chrome (${mode.name})`, () => {
       console.log('[pageCapture.memory] iframe rows:', urls().filter((u) => u.includes('frame')).join(' '));
       const later = ensurePageCapture(page).network.find((e) => e.url.endsWith('/frame-later.json'))!;
       await vi.waitFor(async () => expect(await readEntryBody(page, later)).toEqual({ body: '{"from":"frame"}' }), { timeout: 5_000 });
+    } finally {
+      await page.close();
+    }
+  }, 60_000);
+
+  it('lists a dedicated worker\'s requests and returns their bodies', async (ctx) => {
+    if (h.skipUnless(ctx)) return;
+    const page = (await h.browser().newPage()) as Page;
+    try {
+      attachPageCapture(page);
+      expect(await networkTapReady(page, 2_000)).toBe(true);
+      await page.goto(`${h.origin()}with-worker`, { waitUntil: 'load' });
+      const entry = () => ensurePageCapture(page).network.find((e) => e.url.endsWith('/from-worker.json'));
+      await vi.waitFor(() => expect(entry()?.bodyReadable).toBe(true), { timeout: 5_000 });
+      await vi.waitFor(async () => expect(await readEntryBody(page, entry()!)).toEqual({ body: '{"from":"worker"}' }), { timeout: 5_000 });
+      expect(ensurePageCapture(page).pendingRequests.has(entry()!.requestId!)).toBe(false);
     } finally {
       await page.close();
     }

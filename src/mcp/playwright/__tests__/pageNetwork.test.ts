@@ -153,4 +153,33 @@ describe('tapPageNetwork', () => {
 
     expect(frameNet.net.sent.some((c) => c.method === 'Network.enable')).toBe(true);
   });
+
+  it('follows a dedicated worker over the page session, and fails its open requests when it goes', async () => {
+    const main = fakeNetwork();
+    const page = Object.assign(new EventEmitter(), {
+      mainFrame: () => ({}),
+      frames: () => [],
+      context: () => ({ newCDPSession: main.newCDPSession }),
+    }) as unknown as Page & EventEmitter;
+    const seen: string[] = [];
+    const failed: string[] = [];
+    tapPageNetwork(page, { onRequest: (r) => seen.push(r.url), onFailed: (id) => failed.push(id) });
+    await networkTapReady(page, 1_000);
+    expect(main.net.sent.find((c) => c.method === 'Target.setAutoAttach')?.params).toMatchObject({ autoAttach: true, flatten: false });
+
+    const fromWorker = (method: string, params: object) =>
+      main.net.session.emit('Target.receivedMessageFromTarget', { sessionId: 'w1', message: JSON.stringify({ method, params }) });
+    main.net.session.emit('Target.attachedToTarget', { sessionId: 'w1', targetInfo: { type: 'worker' } });
+    main.net.session.emit('Target.attachedToTarget', { sessionId: 'f1', targetInfo: { type: 'iframe' } });
+    await main.net.ready();
+    const sentToWorker = main.net.sent.find((c) => c.method === 'Target.sendMessageToTarget');
+    expect(JSON.parse((sentToWorker?.params as { message: string }).message).method).toBe('Network.enable');
+    // A non-worker target the auto-attach brings is let go (an OOPIF has its own session).
+    expect(main.net.sent.some((c) => c.method === 'Target.detachFromTarget' && (c.params as { sessionId: string }).sessionId === 'f1')).toBe(true);
+
+    fromWorker('Network.requestWillBeSent', { requestId: 'w.1', loaderId: 'l', type: 'Fetch', request: { url: 'https://x.test/api', method: 'GET' } });
+    expect(seen).toEqual(['https://x.test/api']);
+    main.net.session.emit('Target.detachedFromTarget', { sessionId: 'w1' });
+    expect(failed).toEqual(['w.1']);
+  });
 });
