@@ -44,7 +44,7 @@ describe('tapPageNetwork', () => {
     const main = fakeNetwork();
     const mainFrame = { isDetached: () => false };
     const inProcess = { isDetached: () => false };
-    const oopifs = Array.from({ length: MAX_FRAME_SESSIONS + 2 }, () => ({ frame: { isDetached: () => false }, ...fakeNetwork() }));
+    const oopifs = Array.from({ length: MAX_FRAME_SESSIONS + 2 }, () => ({ frame: { isDetached: (): boolean => false }, ...fakeNetwork() }));
     const emitter = new EventEmitter();
     const page = Object.assign(emitter, {
       mainFrame: () => mainFrame,
