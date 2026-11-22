@@ -38,8 +38,11 @@ export function typeFencedLaunch(ptyId: string, line: string, submit: boolean): 
   window.electronAPI.pty.writeLaunch(ptyId, line, submit, 'human').then(
     (res: unknown) => notePaneFenceResult(ptyId, res),
     (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      const reason = paneFenceRefusalReason(message);
       notePaneFenceError(ptyId, err);
-      useStore.getState().pushToast({ level: 'error', message: err instanceof Error ? err.message : String(err) });
+      // A refusal shows its own sentence, not the IPC error wrapper around it.
+      useStore.getState().pushToast({ level: 'error', message: reason ? t('paneFence.refusedTitle', { reason }) : message });
     },
   );
 }
