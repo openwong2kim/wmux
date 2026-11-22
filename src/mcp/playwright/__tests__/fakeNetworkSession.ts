@@ -37,6 +37,7 @@ export function fakeNetwork(): { newCDPSession: () => Promise<unknown>; net: Fak
     off: (event: string, fn: (...a: unknown[]) => void) => session.off(event, fn),
     send: async (method: string, params?: { requestId?: string }) => {
       sent.push({ method, params });
+      if (method === 'Target.getTargetInfo') return { targetInfo: { targetId: 'tab-1' } };
       if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: FAKE_MAIN_FRAME_ID } } };
       if (method === 'Network.getResponseBody') {
         const body = params?.requestId !== undefined ? bodies.get(params.requestId) : undefined;

@@ -113,6 +113,7 @@ async function openSession(page: Page, state: TapState): Promise<boolean> {
   } catch {
     return false;
   }
+  if (typeof session?.on !== 'function') return false;
   let mainFrameId: string | undefined;
   session.on('Network.requestWillBeSent', (p: CdpRequestWillBeSent) => {
     if (p.redirectResponse) {
