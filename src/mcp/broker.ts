@@ -68,6 +68,7 @@ import {
   ConnectionRate,
 } from '../shared/brokerLimits';
 import { setBrowserReplRunnerTotal } from './browser-repl/runnerProcess';
+import { startMemoryLog } from './memoryLog';
 
 interface ShimHandshake {
   wmuxShim: number;
@@ -266,6 +267,8 @@ function main(): void {
   setBrowserReplBrokerMode();
   markBrokerHost();
   setBrokerEnvelopeMode();
+  // One process carries every session's browser use here, so its growth is the one to see.
+  startMemoryLog('[wmux-mcp-broker]');
   const ownUid = typeof process.getuid === 'function' ? process.getuid() : null;
   const tokenSource = brokerTokenSource(getAuthTokenPath(), process.env.WMUX_AUTH_TOKEN, ownUid);
   if (tokenSource.startProblem && tokenSource.startProblem !== 'missing') {
