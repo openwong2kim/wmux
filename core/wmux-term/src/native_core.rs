@@ -6281,6 +6281,30 @@ mod ring_compression_tests {
     }
 
     #[test]
+    fn a_refused_chunk_leaves_a_small_tail_its_own_size() {
+        let (mut plain, mut packed) = rings(4 * CHUNK as u32);
+        for ring in [&mut plain, &mut packed] {
+            ring.write_bytes(b"0123456789").unwrap();
+        }
+        // The tail's first 64 KiB, holding ten bytes.
+        let allocated = packed.allocated_bytes();
+        assert!((allocated as usize) < CHUNK);
+        let data = output(2 * CHUNK + 5, 4);
+        {
+            let _fail = fail_what(PACKED_CHUNK);
+            assert!(matches!(
+                packed.write_bytes(&data),
+                Err(CallError::Alloc(_))
+            ));
+        }
+        same(&plain, &packed);
+        assert_eq!(packed.allocated_bytes(), allocated);
+        plain.write_bytes(&data).unwrap();
+        packed.write_bytes(&data).unwrap();
+        same(&plain, &packed);
+    }
+
+    #[test]
     fn clear_and_dispose_drop_every_byte() {
         let mut ring = NativeRing::create_with(3 * CHUNK as u32, true).unwrap();
         ring.write_bytes(&output(2 * CHUNK + 10, 1)).unwrap();

@@ -30,6 +30,7 @@ const TAIL: &str = "the compressed output ring's open tail";
 const SCRATCH: &str = "the output ring's compression buffer";
 const CODEC: &str = "the output ring's zstd context";
 const UNPACKED: &str = "a decompressed output ring chunk";
+const JOINED: &str = "the output ring's chunk join buffer";
 
 enum Chunk {
     Zstd(Vec<u8>),
@@ -51,17 +52,20 @@ impl Chunk {
 }
 
 /// One compression and one decompression context for every ring on the
-/// thread (the daemon's rings are all written from its JS thread), and the
-/// buffer a chunk compresses into before its exact-size copy.
+/// thread (the daemon's rings are all written from its JS thread), the
+/// buffer a chunk compresses into before its exact-size copy, and the one a
+/// tail is joined with the start of a write in (so a refused write leaves the
+/// tail's own buffer as it was).
 struct Codec {
     cctx: Option<zstd_safe::CCtx<'static>>,
     dctx: Option<zstd_safe::DCtx<'static>>,
     scratch: Vec<u8>,
+    joined: Vec<u8>,
 }
 
 thread_local! {
     static CODEC_STATE: RefCell<Codec> = const {
-        RefCell::new(Codec { cctx: None, dctx: None, scratch: Vec::new() })
+        RefCell::new(Codec { cctx: None, dctx: None, scratch: Vec::new(), joined: Vec::new() })
     };
 }
 
@@ -71,10 +75,25 @@ fn codec_refused(bytes: usize) -> AllocFailed {
     AllocFailed { what: CODEC, bytes }
 }
 
-fn pack(raw: &[u8]) -> Result<Chunk, AllocFailed> {
+/// One closed chunk: `head` (a tail, possibly empty) then `rest`.
+fn pack(head: &[u8], rest: &[u8]) -> Result<Chunk, AllocFailed> {
     CODEC_STATE.with(|state| {
         let mut state = state.borrow_mut();
-        let Codec { cctx, scratch, .. } = &mut *state;
+        let Codec {
+            cctx,
+            scratch,
+            joined,
+            ..
+        } = &mut *state;
+        let raw = if head.is_empty() {
+            rest
+        } else {
+            joined.clear();
+            fallible::try_reserve_exact(joined, head.len() + rest.len(), JOINED)?;
+            joined.extend_from_slice(head);
+            joined.extend_from_slice(rest);
+            &joined[..]
+        };
         if cctx.is_none() {
             *cctx = Some(zstd_safe::CCtx::try_create().ok_or(codec_refused(raw.len()))?);
         }
@@ -167,19 +186,10 @@ impl PackedRing {
         let mut used = 0;
         if closes > 0 {
             used = c - held;
-            if held == 0 {
-                staged.push(pack(&input[..c])?);
-            } else {
-                // The tail ends with the start of this write: join them in
-                // the tail's own buffer, then cut it back.
-                fallible::try_reserve_exact(&mut self.tail, c - held, TAIL)?;
-                self.tail.extend_from_slice(&input[..used]);
-                let first = pack(&self.tail);
-                self.tail.truncate(held);
-                staged.push(first?);
-            }
+            // The tail, then the start of this write.
+            staged.push(pack(&self.tail, &input[..used])?);
             for _ in 1..closes {
-                staged.push(pack(&input[used..used + c])?);
+                staged.push(pack(&[], &input[used..used + c])?);
                 used += c;
             }
         }
