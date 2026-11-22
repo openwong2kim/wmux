@@ -43,8 +43,11 @@ export interface NetResponse {
 export interface NetworkTapListener {
   onRequest?: (request: NetRequest) => void;
   onResponse?: (response: NetResponse) => void;
-  /** Loaded in full, or redirected (the next hop starts as a new request with the same id). */
-  onFinished?: (requestId: string) => void;
+  /**
+   * Loaded in full, or redirected (the next hop starts as a new request with
+   * the same id). `encodedDataLength` is the bytes received, when Chrome says.
+   */
+  onFinished?: (requestId: string, encodedDataLength?: number) => void;
   onFailed?: (requestId: string) => void;
 }
 
@@ -100,11 +103,11 @@ function lowerHeaders(headers: Record<string, unknown> | undefined): Record<stri
 function dispatch<K extends keyof NetworkTapListener>(
   state: TapState,
   key: K,
-  arg: Parameters<NonNullable<NetworkTapListener[K]>>[0],
+  ...args: Parameters<NonNullable<NetworkTapListener[K]>>
 ): void {
   for (const listener of [...state.listeners]) {
     try {
-      (listener[key] as ((a: typeof arg) => void) | undefined)?.(arg);
+      (listener[key] as ((...a: typeof args) => void) | undefined)?.(...args);
     } catch {
       // One watcher's failure must not starve the others.
     }
@@ -150,7 +153,8 @@ async function openSession(page: Page, state: TapState): Promise<boolean> {
       headers: lowerHeaders(p.response.headers),
     });
   });
-  session.on('Network.loadingFinished', (p: { requestId: string }) => dispatch(state, 'onFinished', p.requestId));
+  session.on('Network.loadingFinished', (p: { requestId: string; encodedDataLength?: number }) =>
+    dispatch(state, 'onFinished', p.requestId, p.encodedDataLength));
   session.on('Network.loadingFailed', (p: { requestId: string }) => dispatch(state, 'onFailed', p.requestId));
   try {
     // Sent together: Chrome answers in order, and every round trip before

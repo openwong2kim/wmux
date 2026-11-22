@@ -18,7 +18,11 @@ export interface FakeNetwork {
   /** Chrome let the body go (navigation, buffer pressure). */
   dropBody: (id: string) => void;
   /** One request, answered and finished. */
-  exchange: (url: string, status: number, opts?: { method?: string; contentType?: string; body?: string }) => string;
+  exchange: (
+    url: string,
+    status: number,
+    opts?: { method?: string; contentType?: string; body?: string; type?: string },
+  ) => string;
   sent: Array<{ method: string; params?: unknown }>;
   detached: () => boolean;
   session: EventEmitter;
@@ -78,11 +82,12 @@ export function fakeNetwork(): { newCDPSession: () => Promise<unknown>; net: Fak
         },
       });
     },
-    finish: (id) => session.emit('Network.loadingFinished', { requestId: id }),
+    finish: (id) =>
+      session.emit('Network.loadingFinished', { requestId: id, encodedDataLength: bodies.get(id)?.length ?? 0 }),
     fail: (id) => session.emit('Network.loadingFailed', { requestId: id }),
     dropBody: (id) => bodies.delete(id),
     exchange: (url, status, opts = {}) => {
-      const id = net.request(url, { method: opts.method });
+      const id = net.request(url, { method: opts.method, type: opts.type });
       net.respond(id, status, { contentType: opts.contentType, body: opts.body });
       net.finish(id);
       return id;

@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import v8 from 'node:v8';
 import vm from 'node:vm';
 import type { Page } from 'playwright-core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { trackRequestBaseline } from '../actionSettle';
 import { attachPageCapture, ensurePageCapture, readEntryBody } from '../pageCapture';
 import { networkTapReady } from '../pageNetwork';
@@ -28,6 +28,16 @@ const line = '/* padding padding padding padding padding padding padding */\n';
 const BUNDLE = `${line.repeat(Math.ceil(BUNDLE_BYTES / line.length))}window.bundleLoaded = (window.bundleLoaded || 0) + 1;\n`;
 
 function serve(req: IncomingMessage, res: ServerResponse): void {
+  if (req.url === '/api.json') {
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end('{"rows":[1,2,3]}');
+    return;
+  }
+  if (req.url === '/fetches') {
+    res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
+    res.end("<!doctype html><title>f</title><script>fetch('/api.json').then((r) => r.json()).then(() => { document.title = 'done'; })</script>");
+    return;
+  }
   if (req.url?.startsWith('/bundle.js')) {
     res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-store' });
     res.end(BUNDLE);
@@ -105,6 +115,24 @@ describe(`network capture memory against real Chrome (${mode.name})`, () => {
       const urls = ensurePageCapture(page).network.map((e) => e.url);
       expect(urls).toContain(h.origin());
       expect(urls.some((u) => u.endsWith('/bundle.js'))).toBe(true);
+    } finally {
+      await page.close();
+    }
+  }, 60_000);
+
+  it('still returns a fetch body after the page navigates away', async (ctx) => {
+    if (h.skipUnless(ctx)) return;
+    const page = (await h.browser().newPage()) as Page;
+    try {
+      attachPageCapture(page);
+      expect(await networkTapReady(page, 2_000)).toBe(true);
+      await page.goto(`${h.origin()}fetches`, { waitUntil: 'load' });
+      await page.waitForFunction(() => document.title === 'done');
+      const entry = () => ensurePageCapture(page).network.find((e) => e.url.endsWith('/api.json'));
+      await vi.waitFor(() => expect(entry()?.response?.body).toBeDefined(), { timeout: 5_000 });
+      await page.goto(h.origin(), { waitUntil: 'load' });
+
+      await expect(readEntryBody(page, entry()!)).resolves.toEqual({ body: '{"rows":[1,2,3]}' });
     } finally {
       await page.close();
     }

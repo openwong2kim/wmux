@@ -25,12 +25,15 @@ export interface NetworkEntry {
   status?: number;
   response?: {
     headers: Record<string, string>;
+    /** A small xhr/fetch body copied when it finished (see onFinished); anything else is fetched on demand. */
+    body?: string;
   };
-  /**
-   * The CDP request id. The body is never copied here: browser_response_body
-   * asks Chrome for it by this id when it is called (pageNetwork).
-   */
+  /** Retained-body size, tracked so eviction can keep the budget accurate. */
+  bodyBytes?: number;
+  /** The CDP request id, by which browser_response_body asks Chrome for the body (pageNetwork). */
   requestId?: string;
+  /** Playwright's resourceType spelling ('xhr', 'fetch', 'script', ...). */
+  resourceType?: string;
   /** Loaded in full with a textual, non-streaming body, so Chrome can be asked for it. */
   bodyReadable?: boolean;
 }
@@ -52,6 +55,7 @@ export interface PageCaptureState {
    *  claim the network buffer only goes back that far. */
   consoleWindow: CaptureWindow;
   networkWindow: CaptureWindow;
+  totalBodyBytes: number;
   /**
    * Requests that have started and not yet finished or failed, keyed by the
    * CDP request id with the ms timestamp of their start.
@@ -76,9 +80,15 @@ const MAX_CAPTURE_ENTRIES = 1000;
 // megabytes on its own. Cap both so the ring's worst case is arithmetic.
 const MAX_CONSOLE_TEXT_CHARS = 4096;
 const MAX_URL_CHARS = 2048;
-// Cap the body browser_response_body hands back. Bodies are not retained
-// here at all (see pageNetwork), so this bounds one answer, not a buffer.
+// Cap each retained response body, and the total, so 1000 entries cannot pin
+// 1000 of them. Only small xhr/fetch bodies are retained at all (onFinished):
+// they are what an agent reads after the page has moved on, and Chrome drops
+// a session's bodies when the page navigates. Every other body stays in
+// Chrome and is fetched on demand, capped to the same size in the answer.
 const MAX_RESPONSE_BODY_BYTES = 256 * 1024;
+const MAX_TOTAL_BODY_BYTES = 4 * 1024 * 1024;
+/** Resource types whose small bodies are copied as they finish. */
+const RETAINED_BODY_TYPES = new Set(['xhr', 'fetch']);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 // Unsettled requests tracked at once (insertion-ordered eviction).
 const MAX_PENDING_REQUESTS = 500;
@@ -118,10 +128,30 @@ function pushNetwork(state: PageCaptureState, entry: NetworkEntry): void {
   while (state.network.length > MAX_CAPTURE_ENTRIES) {
     const old = state.network.shift();
     if (!old) break;
+    if (old.response?.body !== undefined) state.totalBodyBytes -= old.bodyBytes ?? 0;
     if (old.requestId !== undefined && state.byRequestId.get(old.requestId) === old) {
       state.byRequestId.delete(old.requestId);
     }
   }
+}
+
+/** Drop the oldest retained bodies (keeping their metadata) until under budget. */
+function evictBodies(state: PageCaptureState): void {
+  if (state.totalBodyBytes <= MAX_TOTAL_BODY_BYTES) return;
+  for (const entry of state.network) {
+    if (state.totalBodyBytes <= MAX_TOTAL_BODY_BYTES) break;
+    if (entry.response?.body !== undefined) {
+      state.totalBodyBytes -= entry.bodyBytes ?? 0;
+      entry.bodyBytes = undefined;
+      entry.response.body = undefined;
+    }
+  }
+}
+
+function capBody(body: string): string {
+  return body.length > MAX_RESPONSE_BODY_BYTES
+    ? body.slice(0, MAX_RESPONSE_BODY_BYTES) + `\n... [truncated ${body.length - MAX_RESPONSE_BODY_BYTES} chars]`
+    : body;
 }
 
 /**
@@ -178,6 +208,7 @@ export function attachPageCapture(page: Page): PageCaptureState {
     network: [],
     consoleWindow: { ...window },
     networkWindow: { ...window },
+    totalBodyBytes: 0,
     pendingRequests: new Map<string, number>(),
     byRequestId: new Map<string, NetworkEntry>(),
   };
@@ -226,6 +257,7 @@ export function attachPageCapture(page: Page): PageCaptureState {
       url: truncate(request.url, MAX_URL_CHARS),
       method: request.method,
       requestId: request.requestId,
+      resourceType: request.resourceType,
     };
     pushNetwork(state, entry);
     state.byRequestId.set(request.requestId, entry);
@@ -240,14 +272,29 @@ export function attachPageCapture(page: Page): PageCaptureState {
 
   // Settlement. Both must clear the entry: finishing alone leaves every
   // blocked/aborted request pending forever.
-  const onFinished = (requestId: string) => {
+  const onFinished = (requestId: string, encodedDataLength?: number) => {
     state.pendingRequests.delete(requestId);
     const entry = state.byRequestId.get(requestId);
     // A redirect hop also finishes here, and has no body of its own.
-    if (entry && !REDIRECT_STATUSES.has(entry.status ?? 0)
-      && isRetainableTextBody(entry.response?.headers['content-type'] ?? '')) {
-      entry.bodyReadable = true;
-    }
+    if (!entry || REDIRECT_STATUSES.has(entry.status ?? 0)
+      || !isRetainableTextBody(entry.response?.headers['content-type'] ?? '')) return;
+    entry.bodyReadable = true;
+    // A small xhr/fetch body is copied now, while Chrome still has it: the
+    // page navigating away drops it there. A plain string under the caps
+    // above; Playwright never sees the body, so it keeps no Buffer of it.
+    if (!RETAINED_BODY_TYPES.has(entry.resourceType ?? '')) return;
+    if (encodedDataLength === undefined || encodedDataLength > MAX_RESPONSE_BODY_BYTES) return;
+    void fetchResponseBody(page, requestId).then((result) => {
+      // The state was dropped on close, the entry left the ring, or
+      // clear:true replaced the array: charging a dead entry's bytes would
+      // leak the budget, since evictBodies can no longer reach it.
+      if (!('body' in result) || !entry.response || states.get(page) !== state) return;
+      if (!state.network.includes(entry)) return;
+      entry.response.body = capBody(result.body);
+      entry.bodyBytes = entry.response.body.length;
+      state.totalBodyBytes += entry.bodyBytes;
+      evictBodies(state);
+    });
   };
   const onFailed = (requestId: string) => {
     state.pendingRequests.delete(requestId);
@@ -295,6 +342,7 @@ export function clearConsoleCapture(state: PageCaptureState): void {
 /** Reset the network buffer (browser_network clear:true). */
 export function clearNetworkCapture(state: PageCaptureState): void {
   state.network = [];
+  state.totalBodyBytes = 0;
   state.byRequestId.clear();
   state.pendingRequests.clear();
   state.networkWindow = { since: Date.now(), missedBefore: false };
@@ -341,20 +389,16 @@ export function peekRecentPendingRequests(page: Page, now = Date.now()): number 
 export type EntryBody = { body: string } | { unavailable: 'not-readable' | 'gone' };
 
 /**
- * Fetch a captured entry's body from Chrome, now. Nothing is cached: the next
- * call asks again, so a body read once is not kept alive by having been read.
+ * A captured entry's body: the retained copy when there is one, else asked of
+ * Chrome now. A body fetched on demand is not cached, so reading one does not
+ * keep it alive.
  */
 export async function readEntryBody(page: Page, entry: NetworkEntry): Promise<EntryBody> {
+  if (entry.response?.body !== undefined) return { body: entry.response.body };
   if (!entry.bodyReadable || entry.requestId === undefined) return { unavailable: 'not-readable' };
   const result = await fetchResponseBody(page, entry.requestId);
   if ('unavailable' in result) return { unavailable: 'gone' };
-  const body = result.body;
-  return {
-    body:
-      body.length > MAX_RESPONSE_BODY_BYTES
-        ? body.slice(0, MAX_RESPONSE_BODY_BYTES) + `\n... [truncated ${body.length - MAX_RESPONSE_BODY_BYTES} chars]`
-        : body,
-  };
+  return { body: capBody(result.body) };
 }
 
 /** Bounds, exported so tests assert the ring's contract rather than assume it. */
@@ -363,5 +407,6 @@ export const CAPTURE_BOUNDS = {
   MAX_CONSOLE_TEXT_CHARS,
   MAX_URL_CHARS,
   MAX_RESPONSE_BODY_BYTES,
+  MAX_TOTAL_BODY_BYTES,
   MAX_PENDING_REQUESTS,
 } as const;

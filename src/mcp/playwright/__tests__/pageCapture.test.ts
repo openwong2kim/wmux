@@ -107,12 +107,12 @@ describe('attachPageCapture', () => {
     expect(state.console[0].text).toContain('[truncated');
   });
 
-  it('pairs a response with its request and copies no body until one is asked for', async () => {
+  it('pairs a response with its request and copies no script body until one is asked for', async () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
     await page.net.ready();
 
-    page.net.exchange('https://x.test/api', 201, { method: 'POST', body: '{"ok":true}' });
+    page.net.exchange('https://x.test/api', 201, { method: 'POST', type: 'Script', body: '{"ok":true}' });
     await tick();
 
     expect(state.network[0]).toMatchObject({ method: 'POST', status: 201, bodyReadable: true });
@@ -265,6 +265,63 @@ describe('attachPageCapture — uncaught exceptions (#1081)', () => {
     page.emit('pageerror', error);
 
     expect(state.console[0].text.length).toBeLessThan(CAPTURE_BOUNDS.MAX_CONSOLE_TEXT_CHARS + 64);
+  });
+});
+
+describe('attachPageCapture — small xhr/fetch bodies outlive a navigation', () => {
+  it('copies a small fetch body as it finishes, so it is there after Chrome drops it', async () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+    await page.net.ready();
+
+    const id = page.net.exchange('https://x.test/api', 200, { body: '{"kept":true}' });
+    await tick();
+    page.net.dropBody(id); // the page navigated away
+
+    expect(state.network[0].response?.body).toBe('{"kept":true}');
+    await expect(readEntryBody(asPage(page), state.network[0])).resolves.toEqual({ body: '{"kept":true}' });
+  });
+
+  it('copies no script, document, or over-cap body; those stay on demand', async () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+    await page.net.ready();
+
+    page.net.exchange('https://x.test/app.js', 200, { type: 'Script', contentType: 'text/javascript', body: 'x=1' });
+    page.net.exchange('https://x.test/', 200, { type: 'Document', contentType: 'text/html', body: '<p>' });
+    page.net.exchange('https://x.test/big', 200, { body: 'y'.repeat(CAPTURE_BOUNDS.MAX_RESPONSE_BODY_BYTES + 1) });
+    await tick();
+
+    expect(state.network.map((e) => e.response?.body)).toEqual([undefined, undefined, undefined]);
+    expect(state.totalBodyBytes).toBe(0);
+    await expect(readEntryBody(asPage(page), state.network[0])).resolves.toEqual({ body: 'x=1' });
+  });
+
+  it('drops the oldest retained bodies once the total body budget is exceeded', async () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+    await page.net.ready();
+    const body = 'y'.repeat(CAPTURE_BOUNDS.MAX_RESPONSE_BODY_BYTES);
+    const count = Math.ceil(CAPTURE_BOUNDS.MAX_TOTAL_BODY_BYTES / body.length) + 2;
+
+    for (let i = 0; i < count; i++) page.net.exchange(`https://x.test/big/${i}`, 200, { body });
+    await tick();
+
+    expect(state.totalBodyBytes).toBeLessThanOrEqual(CAPTURE_BOUNDS.MAX_TOTAL_BODY_BYTES);
+    expect(state.network[0].response?.body).toBeUndefined();
+    expect(state.network[count - 1].response?.body).toBeDefined();
+  });
+
+  it('charges nothing for a body that lands after clear:true', async () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+    await page.net.ready();
+
+    page.net.exchange('https://x.test/api', 200, { body: 'z'.repeat(1000) });
+    clearNetworkCapture(state); // before the body fetch resolves
+    await tick();
+
+    expect(state.totalBodyBytes).toBe(0);
   });
 });
 
