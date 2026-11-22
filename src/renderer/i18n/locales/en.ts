@@ -10,6 +10,7 @@ export const en = {
   "paneFence.refused": "Fence refused",
   "paneFence.refusedTitle": "The agent did not start: {reason}",
   "paneFence.switchFailed": "The worker fence switch could not be saved",
+  "paneFence.multiline": "a multi-line keybinding can't start an agent in a fenced tab; make it one line",
   "workspaceProfile.fenceAgents": "Contain agents in new terminals (worker fence)",
   "workspaceProfile.fenceAgentsHint": "New terminals start with the worker fence on: agents wmux starts there write only in the terminal's folder and can't read credential files. Claude Code only for now. User settings' hooks, enabledPlugins and statusLine are not loaded; env, model and apiKeyHelper are.",
   "plugins.settings.commander": "Files",

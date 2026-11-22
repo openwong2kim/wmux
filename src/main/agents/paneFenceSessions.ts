@@ -61,9 +61,12 @@ function load(dir: string): Map<string, PaneFenceSession> {
 
 function save(dir: string, sessions: Map<string, PaneFenceSession>): void {
   while (sessions.size > PANE_FENCE_SESSIONS_MAX) {
+    // A switched-off record goes first: dropping an on one would let that
+    // pane's next launch start unfenced until the renderer asserts it again.
     let oldest: string | null = null;
     let at = Infinity;
-    for (const [id, r] of sessions) if (r.at < at) { at = r.at; oldest = id; }
+    for (const [id, r] of sessions) if (!r.on && r.at < at) { at = r.at; oldest = id; }
+    if (oldest === null) for (const [id, r] of sessions) if (r.at < at) { at = r.at; oldest = id; }
     if (oldest === null) break;
     sessions.delete(oldest);
   }
@@ -80,10 +83,12 @@ export function getPaneFenceSession(sessionId: string, dir: string = getWmuxDir(
   return load(dir).get(sessionId) ?? null;
 }
 
-/** Record a fenced launch of the session (it stays on). */
+/** Record a fenced launch of the session. Its switch stays as it is (a
+ *  switch-off made while the launch was being checked holds); a session with
+ *  no record yet is on. */
 export function notePaneFenceLaunch(sessionId: string, launch: { cwd: string; settingsFile: string; tempDir?: string }, dir: string = getWmuxDir(), now: number = Date.now()): void {
   const sessions = load(dir);
-  sessions.set(sessionId, { on: true, cwd: launch.cwd, settingsFile: launch.settingsFile, ...(launch.tempDir ? { tempDir: launch.tempDir } : {}), at: now });
+  sessions.set(sessionId, { on: sessions.get(sessionId)?.on ?? true, cwd: launch.cwd, settingsFile: launch.settingsFile, ...(launch.tempDir ? { tempDir: launch.tempDir } : {}), at: now });
   save(dir, sessions);
 }
 

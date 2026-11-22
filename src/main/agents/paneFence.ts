@@ -29,7 +29,8 @@ import { bridgeHookGroups, findBridgeSourceFrom } from '../../cli/commands/setup
 import { startsAgent } from '../factory/workerSlots';
 import { attachWorkerFence, lastWorkerFenceSupport, writeContentFile, type WorkerFenceAttachInput, type WorkerFenceSupport } from './botWorkerFence';
 import { pinClaudeLauncher } from './botWorkerMergeGuard';
-import { mergeWorkerFenceSettings, workerFenceLaunch } from './workerFence';
+import { mergeWorkerFenceSettings, workerFenceLaunch, WRAPPER_STEMS } from './workerFence';
+import { launcherStem } from '../../shared/agentResume';
 
 /** The refusal for an agent the fence does not cover yet. */
 export const PANE_FENCE_CLAUDE_ONLY = 'the worker fence runs Claude Code only for now, so this agent does not start in a fenced pane';
@@ -57,6 +58,19 @@ export interface PaneFenceLaunchRecord {
   tempDir?: string;
 }
 
+/** Whether `line` starts an agent, also behind wrapper words (`command`,
+ *  `sh -c`, `nohup`, ...) and their flags, which startsAgent alone does not
+ *  look past. Pure. */
+export function paneLineStartsAgent(line: string): boolean {
+  if (namesClaude(line) || namesCodex(line) || startsAgent(line)) return true;
+  const tokens = tokenize(splitModelEnvMarker(line.trim()).command.trim());
+  let i = 0;
+  while (i < tokens.length && (WRAPPER_STEMS.has(launcherStem(tokens[i].value)) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i].value) || tokens[i].value.startsWith('-'))) i += 1;
+  if (i === 0 || i >= tokens.length) return false;
+  const rest = tokens.slice(i).map((t) => t.value).join(' ');
+  return namesCodex(rest) || startsAgent(rest);
+}
+
 function refusal(why: string): Error {
   return new Error(`worker fence: ${why}`);
 }
@@ -80,7 +94,7 @@ export function spliceProjectSettingSources(fullCommand: string): string | null 
  */
 export function paneFenceLaunch(line: string, cwd: string | undefined, launch: { wsl?: boolean } = {}, deps: PaneFenceDeps = {}): { line: string; record: PaneFenceLaunchRecord } | null {
   if (!namesClaude(line)) {
-    if (namesCodex(line) || startsAgent(line)) throw refusal(PANE_FENCE_CLAUDE_ONLY);
+    if (paneLineStartsAgent(line)) throw refusal(PANE_FENCE_CLAUDE_ONLY);
     return null;
   }
   const platform = deps.platform ?? process.platform;

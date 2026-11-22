@@ -9,6 +9,10 @@
 import { useStore } from '../stores';
 import { t } from '../i18n';
 import { paneFenceRefusalReason, type PaneFenceState } from '../../shared/paneFence';
+import { launcherStem, tokenize } from '../../shared/agentResume';
+import { AGENT_ROWS, agentLauncherStem } from '../../shared/agentIdentity';
+
+const AGENT_STEMS: ReadonlySet<string> = new Set(AGENT_ROWS.map(agentLauncherStem));
 
 /** Whether main refused a fenced launch: notes the refusal on the tab's
  *  chip and returns true. Any other error returns false. */
@@ -16,6 +20,15 @@ export function notePaneFenceError(ptyId: string, err: unknown): boolean {
   const reason = paneFenceRefusalReason(err instanceof Error ? err.message : String(err));
   if (!reason) return false;
   useStore.getState().setPaneFenceNotice(ptyId, { kind: 'refused', reason });
+  return true;
+}
+
+/** A toast with a fence refusal's own sentence, not the IPC error wrapper
+ *  around it. Returns false (no toast) for any other error. */
+export function toastPaneFenceRefusal(err: unknown): boolean {
+  const reason = paneFenceRefusalReason(err instanceof Error ? err.message : String(err));
+  if (!reason) return false;
+  useStore.getState().pushToast({ level: 'error', message: t('paneFence.refusedTitle', { reason }) });
   return true;
 }
 
@@ -32,17 +45,27 @@ export function keybindingGoesThroughFence(surface: { workerFence?: boolean }, c
   return surface.workerFence === true && !/[\r\n]/.test(command);
 }
 
+/** A multi-line keybinding in an opted-in tab that starts an agent: main's
+ *  fenced launch takes one line, and the raw write would start it unfenced,
+ *  so it is refused (chip and toast) and nothing is typed. True when refused. */
+export function refuseMultilineFencedKeybinding(surface: { workerFence?: boolean }, ptyId: string, command: string): boolean {
+  if (surface.workerFence !== true || !/[\r\n]/.test(command)) return false;
+  // Any word naming an agent (also behind a wrapper such as `command`).
+  if (!command.split(/[\r\n]+/).some((l) => tokenize(l).some((tok) => AGENT_STEMS.has(launcherStem(tok.value))))) return false;
+  const reason = t('paneFence.multiline');
+  useStore.getState().setPaneFenceNotice(ptyId, { kind: 'refused', reason });
+  useStore.getState().pushToast({ level: 'error', message: t('paneFence.refusedTitle', { reason }) });
+  return true;
+}
+
 /** Type a launch line into an opted-in tab through main, which fences an
  *  agent line or refuses it (then the chip and a toast say why). */
 export function typeFencedLaunch(ptyId: string, line: string, submit: boolean): void {
   window.electronAPI.pty.writeLaunch(ptyId, line, submit, 'human').then(
     (res: unknown) => notePaneFenceResult(ptyId, res),
     (err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      const reason = paneFenceRefusalReason(message);
       notePaneFenceError(ptyId, err);
-      // A refusal shows its own sentence, not the IPC error wrapper around it.
-      useStore.getState().pushToast({ level: 'error', message: reason ? t('paneFence.refusedTitle', { reason }) : message });
+      if (!toastPaneFenceRefusal(err)) useStore.getState().pushToast({ level: 'error', message: err instanceof Error ? err.message : String(err) });
     },
   );
 }
@@ -57,6 +80,8 @@ export function setTabWorkerFence(surfaceId: string, ptyId: string | undefined, 
   store.setPaneFenceNotice(ptyId, agentRunning ? { kind: 'pending' } : null);
   asserted.add(ptyId);
   window.electronAPI.pty.setFence?.(ptyId, on).catch((err: unknown) => {
+    // Not recorded in main: the next assertion tries again.
+    asserted.delete(ptyId);
     store.pushToast({ level: 'error', message: `${t('paneFence.switchFailed')} (${err instanceof Error ? err.message : String(err)})` });
   });
 }

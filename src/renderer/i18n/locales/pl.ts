@@ -10,6 +10,7 @@ export const pl = {
   "paneFence.refused": "Ogrodzenie odmówiło",
   "paneFence.refusedTitle": "Agent nie wystartował: {reason}",
   "paneFence.switchFailed": "Nie udało się zapisać przełącznika ogrodzenia workera",
+  "paneFence.multiline": "wielowierszowy skrót nie może uruchomić agenta w karcie za ogrodzeniem; zapisz go w jednej linii",
   "workspaceProfile.fenceAgents": "Ogranicz agentów w nowych terminalach (ogrodzenie workera)",
   "workspaceProfile.fenceAgentsHint": "Nowe terminale startują z włączonym ogrodzeniem workera: agenci uruchamiani tam przez wmux zapisują tylko w folderze terminala i nie mogą czytać plików z poświadczeniami. Na razie tylko Claude Code. Hooks, enabledPlugins i statusLine z ustawień użytkownika nie są wczytywane; env, model i apiKeyHelper są.",
   "plugins.settings.commander": "Files",

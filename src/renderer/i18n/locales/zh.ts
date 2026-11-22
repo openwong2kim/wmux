@@ -10,6 +10,7 @@ export const zh = {
   "paneFence.refused": "围栏已拒绝",
   "paneFence.refusedTitle": "代理未启动：{reason}",
   "paneFence.switchFailed": "无法保存工作者围栏开关",
+  "paneFence.multiline": "多行快捷键无法在受限标签页中启动代理；请改为一行",
   "workspaceProfile.fenceAgents": "在新终端中约束代理（工作者围栏）",
   "workspaceProfile.fenceAgentsHint": "新终端启动时开启工作者围栏：wmux 在其中启动的代理只能写入终端的文件夹，且无法读取凭据文件。目前仅支持 Claude Code。不会加载用户设置中的 hooks、enabledPlugins 和 statusLine；会带上 env、model 和 apiKeyHelper。",
   "plugins.settings.commander": "Files",

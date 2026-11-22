@@ -431,7 +431,7 @@ export type WorkerFenceLaunch =
 
 /** Programs that run another program: a line starting with one starts claude
  *  (if at all) where the fence's flag cannot be put. */
-const WRAPPER_STEMS: ReadonlySet<string> = new Set([
+export const WRAPPER_STEMS: ReadonlySet<string> = new Set([
   'env', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'mksh', 'ash', 'fish', 'csh', 'tcsh', 'busybox',
   'exec', 'command', 'builtin', 'eval', 'source', '.', 'nohup', 'nice', 'sudo', 'doas', 'su', 'time', 'timeout',
   'stdbuf', 'xargs', 'script', 'caffeinate', 'npx', 'bunx', 'pnpx', 'cmd', 'powershell', 'pwsh', 'wsl',

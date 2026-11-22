@@ -5,7 +5,7 @@ import { collectPaneTreePtyIds, findLeaf, getLeafPanes, getWorkspacePtyIds } fro
 import { terminalRegistry } from './useTerminal';
 import { t } from '../i18n';
 import { pastePtyChunked } from '../utils/clipboardChunk';
-import { keybindingGoesThroughFence, typeFencedLaunch } from '../utils/paneFence';
+import { keybindingGoesThroughFence, refuseMultilineFencedKeybinding, typeFencedLaunch } from '../utils/paneFence';
 import { isPluginPageShortcut, isPrefixTrigger, resolveShortcut, type ShortcutActionId } from '../../shared/keymap';
 import { isPcRailAction, pcRailClaimsKey, pcShortcutTarget } from '../components/PcRail/pcRailModel';
 import { activeShortcutBindings, shortcutPressGuard } from '../utils/shortcutBindings';
@@ -728,6 +728,8 @@ export function useKeyboard() {
               // An opted-in tab: main types the line, fencing an agent launch
               // (utils/paneFence.ts) instead of it reaching the shell as is.
               typeFencedLaunch(surface.ptyId, match.command, match.sendEnter);
+            } else if (surface?.ptyId && refuseMultilineFencedKeybinding(surface, surface.ptyId, match.command)) {
+              // Refused: nothing is typed (the chip and a toast say why).
             } else if (surface?.ptyId) {
               const text = match.sendEnter ? match.command + '\r' : match.command;
               // Route through the paste chunker. User-authored keybinding

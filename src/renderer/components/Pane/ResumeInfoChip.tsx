@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { notePaneFenceError, notePaneFenceResult } from '../../utils/paneFence';
+import { notePaneFenceError, notePaneFenceResult, toastPaneFenceRefusal } from '../../utils/paneFence';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
 import { isPaneAgentBusy } from '../../stores/selectors/fleet';
@@ -228,7 +228,7 @@ export default function ResumeInfoChip(props: {
       window.electronAPI.pty.writeLaunch(ptyId, command, false, 'human').then((res: unknown) => notePaneFenceResult(ptyId, res), (err: unknown) => {
         console.warn('[wmux:resume] the resume line was not typed', String(err));
         notePaneFenceError(ptyId, err);
-        toastFolderTrustLaunchRefusal(err);
+        if (!toastPaneFenceRefusal(err)) toastFolderTrustLaunchRefusal(err);
       });
     }
     setOpen(false);

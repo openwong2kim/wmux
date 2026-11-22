@@ -29,6 +29,7 @@ vi.mock('../../../agents/paneFence', () => ({
     return /^claude/.test(line) ? { line: `/opt/claude --setting-sources=project --settings="/d/f.json"${line.slice('claude'.length)}`, record: { cwd: cwd ?? '', settingsFile: '/d/f.json' } } : null;
   },
   paneFenceCwdRefusal: () => null,
+  paneLineStartsAgent: (line: string) => /^(claude|codex|gemini)\b/.test(line),
 }));
 vi.mock('../../../agents/paneFenceSessions', () => ({
   getPaneFenceSession: (id: string) => fence.sessions.get(id) ?? null,

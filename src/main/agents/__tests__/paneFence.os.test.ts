@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { PANE_FENCE_CLAUDE_ONLY, paneFenceCwdRefusal, paneFenceLaunch, spliceProjectSettingSources, type PaneFenceDeps } from '../paneFence';
+import { PANE_FENCE_CLAUDE_ONLY, paneFenceCwdRefusal, paneFenceLaunch, paneLineStartsAgent, spliceProjectSettingSources, type PaneFenceDeps } from '../paneFence';
 import {
   PANE_FENCE_SESSIONS_MAX,
   __resetPaneFenceSessionsForTesting,
@@ -84,10 +84,12 @@ describe.skipIf(isWin)('an opted-in pane\'s launch', () => {
 
   it('leaves a plain shell command alone', () => {
     expect(paneFenceLaunch('ls -la', repo, {}, deps())).toBeNull();
+    expect(paneFenceLaunch('nice -n 10 make', repo, {}, deps())).toBeNull();
+    expect(paneLineStartsAgent('command ls')).toBe(false);
   });
 
   it('refuses codex and any other agent: Claude Code only for now', () => {
-    for (const line of ['codex', 'codex --yolo', 'gemini']) {
+    for (const line of ['codex', 'codex --yolo', 'gemini', 'command gemini', 'nohup nice -n 5 codex', "sh -c 'gemini'"]) {
       const why = refusalOf(() => paneFenceLaunch(line, repo, {}, deps()));
       expect(why, line).toContain(PANE_FENCE_CLAUDE_ONLY);
       expect(why).toContain('Claude Code only for now');
@@ -115,6 +117,15 @@ describe.skipIf(isWin)('an opted-in pane\'s launch', () => {
     expect(refusalOf(() => paneFenceLaunch('claude', '/', {}, deps()))).toContain('root of the disk');
     expect(refusalOf(() => paneFenceLaunch('claude', root, {}, deps()))).toContain('the fence keeps unreadable');
     expect(refusalOf(() => paneFenceLaunch('claude', undefined, {}, deps()))).toContain('no folder');
+  });
+
+  it('refuses a folder inside a credential path, and denies the pane env\'s own config folder', () => {
+    const inSsh = path.join(home, '.ssh', 'project');
+    fs.mkdirSync(inSsh, { recursive: true });
+    expect(refusalOf(() => paneFenceLaunch('claude', inSsh, {}, deps()))).toContain('is inside');
+    const cfg = path.join(root, 'profile-claude');
+    const res = paneFenceLaunch('claude', repo, {}, deps({ fence: { runtime: RUNTIME, home, env: { CLAUDE_CONFIG_DIR: cfg }, accountConfigDirs: [] } }));
+    expect(JSON.stringify(settingsOf(res!.line))).toContain(path.join(cfg, '.credentials.json'));
   });
 
   it('refuses a line the fence cannot be attached to', () => {
@@ -168,9 +179,20 @@ describe('the session record', () => {
     expect(getPaneFenceSession('daemon-1', dir)).toBeNull();
   });
 
-  it('keeps at most PANE_FENCE_SESSIONS_MAX sessions, dropping the oldest', () => {
-    for (let i = 0; i <= PANE_FENCE_SESSIONS_MAX; i++) setPaneFenceOn(`daemon-${i}`, true, dir, i);
+  it('keeps at most PANE_FENCE_SESSIONS_MAX sessions, dropping a switched-off one first, else the oldest', () => {
+    setPaneFenceOn('daemon-off', false, dir, PANE_FENCE_SESSIONS_MAX);
+    for (let i = 0; i < PANE_FENCE_SESSIONS_MAX; i++) setPaneFenceOn(`daemon-${i}`, true, dir, i);
+    expect(getPaneFenceSession('daemon-off', dir)).toBeNull();
+    expect(getPaneFenceSession('daemon-0', dir)?.on).toBe(true);
+    setPaneFenceOn('daemon-new', true, dir, PANE_FENCE_SESSIONS_MAX + 1);
     expect(getPaneFenceSession('daemon-0', dir)).toBeNull();
-    expect(getPaneFenceSession(`daemon-${PANE_FENCE_SESSIONS_MAX}`, dir)?.on).toBe(true);
+  });
+
+  it('a fenced launch keeps a switch-off made while it was checked', () => {
+    setPaneFenceOn('daemon-1', false, dir, 1);
+    notePaneFenceLaunch('daemon-1', { cwd: '/w/p', settingsFile: '/d/f.json' }, dir, 2);
+    expect(getPaneFenceSession('daemon-1', dir)?.on).toBe(false);
+    notePaneFenceLaunch('daemon-2', { cwd: '/w/p', settingsFile: '/d/f.json' }, dir, 3);
+    expect(getPaneFenceSession('daemon-2', dir)?.on).toBe(true);
   });
 });

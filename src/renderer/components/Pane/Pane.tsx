@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState, useMemo, useRef } from 'react';
-import { notePaneFenceError, notePaneFenceResult } from '../../utils/paneFence';
+import { notePaneFenceError, notePaneFenceResult, toastPaneFenceRefusal } from '../../utils/paneFence';
 import { Panel, Group, Separator, type Layout } from 'react-resizable-panels';
 import type { PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
@@ -1382,7 +1382,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
             (err: unknown) => {
               console.warn('[wmux:resume] the resume line was not typed', String(err));
               notePaneFenceError(ptyId, err);
-              toastFolderTrustLaunchRefusal(err);
+              if (!toastPaneFenceRefusal(err)) toastFolderTrustLaunchRefusal(err);
               return false;
             },
           );

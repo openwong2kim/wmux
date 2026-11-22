@@ -40,7 +40,7 @@ import { withScreenReaderFlag } from '../../../shared/screenReaderLaunch';
 import { isScreenReaderOn, launcherVersionsIn } from '../../screenReaderService';
 import { guardBotWorkerSessionText, guardCodexBotWorker } from '../../agents/codexWorkerGuard';
 import { workerFenceSupport, workerFenceSupportFor } from '../../agents/botWorkerFence';
-import { paneFenceCwdRefusal, paneFenceLaunch, type PaneFenceLaunchRecord } from '../../agents/paneFence';
+import { paneFenceCwdRefusal, paneFenceLaunch, paneLineStartsAgent, type PaneFenceLaunchRecord } from '../../agents/paneFence';
 import { getPaneFenceSession, notePaneFenceLaunch, setPaneFenceOn, type PaneFenceSession } from '../../agents/paneFenceSessions';
 import type { PaneFenceState } from '../../../shared/paneFence';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
@@ -328,7 +328,7 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
     // A supervised unit runs as the pane's root process, with no line the
     // fence can be attached to: an agent one is refused, not run unfenced.
     const unit = typeof staged?.exec === 'string' ? staged.exec : '';
-    if (unit && (namesClaude(unit) || namesCodex(unit) || startsAgent(unit))) {
+    if (unit && paneLineStartsAgent(unit)) {
       throw new Error('PTY_CREATE: worker fence: a supervised agent unit cannot run inside the fence yet');
     }
     const paneLine = staged?.initialCommand;
@@ -336,7 +336,10 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
       const support = namesClaude(paneLine) ? await workerFenceSupport() : undefined;
       let fenced: ReturnType<typeof paneFenceLaunch>;
       try {
-        fenced = paneFenceLaunch(paneLine, typeof staged.cwd === 'string' && staged.cwd ? path.resolve(staged.cwd) : undefined, { wsl }, support !== undefined ? { support } : {});
+        // The pane's own env (a profile's CLAUDE_CONFIG_DIR) names the config
+        // folder whose credentials the fence denies.
+        const fence = { env: { ...process.env, ...(staged.env ?? {}) } };
+        fenced = paneFenceLaunch(paneLine, typeof staged.cwd === 'string' && staged.cwd ? path.resolve(staged.cwd) : undefined, { wsl }, { fence, ...(support !== undefined ? { support } : {}) });
       } catch (err) {
         throw new Error(`PTY_CREATE: ${(err as Error).message}`);
       }
@@ -362,13 +365,16 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
   return { options: pinned, launch: { ...launchOfCodex(guarded), ...guardedLaunchOf(guarded), ...(conversation ? { conversation } : {}) } };
 }
 
-/** The folder a line typed into pane `sessionId` starts in: its live
- *  folder, else the one it was spawned in; null when the daemon knows none. */
-async function paneLiveFolder(sessionId: string, rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>): Promise<string | null> {
-  const sessions = await rpc('daemon.listSessions', {}) as Array<{ id?: unknown; cwd?: unknown; spawnCwd?: unknown }>;
+/** The folder a line typed into pane `sessionId` starts in (its live
+ *  folder, else the one it was spawned in; null when the daemon knows none)
+ *  and the env the pane was spawned with (credential values stripped). */
+async function paneLiveFolder(sessionId: string, rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>): Promise<{ folder: string | null; env: Record<string, string> }> {
+  const sessions = await rpc('daemon.listSessions', {}) as Array<{ id?: unknown; cwd?: unknown; spawnCwd?: unknown; env?: unknown }>;
   const s = Array.isArray(sessions) ? sessions.find((x) => x?.id === sessionId) : undefined;
   const folder = [s?.cwd, s?.spawnCwd].find((f): f is string => typeof f === 'string' && f.length > 0 && path.isAbsolute(f));
-  return folder ?? null;
+  const env: Record<string, string> = {};
+  if (s?.env && typeof s.env === 'object') for (const [k, v] of Object.entries(s.env)) if (typeof v === 'string') env[k] = v;
+  return { folder: folder ?? null, env };
 }
 
 /** What stageCreate put a person's fenced pane's create through (per staged
@@ -383,13 +389,13 @@ function paneFenceOf(options: object | undefined): { record?: PaneFenceLaunchRec
  *  this throws (nothing is typed). Any other line comes back as given. */
 async function fencePaneLaunchText(sessionId: string, text: string, dc: DaemonClient | null): Promise<{ paneFence: PaneFenceSession | null; paneLaunch?: PaneFenceLaunchRecord; line: string }> {
   const paneFence = getPaneFenceSession(sessionId);
-  if (!paneFence?.on || !(namesClaude(text) || namesCodex(text) || startsAgent(text))) return { paneFence, line: text };
+  if (!paneFence?.on || !paneLineStartsAgent(text)) return { paneFence, line: text };
   if (!dc) throw new Error('PTY_WRITE_LAUNCH: worker fence: a fenced pane\'s agent starts again only with the wmux daemon');
-  const folder = await paneLiveFolder(sessionId, (m, p) => dc.rpc(m, p));
+  const { folder, env } = await paneLiveFolder(sessionId, (m, p) => dc.rpc(m, p));
   const support = namesClaude(text) ? await workerFenceSupport() : undefined;
   let fenced: ReturnType<typeof paneFenceLaunch>;
   try {
-    fenced = paneFenceLaunch(text, folder ?? undefined, { wsl: isWslShell(getPtyShell(sessionId)) }, support !== undefined ? { support } : {});
+    fenced = paneFenceLaunch(text, folder ?? undefined, { wsl: isWslShell(getPtyShell(sessionId)) }, { fence: { env: { ...process.env, ...env } }, ...(support !== undefined ? { support } : {}) });
   } catch (err) {
     throw new Error(`PTY_WRITE_LAUNCH: ${(err as Error).message}`);
   }

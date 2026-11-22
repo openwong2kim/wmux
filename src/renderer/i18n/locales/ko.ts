@@ -10,6 +10,7 @@ export const ko = {
   "paneFence.refused": "펜스가 거부함",
   "paneFence.refusedTitle": "에이전트를 시작하지 않았어요: {reason}",
   "paneFence.switchFailed": "워커 펜스 설정을 저장하지 못했어요",
+  "paneFence.multiline": "여러 줄 단축키로는 가둔 탭에서 에이전트를 시작할 수 없어요. 한 줄로 바꿔 주세요",
   "workspaceProfile.fenceAgents": "새 터미널의 에이전트 가두기 (워커 펜스)",
   "workspaceProfile.fenceAgentsHint": "새 터미널은 워커 펜스가 켜진 채로 시작해요. wmux가 시작하는 에이전트는 터미널 폴더 안에만 쓰고 자격 증명 파일은 읽지 못해요. 지금은 Claude Code만 지원해요. 사용자 설정의 hooks, enabledPlugins, statusLine은 불러오지 않고 env, model, apiKeyHelper는 가져와요.",
   "plugins.settings.commander": "파일",

@@ -912,9 +912,11 @@ export function attachWorkerFence(input: WorkerFenceAttachInput): WorkerFenceAtt
     // the home folder's .claude is the user's own settings, not a project's.
     const real = realOrResolved(input.cwd);
     const held = credentials.map(realOrResolved).find((c) => isWithin(c, real));
+    const inside = credentials.map(realOrResolved).find((c) => c !== real && isWithin(real, c));
     if (real === path.parse(real).root) throw fenceError('the pane\'s folder is the root of the disk; open the pane in a project folder');
     if (real === realOrResolved(home)) throw fenceError('the pane\'s folder is your home folder; open the pane in a project folder');
     if (held) throw fenceError(`the pane's folder holds ${held}, which the fence keeps unreadable; open the pane in a project folder`);
+    if (inside) throw fenceError(`the pane's folder is inside ${inside}, which the fence keeps unreadable; open the pane in a project folder`);
   }
   const refusal = workerFenceFolderRefusal(input.cwd);
   if (refusal) throw fenceError(refusal);
