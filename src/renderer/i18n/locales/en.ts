@@ -1,5 +1,5 @@
 export const en = {
-  "paneFence.menu": "Contain agents (worker fence)",
+  "paneFence.menu": "Contain agents",
   "paneFence.menuTitle": "Agents wmux starts in this tab run inside the worker fence: writes stay in the tab's folder and credential files can't be read. Claude Code only for now. Your user settings' hooks, enabledPlugins and statusLine are not loaded; env, model and apiKeyHelper are. Applies from the next agent launch.",
   "paneFence.unavailable": "Needs the OS sandbox (macOS sandbox-exec or Linux bubblewrap); not available on Windows.",
   "paneFence.chip": "Fenced",

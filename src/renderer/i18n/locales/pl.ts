@@ -1,5 +1,5 @@
 export const pl = {
-  "paneFence.menu": "Ogranicz agentów (ogrodzenie workera)",
+  "paneFence.menu": "Ogranicz agentów",
   "paneFence.menuTitle": "Agenci uruchamiani przez wmux w tej karcie działają w ogrodzeniu workera: zapisują tylko w folderze karty i nie mogą czytać plików z poświadczeniami. Na razie tylko Claude Code. Hooks, enabledPlugins i statusLine z ustawień użytkownika nie są wczytywane; env, model i apiKeyHelper są. Działa od następnego uruchomienia agenta.",
   "paneFence.unavailable": "Wymaga piaskownicy systemu (macOS sandbox-exec lub Linux bubblewrap); niedostępne w Windows.",
   "paneFence.chip": "Ogrodzony",

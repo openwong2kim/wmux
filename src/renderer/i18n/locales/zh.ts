@@ -1,5 +1,5 @@
 export const zh = {
-  "paneFence.menu": "约束代理（工作者围栏）",
+  "paneFence.menu": "约束代理",
   "paneFence.menuTitle": "wmux 在此标签页中启动的代理会在工作者围栏内运行：写入仅限标签页的文件夹，且无法读取凭据文件。目前仅支持 Claude Code。不会加载用户设置中的 hooks、enabledPlugins 和 statusLine；会带上 env、model 和 apiKeyHelper。从下一次启动代理时生效。",
   "paneFence.unavailable": "需要操作系统沙箱（macOS sandbox-exec 或 Linux bubblewrap）；Windows 上不可用。",
   "paneFence.chip": "已围栏",

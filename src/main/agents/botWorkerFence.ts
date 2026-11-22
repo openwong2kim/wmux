@@ -905,17 +905,20 @@ export function attachWorkerFence(input: WorkerFenceAttachInput): WorkerFenceAtt
   if (!support) throw fenceError('this computer\'s fence support was not checked yet; try again');
   if (!support.capable && support.transient) throw fenceError(`this computer has the OS sandbox, but the fence cannot start now (${support.reason}); try again`);
   if (!support.capable && input.recorded?.strength === 'full') throw fenceError(`this worker started inside the full fence, which cannot run now (${support.reason})`);
-  const refusal = workerFenceFolderRefusal(input.cwd);
-  if (refusal) throw fenceError(refusal);
-  const worktree = fs.realpathSync(input.cwd);
   if (input.always) {
     // The folder is opened for reads and writes, which a credential path
     // inside it would lose its deny to: not the root, the home folder or
-    // any folder holding a path the fence keeps unreadable.
-    const held = credentials.map(realOrResolved).find((c) => isWithin(c, worktree));
-    if (worktree === path.parse(worktree).root) throw fenceError('the pane\'s folder is the root of the disk; open the pane in a project folder');
+    // any folder holding a path the fence keeps unreadable. Checked first:
+    // the home folder's .claude is the user's own settings, not a project's.
+    const real = realOrResolved(input.cwd);
+    const held = credentials.map(realOrResolved).find((c) => isWithin(c, real));
+    if (real === path.parse(real).root) throw fenceError('the pane\'s folder is the root of the disk; open the pane in a project folder');
+    if (real === realOrResolved(home)) throw fenceError('the pane\'s folder is your home folder; open the pane in a project folder');
     if (held) throw fenceError(`the pane's folder holds ${held}, which the fence keeps unreadable; open the pane in a project folder`);
   }
+  const refusal = workerFenceFolderRefusal(input.cwd);
+  if (refusal) throw fenceError(refusal);
+  const worktree = fs.realpathSync(input.cwd);
   const temp = workerTempDir(input.dir, input.recorded?.tempDir);
   const tempDir = temp.path;
   const git = readWorktreeGitFacts(worktree, input.expectedGit);

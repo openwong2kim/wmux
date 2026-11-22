@@ -108,7 +108,10 @@ describe.skipIf(isWin)('an opted-in pane\'s launch', () => {
   });
 
   it('refuses a folder that is the home folder, the disk root, or holds a credential path', () => {
-    expect(refusalOf(() => paneFenceLaunch('claude', home, {}, deps()))).toContain('the fence keeps unreadable');
+    // The home folder's .claude is the user's own settings: the home refusal comes first.
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ sandbox: { enabled: false } }));
+    expect(refusalOf(() => paneFenceLaunch('claude', home, {}, deps()))).toBe('worker fence: the pane\'s folder is your home folder; open the pane in a project folder');
     expect(refusalOf(() => paneFenceLaunch('claude', '/', {}, deps()))).toContain('root of the disk');
     expect(refusalOf(() => paneFenceLaunch('claude', root, {}, deps()))).toContain('the fence keeps unreadable');
     expect(refusalOf(() => paneFenceLaunch('claude', undefined, {}, deps()))).toContain('no folder');

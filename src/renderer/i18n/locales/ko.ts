@@ -1,5 +1,5 @@
 export const ko = {
-  "paneFence.menu": "에이전트 가두기 (워커 펜스)",
+  "paneFence.menu": "에이전트 가두기",
   "paneFence.menuTitle": "이 탭에서 wmux가 시작하는 에이전트는 워커 펜스 안에서 실행돼요. 쓰기는 탭의 폴더 안으로 제한되고 자격 증명 파일은 읽을 수 없어요. 지금은 Claude Code만 지원해요. 사용자 설정의 hooks, enabledPlugins, statusLine은 불러오지 않고 env, model, apiKeyHelper는 가져와요. 다음 에이전트 실행부터 적용돼요.",
   "paneFence.unavailable": "OS 샌드박스(macOS sandbox-exec 또는 Linux bubblewrap)가 필요해요. Windows에서는 사용할 수 없어요.",
   "paneFence.chip": "펜스 켜짐",
