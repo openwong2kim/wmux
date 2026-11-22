@@ -109,9 +109,19 @@ function mapConsoleLevel(type: string): string {
   return type === 'warning' ? 'warn' : type;
 }
 
+/**
+ * A copy of `value` that shares no storage with it. V8 makes a slice of a
+ * long string a view onto the original, so a kept prefix of a 1MB data: URL
+ * or a 4MB body would keep all of it alive.
+ */
+function detachedCopy(value: string): string {
+  // A JSON round trip builds a new flat string, keeping one-byte text one-byte.
+  return JSON.parse(JSON.stringify(value)) as string;
+}
+
 function truncate(value: string, max: number): string {
   return value.length > max
-    ? `${value.slice(0, max)} [truncated ${value.length - max} chars]`
+    ? detachedCopy(`${value.slice(0, max)} [truncated ${value.length - max} chars]`)
     : value;
 }
 
@@ -150,7 +160,7 @@ function evictBodies(state: PageCaptureState): void {
 
 function capBody(body: string): string {
   return body.length > MAX_RESPONSE_BODY_BYTES
-    ? body.slice(0, MAX_RESPONSE_BODY_BYTES) + `\n... [truncated ${body.length - MAX_RESPONSE_BODY_BYTES} chars]`
+    ? detachedCopy(body.slice(0, MAX_RESPONSE_BODY_BYTES) + `\n... [truncated ${body.length - MAX_RESPONSE_BODY_BYTES} chars]`)
     : body;
 }
 
@@ -283,6 +293,8 @@ export function attachPageCapture(page: Page): PageCaptureState {
     // page navigating away drops it there. A plain string under the caps
     // above; Playwright never sees the body, so it keeps no Buffer of it.
     if (!RETAINED_BODY_TYPES.has(entry.resourceType ?? '')) return;
+    // A first cut on the wire size; the decoded length below is the real gate
+    // (a compressed response can decode to many times this).
     if (encodedDataLength === undefined || encodedDataLength > MAX_RESPONSE_BODY_BYTES) return;
     void fetchResponseBody(page, requestId).then((result) => {
       // The state was dropped on close, the entry left the ring, or
@@ -290,11 +302,14 @@ export function attachPageCapture(page: Page): PageCaptureState {
       // leak the budget, since evictBodies can no longer reach it.
       if (!('body' in result) || !entry.response || states.get(page) !== state) return;
       if (!state.network.includes(entry)) return;
-      entry.response.body = capBody(result.body);
+      // Over the cap once decoded: not kept (a truncated copy would be a
+      // partial answer anyway); browser_response_body asks Chrome for it.
+      if (result.body.length > MAX_RESPONSE_BODY_BYTES) return;
+      entry.response.body = result.body;
       entry.bodyBytes = entry.response.body.length;
       state.totalBodyBytes += entry.bodyBytes;
       evictBodies(state);
-    });
+    }, () => undefined);
   };
   const onFailed = (requestId: string) => {
     state.pendingRequests.delete(requestId);

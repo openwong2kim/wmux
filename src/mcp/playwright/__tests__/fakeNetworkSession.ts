@@ -13,7 +13,8 @@ export interface FakeNetwork {
     opts?: { method?: string; type?: string; navigation?: boolean; frameId?: string; id?: string },
   ) => string;
   respond: (id: string, status: number, opts?: { contentType?: string; body?: string; url?: string }) => void;
-  finish: (id: string) => void;
+  /** `encodedDataLength` defaults to the body's length (an uncompressed response). */
+  finish: (id: string, encodedDataLength?: number) => void;
   fail: (id: string) => void;
   /** Chrome let the body go (navigation, buffer pressure). */
   dropBody: (id: string) => void;
@@ -82,8 +83,11 @@ export function fakeNetwork(): { newCDPSession: () => Promise<unknown>; net: Fak
         },
       });
     },
-    finish: (id) =>
-      session.emit('Network.loadingFinished', { requestId: id, encodedDataLength: bodies.get(id)?.length ?? 0 }),
+    finish: (id, encodedDataLength) =>
+      session.emit('Network.loadingFinished', {
+        requestId: id,
+        encodedDataLength: encodedDataLength ?? bodies.get(id)?.length ?? 0,
+      }),
     fail: (id) => session.emit('Network.loadingFailed', { requestId: id }),
     dropBody: (id) => bodies.delete(id),
     exchange: (url, status, opts = {}) => {

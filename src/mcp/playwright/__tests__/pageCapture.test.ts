@@ -297,6 +297,23 @@ describe('attachPageCapture — small xhr/fetch bodies outlive a navigation', ()
     await expect(readEntryBody(asPage(page), state.network[0])).resolves.toEqual({ body: 'x=1' });
   });
 
+  it('keeps no copy of a body that is small on the wire but over the cap once decoded', async () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+    await page.net.ready();
+
+    // A gzipped 1MB JSON: 20KB on the wire.
+    const id = page.net.request('https://x.test/zipped');
+    page.net.respond(id, 200, { body: 'z'.repeat(1024 * 1024) });
+    page.net.finish(id, 20 * 1024);
+    await tick();
+
+    expect(state.network[0].response?.body).toBeUndefined();
+    expect(state.totalBodyBytes).toBe(0);
+    const answer = await readEntryBody(asPage(page), state.network[0]);
+    expect('body' in answer && answer.body).toContain('[truncated');
+  });
+
   it('drops the oldest retained bodies once the total body budget is exceeded', async () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
