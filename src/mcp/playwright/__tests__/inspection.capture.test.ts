@@ -170,17 +170,11 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
   it('surfaces an uncaught exception the page threw while loading', async () => {
     const page = makePage();
     await resolveChromePage(page);
-    // Not a console call — and a page that throws on load is the case the
-    // whole issue is about.
-    page.net.exception({
-      text: 'Uncaught',
-      exception: {
-        type: 'object',
-        subtype: 'error',
-        objectId: 'err-1',
-        description: 'TypeError: Cannot read properties of undefined\n    at boot (app.js:12:5)',
-      },
-    });
+    const error = new Error('Cannot read properties of undefined');
+    error.stack = 'TypeError: Cannot read properties of undefined\n    at boot (app.js:12:5)';
+    // Playwright routes this to 'pageerror', not 'console' — and a page that
+    // throws on load is the case the whole issue is about.
+    page.emit('pageerror', error);
 
     const text = (await consoleTool({ level: 'error' })).content[0].text;
 

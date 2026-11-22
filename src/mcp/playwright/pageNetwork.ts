@@ -28,7 +28,8 @@ import type { Frame, Page } from 'playwright-core';
 // session for a worker, so the page session auto-attaches to workers itself
 // (non-flattened, through Target.sendMessageToTarget). The pipe relay refuses
 // a non-flattened auto-attach, so there workers stay unseen
-// (their requests and, since console moved here, their console too). Shared and
+// (their requests and, since console moved here, their console messages too;
+// their uncaught exceptions still reach pageCapture through Playwright). Shared and
 // service workers are not the page's and are not seen anywhere.
 // ---------------------------------------------------------------------------
 
@@ -72,13 +73,6 @@ export interface CdpConsoleCall {
   timestamp?: number;
 }
 
-/** Runtime.ExceptionDetails, as Runtime.exceptionThrown carries it. */
-export interface CdpExceptionDetails {
-  text: string;
-  exception?: CdpRemoteObject;
-  stackTrace?: { callFrames: Array<{ functionName: string; url: string; lineNumber: number; columnNumber: number }> };
-}
-
 /** Log.LogEntry: what the browser itself logs ("Failed to load resource", violations). */
 export interface CdpLogEntry {
   level: string;
@@ -91,8 +85,6 @@ export interface CdpLogEntry {
 export interface NetworkTapListener {
   /** A console API call in the page, one of its cross-site iframes, or a worker. */
   onConsoleCall?: (call: CdpConsoleCall) => void;
-  /** An uncaught exception; `timestamp` is ms since the epoch. */
-  onException?: (details: CdpExceptionDetails, timestamp?: number) => void;
   /** A browser log entry (page and iframe sessions; workers have none). */
   onLogEntry?: (entry: CdpLogEntry) => void;
   onRequest?: (request: NetRequest) => void;
@@ -290,8 +282,9 @@ function listen(
     dispatch(state, 'onConsoleCall', p);
     release(p.args);
   });
-  session.on('Runtime.exceptionThrown', (p: { timestamp?: number; exceptionDetails: CdpExceptionDetails }) => {
-    dispatch(state, 'onException', p.exceptionDetails, p.timestamp);
+  // Exceptions are recorded from Playwright's 'pageerror' (pageCapture); the
+  // thrown value Chrome wrapped for this session is only let go here.
+  session.on('Runtime.exceptionThrown', (p: { exceptionDetails?: { exception?: CdpRemoteObject } }) => {
     release([p.exceptionDetails?.exception]);
   });
   session.on('Log.entryAdded', (p: { entry: CdpLogEntry }) => {

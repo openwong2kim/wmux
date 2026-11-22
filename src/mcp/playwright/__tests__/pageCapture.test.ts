@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import type { Page } from 'playwright-core';
 import {
@@ -9,7 +9,7 @@ import {
   ensurePageCapture,
   readEntryBody,
 } from '../pageCapture';
-import { NETWORK_BUFFER } from '../pageNetwork';
+import { NETWORK_BUFFER, networkTapReady } from '../pageNetwork';
 import { fakeNetwork, type FakeNetwork } from './fakeNetworkSession';
 
 // A Page stand-in: the capture module calls url(), mainFrame(), on() and off(),
@@ -233,49 +233,60 @@ describe('attachPageCapture', () => {
 });
 
 describe('attachPageCapture — uncaught exceptions (#1081)', () => {
-  it('records an uncaught exception, which is not a console call', async () => {
+  it('records an uncaught exception, which Playwright routes away from console', () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
-    await page.net.ready();
 
-    page.net.exception({
-      text: 'Uncaught',
-      exception: {
-        type: 'object',
-        subtype: 'error',
-        objectId: 'err-1',
-        description: 'Error: boom during load\n    at http://x.test/app.js:1:1',
-      },
-    });
+    const error = new Error('boom during load');
+    error.stack = 'Error: boom during load\n    at http://x.test/app.js:1:1';
+    page.emit('pageerror', error);
 
-    expect(state.console).toEqual([
-      { level: 'error', text: 'Uncaught Error: boom during load\n    at http://x.test/app.js:1:1' },
-    ]);
+    expect(state.console).toHaveLength(1);
+    expect(state.console[0].level).toBe('error');
+    expect(state.console[0].text).toContain('boom during load');
+    expect(state.console[0].text).toContain('app.js:1:1');
   });
 
-  it('falls back to name and message when there is no stack', async () => {
+  it('falls back to name and message when there is no stack', () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
-    await page.net.ready();
 
-    page.net.exception({ text: 'Uncaught', exception: { type: 'object', subtype: 'error', objectId: 'e', description: 'Error: no stack here' } });
-    // A thrown string: Playwright split it on ':' and found no name.
-    page.net.exception({ text: 'Uncaught', exception: { type: 'string', value: 'plain' } });
+    const error = new Error('no stack here');
+    error.stack = undefined;
+    page.emit('pageerror', error);
 
-    expect(state.console.map((e) => e.text)).toEqual(['Uncaught Error: no stack here', 'Uncaught : plain']);
+    expect(state.console[0].text).toContain('Error: no stack here');
   });
 
-  it('caps a pathological stack like any other console line', async () => {
+  it('caps a pathological stack like any other console line', () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
-    await page.net.ready();
 
-    page.net.exception({
-      text: 'Uncaught',
-      exception: { type: 'object', objectId: 'e', description: `Error: deep\n    at ${'x'.repeat(CAPTURE_BOUNDS.MAX_CONSOLE_TEXT_CHARS * 3)}` },
-    });
+    const error = new Error('deep');
+    error.stack = 'x'.repeat(CAPTURE_BOUNDS.MAX_CONSOLE_TEXT_CHARS * 3);
+    page.emit('pageerror', error);
 
     expect(state.console[0].text.length).toBeLessThan(CAPTURE_BOUNDS.MAX_CONSOLE_TEXT_CHARS + 64);
+  });
+
+  it('records an exception once: the CDP event only lets go of the thrown value', async () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+    await page.net.ready();
+
+    page.net.exception({ text: 'Uncaught', exception: { type: 'object', subtype: 'error', objectId: 'e', description: 'Error: once' } });
+    page.emit('pageerror', Object.assign(new Error('once'), { stack: 'Error: once' }));
+
+    expect(state.console).toEqual([{ level: 'error', text: 'Uncaught Error: once' }]);
+    expect(page.net.sent.filter((c) => c.method === 'Runtime.releaseObjectGroup')).toHaveLength(1);
+  });
+
+  it('stops listening for page errors on close', () => {
+    const page = makePage();
+    attachPageCapture(asPage(page));
+    expect(page.listenerCount('pageerror')).toBe(1);
+    page.emit('close');
+    expect(page.listenerCount('pageerror')).toBe(0);
   });
 });
 
@@ -334,12 +345,41 @@ describe('attachPageCapture — console from the CDP session, not Playwright han
     const before = state.consoleWindow.since - 1_000;
 
     page.net.session.emit('Runtime.consoleAPICalled', { type: 'log', args: [{ type: 'string', value: 'old' }], executionContextId: 1, timestamp: before });
-    page.net.exception({ text: 'Uncaught', exception: { type: 'string', value: 'old throw' } }, before);
     page.net.log('error', 'old log', { timestamp: before });
     page.net.console('log', 'new');
 
     expect(state.console).toEqual([{ level: 'log', text: 'new' }]);
     expect(state.consoleWindow.missedBefore).toBe(true);
+  });
+
+  it('a session opened later replays nothing from before clear:true', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const t0 = Date.now();
+      const page = makePage();
+      const real = page.context().newCDPSession;
+      let refuse = true;
+      page.context = () => ({ newCDPSession: () => (refuse ? Promise.reject(new Error('relay busy')) : real()) });
+      const state = attachPageCapture(asPage(page));
+      expect(await networkTapReady(asPage(page), 100)).toBe(false);
+
+      vi.setSystemTime(t0 + 10_000);
+      clearConsoleCapture(state);
+      // Past the reopen cooldown; the next reader retries the session.
+      vi.setSystemTime(t0 + 40_000);
+      refuse = false;
+      expect(await networkTapReady(asPage(page), 100)).toBe(true);
+
+      const replay = (text: string, timestamp: number) =>
+        page.net.session.emit('Runtime.consoleAPICalled', { type: 'log', args: [{ type: 'string', value: text }], executionContextId: 1, timestamp });
+      replay('cleared before the reopen', t0 + 5_000);
+      replay('after the clear', t0 + 20_000);
+      page.net.console('log', 'live');
+
+      expect(state.console.map((e) => e.text)).toEqual(['after the clear', 'live']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('releases the console object group once per burst, and not for plain strings', async () => {
