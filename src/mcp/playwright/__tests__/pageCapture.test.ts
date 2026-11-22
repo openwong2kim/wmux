@@ -319,6 +319,8 @@ describe('attachPageCapture — console from the CDP session, not Playwright han
 
     page.net.log('error', 'Failed to load resource: the server responded with a status of 404 (Not Found)');
     page.net.log('warning', 'from a worker', { source: 'worker' });
+    // Playwright's page.setContent marker, which its console never showed.
+    page.net.console('debug', '--playwright--set--content--frame-1--1--');
 
     expect(state.console).toEqual([
       { level: 'error', text: 'Failed to load resource: the server responded with a status of 404 (Not Found)' },

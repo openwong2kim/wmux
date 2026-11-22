@@ -19,7 +19,8 @@ import { MODES, harnessFor } from '../../../test-utils/realBrowserHarness';
 const LOGS = 3_000;
 /** Each logged call carries two object arguments: the old path kept a handle for each. */
 const MAX_HANDLE_GROWTH = 100;
-const MAX_HEAP_GROWTH = 8 * 1024 * 1024;
+// Measured +1.2MB; the old path grew +30MB. The handle count is the sharp check.
+const MAX_HEAP_GROWTH = 15 * 1024 * 1024;
 
 const MATRIX = `
   console.log('plain string');
@@ -83,7 +84,7 @@ describe(`console capture against real Chrome (${mode.name})`, () => {
     const page = (await h.browser().newPage()) as Page;
     try {
       attachPageCapture(page);
-      await networkTapReady(page, 2_000);
+      expect(await networkTapReady(page, 2_000)).toBe(true);
       await page.goto(h.origin(), { waitUntil: 'load' });
       const heapBefore = await settledHeap();
       const handlesBefore = clientObjects(page, 'JSHandle');
@@ -121,8 +122,10 @@ describe(`console capture against real Chrome (${mode.name})`, () => {
     page.on('pageerror', (error) => referenceErrors.push(`Uncaught ${error.stack || `${error.name}: ${error.message}`}`));
     try {
       attachPageCapture(page);
-      await networkTapReady(page, 2_000);
+      expect(await networkTapReady(page, 2_000)).toBe(true);
       await page.goto(`${h.origin()}matrix`, { waitUntil: 'load' });
+      // setContent's internal marker must stay out, as Playwright kept it out.
+      await page.setContent('<!doctype html><title>set</title><script>console.log("after setContent")</script>');
       const ours = () => ensurePageCapture(page).console;
       const errors = () => ours().filter((e) => e.text.startsWith('Uncaught '));
       const rest = () => ours().filter((e) => !e.text.startsWith('Uncaught '));
@@ -130,6 +133,7 @@ describe(`console capture against real Chrome (${mode.name})`, () => {
         expect(referenceErrors).toHaveLength(3);
         expect(errors()).toHaveLength(3);
         expect(reference.some((e) => e.text.startsWith('Failed to load resource'))).toBe(true);
+        expect(reference.some((e) => e.text === 'after setContent')).toBe(true);
         expect(rest()).toHaveLength(reference.length);
       }, { timeout: 10_000 });
 

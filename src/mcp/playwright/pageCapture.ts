@@ -166,6 +166,11 @@ function previewArg(arg: CdpRemoteObject): string {
   return arg.unserializableValue === '-0' ? '0' : arg.unserializableValue;
 }
 
+function isSetContentTag(call: CdpConsoleCall): boolean {
+  const [only] = call.args ?? [];
+  return call.args?.length === 1 && typeof only.value === 'string' && only.value.startsWith('--playwright--set--content--');
+}
+
 function consoleCallText(call: CdpConsoleCall): string {
   return (call.args ?? []).map(previewArg).join(' ');
 }
@@ -321,6 +326,8 @@ export function attachPageCapture(page: Page): PageCaptureState {
   const onConsoleCall = (call: CdpConsoleCall) => {
     // Playwright drops these too: no execution context to attribute them to.
     if (call.executionContextId === 0 || beforeAttach(call.timestamp)) return;
+    // Playwright's own setContent marker, which it swallowed before emitting.
+    if (call.type === 'debug' && isSetContentTag(call)) return;
     pushConsole(state, {
       level: mapConsoleLevel(call.type),
       text: truncate(consoleCallText(call), MAX_CONSOLE_TEXT_CHARS),
