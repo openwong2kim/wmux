@@ -194,7 +194,7 @@ export const en = {
   'settings.terminalEngineError': "Could not read the terminal engine status.",
   'settings.terminalEngineRetry': "Refresh",
   'settings.tabLabs': "Labs",
-  'settings.labsIntro': "Experimental memory savers. Each is off by default and may change or go away.",
+  'settings.labsIntro': "Experimental memory savers. Each may change or go away; only session output compression is on by default.",
   'settings.labsCompactScrollback': "Compact scrollback",
   'settings.labsCompactScrollbackDesc': "Keeps scrollback rows well above the screen packed, at about a third of the memory. Searching the whole scrollback gets slower. Applies to terminals opened after the change.",
   'settings.labsSharedWebgl': "Shared WebGL renderer",

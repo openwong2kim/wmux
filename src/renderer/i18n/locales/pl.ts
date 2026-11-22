@@ -194,7 +194,7 @@ export const pl = {
   'settings.terminalEngineError': "Nie udało się odczytać stanu silnika terminala.",
   'settings.terminalEngineRetry': "Odśwież",
   'settings.tabLabs': "Laboratorium",
-  'settings.labsIntro': "Eksperymentalne funkcje oszczędzające pamięć. Każda jest domyślnie wyłączona i może się zmienić lub zniknąć.",
+  'settings.labsIntro': "Eksperymentalne funkcje oszczędzające pamięć. Każda może się zmienić lub zniknąć; domyślnie włączona jest tylko kompresja wyjścia sesji.",
   'settings.labsCompactScrollback': "Kompaktowa historia przewijania",
   'settings.labsCompactScrollbackDesc': "Pakuje wiersze historii daleko nad ekranem, zajmując około jednej trzeciej pamięci. Przeszukiwanie całej historii jest wolniejsze. Dotyczy terminali otwartych po zmianie.",
   'settings.labsSharedWebgl': "Wspólny renderer WebGL",

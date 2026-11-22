@@ -194,7 +194,7 @@ export const ko = {
   'settings.terminalEngineError': "터미널 엔진 상태를 읽지 못했습니다.",
   'settings.terminalEngineRetry': "새로고침",
   'settings.tabLabs': "실험실",
-  'settings.labsIntro': "메모리를 줄이는 실험 기능입니다. 모두 기본으로 꺼져 있고, 바뀌거나 없어질 수 있습니다.",
+  'settings.labsIntro': "메모리를 줄이는 실험 기능입니다. 바뀌거나 없어질 수 있으며, 기본으로 켜져 있는 것은 세션 출력 압축뿐입니다.",
   'settings.labsCompactScrollback': "스크롤백 압축",
   'settings.labsCompactScrollbackDesc': "화면에서 멀리 올라간 스크롤백 줄을 압축해 메모리를 약 3분의 1로 줄입니다. 스크롤백 전체 검색은 느려집니다. 바꾼 뒤 새로 여는 터미널부터 적용됩니다.",
   'settings.labsSharedWebgl': "공유 WebGL 렌더러",
