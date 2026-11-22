@@ -325,6 +325,12 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
   let paneFence: { record?: PaneFenceLaunchRecord } | undefined;
   if (paneFenced) {
     paneFence = {};
+    // A supervised unit runs as the pane's root process, with no line the
+    // fence can be attached to: an agent one is refused, not run unfenced.
+    const unit = typeof staged?.exec === 'string' ? staged.exec : '';
+    if (unit && (namesClaude(unit) || namesCodex(unit) || startsAgent(unit))) {
+      throw new Error('PTY_CREATE: worker fence: a supervised agent unit cannot run inside the fence yet');
+    }
     const paneLine = staged?.initialCommand;
     if (staged && paneLine) {
       const support = namesClaude(paneLine) ? await workerFenceSupport() : undefined;

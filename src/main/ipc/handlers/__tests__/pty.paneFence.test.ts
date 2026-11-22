@@ -95,6 +95,10 @@ describe('pty:create in an opted-in pane', () => {
     await expect(createLocal({ initialCommand: 'codex', workerFence: true })).rejects.toThrow('PTY_CREATE: worker fence: the worker fence runs Claude Code only for now');
   });
 
+  it('refuses a supervised agent unit, which the fence cannot be attached to', async () => {
+    await expect(createLocal({ exec: 'claude', supervision: { restart: 'always' }, workerFence: true })).rejects.toThrow('PTY_CREATE: worker fence: a supervised agent unit cannot run inside the fence yet');
+  });
+
   it('a create without the flag is as before', async () => {
     const { result, written } = await createLocal({ initialCommand: 'claude' });
     expect(fence.calls).toEqual([]);
