@@ -16,12 +16,19 @@ import type { Frame, Page } from 'playwright-core';
 // bodies stay in Chrome's own buffer (bounded by NETWORK_BUFFER below) and are
 // fetched only when a caller asks for one.
 //
+// The same sessions carry the page's console (Runtime and Log domains), for
+// the same reason: page.on('console') makes Playwright keep a JSHandle for
+// every argument of every message until the page closes (up to 100k of them),
+// in this one process that a broker shares across every client. Here each
+// message becomes text at once and its remote objects are released in Chrome.
+//
 // Coverage: the page's own target, plus one session per cross-site iframe that
 // runs in its own process (an OOPIF), and one channel per dedicated worker the
 // page starts, each up to MAX_CHILD_SESSIONS per page. Playwright opens no CDP
 // session for a worker, so the page session auto-attaches to workers itself
 // (non-flattened, through Target.sendMessageToTarget). The pipe relay refuses
-// a non-flattened auto-attach, so there workers stay unseen. Shared and
+// a non-flattened auto-attach, so there workers stay unseen
+// (their requests and, since console moved here, their console too). Shared and
 // service workers are not the page's and are not seen anywhere.
 // ---------------------------------------------------------------------------
 
@@ -46,7 +53,48 @@ export interface NetResponse {
   headers: Record<string, string>;
 }
 
+/** The parts of a CDP Runtime.RemoteObject that console text is rendered from. */
+export interface CdpRemoteObject {
+  type: string;
+  subtype?: string;
+  value?: unknown;
+  unserializableValue?: string;
+  description?: string;
+  objectId?: string;
+  preview?: { properties: Array<{ name: string; value?: string }> };
+}
+
+/** Runtime.consoleAPICalled. `timestamp` is ms since the epoch. */
+export interface CdpConsoleCall {
+  type: string;
+  args: CdpRemoteObject[];
+  executionContextId?: number;
+  timestamp?: number;
+}
+
+/** Runtime.ExceptionDetails, as Runtime.exceptionThrown carries it. */
+export interface CdpExceptionDetails {
+  text: string;
+  exception?: CdpRemoteObject;
+  stackTrace?: { callFrames: Array<{ functionName: string; url: string; lineNumber: number; columnNumber: number }> };
+}
+
+/** Log.LogEntry: what the browser itself logs ("Failed to load resource", violations). */
+export interface CdpLogEntry {
+  level: string;
+  text: string;
+  source?: string;
+  timestamp?: number;
+  args?: CdpRemoteObject[];
+}
+
 export interface NetworkTapListener {
+  /** A console API call in the page, one of its cross-site iframes, or a worker. */
+  onConsoleCall?: (call: CdpConsoleCall) => void;
+  /** An uncaught exception; `timestamp` is ms since the epoch. */
+  onException?: (details: CdpExceptionDetails, timestamp?: number) => void;
+  /** A browser log entry (page and iframe sessions; workers have none). */
+  onLogEntry?: (entry: CdpLogEntry) => void;
   onRequest?: (request: NetRequest) => void;
   onResponse?: (response: NetResponse) => void;
   /**
@@ -179,6 +227,16 @@ function lowerHeaders(headers: Record<string, unknown> | undefined): Record<stri
   return out;
 }
 
+/**
+ * Turn on the console domains for a session, once, when it opens: enabling
+ * Runtime again would replay every stored message a second time. Not fatal,
+ * so a session that refuses them still captures network traffic.
+ */
+function enableConsole(session: Channel, log: boolean): void {
+  session.send('Runtime.enable').catch(() => undefined);
+  if (log) session.send('Log.enable').catch(() => undefined);
+}
+
 function dispatch<K extends keyof NetworkTapListener>(
   state: TapState,
   key: K,
@@ -203,6 +261,38 @@ function listen(
   const open = new Set<string>();
   if (frameSession) state.inflight.set(session, open);
   const settle = (requestId: string) => open.delete(requestId);
+  // Chrome keeps every remote object it sends a session until the session
+  // releases it, so a page logging large objects would pin them all in the
+  // renderer. Console arguments and thrown values are wrapped in the 'console'
+  // object group (per session: Playwright's own handles are untouched), and
+  // nothing here reads them, so the group is released after each burst. One
+  // release in flight covers every event that arrived before its reply.
+  let releasing = false;
+  const release = (objects: Array<CdpRemoteObject | undefined> | undefined) => {
+    if (releasing || !objects?.some((o) => o?.objectId !== undefined)) return;
+    releasing = true;
+    session
+      .send('Runtime.releaseObjectGroup', { objectGroup: 'console' })
+      .catch(() => undefined)
+      .then(() => {
+        releasing = false;
+      });
+  };
+  session.on('Runtime.consoleAPICalled', (p: CdpConsoleCall) => {
+    dispatch(state, 'onConsoleCall', p);
+    release(p.args);
+  });
+  session.on('Runtime.exceptionThrown', (p: { timestamp?: number; exceptionDetails: CdpExceptionDetails }) => {
+    dispatch(state, 'onException', p.exceptionDetails, p.timestamp);
+    release([p.exceptionDetails?.exception]);
+  });
+  session.on('Log.entryAdded', (p: { entry: CdpLogEntry }) => {
+    dispatch(state, 'onLogEntry', p.entry);
+    // Log arguments are not in the console group.
+    for (const arg of p.entry?.args ?? []) {
+      if (arg.objectId !== undefined) session.send('Runtime.releaseObject', { objectId: arg.objectId }).catch(() => undefined);
+    }
+  });
   session.on('Network.requestWillBeSent', (p: CdpRequestWillBeSent) => {
     if (frameSession) {
       rememberSession(state, p.requestId, session);
@@ -305,6 +395,7 @@ async function tapFrame(page: Page, state: TapState, frame: Frame): Promise<void
     // Taken now, before the await, so concurrent opens cannot overshoot the cap.
     state.frames.set(frame, session);
     listen(state, session, () => undefined, true);
+    enableConsole(session, true);
     const enabled = await session.send('Network.enable', { ...NETWORK_BUFFER }).then(() => true, () => false);
     if (!enabled || taps.get(page) !== state || frame.isDetached()) {
       if (state.frames.get(frame) === session) state.frames.delete(frame);
@@ -343,6 +434,7 @@ async function openSession(page: Page, state: TapState): Promise<boolean> {
   if (typeof session?.on !== 'function') return false;
   let mainFrameId: string | undefined;
   listen(state, session, () => mainFrameId);
+  enableConsole(session, true);
   try {
     // Sent together: Chrome answers in order, and every round trip before
     // Network.enable is a window in which the page's requests go unseen.
@@ -387,6 +479,7 @@ function tapWorkers(state: TapState, session: Channel): void {
     state.workers.set(p.sessionId, worker);
     listen(state, worker, () => undefined, true);
     worker.send('Network.enable', { ...NETWORK_BUFFER }).catch(() => undefined);
+    enableConsole(worker, false);
   });
   session.on('Target.receivedMessageFromTarget', (p: { sessionId: string; message: string }) => {
     const worker = state.workers.get(p.sessionId);

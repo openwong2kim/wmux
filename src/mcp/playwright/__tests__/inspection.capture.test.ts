@@ -74,9 +74,6 @@ function asPage(page: FakePage): Page {
   return page as unknown as Page;
 }
 
-function consoleMessage(level: string, text: string) {
-  return { type: () => level, text: () => text };
-}
 
 /** What the engine does on every page resolve under a non-builtin backend. */
 async function resolveChromePage(page: FakePage): Promise<void> {
@@ -101,7 +98,7 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
     // browser_navigate resolves the page; the engine attaches capture there.
     await resolveChromePage(page);
     // The page loads and throws. Nothing has read the buffer yet.
-    page.emit('console', consoleMessage('error', 'Uncaught TypeError during load'));
+    page.net.console('error', 'Uncaught TypeError during load');
 
     const result = await consoleTool({});
 
@@ -114,7 +111,7 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
     // Ten more tool calls, ten more resolves.
     for (let i = 0; i < 10; i++) attachPageCapture(asPage(page));
 
-    page.emit('console', consoleMessage('log', 'exactly once'));
+    page.net.console('log', 'exactly once');
 
     const text = (await consoleTool({})).content[0].text;
     expect(text.match(/exactly once/g)).toHaveLength(1);
@@ -136,7 +133,7 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
     const empty = (await consoleTool({})).content[0].text;
     expect(empty).toContain('already open when collection started');
 
-    page.emit('console', consoleMessage('warn', 'something later'));
+    page.net.console('warn', 'something later');
     const withEntries = (await consoleTool({})).content[0].text;
     expect(withEntries).toContain('[warn] something later');
     expect(withEntries).toContain('not included');
@@ -145,7 +142,7 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
   it('clear:true empties the buffer and restarts the window', async () => {
     const page = makePage('https://x.test/opened-before-the-agent-arrived');
     await resolveChromePage(page);
-    page.emit('console', consoleMessage('log', 'before'));
+    page.net.console('log', 'before');
 
     const cleared = (await consoleTool({ clear: true })).content[0].text;
     expect(cleared).toContain('[log] before');
@@ -155,14 +152,14 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
     // The pre-attach gap is no longer what the emptiness is hiding.
     expect(afterClear).not.toContain('already open when collection started');
 
-    page.emit('console', consoleMessage('log', 'after'));
+    page.net.console('log', 'after');
     expect((await consoleTool({})).content[0].text).toContain('[log] after');
   });
 
   it('still masks a credential the page logged (eager path, #1079)', async () => {
     const page = makePage();
     await resolveChromePage(page);
-    page.emit('console', consoleMessage('log', 'POST /login {"password":"hunter2SECRET"}'));
+    page.net.console('log', 'POST /login {"password":"hunter2SECRET"}');
 
     const text = (await consoleTool({})).content[0].text;
 
@@ -173,11 +170,17 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
   it('surfaces an uncaught exception the page threw while loading', async () => {
     const page = makePage();
     await resolveChromePage(page);
-    const error = new Error('Cannot read properties of undefined');
-    error.stack = 'TypeError: Cannot read properties of undefined\n    at boot (app.js:12:5)';
-    // Playwright routes this to 'pageerror', not 'console' — and a page that
-    // throws on load is the case the whole issue is about.
-    page.emit('pageerror', error);
+    // Not a console call — and a page that throws on load is the case the
+    // whole issue is about.
+    page.net.exception({
+      text: 'Uncaught',
+      exception: {
+        type: 'object',
+        subtype: 'error',
+        objectId: 'err-1',
+        description: 'TypeError: Cannot read properties of undefined\n    at boot (app.js:12:5)',
+      },
+    });
 
     const text = (await consoleTool({ level: 'error' })).content[0].text;
 
@@ -188,8 +191,8 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
   it("speaks the filter's vocabulary for warnings ('warning' -> 'warn')", async () => {
     const page = makePage();
     await resolveChromePage(page);
-    // Playwright reports 'warning'; the level filter and main's capture say 'warn'.
-    page.emit('console', consoleMessage('warning', 'deprecated API'));
+    // Chrome reports 'warning'; the level filter and main's capture say 'warn'.
+    page.net.console('warning', 'deprecated API');
 
     const text = (await consoleTool({ level: 'warn' })).content[0].text;
 
@@ -199,8 +202,8 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
   it('level filtering still applies to the eagerly collected buffer', async () => {
     const page = makePage();
     await resolveChromePage(page);
-    page.emit('console', consoleMessage('log', 'chatter'));
-    page.emit('console', consoleMessage('error', 'the real problem'));
+    page.net.console('log', 'chatter');
+    page.net.console('error', 'the real problem');
 
     const text = (await consoleTool({ level: 'error' })).content[0].text;
 
@@ -216,7 +219,8 @@ describe('browser_console — transport selection', () => {
     const page = makePage();
     getPage.mockResolvedValue(asPage(page));
     attachPageCapture(asPage(page));
-    page.emit('console', consoleMessage('log', 'engine-side buffer'));
+    await page.net.ready();
+    page.net.console('log', 'engine-side buffer');
     mockSendRpc.mockResolvedValue({ entries: [{ level: 'log', text: 'main-side buffer' }] });
 
     const text = (await consoleTool({})).content[0].text;
@@ -230,7 +234,8 @@ describe('browser_console — transport selection', () => {
     const page = makePage();
     getPage.mockResolvedValue(asPage(page));
     attachPageCapture(asPage(page));
-    page.emit('console', consoleMessage('error', 'engine-side fallback'));
+    await page.net.ready();
+    page.net.console('error', 'engine-side fallback');
     mockSendRpc.mockRejectedValue(new Error('browser.console.get: no browser surface'));
 
     const text = (await consoleTool({})).content[0].text;
@@ -308,7 +313,7 @@ describe('browser_network — collection starts at page resolve (#1081)', () => 
   it('clear:true empties the buffer without touching the console window', async () => {
     const page = makePage();
     await resolveChromePage(page);
-    page.emit('console', consoleMessage('log', 'console survives'));
+    page.net.console('log', 'console survives');
     page.net.request('https://x.test/gone', { method: 'GET' });
 
     await network({ clear: true });
@@ -340,10 +345,7 @@ describe('browser_console — the URL Chrome leaves off a 404 line (#1360)', () 
     const page = makePage();
     await resolveChromePage(page);
     exchange(page, 'https://x.test/api/missing', 'GET', 404);
-    page.emit(
-      'console',
-      consoleMessage('error', 'Failed to load resource: the server responded with a status of 404 ()'),
-    );
+    page.net.log('error', 'Failed to load resource: the server responded with a status of 404 ()');
 
     const text = (await consoleTool({ level: 'error' })).content[0].text;
 
@@ -355,8 +357,8 @@ describe('browser_console — the URL Chrome leaves off a 404 line (#1360)', () 
     await resolveChromePage(page);
     exchange(page, 'https://x.test/a.js', 'GET', 500);
     exchange(page, 'https://x.test/b.js', 'GET', 404);
-    page.emit('console', consoleMessage('error', 'Failed to load resource: the server responded with a status of 404 ()'));
-    page.emit('console', consoleMessage('error', 'Failed to load resource: the server responded with a status of 500 ()'));
+    page.net.log('error', 'Failed to load resource: the server responded with a status of 404 ()');
+    page.net.log('error', 'Failed to load resource: the server responded with a status of 500 ()');
 
     const lines = (await consoleTool({ level: 'error' })).content[0].text.split('\n');
 
@@ -368,7 +370,7 @@ describe('browser_console — the URL Chrome leaves off a 404 line (#1360)', () 
     const page = makePage();
     await resolveChromePage(page);
     exchange(page, 'https://x.test/api/missing', 'GET', 404);
-    page.emit('console', consoleMessage('log', 'just chatter'));
+    page.net.console('log', 'just chatter');
 
     const text = (await consoleTool({})).content[0].text;
 

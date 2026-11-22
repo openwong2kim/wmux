@@ -98,9 +98,6 @@ function asPage(page: FakePage): Page {
   return page as unknown as Page;
 }
 
-function consoleMessage(level: string, text: string) {
-  return { type: () => level, text: () => text };
-}
 
 beforeEach(() => {
   browserToolDeps.resolveWorkspaceId.mockClear();
@@ -164,10 +161,11 @@ describe('browser_console — text cap honours maxBytes (eager capture path)', (
     resolveWorkspaceBackend.mockResolvedValue('chrome');
     getPage.mockResolvedValue(asPage(page));
     attachPageCapture(asPage(page));
+    await page.net.ready();
     // Many small entries, each under the capture layer's per-entry bound, so
     // the aggregate — not one entry — is what crosses the result cap.
     for (let i = 0; i < 200; i++) {
-      page.emit('console', consoleMessage('log', `line ${i} ${'c'.repeat(900)}`));
+      page.net.console('log', `line ${i} ${'c'.repeat(900)}`);
     }
 
     const capped = await consoleTool!({});

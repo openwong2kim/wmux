@@ -37,44 +37,43 @@ function asPage(page: FakePage): Page {
   return page as unknown as Page;
 }
 
-function consoleMessage(level: string, text: string) {
-  return { type: () => level, text: () => text };
-}
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('attachPageCapture', () => {
-  it('records what the page logs before anything reads the buffer', () => {
+  it('records what the page logs before anything reads the buffer', async () => {
     const page = makePage();
     attachPageCapture(asPage(page));
+    await page.net.ready();
 
     // No read has happened yet — this is the load-time window that used to be
     // lost because the listener only attached on the first browser_console.
-    page.emit('console', consoleMessage('error', 'boom during load'));
+    page.net.console('error', 'boom during load');
 
     expect(ensurePageCapture(asPage(page)).console).toEqual([
       { level: 'error', text: 'boom during load' },
     ]);
   });
 
-  it('attaches once per page, so a re-resolved page does not double-record', () => {
+  it('attaches once per page, so a re-resolved page does not double-record', async () => {
     const page = makePage();
     attachPageCapture(asPage(page));
     attachPageCapture(asPage(page));
     ensurePageCapture(asPage(page));
+    await page.net.ready();
 
-    expect(page.listenerCount('console')).toBe(1);
-    page.emit('console', consoleMessage('log', 'once'));
+    page.net.console('log', 'once');
     expect(ensurePageCapture(asPage(page)).console).toEqual([{ level: 'log', text: 'once' }]);
   });
 
-  it('keeps the newest entries when the console ring overflows', () => {
+  it('keeps the newest entries when the console ring overflows', async () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
+    await page.net.ready();
     const overflow = CAPTURE_BOUNDS.MAX_CAPTURE_ENTRIES + 5;
 
     for (let i = 0; i < overflow; i++) {
-      page.emit('console', consoleMessage('log', `msg-${i}`));
+      page.net.console('log', `msg-${i}`);
     }
 
     expect(state.console).toHaveLength(CAPTURE_BOUNDS.MAX_CAPTURE_ENTRIES);
@@ -97,11 +96,12 @@ describe('attachPageCapture', () => {
     expect(state.network[state.network.length - 1].url).toBe(`https://x.test/${overflow - 1}`);
   });
 
-  it('caps a single oversized console line instead of buffering it whole', () => {
+  it('caps a single oversized console line instead of buffering it whole', async () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
+    await page.net.ready();
 
-    page.emit('console', consoleMessage('log', 'x'.repeat(CAPTURE_BOUNDS.MAX_CONSOLE_TEXT_CHARS * 3)));
+    page.net.console('log', 'x'.repeat(CAPTURE_BOUNDS.MAX_CONSOLE_TEXT_CHARS * 3));
 
     expect(state.console[0].text.length).toBeLessThan(CAPTURE_BOUNDS.MAX_CONSOLE_TEXT_CHARS + 64);
     expect(state.console[0].text).toContain('[truncated');
@@ -183,7 +183,7 @@ describe('attachPageCapture', () => {
     await page.net.ready();
     const networkWindowBefore = state.networkWindow;
 
-    page.emit('console', consoleMessage('log', 'before clear'));
+    page.net.console('log', 'before clear');
     page.net.request('https://x.test/keep');
     clearConsoleCapture(state);
 
@@ -194,7 +194,7 @@ describe('attachPageCapture', () => {
     expect(state.networkWindow).toBe(networkWindowBefore);
     expect(state.networkWindow.missedBefore).toBe(true);
 
-    page.emit('console', consoleMessage('log', 'after clear'));
+    page.net.console('log', 'after clear');
     expect(state.console).toEqual([{ level: 'log', text: 'after clear' }]);
 
     clearNetworkCapture(state);
@@ -202,10 +202,11 @@ describe('attachPageCapture', () => {
     expect(state.networkWindow.missedBefore).toBe(false);
   });
 
-  it('drops the buffers when the page closes', () => {
+  it('drops the buffers when the page closes', async () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
-    page.emit('console', consoleMessage('log', 'pre-close'));
+    await page.net.ready();
+    page.net.console('log', 'pre-close');
     expect(state.console).toHaveLength(1);
 
     page.emit('close');
@@ -214,57 +215,147 @@ describe('attachPageCapture', () => {
     expect(ensurePageCapture(asPage(page)).console).toEqual([]);
   });
 
-  it('removes its listeners on close, so re-attaching does not double-record', () => {
+  it('removes its listeners on close, so re-attaching does not double-record', async () => {
     const page = makePage();
     attachPageCapture(asPage(page));
+    await page.net.ready();
     page.emit('close');
-    expect(page.listenerCount('console')).toBe(0);
     expect(page.listenerCount('close')).toBe(0);
 
     // Same Page object resolved again: the WeakMap miss re-attaches, and a
     // listener left over from the closed state would record a second copy.
     const revived = ensurePageCapture(asPage(page));
-    page.emit('console', consoleMessage('log', 'after revive'));
+    await page.net.ready();
+    page.net.console('log', 'after revive');
 
     expect(revived.console).toEqual([{ level: 'log', text: 'after revive' }]);
   });
 });
 
 describe('attachPageCapture — uncaught exceptions (#1081)', () => {
-  it('records an uncaught exception, which Playwright routes away from console', () => {
+  it('records an uncaught exception, which is not a console call', async () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
+    await page.net.ready();
 
-    const error = new Error('boom during load');
-    error.stack = 'Error: boom during load\n    at http://x.test/app.js:1:1';
-    page.emit('pageerror', error);
+    page.net.exception({
+      text: 'Uncaught',
+      exception: {
+        type: 'object',
+        subtype: 'error',
+        objectId: 'err-1',
+        description: 'Error: boom during load\n    at http://x.test/app.js:1:1',
+      },
+    });
 
-    expect(state.console).toHaveLength(1);
-    expect(state.console[0].level).toBe('error');
-    expect(state.console[0].text).toContain('boom during load');
-    expect(state.console[0].text).toContain('app.js:1:1');
+    expect(state.console).toEqual([
+      { level: 'error', text: 'Uncaught Error: boom during load\n    at http://x.test/app.js:1:1' },
+    ]);
   });
 
-  it('falls back to name and message when there is no stack', () => {
+  it('falls back to name and message when there is no stack', async () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
+    await page.net.ready();
 
-    const error = new Error('no stack here');
-    error.stack = undefined;
-    page.emit('pageerror', error);
+    page.net.exception({ text: 'Uncaught', exception: { type: 'object', subtype: 'error', objectId: 'e', description: 'Error: no stack here' } });
+    // A thrown string: Playwright split it on ':' and found no name.
+    page.net.exception({ text: 'Uncaught', exception: { type: 'string', value: 'plain' } });
 
-    expect(state.console[0].text).toContain('Error: no stack here');
+    expect(state.console.map((e) => e.text)).toEqual(['Uncaught Error: no stack here', 'Uncaught : plain']);
   });
 
-  it('caps a pathological stack like any other console line', () => {
+  it('caps a pathological stack like any other console line', async () => {
     const page = makePage();
     const state = attachPageCapture(asPage(page));
+    await page.net.ready();
 
-    const error = new Error('deep');
-    error.stack = 'x'.repeat(CAPTURE_BOUNDS.MAX_CONSOLE_TEXT_CHARS * 3);
-    page.emit('pageerror', error);
+    page.net.exception({
+      text: 'Uncaught',
+      exception: { type: 'object', objectId: 'e', description: `Error: deep\n    at ${'x'.repeat(CAPTURE_BOUNDS.MAX_CONSOLE_TEXT_CHARS * 3)}` },
+    });
 
     expect(state.console[0].text.length).toBeLessThan(CAPTURE_BOUNDS.MAX_CONSOLE_TEXT_CHARS + 64);
+  });
+});
+
+describe('attachPageCapture — console from the CDP session, not Playwright handles', () => {
+  it('turns on Runtime and Log on the page session', async () => {
+    const page = makePage();
+    attachPageCapture(asPage(page));
+    await page.net.ready();
+
+    const methods = page.net.sent.map((c) => c.method);
+    expect(methods).toContain('Runtime.enable');
+    expect(methods).toContain('Log.enable');
+  });
+
+  it('renders arguments as Playwright did', async () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+    await page.net.ready();
+
+    page.net.console(
+      'log',
+      'n',
+      { type: 'number', value: 3 },
+      { type: 'undefined' },
+      { type: 'object', subtype: 'null', value: null },
+      { type: 'number', unserializableValue: '-0' },
+      { type: 'number', unserializableValue: 'NaN' },
+      { type: 'object', objectId: 'o', description: 'Object', preview: { properties: [{ name: 'a', value: '1' }, { name: 'b', value: 'Object' }] } },
+      { type: 'object', subtype: 'array', objectId: 'a', description: 'Array(4)', preview: { properties: [{ name: '0', value: '1' }, { name: '3', value: '4' }] } },
+      { type: 'object', subtype: 'node', objectId: 'd', description: 'div#app' },
+      { type: 'function', objectId: 'f', description: 'function f() {}' },
+    );
+
+    expect(state.console[0].text).toBe('n 3 undefined null 0 NaN {a: 1, b: Object} [1, empty x 2, 4] JSHandle@node function f() {}');
+  });
+
+  it('keeps the browser\'s own log lines, but not a worker\'s', async () => {
+    const page = makePage();
+    const state = attachPageCapture(asPage(page));
+    await page.net.ready();
+
+    page.net.log('error', 'Failed to load resource: the server responded with a status of 404 (Not Found)');
+    page.net.log('warning', 'from a worker', { source: 'worker' });
+
+    expect(state.console).toEqual([
+      { level: 'error', text: 'Failed to load resource: the server responded with a status of 404 (Not Found)' },
+    ]);
+  });
+
+  it('leaves out what Runtime.enable replays from before capture started', async () => {
+    const page = makePage('https://x.test/already-here');
+    const state = attachPageCapture(asPage(page));
+    await page.net.ready();
+    const before = state.consoleWindow.since - 1_000;
+
+    page.net.session.emit('Runtime.consoleAPICalled', { type: 'log', args: [{ type: 'string', value: 'old' }], executionContextId: 1, timestamp: before });
+    page.net.exception({ text: 'Uncaught', exception: { type: 'string', value: 'old throw' } }, before);
+    page.net.log('error', 'old log', { timestamp: before });
+    page.net.console('log', 'new');
+
+    expect(state.console).toEqual([{ level: 'log', text: 'new' }]);
+    expect(state.consoleWindow.missedBefore).toBe(true);
+  });
+
+  it('releases the console object group once per burst, and not for plain strings', async () => {
+    const page = makePage();
+    attachPageCapture(asPage(page));
+    await page.net.ready();
+    const releases = () => page.net.sent.filter((c) => c.method === 'Runtime.releaseObjectGroup');
+
+    page.net.console('log', 'only strings');
+    expect(releases()).toHaveLength(0);
+
+    const big = { type: 'object', objectId: 'big', description: 'Object', preview: { properties: [] } };
+    for (let i = 0; i < 50; i++) page.net.console('log', big);
+    expect(releases()).toEqual([{ method: 'Runtime.releaseObjectGroup', params: { objectGroup: 'console' } }]);
+
+    await tick();
+    page.net.console('log', big);
+    expect(releases()).toHaveLength(2);
   });
 });
 
