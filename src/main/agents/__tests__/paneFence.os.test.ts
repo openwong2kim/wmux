@@ -119,6 +119,12 @@ describe.skipIf(isWin)('an opted-in pane\'s launch', () => {
     expect(refusalOf(() => paneFenceLaunch('claude', undefined, {}, deps()))).toContain('no folder');
   });
 
+  it('refuses a folder whose project settings run a program, as a bot worker\'s does', () => {
+    fs.mkdirSync(path.join(repo, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.claude', 'settings.json'), JSON.stringify({ hooks: { PostToolUse: [] } }));
+    expect(refusalOf(() => paneFenceLaunch('claude', repo, {}, deps()))).toContain('.claude/settings.json sets hooks');
+  });
+
   it('refuses a folder inside a credential path, and denies the pane env\'s own config folder', () => {
     const inSsh = path.join(home, '.ssh', 'project');
     fs.mkdirSync(inSsh, { recursive: true });

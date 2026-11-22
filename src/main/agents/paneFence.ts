@@ -22,7 +22,7 @@
 import path from 'node:path';
 import { splitModelEnvMarker } from '../../shared/workerLaunch';
 import { tokenize } from '../../shared/agentResume';
-import { namesClaude } from '../../shared/botWorkerGuard';
+import { namesClaude, workerProjectSettingsRefusal } from '../../shared/botWorkerGuard';
 import { namesCodex } from '../../shared/codexWorkerGuard';
 import { getWmuxDir } from '../../daemon/config';
 import { bridgeHookGroups, findBridgeSourceFrom } from '../../cli/commands/setupHooks';
@@ -109,6 +109,11 @@ export function paneFenceLaunch(line: string, cwd: string | undefined, launch: {
   const dir = deps.dir ?? getWmuxDir();
   const attached = attachWorkerFence({ line, cwd, wsl: false, dir, switchedOff: false, always: true, support: support ?? null, platform, ...(deps.fence ?? {}) });
   if (attached.kind !== 'fence' || attached.strength !== 'full' || !attached.launcher) throw refusal('only the full fence starts in a fenced pane');
+  // The project settings still load (--setting-sources=project): a hook or
+  // helper they name would run outside the OS sandbox, so the same rule as a
+  // bot's worker holds.
+  const unsafe = workerProjectSettingsRefusal(cwd);
+  if (unsafe) throw refusal(`the folder's Claude settings run programs outside the fence (${unsafe})`);
   const bridge = (deps.bridge ?? (() => findBridgeSourceFrom(__dirname)))();
   if (!bridge) throw refusal('wmux\'s hook bridge was not found, so a fenced pane could not report');
   const merged = mergeWorkerFenceSettings(attached.settings, [{ disableAllHooks: false, hooks: bridgeHookGroups(bridge) }]);
