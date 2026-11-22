@@ -28,7 +28,7 @@ describe('tapPageNetwork', () => {
 
     fail = false;
     await vi.advanceTimersByTimeAsync(30_000);
-    tapPageNetwork(page, {});
+    // The readiness wait a tool resolve makes is enough to try again.
     expect(await networkTapReady(page, 1_000)).toBe(true);
     expect(open).toHaveBeenCalledTimes(2);
     net.request('https://x.test/after-retry');
@@ -90,5 +90,67 @@ describe('tapPageNetwork', () => {
     await oopifs[0].net.ready();
     expect(oopifs[0].net.detached()).toBe(true);
     err.mockRestore();
+  });
+
+  it('fails a dropped iframe session\'s unsettled requests, so nothing waits on them', async () => {
+    const main = fakeNetwork();
+    const frameNet = fakeNetwork();
+    const mainFrame = { isDetached: () => false };
+    const frame = { isDetached: () => false };
+    const emitter = new EventEmitter();
+    const page = Object.assign(emitter, {
+      mainFrame: () => mainFrame,
+      frames: () => [mainFrame, frame],
+      context: () => ({ newCDPSession: async (t: unknown) => (t === page ? main.newCDPSession() : frameNet.newCDPSession()) }),
+    }) as unknown as Page & EventEmitter;
+    const failed: string[] = [];
+    tapPageNetwork(page, { onFailed: (id) => failed.push(id) });
+    await networkTapReady(page, 1_000);
+    await frameNet.net.ready();
+
+    const done = frameNet.net.request('https://ads.test/done');
+    frameNet.net.finish(done);
+    const hung = frameNet.net.request('https://ads.test/long-poll');
+    emitter.emit('framedetached', frame);
+
+    expect(failed).toEqual([hung]);
+    await frameNet.net.ready();
+    expect(frameNet.net.detached()).toBe(true);
+  });
+
+  it('looks at a frame again when it navigated while its session was being opened', async () => {
+    const main = fakeNetwork();
+    const frameNet = fakeNetwork();
+    const mainFrame = { isDetached: () => false };
+    const frame = { isDetached: () => false };
+    let crossSite = false;
+    let releaseFirst: () => void = () => undefined;
+    const emitter = new EventEmitter();
+    const page = Object.assign(emitter, {
+      mainFrame: () => mainFrame,
+      frames: () => [mainFrame],
+      context: () => ({
+        newCDPSession: async (t: unknown) => {
+          if (t === page) return main.newCDPSession();
+          if (!crossSite) {
+            // about:blank: in-process, and the answer takes a while.
+            await new Promise<void>((resolve) => { releaseFirst = resolve; });
+            throw new Error('This frame does not have a separate CDP session');
+          }
+          return frameNet.newCDPSession();
+        },
+      }),
+    }) as unknown as Page & EventEmitter;
+    tapPageNetwork(page, {});
+    await networkTapReady(page, 1_000);
+
+    emitter.emit('framenavigated', frame); // about:blank commit
+    await main.net.ready();
+    crossSite = true;
+    emitter.emit('framenavigated', frame); // cross-site commit, mid-open
+    releaseFirst();
+    await frameNet.net.ready();
+
+    expect(frameNet.net.sent.some((c) => c.method === 'Network.enable')).toBe(true);
   });
 });

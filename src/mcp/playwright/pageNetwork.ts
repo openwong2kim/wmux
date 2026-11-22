@@ -85,6 +85,10 @@ interface TapState {
   frames: Map<Frame, CDPSession>;
   /** Frames whose session is being opened, so two navigations do not open two. */
   opening: Set<Frame>;
+  /** Frames that navigated again while being opened: checked once more after. */
+  retap: Set<Frame>;
+  /** Each frame session's requests that have started and not settled. */
+  inflight: Map<CDPSession, Set<string>>;
   /** Which frame session saw a request; absent means the page's own session. */
   sessionOf: Map<string, CDPSession>;
   capLogged: boolean;
@@ -133,8 +137,14 @@ function listen(
   mainFrameOf: () => string | undefined,
   frameSession = false,
 ): void {
+  const open = new Set<string>();
+  if (frameSession) state.inflight.set(session, open);
+  const settle = (requestId: string) => open.delete(requestId);
   session.on('Network.requestWillBeSent', (p: CdpRequestWillBeSent) => {
-    if (frameSession) rememberSession(state, p.requestId, session);
+    if (frameSession) {
+      rememberSession(state, p.requestId, session);
+      open.add(p.requestId);
+    }
     if (p.redirectResponse) {
       // Playwright's shape: the redirected hop gets its response and finishes,
       // and the next hop is a request of its own (Chrome reuses the id).
@@ -164,9 +174,27 @@ function listen(
       headers: lowerHeaders(p.response.headers),
     });
   });
-  session.on('Network.loadingFinished', (p: { requestId: string; encodedDataLength?: number }) =>
-    dispatch(state, 'onFinished', p.requestId, p.encodedDataLength));
-  session.on('Network.loadingFailed', (p: { requestId: string }) => dispatch(state, 'onFailed', p.requestId));
+  session.on('Network.loadingFinished', (p: { requestId: string; encodedDataLength?: number }) => {
+    settle(p.requestId);
+    dispatch(state, 'onFinished', p.requestId, p.encodedDataLength);
+  });
+  session.on('Network.loadingFailed', (p: { requestId: string }) => {
+    settle(p.requestId);
+    dispatch(state, 'onFailed', p.requestId);
+  });
+}
+
+/**
+ * Let a frame session go: its unsettled requests will never finish here, so
+ * they fail now (a settle wait or pending count must not wait on them), and
+ * the request ids it saw are forgotten.
+ */
+function dropFrameSession(state: TapState, session: CDPSession): void {
+  const open = state.inflight.get(session);
+  state.inflight.delete(session);
+  for (const requestId of open ?? []) dispatch(state, 'onFailed', requestId);
+  for (const [requestId, owner] of state.sessionOf) if (owner === session) state.sessionOf.delete(requestId);
+  void session.detach().catch(() => undefined);
 }
 
 function rememberSession(state: TapState, requestId: string, session: CDPSession): void {
@@ -183,12 +211,18 @@ function rememberSession(state: TapState, requestId: string, session: CDPSession
  * session: a session that no longer answers is replaced.
  */
 async function tapFrame(page: Page, state: TapState, frame: Frame): Promise<void> {
-  if (state.opening.has(frame) || taps.get(page) !== state) return;
+  if (taps.get(page) !== state) return;
+  if (state.opening.has(frame)) {
+    // It navigated again mid-open (about:blank, then cross-site): look again after.
+    state.retap.add(frame);
+    return;
+  }
   const existing = state.frames.get(frame);
   if (existing) {
     const alive = await existing.send('Network.enable', { ...NETWORK_BUFFER }).then(() => true, () => false);
     if (alive || state.frames.get(frame) !== existing) return;
     state.frames.delete(frame);
+    dropFrameSession(state, existing);
   }
   if (frameCapReached(state)) return;
   state.opening.add(frame);
@@ -211,10 +245,11 @@ async function tapFrame(page: Page, state: TapState, frame: Frame): Promise<void
     const enabled = await session.send('Network.enable', { ...NETWORK_BUFFER }).then(() => true, () => false);
     if (!enabled || taps.get(page) !== state || frame.isDetached()) {
       if (state.frames.get(frame) === session) state.frames.delete(frame);
-      await session.detach().catch(() => undefined);
+      dropFrameSession(state, session);
     }
   } finally {
     state.opening.delete(frame);
+    if (state.retap.delete(frame) && !frame.isDetached()) void tapFrame(page, state, frame);
   }
 }
 
@@ -231,7 +266,7 @@ function untapFrame(state: TapState, frame: Frame): void {
   const session = state.frames.get(frame);
   if (!session) return;
   state.frames.delete(frame);
-  void session.detach().catch(() => undefined);
+  dropFrameSession(state, session);
 }
 
 async function openSession(page: Page, state: TapState): Promise<boolean> {
@@ -268,6 +303,14 @@ async function openSession(page: Page, state: TapState): Promise<boolean> {
   return true;
 }
 
+/**
+ * A session that could not open (a transient relay error, a page mid-swap) is
+ * tried again, at most once per cooldown; the listeners stay.
+ */
+function reopenIfDue(page: Page, state: TapState): void {
+  if (state.failedAt !== 0 && Date.now() - state.failedAt >= REOPEN_COOLDOWN_MS) startOpen(page, state);
+}
+
 function startOpen(page: Page, state: TapState): void {
   state.failedAt = 0;
   state.ready = openSession(page, state).then((ok) => {
@@ -292,6 +335,8 @@ export function tapPageNetwork(page: Page, listener: NetworkTapListener): Networ
       listeners: new Set(),
       frames: new Map(),
       opening: new Set(),
+      retap: new Set(),
+      inflight: new Map(),
       sessionOf: new Map(),
       capLogged: false,
     };
@@ -326,10 +371,8 @@ export function tapPageNetwork(page: Page, listener: NetworkTapListener): Networ
     page.on('framenavigated', onFrameNavigated);
     page.on('framedetached', onFrameDetached);
     state = created;
-  } else if (state.failedAt !== 0 && Date.now() - state.failedAt >= REOPEN_COOLDOWN_MS) {
-    // A session that could not open (a transient relay error, a page mid-swap)
-    // is tried again, at most once per cooldown; the listeners stay.
-    startOpen(page, state);
+  } else {
+    reopenIfDue(page, state);
   }
   const own = state;
   own.listeners.add(listener);
@@ -343,6 +386,7 @@ export function tapPageNetwork(page: Page, listener: NetworkTapListener): Networ
 export async function networkTapReady(page: Page, maxMs: number): Promise<boolean> {
   const state = taps.get(page);
   if (!state) return false;
+  reopenIfDue(page, state);
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
     state.ready,
