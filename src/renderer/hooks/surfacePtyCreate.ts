@@ -113,8 +113,10 @@ export function surfaceCreate(
           workspaceId,
           surfaceId,
           spawnKind: 'user-shell',
-          // A tab that exists keeps its own worker fence switch over the profile's.
-          ...(fenceSwitch !== undefined ? { workerFence: fenceSwitch } : {}),
+          // A tab that exists keeps its own worker fence switch over the
+          // profile's. An off switch is sent only against a profile that would
+          // turn it on, so an unfenced create stays byte-identical.
+          ...(fenceSwitch === true || (fenceSwitch === false && profile?.fenceAgents === true) ? { workerFence: fenceSwitch } : {}),
         }, defaultShell), profile)),
       );
     },

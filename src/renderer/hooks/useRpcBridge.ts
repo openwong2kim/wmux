@@ -2249,7 +2249,10 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
           // the WSL shell, as Ctrl+T, splits and pane.split do.
           ...withDefaultShell({ shell: shell || undefined, cwd: cwd || undefined }, store.defaultShell),
           workspaceId: ws.id,
-          ...(initialCommand ? { initialCommand, spawnKind: 'user-shell' as const } : {}),
+          // The sign-in tab stays out of the worker fence, as
+          // accountLogin.openTerminalTab's does: the fence would refuse it (no
+          // folder) or keep its login from the credential files.
+          ...(initialCommand ? { initialCommand, spawnKind: 'user-shell' as const, workerFence: false } : {}),
         },
         ws.profile,
       ),
@@ -2267,7 +2270,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     }
     // #515: adopt the cwd main actually spawned in (validated/home-fallback
     // applied) so the surface tracks its real dir and later splits seed correctly.
-    freshAfterCreate.addSurface(paneId, ptyId, shell, created.cwd || cwd, ws.id);
+    freshAfterCreate.addSurface(paneId, ptyId, shell, created.cwd || cwd, ws.id, initialCommand ? { workerFence: false } : undefined);
 
     const fresh = useStore.getState();
     const freshWs = fresh.workspaces.find((w) => w.id === ws.id);
