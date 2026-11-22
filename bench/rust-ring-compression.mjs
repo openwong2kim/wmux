@@ -106,6 +106,7 @@ if (process.argv[2] === '--child') {
 } else {
   if (!fs.existsSync(modulePath)) throw new Error(`Build the native core first: ${modulePath}`);
   const data = corpus(process.argv.slice(2));
+  if (data.length === 0) throw new Error('The corpus is empty');
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || root, 'wmux-ring-bench-'));
   const corpusFile = path.join(dir, 'corpus.bin');
   fs.writeFileSync(corpusFile, data);
