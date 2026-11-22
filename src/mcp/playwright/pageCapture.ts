@@ -1,5 +1,13 @@
-import type { ConsoleMessage, Frame, Page } from 'playwright-core';
-import { fetchResponseBody, tapPageNetwork, type NetRequest, type NetResponse } from './pageNetwork';
+import type { Frame, Page } from 'playwright-core';
+import {
+  fetchResponseBody,
+  tapPageNetwork,
+  type CdpConsoleCall,
+  type CdpLogEntry,
+  type CdpRemoteObject,
+  type NetRequest,
+  type NetResponse,
+} from './pageNetwork';
 
 // ---------------------------------------------------------------------------
 // Engine-side console / network capture for the Playwright transport (#1081).
@@ -107,6 +115,63 @@ const states = new WeakMap<Page, PageCaptureState>();
  */
 function mapConsoleLevel(type: string): string {
   return type === 'warning' ? 'warn' : type;
+}
+
+// Console text is rendered from the CDP events the way Playwright's
+// ConsoleMessage.text() renders them, so the buffer reads the same as it did
+// when it listened to page.on('console').
+
+/** Playwright's sparseArrayToString: an array preview, holes and all. */
+function sparseArrayToString(entries: Array<{ name: string; value?: string }>): string {
+  const items: Array<{ index: number; value?: string }> = [];
+  for (const { name, value } of entries) {
+    const index = +name;
+    if (isNaN(index) || index < 0) continue;
+    items.push({ index, value });
+  }
+  items.sort((a, b) => a.index - b.index);
+  let lastIndex = -1;
+  const tokens: string[] = [];
+  for (const { index, value } of items) {
+    const emptyItems = index - lastIndex - 1;
+    if (emptyItems === 1) tokens.push('empty');
+    else if (emptyItems > 1) tokens.push(`empty x ${emptyItems}`);
+    tokens.push(String(value));
+    lastIndex = index;
+  }
+  return `[${tokens.join(', ')}]`;
+}
+
+/** Playwright's renderPreview, for an argument Chrome sent as an object. */
+function renderPreview(object: CdpRemoteObject): string | undefined {
+  if (object.type === 'undefined') return 'undefined';
+  if ('value' in object) return String(object.value);
+  if (object.unserializableValue) return String(object.unserializableValue);
+  if (object.description === 'Object' && object.preview) {
+    return `{${object.preview.properties.map(({ name, value }) => `${name}: ${value}`).join(', ')}}`;
+  }
+  if (object.subtype === 'array' && object.preview) return sparseArrayToString(object.preview.properties);
+  return object.description;
+}
+
+/** One console argument, as Playwright's JSHandle preview reads at the time the message is emitted. */
+function previewArg(arg: CdpRemoteObject): string {
+  // An ElementHandle's preview is filled in later, by a page round trip.
+  if (arg.subtype === 'node') return 'JSHandle@node';
+  if (arg.objectId !== undefined) return renderPreview(arg) || `JSHandle@${arg.subtype || arg.type}`;
+  if (arg.unserializableValue === undefined) return String(arg.value);
+  // Playwright prints the parsed number, so -0 reads "0". A BigInt ("12n") it
+  // parses to undefined and prints that; the literal is kept here instead.
+  return arg.unserializableValue === '-0' ? '0' : arg.unserializableValue;
+}
+
+function isSetContentTag(call: CdpConsoleCall): boolean {
+  const [only] = call.args ?? [];
+  return call.args?.length === 1 && typeof only.value === 'string' && only.value.startsWith('--playwright--set--content--');
+}
+
+function consoleCallText(call: CdpConsoleCall): string {
+  return (call.args ?? []).map(previewArg).join(' ');
 }
 
 /**
@@ -224,21 +289,49 @@ export function attachPageCapture(page: Page): PageCaptureState {
   };
   states.set(page, state);
 
-  const onConsole = (msg: ConsoleMessage) => {
+  // Enabling Runtime on a session replays what the page logged before it: at
+  // attach, and again when a session opens later (a retried open, a cross-site
+  // iframe's new process). The buffer starts at its window, as it did with
+  // page.on('console'), so a replay neither reaches back before attach nor
+  // brings back what clear:true emptied.
+  const beforeWindow = (timestamp: number | undefined) =>
+    timestamp !== undefined && timestamp < state.consoleWindow.since;
+
+  // Console messages come from the page's CDP sessions (pageNetwork), not
+  // page.on('console'): that listener makes Playwright keep a JSHandle per
+  // argument for the page's life. Each message is text here at once, and its
+  // remote objects are released in Chrome.
+  const onConsoleCall = (call: CdpConsoleCall) => {
+    // Playwright drops these too: no execution context to attribute them to.
+    if (call.executionContextId === 0 || beforeWindow(call.timestamp)) return;
+    // Playwright's own setContent marker, which it swallowed before emitting.
+    if (call.type === 'debug' && isSetContentTag(call)) return;
     pushConsole(state, {
-      level: mapConsoleLevel(msg.type()),
-      text: truncate(msg.text(), MAX_CONSOLE_TEXT_CHARS),
+      level: mapConsoleLevel(call.type),
+      text: truncate(consoleCallText(call), MAX_CONSOLE_TEXT_CHARS),
     });
   };
 
   // Playwright routes an uncaught exception to 'pageerror', NOT to 'console' —
   // so without this the one thing #1081 is most often reached for, a page that
   // threw while loading, was still missing from an eagerly attached buffer.
+  // It stays on Playwright: 'pageerror' carries a serialized Error and builds
+  // no JSHandle, and it covers dedicated workers wherever Playwright can.
   const onPageError = (error: Error) => {
     const rendered = error.stack || `${error.name}: ${error.message}`;
     pushConsole(state, {
       level: 'error',
       text: truncate(`Uncaught ${rendered}`, MAX_CONSOLE_TEXT_CHARS),
+    });
+  };
+
+  // What the browser logs itself ("Failed to load resource: ... 404"), which
+  // Playwright's console carried too. A worker's are left out, as it did.
+  const onLogEntry = (entry: CdpLogEntry) => {
+    if (entry.source === 'worker' || beforeWindow(entry.timestamp)) return;
+    pushConsole(state, {
+      level: mapConsoleLevel(entry.level),
+      text: truncate(entry.text, MAX_CONSOLE_TEXT_CHARS),
     });
   };
 
@@ -314,7 +407,14 @@ export function attachPageCapture(page: Page): PageCaptureState {
   const onFailed = (requestId: string) => {
     state.pendingRequests.delete(requestId);
   };
-  const tap = tapPageNetwork(page, { onRequest, onResponse, onFinished, onFailed });
+  const tap = tapPageNetwork(page, {
+    onRequest,
+    onResponse,
+    onFinished,
+    onFailed,
+    onConsoleCall,
+    onLogEntry,
+  });
 
   // The WeakMap would reclaim the buffers once the Page is GC'd, but the engine
   // may retain the Page object past close, so drop them on 'close' to free the
@@ -324,7 +424,6 @@ export function attachPageCapture(page: Page): PageCaptureState {
   // through the closures.
   const onClose = () => {
     states.delete(page);
-    page.off('console', onConsole);
     page.off('pageerror', onPageError);
     page.off('framenavigated', onFrameNavigated);
     tap.off();
@@ -332,7 +431,6 @@ export function attachPageCapture(page: Page): PageCaptureState {
   };
 
   page.on('close', onClose);
-  page.on('console', onConsole);
   page.on('pageerror', onPageError);
   page.on('framenavigated', onFrameNavigated);
 

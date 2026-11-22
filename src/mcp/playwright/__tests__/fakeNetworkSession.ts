@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 
-// A stand-in for the CDP session pageNetwork opens: the Network events a test
-// fires, and the bodies Network.getResponseBody answers with.
+// A stand-in for the CDP session pageNetwork opens: the Network, Runtime and
+// Log events a test fires, and the bodies Network.getResponseBody answers with.
 
 export const FAKE_MAIN_FRAME_ID = 'main-frame';
 
@@ -24,6 +24,12 @@ export interface FakeNetwork {
     status: number,
     opts?: { method?: string; contentType?: string; body?: string; type?: string },
   ) => string;
+  /** A console call; a string is sent as Chrome sends a string argument. */
+  console: (type: string, ...args: Array<string | Record<string, unknown>>) => void;
+  /** Runtime.exceptionThrown with these details. */
+  exception: (details: Record<string, unknown>, timestamp?: number) => void;
+  /** Log.entryAdded: what the browser logs itself. */
+  log: (level: string, text: string, opts?: { source?: string; timestamp?: number }) => void;
   sent: Array<{ method: string; params?: unknown }>;
   detached: () => boolean;
   session: EventEmitter;
@@ -96,6 +102,19 @@ export function fakeNetwork(): { newCDPSession: () => Promise<unknown>; net: Fak
       net.finish(id);
       return id;
     },
+    console: (type, ...args) =>
+      session.emit('Runtime.consoleAPICalled', {
+        type,
+        args: args.map((arg) => (typeof arg === 'string' ? { type: 'string', value: arg } : arg)),
+        executionContextId: 1,
+        timestamp: Date.now(),
+      }),
+    exception: (details, timestamp = Date.now()) =>
+      session.emit('Runtime.exceptionThrown', { timestamp, exceptionDetails: details }),
+    log: (level, text, opts = {}) =>
+      session.emit('Log.entryAdded', {
+        entry: { level, text, source: opts.source ?? 'network', timestamp: opts.timestamp ?? Date.now() },
+      }),
     sent,
     detached: () => detached,
     session,

@@ -6,6 +6,7 @@ import type { RpcMethod, RpcResponse } from '../shared/rpc';
 import { getPipeName, getAuthTokenPath, getTcpPortPath } from '../shared/constants';
 import { getConnectionScope, scopeOrRefuse } from './connectionScope';
 import { brokerStampFor } from './brokerStamp';
+import { LineFramer } from './lineFramer';
 
 /**
  * Default per-call RPC deadline. Every tool gets this unless it asks for
@@ -351,7 +352,7 @@ function attemptRpc(
     const request = JSON.stringify(envelope) + '\n';
 
     const socket = typeof target === 'string' ? net.connect(target) : net.connect(target);
-    let buffer = '';
+    const framer = new LineFramer();
     let settled = false;
 
     const timer = setTimeout(() => {
@@ -367,11 +368,7 @@ function attemptRpc(
     });
 
     socket.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString('utf8');
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
+      for (const line of framer.push(chunk)) {
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {
