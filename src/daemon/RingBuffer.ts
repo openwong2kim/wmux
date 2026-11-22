@@ -115,7 +115,7 @@ export class RingBuffer {
   // A rust ring holds its bytes here, except while hibernated: then this is
   // undefined and the node fields below describe the ring (see hibernate()).
   private native?: NativeRingStorage;
-  private NativeRing?: new (capacity: number) => NativeRingStorage; // re-creates it on wake
+  private NativeRing?: new (capacity: number, compress?: boolean) => NativeRingStorage; // re-creates it on wake
   // Lifetime offset of the native ring's first byte: a ring re-created on wake
   // counts from 0, so this keeps totalBytesWritten monotonic across wakes.
   private nativeBase = 0;
@@ -155,12 +155,14 @@ export class RingBuffer {
   private mutations = 0; // bumps on every content change, including clear()
   private clears = 0; // bumps on every clear(); see clearGeneration
   private lastDump: { path: string; mutations: number } | null = null;
-  // `config.session.ringCompression` (node backend only): the stored bytes are
+  // `config.session.ringCompression` on the node backend: the stored bytes are
   // closed `chunkSize` chunks, brotli-compressed, oldest first, then an open
   // uncompressed tail in `buffer` [0..writePos). `length` still counts raw
   // bytes; the first `chunkSkip` raw bytes of the first chunk are already
-  // outside the window.
+  // outside the window. A rust ring compresses inside the native ring instead
+  // (`nativeCompress`, ring_pack.rs); every read returns the same raw bytes.
   private readonly compress: boolean;
+  private readonly nativeCompress: boolean;
   private readonly chunkSize: number;
   private chunks: Buffer[] = [];
   private chunkSkip = 0;
@@ -192,12 +194,13 @@ export class RingBuffer {
     if (backend === 'rust') {
       try {
         this.NativeRing = loadNativeTerminalCore('ring-v1').NativeRing;
-        this.native = new this.NativeRing(capacityBytes);
+        this.native = new this.NativeRing(capacityBytes, options.compress === true);
       }
       catch { reportNativeFallback('ring'); }
     }
     this.backend = this.native ? 'rust' : 'node';
     this.compress = options.compress === true && this.backend === 'node';
+    this.nativeCompress = options.compress === true && this.backend === 'rust';
     this.chunkSize = Math.min(RING_CHUNK_BYTES, capacityBytes);
     this.physical = Math.min(INITIAL_PHYSICAL_BYTES, capacityBytes);
     this.buffer = Buffer.alloc(this.native ? 0 : this.physical);
@@ -681,12 +684,21 @@ export class RingBuffer {
     // fresher snapshot is never wrong for recovery, and the snapshotRunner's
     // dirty-tracking captures totalBytesWritten BEFORE calling us, so a fresher
     // readAll at worst leaves the session marked dirty for one extra tick.
-    const data = this.readAll();
+    // A rust ring takes its copy now and decompresses it in a worker: a
+    // compressed 256 MB ring would otherwise hold the JS thread ~180 ms.
     const mutations = this.mutations;
+    const data = this.native?.readAllAsync ? await this.native.readAllAsync() : this.readAll();
+    // Destroying a session disposes the ring, then deletes its .buf without
+    // waiting for a dump in flight: a dump that lands after that is an orphan.
+    if (this.disposed) return;
     const tmpPath = `${filePath}.tmp.${crypto.randomBytes(6).toString('hex')}`;
     try {
       // mode is a no-op on Windows; use icacls for NTFS ACLs.
       await writeFile(tmpPath, data, { mode: 0o600 });
+      if (this.disposed) {
+        await unlink(tmpPath);
+        return;
+      }
       await RingBuffer.renameWithRetry(tmpPath, filePath);
       this.lastDump = { path: filePath, mutations };
     } catch (err) {
@@ -918,7 +930,7 @@ export class RingBuffer {
   private restoreNative(data: Buffer): void {
     const NativeRing = this.NativeRing;
     if (!NativeRing) throw new Error('rust ring without its native class');
-    const native = new NativeRing(this.capacity);
+    const native = new NativeRing(this.capacity, this.nativeCompress);
     const windowStart = this.totalWritten - data.length;
     let written = 0;
     try {

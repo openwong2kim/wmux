@@ -330,8 +330,10 @@ export interface DaemonConfig {
     /**
      * Keep the older part of each new session's ring buffer compressed in
      * memory (closed 256 KB chunks; the newest output stays uncompressed).
-     * Reads return the same bytes. Node terminal core only; the rust core
-     * ignores it. Off by default. Backfilled as `false` when absent.
+     * Reads return the same bytes, on either terminal core. `true` turns it
+     * on and `false` off; absent leaves it to Settings → Labs (labs.json),
+     * where it is on unless turned off. The `false` older daemons wrote into
+     * a new config.json is dropped once (RING_COMPRESSION_DEFAULT_MIGRATION).
      */
     ringCompression?: boolean;
   };

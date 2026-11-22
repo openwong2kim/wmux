@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DaemonClient } from '../../../DaemonClient';
 const h = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => Promise<unknown>>(),
-  read: vi.fn(), write: vi.fn(), inConfig: vi.fn(() => false),
+  read: vi.fn(), write: vi.fn(), inConfig: vi.fn((): boolean | null => null),
   app: { isPackaged: false, getAppPath: () => '/repo' },
   readFile: vi.fn(async (file: string) => Buffer.from(file)),
 }));
@@ -23,51 +23,46 @@ const invoke = (key: string, value?: unknown) => {
   if (!handler) throw new Error('Missing handler');
   return handler(null, value);
 };
-beforeEach(() => { vi.clearAllMocks(); h.inConfig.mockReturnValue(false); h.handlers.clear(); });
-const core = (effective: 'node' | 'rust') => ({ requested: effective, effective, rustAvailable: true, environmentOverride: false });
+beforeEach(() => { vi.clearAllMocks(); h.inConfig.mockReturnValue(null); h.handlers.clear(); });
 
 describe('labs settings IPC', () => {
-  it('asks for no restart without a daemon answer while the saved opt-in is off', async () => {
-    h.read.mockReturnValue({ ringCompression: false });
-    registerLabsHandlers();
-    expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ running: null, restartRequired: false });
-    const rpc = vi.fn().mockRejectedValue(new Error('offline'));
-    registerLabsHandlers({ rpc } as unknown as DaemonClient);
-    expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ running: null, restartRequired: false });
+  it('asks for no restart without a daemon answer', async () => {
+    for (const ringCompression of [false, true]) {
+      h.read.mockReturnValue({ ringCompression });
+      registerLabsHandlers();
+      expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ running: null, restartRequired: false });
+      const rpc = vi.fn().mockRejectedValue(new Error('offline'));
+      registerLabsHandlers({ rpc } as unknown as DaemonClient);
+      expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ running: null, restartRequired: false });
+    }
   });
-  it('asks for a restart without a daemon answer only while the saved opt-in is on', async () => {
+  it('compares the saved switch with what the daemon reports, on any engine', async () => {
     h.read.mockReturnValue({ ringCompression: true });
-    registerLabsHandlers();
-    expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ restartRequired: true });
-  });
-  it('compares the saved opt-in with what the daemon reports', async () => {
-    h.read.mockReturnValue({ ringCompression: true });
-    const rpc = vi.fn().mockResolvedValue({ labs: { ringCompression: true }, terminalCore: core('node') });
+    const rpc = vi.fn().mockResolvedValue({ labs: { ringCompression: true } });
     registerLabsHandlers({ rpc } as unknown as DaemonClient);
     expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ restartRequired: false });
-    rpc.mockResolvedValue({ labs: { ringCompression: false }, terminalCore: core('node') });
+    expect(rpc).toHaveBeenCalledWith('daemon.ping', { includeLabs: true });
+    rpc.mockResolvedValue({ labs: { ringCompression: false } });
     expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ restartRequired: true });
-  });
-  it('says ring compression applies only while the daemon runs the Node engine', async () => {
-    h.read.mockReturnValue({ ringCompression: true });
-    const rpc = vi.fn().mockResolvedValue({ labs: { ringCompression: false }, terminalCore: core('rust') });
-    registerLabsHandlers({ rpc } as unknown as DaemonClient);
-    expect(rpc).not.toHaveBeenCalled();
-    expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ ringCompressionApplies: false, restartRequired: false });
-    expect(rpc).toHaveBeenCalledWith('daemon.ping', expect.objectContaining({ includeTerminalCore: true }));
-    rpc.mockResolvedValue({ labs: { ringCompression: true }, terminalCore: core('node') });
-    expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ ringCompressionApplies: true });
-    rpc.mockResolvedValue({ labs: { ringCompression: true } });
-    expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ ringCompressionApplies: null });
   });
   it('asks for a restart when config.json turns compression on but the daemon started without it', async () => {
     h.read.mockReturnValue({ ringCompression: false });
     h.inConfig.mockReturnValue(true);
-    const rpc = vi.fn().mockResolvedValue({ labs: { ringCompression: false }, terminalCore: core('node') });
+    const rpc = vi.fn().mockResolvedValue({ labs: { ringCompression: false } });
     registerLabsHandlers({ rpc } as unknown as DaemonClient);
-    expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ restartRequired: true });
-    rpc.mockResolvedValue({ labs: { ringCompression: true }, terminalCore: core('node') });
+    expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ ringCompressionInConfig: true, restartRequired: true });
+    rpc.mockResolvedValue({ labs: { ringCompression: true } });
     expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ restartRequired: false });
+  });
+  it('lets a config.json false win over the saved switch, with no restart once the daemon runs it', async () => {
+    h.read.mockReturnValue({ ringCompression: true });
+    h.inConfig.mockReturnValue(false);
+    const rpc = vi.fn().mockResolvedValue({ labs: { ringCompression: false } });
+    registerLabsHandlers({ rpc } as unknown as DaemonClient);
+    expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ ringCompressionInConfig: false, restartRequired: false });
+    // A daemon still compressing from before the edit is waiting for a restart.
+    rpc.mockResolvedValue({ labs: { ringCompression: true } });
+    expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ restartRequired: true });
   });
   it('hands over the wongtty engine and front end from node_modules, or from resources once packaged', async () => {
     registerLabsHandlers();

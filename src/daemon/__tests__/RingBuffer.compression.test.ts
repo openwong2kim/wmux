@@ -1,15 +1,23 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { RingBuffer } from '../RingBuffer';
+import { nativeCorePath } from '../../shared/nativeTerminalCore';
 
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
   dirs.length = 0;
+  vi.unstubAllEnvs();
 });
+
+// The rust rows need the built module: they skip without it, and fail under
+// WMUX_REQUIRE_RUST_CORE.
+const modulePath = nativeCorePath();
+const native = fs.existsSync(modulePath);
+if (!native && process.env.WMUX_REQUIRE_RUST_CORE) throw new Error(`native core missing: ${modulePath}`);
 
 const CHUNK = 256 * 1024;
 
@@ -40,13 +48,23 @@ function reads(ring: RingBuffer) {
   };
 }
 
-describe('RingBuffer compression', () => {
-  it('serves the same bytes as a plain ring through chunk edges, overflow, geometry and hibernation', async () => {
+describe.each([
+  { backend: 'node' as const, skip: false },
+  { backend: 'rust' as const, skip: !native },
+])('RingBuffer compression ($backend ring)', ({ backend, skip }) => {
+  const ring = (capacity: number, compress = false) => {
+    if (backend === 'rust') vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', modulePath);
+    const made = new RingBuffer(capacity, backend, { compress });
+    expect(made.backend).toBe(backend);
+    return made;
+  };
+
+  it.skipIf(skip)('serves the same bytes as a plain ring through chunk edges, overflow, geometry and hibernation', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-rb-compress-'));
     dirs.push(dir);
     const capacity = 4 * CHUNK + 12_345; // not a whole number of chunks
-    const plain = new RingBuffer(capacity, 'node');
-    const packed = new RingBuffer(capacity, 'node', { compress: true });
+    const plain = ring(capacity);
+    const packed = ring(capacity, true);
     const both = (fn: (ring: RingBuffer) => void) => { fn(plain); fn(packed); };
     const check = () => expect(reads(packed)).toEqual(reads(plain));
 
@@ -84,6 +102,19 @@ describe('RingBuffer compression', () => {
     check(); // the read wakes both
     both((r) => r.write(output(CHUNK + 3, 42)));
     check();
+    // The woken ring compresses again.
+    expect(packed.allocatedBytes).toBeLessThan(plain.allocatedBytes / 2);
+    // A native snapshot copy holds the same bytes.
+    const frozen = (r: RingBuffer) => {
+      const copy = r.freezeNative();
+      if (!copy) return null;
+      const result = { data: digest(copy.readAll()), writtenAt: copy.writtenAt, size: copy.size, geometry: copy.geometry };
+      copy.dispose();
+      return result;
+    };
+    const frozenPlain = frozen(plain);
+    expect(frozenPlain === null).toBe(backend === 'node');
+    expect(frozen(packed)).toEqual(frozenPlain);
     both((r) => r.dumpToFileSyncAtomic(path.join(dir, r === plain ? 'plain.dump' : 'packed.dump')));
     expect(digest(fs.readFileSync(path.join(dir, 'packed.dump')))).toBe(digest(fs.readFileSync(path.join(dir, 'plain.dump'))));
 
@@ -94,9 +125,9 @@ describe('RingBuffer compression', () => {
     check();
   });
 
-  it('keeps a ring smaller than one chunk within its capacity', () => {
-    const plain = new RingBuffer(100_003, 'node');
-    const packed = new RingBuffer(100_003, 'node', { compress: true });
+  it.skipIf(skip)('keeps a ring smaller than one chunk within its capacity', () => {
+    const plain = ring(100_003);
+    const packed = ring(100_003, true);
     for (let i = 0; i < 30; i++) {
       const data = output(1 + ((i * 15_013) % 70_000), i);
       plain.write(data);
@@ -104,5 +135,26 @@ describe('RingBuffer compression', () => {
       expect(reads(packed)).toEqual(reads(plain));
     }
     expect(packed.size).toBe(100_003);
+  });
+});
+
+describe('a dump of a compressed rust ring', () => {
+  it.skipIf(!native)('writes nothing when the ring is disposed while its bytes are read', async () => {
+    vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', modulePath);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-rb-dispose-'));
+    dirs.push(dir);
+    const packed = new RingBuffer(4 * CHUNK, 'rust', { compress: true });
+    packed.write(output(3 * CHUNK, 1));
+    // The session is destroyed while the worker decompresses (index.ts
+    // disposes the ring, then deletes its .buf).
+    const storage = (packed as unknown as { native: { readAllAsync(): Promise<Buffer> } }).native;
+    const read = storage.readAllAsync.bind(storage);
+    storage.readAllAsync = async () => {
+      const bytes = await read();
+      packed.dispose();
+      return bytes;
+    };
+    await packed.dumpToFile(path.join(dir, 'session.buf'));
+    expect(fs.readdirSync(dir)).toEqual([]);
   });
 });

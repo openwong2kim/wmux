@@ -375,10 +375,10 @@ export class DaemonSessionManager extends EventEmitter {
     this.config = config;
   }
 
-  /** Whether new rings are asked to compress: config.json's flag or the saved
-   *  Labs opt-in, both as read at startup. A Rust ring ignores the request. */
+  /** Whether new rings compress: config.json's flag when it is set, else the
+   *  Labs switch (on unless turned off), both as read at startup. */
   ringCompressionEnabled(): boolean {
-    return this.config?.session.ringCompression === true || labsSettingsAtStartup().ringCompression;
+    return this.config?.session.ringCompression ?? labsSettingsAtStartup().ringCompression;
   }
 
   private pendingRecovery = new Map<string, DaemonSession>();

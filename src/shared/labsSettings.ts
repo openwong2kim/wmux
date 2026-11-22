@@ -18,11 +18,9 @@ export interface LabsStatus {
   /** What the running terminal host started with (labs.json or config.json's
    *  flag); null when it did not answer. */
   running: LabsSettings | null;
-  /** config.json's session.ringCompression is on, so compression is on whatever labs.json says. */
-  ringCompressionInConfig: boolean;
-  /** Ring compression works only on the Node terminal engine: false when the
-   *  running host uses Rust, null when it did not report its engine. */
-  ringCompressionApplies: boolean | null;
+  /** config.json's session.ringCompression when it is set (it then wins over
+   *  labs.json), null when it is not. */
+  ringCompressionInConfig: boolean | null;
   restartRequired: boolean;
   stopCommand: string;
 }
@@ -36,20 +34,23 @@ export function labsSettingsPath(): string {
   return path.join(dataDir(), 'labs.json');
 }
 
-export function ringCompressionInConfig(file?: string): boolean {
+/** config.json's session.ringCompression: true or false when set, null otherwise. */
+export function ringCompressionInConfig(file?: string): boolean | null {
   try {
-    return JSON.parse(stripBom(fs.readFileSync(file ?? path.join(dataDir(), 'config.json'), 'utf8')))?.session?.ringCompression === true;
+    const value = JSON.parse(stripBom(fs.readFileSync(file ?? path.join(dataDir(), 'config.json'), 'utf8')))?.session?.ringCompression;
+    return typeof value === 'boolean' ? value : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
+/** Ring compression is on unless labs.json turns it off. */
 export function readLabsSettings(file?: string): LabsSettings {
   try {
     const saved = JSON.parse(fs.readFileSync(file ?? labsSettingsPath(), 'utf8'));
-    return { ringCompression: saved?.ringCompression === true };
+    return { ringCompression: saved?.ringCompression !== false };
   } catch {
-    return { ringCompression: false };
+    return { ringCompression: true };
   }
 }
 

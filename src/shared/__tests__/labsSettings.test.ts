@@ -13,21 +13,27 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); fs.rmSync(dir, { recursive: true, force: true }); });
 
 describe('labs settings', () => {
-  it('reads off when the file is missing, unreadable or holds anything but true', async () => {
+  it('reads on when the file is missing, unreadable or holds anything but false', async () => {
     const labs = await import('../labsSettings');
     const file = path.join(dir, 'labs.json');
-    expect(labs.readLabsSettings(file)).toEqual({ ringCompression: false });
-    for (const body of ['not json', '{"ringCompression":"yes"}', '{"ringCompression":1}', 'null']) {
+    expect(labs.readLabsSettings(file)).toEqual({ ringCompression: true });
+    for (const body of ['not json', '{"ringCompression":"no"}', '{"ringCompression":0}', 'null', '{}']) {
       fs.writeFileSync(file, body);
-      expect(labs.readLabsSettings(file)).toEqual({ ringCompression: false });
+      expect(labs.readLabsSettings(file)).toEqual({ ringCompression: true });
     }
+    fs.writeFileSync(file, '{"ringCompression":false}');
+    expect(labs.readLabsSettings(file)).toEqual({ ringCompression: false });
     expect(() => labs.writeLabsSettings({ ringCompression: 'on' } as never, file)).toThrow();
   });
 
-  it('sees compression already turned on in config.json', async () => {
+  it('reads config.json\'s flag as true, false or unset', async () => {
     const labs = await import('../labsSettings');
     const config = path.join(dir, 'config.json');
-    expect(labs.ringCompressionInConfig(config)).toBe(false);
+    expect(labs.ringCompressionInConfig(config)).toBeNull();
+    fs.writeFileSync(config, '{"session":{}}');
+    expect(labs.ringCompressionInConfig(config)).toBeNull();
+    fs.writeFileSync(config, '{"session":{"ringCompression":"yes"}}');
+    expect(labs.ringCompressionInConfig(config)).toBeNull();
     fs.writeFileSync(config, '{"session":{"ringCompression":false}}');
     expect(labs.ringCompressionInConfig(config)).toBe(false);
     fs.writeFileSync(config, '{"session":{"ringCompression":true}}');
@@ -40,10 +46,10 @@ describe('labs settings', () => {
   it('saves to this instance\'s data dir and the terminal host keeps its startup value', async () => {
     const labs = await import('../labsSettings');
     expect(labs.labsSettingsPath()).toBe(path.join(dir, '.wmux-test', 'labs.json'));
-    expect(labs.labsSettingsAtStartup()).toEqual({ ringCompression: false });
+    expect(labs.labsSettingsAtStartup()).toEqual({ ringCompression: true });
     fs.mkdirSync(path.join(dir, '.wmux-test'));
-    labs.writeLabsSettings({ ringCompression: true });
-    expect(labs.readLabsSettings()).toEqual({ ringCompression: true });
-    expect(labs.labsSettingsAtStartup()).toEqual({ ringCompression: false });
+    labs.writeLabsSettings({ ringCompression: false });
+    expect(labs.readLabsSettings()).toEqual({ ringCompression: false });
+    expect(labs.labsSettingsAtStartup()).toEqual({ ringCompression: true });
   });
 });

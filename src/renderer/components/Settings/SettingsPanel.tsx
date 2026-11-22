@@ -5276,7 +5276,9 @@ export function TabLabs() {
     run(() => window.electronAPI.settings.getLabs());
     return () => { live.current = false; };
   }, [run]);
-  const ringOn = !!labs && (labs.saved.ringCompression || labs.ringCompressionInConfig);
+  // config.json's flag, when set, wins over labs.json (as in the daemon).
+  const ringInConfig = labs?.ringCompressionInConfig ?? null;
+  const ringOn = !!labs && (ringInConfig ?? labs.saved.ringCompression);
   return (
     <SettingsSection description={t('settings.labsIntro')}>
       <SettingRow id="labs-compact-scrollback" label={t('settings.labsCompactScrollback')} description={t('settings.labsCompactScrollbackDesc')}>
@@ -5292,13 +5294,13 @@ export function TabLabs() {
       <SettingRow id="labs-ring-compression" label={t('settings.labsRingCompression')} description={t('settings.labsRingCompressionDesc')}>
         <Toggle
           checked={ringOn}
-          disabled={!labs || busy || labs.ringCompressionInConfig || labs.ringCompressionApplies === false}
+          disabled={!labs || busy || ringInConfig !== null}
           onChange={(on) => run(() => window.electronAPI.settings.setLabs({ ringCompression: on }))}
           label={t('settings.labsRingCompression')}
         />
       </SettingRow>
-      {labs?.ringCompressionApplies === false && <SettingNote>{t('settings.labsRingCompressionNodeOnly')}</SettingNote>}
-      {labs?.ringCompressionInConfig && <SettingNote>{t('settings.labsRingCompressionInConfig')}</SettingNote>}
+      {ringInConfig === true && <SettingNote>{t('settings.labsRingCompressionInConfig')}</SettingNote>}
+      {ringInConfig === false && <SettingNote>{t('settings.labsRingCompressionOffInConfig')}</SettingNote>}
       {labs?.restartRequired && <SettingNote>
         {t('settings.labsRestartDaemon')}<br /><code className="ui-code">{labs.stopCommand}</code>
       </SettingNote>}
