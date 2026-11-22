@@ -480,6 +480,15 @@ describe('browser_response_body — nth and request id (#1360)', () => {
     expect(text).toContain('no longer available');
   });
 
+  it('refuses a fractional nth as an input error', async () => {
+    await resolveChromePage(makePage());
+
+    const result = await responseBody({ urlPattern: '*api*', nth: 1.5 });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('whole number');
+  });
+
   it('refuses a call that names neither a pattern nor an id', async () => {
     await resolveChromePage(makePage());
 

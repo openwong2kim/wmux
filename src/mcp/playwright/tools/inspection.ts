@@ -250,7 +250,6 @@ const BROWSER_RESPONSE_BODY_SHAPE = {
     .describe('The "id" browser_network printed for the request; takes priority over urlPattern.'),
   nth: z
     .number()
-    .int()
     .optional()
     .describe('Which match: 1 is the first, -1 the last (default).'),
   surfaceId: optionalSurfaceId,
@@ -1212,6 +1211,13 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
                 text: 'Pass urlPattern (a URL glob) or requestId (the "id" a browser_network row printed).',
               },
             ],
+            isError: true,
+          };
+        }
+        // Checked here, not in the schema: the schema is part of the pinned MCP protocol baseline.
+        if (nth !== undefined && !Number.isInteger(nth)) {
+          return {
+            content: [{ type: 'text' as const, text: 'nth must be a whole number: 1 is the first match, -1 the last.' }],
             isError: true,
           };
         }
