@@ -1,6 +1,52 @@
-# Rust snapshot memory in a real daemon — 2026-10-13
+# Rust daemon memory
 
-## Results
+## Ring compression — 2026-11-22
+
+`session.ringCompression` now applies to the Rust output ring
+(`core/wmux-term/src/ring_pack.rs`): closed 256 KiB chunks are compressed with
+zstd level 1 and the live tail stays raw. Retention still counts raw bytes, so
+replay depth is unchanged. This measures the ring alone, in its own process per
+mode, with `bench/rust-ring-compression.mjs`. It does not measure a whole daemon.
+
+Six sessions × 8 MiB rings, each filled with 10 MiB of output in PTY-sized writes
+(4–64 KiB). The hot pane is one ring taking 256 MiB of sustained output, median
+of three passes. Reads are one `readAll()` of a full 8 MiB ring. Both modes
+returned identical bytes (sha256 of every ring).
+
+| Corpus | Mode | Ring storage MiB | Process RSS growth MiB | Hot pane MiB/s | `readAll()` ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Coloured `git log -p` of this repo, then 0.6 MiB of TUI redraws (24.6 MiB) | raw | 48.0 | 50.5 | ~41,000 (a memcpy) | 0.6–1.0 |
+| | compressed | 12.8 | 15.6 | 631–636 | 4.3–4.5 |
+| Agent-TUI redraw stream (30 MiB, synthetic) | raw | 48.0 | 50.5 | ~41,700 | 1.1 |
+| | compressed | 5.0 | 6.6 | 1,619 (1,468–1,751) | 2.2 |
+
+What it costs. Compressing takes about 1.6 ms of CPU per MiB of diff-heavy
+output and 0.6 ms per MiB of TUI redraws, on the daemon's JS thread, and only
+when a 256 KiB chunk closes. A pane printing a sustained 10 MiB/s of diffs
+spends about 1.6% of one core on it. A full replay read decompresses 8 MiB in
+2–5 ms. One zstd compression context and one decompression context are shared
+by every ring on the thread.
+
+The audit before this change compressed 17 real rings totalling 118.8 MB to
+11.0 MB (10.8×) with the old Node path (brotli q1, same chunk size). In a
+one-off comparison on the same two kinds of output (256 KiB chunks, Rust
+crates, not kept in the repo), zstd level 1 compressed better than brotli q1
+and lz4: 4.7×, 3.0× and 3.2× on the diff corpus, 13.7×, 7.9× and 8.0× on the
+TUI corpus. It also compressed 3–4× faster than brotli. Brotli q1 got 10.8× on
+the audit's real rings, which puts them nearer the TUI row than the diff row.
+
+Host: darwin-arm64 (Apple M5, 16 GiB), Node v24.15.0, load average
+about 2.4–3.2 and roughly half the memory free, other user work running.
+
+```sh
+bash core/wmux-term/build-native-core.sh
+node bench/rust-ring-compression.mjs            # the git-log + TUI corpus
+node bench/rust-ring-compression.mjs FILE...    # your own captured output
+```
+
+## Rust snapshot memory in a real daemon — 2026-10-13
+
+### Results
 
 In this run, the Rust text-snapshot candidate had lower daemon peak RSS in all
 three workload groups. The largest median difference was 128.3 MiB for six
@@ -44,7 +90,7 @@ A real AI team still adds the agent CLI/MCP processes measured in
 processes. Full Rust PTY/ring replacement and a production AI team before/after
 comparison remain unmeasured here.
 
-## Scope and method
+### Scope and method
 
 This experiment launches the real daemon entry point, bundled from the dirty
 working checkout, in a new isolated data suffix for every sample. It uses real
@@ -93,7 +139,7 @@ fixture processes are gone, then shuts down the isolated daemon. A private
 node-pty copy restores the macOS spawn helper's executable bit when necessary,
 without changing the checkout's installed dependency.
 
-## Reproduce
+### Reproduce
 
 ```sh
 bash core/wmux-term/build-native-core.sh
@@ -108,7 +154,7 @@ targets macOS. This is a short repeated-snapshot experiment, not a leak test or
 a measurement of the complete Rust C replacement.
 
 
-## Host conditions
+### Host conditions
 
 The host was busy during the final run: 16 GiB physical RAM, approximately
 12.6 GiB swap used, and load averages 15.60 / 10.45 / 8.51 at a mid-run sample
