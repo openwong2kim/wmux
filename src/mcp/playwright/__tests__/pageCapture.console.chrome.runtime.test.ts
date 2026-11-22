@@ -41,7 +41,19 @@ const MATRIX = `
   fetch('/missing.json').catch(() => undefined);
 `;
 
+let crossSiteBase = '';
 function serve(req: IncomingMessage, res: ServerResponse): void {
+  if (req.url === '/framed') {
+    res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
+    res.end(`<!doctype html><title>framed</title><iframe src="${crossSiteBase}frame"></iframe>`);
+    return;
+  }
+  if (req.url === '/frame') {
+    // Logs as it loads, before the iframe's own session can be open, and again later.
+    res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
+    res.end("<!doctype html><script>console.log('early', { a: 1 }); setTimeout(() => console.log('late', { b: 2 }), 500)</script>");
+    return;
+  }
   if (req.url === '/missing.json') {
     res.writeHead(404, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end('{}');
@@ -140,6 +152,29 @@ describe(`console capture against real Chrome (${mode.name})`, () => {
       console.log('[pageCapture.console] rendered:\n' + ours().map((e) => `  [${e.level}] ${e.text.split('\n')[0]}`).join('\n'));
       expect(rest()).toEqual(reference);
       expect(errors().map((e) => e.text)).toEqual(referenceErrors);
+    } finally {
+      await page.close();
+    }
+  }, 60_000);
+
+  it('reads a cross-site iframe\'s console, including what it logged before its session opened', async (ctx) => {
+    if (h.skipUnless(ctx)) return;
+    crossSiteBase = h.crossSiteOrigin();
+    const page = (await h.browser().newPage()) as Page;
+    const reference: string[] = [];
+    page.on('console', (msg) => reference.push(msg.text()));
+    try {
+      attachPageCapture(page);
+      expect(await networkTapReady(page, 2_000)).toBe(true);
+      await page.goto(`${h.origin()}framed`, { waitUntil: 'load' });
+      const texts = () => ensurePageCapture(page).console.map((e) => e.text);
+      await vi.waitFor(() => expect(texts().some((t) => t.startsWith('late'))).toBe(true), { timeout: 5_000 });
+      console.log(`[pageCapture.console] iframe: ours ${JSON.stringify(texts())}, Playwright ${JSON.stringify(reference)}`);
+      // The early line arrives as a replay once the iframe's session opens, and
+      // Chrome replays a stored message without object previews: the object
+      // reads by its description. Lines logged after the session opened match.
+      expect(texts()).toEqual(['early Object', reference[1]]);
+      expect(reference).toEqual(['early {a: 1}', 'late {b: 2}']);
     } finally {
       await page.close();
     }

@@ -412,7 +412,7 @@ function frameCapReached(state: TapState): boolean {
   if (state.frames.size < MAX_FRAME_SESSIONS) return false;
   if (!state.capLogged) {
     state.capLogged = true;
-    console.error(`[wmux-mcp] network capture: ${MAX_FRAME_SESSIONS} cross-site iframe sessions on one page; later iframes are not captured`);
+    console.error(`[wmux-mcp] network and console capture: ${MAX_FRAME_SESSIONS} cross-site iframe sessions on one page; later iframes' requests and console messages are not captured`);
   }
   return true;
 }
