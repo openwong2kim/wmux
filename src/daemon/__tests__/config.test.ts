@@ -1169,6 +1169,29 @@ describe('loadConfig — one-time ring compression default', () => {
     expect(diskSession().ringCompression).toBe(false);
   });
 
+  it('keeps a false in a hand-written file that no daemon migrated', () => {
+    writeRawConfig({ session: { ringCompression: false } });
+    expect(loadConfig().session.ringCompression).toBe(false);
+    expect(diskSession().ringCompression).toBe(false);
+    expect(loadConfig().session.ringCompression).toBe(false);
+  });
+
+  it('keeps false while the migrated file cannot be saved', () => {
+    writeRawConfig(olderConfig(false));
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw new Error('EACCES');
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      for (let i = 0; i < 3; i++) expect(loadConfig().session.ringCompression).toBe(false);
+    } finally {
+      rename.mockRestore();
+      error.mockRestore();
+      resetGateMigrationSaveFailure();
+    }
+    expect(diskSession().ringCompression).toBe(false);
+  });
+
   it('keeps a stored true, and never backfills a value that is not a boolean', () => {
     writeRawConfig(olderConfig(true));
     expect(loadConfig().session.ringCompression).toBe(true);

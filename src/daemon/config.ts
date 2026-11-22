@@ -380,7 +380,9 @@ export function resetNotifySinksCache(): void {
  * Drops the `session.ringCompression: false` older daemons wrote into each
  * config.json they created. Nobody chose it, and it changed nothing on the
  * Rust terminal core; once it is gone, compression follows Labs (on by
- * default), and a `false` set after this turns it off.
+ * default), and a `false` set after this turns it off. Only a file that
+ * already carries the gate migration's id is one a daemon wrote: a `false`
+ * in a hand-written or provisioned file stays.
  */
 export const RING_COMPRESSION_DEFAULT_MIGRATION = 'ring-compression-default';
 
@@ -649,23 +651,29 @@ export function loadConfig(): DaemonConfig {
       config.gate = migrateGateForPowerShell(config.gate) as DaemonConfig['gate'];
       pending.push(GATE_POWERSHELL_MIGRATION);
     }
+    let dropRingFalse = false;
     if (!appliedMigrations.includes(RING_COMPRESSION_DEFAULT_MIGRATION)) {
-      if (config.session.ringCompression === false) delete config.session.ringCompression;
+      dropRingFalse = config.session.ringCompression === false && appliedMigrations.includes(GATE_POWERSHELL_MIGRATION);
       pending.push(RING_COMPRESSION_DEFAULT_MIGRATION);
     }
     if (pending.length > 0) {
       config.appliedMigrations = [...appliedMigrations, ...pending];
+      if (dropRingFalse) delete config.session.ringCompression;
       // The daemon calls loadConfig on every hook signal. When the file cannot
       // be written, the migrated list still applies in memory on each load, but
       // the write (and its error log) is tried once per process, not per call.
+      let saved = false;
       if (!gateMigrationSaveFailed) {
         try {
           saveConfigOrThrow(config);
+          saved = true;
         } catch (err) {
           gateMigrationSaveFailed = true;
           console.error('[daemon/config] Failed to save the gate migration; it applies in memory until a restart:', err);
         }
       }
+      // Compression is not turned on behind a file that still says false.
+      if (dropRingFalse && !saved) config.session.ringCompression = false;
     }
 
     // Enforce upper bound on buffer size to prevent excessive memory usage.
