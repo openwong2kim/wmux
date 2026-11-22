@@ -96,7 +96,7 @@ export function parsePorcelainPaths(stdout: string): string[] {
     const xy = e.slice(0, 2);
     out.push(e.slice(3));
     // A rename/copy entry is followed by its original path as its own field.
-    if (xy[0] === 'R' || xy[0] === 'C') {
+    if (/[RC]/.test(xy)) {
       const orig = entries[i + 1];
       if (orig) out.push(orig);
       i++;
@@ -245,6 +245,8 @@ export class SiblingCollisionWatcher {
   private lastEmitted = JSON.stringify(EMPTY_SIBLING_COLLISIONS);
   /** Pair key (both sides' head + dirty set) → result, so an unchanged pair costs no git. */
   private pairCache = new Map<string, PairResult>();
+  /** Each folder's worktree as last resolved (reused for a folder whose read timed out). */
+  private resolvedBefore = new Map<string, ResolvedWorktree>();
 
   constructor(private readonly deps: WatcherDeps) {
     this.run = deps.run ?? runGit;
@@ -276,6 +278,8 @@ export class SiblingCollisionWatcher {
   /** A pane went idle: check soon (debounced), if anything is being watched. */
   poke(): void {
     if (this.disposed || !this.enabled || this.cwds.length < 2) return;
+    // While backing off after timeouts, an idle pane does not pull the next round in.
+    if (this.failures > 0 && this.timer !== null) return;
     this.schedule(POKE_DELAY_MS);
   }
 
@@ -347,15 +351,24 @@ export class SiblingCollisionWatcher {
   private async round(): Promise<boolean> {
     const timeouts = { count: 0 };
     const resolved: ResolvedWorktree[] = [];
+    const known = new Map<string, ResolvedWorktree>();
     for (const cwd of this.cwds) {
-      const r = await this.run(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'], cwd);
-      if (r.timedOut) timeouts.count++;
+      // No --path-format (git 2.31+): --show-toplevel is absolute on every
+      // version, and --git-common-dir is resolved against the folder it ran in.
+      const r = await this.run(['rev-parse', '--show-toplevel', '--git-common-dir'], cwd);
+      if (r.timedOut) {
+        // Slow this round: keep the folder where it was last seen, and back off.
+        timeouts.count++;
+        const last = this.resolvedBefore.get(cwd);
+        if (last) resolved.push(last);
+        continue;
+      }
       if (r.failed || r.code !== 0) continue; // gone, or not a git folder — not a sibling
       const [top, common] = r.stdout.split('\n').map((l) => l.trim());
-      if (top && common) resolved.push({ cwd, worktreePath: resolve(top), commonDir: resolve(common) });
+      if (top && common) resolved.push({ cwd, worktreePath: resolve(top), commonDir: resolve(cwd, common) });
     }
-    // A folder that timed out may be a sibling: keep what is shown and back off.
-    if (timeouts.count) throw new RoundError('git timed out');
+    for (const r of resolved) known.set(r.cwd, r);
+    this.resolvedBefore = known;
     const groups = siblingGroups(resolved);
     if (groups.size === 0) {
       this.pairCache.clear();
@@ -366,10 +379,25 @@ export class SiblingCollisionWatcher {
       const v = await this.run(['version'], groups.values().next().value?.[0] ?? this.cwds[0]);
       if (v.timedOut) timeouts.count++;
       if (!v.failed && v.code === 0) this.mergeTree = supportsMergeTreeWriteTree(v.stdout);
+      // Unknown git: comparing now would cache the wrong kind of answer.
+      if (this.mergeTree === null) throw new RoundError('git version unreadable');
     }
-    // Repos in parallel, each strictly serial inside.
-    const perRepo = await Promise.all([...groups].map(([commonDir, paths]) => this.checkRepo(commonDir, paths, timeouts)));
-    this.publish(buildSnapshot(resolved, perRepo.flat()));
+    // Repos in parallel, each strictly serial inside. A repo whose check threw
+    // (no scratch directory) keeps its last results.
+    const perRepo = await Promise.allSettled([...groups].map(([commonDir, paths]) => this.checkRepo(commonDir, paths, timeouts)));
+    const results: PairResult[] = [];
+    perRepo.forEach((r, i) => {
+      if (r.status === 'fulfilled') {
+        results.push(...r.value);
+        return;
+      }
+      timeouts.count++;
+      for (const [a, b] of pairsOf([...groups.values()][i])) {
+        const last = this.lastResult(a, b);
+        if (last) results.push(last);
+      }
+    });
+    this.publish(buildSnapshot(resolved, results));
     if (timeouts.count) throw new RoundError('git timed out');
     return true;
   }

@@ -37,6 +37,9 @@ describe('parsePorcelainPaths', () => {
   it('reads modified, untracked and both sides of a rename', () => {
     expect(parsePorcelainPaths(' M a.ts\0?? new dir/b.ts\0R  c-new.ts\0c-old.ts\0A  d.ts\0')).toEqual(['a.ts', 'new dir/b.ts', 'c-new.ts', 'c-old.ts', 'd.ts']);
   });
+  it('a rename in the worktree column also carries its original path', () => {
+    expect(parsePorcelainPaths(' R src/b.ts\0src/a.ts\0 M c.ts\0')).toEqual(['src/b.ts', 'src/a.ts', 'c.ts']);
+  });
   it('a clean worktree has none', () => {
     expect(parsePorcelainPaths('')).toEqual([]);
   });
@@ -102,7 +105,7 @@ function fakeGit(opts: { conflict?: boolean; dirty?: Record<string, string>; fai
     if (cwd.startsWith('/r/gone')) return { code: 1, stdout: '', stderr: 'ENOENT', failed: true, timedOut: false };
     const cmd = args[0];
     if (cmd === 'rev-parse' && args.includes('--show-toplevel')) {
-      return cwd.startsWith('/r/') ? ok(`${cwd}\n/r/.git\n`) : ok('', 128);
+      return cwd.startsWith('/r/') ? ok(`${cwd}\n../.git\n`) : ok('', 128);
     }
     if (cmd === 'version') return ok('git version 2.50.1\n');
     if (cmd === 'rev-parse') return ok(`${cwd.endsWith('a') ? 'a'.repeat(40) : cwd.endsWith('orphan') ? 'c'.repeat(40) : 'b'.repeat(40)}\n`);
@@ -214,6 +217,8 @@ describe('SiblingCollisionWatcher', () => {
     await h.tick();
     expect(h.timers.map((t) => t.ms)).toEqual([240_000]);
     expect(h.emitted.length).toBe(shown); // nothing new published: the marker stays
+    h.watcher.poke(); // an idle pane does not cut the back-off short
+    expect(h.timers.map((t) => t.ms)).toEqual([240_000]);
     failing = false;
     await h.tick();
     expect(h.timers.map((t) => t.ms)).toEqual([60_000]);
