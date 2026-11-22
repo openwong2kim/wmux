@@ -6,6 +6,7 @@ import { useT } from '../../hooks/useT';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import Field from '../ui/Field';
+import Checkbox from '../ui/Checkbox';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import { IconWarning, IconX } from '../icons';
 
@@ -43,6 +44,9 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
   const [rows, setRows] = useState<EnvRow[]>(() => rowsFromProfile(workspace));
   const [command, setCommand] = useState<string>(workspace.profile?.defaultPaneCommand ?? '');
   const [startupCwd, setStartupCwd] = useState<string>(workspace.profile?.startupCwd ?? '');
+  const [fenceAgents, setFenceAgents] = useState<boolean>(workspace.profile?.fenceAgents === true);
+  // The fence needs the OS sandbox (macOS, Linux): never offered on Windows.
+  const fenceUnavailable = window.electronAPI?.platform === 'win32';
 
   const updateRow = useCallback((id: number, patch: Partial<EnvRow>) => {
     setRows((prev) => {
@@ -74,9 +78,9 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
     // setWorkspaceProfile normalizes (drops invalid/reserved AND secret-named
     // keys, collapses an empty profile to undefined) — it is the single
     // enforcing boundary, so we just hand it the raw rows.
-    setWorkspaceProfile(workspace.id, { env, defaultPaneCommand: command, startupCwd });
+    setWorkspaceProfile(workspace.id, { env, defaultPaneCommand: command, startupCwd, ...(fenceAgents && !fenceUnavailable ? { fenceAgents: true } : {}) });
     onClose();
-  }, [rows, command, startupCwd, setWorkspaceProfile, workspace.id, onClose]);
+  }, [rows, command, startupCwd, fenceAgents, fenceUnavailable, setWorkspaceProfile, workspace.id, onClose]);
 
   // A key is flagged invalid (red, dropped on save) when non-empty but not a
   // valid, non-reserved name.
@@ -186,6 +190,14 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
             autoCorrect="off"
             onChange={(e) => setStartupCwd(e.target.value)}
           />
+        </Field>
+
+        {/* The worker fence for new terminals (main/agents/paneFence.ts). */}
+        <Field
+          label={t('workspaceProfile.fenceAgents')}
+          description={fenceUnavailable ? t('paneFence.unavailable') : t('workspaceProfile.fenceAgentsHint')}
+        >
+          <Checkbox checked={fenceAgents && !fenceUnavailable} onCheckedChange={setFenceAgents} disabled={fenceUnavailable} data-workspace-fence-agents />
         </Field>
 
         {/* Warnings */}

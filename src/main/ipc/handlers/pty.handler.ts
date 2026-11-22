@@ -39,7 +39,10 @@ import { withLaunchSessionPin } from '../../agents/launchSessionPin';
 import { withScreenReaderFlag } from '../../../shared/screenReaderLaunch';
 import { isScreenReaderOn, launcherVersionsIn } from '../../screenReaderService';
 import { guardBotWorkerSessionText, guardCodexBotWorker } from '../../agents/codexWorkerGuard';
-import { workerFenceSupportFor } from '../../agents/botWorkerFence';
+import { workerFenceSupport, workerFenceSupportFor } from '../../agents/botWorkerFence';
+import { paneFenceCwdRefusal, paneFenceLaunch, type PaneFenceLaunchRecord } from '../../agents/paneFence';
+import { getPaneFenceSession, notePaneFenceLaunch, setPaneFenceOn, type PaneFenceSession } from '../../agents/paneFenceSessions';
+import type { PaneFenceState } from '../../../shared/paneFence';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withholdCredentialsFromAgents } from '../../pty/credentialEnvPrefs';
 import { withheldCredentialNames } from '../../../shared/envFilter';
@@ -196,6 +199,9 @@ type PtyCreateOptions = {
   launchEnv?: Record<string, string>;
   exec?: string;
   supervision?: PtyCreateSupervisionInput;
+  /** The person opted this pane into the worker fence (paneFence.ts): its
+   *  claude launches start fenced or not at all. Ignored for a bot worker. */
+  workerFence?: boolean;
   /** 스폰 출처 (실행 컨텍스트 정책). 'user-shell'만 env 투과; exec/supervision이
    * 있으면 스탬프와 무관하게 gated. 미지정은 fail-closed gated. */
   spawnKind?: SpawnKind;
@@ -282,6 +288,13 @@ function wslAccountTabRefusal(shell: string, options: PtyCreateOptions | undefin
 }
 
 async function stageCreate(options: PtyCreateOptions | undefined, botWorker: BotWorkerCreate | null, gateway?: WorkerGatewayLaunch): Promise<{ options: PtyCreateOptions | undefined; launch: ReturnType<typeof guardedLaunchOf> & ReturnType<typeof launchOfCodex> & { conversation?: ReturnType<typeof launchedConversation> } }> {
+  // A person's pane opted into the worker fence (paneFence.ts). Never a bot
+  // worker's, which has its own; the flag itself goes no further.
+  const paneFenced = !botWorker && options?.workerFence === true;
+  if (options && 'workerFence' in options) {
+    options = { ...options };
+    delete options.workerFence;
+  }
   // A fan-out line's prompt argument was built for the platform; the pane's
   // shell decides its form (a WSL pane runs bash).
   const shellPath = createShell(options);
@@ -307,6 +320,26 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
   } else {
     staged = withWmuxTools(staged);
   }
+  // A person's opted-in pane: its agent line starts inside the worker fence
+  // or the create fails (paneFence.ts). Never a bot worker's (paneFenced).
+  let paneFence: { record?: PaneFenceLaunchRecord } | undefined;
+  if (paneFenced) {
+    paneFence = {};
+    const paneLine = staged?.initialCommand;
+    if (staged && paneLine) {
+      const support = namesClaude(paneLine) ? await workerFenceSupport() : undefined;
+      let fenced: ReturnType<typeof paneFenceLaunch>;
+      try {
+        fenced = paneFenceLaunch(paneLine, typeof staged.cwd === 'string' && staged.cwd ? path.resolve(staged.cwd) : undefined, { wsl }, support !== undefined ? { support } : {});
+      } catch (err) {
+        throw new Error(`PTY_CREATE: ${(err as Error).message}`);
+      }
+      if (fenced) {
+        staged = { ...staged, initialCommand: fenced.line };
+        paneFence.record = fenced.record;
+      }
+    }
+  }
   // The guard decides whether the line is fenced (botWorkerFence.ts); the
   // fence support (and its self-test) is settled before it runs.
   const fenceSupport = botWorker && line ? await workerFenceSupportFor(line, typeof staged?.cwd === 'string' ? staged.cwd : undefined) : undefined;
@@ -319,7 +352,56 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
   // A bot worker's record keeps the conversation its line pinned and the mode
   // that line starts it in (workerReclaim.ts: a resume with no hook-recorded mode).
   const conversation = botWorker && pinned?.initialCommand ? launchedConversation(splitModelEnvMarker(pinned.initialCommand).command) : null;
+  if (pinned && paneFence) paneFenceOfCreate.set(pinned, paneFence);
   return { options: pinned, launch: { ...launchOfCodex(guarded), ...guardedLaunchOf(guarded), ...(conversation ? { conversation } : {}) } };
+}
+
+/** The folder a line typed into pane `sessionId` starts in: its live
+ *  folder, else the one it was spawned in; null when the daemon knows none. */
+async function paneLiveFolder(sessionId: string, rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>): Promise<string | null> {
+  const sessions = await rpc('daemon.listSessions', {}) as Array<{ id?: unknown; cwd?: unknown; spawnCwd?: unknown }>;
+  const s = Array.isArray(sessions) ? sessions.find((x) => x?.id === sessionId) : undefined;
+  const folder = [s?.cwd, s?.spawnCwd].find((f): f is string => typeof f === 'string' && f.length > 0 && path.isAbsolute(f));
+  return folder ?? null;
+}
+
+/** What stageCreate put a person's fenced pane's create through (per staged
+ *  options object): read once, right after the stage. */
+const paneFenceOfCreate = new WeakMap<object, { record?: PaneFenceLaunchRecord }>();
+function paneFenceOf(options: object | undefined): { record?: PaneFenceLaunchRecord } | undefined {
+  return options ? paneFenceOfCreate.get(options) : undefined;
+}
+
+/** pty:write-launch in a person's pane: when the session is opted in, an
+ *  agent line comes back fenced, in the folder the pane's shell is in, or
+ *  this throws (nothing is typed). Any other line comes back as given. */
+async function fencePaneLaunchText(sessionId: string, text: string, dc: DaemonClient | null): Promise<{ paneFence: PaneFenceSession | null; paneLaunch?: PaneFenceLaunchRecord; line: string }> {
+  const paneFence = getPaneFenceSession(sessionId);
+  if (!paneFence?.on || !(namesClaude(text) || namesCodex(text) || startsAgent(text))) return { paneFence, line: text };
+  if (!dc) throw new Error('PTY_WRITE_LAUNCH: worker fence: a fenced pane\'s agent starts again only with the wmux daemon');
+  const folder = await paneLiveFolder(sessionId, (m, p) => dc.rpc(m, p));
+  const support = namesClaude(text) ? await workerFenceSupport() : undefined;
+  let fenced: ReturnType<typeof paneFenceLaunch>;
+  try {
+    fenced = paneFenceLaunch(text, folder ?? undefined, { wsl: isWslShell(getPtyShell(sessionId)) }, support !== undefined ? { support } : {});
+  } catch (err) {
+    throw new Error(`PTY_WRITE_LAUNCH: ${(err as Error).message}`);
+  }
+  return fenced ? { paneFence, paneLaunch: fenced.record, line: fenced.line } : { paneFence, line: text };
+}
+
+/** A person's fenced pane, once its session exists: a fenced launch is
+ *  recorded, and a pane that launched nothing yet is on for its next one. */
+function notePaneFenceCreate(sessionId: string, paneFence: { record?: PaneFenceLaunchRecord } | undefined): void {
+  if (!paneFence) return;
+  if (paneFence.record) notePaneFenceLaunch(sessionId, paneFence.record);
+  else setPaneFenceOn(sessionId, true);
+}
+
+/** What pty:create tells the renderer about a fenced pane: the switch is on,
+ *  and whether an agent launch was fenced now. */
+function paneFenceResult(paneFence: { record?: PaneFenceLaunchRecord } | undefined): { fence?: PaneFenceState } {
+  return paneFence ? { fence: { on: true, launched: paneFence.record !== undefined } } : {};
 }
 
 /** A bot worker create's signed-in connections (main/connectors/
@@ -822,6 +904,7 @@ export function registerPTYHandlers(
         throw err;
       }
       options = staged.options;
+      const paneFence = paneFenceOf(options);
       // The account this create names for itself, resolved by main; an
       // unknown one refuses the create. Its folder goes into the pane env, as
       // a rotated launch's does, so a profile's own folder cannot win over it.
@@ -845,7 +928,7 @@ export function registerPTYHandlers(
       const shell = options?.shell || (process.platform === 'win32' ? new ShellDetector().getDefault() : (process.env.SHELL || '/bin/bash'));
       const cwdResolution = resolvePtyCreateCwdForShell(options?.cwd, options?.recoveryCwds, shell);
       // A bot's worker starts in the folder its rules or settings were checked in.
-      const codexCwdRefusal = guardedCodexCwdRefusal(options, cwdResolution) ?? guardedClaudeCwdRefusal(staged.launch, cwdResolution);
+      const codexCwdRefusal = guardedCodexCwdRefusal(options, cwdResolution) ?? guardedClaudeCwdRefusal(staged.launch, cwdResolution) ?? paneFenceCwdRefusal(paneFence?.record, cwdResolution);
       if (codexCwdRefusal) throw failCreate(codexCwdRefusal);
       // #2388: a task folder whose removal did not finish is locked.
       const pendingRefusal = pendingRemovalRefusal(cwdResolution.safeCwd);
@@ -898,6 +981,8 @@ export function registerPTYHandlers(
         // A fan-out task pane's task and launch generation, bot or owner.
         recordFanoutTaskPane(options, sessionId);
       });
+      // A person's fenced pane: its later launches are fenced too.
+      closingLeases(() => notePaneFenceCreate(sessionId, paneFence));
 
       // Identity env vars for the spawned shell. The daemon's
       // `buildSafeChildEnv` passes WMUX_WORKSPACE_ID / WMUX_SURFACE_ID
@@ -1192,7 +1277,7 @@ export function registerPTYHandlers(
         writePidMap(shellPid, sessionId);
       }
 
-      return { id: sessionId, shell, cwd: effectiveCwd };
+      return { id: sessionId, shell, cwd: effectiveCwd, ...paneFenceResult(paneFence) };
     }));
   } else {
     ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: PtyCreateOptions) => {
@@ -1224,6 +1309,7 @@ export function registerPTYHandlers(
       }
       const staged = await stageCreate(options, botWorker);
       options = staged.options;
+      const paneFence = paneFenceOf(options);
       // An account's vault, too, reaches a pane only through the daemon: a
       // Claude launch on an account signed in only with a token would start
       // signed out. A plain shell is not refused (what it will run is unknown).
@@ -1270,7 +1356,7 @@ export function registerPTYHandlers(
         || (process.platform === 'win32' ? new ShellDetector().getDefault() : (process.env.SHELL || '/bin/bash'));
       const cwdResolution = resolvePtyCreateCwdForShell(options?.cwd, options?.recoveryCwds, shell);
       // A bot's worker starts in the folder its rules or settings were checked in.
-      const codexCwdRefusal = guardedCodexCwdRefusal(options, cwdResolution) ?? guardedClaudeCwdRefusal(staged.launch, cwdResolution);
+      const codexCwdRefusal = guardedCodexCwdRefusal(options, cwdResolution) ?? guardedClaudeCwdRefusal(staged.launch, cwdResolution) ?? paneFenceCwdRefusal(paneFence?.record, cwdResolution);
       if (codexCwdRefusal) throw new Error(codexCwdRefusal);
       const pendingRefusal = pendingRemovalRefusal(cwdResolution.safeCwd);
       if (pendingRefusal) throw new Error(pendingRefusal);
@@ -1292,6 +1378,7 @@ export function registerPTYHandlers(
         : null;
       const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, ...(botWorker || options?.fanoutTaskOf ? { automation: true } : {}), wslAccountLoginEnvKey, wslAccountHomeKey, ...(typeof accountId === 'string' ? { accountId } : {}), ...(ignoreAccountBinding === true ? { ignoreAccountBinding: true } : {}), ...(wslTaskGit ? { wslTaskGit } : {}) });
       logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
+      notePaneFenceCreate(instance.id, paneFence);
       if (botWorker) {
         const launchTask = botWorkerLaunchTask(botWorker);
         try {
@@ -1330,7 +1417,7 @@ export function registerPTYHandlers(
           initialCmd.onFirstData();
         });
       }
-      return { id: instance.id, shell: instance.shell, cwd: actualCwd };
+      return { id: instance.id, shell: instance.shell, cwd: actualCwd, ...paneFenceResult(paneFence) };
     }));
   }
 
@@ -1456,8 +1543,8 @@ export function registerPTYHandlers(
   // guard or nothing is typed (botWorkerMergeGuard.ts); everywhere else it is
   // written as given.
   ipcMain.removeHandler(IPC.PTY_WRITE_LAUNCH);
-  ipcMain.handle(IPC.PTY_WRITE_LAUNCH, wrapHandler(IPC.PTY_WRITE_LAUNCH, async (_event: Electron.IpcMainInvokeEvent, id: unknown, text: unknown, submit: unknown, origin: unknown) => {
-    if (typeof id !== 'string' || typeof text !== 'string' || text.length > PTY_WRITE_BACKSTOP) {
+  ipcMain.handle(IPC.PTY_WRITE_LAUNCH, wrapHandler(IPC.PTY_WRITE_LAUNCH, async (_event: Electron.IpcMainInvokeEvent, id: unknown, typedText: unknown, submit: unknown, origin: unknown) => {
+    if (typeof id !== 'string' || typeof typedText !== 'string' || typedText.length > PTY_WRITE_BACKSTOP) {
       throw new Error('PTY_WRITE_LAUNCH: an id and a line are required');
     }
     // A bot's worker pane: the folders the line may start in are checked too.
@@ -1465,8 +1552,11 @@ export function registerPTYHandlers(
     const botPane = isBotWorkerSession(id);
     // Without the daemon the pane's folder is not known: a bot worker's
     // claude is not started again there.
-    if (botPane && !dc && namesClaude(text)) throw new Error('PTY_WRITE_LAUNCH: a bot worker\'s claude starts again only with the wmux daemon');
+    if (botPane && !dc && namesClaude(typedText)) throw new Error('PTY_WRITE_LAUNCH: a bot worker\'s claude starts again only with the wmux daemon');
     const folders = dc && botPane ? await paneLaunchFolders(id, (m, p) => dc.rpc(m, p)) : undefined;
+    // A person's fenced pane (paneFence.ts): an agent line starts fenced or is not typed.
+    const pane = botPane ? null : await fencePaneLaunchText(id, typedText, dc ?? null);
+    const text = pane?.line ?? typedText;
     const shaped = promptFileArgumentForShell(text, { wsl: isWslShell(getPtyShell(id)), cmd: process.platform === 'win32' && isCmdShellPath(getPtyShell(id)) });
     const guardedText = await guardBotWorkerSessionText(id, shaped, 'write-launch', folders ? { folders } : {});
     if (botPane && process.platform === 'win32' && isCmdShellPath(getPtyShell(id)) && !isPlainCmdLaunchLine(guardedText)) {
@@ -1511,10 +1601,18 @@ export function registerPTYHandlers(
     settleRelaunch?.(true);
     // The line is in the pane: a fence it put the session inside is recorded.
     if (botPane) noteGuardedLaunchTyped(id, guardedText);
+    if (pane?.paneLaunch) notePaneFenceLaunch(id, pane.paneLaunch);
     // An agent starts again in this pane, now or at the owner's Enter: an
     // ended task it belongs to is not known gone any more (agentGoneFacts.ts).
     noteSessionAgentLaunched(id, submit === true, botPane ? botWorkerSessionRecord(id)?.taskId : undefined);
+    return pane?.paneFence ? { fence: { on: pane.paneFence.on, launched: pane.paneLaunch !== undefined } satisfies PaneFenceState } : undefined;
   }));
+
+  // paneFence:set — the pane menu's worker fence switch: the session's next
+  // agent launch is fenced or not (a running agent is never changed).
+  ipcMain.removeHandler(IPC.PANE_FENCE_SET);
+  ipcMain.handle(IPC.PANE_FENCE_SET, wrapHandler(IPC.PANE_FENCE_SET, async (_event: Electron.IpcMainInvokeEvent, id: unknown, on: unknown) =>
+    (typeof id === 'string' && isBotWorkerSession(id) ? false : setPaneFenceOn(id, on))));
 
   // Per-session scheduled prompts. Unlike Command Deck schedules, these
   // target one immutable daemon PTY. Local fallback mode intentionally refuses

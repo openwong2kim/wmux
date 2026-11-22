@@ -178,6 +178,7 @@ export const IPC = {
   FANOUT_OWNER_ANSWERS_SET: 'fanout:ownerAnswers:set',
   WORKER_FENCE_OFF_GET: 'workerFence:off:get',
   WORKER_FENCE_OFF_SET: 'workerFence:off:set',
+  PANE_FENCE_SET: 'paneFence:set',
   FANOUT_AUDIT_RECENT: 'fanout:audit:recent',
   FANOUT_LINEAGE: 'fanout:lineage',
   FANOUT_PRESETS_GET: 'fanout:presets:get',

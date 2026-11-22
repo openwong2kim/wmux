@@ -59,6 +59,9 @@ export interface PtyCreateOptions {
    * spawned as the executable — preserves shell-allowlist + quoting behavior).
    */
   initialCommand?: string;
+  /** The pane runs its agents inside the worker fence (main/agents/
+   *  paneFence.ts): a claude launch starts fenced or not at all. */
+  workerFence?: boolean;
   /**
    * X8 exec-style unit: run this command as the pane's ROOT process (daemon
    * mode only). Set by the AppLayout funnel for a supervised wmux.json leaf —
@@ -133,6 +136,9 @@ export function withWorkspaceProfile<T extends PtyCreateOptions>(
   if (profile.defaultPaneCommand && next.initialCommand === undefined) {
     next.initialCommand = profile.defaultPaneCommand;
   }
+  // New panes start in the worker fence; a caller that says otherwise (a
+  // tab restarted with its own switch) wins.
+  if (profile.fenceAgents === true && next.workerFence === undefined) next.workerFence = true;
   return next;
 }
 

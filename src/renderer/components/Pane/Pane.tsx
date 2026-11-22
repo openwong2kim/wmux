@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState, useMemo, useRef } from 'react';
+import { notePaneFenceError, notePaneFenceResult } from '../../utils/paneFence';
 import { Panel, Group, Separator, type Layout } from 'react-resizable-panels';
 import type { PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
@@ -1014,6 +1015,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
               retries++;
               timer = setTimeout(attempt, wait);
             }
+            // A fenced tab's refusal shows on its chip (utils/paneFence.ts).
+            notePaneFenceError(ptyId, err);
           },
         );
       }, () => undefined);
@@ -1372,9 +1375,13 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         // Resolves false when main refused the line: the pill then stays as it was.
         const type = (text: string): Promise<boolean> =>
           window.electronAPI.pty.writeLaunch(ptyId, text, false, 'human').then(
-            () => true,
+            (res: unknown) => {
+              notePaneFenceResult(ptyId, res);
+              return true;
+            },
             (err: unknown) => {
               console.warn('[wmux:resume] the resume line was not typed', String(err));
+              notePaneFenceError(ptyId, err);
               toastFolderTrustLaunchRefusal(err);
               return false;
             },

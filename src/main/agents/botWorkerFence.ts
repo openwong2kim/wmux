@@ -854,6 +854,9 @@ export interface WorkerFenceAttachInput {
   dir: string;
   /** The owner turned the fence off for the bot's workspace. */
   switchedOff: boolean;
+  /** A pane the person opted into the fence (paneFence.ts): fenced in every
+   *  permission mode, since the mode can change inside the session. */
+  always?: boolean;
   /** What the session's first launch recorded (a resume, a re-fire). */
   recorded?: { strength: WorkerFenceStrength; tempDir?: string; branch?: string | null };
   support: WorkerFenceSupport | null;
@@ -883,7 +886,7 @@ export function attachWorkerFence(input: WorkerFenceAttachInput): WorkerFenceAtt
   const userConfigDir = env.CLAUDE_CONFIG_DIR && path.isAbsolute(env.CLAUDE_CONFIG_DIR) ? env.CLAUDE_CONFIG_DIR : path.join(home, '.claude');
   // A line with no mode flag starts in the mode its settings name.
   const mode = linePermissionMode(input.line) ?? settingsDefaultMode(input.cwd, userConfigDirs(home, env, accountDirs));
-  if (!isFencedMode(mode)) return { kind: 'none' };
+  if (!input.always && !isFencedMode(mode)) return { kind: 'none' };
   const wanted = !input.switchedOff || (input.recorded !== undefined && input.recorded.strength !== 'off');
   if (!wanted) return { kind: 'fence', strength: 'off', settings: statusLine('the worker fence is off for this workspace') };
   const credentials = [
@@ -905,6 +908,14 @@ export function attachWorkerFence(input: WorkerFenceAttachInput): WorkerFenceAtt
   const refusal = workerFenceFolderRefusal(input.cwd);
   if (refusal) throw fenceError(refusal);
   const worktree = fs.realpathSync(input.cwd);
+  if (input.always) {
+    // The folder is opened for reads and writes, which a credential path
+    // inside it would lose its deny to: not the root, the home folder or
+    // any folder holding a path the fence keeps unreadable.
+    const held = credentials.map(realOrResolved).find((c) => isWithin(c, worktree));
+    if (worktree === path.parse(worktree).root) throw fenceError('the pane\'s folder is the root of the disk; open the pane in a project folder');
+    if (held) throw fenceError(`the pane's folder holds ${held}, which the fence keeps unreadable; open the pane in a project folder`);
+  }
   const temp = workerTempDir(input.dir, input.recorded?.tempDir);
   const tempDir = temp.path;
   const git = readWorktreeGitFacts(worktree, input.expectedGit);
@@ -931,7 +942,7 @@ export function attachWorkerFence(input: WorkerFenceAttachInput): WorkerFenceAtt
   if (!hookCommand) throw fenceError('the fence hook\'s command cannot be written for these paths');
   const build = (patterns: readonly string[]) => buildWorkerFence({
     worktree, workerTempDir: temp.real, ...git, platformCapable: support.capable, repoTestWritePaths: [],
-    permissionMode: mode ?? 'bypassPermissions', hookCommand, credentialPaths: credentials, home,
+    permissionMode: mode ?? (input.always ? 'default' : 'bypassPermissions'), hookCommand, credentialPaths: credentials, home,
     extraDenyWrite: [...claudeTempDenies(worktree, platform, input.claudeTempRoots), ...patterns],
     ...(platform === 'linux' ? { keepGitDeny: (p: string) => fs.existsSync(p) } : {}),
   });
@@ -962,6 +973,15 @@ export function attachWorkerFence(input: WorkerFenceAttachInput): WorkerFenceAtt
     return { kind: 'fence', strength: 'full', tempDir, branch: git.ownBranch, settings: merged, launcher: fullLauncher(input.dir, support.exe) };
   }
   return { kind: 'fence', strength: 'full', tempDir, branch: git.ownBranch, settings: fence.settings, launcher: fullLauncher(input.dir, support.exe) };
+}
+
+/** `p` by its real path when it exists, else resolved. */
+function realOrResolved(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
 }
 
 /** Startup: remove worker temp folders no session record names and that
