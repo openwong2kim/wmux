@@ -42,7 +42,8 @@ export interface NativeTerminalCore {
   nativeTransportWorkerCount(): number;
   nativeCoreAbiVersion(): number;
   nativeCoreCapabilities(): string[];
-  NativeRing: new (capacity: number) => NativeRingStorage;
+  /** `compress` keeps finished chunks compressed (`ring-compress-v1`); an older core ignores it. */
+  NativeRing: new (capacity: number, compress?: boolean) => NativeRingStorage;
   NativeOutputDecoder?: new () => { feed(bytes: Uint8Array, finish: boolean): NativeOutputChunk };
   NativeOutputInterpreter?: new () => NativeOutputInterpreter;
   NativeTransport: new (command: string, args: string[], cwd: string, env: Record<string, string>, cols: number, rows: number, wake: () => void, conptyDll?: string, parentWindow?: Uint8Array) => NativeTransport;

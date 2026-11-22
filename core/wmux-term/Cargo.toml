@@ -18,7 +18,7 @@ default = ["bindings"]
 bindings = ["dep:napi", "dep:napi-derive", "dep:wasm-bindgen"]
 bench = []
 # Native-only C experiment. Keep the original S-A1 and WASM builds unchanged.
-native-core = ["dep:alacritty_terminal", "dep:portable-pty", "dep:libc"]
+native-core = ["dep:alacritty_terminal", "dep:portable-pty", "dep:libc", "dep:zstd-safe"]
 
 # 마이크로벤치 — bench 피처에서만 빌드(napi CLI의 전 타깃 빌드에서 격리).
 [[bin]]
@@ -36,6 +36,8 @@ napi-derive = { version = "3", optional = true }
 alacritty_terminal = { version = "=0.26.0", path = "vendor/alacritty_terminal", default-features = false, optional = true }
 portable-pty = { version = "=0.9.0", path = "vendor/portable-pty", optional = true }
 libc = { version = "0.2", optional = true }
+# The output ring's closed chunks (ring_pack.rs): zstd level 1, no legacy formats.
+zstd-safe = { version = "7", default-features = false, optional = true }
 
 # wasm32 타깃 전용 — wasm-bindgen. optional: bindings 피처 게이트.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

@@ -4,6 +4,7 @@
 use crate::fallible::{self, AllocFailed, CallError, CallResult, ErrorCode};
 use crate::native_output::NativeOutputChunk;
 use crate::native_serialize::XtermControl;
+use crate::ring_pack::PackedRing;
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
 use alacritty_terminal::index::{Column, Line, Point};
@@ -48,6 +49,8 @@ pub fn native_core_capabilities() -> Vec<String> {
         "ring-v1".into(),
         "pty-v1".into(),
         "frozen-ring-v1".into(),
+        // `new NativeRing(capacity, compress)` keeps closed chunks compressed.
+        "ring-compress-v1".into(),
         "output-chunk-v1".into(),
         "output-interpreter-v1".into(),
         "ansi-v2".into(),
@@ -3160,13 +3163,18 @@ pub struct NativeRing {
     geometry: Vec<GeometryMark>,
     /// The newest mark is provisional: the next mark replaces it.
     geometry_tail_provisional: bool,
+    /// Compressed storage (ring_pack.rs) in place of `bytes`, which stays
+    /// empty; `length` still counts raw bytes.
+    packed: Option<PackedRing>,
 }
 
 #[napi]
 impl NativeRing {
+    /// `compress` (default false): keep finished chunks compressed. Every
+    /// read returns the same raw bytes either way.
     #[napi(constructor, catch_unwind)]
-    pub fn new(capacity: u32) -> Result<Self, ErrorCode> {
-        Ok(Self::create(capacity)?)
+    pub fn new(capacity: u32, compress: Option<bool>) -> Result<Self, ErrorCode> {
+        Ok(Self::create_with(capacity, compress.unwrap_or(false))?)
     }
 
     #[napi(catch_unwind)]
@@ -3194,7 +3202,15 @@ impl NativeRing {
     }
     #[napi(getter, catch_unwind)]
     pub fn allocated_bytes(&self) -> u32 {
-        self.bytes.len() as u32
+        match &self.packed {
+            Some(packed) => packed.allocated() as u32,
+            None => self.bytes.len() as u32,
+        }
+    }
+
+    #[napi(getter, catch_unwind)]
+    pub fn compressed(&self) -> bool {
+        self.packed.is_some()
     }
 
     #[napi(getter, catch_unwind)]
@@ -3208,6 +3224,9 @@ impl NativeRing {
             return Err(Error::from_reason("Ring disposed"));
         }
         self.bytes.fill(0);
+        if let Some(packed) = &mut self.packed {
+            packed.clear();
+        }
         self.length = 0;
         self.write_pos = 0;
         Ok(())
@@ -3259,6 +3278,10 @@ impl NativeRing {
     #[napi(catch_unwind)]
     pub fn dispose(&mut self) {
         self.bytes = Vec::new();
+        if let Some(packed) = &mut self.packed {
+            packed.clear();
+        }
+        self.packed = None;
         self.capacity = 0;
         self.length = 0;
         self.write_pos = 0;
@@ -3268,14 +3291,24 @@ impl NativeRing {
 }
 
 impl NativeRing {
+    #[cfg(test)]
     fn create(capacity: u32) -> CallResult<Self> {
+        Self::create_with(capacity, false)
+    }
+
+    fn create_with(capacity: u32, compress: bool) -> CallResult<Self> {
         if capacity == 0 || capacity > 256 * 1024 * 1024 {
             return Err(CallError::reason("Ring capacity must be 1..256MiB"));
         }
-        // The first 64 KiB; writes grow it up to the capacity (write_bytes).
-        let initial = (capacity as usize).min(64 * 1024);
-        let mut bytes = fallible::try_with_capacity(initial, "the output ring")?;
-        bytes.resize(initial, 0);
+        let (bytes, packed) = if compress {
+            (Vec::new(), Some(PackedRing::create(capacity as usize)?))
+        } else {
+            // The first 64 KiB; writes grow it up to the capacity (write_bytes).
+            let initial = (capacity as usize).min(64 * 1024);
+            let mut bytes = fallible::try_with_capacity(initial, "the output ring")?;
+            bytes.resize(initial, 0);
+            (bytes, None)
+        };
         Ok(Self {
             bytes,
             capacity: capacity as usize,
@@ -3284,6 +3317,7 @@ impl NativeRing {
             total_written: 0,
             geometry: Vec::new(),
             geometry_tail_provisional: false,
+            packed,
         })
     }
 
@@ -3374,6 +3408,13 @@ impl NativeRing {
         } else {
             bytes
         };
+        if let Some(packed) = &mut self.packed {
+            // A refusal leaves the ring as it was.
+            packed.write(input)?;
+            self.length = packed.len();
+            self.total_written = next_total;
+            return Ok(());
+        }
         let needed = (self.length + input.len()).min(self.capacity);
         if needed > self.bytes.len() {
             // Growth only happens before the ring has wrapped; resize preserves order.
@@ -3400,6 +3441,9 @@ impl NativeRing {
     fn copy_bytes(&self) -> std::result::Result<Vec<u8>, AllocFailed> {
         if self.length == 0 {
             return Ok(Vec::new());
+        }
+        if let Some(packed) = &self.packed {
+            return packed.copy(RING_COPY);
         }
         let start = if self.length < self.bytes.len() {
             0
@@ -5998,5 +6042,259 @@ mod osc_cap_tests {
         terminal.feed_xterm_bytes(b"a\x1b", 0).unwrap();
         let payload = terminal.ansi_snapshot_bytes(None).ok().unwrap();
         assert!(payload.ends_with(b"\x1b"));
+    }
+}
+
+/// `session.ringCompression` (ring_pack.rs): a compressed ring reads back
+/// byte for byte what the plain ring reads, at the same offsets.
+#[cfg(test)]
+mod ring_compression_tests {
+    use super::*;
+    use crate::fallible::{fail_from, fail_what};
+    use crate::ring_pack::{CHUNK_BYTES, PACKED_CHUNK};
+
+    const CHUNK: usize = CHUNK_BYTES;
+
+    /// Terminal-like output (coloured lines, a cursor-up redraw) with a noisy
+    /// stretch every 64 KiB that zstd cannot shrink.
+    fn output(len: usize, seed: u32) -> Vec<u8> {
+        let mut out = Vec::with_capacity(len + 64);
+        let mut x = seed;
+        let mut line = 0u32;
+        while out.len() < len {
+            if out.len() % (64 * 1024) < 2048 {
+                x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                out.push((x >> 24) as u8);
+                continue;
+            }
+            line += 1;
+            out.extend_from_slice(
+                format!(
+                    "\x1b[32mPASS\x1b[0m src/file{}.ts ({} ms)\r\n\x1b[1A\x1b[2K",
+                    line % 97,
+                    line % 13
+                )
+                .as_bytes(),
+            );
+        }
+        out.truncate(len);
+        out
+    }
+
+    fn rings(capacity: u32) -> (NativeRing, NativeRing) {
+        let plain = NativeRing::create_with(capacity, false).unwrap();
+        let packed = NativeRing::create_with(capacity, true).unwrap();
+        (plain, packed)
+    }
+
+    fn same(plain: &NativeRing, packed: &NativeRing) {
+        assert_eq!(packed.size(), plain.size());
+        assert_eq!(packed.total_bytes_written(), plain.total_bytes_written());
+        assert!(
+            packed.copy_bytes().unwrap() == plain.copy_bytes().unwrap(),
+            "bytes differ"
+        );
+    }
+
+    #[test]
+    fn reads_back_the_plain_rings_bytes_across_chunk_edges_and_overflow() {
+        // Not a whole number of chunks, so the window starts inside one.
+        let capacity = 4 * CHUNK + 12_345;
+        let (mut plain, mut packed) = rings(capacity as u32);
+        let sizes = [
+            1,
+            CHUNK - 2,
+            1,
+            1,
+            CHUNK,
+            CHUNK + 1,
+            3 * CHUNK + 7,
+            70_000,
+            capacity + 5_000,
+            CHUNK - 1,
+            5,
+            2 * CHUNK,
+        ];
+        for (i, &n) in sizes.iter().enumerate() {
+            let data = output(n, i as u32);
+            plain.write_bytes(&data).unwrap();
+            packed.write_bytes(&data).unwrap();
+            same(&plain, &packed);
+        }
+        assert_eq!(packed.size() as usize, capacity);
+        assert!(packed.compressed() && !plain.compressed());
+    }
+
+    #[test]
+    fn evicts_the_oldest_bytes_first() {
+        // A ring smaller than one chunk closes chunks of its own size.
+        for capacity in [1000usize, 2 * CHUNK + 100] {
+            let mut ring = NativeRing::create_with(capacity as u32, true).unwrap();
+            let mut offset = 0u64;
+            for n in [
+                7usize,
+                999,
+                capacity - 3,
+                1,
+                capacity / 2 + 13,
+                CHUNK + 9,
+                4,
+            ] {
+                // Each byte names its lifetime offset.
+                let data: Vec<u8> = (offset..offset + n as u64)
+                    .map(|o| (o % 251) as u8)
+                    .collect();
+                ring.write_bytes(&data).unwrap();
+                offset += n as u64;
+                let kept = (offset as usize).min(capacity);
+                let want: Vec<u8> = (offset - kept as u64..offset)
+                    .map(|o| (o % 251) as u8)
+                    .collect();
+                assert_eq!(ring.size() as usize, kept);
+                assert!(
+                    ring.copy_bytes().unwrap() == want,
+                    "capacity {capacity} after {offset}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn holds_far_fewer_bytes_than_it_stores() {
+        let mut ring = NativeRing::create_with(8 << 20, true).unwrap();
+        let data = output(8 << 20, 7);
+        for part in data.chunks(16 * 1024) {
+            ring.write_bytes(part).unwrap();
+        }
+        assert_eq!(ring.size() as usize, 8 << 20);
+        assert!(
+            (ring.allocated_bytes() as usize) < (8 << 20) / 4,
+            "{}",
+            ring.allocated_bytes()
+        );
+        assert!(ring.copy_bytes().unwrap() == data);
+    }
+
+    #[test]
+    fn a_snapshot_from_a_compressed_ring_equals_the_plain_one() {
+        let capacity = 2 * CHUNK + 777;
+        let (mut plain, mut packed) = rings(capacity as u32);
+        for ring in [&mut plain, &mut packed] {
+            ring.note_geometry_mark(20, 4, None).unwrap();
+        }
+        let data = output(3 * CHUNK + 4321, 3);
+        for (i, part) in data.chunks(40_000).enumerate() {
+            for ring in [&mut plain, &mut packed] {
+                ring.write_bytes(part).unwrap();
+                if i == 15 {
+                    ring.note_geometry_mark(30, 6, None).unwrap();
+                }
+            }
+        }
+        let snapshot = |ring: &mut NativeRing| {
+            let frozen = ring.freeze_copy().ok().unwrap();
+            let start = frozen.written_at - frozen.bytes.len() as u64;
+            let geometry = replay_geometry(&frozen.geometry, start)
+                .ok()
+                .unwrap()
+                .map(|g| {
+                    let changes: Vec<_> = g
+                        .changes
+                        .iter()
+                        .map(|c| (c.offset, c.cols, c.rows))
+                        .collect();
+                    (g.start.cols, g.start.rows, changes)
+                });
+            let mut terminal = NativeTerminal::create(20, 4, 100).unwrap();
+            terminal
+                .feed_frozen_range(&frozen, 0, frozen.size())
+                .unwrap();
+            let rows: Vec<String> = terminal
+                .text_snapshot_rows(false)
+                .ok()
+                .unwrap()
+                .rows
+                .into_iter()
+                .map(|row| row.text)
+                .collect();
+            let ansi = terminal.ansi_snapshot_bytes(None).ok().unwrap();
+            (frozen.written_at(), geometry, rows, ansi)
+        };
+        let want = snapshot(&mut plain);
+        assert!(
+            want.1.as_ref().is_some_and(|g| g.2.len() == 1),
+            "the geometry change is in the window"
+        );
+        assert!(snapshot(&mut packed) == want);
+        let (bytes, geometry) = packed.copy_with_geometry().ok().unwrap();
+        let (plain_bytes, plain_geometry) = plain.copy_with_geometry().ok().unwrap();
+        assert!(bytes == plain_bytes);
+        assert_eq!(
+            geometry.map(|g| g.changes.len()),
+            plain_geometry.map(|g| g.changes.len())
+        );
+    }
+
+    #[test]
+    fn a_refused_chunk_leaves_the_ring_as_it_was() {
+        let (mut plain, mut packed) = rings(4 * CHUNK as u32);
+        // Grow the tail to a whole chunk and keep one byte in it.
+        for n in [CHUNK - 1, 2] {
+            let data = output(n, n as u32);
+            plain.write_bytes(&data).unwrap();
+            packed.write_bytes(&data).unwrap();
+        }
+        let allocated = packed.allocated_bytes();
+        // One write closing three chunks: the first joins the tail and
+        // compresses, the second is noise zstd cannot shrink (a raw copy).
+        let mut data = output(CHUNK - 1, 9);
+        let mut x = 1u32;
+        data.extend((0..CHUNK).map(|_| {
+            x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (x >> 24) as u8
+        }));
+        data.extend(output(CHUNK + 5, 10));
+        {
+            let _fail = fail_from(CHUNK);
+            assert!(matches!(
+                packed.write_bytes(&data),
+                Err(CallError::Alloc(_))
+            ));
+        }
+        {
+            let _fail = fail_what(PACKED_CHUNK);
+            assert!(matches!(
+                packed.write_bytes(&data),
+                Err(CallError::Alloc(_))
+            ));
+        }
+        same(&plain, &packed);
+        assert_eq!(packed.allocated_bytes(), allocated);
+        plain.write_bytes(&data).unwrap();
+        packed.write_bytes(&data).unwrap();
+        same(&plain, &packed);
+        {
+            let _fail = fail_from(1);
+            assert!(packed.copy_bytes().is_err());
+        }
+        same(&plain, &packed);
+    }
+
+    #[test]
+    fn clear_and_dispose_drop_every_byte() {
+        let mut ring = NativeRing::create_with(3 * CHUNK as u32, true).unwrap();
+        ring.write_bytes(&output(2 * CHUNK + 10, 1)).unwrap();
+        // NativeRing::clear's own part (it returns a napi result).
+        ring.packed.as_mut().unwrap().clear();
+        ring.length = 0;
+        assert!(ring.copy_bytes().unwrap().is_empty());
+        assert!((ring.allocated_bytes() as usize) <= CHUNK);
+        ring.write_bytes(b"after").unwrap();
+        assert_eq!(&ring.copy_bytes().unwrap()[..], b"after");
+        assert_eq!(ring.size(), 5);
+        assert_eq!(ring.total_bytes_written(), (2 * CHUNK + 15) as f64);
+        ring.dispose();
+        assert!(!ring.compressed());
+        assert!(ring.write_bytes(b"x").is_err());
     }
 }

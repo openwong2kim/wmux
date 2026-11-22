@@ -34,6 +34,13 @@ mod native_core;
 mod native_serialize;
 
 #[cfg(all(
+    feature = "native-core",
+    feature = "bindings",
+    not(target_arch = "wasm32")
+))]
+mod ring_pack;
+
+#[cfg(all(
     test,
     feature = "native-core",
     feature = "bindings",

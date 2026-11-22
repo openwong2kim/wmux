@@ -20,8 +20,9 @@ export interface LabsStatus {
   running: LabsSettings | null;
   /** config.json's session.ringCompression is on, so compression is on whatever labs.json says. */
   ringCompressionInConfig: boolean;
-  /** Ring compression works only on the Node terminal engine: false when the
-   *  running host uses Rust, null when it did not report its engine. */
+  /** Whether ring compression applies to the running host's engine; null when
+   *  it did not report its engine. Every engine compresses now; an older app
+   *  build still reports false for Rust (labs.handler.ts). */
   ringCompressionApplies: boolean | null;
   restartRequired: boolean;
   stopCommand: string;
@@ -44,12 +45,13 @@ export function ringCompressionInConfig(file?: string): boolean {
   }
 }
 
+/** Ring compression is on unless labs.json turns it off. */
 export function readLabsSettings(file?: string): LabsSettings {
   try {
     const saved = JSON.parse(fs.readFileSync(file ?? labsSettingsPath(), 'utf8'));
-    return { ringCompression: saved?.ringCompression === true };
+    return { ringCompression: saved?.ringCompression !== false };
   } catch {
-    return { ringCompression: false };
+    return { ringCompression: true };
   }
 }
 
