@@ -12,7 +12,7 @@
 
 import type { Page } from 'playwright-core';
 import { beginDispatch } from './modalState';
-import { tapPageNetwork, type NetRequest } from './pageNetwork';
+import { networkTapReady, tapPageNetwork, type NetRequest } from './pageNetwork';
 
 /** No relevant request inside this window after the action means there is nothing to wait for. */
 export const REQUEST_GRACE_MS = 100;
@@ -185,13 +185,7 @@ export async function settleAfterAction<T>(page: Page, fn: () => Promise<T>): Pr
   const tap = tapPageNetwork(page, { onRequest, onFinished, onFailed });
   // The session is normally long open (trackRequestBaseline, at page resolve).
   // One that cannot open leaves nothing to wait on: the action runs unsettled.
-  let readyTimer: ReturnType<typeof setTimeout> | undefined;
-  const listening = await Promise.race([
-    tap.ready,
-    new Promise<false>((resolve) => {
-      readyTimer = setTimeout(() => resolve(false), TAP_READY_MS);
-    }),
-  ]).finally(() => clearTimeout(readyTimer));
+  const listening = await networkTapReady(page, TAP_READY_MS);
   if (!listening) {
     tap.off();
     const endDispatch = beginDispatch(page);

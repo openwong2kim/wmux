@@ -148,9 +148,13 @@ async function openSession(page: Page, state: TapState): Promise<boolean> {
   session.on('Network.loadingFinished', (p: { requestId: string }) => dispatch(state, 'onFinished', p.requestId));
   session.on('Network.loadingFailed', (p: { requestId: string }) => dispatch(state, 'onFailed', p.requestId));
   try {
-    const tree = (await session.send('Page.getFrameTree')) as { frameTree?: { frame?: { id?: string } } };
+    // Sent together: Chrome answers in order, and every round trip before
+    // Network.enable is a window in which the page's requests go unseen.
+    const [tree] = (await Promise.all([
+      session.send('Page.getFrameTree'),
+      session.send('Network.enable', { ...NETWORK_BUFFER }),
+    ])) as [{ frameTree?: { frame?: { id?: string } } }, unknown];
     mainFrameId = tree.frameTree?.frame?.id;
-    await session.send('Network.enable', { ...NETWORK_BUFFER });
   } catch {
     await session.detach().catch(() => undefined);
     return false;
@@ -190,6 +194,22 @@ export function tapPageNetwork(page: Page, listener: NetworkTapListener): Networ
   const own = state;
   own.listeners.add(listener);
   return { ready: own.ready, off: () => own.listeners.delete(listener) };
+}
+
+/**
+ * Wait (at most `maxMs`) until the page's tap is listening. A caller about to
+ * drive the page awaits this, so the first navigation's requests are seen.
+ */
+export async function networkTapReady(page: Page, maxMs: number): Promise<boolean> {
+  const state = taps.get(page);
+  if (!state) return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    state.ready,
+    new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), maxMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 /** Why a body could not be returned. */

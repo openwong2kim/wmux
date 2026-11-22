@@ -5,6 +5,7 @@ import type { Page } from 'playwright-core';
 import { describe, expect, it } from 'vitest';
 import { trackRequestBaseline } from '../actionSettle';
 import { attachPageCapture, ensurePageCapture, readEntryBody } from '../pageCapture';
+import { networkTapReady } from '../pageNetwork';
 import { MODES, harnessFor } from '../../../test-utils/realBrowserHarness';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 
@@ -91,4 +92,21 @@ describe(`network capture memory against real Chrome (${mode.name})`, () => {
       await page.close();
     }
   }, 180_000);
+
+  it('lists the document of a navigation started right after the page is resolved', async (ctx) => {
+    if (h.skipUnless(ctx)) return;
+    const page = (await h.browser().newPage()) as Page;
+    try {
+      // PlaywrightEngine.getPageForScope: attach, then wait for the session to listen.
+      trackRequestBaseline(page);
+      attachPageCapture(page);
+      expect(await networkTapReady(page, 2_000)).toBe(true);
+      await page.goto(h.origin(), { waitUntil: 'load' });
+      const urls = ensurePageCapture(page).network.map((e) => e.url);
+      expect(urls).toContain(h.origin());
+      expect(urls.some((u) => u.endsWith('/bundle.js'))).toBe(true);
+    } finally {
+      await page.close();
+    }
+  }, 60_000);
 });
