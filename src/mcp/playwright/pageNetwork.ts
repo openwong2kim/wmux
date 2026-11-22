@@ -1,4 +1,4 @@
-import type { CDPSession, Page } from 'playwright-core';
+import type { CDPSession, Frame, Page } from 'playwright-core';
 
 // ---------------------------------------------------------------------------
 // One CDP Network session per page, shared by everything engine-side that
@@ -15,8 +15,9 @@ import type { CDPSession, Page } from 'playwright-core';
 // bodies stay in Chrome's own buffer (bounded by NETWORK_BUFFER below) and are
 // fetched only when a caller asks for one.
 //
-// Coverage is the page's own target: requests from cross-site iframes that run
-// in their own process (OOPIFs) and from workers are not seen here.
+// Coverage: the page's own target, plus one session per cross-site iframe that
+// runs in its own process (an OOPIF), up to MAX_FRAME_SESSIONS per page.
+// Requests from workers are not seen: Playwright opens no CDP session for one.
 // ---------------------------------------------------------------------------
 
 /** A request start, in the shape the watchers read. */
@@ -69,6 +70,10 @@ export const NETWORK_BUFFER = {
 
 /** After a failed open, how long until a later tap may try again. */
 const REOPEN_COOLDOWN_MS = 30_000;
+/** OOPIF sessions per page; a page full of cross-site ad frames stops here. */
+export const MAX_FRAME_SESSIONS = 16;
+/** Request ids remembered with the session that saw them, for getResponseBody. */
+const MAX_REQUEST_SESSIONS = 2_000;
 
 interface TapState {
   ready: Promise<boolean>;
@@ -76,6 +81,13 @@ interface TapState {
   failedAt: number;
   session: CDPSession | null;
   listeners: Set<NetworkTapListener>;
+  /** One session per out-of-process iframe (Playwright opens one only for those). */
+  frames: Map<Frame, CDPSession>;
+  /** Frames whose session is being opened, so two navigations do not open two. */
+  opening: Set<Frame>;
+  /** Which frame session saw a request; absent means the page's own session. */
+  sessionOf: Map<string, CDPSession>;
+  capLogged: boolean;
 }
 
 const taps = new WeakMap<Page, TapState>();
@@ -114,16 +126,15 @@ function dispatch<K extends keyof NetworkTapListener>(
   }
 }
 
-async function openSession(page: Page, state: TapState): Promise<boolean> {
-  let session: CDPSession;
-  try {
-    session = await page.context().newCDPSession(page);
-  } catch {
-    return false;
-  }
-  if (typeof session?.on !== 'function') return false;
-  let mainFrameId: string | undefined;
+/** Feed one session's Network events to the page's watchers. */
+function listen(
+  state: TapState,
+  session: CDPSession,
+  mainFrameOf: () => string | undefined,
+  frameSession = false,
+): void {
   session.on('Network.requestWillBeSent', (p: CdpRequestWillBeSent) => {
+    if (frameSession) rememberSession(state, p.requestId, session);
     if (p.redirectResponse) {
       // Playwright's shape: the redirected hop gets its response and finishes,
       // and the next hop is a request of its own (Chrome reuses the id).
@@ -142,7 +153,7 @@ async function openSession(page: Page, state: TapState): Promise<boolean> {
       method: p.request.method,
       resourceType,
       navigation: resourceType === 'document' && p.requestId === p.loaderId,
-      mainFrame: mainFrameId !== undefined && p.frameId === mainFrameId,
+      mainFrame: mainFrameOf() !== undefined && p.frameId === mainFrameOf(),
     });
   });
   session.on('Network.responseReceived', (p: CdpResponseReceived) => {
@@ -156,6 +167,73 @@ async function openSession(page: Page, state: TapState): Promise<boolean> {
   session.on('Network.loadingFinished', (p: { requestId: string; encodedDataLength?: number }) =>
     dispatch(state, 'onFinished', p.requestId, p.encodedDataLength));
   session.on('Network.loadingFailed', (p: { requestId: string }) => dispatch(state, 'onFailed', p.requestId));
+}
+
+function rememberSession(state: TapState, requestId: string, session: CDPSession): void {
+  state.sessionOf.delete(requestId);
+  state.sessionOf.set(requestId, session);
+  if (state.sessionOf.size > MAX_REQUEST_SESSIONS) state.sessionOf.delete(state.sessionOf.keys().next().value as string);
+}
+
+/**
+ * Open (or check) the Network session of one iframe. Playwright's
+ * newCDPSession(frame) succeeds only for an out-of-process frame, so an
+ * in-process one simply fails here and is already covered by its parent's.
+ * A frame that navigated may have moved to a new process, which ends its old
+ * session: a session that no longer answers is replaced.
+ */
+async function tapFrame(page: Page, state: TapState, frame: Frame): Promise<void> {
+  if (state.opening.has(frame) || taps.get(page) !== state) return;
+  const existing = state.frames.get(frame);
+  if (existing) {
+    const alive = await existing.send('Network.enable', { ...NETWORK_BUFFER }).then(() => true, () => false);
+    if (alive || state.frames.get(frame) !== existing) return;
+    state.frames.delete(frame);
+  }
+  if (state.frames.size + state.opening.size >= MAX_FRAME_SESSIONS) {
+    if (!state.capLogged) {
+      state.capLogged = true;
+      console.error(`[wmux-mcp] network capture: ${MAX_FRAME_SESSIONS} cross-site iframe sessions on one page; later iframes are not captured`);
+    }
+    return;
+  }
+  state.opening.add(frame);
+  try {
+    let session: CDPSession;
+    try {
+      session = await page.context().newCDPSession(frame);
+    } catch {
+      return; // in-process frame, or gone
+    }
+    listen(state, session, () => undefined, true);
+    const enabled = await session.send('Network.enable', { ...NETWORK_BUFFER }).then(() => true, () => false);
+    if (!enabled || taps.get(page) !== state || frame.isDetached()) {
+      await session.detach().catch(() => undefined);
+      return;
+    }
+    state.frames.set(frame, session);
+  } finally {
+    state.opening.delete(frame);
+  }
+}
+
+function untapFrame(state: TapState, frame: Frame): void {
+  const session = state.frames.get(frame);
+  if (!session) return;
+  state.frames.delete(frame);
+  void session.detach().catch(() => undefined);
+}
+
+async function openSession(page: Page, state: TapState): Promise<boolean> {
+  let session: CDPSession;
+  try {
+    session = await page.context().newCDPSession(page);
+  } catch {
+    return false;
+  }
+  if (typeof session?.on !== 'function') return false;
+  let mainFrameId: string | undefined;
+  listen(state, session, () => mainFrameId);
   try {
     // Sent together: Chrome answers in order, and every round trip before
     // Network.enable is a window in which the page's requests go unseen.
@@ -174,6 +252,9 @@ async function openSession(page: Page, state: TapState): Promise<boolean> {
     return false;
   }
   state.session = session;
+  if (typeof page.frames === 'function') {
+    for (const frame of page.frames()) if (frame !== page.mainFrame()) void tapFrame(page, state, frame);
+  }
   return true;
 }
 
@@ -194,18 +275,46 @@ function startOpen(page: Page, state: TapState): void {
 export function tapPageNetwork(page: Page, listener: NetworkTapListener): NetworkTap {
   let state = taps.get(page);
   if (!state) {
-    const created: TapState = { ready: Promise.resolve(false), failedAt: 0, session: null, listeners: new Set() };
+    const created: TapState = {
+      ready: Promise.resolve(false),
+      failedAt: 0,
+      session: null,
+      listeners: new Set(),
+      frames: new Map(),
+      opening: new Set(),
+      sessionOf: new Map(),
+      capLogged: false,
+    };
     taps.set(page, created);
     startOpen(page, created);
+    const isChild = (frame: Frame) => {
+      try {
+        return frame !== page.mainFrame();
+      } catch {
+        return false;
+      }
+    };
+    // A cross-site iframe gets its own process at navigation, so that is when
+    // its session can be opened (or found dead and replaced).
+    const onFrameNavigated = (frame: Frame) => {
+      if (isChild(frame) && created.session) void tapFrame(page, created, frame);
+    };
+    const onFrameDetached = (frame: Frame) => untapFrame(created, frame);
     const onClose = () => {
       page.off('close', onClose);
+      page.off('framenavigated', onFrameNavigated);
+      page.off('framedetached', onFrameDetached);
       if (taps.get(page) === created) taps.delete(page);
       created.listeners.clear();
+      created.sessionOf.clear();
+      for (const frame of [...created.frames.keys()]) untapFrame(created, frame);
       const session = created.session;
       created.session = null;
       void session?.detach().catch(() => undefined);
     };
     page.on('close', onClose);
+    page.on('framenavigated', onFrameNavigated);
+    page.on('framedetached', onFrameDetached);
     state = created;
   } else if (state.failedAt !== 0 && Date.now() - state.failedAt >= REOPEN_COOLDOWN_MS) {
     // A session that could not open (a transient relay error, a page mid-swap)
@@ -247,8 +356,9 @@ export async function fetchResponseBody(
 ): Promise<{ body: string } | { unavailable: BodyUnavailable }> {
   const state = taps.get(page);
   if (!state || !(await state.ready) || !state.session) return { unavailable: 'no-session' };
+  const session = state.sessionOf.get(requestId) ?? state.session;
   try {
-    const result = (await state.session.send('Network.getResponseBody', { requestId })) as {
+    const result = (await session.send('Network.getResponseBody', { requestId })) as {
       body: string;
       base64Encoded: boolean;
     };

@@ -27,10 +27,27 @@ const MAX_EXTERNAL_GROWTH = 50 * 1024 * 1024;
 const line = '/* padding padding padding padding padding padding padding */\n';
 const BUNDLE = `${line.repeat(Math.ceil(BUNDLE_BYTES / line.length))}window.bundleLoaded = (window.bundleLoaded || 0) + 1;\n`;
 
+let crossSiteBase = '';
 function serve(req: IncomingMessage, res: ServerResponse): void {
   if (req.url === '/api.json') {
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end('{"rows":[1,2,3]}');
+    return;
+  }
+  if (req.url === '/framed') {
+    // The iframe is served from the cross-site origin, so Chrome puts it in its own process.
+    res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
+    res.end(`<!doctype html><title>framed</title><iframe src="${crossSiteBase}frame"></iframe>`);
+    return;
+  }
+  if (req.url === '/frame') {
+    res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
+    res.end("<!doctype html><script>fetch('/frame-now.json').then((r) => r.json()); setTimeout(() => fetch('/frame-later.json').then((r) => r.json()), 300)</script>");
+    return;
+  }
+  if (req.url?.startsWith('/frame-')) {
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end('{"from":"frame"}');
     return;
   }
   if (req.url === '/fetches') {
@@ -133,6 +150,24 @@ describe(`network capture memory against real Chrome (${mode.name})`, () => {
       await page.goto(h.origin(), { waitUntil: 'load' });
 
       await expect(readEntryBody(page, entry()!)).resolves.toEqual({ body: '{"rows":[1,2,3]}' });
+    } finally {
+      await page.close();
+    }
+  }, 60_000);
+
+  it('lists the requests a cross-site iframe makes, from its own process', async (ctx) => {
+    if (h.skipUnless(ctx)) return;
+    crossSiteBase = h.crossSiteOrigin();
+    const page = (await h.browser().newPage()) as Page;
+    try {
+      attachPageCapture(page);
+      expect(await networkTapReady(page, 2_000)).toBe(true);
+      await page.goto(`${h.origin()}framed`, { waitUntil: 'load' });
+      const urls = () => ensurePageCapture(page).network.map((e) => e.url);
+      await vi.waitFor(() => expect(urls().some((u) => u.endsWith('/frame-later.json'))).toBe(true), { timeout: 5_000 });
+      console.log('[pageCapture.memory] iframe rows:', urls().filter((u) => u.includes('frame')).join(' '));
+      const later = ensurePageCapture(page).network.find((e) => e.url.endsWith('/frame-later.json'))!;
+      await vi.waitFor(async () => expect(await readEntryBody(page, later)).toEqual({ body: '{"from":"frame"}' }), { timeout: 5_000 });
     } finally {
       await page.close();
     }

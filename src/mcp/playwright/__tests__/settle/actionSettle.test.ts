@@ -356,9 +356,11 @@ describe('settleAfterAction decision table', () => {
     await run.promise;
     // A Playwright request/response listener is what makes the client keep a
     // Request object per request for the page's life; settle reads CDP instead.
-    for (const event of ['request', 'response', 'requestfinished', 'requestfailed', 'framenavigated']) {
+    for (const event of ['request', 'response', 'requestfinished', 'requestfailed']) {
       expect(fake.page.listenerCount(event)).toBe(0);
     }
+    // The network tap's own (it opens iframe sessions on navigation); settle's came off.
+    expect(fake.page.listenerCount('framenavigated')).toBe(1);
     const again = track(fake);
     await vi.advanceTimersByTimeAsync(REQUEST_GRACE_MS);
     await again.promise;
