@@ -75,6 +75,17 @@ describe('tapPageNetwork', () => {
     expect(enabled).toHaveLength(MAX_FRAME_SESSIONS);
     expect(err.mock.calls.filter((c) => String(c[0]).includes('iframe sessions'))).toHaveLength(1);
 
+    // In-process iframes do not take cross-site ones' places, even when tapped all at once.
+    const busy = Array.from({ length: MAX_FRAME_SESSIONS + 4 }, () => ({ isDetached: () => false }));
+    const fresh = fakeNetwork();
+    const crossSite = { isDetached: () => false };
+    oopifs.push({ frame: crossSite, ...fresh });
+    for (const o of oopifs.slice(1, MAX_FRAME_SESSIONS + 1)) emitter.emit('framedetached', o.frame);
+    for (const f of busy) emitter.emit('framenavigated', f);
+    emitter.emit('framenavigated', crossSite);
+    await fresh.net.ready();
+    expect(fresh.net.sent.some((c) => c.method === 'Network.enable')).toBe(true);
+
     emitter.emit('framedetached', oopifs[0].frame);
     await oopifs[0].net.ready();
     expect(oopifs[0].net.detached()).toBe(true);

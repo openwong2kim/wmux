@@ -190,13 +190,7 @@ async function tapFrame(page: Page, state: TapState, frame: Frame): Promise<void
     if (alive || state.frames.get(frame) !== existing) return;
     state.frames.delete(frame);
   }
-  if (state.frames.size + state.opening.size >= MAX_FRAME_SESSIONS) {
-    if (!state.capLogged) {
-      state.capLogged = true;
-      console.error(`[wmux-mcp] network capture: ${MAX_FRAME_SESSIONS} cross-site iframe sessions on one page; later iframes are not captured`);
-    }
-    return;
-  }
+  if (frameCapReached(state)) return;
   state.opening.add(frame);
   try {
     let session: CDPSession;
@@ -205,16 +199,32 @@ async function tapFrame(page: Page, state: TapState, frame: Frame): Promise<void
     } catch {
       return; // in-process frame, or gone
     }
-    listen(state, session, () => undefined, true);
-    const enabled = await session.send('Network.enable', { ...NETWORK_BUFFER }).then(() => true, () => false);
-    if (!enabled || taps.get(page) !== state || frame.isDetached()) {
+    // Checked again only now: an in-process frame, which fails above, must
+    // not take a cross-site frame's place while its attempt is pending.
+    if (frameCapReached(state)) {
       await session.detach().catch(() => undefined);
       return;
     }
+    // Taken now, before the await, so concurrent opens cannot overshoot the cap.
     state.frames.set(frame, session);
+    listen(state, session, () => undefined, true);
+    const enabled = await session.send('Network.enable', { ...NETWORK_BUFFER }).then(() => true, () => false);
+    if (!enabled || taps.get(page) !== state || frame.isDetached()) {
+      if (state.frames.get(frame) === session) state.frames.delete(frame);
+      await session.detach().catch(() => undefined);
+    }
   } finally {
     state.opening.delete(frame);
   }
+}
+
+function frameCapReached(state: TapState): boolean {
+  if (state.frames.size < MAX_FRAME_SESSIONS) return false;
+  if (!state.capLogged) {
+    state.capLogged = true;
+    console.error(`[wmux-mcp] network capture: ${MAX_FRAME_SESSIONS} cross-site iframe sessions on one page; later iframes are not captured`);
+  }
+  return true;
 }
 
 function untapFrame(state: TapState, frame: Frame): void {
