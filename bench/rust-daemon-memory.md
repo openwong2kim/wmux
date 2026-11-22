@@ -27,6 +27,16 @@ spends about 1.6% of one core on it. A full replay read decompresses 8 MiB in
 2–5 ms. One zstd compression context and one decompression context are shared
 by every ring on the thread.
 
+Snapshot tick at `bufferSizeMb` 256. The 30 s snapshot tick dumps every
+dirty session's ring to its `.buf`. With four busy 256 MiB rings (diff corpus,
+236.8 MiB compressed in all), a synchronous `readAll()` of all four held the
+JS thread for 708–764 ms per tick (about 180 ms per ring; a raw ring's copy is
+about 15 ms). The dump now uses `ring.readAllAsync()`. The call shares the
+closed chunks and returns in 0.05–0.5 ms for all four. They are decompressed
+in libuv workers, and every ring's bytes are ready 156–220 ms later. The
+longest the event loop was held during those reads was 11 ms. The bytes are
+identical to `readAll()`.
+
 The audit before this change compressed 17 real rings totalling 118.8 MB to
 11.0 MB (10.8×) with the old Node path (brotli q1, same chunk size). In a
 one-off comparison on the same two kinds of output (256 KiB chunks, Rust
