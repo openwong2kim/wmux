@@ -481,6 +481,11 @@ export const IPC = {
   WORKTREE_MERGE_STATUS: 'worktree:mergeStatus',
   WORKTREE_MERGE_LAND: 'worktree:mergeLand',
   WORKTREE_MERGE_DISCARD: 'worktree:mergeDiscard',
+  // Sibling worktree collision watch: renderer sends pane folders + setting,
+  // main pushes the files two sibling worktrees both touch.
+  SIBLING_COLLISION_WATCH: 'worktree:siblingCollisionWatch',
+  SIBLING_COLLISION_POKE: 'worktree:siblingCollisionPoke',
+  SIBLING_COLLISION_UPDATE: 'worktree:siblingCollisionUpdate',
   // Git 탭 PR 섹션 — gh CLI 기반 PR 목록·코멘트(성긴 pull, 30s TTL)
   GITHUB_PR_LIST: 'github:prList',
   GITHUB_PR_DETAIL: 'github:prDetail',

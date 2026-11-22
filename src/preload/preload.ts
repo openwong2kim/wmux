@@ -1835,6 +1835,16 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.WORKTREE_MERGE_DISCARD, repoPath) as Promise<
         import('../main/ipc/handlers/worktree.handler').MergeActionResult
       >,
+    // Sibling collision watch: the pane folders + setting go to main; main
+    // pushes a snapshot whenever what two siblings both touch changes.
+    watchSiblings: (req: import('../shared/siblingCollision').SiblingCollisionWatchRequest) =>
+      ipcRenderer.send(IPC.SIBLING_COLLISION_WATCH, req),
+    pokeSiblings: () => ipcRenderer.send(IPC.SIBLING_COLLISION_POKE),
+    onSiblingCollisions: (callback: (snapshot: import('../shared/siblingCollision').SiblingCollisionSnapshot) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, snapshot: import('../shared/siblingCollision').SiblingCollisionSnapshot): void => callback(snapshot);
+      ipcRenderer.on(IPC.SIBLING_COLLISION_UPDATE, listener);
+      return () => { ipcRenderer.removeListener(IPC.SIBLING_COLLISION_UPDATE, listener); };
+    },
   },
   diff: {
     // Fleet Ready to review — change counts only; `unchanged` when the state key matches.

@@ -1159,6 +1159,10 @@ export interface SessionData {
   autoUpdateEnabled?: boolean;
   /** Settings › General: refuse commits, pushes and PRs that carry passwords or keys. Absent = on. */
   secretGuardEnabled?: boolean;
+  /** Settings › General: mark panes whose sibling worktrees touch the same file. Absent = on. */
+  siblingCollisionWatch?: boolean;
+  /** Minutes between those checks (1, 2, 5 or 10). Absent = 2. */
+  siblingCollisionIntervalMin?: number;
   /** Settings › General: when wmux keeps the computer awake. Absent = 'working'. */
   sleepPreventionMode?: SleepPreventionMode;
   customThemeColors?: CustomThemeColors;

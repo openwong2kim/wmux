@@ -24,6 +24,12 @@ import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
 import { sanitizeShortcutOverrides, type ShortcutActionId, type ShortcutOverrides } from '../../../shared/keymap';
 import { FILE_TREE_DEFAULT_WIDTH, clampFileTreeWidth } from '../../utils/fileTreeLayout';
 import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth, isNestedTask, togglePinned, type SidebarSortMode } from '../../utils/sidebarLayout';
+import {
+  EMPTY_SIBLING_COLLISIONS,
+  SIBLING_COLLISION_DEFAULT_INTERVAL_MIN,
+  SIBLING_COLLISION_INTERVAL_CHOICES_MIN,
+  type SiblingCollisionSnapshot,
+} from '../../../shared/siblingCollision';
 
 /**
  * #517: read main's authoritative browser backend synchronously at store-module
@@ -1031,6 +1037,17 @@ export interface UISlice {
   /** On by default; main holds the live value (main/git/secretGuardSetting.ts). */
   secretGuardEnabled: boolean;
   setSecretGuardEnabled: (enabled: boolean) => void;
+
+  // ─── Git: sibling worktrees that touch the same file ─────────────────
+  /** Settings › General; on by default. Main runs the checks (main/git/siblingCollision.ts). */
+  siblingCollisionWatch: boolean;
+  setSiblingCollisionWatch: (enabled: boolean) => void;
+  /** Minutes between checks while two or more siblings are open. */
+  siblingCollisionIntervalMin: number;
+  setSiblingCollisionIntervalMin: (minutes: number) => void;
+  /** Main's latest answer: per pane folder, the siblings it collides with. Not persisted. */
+  siblingCollisions: SiblingCollisionSnapshot;
+  setSiblingCollisions: (snapshot: SiblingCollisionSnapshot) => void;
 
   // ─── Keep the computer awake ─────────────────────────────────────────
   /** Main holds the blocker (main/power/sleepPrevention.ts); this is the choice. */
@@ -2480,6 +2497,20 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setSecretGuardEnabled: (enabled) => set((state) => {
     state.secretGuardEnabled = enabled;
+  }),
+
+  // ─── Git: sibling collision watch ──────────────────────────────────────
+  siblingCollisionWatch: true,
+  setSiblingCollisionWatch: (enabled) => set((state) => {
+    state.siblingCollisionWatch = enabled;
+  }),
+  siblingCollisionIntervalMin: SIBLING_COLLISION_DEFAULT_INTERVAL_MIN,
+  setSiblingCollisionIntervalMin: (minutes) => set((state) => {
+    if ((SIBLING_COLLISION_INTERVAL_CHOICES_MIN as readonly number[]).includes(minutes)) state.siblingCollisionIntervalMin = minutes;
+  }),
+  siblingCollisions: EMPTY_SIBLING_COLLISIONS,
+  setSiblingCollisions: (snapshot) => set((state) => {
+    state.siblingCollisions = snapshot;
   }),
 
   // ─── Keep the computer awake ─────────────────────────────────────────

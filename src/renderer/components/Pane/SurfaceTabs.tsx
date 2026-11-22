@@ -14,6 +14,7 @@ import {
 import { tokenAttrs } from '../../themes';
 import UsageLimitChip from './UsageLimitChip';
 import AgentStallChip from './AgentStallChip';
+import SiblingCollisionChip from './SiblingCollisionChip';
 import { computePaneAutoName, paneDisplayName, paneLabelRejectionKey, paneTag } from '../../utils/paneNaming';
 import { beginPaneTagDrag, endPaneTagDrag } from '../../utils/paneTagDrag';
 import { findPane } from '../../../shared/paneUtils';
@@ -1304,6 +1305,7 @@ export default function SurfaceTabs({
         cwd={surfaces.find((sf) => sf.id === activeSurfaceId)?.cwd}
       />
       <AgentStallChip ptyId={surfaces.find((sf) => sf.id === activeSurfaceId)?.ptyId} readOnly={readOnly} />
+      <SiblingCollisionChip workspace={workspace} paneId={paneId} readOnly={readOnly} />
       {supervision && (
         <span
           data-pane-supervision={supervision.status}

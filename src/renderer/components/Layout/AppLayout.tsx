@@ -128,6 +128,7 @@ import { planAgentCandidateSeed, planLiveAgentSeed, asAgentSlug, markSeedAttempt
 import { agentSlugToDisplay } from '../../../shared/agentIdentity';
 import { applyProcessExits, clearSurfaceAgentOnProcessExit, clearSurfaceAgentsKnownGone, livenessSnapshotRequested, livenessSnapshotSettled } from '../../utils/agentRowLiveness';
 import { startChatStatusMirror } from '../ChatV2/status';
+import { startSiblingCollisionWatch } from '../../utils/siblingCollisionWatch';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import ComposeHost from '../AgentToolbar/ComposeHost';
 import { AgentToolbarStrip } from '../AgentToolbar/ToolbarHost';
@@ -516,6 +517,8 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     shortcutOverrides: state.shortcutOverrides,
     autoUpdateEnabled: state.autoUpdateEnabled,
     secretGuardEnabled: state.secretGuardEnabled,
+    siblingCollisionWatch: state.siblingCollisionWatch,
+    siblingCollisionIntervalMin: state.siblingCollisionIntervalMin,
     sleepPreventionMode: state.sleepPreventionMode,
     customThemeColors: state.customThemeColors ?? undefined,
     pcRail: selectPcRailPersisted(state),
@@ -930,6 +933,7 @@ export default function AppLayout() {
   useNotificationListener();
   // A chat-v2 chat's run state in the same per-pane maps, for the sidebar and Fleet.
   useEffect(() => startChatStatusMirror(), []);
+  useEffect(() => startSiblingCollisionWatch(), []);
   useRpcBridge();
   useCustomAgentsHydration();
   // Cross-host A2A: the pane tree for exposure and gone-pane link breaks.
