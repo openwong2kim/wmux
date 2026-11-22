@@ -63,3 +63,17 @@ describe('container queries', () => {
     expect(unnamedQuerySelectors()).toContain('.wmux-remote-page');
   });
 });
+
+describe('the Remote page scrolls instead of squeezing its sections', () => {
+  it('no section of the scrolling page shrinks, so a clipping list keeps every row', () => {
+    // The page is a scrolling flex column and `.wmux-remote-list` clips
+    // (`overflow: hidden`), which drops its automatic min-height to 0: with the
+    // default flex-shrink the device list shrank to the window and cut off its
+    // last phone row instead of letting the page scroll. Layout does not run in
+    // jsdom, so this reads the stylesheet.
+    expect(css).toMatch(/\.wmux-remote-page\s*\{[^}]*overflow-y:\s*auto/);
+    expect(css).toMatch(/\.wmux-remote-page\s*\{[^}]*flex-direction:\s*column/);
+    expect(css).toMatch(/\.wmux-remote-list\s*\{[^}]*overflow:\s*hidden/);
+    expect(css).toMatch(/\.wmux-remote-page\s*>\s*\*\s*\{[^}]*flex-shrink:\s*0/);
+  });
+});

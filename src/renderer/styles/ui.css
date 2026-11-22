@@ -952,6 +952,9 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
  * the Needs you block's hairline (plus the rail badge). The live dot is
  * neutral and drawn only while a connection is held. */
 .wmux-remote-page { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 20px 28px 32px; }
+/* The page scrolls, its sections never shrink: a list's `overflow: hidden` drops
+ * its automatic min-height to 0, so a shrinking list clipped its own rows. */
+.wmux-remote-page > * { flex-shrink: 0; }
 .wmux-remote-header { display: flex; flex-direction: column; gap: 2px; }
 .wmux-remote-head-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .wmux-remote-title { margin: 0; font-size: 16px; font-weight: 600; line-height: 24px; color: var(--text-main); }
