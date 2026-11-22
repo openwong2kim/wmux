@@ -6385,6 +6385,23 @@ mod ring_compression_tests {
     }
 
     #[test]
+    fn an_evicted_chunk_a_view_holds_is_zeroed_when_the_view_lets_it_go() {
+        let capacity = 2 * CHUNK;
+        let mut ring = NativeRing::create_with(capacity as u32, true).unwrap();
+        ring.write_bytes(&output(capacity, 1)).unwrap();
+        let view = ring.packed.as_ref().unwrap().share().ok().unwrap();
+        let before = crate::ring_pack::chunks_wiped();
+        // Both chunks are evicted while the view holds them.
+        ring.write_bytes(&output(capacity, 2)).unwrap();
+        assert_eq!(crate::ring_pack::chunks_wiped(), before);
+        drop(view);
+        assert_eq!(crate::ring_pack::chunks_wiped(), before + 2);
+        // Without a view, a clear zeroes them at once.
+        ring.packed.as_mut().unwrap().clear();
+        assert_eq!(crate::ring_pack::chunks_wiped(), before + 4);
+    }
+
+    #[test]
     fn clear_zeroes_the_tails_whole_buffer() {
         let mut ring = NativeRing::create_with(4 * CHUNK as u32, true).unwrap();
         // The tail's buffer grows to a chunk; then it holds a few bytes.

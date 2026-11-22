@@ -47,11 +47,30 @@ impl Chunk {
             Chunk::Zstd(b) | Chunk::Raw(b) => b,
         }
     }
-    fn wipe(&mut self) {
+}
+
+/// A chunk is zeroed when its last holder lets it go: the ring that evicted
+/// or cleared it, or a view (possibly on a worker thread) that outlived that.
+impl Drop for Chunk {
+    fn drop(&mut self) {
         match self {
             Chunk::Zstd(b) | Chunk::Raw(b) => b.fill(0),
         }
+        #[cfg(test)]
+        WIPED.with(|wiped| wiped.set(wiped.get() + 1));
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Chunks zeroed on this thread (tests).
+    static WIPED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Chunks zeroed on this thread so far (tests).
+#[cfg(test)]
+pub(crate) fn chunks_wiped() -> usize {
+    WIPED.with(std::cell::Cell::get)
 }
 
 /// One compression and one decompression context for every ring on the
@@ -88,39 +107,55 @@ fn pack(head: &[u8], rest: &[u8]) -> Result<Chunk, AllocFailed> {
             joined,
             ..
         } = &mut *state;
-        let raw = if head.is_empty() {
-            rest
-        } else {
-            joined.clear();
-            fallible::try_reserve_exact(joined, head.len() + rest.len(), JOINED)?;
-            joined.extend_from_slice(head);
-            joined.extend_from_slice(rest);
-            &joined[..]
-        };
-        if cctx.is_none() {
-            *cctx = Some(zstd_safe::CCtx::try_create().ok_or(codec_refused(raw.len()))?);
-        }
-        let bound = zstd_safe::compress_bound(raw.len());
-        if scratch.len() < bound {
-            fallible::try_reserve_exact(scratch, bound - scratch.len(), SCRATCH)?;
-            scratch.resize(bound, 0);
-        }
-        let cctx = cctx.as_mut().expect("created above");
-        let result = match cctx.compress(&mut scratch[..bound], raw, LEVEL) {
-            Err(_) => Err(codec_refused(raw.len())),
-            Ok(packed) if packed < raw.len() => {
-                let copy = fallible::try_copy(&scratch[..packed], PACKED_CHUNK);
-                scratch[..packed].fill(0);
-                copy.map(Chunk::Zstd)
-            }
-            Ok(_) => fallible::try_copy(raw, PACKED_CHUNK).map(Chunk::Raw),
-        };
-        // The buffers are shared by every ring on the thread: keep no output
-        // in them past this chunk.
+        let mut written = 0;
+        let result = pack_with(cctx, scratch, joined, head, rest, &mut written);
+        // One cleanup for every exit: the buffers are shared by every ring on
+        // the thread, so they keep no output past this chunk.
         joined.fill(0);
         joined.clear();
+        scratch[..written].fill(0);
         result
     })
+}
+
+/// `pack`'s work. `written` is how much of `scratch` zstd may have written.
+fn pack_with(
+    cctx: &mut Option<zstd_safe::CCtx<'static>>,
+    scratch: &mut Vec<u8>,
+    joined: &mut Vec<u8>,
+    head: &[u8],
+    rest: &[u8],
+    written: &mut usize,
+) -> Result<Chunk, AllocFailed> {
+    let raw = if head.is_empty() {
+        rest
+    } else {
+        joined.clear();
+        fallible::try_reserve_exact(joined, head.len() + rest.len(), JOINED)?;
+        joined.extend_from_slice(head);
+        joined.extend_from_slice(rest);
+        &joined[..]
+    };
+    if cctx.is_none() {
+        *cctx = Some(zstd_safe::CCtx::try_create().ok_or(codec_refused(raw.len()))?);
+    }
+    let bound = zstd_safe::compress_bound(raw.len());
+    if scratch.len() < bound {
+        fallible::try_reserve_exact(scratch, bound - scratch.len(), SCRATCH)?;
+        scratch.resize(bound, 0);
+    }
+    let cctx = cctx.as_mut().expect("created above");
+    // On an error zstd may have written anywhere in the bound.
+    *written = bound;
+    let packed = cctx
+        .compress(&mut scratch[..bound], raw, LEVEL)
+        .map_err(|_| codec_refused(raw.len()))?;
+    *written = packed;
+    if packed < raw.len() {
+        fallible::try_copy(&scratch[..packed], PACKED_CHUNK).map(Chunk::Zstd)
+    } else {
+        fallible::try_copy(raw, PACKED_CHUNK).map(Chunk::Raw)
+    }
 }
 
 /// `chunk` back into `out`, which is exactly its raw length.
@@ -295,12 +330,9 @@ impl PackedRing {
         };
         while excess > 0 && excess >= self.chunk - self.skip {
             excess -= self.chunk - self.skip;
-            if let Some(mut oldest) = self.chunks.pop_front() {
+            // Zeroed when the last holder drops it (Drop for Chunk).
+            if let Some(oldest) = self.chunks.pop_front() {
                 self.packed_bytes -= oldest.stored().len();
-                // A view still holding it wipes nothing; it goes with the view.
-                if let Some(oldest) = Arc::get_mut(&mut oldest) {
-                    oldest.wipe();
-                }
             }
             self.skip = 0;
         }
@@ -335,11 +367,7 @@ impl PackedRing {
     /// Drops every byte, zeroing what was stored (the tail's whole buffer,
     /// spare capacity included); keeps the tail's buffer.
     pub(crate) fn clear(&mut self) {
-        for chunk in &mut self.chunks {
-            if let Some(chunk) = Arc::get_mut(chunk) {
-                chunk.wipe();
-            }
-        }
+        // Each is zeroed when its last holder drops it (Drop for Chunk).
         self.chunks.clear();
         self.skip = 0;
         self.packed_bytes = 0;
