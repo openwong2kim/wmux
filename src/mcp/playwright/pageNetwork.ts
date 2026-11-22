@@ -64,8 +64,13 @@ export const NETWORK_BUFFER = {
   maxResourceBufferSize: 8 * 1024 * 1024,
 } as const;
 
+/** After a failed open, how long until a later tap may try again. */
+const REOPEN_COOLDOWN_MS = 30_000;
+
 interface TapState {
   ready: Promise<boolean>;
+  /** When the last open attempt failed (0: none failed). */
+  failedAt: number;
   session: CDPSession | null;
   listeners: Set<NetworkTapListener>;
 }
@@ -168,6 +173,14 @@ async function openSession(page: Page, state: TapState): Promise<boolean> {
   return true;
 }
 
+function startOpen(page: Page, state: TapState): void {
+  state.failedAt = 0;
+  state.ready = openSession(page, state).then((ok) => {
+    if (!ok && taps.get(page) === state) state.failedAt = Date.now();
+    return ok;
+  });
+}
+
 /**
  * Watch a page's network traffic. The first tap on a page opens its session;
  * later ones share it. The session ends when the page closes, never earlier: a
@@ -177,9 +190,9 @@ async function openSession(page: Page, state: TapState): Promise<boolean> {
 export function tapPageNetwork(page: Page, listener: NetworkTapListener): NetworkTap {
   let state = taps.get(page);
   if (!state) {
-    const created: TapState = { ready: Promise.resolve(false), session: null, listeners: new Set() };
+    const created: TapState = { ready: Promise.resolve(false), failedAt: 0, session: null, listeners: new Set() };
     taps.set(page, created);
-    created.ready = openSession(page, created);
+    startOpen(page, created);
     const onClose = () => {
       page.off('close', onClose);
       if (taps.get(page) === created) taps.delete(page);
@@ -190,6 +203,10 @@ export function tapPageNetwork(page: Page, listener: NetworkTapListener): Networ
     };
     page.on('close', onClose);
     state = created;
+  } else if (state.failedAt !== 0 && Date.now() - state.failedAt >= REOPEN_COOLDOWN_MS) {
+    // A session that could not open (a transient relay error, a page mid-swap)
+    // is tried again, at most once per cooldown; the listeners stay.
+    startOpen(page, state);
   }
   const own = state;
   own.listeners.add(listener);

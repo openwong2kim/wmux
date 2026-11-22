@@ -57,6 +57,7 @@ import {
   type ConsoleEntry,
   type EntryBody,
 } from '../pageCapture';
+import { NETWORK_BUFFER } from '../pageNetwork';
 import { clampScreenshotCeilingBytes } from '../../resultCap';
 import {
   formatRefBoxTable,
@@ -249,6 +250,7 @@ const BROWSER_RESPONSE_BODY_SHAPE = {
     .describe('The "id" browser_network printed for the request; takes priority over urlPattern.'),
   nth: z
     .number()
+    .int()
     .optional()
     .describe('Which match: 1 is the first, -1 the last (default).'),
   surfaceId: optionalSurfaceId,
@@ -1255,7 +1257,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             content: [
               {
                 type: 'text' as const,
-                text: `The response body for ${what} is no longer available: the browser has since let it go (the page navigated, or newer responses filled its buffer). Repeat the request and read it right after.`,
+                text: `The response body for ${what} is no longer available: the browser did not keep it. Either the page navigated or newer responses pushed it out of the buffer (reading right after the response helps), or the body is over the browser's ${NETWORK_BUFFER.maxResourceBufferSize / (1024 * 1024)}MB per-response limit (reading sooner does not). Repeat the request only if doing so is safe.`,
               },
             ],
           };

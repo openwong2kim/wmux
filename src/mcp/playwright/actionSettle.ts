@@ -131,11 +131,12 @@ export async function settleAfterAction<T>(page: Page, fn: () => Promise<T>): Pr
   let navRequest: string | undefined;
   let committed = false;
   let wake: (() => void) | undefined;
-  const actionStart = Date.now();
+  // Set at dispatch: only what `fn` starts is the action's.
+  let actionStart = 0;
 
   const isMain = (frame: unknown) => safe(() => frame === page.mainFrame(), false);
   const keys = new Map<string, string>();
-  let collecting = true;
+  let collecting = false;
   const onRequest = (request: NetRequest) => {
     if (!collecting) return;
     const navigation = request.navigation && request.mainFrame;
@@ -200,6 +201,8 @@ export async function settleAfterAction<T>(page: Page, fn: () => Promise<T>): Pr
     collecting = false;
   };
   try {
+    actionStart = Date.now();
+    collecting = true;
     const endDispatch = beginDispatch(page);
     let value: T;
     try {
