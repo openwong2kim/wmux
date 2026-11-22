@@ -149,7 +149,7 @@ export function createDefaultConfig(): DaemonConfig {
       // (e.g. a running build) never hits this.
       detachedTtlHours: 8,
       hibernateIdleHours: 24,
-      ringCompression: false,
+      // ringCompression: absent, so Labs decides (RING_COMPRESSION_DEFAULT_MIGRATION).
     },
     // Channel retention — the trash empties itself after 30 days (it only
     // finishes deletions a human started), while auto-trashing archived
@@ -171,7 +171,7 @@ export function createDefaultConfig(): DaemonConfig {
     // #783 — PreToolUse permission gate. Defaults to high-risk tools only.
     gate: createDefaultGateConfig(),
     // A fresh config already has every migration's result in its defaults.
-    appliedMigrations: [GATE_POWERSHELL_MIGRATION],
+    appliedMigrations: [GATE_POWERSHELL_MIGRATION, RING_COMPRESSION_DEFAULT_MIGRATION],
     // Outbound webhook/ntfy notifications. Empty = off; written out so a fresh
     // config.json shows operators the key exists without turning anything on.
     notifySinks: [],
@@ -376,7 +376,15 @@ export function resetNotifySinksCache(): void {
   notifySinksCache = null;
 }
 
-/** #1939 — set once the gate migration's save failed in this process. */
+/**
+ * Drops the `session.ringCompression: false` older daemons wrote into each
+ * config.json they created. Nobody chose it, and it changed nothing on the
+ * Rust terminal core; once it is gone, compression follows Labs (on by
+ * default), and a `false` set after this turns it off.
+ */
+export const RING_COMPRESSION_DEFAULT_MIGRATION = 'ring-compression-default';
+
+/** #1939 — set once a migration's save failed in this process. */
 let gateMigrationSaveFailed = false;
 
 /** Test seam: let the gate migration try its save again. */
@@ -636,9 +644,17 @@ export function loadConfig(): DaemonConfig {
     const appliedMigrations = Array.isArray(config.appliedMigrations)
       ? config.appliedMigrations.filter((m): m is string => typeof m === 'string')
       : [];
+    const pending: string[] = [];
     if (!appliedMigrations.includes(GATE_POWERSHELL_MIGRATION)) {
       config.gate = migrateGateForPowerShell(config.gate) as DaemonConfig['gate'];
-      config.appliedMigrations = [...appliedMigrations, GATE_POWERSHELL_MIGRATION];
+      pending.push(GATE_POWERSHELL_MIGRATION);
+    }
+    if (!appliedMigrations.includes(RING_COMPRESSION_DEFAULT_MIGRATION)) {
+      if (config.session.ringCompression === false) delete config.session.ringCompression;
+      pending.push(RING_COMPRESSION_DEFAULT_MIGRATION);
+    }
+    if (pending.length > 0) {
+      config.appliedMigrations = [...appliedMigrations, ...pending];
       // The daemon calls loadConfig on every hook signal. When the file cannot
       // be written, the migrated list still applies in memory on each load, but
       // the write (and its error log) is tried once per process, not per call.
@@ -685,7 +701,9 @@ export function loadConfig(): DaemonConfig {
       typeof hibernateIdleHours === 'number' && Number.isFinite(hibernateIdleHours) && hibernateIdleHours >= 0
         ? Math.min(hibernateIdleHours, HIBERNATE_IDLE_CAP_HOURS)
         : defaults.session.hibernateIdleHours;
-    config.session.ringCompression = config.session.ringCompression === true;
+    // Absent (or not a boolean) leaves it to Labs; never backfilled, so a
+    // later save does not write a `false` nobody chose.
+    if (typeof config.session.ringCompression !== 'boolean') delete config.session.ringCompression;
     // app-weight P1 idle-CPU knobs — same per-field backfill + clamp.
     config.daemon.livenessIntervalSec = clampLifecycle(
       config.daemon.livenessIntervalSec, defaults.daemon.livenessIntervalSec!,
