@@ -1361,6 +1361,11 @@ ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent
 const fanoutCallerSubmit = createFanoutCallerSubmit({
   deliveryGate: (ptyId) => inputRpc.deliveryGate(ptyId),
   ownerOf: (ptyId) => resolvePtyOwnerWorkspace(() => mainWindow, ptyId),
+  taskClosed: (taskId, owner) => {
+    // The ledger replays its log when it is made, so a row it does not have is not a task of this owner: refused.
+    const row = getTaskLedger().get(taskId);
+    return !row || row.ownerWorkspaceId !== owner || row.status === 'cancelled' || row.status === 'completed';
+  },
   prOf: (ptyId) => currentPrOfPty(ptyId),
   agentState: async (ptyId) => (daemonClient?.isConnected ? daemonClient.getAgentState(ptyId) : null),
   deliver: async (args) =>
@@ -3083,6 +3088,8 @@ app.on('ready', async () => {
           return () => { client.off('event', listener); };
         },
         log: (level, msg) => logLine(level, 'a2a-remote', msg),
+        // An open fan-out row moves to failed and nudges its pane itself (a reported one stands, so not then).
+        endToldElsewhere: (taskId) => getTaskLedger().list({}).some((e) => e.remote?.a2aTaskId === taskId && (e.status === 'working' || e.status === 'input_required')),
         // Work sent to another PC: its links follow the daemon's copy of each task.
         afterPull: () => reconcileRemoteLinks((params) => client.rpc('a2a.task.query', params)),
       });

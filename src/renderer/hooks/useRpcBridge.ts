@@ -96,7 +96,7 @@ import {
   type A2aRemoteTaskState,
 } from '../../shared/a2aRemoteDelivery';
 import { imagePathForPane } from '../../shared/imagePaste';
-import { resolvePaneAddress, activePaneTerminalPty, activePaneTerminalUnstarted, resolveUnaddressedDelivery, paneHasDetectedAgent, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, NO_TARGET_PTY_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, decideRemoteAnchor, remoteEndPointer, activePaneTerminalPty, activePaneTerminalUnstarted, resolveUnaddressedDelivery, paneHasDetectedAgent, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, NO_TARGET_PTY_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { remoteAgentKey } from '../../shared/remoteHosts';
@@ -1115,23 +1115,21 @@ function isInboundRemoteMarker(v: unknown): v is A2aRemoteTaskMarkerV1 {
 type RemoteAnchor = { workspaceId: string; paneId?: string; ptyId?: string };
 
 /**
- * Where a remote delivery for `anchor` (our local side of the task) may go:
- * the pinned pane's snapshotted pty, or — with `resnapshot`, a person having
- * approved it — whatever terminal the pane holds now. Otherwise the reason it
- * is held: the pane is gone, or another pty holds it now.
+ * Where a remote delivery for `anchor` (our local side of the task) may go,
+ * in the anchor's own workspace only (decideRemoteAnchor): the pinned pane's
+ * snapshotted pty, its only agent terminal when no pty was snapshotted, or —
+ * with `resnapshot`, a person having approved it — whatever terminal the pane
+ * holds now. Otherwise the reason it is held: the pane is gone, or another pty
+ * holds it now.
  */
 function remoteAnchorTarget(
   anchor: RemoteAnchor,
   resnapshot: boolean,
 ): { ws: Workspace; pty: string; surfaceId: string } | { held: A2aRemoteHeldReason } {
   const ws = useStore.getState().workspaces.find((w) => w.id === anchor.workspaceId);
-  if (!ws || !anchor.paneId) return { held: 'pane-missing' };
-  const addr = resolvePaneAddress(getWorkspaceLeafPanes(ws), anchor.paneId, '');
-  if ('error' in addr) return { held: 'pane-missing' };
-  if (resnapshot) return { ws, pty: addr.ptyId, surfaceId: addr.surfaceId };
-  const leaf = getWorkspaceLeafPanes(ws).find((l) => l.id === anchor.paneId);
-  const snap = leaf?.surfaces.find((su) => su.surfaceType !== 'browser' && !!su.ptyId && su.ptyId === anchor.ptyId);
-  return snap && anchor.ptyId ? { ws, pty: anchor.ptyId, surfaceId: snap.id } : { held: 'occupant-changed' };
+  if (!ws) return { held: 'pane-missing' };
+  const to = decideRemoteAnchor(getWorkspaceLeafPanes(ws), anchor, resnapshot, (pty) => a2aTargetHasAgent(ws, pty));
+  return 'held' in to ? to : { ws, ...to };
 }
 
 /**
@@ -1279,10 +1277,8 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
     // The item's own state, not the task's: an earlier `working` item handed
     // over late must not announce the end. A peer's `completed` held here as a
     // report (`reported`) asks this side to check it and mark it done.
-    const ended = item.reported === true
-      ? 'reported'
-      : item.state === 'completed' || item.state === 'failed' ? item.state : undefined;
-    if (!ended || side !== 'from') return { ok: true, delivered: true };
+    const ended = remoteEndPointer(item, side, params.endToldElsewhere === true);
+    if (!ended) return { ok: true, delivered: true };
     // The pointer is one best-effort try. The event above already announced
     // the end and the task stays queryable, so a pane that is gone, holds
     // another program or runs no agent gets no pointer, and nothing is held

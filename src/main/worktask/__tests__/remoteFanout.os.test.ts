@@ -19,7 +19,7 @@ import type { RpcContext } from '../../../shared/rpc';
 import {
   POOL_HOLD_MAX_MS, POOL_REFUSING_MS, pickPoolHost, poolCandidates, poolHoldOverride, poolRootHash,
   REMOTE_ASK_GRACE_MS, REMOTE_FOLLOW_INTERVAL_MS, REMOTE_GONE_GRACE_MS, type RemoteTaskView, branchOnPc, remoteTaskReconciler, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal, remoteKeyRows,
-  startRemoteFanout, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
+  startRemoteFanout, onRemoteWaitInPlace, remoteReplyWaitText, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
 } from '../remoteFanout';
 
 const BOX = '0f1e2d3c-4b5a-4968-8776-655443322110';
@@ -156,6 +156,12 @@ describe('startRemoteFanout', () => {
     const rows = deps.ledger.list().filter(isRemoteTask);
     expect(rows).toHaveLength(8);
     expect(rows[0].taskWorkspaceId).toBe(`remote:${rows[0].remote?.spawnId}`);
+  });
+
+  it('hands the daemon the caller\'s own pty with each ask, so the replies have their anchor', async () => {
+    const f = fakeDaemon();
+    await startRemoteFanout(request(2, { ptyId: 'pty-caller' }), depsOf(f.daemon));
+    expect(f.asks.map((a) => [a.from.paneId, a.fromPtyId])).toEqual([['pane-1', 'pty-caller'], ['pane-1', 'pty-caller']]);
   });
 
   it('keeps the request digest on each row, found from the key alone', async () => {
@@ -537,6 +543,100 @@ describe('a started task follows its A2A task', () => {
     await reconcileRemoteTasks(s.deps);
     expect(s.row(0).status).toBe('working');
     expect(s.row(0).remote?.waiting).toBeUndefined();
+  });
+
+  it('a question that shows while the row already waits on a reply is told once, though no status moves', async () => {
+    const s = await started(1);
+    const told: string[] = [];
+    const off = onRemoteWaitInPlace((e) => told.push(`${e.id}@${e.rev}:${e.status}`));
+    try {
+      s.view(0, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      expect(s.row(0).status).toBe('input_required');
+      expect(told).toEqual([]);
+      s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'permission' } });
+      await reconcileRemoteTasks(s.deps);
+      expect(s.row(0)).toMatchObject({ status: 'input_required', remote: { waiting: { on: 'question' } } });
+      expect(told).toEqual([`${s.row(0).id}@${s.row(0).rev}:input_required`]);
+      // Another kind of question on the same showing is not told again.
+      s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'plan' } });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toHaveLength(1);
+      // A row a brain sent back with its own text: the question is told, and the brain's text kept.
+      s.view(0, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      const brain = { kind: 'brain' as const, workspaceId: 'ws-owner' };
+      expect((await s.deps.ledger.update({ id: s.row(0).id, status: 'working', actor: brain, expectedRev: s.row(0).rev })).ok).toBe(true);
+      expect((await s.deps.ledger.update({ id: s.row(0).id, status: 'input_required', actor: brain, expectedRev: s.row(0).rev, summary: 'waiting on the API owner' })).ok).toBe(true);
+      expect(s.row(0).summary).toBe('waiting on the API owner');
+      s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'permission' } });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toHaveLength(2);
+      expect(s.row(0).summary).toBe('waiting on the API owner');
+    } finally {
+      off();
+    }
+  });
+
+  it('a reply held here (not written to the pane) is its own reason: told on the move, and told when it turns up in place', async () => {
+    const s = await started(2);
+    const told: string[] = [];
+    const off = onRemoteWaitInPlace((e) => told.push(e.id));
+    try {
+      s.view(0, { state: 'input-required', replyHeld: true });
+      await reconcileRemoteTasks(s.deps);
+      expect(s.row(0)).toMatchObject({ status: 'input_required', summary: expect.stringContaining('its reply is held here') });
+      expect(s.row(0).summary).not.toBe(remoteReplyWaitText(s.row(0).remote!));
+      // Waiting on a reply that reached the pane, then the box's agent stops with no reply, then a reply is held: each told once, in place.
+      s.view(1, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toEqual([]);
+      s.view(1, { state: 'working', status: { kind: 'waiting-input', since: at } });
+      await reconcileRemoteTasks(s.deps);
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toEqual([s.row(1).id]);
+      s.view(1, { state: 'input-required', replyHeld: true });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toEqual([s.row(1).id, s.row(1).id]);
+      // Retried and delivered: back to the plain reply wait, told nothing.
+      s.view(1, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toHaveLength(2);
+    } finally {
+      off();
+    }
+  });
+
+  it('a new reason that could not be written in place is not told', async () => {
+    const s = await started(1);
+    const told: string[] = [];
+    const off = onRemoteWaitInPlace((e) => told.push(e.id));
+    try {
+      s.view(0, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      // The write with the new text finds the row moved meanwhile: it lands without the text.
+      const ledger = s.deps.ledger as TaskLedger;
+      const real = ledger.updateRemote.bind(ledger);
+      let stale = true;
+      const spy = vi.spyOn(ledger, 'updateRemote').mockImplementation((id, patch, text, expect) => {
+        if (text && stale) {
+          stale = false;
+          return real(id, patch);
+        }
+        return real(id, patch, text, expect);
+      });
+      s.view(0, { state: 'working', status: { kind: 'waiting-input', since: at } });
+      await reconcileRemoteTasks(s.deps);
+      expect(stale).toBe(false);
+      expect(told).toEqual([]);
+      // The next pass writes it, and tells it once.
+      await reconcileRemoteTasks(s.deps);
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toEqual([s.row(0).id]);
+      spy.mockRestore();
+    } finally {
+      off();
+    }
   });
 
   it('while the row stays input_required, its text follows why it waits; the same reason writes nothing', async () => {

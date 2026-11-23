@@ -29,7 +29,7 @@ import type { A2aTaskService } from '../a2a/A2aTaskService';
 import { remoteTaskId } from './ids';
 import type { LinkStore } from './linkStore';
 import type { SpawnOutgoingRecordV1, SpawnOutgoingStore } from './spawnOutgoingStore';
-import { errMsg, isPlainObject } from './storeFile';
+import { errMsg, isPlainObject, isSafeId } from './storeFile';
 
 /**
  * The asking side of remote spawn: this PC asks another PC to start an agent.
@@ -113,7 +113,7 @@ export class A2aSpawnRequester {
     const rec: SpawnOutgoingRecordV1 = {
       v: 1, hostId: host.hostId, spawnId, agent: request.agent, rootId: request.folder.root,
       ...(request.folder.sub ? { sub: request.folder.sub } : {}),
-      from: { workspaceId: request.from.workspaceId, paneId: request.from.paneId },
+      from: { workspaceId: request.from.workspaceId, paneId: request.from.paneId, ...(input.fromPtyId ? { ptyId: input.fromPtyId } : {}) },
       callerKey: input.callerKey, ...(input.requestKey !== undefined ? { requestKey: input.requestKey } : {}),
       text: request.text, ...(input.label ? { label: input.label } : {}),
       ...(input.budget === 'fanout' ? { fanout: true as const } : {}),
@@ -227,7 +227,8 @@ export class A2aSpawnRequester {
         const created = await this.deps.taskService.createTask({
           id: taskId,
           title: text.split('\n', 1)[0].slice(0, 100),
-          from: { workspaceId: rec.from.workspaceId, name: rec.from.workspaceId, paneId: rec.from.paneId },
+          // The asking terminal is the reply anchor from the start: without it every reply is held until a person picks the pane.
+          from: { workspaceId: rec.from.workspaceId, name: rec.from.workspaceId, paneId: rec.from.paneId, ...(rec.from.ptyId ? { ptyId: rec.from.ptyId } : {}) },
           to: { workspaceId: remoteWorkspaceId(linkId), name: this.deps.aliasFor(link) },
           history: [{ kind: 'message', messageId, role: 'user', parts: [{ kind: 'text', text }] }],
           // Sent already, as the request: the outbound sync never sends a task's own first message.
@@ -338,8 +339,9 @@ export function registerSpawnAskRpc(onRpc: (method: string, handler: RpcHandler)
     const from = isPlainObject(p['from']) ? p['from'] : null;
     if (typeof p['pc'] !== 'string' || !isAgentSlug(p['agent']) || !folder || typeof folder['root'] !== 'string' || typeof p['text'] !== 'string' ||
       !from || typeof from['workspaceId'] !== 'string' || typeof from['paneId'] !== 'string' || typeof p['callerKey'] !== 'string' ||
-      (p['expiresInHours'] !== undefined && typeof p['expiresInHours'] !== 'number') || (p['requestKey'] !== undefined && typeof p['requestKey'] !== 'string')) {
-      return { ok: false, error: 'bad-request', message: 'pc, agent, folder{root, sub?}, text, from{workspaceId, paneId} and callerKey are required' };
+      (p['expiresInHours'] !== undefined && typeof p['expiresInHours'] !== 'number') || (p['requestKey'] !== undefined && typeof p['requestKey'] !== 'string') ||
+      (p['fromPtyId'] !== undefined && !isSafeId(p['fromPtyId']))) {
+      return { ok: false, error: 'bad-request', message: 'pc, agent, folder{root, sub?}, text, from{workspaceId, paneId} and callerKey are required; fromPtyId, when given, is an id' };
     }
     return requester.ask({
       pc: p['pc'],
@@ -348,6 +350,7 @@ export function registerSpawnAskRpc(onRpc: (method: string, handler: RpcHandler)
       text: p['text'],
       ...(typeof p['expiresInHours'] === 'number' ? { expiresInHours: p['expiresInHours'] } : {}),
       from: { kind: 'pane', workspaceId: from['workspaceId'], paneId: from['paneId'] },
+      ...(typeof p['fromPtyId'] === 'string' ? { fromPtyId: p['fromPtyId'] } : {}),
       callerKey: p['callerKey'],
       ...(typeof p['requestKey'] === 'string' ? { requestKey: p['requestKey'] } : {}),
       ...(typeof p['label'] === 'string' ? { label: p['label'] } : {}),

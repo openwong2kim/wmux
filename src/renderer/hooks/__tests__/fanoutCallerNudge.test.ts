@@ -87,7 +87,21 @@ describe('fan-out caller nudge', () => {
       ownerWorkspaceId: OWNER,
       incarnationId: 'inc-1',
       text: '[wmux] fan-out task hnmmmmxy updated — channel_mission_list',
+      tasks: ['wtask-mus4zme5-hnmmmmxy'],
     });
+  });
+
+  it('drops only the tasks main says were closed, and sends the rest again', async () => {
+    submit.mockImplementationOnce(async () => ({ result: 'task_closed', pasted: false, closed: ['wtask-a-closedd1'] }));
+    receiveFanoutCallerEvent(pointer('wtask-a-closedd1', 1));
+    receiveFanoutCallerEvent(pointer('wtask-a-stillop1', 1, 'ledger.failed'));
+    await windowElapses();
+    await windowElapses();
+    expect(lines()).toEqual([
+      '[wmux] fan-out task stillop1 failed; task closedd1 updated — channel_mission_list',
+      '[wmux] fan-out task stillop1 failed — channel_mission_list',
+    ]);
+    expect((submit.mock.calls[1][0] as { tasks: string[] }).tasks).toEqual(['wtask-a-stillop1']);
   });
 
   it('carries zero bytes of worker text, whatever the payload holds', async () => {

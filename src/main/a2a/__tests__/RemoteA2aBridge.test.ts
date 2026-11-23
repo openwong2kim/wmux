@@ -279,6 +279,27 @@ describe('RemoteA2aBridge', () => {
     expect(renderer).toHaveBeenCalledTimes(3);
   });
 
+  it('a state item says when its end reaches the pane another way (an open fan-out row); a reply never does', async () => {
+    bridge.stop();
+    const t = remoteTask(12);
+    (t.metadata.remote as A2aRemoteTaskState).inbox = [
+      { messageId: 'r1', kind: 'reply', delivered: false },
+      { messageId: 's1', kind: 'state', delivered: false },
+    ];
+    daemon.tasks.set(t.id, t);
+    bridge = new RemoteA2aBridge({
+      daemonRpc: (m, p) => daemon.rpc(m, p),
+      sendToRenderer: (m, p) => renderer(m, p),
+      onDaemonEvent: () => () => undefined,
+      endToldElsewhere: (taskId) => taskId === t.id,
+    });
+    bridge.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(5_000);
+    const notified = renderer.mock.calls.filter(([m]) => m === 'a2a.remote.notify').map(([, p]) => [p.messageId, p.endToldElsewhere]);
+    expect(notified).toEqual([['s1', true], ['r1', undefined]]);
+  });
+
   it('a held reply is retried only through retryHeld', async () => {
     const t = remoteTask(12);
     const marker = t.metadata.remote as A2aRemoteTaskState;

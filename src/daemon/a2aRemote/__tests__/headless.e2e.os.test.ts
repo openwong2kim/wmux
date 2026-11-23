@@ -23,7 +23,7 @@ import { ExposureStore } from '../exposureStore';
 import { HeadlessMode, headlessFlagPath, headlessReleases } from '../headlessMode';
 import { HeadlessStartStore } from '../headlessStartStore';
 import { A2aHeadlessStarter, headlessTreeId, worktreeUnchanged, type HeadlessSessionInput, type HeadlessSessionPort } from '../headlessStarter';
-import { A2A_REMOTE_RPC } from '../../../shared/a2aRemoteDelivery';
+import { A2A_REMOTE_NOTIFY_METHOD, A2A_REMOTE_RPC } from '../../../shared/a2aRemoteDelivery';
 import { ASK_REASON, DAEMON_STOPPED_REASON, endHeadlessOnStop, HeadlessDelivery } from '../headlessDelivery';
 import { remoteTaskId } from '../ids';
 import { joinRemoteHost } from '../joiner';
@@ -44,6 +44,9 @@ import { A2aSpawnStarter } from '../spawnStarter';
 import { freePort } from './a2aServerRig';
 import { applyTaskQueryView } from '../../../shared/a2aTaskQueryView';
 import { remoteTaskViewOf } from '../../../main/worktask/remoteFanout';
+import { RemoteA2aBridge } from '../../../main/a2a/RemoteA2aBridge';
+import { decideRemoteAnchor } from '../../../renderer/hooks/a2aAddressing';
+import type { PaneLeaf, Task } from '../../../shared/types';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 90_000 });
 
@@ -86,9 +89,14 @@ interface FakeSessions extends HeadlessSessionPort {
 }
 
 const pcs: Pc[] = [];
+const bridges: RemoteA2aBridge[] = [];
 const dirs: string[] = [];
 
 afterEach(async () => {
+  for (const bridge of bridges.splice(0)) {
+    bridge.stop();
+    await bridge.whenIdle();
+  }
   for (const pc of pcs) pc.headless?.stop();
   await Promise.all(pcs.splice(0).map((pc) => Promise.race([pc.stop(), new Promise<void>((r) => setTimeout(r, 15_000))])));
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
@@ -383,12 +391,12 @@ async function allow(b: Pc, aHostId: string, rules: Array<{ hostId: string; root
   expect(set.ok).toBe(true);
 }
 
-async function ask(a: Pc, b: Pc): Promise<string> {
+async function ask(a: Pc, b: Pc, fromPtyId?: string): Promise<string> {
   b.spawn.sendTargets({ ...b.policy.get(), hosts: {} });
   await until(() => a.asks!.list().places.some((p) => p.hostId === b.hostId && p.supported && p.targets !== undefined));
   const asked = a.asks!.ask({
     pc: b.hostId, agent: 'claude', folder: { root: 'web' }, text: PROMPT,
-    from: { kind: 'pane', workspaceId: 'ws-a', paneId: 'pane-a' }, callerKey: 'pane-a',
+    from: { kind: 'pane', workspaceId: 'ws-a', paneId: 'pane-a' }, callerKey: 'pane-a', ...(fromPtyId ? { fromPtyId } : {}),
   });
   expect(asked).toMatchObject({ ok: true });
   return asked.ok ? asked.spawn.spawnId : '';
@@ -409,10 +417,10 @@ describe('headless remote spawn, two PCs and no app', () => {
   });
 
   /** A started request on B for A, and the id of its first task. */
-  async function startedTask(a: Pc, b: Pc, followUps: 'direct' | 'ask' = 'direct'): Promise<{ spawnId: string; taskId: string; rec: HeadlessStartRecordV1; linkId: string }> {
+  async function startedTask(a: Pc, b: Pc, followUps: 'direct' | 'ask' = 'direct', fromPtyId?: string): Promise<{ spawnId: string; taskId: string; rec: HeadlessStartRecordV1; linkId: string }> {
     await pair(a, b);
     await allow(b, a.hostId, [{ hostId: a.hostId, rootId: 'web', agent: 'claude' }], followUps);
-    const spawnId = await ask(a, b);
+    const spawnId = await ask(a, b, fromPtyId);
     await until(() => a.asks!.list(spawnId).requests[0]?.state === 'started');
     const linkId = asSpawnLinkId(a.asks!.list(spawnId).requests[0].linkId)!;
     const taskId = remoteTaskId(linkId, spawnFirstMessageId(linkId));
@@ -490,6 +498,66 @@ describe('headless remote spawn, two PCs and no app', () => {
     // Typed once.
     await b.taskDelivery!.tick();
     expect(b.sessions.typed).toHaveLength(1);
+  });
+
+  /**
+   * A's main (the real RemoteA2aBridge) and, in place of its renderer, the
+   * renderer's own anchor decision over A's caller pane: the answer the
+   * pane would get. Every reply's outcome is recorded.
+   */
+  function callerSide(a: Pc, surfaces: Array<{ id: string; ptyId: string }>): { bridge: RemoteA2aBridge; outcomes: unknown[] } {
+    const leaves = [{ id: 'pane-a', type: 'leaf', activeSurfaceId: surfaces[0].id, surfaces: surfaces.map((x) => ({ ...x, title: x.id, shell: '', cwd: '' })) }] as unknown as PaneLeaf[];
+    const outcomes: unknown[] = [];
+    const bridge = new RemoteA2aBridge({
+      daemonRpc: (method, params) => a.rpc(method, params),
+      sendToRenderer: async (method, params) => {
+        if (method !== A2A_REMOTE_NOTIFY_METHOD) return { ok: true, delivered: true };
+        const task = params['task'] as Task;
+        const item = (task.metadata.remote as { inbox?: Array<{ messageId: string; kind: string }> }).inbox?.find((i) => i.messageId === params['messageId']);
+        if (item?.kind !== 'reply') return { ok: true, delivered: true };
+        const to = decideRemoteAnchor(leaves, task.metadata.from, params['resnapshot'] === true, () => true);
+        const out = 'held' in to ? { ok: true, delivered: false, held: to.held } : { ok: true, delivered: true, ptyId: to.pty };
+        outcomes.push(out);
+        return out;
+      },
+      onDaemonEvent: () => () => undefined,
+      backstopMs: 50,
+      log: quiet,
+    });
+    bridge.start();
+    bridges.push(bridge);
+    return { bridge, outcomes };
+  }
+
+  it('a fan-out caller\'s pty is its first task\'s anchor: the box\'s reply reaches that pane with no Retry', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    const { taskId } = await startedTask(a, b, 'direct', 'pty-a');
+    expect(a.tasks.getTask(taskId)?.metadata.from).toMatchObject({ paneId: 'pane-a', ptyId: 'pty-a' });
+    // The pane holds a shell tab beside the agent: only the stamped pty is the anchor.
+    const { outcomes } = callerSide(a, [{ id: 'surf-a', ptyId: 'pty-a' }, { id: 'surf-sh', ptyId: 'pty-sh' }]);
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    await until(() => outcomes.length > 0);
+    expect(outcomes[0]).toEqual({ ok: true, delivered: true, ptyId: 'pty-a' });
+    const reply = (a.tasks.getTask(taskId)?.metadata.remote as { inbox?: Array<{ kind: string; delivered?: boolean; held?: string }> }).inbox?.find((i) => i.kind === 'reply');
+    await until(() => (a.tasks.getTask(taskId)?.metadata.remote as { inbox?: Array<{ kind: string; delivered?: boolean }> }).inbox?.some((i) => i.kind === 'reply' && i.delivered === true) === true);
+    expect(reply?.held).toBeUndefined();
+  });
+
+  it('with no pty stamped (an older request) and two terminals in the pane, the reply is held, never guessed', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    const { taskId } = await startedTask(a, b);
+    expect(a.tasks.getTask(taskId)?.metadata.from.ptyId).toBeUndefined();
+    const { outcomes } = callerSide(a, [{ id: 'surf-a', ptyId: 'pty-a' }, { id: 'surf-b', ptyId: 'pty-b' }]);
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    await until(() => (a.tasks.getTask(taskId)?.metadata.remote as { inbox?: Array<{ kind: string; held?: string }> }).inbox?.some((i) => i.kind === 'reply' && i.held === 'occupant-changed') === true);
+    expect(outcomes).toEqual([{ ok: true, delivered: false, held: 'occupant-changed' }]);
+    // The fan-out row learns it from the state view, so the caller is still told (the reply never reached the pane).
+    const [view] = applyTaskQueryView([a.tasks.getTask(taskId)!], { view: 'state', taskIds: [taskId] }).flatMap(remoteTaskViewOf);
+    expect(view).toMatchObject({ state: 'input-required', replyHeld: true });
   });
 
   it('nothing is typed in while headless mode is off', async () => {

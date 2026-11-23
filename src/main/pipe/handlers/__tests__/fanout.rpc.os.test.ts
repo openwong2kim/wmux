@@ -2315,7 +2315,8 @@ describe('task.fanout.start with pc (tasks on another PC)', () => {
     const res = await h.call(pcParams());
     expect(res).toMatchObject({ ok: true, status: 'completed', result: { remote: { pc: 'box' } } });
     expect(r.ask).toHaveBeenCalledTimes(2);
-    expect(r.ask.mock.calls[0][0]).toMatchObject({ agent: 'claude', budget: 'fanout', from: { kind: 'pane', paneId: 'pane-1' } });
+    // The replies' anchor: the caller's own pty, the one its workspace and pane were resolved from.
+    expect(r.ask.mock.calls[0][0]).toMatchObject({ agent: 'claude', budget: 'fanout', from: { kind: 'pane', paneId: 'pane-1' }, fromPtyId: 'pty-1' });
     expect(h.start).not.toHaveBeenCalled();
   });
 
