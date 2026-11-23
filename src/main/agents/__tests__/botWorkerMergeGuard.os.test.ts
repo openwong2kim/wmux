@@ -453,7 +453,7 @@ describe('pty:create applies the guard (source-level lock)', () => {
     expect(src.split('await stageCreate(pool.options, botWorker').length - 1).toBe(1);
     // The stages, in order: quota, the tool level (or, for a bot worker's
     // claude line, the guard's own wmux server), codex guard, merge guard, pin.
-    expect(src).toContain('let staged = poolPinned ? options : await withAccountQuota(options);');
+    expect(src).toContain('let staged = poolPinned ? options : await withAccountQuota(options, { wsl });');
     expect(src).toContain('const wsl = isWslShell(shellPath);');
     expect(src).toMatch(/withBotWorkerMergeGuard\(await guardCodexBotWorker\(staged, botWorker\), botWorker, fenceSupport \? \{ fenceSupport \} : \{\}, \{ wsl,/);
     // #2256: a path cmd cannot carry is refused by its own cause before the guard refuses the line.
