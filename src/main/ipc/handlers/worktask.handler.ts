@@ -11,6 +11,7 @@
 // projection(task.mission.list)에서 역참조한다 — 렌더러가 stale 필드를 실어보내
 // 엉뚱한 worktree를 건드리는 표면을 없앤다(단일 정본).
 
+import { poolAccountOfLivePane } from '../../worktask/fanoutAccountPool';
 import { ensureSecretHook } from '../../git/secretHookHost';
 import { ipcMain } from 'electron';
 import { execFile } from 'node:child_process';
@@ -402,7 +403,12 @@ export function registerWorktaskHandlers(
       // typed (factory/workerSlots.ts); not recorded, not typed.
       let settleRelaunch: ((typed: boolean) => void) | null;
       try {
-        settleRelaunch = startsAgent(line) ? beginPaneRelaunch(ptyId) : null;
+        if (startsAgent(line)) {
+          const paneAccount = await poolAccountOfLivePane(ptyId, (m, p) => dc.rpc(m, p));
+          settleRelaunch = beginPaneRelaunch(ptyId, { line, byPerson: true, ...(paneAccount ? { paneAccount } : {}) });
+        } else {
+          settleRelaunch = null;
+        }
       } catch (err) {
         return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
       }

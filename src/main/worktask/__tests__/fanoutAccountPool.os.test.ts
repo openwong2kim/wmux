@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WORKER_SLOTS_FILENAME, WorkerSlots } from '../../factory/workerSlots';
+import { WORKER_SLOTS_FILENAME, WorkerSlots, beginPaneRelaunch, setWorkerSlotsForTests } from '../../factory/workerSlots';
+import { setUsageReserve } from '../../usage/usageReserve';
 import {
   claudeFolderSignedIn,
   loadFanoutAccountPoolSettings,
@@ -13,6 +14,9 @@ import {
   poolCandidates,
   poolAccountForCreate,
   poolAllHeld,
+  poolAccountOfPaneEnv,
+  poolReserveHeldForWorkspace,
+  setFanoutAccountPoolHost,
   poolRelaunchRefusal,
   preparePool,
   resetFanoutAccountPoolForTests,
@@ -52,6 +56,9 @@ function host(over: Partial<FanoutAccountPoolHost> = {}): FanoutAccountPoolHost 
 
 afterEach(() => {
   resetFanoutAccountPoolForTests();
+  setWorkerSlotsForTests(null);
+  setUsageReserve(null);
+  vi.restoreAllMocks();
   slotStores.settle();
 });
 
@@ -198,8 +205,10 @@ describe('poolAccountForCreate', () => {
   });
 
   it('a WSL task pane keeps today\'s behaviour: its account is released, the default login too', () => {
-    expect(poolAccountForCreate(opts(), launch('a'), { wsl: true })).toEqual({ kind: 'release', taskId: 't1', gen: 2 });
-    expect(poolAccountForCreate(opts(), launch(POOL_DEFAULT_ACCOUNT), { wsl: true })).toEqual({ kind: 'release', taskId: 't1', gen: 2 });
+    // Flagged, so the create checks the reserve on the caller's account, as before the pool.
+    expect(poolAccountForCreate(opts(), launch('a'), { wsl: true })).toEqual({ kind: 'release', taskId: 't1', gen: 2, wsl: true });
+    expect(poolAccountForCreate(opts(), launch(POOL_DEFAULT_ACCOUNT), { wsl: true })).toEqual({ kind: 'release', taskId: 't1', gen: 2, wsl: true });
+    expect(poolAccountForCreate(opts({ initialCommand: 'codex' }), launch('a'), { wsl: true })).toEqual({ kind: 'release', taskId: 't1', gen: 2 });
     expect(poolAccountForCreate(opts(), launch('a'), { wsl: false })).toEqual({ kind: 'account', accountId: 'a' });
   });
 
@@ -292,5 +301,54 @@ describe('a pool account\'s transcript', () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+});
+
+describe('a relaunch typed into a pool task\'s pane', () => {
+  /** The pool on, in a scratch wmux dir, with the reserve holding `held`. */
+  async function poolOn(held: string[]): Promise<WorkerSlots> {
+    vi.spyOn(os, 'homedir').mockReturnValue(tmp());
+    setFanoutAccountPoolHost(host());
+    await setFanoutAccountPoolSettings({ enabled: true });
+    setUsageReserve({ holdFor: (account: string) => (held.includes(account) ? { account, untilMs: Date.now() + 60_000 } : null) } as never);
+    const s = slots();
+    setWorkerSlotsForTests(s);
+    const { gen } = s.beginLaunch({ taskId: 't', origin: 'bot', botId: 'bot-1', ownerWorkspaceId: 'ws-owner', accountId: POOL_DEFAULT_ACCOUNT });
+    s.launched('t', gen, 'ws-t', 'pty-t');
+    return s;
+  }
+
+  it('a codex or agy line takes no account, so it counts on none and is never held', async () => {
+    const s = await poolOn([POOL_DEFAULT_ACCOUNT]);
+    beginPaneRelaunch('pty-t', { line: 'codex resume', byPerson: false })?.(true);
+    expect(s.launchOf('t')).not.toHaveProperty('accountId');
+    expect(openWorkersByAccount(s, () => true).size).toBe(0);
+  });
+
+  it('a Claude line wmux types on its own is held while its account is; a person\'s is not', async () => {
+    const s = await poolOn([POOL_DEFAULT_ACCOUNT]);
+    expect(() => beginPaneRelaunch('pty-t', { line: 'claude --resume x', byPerson: false })).toThrow(/usage reserve holds/);
+    beginPaneRelaunch('pty-t', { line: 'claude --resume x', byPerson: true })?.(true);
+    expect(s.launchOf('t')).toMatchObject({ gen: 2, accountId: POOL_DEFAULT_ACCOUNT });
+  });
+
+  it('takes the account the pane\'s live env runs on', async () => {
+    const s = await poolOn([]);
+    beginPaneRelaunch('pty-t', { line: 'claude', byPerson: true, paneAccount: 'acc-b' })?.(true);
+    expect(s.launchOf('t')?.accountId).toBe('acc-b');
+    expect(poolAccountOfPaneEnv({ CLAUDE_CONFIG_DIR: '/acc/a' }, () => [acct('a')])).toBe('a');
+    expect(poolAccountOfPaneEnv({}, () => [acct('a')])).toBe(POOL_DEFAULT_ACCOUNT);
+    expect(poolAccountOfPaneEnv({ CLAUDE_CONFIG_DIR: '/elsewhere' }, () => [acct('a')])).toBeUndefined();
+  });
+});
+
+describe('a held bot fan-out\'s reserve check with the pool on', () => {
+  it('stays held while every member of the workspace\'s last pool is, and falls back when there is none', async () => {
+    await preparePool('ws-owner', { settings: () => on, host: host(), accounts: () => [acct('a')], binding: () => undefined, dirOk: () => true, signedIn: async () => true });
+    const holdFor = (held: string[]) => (account: string) => (held.includes(account) ? { account, untilMs: 5 } : null);
+    expect(poolReserveHeldForWorkspace('ws-owner', { poolOn: () => true, holdFor: holdFor(['a', POOL_DEFAULT_ACCOUNT]) })).toBe(true);
+    expect(poolReserveHeldForWorkspace('ws-owner', { poolOn: () => true, holdFor: holdFor(['a']) })).toBe(false);
+    expect(poolReserveHeldForWorkspace('ws-other', { poolOn: () => true, holdFor: holdFor(['a']) })).toBeUndefined();
+    expect(poolReserveHeldForWorkspace('ws-owner', { poolOn: () => false })).toBeUndefined();
   });
 });

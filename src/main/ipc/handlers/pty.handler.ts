@@ -27,7 +27,8 @@ import { appAccountVault, createAccountOverride, mergeVaultSecretEnv, noteVaultS
 import { loadClaudeCredential } from '../../claude/claudeCredential';
 import { BOT_SECRET_LIMITS } from '../../../shared/botSecret';
 import { withAccountQuota } from '../../account/accountQuotaGate';
-import { poolAccountForCreate } from '../../worktask/fanoutAccountPool';
+import { poolAccountForCreate, poolAccountOfLivePane } from '../../worktask/fanoutAccountPool';
+import { usageReserveHoldForWorkspace, usageReserveRefusalText } from '../../usage/usageReserve';
 import { botWorkerForCreate, botWorkerLaunchTask, botWorkerSessionRecord, noteGuardedLaunchTyped, clearedLaunchLine, forgetBotWorkerSession, guardedClaudeCwdRefusal, guardedCodexCwdRefusal, guardedCodexLaunch, guardedLaunchOf, isBotWorkerSession, noteBotWorkerSession, paneLaunchFolders, setWorkerMcpResolvers, taskConnectors, taskGatewayNames, withBotWorkerMergeGuard, type BotWorkerCreate, type WorkerGatewayLaunch } from '../../agents/botWorkerMergeGuard';
 import { isPlainCmdLaunchLine, namesClaude } from '../../../shared/botWorkerGuard';
 import { namesCodex } from '../../../shared/codexWorkerGuard';
@@ -288,6 +289,12 @@ function wslAccountTabRefusal(shell: string, options: PtyCreateOptions | undefin
   }));
 }
 
+/** The pool account a live pane's env runs on, for a relaunch typed into it. */
+async function poolPaneAccount(sessionId: string, dc: DaemonClient): Promise<{ paneAccount?: string }> {
+  const paneAccount = await poolAccountOfLivePane(sessionId, (m, p) => dc.rpc(m, p));
+  return paneAccount ? { paneAccount } : {};
+}
+
 /**
  * A fan-out task pane's account from the account pool (fanoutAccountPool.ts),
  * read from its launch record once its launch was claimed
@@ -303,7 +310,12 @@ function withPoolAccount(options: PtyCreateOptions | undefined, daemon: boolean)
   const decision = poolAccountForCreate(options, (id) => slots.launchOf(id), { wsl: isWslShell(createShell(options)) });
   if (decision.kind === 'none') return { options, pinned: false };
   if (decision.kind === 'release') {
+    const owner = slots.launchOf(decision.taskId)?.ownerWorkspaceId;
     slots.setLaunchAccount(decision.taskId, decision.gen, undefined);
+    // A WSL Claude worker runs as before the pool, so the usage reserve checks
+    // its caller's account, as the fan-out did before the pool.
+    const hold = decision.wsl && owner ? usageReserveHoldForWorkspace(owner) : null;
+    if (hold) throw new Error(`PTY_CREATE: ${usageReserveRefusalText(hold.untilMs, Date.now(), false)}`);
     return { options, pinned: false };
   }
   if (decision.kind === 'default') return { options, pinned: true };
@@ -1660,7 +1672,9 @@ export function registerPTYHandlers(
     // typed (factory/workerSlots.ts); not recorded, not typed.
     let settleRelaunch: ((typed: boolean) => void) | null;
     try {
-      settleRelaunch = startsAgent(text) ? beginPaneRelaunch(id) : null;
+      settleRelaunch = startsAgent(text)
+        ? beginPaneRelaunch(id, { line: text, byPerson: human, ...(dc ? await poolPaneAccount(id, dc) : {}) })
+        : null;
     } catch (err) {
       throw new Error(`PTY_WRITE_LAUNCH: ${(err as Error).message}`);
     }

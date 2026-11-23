@@ -77,6 +77,10 @@ export interface FanoutAccountPoolHost {
 }
 
 let host: FanoutAccountPoolHost | null = null;
+/** Each caller workspace's pool as last read (preparePool), for checks that
+ *  run between fan-outs: the held bot fan-outs' reserve check. */
+const lastPools = new Map<string, PreparedPool>();
+const LAST_POOLS_MAX = 200;
 
 export function setFanoutAccountPoolHost(next: FanoutAccountPoolHost | null): void {
   host = next;
@@ -130,6 +134,7 @@ export function resetFanoutAccountPoolForTests(): void {
   cached = null;
   writes = Promise.resolve();
   host = null;
+  lastPools.clear();
 }
 
 // ── Eligibility (async, before the launches) ────────────────────────────────
@@ -197,7 +202,10 @@ export async function preparePool(callerWorkspaceId: string, deps: PreparePoolDe
   const h = deps.host === undefined ? host : deps.host;
   if (!h) return null;
   const settings = (deps.settings ?? loadFanoutAccountPoolSettings)();
-  if (!settings.enabled || !h.daemonConnected()) return null;
+  if (!settings.enabled || !h.daemonConnected()) {
+    lastPools.delete(callerWorkspaceId);
+    return null;
+  }
   const log = deps.log ?? ((line: string) => console.log(line));
   const all = (deps.accounts ?? (() => getAccountStore().listAccounts()))().filter((a) => agentRow(a.vendor)?.usageReserve === true);
   const boundId = (deps.binding ?? ((ws: string) => getAccountStore().getBinding(ws, 'claude')))(callerWorkspaceId);
@@ -243,7 +251,11 @@ export async function preparePool(callerWorkspaceId: string, deps: PreparePoolDe
     }
   }
   if (excluded.length > 0) log(`[fanout-pool] left out of the pool: ${excluded.map(([id, why]) => `${id} (${why})`).join(', ')}`);
-  return { settings, group, members };
+  const pool = { settings, group, members };
+  lastPools.delete(callerWorkspaceId);
+  lastPools.set(callerWorkspaceId, pool);
+  while (lastPools.size > LAST_POOLS_MAX) lastPools.delete(lastPools.keys().next().value as string);
+  return pool;
 }
 
 // ── The pick (sync) ─────────────────────────────────────────────────────────
@@ -353,13 +365,57 @@ export function poolRelaunchRefusal(accountId: string, deps: PickDeps & { accoun
   return null;
 }
 
+/**
+ * Whether the usage reserve still holds a held bot fan-out of
+ * `workspaceId` with the pool on: every member of that workspace's last
+ * read pool is held. Undefined when the pool is off or was never read for
+ * it (the caller then checks the workspace's own account, as without a pool).
+ */
+export function poolReserveHeldForWorkspace(
+  workspaceId: string,
+  deps: { holdFor?: (account: string) => { account: string; untilMs: number } | null; poolOn?: () => boolean } = {},
+): boolean | undefined {
+  const poolOn = deps.poolOn ?? (() => !!host && loadFanoutAccountPoolSettings().enabled);
+  if (!poolOn()) return undefined;
+  const pool = lastPools.get(workspaceId);
+  if (!pool || pool.members.length === 0) return undefined;
+  return poolAllHeld(pool, deps.holdFor) !== null;
+}
+
+/** The pool account a pane's live env runs on: the registered account whose
+ *  folder its CLAUDE_CONFIG_DIR names, the default login when it names none,
+ *  undefined for a folder no account has. */
+export function poolAccountOfPaneEnv(env: Record<string, string>, accounts: () => readonly Account[] = () => getAccountStore().listAccounts()): string | undefined {
+  const dir = env.CLAUDE_CONFIG_DIR;
+  if (!dir) return POOL_DEFAULT_ACCOUNT;
+  return accounts().find((a) => a.configDir === dir && agentRow(a.vendor)?.usageReserve === true)?.id;
+}
+
+/** The pool account of a live pane, read from the daemon's session env, for
+ *  a relaunch typed into it; undefined when no launch names a pool account
+ *  (nothing is read then) or it cannot be read. */
+export async function poolAccountOfLivePane(sessionId: string, rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>, slots: WorkerSlots = getWorkerSlots()): Promise<string | undefined> {
+  if (!slots.hasPoolAccounts()) return undefined;
+  try {
+    const sessions = await rpc('daemon.listSessions', {}) as Array<{ id?: unknown; env?: unknown }>;
+    const s = Array.isArray(sessions) ? sessions.find((x) => x?.id === sessionId) : undefined;
+    if (!s?.env || typeof s.env !== 'object') return undefined;
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(s.env)) if (typeof v === 'string') env[k] = v;
+    return poolAccountOfPaneEnv(env);
+  } catch {
+    return undefined;
+  }
+}
+
 // ── The worker pane's create ────────────────────────────────────────────────
 
 export type PoolCreateDecision =
   /** No pool account for this create: it runs as before. */
   | { kind: 'none' }
-  /** The record named an account but the line launches no Claude: drop it. */
-  | { kind: 'release'; taskId: string; gen: number }
+  /** The record named an account but the line launches no Claude, or the
+   *  pane is WSL (`wsl`): drop it. */
+  | { kind: 'release'; taskId: string; gen: number; wsl?: true }
   /** The default login: no account folder, and no quota rotation away from it. */
   | { kind: 'default' }
   | { kind: 'account'; accountId: string };
@@ -390,7 +446,8 @@ export function poolAccountForCreate(
   }
   const raw = typeof options.initialCommand === 'string' ? options.initialCommand : '';
   const line = splitModelEnvMarker(raw).command;
-  if (place.wsl === true || !line || !namesClaude(line) || namesCodex(line)) return { kind: 'release', taskId: token.taskId, gen: token.gen };
+  if (!line || !namesClaude(line) || namesCodex(line)) return { kind: 'release', taskId: token.taskId, gen: token.gen };
+  if (place.wsl === true) return { kind: 'release', taskId: token.taskId, gen: token.gen, wsl: true };
   return recorded ? { kind: 'account', accountId: recorded } : { kind: 'default' };
 }
 
