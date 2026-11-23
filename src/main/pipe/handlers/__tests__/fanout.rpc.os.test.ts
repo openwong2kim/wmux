@@ -1622,7 +1622,8 @@ describe('task.fanout.start — usage reserve with the account pool', () => {
     expect(req.mayLaunch?.({ index: 0, accountId: 'acc-a' })).toBeNull();
     held.add('acc-a');
     expect(req.mayLaunch?.({ index: 0, accountId: 'acc-a' })).toMatch(/^usage reserve: /);
-    expect(req.accountPick?.pick({ index: 0 })).toEqual({ refusal: expect.stringMatching(/usage reserve the person keeps/) });
+    // Every pool account held: the reserve's own refusal (a bot's request is kept for the reset).
+    expect(req.accountPick?.pick({ index: 0 })).toEqual({ refusal: expect.stringMatching(/^usage reserve: .*run unattended/) });
   });
 
   it('refuses only when every pool account is held, with the earliest reset', async () => {

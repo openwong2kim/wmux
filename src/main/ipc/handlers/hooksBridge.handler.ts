@@ -123,6 +123,29 @@ export function accountHookDrift(accounts: readonly Account[], base: SetupHooksP
   return out;
 }
 
+/**
+ * The Claude accounts whose settings file does not hold the current wmux
+ * hooks, each judged on its own (a file two accounts share names both):
+ * none installed, some out of date, or a file that cannot be read. An
+ * account that keeps the default config's settings is judged on that file;
+ * a UNC folder is always listed. For the fan-out account pool, whose workers
+ * report through these hooks.
+ */
+export function accountsWithoutCurrentHooks(accounts: readonly Account[], base: SetupHooksPaths): Set<string> {
+  const out = new Set<string>();
+  for (const account of accounts) {
+    if (isUncPath(account.configDir)) { out.add(account.id); continue; }
+    const paths = ownAccountSettings(account, base) ?? base;
+    try {
+      const status = statusHooks(paths);
+      if (!computeInstalled(status) || status.updateAvailable) out.add(account.id);
+    } catch {
+      out.add(account.id);
+    }
+  }
+  return out;
+}
+
 export function computeInstalled(s: StatusOutcome): boolean {
   // "Installed" for prompt purposes = settings has at least one wmux hook group
   // AND the copied bridge exists. A stale bridge still counts as installed

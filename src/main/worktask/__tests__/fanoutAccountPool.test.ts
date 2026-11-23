@@ -10,6 +10,7 @@ import {
   loadFanoutAccountPoolSettings,
   openWorkersByAccount,
   pickFromPool,
+  poolCandidates,
   poolAccountForCreate,
   poolAllHeld,
   poolRelaunchRefusal,
@@ -70,6 +71,12 @@ describe('preparePool', () => {
     expect(await preparePool('ws', { settings: () => on, host: host({ daemonConnected: () => false }), accounts: () => [acct('a')] })).toBeNull();
   });
 
+  it('asks for a reading of each member the usage service has none for', async () => {
+    const probeUsage = vi.fn();
+    await preparePool('ws', { settings: () => on, host: host({ probeUsage }), accounts: () => [acct('a'), acct('b')], binding: () => undefined, dirOk: () => true, signedIn: async () => true });
+    expect(probeUsage.mock.calls.map((c) => c[0])).toEqual(['a', 'b']);
+  });
+
   it('keeps only signed-in local accounts of the group, by metadata, and names why the rest are out', async () => {
     const log: string[] = [];
     const accounts = [acct('ok'), acct('unc'), acct('gone'), acct('drift'), acct('vault'), acct('out'), acct('other', 'work'), { ...acct('cx'), vendor: 'codex' as const }];
@@ -87,6 +94,26 @@ describe('preparePool', () => {
     expect(pool?.group).toBe('');
     expect(pool?.members).toEqual([{ id: 'ok', configDir: '/acc/ok' }, { id: POOL_DEFAULT_ACCOUNT, configDir: null }]);
     expect(log.join('\n')).toMatch(/unc \(unc\).*gone \(missing-folder\).*drift \(hook-drift\).*vault \(vault-only\).*out \(signed-out\)/);
+  });
+
+  it('never puts an account signed in only inside WSL into a native pane', async () => {
+    const log: string[] = [];
+    // One registered by its WSL home (a UNC path), one by a Windows folder
+    // whose only sign-in lives in the distro (no .credentials.json here).
+    const unc = { ...acct('wsl-unc'), configDir: '\\\\wsl.localhost\\Ubuntu\\home\\u\\.claude-work' };
+    const win = { ...acct('wsl-win'), configDir: tmp() };
+    const pool = await preparePool('ws', {
+      settings: () => ({ ...on, includeDefaultLogin: false }),
+      host: host({ isUnc: (d) => /^[\\/]{2}/.test(d) }),
+      accounts: () => [unc, win],
+      binding: () => undefined,
+      dirOk: () => true,
+      signedIn: (d) => claudeFolderSignedIn(d, 'win32'),
+      vaultSignIn: () => false,
+      log: (l) => log.push(l),
+    });
+    expect(pool?.members).toEqual([]);
+    expect(log.join('\n')).toMatch(/wsl-unc \(unc\).*wsl-win \(signed-out\)/);
   });
 
   it('a caller bound to an account picks only in its group, without the default login', async () => {
@@ -131,6 +158,16 @@ describe('the pick and its booking', () => {
     before.beginLaunch({ taskId: 't9', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'b' });
     before.settlePendingWriteForTests();
     expect(openWorkersByAccount(slots(dir), () => true).get('b')).toBeUndefined();
+  });
+
+  it('counts a launched worker only while the holder set lists it as running', () => {
+    const s = slots();
+    const g = s.beginLaunch({ taskId: 'done', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'a' }).gen;
+    s.launched('done', g, 'ws-done', 'pty-d');
+    s.beginLaunch({ taskId: 'starting', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'a' });
+    // No holder set to read: the ended launch is not counted, the one under way is.
+    const [a] = poolCandidates({ ...pool, members: [{ id: 'a', configDir: '/acc/a' }] }, { host: host(), slots: s, holdFor: () => null, dirOk: () => true });
+    expect(a.open).toBe(1);
   });
 
   it('the reserve stops the fan-out only when it holds every member, naming the first to free up', () => {
@@ -193,7 +230,7 @@ describe('launch records', () => {
 });
 
 describe('poolRelaunchRefusal', () => {
-  const base = { host: host(), slots: slots(), holdFor: () => null, workerMayRun: () => true, dirOk: () => true, account: (id: string) => (id === 'a' ? acct('a') : undefined) };
+  const base = { host: host(), slots: slots(), holdFor: () => null, workerMayRun: () => true, dirOk: () => true, poolOn: () => true, account: (id: string) => (id === 'a' ? acct('a') : undefined) };
   it('lets a respawn back on its account, and holds it while that account is out, held, gone or missing', () => {
     expect(poolRelaunchRefusal('a', base)).toBeNull();
     const spent = { accountId: 'a', status: 'ok' as const, snapshot: { sessionPct: 100, sessionResetEpochSec: Math.floor(Date.now() / 1000) + 600, fetchedAtMs: Date.now() } as never, fetchedAtMs: Date.now(), lastError: null };
@@ -202,6 +239,9 @@ describe('poolRelaunchRefusal', () => {
     expect(poolRelaunchRefusal('a', { ...base, dirOk: () => false })).toMatch(/folder .* is missing/);
     expect(poolRelaunchRefusal('gone', base)).toMatch(/no longer registered/);
     expect(poolRelaunchRefusal(POOL_DEFAULT_ACCOUNT, base)).toBeNull();
+    // The pool turned off: the account's quota and reserve no longer hold it back.
+    expect(poolRelaunchRefusal('a', { ...base, poolOn: () => false, holdFor: () => ({ untilMs: Date.now() + 1000 }) })).toBeNull();
+    expect(poolRelaunchRefusal('gone', { ...base, poolOn: () => false })).toMatch(/no longer registered/);
   });
 });
 

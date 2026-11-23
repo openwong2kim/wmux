@@ -1485,10 +1485,16 @@ export function registerFanOutRpc(
     const POOL_FRESH_MS = 10_000;
     let poolReadAt = 0;
     let poolRead: Promise<void> | null = null;
+    let poolReadSeq = 0;
+    let poolSettled = true;
     const refreshPool = (): Promise<void> => {
-      if (poolRead && Date.now() - poolReadAt < POOL_FRESH_MS) return poolRead;
+      // A read still under way is joined, and a fresh one reused.
+      if (poolRead && (!poolSettled || Date.now() - poolReadAt < POOL_FRESH_MS)) return poolRead;
       poolReadAt = Date.now();
-      poolRead = readPool(callerWorkspaceId).then((p) => { pool = p; }, () => undefined);
+      poolSettled = false;
+      const seq = ++poolReadSeq;
+      poolRead = readPool(callerWorkspaceId).then((p) => { if (seq === poolReadSeq) pool = p; }, () => undefined)
+        .finally(() => { if (seq === poolReadSeq) poolSettled = true; });
       return poolRead;
     };
     if (!keyKnown && !depthRefusal) {
@@ -2371,7 +2377,15 @@ export function registerFanOutRpc(
             const current = pool;
             if (!current || !spendsUsageReserve(taskAgent(task.index))) return null;
             const picked = pick(current);
-            return picked.kind === 'pick' ? { accountId: picked.accountId } : { refusal: poolRefusalText(picked, Date.now()) };
+            if (picked.kind === 'pick') return { accountId: picked.accountId };
+            // Every usable account is in the reserve: held as the reserve
+            // holds a fan-out without the pool (a bot's request is kept).
+            if (picked.reason === 'held') {
+              const hold = poolAllHeld(current, holdForAccount)
+                ?? (picked.availableAtMs !== null ? { account: current.members[0]?.id ?? 'default', untilMs: picked.availableAtMs } : null);
+              if (hold) return { refusal: reserveRefusal(hold, !launchPassed) };
+            }
+            return { refusal: poolRefusalText(picked, Date.now()) };
           },
         };
 

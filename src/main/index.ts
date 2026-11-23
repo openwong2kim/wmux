@@ -130,7 +130,7 @@ import { cachedAgentEnvSummary } from './pcdiff/agentEnv';
 import { AGENT_ENV_COMMAND } from '../shared/agentEnvSummary';
 import { UsageReserve, setUsageReserve } from './usage/usageReserve';
 import { poolAccountOfWorkspace, setFanoutAccountPoolHost } from './worktask/fanoutAccountPool';
-import { accountHookDrift, isUncPath, primaryHookPaths } from './ipc/handlers/hooksBridge.handler';
+import { accountsWithoutCurrentHooks, isUncPath, primaryHookPaths } from './ipc/handlers/hooksBridge.handler';
 import { usageReserveToastText } from './automation/toastText';
 import { formatResetClock } from '../shared/usageLimit';
 import { CompletionAlarm } from '../shared/hooks/CompletionAlarm';
@@ -1969,8 +1969,9 @@ setFanoutAccountPoolHost({
   daemonConnected: () => daemonClient?.isConnected === true,
   claudeUsage: () => accountUsageService.getAll(),
   defaultSnapshot: () => usagePoller.getState().snapshot,
-  hookDriftIds: async (accounts) => new Set(accountHookDrift(accounts, await primaryHookPaths()).map((d) => d.accountId)),
+  hookDriftIds: async (accounts) => accountsWithoutCurrentHooks(accounts, await primaryHookPaths()),
   isUnc: isUncPath,
+  probeUsage: (accountId) => { void accountUsageService.maybeProbe(accountId); },
 });
 usagePoller.onStateChange(() => usageReserve.refresh());
 accountUsageService.onChange(() => usageReserve.refresh());

@@ -40,6 +40,7 @@ import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
 import { AGENT_ROWS, agentLauncherStem } from '../../shared/agentIdentity';
 import { launcherStem, tokenize } from '../../shared/agentResume';
 import { splitModelEnvMarker } from '../../shared/workerLaunch';
+import { poolRelaunchRefusal } from '../worktask/fanoutAccountPool';
 
 export const WORKER_SLOTS_FILENAME = 'worker-slots.json';
 export const WORKER_SLOTS_VERSION = 1 as const;
@@ -677,6 +678,12 @@ export function beginPaneRelaunch(sessionId: string): ((typed: boolean) => void)
   const taskId = owner?.taskId ?? heldTask;
   if (!taskId) return null;
   const prior = slots.launchOf(taskId);
+  // A pool task's relaunch here keeps its account (beginLaunch), and is held
+  // as a respawn would be while that account cannot run it.
+  if (prior?.accountId && pane && pane.taskId === taskId && pane.gen === prior.gen) {
+    const held = poolRelaunchRefusal(prior.accountId);
+    if (held) throw new Error(held);
+  }
   const workspaceId = pane?.workspaceId ?? bot?.workspaceId ?? holder ?? '';
   const { gen } = slots.beginLaunch({
     taskId,

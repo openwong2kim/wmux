@@ -64,9 +64,13 @@ export interface FanoutAccountPoolHost {
   claudeUsage: () => readonly AccountUsageEntry[];
   /** The default login's reading (the usage poller). */
   defaultSnapshot: () => UsageSnapshot | null;
-  /** The accounts whose own settings.json has wmux hooks that are out of
-   *  date (hooksBridge.handler accountHookDrift). */
+  /** The accounts whose settings.json does not hold the current wmux hooks:
+   *  none installed, out of date, or unreadable
+   *  (hooksBridge.handler accountsWithoutCurrentHooks). */
   hookDriftIds: (accounts: readonly Account[]) => Promise<ReadonlySet<string>>;
+  /** Ask for a usage reading of an account, under the usage service's own
+   *  rate limit and switches (AccountUsageService.maybeProbe). Optional. */
+  probeUsage?: (accountId: string) => void;
   /** A UNC folder (hooksBridge.handler isUncPath). */
   isUnc: (dir: string) => boolean;
 }
@@ -227,6 +231,16 @@ export async function preparePool(callerWorkspaceId: string, deps: PreparePoolDe
     members.push({ id: a.id, configDir: a.configDir });
   }
   if (poolIncludesDefaultLogin(group, settings)) members.push({ id: POOL_DEFAULT_ACCOUNT, configDir: null });
+  // A member with no reading ranks below every measured one: ask for one, so
+  // an account that never got a worker is measured for the next picks.
+  if (h.probeUsage) {
+    const usage = h.claudeUsage();
+    for (const m of members) {
+      if (m.id !== POOL_DEFAULT_ACCOUNT && !claudeReading(usage.find((e) => e.accountId === m.id))) {
+        try { h.probeUsage(m.id); } catch { /* the next read asks again */ }
+      }
+    }
+  }
   if (excluded.length > 0) log(`[fanout-pool] left out of the pool: ${excluded.map(([id, why]) => `${id} (${why})`).join(', ')}`);
   return { settings, group, members };
 }
@@ -244,16 +258,18 @@ export interface PickDeps {
 }
 
 /** The live-worker caps' holder set as a sync liveness source: a launched
- *  task whose holder is free runs no worker; unknown, held or not read counts. */
+ *  task runs a worker only while the set lists it as held or unknown. One it
+ *  lists as free, or no longer lists (an ended task whose workspace closed),
+ *  runs none; so does every one when the set cannot be read. */
 function holderMayRun(): (taskId: string) => boolean {
-  let free: Set<string> | null = null;
+  let running: Set<string> = new Set();
   try {
     const look = liveHolders();
-    if (look) free = new Set(look.holders.filter((x) => x.state === 'free').map((x) => x.taskId));
+    if (look) running = new Set(look.holders.filter((x) => x.state !== 'free').map((x) => x.taskId));
   } catch {
-    free = null;
+    running = new Set();
   }
-  return (taskId) => !free?.has(taskId);
+  return (taskId) => running.has(taskId);
 }
 
 /** Open workers per pool account: launching ones under way, and launched ones
@@ -314,17 +330,22 @@ export function poolAllHeld(pool: PreparedPool, holdFor: (account: string) => { 
 
 /**
  * A respawn or resume of a task whose last launch ran on pool account
- * `accountId` launches there again, or is held: null when it may launch now,
- * else why not (the account's folder is gone, it is out of quota, or the
- * usage reserve holds it). Reads only what is on hand (no network).
+ * `accountId` launches there again (its conversation lives in that folder,
+ * so it can resume nowhere else), or is held: null when it may launch now,
+ * else why not. The account must still be registered with its folder; while
+ * the pool is on it must also have quota and not be held by the usage
+ * reserve. Reads only what is on hand (no network).
  */
-export function poolRelaunchRefusal(accountId: string, deps: PickDeps & { account?: (id: string) => Account | undefined } = {}): string | null {
+export function poolRelaunchRefusal(accountId: string, deps: PickDeps & { account?: (id: string) => Account | undefined; poolOn?: () => boolean } = {}): string | null {
   const configDir = accountId === POOL_DEFAULT_ACCOUNT
     ? null
     : (deps.account ?? ((id: string) => getAccountStore().getAccount(id)))(accountId)?.configDir;
   if (configDir === undefined) return 'fan-out account pool: the account this task ran on is no longer registered';
   const [c] = poolCandidates({ settings: DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, group: '', members: [{ id: accountId, configDir }] }, deps);
   if (!c) return 'fan-out account pool: the folder of the account this task ran on is missing';
+  const h = deps.host === undefined ? host : deps.host;
+  const poolOn = deps.poolOn ?? (() => !!h && loadFanoutAccountPoolSettings().enabled);
+  if (!poolOn()) return null;
   const when = (ms: number | null) => (ms !== null ? `; it frees up at ${new Date(ms).toISOString()}` : '');
   if (!c.verdict.usable) return `fan-out account pool: the account this task ran on is out of quota${when(c.verdict.availableAtMs)}`;
   if (c.heldUntilMs !== null) return `fan-out account pool: the usage reserve holds the account this task ran on${when(c.heldUntilMs)}`;
