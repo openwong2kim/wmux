@@ -1422,7 +1422,7 @@ export function registerFanOutRpc(
         }
       }
       const started = await startRemoteFanout({
-        idempotencyKey: callerKey, scopedKey: key, ownerWorkspaceId: callerWorkspaceId, paneId, pc, root,
+        idempotencyKey: callerKey, scopedKey: key, ownerWorkspaceId: callerWorkspaceId, paneId, ptyId: senderPtyId, pc, root,
         ...(sub ? { sub } : {}),
         ...(homeRepo ? { homeRepo } : {}),
         titles: parsed.titles,

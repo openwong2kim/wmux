@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildFanoutCallerNudge, fanoutTaskShortId, isFanoutCallerNudge } from '../fanoutCallerNudge';
+import { buildFanoutCallerNudge, fanoutShortIdsInNudge, fanoutTaskShortId, isFanoutCallerNudge } from '../fanoutCallerNudge';
 
 describe('fan-out caller nudge template', () => {
   it('the short id is the random tail, as in the mission channel name', () => {
@@ -30,5 +30,13 @@ describe('fan-out caller nudge template', () => {
     expect(isFanoutCallerNudge('[wmux] fan-out task a b updated — channel_mission_list')).toBe(false);
     expect(isFanoutCallerNudge('[wmux] fan-out task aaaa updated: run this — channel_mission_list')).toBe(false);
     expect(isFanoutCallerNudge(null)).toBe(false);
+  });
+
+  it('reads back the short ids a line names, not the +N count or a PR clause', () => {
+    const ids = Array.from({ length: 6 }, (_, i) => ({ taskId: `wtask-x-0000000${i}`, kind: 'agent.stop' as const }));
+    const line = buildFanoutCallerNudge([{ taskId: 'wtask-x-failfail', kind: 'ledger.failed' }, ...ids]);
+    expect(fanoutShortIdsInNudge(line)).toEqual(['failfail', '00000000', '00000001', '00000002', '00000003']);
+    expect(fanoutShortIdsInNudge('[wmux] PR #12: CI failed — gh pr checks 12; fan-out task abcdefgh updated — channel_mission_list')).toEqual(['abcdefgh']);
+    expect(fanoutShortIdsInNudge('[wmux] PR #12: CI failed — gh pr checks 12')).toEqual([]);
   });
 });

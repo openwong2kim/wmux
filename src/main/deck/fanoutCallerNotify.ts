@@ -34,6 +34,7 @@ import { isTaskGateReport } from '../factory/taskGate';
 import { STOPPED_BY_OWNER } from '../factory/factoryStop';
 import { WakeQueue, getWakeQueue } from '../factory/wakeQueue';
 import { WORKER_ENDED } from '../factory/workerRunEnds';
+import { WORKER_IDLE_SUMMARY } from './fanoutWorkerWatch';
 import { getTaskLedger } from './taskLedgerHost';
 
 export interface FanoutCallerEvent {
@@ -134,7 +135,12 @@ export function installFanoutCallerLedgerNotify(
     // first-run screen. Either way nobody is working the task until someone
     // looks, and a worker that never started will never send a Stop.
     const byWorker = t.by.kind === 'worker' && (t.to === 'failed' || t.to === 'review_requested');
-    const bySystem = t.by.kind === 'system' && t.to === 'input_required';
+    // Only when someone has to act. A task on another PC moves here at every
+    // turn end of its agent, and that turn's reply already reached the
+    // caller's pane: only a question on that PC's screen is told. The idle
+    // flag repeats the "updated" the caller got at the worker's last stop.
+    const bySystem = t.by.kind === 'system' && t.to === 'input_required'
+      && (isRemoteTask(t.entry) ? t.entry.remote?.waiting?.on === 'question' : t.entry.summary !== WORKER_IDLE_SUMMARY);
     // A task another PC runs has no worker here: wmux moves its row as that
     // PC reports. Its failure is told; its report is not (it already reached
     // the caller's pane as the A2A reply), and neither is a request refused

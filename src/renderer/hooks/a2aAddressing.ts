@@ -88,6 +88,34 @@ export function resolvePaneAddress(
   return { ptyId: term.ptyId, paneId: leaf.id, surfaceId: term.id };
 }
 
+/**
+ * Where a cross-host delivery for `anchor` (this PC's side of a remote task)
+ * may go, inside the anchor workspace's own `leaves`: the snapshotted pty when
+ * the pane still holds it, or — with `resnapshot`, a person having approved it
+ * — whatever terminal the pane holds now. An anchor with no pty snapshot (a
+ * task started before one was stamped) takes the pane's only terminal, and
+ * only when an agent runs in it: never a pick between several. Otherwise the
+ * reason it is held.
+ */
+export function decideRemoteAnchor(
+  leaves: PaneLeaf[],
+  anchor: { paneId?: string; ptyId?: string },
+  resnapshot: boolean,
+  hasAgent: (ptyId: string) => boolean,
+): { pty: string; surfaceId: string } | { held: 'pane-missing' | 'occupant-changed' } {
+  if (!anchor.paneId) return { held: 'pane-missing' };
+  const addr = resolvePaneAddress(leaves, anchor.paneId, '');
+  if ('error' in addr) return { held: 'pane-missing' };
+  if (resnapshot) return { pty: addr.ptyId, surfaceId: addr.surfaceId };
+  const terminals = (leaves.find((l) => l.id === anchor.paneId)?.surfaces ?? []).filter((su) => su.surfaceType !== 'browser' && !!su.ptyId);
+  if (anchor.ptyId) {
+    const snap = terminals.find((su) => su.ptyId === anchor.ptyId);
+    return snap ? { pty: anchor.ptyId, surfaceId: snap.id } : { held: 'occupant-changed' };
+  }
+  const only = terminals.length === 1 ? terminals[0] : undefined;
+  return only?.ptyId && hasAgent(only.ptyId) ? { pty: only.ptyId, surfaceId: only.id } : { held: 'occupant-changed' };
+}
+
 /** A local terminal surface (not remote, not a placeholder) with no pty yet. */
 function isUnstartedTerminal(s: PaneLeaf['surfaces'][number]): boolean {
   return (s.surfaceType === undefined || s.surfaceType === 'terminal') && !s.ptyId;

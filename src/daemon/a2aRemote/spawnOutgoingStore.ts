@@ -42,8 +42,8 @@ export interface SpawnOutgoingRecordV1 {
   agent: AgentSlug;
   rootId: string;
   sub?: string;
-  /** The pane here that gets the replies. */
-  from: { workspaceId: string; paneId: string };
+  /** The pane here that gets the replies, and the terminal in it that asked (absent on older records). */
+  from: { workspaceId: string; paneId: string; ptyId?: string };
   /** Who asked, for the per-pane hourly limit: the pane that gets the replies. */
   callerKey: string;
   /** The asker's id for the request (`A2aSpawnAskInput.requestKey`). */
@@ -252,6 +252,7 @@ function coerceRecord(raw: unknown): SpawnOutgoingRecordV1 | null {
   if (!isHostId(hostId) || !isSpawnId(spawnId) || !isAgentSlug(agent) || !isSpawnRootId(rootId)) return null;
   if (sub !== undefined && (typeof sub !== 'string' || !sub || normalizeSpawnSub(sub) !== sub)) return null;
   if (!isPlainObject(from) || !isSafeId(from['workspaceId']) || !isSafeId(from['paneId'])) return null;
+  if (from['ptyId'] !== undefined && !isSafeId(from['ptyId'])) return null;
   if (!isSafeId(callerKey) || (text !== undefined && typeof text !== 'string')) return null;
   if (label !== undefined && typeof label !== 'string') return null;
   // Bounded like a link's label, which it becomes.
@@ -262,7 +263,7 @@ function coerceRecord(raw: unknown): SpawnOutgoingRecordV1 | null {
   if (!isIsoString(createdAt) || !isIsoString(updatedAt) || !isIsoString(expiresAt)) return null;
   return {
     v: 1, hostId, spawnId, agent, rootId, ...(sub ? { sub: sub as string } : {}),
-    from: { workspaceId: from['workspaceId'] as string, paneId: from['paneId'] as string },
+    from: { workspaceId: from['workspaceId'] as string, paneId: from['paneId'] as string, ...(typeof from['ptyId'] === 'string' ? { ptyId: from['ptyId'] } : {}) },
     callerKey, ...(typeof requestKey === 'string' ? { requestKey } : {}), ...(typeof text === 'string' ? { text } : {}),
     ...(name ? { label: name } : {}),
     ...(raw['fanout'] === true ? { fanout: true as const } : {}),

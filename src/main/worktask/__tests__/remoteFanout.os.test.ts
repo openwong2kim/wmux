@@ -158,6 +158,12 @@ describe('startRemoteFanout', () => {
     expect(rows[0].taskWorkspaceId).toBe(`remote:${rows[0].remote?.spawnId}`);
   });
 
+  it('hands the daemon the caller\'s own pty with each ask, so the replies have their anchor', async () => {
+    const f = fakeDaemon();
+    await startRemoteFanout(request(2, { ptyId: 'pty-caller' }), depsOf(f.daemon));
+    expect(f.asks.map((a) => [a.from.paneId, a.fromPtyId])).toEqual([['pane-1', 'pty-caller'], ['pane-1', 'pty-caller']]);
+  });
+
   it('keeps the request digest on each row, found from the key alone', async () => {
     const f = fakeDaemon();
     const deps = depsOf(f.daemon);

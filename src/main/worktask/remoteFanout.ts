@@ -123,6 +123,8 @@ export interface RemoteFanoutRequest {
   scopedKey: string;
   ownerWorkspaceId: string;
   paneId: string;
+  /** The caller's own terminal in that pane (its verified senderPtyId): where the replies go. */
+  ptyId?: string;
   pc: string;
   root: string;
   sub?: string;
@@ -518,6 +520,7 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
         text,
         expiresInHours: REMOTE_FANOUT_EXPIRES_HOURS,
         from: { kind: 'pane', workspaceId: req.ownerWorkspaceId, paneId: req.paneId },
+        ...(req.ptyId ? { fromPtyId: req.ptyId } : {}),
         callerKey: keys.callerKey,
         requestKey: r.pool ? keys.poolRequestKey(k, r.hostId, r.pool.attempt) : keys.requestKey(k),
         budget: 'fanout',

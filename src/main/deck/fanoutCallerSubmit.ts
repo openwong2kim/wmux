@@ -12,6 +12,9 @@
 //   5. last, after every await: the pane's checkout still shows each PR the
 //      line names (number AND url). A PR that moved answers 'pr_changed' so
 //      the renderer drops only the PR clauses and resends the rest.
+//   6. with it: each fan-out task the line is about still has an open row of
+//      this owner (failed counts: it is told). A row closed meanwhile answers
+//      'task_closed' with those ids, so the renderer drops only them.
 // The daemon then writes under its own identity and input-revision proof and
 // waits while a person is typing (daemon/callerNudgeDelivery.ts).
 //
@@ -20,6 +23,7 @@
 
 import { agentDisplayToSlug } from '../../shared/agentIdentity';
 import { isCallerNudge, prNumbersInNudge } from '../../shared/prOwnerNudge';
+import { fanoutShortIdsInNudge, fanoutTaskShortId } from '../../shared/fanoutCallerNudge';
 import type { AgentSlug } from '../../shared/agentIdentity';
 import type { GatedSubmitRefusal } from '../../shared/ptyMessageDelivery';
 
@@ -35,6 +39,8 @@ export type FanoutCallerSubmitResult =
   | 'session_changed'
   /** Nothing written; the pane's checkout no longer shows a PR the line names. */
   | 'pr_changed'
+  /** Nothing written; a task the line is about was closed (`closed` names them). */
+  | 'task_closed'
   | 'unavailable'
   | 'error';
 
@@ -42,11 +48,15 @@ export interface FanoutCallerSubmitReply {
   result: FanoutCallerSubmitResult;
   /** The line may be in the composer: never paste it again. */
   pasted: boolean;
+  /** 'task_closed': the task ids whose rows were closed. */
+  closed?: string[];
 }
 
 export interface FanoutCallerSubmitPorts {
   deliveryGate: (ptyId: string) => Promise<GatedSubmitRefusal | null>;
   ownerOf: (ptyId: string) => Promise<string | null>;
+  /** Whether a fan-out task's row is gone, closed (cancelled / completed) or another owner's. Must not throw. */
+  taskClosed?: (taskId: string, ownerWorkspaceId: string) => boolean;
   /** The PR the pane's checkout shows now, or null. Absent → PR lines refused. */
   prOf?: (ptyId: string) => { number: number; url: string } | null;
   agentState: (ptyId: string) => Promise<{ agentName: string | null; agentVerified: boolean; incarnationId: string } | null>;
@@ -72,6 +82,12 @@ function parseClaimedPrs(raw: unknown): { number: number; url: string }[] {
     const url = str(r.url);
     return typeof r.number === 'number' && Number.isInteger(r.number) && url ? [{ number: r.number, url }] : [];
   });
+}
+
+/** The fan-out tasks a line is about (the renderer's claim), checked against the line's short ids. */
+function parseClaimedTasks(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 64).flatMap((t) => (str(t) ? [t as string] : []));
 }
 
 export function createFanoutCallerSubmit(ports: FanoutCallerSubmitPorts): {
@@ -113,6 +129,11 @@ export function createFanoutCallerSubmit(ports: FanoutCallerSubmitPorts): {
       const claimed = parseClaimedPrs(r.prs);
       const named = prNumbersInNudge(text);
       if (named.some((n) => !claimed.some((c) => c.number === n))) return { result: 'error', pasted: false };
+      // Every task the line names comes with its full id, so main can read its row below.
+      const tasks = parseClaimedTasks(r.tasks);
+      if (fanoutShortIdsInNudge(text).some((sid) => !tasks.some((id) => fanoutTaskShortId(id) === sid))) {
+        return { result: 'error', pasted: false };
+      }
       const refusal = await ports.deliveryGate(ptyId).catch(() => null);
       if (refusal) {
         noteRefusal(ptyId, refusal.reason);
@@ -136,6 +157,14 @@ export function createFanoutCallerSubmit(ports: FanoutCallerSubmitPorts): {
           !!current && current.number === n && claimed.some((c) => c.number === n && c.url === current?.url);
         if (!named.every(stillShown)) return { result: 'pr_changed', pasted: false };
       }
+      const closed = tasks.filter((id) => {
+        try {
+          return ports.taskClosed?.(id, owner) === true;
+        } catch {
+          return false;
+        }
+      });
+      if (closed.length > 0) return { result: 'task_closed', pasted: false, closed };
       try {
         return await ports.deliver({ id: ptyId, agentSlug: v.slug, incarnationId, prompt: text });
       } catch {

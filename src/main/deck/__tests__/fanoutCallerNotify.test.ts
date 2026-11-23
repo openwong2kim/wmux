@@ -12,6 +12,7 @@ import {
   type FanoutCallerEvent,
 } from '../fanoutCallerNotify';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
+import { WORKER_IDLE_SUMMARY } from '../fanoutWorkerWatch';
 import { buildFanoutCallerNudge, isFanoutCallerNudge, moreSevereKind } from '../../../shared/fanoutCallerNudge';
 import { isCallerNudge } from '../../../shared/prOwnerNudge';
 
@@ -161,6 +162,14 @@ describe('installFanoutCallerLedgerNotify', () => {
     await ledger.update({ id: 'wtask-1', status: 'working', actor: { kind: 'system', workspaceId: 'ws-parent' }, expectedRev: 2 });
     expect(calls).toEqual([['ws-parent', 'ws-task', 'wtask-1', 'ledger.input_required', 2]]);
   });
+
+  it('stays quiet for the idle flag: the caller got "updated" at the worker\'s last stop', async () => {
+    const calls: unknown[][] = [];
+    installFanoutCallerLedgerNotify(() => false, (...a) => { calls.push(a); }, ledger);
+    await ledger.update({ id: 'wtask-1', status: 'input_required', actor: { kind: 'system', workspaceId: 'ws-parent' }, expectedRev: 1, summary: WORKER_IDLE_SUMMARY });
+    expect(ledger.get('wtask-1')?.status).toBe('input_required');
+    expect(calls).toEqual([]);
+  });
 });
 
 describe('installFanoutCallerLedgerNotify for a task another PC runs', () => {
@@ -185,6 +194,18 @@ describe('installFanoutCallerLedgerNotify for a task another PC runs', () => {
     await ledger.update({ id: 'wtask-r2', status: 'review_requested', actor: sys, expectedRev: 1 });
     await ledger.update({ id: 'wtask-1', status: 'failed', actor: sys, expectedRev: 1 });
     expect(calls).toEqual([['ws-parent', `remote:${SPAWN}`, 'wtask-r1', 'ledger.failed', 2]]);
+  });
+
+  it('does not tell a turn end of its agent (its reply reached the pane); tells a question on that PC\'s screen', async () => {
+    const calls: unknown[][] = [];
+    installFanoutCallerLedgerNotify(() => false, (...a) => { calls.push(a); }, ledger);
+    const sys = { kind: 'system' as const, workspaceId: 'main' };
+    await ledger.update({ id: 'wtask-r1', status: 'input_required', actor: sys, expectedRev: 1, summary: 'the agent on box waits for your reply' });
+    expect(ledger.get('wtask-r1')?.status).toBe('input_required');
+    // As remoteFanout's waitFor does: the waiting record first, then the move.
+    await ledger.updateRemote('wtask-r2', { waiting: { on: 'question', since: new Date().toISOString(), question: 'permission' } });
+    await ledger.update({ id: 'wtask-r2', status: 'input_required', actor: sys, expectedRev: ledger.get('wtask-r2')!.rev, summary: 'a question' });
+    expect(calls).toEqual([['ws-parent', `remote:${SPAWN.replace(/1$/, '2')}`, 'wtask-r2', 'ledger.input_required', ledger.get('wtask-r2')!.rev]]);
   });
 
   it('does not tell a request refused while fanout_start ran (its row is still `sent`): that call\'s reply said so', async () => {

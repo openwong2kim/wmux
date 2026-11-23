@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { PaneLeaf, Surface } from '../../../shared/types';
-import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, describeAmbiguousDelivery, wsMetadataMayStandIn, decideSameWsSend, decideReplyDelivery, isCommanderForWorkspace, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, REPLY_SUPPRESS_HINTS, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, type PaneAddress } from '../a2aAddressing';
+import { resolvePaneAddress, decideRemoteAnchor, activePaneTerminalPty, resolveUnaddressedDelivery, describeAmbiguousDelivery, wsMetadataMayStandIn, decideSameWsSend, decideReplyDelivery, isCommanderForWorkspace, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, REPLY_SUPPRESS_HINTS, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, type PaneAddress } from '../a2aAddressing';
 
 function surface(id: string, ptyId: string, surfaceType: Surface['surfaceType'] = 'terminal'): Surface {
   return { id, ptyId, title: id, shell: '', cwd: '', surfaceType } as Surface;
@@ -529,5 +529,31 @@ describe('describeAmbiguousDelivery — target name', () => {
     ]);
     expect(msg).not.toMatch(/\n/);
     expect(msg).toMatch(/…/);
+  });
+});
+
+describe('decideRemoteAnchor', () => {
+  const agentOn = (...ptys: string[]) => (pty: string) => ptys.includes(pty);
+
+  it('the snapshotted pty, while the pane still holds it', () => {
+    expect(decideRemoteAnchor(leaves, { paneId: 'pane-B', ptyId: 'pty-B1' }, false, agentOn())).toEqual({ pty: 'pty-B1', surfaceId: 'surf-B1' });
+    expect(decideRemoteAnchor(leaves, { paneId: 'pane-B', ptyId: 'pty-gone' }, false, agentOn('pty-B1', 'pty-B2'))).toEqual({ held: 'occupant-changed' });
+  });
+
+  it('no snapshot: the pane\'s only terminal, and only when an agent runs there', () => {
+    const ls = [leaf('p', [surface('web', 'pw', 'browser'), surface('t', 'pt')], 'web')];
+    expect(decideRemoteAnchor(ls, { paneId: 'p' }, false, agentOn('pt'))).toEqual({ pty: 'pt', surfaceId: 't' });
+    expect(decideRemoteAnchor(ls, { paneId: 'p' }, false, agentOn())).toEqual({ held: 'occupant-changed' });
+  });
+
+  it('no snapshot and several terminals: held, never a pick between them', () => {
+    expect(decideRemoteAnchor(leaves, { paneId: 'pane-B' }, false, agentOn('pty-B1', 'pty-B2'))).toEqual({ held: 'occupant-changed' });
+    expect(decideRemoteAnchor(leaves, { paneId: 'pane-B' }, false, agentOn('pty-B2'))).toEqual({ held: 'occupant-changed' });
+  });
+
+  it('a person\'s Retry takes the pane\'s terminal now; a pane not in these leaves is missing', () => {
+    expect(decideRemoteAnchor(leaves, { paneId: 'pane-B' }, true, agentOn())).toEqual({ pty: 'pty-B2', surfaceId: 'surf-B2' });
+    expect(decideRemoteAnchor(leaves, { paneId: 'pane-elsewhere' }, false, agentOn('pty-A'))).toEqual({ held: 'pane-missing' });
+    expect(decideRemoteAnchor(leaves, {}, false, agentOn('pty-A'))).toEqual({ held: 'pane-missing' });
   });
 });

@@ -92,3 +92,16 @@ const LINE = new RegExp(`^\\[wmux\\] ${FANOUT_CALLER_BODY_SOURCE}$`);
 export function isFanoutCallerNudge(text: unknown): text is string {
   return typeof text === 'string' && text.length <= 400 && LINE.test(text);
 }
+
+const CLAUSE_IDS = new RegExp(`^tasks? (${ID}(?:, ${ID})*)(?: \\+\\d{1,4})? (?:${Object.values(PHRASE).join('|')})$`);
+
+/**
+ * The task short ids the fan-out part of a valid caller line names (PR
+ * clauses, a `?` and the `+N` count name none), so main can check each
+ * against the ledger. `isCallerNudge` must have accepted `text`.
+ */
+export function fanoutShortIdsInNudge(text: string): string[] {
+  const m = /(?:\] |; )fan-out (.+) — channel_mission_list$/.exec(text);
+  if (!m) return [];
+  return m[1].split('; ').flatMap((clause) => CLAUSE_IDS.exec(clause)?.[1].split(', ') ?? []);
+}

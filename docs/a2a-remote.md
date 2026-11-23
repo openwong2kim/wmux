@@ -473,7 +473,8 @@ id alone.
 - **Who may ask.** Only an agent in a pane: the replies come to that pane.
   A commander or a bot is refused, and so is a fan-out task (the depth
   setting applies as usual). The fan-out approval switch and the hourly cap
-  apply; the live cap does not, since nothing runs here.
+  apply; the live cap does not, since nothing runs here. Cap them on the PC
+  that runs them ([how-to](how-to/cap-fan-out-tasks-on-another-pc.md)).
 - **Polling.** The same `idempotency_key` with the same request answers
   from the task rows and asks for nothing twice, for as long as the rows are
   kept (a completed or cancelled row is kept for 7 days). A poll is not
@@ -513,9 +514,12 @@ id alone.
   after a minute if nothing ended the task meanwhile, and it stays failed.
   Tasks on a headless box end when its daemon stops; they are not resumed.
   Nothing the other PC writes goes into the row.
-- **Being told.** The pane that started the fan-out gets the one-line fan-out
-  nudge when a row needs input or fails. The report itself arrives there as
-  the agent's reply.
+- **Being told.** The agent's replies and its report arrive in the pane that
+  started the fan-out, at the terminal that called `fanout_start`. That pane
+  also gets the one-line fan-out nudge when a row fails, or when a question on
+  the other PC's screen waits for someone. A turn end alone does not send a
+  nudge, since its reply already reached the pane. A pointer to a task
+  closed meanwhile is dropped.
 - **Following up.** `send_message task_id=<the row's A2A task>` reaches the
   agent, and its replies come back to your pane (from a PC running the app,
   after its report, only when both PCs know `reopen.1`); the poll shows this

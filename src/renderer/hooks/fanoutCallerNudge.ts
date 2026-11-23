@@ -23,7 +23,8 @@
 // and a pointer older than POINTER_TTL_MS is dropped.
 //
 // The write itself goes through main (fanoutCallerSubmit.ts): the delivery
-// gate, the owner check, the session check, then a daemon-owned paste + Enter
+// gate, the owner check, the session check, the check that each task's row is
+// still open (a closed one is dropped from the line), then a daemon-owned paste + Enter
 // that waits while the composer holds a draft or a key was pressed in the last
 // 10 s, and cancels the Enter if anything else reached the pane after the paste.
 //
@@ -115,7 +116,7 @@ interface Target {
   attempts: number;
 }
 
-type SubmitReply = { result: string; pasted: boolean };
+type SubmitReply = { result: string; pasted: boolean; closed?: string[] };
 interface DeckBridge {
   fanoutCallerSession?: (ptyId: string) => Promise<{ incarnationId: string } | null>;
   fanoutCallerSubmit?: (p: {
@@ -124,6 +125,7 @@ interface DeckBridge {
     incarnationId: string;
     text: string;
     prs?: { number: number; url: string }[];
+    tasks?: string[];
   }) => Promise<SubmitReply>;
 }
 
@@ -405,6 +407,7 @@ async function flush(key: string): Promise<void> {
           sent.flatMap((i) => (i.type === 'pr' ? [{ prNumber: i.prNumber, kind: i.kind }] : [])),
         ),
         ...prClaims(sent),
+        ...taskClaims(sent),
       })
       .catch((): SubmitReply => ({ result: 'error', pasted: true }));
   } finally {
@@ -430,6 +433,15 @@ async function flush(key: string): Promise<void> {
     // The pane moved off a PR the line named: drop those PR clauses only
     // and send the rest again (fan-out pointers, other PR events).
     for (const [k, i] of [...t.pending]) if (i.type === 'pr' && sent.includes(i)) t.pending.delete(k);
+  } else if (reply.result === 'task_closed') {
+    // A task closed since its pointer came (its mission was closed): drop
+    // those clauses only and send the rest again.
+    const closed = new Set(reply.closed ?? []);
+    for (const [k, i] of [...t.pending]) if (i.type === 'fanout' && sent.includes(i) && closed.has(i.taskId)) t.pending.delete(k);
+    if (closed.size === 0 && ++t.attempts >= MAX_SEND_ATTEMPTS) {
+      drop(key, t);
+      return;
+    }
   } else if (reply.result === 'gone' || reply.result === 'session_changed') {
     drop(key, t);
     return;
@@ -503,6 +515,12 @@ function prClaims(items: readonly PendingItem[]): { prs?: { number: number; url:
   const prs = new Map<string, { number: number; url: string }>();
   for (const i of items) if (i.type === 'pr') prs.set(i.url, { number: i.prNumber, url: i.url });
   return prs.size > 0 ? { prs: [...prs.values()] } : {};
+}
+
+/** The fan-out tasks a line is about, so main can check each row is still open. */
+function taskClaims(items: readonly PendingItem[]): { tasks?: string[] } {
+  const tasks = items.flatMap((i) => (i.type === 'fanout' ? [i.taskId] : []));
+  return tasks.length > 0 ? { tasks } : {};
 }
 
 /** A PR owner pointer from main (DECK_PR_OWNER). Malformed input is ignored. */

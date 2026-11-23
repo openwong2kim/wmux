@@ -9,7 +9,9 @@
 // This watch turns each of those into the one system move that already
 // reaches the caller: `working → input_required` by the system actor (the
 // same move markLaunchFailed makes). installFanoutCallerLedgerNotify then
-// sends the usual "needs input" pointer; nothing here talks to the renderer.
+// sends the usual "needs input" pointer for an exit or a PTY end; the idle
+// move is the ledger's record only (the caller already got "updated" at the
+// worker's last stop). Nothing here talks to the renderer.
 //
 // Every wake costs the parent a full agent turn, so it is spent sparingly and
 // fail-closed:
