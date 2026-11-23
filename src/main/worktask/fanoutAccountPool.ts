@@ -368,11 +368,14 @@ export type PoolCreateDecision =
  * account. Read only after the launch was claimed (stampFanoutTaskPane). The
  * renderer's `accountId` is never taken: one that differs from the record's
  * refuses the create (THROWS). Only a Claude line (and not a Codex one) runs
- * on the account; any other line releases it. Pure over its inputs.
+ * on the account; any other line releases it. A WSL pane releases it too
+ * (`place.wsl`): the pool reads no WSL sign-in or quota yet, so such a pane
+ * runs as it did before the pool. Pure over its inputs.
  */
 export function poolAccountForCreate(
   options: { fanoutTaskOf?: unknown; fanoutLaunch?: unknown; accountId?: unknown; initialCommand?: unknown } | undefined,
   launchOf: (taskId: string) => { gen: number; state: string; accountId?: string } | null,
+  place: { wsl?: boolean } = {},
 ): PoolCreateDecision {
   if (typeof options?.fanoutTaskOf !== 'string' || !options.fanoutTaskOf) return { kind: 'none' };
   const token = parseLaunchToken(options.fanoutLaunch);
@@ -386,7 +389,7 @@ export function poolAccountForCreate(
   }
   const raw = typeof options.initialCommand === 'string' ? options.initialCommand : '';
   const line = splitModelEnvMarker(raw).command;
-  if (!line || !namesClaude(line) || namesCodex(line)) return { kind: 'release', taskId: token.taskId, gen: token.gen };
+  if (place.wsl === true || !line || !namesClaude(line) || namesCodex(line)) return { kind: 'release', taskId: token.taskId, gen: token.gen };
   return recorded ? { kind: 'account', accountId: recorded } : { kind: 'default' };
 }
 

@@ -300,7 +300,7 @@ function wslAccountTabRefusal(shell: string, options: PtyCreateOptions | undefin
  */
 function withPoolAccount(options: PtyCreateOptions | undefined, daemon: boolean): { options: PtyCreateOptions | undefined; pinned: boolean } {
   const slots = getWorkerSlots();
-  const decision = poolAccountForCreate(options, (id) => slots.launchOf(id));
+  const decision = poolAccountForCreate(options, (id) => slots.launchOf(id), { wsl: isWslShell(createShell(options)) });
   if (decision.kind === 'none') return { options, pinned: false };
   if (decision.kind === 'release') {
     slots.setLaunchAccount(decision.taskId, decision.gen, undefined);

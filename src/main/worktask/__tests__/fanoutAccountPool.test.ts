@@ -197,6 +197,12 @@ describe('poolAccountForCreate', () => {
     expect(poolAccountForCreate(opts({ fanoutLaunch: { taskId: 't1', gen: 1 } }), launch('a'))).toEqual({ kind: 'none' });
   });
 
+  it('a WSL task pane keeps today\'s behaviour: its account is released, the default login too', () => {
+    expect(poolAccountForCreate(opts(), launch('a'), { wsl: true })).toEqual({ kind: 'release', taskId: 't1', gen: 2 });
+    expect(poolAccountForCreate(opts(), launch(POOL_DEFAULT_ACCOUNT), { wsl: true })).toEqual({ kind: 'release', taskId: 't1', gen: 2 });
+    expect(poolAccountForCreate(opts(), launch('a'), { wsl: false })).toEqual({ kind: 'account', accountId: 'a' });
+  });
+
   it('a task switched to codex or agy carries no account', () => {
     expect(poolAccountForCreate(opts({ initialCommand: 'codex "$(cat p)"' }), launch('a'))).toEqual({ kind: 'release', taskId: 't1', gen: 2 });
     expect(poolAccountForCreate(opts({ initialCommand: 'agy' }), launch('a'))).toEqual({ kind: 'release', taskId: 't1', gen: 2 });
