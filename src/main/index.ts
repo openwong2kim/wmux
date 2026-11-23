@@ -129,6 +129,8 @@ import { registerPcEnvRpc } from './pipe/handlers/pcEnv.rpc';
 import { cachedAgentEnvSummary } from './pcdiff/agentEnv';
 import { AGENT_ENV_COMMAND } from '../shared/agentEnvSummary';
 import { UsageReserve, setUsageReserve } from './usage/usageReserve';
+import { poolAccountOfWorkspace, setFanoutAccountPoolHost } from './worktask/fanoutAccountPool';
+import { accountHookDrift, isUncPath, primaryHookPaths } from './ipc/handlers/hooksBridge.handler';
 import { usageReserveToastText } from './automation/toastText';
 import { formatResetClock } from '../shared/usageLimit';
 import { CompletionAlarm } from '../shared/hooks/CompletionAlarm';
@@ -1891,6 +1893,10 @@ const onClaudeTurnEnd = (workspaceId: string): void => {
   for (const rotated of getAccountRotationService().launchedAccounts(workspaceId, 'claude')) {
     if (rotated !== accountId) void accountUsageService.maybeProbe(rotated);
   }
+  // A fan-out worker the account pool put on an account: that account, under
+  // the same per-account probe limit.
+  const pooled = poolAccountOfWorkspace(workspaceId);
+  if (pooled && pooled !== accountId) void accountUsageService.maybeProbe(pooled);
 };
 getAccountRotationService().setClaudeUsage(accountUsageService);
 const disposeHooksRpc = registerHooksRpc(
@@ -1958,6 +1964,14 @@ const usageReserve = new UsageReserve({
   log: (line) => console.warn(line),
 });
 setUsageReserve(usageReserve);
+// The fan-out account pool reads these only while it is on (fanoutAccountPool.ts).
+setFanoutAccountPoolHost({
+  daemonConnected: () => daemonClient?.isConnected === true,
+  claudeUsage: () => accountUsageService.getAll(),
+  defaultSnapshot: () => usagePoller.getState().snapshot,
+  hookDriftIds: async (accounts) => new Set(accountHookDrift(accounts, await primaryHookPaths()).map((d) => d.accountId)),
+  isUnc: isUncPath,
+});
 usagePoller.onStateChange(() => usageReserve.refresh());
 accountUsageService.onChange(() => usageReserve.refresh());
 ipcMain.handle(IPC.USAGE_RESERVE_GET, () => ({ enabled: usageReserve.enabled() }));

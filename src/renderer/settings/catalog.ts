@@ -217,6 +217,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'fanoutlivecap', tab: 'roles', labelKey: 'settings.fanoutLiveTaskCap', descKey: 'settings.fanoutLiveTaskCapDesc', synonyms: 'fanout fan-out cap limit live concurrent at once tasks brake 동시 한도' },
   { id: 'fanouthourlycap', tab: 'roles', labelKey: 'settings.fanoutHourlyTaskCap', descKey: 'settings.fanoutHourlyTaskCapDesc', synonyms: 'fanout fan-out cap limit hourly per hour rate tasks brake 시간당 한도' },
   { id: 'workerfence', tab: 'roles', labelKey: 'settings.workerFence', descKey: 'settings.workerFenceDesc', synonyms: 'worker fence sandbox bot unattended bypass auto credentials 울타리 샌드박스 봇 워커' },
+  { id: 'fanoutaccountpool', tab: 'roles', labelKey: 'settings.fanoutAccountPool', descKey: 'settings.fanoutAccountPoolDesc', synonyms: 'fanout fan-out account accounts pool spread quota workers group 계정 분산 풀' },
   { id: 'fanoutagytrust', tab: 'roles', labelKey: 'settings.fanoutTrustAgyFolders', descKey: 'settings.fanoutTrustAgyFoldersDesc', synonyms: 'agy antigravity trust trusted folder workspace fanout fan-out' },
   { id: 'fanoutworkers', tab: 'roles', labelKey: 'settings.fanoutWorkerPermissionMode', descKey: 'settings.fanoutWorkerPermissionModeDesc', synonyms: 'fanout fan-out worker permission auto bypass sandbox' },
   { id: 'fanoutpresets', tab: 'roles', labelKey: 'settings.fanoutPresets', descKey: 'settings.fanoutPresetsDesc', synonyms: 'fanout fan-out preset image video agents codex grok output folder worktree' },

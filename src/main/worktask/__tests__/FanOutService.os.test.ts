@@ -558,6 +558,34 @@ describe('each task\'s launch generation (#2393)', () => {
     expect(renderer.spawned.map((p) => (p as { fanoutLaunch?: unknown }).fanoutLaunch)).toEqual(res.tasks.map((t) => ({ taskId: t.taskId, gen: 1 })));
   });
 
+  it('books the account pool\'s pick in each launch record, hands it to mayLaunch, and a pick refusal launches nothing', async () => {
+    const slots = launches(metaRoot);
+    const seen: Array<{ index: number; accountId?: string } | undefined> = [];
+    const picks = ['acc-a', 'default'];
+    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: makeRendererFake().port, worktrees: makeWorktreesFake(), launches: slots });
+    const res = await svc.start(baseReq({
+      accountPick: { prepare: async () => undefined, pick: ({ index }) => ({ accountId: picks[index] }) },
+      mayLaunch: (task) => { seen.push(task); return null; },
+    }));
+    expect(res.tasks.map((t) => slots.launchOf(t.taskId as string)?.accountId)).toEqual(picks);
+    expect(seen.map((t) => t?.accountId).sort()).toEqual([...picks].sort());
+
+    const renderer = makeRendererFake();
+    const refused = new FanOutService({ daemon: makeDaemonFake().port, renderer: renderer.port, worktrees: makeWorktreesFake(), launches: launches(fs.mkdtempSync(path.join(metaRoot, 'pool-'))) });
+    const out = await refused.start(baseReq({ idempotencyKey: 'k-pool-refused', accountPick: { prepare: async () => undefined, pick: () => ({ refusal: 'fan-out account pool: every account of the pool is out of quota.' }) } }));
+    expect(renderer.port.spawnWorkspace).not.toHaveBeenCalled();
+    for (const t of out.tasks) expect(t.error).toMatch(/not launched: fan-out account pool/);
+  });
+
+  it('a respawn of a pool task resumes on its account, or is held while that account is out', async () => {
+    const slots = launches(metaRoot);
+    slots.beginLaunch({ taskId: 'wtask-p', origin: 'bot', botId: 'bot-0000000a', ownerWorkspaceId: 'ws-ceo', accountId: 'default' });
+    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: makeRendererFake().port, worktrees: makeWorktreesFake(), launches: slots });
+    const input = { ownerWorkspaceId: 'ws-ceo', botId: 'bot-0000000a', taskId: 'wtask-p', title: 'p', cwd: metaRoot, command: 'claude --resume x', workerPermissionMode: 'manual' as const, tainted: false };
+    expect('workspaceId' in (await svc.spawnBotTaskPane(input))).toBe(true);
+    expect(slots.launchOf('wtask-p')).toMatchObject({ gen: 2, accountId: 'default' });
+  });
+
   it('a launch that cannot be recorded is not spawned', async () => {
     const renderer = makeRendererFake();
     const svc = new FanOutService({

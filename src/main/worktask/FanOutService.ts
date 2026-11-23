@@ -82,6 +82,7 @@ import { git } from '../git/git';
 import { workerTempEnv } from './fanoutTempDir';
 import { inheritTaskAutonomy } from './taskAutonomy';
 import { getFanOutGuards, type FanOutGuards } from './fanoutGuards';
+import { poolRelaunchRefusal } from './fanoutAccountPool';
 import { getWorkerSlots, type WorkerSlots } from '../factory/workerSlots';
 import { loadFanoutTasksPerCall, loadFanoutWorkerPermissionMode } from './fanoutWorkerPolicy';
 import { commandChoosesModel, promptFlagForLauncher, type RoleBinding } from '../../shared/orchestratorRole';
@@ -175,6 +176,13 @@ ${push}${connections}${signedIn}`;
 }
 
 /** A launch slot (FanOutRequest.awaitLaunchSlot). */
+/** The fan-out account pool's per-task pick (FanOutRequest.accountPick).
+ *  `pick`: null = no pool account for this task (it launches as before). */
+export interface AccountPick {
+  prepare: (task: { index: number }) => Promise<void>;
+  pick: (task: { index: number }) => { accountId: string } | { refusal: string } | null;
+}
+
 export type LaunchSlot =
   | {
       ok: true;
@@ -385,8 +393,14 @@ export interface FanOutRequest {
    *  nothing is launched, and since no pane was ever started in it, its
    *  worktree is rolled back; see rollbackTaskWorktree). A bot's fan-out answers from the
    *  factory switch, so turning the factory off stops a launch in progress.
-   *  `task.index` names the task (its index in `titles`). */
-  mayLaunch?: (task?: { index: number }) => string | null;
+   *  `task.index` names the task (its index in `titles`); `task.accountId`
+   *  the account the pool picked for it (accountPick), when it did. */
+  mayLaunch?: (task?: { index: number; accountId?: string }) => string | null;
+  /** The fan-out account pool (worktask/fanoutAccountPool.ts): for each task,
+   *  `prepare` is awaited after its launch slot, then `pick` runs right before
+   *  mayLaunch, and what it picked is booked in the task's launch record in
+   *  the same synchronous step. Absent = no pool (no account is recorded). */
+  accountPick?: AccountPick;
   /** Awaited right before mayLaunch for each task: a launch slot under the
    *  factory's agent budget (factory/agentSlots.ts). `ok:false` refuses the
    *  task as mayLaunch does; `release` is called once the task's ledger row is
@@ -983,6 +997,7 @@ export class FanOutService {
       ...(req.repoKey ? { repoKey: req.repoKey } : {}),
       ...(req.originPin ? { originPin: req.originPin } : {}),
       ...(req.mayLaunch ? { mayLaunch: req.mayLaunch } : {}),
+      ...(req.accountPick ? { accountPick: req.accountPick } : {}),
       ...(req.awaitLaunchSlot ? { awaitLaunchSlot: req.awaitLaunchSlot } : {}),
       ...(req.secretNames && req.secretNames.length > 0 ? { secretNames: req.secretNames } : {}),
       ...(req.connectors && req.connectors.length > 0 ? { connectors: req.connectors } : {}),
@@ -1299,6 +1314,7 @@ export class FanOutService {
         ...(req.handoffId ? { handoffId: req.handoffId } : {}),
       ...(req.workflow ? { workflow: req.workflow } : {}),
         ...(req.mayLaunch ? { mayLaunch: req.mayLaunch } : {}),
+        ...(req.accountPick ? { accountPick: req.accountPick } : {}),
         ...(req.awaitLaunchSlot ? { awaitLaunchSlot: req.awaitLaunchSlot } : {}),
         ...(req.secretNames && req.secretNames.length > 0 ? { secretNames: req.secretNames } : {}),
         ...(req.connectors && req.connectors.length > 0 ? { connectors: req.connectors } : {}),
@@ -1475,7 +1491,9 @@ export class FanOutService {
     /** See FanOutRequest.originPin. */
     originPin?: string;
     /** See FanOutRequest.mayLaunch. */
-    mayLaunch?: (task?: { index: number }) => string | null;
+    mayLaunch?: (task?: { index: number; accountId?: string }) => string | null;
+    /** See FanOutRequest.accountPick. */
+    accountPick?: AccountPick;
     /** See FanOutRequest.awaitLaunchSlot. */
     awaitLaunchSlot?: (task: { taskId: string; title: string }) => Promise<LaunchSlot>;
     /** See FanOutRequest.secretNames. */
@@ -1829,12 +1847,33 @@ export class FanOutService {
       slotGuard.settle = () => releaseSlot();
     }
 
+    // The account pool's members as they are now (a slot or dependency wait
+    // can be long). A failure leaves the pick to say what it can.
+    if (ctx.accountPick) {
+      try {
+        await ctx.accountPick.prepare({ index: ctx.index });
+      } catch (err) {
+        console.warn(`[fanout] ${taskId}: the account pool was not read: ${String(err)}`);
+      }
+    }
+    // From the pick to the launch record nothing is awaited: the account is
+    // picked and booked in one step, so parallel launches spread.
+    let accountId: string | undefined;
     // The caller's last word before anything is launched.
     let refusal: string | null = null;
     try {
-      refusal = ctx.mayLaunch?.({ index: ctx.index }) ?? null;
+      const picked = ctx.accountPick?.pick({ index: ctx.index }) ?? null;
+      if (picked && 'refusal' in picked) refusal = picked.refusal;
+      else if (picked) accountId = picked.accountId;
     } catch (err) {
-      refusal = `the launch check failed: ${String(err)}`;
+      refusal = `the account pick failed: ${String(err)}`;
+    }
+    if (!refusal) {
+      try {
+        refusal = ctx.mayLaunch?.({ index: ctx.index, ...(accountId ? { accountId } : {}) }) ?? null;
+      } catch (err) {
+        refusal = `the launch check failed: ${String(err)}`;
+      }
     }
     if (refusal) {
       releaseSlot();
@@ -1865,6 +1904,7 @@ export class FanOutService {
         ...(ctx.requester?.kind === 'bot' && ctx.requester.botId ? { botId: ctx.requester.botId } : {}),
         ownerWorkspaceId: ctx.verifiedWorkspaceId,
         sandboxed: firstRunEnv[CLAUDE_SANDBOXED_ENV] === '1',
+        ...(accountId ? { accountId } : {}),
       }).gen;
     } catch (err) {
       releaseSlot();
@@ -2461,6 +2501,16 @@ export class FanOutService {
     // The same first-run env as the task's first launch: without it a
     // resumed worker stops at claude's folder-trust dialog (#2261).
     const paneEnv = firstRunEnvForAgent(input.command);
+    // A task the account pool put on an account resumes there (its
+    // conversation lives in that folder), or is held while it cannot.
+    const poolAccount = (launches as Partial<Pick<WorkerSlots, 'launchOf'>>).launchOf?.(input.taskId)?.accountId;
+    if (poolAccount) {
+      const held = poolRelaunchRefusal(poolAccount);
+      if (held) {
+        revokeSecretGrant(secretGrant);
+        return { error: held };
+      }
+    }
     let gen: number;
     try {
       gen = launches.beginLaunch({
@@ -2469,6 +2519,7 @@ export class FanOutService {
         botId: input.botId,
         ownerWorkspaceId: input.ownerWorkspaceId,
         sandboxed: paneEnv[CLAUDE_SANDBOXED_ENV] === '1',
+        ...(poolAccount ? { accountId: poolAccount } : {}),
       }).gen;
     } catch (err) {
       revokeSecretGrant(secretGrant);

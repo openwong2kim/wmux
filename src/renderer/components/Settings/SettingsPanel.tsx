@@ -1,4 +1,5 @@
 import { TerminalEngineSetting } from './TerminalEngineSetting';
+import { DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, normalizeFanoutAccountPoolSettings, type FanoutAccountPoolSettings } from '../../../shared/fanoutAccountPool';
 import { QuickCommandsSection } from './QuickCommandsSection';
 import { SecretHookSetting } from './SecretHookSetting';
 import { CredentialEnvSetting } from './CredentialEnvSetting';
@@ -2233,6 +2234,10 @@ function FanoutWorkersSection() {
   }));
   // Main-side as well: main refuses the agy trust write while this is off.
   const [trustAgyFolders, setTrustAgyFoldersState] = useState(false);
+  // Main-side: the fan-out account pool, and the Claude account groups its
+  // group select offers ('' is the ungrouped accounts).
+  const [accountPool, setAccountPoolState] = useState<FanoutAccountPoolSettings>(DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS);
+  const [claudeGroups, setClaudeGroups] = useState<string[]>([]);
   // Main-side, per workspace: the worker fence of this workspace's bots.
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const [fenceOff, setFenceOffState] = useState(false);
@@ -2277,6 +2282,19 @@ function FanoutWorkersSection() {
     window.electronAPI?.fanout?.getTrustAgyFolders?.()
       .then((v) => {
         if (!cancelled && typeof v === 'boolean') setTrustAgyFoldersState(v);
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getAccountPool?.()
+      .then((v) => {
+        if (!cancelled && v) setAccountPoolState(normalizeFanoutAccountPoolSettings(v));
+      })
+      .catch(() => undefined);
+    window.electronAPI?.accounts?.list?.()
+      .then((r) => {
+        if (cancelled) return;
+        const named = new Set<string>();
+        for (const a of r.accounts) if (a.vendor === 'claude' && a.group) named.add(a.group);
+        setClaudeGroups([...named].sort((a, b) => a.localeCompare(b)));
       })
       .catch(() => undefined);
     return () => {
@@ -2332,6 +2350,13 @@ function FanoutWorkersSection() {
     window.electronAPI.fanout
       .setTrustAgyFolders(next)
       .then((stored) => setTrustAgyFoldersState(stored))
+      .catch(() => undefined);
+  };
+
+  const onAccountPoolChange = (patch: Partial<FanoutAccountPoolSettings>) => {
+    window.electronAPI.fanout
+      .setAccountPool(patch)
+      .then((stored) => setAccountPoolState(normalizeFanoutAccountPoolSettings(stored)))
       .catch(() => undefined);
   };
 
@@ -2432,6 +2457,34 @@ function FanoutWorkersSection() {
           label={t('settings.fanoutTrustAgyFolders')}
         />
       </SettingRow>
+      <SettingRow
+        id="fanoutaccountpool"
+        label={t('settings.fanoutAccountPool')}
+        description={t('settings.fanoutAccountPoolDesc')}
+      >
+        <Toggle
+          checked={accountPool.enabled}
+          onChange={(on) => onAccountPoolChange({ enabled: on })}
+          label={t('settings.fanoutAccountPool')}
+        />
+      </SettingRow>
+      {accountPool.enabled && (
+        <SettingRow
+          id="fanoutaccountpoolgroup"
+          label={t('settings.fanoutAccountPoolGroup')}
+          description={t('settings.fanoutAccountPoolGroupDesc')}
+        >
+          <SettingSelect
+            value={accountPool.group ?? ''}
+            onChange={(v) => onAccountPoolChange({ group: v === '' ? null : v })}
+            options={[
+              { value: '', label: t('settings.fanoutAccountPoolUngrouped') },
+              ...[...new Set([...claudeGroups, ...(accountPool.group ? [accountPool.group] : [])])].map((g) => ({ value: g, label: g })),
+            ]}
+            label={t('settings.fanoutAccountPoolGroup')}
+          />
+        </SettingRow>
+      )}
       {activeWorkspaceId && (
         <SettingRow
           id="workerfence"

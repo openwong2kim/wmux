@@ -83,7 +83,7 @@ function physicalPath(file: string): string {
 /** A UNC folder (`\\wsl.localhost\…`, a network share): the hook commands
  *  Update writes name this machine's node and bridge path, which a Claude
  *  running behind that path cannot run. Such accounts get no row. */
-function isUncPath(dir: string): boolean {
+export function isUncPath(dir: string): boolean {
   return /^[\\/]{2}/.test(dir);
 }
 

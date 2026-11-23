@@ -129,7 +129,9 @@ import {
 } from '../../../shared/fanoutPreset';
 import { validateFanoutTaskGraph, type FanoutTaskGraph } from '../../../shared/fanoutTaskGraph';
 import { agentRow } from '../../../shared/agentIdentity';
-import { noteUsageReserveHeld, usageReserveHoldForWorkspace, usageReserveRefusalText, type UsageReserveHold } from '../../usage/usageReserve';
+import { noteUsageReserveHeld, usageReserveHoldForAccount, usageReserveHoldForWorkspace, usageReserveRefusalText, type UsageReserveHold } from '../../usage/usageReserve';
+import { pickFromPool, poolAllHeld, preparePool, type PreparedPool } from '../../worktask/fanoutAccountPool';
+import { poolRefusalText } from '../../../shared/fanoutAccountPool';
 import { botTemplate, type BotBinding, type BotProfile } from '../../../shared/bot';
 import { SHARED_SURFACE } from '../../../shared/botSurface';
 import { WAKE_LIMITS, botFanoutIdempotencyKey, type HeldFanoutArgs, type HeldWakeKind, type WakeItem } from '../../../shared/wake';
@@ -709,6 +711,14 @@ export interface FanOutRpcDeps {
   usageReserveHold?: (workspaceId: string) => UsageReserveHold | null;
   /** A launch was held by the reserve: the owner is told once per hold. */
   noteUsageReserveHeld?: (hold: UsageReserveHold) => void;
+  /** The reserve's hold on one account ('default' or an id): a pool worker's
+   *  (default: main/usage/usageReserve.ts). */
+  usageReserveHoldForAccount?: (account: string) => UsageReserveHold | null;
+  /** The fan-out account pool of a caller, null when it is off (default:
+   *  main/worktask/fanoutAccountPool.ts). */
+  preparePool?: (callerWorkspaceId: string) => Promise<PreparedPool | null>;
+  /** The pool's pick for one worker (default: fanoutAccountPool.ts pickFromPool). */
+  pickFromPool?: typeof pickFromPool;
   /** The connections' OAuth service, for signed-in connections (default:
    *  main/connectors/workerGateway.ts workerGatewayOAuth). */
   gatewayOAuth?: () => GatewayOAuth | null;
@@ -1467,9 +1477,24 @@ export function registerFanOutRpc(
       const repoPath = bot ? (deps.bot ?? defaultBotPort)()?.profile(bot.botId)?.repo?.repoPath : undefined;
       if (repoPath) verifyGate = await (deps.botBaseGate ?? repoBaseGate)(repoPath);
     };
+    // The fan-out account pool (null when off, or not read in time: the
+    // reserve then checks the caller's account, as without a pool). Read
+    // again before each launch.
+    const readPool = deps.preparePool ?? preparePool;
+    let pool: PreparedPool | null = null;
+    const POOL_FRESH_MS = 10_000;
+    let poolReadAt = 0;
+    let poolRead: Promise<void> | null = null;
+    const refreshPool = (): Promise<void> => {
+      if (poolRead && Date.now() - poolReadAt < POOL_FRESH_MS) return poolRead;
+      poolReadAt = Date.now();
+      poolRead = readPool(callerWorkspaceId).then((p) => { pool = p; }, () => undefined);
+      return poolRead;
+    };
     if (!keyKnown && !depthRefusal) {
       try {
         await Promise.all([
+          withinMs(refreshPool(), LIVENESS_WAIT_MS),
           bot ? withinMs((deps.bot ?? defaultBotPort)()?.refreshLiveness?.(), LIVENESS_WAIT_MS) : undefined,
           refreshDormantTaskWorkspaces(LIVENESS_WAIT_MS),
           bot ? withinMs(readVerifyGate(), LIVENESS_WAIT_MS) : undefined,
@@ -1985,8 +2010,16 @@ export function registerFanOutRpc(
     // with the reset time, to relay or retry. Here only the tasks whose agent
     // is known before the approval: a role's binding comes with the approval,
     // and every task is checked again at its launch (below).
-    const reserveHoldOf = (agents: ReadonlyArray<string | undefined>): UsageReserveHold | null =>
-      agents.some(spendsUsageReserve) ? (deps.usageReserveHold ?? usageReserveHoldForWorkspace)(callerWorkspaceId) : null;
+    // With the fan-out account pool on, a Claude worker runs on one of the
+    // pool's accounts, not the caller's: the reserve stops the fan-out only
+    // when it holds every one of them, and each launch checks the account
+    // picked for it. Read again right before each launch (accountPick).
+    const holdForAccount = deps.usageReserveHoldForAccount ?? usageReserveHoldForAccount;
+    const reserveHoldOf = (agents: ReadonlyArray<string | undefined>): UsageReserveHold | null => {
+      if (!agents.some(spendsUsageReserve)) return null;
+      if (pool) return poolAllHeld(pool, holdForAccount);
+      return (deps.usageReserveHold ?? usageReserveHoldForWorkspace)(callerWorkspaceId);
+    };
     /** Hold a bot's request for the reserve (once), and say why nothing started. */
     let reserveHeld = false;
     const reserveRefusal = (reserve: UsageReserveHold, mayHold: boolean): string => {
@@ -2305,6 +2338,7 @@ export function registerFanOutRpc(
         const roleBindings = parsed.roles.some((r) => r) ? approvedRoleBindings(parsed.roles, verdict.roleBindings) : undefined;
         const taskAgent = (k: number): string | undefined => agentChoices[k]?.agent ?? roleBindings?.[parsed.roles[k]?.trim() ?? '']?.agent;
         const taskAgents = parsed.titles.map((_, k) => taskAgent(k));
+        await refreshPool();
         const atLaunch = reserveHoldOf(taskAgents);
         if (atLaunch) {
           const why = reserveRefusal(atLaunch, true);
@@ -2317,9 +2351,28 @@ export function registerFanOutRpc(
         // Whether a task passed its launch check: a request part of which
         // launched is not held again whole (the rest is refused).
         let launchPassed = false;
-        const reserveAtTaskLaunch = (index: number | undefined): string | null => {
-          const hold = reserveHoldOf(index === undefined ? taskAgents : [taskAgent(index)]);
+        const reserveAtTaskLaunch = (index: number | undefined, accountId?: string): string | null => {
+          const agents = index === undefined ? taskAgents : [taskAgent(index)];
+          // A pool worker: the account picked for it, not the caller's.
+          const hold = accountId !== undefined
+            ? (agents.some(spendsUsageReserve) ? holdForAccount(accountId) : null)
+            : reserveHoldOf(agents);
           return hold ? reserveRefusal(hold, !launchPassed) : null;
+        };
+        // The pool's account for each Claude worker, picked and booked right
+        // before its launch (FanOutService accountPick). Null: no pool, or
+        // a worker of another agent.
+        const pick = deps.pickFromPool ?? pickFromPool;
+        const accountPick = {
+          prepare: async (task: { index: number }) => {
+            if (spendsUsageReserve(taskAgent(task.index))) await refreshPool();
+          },
+          pick: (task: { index: number }): { accountId: string } | { refusal: string } | null => {
+            const current = pool;
+            if (!current || !spendsUsageReserve(taskAgent(task.index))) return null;
+            const picked = pick(current);
+            return picked.kind === 'pick' ? { accountId: picked.accountId } : { refusal: poolRefusalText(picked, Date.now()) };
+          },
         };
 
         // The audit record goes down BEFORE anything spawns, and a fan-out that
@@ -2409,8 +2462,9 @@ export function registerFanOutRpc(
             // A bot's worker is launched only while the bot may still spend,
             // and any worker only while the usage reserve does not hold its
             // account: asked again right before each pane spawns.
+            accountPick,
             mayLaunch: (task) => {
-              const refusal = (bot && botPort ? botPort.launchRefusal(bot.botId, botWakeId) : null) ?? reserveAtTaskLaunch(task?.index);
+              const refusal = (bot && botPort ? botPort.launchRefusal(bot.botId, botWakeId) : null) ?? reserveAtTaskLaunch(task?.index, task?.accountId);
               if (!refusal) launchPassed = true;
               return refusal;
             },

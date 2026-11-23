@@ -21,10 +21,12 @@ describe('pty.handler PTY_CREATE — account quota before wmux tools', () => {
     // quota still runs before the tool splice.
     // Both paths run stageCreate, whose first stage is the quota; the tool
     // level is applied to its result.
-    expect(source.match(/staged = await stageCreate\(options, botWorker(, gateway\?\.launch)?\);/g) ?? []).toHaveLength(2);
+    // A fan-out pool worker's pick is pinned (no rotation), so its stage skips the quota.
+    expect(source.match(/staged = await stageCreate\((options, botWorker, gateway\?\.launch, poolPinned|pool\.options, botWorker, undefined, pool\.pinned)\);/g) ?? []).toHaveLength(2);
     const stage = source.slice(source.indexOf('async function stageCreate('));
-    expect(stage.indexOf('let staged = await withAccountQuota(options);')).toBeGreaterThan(-1);
-    expect(stage.indexOf('let staged = await withAccountQuota(options);')).toBeLessThan(stage.indexOf('staged = withWmuxTools(staged);'));
+    const quota = 'let staged = poolPinned ? options : await withAccountQuota(options);';
+    expect(stage.indexOf(quota)).toBeGreaterThan(-1);
+    expect(stage.indexOf(quota)).toBeLessThan(stage.indexOf('staged = withWmuxTools(staged);'));
     expect(source).not.toMatch(/withAccountQuota\(withWmuxTools\(/);
   });
 });

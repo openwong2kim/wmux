@@ -884,6 +884,10 @@ const electronAPI = {
     getTrustAgyFolders: () => ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_GET) as Promise<boolean>,
     setTrustAgyFolders: (value: boolean) =>
       ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_SET, value) as Promise<boolean>,
+    getAccountPool: () =>
+      ipcRenderer.invoke(IPC.FANOUT_ACCOUNT_POOL_GET) as Promise<import('../shared/fanoutAccountPool').FanoutAccountPoolSettings>,
+    setAccountPool: (patch: Partial<import('../shared/fanoutAccountPool').FanoutAccountPoolSettings>) =>
+      ipcRenderer.invoke(IPC.FANOUT_ACCOUNT_POOL_SET, patch) as Promise<import('../shared/fanoutAccountPool').FanoutAccountPoolSettings>,
     getOwnerAnswers: () =>
       ipcRenderer.invoke(IPC.FANOUT_OWNER_ANSWERS_GET) as Promise<import('../shared/workerLaunch').FanoutOwnerAnswers>,
     setOwnerAnswers: (value: import('../shared/workerLaunch').FanoutOwnerAnswers) =>

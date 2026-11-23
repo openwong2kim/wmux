@@ -75,6 +75,11 @@ export interface TaskLaunch {
    *  (agentFirstRun firstRunEnvForAgent): its claude shows no folder-trust
    *  dialog. Absent on a launch that did not, and on any older record. */
   sandboxed?: true;
+  /** The fan-out account pool picked this account for the generation's
+   *  worker (an account id, or 'default' for the default login): its pane's
+   *  create runs it there, whatever the renderer names. Absent with the pool
+   *  off, for a non-Claude launch, and on any older record. */
+  accountId?: string;
 }
 
 export interface TaskPane {
@@ -95,7 +100,8 @@ function isLaunch(v: unknown): v is TaskLaunch {
     && (r.origin === 'bot' || r.origin === 'owner')
     && (r.botId === undefined || typeof r.botId === 'string')
     && typeof r.ownerWorkspaceId === 'string' && isState(r.state)
-    && (r.sandboxed === undefined || r.sandboxed === true);
+    && (r.sandboxed === undefined || r.sandboxed === true)
+    && (r.accountId === undefined || (typeof r.accountId === 'string' && r.accountId.length > 0 && r.accountId.length <= 128));
 }
 
 function isPane(v: unknown): v is TaskPane {
@@ -115,6 +121,10 @@ export interface LaunchRequest {
    *  Left out on a relaunch in the pane of the task's latest generation: the
    *  pane keeps its env, so the new generation keeps what that one recorded. */
   sandboxed?: boolean;
+  /** The pool's account for this generation (TaskLaunch.accountId). Left out
+   *  on a relaunch in the pane of the task's latest generation: the pane
+   *  keeps its env, so the new generation keeps what that one recorded. */
+  accountId?: string;
   /** A relaunch in an existing pane: the pane and its workspace name the
    *  new generation in the same write, before the line is typed. */
   pane?: { sessionId: string; workspaceId: string };
@@ -346,9 +356,9 @@ export class WorkerSlots {
     for (const p of this.panes.values()) if (p.taskId === req.taskId && p.gen > top) top = p.gen;
     for (const w of this.workspaces.values()) if (w.taskId === req.taskId && w.gen > top) top = w.gen;
     const relaunched = req.pane ? this.panes.get(req.pane.sessionId) : undefined;
-    const sandboxed = req.sandboxed ?? (
-      prior?.sandboxed === true && relaunched?.taskId === req.taskId && relaunched.gen === prior.gen
-    );
+    const samePane = !!prior && relaunched?.taskId === req.taskId && relaunched.gen === prior.gen;
+    const sandboxed = req.sandboxed ?? (prior?.sandboxed === true && samePane);
+    const accountId = req.accountId ?? (samePane ? prior?.accountId : undefined);
     const next: TaskLaunch = {
       taskId: req.taskId,
       gen: top + 1,
@@ -358,6 +368,7 @@ export class WorkerSlots {
       ownerWorkspaceId: req.ownerWorkspaceId,
       state: 'launching',
       ...(sandboxed ? { sandboxed: true as const } : {}),
+      ...(accountId ? { accountId } : {}),
     };
     if (this.mode === 'broken') {
       // The file may be free again (a lock that held it at load is gone).
@@ -424,6 +435,33 @@ export class WorkerSlots {
       throw new Error(`PTY_CREATE: the task pane could not be recorded: ${String(err)}`);
     }
     return { ...ref };
+  }
+
+  /** The pool account of the task's generation `gen` is now `accountId`
+   *  (a create that launched no Claude drops it: undefined; a pane moved to
+   *  another account in place). Ignored (false) for another generation or a
+   *  launch with no pool account. */
+  setLaunchAccount(taskId: string, gen: number, accountId: string | undefined): boolean {
+    const t = this.tasks.get(taskId);
+    if (!t || t.gen !== gen || t.accountId === undefined || t.accountId === accountId) return false;
+    const { accountId: _old, ...rest } = t;
+    this.tasks.set(taskId, accountId ? { ...rest, accountId } : rest);
+    this.persist();
+    return true;
+  }
+
+  /** The launches that name a pool account and may still run a worker: a
+   *  launching one while its launch is under way in this run (a crash's
+   *  leftover starts nothing), and every launched one (the caller decides
+   *  whether its worker still runs). Released launches are left out. */
+  poolLaunches(): Array<{ taskId: string; gen: number; accountId: string; state: 'launching' | 'launched' }> {
+    const out: Array<{ taskId: string; gen: number; accountId: string; state: 'launching' | 'launched' }> = [];
+    for (const t of this.tasks.values()) {
+      if (!t.accountId || t.state === 'released') continue;
+      if (t.state === 'launching' && this.underway.get(t.taskId) !== t.gen) continue;
+      out.push({ taskId: t.taskId, gen: t.gen, accountId: t.accountId, state: t.state });
+    }
+    return out;
   }
 
   /** The launch of `gen` did not happen. Ignored (false) when a newer launch
