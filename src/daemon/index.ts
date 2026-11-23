@@ -211,7 +211,7 @@ import { deliveryPresence, promptGrant, type DeliveryPresenceDeps, type PromptAu
 import { AgentProcessTracker, agentProcessExitEvent, type LiveCheck } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
 import { liveRecoveryHint, markCwdMissing, namedAgentAlive, recordedTurnStillOpen, recordWasMidTurn, screenShowsLiveAgent, sightedRecoveredAgent } from './recoveryHint';
-import { checkWslAgentRunning, reportedAgentForPane, stopWslAgent, WslPidWatcher } from './wslAgentProcess';
+import { checkWslAgentRunning, reportedAgentForPane, stopWslAgent, windowsPidAlive, WslPidWatcher } from './wslAgentProcess';
 import { GateFlagFile } from './gateFlagFile';
 import { ensureWslAccountScript, WSL_GATE_FLAG_FILE } from '../shared/wslIntegration';
 import { accountFolderShares, wslAccountHomeKey } from '../shared/wslAccountHome';
@@ -10795,6 +10795,8 @@ async function main(): Promise<void> {
           sourceReady: async (sid, binding) => {
             const meta = sessionManager.getSession(sid)?.meta;
             if (!meta?.wslTarget || !binding.wslTranscriptPath) return false;
+            // The share is read only while the pane's wsl.exe runs: reading it starts a stopped distro.
+            if (typeof meta.pid !== 'number' || !windowsPidAlive(meta.pid)) return false;
             const at = wslTranscriptSharePath(binding.wslTranscriptPath, binding.sessionId, meta.wslTarget, { env: meta.env });
             if (!at.ok) return false;
             const proof = await proveWslTranscriptPath(at);
