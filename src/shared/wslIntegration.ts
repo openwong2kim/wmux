@@ -273,6 +273,72 @@ unset __wmux_vendor __wmux_key __wmux_share __wmux_var __wmux_mode __wmux_root _
 eval "unset __wmux_account_rc; return $__wmux_account_rc"
 `;
 
+/** Where buildWslInjection keeps WSL_ACCOUNT_SH, written (0700) when missing or stale. */
+export function ensureWslAccountScript(integrationDir: string): string {
+  const dir = path.join(integrationDir, 'wsl');
+  const file = path.join(dir, 'account.sh');
+  fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(file) || fs.readFileSync(file, 'utf8') !== WSL_ACCOUNT_SH) fs.writeFileSync(file, WSL_ACCOUNT_SH, { mode: 0o700 });
+  return file;
+}
+
+/** WSL_ACCOUNT_COPY_SH's exit codes; any other exit is a failure. */
+export const WSL_ACCOUNT_COPY_EXIT = { copied: 10, same: 11, diverged: 12 } as const;
+
+/**
+ * "Continue on another account" in a WSL pane: copy the pane's transcript into
+ * the target account's home in this distro, as the pane's own user. Run as
+ * `bash --noprofile --norc -c WSL_ACCOUNT_COPY_SH wmux-copy <key> <share 0|1>
+ * <data suffix> <source> <project> <session id>`, with WMUX_WSL_ACCOUNT_SH (the
+ * account script, a /p WSLENV path). The home is made by WSL_ACCOUNT_SH itself,
+ * exactly as a pane's spawn makes it (private, seeded, renamed into place).
+ *
+ * Prints the home it used on one line, then exits with WSL_ACCOUNT_COPY_EXIT:
+ * `same` when the target project folder is the source's own (a rename there
+ * would replace the original), `diverged` when the target already holds turns
+ * the source lacks (it may hold an earlier state of the same file: A → B → A).
+ * The copy goes through a temp file in the target folder and a rename. The
+ * conversation's sibling folder (`<session id>/`) is copied without
+ * overwriting anything, as copyTranscript does on Windows.
+ */
+export const WSL_ACCOUNT_COPY_SH = `umask 077
+key=$1 share=$2 suffix=$3 src=$4 project=$5 id=$6
+case "$key" in ''|*[!0-9a-f]*) exit 1 ;; esac
+case "$id" in ''|*[!0-9A-Za-z-]*) exit 1 ;; esac
+case "$project" in ''|.|..|*/*) exit 1 ;; esac
+case "$src" in /*) ;; *) exit 1 ;; esac
+[ -f "$src" ] && [ ! -L "$src" ] || exit 1
+[ -n "\${WMUX_WSL_ACCOUNT_SH:-}" ] && [ -r "$WMUX_WSL_ACCOUNT_SH" ] || exit 1
+unset CLAUDE_CONFIG_DIR WMUX_WSL_ACCOUNT_CODEX WMUX_WSL_ACCOUNT_CLAUDE_SHARE
+export WMUX_WSL_ACCOUNT_CLAUDE="$key" WMUX_DATA_SUFFIX="$suffix"
+[ "$share" != 1 ] || export WMUX_WSL_ACCOUNT_CLAUDE_SHARE=1
+. "$WMUX_WSL_ACCOUNT_SH" quiet || exit 1
+home=\${CLAUDE_CONFIG_DIR:-}
+[ -n "$home" ] && [ -d "$home" ] || exit 1
+printf '%s\\n' "$home"
+dir="$home/projects/$project"
+mkdir -p -- "$dir" || exit 1
+real() { (builtin cd -P -- "$1" 2>/dev/null && pwd -P); }
+[ "$(real "$dir")" != "$(real "\${src%/*}")" ] || exit ${WSL_ACCOUNT_COPY_EXIT.same}
+target="$dir/$id.jsonl"
+if [ -e "$target" ] || [ -L "$target" ]; then
+  [ -f "$target" ] && [ ! -L "$target" ] || exit 1
+  have=$(($(wc -c < "$target"))) || exit 1
+  want=$(($(wc -c < "$src"))) || exit 1
+  [ "$have" -le "$want" ] || exit ${WSL_ACCOUNT_COPY_EXIT.diverged}
+  head -c "$have" -- "$src" | cmp -s -- - "$target" || exit ${WSL_ACCOUNT_COPY_EXIT.diverged}
+fi
+tmp=$(mktemp "$dir/.wmux-copy.XXXXXX") || exit 1
+trap '[ -z "$tmp" ] || rm -f -- "$tmp"' EXIT
+cp -- "$src" "$tmp" && mv -f -- "$tmp" "$target" || exit 1
+tmp=
+sib=\${src%.jsonl}
+if [ -d "$sib" ] && [ ! -L "$sib" ]; then
+  mkdir -p -- "$dir/$id" && cp -R -n -- "$sib/." "$dir/$id/" 2>/dev/null
+fi
+exit ${WSL_ACCOUNT_COPY_EXIT.copied}
+`;
+
 export const WSL_CODEX_HOOK = `#!/bin/sh
 export ELECTRON_RUN_AS_NODE=1
 export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w"
