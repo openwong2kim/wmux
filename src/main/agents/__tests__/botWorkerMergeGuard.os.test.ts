@@ -442,17 +442,18 @@ describe('pty:create applies the guard (source-level lock)', () => {
     const src = fs.readFileSync(path.resolve(process.cwd(), 'src/main/ipc/handlers/pty.handler.ts'), 'utf8');
     // The daemon path also hands over its signed-in connections' leases,
     // bound to the session id and closed when the create rolls back.
-    expect(src).toContain('staged = await stageCreate(options, botWorker, gateway?.launch);');
+    expect(src).toContain('staged = await stageCreate(options, botWorker, gateway?.launch, poolPinned);');
     expect(src).toMatch(/gateway\?\.open\.bind\(sessionId\);/);
     expect(src).toMatch(/undoLocal: \(\) => \{[^}]*gateway\?\.open\.close\(\);/);
     // The steps between the open and the daemon create that can throw close them too.
     expect(src).toMatch(/closingLeases\(\(\) => \{\s+if \(botWorker\) \{[\s\S]*?recordFanoutTaskPane\(options, sessionId\);\s+\}\);/);
     expect(src).toContain('const resolvedEnv = closingLeases(() => resolveSpawnEnv(');
-    const line ='await stageCreate(options, botWorker';
-    expect(src.split(line).length - 1).toBe(2);
+    // The local path stages the options its pool account check returned.
+    expect(src.split('await stageCreate(options, botWorker').length - 1).toBe(1);
+    expect(src.split('await stageCreate(pool.options, botWorker').length - 1).toBe(1);
     // The stages, in order: quota, the tool level (or, for a bot worker's
     // claude line, the guard's own wmux server), codex guard, merge guard, pin.
-    expect(src).toContain('let staged = await withAccountQuota(options);');
+    expect(src).toContain('let staged = poolPinned ? options : await withAccountQuota(options);');
     expect(src).toContain('const wsl = isWslShell(shellPath);');
     expect(src).toMatch(/withBotWorkerMergeGuard\(await guardCodexBotWorker\(staged, botWorker\), botWorker, fenceSupport \? \{ fenceSupport \} : \{\}, \{ wsl,/);
     // #2256: a path cmd cannot carry is refused by its own cause before the guard refuses the line.
@@ -464,7 +465,7 @@ describe('pty:create applies the guard (source-level lock)', () => {
     expect(src).toContain('return { options: pinned, launch: { ...launchOfCodex(guarded), ...guardedLaunchOf(guarded), ...(conversation ? { conversation } : {}) } };');
     expect(src.split('stampFanoutTaskPane(options);').length - 1).toBe(2);
     for (let at = src.indexOf('stampFanoutTaskPane(options);'); at !== -1; at = src.indexOf('stampFanoutTaskPane(options);', at + 1)) {
-      expect(src.indexOf(line, at)).toBeGreaterThan(at);
+      expect(src.indexOf('await stageCreate(', at)).toBeGreaterThan(at);
     }
     // The session is recorded (before the daemon creates it), and forgotten with the pane.
     // It names the task when it is that task's own fan-out (or resume) launch.

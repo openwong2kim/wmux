@@ -25,6 +25,7 @@
 // wake queue, and publishes the singletons the other factory modules use
 // (getBotDirectory, getWakeQueue, getBotRuntime, getFactorySettings).
 
+import { poolReserveHeldForWorkspace } from '../../worktask/fanoutAccountPool';
 import path from 'node:path';
 import type { RpcContext, RpcMethod } from '../../../shared/rpc';
 import { BOT_EVENT, BOT_ID_RE, BOT_IDENTITY_SLOTS, BOT_JOB_MAX, BOT_RPC, type BotProfile, type BotStatus } from '../../../shared/bot';
@@ -645,8 +646,10 @@ export function botRuntimeModule(router: FactoryRouter, deps: FactoryHostDeps, o
         liveWakes: () => queue.list({ states: ['queued', 'running'] }),
         liveLimit: () => getFanOutGuards().liveTaskCap(),
         // Only a bot whose workers spend usage the reserve covers waits for it.
+        // With the fan-out account pool on, its workers run on the pool's
+        // accounts: held while the reserve holds every one of them.
         reserveHeld: ({ botId, workspaceId }) => agentRow(store.get(botId)?.workerAgent?.agent ?? 'claude')?.usageReserve === true
-          && usageReserveHoldForWorkspace(workspaceId) !== null,
+          && (poolReserveHeldForWorkspace(workspaceId) ?? usageReserveHoldForWorkspace(workspaceId) !== null),
       };
       let held: HeldFanouts;
       try {

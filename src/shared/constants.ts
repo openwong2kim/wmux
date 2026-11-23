@@ -174,6 +174,8 @@ export const IPC = {
   FANOUT_DEPTH_SET: 'fanout:depth:set',
   FANOUT_TRUST_AGY_FOLDERS_GET: 'fanout:trustAgyFolders:get',
   FANOUT_TRUST_AGY_FOLDERS_SET: 'fanout:trustAgyFolders:set',
+  FANOUT_ACCOUNT_POOL_GET: 'fanout:accountPool:get',
+  FANOUT_ACCOUNT_POOL_SET: 'fanout:accountPool:set',
   FANOUT_OWNER_ANSWERS_GET: 'fanout:ownerAnswers:get',
   FANOUT_OWNER_ANSWERS_SET: 'fanout:ownerAnswers:set',
   WORKER_FENCE_OFF_GET: 'workerFence:off:get',

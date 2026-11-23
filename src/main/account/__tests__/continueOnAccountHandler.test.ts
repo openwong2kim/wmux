@@ -50,6 +50,16 @@ describe('continue on an account', () => {
     expect(d.rpc).toHaveBeenCalledWith('session.continueOnAccount', { sessionId: 'daemon-1', configDir: '/acc/plain' });
   });
 
+  it('a task pane\'s launch record follows only a move the daemon confirmed in place', async () => {
+    const movedInPlace = vi.fn();
+    await continuePane(deps({ movedInPlace }), { ptyId: 'daemon-1', accountId: plain.id });
+    expect(movedInPlace).toHaveBeenCalledWith('daemon-1', plain.id);
+    movedInPlace.mockClear();
+    await continuePane(deps({ movedInPlace, rpc: vi.fn(async () => ({ ok: false, code: 'busy' })) }), { ptyId: 'daemon-1', accountId: plain.id });
+    await continuePane(deps({ movedInPlace }), { ptyId: 'daemon-1', accountId: token.id });
+    expect(movedInPlace).not.toHaveBeenCalled();
+  });
+
   it('a pane that spawned with a vault sign-in moves to a new pane even for a plain account', async () => {
     const sourceSignedIn = vi.fn(() => true);
     const d = deps({ sourceSignedIn });

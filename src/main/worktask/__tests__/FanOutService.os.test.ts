@@ -3,6 +3,8 @@
 // daemon/renderer/worktrees를 fake로 주입해 시퀀스(①~⑤)·보상·멱등을 단위 검증한다.
 // worktree fs 실물은 TaskWorktreeManager 테스트가 담당하므로 여기선 plan만 시뮬레이션.
 
+import { pickFromPool, type PreparedPool } from '../fanoutAccountPool';
+import { DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS } from '../../../shared/fanoutAccountPool';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -556,6 +558,50 @@ describe('each task\'s launch generation (#2393)', () => {
     }
     // Each spawn carries its launch to the pane's create.
     expect(renderer.spawned.map((p) => (p as { fanoutLaunch?: unknown }).fanoutLaunch)).toEqual(res.tasks.map((t) => ({ taskId: t.taskId, gen: 1 })));
+  });
+
+  it('books the account pool\'s pick in each launch record, hands it to mayLaunch, and a pick refusal launches nothing', async () => {
+    const slots = launches(metaRoot);
+    const seen: Array<{ index: number; accountId?: string } | undefined> = [];
+    const picks = ['acc-a', 'default'];
+    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: makeRendererFake().port, worktrees: makeWorktreesFake(), launches: slots });
+    const res = await svc.start(baseReq({
+      accountPick: { prepare: async () => undefined, pick: ({ index }) => ({ accountId: picks[index] }) },
+      mayLaunch: (task) => { seen.push(task); return null; },
+    }));
+    expect(res.tasks.map((t) => slots.launchOf(t.taskId as string)?.accountId)).toEqual(picks);
+    expect(seen.map((t) => t?.accountId).sort()).toEqual([...picks].sort());
+
+    const renderer = makeRendererFake();
+    const refused = new FanOutService({ daemon: makeDaemonFake().port, renderer: renderer.port, worktrees: makeWorktreesFake(), launches: launches(fs.mkdtempSync(path.join(metaRoot, 'pool-'))) });
+    const out = await refused.start(baseReq({ idempotencyKey: 'k-pool-refused', accountPick: { prepare: async () => undefined, pick: () => ({ refusal: 'fan-out account pool: every account of the pool is out of quota.' }) } }));
+    expect(renderer.port.spawnWorkspace).not.toHaveBeenCalled();
+    for (const t of out.tasks) expect(t.error).toMatch(/not launched: fan-out account pool/);
+  });
+
+  it('spreads one fan-out\'s workers evenly over the pool, each picked and booked at its launch', async () => {
+    const slots = launches(metaRoot);
+    const pool: PreparedPool = { settings: { ...DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, enabled: true }, group: '', members: [{ id: 'acc-a', configDir: null }, { id: 'acc-b', configDir: null }] };
+    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: makeRendererFake().port, worktrees: makeWorktreesFake(), launches: slots });
+    const res = await svc.start(baseReq({
+      titles: ['t1', 't2', 't3', 't4'],
+      accountPick: { prepare: async () => undefined, pick: () => {
+        const p = pickFromPool(pool, { host: null, slots, holdFor: () => null, workerMayRun: () => true });
+        return p.kind === 'pick' ? { accountId: p.accountId } : { refusal: 'none' };
+      } },
+    }));
+    const counts = new Map<string, number>();
+    for (const t of res.tasks) { const a = slots.launchOf(t.taskId as string)?.accountId as string; counts.set(a, (counts.get(a) ?? 0) + 1); }
+    expect(Object.fromEntries(counts)).toEqual({ 'acc-a': 2, 'acc-b': 2 });
+  });
+
+  it('a respawn of a pool task resumes on its account, or is held while that account is out', async () => {
+    const slots = launches(metaRoot);
+    slots.beginLaunch({ taskId: 'wtask-p', origin: 'bot', botId: 'bot-0000000a', ownerWorkspaceId: 'ws-ceo', accountId: 'default' });
+    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: makeRendererFake().port, worktrees: makeWorktreesFake(), launches: slots });
+    const input = { ownerWorkspaceId: 'ws-ceo', botId: 'bot-0000000a', taskId: 'wtask-p', title: 'p', cwd: metaRoot, command: 'claude --resume x', workerPermissionMode: 'manual' as const, tainted: false };
+    expect('workspaceId' in (await svc.spawnBotTaskPane(input))).toBe(true);
+    expect(slots.launchOf('wtask-p')).toMatchObject({ gen: 2, accountId: 'default' });
   });
 
   it('a launch that cannot be recorded is not spawned', async () => {

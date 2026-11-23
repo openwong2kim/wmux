@@ -45,6 +45,7 @@ import {
   setFanoutWorkerPermissionMode,
 } from '../../worktask/fanoutWorkerPolicy';
 import { isWorkerFenceOff, setWorkerFenceOff } from '../../agents/workerFencePolicy';
+import { loadFanoutAccountPoolSettings, setFanoutAccountPoolSettings } from '../../worktask/fanoutAccountPool';
 import { customAgentUsers, loadFanoutPresetsReport, saveFanoutPresets } from '../../worktask/fanoutPresets';
 import { loadCustomAgentsReport, saveCustomAgents } from '../../worktask/customAgents';
 
@@ -191,6 +192,19 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     ),
   );
 
+  ipcMain.removeHandler(IPC.FANOUT_ACCOUNT_POOL_GET);
+  ipcMain.handle(
+    IPC.FANOUT_ACCOUNT_POOL_GET,
+    wrapHandler(IPC.FANOUT_ACCOUNT_POOL_GET, async () => loadFanoutAccountPoolSettings()),
+  );
+  ipcMain.removeHandler(IPC.FANOUT_ACCOUNT_POOL_SET);
+  ipcMain.handle(
+    IPC.FANOUT_ACCOUNT_POOL_SET,
+    wrapHandler(IPC.FANOUT_ACCOUNT_POOL_SET, async (_event: Electron.IpcMainInvokeEvent, patch: unknown) =>
+      setFanoutAccountPoolSettings(patch),
+    ),
+  );
+
   ipcMain.removeHandler(IPC.FANOUT_OWNER_ANSWERS_GET);
   ipcMain.handle(
     IPC.FANOUT_OWNER_ANSWERS_GET,
@@ -261,6 +275,8 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     ipcMain.removeHandler(IPC.FANOUT_DEPTH_SET);
     ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_GET);
     ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_SET);
+    ipcMain.removeHandler(IPC.FANOUT_ACCOUNT_POOL_GET);
+    ipcMain.removeHandler(IPC.FANOUT_ACCOUNT_POOL_SET);
     ipcMain.removeHandler(IPC.FANOUT_OWNER_ANSWERS_GET);
     ipcMain.removeHandler(IPC.FANOUT_OWNER_ANSWERS_SET);
     ipcMain.removeHandler(IPC.WORKER_FENCE_OFF_GET);

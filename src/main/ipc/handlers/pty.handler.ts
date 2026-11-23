@@ -27,6 +27,8 @@ import { appAccountVault, createAccountOverride, mergeVaultSecretEnv, noteVaultS
 import { loadClaudeCredential } from '../../claude/claudeCredential';
 import { BOT_SECRET_LIMITS } from '../../../shared/botSecret';
 import { withAccountQuota } from '../../account/accountQuotaGate';
+import { poolAccountForCreate, poolAccountOfLivePane, poolCreateReserveRefusal } from '../../worktask/fanoutAccountPool';
+import { usageReserveHoldForWorkspace, usageReserveRefusalText } from '../../usage/usageReserve';
 import { botWorkerForCreate, botWorkerLaunchTask, botWorkerSessionRecord, noteGuardedLaunchTyped, clearedLaunchLine, forgetBotWorkerSession, guardedClaudeCwdRefusal, guardedCodexCwdRefusal, guardedCodexLaunch, guardedLaunchOf, isBotWorkerSession, noteBotWorkerSession, paneLaunchFolders, setWorkerMcpResolvers, taskConnectors, taskGatewayNames, withBotWorkerMergeGuard, type BotWorkerCreate, type WorkerGatewayLaunch } from '../../agents/botWorkerMergeGuard';
 import { isPlainCmdLaunchLine, namesClaude } from '../../../shared/botWorkerGuard';
 import { namesCodex } from '../../../shared/codexWorkerGuard';
@@ -34,7 +36,7 @@ import { getMcpTarget } from '../../../shared/mcpTargets';
 import { readTargetStatus } from '../../../shared/mcpRegistration';
 import { revokeSecretGrant, secretEnvForCreate } from '../../factory/secretGrants';
 import { noteSessionAgentLaunched, noteSessionInput, noteTaskWorkerLaunched } from '../../factory/agentGoneFacts';
-import { beginPaneRelaunch, launchStillCurrent, startsAgent } from '../../factory/workerSlots';
+import { beginPaneRelaunch, getWorkerSlots, launchStillCurrent, startsAgent } from '../../factory/workerSlots';
 import { withLaunchSessionPin } from '../../agents/launchSessionPin';
 import { withScreenReaderFlag } from '../../../shared/screenReaderLaunch';
 import { isScreenReaderOn, launcherVersionsIn } from '../../screenReaderService';
@@ -287,7 +289,48 @@ function wslAccountTabRefusal(shell: string, options: PtyCreateOptions | undefin
   }));
 }
 
-async function stageCreate(options: PtyCreateOptions | undefined, botWorker: BotWorkerCreate | null, gateway?: WorkerGatewayLaunch): Promise<{ options: PtyCreateOptions | undefined; launch: ReturnType<typeof guardedLaunchOf> & ReturnType<typeof launchOfCodex> & { conversation?: ReturnType<typeof launchedConversation> } }> {
+/** The pool account a live pane's env runs on, for a relaunch typed into it. */
+async function poolPaneAccount(sessionId: string, dc: DaemonClient): Promise<{ paneAccount?: string }> {
+  const paneAccount = await poolAccountOfLivePane(sessionId, (m, p) => dc.rpc(m, p));
+  return paneAccount ? { paneAccount } : {};
+}
+
+/**
+ * A fan-out task pane's account from the account pool (fanoutAccountPool.ts),
+ * read from its launch record once its launch was claimed
+ * (stampFanoutTaskPane): a picked account comes in as a rotated launch's
+ * does, its id and its folder in the pane env, so every later stage reads
+ * that folder; a missing folder refuses the create. The default login keeps
+ * the pane env, and `pinned` keeps quota rotation from moving it. A line that
+ * launches no Claude drops the record's account. The renderer's own
+ * `accountId` is never taken for it (a different one refuses the create).
+ */
+function withPoolAccount(options: PtyCreateOptions | undefined, daemon: boolean): { options: PtyCreateOptions | undefined; pinned: boolean } {
+  const slots = getWorkerSlots();
+  const decision = poolAccountForCreate(options, (id) => slots.launchOf(id), { wsl: isWslShell(createShell(options)) });
+  if (decision.kind === 'none') return { options, pinned: false };
+  if (decision.kind === 'release') {
+    const owner = slots.launchOf(decision.taskId)?.ownerWorkspaceId;
+    slots.setLaunchAccount(decision.taskId, decision.gen, undefined, { unpool: decision.wsl === true });
+    // A WSL Claude worker runs as before the pool, so the usage reserve checks
+    // its caller's account, as the fan-out did before the pool; a stop is
+    // held through the fan-out, so a bot's request is kept for the reset.
+    const hold = decision.wsl && owner ? usageReserveHoldForWorkspace(owner) : null;
+    if (hold) {
+      const refusal = poolCreateReserveRefusal(decision.taskId, hold) ?? usageReserveRefusalText(hold.untilMs, Date.now(), false);
+      throw new Error(`PTY_CREATE: ${refusal}`);
+    }
+    return { options, pinned: false };
+  }
+  if (decision.kind === 'default') return { options, pinned: true };
+  if (!daemon) throw new Error('PTY_CREATE: a fan-out worker on a pool account needs the wmux daemon');
+  const named = { ...options, accountId: decision.accountId };
+  const account = createAccountOverride(named, { missingFolder: 'refuse' });
+  if (!account) throw new Error('PTY_CREATE: unknown account');
+  return { options: { ...named, env: withAccountFolderEnv(named.env, account) }, pinned: true };
+}
+
+async function stageCreate(options: PtyCreateOptions | undefined, botWorker: BotWorkerCreate | null, gateway?: WorkerGatewayLaunch, poolPinned = false): Promise<{ options: PtyCreateOptions | undefined; launch: ReturnType<typeof guardedLaunchOf> & ReturnType<typeof launchOfCodex> & { conversation?: ReturnType<typeof launchedConversation> } }> {
   // A person's pane opted into the worker fence (paneFence.ts). Never a bot
   // worker's, which has its own; the flag itself goes no further.
   const paneFenced = !botWorker && options?.workerFence === true;
@@ -310,7 +353,8 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
     const rewritten = promptFileArgumentForShell(line0, { wsl, cmd: process.platform === 'win32' && isCmdShellPath(shellPath) });
     if (rewritten !== line0) options = { ...options, initialCommand: rewritten };
   }
-  let staged = await withAccountQuota(options);
+  // A pool worker's account was picked for it (withPoolAccount): no rotation.
+  let staged = poolPinned ? options : await withAccountQuota(options);
   let level: string | undefined;
   const line = staged?.initialCommand;
   if (botWorker && staged && line && namesClaude(line) && !namesCodex(line)) {
@@ -932,11 +976,19 @@ export function registerPTYHandlers(
           throw err;
         }
       };
-      // Named by the caller, not by a rotated launch (which stageCreate may add).
+      // A task pane's pool account, from its launch record (never the renderer).
+      let poolPinned: boolean;
+      try {
+        ({ options, pinned: poolPinned } = withPoolAccount(options, true));
+      } catch (err) {
+        gateway?.open.close();
+        throw err;
+      }
+      // Named by the caller or the pool, not by a rotated launch (which stageCreate may add).
       const namedAccount = options?.accountId;
       let staged: Awaited<ReturnType<typeof stageCreate>>;
       try {
-        staged = await stageCreate(options, botWorker, gateway?.launch);
+        staged = await stageCreate(options, botWorker, gateway?.launch, poolPinned);
       } catch (err) {
         gateway?.open.close();
         throw err;
@@ -1345,7 +1397,10 @@ export function registerPTYHandlers(
       if (botWorker?.spawns?.some((s) => (s.connectors?.length ?? 0) > 0)) {
         throw new Error('PTY_CREATE: a worker with connections needs the wmux daemon');
       }
-      const staged = await stageCreate(options, botWorker);
+      // A pool account needs the daemon (its folder env and spawn are the
+      // daemon's); the default login launches here as it is.
+      const pool = withPoolAccount(options, false);
+      const staged = await stageCreate(pool.options, botWorker, undefined, pool.pinned);
       options = staged.options;
       const paneFence = paneFenceOf(options);
       // An account's vault, too, reaches a pane only through the daemon: a
@@ -1621,7 +1676,9 @@ export function registerPTYHandlers(
     // typed (factory/workerSlots.ts); not recorded, not typed.
     let settleRelaunch: ((typed: boolean) => void) | null;
     try {
-      settleRelaunch = startsAgent(text) ? beginPaneRelaunch(id) : null;
+      settleRelaunch = startsAgent(text)
+        ? beginPaneRelaunch(id, { line: text, byPerson: human, ...(dc ? await poolPaneAccount(id, dc) : {}) })
+        : null;
     } catch (err) {
       throw new Error(`PTY_WRITE_LAUNCH: ${(err as Error).message}`);
     }

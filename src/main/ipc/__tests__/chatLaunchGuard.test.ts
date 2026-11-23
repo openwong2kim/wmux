@@ -42,7 +42,7 @@ describe('pty:write-launch', () => {
     expect(ask).toBeGreaterThan(0);
     expect(handler.slice(ask)).toMatch(/^[^\n]*\n\s*if \(trustRefusal\) throw new Error\(`PTY_WRITE_LAUNCH: \$\{trustRefusal\}`\);/);
     expect(ask).toBeLessThan(handler.indexOf('launchAllowedByChat(dc, id, text)'));
-    expect(ask).toBeLessThan(handler.indexOf('beginPaneRelaunch(id)'));
+    expect(ask).toBeLessThan(handler.indexOf('beginPaneRelaunch(id,'));
     expect(ask).toBeLessThan(handler.indexOf('daemonClient.writeToSession(id, typed)'));
   });
 });
