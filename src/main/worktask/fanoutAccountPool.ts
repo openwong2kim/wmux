@@ -30,6 +30,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
+import { agentRow } from '../../shared/agentIdentity';
 import { accountGroupOf } from '../../shared/accountGroup';
 import { evaluateQuota } from '../../shared/accountQuota';
 import { namesClaude } from '../../shared/botWorkerGuard';
@@ -198,7 +199,7 @@ export async function preparePool(callerWorkspaceId: string, deps: PreparePoolDe
   const settings = (deps.settings ?? loadFanoutAccountPoolSettings)();
   if (!settings.enabled || !h.daemonConnected()) return null;
   const log = deps.log ?? ((line: string) => console.log(line));
-  const all = (deps.accounts ?? (() => getAccountStore().listAccounts()))().filter((a) => a.vendor === 'claude');
+  const all = (deps.accounts ?? (() => getAccountStore().listAccounts()))().filter((a) => agentRow(a.vendor)?.usageReserve === true);
   const boundId = (deps.binding ?? ((ws: string) => getAccountStore().getBinding(ws, 'claude')))(callerWorkspaceId);
   const bound = boundId ? all.find((a) => a.id === boundId) : undefined;
   const group = poolGroupFor(bound ? accountGroupOf(bound) : null, settings);

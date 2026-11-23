@@ -78,7 +78,7 @@ import {
 } from '../../utils/shortcutRebind';
 import KeyConflictConfirm from '../shared/KeyConflictConfirm';
 import { CLAUDE_EFFORT_LEVELS } from '../../../shared/claudeModels';
-import type { AgentSlug } from '../../../shared/agentIdentity';
+import { agentRow, type AgentSlug } from '../../../shared/agentIdentity';
 import {
   agyEffortOf,
   agyFamilyOf,
@@ -2293,7 +2293,7 @@ function FanoutWorkersSection() {
       .then((r) => {
         if (cancelled) return;
         const named = new Set<string>();
-        for (const a of r.accounts) if (a.vendor === 'claude' && a.group) named.add(a.group);
+        for (const a of r.accounts) if (agentRow(a.vendor)?.usageReserve === true && a.group) named.add(a.group);
         setClaudeGroups([...named].sort((a, b) => a.localeCompare(b)));
       })
       .catch(() => undefined);
