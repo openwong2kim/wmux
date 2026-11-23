@@ -89,14 +89,16 @@ export class WslAccountState {
    * `placesFile`: where the default places are kept across restarts, so the
    * first plain launch after one has a place (a recovered pane comes back by
    * reattach, never through a plain create). Only the requested distro and
-   * the (distro, user) it started as: no reading, no sign-in.
+   * the (distro, user) it started as: no reading, no sign-in. Only a NAMED
+   * distro's: which distro wsl.exe's default is can change while wmux is
+   * closed (`wsl --set-default`), so that one is learned again each run.
    */
   constructor(private readonly now: () => number = Date.now, private readonly placesFile?: string) {
     if (!placesFile) return;
     try {
       const raw = atomicReadJSONSync<Record<string, unknown>>(placesFile);
       for (const [requested, place] of Object.entries(raw ?? {})) {
-        if (validWslTarget(place)) this.defaultPlaces.set(requested.toLowerCase(), { distribution: place.distribution, user: place.user });
+        if (requested && validWslTarget(place)) this.defaultPlaces.set(requested.toLowerCase(), { distribution: place.distribution, user: place.user });
       }
     } catch { /* none kept yet, or unreadable: learned again from the next plain pane */ }
   }
@@ -171,7 +173,8 @@ export class WslAccountState {
     this.defaultPlaces.set(key, { distribution: place.distribution, user: place.user });
     if (!this.placesFile || (prev && prev.distribution === place.distribution && prev.user === place.user)) return;
     try {
-      atomicWriteJSONSync(this.placesFile, Object.fromEntries(this.defaultPlaces));
+      if (!key) return;
+      atomicWriteJSONSync(this.placesFile, Object.fromEntries([...this.defaultPlaces].filter(([requested]) => requested)));
     } catch { /* kept for this run only */ }
   }
 

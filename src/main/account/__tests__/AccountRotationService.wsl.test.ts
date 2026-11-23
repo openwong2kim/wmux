@@ -104,7 +104,7 @@ describe('AccountRotationService for a WSL launch', () => {
   it('after a restart, a plain launch switches from the kept place and the trail\'s seed', async () => {
     const placesFile = path.join(dataDir, 'wsl-default-places.json');
     const before = new WslAccountState(() => clock, placesFile);
-    before.noteDefaultPlace(null, UBUNTU_ME);
+    before.noteDefaultPlace('Ubuntu', UBUNTU_ME);
     const trail = new UsageTrail();
     trail.record(wslStateKey('a', UBUNTU_ME)!, before.noteSample('a', UBUNTU_ME, sample(100)), clock);
     trail.record(wslStateKey('b', UBUNTU_ME)!, before.noteSample('b', UBUNTU_ME, sample(10)), clock);
@@ -112,7 +112,7 @@ describe('AccountRotationService for a WSL launch', () => {
     clock += 60_000;
     state = new WslAccountState(() => clock, placesFile);
     seedWslAccountState(state, trail);
-    const place = state.defaultPlace(null);
+    const place = state.defaultPlace('Ubuntu');
     expect(place).toEqual(UBUNTU_ME);
     const s = make([acct('a'), acct('b')]);
     await s.setEnabled('claude', true);

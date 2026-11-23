@@ -1107,9 +1107,11 @@ export function registerPTYHandlers(
       }
       const safeCwd = cwdResolution.safeCwd;
       let effectiveCwd = safeCwd ?? (isWslShell(shell) ? '~' : homedir());
-      const wslArgs = isWslDistroSpawnArgs(shell, trustedRecovery?.args)
+      // The distro booted is the one the gate read: a continued pane's, else a
+      // recovered pane's own args, else its recorded target's, else the request.
+      const wslArgs = !wslFromTarget && isWslDistroSpawnArgs(shell, trustedRecovery?.args)
         ? [...trustedRecovery.args]
-        : wslDistroArgs(shell, wslFromTarget?.distribution ?? requestedDistro);
+        : wslDistroArgs(shell, knownTarget?.distribution ?? requestedDistro);
 
       // Generate a unique session ID
       const sessionId = `daemon-${randomUUID().slice(0, 8)}`;

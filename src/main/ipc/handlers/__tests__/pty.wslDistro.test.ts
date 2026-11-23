@@ -30,7 +30,7 @@ describe('requestedWslDistro', () => {
     const src = readFileSync(path.resolve(process.cwd(), 'src/main/ipc/handlers/pty.handler.ts'), 'utf8');
     expect(src.match(/wslDistroArgs\(shell, (requestedWslDistro\(options\)|localRequestedDistro)\)/g)).toHaveLength(1);
     expect(src).not.toMatch(/wslDistroArgs\(shell, getDefaultWslDistro\(\)\)/);
-    expect(src).toMatch(/isWslDistroSpawnArgs\(shell, trustedRecovery\?\.args\)\s*\? \[\.\.\.trustedRecovery\.args\]\s*: wslDistroArgs\(shell, wslFromTarget\?\.distribution \?\? requestedDistro\)/);
+    expect(src).toMatch(/!wslFromTarget && isWslDistroSpawnArgs\(shell, trustedRecovery\?\.args\)\s*\? \[\.\.\.trustedRecovery\.args\]\s*: wslDistroArgs\(shell, knownTarget\?\.distribution \?\? requestedDistro\)/);
   });
 });
 
@@ -68,7 +68,9 @@ describe('launchPlace (where the quota gate reads a WSL launch)', () => {
     expect(src).toMatch(/const createPlace: LaunchPlace \| undefined = trustedRecovery && !knownTarget && isWslShell\(shell\)\s*\? \{ wsl: null \}/);
     expect(src).toContain('if (isWslShell(shell) && !wslFromTarget && !trustedRecovery && validWslTarget(createdTarget)) {');
     expect(src).toContain('getWslAccountState().noteDefaultPlace(requestedDistro, createdTarget);');
-    expect(src).toContain('wslDistroArgs(shell, wslFromTarget?.distribution ?? requestedDistro)');
+    // The distro booted is the gate's: the source pane's, else the recovered pane's recorded one.
+    expect(src).toContain('wslDistroArgs(shell, knownTarget?.distribution ?? requestedDistro)');
+    expect(src).toContain('const wslArgs = !wslFromTarget && isWslDistroSpawnArgs(shell, trustedRecovery?.args)');
     // The spawn's target is the gate's, in the same order.
     expect(src).toContain('wslTarget: wslFromTarget ?? trustedRecovery?.wslTarget,');
     expect(src).not.toMatch(/noteDefaultPlace\(requestedWslDistro\(options\)/);

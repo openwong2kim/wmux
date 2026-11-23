@@ -81,10 +81,14 @@ describe('wslAccountState', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-places-'));
     try {
       const file = path.join(dir, 'wsl-default-places.json');
-      new WslAccountState(() => 0, file).noteDefaultPlace(null, PLACE);
+      const before = new WslAccountState(() => 0, file);
+      before.noteDefaultPlace('Ubuntu', PLACE);
+      before.noteDefaultPlace(null, { distribution: 'Debian', user: 'root' });
       const restarted = new WslAccountState(() => 0, file);
-      expect(restarted.defaultPlace(null)).toEqual(PLACE);
-      expect(fs.statSync(file).isFile()).toBe(true);
+      expect(restarted.defaultPlace('ubuntu')).toEqual(PLACE);
+      // wsl.exe's default distro can change while wmux is closed: learned again each run.
+      expect(restarted.defaultPlace(null)).toBeUndefined();
+      expect(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')))).toEqual(['ubuntu']);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
