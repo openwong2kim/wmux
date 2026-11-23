@@ -77,11 +77,15 @@ export interface RemoteTaskView {
   /** The id of the other PC's message that last reported it; absent before any report. */
   reportId?: string;
   status?: { kind: string; since: string; question?: string; resetsAt?: string };
+  /** The other PC's agent replied after the last message this PC sent. */
+  answered?: true;
+  /** It failed here because its link ended, not by a `failed` the other PC sent. */
+  linkEnded?: true;
 }
 
 /** One row of the state view, or nothing when it is not one. */
 export function remoteTaskViewOf(raw: unknown): RemoteTaskView[] {
-  const t = raw && typeof raw === 'object' ? raw as { id?: unknown; status?: { state?: unknown }; metadata?: { remote?: { reported?: unknown; status?: unknown } } } : null;
+  const t = raw && typeof raw === 'object' ? raw as { id?: unknown; status?: { state?: unknown }; metadata?: { remote?: { reported?: unknown; status?: unknown; answered?: unknown; linkEnded?: unknown } } } : null;
   if (!t || typeof t.id !== 'string' || typeof t.status?.state !== 'string') return [];
   const remote = t.metadata?.remote;
   const st = remote?.status && typeof remote.status === 'object' ? remote.status as { kind?: unknown; since?: unknown; detail?: { question?: unknown; resetsAt?: unknown } } : null;
@@ -92,7 +96,10 @@ export function remoteTaskViewOf(raw: unknown): RemoteTaskView[] {
       ...(typeof st.detail?.resetsAt === 'string' ? { resetsAt: st.detail.resetsAt } : {}),
     }
     : undefined;
-  return [{ id: t.id, state: t.status.state, ...(typeof remote?.reported === 'string' ? { reportId: remote.reported } : {}), ...(status ? { status } : {}) }];
+  return [{
+    id: t.id, state: t.status.state, ...(typeof remote?.reported === 'string' ? { reportId: remote.reported } : {}), ...(status ? { status } : {}),
+    ...(remote?.answered === true ? { answered: true as const } : {}), ...(remote?.linkEnded === true ? { linkEnded: true as const } : {}),
+  }];
 }
 
 export type RemoteLedger = Pick<TaskLedger, 'get' | 'list' | 'register' | 'update' | 'updateRemote' | 'placeRemote' | 'closeTask' | 'onTransition'>;
@@ -698,7 +705,10 @@ async function followTasks(deps: RemoteFanoutDeps): Promise<void> {
  * Precedence: a new report (another report message id) moves the row to
  * review_requested, and a report stands there until a follow-up sets the
  * agent working again (then the statuses below apply as before), also once
- * the daemon no longer lists the task. An ended task beats the worker's status.
+ * the daemon no longer lists the task (a cancel then leaves it as it is). An
+ * ended task beats the worker's status. A task whose agent answered the last
+ * message and that then failed only because its link ended (a headless box
+ * ends the link when it ends the agent) is cancelled, not failed.
  * A gone agent, or a task the daemon dropped, fails the row only after
  * REMOTE_GONE_GRACE_MS, so the end that normally follows is taken instead.
  * Text from the other PC never goes into the row: kinds, the PC's name and
@@ -723,6 +733,7 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   const questionText = (question?: string): string => `the agent on ${r.pc} waits on a ${question ?? 'screen'} question: answer it in that PC's pane; it cannot be answered from here yet, and a headless box ends the task after 10 minutes`;
   const reportedText = `reported on ${r.pc}; the report is on ${on}`;
   const workingText = `working on ${r.pc}`;
+  const endedAfterReplyText = `the agent on ${r.pc} ended after it replied; its reply is on ${on}`;
   /** Every text this pass writes on an open row; a brain's move keeps the one it found when it gives none. */
   const ownTexts = new Set([replyText, stoppedText, reportedText, workingText, questionText(), ...LEDGER_REMOTE_QUESTIONS.map(questionText)]);
   /**
@@ -747,7 +758,6 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   // ended tasks only a while) keeps its row as it is.
   if (!view) return entry.status === 'review_requested' ? undefined : failAfterGrace(`the task on ${r.pc} is no longer known here`);
   const settled = r.waiting || r.goneSeenAt !== undefined ? { waiting: undefined, goneSeenAt: undefined } : null;
-  if (view.state === 'canceled') return move('cancelled', `cancelled on ${r.pc}`);
   const newReport = view.reportId !== undefined && view.reportId !== r.reportId;
   if (newReport || (view.state === 'completed' && entry.status !== 'review_requested')) {
     await patch({ ...(settled ?? {}), ...(view.reportId ? { reportId: view.reportId } : {}) });
@@ -755,6 +765,9 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   }
   // A report stands until a follow-up sets the agent working again.
   if (entry.status === 'review_requested' && view.state !== 'working' && view.state !== 'submitted') return;
+  if (view.state === 'canceled') return move('cancelled', `cancelled on ${r.pc}`);
+  // The agent answered the last message, then its link ended (it was ended on that PC): its reply stands on the task.
+  if (view.state === 'failed' && view.linkEnded && view.answered) return move('cancelled', endedAfterReplyText);
   if (view.state === 'failed') return move('failed', `failed on ${r.pc}; why is on ${on}`);
   if (view.state === 'input-required') return waitFor(replyText, settled ?? {});
   const st = view.status;

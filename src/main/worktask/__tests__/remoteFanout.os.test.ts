@@ -12,6 +12,7 @@ import { SPAWN_REQUEST_KEY_RE, type A2aSpawnAskInput, type A2aSpawnOutgoingSumma
 import { isRemoteTask } from '../../../shared/ledger';
 import { TaskCloseService } from '../TaskCloseService';
 import { installFanoutCallerLedgerNotify } from '../../deck/fanoutCallerNotify';
+import { factFromLedgerTransition } from '../../factory/factIngest';
 import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 import { registerLedgerRpc } from '../../pipe/handlers/ledger.rpc';
 import type { RpcContext } from '../../../shared/rpc';
@@ -629,6 +630,47 @@ describe('a started task follows its A2A task', () => {
     expect(s.row(1).status).toBe('cancelled');
     expect(s.row(2)).toMatchObject({ status: 'input_required', summary: `the agent on box waits for your reply on A2A task ${s.a2a[2]}` });
     await vi.waitFor(() => expect(s.f.revoked.sort()).toEqual([linkOf(0), linkOf(1)].sort()), { timeout: 5_000 });
+  });
+
+  it('done-then-killed on a headless box: a replied task the link end failed is cancelled, never failed, and raises no failure alert', async () => {
+    const s = await started(4);
+    const notified: unknown[][] = [];
+    installFanoutCallerLedgerNotify(() => false, (...a) => { notified.push(a); }, s.deps.ledger as TaskLedger);
+    const facts: Array<ReturnType<typeof factFromLedgerTransition>> = [];
+    (s.deps.ledger as TaskLedger).onTransition((t) => { if (t.entry.id === s.row(0).id) facts.push(factFromLedgerTransition(t)); });
+    // 0: the turn finished (its reply came), then the box ended the agent and its link.
+    s.view(0, { state: 'input-required' });
+    // 1: it finished, the caller sent a follow-up, and the agent was killed on it.
+    s.view(1, { state: 'input-required' });
+    // 2: killed mid-turn.
+    // 3: the worker's own failure (sent by that PC).
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).status).toBe('input_required');
+    s.view(0, { state: 'failed', answered: true, linkEnded: true });
+    s.view(1, { state: 'failed', linkEnded: true });
+    s.view(2, { state: 'failed', linkEnded: true });
+    s.view(3, { state: 'failed', answered: true });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'cancelled', summary: `the agent on box ended after it replied; its reply is on A2A task ${s.a2a[0]}` });
+    expect(s.row(1).status).toBe('failed');
+    expect(s.row(2).status).toBe('failed');
+    expect(s.row(3)).toMatchObject({ status: 'failed', summary: `failed on box; why is on A2A task ${s.a2a[3]}` });
+    // The caller is alerted of the three failures only (the cancelled row raises no `ledger.failed`).
+    const failedAlerts = notified.filter((a) => a[3] === 'ledger.failed').map((a) => a[2]);
+    expect(failedAlerts.sort()).toEqual([s.row(1).id, s.row(2).id, s.row(3).id].sort());
+    expect(notified.some((a) => a[2] === s.row(0).id && a[3] !== 'ledger.input_required')).toBe(false);
+    // The room says "Task cancelled" for it (a cancelled task.failed), never "Task failed".
+    expect(facts.at(-1)).toMatchObject({ kind: 'task.failed', payload: { status: 'cancelled', from: 'input_required' } });
+  });
+
+  it('a reported row keeps its report when the task is then cancelled on that PC', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'input-required', reportId: REPORTED });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).status).toBe('review_requested');
+    s.view(0, { state: 'canceled', reportId: REPORTED });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'review_requested', summary: `reported on box; the report is on A2A task ${s.a2a[0]}` });
   });
 
   it('gone fails the row only once the grace is over, not on a quick second pass, when nothing ended the task', async () => {

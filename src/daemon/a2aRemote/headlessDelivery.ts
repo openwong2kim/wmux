@@ -657,9 +657,14 @@ export class HeadlessDelivery {
    * A start is ending (headlessStarter): nothing more is typed into its
    * session, and its tasks still open are told `why` (while its link can
    * still carry it, when it has one): one not answered yet fails, one that
-   * was answered and waits for more is canceled.
+   * was answered (waiting for more, or its reply sent and its move not made
+   * yet) is canceled.
    */
   async startEnding(rec: HeadlessStartRecordV1, why: string): Promise<void> {
+    // A turn that ended with its reply on the task, its move to input-required not made yet: it was answered.
+    const ep = this.episodes.get(rec.sessionId);
+    const answeredTask = ep?.outcome && ep.outcome.kind !== 'failed'
+      && (this.deps.tasks.get(ep.taskId)?.history.filter((m) => m.role === 'agent').length ?? 0) > ep.agentMessagesAtSend ? ep.taskId : null;
     this.ending.add(rec.sessionId);
     this.episodes.delete(rec.sessionId);
     this.afterwards.delete(rec.sessionId);
@@ -674,7 +679,8 @@ export class HeadlessDelivery {
     if (say && rec.runId === this.deps.runId && open.length > 0) this.deps.status?.gone(open.map((t) => t.id));
     for (const task of open) {
       const state = task.status.state;
-      if (state === 'submitted' || state === 'working') await this.fail(task.id, rec.workspaceId, why, { say });
+      if ((state === 'submitted' || state === 'working') && task.id !== answeredTask) await this.fail(task.id, rec.workspaceId, why, { say });
+      else if (state === 'working' && task.id === answeredTask) await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`, { say });
       else if (state === 'input-required') await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`, { say });
     }
   }

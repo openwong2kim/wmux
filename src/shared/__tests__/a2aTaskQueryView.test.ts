@@ -332,4 +332,33 @@ describe("view: 'state'", () => {
     const rows = applyTaskQueryView([sent('rt-a'), sent('rt-b')], { view: 'state', taskId: 'rt-b' }) as View[];
     expect(rows.map((r) => r.id)).toEqual(['rt-b']);
   });
+
+  it('answered: the newest message (notices left out) came from the other PC; linkEnded: failed here by the link end only', () => {
+    const msg = (id: string, role: 'user' | 'agent') => ({ kind: 'message', messageId: id, role, parts: [{ kind: 'text', text: 'body' }] });
+    const task = (id: string, history: unknown[], inbox: unknown[], status: Record<string, unknown>, stateSync?: string) => ({
+      id, status, history, metadata: { updatedAt: '2026-11-13T08:00:00.000Z', remote: { direction: 'outbound', inbox, ...(stateSync ? { stateSync } : {}) } },
+    });
+    const linkFail = { state: 'failed', evidence: { summary: 'link_broken', items: [] } };
+    const tasks = [
+      // Finished, then the link ended.
+      task('rt-done', [msg('m1', 'user'), msg('r1', 'agent')], [{ messageId: 'r1', kind: 'reply' }], linkFail, 'input-required'),
+      // A follow-up sent after the reply.
+      task('rt-follow', [msg('m1', 'user'), msg('r1', 'agent'), msg('m2', 'user')], [{ messageId: 'r1', kind: 'reply' }], linkFail, 'input-required'),
+      // A notice after the reply does not hide it.
+      task('rt-notice', [msg('m1', 'user'), msg('r1', 'agent'), msg('n1', 'agent')], [{ messageId: 'r1', kind: 'reply' }, { messageId: 'n1', kind: 'notice' }], linkFail),
+      // The other PC sent `failed` itself (whatever its text says).
+      task('rt-peer', [msg('m1', 'user'), msg('r1', 'agent')], [{ messageId: 'r1', kind: 'reply' }], linkFail, 'failed'),
+      // Killed mid-turn: nothing came back.
+      task('rt-mid', [msg('m1', 'user')], [], { state: 'failed', evidence: { summary: 'link_revoked', items: [] } }, 'working'),
+    ];
+    const rows = applyTaskQueryView(tasks, { view: 'state', taskIds: tasks.map((t) => t.id) }) as View[];
+    expect(rows.map((r) => [r.id, r.metadata.remote])).toEqual([
+      ['rt-done', { answered: true, linkEnded: true }],
+      ['rt-follow', { linkEnded: true }],
+      ['rt-notice', { answered: true, linkEnded: true }],
+      ['rt-peer', { answered: true }],
+      ['rt-mid', { linkEnded: true }],
+    ]);
+    expect(JSON.stringify(rows)).not.toContain('body');
+  });
 });

@@ -441,6 +441,35 @@ function remoteStateView(remote: unknown): Rec | null {
   return reported || status ? { ...(reported ? { reported } : {}), ...(status ? { status } : {}) } : null;
 }
 
+/** The reasons a link's end fails the tasks on it (held.ts failTasksForLink). */
+const LINK_END_REASONS: ReadonlySet<string> = new Set(['link_broken', 'link_revoked']);
+
+/**
+ * Two kinds-only facts about a sent task, for main's fan-out rows:
+ * `answered` when the newest message in its history (the other PC's notices
+ * left out) came from the other PC, so its agent replied after the last
+ * message this PC sent; `linkEnded` when it failed here because its link
+ * ended, not by a `failed` the other PC sent.
+ */
+function sentTaskFacts(row: Rec, status: Rec, metadata: Rec): Rec {
+  const remote = isRec(metadata.remote) ? metadata.remote : null;
+  if (!remote) return {};
+  const inbox = new Map<string, unknown>();
+  for (const i of Array.isArray(remote.inbox) ? remote.inbox : []) if (isRec(i) && str(i.messageId)) inbox.set(i.messageId as string, i.kind);
+  const history = Array.isArray(row.history) ? row.history : [];
+  let answered = false;
+  for (let k = history.length - 1; k >= 0; k -= 1) {
+    const id = isRec(history[k]) ? str((history[k] as Rec).messageId) : undefined;
+    const kind = id ? inbox.get(id) : undefined;
+    if (kind === 'notice') continue;
+    answered = kind === 'reply' || kind === 'state';
+    break;
+  }
+  const evidence = isRec(status.evidence) ? status.evidence : {};
+  const linkEnded = status.state === 'failed' && LINK_END_REASONS.has(str(evidence.summary) ?? '') && remote.stateSync !== 'failed';
+  return { ...(answered ? { answered: true } : {}), ...(linkEnded ? { linkEnded: true } : {}) };
+}
+
 /**
  * What one task source returns for a query: every task in full without
  * `view` (the legacy contract), and for `view: 'page'` either the named task in
@@ -458,8 +487,10 @@ export function applyTaskQueryView<T extends object>(tasks: readonly T[], params
       const row = task as Rec;
       const status = isRec(row.status) ? row.status : {};
       const metadata = isRec(row.metadata) ? row.metadata : {};
+      const facts = sentTaskFacts(row, status, metadata);
       const remote = remoteStateView(metadata.remote);
-      return { id: row.id, status: { state: status.state }, metadata: { updatedAt: metadata.updatedAt, ...(remote ? { remote } : {}) } };
+      const shown = remote || Object.keys(facts).length > 0 ? { ...(remote ?? {}), ...facts } : null;
+      return { id: row.id, status: { state: status.state }, metadata: { updatedAt: metadata.updatedAt, ...(shown ? { remote: shown } : {}) } };
     });
   }
   if (isAnchorTaskQuery(params)) return taskAnchorRows(tasks);
