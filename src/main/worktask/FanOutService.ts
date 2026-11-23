@@ -180,7 +180,8 @@ ${push}${connections}${signedIn}`;
  *  `pick`: null = no pool account for this task (it launches as before). */
 export interface AccountPick {
   prepare: (task: { index: number }) => Promise<void>;
-  pick: (task: { index: number }) => { accountId: string } | { refusal: string } | null;
+  /** `cwd`: the folder the task's pane starts in (a WSL share starts WSL). */
+  pick: (task: { index: number; cwd?: string }) => { accountId: string } | { refusal: string } | null;
 }
 
 export type LaunchSlot =
@@ -395,7 +396,7 @@ export interface FanOutRequest {
    *  factory switch, so turning the factory off stops a launch in progress.
    *  `task.index` names the task (its index in `titles`); `task.accountId`
    *  the account the pool picked for it (accountPick), when it did. */
-  mayLaunch?: (task?: { index: number; accountId?: string }) => string | null;
+  mayLaunch?: (task?: { index: number; accountId?: string; taskId?: string }) => string | null;
   /** The fan-out account pool (worktask/fanoutAccountPool.ts): for each task,
    *  `prepare` is awaited after its launch slot, then `pick` runs right before
    *  mayLaunch, and what it picked is booked in the task's launch record in
@@ -1491,7 +1492,7 @@ export class FanOutService {
     /** See FanOutRequest.originPin. */
     originPin?: string;
     /** See FanOutRequest.mayLaunch. */
-    mayLaunch?: (task?: { index: number; accountId?: string }) => string | null;
+    mayLaunch?: (task?: { index: number; accountId?: string; taskId?: string }) => string | null;
     /** See FanOutRequest.accountPick. */
     accountPick?: AccountPick;
     /** See FanOutRequest.awaitLaunchSlot. */
@@ -1862,7 +1863,7 @@ export class FanOutService {
     // The caller's last word before anything is launched.
     let refusal: string | null = null;
     try {
-      const picked = ctx.accountPick?.pick({ index: ctx.index }) ?? null;
+      const picked = ctx.accountPick?.pick({ index: ctx.index, cwd }) ?? null;
       if (picked && 'refusal' in picked) refusal = picked.refusal;
       else if (picked) accountId = picked.accountId;
     } catch (err) {
@@ -1870,7 +1871,7 @@ export class FanOutService {
     }
     if (!refusal) {
       try {
-        refusal = ctx.mayLaunch?.({ index: ctx.index, ...(accountId ? { accountId } : {}) }) ?? null;
+        refusal = ctx.mayLaunch?.({ index: ctx.index, taskId, ...(accountId ? { accountId } : {}) }) ?? null;
       } catch (err) {
         refusal = `the launch check failed: ${String(err)}`;
       }

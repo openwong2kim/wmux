@@ -83,6 +83,10 @@ export interface TaskLaunch {
    *  create runs it there, whatever the renderer names. Absent with the pool
    *  off, for a non-Claude launch, and on any older record. */
   accountId?: string;
+  /** The task ran on the account pool once: kept across later generations,
+   *  a codex or agy one included (which records no account), so a Claude
+   *  line typed later reads its pane's account again. */
+  pooled?: true;
 }
 
 export interface TaskPane {
@@ -104,7 +108,8 @@ function isLaunch(v: unknown): v is TaskLaunch {
     && (r.botId === undefined || typeof r.botId === 'string')
     && typeof r.ownerWorkspaceId === 'string' && isState(r.state)
     && (r.sandboxed === undefined || r.sandboxed === true)
-    && (r.accountId === undefined || (typeof r.accountId === 'string' && r.accountId.length > 0 && r.accountId.length <= 128));
+    && (r.accountId === undefined || (typeof r.accountId === 'string' && r.accountId.length > 0 && r.accountId.length <= 128))
+    && (r.pooled === undefined || r.pooled === true);
 }
 
 function isPane(v: unknown): v is TaskPane {
@@ -363,6 +368,7 @@ export class WorkerSlots {
     const samePane = !!prior && relaunched?.taskId === req.taskId && relaunched.gen === prior.gen;
     const sandboxed = req.sandboxed ?? (prior?.sandboxed === true && samePane);
     const accountId = req.accountId === null ? undefined : (req.accountId ?? (samePane ? prior?.accountId : undefined));
+    const pooled = !!accountId || (prior?.pooled === true && prior.taskId === req.taskId);
     const next: TaskLaunch = {
       taskId: req.taskId,
       gen: top + 1,
@@ -373,6 +379,7 @@ export class WorkerSlots {
       state: 'launching',
       ...(sandboxed ? { sandboxed: true as const } : {}),
       ...(accountId ? { accountId } : {}),
+      ...(pooled ? { pooled: true as const } : {}),
     };
     if (this.mode === 'broken') {
       // The file may be free again (a lock that held it at load is gone).
@@ -445,20 +452,15 @@ export class WorkerSlots {
    *  (a create that launched no Claude drops it: undefined; a pane moved to
    *  another account in place). Ignored (false) for another generation or a
    *  launch with no pool account. */
-  setLaunchAccount(taskId: string, gen: number, accountId: string | undefined): boolean {
+  setLaunchAccount(taskId: string, gen: number, accountId: string | undefined, opts: { unpool?: boolean } = {}): boolean {
     const t = this.tasks.get(taskId);
-    if (!t || t.gen !== gen || t.accountId === undefined || t.accountId === accountId) return false;
-    const { accountId: _old, ...rest } = t;
-    this.tasks.set(taskId, accountId ? { ...rest, accountId } : rest);
+    if (!t || t.gen !== gen || t.accountId === undefined || (t.accountId === accountId && !opts.unpool)) return false;
+    const { accountId: _old, pooled: _pooled, ...rest } = t;
+    // A pane the pool keeps out of (WSL) unmarks the task too; any other drop keeps the mark.
+    const keepMark = !opts.unpool && t.pooled === true;
+    this.tasks.set(taskId, { ...rest, ...(accountId ? { accountId } : {}), ...(accountId || keepMark ? { pooled: true as const } : {}) });
     this.persist();
     return true;
-  }
-
-  /** Whether any launch record names a pool account (a cheap gate before
-   *  reading a pane's live env for one). */
-  hasPoolAccounts(): boolean {
-    for (const t of this.tasks.values()) if (t.accountId) return true;
-    return false;
   }
 
   /** The launches that name a pool account and may still run a worker: a
@@ -675,16 +677,9 @@ export interface PaneRelaunchLine {
   paneAccount?: string;
 }
 
-/** A launch line is about to be typed into an existing pane (pty:write-launch,
- *  worktask:refire): when the pane is a task's, that is a new launch of the
- *  task, recorded now with the pane and its workspace. THROWS when it cannot
- *  be recorded (nothing is typed). Returns how to settle it once typed, or
- *  null for a pane no task is known for. For a task whose last launch had a
- *  pool account, `launch` decides the new one: a Claude line keeps the
- *  pane's account (held, when no person asked, while that account cannot run
- *  it); any other line has none. */
-export function beginPaneRelaunch(sessionId: string, launch?: PaneRelaunchLine): ((typed: boolean) => void) | null {
-  const slots = getWorkerSlots();
+/** The task a pane is the worker of, as a relaunch typed into it resolves
+ *  it (below), with what it was resolved from; null for no task. */
+function paneTask(sessionId: string, slots: WorkerSlots): { taskId: string; pane: TaskPane | null; bot: ReturnType<typeof botWorkerSessionRecord> | null; owner: PaneOwner | null; holder: string | null | undefined } | null {
   const pane = slots.paneOf(sessionId);
   const bot = pane ? null : botWorkerSessionRecord(sessionId);
   // The task of the pane as every reader resolves it (resolvePaneOwner).
@@ -702,19 +697,46 @@ export function beginPaneRelaunch(sessionId: string, launch?: PaneRelaunchLine):
   const held = !owner && holder ? slots.workspaceOf(holder) : null;
   const heldTask = held && getTaskLedger().findByTaskWorkspace(holder as string)?.id === held.taskId ? held.taskId : undefined;
   const taskId = owner?.taskId ?? heldTask;
-  if (!taskId) return null;
+  return taskId ? { taskId, pane, bot, owner, holder } : null;
+}
+
+/** Whether the task of a pane ran on the account pool (TaskLaunch.pooled):
+ *  only then is its live env read for a relaunch's account. */
+export function paneTaskPooled(sessionId: string, slots: WorkerSlots = getWorkerSlots()): boolean {
+  try {
+    const t = paneTask(sessionId, slots);
+    const launch = t ? slots.launchOf(t.taskId) : null;
+    return !!launch && (!!launch.accountId || launch.pooled === true);
+  } catch {
+    return false;
+  }
+}
+
+/** A launch line is about to be typed into an existing pane (pty:write-launch,
+ *  worktask:refire): when the pane is a task's, that is a new launch of the
+ *  task, recorded now with the pane and its workspace. THROWS when it cannot
+ *  be recorded (nothing is typed). Returns how to settle it once typed, or
+ *  null for a pane no task is known for. For a task that ran on the account
+ *  pool, `launch` decides the new one: a Claude line keeps the
+ *  pane's account (held, when no person asked, while that account cannot run
+ *  it); any other line has none. */
+export function beginPaneRelaunch(sessionId: string, launch?: PaneRelaunchLine): ((typed: boolean) => void) | null {
+  const slots = getWorkerSlots();
+  const found = paneTask(sessionId, slots);
+  if (!found) return null;
+  const { taskId, pane, bot, owner, holder } = found;
   const prior = slots.launchOf(taskId);
   // A pool task: a Claude line runs on the pane's account (its live env, else
   // the task's last one), held as a respawn would be when wmux types it on
   // its own; any other line takes no account, so it counts on none.
   let accountId: string | null | undefined;
-  if (prior?.accountId && launch) {
+  if ((prior?.accountId || prior?.pooled) && launch) {
     const command = splitModelEnvMarker(launch.line.trim()).command;
     if (!namesClaude(command) || namesCodex(command)) {
       accountId = null;
     } else {
       accountId = launch.paneAccount ?? prior.accountId;
-      if (!launch.byPerson) {
+      if (accountId && !launch.byPerson) {
         const held = poolRelaunchRefusal(accountId, { taskId });
         if (held) throw new Error(held);
       }

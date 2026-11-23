@@ -27,7 +27,7 @@ import { appAccountVault, createAccountOverride, mergeVaultSecretEnv, noteVaultS
 import { loadClaudeCredential } from '../../claude/claudeCredential';
 import { BOT_SECRET_LIMITS } from '../../../shared/botSecret';
 import { withAccountQuota } from '../../account/accountQuotaGate';
-import { poolAccountForCreate, poolAccountOfLivePane } from '../../worktask/fanoutAccountPool';
+import { poolAccountForCreate, poolAccountOfLivePane, poolCreateReserveRefusal } from '../../worktask/fanoutAccountPool';
 import { usageReserveHoldForWorkspace, usageReserveRefusalText } from '../../usage/usageReserve';
 import { botWorkerForCreate, botWorkerLaunchTask, botWorkerSessionRecord, noteGuardedLaunchTyped, clearedLaunchLine, forgetBotWorkerSession, guardedClaudeCwdRefusal, guardedCodexCwdRefusal, guardedCodexLaunch, guardedLaunchOf, isBotWorkerSession, noteBotWorkerSession, paneLaunchFolders, setWorkerMcpResolvers, taskConnectors, taskGatewayNames, withBotWorkerMergeGuard, type BotWorkerCreate, type WorkerGatewayLaunch } from '../../agents/botWorkerMergeGuard';
 import { isPlainCmdLaunchLine, namesClaude } from '../../../shared/botWorkerGuard';
@@ -311,11 +311,15 @@ function withPoolAccount(options: PtyCreateOptions | undefined, daemon: boolean)
   if (decision.kind === 'none') return { options, pinned: false };
   if (decision.kind === 'release') {
     const owner = slots.launchOf(decision.taskId)?.ownerWorkspaceId;
-    slots.setLaunchAccount(decision.taskId, decision.gen, undefined);
+    slots.setLaunchAccount(decision.taskId, decision.gen, undefined, { unpool: decision.wsl === true });
     // A WSL Claude worker runs as before the pool, so the usage reserve checks
-    // its caller's account, as the fan-out did before the pool.
+    // its caller's account, as the fan-out did before the pool; a stop is
+    // held through the fan-out, so a bot's request is kept for the reset.
     const hold = decision.wsl && owner ? usageReserveHoldForWorkspace(owner) : null;
-    if (hold) throw new Error(`PTY_CREATE: ${usageReserveRefusalText(hold.untilMs, Date.now(), false)}`);
+    if (hold) {
+      const refusal = poolCreateReserveRefusal(decision.taskId, hold) ?? usageReserveRefusalText(hold.untilMs, Date.now(), false);
+      throw new Error(`PTY_CREATE: ${refusal}`);
+    }
     return { options, pinned: false };
   }
   if (decision.kind === 'default') return { options, pinned: true };

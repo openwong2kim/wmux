@@ -130,7 +130,8 @@ import {
 import { validateFanoutTaskGraph, type FanoutTaskGraph } from '../../../shared/fanoutTaskGraph';
 import { agentRow } from '../../../shared/agentIdentity';
 import { noteUsageReserveHeld, usageReserveHoldForAccount, usageReserveHoldForWorkspace, usageReserveRefusalText, type UsageReserveHold } from '../../usage/usageReserve';
-import { pickFromPool, poolAllHeld, preparePool, type PreparedPool } from '../../worktask/fanoutAccountPool';
+import { pickFromPool, poolAllHeld, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
+import { wslShareToLinux } from '../../../shared/wslPaths';
 import { poolRefusalText } from '../../../shared/fanoutAccountPool';
 import { botTemplate, type BotBinding, type BotProfile } from '../../../shared/bot';
 import { SHARED_SURFACE } from '../../../shared/botSurface';
@@ -2377,9 +2378,12 @@ export function registerFanOutRpc(
           prepare: async (task: { index: number }) => {
             if (spendsUsageReserve(taskAgent(task.index))) await refreshPool();
           },
-          pick: (task: { index: number }): { accountId: string } | { refusal: string } | null => {
+          pick: (task: { index: number; cwd?: string }): { accountId: string } | { refusal: string } | null => {
             const current = pool;
             if (!current || !spendsUsageReserve(taskAgent(task.index))) return null;
+            // A task folder on a WSL share starts a WSL pane, which the pool
+            // keeps out of: its launch checks the caller's account as before.
+            if (task.cwd && wslShareToLinux(task.cwd)) return null;
             const picked = pick(current);
             if (picked.kind === 'pick') return { accountId: picked.accountId };
             // Every usable account is in the reserve: held as the reserve
@@ -2482,8 +2486,12 @@ export function registerFanOutRpc(
             // account: asked again right before each pane spawns.
             accountPick,
             mayLaunch: (task) => {
+              const firstPass = !launchPassed;
               const refusal = (bot && botPort ? botPort.launchRefusal(bot.botId, botWakeId) : null) ?? reserveAtTaskLaunch(task?.index, task?.accountId);
               if (!refusal) launchPassed = true;
+              // A pool worker whose pane turns out WSL is checked on the
+              // caller's account at its create: held there as it would be here.
+              if (!refusal && task?.accountId && task.taskId) registerPoolCreateReserveHold(task.taskId, (hold) => reserveRefusal(hold, firstPass));
               return refusal;
             },
             // ...and only once the factory's agent budget has a slot for it

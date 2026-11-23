@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WORKER_SLOTS_FILENAME, WorkerSlots, beginPaneRelaunch, setWorkerSlotsForTests } from '../../factory/workerSlots';
+import { WORKER_SLOTS_FILENAME, WorkerSlots, beginPaneRelaunch, paneTaskPooled, setWorkerSlotsForTests } from '../../factory/workerSlots';
 import { setUsageReserve } from '../../usage/usageReserve';
 import {
   claudeFolderSignedIn,
@@ -16,6 +16,9 @@ import {
   poolAllHeld,
   poolAccountOfPaneEnv,
   poolReserveHeldForWorkspace,
+  poolAccountOfLivePane,
+  poolCreateReserveRefusal,
+  registerPoolCreateReserveHold,
   setFanoutAccountPoolHost,
   poolRelaunchRefusal,
   preparePool,
@@ -354,12 +357,83 @@ describe('a relaunch typed into a pool task\'s pane', () => {
 });
 
 describe('a held bot fan-out\'s reserve check with the pool on', () => {
-  it('stays held while every member of the workspace\'s last pool is, and falls back when there is none', async () => {
-    await preparePool('ws-owner', { settings: () => on, host: host(), accounts: () => [acct('a')], binding: () => undefined, dirOk: () => true, signedIn: async () => true });
-    const holdFor = (held: string[]) => (account: string) => (held.includes(account) ? { account, untilMs: 5 } : null);
-    expect(poolReserveHeldForWorkspace('ws-owner', { poolOn: () => true, holdFor: holdFor(['a', POOL_DEFAULT_ACCOUNT]) })).toBe(true);
-    expect(poolReserveHeldForWorkspace('ws-owner', { poolOn: () => true, holdFor: holdFor(['a']) })).toBe(false);
-    expect(poolReserveHeldForWorkspace('ws-other', { poolOn: () => true, holdFor: holdFor(['a']) })).toBeUndefined();
-    expect(poolReserveHeldForWorkspace('ws-owner', { poolOn: () => false })).toBeUndefined();
+  const spent = (accountId: string) => ({ accountId, status: 'ok' as const, snapshot: { sessionPct: 100, sessionResetEpochSec: Math.floor(Date.now() / 1000) + 600, fetchedAtMs: Date.now() } as never, fetchedAtMs: Date.now(), lastError: null });
+  const read = () => preparePool('ws-owner', { settings: () => on, host: host(), accounts: () => [acct('a')], binding: () => undefined, dirOk: () => true, signedIn: async () => true });
+  const deps = (held: string[], over: Record<string, unknown> = {}) => ({
+    poolOn: () => true, slots: slots(), dirOk: () => true, workerMayRun: () => true, refresh: () => undefined,
+    host: host({ claudeUsage: () => [spent('a')] }),
+    holdFor: (account: string) => (held.includes(account) ? { account, untilMs: Date.now() + 60_000 } : null),
+    ...over,
+  });
+
+  it('decides the wake with the pick that held it: one out of quota and one reserve-held stays held', async () => {
+    await read();
+    // a: out of quota, not held; default: usable but held → the pick says 'held'.
+    expect(poolReserveHeldForWorkspace('ws-owner', deps([POOL_DEFAULT_ACCOUNT]))).toBe(true);
+    expect(poolReserveHeldForWorkspace('ws-owner', deps([]))).toBe(false);
+  });
+
+  it('a pool never read (after a restart) is read in the background and stays held meanwhile', () => {
+    const refresh = vi.fn();
+    expect(poolReserveHeldForWorkspace('ws-new', deps([], { refresh }))).toBe(true);
+    expect(refresh).toHaveBeenCalledWith('ws-new');
+  });
+
+  it('falls back to the caller\'s account when the pool is off or the daemon is away', async () => {
+    vi.spyOn(os, 'homedir').mockReturnValue(tmp());
+    await setFanoutAccountPoolSettings({ enabled: true });
+    await read();
+    const { poolOn: _p, ...rest } = deps([]);
+    expect(poolReserveHeldForWorkspace('ws-owner', { ...rest, host: host({ daemonConnected: () => false }) })).toBeUndefined();
+    expect(poolReserveHeldForWorkspace('ws-owner', { ...rest, host: host({ daemonConnected: () => true, claudeUsage: () => [spent('a')] }) })).toBe(false);
+    expect(poolReserveHeldForWorkspace('ws-owner', { ...deps([]), poolOn: () => false })).toBeUndefined();
+  });
+});
+
+describe('a pool task across non-Claude generations', () => {
+  it('keeps its pool mark through a codex line, so a later Claude line reads its pane\'s account again', async () => {
+    const s = slots();
+    setWorkerSlotsForTests(s);
+    const { gen } = s.beginLaunch({ taskId: 't', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'acc-a' });
+    s.launched('t', gen, 'ws-t', 'pty-t');
+    beginPaneRelaunch('pty-t', { line: 'codex', byPerson: true })?.(true);
+    expect(s.launchOf('t')).toMatchObject({ pooled: true });
+    expect(s.launchOf('t')).not.toHaveProperty('accountId');
+    expect(paneTaskPooled('pty-t', s)).toBe(true);
+    const rpc = vi.fn(async () => [{ id: 'pty-t', env: { CLAUDE_CONFIG_DIR: '/nowhere' } }]);
+    await poolAccountOfLivePane('pty-t', rpc, s);
+    expect(rpc).toHaveBeenCalled();
+    beginPaneRelaunch('pty-t', { line: 'claude --resume x', byPerson: true, paneAccount: 'acc-b' })?.(true);
+    expect(s.launchOf('t')).toMatchObject({ accountId: 'acc-b', pooled: true });
+  });
+
+  it('a task that never ran on the pool is not read, and never becomes the default login', async () => {
+    const s = slots();
+    setWorkerSlotsForTests(s);
+    const { gen } = s.beginLaunch({ taskId: 'p', origin: 'owner', ownerWorkspaceId: 'ws' });
+    s.launched('p', gen, 'ws-p', 'pty-p');
+    const rpc = vi.fn(async () => []);
+    expect(await poolAccountOfLivePane('pty-p', rpc, s)).toBeUndefined();
+    expect(rpc).not.toHaveBeenCalled();
+    beginPaneRelaunch('pty-p', { line: 'claude', byPerson: false })?.(true);
+    expect(s.launchOf('p')).not.toHaveProperty('accountId');
+    expect(s.launchOf('p')).not.toHaveProperty('pooled');
+  });
+
+  it('a WSL pane\'s release unmarks the task', () => {
+    const s = slots();
+    const { gen } = s.beginLaunch({ taskId: 'w', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'acc-a' });
+    s.setLaunchAccount('w', gen, undefined, { unpool: true });
+    expect(s.launchOf('w')).not.toHaveProperty('pooled');
+  });
+});
+
+describe('a reserve stop at a WSL pane\'s create', () => {
+  it('goes through the hold its fan-out registered, once', () => {
+    const hold = vi.fn(() => 'usage reserve: held for the reset');
+    registerPoolCreateReserveHold('t9', hold);
+    expect(poolCreateReserveRefusal('t9', { account: 'default', untilMs: 5 })).toBe('usage reserve: held for the reset');
+    expect(hold).toHaveBeenCalledWith({ account: 'default', untilMs: 5 });
+    expect(poolCreateReserveRefusal('t9', { account: 'default', untilMs: 5 })).toBeNull();
   });
 });

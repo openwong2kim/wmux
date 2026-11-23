@@ -55,7 +55,7 @@ import type { AccountUsageEntry } from '../account/AccountUsageService';
 import type { UsageSnapshot } from '../claude/UsageApi';
 import { macKeychainServiceName } from '../claude/claudeCredential';
 import { usageReserveHoldForAccount } from '../usage/usageReserve';
-import { getWorkerSlots, parseLaunchToken, type WorkerSlots } from '../factory/workerSlots';
+import { getWorkerSlots, paneTaskPooled, parseLaunchToken, type WorkerSlots } from '../factory/workerSlots';
 import { liveHolders } from '../factory/workerHolders';
 
 /** What the running app hands the pool (index.ts): none of it is read while the pool is off. */
@@ -79,8 +79,16 @@ export interface FanoutAccountPoolHost {
 let host: FanoutAccountPoolHost | null = null;
 /** Each caller workspace's pool as last read (preparePool), for checks that
  *  run between fan-outs: the held bot fan-outs' reserve check. */
-const lastPools = new Map<string, PreparedPool>();
+const lastPools = new Map<string, { pool: PreparedPool; at: number }>();
 const LAST_POOLS_MAX = 200;
+/** A cached pool older than this is read again (in the background) for the
+ *  next held-fan-out pass. */
+const LAST_POOL_TTL_MS = 60_000;
+const refreshingPools = new Set<string>();
+/** Per launching task: how its fan-out holds a request the reserve stops at
+ *  the pane's create (a WSL pane, checked on its caller's account). */
+const createReserveHolds = new Map<string, (hold: { account: string; untilMs: number }) => string>();
+const CREATE_RESERVE_HOLDS_MAX = 500;
 
 export function setFanoutAccountPoolHost(next: FanoutAccountPoolHost | null): void {
   host = next;
@@ -135,6 +143,8 @@ export function resetFanoutAccountPoolForTests(): void {
   writes = Promise.resolve();
   host = null;
   lastPools.clear();
+  refreshingPools.clear();
+  createReserveHolds.clear();
 }
 
 // ── Eligibility (async, before the launches) ────────────────────────────────
@@ -253,7 +263,7 @@ export async function preparePool(callerWorkspaceId: string, deps: PreparePoolDe
   if (excluded.length > 0) log(`[fanout-pool] left out of the pool: ${excluded.map(([id, why]) => `${id} (${why})`).join(', ')}`);
   const pool = { settings, group, members };
   lastPools.delete(callerWorkspaceId);
-  lastPools.set(callerWorkspaceId, pool);
+  lastPools.set(callerWorkspaceId, { pool, at: Date.now() });
   while (lastPools.size > LAST_POOLS_MAX) lastPools.delete(lastPools.keys().next().value as string);
   return pool;
 }
@@ -376,20 +386,57 @@ export function poolRelaunchRefusal(accountId: string, deps: PickDeps & { accoun
 }
 
 /**
- * Whether the usage reserve still holds a held bot fan-out of
- * `workspaceId` with the pool on: every member of that workspace's last
- * read pool is held. Undefined when the pool is off or was never read for
- * it (the caller then checks the workspace's own account, as without a pool).
+ * Whether a held bot fan-out of `workspaceId` stays held with the pool on:
+ * decided by the same pick that held it (every usable account held by the
+ * reserve, or every one out of quota with a known reset). Undefined when the
+ * pool is off or the daemon is away: the caller then checks the workspace's
+ * own account, as the fan-out itself would. A pool not read yet (after a
+ * restart) or read too long ago is read again in the background, and stays
+ * held until that read is in.
  */
 export function poolReserveHeldForWorkspace(
   workspaceId: string,
-  deps: { holdFor?: (account: string) => { account: string; untilMs: number } | null; poolOn?: () => boolean } = {},
+  deps: PickDeps & { poolOn?: () => boolean; refresh?: (workspaceId: string) => void } = {},
 ): boolean | undefined {
-  const poolOn = deps.poolOn ?? (() => !!host && loadFanoutAccountPoolSettings().enabled);
+  const h = deps.host === undefined ? host : deps.host;
+  const poolOn = deps.poolOn ?? (() => !!h && h.daemonConnected() && loadFanoutAccountPoolSettings().enabled);
   if (!poolOn()) return undefined;
-  const pool = lastPools.get(workspaceId);
-  if (!pool || pool.members.length === 0) return undefined;
-  return poolAllHeld(pool, deps.holdFor) !== null;
+  const now = (deps.now ?? Date.now)();
+  const entry = lastPools.get(workspaceId);
+  if (!entry || now - entry.at > LAST_POOL_TTL_MS) {
+    (deps.refresh ?? refreshPoolInBackground)(workspaceId);
+    if (!entry) return true;
+  }
+  const pick = pickPoolAccount(poolCandidates(entry.pool, deps), entry.pool.settings);
+  return pick.kind === 'none' && (pick.reason === 'held' || (pick.reason === 'quota' && pick.availableAtMs !== null));
+}
+
+function refreshPoolInBackground(workspaceId: string): void {
+  if (refreshingPools.has(workspaceId)) return;
+  refreshingPools.add(workspaceId);
+  void preparePool(workspaceId).catch(() => null).finally(() => refreshingPools.delete(workspaceId));
+}
+
+/** A launching pool task's fan-out says how a reserve stop at its pane's
+ *  create is held (its reserveRefusal), so a bot's request is kept for the
+ *  reset as it would be at the launch check. */
+export function registerPoolCreateReserveHold(taskId: string, hold: (h: { account: string; untilMs: number }) => string): void {
+  createReserveHolds.delete(taskId);
+  createReserveHolds.set(taskId, hold);
+  while (createReserveHolds.size > CREATE_RESERVE_HOLDS_MAX) createReserveHolds.delete(createReserveHolds.keys().next().value as string);
+}
+
+/** The refusal of a create the reserve stops, held through the task's
+ *  fan-out when it registered one (used once); null when it did not. */
+export function poolCreateReserveRefusal(taskId: string, hold: { account: string; untilMs: number }): string | null {
+  const fn = createReserveHolds.get(taskId);
+  if (!fn) return null;
+  createReserveHolds.delete(taskId);
+  try {
+    return fn(hold);
+  } catch {
+    return null;
+  }
 }
 
 /** The pool account a pane's live env runs on: the registered account whose
@@ -402,10 +449,10 @@ export function poolAccountOfPaneEnv(env: Record<string, string>, accounts: () =
 }
 
 /** The pool account of a live pane, read from the daemon's session env, for
- *  a relaunch typed into it; undefined when no launch names a pool account
- *  (nothing is read then) or it cannot be read. */
+ *  a relaunch typed into it; undefined when the pane's task never ran on the
+ *  pool (nothing is read then) or it cannot be read. */
 export async function poolAccountOfLivePane(sessionId: string, rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>, slots: WorkerSlots = getWorkerSlots()): Promise<string | undefined> {
-  if (!slots.hasPoolAccounts()) return undefined;
+  if (!paneTaskPooled(sessionId, slots)) return undefined;
   try {
     const sessions = await rpc('daemon.listSessions', {}) as Array<{ id?: unknown; env?: unknown }>;
     const s = Array.isArray(sessions) ? sessions.find((x) => x?.id === sessionId) : undefined;

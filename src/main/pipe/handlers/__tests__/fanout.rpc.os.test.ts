@@ -20,7 +20,7 @@
 // and a denial must be reported instead of going quiet.
 
 import { DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, pickPoolAccount } from '../../../../shared/fanoutAccountPool';
-import type { PreparedPool } from '../../../worktask/fanoutAccountPool';
+import { poolCreateReserveRefusal, type PreparedPool } from '../../../worktask/fanoutAccountPool';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
@@ -1619,11 +1619,23 @@ describe('task.fanout.start — usage reserve with the account pool', () => {
     expect(h.start).toHaveBeenCalledTimes(1);
     const req = h.request();
     expect(req.accountPick?.pick({ index: 0 })).toEqual({ accountId: 'acc-a' });
-    expect(req.mayLaunch?.({ index: 0, accountId: 'acc-a' })).toBeNull();
+    expect(req.mayLaunch?.({ index: 0, accountId: 'acc-a', taskId: 'wtask-p1' })).toBeNull();
+    // Its pane, if it turns out WSL, is stopped at its create with the reserve's own (holding) refusal.
+    expect(poolCreateReserveRefusal('wtask-p1', { account: 'default', untilMs })).toMatch(/^usage reserve: /);
     held.add('acc-a');
     expect(req.mayLaunch?.({ index: 0, accountId: 'acc-a' })).toMatch(/^usage reserve: /);
     // Every pool account held: the reserve's own refusal (a bot's request is kept for the reset).
     expect(req.accountPick?.pick({ index: 0 })).toEqual({ refusal: expect.stringMatching(/^usage reserve: .*run unattended/) });
+  });
+
+  it('a task whose folder is a WSL share starts WSL: no pool pick', async () => {
+    const h = setup({ pool: { members: ['acc-a'], holdFor: () => null }, approval: { approved: true, outcome: 'approved' } });
+    expect((await h.call(goodParams())).status).toBe('accepted');
+    await h.flush();
+    await h.flush();
+    const req = h.request();
+    expect(req.accountPick?.pick({ index: 0, cwd: '\\\\wsl.localhost\\Ubuntu\\home\\me\\wt' })).toBeNull();
+    expect(req.accountPick?.pick({ index: 0, cwd: 'C:\\work\\wt' })).toEqual({ accountId: 'acc-a' });
   });
 
   it('a failed pool read is asked again, not kept as fresh', async () => {
