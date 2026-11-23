@@ -89,14 +89,35 @@ describe('TaskbarStatus', () => {
     expect(progress.mock.calls.every(([running]) => running === false)).toBe(true);
   });
 
-  it('follows the count, clears at 0, and skips repeats of the same label', () => {
+  it('follows the count, clears at 0, and refreshes the description under an unchanged label', () => {
     const { status, overlay } = harness();
     status.setState({ enabled: true, running: false });
     overlay.mockClear();
     status.setCount(12);
-    status.setCount(15); // still "9+"
+    status.setCount(15); // still "9+", new description
+    status.setCount(15); // nothing new
     status.setCount(0);
-    expect(overlay.mock.calls).toEqual([['9+', 'wmux: 12 unread notifications'], [null, '']]);
+    expect(overlay.mock.calls).toEqual([
+      ['9+', 'wmux: 12 unread notifications'],
+      ['9+', 'wmux: 15 unread notifications'],
+      [null, ''],
+    ]);
+  });
+
+  it('a late close of the old window does not unbind the window adopted after it', () => {
+    const { status } = harness();
+    const oldSink: TaskbarSink = { setOverlay: vi.fn(), setProgress: vi.fn() };
+    const newSink: TaskbarSink = { setOverlay: vi.fn(), setProgress: vi.fn() };
+    status.setState({ enabled: true, running: false });
+    status.bind(oldSink);
+    status.bind(newSink); // recovery window adopted
+    status.unbind(oldSink); // old window's 'closed' fires afterwards
+    status.setCount(4);
+    expect(newSink.setOverlay).toHaveBeenLastCalledWith('4', 'wmux: 4 unread notifications');
+    expect(oldSink.setOverlay).not.toHaveBeenCalledWith('4', expect.anything());
+    status.unbind(newSink);
+    status.setCount(5);
+    expect(newSink.setOverlay).not.toHaveBeenCalledWith('5', expect.anything());
   });
 
   it('debounces the progress state so a quick flip does not flicker', () => {
@@ -163,6 +184,13 @@ describe('win32 gate (source text)', () => {
       const firstLine = body.split('\n')[1];
       expect(firstLine.trim(), name).toBe("if (process.platform !== 'win32') return;");
     }
+  });
+
+  it('every adopted main window is bound, not only the first', () => {
+    const index = readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf8');
+    const fn = index.slice(index.indexOf('function adoptMainWindow('));
+    expect(fn.slice(0, fn.indexOf('\n}\n'))).toContain('bindTaskbarWindow(win);');
+    expect(index.match(/bindTaskbarWindow\(/g)).toHaveLength(1);
   });
 
   it('the overlay count is fed from the dock-badge path', () => {

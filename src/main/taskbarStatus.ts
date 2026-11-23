@@ -123,6 +123,7 @@ export class TaskbarStatus {
   private enabled: boolean | null = null;
   private sink: TaskbarSink | null = null;
   private shownText: string | null = null;
+  private shownDescription = '';
   private shownProgress = false;
   private timer: unknown = null;
 
@@ -132,11 +133,18 @@ export class TaskbarStatus {
   bind(sink: TaskbarSink | null): void {
     this.sink = sink;
     this.shownText = null;
+    this.shownDescription = '';
     this.shownProgress = false;
     if (!sink || !this.enabled) return;
     this.applyOverlay(true);
     this.cancelTimer();
     this.applyProgress(true);
+  }
+
+  /** Drop `sink` only if it is still the bound one: a window adopted after it
+   *  must keep its binding when the old window's `closed` fires late. */
+  unbind(sink: TaskbarSink): void {
+    if (this.sink === sink) this.bind(null);
   }
 
   setCount(count: number): void {
@@ -166,9 +174,13 @@ export class TaskbarStatus {
   private applyOverlay(force: boolean): void {
     if (!this.sink || !this.enabled) return;
     const text = overlayBadgeText(this.count);
-    if (!force && text === this.shownText) return;
+    // The description carries the exact count, so "9+" from 12 to 15 still
+    // re-applies for screen readers.
+    const description = text ? overlayDescription(this.count) : '';
+    if (!force && text === this.shownText && description === this.shownDescription) return;
     this.shownText = text;
-    this.sink.setOverlay(text, text ? overlayDescription(this.count) : '');
+    this.shownDescription = description;
+    this.sink.setOverlay(text, description);
   }
 
   private scheduleProgress(): void {
@@ -190,6 +202,7 @@ export class TaskbarStatus {
   private clearAll(wasShowing: boolean): void {
     if (!this.sink || !wasShowing) return;
     this.shownText = null;
+    this.shownDescription = '';
     this.shownProgress = false;
     this.sink.setOverlay(null, '');
     this.sink.setProgress(false);
@@ -227,7 +240,7 @@ export function bindTaskbarWindow(win: BrowserWindow): void {
   const sink = windowSink(win);
   status.bind(sink);
   win.on('show', () => status.bind(sink));
-  win.once('closed', () => status.bind(null));
+  win.once('closed', () => status.unbind(sink));
 }
 
 /** The unread count, the same value the dock badge gets. No-op off Windows. */

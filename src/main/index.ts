@@ -2828,8 +2828,6 @@ app.on('ready', async () => {
     // takes the daemon.shutdown branch instead of the detach branch.
     onShutdownAll: () => { fullShutdownRequested = true; },
   });
-  // Windows taskbar overlay + progress (no-op elsewhere).
-  bindTaskbarWindow(mainWindow);
 
   // #2263 — the daemon dropped our event subscription and the health probe
   // subscribed again; correct the panes from a fresh read of their state.
@@ -3706,6 +3704,9 @@ function adoptMainWindow(win: BrowserWindow): void {
   // picker a terminal command opens stacks above it (Windows).
   ptyManager.setHostWindow(hostWindowHandle(win));
   reportHostWindow(() => daemonClient, win);
+  // Windows taskbar overlay + progress follow every adopted window, including
+  // one rebuilt after a failed install (no-op elsewhere).
+  bindTaskbarWindow(win);
 
   // Windows logoff/shutdown/restart. WM_ENDSESSION is a per-window message:
   // Electron emits 'session-end' on the BrowserWindow that received it and
