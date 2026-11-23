@@ -811,9 +811,10 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   // ended tasks only a while) keeps its row as it is.
   if (!view) return entry.status === 'review_requested' ? undefined : failAfterGrace(`the task on ${r.pc} is no longer known here`);
   // The worktree's facts, as that PC last said: kept on the row whatever else this pass does (no status moves for
-  // it). A status without them (that PC could not read them) clears them; no status at all leaves them.
+  // it). A status without them (that PC could not read them) clears them; no status at all, or `gone` (which
+  // never carries any), leaves the last ones on the row.
   const progress = view.status?.progress;
-  if (view.status && JSON.stringify(progress) !== JSON.stringify(r.progress)) await patch({ progress });
+  if (view.status && view.status.kind !== 'gone' && JSON.stringify(progress) !== JSON.stringify(r.progress)) await patch({ progress });
   const settled = r.waiting || r.goneSeenAt !== undefined ? { waiting: undefined, goneSeenAt: undefined } : null;
   const newReport = view.reportId !== undefined && view.reportId !== r.reportId;
   if (newReport || (view.state === 'completed' && entry.status !== 'review_requested')) {

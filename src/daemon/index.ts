@@ -169,7 +169,7 @@ import { rootIsRepoTop, rootOriginKey } from './a2aRemote/continueRootGit';
 import { createSpawnWorktree, gitRunner, removeSpawnWorktree } from '../main/a2aRemote/spawnWorktree';
 import { HeadlessMode, headlessReleases } from './a2aRemote/headlessMode';
 import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
-import { A2aHeadlessStarter, worktreeProgress, worktreeUnchanged, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
+import { A2aHeadlessStarter, HEADLESS_PROGRESS_GIT_TIMEOUT_MS, worktreeProgress, worktreeUnchanged, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
 import { createHeadlessSessions } from './a2aRemote/headlessSessions';
 import { endHeadlessOnStop, HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
 import { LinkedTaskTurns } from './a2aRemote/linkedTaskTurns';
@@ -11752,9 +11752,10 @@ async function main(): Promise<void> {
             if (moved.ok) await a2aDeliveryRef?.syncTask(taskId);
             return moved.ok ? { ok: true } : { ok: false, error: moved.error };
           },
-          // Read once per turn end (headlessDelivery.readFacts), never on a timer.
+          // Read once per turn end (headlessDelivery.readFacts), never on a timer: briefly, and without
+          // the optional index lock the agent's own git may be holding.
           progressOf: (rec) => (rec.worktreePath && rec.baseCommit
-            ? worktreeProgress(gitRunner(rec.worktreePath, {}), rec.baseCommit)
+            ? worktreeProgress(gitRunner(rec.worktreePath, { timeoutMs: HEADLESS_PROGRESS_GIT_TIMEOUT_MS, env: { GIT_OPTIONAL_LOCKS: '0' } }), rec.baseCommit)
             : Promise.resolve(null)),
           log: a2aLog,
         });

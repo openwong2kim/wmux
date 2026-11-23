@@ -1905,10 +1905,14 @@ describe('the status this delivery reports for each task (headlessStatus.ts send
     expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input' });
   });
 
-  it('the worktree\'s facts: read at each turn end, before its move, so the status that says it carries them; never per pass', async () => {
+  it('the worktree\'s facts: read at each turn end without holding up the pass, sent with a later status; never per pass', async () => {
     let reads = 0;
     let facts: { head: string; committedAt?: string; changedFiles: number } | null = { head: 'abc1234def56', committedAt: '2026-11-24T01:00:00.000Z', changedFiles: 2 };
-    const d = new HeadlessDelivery(statusDeps({ progressOf: async () => { reads += 1; order.push('read'); return facts; } }));
+    let release: (() => void) | null = null;
+    const d = new HeadlessDelivery(statusDeps({ progressOf: () => {
+      reads += 1;
+      return new Promise((resolve) => { release = () => resolve(facts); });
+    } }));
     await d.tick();
     write(userLine(PROMPT));
     await d.tick();
@@ -1916,13 +1920,15 @@ describe('the status this delivery reports for each task (headlessStatus.ts send
     expect(reads).toBe(0);
     expect(last()).toEqual({ taskId: TASK, kind: 'working' });
     write(assistantLine('PONG'));
+    // The pass finishes the turn while the read is still out.
     await d.tick();
-    expect(order.filter((o) => o !== 'move working')).toEqual(['read', 'move input-required']);
+    expect(task.status.state).toBe('input-required');
+    expect(reads).toBe(1);
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input' });
+    release!();
     await d.tick();
     expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input', detail: { progress: facts } });
-    // The first status after the turn end already carried them: one status for it, not two.
-    const waiting = ticks.flatMap((t) => t.filter((x) => x.taskId === TASK && x.kind === 'waiting-input'));
-    expect(waiting.every((x) => x.detail?.progress)).toBe(true);
     await d.tick();
     expect(reads).toBe(1);
     // A read that says nothing clears them.
@@ -1932,9 +1938,26 @@ describe('the status this delivery reports for each task (headlessStatus.ts send
     await d.tick();
     write(userLine('again'), assistantLine('done'));
     await d.tick();
+    release!();
+    await d.tick();
     await d.tick();
     expect(reads).toBe(2);
     expect(last()?.detail?.progress).toBeUndefined();
+  });
+
+  it('a turn end whose move is tried again reads its worktree once', async () => {
+    let reads = 0;
+    let fails = 2;
+    const base = statusDeps();
+    const d = new HeadlessDelivery(statusDeps({
+      progressOf: async () => { reads += 1; return { head: 'abc1234', changedFiles: 0 }; },
+      transition: async (input) => (input.to === 'input-required' && fails-- > 0 ? { ok: false, error: 'busy' } : base.transition(input)),
+    }));
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    for (let i = 0; i < 4; i++) await d.tick();
+    expect(task.status.state).toBe('input-required');
+    expect(reads).toBe(1);
   });
 
   it('a turn that ends while work it left runs (its progress reply): read then too, and the working status carries them', async () => {

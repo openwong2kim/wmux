@@ -620,6 +620,9 @@ export async function worktreeUnchanged(git: Git, base: string, branch: string):
   return status.code === 0 && status.stdout.trim() === '';
 }
 
+/** How long one worktree facts read may take (git log + git diff each): a turn end's status does not wait on it. */
+export const HEADLESS_PROGRESS_GIT_TIMEOUT_MS = 5_000;
+
 /**
  * What a start's worktree shows of the work, for its task's status: HEAD
  * abbreviated, when it was committed, and how many tracked files differ from
@@ -631,7 +634,9 @@ export async function worktreeProgress(git: Git, base: string): Promise<A2aRemot
   const [full, committedAt] = head.stdout.trim().split('\0');
   if (head.code !== 0 || !full) return null;
   const sha = full.slice(0, 12);
-  const diff = await git(['diff', '--name-only', '--no-renames', '-z', base, '--']);
+  // One summary line whatever the number of files ("N files changed, ..."; nothing when none).
+  const diff = await git(['diff', '--shortstat', '--no-renames', base, '--']);
   if (diff.code !== 0) return null;
-  return parseA2aRemoteProgress({ head: sha, committedAt, changedFiles: diff.stdout.split('\0').filter((f) => f.length > 0).length });
+  const changed = /(\d+) files? changed/.exec(diff.stdout);
+  return parseA2aRemoteProgress({ head: sha, committedAt, changedFiles: changed ? Number(changed[1]) : 0 });
 }
