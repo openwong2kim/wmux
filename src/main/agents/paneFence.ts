@@ -59,16 +59,15 @@ export interface PaneFenceLaunchRecord {
 }
 
 /** Whether `line` starts an agent, also behind wrapper words (`command`,
- *  `sh -c`, `nohup`, ...) and their flags, which startsAgent alone does not
- *  look past. Pure. */
+ *  `sh -c`, `nice -n 5`, `timeout 30`, ...), which startsAgent alone does not
+ *  look past: a line that starts with a wrapper and names an agent in any
+ *  later word counts. Over-matching is the safe side. Pure. */
 export function paneLineStartsAgent(line: string): boolean {
   if (namesClaude(line) || namesCodex(line) || startsAgent(line)) return true;
   const tokens = tokenize(splitModelEnvMarker(line.trim()).command.trim());
-  let i = 0;
-  while (i < tokens.length && (WRAPPER_STEMS.has(launcherStem(tokens[i].value)) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i].value) || tokens[i].value.startsWith('-'))) i += 1;
-  if (i === 0 || i >= tokens.length) return false;
-  const rest = tokens.slice(i).map((t) => t.value).join(' ');
-  return namesCodex(rest) || startsAgent(rest);
+  const first = tokens.findIndex((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t.value));
+  if (first < 0 || !WRAPPER_STEMS.has(launcherStem(tokens[first].value))) return false;
+  return tokens.slice(first + 1).some((t) => namesCodex(t.value) || startsAgent(t.value));
 }
 
 function refusal(why: string): Error {

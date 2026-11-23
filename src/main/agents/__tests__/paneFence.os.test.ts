@@ -89,7 +89,7 @@ describe.skipIf(isWin)('an opted-in pane\'s launch', () => {
   });
 
   it('refuses codex and any other agent: Claude Code only for now', () => {
-    for (const line of ['codex', 'codex --yolo', 'gemini', 'command gemini', 'nohup nice -n 5 codex', "sh -c 'gemini'"]) {
+    for (const line of ['codex', 'codex --yolo', 'gemini', 'command gemini', 'nohup nice -n 5 codex', 'nice -n 5 gemini', 'timeout 30 gemini', "sh -c 'gemini'"]) {
       const why = refusalOf(() => paneFenceLaunch(line, repo, {}, deps()));
       expect(why, line).toContain(PANE_FENCE_CLAUDE_ONLY);
       expect(why).toContain('Claude Code only for now');
