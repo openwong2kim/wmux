@@ -42,6 +42,8 @@ import { A2aSpawnRequester } from '../spawnRequester';
 import { SpawnRequestStore } from '../spawnRequestStore';
 import { A2aSpawnStarter } from '../spawnStarter';
 import { freePort } from './a2aServerRig';
+import { applyTaskQueryView } from '../../../shared/a2aTaskQueryView';
+import { remoteTaskViewOf } from '../../../main/worktask/remoteFanout';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 90_000 });
 
@@ -519,6 +521,36 @@ describe('headless remote spawn, two PCs and no app', () => {
     const said = a.tasks.getTask(taskId)?.history.filter((m) => m.role === 'agent').map((m) => m.parts.map((p) => (p.kind === 'text' ? p.text : '')).join(''));
     expect(said).toEqual(['PONG\nLinux', `Canceled: the agent ended: ${DAEMON_STOPPED_REASON}`]);
   });
+
+  for (const slow of [false, true]) {
+    it(`done, then its session ends${slow ? ', its cancel not carried before the link ends' : ''}: the asking PC's fan-out row is not failed, its reply kept`, async () => {
+      const a = await makePc('PC-A', { asking: true });
+      const b = await makePc('PC-B', { headless: true });
+      const { taskId, rec } = await startedTask(a, b);
+      await b.taskDelivery!.tick();
+      await b.taskDelivery!.tick();
+      await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
+      // A slow or briefly lost connection: nothing B queues meanwhile is carried until the link has ended.
+      const carry = b.delivery as unknown as { onEnqueue(rec: { hostId: string }): void };
+      const held = slow ? vi.spyOn(carry, 'onEnqueue').mockImplementation(() => undefined) : null;
+      b.sessions.live.delete(rec.sessionId);
+      b.headless!.onSessionGone(rec.sessionId);
+      await b.headless!.reconcile();
+      if (held) {
+        // The link has ended there: what was queued for the task was refused, only the link's notice is owed.
+        await until(() => b.delivery.outbox.pending(a.hostId as HostId).every((r) => r.envelope.kind === 'link'));
+        held.mockRestore();
+        carry.onEnqueue({ hostId: a.hostId });
+      }
+      await until(() => ['failed', 'canceled'].includes(a.tasks.getTask(taskId)?.status.state ?? ''));
+      const caller = a.tasks.getTask(taskId)!;
+      expect(caller.history.some((m) => m.role === 'agent' && m.parts.some((p) => p.kind === 'text' && p.text === 'PONG\nLinux'))).toBe(true);
+      // What main's follow pass reads (the state view): a failure it maps to `cancelled`, or the cancel itself.
+      const [view] = applyTaskQueryView([caller], { view: 'state', taskIds: [taskId] }).flatMap(remoteTaskViewOf);
+      if (view.state === 'failed') expect(view).toMatchObject({ answered: true, linkEnded: true });
+      else expect(view.state).toBe('canceled');
+    });
+  }
 
   it('an agent whose session ends mid-turn: the asking PC sees the task failed, with why', async () => {
     const a = await makePc('PC-A', { asking: true });
