@@ -1927,6 +1927,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.paneRingEnabled === 'boolean') state.paneRingEnabled = data.paneRingEnabled;
       if (typeof data.paneFlashEnabled === 'boolean') state.paneFlashEnabled = data.paneFlashEnabled;
       if (typeof data.taskbarFlashEnabled === 'boolean') state.taskbarFlashEnabled = data.taskbarFlashEnabled;
+      if (typeof data.taskbarBadgeEnabled === 'boolean') state.taskbarBadgeEnabled = data.taskbarBadgeEnabled;
       if (typeof data.paneGlowOpacity === 'number' && Number.isFinite(data.paneGlowOpacity)) {
         state.paneGlowOpacity = Math.min(1, Math.max(0.6, data.paneGlowOpacity));
       }

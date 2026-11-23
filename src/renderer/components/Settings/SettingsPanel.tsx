@@ -4274,6 +4274,9 @@ export interface NotificationsViewProps {
   onChangePaneFlashEnabled: (v: boolean) => void;
   taskbarFlashEnabled: boolean;
   onChangeTaskbarFlashEnabled: (v: boolean) => void;
+  /** Windows taskbar overlay count + running progress; the row shows on win32 only. */
+  taskbarBadgeEnabled: boolean;
+  onChangeTaskbarBadgeEnabled: (v: boolean) => void;
   /** Names the taskbar row in the OS's words (the Dock on macOS). */
   platform?: string;
   notificationSoundChoice: 'default' | 'none';
@@ -4331,6 +4334,7 @@ export function NotificationsView(props: NotificationsViewProps) {
     paneGlowOpacity, onChangePaneGlowOpacity,
     paneFlashEnabled, onChangePaneFlashEnabled,
     taskbarFlashEnabled, onChangeTaskbarFlashEnabled,
+    taskbarBadgeEnabled, onChangeTaskbarBadgeEnabled,
     platform,
     notificationSoundChoice,
     mutedNotificationCategories, onChangeCategoryMuted,
@@ -4417,6 +4421,18 @@ export function NotificationsView(props: NotificationsViewProps) {
             label={t(platform === 'darwin' ? 'settings.taskbarFlash.darwin' : 'settings.taskbarFlash')}
           />
         </SettingRow>
+
+        {/* Windows taskbar overlay count + running progress (main/taskbarStatus.ts).
+            macOS has the dock badge and Linux no overlay API, so win32 only. */}
+        {platform === 'win32' && (
+          <SettingRow id="taskbarbadge" label={t('settings.taskbarBadge')} description={t('settings.taskbarBadgeDesc')}>
+            <Toggle
+              checked={taskbarBadgeEnabled}
+              onChange={onChangeTaskbarBadgeEnabled}
+              label={t('settings.taskbarBadge')}
+            />
+          </SettingRow>
+        )}
       </SettingsSection>
 
       {/* #516 — Per-category mute. Muted categories still reach the
@@ -4559,6 +4575,8 @@ function TabNotifications() {
   const setPaneFlashEnabled      = useStore((s) => s.setPaneFlashEnabled);
   const taskbarFlashEnabled      = useStore((s) => s.taskbarFlashEnabled);
   const setTaskbarFlashEnabled   = useStore((s) => s.setTaskbarFlashEnabled);
+  const taskbarBadgeEnabled      = useStore((s) => s.taskbarBadgeEnabled);
+  const setTaskbarBadgeEnabled   = useStore((s) => s.setTaskbarBadgeEnabled);
   const notificationSoundChoice  = useStore((s) => s.notificationSoundChoice);
   const setNotificationSoundChoice = useStore((s) => s.setNotificationSoundChoice);
 
@@ -4599,6 +4617,8 @@ function TabNotifications() {
       onChangePaneFlashEnabled={setPaneFlashEnabled}
       taskbarFlashEnabled={taskbarFlashEnabled}
       onChangeTaskbarFlashEnabled={setTaskbarFlashEnabled}
+      taskbarBadgeEnabled={taskbarBadgeEnabled}
+      onChangeTaskbarBadgeEnabled={setTaskbarBadgeEnabled}
       platform={window.electronAPI?.platform}
       notificationSoundChoice={notificationSoundChoice}
       mutedNotificationCategories={mutedNotificationCategories}

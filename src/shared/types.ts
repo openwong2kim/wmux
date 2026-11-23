@@ -1141,6 +1141,8 @@ export interface SessionData {
   paneRingEnabled?: boolean;
   paneFlashEnabled?: boolean;
   taskbarFlashEnabled?: boolean;
+  /** Windows taskbar overlay count + running progress. Absent keeps it on. */
+  taskbarBadgeEnabled?: boolean;
   paneGlowOpacity?: number;
   /** Whether the user opted in to Anthropic usage polling (#896). No credentials are persisted. */
   anthropicUsageEnabled?: boolean;

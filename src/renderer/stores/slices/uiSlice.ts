@@ -823,6 +823,12 @@ export interface UISlice {
   taskbarFlashEnabled: boolean;
   setTaskbarFlashEnabled: (enabled: boolean) => void;
 
+  // taskbarBadgeEnabled: Windows only — the needs-you count as a taskbar
+  //   overlay icon and the running progress state (main/taskbarStatus.ts).
+  //   Saved with the session; on by default.
+  taskbarBadgeEnabled: boolean;
+  setTaskbarBadgeEnabled: (enabled: boolean) => void;
+
   notificationSoundChoice: 'default' | 'none';
   setNotificationSoundChoice: (choice: 'default' | 'none') => void;
 
@@ -2144,6 +2150,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setTaskbarFlashEnabled: (enabled) => set((state) => {
     state.taskbarFlashEnabled = enabled;
+  }),
+
+  taskbarBadgeEnabled: true,
+
+  setTaskbarBadgeEnabled: (enabled) => set((state) => {
+    state.taskbarBadgeEnabled = enabled;
   }),
 
   notificationSoundChoice: 'default',

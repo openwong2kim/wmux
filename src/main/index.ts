@@ -283,6 +283,7 @@ import { NEW_PACKAGE_NOTE_IPC } from '../shared/newPackageNote';
 import { newPackageNotePath, readNewPackageNote } from '../daemon/newPackageNoteSetting';
 import { CHANNELS_EPOCH } from '../shared/channels';
 import { createTray, destroyTray, updateTraySessionCount } from './tray';
+import { bindTaskbarWindow } from './taskbarStatus';
 import { installApplicationMenu } from './menu/appMenu';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
@@ -2827,6 +2828,8 @@ app.on('ready', async () => {
     // takes the daemon.shutdown branch instead of the detach branch.
     onShutdownAll: () => { fullShutdownRequested = true; },
   });
+  // Windows taskbar overlay + progress (no-op elsewhere).
+  bindTaskbarWindow(mainWindow);
 
   // #2263 — the daemon dropped our event subscription and the health probe
   // subscribed again; correct the panes from a fresh read of their state.

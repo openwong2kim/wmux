@@ -184,6 +184,18 @@ export default function StatusBar() {
       };
     }),
   );
+  // Windows taskbar: the overlay setting and whether any agent runs. The count
+  // itself rides setBadgeCount above, so the overlay and the dock badge read
+  // one number. Held until the saved session has loaded, so a default "on"
+  // never flashes an overlay for someone who turned it off. Main ignores this
+  // off Windows.
+  const taskbarBadgeEnabled = useStore((s) => s.taskbarBadgeEnabled);
+  const sessionSettingsLoaded = useStore((s) => s.sessionSettingsLoaded);
+  const anyRunning = fleetVitals.running > 0;
+  useEffect(() => {
+    if (!sessionSettingsLoaded) return;
+    window.electronAPI?.notification?.setTaskbarState?.({ enabled: taskbarBadgeEnabled, running: anyRunning });
+  }, [sessionSettingsLoaded, taskbarBadgeEnabled, anyRunning]);
   // No Needs you count here (DESIGN.md › Colour grammar › Attention
   // renditions): one event is drawn at most twice — the sidebar row that is its
   // evidence and one global count, the rail's Fleet badge.

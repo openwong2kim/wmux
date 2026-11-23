@@ -3656,6 +3656,8 @@ export const zh = {
   'settings.taskbarFlashDesc': '收到通知且 wmux 被隐藏时，触发 Windows 任务栏注意提示。',
   'settings.taskbarFlashDesc.darwin': '收到通知且 wmux 在后台时，在程序坞中弹跳 wmux 图标。',
   'settings.taskbarFlashDesc.linux': '收到通知且 wmux 被隐藏时，在任务栏中将 wmux 标记为需要注意。',
+  'settings.taskbarBadge': '在任务栏按钮上显示待处理数量',
+  'settings.taskbarBadgeDesc': '在 wmux 任务栏按钮上显示等待你处理的事项数量，并在任何智能体运行时显示进度状态。',
   'settings.notificationSoundChoice': '通知声音',
   'settings.notificationSoundChoiceDesc': '默认 = 播放系统通知声音。无 = 静音。',
   'settings.notificationSoundChoiceDefault': '默认',
