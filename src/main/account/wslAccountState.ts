@@ -66,8 +66,9 @@ export interface WslAccountEntry {
 
 export class WslAccountState {
   private readonly entries = new Map<string, WslAccountEntry>();
-  /** The user a plain WSL pane of each distro (lowercased) last started as. */
-  private readonly defaultUsers = new Map<string, string>();
+  /** Where a plain WSL pane last started, by the distro it asked for
+   *  (lowercased; '' for wsl.exe's default distro). */
+  private readonly defaultPlaces = new Map<string, WslPlace>();
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly now: () => number = Date.now) {}
@@ -133,13 +134,14 @@ export class WslAccountState {
     return [...this.entries];
   }
 
-  noteDefaultUser(distribution: string, user: string): void {
-    this.defaultUsers.set(distribution.toLowerCase(), user);
+  /** A plain WSL pane (no target of its own) that asked for `requested` started at `place`. */
+  noteDefaultPlace(requested: string | null, place: WslPlace): void {
+    this.defaultPlaces.set((requested ?? '').toLowerCase(), place);
   }
 
-  /** The user a plain pane of this distro starts as, when one was seen since main started. */
-  defaultUser(distribution: string): string | undefined {
-    return this.defaultUsers.get(distribution.toLowerCase());
+  /** Where a plain pane asking for `requested` starts, when one was seen since main started. */
+  defaultPlace(requested: string | null): WslPlace | undefined {
+    return this.defaultPlaces.get((requested ?? '').toLowerCase());
   }
 
   /**

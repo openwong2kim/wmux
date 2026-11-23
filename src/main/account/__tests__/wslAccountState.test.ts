@@ -37,10 +37,12 @@ describe('wslAccountState', () => {
     expect(s.all().map(([k]) => k)).not.toContain('not-a-wsl-key');
   });
 
-  it('remembers the user a plain pane of each distro starts as', () => {
+  it('remembers where a plain pane asking for a distro (or the default one) starts', () => {
     const s = new WslAccountState();
-    expect(s.defaultUser('Ubuntu')).toBeUndefined();
-    s.noteDefaultUser('Ubuntu', 'me');
-    expect(s.defaultUser('UBUNTU')).toBe('me');
+    expect(s.defaultPlace('Ubuntu')).toBeUndefined();
+    s.noteDefaultPlace('Ubuntu', PLACE);
+    s.noteDefaultPlace(null, { distribution: 'Debian', user: 'root' });
+    expect(s.defaultPlace('UBUNTU')).toEqual(PLACE);
+    expect(s.defaultPlace(null)).toEqual({ distribution: 'Debian', user: 'root' });
   });
 });

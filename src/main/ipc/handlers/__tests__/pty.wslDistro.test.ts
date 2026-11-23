@@ -12,7 +12,8 @@ vi.mock('electron', () => ({
 }));
 vi.mock('../../../pty/defaultWslDistro', () => ({ getDefaultWslDistro: () => 'Debian' }));
 
-import { liveWslTarget, requestedWslDistro } from '../pty.handler';
+import { launchPlace, liveWslTarget, requestedWslDistro } from '../pty.handler';
+import { WslAccountState } from '../../../account/wslAccountState';
 
 describe('requestedWslDistro', () => {
   it('takes a valid distro the create names', () => {
@@ -48,3 +49,19 @@ describe('liveWslTarget (a conversation continued from a WSL pane)', () => {
     expect(liveWslTarget([{ id: 'p1', state: 'attached', cmd: 'wsl.exe', wslTarget: { distribution: 'Ubuntu', user: '-x' } }], 'p1')).toBeUndefined();
   });
 });
+
+describe('launchPlace (where the quota gate reads a WSL launch)', () => {
+  const me = { distribution: 'Ubuntu', user: 'me' };
+  it('is absent for a native shell, the known target when there is one, else where a plain pane of that distro started', () => {
+    const state = new WslAccountState();
+    expect(launchPlace(false, { wslDistro: 'Ubuntu' }, me, state)).toBeUndefined();
+    expect(launchPlace(true, { wslDistro: 'Ubuntu' }, { distribution: 'Ubuntu', user: 'other' }, state)).toEqual({ wsl: { distribution: 'Ubuntu', user: 'other' } });
+    // Unknown until a plain pane of that distro was seen: kept as is.
+    expect(launchPlace(true, { wslDistro: 'Ubuntu' }, undefined, state)).toEqual({ wsl: null });
+    state.noteDefaultPlace('Ubuntu', me);
+    expect(launchPlace(true, { wslDistro: 'Ubuntu' }, undefined, state)).toEqual({ wsl: me });
+    // No distro named: the settings picker's (mocked as Debian), not Ubuntu's.
+    expect(launchPlace(true, undefined, undefined, state)).toEqual({ wsl: null });
+  });
+});
+

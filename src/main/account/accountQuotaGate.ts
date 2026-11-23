@@ -14,7 +14,7 @@ import {
   launchStem,
 } from '../../shared/accountQuota';
 import { agyModelFamily, type AgyLaunchDecision, type AgyModelFamily } from '../../shared/agyAccounts';
-import { getAccountRotationService, type RotationDecision } from './AccountRotationService';
+import { getAccountRotationService, type LaunchPlace, type RotationDecision } from './AccountRotationService';
 import { getAgyAccountService } from './AgyAccountService';
 import { VENDOR_ENV_KEYS, type Vendor } from './accountStore';
 
@@ -33,7 +33,9 @@ export interface QuotaLaunchOptions {
 export interface AccountQuotaGateDeps {
   /** The pane runs in WSL: agy's account swap is the Windows Credential Manager slot, which an agy in WSL does not read. */
   wsl?: boolean;
-  prepareLaunch?: (vendor: Vendor, workspaceId: string | undefined) => Promise<RotationDecision>;
+  /** Where the launch runs (pty.handler launchPlace); absent for a native one. */
+  place?: LaunchPlace;
+  prepareLaunch?: (vendor: Vendor, workspaceId: string | undefined, place?: LaunchPlace) => Promise<RotationDecision>;
   /** agy branch: its machine-wide sign-in is handled by the agy account service. */
   prepareAgyLaunch?: (family: AgyModelFamily) => Promise<AgyLaunchDecision>;
   platform?: string;
@@ -68,8 +70,8 @@ export async function withAccountQuota<T extends QuotaLaunchOptions>(
   if (options.accountId !== undefined || launchInlineEnvKeys(command).includes(key)
     || envSetsKey(options.env, key, deps.platform ?? process.platform)) return options;
   try {
-    const prepare = deps.prepareLaunch ?? ((v: Vendor, ws: string | undefined) => getAccountRotationService().prepareLaunch(v, ws));
-    const decision = await prepare(stem, options.workspaceId);
+    const prepare = deps.prepareLaunch ?? ((v: Vendor, ws: string | undefined, p?: LaunchPlace) => getAccountRotationService().prepareLaunch(v, ws, p));
+    const decision = await (deps.place ? prepare(stem, options.workspaceId, deps.place) : prepare(stem, options.workspaceId));
     if (decision.kind === 'switch') return { ...options, env: { ...options.env, ...decision.env }, accountId: decision.accountId };
     if (decision.kind === 'hold') {
       // Holding replaces the launch; never drop commands chained after it.
