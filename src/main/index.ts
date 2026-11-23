@@ -121,7 +121,7 @@ import { createGlyphRepaintLogSummary } from './perf/glyphRepaintLogSummary';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
 import { registerUsageRpc, registerUsageTrailRpc } from './pipe/handlers/usage.rpc';
 import { getPtyShell } from './pty/ptyShellRegistry';
-import { isWslShell, validWslTarget } from '../shared/wslTarget';
+import { isWslShell, validWslTarget, type WslTarget } from '../shared/wslTarget';
 import { registerFsWriteRpc } from './pipe/handlers/fsWrite.rpc';
 import { registerFsRpc } from './pipe/handlers/fs.rpc';
 import { setToolRefusalSource } from './agents/toolRefusals';
@@ -2024,6 +2024,24 @@ ipcMain.handle(NEW_PACKAGE_NOTE_IPC.SET, async (_event, enabled: unknown) => {
 // Where a commit made in a pane came from, as the daemon recorded it.
 registerCommitOriginRpc(rpcRouter, (sha) => daemonClient?.lookupCommitOrigin(sha) ?? Promise.resolve('unavailable'));
 
+// A WSL pane's distro, user and env for its usage samples, read from the
+// daemon and kept briefly: a statusline push has a short budget, and a pane's
+// account changes only on a rebind (continue on another account).
+const WSL_USAGE_PANE_TTL_MS = 30_000;
+const wslUsagePanes = new Map<string, { atMs: number; pane: { target: WslTarget; env: Record<string, string> } | null }>();
+async function wslUsagePane(ptyId: string): Promise<{ target: WslTarget; env: Record<string, string> } | null> {
+  const hit = wslUsagePanes.get(ptyId);
+  if (hit && Date.now() - hit.atMs < WSL_USAGE_PANE_TTL_MS) return hit.pane;
+  if (!daemonClient) return null;
+  const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; wslTarget?: unknown; env?: Record<string, string> }>;
+  const now = Date.now();
+  for (const [id, entry] of wslUsagePanes) if (now - entry.atMs >= WSL_USAGE_PANE_TTL_MS) wslUsagePanes.delete(id);
+  const s = sessions.find((x) => x.id === ptyId);
+  const pane = s && validWslTarget(s.wslTarget) && s.env ? { target: s.wslTarget, env: s.env } : null;
+  wslUsagePanes.set(ptyId, { atMs: now, pane });
+  return pane;
+}
+
 // Live `rate_limits` pushed by the wmux statusline script. The account is the
 // one the pane actually runs on (its CLAUDE_CONFIG_DIR), not the workspace's
 // current binding, so this path is not subject to the routing limitation noted
@@ -2034,13 +2052,11 @@ registerUsageRpc(rpcRouter, {
     .map((a) => ({ id: a.id, configDir: a.configDir })),
   // A WSL pane's sample names its account home in the distro: resolved against
   // that pane's own env and user, as the daemon holds them.
-  isWslPane: (ptyId) => isWslShell(getPtyShell(ptyId)),
-  wslPane: async (ptyId) => {
-    if (!daemonClient) return null;
-    const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; wslTarget?: unknown; env?: Record<string, string> }>;
-    const s = sessions.find((x) => x.id === ptyId);
-    return s && validWslTarget(s.wslTarget) && s.env ? { target: s.wslTarget, env: s.env } : null;
+  isWslPane: (ptyId, configDir) => {
+    const shell = getPtyShell(ptyId);
+    return shell !== undefined ? isWslShell(shell) : process.platform === 'win32' && configDir.startsWith('/');
   },
+  wslPane: (ptyId) => wslUsagePane(ptyId),
   defaultConfigDir: () => path.join(os.homedir(), '.claude'),
   // A live push is recorded and read by the reserve at ingest: with the
   // meter off the poller stores it without telling its listeners.

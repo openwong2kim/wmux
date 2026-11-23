@@ -221,6 +221,14 @@ describe('usage.rateLimits from a WSL pane', () => {
     expect(Object.keys(paneUsageWindows())).toEqual(['pty-1']);
   });
 
+  it('asks the WSL lookup with the sample\'s config dir (a pane main has not seen yet is judged by it)', async () => {
+    const { call, deps } = setup({ target: TARGET, env: ENV });
+    const isWslPane = vi.fn(() => true);
+    deps.isWslPane = isWslPane;
+    await call(sample({ configDir: HOME }));
+    expect(isWslPane).toHaveBeenCalledWith('pty-1', HOME);
+  });
+
   it('an unset config dir stays the default profile, and a native pane never asks the daemon', async () => {
     const wslPane = setup({ target: TARGET, env: ENV });
     await expect(wslPane.call(sample())).resolves.toEqual({ ok: true, applied: true });

@@ -30,8 +30,9 @@ export interface UsageRpcDeps {
   ingestDefault: (update: UsageUpdate) => boolean;
   ingestAccount: (accountId: string, update: UsageUpdate) => boolean;
   log?: (line: string) => void;
-  /** Whether the pane runs in WSL (its shell, as main recorded it). */
-  isWslPane?: (ptyId: string) => boolean;
+  /** Whether the pane may run in WSL: its shell as main recorded it, or, for
+   *  a pane main has not seen yet, a Linux config dir on Windows. */
+  isWslPane?: (ptyId: string, configDir: string) => boolean;
   /** A WSL pane's distro, user and env, from the daemon; null when unknown. */
   wslPane?: (ptyId: string) => Promise<{ target: WslTarget; env: Record<string, string> } | null>;
 }
@@ -41,7 +42,8 @@ export interface UsageRpcDeps {
  * distro, which only the pane's own account home can be: the one its env and
  * user give (shared/wslAccountHome.ts). That home is the account whose Windows
  * folder the pane's env names; anything else (the distro's own folders, another
- * user's) is no registered account. The pane's own window is kept either way.
+ * user's, a login tab's /mnt folder) is no registered account. The pane's own
+ * window is kept either way.
  */
 async function ingestWslSample(
   parsed: { configDir: string; ptyId: string; update: UsageUpdate },
@@ -51,7 +53,8 @@ async function ingestWslSample(
   const home = pane ? wslAccountLinuxHome(pane.env, 'claude', pane.target.user) : null;
   const folder = pane?.env.CLAUDE_CONFIG_DIR;
   if (!pane || !home || !folder || parsed.configDir !== home) {
-    notePaneUsageSample(parsed.ptyId, parsed.update, `wsl:${pane?.target.distribution ?? ''}:${parsed.configDir}`);
+    // Unknown pane (the lookup failed): no window key to share, so none is kept.
+    if (pane) notePaneUsageSample(parsed.ptyId, parsed.update, `wsl:${pane.target.distribution}:${parsed.configDir}`);
     deps.log?.(`[usage.rateLimits] dropped: a WSL config dir that is not the pane's account home (pty ${parsed.ptyId})`);
     return { ok: false, reason: 'unknown-account' };
   }
@@ -181,7 +184,7 @@ export function registerUsageRpc(router: RpcRouter, deps: UsageRpcDeps): void {
     if (!parsed) return { ok: false, reason: 'invalid' };
     // A WSL pane naming its config dir names a Linux one; unset, it is the
     // default profile as for any pane.
-    if (parsed.ptyId && parsed.configDir !== null && deps.isWslPane?.(parsed.ptyId)) {
+    if (parsed.ptyId && parsed.configDir !== null && deps.isWslPane?.(parsed.ptyId, parsed.configDir)) {
       return ingestWslSample({ configDir: parsed.configDir, ptyId: parsed.ptyId, update: parsed.update }, deps);
     }
     // Per pane, whatever account it is: a pane held at a usage limit with no
