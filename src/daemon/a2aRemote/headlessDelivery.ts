@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { A2A_REMOTE_BODY_MAX, ANSWER_OUTCOMES_MAX, type A2aRemoteAnswerOutcome, type A2aRemoteAnswerV1, type A2aRemoteApprovalOffer, type A2aRemoteApprovalOutcome, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
+import { A2A_REMOTE_BODY_MAX, ANSWER_OUTCOMES_MAX, type A2aRemoteAnswerOutcome, type A2aRemoteAnswerV1, type A2aRemoteApprovalOffer, type A2aRemoteApprovalOutcome, type A2aRemoteProgressV1, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
 import { truncateUtf8 } from '../../shared/chatv2/limits';
 import type { SessionPromptScheduleResult } from '../../shared/sessionPromptSchedule';
 import { promptHash } from '../../shared/promptHash';
@@ -221,6 +221,12 @@ export interface HeadlessDeliveryDeps {
    * this delivery works on; and `gone`, before a start's tasks are ended.
    */
   status?: { tick(statuses: HeadlessTaskStatus[]): void; gone(taskIds: string[]): void };
+  /**
+   * What the start's worktree shows of the work (git facts only), or null.
+   * Asked only when a task's status kind changes (a turn end among them),
+   * never on a timer; the answer goes with that task's next status.
+   */
+  progressOf?(rec: HeadlessStartRecordV1): Promise<A2aRemoteProgressV1 | null>;
   /** The daemon's own `a2a.remote.reply`, as main calls it. */
   reply(input: { taskId: string; workspaceId: string; text: string; ptyId?: string }): Promise<{ ok: boolean; error?: string }>;
   /**
@@ -252,6 +258,7 @@ export interface HeadlessTaskStatus {
     /** A linked pane's prompt offered to the PC that sent the task (remoteApproval.ts); never set by the headless delivery. */
     approval?: A2aRemoteApprovalOffer;
     approvals?: A2aRemoteApprovalOutcome[];
+    progress?: A2aRemoteProgressV1;
   };
 }
 
@@ -555,6 +562,8 @@ export class HeadlessDelivery {
   }>();
   /** How the latest answers from the asking PC went, by task (at most ANSWER_OUTCOMES_MAX): sent with each status. */
   private readonly answered = new Map<string, A2aRemoteAnswerOutcome[]>();
+  /** Per task: the status kind its progress was last read at, and what was read (progressOf). */
+  private readonly worktreeFacts = new Map<string, { kind: A2aRemoteStatusKind; facts: A2aRemoteProgressV1 | null; reading: boolean }>();
   /** Answers being typed now (`taskId \0 messageId`): the same message is never typed twice. */
   private readonly answering = new Set<string>();
   /** After an answer, by session: the transcript read on for turns nothing on this PC started. */
@@ -838,16 +847,48 @@ export class HeadlessDelivery {
   private statuses(starts: readonly HeadlessStartRecordV1[]): HeadlessTaskStatus[] {
     const out: HeadlessTaskStatus[] = [];
     for (const taskId of [...this.answered.keys()]) if (this.ended(taskId)) this.answered.delete(taskId);
+    const seen = new Set<string>();
     for (const task of this.deps.tasks.remote()) {
       if ((task.metadata.remote as A2aRemoteTaskState | undefined)?.direction !== 'inbound' || this.ended(task.id)) continue;
       const rec = this.ownerOf(task, starts);
       if (!rec) continue;
+      seen.add(task.id);
       const status = this.statusOf(task, rec);
-      // The latest answers' outcomes go with whatever the worker does now.
+      if (status.kind === null) {
+        out.push({ taskId: task.id, ...status });
+        continue;
+      }
+      // The latest answers' outcomes, and the worktree's facts, go with whatever the worker does now.
       const answers = this.answered.get(task.id);
-      out.push({ taskId: task.id, ...(answers && status.kind !== null ? { ...status, detail: { ...status.detail, answers: [...answers] } } : status) });
+      const progress = this.progressFor(task.id, status.kind, rec);
+      const detail = { ...status.detail, ...(answers ? { answers: [...answers] } : {}), ...(progress ? { progress } : {}) };
+      out.push({ taskId: task.id, kind: status.kind, ...(Object.keys(detail).length > 0 ? { detail } : {}) });
     }
+    for (const taskId of [...this.worktreeFacts.keys()]) if (!seen.has(taskId)) this.worktreeFacts.delete(taskId);
     return out;
+  }
+
+  /**
+   * The task's worktree facts as last read. A new status kind (a turn end
+   * among them) reads them again, once, in the background: the facts go with
+   * a later status. Never read on a timer.
+   */
+  private progressFor(taskId: string, kind: A2aRemoteStatusKind, rec: HeadlessStartRecordV1): A2aRemoteProgressV1 | null {
+    const read = this.deps.progressOf;
+    if (!read) return null;
+    const known = this.worktreeFacts.get(taskId);
+    if (known && (known.kind === kind || known.reading)) return known.facts;
+    const entry = { kind, facts: known?.facts ?? null, reading: true };
+    this.worktreeFacts.set(taskId, entry);
+    void read(rec)
+      .then((facts) => {
+        entry.facts = facts ?? entry.facts;
+      })
+      .catch((err: unknown) => this.deps.log('warn', `[headless] task ${taskId}: its worktree could not be read: ${errMsg(err)}`))
+      .finally(() => {
+        entry.reading = false;
+      });
+    return entry.facts;
   }
 
   /**

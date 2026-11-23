@@ -13,6 +13,7 @@
 // when it believes it is done. `completed` is reserved for the brain, after a
 // gate pass — a worker cannot self-certify.
 
+import type { A2aRemoteProgressV1 } from './a2aRemote';
 import type { CompletionEvidence } from './types';
 
 export const LEDGER_SCHEMA_VERSION = 1 as const;
@@ -182,6 +183,10 @@ export interface LedgerRemote {
   /** Set on a task fanout_start placed itself (`pc: "any"`): it may be moved
    *  to another PC while no request for it is out (state `held`). */
   pool?: LedgerRemotePool;
+  /** What the agent's worktree on that PC shows (git facts only), as that PC
+   *  last said in the task's status: at a turn end or a change of status.
+   *  Absent until it says (an older PC never does). */
+  progress?: A2aRemoteProgressV1;
 }
 
 export interface LedgerRemotePool {

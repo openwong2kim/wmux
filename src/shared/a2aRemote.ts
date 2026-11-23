@@ -1184,6 +1184,37 @@ function parseApprovalOffer(raw: unknown): A2aRemoteApprovalOffer | null {
  * (ISO); the sender keeps only the newest per task. Never a reply: it is not
  * added to the task's history and changes nothing in its state.
  */
+/**
+ * What the worker's worktree shows of its work, as the receiving PC read it
+ * at the worker's last turn end or status change (never polled): facts from
+ * git, no text. An older PC sends none and ignores it.
+ */
+export interface A2aRemoteProgressV1 {
+  /** HEAD, abbreviated (7–12 hex). */
+  head: string;
+  /** When HEAD was committed (ISO); absent when git did not say. */
+  committedAt?: string;
+  /** Tracked files that differ from the commit the worktree started from (committed or not). */
+  changedFiles: number;
+}
+
+/** The most changed files a progress says (a larger count is capped). */
+export const A2A_REMOTE_PROGRESS_FILES_MAX = 100_000;
+
+/** Strict: an abbreviated sha and a count, and the commit time when it is one; null when it is not a progress. */
+export function parseA2aRemoteProgress(raw: unknown): A2aRemoteProgressV1 | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.head !== 'string' || !/^[0-9a-f]{7,12}$/.test(r.head)) return null;
+  if (typeof r.changedFiles !== 'number' || !Number.isInteger(r.changedFiles) || r.changedFiles < 0) return null;
+  const at = typeof r.committedAt === 'string' ? Date.parse(r.committedAt) : NaN;
+  return {
+    head: r.head,
+    ...(Number.isFinite(at) ? { committedAt: new Date(at).toISOString() } : {}),
+    changedFiles: Math.min(r.changedFiles, A2A_REMOTE_PROGRESS_FILES_MAX),
+  };
+}
+
 export interface A2aRemoteStatusV1 {
   kind: A2aRemoteStatusKind;
   since: string;
@@ -1224,6 +1255,8 @@ export interface A2aRemoteStatusV1 {
     approval?: A2aRemoteApprovalOffer;
     /** How the latest approvals on this task went there, oldest first, at most ANSWER_OUTCOMES_MAX. */
     approvals?: A2aRemoteApprovalOutcome[];
+    /** The worker's worktree, as of its last turn end or status change. */
+    progress?: A2aRemoteProgressV1;
   };
 }
 
@@ -1312,6 +1345,8 @@ export function parseA2aRemoteStatus(raw: unknown): A2aRemoteStatusV1 | null {
     const approvals = d.approvals.slice(-ANSWER_OUTCOMES_MAX).map(parseApprovalOutcome).filter((a): a is A2aRemoteApprovalOutcome => a !== null);
     if (approvals.length > 0) detail.approvals = approvals;
   }
+  const progress = parseA2aRemoteProgress(d.progress);
+  if (progress) detail.progress = progress;
   if (Object.keys(detail).length > 0) out.detail = detail;
   return out;
 }

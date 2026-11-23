@@ -1905,6 +1905,39 @@ describe('the status this delivery reports for each task (headlessStatus.ts send
     expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input' });
   });
 
+  it('the worktree\'s facts: read once per change of status kind (a turn end among them), never per pass, and sent with a later status', async () => {
+    let reads = 0;
+    let facts = { head: 'abc1234def56', committedAt: '2026-11-24T01:00:00.000Z', changedFiles: 2 };
+    const d = new HeadlessDelivery(statusDeps({ progressOf: async () => { reads += 1; return facts; } }));
+    await d.tick();
+    write(userLine(PROMPT));
+    await d.tick();
+    // The read started on `working`; its answer goes with the next status.
+    expect(reads).toBe(1);
+    await d.tick();
+    await d.tick();
+    expect(reads).toBe(1);
+    expect(last()).toEqual({ taskId: TASK, kind: 'working', detail: { progress: facts } });
+    facts = { ...facts, head: '0000000aaaaa', changedFiles: 5 };
+    write(assistantLine('PONG'));
+    await d.tick();
+    await d.tick();
+    await d.tick();
+    expect(reads).toBe(2);
+    expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input', detail: { progress: facts } });
+  });
+
+  for (const [name, progressOf] of [['no worktree reader', undefined], ['a reader that fails', async () => { throw new Error('git is gone'); }]] as const) {
+    it(`with ${name}, the status is as before`, async () => {
+      const d = new HeadlessDelivery(statusDeps(progressOf ? { progressOf } : {}));
+      await d.tick();
+      write(userLine(PROMPT));
+      await d.tick();
+      await d.tick();
+      expect(last()).toEqual({ taskId: TASK, kind: 'working' });
+    });
+  }
+
   it('a question on the screen: its kind, read with the question clock\'s own probe; the open AskUserQuestion is said', async () => {
     const asked: boolean[] = [];
     const d = new HeadlessDelivery(statusDeps({ questionKind: async (_s, asking) => { asked.push(asking); return 'permission'; } }));

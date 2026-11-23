@@ -19,7 +19,7 @@ import type { RpcContext } from '../../../shared/rpc';
 import {
   POOL_HOLD_MAX_MS, POOL_REFUSING_MS, pickPoolHost, poolCandidates, poolHoldOverride, poolRootHash,
   REMOTE_ASK_GRACE_MS, REMOTE_FOLLOW_INTERVAL_MS, REMOTE_GONE_GRACE_MS, type RemoteTaskView, branchOnPc, remoteTaskReconciler, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal, remoteKeyRows,
-  startRemoteFanout, onRemoteWaitInPlace, remoteReplyWaitText, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
+  startRemoteFanout, onRemoteWaitInPlace, remoteReplyWaitText, remoteTaskViewOf, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
 } from '../remoteFanout';
 
 const BOX = '0f1e2d3c-4b5a-4968-8776-655443322110';
@@ -636,6 +636,37 @@ describe('a started task follows its A2A task', () => {
       spy.mockRestore();
     } finally {
       off();
+    }
+  });
+
+  it('the worktree facts that PC sends go on the row and into the poll; a status without them (an older PC) leaves none', async () => {
+    const s = await started(2);
+    const progress = { head: 'abc1234def56', committedAt: '2026-11-24T01:00:00.000Z', changedFiles: 3 };
+    s.view(0, { state: 'working', status: { kind: 'working', since: at, progress } });
+    s.view(1, { state: 'working', status: { kind: 'working', since: at } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).remote?.progress).toEqual(progress);
+    expect(s.row(0).status).toBe('working');
+    expect(s.row(1).remote).not.toHaveProperty('progress');
+    // The same facts again write nothing.
+    const rev = s.row(0).rev;
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).rev).toBe(rev);
+    const poll = await startRemoteFanout(request(2), s.deps);
+    if ('error' in poll) throw new Error(poll.error);
+    expect(poll.tasks[0].progress).toEqual(progress);
+    expect(poll.tasks[1]).not.toHaveProperty('progress');
+    // Kept through a turn end that moves the row, and replaced by newer facts.
+    s.view(0, { state: 'input-required', status: { kind: 'waiting-input', since: at, progress: { ...progress, changedFiles: 4 } } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'input_required', remote: { progress: { changedFiles: 4 } } });
+  });
+
+  it('reads the facts from the daemon\'s state view strictly: a malformed progress is dropped', () => {
+    const task = (progress: unknown) => ({ id: 't', status: { state: 'working' }, metadata: { remote: { status: { kind: 'working', since: at, detail: { progress } } } } });
+    expect(remoteTaskViewOf(task({ head: 'abc1234', changedFiles: 1 }))[0].status?.progress).toEqual({ head: 'abc1234', changedFiles: 1 });
+    for (const bad of [{ head: 'not a sha', changedFiles: 1 }, { head: 'abc1234', changedFiles: -1 }, { head: 'abc1234' }, 'abc1234']) {
+      expect(remoteTaskViewOf(task(bad))[0].status).not.toHaveProperty('progress');
     }
   });
 

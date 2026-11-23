@@ -56,6 +56,7 @@ import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { MISSION_LIST_BATCH_NOT_ALLOWED } from '../../../shared/missionListBatch';
 import { getMissionTaskId, getTaskLedger, noteWorkTaskClosed } from '../../deck/taskLedgerHost';
+import type { LedgerEntry } from '../../../shared/ledger';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -105,6 +106,33 @@ function remoteMissionWarning(channelId: unknown): string | null {
   return remote.a2aTaskId
     ? `nobody on ${remote.pc} reads this channel; reach the agent with send_message task_id=${remote.a2aTaskId}`
     : `nobody on ${remote.pc} reads this channel, and the agent there has not started yet`;
+}
+
+/**
+ * A mission list answer with, on each task another PC runs, where it runs and
+ * what its worktree there showed last (the ledger row's remote record: kinds
+ * and git facts only, nothing that PC wrote). Other tasks are left as they are.
+ */
+export function withRemoteMissionFacts(res: unknown, rowOf: (taskId: string) => LedgerEntry | null | undefined): unknown {
+  const tasks = res && typeof res === 'object' ? (res as { tasks?: unknown }).tasks : undefined;
+  if (!Array.isArray(tasks)) return res;
+  return {
+    ...(res as object),
+    tasks: tasks.map((t) => {
+      const id = t && typeof t === 'object' ? (t as { id?: unknown }).id : undefined;
+      let r: LedgerEntry['remote'];
+      try {
+        r = typeof id === 'string' ? rowOf(id)?.remote : undefined;
+      } catch {
+        r = undefined;
+      }
+      if (!r) return t;
+      return {
+        ...(t as object),
+        remote: { pc: r.pc, state: r.state, ...(r.branchOnPc ? { branchOnPc: r.branchOnPc } : {}), ...(r.progress ? { progress: r.progress } : {}) },
+      };
+    }),
+  };
 }
 
 export function registerA2aChannelRpc(
@@ -417,7 +445,8 @@ export function registerA2aChannelRpc(
   // mission titles, branches and absolute worktree paths while the tool
   // description promised the opposite. Raised to require a verifiable caller
   // (or first-party dispatch, which is the renderer's own PTY-less read).
-  router.register('task.mission.list', (p, ctx) => forward('task.mission.list', p, false, ctx, true));
+  router.register('task.mission.list', async (p, ctx) =>
+    withRemoteMissionFacts(await forward('task.mission.list', p, false, ctx, true), (id) => getTaskLedger().get(id)));
   // task.mission.update(J1 §5) — 물질화 커밋. 변이라 verifiable caller 필수(start/
   // close와 동일 forwarder·스탬프 규율). MCP 도구 표면은 없지만(FanOutService 내부
   // 경로), 이 router 등록으로 first-party 파이프 클라이언트는 도달 가능하다 — "도구

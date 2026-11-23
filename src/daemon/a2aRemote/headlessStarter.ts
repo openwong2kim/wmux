@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { agentLauncherStem, agentRow, type AgentSlug } from '../../shared/agentIdentity';
 import { firstRunEnvForAgent } from '../../shared/agentFirstRun';
-import type { HostId, A2aLinkRecordV1 } from '../../shared/a2aRemote';
+import { parseA2aRemoteProgress, type HostId, type A2aLinkRecordV1, type A2aRemoteProgressV1 } from '../../shared/a2aRemote';
 import { REMOTE_SPAWN_LINEAGE_PREFIX, type A2aSpawnClaimResult, type A2aSpawnStepResult } from '../../shared/a2aSpawn';
 import { workerLaunchFlags } from '../../shared/workerLaunch';
 
@@ -618,4 +618,19 @@ export async function worktreeUnchanged(git: Git, base: string, branch: string):
   if (tip.code !== 0 || tip.stdout.trim() !== base) return false;
   const status = await git(['status', '--porcelain', '--untracked-files=all', '--ignored=traditional']);
   return status.code === 0 && status.stdout.trim() === '';
+}
+
+/**
+ * What a start's worktree shows of the work, for its task's status: HEAD
+ * abbreviated, when it was committed, and how many tracked files differ from
+ * `base` (the commit the worktree started from), committed or not. Git facts
+ * only, no file names. Null when git cannot say.
+ */
+export async function worktreeProgress(git: Git, base: string): Promise<A2aRemoteProgressV1 | null> {
+  const head = await git(['log', '-1', '--abbrev=12', '--format=%h%x00%cI', 'HEAD']);
+  const [sha, committedAt] = head.stdout.trim().split('\0');
+  if (head.code !== 0 || !sha) return null;
+  const diff = await git(['diff', '--name-only', '--no-renames', '-z', base, '--']);
+  if (diff.code !== 0) return null;
+  return parseA2aRemoteProgress({ head: sha, committedAt, changedFiles: diff.stdout.split('\0').filter((f) => f.length > 0).length });
 }
