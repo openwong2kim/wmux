@@ -695,7 +695,19 @@ export interface TerminalPromptNote {
    * See ApprovalRequest.newPackages, with the command they were read from:
    * the record carries them only when its own call is that command.
    */
-  packageCheck?: { command: string; newPackages: NewPackageNote[] };
+  packageCheck?: PackageCheck;
+  /**
+   * The same, still being read off the disk: the registry awaits it next to
+   * its own screen read (never longer than the lookup's own timeout), so the
+   * hook's path never waits on a file.
+   */
+  packageCheckPending?: Promise<PackageCheck | undefined>;
+}
+
+/** A package line with the command it was read from. */
+export interface PackageCheck {
+  command: string;
+  newPackages: NewPackageNote[];
 }
 
 /**

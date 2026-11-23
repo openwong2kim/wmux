@@ -347,6 +347,9 @@ export function ClaudeFileSendRow({ t }: { t: (key: string, vars?: Record<string
   );
 }
 
+/** How long the new-package row waits before reading its setting again after a failed read. */
+const NEW_PACKAGE_NOTE_RETRY_MS = 2_000;
+
 /**
  * Install approvals: a gated command that installs packages the project does
  * not have yet gets one line saying so. The daemon reads main's file on each
@@ -354,18 +357,29 @@ export function ClaudeFileSendRow({ t }: { t: (key: string, vars?: Record<string
  */
 export function NewPackageNoteRow({ t }: { t: (key: string, vars?: Record<string, string | number>) => string }) {
   const [on, setOn] = useState<boolean | null>(null);
+  // Bumped to read the saved value again (after a write); a read that fails
+  // is retried while the row is shown, so the switch never stays disabled.
+  const [readSeq, setReadSeq] = useState(0);
   useEffect(() => {
     let live = true;
-    void window.electronAPI?.newPackageNote?.get().then((r) => { if (live) setOn(r.enabled); }).catch(() => undefined);
-    return () => { live = false; };
-  }, []);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = (): void => {
+      Promise.resolve(window.electronAPI?.newPackageNote?.get())
+        .then((r) => {
+          if (!live) return;
+          if (r && typeof r.enabled === 'boolean') setOn(r.enabled);
+          else timer = setTimeout(read, NEW_PACKAGE_NOTE_RETRY_MS);
+        })
+        .catch(() => { if (live) timer = setTimeout(read, NEW_PACKAGE_NOTE_RETRY_MS); });
+    };
+    read();
+    return () => { live = false; if (timer) clearTimeout(timer); };
+  }, [readSeq]);
   const change = (next: boolean) => {
     setOn(null);
     void window.electronAPI.newPackageNote.set(next)
       .catch(() => undefined)
-      .then(() => window.electronAPI.newPackageNote.get())
-      .then((r) => setOn(r.enabled))
-      .catch(() => setOn(null));
+      .then(() => setReadSeq((n) => n + 1));
   };
   return (
     <SettingRow

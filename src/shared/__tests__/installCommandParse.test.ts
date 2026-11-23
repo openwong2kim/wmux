@@ -17,7 +17,20 @@ describe('parseInstallCommand', () => {
     ['npm i -- --weird-but-literal', []],
     ['pnpm add @scope/pkg@2 -D', ['npm:@scope/pkg']],
     ['pnpm --filter web add zod', ['npm:zod']],
-    ['npm --prefix ./web i axios', ['npm:axios']],
+    // pointed at another folder than the pane's: not compared
+    ['npm --prefix ./web i axios', []],
+    ['npm i --prefix=./web axios', []],
+    ['pnpm -C web add zod', []],
+    ['yarn --cwd web add zod', []],
+    ['uv add --directory svc httpx', []],
+    ['cargo add --manifest-path svc/Cargo.toml serde', []],
+    // pnpm's -w is --workspace-root, a switch; yarn workspace <name> add
+    ['pnpm -w add zod', ['npm:zod']],
+    ['pnpm add -w zod', ['npm:zod']],
+    ['yarn workspace web add zod', ['npm:zod']],
+    // names that start with http are names
+    ['npm i http-server http-proxy https-proxy-agent', ['npm:http-server', 'npm:http-proxy', 'npm:https-proxy-agent']],
+    ['npm i http://example.com/p.tgz https:foo', []],
     ['npm -g i serve', []],
     ['yarn add lodash@npm:lodash-es@4', ['npm:lodash-es']],
     ['bun add hono', ['npm:hono']],
@@ -28,6 +41,8 @@ describe('parseInstallCommand', () => {
     // global installs are not compared with the project
     ['npm i -g typescript', []],
     ['npm install --location=global serve', []],
+    ['npm i --location global serve', []],
+    ['npm --location global i serve', []],
     ['yarn global add serve', []],
     // registry runs
     ['npx create-vite@latest my-app', ['npm:create-vite!run']],
@@ -36,6 +51,11 @@ describe('parseInstallCommand', () => {
     ['bunx prettier --write .', ['npm:prettier!run']],
     ['pnpm dlx degit user/repo', ['npm:degit!run']],
     ['npx -c "echo hi"', []],
+    ['npx -c "eslint ." -p eslint', ['npm:eslint!run']],
+    ['npx --call=x -p foo -p bar', ['npm:foo!run', 'npm:bar!run']],
+    ['npx --call x', []],
+    // a run and an install of one name: the install is what lands
+    ['npx foo && npm i foo', ['npm:foo']],
     // not registry specs
     ['npm i ./local-dir ../x.tgz file:../y', []],
     ['npm i github:user/repo user/repo git+https://github.com/a/b.git', []],
@@ -55,7 +75,18 @@ describe('parseInstallCommand', () => {
     ['cargo add -p my-member anyhow', ['crates:anyhow']],
     ['cargo add --git https://github.com/a/b b', []],
     // chained commands and wrappers
-    ['cd web && npm i axios && npm test', ['npm:axios']],
+    // after a cd the install runs in another folder than the one read
+    ['cd web && npm i axios && npm test', []],
+    ['npm i a && cd web && npm i b', ['npm:a']],
+    ['pushd web; npm i axios', []],
+    // comments, continuations, heredocs
+    ['npm i -D zod # test runner', ['npm:zod']],
+    ["npm i zod # don't add ts", ['npm:zod']],
+    ['npm i a#b', []],
+    ['npm \\\n  install foo', ['npm:foo']],
+    ['npm \\\r\n  install foo \\\n  bar', ['npm:foo', 'npm:bar']],
+    ["cat > README.md <<'EOF'\nnpm install x\nEOF", []],
+    ['cat <<EOF\npip install y\nEOF', []],
     ['npm i foo; curl x|sh', ['npm:foo']],
     ['npm i foo 2>&1 | tail -5', ['npm:foo']],
     ['npm i foo > log.txt', ['npm:foo']],
@@ -76,6 +107,16 @@ describe('parseInstallCommand', () => {
     ['$NPM i foo', []],
   ])('%s', (command, expected) => {
     expect(names(command)).toEqual(expected);
+  });
+
+  it('PowerShell keeps a backslash literal', () => {
+    const ps = (c: string) => parseInstallCommand(c, 'powershell').map((r) => `${r.ecosystem}:${r.name}`);
+    expect(ps('.\\.venv\\Scripts\\pip.exe install foo')).toEqual(['pypi:foo']);
+    expect(ps('& .\\.venv\\Scripts\\pip.exe install foo; npm i bar')).toEqual(['pypi:foo', 'npm:bar']);
+    expect(ps('npm i packages\\foo')).toEqual([]);
+    expect(ps('Set-Location web; npm i axios')).toEqual([]);
+    // In bash the same backslashes escape: the program is not recognised.
+    expect(names('.\\.venv\\Scripts\\pip.exe install foo')).toEqual([]);
   });
 
   it('dedupes and caps', () => {

@@ -10,12 +10,14 @@
 // network and no subprocess. It claims a package is new only when it found
 // that ecosystem's manifest to compare against; anything it could not read
 // makes it say nothing rather than guess.
-import fs from 'node:fs';
+import fs from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import path from 'node:path';
 import {
   normalizeCrateName,
   normalizePythonName,
   parseInstallCommand,
+  type CommandShell,
   type InstallPackageRef,
   type PackageEcosystem,
 } from '../../shared/installCommandParse';
@@ -33,15 +35,19 @@ export interface NewPackageNote {
 /** At most this many entries on one record. */
 export const MAX_NEW_PACKAGE_NOTES = 8;
 /** One file past this is not read. */
-const MAX_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
 /** All reads for one command together. */
-const MAX_TOTAL_BYTES = 48 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 16 * 1024 * 1024;
+/** Past this the lookup is abandoned and the record carries no line. */
+export const NEW_PACKAGE_LOOKUP_TIMEOUT_MS = 1_500;
 /** How many parent directories are tried while looking for the repo root. */
 const MAX_LEVELS = 12;
 
 const JS_MANIFEST = 'package.json';
 const JS_LOCKS = ['package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock'];
 const PY_MANIFESTS = ['pyproject.toml', 'Pipfile', 'setup.cfg'];
+/** Its dependencies are code, not data: a project with one gets no Python line. */
+const PY_SETUP_SCRIPT = 'setup.py';
 const PY_LOCKS = ['uv.lock', 'poetry.lock', 'Pipfile.lock', 'pdm.lock'];
 const CARGO_MANIFEST = 'Cargo.toml';
 const CARGO_LOCK = 'Cargo.lock';
@@ -49,34 +55,40 @@ const CARGO_LOCK = 'Cargo.lock';
 /** Thrown inside the lookup when a file cannot be read whole: the ecosystem then says nothing. */
 class Unreadable extends Error {}
 
+/** A stat failure that only means "not there". Anything else (EACCES, EIO) is not knowing. */
+function isMissing(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+/** The path's stats, null when absent. Throws Unreadable when it cannot be told. */
+async function statOrNull(p: string): Promise<Stats | null> {
+  try {
+    return await fs.stat(p);
+  } catch (err) {
+    if (isMissing(err)) return null;
+    throw new Unreadable(p);
+  }
+}
+
 class Reader {
   private total = 0;
   /** The file's text, null when absent. Throws Unreadable when present but not readable within the caps. */
-  read(file: string): string | null {
-    let st: fs.Stats;
-    try {
-      st = fs.statSync(file);
-    } catch {
-      return null;
-    }
-    if (!st.isFile()) return null;
+  async read(file: string): Promise<string | null> {
+    const st = await statOrNull(file);
+    if (st === null || !st.isFile()) return null;
     if (st.size > MAX_FILE_BYTES || this.total + st.size > MAX_TOTAL_BYTES) throw new Unreadable(file);
     this.total += st.size;
     try {
-      return fs.readFileSync(file, 'utf8');
+      return await fs.readFile(file, 'utf8');
     } catch {
       throw new Unreadable(file);
     }
   }
 }
 
-function exists(p: string): boolean {
-  try {
-    fs.statSync(p);
-    return true;
-  } catch {
-    return false;
-  }
+async function exists(p: string): Promise<boolean> {
+  return (await statOrNull(p)) !== null;
 }
 
 /**
@@ -84,13 +96,14 @@ function exists(p: string): boolean {
  * including the first one holding `.git`. Without a repo root in reach, only
  * `cwd` itself: never a walk up into the home directory.
  */
-export function projectDirs(cwd: string): string[] {
+export async function projectDirs(cwd: string): Promise<string[]> {
   if (!path.isAbsolute(cwd)) return [];
   const dirs: string[] = [];
   let dir = path.resolve(cwd);
   for (let level = 0; level < MAX_LEVELS; level++) {
     dirs.push(dir);
-    if (exists(path.join(dir, '.git'))) return dirs;
+    // An unreadable `.git` is no repo root: keep walking, as for a missing one.
+    if (await exists(path.join(dir, '.git')).catch(() => false)) return dirs;
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -141,8 +154,24 @@ export function pythonNamesIn(text: string): Set<string> {
   const out = new Set<string>();
   const add = (n: string): void => { out.add(normalizePythonName(n.replace(/[._-]+$/, ''))); };
   for (const m of text.matchAll(/["']([A-Za-z0-9][A-Za-z0-9._-]*)/g)) add(m[1]);
-  for (const m of text.matchAll(/^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*=/gm)) add(m[1]);
+  // `[ \t]`, never `\s`: with the m flag `\s*` runs across newlines, and a
+  // file of blank lines took seconds.
+  for (const m of text.matchAll(/^[ \t]*([A-Za-z0-9][A-Za-z0-9._-]*)[ \t]*=/gm)) add(m[1]);
+  // setup.cfg's `install_requires =` lists one unquoted requirement per
+  // indented line.
+  for (const m of text.matchAll(/^[ \t]+([A-Za-z0-9][A-Za-z0-9._-]*)/gm)) add(m[1]);
   return out;
+}
+
+/**
+ * Whether a Python manifest declares dependencies at all. One that does not
+ * (a pyproject.toml holding only tool settings) is no list to compare with.
+ */
+export function pythonDeclaresDeps(file: string, text: string): boolean {
+  if (file === 'setup.cfg') return /^[ \t]*install_requires[ \t]*=/m.test(text);
+  if (file === 'Pipfile') return /^\[(dev-)?packages\][ \t]*$/m.test(text);
+  return /^[ \t]*(dependencies|optional-dependencies)[ \t]*=/m.test(text)
+    || /^\[(project\.optional-dependencies|dependency-groups|tool\.poetry(\.group\.[^\]\n]+)?\.(dev-)?dependencies|tool\.pdm\.dev-dependencies)\][ \t]*$/m.test(text);
 }
 
 /** Names a requirements file lists, PEP 503-normalized. */
@@ -161,65 +190,77 @@ export function requirementsNames(text: string): Set<string> {
 export function cargoNamesIn(text: string): Set<string> {
   const out = new Set<string>();
   const add = (n: string): void => { out.add(normalizeCrateName(n)); };
-  for (const m of text.matchAll(/^\s*([A-Za-z0-9][A-Za-z0-9_-]*)\s*=/gm)) add(m[1]);
-  for (const m of text.matchAll(/^\s*\[[^\]]*dependencies\.([A-Za-z0-9_-]+)\]/gm)) add(m[1]);
-  for (const m of text.matchAll(/\b(?:name|package)\s*=\s*"([A-Za-z0-9_-]+)"/g)) add(m[1]);
+  // `[ \t]` and `[^\]\n]`, never `\s` or `[^\]]`: either runs across lines.
+  for (const m of text.matchAll(/^[ \t]*([A-Za-z0-9][A-Za-z0-9_-]*)[ \t]*=/gm)) add(m[1]);
+  for (const m of text.matchAll(/^[ \t]*\[[^\]\n]*dependencies\.([A-Za-z0-9_-]+)\]/gm)) add(m[1]);
+  for (const m of text.matchAll(/\b(?:name|package)[ \t]*=[ \t]*"([A-Za-z0-9_-]+)"/g)) add(m[1]);
   return out;
 }
 
-function requirementFiles(dir: string): string[] {
+async function requirementFiles(dir: string): Promise<string[]> {
+  let names: string[];
   try {
-    return fs.readdirSync(dir).filter((f) => /^requirements[\w.-]*\.(txt|in)$/i.test(f)).sort().slice(0, 16);
-  } catch {
-    return [];
+    names = await fs.readdir(dir);
+  } catch (err) {
+    if (isMissing(err)) return [];
+    throw new Unreadable(dir);
   }
+  return names.filter((f) => /^requirements[\w.-]*\.(txt|in)$/i.test(f)).sort().slice(0, 16);
 }
 
 /** The ones of `refs` (one ecosystem) not found anywhere; null = say nothing. */
-function lookupJs(refs: InstallPackageRef[], dirs: string[], reader: Reader): NewPackageNote[] | null {
+async function lookupJs(refs: InstallPackageRef[], dirs: string[], reader: Reader): Promise<NewPackageNote[] | null> {
   let manifest = false;
   const known = new Set<string>();
+  // A local bin only answers for a run: `npx tsc` runs typescript's `tsc`,
+  // while `npm i tsc` installs the registry's `tsc`, another package.
+  const localBin = new Set<string>();
+  const runs = new Set(refs.filter((r) => r.via === 'run').map((r) => r.name));
   const pending = new Set(refs.map((r) => r.name));
   for (const dir of dirs) {
     for (const name of pending) {
-      // Installed already, maybe transitively, or a local bin `npx` will run.
-      if (exists(path.join(dir, 'node_modules', name, 'package.json'))
-        || (!name.startsWith('@') && exists(path.join(dir, 'node_modules', '.bin', name)))) known.add(name);
+      // Installed already, maybe transitively.
+      if (await exists(path.join(dir, 'node_modules', name, 'package.json'))) known.add(name);
+      else if (runs.has(name) && !name.startsWith('@') && await exists(path.join(dir, 'node_modules', '.bin', name))) localBin.add(name);
     }
-    const pkg = reader.read(path.join(dir, JS_MANIFEST));
+    const pkg = await reader.read(path.join(dir, JS_MANIFEST));
     if (pkg !== null) {
       manifest = true;
       for (const n of packageJsonNames(pkg)) if (pending.has(n)) known.add(n);
     }
     for (const lock of JS_LOCKS) {
       if ([...pending].every((n) => known.has(n))) break;
-      const text = reader.read(path.join(dir, lock));
+      const text = await reader.read(path.join(dir, lock));
       if (text === null) continue;
       for (const n of pending) if (!known.has(n) && jsLockNames(text, n)) known.add(n);
     }
   }
   if (!manifest) return null;
-  return refs.filter((r) => !known.has(r.name)).map((r) => ({ ecosystem: 'npm', name: r.name, checked: JS_MANIFEST, via: r.via }));
+  return refs
+    .filter((r) => !known.has(r.name) && !(r.via === 'run' && localBin.has(r.name)))
+    .map((r) => ({ ecosystem: 'npm', name: r.name, checked: JS_MANIFEST, via: r.via }));
 }
 
-function lookupPython(refs: InstallPackageRef[], dirs: string[], reader: Reader): NewPackageNote[] | null {
+async function lookupPython(refs: InstallPackageRef[], dirs: string[], reader: Reader): Promise<NewPackageNote[] | null> {
   let checked: string | null = null;
   const known = new Set<string>();
   for (const dir of dirs) {
+    // setup.py lists its dependencies in code this does not run.
+    if (await exists(path.join(dir, PY_SETUP_SCRIPT))) return null;
     for (const f of PY_MANIFESTS) {
-      const text = reader.read(path.join(dir, f));
+      const text = await reader.read(path.join(dir, f));
       if (text === null) continue;
-      checked ??= f;
+      if (pythonDeclaresDeps(f, text)) checked ??= f;
       for (const n of pythonNamesIn(text)) known.add(n);
     }
-    for (const f of requirementFiles(dir)) {
-      const text = reader.read(path.join(dir, f));
+    for (const f of await requirementFiles(dir)) {
+      const text = await reader.read(path.join(dir, f));
       if (text === null) continue;
       checked ??= f;
       for (const n of requirementsNames(text)) known.add(n);
     }
     for (const f of PY_LOCKS) {
-      const text = reader.read(path.join(dir, f));
+      const text = await reader.read(path.join(dir, f));
       if (text !== null) for (const n of pythonNamesIn(text)) known.add(n);
     }
   }
@@ -230,16 +271,16 @@ function lookupPython(refs: InstallPackageRef[], dirs: string[], reader: Reader)
     .map((r) => ({ ecosystem: 'pypi', name: r.name, checked: file, via: r.via }));
 }
 
-function lookupCargo(refs: InstallPackageRef[], dirs: string[], reader: Reader): NewPackageNote[] | null {
+async function lookupCargo(refs: InstallPackageRef[], dirs: string[], reader: Reader): Promise<NewPackageNote[] | null> {
   let manifest = false;
   const known = new Set<string>();
   for (const dir of dirs) {
-    const text = reader.read(path.join(dir, CARGO_MANIFEST));
+    const text = await reader.read(path.join(dir, CARGO_MANIFEST));
     if (text !== null) {
       manifest = true;
       for (const n of cargoNamesIn(text)) known.add(n);
     }
-    const lock = reader.read(path.join(dir, CARGO_LOCK));
+    const lock = await reader.read(path.join(dir, CARGO_LOCK));
     if (lock !== null) for (const n of cargoNamesIn(lock)) known.add(n);
   }
   if (!manifest) return null;
@@ -248,18 +289,18 @@ function lookupCargo(refs: InstallPackageRef[], dirs: string[], reader: Reader):
     .map((r) => ({ ecosystem: 'crates', name: r.name, checked: CARGO_MANIFEST, via: r.via }));
 }
 
-const LOOKUPS: Record<PackageEcosystem, (refs: InstallPackageRef[], dirs: string[], reader: Reader) => NewPackageNote[] | null> = {
+const LOOKUPS: Record<PackageEcosystem, (refs: InstallPackageRef[], dirs: string[], reader: Reader) => Promise<NewPackageNote[] | null>> = {
   npm: lookupJs,
   pypi: lookupPython,
   crates: lookupCargo,
 };
 
-/** The packages of `refs` the project at `cwd` does not have. Never throws. */
-export function findNewPackages(refs: readonly InstallPackageRef[], cwd: string): NewPackageNote[] {
+/** The packages of `refs` the project at `cwd` does not have. Never rejects. */
+export async function findNewPackages(refs: readonly InstallPackageRef[], cwd: string): Promise<NewPackageNote[]> {
   if (refs.length === 0) return [];
   let dirs: string[];
   try {
-    dirs = projectDirs(cwd);
+    dirs = await projectDirs(cwd);
   } catch {
     return [];
   }
@@ -270,7 +311,7 @@ export function findNewPackages(refs: readonly InstallPackageRef[], cwd: string)
     const mine = refs.filter((r) => r.ecosystem === eco);
     if (mine.length === 0) continue;
     try {
-      const found = LOOKUPS[eco](mine, dirs, reader);
+      const found = await LOOKUPS[eco](mine, dirs, reader);
       if (found) out.push(...found);
     } catch {
       // Unreadable (or past the caps): this ecosystem says nothing.
@@ -281,15 +322,31 @@ export function findNewPackages(refs: readonly InstallPackageRef[], cwd: string)
 
 /**
  * The new-package line for a shell command run in `cwd`: undefined when the
- * command installs nothing, everything it names is already in the project, or
- * `enabled` (the setting, read only once the command names a package) says no.
- * The disk is touched only after the command is seen to name a package.
+ * command installs nothing, everything it names is already in the project,
+ * `enabled` (the setting, read only once the command names a package) says
+ * no, or the reads outlast `timeoutMs`. The disk is touched only after the
+ * command is seen to name a package, and only through fs.promises: the
+ * caller's thread never waits on a file. Never rejects.
  */
-export function newPackagesForCommand(command: string, cwd: string, enabled: () => boolean = () => true): NewPackageNote[] | undefined {
-  const refs = parseInstallCommand(command);
+export async function newPackagesForCommand(
+  command: string,
+  cwd: string,
+  enabled: () => boolean = () => true,
+  opts: { shell?: CommandShell; timeoutMs?: number } = {},
+): Promise<NewPackageNote[] | undefined> {
+  const refs = parseInstallCommand(command, opts.shell);
   if (refs.length === 0 || !enabled()) return undefined;
-  const found = findNewPackages(refs, cwd);
-  return found.length > 0 ? found : undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<NewPackageNote[]>((resolve) => {
+    timer = setTimeout(() => resolve([]), opts.timeoutMs ?? NEW_PACKAGE_LOOKUP_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  try {
+    const found = await Promise.race([findNewPackages(refs, cwd).catch(() => []), timeout]);
+    return found.length > 0 ? found : undefined;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** Re-validate a stored list (approvals.json is plain JSON on disk). */

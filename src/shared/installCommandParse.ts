@@ -4,13 +4,19 @@
 //
 // It reads the command the way a careful human would skim it, not the way a
 // shell would run it: segments split on `&&`, `||`, `;`, `|`, `&` and
-// newlines, words split on whitespace with quotes honoured. Anything it cannot
-// read with confidence (a `$VAR`, a backtick, a path, a URL, a git spec, a
-// local tarball, `-r requirements.txt`) is skipped, never guessed at. The
+// newlines, words split on whitespace with quotes honoured, `#` comments and
+// line continuations dropped. Anything it cannot read with confidence (a
+// `$VAR`, a backtick, a path, a URL, a git spec, a local tarball, `-r
+// requirements.txt`) is skipped, never guessed at; a heredoc makes it read
+// nothing at all, and an install after a `cd` (or with `--prefix`) is skipped
+// because it lands in another folder than the one the lookup reads. The
 // result is informational only: it feeds a quiet line on an approval card and
 // never a risk verdict.
 
 export type PackageEcosystem = 'npm' | 'pypi' | 'crates';
+
+/** The shell the command is for. PowerShell keeps `\\` literal (its escape is a backtick). */
+export type CommandShell = 'posix' | 'powershell';
 
 export interface InstallPackageRef {
   ecosystem: PackageEcosystem;
@@ -32,7 +38,7 @@ type Segment = string[];
  * shell would expand (`$`, a backtick, `(`, `)`, a glob) comes back as null so
  * no caller can mistake it for a literal name. Redirection targets are dropped.
  */
-function segmentsOf(command: string): Array<Array<string | null>> {
+function segmentsOf(command: string, shell: CommandShell): Array<Array<string | null>> | null {
   const segments: Array<Array<string | null>> = [];
   let words: Array<string | null> = [];
   let word = '';
@@ -56,7 +62,10 @@ function segmentsOf(command: string): Array<Array<string | null>> {
   };
   for (let i = 0; i < command.length; i++) {
     const c = command[i];
-    if (c === "'") {
+    if (c === '#' && !inWord) {
+      // A comment runs to the end of the line; an apostrophe in it opens nothing.
+      while (i + 1 < command.length && command[i + 1] !== '\n') i++;
+    } else if (c === "'") {
       inWord = true;
       const close = command.indexOf("'", i + 1);
       const end = close === -1 ? command.length : close;
@@ -67,7 +76,7 @@ function segmentsOf(command: string): Array<Array<string | null>> {
       let j = i + 1;
       for (; j < command.length && command[j] !== '"'; j++) {
         const d = command[j];
-        if (d === '\\' && j + 1 < command.length) {
+        if (d === '\\' && shell === 'posix' && j + 1 < command.length) {
           word += command[++j];
         } else {
           if (d === '$' || d === '`') opaque = true;
@@ -75,13 +84,18 @@ function segmentsOf(command: string): Array<Array<string | null>> {
         }
       }
       i = j;
-    } else if (c === '\\') {
-      inWord = true;
-      if (i + 1 < command.length && command[i + 1] !== '\n') word += command[++i];
-      else i++;
+    } else if (c === '\\' && shell === 'posix') {
+      // A line continuation (`\` + LF or CRLF) joins two lines: no word, no break.
+      if (command[i + 1] === '\n') i++;
+      else if (command[i + 1] === '\r' && command[i + 2] === '\n') i += 2;
+      else if (i + 1 < command.length) { inWord = true; word += command[++i]; }
     } else if (c === ';' || c === '|' || c === '&' || c === '\n' || c === '\r') {
       // `2>&1` keeps its `&` in a redirection, which already ended the word.
       endSegment();
+    } else if (c === '<' && command[i + 1] === '<') {
+      // A heredoc's body is data, not commands; a here-string is no command
+      // either. Reading neither apart is not worth guessing at.
+      return null;
     } else if (c === '>' || c === '<') {
       // `2>`: the digits are a file descriptor, not an argument.
       if (inWord && !opaque && /^\d+$/.test(word)) { word = ''; inWord = false; }
@@ -100,6 +114,9 @@ function segmentsOf(command: string): Array<Array<string | null>> {
   endSegment();
   return segments;
 }
+
+/** Commands that change the folder the rest of the command runs in. */
+const DIRECTORY_CHANGERS = new Set(['cd', 'pushd', 'popd', 'chdir', 'set-location', 'sl', 'push-location', 'pop-location']);
 
 /** Prefixes that run the rest of the segment as its own command. */
 const WRAPPERS = new Set(['sudo', 'doas', 'env', 'command', 'time', 'nohup', 'exec', 'nice', 'builtin']);
@@ -145,7 +162,11 @@ const NPM_VALUE_FLAGS = new Set([
   '--lockfile-dir', '--virtual-store-dir', '--store-dir', '--mutex', '--network-concurrency', '--cache-folder',
   '--global-folder', '--link-folder', '--use-yarnrc', '--backend', '--trust', '--allow',
 ]);
+/** pnpm's `-w` is `--workspace-root`, a switch: its next word is a package. */
+const PNPM_VALUE_FLAGS = new Set([...NPM_VALUE_FLAGS].filter((f) => f !== '-w'));
 const NPM_GLOBAL_FLAGS = new Set(['-g', '--global', '--location=global']);
+/** Flags that point the install at another folder than the pane's. */
+const JS_ELSEWHERE_FLAGS = new Set(['--prefix', '-C', '--dir', '--cwd']);
 const NPX_VALUE_FLAGS = new Set(['--registry', '--cache', '--userconfig', '-w', '--workspace', '--prefix', '--loglevel', '--node-options', '--shell', '--call', '-c']);
 const NPM_INSTALL_SUBS = new Set(['install', 'i', 'in', 'ins', 'inst', 'insta', 'instal', 'isnt', 'isnta', 'isntal', 'isntall', 'add']);
 
@@ -180,7 +201,7 @@ export function npmSpecName(spec: string): string | null {
   // `alias@npm:real@1.2`: what lands from the registry is `real`.
   const alias = /^((?:@[^/@]+\/)?[^/@]+)@npm:(.+)$/.exec(s);
   if (alias) s = alias[2];
-  if (/^[.~/\\]/.test(s) || s.includes('://') || /^(git\+|git:|github:|gitlab:|bitbucket:|gist:|file:|link:|workspace:|portal:|patch:|http)/i.test(s)) return null;
+  if (/^[.~/\\]/.test(s) || s.includes('://') || /^(git\+|git:|github:|gitlab:|bitbucket:|gist:|file:|link:|workspace:|portal:|patch:|https?:)/i.test(s)) return null;
   if (/\.(tgz|tar|tar\.gz|zip)$/i.test(s)) return null;
   let name: string;
   if (s.startsWith('@')) {
@@ -260,15 +281,19 @@ function positionals(args: Segment, start: number, valueFlags: ReadonlySet<strin
   return { names, flags };
 }
 
-function isGlobal(flags: Set<string>): boolean {
+function isGlobal(args: Segment, start: number, flags: Set<string>): boolean {
   for (const f of flags) if (NPM_GLOBAL_FLAGS.has(f)) return true;
+  // `--location global`, the value as its own word.
+  for (let i = start; i < args.length - 1; i++) if (args[i] === '--location' && args[i + 1] === 'global') return true;
   return false;
 }
 
-function jsInstall(args: Segment, start: number, out: InstallPackageRef[]): void {
-  const { names, flags } = positionals(args, start, NPM_VALUE_FLAGS);
+function jsInstall(args: Segment, start: number, valueFlags: ReadonlySet<string>, out: InstallPackageRef[]): void {
+  const { names, flags } = positionals(args, start, valueFlags);
   // A global install lands outside the project: there is nothing to compare it with.
-  if (isGlobal(flags)) return;
+  if (isGlobal(args, start, flags)) return;
+  // Nor does one pointed at another folder.
+  for (const f of flags) if (JS_ELSEWHERE_FLAGS.has(f)) return;
   for (const n of names) {
     const name = npmSpecName(n);
     if (name) out.push({ ecosystem: 'npm', name, via: 'install' });
@@ -279,23 +304,27 @@ function jsInstall(args: Segment, start: number, out: InstallPackageRef[]): void
 function jsRun(args: Segment, start: number, out: InstallPackageRef[]): void {
   const packages: string[] = [];
   let first: string | undefined;
+  // `npx -c '<cmd>'` runs a command string: only its `-p` packages are fetched.
+  let call = false;
   for (let i = start; i < args.length; i++) {
     const a = args[i];
     if (a === '--') { first = args[i + 1]; break; }
     if (a === '-p' || a === '--package') { if (args[i + 1] !== undefined) packages.push(args[++i]); continue; }
     if (a.startsWith('--package=')) { packages.push(a.slice('--package='.length)); continue; }
-    if (a.startsWith('-')) {
-      if (NPX_VALUE_FLAGS.has(a)) {
-        // `npx -c '<cmd>'` runs a command string, not a package.
-        if (a === '-c' || a === '--call') return;
-        i++;
-      }
+    if (a === '-c' || a === '--call' || a.startsWith('--call=')) {
+      call = true;
+      if (!a.includes('=')) i++;
       continue;
     }
+    if (a.startsWith('-')) {
+      if (NPX_VALUE_FLAGS.has(a)) i++;
+      continue;
+    }
+    if (call) continue;
     first = a;
     break;
   }
-  const specs = packages.length > 0 ? packages : first !== undefined ? [first] : [];
+  const specs = packages.length > 0 ? packages : first !== undefined && !call ? [first] : [];
   for (const s of specs) {
     const name = npmSpecName(s);
     if (name) out.push({ ecosystem: 'npm', name, via: 'run' });
@@ -311,10 +340,10 @@ function pipInstall(args: Segment, start: number, valueFlags: ReadonlySet<string
 }
 
 /** Index of a JS package manager's subcommand: options before it (`pnpm --filter web add`) are skipped. */
-function jsSubIndex(args: Segment): number {
+function jsSubIndex(args: Segment, valueFlags: ReadonlySet<string>): number {
   let i = 1;
   while (i < args.length && args[i].startsWith('-')) {
-    i += !args[i].includes('=') && NPM_VALUE_FLAGS.has(args[i]) ? 2 : 1;
+    i += !args[i].includes('=') && valueFlags.has(args[i]) ? 2 : 1;
   }
   return i;
 }
@@ -323,11 +352,18 @@ function readSegment(args: Segment, out: InstallPackageRef[]): void {
   const p = programName(args[0]);
   const sub = args[1];
   if (p === 'npm' || p === 'pnpm' || p === 'yarn' || p === 'bun') {
-    const at = jsSubIndex(args);
+    const valueFlags = p === 'pnpm' ? PNPM_VALUE_FLAGS : NPM_VALUE_FLAGS;
+    let at = jsSubIndex(args, valueFlags);
+    // `yarn workspace web add zod`: the workspace's name, then the subcommand.
+    if (p === 'yarn' && args[at] === 'workspace' && args[at + 2] !== undefined) at += 2;
     const verb = args[at];
     if (verb === undefined) return;
-    // A global flag before the subcommand (`npm -g i x`) makes the install global too.
-    const leadingGlobal = args.slice(1, at).some((a) => NPM_GLOBAL_FLAGS.has(a));
+    const leading = args.slice(1, at);
+    // A global flag before the subcommand (`npm -g i x`) makes the install global too,
+    // and `npm --prefix ./web i x` lands in another folder.
+    const leadingGlobal = leading.some((a) => NPM_GLOBAL_FLAGS.has(a))
+      || leading.some((a, k) => a === '--location' && leading[k + 1] === 'global');
+    const leadingElsewhere = leading.some((a) => JS_ELSEWHERE_FLAGS.has(a.split('=')[0] ?? a));
     const install = p === 'npm' ? NPM_INSTALL_SUBS.has(verb)
       : p === 'pnpm' ? verb === 'add' || verb === 'install' || verb === 'i'
         : p === 'yarn' ? verb === 'add'
@@ -335,7 +371,7 @@ function readSegment(args: Segment, out: InstallPackageRef[]): void {
     const run = p === 'npm' ? verb === 'exec' || verb === 'x'
       : p === 'bun' ? verb === 'x'
         : verb === 'dlx';
-    if (install && !leadingGlobal) jsInstall(args, at + 1, out);
+    if (install && !leadingGlobal && !leadingElsewhere) jsInstall(args, at + 1, valueFlags, out);
     else if (run) jsRun(args, at + 1, out);
     return;
   }
@@ -357,6 +393,8 @@ function readSegment(args: Segment, out: InstallPackageRef[]): void {
     if (sub === 'add') {
       const { flags } = positionals(args, 2, UV_ADD_VALUE_FLAGS);
       if (flags.has('--git') || flags.has('--path') || flags.has('--editable')) return;
+      // Another project's folder than the pane's.
+      if (flags.has('--directory') || flags.has('--project')) return;
       pipInstall(args, 2, UV_ADD_VALUE_FLAGS, out);
     } else if (sub === 'pip' && args[2] === 'install') {
       pipInstall(args, 3, PIP_VALUE_FLAGS, out);
@@ -366,8 +404,8 @@ function readSegment(args: Segment, out: InstallPackageRef[]): void {
   if (p === 'cargo') {
     if (sub !== 'add') return;
     const { names, flags } = positionals(args, 2, CARGO_VALUE_FLAGS);
-    // From a git repo or a path: not crates.io.
-    if (flags.has('--git') || flags.has('--path')) return;
+    // From a git repo or a path: not crates.io. Another manifest than the pane's: not this project.
+    if (flags.has('--git') || flags.has('--path') || flags.has('--manifest-path')) return;
     for (const n of names) {
       const name = crateSpecName(n);
       if (name) out.push({ ecosystem: 'crates', name, via: 'install' });
@@ -378,24 +416,29 @@ function readSegment(args: Segment, out: InstallPackageRef[]): void {
 /**
  * The registry packages `command` installs or runs, deduplicated, at most
  * MAX_INSTALL_PACKAGES. Empty for anything that is not one of the recognised
- * install commands, and for a bare `npm install` (no names).
+ * install commands, for a bare `npm install` (no names), and for any install
+ * after a command that changes the folder.
  */
-export function parseInstallCommand(command: string): InstallPackageRef[] {
+export function parseInstallCommand(command: string, shell: CommandShell = 'posix'): InstallPackageRef[] {
   if (typeof command !== 'string' || !command || command.length > MAX_COMMAND_CHARS) return [];
+  const segments = segmentsOf(command, shell);
+  if (!segments) return [];
   const out: InstallPackageRef[] = [];
-  for (const raw of segmentsOf(command)) {
+  for (const raw of segments) {
     const seg = unwrap(raw);
     if (!seg) continue;
+    // Past a `cd`, the install runs in a folder the lookup is not reading.
+    if (DIRECTORY_CHANGERS.has(programName(seg[0] ?? ''))) break;
     readSegment(seg, out);
   }
-  const seen = new Set<string>();
-  const unique: InstallPackageRef[] = [];
+  const byKey = new Map<string, InstallPackageRef>();
   for (const r of out) {
     const key = `${r.ecosystem}:${r.ecosystem === 'pypi' ? normalizePythonName(r.name) : r.ecosystem === 'crates' ? normalizeCrateName(r.name) : r.name}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    unique.push(r);
-    if (unique.length >= MAX_INSTALL_PACKAGES) break;
+    const seen = byKey.get(key);
+    // Installed AND run: the install is what lands in the project.
+    if (seen) { if (r.via === 'install') seen.via = 'install'; continue; }
+    if (byKey.size >= MAX_INSTALL_PACKAGES) continue;
+    byKey.set(key, { ...r });
   }
-  return unique;
+  return [...byKey.values()];
 }
