@@ -36,7 +36,7 @@ describe('continue on an account', () => {
   it('a token account takes the conversation in a new pane: the daemon only copies', async () => {
     const d = deps();
     const res = await continuePane(d, { ptyId: 'daemon-1', accountId: token.id });
-    expect(d.rpc).toHaveBeenCalledWith('session.copyToAccountV1', { sessionId: 'daemon-1', configDir: '/acc/token' });
+    expect(d.rpc).toHaveBeenCalledWith('session.copyToAccountV1', { sessionId: 'daemon-1', configDir: '/acc/token', wslNewPane: true });
     expect(res).toEqual({
       ok: true,
       newPane: { accountId: token.id, command: `claude --resume ${SID} --dangerously-skip-permissions`, cwd: '/work' },
@@ -74,7 +74,7 @@ describe('continue on an account', () => {
     const d = deps({ sourceSignedIn });
     const res = await continuePane(d, { ptyId: 'daemon-1', accountId: plain.id, workspaceId: 'ws-1' });
     expect(sourceSignedIn).toHaveBeenCalledWith('daemon-1', 'ws-1');
-    expect(d.rpc).toHaveBeenCalledWith('session.copyToAccountV1', { sessionId: 'daemon-1', configDir: '/acc/plain' });
+    expect(d.rpc).toHaveBeenCalledWith('session.copyToAccountV1', { sessionId: 'daemon-1', configDir: '/acc/plain', wslNewPane: true });
     expect(res).toMatchObject({ ok: true, newPane: { accountId: plain.id, cwd: '/work' } });
   });
 

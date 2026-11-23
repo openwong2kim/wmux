@@ -315,23 +315,26 @@ export async function continueOnAccount(
   deps: ContinueOnAccountDeps,
   id: string,
   configDir: string,
-  opts: { copyOnly?: boolean } = {},
+  /** `wslNewPane`: main opens a WSL copy's new pane in the source pane's
+   *  distro as its user. A main without it would open a Windows pane at a
+   *  Linux folder, so a WSL copy-only is refused for it. */
+  opts: { copyOnly?: boolean; wslNewPane?: boolean } = {},
 ): Promise<ContinueOnAccountResult> {
   // One move per pane, shared with the chat ↔ terminal handoffs.
   if (!beginPaneMove(id)) return { ok: false, code: 'busy' };
   try {
     if (deps.chatOwnsPane?.(id)) return { ok: false, code: 'busy' };
-    return await run(deps, id, configDir, opts.copyOnly === true);
+    return await run(deps, id, configDir, opts.copyOnly === true, opts.wslNewPane === true);
   } finally {
     endPaneMove(id);
   }
 }
 
-async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, copyOnly: boolean): Promise<ContinueOnAccountResult> {
+async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, copyOnly: boolean, wslNewPane: boolean): Promise<ContinueOnAccountResult> {
   const pane = deps.pane(id);
   if (!pane) return { ok: false, code: 'no_session' };
   if (pane.exec) return { ok: false, code: 'unsupported' };
-  if (pane.wslTarget) return runWsl(deps, id, pane, configDir, copyOnly);
+  if (pane.wslTarget) return copyOnly && !wslNewPane ? { ok: false, code: 'unsupported' } : runWsl(deps, id, pane, configDir, copyOnly);
   // A copy types nothing into this pane, so its shell does not matter.
   const shell = copyOnly ? null : deps.shellKind(id);
   if (!copyOnly && !shell) return { ok: false, code: 'unsupported' };
@@ -411,7 +414,8 @@ async function runWsl(
   const live = deps.liveAgent(id);
   if (live !== undefined && !agentRow(live)?.continueOnAccount) return { ok: false, code: 'not_claude' };
   // A Claude its hook never reported cannot be stopped from here.
-  if (!copyOnly && live !== undefined && !wsl.agentTracked(id)) return { ok: false, code: 'unsupported' };
+  // Nor is its turn known to be closed, so not copied either.
+  if (live !== undefined && !wsl.agentTracked(id)) return { ok: false, code: 'unsupported' };
   const binding = pane.resumeBinding;
   const planned = planWslTranscriptCopy(binding, pane, configDir);
   if (!planned.ok || !binding) return { ok: false, code: planned.ok ? 'unknown_session' : planned.code };

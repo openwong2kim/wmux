@@ -10743,7 +10743,7 @@ async function main(): Promise<void> {
   // `copyOnly` (a pane that cannot switch in place): only the copy; main opens the new pane.
   const continueOnAccountRpc = (copyOnly: boolean): Parameters<typeof pipeServer.onRpc>[1] => async (rawParams, ctx) => {
     if (!pipeServer.isFirstParty(ctx.clientId)) return { ok: false, code: 'not_authorized' };
-    const p = rawParams as { sessionId?: unknown; configDir?: unknown };
+    const p = rawParams as { sessionId?: unknown; configDir?: unknown; wslNewPane?: unknown };
     const id = typeof p.sessionId === 'string' ? p.sessionId : '';
     const configDir = typeof p.configDir === 'string' ? p.configDir : '';
     if (!id || !sessionManager.getSession(id)) return { ok: false, code: 'no_session' };
@@ -10849,7 +10849,7 @@ async function main(): Promise<void> {
           pane.bridge.noteInput(data);
           return true;
         },
-      }, id, configDir, { copyOnly });
+      }, id, configDir, { copyOnly, wslNewPane: p.wslNewPane === true });
     } catch {
       return { ok: false, code: 'unknown' };
     }

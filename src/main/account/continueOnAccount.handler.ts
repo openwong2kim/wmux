@@ -48,7 +48,7 @@ export interface ContinuePaneDeps {
   sourceSignedIn: (ptyId: string, workspaceId: string | undefined) => boolean;
   dirOk: (dir: string) => boolean;
   connected: () => boolean;
-  rpc: (method: 'session.continueOnAccount' | 'session.copyToAccountV1', params: { sessionId: string; configDir: string }) => Promise<unknown>;
+  rpc: (method: 'session.continueOnAccount' | 'session.copyToAccountV1', params: { sessionId: string; configDir: string; wslNewPane?: true }) => Promise<unknown>;
   /** The daemon moved the pane to the account in place (a fan-out task's
    *  launch record follows: fanoutAccountPool.ts notePoolPaneMoved). */
   movedInPlace?: (ptyId: string, accountId: string) => void;
@@ -76,7 +76,9 @@ export async function continuePane(
     return { ok: false, code: 'unavailable' };
   }
   try {
-    const res = await deps.rpc(newPane ? 'session.copyToAccountV1' : 'session.continueOnAccount', { sessionId: ptyId, configDir: account.configDir }) as
+    // `wslNewPane`: this main opens a WSL pane's copy as that pane runs (ContinueNewPane.wslFrom).
+    const res = await deps.rpc(newPane ? 'session.copyToAccountV1' : 'session.continueOnAccount',
+      newPane ? { sessionId: ptyId, configDir: account.configDir, wslNewPane: true } : { sessionId: ptyId, configDir: account.configDir }) as
       { ok?: unknown; code?: unknown; sessionId?: unknown; cwd?: unknown; permissionMode?: unknown; resumeCommand?: unknown; wsl?: unknown } | null;
     if (res?.ok !== true) {
       const code = typeof res?.code === 'string' ? res.code : 'unknown';

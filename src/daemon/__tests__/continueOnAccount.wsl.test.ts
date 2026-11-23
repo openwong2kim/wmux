@@ -101,8 +101,8 @@ describe('continueOnAccount in a WSL pane', () => {
   });
 
   it('copy-only (a vault sign-in): copies in the distro with Claude left running, and hands back the Linux folder', async () => {
-    const d = deps({ liveAgent: () => 'claude' }, { agentTracked: () => false });
-    expect(await continueOnAccount(d, 'p1', ACCOUNT_B, { copyOnly: true })).toEqual({
+    const d = deps();
+    expect(await continueOnAccount(d, 'p1', ACCOUNT_B, { copyOnly: true, wslNewPane: true })).toEqual({
       ok: true, sessionId: SID, transcriptPath: COPY, cwd: '/home/me/repo', wsl: true,
     });
     expect(d.calls).toEqual(['ready', `copy:${SOURCE}>${COPY}`]);
@@ -121,7 +121,7 @@ describe('continueOnAccount in a WSL pane', () => {
   });
 
   it('copy-only refuses a copy into another home, an open turn, and the same or a diverged copy', async () => {
-    const run = (d: ReturnType<typeof deps>) => continueOnAccount(d, 'p1', ACCOUNT_B, { copyOnly: true });
+    const run = (d: ReturnType<typeof deps>) => continueOnAccount(d, 'p1', ACCOUNT_B, { copyOnly: true, wslNewPane: true });
     expect(await run(deps({}, { copy: async () => ({ result: 'copied', home: '/somewhere/else' }) }))).toEqual({ ok: false, code: 'copy_failed' });
     expect(await run(deps({}, { copy: async () => ({ result: 'failed', reason: 'x' }) }))).toEqual({ ok: false, code: 'copy_failed' });
     expect(await run(deps({}, { copy: async () => ({ result: 'same', home: HOME_B }) }))).toEqual({ ok: false, code: 'same_account' });
@@ -132,8 +132,12 @@ describe('continueOnAccount in a WSL pane', () => {
   });
 
   it('refuses before anything stops: an unreported Claude, no WSL support, a missing source', async () => {
-    const cases: Array<[ReturnType<typeof deps>, { copyOnly?: boolean }, string]> = [
-      [deps({ wsl: undefined }), { copyOnly: true }, 'unsupported'],
+    const cases: Array<[ReturnType<typeof deps>, { copyOnly?: boolean; wslNewPane?: boolean }, string]> = [
+      // A main that would open a Windows pane at the Linux folder.
+      [deps(), { copyOnly: true }, 'unsupported'],
+      // An unreported Claude: its turn is not known to be closed either.
+      [deps({}, { agentTracked: () => false }), { copyOnly: true, wslNewPane: true }, 'unsupported'],
+      [deps({ wsl: undefined }), { copyOnly: true, wslNewPane: true }, 'unsupported'],
       [deps({}, { agentTracked: () => false }), {}, 'unsupported'],
       [deps({ wsl: undefined }), {}, 'unsupported'],
       [deps({}, { sourceReady: async () => false }), {}, 'unknown_session'],

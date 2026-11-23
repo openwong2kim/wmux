@@ -56,6 +56,9 @@ const RESERVED_AUTH_PREFIX = /^WMUX_AUTH/i;
 /** The full reserved wmux namespace (auth token + identity vars). */
 const RESERVED_PREFIX = /^WMUX_/i;
 
+/** The Claude sign-in that withSecretEnv flags for a WSL account home's first-run mark. */
+const CLAUDE_TOKEN_ENV = 'CLAUDE_CODE_OAUTH_TOKEN';
+
 /**
  * Return a fresh copy of a caller-supplied env with the keys no caller can
  * legitimately supply removed. Applied to every supplied env, fresh create and
@@ -73,8 +76,6 @@ const RESERVED_PREFIX = /^WMUX_/i;
  * None of these can be an intentional user/profile key, so this cannot strip
  * one; CLAUDE_CONFIG_DIR and other CLAUDE_* config are untouched.
  */
-const CLAUDE_TOKEN_ENV = 'CLAUDE_CODE_OAUTH_TOKEN';
-
 /**
  * The spawn env of a worker that carries secrets: `env` plus the secrets, and
  * for a WSL spawn each secret NAME appended to WSLENV with no path flag, so

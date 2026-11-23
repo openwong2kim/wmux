@@ -31,8 +31,8 @@ folder inside the distro, and you sign in to it there once.
   stored token, the conversation opens in a new WSL pane beside this one
   instead, in the same distro and as the same Linux user, and this pane is
   left as it was.
-- **Stored token.** A pane on an account that signs in with a stored token
-  gets the token in the distro too, and its WSL folder is marked as past
+- **Stored token.** A pane on an account that signs in with a stored Claude
+  OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`) gets the token in the distro too, and its WSL folder is marked as past
   Claude's first-run setup, so Claude uses the token instead of asking you to
   sign in. If that folder already has a `.claude.json` from an earlier Claude
   run, wmux leaves it alone, and Claude may ask once.

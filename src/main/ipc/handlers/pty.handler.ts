@@ -257,6 +257,8 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
 }
 
 const WSL_FROM_GONE = 'PTY_CREATE: the WSL pane this conversation was continued from has closed, so the new pane was not opened. The copy is kept on the account; resume it from a WSL pane.';
+const WSL_FROM_NOT_WSL = 'PTY_CREATE: a conversation continued from a WSL pane opens only in a WSL shell, so the new pane was not opened.';
+const WSL_FROM_NO_DAEMON = 'PTY_CREATE: the wmux background service is not connected, so the new WSL pane for this conversation was not opened. Try again once it reconnects.';
 
 /** The distro and user of a live WSL pane in the daemon's list, or undefined. */
 export function liveWslTarget(
@@ -1061,8 +1063,8 @@ export function registerPTYHandlers(
       // pane runs in that pane's distro as its user, so it opens the account
       // home the copy went to (daemon/continueOnAccount.ts). Taken from the
       // live session only, whose wsl.exe keeps the distro up: never booted.
-      const wslFromId = typeof options?.wslFrom === 'string' ? options.wslFrom : undefined;
-      if (wslFromId !== undefined && !isWslShell(shell)) throw failCreate(WSL_FROM_GONE);
+      const wslFromId = options?.wslFrom === undefined ? undefined : String(options.wslFrom);
+      if (wslFromId !== undefined && !isWslShell(shell)) throw failCreate(WSL_FROM_NOT_WSL);
       const recoverySessions = (recoveryId || wslFromId) && isWslShell(shell)
         ? await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; state: string; cmd: string; args?: string[]; wslTarget?: WslTarget }>
         : [];
@@ -1480,7 +1482,7 @@ export function registerPTYHandlers(
       const accountRefusal = wslAccountTabRefusal(shell, options);
       if (accountRefusal) throw new Error(accountRefusal);
       // Only the daemon knows a live WSL pane's user (and continues a conversation).
-      if (options?.wslFrom !== undefined) throw new Error(WSL_FROM_GONE);
+      if (options?.wslFrom !== undefined) throw new Error(WSL_FROM_NO_DAEMON);
       const safeCwd = cwdResolution.safeCwd;
       const effectiveCwd = safeCwd ?? undefined;
       // Split off initialCommand — it's written into the shell post-create, not
