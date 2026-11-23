@@ -95,14 +95,14 @@ export function noteWslHomeAuth(
   signedIn: boolean,
   deps: { accounts?: () => ReadonlyArray<{ id: string; vendor: string; configDir: string }>; state?: Pick<WslAccountState, 'noteAuth'> } = {},
 ): void {
-  if (!account || account.agent !== 'claude' || !validWslTarget(wsl)) return;
+  if (!account || !validWslTarget(wsl)) return;
   const ref = parseWslAuthRef(account.configDir);
   if (!ref || ref.distro.toLowerCase() !== wsl.distribution.toLowerCase()) return;
   const folder = canonicalAccountFolder(ref.configDir);
   const accounts = deps.accounts ?? (() => getAccountStore().listAccounts());
   const state = deps.state ?? getWslAccountState();
   for (const a of accounts()) {
-    if (a.vendor === 'claude' && canonicalAccountFolder(a.configDir) === folder) state.noteAuth(a.id, wsl, signedIn);
+    if (a.vendor === account.agent && canonicalAccountFolder(a.configDir) === folder) state.noteAuth(a.id, wsl, signedIn);
   }
 }
 

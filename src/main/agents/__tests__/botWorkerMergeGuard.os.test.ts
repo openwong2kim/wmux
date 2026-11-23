@@ -442,7 +442,7 @@ describe('pty:create applies the guard (source-level lock)', () => {
     const src = fs.readFileSync(path.resolve(process.cwd(), 'src/main/ipc/handlers/pty.handler.ts'), 'utf8');
     // The daemon path also hands over its signed-in connections' leases,
     // bound to the session id and closed when the create rolls back.
-    expect(src).toContain('staged = await stageCreate(options, botWorker, gateway?.launch, poolPinned);');
+    expect(src).toContain('staged = await stageCreate(options, botWorker, gateway?.launch, poolPinned, launchPlace(isWslShell(shell), options, knownTarget));');
     expect(src).toMatch(/gateway\?\.open\.bind\(sessionId\);/);
     expect(src).toMatch(/undoLocal: \(\) => \{[^}]*gateway\?\.open\.close\(\);/);
     // The steps between the open and the daemon create that can throw close them too.
@@ -453,7 +453,7 @@ describe('pty:create applies the guard (source-level lock)', () => {
     expect(src.split('await stageCreate(pool.options, botWorker').length - 1).toBe(1);
     // The stages, in order: quota, the tool level (or, for a bot worker's
     // claude line, the guard's own wmux server), codex guard, merge guard, pin.
-    expect(src).toContain('let staged = poolPinned ? options : await withAccountQuota(options, { wsl });');
+    expect(src).toContain('let staged = poolPinned ? options : await withAccountQuota(options, { wsl, place: place ?? launchPlace(wsl, options, undefined) });');
     expect(src).toContain('const wsl = isWslShell(shellPath);');
     expect(src).toMatch(/withBotWorkerMergeGuard\(await guardCodexBotWorker\(staged, botWorker\), botWorker, fenceSupport \? \{ fenceSupport \} : \{\}, \{ wsl,/);
     // #2256: a path cmd cannot carry is refused by its own cause before the guard refuses the line.

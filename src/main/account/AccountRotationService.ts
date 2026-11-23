@@ -206,10 +206,11 @@ export class AccountRotationService {
    */
   async prepareLaunch(vendor: Vendor, workspaceId: string | undefined, place?: LaunchPlace): Promise<RotationDecision> {
     if (!this.getSettings()[vendor]) return { kind: 'keep' };
-    // In WSL: Codex has no reading there (its rollouts are the distro's), and
-    // a launch whose distro or user is unknown has no home to read.
+    // In WSL, a launch whose distro or user is unknown has no home to read.
+    // Only Claude homes hold readings (Codex's rollouts are the distro's), so
+    // a Codex launch there reads none and keeps too.
     const wsl = place?.wsl;
-    if (place && (vendor !== 'claude' || !wsl)) return { kind: 'keep' };
+    if (place && !wsl) return { kind: 'keep' };
     const wslReading = this.deps.wslReading ?? ((id: string, p: WslPlace, role: 'bound' | 'candidate') => getWslAccountState().reading(id, p, role));
     const registered = this.accounts(vendor);
     if (registered.length === 0) return { kind: 'keep' };
