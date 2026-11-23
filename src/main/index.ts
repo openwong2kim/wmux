@@ -121,6 +121,7 @@ import { createGlyphRepaintLogSummary } from './perf/glyphRepaintLogSummary';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
 import { registerUsageRpc, registerUsageTrailRpc, type WslUsagePane } from './pipe/handlers/usage.rpc';
 import { getPtyShell } from './pty/ptyShellRegistry';
+import { getWslAccountState, seedWslAccountState, wslStateKey } from './account/wslAccountState';
 import { isWslShell, validWslTarget } from '../shared/wslTarget';
 import { registerFsWriteRpc } from './pipe/handlers/fsWrite.rpc';
 import { registerFsRpc } from './pipe/handlers/fs.rpc';
@@ -1941,6 +1942,8 @@ function claudeAccountSnapshot(accountId: string): UsageSnapshot | null {
 const usageTrail = new UsageTrailStore(path.join(getWmuxDir(), 'usage-trail.json'));
 usagePoller.onStateChange((state) => usageTrail.record('default', state.snapshot));
 accountUsageService.onChange((entry) => usageTrail.record(entry.accountId, entry.snapshot));
+// A WSL account home's last reading from before this start (wslAccountState.ts).
+seedWslAccountState(getWslAccountState(), usageTrail);
 // A removed account's history is not served; it ages out of the file.
 registerFsRpc(rpcRouter);
 registerFsWriteRpc(rpcRouter);
@@ -2034,10 +2037,11 @@ async function wslUsagePane(ptyId: string, fresh: boolean): Promise<WslUsagePane
   if (!fresh && hit && Date.now() - hit.atMs < WSL_USAGE_PANE_TTL_MS) return hit.pane;
   // Local PTY mode: main spawned the pane and kept what decides its home.
   if (!daemonClient) return ptyManager.get(ptyId)?.wslAccount ?? null;
-  const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; wslTarget?: unknown; env?: Record<string, string> }>;
+  const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; state?: string; wslTarget?: unknown; env?: Record<string, string> }>;
   const now = Date.now();
   for (const [id, entry] of wslUsagePanes) if (now - entry.atMs >= WSL_USAGE_PANE_TTL_MS) wslUsagePanes.delete(id);
-  const s = sessions.find((x) => x.id === ptyId);
+  // A live session only: a closed pane's samples are no one's.
+  const s = sessions.find((x) => x.id === ptyId && (x.state === 'attached' || x.state === 'detached'));
   if (!s || !validWslTarget(s.wslTarget) || !s.env) {
     wslUsagePanes.delete(ptyId);
     return null;
@@ -2062,6 +2066,11 @@ registerUsageRpc(rpcRouter, {
     return shell !== undefined ? isWslShell(shell) : process.platform === 'win32' && !!configDir?.startsWith('/');
   },
   wslPane: (ptyId, fresh) => wslUsagePane(ptyId, fresh),
+  noteWslAccountSample: (accountId, place, update) => {
+    const snapshot = getWslAccountState().noteSample(accountId, place, update);
+    const key = wslStateKey(accountId, place);
+    if (snapshot && key) usageTrail.record(key, snapshot);
+  },
   defaultConfigDir: () => path.join(os.homedir(), '.claude'),
   // A live push is recorded and read by the reserve at ingest: with the
   // meter off the poller stores it without telling its listeners.

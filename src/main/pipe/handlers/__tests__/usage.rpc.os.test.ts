@@ -189,6 +189,7 @@ describe('usage.rateLimits from a WSL pane', () => {
       defaultConfigDir: () => NOWHERE,
       ingestDefault: vi.fn(() => true),
       ingestAccount: vi.fn(() => true),
+      noteWslAccountSample: vi.fn(),
       isWslPane: () => wsl,
       wslPane: vi.fn(async (_id: string, fresh: boolean) => {
         const p = typeof pane === 'function' ? pane(fresh) : pane;
@@ -208,6 +209,9 @@ describe('usage.rateLimits from a WSL pane', () => {
     expect(deps.ingestAccount).not.toHaveBeenCalled();
     expect(deps.ingestDefault).not.toHaveBeenCalled();
     expect(Object.keys(paneUsageWindows())).toEqual(['pty-1']);
+    // The home's own reading, keyed by the pane's own distro and user.
+    expect(deps.noteWslAccountSample).toHaveBeenCalledTimes(1);
+    expect(deps.noteWslAccountSample).toHaveBeenCalledWith('B', TARGET, expect.objectContaining({ session: expect.anything() }));
   });
 
   it('maps nothing for another home, another user, a failed lookup, or an unmarked env', async () => {
@@ -223,6 +227,8 @@ describe('usage.rateLimits from a WSL pane', () => {
       await expect(call(sample({ configDir }))).resolves.toEqual({ ok: false, reason: 'unknown-account' });
       expect(deps.ingestAccount).not.toHaveBeenCalled();
       expect(deps.ingestDefault).not.toHaveBeenCalled();
+      // (c) A forged sample (another user's home, no live pane) leaves the WSL store unchanged.
+      expect(deps.noteWslAccountSample).not.toHaveBeenCalled();
     }
   });
 

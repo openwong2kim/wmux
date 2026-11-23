@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isWslStateKey, MAX_WSL_STATE_KEY_LEN, WslAccountState, wslStateKey } from '../wslAccountState';
+import { isWslStateKey, MAX_WSL_STATE_KEY_LEN, seedWslAccountState, WslAccountState, wslStateKey } from '../wslAccountState';
 
 const PLACE = { distribution: 'Ubuntu', user: 'me' };
 const RESET = 1_900_000_000;
@@ -44,5 +44,21 @@ describe('wslAccountState', () => {
     s.noteDefaultPlace(null, { distribution: 'Debian', user: 'root' });
     expect(s.defaultPlace('UBUNTU')).toEqual(PLACE);
     expect(s.defaultPlace(null)).toEqual({ distribution: 'Debian', user: 'root' });
+  });
+
+  it('(e) a restart seeds each home\'s last mirrored reading from the trail, and ignores other or over-long keys', () => {
+    const now = 10_000_000;
+    const s = new WslAccountState(() => now);
+    const key = wslStateKey('a', PLACE)!;
+    const trail: Record<string, Array<{ t: number; s5: number; r5: number; s7: number; r7: number }>> = {
+      [key]: [{ t: now - 60 * 60_000, s5: 50, r5: RESET, s7: 5, r7: RESET }, { t: now - 30 * 60_000, s5: 100, r5: RESET, s7: 9, r7: RESET }],
+      a: [{ t: now, s5: 1, r5: RESET, s7: 1, r7: RESET }],
+      [`${'x'.repeat(120)}@wsl:0123456789abcdef`]: [{ t: now, s5: 1, r5: RESET, s7: 1, r7: RESET }],
+    };
+    seedWslAccountState(s, { keys: () => Object.keys(trail), read: (k) => trail[k] ?? [] });
+    // The last sample, as the bound account's reading at any age; too old to be a candidate.
+    expect(s.reading('a', PLACE, 'bound')?.windows[0]?.remaining).toBe(0);
+    expect(s.reading('a', PLACE, 'candidate')).toBeNull();
+    expect(s.all().map(([k]) => k)).toEqual([key]);
   });
 });

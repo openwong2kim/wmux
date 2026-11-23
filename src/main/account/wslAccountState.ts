@@ -25,6 +25,7 @@ import { createHash } from 'node:crypto';
 import type { UsageSnapshot } from '../claude/UsageApi';
 import { mergeLive, type UsageUpdate } from '../claude/usageMerge';
 import type { AccountQuotaReading } from '../../shared/accountQuota';
+import type { UsageTrailSample } from '../usage/usageTrail';
 
 /** Where a WSL launch or pane runs: its distro and Linux user. */
 export interface WslPlace {
@@ -160,6 +161,21 @@ export class WslAccountState {
       resetAtMs: resetSec > 0 ? resetSec * 1000 : null,
     }]);
     return { windows: [...win(s.sessionPct, s.sessionResetEpochSec), ...win(s.weeklyPct, s.weeklyResetEpochSec)], capturedAtMs: e.sampleAtMs };
+  }
+}
+
+/** Seed a store from the usage trail's last `@wsl:` sample per key (after a restart). */
+export function seedWslAccountState(
+  state: Pick<WslAccountState, 'seed'>,
+  trail: { keys(): string[]; read(key: string): UsageTrailSample[] },
+): void {
+  for (const key of trail.keys()) {
+    if (!isWslStateKey(key)) continue;
+    const last = trail.read(key).at(-1);
+    if (!last) continue;
+    state.seed(key, {
+      sessionPct: last.s5, sessionResetEpochSec: last.r5, weeklyPct: last.s7, weeklyResetEpochSec: last.r7, fetchedAtMs: last.t,
+    }, last.t);
   }
 }
 

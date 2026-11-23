@@ -18,7 +18,7 @@ import type { RpcRouter } from '../RpcRouter';
 import type { UsageUpdate, UsageWindow } from '../../claude/usageMerge';
 import { notePaneUsageSample } from '../../usageLimit/paneUsageLimits';
 import type { UsageTrailSample } from '../../usage/usageTrail';
-import { wslAccountLinuxHome } from '../../../shared/wslAccountHome';
+import { canonicalAccountFolder, wslAccountLinuxHome } from '../../../shared/wslAccountHome';
 import type { WslTarget } from '../../../shared/wslTarget';
 
 export interface UsageRpcDeps {
@@ -36,6 +36,9 @@ export interface UsageRpcDeps {
   /** A WSL pane's distro, user and env, from the daemon; null when unknown.
    *  `fresh`: past any kept lookup. */
   wslPane?: (ptyId: string, fresh: boolean) => Promise<WslUsagePane | null>;
+  /** A live WSL pane's sample on its own account home: that home's reading
+   *  (wslAccountState.ts), never the account's Windows entry. */
+  noteWslAccountSample?: (accountId: string, place: WslTarget, update: UsageUpdate) => void;
 }
 
 export interface WslUsagePane { target: WslTarget; env: Record<string, string> }
@@ -68,6 +71,12 @@ async function ingestWslSample(
   if (parsed.configDir === null || homeOf(pane) !== parsed.configDir) {
     deps.log?.(`[usage.rateLimits] not an account: a WSL config dir that is not the pane's account home (pty ${parsed.ptyId})`);
     return { ok: false, reason: 'unknown-account' };
+  }
+  // The registered account whose Windows folder the pane's env names: its
+  // home in this distro, as this user (the pane's own target).
+  const folder = canonicalAccountFolder(pane.env.CLAUDE_CONFIG_DIR ?? '');
+  for (const a of deps.listClaudeAccounts()) {
+    if (canonicalAccountFolder(a.configDir) === folder) deps.noteWslAccountSample?.(a.id, pane.target, parsed.update);
   }
   return { ok: true, applied: true };
 }

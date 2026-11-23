@@ -127,6 +127,11 @@ export class UsageTrail {
     return true;
   }
 
+  /** Every key that holds samples. */
+  keys(): string[] {
+    return [...this.trails.keys()];
+  }
+
   /** Samples for one key with since ≤ t ≤ until, oldest first (a copy). */
   read(key: string, sinceMs = 0, untilMs = Number.MAX_SAFE_INTEGER): UsageTrailSample[] {
     const list = this.trails.get(key) ?? [];
