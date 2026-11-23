@@ -328,6 +328,8 @@ import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
 import { withActivity, withViewingSessions } from './web/deviceActivity';
 import { buildWebPaneEnv } from './web/webPaneEnv';
 import { readClaudeFileSend } from './claudeFileSendSetting';
+import { readNewPackageNote } from './newPackageNoteSetting';
+import { newPackagesForCommand } from './approvals/installPackageLookup';
 import { makeChannelPhoneApi, type ChannelPhoneApi } from './web/channelsApi';
 import type { ApprovalDecision, DecisionFormKind, NativeDecisionOutcome, NativeDecisionRef, NativeDecisionReply } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
@@ -5857,6 +5859,7 @@ function registerRpcHandlers(
       },
       log: (level, message) => log(level, message),
       isAutomationPane: (id) => automationEngine?.ownsPane(id) === true,
+      newPackagesFor: (command, cwd, shell) => newPackagesForCommand(command, cwd, () => readNewPackageNote(getWmuxDir()), { shell }),
       latestEndedTurn: (id) => sessionManager.getSession(id)?.bridge.endedTurnId() ?? null,
       // M2 — hook-sourced awaiting_input is the ONLY thing that mints an
       // approval request. Wired here, on the daemon-internal path, because this
@@ -6011,7 +6014,11 @@ function registerRpcHandlers(
         if (!isInternalForkPayload(signal.payload)) ingest.handle({ ...signal, kind: 'agent.tool_started' });
         return { ok: true };
       }
-      const gate = ingest.handlePermissionGate(signal);
+      // The new-package line reads files: it is awaited here, off the hook's
+      // synchronous path and bounded by its own timeout, so the gate is
+      // created once with it rather than updated after the phone saw it.
+      const packageCheck = await ingest.gatePackageCheck(signal);
+      const gate = ingest.handlePermissionGate(signal, packageCheck);
       if (!gate.ok || !gate.gateId) {
         // Unroutable or non-gated tool (or a bypassPermissions session, which
         // handlePermissionGate deliberately never gates) — hand it back to the

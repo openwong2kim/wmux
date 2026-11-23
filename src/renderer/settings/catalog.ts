@@ -188,6 +188,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'scheduledretry', tab: 'claude-integration', labelKey: 'claudeIntegration.scheduledRetry', descKey: 'claudeIntegration.scheduledRetryDesc', synonyms: 'schedule scheduled run retry network server error overloaded continue 예약 재시도 오류' },
   { id: 'clauderesumeonstart', tab: 'claude-integration', labelKey: 'claudeIntegration.resumeOnStart', descKey: 'claudeIntegration.resumeOnStartDesc', synonyms: 'resume restart recover continue launch boot session 재시작 이어가기 복원' },
   { id: 'claudefilesend', tab: 'claude-integration', labelKey: 'claudeIntegration.fileSend', descKey: 'claudeIntegration.fileSendDesc', synonyms: 'send file attachment phone mobile SendUserFile remote control 파일 보내기 첨부 휴대폰 폰' },
+  { id: 'newpackagenote', tab: 'claude-integration', labelKey: 'claudeIntegration.newPackageNote', descKey: 'claudeIntegration.newPackageNoteDesc', synonyms: 'install package npm pip cargo approval new unknown hallucinated typosquat supply chain dependency 설치 패키지 새 승인 의존성' },
   { id: 'mcp', tab: 'claude-integration', labelKey: 'settings.mcpServers', synonyms: 'mcp plugin tools broker register codex' },
   { id: 'mcpbroker', tab: 'claude-integration', labelKey: 'settings.mcpBroker', descKey: 'settings.mcpBrokerDesc', synonyms: 'mcp broker shared process memory WMUX_MCP_BROKER 공유 프로세스 메모리 브로커' },
 

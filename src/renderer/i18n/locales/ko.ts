@@ -3880,6 +3880,8 @@ export const ko = {
   'claudeIntegration.resumeOnStartDesc': '재시작 후 Claude Code나 Codex를 실행하던 판에 Resume 버튼을 누르지 않아도 이어가기 명령을 입력합니다. 기본값은 꺼짐입니다.',
   'claudeIntegration.fileSend': 'Claude가 휴대폰으로 파일 보내기',
   'claudeIntegration.fileSendDesc': "Claude가 wmux 휴대폰 앱으로 파일을 보낼 수 있게 합니다. 켜면 Claude의 Remote Control은 그 파일을 claude.ai에 올리지 못할 수 있습니다. 바꾼 뒤 새로 시작하는 판부터 적용되고, 이미 실행 중인 판은 그대로입니다. 기본값은 꺼짐입니다.",
+  'claudeIntegration.newPackageNote': "설치 승인에 새 패키지 표시",
+  'claudeIntegration.newPackageNoteDesc': "에이전트가 이 프로젝트에 아직 없는 패키지를 설치하려 하면 wmux 휴대폰 앱의 승인 카드에 한 줄로 알려 줍니다(예: \"새 패키지: left-pad — package.json에 없음\"). 에이전트는 가끔 없는 패키지 이름을 지어내고, 공격자는 그런 이름을 등록해 둡니다. 이 컴퓨터의 package.json, Python·Cargo 매니페스트와 잠금 파일만 확인하며 어디에도 보내지 않습니다. 승인 동작은 켜든 끄든 같습니다. 기본값은 켜짐입니다.",
   'usageLimit.waiting': '대기 중',
   'agentAuth.signedOut': "{agent} 로그인이 풀렸습니다. 다시 로그인할 때까지 실행되지 않습니다.",
   'agentAuth.signInAgain': "다시 로그인",

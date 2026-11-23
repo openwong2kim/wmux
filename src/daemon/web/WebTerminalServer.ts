@@ -9855,6 +9855,8 @@ export class WebTerminalServer {
       ...(r.kind === 'awaiting_permission' ? { kind: r.kind } : {}),
       ...(r.kind !== 'terminal_prompt' && r.toolName ? { toolName: r.toolName } : {}),
       ...(r.toolInputSummary ? { toolInputSummary: r.toolInputSummary } : {}),
+      // Next to the summary it annotates, so a card built from the nudge shows it too.
+      ...(r.kind === 'awaiting_permission' && r.newPackages ? { newPackages: r.newPackages } : {}),
       // The agent's own terminal dialog: the kind and nothing else. The nudge
       // carries no content; the capability-aware list is where the dialog is.
       ...(r.kind === 'terminal_prompt' ? { kind: r.kind } : {}),
@@ -11503,6 +11505,9 @@ function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAns
       ...(r.workspaceId ? { workspaceId: r.workspaceId } : {}),
       ...(r.toolName ? { toolName: r.toolName } : {}),
       ...(r.summary ? { summary: r.summary } : {}),
+      // Packages the command installs that the project lacks: one quiet line,
+      // informational only (see ApprovalRequest.newPackages).
+      ...(r.newPackages ? { newPackages: r.newPackages } : {}),
       // A hint for the client's own confirm step — computed at creation from the
       // call's full command. Never a permission.
       ...(r.risk ? { risk: r.risk } : {}),
@@ -11559,6 +11564,7 @@ function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAns
     // shell command with nothing on screen saying which one.
     ...(r.toolName ? { toolName: r.toolName } : {}),
     ...(r.toolInputSummary ? { toolInputSummary: r.toolInputSummary } : {}),
+    ...(r.newPackages ? { newPackages: r.newPackages } : {}),
     ...decisionV2Wire(r, caps, otherMaxCells),
   };
 }

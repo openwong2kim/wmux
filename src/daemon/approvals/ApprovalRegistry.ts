@@ -153,6 +153,7 @@ import {
 import { showsScreenReaderKeyRow } from './screenReaderKeyRow';
 import type { PhoneDecisionsConfig } from './decisionConfig';
 import { boundDecisionForm, nativeV2Answer } from './decisionForm';
+import { sanitizeNewPackages, type NewPackageNote } from './installPackageLookup';
 
 /** The pane's state at one instant: output bytes, key-carrying input, the PTY incarnation. */
 export interface PromptScreenMark {
@@ -470,6 +471,7 @@ function copyRequest(r: ApprovalRequest): ApprovalRequest {
     ...(r.form ? { form: structuredClone(r.form) } : {}),
     ...(r.step ? { step: { ...r.step } } : {}),
     ...(r.answerDigest ? { answerDigest: { ...r.answerDigest } } : {}),
+    ...(r.newPackages ? { newPackages: r.newPackages.map((p) => ({ ...p })) } : {}),
   };
 }
 
@@ -968,6 +970,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     workspaceId?: string;
     toolName: string;
     toolInputSummary?: string;
+    newPackages?: NewPackageNote[];
     /** The ingest's verdict on the call's FULL input (the summary is cut). */
     risk?: 'critical';
     attribution?: 'exact' | 'inexact';
@@ -980,6 +983,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       workspaceId: input.workspaceId,
       toolName: input.toolName,
       toolInputSummary: input.toolInputSummary,
+      newPackages: sanitizeNewPackages(input.newPackages),
     };
     // The same pattern list every other record kind uses; the summary is
     // scanned too so a caller that passed no verdict still gets one.
@@ -1015,6 +1019,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         kind: 'awaiting_permission',
         toolName: snapshot.toolName,
         ...(snapshot.toolInputSummary ? { toolInputSummary: snapshot.toolInputSummary } : {}),
+        ...(snapshot.newPackages ? { newPackages: snapshot.newPackages } : {}),
         ...(critical ? { risk: 'critical' as const } : {}),
         ...(input.attribution ? { attribution: input.attribution } : {}),
         createdAt: this.now(),
@@ -1298,7 +1303,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     }
   }
 
-  private async noteTerminalPromptInner(note: TerminalPromptNote): Promise<void> {
+  private async noteTerminalPromptInner(input: TerminalPromptNote): Promise<void> {
+    let note = input;
     const { sessionId } = note;
     if (!isClaudeFamilyAgent(note.agent)) return;
     if (note.source === 'hook' && this.notePermissionEvidence(note)) {
@@ -1320,7 +1326,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     this.terminalPromptReads.add(sessionId);
     const seq = this.sweepSeq.get(sessionId) ?? 0;
     try {
-      const read = await this.readDialogForCreation(sessionId);
+      const [read, packageCheck] = await Promise.all([
+        this.readDialogForCreation(sessionId),
+        note.packageCheckPending?.catch(() => undefined),
+      ]);
+      if (packageCheck) note = { ...note, packageCheck };
       const binding = this.bindingFor(sessionId, note);
       // The question must be proven gone from the screen, not just outlived by
       // a hook: a subagent's permission request can arrive while the lead
@@ -1800,7 +1810,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     // and summary are the fallbacks.
     const callSummary = boundRecordText(command && webSearch ? `${command} (${webSearch})` : command, TERMINAL_PROMPT_SUMMARY_MAX);
     const screenSummary = parsed ? boundRecordText(parsed.commandText, TERMINAL_PROMPT_SUMMARY_MAX) : undefined;
-    const summary = (bound || !parsed || toolOfDialog(parsed) === undefined
+    const summaryFromCall = bound || !parsed || toolOfDialog(parsed) === undefined;
+    const summary = (summaryFromCall
       ? callSummary ?? screenSummary
       : screenSummary ?? callSummary)
       ?? note.summary;
@@ -1808,6 +1819,13 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     // sandbox is flagged critical, so the approver gets the louder treatment
     // the terminal's "(unsandboxed)" title gives the person at the desk.
     const risky = terminalPromptTextRisk(command, summary, parsed?.reason) || titleSaysUnsandboxed(parsed?.title);
+    // The hook's package line, only on a record whose card shows the call the
+    // line was read from: an unbound dialog's summary is the screen's, which
+    // may be another call's.
+    const newPackages = summaryFromCall && callSummary !== undefined && note.packageCheck
+      && command !== undefined && command === note.packageCheck.command
+      ? sanitizeNewPackages(note.packageCheck.newPackages)
+      : undefined;
     const inputHash = binding && !binding.unbindable ? toolInputHash(binding.input) : undefined;
     const record: WithIdentity = {
       id: this.newId(),
@@ -1817,6 +1835,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       kind: 'terminal_prompt',
       ...(toolName ? { toolName } : {}),
       ...(summary ? { summary } : {}),
+      ...(newPackages ? { newPackages } : {}),
       ...(risky ? { risk: 'critical' as const } : {}),
       ...(answerable && parsed && read
         ? {
@@ -3876,11 +3895,17 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * `replaces`, so the push carries over rather than firing again.
    */
   private async supersedeWithFresh(record: ApprovalRequest, live: DialogRead): Promise<ApprovalRequest | null> {
+    // The package line carries over only while the fresh record's call is
+    // still the command it was read from (buildTerminalPrompt checks).
+    const previousCommand = identityOf(record)?.call?.command;
     const note: TerminalPromptNote = {
       sessionId: record.sessionId,
       agent: record.agent,
       ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
       ...(record.toolName ? { toolName: record.toolName } : {}),
+      ...(record.newPackages && previousCommand !== undefined
+        ? { packageCheck: { command: previousCommand, newPackages: record.newPackages } }
+        : {}),
       source: 'detector',
     };
     const fresh = this.buildTerminalPrompt(note, live, this.bindingFor(record.sessionId, note));

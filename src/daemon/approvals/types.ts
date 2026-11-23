@@ -12,6 +12,7 @@
 import type { ApprovalPressRefusal } from './approvalKeystrokes';
 import type { QuestionShape } from './askUserQuestion';
 import type { AgentSlug } from '../../shared/agentIdentity';
+import type { NewPackageNote } from './installPackageLookup';
 
 /** What the resolver asked for. Approve = affirmative, deny = reject. */
 export type ApprovalDecision = 'approve' | 'deny';
@@ -181,6 +182,15 @@ export interface ApprovalRequest {
    * command" / "what file" without a second round trip.
    */
   toolInputSummary?: string;
+  /**
+   * Packages a shell install command names that the pane's project does not
+   * have yet (installPackageLookup.ts), for one quiet line on the card: "New
+   * package: X — not in package.json". On `awaiting_permission` and
+   * `terminal_prompt` records only, absent (never empty) when there is nothing
+   * to say, when no manifest was there to compare with, or when the setting is
+   * off. INFORMATIONAL ONLY: no risk verdict, button, or answer reads it.
+   */
+  newPackages?: NewPackageNote[];
   /**
    * What the dialog is about, sanitized and capped at 200 characters. Present
    * only on `kind:'terminal_prompt'` records, and only when known (the command
@@ -681,6 +691,23 @@ export interface TerminalPromptNote {
   promptId?: string;
   /** `hook` (PermissionRequest) or `detector` (confirmed screen attention). */
   source: 'hook' | 'detector';
+  /**
+   * See ApprovalRequest.newPackages, with the command they were read from:
+   * the record carries them only when its own call is that command.
+   */
+  packageCheck?: PackageCheck;
+  /**
+   * The same, still being read off the disk: the registry awaits it next to
+   * its own screen read (never longer than the lookup's own timeout), so the
+   * hook's path never waits on a file.
+   */
+  packageCheckPending?: Promise<PackageCheck | undefined>;
+}
+
+/** A package line with the command it was read from. */
+export interface PackageCheck {
+  command: string;
+  newPackages: NewPackageNote[];
 }
 
 /**
@@ -730,6 +757,8 @@ export interface ApprovalHookSink {
     workspaceId?: string;
     toolName: string;
     toolInputSummary?: string;
+    /** See ApprovalRequest.newPackages. */
+    newPackages?: NewPackageNote[];
     /** Judged on the call's FULL input before the summary was cut. */
     risk?: 'critical';
     /** See ApprovalRequest.attribution. */

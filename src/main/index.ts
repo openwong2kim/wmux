@@ -277,6 +277,8 @@ import { loadConfig, getWmuxDir, isFailClosedConfig } from '../daemon/config';
 import { atomicWriteJSON } from '../daemon/util/atomicWrite';
 import { CLAUDE_FILE_SEND_IPC } from '../shared/claudeFileSend';
 import { claudeFileSendPath, readClaudeFileSend } from '../daemon/claudeFileSendSetting';
+import { NEW_PACKAGE_NOTE_IPC } from '../shared/newPackageNote';
+import { newPackageNotePath, readNewPackageNote } from '../daemon/newPackageNoteSetting';
 import { CHANNELS_EPOCH } from '../shared/channels';
 import { createTray, destroyTray, updateTraySessionCount } from './tray';
 import { installApplicationMenu } from './menu/appMenu';
@@ -1975,6 +1977,19 @@ ipcMain.handle(CLAUDE_FILE_SEND_IPC.SET, async (_event, enabled: unknown) => {
   if (typeof enabled !== 'boolean') return { ok: false };
   try {
     await atomicWriteJSON(claudeFileSendPath(getWmuxDir()), { enabled });
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+});
+
+// New-package note on install approvals: main owns writes; the daemon reads
+// the file on each gated install command.
+ipcMain.handle(NEW_PACKAGE_NOTE_IPC.GET, () => ({ enabled: readNewPackageNote(getWmuxDir()) }));
+ipcMain.handle(NEW_PACKAGE_NOTE_IPC.SET, async (_event, enabled: unknown) => {
+  if (typeof enabled !== 'boolean') return { ok: false };
+  try {
+    await atomicWriteJSON(newPackageNotePath(getWmuxDir()), { enabled });
     return { ok: true };
   } catch {
     return { ok: false };

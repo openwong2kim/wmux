@@ -72,6 +72,9 @@ import { checkNativeTranscriptPath } from '../transcript/providers';
 import { isWslOwnTranscriptPath } from './transcriptPathGuard';
 import type { WslTarget } from '../../shared/wslTarget';
 import { agentRow } from '../../shared/agentIdentity';
+import type { NewPackageNote } from '../approvals/installPackageLookup';
+import type { CommandShell } from '../../shared/installCommandParse';
+import type { PackageCheck } from '../approvals/types';
 
 /** Rolling flood-summary interval. Mirrors the main-side handler. */
 const HOOK_FLOOD_LOG_INTERVAL_MS = 30_000;
@@ -393,6 +396,14 @@ export interface HookIngestDeps {
    * approval mode). Registry membership, never the id prefix.
    */
   isAutomationPane?: (sessionId: string) => boolean;
+  /**
+   * The packages a shell command installs that the project at `cwd` does not
+   * have (approvals/installPackageLookup.ts), or undefined. Undefined while
+   * the "note new packages" setting is off. Informational: it only adds a line
+   * to the approval record, never a risk verdict. Async and bounded by its own
+   * timeout: it reads files, and the hook's path must not wait on them.
+   */
+  newPackagesFor?: (command: string, cwd: string, shell: CommandShell) => Promise<NewPackageNote[] | undefined>;
   /**
    * External sessions — a valid signal that reached no pane: an agent running
    * outside wmux (tmux, ssh, another terminal), or one whose guessed pane
@@ -764,6 +775,17 @@ export function summarizeToolInput(payload: Record<string, unknown> | undefined)
     }
   }
   return undefined;
+}
+
+/** The shell command of a Bash / PowerShell call, whole (not the 200-char summary), with its shell. */
+function shellCommandOf(payload: Record<string, unknown> | undefined): { command: string; shell: CommandShell } | undefined {
+  const tool = payload?.['tool_name'];
+  if (tool !== 'Bash' && tool !== 'PowerShell') return undefined;
+  const input = payload?.['tool_input'];
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const command = (input as Record<string, unknown>)['command'];
+  if (typeof command !== 'string' || !command.trim()) return undefined;
+  return { command, shell: tool === 'PowerShell' ? 'powershell' : 'posix' };
 }
 
 /** Bounds on the critical scan's walk of a tool input. Past either, the input
@@ -1149,7 +1171,7 @@ export class HookIngest {
    *
    * Never throws: the bridge is on the hook budget.
    */
-  handlePermissionGate(signal: AgentSignal): {
+  handlePermissionGate(signal: AgentSignal, packageCheck?: PackageCheck): {
     ok: boolean;
     reason?: string;
     gateId?: string;
@@ -1282,12 +1304,19 @@ export class HookIngest {
     // Gated tool — create a gate record and broadcast awaiting_permission.
     const workspaceId = sessions.find((s) => s.id === sessionId)?.env?.[ENV_KEYS.WORKSPACE_ID];
     const toolInputSummary = summarizeToolInput(signal.payload);
+    // Read before this call (gatePackageCheck) for the pane the hook named
+    // exactly; carried only onto that pane's gate for that same command.
+    const newPackages = packageCheck && signal.ptyId === sessionId
+      && shellCommandOf(signal.payload)?.command === packageCheck.command
+      ? packageCheck.newPackages
+      : undefined;
     const gateId = this.deps.approvals?.noteGateAwaiting({
       sessionId,
       agent: signal.agent,
       ...(workspaceId ? { workspaceId } : {}),
       toolName,
       ...(toolInputSummary ? { toolInputSummary } : {}),
+      ...(newPackages ? { newPackages } : {}),
       ...(gateInputIsCritical(signal.payload) ? { risk: 'critical' as const } : {}),
       // Only a hook that named this pane exactly may be approved by a machine.
       attribution: signal.ptyId === sessionId ? 'exact' : 'inexact',
@@ -1835,6 +1864,7 @@ export class HookIngest {
       const toolUseId = typeof signal.payload?.tool_use_id === 'string' ? signal.payload.tool_use_id : undefined;
       const hookSessionId = typeof signal.payload?.session_id === 'string' ? signal.payload.session_id : undefined;
       const promptId = typeof signal.payload?.prompt_id === 'string' ? signal.payload.prompt_id : undefined;
+      const packageCheckPending = this.packageCheckFor(signal.payload, session);
       this.recordTerminalPrompt({
         sessionId,
         agent: signal.agent,
@@ -1845,6 +1875,7 @@ export class HookIngest {
         ...(toolUseId ? { toolUseId } : {}),
         ...(hookSessionId ? { hookSessionId } : {}),
         ...(promptId ? { promptId } : {}),
+        ...(packageCheckPending ? { packageCheckPending } : {}),
         source: 'hook',
       });
       return;
@@ -2076,6 +2107,56 @@ export class HookIngest {
       ...(workspaceId ? { workspaceId } : {}),
       source: 'detector',
     });
+  }
+
+  /**
+   * The new-package line for a gated tool call, read before
+   * `handlePermissionGate` creates the gate (the daemon's gate RPC awaits it).
+   * Only for the pane the hook names exactly; undefined otherwise, and
+   * whenever there is nothing to say. Never rejects, and never outlasts the
+   * lookup's own timeout.
+   */
+  async gatePackageCheck(signal: AgentSignal): Promise<PackageCheck | undefined> {
+    // No file is read for a call that raises no gate (handlePermissionGate's
+    // first filters; the rest are checked again there).
+    const toolName = signal.payload?.tool_name;
+    if (typeof toolName !== 'string' || !(this.deps.gateConfig?.().gatedTools ?? []).includes(toolName)) return undefined;
+    if (signal.payload?.permission_mode === 'bypassPermissions') return undefined;
+    const session = this.deps.listLiveSessions().find((s) => s.id === signal.ptyId);
+    return this.packageCheckFor(signal.payload, session);
+  }
+
+  /**
+   * The new-package line for a shell call, with the command it was read
+   * from, or undefined synchronously when there is no lookup to run. Run
+   * where the command runs: the hook's own `cwd` when it names an absolute
+   * directory, else the pane's. A WSL pane reports Linux paths this host
+   * cannot read, so it gets none. The promise never rejects: a failed lookup
+   * is no line.
+   */
+  private packageCheckFor(
+    payload: Record<string, unknown> | undefined,
+    session: HookIngestSession | undefined,
+  ): Promise<PackageCheck | undefined> | undefined {
+    const lookup = this.deps.newPackagesFor;
+    if (!lookup || !session || session.wslTarget) return undefined;
+    const call = shellCommandOf(payload);
+    if (!call) return undefined;
+    const hookCwd = payload?.['cwd'];
+    const cwd = typeof hookCwd === 'string' && path.isAbsolute(hookCwd) ? hookCwd : session.cwd;
+    if (!cwd) return undefined;
+    const warn = (err: unknown): undefined => {
+      this.deps.log?.('warn', `[hooks] new-package lookup failed: ${String(err)}`);
+      return undefined;
+    };
+    try {
+      return lookup(call.command, cwd, call.shell).then(
+        (newPackages) => (newPackages && newPackages.length > 0 ? { command: call.command, newPackages } : undefined),
+        warn,
+      );
+    } catch (err) {
+      return Promise.resolve(warn(err));
+    }
   }
 
   /** Hand a `terminal_prompt` to the registry; its async work never escapes unhandled. */
