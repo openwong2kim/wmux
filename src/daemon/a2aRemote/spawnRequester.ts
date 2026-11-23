@@ -341,7 +341,7 @@ export function registerSpawnAskRpc(onRpc: (method: string, handler: RpcHandler)
       !from || typeof from['workspaceId'] !== 'string' || typeof from['paneId'] !== 'string' || typeof p['callerKey'] !== 'string' ||
       (p['expiresInHours'] !== undefined && typeof p['expiresInHours'] !== 'number') || (p['requestKey'] !== undefined && typeof p['requestKey'] !== 'string') ||
       (p['fromPtyId'] !== undefined && !isSafeId(p['fromPtyId']))) {
-      return { ok: false, error: 'bad-request', message: 'pc, agent, folder{root, sub?}, text, from{workspaceId, paneId} and callerKey are required' };
+      return { ok: false, error: 'bad-request', message: 'pc, agent, folder{root, sub?}, text, from{workspaceId, paneId} and callerKey are required; fromPtyId, when given, is an id' };
     }
     return requester.ask({
       pc: p['pc'],

@@ -36,6 +36,7 @@ import { WakeQueue, getWakeQueue } from '../factory/wakeQueue';
 import { WORKER_ENDED } from '../factory/workerRunEnds';
 import { WORKER_IDLE_SUMMARY } from './fanoutWorkerWatch';
 import { getTaskLedger } from './taskLedgerHost';
+import { onRemoteQuestionInPlace } from '../worktask/remoteFanout';
 
 export interface FanoutCallerEvent {
   ownerWorkspaceId: string;
@@ -129,7 +130,17 @@ export function installFanoutCallerLedgerNotify(
   notify: (ownerWorkspaceId: string, taskWorkspaceId: string, taskId: string, kind: string, seq: number) => void,
   instance?: TaskLedger,
 ): () => void {
-  return (instance ?? getTaskLedger()).onTransition((t) => {
+  // A question on another PC's screen while its row already waited on a
+  // reply: the row stays input_required, so no transition below sees it.
+  const offQuestion = onRemoteQuestionInPlace((entry) => {
+    try {
+      if (hasBrain(entry.ownerWorkspaceId)) return;
+      notify(entry.ownerWorkspaceId, entry.taskWorkspaceId, entry.id, 'ledger.input_required', entry.rev);
+    } catch {
+      // best effort
+    }
+  });
+  const offTransition = (instance ?? getTaskLedger()).onTransition((t) => {
     // A worker's own failed / review_requested, or wmux itself moving the row
     // to input_required: the worker's agent never started (#1919) or sits on a
     // first-run screen. Either way nobody is working the task until someone
@@ -154,6 +165,10 @@ export function installFanoutCallerLedgerNotify(
       // best effort
     }
   });
+  return () => {
+    offQuestion();
+    offTransition();
+  };
 }
 
 /** What a bot-origin task transition wakes, by the status it moved to. */

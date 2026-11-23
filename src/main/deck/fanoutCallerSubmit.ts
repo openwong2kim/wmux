@@ -12,8 +12,8 @@
 //   5. last, after every await: the pane's checkout still shows each PR the
 //      line names (number AND url). A PR that moved answers 'pr_changed' so
 //      the renderer drops only the PR clauses and resends the rest.
-//   6. with it: each fan-out task the line is about still has an open row of
-//      this owner (failed counts: it is told). A row closed meanwhile answers
+//   6. with it: no fan-out task the line is about has a row that was closed
+//      (cancelled / completed) or is another owner's (failed is told). A row closed meanwhile answers
 //      'task_closed' with those ids, so the renderer drops only them.
 // The daemon then writes under its own identity and input-revision proof and
 // waits while a person is typing (daemon/callerNudgeDelivery.ts).
@@ -55,7 +55,7 @@ export interface FanoutCallerSubmitReply {
 export interface FanoutCallerSubmitPorts {
   deliveryGate: (ptyId: string) => Promise<GatedSubmitRefusal | null>;
   ownerOf: (ptyId: string) => Promise<string | null>;
-  /** Whether a fan-out task's row is gone, closed (cancelled / completed) or another owner's. Must not throw. */
+  /** Whether a fan-out task's row is closed (cancelled / completed) or another owner's. Must not throw. */
   taskClosed?: (taskId: string, ownerWorkspaceId: string) => boolean;
   /** The PR the pane's checkout shows now, or null. Absent → PR lines refused. */
   prOf?: (ptyId: string) => { number: number; url: string } | null;
@@ -67,6 +67,9 @@ export interface FanoutCallerSubmitPorts {
     pasted: boolean;
   }>;
 }
+
+/** Task ids one line may claim: more than one pane's queue holds. */
+const CLAIMED_TASKS_MAX = 2000;
 
 /** Panes whose last logged gate refusal is remembered. */
 const REFUSALS_KEPT = 256;
@@ -87,7 +90,7 @@ function parseClaimedPrs(raw: unknown): { number: number; url: string }[] {
 /** The fan-out tasks a line is about (the renderer's claim), checked against the line's short ids. */
 function parseClaimedTasks(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
-  return raw.slice(0, 64).flatMap((t) => (str(t) ? [t as string] : []));
+  return raw.slice(0, CLAIMED_TASKS_MAX).flatMap((t) => (str(t) ? [t as string] : []));
 }
 
 export function createFanoutCallerSubmit(ports: FanoutCallerSubmitPorts): {

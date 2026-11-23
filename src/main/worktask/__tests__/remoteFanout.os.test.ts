@@ -19,7 +19,7 @@ import type { RpcContext } from '../../../shared/rpc';
 import {
   POOL_HOLD_MAX_MS, POOL_REFUSING_MS, pickPoolHost, poolCandidates, poolHoldOverride, poolRootHash,
   REMOTE_ASK_GRACE_MS, REMOTE_FOLLOW_INTERVAL_MS, REMOTE_GONE_GRACE_MS, type RemoteTaskView, branchOnPc, remoteTaskReconciler, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal, remoteKeyRows,
-  startRemoteFanout, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
+  startRemoteFanout, onRemoteQuestionInPlace, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
 } from '../remoteFanout';
 
 const BOX = '0f1e2d3c-4b5a-4968-8776-655443322110';
@@ -543,6 +543,28 @@ describe('a started task follows its A2A task', () => {
     await reconcileRemoteTasks(s.deps);
     expect(s.row(0).status).toBe('working');
     expect(s.row(0).remote?.waiting).toBeUndefined();
+  });
+
+  it('a question that shows while the row already waits on a reply is told once, though no status moves', async () => {
+    const s = await started(1);
+    const told: string[] = [];
+    const off = onRemoteQuestionInPlace((e) => told.push(`${e.id}@${e.rev}:${e.status}`));
+    try {
+      s.view(0, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      expect(s.row(0).status).toBe('input_required');
+      expect(told).toEqual([]);
+      s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'permission' } });
+      await reconcileRemoteTasks(s.deps);
+      expect(s.row(0)).toMatchObject({ status: 'input_required', remote: { waiting: { on: 'question' } } });
+      expect(told).toEqual([`${s.row(0).id}@${s.row(0).rev}:input_required`]);
+      // Another kind of question on the same showing is not told again.
+      s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'plan' } });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toHaveLength(1);
+    } finally {
+      off();
+    }
   });
 
   it('while the row stays input_required, its text follows why it waits; the same reason writes nothing', async () => {

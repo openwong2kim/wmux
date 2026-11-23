@@ -1362,8 +1362,9 @@ const fanoutCallerSubmit = createFanoutCallerSubmit({
   deliveryGate: (ptyId) => inputRpc.deliveryGate(ptyId),
   ownerOf: (ptyId) => resolvePtyOwnerWorkspace(() => mainWindow, ptyId),
   taskClosed: (taskId, owner) => {
+    // A row not found (the ledger not loaded yet) is not proof of a close: the line goes.
     const row = getTaskLedger().get(taskId);
-    return !row || row.ownerWorkspaceId !== owner || row.status === 'cancelled' || row.status === 'completed';
+    return !!row && (row.ownerWorkspaceId !== owner || row.status === 'cancelled' || row.status === 'completed');
   },
   prOf: (ptyId) => currentPrOfPty(ptyId),
   agentState: async (ptyId) => (daemonClient?.isConnected ? daemonClient.getAgentState(ptyId) : null),

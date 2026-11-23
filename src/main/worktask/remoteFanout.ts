@@ -668,6 +668,20 @@ const SYSTEM_ACTOR = { kind: 'system', workspaceId: 'main' } as const;
 /** How long a gone agent, or a task the daemon no longer lists, waits before its row fails: the end normally follows within seconds. */
 export const REMOTE_GONE_GRACE_MS = 60_000;
 
+/** Listeners for a question that showed on another PC's screen while its row already waited (onRemoteQuestionInPlace). */
+const questionInPlace = new Set<(entry: LedgerEntry) => void>();
+
+/**
+ * A question that shows on another PC's screen while its row is already
+ * input_required with wmux's own text (its reply was waited on) moves no
+ * status, so no ledger transition tells it: this does, with the row as it is
+ * now. Returns the unsubscribe.
+ */
+export function onRemoteQuestionInPlace(listener: (entry: LedgerEntry) => void): () => void {
+  questionInPlace.add(listener);
+  return () => questionInPlace.delete(listener);
+}
+
 /**
  * Started rows follow their A2A task: one state-view call per owner workspace
  * and pass (STATE_VIEW_IDS_MAX ids at most each), whatever the number of rows.
@@ -750,7 +764,16 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
       await patch(p);
       return move('input_required', summary);
     }
+    const wasQuestion = entry!.remote?.waiting?.on === 'question';
     entry = (await deps.ledger.updateRemote(entry!.id, p, { summary, expectedRev: entry!.rev })) ?? entry;
+    if (wasQuestion || entry!.status !== 'input_required' || entry!.remote?.waiting?.on !== 'question') return;
+    for (const listener of questionInPlace) {
+      try {
+        listener(entry!);
+      } catch {
+        // best effort
+      }
+    }
   };
   /** Fails the row once the grace from the first sighting is over. */
   const failAfterGrace = async (summary: string): Promise<void> => {
