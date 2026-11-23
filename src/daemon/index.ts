@@ -58,7 +58,7 @@ import { coercePhoneDecisions } from './approvals/decisionConfig';
 import { createOpenCodeDecisions } from './approvals/openCodeDecisions';
 import { isNativeDecision } from './approvals/types';
 import { SCROLLBACK_ROWS, joinWrappedRows } from './web/hostSearch';
-import { recoveryCwd, isWslShell, isWslCwdMissingError } from '../shared/wsl';
+import { recoveryCwd, isWslShell, isWslCwdMissingError, type WslTarget } from '../shared/wsl';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -343,6 +343,7 @@ import { deliverCallerNudge } from './callerNudgeDelivery';
 import { draftScreenCheck, type DraftCheck } from './draftScreen';
 import { paneTurnClosed, stopAgentTree } from './agentStop';
 import { continueOnAccount, paneShellDeps, wslAccountEnv } from './continueOnAccount';
+import { wslAuthEvidencePlace } from './wslAuthEvidence';
 import { paneFree } from './paneFree';
 import { createOrphanSweep } from './winProcessSweep';
 import { classifyShell } from './shell-integration';
@@ -605,9 +606,9 @@ let pushBrowserHelp: ((rows: readonly BrowserHelpTableRow[], closed: ReadonlyMap
 /** The pipe client that last published the browser help table (main). */
 let browserHelpPublisher: string | null = null;
 /** N4 — an agent's sign-in was lost (shared/agentAuthLost); set at boot once the pipe server exists. */
-let noteAuthLost: ((sessionId: string, agent: AuthLostAgent, env: Record<string, string> | undefined, origin: AuthLostOrigin, providerCode?: string) => void) | undefined;
+let noteAuthLost: ((sessionId: string, agent: AuthLostAgent, env: Record<string, string> | undefined, origin: AuthLostOrigin, providerCode?: string, wsl?: WslTarget) => void) | undefined;
 /** N4 — an agent and account was seen to work (a confirmed turn end, or its status said signed in). */
-let noteAuthWorks: ((agent: AuthLostAgent, env: Record<string, string> | undefined) => void) | undefined;
+let noteAuthWorks: ((agent: AuthLostAgent, env: Record<string, string> | undefined, wsl?: WslTarget) => void) | undefined;
 /** N4 — one status probe per agent and account a minute, before a scheduled run and as an agent starts. */
 const agentLoginGate = new AgentLoginGate((agent, env) => new AgentSetupDetector().loginState(agent, env));
 /** The check a box runs before it starts an agent for another PC (offlineEnv
@@ -5750,14 +5751,18 @@ function registerRpcHandlers(
               // A held scheduled run is not final yet: only its final failure notifies.
               if (!shouldPushTurnFailure(transientFailure, () => automationEngine?.armTransientRetry(sessionId, data.decision) === true)) return;
               pushTurnFailed?.(sessionId, f);
-              if (f.reason === 'auth') noteAuthLost?.(sessionId, 'claude', historySession.meta.env, 'turn', f.providerCode);
+              if (f.reason === 'auth') {
+                noteAuthLost?.(sessionId, 'claude', historySession.meta.env, 'turn', f.providerCode,
+                  wslAuthEvidencePlace(historySession.meta, data.signal.agentSessionId, data.signal.payload));
+              }
             },
           })
           : undefined;
         if (data.signal.kind === 'agent.stop' && data.status === 'complete' && historySession
           && isAuthLostAgent(data.signal.agent)
           && !['internal', 'veto', 'pending'].includes(data.decision ?? '')) {
-          noteAuthWorks?.(data.signal.agent, historySession.meta.env);
+          noteAuthWorks?.(data.signal.agent, historySession.meta.env,
+            wslAuthEvidencePlace(historySession.meta, data.signal.agentSessionId, data.signal.payload));
         }
         const failure = served?.failure;
         const liveFailure = served?.current ? served.failure : undefined;
@@ -10084,17 +10089,18 @@ async function main(): Promise<void> {
   // account beyond its folder is sent. A loss makes the login gate forget the
   // account and a working turn records it as signed in; either way an answer
   // still in flight from before is not used.
-  noteAuthLost = (sessionId, agent, env, origin, providerCode) => {
+  // `wsl`: the WSL home the signal is evidence about (wslAuthEvidence.ts).
+  noteAuthLost = (sessionId, agent, env, origin, providerCode, wsl) => {
     const configDir = authConfigDir(agent, env);
     agentLoginGate.forget(agent, configDir);
     const lost: AgentAuthLost = { agent, configDir, origin, ...(providerCode ? { providerCode } : {}), at: Date.now() };
     log('info', `[auth] ${sessionId || (origin === 'schedule' ? 'scheduled run' : 'new pane')}: ${agent} is signed out (${origin}${providerCode ? `, ${providerCode}` : ''})`);
-    pipeServer.broadcast({ type: 'agent.auth_lost', sessionId, data: { lost } });
+    pipeServer.broadcast({ type: 'agent.auth_lost', sessionId, data: { lost, ...(wsl ? { wsl } : {}) } });
   };
-  noteAuthWorks = (agent, env) => {
+  noteAuthWorks = (agent, env, wsl) => {
     const configDir = authConfigDir(agent, env);
     agentLoginGate.markWorks(agent, configDir);
-    pipeServer.broadcast({ type: 'agent.auth_lost', sessionId: '', data: { works: { agent, configDir } } });
+    pipeServer.broadcast({ type: 'agent.auth_lost', sessionId: '', data: { works: { agent, configDir }, ...(wsl ? { wsl } : {}) } });
   };
   // A re-list nudge for main's HQ approval lane (deck/hqApprovalLane.ts).
   // Subscribed here, not above: that listener runs before `pipeServer` exists.

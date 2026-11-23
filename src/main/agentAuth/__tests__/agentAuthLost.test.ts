@@ -4,7 +4,7 @@ vi.mock('electron', () => ({ ipcMain: { handle: vi.fn(), removeHandler: vi.fn() 
 vi.mock('../../notification/dispatchNotification', () => ({ dispatchNotification: vi.fn() }));
 
 import { EventEmitter } from 'node:events';
-import { AuthLostBoard, answerLoginState, loginProbeEnv, registerAgentAuthHandlers } from '../agentAuthLost';
+import { AuthLostBoard, answerLoginState, loginProbeEnv, noteWslHomeAuth, registerAgentAuthHandlers } from '../agentAuthLost';
 import type { DaemonClient } from '../../DaemonClient';
 import { authLostKey, parseAgentAuthLost, type AgentAuthLost } from '../../../shared/agentAuthLost';
 
@@ -121,3 +121,28 @@ describe('registerAgentAuthHandlers across a daemon reconnect', () => {
     cleanupAgain();
   });
 });
+
+describe('noteWslHomeAuth (a WSL home\'s sign-in evidence)', () => {
+  const folder = 'C:\\Users\\me\\.wmux\\accounts\\claude-b';
+  const target = { distribution: 'Ubuntu', user: 'me' };
+  const accounts = () => [{ id: 'B', vendor: 'claude', configDir: folder.toUpperCase() }, { id: 'C', vendor: 'claude', configDir: 'C:\\other' }];
+  it('records the account its sign-in key names, in that distro as that user', () => {
+    const noteAuth = vi.fn();
+    noteWslHomeAuth(target, { agent: 'claude', configDir: `wsl:Ubuntu:${folder}` }, false, { accounts, state: { noteAuth } });
+    expect(noteAuth).toHaveBeenCalledWith('B', target, false);
+    noteWslHomeAuth(target, { agent: 'claude', configDir: `wsl:Ubuntu:${folder}` }, true, { accounts, state: { noteAuth } });
+    expect(noteAuth).toHaveBeenLastCalledWith('B', target, true);
+    expect(noteAuth).toHaveBeenCalledTimes(2);
+  });
+
+  it('(c) records nothing without the daemon\'s target, for another distro, a Windows folder or codex', () => {
+    const noteAuth = vi.fn();
+    const run = (wsl: unknown, configDir: string | null, agent = 'claude') => noteWslHomeAuth(wsl, { agent, configDir }, false, { accounts, state: { noteAuth } });
+    run(undefined, `wsl:Ubuntu:${folder}`);
+    run(target, `wsl:Debian:${folder}`);
+    run(target, folder);
+    run(target, `wsl:Ubuntu:${folder}`, 'codex');
+    expect(noteAuth).not.toHaveBeenCalled();
+  });
+});
+
