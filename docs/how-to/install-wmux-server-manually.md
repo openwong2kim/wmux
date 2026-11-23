@@ -340,8 +340,8 @@ its HEAD and branch tip are both on a remote-tracking ref of the clone
 brought back. It is removed with `git worktree remove`, never forced, and its
 branch with it; files git ignores (a `node_modules`, a build) go with it. Every
 other worktree is kept and listed with the reason. `--dry-run` only lists.
-Like `release`, it refuses to run from inside an agent session or a wmux pane
-and needs a terminal. With the daemon running, it drops the removed starts'
+Like `release`, it refuses to run from inside an agent session or a wmux pane;
+removing needs a terminal, while `--dry-run` also runs from a script. With the daemon running, it drops the removed starts'
 records within a minute; otherwise `prune` drops them itself:
 
 ```bash

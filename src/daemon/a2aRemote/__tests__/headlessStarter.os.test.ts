@@ -11,6 +11,8 @@ import type { A2aSpawnClaimResult, A2aSpawnStepResult } from '../../../shared/a2
 import { toolRuleCovers, workerLaunchFlags } from '../../../shared/workerLaunch';
 import type { SpawnWorktreeResult } from '../../../main/a2aRemote/spawnWorktree';
 import { HeadlessStartStore, type HeadlessSurvivor } from '../headlessStartStore';
+import { clearFanoutPortReservationsForTest } from '../../../main/worktask/fanoutEnvironment';
+import { pickHeadlessTaskPort } from '../headlessTaskPort';
 import { A2aHeadlessStarter, HEADLESS_EXTRA_DISALLOWED_TOOLS, headlessTreeId, type HeadlessSessionInput, type HeadlessSessionPort, type HeadlessStarterDeps } from '../headlessStarter';
 import type { SpawnRequestRecordV1 } from '../spawnRequestStore';
 
@@ -756,5 +758,23 @@ describe('headless start: task port', () => {
     await makeStarter({ taskPort: async (_wt, t) => { taken = [...t]; return 4000; } }).start(HOST, SPAWN2);
     expect(taken).toEqual([]);
     expect(created[1].env).toMatchObject({ WMUX_TASK_PORT: '4000' });
+  });
+
+  it('with the real picker: an ended start\'s port is free for the next start at once (the record holds it, not a timed hold)', async () => {
+    clearFanoutPortReservationsForTest();
+    const wtDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hl-port-wt-'));
+    try {
+      fs.writeFileSync(path.join(wtDir, 'wmux.json'), JSON.stringify({ fanout: { portRange: '4300-4301' } }));
+      worktree = { ok: true, worktreePath: wtDir, cwd: wtDir, branch: `wmux/remote/${TREE}` };
+      const taskPort = (w: string, taken: ReadonlySet<number>) => pickHeadlessTaskPort(w, taken, async () => true);
+      await makeStarter({ taskPort }).start(HOST, SPAWN);
+      expect(starts.get(HOST, SPAWN)?.taskPort).toBe(4300);
+      starts.update(HOST, SPAWN, { phase: 'ended' });
+      request = { state: 'approved' };
+      await makeStarter({ taskPort }).start(HOST, SPAWN2);
+      expect(created[1].env).toMatchObject({ WMUX_TASK_PORT: '4300' });
+    } finally {
+      fs.rmSync(wtDir, { recursive: true, force: true });
+    }
   });
 });

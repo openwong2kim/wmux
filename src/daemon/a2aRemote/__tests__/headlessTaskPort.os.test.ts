@@ -39,4 +39,18 @@ describe('headless task port', () => {
     expect(await pickHeadlessTaskPort(wt, new Set(), async () => { probed += 1; return true; })).toBeUndefined();
     expect(probed).toBe(0);
   });
+
+  it.skipIf(process.platform === 'win32')('a wmux.json that is not a regular file (a link to /dev/zero, a folder) is never read; a link to a regular file is', () => {
+    const file = path.join(wt, 'wmux.json');
+    fs.symlinkSync('/dev/zero', file);
+    expect(worktreePortRange(wt)).toBeUndefined();
+    fs.unlinkSync(file);
+    fs.mkdirSync(file);
+    expect(worktreePortRange(wt)).toBeUndefined();
+    fs.rmdirSync(file);
+    const real = path.join(wt, 'real.json');
+    fs.writeFileSync(real, JSON.stringify({ fanout: { portRange: '4200-4201' } }));
+    fs.symlinkSync(real, file);
+    expect(worktreePortRange(wt)).toEqual({ min: 4200, max: 4201 });
+  });
 });

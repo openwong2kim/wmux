@@ -32,7 +32,7 @@ export const HEADLESS_EXTRA_DISALLOWED_TOOLS: readonly string[] = [
   'mcp__wmux__channel_invite',
 ];
 import type { Git, SpawnWorktreeInput, SpawnWorktreeResult } from '../../main/a2aRemote/spawnWorktree';
-import { FANOUT_TASK_PORT_ENV } from '../../main/worktask/fanoutEnvironment';
+import { FANOUT_TASK_PORT_ENV, releaseFanoutPorts } from '../../main/worktask/fanoutEnvironment';
 import { headlessStartable } from './headlessMode';
 import { pickHeadlessTaskPort } from './headlessTaskPort';
 import { HEADLESS_SESSION_ID_RE, type HeadlessStartRecordV1, type HeadlessStartStore, type HeadlessSurvivor } from './headlessStartStore';
@@ -450,6 +450,9 @@ export class A2aHeadlessStarter {
       } catch (err) {
         this.deps.log('warn', `[headless] spawn ${spawnId}: its task port was not recorded, none given: ${errMsg(err)}`);
         return undefined;
+      } finally {
+        // The record holds it now (or nothing does): the allocator's own 10-minute hold would outlive an ended start.
+        releaseFanoutPorts([port]);
       }
     };
     const run = this.portPicking.then(pick);

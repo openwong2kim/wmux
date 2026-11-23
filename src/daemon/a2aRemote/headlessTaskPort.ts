@@ -12,7 +12,10 @@ import { normalizeWmuxProjectConfig, PROJECT_CONFIG_MAX_FILE_BYTES, WMUX_PROJECT
 export function worktreePortRange(worktreePath: string): { min: number; max: number } | undefined {
   try {
     const file = path.join(worktreePath, WMUX_PROJECT_CONFIG_FILENAME);
-    if (fs.statSync(file).size > PROJECT_CONFIG_MAX_FILE_BYTES) return undefined;
+    // A regular file only, also behind a link: a committed link to a device (/dev/zero) or a fifo would never end a read.
+    const link = fs.lstatSync(file);
+    const target = link.isSymbolicLink() ? fs.statSync(fs.realpathSync.native(file)) : link;
+    if (!target.isFile() || target.size > PROJECT_CONFIG_MAX_FILE_BYTES) return undefined;
     return normalizeWmuxProjectConfig(JSON.parse(fs.readFileSync(file, 'utf8')))?.fanout?.portRange;
   } catch {
     return undefined;
@@ -23,7 +26,9 @@ export function worktreePortRange(worktreePath: string): { min: number; max: num
  * One free port from the worktree's `fanout.portRange` that no port in `taken`
  * (the ports other live starts on this box hold) is, or undefined when none is
  * declared or the window has no free port left: the agent then starts without
- * WMUX_TASK_PORT, as before.
+ * WMUX_TASK_PORT, as before. The port stays reserved in the fan-out
+ * allocator's table until the caller has recorded it and released it there
+ * (`releaseFanoutPorts`): the start record is what holds it from then on.
  */
 export async function pickHeadlessTaskPort(
   worktreePath: string,
