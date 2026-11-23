@@ -117,6 +117,23 @@ export function decideRemoteAnchor(
   return only?.ptyId && hasAgent(only.ptyId) ? { pty: only.ptyId, surfaceId: only.id } : { held: 'occupant-changed' };
 }
 
+/**
+ * Which end of a task this PC sent the peer's state item announces in the
+ * sender's pane: its report, its completion or its failure, or none. A
+ * fan-out task's failure is none: the pane hears it as the fan-out nudge
+ * (its ledger row's failure), so it gets one line, not two.
+ */
+export function remoteEndPointer(
+  item: { reported?: true; state?: string },
+  marker: { fanout?: true },
+  side: 'from' | 'to',
+): 'reported' | 'completed' | 'failed' | undefined {
+  if (side !== 'from') return undefined;
+  if (item.reported === true) return 'reported';
+  if (item.state === 'completed') return 'completed';
+  return item.state === 'failed' && marker.fanout !== true ? 'failed' : undefined;
+}
+
 /** A local terminal surface (not remote, not a placeholder) with no pty yet. */
 function isUnstartedTerminal(s: PaneLeaf['surfaces'][number]): boolean {
   return (s.surfaceType === undefined || s.surfaceType === 'terminal') && !s.ptyId;

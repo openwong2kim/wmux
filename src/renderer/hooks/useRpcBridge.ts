@@ -96,7 +96,7 @@ import {
   type A2aRemoteTaskState,
 } from '../../shared/a2aRemoteDelivery';
 import { imagePathForPane } from '../../shared/imagePaste';
-import { resolvePaneAddress, decideRemoteAnchor, activePaneTerminalPty, activePaneTerminalUnstarted, resolveUnaddressedDelivery, paneHasDetectedAgent, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, NO_TARGET_PTY_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, decideRemoteAnchor, remoteEndPointer, activePaneTerminalPty, activePaneTerminalUnstarted, resolveUnaddressedDelivery, paneHasDetectedAgent, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, NO_TARGET_PTY_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { remoteAgentKey } from '../../shared/remoteHosts';
@@ -1277,10 +1277,8 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
     // The item's own state, not the task's: an earlier `working` item handed
     // over late must not announce the end. A peer's `completed` held here as a
     // report (`reported`) asks this side to check it and mark it done.
-    const ended = item.reported === true
-      ? 'reported'
-      : item.state === 'completed' || item.state === 'failed' ? item.state : undefined;
-    if (!ended || side !== 'from') return { ok: true, delivered: true };
+    const ended = remoteEndPointer(item, marker, side);
+    if (!ended) return { ok: true, delivered: true };
     // The pointer is one best-effort try. The event above already announced
     // the end and the task stays queryable, so a pane that is gone, holds
     // another program or runs no agent gets no pointer, and nothing is held

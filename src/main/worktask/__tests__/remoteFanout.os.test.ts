@@ -19,7 +19,7 @@ import type { RpcContext } from '../../../shared/rpc';
 import {
   POOL_HOLD_MAX_MS, POOL_REFUSING_MS, pickPoolHost, poolCandidates, poolHoldOverride, poolRootHash,
   REMOTE_ASK_GRACE_MS, REMOTE_FOLLOW_INTERVAL_MS, REMOTE_GONE_GRACE_MS, type RemoteTaskView, branchOnPc, remoteTaskReconciler, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal, remoteKeyRows,
-  startRemoteFanout, onRemoteQuestionInPlace, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
+  startRemoteFanout, onRemoteWaitInPlace, remoteReplyWaitText, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
 } from '../remoteFanout';
 
 const BOX = '0f1e2d3c-4b5a-4968-8776-655443322110';
@@ -548,7 +548,7 @@ describe('a started task follows its A2A task', () => {
   it('a question that shows while the row already waits on a reply is told once, though no status moves', async () => {
     const s = await started(1);
     const told: string[] = [];
-    const off = onRemoteQuestionInPlace((e) => told.push(`${e.id}@${e.rev}:${e.status}`));
+    const off = onRemoteWaitInPlace((e) => told.push(`${e.id}@${e.rev}:${e.status}`));
     try {
       s.view(0, { state: 'input-required' });
       await reconcileRemoteTasks(s.deps);
@@ -573,6 +573,35 @@ describe('a started task follows its A2A task', () => {
       await reconcileRemoteTasks(s.deps);
       expect(told).toHaveLength(2);
       expect(s.row(0).summary).toBe('waiting on the API owner');
+    } finally {
+      off();
+    }
+  });
+
+  it('a reply held here (not written to the pane) is its own reason: told on the move, and told when it turns up in place', async () => {
+    const s = await started(2);
+    const told: string[] = [];
+    const off = onRemoteWaitInPlace((e) => told.push(e.id));
+    try {
+      s.view(0, { state: 'input-required', replyHeld: true });
+      await reconcileRemoteTasks(s.deps);
+      expect(s.row(0)).toMatchObject({ status: 'input_required', summary: expect.stringContaining('its reply is held here') });
+      expect(s.row(0).summary).not.toBe(remoteReplyWaitText(s.row(0).remote!));
+      // Waiting on a reply that reached the pane, then the box's agent stops with no reply, then a reply is held: each told once, in place.
+      s.view(1, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toEqual([]);
+      s.view(1, { state: 'working', status: { kind: 'waiting-input', since: at } });
+      await reconcileRemoteTasks(s.deps);
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toEqual([s.row(1).id]);
+      s.view(1, { state: 'input-required', replyHeld: true });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toEqual([s.row(1).id, s.row(1).id]);
+      // Retried and delivered: back to the plain reply wait, told nothing.
+      s.view(1, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toHaveLength(2);
     } finally {
       off();
     }

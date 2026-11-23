@@ -484,7 +484,9 @@ function sentTaskFacts(row: Rec, status: Rec, metadata: Rec): Rec {
   }
   const evidence = isRec(status.evidence) ? status.evidence : {};
   const linkEnded = status.state === 'failed' && LINK_END_REASONS.has(str(evidence.summary) ?? '') && remote.stateSync !== 'failed';
-  return { ...(answered ? { answered: true } : {}), ...(linkEnded ? { linkEnded: true } : {}) };
+  // A reply of the other PC's agent held here (not written to this PC's pane): someone has to look.
+  const replyHeld = (Array.isArray(remote.inbox) ? remote.inbox : []).some((i) => isRec(i) && i.kind === 'reply' && i.delivered !== true && !!str(i.held));
+  return { ...(answered ? { answered: true } : {}), ...(linkEnded ? { linkEnded: true } : {}), ...(replyHeld ? { replyHeld: true } : {}) };
 }
 
 /**

@@ -12,7 +12,7 @@ import {
   type FanoutCallerEvent,
 } from '../fanoutCallerNotify';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
-import { WORKER_IDLE_SUMMARY } from '../fanoutWorkerWatch';
+import { WORKER_IDLE_SUMMARY, WORKER_PROMPT_SUMMARY } from '../fanoutWorkerWatch';
 import { remoteReplyWaitText } from '../../worktask/remoteFanout';
 import { buildFanoutCallerNudge, isFanoutCallerNudge, moreSevereKind } from '../../../shared/fanoutCallerNudge';
 import { isCallerNudge } from '../../../shared/prOwnerNudge';
@@ -170,6 +170,13 @@ describe('installFanoutCallerLedgerNotify', () => {
     await ledger.update({ id: 'wtask-1', status: 'input_required', actor: { kind: 'system', workspaceId: 'ws-parent' }, expectedRev: 1, summary: WORKER_IDLE_SUMMARY });
     expect(ledger.get('wtask-1')?.status).toBe('input_required');
     expect(calls).toEqual([]);
+  });
+
+  it('tells the idle flag of a worker waiting on a prompt: no Stop told the caller of that turn', async () => {
+    const calls: unknown[][] = [];
+    installFanoutCallerLedgerNotify(() => false, (...a) => { calls.push(a); }, ledger);
+    await ledger.update({ id: 'wtask-1', status: 'input_required', actor: { kind: 'system', workspaceId: 'ws-parent' }, expectedRev: 1, summary: WORKER_PROMPT_SUMMARY });
+    expect(calls).toEqual([['ws-parent', 'ws-task', 'wtask-1', 'ledger.input_required', 2]]);
   });
 });
 

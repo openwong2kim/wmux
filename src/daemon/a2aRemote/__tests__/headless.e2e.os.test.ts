@@ -555,6 +555,9 @@ describe('headless remote spawn, two PCs and no app', () => {
     await b.taskDelivery!.tick();
     await until(() => (a.tasks.getTask(taskId)?.metadata.remote as { inbox?: Array<{ kind: string; held?: string }> }).inbox?.some((i) => i.kind === 'reply' && i.held === 'occupant-changed') === true);
     expect(outcomes).toEqual([{ ok: true, delivered: false, held: 'occupant-changed' }]);
+    // The fan-out row learns it from the state view, so the caller is still told (the reply never reached the pane).
+    const [view] = applyTaskQueryView([a.tasks.getTask(taskId)!], { view: 'state', taskIds: [taskId] }).flatMap(remoteTaskViewOf);
+    expect(view).toMatchObject({ state: 'input-required', replyHeld: true });
   });
 
   it('nothing is typed in while headless mode is off', async () => {

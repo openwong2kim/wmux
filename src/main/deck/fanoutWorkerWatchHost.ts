@@ -28,6 +28,7 @@ export function startFanoutWorkerWatch(
     workspacePtyIds: (workspaceId) =>
       getWorkspaceMirror().getEntries()?.find((e) => e.id === workspaceId)?.ptyIds ?? null,
     isRunning: (ptyId) => getLastBroadcastAgentStatus(ptyId) === 'running' || hasOutstandingRunningClaim(ptyId),
+    isAwaitingInput: (ptyId) => getLastBroadcastAgentStatus(ptyId) === 'awaiting_input',
     agentRunning: (ptyId) => probe.agentRunning(ptyId),
     hasBrain,
   });

@@ -36,7 +36,7 @@ import { WakeQueue, getWakeQueue } from '../factory/wakeQueue';
 import { WORKER_ENDED } from '../factory/workerRunEnds';
 import { WORKER_IDLE_SUMMARY } from './fanoutWorkerWatch';
 import { getTaskLedger } from './taskLedgerHost';
-import { onRemoteQuestionInPlace, remoteReplyWaitText } from '../worktask/remoteFanout';
+import { onRemoteWaitInPlace, remoteReplyWaitText } from '../worktask/remoteFanout';
 
 export interface FanoutCallerEvent {
   ownerWorkspaceId: string;
@@ -130,9 +130,10 @@ export function installFanoutCallerLedgerNotify(
   notify: (ownerWorkspaceId: string, taskWorkspaceId: string, taskId: string, kind: string, seq: number) => void,
   instance?: TaskLedger,
 ): () => void {
-  // A question on another PC's screen while its row already waited on a
-  // reply: the row stays input_required, so no transition below sees it.
-  const offQuestion = onRemoteQuestionInPlace((entry) => {
+  // A row of another PC's task that already waited and now waits on
+  // something someone must act on: it stays input_required, so no transition
+  // below sees it.
+  const offQuestion = onRemoteWaitInPlace((entry) => {
     try {
       if (hasBrain(entry.ownerWorkspaceId)) return;
       notify(entry.ownerWorkspaceId, entry.taskWorkspaceId, entry.id, 'ledger.input_required', entry.rev);

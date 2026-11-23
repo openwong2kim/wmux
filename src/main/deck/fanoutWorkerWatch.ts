@@ -9,9 +9,10 @@
 // This watch turns each of those into the one system move that already
 // reaches the caller: `working → input_required` by the system actor (the
 // same move markLaunchFailed makes). installFanoutCallerLedgerNotify then
-// sends the usual "needs input" pointer for an exit or a PTY end; the idle
-// move is the ledger's record only (the caller already got "updated" at the
-// worker's last stop). Nothing here talks to the renderer.
+// sends the usual "needs input" pointer for an exit, a PTY end, or an idle
+// worker whose pane waits on a prompt; a plain idle move is the ledger's
+// record only (the caller already got "updated" at the worker's last stop).
+// Nothing here talks to the renderer.
 //
 // Every wake costs the parent a full agent turn, so it is spent sparingly and
 // fail-closed:
@@ -41,6 +42,8 @@ export const FANOUT_WORKER_DIED_GRACE_MS = 60_000;
 export const WORKER_EXIT_SUMMARY = 'worker agent exited';
 export const WORKER_PTY_ENDED_SUMMARY = 'worker PTY ended';
 export const WORKER_IDLE_SUMMARY = `worker idle ${FANOUT_WORKER_IDLE_MINUTES}m after its last turn`;
+/** The same flag for a worker whose pane shows it waiting on a prompt (a later turn stopped there, with no Stop). */
+export const WORKER_PROMPT_SUMMARY = `worker waiting on a prompt in its pane ${FANOUT_WORKER_IDLE_MINUTES}m after its last turn`;
 
 type SessionListener = (payload: { sessionId: string }) => void;
 type WatchedEvent = 'session:agentProcessExit' | 'session:died' | 'session:restarted';
@@ -60,6 +63,8 @@ export interface FanoutWorkerWatchPorts {
   workspacePtyIds: (workspaceId: string) => readonly string[] | null;
   /** True while the pane shows a running turn. */
   isRunning: (ptyId: string) => boolean;
+  /** True while the pane's agent waits on a prompt (permission, a question). */
+  isAwaitingInput?: (ptyId: string) => boolean;
   /** True when an agent is running in the pane again; undefined = can't tell. */
   agentRunning?: (ptyId: string) => Promise<boolean | undefined>;
   hasBrain: (ownerWorkspaceId: string) => boolean;
@@ -266,7 +271,9 @@ export function installFanoutWorkerWatch(ports: FanoutWorkerWatchPorts): FanoutW
       if (ports.workspacePtyIds(entry.taskWorkspaceId)?.some((p) => ports.isRunning(p))) continue;
       inFlight.add(taskId);
       try {
-        if (await flag(taskId, entry.rev, WORKER_IDLE_SUMMARY)) idleWoken.add(taskId);
+        // A worker stuck on a prompt in a later turn sends no Stop: this flag is all the caller hears of it.
+        const prompt = ports.isAwaitingInput?.(t.ptyId) === true;
+        if (await flag(taskId, entry.rev, prompt ? WORKER_PROMPT_SUMMARY : WORKER_IDLE_SUMMARY)) idleWoken.add(taskId);
       } finally {
         inFlight.delete(taskId);
       }

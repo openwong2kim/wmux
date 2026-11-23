@@ -12,8 +12,8 @@
 //   5. last, after every await: the pane's checkout still shows each PR the
 //      line names (number AND url). A PR that moved answers 'pr_changed' so
 //      the renderer drops only the PR clauses and resends the rest.
-//   6. with it: no fan-out task the line is about has a row that was closed
-//      (cancelled / completed) or is another owner's (failed is told). A row closed meanwhile answers
+//   6. with it: every fan-out task the line is about is a row of this owner
+//      that is not closed (failed is told); unknown task ids are refused. A row closed meanwhile answers
 //      'task_closed' with those ids, so the renderer drops only them.
 // The daemon then writes under its own identity and input-revision proof and
 // waits while a person is typing (daemon/callerNudgeDelivery.ts).
@@ -39,7 +39,7 @@ export type FanoutCallerSubmitResult =
   | 'session_changed'
   /** Nothing written; the pane's checkout no longer shows a PR the line names. */
   | 'pr_changed'
-  /** Nothing written; a task the line is about was closed (`closed` names them). */
+  /** Nothing written; a task the line is about is unknown or was closed (`closed` names them). */
   | 'task_closed'
   | 'unavailable'
   | 'error';
@@ -55,7 +55,7 @@ export interface FanoutCallerSubmitReply {
 export interface FanoutCallerSubmitPorts {
   deliveryGate: (ptyId: string) => Promise<GatedSubmitRefusal | null>;
   ownerOf: (ptyId: string) => Promise<string | null>;
-  /** Whether a fan-out task's row is closed (cancelled / completed) or another owner's. Must not throw. */
+  /** Whether a fan-out task is not an open row of this owner: unknown, closed (cancelled / completed) or another owner's. Must not throw. */
   taskClosed?: (taskId: string, ownerWorkspaceId: string) => boolean;
   /** The PR the pane's checkout shows now, or null. Absent → PR lines refused. */
   prOf?: (ptyId: string) => { number: number; url: string } | null;

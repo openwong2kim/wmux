@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { PaneLeaf, Surface } from '../../../shared/types';
-import { resolvePaneAddress, decideRemoteAnchor, activePaneTerminalPty, resolveUnaddressedDelivery, describeAmbiguousDelivery, wsMetadataMayStandIn, decideSameWsSend, decideReplyDelivery, isCommanderForWorkspace, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, REPLY_SUPPRESS_HINTS, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, type PaneAddress } from '../a2aAddressing';
+import { resolvePaneAddress, decideRemoteAnchor, remoteEndPointer, activePaneTerminalPty, resolveUnaddressedDelivery, describeAmbiguousDelivery, wsMetadataMayStandIn, decideSameWsSend, decideReplyDelivery, isCommanderForWorkspace, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, REPLY_SUPPRESS_HINTS, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, type PaneAddress } from '../a2aAddressing';
 
 function surface(id: string, ptyId: string, surfaceType: Surface['surfaceType'] = 'terminal'): Surface {
   return { id, ptyId, title: id, shell: '', cwd: '', surfaceType } as Surface;
@@ -560,5 +560,16 @@ describe('decideRemoteAnchor', () => {
     expect(decideRemoteAnchor(leaves, { paneId: 'pane-B' }, true, agentOn())).toEqual({ pty: 'pty-B2', surfaceId: 'surf-B2' });
     expect(decideRemoteAnchor(leaves, { paneId: 'pane-elsewhere' }, false, agentOn('pty-A'))).toEqual({ held: 'pane-missing' });
     expect(decideRemoteAnchor(leaves, {}, false, agentOn('pty-A'))).toEqual({ held: 'pane-missing' });
+  });
+});
+
+describe('remoteEndPointer', () => {
+  it('a report, a completion or a failure, on the side that sent the task; a fan-out task\'s failure is left to its fan-out nudge', () => {
+    expect(remoteEndPointer({ reported: true, state: 'completed' }, { fanout: true }, 'from')).toBe('reported');
+    expect(remoteEndPointer({ state: 'completed' }, {}, 'from')).toBe('completed');
+    expect(remoteEndPointer({ state: 'failed' }, {}, 'from')).toBe('failed');
+    expect(remoteEndPointer({ state: 'failed' }, { fanout: true }, 'from')).toBeUndefined();
+    expect(remoteEndPointer({ state: 'working' }, {}, 'from')).toBeUndefined();
+    expect(remoteEndPointer({ state: 'failed' }, {}, 'to')).toBeUndefined();
   });
 });
