@@ -516,9 +516,10 @@ id alone.
   Nothing the other PC writes goes into the row.
 - **Being told.** The agent's replies and its report arrive in the pane that
   started the fan-out, at the terminal that called `fanout_start`. That pane
-  also gets the one-line fan-out nudge when a row fails, or when a question on
-  the other PC's screen waits for someone. A turn end alone does not send a
-  nudge, since its reply already reached the pane. A pointer to a task
+  also gets the one-line fan-out nudge when a row fails, when a question on
+  the other PC's screen waits for someone, or when the agent there stopped
+  with no reply. A turn end that sent its reply does not send a nudge, since
+  the reply already reached the pane. A pointer to a task
   closed meanwhile is dropped.
 - **Following up.** `send_message task_id=<the row's A2A task>` reaches the
   agent, and its replies come back to your pane (from a PC running the app,

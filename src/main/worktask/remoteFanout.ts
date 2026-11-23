@@ -668,6 +668,11 @@ const SYSTEM_ACTOR = { kind: 'system', workspaceId: 'main' } as const;
 /** How long a gone agent, or a task the daemon no longer lists, waits before its row fails: the end normally follows within seconds. */
 export const REMOTE_GONE_GRACE_MS = 60_000;
 
+/** The row's text while its agent waits for a reply its turn already sent (the caller's pane has that reply). */
+export function remoteReplyWaitText(r: Pick<LedgerRemote, 'pc' | 'a2aTaskId'>): string {
+  return `the agent on ${r.pc} waits for your reply on A2A task ${r.a2aTaskId}`;
+}
+
 /** Listeners for a question that showed on another PC's screen while its row already waited (onRemoteQuestionInPlace). */
 const questionInPlace = new Set<(entry: LedgerEntry) => void>();
 
@@ -745,7 +750,7 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
     const res = await deps.ledger.update({ id: entry!.id, status, actor: SYSTEM_ACTOR, expectedRev: entry!.rev, summary });
     if (res.ok) entry = res.entry;
   };
-  const replyText = `the agent on ${r.pc} waits for your reply on ${on}`;
+  const replyText = remoteReplyWaitText(r);
   const stoppedText = `the agent on ${r.pc} stopped without a reply; send it a follow-up on ${on}`;
   const questionText = (question?: string): string => `the agent on ${r.pc} waits on a ${question ?? 'screen'} question: answer it in that PC's pane; it cannot be answered from here yet, and a headless box ends the task after 10 minutes`;
   const reportedText = `reported on ${r.pc}; the report is on ${on}`;
@@ -759,14 +764,16 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
    * sent the row back with no text) is replaced, with the record in one write. A text a brain wrote is kept.
    */
   const waitFor = async (summary: string, p: Partial<LedgerRemote>): Promise<void> => {
+    // Already waiting with no question: a question now moves no status, so it is told below.
+    const waitedBefore = entry!.status === 'input_required' && entry!.remote?.waiting?.on !== 'question';
     const ownText = entry!.status === 'input_required' && entry!.summary !== summary && ownTexts.has(entry!.summary ?? '');
     if (!ownText) {
       await patch(p);
-      return move('input_required', summary);
+      await move('input_required', summary);
+    } else {
+      entry = (await deps.ledger.updateRemote(entry!.id, p, { summary, expectedRev: entry!.rev })) ?? entry;
     }
-    const wasQuestion = entry!.remote?.waiting?.on === 'question';
-    entry = (await deps.ledger.updateRemote(entry!.id, p, { summary, expectedRev: entry!.rev })) ?? entry;
-    if (wasQuestion || entry!.status !== 'input_required' || entry!.remote?.waiting?.on !== 'question') return;
+    if (!waitedBefore || entry!.status !== 'input_required' || entry!.remote?.waiting?.on !== 'question') return;
     for (const listener of questionInPlace) {
       try {
         listener(entry!);

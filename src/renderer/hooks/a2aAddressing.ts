@@ -107,9 +107,10 @@ export function decideRemoteAnchor(
   const addr = resolvePaneAddress(leaves, anchor.paneId, '');
   if ('error' in addr) return { held: 'pane-missing' };
   if (resnapshot) return { pty: addr.ptyId, surfaceId: addr.surfaceId };
-  const terminals = (leaves.find((l) => l.id === anchor.paneId)?.surfaces ?? []).filter((su) => su.surfaceType !== 'browser' && !!su.ptyId);
+  // Every terminal surface, started or not: one that has not started yet still makes it a pick between several.
+  const terminals = (leaves.find((l) => l.id === anchor.paneId)?.surfaces ?? []).filter((su) => su.surfaceType !== 'browser');
   if (anchor.ptyId) {
-    const snap = terminals.find((su) => su.ptyId === anchor.ptyId);
+    const snap = terminals.find((su) => !!su.ptyId && su.ptyId === anchor.ptyId);
     return snap ? { pty: anchor.ptyId, surfaceId: snap.id } : { held: 'occupant-changed' };
   }
   const only = terminals.length === 1 ? terminals[0] : undefined;

@@ -562,6 +562,17 @@ describe('a started task follows its A2A task', () => {
       s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'plan' } });
       await reconcileRemoteTasks(s.deps);
       expect(told).toHaveLength(1);
+      // A row a brain sent back with its own text: the question is told, and the brain's text kept.
+      s.view(0, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      const brain = { kind: 'brain' as const, workspaceId: 'ws-owner' };
+      expect((await s.deps.ledger.update({ id: s.row(0).id, status: 'working', actor: brain, expectedRev: s.row(0).rev })).ok).toBe(true);
+      expect((await s.deps.ledger.update({ id: s.row(0).id, status: 'input_required', actor: brain, expectedRev: s.row(0).rev, summary: 'waiting on the API owner' })).ok).toBe(true);
+      expect(s.row(0).summary).toBe('waiting on the API owner');
+      s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'permission' } });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toHaveLength(2);
+      expect(s.row(0).summary).toBe('waiting on the API owner');
     } finally {
       off();
     }

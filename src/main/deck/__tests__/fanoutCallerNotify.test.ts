@@ -13,6 +13,7 @@ import {
 } from '../fanoutCallerNotify';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
 import { WORKER_IDLE_SUMMARY } from '../fanoutWorkerWatch';
+import { remoteReplyWaitText } from '../../worktask/remoteFanout';
 import { buildFanoutCallerNudge, isFanoutCallerNudge, moreSevereKind } from '../../../shared/fanoutCallerNudge';
 import { isCallerNudge } from '../../../shared/prOwnerNudge';
 
@@ -200,12 +201,21 @@ describe('installFanoutCallerLedgerNotify for a task another PC runs', () => {
     const calls: unknown[][] = [];
     installFanoutCallerLedgerNotify(() => false, (...a) => { calls.push(a); }, ledger);
     const sys = { kind: 'system' as const, workspaceId: 'main' };
-    await ledger.update({ id: 'wtask-r1', status: 'input_required', actor: sys, expectedRev: 1, summary: 'the agent on box waits for your reply' });
+    const started = await ledger.updateRemote('wtask-r1', { a2aTaskId: 'rt-1' });
+    await ledger.update({ id: 'wtask-r1', status: 'input_required', actor: sys, expectedRev: started!.rev, summary: remoteReplyWaitText(started!.remote!) });
     expect(ledger.get('wtask-r1')?.status).toBe('input_required');
     // As remoteFanout's waitFor does: the waiting record first, then the move.
     await ledger.updateRemote('wtask-r2', { waiting: { on: 'question', since: new Date().toISOString(), question: 'permission' } });
     await ledger.update({ id: 'wtask-r2', status: 'input_required', actor: sys, expectedRev: ledger.get('wtask-r2')!.rev, summary: 'a question' });
     expect(calls).toEqual([['ws-parent', `remote:${SPAWN.replace(/1$/, '2')}`, 'wtask-r2', 'ledger.input_required', ledger.get('wtask-r2')!.rev]]);
+  });
+
+  it('tells an agent there that stopped with no reply: nothing reached the pane', async () => {
+    const calls: unknown[][] = [];
+    installFanoutCallerLedgerNotify(() => false, (...a) => { calls.push(a); }, ledger);
+    const started = await ledger.updateRemote('wtask-r1', { a2aTaskId: 'rt-1' });
+    await ledger.update({ id: 'wtask-r1', status: 'input_required', actor: { kind: 'system', workspaceId: 'main' }, expectedRev: started!.rev, summary: 'the agent on box stopped without a reply; send it a follow-up on A2A task rt-1' });
+    expect(calls).toEqual([['ws-parent', `remote:${SPAWN}`, 'wtask-r1', 'ledger.input_required', ledger.get('wtask-r1')!.rev]]);
   });
 
   it('does not tell a request refused while fanout_start ran (its row is still `sent`): that call\'s reply said so', async () => {

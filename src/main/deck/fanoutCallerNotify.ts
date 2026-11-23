@@ -36,7 +36,7 @@ import { WakeQueue, getWakeQueue } from '../factory/wakeQueue';
 import { WORKER_ENDED } from '../factory/workerRunEnds';
 import { WORKER_IDLE_SUMMARY } from './fanoutWorkerWatch';
 import { getTaskLedger } from './taskLedgerHost';
-import { onRemoteQuestionInPlace } from '../worktask/remoteFanout';
+import { onRemoteQuestionInPlace, remoteReplyWaitText } from '../worktask/remoteFanout';
 
 export interface FanoutCallerEvent {
   ownerWorkspaceId: string;
@@ -148,10 +148,14 @@ export function installFanoutCallerLedgerNotify(
     const byWorker = t.by.kind === 'worker' && (t.to === 'failed' || t.to === 'review_requested');
     // Only when someone has to act. A task on another PC moves here at every
     // turn end of its agent, and that turn's reply already reached the
-    // caller's pane: only a question on that PC's screen is told. The idle
-    // flag repeats the "updated" the caller got at the worker's last stop.
+    // caller's pane: that one is not told (a question on that PC's screen,
+    // or an agent that stopped with no reply, is). The idle flag repeats the
+    // "updated" the caller got at the worker's last stop.
+    const r = t.entry.remote;
     const bySystem = t.by.kind === 'system' && t.to === 'input_required'
-      && (isRemoteTask(t.entry) ? t.entry.remote?.waiting?.on === 'question' : t.entry.summary !== WORKER_IDLE_SUMMARY);
+      && (isRemoteTask(t.entry)
+        ? r?.waiting?.on === 'question' || !r?.a2aTaskId || t.entry.summary !== remoteReplyWaitText(r)
+        : t.entry.summary !== WORKER_IDLE_SUMMARY);
     // A task another PC runs has no worker here: wmux moves its row as that
     // PC reports. Its failure is told; its report is not (it already reached
     // the caller's pane as the A2A reply), and neither is a request refused

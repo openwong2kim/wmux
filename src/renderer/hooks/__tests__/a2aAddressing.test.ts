@@ -546,6 +546,11 @@ describe('decideRemoteAnchor', () => {
     expect(decideRemoteAnchor(ls, { paneId: 'p' }, false, agentOn())).toEqual({ held: 'occupant-changed' });
   });
 
+  it('no snapshot and a terminal that has not started beside the agent: still several, held', () => {
+    const ls = [leaf('p', [surface('t', 'pt'), surface('later', '')])];
+    expect(decideRemoteAnchor(ls, { paneId: 'p' }, false, agentOn('pt'))).toEqual({ held: 'occupant-changed' });
+  });
+
   it('no snapshot and several terminals: held, never a pick between them', () => {
     expect(decideRemoteAnchor(leaves, { paneId: 'pane-B' }, false, agentOn('pty-B1', 'pty-B2'))).toEqual({ held: 'occupant-changed' });
     expect(decideRemoteAnchor(leaves, { paneId: 'pane-B' }, false, agentOn('pty-B2'))).toEqual({ held: 'occupant-changed' });
