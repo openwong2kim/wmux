@@ -377,3 +377,16 @@ describe("view: 'state'", () => {
     expect(JSON.stringify(rows)).not.toMatch(/body|Canceled/);
   });
 });
+
+describe('the state view\'s replyHeld (a fan-out row tells its caller of a reply held here)', () => {
+  const view = (inbox: unknown[]) => applyTaskQueryView([{ id: 't', status: { state: 'input-required' }, history: [], metadata: { remote: { v: 1, direction: 'outbound', inbox } } }], { view: 'state', taskId: 't' })[0] as { metadata?: { remote?: { replyHeld?: true } } };
+  it('only while the newest reply is held, and not for a paste that may have landed', () => {
+    const held = (inbox: unknown[]) => view(inbox).metadata?.remote?.replyHeld;
+    expect(held([{ messageId: 'a', kind: 'reply', delivered: false, held: 'occupant-changed' }])).toBe(true);
+    // An older reply still held does not make a later one that went through unread.
+    expect(held([{ messageId: 'a', kind: 'reply', delivered: false, held: 'occupant-changed' }, { messageId: 'b', kind: 'reply', delivered: true }])).toBeUndefined();
+    expect(held([{ messageId: 'a', kind: 'reply', delivered: false, held: 'delivery-unconfirmed' }])).toBeUndefined();
+    // A state item after the reply does not hide it.
+    expect(held([{ messageId: 'a', kind: 'reply', delivered: false, held: 'pane-missing' }, { messageId: 's', kind: 'state', state: 'input-required' }])).toBe(true);
+  });
+});

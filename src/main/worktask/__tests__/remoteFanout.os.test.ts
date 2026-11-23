@@ -607,6 +607,38 @@ describe('a started task follows its A2A task', () => {
     }
   });
 
+  it('a new reason that could not be written in place is not told', async () => {
+    const s = await started(1);
+    const told: string[] = [];
+    const off = onRemoteWaitInPlace((e) => told.push(e.id));
+    try {
+      s.view(0, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      // The write with the new text finds the row moved meanwhile: it lands without the text.
+      const ledger = s.deps.ledger as TaskLedger;
+      const real = ledger.updateRemote.bind(ledger);
+      let stale = true;
+      const spy = vi.spyOn(ledger, 'updateRemote').mockImplementation((id, patch, text, expect) => {
+        if (text && stale) {
+          stale = false;
+          return real(id, patch);
+        }
+        return real(id, patch, text, expect);
+      });
+      s.view(0, { state: 'working', status: { kind: 'waiting-input', since: at } });
+      await reconcileRemoteTasks(s.deps);
+      expect(stale).toBe(false);
+      expect(told).toEqual([]);
+      // The next pass writes it, and tells it once.
+      await reconcileRemoteTasks(s.deps);
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toEqual([s.row(0).id]);
+      spy.mockRestore();
+    } finally {
+      off();
+    }
+  });
+
   it('while the row stays input_required, its text follows why it waits; the same reason writes nothing', async () => {
     const s = await started(1);
     s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'permission' } });

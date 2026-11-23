@@ -120,18 +120,19 @@ export function decideRemoteAnchor(
 /**
  * Which end of a task this PC sent the peer's state item announces in the
  * sender's pane: its report, its completion or its failure, or none. A
- * fan-out task's failure is none: the pane hears it as the fan-out nudge
- * (its ledger row's failure), so it gets one line, not two.
+ * failure main says reaches the pane another way (`endToldElsewhere`: an open
+ * fan-out row, whose fan-out nudge tells it) is none, so the pane gets one
+ * line, not two.
  */
 export function remoteEndPointer(
   item: { reported?: true; state?: string },
-  marker: { fanout?: true },
   side: 'from' | 'to',
+  endToldElsewhere: boolean,
 ): 'reported' | 'completed' | 'failed' | undefined {
   if (side !== 'from') return undefined;
   if (item.reported === true) return 'reported';
   if (item.state === 'completed') return 'completed';
-  return item.state === 'failed' && marker.fanout !== true ? 'failed' : undefined;
+  return item.state === 'failed' && !endToldElsewhere ? 'failed' : undefined;
 }
 
 /** A local terminal surface (not remote, not a placeholder) with no pty yet. */

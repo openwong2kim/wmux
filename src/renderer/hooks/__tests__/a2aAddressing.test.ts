@@ -564,12 +564,12 @@ describe('decideRemoteAnchor', () => {
 });
 
 describe('remoteEndPointer', () => {
-  it('a report, a completion or a failure, on the side that sent the task; a fan-out task\'s failure is left to its fan-out nudge', () => {
-    expect(remoteEndPointer({ reported: true, state: 'completed' }, { fanout: true }, 'from')).toBe('reported');
-    expect(remoteEndPointer({ state: 'completed' }, {}, 'from')).toBe('completed');
-    expect(remoteEndPointer({ state: 'failed' }, {}, 'from')).toBe('failed');
-    expect(remoteEndPointer({ state: 'failed' }, { fanout: true }, 'from')).toBeUndefined();
-    expect(remoteEndPointer({ state: 'working' }, {}, 'from')).toBeUndefined();
-    expect(remoteEndPointer({ state: 'failed' }, {}, 'to')).toBeUndefined();
+  it('a report, a completion or a failure, on the side that sent the task; a failure told another way (an open fan-out row) is not said twice', () => {
+    expect(remoteEndPointer({ reported: true, state: 'completed' }, 'from', true)).toBe('reported');
+    expect(remoteEndPointer({ state: 'completed' }, 'from', false)).toBe('completed');
+    expect(remoteEndPointer({ state: 'failed' }, 'from', false)).toBe('failed');
+    expect(remoteEndPointer({ state: 'failed' }, 'from', true)).toBeUndefined();
+    expect(remoteEndPointer({ state: 'working' }, 'from', false)).toBeUndefined();
+    expect(remoteEndPointer({ state: 'failed' }, 'to', false)).toBeUndefined();
   });
 });

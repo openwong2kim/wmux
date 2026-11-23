@@ -3088,6 +3088,8 @@ app.on('ready', async () => {
           return () => { client.off('event', listener); };
         },
         log: (level, msg) => logLine(level, 'a2a-remote', msg),
+        // An open fan-out row moves to failed and nudges its pane itself (a reported one stands, so not then).
+        endToldElsewhere: (taskId) => getTaskLedger().list({}).some((e) => e.remote?.a2aTaskId === taskId && (e.status === 'working' || e.status === 'input_required')),
         // Work sent to another PC: its links follow the daemon's copy of each task.
         afterPull: () => reconcileRemoteLinks((params) => client.rpc('a2a.task.query', params)),
       });

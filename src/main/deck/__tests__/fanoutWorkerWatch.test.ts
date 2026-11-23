@@ -214,6 +214,8 @@ describe('fan-out worker watch — idle', () => {
   it('a worker whose pane waits on a prompt (a later turn stopped there, no Stop) is flagged as such', async () => {
     start({ isAwaitingInput: (ptyId) => ptyId === 'pty-w1' });
     stop();
+    // As the real host reads it: the later turn's running claim is not settled by the prompt.
+    running.add('pty-w1');
     clock += IDLE_MS;
     await watch!.tick();
     expect(ledger.get('wtask-1')).toMatchObject({ status: 'input_required', summary: WORKER_PROMPT_SUMMARY });

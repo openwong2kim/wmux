@@ -266,13 +266,19 @@ export function installFanoutWorkerWatch(ports: FanoutWorkerWatchPorts): FanoutW
       }
       // A row that moved since that turn end (e.g. back to working after a
       // question) starts its idle clock at the move.
-      if (entry.status !== 'working' || at - entry.updatedAt < idleMs || ports.isRunning(t.ptyId)) continue;
+      if (entry.status !== 'working' || at - entry.updatedAt < idleMs) continue;
+      // A worker stuck on a prompt in a later turn sends no Stop: this flag is
+      // all the caller hears of it. A pane waiting on a prompt still reads as
+      // running (its turn's running claim is not settled by the prompt), so it
+      // is not work in progress here.
+      const awaiting = (p: string): boolean => ports.isAwaitingInput?.(p) === true;
+      const working = (p: string): boolean => ports.isRunning(p) && !awaiting(p);
+      if (working(t.ptyId)) continue;
       // Any agent turn running in the task workspace is work on the task.
-      if (ports.workspacePtyIds(entry.taskWorkspaceId)?.some((p) => ports.isRunning(p))) continue;
+      if (ports.workspacePtyIds(entry.taskWorkspaceId)?.some(working)) continue;
       inFlight.add(taskId);
       try {
-        // A worker stuck on a prompt in a later turn sends no Stop: this flag is all the caller hears of it.
-        const prompt = ports.isAwaitingInput?.(t.ptyId) === true;
+        const prompt = awaiting(t.ptyId);
         if (await flag(taskId, entry.rev, prompt ? WORKER_PROMPT_SUMMARY : WORKER_IDLE_SUMMARY)) idleWoken.add(taskId);
       } finally {
         inFlight.delete(taskId);

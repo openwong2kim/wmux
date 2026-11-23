@@ -1277,7 +1277,7 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
     // The item's own state, not the task's: an earlier `working` item handed
     // over late must not announce the end. A peer's `completed` held here as a
     // report (`reported`) asks this side to check it and mark it done.
-    const ended = remoteEndPointer(item, marker, side);
+    const ended = remoteEndPointer(item, side, params.endToldElsewhere === true);
     if (!ended) return { ok: true, delivered: true };
     // The pointer is one best-effort try. The event above already announced
     // the end and the task stays queryable, so a pane that is gone, holds

@@ -779,10 +779,13 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
       await patch(p);
       await move('input_required', summary);
     } else {
-      entry = (await deps.ledger.updateRemote(entry!.id, p, { summary, expectedRev: entry!.rev })) ?? entry;
+      const written = await deps.ledger.updateRemote(entry!.id, p, { summary, expectedRev: entry!.rev });
+      // Not written (the row went, or moved meanwhile): the next pass reads it again; nothing is told for it.
+      if (!written || written.summary !== summary) return;
+      entry = written;
     }
     // The reason this pass found (a brain's own text on the row is kept, but the reason is still new).
-    const now = waitKind(entry!, summary);
+    const now = waitKind(entry!, ownTexts.has(entry!.summary ?? '') ? entry!.summary : summary);
     if (before === null || entry!.status !== 'input_required' || now === 'reply' || now === before) return;
     // Under a brain's own text only a question is remembered on the row (`waiting`): any other reason would read as new every pass.
     if (before === 'other' && now !== 'question') return;

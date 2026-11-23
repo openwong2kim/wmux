@@ -484,8 +484,11 @@ function sentTaskFacts(row: Rec, status: Rec, metadata: Rec): Rec {
   }
   const evidence = isRec(status.evidence) ? status.evidence : {};
   const linkEnded = status.state === 'failed' && LINK_END_REASONS.has(str(evidence.summary) ?? '') && remote.stateSync !== 'failed';
-  // A reply of the other PC's agent held here (not written to this PC's pane): someone has to look.
-  const replyHeld = (Array.isArray(remote.inbox) ? remote.inbox : []).some((i) => isRec(i) && i.kind === 'reply' && i.delivered !== true && !!str(i.held));
+  // The newest reply of the other PC's agent is held here (not written to this PC's pane): someone has to
+  // look. An older one held does not make a later one that went through unread; a paste that may have landed
+  // (`delivery-unconfirmed`) is not said to be unwritten.
+  const newestReply = (Array.isArray(remote.inbox) ? remote.inbox : []).filter((i): i is Rec => isRec(i) && i.kind === 'reply').at(-1);
+  const replyHeld = !!newestReply && newestReply.delivered !== true && !!str(newestReply.held) && newestReply.held !== 'delivery-unconfirmed';
   return { ...(answered ? { answered: true } : {}), ...(linkEnded ? { linkEnded: true } : {}), ...(replyHeld ? { replyHeld: true } : {}) };
 }
 
