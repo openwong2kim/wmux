@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { A2A_REMOTE_BODY_MAX, ANSWER_OUTCOMES_MAX, type A2aRemoteAnswerOutcome, type A2aRemoteAnswerV1, type A2aRemoteApprovalOffer, type A2aRemoteApprovalOutcome, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
+import { A2A_REMOTE_BODY_MAX, ANSWER_OUTCOMES_MAX, type A2aRemoteAnswerOutcome, type A2aRemoteAnswerV1, type A2aRemoteApprovalOffer, type A2aRemoteApprovalOutcome, type A2aRemoteProgressV1, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
 import { truncateUtf8 } from '../../shared/chatv2/limits';
 import type { SessionPromptScheduleResult } from '../../shared/sessionPromptSchedule';
 import { promptHash } from '../../shared/promptHash';
@@ -221,6 +221,12 @@ export interface HeadlessDeliveryDeps {
    * this delivery works on; and `gone`, before a start's tasks are ended.
    */
   status?: { tick(statuses: HeadlessTaskStatus[]): void; gone(taskIds: string[]): void };
+  /**
+   * What the start's worktree shows of the work (git facts only), or null.
+   * Asked once per turn end, never on a timer, and not awaited by the pass;
+   * the answer goes with the task's statuses from then on.
+   */
+  progressOf?(rec: HeadlessStartRecordV1): Promise<A2aRemoteProgressV1 | null>;
   /** The daemon's own `a2a.remote.reply`, as main calls it. */
   reply(input: { taskId: string; workspaceId: string; text: string; ptyId?: string }): Promise<{ ok: boolean; error?: string }>;
   /**
@@ -252,6 +258,7 @@ export interface HeadlessTaskStatus {
     /** A linked pane's prompt offered to the PC that sent the task (remoteApproval.ts); never set by the headless delivery. */
     approval?: A2aRemoteApprovalOffer;
     approvals?: A2aRemoteApprovalOutcome[];
+    progress?: A2aRemoteProgressV1;
   };
 }
 
@@ -260,6 +267,8 @@ export interface Episode {
   taskId: string;
   sessionId: string;
   workspaceId: string;
+  /** This turn end's worktree facts were asked for (readFacts): its retries do not ask again. */
+  factsRead?: true;
   /**
    * sha256 of the prompt as typed (sanitized), in the shared normal form
    * (shared/promptMatch.ts: paste markers and whitespace removed), which the
@@ -555,6 +564,12 @@ export class HeadlessDelivery {
   }>();
   /** How the latest answers from the asking PC went, by task (at most ANSWER_OUTCOMES_MAX): sent with each status. */
   private readonly answered = new Map<string, A2aRemoteAnswerOutcome[]>();
+  /** Per task: its worktree's facts as read at its last turn end (progressOf). */
+  private readonly worktreeFacts = new Map<string, A2aRemoteProgressV1>();
+  /** Tasks whose worktree facts are being read now. */
+  private readonly factsReading = new Set<string>();
+  /** Tasks with a turn end that came while their read was out: read once more after it. */
+  private readonly factsAgain = new Map<string, Episode>();
   /** Answers being typed now (`taskId \0 messageId`): the same message is never typed twice. */
   private readonly answering = new Set<string>();
   /** After an answer, by session: the transcript read on for turns nothing on this PC started. */
@@ -838,16 +853,60 @@ export class HeadlessDelivery {
   private statuses(starts: readonly HeadlessStartRecordV1[]): HeadlessTaskStatus[] {
     const out: HeadlessTaskStatus[] = [];
     for (const taskId of [...this.answered.keys()]) if (this.ended(taskId)) this.answered.delete(taskId);
+    const seen = new Set<string>();
     for (const task of this.deps.tasks.remote()) {
       if ((task.metadata.remote as A2aRemoteTaskState | undefined)?.direction !== 'inbound' || this.ended(task.id)) continue;
       const rec = this.ownerOf(task, starts);
       if (!rec) continue;
+      seen.add(task.id);
       const status = this.statusOf(task, rec);
-      // The latest answers' outcomes go with whatever the worker does now.
+      if (status.kind === null) {
+        out.push({ taskId: task.id, ...status });
+        continue;
+      }
+      // The latest answers' outcomes, and the worktree's facts, go with whatever the worker does now.
       const answers = this.answered.get(task.id);
-      out.push({ taskId: task.id, ...(answers && status.kind !== null ? { ...status, detail: { ...status.detail, answers: [...answers] } } : status) });
+      const progress = this.worktreeFacts.get(task.id);
+      const detail = { ...status.detail, ...(answers ? { answers: [...answers] } : {}), ...(progress ? { progress } : {}) };
+      out.push({ taskId: task.id, kind: status.kind, ...(Object.keys(detail).length > 0 ? { detail } : {}) });
     }
+    for (const taskId of [...this.worktreeFacts.keys()]) if (!seen.has(taskId)) this.worktreeFacts.delete(taskId);
     return out;
+  }
+
+  /**
+   * Start reading the worktree's facts for the task whose turn just ended,
+   * once per turn end (the callers' retries do not read again). Not awaited:
+   * a slow git never holds up the pass that serves every session here; the
+   * facts go with the task's statuses once read. Never on a timer. A read that
+   * fails or says nothing clears them.
+   */
+  private readFacts(ep: Episode): void {
+    const read = this.deps.progressOf;
+    const rec = read ? this.deps.starts.list().find((r) => r.sessionId === ep.sessionId) : undefined;
+    if (!read || !rec) return;
+    const taskId = ep.taskId;
+    // A turn end while a read is out: one more read once it is done, so the facts are this turn end's.
+    if (this.factsReading.has(taskId)) {
+      this.factsAgain.set(taskId, ep);
+      return;
+    }
+    this.factsReading.add(taskId);
+    void read(rec)
+      .catch((err: unknown) => {
+        this.deps.log('warn', `[headless] task ${taskId}: its worktree could not be read: ${errMsg(err)}`);
+        return null;
+      })
+      .then((facts) => {
+        if (facts && !this.ended(taskId)) this.worktreeFacts.set(taskId, facts);
+        else this.worktreeFacts.delete(taskId);
+      })
+      .finally(() => {
+        this.factsReading.delete(taskId);
+        const again = this.factsAgain.get(taskId);
+        this.factsAgain.delete(taskId);
+        if (again && !this.ended(taskId)) this.readFacts(again);
+      });
   }
 
   /**
@@ -1270,6 +1329,8 @@ export class HeadlessDelivery {
     const body = text.trim();
     ep.lastProgress = { text: body, sent: false };
     if (!body || this.ended(ep.taskId) || !this.budgetLeft(ep.taskId)) return;
+    // A turn end too: the facts go with the statuses from here on.
+    this.readFacts(ep);
     const before = this.said(ep.taskId, cutReply(body));
     ep.lastProgress.sent = await this.sayFurther(ep, body);
     this.countAsSaid(ep, cutReply(body), before);
@@ -1337,9 +1398,13 @@ export class HeadlessDelivery {
       if (w.unsaid?.text === body && copies > w.unsaid.copies) {
         // The try before landed although its call failed.
         this.further.set(w.taskId, (this.further.get(w.taskId) ?? 0) + 1);
-      } else if (!(await this.sayFurther(w, body))) {
-        w.unsaid = { text: body, copies };
-        return 'held';
+      } else {
+        // A turn end of its own (not the retry of one held before): the facts go with the statuses from here on.
+        if (w.unsaid?.text !== body) this.readFacts(w);
+        if (!(await this.sayFurther(w, body))) {
+          w.unsaid = { text: body, copies };
+          return 'held';
+        }
       }
       w.unsaid = null;
       return 'sent';
@@ -1390,6 +1455,11 @@ export class HeadlessDelivery {
     }
     const task = this.deps.tasks.get(ep.taskId);
     if (!task || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return this.drop(ep);
+    // Once per turn end, before its reply is tried (a reply that throws is tried again on a later pass).
+    if (!ep.factsRead) {
+      ep.factsRead = true;
+      this.readFacts(ep);
+    }
     const replied = task.history.filter((m) => m.role === 'agent').length > ep.agentMessagesAtSend;
     if (!replied) {
       // Over the body limit: its start goes, with a marker (an answer leads with its result).
@@ -1426,7 +1496,7 @@ export class HeadlessDelivery {
     // Read on from here for turns nothing on this PC starts (only while nothing else took the session).
     if (ep.path !== null && !this.episodes.has(ep.sessionId) && !this.ending.has(ep.sessionId)) {
       this.afterwards.set(ep.sessionId, {
-        ...ep, opened: true, answer: [], endPending: undefined, limitStopped: false, limitTold: undefined, outcome: null, waitingSince: null, busy: false, lastProgress: null,
+        ...ep, opened: true, answer: [], endPending: undefined, limitStopped: false, limitTold: undefined, outcome: null, waitingSince: null, busy: false, lastProgress: null, factsRead: undefined,
       });
     }
   }

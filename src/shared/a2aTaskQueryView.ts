@@ -19,6 +19,7 @@
 import { isReceiverPaneGone, normalizeLivePaneIds } from './a2aOrphanedTask';
 import { companyHoldOf, companyHoldPhase } from './companyHold';
 import { TERMINAL_STATES, type Task } from './types';
+import { parseA2aRemoteProgress } from './a2aRemote';
 
 /** Byte budget for one result: the MCP tool result cap (DEFAULT_RESULT_CAP_BYTES). */
 export const TASK_QUERY_CAP_BYTES = 64 * 1024;
@@ -435,6 +436,8 @@ function remoteStateView(remote: unknown): Rec | null {
       ...(str(d.menuId) ? { menuId: d.menuId } : {}),
       ...(str(d.resetsAt) ? { resetsAt: d.resetsAt } : {}),
       ...(typeof d.background === 'number' ? { background: d.background } : {}),
+      // Git facts only (a sha, a time, a count), checked again here.
+      ...(parseA2aRemoteProgress(d.progress) ? { progress: parseA2aRemoteProgress(d.progress) } : {}),
     };
     status = { kind: remote.status.kind, since: remote.status.since, ...(Object.keys(detail).length > 0 ? { detail } : {}) };
   }

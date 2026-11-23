@@ -73,7 +73,7 @@ import {
   type LedgerStatus,
 } from '../../shared/ledger';
 import { sanitizeTaskCriteria, gradeNonCodeEvidence } from '../../shared/nonCodeTaskEvidence';
-import { A2A_REMOTE_MESSAGE_ID_RE } from '../../shared/a2aRemote';
+import { A2A_REMOTE_MESSAGE_ID_RE, parseA2aRemoteProgress } from '../../shared/a2aRemote';
 import type { CompletionEvidence } from '../../shared/types';
 
 export const LEDGER_FILENAME = 'task-ledger.jsonl';
@@ -334,6 +334,7 @@ export function copyRemote(r: unknown): LedgerRemote | null {
     ...(typeof o.goneSeenAt === 'number' && Number.isFinite(o.goneSeenAt) && o.goneSeenAt > 0 ? { goneSeenAt: o.goneSeenAt } : {}),
     ...(typeof o.reportId === 'string' && A2A_REMOTE_MESSAGE_ID_RE.test(o.reportId) ? { reportId: o.reportId } : {}),
     ...(copyPool(o.pool) ? { pool: copyPool(o.pool)! } : {}),
+    ...(parseA2aRemoteProgress(o.progress) ? { progress: parseA2aRemoteProgress(o.progress)! } : {}),
   };
 }
 

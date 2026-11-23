@@ -1905,6 +1905,134 @@ describe('the status this delivery reports for each task (headlessStatus.ts send
     expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input' });
   });
 
+  it('the worktree\'s facts: read at each turn end without holding up the pass, sent with a later status; never per pass', async () => {
+    let reads = 0;
+    let facts: { head: string; committedAt?: string; changedFiles: number } | null = { head: 'abc1234def56', committedAt: '2026-11-24T01:00:00.000Z', changedFiles: 2 };
+    let release: (() => void) | null = null;
+    const d = new HeadlessDelivery(statusDeps({ progressOf: () => {
+      reads += 1;
+      return new Promise((resolve) => { release = () => resolve(facts); });
+    } }));
+    await d.tick();
+    write(userLine(PROMPT));
+    await d.tick();
+    await d.tick();
+    expect(reads).toBe(0);
+    expect(last()).toEqual({ taskId: TASK, kind: 'working' });
+    write(assistantLine('PONG'));
+    // The pass finishes the turn while the read is still out.
+    await d.tick();
+    expect(task.status.state).toBe('input-required');
+    expect(reads).toBe(1);
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input' });
+    release!();
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input', detail: { progress: facts } });
+    await d.tick();
+    expect(reads).toBe(1);
+    // A read that says nothing clears them.
+    facts = null;
+    task.history.push({ kind: 'message', messageId: 'm9', role: 'user', parts: [{ kind: 'text', text: 'again' }] });
+    (task.metadata.remote as A2aRemoteTaskState).inbox = [{ messageId: 'm9', kind: 'reply', delivered: false }];
+    await d.tick();
+    write(userLine('again'), assistantLine('done'));
+    await d.tick();
+    release!();
+    await d.tick();
+    await d.tick();
+    expect(reads).toBe(2);
+    expect(last()?.detail?.progress).toBeUndefined();
+  });
+
+  it('a turn end that comes while a read is out is read again once that read is done', async () => {
+    let reads = 0;
+    const pending: Array<() => void> = [];
+    const d = new HeadlessDelivery(statusDeps({ progressOf: () => {
+      reads += 1;
+      const n = reads;
+      return new Promise((resolve) => { pending.push(() => resolve({ head: n === 1 ? 'aaaaaaa' : 'bbbbbbb', changedFiles: n })); });
+    } }));
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(reads).toBe(1);
+    // A follow-up's turn ends while the first read is still out.
+    task.history.push({ kind: 'message', messageId: 'm9', role: 'user', parts: [{ kind: 'text', text: 'again' }] });
+    (task.metadata.remote as A2aRemoteTaskState).inbox = [{ messageId: 'm9', kind: 'reply', delivered: false }];
+    await d.tick();
+    write(userLine('again'), assistantLine('done'));
+    await d.tick();
+    await d.tick();
+    expect(reads).toBe(1);
+    pending.shift()!();
+    await d.tick();
+    expect(reads).toBe(2);
+    pending.shift()!();
+    await d.tick();
+    await d.tick();
+    expect(last()?.detail?.progress).toEqual({ head: 'bbbbbbb', changedFiles: 2 });
+  });
+
+  it('a turn end whose reply throws, tried again on a later pass, reads its worktree once', async () => {
+    let reads = 0;
+    let throws = 1;
+    const base = statusDeps();
+    const d = new HeadlessDelivery(statusDeps({
+      progressOf: async () => { reads += 1; return { head: 'abc1234', changedFiles: 0 }; },
+      reply: async (input) => {
+        if (throws-- > 0) throw new Error('pipe closed');
+        return base.reply(input);
+      },
+    }));
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    for (let i = 0; i < 4; i++) await d.tick();
+    expect(task.status.state).toBe('input-required');
+    expect(reads).toBe(1);
+    expect(last()?.detail?.progress).toEqual({ head: 'abc1234', changedFiles: 0 });
+  });
+
+  it('a turn end whose move is tried again reads its worktree once', async () => {
+    let reads = 0;
+    let fails = 2;
+    const base = statusDeps();
+    const d = new HeadlessDelivery(statusDeps({
+      progressOf: async () => { reads += 1; return { head: 'abc1234', changedFiles: 0 }; },
+      transition: async (input) => (input.to === 'input-required' && fails-- > 0 ? { ok: false, error: 'busy' } : base.transition(input)),
+    }));
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    for (let i = 0; i < 4; i++) await d.tick();
+    expect(task.status.state).toBe('input-required');
+    expect(reads).toBe(1);
+  });
+
+  it('a turn that ends while work it left runs (its progress reply): read then too, and the working status carries them', async () => {
+    let reads = 0;
+    const facts = { head: 'abc1234def56', changedFiles: 1 };
+    const d = new HeadlessDelivery(statusDeps({ progressOf: async () => { reads += 1; return facts; } }));
+    await d.tick();
+    write(userLine(PROMPT), callLine('m1', 'Monitor', { command: 'tail -f log' }),
+      resultLine('m1', 'Monitor started (task mon1, expires in 15m unless the source ends first)'), assistantLine('Watching the log.'));
+    await d.tick();
+    await d.tick();
+    expect(reads).toBe(1);
+    expect(task.status.state).toBe('working');
+    expect(last()).toMatchObject({ taskId: TASK, detail: { progress: facts } });
+  });
+
+  for (const [name, progressOf] of [['no worktree reader', undefined], ['a reader that fails', async () => { throw new Error('git is gone'); }]] as const) {
+    it(`with ${name}, the status is as before`, async () => {
+      const d = new HeadlessDelivery(statusDeps(progressOf ? { progressOf } : {}));
+      await d.tick();
+      write(userLine(PROMPT));
+      await d.tick();
+      await d.tick();
+      expect(last()).toEqual({ taskId: TASK, kind: 'working' });
+    });
+  }
+
   it('a question on the screen: its kind, read with the question clock\'s own probe; the open AskUserQuestion is said', async () => {
     const asked: boolean[] = [];
     const d = new HeadlessDelivery(statusDeps({ questionKind: async (_s, asking) => { asked.push(asking); return 'permission'; } }));

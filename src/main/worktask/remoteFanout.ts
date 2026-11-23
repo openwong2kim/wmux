@@ -18,7 +18,7 @@
 import crypto from 'node:crypto';
 import type { A2aSpawnAskError, A2aSpawnAskInput, A2aSpawnAskResult, A2aSpawnOutgoingList, A2aSpawnOutgoingSummary } from '../../shared/a2aSpawn';
 import { asSpawnLinkId, spawnFirstMessageId } from '../../shared/a2aSpawn';
-import { isHostId } from '../../shared/a2aRemote';
+import { isHostId, parseA2aRemoteProgress, type A2aRemoteProgressV1 } from '../../shared/a2aRemote';
 import type { AgentSlug } from '../../shared/agentIdentity';
 import { LEDGER_POOL_REFUSALS_MAX, LEDGER_REMOTE_QUESTIONS, type LedgerEntry, type LedgerRemote, type LedgerRemoteWaiting, type LedgerStatus, remoteTaskWorkspaceId } from '../../shared/ledger';
 import { STATE_VIEW_IDS_MAX } from '../../shared/a2aTaskQueryView';
@@ -76,7 +76,7 @@ export interface RemoteTaskView {
   state: string;
   /** The id of the other PC's message that last reported it; absent before any report. */
   reportId?: string;
-  status?: { kind: string; since: string; question?: string; resetsAt?: string };
+  status?: { kind: string; since: string; question?: string; resetsAt?: string; progress?: A2aRemoteProgressV1 };
   /** The other PC's agent replied after the last message this PC sent. */
   answered?: true;
   /** It failed here because its link ended, not by a `failed` the other PC sent. */
@@ -90,12 +90,14 @@ export function remoteTaskViewOf(raw: unknown): RemoteTaskView[] {
   const t = raw && typeof raw === 'object' ? raw as { id?: unknown; status?: { state?: unknown }; metadata?: { remote?: { reported?: unknown; status?: unknown; answered?: unknown; linkEnded?: unknown; replyHeld?: unknown } } } : null;
   if (!t || typeof t.id !== 'string' || typeof t.status?.state !== 'string') return [];
   const remote = t.metadata?.remote;
-  const st = remote?.status && typeof remote.status === 'object' ? remote.status as { kind?: unknown; since?: unknown; detail?: { question?: unknown; resetsAt?: unknown } } : null;
+  const st = remote?.status && typeof remote.status === 'object' ? remote.status as { kind?: unknown; since?: unknown; detail?: { question?: unknown; resetsAt?: unknown; progress?: unknown } } : null;
+  const progress = parseA2aRemoteProgress(st?.detail?.progress);
   const status = st && typeof st.kind === 'string' && typeof st.since === 'string'
     ? {
       kind: st.kind, since: st.since,
       ...(typeof st.detail?.question === 'string' ? { question: st.detail.question } : {}),
       ...(typeof st.detail?.resetsAt === 'string' ? { resetsAt: st.detail.resetsAt } : {}),
+      ...(progress ? { progress } : {}),
     }
     : undefined;
   return [{
@@ -162,6 +164,8 @@ export interface RemoteTaskResult {
   hostId?: string;
   /** How to reach the agent once it started. */
   followUp?: string;
+  /** What the agent's worktree on that PC shows, as of its last turn end (a headless box only). */
+  progress?: A2aRemoteProgressV1;
 }
 
 const sha256 = (s: string): string => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
@@ -353,6 +357,7 @@ function resultOf(index: number, title: string, entry: LedgerEntry, channelId: s
       ...(r.state === 'held' && !failed ? { pending: { waitingOn: 'pc-full' as const } } : {}),
       ...(r.pool ? { pc: r.pc, hostId: r.hostId } : {}),
       ...(r.a2aTaskId && !failed ? { followUp: followUpText(r) } : {}),
+      ...(r.progress ? { progress: r.progress } : {}),
     } : {}),
     ...(failed && !r?.code ? { reason: entry.summary ?? entry.status } : {}),
   };
@@ -805,6 +810,11 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   // A report stands: a reported task the daemon dropped later (its log keeps
   // ended tasks only a while) keeps its row as it is.
   if (!view) return entry.status === 'review_requested' ? undefined : failAfterGrace(`the task on ${r.pc} is no longer known here`);
+  // The worktree's facts, as that PC last said: kept on the row whatever else this pass does (no status moves for
+  // it). A status without them (that PC could not read them) clears them; no status at all, or `gone` (which
+  // never carries any), leaves the last ones on the row.
+  const progress = view.status?.progress;
+  if (view.status && view.status.kind !== 'gone' && JSON.stringify(progress) !== JSON.stringify(r.progress)) await patch({ progress });
   const settled = r.waiting || r.goneSeenAt !== undefined ? { waiting: undefined, goneSeenAt: undefined } : null;
   const newReport = view.reportId !== undefined && view.reportId !== r.reportId;
   if (newReport || (view.state === 'completed' && entry.status !== 'review_requested')) {

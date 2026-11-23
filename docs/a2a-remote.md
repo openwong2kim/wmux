@@ -514,6 +514,15 @@ id alone.
   after a minute if nothing ended the task meanwhile, and it stays failed.
   Tasks on a headless box end when its daemon stops; they are not resumed.
   Nothing the other PC writes goes into the row.
+
+  A headless box also says what the agent's worktree shows, read at each
+  turn end of the agent (never on a timer, so during a long turn it is the
+  last turn end's): HEAD (abbreviated), when
+  it was committed, and how many tracked files differ from the commit the
+  worktree started from, committed or not. The row keeps the last one as
+  `remote.progress`. The poll returns it as `progress`, and
+  `channel_mission_list` shows it with the PC and branch under each such
+  task's `remote`. An older box sends none, and its rows have no `progress`.
 - **Being told.** The agent's replies and its report arrive in the pane that
   started the fan-out, at the terminal that called `fanout_start`. That pane
   also gets the one-line fan-out nudge when a row fails, when a question on

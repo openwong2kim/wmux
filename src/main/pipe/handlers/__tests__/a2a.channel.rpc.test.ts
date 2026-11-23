@@ -33,7 +33,7 @@ import { EventEmitter } from 'node:events';
 import { rememberMissionChannel, setTaskLedgerForTests } from '../../../deck/taskLedgerHost';
 import { RpcRouter } from '../../RpcRouter';
 import { mintCommanderToken, revokeCommanderToken } from '../../../deck/commanderTrust';
-import { registerA2aChannelRpc } from '../a2a.channel.rpc';
+import { registerA2aChannelRpc, withRemoteMissionFacts } from '../a2a.channel.rpc';
 import { METHOD_CAPABILITY, CAPABILITY_RISK_CLASS } from '../../../mcp/methodCapabilityMap';
 import { listKnownCapabilities } from '../../../mcp/permissionGrammar';
 import { registerEventsRpc } from '../events.rpc';
@@ -1322,5 +1322,23 @@ describe('a2a.channel.post into the mission channel of a task another PC runs', 
     } finally {
       setTaskLedgerForTests(null);
     }
+  });
+});
+
+describe('withRemoteMissionFacts (channel_mission_list)', () => {
+  const progress = { head: 'abc1234def56', changedFiles: 2 };
+  const remote = { hostId: '0f1e2d3c-4b5a-4968-8776-655443322110', pc: 'box', spawnId: 'sp-x', root: 'repo', state: 'started' as const, branchOnPc: 'wmux/remote/sp-x', progress };
+  it('adds where a task on another PC runs and its worktree facts; other tasks and answers are left as they are', () => {
+    const rows: Record<string, unknown> = { 'wtask-r': { id: 'wtask-r', remote }, 'wtask-old': { id: 'wtask-old', remote: { ...remote, progress: undefined, branchOnPc: undefined } } };
+    const res = { ok: true, tasks: [{ id: 'wtask-r', title: 'r' }, { id: 'wtask-old' }, { id: 'wtask-local' }] };
+    const out = withRemoteMissionFacts(res, (id) => rows[id] as never) as { tasks: unknown[] };
+    expect(out.tasks).toEqual([
+      { id: 'wtask-r', title: 'r', remote: { pc: 'box', state: 'started', branchOnPc: 'wmux/remote/sp-x', progress } },
+      { id: 'wtask-old', remote: { pc: 'box', state: 'started' } },
+      { id: 'wtask-local' },
+    ]);
+    const refused = { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'no' } };
+    expect(withRemoteMissionFacts(refused, () => { throw new Error('not read'); })).toBe(refused);
+    expect(withRemoteMissionFacts({ ok: true, tasks: [{ id: 'wtask-r' }] }, () => { throw new Error('ledger down'); })).toEqual({ ok: true, tasks: [{ id: 'wtask-r' }] });
   });
 });
