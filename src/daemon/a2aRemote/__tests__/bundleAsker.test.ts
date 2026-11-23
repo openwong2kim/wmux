@@ -380,4 +380,18 @@ describe('BundleAsker', () => {
     expect(h.intake.discard).toHaveBeenCalledWith(HOST, M);
     expect(await h.asker.bringBack(HOST, SPAWN, ORIGIN)).toEqual({ state: 'asking' });
   });
+
+  it('released after main imported it: the box is told that commit (only one that takes the word); refused or cancelled: not', async () => {
+    const HEAD = 'a'.repeat(40);
+    for (const [takes, imported, told] of [[true, HEAD, true], [true, undefined, false], [false, HEAD, false]] as const) {
+      const h = harness({ peerTakesImported: () => takes });
+      await h.asker.bringBack(HOST, SPAWN, ORIGIN);
+      h.answer({ op: 'made', manifest: M });
+      await flush();
+      await vi.waitFor(() => expect(h.sent.map((x) => x.env.bundleAsk?.op)).toContain('done'), { timeout: 5_000 });
+      await h.asker.release(HOST, SPAWN, imported);
+      const said = h.sent.map((x) => x.env.bundleAsk).filter((a) => a?.op === 'imported');
+      expect(said).toEqual(told ? [expect.objectContaining({ op: 'imported', spawnId: SPAWN, head: HEAD })] : []);
+    }
+  });
 });

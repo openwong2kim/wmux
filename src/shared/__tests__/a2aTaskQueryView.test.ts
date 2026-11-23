@@ -332,4 +332,48 @@ describe("view: 'state'", () => {
     const rows = applyTaskQueryView([sent('rt-a'), sent('rt-b')], { view: 'state', taskId: 'rt-b' }) as View[];
     expect(rows.map((r) => r.id)).toEqual(['rt-b']);
   });
+
+  it('answered: the newest message (notices left out) came from the other PC; linkEnded: failed here by the link end only', () => {
+    const msg = (id: string, role: 'user' | 'agent') => ({ kind: 'message', messageId: id, role, parts: [{ kind: 'text', text: 'body' }] });
+    const task = (id: string, history: unknown[], inbox: unknown[], status: Record<string, unknown>, stateSync?: string) => ({
+      id, status, history, metadata: { updatedAt: '2026-11-13T08:00:00.000Z', remote: { direction: 'outbound', inbox, ...(stateSync ? { stateSync } : {}) } },
+    });
+    const linkFail = { state: 'failed', evidence: { summary: 'link_broken', items: [] } };
+    const tasks = [
+      // Finished, then the link ended.
+      task('rt-done', [msg('m1', 'user'), msg('r1', 'agent')], [{ messageId: 'r1', kind: 'reply' }], linkFail, 'input-required'),
+      // A follow-up sent after the reply.
+      task('rt-follow', [msg('m1', 'user'), msg('r1', 'agent'), msg('m2', 'user')], [{ messageId: 'r1', kind: 'reply' }], linkFail, 'input-required'),
+      // A notice after the reply does not hide it.
+      task('rt-notice', [msg('m1', 'user'), msg('r1', 'agent'), msg('n1', 'agent')], [{ messageId: 'r1', kind: 'reply' }, { messageId: 'n1', kind: 'notice' }], linkFail, 'input-required'),
+      // Mid-turn: a progress reply (or a limit or question text) while the box's last state is `working`.
+      task('rt-progress', [msg('m1', 'user'), msg('p1', 'agent')], [{ messageId: 'p1', kind: 'reply' }], linkFail, 'working'),
+      // A follow-up crossed by the last turn's reply; the box took it up (its `working`) and was killed on it.
+      task('rt-crossed', [msg('m1', 'user'), msg('m2', 'user'), msg('r1', 'agent')], [{ messageId: 'r1', kind: 'reply' }], linkFail, 'working'),
+      // A report (the box's `completed`, held here) and then the link end.
+      task('rt-report', [msg('m1', 'user'), msg('s1', 'agent')], [{ messageId: 's1', kind: 'state', state: 'completed' }], linkFail, 'completed'),
+      // The other PC sent `failed` itself (whatever its text says).
+      task('rt-peer', [msg('m1', 'user'), msg('r1', 'agent')], [{ messageId: 'r1', kind: 'reply' }], linkFail, 'failed'),
+      // Killed mid-turn: nothing came back.
+      task('rt-mid', [msg('m1', 'user')], [], { state: 'failed', evidence: { summary: 'link_revoked', items: [] } }, 'working'),
+      // Never answered: only the box's reason for its cancel came back before the link ended.
+      task('rt-reason', [msg('m1', 'user'), { ...msg('c1', 'agent'), parts: [{ kind: 'text', text: "Canceled: the agent's session ended" }] }], [{ messageId: 'c1', kind: 'reply' }], linkFail, 'submitted'),
+      // Answered, then the reason: still answered.
+      task('rt-both', [msg('m1', 'user'), msg('r1', 'agent'), { ...msg('c1', 'agent'), parts: [{ kind: 'text', text: 'Canceled: the agent ended: x' }] }], [{ messageId: 'r1', kind: 'reply' }, { messageId: 'c1', kind: 'reply' }], linkFail, 'input-required'),
+    ];
+    const rows = applyTaskQueryView(tasks, { view: 'state', taskIds: tasks.map((t) => t.id) }) as View[];
+    expect(rows.map((r) => [r.id, r.metadata.remote])).toEqual([
+      ['rt-done', { answered: true, linkEnded: true }],
+      ['rt-follow', { linkEnded: true }],
+      ['rt-notice', { answered: true, linkEnded: true }],
+      ['rt-progress', { linkEnded: true }],
+      ['rt-crossed', { linkEnded: true }],
+      ['rt-report', { answered: true, linkEnded: true }],
+      ['rt-peer', undefined],
+      ['rt-mid', { linkEnded: true }],
+      ['rt-reason', { linkEnded: true }],
+      ['rt-both', { answered: true, linkEnded: true }],
+    ]);
+    expect(JSON.stringify(rows)).not.toMatch(/body|Canceled/);
+  });
 });

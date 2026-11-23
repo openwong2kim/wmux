@@ -18,6 +18,7 @@ type HeadlessAnswerReason = Extract<HeadlessAnswerResult, { outcome: 'not-answer
 import type { HeadlessStartRecordV1 } from './headlessStartStore';
 import { isPromptRaw, rawEntry } from './taskTurn';
 import { LINK_ENDED_REASON } from './headlessStarter';
+import { HEADLESS_CANCEL_REASON_PREFIX } from '../../shared/a2aTaskQueryView';
 import { errMsg } from './storeFile';
 
 /**
@@ -268,6 +269,8 @@ export interface Episode {
   sentAt: number;
   /** Agent messages the task held at the write (more later: the agent replied itself). */
   agentMessagesAtSend: number;
+  /** The answer that ended this turn, once it is on the task (its message id). */
+  replyId?: string;
   /** The transcript `offset` counts in; null until the session is bound to one. */
   path: string | null;
   /** Where the transcript is read from next (bytes); the file may not exist yet. */
@@ -657,9 +660,16 @@ export class HeadlessDelivery {
    * A start is ending (headlessStarter): nothing more is typed into its
    * session, and its tasks still open are told `why` (while its link can
    * still carry it, when it has one): one not answered yet fails, one that
-   * was answered and waits for more is canceled.
+   * was answered (waiting for more, or its reply sent and its move not made
+   * yet) is canceled.
    */
   async startEnding(rec: HeadlessStartRecordV1, why: string): Promise<void> {
+    // A turn that ended with its answer on the task, its move to input-required not made yet, and nothing the
+    // asking PC sent after that answer: it was answered.
+    const ep = this.episodes.get(rec.sessionId);
+    const history = ep ? this.deps.tasks.get(ep.taskId)?.history ?? [] : [];
+    const at = ep?.replyId ? history.findIndex((m) => m.messageId === ep.replyId) : -1;
+    const answeredTask = ep?.outcome && ep.outcome.kind !== 'failed' && at >= 0 && !history.slice(at + 1).some((m) => m.role === 'user') ? ep.taskId : null;
     this.ending.add(rec.sessionId);
     this.episodes.delete(rec.sessionId);
     this.afterwards.delete(rec.sessionId);
@@ -674,7 +684,8 @@ export class HeadlessDelivery {
     if (say && rec.runId === this.deps.runId && open.length > 0) this.deps.status?.gone(open.map((t) => t.id));
     for (const task of open) {
       const state = task.status.state;
-      if (state === 'submitted' || state === 'working') await this.fail(task.id, rec.workspaceId, why, { say });
+      if ((state === 'submitted' || state === 'working') && task.id !== answeredTask) await this.fail(task.id, rec.workspaceId, why, { say });
+      else if ((state === 'submitted' || state === 'working') && task.id === answeredTask) await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`, { say });
       else if (state === 'input-required') await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`, { say });
     }
   }
@@ -1398,6 +1409,11 @@ export class HeadlessDelivery {
         return;
       }
     }
+    // The answer is on the task now: the newest message this PC's agent wrote on it (sent here, or by the agent itself).
+    const answered = this.deps.tasks.get(ep.taskId);
+    const fromPeer = new Set(((answered?.metadata.remote as A2aRemoteTaskState | undefined)?.inbox ?? []).map((i) => i.messageId));
+    const own = (answered?.history ?? []).filter((m) => m.role === 'agent' && !fromPeer.has(m.messageId)).at(-1);
+    if (own && !ep.replyId) ep.replyId = own.messageId;
     if (!ep.working) await this.toWorking(ep);
     if (this.deps.tasks.get(ep.taskId)?.status.state !== 'working') return this.drop(ep);
     const moved = await this.deps.transition({ taskId: ep.taskId, workspaceId: ep.workspaceId, to: 'input-required' })
@@ -1437,7 +1453,7 @@ export class HeadlessDelivery {
     // `failed` is not a move from `submitted` or `input-required` in the ledger: those are canceled, with the reason.
     const to = wanted === 'failed' && (state === 'submitted' || state === 'input-required') ? 'canceled' : wanted;
     // A cancel reaches the asking PC without its summary (a failure carries one): the reason goes first, as a reply, once.
-    if (to === 'canceled' && opts.say !== false) await this.sayOnce(taskId, workspaceId, `Canceled: ${reason}`);
+    if (to === 'canceled' && opts.say !== false) await this.sayOnce(taskId, workspaceId, `${HEADLESS_CANCEL_REASON_PREFIX}${reason}`);
     // The state read above may be stale by now: another path can end the task meanwhile (an ended link fails
     // every task on it, failTasksForLink). Ended is ended: nothing more to move.
     const res: { ok: boolean; error?: string } = this.ended(taskId)

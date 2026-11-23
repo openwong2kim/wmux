@@ -815,6 +815,51 @@ describe('the reply, from the transcript', () => {
     expect(warns.filter((w) => w.includes('not marked'))).toEqual([]);
   });
 
+  it('ended after its reply went but before its move to input-required: canceled, not failed; killed mid-turn: failed', async () => {
+    write(userLine('an earlier session line'));
+    const base = deps();
+    let moveRefused = true;
+    const d = new HeadlessDelivery(deps({
+      transition: async (input) => (input.to === 'input-required' && moveRefused ? { ok: false, error: 'busy' } : base.transition(input)),
+    }));
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG']);
+    expect(task.status.state).toBe('working');
+    await d.startEnding(rec, "the agent's session ended");
+    expect(moves.at(-1)).toEqual({ to: 'canceled', summary: "the agent ended: the agent's session ended" });
+    moveRefused = false;
+
+    // Answered, then the asking PC wrote again before the move: that follow-up is not answered, so it fails.
+    task = inboundTask();
+    moves = [];
+    replies = [];
+    moveRefused = true;
+    write(userLine('an earlier session line'));
+    const again = new HeadlessDelivery(deps({
+      transition: async (input) => (input.to === 'input-required' && moveRefused ? { ok: false, error: 'busy' } : base.transition(input)),
+    }));
+    await again.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await again.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG']);
+    task.history.push({ kind: 'message', messageId: 'u-follow', role: 'user', parts: [{ kind: 'text', text: 'and the tests?' }] });
+    await again.startEnding(rec, "the agent's session ended");
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: "the agent's session ended" });
+    moveRefused = false;
+
+    // Mid-turn (nothing answered yet): failed, as before.
+    task = inboundTask();
+    moves = [];
+    replies = [];
+    const mid = await delivering();
+    write(userLine(PROMPT), toolUseLine());
+    await mid.tick();
+    await mid.startEnding(rec, "the agent's session ended");
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: "the agent's session ended" });
+  });
+
   it('a start that ends fails its open task with why (a restart: "the daemon restarted"), and cancels an answered one', async () => {
     let d = await delivering();
     await d.startEnding(rec, 'the daemon restarted');

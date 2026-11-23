@@ -442,6 +442,52 @@ function remoteStateView(remote: unknown): Rec | null {
 }
 
 /**
+ * How a headless box words the reason it sends, as a reply, just before it
+ * cancels a task (headlessDelivery): not an answer from its agent.
+ */
+export const HEADLESS_CANCEL_REASON_PREFIX = 'Canceled: ';
+
+/** The reasons a link's end fails the tasks on it (held.ts failTasksForLink). */
+const LINK_END_REASONS: ReadonlySet<string> = new Set(['link_broken', 'link_revoked']);
+
+/**
+ * Two kinds-only facts about a sent task, for main's fan-out rows:
+ * `answered` when the other PC's last state ended its agent's turn
+ * (input-required, or a report) and the newest message in its history (the
+ * other PC's notices and a headless box's cancel reason left out) came from
+ * the other PC, so its agent replied after the last
+ * message this PC sent; `linkEnded` when it failed here because its link
+ * ended, not by a `failed` the other PC sent.
+ */
+function textOf(message: unknown): string {
+  const parts = isRec(message) && Array.isArray(message.parts) ? message.parts : [];
+  return parts.map((p) => (isRec(p) && p.kind === 'text' && typeof p.text === 'string' ? p.text : '')).join('');
+}
+
+function sentTaskFacts(row: Rec, status: Rec, metadata: Rec): Rec {
+  const remote = isRec(metadata.remote) ? metadata.remote : null;
+  if (!remote) return {};
+  const inbox = new Map<string, unknown>();
+  for (const i of Array.isArray(remote.inbox) ? remote.inbox : []) if (isRec(i) && str(i.messageId)) inbox.set(i.messageId as string, i.kind);
+  const history = Array.isArray(row.history) ? row.history : [];
+  // The other PC's last state said its agent's turn ended (a progress reply, or a `working`, is not an answer).
+  const turnEnded = remote.stateSync === 'input-required' || remote.stateSync === 'completed';
+  let answered = false;
+  for (let k = turnEnded ? history.length - 1 : -1; k >= 0; k -= 1) {
+    const id = isRec(history[k]) ? str((history[k] as Rec).messageId) : undefined;
+    const kind = id ? inbox.get(id) : undefined;
+    if (kind === 'notice') continue;
+    // The box's reason for its cancel is not its agent's answer: the message before it decides.
+    if (kind === 'reply' && textOf(history[k]).startsWith(HEADLESS_CANCEL_REASON_PREFIX)) continue;
+    answered = kind === 'reply' || kind === 'state';
+    break;
+  }
+  const evidence = isRec(status.evidence) ? status.evidence : {};
+  const linkEnded = status.state === 'failed' && LINK_END_REASONS.has(str(evidence.summary) ?? '') && remote.stateSync !== 'failed';
+  return { ...(answered ? { answered: true } : {}), ...(linkEnded ? { linkEnded: true } : {}) };
+}
+
+/**
  * What one task source returns for a query: every task in full without
  * `view` (the legacy contract), and for `view: 'page'` either the named task in
  * full or a summary of each task, flagged when orphaned.
@@ -458,8 +504,10 @@ export function applyTaskQueryView<T extends object>(tasks: readonly T[], params
       const row = task as Rec;
       const status = isRec(row.status) ? row.status : {};
       const metadata = isRec(row.metadata) ? row.metadata : {};
+      const facts = sentTaskFacts(row, status, metadata);
       const remote = remoteStateView(metadata.remote);
-      return { id: row.id, status: { state: status.state }, metadata: { updatedAt: metadata.updatedAt, ...(remote ? { remote } : {}) } };
+      const shown = remote || Object.keys(facts).length > 0 ? { ...(remote ?? {}), ...facts } : null;
+      return { id: row.id, status: { state: status.state }, metadata: { updatedAt: metadata.updatedAt, ...(shown ? { remote: shown } : {}) } };
     });
   }
   if (isAnchorTaskQuery(params)) return taskAnchorRows(tasks);

@@ -32,7 +32,9 @@ export const HEADLESS_EXTRA_DISALLOWED_TOOLS: readonly string[] = [
   'mcp__wmux__channel_invite',
 ];
 import type { Git, SpawnWorktreeInput, SpawnWorktreeResult } from '../../main/a2aRemote/spawnWorktree';
+import { FANOUT_TASK_PORT_ENV, releaseFanoutPorts } from '../../main/worktask/fanoutEnvironment';
 import { headlessStartable } from './headlessMode';
+import { pickHeadlessTaskPort } from './headlessTaskPort';
 import { HEADLESS_SESSION_ID_RE, type HeadlessStartRecordV1, type HeadlessStartStore, type HeadlessSurvivor } from './headlessStartStore';
 import type { SpawnRequestRecordV1 } from './spawnRequestStore';
 import { errMsg } from './storeFile';
@@ -150,6 +152,11 @@ export interface HeadlessStarterDeps {
    * open tasks are told (headlessDelivery) while its link can still carry it.
    */
   startEnding?(rec: HeadlessStartRecordV1, why: string): Promise<void>;
+  /**
+   * A free port from the worktree's `fanout.portRange` that is not in `taken`
+   * (headlessTaskPort.ts by default); undefined: none declared, or none free.
+   */
+  taskPort?: (worktreePath: string, taken: ReadonlySet<number>) => Promise<number | undefined>;
   /** This daemon run (a restart ends every agent the run before had). */
   runId: string;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
@@ -186,6 +193,8 @@ export class A2aHeadlessStarter {
    */
   private readonly orphanSurvivors = new Map<string, HeadlessSurvivor[]>();
   private settling: Promise<void> = Promise.resolve();
+  /** Task ports are picked and recorded one start at a time: two starts never get the same one. */
+  private portPicking: Promise<unknown> = Promise.resolve();
   private stopped = false;
 
   constructor(deps: HeadlessStarterDeps) {
@@ -423,6 +432,34 @@ export class A2aHeadlessStarter {
     throw new Error(`${survivors.length} process(es) of its agent did not exit (pid ${survivors.map((p) => p.pid).join(', ')}); its worktree stays until they do`);
   }
 
+  /**
+   * The task port of a start, picked from its worktree's `fanout.portRange`
+   * among the ports no other start that may still run holds, and recorded
+   * before its agent starts. Not recorded (or nothing free): no port.
+   */
+  private recordTaskPort(hostId: HostId, spawnId: string, worktreePath: string): Promise<number | undefined> {
+    const pick = async (): Promise<number | undefined> => {
+      const taken = new Set(this.deps.starts.list()
+        .filter((r) => (r.phase !== 'ended' || r.survivors?.length) && r.taskPort !== undefined && !(r.hostId === hostId && r.spawnId === spawnId))
+        .map((r) => r.taskPort as number));
+      const port = await (this.deps.taskPort ?? pickHeadlessTaskPort)(worktreePath, taken).catch(() => undefined);
+      if (port === undefined) return undefined;
+      try {
+        this.deps.starts.update(hostId, spawnId, { taskPort: port });
+        return port;
+      } catch (err) {
+        this.deps.log('warn', `[headless] spawn ${spawnId}: its task port was not recorded, none given: ${errMsg(err)}`);
+        return undefined;
+      } finally {
+        // The record holds it now (or nothing does): the allocator's own 10-minute hold would outlive an ended start.
+        releaseFanoutPorts([port]);
+      }
+    };
+    const run = this.portPicking.then(pick);
+    this.portPicking = run.catch(() => undefined);
+    return run;
+  }
+
   private retryLater(k: string, hostId: HostId, spawnId: string, why: string): void {
     if (this.stopped || this.timers.has(k)) return;
     this.deps.log('info', `[headless] spawn ${spawnId} from ${hostId}: not started now, trying again: ${why}`);
@@ -529,8 +566,13 @@ export class A2aHeadlessStarter {
     // The worktree is a folder nobody opened here: without the first-run env
     // Claude Code stops on its folder-trust prompt, as a fan-out worker would.
     const command = `${stem} --session-id ${rec.agentSessionId} ${workerLaunchFlags(claim.permissionMode, HEADLESS_EXTRA_DISALLOWED_TOOLS)}`;
+    const taskPort = await this.recordTaskPort(hostId, spawnId, made.worktreePath);
+    const extraEnv: Record<string, string> = {
+      ...firstRunEnvForAgent(stem),
+      ...(taskPort !== undefined ? { [FANOUT_TASK_PORT_ENV]: String(taskPort) } : {}),
+    };
     try {
-      const root = await sessions.create({ sessionId: rec.sessionId, workspaceId: rec.workspaceId, cwd: made.cwd, agentBin, command, env: firstRunEnvForAgent(stem) });
+      const root = await sessions.create({ sessionId: rec.sessionId, workspaceId: rec.workspaceId, cwd: made.cwd, agentBin, command, env: extraEnv });
       this.deps.starts.update(hostId, spawnId, {
         phase: 'created',
         ...(root.rootPid !== undefined ? { rootPid: root.rootPid } : {}),

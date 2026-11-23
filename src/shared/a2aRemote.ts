@@ -160,6 +160,11 @@ export const A2A_FEATURE_CONTINUE = 'continue.1';
  */
 export const A2A_FEATURE_BUNDLE = 'bundle.1';
 /**
+ * The box takes an `imported` bundle ask (`shared/a2aBundle.ts`): the asking
+ * PC's word that a bundle's commits are now in one of its repositories.
+ */
+export const A2A_FEATURE_BUNDLE_IMPORTED = 'bundle-imported.1';
+/**
  * The PC follows a task again after it ended `completed`, when its sender
  * writes to it: the receiver sets it `working` again, and the sender takes
  * that `working` for the follow-up it sent. Each side does so only with a

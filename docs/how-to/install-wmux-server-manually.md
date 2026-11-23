@@ -301,10 +301,15 @@ With headless mode on:
   ends them within moments of starting; `daemon headless status` then lists
   the worktrees they left, and the daemon log has one line per agent ended.
 - When an agent ends, its worktree and branch are kept, with whatever the
-  agent wrote there. Remove them yourself with `git worktree remove` and
-  `git branch -D` once you no longer need them. A worktree the agent left
+  agent wrote there. `daemon headless prune` (below) removes the ones whose
+  work is safe elsewhere; remove any other yourself with `git worktree remove`
+  and `git branch -D` once you no longer need it. A worktree the agent left
   unchanged (no commit, nothing modified or added) is removed with its
   branch.
+- If the folder's `wmux.json` declares `fanout.portRange`, each agent gets one
+  free port from it as `WMUX_TASK_PORT`, as a desktop fan-out task does. The
+  range is read from the new worktree, and no two agents running on this host
+  get the same port (see [Fan-out task environment](fan-out-task-environment.md)).
 
 See whether headless mode is in effect, which agents run (each with its spawn
 id, the asking PC, since when and its worktree), and which worktrees ended
@@ -326,6 +331,22 @@ and refuses to run from inside an agent session or a wmux pane:
 
 ```bash
 "$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless release <spawn id>
+```
+
+Remove the kept worktrees of ended agents whose work is safe elsewhere. A
+worktree goes only when `git status` shows nothing modified or untracked, and
+its HEAD and branch tip are both on a remote-tracking ref of the clone
+(pushed; nothing is fetched to check) or inside the commit the asking PC last
+brought back. It is removed with `git worktree remove`, never forced, and its
+branch with it; files git ignores (a `node_modules`, a build) go with it. Every
+other worktree is kept and listed with the reason. `--dry-run` only lists.
+Like `release`, it refuses to run from inside an agent session or a wmux pane;
+removing needs a terminal, while `--dry-run` also runs from a script. With the daemon running, it drops the removed starts'
+records within a minute; otherwise `prune` drops them itself:
+
+```bash
+"$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless prune --dry-run
+"$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless prune
 ```
 
 Turn it off (no question asked). No new agent is started, and the ones

@@ -38,6 +38,11 @@ start without `WMUX_TASK_PORT` — nothing fails, you just get the old behavior
 for those tasks. The probe is advisory: nothing holds the port between the check
 and your dev server's own bind.
 
+An agent another PC starts on a headless host (`wmux daemon headless on`) gets
+`WMUX_TASK_PORT` the same way: the range is read from the `wmux.json` in its new
+worktree, and the port is recorded with the start, so no other agent running on
+that host gets it, nor one started after a daemon restart while it is held.
+
 A `portRange` the schema rejects (typo, privileged or inverted bounds, wider
 than the cap) is dropped and reported — it never disables your `setup` hook, and
 it is never confused with "no range declared".
