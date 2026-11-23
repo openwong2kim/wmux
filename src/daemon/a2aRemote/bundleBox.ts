@@ -83,9 +83,12 @@ export interface BundleBoxDeps {
   starts: () => HeadlessStartRecordV1[];
   /** A start `hostId` made here otherwise (in the app): nothing to make from yet. */
   startedInApp?: (hostId: HostId, spawnId: string) => boolean;
-  outbox: Pick<BundleOutbox, 'offer' | 'withdraw' | 'send'>;
+  outbox: Pick<BundleOutbox, 'offer' | 'withdraw' | 'send' | 'sentWhole'>;
   enqueue: (hostId: HostId, envelope: A2aRemoteEnvelope) => void;
-  /** The asking PC took the bundle of that start made at `head` (`wmux daemon headless prune` reads it). */
+  /**
+   * The asking PC took the bundle of that start made at `head` (`wmux daemon headless prune` reads it): said
+   * only for a bundle whose whole bytes went to it; a `done` for one it refused or never fetched says nothing.
+   */
   taken?: (hostId: HostId, spawnId: string, head: string) => void;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
   /** The limits of the moment (settings), over BUNDLE_BOX_DEFAULTS. */
@@ -301,7 +304,7 @@ export class BundleBox {
   /** The asking PC took it: the offer ends and the file goes. */
   private done(hostId: HostId, bundleId: string): void {
     const o = this.offers.get(hostId)?.get(bundleId);
-    if (o) {
+    if (o && this.deps.outbox.sentWhole(hostId, bundleId)) {
       try {
         this.deps.taken?.(hostId, o.spawnId, o.head);
       } catch (err) {

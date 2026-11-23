@@ -55,7 +55,7 @@ async function elsewhere(git: Git, sha: string, fetchedHead: string | undefined)
 }
 
 /** Whether this start's worktree may go, and why (or why not). */
-async function judge(rec: HeadlessStartRecordV1, git: Git): Promise<{ ok: boolean; reason: string }> {
+async function judge(rec: HeadlessStartRecordV1, git: Git): Promise<{ ok: boolean; reason: string; tip?: string | null }> {
   const status = await git(['status', '--porcelain', '--untracked-files=all']);
   if (status.code !== 0) return { ok: false, reason: 'git status failed' };
   if (status.stdout.trim() !== '') return { ok: false, reason: 'it has uncommitted or untracked changes' };
@@ -70,7 +70,7 @@ async function judge(rec: HeadlessStartRecordV1, git: Git): Promise<{ ok: boolea
     if (!way) return { ok: false, reason: `commit ${sha.slice(0, 12)} is not pushed and was not fetched back` };
     ways.push(way);
   }
-  return { ok: true, reason: `clean, ${[...new Set(ways)].join(' and ')}` };
+  return { ok: true, reason: `clean, ${[...new Set(ways)].join(' and ')}`, tip };
 }
 
 export async function pruneHeadless(
@@ -107,8 +107,7 @@ export async function pruneHeadless(
       continue;
     }
     // The tip as judged: the branch goes only while it is still there.
-    // eslint-disable-next-line no-await-in-loop -- one worktree at a time
-    const tip = rec.branch ? await revOf(git, `refs/heads/${rec.branch}`) : null;
+    const tip = verdict.tip ?? null;
     // eslint-disable-next-line no-await-in-loop -- one worktree at a time
     const out = await gitAt(rec.repoPath)(['worktree', 'remove', rec.worktreePath]);
     if (out.code !== 0) {

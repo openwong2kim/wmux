@@ -440,7 +440,7 @@ export class A2aHeadlessStarter {
   private recordTaskPort(hostId: HostId, spawnId: string, worktreePath: string): Promise<number | undefined> {
     const pick = async (): Promise<number | undefined> => {
       const taken = new Set(this.deps.starts.list()
-        .filter((r) => (r.phase !== 'ended' || r.survivors) && r.taskPort !== undefined && !(r.hostId === hostId && r.spawnId === spawnId))
+        .filter((r) => (r.phase !== 'ended' || r.survivors?.length) && r.taskPort !== undefined && !(r.hostId === hostId && r.spawnId === spawnId))
         .map((r) => r.taskPort as number));
       const port = await (this.deps.taskPort ?? pickHeadlessTaskPort)(worktreePath, taken).catch(() => undefined);
       if (port === undefined) return undefined;

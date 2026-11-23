@@ -112,11 +112,18 @@ export class BundleOutbox {
   /** Transfers of each offer under way (how to end each): ended when the offer ends. */
   private readonly sending = new Map<string, Set<() => void>>();
   private readonly slots = transferSlots(TRANSFERS_MAX);
+  /** Offers whose whole bytes went to their PC at least once (a GET read to its end, or a PUT it took). */
+  private readonly whole = new Set<string>();
 
   constructor(deps: BundleOutboxDeps) {
     this.deps = deps;
     this.now = deps.now ?? Date.now;
     this.budget = deps.transferBudgetMs ?? continueTransferBudgetMs;
+  }
+
+  /** The whole bundle went to `hostId` at least once while it was offered (forgotten when the offer is withdrawn). */
+  sentWhole(hostId: HostId, bundleId: string): boolean {
+    return this.whole.has(key(hostId, bundleId));
   }
 
   registerRoutes(table: A2aRouteTable): void {
@@ -151,12 +158,14 @@ export class BundleOutbox {
   withdraw(hostId: HostId, bundleId: string): void {
     const k = key(hostId, bundleId);
     this.offers.delete(k);
+    this.whole.delete(k);
     this.endSending(k);
   }
 
   /** A paired PC was removed: its offers end, and every transfer to it (also of an offer already past its time). */
   forgetHost(hostId: HostId): void {
     for (const [k, o] of this.offers) if (o.hostId === hostId) this.offers.delete(k);
+    for (const k of [...this.whole]) if (k.startsWith(`${hostId}:`)) this.whole.delete(k);
     for (const k of [...this.sending.keys()]) if (k.startsWith(`${hostId}:`)) this.endSending(k);
   }
 
@@ -230,6 +239,7 @@ export class BundleOutbox {
       });
       if (status === 200) {
         this.deps.log('info', `[a2a-remote] ${what}: sent`);
+        this.whole.add(k);
         return { kind: 'sent' };
       }
       // As for a fetch: a refusal of this bundle (a 4xx but 401, 408 and 429) is final; anything else is tried again.
@@ -291,6 +301,7 @@ export class BundleOutbox {
       if (stream.bytesRead !== offered.bytes) throw new Error(`the file gave ${stream.bytesRead} of ${offered.bytes} bytes`);
       await new Promise<void>((resolve) => res.end(resolve));
       this.deps.log('info', `[a2a-remote] ${what}: sent`);
+      this.whole.add(k);
     } catch (err) {
       this.deps.log('info', `[a2a-remote] ${what}: not sent whole: ${errMsg(err)}`);
       if (!res.headersSent) sendJson(res, 503, { ok: false, error: 'unavailable' });

@@ -254,14 +254,13 @@ describe('wmux daemon headless', () => {
     expect(fs.existsSync(marker)).toBe(true);
   });
 
-  it('prune: refused from a wmux pane, without a terminal, or with an unknown flag; an empty box removes nothing', async () => {
+  it('prune: refused from a wmux pane, with an unknown flag, or (removing) without a terminal; a dry run lists from a script', async () => {
     process.env = { ...process.env, WMUX_PTY_ID: 'pane-1' };
-    await expect(runHeadless('prune', false, dir)).rejects.toThrow('exit 1');
+    await expect(runHeadless('prune', false, dir, '--dry-run')).rejects.toThrow('exit 1');
     process.env = { PATH: savedEnv.PATH, HOME: dir };
     await expect(runHeadless('prune', false, dir, '--force')).rejects.toThrow('exit 1');
     vi.spyOn(policyIo, 'stdinIsTty').mockReturnValue(false);
-    await expect(runHeadless('prune', false, dir, '--dry-run')).rejects.toThrow('exit 1');
-    vi.spyOn(policyIo, 'stdinIsTty').mockReturnValue(true);
+    await expect(runHeadless('prune', false, dir)).rejects.toThrow('exit 1');
     out.length = 0;
     await runHeadless('prune', false, dir, '--dry-run');
     expect(out).toEqual(['Would remove: 0', 'Kept: 0']);

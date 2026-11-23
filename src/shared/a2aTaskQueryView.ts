@@ -441,16 +441,27 @@ function remoteStateView(remote: unknown): Rec | null {
   return reported || status ? { ...(reported ? { reported } : {}), ...(status ? { status } : {}) } : null;
 }
 
+/**
+ * How a headless box words the reason it sends, as a reply, just before it
+ * cancels a task (headlessDelivery): not an answer from its agent.
+ */
+export const HEADLESS_CANCEL_REASON_PREFIX = 'Canceled: ';
+
 /** The reasons a link's end fails the tasks on it (held.ts failTasksForLink). */
 const LINK_END_REASONS: ReadonlySet<string> = new Set(['link_broken', 'link_revoked']);
 
 /**
  * Two kinds-only facts about a sent task, for main's fan-out rows:
  * `answered` when the newest message in its history (the other PC's notices
- * left out) came from the other PC, so its agent replied after the last
+ * and a headless box's cancel reason left out) came from the other PC, so its agent replied after the last
  * message this PC sent; `linkEnded` when it failed here because its link
  * ended, not by a `failed` the other PC sent.
  */
+function textOf(message: unknown): string {
+  const parts = isRec(message) && Array.isArray(message.parts) ? message.parts : [];
+  return parts.map((p) => (isRec(p) && p.kind === 'text' && typeof p.text === 'string' ? p.text : '')).join('');
+}
+
 function sentTaskFacts(row: Rec, status: Rec, metadata: Rec): Rec {
   const remote = isRec(metadata.remote) ? metadata.remote : null;
   if (!remote) return {};
@@ -462,6 +473,8 @@ function sentTaskFacts(row: Rec, status: Rec, metadata: Rec): Rec {
     const id = isRec(history[k]) ? str((history[k] as Rec).messageId) : undefined;
     const kind = id ? inbox.get(id) : undefined;
     if (kind === 'notice') continue;
+    // The box's reason for its cancel is not its agent's answer: the message before it decides.
+    if (kind === 'reply' && textOf(history[k]).startsWith(HEADLESS_CANCEL_REASON_PREFIX)) continue;
     answered = kind === 'reply' || kind === 'state';
     break;
   }

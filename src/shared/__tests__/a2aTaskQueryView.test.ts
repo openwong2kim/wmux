@@ -350,6 +350,10 @@ describe("view: 'state'", () => {
       task('rt-peer', [msg('m1', 'user'), msg('r1', 'agent')], [{ messageId: 'r1', kind: 'reply' }], linkFail, 'failed'),
       // Killed mid-turn: nothing came back.
       task('rt-mid', [msg('m1', 'user')], [], { state: 'failed', evidence: { summary: 'link_revoked', items: [] } }, 'working'),
+      // Never answered: only the box's reason for its cancel came back before the link ended.
+      task('rt-reason', [msg('m1', 'user'), { ...msg('c1', 'agent'), parts: [{ kind: 'text', text: "Canceled: the agent's session ended" }] }], [{ messageId: 'c1', kind: 'reply' }], linkFail, 'submitted'),
+      // Answered, then the reason: still answered.
+      task('rt-both', [msg('m1', 'user'), msg('r1', 'agent'), { ...msg('c1', 'agent'), parts: [{ kind: 'text', text: 'Canceled: the agent ended: x' }] }], [{ messageId: 'r1', kind: 'reply' }, { messageId: 'c1', kind: 'reply' }], linkFail),
     ];
     const rows = applyTaskQueryView(tasks, { view: 'state', taskIds: tasks.map((t) => t.id) }) as View[];
     expect(rows.map((r) => [r.id, r.metadata.remote])).toEqual([
@@ -358,7 +362,9 @@ describe("view: 'state'", () => {
       ['rt-notice', { answered: true, linkEnded: true }],
       ['rt-peer', { answered: true }],
       ['rt-mid', { linkEnded: true }],
+      ['rt-reason', { linkEnded: true }],
+      ['rt-both', { answered: true, linkEnded: true }],
     ]);
-    expect(JSON.stringify(rows)).not.toContain('body');
+    expect(JSON.stringify(rows)).not.toMatch(/body|Canceled/);
   });
 });

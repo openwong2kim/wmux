@@ -599,8 +599,9 @@ async function releaseHold(spawnId: string | undefined, wmuxDir: string, jsonMod
  */
 async function runPrune(arg: string | undefined, wmuxDir: string, jsonMode: boolean): Promise<void> {
   if (arg !== undefined && arg !== '--dry-run') headlessFail('Usage: wmux daemon headless prune [--dry-run]');
-  if (!policyIo.stdinIsTty()) headlessFail('`wmux daemon headless prune` removes worktrees. Run it in a terminal.');
   const dryRun = arg === '--dry-run';
+  // Only listing is fine from a script.
+  if (!dryRun && !policyIo.stdinIsTty()) headlessFail('`wmux daemon headless prune` removes worktrees. Run it in a terminal (or list them with --dry-run).');
   const daemonRunning = (await headlessIo.daemonView()) !== null;
   const res = await pruneHeadless(wmuxDir, { dryRun, daemonRunning });
   if (jsonMode) {

@@ -18,6 +18,7 @@ type HeadlessAnswerReason = Extract<HeadlessAnswerResult, { outcome: 'not-answer
 import type { HeadlessStartRecordV1 } from './headlessStartStore';
 import { isPromptRaw, rawEntry } from './taskTurn';
 import { LINK_ENDED_REASON } from './headlessStarter';
+import { HEADLESS_CANCEL_REASON_PREFIX } from '../../shared/a2aTaskQueryView';
 import { errMsg } from './storeFile';
 
 /**
@@ -680,7 +681,7 @@ export class HeadlessDelivery {
     for (const task of open) {
       const state = task.status.state;
       if ((state === 'submitted' || state === 'working') && task.id !== answeredTask) await this.fail(task.id, rec.workspaceId, why, { say });
-      else if (state === 'working' && task.id === answeredTask) await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`, { say });
+      else if ((state === 'submitted' || state === 'working') && task.id === answeredTask) await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`, { say });
       else if (state === 'input-required') await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`, { say });
     }
   }
@@ -1443,7 +1444,7 @@ export class HeadlessDelivery {
     // `failed` is not a move from `submitted` or `input-required` in the ledger: those are canceled, with the reason.
     const to = wanted === 'failed' && (state === 'submitted' || state === 'input-required') ? 'canceled' : wanted;
     // A cancel reaches the asking PC without its summary (a failure carries one): the reason goes first, as a reply, once.
-    if (to === 'canceled' && opts.say !== false) await this.sayOnce(taskId, workspaceId, `Canceled: ${reason}`);
+    if (to === 'canceled' && opts.say !== false) await this.sayOnce(taskId, workspaceId, `${HEADLESS_CANCEL_REASON_PREFIX}${reason}`);
     // The state read above may be stale by now: another path can end the task meanwhile (an ended link fails
     // every task on it, failTasksForLink). Ended is ended: nothing more to move.
     const res: { ok: boolean; error?: string } = this.ended(taskId)

@@ -341,8 +341,8 @@ describe('BundleBox', () => {
     ask(b, ASKER, { op: 'done', bundleId: first.manifest.bundleId });
     await vi.waitFor(() => expect(fs.existsSync(file)).toBe(false), { timeout: 10_000 });
     expect(b.standing(ASKER)).toEqual([]);
-    // The head it was made at is recorded as fetched back (prune reads it).
-    expect(taken).toEqual([[ASKER, rec.spawnId, g(rec.worktreePath!, 'rev-parse', 'HEAD')]]);
+    // Never fetched (a `done` for a bundle the asking PC refused or dropped): nothing is recorded as fetched back.
+    expect(taken).toEqual([]);
   });
 
   it('only the asking PC\'s own starts: another PC\'s spawn and an unknown one are `unknown-spawn`; one started in the app is `not-supported`', async () => {
@@ -638,10 +638,14 @@ describe('BundleBox', () => {
     }
 
     it('fetched by the asking PC (it joined the box): staged whole, and it reads back as the head', async () => {
-      const b = box();
+      const taken: Array<[string, string, string]> = [];
+      const b = box({ taken: (hostId, spawnId, h) => void taken.push([hostId, spawnId, h]) });
       const { rec, head, manifest } = await made(b);
       const intake = new BundleIntake({ a2aDir: askerA2a(), enabled: () => true, fetchFrom: () => getAs(ASKER), log: () => undefined });
       expect(await intake.pull(BOX, manifest)).toMatchObject({ kind: 'staged' });
+      // Its whole bytes went, then the asking PC said it took it: that head is recorded as fetched back (prune reads it).
+      ask(b, ASKER, { op: 'done', bundleId: manifest.bundleId });
+      await vi.waitFor(() => expect(taken).toEqual([[ASKER, rec.spawnId, head]]), { timeout: 5_000 });
       const staged = bundleStagedFile(askerA2a(), BOX, manifest);
       expect(readBack(staged, rec.treeId!).head).toBe(head);
       // Another PC cannot fetch it.
