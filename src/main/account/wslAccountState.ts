@@ -22,6 +22,10 @@
 // (as for any pane); the boundary against another OS user is a separate design.
 
 import { createHash } from 'node:crypto';
+import path from 'node:path';
+import { getWmuxDir } from '../../daemon/config';
+import { atomicReadJSONSync, atomicWriteJSONSync } from '../../daemon/util/atomicWrite';
+import { validWslTarget } from '../../shared/wslTarget';
 import type { UsageSnapshot } from '../claude/UsageApi';
 import { mergeLive, type UsageUpdate } from '../claude/usageMerge';
 import type { AccountQuotaReading } from '../../shared/accountQuota';
@@ -81,7 +85,21 @@ export class WslAccountState {
   private readonly defaultPlaces = new Map<string, WslPlace>();
   private readonly listeners = new Set<() => void>();
 
-  constructor(private readonly now: () => number = Date.now) {}
+  /**
+   * `placesFile`: where the default places are kept across restarts, so the
+   * first plain launch after one has a place (a recovered pane comes back by
+   * reattach, never through a plain create). Only the requested distro and
+   * the (distro, user) it started as: no reading, no sign-in.
+   */
+  constructor(private readonly now: () => number = Date.now, private readonly placesFile?: string) {
+    if (!placesFile) return;
+    try {
+      const raw = atomicReadJSONSync<Record<string, unknown>>(placesFile);
+      for (const [requested, place] of Object.entries(raw ?? {})) {
+        if (validWslTarget(place)) this.defaultPlaces.set(requested.toLowerCase(), { distribution: place.distribution, user: place.user });
+      }
+    } catch { /* none kept yet, or unreadable: learned again from the next plain pane */ }
+  }
 
   onChange(listener: () => void): () => void {
     this.listeners.add(listener);
@@ -148,7 +166,13 @@ export class WslAccountState {
 
   /** A plain WSL pane (no target of its own) that asked for `requested` started at `place`. */
   noteDefaultPlace(requested: string | null, place: WslPlace): void {
-    this.defaultPlaces.set((requested ?? '').toLowerCase(), place);
+    const key = (requested ?? '').toLowerCase();
+    const prev = this.defaultPlaces.get(key);
+    this.defaultPlaces.set(key, { distribution: place.distribution, user: place.user });
+    if (!this.placesFile || (prev && prev.distribution === place.distribution && prev.user === place.user)) return;
+    try {
+      atomicWriteJSONSync(this.placesFile, Object.fromEntries(this.defaultPlaces));
+    } catch { /* kept for this run only */ }
   }
 
   /** Where a plain pane asking for `requested` starts, when one was seen since main started. */
@@ -185,8 +209,12 @@ export function seedWslAccountState(
     if (!isWslStateKey(key)) continue;
     const last = trail.read(key).at(-1);
     if (!last) continue;
+    // A window kept as 0% with no reset is one the plan does not have (usageTrail.ts).
+    const absent = (pct: number, reset: number) => pct === 0 && reset === 0;
     state.seed(key, {
-      sessionPct: last.s5, sessionResetEpochSec: last.r5, weeklyPct: last.s7, weeklyResetEpochSec: last.r7, fetchedAtMs: last.t,
+      ...(absent(last.s5, last.r5) ? {} : { sessionPct: last.s5, sessionResetEpochSec: last.r5 }),
+      ...(absent(last.s7, last.r7) ? {} : { weeklyPct: last.s7, weeklyResetEpochSec: last.r7 }),
+      fetchedAtMs: last.t,
     }, last.t);
   }
 }
@@ -194,6 +222,6 @@ export function seedWslAccountState(
 let instance: WslAccountState | null = null;
 
 export function getWslAccountState(): WslAccountState {
-  if (!instance) instance = new WslAccountState();
+  if (!instance) instance = new WslAccountState(Date.now, path.join(getWmuxDir(), 'wsl-default-places.json'));
   return instance;
 }

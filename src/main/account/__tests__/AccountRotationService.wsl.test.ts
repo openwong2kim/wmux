@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountRotationService, type AccountRotationDeps } from '../AccountRotationService';
 import type { Account } from '../accountStore';
 import type { AccountUsageEntry } from '../AccountUsageService';
-import { WSL_CANDIDATE_MAX_AGE_MS, WslAccountState } from '../wslAccountState';
+import { seedWslAccountState, WSL_CANDIDATE_MAX_AGE_MS, WslAccountState, wslStateKey } from '../wslAccountState';
+import { UsageTrail } from '../../usage/usageTrail';
 
 const NOW = Date.parse('2026-10-02T12:00:00Z');
 const RESET_SEC = Math.floor((NOW + 3 * 3600_000) / 1000);
@@ -99,4 +100,23 @@ describe('AccountRotationService for a WSL launch', () => {
     // Settings rows and cachedVerdict stay the Windows side's.
     expect((await s.cachedVerdict('b'))?.remaining ?? null).toBeNull();
   });
+
+  it('after a restart, a plain launch switches from the kept place and the trail\'s seed', async () => {
+    const placesFile = path.join(dataDir, 'wsl-default-places.json');
+    const before = new WslAccountState(() => clock, placesFile);
+    before.noteDefaultPlace(null, UBUNTU_ME);
+    const trail = new UsageTrail();
+    trail.record(wslStateKey('a', UBUNTU_ME)!, before.noteSample('a', UBUNTU_ME, sample(100)), clock);
+    trail.record(wslStateKey('b', UBUNTU_ME)!, before.noteSample('b', UBUNTU_ME, sample(10)), clock);
+    // Main restarts a minute later: nothing in memory but the kept file and the trail.
+    clock += 60_000;
+    state = new WslAccountState(() => clock, placesFile);
+    seedWslAccountState(state, trail);
+    const place = state.defaultPlace(null);
+    expect(place).toEqual(UBUNTU_ME);
+    const s = make([acct('a'), acct('b')]);
+    await s.setEnabled('claude', true);
+    expect(await s.prepareLaunch('claude', 'ws', { wsl: place ?? null })).toMatchObject({ kind: 'switch', accountId: 'b' });
+  });
 });
+

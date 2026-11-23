@@ -28,9 +28,9 @@ describe('requestedWslDistro', () => {
 
   it('both create paths (daemon and local) ask it; a dead session\'s own distro still wins', () => {
     const src = readFileSync(path.resolve(process.cwd(), 'src/main/ipc/handlers/pty.handler.ts'), 'utf8');
-    expect(src.match(/wslDistroArgs\(shell, requestedWslDistro\(options\)\)/g)).toHaveLength(1);
+    expect(src.match(/wslDistroArgs\(shell, (requestedWslDistro\(options\)|localRequestedDistro)\)/g)).toHaveLength(1);
     expect(src).not.toMatch(/wslDistroArgs\(shell, getDefaultWslDistro\(\)\)/);
-    expect(src).toMatch(/isWslDistroSpawnArgs\(shell, trustedRecovery\?\.args\)\s*\? \[\.\.\.trustedRecovery\.args\]\s*: wslDistroArgs\(shell, wslFromTarget\?\.distribution \?\? requestedWslDistro\(options\)\)/);
+    expect(src).toMatch(/isWslDistroSpawnArgs\(shell, trustedRecovery\?\.args\)\s*\? \[\.\.\.trustedRecovery\.args\]\s*: wslDistroArgs\(shell, wslFromTarget\?\.distribution \?\? requestedDistro\)/);
   });
 });
 
@@ -54,14 +54,24 @@ describe('launchPlace (where the quota gate reads a WSL launch)', () => {
   const me = { distribution: 'Ubuntu', user: 'me' };
   it('is absent for a native shell, the known target when there is one, else where a plain pane of that distro started', () => {
     const state = new WslAccountState();
-    expect(launchPlace(false, { wslDistro: 'Ubuntu' }, me, state)).toBeUndefined();
-    expect(launchPlace(true, { wslDistro: 'Ubuntu' }, { distribution: 'Ubuntu', user: 'other' }, state)).toEqual({ wsl: { distribution: 'Ubuntu', user: 'other' } });
+    expect(launchPlace(false, 'Ubuntu', me, state)).toBeUndefined();
+    expect(launchPlace(true, 'Ubuntu', { distribution: 'Ubuntu', user: 'other' }, state)).toEqual({ wsl: { distribution: 'Ubuntu', user: 'other' } });
     // Unknown until a plain pane of that distro was seen: kept as is.
-    expect(launchPlace(true, { wslDistro: 'Ubuntu' }, undefined, state)).toEqual({ wsl: null });
+    expect(launchPlace(true, 'Ubuntu', undefined, state)).toEqual({ wsl: null });
     state.noteDefaultPlace('Ubuntu', me);
-    expect(launchPlace(true, { wslDistro: 'Ubuntu' }, undefined, state)).toEqual({ wsl: me });
-    // No distro named: the settings picker's (mocked as Debian), not Ubuntu's.
-    expect(launchPlace(true, undefined, undefined, state)).toEqual({ wsl: null });
+    expect(launchPlace(true, 'Ubuntu', undefined, state)).toEqual({ wsl: me });
+    expect(launchPlace(true, null, undefined, state)).toEqual({ wsl: null });
+  });
+
+  it('a recovered pane without a valid target of its own has no place and records none; the distro is read once', () => {
+    const src = readFileSync(path.resolve(process.cwd(), 'src/main/ipc/handlers/pty.handler.ts'), 'utf8');
+    expect(src).toMatch(/const createPlace: LaunchPlace \| undefined = trustedRecovery && !knownTarget && isWslShell\(shell\)\s*\? \{ wsl: null \}/);
+    expect(src).toContain('if (isWslShell(shell) && !wslFromTarget && !trustedRecovery && validWslTarget(createdTarget)) {');
+    expect(src).toContain('getWslAccountState().noteDefaultPlace(requestedDistro, createdTarget);');
+    expect(src).toContain('wslDistroArgs(shell, wslFromTarget?.distribution ?? requestedDistro)');
+    // The spawn's target is the gate's, in the same order.
+    expect(src).toContain('wslTarget: wslFromTarget ?? trustedRecovery?.wslTarget,');
+    expect(src).not.toMatch(/noteDefaultPlace\(requestedWslDistro\(options\)/);
   });
 });
 

@@ -68,6 +68,9 @@ describe('withAccountQuota with a launch place', () => {
     expect(prepareLaunch).toHaveBeenLastCalledWith('claude', 'ws', place);
     await withAccountQuota({ workspaceId: 'ws', initialCommand: 'claude' }, { prepareLaunch });
     expect(prepareLaunch).toHaveBeenLastCalledWith('claude', 'ws');
+    // A WSL launch with no place given is one whose place is unknown, never a native one.
+    await withAccountQuota({ workspaceId: 'ws', initialCommand: 'claude' }, { prepareLaunch, wsl: true });
+    expect(prepareLaunch).toHaveBeenLastCalledWith('claude', 'ws', { wsl: null });
   });
 });
 

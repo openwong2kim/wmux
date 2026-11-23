@@ -71,7 +71,9 @@ export async function withAccountQuota<T extends QuotaLaunchOptions>(
     || envSetsKey(options.env, key, deps.platform ?? process.platform)) return options;
   try {
     const prepare = deps.prepareLaunch ?? ((v: Vendor, ws: string | undefined, p?: LaunchPlace) => getAccountRotationService().prepareLaunch(v, ws, p));
-    const decision = await (deps.place ? prepare(stem, options.workspaceId, deps.place) : prepare(stem, options.workspaceId));
+    // A WSL launch with no place given is one whose place is unknown, never a native one.
+    const place = deps.place ?? (deps.wsl ? { wsl: null } : undefined);
+    const decision = await (place ? prepare(stem, options.workspaceId, place) : prepare(stem, options.workspaceId));
     if (decision.kind === 'switch') return { ...options, env: { ...options.env, ...decision.env }, accountId: decision.accountId };
     if (decision.kind === 'hold') {
       // Holding replaces the launch; never drop commands chained after it.

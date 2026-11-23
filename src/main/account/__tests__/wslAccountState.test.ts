@@ -1,4 +1,8 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { UsageTrail } from '../../usage/usageTrail';
 import { isWslStateKey, MAX_WSL_STATE_KEY_LEN, seedWslAccountState, WslAccountState, wslStateKey } from '../wslAccountState';
 
 const PLACE = { distribution: 'Ubuntu', user: 'me' };
@@ -71,6 +75,28 @@ describe('wslAccountState', () => {
     expect(s.reading('a', PLACE, 'bound')).toBeNull();
     s.noteAuth('a', PLACE, true);
     expect(s.reading('a', PLACE, 'bound')).not.toBeNull();
+  });
+
+  it('keeps the default places across a restart, so the first plain launch after one has a place', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-places-'));
+    try {
+      const file = path.join(dir, 'wsl-default-places.json');
+      new WslAccountState(() => 0, file).noteDefaultPlace(null, PLACE);
+      const restarted = new WslAccountState(() => 0, file);
+      expect(restarted.defaultPlace(null)).toEqual(PLACE);
+      expect(fs.statSync(file).isFile()).toBe(true);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a one-window plan is mirrored to the trail and seeded back without the window it does not have', () => {
+    const trail = new UsageTrail();
+    const key = wslStateKey('a', PLACE)!;
+    expect(trail.record(key, { weeklyPct: 70, weeklyResetEpochSec: RESET, fetchedAtMs: 1 }, 1_000)).toBe(true);
+    // Any other key still needs both windows.
+    expect(trail.record('acc', { weeklyPct: 70, weeklyResetEpochSec: RESET, fetchedAtMs: 1 }, 1_000)).toBe(false);
+    const s = new WslAccountState(() => 2_000);
+    seedWslAccountState(s, trail);
+    expect(s.reading('a', PLACE, 'bound')?.windows).toEqual([{ remaining: expect.closeTo(0.3), resetAtMs: RESET * 1000 }]);
   });
 });
 

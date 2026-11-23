@@ -280,7 +280,7 @@ describe('the account a create names', () => {
     const resolved = src.indexOf("const accountOverride = closingLeases(() => createAccountOverride(options, { missingFolder: namedAccount === undefined ? 'skip' : 'refuse' }));");
     expect(resolved).toBeGreaterThan(src.indexOf('options = staged.options;'));
     // The caller's own id is read before staging, so only a rotated one is forgiven a missing folder.
-    expect(src.indexOf('const namedAccount = options?.accountId;')).toBeLessThan(src.indexOf('staged = await stageCreate(options, botWorker, gateway?.launch, poolPinned, launchPlace(isWslShell(shell), options, knownTarget));'));
+    expect(src.indexOf('const namedAccount = options?.accountId;')).toBeLessThan(src.indexOf('staged = await stageCreate(options, botWorker, gateway?.launch, poolPinned, createPlace);'));
     expect(src).toContain('if (accountOverride) options = { ...options, env: withAccountFolderEnv(options?.env, accountOverride) };');
     expect(src).toContain('execCommand !== undefined || supervisionPolicy !== undefined, accountOverride));');
     expect(src).toContain('noteVaultSignInPane(sessionId,');

@@ -286,13 +286,13 @@ export function requestedWslDistro(options: Pick<PtyCreateOptions, 'wslDistro'> 
  */
 export function launchPlace(
   wsl: boolean,
-  options: Pick<PtyCreateOptions, 'wslDistro'> | undefined,
+  requestedDistro: string | null,
   known: WslTarget | undefined,
   state: Pick<WslAccountState, 'defaultPlace'> = getWslAccountState(),
 ): LaunchPlace | undefined {
   if (!wsl) return undefined;
   if (known) return { wsl: known };
-  return { wsl: state.defaultPlace(requestedWslDistro(options)) ?? null };
+  return { wsl: state.defaultPlace(requestedDistro) ?? null };
 }
 
 /** The shell a create will spawn (the same default both modes use). */
@@ -392,7 +392,7 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
     if (rewritten !== line0) options = { ...options, initialCommand: rewritten };
   }
   // A pool worker's account was picked for it (withPoolAccount): no rotation.
-  let staged = poolPinned ? options : await withAccountQuota(options, { wsl, place: place ?? launchPlace(wsl, options, undefined) });
+  let staged = poolPinned ? options : await withAccountQuota(options, { wsl, place: place ?? launchPlace(wsl, requestedWslDistro(options), undefined) });
   let level: string | undefined;
   const line = staged?.initialCommand;
   if (botWorker && staged && line && namesClaude(line) && !namesCodex(line)) {
@@ -1054,11 +1054,19 @@ export function registerPTYHandlers(
       const wslFromTarget = wslFromId ? liveWslTarget(recoverySessions, wslFromId) : undefined;
       if (wslFromId !== undefined && !wslFromTarget) throw failCreate(WSL_FROM_GONE);
       const knownTarget = wslFromTarget ?? (validWslTarget(trustedRecovery?.wslTarget) ? trustedRecovery.wslTarget : undefined);
+      // The distro a plain pane asks for, read once: the gate, the spawn and
+      // the place recorded after it agree even if the setting changes meanwhile.
+      const requestedDistro = requestedWslDistro(options);
+      // A recovered pane without a valid target of its own runs as whoever its
+      // distro starts as: no place is known, and none is recorded from it.
+      const createPlace: LaunchPlace | undefined = trustedRecovery && !knownTarget && isWslShell(shell)
+        ? { wsl: null }
+        : launchPlace(isWslShell(shell), requestedDistro, knownTarget);
       // Named by the caller or the pool, not by a rotated launch (which stageCreate may add).
       const namedAccount = options?.accountId;
       let staged: Awaited<ReturnType<typeof stageCreate>>;
       try {
-        staged = await stageCreate(options, botWorker, gateway?.launch, poolPinned, launchPlace(isWslShell(shell), options, knownTarget));
+        staged = await stageCreate(options, botWorker, gateway?.launch, poolPinned, createPlace);
       } catch (err) {
         gateway?.open.close();
         throw err;
@@ -1101,7 +1109,7 @@ export function registerPTYHandlers(
       let effectiveCwd = safeCwd ?? (isWslShell(shell) ? '~' : homedir());
       const wslArgs = isWslDistroSpawnArgs(shell, trustedRecovery?.args)
         ? [...trustedRecovery.args]
-        : wslDistroArgs(shell, wslFromTarget?.distribution ?? requestedWslDistro(options));
+        : wslDistroArgs(shell, wslFromTarget?.distribution ?? requestedDistro);
 
       // Generate a unique session ID
       const sessionId = `daemon-${randomUUID().slice(0, 8)}`;
@@ -1272,7 +1280,7 @@ export function registerPTYHandlers(
           cmd: shell,
           ...(wslArgs ? { args: wslArgs } : {}),
           cwd: effectiveCwd,
-          wslTarget: trustedRecovery?.wslTarget ?? wslFromTarget,
+          wslTarget: wslFromTarget ?? trustedRecovery?.wslTarget,
           cols: options?.cols || 80,
           rows: options?.rows || 24,
           env: resolvedEnv,
@@ -1284,8 +1292,8 @@ export function registerPTYHandlers(
 
         // Where a plain WSL pane starts: the place the gate reads for the next plain launch.
         const createdTarget = (result as { wslTarget?: unknown })?.wslTarget;
-        if (isWslShell(shell) && !knownTarget && validWslTarget(createdTarget)) {
-          getWslAccountState().noteDefaultPlace(requestedWslDistro(options), createdTarget);
+        if (isWslShell(shell) && !wslFromTarget && !trustedRecovery && validWslTarget(createdTarget)) {
+          getWslAccountState().noteDefaultPlace(requestedDistro, createdTarget);
         }
         const createdCwd = (result as { cwd?: string })?.cwd;
         if (isWslShell(shell) && createdCwd) effectiveCwd = createdCwd;
@@ -1459,7 +1467,9 @@ export function registerPTYHandlers(
       // A pool account needs the daemon (its folder env and spawn are the
       // daemon's); the default login launches here as it is.
       const pool = withPoolAccount(options, false);
-      const staged = await stageCreate(pool.options, botWorker, undefined, pool.pinned);
+      // Read once, as on the daemon path: the gate, the spawn and the place recorded agree.
+      const localRequestedDistro = requestedWslDistro(options);
+      const staged = await stageCreate(pool.options, botWorker, undefined, pool.pinned, launchPlace(isWslShell(createShell(options)), localRequestedDistro, undefined));
       options = staged.options;
       const paneFence = paneFenceOf(options);
       // An account's vault, too, reaches a pane only through the daemon: a
@@ -1525,14 +1535,15 @@ export function registerPTYHandlers(
       const { initialCommand, cols, rows, workspaceId, surfaceId, env, spawnKind, wslAccountLoginEnvKey, wslAccountHomeKey, ignoreAccountBinding, accountId } = options ?? {};
       // #1103 — same distro injection as the daemon branch, so both modes
       // boot the same WSL distro for the same setting.
-      const wslArgs = wslDistroArgs(shell, requestedWslDistro(options));
+      const wslArgs = wslDistroArgs(shell, localRequestedDistro);
       // #2231 — as the daemon branch: a WSL fan-out task pane's worktree git location.
       const wslTaskGit = (botWorker || options?.fanoutTaskOf) && isWslShell(shell) && safeCwd
         ? await resolveWslWorkerGit(safeCwd, wslArgs?.[1] ?? null).catch(() => null)
         : null;
       const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, ...(botWorker || options?.fanoutTaskOf ? { automation: true } : {}), wslAccountLoginEnvKey, wslAccountHomeKey, ...(typeof accountId === 'string' ? { accountId } : {}), ...(ignoreAccountBinding === true ? { ignoreAccountBinding: true } : {}), ...(wslTaskGit ? { wslTaskGit } : {}) });
       // Where a plain WSL pane starts in local mode: the place the gate reads for the next plain launch.
-      if (instance.wslAccount && !options?.recoveryCwds?.wslTarget) getWslAccountState().noteDefaultPlace(requestedWslDistro(options), instance.wslAccount.target);
+      // A local pane always starts plain (the recovery target is the daemon's).
+      if (instance.wslAccount) getWslAccountState().noteDefaultPlace(localRequestedDistro, instance.wslAccount.target);
       logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
       notePaneFenceCreate(instance.id, paneFence);
       if (botWorker) {
