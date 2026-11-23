@@ -95,6 +95,26 @@ async function openLoginTab(req: AccountLoginRequest): Promise<LoginTab | null> 
   });
 }
 
+/**
+ * Sign an account in for WSL: a WSL tab in `distro` (null: wsl.exe's default
+ * distribution, which starts it if it is not running; only on the person's
+ * explicit choice) whose agent runs on the account's own home there, the
+ * same tab "Sign in again" opens for a WSL pane (useAgentAuthBridge).
+ */
+export async function startWslSignIn(account: { vendor: LoginVendor; name: string; configDir: string }, distro: string | null): Promise<LoginTab | null> {
+  const envKey = loginEnvKey(account.vendor);
+  return openTerminalTab({
+    plainEnv: true,
+    env: { [envKey]: account.configDir },
+    wslAccountHomeKey: envKey,
+    shell: 'wsl.exe',
+    ...(distro ? { wslDistro: distro } : {}),
+    initialCommand: loginInitialCommand(account.vendor),
+    title: t('accounts.wslSignInTabTitle', { name: account.name }),
+    cwd: null,
+  });
+}
+
 /** Open a terminal tab running `initialCommand` in the active workspace's
  *  active pane (or the pane `target` names), focus it and close Settings.
  *  Also used by agy sign-in, which has no login subcommand: the user signs in

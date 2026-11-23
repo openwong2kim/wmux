@@ -71,11 +71,28 @@ export function isWslStateKey(key: string): boolean {
 }
 
 export interface WslAccountEntry {
+  /** The home's account and place; absent on an entry only seeded from the
+   *  trail (its key is a hash), until a sample or a hook names it. */
+  accountId?: string;
+  place?: WslPlace;
   snapshot: UsageSnapshot | null;
   /** When the last sample ARRIVED (not the window it describes). */
   sampleAtMs: number | null;
   /** Last sign-in evidence: true after a turn worked, false after one failed on its sign-in. */
   signedIn: boolean | null;
+}
+
+/** One WSL home's line in Settings › Accounts. */
+export interface WslAccountStatus {
+  accountId: string;
+  distribution: string;
+  user: string;
+  /** Last evidence; null when nothing has said either way yet. */
+  signedIn: boolean | null;
+  sessionPct: number | null;
+  weeklyPct: number | null;
+  /** When its last usage sample arrived. */
+  seenAtMs: number | null;
 }
 
 export class WslAccountState {
@@ -114,11 +131,15 @@ export class WslAccountState {
     }
   }
 
-  private entry(key: string): WslAccountEntry {
+  private entry(key: string, owner?: { accountId: string; place: WslPlace }): WslAccountEntry {
     let e = this.entries.get(key);
     if (!e) {
       e = { snapshot: null, sampleAtMs: null, signedIn: null };
       this.entries.set(key, e);
+    }
+    if (owner) {
+      e.accountId = owner.accountId;
+      e.place = { distribution: owner.place.distribution, user: owner.place.user };
     }
     return e;
   }
@@ -127,7 +148,7 @@ export class WslAccountState {
   noteSample(accountId: string, place: WslPlace, update: UsageUpdate): UsageSnapshot | null {
     const key = wslStateKey(accountId, place);
     if (!key) return null;
-    const e = this.entry(key);
+    const e = this.entry(key, { accountId, place });
     // A first sample stands on its own even with one window (a plan that has
     // no 5h one): no probe here seeds the other half.
     const merged = mergeLive(e.snapshot, update, this.now()) ?? (e.snapshot ? null : firstSnapshot(update, this.now()));
@@ -142,7 +163,7 @@ export class WslAccountState {
   noteAuth(accountId: string, place: WslPlace, signedIn: boolean): void {
     const key = wslStateKey(accountId, place);
     if (!key) return;
-    this.entry(key).signedIn = signedIn;
+    this.entry(key, { accountId, place }).signedIn = signedIn;
     this.changed();
   }
 
@@ -159,6 +180,21 @@ export class WslAccountState {
   get(accountId: string, place: WslPlace): WslAccountEntry | undefined {
     const key = wslStateKey(accountId, place);
     return key ? this.entries.get(key) : undefined;
+  }
+
+  /** What Settings shows: every home that a sample or a hook has named, per account. */
+  statuses(): WslAccountStatus[] {
+    const out: WslAccountStatus[] = [];
+    for (const e of this.entries.values()) {
+      if (!e.accountId || !e.place) continue;
+      out.push({
+        accountId: e.accountId, distribution: e.place.distribution, user: e.place.user,
+        // A reading proves a working sign-in until a turn says otherwise.
+        signedIn: e.signedIn ?? (e.snapshot ? true : null),
+        sessionPct: e.snapshot?.sessionPct ?? null, weeklyPct: e.snapshot?.weeklyPct ?? null, seenAtMs: e.sampleAtMs,
+      });
+    }
+    return out;
   }
 
   /** Every held entry by key, for the usage reserve and the trail. */

@@ -2113,6 +2113,8 @@ ipcMain.on(IPC.USAGE_REFRESH, () => {
 // REFRESH forces a manual probe for one account (explicit user action, bypasses
 // the opt-in/cooldown gates in the service). The UPDATE push is wired above.
 ipcMain.handle(IPC.ACCOUNT_USAGE_LIST, () => accountUsageService.getAll());
+// Each WSL account home's line in Settings › Accounts (wslAccountState.ts).
+ipcMain.handle(IPC.ACCOUNT_WSL_STATUS, () => getWslAccountState().statuses());
 ipcMain.on(IPC.ACCOUNT_USAGE_REFRESH, (_event, accountId: unknown) => {
   if (typeof accountId === 'string' && accountId) {
     void accountUsageService.refreshNow(accountId);
@@ -4102,6 +4104,7 @@ app.on('before-quit', async (e) => {
   safeStep('accountUsageService.dispose', () => accountUsageService.dispose());
   safeStep('cleanupAccountUsageIpc', () => {
     ipcMain.removeHandler(IPC.ACCOUNT_USAGE_LIST);
+    ipcMain.removeHandler(IPC.ACCOUNT_WSL_STATUS);
     ipcMain.removeAllListeners(IPC.ACCOUNT_USAGE_REFRESH);
   });
   // Tear down the respawn controller BEFORE the daemon-shutdown race so

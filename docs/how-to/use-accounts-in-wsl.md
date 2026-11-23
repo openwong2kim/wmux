@@ -19,6 +19,15 @@ folder inside the distro, and you sign in to it there once.
   prints one line saying so. Sign in from a bound pane (`/login` in `claude`,
   or `codex login`). That signs in this account only; other workspaces and
   unbound panes keep their own sign-ins.
+- **Sign in from Settings.** In **Settings › Accounts**, a Claude account's ⋯
+  menu has **Sign in for WSL (<distro>)** for each distro its WSL panes ran
+  in. It opens a WSL tab there that signs in that account's WSL folder. **Sign
+  in for WSL (default distribution)…** asks first, because opening the tab
+  starts that distribution if it is not running.
+- **Status per distro.** Under the account's name, each distro its WSL panes
+  reported shows one line: `WSL Ubuntu: signed in · 5h 40% · 7d 12% · seen 3m
+  ago`, or `signed out` after a turn there failed on its sign-in. wmux learns
+  this only from those panes and never reads the distro's files.
 - **Signed out later.** If the agent in a bound WSL pane loses its sign-in,
   **Sign in again** on the notice opens the sign-in in a WSL tab of the same
   distro, for that account's WSL folder. A Windows pane of the same account
