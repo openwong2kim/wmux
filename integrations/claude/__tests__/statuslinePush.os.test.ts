@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 const SCRIPT = fileURLToPath(new URL('../bin/wmux-statusline.mjs', import.meta.url));
 const SUFFIX = '-statusline-push-test';
@@ -158,6 +159,33 @@ async function fakeMain(pipe: string, result: unknown): Promise<{ received: Arra
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 600));
 
 describe('statusline live-usage push', () => {
+  it('a WSL pane\'s statusline (Windows node): its Linux config dir goes as is, with the token of this side\'s home, and names its account', async () => {
+    clearState();
+    writeToken();
+    const folder = 'C:\\Users\\me\\.wmux\\accounts\\claude-b';
+    const key = createHash('sha256').update(path.win32.normalize(folder).toLowerCase()).digest('hex').slice(0, 16);
+    fs.mkdirSync(path.join(home, '.wmux'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.wmux', 'accounts.json'), JSON.stringify({ accounts: [{ id: 'b', name: 'Work', vendor: 'claude', configDir: folder }] }));
+    const linuxHome = `/home/me/.wmux/accounts/claude-${key}`;
+    const pipe = socketPathFor('wsl');
+    const main = await fakeMain(pipe, { ok: true, applied: true });
+    try {
+      // CLAUDE_CONFIG_DIR is the interop side's own (a Windows folder): ignored for the WSL one.
+      const r = await run(input(42), pipe, { WMUX_STATUSLINE_CONFIG_DIR: `d:${linuxHome}`, CLAUDE_CONFIG_DIR: folder });
+      expect(r).toMatchObject({ code: 0, stderr: '' });
+      expect(r.stdout).toContain('Work');
+      await waitFor(() => main.received.length > 0);
+      expect(main.received[0]).toMatchObject({ method: 'usage.rateLimits', token: 'test-token', params: { configDir: linuxHome, ptyId: 'pty-test' } });
+      // Unset in the distro: reported as unset, never as the Windows default.
+      clearState();
+      await run(input(43), pipe, { WMUX_STATUSLINE_CONFIG_DIR: 'none', CLAUDE_CONFIG_DIR: folder });
+      await waitFor(() => main.received.length > 1);
+      expect(main.received[1]).toMatchObject({ params: { configDir: null } });
+    } finally {
+      await main.close();
+    }
+  });
+
   it('no token: same stdout, exit 0, silent stderr, nothing written', async () => {
     clearState();
     removeToken();

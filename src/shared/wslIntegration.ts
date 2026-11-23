@@ -70,6 +70,26 @@ export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w:WMUX_WSL_AGENT_PROC/w:
 exec "$WMUX_WSL_NODE" "$WMUX_WSL_BRIDGE" "$@"
 `;
 
+/**
+ * Claude Code's statusLine in a WSL pane: the wmux usage statusline
+ * (integrations/claude/bin/wmux-statusline.mjs), run as Windows node over
+ * interop the way WSL_HOOK runs the bridge. On the Windows side it dials
+ * main's own pipe with the instance's token file, which never enters the
+ * distro. The pane's CLAUDE_CONFIG_DIR is a Linux path: it goes as
+ * `d:<dir>` (`none` when unset) in a variable of its own, /w so Windows gets
+ * it untranslated, never the Windows CLAUDE_CONFIG_DIR of the interop side.
+ */
+export const WSL_STATUSLINE = `#!/bin/sh
+[ -n "\${WMUX_WSL_NODE:-}" ] && [ -n "\${WMUX_WSL_STATUSLINE:-}" ] || exit 0
+WMUX_STATUSLINE_CONFIG_DIR=\${CLAUDE_CONFIG_DIR:+d:$CLAUDE_CONFIG_DIR}
+export ELECTRON_RUN_AS_NODE=1 WMUX_STATUSLINE_CONFIG_DIR="\${WMUX_STATUSLINE_CONFIG_DIR:-none}"
+export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w:WMUX_STATUSLINE_CONFIG_DIR/w"
+exec "$WMUX_WSL_NODE" "$WMUX_WSL_STATUSLINE"
+`;
+
+/** The statusLine entry of a WSL pane's claude settings (WSL_STATUSLINE). */
+export const WSL_STATUSLINE_SETTING = { type: 'command', command: '/bin/sh "$WMUX_WSL_STATUSLINE_SH"', padding: 0 } as const;
+
 export const WSL_CLAUDE_SHIM = `#!/bin/sh
 # Remove this shim directory from a PATH, including repeated/nested injections.
 strip_shim() {
@@ -147,8 +167,16 @@ mcp_config=\${WMUX_WSL_MCP_CONFIG:-}
 for arg in "$@"; do
   case $arg in --) break ;; --strict-mcp-config) mcp_config= ;; esac
 done
+# --settings outranks the user's and the project's settings, so the one with
+# wmux's statusLine is used only when none of those sets a statusLine: the
+# user's own is never replaced (managed settings outrank both anyway).
+wmux_settings=$WMUX_WSL_SETTINGS
+if [ -n "\${WMUX_WSL_SETTINGS_STATUSLINE:-}" ] && ! grep -qs '"statusLine"' \
+  "\${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" .claude/settings.json .claude/settings.local.json; then
+  wmux_settings=$WMUX_WSL_SETTINGS_STATUSLINE
+fi
 # --mcp-config is variadic: the = form keeps it from swallowing a prompt argument.
-exec "$real" --settings "$WMUX_WSL_SETTINGS" \${mcp_config:+--mcp-config="$mcp_config"} "$@"
+exec "$real" --settings "$wmux_settings" \${mcp_config:+--mcp-config="$mcp_config"} "$@"
 `;
 
 /**
@@ -539,6 +567,15 @@ function findBridge(startDir: string, basename = 'wmux-bridge.mjs', agent = 'cla
   return found;
 }
 
+/** The usage statusline a WSL pane's claude runs (WSL_STATUSLINE), or null when it is missing. */
+function findWslStatusline(startDir: string): string | null {
+  try {
+    return findBridge(startDir, 'wmux-statusline.mjs');
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The Claude bridge a WSL pane's hook runs, or null when it is missing: the
  * same lookup, so the global WSL hook (shared/wslGlobalHook.ts) and a pane's
@@ -622,6 +659,8 @@ export function buildWslInjection(options: {
   codexConfigPath?: string;
   /** Windows MCP entry; null skips MCP. Missing bundle also skips, never fails the pane. */
   mcpEntryPath?: string | null;
+  /** The usage statusline script; null skips it. Missing also skips. */
+  statuslinePath?: string | null;
 }): { args: string[]; env: Record<string, string> } {
   const { target, cwd, integrationDir } = options;
   const dir = path.join(integrationDir, 'wsl');
@@ -635,6 +674,12 @@ export function buildWslInjection(options: {
   write(path.join(dir, 'codex-hook.sh'), WSL_CODEX_HOOK);
   write(path.join(bin, 'codex'), WSL_CODEX_SHIM);
   write(path.join(dir, 'claude-settings.json'), JSON.stringify({ hooks: wslClaudeHooks() }));
+  // The usage statusline, when its script ships (WSL_STATUSLINE).
+  const statusline = options.statuslinePath === undefined ? findWslStatusline(__dirname) : options.statuslinePath;
+  if (statusline) {
+    write(path.join(dir, 'statusline.sh'), WSL_STATUSLINE);
+    write(path.join(dir, 'claude-settings-statusline.json'), JSON.stringify({ hooks: wslClaudeHooks(), statusLine: WSL_STATUSLINE_SETTING }));
+  }
   const mcpEntry = options.mcpEntryPath === undefined
     ? findUp(__dirname, ['mcp-bundle/index.js', 'dist/mcp/mcp/entry.js'])
     : options.mcpEntryPath;
@@ -690,6 +735,11 @@ fi
     WMUX_WSL_BIN: bin,
     WMUX_WSL_BASHRC: path.join(dir, 'bashrc'),
     ...(mcpEntry ? { WMUX_WSL_MCP: mcpEntry, WMUX_WSL_MCP_CONFIG: path.join(dir, 'claude-mcp.json') } : {}),
+    ...(statusline ? {
+      WMUX_WSL_STATUSLINE: statusline,
+      WMUX_WSL_STATUSLINE_SH: path.join(dir, 'statusline.sh'),
+      WMUX_WSL_SETTINGS_STATUSLINE: path.join(dir, 'claude-settings-statusline.json'),
+    } : {}),
   };
   const entries = [
     'WMUX_PTY_ID', 'WMUX_WORKSPACE_ID', 'WMUX_SURFACE_ID', 'WMUX_DATA_SUFFIX',
@@ -697,6 +747,9 @@ fi
     'WMUX_WSL_CODEX_BRIDGE/u', 'WMUX_WSL_CODEX_CONFIG/u', 'WMUX_WSL_CODEX_HOOK/p',
     'WMUX_WSL_CWD/u', 'WMUX_WSL_SETTINGS/p', 'WMUX_WSL_BIN/p', 'WMUX_WSL_BASHRC/p', 'WMUX_SHELL_INTEGRATION',
     ...(mcpEntry ? ['WMUX_WSL_MCP/u', 'WMUX_WSL_MCP_CONFIG/p'] : []),
+    // The script is Windows node's to open (/u: stays a Windows path); the
+    // rest are the distro's to read.
+    ...(statusline ? ['WMUX_WSL_STATUSLINE/u', 'WMUX_WSL_STATUSLINE_SH/p', 'WMUX_WSL_SETTINGS_STATUSLINE/p'] : []),
     // A fan-out or automation pane's claude skips the workspace-trust dialog
     // (shared/agentFirstRun.ts CLAUDE_SANDBOXED_ENV). wsl.exe passes only the
     // variables WSLENV names, so without this Linux claude in a WSL task pane
