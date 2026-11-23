@@ -123,7 +123,6 @@ function wire() {
         done({ kind: 'staged', file: target });
         return { kind: 'sent' };
       },
-      sentWhole: () => false,
     },
     enqueue: (_hostId: HostId, env: A2aRemoteEnvelope) => { asker.applyInbound(env, { hostId: BOX }); },
     log: () => undefined,

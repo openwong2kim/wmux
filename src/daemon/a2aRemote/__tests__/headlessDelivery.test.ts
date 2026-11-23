@@ -831,6 +831,24 @@ describe('the reply, from the transcript', () => {
     expect(moves.at(-1)).toEqual({ to: 'canceled', summary: "the agent ended: the agent's session ended" });
     moveRefused = false;
 
+    // Answered, then the asking PC wrote again before the move: that follow-up is not answered, so it fails.
+    task = inboundTask();
+    moves = [];
+    replies = [];
+    moveRefused = true;
+    write(userLine('an earlier session line'));
+    const again = new HeadlessDelivery(deps({
+      transition: async (input) => (input.to === 'input-required' && moveRefused ? { ok: false, error: 'busy' } : base.transition(input)),
+    }));
+    await again.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await again.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG']);
+    task.history.push({ kind: 'message', messageId: 'u-follow', role: 'user', parts: [{ kind: 'text', text: 'and the tests?' }] });
+    await again.startEnding(rec, "the agent's session ended");
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: "the agent's session ended" });
+    moveRefused = false;
+
     // Mid-turn (nothing answered yet): failed, as before.
     task = inboundTask();
     moves = [];

@@ -76,6 +76,8 @@ export interface BundleAskerDeps {
   enabled: () => boolean;
   /** That PC advertises `bundle.1`. */
   peerTakes: (hostId: HostId) => boolean;
+  /** That PC takes an `imported` ask (`bundle-imported.1`). */
+  peerTakesImported?: (hostId: HostId) => boolean;
   /** This PC's host id as other PCs know it; null when it has none yet. */
   selfHostId: () => string | null;
   /** The largest bundle this PC takes (shared/a2aBundle.ts bundleBytesMax). */
@@ -218,11 +220,17 @@ export class BundleAsker {
     return this.view(k);
   }
 
-  /** Main is done with the ask (imported, refused at import, or cancelled): its staged file goes and it ends. */
-  async release(hostId: HostId, spawnId: string): Promise<void> {
+  /**
+   * Main is done with the ask (imported, refused at import, or cancelled): its staged file goes and it ends.
+   * `imported`: the commit main imported into a repository here, told to the box when it takes that word.
+   */
+  async release(hostId: HostId, spawnId: string, imported?: string): Promise<void> {
     const k = key(hostId, spawnId);
     const rec = this.records.get(k);
     if (!rec) return;
+    if (imported && rec.phase === 'staged' && this.deps.peerTakesImported?.(hostId)) {
+      this.enqueueAsk(hostId, { op: 'imported', spawnId, head: imported });
+    }
     this.end(rec);
     this.drop(k);
     if (rec.manifest) await this.deps.intake.discard(hostId, rec.manifest).catch((err: unknown) => {
@@ -426,7 +434,7 @@ export class BundleAsker {
   /** The envelope of one ask, queued to `hostId`; the refusal when it could not be. A `done` gets its own id. */
   private enqueueAsk(
     hostId: HostId,
-    op: { op: 'make'; spawnId: string; origin: string } | { op: 'send' | 'done'; bundleId: string },
+    op: { op: 'make'; spawnId: string; origin: string } | { op: 'send' | 'done'; bundleId: string } | { op: 'imported'; spawnId: string; head: string },
     askId = `ba-${crypto.randomUUID()}`,
   ): BundleBringBackRefusal | null {
     const bundleAsk = parseBundleAsk({ v: 1, askId, ...op });
@@ -576,9 +584,12 @@ export function registerBundleAskRpc(
     return { ok: true, ...(await asker.bringBack(hostId, spawnId, origin, typeof waitMs === 'number' && waitMs > 0 ? waitMs : 0)) };
   });
   onRpc(A2A_BUNDLE_ASK_RPC.release, async (p) => {
-    const { hostId, spawnId } = p;
+    const { hostId, spawnId, imported } = p;
     if (!isHostId(hostId) || !isSpawnId(spawnId)) return { ok: false, error: 'bad-request', message: 'hostId and spawnId are required' };
-    await asker.release(hostId, spawnId);
+    if (imported !== undefined && (typeof imported !== 'string' || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(imported))) {
+      return { ok: false, error: 'bad-request', message: 'imported is a commit id' };
+    }
+    await asker.release(hostId, spawnId, imported);
     return { ok: true };
   });
 }

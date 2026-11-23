@@ -73,9 +73,22 @@ async function judge(rec: HeadlessStartRecordV1, git: Git): Promise<{ ok: boolea
   return { ok: true, reason: `clean, ${[...new Set(ways)].join(' and ')}`, tip };
 }
 
+/** Where `branch` is checked out (in the repository or a worktree of it), or null when nowhere or not known to be. */
+async function checkedOutIn(git: Git, branch: string): Promise<string | null> {
+  const out = await git(['worktree', 'list', '--porcelain']);
+  if (out.code !== 0) return 'the worktrees of its repository could not be listed';
+  let at = '';
+  for (const line of out.stdout.split('\n')) {
+    if (line.startsWith('worktree ')) at = line.slice('worktree '.length);
+    else if (line === `branch refs/heads/${branch}`) return `it is checked out in ${at}`;
+  }
+  return null;
+}
+
 export async function pruneHeadless(
   wmuxDir: string,
-  opts: { dryRun: boolean; daemonRunning: boolean },
+  /** `daemonRunning`: asked again right before records are dropped (a daemon started meanwhile owns the file). */
+  opts: { dryRun: boolean; daemonRunning: () => Promise<boolean> },
   deps: PruneDeps = {},
 ): Promise<PruneResult> {
   const gitAt = deps.git ?? ((at: string): Git => gitRunner(at, {}));
@@ -87,12 +100,13 @@ export async function pruneHeadless(
   for (const rec of store.list()) {
     if (rec.phase !== 'ended' || !rec.worktreePath) continue;
     const entry = { spawnId: rec.spawnId, hostId: rec.hostId, worktreePath: rec.worktreePath };
-    if (!exists(rec.worktreePath)) {
-      gone.push(rec);
-      continue;
-    }
+    // Held first: its record keeps the hold (and the port) even when its folder is gone.
     if (rec.survivors?.length) {
       kept.push({ ...entry, reason: 'processes of its agent may still run (see `wmux daemon headless status`)' });
+      continue;
+    }
+    if (!exists(rec.worktreePath)) {
+      gone.push(rec);
       continue;
     }
     const git = gitAt(rec.worktreePath);
@@ -114,6 +128,14 @@ export async function pruneHeadless(
       kept.push({ ...entry, reason: `git worktree remove refused: ${(out.stderr || out.stdout).trim().split('\n')[0] ?? 'unknown'}` });
       continue;
     }
+    // update-ref does not check worktrees: a branch checked out anywhere (the repository, another worktree) stays.
+    // eslint-disable-next-line no-await-in-loop -- one worktree at a time
+    const checkedOut = rec.branch ? await checkedOutIn(gitAt(rec.repoPath), rec.branch) : null;
+    if (rec.branch && checkedOut !== null) {
+      removed.push({ ...entry, reason: `${verdict.reason}; its branch ${rec.branch} was kept (${checkedOut})` });
+      gone.push(rec);
+      continue;
+    }
     if (rec.branch && tip) {
       // eslint-disable-next-line no-await-in-loop -- one worktree at a time
       const del = await gitAt(rec.repoPath)(['update-ref', '-d', `refs/heads/${rec.branch}`, tip]);
@@ -127,10 +149,14 @@ export async function pruneHeadless(
     gone.push(rec);
   }
   let recordsDropped = 0;
-  // A running daemon owns the file: it drops a record whose worktree is gone at its next reconcile.
-  if (!opts.dryRun && !opts.daemonRunning) {
+  // A running daemon owns the file: it drops a record whose worktree is gone at its next reconcile. Otherwise the
+  // file is read again now (not the copy read before the git work) and only records still ended and unheld go.
+  if (!opts.dryRun && gone.length > 0 && !(await opts.daemonRunning())) {
+    const fresh = new HeadlessStartStore({ dir: join(wmuxDir, 'a2a') });
     for (const rec of gone) {
-      store.remove(rec.hostId, rec.spawnId);
+      const now = fresh.get(rec.hostId, rec.spawnId);
+      if (!now || now.phase !== 'ended' || now.survivors?.length || (now.worktreePath && exists(now.worktreePath))) continue;
+      fresh.remove(rec.hostId, rec.spawnId);
       recordsDropped += 1;
     }
   }

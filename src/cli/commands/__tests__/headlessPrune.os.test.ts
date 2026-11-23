@@ -80,7 +80,7 @@ describe('headless prune', () => {
     fs.writeFileSync(path.join(dirty.worktreePath!, 'scratch.txt'), 'not committed\n');
     const unpushed = endedStart();
 
-    const res = await pruneHeadless(wmuxDir, { dryRun: false, daemonRunning: false }, { git });
+    const res = await pruneHeadless(wmuxDir, { dryRun: false, daemonRunning: async () => false }, { git });
     expect(res.removed.map((e) => e.spawnId)).toEqual([pushed.spawnId]);
     expect(res.removed[0].reason).toMatch(/clean, pushed/);
     const kept = Object.fromEntries(res.kept.map((e) => [e.spawnId, e.reason]));
@@ -105,7 +105,7 @@ describe('headless prune', () => {
     sh(movedOn.worktreePath!, 'add', '.');
     sh(movedOn.worktreePath!, 'commit', '-qm', 'more');
 
-    const res = await pruneHeadless(wmuxDir, { dryRun: false, daemonRunning: true }, { git });
+    const res = await pruneHeadless(wmuxDir, { dryRun: false, daemonRunning: async () => true }, { git });
     expect(res.removed.map((e) => [e.spawnId, e.reason])).toEqual([[fetched.spawnId, 'clean, fetched back']]);
     expect(res.kept.map((e) => e.spawnId)).toEqual([movedOn.spawnId]);
     // A running daemon owns the file: it drops the record itself (the folder is gone).
@@ -121,10 +121,39 @@ describe('headless prune', () => {
     const running = endedStart({ phase: 'started' });
     sh(repo, 'push', '-q', 'origin', running.branch!);
 
-    const res = await pruneHeadless(wmuxDir, { dryRun: true, daemonRunning: false }, { git });
+    const res = await pruneHeadless(wmuxDir, { dryRun: true, daemonRunning: async () => false }, { git });
     expect(res.removed.map((e) => e.spawnId)).toEqual([pushed.spawnId]);
     expect(res.kept.map((e) => [e.spawnId, e.reason])).toEqual([[held.spawnId, expect.stringMatching(/may still run/)]]);
     for (const r of [pushed, held, running]) expect(fs.existsSync(r.worktreePath!)).toBe(true);
     expect(reload()).toHaveLength(3);
+  });
+
+  it('a held start keeps its record even with its folder gone; a branch checked out elsewhere is kept', async () => {
+    const held = endedStart({ survivors: [{ pid: 4242, reason: 'did not exit' }], taskPort: 4100 });
+    sh(repo, 'worktree', 'remove', '--force', held.worktreePath!);
+    const elsewhere = endedStart();
+    sh(repo, 'push', '-q', 'origin', elsewhere.branch!);
+    // The same branch checked out in another worktree too (detached in its own, then checked out there).
+    sh(elsewhere.worktreePath!, 'checkout', '-q', '--detach');
+    const other = path.join(root, 'other-wt');
+    sh(repo, 'worktree', 'add', '-q', other, elsewhere.branch!);
+
+    const res = await pruneHeadless(wmuxDir, { dryRun: false, daemonRunning: async () => false }, { git });
+    expect(res.kept.map((e) => [e.spawnId, e.reason])).toEqual([[held.spawnId, expect.stringMatching(/may still run/)]]);
+    expect(res.removed.map((e) => [e.spawnId, e.reason])).toEqual([[elsewhere.spawnId, expect.stringMatching(/branch .* was kept \(it is checked out in .*other-wt\)/)]]);
+    expect(sh(repo, 'rev-parse', '--verify', `refs/heads/${elsewhere.branch!}`)).toMatch(/^[0-9a-f]{40}$/);
+    // The held record stays, with its port.
+    expect(reload().find((r) => r.spawnId === held.spawnId)).toMatchObject({ survivors: [{ pid: 4242 }], taskPort: 4100 });
+  });
+
+  it('a daemon that started during the git work owns the file: no record is dropped then', async () => {
+    const pushed = endedStart();
+    sh(repo, 'push', '-q', 'origin', pushed.branch!);
+    let asked = 0;
+    const res = await pruneHeadless(wmuxDir, { dryRun: false, daemonRunning: async () => { asked += 1; return true; } }, { git });
+    expect(res.removed).toHaveLength(1);
+    expect(asked).toBe(1);
+    expect(res.recordsDropped).toBe(0);
+    expect(reload()).toHaveLength(1);
   });
 });

@@ -1188,8 +1188,9 @@ export function registerFanOutRpc(
         top: home.top, gitDir: home.gitDir, commonDir: home.commonDir, spawnId, file: asked.file, manifest: asked.manifest as A2aBundleManifestV1, ref: asked.ref,
         noHooksDir: path.join((deps.wmuxDir ?? getWmuxDir)(), 'factory', 'no-hooks'),
       }, git);
-      // Imported or refused, the staged file is done with; a refusal is final for this bundle.
-      await dc.rpc(A2A_BUNDLE_ASK_RPC.release, { hostId, spawnId }).catch(() => undefined);
+      // Imported or refused, the staged file is done with; a refusal is final for this bundle. Imported: the box
+      // is told the commit is here now (its prune may then count that work as kept).
+      await dc.rpc(A2A_BUNDLE_ASK_RPC.release, { hostId, spawnId, ...(imported.ok ? { imported: imported.sha } : {}) }).catch(() => undefined);
       if (!imported.ok) {
         console.warn(`[fanout.rpc] bring-back ${spawnId} from ${hostId}: not imported (${imported.reason})`);
         return refused(imported.reason, imported.reason === 'home-repo-config' ? imported.kind : undefined);

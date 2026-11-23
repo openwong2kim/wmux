@@ -452,8 +452,10 @@ const LINK_END_REASONS: ReadonlySet<string> = new Set(['link_broken', 'link_revo
 
 /**
  * Two kinds-only facts about a sent task, for main's fan-out rows:
- * `answered` when the newest message in its history (the other PC's notices
- * and a headless box's cancel reason left out) came from the other PC, so its agent replied after the last
+ * `answered` when the other PC's last state ended its agent's turn
+ * (input-required, or a report) and the newest message in its history (the
+ * other PC's notices and a headless box's cancel reason left out) came from
+ * the other PC, so its agent replied after the last
  * message this PC sent; `linkEnded` when it failed here because its link
  * ended, not by a `failed` the other PC sent.
  */
@@ -468,8 +470,10 @@ function sentTaskFacts(row: Rec, status: Rec, metadata: Rec): Rec {
   const inbox = new Map<string, unknown>();
   for (const i of Array.isArray(remote.inbox) ? remote.inbox : []) if (isRec(i) && str(i.messageId)) inbox.set(i.messageId as string, i.kind);
   const history = Array.isArray(row.history) ? row.history : [];
+  // The other PC's last state said its agent's turn ended (a progress reply, or a `working`, is not an answer).
+  const turnEnded = remote.stateSync === 'input-required' || remote.stateSync === 'completed';
   let answered = false;
-  for (let k = history.length - 1; k >= 0; k -= 1) {
+  for (let k = turnEnded ? history.length - 1 : -1; k >= 0; k -= 1) {
     const id = isRec(history[k]) ? str((history[k] as Rec).messageId) : undefined;
     const kind = id ? inbox.get(id) : undefined;
     if (kind === 'notice') continue;

@@ -309,7 +309,7 @@ describe('BundleBox', () => {
     });
   }
 
-  type AskBody = { op: 'make'; spawnId: string; origin: string } | { op: 'send' | 'done'; bundleId: string };
+  type AskBody = { op: 'make'; spawnId: string; origin: string } | { op: 'send' | 'done'; bundleId: string } | { op: 'imported'; spawnId: string; head: string };
   function ask(b: BundleBox, hostId: HostId, a: AskBody, askId = askIdOf()): string {
     const env: A2aRemoteEnvelope = {
       protocol: A2A_REMOTE_PROTOCOL, linkId: askId, linkVersion: 0, messageId: `m-${crypto.randomUUID()}`, kind: 'link',
@@ -643,9 +643,15 @@ describe('BundleBox', () => {
       const { rec, head, manifest } = await made(b);
       const intake = new BundleIntake({ a2aDir: askerA2a(), enabled: () => true, fetchFrom: () => getAs(ASKER), log: () => undefined });
       expect(await intake.pull(BOX, manifest)).toMatchObject({ kind: 'staged' });
-      // Its whole bytes went, then the asking PC said it took it: that head is recorded as fetched back (prune reads it).
+      // Staged there is not imported there: its `done` records nothing.
       ask(b, ASKER, { op: 'done', bundleId: manifest.bundleId });
-      await vi.waitFor(() => expect(taken).toEqual([[ASKER, rec.spawnId, head]]), { timeout: 5_000 });
+      await vi.waitFor(() => expect(b.standing(ASKER)).toEqual([]), { timeout: 5_000 });
+      expect(taken).toEqual([]);
+      // A commit no bundle of it was made at, or another PC's word, is not taken; the import of that head is.
+      ask(b, ASKER, { op: 'imported', spawnId: rec.spawnId, head: 'f'.repeat(40) });
+      ask(b, OTHER, { op: 'imported', spawnId: rec.spawnId, head });
+      ask(b, ASKER, { op: 'imported', spawnId: rec.spawnId, head });
+      expect(taken).toEqual([[ASKER, rec.spawnId, head]]);
       const staged = bundleStagedFile(askerA2a(), BOX, manifest);
       expect(readBack(staged, rec.treeId!).head).toBe(head);
       // Another PC cannot fetch it.

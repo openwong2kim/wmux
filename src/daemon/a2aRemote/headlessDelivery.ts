@@ -269,6 +269,8 @@ export interface Episode {
   sentAt: number;
   /** Agent messages the task held at the write (more later: the agent replied itself). */
   agentMessagesAtSend: number;
+  /** The answer that ended this turn, once it is on the task (its message id). */
+  replyId?: string;
   /** The transcript `offset` counts in; null until the session is bound to one. */
   path: string | null;
   /** Where the transcript is read from next (bytes); the file may not exist yet. */
@@ -662,10 +664,12 @@ export class HeadlessDelivery {
    * yet) is canceled.
    */
   async startEnding(rec: HeadlessStartRecordV1, why: string): Promise<void> {
-    // A turn that ended with its reply on the task, its move to input-required not made yet: it was answered.
+    // A turn that ended with its answer on the task, its move to input-required not made yet, and nothing the
+    // asking PC sent after that answer: it was answered.
     const ep = this.episodes.get(rec.sessionId);
-    const answeredTask = ep?.outcome && ep.outcome.kind !== 'failed'
-      && (this.deps.tasks.get(ep.taskId)?.history.filter((m) => m.role === 'agent').length ?? 0) > ep.agentMessagesAtSend ? ep.taskId : null;
+    const history = ep ? this.deps.tasks.get(ep.taskId)?.history ?? [] : [];
+    const at = ep?.replyId ? history.findIndex((m) => m.messageId === ep.replyId) : -1;
+    const answeredTask = ep?.outcome && ep.outcome.kind !== 'failed' && at >= 0 && !history.slice(at + 1).some((m) => m.role === 'user') ? ep.taskId : null;
     this.ending.add(rec.sessionId);
     this.episodes.delete(rec.sessionId);
     this.afterwards.delete(rec.sessionId);
@@ -1405,6 +1409,11 @@ export class HeadlessDelivery {
         return;
       }
     }
+    // The answer is on the task now: the newest message this PC's agent wrote on it (sent here, or by the agent itself).
+    const answered = this.deps.tasks.get(ep.taskId);
+    const fromPeer = new Set(((answered?.metadata.remote as A2aRemoteTaskState | undefined)?.inbox ?? []).map((i) => i.messageId));
+    const own = (answered?.history ?? []).filter((m) => m.role === 'agent' && !fromPeer.has(m.messageId)).at(-1);
+    if (own && !ep.replyId) ep.replyId = own.messageId;
     if (!ep.working) await this.toWorking(ep);
     if (this.deps.tasks.get(ep.taskId)?.status.state !== 'working') return this.drop(ep);
     const moved = await this.deps.transition({ taskId: ep.taskId, workspaceId: ep.workspaceId, to: 'input-required' })

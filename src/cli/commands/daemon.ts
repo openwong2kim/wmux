@@ -602,7 +602,7 @@ async function runPrune(arg: string | undefined, wmuxDir: string, jsonMode: bool
   const dryRun = arg === '--dry-run';
   // Only listing is fine from a script.
   if (!dryRun && !policyIo.stdinIsTty()) headlessFail('`wmux daemon headless prune` removes worktrees. Run it in a terminal (or list them with --dry-run).');
-  const daemonRunning = (await headlessIo.daemonView()) !== null;
+  const daemonRunning = async (): Promise<boolean> => (await headlessIo.daemonView()) !== null;
   const res = await pruneHeadless(wmuxDir, { dryRun, daemonRunning });
   if (jsonMode) {
     console.log(JSON.stringify({ ok: true, ...res }, null, 2));
@@ -612,7 +612,7 @@ async function runPrune(arg: string | undefined, wmuxDir: string, jsonMode: bool
   for (const e of res.removed) console.log(`  ${e.worktreePath} (${e.spawnId} from ${e.hostId}): ${e.reason}`);
   console.log(`Kept: ${res.kept.length}`);
   for (const e of res.kept) console.log(`  ${e.worktreePath} (${e.spawnId} from ${e.hostId}): ${e.reason}`);
-  if (!dryRun && res.removed.length > 0 && daemonRunning) console.log('The daemon drops their records at its next reconcile (within a minute).');
+  if (!dryRun && res.removed.length > res.recordsDropped) console.log('The daemon drops their records at its next reconcile (within a minute).');
 }
 
 export async function handleDaemon(sub: string | undefined, rest: string[], jsonMode: boolean): Promise<void> {
