@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { A2A_FEATURE_SPAWN, type HostId } from '../../../shared/a2aRemote';
+import { A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS, type HostId } from '../../../shared/a2aRemote';
 import { asSpawnLinkId, spawnFirstMessageId } from '../../../shared/a2aSpawn';
 import type { DaemonConfig } from '../../types';
 import type { HeadlessStartRecordV1 } from '../headlessStartStore';
@@ -291,7 +291,7 @@ async function makePc(name: string, opts: { headless?: boolean; asking?: boolean
     spawn,
     ...(started ? { spawnLinks: started } : {}),
     ...(asks ? { spawnAsks: asks } : {}),
-    features: [A2A_FEATURE_SPAWN],
+    features: [A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS],
     log: quiet,
     timing: TIMING,
     heartbeatMs: 200,
@@ -558,6 +558,19 @@ describe('headless remote spawn, two PCs and no app', () => {
     // The fan-out row learns it from the state view, so the caller is still told (the reply never reached the pane).
     const [view] = applyTaskQueryView([a.tasks.getTask(taskId)!], { view: 'state', taskIds: [taskId] }).flatMap(remoteTaskViewOf);
     expect(view).toMatchObject({ state: 'input-required', replyHeld: true });
+  });
+
+  it('a status with the worktree facts crosses the link: the asking PC\'s state view hands them to its fan-out row as sent', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    const { taskId } = await startedTask(a, b);
+    const progress = { head: 'abc1234def56', committedAt: '2026-11-24T01:00:00.000Z', changedFiles: 3 };
+    expect(b.delivery.sendStatus(taskId, { kind: 'waiting-input', since: new Date().toISOString(), detail: { progress } })).toEqual({ ok: true });
+    // As the daemon's a2a.task.query serves it: the kept status on the task, then the state view.
+    const shown = (): Task => a.delivery.withRemoteStatus(a.tasks.getTask(taskId)!);
+    await until(() => (shown().metadata.remote as { status?: unknown } | undefined)?.status !== undefined);
+    const [view] = applyTaskQueryView([shown()], { view: 'state', taskIds: [taskId] }).flatMap(remoteTaskViewOf);
+    expect(view.status).toMatchObject({ kind: 'waiting-input', progress });
   });
 
   it('nothing is typed in while headless mode is off', async () => {
