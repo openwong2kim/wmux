@@ -153,6 +153,7 @@ import {
 import { showsScreenReaderKeyRow } from './screenReaderKeyRow';
 import type { PhoneDecisionsConfig } from './decisionConfig';
 import { boundDecisionForm, nativeV2Answer } from './decisionForm';
+import { sanitizeNewPackages, type NewPackageNote } from './installPackageLookup';
 
 /** The pane's state at one instant: output bytes, key-carrying input, the PTY incarnation. */
 export interface PromptScreenMark {
@@ -470,6 +471,7 @@ function copyRequest(r: ApprovalRequest): ApprovalRequest {
     ...(r.form ? { form: structuredClone(r.form) } : {}),
     ...(r.step ? { step: { ...r.step } } : {}),
     ...(r.answerDigest ? { answerDigest: { ...r.answerDigest } } : {}),
+    ...(r.newPackages ? { newPackages: r.newPackages.map((p) => ({ ...p })) } : {}),
   };
 }
 
@@ -968,6 +970,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     workspaceId?: string;
     toolName: string;
     toolInputSummary?: string;
+    newPackages?: NewPackageNote[];
     /** The ingest's verdict on the call's FULL input (the summary is cut). */
     risk?: 'critical';
     attribution?: 'exact' | 'inexact';
@@ -980,6 +983,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       workspaceId: input.workspaceId,
       toolName: input.toolName,
       toolInputSummary: input.toolInputSummary,
+      newPackages: sanitizeNewPackages(input.newPackages),
     };
     // The same pattern list every other record kind uses; the summary is
     // scanned too so a caller that passed no verdict still gets one.
@@ -1015,6 +1019,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         kind: 'awaiting_permission',
         toolName: snapshot.toolName,
         ...(snapshot.toolInputSummary ? { toolInputSummary: snapshot.toolInputSummary } : {}),
+        ...(snapshot.newPackages ? { newPackages: snapshot.newPackages } : {}),
         ...(critical ? { risk: 'critical' as const } : {}),
         ...(input.attribution ? { attribution: input.attribution } : {}),
         createdAt: this.now(),
@@ -1808,6 +1813,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     // sandbox is flagged critical, so the approver gets the louder treatment
     // the terminal's "(unsandboxed)" title gives the person at the desk.
     const risky = terminalPromptTextRisk(command, summary, parsed?.reason) || titleSaysUnsandboxed(parsed?.title);
+    // The hook's package line, only on a record whose own call is the command
+    // it was read from: an unbound dialog may be another call's.
+    const newPackages = note.packageCheck && command !== undefined && command === note.packageCheck.command
+      ? sanitizeNewPackages(note.packageCheck.newPackages)
+      : undefined;
     const inputHash = binding && !binding.unbindable ? toolInputHash(binding.input) : undefined;
     const record: WithIdentity = {
       id: this.newId(),
@@ -1817,6 +1827,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       kind: 'terminal_prompt',
       ...(toolName ? { toolName } : {}),
       ...(summary ? { summary } : {}),
+      ...(newPackages ? { newPackages } : {}),
       ...(risky ? { risk: 'critical' as const } : {}),
       ...(answerable && parsed && read
         ? {

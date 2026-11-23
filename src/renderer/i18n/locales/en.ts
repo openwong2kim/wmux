@@ -4503,6 +4503,8 @@ export const en = {
   'claudeIntegration.resumeOnStartDesc': 'After a restart, type the resume line into panes that were running Claude Code or Codex instead of waiting for the Resume pill. Off by default.',
   'claudeIntegration.fileSend': 'Let Claude send files to your phone',
   'claudeIntegration.fileSendDesc': "Lets Claude send files to the wmux phone app. Claude's own Remote Control may then not upload those files to claude.ai. Applies to panes started after the change; panes already running keep how they started. Off by default.",
+  'claudeIntegration.newPackageNote': "Note new packages on install approvals",
+  'claudeIntegration.newPackageNoteDesc': "When an agent asks to install a package this project doesn't have yet, the approval card in the wmux phone app says so in one line (for example, \"New package: left-pad — not in package.json\"). Agents sometimes invent package names, and attackers register them. Checks package.json, Python and Cargo manifests and their lockfiles on this computer; nothing is sent anywhere. The approval itself works the same either way. On by default.",
   'usageLimit.waiting': 'Waiting',
   'agentAuth.signedOut': "{agent} is signed out. It cannot run until you sign in again.",
   'agentAuth.signInAgain': "Sign in again",

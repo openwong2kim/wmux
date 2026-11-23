@@ -23,6 +23,7 @@ import { startLocaleFromArgv } from '../shared/startLocale';
 import { localHostNameFromArgv } from '../shared/localHostName';
 import { IPC } from '../shared/constants';
 import { CLAUDE_FILE_SEND_IPC } from '../shared/claudeFileSend';
+import { NEW_PACKAGE_NOTE_IPC } from '../shared/newPackageNote';
 import type { A2aSpawnAskResult, A2aSpawnOutgoingList, A2aSpawnPolicySetResult, A2aSpawnPolicyV1, A2aSpawnRequestSummary, A2aSpawnUiAsk } from '../shared/a2aSpawn';
 import type { A2aApprovalExposure } from '../shared/a2aRemote';
 import type { SleepPreventionMode, SleepWindow } from '../shared/sleepPrevention';
@@ -2266,6 +2267,11 @@ const electronAPI = {
       get: () => ipcRenderer.invoke(IPC.USAGE_RESERVE_GET) as Promise<{ enabled: boolean }>,
       set: (enabled: boolean) => ipcRenderer.invoke(IPC.USAGE_RESERVE_SET, enabled) as Promise<{ ok: boolean }>,
     },
+  },
+  /** Whether install approvals note packages the project lacks (shared/newPackageNote.ts). */
+  newPackageNote: {
+    get: () => ipcRenderer.invoke(NEW_PACKAGE_NOTE_IPC.GET) as Promise<{ enabled: boolean }>,
+    set: (enabled: boolean) => ipcRenderer.invoke(NEW_PACKAGE_NOTE_IPC.SET, enabled) as Promise<{ ok: boolean }>,
   },
   /** Whether new panes let Claude send files to the phone (shared/claudeFileSend.ts). */
   claudeFileSend: {

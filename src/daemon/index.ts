@@ -328,6 +328,8 @@ import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
 import { withActivity, withViewingSessions } from './web/deviceActivity';
 import { buildWebPaneEnv } from './web/webPaneEnv';
 import { readClaudeFileSend } from './claudeFileSendSetting';
+import { readNewPackageNote } from './newPackageNoteSetting';
+import { newPackagesForCommand } from './approvals/installPackageLookup';
 import { makeChannelPhoneApi, type ChannelPhoneApi } from './web/channelsApi';
 import type { ApprovalDecision, DecisionFormKind, NativeDecisionOutcome, NativeDecisionRef, NativeDecisionReply } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
@@ -5854,6 +5856,7 @@ function registerRpcHandlers(
       },
       log: (level, message) => log(level, message),
       isAutomationPane: (id) => automationEngine?.ownsPane(id) === true,
+      newPackagesFor: (command, cwd) => newPackagesForCommand(command, cwd, () => readNewPackageNote(getWmuxDir())),
       latestEndedTurn: (id) => sessionManager.getSession(id)?.bridge.endedTurnId() ?? null,
       // M2 — hook-sourced awaiting_input is the ONLY thing that mints an
       // approval request. Wired here, on the daemon-internal path, because this

@@ -224,6 +224,7 @@ function UsageCard({
         />
       </SettingRow>
       <ClaudeFileSendRow t={t} />
+      <NewPackageNoteRow t={t} />
     </SettingsSection>
   );
 }
@@ -341,6 +342,43 @@ export function ClaudeFileSendRow({ t }: { t: (key: string, vars?: Record<string
         onCheckedChange={change}
         aria-label={t('claudeIntegration.fileSend')}
         data-claude-file-send={on === null ? 'unknown' : on ? 'on' : 'off'}
+      />
+    </SettingRow>
+  );
+}
+
+/**
+ * Install approvals: a gated command that installs packages the project does
+ * not have yet gets one line saying so. The daemon reads main's file on each
+ * such command; same read-back pattern as the file send row. On by default.
+ */
+export function NewPackageNoteRow({ t }: { t: (key: string, vars?: Record<string, string | number>) => string }) {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    void window.electronAPI?.newPackageNote?.get().then((r) => { if (live) setOn(r.enabled); }).catch(() => undefined);
+    return () => { live = false; };
+  }, []);
+  const change = (next: boolean) => {
+    setOn(null);
+    void window.electronAPI.newPackageNote.set(next)
+      .catch(() => undefined)
+      .then(() => window.electronAPI.newPackageNote.get())
+      .then((r) => setOn(r.enabled))
+      .catch(() => setOn(null));
+  };
+  return (
+    <SettingRow
+      id="newpackagenote"
+      label={t('claudeIntegration.newPackageNote')}
+      description={t('claudeIntegration.newPackageNoteDesc')}
+    >
+      <Switch
+        checked={on === true}
+        disabled={on === null}
+        onCheckedChange={change}
+        aria-label={t('claudeIntegration.newPackageNote')}
+        data-new-package-note={on === null ? 'unknown' : on ? 'on' : 'off'}
       />
     </SettingRow>
   );

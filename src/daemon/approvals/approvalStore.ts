@@ -18,6 +18,7 @@ import { atomicReadJSONSync, atomicWriteJSON } from '../util/atomicWrite';
 import { sanitizeChoices, sanitizeOptions, sanitizeQuestion, sanitizeQuestionShape } from './askUserQuestion';
 import { boundRecordText, TERMINAL_PROMPT_SUMMARY_MAX, TERMINAL_PROMPT_TOOL_NAME_MAX } from './terminalPrompt';
 import type { ApprovalDecision, ApprovalRequest, ApprovalState } from './types';
+import { sanitizeNewPackages } from './installPackageLookup';
 
 const STATE_FILE = 'approvals.json';
 
@@ -142,6 +143,8 @@ function coerceRequest(raw: unknown): ApprovalRequest | null {
   if (summary) out.summary = summary;
   const reason = boundRecordText(o['reason'], TERMINAL_PROMPT_SUMMARY_MAX);
   if (reason) out.reason = reason;
+  const newPackages = sanitizeNewPackages(o['newPackages']);
+  if (newPackages) out.newPackages = newPackages;
   if (typeof o['promptFingerprint'] === 'string' && /^[0-9a-f]{32}$/.test(o['promptFingerprint'])) {
     out.promptFingerprint = o['promptFingerprint'];
   }

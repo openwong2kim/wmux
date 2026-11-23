@@ -4446,6 +4446,8 @@ export const pl = {
   'claudeIntegration.resumeOnStartDesc': 'Po restarcie wpisz polecenie wznowienia w panelach, w których działał Claude Code lub Codex, zamiast czekać na przycisk Wznów. Domyślnie wyłączone.',
   'claudeIntegration.fileSend': 'Pozwól Claude wysyłać pliki na telefon',
   'claudeIntegration.fileSendDesc': 'Pozwala Claude wysyłać pliki do aplikacji wmux na telefonie. Własna funkcja Remote Control Claude może wtedy nie przesyłać tych plików do claude.ai. Dotyczy paneli uruchomionych po zmianie; działające panele zostają bez zmian. Domyślnie wyłączone.',
+  'claudeIntegration.newPackageNote': "Oznaczaj nowe pakiety przy zatwierdzaniu instalacji",
+  'claudeIntegration.newPackageNoteDesc': "Gdy agent prosi o instalację pakietu, którego ten projekt jeszcze nie ma, karta zatwierdzenia w aplikacji wmux na telefonie mówi o tym w jednej linii (na przykład \"Nowy pakiet: left-pad — nie ma go w package.json\"). Agenci czasem wymyślają nazwy pakietów, a atakujący je rejestrują. Sprawdzane są package.json, manifesty Pythona i Cargo oraz ich pliki blokad na tym komputerze; nic nie jest nigdzie wysyłane. Samo zatwierdzanie działa tak samo. Domyślnie włączone.",
   'usageLimit.waiting': 'Oczekiwanie',
   'agentAuth.signedOut': "{agent} jest wylogowany. Nie zadziała, dopóki nie zalogujesz się ponownie.",
   'agentAuth.signInAgain': "Zaloguj się ponownie",
