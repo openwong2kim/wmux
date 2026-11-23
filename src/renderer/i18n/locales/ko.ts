@@ -3125,7 +3125,7 @@ export const ko = {
   'settings.workerFenceOffWarning': '이 워크스페이스의 워커 울타리가 꺼져 있습니다. 여기서 새로 시작하는 봇 워커는 계정이 쓸 수 있는 곳 어디에나 쓸 수 있습니다.',
   'settings.fanoutTrustAgyFoldersDesc': '기본 꺼짐. 켜면 agy fan-out 작업이 시작되기 전에 wmux가 그 작업 폴더를 agy 자체 신뢰 목록(~/.gemini/antigravity-cli/settings.json)에 추가해, 작업이 agy 신뢰 화면에서 멈추지 않습니다. 끄면 wmux는 그 파일에 아무것도 쓰지 않고, agy가 새 작업 폴더마다 묻습니다.',
   'settings.fanoutAccountPool': 'fan-out 워커를 여러 계정에 나누기',
-  'settings.fanoutAccountPoolDesc': '기본 꺼짐. 켜면 Claude fan-out 워커가 모두 기본 로그인으로 뜨지 않고, 그룹 안에서 남은 사용량이 가장 많고 워커가 가장 적은 계정으로 하나씩 시작합니다. 자기 폴더에 로그인된 계정만 참여하고, 저장된 토큰으로만 로그인하는 계정은 빠집니다. 그룹 없는 계정끼리는 기본 로그인도 참여합니다. wmux 데몬이 필요합니다.',
+  'settings.fanoutAccountPoolDesc': '기본 꺼짐. 켜면 Claude fan-out 워커가 모두 기본 로그인으로 뜨지 않고, 그룹 안에서 남은 사용량이 가장 많고 워커가 가장 적은 계정으로 하나씩 시작합니다. 자기 폴더에 로그인되어 있고 wmux 훅이 최신인 계정만 참여하고, 저장된 토큰으로만 로그인하는 계정은 빠집니다. 그룹 없는 계정끼리는 기본 로그인도 참여합니다. wmux 데몬이 필요합니다.',
   'settings.fanoutAccountPoolGroup': '계정에 묶이지 않은 워크스페이스의 계정 그룹',
   'settings.fanoutAccountPoolGroupDesc': '계정에 묶인 워크스페이스는 항상 그 계정의 그룹을 씁니다. 다른 워크스페이스의 워커는 이 그룹에서 고릅니다.',
   'settings.fanoutAccountPoolUngrouped': '그룹 없는 계정',

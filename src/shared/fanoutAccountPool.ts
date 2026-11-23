@@ -106,8 +106,13 @@ export function pickPoolAccount(candidates: readonly PoolCandidate[], settings: 
   const free = usable.filter((c) => c.heldUntilMs === null);
   const room = free.filter((c) => settings.maxWorkersPerAccount <= 0 || c.open < settings.maxWorkersPerAccount);
   if (room.length === 0) {
+    // Each account is free once every one of its blockers ends: its spent
+    // window and its reserve hold, whichever ends later.
     const times = candidates
-      .map((c) => (c.verdict.usable ? c.heldUntilMs : c.verdict.availableAtMs))
+      .map((c) => {
+        const blockers = [c.verdict.usable ? null : c.verdict.availableAtMs, c.heldUntilMs].filter((t): t is number => t !== null);
+        return blockers.length > 0 ? Math.max(...blockers) : null;
+      })
       .filter((t): t is number => t !== null);
     const availableAtMs = times.length > 0 ? Math.min(...times) : null;
     const reason = free.length > 0 ? 'full' : usable.length > 0 ? 'held' : 'quota';

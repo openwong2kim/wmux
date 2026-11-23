@@ -2505,7 +2505,7 @@ export class FanOutService {
     // conversation lives in that folder), or is held while it cannot.
     const poolAccount = (launches as Partial<Pick<WorkerSlots, 'launchOf'>>).launchOf?.(input.taskId)?.accountId;
     if (poolAccount) {
-      const held = poolRelaunchRefusal(poolAccount);
+      const held = poolRelaunchRefusal(poolAccount, { taskId: input.taskId, ...('poolLaunches' in launches ? { slots: launches as WorkerSlots } : {}) });
       if (held) {
         revokeSecretGrant(secretGrant);
         return { error: held };

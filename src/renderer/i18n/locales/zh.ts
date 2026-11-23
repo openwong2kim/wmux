@@ -3547,7 +3547,7 @@ export const zh = {
   'settings.workerFenceOffWarning': '此工作区的工作者围栏已关闭：此处新启动的机器人工作者可以写入你的账户能写入的任何位置。',
   'settings.fanoutTrustAgyFoldersDesc': '默认关闭。开启后，在 agy fan-out 任务启动前，wmux 会把该任务文件夹加入 agy 自己的信任列表（~/.gemini/antigravity-cli/settings.json），任务不会停在 agy 的信任界面。关闭时，wmux 不会写入该文件，agy 会在每个新任务文件夹中询问。',
   'settings.fanoutAccountPool': '将 fan-out 工作者分散到多个账号',
-  'settings.fanoutAccountPoolDesc': '默认关闭。开启后，Claude fan-out 工作者不再全部使用默认登录，而是各自在其分组中剩余额度最多、工作者最少的账号上启动。只有在自身文件夹中登录的账号参与；仅通过已保存令牌登录的账号会被排除。无分组的账号中，默认登录也参与。需要 wmux 守护进程。',
+  'settings.fanoutAccountPoolDesc': '默认关闭。开启后，Claude fan-out 工作者不再全部使用默认登录，而是各自在其分组中剩余额度最多、工作者最少的账号上启动。只有在自身文件夹中登录且 wmux 钩子为最新的账号参与；仅通过已保存令牌登录的账号会被排除。无分组的账号中，默认登录也参与。需要 wmux 守护进程。',
   'settings.fanoutAccountPoolGroup': '未绑定账号的工作区使用的账号分组',
   'settings.fanoutAccountPoolGroupDesc': '绑定了账号的工作区始终使用该账号的分组。其他工作区的工作者从此分组中选择。',
   'settings.fanoutAccountPoolUngrouped': '无分组的账号',

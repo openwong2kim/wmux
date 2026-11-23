@@ -131,7 +131,7 @@ function setup(opts?: {
   /** The usage reserve's hold for a workspace. Omitted = no reserve. */
   reserve?: (workspaceId: string) => { account: string; untilMs: number } | null;
   /** The fan-out account pool and the reserve's hold per account. Omitted = no pool. */
-  pool?: { members: string[]; holdFor: (account: string) => { account: string; untilMs: number } | null };
+  pool?: { members: string[]; holdFor: (account: string) => { account: string; untilMs: number } | null; read?: () => Promise<void> };
   ownerWorkspaceId?: string;
   cwd?: string | null;
   approval?: ApprovalStub;
@@ -298,7 +298,7 @@ function setup(opts?: {
     ...(opts?.wmuxDir ? { wmuxDir: () => opts.wmuxDir as string } : {}),
     ...(opts?.reserve ? { usageReserveHold: opts.reserve, noteUsageReserveHeld: () => undefined } : {}),
     ...(opts?.pool ? {
-      preparePool: async () => ({ settings: { ...DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, enabled: true }, group: '', members: opts.pool!.members.map((id) => ({ id, configDir: null })) }),
+      preparePool: async () => (await opts.pool!.read?.(), { settings: { ...DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, enabled: true }, group: '', members: opts.pool!.members.map((id) => ({ id, configDir: null })) }),
       usageReserveHoldForAccount: opts.pool.holdFor,
       noteUsageReserveHeld: () => undefined,
       pickFromPool: (pool: PreparedPool) => pickPoolAccount(pool.members.map((m) => ({ id: m.id, verdict: { usable: true, remaining: null, availableAtMs: null }, heldUntilMs: opts.pool!.holdFor(m.id)?.untilMs ?? null, open: 0 })), pool.settings),
@@ -1624,6 +1624,18 @@ describe('task.fanout.start — usage reserve with the account pool', () => {
     expect(req.mayLaunch?.({ index: 0, accountId: 'acc-a' })).toMatch(/^usage reserve: /);
     // Every pool account held: the reserve's own refusal (a bot's request is kept for the reset).
     expect(req.accountPick?.pick({ index: 0 })).toEqual({ refusal: expect.stringMatching(/^usage reserve: .*run unattended/) });
+  });
+
+  it('a failed pool read is asked again, not kept as fresh', async () => {
+    let reads = 0;
+    const h = setup({ pool: { members: ['acc-a'], holdFor: () => null, read: async () => { reads += 1; if (reads === 1) throw new Error('keychain busy'); } }, approval: { approved: true, outcome: 'approved' } });
+    expect((await h.call(goodParams())).status).toBe('accepted');
+    await h.flush();
+    await h.flush();
+    const req = h.request();
+    await req.accountPick?.prepare({ index: 0 });
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(req.accountPick?.pick({ index: 0 })).toEqual({ accountId: 'acc-a' });
   });
 
   it('refuses only when every pool account is held, with the earliest reset', async () => {

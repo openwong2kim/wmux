@@ -13,7 +13,7 @@ import { ipcMain } from 'electron';
 import { IPC } from '../../../../shared/constants';
 import { installHooks, statusHooks, removeHooks, type InstallOutcome, type SetupHooksPaths } from '../../../../cli/commands/setupHooks';
 import type { Account } from '../../../account/accountStore';
-import { accountHookDrift, installHooksIntoNewAccount, registerHooksBridgeHandlers } from '../hooksBridge.handler';
+import { accountHookDrift, hookStatusCurrent, installHooksIntoNewAccount, registerHooksBridgeHandlers } from '../hooksBridge.handler';
 
 vi.mock('electron', () => ({
   app: { isPackaged: true },
@@ -243,5 +243,22 @@ describe('Install covers every Claude folder (CLAUDE_CONFIG_DIR unset)', () => {
     fs.mkdirSync(other, { recursive: true });
     expect(await installHooksIntoNewAccount(other)).toBeNull();
     expect(fs.existsSync(path.join(other, 'settings.json'))).toBe(false);
+  });
+});
+
+describe('hookStatusCurrent (the fan-out account pool\'s hook check)', () => {
+  const feature = (state: 'ok' | 'off' | 'stale') => ({ state, detail: '' });
+  const features = (state: 'ok' | 'off' | 'stale') => ({
+    conversationRead: feature(state), approvalCard: feature(state), turnStart: feature(state), turnEnd: feature(state), permissionPrompt: feature(state), permissionGate: feature(state),
+  });
+  it('accepts current settings.json hooks and plugin-supplied ones; refuses none, stale, or an unreadable file', () => {
+    const installed = statusHooks(base);
+    expect(hookStatusCurrent(installed)).toBe(true);
+    // The active wmux plugin supplies the hooks: settings.json holds none by design.
+    expect(hookStatusCurrent({ installedEvents: [], bridgeExists: true, settingsCorrupted: false, updateAvailable: false, features: features('ok') })).toBe(true);
+    expect(hookStatusCurrent({ installedEvents: [], bridgeExists: true, settingsCorrupted: false, updateAvailable: false, features: features('off') })).toBe(false);
+    expect(hookStatusCurrent({ installedEvents: [], bridgeExists: true, settingsCorrupted: false, updateAvailable: false, features: features('stale') })).toBe(false);
+    expect(hookStatusCurrent({ ...installed, updateAvailable: true })).toBe(false);
+    expect(hookStatusCurrent({ ...installed, settingsCorrupted: true })).toBe(false);
   });
 });

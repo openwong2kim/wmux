@@ -137,13 +137,24 @@ export function accountsWithoutCurrentHooks(accounts: readonly Account[], base: 
     if (isUncPath(account.configDir)) { out.add(account.id); continue; }
     const paths = ownAccountSettings(account, base) ?? base;
     try {
-      const status = statusHooks(paths);
-      if (!computeInstalled(status) || status.updateAvailable) out.add(account.id);
+      if (!hookStatusCurrent(statusHooks(paths))) out.add(account.id);
     } catch {
       out.add(account.id);
     }
   }
   return out;
+}
+
+/**
+ * Whether a settings file's wmux hooks are current: installed in it and not
+ * out of date, or supplied by the active wmux plugin (settings.json then
+ * holds none by design) with the turn and conversation signals working. Pure.
+ */
+export function hookStatusCurrent(status: Pick<StatusOutcome, 'installedEvents' | 'bridgeExists' | 'settingsCorrupted' | 'updateAvailable' | 'features'>): boolean {
+  if (status.settingsCorrupted) return false;
+  if (computeInstalled(status as StatusOutcome)) return !status.updateAvailable;
+  const f = status.features;
+  return f.turnStart.state === 'ok' && f.turnEnd.state === 'ok' && f.conversationRead.state === 'ok';
 }
 
 export function computeInstalled(s: StatusOutcome): boolean {

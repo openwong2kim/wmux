@@ -715,7 +715,7 @@ export function beginPaneRelaunch(sessionId: string, launch?: PaneRelaunchLine):
     } else {
       accountId = launch.paneAccount ?? prior.accountId;
       if (!launch.byPerson) {
-        const held = poolRelaunchRefusal(accountId);
+        const held = poolRelaunchRefusal(accountId, { taskId });
         if (held) throw new Error(held);
       }
     }

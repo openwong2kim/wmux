@@ -3664,7 +3664,7 @@ export const en = {
   'settings.workerFenceOffWarning': 'The worker fence is off for this workspace: new bot workers here can write anywhere your account can.',
   'settings.fanoutTrustAgyFoldersDesc': 'Off by default. On: before an agy fan-out task starts, wmux adds its task folder to agy\'s own trusted list (~/.gemini/antigravity-cli/settings.json), so the task does not stop on agy\'s trust screen. Off: wmux writes nothing there, and agy asks in every new task folder.',
   'settings.fanoutAccountPool': 'Spread fan-out workers over accounts',
-  'settings.fanoutAccountPoolDesc': 'Off by default. On: each Claude fan-out worker starts on the account of its group with the most quota left and the fewest workers, not all on the default login. Only accounts signed in within their own folder take part; one that signs in only with a saved token is left out. The default login takes part for ungrouped accounts. Needs the wmux daemon.',
+  'settings.fanoutAccountPoolDesc': 'Off by default. On: each Claude fan-out worker starts on the account of its group with the most quota left and the fewest workers, not all on the default login. Only accounts signed in within their own folder, with current wmux hooks, take part; one that signs in only with a saved token is left out. The default login takes part for ungrouped accounts. Needs the wmux daemon.',
   'settings.fanoutAccountPoolGroup': 'Account group for unbound workspaces',
   'settings.fanoutAccountPoolGroupDesc': "A workspace bound to an account always uses that account's group. Workers of other workspaces pick from this group.",
   'settings.fanoutAccountPoolUngrouped': 'Ungrouped accounts',

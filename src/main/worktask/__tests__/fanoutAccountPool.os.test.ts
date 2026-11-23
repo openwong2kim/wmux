@@ -172,9 +172,12 @@ describe('the pick and its booking', () => {
     const g = s.beginLaunch({ taskId: 'done', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'a' }).gen;
     s.launched('done', g, 'ws-done', 'pty-d');
     s.beginLaunch({ taskId: 'starting', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'a' });
-    // No holder set to read: the ended launch is not counted, the one under way is.
+    // No holder set to read (none installed yet): every launched worker still
+    // counts, an unknown never frees its account.
     const [a] = poolCandidates({ ...pool, members: [{ id: 'a', configDir: '/acc/a' }] }, { host: host(), slots: s, holdFor: () => null, dirOk: () => true });
-    expect(a.open).toBe(1);
+    expect(a.open).toBe(2);
+    // A holder set that no longer lists the ended task frees its account.
+    expect(openWorkersByAccount(s, (id) => id !== 'done').get('a')).toBe(1);
   });
 
   it('the reserve stops the fan-out only when it holds every member, naming the first to free up', () => {
@@ -254,6 +257,14 @@ describe('poolRelaunchRefusal', () => {
     expect(poolRelaunchRefusal('a', { ...base, dirOk: () => false })).toMatch(/folder .* is missing/);
     expect(poolRelaunchRefusal('gone', base)).toMatch(/no longer registered/);
     expect(poolRelaunchRefusal(POOL_DEFAULT_ACCOUNT, base)).toBeNull();
+    // At the per-account limit: held, not counting the task's own last launch.
+    const s = slots();
+    s.beginLaunch({ taskId: 'other', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'a' });
+    s.beginLaunch({ taskId: 'mine', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'a' });
+    const capped = { ...base, slots: s, settings: () => ({ ...on, maxWorkersPerAccount: 2 }) };
+    expect(poolRelaunchRefusal('a', { ...capped, taskId: 'mine' })).toBeNull();
+    expect(poolRelaunchRefusal('a', { ...capped, taskId: 'mine', settings: () => ({ ...on, maxWorkersPerAccount: 1 }) })).toMatch(/runs its most workers \(1\)/);
+    expect(poolRelaunchRefusal('a', { ...capped, taskId: 'third' })).toMatch(/runs its most workers \(2\)/);
     // The pool turned off: the account's quota and reserve no longer hold it back.
     expect(poolRelaunchRefusal('a', { ...base, poolOn: () => false, holdFor: () => ({ untilMs: Date.now() + 1000 }) })).toBeNull();
     expect(poolRelaunchRefusal('gone', { ...base, poolOn: () => false })).toMatch(/no longer registered/);

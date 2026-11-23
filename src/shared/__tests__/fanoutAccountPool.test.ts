@@ -36,6 +36,9 @@ describe('pickPoolAccount', () => {
     expect(pickPoolAccount([c('a', 0.9, 2)], { quotaBandPct: 10, maxWorkersPerAccount: 2 })).toEqual({ kind: 'none', reason: 'full', availableAtMs: null });
     expect(pickPoolAccount([c('a', 0.9, 2), c('b', 0.2, 1)], { quotaBandPct: 10, maxWorkersPerAccount: 2 })).toEqual({ kind: 'pick', accountId: 'b' });
     expect(pickPoolAccount([], settings)).toEqual({ kind: 'none', reason: 'empty', availableAtMs: null });
+    // An account free only once both its window resets and its hold ends.
+    const both: PoolCandidate = { id: 'a', verdict: { usable: false, remaining: 0, availableAtMs: 5_000 }, heldUntilMs: 9_000, open: 0 };
+    expect(pickPoolAccount([both, c('b', 0.5, 0, 7_000)], settings)).toMatchObject({ kind: 'none', availableAtMs: 7_000 });
   });
 });
 

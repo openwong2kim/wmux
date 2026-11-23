@@ -1493,8 +1493,12 @@ export function registerFanOutRpc(
       poolReadAt = Date.now();
       poolSettled = false;
       const seq = ++poolReadSeq;
-      poolRead = readPool(callerWorkspaceId).then((p) => { if (seq === poolReadSeq) pool = p; }, () => undefined)
-        .finally(() => { if (seq === poolReadSeq) poolSettled = true; });
+      poolRead = readPool(callerWorkspaceId).then(
+        (p) => { if (seq === poolReadSeq) pool = p; },
+        // A failed read is not a fresh one: the next call asks again (the
+        // pool keeps what the last good read found, or none).
+        () => { if (seq === poolReadSeq) poolReadAt = 0; },
+      ).finally(() => { if (seq === poolReadSeq) poolSettled = true; });
       return poolRead;
     };
     if (!keyKnown && !depthRefusal) {

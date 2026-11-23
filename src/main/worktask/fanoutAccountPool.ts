@@ -271,18 +271,20 @@ export interface PickDeps {
 }
 
 /** The live-worker caps' holder set as a sync liveness source: a launched
- *  task runs a worker only while the set lists it as held or unknown. One it
- *  lists as free, or no longer lists (an ended task whose workspace closed),
- *  runs none; so does every one when the set cannot be read. */
+ *  task runs a worker while the set lists it as held or unknown. One it lists
+ *  as free, or no longer lists (an ended task whose workspace closed), runs
+ *  none. While the set cannot be read (no source installed yet, or a read
+ *  that throws) every launched worker still counts: an unknown never frees
+ *  an account. */
 function holderMayRun(): (taskId: string) => boolean {
-  let running: Set<string> = new Set();
+  let running: Set<string> | null = null;
   try {
     const look = liveHolders();
     if (look) running = new Set(look.holders.filter((x) => x.state !== 'free').map((x) => x.taskId));
   } catch {
-    running = new Set();
+    running = null;
   }
-  return (taskId) => running.has(taskId);
+  return (taskId) => running === null || running.has(taskId);
 }
 
 /** Open workers per pool account: launching ones under way, and launched ones
@@ -349,7 +351,7 @@ export function poolAllHeld(pool: PreparedPool, holdFor: (account: string) => { 
  * the pool is on it must also have quota and not be held by the usage
  * reserve. Reads only what is on hand (no network).
  */
-export function poolRelaunchRefusal(accountId: string, deps: PickDeps & { account?: (id: string) => Account | undefined; poolOn?: () => boolean } = {}): string | null {
+export function poolRelaunchRefusal(accountId: string, deps: PickDeps & { account?: (id: string) => Account | undefined; poolOn?: () => boolean; settings?: () => FanoutAccountPoolSettings; taskId?: string } = {}): string | null {
   const configDir = accountId === POOL_DEFAULT_ACCOUNT
     ? null
     : (deps.account ?? ((id: string) => getAccountStore().getAccount(id)))(accountId)?.configDir;
@@ -362,6 +364,14 @@ export function poolRelaunchRefusal(accountId: string, deps: PickDeps & { accoun
   const when = (ms: number | null) => (ms !== null ? `; it frees up at ${new Date(ms).toISOString()}` : '');
   if (!c.verdict.usable) return `fan-out account pool: the account this task ran on is out of quota${when(c.verdict.availableAtMs)}`;
   if (c.heldUntilMs !== null) return `fan-out account pool: the usage reserve holds the account this task ran on${when(c.heldUntilMs)}`;
+  // The per-account limit, not counting this task's own last launch (the
+  // relaunch replaces it).
+  const max = (deps.settings ?? loadFanoutAccountPoolSettings)().maxWorkersPerAccount;
+  if (max > 0) {
+    const own = deps.taskId ? (deps.slots ?? getWorkerSlots()).launchOf(deps.taskId) : null;
+    const ownCounted = own?.accountId === accountId && own.state !== 'released' ? 1 : 0;
+    if (c.open - ownCounted >= max) return `fan-out account pool: the account this task ran on already runs its most workers (${max}); it starts again once one ends`;
+  }
   return null;
 }
 
