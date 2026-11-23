@@ -1,8 +1,8 @@
 import { nativeImage, type BrowserWindow, type NativeImage } from 'electron';
 
 /**
- * Windows taskbar status: the needs-you count as an overlay icon on the
- * taskbar button, and an indeterminate progress state while any agent runs.
+ * Windows taskbar status: the unread count (the macOS dock badge's number) as
+ * an overlay icon on the taskbar button, and an indeterminate progress state while any agent runs.
  *
  * The overlay count is fed from updateUnreadBadge (tray.ts), the same call and
  * value that set the macOS dock badge, so the two can never disagree. The
@@ -20,7 +20,7 @@ export function overlayBadgeText(count: number): string | null {
 
 /** Screen-reader description Windows reads for the overlay. */
 export function overlayDescription(count: number): string {
-  return count === 1 ? 'wmux: 1 item needs you' : `wmux: ${count > 999 ? '999+' : count} items need you`;
+  return count === 1 ? 'wmux: 1 unread notification' : `wmux: ${count > 999 ? '999+' : count} unread notifications`;
 }
 
 // 3x5 pixel glyphs, one string per row, '#' lit.
@@ -38,11 +38,12 @@ const GLYPHS: Record<string, readonly string[]> = {
   '+': ['...', '.#.', '###', '.#.', '...'],
 };
 
-// The attention orange and its ink (DESIGN.md › ATTENTION_COLORS, the graphite
-// look). The taskbar is OS chrome that does not follow the app theme, so one
-// fixed pair is used.
-const FILL = [0xff, 0x8a, 0x3d] as const;
-const INK = [0x0b, 0x0c, 0x0e] as const;
+// A neutral grey with white digits. The count is every unread notification,
+// not only needs-you, so it does not spend the attention orange (DESIGN.md ›
+// Colour grammar). The taskbar does not follow the app theme, so one fixed
+// pair is used that reads on light and dark taskbars.
+const FILL = [0x5a, 0x5a, 0x60] as const;
+const INK = [0xff, 0xff, 0xff] as const;
 
 /**
  * Draw a size×size badge (a filled circle with the text in pixel glyphs) as a
@@ -93,7 +94,7 @@ export function renderBadgeBitmap(text: string, size: number): Buffer {
 function badgeImage(text: string): NativeImage {
   const image = nativeImage.createFromBitmap(renderBadgeBitmap(text, 16), { width: 16, height: 16, scaleFactor: 1 });
   const hiDpi = nativeImage.createFromBitmap(renderBadgeBitmap(text, 32), { width: 32, height: 32, scaleFactor: 2 });
-  image.addRepresentation({ scaleFactor: 2, buffer: hiDpi.toPNG() });
+  image.addRepresentation({ scaleFactor: 2, buffer: hiDpi.toPNG({ scaleFactor: 2 }) });
   return image;
 }
 
@@ -229,7 +230,7 @@ export function bindTaskbarWindow(win: BrowserWindow): void {
   win.once('closed', () => status.bind(null));
 }
 
-/** The needs-you count, the same value the dock badge gets. No-op off Windows. */
+/** The unread count, the same value the dock badge gets. No-op off Windows. */
 export function updateTaskbarNeedsYou(count: number): void {
   if (process.platform !== 'win32') return;
   status.setCount(count);

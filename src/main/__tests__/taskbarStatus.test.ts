@@ -25,25 +25,25 @@ describe('overlayBadgeText', () => {
   });
 
   it('gives the overlay a readable description with the real count', () => {
-    expect(overlayDescription(1)).toBe('wmux: 1 item needs you');
-    expect(overlayDescription(12)).toBe('wmux: 12 items need you');
+    expect(overlayDescription(1)).toBe('wmux: 1 unread notification');
+    expect(overlayDescription(12)).toBe('wmux: 12 unread notifications');
   });
 });
 
 describe('renderBadgeBitmap', () => {
-  it('draws an opaque centre, transparent corners, and ink pixels for the glyph', () => {
+  it('draws an opaque centre, transparent corners, and white glyph pixels on grey', () => {
     for (const size of [16, 32]) {
       const buf = renderBadgeBitmap('9+', size);
       expect(buf.length).toBe(size * size * 4);
       expect(buf[3]).toBe(0); // top-left corner is outside the circle
       const alphaAt = (x: number, y: number) => buf[(y * size + x) * 4 + 3];
       expect(alphaAt(size / 2, size / 2)).toBe(255);
-      // Some pixels are the dark ink, some the orange fill.
+      // Some pixels are the white glyph, some the grey fill.
       let ink = 0;
       let fill = 0;
       for (let i = 0; i < buf.length; i += 4) {
         if (buf[i + 3] !== 255) continue;
-        if (buf[i + 2] < 0x20) ink++;
+        if (buf[i + 2] === 0xff) ink++;
         else fill++;
       }
       expect(ink).toBeGreaterThan(0);
@@ -75,7 +75,7 @@ describe('TaskbarStatus', () => {
     status.setCount(3);
     expect(overlay).not.toHaveBeenCalled();
     status.setState({ enabled: true, running: true });
-    expect(overlay).toHaveBeenLastCalledWith('3', 'wmux: 3 items need you');
+    expect(overlay).toHaveBeenLastCalledWith('3', 'wmux: 3 unread notifications');
     expect(progress).toHaveBeenLastCalledWith(true);
   });
 
@@ -96,7 +96,7 @@ describe('TaskbarStatus', () => {
     status.setCount(12);
     status.setCount(15); // still "9+"
     status.setCount(0);
-    expect(overlay.mock.calls).toEqual([['9+', 'wmux: 12 items need you'], [null, '']]);
+    expect(overlay.mock.calls).toEqual([['9+', 'wmux: 12 unread notifications'], [null, '']]);
   });
 
   it('debounces the progress state so a quick flip does not flicker', () => {
@@ -140,7 +140,7 @@ describe('TaskbarStatus', () => {
     progress.mockClear();
     const sink2: TaskbarSink = { setOverlay: vi.fn(), setProgress: vi.fn() };
     status.bind(sink2);
-    expect(sink2.setOverlay).toHaveBeenCalledWith('1', 'wmux: 1 item needs you');
+    expect(sink2.setOverlay).toHaveBeenCalledWith('1', 'wmux: 1 unread notification');
     expect(sink2.setProgress).toHaveBeenCalledWith(true);
   });
 

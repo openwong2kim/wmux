@@ -184,9 +184,9 @@ export default function StatusBar() {
       };
     }),
   );
-  // Windows taskbar: the overlay setting and whether any agent runs. The count
-  // itself rides setBadgeCount above, so the overlay and the dock badge read
-  // one number. Held until the saved session has loaded, so a default "on"
+  // Windows taskbar: the overlay setting and whether any agent runs. The unread
+  // count itself rides setBadgeCount above, so the overlay and the dock badge
+  // read one number. Held until the saved session has loaded, so a default "on"
   // never flashes an overlay for someone who turned it off. Main ignores this
   // off Windows.
   const taskbarBadgeEnabled = useStore((s) => s.taskbarBadgeEnabled);
