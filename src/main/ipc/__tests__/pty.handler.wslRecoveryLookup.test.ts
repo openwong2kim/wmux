@@ -24,14 +24,16 @@ describe('pty.handler PTY_CREATE (daemon) — recovery lookup scope', () => {
     return source.slice(start, end);
   }
 
-  it('issues daemon.listSessions for a recovery only when the shell is WSL', () => {
+  it('issues daemon.listSessions for a recovery (or a WSL source pane) only when the shell is WSL', () => {
     const region = daemonCreateRegion();
     const lookups = region.match(/daemonClient\.rpc\('daemon\.listSessions'/g) ?? [];
     expect(lookups).toHaveLength(1);
     // Non-WSL (or no source session) short-circuits to [] with no RPC.
     expect(region).toMatch(
-      /const recoverySessions = recoveryId && isWslShell\(shell\)\s*\?\s*await daemonClient\.rpc\('daemon\.listSessions', \{\}\)[^\n]*\n\s*: \[\];/,
+      /const recoverySessions = \(recoveryId \|\| wslFromId\) && isWslShell\(shell\)\s*\?\s*await daemonClient\.rpc\('daemon\.listSessions', \{\}\)[^\n]*\n\s*: \[\];/,
     );
+    // A create naming a WSL source pane with a non-WSL shell is refused before any lookup.
+    expect(region.indexOf('throw failCreate(WSL_FROM_NOT_WSL)')).toBeLessThan(region.indexOf('const recoverySessions = '));
   });
 
   it('resolves the effective shell before the gated lookup', () => {
