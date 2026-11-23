@@ -11752,10 +11752,10 @@ async function main(): Promise<void> {
             if (moved.ok) await a2aDeliveryRef?.syncTask(taskId);
             return moved.ok ? { ok: true } : { ok: false, error: moved.error };
           },
-          // Read once per turn end (headlessDelivery.readFacts), never on a timer: briefly, and without
-          // the optional index lock the agent's own git may be holding.
+          // Read once per turn end (headlessDelivery.readFacts), never on a timer: briefly, without the
+          // optional index lock the agent's own git may be holding, and in git's own words (any locale).
           progressOf: (rec) => (rec.worktreePath && rec.baseCommit
-            ? worktreeProgress(gitRunner(rec.worktreePath, { timeoutMs: HEADLESS_PROGRESS_GIT_TIMEOUT_MS, env: { GIT_OPTIONAL_LOCKS: '0' } }), rec.baseCommit)
+            ? worktreeProgress(gitRunner(rec.worktreePath, { timeoutMs: HEADLESS_PROGRESS_GIT_TIMEOUT_MS, env: { GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' } }), rec.baseCommit)
             : Promise.resolve(null)),
           log: a2aLog,
         });

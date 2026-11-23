@@ -61,4 +61,15 @@ describe('worktreeProgress', () => {
     expect(await worktreeProgress(gitRunner(r.repo, { env: r.env }), 'f'.repeat(40))).toBeNull();
     expect(await worktreeProgress(gitRunner(dir, { env: r.env }), 'f'.repeat(40))).toBeNull();
   });
+
+  it('a diff summary it cannot read (git in another language) is no count, not zero', async () => {
+    const git = async (args: string[]) => (args[0] === 'log'
+      ? { code: 0, stdout: `${'a'.repeat(40)}\u00002026-11-24T01:00:00+09:00\n`, stderr: '' }
+      : { code: 0, stdout: ' 3 Dateien geändert, 10 Zeilen hinzugefügt(+)\n', stderr: '' });
+    expect(await worktreeProgress(git as never, 'b'.repeat(40))).toBeNull();
+    const none = async (args: string[]) => (args[0] === 'log'
+      ? { code: 0, stdout: `${'a'.repeat(40)}\u00002026-11-24T01:00:00+09:00\n`, stderr: '' }
+      : { code: 0, stdout: '', stderr: '' });
+    expect(await worktreeProgress(none as never, 'b'.repeat(40))).toMatchObject({ head: 'a'.repeat(12), changedFiles: 0 });
+  });
 });

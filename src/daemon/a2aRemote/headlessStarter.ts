@@ -637,6 +637,8 @@ export async function worktreeProgress(git: Git, base: string): Promise<A2aRemot
   // One summary line whatever the number of files ("N files changed, ..."; nothing when none).
   const diff = await git(['diff', '--shortstat', '--no-renames', base, '--']);
   if (diff.code !== 0) return null;
+  // Its words are git's own (LC_ALL=C on this read): a line it cannot read is no count, not zero.
   const changed = /(\d+) files? changed/.exec(diff.stdout);
+  if (!changed && diff.stdout.trim() !== '') return null;
   return parseA2aRemoteProgress({ head: sha, committedAt, changedFiles: changed ? Number(changed[1]) : 0 });
 }

@@ -267,6 +267,8 @@ export interface Episode {
   taskId: string;
   sessionId: string;
   workspaceId: string;
+  /** This turn end's worktree facts were asked for (readFacts): its retries do not ask again. */
+  factsRead?: true;
   /**
    * sha256 of the prompt as typed (sanitized), in the shared normal form
    * (shared/promptMatch.ts: paste markers and whitespace removed), which the
@@ -566,6 +568,8 @@ export class HeadlessDelivery {
   private readonly worktreeFacts = new Map<string, A2aRemoteProgressV1>();
   /** Tasks whose worktree facts are being read now. */
   private readonly factsReading = new Set<string>();
+  /** Tasks with a turn end that came while their read was out: read once more after it. */
+  private readonly factsAgain = new Map<string, Episode>();
   /** Answers being typed now (`taskId \0 messageId`): the same message is never typed twice. */
   private readonly answering = new Set<string>();
   /** After an answer, by session: the transcript read on for turns nothing on this PC started. */
@@ -880,8 +884,13 @@ export class HeadlessDelivery {
   private readFacts(ep: Episode): void {
     const read = this.deps.progressOf;
     const rec = read ? this.deps.starts.list().find((r) => r.sessionId === ep.sessionId) : undefined;
-    if (!read || !rec || this.factsReading.has(ep.taskId)) return;
+    if (!read || !rec) return;
     const taskId = ep.taskId;
+    // A turn end while a read is out: one more read once it is done, so the facts are this turn end's.
+    if (this.factsReading.has(taskId)) {
+      this.factsAgain.set(taskId, ep);
+      return;
+    }
     this.factsReading.add(taskId);
     void read(rec)
       .catch((err: unknown) => {
@@ -892,7 +901,12 @@ export class HeadlessDelivery {
         if (facts && !this.ended(taskId)) this.worktreeFacts.set(taskId, facts);
         else this.worktreeFacts.delete(taskId);
       })
-      .finally(() => this.factsReading.delete(taskId));
+      .finally(() => {
+        this.factsReading.delete(taskId);
+        const again = this.factsAgain.get(taskId);
+        this.factsAgain.delete(taskId);
+        if (again && !this.ended(taskId)) this.readFacts(again);
+      });
   }
 
   /**
@@ -1441,6 +1455,11 @@ export class HeadlessDelivery {
     }
     const task = this.deps.tasks.get(ep.taskId);
     if (!task || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return this.drop(ep);
+    // Once per turn end, before its reply is tried (a reply that throws is tried again on a later pass).
+    if (!ep.factsRead) {
+      ep.factsRead = true;
+      this.readFacts(ep);
+    }
     const replied = task.history.filter((m) => m.role === 'agent').length > ep.agentMessagesAtSend;
     if (!replied) {
       // Over the body limit: its start goes, with a marker (an answer leads with its result).
@@ -1465,8 +1484,6 @@ export class HeadlessDelivery {
     const fromPeer = new Set(((answered?.metadata.remote as A2aRemoteTaskState | undefined)?.inbox ?? []).map((i) => i.messageId));
     const own = (answered?.history ?? []).filter((m) => m.role === 'agent' && !fromPeer.has(m.messageId)).at(-1);
     if (own && !ep.replyId) ep.replyId = own.messageId;
-    // Once per turn end: a retry of its reply or its move does not read again.
-    if (first) this.readFacts(ep);
     if (!ep.working) await this.toWorking(ep);
     if (this.deps.tasks.get(ep.taskId)?.status.state !== 'working') return this.drop(ep);
     const moved = await this.deps.transition({ taskId: ep.taskId, workspaceId: ep.workspaceId, to: 'input-required' })
@@ -1479,7 +1496,7 @@ export class HeadlessDelivery {
     // Read on from here for turns nothing on this PC starts (only while nothing else took the session).
     if (ep.path !== null && !this.episodes.has(ep.sessionId) && !this.ending.has(ep.sessionId)) {
       this.afterwards.set(ep.sessionId, {
-        ...ep, opened: true, answer: [], endPending: undefined, limitStopped: false, limitTold: undefined, outcome: null, waitingSince: null, busy: false, lastProgress: null,
+        ...ep, opened: true, answer: [], endPending: undefined, limitStopped: false, limitTold: undefined, outcome: null, waitingSince: null, busy: false, lastProgress: null, factsRead: undefined,
       });
     }
   }

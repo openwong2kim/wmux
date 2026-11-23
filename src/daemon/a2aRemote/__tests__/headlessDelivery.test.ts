@@ -1945,6 +1945,54 @@ describe('the status this delivery reports for each task (headlessStatus.ts send
     expect(last()?.detail?.progress).toBeUndefined();
   });
 
+  it('a turn end that comes while a read is out is read again once that read is done', async () => {
+    let reads = 0;
+    const pending: Array<() => void> = [];
+    const d = new HeadlessDelivery(statusDeps({ progressOf: () => {
+      reads += 1;
+      const n = reads;
+      return new Promise((resolve) => { pending.push(() => resolve({ head: n === 1 ? 'aaaaaaa' : 'bbbbbbb', changedFiles: n })); });
+    } }));
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(reads).toBe(1);
+    // A follow-up's turn ends while the first read is still out.
+    task.history.push({ kind: 'message', messageId: 'm9', role: 'user', parts: [{ kind: 'text', text: 'again' }] });
+    (task.metadata.remote as A2aRemoteTaskState).inbox = [{ messageId: 'm9', kind: 'reply', delivered: false }];
+    await d.tick();
+    write(userLine('again'), assistantLine('done'));
+    await d.tick();
+    await d.tick();
+    expect(reads).toBe(1);
+    pending.shift()!();
+    await d.tick();
+    expect(reads).toBe(2);
+    pending.shift()!();
+    await d.tick();
+    await d.tick();
+    expect(last()?.detail?.progress).toEqual({ head: 'bbbbbbb', changedFiles: 2 });
+  });
+
+  it('a turn end whose reply throws, tried again on a later pass, reads its worktree once', async () => {
+    let reads = 0;
+    let throws = 1;
+    const base = statusDeps();
+    const d = new HeadlessDelivery(statusDeps({
+      progressOf: async () => { reads += 1; return { head: 'abc1234', changedFiles: 0 }; },
+      reply: async (input) => {
+        if (throws-- > 0) throw new Error('pipe closed');
+        return base.reply(input);
+      },
+    }));
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    for (let i = 0; i < 4; i++) await d.tick();
+    expect(task.status.state).toBe('input-required');
+    expect(reads).toBe(1);
+    expect(last()?.detail?.progress).toEqual({ head: 'abc1234', changedFiles: 0 });
+  });
+
   it('a turn end whose move is tried again reads its worktree once', async () => {
     let reads = 0;
     let fails = 2;
