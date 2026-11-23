@@ -18,6 +18,7 @@ import { headlessFlagPath, headlessReleasePath } from '../../daemon/a2aRemote/he
 import { HEADLESS_STARTS_FILE, coerceHeadlessStart, type HeadlessStartRecordV1 } from '../../daemon/a2aRemote/headlessStartStore';
 import { isNestingMarker } from '../../shared/envFilter';
 import { policyIo } from './remote';
+import { pruneHeadless } from './headlessPrune';
 import {
   defaultDaemonServiceDeps,
   installDaemonService,
@@ -536,12 +537,13 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
     else console.log('Headless mode: off. No new remote start here. Agents it started that still run end within a minute; their worktrees and branches are kept. With nothing attached, the daemon exits when idle again.');
     return;
   }
-  if (verb !== 'on' && verb !== 'release') headlessFail('Usage: wmux daemon headless on | off | status | release <spawn id>');
+  if (verb !== 'on' && verb !== 'release' && verb !== 'prune') headlessFail('Usage: wmux daemon headless on | off | status | release <spawn id> | prune [--dry-run]');
   // A person decides this, in a terminal outside wmux: an agent may not do it for itself.
   const env = process.env;
   const marker = env.WMUX_PTY_ID ? 'WMUX_PTY_ID' : Object.keys(env).find((k) => env[k] !== undefined && isNestingMarker(k));
   if (marker) headlessFail(`\`wmux daemon headless ${verb}\` is not run from an agent session or a wmux pane (${marker} is set). A person must run it, in a terminal outside wmux.`);
   if (verb === 'release') return releaseHold(spawnIdArg, wmuxDir, jsonMode);
+  if (verb === 'prune') return runPrune(spawnIdArg, wmuxDir, jsonMode);
   const APP_USED = 'the desktop app has used this install; it starts remote agents here. Headless mode is only for a host without the app.';
   if (await appKnown(wmuxDir)) headlessFail(APP_USED);
   if (!policyIo.stdinIsTty()) headlessFail('`wmux daemon headless on` asks for a typed confirmation. Run it in a terminal.');
@@ -590,6 +592,28 @@ async function releaseHold(spawnId: string | undefined, wmuxDir: string, jsonMod
   else console.log('Released. The daemon ends it within a minute.');
 }
 
+/**
+ * `prune [--dry-run]`: remove the kept worktrees of ended starts that are
+ * clean and whose work is pushed or was fetched back (headlessPrune.ts), and
+ * list what stays, with why.
+ */
+async function runPrune(arg: string | undefined, wmuxDir: string, jsonMode: boolean): Promise<void> {
+  if (arg !== undefined && arg !== '--dry-run') headlessFail('Usage: wmux daemon headless prune [--dry-run]');
+  if (!policyIo.stdinIsTty()) headlessFail('`wmux daemon headless prune` removes worktrees. Run it in a terminal.');
+  const dryRun = arg === '--dry-run';
+  const daemonRunning = (await headlessIo.daemonView()) !== null;
+  const res = await pruneHeadless(wmuxDir, { dryRun, daemonRunning });
+  if (jsonMode) {
+    console.log(JSON.stringify({ ok: true, ...res }, null, 2));
+    return;
+  }
+  console.log(`${dryRun ? 'Would remove' : 'Removed'}: ${res.removed.length}`);
+  for (const e of res.removed) console.log(`  ${e.worktreePath} (${e.spawnId} from ${e.hostId}): ${e.reason}`);
+  console.log(`Kept: ${res.kept.length}`);
+  for (const e of res.kept) console.log(`  ${e.worktreePath} (${e.spawnId} from ${e.hostId}): ${e.reason}`);
+  if (!dryRun && res.removed.length > 0 && daemonRunning) console.log('The daemon drops their records at its next reconcile (within a minute).');
+}
+
 export async function handleDaemon(sub: string | undefined, rest: string[], jsonMode: boolean): Promise<void> {
   switch (sub) {
     case 'headless':
@@ -610,7 +634,7 @@ export async function handleDaemon(sub: string | undefined, rest: string[], json
       if (jsonMode) {
         console.log(JSON.stringify({ ok: false, error: `unknown subcommand: ${sub ?? '(none)'}` }, null, 2));
       } else {
-        console.error(`Usage: wmux daemon start | stop | status | run | install-service | uninstall-service | headless on|off|status|release`);
+        console.error(`Usage: wmux daemon start | stop | status | run | install-service | uninstall-service | headless on|off|status|release|prune`);
       }
       process.exitCode = 1;
   }

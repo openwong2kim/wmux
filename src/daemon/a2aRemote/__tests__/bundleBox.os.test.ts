@@ -327,7 +327,8 @@ describe('BundleBox', () => {
     const rec = start();
     starts.push(rec);
     commit(rec.worktreePath!, 'work.txt', 'done\n');
-    const b = box();
+    const taken: Array<[string, string, string]> = [];
+    const b = box({ taken: (hostId, spawnId, head) => void taken.push([hostId, spawnId, head]) });
     const first = await answerTo(ask(b, ASKER, { op: 'make', spawnId: rec.spawnId, origin: ORIGIN }));
     expect(first).toMatchObject({ op: 'made' });
     if (first.op !== 'made') return;
@@ -340,6 +341,8 @@ describe('BundleBox', () => {
     ask(b, ASKER, { op: 'done', bundleId: first.manifest.bundleId });
     await vi.waitFor(() => expect(fs.existsSync(file)).toBe(false), { timeout: 10_000 });
     expect(b.standing(ASKER)).toEqual([]);
+    // The head it was made at is recorded as fetched back (prune reads it).
+    expect(taken).toEqual([[ASKER, rec.spawnId, g(rec.worktreePath!, 'rev-parse', 'HEAD')]]);
   });
 
   it('only the asking PC\'s own starts: another PC\'s spawn and an unknown one are `unknown-spawn`; one started in the app is `not-supported`', async () => {

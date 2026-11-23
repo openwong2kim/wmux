@@ -11627,6 +11627,9 @@ async function main(): Promise<void> {
             if (!a2aDeliveryRef) throw new Error('messages between PCs are not carried this run');
             a2aDeliveryRef.outbox.enqueue(hostId, envelope);
           },
+          taken: (hostId, spawnId, head) => {
+            if (headlessStarts.get(hostId, spawnId)) headlessStarts.update(hostId, spawnId, { fetchedHead: head });
+          },
           limits: () => (config.a2aRemote?.bundleBytes !== undefined ? { bundleBytes: config.a2aRemote.bundleBytes } : {}),
           log: a2aLog,
         });

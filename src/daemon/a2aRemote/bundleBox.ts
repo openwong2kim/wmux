@@ -85,6 +85,8 @@ export interface BundleBoxDeps {
   startedInApp?: (hostId: HostId, spawnId: string) => boolean;
   outbox: Pick<BundleOutbox, 'offer' | 'withdraw' | 'send'>;
   enqueue: (hostId: HostId, envelope: A2aRemoteEnvelope) => void;
+  /** The asking PC took the bundle of that start made at `head` (`wmux daemon headless prune` reads it). */
+  taken?: (hostId: HostId, spawnId: string, head: string) => void;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
   /** The limits of the moment (settings), over BUNDLE_BOX_DEFAULTS. */
   limits?: () => Partial<BundleBoxLimits>;
@@ -298,6 +300,14 @@ export class BundleBox {
 
   /** The asking PC took it: the offer ends and the file goes. */
   private done(hostId: HostId, bundleId: string): void {
+    const o = this.offers.get(hostId)?.get(bundleId);
+    if (o) {
+      try {
+        this.deps.taken?.(hostId, o.spawnId, o.head);
+      } catch (err) {
+        this.deps.log('warn', `[a2a-remote] bundle ${bundleId} for ${hostId}: taken, not recorded: ${errMsg(err)}`);
+      }
+    }
     this.drop(hostId, bundleId);
   }
 

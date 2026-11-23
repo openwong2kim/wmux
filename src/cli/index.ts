@@ -92,6 +92,8 @@ DAEMON (headless lifecycle, no Electron/GUI required)
   daemon headless on|off|status     Host without the desktop app: let the daemon
                                     start agents that paired PCs' allow rules match
   daemon headless release <id>      Drop the hold on a start whose processes were checked
+  daemon headless prune [--dry-run] Remove ended starts' worktrees that are clean and
+                                    pushed or fetched back; list the rest with why
 
 WEB ACCESS (browser / PWA)
   web                               Serve wmux panes to a browser (read-only,
