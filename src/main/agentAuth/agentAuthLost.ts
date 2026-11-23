@@ -84,11 +84,6 @@ export class AuthLostBoard {
 }
 
 /**
- * The env an entry's status check runs with: a copy of `base` (main's own
- * environment is never written to) naming the entry's account folder, or
- * none at all for the agent's default account, so an inherited one is out.
- */
-/**
  * A WSL home's sign-in evidence (the daemon sends the pane's target only for a
  * hook whose transcript lies under that home, daemon/wslAuthEvidence.ts):
  * recorded for the account whose folder the sign-in key names, in that
@@ -111,6 +106,11 @@ export function noteWslHomeAuth(
   }
 }
 
+/**
+ * The env an entry's status check runs with: a copy of `base` (main's own
+ * environment is never written to) naming the entry's account folder, or
+ * none at all for the agent's default account, so an inherited one is out.
+ */
 export function loginProbeEnv(entry: Pick<AuthLostEntry, 'agent' | 'configDir'>, base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
   const envKey = authConfigEnvKey(entry.agent);

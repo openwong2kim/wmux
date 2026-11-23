@@ -41,6 +41,15 @@ export const WSL_CANDIDATE_MAX_AGE_MS = 10 * 60 * 1000;
 
 const KEY_MARK = '@wsl:';
 
+function firstSnapshot(update: UsageUpdate, nowMs: number): UsageSnapshot | null {
+  if (!update.session && !update.weekly) return null;
+  return {
+    ...(update.session ? { sessionPct: update.session.pct, sessionResetEpochSec: update.session.resetEpochSec } : {}),
+    ...(update.weekly ? { weeklyPct: update.weekly.pct, weeklyResetEpochSec: update.weekly.resetEpochSec } : {}),
+    fetchedAtMs: nowMs,
+  };
+}
+
 /** Distro names compare as the daemon's target.distribution does: any case. */
 function placeHash(place: WslPlace): string {
   return createHash('sha256').update(`${place.distribution.toLowerCase()}\0${place.user}`).digest('hex').slice(0, 16);
@@ -99,7 +108,9 @@ export class WslAccountState {
     const key = wslStateKey(accountId, place);
     if (!key) return null;
     const e = this.entry(key);
-    const merged = mergeLive(e.snapshot, update, this.now());
+    // A first sample stands on its own even with one window (a plan that has
+    // no 5h one): no probe here seeds the other half.
+    const merged = mergeLive(e.snapshot, update, this.now()) ?? (e.snapshot ? null : firstSnapshot(update, this.now()));
     // Arrival is what makes a reading fresh, even when the numbers did not move.
     e.sampleAtMs = this.now();
     if (merged) e.snapshot = merged;
@@ -154,7 +165,8 @@ export class WslAccountState {
   reading(accountId: string, place: WslPlace, role: 'bound' | 'candidate'): AccountQuotaReading | null {
     const e = this.get(accountId, place);
     const s = e?.snapshot;
-    if (!e || !s || e.sampleAtMs === null) return null;
+    // A home whose last turn failed on its sign-in cannot run a launch.
+    if (!e || !s || e.sampleAtMs === null || e.signedIn === false) return null;
     if (role === 'candidate' && this.now() - e.sampleAtMs > WSL_CANDIDATE_MAX_AGE_MS) return null;
     const win = (pct: number | undefined, resetSec = 0) => (pct === undefined ? [] : [{
       remaining: 1 - Math.max(0, Math.min(100, pct)) / 100,

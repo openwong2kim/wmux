@@ -1041,9 +1041,15 @@ export function registerPTYHandlers(
       // Resolved before stageCreate: the quota gate decides by where it runs.
       const wslFromId = options?.wslFrom === undefined ? undefined : String(options.wslFrom);
       if (wslFromId !== undefined && !isWslShell(shell)) throw failCreate(WSL_FROM_NOT_WSL);
-      const recoverySessions = (recoveryId || wslFromId) && isWslShell(shell)
-        ? await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; state: string; cmd: string; args?: string[]; wslTarget?: WslTarget }>
-        : [];
+      let recoverySessions: Array<{ id: string; state: string; cmd: string; args?: string[]; wslTarget?: WslTarget }>;
+      try {
+        recoverySessions = (recoveryId || wslFromId) && isWslShell(shell)
+          ? await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; state: string; cmd: string; args?: string[]; wslTarget?: WslTarget }>
+          : [];
+      } catch (err) {
+        gateway?.open.close();
+        throw err;
+      }
       const trustedRecovery = recoveryId ? recoverySessions.find(s => s.id === recoveryId && s.state === 'dead' && isWslShell(s.cmd)) : undefined;
       const wslFromTarget = wslFromId ? liveWslTarget(recoverySessions, wslFromId) : undefined;
       if (wslFromId !== undefined && !wslFromTarget) throw failCreate(WSL_FROM_GONE);
@@ -1525,6 +1531,8 @@ export function registerPTYHandlers(
         ? await resolveWslWorkerGit(safeCwd, wslArgs?.[1] ?? null).catch(() => null)
         : null;
       const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, ...(botWorker || options?.fanoutTaskOf ? { automation: true } : {}), wslAccountLoginEnvKey, wslAccountHomeKey, ...(typeof accountId === 'string' ? { accountId } : {}), ...(ignoreAccountBinding === true ? { ignoreAccountBinding: true } : {}), ...(wslTaskGit ? { wslTaskGit } : {}) });
+      // Where a plain WSL pane starts in local mode: the place the gate reads for the next plain launch.
+      if (instance.wslAccount && !options?.recoveryCwds?.wslTarget) getWslAccountState().noteDefaultPlace(requestedWslDistro(options), instance.wslAccount.target);
       logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
       notePaneFenceCreate(instance.id, paneFence);
       if (botWorker) {

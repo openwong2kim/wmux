@@ -32,7 +32,7 @@ describe('pty.handler PTY_CREATE — account quota before wmux tools', () => {
 
   it('resolves where a WSL launch runs before the gate, from the one session lookup', () => {
     const daemon = source.slice(source.indexOf('ipcMain.handle(IPC.PTY_CREATE'));
-    const lookup = daemon.indexOf("const recoverySessions = ");
+    const lookup = daemon.indexOf("recoverySessions = (recoveryId");
     expect(lookup).toBeGreaterThan(-1);
     expect(lookup).toBeLessThan(daemon.indexOf('staged = await stageCreate('));
     expect(daemon.indexOf('const knownTarget = ')).toBeLessThan(daemon.indexOf('staged = await stageCreate('));

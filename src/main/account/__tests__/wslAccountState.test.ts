@@ -61,4 +61,16 @@ describe('wslAccountState', () => {
     expect(s.reading('a', PLACE, 'candidate')).toBeNull();
     expect(s.all().map(([k]) => k)).toEqual([key]);
   });
+
+  it('a home whose last turn failed on its sign-in has no reading, and a one-window plan gets one from its first sample', () => {
+    const s = new WslAccountState(() => 1_000);
+    s.noteSample('a', PLACE, { weekly: { pct: 70, resetEpochSec: RESET } });
+    expect(s.reading('a', PLACE, 'candidate')?.windows).toEqual([{ remaining: expect.closeTo(0.3), resetAtMs: RESET * 1000 }]);
+    s.noteAuth('a', PLACE, false);
+    expect(s.reading('a', PLACE, 'candidate')).toBeNull();
+    expect(s.reading('a', PLACE, 'bound')).toBeNull();
+    s.noteAuth('a', PLACE, true);
+    expect(s.reading('a', PLACE, 'bound')).not.toBeNull();
+  });
 });
+
