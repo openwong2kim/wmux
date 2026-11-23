@@ -31,6 +31,8 @@ export interface QuotaLaunchOptions {
 }
 
 export interface AccountQuotaGateDeps {
+  /** The pane runs in WSL: agy's account swap is the Windows Credential Manager slot, which an agy in WSL does not read. */
+  wsl?: boolean;
   prepareLaunch?: (vendor: Vendor, workspaceId: string | undefined) => Promise<RotationDecision>;
   /** agy branch: its machine-wide sign-in is handled by the agy account service. */
   prepareAgyLaunch?: (family: AgyModelFamily) => Promise<AgyLaunchDecision>;
@@ -59,7 +61,7 @@ export async function withAccountQuota<T extends QuotaLaunchOptions>(
   if (!options?.initialCommand || options.ignoreAccountBinding === true) return options;
   const { marker, command } = splitModelEnvMarker(options.initialCommand);
   const stem = launchStem(command);
-  if (stem === 'agy') return withAgyAccountQuota(options, { prepareLaunch: deps.prepareAgyLaunch });
+  if (stem === 'agy') return deps.wsl ? options : withAgyAccountQuota(options, { prepareLaunch: deps.prepareAgyLaunch });
   if (stem !== 'claude' && stem !== 'codex') return options;
   if (!isNewSessionLaunch(stem, command)) return options;
   const key = VENDOR_ENV_KEYS[stem];

@@ -10,6 +10,7 @@ import {
   type UsageRpcDeps,
 } from '../usage.rpc';
 import { paneUsageWindows, resetPaneUsageLimitsForTest } from '../../../usageLimit/paneUsageLimits';
+import { wslAccountHomeKey } from '../../../../shared/wslAccountHome';
 
 const RESET = 1_900_000_000;
 // Platform-neutral fixtures: absolute on POSIX and Windows alike.
@@ -171,3 +172,64 @@ describe('usage.rateLimits handler', () => {
     expect(deps.ingestAccount).toHaveBeenCalledWith('A', expect.objectContaining({ session: { pct: 13, resetEpochSec: RESET } }));
   });
 });
+
+describe('usage.rateLimits from a WSL pane', () => {
+  const FOLDER = 'C:\\Users\\me\\.wmux\\accounts\\claude-b';
+  const TARGET = { distribution: 'Ubuntu', user: 'me' };
+  const ENV = { CLAUDE_CONFIG_DIR: FOLDER, WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR' };
+  const HOME = `/home/me/.wmux/accounts/claude-${wslAccountHomeKey(FOLDER)}`;
+  afterEach(() => resetPaneUsageLimitsForTest());
+
+  function setup(pane: { target: typeof TARGET; env: Record<string, string> } | null | Error, wsl = true) {
+    let handler: ((p: Record<string, unknown>) => Promise<unknown>) | null = null;
+    const router = { register: (_m: string, h: typeof handler) => { handler = h; } } as unknown as RpcRouter;
+    const deps: UsageRpcDeps = {
+      listClaudeAccounts: () => [{ id: 'B', configDir: FOLDER.toUpperCase() }, { id: 'C', configDir: 'C:\\other' }],
+      defaultConfigDir: () => NOWHERE,
+      ingestDefault: vi.fn(() => true),
+      ingestAccount: vi.fn(() => true),
+      isWslPane: () => wsl,
+      wslPane: vi.fn(async () => { if (pane instanceof Error) throw pane; return pane; }),
+    };
+    registerUsageRpc(router, deps);
+    return { call: (p: Record<string, unknown>) => (handler ? handler(p) : Promise.reject(new Error('not registered'))), deps };
+  }
+
+  it('maps the pane\'s own account home to the account its env names', async () => {
+    const { call, deps } = setup({ target: TARGET, env: ENV });
+    await expect(call(sample({ configDir: HOME }))).resolves.toEqual({ ok: true, applied: true });
+    expect(deps.ingestAccount).toHaveBeenCalledTimes(1);
+    expect(deps.ingestAccount).toHaveBeenCalledWith('B', expect.anything());
+    expect(deps.ingestDefault).not.toHaveBeenCalled();
+    expect(Object.keys(paneUsageWindows())).toEqual(['pty-1']);
+  });
+
+  it('maps nothing for another home, another user, a failed lookup, or an unmarked env, but keeps the pane\'s window', async () => {
+    const cases: Array<[Parameters<typeof setup>[0], string]> = [
+      [{ target: TARGET, env: ENV }, '/home/me/.claude'],
+      [{ target: { ...TARGET, user: 'other' }, env: ENV }, HOME],
+      [{ target: TARGET, env: { CLAUDE_CONFIG_DIR: FOLDER } }, HOME],
+      [null, HOME],
+      [new Error('daemon gone'), HOME],
+    ];
+    for (const [pane, configDir] of cases) {
+      const { call, deps } = setup(pane);
+      await expect(call(sample({ configDir }))).resolves.toEqual({ ok: false, reason: 'unknown-account' });
+      expect(deps.ingestAccount).not.toHaveBeenCalled();
+      expect(deps.ingestDefault).not.toHaveBeenCalled();
+    }
+    expect(Object.keys(paneUsageWindows())).toEqual(['pty-1']);
+  });
+
+  it('an unset config dir stays the default profile, and a native pane never asks the daemon', async () => {
+    const wslPane = setup({ target: TARGET, env: ENV });
+    await expect(wslPane.call(sample())).resolves.toEqual({ ok: true, applied: true });
+    expect(wslPane.deps.ingestDefault).toHaveBeenCalledTimes(1);
+    expect(wslPane.deps.wslPane).not.toHaveBeenCalled();
+    const native = setup({ target: TARGET, env: ENV }, false);
+    await native.call(sample({ configDir: HOME }));
+    expect(native.deps.wslPane).not.toHaveBeenCalled();
+    expect(native.deps.ingestAccount).not.toHaveBeenCalled();
+  });
+});
+

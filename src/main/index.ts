@@ -120,6 +120,8 @@ import { revealStatsAggregator } from './perf/revealStatsAggregator';
 import { createGlyphRepaintLogSummary } from './perf/glyphRepaintLogSummary';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
 import { registerUsageRpc, registerUsageTrailRpc } from './pipe/handlers/usage.rpc';
+import { getPtyShell } from './pty/ptyShellRegistry';
+import { isWslShell, validWslTarget } from '../shared/wslTarget';
 import { registerFsWriteRpc } from './pipe/handlers/fsWrite.rpc';
 import { registerFsRpc } from './pipe/handlers/fs.rpc';
 import { setToolRefusalSource } from './agents/toolRefusals';
@@ -2030,6 +2032,15 @@ registerUsageRpc(rpcRouter, {
   listClaudeAccounts: () => getAccountStore().listAccounts()
     .filter((a) => a.vendor === 'claude')
     .map((a) => ({ id: a.id, configDir: a.configDir })),
+  // A WSL pane's sample names its account home in the distro: resolved against
+  // that pane's own env and user, as the daemon holds them.
+  isWslPane: (ptyId) => isWslShell(getPtyShell(ptyId)),
+  wslPane: async (ptyId) => {
+    if (!daemonClient) return null;
+    const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; wslTarget?: unknown; env?: Record<string, string> }>;
+    const s = sessions.find((x) => x.id === ptyId);
+    return s && validWslTarget(s.wslTarget) && s.env ? { target: s.wslTarget, env: s.env } : null;
+  },
   defaultConfigDir: () => path.join(os.homedir(), '.claude'),
   // A live push is recorded and read by the reserve at ingest: with the
   // meter off the poller stores it without telling its listeners.

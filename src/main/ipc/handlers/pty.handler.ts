@@ -372,7 +372,7 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
     if (rewritten !== line0) options = { ...options, initialCommand: rewritten };
   }
   // A pool worker's account was picked for it (withPoolAccount): no rotation.
-  let staged = poolPinned ? options : await withAccountQuota(options);
+  let staged = poolPinned ? options : await withAccountQuota(options, { wsl });
   let level: string | undefined;
   const line = staged?.initialCommand;
   if (botWorker && staged && line && namesClaude(line) && !namesCodex(line)) {

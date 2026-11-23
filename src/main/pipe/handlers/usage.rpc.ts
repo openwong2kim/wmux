@@ -18,6 +18,8 @@ import type { RpcRouter } from '../RpcRouter';
 import type { UsageUpdate, UsageWindow } from '../../claude/usageMerge';
 import { notePaneUsageSample } from '../../usageLimit/paneUsageLimits';
 import type { UsageTrailSample } from '../../usage/usageTrail';
+import { canonicalAccountFolder, wslAccountLinuxHome } from '../../../shared/wslAccountHome';
+import type { WslTarget } from '../../../shared/wslTarget';
 
 export interface UsageRpcDeps {
   /** Registered claude accounts (id + canonical config dir). */
@@ -28,6 +30,42 @@ export interface UsageRpcDeps {
   ingestDefault: (update: UsageUpdate) => boolean;
   ingestAccount: (accountId: string, update: UsageUpdate) => boolean;
   log?: (line: string) => void;
+  /** Whether the pane runs in WSL (its shell, as main recorded it). */
+  isWslPane?: (ptyId: string) => boolean;
+  /** A WSL pane's distro, user and env, from the daemon; null when unknown. */
+  wslPane?: (ptyId: string) => Promise<{ target: WslTarget; env: Record<string, string> } | null>;
+}
+
+/**
+ * A WSL pane's sample naming a config dir. That dir is a Linux path in the
+ * distro, which only the pane's own account home can be: the one its env and
+ * user give (shared/wslAccountHome.ts). That home is the account whose Windows
+ * folder the pane's env names; anything else (the distro's own folders, another
+ * user's) is no registered account. The pane's own window is kept either way.
+ */
+async function ingestWslSample(
+  parsed: { configDir: string; ptyId: string; update: UsageUpdate },
+  deps: UsageRpcDeps,
+): Promise<{ ok: true; applied: true } | { ok: false; reason: 'unknown-account' | 'not-applied' }> {
+  const pane = await deps.wslPane?.(parsed.ptyId).catch(() => null) ?? null;
+  const home = pane ? wslAccountLinuxHome(pane.env, 'claude', pane.target.user) : null;
+  const folder = pane?.env.CLAUDE_CONFIG_DIR;
+  if (!pane || !home || !folder || parsed.configDir !== home) {
+    notePaneUsageSample(parsed.ptyId, parsed.update, `wsl:${pane?.target.distribution ?? ''}:${parsed.configDir}`);
+    deps.log?.(`[usage.rateLimits] dropped: a WSL config dir that is not the pane's account home (pty ${parsed.ptyId})`);
+    return { ok: false, reason: 'unknown-account' };
+  }
+  // Keyed as the account's Windows folder, so its windows are the account's.
+  notePaneUsageSample(parsed.ptyId, parsed.update, await dirIdentity(folder));
+  const want = canonicalAccountFolder(folder);
+  const ids = deps.listClaudeAccounts().filter((a) => canonicalAccountFolder(a.configDir) === want).map((a) => a.id);
+  if (ids.length === 0) {
+    deps.log?.(`[usage.rateLimits] dropped: the WSL pane's account is not registered (pty ${parsed.ptyId})`);
+    return { ok: false, reason: 'unknown-account' };
+  }
+  let applied = false;
+  for (const id of ids) applied = deps.ingestAccount(id, parsed.update) || applied;
+  return applied ? { ok: true, applied: true } : { ok: false, reason: 'not-applied' };
 }
 
 /** Budget for resolving the caller's config dir. Filesystem calls on a stalled
@@ -141,6 +179,11 @@ export function registerUsageRpc(router: RpcRouter, deps: UsageRpcDeps): void {
   router.register('usage.rateLimits', async (params) => {
     const parsed = validateRateLimitsParams(params);
     if (!parsed) return { ok: false, reason: 'invalid' };
+    // A WSL pane naming its config dir names a Linux one; unset, it is the
+    // default profile as for any pane.
+    if (parsed.ptyId && parsed.configDir !== null && deps.isWslPane?.(parsed.ptyId)) {
+      return ingestWslSample({ configDir: parsed.configDir, ptyId: parsed.ptyId, update: parsed.update }, deps);
+    }
     // Per pane, whatever account it is: a pane held at a usage limit with no
     // reset time in its hook text takes it from its own exhausted window, and
     // a pane close to its limit is shown so. Keyed by the dir's identity (unset

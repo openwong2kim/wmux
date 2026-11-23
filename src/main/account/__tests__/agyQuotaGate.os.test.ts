@@ -82,6 +82,12 @@ describe('withAgyAccountQuota', () => {
     expect(out?.initialCommand).toMatch(/^echo "wmux: agy was not started/);
     expect(prepareLaunch).not.toHaveBeenCalled();
   });
+
+  it('leaves an agy launch in a WSL pane alone: the swap is a Windows sign-in that agy there does not read', async () => {
+    const prepareAgyLaunch = vi.fn(async () => OUT);
+    expect(await withAccountQuota<QuotaLaunchOptions>({ initialCommand: 'agy' }, { prepareAgyLaunch, wsl: true })).toEqual({ initialCommand: 'agy' });
+    expect(prepareAgyLaunch).not.toHaveBeenCalled();
+  });
 });
 
 // A fan-out task's line reads its prompt file with command substitution. That is wmux's own argument,
