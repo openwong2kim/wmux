@@ -19,6 +19,7 @@ import { agentRow } from '../../../shared/agentIdentity';
 import { accountGroupOf, groupAccountsBoundFirst } from '../../../shared/accountGroup';
 import { findWorkspaceSurfaceByPtyId } from '../../utils/paneTraversal';
 import type { Toast } from '../../stores/slices/toastSlice';
+import { paneWslSession } from '../../terminal/paneForegroundProbe';
 
 /**
  * A new pane beside the one running `ptyId` (the workspace's active pane when
@@ -123,16 +124,21 @@ export function usePaneContinueOnAccount(opts: {
   const reload = useCallback(() => {
     const api = window.electronAPI?.accounts;
     if (!api || !ready) return;
-    void api.list().then((res) => {
+    // An account's sign-in status is its Windows folder's. A WSL pane runs
+    // the account on its own home in the distro, where Claude asks for a
+    // sign-in itself when there is none, so the Windows one does not gate it.
+    const pty = window.electronAPI?.pty;
+    const wsl = pty && ptyId ? paneWslSession(ptyId, pty).then((s) => s.wsl) : Promise.resolve(false);
+    void Promise.all([api.list(), wsl]).then(([res, wslPane]) => {
       const rows = res.accounts.filter((a) => agentRow(a.vendor)?.continueOnAccount);
       const bound = workspaceId ? rows.find((a) => a.id === res.bindings[workspaceId]?.claude) : undefined;
       const buckets = groupAccountsBoundFirst(rows, bound ? accountGroupOf(bound) : null);
       setAccounts(buckets.flatMap((b) => b.accounts).map((a) => ({
-        id: a.id, name: a.name, group: a.group, loggedIn: a.status.loggedIn || a.tokenSignIn?.usable === true,
+        id: a.id, name: a.name, group: a.group, loggedIn: wslPane || a.status.loggedIn || a.tokenSignIn?.usable === true,
       })));
       setOtherFrom(bound && buckets.length > 1 ? buckets[0].accounts.length : -1);
     }).catch(() => { /* menu keeps the last rows */ });
-  }, [ready, workspaceId]);
+  }, [ready, workspaceId, ptyId]);
 
   const continueOn = useCallback(async (account: { id: string; name: string }) => {
     const api = window.electronAPI?.accounts;
@@ -174,7 +180,7 @@ export function usePaneContinueOnAccount(opts: {
 
   // Once any account has a group: the bound account's group first, one
   // divider before the other groups, and each account's group under its name.
-  // A logged-out account cannot take the conversation.
+  // A logged-out account cannot take the conversation (in a native pane).
   const subItems: PaneActionItem[] = useMemo(() => {
     const sectioned = accounts.some((a) => accountGroupOf(a) !== '');
     return accounts.map((account, i) => ({
