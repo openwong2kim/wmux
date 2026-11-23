@@ -1937,6 +1937,20 @@ describe('the status this delivery reports for each task (headlessStatus.ts send
     expect(last()?.detail?.progress).toBeUndefined();
   });
 
+  it('a turn that ends while work it left runs (its progress reply): read then too, and the working status carries them', async () => {
+    let reads = 0;
+    const facts = { head: 'abc1234def56', changedFiles: 1 };
+    const d = new HeadlessDelivery(statusDeps({ progressOf: async () => { reads += 1; return facts; } }));
+    await d.tick();
+    write(userLine(PROMPT), callLine('m1', 'Monitor', { command: 'tail -f log' }),
+      resultLine('m1', 'Monitor started (task mon1, expires in 15m unless the source ends first)'), assistantLine('Watching the log.'));
+    await d.tick();
+    await d.tick();
+    expect(reads).toBe(1);
+    expect(task.status.state).toBe('working');
+    expect(last()).toMatchObject({ taskId: TASK, detail: { progress: facts } });
+  });
+
   for (const [name, progressOf] of [['no worktree reader', undefined], ['a reader that fails', async () => { throw new Error('git is gone'); }]] as const) {
     it(`with ${name}, the status is as before`, async () => {
       const d = new HeadlessDelivery(statusDeps(progressOf ? { progressOf } : {}));

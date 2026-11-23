@@ -661,6 +661,10 @@ describe('a started task follows its A2A task', () => {
     s.view(0, { state: 'input-required', status: { kind: 'waiting-input', since: at, progress: { ...progress, changedFiles: 4 } } });
     await reconcileRemoteTasks(s.deps);
     expect(s.row(0)).toMatchObject({ status: 'input_required', remote: { progress: { changedFiles: 4 } } });
+    // A status without them (that PC could not read the worktree) clears them.
+    s.view(0, { state: 'input-required', status: { kind: 'waiting-input', since: at } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).remote).not.toHaveProperty('progress');
   });
 
   it('reads the facts through the daemon\'s real state view, strictly: a malformed progress is dropped', () => {

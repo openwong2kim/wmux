@@ -1307,6 +1307,8 @@ export class HeadlessDelivery {
     const body = text.trim();
     ep.lastProgress = { text: body, sent: false };
     if (!body || this.ended(ep.taskId) || !this.budgetLeft(ep.taskId)) return;
+    // A turn end too: the facts go with the statuses from here on.
+    await this.readFacts(ep);
     const before = this.said(ep.taskId, cutReply(body));
     ep.lastProgress.sent = await this.sayFurther(ep, body);
     this.countAsSaid(ep, cutReply(body), before);
@@ -1374,9 +1376,13 @@ export class HeadlessDelivery {
       if (w.unsaid?.text === body && copies > w.unsaid.copies) {
         // The try before landed although its call failed.
         this.further.set(w.taskId, (this.further.get(w.taskId) ?? 0) + 1);
-      } else if (!(await this.sayFurther(w, body))) {
-        w.unsaid = { text: body, copies };
-        return 'held';
+      } else {
+        // A turn end of its own: the facts go with the statuses from here on.
+        await this.readFacts(w);
+        if (!(await this.sayFurther(w, body))) {
+          w.unsaid = { text: body, copies };
+          return 'held';
+        }
       }
       w.unsaid = null;
       return 'sent';

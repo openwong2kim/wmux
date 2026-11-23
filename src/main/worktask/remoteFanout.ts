@@ -810,9 +810,10 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   // A report stands: a reported task the daemon dropped later (its log keeps
   // ended tasks only a while) keeps its row as it is.
   if (!view) return entry.status === 'review_requested' ? undefined : failAfterGrace(`the task on ${r.pc} is no longer known here`);
-  // The worktree's facts, as that PC last said: kept on the row whatever else this pass does (no status moves for it).
+  // The worktree's facts, as that PC last said: kept on the row whatever else this pass does (no status moves for
+  // it). A status without them (that PC could not read them) clears them; no status at all leaves them.
   const progress = view.status?.progress;
-  if (progress && JSON.stringify(progress) !== JSON.stringify(r.progress)) await patch({ progress });
+  if (view.status && JSON.stringify(progress) !== JSON.stringify(r.progress)) await patch({ progress });
   const settled = r.waiting || r.goneSeenAt !== undefined ? { waiting: undefined, goneSeenAt: undefined } : null;
   const newReport = view.reportId !== undefined && view.reportId !== r.reportId;
   if (newReport || (view.state === 'completed' && entry.status !== 'review_requested')) {
