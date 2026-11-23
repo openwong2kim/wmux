@@ -299,7 +299,7 @@ export function factoryEngineLoginHandler(
 function defaultEngineLoginDeps(getWindow: () => BrowserWindow | null): Omit<EngineLoginDeps, 'platform'> {
   return {
     openTab: async (shell, initialCommand) =>
-      (await sendToRenderer(getWindow, 'surface.new', { ...(shell ? { shell } : {}), initialCommand }, { timeoutMs: 15_000 })) as { ptyId?: unknown; error?: unknown } | null,
+      (await sendToRenderer(getWindow, 'surface.new', { ...(shell ? { shell } : {}), initialCommand, signIn: true }, { timeoutMs: 15_000 })) as { ptyId?: unknown; error?: unknown } | null,
     windowsShell: () => new ShellDetector().getDefault(),
   };
 }

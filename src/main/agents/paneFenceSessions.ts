@@ -7,8 +7,10 @@
 // switch changes it for the next launch. Session ids are the daemon's, so the
 // record outlives an app restart that reattaches to the same sessions.
 //
-// Kept in memory and written through to the file. A missing or unreadable
-// file is an empty record.
+// Kept in memory and written through to the file; a local pane's `pty-N`
+// id is not written, since it starts again every app run. A record goes when its session is closed or dies, and at
+// startup when the daemon no longer has its session. A missing or
+// unreadable file is an empty record.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,8 +23,14 @@ export interface PaneFenceSession {
   /** The folder the last fenced launch was fenced to. */
   cwd?: string;
   settingsFile?: string;
+  mcpConfigFile?: string;
   tempDir?: string;
   at: number;
+}
+
+/** Whether a session id outlives an app run (not a local pane's `pty-N`). */
+function persists(id: string): boolean {
+  return !/^pty-\d+$/.test(id);
 }
 
 /** Most sessions the file keeps (the oldest go first). */
@@ -46,13 +54,14 @@ function load(dir: string): Map<string, PaneFenceSession> {
     const raw = JSON.parse(fs.readFileSync(getPaneFenceSessionsPath(dir), 'utf8')) as { sessions?: unknown };
     const sessions = raw && typeof raw.sessions === 'object' && raw.sessions && !Array.isArray(raw.sessions) ? raw.sessions as Record<string, unknown> : {};
     for (const [id, v] of Object.entries(sessions)) {
-      if (!id || id.length > 128 || !v || typeof v !== 'object') continue;
+      if (!id || id.length > 128 || !persists(id) || !v || typeof v !== 'object') continue;
       const r = v as Record<string, unknown>;
       if (typeof r.on !== 'boolean') continue;
       const cwd = str(r.cwd);
       const settingsFile = str(r.settingsFile);
+      const mcpConfigFile = str(r.mcpConfigFile);
       const tempDir = str(r.tempDir);
-      out.set(id, { on: r.on, ...(cwd ? { cwd } : {}), ...(settingsFile ? { settingsFile } : {}), ...(tempDir ? { tempDir } : {}), at: typeof r.at === 'number' ? r.at : 0 });
+      out.set(id, { on: r.on, ...(cwd ? { cwd } : {}), ...(settingsFile ? { settingsFile } : {}), ...(mcpConfigFile ? { mcpConfigFile } : {}), ...(tempDir ? { tempDir } : {}), at: typeof r.at === 'number' ? r.at : 0 });
     }
   } catch { /* missing or unreadable: empty */ }
   cache.set(dir, out);
@@ -72,7 +81,7 @@ function save(dir: string, sessions: Map<string, PaneFenceSession>): void {
   }
   try {
     fs.mkdirSync(path.dirname(getPaneFenceSessionsPath(dir)), { recursive: true, mode: 0o700 });
-    atomicWriteJSONSync(getPaneFenceSessionsPath(dir), { version: 1, sessions: Object.fromEntries(sessions) });
+    atomicWriteJSONSync(getPaneFenceSessionsPath(dir), { version: 1, sessions: Object.fromEntries([...sessions].filter(([id]) => persists(id))) });
   } catch (err) {
     console.warn('[pane-fence] the session record could not be written', err);
   }
@@ -86,9 +95,9 @@ export function getPaneFenceSession(sessionId: string, dir: string = getWmuxDir(
 /** Record a fenced launch of the session. Its switch stays as it is (a
  *  switch-off made while the launch was being checked holds); a session with
  *  no record yet is on. */
-export function notePaneFenceLaunch(sessionId: string, launch: { cwd: string; settingsFile: string; tempDir?: string }, dir: string = getWmuxDir(), now: number = Date.now()): void {
+export function notePaneFenceLaunch(sessionId: string, launch: { cwd: string; settingsFile: string; mcpConfigFile?: string; tempDir?: string }, dir: string = getWmuxDir(), now: number = Date.now()): void {
   const sessions = load(dir);
-  sessions.set(sessionId, { on: sessions.get(sessionId)?.on ?? true, cwd: launch.cwd, settingsFile: launch.settingsFile, ...(launch.tempDir ? { tempDir: launch.tempDir } : {}), at: now });
+  sessions.set(sessionId, { on: sessions.get(sessionId)?.on ?? true, cwd: launch.cwd, settingsFile: launch.settingsFile, ...(launch.mcpConfigFile ? { mcpConfigFile: launch.mcpConfigFile } : {}), ...(launch.tempDir ? { tempDir: launch.tempDir } : {}), at: now });
   save(dir, sessions);
 }
 
@@ -105,6 +114,22 @@ export function setPaneFenceOn(sessionId: unknown, on: unknown, dir: string = ge
   return on;
 }
 
+/** A closed or dead session's record goes. */
+export function forgetPaneFenceSession(sessionId: string, dir: string = getWmuxDir()): void {
+  const sessions = load(dir);
+  if (sessions.delete(sessionId)) save(dir, sessions);
+}
+
+/** Startup, once the daemon's sessions are known: the records of sessions
+ *  it no longer has go. */
+export function prunePaneFenceSessions(live: ReadonlySet<string>, dir: string = getWmuxDir()): number {
+  const sessions = load(dir);
+  let removed = 0;
+  for (const id of [...sessions.keys()]) if (!live.has(id) && sessions.delete(id)) removed += 1;
+  if (removed > 0) save(dir, sessions);
+  return removed;
+}
+
 /** The temp folders and settings files the records name (startup prune). */
 export function paneFenceNamedPaths(dir: string = getWmuxDir()): { tempDirs: Set<string>; files: Set<string> } {
   const tempDirs = new Set<string>();
@@ -112,6 +137,7 @@ export function paneFenceNamedPaths(dir: string = getWmuxDir()): { tempDirs: Set
   for (const r of load(dir).values()) {
     if (r.tempDir) tempDirs.add(r.tempDir);
     if (r.settingsFile) files.add(r.settingsFile);
+    if (r.mcpConfigFile) files.add(r.mcpConfigFile);
   }
   return { tempDirs, files };
 }

@@ -364,6 +364,7 @@ import type { ChatInteractionAnswer } from '../shared/transcript/chatSession';
 import { selfCheckPeerPid } from '../shared/peerPid';
 import { PANE_INPUT_HIGH_WATER, PANE_LOCK_DAEMON_WAIT_MS, PANE_LOCK_MAX_WAIT_MS, PaneDeliveryLocks, admitPaneInput, writeUnderLock } from './paneDeliveryLock';
 import { UnsentPasteHolds, deliverUnderHold } from './unsentPasteHold';
+import { paneFenceOnInRecord } from './web/paneFenceRecord';
 
 // A delivery asks whether the agent the tracker attributes still runs there,
 // not where its binary lives: the image rule (isAgentImage) would refuse a live
@@ -1155,6 +1156,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
         roomAttachmentsDir: path.join(wmuxDir, 'factory', 'room-attachments'),
         roomFilesDir: path.join(wmuxDir, 'factory', 'room-files'),
+        paneFenceOn: (id: string) => paneFenceOnInRecord(wmuxDir, id),
         // Each file served because an agent sent it with SendUserFile.
         auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
         // The Moa (HQ brain) pane main last vouched for, read per request so a
@@ -4122,6 +4124,7 @@ function registerRpcHandlers(
       uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
         roomAttachmentsDir: path.join(wmuxDir, 'factory', 'room-attachments'),
         roomFilesDir: path.join(wmuxDir, 'factory', 'room-files'),
+        paneFenceOn: (id: string) => paneFenceOnInRecord(wmuxDir, id),
       // See the restore path.
       auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
       // See the restore path.

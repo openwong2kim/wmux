@@ -25,6 +25,7 @@ import path from 'node:path';
 import { launcherStem, tokenize, type PermissionMode } from '../../shared/agentResume';
 import { WORKER_FENCE_FILE_ALLOW_RULE, WORKER_FENCE_REFUSED_PERMISSION_KEYS, WORKER_FENCE_REFUSED_SETTINGS_KEYS, WORKER_FENCE_REFUSED_WMUX_TOOLS, isClaudeLauncher, namesClaude, spliceSettingsFlag } from '../../shared/botWorkerGuard';
 import { splitModelEnvMarker } from '../../shared/workerLaunch';
+import { WRAPPER_STEMS } from '../../shared/paneFence';
 import { botSandboxDenyRead, type BotSandboxInput } from '../factory/botExecSandbox';
 import { WORKER_GATE_TIMEOUT_S } from './workerToolGate';
 
@@ -430,12 +431,8 @@ export type WorkerFenceLaunch =
   | { ok: false; refusal: WorkerFenceRefusal; reason: string };
 
 /** Programs that run another program: a line starting with one starts claude
- *  (if at all) where the fence's flag cannot be put. */
-export const WRAPPER_STEMS: ReadonlySet<string> = new Set([
-  'env', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'mksh', 'ash', 'fish', 'csh', 'tcsh', 'busybox',
-  'exec', 'command', 'builtin', 'eval', 'source', '.', 'nohup', 'nice', 'sudo', 'doas', 'su', 'time', 'timeout',
-  'stdbuf', 'xargs', 'script', 'caffeinate', 'npx', 'bunx', 'pnpx', 'cmd', 'powershell', 'pwsh', 'wsl',
-]);
+ *  (if at all) where the fence's flag cannot be put (shared/paneFence.ts). */
+export { WRAPPER_STEMS };
 
 // What a fenced worker's other settings may not set, because each would
 // loosen the fence. The launch that attaches the fence refuses or overrides

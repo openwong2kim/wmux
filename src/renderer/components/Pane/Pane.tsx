@@ -1007,16 +1007,17 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           (err: unknown) => {
             releaseAutoResume(ptyId);
             console.warn('[wmux:resume] the resume line was not typed', String(err));
+            // A fenced tab's refusal shows on its chip (utils/paneFence.ts),
+            // and is not tried again: the same line meets the same refusal.
+            const fenceRefused = notePaneFenceError(ptyId, err);
             // A screen main could not read may become readable: try again a
             // few times while this pane and binding stand (the cleanup below
             // cancels it). Every check above runs again on each try.
-            const wait = cancelled ? null : autoResumeRetryDelay(err, retries);
+            const wait = cancelled || fenceRefused ? null : autoResumeRetryDelay(err, retries);
             if (wait !== null) {
               retries++;
               timer = setTimeout(attempt, wait);
             }
-            // A fenced tab's refusal shows on its chip (utils/paneFence.ts).
-            notePaneFenceError(ptyId, err);
           },
         );
       }, () => undefined);

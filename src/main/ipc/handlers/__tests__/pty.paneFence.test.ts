@@ -35,13 +35,14 @@ vi.mock('../../../agents/paneFenceSessions', () => ({
   getPaneFenceSession: (id: string) => fence.sessions.get(id) ?? null,
   notePaneFenceLaunch: (id: string) => { fence.noted.push(id); fence.sessions.set(id, { on: true }); },
   setPaneFenceOn: (id: string, on: boolean) => { fence.sessions.set(id, { on }); return on; },
+  forgetPaneFenceSession: (id: string) => { fence.sessions.delete(id); },
 }));
 vi.mock('../../../agents/botWorkerFence', async (orig) => ({
   ...(await orig<typeof import('../../../agents/botWorkerFence')>()),
   workerFenceSupport: async () => ({ capable: true, exe: '/opt/claude', version: '2.1.316', selfTest: { ok: true } }),
 }));
 
-import { registerPTYHandlers } from '../pty.handler';
+import { paneFenceSpawnEnv, paneLiveFolder, registerPTYHandlers } from '../pty.handler';
 import { IPC } from '../../../../shared/constants';
 import type { PTYManager } from '../../../pty/PTYManager';
 import type { PTYBridge } from '../../../pty/PTYBridge';
@@ -149,5 +150,23 @@ describe('pty:write-launch and paneFence:set', () => {
     expect(out.written).toEqual(['claude --resume 7b0e3c2a-1f4d-4c8e-9a6b-2d5f8e1c3a90\r']);
     expect(fence.calls).toEqual([]);
     expect(out.result).toBeUndefined();
+  });
+});
+
+describe('what a fenced launch is checked against', () => {
+  it('the pane\'s live folder only, never the folder it was spawned in', async () => {
+    const rpc = async () => [{ id: 'daemon-1', cwd: '/w/now', spawnCwd: '/w/spawn' }, { id: 'daemon-2', spawnCwd: '/w/spawn' }];
+    expect((await paneLiveFolder('daemon-1', rpc)).folder).toBe('/w/now');
+    expect((await paneLiveFolder('daemon-2', rpc)).folder).toBeNull();
+  });
+
+  it('the env the pane spawns with: the bound account, then the pane\'s env with a named account over it', () => {
+    const base = { CLAUDE_CONFIG_DIR: '/home/u/.claude', PATH: '/bin' };
+    const bound = () => ({ CLAUDE_CONFIG_DIR: '/acc/bound' });
+    expect(paneFenceSpawnEnv({ workspaceId: 'ws-1' }, { base, bound }).CLAUDE_CONFIG_DIR).toBe('/acc/bound');
+    expect(paneFenceSpawnEnv({ workspaceId: 'ws-1', ignoreAccountBinding: true }, { base, bound }).CLAUDE_CONFIG_DIR).toBe('/home/u/.claude');
+    expect(paneFenceSpawnEnv({ workspaceId: 'ws-1', env: { CLAUDE_CONFIG_DIR: '/profile' } }, { base, bound }).CLAUDE_CONFIG_DIR).toBe('/profile');
+    const account = () => ({ id: 'a1', vendor: 'claude', configDir: '/acc/named' }) as never;
+    expect(paneFenceSpawnEnv({ workspaceId: 'ws-1', accountId: 'a1', env: { CLAUDE_CONFIG_DIR: '/profile' } }, { base, bound, account }).CLAUDE_CONFIG_DIR).toBe('/acc/named');
   });
 });

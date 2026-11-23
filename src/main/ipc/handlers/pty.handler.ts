@@ -41,7 +41,7 @@ import { isScreenReaderOn, launcherVersionsIn } from '../../screenReaderService'
 import { guardBotWorkerSessionText, guardCodexBotWorker } from '../../agents/codexWorkerGuard';
 import { workerFenceSupport, workerFenceSupportFor } from '../../agents/botWorkerFence';
 import { paneFenceCwdRefusal, paneFenceLaunch, paneLineStartsAgent, type PaneFenceLaunchRecord } from '../../agents/paneFence';
-import { getPaneFenceSession, notePaneFenceLaunch, setPaneFenceOn, type PaneFenceSession } from '../../agents/paneFenceSessions';
+import { forgetPaneFenceSession, getPaneFenceSession, notePaneFenceLaunch, setPaneFenceOn, type PaneFenceSession } from '../../agents/paneFenceSessions';
 import type { PaneFenceState } from '../../../shared/paneFence';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withholdCredentialsFromAgents } from '../../pty/credentialEnvPrefs';
@@ -336,9 +336,10 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
       const support = namesClaude(paneLine) ? await workerFenceSupport() : undefined;
       let fenced: ReturnType<typeof paneFenceLaunch>;
       try {
-        // The pane's own env (a profile's CLAUDE_CONFIG_DIR) names the config
-        // folder whose credentials the fence denies.
-        const fence = { env: { ...process.env, ...(staged.env ?? {}) } };
+        // The pane's env as the spawn resolves it (the workspace's bound
+        // account, then the pane's own env with a named account's folder):
+        // its CLAUDE_CONFIG_DIR is the config folder the fence reads and denies.
+        const fence = { env: paneFenceSpawnEnv(staged) };
         // The folder the create resolves to (a dead pane's respawn included),
         // which paneFenceCwdRefusal checks again once the create runs.
         const folder = resolvePtyCreateCwdForShell(typeof staged.cwd === 'string' ? staged.cwd : undefined, staged.recoveryCwds, shellPath).safeCwd;
@@ -368,13 +369,33 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
   return { options: pinned, launch: { ...launchOfCodex(guarded), ...guardedLaunchOf(guarded), ...(conversation ? { conversation } : {}) } };
 }
 
-/** The folder a line typed into pane `sessionId` starts in (its live
- *  folder, else the one it was spawned in; null when the daemon knows none)
- *  and the env the pane was spawned with (credential values stripped). */
-async function paneLiveFolder(sessionId: string, rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>): Promise<{ folder: string | null; env: Record<string, string> }> {
-  const sessions = await rpc('daemon.listSessions', {}) as Array<{ id?: unknown; cwd?: unknown; spawnCwd?: unknown; env?: unknown }>;
+/** The env a create's pane is spawned with, as far as the fence reads it:
+ *  the app's env, the workspace's bound account, then the pane's own env
+ *  with a named account's folder over it (resolveSpawnEnv's order). */
+export function paneFenceSpawnEnv(
+  options: PtyCreateOptions,
+  deps: { account?: (id: string) => Account | undefined; bound?: (workspaceId: string) => Record<string, string> | undefined; base?: NodeJS.ProcessEnv } = {},
+): Record<string, string | undefined> {
+  let named: ReturnType<typeof createAccountOverride>;
+  try {
+    named = createAccountOverride(options, { missingFolder: 'skip', ...(deps.account ? { account: deps.account, dirOk: () => true } : {}) });
+  } catch {
+    named = undefined; // the create refuses it itself, later
+  }
+  const bound = options.workspaceId && options.ignoreAccountBinding !== true
+    ? (deps.bound ?? ((ws: string) => getAccountStore().resolveWorkspaceAccountEnv(ws, () => undefined)))(options.workspaceId)
+    : undefined;
+  return { ...(deps.base ?? process.env), ...(bound ?? {}), ...((named ? withAccountFolderEnv(options.env, named) : options.env) ?? {}) };
+}
+
+/** The folder a line typed into pane `sessionId` starts in (the shell's live
+ *  folder; null when the daemon knows none: a fenced launch is refused then,
+ *  never fenced for the folder the pane was spawned in) and the env the pane
+ *  was spawned with (credential values stripped). */
+export async function paneLiveFolder(sessionId: string, rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>): Promise<{ folder: string | null; env: Record<string, string> }> {
+  const sessions = await rpc('daemon.listSessions', {}) as Array<{ id?: unknown; cwd?: unknown; env?: unknown }>;
   const s = Array.isArray(sessions) ? sessions.find((x) => x?.id === sessionId) : undefined;
-  const folder = [s?.cwd, s?.spawnCwd].find((f): f is string => typeof f === 'string' && f.length > 0 && path.isAbsolute(f));
+  const folder = typeof s?.cwd === 'string' && s.cwd.length > 0 && path.isAbsolute(s.cwd) ? s.cwd : undefined;
   const env: Record<string, string> = {};
   if (s?.env && typeof s.env === 'object') for (const [k, v] of Object.entries(s.env)) if (typeof v === 'string') env[k] = v;
   return { folder: folder ?? null, env };
@@ -398,7 +419,9 @@ async function fencePaneLaunchText(sessionId: string, text: string, dc: DaemonCl
   const support = namesClaude(text) ? await workerFenceSupport() : undefined;
   let fenced: ReturnType<typeof paneFenceLaunch>;
   try {
-    fenced = paneFenceLaunch(text, folder ?? undefined, { wsl: isWslShell(getPtyShell(sessionId)) }, { fence: { env: { ...process.env, ...env } }, ...(support !== undefined ? { support } : {}) });
+    // A resume takes the temp folder the last fenced launch used.
+    const fence = { env: { ...process.env, ...env }, ...(paneFence.tempDir ? { paneTempDir: paneFence.tempDir } : {}) };
+    fenced = paneFenceLaunch(text, folder ?? undefined, { wsl: isWslShell(getPtyShell(sessionId)) }, { fence, ...(support !== undefined ? { support } : {}) });
   } catch (err) {
     throw new Error(`PTY_WRITE_LAUNCH: ${(err as Error).message}`);
   }
@@ -1805,6 +1828,7 @@ export function registerPTYHandlers(
       forgetPtyShell(id);
       forgetFolderTrustPane(id);
       forgetBotWorkerSession(id);
+      forgetPaneFenceSession(id);
       // Drop the data forwarding listener for this session so a future
       // create or reconnect doesn't pile new listeners on top of dead ones.
       clearSessionDataListener(id);
@@ -1821,6 +1845,7 @@ export function registerPTYHandlers(
     ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       ptyManager.dispose(id);
       forgetBotWorkerSession(id);
+      forgetPaneFenceSession(id);
       await pruneSessionSchedules(id);
     }));
   }
@@ -2348,6 +2373,8 @@ export function registerPTYHandlers(
       // the process (and a recycled id would inherit the dead pane's shell).
       forgetPtyShell(payload.sessionId);
       forgetFolderTrustPane(payload.sessionId);
+      // A dead pane comes back as a new session, which records itself.
+      forgetPaneFenceSession(payload.sessionId);
       // #3049 — nor is a dead one; a pane recreated in its place records itself.
       getUserShellRecord(app.getPath('userData')).remove(payload.sessionId);
     };

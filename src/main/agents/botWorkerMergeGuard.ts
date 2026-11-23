@@ -135,6 +135,11 @@ export function setWorkerMcpResolvers(r: { entry: () => string | null; registere
   defaultRegisteredLevel = r.registeredLevel;
 }
 
+/** The resolvers pty.handler set (a person's fenced pane uses them too). */
+export function workerMcpResolvers(): { entry: () => string | null; registeredLevel: () => string | null } {
+  return { entry: defaultMcpEntry, registeredLevel: defaultRegisteredLevel };
+}
+
 // ── Which panes are a bot's workers: main's own records, never the renderer's
 // echo of the fan-out origin.
 //

@@ -8,11 +8,7 @@
 
 import { useStore } from '../stores';
 import { t } from '../i18n';
-import { paneFenceRefusalReason, type PaneFenceState } from '../../shared/paneFence';
-import { launcherStem, tokenize } from '../../shared/agentResume';
-import { AGENT_ROWS, agentLauncherStem } from '../../shared/agentIdentity';
-
-const AGENT_STEMS: ReadonlySet<string> = new Set(AGENT_ROWS.map(agentLauncherStem));
+import { paneFenceRefusalReason, paneLineAgents, type PaneFenceState } from '../../shared/paneFence';
 
 /** Whether main refused a fenced launch: notes the refusal on the tab's
  *  chip and returns true. Any other error returns false. */
@@ -50,8 +46,8 @@ export function keybindingGoesThroughFence(surface: { workerFence?: boolean }, c
  *  so it is refused (chip and toast) and nothing is typed. True when refused. */
 export function refuseMultilineFencedKeybinding(surface: { workerFence?: boolean }, ptyId: string, command: string): boolean {
   if (surface.workerFence !== true || !/[\r\n]/.test(command)) return false;
-  // Any word naming an agent (also behind a wrapper such as `command`).
-  if (!command.split(/[\r\n]+/).some((l) => tokenize(l).some((tok) => AGENT_STEMS.has(launcherStem(tok.value))))) return false;
+  // An agent at a command word of any line, or behind a wrapper.
+  if (paneLineAgents(command).length === 0) return false;
   const reason = t('paneFence.multiline');
   useStore.getState().setPaneFenceNotice(ptyId, { kind: 'refused', reason });
   useStore.getState().pushToast({ level: 'error', message: t('paneFence.refusedTitle', { reason }) });
@@ -79,11 +75,21 @@ export function setTabWorkerFence(surfaceId: string, ptyId: string | undefined, 
   if (!ptyId) return;
   store.setPaneFenceNotice(ptyId, agentRunning ? { kind: 'pending' } : null);
   asserted.add(ptyId);
-  window.electronAPI.pty.setFence?.(ptyId, on).catch((err: unknown) => {
-    // Not recorded in main: the next assertion tries again.
+  // Main's answer is the state in force: anything else puts the switch back,
+  // so the tab never shows a fence main does not apply.
+  const rollBack = (detail: string) => {
     asserted.delete(ptyId);
-    store.pushToast({ level: 'error', message: `${t('paneFence.switchFailed')} (${err instanceof Error ? err.message : String(err)})` });
-  });
+    const now = useStore.getState();
+    now.setSurfaceWorkerFence(surfaceId, !on);
+    now.setPaneFenceNotice(ptyId, null);
+    now.pushToast({ level: 'error', message: `${t('paneFence.switchFailed')}${detail ? ` (${detail})` : ''}` });
+  };
+  const sent = window.electronAPI.pty.setFence?.(ptyId, on);
+  if (!sent) return rollBack('');
+  sent.then(
+    (inForce: unknown) => { if (inForce !== on) rollBack(''); },
+    (err: unknown) => rollBack(err instanceof Error ? err.message : String(err)),
+  );
 }
 
 const asserted = new Set<string>();

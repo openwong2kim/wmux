@@ -1,4 +1,5 @@
 import { normalizeForPromptMatch, stripPasteMarkers } from '../../shared/promptMatch';
+import { paneLineAgents } from '../../shared/paneFence';
 import { LiveSettingsError, type LiveAgentSettings } from './codexLiveSettings';
 import type { PaneSettingsChoice } from './paneCodexSettings';
 import { buildAgentLaunch, type AgentLaunchChoice, type AgentLaunchOptions } from './agentLaunch';
@@ -217,6 +218,9 @@ import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../shared/folderTrustWording
 // lists, pages, acks, joins and republishes mention notifications. The
 // production adapter lives in channelsApi.ts.
 import type { ChannelMentionNotification, ChannelPhoneApi } from './channelsApi';
+
+/** Why a phone or web launch line is refused in a person's fenced pane. */
+const PANE_FENCE_WEB_REFUSAL = 'worker fence: this pane starts its agent inside the worker fence, which only the desktop app can put around it';
 
 /**
  * Opaque cursor for `/api/sessions/:id/turns` (#782). Encodes head+tail offsets
@@ -855,6 +859,12 @@ interface WebTerminalServerDeps {
    * main confirmed a kept bot card carries the file. Absent: that route is 503.
    */
   roomFilesDir?: string;
+  /**
+   * Whether a session is a person's fenced pane (main's record,
+   * paneFenceRecord.ts): an agent launch line typed from here would start
+   * outside the fence main puts around it, so it is refused. Absent: none is.
+   */
+  paneFenceOn?: (sessionId: string) => boolean;
   /**
    * Records one file served because the pane's agent sent it with
    * `SendUserFile` (the device audit log). Device, pane, basename and size
@@ -6518,6 +6528,10 @@ export class WebTerminalServer {
         // Past the receipt lifetime `unknown` no longer proves "never typed",
         // so the id is refused rather than risking a second launcher.
         if (age === 'expired') return this.json(res, 400, { error: 'launch-id-expired', effect: 'none', clientLaunchId });
+        // A fenced pane's agent starts only through main (paneFence.ts).
+        if (this.deps.paneFenceOn?.(id) === true) {
+          return this.json(res, 409, { error: 'worker-fence', detail: PANE_FENCE_WEB_REFUSAL, effect: 'none', clientLaunchId });
+        }
         // The anchor shell of a chat-v2 pane is idle, but the pane has a writer: the driver.
         if (this.chatV2For(id)) {
           const refused = chatV2LaunchResponse(clientLaunchId);
@@ -8215,6 +8229,10 @@ export class WebTerminalServer {
         // As main's launch lines: a folder-trust prompt stops every one, a
         // screen that cannot rule one out all but a person's.
         if (launch !== null) {
+          // A fenced pane's agent starts only through main (paneFence.ts).
+          if (paneLineAgents(body).length > 0 && this.deps.paneFenceOn?.(sessionId) === true) {
+            return this.json(res,409,{error:'worker-fence',detail:PANE_FENCE_WEB_REFUSAL,effect:'none'});
+          }
           const human = launch === 'human';
           const refused = await folderTrustRefusal(this.deps.sessionManager, sessionId, human ? 'web launch line' : 'web automated launch line', {
             refuseUnknown: !human, log: (message) => this.deps.log('warn', message),

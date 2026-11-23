@@ -870,6 +870,9 @@ export interface WorkerFenceAttachInput {
   platform?: NodeJS.Platform;
   /** Claude's own temp folders (default: claudeTempRoots()). */
   claudeTempRoots?: readonly string[];
+  /** A person's fenced pane: the temp folder its last fenced launch used,
+   *  taken again when it is still one of the fence's own. */
+  paneTempDir?: string;
 }
 
 /**
@@ -921,9 +924,16 @@ export function attachWorkerFence(input: WorkerFenceAttachInput): WorkerFenceAtt
   const refusal = workerFenceFolderRefusal(input.cwd);
   if (refusal) throw fenceError(refusal);
   const worktree = fs.realpathSync(input.cwd);
-  const temp = workerTempDir(input.dir, input.recorded?.tempDir);
+  const temp = workerTempDir(input.dir, input.recorded?.tempDir ?? input.paneTempDir);
   const tempDir = temp.path;
   const git = readWorktreeGitFacts(worktree, input.expectedGit);
+  const platform = input.platform ?? process.platform;
+  if (input.always && platform === 'linux') {
+    // On Linux the git denies name only what exists (bubblewrap binds each
+    // one), so a fenced pane needs its git config and hooks folder present.
+    const missing = ['config', 'hooks'].find((n) => !fs.existsSync(path.join(git.gitCommonDir, n)));
+    if (missing) throw fenceError(`the pane's folder has no git ${missing === 'config' ? 'repository' : 'hooks folder'}, which the fence on Linux keeps read-only only once it exists; open the pane in a git repository`);
+  }
   // The worker's branch is the one its first fenced launch ran on, never
   // what HEAD names at a later one.
   const recorded = input.recorded && input.recorded.strength !== 'off' ? input.recorded : null;
@@ -933,7 +943,6 @@ export function attachWorkerFence(input: WorkerFenceAttachInput): WorkerFenceAtt
     const now = git.ownBranch === null ? 'a detached HEAD' : `branch ${git.ownBranch}`;
     throw fenceError(`the worktree is on ${now}, not on ${was} it started on`);
   }
-  const platform = input.platform ?? process.platform;
   if (git.isLinkedWorktree && git.ownBranch !== null) {
     // The folders the fence opens for the branch's ref and reflog, made
     // here: a branch kept only in packed-refs has neither yet, and the
@@ -980,12 +989,22 @@ export function attachWorkerFence(input: WorkerFenceAttachInput): WorkerFenceAtt
   return { kind: 'fence', strength: 'full', tempDir, branch: git.ownBranch, settings: fence.settings, launcher: fullLauncher(input.dir, support.exe) };
 }
 
-/** `p` by its real path when it exists, else resolved. */
+/** `p` by its real path; a path that does not exist (yet) by its nearest
+ *  existing folder's real path and the rest, so a symlinked ancestor
+ *  (`/tmp`, `/var` on macOS) still compares. */
 function realOrResolved(p: string): string {
-  try {
-    return fs.realpathSync(p);
-  } catch {
-    return path.resolve(p);
+  const abs = path.resolve(p);
+  const tail: string[] = [];
+  let at = abs;
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(at), ...tail.reverse());
+    } catch {
+      const up = path.dirname(at);
+      if (up === at) return abs;
+      tail.push(path.basename(at));
+      at = up;
+    }
   }
 }
 
