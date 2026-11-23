@@ -10,6 +10,7 @@ import { headlessTreeId } from '../../../daemon/a2aRemote/headlessStarter';
 import { branchFor } from '../../a2aRemote/spawnWorktree';
 import { SPAWN_REQUEST_KEY_RE, type A2aSpawnAskInput, type A2aSpawnOutgoingSummary } from '../../../shared/a2aSpawn';
 import { isRemoteTask } from '../../../shared/ledger';
+import { applyTaskQueryView } from '../../../shared/a2aTaskQueryView';
 import { TaskCloseService } from '../TaskCloseService';
 import { installFanoutCallerLedgerNotify } from '../../deck/fanoutCallerNotify';
 import { factFromLedgerTransition } from '../../factory/factIngest';
@@ -662,11 +663,12 @@ describe('a started task follows its A2A task', () => {
     expect(s.row(0)).toMatchObject({ status: 'input_required', remote: { progress: { changedFiles: 4 } } });
   });
 
-  it('reads the facts from the daemon\'s state view strictly: a malformed progress is dropped', () => {
-    const task = (progress: unknown) => ({ id: 't', status: { state: 'working' }, metadata: { remote: { status: { kind: 'working', since: at, detail: { progress } } } } });
-    expect(remoteTaskViewOf(task({ head: 'abc1234', changedFiles: 1 }))[0].status?.progress).toEqual({ head: 'abc1234', changedFiles: 1 });
+  it('reads the facts through the daemon\'s real state view, strictly: a malformed progress is dropped', () => {
+    const task = (progress: unknown) => ({ id: 't', status: { state: 'working' }, metadata: { remote: { v: 1, direction: 'outbound', status: { kind: 'working', since: at, detail: { progress, options: ['label text'] } } } } });
+    const viewOf = (progress: unknown) => applyTaskQueryView([task(progress)], { view: 'state', taskIds: ['t'] }).flatMap(remoteTaskViewOf)[0];
+    expect(viewOf({ head: 'abc1234', changedFiles: 1 }).status?.progress).toEqual({ head: 'abc1234', changedFiles: 1 });
     for (const bad of [{ head: 'not a sha', changedFiles: 1 }, { head: 'abc1234', changedFiles: -1 }, { head: 'abc1234' }, 'abc1234']) {
-      expect(remoteTaskViewOf(task(bad))[0].status).not.toHaveProperty('progress');
+      expect(viewOf(bad).status).not.toHaveProperty('progress');
     }
   });
 

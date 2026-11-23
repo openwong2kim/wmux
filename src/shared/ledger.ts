@@ -184,7 +184,7 @@ export interface LedgerRemote {
    *  to another PC while no request for it is out (state `held`). */
   pool?: LedgerRemotePool;
   /** What the agent's worktree on that PC shows (git facts only), as that PC
-   *  last said in the task's status: at a turn end or a change of status.
+   *  last said in the task's status: as of the agent's last turn end.
    *  Absent until it says (an older PC never does). */
   progress?: A2aRemoteProgressV1;
 }

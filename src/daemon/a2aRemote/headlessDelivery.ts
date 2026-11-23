@@ -223,8 +223,8 @@ export interface HeadlessDeliveryDeps {
   status?: { tick(statuses: HeadlessTaskStatus[]): void; gone(taskIds: string[]): void };
   /**
    * What the start's worktree shows of the work (git facts only), or null.
-   * Asked only when a task's status kind changes (a turn end among them),
-   * never on a timer; the answer goes with that task's next status.
+   * Asked once per turn end, before the move that ends it, never on a timer;
+   * the answer goes with the task's statuses from then on.
    */
   progressOf?(rec: HeadlessStartRecordV1): Promise<A2aRemoteProgressV1 | null>;
   /** The daemon's own `a2a.remote.reply`, as main calls it. */
@@ -562,8 +562,8 @@ export class HeadlessDelivery {
   }>();
   /** How the latest answers from the asking PC went, by task (at most ANSWER_OUTCOMES_MAX): sent with each status. */
   private readonly answered = new Map<string, A2aRemoteAnswerOutcome[]>();
-  /** Per task: the status kind its progress was last read at, and what was read (progressOf). */
-  private readonly worktreeFacts = new Map<string, { kind: A2aRemoteStatusKind; facts: A2aRemoteProgressV1 | null; reading: boolean }>();
+  /** Per task: its worktree's facts as read at its last turn end (progressOf). */
+  private readonly worktreeFacts = new Map<string, A2aRemoteProgressV1>();
   /** Answers being typed now (`taskId \0 messageId`): the same message is never typed twice. */
   private readonly answering = new Set<string>();
   /** After an answer, by session: the transcript read on for turns nothing on this PC started. */
@@ -860,7 +860,7 @@ export class HeadlessDelivery {
       }
       // The latest answers' outcomes, and the worktree's facts, go with whatever the worker does now.
       const answers = this.answered.get(task.id);
-      const progress = this.progressFor(task.id, status.kind, rec);
+      const progress = this.worktreeFacts.get(task.id);
       const detail = { ...status.detail, ...(answers ? { answers: [...answers] } : {}), ...(progress ? { progress } : {}) };
       out.push({ taskId: task.id, kind: status.kind, ...(Object.keys(detail).length > 0 ? { detail } : {}) });
     }
@@ -869,26 +869,22 @@ export class HeadlessDelivery {
   }
 
   /**
-   * The task's worktree facts as last read. A new status kind (a turn end
-   * among them) reads them again, once, in the background: the facts go with
-   * a later status. Never read on a timer.
+   * Read the worktree's facts for the task whose turn just ended, before its
+   * end is said: the status that says so carries them (no second status for
+   * them). Never on a timer. A read that fails or says nothing clears them.
    */
-  private progressFor(taskId: string, kind: A2aRemoteStatusKind, rec: HeadlessStartRecordV1): A2aRemoteProgressV1 | null {
+  private async readFacts(ep: Episode): Promise<void> {
     const read = this.deps.progressOf;
-    if (!read) return null;
-    const known = this.worktreeFacts.get(taskId);
-    if (known && (known.kind === kind || known.reading)) return known.facts;
-    const entry = { kind, facts: known?.facts ?? null, reading: true };
-    this.worktreeFacts.set(taskId, entry);
-    void read(rec)
-      .then((facts) => {
-        entry.facts = facts ?? entry.facts;
-      })
-      .catch((err: unknown) => this.deps.log('warn', `[headless] task ${taskId}: its worktree could not be read: ${errMsg(err)}`))
-      .finally(() => {
-        entry.reading = false;
-      });
-    return entry.facts;
+    const rec = read ? this.deps.starts.list().find((r) => r.sessionId === ep.sessionId) : undefined;
+    if (!read || !rec) return;
+    let facts: A2aRemoteProgressV1 | null = null;
+    try {
+      facts = await read(rec);
+    } catch (err) {
+      this.deps.log('warn', `[headless] task ${ep.taskId}: its worktree could not be read: ${errMsg(err)}`);
+    }
+    if (facts) this.worktreeFacts.set(ep.taskId, facts);
+    else this.worktreeFacts.delete(ep.taskId);
   }
 
   /**
@@ -1455,6 +1451,8 @@ export class HeadlessDelivery {
     const fromPeer = new Set(((answered?.metadata.remote as A2aRemoteTaskState | undefined)?.inbox ?? []).map((i) => i.messageId));
     const own = (answered?.history ?? []).filter((m) => m.role === 'agent' && !fromPeer.has(m.messageId)).at(-1);
     if (own && !ep.replyId) ep.replyId = own.messageId;
+    // Before the move that ends the turn, so the status that follows it carries them.
+    await this.readFacts(ep);
     if (!ep.working) await this.toWorking(ep);
     if (this.deps.tasks.get(ep.taskId)?.status.state !== 'working') return this.drop(ep);
     const moved = await this.deps.transition({ taskId: ep.taskId, workspaceId: ep.workspaceId, to: 'input-required' })

@@ -11752,7 +11752,7 @@ async function main(): Promise<void> {
             if (moved.ok) await a2aDeliveryRef?.syncTask(taskId);
             return moved.ok ? { ok: true } : { ok: false, error: moved.error };
           },
-          // Read only when a task's status kind changes (headlessDelivery.progressFor), never on a timer.
+          // Read once per turn end (headlessDelivery.readFacts), never on a timer.
           progressOf: (rec) => (rec.worktreePath && rec.baseCommit
             ? worktreeProgress(gitRunner(rec.worktreePath, {}), rec.baseCommit)
             : Promise.resolve(null)),

@@ -516,7 +516,8 @@ id alone.
   Nothing the other PC writes goes into the row.
 
   A headless box also says what the agent's worktree shows, read at each
-  turn end or change of status (never on a timer): HEAD (abbreviated), when
+  turn end of the agent (never on a timer, so during a long turn it is the
+  last turn end's): HEAD (abbreviated), when
   it was committed, and how many tracked files differ from the commit the
   worktree started from, committed or not. The row keeps the last one as
   `remote.progress`. The poll returns it as `progress`, and

@@ -1180,13 +1180,8 @@ function parseApprovalOffer(raw: unknown): A2aRemoteApprovalOffer | null {
 }
 
 /**
- * A worker's status on one task. `since`: when it began on the receiving PC
- * (ISO); the sender keeps only the newest per task. Never a reply: it is not
- * added to the task's history and changes nothing in its state.
- */
-/**
  * What the worker's worktree shows of its work, as the receiving PC read it
- * at the worker's last turn end or status change (never polled): facts from
+ * at the worker's last turn end (never polled): facts from
  * git, no text. An older PC sends none and ignores it.
  */
 export interface A2aRemoteProgressV1 {
@@ -1215,6 +1210,11 @@ export function parseA2aRemoteProgress(raw: unknown): A2aRemoteProgressV1 | null
   };
 }
 
+/**
+ * A worker's status on one task. `since`: when it began on the receiving PC
+ * (ISO); the sender keeps only the newest per task. Never a reply: it is not
+ * added to the task's history and changes nothing in its state.
+ */
 export interface A2aRemoteStatusV1 {
   kind: A2aRemoteStatusKind;
   since: string;
@@ -1255,7 +1255,7 @@ export interface A2aRemoteStatusV1 {
     approval?: A2aRemoteApprovalOffer;
     /** How the latest approvals on this task went there, oldest first, at most ANSWER_OUTCOMES_MAX. */
     approvals?: A2aRemoteApprovalOutcome[];
-    /** The worker's worktree, as of its last turn end or status change. */
+    /** The worker's worktree, as of its last turn end. */
     progress?: A2aRemoteProgressV1;
   };
 }

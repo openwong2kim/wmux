@@ -1905,26 +1905,36 @@ describe('the status this delivery reports for each task (headlessStatus.ts send
     expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input' });
   });
 
-  it('the worktree\'s facts: read once per change of status kind (a turn end among them), never per pass, and sent with a later status', async () => {
+  it('the worktree\'s facts: read at each turn end, before its move, so the status that says it carries them; never per pass', async () => {
     let reads = 0;
-    let facts = { head: 'abc1234def56', committedAt: '2026-11-24T01:00:00.000Z', changedFiles: 2 };
-    const d = new HeadlessDelivery(statusDeps({ progressOf: async () => { reads += 1; return facts; } }));
+    let facts: { head: string; committedAt?: string; changedFiles: number } | null = { head: 'abc1234def56', committedAt: '2026-11-24T01:00:00.000Z', changedFiles: 2 };
+    const d = new HeadlessDelivery(statusDeps({ progressOf: async () => { reads += 1; order.push('read'); return facts; } }));
     await d.tick();
     write(userLine(PROMPT));
     await d.tick();
-    // The read started on `working`; its answer goes with the next status.
-    expect(reads).toBe(1);
     await d.tick();
-    await d.tick();
-    expect(reads).toBe(1);
-    expect(last()).toEqual({ taskId: TASK, kind: 'working', detail: { progress: facts } });
-    facts = { ...facts, head: '0000000aaaaa', changedFiles: 5 };
+    expect(reads).toBe(0);
+    expect(last()).toEqual({ taskId: TASK, kind: 'working' });
     write(assistantLine('PONG'));
     await d.tick();
+    expect(order.filter((o) => o !== 'move working')).toEqual(['read', 'move input-required']);
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input', detail: { progress: facts } });
+    // The first status after the turn end already carried them: one status for it, not two.
+    const waiting = ticks.flatMap((t) => t.filter((x) => x.taskId === TASK && x.kind === 'waiting-input'));
+    expect(waiting.every((x) => x.detail?.progress)).toBe(true);
+    await d.tick();
+    expect(reads).toBe(1);
+    // A read that says nothing clears them.
+    facts = null;
+    task.history.push({ kind: 'message', messageId: 'm9', role: 'user', parts: [{ kind: 'text', text: 'again' }] });
+    (task.metadata.remote as A2aRemoteTaskState).inbox = [{ messageId: 'm9', kind: 'reply', delivered: false }];
+    await d.tick();
+    write(userLine('again'), assistantLine('done'));
     await d.tick();
     await d.tick();
     expect(reads).toBe(2);
-    expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input', detail: { progress: facts } });
+    expect(last()?.detail?.progress).toBeUndefined();
   });
 
   for (const [name, progressOf] of [['no worktree reader', undefined], ['a reader that fails', async () => { throw new Error('git is gone'); }]] as const) {

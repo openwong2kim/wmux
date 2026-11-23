@@ -164,7 +164,7 @@ export interface RemoteTaskResult {
   hostId?: string;
   /** How to reach the agent once it started. */
   followUp?: string;
-  /** What the agent's worktree on that PC shows, as of its last turn end or status change (a headless box only). */
+  /** What the agent's worktree on that PC shows, as of its last turn end (a headless box only). */
   progress?: A2aRemoteProgressV1;
 }
 

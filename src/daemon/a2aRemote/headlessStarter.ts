@@ -627,9 +627,10 @@ export async function worktreeUnchanged(git: Git, base: string, branch: string):
  * only, no file names. Null when git cannot say.
  */
 export async function worktreeProgress(git: Git, base: string): Promise<A2aRemoteProgressV1 | null> {
-  const head = await git(['log', '-1', '--abbrev=12', '--format=%h%x00%cI', 'HEAD']);
-  const [sha, committedAt] = head.stdout.trim().split('\0');
-  if (head.code !== 0 || !sha) return null;
+  const head = await git(['log', '-1', '--format=%H%x00%cI', 'HEAD']);
+  const [full, committedAt] = head.stdout.trim().split('\0');
+  if (head.code !== 0 || !full) return null;
+  const sha = full.slice(0, 12);
   const diff = await git(['diff', '--name-only', '--no-renames', '-z', base, '--']);
   if (diff.code !== 0) return null;
   return parseA2aRemoteProgress({ head: sha, committedAt, changedFiles: diff.stdout.split('\0').filter((f) => f.length > 0).length });
