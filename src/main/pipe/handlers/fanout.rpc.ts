@@ -2362,12 +2362,18 @@ export function registerFanOutRpc(
         // Whether a task passed its launch check: a request part of which
         // launched is not held again whole (the rest is refused).
         let launchPassed = false;
+        // Tasks the pool left out because their folder starts a WSL pane:
+        // they run on the caller's account, as without the pool.
+        const wslTasks = new Set<number>();
         const reserveAtTaskLaunch = (index: number | undefined, accountId?: string): string | null => {
           const agents = index === undefined ? taskAgents : [taskAgent(index)];
+          const spends = agents.some(spendsUsageReserve);
           // A pool worker: the account picked for it, not the caller's.
           const hold = accountId !== undefined
-            ? (agents.some(spendsUsageReserve) ? holdForAccount(accountId) : null)
-            : reserveHoldOf(agents);
+            ? (spends ? holdForAccount(accountId) : null)
+            : index !== undefined && wslTasks.has(index)
+              ? (spends ? (deps.usageReserveHold ?? usageReserveHoldForWorkspace)(callerWorkspaceId) : null)
+              : reserveHoldOf(agents);
           return hold ? reserveRefusal(hold, !launchPassed) : null;
         };
         // The pool's account for each Claude worker, picked and booked right
@@ -2383,7 +2389,10 @@ export function registerFanOutRpc(
             if (!current || !spendsUsageReserve(taskAgent(task.index))) return null;
             // A task folder on a WSL share starts a WSL pane, which the pool
             // keeps out of: its launch checks the caller's account as before.
-            if (task.cwd && wslShareToLinux(task.cwd)) return null;
+            if (task.cwd && wslShareToLinux(task.cwd)) {
+              wslTasks.add(task.index);
+              return null;
+            }
             const picked = pick(current);
             if (picked.kind === 'pick') return { accountId: picked.accountId };
             // Every usable account is in the reserve: held as the reserve

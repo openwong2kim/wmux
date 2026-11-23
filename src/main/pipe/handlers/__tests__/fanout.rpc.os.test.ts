@@ -1638,6 +1638,27 @@ describe('task.fanout.start — usage reserve with the account pool', () => {
     expect(req.accountPick?.pick({ index: 0, cwd: 'C:\\work\\wt' })).toEqual({ accountId: 'acc-a' });
   });
 
+  it('a WSL-share task runs on the caller\'s account, so the reserve holds it there while a pool account is free', async () => {
+    const untilMs = Date.now() + 60 * 60_000;
+    let callerHeld = false;
+    const h = setup({
+      reserve: () => (callerHeld ? { account: 'default', untilMs } : null),
+      pool: { members: ['acc-a'], holdFor: () => null },
+      approval: { approved: true, outcome: 'approved' },
+    });
+    expect((await h.call(goodParams())).status).toBe('accepted');
+    await h.flush();
+    await h.flush();
+    const req = h.request();
+    callerHeld = true;
+    expect(req.accountPick?.pick({ index: 0, cwd: '\\\\wsl.localhost\\Ubuntu\\home\\me\\wt' })).toBeNull();
+    // Held on the caller's account, not let through because acc-a is free.
+    expect(req.mayLaunch?.({ index: 0, taskId: 'wtask-w1' })).toMatch(/^usage reserve: .*run unattended/);
+    // A native task of the same fan-out still runs on the free pool account.
+    expect(req.accountPick?.pick({ index: 1, cwd: 'C:\\work\\wt2' })).toEqual({ accountId: 'acc-a' });
+    expect(req.mayLaunch?.({ index: 1, accountId: 'acc-a', taskId: 'wtask-w2' })).toBeNull();
+  });
+
   it('a failed pool read is asked again, not kept as fresh', async () => {
     let reads = 0;
     const h = setup({ pool: { members: ['acc-a'], holdFor: () => null, read: async () => { reads += 1; if (reads === 1) throw new Error('keychain busy'); } }, approval: { approved: true, outcome: 'approved' } });
