@@ -2032,7 +2032,8 @@ const wslUsagePanes = new Map<string, { atMs: number; pane: { target: WslTarget;
 async function wslUsagePane(ptyId: string): Promise<{ target: WslTarget; env: Record<string, string> } | null> {
   const hit = wslUsagePanes.get(ptyId);
   if (hit && Date.now() - hit.atMs < WSL_USAGE_PANE_TTL_MS) return hit.pane;
-  if (!daemonClient) return null;
+  // Local PTY mode: main spawned the pane and kept what decides its home.
+  if (!daemonClient) return ptyManager.get(ptyId)?.wslAccount ?? null;
   const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; wslTarget?: unknown; env?: Record<string, string> }>;
   const now = Date.now();
   for (const [id, entry] of wslUsagePanes) if (now - entry.atMs >= WSL_USAGE_PANE_TTL_MS) wslUsagePanes.delete(id);
@@ -2054,7 +2055,7 @@ registerUsageRpc(rpcRouter, {
   // that pane's own env and user, as the daemon holds them.
   isWslPane: (ptyId, configDir) => {
     const shell = getPtyShell(ptyId);
-    return shell !== undefined ? isWslShell(shell) : process.platform === 'win32' && configDir.startsWith('/');
+    return shell !== undefined ? isWslShell(shell) : process.platform === 'win32' && !!configDir?.startsWith('/');
   },
   wslPane: (ptyId) => wslUsagePane(ptyId),
   defaultConfigDir: () => path.join(os.homedir(), '.claude'),

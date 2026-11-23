@@ -229,15 +229,21 @@ describe('usage.rateLimits from a WSL pane', () => {
     expect(isWslPane).toHaveBeenCalledWith('pty-1', HOME);
   });
 
-  it('an unset config dir stays the default profile, and a native pane never asks the daemon', async () => {
-    const wslPane = setup({ target: TARGET, env: ENV });
-    await expect(wslPane.call(sample())).resolves.toEqual({ ok: true, applied: true });
-    expect(wslPane.deps.ingestDefault).toHaveBeenCalledTimes(1);
-    expect(wslPane.deps.wslPane).not.toHaveBeenCalled();
+  it('an unset config dir is the distro\'s own sign-in: no account and not the Windows default, only the pane\'s window', async () => {
+    const { call, deps } = setup({ target: TARGET, env: ENV });
+    await expect(call(sample())).resolves.toEqual({ ok: false, reason: 'unknown-account' });
+    expect(deps.ingestDefault).not.toHaveBeenCalled();
+    expect(deps.ingestAccount).not.toHaveBeenCalled();
+    expect(Object.keys(paneUsageWindows())).toEqual(['pty-1']);
+  });
+
+  it('a native pane never asks the daemon, and its unset config dir is the default profile', async () => {
     const native = setup({ target: TARGET, env: ENV }, false);
     await native.call(sample({ configDir: HOME }));
+    await expect(native.call(sample())).resolves.toEqual({ ok: true, applied: true });
     expect(native.deps.wslPane).not.toHaveBeenCalled();
     expect(native.deps.ingestAccount).not.toHaveBeenCalled();
+    expect(native.deps.ingestDefault).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -32,7 +32,7 @@ export interface UsageRpcDeps {
   log?: (line: string) => void;
   /** Whether the pane may run in WSL: its shell as main recorded it, or, for
    *  a pane main has not seen yet, a Linux config dir on Windows. */
-  isWslPane?: (ptyId: string, configDir: string) => boolean;
+  isWslPane?: (ptyId: string, configDir: string | null) => boolean;
   /** A WSL pane's distro, user and env, from the daemon; null when unknown. */
   wslPane?: (ptyId: string) => Promise<{ target: WslTarget; env: Record<string, string> } | null>;
 }
@@ -46,7 +46,7 @@ export interface UsageRpcDeps {
  * window is kept either way.
  */
 async function ingestWslSample(
-  parsed: { configDir: string; ptyId: string; update: UsageUpdate },
+  parsed: { configDir: string | null; ptyId: string; update: UsageUpdate },
   deps: UsageRpcDeps,
 ): Promise<{ ok: true; applied: true } | { ok: false; reason: 'unknown-account' | 'not-applied' }> {
   const pane = await deps.wslPane?.(parsed.ptyId).catch(() => null) ?? null;
@@ -54,7 +54,7 @@ async function ingestWslSample(
   const folder = pane?.env.CLAUDE_CONFIG_DIR;
   if (!pane || !home || !folder || parsed.configDir !== home) {
     // Unknown pane (the lookup failed): no window key to share, so none is kept.
-    if (pane) notePaneUsageSample(parsed.ptyId, parsed.update, `wsl:${pane.target.distribution}:${parsed.configDir}`);
+    if (pane) notePaneUsageSample(parsed.ptyId, parsed.update, `wsl:${pane.target.distribution}:${pane.target.user}:${parsed.configDir ?? '~/.claude'}`);
     deps.log?.(`[usage.rateLimits] dropped: a WSL config dir that is not the pane's account home (pty ${parsed.ptyId})`);
     return { ok: false, reason: 'unknown-account' };
   }
@@ -182,9 +182,10 @@ export function registerUsageRpc(router: RpcRouter, deps: UsageRpcDeps): void {
   router.register('usage.rateLimits', async (params) => {
     const parsed = validateRateLimitsParams(params);
     if (!parsed) return { ok: false, reason: 'invalid' };
-    // A WSL pane naming its config dir names a Linux one; unset, it is the
-    // default profile as for any pane.
-    if (parsed.ptyId && parsed.configDir !== null && deps.isWslPane?.(parsed.ptyId, parsed.configDir)) {
+    // A WSL pane's config dir is a Linux one; unset, it is the distro's own
+    // ~/.claude, a sign-in of its own and not the Windows default profile,
+    // whose reading holds unattended starts (the usage reserve).
+    if (parsed.ptyId && deps.isWslPane?.(parsed.ptyId, parsed.configDir)) {
       return ingestWslSample({ configDir: parsed.configDir, ptyId: parsed.ptyId, update: parsed.update }, deps);
     }
     // Per pane, whatever account it is: a pane held at a usage limit with no
