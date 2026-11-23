@@ -100,3 +100,63 @@ describe.skipIf(process.platform === 'win32')('WSL_ACCOUNT_COPY_SH', () => {
     expect(fs.readFileSync(path.join(targetSibling, 'b.txt'), 'utf8')).toBe('b');
   });
 });
+
+describe.skipIf(process.platform === 'win32')('WSL_ACCOUNT_SH with a token sign-in', () => {
+  function setup() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux token -')); dirs.push(root);
+    const home = path.join(root, 'home');
+    fs.mkdirSync(path.join(home, '.claude', 'projects', '-r'), { recursive: true });
+    const script = ensureWslAccountScript(path.join(root, 'integration'));
+    const accountHome = path.join(home, '.wmux', 'accounts', `claude-${KEY}`);
+    const flag = path.join(accountHome, '.claude.json');
+    // A pane's spawn: the script sourced before the user's startup files.
+    const spawn = (token: boolean) => spawnSync('bash', ['--noprofile', '--norc', '-c', '. "$WMUX_WSL_ACCOUNT_SH" interactive && printf %s "$CLAUDE_CONFIG_DIR"'], {
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, WMUX_WSL_ACCOUNT_SH: script, WMUX_WSL_ACCOUNT_CLAUDE: KEY,
+        ...(token ? { WMUX_WSL_ACCOUNT_CLAUDE_TOKEN: '1' } : {}),
+      },
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { home, script, accountHome, flag, spawn };
+  }
+
+  it('marks first-run setup done in a new home, privately, and says nothing about a missing sign-in', () => {
+    const s = setup();
+    const ran = s.spawn(true);
+    expect(ran.status).toBe(0);
+    expect(ran.stdout).toBe(s.accountHome);
+    expect(JSON.parse(fs.readFileSync(s.flag, 'utf8'))).toEqual({ hasCompletedOnboarding: true });
+    expect(fs.statSync(s.flag).mode & 0o777).toBe(0o600);
+    expect(ran.stderr).not.toContain('no sign-in');
+  });
+
+  it('marks a home the conversation copy made first (copy, then the new pane spawns)', () => {
+    const s = setup();
+    const source = path.join(s.home, '.claude', 'projects', '-r', `${SID}.jsonl`);
+    fs.writeFileSync(source, '{"turn":1}\n');
+    // The copy runs with the flag in its env too: it never writes the mark.
+    const copied = spawnSync('bash', ['--noprofile', '--norc', '-c', WSL_ACCOUNT_COPY_SH,
+      ...wslAccountCopyArgs({ key: KEY, share: false, suffix: '', source, project: '-r', sessionId: SID })], {
+      env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: s.home, WMUX_WSL_ACCOUNT_SH: s.script, WMUX_WSL_ACCOUNT_CLAUDE_TOKEN: '1' },
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    expect(copied.status).toBe(WSL_ACCOUNT_COPY_EXIT.copied);
+    expect(fs.existsSync(s.flag)).toBe(false);
+    expect(s.spawn(true).status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(s.flag, 'utf8'))).toEqual({ hasCompletedOnboarding: true });
+  });
+
+  it('leaves an existing .claude.json or a link there alone, and writes nothing without a token', () => {
+    const s = setup();
+    expect(s.spawn(false).status).toBe(0);
+    expect(fs.existsSync(s.flag)).toBe(false);
+    fs.writeFileSync(s.flag, '{"theme":"dark"}');
+    expect(s.spawn(true).status).toBe(0);
+    expect(fs.readFileSync(s.flag, 'utf8')).toBe('{"theme":"dark"}');
+    fs.rmSync(s.flag);
+    const elsewhere = path.join(s.home, 'elsewhere.json');
+    fs.symlinkSync(elsewhere, s.flag);
+    expect(s.spawn(true).status).toBe(0);
+    expect(fs.existsSync(elsewhere)).toBe(false);
+  });
+});

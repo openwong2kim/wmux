@@ -44,6 +44,15 @@ describe('continue on an account', () => {
     expect(JSON.stringify(res)).not.toContain(TOKEN);
   });
 
+  it('a WSL pane\'s copy opens the new pane from that pane (its distro and user), at its Linux folder', async () => {
+    const rpc: Rpc = vi.fn<ContinuePaneDeps['rpc']>(async () => ({ ok: true, sessionId: SID, transcriptPath: '/x', cwd: '/home/me/repo', wsl: true }));
+    expect(await continuePane(deps({ rpc }), { ptyId: 'daemon-1', accountId: token.id })).toEqual({
+      ok: true, newPane: { accountId: token.id, command: `claude --resume ${SID}`, cwd: '/home/me/repo', wslFrom: 'daemon-1' },
+    });
+    const notLinux: Rpc = vi.fn<ContinuePaneDeps['rpc']>(async () => ({ ok: true, sessionId: SID, transcriptPath: '/x', cwd: 'C:\\repo', wsl: true }));
+    expect(await continuePane(deps({ rpc: notLinux }), { ptyId: 'daemon-1', accountId: token.id })).toEqual({ ok: false, code: 'unknown_session' });
+  });
+
   it('an account without a token keeps the same-pane switch', async () => {
     const d = deps();
     expect(await continuePane(d, { ptyId: 'daemon-1', accountId: plain.id })).toEqual({ ok: true });

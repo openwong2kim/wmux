@@ -92,12 +92,13 @@ import { splitModelEnvMarker } from '../../../shared/workerLaunch';
 import type { AgentSlug } from '../../../shared/events';
 import { createDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { isWslShell, type WslTarget } from '../../../shared/wsl';
+import { validWslTarget } from '../../../shared/wslTarget';
 import { resolvePtyCreateCwdForShell, type PtyCwdSource, type ResolvedPtyCwd } from '../../pty/resolvePtyCwd';
 import { FANOUT_TASK_PORT_ENV } from '../../worktask/fanoutEnvironment';
 import { agentDisplayToSlug } from '../../../shared/agentIdentity';
 import { wslShareToLinux } from '../../../shared/wslPaths';
 import { applyWslShareCwd, defaultWslShellPath } from '../../../shared/wslShareSpawn';
-import { wslDistroArgs, isWslDistroSpawnArgs, isValidWslDistroName } from '../../../shared/wslDistro';
+import { wslDistroArgs, isWslDistroSpawnArgs, isValidWslDistroName, isWslShellPath } from '../../../shared/wslDistro';
 import { getDefaultWslDistro, getKnownWslDistros, enumerateWslDistros } from '../../pty/defaultWslDistro';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
 import { recordFanoutTaskPane, stampFanoutTaskPane, stampRemoteSpawnPane, taskOfWorkspace } from '../../worktask/fanoutGuards';
@@ -188,6 +189,10 @@ type PtyCreateOptions = {
    * picker's distro, as for any new pane.
    */
   wslDistro?: string;
+  /** The live WSL pane whose distro and user this one runs as: a
+   *  conversation continued from it on a token account. Main reads both from
+   *  the daemon; an id that is not a live WSL pane refuses the create. */
+  wslFrom?: string;
   /** Dead-session replacement candidates. WSL validates inside its distro;
    * neither value is trusted merely because it came from the renderer. */
   recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'wslTarget' | 'args' | 'sourceSessionId'>;
@@ -249,6 +254,17 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
   });
   if (initialCommand !== rest.initialCommand) console.log('[pty:create] wmux tool level applied', { tools: wmuxTools.tools, role: wmuxTools.role });
   return { ...rest, initialCommand };
+}
+
+const WSL_FROM_GONE = 'PTY_CREATE: the WSL pane this conversation was continued from has closed, so the new pane was not opened. The copy is kept on the account; resume it from a WSL pane.';
+
+/** The distro and user of a live WSL pane in the daemon's list, or undefined. */
+export function liveWslTarget(
+  sessions: ReadonlyArray<{ id: string; state: string; cmd: string; wslTarget?: unknown }>,
+  id: string,
+): WslTarget | undefined {
+  const s = sessions.find((x) => x.id === id);
+  return s && (s.state === 'attached' || s.state === 'detached') && isWslShellPath(s.cmd) && validWslTarget(s.wslTarget) ? s.wslTarget : undefined;
 }
 
 /** The distro a new WSL pane boots: the caller's, when it names a valid one, else the settings picker's. */
@@ -1041,13 +1057,21 @@ export function registerPTYHandlers(
       const recoveryId = options?.recoveryCwds?.sourceSessionId;
       // WSL-only: non-WSL replacements never read distro/user from the dead
       // session, so they must not pay for (or fail on) this lookup.
-      const recoverySessions = recoveryId && isWslShell(shell)
+      // A conversation continued from a WSL pane on a token account: the new
+      // pane runs in that pane's distro as its user, so it opens the account
+      // home the copy went to (daemon/continueOnAccount.ts). Taken from the
+      // live session only, whose wsl.exe keeps the distro up: never booted.
+      const wslFromId = typeof options?.wslFrom === 'string' ? options.wslFrom : undefined;
+      if (wslFromId !== undefined && !isWslShell(shell)) throw failCreate(WSL_FROM_GONE);
+      const recoverySessions = (recoveryId || wslFromId) && isWslShell(shell)
         ? await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; state: string; cmd: string; args?: string[]; wslTarget?: WslTarget }>
         : [];
-      const trustedRecovery = recoverySessions.find(s => s.id === recoveryId && s.state === 'dead' && isWslShell(s.cmd));
+      const trustedRecovery = recoveryId ? recoverySessions.find(s => s.id === recoveryId && s.state === 'dead' && isWslShell(s.cmd)) : undefined;
+      const wslFromTarget = wslFromId ? liveWslTarget(recoverySessions, wslFromId) : undefined;
+      if (wslFromId !== undefined && !wslFromTarget) throw failCreate(WSL_FROM_GONE);
       const wslArgs = isWslDistroSpawnArgs(shell, trustedRecovery?.args)
         ? [...trustedRecovery.args]
-        : wslDistroArgs(shell, requestedWslDistro(options));
+        : wslDistroArgs(shell, wslFromTarget?.distribution ?? requestedWslDistro(options));
 
       // Generate a unique session ID
       const sessionId = `daemon-${randomUUID().slice(0, 8)}`;
@@ -1218,7 +1242,7 @@ export function registerPTYHandlers(
           cmd: shell,
           ...(wslArgs ? { args: wslArgs } : {}),
           cwd: effectiveCwd,
-          wslTarget: trustedRecovery?.wslTarget,
+          wslTarget: trustedRecovery?.wslTarget ?? wslFromTarget,
           cols: options?.cols || 80,
           rows: options?.rows || 24,
           env: resolvedEnv,
@@ -1455,6 +1479,8 @@ export function registerPTYHandlers(
       if (pendingRefusal) throw new Error(pendingRefusal);
       const accountRefusal = wslAccountTabRefusal(shell, options);
       if (accountRefusal) throw new Error(accountRefusal);
+      // Only the daemon knows a live WSL pane's user (and continues a conversation).
+      if (options?.wslFrom !== undefined) throw new Error(WSL_FROM_GONE);
       const safeCwd = cwdResolution.safeCwd;
       const effectiveCwd = safeCwd ?? undefined;
       // Split off initialCommand — it's written into the shell post-create, not

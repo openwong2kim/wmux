@@ -24,10 +24,11 @@ import { paneWslSession } from '../../terminal/paneForegroundProbe';
 /**
  * A new pane beside the one running `ptyId` (the workspace's active pane when
  * that one is stashed) that runs `command` in `cwd` on the account: the funnel
- * creates it from the seed, through the normal create. False when there is no
+ * creates it from the seed, through the normal create (from a WSL pane, as
+ * that pane's distro and user: `wslFrom`). False when there is no
  * such workspace or the split was refused (the pane cap says so itself).
  */
-export function openContinuePane(ptyId: string, pane: { accountId: string; command: string; cwd: string }): boolean {
+export function openContinuePane(ptyId: string, pane: { accountId: string; command: string; cwd: string; wslFrom?: string }): boolean {
   const st = useStore.getState();
   const ws = st.workspaces.find((w) => findWorkspaceSurfaceByPtyId(w, ptyId));
   const hit = ws ? findWorkspaceSurfaceByPtyId(ws, ptyId) : null;
@@ -38,7 +39,7 @@ export function openContinuePane(ptyId: string, pane: { accountId: string; comma
   const paneId = useStore.getState().splitPane(source, 'horizontal', ws.id);
   if (!paneId) return false;
   useStore.setState((s) => {
-    s.projectPaneSeed[paneId] = { command: pane.command, cwd: pane.cwd, accountId: pane.accountId };
+    s.projectPaneSeed[paneId] = { command: pane.command, cwd: pane.cwd, accountId: pane.accountId, ...(pane.wslFrom ? { wslFrom: pane.wslFrom } : {}) };
     delete s.splitCwdSeed[paneId];
   });
   return true;

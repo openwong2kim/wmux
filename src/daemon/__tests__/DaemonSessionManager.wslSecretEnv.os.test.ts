@@ -55,6 +55,14 @@ describe('withSecretEnv', () => {
     expect(withSecretEnv({ WSLENV: 'NPM_TOKEN/p' }, { NPM_TOKEN: VALUE }, true).WSLENV).toBe('NPM_TOKEN');
   });
 
+  it('a WSL spawn with a Claude token also sends a flag (never the value) for the account home\'s first-run mark', () => {
+    const out = withSecretEnv({ WSLENV: 'WMUX_PTY_ID' }, { CLAUDE_CODE_OAUTH_TOKEN: VALUE }, true);
+    expect(out.WMUX_WSL_ACCOUNT_CLAUDE_TOKEN).toBe('1');
+    expect(out.WSLENV.split(':')).toEqual(['WMUX_PTY_ID', 'CLAUDE_CODE_OAUTH_TOKEN', 'WMUX_WSL_ACCOUNT_CLAUDE_TOKEN']);
+    expect(withSecretEnv({}, { NPM_TOKEN: VALUE }, true).WMUX_WSL_ACCOUNT_CLAUDE_TOKEN).toBeUndefined();
+    expect(withSecretEnv({}, { CLAUDE_CODE_OAUTH_TOKEN: VALUE }, false).WMUX_WSL_ACCOUNT_CLAUDE_TOKEN).toBeUndefined();
+  });
+
   it('a native spawn: WSLENV is not touched', () => {
     expect(withSecretEnv({ PATH: '/usr/bin' }, { NPM_TOKEN: VALUE }, false)).toEqual({ PATH: '/usr/bin', NPM_TOKEN: VALUE });
   });

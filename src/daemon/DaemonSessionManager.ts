@@ -1,5 +1,5 @@
 import { isWslShell, mergeWslEnv, resolveWslCwd, type WslTarget, type ResolvedWslCwd } from '../shared/wsl';
-import { buildWslInjection, WSL_ACCOUNT_INJECTED_VARS } from '../shared/wslIntegration';
+import { buildWslInjection, WSL_ACCOUNT_INJECTED_VARS, WSL_CLAUDE_TOKEN_MARK } from '../shared/wslIntegration';
 import { getWmuxDir } from './config';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -73,6 +73,8 @@ const RESERVED_PREFIX = /^WMUX_/i;
  * None of these can be an intentional user/profile key, so this cannot strip
  * one; CLAUDE_CONFIG_DIR and other CLAUDE_* config are untouched.
  */
+const CLAUDE_TOKEN_ENV = 'CLAUDE_CODE_OAUTH_TOKEN';
+
 /**
  * The spawn env of a worker that carries secrets: `env` plus the secrets, and
  * for a WSL spawn each secret NAME appended to WSLENV with no path flag, so
@@ -82,7 +84,15 @@ const RESERVED_PREFIX = /^WMUX_/i;
  */
 export function withSecretEnv(env: Record<string, string>, secretEnv: Record<string, string>, wsl: boolean): Record<string, string> {
   const out = { ...env, ...secretEnv };
-  if (wsl) out.WSLENV = mergeWslEnv(env.WSLENV, Object.keys(secretEnv));
+  if (!wsl) return out;
+  const names = Object.keys(secretEnv);
+  // A Claude token: its account's home in the distro marks first-run setup
+  // done (WSL_ACCOUNT_SH). The mark is a flag, never the value.
+  if (secretEnv[CLAUDE_TOKEN_ENV]) {
+    out[WSL_CLAUDE_TOKEN_MARK] = '1';
+    names.push(WSL_CLAUDE_TOKEN_MARK);
+  }
+  out.WSLENV = mergeWslEnv(env.WSLENV, names);
   return out;
 }
 

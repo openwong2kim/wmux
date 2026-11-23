@@ -194,8 +194,17 @@ fi`;
  */
 export const WSL_ACCOUNT_INJECTED_VARS: readonly string[] = [
   'WMUX_WSL_ACCOUNT_CLAUDE', 'WMUX_WSL_ACCOUNT_CLAUDE_SHARE', 'WMUX_WSL_ACCOUNT_CODEX', 'WMUX_WSL_ACCOUNT_CODEX_SHARE',
-  'WMUX_WSL_ACCOUNT_SH', WSL_ACCOUNT_DISTRO_ENV,
+  'WMUX_WSL_ACCOUNT_SH', WSL_ACCOUNT_DISTRO_ENV, 'WMUX_WSL_ACCOUNT_CLAUDE_TOKEN',
 ];
+
+/**
+ * Set (to 1) in a WSL spawn's process env, never its saved env, when the spawn
+ * carries a Claude token from a vault (DaemonSessionManager withSecretEnv).
+ * WSL_ACCOUNT_SH then marks first-run setup done in a Claude account's home,
+ * as markClaudeOnboardingDone does in the Windows folder: Claude Code reads
+ * the token only once that is marked.
+ */
+export const WSL_CLAUDE_TOKEN_MARK = 'WMUX_WSL_ACCOUNT_CLAUDE_TOKEN';
 
 const shareList = (vendor: AccountVendor, kind: 'linkDirs' | 'copyFiles') => ACCOUNT_SHARE_MANIFEST[vendor][kind].join(' ');
 
@@ -254,8 +263,18 @@ __wmux_account_home() {
       return 1
     fi
   fi
+  # A token sign-in: Claude Code reads the token only once its first-run setup
+  # is marked done in the home's .claude.json. Only a missing file is created
+  # (never one that exists or is a link): editing Claude's own file here would
+  # race its save, which takes a lock this script cannot.
+  __wmux_token=
+  if [ "$__wmux_vendor" = claude ] && [ "\${WMUX_WSL_ACCOUNT_CLAUDE_TOKEN:-}" = 1 ]; then
+    __wmux_token=1
+    [ -e "$__wmux_home/.claude.json" ] || [ -L "$__wmux_home/.claude.json" ] ||
+      (umask 077 && set -C && printf '{"hasCompletedOnboarding":true}\\n' > "$__wmux_home/.claude.json") 2>/dev/null
+  fi
   if [ "$__wmux_vendor" = codex ]; then __wmux_login=auth.json __wmux_how="codex login"; else __wmux_login=.credentials.json __wmux_how="/login in claude"; fi
-  if [ ! -e "$__wmux_home/$__wmux_login" ]; then
+  if [ -z "$__wmux_token" ] && [ ! -e "$__wmux_home/$__wmux_login" ]; then
     __wmux_note="wmux: this pane's $__wmux_vendor account has no sign-in in this WSL distro yet; signing in here ($__wmux_how) signs in this account only, other panes keep theirs."
     if [ "$__wmux_mode" = interactive ]; then
       printf '%s\\n' "$__wmux_note" >&2
@@ -269,7 +288,7 @@ __wmux_account_rc=0
 [ -z "\${WMUX_WSL_ACCOUNT_CLAUDE:-}" ] || __wmux_account_home claude "$WMUX_WSL_ACCOUNT_CLAUDE" "\${WMUX_WSL_ACCOUNT_CLAUDE_SHARE:-}" CLAUDE_CONFIG_DIR "\${1:-interactive}" || __wmux_account_rc=1
 [ -z "\${WMUX_WSL_ACCOUNT_CODEX:-}" ] || __wmux_account_home codex "$WMUX_WSL_ACCOUNT_CODEX" "\${WMUX_WSL_ACCOUNT_CODEX_SHARE:-}" CODEX_HOME "\${1:-interactive}" || __wmux_account_rc=1
 unset -f __wmux_account_home
-unset __wmux_vendor __wmux_key __wmux_share __wmux_var __wmux_mode __wmux_root __wmux_home __wmux_seed __wmux_src __wmux_links __wmux_copies __wmux_name __wmux_login __wmux_how __wmux_note
+unset __wmux_vendor __wmux_key __wmux_share __wmux_var __wmux_mode __wmux_root __wmux_home __wmux_seed __wmux_src __wmux_links __wmux_copies __wmux_name __wmux_login __wmux_how __wmux_note __wmux_token
 eval "unset __wmux_account_rc; return $__wmux_account_rc"
 `;
 
@@ -309,7 +328,7 @@ case "$project" in ''|.|..|*/*) exit 1 ;; esac
 case "$src" in /*) ;; *) exit 1 ;; esac
 [ -f "$src" ] && [ ! -L "$src" ] || exit 1
 [ -n "\${WMUX_WSL_ACCOUNT_SH:-}" ] && [ -r "$WMUX_WSL_ACCOUNT_SH" ] || exit 1
-unset CLAUDE_CONFIG_DIR WMUX_WSL_ACCOUNT_CODEX WMUX_WSL_ACCOUNT_CLAUDE_SHARE
+unset CLAUDE_CONFIG_DIR WMUX_WSL_ACCOUNT_CODEX WMUX_WSL_ACCOUNT_CLAUDE_SHARE WMUX_WSL_ACCOUNT_CLAUDE_TOKEN
 export WMUX_WSL_ACCOUNT_CLAUDE="$key" WMUX_DATA_SUFFIX="$suffix"
 [ "$share" != 1 ] || export WMUX_WSL_ACCOUNT_CLAUDE_SHARE=1
 . "$WMUX_WSL_ACCOUNT_SH" quiet || exit 1

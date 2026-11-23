@@ -4,6 +4,11 @@ import { keepOwnWslTranscriptPath } from '../hooks/transcriptPathGuard';
 import { parseWslAccountCopy, runWslAccountCopy, wslAccountCopyArgs } from '../wslAccountCopy';
 import { wslAccountHomeKey } from '../../shared/wslAccountHome';
 import type { ResumeBinding } from '../../shared/agentResume';
+import { buildWslInjection } from '../../shared/wslIntegration';
+import { setWslAccountKeys } from '../../shared/wslAccountMark';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const SID = '0b5c1d2e-3f40-4a5b-8c6d-7e8f9a0b1c2d';
 const TARGET = { distribution: 'Ubuntu', user: 'me' };
@@ -95,9 +100,40 @@ describe('continueOnAccount in a WSL pane', () => {
     expect(await continueOnAccount(deps({}, { copy: async () => ({ result: 'diverged', home: HOME_B }) }), 'p1', ACCOUNT_B)).toEqual({ ok: false, code: 'diverged' });
   });
 
-  it('refuses before anything stops: copy-only, an unreported Claude, no WSL support, a missing source', async () => {
+  it('copy-only (a vault sign-in): copies in the distro with Claude left running, and hands back the Linux folder', async () => {
+    const d = deps({ liveAgent: () => 'claude' }, { agentTracked: () => false });
+    expect(await continueOnAccount(d, 'p1', ACCOUNT_B, { copyOnly: true })).toEqual({
+      ok: true, sessionId: SID, transcriptPath: COPY, cwd: '/home/me/repo', wsl: true,
+    });
+    expect(d.calls).toEqual(['ready', `copy:${SOURCE}>${COPY}`]);
+  });
+
+  it('copy-only: the new pane, run on the account as this pane\'s user, gets the home the copy was planned into', () => {
+    const planned = planWslTranscriptCopy(binding(), { wslTarget: TARGET, env: {} }, ACCOUNT_B);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-home-match-'));
+    try {
+      // What pty.handler hands the daemon for the new pane: the account's folder, marked as the account's.
+      const env: Record<string, string> = { CLAUDE_CONFIG_DIR: ACCOUNT_B };
+      setWslAccountKeys(env, ['CLAUDE_CONFIG_DIR']);
+      const injected = buildWslInjection({ target: TARGET, cwd: '/home/me/repo', env, integrationDir: dir, bashInit: '', bridgePath: '/unused' });
+      expect(planned.ok && planned.plan.home).toBe(`/home/${TARGET.user}/.wmux/accounts/claude-${injected.env.WMUX_WSL_ACCOUNT_CLAUDE}`);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('copy-only refuses a copy into another home, an open turn, and the same or a diverged copy', async () => {
+    const run = (d: ReturnType<typeof deps>) => continueOnAccount(d, 'p1', ACCOUNT_B, { copyOnly: true });
+    expect(await run(deps({}, { copy: async () => ({ result: 'copied', home: '/somewhere/else' }) }))).toEqual({ ok: false, code: 'copy_failed' });
+    expect(await run(deps({}, { copy: async () => ({ result: 'failed', reason: 'x' }) }))).toEqual({ ok: false, code: 'copy_failed' });
+    expect(await run(deps({}, { copy: async () => ({ result: 'same', home: HOME_B }) }))).toEqual({ ok: false, code: 'same_account' });
+    expect(await run(deps({}, { copy: async () => ({ result: 'diverged', home: HOME_B }) }))).toEqual({ ok: false, code: 'diverged' });
+    const open = deps({ turnClosed: () => false });
+    expect(await run(open)).toEqual({ ok: false, code: 'turn_open' });
+    expect(open.calls.filter((c) => c !== 'ready')).toEqual([]);
+  });
+
+  it('refuses before anything stops: an unreported Claude, no WSL support, a missing source', async () => {
     const cases: Array<[ReturnType<typeof deps>, { copyOnly?: boolean }, string]> = [
-      [deps(), { copyOnly: true }, 'unsupported'],
+      [deps({ wsl: undefined }), { copyOnly: true }, 'unsupported'],
       [deps({}, { agentTracked: () => false }), {}, 'unsupported'],
       [deps({ wsl: undefined }), {}, 'unsupported'],
       [deps({}, { sourceReady: async () => false }), {}, 'unknown_session'],

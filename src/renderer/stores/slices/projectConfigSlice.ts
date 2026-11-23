@@ -32,6 +32,12 @@ export interface ProjectPaneSeed {
    */
   wslDistro?: string;
   /**
+   * Open the pane as a WSL shell running as the live WSL pane with this pty
+   * id does (its distro and user), at `cwd` (a Linux path): a conversation
+   * continued from it on a token account. Never read from wmux.json.
+   */
+  wslFrom?: string;
+  /**
    * The registered account the pane runs on instead of the workspace's bound
    * one (a conversation continued on a token account). Main resolves the id.
    * Never read from wmux.json.
