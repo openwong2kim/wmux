@@ -129,9 +129,10 @@ export function paneFenceLaunch(line: string, cwd: string | undefined, launch: {
 }
 
 /** pty:create, once the folder is resolved: a fenced pane starts in the
- *  folder its fence was built for, or not at all. */
+ *  folder its fence was built for (a respawn's recovered folder included),
+ *  or not at all. */
 export function paneFenceCwdRefusal(record: { cwd: string } | undefined, resolution: { source: string; safeCwd?: string | null }): string | null {
   if (!record) return null;
-  const moved = resolution.source !== 'requested' || !resolution.safeCwd || path.resolve(resolution.safeCwd) !== path.resolve(record.cwd);
+  const moved = !resolution.safeCwd || path.resolve(resolution.safeCwd) !== path.resolve(record.cwd);
   return moved ? 'PTY_CREATE: worker fence: the pane would start in another folder than the one its fence was built for' : null;
 }

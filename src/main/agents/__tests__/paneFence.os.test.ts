@@ -161,6 +161,9 @@ describe('paneFenceCwdRefusal', () => {
     expect(paneFenceCwdRefusal({ cwd: '/w/p' }, { source: 'requested', safeCwd: '/w/p' })).toBeNull();
     expect(paneFenceCwdRefusal({ cwd: '/w/p' }, { source: 'home', safeCwd: '/home/u' })).toContain('worker fence:');
     expect(paneFenceCwdRefusal({ cwd: '/w/p' }, { source: 'requested', safeCwd: '/w/q' })).toContain('worker fence:');
+    // A dead pane's respawn in the folder its fence was built for.
+    expect(paneFenceCwdRefusal({ cwd: '/w/p' }, { source: 'recovery-cwd', safeCwd: '/w/p' })).toBeNull();
+    expect(paneFenceCwdRefusal({ cwd: '/w/p' }, { source: 'recovery-home' })).toContain('worker fence:');
   });
 });
 

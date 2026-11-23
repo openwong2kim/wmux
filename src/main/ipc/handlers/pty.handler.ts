@@ -339,7 +339,10 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
         // The pane's own env (a profile's CLAUDE_CONFIG_DIR) names the config
         // folder whose credentials the fence denies.
         const fence = { env: { ...process.env, ...(staged.env ?? {}) } };
-        fenced = paneFenceLaunch(paneLine, typeof staged.cwd === 'string' && staged.cwd ? path.resolve(staged.cwd) : undefined, { wsl }, { fence, ...(support !== undefined ? { support } : {}) });
+        // The folder the create resolves to (a dead pane's respawn included),
+        // which paneFenceCwdRefusal checks again once the create runs.
+        const folder = resolvePtyCreateCwdForShell(typeof staged.cwd === 'string' ? staged.cwd : undefined, staged.recoveryCwds, shellPath).safeCwd;
+        fenced = paneFenceLaunch(paneLine, folder ? path.resolve(folder) : undefined, { wsl }, { fence, ...(support !== undefined ? { support } : {}) });
       } catch (err) {
         throw new Error(`PTY_CREATE: ${(err as Error).message}`);
       }

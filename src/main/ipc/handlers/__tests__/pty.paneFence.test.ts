@@ -85,6 +85,12 @@ describe('pty:create in an opted-in pane', () => {
     expect(result).toMatchObject({ id: 'pty-c', fence: { on: true, launched: true } });
   });
 
+  it('a dead pane\'s respawn is fenced in the folder it comes back in', async () => {
+    const folder = process.cwd();
+    await createLocal({ cwd: undefined, recoveryCwds: { cwd: folder, spawnCwd: folder }, initialCommand: 'claude', workerFence: true });
+    expect(fence.calls).toEqual([{ line: 'claude', cwd: folder }]);
+  });
+
   it('a plain shell still turns the session on for its next launch', async () => {
     const { result } = await createLocal({ workerFence: true });
     expect(fence.sessions.get('pty-c')).toEqual({ on: true });
