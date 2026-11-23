@@ -152,6 +152,10 @@ describe('WSL per-launch Claude integration', () => {
       expect(run({ CLAUDE_CONFIG_DIR: '/home/me/.wmux/accounts/claude-0123456789abcdef' }))
         .toBe('C:\\wmux\\wmux-statusline.mjs|1|d:/home/me/.wmux/accounts/claude-0123456789abcdef|WMUX_PTY_ID:ELECTRON_RUN_AS_NODE/w:WMUX_STATUSLINE_CONFIG_DIR/w');
       expect(run({}).split('|')[2]).toBe('none');
+      // A relative one is made absolute against the working folder.
+      expect(execFileSync('/bin/sh', [path.join(dir, 'statusline.sh')], {
+        encoding: 'utf8', cwd: dir, env: { PATH: '/usr/bin:/bin', WMUX_WSL_NODE: node, WMUX_WSL_STATUSLINE: 's', CLAUDE_CONFIG_DIR: './cfg', PWD: dir },
+      }).split('|')[2]).toBe(`d:${dir}/./cfg`);
       // Without the Windows side's paths it is silent.
       expect(execFileSync('/bin/sh', [path.join(dir, 'statusline.sh')], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } })).toBe('');
     });

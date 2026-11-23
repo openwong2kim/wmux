@@ -181,6 +181,11 @@ describe('statusline live-usage push', () => {
       await run(input(43), pipe, { WMUX_STATUSLINE_CONFIG_DIR: 'none', CLAUDE_CONFIG_DIR: folder });
       await waitFor(() => main.received.length > 1);
       expect(main.received[1]).toMatchObject({ params: { configDir: null } });
+      // Anything but an absolute dir is no account home, never the Windows folder.
+      clearState();
+      await run(input(44), pipe, { WMUX_STATUSLINE_CONFIG_DIR: 'd:.claude-work', CLAUDE_CONFIG_DIR: folder });
+      await waitFor(() => main.received.length > 2);
+      expect(main.received[2]).toMatchObject({ params: { configDir: null } });
     } finally {
       await main.close();
     }

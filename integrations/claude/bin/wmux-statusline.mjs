@@ -75,9 +75,11 @@ const WMUX_CLIENT_NAME = 'wmux-statusline';
  */
 function wslConfigDir() {
   const v = process.env.WMUX_STATUSLINE_CONFIG_DIR;
-  if (v === 'none') return { dir: null };
-  if (typeof v === 'string' && v.startsWith('d:/') && !v.includes('\0')) return { dir: v.slice(2) };
-  return undefined;
+  if (typeof v !== 'string' || v.length === 0) return undefined;
+  if (v.startsWith('d:/') && !v.includes('\0')) return { dir: v.slice(2) };
+  // `none`, or anything but an absolute dir (a relative CLAUDE_CONFIG_DIR):
+  // no account home, and never the Windows side's folder.
+  return { dir: null };
 }
 
 /** The account a WSL home is: `claude-<16 hex>`, the SHA-256 of the account

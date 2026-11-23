@@ -82,6 +82,8 @@ exec "$WMUX_WSL_NODE" "$WMUX_WSL_BRIDGE" "$@"
 export const WSL_STATUSLINE = `#!/bin/sh
 [ -n "\${WMUX_WSL_NODE:-}" ] && [ -n "\${WMUX_WSL_STATUSLINE:-}" ] || exit 0
 WMUX_STATUSLINE_CONFIG_DIR=\${CLAUDE_CONFIG_DIR:+d:$CLAUDE_CONFIG_DIR}
+# A relative one is claude's own working folder's: made absolute the same way.
+case $CLAUDE_CONFIG_DIR in ''|/*) ;; *) WMUX_STATUSLINE_CONFIG_DIR="d:$PWD/$CLAUDE_CONFIG_DIR" ;; esac
 export ELECTRON_RUN_AS_NODE=1 WMUX_STATUSLINE_CONFIG_DIR="\${WMUX_STATUSLINE_CONFIG_DIR:-none}"
 export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w:WMUX_STATUSLINE_CONFIG_DIR/w"
 exec "$WMUX_WSL_NODE" "$WMUX_WSL_STATUSLINE"
