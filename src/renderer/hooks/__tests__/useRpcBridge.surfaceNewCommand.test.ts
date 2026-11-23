@@ -38,6 +38,22 @@ describe('surface.new initialCommand', () => {
     expect(opts.env).toEqual({ A: '1' });
   });
 
+  it('only main\'s sign-in tab stays out of the worker fence a profile turns on for new panes', async () => {
+    const ws = workspace();
+    ws.profile = { ...ws.profile, fenceAgents: true };
+    useStore.setState({ workspaces: [ws] } as never);
+    await handleRpcMethod('surface.new', { workspaceId: 'ws-1', initialCommand: 'claude auth login', signIn: true });
+    expect((create.mock.calls[0][0] as Record<string, unknown>).workerFence).toBe(false);
+    await handleRpcMethod('surface.new', { workspaceId: 'ws-1' });
+    expect((create.mock.calls[1][0] as Record<string, unknown>).workerFence).toBe(true);
+    // Any other startup command follows the profile.
+    await handleRpcMethod('surface.new', { workspaceId: 'ws-1', initialCommand: 'claude' });
+    expect((create.mock.calls[2][0] as Record<string, unknown>).workerFence).toBe(true);
+    // The flag alone, with no command, opts nothing out.
+    await handleRpcMethod('surface.new', { workspaceId: 'ws-1', signIn: true });
+    expect((create.mock.calls[3][0] as Record<string, unknown>).workerFence).toBe(true);
+  });
+
   it('without one, the profile\'s default pane command stands and no spawn kind is set', async () => {
     await handleRpcMethod('surface.new', { workspaceId: 'ws-1' });
     const opts = create.mock.calls[0][0] as Record<string, unknown>;

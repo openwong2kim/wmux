@@ -1,0 +1,273 @@
+// A person's pane in the worker fence (paneFence.ts): the fenced line, every
+// refusal, and the session record write-launch reads (paneFenceSessions.ts).
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { PANE_FENCE_CLAUDE_ONLY, paneFenceCwdRefusal, paneFenceLaunch, paneLineStartsAgent, spliceProjectSettingSources, type PaneFenceDeps } from '../paneFence';
+import {
+  PANE_FENCE_SESSIONS_MAX,
+  __resetPaneFenceSessionsForTesting,
+  forgetPaneFenceSession,
+  getPaneFenceSession,
+  getPaneFenceSessionsPath,
+  notePaneFenceLaunch,
+  paneFenceNamedPaths,
+  prunePaneFenceSessions,
+  setPaneFenceOn,
+} from '../paneFenceSessions';
+import { __resetWorkerFenceSupportForTesting, type WorkerFenceSupport } from '../botWorkerFence';
+import { paneFenceRefusalReason, paneLineAgents } from '../../../shared/paneFence';
+
+const isWin = process.platform === 'win32';
+const RUNTIME = '/opt/wmux/wmux';
+const BRIDGE = '/opt/wmux/hooks/wmux-bridge.mjs';
+const EXE = '/opt/claude/bin/claude';
+const MCP_ENTRY = '/opt/wmux/mcp/index.js';
+const FULL: WorkerFenceSupport = { capable: true, exe: EXE, version: '2.1.311', selfTest: { ok: true } };
+
+let root: string;
+let dir: string;
+let home: string;
+let repo: string;
+
+beforeEach(() => {
+  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pane-fence-')));
+  dir = path.join(root, 'data');
+  home = path.join(root, 'home');
+  repo = path.join(home, 'code', 'project');
+  fs.mkdirSync(dir);
+  fs.mkdirSync(repo, { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+  __resetWorkerFenceSupportForTesting();
+  __resetPaneFenceSessionsForTesting();
+});
+afterEach(() => {
+  __resetPaneFenceSessionsForTesting();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+function deps(over: Partial<PaneFenceDeps> = {}): PaneFenceDeps {
+  return { dir, support: FULL, bridge: () => BRIDGE, mcp: () => ({ entry: MCP_ENTRY, level: 'full' }), platform: process.platform, fence: { runtime: RUNTIME, home, env: {}, accountConfigDirs: [] }, ...over };
+}
+const settingsOf = (line: string): Record<string, unknown> => {
+  const m = /--settings="([^"]+)"/.exec(line);
+  if (!m) throw new Error(`no settings: ${line}`);
+  return JSON.parse(fs.readFileSync(m[1], 'utf8')) as Record<string, unknown>;
+};
+const refusalOf = (fn: () => unknown): string => {
+  try {
+    fn();
+  } catch (err) {
+    return (err as Error).message;
+  }
+  throw new Error('not refused');
+};
+
+describe.skipIf(isWin)('an opted-in pane\'s launch', () => {
+  it('is fenced in every permission mode, loads only project settings, and carries wmux\'s status hooks', () => {
+    for (const line of ['claude', 'claude --permission-mode acceptEdits', 'claude --dangerously-skip-permissions']) {
+      const out = paneFenceLaunch(line, repo, {}, deps());
+      expect(out, line).not.toBeNull();
+      expect(out!.line.startsWith(`${EXE} --setting-sources=project --mcp-config="${out!.record.mcpConfigFile}" --strict-mcp-config --settings="`), out!.line).toBe(true);
+      const s = settingsOf(out!.line);
+      const sandbox = s.sandbox as { enabled: boolean; autoAllowBashIfSandboxed: boolean; filesystem: { allowWrite: string[]; denyRead: string[] } };
+      expect(sandbox.enabled).toBe(true);
+      expect(sandbox.filesystem.allowWrite).toContain(fs.realpathSync(repo));
+      expect(sandbox.filesystem.denyRead).toContain(path.join(home, '.ssh'));
+      // Only a bypass line has no other judge for a command.
+      expect(sandbox.autoAllowBashIfSandboxed, line).toBe(line.includes('--dangerously-skip-permissions'));
+      const hooks = s.hooks as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
+      expect(hooks.PreToolUse[0].matcher).toBe('.*');
+      expect(hooks.Stop.some((g) => g.hooks.some((h) => h.command.includes(BRIDGE)))).toBe(true);
+      expect(out!.record.cwd).toBe(repo);
+    }
+  });
+
+  it('leaves a plain shell command alone', () => {
+    expect(paneFenceLaunch('ls -la', repo, {}, deps())).toBeNull();
+    expect(paneFenceLaunch('nice -n 10 make', repo, {}, deps())).toBeNull();
+    expect(paneLineStartsAgent('command ls')).toBe(false);
+    // A word that only mentions an agent starts none.
+    expect(paneFenceLaunch('ask codex to check', repo, {}, deps())).toBeNull();
+    expect(paneFenceLaunch('echo claude', repo, {}, deps())).toBeNull();
+  });
+
+  it('loads only wmux\'s own MCP server, keeping a server list the line names itself', () => {
+    const out = paneFenceLaunch('claude', repo, {}, deps())!;
+    expect(JSON.parse(fs.readFileSync(out.record.mcpConfigFile!, 'utf8'))).toEqual({ mcpServers: { wmux: { type: 'stdio', command: 'node', args: [MCP_ENTRY] } } });
+    const own = paneFenceLaunch('claude --mcp-config /w/surface.json', repo, {}, deps())!;
+    expect(own.line).toContain('--strict-mcp-config');
+    expect(own.line).not.toContain(out.record.mcpConfigFile!);
+    expect(refusalOf(() => paneFenceLaunch('claude', repo, {}, deps({ mcp: () => ({ entry: null, level: 'full' }) })))).toContain('MCP bundle');
+  });
+
+  it('finds an agent at a command word of any command, and inside a shell\'s -c', () => {
+    for (const line of [
+      'cd d && claude', 'clear; claude', 'cd sub;claude', 'sh -c "cd d && claude"', 'x=$(claude -p hi)', 'FOO=1 claude', 'true || gemini', 'x=1; codex', "bash -c 'cd d; codex'",
+      'if true; then claude; fi', 'while true; do claude; done', 'if claude; then x; fi', '! claude', 'until false; do codex; done', 'coproc claude',
+      '2>/dev/null claude', '2> /dev/null claude', 'claude>log', 'claude<<<hi', '>x claude', 'nice -n 5 claude>log',
+    ]) {
+      expect(paneLineAgents(line).length, line).toBeGreaterThan(0);
+    }
+    for (const line of ['ask codex to check', 'echo claude', 'git commit -m "claude"', 'ls']) expect(paneLineAgents(line), line).toEqual([]);
+    // Another agent behind an operator is refused, a claude one is never typed unfenced.
+    expect(refusalOf(() => paneFenceLaunch('true || gemini', repo, {}, deps()))).toContain(PANE_FENCE_CLAUDE_ONLY);
+    for (const line of ['cd d && claude', 'clear; claude', 'sh -c "cd d && claude"', 'FOO=1 claude']) {
+      expect(refusalOf(() => paneFenceLaunch(line, repo, {}, deps())), line).toMatch(/^worker fence: /);
+    }
+  });
+
+  it('on Linux, refuses a folder with no git config or hooks folder the fence could keep read-only', () => {
+    const plain = path.join(home, 'code', 'notes');
+    fs.mkdirSync(plain, { recursive: true });
+    expect(refusalOf(() => paneFenceLaunch('claude', plain, {}, deps({ platform: 'linux' })))).toContain('has no git repository');
+    fs.rmSync(path.join(repo, '.git', 'hooks'), { recursive: true, force: true });
+    expect(refusalOf(() => paneFenceLaunch('claude', repo, {}, deps({ platform: 'linux' })))).toContain('has no git hooks folder');
+  });
+
+  it('compares a credential path that does not exist yet by its real ancestor', () => {
+    const link = path.join(root, 'link');
+    fs.symlinkSync(repo, link);
+    const env = { CLAUDE_CONFIG_DIR: path.join(link, 'cfg') };
+    expect(refusalOf(() => paneFenceLaunch('claude', repo, {}, deps({ fence: { runtime: RUNTIME, home, env, accountConfigDirs: [] } })))).toContain('the fence keeps unreadable');
+  });
+
+  it('refuses codex and any other agent: Claude Code only for now', () => {
+    for (const line of ['codex', 'codex --yolo', 'gemini', 'command gemini', 'nohup nice -n 5 codex', 'nice -n 5 gemini', 'timeout 30 gemini', "sh -c 'gemini'"]) {
+      const why = refusalOf(() => paneFenceLaunch(line, repo, {}, deps()));
+      expect(why, line).toContain(PANE_FENCE_CLAUDE_ONLY);
+      expect(why).toContain('Claude Code only for now');
+    }
+  });
+
+  it('refuses where only a weaker fence would run, never starting unfenced', () => {
+    expect(refusalOf(() => paneFenceLaunch('claude', repo, {}, deps({ support: { capable: false, reason: 'the sandbox needs bwrap and socat on PATH' } })))).toMatch(/^worker fence: it needs the OS sandbox, which cannot run here \(the sandbox needs bwrap/);
+    expect(refusalOf(() => paneFenceLaunch('claude', repo, { wsl: true }, deps()))).toContain('a WSL pane cannot run the OS sandbox');
+    expect(refusalOf(() => paneFenceLaunch('claude', repo, {}, deps({ platform: 'win32' })))).toContain('Windows does not have');
+  });
+
+  it('refuses a self-test failure (no toolless claude) and asks again after a transient one', () => {
+    expect(refusalOf(() => paneFenceLaunch('claude', repo, {}, deps({ support: { ...FULL, selfTest: { ok: false, reason: 'the write landed' } } })))).toContain('failed its self-test');
+    expect(refusalOf(() => paneFenceLaunch('claude', repo, {}, deps({ support: { ...FULL, selfTest: { ok: false, reason: 'timed out', transient: true } } })))).toContain('try again');
+    expect(refusalOf(() => paneFenceLaunch('claude', repo, {}, deps({ support: { capable: false, reason: 'no claude executable', transient: true } })))).toContain('try again');
+    expect(refusalOf(() => paneFenceLaunch('claude', repo, {}, deps({ support: null })))).toContain('not checked yet');
+  });
+
+  it('refuses a folder that is the home folder, the disk root, or holds a credential path', () => {
+    // The home folder's .claude is the user's own settings: the home refusal comes first.
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ sandbox: { enabled: false } }));
+    expect(refusalOf(() => paneFenceLaunch('claude', home, {}, deps()))).toBe('worker fence: the pane\'s folder is your home folder; open the pane in a project folder');
+    expect(refusalOf(() => paneFenceLaunch('claude', '/', {}, deps()))).toContain('root of the disk');
+    expect(refusalOf(() => paneFenceLaunch('claude', root, {}, deps()))).toContain('the fence keeps unreadable');
+    expect(refusalOf(() => paneFenceLaunch('claude', undefined, {}, deps()))).toContain('no folder');
+  });
+
+  it('refuses a folder whose project settings run a program, as a bot worker\'s does', () => {
+    fs.mkdirSync(path.join(repo, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.claude', 'settings.json'), JSON.stringify({ hooks: { PostToolUse: [] } }));
+    expect(refusalOf(() => paneFenceLaunch('claude', repo, {}, deps()))).toContain('.claude/settings.json sets hooks');
+  });
+
+  it('refuses a folder inside a credential path, and denies the pane env\'s own config folder', () => {
+    const inSsh = path.join(home, '.ssh', 'project');
+    fs.mkdirSync(inSsh, { recursive: true });
+    expect(refusalOf(() => paneFenceLaunch('claude', inSsh, {}, deps()))).toContain('is inside');
+    const cfg = path.join(root, 'profile-claude');
+    const res = paneFenceLaunch('claude', repo, {}, deps({ fence: { runtime: RUNTIME, home, env: { CLAUDE_CONFIG_DIR: cfg }, accountConfigDirs: [] } }));
+    expect(JSON.stringify(settingsOf(res!.line))).toContain(path.join(cfg, '.credentials.json'));
+  });
+
+  it('refuses a line the fence cannot be attached to', () => {
+    expect(refusalOf(() => paneFenceLaunch('claude --add-dir /tmp', repo, {}, deps()))).toContain('--add-dir');
+    expect(refusalOf(() => paneFenceLaunch('claude --settings=/x.json', repo, {}, deps()))).toContain('--settings');
+    expect(refusalOf(() => paneFenceLaunch('claude --setting-sources=user', repo, {}, deps()))).toContain('--setting-sources');
+    expect(refusalOf(() => paneFenceLaunch('claude', repo, {}, deps({ bridge: () => null })))).toContain('hook bridge');
+  });
+
+  it('every refusal reads back as the fence\'s own sentence', () => {
+    const why = refusalOf(() => paneFenceLaunch('codex', repo, {}, deps()));
+    expect(paneFenceRefusalReason(`PTY_WRITE_LAUNCH: ${why}`)).toBe(PANE_FENCE_CLAUDE_ONLY);
+    expect(paneFenceRefusalReason('PTY_WRITE_LAUNCH: the session is not live')).toBeNull();
+  });
+});
+
+describe('spliceProjectSettingSources', () => {
+  it('goes right after the launcher, keeping the model marker', () => {
+    expect(spliceProjectSettingSources('claude -p hi')).toBe('claude --setting-sources=project -p hi');
+    expect(spliceProjectSettingSources('claude --setting-sources user')).toBeNull();
+    // After the launcher, not after a leading VAR=value.
+    expect(spliceProjectSettingSources('FOO=1 claude -p hi')).toBe('FOO=1 claude --setting-sources=project -p hi');
+    expect(spliceProjectSettingSources('claude -p hi', '/d/m.json')).toBe('claude --setting-sources=project --mcp-config="/d/m.json" --strict-mcp-config -p hi');
+    expect(spliceProjectSettingSources('claude', '/d/$m.json')).toBeNull();
+  });
+});
+
+describe('paneFenceCwdRefusal', () => {
+  it('refuses a create that would start in another folder than the fenced one', () => {
+    expect(paneFenceCwdRefusal(undefined, { source: 'home' })).toBeNull();
+    expect(paneFenceCwdRefusal({ cwd: '/w/p' }, { source: 'requested', safeCwd: '/w/p' })).toBeNull();
+    expect(paneFenceCwdRefusal({ cwd: '/w/p' }, { source: 'home', safeCwd: '/home/u' })).toContain('worker fence:');
+    expect(paneFenceCwdRefusal({ cwd: '/w/p' }, { source: 'requested', safeCwd: '/w/q' })).toContain('worker fence:');
+    // A dead pane's respawn in the folder its fence was built for.
+    expect(paneFenceCwdRefusal({ cwd: '/w/p' }, { source: 'recovery-cwd', safeCwd: '/w/p' })).toBeNull();
+    expect(paneFenceCwdRefusal({ cwd: '/w/p' }, { source: 'recovery-home' })).toContain('worker fence:');
+  });
+});
+
+describe('the session record', () => {
+  it('keeps a fenced launch and the switch across a reload', () => {
+    notePaneFenceLaunch('daemon-1', { cwd: '/w/p', settingsFile: '/d/f.json', tempDir: '/d/t' }, dir, 1);
+    expect(setPaneFenceOn('daemon-2', true, dir, 2)).toBe(true);
+    __resetPaneFenceSessionsForTesting();
+    expect(getPaneFenceSession('daemon-1', dir)).toMatchObject({ on: true, cwd: '/w/p' });
+    expect(getPaneFenceSession('daemon-2', dir)?.on).toBe(true);
+    expect(setPaneFenceOn('daemon-1', false, dir, 3)).toBe(false);
+    expect(getPaneFenceSession('daemon-1', dir)?.on).toBe(false);
+    expect(paneFenceNamedPaths(dir)).toEqual({ tempDirs: new Set(['/d/t']), files: new Set(['/d/f.json']) });
+  });
+
+  it('takes only a literal boolean, and an unreadable file is an empty record', () => {
+    expect(setPaneFenceOn('daemon-1', 'yes', dir)).toBe(false);
+    expect(getPaneFenceSession('daemon-1', dir)).toBeNull();
+    fs.mkdirSync(path.dirname(getPaneFenceSessionsPath(dir)), { recursive: true });
+    fs.writeFileSync(getPaneFenceSessionsPath(dir), '{not json');
+    __resetPaneFenceSessionsForTesting();
+    expect(getPaneFenceSession('daemon-1', dir)).toBeNull();
+  });
+
+  it('keeps at most PANE_FENCE_SESSIONS_MAX sessions, dropping a switched-off one first, else the oldest', () => {
+    setPaneFenceOn('daemon-off', false, dir, PANE_FENCE_SESSIONS_MAX);
+    for (let i = 0; i < PANE_FENCE_SESSIONS_MAX; i++) setPaneFenceOn(`daemon-${i}`, true, dir, i);
+    expect(getPaneFenceSession('daemon-off', dir)).toBeNull();
+    expect(getPaneFenceSession('daemon-0', dir)?.on).toBe(true);
+    setPaneFenceOn('daemon-new', true, dir, PANE_FENCE_SESSIONS_MAX + 1);
+    expect(getPaneFenceSession('daemon-0', dir)).toBeNull();
+  });
+
+  it('drops a closed session, the sessions the daemon no longer has, and never writes a local pane\'s id', () => {
+    notePaneFenceLaunch('daemon-1', { cwd: '/w/p', settingsFile: '/d/f.json', mcpConfigFile: '/d/m.json' }, dir, 1);
+    setPaneFenceOn('daemon-2', true, dir, 2);
+    setPaneFenceOn('daemon-3', true, dir, 3);
+    setPaneFenceOn('pty-1', true, dir, 4);
+    setPaneFenceOn('other-1', true, dir, 5);
+    expect(paneFenceNamedPaths(dir).files).toEqual(new Set(['/d/f.json', '/d/m.json']));
+    forgetPaneFenceSession('daemon-2', dir);
+    expect(prunePaneFenceSessions(new Set(['daemon-1', 'pty-1', 'other-1']), dir)).toBe(1);
+    expect(getPaneFenceSession('pty-1', dir)?.on).toBe(true);
+    __resetPaneFenceSessionsForTesting();
+    expect(getPaneFenceSession('daemon-1', dir)?.on).toBe(true);
+    expect(getPaneFenceSession('other-1', dir)?.on).toBe(true);
+    for (const id of ['daemon-2', 'daemon-3', 'pty-1']) expect(getPaneFenceSession(id, dir), id).toBeNull();
+  });
+
+  it('a fenced launch keeps a switch-off made while it was checked', () => {
+    setPaneFenceOn('daemon-1', false, dir, 1);
+    notePaneFenceLaunch('daemon-1', { cwd: '/w/p', settingsFile: '/d/f.json' }, dir, 2);
+    expect(getPaneFenceSession('daemon-1', dir)?.on).toBe(false);
+    notePaneFenceLaunch('daemon-2', { cwd: '/w/p', settingsFile: '/d/f.json' }, dir, 3);
+    expect(getPaneFenceSession('daemon-2', dir)?.on).toBe(true);
+  });
+});

@@ -5440,6 +5440,25 @@ describe('WebTerminalServer', () => {
         expect(write).toHaveBeenCalledWith('\r');
       });
 
+      it('an agent launch line into a person\'s fenced pane is refused; other lines and typed keys go through', async () => {
+        const info = await startRW();
+        become('pane-shell');
+        (server as unknown as { deps: { paneFenceOn?: (id: string) => boolean } }).deps.paneFenceOn = (id) => id === 's1';
+        try {
+          for (const line of ['claude --resume x\r', 'cd d && codex\r']) {
+            const res = await launchInto(info.token as string, line, 'human');
+            expect(res.status).toBe(409);
+            expect(await res.json()).toMatchObject({ error: 'worker-fence', effect: 'none' });
+          }
+          expect(write).not.toHaveBeenCalled();
+          expect((await launchInto(info.token as string, 'ls\r', 'human')).status).toBe(204);
+          expect((await launchInto(info.token as string, 'claude\r', null)).status).toBe(204);
+          expect(write.mock.calls).toEqual([['ls\r'], ['claude\r']]);
+        } finally {
+          delete (server as unknown as { deps: { paneFenceOn?: unknown } }).deps.paneFenceOn;
+        }
+      });
+
       it('a screen that cannot rule the prompt out stops only an automated line', async () => {
         const info = await startRW();
         become('pane-unknown');

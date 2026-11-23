@@ -15,6 +15,8 @@ import { tokenAttrs } from '../../themes';
 import UsageLimitChip from './UsageLimitChip';
 import AgentStallChip from './AgentStallChip';
 import SiblingCollisionChip from './SiblingCollisionChip';
+import PaneFenceChip from './PaneFenceChip';
+import { setTabWorkerFence } from '../../utils/paneFence';
 import { computePaneAutoName, paneDisplayName, paneLabelRejectionKey, paneTag } from '../../utils/paneNaming';
 import { beginPaneTagDrag, endPaneTagDrag } from '../../utils/paneTagDrag';
 import { findPane } from '../../../shared/paneUtils';
@@ -101,7 +103,7 @@ export const PANE_ACTIONS_CLUSTER_WIDTH = 142;
  *  host, so no split, no new pane and (by the `snap-` prefix) no layout snap. */
 // 'mute-notifications': a shadow pane's notifications come from the remote
 // host's own path, which never reads this pane's mute flag.
-const HIDDEN_ON_SHADOW: ReadonlySet<string> = new Set(['split-right', 'split-down', 'new-remote', 'split-right-remote', 'split-down-remote', 'mute-notifications', 'share-remote-pane', PANE_CONTINUE_IN_AGENT_KEY]);
+const HIDDEN_ON_SHADOW: ReadonlySet<string> = new Set(['split-right', 'split-down', 'new-remote', 'split-right-remote', 'split-down-remote', 'mute-notifications', 'share-remote-pane', PANE_CONTINUE_IN_AGENT_KEY, 'worker-fence']);
 
 /** Rendered width (px) of the COLLAPSED cluster: the ⋮ trigger alone, which
  *  opens the same actions as a vertical menu. Same outer box as the full
@@ -790,6 +792,24 @@ export default function SurfaceTabs({
     if (activeSurfacePtyId) setContinueInAgentFor({ ptyId: activeSurfacePtyId, ...(activeSurfaceCwd ? { cwd: activeSurfaceCwd } : {}) });
   }, [activeSurfacePtyId, activeSurfaceCwd]);
   const continueInAgentItems = usePaneContinueInAgent({ ptyId: activeSurfacePtyId, allowed: !readOnly, onOpen: openContinueInAgent });
+  // The worker fence switch for the active terminal tab (utils/paneFence.ts).
+  const fenceTab = activeSurface && (!activeSurface.surfaceType || activeSurface.surfaceType === 'terminal') && !readOnly ? activeSurface : null;
+  const fenceOn = fenceTab?.workerFence === true;
+  const fenceAgentRunning = useStore((s) => (activeSurfacePtyId ? s.surfaceAgent[activeSurfacePtyId] !== undefined : false));
+  const fenceItems: PaneActionItem[] = useMemo(() => {
+    if (!fenceTab) return [];
+    // The fence needs the OS sandbox (macOS, Linux): unavailable on Windows.
+    const unavailable = window.electronAPI?.platform === 'win32';
+    return [{
+      key: 'worker-fence',
+      label: t('paneFence.menu'),
+      icon: <IconLock size={14} />,
+      active: fenceOn,
+      disabled: unavailable,
+      title: unavailable ? t('paneFence.unavailable') : t('paneFence.menuTitle'),
+      onSelect: () => setTabWorkerFence(fenceTab.id, fenceTab.ptyId || undefined, !fenceOn, fenceAgentRunning),
+    }];
+  }, [fenceTab, fenceOn, fenceAgentRunning, t]);
   useEffect(() => {
     if (menu !== 'main') return;
     reloadChromeProfiles();
@@ -863,6 +883,7 @@ export default function SurfaceTabs({
     ...continueAccount.mainItems,
     ...continueInAgentItems,
     ...claudeRewindItems,
+    ...fenceItems,
     ...(canShareRemote ? [{
       key: 'share-remote-pane',
       label: sharePeers.length === 1 ? t('a2aShare.menuOne', { pc: sharePeers[0] }) : t('a2aShare.menu'),
@@ -918,7 +939,7 @@ export default function SurfaceTabs({
   ].filter((item) => !shadow || !(HIDDEN_ON_SHADOW.has(item.key) || item.key.startsWith('snap-'))), [
     t, onSplitHorizontal, onSplitVertical, onAddBrowser, newBrowserLabel, onAddPrivateBrowser, chromeProfile.mainItems, browserPolicy.mainItems, onAddRemote,
     onSplitHorizontalRemote, onSplitVerticalRemote, startPaneRename,
-    menuTabSurface, startRename, canLinkRemote, canShareRemote, sharePeers, paneMuted, togglePaneMuted, continueAccount.mainItems, continueInAgentItems, claudeRewindItems,
+    menuTabSurface, startRename, canLinkRemote, canShareRemote, sharePeers, paneMuted, togglePaneMuted, continueAccount.mainItems, continueInAgentItems, claudeRewindItems, fenceItems,
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
     layoutTemplates, shadow, splitRightKey, splitDownKey,
   ]);
@@ -1306,6 +1327,7 @@ export default function SurfaceTabs({
       />
       <AgentStallChip ptyId={surfaces.find((sf) => sf.id === activeSurfaceId)?.ptyId} readOnly={readOnly} />
       <SiblingCollisionChip workspace={workspace} paneId={paneId} readOnly={readOnly} />
+      <PaneFenceChip surface={surfaces.find((sf) => sf.id === activeSurfaceId)} />
       {supervision && (
         <span
           data-pane-supervision={supervision.status}

@@ -42,6 +42,9 @@ export interface SurfaceHandoff {
 export interface Surface {
   /** Presentation only: both views share the same live PTY. */
   viewMode?: 'terminal' | 'chat';
+  /** A terminal tab the person opted into the worker fence: the agents wmux
+   *  starts in it run fenced (main/agents/paneFence.ts). Off when absent. */
+  workerFence?: boolean;
   id: string;
   ptyId: string;
   title: string;
@@ -270,6 +273,9 @@ export interface WorkspaceProfile {
    * (validateCwd in pty.handler), so a disconnected drive never hard-fails.
    */
   startupCwd?: string;
+  /** New terminals in this workspace start opted into the worker fence
+   *  (Surface.workerFence). Off when absent. */
+  fenceAgents?: boolean;
 }
 
 // Validation caps — enforced by shared/workspaceProfile.ts.

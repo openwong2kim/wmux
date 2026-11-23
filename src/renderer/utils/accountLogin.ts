@@ -150,6 +150,8 @@ export async function openTerminalTab(req: {
         ...(req.shell ? { shell: req.shell } : {}),
         ...(req.wslDistro ? { wslDistro: req.wslDistro } : {}),
         initialCommand: req.initialCommand,
+        // A sign-in or setup tab reads the credentials the fence hides.
+        workerFence: false,
       },
       state.defaultShell,
     );
@@ -165,7 +167,7 @@ export async function openTerminalTab(req: {
     }
     // addSurface's third argument is the SHELL (also the initial title); the
     // restore path re-spawns it, so it must be a real shell, never the label.
-    useStore.getState().addSurface(paneId, created.id, created.shell || options.shell || '', created.cwd || cwd || '', ws.id);
+    useStore.getState().addSurface(paneId, created.id, created.shell || options.shell || '', created.cwd || cwd || '', ws.id, { workerFence: false });
     const surface = findSurfaceByPty(ws.id, created.id);
     if (!surface) {
       dispose();

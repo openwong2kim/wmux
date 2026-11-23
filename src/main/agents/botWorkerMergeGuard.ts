@@ -65,6 +65,7 @@ import { dataSuffix } from '../../shared/constants';
 import { bridgeHookGroups, findBridgeSourceFrom } from '../../cli/commands/setupHooks';
 import { attachWorkerFence, lastWorkerFenceSupport, pruneWorkerTempDirs, writeContentFile, type WorkerFenceAttach, type WorkerFenceAttachInput, type WorkerFenceStrength, type WorkerFenceSupport } from './botWorkerFence';
 import { isWorkerFenceOff } from './workerFencePolicy';
+import { paneFenceNamedPaths } from './paneFenceSessions';
 import { mergeWorkerFenceSettings, workerFenceLaunch } from './workerFence';
 
 // The pure parts live in shared/ (the daemon guards a phone's launches too).
@@ -132,6 +133,11 @@ let defaultRegisteredLevel: () => string | null = () => null;
 export function setWorkerMcpResolvers(r: { entry: () => string | null; registeredLevel: () => string | null }): void {
   defaultMcpEntry = r.entry;
   defaultRegisteredLevel = r.registeredLevel;
+}
+
+/** The resolvers pty.handler set (a person's fenced pane uses them too). */
+export function workerMcpResolvers(): { entry: () => string | null; registeredLevel: () => string | null } {
+  return { entry: defaultMcpEntry, registeredLevel: defaultRegisteredLevel };
 }
 
 // ── Which panes are a bot's workers: main's own records, never the renderer's
@@ -975,8 +981,12 @@ export function pruneWorkerLaunchFiles(dir: string = getWmuxDir(), now: number =
       if (r.launch.fence?.tempDir) temps.add(r.launch.fence.tempDir);
     }
   }
+  // A person's fenced panes (paneFence.ts) keep theirs too.
+  const pane = paneFenceNamedPaths(dir);
+  for (const t of pane.tempDirs) temps.add(t);
+  for (const f of pane.files) named.add(f);
   let removed = pruneWorkerTempDirs(dir, temps, now);
-  for (const sub of ['worker-settings', 'worker-mcp']) {
+  for (const sub of ['worker-settings', 'worker-mcp', 'pane-fence']) {
     const folder = path.join(dir, 'factory', sub);
     let names: string[] = [];
     try {

@@ -158,7 +158,7 @@ export function normalizeWorkspaceProfile(
   opts: { dropSecretKeys?: boolean } = {},
 ): WorkspaceProfile | undefined {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  const src = input as { env?: unknown; defaultPaneCommand?: unknown; startupCwd?: unknown };
+  const src = input as { env?: unknown; defaultPaneCommand?: unknown; startupCwd?: unknown; fenceAgents?: unknown };
 
   const env = normalizeEnv(src.env, opts.dropSecretKeys ?? false);
   const command = normalizeCommand(src.defaultPaneCommand);
@@ -168,8 +168,10 @@ export function normalizeWorkspaceProfile(
   if (Object.keys(env).length > 0) profile.env = env;
   if (command !== undefined) profile.defaultPaneCommand = command;
   if (startupCwd !== undefined) profile.startupCwd = startupCwd;
+  // Only a literal true opts new panes into the worker fence.
+  if (src.fenceAgents === true) profile.fenceAgents = true;
 
-  if (profile.env === undefined && profile.defaultPaneCommand === undefined && profile.startupCwd === undefined) {
+  if (profile.env === undefined && profile.defaultPaneCommand === undefined && profile.startupCwd === undefined && profile.fenceAgents === undefined) {
     return undefined;
   }
   return profile;

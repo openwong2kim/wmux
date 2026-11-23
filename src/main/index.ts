@@ -74,6 +74,7 @@ import { PTYBridge } from './pty/PTYBridge';
 import { createLocalApprovalScreenReader } from './pty/localApprovalScreen';
 import { pruneDaemonPidMapAtConnect } from './pty/pidMap';
 import { getUserShellRecord, HELD_START_CONNECTED_WAIT_MS, startHeldUserShells } from './pty/userShellRecord';
+import { prunePaneFenceSessions } from './agents/paneFenceSessions';
 import { WSL_RPC_TIMEOUT_MS } from '../shared/wslTimeouts';
 import { resyncShellPromptsAtConnect } from './shellPrompt/shellPromptMirror';
 import { registerAllHandlers } from './ipc/registerHandlers';
@@ -3014,6 +3015,8 @@ app.on('ready', async () => {
       const heldStart = startHeldUserShells(client, getUserShellRecord(app.getPath('userData')), {
         timeoutMs: WSL_RPC_TIMEOUT_MS,
         log: (line) => logLine('info', 'main', line),
+        // A person's fenced panes: a session the daemon no longer has keeps no record.
+        onLive: (live) => { prunePaneFenceSessions(live); },
       }).then((held) => {
         if (held > 0) logLine('info', 'main', `[env] started ${held} restored user shell(s) held for the app`);
       }, (err: unknown) => {

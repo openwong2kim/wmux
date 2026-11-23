@@ -237,12 +237,14 @@ async function listedSession(client: PromoteClient, id: string): Promise<ListedS
 export async function startHeldUserShells(
   client: PromoteClient,
   record: UserShellRecord,
-  opts: { timeoutMs?: number; liveEnv?: NodeJS.ProcessEnv; log?: (line: string) => void } = {},
+  opts: { timeoutMs?: number; liveEnv?: NodeJS.ProcessEnv; log?: (line: string) => void; onLive?: (live: ReadonlySet<string>) => void } = {},
 ): Promise<number> {
   const rows = await client.rpc('daemon.listSessions', { includeSuspended: true });
   if (!Array.isArray(rows)) return 0;
   const listed = rows.filter((r): r is ListedSession => !!r && typeof (r as ListedSession).id === 'string');
-  record.prune(new Set(listed.filter((s) => s.state !== 'dead').map((s) => s.id)));
+  const live = new Set(listed.filter((s) => s.state !== 'dead').map((s) => s.id));
+  record.prune(live);
+  opts.onLive?.(live);
   // Whatever happened to the hold list since, the next boot holds what the record names.
   record.syncHolds();
   const held = listed.filter((s) => s.startPending === true);

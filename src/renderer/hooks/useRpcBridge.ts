@@ -2242,6 +2242,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // withWorkspaceProfile, which keeps an initialCommand already present.
     const initialCommand = surfaceNewInitialCommand(params.initialCommand);
     if (initialCommand === null) return { error: 'surface.new: initialCommand must be a non-empty string' };
+    const signIn = initialCommand !== undefined && params.signIn === true;
     const created = await window.electronAPI.pty.create(
       withWorkspaceProfile(
         {
@@ -2250,6 +2251,11 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
           ...withDefaultShell({ shell: shell || undefined, cwd: cwd || undefined }, store.defaultShell),
           workspaceId: ws.id,
           ...(initialCommand ? { initialCommand, spawnKind: 'user-shell' as const } : {}),
+          // Main's sign-in tab (factory.handler, `signIn`) stays out of the
+          // worker fence, as accountLogin.openTerminalTab's does: the fence
+          // would refuse it (no folder) or keep its login from the credential
+          // files. Any other command follows the tab's own switch.
+          ...(signIn ? { workerFence: false } : {}),
         },
         ws.profile,
       ),
@@ -2267,7 +2273,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     }
     // #515: adopt the cwd main actually spawned in (validated/home-fallback
     // applied) so the surface tracks its real dir and later splits seed correctly.
-    freshAfterCreate.addSurface(paneId, ptyId, shell, created.cwd || cwd, ws.id);
+    freshAfterCreate.addSurface(paneId, ptyId, shell, created.cwd || cwd, ws.id, signIn ? { workerFence: false } : undefined);
 
     const fresh = useStore.getState();
     const freshWs = fresh.workspaces.find((w) => w.id === ws.id);

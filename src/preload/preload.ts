@@ -367,6 +367,8 @@ const electronAPI = {
      *  as typed by wmux on its own. */
     writeLaunch: (id: string, text: string, submit: boolean, origin?: 'human') =>
       ipcRenderer.invoke(IPC.PTY_WRITE_LAUNCH, id, text, submit, origin) as Promise<void>,
+    /** A person's pane in the worker fence: its next claude launch is fenced or not. */
+    setFence: (id: string, on: boolean) => ipcRenderer.invoke(IPC.PANE_FENCE_SET, id, on) as Promise<boolean>,
     schedules: {
       list: (ptyId: string) =>
         ipcRenderer.invoke(IPC.SESSION_PROMPT_SCHEDULES_LIST, { ptyId }) as Promise<{

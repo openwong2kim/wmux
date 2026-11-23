@@ -854,6 +854,9 @@ export interface WorkerFenceAttachInput {
   dir: string;
   /** The owner turned the fence off for the bot's workspace. */
   switchedOff: boolean;
+  /** A pane the person opted into the fence (paneFence.ts): fenced in every
+   *  permission mode, since the mode can change inside the session. */
+  always?: boolean;
   /** What the session's first launch recorded (a resume, a re-fire). */
   recorded?: { strength: WorkerFenceStrength; tempDir?: string; branch?: string | null };
   support: WorkerFenceSupport | null;
@@ -867,6 +870,9 @@ export interface WorkerFenceAttachInput {
   platform?: NodeJS.Platform;
   /** Claude's own temp folders (default: claudeTempRoots()). */
   claudeTempRoots?: readonly string[];
+  /** A person's fenced pane: the temp folder its last fenced launch used,
+   *  taken again when it is still one of the fence's own. */
+  paneTempDir?: string;
 }
 
 /**
@@ -883,7 +889,7 @@ export function attachWorkerFence(input: WorkerFenceAttachInput): WorkerFenceAtt
   const userConfigDir = env.CLAUDE_CONFIG_DIR && path.isAbsolute(env.CLAUDE_CONFIG_DIR) ? env.CLAUDE_CONFIG_DIR : path.join(home, '.claude');
   // A line with no mode flag starts in the mode its settings name.
   const mode = linePermissionMode(input.line) ?? settingsDefaultMode(input.cwd, userConfigDirs(home, env, accountDirs));
-  if (!isFencedMode(mode)) return { kind: 'none' };
+  if (!input.always && !isFencedMode(mode)) return { kind: 'none' };
   const wanted = !input.switchedOff || (input.recorded !== undefined && input.recorded.strength !== 'off');
   if (!wanted) return { kind: 'fence', strength: 'off', settings: statusLine('the worker fence is off for this workspace') };
   const credentials = [
@@ -902,12 +908,32 @@ export function attachWorkerFence(input: WorkerFenceAttachInput): WorkerFenceAtt
   if (!support) throw fenceError('this computer\'s fence support was not checked yet; try again');
   if (!support.capable && support.transient) throw fenceError(`this computer has the OS sandbox, but the fence cannot start now (${support.reason}); try again`);
   if (!support.capable && input.recorded?.strength === 'full') throw fenceError(`this worker started inside the full fence, which cannot run now (${support.reason})`);
+  if (input.always) {
+    // The folder is opened for reads and writes, which a credential path
+    // inside it would lose its deny to: not the root, the home folder or
+    // any folder holding a path the fence keeps unreadable. Checked first:
+    // the home folder's .claude is the user's own settings, not a project's.
+    const real = realOrResolved(input.cwd);
+    const held = credentials.map(realOrResolved).find((c) => isWithin(c, real));
+    const inside = credentials.map(realOrResolved).find((c) => c !== real && isWithin(real, c));
+    if (real === path.parse(real).root) throw fenceError('the pane\'s folder is the root of the disk; open the pane in a project folder');
+    if (real === realOrResolved(home)) throw fenceError('the pane\'s folder is your home folder; open the pane in a project folder');
+    if (held) throw fenceError(`the pane's folder holds ${held}, which the fence keeps unreadable; open the pane in a project folder`);
+    if (inside) throw fenceError(`the pane's folder is inside ${inside}, which the fence keeps unreadable; open the pane in a project folder`);
+  }
   const refusal = workerFenceFolderRefusal(input.cwd);
   if (refusal) throw fenceError(refusal);
   const worktree = fs.realpathSync(input.cwd);
-  const temp = workerTempDir(input.dir, input.recorded?.tempDir);
+  const temp = workerTempDir(input.dir, input.recorded?.tempDir ?? input.paneTempDir);
   const tempDir = temp.path;
   const git = readWorktreeGitFacts(worktree, input.expectedGit);
+  const platform = input.platform ?? process.platform;
+  if (input.always && platform === 'linux') {
+    // On Linux the git denies name only what exists (bubblewrap binds each
+    // one), so a fenced pane needs its git config and hooks folder present.
+    const missing = ['config', 'hooks'].find((n) => !fs.existsSync(path.join(git.gitCommonDir, n)));
+    if (missing) throw fenceError(`the pane's folder has no git ${missing === 'config' ? 'repository' : 'hooks folder'}, which the fence on Linux keeps read-only only once it exists; open the pane in a git repository`);
+  }
   // The worker's branch is the one its first fenced launch ran on, never
   // what HEAD names at a later one.
   const recorded = input.recorded && input.recorded.strength !== 'off' ? input.recorded : null;
@@ -917,7 +943,6 @@ export function attachWorkerFence(input: WorkerFenceAttachInput): WorkerFenceAtt
     const now = git.ownBranch === null ? 'a detached HEAD' : `branch ${git.ownBranch}`;
     throw fenceError(`the worktree is on ${now}, not on ${was} it started on`);
   }
-  const platform = input.platform ?? process.platform;
   if (git.isLinkedWorktree && git.ownBranch !== null) {
     // The folders the fence opens for the branch's ref and reflog, made
     // here: a branch kept only in packed-refs has neither yet, and the
@@ -931,7 +956,7 @@ export function attachWorkerFence(input: WorkerFenceAttachInput): WorkerFenceAtt
   if (!hookCommand) throw fenceError('the fence hook\'s command cannot be written for these paths');
   const build = (patterns: readonly string[]) => buildWorkerFence({
     worktree, workerTempDir: temp.real, ...git, platformCapable: support.capable, repoTestWritePaths: [],
-    permissionMode: mode ?? 'bypassPermissions', hookCommand, credentialPaths: credentials, home,
+    permissionMode: mode ?? (input.always ? 'default' : 'bypassPermissions'), hookCommand, credentialPaths: credentials, home,
     extraDenyWrite: [...claudeTempDenies(worktree, platform, input.claudeTempRoots), ...patterns],
     ...(platform === 'linux' ? { keepGitDeny: (p: string) => fs.existsSync(p) } : {}),
   });
@@ -962,6 +987,25 @@ export function attachWorkerFence(input: WorkerFenceAttachInput): WorkerFenceAtt
     return { kind: 'fence', strength: 'full', tempDir, branch: git.ownBranch, settings: merged, launcher: fullLauncher(input.dir, support.exe) };
   }
   return { kind: 'fence', strength: 'full', tempDir, branch: git.ownBranch, settings: fence.settings, launcher: fullLauncher(input.dir, support.exe) };
+}
+
+/** `p` by its real path; a path that does not exist (yet) by its nearest
+ *  existing folder's real path and the rest, so a symlinked ancestor
+ *  (`/tmp`, `/var` on macOS) still compares. */
+function realOrResolved(p: string): string {
+  const abs = path.resolve(p);
+  const tail: string[] = [];
+  let at = abs;
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(at), ...tail.reverse());
+    } catch {
+      const up = path.dirname(at);
+      if (up === at) return abs;
+      tail.push(path.basename(at));
+      at = up;
+    }
+  }
 }
 
 /** Startup: remove worker temp folders no session record names and that

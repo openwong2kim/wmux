@@ -39,6 +39,18 @@ export function surfaceHoldsPty(surfaceId: string, ptyId: string | undefined): b
   return false;
 }
 
+/** A tab's worker fence switch (Surface.workerFence); undefined when the
+ *  tab is not in the store yet. */
+export function surfaceWorkerFence(surfaceId: string): boolean | undefined {
+  for (const ws of useStore.getState().workspaces) {
+    for (const leaf of getWorkspaceLeafPanes(ws)) {
+      const surface = leaf.surfaces.find((s) => s.id === surfaceId);
+      if (surface) return surface.workerFence === true;
+    }
+  }
+  return undefined;
+}
+
 export interface SurfaceCreateInput {
   workspaceId: string;
   surfaceId?: string;
@@ -66,6 +78,7 @@ export function surfaceCreate(
   const defaultShell = useStore.getState().defaultShell;
   // Owning workspace's profile (env + startup command) for this new pane.
   const profile = useStore.getState().workspaces.find((w) => w.id === workspaceId)?.profile;
+  const fenceSwitch = surfaceId ? surfaceWorkerFence(surfaceId) : undefined;
   // Issue #515: a self-create is a NEW shell for a blank surface — resolve the
   // startup dir with the workspace default OUTRANKING the (possibly stale/home-
   // contaminated) surface.cwd prop, so a dead-session respawn heals back to
@@ -100,6 +113,10 @@ export function surfaceCreate(
           workspaceId,
           surfaceId,
           spawnKind: 'user-shell',
+          // A tab that exists keeps its own worker fence switch over the
+          // profile's. An off switch is sent only against a profile that would
+          // turn it on, so an unfenced create stays byte-identical.
+          ...(fenceSwitch === true || (fenceSwitch === false && profile?.fenceAgents === true) ? { workerFence: fenceSwitch } : {}),
         }, defaultShell), profile)),
       );
     },
