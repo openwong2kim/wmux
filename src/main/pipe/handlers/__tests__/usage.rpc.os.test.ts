@@ -180,32 +180,38 @@ describe('usage.rateLimits from a WSL pane', () => {
   const HOME = `/home/me/.wmux/accounts/claude-${wslAccountHomeKey(FOLDER)}`;
   afterEach(() => resetPaneUsageLimitsForTest());
 
-  function setup(pane: { target: typeof TARGET; env: Record<string, string> } | null | Error, wsl = true) {
+  type Pane = { target: typeof TARGET; env: Record<string, string> } | null | Error;
+  function setup(pane: Pane | ((fresh: boolean) => Pane), wsl = true) {
     let handler: ((p: Record<string, unknown>) => Promise<unknown>) | null = null;
     const router = { register: (_m: string, h: typeof handler) => { handler = h; } } as unknown as RpcRouter;
     const deps: UsageRpcDeps = {
-      listClaudeAccounts: () => [{ id: 'B', configDir: FOLDER.toUpperCase() }, { id: 'C', configDir: 'C:\\other' }],
+      listClaudeAccounts: () => [{ id: 'B', configDir: FOLDER.toUpperCase() }],
       defaultConfigDir: () => NOWHERE,
       ingestDefault: vi.fn(() => true),
       ingestAccount: vi.fn(() => true),
       isWslPane: () => wsl,
-      wslPane: vi.fn(async () => { if (pane instanceof Error) throw pane; return pane; }),
+      wslPane: vi.fn(async (_id: string, fresh: boolean) => {
+        const p = typeof pane === 'function' ? pane(fresh) : pane;
+        if (p instanceof Error) throw p;
+        return p;
+      }),
     };
     registerUsageRpc(router, deps);
     return { call: (p: Record<string, unknown>) => (handler ? handler(p) : Promise.reject(new Error('not registered'))), deps };
   }
 
-  it('maps the pane\'s own account home to the account its env names', async () => {
+  it('takes the pane\'s own account home as the pane\'s window only, never the account\'s (Windows) entry', async () => {
+    // The distro home may be signed in to another login than the account's
+    // Windows folder: its numbers must not move what rotation and the reserve read.
     const { call, deps } = setup({ target: TARGET, env: ENV });
     await expect(call(sample({ configDir: HOME }))).resolves.toEqual({ ok: true, applied: true });
-    expect(deps.ingestAccount).toHaveBeenCalledTimes(1);
-    expect(deps.ingestAccount).toHaveBeenCalledWith('B', expect.anything());
+    expect(deps.ingestAccount).not.toHaveBeenCalled();
     expect(deps.ingestDefault).not.toHaveBeenCalled();
     expect(Object.keys(paneUsageWindows())).toEqual(['pty-1']);
   });
 
-  it('maps nothing for another home, another user, a failed lookup, or an unmarked env, but keeps the pane\'s window', async () => {
-    const cases: Array<[Parameters<typeof setup>[0], string]> = [
+  it('maps nothing for another home, another user, a failed lookup, or an unmarked env', async () => {
+    const cases: Array<[Pane, string]> = [
       [{ target: TARGET, env: ENV }, '/home/me/.claude'],
       [{ target: { ...TARGET, user: 'other' }, env: ENV }, HOME],
       [{ target: TARGET, env: { CLAUDE_CONFIG_DIR: FOLDER } }, HOME],
@@ -218,7 +224,19 @@ describe('usage.rateLimits from a WSL pane', () => {
       expect(deps.ingestAccount).not.toHaveBeenCalled();
       expect(deps.ingestDefault).not.toHaveBeenCalled();
     }
-    expect(Object.keys(paneUsageWindows())).toEqual(['pty-1']);
+  });
+
+  it('asks again past a kept lookup when the sample names another home (the pane was rebound)', async () => {
+    const OTHER = 'C:\\Users\\me\\.wmux\\accounts\\claude-c';
+    const homeC = `/home/me/.wmux/accounts/claude-${wslAccountHomeKey(OTHER)}`;
+    const { call, deps } = setup((fresh) => ({ target: TARGET, env: fresh ? { ...ENV, CLAUDE_CONFIG_DIR: OTHER } : ENV }));
+    await expect(call(sample({ configDir: homeC }))).resolves.toEqual({ ok: true, applied: true });
+    expect(deps.wslPane).toHaveBeenNthCalledWith(1, 'pty-1', false);
+    expect(deps.wslPane).toHaveBeenNthCalledWith(2, 'pty-1', true);
+    // A match needs no second look.
+    const again = setup({ target: TARGET, env: ENV });
+    await again.call(sample({ configDir: HOME }));
+    expect(again.deps.wslPane).toHaveBeenCalledTimes(1);
   });
 
   it('asks the WSL lookup with the sample\'s config dir (a pane main has not seen yet is judged by it)', async () => {
@@ -246,4 +264,3 @@ describe('usage.rateLimits from a WSL pane', () => {
     expect(native.deps.ingestDefault).toHaveBeenCalledTimes(1);
   });
 });
-

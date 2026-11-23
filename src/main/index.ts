@@ -119,9 +119,9 @@ import type { ComputerService } from './computer/ComputerService';
 import { revealStatsAggregator } from './perf/revealStatsAggregator';
 import { createGlyphRepaintLogSummary } from './perf/glyphRepaintLogSummary';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
-import { registerUsageRpc, registerUsageTrailRpc } from './pipe/handlers/usage.rpc';
+import { registerUsageRpc, registerUsageTrailRpc, type WslUsagePane } from './pipe/handlers/usage.rpc';
 import { getPtyShell } from './pty/ptyShellRegistry';
-import { isWslShell, validWslTarget, type WslTarget } from '../shared/wslTarget';
+import { isWslShell, validWslTarget } from '../shared/wslTarget';
 import { registerFsWriteRpc } from './pipe/handlers/fsWrite.rpc';
 import { registerFsRpc } from './pipe/handlers/fs.rpc';
 import { setToolRefusalSource } from './agents/toolRefusals';
@@ -2025,20 +2025,24 @@ ipcMain.handle(NEW_PACKAGE_NOTE_IPC.SET, async (_event, enabled: unknown) => {
 registerCommitOriginRpc(rpcRouter, (sha) => daemonClient?.lookupCommitOrigin(sha) ?? Promise.resolve('unavailable'));
 
 // A WSL pane's distro, user and env for its usage samples, read from the
-// daemon and kept briefly: a statusline push has a short budget, and a pane's
-// account changes only on a rebind (continue on another account).
+// daemon and kept briefly: a statusline push has a short budget. A miss is
+// never kept, and a sample that no longer matches asks again (`fresh`).
 const WSL_USAGE_PANE_TTL_MS = 30_000;
-const wslUsagePanes = new Map<string, { atMs: number; pane: { target: WslTarget; env: Record<string, string> } | null }>();
-async function wslUsagePane(ptyId: string): Promise<{ target: WslTarget; env: Record<string, string> } | null> {
+const wslUsagePanes = new Map<string, { atMs: number; pane: WslUsagePane }>();
+async function wslUsagePane(ptyId: string, fresh: boolean): Promise<WslUsagePane | null> {
   const hit = wslUsagePanes.get(ptyId);
-  if (hit && Date.now() - hit.atMs < WSL_USAGE_PANE_TTL_MS) return hit.pane;
+  if (!fresh && hit && Date.now() - hit.atMs < WSL_USAGE_PANE_TTL_MS) return hit.pane;
   // Local PTY mode: main spawned the pane and kept what decides its home.
   if (!daemonClient) return ptyManager.get(ptyId)?.wslAccount ?? null;
   const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; wslTarget?: unknown; env?: Record<string, string> }>;
   const now = Date.now();
   for (const [id, entry] of wslUsagePanes) if (now - entry.atMs >= WSL_USAGE_PANE_TTL_MS) wslUsagePanes.delete(id);
   const s = sessions.find((x) => x.id === ptyId);
-  const pane = s && validWslTarget(s.wslTarget) && s.env ? { target: s.wslTarget, env: s.env } : null;
+  if (!s || !validWslTarget(s.wslTarget) || !s.env) {
+    wslUsagePanes.delete(ptyId);
+    return null;
+  }
+  const pane = { target: s.wslTarget, env: s.env };
   wslUsagePanes.set(ptyId, { atMs: now, pane });
   return pane;
 }
@@ -2057,7 +2061,7 @@ registerUsageRpc(rpcRouter, {
     const shell = getPtyShell(ptyId);
     return shell !== undefined ? isWslShell(shell) : process.platform === 'win32' && !!configDir?.startsWith('/');
   },
-  wslPane: (ptyId) => wslUsagePane(ptyId),
+  wslPane: (ptyId, fresh) => wslUsagePane(ptyId, fresh),
   defaultConfigDir: () => path.join(os.homedir(), '.claude'),
   // A live push is recorded and read by the reserve at ingest: with the
   // meter off the poller stores it without telling its listeners.
