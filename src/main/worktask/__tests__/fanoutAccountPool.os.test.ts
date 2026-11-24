@@ -10,6 +10,7 @@ import {
   claudeFolderSignedIn,
   loadFanoutAccountPoolSettings,
   openWorkersByAccount,
+  openWorkersOn,
   pickFromPool,
   poolCandidates,
   poolAccountForCreate,
@@ -466,5 +467,21 @@ describe('a pool with no account that can run a worker', () => {
     expect(poolFallsBackToCaller({ kind: 'none', reason: 'full', availableAtMs: null })).toBe(false);
     // A held bot's recheck leaves it to the workspace's own account.
     expect(poolReserveHeldForWorkspace('ws-owner', { poolOn: () => true, host: h, slots: slots(), holdFor: () => null, workerMayRun: () => true, dirOk: () => true, refresh: () => undefined })).toBeUndefined();
+  });
+});
+
+describe('a fallback onto the caller\'s account', () => {
+  it('is booked on that account and counts toward its worker limit, never as a pool account', () => {
+    const s = slots();
+    s.beginLaunch({ taskId: 'f1', origin: 'owner', ownerWorkspaceId: 'ws', callerAccount: POOL_DEFAULT_ACCOUNT });
+    s.beginLaunch({ taskId: 'f2', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'a', callerAccount: 'x' });
+    expect(s.launchOf('f1')).toMatchObject({ callerAccount: POOL_DEFAULT_ACCOUNT });
+    expect(s.launchOf('f1')).not.toHaveProperty('accountId');
+    expect(s.launchOf('f2')).not.toHaveProperty('callerAccount');
+    expect(Object.fromEntries(openWorkersByAccount(s, () => true))).toEqual({ [POOL_DEFAULT_ACCOUNT]: 1, a: 1 });
+    expect(openWorkersOn(POOL_DEFAULT_ACCOUNT, { slots: s, workerMayRun: () => true })).toBe(1);
+    // Its pane's create takes no pool account from it.
+    const g = s.launchOf('f1')!.gen;
+    expect(poolAccountForCreate({ fanoutTaskOf: 'ws', fanoutLaunch: { taskId: 'f1', gen: g }, initialCommand: 'claude' }, (id) => s.launchOf(id))).toEqual({ kind: 'none' });
   });
 });

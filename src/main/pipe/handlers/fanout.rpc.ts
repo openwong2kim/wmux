@@ -130,9 +130,10 @@ import {
 import { validateFanoutTaskGraph, type FanoutTaskGraph } from '../../../shared/fanoutTaskGraph';
 import { agentRow } from '../../../shared/agentIdentity';
 import { noteUsageReserveHeld, usageReserveHoldForAccount, usageReserveHoldForWorkspace, usageReserveRefusalText, type UsageReserveHold } from '../../usage/usageReserve';
-import { notePoolCallerFallback, pickFromPool, poolAllHeld, poolFallsBackToCaller, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
+import { notePoolCallerFallback, openWorkersOn, pickFromPool, poolAllHeld, poolFallsBackToCaller, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
 import { wslShareToLinux } from '../../../shared/wslPaths';
-import { poolRefusalText } from '../../../shared/fanoutAccountPool';
+import { POOL_DEFAULT_ACCOUNT, poolRefusalText } from '../../../shared/fanoutAccountPool';
+import { getAccountStore } from '../../account/accountStore';
 import { botTemplate, type BotBinding, type BotProfile } from '../../../shared/bot';
 import { SHARED_SURFACE } from '../../../shared/botSurface';
 import { WAKE_LIMITS, botFanoutIdempotencyKey, type HeldFanoutArgs, type HeldWakeKind, type WakeItem } from '../../../shared/wake';
@@ -720,6 +721,12 @@ export interface FanOutRpcDeps {
   preparePool?: (callerWorkspaceId: string) => Promise<PreparedPool | null>;
   /** The pool's pick for one worker (default: fanoutAccountPool.ts pickFromPool). */
   pickFromPool?: typeof pickFromPool;
+  /** The usage key a workspace's Claude launches run on, an account id or
+   *  'default' (default: its bound Claude account), and the open workers on
+   *  a key (default: fanoutAccountPool.ts openWorkersOn): a pool fallback
+   *  onto the caller's account counts toward the per-account worker limit. */
+  callerAccountKey?: (workspaceId: string) => string;
+  openWorkersOn?: (key: string) => number;
   /** The connections' OAuth service, for signed-in connections (default:
    *  main/connectors/workerGateway.ts workerGatewayOAuth). */
   gatewayOAuth?: () => GatewayOAuth | null;
@@ -2391,7 +2398,7 @@ export function registerFanOutRpc(
           prepare: async (task: { index: number }) => {
             if (spendsUsageReserve(taskAgent(task.index))) await refreshPool();
           },
-          pick: (task: { index: number; cwd?: string }): { accountId: string } | { refusal: string } | null => {
+          pick: (task: { index: number; cwd?: string }): { accountId: string } | { callerAccount: string } | { refusal: string } | null => {
             const current = pool;
             if (!current || !spendsUsageReserve(taskAgent(task.index))) return null;
             // A task folder on a WSL share starts a WSL pane, which the pool
@@ -2405,12 +2412,19 @@ export function registerFanOutRpc(
             callerTasks.delete(task.index);
             fallbackTasks.delete(task.index);
             if (picked.kind === 'pick') return { accountId: picked.accountId };
-            // No pool account can run it (none eligible, or all out of
-            // quota): the caller's account, as with the pool off, said once.
+            // No pool account can run it at all (none eligible): the
+            // caller's account, as with the pool off, said once. The
+            // per-account worker limit the owner set still holds there: such
+            // workers are booked on that account and count toward it.
             if (poolFallsBackToCaller(picked)) {
+              const callerKey = (deps.callerAccountKey ?? ((ws: string) => getAccountStore().getBinding(ws, 'claude') ?? POOL_DEFAULT_ACCOUNT))(callerWorkspaceId);
+              const max = current.settings.maxWorkersPerAccount;
+              if (max > 0 && (deps.openWorkersOn ?? openWorkersOn)(callerKey) >= max) {
+                return { refusal: poolRefusalText({ kind: 'none', reason: 'full', availableAtMs: null }, Date.now()) };
+              }
               callerTasks.add(task.index);
               fallbackTasks.add(task.index);
-              return null;
+              return { callerAccount: callerKey };
             }
             // Every usable account is in the reserve: held as the reserve
             // holds a fan-out without the pool (a bot's request is kept).

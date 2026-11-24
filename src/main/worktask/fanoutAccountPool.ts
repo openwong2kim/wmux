@@ -357,6 +357,13 @@ export function poolFallsBackToCaller(pick: PoolPick): boolean {
   return pick.kind === 'none' && pick.reason === 'empty';
 }
 
+/** Open workers on one usage key (an account id or 'default'), as the
+ *  per-account worker limit counts them: pool launches and fallbacks onto
+ *  the caller's account alike. */
+export function openWorkersOn(key: string, deps: Pick<PickDeps, 'slots' | 'workerMayRun'> = {}): number {
+  return openWorkersByAccount(deps.slots ?? getWorkerSlots(), deps.workerMayRun ?? holderMayRun()).get(key) ?? 0;
+}
+
 /** A worker ran on the caller's account (poolFallsBackToCaller): said once per app run. */
 export function notePoolCallerFallback(deps: { host?: FanoutAccountPoolHost | null; log?: (line: string) => void } = {}): void {
   if (toldCallerFallback) return;
