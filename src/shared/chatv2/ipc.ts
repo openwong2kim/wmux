@@ -139,11 +139,25 @@
  * ## Attachments
  * Main copies a picked image into `<wmux data dir>/${CHATV2_ATTACHMENT_DIR}/`
  * (`chatv2:stage-attachment`, main only) and sends that path. The daemon
- * accepts only a path directly inside that directory that `lstat` shows to be
- * a regular file (not a symlink) of at most `CHAT_IMAGE_MAX_BYTES` with an
- * image extension; anything else is `attachment-refused`.
+ * accepts an image only at a path directly inside that directory that `lstat`
+ * shows to be a regular file (not a symlink) of at most `CHAT_IMAGE_MAX_BYTES`;
+ * anything else is `attachment-refused`.
+ *
+ * Any other file is not copied: its own absolute path is sent, and the daemon
+ * checks only that it is a regular file. The daemon never reads it; the agent
+ * gets the path in its prompt and opens the file with its own tools (and its
+ * own permission rules), so "fix this file" edits the real file.
+ *
+ * ## Model and effort
+ * `configure` changes the model and/or effort of an existing chat between
+ * turns (refused while a turn runs, an answer is pending or the agent is
+ * starting). The driver applies it to the running agent when the agent
+ * supports a live switch; otherwise the host restarts the agent on the same
+ * conversation (resume) with the new options. Effort values are per agent
+ * (`CHATV2_AGENT_CAPS[agent].efforts`); '' = the agent's default.
  */
-import { CHAT_ATTACHMENT_LIMIT, validChatImagePath } from '../transcript/chatAttachments';
+import { CHAT_ATTACHMENT_LIMIT } from '../transcript/chatAttachments';
+import type { ChatSkillCatalog } from '../transcript/chatSkills';
 import { CHATV2_MAX_PROMPT_BYTES, utf8Bytes } from './limits';
 import type { HarnessId, Session } from './session';
 import type { StampedHarnessEvent } from './harnessEvents';
@@ -164,8 +178,12 @@ export const CHATV2_IPC = {
   toTerminal: 'chatv2:to-terminal',
   fromTerminal: 'chatv2:from-terminal',
   close: 'chatv2:close',
-  /** Main only: copy a picked image into the staging directory. */
+  configure: 'chatv2:configure',
+  skills: 'chatv2:skills',
+  /** Main only: check a dropped or pasted file (and copy an image into the staging directory). */
   stageAttachment: 'chatv2:stage-attachment',
+  /** Main only: the open-file dialog, then the same checks as `stageAttachment` for each pick. */
+  pickAttachments: 'chatv2:pick-attachments',
   /** main → renderer push; payload `ChatV2EventsPush`. */
   events: 'chatv2:events',
   /** main → renderer push after a daemon reconnect; payload `ChatV2ResyncPush`. */
@@ -188,6 +206,8 @@ export const CHATV2_RPC = {
   toTerminal: 'daemon.chatv2.toTerminal',
   fromTerminal: 'daemon.chatv2.fromTerminal',
   close: 'daemon.chatv2.close',
+  configure: 'daemon.chatv2.configure',
+  skills: 'daemon.chatv2.skills',
 } as const;
 
 /**
@@ -237,10 +257,15 @@ export const CHATV2_AGENT_CAPS: Readonly<Record<ChatV2Agent, {
   sharedServerThreads: boolean;
   /** A new chat picks its model from the Claude list; without it the agent starts on its own default. */
   claudeModels: boolean;
+  /** Effort levels the agent takes ('' = its default is always allowed). */
+  efforts: readonly string[];
 }>> = {
-  claude: { bypass: true, terminalHandoff: true, sharedServerThreads: false, claudeModels: true },
-  codex: { bypass: false, terminalHandoff: false, sharedServerThreads: true, claudeModels: false },
+  claude: { bypass: true, terminalHandoff: true, sharedServerThreads: false, claudeModels: true, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  codex: { bypass: false, terminalHandoff: false, sharedServerThreads: true, claudeModels: false, efforts: ['low', 'medium', 'high', 'xhigh'] },
 };
+
+/** Every effort any agent takes; the host checks the agent's own list. */
+export const CHATV2_EFFORT = /^(?:low|medium|high|xhigh|max)$/;
 
 /** `default` adds no permission flags; `bypass` = the agent's skip-permissions mode. */
 export type ChatV2RunMode = 'default' | 'bypass';
@@ -261,7 +286,7 @@ export interface ChatV2Capabilities {
   approvals: boolean;
   /** AskUserQuestion is answered in chat. */
   questions: boolean;
-  /** Image attachments (staged, see the header). */
+  /** Attachments: staged images and file paths (see the header). */
   images: boolean;
   /** `toTerminal` can hand the conversation to a TUI in the anchor shell. */
   toTerminal: boolean;
@@ -398,6 +423,14 @@ export interface ChatV2CreateParams {
   mode: ChatV2RunMode;
   /** Absent = the agent's default model. */
   model?: string;
+  /** Absent = the agent's default effort. One of `CHATV2_AGENT_CAPS[agent].efforts`. */
+  effort?: string;
+}
+
+/** At least one of the two. '' = back to the agent's default. */
+export interface ChatV2ConfigureParams extends ChatV2SessionParams {
+  model?: string;
+  effort?: string;
 }
 
 export interface ChatV2PaneParams {
@@ -444,7 +477,7 @@ export interface ChatV2SendParams extends ChatV2SessionParams {
   clientMessageId: string;
   /** At most `CHATV2_MAX_PROMPT_BYTES` UTF-8 bytes. */
   text: string;
-  /** Staged image paths (see the header). */
+  /** Staged image paths and file paths (see the header). */
   attachments?: string[];
 }
 
@@ -480,6 +513,8 @@ export interface ChatV2ParamsByMethod {
   toTerminal: ChatV2SessionParams;
   fromTerminal: ChatV2FromTerminalParams;
   close: ChatV2SessionParams;
+  configure: ChatV2ConfigureParams;
+  skills: ChatV2SessionParams;
 }
 
 export interface ChatV2ResultByMethod {
@@ -520,10 +555,22 @@ export interface ChatV2ResultByMethod {
   fromTerminal: ChatV2Result<{ binding?: ChatV2Binding; processes?: ChatV2TerminalProcess[] }>;
   /** The driver is stopped and the record dropped (the agent's own history stays). */
   close: ChatV2Result;
+  /**
+   * `applied`: `live` = the running agent took it; `restarted` = the agent was
+   * restarted on the same conversation with it; `saved` = no agent runs now,
+   * the next start uses it.
+   */
+  configure: ChatV2Result<{ binding: ChatV2Binding; applied: 'live' | 'restarted' | 'saved' }>;
+  /** The skills and commands the chat's agent offers in its folder (display metadata only). */
+  skills: ChatV2Result<{ catalog: ChatSkillCatalog }>;
 }
 
+/**
+ * `path` is what `send` takes: the staged copy of an image, the file's own
+ * path otherwise. `thumbnail` is a small data URL for an image main could decode.
+ */
 export type ChatV2StageAttachmentResult =
-  | { ok: true; path: string }
+  | { ok: true; path: string; name: string; kind: 'image' | 'file'; size: number; thumbnail?: string }
   | { ok: false; reason: 'missing' | 'not-image' | 'too-large' };
 
 /**
@@ -534,6 +581,8 @@ export type ChatV2StageAttachmentResult =
 export interface ChatV2BridgeApi {
   call<M extends ChatV2Method>(method: M, params: ChatV2ParamsByMethod[M]): Promise<ChatV2ResultByMethod[M]>;
   stageAttachment(path: string): Promise<ChatV2StageAttachmentResult>;
+  /** The open-file dialog; one result per picked file, none when cancelled. */
+  pickAttachments(): Promise<ChatV2StageAttachmentResult[]>;
   /** Returns an unsubscribe. */
   onEvents(listener: (push: ChatV2EventsPush) => void): () => void;
   /** Returns an unsubscribe. */
@@ -567,9 +616,17 @@ function answers(value: unknown): value is Array<{ keys: string[]; other?: strin
   });
 }
 
+/** An attachment path `send` may carry: absolute, one line, naming a file (see the header). */
+export function validChatV2AttachmentPath(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length >= 4096 || !/^(?:\/|[A-Za-z]:[\\/])/.test(value)) return false;
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(value)) return false;
+  return !/[\\/]$/.test(value);
+}
+
 function attachments(value: unknown): value is string[] | undefined {
   return value === undefined
-    || (Array.isArray(value) && value.length <= CHAT_ATTACHMENT_LIMIT && value.every(validChatImagePath));
+    || (Array.isArray(value) && value.length <= CHAT_ATTACHMENT_LIMIT && value.every(validChatV2AttachmentPath));
 }
 
 /**
@@ -589,7 +646,26 @@ export function parseChatV2Params<M extends ChatV2Method>(method: M, value: unkn
       if (!CHATV2_AGENTS.includes(o.agent as ChatV2Agent)) return null;
       if (o.mode !== 'default' && o.mode !== 'bypass') return null;
       if (o.model !== undefined && !matches(o.model, CHATV2_MODEL)) return null;
-      parsed = { paneId, agent: o.agent as ChatV2Agent, mode: o.mode, ...(o.model ? { model: o.model as string } : {}) };
+      if (o.effort !== undefined && !matches(o.effort, CHATV2_EFFORT)) return null;
+      parsed = {
+        paneId,
+        agent: o.agent as ChatV2Agent,
+        mode: o.mode,
+        ...(o.model ? { model: o.model as string } : {}),
+        ...(o.effort ? { effort: o.effort as string } : {}),
+      };
+      break;
+    }
+    case 'configure': {
+      if (!session) return null;
+      if (o.model !== undefined && o.model !== '' && !matches(o.model, CHATV2_MODEL)) return null;
+      if (o.effort !== undefined && o.effort !== '' && !matches(o.effort, CHATV2_EFFORT)) return null;
+      if (o.model === undefined && o.effort === undefined) return null;
+      parsed = {
+        ...session,
+        ...(o.model !== undefined ? { model: o.model as string } : {}),
+        ...(o.effort !== undefined ? { effort: o.effort as string } : {}),
+      };
       break;
     }
     case 'fromTerminal':
@@ -615,6 +691,7 @@ export function parseChatV2Params<M extends ChatV2Method>(method: M, value: unkn
     case 'snapshot':
     case 'toTerminal':
     case 'close':
+    case 'skills':
       parsed = session;
       break;
     case 'history':

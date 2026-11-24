@@ -266,6 +266,7 @@ const chat: ChatBridgeApi = {
 const chatv2: ChatV2BridgeApi = {
   call: (method, params) => ipcRenderer.invoke(CHATV2_IPC[method], params),
   stageAttachment: (path) => ipcRenderer.invoke(CHATV2_IPC.stageAttachment, path),
+  pickAttachments: () => ipcRenderer.invoke(CHATV2_IPC.pickAttachments),
   onEvents: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, push: ChatV2EventsPush) => listener(push);
     ipcRenderer.on(CHATV2_IPC.events, handler);

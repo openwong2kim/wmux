@@ -1,11 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import { dialog, ipcMain, nativeImage, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import type { DaemonClient } from '../../DaemonClient';
 import type { DaemonEvent } from '../../../shared/rpc';
 import { getWmuxDir } from '../../../daemon/config';
-import { CHAT_IMAGE_MAX_BYTES, validChatImagePath } from '../../../shared/transcript/chatAttachments';
+import { CHAT_ATTACHMENT_LIMIT, CHAT_IMAGE_MAX_BYTES, validChatImagePath } from '../../../shared/transcript/chatAttachments';
 import {
   CHATV2_ATTACHMENT_DIR,
   CHATV2_IPC,
@@ -16,6 +16,7 @@ import {
   type ChatV2EventsPush,
   type ChatV2Method,
   type ChatV2StageAttachmentResult,
+  validChatV2AttachmentPath,
 } from '../../../shared/chatv2/ipc';
 import { wrapHandler } from '../wrapHandler';
 
@@ -34,13 +35,33 @@ const STAGED_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 const unavailable = () => chatV2Error('unavailable', 'Chat is unavailable.');
 
-/** Copy a picked image into the staging directory the daemon accepts attachments from. */
+const THUMBNAIL_EDGE = 160;
+
+/** A small data URL of an image file, or undefined when it cannot be decoded. */
+function thumbnailOf(file: string): string | undefined {
+  try {
+    const image = nativeImage.createFromPath(file);
+    if (image.isEmpty()) return undefined;
+    const { width, height } = image.getSize();
+    const scale = Math.min(1, THUMBNAIL_EDGE / Math.max(width, height, 1));
+    return (scale < 1 ? image.resize({ width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)), quality: 'good' }) : image).toDataURL();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Check a picked, dropped or pasted file for a chat. An image is copied into
+ * the staging directory the daemon reads attachments from, with a thumbnail;
+ * any other file keeps its own path (the agent opens it itself; see ipc.ts).
+ */
 export async function stageChatV2Attachment(file: unknown, wmuxDir = getWmuxDir()): Promise<ChatV2StageAttachmentResult> {
-  if (typeof file !== 'string' || !path.isAbsolute(file)) return { ok: false, reason: 'missing' };
-  if (!validChatImagePath(file)) return { ok: false, reason: 'not-image' };
+  if (typeof file !== 'string' || !path.isAbsolute(file) || !validChatV2AttachmentPath(file)) return { ok: false, reason: 'missing' };
   try {
     const stat = await fs.stat(file);
     if (!stat.isFile()) return { ok: false, reason: 'missing' };
+    const name = path.basename(file);
+    if (!validChatImagePath(file)) return { ok: true, path: file, name, kind: 'file', size: stat.size };
     if (stat.size > CHAT_IMAGE_MAX_BYTES) return { ok: false, reason: 'too-large' };
     const dir = path.join(wmuxDir, CHATV2_ATTACHMENT_DIR);
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
@@ -48,7 +69,8 @@ export async function stageChatV2Attachment(file: unknown, wmuxDir = getWmuxDir(
     const target = path.join(dir, `${randomUUID()}${path.extname(file).toLowerCase()}`);
     await fs.copyFile(file, target);
     await fs.chmod(target, 0o600);
-    return { ok: true, path: target };
+    const thumbnail = thumbnailOf(target);
+    return { ok: true, path: target, name, kind: 'image', size: stat.size, ...(thumbnail ? { thumbnail } : {}) };
   } catch {
     return { ok: false, reason: 'missing' };
   }
@@ -158,6 +180,16 @@ export function registerChatV2Handlers(client: DaemonClient | undefined, getWind
   ipcMain.removeHandler(CHATV2_IPC.stageAttachment);
   ipcMain.handle(CHATV2_IPC.stageAttachment, wrapHandler(CHATV2_IPC.stageAttachment, (e: IpcMainInvokeEvent, file: unknown): Promise<ChatV2StageAttachmentResult> =>
     trusted(e) ? stageChatV2Attachment(file) : Promise.resolve({ ok: false, reason: 'missing' })));
+  channels.push(CHATV2_IPC.pickAttachments);
+  ipcMain.removeHandler(CHATV2_IPC.pickAttachments);
+  ipcMain.handle(CHATV2_IPC.pickAttachments, wrapHandler(CHATV2_IPC.pickAttachments, async (e: IpcMainInvokeEvent): Promise<ChatV2StageAttachmentResult[]> => {
+    if (!trusted(e)) return [];
+    const win = getWindow();
+    const opts = { properties: ['openFile', 'multiSelections'] as Array<'openFile' | 'multiSelections'> };
+    const picked = win && !win.isDestroyed() ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+    if (picked.canceled || !trusted(e)) return [];
+    return Promise.all(picked.filePaths.slice(0, CHAT_ATTACHMENT_LIMIT).map((file) => stageChatV2Attachment(file)));
+  }));
 
   // Reconnect rule: subscribe again for every pane, then tell the renderer to
   // re-snapshot them. A pane whose subscribe failed leaves the set; the

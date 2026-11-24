@@ -94,6 +94,8 @@ const CLAUDE_TASKS_KEY = 'claude-tasks';
 const ANSWERABLE_REQUEST_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 /** Stderr kept for a failed start's message. */
 const STDERR_TAIL_BYTES = 2_048;
+/** A control request other than initialize (a model or effort change) must answer within this long. */
+export const CLAUDE_CONTROL_TIMEOUT_MS = 10_000;
 
 type PendingDecision =
   | { kind: 'permission'; input: Record<string, unknown> }
@@ -156,6 +158,12 @@ export class ClaudeDriver implements ChatV2Driver {
   private initDone: ((ok: boolean, error?: string) => void) | null = null;
   private initialized = false;
   private stopping = false;
+  // Control requests awaiting their control_response, by request id.
+  private readonly controlWaiters = new Map<string, (ok: boolean) => void>();
+  // What the process was started with, and what it runs now ('' = the CLI's default).
+  private spawnModel = '';
+  private model = '';
+  private effort = '';
   private exitedOnce = false;
   private stderrTail = '';
 
@@ -197,9 +205,12 @@ export class ClaudeDriver implements ChatV2Driver {
     if (this.sink) throw new Error('Driver already started');
     this.sink = sink;
     this.claudeSessionId = spec.providerSession.id;
+    this.spawnModel = this.model = spec.model;
+    this.effort = spec.effort ?? '';
     const args = buildClaudeSpawnArgs({
       mode: spec.mode,
       model: spec.model,
+      effort: this.effort,
       providerSession: spec.providerSession,
       settingSources: this.options.settingSources,
     });
@@ -241,11 +252,14 @@ export class ClaudeDriver implements ChatV2Driver {
   async send(turn: ChatV2DriverTurn): Promise<void> {
     if (!this.backend.alive) throw new Error('Claude Code is not running.');
     const images: ClaudeImage[] = [];
+    const files: string[] = [];
     for (const attachment of turn.attachments) {
+      // A file is named to Claude, which opens it with its own tools; only images are read here.
+      if (attachment.kind === 'file') { files.push(attachment.path); continue; }
       const data = await this.readImage(attachment.path);
       images.push({ mimeType: attachment.mimeType, data: data.toString('base64') });
     }
-    const message = buildClaudeUserMessage({ text: turn.text, images });
+    const message = buildClaudeUserMessage({ text: turn.text, images, files });
     this.resetTurn();
     this.activeTurn = true;
     await this.write(message);
@@ -291,6 +305,53 @@ export class ClaudeDriver implements ChatV2Driver {
     }
   }
 
+  /**
+   * Switch the running Claude between turns: `set_model` for the model and
+   * the flag-settings layer for effort (what Claude's own /effort sends on a
+   * hosted session; session-only, no settings file is written). Going back to
+   * a default that differs from the spawn's is not something the CLI can do
+   * live, so that answers false and the host restarts on the same conversation.
+   */
+  async configure(change: { model: string; effort: string }): Promise<boolean> {
+    if (!this.backend.alive || !this.initialized || this.stopping || this.activeTurn) return false;
+    const modelChanged = change.model !== this.model;
+    const effortChanged = change.effort !== this.effort;
+    if (modelChanged && !change.model && this.spawnModel) return false;
+    if (effortChanged && !change.effort) return false;
+    if (modelChanged) {
+      if (!(await this.control({ subtype: 'set_model', model: change.model || 'default' }))) return false;
+      this.model = change.model;
+    }
+    if (effortChanged) {
+      if (!(await this.control({ subtype: 'apply_flag_settings', settings: { effortLevel: change.effort } }))) return false;
+      this.effort = change.effort;
+    }
+    return true;
+  }
+
+  /** Send one control request and wait for its answer: false on an error answer, a timeout or an exit. */
+  private async control(request: Record<string, unknown>): Promise<boolean> {
+    const requestId = this.nextControlId();
+    const answered = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => this.settleControl(requestId, false), CLAUDE_CONTROL_TIMEOUT_MS);
+      timer.unref?.();
+      this.controlWaiters.set(requestId, (ok) => { clearTimeout(timer); resolve(ok); });
+    });
+    try {
+      await this.write(buildControlRequest(requestId, request));
+    } catch {
+      this.settleControl(requestId, false);
+    }
+    return answered;
+  }
+
+  private settleControl(requestId: string, ok: boolean): void {
+    const waiter = this.controlWaiters.get(requestId);
+    if (!waiter) return;
+    this.controlWaiters.delete(requestId);
+    waiter(ok);
+  }
+
   /** Rejects when the process was not seen to exit: it may still be running. */
   async stop(): Promise<void> {
     this.stopping = true;
@@ -319,6 +380,7 @@ export class ClaudeDriver implements ChatV2Driver {
     this.clearAwaitingResume();
     this.initDone?.(false, 'Claude Code exited during startup.');
     this.initDone = null;
+    for (const requestId of [...this.controlWaiters.keys()]) this.settleControl(requestId, false);
     for (const requestId of this.pending.keys()) this.settled.add(requestId);
     this.pending.clear();
     this.activeTurn = false;
@@ -361,6 +423,8 @@ export class ClaudeDriver implements ChatV2Driver {
       if (response && response.requestId === this.initRequestId) {
         if (response.ok) this.markInitialized();
         else this.initDone?.(false, response.error ?? 'Claude Code refused its startup handshake.');
+      } else if (response) {
+        this.settleControl(response.requestId, response.ok);
       }
       return;
     }

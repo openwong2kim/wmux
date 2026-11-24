@@ -126,7 +126,8 @@ export type AgentRunMeta = {
   steps: AgentStep[];
 };
 
-export type AttachmentKind = "image";
+/** `image`: a staged copy the agent sees; `file`: the file's own path, which the agent opens itself. */
+export type AttachmentKind = "image" | "file";
 
 /**
  * What the transcript keeps of an attached file. The bytes are never part of

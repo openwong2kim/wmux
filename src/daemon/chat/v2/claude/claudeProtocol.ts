@@ -94,10 +94,13 @@ export function parseResetTimestamp(value: unknown): number | null {
 export type ClaudeImage = { mimeType: string; data: string };
 
 const ATTACHMENT_ONLY_PROMPT = 'See the attached image.';
+const FILE_ONLY_PROMPT = 'See the attached file.';
 
 export function buildClaudeUserMessage(input: {
   text: string;
   images?: ClaudeImage[];
+  /** Absolute paths of attached files Claude opens itself; named in a text block after the prompt. */
+  files?: readonly string[];
 }): Record<string, unknown> {
   const images = (input.images ?? []).flatMap((image) => {
     const mime = image.mimeType === 'image/jpg' ? 'image/jpeg' : image.mimeType;
@@ -105,11 +108,13 @@ export function buildClaudeUserMessage(input: {
       ? [{ type: 'image', source: { type: 'base64', media_type: mime, data: image.data } }]
       : [];
   });
+  const files = input.files ?? [];
   const trimmed = input.text.trim();
-  const text = trimmed || (images.length ? ATTACHMENT_ONLY_PROMPT : '');
+  const text = trimmed || (images.length ? ATTACHMENT_ONLY_PROMPT : files.length ? FILE_ONLY_PROMPT : '');
   const content: Array<Record<string, unknown>> = [];
   if (text) content.push({ type: 'text', text: input.text.trim() ? input.text : text });
   content.push(...images);
+  if (files.length) content.push({ type: 'text', text: attachedFilesNote(files) });
   return {
     type: 'user',
     session_id: '',
@@ -124,9 +129,16 @@ export function buildClaudeUserMessage(input: {
  * provider session id is always in argv (`--session-id` or `--resume`), which
  * is the marker the orphan sweep matches.
  */
+/** The line naming attached files to the agent, one absolute path per line. */
+export function attachedFilesNote(files: readonly string[]): string {
+  return [files.length === 1 ? 'Attached file:' : 'Attached files:', ...files].join('\n');
+}
+
 export function buildClaudeSpawnArgs(input: {
   mode: ChatV2RunMode;
   model: string;
+  /** '' or absent = the CLI's default. Checked against the agent's effort list; one `--effort=<level>` argument. */
+  effort?: string;
   providerSession: { id: string; mode: 'new' | 'resume' };
   settingSources: string;
 }): string[] {
@@ -143,6 +155,7 @@ export function buildClaudeSpawnArgs(input: {
     `--setting-sources=${input.settingSources}`,
   ];
   if (input.model) args.push(`--model=${input.model}`);
+  if (input.effort) args.push(`--effort=${input.effort}`);
   if (input.mode === 'bypass') {
     args.push('--permission-mode', 'bypassPermissions', '--allow-dangerously-skip-permissions');
   } else {

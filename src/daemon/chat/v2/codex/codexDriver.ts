@@ -27,7 +27,7 @@ import { questionPromptTitle } from '../../../../shared/chatv2/userQuestion';
 import type { NativeDecisionOutcome, NativeDecisionReply } from '../../../approvals/types';
 import { whichOnPath } from '../../../web/agentLaunch';
 import { ChildBackend } from '../childBackend';
-import { asRecord, parseJsonLine } from '../claude/claudeProtocol';
+import { asRecord, attachedFilesNote, parseJsonLine } from '../claude/claudeProtocol';
 import type { ChatV2Driver, ChatV2DriverSink, ChatV2DriverStart, ChatV2DriverTurn } from '../types';
 import {
   CODEX_APPROVAL_POLICY,
@@ -106,6 +106,9 @@ export class CodexDriver implements ChatV2Driver {
   // Client calls use their own string ids (`wmux-<n>`), apart from the server's request ids.
   private readonly calls = new Map<string, { resolve: (result: unknown) => void; reject: (error: Error) => void }>();
   private initialized = false;
+  // The thread's model and effort as last set ('' = Codex's default).
+  private model = '';
+  private effort = '';
   private stopping = false;
   private exitedOnce = false;
   private stderrTail = '';
@@ -183,6 +186,10 @@ export class CodexDriver implements ChatV2Driver {
         throw new Error('This Codex conversation is still running somewhere else.');
       }
       this.threadId = threadId;
+      // Effort has no start option: the thread's settings carry it (what chat 1's settings use too).
+      if (spec.effort) await this.call('thread/settings/update', { threadId, effort: spec.effort });
+      this.model = spec.model;
+      this.effort = spec.effort ?? '';
       this.initialized = true;
     } catch (error) {
       const exited = await this.stop().then(() => true, () => false);
@@ -198,8 +205,11 @@ export class CodexDriver implements ChatV2Driver {
   async send(turn: ChatV2DriverTurn): Promise<void> {
     if (!this.backend.alive || !this.initialized) throw new Error('Codex is not running.');
     if (this.activeTurn) throw new Error('A Codex turn is still running; stop it before sending another.');
-    const input: Array<Record<string, unknown>> = [{ type: 'text', text: turn.text }];
-    for (const attachment of turn.attachments) input.push({ type: 'localImage', path: attachment.path });
+    const files = turn.attachments.filter((attachment) => attachment.kind === 'file').map((attachment) => attachment.path);
+    // A file is named to Codex, which opens it with its own tools; an image goes as a local image.
+    const text = files.length ? `${turn.text.trim() ? `${turn.text}\n\n` : ''}${attachedFilesNote(files)}` : turn.text;
+    const input: Array<Record<string, unknown>> = [{ type: 'text', text }];
+    for (const attachment of turn.attachments) if (attachment.kind !== 'file') input.push({ type: 'localImage', path: attachment.path });
     this.resetTurn();
     this.activeTurn = true;
     try {
@@ -226,6 +236,28 @@ export class CodexDriver implements ChatV2Driver {
     }
     if (this.turnId && await this.sendInterrupt().then(() => true, () => false)) return;
     await this.backend.stop().catch(() => false);
+  }
+
+  /**
+   * Codex keeps model and effort on the thread (`thread/settings/update`,
+   * the call chat 1's settings use), so a change applies from the next turn.
+   * Back to a default cannot be expressed there: false, and the host restarts.
+   */
+  async configure(change: { model: string; effort: string }): Promise<boolean> {
+    if (!this.backend.alive || !this.initialized || this.stopping || this.activeTurn) return false;
+    if ((change.model !== this.model && !change.model) || (change.effort !== this.effort && !change.effort)) return false;
+    try {
+      await this.call('thread/settings/update', {
+        threadId: this.threadId,
+        ...(change.model ? { model: change.model } : {}),
+        ...(change.effort ? { effort: change.effort } : {}),
+      });
+    } catch {
+      return false;
+    }
+    this.model = change.model;
+    this.effort = change.effort;
+    return true;
   }
 
   async interrupt(): Promise<boolean> {
