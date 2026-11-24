@@ -211,9 +211,11 @@ import { deliveryPresence, promptGrant, type DeliveryPresenceDeps, type PromptAu
 import { AgentProcessTracker, agentProcessExitEvent, type LiveCheck } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
 import { liveRecoveryHint, markCwdMissing, namedAgentAlive, recordedTurnStillOpen, recordWasMidTurn, screenShowsLiveAgent, sightedRecoveredAgent } from './recoveryHint';
-import { checkWslAgentRunning, reportedAgentForPane, stopWslAgent, WslPidWatcher } from './wslAgentProcess';
+import { checkWslAgentRunning, reportedAgentForPane, stopWslAgent, windowsPidAlive, WslPidWatcher } from './wslAgentProcess';
 import { GateFlagFile } from './gateFlagFile';
-import { WSL_GATE_FLAG_FILE } from '../shared/wslIntegration';
+import { ensureWslAccountScript, WSL_GATE_FLAG_FILE } from '../shared/wslIntegration';
+import { accountFolderShares, wslAccountHomeKey } from '../shared/wslAccountHome';
+import { runWslAccountCopy } from './wslAccountCopy';
 import { CommandStartAgentProbe } from './commandStartAgentProbe';
 import { resolveCanonicalAgentIdentity, detectorSuppressedBy, reportedAgentName, provesLiveAgent, type CanonicalAgentIdentity, recordPaneIdentity } from './canonicalAgent';
 import { inspectLaunchPresence } from './launchPresence';
@@ -282,7 +284,7 @@ import { serveTurnFailure } from './turnFailure/serveTurnFailure';
 import { buildTurnFailedPushPayload, turnFailedPushCollapseId } from './push/turnFailedPushPayload';
 import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
 import { checkNativeTranscriptPath } from './transcript/providers';
-import { keepOwnWslTranscriptPath } from './hooks/transcriptPathGuard';
+import { keepOwnWslTranscriptPath, proveWslTranscriptPath, wslTranscriptSharePath } from './hooks/transcriptPathGuard';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { statTranscript } from './transcript/readTail';
 import { TranscriptActivityWatcher } from './transcript/TranscriptActivityWatcher';
@@ -340,7 +342,7 @@ import { deliverScheduledPrompt, deliveryInputFence, type ScheduledPromptDeliver
 import { deliverCallerNudge } from './callerNudgeDelivery';
 import { draftScreenCheck, type DraftCheck } from './draftScreen';
 import { paneTurnClosed, stopAgentTree } from './agentStop';
-import { continueOnAccount, paneShellDeps } from './continueOnAccount';
+import { continueOnAccount, paneShellDeps, wslAccountEnv } from './continueOnAccount';
 import { paneFree } from './paneFree';
 import { createOrphanSweep } from './winProcessSweep';
 import { classifyShell } from './shell-integration';
@@ -10763,15 +10765,63 @@ async function main(): Promise<void> {
           if (shell === 'bash' || shell === 'zsh') return 'posix';
           return process.platform === 'win32' ? null : 'posix';
         },
-        stopClaude: (sid, stillIdle) => stopAgentTree({
-          tree: () => agentProcessTracker.agentProcessTree(sid, 'claude'),
-          stillRunning: (entries) => agentProcessTracker.liveness(entries),
-          kill: (pid, signal) => process.kill(pid, signal),
-          stillIdle,
-        }),
+        stopClaude: async (sid, stillIdle) => {
+          if (!sessionManager.getSession(sid)?.meta.wslTarget) {
+            return stopAgentTree({
+              tree: () => agentProcessTracker.agentProcessTree(sid, 'claude'),
+              stillRunning: (entries) => agentProcessTracker.liveness(entries),
+              kill: (pid, signal) => process.kill(pid, signal),
+              stillIdle,
+            });
+          }
+          // #2261 — the Claude the pane's own hook reported, stopped inside the distro.
+          const wslAgent = agentProcessTracker.wslAgentFor(sid);
+          if (!wslAgent) return { ok: true, stopped: false };
+          if (!stillIdle()) return { ok: false, code: 'turn_open' };
+          const r = await stopWslAgent(wslAgent);
+          if (r.ok) agentProcessTracker.noteWslAgentGone(sid, wslAgent);
+          return r;
+        },
         atFolderTrust: async (sid) =>
           (await trustRefusal(sessionManager, sid, 'continue on account', false)) !== null,
-        paneFree: (sid) => sessionPaneFree(sessionManager, agentProcessTracker, sid),
+        // A WSL pane's wsl.exe has no Windows children to read: its shell runs
+        // nothing once its tracked Claude is gone and its prompt (OSC 133,
+        // promptRevision) says no command runs.
+        paneFree: async (sid) => sessionManager.getSession(sid)?.meta.wslTarget
+          ? !agentProcessTracker.wslAgentFor(sid)
+          : sessionPaneFree(sessionManager, agentProcessTracker, sid),
+        wsl: {
+          agentTracked: (sid) => !!agentProcessTracker.wslAgentFor(sid),
+          sourceReady: async (sid, binding) => {
+            const meta = sessionManager.getSession(sid)?.meta;
+            if (!meta?.wslTarget || !binding.wslTranscriptPath) return false;
+            // The share is read only while the pane's wsl.exe runs: reading it starts a stopped distro.
+            if (typeof meta.pid !== 'number' || !windowsPidAlive(meta.pid)) return false;
+            const at = wslTranscriptSharePath(binding.wslTranscriptPath, binding.sessionId, meta.wslTarget, { env: meta.env });
+            if (!at.ok) return false;
+            const proof = await proveWslTranscriptPath(at);
+            // A transcript Claude has not written yet has nothing to continue.
+            return proof.ok && !proof.pending;
+          },
+          copy: async (sid, { configDir, plan, sessionId }) => {
+            const meta = sessionManager.getSession(sid)?.meta;
+            if (!meta?.wslTarget || !meta.cmd || typeof meta.pid !== 'number') return { result: 'failed', reason: 'not a WSL pane' };
+            let share = false;
+            try { share = accountFolderShares(configDir, 'claude'); } catch { /* unreadable: no mirror */ }
+            return runWslAccountCopy({
+              shell: meta.cmd,
+              target: meta.wslTarget,
+              hostPid: meta.pid,
+              key: wslAccountHomeKey(configDir),
+              share,
+              suffix: meta.env?.WMUX_DATA_SUFFIX ?? '',
+              accountScript: ensureWslAccountScript(getWmuxDir()),
+              source: plan.source,
+              project: plan.project,
+              sessionId,
+            });
+          },
+        },
         chatOwnsPane: (sid) => chatV2Host?.ownsPane(sid) === true,
         ...paneShellDeps((sid) => sessionManager.getSession(sid)),
         rebind: (sid, dir, binding) => {
@@ -10783,8 +10833,10 @@ async function main(): Promise<void> {
             meta.paneAccount = before.paneAccount;
             meta.resumeBinding = before.resumeBinding;
           };
-          meta.env = { ...meta.env, CLAUDE_CONFIG_DIR: dir };
-          meta.paneAccount = { vendor: 'claude' };
+          // A WSL pane keeps the Windows folder too, marked, so its next spawn runs the account's home in the distro.
+          meta.env = meta.wslTarget ? wslAccountEnv(meta.env, dir, meta.wslTarget) : { ...meta.env, CLAUDE_CONFIG_DIR: dir };
+          // Not for a WSL pane: a chosen account is typed as its folder (withChosenAccountEnv), a Windows path there.
+          if (!meta.wslTarget) meta.paneAccount = { vendor: 'claude' };
           meta.resumeBinding = { ...binding, ts: Date.now() };
           // Unpersisted, a restart would recover the pane on the old account.
           if (!stateWriter.saveImmediate(buildState(sessionManager))) { restore(); return null; }

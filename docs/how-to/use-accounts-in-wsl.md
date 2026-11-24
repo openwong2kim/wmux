@@ -23,6 +23,12 @@ folder inside the distro, and you sign in to it there once.
   **Sign in again** on the notice opens the sign-in in a WSL tab of the same
   distro, for that account's WSL folder. A Windows pane of the same account
   has its own notice.
+- **Continue on another account.** In a WSL pane, **Continue on <account>**
+  stops Claude, copies the conversation into that account's folder in the
+  same distro (created if needed, as your pane's user), and resumes it there
+  in the same pane. If that account has no sign-in in this distro yet, Claude
+  asks you to sign in. An account that signs in with a stored token still
+  cannot be continued in a WSL pane.
 - **Shared settings.** If the account was created with sharing on, its new WSL
   folder links the distro's own skills, commands, agents and plugins (Codex:
   prompts) and copies its `settings.json` and `CLAUDE.md` (Codex: `config.toml`

@@ -31,6 +31,10 @@ import { beginPaneMove, endPaneMove } from './chat/v2/paneClaims';
 import { withChosenAccountEnv } from './phone/paneAccountSpawn';
 import type { AgentStopResult } from './agentStop';
 import type { DaemonPTYBridge } from './DaemonPTYBridge';
+import { isWslOwnTranscriptPath } from './hooks/transcriptPathGuard';
+import { isLinuxCwd, validWslTarget, type WslTarget } from '../shared/wsl';
+import { parseWslAccountKeys, setWslAccountKeys, WSL_ACCOUNT_DISTRO_ENV, WSL_ACCOUNT_KEYS_ENV, wslAccountLinuxHome } from '../shared/wslAccountHome';
+import type { WslAccountCopyOutcome } from './wslAccountCopy';
 
 export type ContinueOnAccountCode =
   | 'no_session'
@@ -87,6 +91,60 @@ export function planTranscriptCopy(
   try { targetRoot = realpath(configDir); } catch { return { ok: false, code: 'invalid_account' }; }
   if (sourceRoot === targetRoot) return { ok: false, code: 'same_account' };
   return { ok: true, source: transcriptPath, target: path.join(configDir, 'projects', path.basename(projectDir), file) };
+}
+
+/**
+ * A WSL pane's env bound to the account at `configDir` (its Windows folder):
+ * the folder, marked as account-sourced, in the pane's distro. The next spawn
+ * of the pane (a recovery) then runs that account's home in the distro, and
+ * the new Claude's hooks report a transcript there (isWslOwnTranscriptPath).
+ */
+export function wslAccountEnv(env: Readonly<Record<string, string>> | undefined, configDir: string, target: WslTarget): Record<string, string> {
+  const next: Record<string, string> = { ...(env ?? {}), CLAUDE_CONFIG_DIR: configDir, [WSL_ACCOUNT_DISTRO_ENV]: target.distribution };
+  setWslAccountKeys(next, [...parseWslAccountKeys(next[WSL_ACCOUNT_KEYS_ENV]), 'CLAUDE_CONFIG_DIR']);
+  return next;
+}
+
+export interface WslCopyPlan {
+  /** The source transcript's Linux path, as the pane's hook reported it. */
+  source: string;
+  project: string;
+  /** The target account's home in the distro, as the pane's next spawn makes it. */
+  home: string;
+  /** Where the copy goes: `<home>/projects/<project>/<sessionId>.jsonl`. */
+  target: string;
+}
+
+/**
+ * The WSL counterpart of planTranscriptCopy, from the pane's own record alone:
+ * its binding's `wslTranscriptPath` must still be its own Claude transcript
+ * (in the distro user's default home or its account's home), and the target
+ * home is the one the pane's next spawn would run on. Pure: every path is a
+ * Linux one this process cannot open, so nothing is resolved here; the copy
+ * script checks the folders themselves.
+ */
+export function planWslTranscriptCopy(
+  binding: ResumeBinding | undefined,
+  pane: { wslTarget?: unknown; env?: Readonly<Record<string, string>> },
+  configDir: string,
+): { ok: true; plan: WslCopyPlan } | { ok: false; code: 'not_claude' | 'unknown_session' | 'invalid_account' | 'same_account' | 'unsupported' } {
+  if (!validWslTarget(pane.wslTarget)) return { ok: false, code: 'unsupported' };
+  const target = pane.wslTarget;
+  if (!binding) return { ok: false, code: 'unknown_session' };
+  if (!agentRow(binding.agent)?.continueOnAccount) return { ok: false, code: 'not_claude' };
+  const { sessionId, wslTranscriptPath: source } = binding;
+  if (!CHATV2_PROVIDER_SESSION_ID.test(sessionId) || !source || !isWslOwnTranscriptPath(source, sessionId, target, pane.env)) {
+    return { ok: false, code: 'unknown_session' };
+  }
+  if (!configDir || !(path.win32.isAbsolute(configDir) || path.posix.isAbsolute(configDir)) || CONTROL.test(configDir)) {
+    return { ok: false, code: 'invalid_account' };
+  }
+  const home = wslAccountLinuxHome(wslAccountEnv(pane.env, configDir, target), 'claude', target.user);
+  if (!home) return { ok: false, code: 'invalid_account' };
+  const projectDir = path.posix.dirname(source);
+  if (path.posix.dirname(path.posix.dirname(projectDir)) === home) return { ok: false, code: 'same_account' };
+  const project = path.posix.basename(projectDir);
+  return { ok: true, plan: { source, project, home, target: `${home}/projects/${project}/${sessionId}.jsonl` } };
 }
 
 /** Whether `prefix`'s bytes start `file`'s. */
@@ -198,6 +256,17 @@ export interface ContinueOnAccountPane {
   resumeBinding?: ResumeBinding;
   exec?: unknown;
   wslTarget?: unknown;
+  env?: Readonly<Record<string, string>>;
+}
+
+/** What a WSL pane's continue needs besides the common deps. */
+export interface ContinueOnAccountWslDeps {
+  /** The pane's Claude was attributed from its own hook, so it can be stopped inside the distro. */
+  agentTracked: (id: string) => boolean;
+  /** The source transcript is an existing regular file on the distro share (proveWslTranscriptPath). */
+  sourceReady: (id: string, binding: ResumeBinding) => Promise<boolean>;
+  /** The copy inside the distro (wslAccountCopy.ts); never boots it. */
+  copy: (id: string, req: { configDir: string; plan: WslCopyPlan; sessionId: string }) => Promise<WslAccountCopyOutcome>;
 }
 
 export interface ContinueOnAccountDeps {
@@ -228,6 +297,8 @@ export interface ContinueOnAccountDeps {
   /** The pane is on an agent's folder-trust prompt: a person's move, so
    *  only a prompt seen on screen stops it. Asked before the stop. */
   atFolderTrust?: (id: string) => Promise<boolean>;
+  /** Absent: a WSL pane is refused as `unsupported`. */
+  wsl?: ContinueOnAccountWslDeps;
 }
 
 /**
@@ -256,7 +327,8 @@ export async function continueOnAccount(
 async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, copyOnly: boolean): Promise<ContinueOnAccountResult> {
   const pane = deps.pane(id);
   if (!pane) return { ok: false, code: 'no_session' };
-  if (pane.exec || pane.wslTarget) return { ok: false, code: 'unsupported' };
+  if (pane.exec) return { ok: false, code: 'unsupported' };
+  if (pane.wslTarget) return runWsl(deps, id, pane, configDir, copyOnly);
   // A copy types nothing into this pane, so its shell does not matter.
   const shell = copyOnly ? null : deps.shellKind(id);
   if (!copyOnly && !shell) return { ok: false, code: 'unsupported' };
@@ -305,6 +377,82 @@ async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, c
     };
   }
 
+  return stopCopyRelaunch(deps, id, configDir, {
+    binding,
+    line,
+    transcriptPath: plan.target,
+    rebound: { ...binding, transcriptPath: plan.target },
+    copy: () => (deps.copy ?? copyTranscript)(plan.source, plan.target),
+  });
+}
+
+/**
+ * A WSL pane: the same steps, inside its distro. The source is the pane's
+ * Linux transcript (planWslTranscriptCopy), Claude is the one its own hook
+ * reported (stopped inside the distro), the copy runs there as the pane's
+ * user (wslAccountCopy.ts), and the line typed into its bash names the
+ * account's home in the distro. Copy-only (a vault sign-in) is refused for
+ * now: the new pane would start as the distro's default user, not the
+ * source pane's.
+ */
+async function runWsl(
+  deps: ContinueOnAccountDeps,
+  id: string,
+  pane: ContinueOnAccountPane,
+  configDir: string,
+  copyOnly: boolean,
+): Promise<ContinueOnAccountResult> {
+  const wsl = deps.wsl;
+  if (!wsl || copyOnly) return { ok: false, code: 'unsupported' };
+  const live = deps.liveAgent(id);
+  if (live !== undefined && !agentRow(live)?.continueOnAccount) return { ok: false, code: 'not_claude' };
+  // A Claude its hook never reported cannot be stopped from here.
+  if (live !== undefined && !wsl.agentTracked(id)) return { ok: false, code: 'unsupported' };
+  const binding = pane.resumeBinding;
+  const planned = planWslTranscriptCopy(binding, pane, configDir);
+  if (!planned.ok || !binding) return { ok: false, code: planned.ok ? 'unknown_session' : planned.code };
+  const { plan } = planned;
+  if (!isLinuxCwd(binding.cwd) || !binding.cwd.startsWith('/')) return { ok: false, code: 'unknown_session' };
+  const line = relaunchLine(binding, plan.home, 'posix');
+  if (!line) return { ok: false, code: 'invalid_account' };
+  if (!(await wsl.sourceReady(id, binding))) return { ok: false, code: 'unknown_session' };
+  if (!deps.turnClosed(id)) return { ok: false, code: 'turn_open' };
+  if (await deps.atFolderTrust?.(id)) return { ok: false, code: 'folder_trust' };
+  return stopCopyRelaunch(deps, id, configDir, {
+    binding,
+    line,
+    transcriptPath: plan.target,
+    // Only the Linux path: a binding's transcriptPath is always one this process can open.
+    rebound: { ...binding, wslTranscriptPath: plan.target },
+    copy: async () => {
+      const out = await wsl.copy(id, { configDir, plan, sessionId: binding.sessionId });
+      if (out.result === 'failed') throw new Error(out.reason);
+      // The typed line names the home by /home/<user>, the script by $HOME: a
+      // copy anywhere else is not the one the line would resume.
+      if (out.result === 'copied' && out.home !== plan.home) throw new Error('the copy went to another home');
+      return out.result;
+    },
+  });
+}
+
+/**
+ * The steps after the checks, for both kinds of pane: stop Claude, copy,
+ * wait for the shell's empty prompt, rebind, type `line`.
+ */
+async function stopCopyRelaunch(
+  deps: ContinueOnAccountDeps,
+  id: string,
+  configDir: string,
+  step: {
+    binding: ResumeBinding;
+    line: string;
+    transcriptPath: string;
+    /** The pane's binding once the copy exists. */
+    rebound: ResumeBinding;
+    copy: () => Promise<'copied' | 'diverged' | 'same'>;
+  },
+): Promise<ContinueOnAccountResult> {
+  const { binding, line } = step;
   // Stop first: Claude may still write to the transcript as it exits. The
   // turn is checked again right before the first signal.
   const keys = deps.markKeys(id);
@@ -319,7 +467,7 @@ async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, c
   if (!stillOwn()) return { ok: false, code: 'unknown_session' };
 
   try {
-    const copied = await (deps.copy ?? copyTranscript)(plan.source, plan.target);
+    const copied = await step.copy();
     if (copied === 'diverged') return { ok: false, code: 'diverged' };
     if (copied === 'same') return { ok: false, code: 'same_account' };
   } catch {
@@ -357,7 +505,7 @@ async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, c
   // Bound before the line is typed: the new process's first hook is checked
   // against the pane's account folder. A rebind that could not be persisted
   // is undone and nothing is typed.
-  const undo = deps.rebind(id, configDir, { ...binding, transcriptPath: plan.target });
+  const undo = deps.rebind(id, configDir, step.rebound);
   if (!undo) return blocked('save_failed');
   let typed = false;
   try {
@@ -369,5 +517,5 @@ async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, c
     undo();
     return blocked('shell_busy');
   }
-  return { ok: true, sessionId: binding.sessionId, transcriptPath: plan.target };
+  return { ok: true, sessionId: binding.sessionId, transcriptPath: step.transcriptPath };
 }
