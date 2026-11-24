@@ -11,6 +11,8 @@ import type { A2aSpawnClaimResult, A2aSpawnStepResult } from '../../../shared/a2
 import { toolRuleCovers, workerLaunchFlags } from '../../../shared/workerLaunch';
 import type { SpawnWorktreeResult } from '../../../main/a2aRemote/spawnWorktree';
 import { HeadlessStartStore, type HeadlessSurvivor } from '../headlessStartStore';
+import { clearFanoutPortReservationsForTest } from '../../../main/worktask/fanoutEnvironment';
+import { pickHeadlessTaskPort } from '../headlessTaskPort';
 import { A2aHeadlessStarter, HEADLESS_EXTRA_DISALLOWED_TOOLS, headlessTreeId, type HeadlessSessionInput, type HeadlessSessionPort, type HeadlessStarterDeps } from '../headlessStarter';
 import type { SpawnRequestRecordV1 } from '../spawnRequestStore';
 
@@ -720,5 +722,59 @@ describe('headless start store', () => {
     expect(small.phaseOfSession('hl-00000000-0000-4000-8000-000000000001')).toBe('ended');
     add(1001, 'started');
     expect(() => add(1002, 'started')).toThrow(/1000 are recorded/);
+  });
+});
+
+describe('headless start: task port', () => {
+  const SPAWN2 = 'sp-0123abcd-4567-89ab-cdef-0123456789ac';
+
+  it('gives the agent WMUX_TASK_PORT and records it; a second live start never gets the same port', async () => {
+    const asked: Array<number[]> = [];
+    // The first free port of 4000-4001 that is not taken.
+    const taskPort = async (_wt: string, taken: ReadonlySet<number>): Promise<number | undefined> => {
+      asked.push([...taken]);
+      return [4000, 4001].find((p) => !taken.has(p));
+    };
+    await makeStarter({ taskPort }).start(HOST, SPAWN);
+    expect(created[0].env).toMatchObject({ WMUX_TASK_PORT: '4000' });
+    expect(starts.get(HOST, SPAWN)?.taskPort).toBe(4000);
+    // Recorded before the agent started, and kept across a reload of the file.
+    expect(new HeadlessStartStore({ dir, scheduleHarden: () => undefined }).get(HOST, SPAWN)?.taskPort).toBe(4000);
+    request = { state: 'approved' };
+    worktree = { ok: true, worktreePath: '/wt/remote-y', cwd: '/wt/remote-y', branch: `wmux/remote/${headlessTreeId(HOST, SPAWN2)}` };
+    await makeStarter({ taskPort }).start(HOST, SPAWN2);
+    expect(asked[1]).toEqual([4000]);
+    expect(created[1].env).toMatchObject({ WMUX_TASK_PORT: '4001' });
+    expect(starts.get(HOST, SPAWN2)?.taskPort).toBe(4001);
+  });
+
+  it('a port held by an ended start is free again; none declared means no WMUX_TASK_PORT', async () => {
+    let taken: number[] = [];
+    await makeStarter({ taskPort: async () => undefined }).start(HOST, SPAWN);
+    expect(created[0].env).not.toHaveProperty('WMUX_TASK_PORT');
+    expect(starts.get(HOST, SPAWN)?.taskPort).toBeUndefined();
+    starts.update(HOST, SPAWN, { phase: 'ended', taskPort: 4000 });
+    request = { state: 'approved' };
+    await makeStarter({ taskPort: async (_wt, t) => { taken = [...t]; return 4000; } }).start(HOST, SPAWN2);
+    expect(taken).toEqual([]);
+    expect(created[1].env).toMatchObject({ WMUX_TASK_PORT: '4000' });
+  });
+
+  it('with the real picker: an ended start\'s port is free for the next start at once (the record holds it, not a timed hold)', async () => {
+    clearFanoutPortReservationsForTest();
+    const wtDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hl-port-wt-'));
+    try {
+      fs.writeFileSync(path.join(wtDir, 'wmux.json'), JSON.stringify({ fanout: { portRange: '4300-4301' } }));
+      worktree = { ok: true, worktreePath: wtDir, cwd: wtDir, branch: `wmux/remote/${TREE}` };
+      const taskPort = (w: string, taken: ReadonlySet<number>) => pickHeadlessTaskPort(w, taken, async () => true);
+      await makeStarter({ taskPort }).start(HOST, SPAWN);
+      expect(starts.get(HOST, SPAWN)?.taskPort).toBe(4300);
+      starts.update(HOST, SPAWN, { phase: 'ended' });
+      request = { state: 'approved' };
+      await makeStarter({ taskPort }).start(HOST, SPAWN2);
+      expect(created[1].env).toMatchObject({ WMUX_TASK_PORT: '4300' });
+    } finally {
+      fs.rmSync(wtDir, { recursive: true, force: true });
+    }
   });
 });

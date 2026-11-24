@@ -11,7 +11,7 @@ import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { remoteTaskId } from '../ids';
 import { LinkStore } from '../linkStore';
 import { OutboxStore } from '../outboxStore';
-import { aliasTable, linkAlias, listRemoteTargets, sendRemoteReply, sendRemoteState, sendRemoteStatus, sendRemoteTask, stateMessageId, syncRemoteTask, type OutboundDeps, type StateDeps } from '../outbound';
+import { aliasTable, linkAlias, listRemoteTargets, sendRemoteAnswer, sendRemoteReply, sendRemoteState, sendRemoteStatus, sendRemoteTask, stateMessageId, syncRemoteTask, type OutboundDeps, type StateDeps } from '../outbound';
 
 const HOST = '11111111-1111-4111-8111-111111111111';
 
@@ -575,5 +575,57 @@ describe('sendRemoteStatus (a worker\'s status for the PC that sent the task)', 
     // Not a spawn link: as written (the receiver still cleans what it shows).
     sendRemoteStatus(deps, { taskId: id, status: { ...status, since: '2026-11-13T06:01:00.000Z' } });
     expect(envelopes()[1]!.status!.detail?.options?.[0]).toContain(token);
+  });
+});
+
+describe('sendRemoteAnswer (the sender\'s answer to the question its task\'s worker shows)', () => {
+  const ANSWER = { pickerId: '0123456789abcdef', option: 2 };
+  const envelopes = () => outbox.pending(HOST).map((r) => r.envelope);
+  async function sentTask(): Promise<string> {
+    const linkId = activeLink();
+    const sent = await sendRemoteTask(deps, { linkId, from: FROM, title: '', text: 'mine' });
+    if (!sent.ok) throw new Error(sent.error);
+    return sent.taskId;
+  }
+
+  it('queues a picker id and a number for the PC the task went to: no text, not in the history, no state', async () => {
+    const id = await sentTask();
+    const before = structuredClone(tasks.getTask(id));
+    const res = sendRemoteAnswer(deps, { taskId: id, workspaceId: 'ws-a', answer: ANSWER });
+    expect(res).toMatchObject({ ok: true, taskId: id, messageId: expect.stringMatching(/^an-/) });
+    const e = envelopes().find((x) => x.kind === 'answer')!;
+    expect(e).toMatchObject({ taskId: id, answer: ANSWER });
+    expect(e.text).toBeUndefined();
+    expect(tasks.getTask(id)).toEqual(before);
+  });
+
+  it('only from the agent that sent the task, only while it is open, only a checked answer', async () => {
+    const id = await sentTask();
+    expect(sendRemoteAnswer(deps, { taskId: id, workspaceId: 'ws-other', answer: ANSWER })).toMatchObject({ ok: false, error: expect.stringContaining('forbidden') });
+    expect(sendRemoteAnswer(deps, { taskId: id, workspaceId: 'ws-a', answer: { pickerId: 'x', option: 1 } })).toMatchObject({ ok: false, error: expect.stringContaining('bad-request') });
+    const linkId = (tasks.getTask(id)!.metadata.remote as { linkId: string }).linkId;
+    expect((await tasks.applyRemoteState({ taskId: id, linkId, messageId: 'st-1', to: 'failed', summary: 'gone' })).ok).toBe(true);
+    expect(sendRemoteAnswer(deps, { taskId: id, workspaceId: 'ws-a', answer: ANSWER })).toMatchObject({ ok: false, error: expect.stringContaining('ended') });
+    expect(envelopes().filter((x) => x.kind === 'answer')).toEqual([]);
+  });
+
+  it('refused for a task this PC received', async () => {
+    const linkId = activeLink();
+    const id = remoteTaskId(linkId, 'theirs-1');
+    await tasks.createTask({
+      id,
+      title: 'theirs',
+      from: { workspaceId: `remote:${linkId}`, name: 'pc-b/ws-b/codex' },
+      to: { workspaceId: 'ws-a', name: 'Frontend', paneId: 'pane-a' },
+      history: [{ kind: 'message', messageId: 'theirs-1', role: 'user', parts: [{ kind: 'text', text: 'do it' }] }],
+      remote: { v: 1, linkId, hostId: HOST, messageId: 'theirs-1', direction: 'inbound', kind: 'pane' },
+    });
+    expect(sendRemoteAnswer(deps, { taskId: id, workspaceId: 'ws-a', answer: ANSWER })).toMatchObject({ ok: false, error: expect.stringContaining('bad-request') });
+  });
+
+  it('on a link a remote start made, the answer is rebuilt from its checked shape and still goes', async () => {
+    const id = await sentTask();
+    sendRemoteAnswer({ ...deps, spawnLink: () => true }, { taskId: id, workspaceId: 'ws-a', answer: ANSWER });
+    expect(envelopes().find((x) => x.kind === 'answer')).toMatchObject({ answer: ANSWER });
   });
 });

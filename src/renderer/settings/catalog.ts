@@ -119,6 +119,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'autoupdate', tab: 'general', labelKey: 'settings.autoUpdate', descKey: 'settings.autoUpdateDesc', synonyms: 'update upgrade version' },
   { id: 'checkupdate', tab: 'general', labelKey: 'settings.checkUpdate', synonyms: 'update now latest release' },
   { id: 'secretguard', tab: 'general', labelKey: 'settings.secretGuard', descKey: 'settings.secretGuardDesc', synonyms: 'git secret password key token env commit push pr 비밀번호 키' },
+  { id: 'siblingcollision', tab: 'general', labelKey: 'settings.siblingCollision', descKey: 'settings.siblingCollisionDesc', synonyms: 'git worktree sibling conflict merge same file fan-out 충돌 워크트리 같은 파일 머지' },
+  { id: 'siblingcollisioninterval', tab: 'general', labelKey: 'settings.siblingCollisionInterval', descKey: 'settings.siblingCollisionIntervalDesc', synonyms: 'git worktree conflict check interval minutes 충돌 확인 간격 분' },
   { id: 'startup', tab: 'general', labelKey: 'settings.startup', synonyms: 'autostart boot login launch 시작', platform: ['win32', 'darwin'] },
   { id: 'sleepprevention', tab: 'general', labelKey: 'settings.sleepPrevention', descKey: 'settings.sleepPreventionDesc', synonyms: 'sleep awake suspend standby power caffeine 절전 잠자기 대기 uśpienie czuwanie 睡眠 休眠' },
   { id: 'tutorial', tab: 'general', labelKey: 'settings.restartTutorial', descKey: 'settings.restartTutorialDesc', synonyms: 'onboarding tour help 튜토리얼' },
@@ -186,7 +188,9 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'scheduledretry', tab: 'claude-integration', labelKey: 'claudeIntegration.scheduledRetry', descKey: 'claudeIntegration.scheduledRetryDesc', synonyms: 'schedule scheduled run retry network server error overloaded continue 예약 재시도 오류' },
   { id: 'clauderesumeonstart', tab: 'claude-integration', labelKey: 'claudeIntegration.resumeOnStart', descKey: 'claudeIntegration.resumeOnStartDesc', synonyms: 'resume restart recover continue launch boot session 재시작 이어가기 복원' },
   { id: 'claudefilesend', tab: 'claude-integration', labelKey: 'claudeIntegration.fileSend', descKey: 'claudeIntegration.fileSendDesc', synonyms: 'send file attachment phone mobile SendUserFile remote control 파일 보내기 첨부 휴대폰 폰' },
+  { id: 'newpackagenote', tab: 'claude-integration', labelKey: 'claudeIntegration.newPackageNote', descKey: 'claudeIntegration.newPackageNoteDesc', synonyms: 'install package npm pip cargo approval new unknown hallucinated typosquat supply chain dependency 설치 패키지 새 승인 의존성' },
   { id: 'mcp', tab: 'claude-integration', labelKey: 'settings.mcpServers', synonyms: 'mcp plugin tools broker register codex' },
+  { id: 'mcpbroker', tab: 'claude-integration', labelKey: 'settings.mcpBroker', descKey: 'settings.mcpBrokerDesc', synonyms: 'mcp broker shared process memory WMUX_MCP_BROKER 공유 프로세스 메모리 브로커' },
 
   { id: 'claudeacct', tab: 'accounts', labelKey: 'accounts.title', synonyms: 'claude account login subscription max usage quota 계정' },
 
@@ -213,6 +217,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'fanoutlivecap', tab: 'roles', labelKey: 'settings.fanoutLiveTaskCap', descKey: 'settings.fanoutLiveTaskCapDesc', synonyms: 'fanout fan-out cap limit live concurrent at once tasks brake 동시 한도' },
   { id: 'fanouthourlycap', tab: 'roles', labelKey: 'settings.fanoutHourlyTaskCap', descKey: 'settings.fanoutHourlyTaskCapDesc', synonyms: 'fanout fan-out cap limit hourly per hour rate tasks brake 시간당 한도' },
   { id: 'workerfence', tab: 'roles', labelKey: 'settings.workerFence', descKey: 'settings.workerFenceDesc', synonyms: 'worker fence sandbox bot unattended bypass auto credentials 울타리 샌드박스 봇 워커' },
+  { id: 'fanoutaccountpool', tab: 'roles', labelKey: 'settings.fanoutAccountPool', descKey: 'settings.fanoutAccountPoolDesc', synonyms: 'fanout fan-out account accounts pool spread quota workers group 계정 분산 풀' },
   { id: 'fanoutagytrust', tab: 'roles', labelKey: 'settings.fanoutTrustAgyFolders', descKey: 'settings.fanoutTrustAgyFoldersDesc', synonyms: 'agy antigravity trust trusted folder workspace fanout fan-out' },
   { id: 'fanoutworkers', tab: 'roles', labelKey: 'settings.fanoutWorkerPermissionMode', descKey: 'settings.fanoutWorkerPermissionModeDesc', synonyms: 'fanout fan-out worker permission auto bypass sandbox' },
   { id: 'fanoutpresets', tab: 'roles', labelKey: 'settings.fanoutPresets', descKey: 'settings.fanoutPresetsDesc', synonyms: 'fanout fan-out preset image video agents codex grok output folder worktree' },

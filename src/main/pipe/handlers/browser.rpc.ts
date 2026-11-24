@@ -8,6 +8,7 @@ import { logNotificationFailure } from '../../notification/notificationFailure';
 import { osToastsAllowed } from '../../notification/osToastGate';
 import { IPC } from '../../../shared/constants';
 import { HelpRequests } from '../../browser-session/HelpRequests';
+import { grantCovers } from '../../browser-session/dangerousActionConsent';
 import { FrameTarget, FrameWorlds, evaluateInFrame, listChildFrames, type CdpSend, type Point as FramePoint } from '../../browser-session/frameAccess';
 import { buildDomSnapshotExpression, readDomSnapshotPayload } from '../../../mcp/playwright/dom-intelligence';
 import type { RefDescriptor } from '../../../mcp/playwright/refDescriptors';
@@ -136,7 +137,8 @@ import type {
   BrowserScopeShadowReason,
 } from '../../audit/shadowRejectionLog';
 import type { BrowserBackendStore } from '../../browser-session/BrowserBackendStore';
-import type { ChromeBackendClient, ChromeLauncherRegistry } from '../../browser-session/ChromeLauncher';
+import { closeRelayClients, relayAdmissionRefusal, relaySweepMark, relaySweptSince, revokeRelayTokens, type ChromeBackendClient, type ChromeLauncherRegistry } from '../../browser-session/ChromeLauncher';
+import type { CallerIdentity } from '../../browser-session/CdpPipeMux';
 import { isLiveChromeReachable } from '../../browser-session/LiveChromeClient';
 import {
   agentWindowScopeMessage,
@@ -149,6 +151,7 @@ import {
 import type { EnforcementMode } from '../../mcp/enforcementMode';
 import { isFirstPartyClient } from '../../mcp/firstParty';
 import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
+import { paneOfPeer } from './peerPidShadow';
 import type { BrowserAgentControl } from '../../browser-session/BrowserAgentControl';
 import { heldBrowserSurfaceRefusal } from './surface.rpc';
 import { agentControlRefusal } from '../../../shared/browserAgentControl';
@@ -170,7 +173,7 @@ type GetWindow = () => BrowserWindow | null;
 /** What main wires in for protected browser panes. */
 export interface BrowserPolicyWiring {
   store: Pick<BrowserPolicyStore, 'hasAnyHistory' | 'workspaceHasHistory' | 'decisionFor' | 'entryFor'>
-    & Partial<Pick<BrowserPolicyStore, 'onChange'>>;
+    & Partial<Pick<BrowserPolicyStore, 'onChange' | 'epoch' | 'grantsFor'>>;
   /** paneId → its exclusive Chrome profile binding (ChromeProfileStore). */
   paneBindings: () => ChromePaneBindings;
   /** Receives the caller-protection check below, for callers outside browser.* (computer use). */
@@ -503,6 +506,40 @@ export function canDiscloseBrowserAttachInfo(ctx: RpcContext | undefined): boole
     return isLocalExternalWireContext(ctx);
   }
   return isLocalExternalWireContext(ctx) && isFirstPartyClient(ctx.clientName);
+}
+
+/**
+ * The lane a browser.cdp.info relay grant is minted in: the operator's, the
+ * engine's for a first-party client on wmux's pipe, and the restricted
+ * pane-script lane for anyone else.
+ */
+export function relayLaneOf(ctx: RpcContext | undefined): CallerIdentity['lane'] {
+  if (ctx?.operator === true) return 'operator';
+  return ctx && isLocalExternalWireContext(ctx) && isFirstPartyClient(ctx.clientName) ? 'engine' : 'pane-script';
+}
+
+/**
+ * Why `ctx` may not be handed a pane-script relay grant (browser.cdp.grant),
+ * or null when it may. Every condition comes from what main attested about
+ * the caller, never from params: a request over wmux's local pipe, holding a
+ * live pane claim main minted from its own walk, that is not the operator, a
+ * plugin host, a commander or bot token, a fenced bot worker, or a scheduled
+ * run. browser.cdp.grant also walks the connection's peer process to that pane.
+ */
+export function paneScriptGrantRefusal(ctx: RpcContext | undefined): string | null {
+  if (!ctx) return 'the caller could not be identified';
+  // A local request on the pipe: not a remote one, the operator or a plugin
+  // host (the pipe marker excludes all three).
+  if (!isLocalExternalWireContext(ctx)) return 'only a process in a wmux pane may ask, over the wmux pipe';
+  // A bot token is a commander token too (RpcContext.bot).
+  if (ctx.commanderWorkspace !== undefined) return 'a commander or bot token may not ask';
+  if (ctx.fencedWorker === true) return 'a fenced bot worker may not ask';
+  const claim = ctx.workspaceClaim;
+  if (claim === undefined) return 'the call carries no pane claim; run it from a wmux pane';
+  if (claim.kind !== 'bound') return 'the pane claim is no longer valid; run the command again';
+  if (!claim.ptyId) return 'the claim names a workspace but no pane; run it from a wmux pane';
+  if (claim.browserOnly === true || isRunCaller(ctx)) return 'a scheduled run may not ask';
+  return null;
 }
 
 export type BrowserCallerScopeDecision =
@@ -1810,6 +1847,24 @@ export function registerBrowserRpc(
     });
   }
   const protectedDecisions = new WeakMap<RpcContext, Extract<PanePolicyDecision, { kind: 'protected' }>>();
+  /** Per call: the relay sweep mark and policy epoch at its start (a relay grant's basis check). */
+  const grantMarks = new WeakMap<RpcContext, { sweep: number; epoch: number | undefined }>();
+  /**
+   * After a relay token is minted for `identity`: if what the caller was
+   * resolved on went away while it was made (the policy moved, its workspace
+   * or pane closed, a hold landed, its claim changed), the sweep for that
+   * (relayClientTriggers) ran before the token existed, so the token goes now
+   * and the call fails.
+   */
+  const withdrawIfBasisChanged = (method: string, ctx: RpcContext | undefined, identity: CallerIdentity): void => {
+    const mark = ctx ? grantMarks.get(ctx) : undefined;
+    if (!mark) return;
+    const epochNow = browserPolicy?.store.epoch?.();
+    if (relaySweptSince(mark.sweep, identity) || (epochNow !== undefined && epochNow !== mark.epoch)) {
+      closeRelayClients((id) => id === identity, 'grant basis changed during the grant');
+      throw new Error(`${method}: what this caller was resolved on changed while the relay token was made; ask again`);
+    }
+  };
   /** The attested pane behind a recorded protected decision (memory namespace). */
   const protectedPanes = new WeakMap<RpcContext, { workspaceId: string; paneId: string }>();
 
@@ -1955,6 +2010,8 @@ export function registerBrowserRpc(
   const router: Pick<RpcRouter, 'register'> = {
     register: (method, handler) =>
       rawRouter.register(method, (params, ctx) => {
+        // Before anything this call resolves: what browser.cdp.info checks a relay grant against.
+        if (ctx) grantMarks.set(ctx, { sweep: relaySweepMark(), epoch: browserPolicy?.store.epoch?.() });
         // Legacy (nothing ever protected): call straight through, not even a
         // microtask later than before. A scheduled run with a browser identity
         // is always gated: its grant names a protected pane.
@@ -4236,6 +4293,9 @@ export function registerBrowserRpc(
         // protected pane never sees it.
         port: protectedDecisionOf(ctx) || !canDiscloseBrowserAttachInfo(ctx) ? null : status.cdpPort,
         running: status.running,
+        // How main reaches the running Chrome: 'pipe', 'port', or 'port (weaker)'
+        // for a protected profile on the port. Absent while none runs.
+        ...(status.transport !== undefined && { transport: status.transport }),
         // Only the live profile sets liveAttach (running there = remote-debugging
         // reachable), so the agent reads running:false as "enable it at
         // chrome://inspect", not "call session.start". Additive: absent elsewhere.
@@ -4358,19 +4418,35 @@ export function registerBrowserRpc(
       const chromeTargets = await launcher.cdpInfoTargets(callerWorkspaceId || undefined);
       const disclose = canDiscloseBrowserAttachInfo(ctx);
       const decision = protectedDecisionOf(ctx);
-      const relay = disclose && ep.piped && params.relay === true && launcher.relayGrant
-        ? await launcher.relayGrant({
-          ...(callerWorkspaceId && { workspaceId: callerWorkspaceId }),
-          profile: chrome.profile,
-          ...(decision && { protectedEpoch: decision.epoch }),
-          // The operator lane: with grants (C3b), every target, as on the port. From the
-          // authenticated caller only, never from params.
-          ...(ctx?.operator === true && { everyTarget: true }),
-        })
-        : undefined;
+      // Every field from the authenticated caller and main's own resolution,
+      // never from params.
+      const identity: CallerIdentity = {
+        ...(callerWorkspaceId && { workspaceId: callerWorkspaceId }),
+        profile: chrome.profile,
+        ...(decision && { protectedEpoch: decision.epoch }),
+        // The operator lane: with grants (C3b), every target, as on the port.
+        ...(ctx?.operator === true && { everyTarget: true }),
+        ...(chrome.callerPtyId && { ptyId: chrome.callerPtyId }),
+        lane: relayLaneOf(ctx),
+      };
+      const wantsRelay = disclose && ep.piped && params.relay === true && !!launcher.relayGrant;
+      // What the caller was resolved on must still be there before a token
+      // is minted for it: a sweep that ran before this call began never sees it.
+      const refusal = wantsRelay ? relayAdmissionRefusal(identity) : null;
+      if (refusal !== null) throw new Error(`browser.cdp.info: no relay token: ${refusal}; ask again`);
+      const relay = wantsRelay && launcher.relayGrant ? await launcher.relayGrant(identity) : undefined;
+      // What the caller was resolved on went away while the token was made
+      // (the policy moved, its workspace or pane closed, a hold landed): the
+      // sweep for it (relayClientTriggers) ran before this token existed, so
+      // the token goes now.
+      if (relay) withdrawIfBasisChanged('browser.cdp.info', ctx, identity);
+      // A protected pane's caller never gets the port or its WebSocket, on
+      // either transport: on the pipe it reaches Chrome through the relay (held
+      // to the profile's rules); on the port there is no such route for it.
+      const attach = disclose && !decision;
       return {
-        ...(disclose && ep.cdpPort !== undefined && { cdpPort: ep.cdpPort }),
-        ...(disclose && ep.wsEndpoint && { wsEndpoint: ep.wsEndpoint }),
+        ...(attach && ep.cdpPort !== undefined && { cdpPort: ep.cdpPort }),
+        ...(attach && ep.wsEndpoint && { wsEndpoint: ep.wsEndpoint }),
         ...(relay && { relay }),
         // Reached through the relay: an engine checking a live connection asks
         // again with relay: true only when this is set.
@@ -4487,6 +4563,111 @@ export function registerBrowserRpc(
         // own surface instead of the workspace's newest. A verdict, never a key.
         ...withOpener(t.surfaceId, callerOpenerKey),
       })),
+    };
+  });
+
+  /** browser.cdp.grant's mint per pane, one after another (the tail of each pane's chain). */
+  const paneGrants = new Map<string, Promise<unknown>>();
+  const onePaneAtATime = <T>(ptyId: string, run: () => Promise<T>): Promise<T> => {
+    const before = paneGrants.get(ptyId) ?? Promise.resolve();
+    const next = before.then(run, run);
+    const tail = next.catch(() => undefined);
+    paneGrants.set(ptyId, tail);
+    void tail.then(() => { if (paneGrants.get(ptyId) === tail) paneGrants.delete(ptyId); });
+    return next;
+  };
+
+  /**
+   * The workspace of every surface the user holds (Stop or Take over), with
+   * undefined for one main cannot place.
+   */
+  const heldSurfaceWorkspaces = (): Array<string | undefined> => (agentControl?.list() ?? [])
+    .filter((state) => state.mode !== 'agent')
+    .map((state) => webviewCdpManager.getTarget(state.surfaceId)?.workspaceId ?? chromeRegistry?.ownerOfSurface(state.surfaceId)?.workspaceId);
+
+  /**
+   * browser.cdp.grant
+   * A one-time relay token for a script running in a wmux pane: it connects
+   * to the Chrome of the calling pane (its own profile, else its workspace's)
+   * on the debugging pipe, and sees only the targets it opens. Everything that
+   * decides the grant comes from main: the caller's pane claim, main's walk
+   * from the connection's peer process to that pane, the pane's profile, and
+   * the profile's protection. Params narrow nothing and choose nothing.
+   * params: {} (a `workspaceId` other than the pane's, or any `profile`, is refused)
+   */
+  router.register('browser.cdp.grant', async (params, ctx) => {
+    const method = 'browser.cdp.grant';
+    const refusal = paneScriptGrantRefusal(ctx);
+    if (refusal !== null) throw new Error(`${method}: ${refusal}`);
+    const claim = (ctx as RpcContext).workspaceClaim as { kind: 'bound'; workspaceId: string; ptyId: string };
+    const { workspaceId, ptyId } = claim;
+    // A workspaceId in params only narrows, as on every browser call: one that
+    // is not the claim's is refused there.
+    if (scopeFor(method, params, ctx) !== workspaceId) {
+      throw new Error(`${method}: the grant is for the calling pane's own workspace; it takes no other`);
+    }
+    if (params['profile'] !== undefined) {
+      throw new Error(`${method}: the Chrome profile is the calling pane's; it takes no profile`);
+    }
+    // Windows reads no peer process for a pipe connection, so a claim there
+    // is taken as sent: nothing could check that this process is the pane's.
+    if (process.platform === 'win32') throw new Error(`${method}: not available on Windows yet: wmux can't verify which process asked`);
+    const peer = await paneOfPeer(ctx as RpcContext);
+    if (!peer) throw new Error(`${method}: wmux could not trace this process to a wmux pane; run it from a wmux pane terminal`);
+    if (peer.ptyId !== ptyId || peer.workspaceId !== workspaceId) {
+      throw new Error(`${method}: this process does not run in the pane its claim names`);
+    }
+    if (backend() !== 'chrome') throw new Error(`${method}: the browser backend is not Chrome`);
+    const held = heldSurfaceWorkspaces();
+    if (held.some((w) => w === undefined || w === workspaceId)) {
+      throw new Error(`${method}: a browser tab in this workspace is paused or taken over; hand it back first`);
+    }
+    const chrome = await resolveChromeClient(method, ctx, workspaceId);
+    const launcher = chrome.client;
+    const ep = await launcher.endpoint();
+    if (!ep.piped || !launcher.relayGrant) {
+      throw new Error(`${method}: the pane's Chrome is not on the debugging pipe`);
+    }
+    const decision = protectedDecisionOf(ctx);
+    // On a protected pane a connection runs page scripts, so it needs the
+    // standing consent browser.evaluate needs there (dangerousActionConsent).
+    if (decision) {
+      const pane = protectedPanes.get(ctx as RpcContext);
+      const standing = pane ? browserPolicy?.store.grantsFor?.(pane.paneId, workspaceId, decision.profileId) : null;
+      if (!standing || !grantCovers(standing.grants, { action: 'evaluate', hosts: [] })) {
+        throw new Error(policyDeniedMessage(method, "on a protected pane this needs the user's consent for page scripts first: when wmux asks to run a script on this pane, choose Always on this pane"));
+      }
+    }
+    const identity: CallerIdentity = {
+      workspaceId,
+      profile: chrome.profile,
+      ...(decision && { protectedEpoch: decision.epoch }),
+      ptyId,
+      lane: 'pane-script',
+    };
+    if (launcher.narrowedFor?.(identity) !== true) {
+      throw new Error(`${method}: the pane's Chrome does not keep each client to its own tabs; this is opt-in for now: start wmux with WMUX_CDP_TARGET_GRANT=1`);
+    }
+    const admission = relayAdmissionRefusal(identity);
+    if (admission !== null) throw new Error(`${method}: no relay token: ${admission}; ask again`);
+    // One grant at a time per pane, so the newest token is always the one left.
+    const relayGrant = launcher.relayGrant.bind(launcher);
+    const grant = await onePaneAtATime(ptyId, async () => {
+      const minted = await relayGrant(identity);
+      withdrawIfBasisChanged(method, ctx, identity);
+      // One unspent token per pane: an earlier one this pane has not used goes.
+      revokeRelayTokens((id) => id !== identity && id.lane === 'pane-script' && id.ptyId === ptyId);
+      return minted;
+    });
+    const transport = grant.endpoint.startsWith('ws+unix:') ? 'unix socket' : 'loopback tcp';
+    console.log(`[browser.cdp.grant] pane ${ptyId} profile ${chrome.profile} protected ${decision ? 'yes' : 'no'} transport ${transport}`);
+    return {
+      endpoint: grant.endpoint,
+      headers: grant.headers,
+      proofKey: grant.proofKey,
+      ...(grant.bootstrapTargetId !== undefined && { bootstrapTargetId: grant.bootstrapTargetId }),
+      profile: chrome.profile,
+      ...(decision && { protected: true }),
     };
   });
 

@@ -21,6 +21,7 @@ import { clearClientIdentity } from './wmux-client';
 import { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { createWmuxServer } from './index';
 import { disposeReplRegistry } from './repl/replRegistry';
+import { startMemoryLog } from './memoryLog';
 
 async function main(): Promise<void> {
   // Bot mode: the token is read once from the hand-off file named in argv
@@ -42,6 +43,7 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  startMemoryLog('[wmux-mcp]');
 
   // Clean up Playwright connection when transport closes. Also drop the
   // declared plugin identity so any trailing RPC traffic goes out

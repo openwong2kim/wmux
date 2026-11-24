@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { OutputInterpreter } from '../OutputInterpreter';
 import { loadNativeTerminalCore } from '../../shared/nativeTerminalCore';
-vi.mock('../../shared/nativeTerminalCore', () => ({loadNativeTerminalCore:vi.fn(() => {throw new Error('old module');}),reportNativeFallback:vi.fn()}));
+vi.mock('../../shared/nativeTerminalCore', async (importOriginal) => ({...await importOriginal<typeof import('../../shared/nativeTerminalCore')>(),loadNativeTerminalCore:vi.fn(() => {throw new Error('old module');}),reportNativeFallback:vi.fn()}));
 
 describe('output interpreter selection', () => {
   it('does not load native code for Node PTYs', () => {

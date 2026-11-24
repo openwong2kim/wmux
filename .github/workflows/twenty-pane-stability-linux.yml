@@ -1,0 +1,114 @@
+name: Twenty-pane stability (Linux)
+
+# The twenty-pane stability run on Linux (docs/performance/twenty-panes.md):
+# one packaged build, then scripts/twenty-pane-stability.mjs under Xvfb. The
+# run must complete on the Rust terminal core (scripts/twenty-pane-ab-check.mjs);
+# its output directory is uploaded. This was the node vs rust engine A/B until
+# the Node engine was removed. Started by hand: at the default 120 minutes it
+# takes about 2.5 hours.
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: Minutes the run lasts after its setup (1 to 140)
+        type: number
+        required: true
+        default: 120
+
+permissions:
+  contents: read
+
+jobs:
+  ab:
+    name: Twenty-pane stability (ubuntu-22.04)
+    runs-on: ubuntu-22.04
+    # A run of at most 140 minutes, its setup and teardown, and the build.
+    timeout-minutes: 200
+    env:
+      MINUTES: ${{ inputs.minutes }}
+      APP: out/wmux-linux-x64/wmux
+      OUT: out/twenty-pane-stability
+    steps:
+      - name: Check the run length
+        run: |
+          if ! [[ "$MINUTES" =~ ^[0-9]+$ ]] || (( MINUTES < 1 || MINUTES > 140 )); then
+            echo "::error::minutes must be a whole number from 1 to 140, not '$MINUTES': the run must fit the 200-minute timeout"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Use npm 11
+        run: npm install -g npm@11
+
+      # libxss1 for Electron, build-essential for node-pty, xvfb for a display;
+      # the third-party sources and the retry as in ci-cross-platform-baseline.yml.
+      - name: Install Linux dependencies
+        run: |
+          set -euo pipefail
+          apt_retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              if sudo apt-get -o Acquire::Retries=3 "$@"; then
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "apt-get $* failed (attempt ${attempt}/3); retrying after $((attempt * 15))s"
+                sleep $((attempt * 15))
+              fi
+            done
+            echo "apt-get $* failed after 3 attempts" >&2
+            return 1
+          }
+          sudo bash -c 'grep -rlE "packages\.microsoft\.com|dl\.google\.com" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r rm -f'
+          apt_retry update
+          apt_retry install -y build-essential libxss1 xvfb
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the terminal core
+        uses: ./.github/actions/terminal-core
+
+      # As the release's Linux job packages it; forge checks the copied module
+      # and runs a PTY with the packaged executable.
+      - name: Package
+        run: npm run package
+
+      # The .deb installs chrome-sandbox setuid root; give the packaged copy
+      # the same, so the app runs sandboxed as an installed one does.
+      - name: Set up the Chromium sandbox helper
+        run: |
+          sudo chown root:root out/wmux-linux-x64/chrome-sandbox
+          sudo chmod 4755 out/wmux-linux-x64/chrome-sandbox
+
+      - name: Runner
+        run: |
+          {
+            echo "## Twenty-pane stability (Linux), ${MINUTES} min"
+            echo
+            echo "\`$(nproc)\` CPUs, \`$(free -m | awk '/^Mem:/ {print $2}')\` MiB RAM, $(lsb_release -ds)"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run on rust
+        run: xvfb-run -a -s '-screen 0 1920x1080x24' node scripts/twenty-pane-stability.mjs --app "$APP" --minutes "$MINUTES" --claude 0 --engine rust --out "$OUT/ab-rust"
+
+      # Also after a failed run, to say why.
+      - name: Check the rust run
+        if: ${{ !cancelled() }}
+        run: node scripts/twenty-pane-ab-check.mjs "$OUT/ab-rust" rust
+
+      - name: Upload the runs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: twenty-pane-stability-linux
+          path: out/twenty-pane-stability/ab-rust/
+          if-no-files-found: warn
+          retention-days: 30

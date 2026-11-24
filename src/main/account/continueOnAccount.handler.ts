@@ -21,10 +21,16 @@ import { appAccountVault, holdsClaudeSignIn, paneHasVaultSignIn, type AccountVau
 import { agentRow } from '../../shared/agentIdentity';
 import { CHATV2_PROVIDER_SESSION_ID } from '../../shared/chatv2/ipc';
 import { permissionFlagFor, type PermissionMode } from '../../shared/agentResume';
+import { notePoolPaneMoved } from '../worktask/fanoutAccountPool';
 
 export type ContinuePaneResult =
   | { ok: true; newPane?: { accountId: string; command: string; cwd: string } }
-  | { ok: false; code: string };
+  /** `resumeCommand`: Claude stopped and the copy exists, but it was not
+   *  relaunched; the line that resumes the copy in the source pane's shell. */
+  | { ok: false; code: string; resumeCommand?: string };
+
+// eslint-disable-next-line no-control-regex -- the line is shown and copied, never typed for the person
+const CONTROL = /[\u0000-\u001f\u007f]/;
 
 /** Stop grace (5 s) + prompt wait (5 s) + the copy of a large transcript, with room to spare. */
 const CONTINUE_TIMEOUT_MS = 60_000;
@@ -37,6 +43,9 @@ export interface ContinuePaneDeps {
   dirOk: (dir: string) => boolean;
   connected: () => boolean;
   rpc: (method: 'session.continueOnAccount' | 'session.copyToAccountV1', params: { sessionId: string; configDir: string }) => Promise<unknown>;
+  /** The daemon moved the pane to the account in place (a fan-out task's
+   *  launch record follows: fanoutAccountPool.ts notePoolPaneMoved). */
+  movedInPlace?: (ptyId: string, accountId: string) => void;
 }
 
 export async function continuePane(
@@ -62,9 +71,19 @@ export async function continuePane(
   }
   try {
     const res = await deps.rpc(newPane ? 'session.copyToAccountV1' : 'session.continueOnAccount', { sessionId: ptyId, configDir: account.configDir }) as
-      { ok?: unknown; code?: unknown; sessionId?: unknown; cwd?: unknown; permissionMode?: unknown } | null;
-    if (res?.ok !== true) return { ok: false, code: typeof res?.code === 'string' ? res.code : 'unknown' };
-    if (!newPane) return { ok: true };
+      { ok?: unknown; code?: unknown; sessionId?: unknown; cwd?: unknown; permissionMode?: unknown; resumeCommand?: unknown } | null;
+    if (res?.ok !== true) {
+      const code = typeof res?.code === 'string' ? res.code : 'unknown';
+      const resume = res?.resumeCommand;
+      return typeof resume === 'string' && resume.length > 0 && resume.length <= 8192 && !CONTROL.test(resume)
+        ? { ok: false, code, resumeCommand: resume }
+        : { ok: false, code };
+    }
+    if (!newPane) {
+      // Only now that the daemon confirmed the move (not on its own undo).
+      try { deps.movedInPlace?.(ptyId, account.id); } catch { /* the record keeps the old account */ }
+      return { ok: true };
+    }
     if (typeof res.sessionId !== 'string' || !CHATV2_PROVIDER_SESSION_ID.test(res.sessionId) || typeof res.cwd !== 'string' || !res.cwd) {
       return { ok: false, code: 'unknown_session' };
     }
@@ -97,6 +116,7 @@ export function registerContinueOnAccountHandler(daemonClient: DaemonClient | un
       dirOk: isAccessibleDir,
       connected: () => !!daemonClient?.isConnected,
       rpc: async (method, params) => daemonClient?.rpc(method, params, { timeoutMs: CONTINUE_TIMEOUT_MS }),
+      movedInPlace: notePoolPaneMoved,
     }, args));
   return () => { ipcMain.removeHandler(IPC.ACCOUNT_CONTINUE_PANE); };
 }

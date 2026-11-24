@@ -477,6 +477,9 @@ export class StateWriter {
       // bound on its own clock instead of the exemption it used to have — see
       // PENDING_RECOVERY_TTL_HOURS for why "exempt" could not stay "immortal"
       // and why the clock is recoveryPendingSince rather than lastActivity.
+      // Held because the terminal core did not load: no TTL applies until a
+      // boot with the module recovers it (DaemonSession.holdReason).
+      if (s.state === 'suspended' && s.holdReason === 'terminal-core-missing') return true;
       if (s.state === 'suspended' && s.recoveryError) {
         const pendingSince = Date.parse(s.recoveryPendingSince ?? '');
         // No clock yet: a record written before this field existed, or one

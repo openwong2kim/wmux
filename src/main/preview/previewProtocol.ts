@@ -27,6 +27,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { IPC } from '../../shared/constants';
+import { sameFileId } from '../../shared/sameFileId';
 import {
   looksComplete,
   PREVIEW_MAX_BYTES,
@@ -99,12 +100,19 @@ interface FileStat {
   complete: boolean;
   size: number;
   mtimeMs: number;
-  dev: number;
-  ino: number;
+  dev: bigint;
+  ino: bigint;
   ctimeMs: number;
 }
 
-const MISSING: FileStat = { exists: false, complete: false, size: 0, mtimeMs: 0, dev: 0, ino: 0, ctimeMs: 0 };
+const MISSING: FileStat = { exists: false, complete: false, size: 0, mtimeMs: 0, dev: 0n, ino: 0n, ctimeMs: 0 };
+
+/** The file identity is read from a bigint stat (a 64-bit file ID does not
+ *  fit a Number); its times, as milliseconds, from the same stat. */
+function fileStatOf(st: fs.BigIntStats, complete: boolean): FileStat {
+  const ms = (ns: bigint): number => Number(ns) / 1e6;
+  return { exists: true, complete, size: Number(st.size), mtimeMs: ms(st.mtimeNs), dev: st.dev, ino: st.ino, ctimeMs: ms(st.ctimeNs) };
+}
 
 async function readTail(canonical: string, size: number): Promise<Uint8Array> {
   const length = Math.min(size, PREVIEW_TAIL_BYTES);
@@ -123,10 +131,9 @@ async function statFile(requestedPath: string): Promise<FileStat> {
   const canonical = await resolveAccessiblePath(requestedPath);
   if (!canonical) return MISSING;
   try {
-    const st = await fs.promises.stat(canonical);
+    const st = await fs.promises.stat(canonical, { bigint: true });
     if (!st.isFile()) return MISSING;
-    const complete = looksComplete(canonical, await readTail(canonical, st.size));
-    return { exists: true, complete, size: st.size, mtimeMs: st.mtimeMs, dev: st.dev, ino: st.ino, ctimeMs: st.ctimeMs };
+    return fileStatOf(st, looksComplete(canonical, await readTail(canonical, Number(st.size))));
   } catch {
     return MISSING;
   }
@@ -134,7 +141,7 @@ async function statFile(requestedPath: string): Promise<FileStat> {
 
 function sameStat(a: FileStat, b: FileStat): boolean {
   return a.exists === b.exists && a.complete === b.complete && a.size === b.size && a.mtimeMs === b.mtimeMs
-    && a.dev === b.dev && a.ino === b.ino && a.ctimeMs === b.ctimeMs;
+    && sameFileId(a, b) && a.ctimeMs === b.ctimeMs;
 }
 
 function publish(entry: Entry, stat: FileStat, complete: boolean): void {
@@ -341,9 +348,9 @@ export async function openPreview(sender: WebContents, filePath: unknown): Promi
   // A symlink is judged, and typed, by what it points at.
   const actual = previewTypeOf(canonical);
   if (actual?.kind !== requested.kind) return { ok: false, reason: 'unsupported' };
-  let st: fs.Stats;
+  let st: fs.BigIntStats;
   try {
-    st = await fs.promises.stat(canonical);
+    st = await fs.promises.stat(canonical, { bigint: true });
   } catch {
     return { ok: false, reason: 'missing' };
   }
@@ -351,7 +358,7 @@ export async function openPreview(sender: WebContents, filePath: unknown): Promi
   if (st.size > PREVIEW_MAX_BYTES[requested.kind]) return { ok: false, reason: 'too-large' };
   let complete = true;
   try {
-    complete = looksComplete(canonical, await readTail(canonical, st.size));
+    complete = looksComplete(canonical, await readTail(canonical, Number(st.size)));
   } catch {
     return { ok: false, reason: 'missing' };
   }
@@ -366,6 +373,7 @@ export async function openPreview(sender: WebContents, filePath: unknown): Promi
   if (!dirWatches.has(dir) && dirWatches.size >= MAX_WATCHED_DIRS) return { ok: false, reason: 'limit' };
 
   const token = randomBytes(16).toString('hex');
+  const last = fileStatOf(st, complete);
   const entry: Entry = {
     token,
     requestedPath: filePath,
@@ -374,8 +382,8 @@ export async function openPreview(sender: WebContents, filePath: unknown): Promi
     kind: actual.kind,
     mime: actual.mime,
     sender,
-    state: { exists: true, complete, size: st.size, mtimeMs: st.mtimeMs, version: 1 },
-    last: { exists: true, complete, size: st.size, mtimeMs: st.mtimeMs, dev: st.dev, ino: st.ino, ctimeMs: st.ctimeMs },
+    state: { exists: true, complete, size: last.size, mtimeMs: last.mtimeMs, version: 1 },
+    last,
     incompleteSince: complete ? null : Date.now(),
     settling: false,
   };
@@ -431,17 +439,17 @@ export async function servePreview(request: Request): Promise<Response> {
   }
   let size: number;
   try {
-    const st = await handle.stat();
+    const st = await handle.stat({ bigint: true });
     // A folder above the file may have been swapped between the check and the
     // open: the handle must be the very file a fresh check lands on.
     const again = await resolveAccessiblePath(entry.requestedPath);
-    const atPath = again === canonical ? await fs.promises.stat(again) : null;
+    const atPath = again === canonical ? await fs.promises.stat(again, { bigint: true }) : null;
     if (!st.isFile() || st.size > PREVIEW_MAX_BYTES[entry.kind]
-      || !atPath || atPath.dev !== st.dev || atPath.ino !== st.ino) {
+      || !atPath || !sameFileId(atPath, st)) {
       await handle.close();
       return notFound();
     }
-    size = st.size;
+    size = Number(st.size);
   } catch {
     await handle.close().catch(() => undefined);
     return notFound();

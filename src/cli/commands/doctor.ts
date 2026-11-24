@@ -607,13 +607,20 @@ function downConsequences(kinds: ReadonlySet<string>): string[] {
 }
 
 /** Why the broker is on, and the way back, for an app that says what it read. */
-function brokerRule(flag: McpSessionsSummary['broker']['flag']): string | undefined {
+function brokerRule(flag: McpSessionsSummary['broker']['flag'], setting?: McpSessionsSummary['broker']['setting'], flagValue?: string): string | undefined {
+  if (flag === 'unset' && setting === 'on') {
+    return 'On because Settings > Claude Code > Shared MCP process is On. Off there turns it off, from the next wmux start.';
+  }
   if (flag === 'on') {
-    return 'On because WMUX_MCP_BROKER=1 is set for the app. To turn it off, remove it (or set it to 0) and restart wmux: '
+    return `On because WMUX_MCP_BROKER=${flagValue ?? '1'} is set for the app. To turn it off, set it to 0 and restart wmux: `
       + 'agents then run their own MCP server, and the entries the app registers go back to the full bundle at that start.';
   }
   if (flag === 'unset') {
-    return 'On by default on this platform. WMUX_MCP_BROKER=0 for the app turns it off, from the next wmux start.';
+    // An app that sends no `setting` has no such Settings row.
+    return setting === undefined
+      ? 'On by default on this platform. WMUX_MCP_BROKER=0 for the app turns it off, from the next wmux start.'
+      : 'On by default on this platform. Settings > Claude Code > Shared MCP process: Off turns it off '
+        + '(or WMUX_MCP_BROKER=0 for the app), from the next wmux start.';
   }
   return undefined;
 }
@@ -625,18 +632,29 @@ function brokerRule(flag: McpSessionsSummary['broker']['flag']): string | undefi
  */
 function brokerLine(b: McpSessionsSummary['broker'], kinds: ReadonlySet<string>): CheckLine {
   if (!b.enabled) {
-    if (b.flag === 'off') return { label: 'broker', value: 'off (WMUX_MCP_BROKER=0)', verdict: 'OK' };
+    if (b.flag === 'off') return { label: 'broker', value: `off (WMUX_MCP_BROKER=${b.flagValue ?? '0'})`, verdict: 'OK' };
+    if (b.flag === 'unset' && b.setting === 'off') {
+      return {
+        label: 'broker',
+        value: 'off (Settings)',
+        verdict: 'OK',
+        hint: 'Settings > Claude Code > Shared MCP process turns it on, from the next wmux start.',
+      };
+    }
     if (b.flag === 'unset') {
       return {
         label: 'broker',
         value: 'off (the default)',
         verdict: 'OK',
-        hint: "WMUX_MCP_BROKER=1 in the app's environment turns it on, from the next wmux start.",
+        // An app that sends no `setting` has no such Settings row.
+        hint: b.setting === undefined
+          ? "WMUX_MCP_BROKER=1 in the app's environment turns it on, from the next wmux start."
+          : "Settings > Claude Code > Shared MCP process, or WMUX_MCP_BROKER=1 in the app's environment, turns it on, from the next wmux start.",
       };
     }
     return { label: 'broker', value: 'off', verdict: 'OK' };
   }
-  const rule = brokerRule(b.flag);
+  const rule = brokerRule(b.flag, b.setting, b.flagValue);
   if (b.running) {
     return {
       label: 'broker',
@@ -662,6 +680,14 @@ function brokerLine(b: McpSessionsSummary['broker'], kinds: ReadonlySet<string>)
     'crash-loop': {
       value: `not running: it kept failing (crash exits ${b.crashExits}, spawn failures ${b.spawnFailures}), off until wmux restarts`,
       next: lastCrash(b),
+    },
+    'path-occupied': {
+      value: 'not running: something that is not a socket sits at its socket path, off until wmux restarts',
+      next: 'Move it away from the broker socket path (the app log names it), then restart wmux.',
+    },
+    'peer-unavailable': {
+      value: 'not running: it could not confirm which process connects to it on this system, off until wmux restarts',
+      next: 'Agents use their own MCP server. The app log has the self-check result.',
     },
     'script-missing': { value: 'not running: this build has no broker script', next: 'It will not start in this session.' },
     stopped: { value: 'not running: stopped by the app' },

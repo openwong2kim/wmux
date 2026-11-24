@@ -4,8 +4,9 @@ import * as crypto from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import type { RpcMethod, RpcResponse } from '../shared/rpc';
 import { getPipeName, getAuthTokenPath, getTcpPortPath } from '../shared/constants';
-import { getConnectionScope } from './connectionScope';
+import { getConnectionScope, scopeOrRefuse } from './connectionScope';
 import { brokerStampFor } from './brokerStamp';
+import { LineFramer } from './lineFramer';
 
 /**
  * Default per-call RPC deadline. Every tool gets this unless it asks for
@@ -55,7 +56,7 @@ export function brokerStampForTarget(
 export function setClientIdentity(name?: string, version?: string): void {
   const trimmedName = typeof name === 'string' ? name.trim() : '';
   const trimmedVersion = typeof version === 'string' ? version.trim() : '';
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the client identity');
   if (scope) {
     scope.rpcIdentity.clientName = trimmedName.length > 0 ? trimmedName : undefined;
     scope.rpcIdentity.clientVersion = trimmedVersion.length > 0 ? trimmedVersion : undefined;
@@ -88,7 +89,7 @@ export function clearClientIdentity(): void {
 }
 
 export function getClientIdentity(): { name?: string; version?: string } {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the client identity');
   if (scope) {
     return { name: scope.rpcIdentity.clientName, version: scope.rpcIdentity.clientVersion };
   }
@@ -110,7 +111,7 @@ let WORKSPACE_TOKEN: string | undefined;
 export function setWorkspaceToken(token: string | undefined): void {
   const trimmed = typeof token === 'string' ? token.trim() : '';
   const value = trimmed.length > 0 ? trimmed : undefined;
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the workspace claim');
   if (scope) {
     scope.rpcIdentity.workspaceToken = value;
     return;
@@ -119,7 +120,7 @@ export function setWorkspaceToken(token: string | undefined): void {
 }
 
 export function getWorkspaceToken(): string | undefined {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the workspace claim');
   if (scope) return scope.rpcIdentity.workspaceToken;
   return WORKSPACE_TOKEN;
 }
@@ -141,7 +142,7 @@ const callerPtyIdSource = new AsyncLocalStorage<() => string | undefined>();
 export function setCallerPtyId(ptyId: string | undefined): void {
   const trimmed = typeof ptyId === 'string' ? ptyId.trim() : '';
   const value = trimmed.length > 0 ? trimmed : undefined;
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the caller pane');
   if (scope) {
     scope.rpcIdentity.callerPtyId = value;
     return;
@@ -154,7 +155,7 @@ export function getCallerPtyId(): string | undefined {
   const source = callerPtyIdSource.getStore();
   const fromCall = source ? source() : undefined;
   if (fromCall !== undefined) return fromCall.length > 0 ? fromCall : undefined;
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the caller pane');
   if (scope) return scope.rpcIdentity.callerPtyId;
   return CALLER_PTY_ID;
 }
@@ -203,12 +204,15 @@ const IDENTITY_FREE_BROWSER_METHODS: ReadonlySet<string> = new Set(['browser.nav
  *   `a2a.broadcast`: `a2aCallerWorkspace` (a2a.rpc.ts `registerAsCaller`),
  *   before the handler runs;
  * - `computer.*`: `callerAgent` (computer.rpc.ts `wrap`), before the service is
- *   called (a method that takes no identity never reads the claim).
+ *   called (a method that takes no identity never reads the claim);
+ * - `a2a.remote.answer`, `a2a.remote.approve`: `remoteTaskCaller`
+ *   (remoteTaskCaller.ts), before anything reaches the daemon.
  * Methods that never read the claim (`channel.*`, `ledger.*`, …) are never
  * refused for one, so they are not here.
  */
 const CLAIM_GATED_METHODS: ReadonlySet<string> = new Set([
   'a2a.task.query', 'a2a.task.update', 'a2a.task.send', 'a2a.task.cancel', 'a2a.broadcast',
+  'a2a.remote.answer', 'a2a.remote.approve',
 ]);
 
 /** Whether main refuses `method` for a dead claim before it acts (see above). */
@@ -217,9 +221,14 @@ function isClaimGated(method: string): boolean {
   return method.startsWith('computer.') || CLAIM_GATED_METHODS.has(method);
 }
 
-/** A result that is main's refusal: an object whose `error` is its text (a2a handlers answer this way). */
+/**
+ * A result that is main's refusal: an object whose `error` is its text (a2a
+ * handlers answer this way), or `{ code, message }` (`a2a.remote.*`).
+ */
 function isRefusalResult(outcome: unknown): boolean {
-  return !!outcome && typeof outcome === 'object' && !Array.isArray(outcome) && typeof (outcome as { error?: unknown }).error === 'string';
+  if (!outcome || typeof outcome !== 'object' || Array.isArray(outcome)) return false;
+  const error = (outcome as { error?: unknown }).error;
+  return typeof error === 'string' || (!!error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string');
 }
 
 /** Hand a claim-gated RPC's outcome to the current stale-identity handler (exported for tests). */
@@ -251,7 +260,7 @@ function envelopeWorkspaceToken(connectionToken: string | undefined): string | u
 let COMMANDER_TOKEN: string | undefined;
 
 export function setCommanderRole(token: string): void {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the commander role');
   if (scope) {
     scope.rpcIdentity.commanderToken = token;
     return;
@@ -282,7 +291,7 @@ function currentEnvelopeIdentity(): {
   commanderToken?: string;
   workspaceToken?: string;
 } {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('an outbound call');
   if (scope) return scope.rpcIdentity;
   return {
     clientName: CLIENT_NAME,
@@ -343,7 +352,7 @@ function attemptRpc(
     const request = JSON.stringify(envelope) + '\n';
 
     const socket = typeof target === 'string' ? net.connect(target) : net.connect(target);
-    let buffer = '';
+    const framer = new LineFramer();
     let settled = false;
 
     const timer = setTimeout(() => {
@@ -359,11 +368,7 @@ function attemptRpc(
     });
 
     socket.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString('utf8');
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
+      for (const line of framer.push(chunk)) {
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {

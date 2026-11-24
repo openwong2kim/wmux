@@ -23,6 +23,7 @@ vi.mock('electron', () => ({
   },
 }));
 
+vi.mock('../../../shared/terminalPty', async (importOriginal) => (await import('../../../test-utils/ptyTransportStub')).routeSpawnToNodePtyMock(importOriginal));
 vi.mock('node-pty', async () => {
   const { EventEmitter } = await import('node:events');
   class P extends EventEmitter {

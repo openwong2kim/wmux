@@ -57,7 +57,7 @@ export function heldForCredentials(
   session: Pick<DaemonSession, 'id' | 'cmd' | 'exec' | 'supervision'>,
   holds: ReadonlySet<string>,
 ): boolean {
-  return holds.has(session.id) && !recoversInBackground(session) && !isWslShell(session.cmd);
+  return holds.has(session.id) && !recoversInBackground({ exec: session.exec, supervision: session.supervision }) && !isWslShell(session.cmd);
 }
 
 /**

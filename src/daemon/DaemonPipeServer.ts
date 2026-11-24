@@ -6,7 +6,8 @@ import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../shared/secur
 import { getDaemonAuthTokenPath } from '../shared/constants';
 import { NOT_FIRST_PARTY, PANE_DELIVERY_LOCK_METHODS, isAppOnlyDaemonMethod } from '../shared/daemonFirstParty';
 import { A2A_SPAWN_RPC } from '../shared/a2aSpawn';
-import { A2A_STATUS_LABELS_RPC } from '../shared/a2aRemote';
+import { A2A_ANSWER_RPC, A2A_APPROVALS_RPC, A2A_STATUS_LABELS_RPC } from '../shared/a2aRemote';
+import { isTerminalCoreMissing, TERMINAL_CORE_MISSING } from '../shared/terminalPty';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
@@ -165,6 +166,10 @@ export class DaemonPipeServer {
     A2A_SPAWN_RPC.policySet,
     A2A_STATUS_LABELS_RPC.get,
     A2A_STATUS_LABELS_RPC.set,
+    A2A_ANSWER_RPC.get,
+    A2A_ANSWER_RPC.set,
+    A2A_APPROVALS_RPC.get,
+    A2A_APPROVALS_RPC.set,
   ]);
   // Set by the first `markFirstParty`, or at boot by `markAppHost` (the app's
   // launcher started this daemon, or the app attached on this install before),
@@ -1152,7 +1157,9 @@ export class DaemonPipeServer {
       return { id: request.id, ok: true, result };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return { id: request.id, ok: false, error: message };
+      // A missing terminal core says so by code too: main and the CLI branch
+      // on it rather than on the wording.
+      return { id: request.id, ok: false, error: message, ...(isTerminalCoreMissing(err) ? { code: TERMINAL_CORE_MISSING } : {}) };
     }
   }
 }

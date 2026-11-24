@@ -106,7 +106,7 @@ const auth = (grant: RelayGrant) => `Authorization: ${grant.headers.Authorizatio
 describe('CdpPipeRelay', () => {
   it.skipIf(!posix)('serves CDP on a Unix socket in a private dir, to a client with a token', async () => {
     const { route } = await setup();
-    const grant = await route.grant({ workspaceId: 'ws-a' });
+    const grant = await route.grant({ lane: 'engine', workspaceId: 'ws-a' });
     expect(grant.endpoint).toMatch(new RegExp(`^ws\\+unix:///tmp/wmux-rr-[A-Za-z0-9]{6}/${RELAY_DIR_PREFIX}[A-Za-z0-9]{6}/r\\.sock:${RELAY_PATH}$`));
     expect(grant.headers.Authorization).toMatch(/^Bearer [A-Za-z0-9_-]{43}$/);
     const socketPath = (placeOf(grant.endpoint) as { path: string }).path;
@@ -119,7 +119,7 @@ describe('CdpPipeRelay', () => {
 
   it('falls back to loopback TCP with no usable root, and still needs the token', async () => {
     const { route } = await setup({ roots: [], windowsPipe: false });
-    const grant = await route.grant({});
+    const grant = await route.grant({ lane: 'engine' });
     expect(grant.endpoint).toMatch(new RegExp(`^ws://127\\.0\\.0\\.1:\\d+${RELAY_PATH}$`));
     const ws = await dial(grant);
     expect(await request(ws, { id: 1, method: 'Browser.getVersion' })).toEqual({ id: 1, result: { echo: 'Browser.getVersion' } });
@@ -137,11 +137,11 @@ describe('CdpPipeRelay', () => {
     const good = path.join(base, 'good');
     fs.mkdirSync(good, { mode: 0o700 });
     const { route } = await setup({ roots: [nonAscii, long, open, good] });
-    expect((placeOf((await route.grant({})).endpoint) as { path: string }).path.startsWith(`${good}/`)).toBe(true);
+    expect((placeOf((await route.grant({ lane: 'engine' })).endpoint) as { path: string }).path.startsWith(`${good}/`)).toBe(true);
     for (const dir of [nonAscii, long, open]) expect(fs.readdirSync(dir)).toEqual([]);
 
     const tcp = await setup({ roots: [nonAscii, long, open] });
-    expect((await tcp.route.grant({})).endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
+    expect((await tcp.route.grant({ lane: 'engine' })).endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
   });
 
   it.skipIf(!posix)('says once, naming nothing, when no socket root works and it serves on loopback TCP; says nothing when the socket works', async () => {
@@ -151,11 +151,11 @@ describe('CdpPipeRelay', () => {
     fs.mkdirSync(open);
     fs.chmodSync(open, 0o777);
     const tcp = await setup({ roots: [open] });
-    const grant = await tcp.route.grant({});
+    const grant = await tcp.route.grant({ lane: 'engine' });
     expect(grant.endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
     // The grant still works, and a second one says nothing more.
     (await dial(grant)).close();
-    await tcp.route.grant({});
+    await tcp.route.grant({ lane: 'engine' });
     expect(said().filter((line) => line === RELAY_TCP_FALLBACK_LINE)).toHaveLength(1);
     for (const line of said()) {
       expect(line).not.toContain(new URL(grant.endpoint).port);
@@ -165,7 +165,7 @@ describe('CdpPipeRelay', () => {
 
     warn.mockClear();
     const unix = await setup();
-    expect((await unix.route.grant({})).endpoint.startsWith('ws+unix://')).toBe(true);
+    expect((await unix.route.grant({ lane: 'engine' })).endpoint.startsWith('ws+unix://')).toBe(true);
     expect(said()).not.toContain(RELAY_TCP_FALLBACK_LINE);
   });
 
@@ -191,7 +191,7 @@ describe('CdpPipeRelay', () => {
     // The private socket (or, on Windows, the pipe), then loopback TCP.
     for (const opts of posix ? [{}, { roots: [] }] : [{}, { windowsPipe: false }]) {
       const { route } = await setup(opts);
-      const grant = await route.grant({});
+      const grant = await route.grant({ lane: 'engine' });
       const ep = grant.endpoint;
       expect(await rawStatus(ep, `GET ${RELAY_PATH} HTTP/1.1\r\nHost: ${hostOf(ep)}\r\n${auth(grant)}\r\n`)).toBe('HTTP/1.1 404 Not Found');
       expect(await rawStatus(ep, upgrade(ep, { path: `${RELAY_PATH}x`, extra: auth(grant) }))).toBe('HTTP/1.1 404 Not Found');
@@ -217,9 +217,9 @@ describe('CdpPipeRelay', () => {
   it('caps connections per Chrome; a refusal for room leaves the token usable', async () => {
     const { route } = await setup({ maxClientsPerChrome: 2 });
     // All three handed out while there was room: the third races in after the cap filled.
-    const first = await route.grant({});
-    const second = await route.grant({});
-    const third = await route.grant({});
+    const first = await route.grant({ lane: 'engine' });
+    const second = await route.grant({ lane: 'engine' });
+    const third = await route.grant({ lane: 'engine' });
     const a = await dial(first);
     const b = await dial(second);
     await expect(dial(third)).rejects.toThrow('HTTP 503');
@@ -230,11 +230,11 @@ describe('CdpPipeRelay', () => {
 
   it('a full Chrome hands out no token, and says why', async () => {
     const { route } = await setup({ maxClientsPerChrome: 2 });
-    const a = await dial(await route.grant({}));
-    const b = await dial(await route.grant({}));
-    await expect(route.grant({})).rejects.toThrow(/already has 2 automation connections, the most it takes/);
+    const a = await dial(await route.grant({ lane: 'engine' }));
+    const b = await dial(await route.grant({ lane: 'engine' }));
+    await expect(route.grant({ lane: 'engine' })).rejects.toThrow(/already has 2 automation connections, the most it takes/);
     a.close();
-    await vi.waitFor(async () => { (await dial(await route.grant({}))).close(); }, { timeout: 5_000 });
+    await vi.waitFor(async () => { (await dial(await route.grant({ lane: 'engine' }))).close(); }, { timeout: 5_000 });
     b.close();
   });
 
@@ -254,22 +254,22 @@ describe('CdpPipeRelay', () => {
     muxes.push(muxOne, muxTwo);
     const routeOne = relay.serve(muxOne);
     const routeTwo = relay.serve(muxTwo);
-    const toOne = await dial(await routeOne.grant({ workspaceId: 'ws-a', profile: 'p1' }));
-    const toTwo = await dial(await routeTwo.grant({ workspaceId: 'ws-b', profile: 'p2' }));
+    const toOne = await dial(await routeOne.grant({ lane: 'engine', workspaceId: 'ws-a', profile: 'p1' }));
+    const toTwo = await dial(await routeTwo.grant({ lane: 'engine', workspaceId: 'ws-b', profile: 'p2' }));
     await request(toOne, { id: 1, method: 'Test.one' });
     await request(toTwo, { id: 1, method: 'Test.two' });
     expect(one.received.map((c) => c.method)).toContain('Test.one');
     expect(one.received.map((c) => c.method)).not.toContain('Test.two');
     expect(two.received.map((c) => c.method)).toContain('Test.two');
-    expect(seen.find((c) => c.kind === 'external')?.identity).toEqual({ workspaceId: 'ws-a', profile: 'p1' });
+    expect(seen.find((c) => c.kind === 'external')?.identity).toEqual({ lane: 'engine', workspaceId: 'ws-a', profile: 'p1' });
     toOne.close();
     toTwo.close();
   });
 
   it('a client cannot drive another client\'s session by naming its id', async () => {
     const { route } = await setup();
-    const a = await dial(await route.grant({ workspaceId: 'ws-a' }));
-    const b = await dial(await route.grant({ workspaceId: 'ws-b' }));
+    const a = await dial(await route.grant({ lane: 'engine', workspaceId: 'ws-a' }));
+    const b = await dial(await route.grant({ lane: 'engine', workspaceId: 'ws-b' }));
     const attached = new Promise<string>((resolve) => a.on('message', (data) => {
       const frame = JSON.parse(data.toString()) as { method?: string; params?: { sessionId?: string } };
       if (frame.method === 'Target.attachedToTarget' && frame.params?.sessionId) resolve(frame.params.sessionId);
@@ -286,24 +286,40 @@ describe('CdpPipeRelay', () => {
     b.close();
   });
 
+  it('a screencast frame passed on as Chrome wrote it reaches the client as a text message, byte for byte', async () => {
+    const { route, browser } = await setup();
+    const a = await dial(await route.grant({ lane: 'engine', workspaceId: 'ws-a' }));
+    const page = ((await request(a, { id: 1, method: 'Target.attachToTarget', params: { targetId: 'T0', flatten: true } })).result as { sessionId: string }).sessionId;
+    const frame = `{"method":"Page.screencastFrame","params":{"data":"${'QUJD'.repeat(64 * 1024)}","metadata":{"timestamp":1.5},"sessionId":7},"sessionId":"${page}"}`;
+    const got = new Promise<{ data: Buffer; isBinary: boolean }>((resolve) => a.on('message', (data, isBinary) => {
+      if (!isBinary && !data.toString().startsWith('{"method":"Page.screencastFrame"')) return;
+      resolve({ data: data as Buffer, isBinary });
+    }));
+    browser.emit(frame);
+    const { data, isBinary } = await got;
+    expect(isBinary).toBe(false);
+    expect(data.equals(Buffer.from(frame))).toBe(true);
+    a.close();
+  });
+
   it('when a Chrome goes, its clients are disconnected and its unused tokens refused', async () => {
     const { route } = await setup();
-    const ws = await dial(await route.grant({}));
-    const unused = await route.grant({});
+    const ws = await dial(await route.grant({ lane: 'engine' }));
+    const unused = await route.grant({ lane: 'engine' });
     const closed = new Promise((resolve) => ws.once('close', resolve));
     route.close();
     await closed;
     await expect(dial(unused)).rejects.toThrow('HTTP 401');
-    await expect(route.grant({})).rejects.toThrow('that Chrome is gone');
+    await expect(route.grant({ lane: 'engine' })).rejects.toThrow('that Chrome is gone');
   });
 
   it.skipIf(!posix)('binds afresh when its socket is removed, keeping the connections it has; one bind for concurrent grants', async () => {
     const { route } = await setup();
-    const first = await route.grant({});
+    const first = await route.grant({ lane: 'engine' });
     const ws = await dial(first);
     const socketPath = (placeOf(first.endpoint) as { path: string }).path;
     fs.rmSync(socketPath);
-    const [g1, g2] = await Promise.all([route.grant({}), route.grant({})]);
+    const [g1, g2] = await Promise.all([route.grant({ lane: 'engine' }), route.grant({ lane: 'engine' })]);
     expect(g1.endpoint).not.toBe(first.endpoint);
     expect(g2.endpoint).toBe(g1.endpoint);
     (await dial(g1)).close();
@@ -317,25 +333,25 @@ describe('CdpPipeRelay', () => {
 
   it('offers no per-message compression', async () => {
     const { route } = await setup();
-    const ws = await dial(await route.grant({}), { perMessageDeflate: true });
+    const ws = await dial(await route.grant({ lane: 'engine' }), { perMessageDeflate: true });
     expect(ws.extensions).toBe('');
     ws.close();
   });
 
   it('an upgrade that fails its handshake gives its place back, and spends its token', async () => {
     const { route } = await setup({ maxClientsPerChrome: 1 });
-    const grant = await route.grant({});
+    const grant = await route.grant({ lane: 'engine' });
     // No Sec-WebSocket-Key: refused by the handshake itself.
     const bad = `GET ${RELAY_PATH} HTTP/1.1\r\nHost: ${hostOf(grant.endpoint)}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n${auth(grant)}\r\n`;
     expect(await rawStatus(grant.endpoint, bad)).toBe('HTTP/1.1 400 Bad Request');
     await expect(dial(grant)).rejects.toThrow('HTTP 401');
-    await vi.waitFor(async () => { (await dial(await route.grant({}))).close(); }, { timeout: 5_000 });
+    await vi.waitFor(async () => { (await dial(await route.grant({ lane: 'engine' }))).close(); }, { timeout: 5_000 });
   });
 
   it('a server error after it is listening is logged, not thrown, and a client sending garbage is dropped', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { relay, route } = await setup();
-    const grant = await route.grant({});
+    const grant = await route.grant({ lane: 'engine' });
     const server = (relay as unknown as { listener: { server: import('node:http').Server } }).listener.server;
     expect(() => server.emit('error', new Error('EMFILE'))).not.toThrow();
     expect(warn).toHaveBeenCalledWith('[CdpPipeRelay] server error:', 'EMFILE');
@@ -345,7 +361,7 @@ describe('CdpPipeRelay', () => {
 
   it('drops a connection whose headers never finish', async () => {
     const { route } = await setup({ headerTimeoutMs: 200 });
-    const grant = await route.grant({});
+    const grant = await route.grant({ lane: 'engine' });
     const started = Date.now();
     expect(await rawStatus(grant.endpoint, 'GET / HTTP/1.1\r\nHost: x\r\n')).toMatch(/closed|408/);
     expect(Date.now() - started).toBeLessThan(3_000);
@@ -353,7 +369,7 @@ describe('CdpPipeRelay', () => {
 
   it('disconnects a client that stops reading once too much waits for it', async () => {
     const { browser, route } = await setup({ maxBufferedBytes: 1024 });
-    const ws = await dial(await route.grant({}));
+    const ws = await dial(await route.grant({ lane: 'engine' }));
     await request(ws, { id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, flatten: true } });
     const closed = new Promise<number>((resolve) => ws.once('close', (code) => resolve(code)));
     const socket = (ws as unknown as { _socket: net.Socket })._socket;
@@ -367,8 +383,8 @@ describe('CdpPipeRelay', () => {
 
   it('holds one Chrome\'s clients to a shared budget: past it, the one with the most waiting is disconnected', async () => {
     const { browser, route } = await setup({ maxBufferedBytes: 1024 * 1024 * 1024, maxBufferedBytesPerChrome: 1024 });
-    const reading = await dial(await route.grant({}));
-    const ws = await dial(await route.grant({}));
+    const reading = await dial(await route.grant({ lane: 'engine' }));
+    const ws = await dial(await route.grant({ lane: 'engine' }));
     await request(ws, { id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, flatten: true } });
     const closed = new Promise<number>((resolve) => ws.once('close', (code) => resolve(code)));
     const socket = (ws as unknown as { _socket: net.Socket })._socket;
@@ -385,7 +401,7 @@ describe('CdpPipeRelay', () => {
 
   it('close() disconnects every client, stops listening and removes its socket dir', async () => {
     const { relay, route } = await setup();
-    const grant = await route.grant({});
+    const grant = await route.grant({ lane: 'engine' });
     const ws = await dial(grant);
     const closed = new Promise((resolve) => ws.once('close', resolve));
     await relay.close();
@@ -399,8 +415,8 @@ describe('CdpPipeRelay', () => {
     const { chromium } = await import('playwright-core');
     const { route } = await setup({ maxClientsPerChrome: 1 });
     // Handed out before the one place is taken: its connect then meets a full Chrome.
-    const first = await route.grant({});
-    const grant = await route.grant({});
+    const first = await route.grant({ lane: 'engine' });
+    const grant = await route.grant({ lane: 'engine' });
     const held = await dial(first);
     const token = grant.headers.Authorization.slice('Bearer '.length);
     const refused = async (headers: Record<string, string>) => {
@@ -422,7 +438,7 @@ describe('CdpPipeRelay', () => {
   it('never writes its endpoint or a token to the console', async () => {
     const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => undefined));
     const { relay, route } = await setup();
-    const grant = await route.grant({});
+    const grant = await route.grant({ lane: 'engine' });
     const ws = await dial(grant);
     await request(ws, { id: 1, method: 'Browser.getVersion' });
     await rawStatus(grant.endpoint, upgrade(grant.endpoint, { extra: 'Authorization: Bearer forged\r\n' }));
@@ -484,7 +500,7 @@ describe.skipIf(!posix)('CdpPipeRelay: leftover socket dirs', () => {
   it('a second instance starting on the same root leaves the first one\'s socket and connections alone, and sweeps a dead one', async () => {
     const root = testRoot();
     const a = await setup({ roots: [root] });
-    const grantA = await a.route.grant({});
+    const grantA = await a.route.grant({ lane: 'engine' });
     const wsA = await dial(grantA);
     const dirA = path.dirname((placeOf(grantA.endpoint) as { path: string }).path);
     // As if A were another process that is still running.
@@ -492,13 +508,13 @@ describe.skipIf(!posix)('CdpPipeRelay: leftover socket dirs', () => {
     const dead = leftover(root, 'dead01', await deadPid());
 
     const b = await setup({ roots: [root] });
-    const grantB = await b.route.grant({});
+    const grantB = await b.route.grant({ lane: 'engine' });
     expect(grantB.endpoint).not.toBe(grantA.endpoint);
     await b.relay.sweeping;
     expect(fs.existsSync(dead)).toBe(false);
     expect(verifyRelaySocket({ dir: dirA, socketPath: path.join(dirA, 'r.sock') })).not.toBeNull();
     expect(await request(wsA, { id: 3, method: 'Browser.getVersion' })).toEqual({ id: 3, result: { echo: 'Browser.getVersion' } });
-    (await dial(await a.route.grant({}))).close();
+    (await dial(await a.route.grant({ lane: 'engine' }))).close();
     (await dial(grantB)).close();
     wsA.close();
   });
@@ -507,11 +523,11 @@ describe.skipIf(!posix)('CdpPipeRelay: leftover socket dirs', () => {
 describe('CdpPipeRelay: tokens and listeners', () => {
   it('a token handed out before a rebind is refused after it, on the new listener too', async () => {
     const { relay, route } = await setup();
-    const old = await route.grant({});
+    const old = await route.grant({ lane: 'engine' });
     // The listener goes away (its socket or pipe gone): the next grant binds afresh.
     const listener = (relay as unknown as { listener: { server: import('node:http').Server } }).listener;
     await new Promise<void>((resolve) => listener.server.close(() => resolve()));
-    const fresh = await route.grant({});
+    const fresh = await route.grant({ lane: 'engine' });
     await expect(dial({ endpoint: fresh.endpoint, headers: old.headers })).rejects.toThrow('HTTP 401');
     (await dial(fresh)).close();
   });
@@ -531,7 +547,7 @@ describe.runIf(process.platform === 'win32')('CdpPipeRelay on a Windows named pi
 
   it('serves CDP on a pipe closed to everyone but this user and SYSTEM, to a client with a token', async () => {
     const { route } = await setup();
-    const grant = await route.grant({ workspaceId: 'ws-a' });
+    const grant = await route.grant({ lane: 'engine', workspaceId: 'ws-a' });
     expect(grant.endpoint).toMatch(new RegExp(`^ws\\+unix:\\\\\\\\\\.\\\\pipe\\\\${RELAY_PIPE_PREFIX}[0-9a-f]{32}:${RELAY_PATH}$`));
     const sec = security();
     expect(isOwnerOnlyDacl(parseDacl(sec.daclOf(pipeOf(grant))), sec.userSpellings)).toBe(true);
@@ -551,7 +567,7 @@ describe.runIf(process.platform === 'win32')('CdpPipeRelay on a Windows named pi
         pipeSecurity: () => ({ security: { ...real, narrow } }),
         beforeNarrow: (pipePath) => tried.push(pipePath),
       });
-      const grant = await route.grant({});
+      const grant = await route.grant({ lane: 'engine' });
       expect(grant.endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:\d+\//);
       (await dial(grant)).close();
       const lines = warn.mock.calls.map((call) => call.map(String).join(' '));
@@ -571,7 +587,7 @@ describe.runIf(process.platform === 'win32')('CdpPipeRelay on a Windows named pi
       pipeSecurity: () => ({ security: { ...real, narrow: () => { throw new Error('koffi decode'); } } }),
       beforeNarrow: (pipePath) => tried.push(pipePath),
     });
-    expect((await route.grant({})).endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
+    expect((await route.grant({ lane: 'engine' })).endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
     expect(warn.mock.calls.map((call) => call.map(String).join(' '))).toContain(`${RELAY_PIPE_FALLBACK_LINE} (throw)`);
     expect(tried).toHaveLength(3);
     for (const pipePath of tried) expect(await gone(pipePath)).toBe('ENOENT');
@@ -589,7 +605,7 @@ describe.runIf(process.platform === 'win32')('CdpPipeRelay on a Windows named pi
     // rebind() would retire a listener bound after a close anyway; the pipe is
     // not even attached (no upgrade handler on it for a moment).
     const attach = vi.spyOn(relay as unknown as { attach: (...args: unknown[]) => unknown }, 'attach');
-    const granting = route.grant({}).then(() => 'granted', (err: Error) => err.message);
+    const granting = route.grant({ lane: 'engine' }).then(() => 'granted', (err: Error) => err.message);
     await vi.waitFor(() => expect(close).toBeDefined(), { timeout: 2_000 });
     await close;
     expect(await granting).toMatch(/closed|gone/);
@@ -606,7 +622,7 @@ describe.runIf(process.platform === 'win32')('CdpPipeRelay on a Windows named pi
       pipeSecurity: () => ({ security: { ...real, narrow: () => ({ ok: false, busy: true, reason: 'open 231' }) } }),
       beforeNarrow: (pipePath) => tried.push(pipePath),
     });
-    const granting = route.grant({}).then(() => 'granted', (err: Error) => err.message);
+    const granting = route.grant({ lane: 'engine' }).then(() => 'granted', (err: Error) => err.message);
     await vi.waitFor(() => expect(tried).toHaveLength(1), { timeout: 2_000 });
     await relay.close();
     expect(await granting).toMatch(/closed|gone/);
@@ -618,7 +634,7 @@ describe.runIf(process.platform === 'win32')('CdpPipeRelay on a Windows named pi
   it('serves on loopback TCP when this process runs as another user than the session\'s', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { route } = await setup({ pipeSecurity: () => ({ unavailable: 'different-user' }) });
-    expect((await route.grant({})).endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
+    expect((await route.grant({ lane: 'engine' })).endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
     expect(warn.mock.calls.map((call) => call.map(String).join(' '))).toContain(`${RELAY_PIPE_FALLBACK_LINE} (different-user)`);
   });
 
@@ -635,7 +651,7 @@ describe.runIf(process.platform === 'win32')('CdpPipeRelay on a Windows named pi
       },
     });
     try {
-      const grant = await route.grant({});
+      const grant = await route.grant({ lane: 'engine' });
       expect(held.length).toBeGreaterThan(0);
       if (grant.endpoint.startsWith('ws+unix:')) {
         expect(isOwnerOnlyDacl(parseDacl(sec.daclOf(pipeOf(grant))), sec.userSpellings)).toBe(true);
@@ -660,7 +676,7 @@ describe.runIf(process.platform === 'win32')('CdpPipeRelay on a Windows named pi
       },
     });
     try {
-      await route.grant({});
+      await route.grant({ lane: 'engine' });
       expect(held).toHaveLength(1);
       const server = (relay as unknown as { listener: { server: import('node:http').Server } }).listener.server;
       const count = () => new Promise<number>((resolve) => server.getConnections((_err, n) => resolve(n)));
@@ -687,7 +703,7 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
 
   it('answers HMAC(key, label || nonce) on the root, once per connection, and never forwards it', async () => {
     const { route, browser } = await setup(opts);
-    const grant = await route.grant({});
+    const grant = await route.grant({ lane: 'engine' });
     expect(keyOf(grant)).toHaveLength(32);
     resetCdpPipeCounters();
     const ws = await dial(grant);
@@ -707,8 +723,8 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
 
   it('answers on a session the client owns, with that sessionId, and on none it does not own', async () => {
     const { route, browser } = await setup(opts);
-    const grantA = await route.grant({});
-    const grantB = await route.grant({});
+    const grantA = await route.grant({ lane: 'engine' });
+    const grantB = await route.grant({ lane: 'engine' });
     const a = await dial(grantA);
     const b = await dial(grantB);
     const attached = await request(a, { id: 1, method: 'Target.attachToBrowserTarget' });
@@ -727,10 +743,10 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
 
   it('a nonce under 32 bytes, or not base64url, is refused and spends the ask', async () => {
     const { route } = await setup(opts);
-    const ws = await dial(await route.grant({}));
+    const ws = await dial(await route.grant({ lane: 'engine' }));
     expect((await ask(ws, 1, randomBytes(31))).error).toMatchObject({ code: -32602 });
     expect((await ask(ws, 2, randomBytes(32))).error).toMatchObject({ code: -32000 });
-    const other = await dial(await route.grant({}));
+    const other = await dial(await route.grant({ lane: 'engine' }));
     expect((await request(other, { id: 1, method: RELAY_PROOF_METHOD, params: { nonce: '+'.repeat(64) } })).error).toMatchObject({ code: -32602 });
     expect((await request(other, { id: 2, method: RELAY_PROOF_METHOD })).error).toMatchObject({ code: -32000 });
     ws.close();
@@ -739,7 +755,7 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
 
   it('another Wmux.* method is unknown, and not forwarded either', async () => {
     const { route, browser } = await setup(opts);
-    const ws = await dial(await route.grant({}));
+    const ws = await dial(await route.grant({ lane: 'engine' }));
     expect((await request(ws, { id: 1, method: 'Wmux.somethingElse', params: {} })).error).toMatchObject({ code: -32601 });
     expect(wmuxFramesAt(browser)).toEqual([]);
     ws.close();
@@ -747,10 +763,10 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
 
   it('two clients on one grant: the second is refused, and a new grant proves with its own key', async () => {
     const { route } = await setup(opts);
-    const first = await route.grant({});
+    const first = await route.grant({ lane: 'engine' });
     const ws = await dial(first);
     await expect(dial(first)).rejects.toThrow('HTTP 401');
-    const second = await route.grant({});
+    const second = await route.grant({ lane: 'engine' });
     expect(second.proofKey).not.toBe(first.proofKey);
     const again = await dial(second);
     const nonce = randomBytes(32);
@@ -763,7 +779,7 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
 
   it('a connection holds its key for a bounded time only', async () => {
     const { route } = await setup({ ...opts, proofKeyTtlMs: 50 });
-    const ws = await dial(await route.grant({}));
+    const ws = await dial(await route.grant({ lane: 'engine' }));
     await deliberateSleep(200, "the key's lifetime running out is what is tested");
     expect((await ask(ws, 1, randomBytes(32))).error).toMatchObject({ code: -32000 });
     ws.close();
@@ -771,7 +787,7 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
 
   it('a retired listener\'s grants and keys are gone before its name or port is let go', async () => {
     const { relay, route } = await setup(opts);
-    const old = await route.grant({});
+    const old = await route.grant({ lane: 'engine' });
     type Inner = { listener: { server: import('node:http').Server }; tokens: { size: number; entries: Array<{ binding: { key: Buffer } }> } };
     const inner = relay as unknown as Inner & { retire: (l: Inner['listener'], all: boolean) => Promise<void> };
     const listener = inner.listener;
@@ -788,21 +804,21 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
     expect(unusedAtClose).toBe(0);
     expect(keyAtClose).toEqual(Buffer.alloc(32));
     // The next grant binds afresh; the old one is good nowhere.
-    const fresh = await route.grant({});
+    const fresh = await route.grant({ lane: 'engine' });
     await expect(dial({ endpoint: fresh.endpoint, headers: old.headers })).rejects.toThrow('HTTP 401');
     (await dial(fresh)).close();
   });
 
   it('a grant waiting on a listener that a rebind retires meanwhile is minted for the new one', async () => {
     const { relay, route } = await setup(opts);
-    await route.grant({});
+    await route.grant({ lane: 'engine' });
     const inner = relay as unknown as { listener: { server: import('node:http').Server } };
     const old = inner.listener;
     // The first grant finds the listener intact; before it mints, the listener
     // stops and a second grant starts the rebind.
-    const first = route.grant({});
+    const first = route.grant({ lane: 'engine' });
     old.server.close();
-    const second = await route.grant({});
+    const second = await route.grant({ lane: 'engine' });
     const late = await first;
     expect(inner.listener).not.toBe(old);
     expect(late.endpoint).toBe(second.endpoint);
@@ -814,7 +830,7 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
 
   it('every unused key is wiped when its token goes, by expiry too', async () => {
     const { relay, route } = await setup(opts);
-    await route.grant({});
+    await route.grant({ lane: 'engine' });
     const key = (relay as unknown as { tokens: { entries: Array<{ binding: { key: Buffer } }> } }).tokens.entries[0].binding.key;
     expect(key.equals(Buffer.alloc(32))).toBe(false);
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000);
@@ -826,7 +842,7 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
     const { route } = await setup(opts);
     for (const proven of [true, false]) {
       const onSettled = vi.fn();
-      const ws = await dial(await route.grant({}, { onSettled }));
+      const ws = await dial(await route.grant({ lane: 'engine' }, { onSettled }));
       expect(await request(ws, { id: 1, method: 'Browser.getVersion' })).toEqual({ id: 1, result: { echo: 'Browser.getVersion' } });
       if (proven) await ask(ws, 2, randomBytes(32));
       // The connection is still in use: whatever it attached through stays.
@@ -842,7 +858,7 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
     // Nobody presents this one: the grant's own timer drops it once expired.
     const timers = vi.spyOn(globalThis, 'setTimeout');
     const expired = vi.fn();
-    await route.grant({}, { onSettled: expired });
+    await route.grant({ lane: 'engine' }, { onSettled: expired });
     const expiry = timers.mock.calls.find(([, ms]) => ms === RELAY_TOKEN_TTL_MS);
     timers.mockRestore();
     if (!expiry) throw new Error('the grant armed no expiry timer');
@@ -852,14 +868,14 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
     expect(expired).toHaveBeenCalledTimes(1);
 
     const gone = vi.fn();
-    await route.grant({}, { onSettled: gone });
+    await route.grant({ lane: 'engine' }, { onSettled: gone });
     route.close();
     expect(gone).toHaveBeenCalledTimes(1);
   });
 
   it('a listener that stops on its own takes its grants with it', async () => {
     const { relay, route } = await setup(opts);
-    await route.grant({});
+    await route.grant({ lane: 'engine' });
     const inner = relay as unknown as { listener: { server: import('node:http').Server }; tokens: { size: number } };
     expect(inner.tokens.size).toBe(1);
     await new Promise<void>((resolve) => inner.listener.server.close(() => resolve()));
@@ -889,8 +905,8 @@ describe('CdpPipeRelay: signs of life for the stall watch', () => {
   it('pings a client with a target waiting on it, and its WebSocket\'s pong keeps the target waiting for it', async () => {
     resetCdpPipeCounters();
     const { browser, route } = await setup({}, { stallMs: 100 });
-    const a = await dial(await route.grant({}));
-    const b = await dial(await route.grant({}));
+    const a = await dial(await route.grant({ lane: 'engine' }));
+    const b = await dial(await route.grant({ lane: 'engine' }));
     let pings = 0;
     a.on('ping', () => { pings++; });
     await request(a, { id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true } });
@@ -901,5 +917,71 @@ describe('CdpPipeRelay: signs of life for the stall watch', () => {
     expect(cdpPipeCounters().watchdog?.['restarted-by-pong']).toBeGreaterThanOrEqual(2);
     a.close();
     b.close();
+  });
+});
+
+describe('CdpPipeRelay.closeClients', () => {
+  const closed = (ws: WebSocket) => new Promise<void>((resolve) => {
+    if (ws.readyState === WebSocket.CLOSED) resolve();
+    else ws.once('close', () => resolve());
+  });
+
+  it('ends the clients it matches on every Chrome, at once for Chrome, and leaves the others', async () => {
+    const { relay, route, browser } = await setup();
+    const other = new FakeBrowser();
+    const otherMux = new CdpPipeMux(other.fromMux, other.toMux);
+    muxes.push(otherMux);
+    const otherRoute = relay.serve(otherMux);
+    const pane = { lane: 'pane-script', workspaceId: 'ws-a', ptyId: 'pty-1' } as const;
+    const a = await dial(await route.grant(pane));
+    const a2 = await dial(await otherRoute.grant(pane));
+    const neighbour = await dial(await route.grant({ lane: 'pane-script', workspaceId: 'ws-a', ptyId: 'pty-2' }));
+    const engine = await dial(await route.grant({ lane: 'engine', workspaceId: 'ws-a' }));
+    await request(a, { id: 1, method: 'Test.before' });
+    await request(a2, { id: 1, method: 'Test.before' });
+    const ended = Promise.all([closed(a), closed(a2)]);
+
+    expect(relay.closeClients((id) => id.lane === 'pane-script' && id.ptyId === 'pty-1', 'pane closed')).toBe(2);
+    // Sent after the close: on the same socket ahead of the client's close
+    // answer, so the relay has read it by the time the client sees the close.
+    a.send(JSON.stringify({ id: 2, method: 'Test.after' }));
+    a2.send(JSON.stringify({ id: 2, method: 'Test.after' }));
+    await ended;
+    expect(browser.received.map((c) => c.method)).not.toContain('Test.after');
+    expect(other.received.map((c) => c.method)).not.toContain('Test.after');
+    await vi.waitFor(() => expect([route.clients.size, otherRoute.clients.size]).toEqual([2, 0]), { timeout: 5_000 });
+
+    for (const kept of [neighbour, engine]) {
+      expect((await request(kept, { id: 1, method: 'Test.still' })).result).toEqual({ echo: 'Test.still' });
+    }
+    expect(relay.closeClients(() => false, 'nothing')).toBe(0);
+    neighbour.close();
+    engine.close();
+  });
+
+  it('refuses the unused tokens it matches, and leaves the rest usable', async () => {
+    const { relay, route } = await setup();
+    const gone = await route.grant({ lane: 'pane-script', workspaceId: 'ws-a', ptyId: 'pty-1' });
+    const kept = await route.grant({ lane: 'pane-script', workspaceId: 'ws-a', ptyId: 'pty-2' });
+    expect(relay.closeClients((id) => id.ptyId === 'pty-1', 'pane claim changed')).toBe(0);
+    await expect(dial(gone)).rejects.toThrow('HTTP 401');
+    (await dial(kept)).close();
+  });
+
+  it('logs one line with the reason and the counts, never a token or an endpoint, and nothing when nothing matched', async () => {
+    const { relay, route } = await setup();
+    const grant = await route.grant({ lane: 'engine', workspaceId: 'ws-a' });
+    const unused = await route.grant({ lane: 'engine', workspaceId: 'ws-a' });
+    const ws = await dial(grant);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(relay.closeClients((id) => id.workspaceId === 'ws-b', 'workspace closed')).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+    const ended = closed(ws);
+    expect(relay.closeClients((id) => id.workspaceId === 'ws-a', 'workspace closed')).toBe(1);
+    await ended;
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = String(warn.mock.calls[0]?.[0]);
+    expect(line).toBe('[CdpPipeRelay] workspace closed: ended 1 client(s), revoked 1 unused token(s)');
+    for (const secret of [grant.headers.Authorization, unused.headers.Authorization, grant.endpoint]) expect(line).not.toContain(secret);
   });
 });

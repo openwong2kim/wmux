@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { createFanoutCallerSubmit, type FanoutCallerSubmitPorts } from '../fanoutCallerSubmit';
 
 const LINE = '[wmux] fan-out task 6k7g7szw updated — channel_mission_list';
-const REQ = { ptyId: 'pty-c', ownerWorkspaceId: 'ws-owner', incarnationId: 'inc-1', text: LINE };
+const TASK = 'wtask-mwtn17jz-6k7g7szw';
+const REQ = { ptyId: 'pty-c', ownerWorkspaceId: 'ws-owner', incarnationId: 'inc-1', text: LINE, tasks: [TASK] };
 
 function make(over: Partial<FanoutCallerSubmitPorts> = {}) {
   const deliver = vi.fn(async () => ({ result: 'sent' as const, pasted: true }));
@@ -31,6 +32,24 @@ describe('createFanoutCallerSubmit', () => {
       pasted: false,
     });
     expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it('refuses a line naming a task it was not told the id of', async () => {
+    const { api, deliver } = make();
+    expect(await api.submit({ ...REQ, tasks: undefined })).toEqual({ result: 'error', pasted: false });
+    expect(await api.submit({ ...REQ, tasks: ['wtask-mwtn17jz-aaaaaaaa'] })).toEqual({ result: 'error', pasted: false });
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it('answers task_closed, writing nothing, for a task whose row was closed since its pointer came', async () => {
+    const other = 'wtask-mwtn17jz-a1b2c3d4';
+    const line = '[wmux] fan-out task a1b2c3d4 failed; task 6k7g7szw updated — channel_mission_list';
+    const taskClosed = vi.fn((id: string, owner: string) => owner === 'ws-owner' && id === TASK);
+    const { api, deliver } = make({ taskClosed });
+    expect(await api.submit({ ...REQ, text: line, tasks: [other, TASK] })).toEqual({ result: 'task_closed', pasted: false, closed: [TASK] });
+    expect(deliver).not.toHaveBeenCalled();
+    // The rest goes as usual.
+    expect(await api.submit({ ...REQ, text: '[wmux] fan-out task a1b2c3d4 failed — channel_mission_list', tasks: [other] })).toEqual({ result: 'sent', pasted: true });
   });
 
   it('re-checks the gate, the owner and the session right before the write', async () => {

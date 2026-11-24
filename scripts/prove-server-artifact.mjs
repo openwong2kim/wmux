@@ -12,9 +12,10 @@
 //   4. checks the daemon reports rust as requested and effective;
 //   5. opens a shell session in the daemon and reads its prompt back from the
 //      session's screen text, then ends the session and stops the daemon;
-//   6. waits for that daemon to exit, saves `{"engine": "node"}` the way a
-//      server user switches back, starts a new daemon and checks it reports
-//      node as requested and effective.
+//   6. waits for that daemon to exit, saves `{"engine": "node"}` the way an
+//      older server's docs had a user switch back, starts a new daemon and
+//      checks it still runs rust (the Node engine is removed; the saved
+//      choice is ignored) and leaves that file in place.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -139,7 +140,8 @@ async function waitForExit(pid, pipeName, timeoutMs = 15_000) {
   }
 }
 
-// The switch back to Node that the server docs give: a saved choice wins over the default.
+// An older server's switch back to Node: the saved choice is ignored now (there
+// is no other engine), and the file is left alone.
 await waitForExit(started.pid, started.pipeName);
 fs.mkdirSync(wmuxDir, { recursive: true });
 fs.writeFileSync(path.join(wmuxDir, 'terminal-core.json'), `${JSON.stringify({ engine: 'node' })}\n`);
@@ -148,10 +150,13 @@ if (!restarted.spawned) throw new Error('`wmux daemon start` reused a running da
 try {
   const token = fs.readFileSync(path.join(wmuxDir, 'daemon-auth-token'), 'utf8').trim();
   const { terminalCore } = await rpc(restarted.pipeName, token, 'daemon.ping', { includeTerminalCore: true });
-  if (terminalCore?.requested !== 'node' || terminalCore.effective !== 'node' || terminalCore.environmentOverride !== false) {
-    throw new Error(`the daemon does not follow a saved node choice: ${JSON.stringify(terminalCore)}`);
+  // The restarted daemon loads the core again: the first load proves nothing here.
+  if (terminalCore?.requested !== 'rust' || terminalCore.effective !== 'rust'
+    || terminalCore.rustAvailable !== true || terminalCore.environmentOverride !== false) {
+    throw new Error(`a saved node choice moved the daemon off the rust engine: ${JSON.stringify(terminalCore)}`);
   }
-  console.log(JSON.stringify({ serverArtifactSavedChoice: 'ok', terminalCore }));
+  if (!fs.existsSync(path.join(wmuxDir, 'terminal-core.json'))) throw new Error('the daemon deleted the saved engine choice');
+  console.log(JSON.stringify({ serverArtifactSavedChoiceIgnored: 'ok', terminalCore }));
 } finally {
   try { wmux('daemon', 'stop'); } catch (err) { console.error(`wmux daemon stop: ${err.message}`); process.exitCode = 1; }
 }

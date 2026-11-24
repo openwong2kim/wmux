@@ -1,9 +1,11 @@
 import { registerTerminalCoreHandlers } from './handlers/terminalCore.handler';
+import type { BrokerDownReason } from '../../shared/mcpSessions';
 import { registerLabsHandlers } from './handlers/labs.handler';
 import { registerQuickCommandHandlers } from './handlers/quickCommand.handler';
 import { registerUsageLimitHandlers } from '../usageLimit/usageLimit.handler';
 import { registerExternalSessionsHandlers } from '../externalSessions/externalSessions.handler';
 import { registerAgentAuthHandlers } from '../agentAuth/agentAuthLost';
+import { registerRemoteApprovalNotifications } from '../a2aRemote/approvalNotification';
 import { registerDictationHandlers } from '../dictation/dictation.handler';
 import { registerContinueOnAccountHandler } from '../account/continueOnAccount.handler';
 import { registerWorkspaceSettle } from '../workspace/settle/workspaceSettleHost';
@@ -36,6 +38,7 @@ import { registerFsHandlers } from './handlers/fs.handler';
 import { registerToolbarHandlers } from './handlers/toolbar.handler';
 import { registerDiffHandlers } from './handlers/diff.handler';
 import { registerWorktreeHandlers } from './handlers/worktree.handler';
+import { registerSiblingCollisionHandlers } from './handlers/siblingCollision.handler';
 import { registerGithubHandlers } from './handlers/github.handler';
 import { registerPrReviewHandlers } from './handlers/prReview.handler';
 import { registerWorkLinkHandlers } from './handlers/workLink.handler';
@@ -81,7 +84,7 @@ import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 import { markRendererNotificationListenerReady } from '../notification/rendererNotificationReadiness';
 import { setMutedNotificationCategories } from '../notification/mutedCategories';
-import { setDefaultWslDistro } from '../pty/defaultWslDistro';
+import { setDefaultWslDistro, enumerateWslDistros } from '../pty/defaultWslDistro';
 import { setSecretGuardEnabled } from '../git/secretGuardSetting';
 import { updateUnreadBadge } from '../tray';
 import { eventBus } from '../events/EventBus';
@@ -178,6 +181,8 @@ export interface RegisterHandlersOptions {
   mcpRegistrar?: McpRegistrar;
   /** Lazy accessor for the live pipe-server auth token, used by mcp:reregister. */
   getMcpAuthToken?: () => string | null;
+  /** Why the MCP broker is not running (BrokerSupervisor), for Settings. */
+  mcpBrokerDownReason?: () => BrokerDownReason | null;
   /**
    * Renderer-initiated RPC entrypoint. Wired in main/index to the live
    * `RpcRouter` so the in-renderer `__wmuxEventsPoll` /
@@ -205,6 +210,8 @@ export function registerAllHandlers(
   const cleanupUsageLimit = registerUsageLimitHandlers(daemonClient, getWindow);
   const cleanupExternalSessions = registerExternalSessionsHandlers(daemonClient, getWindow);
   const cleanupAgentAuth = registerAgentAuthHandlers(daemonClient, getWindow);
+  // Another PC's allow or deny typed into a pane here: a notification (never the command).
+  const cleanupRemoteApprovalNotices = registerRemoteApprovalNotifications(daemonClient, getWindow);
   const cleanupDictation = registerDictationHandlers(getWindow);
   const cleanupContinueOnAccount = registerContinueOnAccountHandler(daemonClient);
   const cleanupWorkspaceSettle = registerWorkspaceSettle(getWindow, { daemonClient, ptyManager });
@@ -212,6 +219,8 @@ export function registerAllHandlers(
   // main/index.ts) and intentionally NOT in this swap cycle. See the
   // import-block note above for the race rationale.
   const cleanupShell = registerShellHandlers();
+  // Warm the WSL distro cache once so the first + menu answers from it.
+  if (process.platform === 'win32') void enumerateWslDistros();
   const cleanupTerminalCore = registerTerminalCoreHandlers(daemonClient);
   const cleanupLabs = registerLabsHandlers(daemonClient);
   const cleanupFonts = registerFontHandlers();
@@ -242,6 +251,7 @@ export function registerAllHandlers(
   const cleanupDiff = registerDiffHandlers();
   // Deck Git 탭 — worktree list/add/remove. git 전용(데몬 무관) — 항상 등록.
   const cleanupWorktree = registerWorktreeHandlers();
+  const cleanupSiblingCollision = registerSiblingCollisionHandlers(getWindow);
   // Deck Git 탭 PR 섹션 — gh CLI 기반(미설치/미인증은 fail-closed 안내).
   const cleanupGithub = registerGithubHandlers();
   // PR review and CI on the Git page's detail pane.
@@ -267,7 +277,7 @@ export function registerAllHandlers(
   // Owner approvals of bots' requests: decided only from the main window.
   const cleanupApprovals = registerApprovalIpcHandlers(getWindow);
   const cleanupMcp = options.mcpRegistrar
-    ? registerMcpHandlers(options.mcpRegistrar, options.getMcpAuthToken ?? (() => null))
+    ? registerMcpHandlers(options.mcpRegistrar, options.getMcpAuthToken ?? (() => null), options.mcpBrokerDownReason)
     : null;
   const cleanupTokenUsageQuota = registerTokenUsageQuotaHandlers();
   const cleanupTokenUsageSurface = registerTokenUsageSurfaceHandlers();
@@ -620,6 +630,7 @@ export function registerAllHandlers(
     cleanupUsageLimit();
     cleanupExternalSessions();
     cleanupAgentAuth();
+    cleanupRemoteApprovalNotices();
     cleanupDictation();
     cleanupContinueOnAccount();
     cleanupWorkspaceSettle();
@@ -635,6 +646,7 @@ export function registerAllHandlers(
     cleanupToolbar();
     cleanupDiff();
     cleanupWorktree();
+    cleanupSiblingCollision();
     cleanupGithub();
     cleanupPrReview();
     cleanupWorkLinks();

@@ -44,6 +44,24 @@ describe('mcp.sessions.summary', () => {
     expect((res as { result: { broker: { flag?: string; enabled: boolean } } }).result.broker).toMatchObject({ enabled: false, flag: 'unset' });
   });
 
+  it('carries the WMUX_MCP_BROKER value as set, and leaves it out while unset', async () => {
+    const set = new RpcRouter();
+    registerMcpSessionsRpc(set, { brokerEnabled: () => false, brokerFlag: () => 'off', brokerFlagValue: () => 'false', brokerStatus: () => broker, tracker: new McpSessionTracker({ now: () => 0 }) });
+    const a = await set.dispatch({ id: '1', method: 'mcp.sessions.summary', params: {} });
+    expect((a as { result: { broker: { flagValue?: string } } }).result.broker.flagValue).toBe('false');
+    const unset = new RpcRouter();
+    registerMcpSessionsRpc(unset, { brokerEnabled: () => false, brokerFlag: () => 'unset', brokerFlagValue: () => undefined, brokerStatus: () => broker, tracker: new McpSessionTracker({ now: () => 0 }) });
+    const b = await unset.dispatch({ id: '1', method: 'mcp.sessions.summary', params: {} });
+    expect((b as { result: { broker: object } }).result.broker).not.toHaveProperty('flagValue');
+  });
+
+  it('carries the Settings choice the app read at start, when given', async () => {
+    const router = new RpcRouter();
+    registerMcpSessionsRpc(router, { brokerEnabled: () => true, brokerFlag: () => 'unset', brokerSetting: () => 'on', brokerStatus: () => broker, tracker: new McpSessionTracker({ now: () => 0 }) });
+    const res = await router.dispatch({ id: '1', method: 'mcp.sessions.summary', params: {} });
+    expect((res as { result: { broker: { setting?: string } } }).result.broker).toMatchObject({ setting: 'on' });
+  });
+
   it('is an internal method the CLI tier reaches', () => {
     expect(METHOD_CAPABILITY['mcp.sessions.summary']).toEqual({ capability: 'wmux.internal' });
     expect(WMUX_CLI_METHODS.has('mcp.sessions.summary')).toBe(true);

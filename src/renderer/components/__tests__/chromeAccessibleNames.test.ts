@@ -43,7 +43,7 @@ const CHROME_FILES = [
   'Sidebar/RemoteWorkspaceItem.tsx',
   'Sidebar/AttachRemoteModal.tsx',
   'Pane/SurfaceTabs.tsx',
-  'StatusBar/PhoneConnectWizard.tsx',
+  'StatusBar/PhonePairDialog.tsx',
 ];
 
 /**

@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import { ShellDetector } from '../../../shared/ShellDetector';
-import { enumerateWslDistros } from '../../pty/defaultWslDistro';
+import { enumerateWslDistros, getKnownWslDistros } from '../../pty/defaultWslDistro';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { isAutostartEnabled, setAutostartEnabled } from '../../autostart';
@@ -95,8 +95,20 @@ export function registerShellHandlers(): () => void {
   // total ([] off-Windows / on any failure — the picker simply hides); the
   // same enumeration refreshes the cache pty.create checks the choice against.
   ipcMain.removeHandler(IPC.SHELL_WSL_DISTROS);
+  // Cached answer is immediate (wsl.exe takes noticeable time, and the + menu
+  // waits on this); the list is refreshed in the background for the next open.
+  // Only a cold cache awaits the enumeration.
+  let refreshing = false;
   ipcMain.handle(IPC.SHELL_WSL_DISTROS, wrapHandler(IPC.SHELL_WSL_DISTROS, (_event: Electron.IpcMainInvokeEvent) => {
-    return enumerateWslDistros();
+    const known = getKnownWslDistros();
+    if (!known) return enumerateWslDistros();
+    if (!refreshing) {
+      refreshing = true;
+      void enumerateWslDistros()
+        .catch(() => { /* a failed refresh keeps the cached list */ })
+        .finally(() => { refreshing = false; });
+    }
+    return [...known];
   }));
 
   ipcMain.removeHandler(IPC.SHELL_OPEN_EXTERNAL);

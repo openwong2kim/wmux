@@ -10,15 +10,17 @@ import { headlessTreeId } from '../../../daemon/a2aRemote/headlessStarter';
 import { branchFor } from '../../a2aRemote/spawnWorktree';
 import { SPAWN_REQUEST_KEY_RE, type A2aSpawnAskInput, type A2aSpawnOutgoingSummary } from '../../../shared/a2aSpawn';
 import { isRemoteTask } from '../../../shared/ledger';
+import { applyTaskQueryView } from '../../../shared/a2aTaskQueryView';
 import { TaskCloseService } from '../TaskCloseService';
 import { installFanoutCallerLedgerNotify } from '../../deck/fanoutCallerNotify';
+import { factFromLedgerTransition } from '../../factory/factIngest';
 import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 import { registerLedgerRpc } from '../../pipe/handlers/ledger.rpc';
 import type { RpcContext } from '../../../shared/rpc';
 import {
   POOL_HOLD_MAX_MS, POOL_REFUSING_MS, pickPoolHost, poolCandidates, poolHoldOverride, poolRootHash,
   REMOTE_ASK_GRACE_MS, REMOTE_FOLLOW_INTERVAL_MS, REMOTE_GONE_GRACE_MS, type RemoteTaskView, branchOnPc, remoteTaskReconciler, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal, remoteKeyRows,
-  startRemoteFanout, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
+  startRemoteFanout, onRemoteWaitInPlace, remoteReplyWaitText, remoteTaskViewOf, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
 } from '../remoteFanout';
 
 const BOX = '0f1e2d3c-4b5a-4968-8776-655443322110';
@@ -155,6 +157,12 @@ describe('startRemoteFanout', () => {
     const rows = deps.ledger.list().filter(isRemoteTask);
     expect(rows).toHaveLength(8);
     expect(rows[0].taskWorkspaceId).toBe(`remote:${rows[0].remote?.spawnId}`);
+  });
+
+  it('hands the daemon the caller\'s own pty with each ask, so the replies have their anchor', async () => {
+    const f = fakeDaemon();
+    await startRemoteFanout(request(2, { ptyId: 'pty-caller' }), depsOf(f.daemon));
+    expect(f.asks.map((a) => [a.from.paneId, a.fromPtyId])).toEqual([['pane-1', 'pty-caller'], ['pane-1', 'pty-caller']]);
   });
 
   it('keeps the request digest on each row, found from the key alone', async () => {
@@ -538,6 +546,140 @@ describe('a started task follows its A2A task', () => {
     expect(s.row(0).remote?.waiting).toBeUndefined();
   });
 
+  it('a question that shows while the row already waits on a reply is told once, though no status moves', async () => {
+    const s = await started(1);
+    const told: string[] = [];
+    const off = onRemoteWaitInPlace((e) => told.push(`${e.id}@${e.rev}:${e.status}`));
+    try {
+      s.view(0, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      expect(s.row(0).status).toBe('input_required');
+      expect(told).toEqual([]);
+      s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'permission' } });
+      await reconcileRemoteTasks(s.deps);
+      expect(s.row(0)).toMatchObject({ status: 'input_required', remote: { waiting: { on: 'question' } } });
+      expect(told).toEqual([`${s.row(0).id}@${s.row(0).rev}:input_required`]);
+      // Another kind of question on the same showing is not told again.
+      s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'plan' } });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toHaveLength(1);
+      // A row a brain sent back with its own text: the question is told, and the brain's text kept.
+      s.view(0, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      const brain = { kind: 'brain' as const, workspaceId: 'ws-owner' };
+      expect((await s.deps.ledger.update({ id: s.row(0).id, status: 'working', actor: brain, expectedRev: s.row(0).rev })).ok).toBe(true);
+      expect((await s.deps.ledger.update({ id: s.row(0).id, status: 'input_required', actor: brain, expectedRev: s.row(0).rev, summary: 'waiting on the API owner' })).ok).toBe(true);
+      expect(s.row(0).summary).toBe('waiting on the API owner');
+      s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'permission' } });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toHaveLength(2);
+      expect(s.row(0).summary).toBe('waiting on the API owner');
+    } finally {
+      off();
+    }
+  });
+
+  it('a reply held here (not written to the pane) is its own reason: told on the move, and told when it turns up in place', async () => {
+    const s = await started(2);
+    const told: string[] = [];
+    const off = onRemoteWaitInPlace((e) => told.push(e.id));
+    try {
+      s.view(0, { state: 'input-required', replyHeld: true });
+      await reconcileRemoteTasks(s.deps);
+      expect(s.row(0)).toMatchObject({ status: 'input_required', summary: expect.stringContaining('its reply is held here') });
+      expect(s.row(0).summary).not.toBe(remoteReplyWaitText(s.row(0).remote!));
+      // Waiting on a reply that reached the pane, then the box's agent stops with no reply, then a reply is held: each told once, in place.
+      s.view(1, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toEqual([]);
+      s.view(1, { state: 'working', status: { kind: 'waiting-input', since: at } });
+      await reconcileRemoteTasks(s.deps);
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toEqual([s.row(1).id]);
+      s.view(1, { state: 'input-required', replyHeld: true });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toEqual([s.row(1).id, s.row(1).id]);
+      // Retried and delivered: back to the plain reply wait, told nothing.
+      s.view(1, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toHaveLength(2);
+    } finally {
+      off();
+    }
+  });
+
+  it('a new reason that could not be written in place is not told', async () => {
+    const s = await started(1);
+    const told: string[] = [];
+    const off = onRemoteWaitInPlace((e) => told.push(e.id));
+    try {
+      s.view(0, { state: 'input-required' });
+      await reconcileRemoteTasks(s.deps);
+      // The write with the new text finds the row moved meanwhile: it lands without the text.
+      const ledger = s.deps.ledger as TaskLedger;
+      const real = ledger.updateRemote.bind(ledger);
+      let stale = true;
+      const spy = vi.spyOn(ledger, 'updateRemote').mockImplementation((id, patch, text, expect) => {
+        if (text && stale) {
+          stale = false;
+          return real(id, patch);
+        }
+        return real(id, patch, text, expect);
+      });
+      s.view(0, { state: 'working', status: { kind: 'waiting-input', since: at } });
+      await reconcileRemoteTasks(s.deps);
+      expect(stale).toBe(false);
+      expect(told).toEqual([]);
+      // The next pass writes it, and tells it once.
+      await reconcileRemoteTasks(s.deps);
+      await reconcileRemoteTasks(s.deps);
+      expect(told).toEqual([s.row(0).id]);
+      spy.mockRestore();
+    } finally {
+      off();
+    }
+  });
+
+  it('the worktree facts that PC sends go on the row and into the poll; a status without them (an older PC) leaves none', async () => {
+    const s = await started(2);
+    const progress = { head: 'abc1234def56', committedAt: '2026-11-24T01:00:00.000Z', changedFiles: 3 };
+    s.view(0, { state: 'working', status: { kind: 'working', since: at, progress } });
+    s.view(1, { state: 'working', status: { kind: 'working', since: at } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).remote?.progress).toEqual(progress);
+    expect(s.row(0).status).toBe('working');
+    expect(s.row(1).remote).not.toHaveProperty('progress');
+    // The same facts again write nothing.
+    const rev = s.row(0).rev;
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).rev).toBe(rev);
+    const poll = await startRemoteFanout(request(2), s.deps);
+    if ('error' in poll) throw new Error(poll.error);
+    expect(poll.tasks[0].progress).toEqual(progress);
+    expect(poll.tasks[1]).not.toHaveProperty('progress');
+    // Kept through a turn end that moves the row, and replaced by newer facts.
+    s.view(0, { state: 'input-required', status: { kind: 'waiting-input', since: at, progress: { ...progress, changedFiles: 4 } } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'input_required', remote: { progress: { changedFiles: 4 } } });
+    // `gone` never carries them: the last ones stay on the row through the end that follows.
+    s.view(0, { state: 'working', status: { kind: 'gone', since: at } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).remote?.progress).toMatchObject({ changedFiles: 4 });
+    // A status without them (that PC could not read the worktree) clears them.
+    s.view(0, { state: 'input-required', status: { kind: 'waiting-input', since: at } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).remote).not.toHaveProperty('progress');
+  });
+
+  it('reads the facts through the daemon\'s real state view, strictly: a malformed progress is dropped', () => {
+    const task = (progress: unknown) => ({ id: 't', status: { state: 'working' }, metadata: { remote: { v: 1, direction: 'outbound', status: { kind: 'working', since: at, detail: { progress, options: ['label text'] } } } } });
+    const viewOf = (progress: unknown) => applyTaskQueryView([task(progress)], { view: 'state', taskIds: ['t'] }).flatMap(remoteTaskViewOf)[0];
+    expect(viewOf({ head: 'abc1234', changedFiles: 1 }).status?.progress).toEqual({ head: 'abc1234', changedFiles: 1 });
+    for (const bad of [{ head: 'not a sha', changedFiles: 1 }, { head: 'abc1234', changedFiles: -1 }, { head: 'abc1234' }, 'abc1234']) {
+      expect(viewOf(bad).status).not.toHaveProperty('progress');
+    }
+  });
+
   it('while the row stays input_required, its text follows why it waits; the same reason writes nothing', async () => {
     const s = await started(1);
     s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'permission' } });
@@ -629,6 +771,47 @@ describe('a started task follows its A2A task', () => {
     expect(s.row(1).status).toBe('cancelled');
     expect(s.row(2)).toMatchObject({ status: 'input_required', summary: `the agent on box waits for your reply on A2A task ${s.a2a[2]}` });
     await vi.waitFor(() => expect(s.f.revoked.sort()).toEqual([linkOf(0), linkOf(1)].sort()), { timeout: 5_000 });
+  });
+
+  it('done-then-killed on a headless box: a replied task the link end failed is cancelled, never failed, and raises no failure alert', async () => {
+    const s = await started(4);
+    const notified: unknown[][] = [];
+    installFanoutCallerLedgerNotify(() => false, (...a) => { notified.push(a); }, s.deps.ledger as TaskLedger);
+    const facts: Array<ReturnType<typeof factFromLedgerTransition>> = [];
+    (s.deps.ledger as TaskLedger).onTransition((t) => { if (t.entry.id === s.row(0).id) facts.push(factFromLedgerTransition(t)); });
+    // 0: the turn finished (its reply came), then the box ended the agent and its link.
+    s.view(0, { state: 'input-required' });
+    // 1: it finished, the caller sent a follow-up, and the agent was killed on it.
+    s.view(1, { state: 'input-required' });
+    // 2: killed mid-turn.
+    // 3: the worker's own failure (sent by that PC).
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).status).toBe('input_required');
+    s.view(0, { state: 'failed', answered: true, linkEnded: true });
+    s.view(1, { state: 'failed', linkEnded: true });
+    s.view(2, { state: 'failed', linkEnded: true });
+    s.view(3, { state: 'failed', answered: true });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'cancelled', summary: `the agent on box ended after it replied; its reply is on A2A task ${s.a2a[0]}` });
+    expect(s.row(1).status).toBe('failed');
+    expect(s.row(2).status).toBe('failed');
+    expect(s.row(3)).toMatchObject({ status: 'failed', summary: `failed on box; why is on A2A task ${s.a2a[3]}` });
+    // The caller is alerted of the three failures only (the cancelled row raises no `ledger.failed`).
+    const failedAlerts = notified.filter((a) => a[3] === 'ledger.failed').map((a) => a[2]);
+    expect(failedAlerts.sort()).toEqual([s.row(1).id, s.row(2).id, s.row(3).id].sort());
+    expect(notified.some((a) => a[2] === s.row(0).id && a[3] !== 'ledger.input_required')).toBe(false);
+    // The room says "Task cancelled" for it (a cancelled task.failed), never "Task failed".
+    expect(facts.at(-1)).toMatchObject({ kind: 'task.failed', payload: { status: 'cancelled', from: 'input_required' } });
+  });
+
+  it('a reported row keeps its report when the task is then cancelled on that PC', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'input-required', reportId: REPORTED });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).status).toBe('review_requested');
+    s.view(0, { state: 'canceled', reportId: REPORTED });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'review_requested', summary: `reported on box; the report is on A2A task ${s.a2a[0]}` });
   });
 
   it('gone fails the row only once the grace is over, not on a quick second pass, when nothing ended the task', async () => {

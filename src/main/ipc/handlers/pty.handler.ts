@@ -19,12 +19,16 @@ import { stripPassiveInput } from '../../../shared/terminal/passiveInput';
 import { sanitizePtyText } from '../../../shared/types';
 import { isShadowWorkspaceId } from '../../../shared/pcRail/shadowId';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
+import { accountSourcedKeys, setWslAccountKeys } from '../../../shared/wslAccountHome';
+import { paneAccountKeys, requestedAccountRefusal } from '../../account/wslAccountSpawn';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore, type Account } from '../../account/accountStore';
 import { appAccountVault, createAccountOverride, mergeVaultSecretEnv, noteVaultSignInPane, vaultAccountsForCreate, vaultOnlyClaudeAccount, withAccountFolderEnv } from '../../account/accountVault';
 import { loadClaudeCredential } from '../../claude/claudeCredential';
 import { BOT_SECRET_LIMITS } from '../../../shared/botSecret';
 import { withAccountQuota } from '../../account/accountQuotaGate';
+import { poolAccountForCreate, poolAccountOfLivePane, poolCreateReserveRefusal } from '../../worktask/fanoutAccountPool';
+import { usageReserveHoldForWorkspace, usageReserveRefusalText } from '../../usage/usageReserve';
 import { botWorkerForCreate, botWorkerLaunchTask, botWorkerSessionRecord, noteGuardedLaunchTyped, clearedLaunchLine, forgetBotWorkerSession, guardedClaudeCwdRefusal, guardedCodexCwdRefusal, guardedCodexLaunch, guardedLaunchOf, isBotWorkerSession, noteBotWorkerSession, paneLaunchFolders, setWorkerMcpResolvers, taskConnectors, taskGatewayNames, withBotWorkerMergeGuard, type BotWorkerCreate, type WorkerGatewayLaunch } from '../../agents/botWorkerMergeGuard';
 import { isPlainCmdLaunchLine, namesClaude } from '../../../shared/botWorkerGuard';
 import { namesCodex } from '../../../shared/codexWorkerGuard';
@@ -32,12 +36,15 @@ import { getMcpTarget } from '../../../shared/mcpTargets';
 import { readTargetStatus } from '../../../shared/mcpRegistration';
 import { revokeSecretGrant, secretEnvForCreate } from '../../factory/secretGrants';
 import { noteSessionAgentLaunched, noteSessionInput, noteTaskWorkerLaunched } from '../../factory/agentGoneFacts';
-import { beginPaneRelaunch, launchStillCurrent, startsAgent } from '../../factory/workerSlots';
+import { beginPaneRelaunch, getWorkerSlots, launchStillCurrent, startsAgent } from '../../factory/workerSlots';
 import { withLaunchSessionPin } from '../../agents/launchSessionPin';
 import { withScreenReaderFlag } from '../../../shared/screenReaderLaunch';
 import { isScreenReaderOn, launcherVersionsIn } from '../../screenReaderService';
 import { guardBotWorkerSessionText, guardCodexBotWorker } from '../../agents/codexWorkerGuard';
-import { workerFenceSupportFor } from '../../agents/botWorkerFence';
+import { workerFenceSupport, workerFenceSupportFor } from '../../agents/botWorkerFence';
+import { paneFenceCwdRefusal, paneFenceLaunch, paneLineStartsAgent, type PaneFenceLaunchRecord } from '../../agents/paneFence';
+import { forgetPaneFenceSession, getPaneFenceSession, notePaneFenceLaunch, setPaneFenceOn, type PaneFenceSession } from '../../agents/paneFenceSessions';
+import type { PaneFenceState } from '../../../shared/paneFence';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withholdCredentialsFromAgents } from '../../pty/credentialEnvPrefs';
 import { withheldCredentialNames } from '../../../shared/envFilter';
@@ -88,8 +95,10 @@ import { isWslShell, type WslTarget } from '../../../shared/wsl';
 import { resolvePtyCreateCwdForShell, type PtyCwdSource, type ResolvedPtyCwd } from '../../pty/resolvePtyCwd';
 import { FANOUT_TASK_PORT_ENV } from '../../worktask/fanoutEnvironment';
 import { agentDisplayToSlug } from '../../../shared/agentIdentity';
+import { wslShareToLinux } from '../../../shared/wslPaths';
+import { applyWslShareCwd, defaultWslShellPath } from '../../../shared/wslShareSpawn';
 import { wslDistroArgs, isWslDistroSpawnArgs, isValidWslDistroName } from '../../../shared/wslDistro';
-import { getDefaultWslDistro } from '../../pty/defaultWslDistro';
+import { getDefaultWslDistro, getKnownWslDistros, enumerateWslDistros } from '../../pty/defaultWslDistro';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
 import { recordFanoutTaskPane, stampFanoutTaskPane, stampRemoteSpawnPane, taskOfWorkspace } from '../../worktask/fanoutGuards';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
@@ -152,6 +161,12 @@ interface PtyCreateSupervisionInput {
 type PtyCreateOptions = {
   wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
   /**
+   * A re-sign-in tab for an account a WSL pane reported signed out: in WSL,
+   * this variable (its folder in `env`) runs as that account, on its own home
+   * in the distro. Honoured only for a registered account's folder.
+   */
+  wslAccountHomeKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
+  /**
    * Agent-setup panes (first-run "Agent ready" cards) only: spawn without the
    * workspace's bound-account env, so an install or sign-in targets the same
    * default config dir the card's detection reads.
@@ -186,6 +201,9 @@ type PtyCreateOptions = {
   launchEnv?: Record<string, string>;
   exec?: string;
   supervision?: PtyCreateSupervisionInput;
+  /** The person opted this pane into the worker fence (paneFence.ts): its
+   *  claude launches start fenced or not at all. Ignored for a bot worker. */
+  workerFence?: boolean;
   /** 스폰 출처 (실행 컨텍스트 정책). 'user-shell'만 env 투과; exec/supervision이
    * 있으면 스탬프와 무관하게 gated. 미지정은 fail-closed gated. */
   spawnKind?: SpawnKind;
@@ -262,7 +280,64 @@ function registeredClaudeLevel(): string | null {
  * its wmux level) instead of being spliced on its own, and the hint is
  * dropped. Returns what the guarded launch carried, for its session record.
  */
-async function stageCreate(options: PtyCreateOptions | undefined, botWorker: BotWorkerCreate | null, gateway?: WorkerGatewayLaunch): Promise<{ options: PtyCreateOptions | undefined; launch: ReturnType<typeof guardedLaunchOf> & ReturnType<typeof launchOfCodex> & { conversation?: ReturnType<typeof launchedConversation> } }> {
+/** A WSL re-sign-in tab's refusal, from what it supplied (both create modes). */
+function wslAccountTabRefusal(shell: string, options: PtyCreateOptions | undefined): string | null {
+  if (!isWslShell(shell) || options?.wslAccountHomeKey === undefined) return null;
+  const supplied = options.env ?? {};
+  return requestedAccountRefusal(options.wslAccountHomeKey, paneAccountKeys(supplied, {
+    requested: options.wslAccountHomeKey, supplied, accounts: () => getAccountStore().listAccounts(),
+  }));
+}
+
+/** The pool account a live pane's env runs on, for a relaunch typed into it. */
+async function poolPaneAccount(sessionId: string, dc: DaemonClient): Promise<{ paneAccount?: string }> {
+  const paneAccount = await poolAccountOfLivePane(sessionId, (m, p) => dc.rpc(m, p));
+  return paneAccount ? { paneAccount } : {};
+}
+
+/**
+ * A fan-out task pane's account from the account pool (fanoutAccountPool.ts),
+ * read from its launch record once its launch was claimed
+ * (stampFanoutTaskPane): a picked account comes in as a rotated launch's
+ * does, its id and its folder in the pane env, so every later stage reads
+ * that folder; a missing folder refuses the create. The default login keeps
+ * the pane env, and `pinned` keeps quota rotation from moving it. A line that
+ * launches no Claude drops the record's account. The renderer's own
+ * `accountId` is never taken for it (a different one refuses the create).
+ */
+function withPoolAccount(options: PtyCreateOptions | undefined, daemon: boolean): { options: PtyCreateOptions | undefined; pinned: boolean } {
+  const slots = getWorkerSlots();
+  const decision = poolAccountForCreate(options, (id) => slots.launchOf(id), { wsl: isWslShell(createShell(options)) });
+  if (decision.kind === 'none') return { options, pinned: false };
+  if (decision.kind === 'release') {
+    const owner = slots.launchOf(decision.taskId)?.ownerWorkspaceId;
+    slots.setLaunchAccount(decision.taskId, decision.gen, undefined, { unpool: decision.wsl === true });
+    // A WSL Claude worker runs as before the pool, so the usage reserve checks
+    // its caller's account, as the fan-out did before the pool; a stop is
+    // held through the fan-out, so a bot's request is kept for the reset.
+    const hold = decision.wsl && owner ? usageReserveHoldForWorkspace(owner) : null;
+    if (hold) {
+      const refusal = poolCreateReserveRefusal(decision.taskId, hold) ?? usageReserveRefusalText(hold.untilMs, Date.now(), false);
+      throw new Error(`PTY_CREATE: ${refusal}`);
+    }
+    return { options, pinned: false };
+  }
+  if (decision.kind === 'default') return { options, pinned: true };
+  if (!daemon) throw new Error('PTY_CREATE: a fan-out worker on a pool account needs the wmux daemon');
+  const named = { ...options, accountId: decision.accountId };
+  const account = createAccountOverride(named, { missingFolder: 'refuse' });
+  if (!account) throw new Error('PTY_CREATE: unknown account');
+  return { options: { ...named, env: withAccountFolderEnv(named.env, account) }, pinned: true };
+}
+
+async function stageCreate(options: PtyCreateOptions | undefined, botWorker: BotWorkerCreate | null, gateway?: WorkerGatewayLaunch, poolPinned = false): Promise<{ options: PtyCreateOptions | undefined; launch: ReturnType<typeof guardedLaunchOf> & ReturnType<typeof launchOfCodex> & { conversation?: ReturnType<typeof launchedConversation> } }> {
+  // A person's pane opted into the worker fence (paneFence.ts). Never a bot
+  // worker's, which has its own; the flag itself goes no further.
+  const paneFenced = !botWorker && options?.workerFence === true;
+  if (options && 'workerFence' in options) {
+    options = { ...options };
+    delete options.workerFence;
+  }
   // A fan-out line's prompt argument was built for the platform; the pane's
   // shell decides its form (a WSL pane runs bash).
   const shellPath = createShell(options);
@@ -278,7 +353,8 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
     const rewritten = promptFileArgumentForShell(line0, { wsl, cmd: process.platform === 'win32' && isCmdShellPath(shellPath) });
     if (rewritten !== line0) options = { ...options, initialCommand: rewritten };
   }
-  let staged = await withAccountQuota(options);
+  // A pool worker's account was picked for it (withPoolAccount): no rotation.
+  let staged = poolPinned ? options : await withAccountQuota(options);
   let level: string | undefined;
   const line = staged?.initialCommand;
   if (botWorker && staged && line && namesClaude(line) && !namesCodex(line)) {
@@ -287,6 +363,39 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
     staged = rest;
   } else {
     staged = withWmuxTools(staged);
+  }
+  // A person's opted-in pane: its agent line starts inside the worker fence
+  // or the create fails (paneFence.ts). Never a bot worker's (paneFenced).
+  let paneFence: { record?: PaneFenceLaunchRecord } | undefined;
+  if (paneFenced) {
+    paneFence = {};
+    // A supervised unit runs as the pane's root process, with no line the
+    // fence can be attached to: an agent one is refused, not run unfenced.
+    const unit = typeof staged?.exec === 'string' ? staged.exec : '';
+    if (unit && paneLineStartsAgent(unit)) {
+      throw new Error('PTY_CREATE: worker fence: a supervised agent unit cannot run inside the fence yet');
+    }
+    const paneLine = staged?.initialCommand;
+    if (staged && paneLine) {
+      const support = namesClaude(paneLine) ? await workerFenceSupport() : undefined;
+      let fenced: ReturnType<typeof paneFenceLaunch>;
+      try {
+        // The pane's env as the spawn resolves it (the workspace's bound
+        // account, then the pane's own env with a named account's folder):
+        // its CLAUDE_CONFIG_DIR is the config folder the fence reads and denies.
+        const fence = { env: paneFenceSpawnEnv(staged) };
+        // The folder the create resolves to (a dead pane's respawn included),
+        // which paneFenceCwdRefusal checks again once the create runs.
+        const folder = resolvePtyCreateCwdForShell(typeof staged.cwd === 'string' ? staged.cwd : undefined, staged.recoveryCwds, shellPath).safeCwd;
+        fenced = paneFenceLaunch(paneLine, folder ? path.resolve(folder) : undefined, { wsl }, { fence, ...(support !== undefined ? { support } : {}) });
+      } catch (err) {
+        throw new Error(`PTY_CREATE: ${(err as Error).message}`);
+      }
+      if (fenced) {
+        staged = { ...staged, initialCommand: fenced.line };
+        paneFence.record = fenced.record;
+      }
+    }
   }
   // The guard decides whether the line is fenced (botWorkerFence.ts); the
   // fence support (and its self-test) is settled before it runs.
@@ -300,7 +409,81 @@ async function stageCreate(options: PtyCreateOptions | undefined, botWorker: Bot
   // A bot worker's record keeps the conversation its line pinned and the mode
   // that line starts it in (workerReclaim.ts: a resume with no hook-recorded mode).
   const conversation = botWorker && pinned?.initialCommand ? launchedConversation(splitModelEnvMarker(pinned.initialCommand).command) : null;
+  if (pinned && paneFence) paneFenceOfCreate.set(pinned, paneFence);
   return { options: pinned, launch: { ...launchOfCodex(guarded), ...guardedLaunchOf(guarded), ...(conversation ? { conversation } : {}) } };
+}
+
+/** The env a create's pane is spawned with, as far as the fence reads it:
+ *  the app's env, the workspace's bound account, then the pane's own env
+ *  with a named account's folder over it (resolveSpawnEnv's order). */
+export function paneFenceSpawnEnv(
+  options: PtyCreateOptions,
+  deps: { account?: (id: string) => Account | undefined; bound?: (workspaceId: string) => Record<string, string> | undefined; base?: NodeJS.ProcessEnv } = {},
+): Record<string, string | undefined> {
+  let named: ReturnType<typeof createAccountOverride>;
+  try {
+    named = createAccountOverride(options, { missingFolder: 'skip', ...(deps.account ? { account: deps.account, dirOk: () => true } : {}) });
+  } catch {
+    named = undefined; // the create refuses it itself, later
+  }
+  const bound = options.workspaceId && options.ignoreAccountBinding !== true
+    ? (deps.bound ?? ((ws: string) => getAccountStore().resolveWorkspaceAccountEnv(ws, () => undefined)))(options.workspaceId)
+    : undefined;
+  return { ...(deps.base ?? process.env), ...(bound ?? {}), ...((named ? withAccountFolderEnv(options.env, named) : options.env) ?? {}) };
+}
+
+/** The folder a line typed into pane `sessionId` starts in (the shell's live
+ *  folder; null when the daemon knows none: a fenced launch is refused then,
+ *  never fenced for the folder the pane was spawned in) and the env the pane
+ *  was spawned with (credential values stripped). */
+export async function paneLiveFolder(sessionId: string, rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>): Promise<{ folder: string | null; env: Record<string, string> }> {
+  const sessions = await rpc('daemon.listSessions', {}) as Array<{ id?: unknown; cwd?: unknown; env?: unknown }>;
+  const s = Array.isArray(sessions) ? sessions.find((x) => x?.id === sessionId) : undefined;
+  const folder = typeof s?.cwd === 'string' && s.cwd.length > 0 && path.isAbsolute(s.cwd) ? s.cwd : undefined;
+  const env: Record<string, string> = {};
+  if (s?.env && typeof s.env === 'object') for (const [k, v] of Object.entries(s.env)) if (typeof v === 'string') env[k] = v;
+  return { folder: folder ?? null, env };
+}
+
+/** What stageCreate put a person's fenced pane's create through (per staged
+ *  options object): read once, right after the stage. */
+const paneFenceOfCreate = new WeakMap<object, { record?: PaneFenceLaunchRecord }>();
+function paneFenceOf(options: object | undefined): { record?: PaneFenceLaunchRecord } | undefined {
+  return options ? paneFenceOfCreate.get(options) : undefined;
+}
+
+/** pty:write-launch in a person's pane: when the session is opted in, an
+ *  agent line comes back fenced, in the folder the pane's shell is in, or
+ *  this throws (nothing is typed). Any other line comes back as given. */
+async function fencePaneLaunchText(sessionId: string, text: string, dc: DaemonClient | null): Promise<{ paneFence: PaneFenceSession | null; paneLaunch?: PaneFenceLaunchRecord; line: string }> {
+  const paneFence = getPaneFenceSession(sessionId);
+  if (!paneFence?.on || !paneLineStartsAgent(text)) return { paneFence, line: text };
+  if (!dc) throw new Error('PTY_WRITE_LAUNCH: worker fence: a fenced pane\'s agent starts again only with the wmux daemon');
+  const { folder, env } = await paneLiveFolder(sessionId, (m, p) => dc.rpc(m, p));
+  const support = namesClaude(text) ? await workerFenceSupport() : undefined;
+  let fenced: ReturnType<typeof paneFenceLaunch>;
+  try {
+    // A resume takes the temp folder the last fenced launch used.
+    const fence = { env: { ...process.env, ...env }, ...(paneFence.tempDir ? { paneTempDir: paneFence.tempDir } : {}) };
+    fenced = paneFenceLaunch(text, folder ?? undefined, { wsl: isWslShell(getPtyShell(sessionId)) }, { fence, ...(support !== undefined ? { support } : {}) });
+  } catch (err) {
+    throw new Error(`PTY_WRITE_LAUNCH: ${(err as Error).message}`);
+  }
+  return fenced ? { paneFence, paneLaunch: fenced.record, line: fenced.line } : { paneFence, line: text };
+}
+
+/** A person's fenced pane, once its session exists: a fenced launch is
+ *  recorded, and a pane that launched nothing yet is on for its next one. */
+function notePaneFenceCreate(sessionId: string, paneFence: { record?: PaneFenceLaunchRecord } | undefined): void {
+  if (!paneFence) return;
+  if (paneFence.record) notePaneFenceLaunch(sessionId, paneFence.record);
+  else setPaneFenceOn(sessionId, true);
+}
+
+/** What pty:create tells the renderer about a fenced pane: the switch is on,
+ *  and whether an agent launch was fenced now. */
+function paneFenceResult(paneFence: { record?: PaneFenceLaunchRecord } | undefined): { fence?: PaneFenceState } {
+  return paneFence ? { fence: { on: true, launched: paneFence.record !== undefined } } : {};
 }
 
 /** A bot worker create's signed-in connections (main/connectors/
@@ -390,6 +573,56 @@ function resolveSupervisionPolicy(input: PtyCreateSupervisionInput): DaemonSuper
  * toast. A wmux.json with many supervised leaves would otherwise fire one toast
  * per pane in local mode (decision ②: warn, don't spam). */
 let localSupervisionWarned = false;
+
+/** Workspaces already told their WSL share folder could not be opened (one toast each per app run). */
+const wslShareToasted = new Set<string>();
+
+/**
+ * A create whose cwd is a WSL share folder becomes a WSL shell in that
+ * distro at the Linux path. Runs first in both create paths (daemon and
+ * local), so everything after (shell allow-list, cwd validation, distro args,
+ * the daemon forward) sees the rewritten options. A distro that is not
+ * installed opens the pane in the default WSL shell at its home and toasts
+ * once per workspace, so a restore that respawns every pane does not repeat it.
+ */
+async function withWslShareCwd(
+  options: PtyCreateOptions | undefined,
+  getWindow: (() => BrowserWindow | null) | undefined,
+): Promise<PtyCreateOptions | undefined> {
+  if (!options || process.platform !== 'win32' || typeof options.cwd !== 'string' || !wslShareToLinux(options.cwd)) return options;
+  // The known-distro cache answers the common case; only a miss (a distro
+  // installed since the last enumeration, or no enumeration yet) pays for
+  // `wsl.exe --list`.
+  const share = wslShareToLinux(options.cwd)!;
+  const cached = getKnownWslDistros();
+  const hit = cached?.some((d) => d.toLowerCase() === share.distro.toLowerCase()) ?? false;
+  // A hit is trusted for this create and refreshed behind it, so a distro
+  // unregistered since then is caught by the next one.
+  if (hit) void enumerateWslDistros();
+  const known = hit && cached ? [...cached] : await enumerateWslDistros();
+  const result = applyWslShareCwd(options, process.platform, known);
+  if ('options' in result) return result.options;
+  const { cwd: _dropped, wslDistro: _unused, ...rest } = options;
+  const key = options.workspaceId ?? '';
+  const toastOnce = (title: string, body: string): void => {
+    if (wslShareToasted.has(key)) return;
+    wslShareToasted.add(key);
+    dispatchNotification(
+      getWindow?.() ?? null,
+      null,
+      { type: 'warning', title, body, workspaceId: options.workspaceId, category: 'system' },
+      { workspaceId: options.workspaceId ?? null },
+    );
+  };
+  if ('needsWslShell' in result) {
+    // A named PowerShell or cmd keeps its shell, in its usual folder: the
+    // share is not a folder it can start in.
+    toastOnce('WSL folder needs a WSL shell', `${share.linuxPath} in ${share.distro} opens in a WSL shell; this pane's shell started in its usual folder instead.`);
+    return rest as PtyCreateOptions;
+  }
+  toastOnce('WSL folder unavailable', `${result.error} - opened the default WSL shell in its home instead.`);
+  return { ...rest, shell: defaultWslShellPath() };
+}
 
 /**
  * Recovery PTY mute race retry (v2.9.0-rc.2 fix for the symptom reported
@@ -705,6 +938,7 @@ export function registerPTYHandlers(
   ipcMain.removeHandler(IPC.PTY_CREATE);
   if (useDaemon && daemonClient) {
     ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: PtyCreateOptions) => {
+      options = await withWslShareCwd(options, getWindow);
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
@@ -742,16 +976,25 @@ export function registerPTYHandlers(
           throw err;
         }
       };
-      // Named by the caller, not by a rotated launch (which stageCreate may add).
+      // A task pane's pool account, from its launch record (never the renderer).
+      let poolPinned: boolean;
+      try {
+        ({ options, pinned: poolPinned } = withPoolAccount(options, true));
+      } catch (err) {
+        gateway?.open.close();
+        throw err;
+      }
+      // Named by the caller or the pool, not by a rotated launch (which stageCreate may add).
       const namedAccount = options?.accountId;
       let staged: Awaited<ReturnType<typeof stageCreate>>;
       try {
-        staged = await stageCreate(options, botWorker, gateway?.launch);
+        staged = await stageCreate(options, botWorker, gateway?.launch, poolPinned);
       } catch (err) {
         gateway?.open.close();
         throw err;
       }
       options = staged.options;
+      const paneFence = paneFenceOf(options);
       // The account this create names for itself, resolved by main; an
       // unknown one refuses the create. Its folder goes into the pane env, as
       // a rotated launch's does, so a profile's own folder cannot win over it.
@@ -775,11 +1018,15 @@ export function registerPTYHandlers(
       const shell = options?.shell || (process.platform === 'win32' ? new ShellDetector().getDefault() : (process.env.SHELL || '/bin/bash'));
       const cwdResolution = resolvePtyCreateCwdForShell(options?.cwd, options?.recoveryCwds, shell);
       // A bot's worker starts in the folder its rules or settings were checked in.
-      const codexCwdRefusal = guardedCodexCwdRefusal(options, cwdResolution) ?? guardedClaudeCwdRefusal(staged.launch, cwdResolution);
+      const codexCwdRefusal = guardedCodexCwdRefusal(options, cwdResolution) ?? guardedClaudeCwdRefusal(staged.launch, cwdResolution) ?? paneFenceCwdRefusal(paneFence?.record, cwdResolution);
       if (codexCwdRefusal) throw failCreate(codexCwdRefusal);
       // #2388: a task folder whose removal did not finish is locked.
       const pendingRefusal = pendingRemovalRefusal(cwdResolution.safeCwd);
       if (pendingRefusal) throw failCreate(pendingRefusal);
+      // A re-sign-in tab whose account can no longer run on its own WSL home,
+      // refused before anything is recorded (wslAccountSpawn.ts).
+      const accountRefusal = wslAccountTabRefusal(shell, options);
+      if (accountRefusal) throw failCreate(accountRefusal);
       if (secretEnv) {
         const refusal = secretCreateCwdRefusal(grantedCwd, cwdResolution);
         if (refusal) throw failCreate(refusal);
@@ -824,6 +1071,8 @@ export function registerPTYHandlers(
         // A fan-out task pane's task and launch generation, bot or owner.
         recordFanoutTaskPane(options, sessionId);
       });
+      // A person's fenced pane: its later launches are fenced too.
+      closingLeases(() => notePaneFenceCreate(sessionId, paneFence));
 
       // Identity env vars for the spawned shell. The daemon's
       // `buildSafeChildEnv` passes WMUX_WORKSPACE_ID / WMUX_SURFACE_ID
@@ -918,6 +1167,19 @@ export function registerPTYHandlers(
       // native-terminal freshness. No-op off win32 / on failure. (Recovery replays
       // the persisted create-time env verbatim; refreshing that is a follow-up.)
       const resolvedEnv = closingLeases(() => resolveSpawnEnv(withFreshWindowsPath(globalThis.process.env), options?.env, identity, getShellUtf8Locale(), envPolicy, accountEnv));
+      // A bound account gets its own home in the distro (shared/wslAccountHome.ts),
+      // only for the variables the binding still decides (a profile's own wins).
+      // It rides in the env the daemon persists, so a recovered pane keeps it.
+      if (isWslShell(shell)) {
+        const paneKeys = paneAccountKeys(resolvedEnv, {
+          override: accountOverride, requested: options?.wslAccountHomeKey, supplied: options?.env,
+          accounts: () => getAccountStore().listAccounts(),
+        });
+        // Backstop: the profile-free env the tab asked for no longer names its account.
+        const refusal = requestedAccountRefusal(options?.wslAccountHomeKey, paneKeys);
+        if (refusal) throw failCreate(refusal);
+        setWslAccountKeys(resolvedEnv, [...accountSourcedKeys(resolvedEnv, accountEnv), ...paneKeys]);
+      }
       // #2231 — a fan-out task pane in WSL on a Windows-drive worktree: Linux
       // git gets the worktree's gitdir by its Linux path (wslWorkerGit.ts).
       if ((botWorker || options?.fanoutTaskOf) && isWslShell(shell) && safeCwd) {
@@ -1105,10 +1367,11 @@ export function registerPTYHandlers(
         writePidMap(shellPid, sessionId);
       }
 
-      return { id: sessionId, shell, cwd: effectiveCwd };
+      return { id: sessionId, shell, cwd: effectiveCwd, ...paneFenceResult(paneFence) };
     }));
   } else {
     ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: PtyCreateOptions) => {
+      options = await withWslShareCwd(options, getWindow);
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
@@ -1134,8 +1397,12 @@ export function registerPTYHandlers(
       if (botWorker?.spawns?.some((s) => (s.connectors?.length ?? 0) > 0)) {
         throw new Error('PTY_CREATE: a worker with connections needs the wmux daemon');
       }
-      const staged = await stageCreate(options, botWorker);
+      // A pool account needs the daemon (its folder env and spawn are the
+      // daemon's); the default login launches here as it is.
+      const pool = withPoolAccount(options, false);
+      const staged = await stageCreate(pool.options, botWorker, undefined, pool.pinned);
       options = staged.options;
+      const paneFence = paneFenceOf(options);
       // An account's vault, too, reaches a pane only through the daemon: a
       // Claude launch on an account signed in only with a token would start
       // signed out. A plain shell is not refused (what it will run is unknown).
@@ -1182,17 +1449,19 @@ export function registerPTYHandlers(
         || (process.platform === 'win32' ? new ShellDetector().getDefault() : (process.env.SHELL || '/bin/bash'));
       const cwdResolution = resolvePtyCreateCwdForShell(options?.cwd, options?.recoveryCwds, shell);
       // A bot's worker starts in the folder its rules or settings were checked in.
-      const codexCwdRefusal = guardedCodexCwdRefusal(options, cwdResolution) ?? guardedClaudeCwdRefusal(staged.launch, cwdResolution);
+      const codexCwdRefusal = guardedCodexCwdRefusal(options, cwdResolution) ?? guardedClaudeCwdRefusal(staged.launch, cwdResolution) ?? paneFenceCwdRefusal(paneFence?.record, cwdResolution);
       if (codexCwdRefusal) throw new Error(codexCwdRefusal);
       const pendingRefusal = pendingRemovalRefusal(cwdResolution.safeCwd);
       if (pendingRefusal) throw new Error(pendingRefusal);
+      const accountRefusal = wslAccountTabRefusal(shell, options);
+      if (accountRefusal) throw new Error(accountRefusal);
       const safeCwd = cwdResolution.safeCwd;
       const effectiveCwd = safeCwd ?? undefined;
       // Split off initialCommand — it's written into the shell post-create, not
       // a spawn option. exec/supervision are daemon-only (handled above) and
       // must not reach ptyManager.create, so build a clean spawn-options object
       // from only the local-relevant fields instead of spreading the payload.
-      const { initialCommand, cols, rows, workspaceId, surfaceId, env, spawnKind, wslAccountLoginEnvKey, ignoreAccountBinding } = options ?? {};
+      const { initialCommand, cols, rows, workspaceId, surfaceId, env, spawnKind, wslAccountLoginEnvKey, wslAccountHomeKey, ignoreAccountBinding, accountId } = options ?? {};
       // #1103 — same distro injection as the daemon branch, so both modes
       // boot the same WSL distro for the same setting.
       const wslArgs = wslDistroArgs(shell, requestedWslDistro(options));
@@ -1200,8 +1469,9 @@ export function registerPTYHandlers(
       const wslTaskGit = (botWorker || options?.fanoutTaskOf) && isWslShell(shell) && safeCwd
         ? await resolveWslWorkerGit(safeCwd, wslArgs?.[1] ?? null).catch(() => null)
         : null;
-      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, ...(botWorker || options?.fanoutTaskOf ? { automation: true } : {}), wslAccountLoginEnvKey, ...(ignoreAccountBinding === true ? { ignoreAccountBinding: true } : {}), ...(wslTaskGit ? { wslTaskGit } : {}) });
+      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, ...(botWorker || options?.fanoutTaskOf ? { automation: true } : {}), wslAccountLoginEnvKey, wslAccountHomeKey, ...(typeof accountId === 'string' ? { accountId } : {}), ...(ignoreAccountBinding === true ? { ignoreAccountBinding: true } : {}), ...(wslTaskGit ? { wslTaskGit } : {}) });
       logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
+      notePaneFenceCreate(instance.id, paneFence);
       if (botWorker) {
         const launchTask = botWorkerLaunchTask(botWorker);
         try {
@@ -1240,7 +1510,7 @@ export function registerPTYHandlers(
           initialCmd.onFirstData();
         });
       }
-      return { id: instance.id, shell: instance.shell, cwd: actualCwd };
+      return { id: instance.id, shell: instance.shell, cwd: actualCwd, ...paneFenceResult(paneFence) };
     }));
   }
 
@@ -1366,8 +1636,8 @@ export function registerPTYHandlers(
   // guard or nothing is typed (botWorkerMergeGuard.ts); everywhere else it is
   // written as given.
   ipcMain.removeHandler(IPC.PTY_WRITE_LAUNCH);
-  ipcMain.handle(IPC.PTY_WRITE_LAUNCH, wrapHandler(IPC.PTY_WRITE_LAUNCH, async (_event: Electron.IpcMainInvokeEvent, id: unknown, text: unknown, submit: unknown, origin: unknown) => {
-    if (typeof id !== 'string' || typeof text !== 'string' || text.length > PTY_WRITE_BACKSTOP) {
+  ipcMain.handle(IPC.PTY_WRITE_LAUNCH, wrapHandler(IPC.PTY_WRITE_LAUNCH, async (_event: Electron.IpcMainInvokeEvent, id: unknown, typedText: unknown, submit: unknown, origin: unknown) => {
+    if (typeof id !== 'string' || typeof typedText !== 'string' || typedText.length > PTY_WRITE_BACKSTOP) {
       throw new Error('PTY_WRITE_LAUNCH: an id and a line are required');
     }
     // A bot's worker pane: the folders the line may start in are checked too.
@@ -1375,8 +1645,11 @@ export function registerPTYHandlers(
     const botPane = isBotWorkerSession(id);
     // Without the daemon the pane's folder is not known: a bot worker's
     // claude is not started again there.
-    if (botPane && !dc && namesClaude(text)) throw new Error('PTY_WRITE_LAUNCH: a bot worker\'s claude starts again only with the wmux daemon');
+    if (botPane && !dc && namesClaude(typedText)) throw new Error('PTY_WRITE_LAUNCH: a bot worker\'s claude starts again only with the wmux daemon');
     const folders = dc && botPane ? await paneLaunchFolders(id, (m, p) => dc.rpc(m, p)) : undefined;
+    // A person's fenced pane (paneFence.ts): an agent line starts fenced or is not typed.
+    const pane = botPane ? null : await fencePaneLaunchText(id, typedText, dc ?? null);
+    const text = pane?.line ?? typedText;
     const shaped = promptFileArgumentForShell(text, { wsl: isWslShell(getPtyShell(id)), cmd: process.platform === 'win32' && isCmdShellPath(getPtyShell(id)) });
     const guardedText = await guardBotWorkerSessionText(id, shaped, 'write-launch', folders ? { folders } : {});
     if (botPane && process.platform === 'win32' && isCmdShellPath(getPtyShell(id)) && !isPlainCmdLaunchLine(guardedText)) {
@@ -1403,7 +1676,9 @@ export function registerPTYHandlers(
     // typed (factory/workerSlots.ts); not recorded, not typed.
     let settleRelaunch: ((typed: boolean) => void) | null;
     try {
-      settleRelaunch = startsAgent(text) ? beginPaneRelaunch(id) : null;
+      settleRelaunch = startsAgent(text)
+        ? beginPaneRelaunch(id, { line: text, byPerson: human, ...(dc ? await poolPaneAccount(id, dc) : {}) })
+        : null;
     } catch (err) {
       throw new Error(`PTY_WRITE_LAUNCH: ${(err as Error).message}`);
     }
@@ -1421,10 +1696,18 @@ export function registerPTYHandlers(
     settleRelaunch?.(true);
     // The line is in the pane: a fence it put the session inside is recorded.
     if (botPane) noteGuardedLaunchTyped(id, guardedText);
+    if (pane?.paneLaunch) notePaneFenceLaunch(id, pane.paneLaunch);
     // An agent starts again in this pane, now or at the owner's Enter: an
     // ended task it belongs to is not known gone any more (agentGoneFacts.ts).
     noteSessionAgentLaunched(id, submit === true, botPane ? botWorkerSessionRecord(id)?.taskId : undefined);
+    return pane?.paneFence ? { fence: { on: pane.paneFence.on, launched: pane.paneLaunch !== undefined } satisfies PaneFenceState } : undefined;
   }));
+
+  // paneFence:set — the pane menu's worker fence switch: the session's next
+  // agent launch is fenced or not (a running agent is never changed).
+  ipcMain.removeHandler(IPC.PANE_FENCE_SET);
+  ipcMain.handle(IPC.PANE_FENCE_SET, wrapHandler(IPC.PANE_FENCE_SET, async (_event: Electron.IpcMainInvokeEvent, id: unknown, on: unknown) =>
+    (typeof id === 'string' && isBotWorkerSession(id) ? false : setPaneFenceOn(id, on))));
 
   // Per-session scheduled prompts. Unlike Command Deck schedules, these
   // target one immutable daemon PTY. Local fallback mode intentionally refuses
@@ -1602,6 +1885,7 @@ export function registerPTYHandlers(
       forgetPtyShell(id);
       forgetFolderTrustPane(id);
       forgetBotWorkerSession(id);
+      forgetPaneFenceSession(id);
       // Drop the data forwarding listener for this session so a future
       // create or reconnect doesn't pile new listeners on top of dead ones.
       clearSessionDataListener(id);
@@ -1618,6 +1902,7 @@ export function registerPTYHandlers(
     ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       ptyManager.dispose(id);
       forgetBotWorkerSession(id);
+      forgetPaneFenceSession(id);
       await pruneSessionSchedules(id);
     }));
   }
@@ -1655,6 +1940,8 @@ export function registerPTYHandlers(
         supervisionRuntime?: { status: 'armed' | 'stopped'; restartCount: number };
         // An exec unit's command (#2398: read only for whether it is one).
         exec?: unknown;
+        // R2 (a) — held because the terminal core is missing.
+        holdReason?: 'terminal-core-missing';
         // #1101 — origin identity for the orphaned-session list: the workspace
         // the session was spawned in (env-stamped by main force-stamps) and
         // the agent identity the daemon already derives for /api/sessions.
@@ -1736,6 +2023,8 @@ export function registerPTYHandlers(
           // or not its pane is shown (recoversInBackground): the reconcile
           // must not hold a cap-skipped one as a plain shell.
           ...(s.exec ? { exec: true as const } : {}),
+          // R2 (a) — a held session (no terminal core) starts by itself nowhere.
+          ...(s.holdReason ? { holdReason: s.holdReason } : {}),
           // X6 ② — carry the resume hint (agent slug) for the renderer pill.
           ...(s.resumeAgent ? { resumeAgent: s.resumeAgent } : {}),
           ...(s.resumeAgent && typeof s.resumeAgentOnScreen === 'boolean' ? { resumeAgentOnScreen: s.resumeAgentOnScreen } : {}),
@@ -1830,6 +2119,7 @@ export function registerPTYHandlers(
           resumeBinding?: ResumeBinding;
           exec?: unknown;
           supervision?: unknown;
+          holdReason?: 'terminal-core-missing';
           incarnationId?: string;
           startPending?: boolean;
         }>;
@@ -2140,6 +2430,8 @@ export function registerPTYHandlers(
       // the process (and a recycled id would inherit the dead pane's shell).
       forgetPtyShell(payload.sessionId);
       forgetFolderTrustPane(payload.sessionId);
+      // A dead pane comes back as a new session, which records itself.
+      forgetPaneFenceSession(payload.sessionId);
       // #3049 — nor is a dead one; a pane recreated in its place records itself.
       getUserShellRecord(app.getPath('userData')).remove(payload.sessionId);
     };

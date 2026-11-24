@@ -10,7 +10,11 @@ import {
   A2A_REMOTE_STATE_EVIDENCE_MAX,
   A2A_REMOTE_STATE_MESSAGE_MAX,
   isA2aRemoteImageMediaType,
+  parseA2aRemoteAnswer,
+  parseA2aRemoteApproval,
   parseA2aRemoteStatus,
+  type A2aRemoteAnswerV1,
+  type A2aRemoteApprovalV1,
   type A2aRemoteImageRef,
   type A2aRemoteNoticeV1,
   type A2aRemoteStatusV1,
@@ -289,7 +293,16 @@ export async function sendRemoteState(deps: StateDeps, input: A2aRemoteStateInpu
  * message to the peer. Whether the peer takes a status at all
  * (`A2A_FEATURE_STATUS`) is the caller's to check.
  */
-export function sendRemoteStatus(deps: StateDeps, input: { taskId: string; status: A2aRemoteStatusV1 }): OutboundResult {
+/** The message id prefix of a status the remote approvals producer sends (remoteApproval.ts); every other status is `ss-`. */
+export const APPROVAL_STATUS_ID_PREFIX = 'sa-';
+
+/** A status's message id: derived from the task and the status itself, under its producer's prefix. */
+export function statusMessageId(taskId: string, status: A2aRemoteStatusV1, source?: 'approvals'): string {
+  const key = `${taskId}\0${status.kind}\0${status.since}\0${JSON.stringify(status.detail ?? {})}`;
+  return `${source === 'approvals' ? APPROVAL_STATUS_ID_PREFIX : 'ss-'}${crypto.createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
+}
+
+export function sendRemoteStatus(deps: StateDeps, input: { taskId: string; status: A2aRemoteStatusV1; source?: 'approvals' }): OutboundResult {
   const found = remoteTaskAndLink(deps, input.taskId);
   if (!found.ok) return found;
   const { task, link } = found;
@@ -301,14 +314,102 @@ export function sendRemoteStatus(deps: StateDeps, input: { taskId: string; statu
   if (!status) return { ok: false, error: 'bad-request: not a status' };
   const check = deps.linkStore.checkMessage(link.linkId, link.version, link.remote.hostId, 'outbound', 'status', undefined, { onThisLink: true });
   if (!check.ok) return { ok: false, error: check.error };
-  const key = `${task.id}\0${status.kind}\0${status.since}\0${JSON.stringify(status.detail ?? {})}`;
-  const messageId = `ss-${crypto.createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
+  const messageId = statusMessageId(task.id, status, input.source);
   try {
     deps.outbox.enqueue(link.remote.hostId, envelope(deps, link, messageId, { kind: 'status', taskId: task.id, status }));
   } catch (err) {
     return { ok: false, error: `unavailable: could not queue for the peer (${errText(err)})` };
   }
   return { ok: true, taskId: task.id };
+}
+
+/**
+ * A message from the asking PC to the worker of a task it SENT: only the
+ * task's local party may send it (the same check as a reply), only while the
+ * task is open, with a body `parse` accepts; a new message id under `idPrefix`
+ * each time. Not added to the task's history and no state change: how it went
+ * comes back in the task's status. Whether the peer takes the kind at all is
+ * the caller's to check.
+ */
+function sendToTaskWorker<K extends 'answer' | 'approval'>(
+  deps: StateDeps,
+  input: {
+    taskId: string;
+    workspaceId: string;
+    kind: K;
+    idPrefix: string;
+    parse: () => NonNullable<A2aRemoteEnvelope[K]> | null;
+    words: { notOurs: string; notSender: string; badBody: string };
+  },
+): { ok: true; taskId: string; messageId: string } | { ok: false; error: string } {
+  const found = remoteTaskAndLink(deps, input.taskId);
+  if (!found.ok) return found;
+  const { task, link } = found;
+  if ((task.metadata.remote as A2aRemoteTaskMarkerV1).direction !== 'outbound') return { ok: false, error: `bad-request: ${input.words.notOurs}` };
+  const localSide = isRemoteWorkspaceId(task.metadata.from.workspaceId) ? 'to' : 'from';
+  if (task.metadata[localSide].workspaceId !== input.workspaceId) return { ok: false, error: `forbidden: ${input.words.notSender}` };
+  if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: false, error: `bad-request: task ${task.id} has ended` };
+  const body = input.parse();
+  if (!body) return { ok: false, error: `bad-request: ${input.words.badBody}` };
+  const check = deps.linkStore.checkMessage(link.linkId, link.version, link.remote.hostId, 'outbound', input.kind, undefined, { onThisLink: true });
+  if (!check.ok) return { ok: false, error: check.error };
+  const messageId = `${input.idPrefix}${mint(deps)}`;
+  try {
+    deps.outbox.enqueue(link.remote.hostId, envelope(deps, link, messageId, { kind: input.kind, taskId: task.id, [input.kind]: body }));
+  } catch (err) {
+    return { ok: false, error: `unavailable: could not queue for the peer (${errText(err)})` };
+  }
+  return { ok: true, taskId: task.id, messageId };
+}
+
+/**
+ * The asking PC's answer to the question the worker on a task it SENT shows
+ * (`kind: 'answer'`): a picker id and an option number, never text. How it
+ * went comes back in the task's status (`detail.answers`). Whether the peer
+ * takes an answer at all (`A2A_FEATURE_ANSWER`) is the caller's to check.
+ */
+export function sendRemoteAnswer(
+  deps: StateDeps,
+  input: { taskId: string; workspaceId: string; answer: A2aRemoteAnswerV1 },
+): { ok: true; taskId: string; messageId: string } | { ok: false; error: string } {
+  return sendToTaskWorker(deps, {
+    taskId: input.taskId,
+    workspaceId: input.workspaceId,
+    kind: 'answer',
+    idPrefix: 'an-',
+    parse: () => parseA2aRemoteAnswer(input.answer),
+    words: {
+      notOurs: 'an answer is for a task this PC sent',
+      notSender: 'only the agent that sent this task can answer its worker',
+      badBody: 'an answer is a picker id (16 hex characters) and an option number from 1 to 9',
+    },
+  });
+}
+
+/**
+ * The asking PC's allow or deny for the permission prompt the worker on a task
+ * it SENT shows (`kind: 'approval'`): a prompt id and a decision, never text.
+ * How it went comes back in the task's status (`detail.approvals`). Whether
+ * the peer takes one (`A2A_FEATURE_APPROVAL`), and whether the offer allows the
+ * decision, are the caller's to check. Each call is a new message id: the
+ * receiving PC answers a reused one as `id-reused`.
+ */
+export function sendRemoteApproval(
+  deps: StateDeps,
+  input: { taskId: string; workspaceId: string; approval: A2aRemoteApprovalV1 },
+): { ok: true; taskId: string; messageId: string } | { ok: false; error: string } {
+  return sendToTaskWorker(deps, {
+    taskId: input.taskId,
+    workspaceId: input.workspaceId,
+    kind: 'approval',
+    idPrefix: 'ap-',
+    parse: () => parseA2aRemoteApproval(input.approval),
+    words: {
+      notOurs: 'an approval is for a task this PC sent',
+      notSender: 'only the agent that sent this task can answer its worker\'s prompts',
+      badBody: 'an approval is a prompt id (16 hex characters) and allow or deny',
+    },
+  });
 }
 
 /**
@@ -537,7 +638,7 @@ function envelope(
   deps: Pick<OutboundDeps, 'now' | 'spawnLink'>,
   link: A2aLinkRecordV1,
   messageId: string,
-  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images' | 'status' | 'notice'>,
+  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images' | 'status' | 'notice' | 'answer' | 'approval'>,
 ): A2aRemoteEnvelope {
   return {
     protocol: A2A_REMOTE_PROTOCOL,
@@ -556,7 +657,7 @@ function envelope(
  * field added later cannot pass unredacted).
  */
 function spawnLinkBody(
-  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images' | 'status' | 'notice'>,
+  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images' | 'status' | 'notice' | 'answer' | 'approval'>,
 ): typeof body {
   const r = (v: string): string => redactSecrets(v);
   const evidence: CompletionEvidence | undefined = body.evidence
@@ -584,6 +685,10 @@ function spawnLinkBody(
     ...(body.receipt === 'delivered' || body.receipt === 'read' ? { receipt: body.receipt } : {}),
     // A status is rebuilt from its checked shape; the only free text, its options, redacted.
     ...(body.status ? { status: spawnLinkStatus(body.status) } : {}),
+    // An answer is a picker id and a number only, rebuilt from its checked shape.
+    ...(body.answer ? { answer: { pickerId: body.answer.pickerId, option: body.answer.option } } : {}),
+    // An approval is a prompt id and a decision only, rebuilt from its checked shape.
+    ...(body.approval ? { approval: { promptId: body.approval.promptId, decision: body.approval.decision } } : {}),
     // A notice is ids and a time only, rebuilt from its checked shape.
     ...(body.notice ? {
       notice: { kind: body.notice.kind, messageId: body.notice.messageId, sentAt: body.notice.sentAt, ...(body.notice.unconfirmed ? { unconfirmed: true as const } : {}) },

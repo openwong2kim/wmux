@@ -18,7 +18,8 @@ import {
 } from '../../shared/mcpRegistration';
 import type { WmuxLauncher, WmuxMcpEntryProfile } from '../../shared/configIO';
 import { approvedInstalledNative, chooseLauncher } from '../../shared/mcpLauncher';
-import { brokerFlag } from '../../shared/mcpBroker';
+import { brokerMayRun } from '../../shared/mcpBroker';
+import { readBrokerSetting } from '../../shared/brokerSetting';
 
 /**
  * `wmux mcp …` — inspect / manage MCP registration across the installed agent
@@ -462,8 +463,10 @@ async function planCliLauncher(
   approvedNative: (stableDir: string) => string | null,
 ): Promise<CliLauncherPlan | null> {
   const approved = stableDir ? approvedNative(stableDir) : null;
-  // Only an explicit WMUX_MCP_BROKER=0 skips the probe (shared/mcpBroker.ts).
-  const brokerEnabled = brokerFlag(process.env.WMUX_MCP_BROKER) !== 'off' && (await canConnectBrokerPipe(300));
+  // The app's rule (shared/mcpBroker.ts): WMUX_MCP_BROKER=0, or Off in
+  // Settings with no WMUX_MCP_BROKER, skips the probe.
+  const brokerEnabled = brokerMayRun(process.platform, process.env.WMUX_MCP_BROKER, readBrokerSetting().setting)
+    && (await canConnectBrokerPipe(300));
   // Inside an installed app the CLI bundle sits in resources beside app.asar,
   // which is what makes main's app.isPackaged true.
   const packaged = fs.existsSync(path.join(__dirname, '..', 'app.asar'));

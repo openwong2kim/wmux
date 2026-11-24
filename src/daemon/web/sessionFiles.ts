@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
+import { sameFileId } from '../../shared/sameFileId';
 
 export class SessionFileError extends Error {
   constructor(public readonly status: number, public readonly tag: string) { super(tag); }
@@ -51,13 +52,13 @@ export async function sessionFiles(root: string, relative: string, offset: numbe
     const entries = all.slice(offset, offset + PAGE_SIZE);
     return { path: relative, entries, nextOffset: offset + entries.length < all.length ? offset + entries.length : null };
   }
-  const before = await fs.stat(target);
+  const before = await fs.stat(target, { bigint: true });
   if (!before.isFile()) throw new SessionFileError(415, 'not-a-file');
   if (before.size > MAX_BYTES) throw new SessionFileError(413, 'file-too-large');
   const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
-    const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || !inside(await fs.realpath(target))) {
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || !sameFileId(opened, before) || !inside(await fs.realpath(target))) {
       throw new SessionFileError(409, 'file-changed');
     }
     const buffer = Buffer.alloc(MAX_BYTES + 1);

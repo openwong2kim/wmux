@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
-import { A2A_REMOTE_BODY_MAX, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
+import { A2A_REMOTE_BODY_MAX, ANSWER_OUTCOMES_MAX, type A2aRemoteAnswerOutcome, type A2aRemoteAnswerV1, type A2aRemoteApprovalOffer, type A2aRemoteApprovalOutcome, type A2aRemoteProgressV1, type A2aRemoteQuestionKind, type A2aRemoteStatusKind } from '../../shared/a2aRemote';
 import { truncateUtf8 } from '../../shared/chatv2/limits';
 import type { SessionPromptScheduleResult } from '../../shared/sessionPromptSchedule';
-import { sanitizeBracketedPastePayload } from '../../shared/ptyMessageDelivery';
+import { promptHash } from '../../shared/promptHash';
 import { localSideOf, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 import { spawnFirstMessageId, type SpawnLinkId } from '../../shared/a2aSpawn';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
@@ -12,8 +12,13 @@ import { apiErrorFromTranscriptLine } from '../transcript/apiErrorTurnEnd';
 import { parseTranscriptLine } from '../transcript/parseEntry';
 import { readTranscriptDelta } from '../transcript/readTail';
 import { SUBAGENT_COUNTERS, type SubagentCounter } from '../transcript/subagentCount';
+import type { HeadlessAnswerResult } from './headlessAnswer';
+
+type HeadlessAnswerReason = Extract<HeadlessAnswerResult, { outcome: 'not-answered' }>['reason'];
 import type { HeadlessStartRecordV1 } from './headlessStartStore';
+import { isPromptRaw, rawEntry } from './taskTurn';
 import { LINK_ENDED_REASON } from './headlessStarter';
+import { HEADLESS_CANCEL_REASON_PREFIX } from '../../shared/a2aTaskQueryView';
 import { errMsg } from './storeFile';
 
 /**
@@ -202,10 +207,26 @@ export interface HeadlessDeliveryDeps {
    */
   questionKind?(sessionId: string, asking: boolean): Promise<A2aRemoteQuestionKind>;
   /**
+   * The one-question single-select picker on the session's screen, the only
+   * shape an answer from the asking PC is typed into (headlessAnswer.ts): its
+   * id and number of choices, or null.
+   */
+  pickerOnScreen?(sessionId: string): Promise<{ pickerId: string; optionCount: number } | null>;
+  /** This PC's answers setting (answersStore.ts): `damaged` reads as off. */
+  answers?(): 'on' | 'off' | 'damaged';
+  /** Type an answer into the session's picker (headlessAnswer.ts `answerPicker`). Never throws. */
+  answerOnScreen?(sessionId: string, answer: A2aRemoteAnswerV1, stillAllowed: () => HeadlessAnswerReason | null): Promise<HeadlessAnswerResult>;
+  /**
    * Where each task's status goes (headlessStatus.ts): every pass, the tasks
    * this delivery works on; and `gone`, before a start's tasks are ended.
    */
   status?: { tick(statuses: HeadlessTaskStatus[]): void; gone(taskIds: string[]): void };
+  /**
+   * What the start's worktree shows of the work (git facts only), or null.
+   * Asked once per turn end, never on a timer, and not awaited by the pass;
+   * the answer goes with the task's statuses from then on.
+   */
+  progressOf?(rec: HeadlessStartRecordV1): Promise<A2aRemoteProgressV1 | null>;
   /** The daemon's own `a2a.remote.reply`, as main calls it. */
   reply(input: { taskId: string; workspaceId: string; text: string; ptyId?: string }): Promise<{ ok: boolean; error?: string }>;
   /**
@@ -228,9 +249,16 @@ export interface HeadlessTaskStatus {
     question?: A2aRemoteQuestionKind;
     menuId?: string;
     options?: string[];
+    optionCount?: number;
+    pickerId?: string;
+    answers?: A2aRemoteAnswerOutcome[];
     resetsAt?: string;
     provider?: string;
     background?: number;
+    /** A linked pane's prompt offered to the PC that sent the task (remoteApproval.ts); never set by the headless delivery. */
+    approval?: A2aRemoteApprovalOffer;
+    approvals?: A2aRemoteApprovalOutcome[];
+    progress?: A2aRemoteProgressV1;
   };
 }
 
@@ -239,11 +267,19 @@ export interface Episode {
   taskId: string;
   sessionId: string;
   workspaceId: string;
-  /** sha256 of the prompt as typed (sanitized, CRLF→LF, trimmed). */
+  /** This turn end's worktree facts were asked for (readFacts): its retries do not ask again. */
+  factsRead?: true;
+  /**
+   * sha256 of the prompt as typed (sanitized), in the shared normal form
+   * (shared/promptMatch.ts: paste markers and whitespace removed), which the
+   * transcript's user entry is compared in too.
+   */
   promptHash: string;
   sentAt: number;
   /** Agent messages the task held at the write (more later: the agent replied itself). */
   agentMessagesAtSend: number;
+  /** The answer that ended this turn, once it is on the task (its message id). */
+  replyId?: string;
   /** The transcript `offset` counts in; null until the session is bound to one. */
   path: string | null;
   /** Where the transcript is read from next (bytes); the file may not exist yet. */
@@ -337,11 +373,6 @@ function turnEnd(ep: Episode): { kind: 'answered'; text: string } | { kind: 'pro
   return (ep.work?.background ?? 0) > 0 ? { kind: 'progress', text } : { kind: 'answered', text };
 }
 
-/** The hash a delivered prompt is recognized by in the transcript. */
-export function promptHash(prompt: string): string {
-  return hashOf(sanitizeBracketedPastePayload(prompt));
-}
-
 /**
  * A reply within the body limit: the start of `text`, cut on a code point,
  * then a marker naming the bytes left out. The marker counts in the limit.
@@ -358,43 +389,6 @@ export function cutReply(text: string, max = A2A_REMOTE_BODY_MAX): string {
 /** Oldest first (when each reached this PC), so follow-ups are typed in the order they were sent. */
 function oldestFirst(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => a.metadata.createdAt.localeCompare(b.metadata.createdAt) || a.id.localeCompare(b.id));
-}
-
-function hashOf(text: string): string {
-  return crypto.createHash('sha256').update(text.replace(/\r\n?/g, '\n').trim()).digest('hex');
-}
-
-/** Claude Code's system notice when it goes on by itself after a usage limit reset. */
-const AUTO_CONTINUE_NOTICE = 'Usage limit reset · Continuing automatically';
-
-/** The entry's `type`, `stop_reason`, content and sidechain flag, from its raw line (null: not JSON). */
-function rawEntry(line: string): { type?: unknown; stopReason?: unknown; content?: unknown; messageId: string | null; sidechain: boolean; typed: boolean; autoContinued: boolean } | null {
-  let entry: unknown;
-  try {
-    entry = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  if (!entry || typeof entry !== 'object') return null;
-  const e = entry as { type?: unknown; isSidechain?: unknown; origin?: { kind?: unknown }; promptSource?: unknown; turnOrigin?: unknown; content?: unknown; message?: { id?: unknown; stop_reason?: unknown; content?: unknown } };
-  const messageId = typeof e.message?.id === 'string' ? e.message.id : null;
-  // Typed at the agent's prompt on this PC (a prompt, a slash command, a `!` command), as Claude Code 2.1 marks it.
-  const typed = e.type === 'user' && (e.origin?.kind === 'human' || e.promptSource === 'typed');
-  // Claude Code going on by itself after its usage limit reset (2.1.322): its notice, then its own prompt.
-  const autoContinued = (e.type === 'user' && (e.origin?.kind === 'auto-continuation' || e.turnOrigin === 'auto_continuation'))
-    || (e.type === 'system' && typeof e.content === 'string' && e.content.startsWith(AUTO_CONTINUE_NOTICE));
-  return { type: e.type, stopReason: e.message?.stop_reason, content: e.message?.content, messageId, sidechain: e.isSidechain === true, typed, autoContinued };
-}
-
-function textOfContent(content: unknown): string | null {
-  if (typeof content === 'string') return content.trim() ? content : null;
-  if (!Array.isArray(content)) return null;
-  const blocks = content.filter((b): b is { type: 'text'; text: string } =>
-    !!b && typeof b === 'object' && (b as { type?: unknown }).type === 'text' && typeof (b as { text?: unknown }).text === 'string');
-  // A tool result (no text block of the user's own) is not a prompt.
-  if (blocks.length === 0 || blocks.length !== content.length) return null;
-  const text = blocks.map((b) => b.text).join('\n');
-  return text.trim() ? text : null;
 }
 
 /**
@@ -434,12 +428,9 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
   if (ep.opened) noteAsk(ep, raw?.content);
   // A conversation entry after a turn end: the agent is in a turn again.
   if (raw?.type === 'assistant' || raw?.type === 'user') ep.busy = true;
-  if (!ep.opened) {
-    const text = raw?.type === 'user' ? textOfContent(raw.content) : null;
-    if (text !== null && hashOf(text) === ep.promptHash) {
-      ep.opened = true;
-      return null;
-    }
+  if (!ep.opened && isPromptRaw(raw, ep.promptHash)) {
+    ep.opened = true;
+    return null;
   }
   const apiError = apiErrorFromTranscriptLine(line);
   if (apiError && ep.opened) {
@@ -556,7 +547,31 @@ export class HeadlessDelivery {
   /** Sessions whose start is ending: nothing more is typed into them. */
   private readonly ending = new Set<string>();
   /** The question clock of each session's current task (owed, or in its turn). */
-  private readonly questions = new Map<string, { since: number | null; probedAt: number; noticedTask: string | null; taskId?: string; kind?: A2aRemoteQuestionKind | null }>();
+  private readonly questions = new Map<string, {
+    since: number | null;
+    probedAt: number;
+    noticedTask: string | null;
+    taskId?: string;
+    kind?: A2aRemoteQuestionKind | null;
+    /**
+     * Minted each time a question appears on the screen: the picker id the
+     * asking PC sees binds to it, so an answer meant for an earlier showing
+     * of the same question (queued while its link was down) is refused.
+     */
+    nonce?: string;
+    /** `pickerId`: the id sent in the status (with the nonce); `screenId`: the screen's own (headlessAnswer.ts). */
+    picker?: { pickerId: string; screenId: string; optionCount: number } | null;
+  }>();
+  /** How the latest answers from the asking PC went, by task (at most ANSWER_OUTCOMES_MAX): sent with each status. */
+  private readonly answered = new Map<string, A2aRemoteAnswerOutcome[]>();
+  /** Per task: its worktree's facts as read at its last turn end (progressOf). */
+  private readonly worktreeFacts = new Map<string, A2aRemoteProgressV1>();
+  /** Tasks whose worktree facts are being read now. */
+  private readonly factsReading = new Set<string>();
+  /** Tasks with a turn end that came while their read was out: read once more after it. */
+  private readonly factsAgain = new Map<string, Episode>();
+  /** Answers being typed now (`taskId \0 messageId`): the same message is never typed twice. */
+  private readonly answering = new Set<string>();
   /** After an answer, by session: the transcript read on for turns nothing on this PC started. */
   private readonly afterwards = new Map<string, Episode>();
   /** Replies sent on each task besides its answers (progress, later turns): bounded by FURTHER_REPLIES_MAX. */
@@ -660,9 +675,16 @@ export class HeadlessDelivery {
    * A start is ending (headlessStarter): nothing more is typed into its
    * session, and its tasks still open are told `why` (while its link can
    * still carry it, when it has one): one not answered yet fails, one that
-   * was answered and waits for more is canceled.
+   * was answered (waiting for more, or its reply sent and its move not made
+   * yet) is canceled.
    */
   async startEnding(rec: HeadlessStartRecordV1, why: string): Promise<void> {
+    // A turn that ended with its answer on the task, its move to input-required not made yet, and nothing the
+    // asking PC sent after that answer: it was answered.
+    const ep = this.episodes.get(rec.sessionId);
+    const history = ep ? this.deps.tasks.get(ep.taskId)?.history ?? [] : [];
+    const at = ep?.replyId ? history.findIndex((m) => m.messageId === ep.replyId) : -1;
+    const answeredTask = ep?.outcome && ep.outcome.kind !== 'failed' && at >= 0 && !history.slice(at + 1).some((m) => m.role === 'user') ? ep.taskId : null;
     this.ending.add(rec.sessionId);
     this.episodes.delete(rec.sessionId);
     this.afterwards.delete(rec.sessionId);
@@ -677,7 +699,8 @@ export class HeadlessDelivery {
     if (say && rec.runId === this.deps.runId && open.length > 0) this.deps.status?.gone(open.map((t) => t.id));
     for (const task of open) {
       const state = task.status.state;
-      if (state === 'submitted' || state === 'working') await this.fail(task.id, rec.workspaceId, why, { say });
+      if ((state === 'submitted' || state === 'working') && task.id !== answeredTask) await this.fail(task.id, rec.workspaceId, why, { say });
+      else if ((state === 'submitted' || state === 'working') && task.id === answeredTask) await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`, { say });
       else if (state === 'input-required') await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`, { say });
     }
   }
@@ -787,17 +810,32 @@ export class HeadlessDelivery {
     if (inTurn?.limitStopped || this.deps.limitHeld?.(sessionId)) {
       q.since = null;
       q.kind = null;
+      q.picker = null;
       return;
     }
     const seen = await this.deps.questionOnScreen(sessionId);
     if (seen === 'clear') {
       q.since = null;
       q.kind = null;
+      q.picker = null;
     }
     if (seen !== 'dialog') return;
-    q.since ??= now;
+    if (q.since == null) {
+      q.since = now;
+      q.nonce = crypto.randomUUID();
+    }
     // Which question, for the asking PC's status: read with the same pass, never acted on.
     q.kind = this.deps.questionKind ? await this.deps.questionKind(sessionId, !!inTurn?.ask).catch(() => 'dialog' as const) : 'dialog';
+    // A picker the asking PC can answer, only while answers are on here: read off the screen, since in auto
+    // mode the transcript has no call yet.
+    const screen = this.deps.pickerOnScreen && this.deps.answers?.() === 'on' ? await this.deps.pickerOnScreen(sessionId).catch(() => null) : null;
+    q.picker = screen
+      ? {
+        pickerId: crypto.createHash('sha256').update(`${screen.pickerId}\n${q.nonce ?? ''}`).digest('hex').slice(0, 16),
+        screenId: screen.pickerId,
+        optionCount: screen.optionCount,
+      }
+      : null;
     const waited = now - q.since;
     if (waited >= QUESTION_TIMEOUT_MS) {
       this.deps.log('warn', `[headless] task ${taskId}: ${QUESTION_REASON}`);
@@ -814,12 +852,128 @@ export class HeadlessDelivery {
   /** The status of each open task a live start of this run works on. */
   private statuses(starts: readonly HeadlessStartRecordV1[]): HeadlessTaskStatus[] {
     const out: HeadlessTaskStatus[] = [];
+    for (const taskId of [...this.answered.keys()]) if (this.ended(taskId)) this.answered.delete(taskId);
+    const seen = new Set<string>();
     for (const task of this.deps.tasks.remote()) {
       if ((task.metadata.remote as A2aRemoteTaskState | undefined)?.direction !== 'inbound' || this.ended(task.id)) continue;
       const rec = this.ownerOf(task, starts);
-      if (rec) out.push({ taskId: task.id, ...this.statusOf(task, rec) });
+      if (!rec) continue;
+      seen.add(task.id);
+      const status = this.statusOf(task, rec);
+      if (status.kind === null) {
+        out.push({ taskId: task.id, ...status });
+        continue;
+      }
+      // The latest answers' outcomes, and the worktree's facts, go with whatever the worker does now.
+      const answers = this.answered.get(task.id);
+      const progress = this.worktreeFacts.get(task.id);
+      const detail = { ...status.detail, ...(answers ? { answers: [...answers] } : {}), ...(progress ? { progress } : {}) };
+      out.push({ taskId: task.id, kind: status.kind, ...(Object.keys(detail).length > 0 ? { detail } : {}) });
     }
+    for (const taskId of [...this.worktreeFacts.keys()]) if (!seen.has(taskId)) this.worktreeFacts.delete(taskId);
     return out;
+  }
+
+  /**
+   * Start reading the worktree's facts for the task whose turn just ended,
+   * once per turn end (the callers' retries do not read again). Not awaited:
+   * a slow git never holds up the pass that serves every session here; the
+   * facts go with the task's statuses once read. Never on a timer. A read that
+   * fails or says nothing clears them.
+   */
+  private readFacts(ep: Episode): void {
+    const read = this.deps.progressOf;
+    const rec = read ? this.deps.starts.list().find((r) => r.sessionId === ep.sessionId) : undefined;
+    if (!read || !rec) return;
+    const taskId = ep.taskId;
+    // A turn end while a read is out: one more read once it is done, so the facts are this turn end's.
+    if (this.factsReading.has(taskId)) {
+      this.factsAgain.set(taskId, ep);
+      return;
+    }
+    this.factsReading.add(taskId);
+    void read(rec)
+      .catch((err: unknown) => {
+        this.deps.log('warn', `[headless] task ${taskId}: its worktree could not be read: ${errMsg(err)}`);
+        return null;
+      })
+      .then((facts) => {
+        if (facts && !this.ended(taskId)) this.worktreeFacts.set(taskId, facts);
+        else this.worktreeFacts.delete(taskId);
+      })
+      .finally(() => {
+        this.factsReading.delete(taskId);
+        const again = this.factsAgain.get(taskId);
+        this.factsAgain.delete(taskId);
+        if (again && !this.ended(taskId)) this.readFacts(again);
+      });
+  }
+
+  /**
+   * The asking PC's answer to the question its task's worker shows. Only for
+   * an open task this PC received from that PC, owned by one of this run's live
+   * headless starts, while this PC's answers setting is on; the key goes in
+   * through `answerOnScreen`. The outcome is kept for the task's status. The
+   * same message is taken once: a resend of one being typed, or of the last
+   * one, changes nothing.
+   */
+  async answer(taskId: string, messageId: string, answer: A2aRemoteAnswerV1): Promise<HeadlessAnswerResult | 'duplicate'> {
+    const key = `${taskId}\0${messageId}`;
+    if (this.answering.has(key) || this.answered.get(taskId)?.some((o) => o.messageId === messageId)) return 'duplicate';
+    // One answer at a time per task: another arriving meanwhile is not typed, and says so.
+    if ([...this.answering].some((k) => k.startsWith(`${taskId}\0`))) {
+      const busy: HeadlessAnswerResult = { outcome: 'not-answered', reason: 'lock-busy' };
+      this.record(taskId, messageId, busy);
+      return busy;
+    }
+    this.answering.add(key);
+    try {
+      const result = await this.answerOnce(taskId, answer);
+      this.record(taskId, messageId, result);
+      return result;
+    } finally {
+      this.answering.delete(key);
+    }
+  }
+
+  /** Kept for the task's status only while one of this run's live starts owns it: no status goes for any other. */
+  private record(taskId: string, messageId: string, result: HeadlessAnswerResult): void {
+    const task = this.deps.tasks.get(taskId);
+    if (!task || this.ended(taskId) || !this.ownerOf(task, this.deps.starts.list())) return;
+    const list = [...(this.answered.get(taskId) ?? []), { messageId, ...result }];
+    this.answered.set(taskId, list.slice(-ANSWER_OUTCOMES_MAX));
+  }
+
+  private async answerOnce(taskId: string, answer: A2aRemoteAnswerV1): Promise<HeadlessAnswerResult> {
+    const no = (reason: HeadlessAnswerReason): HeadlessAnswerResult => ({ outcome: 'not-answered', reason });
+    const refused = this.answerRefusal(taskId);
+    if (refused) return no(refused);
+    const task = this.deps.tasks.get(taskId)!;
+    const rec = this.ownerOf(task, this.deps.starts.list());
+    if (!rec || !this.deps.answerOnScreen) return no('not-headless');
+    // The picker this PC last told the asking PC about, on this task, in this showing of the question.
+    const q = this.questions.get(rec.sessionId);
+    if (!q?.picker || q.since == null || q.taskId !== taskId) return no('no-picker');
+    if (q.picker.pickerId !== answer.pickerId) return no('picker-changed');
+    const sessionId = rec.sessionId;
+    // Asked again right before the key: the task may have ended, its start changed, or answers gone off since.
+    const stillAllowed = (): HeadlessAnswerReason | null => this.answerRefusal(taskId)
+      ?? (this.ownerOf(this.deps.tasks.get(taskId)!, this.deps.starts.list())?.sessionId === sessionId ? null : 'not-headless');
+    const result = await this.deps.answerOnScreen(sessionId, { pickerId: q.picker.screenId, option: answer.option }, stillAllowed);
+    // Answered: this showing of the question is over, whatever the next probe sees.
+    if (result.outcome === 'answered' && this.questions.get(sessionId) === q) q.picker = null;
+    return result;
+  }
+
+  /** Why no answer may be typed for this task now (answers setting, task state, headless mode), or null. */
+  private answerRefusal(taskId: string): HeadlessAnswerReason | null {
+    const setting = this.deps.answers?.() ?? 'off';
+    if (setting === 'damaged') return 'answers-damaged';
+    if (setting !== 'on') return 'answers-off';
+    const task = this.deps.tasks.get(taskId);
+    if (!task || (task.metadata.remote as A2aRemoteTaskState | undefined)?.direction !== 'inbound' || this.ended(taskId)) return 'not-open';
+    if (this.stopped || !this.deps.mode.active()) return 'not-headless';
+    return null;
   }
 
   /** At its usage limit, then a question it waits on, then in a turn, then waiting for more. */
@@ -833,11 +987,17 @@ export class HeadlessDelivery {
       const resetsAt = limitResetOf(active.limit);
       return { kind: 'usage-limit', detail: { provider: rec.agent, ...(resetsAt != null ? { resetsAt: new Date(resetsAt).toISOString() } : {}) } };
     }
-    if (active?.ask) {
-      return { kind: 'question', detail: { question: 'menu', menuId: active.ask.id, ...(active.ask.options.length > 0 ? { options: active.ask.options } : {}) } };
-    }
     const q = this.questions.get(rec.sessionId);
-    if (q?.since != null && q.taskId === task.id) return { kind: 'question', detail: { question: q.kind ?? 'dialog' } };
+    // The picker read off the screen, for an answer from the asking PC: its id and how many choices.
+    const picker = q?.since != null && q.taskId === task.id && q.picker ? q.picker : null;
+    const answerable = picker ? { pickerId: picker.pickerId, optionCount: picker.optionCount } : {};
+    if (active?.ask) {
+      return {
+        kind: 'question',
+        detail: { question: 'menu', menuId: active.ask.id, ...(active.ask.options.length > 0 ? { options: active.ask.options } : {}), ...answerable },
+      };
+    }
+    if (q?.since != null && q.taskId === task.id) return { kind: 'question', detail: { question: picker ? 'menu' : q.kind ?? 'dialog', ...answerable } };
     if ((inTurn && !inTurn.outcome) || (!inTurn && active?.busy)) {
       const background = active?.work?.background ?? 0;
       return { kind: 'working', ...(background > 0 ? { detail: { background } } : {}) };
@@ -1169,6 +1329,8 @@ export class HeadlessDelivery {
     const body = text.trim();
     ep.lastProgress = { text: body, sent: false };
     if (!body || this.ended(ep.taskId) || !this.budgetLeft(ep.taskId)) return;
+    // A turn end too: the facts go with the statuses from here on.
+    this.readFacts(ep);
     const before = this.said(ep.taskId, cutReply(body));
     ep.lastProgress.sent = await this.sayFurther(ep, body);
     this.countAsSaid(ep, cutReply(body), before);
@@ -1236,9 +1398,13 @@ export class HeadlessDelivery {
       if (w.unsaid?.text === body && copies > w.unsaid.copies) {
         // The try before landed although its call failed.
         this.further.set(w.taskId, (this.further.get(w.taskId) ?? 0) + 1);
-      } else if (!(await this.sayFurther(w, body))) {
-        w.unsaid = { text: body, copies };
-        return 'held';
+      } else {
+        // A turn end of its own (not the retry of one held before): the facts go with the statuses from here on.
+        if (w.unsaid?.text !== body) this.readFacts(w);
+        if (!(await this.sayFurther(w, body))) {
+          w.unsaid = { text: body, copies };
+          return 'held';
+        }
       }
       w.unsaid = null;
       return 'sent';
@@ -1289,6 +1455,11 @@ export class HeadlessDelivery {
     }
     const task = this.deps.tasks.get(ep.taskId);
     if (!task || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return this.drop(ep);
+    // Once per turn end, before its reply is tried (a reply that throws is tried again on a later pass).
+    if (!ep.factsRead) {
+      ep.factsRead = true;
+      this.readFacts(ep);
+    }
     const replied = task.history.filter((m) => m.role === 'agent').length > ep.agentMessagesAtSend;
     if (!replied) {
       // Over the body limit: its start goes, with a marker (an answer leads with its result).
@@ -1308,6 +1479,11 @@ export class HeadlessDelivery {
         return;
       }
     }
+    // The answer is on the task now: the newest message this PC's agent wrote on it (sent here, or by the agent itself).
+    const answered = this.deps.tasks.get(ep.taskId);
+    const fromPeer = new Set(((answered?.metadata.remote as A2aRemoteTaskState | undefined)?.inbox ?? []).map((i) => i.messageId));
+    const own = (answered?.history ?? []).filter((m) => m.role === 'agent' && !fromPeer.has(m.messageId)).at(-1);
+    if (own && !ep.replyId) ep.replyId = own.messageId;
     if (!ep.working) await this.toWorking(ep);
     if (this.deps.tasks.get(ep.taskId)?.status.state !== 'working') return this.drop(ep);
     const moved = await this.deps.transition({ taskId: ep.taskId, workspaceId: ep.workspaceId, to: 'input-required' })
@@ -1320,7 +1496,7 @@ export class HeadlessDelivery {
     // Read on from here for turns nothing on this PC starts (only while nothing else took the session).
     if (ep.path !== null && !this.episodes.has(ep.sessionId) && !this.ending.has(ep.sessionId)) {
       this.afterwards.set(ep.sessionId, {
-        ...ep, opened: true, answer: [], endPending: undefined, limitStopped: false, limitTold: undefined, outcome: null, waitingSince: null, busy: false, lastProgress: null,
+        ...ep, opened: true, answer: [], endPending: undefined, limitStopped: false, limitTold: undefined, outcome: null, waitingSince: null, busy: false, lastProgress: null, factsRead: undefined,
       });
     }
   }
@@ -1347,7 +1523,7 @@ export class HeadlessDelivery {
     // `failed` is not a move from `submitted` or `input-required` in the ledger: those are canceled, with the reason.
     const to = wanted === 'failed' && (state === 'submitted' || state === 'input-required') ? 'canceled' : wanted;
     // A cancel reaches the asking PC without its summary (a failure carries one): the reason goes first, as a reply, once.
-    if (to === 'canceled' && opts.say !== false) await this.sayOnce(taskId, workspaceId, `Canceled: ${reason}`);
+    if (to === 'canceled' && opts.say !== false) await this.sayOnce(taskId, workspaceId, `${HEADLESS_CANCEL_REASON_PREFIX}${reason}`);
     // The state read above may be stale by now: another path can end the task meanwhile (an ended link fails
     // every task on it, failTasksForLink). Ended is ended: nothing more to move.
     const res: { ok: boolean; error?: string } = this.ended(taskId)

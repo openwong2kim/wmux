@@ -33,6 +33,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { IPC } from '../../shared/constants';
+import { sameFileId } from '../../shared/sameFileId';
 import {
   HTML_PREVIEW_ONLINE_PARTITION,
   HTML_PREVIEW_PARTITION,
@@ -301,12 +302,13 @@ export async function resolveInsideRoot(entry: Pick<HtmlEntry, 'root' | 'pageDir
   if (segments.some((s) => s === '..' || s === '.')) return null;
   const joined = path.join(entry.root, ...segments);
   if (!sameOrInside(entry.root, joined)) return null;
-  let real: string;
-  try {
-    real = await fs.promises.realpath(joined);
-  } catch {
-    return null;
-  }
+  // Canonicalized by resolveAccessiblePath, which spelled the page's folder the
+  // root was chosen from (openHtmlPreview), so both are in one path space: on a
+  // mapped network drive a bare realpath answers the share's UNC spelling
+  // (\\server\share\…), while the root is spelled from the drive (Z:\…), and
+  // nothing on the drive would be inside it (#3413).
+  const real = await resolveAccessiblePath(joined);
+  if (!real) return null;
   if (!sameOrInside(entry.root, real) || isSensitivePath(real)) return null;
   // No dot-names (.env, .git, …), judged on the real path, except along the
   // page's own folder chain (a page under .github/ may load its neighbours).
@@ -365,16 +367,16 @@ export async function serveHtmlPreview(request: Request, online = false): Promis
   }
   let size: number;
   try {
-    const opened = await handle.stat();
+    const opened = await handle.stat({ bigint: true });
     // A folder above the file may have been swapped between the check and the
     // open: resolve the request again and require the very file we hold.
     const again = await resolveInsideRoot(entry, servedRaw);
-    const atPath = again === real ? await fs.promises.stat(again) : null;
-    if (!opened.isFile() || opened.size > PREVIEW_MAX_BYTES.html || !atPath || atPath.dev !== opened.dev || atPath.ino !== opened.ino) {
+    const atPath = again === real ? await fs.promises.stat(again, { bigint: true }) : null;
+    if (!opened.isFile() || opened.size > PREVIEW_MAX_BYTES.html || !atPath || !sameFileId(atPath, opened)) {
       await handle.close();
       return notFound();
     }
-    size = opened.size;
+    size = Number(opened.size);
   } catch {
     await handle.close().catch(() => undefined);
     return notFound();

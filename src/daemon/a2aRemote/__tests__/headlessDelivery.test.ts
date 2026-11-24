@@ -569,6 +569,40 @@ describe('the reply, from the transcript', () => {
     expect(replies.map((r) => r.text)).toEqual(['PONG']);
   });
 
+  // Claude Code 2.1.326 stores a long or multi-line prompt as a paste: inside
+  // `<pasted_content id="…">` markers, with line breaks around them (#3412).
+  const asPasted = (text: string, id = '3de0'): string =>
+    `\n\n<pasted_content id="${id}">\n${text}\n</pasted_content id="${id}">\n`;
+
+  it('the prompt stored inside paste markers is its own entry: the turn is answered (#3412)', async () => {
+    const multi = 'Reply with PONG.\nThen run uname -s\nand say what it printed.';
+    task = inboundTask(multi);
+    const d = await delivering();
+    expect(delivered.map((x) => x.prompt)).toEqual([multi]);
+    write(userLine(asPasted(multi)), toolUseLine(), toolResultLine(), assistantLine('PONG Linux'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG Linux']);
+    expect(moves.at(-1)).toEqual({ to: 'input-required' });
+  });
+
+  it('a paste break inside a word still matches; a different pasted text is still input from this PC', async () => {
+    const long = 'Summarise the last three commits in this repository';
+    task = inboundTask(long);
+    let d = await delivering();
+    write(userLine(asPasted('Summarise the last three com\nmits in this repository')), assistantLine('done'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['done']);
+
+    task = inboundTask(long);
+    moves = [];
+    replies = [];
+    d = await delivering();
+    write(userLine(asPasted('Summarise the last three tags in this repository')));
+    await d.tick();
+    expect(replies).toEqual([]);
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: 'the agent was given other input on this PC before the task' });
+  });
+
   it('input from this PC before the prompt, or inside its turn: failed, no reply', async () => {
     let d = await delivering();
     write(userLine('something typed over ssh'));
@@ -779,6 +813,51 @@ describe('the reply, from the transcript', () => {
     await d.startEnding(rec, "the agent's session ended");
     expect(task.status.state).toBe('failed');
     expect(warns.filter((w) => w.includes('not marked'))).toEqual([]);
+  });
+
+  it('ended after its reply went but before its move to input-required: canceled, not failed; killed mid-turn: failed', async () => {
+    write(userLine('an earlier session line'));
+    const base = deps();
+    let moveRefused = true;
+    const d = new HeadlessDelivery(deps({
+      transition: async (input) => (input.to === 'input-required' && moveRefused ? { ok: false, error: 'busy' } : base.transition(input)),
+    }));
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG']);
+    expect(task.status.state).toBe('working');
+    await d.startEnding(rec, "the agent's session ended");
+    expect(moves.at(-1)).toEqual({ to: 'canceled', summary: "the agent ended: the agent's session ended" });
+    moveRefused = false;
+
+    // Answered, then the asking PC wrote again before the move: that follow-up is not answered, so it fails.
+    task = inboundTask();
+    moves = [];
+    replies = [];
+    moveRefused = true;
+    write(userLine('an earlier session line'));
+    const again = new HeadlessDelivery(deps({
+      transition: async (input) => (input.to === 'input-required' && moveRefused ? { ok: false, error: 'busy' } : base.transition(input)),
+    }));
+    await again.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await again.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG']);
+    task.history.push({ kind: 'message', messageId: 'u-follow', role: 'user', parts: [{ kind: 'text', text: 'and the tests?' }] });
+    await again.startEnding(rec, "the agent's session ended");
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: "the agent's session ended" });
+    moveRefused = false;
+
+    // Mid-turn (nothing answered yet): failed, as before.
+    task = inboundTask();
+    moves = [];
+    replies = [];
+    const mid = await delivering();
+    write(userLine(PROMPT), toolUseLine());
+    await mid.tick();
+    await mid.startEnding(rec, "the agent's session ended");
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: "the agent's session ended" });
   });
 
   it('a start that ends fails its open task with why (a restart: "the daemon restarted"), and cancels an answered one', async () => {
@@ -1062,6 +1141,19 @@ const resultLine = (id: string, text: string): string => JSON.stringify({ type: 
 /** A turn Claude Code starts itself (a ScheduleWakeup, a peer): an `isMeta` user entry. */
 const wakeLine = (): string => JSON.stringify({ type: 'user', uuid: `w${seq}`, timestamp: stamp(), isMeta: true, turnOrigin: 'scheduled', promptSource: 'system',
   message: { role: 'user', content: 'scheduled wake' } });
+
+describe('a prompt Claude Code stored as a paste (#3412)', () => {
+  it('recorded form: the paste-wrapped prompt opens the episode and the turn end is the reply', async () => {
+    task = inboundTask('Reply with PONG.\nThen run uname -s and say what it printed.');
+    const lines = fs.readFileSync(path.join(__dirname, 'fixtures', 'pasted', 'prompt.jsonl'), 'utf8').split('\n').filter(Boolean);
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(...lines);
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG. `uname -s` printed `Linux`.']);
+    expect(moves).toEqual([{ to: 'working' }, { to: 'input-required' }]);
+  });
+});
 
 describe('background work the agent leaves running', () => {
   for (const name of ['hooks', 'nohooks']) {
@@ -1813,6 +1905,134 @@ describe('the status this delivery reports for each task (headlessStatus.ts send
     expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input' });
   });
 
+  it('the worktree\'s facts: read at each turn end without holding up the pass, sent with a later status; never per pass', async () => {
+    let reads = 0;
+    let facts: { head: string; committedAt?: string; changedFiles: number } | null = { head: 'abc1234def56', committedAt: '2026-11-24T01:00:00.000Z', changedFiles: 2 };
+    let release: (() => void) | null = null;
+    const d = new HeadlessDelivery(statusDeps({ progressOf: () => {
+      reads += 1;
+      return new Promise((resolve) => { release = () => resolve(facts); });
+    } }));
+    await d.tick();
+    write(userLine(PROMPT));
+    await d.tick();
+    await d.tick();
+    expect(reads).toBe(0);
+    expect(last()).toEqual({ taskId: TASK, kind: 'working' });
+    write(assistantLine('PONG'));
+    // The pass finishes the turn while the read is still out.
+    await d.tick();
+    expect(task.status.state).toBe('input-required');
+    expect(reads).toBe(1);
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input' });
+    release!();
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input', detail: { progress: facts } });
+    await d.tick();
+    expect(reads).toBe(1);
+    // A read that says nothing clears them.
+    facts = null;
+    task.history.push({ kind: 'message', messageId: 'm9', role: 'user', parts: [{ kind: 'text', text: 'again' }] });
+    (task.metadata.remote as A2aRemoteTaskState).inbox = [{ messageId: 'm9', kind: 'reply', delivered: false }];
+    await d.tick();
+    write(userLine('again'), assistantLine('done'));
+    await d.tick();
+    release!();
+    await d.tick();
+    await d.tick();
+    expect(reads).toBe(2);
+    expect(last()?.detail?.progress).toBeUndefined();
+  });
+
+  it('a turn end that comes while a read is out is read again once that read is done', async () => {
+    let reads = 0;
+    const pending: Array<() => void> = [];
+    const d = new HeadlessDelivery(statusDeps({ progressOf: () => {
+      reads += 1;
+      const n = reads;
+      return new Promise((resolve) => { pending.push(() => resolve({ head: n === 1 ? 'aaaaaaa' : 'bbbbbbb', changedFiles: n })); });
+    } }));
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(reads).toBe(1);
+    // A follow-up's turn ends while the first read is still out.
+    task.history.push({ kind: 'message', messageId: 'm9', role: 'user', parts: [{ kind: 'text', text: 'again' }] });
+    (task.metadata.remote as A2aRemoteTaskState).inbox = [{ messageId: 'm9', kind: 'reply', delivered: false }];
+    await d.tick();
+    write(userLine('again'), assistantLine('done'));
+    await d.tick();
+    await d.tick();
+    expect(reads).toBe(1);
+    pending.shift()!();
+    await d.tick();
+    expect(reads).toBe(2);
+    pending.shift()!();
+    await d.tick();
+    await d.tick();
+    expect(last()?.detail?.progress).toEqual({ head: 'bbbbbbb', changedFiles: 2 });
+  });
+
+  it('a turn end whose reply throws, tried again on a later pass, reads its worktree once', async () => {
+    let reads = 0;
+    let throws = 1;
+    const base = statusDeps();
+    const d = new HeadlessDelivery(statusDeps({
+      progressOf: async () => { reads += 1; return { head: 'abc1234', changedFiles: 0 }; },
+      reply: async (input) => {
+        if (throws-- > 0) throw new Error('pipe closed');
+        return base.reply(input);
+      },
+    }));
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    for (let i = 0; i < 4; i++) await d.tick();
+    expect(task.status.state).toBe('input-required');
+    expect(reads).toBe(1);
+    expect(last()?.detail?.progress).toEqual({ head: 'abc1234', changedFiles: 0 });
+  });
+
+  it('a turn end whose move is tried again reads its worktree once', async () => {
+    let reads = 0;
+    let fails = 2;
+    const base = statusDeps();
+    const d = new HeadlessDelivery(statusDeps({
+      progressOf: async () => { reads += 1; return { head: 'abc1234', changedFiles: 0 }; },
+      transition: async (input) => (input.to === 'input-required' && fails-- > 0 ? { ok: false, error: 'busy' } : base.transition(input)),
+    }));
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    for (let i = 0; i < 4; i++) await d.tick();
+    expect(task.status.state).toBe('input-required');
+    expect(reads).toBe(1);
+  });
+
+  it('a turn that ends while work it left runs (its progress reply): read then too, and the working status carries them', async () => {
+    let reads = 0;
+    const facts = { head: 'abc1234def56', changedFiles: 1 };
+    const d = new HeadlessDelivery(statusDeps({ progressOf: async () => { reads += 1; return facts; } }));
+    await d.tick();
+    write(userLine(PROMPT), callLine('m1', 'Monitor', { command: 'tail -f log' }),
+      resultLine('m1', 'Monitor started (task mon1, expires in 15m unless the source ends first)'), assistantLine('Watching the log.'));
+    await d.tick();
+    await d.tick();
+    expect(reads).toBe(1);
+    expect(task.status.state).toBe('working');
+    expect(last()).toMatchObject({ taskId: TASK, detail: { progress: facts } });
+  });
+
+  for (const [name, progressOf] of [['no worktree reader', undefined], ['a reader that fails', async () => { throw new Error('git is gone'); }]] as const) {
+    it(`with ${name}, the status is as before`, async () => {
+      const d = new HeadlessDelivery(statusDeps(progressOf ? { progressOf } : {}));
+      await d.tick();
+      write(userLine(PROMPT));
+      await d.tick();
+      await d.tick();
+      expect(last()).toEqual({ taskId: TASK, kind: 'working' });
+    });
+  }
+
   it('a question on the screen: its kind, read with the question clock\'s own probe; the open AskUserQuestion is said', async () => {
     const asked: boolean[] = [];
     const d = new HeadlessDelivery(statusDeps({ questionKind: async (_s, asking) => { asked.push(asking); return 'permission'; } }));
@@ -1846,6 +2066,155 @@ describe('the status this delivery reports for each task (headlessStatus.ts send
     await advance(d, 2_000);
     expect(delivered.map((x) => x.prompt)).toEqual([PROMPT, 'now the kernel version']);
     expect(last()).toEqual({ taskId: TASK, kind: 'working' });
+  });
+
+  it('a picker read off the screen, with no AskUserQuestion call in the transcript (auto mode): a menu question with its picker id and choices count', async () => {
+    const d = new HeadlessDelivery(statusDeps({
+      questionKind: async () => 'dialog',
+      answers: () => 'on',
+      pickerOnScreen: async () => ({ pickerId: '0123456789abcdef', optionCount: 2 }),
+    }));
+    await d.tick();
+    write(userLine(PROMPT));
+    screen = 'dialog';
+    await advance(d, QUESTION_PROBE_MS);
+    expect(last()).toMatchObject({ taskId: TASK, kind: 'question', detail: { question: 'menu', optionCount: 2 } });
+    // The id sent is bound to this showing of the question, not the screen's own.
+    expect(last()?.detail?.pickerId).toMatch(/^[0-9a-f]{16}$/);
+    expect(last()?.detail?.pickerId).not.toBe('0123456789abcdef');
+    screen = 'clear';
+    await advance(d, QUESTION_PROBE_MS);
+    expect(last()).toEqual({ taskId: TASK, kind: 'working' });
+  });
+
+  it('with answers off here, no picker is read or sent', async () => {
+    let reads = 0;
+    const d = new HeadlessDelivery(statusDeps({
+      questionKind: async () => 'dialog',
+      answers: () => 'off',
+      pickerOnScreen: async () => { reads += 1; return { pickerId: '0123456789abcdef', optionCount: 2 }; },
+    }));
+    await d.tick();
+    write(userLine(PROMPT));
+    screen = 'dialog';
+    await advance(d, QUESTION_PROBE_MS);
+    expect(last()).toEqual({ taskId: TASK, kind: 'question', detail: { question: 'dialog' } });
+    expect(reads).toBe(0);
+  });
+
+  describe('an answer from the asking PC', () => {
+    const typed: Array<{ sessionId: string; pickerId: string; option: number }> = [];
+    const allowedAtKey: Array<string | null> = [];
+    let answers: 'on' | 'off' | 'damaged';
+    let result: () => Promise<{ outcome: 'answered' }>;
+    beforeEach(() => {
+      typed.length = 0;
+      allowedAtKey.length = 0;
+      answers = 'on';
+      result = async () => ({ outcome: 'answered' });
+    });
+    const answering = (): HeadlessDelivery => new HeadlessDelivery(statusDeps({
+      questionKind: async () => 'dialog',
+      answers: () => answers,
+      pickerOnScreen: async () => ({ pickerId: '0123456789abcdef', optionCount: 2 }),
+      answerOnScreen: async (sessionId, a, stillAllowed) => {
+        allowedAtKey.push(stillAllowed());
+        typed.push({ sessionId, pickerId: a.pickerId, option: a.option });
+        return result();
+      },
+    }));
+    /** The task's worker shows the picker; the id its status carries. */
+    async function showing(d: HeadlessDelivery): Promise<string> {
+      await d.tick();
+      write(userLine(PROMPT));
+      screen = 'dialog';
+      await advance(d, QUESTION_PROBE_MS);
+      return last()!.detail!.pickerId!;
+    }
+
+    it('is typed into its task\'s own session against the screen\'s picker, once per message, and its outcome rides on the status', async () => {
+      const d = answering();
+      const pickerId = await showing(d);
+      expect(await d.answer(TASK, 'an-1', { pickerId, option: 2 })).toEqual({ outcome: 'answered' });
+      expect(await d.answer(TASK, 'an-1', { pickerId, option: 2 })).toBe('duplicate');
+      expect(typed).toEqual([{ sessionId: rec.sessionId, pickerId: '0123456789abcdef', option: 2 }]);
+      expect(allowedAtKey).toEqual([null]);
+      await d.tick();
+      expect(last()?.detail?.answers).toEqual([{ messageId: 'an-1', outcome: 'answered' }]);
+      // Answered: this showing of the question is over, before the next probe looks.
+      expect(await d.answer(TASK, 'an-2', { pickerId, option: 1 })).toEqual({ outcome: 'not-answered', reason: 'no-picker' });
+      expect(typed).toHaveLength(1);
+    });
+
+    it('the check asked right before the key sees answers turned off and the task ended meanwhile', async () => {
+      let check: () => string | null = () => null;
+      const d = new HeadlessDelivery(statusDeps({
+        questionKind: async () => 'dialog',
+        answers: () => answers,
+        pickerOnScreen: async () => ({ pickerId: '0123456789abcdef', optionCount: 2 }),
+        answerOnScreen: async (_s, _a, stillAllowed) => { check = stillAllowed; return { outcome: 'answered' }; },
+      }));
+      const pickerId = await showing(d);
+      await d.answer(TASK, 'an-1', { pickerId, option: 2 });
+      answers = 'off';
+      expect(check()).toBe('answers-off');
+      answers = 'on';
+      task.status = { state: 'canceled', timestamp: new Date().toISOString() };
+      expect(check()).toBe('not-open');
+    });
+
+    it('an answer meant for an earlier showing of the same question is refused', async () => {
+      const d = answering();
+      const first = await showing(d);
+      screen = 'clear';
+      await advance(d, QUESTION_PROBE_MS);
+      screen = 'dialog';
+      await advance(d, QUESTION_PROBE_MS);
+      const second = last()!.detail!.pickerId!;
+      expect(second).not.toBe(first);
+      expect(await d.answer(TASK, 'an-1', { pickerId: first, option: 2 })).toEqual({ outcome: 'not-answered', reason: 'picker-changed' });
+      expect(typed).toEqual([]);
+    });
+
+    it('is not typed while answers are off, or off because their file is damaged; the status says why', async () => {
+      const d = answering();
+      const pickerId = await showing(d);
+      answers = 'off';
+      expect(await d.answer(TASK, 'an-1', { pickerId, option: 2 })).toEqual({ outcome: 'not-answered', reason: 'answers-off' });
+      answers = 'damaged';
+      expect(await d.answer(TASK, 'an-2', { pickerId, option: 2 })).toEqual({ outcome: 'not-answered', reason: 'answers-damaged' });
+      expect(typed).toEqual([]);
+      await d.tick();
+      expect(last()?.detail?.answers).toEqual([
+        { messageId: 'an-1', outcome: 'not-answered', reason: 'answers-off' },
+        { messageId: 'an-2', outcome: 'not-answered', reason: 'answers-damaged' },
+      ]);
+    });
+
+    it('is not typed for a task that ended, and nothing is kept for it', async () => {
+      const d = answering();
+      const pickerId = await showing(d);
+      task.status = { state: 'canceled', timestamp: new Date().toISOString() };
+      expect(await d.answer(TASK, 'an-1', { pickerId, option: 2 })).toEqual({ outcome: 'not-answered', reason: 'not-open' });
+      expect(typed).toEqual([]);
+    });
+
+    it('a second answer while one is being typed is not typed, and both outcomes reach the status', async () => {
+      let release: () => void = () => undefined;
+      result = () => new Promise((resolve) => { release = () => resolve({ outcome: 'answered' }); });
+      const d = answering();
+      const pickerId = await showing(d);
+      const first = d.answer(TASK, 'an-1', { pickerId, option: 2 });
+      await Promise.resolve();
+      expect(await d.answer(TASK, 'an-2', { pickerId, option: 1 })).toEqual({ outcome: 'not-answered', reason: 'lock-busy' });
+      release();
+      expect(await first).toEqual({ outcome: 'answered' });
+      await d.tick();
+      expect(last()?.detail?.answers).toEqual([
+        { messageId: 'an-2', outcome: 'not-answered', reason: 'lock-busy' },
+        { messageId: 'an-1', outcome: 'answered' },
+      ]);
+    });
   });
 
   it('at its usage limit: usage-limit, with whose limit and when it resets', async () => {

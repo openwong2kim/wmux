@@ -9,6 +9,7 @@ const { spawn } = vi.hoisted(() => ({
   spawn: vi.fn((_cmd: string, _args: string[], _opts: { env?: Record<string, string> }) =>
     ({ pid: 4322, kill: vi.fn(), onData: vi.fn(), onExit: vi.fn(), write: vi.fn(), resize: vi.fn() })),
 }));
+vi.mock('../../../shared/terminalPty', async (importOriginal) => (await import('../../../test-utils/ptyTransportStub')).routeSpawnToNodePtyMock(importOriginal));
 vi.mock('node-pty', () => ({ spawn, default: { spawn } }));
 import { PTYManager } from '../PTYManager';
 import { getWmuxDir } from '../../../daemon/config';

@@ -3,8 +3,9 @@
 // asked for at start and at end, with one daemon throughout, with its memory
 // recorded, and torn down cleanly, so nothing of it runs on into the next
 // engine's run. The harness
-// exits 0 either way and only flags these in summary.json; the A/B workflow
-// (.github/workflows/twenty-pane-ab-linux.yml) fails on them instead.
+// exits 0 either way and only flags these in summary.json; the Linux stability
+// workflow (.github/workflows/twenty-pane-stability-linux.yml) fails on them
+// instead. node runs are older builds' (the Node engine is removed).
 //
 //   node scripts/twenty-pane-ab-check.mjs <run-out-dir> <node|rust>
 //   node scripts/twenty-pane-ab-check.mjs --table <node-run-out-dir> <rust-run-out-dir>

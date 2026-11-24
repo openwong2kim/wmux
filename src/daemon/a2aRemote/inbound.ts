@@ -3,6 +3,8 @@ import {
   A2A_BRAIN_ALIAS,
   A2A_REMOTE_BODY_MAX,
   parseA2aRemoteImageRefs,
+  parseA2aRemoteAnswer,
+  parseA2aRemoteApproval,
   parseA2aRemoteNotice,
   parseA2aRemoteStatus,
   type A2aRemoteImageRef,
@@ -14,6 +16,8 @@ import {
   type A2aRemoteEnvelope,
   type A2aRemoteReceipt,
   type A2aRemoteStatusV1,
+  type A2aRemoteAnswerV1,
+  type A2aRemoteApprovalV1,
   type A2aRemoteErrorCode,
   type A2aRemoteTaskMarkerV1,
   type HostId,
@@ -86,6 +90,36 @@ export interface InboundDeps {
     /** True the first time a task's `gone` is seen (its log line); false after, until the task is forgotten. */
     firstGone?(taskId: string): boolean;
     forget(taskId: string): void;
+    /** A status for a task that ended here: not kept, but a send still waiting for an outcome it carries has it. */
+    ended?(taskId: string, status: A2aRemoteStatusV1): void;
+  };
+  /**
+   * Where the asking PC's answer to the question its task's worker shows goes
+   * (`kind: 'answer'`, headless delivery): taken at once, typed (or refused) in
+   * the background, and told back in the task's status. Absent, an answer is
+   * refused as unknown.
+   */
+  remoteAnswer?: {
+    take(taskId: string, messageId: string, answer: A2aRemoteAnswerV1): void;
+  };
+  /**
+   * Where the sending PC's approval of a prompt offered in its task's status
+   * goes (`kind: 'approval'`, remoteApproval.ts): taken at once, carried out
+   * (or refused) in the background, and told back in the task's status.
+   * `on(hostId)` false (or absent): refused as `approvals-off` before anything
+   * else is read.
+   */
+  remoteApproval?: {
+    on(hostId: HostId): boolean;
+    /**
+     * Whether this approval from this PC is taken now (a per-PC window: every
+     * message counts but one whose id already has a final outcome); past it,
+     * the time left in the window.
+     */
+    admit?(hostId: HostId, messageId: string): { ok: true } | { ok: false; retryAfterMs: number };
+    take(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1): void;
+    /** An approval past the window: answered `rate-limited` in the task's status, stored as final, never carried out. */
+    limited?(hostId: HostId, taskId: string, messageId: string, approval: A2aRemoteApprovalV1, retryAfterMs: number): void | Promise<void>;
   };
   /**
    * A host's notice about one of our own messages (`held-notice.1`): how many
@@ -182,6 +216,8 @@ async function applyInbound(
   peer: { hostId: HostId; pull?: ImagePull },
   deps: InboundDeps,
 ): Promise<A2aRemoteDeliverResponse> {
+  // An approval from a PC this PC's setting is off for: refused before its shape, its link or its task is read.
+  if (isPlainObject(raw) && raw['kind'] === 'approval' && deps.remoteApproval?.on(peer.hostId) !== true) return fail('approvals-off');
   const parsed = parseEnvelope(raw);
   if ('error' in parsed) return fail(parsed.error);
   // Peer text is pasted into a terminal later: control characters and escape
@@ -210,14 +246,19 @@ async function applyInbound(
   if (env.kind === 'status' && deps.remoteStatus?.admit && !deps.remoteStatus.admit(peer.hostId)) {
     return { ok: true, taskId: env.taskId as string, duplicate: true };
   }
+  // An approval past its PC's window: checked like any other, then answered `rate-limited` (below). One that
+  // fails a check is answered `rate-limited` too, unread and with no log line, so the asker always hears a
+  // final answer for it and a flood of bad ones brings no log line each.
+  const overWindow = env.kind === 'approval' && deps.remoteApproval?.admit ? deps.remoteApproval.admit(peer.hostId, env.messageId) : { ok: true as const };
+  const dropped = (): A2aRemoteDeliverResponse => fail('rate-limited');
 
   let onThisLink = false;
-  if (env.kind === 'reply' || env.kind === 'state' || env.kind === 'receipt' || env.kind === 'status') {
+  if (env.kind === 'reply' || env.kind === 'state' || env.kind === 'receipt' || env.kind === 'status' || env.kind === 'answer' || env.kind === 'approval') {
     const marker = deps.taskService.getTask(env.taskId as string)?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
     onThisLink = marker?.v === 1 && marker.linkId === env.linkId;
   }
   const check = deps.linkStore.checkMessage(env.linkId, env.linkVersion, peer.hostId, 'inbound', env.kind, undefined, { onThisLink });
-  if (!check.ok) return fail(check.error);
+  if (!check.ok) return overWindow.ok ? fail(check.error) : dropped();
   const link = check.link;
   const remoteWs = remoteWorkspaceId(link.linkId);
   // A link a remote start made carries no images either way.
@@ -282,8 +323,38 @@ async function applyInbound(
     if ((env.status as A2aRemoteStatusV1).kind === 'gone' && open && (deps.remoteStatus.firstGone?.(taskId) ?? true)) {
       deps.log?.('info', `[a2a-remote] task ${taskId} on link ${link.linkId}: the agent on that PC is gone`);
     }
-    // A task that ended has no worker status any more: taken, and dropped.
+    // A task that ended has no worker status any more: taken, and dropped (an approval's outcome still reaches its wait).
     if (open) deps.remoteStatus.note(taskId, env.status as A2aRemoteStatusV1, peer.hostId);
+    else deps.remoteStatus.ended?.(taskId, env.status as A2aRemoteStatusV1);
+    return { ok: true, taskId, duplicate: false };
+  }
+  if (env.kind === 'answer') {
+    // The sender's answer to the question its task's worker shows here: never a reply, never a state.
+    const task = deps.taskService.getTask(taskId);
+    const marker = task?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
+    if (!deps.remoteAnswer) return fail('bad-request', 'this PC takes no answer');
+    if (marker?.direction !== 'inbound' || task!.metadata.from.workspaceId !== remoteWs) {
+      return fail('forbidden', 'an answer is only for a task that host sent');
+    }
+    deps.remoteAnswer.take(taskId, env.messageId, env.answer as A2aRemoteAnswerV1);
+    return { ok: true, taskId, duplicate: false };
+  }
+  if (env.kind === 'approval') {
+    // The sender's allow or deny for a prompt its task's worker shows here: never a reply, never a state.
+    const task = deps.taskService.getTask(taskId);
+    const marker = task?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
+    if (!deps.remoteApproval) return fail('approvals-off');
+    if (marker?.direction !== 'inbound' || task!.metadata.from.workspaceId !== remoteWs) {
+      return overWindow.ok ? fail('forbidden', 'an approval is only for a task that host sent') : dropped();
+    }
+    if (!overWindow.ok) {
+      // Answered to the message itself (each one, however many came in a burst), and in the task's status
+      // with the exact time left.
+      // Stored before it is answered, so a resend after a restart is answered the same.
+      await deps.remoteApproval.limited?.(peer.hostId, taskId, env.messageId, env.approval as A2aRemoteApprovalV1, overWindow.retryAfterMs);
+      return fail('rate-limited');
+    }
+    deps.remoteApproval.take(peer.hostId, taskId, env.messageId, env.approval as A2aRemoteApprovalV1);
     return { ok: true, taskId, duplicate: false };
   }
   if (env.kind === 'receipt') {
@@ -465,10 +536,26 @@ function parseEnvelope(raw: unknown): Parsed {
     case 'status':
       if (!isSafeId(taskId) || !parseA2aRemoteStatus(raw['status'])) return { error: 'bad-request' };
       break;
+    case 'answer':
+      // A picker id and a number; no text rides on it.
+      if (!isSafeId(taskId) || text !== undefined || !parseA2aRemoteAnswer(raw['answer'])) return { error: 'bad-request' };
+      break;
+    case 'approval':
+      // A prompt id and a decision; no text rides on it.
+      if (!isSafeId(taskId) || text !== undefined || !parseA2aRemoteApproval(raw['approval'])) return { error: 'bad-request' };
+      break;
   }
   const envelope = { ...raw } as unknown as A2aRemoteEnvelope;
   if (images) envelope.images = images;
   else delete envelope.images;
+  // An answer only on its own kind, rebuilt from its checked shape.
+  const answer = kind === 'answer' ? parseA2aRemoteAnswer(raw['answer']) : null;
+  if (answer) envelope.answer = answer;
+  else delete envelope.answer;
+  // An approval only on its own kind, rebuilt from its checked shape.
+  const approval = kind === 'approval' ? parseA2aRemoteApproval(raw['approval']) : null;
+  if (approval) envelope.approval = approval;
+  else delete envelope.approval;
   // The request to follow a task again is a boolean: anything else is refused, not ignored.
   if (raw['reopen'] !== undefined && typeof raw['reopen'] !== 'boolean') return { error: 'bad-request' };
   // A host's notice rides on a reply only, checked strictly: one that does not parse is refused, never

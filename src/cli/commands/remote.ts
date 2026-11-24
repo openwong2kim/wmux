@@ -25,7 +25,7 @@ import {
   type A2aSpawnPolicySetResult,
   type A2aSpawnPolicyV1,
 } from '../../shared/a2aSpawn';
-import { A2A_STATUS_LABELS_RPC, INVITE_CODE_RE, isA2aStatusLabels, isHostId, parseInvite, type A2aPeerRecordV1, type A2aRemoteHostRecordV1, type HostId } from '../../shared/a2aRemote';
+import { A2A_ANSWER_RPC, A2A_APPROVAL_OUTCOME_WAIT_MS, A2A_APPROVAL_RPC, A2A_APPROVALS_RPC, A2A_REMOTE_PROMPT_ID_RE, A2A_STATUS_LABELS_RPC, INVITE_CODE_RE, isA2aAnswersSetting, isA2aApprovalExposure, isA2aStatusLabels, isHostId, parseInvite, type A2aPeerRecordV1, type A2aRemoteHostRecordV1, type HostId } from '../../shared/a2aRemote';
 import { AGENT_ROWS, type AgentSlug } from '../../shared/agentIdentity';
 import { NOT_FIRST_PARTY } from '../../shared/daemonFirstParty';
 import { isNestingMarker } from '../../shared/envFilter';
@@ -74,8 +74,38 @@ wmux remote — pair with other PCs and ask them to start agents
       Whether the choices of a question an agent started from another PC asks
       here go to that PC with its status (send, the default), or only how
       many there are (keep). With no argument, prints the current setting.
+  wmux remote answers [on|off|default]
+      Whether an answer from the PC that asked is typed into the question an
+      agent it started here shows (a single single-choice question only).
+      default: on where follow-ups reach the agent directly, off where they
+      wait for approval here. With no argument, prints the current setting.
+  wmux remote approvals [<pc> off|tool-only|command]
+      Whether agents on that PC can allow or deny permission prompts in the
+      tasks they sent to a linked pane here. Off for every PC unless set
+      here. tool-only: that PC sees the tool's name and can only deny.
+      command: it also sees the command (known credential shapes are masked;
+      other secrets are not) and can allow a Bash, PowerShell or WebSearch
+      prompt, or a plan. Turning a PC on, or
+      to command, asks you to type yes first, so run it in a terminal;
+      lowering it or turning it off does not ask. With no argument, prints
+      the setting for each paired PC. On a PC where the desktop app runs,
+      the daemon takes this setting only from the app: set it there on the
+      Remote page, under each paired PC.
+  wmux remote answer <task-id> <option> --picker <picker-id>
+      Answer the question the worker on a task you sent shows on the other
+      PC: <option> is the choice's number, <picker-id> the pickerId in the
+      task's remoteStatus (a2a_task_query). How it went shows in the same
+      status (detail.answers). Run it from the pane that sent the task; it
+      goes through the desktop app, unlike the other verbs.
+  wmux remote approve <task-id> <prompt-id> allow|deny
+      Allow or deny the permission prompt the worker on a task you sent
+      shows on the other PC: <prompt-id> is detail.approval.promptId in the
+      task's remoteStatus (a2a_task_query). allow is sent only when that
+      offer's allowed list has it; at most 60 go to one PC a minute. Prints
+      the outcome once it comes back, or that it is still pending. Run it
+      from the pane that sent the task; it goes through the desktop app.
 
-  These verbs talk to the wmux daemon directly, so they work on a host that
+  The other verbs talk to the wmux daemon directly, so they work on a host that
   runs only the daemon (no desktop app). Exit code 1 on any failure. --json
   prints the raw RPC payload.
 `;
@@ -90,10 +120,10 @@ async function senderPtyId(): Promise<string> {
   }
 }
 
-async function call(method: RpcMethod, params: Record<string, unknown>, jsonMode: boolean): Promise<Record<string, unknown>> {
+async function call(method: RpcMethod, params: Record<string, unknown>, jsonMode: boolean, timeoutMs?: number): Promise<Record<string, unknown>> {
   let response: RpcResponse;
   try {
-    response = await sendRequest(method, params);
+    response = await (timeoutMs === undefined ? sendRequest(method, params) : sendRequest(method, params, timeoutMs));
   } catch (err) {
     console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
@@ -666,6 +696,156 @@ async function remoteStatusLabels(args: string[], jsonMode: boolean): Promise<vo
     : 'Status labels: send (a question\'s choices go to the PC that asked, with its status)');
 }
 
+/** `wmux remote answers [on|off|default]`: this PC's setting, printed or saved. */
+async function remoteAnswers(args: string[], jsonMode: boolean): Promise<void> {
+  const value = args.find((a) => !a.startsWith('-'));
+  if (value !== undefined && !isA2aAnswersSetting(value)) fail(`answers takes on, off or default, not ${value}`);
+  if (value !== undefined) {
+    const saved = (await daemonCall(A2A_ANSWER_RPC.set as RpcMethod, { answers: value })) as { ok?: unknown; error?: unknown };
+    if (saved.ok === false) fail(`the daemon did not save it: ${String(saved.error)}`);
+  }
+  const res = (await daemonCall(A2A_ANSWER_RPC.get as RpcMethod, {})) as { answers?: unknown; damaged?: unknown; effective?: unknown };
+  if (jsonMode) {
+    console.log(JSON.stringify({ answers: res.answers, damaged: res.damaged === true, effective: res.effective }, null, 2));
+    return;
+  }
+  const now = res.effective === 'on' ? 'on' : 'off';
+  if (res.damaged === true) {
+    console.log('Answers: off (its settings file was damaged; set it again with wmux remote answers on|off|default)');
+  } else if (res.answers === 'default') {
+    console.log(`Answers: default, ${now} now (on where follow-ups reach the agent directly, off where they wait for approval here)`);
+  } else {
+    console.log(`Answers: ${now} (an answer from the PC that asked ${now === 'on' ? 'is typed into' : 'is not typed into'} the question an agent it started here shows)`);
+  }
+}
+
+function approvalExposureOf(v: unknown): 'off' | 'tool-only' | 'command' {
+  return isA2aApprovalExposure(v) ? v : 'off';
+}
+
+/** `wmux remote approvals [<pc> off|tool-only|command]`: this PC's setting per paired PC, printed or saved. */
+async function remoteApprovals(args: string[], jsonMode: boolean): Promise<void> {
+  const [pcArg, value, ...rest] = args.filter((a) => !a.startsWith('-'));
+  if (rest.length > 0 || (pcArg !== undefined && value === undefined)) {
+    console.error('Usage: wmux remote approvals [<pc> off|tool-only|command]');
+    process.exit(1);
+  }
+  if (value !== undefined && value !== 'off' && !isA2aApprovalExposure(value)) fail(`approvals takes off, tool-only or command, not ${printable(value)}`);
+  const pcs = await knownPcs();
+  const read = async (): Promise<{ hosts: Record<string, unknown>; damaged: boolean }> => {
+    const r = (await daemonCall(A2A_APPROVALS_RPC.get as RpcMethod, {})) as { hosts?: unknown; damaged?: unknown };
+    return { hosts: r.hosts && typeof r.hosts === 'object' ? r.hosts as Record<string, unknown> : {}, damaged: r.damaged === true };
+  };
+  let res = await read();
+  if (pcArg !== undefined && value !== undefined) {
+    // A PC no longer paired can still be turned off.
+    const { pc } = resolvePc(pcArg, pcs, value === 'off' ? Object.keys(res.hosts) : []);
+    const before = res.damaged ? 'off' : approvalExposureOf(res.hosts[pc.hostId]);
+    // Raising what that PC may do (on, or to `command`) is typed out by a person; lowering it is not asked.
+    if ((before === 'off' && value !== 'off') || (value === 'command' && before !== 'command')) {
+      const marker = agentSessionMarker(process.env);
+      if (marker) fail(`raising approvals for a PC is not done from an agent session or a wmux pane (${marker} is set). A person must run it, in a terminal outside wmux.`);
+      if (!policyIo.stdinIsTty()) fail('raising approvals for a PC asks for a typed confirmation. Run this in a terminal and confirm.');
+      const say = (line: string): void => { if (jsonMode) console.error(line); else console.log(line); };
+      say(value === 'command'
+        ? `Agents on ${pcLabel(pc)} will see the command of a permission prompt in a task they sent to a linked pane here (known credential shapes are masked; other secrets are not), and can allow a Bash, PowerShell or WebSearch call or a plan, or deny any prompt offered.`
+        : `Agents on ${pcLabel(pc)} will see the tool name of a permission prompt in a task they sent to a linked pane here, and can deny it.`);
+      const answer = (await policyIo.ask(`Type ${CONFIRM_WORD} to save this: `, jsonMode)).trim().toLowerCase();
+      if (answer !== CONFIRM_WORD) fail('not confirmed; nothing was saved.');
+      const now = await read();
+      if ((now.damaged ? 'off' : approvalExposureOf(now.hosts[pc.hostId])) !== before) {
+        fail('the approvals setting for that PC changed while you were confirming. Run the command again.');
+      }
+    }
+    const saved = (await daemonCall(A2A_APPROVALS_RPC.set as RpcMethod, { hostId: pc.hostId, exposure: value })) as { ok?: unknown; error?: unknown };
+    if (saved.ok === false) fail(`the daemon did not save it: ${String(saved.error)}`);
+    res = await read();
+  }
+  const hosts = res.hosts;
+  if (jsonMode) {
+    console.log(JSON.stringify({ hosts, damaged: res.damaged }, null, 2));
+    return;
+  }
+  if (res.damaged) console.log('Approvals: off for every PC (its settings file was damaged; set a PC again with wmux remote approvals <pc> tool-only|command)');
+  const ids = [...new Set([...pcs.map((p) => p.hostId), ...Object.keys(hosts)])];
+  if (ids.length === 0) {
+    console.log('Approvals: no paired PCs.');
+    return;
+  }
+  for (const hostId of ids) {
+    const pc = pcs.find((p) => p.hostId === hostId) ?? { hostId, name: '' };
+    const exposure = hosts[hostId];
+    console.log(`${pcLabel(pc)}: ${exposure === 'command' ? 'command (sees the command; can allow or deny)'
+      : exposure === 'tool-only' ? 'tool-only (sees the tool name; can deny)' : 'off'}`);
+  }
+}
+
+/** `wmux remote answer <task-id> <option> --picker <id>`: from the pane that sent the task. */
+async function remoteAnswer(args: string[], jsonMode: boolean): Promise<void> {
+  const picker = parseFlag(args, '--picker');
+  const positional = args.filter((a, i) => !a.startsWith('-') && args[i - 1] !== '--picker');
+  const [taskId, optionText] = positional;
+  const option = Number(optionText);
+  if (!taskId || !picker || !Number.isInteger(option) || option < 1) {
+    console.error('Usage: wmux remote answer <task-id> <option> --picker <picker-id>');
+    process.exit(1);
+  }
+  const pty = await senderPtyId();
+  if (!pty) fail('not inside a wmux pane (no resolvable pane identity). Only the agent that sent the task can answer, so run this from its pane.');
+  const res = await call(A2A_ANSWER_RPC.ask as RpcMethod, { taskId, pickerId: picker, option, senderPtyId: pty }, jsonMode);
+  if (jsonMode) {
+    console.log(JSON.stringify(res, null, 2));
+    return;
+  }
+  console.log(`Answer ${String(res['messageId'])} sent. How it went shows in the task's status (detail.answers, by this message id) once that PC has typed it.`);
+}
+
+/** `wmux remote approve` arguments: `<task-id> <prompt-id> allow|deny`, or why they are not. */
+export function parseApproveArgs(args: readonly string[]): { taskId: string; promptId: string; decision: 'allow' | 'deny' } | string {
+  const positional = args.filter((a) => !a.startsWith('-'));
+  const usage = 'Usage: wmux remote approve <task-id> <prompt-id> allow|deny';
+  if (positional.length !== 3) return usage;
+  const [taskId, promptId, decision] = positional;
+  if (!A2A_REMOTE_PROMPT_ID_RE.test(promptId)) return `${usage}\n<prompt-id> is 16 hex characters: detail.approval.promptId in the task's remoteStatus (a2a_task_query).`;
+  if (decision !== 'allow' && decision !== 'deny') return `${usage}\nThe decision is allow or deny, not ${printable(decision)}.`;
+  return { taskId, promptId, decision };
+}
+
+/** `wmux remote approve <task-id> <prompt-id> allow|deny`: from the pane that sent the task, through the app. */
+async function remoteApprove(args: string[], jsonMode: boolean): Promise<void> {
+  const parsed = parseApproveArgs(args);
+  if (typeof parsed === 'string') {
+    console.error(parsed);
+    process.exit(1);
+  }
+  const pty = await senderPtyId();
+  if (!pty) fail('not inside a wmux pane (no resolvable pane identity). Only the agent that sent the task can answer its prompts, so run this from its pane.');
+  const res = await call(A2A_APPROVAL_RPC.ask as RpcMethod, { ...parsed, senderPtyId: pty }, jsonMode, A2A_APPROVAL_OUTCOME_WAIT_MS + 15_000);
+  const outcome = res['outcome'] as { outcome?: string; reason?: string; reasonText?: string; retryAfterMs?: number } | undefined;
+  if (jsonMode) {
+    console.log(JSON.stringify(res, null, 2));
+    // The same exit status as the text: 1 when it was not done, or may not have been.
+    if (outcome && outcome.outcome !== 'done') process.exit(1);
+    return;
+  }
+  const what = `${parsed.decision === 'allow' ? 'Allow' : 'Deny'} for ${printable(String(res['tool'] ?? 'the prompt'))} (${String(res['messageId'])})`;
+  if (!outcome) {
+    console.log(`${what} sent. No outcome yet: it shows in the task's status (detail.approvals, by this message id) once that PC has carried it out.`);
+    return;
+  }
+  if (outcome.outcome === 'done') {
+    console.log(`${what}: done on the other PC.`);
+    return;
+  }
+  const line = outcome.outcome === 'uncertain'
+    ? `${what}: uncertain (that PC stopped while it ran; it is never run again).`
+    : outcome.reason === 'rate-limited'
+      ? `${what}: not done; that PC takes no more approvals from this one for now. Try again in ${Math.max(1, Math.ceil((outcome.retryAfterMs ?? 0) / 1000))} s.`
+      : `${what}: not done${outcome.reasonText ? ` (${outcome.reasonText})` : ''}.`;
+  console.error(line);
+  process.exit(1);
+}
+
 async function remoteAllowed(jsonMode: boolean): Promise<void> {
   if (jsonMode) {
     console.log(JSON.stringify({ policy: await readPolicy() }, null, 2));
@@ -834,5 +1014,9 @@ export async function handleRemote(sub: string | undefined, args: string[], json
   if (sub === 'allowed') return remoteAllowed(jsonMode);
   if (sub === 'revoke') return remoteRevoke(args, jsonMode);
   if (sub === 'status-labels') return remoteStatusLabels(args, jsonMode);
+  if (sub === 'answers') return remoteAnswers(args, jsonMode);
+  if (sub === 'approvals') return remoteApprovals(args, jsonMode);
+  if (sub === 'answer') return remoteAnswer(args, jsonMode);
+  if (sub === 'approve') return remoteApprove(args, jsonMode);
   console.log(REMOTE_HELP);
 }

@@ -303,6 +303,28 @@ describe('filesystem write jobs', () => {
     expect((await finish(await queue.start('copy', { sources: [file], destDir: dest, conflict: 'fail' }))).state).toBe('failed');
     expect(fs.existsSync(path.join(dest, 'a'))).toBe(false);
   });
+  it('tells two files apart whose 64-bit IDs differ only below Number precision', async () => {
+    // 2^60+1 and 2^60+3 round to the same Number: a Windows file ID can be that large.
+    const file = path.join(src, 'a');
+    const withIno = <T extends fs.Stats | fs.BigIntStats>(st: T, ino: bigint): T =>
+      Object.assign(st, { ino: typeof st.ino === 'bigint' ? ino : Number(ino) });
+    const lstat = fs.promises.lstat.bind(fs.promises);
+    vi.spyOn(fs.promises, 'lstat').mockImplementation((async (p: fs.PathLike, ...rest: unknown[]) => {
+      const st = await (lstat as (...a: unknown[]) => Promise<fs.Stats | fs.BigIntStats>)(p, ...rest);
+      return String(p) === file ? withIno(st, 2n ** 60n + 1n) : st;
+    }) as typeof fs.promises.lstat);
+    const open = fs.promises.open.bind(fs.promises);
+    vi.spyOn(fs.promises, 'open').mockImplementation((async (p: fs.PathLike, ...rest: unknown[]) => {
+      const handle = await (open as (...a: unknown[]) => Promise<fs.promises.FileHandle>)(p, ...rest);
+      if (String(p) === file) {
+        const stat = handle.stat.bind(handle);
+        handle.stat = (async (opts?: fs.StatOptions) => withIno(await stat(opts as { bigint: false }), 2n ** 60n + 3n)) as typeof handle.stat;
+      }
+      return handle;
+    }) as typeof fs.promises.open);
+    expect((await finish(await queue.start('copy', { sources: [file], destDir: dest, conflict: 'fail' }))).state).toBe('failed');
+    expect(fs.existsSync(path.join(dest, 'a'))).toBe(false);
+  });
   it.runIf(process.platform !== 'win32')('reads the file it opened, not a link put at its path after', async () => {
     const secret = path.join(home, '.ssh', 'id_test'); fs.writeFileSync(secret, 'SECRET');
     const file = path.join(src, 'a');

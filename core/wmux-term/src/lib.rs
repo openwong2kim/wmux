@@ -34,6 +34,13 @@ mod native_core;
 mod native_serialize;
 
 #[cfg(all(
+    feature = "native-core",
+    feature = "bindings",
+    not(target_arch = "wasm32")
+))]
+mod ring_pack;
+
+#[cfg(all(
     test,
     feature = "native-core",
     feature = "bindings",
@@ -87,6 +94,14 @@ mod native_transport;
 ))]
 mod native_output;
 
+#[cfg(test)]
+mod test_allocator;
+
+#[cfg(any(test, feature = "native-core"))]
+// Without the bindings, only the output interpreter uses it.
+#[cfg_attr(not(feature = "native-core"), allow(dead_code))]
+mod fallible;
+
 #[cfg(any(test, feature = "native-core"))]
 mod output_interpreter;
 
@@ -116,3 +131,6 @@ mod native_interpreter;
     )
 ))]
 mod process_table;
+
+#[cfg(all(windows, any(test, all(feature = "native-core", feature = "bindings"))))]
+mod native_pipe_listener;

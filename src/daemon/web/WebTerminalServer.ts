@@ -1,3 +1,5 @@
+import { normalizeForPromptMatch, stripPasteMarkers } from '../../shared/promptMatch';
+import { paneLineAgents } from '../../shared/paneFence';
 import { LiveSettingsError, type LiveAgentSettings } from './codexLiveSettings';
 import type { PaneSettingsChoice } from './paneCodexSettings';
 import { buildAgentLaunch, type AgentLaunchChoice, type AgentLaunchOptions } from './agentLaunch';
@@ -202,7 +204,7 @@ import { ROOMS_ROUTE, ROOM_ATTACHMENT_ROUTE, ROOM_FILE_ROUTE, ROOM_FILE_STREAMS_
 import { BOTS_ROUTE, botsResponse, botsSupported } from './bots';
 import { GuestRateLimiter, guestRouteResponse, readGuestBody, type GuestBotResolver } from './guestBotRoutes';
 import { isGuestRoute, looksLikeGuestCredential, type GuestBotGates } from '../../shared/guestBots';
-import { BOT_APPROVALS_ROUTE, botApprovalDecisionRefusal, botApprovalsResponse, botApprovalsSupported, type BotApprovalsCaller } from './botApprovals';
+import { BOT_APPROVALS_ROUTE, GRANT_HINT, botApprovalDecisionRefusal, botApprovalsResponse, botApprovalsSupported, type BotApprovalsCaller } from './botApprovals';
 import { BROWSER_CHROME_PREVIEW_CAPABILITY, BROWSER_STREAM_CAPABILITY, BROWSER_STREAM_KEYS, PHONE_BROWSER_ERROR_STATUS, isPhoneBrowserErrorCode, phoneBrowserTapReply } from '../../shared/phoneBrowserPreview';
 import { BROWSER_HELP_DECISION_ROUTE, BROWSER_HELP_LIST_ROUTE, browserHelpDecisionRefusal, browserHelpDecisionResponse, browserHelpListResponse, browserHelpSupported, type BrowserHelpTableView } from './browserHelp';
 import { browserHelpFrameJson, isBrowserHelpId, type PhoneBrowserHelpFrame } from '../../shared/phoneBrowserHelp';
@@ -216,6 +218,9 @@ import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../shared/folderTrustWording
 // lists, pages, acks, joins and republishes mention notifications. The
 // production adapter lives in channelsApi.ts.
 import type { ChannelMentionNotification, ChannelPhoneApi } from './channelsApi';
+
+/** Why a phone or web launch line is refused in a person's fenced pane. */
+const PANE_FENCE_WEB_REFUSAL = 'worker fence: this pane starts its agent inside the worker fence, which only the desktop app can put around it';
 
 /**
  * Opaque cursor for `/api/sessions/:id/turns` (#782). Encodes head+tail offsets
@@ -855,6 +860,12 @@ interface WebTerminalServerDeps {
    */
   roomFilesDir?: string;
   /**
+   * Whether a session is a person's fenced pane (main's record,
+   * paneFenceRecord.ts): an agent launch line typed from here would start
+   * outside the fence main puts around it, so it is refused. Absent: none is.
+   */
+  paneFenceOn?: (sessionId: string) => boolean;
+  /**
    * Records one file served because the pane's agent sent it with
    * `SendUserFile` (the device audit log). Device, pane, basename and size
    * only — never the full path or the content. `deviceId` is empty for the
@@ -1172,6 +1183,8 @@ const CHAT_LAUNCH_MAX_BODY_BYTES = 16 * 1024;
 const CHAT_CANCEL_MAX_BODY_BYTES = 4 * 1024;
 /** A transcript row may carry a timestamp slightly before the daemon noted the delivery. */
 const CHAT_DELIVERY_SKEW_MS = 5_000;
+/** The transcript keeps this many characters of a user row, then an ellipsis (transcript/parseEntry.ts MAX_TEXT_CHARS). */
+const CAPPED_ROW_CHARS = 8_000;
 /** Same 1 Hz floor as the nudge: a blocked badge must be right, not instant. */
 const CHAT_BLOCKED_COALESCE_MS = 1000;
 /** Moa card ids remembered until they settle (see `moaCardIds`). */
@@ -5295,14 +5308,26 @@ export class WebTerminalServer {
       ...this.moaWakeRows(sessionId, owner),
     ];
     if (!Array.isArray(events) || delivered.length === 0) return events;
-    const unused = [...delivered];
+    // Each delivery with its normal form (shared/promptMatch.ts), worked out once.
+    const unused = delivered.map((m) => ({ ...m, normal: normalizeForPromptMatch(m.text) }));
     const photoMatches = typedPhotoTextMatcher(this.deps.uploadsDir);
     return events.map((event: Record<string, unknown>) => {
       if (event?.kind !== 'user_text' || typeof event.text !== 'string') return event;
       const text = event.text.trim();
       const ts = typeof event.ts === 'number' ? event.ts : undefined;
       const inTime = (m: ChatDeliveredMessage) => ts === undefined || ts >= m.at - CHAT_DELIVERY_SKEW_MS;
+      // The exact text first; then the normal form, since Claude Code stores a
+      // long or multi-line message inside paste markers with breaks around
+      // them. The transcript keeps the first CAPPED_ROW_CHARS characters of a
+      // longer one and an ellipsis: that row matches by its start.
       let index = unused.findIndex((m) => m.text.trim() === text && inTime(m));
+      if (index < 0) {
+        // At or over the cap: parseEntry backs off one unit rather than split an emoji.
+        const capped = (event.text as string).length >= CAPPED_ROW_CHARS && text.endsWith('…');
+        // A cut can leave part of the closing marker, down to a bare `<` or `</`.
+        const normal = normalizeForPromptMatch(capped ? text.slice(0, -1).replace(/<\/?p[^>]*$|<\/?$/, '') : text);
+        index = unused.findIndex((m) => (capped ? normal.length > 0 && m.normal.startsWith(normal) : m.normal === normal) && inTime(m));
+      }
       // A photo row reads `[Image #N]` where the typed text held the upload path.
       // Photo sends of the same count read alike, so a row takes the unclaimed
       // send nearest its own time: one sent before the row first, then one in
@@ -5318,7 +5343,7 @@ export class WebTerminalServer {
           return k >= 0 && x[k] < y[k];
         };
         unused.forEach((m, i) => {
-          if (inTime(m) && photoMatches(m.text, text) && (index < 0 || better(m, unused[index]))) index = i;
+          if (inTime(m) && photoMatches(m.text, stripPasteMarkers(text)) && (index < 0 || better(m, unused[index]))) index = i;
         });
       }
       if (index < 0) return event;
@@ -6503,6 +6528,10 @@ export class WebTerminalServer {
         // Past the receipt lifetime `unknown` no longer proves "never typed",
         // so the id is refused rather than risking a second launcher.
         if (age === 'expired') return this.json(res, 400, { error: 'launch-id-expired', effect: 'none', clientLaunchId });
+        // A fenced pane's agent starts only through main (paneFence.ts).
+        if (this.deps.paneFenceOn?.(id) === true) {
+          return this.json(res, 409, { error: 'worker-fence', detail: PANE_FENCE_WEB_REFUSAL, effect: 'none', clientLaunchId });
+        }
         // The anchor shell of a chat-v2 pane is idle, but the pane has a writer: the driver.
         if (this.chatV2For(id)) {
           const refused = chatV2LaunchResponse(clientLaunchId);
@@ -8200,6 +8229,10 @@ export class WebTerminalServer {
         // As main's launch lines: a folder-trust prompt stops every one, a
         // screen that cannot rule one out all but a person's.
         if (launch !== null) {
+          // A fenced pane's agent starts only through main (paneFence.ts).
+          if (paneLineAgents(body).length > 0 && this.deps.paneFenceOn?.(sessionId) === true) {
+            return this.json(res,409,{error:'worker-fence',detail:PANE_FENCE_WEB_REFUSAL,effect:'none'});
+          }
           const human = launch === 'human';
           const refused = await folderTrustRefusal(this.deps.sessionManager, sessionId, human ? 'web launch line' : 'web automated launch line', {
             refuseUnknown: !human, log: (message) => this.deps.log('warn', message),
@@ -9822,6 +9855,8 @@ export class WebTerminalServer {
       ...(r.kind === 'awaiting_permission' ? { kind: r.kind } : {}),
       ...(r.kind !== 'terminal_prompt' && r.toolName ? { toolName: r.toolName } : {}),
       ...(r.toolInputSummary ? { toolInputSummary: r.toolInputSummary } : {}),
+      // Next to the summary it annotates, so a card built from the nudge shows it too.
+      ...(r.kind === 'awaiting_permission' && r.newPackages ? { newPackages: r.newPackages } : {}),
       // The agent's own terminal dialog: the kind and nothing else. The nudge
       // carries no content; the capability-aware list is where the dialog is.
       ...(r.kind === 'terminal_prompt' ? { kind: r.kind } : {}),
@@ -10873,7 +10908,7 @@ export class WebTerminalServer {
         : 'read-only: this device was paired without permission to type',
       detail: serverReadOnly
         ? detail
-        : `${detail}. Grant it from "Paired devices" on the machine running wmux web.`,
+        : `${detail}. ${GRANT_HINT}`,
     });
   }
 
@@ -11470,6 +11505,9 @@ function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAns
       ...(r.workspaceId ? { workspaceId: r.workspaceId } : {}),
       ...(r.toolName ? { toolName: r.toolName } : {}),
       ...(r.summary ? { summary: r.summary } : {}),
+      // Packages the command installs that the project lacks: one quiet line,
+      // informational only (see ApprovalRequest.newPackages).
+      ...(r.newPackages ? { newPackages: r.newPackages } : {}),
       // A hint for the client's own confirm step — computed at creation from the
       // call's full command. Never a permission.
       ...(r.risk ? { risk: r.risk } : {}),
@@ -11526,6 +11564,7 @@ function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAns
     // shell command with nothing on screen saying which one.
     ...(r.toolName ? { toolName: r.toolName } : {}),
     ...(r.toolInputSummary ? { toolInputSummary: r.toolInputSummary } : {}),
+    ...(r.newPackages ? { newPackages: r.newPackages } : {}),
     ...decisionV2Wire(r, caps, otherMaxCells),
   };
 }

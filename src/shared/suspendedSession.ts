@@ -7,10 +7,11 @@
  * Owner decision §6-4: the daemon promotes a pending recovery in the
  * background right after boot only for an exec unit or a supervised session,
  * which must run whether or not anyone looks at it. A plain shell starts when
- * its pane is first shown.
+ * its pane is first shown. A held session (holdReason: the terminal core is
+ * missing) starts by itself in neither place: it cannot start.
  */
-export function recoversInBackground(session: { exec?: unknown; supervision?: unknown }): boolean {
-  return !!session.exec || !!session.supervision;
+export function recoversInBackground(session: { exec?: unknown; supervision?: unknown; holdReason?: unknown }): boolean {
+  return !session.holdReason && (!!session.exec || !!session.supervision);
 }
 
 /**
@@ -45,7 +46,7 @@ export function promoteStartedSession(result: { ok: boolean; alreadyActive?: boo
  * plain shell.
  */
 export function suspendedReconnectAction(
-  session: { exec?: unknown; supervision?: unknown; startPending?: boolean },
+  session: { exec?: unknown; supervision?: unknown; holdReason?: unknown; startPending?: boolean },
   opts: { promote?: boolean; joinOnly?: boolean } | undefined,
 ): 'promote' | 'join' | 'join-only' | 'hold' {
   if (opts?.promote === true) return 'promote';

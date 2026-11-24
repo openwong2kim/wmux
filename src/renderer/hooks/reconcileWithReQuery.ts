@@ -112,8 +112,8 @@ export function holdsSuspendedSession(candidate: {
   stashed: boolean;
   /** On screen in the sense that starts a shell (stores/selectors/surfaceShown.ts). */
   shown: boolean;
-  /** The daemon's suspended entry: its exec and supervision. */
-  session: { exec?: unknown; supervision?: unknown };
+  /** The daemon's suspended entry: its exec, supervision and hold. */
+  session: { exec?: unknown; supervision?: unknown; holdReason?: unknown };
 }): boolean {
   return !candidate.shown && !candidate.stashed && !recoversInBackground(candidate.session);
 }

@@ -35,6 +35,13 @@ let logs: string[];
 /** The daemon reports no input count (an older daemon). */
 let noCount: boolean;
 let turnStartedAt: number | undefined;
+/**
+ * #3393 — a daemon with the pane delivery lock: it holds an unsent paste itself. `held` is what it reports per pane,
+ * `reports` what main told it, `accept` whether it takes a report. Null: an older daemon (main's own record).
+ */
+let daemonHold: { held: Record<string, boolean>; reports: Array<{ id: string; token: string }>; accept: boolean; dropped?: number } | null;
+/** How many of the daemon's next agent-state reads fail (a timeout). */
+let unreadable: number;
 let stops: (ptyId: string) => void = () => undefined;
 let dropped: (ptyId: string) => void = () => undefined;
 
@@ -48,6 +55,10 @@ function harness() {
       return true;
     },
     getAgentState: async (id: string) => {
+      if (unreadable > 0) {
+        unreadable -= 1;
+        throw new Error('timeout');
+      }
       const lag = (lagReads[id] ?? 0) > 0 ? 1 : 0;
       if (lag) lagReads[id] -= 1;
       const count = writes.filter((w) => w.id === id).length + (keys[id] ?? 0) - lag;
@@ -55,8 +66,27 @@ function harness() {
         agentName: 'Claude Code', agentStatus: 'waiting', agentVerified: true, incarnationId: 'inc-1',
         inputQuiet: true, inputRevision: 1, hasDraft: draft[id] ?? false, keyInputIdleMs: 60_000,
         ...(noCount ? {} : { keyInputRevision: count }),
+        ...(daemonHold ? { unsentPasteHeld: daemonHold.held[id] ?? false } : {}),
       };
     },
+    ...(daemonHold ? {
+      acquirePaneLock: async () => ({ held: true as const, token: 'tok-1' }),
+      releasePaneLock: () => undefined,
+      writeHeld: async (id: string, _token: string, data: string) => {
+        writes.push({ id, data });
+        return { ok: true as const, written: 1 };
+      },
+      reportUnsentPaste: async (id: string, token: string) => {
+        daemonHold?.reports.push({ id, token });
+        // An answer lost on the way (a timeout): nothing recorded.
+        if (daemonHold?.dropped) {
+          daemonHold.dropped -= 1;
+          return false;
+        }
+        if (daemonHold?.accept) daemonHold.held[id] = true;
+        return daemonHold?.accept === true;
+      },
+    } : {}),
   };
   return registerInputRpc(
     new RpcRouter(),
@@ -114,6 +144,8 @@ beforeEach(() => {
   lagAfterWrite = {};
   logs = [];
   noCount = false;
+  daemonHold = null;
+  unreadable = 0;
   turnStartedAt = undefined;
   vi.mocked(sendToRenderer).mockImplementation(async (_w, method) => (method === 'input.findOwnerWorkspace' ? { workspaceId: 'ws-a' } : null));
 });
@@ -240,5 +272,69 @@ describe('a paste left unsent in the input box (#3390)', () => {
     answers = [{ tier: 'process', slug: 'codex', input: 'full', bracketedPaste: true }];
     draft['pty-a'] = true;
     expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Codex')).toMatchObject({ ok: true });
+  });
+
+  describe('with a daemon that holds it (#3393)', () => {
+    it("main reports the paste it left, under the pane's lock, and keeps no record of its own", async () => {
+      daemonHold = { held: {}, reports: [], accept: true };
+      const wiring = harness();
+      await leaveUnsent(wiring);
+      expect(daemonHold.reports).toEqual([{ id: 'pty-a', token: 'tok-1' }]);
+      expect(logs.some((line) => line.includes('recorded before its writes were counted'))).toBe(false);
+      // Held by the daemon: refused, nothing written.
+      answers = [PROCESS];
+      expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Claude Code')).toMatchObject({ ok: false, reason: 'input_mode', detail: expect.stringMatching(/still holds an earlier message/) });
+      expect(written()).toEqual(['\x1b[200~pointer\x1b[201~']);
+      // The daemon cleared it (a key, a turn, an exit): typed, as main has no record that would hold it.
+      daemonHold.held['pty-a'] = false;
+      expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Claude Code')).toMatchObject({ ok: true });
+    });
+
+    it("a paste the daemon's own writer left holds main's delivery too", async () => {
+      daemonHold = { held: { 'pty-a': true }, reports: [], accept: true };
+      const wiring = harness();
+      answers = [PROCESS];
+      expect(await wiring.gatedSubmit('pty-a', 'later', 'Claude Code', { senderTaskIds: ['t-9'] })).toMatchObject({ ok: false, stored: true, composerNotPlain: true });
+      expect(writes).toEqual([]);
+    });
+
+    it("the daemon's answer missing twice: whether the box is held is unknown, so nothing is typed and the delivery is kept", async () => {
+      daemonHold = { held: {}, reports: [], accept: true };
+      const wiring = harness();
+      // Both hold reads fail; the daemon answers again by the time the delivery is stored.
+      unreadable = 2;
+      answers = [PROCESS];
+      expect(await wiring.gatedSubmit('pty-a', 'later', 'Claude Code', { senderTaskIds: ['t-4'] })).toMatchObject({ ok: false, reason: 'gate_unavailable', stored: true, detail: expect.stringMatching(/input state could not be read/) });
+      expect(writes).toEqual([]);
+    });
+
+    it("one missed answer from a stalled daemon is asked again, and the delivery goes on", async () => {
+      daemonHold = { held: {}, reports: [], accept: true };
+      const wiring = harness();
+      unreadable = 1;
+      answers = [PROCESS];
+      expect(await wiring.gatedSubmit('pty-a', 'later', 'Claude Code', { senderTaskIds: ['t-5'] })).toMatchObject({ ok: true });
+      expect(writes.length).toBeGreaterThan(0);
+    });
+
+    it('a report the daemon did not take falls back to main\'s own record', async () => {
+      daemonHold = { held: {}, reports: [], accept: false };
+      const wiring = harness();
+      await leaveUnsent(wiring);
+      // Asked twice, then said in the log: the daemon's own writers do not see this paste.
+      expect(daemonHold.reports).toHaveLength(2);
+      expect(logs.some((line) => line.includes('the daemon did not take the hold'))).toBe(true);
+      answers = [PROCESS];
+      expect(await wiring.gatedSubmit('pty-a', REMINDER, 'Claude Code')).toMatchObject({ ok: false, detail: expect.stringMatching(/still holds an earlier message/) });
+    });
+
+    it('one lost answer to the report is asked again, and the daemon holds the paste', async () => {
+      daemonHold = { held: {}, reports: [], accept: true, dropped: 1 };
+      const wiring = harness();
+      await leaveUnsent(wiring);
+      expect(daemonHold.reports).toHaveLength(2);
+      expect(daemonHold.held['pty-a']).toBe(true);
+      expect(logs.some((line) => line.includes('the daemon did not take the hold'))).toBe(false);
+    });
   });
 });

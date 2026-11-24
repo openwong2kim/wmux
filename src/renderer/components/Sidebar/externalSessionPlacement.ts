@@ -11,6 +11,7 @@ import type { AgentStatus, Workspace } from '../../../shared/types';
 import { isAtOrUnder } from '../FileTree/FileTreePanel';
 import { quotePosixPath } from '../../../shared/imagePaste';
 import { isValidWslDistroName } from '../../../shared/wslDistro';
+import { wslShareToLinux } from '../../../shared/wslPaths';
 import { isLinuxCwd } from '../../../shared/wslTarget';
 
 /**
@@ -43,9 +44,6 @@ export function externalSessionWslDistro(session: Pick<ExternalSession, 'cwd' | 
   return isValidWslDistroName(distro) && isLinuxCwd(session.cwd) && session.cwd.startsWith('/') ? distro : undefined;
 }
 
-/** `\\wsl.localhost\<distro>\…` or `\\wsl$\<distro>\…`: the distro, then the Linux path. */
-const WSL_SHARE_FOLDER = /^[\\/]{2}(?:wsl\.localhost|wsl\$)[\\/]([^\\/]+)(.*)$/i;
-
 /**
  * A workspace folder as a session in `wslDistro` names it. To a session in
  * WSL, a share (`\\wsl.localhost\Ubuntu\home\me`) is that distro's Linux path,
@@ -54,10 +52,10 @@ const WSL_SHARE_FOLDER = /^[\\/]{2}(?:wsl\.localhost|wsl\$)[\\/]([^\\/]+)(.*)$/i
  * folder is compared as it is: a WSL pane's folder is already its Linux path.
  */
 function folderAsSessionSees(folder: string, wslDistro: string | undefined): string | undefined {
-  const share = WSL_SHARE_FOLDER.exec(folder);
+  const share = wslShareToLinux(folder);
   if (!share || !wslDistro) return folder;
-  if (share[1].toLowerCase() !== wslDistro.toLowerCase()) return undefined;
-  return share[2].replace(/\\/g, '/') || '/';
+  if (share.distro.toLowerCase() !== wslDistro.toLowerCase()) return undefined;
+  return share.linuxPath;
 }
 
 /**

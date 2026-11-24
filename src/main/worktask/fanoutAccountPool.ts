@@ -1,0 +1,575 @@
+// ─── Fan-out account pool (desktop) ─────────────────────────────────────────
+//
+// With "Spread fan-out workers over accounts" on, each Claude fan-out worker
+// launches on one account of a pool instead of all of them on the default
+// login (a task workspace is bound to no account). The pick is the shared
+// pickPoolAccount (src/shared/fanoutAccountPool.ts); this module feeds it:
+//
+//   - which accounts may run a worker (preparePool, async, before the
+//     launches): Claude accounts of the caller's group whose folder exists,
+//     is local (not UNC), has wmux hooks that are not out of date, and holds
+//     a sign-in of its own. A sign-in is checked by its presence only — a
+//     stat of `.credentials.json`, or on macOS a keychain lookup that prints
+//     no secret — never by reading it. A task pane gets no vault value, so an
+//     account that signs in only through its vault is left out. The default
+//     login joins when the settings include it (poolIncludesDefaultLogin).
+//   - the pick itself (pickFromPool, sync, so it and the booking in the
+//     launch record are one step): the cached quota readings (no network),
+//     the usage reserve's holds, and the open workers on each account.
+//   - the create of the worker's pane (poolAccountForCreate): main reads the
+//     account from the launch record; the renderer never names it.
+//
+// Off by default, and off reads nothing: no settings beyond the file's
+// `enabled`, no account folders, no keychain, and no launch record gets an
+// account. Daemon mode only (a pane's account folder and its spawn env are
+// the daemon's).
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { getWmuxDir } from '../../daemon/config';
+import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
+import { agentRow } from '../../shared/agentIdentity';
+import { accountGroupOf } from '../../shared/accountGroup';
+import { evaluateQuota } from '../../shared/accountQuota';
+import { namesClaude } from '../../shared/botWorkerGuard';
+import { namesCodex } from '../../shared/codexWorkerGuard';
+import { splitModelEnvMarker } from '../../shared/workerLaunch';
+import {
+  DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS,
+  FANOUT_ACCOUNT_POOL_FILENAME,
+  POOL_DEFAULT_ACCOUNT,
+  normalizeFanoutAccountPoolSettings,
+  pickPoolAccount,
+  poolGroupFor,
+  poolIncludesDefaultLogin,
+  type FanoutAccountPoolSettings,
+  type PoolCandidate,
+  type PoolPick,
+} from '../../shared/fanoutAccountPool';
+import { getAccountStore, isAccessibleDir, type Account } from '../account/accountStore';
+import { appAccountVault, holdsClaudeSignIn } from '../account/accountVault';
+import { claudeReading } from '../account/AccountRotationService';
+import type { AccountUsageEntry } from '../account/AccountUsageService';
+import type { UsageSnapshot } from '../claude/UsageApi';
+import { macKeychainServiceName } from '../claude/claudeCredential';
+import { usageReserveHoldForAccount } from '../usage/usageReserve';
+import { getWorkerSlots, paneTaskPooled, parseLaunchToken, type WorkerSlots } from '../factory/workerSlots';
+import { liveHolders } from '../factory/workerHolders';
+
+/** What the running app hands the pool (index.ts): none of it is read while the pool is off. */
+export interface FanoutAccountPoolHost {
+  daemonConnected: () => boolean;
+  /** The per-account usage readings main holds (AccountUsageService). */
+  claudeUsage: () => readonly AccountUsageEntry[];
+  /** The default login's reading (the usage poller). */
+  defaultSnapshot: () => UsageSnapshot | null;
+  /** The accounts whose settings.json does not hold the current wmux hooks:
+   *  none installed, out of date, or unreadable
+   *  (hooksBridge.handler accountsWithoutCurrentHooks). */
+  hookDriftIds: (accounts: readonly Account[]) => Promise<ReadonlySet<string>>;
+  /** Ask for a usage reading of an account, under the usage service's own
+   *  rate limit and switches (AccountUsageService.maybeProbe). Optional. */
+  probeUsage?: (accountId: string) => void;
+  /** A UNC folder (hooksBridge.handler isUncPath). */
+  isUnc: (dir: string) => boolean;
+  /** Tell the owner once that a worker ran on the caller's account because no
+   *  pool account could run it (poolCallerFallback). Optional. */
+  notifyCallerFallback?: () => void;
+}
+
+let host: FanoutAccountPoolHost | null = null;
+/** Each caller workspace's pool as last read (preparePool), for checks that
+ *  run between fan-outs: the held bot fan-outs' reserve check. */
+const lastPools = new Map<string, { pool: PreparedPool; at: number }>();
+const LAST_POOLS_MAX = 200;
+/** A cached pool older than this is read again (in the background) for the
+ *  next held-fan-out pass. */
+const LAST_POOL_TTL_MS = 60_000;
+const refreshingPools = new Set<string>();
+/** Per launching task: how its fan-out holds a request the reserve stops at
+ *  the pane's create (a WSL pane, checked on its caller's account). */
+const createReserveHolds = new Map<string, (hold: { account: string; untilMs: number }) => string>();
+const CREATE_RESERVE_HOLDS_MAX = 500;
+/** The owner was told this run that the pool fell back to the caller's account. */
+let toldCallerFallback = false;
+
+export function setFanoutAccountPoolHost(next: FanoutAccountPoolHost | null): void {
+  host = next;
+}
+
+// ── Settings ────────────────────────────────────────────────────────────────
+
+let cached: { file: string; settings: FanoutAccountPoolSettings } | null = null;
+let writes: Promise<unknown> = Promise.resolve();
+
+function settingsFile(wmuxDir = getWmuxDir()): string {
+  return path.join(wmuxDir, FANOUT_ACCOUNT_POOL_FILENAME);
+}
+
+/** The pool's settings (defaults when the file is missing or unreadable). */
+export function loadFanoutAccountPoolSettings(wmuxDir?: string): FanoutAccountPoolSettings {
+  const file = settingsFile(wmuxDir);
+  if (cached?.file === file) return { ...cached.settings };
+  let raw: unknown = null;
+  try {
+    raw = atomicReadJSONSync<unknown>(file);
+  } catch {
+    raw = null;
+  }
+  const settings = normalizeFanoutAccountPoolSettings(raw);
+  cached = { file, settings };
+  return { ...settings };
+}
+
+/** Write the fields of `patch` over the stored settings; resolves the stored result. */
+export function setFanoutAccountPoolSettings(patch: unknown, wmuxDir?: string): Promise<FanoutAccountPoolSettings> {
+  const run = writes.then(async () => {
+    const file = settingsFile(wmuxDir);
+    const p = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch as Record<string, unknown> : {};
+    const current = loadFanoutAccountPoolSettings(wmuxDir);
+    const merged: Record<string, unknown> = { ...current };
+    for (const k of ['enabled', 'includeDefaultLogin', 'group', 'quotaBandPct', 'maxWorkersPerAccount'] as const) {
+      if (Object.hasOwn(p, k)) merged[k] = p[k];
+    }
+    const next = normalizeFanoutAccountPoolSettings(merged);
+    await atomicWriteJSON(file, next);
+    cached = { file, settings: next };
+    return { ...next };
+  });
+  writes = run.catch(() => undefined);
+  return run;
+}
+
+/** Tests only. */
+export function resetFanoutAccountPoolForTests(): void {
+  cached = null;
+  writes = Promise.resolve();
+  host = null;
+  lastPools.clear();
+  refreshingPools.clear();
+  createReserveHolds.clear();
+  toldCallerFallback = false;
+}
+
+// ── Eligibility (async, before the launches) ────────────────────────────────
+
+export interface PoolMember {
+  /** An account id, or POOL_DEFAULT_ACCOUNT. */
+  id: string;
+  /** The account's folder; null for the default login. */
+  configDir: string | null;
+}
+
+export interface PreparedPool {
+  settings: FanoutAccountPoolSettings;
+  group: string;
+  members: PoolMember[];
+}
+
+export type PoolExclusion = 'missing-folder' | 'unc' | 'hook-drift' | 'vault-only' | 'signed-out';
+
+export interface PreparePoolDeps {
+  settings?: () => FanoutAccountPoolSettings;
+  host?: FanoutAccountPoolHost | null;
+  accounts?: () => Account[];
+  binding?: (workspaceId: string) => string | undefined;
+  dirOk?: (dir: string) => boolean;
+  /** Whether the folder holds a Claude sign-in of its own (presence only). */
+  signedIn?: (configDir: string) => Promise<boolean>;
+  /** Whether the account's vault holds a Claude sign-in (metadata only). */
+  vaultSignIn?: (accountId: string) => boolean;
+  log?: (line: string) => void;
+}
+
+const SIGN_IN_PROBE_TIMEOUT_MS = 5000;
+
+/**
+ * Whether a Claude account folder holds a sign-in of its own, by presence
+ * only: a non-empty `.credentials.json` (Linux, Windows, and macOS without a
+ * keychain item), else on macOS the keychain item Claude Code keeps for that
+ * folder, looked up without `-w`/`-g` so no secret is printed or read.
+ * False on any failure or timeout (fail closed: the account is left out).
+ */
+export async function claudeFolderSignedIn(configDir: string, platform: NodeJS.Platform = process.platform): Promise<boolean> {
+  try {
+    const st = fs.statSync(path.join(configDir, '.credentials.json'));
+    if (st.isFile() && st.size > 0) return true;
+  } catch {
+    // no file: the keychain below, on macOS
+  }
+  if (platform !== 'darwin') return false;
+  return new Promise<boolean>((resolve) => {
+    execFile('security', ['find-generic-password', '-s', macKeychainServiceName(configDir), '-a', os.userInfo().username],
+      { timeout: SIGN_IN_PROBE_TIMEOUT_MS, windowsHide: true },
+      (err) => resolve(!err));
+  });
+}
+
+/**
+ * The pool a fan-out of `callerWorkspaceId` picks from, or null when the
+ * pool is off (or there is no daemon): then nothing is read and no launch is
+ * given an account. The group is the caller's bound account's, else the
+ * setting's; accounts of other groups are never members.
+ */
+export async function preparePool(callerWorkspaceId: string, deps: PreparePoolDeps = {}): Promise<PreparedPool | null> {
+  // No host (tests, or before the app wired it): nothing is read at all.
+  const h = deps.host === undefined ? host : deps.host;
+  if (!h) return null;
+  const settings = (deps.settings ?? loadFanoutAccountPoolSettings)();
+  if (!settings.enabled || !h.daemonConnected()) {
+    lastPools.delete(callerWorkspaceId);
+    return null;
+  }
+  const log = deps.log ?? ((line: string) => console.log(line));
+  const all = (deps.accounts ?? (() => getAccountStore().listAccounts()))().filter((a) => agentRow(a.vendor)?.usageReserve === true);
+  const boundId = (deps.binding ?? ((ws: string) => getAccountStore().getBinding(ws, 'claude')))(callerWorkspaceId);
+  const bound = boundId ? all.find((a) => a.id === boundId) : undefined;
+  const group = poolGroupFor(bound ? accountGroupOf(bound) : null, settings);
+  const inGroup = all.filter((a) => accountGroupOf(a) === group);
+  const dirOk = deps.dirOk ?? isAccessibleDir;
+  const signedIn = deps.signedIn ?? ((dir: string) => claudeFolderSignedIn(dir));
+  const vaultSignIn = deps.vaultSignIn ?? ((id: string) => holdsClaudeSignIn(appAccountVault().list(id)));
+  const excluded: Array<[string, PoolExclusion]> = [];
+  const local = inGroup.filter((a) => {
+    if (h.isUnc(a.configDir)) { excluded.push([a.id, 'unc']); return false; }
+    if (!dirOk(a.configDir)) { excluded.push([a.id, 'missing-folder']); return false; }
+    return true;
+  });
+  let drift: ReadonlySet<string> = new Set();
+  try {
+    drift = await h.hookDriftIds(local);
+  } catch {
+    // Unknown: every account counts as drifted rather than launch without its hooks.
+    drift = new Set(local.map((a) => a.id));
+  }
+  const members: PoolMember[] = [];
+  for (const a of local) {
+    if (drift.has(a.id)) { excluded.push([a.id, 'hook-drift']); continue; }
+    if (!(await signedIn(a.configDir).catch(() => false))) {
+      let vault = false;
+      try { vault = vaultSignIn(a.id); } catch { vault = false; }
+      excluded.push([a.id, vault ? 'vault-only' : 'signed-out']);
+      continue;
+    }
+    members.push({ id: a.id, configDir: a.configDir });
+  }
+  if (poolIncludesDefaultLogin(group, settings)) members.push({ id: POOL_DEFAULT_ACCOUNT, configDir: null });
+  // A member with no reading ranks below every measured one: ask for one, so
+  // an account that never got a worker is measured for the next picks.
+  if (h.probeUsage) {
+    const usage = h.claudeUsage();
+    for (const m of members) {
+      if (m.id !== POOL_DEFAULT_ACCOUNT && !claudeReading(usage.find((e) => e.accountId === m.id))) {
+        try { h.probeUsage(m.id); } catch { /* the next read asks again */ }
+      }
+    }
+  }
+  if (excluded.length > 0) log(`[fanout-pool] left out of the pool: ${excluded.map(([id, why]) => `${id} (${why})`).join(', ')}`);
+  const pool = { settings, group, members };
+  lastPools.delete(callerWorkspaceId);
+  lastPools.set(callerWorkspaceId, { pool, at: Date.now() });
+  while (lastPools.size > LAST_POOLS_MAX) lastPools.delete(lastPools.keys().next().value as string);
+  return pool;
+}
+
+// ── The pick (sync) ─────────────────────────────────────────────────────────
+
+export interface PickDeps {
+  host?: FanoutAccountPoolHost | null;
+  slots?: WorkerSlots;
+  holdFor?: (account: string) => { untilMs: number } | null;
+  /** Whether a launched task's worker may still run (liveHolders: a free holder does not). */
+  workerMayRun?: (taskId: string) => boolean;
+  dirOk?: (dir: string) => boolean;
+  now?: () => number;
+}
+
+/** The live-worker caps' holder set as a sync liveness source: a launched
+ *  task runs a worker while the set lists it as held or unknown. One it lists
+ *  as free, or no longer lists (an ended task whose workspace closed), runs
+ *  none. While the set cannot be read (no source installed yet, or a read
+ *  that throws) every launched worker still counts: an unknown never frees
+ *  an account. */
+function holderMayRun(): (taskId: string) => boolean {
+  let running: Set<string> | null = null;
+  try {
+    const look = liveHolders();
+    if (look) running = new Set(look.holders.filter((x) => x.state !== 'free').map((x) => x.taskId));
+  } catch {
+    running = null;
+  }
+  return (taskId) => running === null || running.has(taskId);
+}
+
+/** Open workers per pool account: launching ones under way, and launched ones
+ *  whose worker may still run. Released and ended ones do not count. */
+export function openWorkersByAccount(slots: WorkerSlots, workerMayRun: (taskId: string) => boolean): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const l of slots.poolLaunches()) {
+    if (l.state === 'launched' && !workerMayRun(l.taskId)) continue;
+    out.set(l.accountId, (out.get(l.accountId) ?? 0) + 1);
+  }
+  return out;
+}
+
+/** The candidates of a prepared pool now: quota from the readings on hand,
+ *  the reserve's holds, the open workers. A member whose folder went since
+ *  is left out. */
+export function poolCandidates(pool: PreparedPool, deps: PickDeps = {}): PoolCandidate[] {
+  const h = deps.host === undefined ? host : deps.host;
+  const now = (deps.now ?? Date.now)();
+  const usage = h?.claudeUsage() ?? [];
+  const holdFor = deps.holdFor ?? usageReserveHoldForAccount;
+  const open = openWorkersByAccount(deps.slots ?? getWorkerSlots(), deps.workerMayRun ?? holderMayRun());
+  const dirOk = deps.dirOk ?? isAccessibleDir;
+  const out: PoolCandidate[] = [];
+  for (const m of pool.members) {
+    if (m.configDir !== null && !dirOk(m.configDir)) continue;
+    const reading = m.id === POOL_DEFAULT_ACCOUNT
+      ? defaultReading(h?.defaultSnapshot() ?? null)
+      : claudeReading(usage.find((e) => e.accountId === m.id));
+    out.push({ id: m.id, verdict: evaluateQuota(reading, now), heldUntilMs: holdFor(m.id)?.untilMs ?? null, open: open.get(m.id) ?? 0 });
+  }
+  return out;
+}
+
+function defaultReading(snapshot: UsageSnapshot | null): ReturnType<typeof claudeReading> {
+  return snapshot ? claudeReading({ accountId: POOL_DEFAULT_ACCOUNT, status: 'ok', snapshot, fetchedAtMs: snapshot.fetchedAtMs ?? null, lastError: null }) : null;
+}
+
+/** The account the next worker launches on. Sync: the caller books it in
+ *  the launch record in the same step. */
+export function pickFromPool(pool: PreparedPool, deps: PickDeps = {}): PoolPick {
+  return pickPoolAccount(poolCandidates(pool, deps), pool.settings);
+}
+
+/**
+ * Whether a pick that found no account sends the worker to the caller's
+ * account, as with the pool off: the pool has no account that can run
+ * workers at all (none eligible, such as accounts signed in only inside
+ * WSL). Every account out of quota still refuses with its reset (the
+ * caller's may be one of them), and a limit the owner set (the usage
+ * reserve's holds, the per-account worker limit) still stops it.
+ */
+export function poolFallsBackToCaller(pick: PoolPick): boolean {
+  return pick.kind === 'none' && pick.reason === 'empty';
+}
+
+/** Open workers on one usage key (an account id or 'default'), as the
+ *  per-account worker limit counts them: pool launches and fallbacks onto
+ *  the caller's account alike. */
+export function openWorkersOn(key: string, deps: Pick<PickDeps, 'slots' | 'workerMayRun'> = {}): number {
+  return openWorkersByAccount(deps.slots ?? getWorkerSlots(), deps.workerMayRun ?? holderMayRun()).get(key) ?? 0;
+}
+
+/** A worker ran on the caller's account (poolFallsBackToCaller): said once per app run. */
+export function notePoolCallerFallback(deps: { host?: FanoutAccountPoolHost | null; log?: (line: string) => void } = {}): void {
+  if (toldCallerFallback) return;
+  (deps.log ?? ((line: string) => console.log(line)))('[fanout-pool] no pool account can run a worker: it runs on the caller\'s account, as with the pool off');
+  const h = deps.host === undefined ? host : deps.host;
+  if (!h?.notifyCallerFallback) return;
+  try {
+    h.notifyCallerFallback();
+    toldCallerFallback = true;
+  } catch { /* a notice never stops a launch; the next fallback tries again */ }
+}
+
+/** For the usage reserve's check at the fan-out: null when some member is
+ *  not held (or the pool has none: the caller checks its own account then,
+ *  poolFallsBackToCaller), else the member's hold that ends first. */
+export function poolAllHeld(pool: PreparedPool, holdFor: (account: string) => { account: string; untilMs: number } | null = usageReserveHoldForAccount): { account: string; untilMs: number } | null {
+  if (pool.members.length === 0) return null;
+  let first: { account: string; untilMs: number } | null = null;
+  for (const m of pool.members) {
+    const hold = holdFor(m.id);
+    if (!hold) return null;
+    if (!first || hold.untilMs < first.untilMs) first = { account: hold.account, untilMs: hold.untilMs };
+  }
+  return first;
+}
+
+/**
+ * A respawn or resume of a task whose last launch ran on pool account
+ * `accountId` launches there again (its conversation lives in that folder,
+ * so it can resume nowhere else), or is held: null when it may launch now,
+ * else why not. The account must still be registered with its folder; while
+ * the pool is on it must also have quota and not be held by the usage
+ * reserve. Reads only what is on hand (no network).
+ */
+export function poolRelaunchRefusal(accountId: string, deps: PickDeps & { account?: (id: string) => Account | undefined; poolOn?: () => boolean; settings?: () => FanoutAccountPoolSettings; taskId?: string } = {}): string | null {
+  const configDir = accountId === POOL_DEFAULT_ACCOUNT
+    ? null
+    : (deps.account ?? ((id: string) => getAccountStore().getAccount(id)))(accountId)?.configDir;
+  if (configDir === undefined) return 'fan-out account pool: the account this task ran on is no longer registered';
+  const [c] = poolCandidates({ settings: DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, group: '', members: [{ id: accountId, configDir }] }, deps);
+  if (!c) return 'fan-out account pool: the folder of the account this task ran on is missing';
+  const h = deps.host === undefined ? host : deps.host;
+  const poolOn = deps.poolOn ?? (() => !!h && loadFanoutAccountPoolSettings().enabled);
+  if (!poolOn()) return null;
+  const when = (ms: number | null) => (ms !== null ? `; it frees up at ${new Date(ms).toISOString()}` : '');
+  if (!c.verdict.usable) return `fan-out account pool: the account this task ran on is out of quota${when(c.verdict.availableAtMs)}`;
+  if (c.heldUntilMs !== null) return `fan-out account pool: the usage reserve holds the account this task ran on${when(c.heldUntilMs)}`;
+  // The per-account limit, not counting this task's own last launch (the
+  // relaunch replaces it).
+  const max = (deps.settings ?? loadFanoutAccountPoolSettings)().maxWorkersPerAccount;
+  if (max > 0) {
+    const own = deps.taskId ? (deps.slots ?? getWorkerSlots()).launchOf(deps.taskId) : null;
+    const ownCounted = own?.accountId === accountId && own.state !== 'released' ? 1 : 0;
+    if (c.open - ownCounted >= max) return `fan-out account pool: the account this task ran on already runs its most workers (${max}); it starts again once one ends`;
+  }
+  return null;
+}
+
+/**
+ * Whether a held bot fan-out of `workspaceId` stays held with the pool on:
+ * decided by the same pick that held it (every usable account held by the
+ * reserve, or every one out of quota with a known reset). Undefined when the
+ * pool is off, the daemon is away, or no pool account can run workers at all
+ * (poolFallsBackToCaller): the caller then checks the workspace's own
+ * account, as the fan-out itself would. A pool not read yet (after a
+ * restart) or read too long ago is read again in the background, and stays
+ * held until that read is in.
+ */
+export function poolReserveHeldForWorkspace(
+  workspaceId: string,
+  deps: PickDeps & { poolOn?: () => boolean; refresh?: (workspaceId: string) => void } = {},
+): boolean | undefined {
+  const h = deps.host === undefined ? host : deps.host;
+  const poolOn = deps.poolOn ?? (() => !!h && h.daemonConnected() && loadFanoutAccountPoolSettings().enabled);
+  if (!poolOn()) return undefined;
+  const now = (deps.now ?? Date.now)();
+  const entry = lastPools.get(workspaceId);
+  if (!entry || now - entry.at > LAST_POOL_TTL_MS) {
+    (deps.refresh ?? refreshPoolInBackground)(workspaceId);
+    if (!entry) return true;
+  }
+  const pick = pickPoolAccount(poolCandidates(entry.pool, deps), entry.pool.settings);
+  // No pool account can run it: its workers run on the workspace's own
+  // account, which the caller checks (as with the pool off).
+  if (poolFallsBackToCaller(pick)) return undefined;
+  return pick.kind === 'none' && (pick.reason === 'held' || (pick.reason === 'quota' && pick.availableAtMs !== null));
+}
+
+function refreshPoolInBackground(workspaceId: string): void {
+  if (refreshingPools.has(workspaceId)) return;
+  refreshingPools.add(workspaceId);
+  void preparePool(workspaceId).catch(() => null).finally(() => refreshingPools.delete(workspaceId));
+}
+
+/** A launching pool task's fan-out says how a reserve stop at its pane's
+ *  create is held (its reserveRefusal), so a bot's request is kept for the
+ *  reset as it would be at the launch check. */
+export function registerPoolCreateReserveHold(taskId: string, hold: (h: { account: string; untilMs: number }) => string): void {
+  createReserveHolds.delete(taskId);
+  createReserveHolds.set(taskId, hold);
+  while (createReserveHolds.size > CREATE_RESERVE_HOLDS_MAX) createReserveHolds.delete(createReserveHolds.keys().next().value as string);
+}
+
+/** The refusal of a create the reserve stops, held through the task's
+ *  fan-out when it registered one (used once); null when it did not. */
+export function poolCreateReserveRefusal(taskId: string, hold: { account: string; untilMs: number }): string | null {
+  const fn = createReserveHolds.get(taskId);
+  if (!fn) return null;
+  createReserveHolds.delete(taskId);
+  try {
+    return fn(hold);
+  } catch {
+    return null;
+  }
+}
+
+/** The pool account a pane's live env runs on: the registered account whose
+ *  folder its CLAUDE_CONFIG_DIR names, the default login when it names none,
+ *  undefined for a folder no account has. */
+export function poolAccountOfPaneEnv(env: Record<string, string>, accounts: () => readonly Account[] = () => getAccountStore().listAccounts()): string | undefined {
+  const dir = env.CLAUDE_CONFIG_DIR;
+  if (!dir) return POOL_DEFAULT_ACCOUNT;
+  return accounts().find((a) => a.configDir === dir && agentRow(a.vendor)?.usageReserve === true)?.id;
+}
+
+/** The pool account of a live pane, read from the daemon's session env, for
+ *  a relaunch typed into it; undefined when the pane's task never ran on the
+ *  pool (nothing is read then) or it cannot be read. */
+export async function poolAccountOfLivePane(sessionId: string, rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>, slots: WorkerSlots = getWorkerSlots()): Promise<string | undefined> {
+  if (!paneTaskPooled(sessionId, slots)) return undefined;
+  try {
+    const sessions = await rpc('daemon.listSessions', {}) as Array<{ id?: unknown; env?: unknown }>;
+    const s = Array.isArray(sessions) ? sessions.find((x) => x?.id === sessionId) : undefined;
+    if (!s?.env || typeof s.env !== 'object') return undefined;
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(s.env)) if (typeof v === 'string') env[k] = v;
+    return poolAccountOfPaneEnv(env);
+  } catch {
+    return undefined;
+  }
+}
+
+// ── The worker pane's create ────────────────────────────────────────────────
+
+export type PoolCreateDecision =
+  /** No pool account for this create: it runs as before. */
+  | { kind: 'none' }
+  /** The record named an account but the line launches no Claude, or the
+   *  pane is WSL (`wsl`): drop it. */
+  | { kind: 'release'; taskId: string; gen: number; wsl?: true }
+  /** The default login: no account folder, and no quota rotation away from it. */
+  | { kind: 'default' }
+  | { kind: 'account'; accountId: string };
+
+/**
+ * What a fan-out task pane's create does with its launch record's pool
+ * account. Read only after the launch was claimed (stampFanoutTaskPane). The
+ * renderer's `accountId` is never taken: one that differs from the record's
+ * refuses the create (THROWS). Only a Claude line (and not a Codex one) runs
+ * on the account; any other line releases it. A WSL pane releases it too
+ * (`place.wsl`): the pool reads no WSL sign-in or quota yet, so such a pane
+ * runs as it did before the pool. Pure over its inputs.
+ */
+export function poolAccountForCreate(
+  options: { fanoutTaskOf?: unknown; fanoutLaunch?: unknown; accountId?: unknown; initialCommand?: unknown } | undefined,
+  launchOf: (taskId: string) => { gen: number; state: string; accountId?: string } | null,
+  place: { wsl?: boolean } = {},
+): PoolCreateDecision {
+  if (typeof options?.fanoutTaskOf !== 'string' || !options.fanoutTaskOf) return { kind: 'none' };
+  const token = parseLaunchToken(options.fanoutLaunch);
+  if (!token) return { kind: 'none' };
+  const launch = launchOf(token.taskId);
+  if (!launch || launch.gen !== token.gen || launch.state === 'released' || !launch.accountId) return { kind: 'none' };
+  const named = options.accountId;
+  const recorded = launch.accountId === POOL_DEFAULT_ACCOUNT ? undefined : launch.accountId;
+  if (named !== undefined && named !== recorded) {
+    throw new Error('PTY_CREATE: this task pane runs on the account its launch recorded, not one the create names');
+  }
+  const raw = typeof options.initialCommand === 'string' ? options.initialCommand : '';
+  const line = splitModelEnvMarker(raw).command;
+  if (!line || !namesClaude(line) || namesCodex(line)) return { kind: 'release', taskId: token.taskId, gen: token.gen };
+  if (place.wsl === true) return { kind: 'release', taskId: token.taskId, gen: token.gen, wsl: true };
+  return recorded ? { kind: 'account', accountId: recorded } : { kind: 'default' };
+}
+
+/** The pool account (never the default login) a task workspace's current
+ *  launch runs on, for the turn-end usage probe. */
+export function poolAccountOfWorkspace(workspaceId: string, slots: WorkerSlots = getWorkerSlots()): string | null {
+  try {
+    const ref = slots.workspaceOf(workspaceId);
+    if (!ref) return null;
+    const launch = slots.launchOf(ref.taskId);
+    if (!launch || launch.gen !== ref.gen || !launch.accountId || launch.accountId === POOL_DEFAULT_ACCOUNT) return null;
+    return launch.accountId;
+  } catch {
+    return null;
+  }
+}
+
+/** A task pane moved to `accountId` in place (continueOnAccount, after the
+ *  daemon confirmed): its launch record follows, when it has a pool account. */
+export function notePoolPaneMoved(sessionId: string, accountId: string, slots: WorkerSlots = getWorkerSlots()): void {
+  try {
+    const pane = slots.paneOf(sessionId);
+    if (pane) slots.setLaunchAccount(pane.taskId, pane.gen, accountId);
+  } catch {
+    // the record keeps the old account; the next pick may count it there
+  }
+}

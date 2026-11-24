@@ -52,9 +52,12 @@ import {
   clearConsoleCapture,
   clearNetworkCapture,
   ensurePageCapture,
+  readEntryBody,
   type CaptureWindow,
   type ConsoleEntry,
+  type EntryBody,
 } from '../pageCapture';
+import { NETWORK_BUFFER } from '../pageNetwork';
 import { clampScreenshotCeilingBytes } from '../../resultCap';
 import {
   formatRefBoxTable,
@@ -296,7 +299,7 @@ function matchesGlob(url: string, pattern: string): boolean {
 async function readCapture<T>(
   scope: BrowserTargetScope,
   fromRpc: () => Promise<T>,
-  fromPage: (page: Page) => T,
+  fromPage: (page: Page) => T | Promise<T>,
 ): Promise<T> {
   const engine = PlaywrightEngine.getInstance();
   const resolvePage = () => engine.getPageForScope(scope).catch(allowScopedRpcFallback);
@@ -1211,9 +1214,16 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             isError: true,
           };
         }
+        // Checked here, not in the schema: the schema is part of the pinned MCP protocol baseline.
+        if (nth !== undefined && !Number.isInteger(nth)) {
+          return {
+            content: [{ type: 'text' as const, text: 'nth must be a whole number: 1 is the first match, -1 the last.' }],
+            isError: true,
+          };
+        }
         const what =
           requestId !== undefined ? `id ${requestId}` : `pattern "${urlPattern}"`;
-        const body = await readCapture<string | null>(
+        const found = await readCapture<EntryBody | null>(
           scope,
           async () => {
             // Main's buffer cannot be indexed over RPC, so the id / nth is
@@ -1230,24 +1240,35 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             const result = await sendScopedBrowserRpc<{ body: string | null }>('browser.responseBody.get', scope, {
               urlPattern: pattern,
             });
-            return result.body ?? null;
+            return typeof result.body === 'string' ? { body: result.body } : null;
           },
-          (page) => {
+          async (page) => {
             const state = ensurePageCapture(page);
             if (requestId !== undefined) {
               const entry = state.network[requestId - 1];
-              return entry?.response?.body ?? null;
+              return entry ? readEntryBody(page, entry) : null;
             }
-            // Only entries whose body was actually retained can be answered
-            // with, so `nth` counts over those and not over every request.
+            // Only a finished, textual response has a body to answer with, so
+            // `nth` counts over those and not over every request.
             const withBody = state.network.filter(
-              (e) => e.response?.body !== undefined && matchesGlob(e.url, urlPattern!),
+              (e) => e.bodyReadable === true && matchesGlob(e.url, urlPattern!),
             );
             const index = resolveNthIndex(withBody.length, nth);
-            return index < 0 ? null : withBody[index].response!.body!;
+            return index < 0 ? null : readEntryBody(page, withBody[index]);
           },
         );
 
+        if (found !== null && 'unavailable' in found && found.unavailable === 'gone') {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `The response body for ${what} is no longer available: the browser did not keep it. Either the page navigated or newer responses pushed it out of the buffer (reading right after the response helps), or the body is over the browser's ${NETWORK_BUFFER.maxResourceBufferSize / (1024 * 1024)}MB per-response limit (reading sooner does not). Repeat the request only if doing so is safe.`,
+              },
+            ],
+          };
+        }
+        const body = found !== null && 'body' in found ? found.body : null;
         if (body === null) {
           return {
             content: [

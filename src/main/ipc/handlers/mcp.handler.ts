@@ -3,6 +3,11 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { McpRegistrar, McpRegistrarStatus } from '../../mcp/McpRegistrar';
 import { externalRegistrationSkipReason } from '../../../shared/mcpTargets';
+import { brokerDecision, brokerFlag, brokerFlagValue, isBrokerSetting, type BrokerSettingPayload } from '../../../shared/mcpBroker';
+import { readBrokerSetting, writeBrokerSetting } from '../../../shared/brokerSetting';
+import { mcpBrokerDecision } from '../../mcp/BrokerSupervisor';
+import { brokerHostsSessionsHere } from '../../mcp/brokerNativePipe';
+import type { BrokerDownReason } from '../../../shared/mcpSessions';
 
 /**
  * Serializable shape returned to the renderer. Mirrors {@link McpRegistrarStatus}
@@ -61,10 +66,13 @@ function serialize(status: McpRegistrarStatus): McpStatusPayload {
  *                     so this handler can be wired up before the pipe server
  *                     finishes starting (it logs and refuses gracefully if the
  *                     token isn't available yet).
+ * @param brokerDownReason Why the broker is not running, for the Settings note
+ *                     (BrokerSupervisor.status().downReason).
  */
 export function registerMcpHandlers(
   registrar: McpRegistrar,
   getAuthToken: () => string | null,
+  brokerDownReason?: () => BrokerDownReason | null,
 ): () => void {
   // wrapHandler is variadic and treats its first argument (the IpcMainInvokeEvent)
   // as transport plumbing; we can omit the parameter entirely on the inner
@@ -141,7 +149,49 @@ export function registerMcpHandlers(
     ),
   );
 
+  /**
+   * The broker's Settings choice. `saved` is the file now; `running` is what
+   * this app decided at start, which a saved change reaches only after a
+   * restart; `next` is what the next start would decide with `saved`.
+   */
+  const brokerPayload = (): BrokerSettingPayload => {
+    const read = readBrokerSetting();
+    const running = mcpBrokerDecision();
+    const envValue = brokerFlagValue(process.env.WMUX_MCP_BROKER);
+    const downReason = brokerDownReason?.();
+    return {
+      saved: read.setting,
+      ...(read.problem ? { problem: read.problem } : {}),
+      env: brokerFlag(process.env.WMUX_MCP_BROKER),
+      ...(envValue !== undefined ? { envValue } : {}),
+      ...(downReason === 'peer-unavailable' ? { peerUnavailable: true } : {}),
+      ...(downReason === 'path-occupied' ? { pathOccupied: true } : {}),
+      running,
+      next: brokerDecision(process.platform, process.env.WMUX_MCP_BROKER, read.setting),
+      platformDefaultOn: brokerDecision(process.platform, undefined, 'default').on,
+      hostsSessions: brokerHostsSessionsHere(),
+    };
+  };
+
+  ipcMain.removeHandler(IPC.MCP_BROKER_SETTING_GET);
+  ipcMain.handle(
+    IPC.MCP_BROKER_SETTING_GET,
+    wrapHandler(IPC.MCP_BROKER_SETTING_GET, async (): Promise<BrokerSettingPayload> => brokerPayload()),
+  );
+
+  ipcMain.removeHandler(IPC.MCP_BROKER_SETTING_SET);
+  ipcMain.handle(
+    IPC.MCP_BROKER_SETTING_SET,
+    wrapHandler(IPC.MCP_BROKER_SETTING_SET, async (_event: unknown, setting: unknown): Promise<BrokerSettingPayload> => {
+      if (!isBrokerSetting(setting)) throw new Error('mcp broker setting: expected default, on or off');
+      writeBrokerSetting(setting);
+      return brokerPayload();
+    }),
+  );
+
   return () => {
+    ipcMain.removeHandler(IPC.MCP_BROKER_SETTING_GET);
+    ipcMain.removeHandler(IPC.MCP_BROKER_SETTING_SET);
     ipcMain.removeHandler(IPC.MCP_CHECK);
     ipcMain.removeHandler(IPC.MCP_REREGISTER);
     ipcMain.removeHandler(IPC.MCP_UNREGISTER);

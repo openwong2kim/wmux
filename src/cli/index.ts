@@ -15,6 +15,7 @@ import { handlePane } from './commands/pane';
 import { handleInput } from './commands/input';
 import { handleNotify } from './commands/notify';
 import { handleAction } from './commands/action';
+import { handleSettings } from './commands/settings';
 import { handleSystem } from './commands/system';
 import { handleBrowser, handleOpen } from './commands/browser';
 import { handleGate } from './commands/gate';
@@ -91,6 +92,8 @@ DAEMON (headless lifecycle, no Electron/GUI required)
   daemon headless on|off|status     Host without the desktop app: let the daemon
                                     start agents that paired PCs' allow rules match
   daemon headless release <id>      Drop the hold on a start whose processes were checked
+  daemon headless prune [--dry-run] Remove ended starts' worktrees that are clean and
+                                    pushed or fetched back; list the rest with why
 
 WEB ACCESS (browser / PWA)
   web                               Serve wmux panes to a browser (read-only,
@@ -179,6 +182,15 @@ APP ACTIONS (your own workspace; run from a wmux pane)
                                     workspace, pane or tab; a target in another
                                     workspace is refused (not_owned)
   action --list                     List the actions and their arguments
+
+SETTINGS (the running app; from a wmux pane or any terminal)
+  settings list                     The settings that can change here, their
+                                    values and what each takes
+  settings get [<key>]              Read one setting, or all of them
+  settings set <key> <value>        Change one; the app shows who changed it.
+                                    Settings about approvals, accounts, remote
+                                    and phone access, or that run a command,
+                                    are changed in Settings only
 
 NOTIFICATION COMMANDS
   notify <title> [body]             Show a notification in wmux
@@ -295,6 +307,7 @@ EXAMPLES
   wmux notify "Done" "Build finished"
   wmux action workspace.rename --arg name=api
   wmux action settings.set --arg key=terminal.fontSize --arg value=16
+  wmux settings set theme paper
   wmux open http://localhost:3000
   wmux identify --json
   wmux browser navigate "https://example.com"
@@ -382,6 +395,8 @@ async function main(): Promise<void> {
       await handleNotify(rest, jsonMode);
     } else if (cmd === 'action') {
       await handleAction(rest, jsonMode);
+    } else if (cmd === 'settings') {
+      await handleSettings(rest, jsonMode);
     } else if (SYSTEM_CMDS.has(cmd)) {
       await handleSystem(cmd, rest, jsonMode);
     } else if (cmd === 'open') {

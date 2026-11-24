@@ -37,7 +37,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          RELEVANT: '^(core/wmux-native/|integrations/shared/|integrations/claude/(bin/wmux-bridge\.mjs$|__tests__/)|src/shared/hooks/|src/main/pipe/|src/shared/lifecycleIntegrations\.ts$|src/shared/rpc\.ts$|src/cli/commands/(setupHooks|doctor)\.ts$|src/shared/probedNative\.ts$|src/main/ipc/handlers/hooksBridge\.handler\.ts$|src/cli/commands/__tests__/setupHooks\.(native|downgrade)\.os\.test\.ts$|scripts/fetch-last-release-cli\.mjs$|scripts/__tests__/fetchLastReleaseCli\.test\.mjs$|scripts/lib/last-release\.mjs$|src/daemon/DaemonPipeServer\.ts$|src/main/mcp/hookBridge\.ts$|src/main/mcp/__tests__/hookBridge\.lockstep\.test\.ts$|src/mcp/(shim|broker|brokerPeer)\.ts$|src/shared/peerPid\.ts$|src/mcp/__tests__/identityMatrix\.os\.test\.ts$|src/main/mcp/(nativeLauncher\.ts|__tests__/nativeLauncher\.os\.test\.ts)$|src/shared/(mcpLauncher\.ts|__tests__/mcpLauncher\.os\.test\.ts)$|src/mcp/__tests__/nativeShim\.parity\.os\.test\.ts$|src/shared/(constants|roleSurfaces|commanderSurface|coreSurface)\.ts$|scripts/build-mcp\.js$|scripts/build-native-hooks\.mjs$|scripts/__tests__/(buildNativeHooks\.os\.test|nativeHooksRelease\.test)\.mjs$|forge\.config\.ts$|package(-lock)?\.json$|\.github/workflows/(native-hooks|release)\.yml$)'
+          RELEVANT: '^(core/wmux-native/|integrations/shared/|integrations/claude/(bin/wmux-bridge\.mjs$|__tests__/)|src/shared/hooks/|src/main/pipe/|src/shared/lifecycleIntegrations\.ts$|src/shared/rpc\.ts$|src/cli/commands/(setupHooks|doctor)\.ts$|src/shared/probedNative\.ts$|src/main/ipc/handlers/hooksBridge\.handler\.ts$|src/cli/commands/__tests__/setupHooks\.(native|downgrade)\.os\.test\.ts$|scripts/fetch-last-release-cli\.mjs$|scripts/__tests__/fetchLastReleaseCli\.test\.mjs$|scripts/lib/last-release\.mjs$|src/daemon/DaemonPipeServer\.ts$|src/main/mcp/hookBridge\.ts$|src/main/mcp/__tests__/hookBridge\.lockstep\.test\.ts$|src/mcp/(shim|broker|brokerPeer|nativePipe)\.ts$|core/wmux-term/src/native_pipe_listener|src/shared/peerPid\.ts$|src/mcp/__tests__/identityMatrix\.os\.test\.ts$|src/main/mcp/(nativeLauncher\.ts|__tests__/nativeLauncher\.os\.test\.ts)$|src/shared/(mcpLauncher\.ts|__tests__/mcpLauncher\.os\.test\.ts)$|src/mcp/__tests__/nativeShim\.parity\.os\.test\.ts$|src/shared/(constants|roleSurfaces|commanderSurface|coreSurface)\.ts$|scripts/build-mcp\.js$|scripts/build-native-hooks\.mjs$|scripts/__tests__/(buildNativeHooks\.os\.test|nativeHooksRelease\.test)\.mjs$|forge\.config\.ts$|package(-lock)?\.json$|\.github/workflows/(native-hooks|release)\.yml$)'
         run: |
           if [ "$EVENT" != "pull_request" ]; then echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           files="$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')"
@@ -58,6 +58,10 @@ jobs:
     name: native-hooks (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    # No test here starts a terminal, so the suite's setup does not ask for
+    # the Rust terminal core (src/test-utils/requireRustEngine.ts).
+    env:
+      WMUX_TERMINAL_CORE_NOT_NEEDED: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.changes.outputs.relevant != 'false'
@@ -76,6 +80,13 @@ jobs:
       - name: Install Rust toolchain
         if: needs.changes.outputs.relevant != 'false'
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      # On Windows the broker listens through the terminal core's native pipe
+      # listener, so the mcp-shim end-to-end test needs the core staged beside
+      # the bundle (dist/wmux-native); without it the broker exits before it
+      # listens.
+      - name: Build the terminal core (the Windows broker listens through it)
+        if: needs.changes.outputs.relevant != 'false' && matrix.name == 'windows-x64'
+        run: npm run build:terminal-core
       - name: Format, lint and unit tests
         if: needs.changes.outputs.relevant != 'false'
         working-directory: core/wmux-native
@@ -93,6 +104,10 @@ jobs:
         run: npx vitest run integrations/shared/__tests__/hooksBridgeNative.parity.os.test.ts src/mcp/__tests__/nativeShim.parity.os.test.ts integrations/shared/__tests__/hookFlavours.lockstep.test.ts integrations/shared/__tests__/hooksBridgeShells.os.test.ts src/shared/hooks/__tests__/compatHookInstall.os.test.ts src/main/mcp/__tests__/hookBridge.lockstep.test.ts scripts/__tests__/buildNativeHooks.os.test.mjs scripts/__tests__/nativeHooksRelease.test.mjs src/shared/__tests__/mcpLauncher.os.test.ts src/main/mcp/__tests__/nativeLauncher.os.test.ts src/shared/hooks/__tests__/claudeNativeHook.os.test.ts src/cli/commands/__tests__/setupHooks.native.os.test.ts src/mcp/__tests__/identityMatrix.os.test.ts
         env:
           WMUX_REQUIRE_NATIVE_HOOKS: '1'
+          # The Windows stub brokers listen through the core built above (an
+          # elevated runner's net pipe is owned by Administrators, which the
+          # native shim refuses); elsewhere they are net servers.
+          WMUX_TERMINAL_CORE_MODULE: ${{ matrix.name == 'windows-x64' && format('{0}/dist/wmux-native/index.cjs', github.workspace) || '' }}
           WMUX_NATIVE_HOOKS_BIN: ${{ github.workspace }}/dist/native-hooks/${{ runner.os == 'Windows' && 'wmux-native.exe' || 'wmux-native' }}
       - name: Claude hook characterisation against the native binary
         if: needs.changes.outputs.relevant != 'false'

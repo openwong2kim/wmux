@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState, useMemo, useRef } from 'react';
+import { notePaneFenceError, notePaneFenceResult, toastPaneFenceRefusal } from '../../utils/paneFence';
 import { Panel, Group, Separator, type Layout } from 'react-resizable-panels';
 import type { PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
@@ -1006,10 +1007,13 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           (err: unknown) => {
             releaseAutoResume(ptyId);
             console.warn('[wmux:resume] the resume line was not typed', String(err));
+            // A fenced tab's refusal shows on its chip (utils/paneFence.ts),
+            // and is not tried again: the same line meets the same refusal.
+            const fenceRefused = notePaneFenceError(ptyId, err);
             // A screen main could not read may become readable: try again a
             // few times while this pane and binding stand (the cleanup below
             // cancels it). Every check above runs again on each try.
-            const wait = cancelled ? null : autoResumeRetryDelay(err, retries);
+            const wait = cancelled || fenceRefused ? null : autoResumeRetryDelay(err, retries);
             if (wait !== null) {
               retries++;
               timer = setTimeout(attempt, wait);
@@ -1372,10 +1376,14 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         // Resolves false when main refused the line: the pill then stays as it was.
         const type = (text: string): Promise<boolean> =>
           window.electronAPI.pty.writeLaunch(ptyId, text, false, 'human').then(
-            () => true,
+            (res: unknown) => {
+              notePaneFenceResult(ptyId, res);
+              return true;
+            },
             (err: unknown) => {
               console.warn('[wmux:resume] the resume line was not typed', String(err));
-              toastFolderTrustLaunchRefusal(err);
+              notePaneFenceError(ptyId, err);
+              if (!toastPaneFenceRefusal(err)) toastFolderTrustLaunchRefusal(err);
               return false;
             },
           );

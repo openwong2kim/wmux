@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import { sendRpc } from '../wmux-client';
 import { CHROME_START_RPC_TIMEOUT_MS } from '../../shared/chromeStart';
-import { getConnectionScope } from '../connectionScope';
+import { scopeOrRefuse } from '../connectionScope';
 import { browserCallRefusal, WorkspaceScopeUnresolvedError } from './browserScope';
 
 /**
@@ -82,7 +82,7 @@ let modulePin: SurfacePin | null = null;
  * fallback has exactly the same meaning.
  */
 export function getOpenerKey(): string {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the browser opener');
   if (scope) {
     if (!scope.browserOpenerKey) scope.browserOpenerKey = crypto.randomUUID();
     return scope.browserOpenerKey;
@@ -92,13 +92,13 @@ export function getOpenerKey(): string {
 }
 
 function readPin(): SurfacePin | null {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the browser surface pin');
   if (scope) return (scope.browserPin as SurfacePin | null | undefined) ?? null;
   return modulePin;
 }
 
 function writePin(pin: SurfacePin | null): void {
-  const scope = getConnectionScope();
+  const scope = scopeOrRefuse('the browser surface pin');
   if (scope) {
     scope.browserPin = pin;
     return;

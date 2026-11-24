@@ -8,6 +8,7 @@ use crate::term::cell::{Flags, ResetDiscriminant};
 
 use crate::grid::row::Row;
 use crate::grid::{Dimensions, Grid, GridCell};
+use crate::wmux_alloc::{self, REFLOW, ROW};
 
 impl<T: GridCell + Default + PartialEq> Grid<T> {
     // wmux: xterm's default reflowCursorLine=false leaves the entire cursor
@@ -178,7 +179,8 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         self.columns = columns;
 
-        let mut reversed: Vec<Row<T>> = Vec::with_capacity(self.raw.len());
+        // wmux: every vector below reserves fallibly (`wmux_alloc`).
+        let mut reversed: Vec<Row<T>> = wmux_alloc::with_capacity(self.raw.len(), REFLOW);
         let mut cursor_line_delta = 0;
 
         // Remove the linewrap special case, by moving the cursor outside of the grid.
@@ -192,14 +194,14 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         for (i, mut row) in rows.drain(..).enumerate().rev() {
             if reflow && cursor_paragraph.contains(&i) {
                 Self::resize_cursor_row(&mut row, columns, false);
-                reversed.push(row);
+                wmux_alloc::push(&mut reversed, row, REFLOW);
                 continue;
             }
             // Check if reflowing should be performed.
             let last_row = match reversed.last_mut() {
                 Some(last_row) if should_reflow(last_row) => last_row,
                 _ => {
-                    reversed.push(row);
+                    wmux_alloc::push(&mut reversed, row, REFLOW);
                     continue;
                 },
             };
@@ -230,7 +232,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
                 let mut spacer = T::default();
                 spacer.flags_mut().insert(Flags::LEADING_WIDE_CHAR_SPACER);
-                cells.push(spacer);
+                wmux_alloc::push(&mut cells, spacer, ROW);
 
                 cells
             } else {
@@ -282,7 +284,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                 cell.flags_mut().insert(Flags::WRAPLINE);
             }
 
-            reversed.push(row);
+            wmux_alloc::push(&mut reversed, row, REFLOW);
         }
 
         let removed = total_before.saturating_sub(reversed.len());
@@ -291,7 +293,8 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         if reversed.len() < self.lines {
             let delta = (self.lines - reversed.len()) as i32;
             self.cursor.point.line = max(self.cursor.point.line - delta, Line(0));
-            reversed.resize_with(self.lines, || Row::new(columns));
+            let lines = self.lines;
+            wmux_alloc::resize_with(&mut reversed, lines, || Row::new(columns), REFLOW);
         }
 
         // Pull content down to put cursor in correct position, or move cursor up if there's no
@@ -305,12 +308,12 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         }
 
         // Reverse iterator and fill all rows that are still too short.
-        let mut new_raw = Vec::with_capacity(reversed.len());
+        let mut new_raw = wmux_alloc::with_capacity(reversed.len(), REFLOW);
         for mut row in reversed.drain(..).rev() {
             if row.len() < columns {
                 row.grow(columns);
             }
-            new_raw.push(row);
+            wmux_alloc::push(&mut new_raw, row, REFLOW);
         }
 
         self.raw.replace_inner(new_raw);
@@ -348,24 +351,27 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             self.cursor.point.column += 1;
         }
 
-        let mut new_raw = Vec::with_capacity(self.raw.len());
+        // wmux: every vector below reserves fallibly (`wmux_alloc`).
+        let mut new_raw = wmux_alloc::with_capacity(self.raw.len(), REFLOW);
         let mut buffered: Option<Vec<T>> = None;
 
         let mut rows = self.raw.take_all();
         // wmux: which rows start with a fullwidth glyph (the row below index i is i - 1).
-        let starts_wide: Vec<bool> =
-            rows.iter().map(|r| r.len() > 0 && r[Column(0)].flags().contains(Flags::WIDE_CHAR)).collect();
+        let starts_wide: Vec<bool> = wmux_alloc::collect(
+            rows.iter().map(|r| r.len() > 0 && r[Column(0)].flags().contains(Flags::WIDE_CHAR)),
+            REFLOW,
+        );
         for (i, mut row) in rows.drain(..).enumerate().rev() {
             if reflow && cursor_paragraph.contains(&i) {
                 Self::resize_cursor_row(&mut row, columns, i > 0 && starts_wide[i - 1]);
-                new_raw.push(row);
+                wmux_alloc::push(&mut new_raw, row, REFLOW);
                 continue;
             }
             // wmux: without reflow (the alternate screen) xterm keeps a line's
             // cells past the narrower width; a later widen shows them again.
             if !reflow {
                 row.hide_past(columns);
-                new_raw.push(row);
+                wmux_alloc::push(&mut new_raw, row, REFLOW);
                 continue;
             }
             // Append lines left over from the previous row.
@@ -392,7 +398,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                             Vec::new()
                         } else {
                             // Since it fits, just push the existing line without any reflow.
-                            new_raw.push(row);
+                            wmux_alloc::push(&mut new_raw, row, REFLOW);
                             break;
                         }
                     },
@@ -406,6 +412,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                     spacer.flags_mut().insert(Flags::LEADING_WIDE_CHAR_SPACER);
 
                     let wide_char = mem::replace(&mut row[Column(columns - 1)], spacer);
+                    wmux_alloc::reserve(&mut wrapped, 1, ROW);
                     wrapped.insert(0, wide_char);
                 }
 
@@ -414,7 +421,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                 if len > 0 && wrapped[len - 1].flags().contains(Flags::LEADING_WIDE_CHAR_SPACER) {
                     if len == 1 {
                         row[Column(columns - 1)].flags_mut().insert(Flags::WRAPLINE);
-                        new_raw.push(row);
+                        wmux_alloc::push(&mut new_raw, row, REFLOW);
                         break;
                     } else {
                         // Remove the leading spacer from the end of the wrapped row.
@@ -423,7 +430,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                     }
                 }
 
-                new_raw.push(row);
+                wmux_alloc::push(&mut new_raw, row, REFLOW);
 
                 // Set line as wrapped if cells got removed.
                 if let Some(cell) = new_raw.last_mut().and_then(|r| r.last_mut()) {
@@ -463,7 +470,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                     // Make sure new row is at least as long as new width.
                     let occ = wrapped.len();
                     if occ < columns {
-                        wrapped.resize_with(columns, T::default);
+                        wmux_alloc::resize_with(&mut wrapped, columns, T::default, ROW);
                     }
                     row = Row::from_vec(wrapped, occ);
 
@@ -476,7 +483,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         }
 
         // Reverse iterator and use it as the new grid storage.
-        let mut reversed: Vec<Row<T>> = new_raw.drain(..).rev().collect();
+        let mut reversed: Vec<Row<T>> = wmux_alloc::collect(new_raw.drain(..).rev(), REFLOW);
         let added = reversed.len().saturating_sub(total_before);
         let last = Line(self.lines as i32 - 1);
         let kept = if reflow && history_before == 0 {

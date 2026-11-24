@@ -44,6 +44,11 @@ export interface UserTextEvent extends TurnEventBase {
   hasImage?: boolean;
   /** Absolute source paths Claude Code recorded for attached images, when it did. */
   images?: string[];
+  /**
+   * Claude Code stored this message as a paste; `text` is the paste's own
+   * text, its `<pasted_content>` markers removed (transcript/parseEntry.ts).
+   */
+  pasted?: true;
 }
 
 /**
@@ -296,9 +301,11 @@ export interface ChatBridgeApi {
    * what the send did to the pane and outranks `result` for the UI: `none`
    * wrote nothing, `uncertain` may have written. An older daemon omits it.
    * `queued` marks a `sent` the agent's composer queued behind a running turn.
+   * `reason: 'unsent-paste'`: refused because the pane's input box still holds
+   * an earlier message wmux pasted and did not submit.
    */
   send: (args: { ptyId: string; agentSessionId: string; text: string; requestId?: string; attachments?: string[] }) => Promise<{
-    result: ChatSendResult; replayed?: boolean; effect?: 'none' | 'uncertain' | 'submitted'; queued?: true;
+    result: ChatSendResult; replayed?: boolean; effect?: 'none' | 'uncertain' | 'submitted'; queued?: true; reason?: 'unsent-paste';
   }>;
   /** ESC into the live terminal agent, only while its turn is running. */
   interrupt?: (args: { ptyId: string; agentSessionId: string }) => Promise<{ result: ChatInterruptResult }>;

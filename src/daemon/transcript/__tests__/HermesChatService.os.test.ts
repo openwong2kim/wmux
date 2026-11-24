@@ -126,6 +126,33 @@ describe('HermesChatService', () => {
     expect(writes).toHaveLength(2);
   });
 
+  it('#3393: a pane holding an earlier unsubmitted paste types nothing; a send that leaves its own paste records one', async () => {
+    let held = true;
+    const recorded: string[] = [];
+    const unsentPaste = { held: () => held, wrote: () => undefined, record: (id: string, writer: string) => { recorded.push(`${id}:${writer}`); } };
+    const refused = rig({ unsentPaste });
+    expect(await refused.service.send('p1', '20261029_053840_ec122e', 'x', 'm1')).toEqual({ result: 'busy', reason: 'unsent-paste' });
+    expect(refused.writes).toEqual([]);
+    held = false;
+    let revision = 0;
+    const raced = rig({ unsentPaste, keyInput: () => ({ revision, quiet: true }), write: (_id, data) => { raced.writes.push(data); revision += 2; return true; } });
+    expect(await raced.service.send('p1', '20261029_053840_ec122e', 'x', 'm2')).toEqual({ result: 'unconfirmed', reason: 'transport-lost' });
+    expect(recorded).toEqual(['p1:chat send']);
+    const sent = rig({ unsentPaste });
+    expect(await sent.service.send('p1', '20261029_053840_ec122e', 'x', 'm3')).toEqual({ result: 'sent' });
+    expect(recorded).toHaveLength(1);
+    // An Enter the writer refuses (another delivery took the pane) did not reach it: the paste is held.
+    let keys = 0;
+    const enterRefused = rig({ unsentPaste, keyInput: () => ({ revision: keys, quiet: true }), write: (_id, data) => {
+      enterRefused.writes.push(data);
+      if (data === '\r') return false;
+      keys++;
+      return true;
+    } });
+    expect(await enterRefused.service.send('p1', '20261029_053840_ec122e', 'x', 'm4')).toEqual({ result: 'unconfirmed', reason: 'transport-lost' });
+    expect(recorded).toEqual(['p1:chat send', 'p1:chat send']);
+  });
+
   it('a withdrawn grant types nothing; a key typed after the paste stops the Enter', async () => {
     const denied = rig();
     expect(await denied.service.send('p1', '20261029_053840_ec122e', 'x', 'm1', { authorized: async () => false })).toEqual({ result: 'error', reason: 'unauthorized' });

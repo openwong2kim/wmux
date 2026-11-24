@@ -53,6 +53,7 @@ import type {
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { A2A_COMPANY_RPC, type A2aCompanyMarkParams, type A2aCompanyMarkResult, type A2aCompanyTasksResult } from '../shared/companyHold';
 import { A2A_SPAWN_RPC, type A2aSpawnAskInput, type A2aSpawnAskResult, type A2aSpawnOutgoingList, type A2aSpawnPolicySetResult, type A2aSpawnPolicyV1, type A2aSpawnRequestSummary } from '../shared/a2aSpawn';
+import { A2A_ANSWER_RPC, A2A_APPROVAL_OUTCOME_WAIT_MS, A2A_APPROVAL_RPC, A2A_APPROVALS_RPC, type A2aApprovalExposure, type A2aApprovalSendResult } from '../shared/a2aRemote';
 import { createSessionPipeMarkers } from '../daemon/sessionPipeMarkers';
 import { PANE_LOCK_DAEMON_WAIT_MS } from '../daemon/paneDeliveryLock';
 import type { FolderTrustState } from '../daemon/folderTrustState';
@@ -982,6 +983,35 @@ export class DaemonClient extends EventEmitter {
     return (await this.rpc(A2A_SPAWN_RPC.ask, { ...input })) as A2aSpawnAskResult;
   }
 
+  /** An answer to the question the worker on a task this PC sent shows (A2A_FEATURE_ANSWER). */
+  async a2aRemoteAnswer(input: { taskId: string; workspaceId: string; pickerId: string; option: number }): Promise<{ ok: true; taskId: string; messageId: string } | { ok: false; error: string }> {
+    return (await this.rpc(A2A_ANSWER_RPC.send, { ...input })) as { ok: true; taskId: string; messageId: string } | { ok: false; error: string };
+  }
+
+  /**
+   * An allow or deny for the prompt the worker on a task this PC sent shows
+   * (A2A_FEATURE_APPROVAL). The daemon waits for the outcome up to
+   * A2A_APPROVAL_OUTCOME_WAIT_MS, so this waits longer.
+   */
+  async a2aRemoteApprove(input: { taskId: string; workspaceId: string; promptId: string; decision: 'allow' | 'deny' }): Promise<A2aApprovalSendResult> {
+    return (await this.rpc(A2A_APPROVAL_RPC.send, { ...input }, { timeoutMs: A2A_APPROVAL_OUTCOME_WAIT_MS + 10_000 })) as A2aApprovalSendResult;
+  }
+
+  /** This PC's approvals setting: which paired PCs may allow or deny prompts in the tasks they sent here. */
+  async a2aRemoteApprovalsGet(): Promise<{ hosts: Record<string, A2aApprovalExposure>; damaged: boolean }> {
+    return (await this.rpc(A2A_APPROVALS_RPC.get, {})) as { hosts: Record<string, A2aApprovalExposure>; damaged: boolean };
+  }
+
+  /**
+   * Set it for one PC, as the app (first party); `by` is logged by the daemon (`approvals set by=`).
+   * With `expected`, the daemon saves a raise only while the PC is still at that level (else `conflict`); a lowering always saves.
+   */
+  async a2aRemoteApprovalsSet(input: { hostId: string; exposure: 'off' | A2aApprovalExposure; by: string; expected?: 'off' | A2aApprovalExposure }): Promise<{ ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string; conflict?: true }> {
+    return (await this.rpc(A2A_APPROVALS_RPC.set, {
+      hostId: input.hostId, exposure: input.exposure, senderPtyId: input.by, ...(input.expected !== undefined ? { expected: input.expected } : {}),
+    })) as { ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string; conflict?: true };
+  }
+
   async a2aSpawnOutgoing(spawnId?: string): Promise<A2aSpawnOutgoingList> {
     return (await this.rpc(A2A_SPAWN_RPC.outgoing, spawnId ? { spawnId } : {})) as A2aSpawnOutgoingList;
   }
@@ -1159,8 +1189,10 @@ export class DaemonClient extends EventEmitter {
   }
 
   /** Current daemon-owned agent identity and status for reconnect-safe actions.
-   *  `opts.timeoutMs` bounds one read for a caller that polls (#1680). */
-  async getAgentState(sessionId: string, opts: { timeoutMs?: number } = {}): Promise<{
+   *  `opts.timeoutMs` bounds one read for a caller that polls (#1680).
+   *  `opts.transcriptOffset` also asks for the size of the session's bound
+   *  transcript (a delivery's submit proof); always a read of its own. */
+  async getAgentState(sessionId: string, opts: { timeoutMs?: number; transcriptOffset?: boolean } = {}): Promise<{
     agentName: string | null;
     /** #1307 — true when a live attributed process backs this pane.
      *  Missing or non-boolean parses to false, so an older daemon
@@ -1173,6 +1205,12 @@ export class DaemonClient extends EventEmitter {
     /** #1680 — the key-only input counter: focus and pointer-motion reports do
      *  not move it. Absent on an older daemon. */
     keyInputRevision?: number;
+    /** The epoch that counter is in: a recovered session counts again from 0
+     *  under a new one. Absent on an older daemon. */
+    keyEpoch?: string;
+    /** With `opts.transcriptOffset`: the bound transcript's size in bytes.
+     *  Absent when the session is not bound to one, or on an older daemon. */
+    transcriptOffset?: number;
     /** #1680 — `inputQuiet` for key input only. Absent on an older daemon. */
     keyInputQuiet?: boolean;
     /** #1680 — the pane's CURRENT agent has delivered a hook (reset when that
@@ -1190,10 +1228,12 @@ export class DaemonClient extends EventEmitter {
     /** Milliseconds since the pane's last settled result. Absent on an older
      *  daemon and when none settled since its agent started. */
     settledAgoMs?: number;
+    /** #3393 — the input box holds a delivery's paste left unsubmitted. Absent on an older daemon. */
+    unsentPasteHeld?: boolean;
   } | null> {
     try {
-      const result = await (opts.timeoutMs !== undefined
-        ? this.rpc('daemon.getAgentState', { id: sessionId }, { timeoutMs: opts.timeoutMs })
+      const result = await (opts.timeoutMs !== undefined || opts.transcriptOffset
+        ? this.rpc('daemon.getAgentState', { id: sessionId, ...(opts.transcriptOffset ? { transcriptOffset: true } : {}) }, opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : undefined)
         : this.readAgentStateRaw(sessionId)) as {
         agentName?: unknown;
         agentVerified?: unknown;
@@ -1202,6 +1242,8 @@ export class DaemonClient extends EventEmitter {
         inputRevision?: unknown;
         incarnationId?: unknown;
         keyInputRevision?: unknown;
+        keyEpoch?: unknown;
+        transcriptOffset?: unknown;
         keyInputQuiet?: unknown;
         hookReports?: unknown;
         hasDraft?: unknown;
@@ -1210,6 +1252,7 @@ export class DaemonClient extends EventEmitter {
         turnOpen?: unknown;
         agentMidTurn?: unknown;
         settledAgoMs?: unknown;
+        unsentPasteHeld?: unknown;
       };
       const validStatuses: AgentStatus[] = [
         'running',
@@ -1243,6 +1286,10 @@ export class DaemonClient extends EventEmitter {
         result.keyInputRevision >= 0
           ? { keyInputRevision: result.keyInputRevision }
           : {}),
+        ...(typeof result.keyEpoch === 'string' && result.keyEpoch && result.keyEpoch.length <= 128 ? { keyEpoch: result.keyEpoch } : {}),
+        ...(typeof result.transcriptOffset === 'number' && Number.isSafeInteger(result.transcriptOffset) && result.transcriptOffset >= 0
+          ? { transcriptOffset: result.transcriptOffset }
+          : {}),
         ...(typeof result.keyInputQuiet === 'boolean' ? { keyInputQuiet: result.keyInputQuiet } : {}),
         ...(typeof result.hookReports === 'boolean' ? { hookReports: result.hookReports } : {}),
         ...(typeof result.hasDraft === 'boolean' ? { hasDraft: result.hasDraft } : {}),
@@ -1255,6 +1302,7 @@ export class DaemonClient extends EventEmitter {
         ...(typeof result.settledAgoMs === 'number' && Number.isFinite(result.settledAgoMs) && result.settledAgoMs >= 0
           ? { settledAgoMs: result.settledAgoMs }
           : {}),
+        ...(typeof result.unsentPasteHeld === 'boolean' ? { unsentPasteHeld: result.unsentPasteHeld } : {}),
       };
     } catch {
       return null;
@@ -1446,6 +1494,22 @@ export class DaemonClient extends EventEmitter {
   releasePaneLock(id: string, by: { token: string } | { nonce: string }): void {
     const attempt = () => (this.isConnected ? this.rpc('daemon.session.deliveryUnlockV1', { id, ...by }) : Promise.resolve());
     void attempt().catch(() => attempt()).catch(() => undefined);
+  }
+
+  /**
+   * #3393 — this delivery left its paste in the pane's input box: the daemon
+   * holds the pane for every writer until it is clear again. Sent while
+   * `token` still holds the pane, after the delivery's last held write. False:
+   * not recorded (an older daemon, a hold that ended, no reply).
+   */
+  async reportUnsentPaste(id: string, token: string): Promise<boolean> {
+    if (!this.isConnected) return false;
+    try {
+      const r = await this.rpc('daemon.session.unsentPasteV1', { id, token }) as { ok?: unknown } | null;
+      return r?.ok === true;
+    } catch {
+      return false;
+    }
   }
 
   /**

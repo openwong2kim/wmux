@@ -588,8 +588,9 @@ export async function openTaskGitRepo(input: TaskGitRepoInput, git: TaskPushGit 
         git: (args, env, ms) => git(args, hostCwd, taskGitEnv(env), { timeoutMs: ms }),
         binaryId: async (execPath) => {
           try {
-            const st = fs.statSync(path.join(execPath, platform === 'win32' ? 'git.exe' : 'git'));
-            return `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}`;
+            // bigint: a 64-bit file ID (NTFS) does not fit a Number.
+            const st = fs.statSync(path.join(execPath, platform === 'win32' ? 'git.exe' : 'git'), { bigint: true });
+            return `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}`;
           } catch {
             return null;
           }

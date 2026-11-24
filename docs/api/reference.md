@@ -7,7 +7,7 @@
 
 # wmux API Reference (generated)
 
-> **Generated from wmux v4.15.0 sources.** This file is produced by
+> **Generated from wmux v4.17.0 sources.** This file is produced by
 > `scripts/gen-api-reference.mjs` directly from the code — it lists every
 > RPC method, event type, required capability, and the key event-bus
 > constants exactly as the running daemon sees them. For the hand-curated
@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **326** methods (`ALL_RPC_METHODS` in
+Total: **335** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -140,6 +140,7 @@ Total: **326** methods (`ALL_RPC_METHODS` in
 | `browser.type.humanlike` | `browser.type` | `browser` |
 | `browser.cdp.target` | `browser.read` | `browser` |
 | `browser.cdp.info` | `browser.read` | `browser` |
+| `browser.cdp.grant` | `browser.evaluate` | `browser` |
 | `browser.screenshot` | `browser.screenshot` | `browser` |
 | `browser.evaluate` | `browser.evaluate` | `browser` |
 | `browser.console.get` | `browser.read` | `browser` |
@@ -244,6 +245,14 @@ Total: **326** methods (`ALL_RPC_METHODS` in
 | `a2a.remote.spawnPolicy.set` | `wmux.internal` |  |
 | `a2a.remote.statusLabels.get` | `wmux.internal` |  |
 | `a2a.remote.statusLabels.set` | `wmux.internal` |  |
+| `a2a.remote.answer` | `a2a.send` | `a2a` |
+| `a2a.remote.answer.send` | `wmux.internal` |  |
+| `a2a.remote.answers.get` | `wmux.internal` |  |
+| `a2a.remote.answers.set` | `wmux.internal` |  |
+| `a2a.remote.approve` | `a2a.execute` | `a2a` |
+| `a2a.remote.approve.send` | `wmux.internal` |  |
+| `a2a.remote.approvals.get` | `wmux.internal` |  |
+| `a2a.remote.approvals.set` | `wmux.internal` |  |
 | `a2a.remote.spawnRequests.list` | `wmux.internal` |  |
 | `a2a.remote.spawn.work` | `wmux.internal` |  |
 | `a2a.remote.spawn.decide` | `wmux.internal` |  |

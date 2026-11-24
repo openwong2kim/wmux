@@ -23,6 +23,8 @@ export interface NativeRingStorage {
   readAllWithGeometry(): { data: Buffer; writtenAt: number; geometry?: ReplayGeometry | null };
   dispose(): void;
   freeze(): NativeFrozenRing;
+  /** readAll() as of the call, put together off the JS thread (`ring-read-async-v1`). Absent on an older core. */
+  readAllAsync?(): Promise<Buffer>;
 }
 /** Synchronous delivery only; the owner disposes the chunk after listeners return. */
 export interface NativeOutputChunk {
@@ -42,7 +44,8 @@ export interface NativeTerminalCore {
   nativeTransportWorkerCount(): number;
   nativeCoreAbiVersion(): number;
   nativeCoreCapabilities(): string[];
-  NativeRing: new (capacity: number) => NativeRingStorage;
+  /** `compress` keeps finished chunks compressed (`ring-compress-v1`); an older core ignores it. */
+  NativeRing: new (capacity: number, compress?: boolean) => NativeRingStorage;
   NativeOutputDecoder?: new () => { feed(bytes: Uint8Array, finish: boolean): NativeOutputChunk };
   NativeOutputInterpreter?: new () => NativeOutputInterpreter;
   NativeTransport: new (command: string, args: string[], cwd: string, env: Record<string, string>, cols: number, rows: number, wake: () => void, conptyDll?: string, parentWindow?: Uint8Array) => NativeTransport;
@@ -63,6 +66,13 @@ export interface NativeOutputInterpreter {
   readonly altScreen: boolean;
   preamble(windowStartOffset: number): string;
   reset(): void;
+  /**
+   * Read a chunk for its modes only, as feed would read them (the mode carry
+   * joins the last chunk), dropping the OSC state (the open OSC, a held ESC)
+   * and reading no OSC events. Never allocate. Absent on a module built before them.
+   */
+  skipChunk?(chunk: NativeOutputChunk, end: number): void;
+  skipBytes?(bytes: Uint8Array, end: number): void;
   dispose(): void;
 }
 export interface NativeTransport {
@@ -96,12 +106,27 @@ export function nativeCorePath(): string {
     return override;
   }
   const resources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
-  const candidates = [
-    ...(resources ? [path.join(resources, 'wmux-native/index.cjs')] : []),
-    path.join(__dirname, '../wmux-native/index.cjs'),
-    path.join(__dirname, 'wmux-native/index.cjs'),
-  ];
+  const candidates = nativeCoreCandidates(__dirname, resources);
   return candidates.find(p => fs.existsSync(p)) ?? candidates[0];
+}
+
+/** Where nativeCorePath looks, in order, for a loader in `dirname`. */
+export function nativeCoreCandidates(dirname: string, resources: string | undefined): string[] {
+  const parent = path.dirname(dirname);
+  return [
+    ...(resources ? [path.join(resources, 'wmux-native/index.cjs')] : []),
+    path.join(dirname, '../wmux-native/index.cjs'),
+    path.join(dirname, 'wmux-native/index.cjs'),
+    // `npm start`: main runs from .vite/build, and the core is staged in
+    // dist/wmux-native (as for the dev daemon bundle). Only for that bundle:
+    // another one never reaches for a dist folder two levels up.
+    ...(path.basename(dirname) === 'build' && path.basename(parent) === '.vite'
+      ? [path.join(dirname, '../../dist/wmux-native/index.cjs')] : []),
+    // The dev MCP broker (dist/mcp/mcp/broker.js, tsc output): this loader
+    // runs from dist/mcp/shared, and the core is staged in dist/wmux-native.
+    ...(path.basename(dirname) === 'shared' && path.basename(parent) === 'mcp' && path.basename(path.dirname(parent)) === 'dist'
+      ? [path.join(dirname, '../../wmux-native/index.cjs')] : []),
+  ];
 }
 
 export function loadNativeTerminalCore(capability: string): NativeTerminalCore {
@@ -124,4 +149,80 @@ export function reportNativeFallback(component: string): void {
   if (failures.has(component)) return;
   failures.add(component);
   console.warn(`[terminal-core] ${component}: native module unavailable; using node backend`);
+}
+
+/** The `code` a refused native allocation is thrown (or rejected) with (one call, one session). */
+export const NATIVE_ALLOC_FAILED_CODE = 'ALLOC_FAILED';
+
+/**
+ * The native core refused an allocation for one call: the error carries
+ * `code === 'ALLOC_FAILED'`. Only the code decides; the message is diagnostic
+ * ("could not allocate <N> bytes for <what>") and may be empty, and a message
+ * that merely reads like one is no refusal. Nothing else in the daemon is
+ * affected. A ring, transport, decoder or interpreter is left as it was; a
+ * NativeTerminal whose grid was refused is unusable afterwards (later calls
+ * fail with "unsupported-alloc"), so its owner disposes it.
+ */
+export function isNativeAllocFailure(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === NATIVE_ALLOC_FAILED_CODE;
+}
+
+/** A native error for a log line or a snapshot detail: its message, or its code when the message is empty. */
+export function describeNativeError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  if (error.message) return error.message;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' && code ? code : error.name;
+}
+
+/** At most one line per reporter in this window; the lines in between are counted. */
+export const NATIVE_ALLOC_LOG_INTERVAL_MS = 60_000;
+
+/**
+ * A rate-limited log line for refused native allocations, one per owner (a
+ * session's ring or interpreter). The first refusal logs at once; later ones
+ * log at most once per interval, with the count suppressed since. Refusals
+ * suppressed inside a window are reported when it ends, even when none
+ * follows: one unref'd timer per reporter, armed only while a count is held.
+ */
+export function createNativeAllocReporter(component: string, label: () => string | undefined,
+  log: (line: string) => void = (line) => console.error(line), now: () => number = Date.now): (error: unknown, detail?: string) => void {
+  let lastAt = Number.NEGATIVE_INFINITY;
+  let suppressed = 0;
+  let lastSuppressed = '';
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const describe = (error: unknown, detail: string | undefined): string =>
+    `${describeNativeError(error)}${detail ? `; ${detail}` : ''}`;
+  const line = (text: string): void => {
+    log(`[terminal-core] ${component} session=${label() ?? 'unknown'}: ${text}`);
+  };
+  const disarm = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
+  const flushSuppressed = (): void => {
+    timer = null;
+    if (suppressed === 0) return;
+    const count = suppressed;
+    lastAt = now();
+    suppressed = 0;
+    line(`${count} more refused since the last line, the last: ${lastSuppressed}`);
+  };
+  return (error, detail) => {
+    const at = now();
+    if (at - lastAt < NATIVE_ALLOC_LOG_INTERVAL_MS) {
+      suppressed++;
+      lastSuppressed = describe(error, detail);
+      if (!timer) {
+        timer = setTimeout(flushSuppressed, Math.max(0, lastAt + NATIVE_ALLOC_LOG_INTERVAL_MS - at));
+        timer.unref?.();
+      }
+      return;
+    }
+    const more = suppressed > 0 ? ` (+${suppressed} more since the last line)` : '';
+    disarm();
+    lastAt = at;
+    suppressed = 0;
+    line(`${describe(error, detail)}${more}`);
+  };
 }

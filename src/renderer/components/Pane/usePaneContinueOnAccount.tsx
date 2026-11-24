@@ -18,6 +18,8 @@ import type { PaneActionItem } from './PaneActionsMenu';
 import { agentRow } from '../../../shared/agentIdentity';
 import { accountGroupOf, groupAccountsBoundFirst } from '../../../shared/accountGroup';
 import { findWorkspaceSurfaceByPtyId } from '../../utils/paneTraversal';
+import type { Toast } from '../../stores/slices/toastSlice';
+import { paneWslSession } from '../../terminal/paneForegroundProbe';
 
 /**
  * A new pane beside the one running `ptyId` (the workspace's active pane when
@@ -63,6 +65,37 @@ const REFUSAL_KEYS: Record<string, string> = {
   folder_trust: 'pane.launchAtFolderTrust',
 };
 
+/** Why Claude, once stopped and its conversation copied, was not relaunched → message key. */
+const STOPPED_KEYS: Record<string, string> = {
+  shell_busy: 'pane.continueOnAccountStoppedShellBusy',
+  shell_typed: 'pane.continueOnAccountStoppedShellTyped',
+  shell_running: 'pane.continueOnAccountStoppedShellRunning',
+  save_failed: 'pane.continueOnAccountStoppedSaveFailed',
+};
+
+/**
+ * Claude stopped and the copy exists, but nothing was typed: the reason, and
+ * the line that resumes the copy as a block of its own, kept until dismissed
+ * (the pane is left at its shell), with the line to copy.
+ */
+export function stoppedNotRelaunchedToast(
+  code: string,
+  resumeCommand: string,
+  accountName: string,
+  t: (key: string, vars?: Record<string, string>) => string,
+): Omit<Toast, 'id'> {
+  return {
+    level: 'error',
+    persist: true,
+    message: t(STOPPED_KEYS[code] ?? 'pane.continueOnAccountStopped', { name: accountName }),
+    code: resumeCommand,
+    action: {
+      label: t('resume.copyCommand'),
+      onClick: () => { void navigator.clipboard?.writeText(resumeCommand).catch(() => undefined); },
+    },
+  };
+}
+
 export function usePaneContinueOnAccount(opts: {
   ptyId: string | undefined;
   /** False for a read-only mirror, whose ptyIds are not this main's panes. */
@@ -91,16 +124,21 @@ export function usePaneContinueOnAccount(opts: {
   const reload = useCallback(() => {
     const api = window.electronAPI?.accounts;
     if (!api || !ready) return;
-    void api.list().then((res) => {
+    // An account's sign-in status is its Windows folder's. A WSL pane runs
+    // the account on its own home in the distro, where Claude asks for a
+    // sign-in itself when there is none, so the Windows one does not gate it.
+    const pty = window.electronAPI?.pty;
+    const wsl = pty && ptyId ? paneWslSession(ptyId, pty).then((s) => s.wsl) : Promise.resolve(false);
+    void Promise.all([api.list(), wsl]).then(([res, wslPane]) => {
       const rows = res.accounts.filter((a) => agentRow(a.vendor)?.continueOnAccount);
       const bound = workspaceId ? rows.find((a) => a.id === res.bindings[workspaceId]?.claude) : undefined;
       const buckets = groupAccountsBoundFirst(rows, bound ? accountGroupOf(bound) : null);
       setAccounts(buckets.flatMap((b) => b.accounts).map((a) => ({
-        id: a.id, name: a.name, group: a.group, loggedIn: a.status.loggedIn || a.tokenSignIn?.usable === true,
+        id: a.id, name: a.name, group: a.group, loggedIn: wslPane || a.status.loggedIn || a.tokenSignIn?.usable === true,
       })));
       setOtherFrom(bound && buckets.length > 1 ? buckets[0].accounts.length : -1);
     }).catch(() => { /* menu keeps the last rows */ });
-  }, [ready, workspaceId]);
+  }, [ready, workspaceId, ptyId]);
 
   const continueOn = useCallback(async (account: { id: string; name: string }) => {
     const api = window.electronAPI?.accounts;
@@ -118,6 +156,10 @@ export function usePaneContinueOnAccount(opts: {
       }
       if (res.ok) {
         pushToast({ level: 'info', message: t('pane.continueOnAccountDone', { name: account.name }) });
+        return;
+      }
+      if (res.resumeCommand) {
+        pushToast(stoppedNotRelaunchedToast(res.code, res.resumeCommand, account.name, t));
         return;
       }
       pushToast({ level: res.code === 'pending' ? 'warn' : 'error', message: t(REFUSAL_KEYS[res.code] ?? 'pane.continueOnAccountFailed') });
@@ -138,7 +180,7 @@ export function usePaneContinueOnAccount(opts: {
 
   // Once any account has a group: the bound account's group first, one
   // divider before the other groups, and each account's group under its name.
-  // A logged-out account cannot take the conversation.
+  // A logged-out account cannot take the conversation (in a native pane).
   const subItems: PaneActionItem[] = useMemo(() => {
     const sectioned = accounts.some((a) => accountGroupOf(a) !== '');
     return accounts.map((account, i) => ({

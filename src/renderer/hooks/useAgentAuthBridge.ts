@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { t } from '../i18n';
 import { authConfigEnvKey, type AuthLostEntry } from '../../shared/agentAuthLost';
+import { parseWslAuthRef } from '../../shared/wslAccountMark';
 import { loginInitialCommand, openTerminalTab } from '../utils/accountLogin';
 
 // ─── Lost sign-in bridge (N4) ────────────────────────────────────────────────
@@ -69,18 +70,34 @@ export async function signInAgain(
   waiting.set(entry.key, token);
   const mine = () => waiting.get(entry.key) === token;
   let settled = false;
+  let keepWaiting = false;
   try {
     const envKey = authConfigEnvKey(entry.agent);
+    // A WSL pane on a bound account signed out of that account's Linux home:
+    // sign in there, in the same distro, not in the Windows folder.
+    const wsl = parseWslAuthRef(entry.configDir);
     const tab = await openTerminalTab({
       // The account's own folder, or nothing: never the workspace's bound account,
       // which is not necessarily the one that was signed out.
       plainEnv: true,
-      ...(entry.configDir ? { env: { [envKey]: entry.configDir }, wslAccountLoginEnvKey: envKey } : {}),
+      ...(wsl
+        ? { env: { [envKey]: wsl.configDir }, wslAccountHomeKey: envKey, shell: 'wsl.exe', wslDistro: wsl.distro }
+        : entry.configDir ? { env: { [envKey]: entry.configDir }, wslAccountLoginEnvKey: envKey } : {}),
       initialCommand: loginInitialCommand(entry.agent),
       title: t('agentAuth.signInTabTitle', { agent: AGENT_NAME[entry.agent] }),
       cwd: null,
     });
     if (!tab) return;
+    // wmux cannot ask about a WSL home's sign-in from Windows, so there is
+    // nothing to wait on: the entry (and the sidebar's "Signed out") goes when
+    // that pane's agent is next seen to work, and no toast comes back meanwhile:
+    // the key stays in `waiting` until then (applyAuthLostEntries drops it with
+    // the entry), so another account's report does not bring this toast back.
+    if (wsl) {
+      settled = true;
+      keepWaiting = true;
+      return;
+    }
     const until = now() + SIGN_IN_WAIT_MS;
     while (mine() && now() < until) {
       await sleep(SIGN_IN_POLL_MS);
@@ -95,7 +112,7 @@ export async function signInAgain(
     // The tab or the check failed: the toast comes back below.
   } finally {
     // Only this wait's own state: a newer one (the entry went and came back) is left alone.
-    if (mine()) {
+    if (mine() && !keepWaiting) {
       waiting.delete(entry.key);
       if (!settled && stillLost(entry.key)) offerSignIn(entry);
     }

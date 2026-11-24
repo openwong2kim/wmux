@@ -174,10 +174,13 @@ export const IPC = {
   FANOUT_DEPTH_SET: 'fanout:depth:set',
   FANOUT_TRUST_AGY_FOLDERS_GET: 'fanout:trustAgyFolders:get',
   FANOUT_TRUST_AGY_FOLDERS_SET: 'fanout:trustAgyFolders:set',
+  FANOUT_ACCOUNT_POOL_GET: 'fanout:accountPool:get',
+  FANOUT_ACCOUNT_POOL_SET: 'fanout:accountPool:set',
   FANOUT_OWNER_ANSWERS_GET: 'fanout:ownerAnswers:get',
   FANOUT_OWNER_ANSWERS_SET: 'fanout:ownerAnswers:set',
   WORKER_FENCE_OFF_GET: 'workerFence:off:get',
   WORKER_FENCE_OFF_SET: 'workerFence:off:set',
+  PANE_FENCE_SET: 'paneFence:set',
   FANOUT_AUDIT_RECENT: 'fanout:audit:recent',
   FANOUT_LINEAGE: 'fanout:lineage',
   FANOUT_PRESETS_GET: 'fanout:presets:get',
@@ -388,7 +391,6 @@ export const IPC = {
   // mirrored to main, which runs those paths (main/git/secretGuardSetting.ts).
   SECRET_GUARD_ENABLED: 'settings:secret-guard-enabled',
   TERMINAL_CORE_SETTINGS_GET: 'settings:terminal-core:get',
-  TERMINAL_CORE_SETTINGS_SET: 'settings:terminal-core:set',
   LABS_SETTINGS_GET: 'settings:labs:get',
   LABS_SETTINGS_SET: 'settings:labs:set',
   LABS_WONGTTY_WASM: 'settings:labs:wongtty-wasm',
@@ -482,6 +484,11 @@ export const IPC = {
   WORKTREE_MERGE_STATUS: 'worktree:mergeStatus',
   WORKTREE_MERGE_LAND: 'worktree:mergeLand',
   WORKTREE_MERGE_DISCARD: 'worktree:mergeDiscard',
+  // Sibling worktree collision watch: renderer sends pane folders + setting,
+  // main pushes the files two sibling worktrees both touch.
+  SIBLING_COLLISION_WATCH: 'worktree:siblingCollisionWatch',
+  SIBLING_COLLISION_POKE: 'worktree:siblingCollisionPoke',
+  SIBLING_COLLISION_UPDATE: 'worktree:siblingCollisionUpdate',
   // Git 탭 PR 섹션 — gh CLI 기반 PR 목록·코멘트(성긴 pull, 30s TTL)
   GITHUB_PR_LIST: 'github:prList',
   GITHUB_PR_DETAIL: 'github:prDetail',
@@ -794,6 +801,9 @@ export const IPC = {
   MCP_REREGISTER: 'mcp:reregister',
   MCP_UNREGISTER: 'mcp:unregister',
   MCP_REGISTER_TARGET: 'mcp:register-target',
+  // The shared MCP broker's Settings choice (shared/brokerSetting.ts): main reads and writes it.
+  MCP_BROKER_SETTING_GET: 'mcp:broker-setting:get',
+  MCP_BROKER_SETTING_SET: 'mcp:broker-setting:set',
   // Settings -> Token usage: quota (manual refresh only) and the CLI "surface" inventory / toggles.
   TOKEN_QUOTA_READ: 'tokenUsage:quota:read',
   TOKEN_QUOTA_SENSOR_STATUS: 'tokenUsage:quota:sensor-status',
@@ -882,6 +892,9 @@ export const IPC = {
   A2A_REMOTE_SPAWN_POLICY_GET: 'a2aRemote:spawnPolicy:get',
   A2A_REMOTE_SPAWN_POLICY_SET: 'a2aRemote:spawnPolicy:set',
   A2A_REMOTE_SPAWN_REQUESTS_LIST: 'a2aRemote:spawnRequests:list',
+  // Which paired PCs may allow or deny permission prompts in the tasks they sent here (the app's own set).
+  A2A_REMOTE_APPROVALS_GET: 'a2aRemote:approvals:get',
+  A2A_REMOTE_APPROVALS_SET: 'a2aRemote:approvals:set',
   // Asking another PC to start an agent: the ask, and what this PC sent.
   A2A_REMOTE_SPAWN_ASK: 'a2aRemote:spawn:ask',
   A2A_REMOTE_SPAWN_OUTGOING: 'a2aRemote:spawn:outgoing',

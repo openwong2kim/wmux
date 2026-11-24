@@ -16,6 +16,8 @@
 import type { Task, TaskState, Message, CompletionEvidence } from './types';
 import type { A2aRemoteErrorCode, A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from './a2aRemote';
 import type { CompanyBlockerEnd, CompanyHoldReason } from './companyHold';
+import type { GatedSubmitProof } from './ptyMessageDelivery';
+import type { A2aRemoteApprovalNote } from './a2aRemoteDelivery';
 
 /**
  * A2A 로그 payload 판별 union. kind가 닫힌 enum이라 projection이 미지 kind를
@@ -147,6 +149,8 @@ export interface A2aRemoteMarkPayload {
   held?: NonNullable<A2aRemoteTaskMarkerV1['held']>;
   /** With `delivered`: the pty written to — the local pane's new occupant snapshot. */
   ptyId?: string;
+  /** With `delivered` and `ptyId`: what main submitted to that pty (recorded only). */
+  submit?: GatedSubmitProof;
   /** true: main is about to paste (recorded BEFORE the write); false: that attempt wrote nothing. */
   attempted?: boolean;
   /** Task-level: this state was queued for the peer (it no longer owes it). */
@@ -176,6 +180,8 @@ export interface A2aRemoteMarkPayload {
   notice?: 'sent' | 'not-sent';
   /** With `attempted: true` on a held item: it is being offered again; the hold and its time stay. */
   reoffer?: true;
+  /** Task-level, inbound: another PC's decision carried out here (a note; nothing else on the task moves). */
+  approvalNote?: Omit<A2aRemoteApprovalNote, 'at'>;
   timestamp: string;
 }
 

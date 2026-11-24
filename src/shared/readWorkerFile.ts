@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { sameFileId } from './sameFileId';
 
 /** A small file a worker can write (HEAD, a worktree's `gitdir`, the
  *  shallow list), read without waiting on it: a plain file only (lstat, then
@@ -8,11 +9,11 @@ import fs from 'node:fs';
 export async function readWorkerFile(p: string, max = 4096): Promise<string | null> {
   let fh: fs.promises.FileHandle | undefined;
   try {
-    const st = await fs.promises.lstat(p);
+    const st = await fs.promises.lstat(p, { bigint: true });
     if (!st.isFile() || st.size > max) return null;
     fh = await fs.promises.open(p, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0) | (fs.constants.O_NOFOLLOW ?? 0));
-    const opened = await fh.stat();
-    if (!opened.isFile() || opened.ino !== st.ino || opened.dev !== st.dev) return null;
+    const opened = await fh.stat({ bigint: true });
+    if (!opened.isFile() || !sameFileId(opened, st)) return null;
     const buf = Buffer.alloc(max + 1);
     const { bytesRead } = await fh.read(buf, 0, max + 1, 0);
     return bytesRead > max ? null : buf.subarray(0, bytesRead).toString('utf8');

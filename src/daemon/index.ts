@@ -2,7 +2,7 @@
 import '../shared/exeSearchGuard';
 import { isInternalForkPayload } from '../shared/hooks/internalFork';
 import { releaseDaemonFiles, replaceFileOrWrite, unlinkIfContent } from '../shared/daemon/daemonFiles';
-import { terminalCoreRuntime, terminalCoreSelection } from '../shared/terminalCoreSettings';
+import { terminalCoreLoadError, terminalCoreRuntime, terminalCoreSelection } from '../shared/terminalCoreSettings';
 import { labsSettingsAtStartup } from '../shared/labsSettings';
 import { collectDaemonMemoryDiagnostics } from './memoryDiagnostics';
 import { createStartupRecovery } from './startupRecovery';
@@ -94,13 +94,14 @@ import { scheduleTokenFileReHarden } from '../shared/security';
 import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
 import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import { WEB_DEFAULT_PORT, webHostIsLoopback, type WebTlsConfig } from '../shared/web';
+import { warmRustSnapshot } from './RustSnapshot';
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, runSmallSnapshotJob, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
 import { usageLimitMenuOnScreen, usageLimitWaitOnScreen } from './usageLimit/limitMenu';
 import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, readFolderTrust, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
 import { HOST_WINDOW_RPC, createHostWindowRpc } from './hostWindowRpc';
-import type { TerminalPty } from '../shared/terminalPty';
+import { isTerminalCoreMissing, TERMINAL_CORE_MISSING, type TerminalPty } from '../shared/terminalPty';
 import { serializeSession } from './sessionSerialize';
 import { AwaitingScreenVerifier, AWAITING_NARROW_DIALOG_COLS, questionInFlight, renderPaneScreen, renderPaneTail } from './AwaitingScreenVerifier';
 import { screenBlocksChatSend, screenShowsAgentDialog, screenShowsActiveDialog, screenShowsPermissionDialog, screenShowsRunningTurn, titleShowsRunningTurn } from './transcript/chatScreenGate';
@@ -168,17 +169,23 @@ import { rootIsRepoTop, rootOriginKey } from './a2aRemote/continueRootGit';
 import { createSpawnWorktree, gitRunner, removeSpawnWorktree } from '../main/a2aRemote/spawnWorktree';
 import { HeadlessMode, headlessReleases } from './a2aRemote/headlessMode';
 import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
-import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
+import { A2aHeadlessStarter, HEADLESS_PROGRESS_GIT_TIMEOUT_MS, worktreeProgress, worktreeUnchanged, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
 import { createHeadlessSessions } from './a2aRemote/headlessSessions';
 import { endHeadlessOnStop, HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
+import { LinkedTaskTurns } from './a2aRemote/linkedTaskTurns';
+import { ApprovalSwitchStore, pairingOf as approvalPairingOf, setApprovals } from './a2aRemote/approvalSwitchStore';
+import { noteRemoteApproval } from './a2aRemote/approvalNotice';
+import { openApprovalReceipts, RemoteApprovals } from './a2aRemote/remoteApproval';
 import { HeadlessStatusReporter } from './a2aRemote/headlessStatus';
+import { answerPicker, screenPicker } from './a2aRemote/headlessAnswer';
+import { AnswersStore } from './a2aRemote/answersStore';
 import { StatusLabelsStore } from './a2aRemote/statusLabelsStore';
 import { QUESTION_RECORD_KIND, screenQuestionOf } from './approvals/screenQuestion';
-import { A2A_REMOTE_RPC } from '../shared/a2aRemoteDelivery';
+import { A2A_REMOTE_RPC, type A2aRemoteTaskState } from '../shared/a2aRemoteDelivery';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
-import { A2A_FEATURE_BUNDLE, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
+import { A2A_ANSWER_RPC, A2A_APPROVALS_RPC, A2A_FEATURE_ANSWER, A2A_FEATURE_APPROVAL, isA2aAnswersSetting, A2A_FEATURE_BUNDLE, A2A_FEATURE_BUNDLE_IMPORTED, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
@@ -204,9 +211,11 @@ import { deliveryPresence, promptGrant, type DeliveryPresenceDeps, type PromptAu
 import { AgentProcessTracker, agentProcessExitEvent, type LiveCheck } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
 import { liveRecoveryHint, markCwdMissing, namedAgentAlive, recordedTurnStillOpen, recordWasMidTurn, screenShowsLiveAgent, sightedRecoveredAgent } from './recoveryHint';
-import { checkWslAgentRunning, reportedAgentForPane, stopWslAgent, WslPidWatcher } from './wslAgentProcess';
+import { checkWslAgentRunning, reportedAgentForPane, stopWslAgent, windowsPidAlive, WslPidWatcher } from './wslAgentProcess';
 import { GateFlagFile } from './gateFlagFile';
-import { WSL_GATE_FLAG_FILE } from '../shared/wslIntegration';
+import { ensureWslAccountScript, WSL_GATE_FLAG_FILE } from '../shared/wslIntegration';
+import { accountFolderShares, wslAccountHomeKey } from '../shared/wslAccountHome';
+import { runWslAccountCopy } from './wslAccountCopy';
 import { CommandStartAgentProbe } from './commandStartAgentProbe';
 import { resolveCanonicalAgentIdentity, detectorSuppressedBy, reportedAgentName, provesLiveAgent, type CanonicalAgentIdentity, recordPaneIdentity } from './canonicalAgent';
 import { inspectLaunchPresence } from './launchPresence';
@@ -247,7 +256,7 @@ import { startHangWatchdog } from './hangWatchdog';
 import { newerTimestamp } from './util/idleAnchor';
 import type { DaemonSession, DaemonState } from './types';
 import { retireAdopted, withDiskOnlySessions } from './diskOnlySessions';
-import { stampHeld } from './heldSessions';
+import { releaseCoreHold, stampHeld } from './heldSessions';
 import { suspendedListEntry } from './suspendedListEntry';
 import { createPromoteOnce, type PromoteResult } from './promoteOnce';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonDestroySessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
@@ -275,8 +284,9 @@ import { serveTurnFailure } from './turnFailure/serveTurnFailure';
 import { buildTurnFailedPushPayload, turnFailedPushCollapseId } from './push/turnFailedPushPayload';
 import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
 import { checkNativeTranscriptPath } from './transcript/providers';
-import { keepOwnWslTranscriptPath } from './hooks/transcriptPathGuard';
+import { keepOwnWslTranscriptPath, proveWslTranscriptPath, wslTranscriptSharePath } from './hooks/transcriptPathGuard';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
+import { statTranscript } from './transcript/readTail';
 import { TranscriptActivityWatcher } from './transcript/TranscriptActivityWatcher';
 import { ToolRefusalTracker } from './transcript/toolRefusals';
 import { ShellPromptWatcher } from './shellPrompt/ShellPromptWatcher';
@@ -306,7 +316,7 @@ import {
   shouldSuppressPush,
   type PushPresenceSuppressionConfig,
 } from './push/presence';
-import { ApprovalRegistry } from './approvals/ApprovalRegistry';
+import { ApprovalRegistry, type PromptScreenMark } from './approvals/ApprovalRegistry';
 import { WorkspaceFactStore, type WorkspaceFactRowInput } from './approvals/workspaceFacts';
 import { MoaPaneRpc, resolveMoaPane } from './web/moaPane';
 import { MoaPromptSync } from './web/moaPrompt';
@@ -320,6 +330,8 @@ import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
 import { withActivity, withViewingSessions } from './web/deviceActivity';
 import { buildWebPaneEnv } from './web/webPaneEnv';
 import { readClaudeFileSend } from './claudeFileSendSetting';
+import { readNewPackageNote } from './newPackageNoteSetting';
+import { newPackagesForCommand } from './approvals/installPackageLookup';
 import { makeChannelPhoneApi, type ChannelPhoneApi } from './web/channelsApi';
 import type { ApprovalDecision, DecisionFormKind, NativeDecisionOutcome, NativeDecisionRef, NativeDecisionReply } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
@@ -330,7 +342,7 @@ import { deliverScheduledPrompt, deliveryInputFence, type ScheduledPromptDeliver
 import { deliverCallerNudge } from './callerNudgeDelivery';
 import { draftScreenCheck, type DraftCheck } from './draftScreen';
 import { paneTurnClosed, stopAgentTree } from './agentStop';
-import { continueOnAccount } from './continueOnAccount';
+import { continueOnAccount, paneShellDeps, wslAccountEnv } from './continueOnAccount';
 import { paneFree } from './paneFree';
 import { createOrphanSweep } from './winProcessSweep';
 import { classifyShell } from './shell-integration';
@@ -355,6 +367,8 @@ import { record as chatRecord } from './chat/adapter';
 import type { ChatInteractionAnswer } from '../shared/transcript/chatSession';
 import { selfCheckPeerPid } from '../shared/peerPid';
 import { PANE_INPUT_HIGH_WATER, PANE_LOCK_DAEMON_WAIT_MS, PANE_LOCK_MAX_WAIT_MS, PaneDeliveryLocks, admitPaneInput, writeUnderLock } from './paneDeliveryLock';
+import { UnsentPasteHolds, deliverUnderHold } from './unsentPasteHold';
+import { paneFenceOnInRecord } from './web/paneFenceRecord';
 
 // A delivery asks whether the agent the tracker attributes still runs there,
 // not where its binary lives: the image rule (isAgentImage) would refuse a live
@@ -560,9 +574,17 @@ let headlessDeliverRef: HeadlessDeliveryDeps['deliver'] | null = null;
 let deliveryPresenceRef: ((id: string, check: DeliveryCheck) => Promise<DeliveryPresence>) | null = null;
 /** One delivery at a time into a pane, across main and the daemon (paneDeliveryLock.ts). */
 const paneLocks = new PaneDeliveryLocks({ log: (line) => log('info', line) });
+/** #3393 — panes holding a delivery's paste left unsubmitted (unsentPasteHold.ts); built in registerRpcHandlers. */
+let unsentPasteHolds: UnsentPasteHolds | null = null;
 /** Whether a pane holds a draft, the screen consulted (draftScreen.ts). */
 let draftOnScreen: DraftCheck | undefined;
 let headlessDeliveryRef: HeadlessDelivery | null = null;
+/** The turn each remote task started in a linked pane (a2aRemote/linkedTaskTurns.ts); read by the remote approvals. */
+let linkedTaskTurnsRef: LinkedTaskTurns | null = null;
+/** Prompts in linked panes answered by the PC that sent the task (a2aRemote/remoteApproval.ts). */
+let remoteApprovalsRef: RemoteApprovals | null = null;
+/** When the last "answer dropped: no headless agents" line was logged (once a minute at most). */
+let answersDroppedLoggedAt = 0;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 let noteCodexServerLost: ((id:string)=>void) | undefined;
 /** Contract v-next item 1: a Codex turn on a daemon-owned relay failed (set at boot). */
@@ -843,6 +865,62 @@ function sessionTextReader(sessionManager: DaemonSessionManager) {
 }
 
 /**
+ * A pane's visible grid at its live geometry, and the pane's state (output
+ * bytes, key-carrying input, incarnation) at the instant the ring was read.
+ * renderPaneScreen reads the ring synchronously before its first await, so
+ * the revision and incarnation below are the same instant. Shared by the
+ * approval registry's `terminal_prompt` and a headless answer.
+ */
+async function readPromptScreenOf(
+  sessionManager: DaemonSessionManager,
+  sessionId: string,
+): Promise<{ rows: readonly string[]; mark: PromptScreenMark; cols?: number; unknown?: readonly string[] } | null> {
+  const managed = sessionManager.getSession(sessionId);
+  if (!managed) return null;
+  const keyInputRevision = managed.bridge.getKeyInputRevision();
+  const incarnation = managed.meta.incarnationId ?? null;
+  const cols = managed.ptyProcess.cols ?? managed.meta.cols;
+  const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot, { reuse: true });
+  if (!frame) return null;
+  return {
+    rows: frame.rows,
+    mark: { bytes: frame.mark, keyInputRevision, incarnation },
+    ...(typeof cols === 'number' ? { cols } : {}),
+    ...(frame.unknown ? { unknown: frame.unknown } : {}),
+  };
+}
+
+/** A pane's state right now, read synchronously just before a driver's write. */
+function promptScreenMarkOf(sessionManager: DaemonSessionManager, sessionId: string): PromptScreenMark | null {
+  const managed = sessionManager.getSession(sessionId);
+  if (!managed) return null;
+  return {
+    bytes: managed.ringBuffer.totalBytesWritten,
+    keyInputRevision: managed.bridge.getKeyInputRevision(),
+    incarnation: managed.meta.incarnationId ?? null,
+  };
+}
+
+/** A driver's own key: the pane's new key revision, in the same synchronous block as the write, or null. */
+function writeStepKeyOf(sessionManager: DaemonSessionManager, sessionId: string, data: string): number | null {
+  const managed = sessionManager.getSession(sessionId);
+  if (!managed) return null;
+  managed.ptyProcess.write(data);
+  const revision = managed.bridge.noteInput(data, { selfWrite: true });
+  passedOverByDialogKey(sessionId, revision, 'a dialog key');
+  return revision;
+}
+
+/**
+ * #3393 — a key the daemon typed into a dialog drawn over the input box (an approval, a picker, the usage-limit
+ * menu: each typed only after its screen was read as that dialog). Claude Code hides the box while one is up, so the
+ * key cannot submit or change a paste waiting there: it does not clear an unsent-paste hold either.
+ */
+function passedOverByDialogKey(sessionId: string, revision: number | undefined, writer: string): void {
+  if (revision !== undefined) unsentPasteHolds?.passedOver(sessionId, revision, writer);
+}
+
+/**
  * Build the registry. Split out of main() only so the two dependencies that
  * need a live sessionManager can be closures over it.
  *
@@ -882,6 +960,8 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       if (!managed) return false;
       managed.ptyProcess.write(data);
       managed.bridge.noteInput(data, true);
+      // An approval's answer, into its dialog over the input box.
+      passedOverByDialogKey(sessionId, managed.bridge.getKeyInputRevision(), 'an approval answer');
       return true;
     },
     // Every pane on a Windows daemon is a ConPTY, and ConPTY puts its own
@@ -891,12 +971,7 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
     win32Input: () => process.platform === 'win32',
     // The stepwise driver's own keys: the new key revision comes back in the
     // same synchronous block as the write (see DaemonPTYBridge.noteInput).
-    writeStepKey: (sessionId, data) => {
-      const managed = sessionManager.getSession(sessionId);
-      if (!managed) return null;
-      managed.ptyProcess.write(data);
-      return managed.bridge.noteInput(data, { selfWrite: true });
-    },
+    writeStepKey: (sessionId, data) => writeStepKeyOf(sessionManager, sessionId, data),
     noteSubmitted: (sessionId) => {
       sessionManager.getSession(sessionId)?.bridge.noteSubmitted();
     },
@@ -904,21 +979,7 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
     // state (output bytes, key-carrying input, incarnation) at the instant the
     // ring was read. renderPaneScreen reads the ring synchronously before its
     // first await, so the revision and incarnation below are the same instant.
-    readPromptScreen: async (sessionId) => {
-      const managed = sessionManager.getSession(sessionId);
-      if (!managed) return null;
-      const keyInputRevision = managed.bridge.getKeyInputRevision();
-      const incarnation = managed.meta.incarnationId ?? null;
-      const cols = managed.ptyProcess.cols ?? managed.meta.cols;
-      const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot, { reuse: true });
-      if (!frame) return null;
-      return {
-        rows: frame.rows,
-        mark: { bytes: frame.mark, keyInputRevision, incarnation },
-        ...(typeof cols === 'number' ? { cols } : {}),
-        ...(frame.unknown ? { unknown: frame.unknown } : {}),
-      };
-    },
+    readPromptScreen: (sessionId) => readPromptScreenOf(sessionManager, sessionId),
     // The pane's own Claude transcript (the projector's containment-checked
     // path): its latest tool call still waiting for a result.
     pendingToolUse: (sessionId) => {
@@ -931,15 +992,7 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       const base = transcriptPath ? path.basename(transcriptPath) : '';
       return base.endsWith('.jsonl') ? base.slice(0, -'.jsonl'.length) : null;
     },
-    promptScreenMark: (sessionId) => {
-      const managed = sessionManager.getSession(sessionId);
-      if (!managed) return null;
-      return {
-        bytes: managed.ringBuffer.totalBytesWritten,
-        keyInputRevision: managed.bridge.getKeyInputRevision(),
-        incarnation: managed.meta.incarnationId ?? null,
-      };
-    },
+    promptScreenMark: (sessionId) => promptScreenMarkOf(sessionManager, sessionId),
     // #783 — wake the GateBroker waiter when a gate record is resolved by the
     // phone. The broker holds the bridge RPC open; this call closes it.
     notifyGateResolved: (gateId, decision) => {
@@ -1107,6 +1160,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
         roomAttachmentsDir: path.join(wmuxDir, 'factory', 'room-attachments'),
         roomFilesDir: path.join(wmuxDir, 'factory', 'room-files'),
+        paneFenceOn: (id: string) => paneFenceOnInRecord(wmuxDir, id),
         // Each file served because an agent sent it with SendUserFile.
         auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
         // The Moa (HQ brain) pane main last vouched for, read per request so a
@@ -2148,6 +2202,13 @@ async function recoverSessions(
   const state = stateWriter.load();
   let changed = false;
   const recoveredIds = new Set<string>();
+  // No Rust terminal module: nothing can start on this boot (there is no other
+  // engine). Every session is held below with its scrollback, and recovered
+  // on the next boot that has the module.
+  const terminalCoreMissing = terminalCoreLoadError();
+  if (terminalCoreMissing !== null) {
+    log('warn', `[recovery] the terminal core did not load (${terminalCoreMissing}); holding every session until it does`);
+  }
   // X6 ③ (CodeRabbit): pre-read the spool (no consume) so an exec/supervised agent
   // pane whose exact binding only exists in the spool replays as `--resume <id>`,
   // not `--continue`. The post-recovery ingestResumeSpool still does the durable
@@ -2234,6 +2295,17 @@ async function recoverSessions(
         }),
       },
     );
+  // A WSL shell the previous daemon left running on this same boot: stopped,
+  // identity-checked, before its record becomes a placeholder (the reaps above
+  // leave WSL out). Whether the placeholder is then held or promoted later,
+  // nothing may start a second shell beside the first.
+  const reapWslSurvivor = async (session: DaemonSession): Promise<void> => {
+    if (rebooted || session.state === 'suspended' || !recoverableIds.has(session.id)
+      || !leftoverReapEligible(session, sameBootProven)) return;
+    await reapIfIdentityConfirmed({ pid: session.pid, cmd: session.cmd,
+      storedCreatedAtFt: session.pidCreatedAtFt, storedStartTime: session.pidStartTime, storedStartKernel: session.pidStartKernel,
+      reason: `WSL recovery of ${session.id}` });
+  };
 
   for (const session of state.sessions) {
     if (session.state === 'dead') {
@@ -2285,17 +2357,30 @@ async function recoverSessions(
     }
     // Before anything is recreated: the exec relaunch below reads this binding.
     settleStoredBinding(session);
+    // Held, not attempted: no recoveryError, so no retention clock, and the
+    // holdReason keeps every TTL off it (StateWriter). Its ring dump stays (the
+    // orphan-buffer sweep below keeps every non-dead session's). A pane that
+    // asks for it gets TERMINAL_CORE_MISSING from promote, and the reason.
+    if (terminalCoreMissing !== null) {
+      // A same-boot shell the old daemon left is stopped first, as the paths
+      // below do: a later promote must not start a second one beside it.
+      if (isWslShell(session.cmd)) await reapWslSurvivor(session);
+      else await leftoverShells.get(session.id);
+      session.state = 'suspended';
+      session.bufferDumpPath ??= stateWriter.getBufferDumpPath(session.id);
+      sessionManager.holdPendingRecovery(session);
+      changed = true;
+      continue;
+    }
+    // A boot with the module: an earlier hold is over, recover as usual. Its
+    // clocks start now (releaseCoreHold), so the outage costs no retention.
+    if (releaseCoreHold(session, Date.now())) changed = true;
     // Publish every WSL placeholder, including cap-skipped panes. Boot must
     // publish RPC/panes without
     // waiting for a cold distro, and one unavailable target must not lose its
     // identity, binding or snapshot. Attach/promote retries asynchronously.
     if (isWslShell(session.cmd)) {
-      if (!rebooted && session.state !== 'suspended' && recoverableIds.has(session.id)
-        && leftoverReapEligible(session, sameBootProven)) {
-        await reapIfIdentityConfirmed({ pid: session.pid, cmd: session.cmd,
-          storedCreatedAtFt: session.pidCreatedAtFt, storedStartTime: session.pidStartTime, storedStartKernel: session.pidStartKernel,
-          reason: `WSL recovery of ${session.id}` });
-      }
+      await reapWslSurvivor(session);
       session.state = 'suspended';
       session.bufferDumpPath ??= stateWriter.getBufferDumpPath(session.id);
       // Waiting (including recovery-cap skips) is not a failure: only a real
@@ -3891,6 +3976,15 @@ function registerRpcHandlers(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log('error', `[promote] Failed to promote session ${sessionId}: ${msg}`);
+      // No terminal core: the placeholder stays held (no clock, no TTL), with
+      // its scrollback, whatever kind of session it was. The pane shows why.
+      if (isTerminalCoreMissing(err)) {
+        if (!shuttingDown) {
+          sessionManager.holdPendingRecovery(sessionManager.dropPendingRecovery(sessionId) ?? session);
+          stateWriter.saveImmediate(buildState(sessionManager));
+        }
+        return { ok: false, error: { code: TERMINAL_CORE_MISSING, message: msg } };
+      }
       if (isWslShell(session.cmd) && !shuttingDown && sessionManager.getPendingRecovery(sessionId)) {
         sessionManager.keepPendingRecovery(session, msg);
         stateWriter.saveImmediate(buildState(sessionManager));
@@ -4034,6 +4128,7 @@ function registerRpcHandlers(
       uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
         roomAttachmentsDir: path.join(wmuxDir, 'factory', 'room-attachments'),
         roomFilesDir: path.join(wmuxDir, 'factory', 'room-files'),
+        paneFenceOn: (id: string) => paneFenceOnInRecord(wmuxDir, id),
       // See the restore path.
       auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
       // See the restore path.
@@ -4357,7 +4452,13 @@ function registerRpcHandlers(
     // `activeNow` is computed here, at list time, from the store's in-memory
     // `lastSeenAt` and the server's live streams. Never persisted. Same for
     // `viewingSessions`: the panes each device is streaming right now.
-    const devices = withActivity(getDeviceStore().list(), webServer.liveDeviceIds(), Date.now());
+    const store = getDeviceStore();
+    // A grandfathered grant says so, for the desktop only: the routes that need
+    // an explicit one refuse it, and the Remote page offers to set it.
+    const listed = store.list().map((d) => (d.allowInput && d.revokedAt === undefined && !store.hasExplicitInputGrant(d.deviceId)
+      ? { ...d, inputGrantImplicit: true as const }
+      : d));
+    const devices = withActivity(listed, webServer.liveDeviceIds(), Date.now());
     return { devices: withViewingSessions(devices, webServer.liveSessionsByDevice()) };
   });
 
@@ -4506,7 +4607,7 @@ function registerRpcHandlers(
     }
     // The same writer half for a WSL pane's Linux transcript path: only that
     // pane's own Claude transcript is kept (the projector re-checks on read).
-    const ownWsl = keepOwnWslTranscriptPath(vetted, managed.meta.wslTarget);
+    const ownWsl = keepOwnWslTranscriptPath(vetted, managed.meta.wslTarget, managed.meta.env);
     if (ownWsl.dropped) log('warn', `[resume] refused WSL transcript path for ${id}`);
     vetted = ownWsl.binding;
     // A capture left without a path (none sent, or one refused above) may
@@ -4995,6 +5096,15 @@ function registerRpcHandlers(
   pipeServer.onClientClose((clientId) => paneLocks.releaseClient(clientId));
   sessionManager.on('session:died', (payload: { id: string }) => paneLocks.dropSession(payload.id));
   sessionManager.on('session:destroyed', (payload: { id: string }) => paneLocks.dropSession(payload.id));
+  unsentPasteHolds = new UnsentPasteHolds({
+    keyRevision: (id) => sessionManager.getSession(id)?.bridge.getKeyInputRevision(),
+    promptSubmittedAt: (id) => hookIngest?.promptSubmittedAt(id),
+    agentPid: (id) => agentProcessTracker.pidFor(id),
+    log: (line) => log('info', line),
+  });
+  paneLocks.onHeldWrite = (id) => unsentPasteHolds?.wrote(id);
+  sessionManager.on('session:died', (payload: { id: string }) => unsentPasteHolds?.sessionEnded(payload.id));
+  sessionManager.on('session:destroyed', (payload: { id: string }) => unsentPasteHolds?.sessionEnded(payload.id));
   // Only a live session takes a delivery: a suspended or dead one has no
   // process to write to, and main reports that nothing was delivered. A
   // detached live session (no pane shows it) does, as the daemon's own
@@ -5039,6 +5149,16 @@ function registerRpcHandlers(
       pendingInputBytes: (managed.ptyProcess as TerminalPty).pendingInputBytes,
       noteInput: (bytes) => managed.bridge.noteInput(bytes),
     } : undefined, data);
+  });
+  // #3393 — main's delivery left its paste in the box. Sent while main still
+  // holds the pane, after its last held write: this pipe carried those writes
+  // first, so the pane's key count already has every one of them.
+  pipeServer.onRpc('daemon.session.unsentPasteV1', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'daemon.session.unsentPasteV1')) return { ok: false, error: 'not allowed' };
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const token = typeof params['token'] === 'string' ? params['token'] : '';
+    if (!token || !paneLocks.holds(id, token, ctx.clientId)) return { ok: false, error: 'not held' };
+    return { ok: unsentPasteHolds?.record(id, 'main delivery') === true };
   });
 
   desktopPhoneBridge ??= new DesktopPhoneBridge((id,event) => pipeServer.sendTo(id,event));
@@ -5344,6 +5464,7 @@ function registerRpcHandlers(
         return true;
       },
       paneLock: (id, send) => paneLocks.runLocked(id, 'hermes-chat', PANE_LOCK_DAEMON_WAIT_MS, send),
+      unsentPaste: { held: (id) => unsentPasteHolds?.held(id) === true, wrote: (id) => unsentPasteHolds?.wrote(id), record: (id, writer) => { unsentPasteHolds?.record(id, writer); } },
       emit: (id, data, clients) => {
         nativeChatBridge?.nudgeQueue(id);
         for (const client of clients) {
@@ -5445,6 +5566,7 @@ function registerRpcHandlers(
       return true;
     },
     paneLock: (id, send) => paneLocks.runLocked(id, 'native-chat', PANE_LOCK_DAEMON_WAIT_MS, send),
+    unsentPaste: { held: (id) => unsentPasteHolds?.held(id) === true, wrote: (id) => unsentPasteHolds?.wrote(id), record: (id, writer) => { unsentPasteHolds?.record(id, writer); } },
     receipts: chatSendReceipts,
     cancelReceipts: chatCancelReceipts,
     queue: chatQueue,
@@ -5739,6 +5861,7 @@ function registerRpcHandlers(
       },
       log: (level, message) => log(level, message),
       isAutomationPane: (id) => automationEngine?.ownsPane(id) === true,
+      newPackagesFor: (command, cwd, shell) => newPackagesForCommand(command, cwd, () => readNewPackageNote(getWmuxDir()), { shell }),
       latestEndedTurn: (id) => sessionManager.getSession(id)?.bridge.endedTurnId() ?? null,
       // M2 — hook-sourced awaiting_input is the ONLY thing that mints an
       // approval request. Wired here, on the daemon-internal path, because this
@@ -5893,7 +6016,11 @@ function registerRpcHandlers(
         if (!isInternalForkPayload(signal.payload)) ingest.handle({ ...signal, kind: 'agent.tool_started' });
         return { ok: true };
       }
-      const gate = ingest.handlePermissionGate(signal);
+      // The new-package line reads files: it is awaited here, off the hook's
+      // synchronous path and bounded by its own timeout, so the gate is
+      // created once with it rather than updated after the phone saw it.
+      const packageCheck = await ingest.gatePackageCheck(signal);
+      const gate = ingest.handlePermissionGate(signal, packageCheck);
       if (!gate.ok || !gate.gateId) {
         // Unroutable or non-gated tool (or a bypassPermissions session, which
         // handlePermissionGate deliberately never gates) — hand it back to the
@@ -6306,8 +6433,8 @@ function registerRpcHandlers(
   // #2372 — `ids` reads several panes in one call (see agentStateBatch.ts).
   pipeServer.onRpc('daemon.getAgentState', async (params) => (params['ids'] !== undefined
     ? agentStatesFor(params['ids'], agentStateFor)
-    : agentStateFor(typeof params['id'] === 'string' ? params['id'] : '')));
-  function agentStateFor(id: string) {
+    : agentStateFor(typeof params['id'] === 'string' ? params['id'] : '', params['transcriptOffset'] === true)));
+  function agentStateFor(id: string, withTranscriptOffset = false) {
     const state = readDaemonAgentState(id);
     const bridge = sessionManager.getSession(id)?.bridge;
     if (!bridge) return state;
@@ -6319,9 +6446,15 @@ function registerRpcHandlers(
     // them), and whether the CURRENT agent's hooks have reported (reset when
     // the agent ends). Kept out of readDaemonAgentState, which also answers
     // the web roster.
+    // Asked for one pane only (a delivery's submit proof): the size of its bound transcript now.
+    const transcript = withTranscriptOffset ? transcriptProjector?.transcriptPath(id) ?? null : null;
+    const transcriptSize = transcript ? statTranscript(transcript)?.size : undefined;
     return {
       ...state,
       keyInputRevision: bridge.getKeyInputRevision(),
+      // Additive: the epoch that count is in (a recovered session's bridge counts again from 0).
+      keyEpoch: bridge.getKeyEpoch(),
+      ...(transcriptSize !== undefined ? { transcriptOffset: transcriptSize } : {}),
       keyInputQuiet: bridge.isKeyInputQuiet(),
       hookReports: bridge.hasHookReports(),
       // Additive, for a delivery that waits for the person to stop typing:
@@ -6338,6 +6471,9 @@ function registerRpcHandlers(
       // restart: how long ago the pane's last result settled (null: none
       // since its agent started), so its idle window runs from that end.
       settledAgoMs: bridge.settledAgoMs(),
+      // #3393 — additive: the input box holds a delivery's paste left
+      // unsubmitted (unsentPasteHold.ts), with its clears applied now.
+      unsentPasteHeld: unsentPasteHolds?.held(id) === true,
     };
   }
   // Deliveries wait for a verified agent process (deliveryPresence.ts): what
@@ -6489,8 +6625,25 @@ function registerRpcHandlers(
     // The pane's delivery lock, held from before the writer's first look at
     // the pane through its Enter: no other delivery writes in between. Not
     // granted in time: busy, which every caller already retries.
-    const result = await paneLocks.runLocked(id, `daemon:${writer}`, PANE_LOCK_DAEMON_WAIT_MS,
-      () => deliverPromptToSessionLocked(id, agentSlug, incarnationId, prompt, opts, writer, author, trust));
+    const result = await paneLocks.runLocked(id, `daemon:${writer}`, PANE_LOCK_DAEMON_WAIT_MS, () => deliverUnderHold({
+      holds: unsentPasteHolds,
+      sessionId: id,
+      writer,
+      text: prompt,
+      deliver: (onWrite) => deliverPromptToSessionLocked(id, agentSlug, incarnationId, prompt, { ...opts, onWrite }, writer, author, trust),
+      ...(opts.onWrite ? { onWrite: opts.onWrite } : {}),
+      // #3393 — an earlier paste still in the box: busy (reason unsent-paste); one this writer leaves is taken back
+      // while the box shows exactly its own text, or else held.
+      presence: (check) => deliveryPresence(presenceDeps, id, agentSlug, check),
+      eraseLine: () => {
+        const managed = sessionManager.getSession(id);
+        if (!managed) return false;
+        managed.ptyProcess.write('\x15');
+        managed.bridge.noteInput('\x15');
+        return true;
+      },
+      log: (line) => log('info', line),
+    }));
     return result ?? 'busy';
   };
   const deliverPromptToSessionLocked = (
@@ -6557,6 +6710,7 @@ function registerRpcHandlers(
         if (!managed) return false;
         managed.ptyProcess.write(data);
         managed.bridge.noteInput(data);
+        unsentPasteHolds?.wrote(id);
         return true;
       },
     });
@@ -9419,6 +9573,8 @@ async function shutdown(
   // No headless start begins while the daemon goes down (its retries would only fail), nor any task is typed in.
   headlessStarterRef?.stop();
   headlessDeliveryRef?.stop();
+  linkedTaskTurnsRef?.stop();
+  remoteApprovalsRef?.stop();
   try { a2aServerRef?.dispose(); } catch { /* best effort */ }
   try { a2aDiscoverRef?.dispose(); } catch { /* best effort */ }
   paneSupervisorRef = null;
@@ -9554,7 +9710,7 @@ function logExitHandoff(via: string): void {
 // === Main entry point ===
 
 async function main(): Promise<void> {
-  terminalCoreSelection();
+  terminalCoreSelection((line) => log('info', line));
   labsSettingsAtStartup();
   const startTime = Date.now();
   markDaemonBoot('main-start');
@@ -10388,6 +10544,8 @@ async function main(): Promise<void> {
       const token = await paneLocks.acquire(id, { key: 'daemon:channel wake' }, 0);
       return token ? () => paneLocks.release(id, token) : null;
     },
+    // #3393 — a pane holding an earlier paste left unsubmitted gets no nudge; a nudge left in the box records one.
+    unsentPaste: { held: (id) => unsentPasteHolds?.heldFor(id, 'channel wake nudge') === true, wrote: (id) => unsentPasteHolds?.wrote(id), record: (id, writer) => { unsentPasteHolds?.record(id, writer); } },
     unreadFor: (ws) => channelService.unreadFor(ws),
     // A nudge that never landed must not leave the message it announced sitting
     // at 'pending' forever — the push half used to drop that outcome on the
@@ -10607,21 +10765,65 @@ async function main(): Promise<void> {
           if (shell === 'bash' || shell === 'zsh') return 'posix';
           return process.platform === 'win32' ? null : 'posix';
         },
-        stopClaude: (sid, stillIdle) => stopAgentTree({
-          tree: () => agentProcessTracker.agentProcessTree(sid, 'claude'),
-          stillRunning: (entries) => agentProcessTracker.liveness(entries),
-          kill: (pid, signal) => process.kill(pid, signal),
-          stillIdle,
-        }),
+        stopClaude: async (sid, stillIdle) => {
+          if (!sessionManager.getSession(sid)?.meta.wslTarget) {
+            return stopAgentTree({
+              tree: () => agentProcessTracker.agentProcessTree(sid, 'claude'),
+              stillRunning: (entries) => agentProcessTracker.liveness(entries),
+              kill: (pid, signal) => process.kill(pid, signal),
+              stillIdle,
+            });
+          }
+          // #2261 — the Claude the pane's own hook reported, stopped inside the distro.
+          const wslAgent = agentProcessTracker.wslAgentFor(sid);
+          if (!wslAgent) return { ok: true, stopped: false };
+          if (!stillIdle()) return { ok: false, code: 'turn_open' };
+          const r = await stopWslAgent(wslAgent);
+          if (r.ok) agentProcessTracker.noteWslAgentGone(sid, wslAgent);
+          return r;
+        },
         atFolderTrust: async (sid) =>
           (await trustRefusal(sessionManager, sid, 'continue on account', false)) !== null,
-        paneFree: (sid) => sessionPaneFree(sessionManager, agentProcessTracker, sid),
-        chatOwnsPane: (sid) => chatV2Host?.ownsPane(sid) === true,
-        promptRevision: (sid) => {
-          const pane = sessionManager.getSession(sid);
-          if (!pane || pane.promptLog.size === 0 || pane.promptLog.isCommandRunning()) return null;
-          return pane.bridge.isEmptyShellPrompt() ? pane.bridge.getInputRevision() : null;
+        // A WSL pane's wsl.exe has no Windows children to read: its shell runs
+        // nothing once its tracked Claude is gone and its prompt (OSC 133,
+        // promptRevision) says no command runs.
+        paneFree: async (sid) => sessionManager.getSession(sid)?.meta.wslTarget
+          ? !agentProcessTracker.wslAgentFor(sid)
+          : sessionPaneFree(sessionManager, agentProcessTracker, sid),
+        wsl: {
+          agentTracked: (sid) => !!agentProcessTracker.wslAgentFor(sid),
+          sourceReady: async (sid, binding) => {
+            const meta = sessionManager.getSession(sid)?.meta;
+            if (!meta?.wslTarget || !binding.wslTranscriptPath) return false;
+            // The share is read only while the pane's wsl.exe runs: reading it starts a stopped distro.
+            if (typeof meta.pid !== 'number' || !windowsPidAlive(meta.pid)) return false;
+            const at = wslTranscriptSharePath(binding.wslTranscriptPath, binding.sessionId, meta.wslTarget, { env: meta.env });
+            if (!at.ok) return false;
+            const proof = await proveWslTranscriptPath(at);
+            // A transcript Claude has not written yet has nothing to continue.
+            return proof.ok && !proof.pending;
+          },
+          copy: async (sid, { configDir, plan, sessionId }) => {
+            const meta = sessionManager.getSession(sid)?.meta;
+            if (!meta?.wslTarget || !meta.cmd || typeof meta.pid !== 'number') return { result: 'failed', reason: 'not a WSL pane' };
+            let share = false;
+            try { share = accountFolderShares(configDir, 'claude'); } catch { /* unreadable: no mirror */ }
+            return runWslAccountCopy({
+              shell: meta.cmd,
+              target: meta.wslTarget,
+              hostPid: meta.pid,
+              key: wslAccountHomeKey(configDir),
+              share,
+              suffix: meta.env?.WMUX_DATA_SUFFIX ?? '',
+              accountScript: ensureWslAccountScript(getWmuxDir()),
+              source: plan.source,
+              project: plan.project,
+              sessionId,
+            });
+          },
         },
+        chatOwnsPane: (sid) => chatV2Host?.ownsPane(sid) === true,
+        ...paneShellDeps((sid) => sessionManager.getSession(sid)),
         rebind: (sid, dir, binding) => {
           const meta = sessionManager.getSession(sid)?.meta;
           if (!meta) return null;
@@ -10631,8 +10833,10 @@ async function main(): Promise<void> {
             meta.paneAccount = before.paneAccount;
             meta.resumeBinding = before.resumeBinding;
           };
-          meta.env = { ...meta.env, CLAUDE_CONFIG_DIR: dir };
-          meta.paneAccount = { vendor: 'claude' };
+          // A WSL pane keeps the Windows folder too, marked, so its next spawn runs the account's home in the distro.
+          meta.env = meta.wslTarget ? wslAccountEnv(meta.env, dir, meta.wslTarget) : { ...meta.env, CLAUDE_CONFIG_DIR: dir };
+          // Not for a WSL pane: a chosen account is typed as its folder (withChosenAccountEnv), a Windows path there.
+          if (!meta.wslTarget) meta.paneAccount = { vendor: 'claude' };
           meta.resumeBinding = { ...binding, ts: Date.now() };
           // Unpersisted, a restart would recover the pane on the old account.
           if (!stateWriter.saveImmediate(buildState(sessionManager))) { restore(); return null; }
@@ -10674,6 +10878,8 @@ async function main(): Promise<void> {
   // pane's shell started a command since that agent was picked.
   agentProcessTracker.setLaunchCounter((sessionId) => sessionManager.getSession(sessionId)?.bridge.getCommandStarts());
   agentProcessTracker.setStateChangeListener((sessionId, state) => {
+    // #3393 — the death edge, or a launch of a different process, clears a held pane.
+    unsentPasteHolds?.agentState(sessionId, state.alive);
     if (!state.alive) hookIngest?.expireAuthorityFor(sessionId, state.slug);
     // #2673 — a launch edge that replaced a live process (the tracker found a
     // relaunch where its watched agent died) carries no death edge, so the
@@ -10892,6 +11098,15 @@ async function main(): Promise<void> {
     const a2aSpawnPolicy = new SpawnPolicyStore({ dir: a2aDir, log: a2aLog });
     // Whether a menu's labels leave this PC in a worker's status (`wmux remote status-labels`).
     const a2aStatusLabels = new StatusLabelsStore({ dir: a2aDir, log: a2aLog });
+    // Whether another PC's answer is typed into a headless worker's question (`wmux remote answers`).
+    const a2aAnswers = new AnswersStore({ dir: a2aDir, log: a2aLog });
+    // Which PCs may allow or deny prompts in the tasks they sent to a linked pane here (`wmux remote approvals`): none without the file.
+    const a2aApprovalSwitch = new ApprovalSwitchStore({
+      dir: a2aDir,
+      log: a2aLog,
+      // A new pairing has new peer records, so an entry set before it reads as off.
+      pairing: (hostId) => approvalPairingOf(hostId, a2aPeers.list(), a2aRemoteHosts.get(hostId)),
+    });
     const a2aSpawnRequests = new SpawnRequestStore({ dir: a2aDir, log: a2aLog });
     // Continuing a conversation from another PC: off until this PC's human opts in.
     const a2aContinuePolicy = new ContinuePolicyStore({ dir: a2aDir, log: a2aLog });
@@ -10909,6 +11124,7 @@ async function main(): Promise<void> {
         a2aLog('error', `[a2a-remote] ${err instanceof Error ? err.message : String(err)}`);
       }
       a2aContinueRequests.retainHosts(a2aPaired);
+      a2aApprovalSwitch.retainHosts(a2aPaired);
     }
     const a2aHostName = (hostId: string): string | undefined =>
       a2aRemoteHosts.get(hostId)?.name ?? a2aPeers.list().find((p) => p.hostId === hostId && !p.revokedAt)?.name;
@@ -11066,6 +11282,7 @@ async function main(): Promise<void> {
       intake: a2aBundleIntake,
       enabled: a2aBundlesOn,
       peerTakes: (hostId) => a2aDelivery?.peerFeatures(hostId)?.has(A2A_FEATURE_BUNDLE) === true,
+      peerTakesImported: (hostId) => a2aDelivery?.peerFeatures(hostId)?.has(A2A_FEATURE_BUNDLE_IMPORTED) === true,
       selfHostId: () => a2aServerRef?.status().hostId ?? null,
       maxBytes: () => bundleBytesMax(config.a2aRemote?.bundleBytes),
       enqueue: (hostId, envelope) => {
@@ -11106,6 +11323,13 @@ async function main(): Promise<void> {
         a2aAsks?.forgetHost(hostId);
       } catch (err) {
         a2aLog('error', `[a2a-remote] revoke cascade: spawn requests sent to ${hostId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      try {
+        // Off, and still off if that PC is paired again under the same host id.
+        if (a2aApprovalSwitch.forgetHost(hostId)) a2aDelivery?.readvertise(hostId);
+        remoteApprovalsRef?.wake();
+      } catch (err) {
+        a2aLog('error', `[a2a-remote] revoke cascade: approvals setting for ${hostId}: ${err instanceof Error ? err.message : String(err)}`);
       }
       try {
         a2aContinuePolicy.forgetHost(hostId);
@@ -11184,6 +11408,29 @@ async function main(): Promise<void> {
       if (res.ok) log('info', `[a2a-remote] status labels: ${labels}`);
       return res;
     });
+    onA2aRpc(A2A_ANSWER_RPC.get, async () => ({
+      ...a2aAnswers.get(),
+      effective: a2aAnswers.effective(a2aSpawnPolicy.get().followUps === 'direct'),
+    }));
+    onA2aRpc(A2A_ANSWER_RPC.set, async (params) => {
+      const answers = params['answers'];
+      if (!isA2aAnswersSetting(answers)) return { ok: false, error: "answers must be 'on', 'off' or 'default'" };
+      const res = a2aAnswers.set(answers);
+      if (res.ok) log('info', `[a2a-remote] answers: ${answers}`);
+      return res;
+    });
+    onA2aRpc(A2A_APPROVALS_RPC.get, async () => a2aApprovalSwitch.get());
+    onA2aRpc(A2A_APPROVALS_RPC.set, async (params) => {
+      const res = setApprovals(a2aApprovalSwitch, params, {
+        log: a2aLog,
+        // Only a PC paired now may be turned on (a revoke during the CLI's confirmation leaves it off).
+        paired: (hostId) => a2aPeers.list().some((p) => p.hostId === hostId && !p.revokedAt) || a2aRemoteHosts.get(hostId) !== undefined,
+        // `approval.1` is advertised only while it is on: the streams with that PC open again when that changes.
+        changed: (hostId) => a2aDelivery?.readvertise(hostId),
+      });
+      remoteApprovalsRef?.wake();
+      return res;
+    });
     registerSpawnRpc(onA2aRpc, {
       policy: a2aSpawnPolicy,
       requests: a2aSpawnRequests,
@@ -11249,6 +11496,42 @@ async function main(): Promise<void> {
         continueBytes: a2aContinueBytes,
         ...(a2aStarter ? { spawnLinks: a2aStarter } : {}),
         ...(a2aAsks ? { spawnAsks: a2aAsks } : {}),
+        // Typed (or refused) by the headless delivery; how it went goes back in the task's status.
+        answers: {
+          take: (taskId, messageId, answer) => {
+            const delivery = headlessDeliveryRef;
+            // No headless delivery this run: no agent here was started for that PC, and no status goes back.
+            if (!delivery) {
+              // Once a minute at most: a peer that keeps sending does not fill the log.
+              const now = Date.now();
+              if (now - answersDroppedLoggedAt >= 60_000) {
+                answersDroppedLoggedAt = now;
+                log('info', `[headless] task ${taskId}: answer ${messageId} dropped: this PC runs no headless agents`);
+              }
+              return;
+            }
+            void delivery.answer(taskId, messageId, answer).then((res) => {
+              if (res !== 'duplicate') log('info', `[headless] task ${taskId}: answer ${messageId}: ${res.outcome}${res.outcome === 'not-answered' ? ` (${res.reason})` : ''}`);
+            }).catch((err: unknown) => log('warn', `[headless] task ${taskId}: answer ${messageId} failed: ${String(err)}`));
+          },
+        },
+        // Carried out by the remote approvals (linked panes); refused as `approvals-off` for a PC the setting is off for.
+        approvals: {
+          on: (hostId) => remoteApprovalsRef !== null && a2aApprovalSwitch.exposure(hostId) !== null,
+          // No producer (a start that failed): past nothing, refused as approvals-off above.
+          admit: (hostId, messageId) => remoteApprovalsRef?.admit(hostId, messageId) ?? { ok: false, retryAfterMs: 0 },
+          limited: async (hostId, taskId, messageId, approval, retryAfterMs) => {
+            await remoteApprovalsRef?.limited(hostId, taskId, messageId, approval, retryAfterMs);
+          },
+          take: (hostId, taskId, messageId, approval) => {
+            const approvals = remoteApprovalsRef;
+            if (!approvals) return;
+            void approvals.take(hostId, taskId, messageId, approval);
+          },
+        },
+        // `approval.1` only to a PC the approvals setting is on for.
+        hostFeatures: (hostId) => (a2aApprovalSwitch.exposure(hostId) !== null ? [A2A_FEATURE_APPROVAL] : []),
+        approvalExposure: (hostId) => a2aApprovalSwitch.exposure(hostId),
         bundleAsks: a2aBundleAsker,
         // No box this run (no headless starts kept here): an ask is taken and dropped, as by a box that is off.
         bundles: { applyInbound: (env, peer) => a2aBundleBox?.applyInbound(env, peer) ?? { ok: true, duplicate: false } },
@@ -11256,7 +11539,7 @@ async function main(): Promise<void> {
         // messages and pings its streams: tell the servers it joins, and the
         // joiners in its hello.
         // `bundle.1` only while bundles are on (read at start: a change takes effect on the next one).
-        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE, ...(a2aBundlesOn() ? [A2A_FEATURE_BUNDLE] : [])],
+        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_ANSWER, ...(a2aBundlesOn() ? [A2A_FEATURE_BUNDLE, A2A_FEATURE_BUNDLE_IMPORTED] : [])],
         uploadsRoot: path.join(wmuxDir, 'uploads'),
         // A live terminal of the sender's workspace (stamped at spawn by main), else none.
         spawnCwdOf: (ptyId, workspaceId) => {
@@ -11272,11 +11555,82 @@ async function main(): Promise<void> {
       // Kept too: the headless delivery calls them in-process, as main does over the pipe.
       const a2aDeliveryHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
       a2aDelivery.registerRpc((method, handler) => {
-        a2aDeliveryHandlers.set(method, handler);
-        onA2aRpc(method, handler);
+        // A delivered mark that carries a submit proof: the linked-pane turns have something to follow.
+        const wrapped: typeof handler = method === A2A_REMOTE_RPC.mark
+          ? async (params) => {
+            const res = await handler(params);
+            if (params['submit'] !== undefined) linkedTaskTurnsRef?.wake();
+            return res;
+          }
+          : handler;
+        a2aDeliveryHandlers.set(method, wrapped);
+        onA2aRpc(method, wrapped);
       });
       a2aDelivery.start();
       a2aDeliveryRef = a2aDelivery;
+      // Followed from the submit main recorded on each delivered remote task; recorded only.
+      const turnsTaskSvc = a2aTaskService;
+      linkedTaskTurnsRef = new LinkedTaskTurns({
+        tasks: () => turnsTaskSvc.listRemote(),
+        transcriptPath: (sessionId) => transcriptProjector?.transcriptPath(sessionId) ?? null,
+        session: (sessionId) => {
+          const managed = sessionManager.getSession(sessionId);
+          if (!managed) return null;
+          const agentName = readAgentStateForWeb?.(sessionId).agentName ?? null;
+          return { incarnationId: managed.meta.incarnationId ?? null, keyEpoch: managed.bridge.getKeyEpoch(), agent: agentName ? agentDisplayToSlug(agentName) ?? null : null };
+        },
+        log: a2aLog,
+      });
+      linkedTaskTurnsRef.start();
+      // Its receipts: a file there that cannot be read leaves them null, and every approval is then refused.
+      const approvalReceipts = openApprovalReceipts(a2aDir, a2aLog);
+      const approvalTurns = linkedTaskTurnsRef;
+      const approvalTaskSvc = a2aTaskService;
+      remoteApprovalsRef = new RemoteApprovals({
+        exposure: (hostId) => a2aApprovalSwitch.exposure(hostId),
+        anyOn: () => a2aApprovalSwitch.anyOn(),
+        tasks: { get: (taskId) => approvalTaskSvc.getTask(taskId), remote: () => approvalTaskSvc.listRemote() },
+        // A pane end of a link a person made: not a headless start's, not one a remote start made.
+        linkedPane: (task) => {
+          const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
+          return marker?.kind === 'pane' && a2aLinks.get(marker.linkId)?.spawned !== true && a2aStarter?.isSpawnLink(marker.linkId) !== true;
+        },
+        linkActive: (linkId) => a2aLinks.get(linkId)?.state === 'active',
+        hostName: (hostId) => a2aHostName(hostId),
+        turn: (taskId) => approvalTurns.latestTurn(taskId),
+        session: (ptyId) => {
+          const managed = sessionManager.getSession(ptyId);
+          return managed ? { incarnation: managed.meta.incarnationId ?? null, keyEpoch: managed.bridge.getKeyEpoch() } : null;
+        },
+        registry: {
+          pendingPrompts: (sessionId) => (approvalRegistry?.list().pending ?? [])
+            .filter((r) => r.kind === 'terminal_prompt' && r.sessionId === sessionId)
+            .map((r) => r.id),
+          facts: (id) => approvalRegistry?.remoteApprovalFacts(id) ?? null,
+          resolve: (params) => (approvalRegistry ? approvalRegistry.resolve(params) : Promise.resolve({ ok: false, reason: 'not-found' as const })),
+        },
+        lock: (sid) => paneLocks.acquire(sid, { key: 'remote-approval' }, PANE_LOCK_DAEMON_WAIT_MS),
+        unlock: (sid, token) => paneLocks.release(sid, token),
+        receipts: approvalReceipts,
+        // Behind its own reporter (one status per prompt and one per outcome, the same floor).
+        status: {
+          peer: (taskId) => a2aDeliveryRef?.statusPeer(taskId) ?? null,
+          send: (taskId, status) => a2aDeliveryRef?.sendStatus(taskId, status, 'approvals') ?? { ok: false, error: 'unavailable' },
+        },
+        log: a2aLog,
+        // A notification in the app and a line in the task's history; neither carries the command.
+        carriedOut: (e) => void noteRemoteApproval({
+          tasks: approvalTaskSvc,
+          hostName: (hostId) => a2aHostName(hostId),
+          paneLabel: (workspaceId, paneId) => {
+            const pane = a2aExposedPanes.all().find((p) => p.kind === 'pane' && p.workspaceId === workspaceId && p.paneId === paneId);
+            return pane ? (pane.label ? `${pane.workspaceName} / ${pane.label}` : pane.workspaceName) : undefined;
+          },
+          broadcast: (event) => pipeServer.broadcast(event),
+          log: a2aLog,
+        }, e).catch((err: unknown) => a2aLog('warn', `[a2a-remote] approval task=${e.taskId}: its notice failed: ${String(err)}`)),
+      });
+      remoteApprovalsRef.start();
       // main asks for a bundle and releases it once imported; open asks are asked again and staging is swept.
       // Main's asks are taken once the asks kept from before a restart have gone on.
       void a2aBundleIntake.sweepParts().catch(() => undefined).then(() => {
@@ -11325,6 +11679,9 @@ async function main(): Promise<void> {
           enqueue: (hostId, envelope) => {
             if (!a2aDeliveryRef) throw new Error('messages between PCs are not carried this run');
             a2aDeliveryRef.outbox.enqueue(hostId, envelope);
+          },
+          taken: (hostId, spawnId, head) => {
+            if (headlessStarts.get(hostId, spawnId)) headlessStarts.update(hostId, spawnId, { fetchedHead: head });
           },
           limits: () => (config.a2aRemote?.bundleBytes !== undefined ? { bundleBytes: config.a2aRemote.bundleBytes } : {}),
           log: a2aLog,
@@ -11380,6 +11737,26 @@ async function main(): Promise<void> {
             });
             return kind === 'none' || kind === 'unknown' ? 'dialog' : kind;
           },
+          // The picker an answer from the asking PC is typed into, read as the answer reads it (headlessAnswer.ts).
+          pickerOnScreen: async (sessionId) => {
+            const screen = await readPromptScreenOf(sessionManager, sessionId);
+            if (!screen) return null;
+            const found = screenPicker(sessionId, screen.rows);
+            return 'refused' in found ? null : { pickerId: found.pickerId, optionCount: found.optionCount };
+          },
+          answers: () => a2aAnswers.effective(a2aSpawnPolicy.get().followUps === 'direct'),
+          // One digit, under the pane's delivery lock and the stepwise answer's fences.
+          answerOnScreen: (sessionId, answer, stillAllowed) => answerPicker({
+            readPromptScreen: (sid) => readPromptScreenOf(sessionManager, sid),
+            promptScreenMark: (sid) => promptScreenMarkOf(sessionManager, sid),
+            // The answer types only while askPicker reads a picker on screen, and a picker
+            // replaces the input box: its digit cannot submit a paste waiting there. So it is
+            // not refused by an unsent-paste hold, and writeStepKeyOf keeps one (#3393).
+            writeStepKey: (sid, data) => writeStepKeyOf(sessionManager, sid, data),
+            lock: (sid) => paneLocks.acquire(sid, { key: 'headless-answer' }, PANE_LOCK_DAEMON_WAIT_MS),
+            unlock: (sid, token) => paneLocks.release(sid, token),
+            stillAllowed,
+          }, sessionId, answer),
           status: headlessStatus,
           // The hold from the transcript's own limit line: a headless session has no hook, and its
           // bridge may not count the turn as open, which the API-error stand-in needs.
@@ -11403,7 +11780,7 @@ async function main(): Promise<void> {
             if (refused || !managed || (managed.meta.state !== 'attached' && managed.meta.state !== 'detached')) return false;
             managed.ptyProcess.write('\x1b');
             // The daemon's own key: no submit, so no turn is opened for it.
-            managed.bridge.noteInput('\x1b', { selfWrite: true });
+            passedOverByDialogKey(sessionId, managed.bridge.noteInput('\x1b', { selfWrite: true }), 'the usage-limit menu key');
             return true;
           },
           deliver: (sessionId, agent, prompt, authorized, onWrite) => (headlessDeliverRef ? headlessDeliverRef(sessionId, agent, prompt, authorized, onWrite) : Promise.resolve('unavailable')),
@@ -11427,6 +11804,11 @@ async function main(): Promise<void> {
             if (moved.ok) await a2aDeliveryRef?.syncTask(taskId);
             return moved.ok ? { ok: true } : { ok: false, error: moved.error };
           },
+          // Read once per turn end (headlessDelivery.readFacts), never on a timer: briefly, without the
+          // optional index lock the agent's own git may be holding, and in git's own words (any locale).
+          progressOf: (rec) => (rec.worktreePath && rec.baseCommit
+            ? worktreeProgress(gitRunner(rec.worktreePath, { timeoutMs: HEADLESS_PROGRESS_GIT_TIMEOUT_MS, env: { GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' } }), rec.baseCommit)
+            : Promise.resolve(null)),
           log: a2aLog,
         });
         headlessDeliveryRef = headlessDelivery;
@@ -12105,6 +12487,9 @@ async function main(): Promise<void> {
 
   markDaemonBoot('ready');
   log('info', `Daemon ready — pipe: ${activePipeName}`);
+  // The native snapshot parser's one fixed allocation, taken now rather than
+  // under the memory pressure a busy pane brings (#3440).
+  warmRustSnapshot();
   void selfCheckPeerPid().then((verdict) => { if (verdict) log('info', `[peer-pid] daemon: ${verdict}`); });
   // Boot summary for postmortems. nodeTiming gives the Node/V8 startup split
   // for free (all values are ms relative to nodeTiming's own timeOrigin).

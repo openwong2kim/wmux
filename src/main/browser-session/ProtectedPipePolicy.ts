@@ -12,6 +12,8 @@ import type { BeforeReply, ClientCommandFilter, ClientRef, ReplyError } from './
 // the client hears the new context's id. Context options that change where a
 // context's traffic goes, or what it may reach, are refused, and so is
 // choosing a Bluetooth or USB device for a page's request.
+// A client opens and navigates pages only to the URLs protectedUrlAllowed
+// takes: Target.createTarget, Page.navigate, and a history entry it was shown.
 //
 // Internal clients (main's own connections: the guard, consent, the watcher)
 // are never filtered. Unprotected profiles get no policy at all.
@@ -23,6 +25,67 @@ import type { BeforeReply, ClientCommandFilter, ClientRef, ReplyError } from './
  * other option is disposeOnDetach (allowed).
  */
 const REFUSED_CONTEXT_OPTIONS = ['proxyServer', 'proxyBypassList', 'originsWithUniversalNetworkAccess'] as const;
+
+/**
+ * The pages an outside client of a protected profile may open, navigate to,
+ * see and drive: http:, https:, data:, blob: of an http(s) origin, and
+ * about:blank (a target with no URL yet counts as blank). Read the way Chrome
+ * reads a typed URL: surrounding whitespace dropped, the scheme in any case
+ * (`CHROME://x`, `chrome:x`), and a view-source: wrapper refused whatever it
+ * wraps. Anything that doesn't parse is refused.
+ */
+export function protectedUrlAllowed(url: string): boolean {
+  const text = url.trim();
+  if (text === '') return true;
+  let parsed: URL;
+  try {
+    parsed = new URL(text);
+  } catch {
+    return false;
+  }
+  switch (parsed.protocol) {
+    case 'http:':
+    case 'https:':
+    case 'data:':
+      return true;
+    case 'about:':
+      return parsed.pathname === 'blank';
+    case 'blob:': {
+      try {
+        const inner = new URL(parsed.pathname);
+        return inner.protocol === 'http:' || inner.protocol === 'https:';
+      } catch {
+        return false;
+      }
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Schemes Chrome hands to another application instead of loading in the tab,
+ * so a navigation toward one never commits there. A fixed list: mailto (which
+ * chrome/browser/external_protocol/external_protocol_handler.cc at 157.0.8103.79
+ * always lets through to its handler) and the other common app-launch schemes.
+ * Any other scheme counts as one that may commit.
+ */
+const APP_LAUNCH_SCHEMES = new Set(['mailto:', 'tel:', 'sms:', 'callto:', 'facetime:']);
+
+/** Whether Chrome hands `url` to another application (APP_LAUNCH_SCHEMES), read as protectedUrlAllowed reads it. */
+export function appLaunchUrl(url: string): boolean {
+  try {
+    return APP_LAUNCH_SCHEMES.has(new URL(url.trim()).protocol);
+  } catch {
+    return false;
+  }
+}
+
+/** History entries remembered per client for Page.navigateToHistoryEntry. */
+const HISTORY_ENTRIES_KEPT = 500;
+
+/** The refusal for a URL `protectedUrlAllowed` refuses. */
+export const SCHEME_NOT_ALLOWED = { code: -32000, message: 'policy_denied: scheme not allowed on a protected profile' } as const;
 
 const policyDenied = (what: string) => ({ code: -32000, message: `policy_denied: ${what} is not available on a protected browser profile` });
 
@@ -64,6 +127,8 @@ export class ProtectedPipePolicy {
   private readonly denying = new Set<Promise<unknown>>();
   /** Contexts that could be neither denied nor closed; denied again before any list names them. */
   private readonly unguarded = new Set<string>();
+  /** The history entries each client was shown (Page.getNavigationHistory), by id: their URLs. */
+  private readonly history = new Map<ClientRef, Map<number, string>>();
   private warned = false;
 
   constructor(private readonly deps: ProtectedPipeDeps) {}
@@ -84,6 +149,21 @@ export class ProtectedPipePolicy {
         return REFUSED_CONTEXT_OPTIONS.some((option) => command.params[option] !== undefined)
           ? { refuse: policyDenied('this browser context option'), reason: 'context-options' }
           : null;
+      case 'Target.createTarget': {
+        // No URL opens about:blank.
+        const url = command.params.url ?? '';
+        return typeof url === 'string' && protectedUrlAllowed(url) ? null : { refuse: SCHEME_NOT_ALLOWED, reason: 'scheme-not-allowed' };
+      }
+      case 'Page.navigate': {
+        const url = command.params.url;
+        return typeof url === 'string' && protectedUrlAllowed(url) ? null : { refuse: SCHEME_NOT_ALLOWED, reason: 'scheme-not-allowed' };
+      }
+      case 'Page.navigateToHistoryEntry': {
+        // Only an entry this client was shown, at a URL it may open.
+        const id = command.params.entryId;
+        const url = typeof id === 'number' ? this.history.get(client)?.get(id) : undefined;
+        return url !== undefined && protectedUrlAllowed(url) ? null : { refuse: SCHEME_NOT_ALLOWED, reason: 'scheme-not-allowed' };
+      }
       default:
         return null;
     }
@@ -98,6 +178,10 @@ export class ProtectedPipePolicy {
   readonly beforeReply: BeforeReply = (client, method, result) => {
     if (method === 'Target.createBrowserContext' && typeof result.browserContextId === 'string') this.created.add(result.browserContextId);
     if (client.kind !== 'external') return null;
+    if (method === 'Page.getNavigationHistory') {
+      this.learnHistory(client, result);
+      return null;
+    }
     if (method === 'Target.getBrowserContexts') {
       return this.denying.size || this.unguarded.size ? this.listHeld(result) : null;
     }
@@ -153,11 +237,29 @@ export class ProtectedPipePolicy {
   /** A client left: what it asked for and what it was told go with it. */
   forget(client: ClientRef): void {
     this.listening.delete(client);
+    this.history.delete(client);
     for (const [guid, listeners] of this.told) {
       const kept = listeners.filter((l) => l.client !== client);
       if (kept.length) this.told.set(guid, kept);
       else this.told.delete(guid);
     }
+  }
+
+  /** The entries of a history `client` was shown, kept for its later navigateToHistoryEntry. */
+  private learnHistory(client: ClientRef, result: Record<string, unknown>): void {
+    if (!Array.isArray(result.entries)) return;
+    const known = this.history.get(client) ?? new Map<number, string>();
+    for (const entry of result.entries as Array<{ id?: unknown; url?: unknown }>) {
+      if (typeof entry?.id !== 'number' || typeof entry.url !== 'string') continue;
+      known.delete(entry.id);
+      known.set(entry.id, entry.url);
+    }
+    // The newest entries are kept; an id older than these is refused like an unknown one.
+    for (const id of known.keys()) {
+      if (known.size <= HISTORY_ENTRIES_KEPT) break;
+      known.delete(id);
+    }
+    if (known.size) this.history.set(client, known);
   }
 
   private listenersFor(frameId: string): Listener[] {

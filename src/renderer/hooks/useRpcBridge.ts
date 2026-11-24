@@ -70,7 +70,7 @@ import {
 } from '../utils/searchEngine';
 import { gatedSubmitToPty, submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { isTerminalDirty, isTerminalRetained } from '../terminal/terminalOutputScheduler';
-import { NO_BACKGROUND_SERVICE_DETAIL, type GatedSubmitRefusal, type GatedSubmitResult } from '../../shared/ptyMessageDelivery';
+import { NO_BACKGROUND_SERVICE_DETAIL, parseGatedSubmitProof, type GatedSubmitProof, type GatedSubmitRefusal, type GatedSubmitResult } from '../../shared/ptyMessageDelivery';
 import type { FreshContextReply } from '../../shared/freshContext';
 import { paneAddressOfPty, paneHasOtherOpenA2aTask } from './a2aFreshContext';
 import { publishA2aTask } from '../events/publisher';
@@ -96,7 +96,7 @@ import {
   type A2aRemoteTaskState,
 } from '../../shared/a2aRemoteDelivery';
 import { imagePathForPane } from '../../shared/imagePaste';
-import { resolvePaneAddress, activePaneTerminalPty, activePaneTerminalUnstarted, resolveUnaddressedDelivery, paneHasDetectedAgent, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, NO_TARGET_PTY_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, decideRemoteAnchor, remoteEndPointer, activePaneTerminalPty, activePaneTerminalUnstarted, resolveUnaddressedDelivery, paneHasDetectedAgent, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, NO_TARGET_PTY_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { remoteAgentKey } from '../../shared/remoteHosts';
@@ -368,6 +368,8 @@ export interface A2aPtyWrite {
   /** What a new-task delivery's fresh-context step did (#1680). Absent for
    *  every other delivery, and when the pane's role does not ask for one. */
   freshContext?: FreshContextReply;
+  /** A remote task's delivery: what main submitted to `ptyId`, when it could tell. */
+  submit?: GatedSubmitProof;
 }
 
 /**
@@ -428,9 +430,10 @@ async function deliverA2aText(
   // Main also asks the daemon's task store (this list is not reloaded after a
   // restart), keyed by where the pane sits; a pane it cannot place is kept.
   const pane = newTask ? paneAddressOfPty(s.workspaces, ptyId) : undefined;
+  const aboutTask = pointerTaskId ?? newTask?.taskId ?? replyTaskId;
   const result = await gatedSubmitToPty(ptyId, text, {
     agent: agentUnknown ? undefined : ptyAgent(ptyId).name,
-    ...((pointerTaskId ?? newTask?.taskId ?? replyTaskId) ? { pointerTaskId: pointerTaskId ?? newTask?.taskId ?? replyTaskId } : {}),
+    ...(aboutTask ? { pointerTaskId: aboutTask } : {}),
     ...(newTask?.senderKey ? { senderSendKey: newTask.senderKey } : {}),
     ...(!newTask && replyTaskId ? { senderTaskIds: [replyTaskId] } : {}),
     ...(newTask ? { newTask: true, taskId: newTask.taskId, ...keep, ...(pane ? { pane } : {}) } : {}),
@@ -438,10 +441,14 @@ async function deliverA2aText(
     ...(newTask?.waitQuiet && newTask.expectAgent && !agentUnknown ? { expectAgent: newTask.expectAgent } : {}),
     ...(newTask?.waitQuiet && newTask.deadlineAt !== undefined ? { deadlineAt: newTask.deadlineAt } : {}),
     ...(newTask?.waitQuiet && newTask.guardKey ? { guardKey: newTask.guardKey } : {}),
+    // A remote task's delivery: main says what it submitted, for the daemon's record.
+    ...(aboutTask && isRemoteTaskId(aboutTask) ? { submitProof: true } : {}),
   });
   if (!result.ok) return { ptyId: null, refused: result };
   const fresh = freshContextOf(result);
-  return fresh ? { ptyId, freshContext: fresh } : { ptyId };
+  const proof = parseGatedSubmitProof(result.submit);
+  const submit = proof?.ptyId === ptyId ? { submit: proof } : {};
+  return fresh ? { ptyId, freshContext: fresh, ...submit } : { ptyId, ...submit };
 }
 
 /** Sender-facing hints for a delivery the gate withheld, by reason. */
@@ -1108,23 +1115,21 @@ function isInboundRemoteMarker(v: unknown): v is A2aRemoteTaskMarkerV1 {
 type RemoteAnchor = { workspaceId: string; paneId?: string; ptyId?: string };
 
 /**
- * Where a remote delivery for `anchor` (our local side of the task) may go:
- * the pinned pane's snapshotted pty, or — with `resnapshot`, a person having
- * approved it — whatever terminal the pane holds now. Otherwise the reason it
- * is held: the pane is gone, or another pty holds it now.
+ * Where a remote delivery for `anchor` (our local side of the task) may go,
+ * in the anchor's own workspace only (decideRemoteAnchor): the pinned pane's
+ * snapshotted pty, its only agent terminal when no pty was snapshotted, or —
+ * with `resnapshot`, a person having approved it — whatever terminal the pane
+ * holds now. Otherwise the reason it is held: the pane is gone, or another pty
+ * holds it now.
  */
 function remoteAnchorTarget(
   anchor: RemoteAnchor,
   resnapshot: boolean,
 ): { ws: Workspace; pty: string; surfaceId: string } | { held: A2aRemoteHeldReason } {
   const ws = useStore.getState().workspaces.find((w) => w.id === anchor.workspaceId);
-  if (!ws || !anchor.paneId) return { held: 'pane-missing' };
-  const addr = resolvePaneAddress(getWorkspaceLeafPanes(ws), anchor.paneId, '');
-  if ('error' in addr) return { held: 'pane-missing' };
-  if (resnapshot) return { ws, pty: addr.ptyId, surfaceId: addr.surfaceId };
-  const leaf = getWorkspaceLeafPanes(ws).find((l) => l.id === anchor.paneId);
-  const snap = leaf?.surfaces.find((su) => su.surfaceType !== 'browser' && !!su.ptyId && su.ptyId === anchor.ptyId);
-  return snap && anchor.ptyId ? { ws, pty: anchor.ptyId, surfaceId: snap.id } : { held: 'occupant-changed' };
+  if (!ws) return { held: 'pane-missing' };
+  const to = decideRemoteAnchor(getWorkspaceLeafPanes(ws), anchor, resnapshot, (pty) => a2aTargetHasAgent(ws, pty));
+  return 'held' in to ? to : { ws, ...to };
 }
 
 /**
@@ -1140,7 +1145,7 @@ async function writeRemoteDelivery(
 ): Promise<A2aRemoteDeliveryResult> {
   if (!a2aTargetHasAgent(target.ws, target.pty)) return { ok: true, delivered: false, reason: 'no_agent_pane' };
   const res = await write();
-  if (res.ptyId) return { ok: true, delivered: true, ptyId: res.ptyId };
+  if (res.ptyId) return { ok: true, delivered: true, ptyId: res.ptyId, ...(res.submit?.ptyId === res.ptyId ? { submit: res.submit } : {}) };
   if (res.refused?.pasted && !res.refused.cleared) return { ok: true, delivered: false, held: 'delivery-unconfirmed' };
   // The pane may have changed while the delivery waited.
   const after = remoteAnchorTarget({ ...anchor, ptyId: target.pty }, false);
@@ -1272,10 +1277,8 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
     // The item's own state, not the task's: an earlier `working` item handed
     // over late must not announce the end. A peer's `completed` held here as a
     // report (`reported`) asks this side to check it and mark it done.
-    const ended = item.reported === true
-      ? 'reported'
-      : item.state === 'completed' || item.state === 'failed' ? item.state : undefined;
-    if (!ended || side !== 'from') return { ok: true, delivered: true };
+    const ended = remoteEndPointer(item, side, params.endToldElsewhere === true);
+    if (!ended) return { ok: true, delivered: true };
     // The pointer is one best-effort try. The event above already announced
     // the end and the task stays queryable, so a pane that is gone, holds
     // another program or runs no agent gets no pointer, and nothing is held
@@ -2235,13 +2238,20 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // withWorkspaceProfile, which keeps an initialCommand already present.
     const initialCommand = surfaceNewInitialCommand(params.initialCommand);
     if (initialCommand === null) return { error: 'surface.new: initialCommand must be a non-empty string' };
+    const signIn = initialCommand !== undefined && params.signIn === true;
     const created = await window.electronAPI.pty.create(
       withWorkspaceProfile(
         {
-          ...withDefaultShell({ shell: shell || undefined }, store.defaultShell),
-          cwd: cwd || undefined,
+          // The cwd goes through withDefaultShell so a WSL share folder picks
+          // the WSL shell, as Ctrl+T, splits and pane.split do.
+          ...withDefaultShell({ shell: shell || undefined, cwd: cwd || undefined }, store.defaultShell),
           workspaceId: ws.id,
           ...(initialCommand ? { initialCommand, spawnKind: 'user-shell' as const } : {}),
+          // Main's sign-in tab (factory.handler, `signIn`) stays out of the
+          // worker fence, as accountLogin.openTerminalTab's does: the fence
+          // would refuse it (no folder) or keep its login from the credential
+          // files. Any other command follows the tab's own switch.
+          ...(signIn ? { workerFence: false } : {}),
         },
         ws.profile,
       ),
@@ -2259,7 +2269,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     }
     // #515: adopt the cwd main actually spawned in (validated/home-fallback
     // applied) so the surface tracks its real dir and later splits seed correctly.
-    freshAfterCreate.addSurface(paneId, ptyId, shell, created.cwd || cwd, ws.id);
+    freshAfterCreate.addSurface(paneId, ptyId, shell, created.cwd || cwd, ws.id, signIn ? { workerFence: false } : undefined);
 
     const fresh = useStore.getState();
     const freshWs = fresh.workspaces.find((w) => w.id === ws.id);

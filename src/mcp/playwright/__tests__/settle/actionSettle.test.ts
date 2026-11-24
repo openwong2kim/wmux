@@ -349,19 +349,34 @@ describe('settleAfterAction decision table', () => {
     await expect(run.promise).resolves.toBeUndefined();
   });
 
-  it('detaches every per-action listener; only the page baseline stays', async () => {
+  it('detaches every per-action listener, and never subscribes to Playwright request events', async () => {
     const fake = makeFakePage();
     const run = track(fake);
     await vi.advanceTimersByTimeAsync(REQUEST_GRACE_MS);
     await run.promise;
-    for (const event of ['requestfinished', 'requestfailed', 'framenavigated']) {
+    // A Playwright request/response listener is what makes the client keep a
+    // Request object per request for the page's life; settle reads CDP instead.
+    for (const event of ['request', 'response', 'requestfinished', 'requestfailed']) {
       expect(fake.page.listenerCount(event)).toBe(0);
     }
-    // The baseline's one persistent listener, attached once per page.
-    expect(fake.page.listenerCount('request')).toBe(1);
+    // The network tap's own (it opens iframe sessions on navigation); settle's came off.
+    expect(fake.page.listenerCount('framenavigated')).toBe(1);
     const again = track(fake);
     await vi.advanceTimersByTimeAsync(REQUEST_GRACE_MS);
     await again.promise;
-    expect(fake.page.listenerCount('request')).toBe(1);
+    // One network session per page, however many actions ran on it.
+    expect(fake.net.session.listenerCount('Network.requestWillBeSent')).toBe(1);
+    expect(fake.net.sent.filter((c) => c.method === 'Network.enable')).toHaveLength(1);
+  });
+
+  it('a page whose network session cannot open still runs the action, unsettled', async () => {
+    const fake = makeFakePage();
+    (fake.page.context() as { newCDPSession: () => Promise<unknown> }).newCDPSession = async () => {
+      throw new Error('no cdp');
+    };
+    const run = track(fake, async () => 'ran');
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(run.promise).resolves.toBe('ran');
+    expect(run.settledAt()).toBe(0);
   });
 });

@@ -42,6 +42,9 @@ export interface SurfaceHandoff {
 export interface Surface {
   /** Presentation only: both views share the same live PTY. */
   viewMode?: 'terminal' | 'chat';
+  /** A terminal tab the person opted into the worker fence: the agents wmux
+   *  starts in it run fenced (main/agents/paneFence.ts). Off when absent. */
+  workerFence?: boolean;
   id: string;
   ptyId: string;
   title: string;
@@ -270,6 +273,9 @@ export interface WorkspaceProfile {
    * (validateCwd in pty.handler), so a disconnected drive never hard-fails.
    */
   startupCwd?: string;
+  /** New terminals in this workspace start opted into the worker fence
+   *  (Surface.workerFence). Off when absent. */
+  fenceAgents?: boolean;
 }
 
 // Validation caps — enforced by shared/workspaceProfile.ts.
@@ -879,6 +885,9 @@ export interface ArchivedWorkspace {
 /** The Fleet page's layout: the attention list, or the same rows as a four-column board. */
 export type FleetLayout = 'list' | 'board';
 
+/** How the Fleet list groups the rows below Needs you: by status (default) or by device. */
+export type FleetGroupBy = 'status' | 'device';
+
 /** One app window's slice of the session. A workspace belongs to exactly one
  *  window. Bounds live in window-state.json, not here. */
 export interface SessionWindow {
@@ -1141,6 +1150,8 @@ export interface SessionData {
   claudeResumeOnStart?: boolean;
   /** How the Fleet page lays out its agents: one list (default) or a four-column board. */
   fleetLayout?: FleetLayout;
+  /** How the Fleet list groups its rows: by status (default) or by device. */
+  fleetGroupBy?: FleetGroupBy;
   /** Categories whose surface actions are suppressed (#516). */
   mutedNotificationCategories?: NotificationCategory[];
   customKeybindings?: CustomKeybinding[];
@@ -1154,6 +1165,10 @@ export interface SessionData {
   autoUpdateEnabled?: boolean;
   /** Settings › General: refuse commits, pushes and PRs that carry passwords or keys. Absent = on. */
   secretGuardEnabled?: boolean;
+  /** Settings › General: mark panes whose sibling worktrees touch the same file. Absent = on. */
+  siblingCollisionWatch?: boolean;
+  /** Minutes between those checks (1, 2, 5 or 10). Absent = 2. */
+  siblingCollisionIntervalMin?: number;
   /** Settings › General: when wmux keeps the computer awake. Absent = 'working'. */
   sleepPreventionMode?: SleepPreventionMode;
   customThemeColors?: CustomThemeColors;

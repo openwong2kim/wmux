@@ -10,7 +10,8 @@ import {
   type AllowPrivateNetworkState,
 } from '../shared/browserBackend';
 import { WORKFLOW_OWNER_IPC } from '../shared/botWorkflow';
-import type { TerminalCoreSettings, TerminalEngine } from '../shared/terminalCoreSettings';
+import type { BrokerSetting, BrokerSettingPayload } from '../shared/mcpBroker';
+import type { TerminalCoreSettings } from '../shared/terminalCoreSettings';
 import type { LabsSettings, LabsStatus } from '../shared/labsSettings';
 import { CHAT_IPC } from '../shared/transcript/chatIpc';
 import type { ChatBridgeApi } from '../shared/transcript/turnEvents';
@@ -22,7 +23,9 @@ import { startLocaleFromArgv } from '../shared/startLocale';
 import { localHostNameFromArgv } from '../shared/localHostName';
 import { IPC } from '../shared/constants';
 import { CLAUDE_FILE_SEND_IPC } from '../shared/claudeFileSend';
+import { NEW_PACKAGE_NOTE_IPC } from '../shared/newPackageNote';
 import type { A2aSpawnAskResult, A2aSpawnOutgoingList, A2aSpawnPolicySetResult, A2aSpawnPolicyV1, A2aSpawnRequestSummary, A2aSpawnUiAsk } from '../shared/a2aSpawn';
+import type { A2aApprovalExposure } from '../shared/a2aRemote';
 import type { SleepPreventionMode, SleepWindow } from '../shared/sleepPrevention';
 import { ROOM_EVENT } from '../shared/room';
 import { BOT_EVENT } from '../shared/bot';
@@ -354,7 +357,7 @@ const electronAPI = {
     // wmux.json leaf — `exec` runs the command as the pane's ROOT process and
     // `supervision` arms the daemon's PaneSupervisor (daemon mode only; the
     // local branch ignores them with a one-time warning toast).
-    create: (options?: { shell?: string; cwd?: string; wslDistro?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; ignoreAccountBinding?: boolean; initialCommand?: string; launchEnv?: Record<string, string>; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string; fanoutOrigin?: import('../shared/fanoutOrigin').FanoutOrigin; secretGrant?: string; fanoutLaunch?: { taskId: string; gen: number }; remoteSpawnOf?: string }) =>
+    create: (options?: { shell?: string; cwd?: string; wslDistro?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; wslAccountHomeKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; ignoreAccountBinding?: boolean; initialCommand?: string; launchEnv?: Record<string, string>; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string; fanoutOrigin?: import('../shared/fanoutOrigin').FanoutOrigin; secretGrant?: string; fanoutLaunch?: { taskId: string; gen: number }; remoteSpawnOf?: string }) =>
       ipcRenderer.invoke(IPC.PTY_CREATE, options),
     write: (id: string, data: string) => {
       ipcRenderer.send(IPC.PTY_WRITE, id, data);
@@ -365,6 +368,8 @@ const electronAPI = {
      *  as typed by wmux on its own. */
     writeLaunch: (id: string, text: string, submit: boolean, origin?: 'human') =>
       ipcRenderer.invoke(IPC.PTY_WRITE_LAUNCH, id, text, submit, origin) as Promise<void>,
+    /** A person's pane in the worker fence: its next claude launch is fenced or not. */
+    setFence: (id: string, on: boolean) => ipcRenderer.invoke(IPC.PANE_FENCE_SET, id, on) as Promise<boolean>,
     schedules: {
       list: (ptyId: string) =>
         ipcRenderer.invoke(IPC.SESSION_PROMPT_SCHEDULES_LIST, { ptyId }) as Promise<{
@@ -427,7 +432,7 @@ const electronAPI = {
       // rebind a stale ptyId to the surviving session after a reboot.
       // `workspaceId`/`agentName` (#1101): origin identity for the orphaned
       // session list. `exec` (#2398): an exec unit.
-      ipcRenderer.invoke(IPC.PTY_LIST, opts) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; state?: string; cwd?: string; spawnCwd?: string; workspaceId?: string; agentName?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; exec?: true; resumeAgent?: AgentSlug; resumeAgentOnScreen?: boolean; resumeWasRunning?: boolean; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean; liveAgent?: AgentSlug }[]>,
+      ipcRenderer.invoke(IPC.PTY_LIST, opts) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; state?: string; cwd?: string; spawnCwd?: string; workspaceId?: string; agentName?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; exec?: true; holdReason?: 'terminal-core-missing'; resumeAgent?: AgentSlug; resumeAgentOnScreen?: boolean; resumeWasRunning?: boolean; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean; liveAgent?: AgentSlug }[]>,
     // TASK-6 — per-pane agent RAM for the Fleet View cockpit. Given the ptyIds
     // currently shown as cards, returns { [ptyId]: { rss (bytes), image? } } by
     // walking each pane shell's descendant process tree from ONE CIM snapshot.
@@ -647,7 +652,6 @@ const electronAPI = {
   },
   settings: {
     getTerminalCore: () => ipcRenderer.invoke(IPC.TERMINAL_CORE_SETTINGS_GET) as Promise<TerminalCoreSettings>,
-    setTerminalCore: (engine: TerminalEngine) => ipcRenderer.invoke(IPC.TERMINAL_CORE_SETTINGS_SET, engine) as Promise<TerminalCoreSettings>,
     getLabs: () => ipcRenderer.invoke(IPC.LABS_SETTINGS_GET) as Promise<LabsStatus>,
     setLabs: (settings: LabsSettings) => ipcRenderer.invoke(IPC.LABS_SETTINGS_SET, settings) as Promise<LabsStatus>,
     getWongttyWasm: () => ipcRenderer.invoke(IPC.LABS_WONGTTY_WASM) as Promise<{ engine: Uint8Array; frontEnd: Uint8Array }>,
@@ -850,6 +854,7 @@ const electronAPI = {
         ...(Array.isArray(opts?.senderTaskIds) && opts.senderTaskIds.length > 0 ? { senderTaskIds: opts.senderTaskIds } : {}),
         ...(typeof opts?.senderSendKey === 'string' ? { senderSendKey: opts.senderSendKey } : {}),
         ...(Array.isArray(opts?.senderMentions) && opts.senderMentions.length > 0 ? { senderMentions: opts.senderMentions } : {}),
+        ...(opts?.submitProof === true ? { submitProof: true } : {}),
       }) as Promise<
         import('../shared/ptyMessageDelivery').GatedSubmitResult
       >,
@@ -879,6 +884,10 @@ const electronAPI = {
     getTrustAgyFolders: () => ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_GET) as Promise<boolean>,
     setTrustAgyFolders: (value: boolean) =>
       ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_SET, value) as Promise<boolean>,
+    getAccountPool: () =>
+      ipcRenderer.invoke(IPC.FANOUT_ACCOUNT_POOL_GET) as Promise<import('../shared/fanoutAccountPool').FanoutAccountPoolSettings>,
+    setAccountPool: (patch: Partial<import('../shared/fanoutAccountPool').FanoutAccountPoolSettings>) =>
+      ipcRenderer.invoke(IPC.FANOUT_ACCOUNT_POOL_SET, patch) as Promise<import('../shared/fanoutAccountPool').FanoutAccountPoolSettings>,
     getOwnerAnswers: () =>
       ipcRenderer.invoke(IPC.FANOUT_OWNER_ANSWERS_GET) as Promise<import('../shared/workerLaunch').FanoutOwnerAnswers>,
     setOwnerAnswers: (value: import('../shared/workerLaunch').FanoutOwnerAnswers) =>
@@ -1232,6 +1241,8 @@ const electronAPI = {
       text: string;
       /** The PRs the line names, with the url the owner was resolved by. */
       prs?: { number: number; url: string }[];
+      /** The fan-out tasks the line is about (full ids). */
+      tasks?: string[];
     }) =>
       ipcRenderer.invoke(IPC.DECK_FANOUT_CALLER_SUBMIT, payload) as Promise<
         import('../main/deck/fanoutCallerSubmit').FanoutCallerSubmitReply
@@ -1833,6 +1844,16 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.WORKTREE_MERGE_DISCARD, repoPath) as Promise<
         import('../main/ipc/handlers/worktree.handler').MergeActionResult
       >,
+    // Sibling collision watch: the pane folders + setting go to main; main
+    // pushes a snapshot whenever what two siblings both touch changes.
+    watchSiblings: (req: import('../shared/siblingCollision').SiblingCollisionWatchRequest) =>
+      ipcRenderer.send(IPC.SIBLING_COLLISION_WATCH, req),
+    pokeSiblings: () => ipcRenderer.send(IPC.SIBLING_COLLISION_POKE),
+    onSiblingCollisions: (callback: (snapshot: import('../shared/siblingCollision').SiblingCollisionSnapshot) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, snapshot: import('../shared/siblingCollision').SiblingCollisionSnapshot): void => callback(snapshot);
+      ipcRenderer.on(IPC.SIBLING_COLLISION_UPDATE, listener);
+      return () => { ipcRenderer.removeListener(IPC.SIBLING_COLLISION_UPDATE, listener); };
+    },
   },
   diff: {
     // Fleet Ready to review — change counts only; `unchanged` when the state key matches.
@@ -1922,7 +1943,7 @@ const electronAPI = {
       >,
   },
   dialog: {
-    pickFolder: () => ipcRenderer.invoke(IPC.DIALOG_PICK_FOLDER) as Promise<string[]>,
+    pickFolder: (defaultPath?: string) => ipcRenderer.invoke(IPC.DIALOG_PICK_FOLDER, defaultPath) as Promise<string[]>,
   },
   // Project config (X5 wmux.json). `get` resolves a workspace cwd to the
   // nearest wmux.json + trust state; `setTrust` persists a user decision
@@ -2108,6 +2129,9 @@ const electronAPI = {
     unregister: () => ipcRenderer.invoke(IPC.MCP_UNREGISTER) as Promise<McpStatusPayload>,
     registerTarget: (targetId: string) =>
       ipcRenderer.invoke(IPC.MCP_REGISTER_TARGET, targetId) as Promise<McpRegisterTargetResult>,
+    brokerSetting: () => ipcRenderer.invoke(IPC.MCP_BROKER_SETTING_GET) as Promise<BrokerSettingPayload>,
+    setBrokerSetting: (setting: BrokerSetting) =>
+      ipcRenderer.invoke(IPC.MCP_BROKER_SETTING_SET, setting) as Promise<BrokerSettingPayload>,
   },
   tokenUsage: {
     readQuota: (request?: QuotaReadRequest) =>
@@ -2251,6 +2275,11 @@ const electronAPI = {
       get: () => ipcRenderer.invoke(IPC.USAGE_RESERVE_GET) as Promise<{ enabled: boolean }>,
       set: (enabled: boolean) => ipcRenderer.invoke(IPC.USAGE_RESERVE_SET, enabled) as Promise<{ ok: boolean }>,
     },
+  },
+  /** Whether install approvals note packages the project lacks (shared/newPackageNote.ts). */
+  newPackageNote: {
+    get: () => ipcRenderer.invoke(NEW_PACKAGE_NOTE_IPC.GET) as Promise<{ enabled: boolean }>,
+    set: (enabled: boolean) => ipcRenderer.invoke(NEW_PACKAGE_NOTE_IPC.SET, enabled) as Promise<{ ok: boolean }>,
   },
   /** Whether new panes let Claude send files to the phone (shared/claudeFileSend.ts). */
   claudeFileSend: {
@@ -2703,6 +2732,10 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.invoke(IPC.A2A_REMOTE_SPAWN_POLICY_SET, policy) as Promise<A2aSpawnPolicySetResult>,
   spawnRequestsList: () =>
     ipcRenderer.invoke(IPC.A2A_REMOTE_SPAWN_REQUESTS_LIST) as Promise<{ requests: A2aSpawnRequestSummary[] }>,
+  approvalsGet: () =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_APPROVALS_GET) as Promise<{ hosts: Record<string, A2aApprovalExposure>; damaged: boolean }>,
+  approvalsSet: (hostId: string, exposure: 'off' | A2aApprovalExposure, expected?: 'off' | A2aApprovalExposure) =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_APPROVALS_SET, hostId, exposure, expected) as Promise<{ ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string; conflict?: true }>,
   spawnAsk: (ask: A2aSpawnUiAsk) => ipcRenderer.invoke(IPC.A2A_REMOTE_SPAWN_ASK, ask) as Promise<A2aSpawnAskResult>,
   spawnOutgoing: () => ipcRenderer.invoke(IPC.A2A_REMOTE_SPAWN_OUTGOING) as Promise<A2aSpawnOutgoingList>,
   hostsExposed: (hostId: string) =>

@@ -4,8 +4,9 @@ A soak benchmark for the question "does wmux stay responsive and bounded with
 20 terminals open for half an hour?". It drives a packaged wmux in an isolated
 instance, keeps 20 panes open (6 streaming, 14 idle shells by default,
 optionally some running Claude Code), and samples input latency, lost input,
-output stalls and memory every 10 seconds. It can pin the terminal engine
-(`--engine node|rust`), so the same scenario serves as a node vs rust A/B.
+output stalls and memory every 10 seconds. `--engine rust` checks that the
+daemon runs the Rust terminal core. (Until the Node engine was removed, the
+same flag pinned either engine for a node vs rust A/B.)
 
 Script: `scripts/twenty-pane-stability.mjs` (measurement core in
 `scripts/lib/twenty-pane-stability.mjs`, unit-tested by
@@ -71,24 +72,21 @@ keychain dialog.
 The run's `WMUX_DATA_SUFFIX` is `-s<harness pid in base 36>`; it is in
 `run.json`.
 
-**Terminal engine.** `--engine node|rust` writes `terminal-core.json` in the
-instance's data directory before launch: `{"engine": "rust"}`. That is the
-file **Settings › Terminal › Performance › Terminal engine** writes
-(`src/shared/terminalCoreSettings.ts`). The daemon reads it once at start; a
-changed setting needs a daemon restart. The sandbox's daemon has not started
-yet, so no restart is needed.
+**Terminal engine.** The Rust terminal core is wmux's only engine;
+`--engine node` is refused. `--engine rust` writes `{"engine": "rust"}` to
+`terminal-core.json` in the instance's data directory before launch. A
+current daemon ignores that file; an older build's daemon reads it once at
+start, so a run against one still gets the Rust engine.
 
 After launch the harness asks the daemon what it actually runs:
 `daemon.ping {includeTerminalCore}` returns `terminalCore.requested` and
-`terminalCore.effective`. The run aborts before setup when any of these hold:
+`terminalCore.effective`. With `--engine rust` the run aborts before setup
+when any of these hold:
 
 - the daemon does not report an engine (an older build);
-- `--engine rust` on a build without the Rust module (`rustAvailable` is
-  false). A node run works on such a build;
-- `WMUX_TERMINAL_CORE` overrides the setting;
-- the requested engine differs from what the daemon started with;
-- the requested engine differs from what is effective, for example Rust when
-  the native module is missing.
+- the build lacks the Rust module (`rustAvailable` is false);
+- an older daemon reports that `WMUX_TERMINAL_CORE` overrides the setting;
+- the daemon started with, or runs, another engine (an older build on node).
 
 The harness asks again at the end, recording without aborting. Both answers,
 and the daemon pid at start and end, go into `summary.json` under `engine`.
@@ -208,9 +206,8 @@ process only, so its own login works.
 - With `--claude 0`, nothing touches the real profile.
 
 The real profile also brings your global `CLAUDE.md`, MCP servers and hooks,
-and your default model. That is fine for the engine A/B, where both runs see
-the same profile. For any other run, use a separate logged-in config and a
-small model:
+and your default model. For a run whose numbers you compare with another's,
+use a separate logged-in config and a small model:
 
 ```sh
 --claude-config-dir <separate logged-in config> --claude-cmd "claude --model haiku"
@@ -343,52 +340,18 @@ Caveats:
 - This is a soak with a fixed synthetic workload, not a p99 latency study and
   not a model of any particular agent.
 
-## Engine A/B (node vs rust)
+## Linux on CI
 
-To compare engines, run the same scenario once per engine on the same
-machine, with the same app build and the same flags. Only `--engine` and
-`--out` change.
-
-1. Run `--engine node` first, then `--engine rust`.
-2. Wait about a minute between runs, so the first instance's daemon and
-   shells are gone.
-3. If time allows, run a second pair in the opposite order (rust, then node).
-   A difference that holds in both orders is not warm-up or machine drift.
-
-Each run verifies its own engine at start and end; a run that could not
-verify it aborts instead of producing numbers. Before comparing, check that
-`summary.json` shows `engine.start.effective` and `engine.end.effective`
-equal to the requested engine, and that it has no flags about the daemon or
-engine changing.
-
-Windows (PowerShell; the extracted release build; Claude Code uses your own
-login):
-
-```powershell
-node scripts/twenty-pane-stability.mjs --app D:\test\wmux-4.11.0\wmux.exe --engine node --claude 4 --streaming 8 --panes 20 --out out\twenty-pane-stability\ab-node
-node scripts/twenty-pane-stability.mjs --app D:\test\wmux-4.11.0\wmux.exe --engine rust --claude 4 --streaming 8 --panes 20 --out out\twenty-pane-stability\ab-rust
-```
-
-macOS (the unzipped release `.app`; a fake model on port 8791 with its own
-config dir). Clear the download quarantine first with
-`xattr -dr com.apple.quarantine <app>`.
-
-```sh
-node scripts/twenty-pane-stability.mjs --app ~/test/wmux.app --engine node --claude 4 --claude-config-dir ~/test/claude-fake-config --claude-cmd "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 ANTHROPIC_BASE_URL=http://127.0.0.1:8791 ANTHROPIC_API_KEY=<fake key> claude --model haiku" --streaming 8 --panes 20 --out out/twenty-pane-stability/ab-node
-```
-
-Then run the same command with `--engine rust --out out/twenty-pane-stability/ab-rust`.
-
-Linux runs on CI: **Actions › Twenty-pane engine A/B (Linux) › Run workflow**
-(`.github/workflows/twenty-pane-ab-linux.yml`). One ubuntu-22.04 runner
-packages the app with the Rust module, then runs the default scenario with
-`--claude 0` under Xvfb, node first and then rust, for the minutes you enter
-(1 to 140; 120 by default, about 4.5 hours in all). Each run must have
-completed on its engine, at start and at end, with one daemon throughout,
-recorded daemon and process-tree memory, and be torn down cleanly before the
-next starts (`scripts/twenty-pane-ab-check.mjs`),
-or the job fails. The job summary has a table of both runs' headline numbers,
-and the `twenty-pane-ab-linux` artifact has both output directories.
+**Actions › Twenty-pane stability (Linux) › Run workflow**
+(`.github/workflows/twenty-pane-stability-linux.yml`). One ubuntu-22.04
+runner packages the app, then runs the default scenario with `--claude 0`
+and `--engine rust` under Xvfb for the minutes you enter (1 to 140; 120 by
+default). The run must have completed on the Rust engine, at start and at
+end, with one daemon throughout, recorded daemon and process-tree memory,
+and been torn down cleanly (`scripts/twenty-pane-ab-check.mjs`), or the job
+fails. The `twenty-pane-stability-linux` artifact has the output directory.
+This workflow was the node vs rust engine A/B until the Node engine was
+removed.
 
 ## How to run
 
@@ -422,7 +385,7 @@ Flags:
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--app <exe or .app>` | `out/wmux-win32-x64/wmux.exe`; on macOS a packaged `out/` build, else `/Applications/wmux.app` | The app to run |
-| `--engine node\|rust` | the app's default, recorded but not enforced | The terminal engine, verified after launch |
+| `--engine rust` | the app's engine, recorded but not enforced | Verify after launch that the daemon runs the Rust terminal core (`node` is refused) |
 | `--minutes`, `--panes`, `--streaming`, `--per-workspace`, `--sample-sec` | 30, 20, 6, 5, 10 | Scenario size and sampling |
 | `--claude <n>` | 0 | Claude Code panes |
 | `--claude-config-dir <dir>` | none (your default Claude Code profile) | Another Claude Code config dir |

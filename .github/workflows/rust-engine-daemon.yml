@@ -1,9 +1,8 @@
 name: Rust engine daemon tests
 
-# The daemon's own tests on the rust terminal engine, on Linux, against real
-# shells: vitest.rust-engine.config.ts runs src/daemon with
-# WMUX_TERMINAL_CORE=rust and lists the files that assume the node engine.
-# Among them, sessionReattach.engines.os.test.ts drives a real /bin/sh through
+# The daemon's own tests on the Rust terminal core, on Linux, against real
+# shells: vitest.rust-engine.config.ts runs src/daemon, integration files
+# included (ci.yml runs that lane on Windows). Among them, sessionReattach.engines.os.test.ts drives a real /bin/sh through
 # DaemonSessionManager and SessionPipe: attach, reattach, the attach snapshot,
 # a restart that restores the dumped ring, resize and exit.
 #
@@ -34,8 +33,7 @@ jobs:
       - name: Daemon tests on the rust engine
         # The absolute module path, as scripts/native-core-verify.mjs passes
         # it. The config's setup file fails every test file when the module
-        # does not load, where the engine would fall back to node.
+        # is missing or does not load.
         run: WMUX_TERMINAL_CORE_MODULE="$PWD/core/wmux-term/dist/native-core/index.cjs" npx vitest run --config vitest.rust-engine.config.ts
         env:
-          WMUX_TERMINAL_CORE: rust
           WMUX_REQUIRE_RUST_CORE: '1'

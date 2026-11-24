@@ -64,11 +64,17 @@ const send = (() => {
   if (typeof process._send === 'function') process._send = guard(process._send);
   process.send = guard(process.send);
   return (msg) => {
+    if (ending && msg.id === ending.id) {
+      try { stdoutWrite(ending.mark); stderrWrite(ending.mark); } catch (_) { /* gone */ }
+      ending = null;
+    }
     internal = true;
     try { return raw(msg); } finally { internal = false; }
   };
 })();
 const stderrWrite = process.stderr.write.bind(process.stderr);
+const stdoutWrite = process.stdout.write.bind(process.stdout);
+let ending;
 
 // require() is module-scoped, so a script evaluated in the global context does
 // not see it. Bind one to the session cwd so require('./local') resolves the
@@ -292,6 +298,7 @@ process.on('message', (msg) => {
   }
   if (!msg || typeof msg.code !== 'string') return;
   if (Array.isArray(msg.browser)) installBrowser(msg.browser);
+  ending = msg;
   runStore.run(msg.id, () => evaluate(msg));
 });
 

@@ -345,6 +345,12 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // server-resolved and depth-1 checked in the handler; the other PC decides.
   'a2a.remote.spawn',
   'a2a.remote.spawnStatus',
+  // remote_answer: the caller's pane is server-resolved in the handler; the
+  // daemon takes the answer only from the task's sender.
+  'a2a.remote.answer',
+  // remote_approve: the same; the daemon also checks the decision against the
+  // offer the task's status carries before anything is sent.
+  'a2a.remote.approve',
   // Task ledger — ledger_update (every profile, worker-scoped by the ledger's
   // authz) and ledger_list (commander-only tool, also in the commander lane).
   'ledger.list',

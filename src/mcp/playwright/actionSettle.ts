@@ -1,6 +1,7 @@
 // Adapted from microsoft/playwright@v1.58.2 packages/playwright-core/src/server/agent/context.ts (waitForCompletion), Apache-2.0, modified
 //
-// Modified: reimplemented client-side over Page events (the original runs on
+// Modified: reimplemented client-side over CDP Network events (pageNetwork;
+// the original runs on
 // the server's progress controller); returns immediately when the action
 // starts no relevant request within REQUEST_GRACE_MS; only document,
 // stylesheet, script, xhr and fetch requests (or a main-frame navigation)
@@ -9,11 +10,14 @@
 // as done; a request the page already repeats on its own (a per-page request
 // baseline, or a URL starting twice in one window) is not waited for.
 
-import type { Page, Request } from 'playwright-core';
+import type { Page } from 'playwright-core';
 import { beginDispatch } from './modalState';
+import { networkTapReady, tapPageNetwork, type NetRequest } from './pageNetwork';
 
 /** No relevant request inside this window after the action means there is nothing to wait for. */
 export const REQUEST_GRACE_MS = 100;
+/** The longest an action waits for the page's network session to be listening. */
+export const TAP_READY_MS = 2_000;
 /** Once traffic started: how long new requests are still collected, from the action's end. */
 export const COLLECT_WINDOW_MS = 500;
 /** The ceiling on everything settle waits for after the action itself. */
@@ -23,11 +27,11 @@ export const SETTLE_CAP_MS = 5_000;
 // change what a snapshot will show, and must not cost a click 500ms.
 const TRACKED_TYPES = new Set(['document', 'stylesheet', 'script', 'xhr', 'fetch']);
 
-type EventPage = Pick<Page, 'on' | 'off' | 'mainFrame' | 'waitForLoadState'>;
+type EventPage = Pick<Page, 'on' | 'off' | 'mainFrame' | 'waitForLoadState' | 'context'>;
 
 function hasEvents(page: unknown): page is EventPage {
   const p = page as Partial<EventPage> | null | undefined;
-  return !!p && typeof p.on === 'function' && typeof p.off === 'function';
+  return !!p && typeof p.on === 'function' && typeof p.off === 'function' && typeof p.context === 'function';
 }
 
 // ---------------------------------------------------------------------------
@@ -61,16 +65,18 @@ export function trackRequestBaseline(page: Page): void {
   if (!hasEvents(page) || baselines.has(page)) return;
   const starts = new Map<string, number[]>();
   baselines.set(page, starts);
-  page.on('request', (request: Request) => {
-    if (!safe(() => TRACKED_TYPES.has(request.resourceType()), false)) return;
-    if (safe(() => request.isNavigationRequest(), false)) return;
-    const key = requestKey(request);
-    const times = starts.get(key) ?? [];
-    starts.delete(key); // re-insert: Map order doubles as recency for eviction
-    times.push(Date.now());
-    if (times.length > BASELINE_STARTS) times.shift();
-    starts.set(key, times);
-    if (starts.size > BASELINE_KEYS) starts.delete(starts.keys().next().value as string);
+  tapPageNetwork(page, {
+    onRequest: (request) => {
+      if (!TRACKED_TYPES.has(request.resourceType)) return;
+      if (request.navigation) return;
+      const key = requestKey(request);
+      const times = starts.get(key) ?? [];
+      starts.delete(key); // re-insert: Map order doubles as recency for eviction
+      times.push(Date.now());
+      if (times.length > BASELINE_STARTS) times.shift();
+      starts.set(key, times);
+      if (starts.size > BASELINE_KEYS) starts.delete(starts.keys().next().value as string);
+    },
   });
 }
 
@@ -117,41 +123,46 @@ export async function settleAfterAction<T>(page: Page, fn: () => Promise<T>): Pr
   if (!hasEvents(page)) return fn();
   trackRequestBaseline(page);
 
-  const inFlight = new Set<Request>();
+  const inFlight = new Set<string>();
   // How often each URL (minus query and hash) started during this settle. A
   // URL that starts twice in one window is the page polling, not the action.
   const starts = new Map<string, number>();
   let sawRequest = false;
-  let navRequest: Request | undefined;
+  let navRequest: string | undefined;
   let committed = false;
   let wake: (() => void) | undefined;
-  const actionStart = Date.now();
+  // Set at dispatch: only what `fn` starts is the action's.
+  let actionStart = 0;
 
   const isMain = (frame: unknown) => safe(() => frame === page.mainFrame(), false);
-  const onRequest = (request: Request) => {
-    const navigation = safe(() => request.isNavigationRequest() && isMain(request.frame()), false);
-    const tracked = safe(() => TRACKED_TYPES.has(request.resourceType()), false);
+  const keys = new Map<string, string>();
+  let collecting = false;
+  const onRequest = (request: NetRequest) => {
+    if (!collecting) return;
+    const navigation = request.navigation && request.mainFrame;
+    const tracked = TRACKED_TYPES.has(request.resourceType);
     if (!navigation && !tracked) return;
     if (navigation) {
-      navRequest = request;
+      navRequest = request.requestId;
     } else {
       const key = requestKey(request);
       if (isPageOwnRhythm(page, key, actionStart)) return;
       forgetActionStart(page, key, actionStart);
-      inFlight.add(request);
+      inFlight.add(request.requestId);
+      keys.set(request.requestId, key);
       starts.set(key, (starts.get(key) ?? 0) + 1);
     }
     sawRequest = true;
     wake?.();
   };
-  const onFinished = (request: Request) => {
+  const onFinished = (requestId: string) => {
     // A navigation's document arriving is not its commit; that is framenavigated.
-    inFlight.delete(request);
+    inFlight.delete(requestId);
     wake?.();
   };
-  const onFailed = (request: Request) => {
-    inFlight.delete(request);
-    if (request === navRequest && !committed) navRequest = undefined; // aborted
+  const onFailed = (requestId: string) => {
+    inFlight.delete(requestId);
+    if (requestId === navRequest && !committed) navRequest = undefined; // aborted
     wake?.();
   };
   const onNavigated = (frame: unknown) => {
@@ -172,17 +183,26 @@ export async function settleAfterAction<T>(page: Page, fn: () => Promise<T>): Pr
       wake = undefined;
     });
 
-  page.on('request', onRequest);
-  page.on('requestfinished', onFinished);
-  page.on('requestfailed', onFailed);
+  const tap = tapPageNetwork(page, { onRequest, onFinished, onFailed });
+  // The session is normally long open (trackRequestBaseline, at page resolve).
+  // One that cannot open leaves nothing to wait on: the action runs unsettled.
+  const listening = await networkTapReady(page, TAP_READY_MS);
+  if (!listening) {
+    tap.off();
+    const endDispatch = beginDispatch(page);
+    try {
+      return await fn();
+    } finally {
+      endDispatch();
+    }
+  }
   page.on('framenavigated', onNavigated);
-  let collecting = true;
   const stopCollecting = () => {
-    if (!collecting) return;
     collecting = false;
-    page.off('request', onRequest);
   };
   try {
+    actionStart = Date.now();
+    collecting = true;
     const endDispatch = beginDispatch(page);
     let value: T;
     try {
@@ -200,8 +220,8 @@ export async function settleAfterAction<T>(page: Page, fn: () => Promise<T>): Pr
     await sleep(COLLECT_WINDOW_MS - (Date.now() - actedAt));
     // A polling page keeps starting requests; only the action's are waited for.
     stopCollecting();
-    for (const request of [...inFlight]) {
-      if ((starts.get(requestKey(request)) ?? 0) > 1) inFlight.delete(request);
+    for (const requestId of [...inFlight]) {
+      if ((starts.get(keys.get(requestId) ?? '') ?? 0) > 1) inFlight.delete(requestId);
     }
 
     if (navRequest) {
@@ -217,17 +237,16 @@ export async function settleAfterAction<T>(page: Page, fn: () => Promise<T>): Pr
     return value;
   } finally {
     stopCollecting();
-    page.off('requestfinished', onFinished);
-    page.off('requestfailed', onFailed);
+    tap.off();
     page.off('framenavigated', onNavigated);
   }
 }
 
 /** Method plus URL without query or hash: a poll's cache-buster is not a new request. */
-function requestKey(request: Request): string {
-  const url = safe(() => request.url(), '');
+function requestKey(request: NetRequest): string {
+  const url = request.url;
   const cut = url.search(/[?#]/);
-  return `${safe(() => request.method(), 'GET')} ${cut === -1 ? url : url.slice(0, cut)}`;
+  return `${request.method} ${cut === -1 ? url : url.slice(0, cut)}`;
 }
 
 function safe<T>(fn: () => T, fallback: T): T {

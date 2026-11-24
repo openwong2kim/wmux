@@ -1,5 +1,6 @@
 //! ANSI replay of a Rust-engine session (AnsiSnapshotBackend selects it).
 //! Grid/cursor/style restoration is separate from partial input-tail handling.
+use crate::fallible::{self, AllocFailed};
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::{Dimensions, Grid, Row};
 use alacritty_terminal::index::{Column, Line};
@@ -8,8 +9,80 @@ use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{CharsetIndex, Color, NamedColor, StandardCharset};
 use std::fmt::Write;
 
+/// A control's copy without its C0 bytes (`without_c0`).
+pub(crate) const WITHOUT_C0: &str = "a control the feed classifies, without its C0 bytes";
+
 /// The rendition `style` gives a default cell.
 const RESET: &str = "\x1b[0m";
+/// What the payload's allocations are for.
+const PAYLOAD: &str = "the ANSI snapshot";
+
+/// Why `serialize` produced no payload.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SerializeError {
+    /// The screen's state cannot replay as xterm's (an `unsupported-*` reason).
+    Refused(&'static str),
+    /// The payload could not be allocated.
+    Alloc(AllocFailed),
+}
+
+impl From<&'static str> for SerializeError {
+    fn from(reason: &'static str) -> Self {
+        Self::Refused(reason)
+    }
+}
+
+impl From<AllocFailed> for SerializeError {
+    fn from(failed: AllocFailed) -> Self {
+        Self::Alloc(failed)
+    }
+}
+
+impl From<SerializeError> for crate::fallible::CallError {
+    fn from(error: SerializeError) -> Self {
+        match error {
+            SerializeError::Refused(reason) => Self::reason(reason),
+            SerializeError::Alloc(failed) => Self::Alloc(failed),
+        }
+    }
+}
+
+/// The payload being written. The payload is sized by the session (every
+/// history row, and per cell an OSC 8 target or zero-width characters no
+/// per-row estimate bounds), so every append reserves fallibly, with
+/// amortized growth. A refusal is kept and every later append skipped;
+/// `screen` checks it after each row and `serialize` at the end.
+#[derive(Default)]
+struct Out {
+    text: String,
+    failed: Option<AllocFailed>,
+}
+
+impl Out {
+    fn push_str(&mut self, add: &str) {
+        if self.failed.is_some() {
+            return;
+        }
+        if let Err(failed) = fallible::try_push_str(&mut self.text, add, PAYLOAD) {
+            self.failed = Some(failed);
+        }
+    }
+
+    fn push(&mut self, c: char) {
+        self.push_str(c.encode_utf8(&mut [0; 4]));
+    }
+
+    fn check(&self) -> Result<(), SerializeError> {
+        self.failed.map_or(Ok(()), |failed| Err(failed.into()))
+    }
+}
+
+impl Write for Out {
+    fn write_str(&mut self, add: &str) -> std::fmt::Result {
+        self.push_str(add);
+        Ok(())
+    }
+}
 
 fn color(out: &mut String, value: Color, foreground: bool) {
     let base = if foreground { 38 } else { 48 };
@@ -80,12 +153,12 @@ fn style(cell: &Cell) -> String {
     out
 }
 
-fn glyph(out: &mut String, cell: &Cell) {
+fn glyph(out: &mut Out, cell: &Cell) {
     // A tab marks the blank cell it started on (for copying); xterm moves the
     // cursor without writing. Replaying it would jump to a tab stop instead.
     out.push(if cell.c == '\t' { ' ' } else { cell.c });
-    if let Some(chars) = cell.zerowidth() {
-        out.extend(chars);
+    for &c in cell.zerowidth().unwrap_or_default() {
+        out.push(c);
     }
 }
 
@@ -111,7 +184,7 @@ struct Pen {
 }
 
 impl Pen {
-    fn set(&mut self, out: &mut String, cell: &Cell) {
+    fn set(&mut self, out: &mut Out, cell: &Cell) {
         let style = style(cell);
         if style != self.style {
             out.push_str(&style);
@@ -121,7 +194,7 @@ impl Pen {
         self.set_link(out, cell.hyperlink().filter(replayable));
     }
 
-    fn set_link(&mut self, out: &mut String, link: Option<Hyperlink>) {
+    fn set_link(&mut self, out: &mut Out, link: Option<Hyperlink>) {
         if link == self.link {
             return;
         }
@@ -134,13 +207,13 @@ impl Pen {
         self.link = link;
     }
 
-    fn print(&mut self, out: &mut String, cell: &Cell) {
+    fn print(&mut self, out: &mut Out, cell: &Cell) {
         self.set(out, cell);
         glyph(out, cell);
     }
 }
 
-fn cursor(out: &mut String, pen: &mut Pen, grid: &Grid<Cell>) {
+fn cursor(out: &mut Out, pen: &mut Pen, grid: &Grid<Cell>) {
     let point = grid.cursor.point;
     let mut col = point.column.0;
     if grid.cursor.input_needs_wrap
@@ -183,7 +256,7 @@ fn whole_glyphs(
     line: &Row<Cell>,
     columns: usize,
     repair: bool,
-) -> Result<Option<Vec<Cell>>, &'static str> {
+) -> Result<Option<Vec<Cell>>, SerializeError> {
     let mut fixed: Option<Vec<Cell>> = None;
     for x in 0..columns {
         let flags = line[Column(x)].flags;
@@ -206,8 +279,15 @@ fn whole_glyphs(
             .then(|| &line[Column(partner)])
             .filter(|cell| blank(cell) && !cell.flags.contains(Flags::WIDE_CHAR_SPACER))
             .ok_or("unsupported-wide-half: half a fullwidth glyph next to content")?;
-        let cells =
-            fixed.get_or_insert_with(|| (0..columns).map(|i| line[Column(i)].clone()).collect());
+        let cells = match &mut fixed {
+            Some(cells) => cells,
+            None => {
+                // One row's cells: at most the grid's columns.
+                let mut cells = fallible::try_with_capacity(columns, PAYLOAD)?;
+                cells.extend((0..columns).map(|i| line[Column(i)].clone()));
+                fixed.insert(cells)
+            }
+        };
         let wrap = cells[x].flags & Flags::WRAPLINE;
         cells[x] = Cell {
             bg: erased.bg,
@@ -219,7 +299,7 @@ fn whole_glyphs(
 }
 
 /// Returns whether the replay leaves a hyperlink open.
-fn screen(out: &mut String, grid: &Grid<Cell>, repair: bool) -> Result<bool, &'static str> {
+fn screen(out: &mut Out, grid: &Grid<Cell>, repair: bool) -> Result<bool, SerializeError> {
     let mut pen = Pen::default();
     let columns = grid.columns();
     for y in -(grid.history_size() as i32)..grid.screen_lines() as i32 {
@@ -274,7 +354,9 @@ fn screen(out: &mut String, grid: &Grid<Cell>, repair: bool) -> Result<bool, &'s
             pen.set(out, &Cell::default());
             // One more than fits lands on the next row's head and wraps it;
             // erase that one, then go back up to the filler.
-            out.extend(std::iter::repeat_n('-', columns - end + 1));
+            for _ in 0..columns - end + 1 {
+                out.push('-');
+            }
             out.push_str("\x1b[D\x1b[X\x1b[A\r");
             // An erase can empty the whole row (`end` 0), and CUF 0 moves one.
             if end > 0 {
@@ -323,8 +405,10 @@ fn screen(out: &mut String, grid: &Grid<Cell>, repair: bool) -> Result<bool, &'s
             }
             out.push_str("\r\n");
         }
+        out.check()?;
     }
     cursor(out, &mut pen, grid);
+    out.check()?;
     Ok(pen.link.is_some())
 }
 
@@ -452,15 +536,16 @@ pub(crate) fn xterm_control(sequence: &[u8]) -> Option<XtermControl> {
 }
 
 /// `sequence` without the C0 controls inside it, which execute and are not
-/// part of it (rare); None when it has none.
-fn without_c0(sequence: &[u8]) -> Option<Vec<u8>> {
-    sequence[1..].iter().any(|&b| b < 0x20).then(|| {
-        sequence[..1]
-            .iter()
-            .chain(sequence[1..].iter().filter(|&&b| b >= 0x20))
-            .copied()
-            .collect()
-    })
+/// part of it (rare); None when it has none. At most the sequence, which is
+/// at most the feed's input.
+fn without_c0(sequence: &[u8]) -> Result<Option<Vec<u8>>, AllocFailed> {
+    if !sequence[1..].iter().any(|&b| b < 0x20) {
+        return Ok(None);
+    }
+    let mut plain = fallible::try_with_capacity(sequence.len(), WITHOUT_C0)?;
+    plain.push(sequence[0]);
+    plain.extend(sequence[1..].iter().filter(|&&b| b >= 0x20));
+    Ok(Some(plain))
 }
 
 /// IND, NEL, ED 1/2 or a control in `xterm_control`, spelled without C0:
@@ -481,12 +566,23 @@ fn run_by_the_feed(plain: &[u8]) -> bool {
 /// `CSI 2 J`, the modes 2, 9, 20, 45, 47, 66, 1047 and 1048, SGR 21/53 or
 /// malformed colors, and a control the feed runs as xterm does
 /// (`run_by_the_feed`) with a C0 control inside. `sequence` is complete.
-pub(crate) fn divergent(sequence: &[u8]) -> bool {
-    let filtered = without_c0(sequence);
+/// Reading a control with a C0 control inside copies it (`without_c0`).
+pub(crate) fn try_divergent(sequence: &[u8]) -> Result<bool, AllocFailed> {
+    let filtered = without_c0(sequence)?;
     if filtered.as_deref().is_some_and(run_by_the_feed) {
-        return true;
+        return Ok(true);
     }
     let body = filtered.as_deref().unwrap_or(sequence);
+    Ok(plain_divergent(body))
+}
+
+#[cfg(test)]
+pub(crate) fn divergent(sequence: &[u8]) -> bool {
+    try_divergent(sequence).expect("no allocation is refused")
+}
+
+/// `divergent` for a control without C0 controls inside.
+fn plain_divergent(body: &[u8]) -> bool {
     match body[1..].split_first() {
         Some((b'[', rest)) => csi_divergent(rest),
         // ASCII and DEC line drawing replay alike in G0-G3 (vte designates
@@ -505,7 +601,9 @@ pub(crate) fn divergent(sequence: &[u8]) -> bool {
 /// fallbacks under (`wmux doctor --performance`), so the controls that send
 /// panes to the xterm path can be told apart.
 pub(crate) fn refusal(sequence: &[u8]) -> &'static str {
-    let filtered = without_c0(sequence);
+    let Ok(filtered) = without_c0(sequence) else {
+        return crate::native_core::ALLOC_REFUSED;
+    };
     if filtered.as_deref().is_some_and(run_by_the_feed) {
         return "unsupported-state-c0-inside: a C0 control inside a control the snapshot runs as xterm does";
     }
@@ -580,7 +678,10 @@ fn csi_divergent(rest: &[u8]) -> bool {
 
 /// `repair_wide`: whether a half-erased fullwidth glyph may be replayed as
 /// the blank its erased partner holds (the stream shifted no cells).
-pub fn serialize(term: &Term<VoidListener>, repair_wide: bool) -> Result<String, &'static str> {
+pub(crate) fn serialize(
+    term: &Term<VoidListener>,
+    repair_wide: bool,
+) -> Result<String, SerializeError> {
     // A fullwidth glyph in the last column cannot be printed there: it would
     // wrap instead. The cursor paragraph's narrowing resets it as xterm's trim
     // does (vendored grid `resize_cursor_row`); what is left is the alternate
@@ -601,17 +702,20 @@ pub fn serialize(term: &Term<VoidListener>, repair_wide: bool) -> Result<String,
                 .flags
                 .contains(Flags::WIDE_CHAR)
             {
-                return Err("unsupported-wide-edge: clipped fullwidth glyph requires raw replay");
+                return Err(
+                    "unsupported-wide-edge: clipped fullwidth glyph requires raw replay".into(),
+                );
             }
         }
         // xterm clamps a restored cursor into the last column and drops the
         // pending wrap; Alacritty keeps it, so the next glyph lands a row lower.
         // A cursor saved while wrap was pending may already have diverged.
         if grid.saved_cursor.input_needs_wrap {
-            return Err("unsupported-saved-wrap: cursor saved with a pending wrap");
+            return Err("unsupported-saved-wrap: cursor saved with a pending wrap".into());
         }
     }
-    let mut out = String::from("\x1b[0m\x1b[?6l\x1b[?7h\x1b[4l\x1b[H");
+    let mut out = Out::default();
+    out.push_str("\x1b[0m\x1b[?6l\x1b[?7h\x1b[4l\x1b[H");
     let modes = term.mode();
     if modes.contains(TermMode::ALT_SCREEN) {
         // DECSC on entry saves the primary template, open hyperlink included,
@@ -647,12 +751,13 @@ pub fn serialize(term: &Term<VoidListener>, repair_wide: bool) -> Result<String,
     } else {
         "\x1b[?25l"
     });
-    Ok(out)
+    out.check()?;
+    Ok(out.text)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::serialize;
+    use super::{serialize, SerializeError};
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
@@ -677,7 +782,10 @@ mod tests {
         let mut term = Term::new(Config::default(), &Size(cols, 3), VoidListener);
         let mut parser: Processor = Processor::new();
         parser.advance(&mut term, bytes.as_bytes());
-        serialize(&term, true)
+        serialize(&term, true).map_err(|error| match error {
+            SerializeError::Refused(reason) => reason,
+            SerializeError::Alloc(failed) => panic!("{failed}"),
+        })
     }
 
     use super::{divergent, has_c1, sequence_len};
@@ -1009,7 +1117,10 @@ mod tests {
         assert!(out[at..].contains("\x1b[3X\r\x1b[Bef"), "{out:?}");
         // The cursor moved into the empty run prints nothing there.
         let out = run("\x1b[1;9H");
-        assert!(out.contains("R\x1b[0m----\x1b[D\x1b[X\x1b[A\r\x1b[7C"), "{out:?}");
+        assert!(
+            out.contains("R\x1b[0m----\x1b[D\x1b[X\x1b[A\r\x1b[7C"),
+            "{out:?}"
+        );
         // A blank printed there later, here with a colored background, is
         // content: the empty run starts after it, and only that is filler
         // (an empty run holds unwritten cells, so its background is default).
@@ -1026,7 +1137,10 @@ mod tests {
         // An erase through a wrapped row's edge leaves empty cells too: they
         // replay as filler erased in the erase background.
         let out = replay(5, "abcdefg\x1b[1;3H\x1b[44m\x1b[K\x1b[0m\x1b[2;3H").unwrap();
-        assert!(out.contains("ab----\x1b[D\x1b[X\x1b[A\r\x1b[2C\x1b[0;44m\x1b[3X"), "{out:?}");
+        assert!(
+            out.contains("ab----\x1b[D\x1b[X\x1b[A\r\x1b[2C\x1b[0;44m\x1b[3X"),
+            "{out:?}"
+        );
         // From column 0 the whole row is filler, and only CR goes back to it
         // (CUF 0 would move one).
         let out = replay(5, "abcdefg\x1b[1;1H\x1b[2K\x1b[2;3H").unwrap();

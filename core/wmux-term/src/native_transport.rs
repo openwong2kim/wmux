@@ -1,4 +1,5 @@
 //! Event-driven PTY transport. Blocking OS reads/writes never run on Node.
+use crate::fallible::{self, napi_error, CallError, CallResult, ErrorCode};
 use crate::native_output::{NativeOutputChunk, NativeOutputDecoder};
 use crate::wake_gate::WakeGate;
 use napi::bindgen_prelude::*;
@@ -18,10 +19,9 @@ use std::os::{
 };
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, Ordering},
-    mpsc::{sync_channel, Receiver, TryRecvError},
+    mpsc::{sync_channel, Receiver, SyncSender, TryRecvError},
     Arc, Condvar, Mutex,
 };
-#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 /// The JS wake callback. Every worker shares one single-slot queue, so the
@@ -62,6 +62,13 @@ const HANGUP_GRACE: Duration = Duration::from_secs(5);
 /// One budget waits for the end; a second bounds a job that never stops writing.
 #[cfg(unix)]
 const EXIT_OUTPUT_GRACE: Duration = Duration::from_millis(200);
+/// How often the waiter looks again at a root that is stopped, or whose exit
+/// it cannot watch: it holds no lock meanwhile. A root that stays stopped is
+/// looked at less and less often, down to EXIT_POLL_MAX.
+#[cfg(unix)]
+const EXIT_POLL: Duration = Duration::from_millis(25);
+#[cfg(unix)]
+const EXIT_POLL_MAX: Duration = Duration::from_millis(250);
 static ACTIVE_WORKERS: AtomicU32 = AtomicU32::new(0);
 struct Worker;
 impl Worker {
@@ -98,9 +105,10 @@ struct State {
     closed: AtomicBool,
     #[cfg(unix)]
     cancel: Mutex<Option<UnixStream>>,
-    /// When close() found the child unreaped: the session sweep's deadline.
+    /// The session sweep, armed by the hangup (kill() or close()) while the
+    /// child is unreaped. Taken under `exited` (see the waiter).
     #[cfg(unix)]
-    sweep_at: Mutex<Option<Instant>>,
+    sweep: Mutex<Sweep>,
     /// The reader stops once no output is pending, without reporting an error.
     #[cfg(unix)]
     stop_reading: AtomicBool,
@@ -108,8 +116,36 @@ struct State {
     reader_done: AtomicBool,
 }
 impl State {
-    fn fail(&self, message: String, wake: &Wake) {
+    fn new() -> Self {
+        let state = Self {
+            input: Mutex::new(Input::default()),
+            ready: Condvar::new(),
+            exited: Mutex::new(None),
+            error: Mutex::new(None),
+            closed: AtomicBool::new(false),
+            #[cfg(unix)]
+            cancel: Mutex::new(None),
+            #[cfg(unix)]
+            sweep: Mutex::new(Sweep::None),
+            #[cfg(unix)]
+            stop_reading: AtomicBool::new(false),
+            #[cfg(unix)]
+            reader_done: AtomicBool::new(false),
+        };
+        // A std mutex on macOS allocates its pthread mutex at its first lock,
+        // and that allocation cannot fail softly. Taking `error` once here,
+        // while memory is available, keeps the reader's give-up (`record`,
+        // which runs once memory is refused) from asking the allocator for
+        // anything.
+        drop(state.error.lock());
+        state
+    }
+    /// The error the next read reports.
+    fn record(&self, message: String) {
         *self.error.lock().unwrap_or_else(|p| p.into_inner()) = Some(message);
+    }
+    fn fail(&self, message: String, wake: &Wake) {
+        self.record(message);
         wake.notify();
     }
 }
@@ -157,7 +193,19 @@ pub struct NativeTransport {
     pid: u32,
     eof: bool,
     decoder: NativeOutputDecoder,
+    /// Reads not returned yet, oldest first: a read chunk a refused join
+    /// could not add to a batch, and a batch a refused decode handed back.
+    /// At most two (take_output empties it before receiving more), so its
+    /// fixed capacity of 2 is never outgrown.
+    carry: VecDeque<Vec<u8>>,
 }
+
+/// The reader's buffer: one read copies at most this many bytes.
+const READ_BYTES: usize = 16 * 1024;
+/// The most reads one drain joins: a batch is at most 16 x READ_BYTES (256 KiB).
+const DRAIN_READS: usize = 16;
+/// The most bytes one batch holds, carried ones included.
+const BATCH_BYTES: usize = DRAIN_READS * READ_BYTES;
 
 #[napi]
 impl NativeTransport {
@@ -221,22 +269,14 @@ impl NativeTransport {
         for (key, value) in env {
             command_builder.env(key, value);
         }
-        let state = Arc::new(State {
-            input: Mutex::new(Input::default()),
-            ready: Condvar::new(),
-            exited: Mutex::new(None),
-            error: Mutex::new(None),
-            closed: AtomicBool::new(false),
-            #[cfg(unix)]
-            cancel: Mutex::new(Some(cancel)),
-            #[cfg(unix)]
-            sweep_at: Mutex::new(None),
-            #[cfg(unix)]
-            stop_reading: AtomicBool::new(false),
-            #[cfg(unix)]
-            reader_done: AtomicBool::new(false),
-        });
-        let (tx, rx) = sync_channel::<Vec<u8>>(16);
+        #[cfg_attr(windows, allow(unused_mut))]
+        let mut state = State::new();
+        #[cfg(unix)]
+        {
+            state.cancel = Mutex::new(Some(cancel));
+        }
+        let state = Arc::new(state);
+        let (tx, rx) = sync_channel::<Vec<u8>>(DRAIN_READS);
         let mut result = Self {
             master: Some(pair.master),
             #[cfg(windows)]
@@ -246,6 +286,7 @@ impl NativeTransport {
             pid: 0,
             eof: false,
             decoder: NativeOutputDecoder::default(),
+            carry: VecDeque::with_capacity(2),
         };
         let reader_state = state.clone();
         let reader_wake = wake.clone();
@@ -255,74 +296,18 @@ impl NativeTransport {
             .name("wmux-pty-reader".into())
             .spawn(move || {
                 let _worker = Worker::enter();
-                let mut bytes = [0; 16 * 1024];
                 #[cfg(unix)]
-                let mut stop_by: Option<Instant> = None;
-                loop {
-                    #[cfg(unix)]
-                    if reader_state.closed.load(Ordering::Acquire) {
-                        break;
-                    }
-                    match reader.read(&mut bytes) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            // Older ConPTY versions block ClosePseudoConsole
-                            // until their output is drained. After disposal,
-                            // discard bytes until EOF instead of abandoning
-                            // the pipe while the close worker is using it.
-                            #[cfg(windows)]
-                            if reader_state.closed.load(Ordering::Acquire) {
-                                continue;
-                            }
-                            if tx.send(bytes[..n].to_vec()).is_err() {
-                                #[cfg(windows)]
-                                continue;
-                                #[cfg(unix)]
-                                break;
-                            }
-                            reader_wake.notify();
-                            // Output that never pauses would never reach the
-                            // check below: end it at a deadline instead.
-                            #[cfg(unix)]
-                            if reader_state.stop_reading.load(Ordering::Acquire)
-                                && Instant::now()
-                                    >= *stop_by
-                                        .get_or_insert_with(|| Instant::now() + EXIT_OUTPUT_GRACE)
-                            {
-                                break;
-                            }
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        #[cfg(unix)]
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            // Nothing is pending: an exited shell's output ends here.
-                            if reader_state.stop_reading.load(Ordering::Acquire) {
-                                break;
-                            }
-                            if let Err(e) = reader_io.wait(libc::POLLIN, -1) {
-                                if reader_state.closed.load(Ordering::Acquire) {
-                                    break;
-                                }
-                                // Stopped while waiting: read what is pending first.
-                                if reader_state.stop_reading.load(Ordering::Acquire) {
-                                    continue;
-                                }
-                                reader_state.fail(e.to_string(), &reader_wake);
-                                break;
-                            }
-                        }
-                        // Unix PTYs may signal slave closure with EIO.
-                        Err(e) if cfg!(unix) && e.raw_os_error() == Some(5) => break,
-                        Err(e) => {
-                            reader_state.fail(e.to_string(), &reader_wake);
-                            break;
-                        }
-                    }
-                }
-                drop(tx);
-                #[cfg(unix)]
-                reader_state.reader_done.store(true, Ordering::Release);
-                reader_wake.notify();
+                let wait_readable = || reader_io.wait(libc::POLLIN, -1);
+                #[cfg(windows)]
+                let wait_readable = || Ok(());
+                run_reader(
+                    &mut reader,
+                    tx,
+                    &reader_state,
+                    &|| reader_wake.notify(),
+                    &wait_readable,
+                    &SystemClock,
+                );
             });
         if let Err(e) = reader_start {
             result.close();
@@ -399,33 +384,56 @@ impl NativeTransport {
                 // excluded. Otherwise its PID can be reused before exited is set.
                 #[cfg(unix)]
                 let pid = child.process_id().unwrap() as i32;
-                #[cfg(unix)]
-                let observed = observe_exit(pid);
                 // The shell's own exit signals nothing, as with node-pty: what it
                 // left gets the terminal's hangup. Only a session whose pane was
                 // closed first is swept, at the deadline, while the unreaped root
                 // still pins its session id.
+                //
+                // Invariant: `exited` is never held across a wait that can block.
+                // kill() and close() take it, on the JS thread, before they signal
+                // the root, so a blocking reap under it would wait for a root that
+                // only their signal can end. The root is reaped under the lock
+                // (no signal can reach a freed pid), but only with try_wait, once
+                // an exit was observed; a root not reapable yet lets the lock go.
+                //
+                // Invariant: a hung-up root is reaped only after its session was
+                // swept. The hangup arms the sweep under `exited` (kill()'s SIGHUP,
+                // or close()), so the waiter, which reaps under that lock too,
+                // either sees it armed or reaps before any hangup: never between
+                // the two, where nothing could sweep the session any more (#3434).
                 #[cfg(unix)]
-                let mut exit_guard = loop {
+                let (mut exit_guard, status) = loop {
+                    let observed = observe_exit(pid);
                     let guard = waiter_state
                         .exited
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
-                    let sweep_at = waiter_state
-                        .sweep_at
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .take();
-                    match sweep_at {
-                        Some(at) if observed.is_ok() => {
-                            // Unlocked, so kill() never waits out the grace.
+                    // A sweep needs the observed exit: only then does it run.
+                    let armed = match *waiter_state.sweep.lock().unwrap_or_else(|p| p.into_inner())
+                    {
+                        Sweep::Armed(at) if observed.is_ok() => Some(at),
+                        _ => None,
+                    };
+                    if let Some(at) = armed {
+                        // Unlocked, so kill() never waits out the grace.
+                        drop(guard);
+                        std::thread::sleep(at.saturating_duration_since(Instant::now()));
+                        signal_session(pid, libc::SIGKILL);
+                        *waiter_state.sweep.lock().unwrap_or_else(|p| p.into_inner()) = Sweep::Done;
+                        continue;
+                    }
+                    match child.try_wait() {
+                        Ok(Some(status)) => break (guard, Ok(status)),
+                        Ok(None) => {
+                            // Still running: no exit could be watched (observe_exit
+                            // failed). Look again, unlocked, a moment later.
                             drop(guard);
-                            std::thread::sleep(at.saturating_duration_since(Instant::now()));
-                            signal_session(pid, libc::SIGKILL);
+                            std::thread::sleep(EXIT_POLL);
                         }
-                        _ => break guard,
+                        Err(e) => break (guard, Err(e)),
                     }
                 };
+                #[cfg(windows)]
                 let status = child.wait();
                 #[cfg(windows)]
                 let mut exit_guard = waiter_state
@@ -528,20 +536,11 @@ impl NativeTransport {
         }
     }
 
+    /// A refused decode throws; its bytes are kept, ahead of any later output,
+    /// for the next read, and nothing else the read would report is consumed.
     #[napi(catch_unwind)]
-    pub fn read_chunk(&mut self, paused: Option<bool>) -> TransportChunkRead {
-        let result = self.drain(paused);
-        let bytes_read = result.data.len() as u32;
-        TransportChunkRead {
-            chunk: self.decoder.decode(result.data, result.exit_code.is_some()),
-            bytes_read,
-            eof: result.eof,
-            child_exited: result.child_exited,
-            exit_code: result.exit_code,
-            signal: result.signal,
-            error: result.error,
-            pending_input_bytes: result.pending_input_bytes,
-        }
+    pub fn read_chunk(&mut self, paused: Option<bool>) -> Result<TransportChunkRead, ErrorCode> {
+        Ok(self.read_chunk_raw(paused)?)
     }
 
     #[napi(getter, catch_unwind)]
@@ -554,17 +553,9 @@ impl NativeTransport {
     }
 
     #[napi(catch_unwind)]
-    pub fn write(&self, data: Uint8Array) -> Result<()> {
-        let mut input = self.state.input.lock().map_err(error)?;
-        if input.closed {
-            return Err(Error::from_reason("PTY_CLOSED"));
-        }
-        if input.bytes + data.len() > INPUT_LIMIT {
-            return Err(Error::from_reason("PTY_BACKPRESSURE: input queue is full"));
-        }
-        if !data.is_empty() {
-            input.bytes += data.len();
-            input.queue.push_back(data.to_vec());
+    pub fn write(&self, data: Uint8Array) -> Result<(), ErrorCode> {
+        let mut input = self.state.input.lock().map_err(|e| napi_error(error(e)))?;
+        if enqueue(&mut input, &data)? {
             self.state.ready.notify_one();
         }
         Ok(())
@@ -602,6 +593,10 @@ impl NativeTransport {
             .is_some_and(|master| master.set_parent_window(hwnd))
     }
 
+    /// Signals the child (SIGHUP by default) and, on Unix, its foreground group.
+    /// A SIGHUP is a hangup: it arms the session sweep HANGUP_GRACE later, which
+    /// runs once the root's exit is seen, also with no close() after it. Only
+    /// close() SIGKILLs a root that ignored it. A SIGKILL sweeps the session now.
     #[napi(catch_unwind)]
     pub fn kill(&self, signal: Option<u32>) -> Result<()> {
         let exited = self.state.exited.lock().map_err(error)?;
@@ -614,8 +609,9 @@ impl NativeTransport {
             if !(1..=64).contains(&signal) {
                 return Err(Error::from_reason("Invalid signal"));
             }
-            if signal == libc::SIGKILL {
-                signal_session(self.pid as i32, signal);
+            if signal == libc::SIGHUP {
+                // The hangup decides the sweep, under `exited` (see the waiter).
+                arm(&self.state.sweep);
             }
             if let Some(group) = self.master.as_ref().and_then(|m| m.process_group_leader()) {
                 if group > 0 {
@@ -624,8 +620,15 @@ impl NativeTransport {
                     }
                 }
             }
-            if unsafe { libc::kill(self.pid as i32, signal) } != 0 {
-                let e = std::io::Error::last_os_error();
+            let root = (unsafe { libc::kill(self.pid as i32, signal) } != 0)
+                .then(std::io::Error::last_os_error);
+            if signal == libc::SIGKILL {
+                // After the root's own SIGKILL: a child it forks during the scan
+                // is already in the session, and the root forks nothing after.
+                signal_session(self.pid as i32, signal);
+                *self.state.sweep.lock().unwrap_or_else(|p| p.into_inner()) = Sweep::Done;
+            }
+            if let Some(e) = root {
                 if e.raw_os_error() != Some(libc::ESRCH) {
                     return Err(error(e));
                 }
@@ -701,37 +704,112 @@ impl NativeTransport {
     }
 }
 impl NativeTransport {
-    /// Sets the session sweep's deadline when the child is still unreaped.
+    /// The session sweep's deadline when the child is still unreaped: the
+    /// hangup's own when kill() armed it already.
     #[cfg(unix)]
     fn arm_sweep(&self) -> Option<Instant> {
         let exited = self.state.exited.lock().unwrap_or_else(|p| p.into_inner());
         if exited.is_some() || self.pid == 0 {
             return None;
         }
-        let at = Instant::now() + HANGUP_GRACE;
-        *self
-            .state
-            .sweep_at
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some(at);
-        Some(at)
+        arm(&self.state.sweep)
     }
+    /// `read_chunk`'s body.
+    fn read_chunk_raw(&mut self, paused: Option<bool>) -> CallResult<TransportChunkRead> {
+        let data = self.take_output(paused);
+        let exit = self.exit();
+        let bytes_read = data.len() as u32;
+        // The exit is final only once the output ended (`report`).
+        let finish = self.ended() && exit.is_some();
+        let chunk = match self.decoder.try_decode(data, finish) {
+            Ok(chunk) => chunk,
+            Err((failed, data)) => {
+                self.keep(data);
+                return Err(failed.into());
+            }
+        };
+        let result = self.report(Vec::new(), exit);
+        Ok(TransportChunkRead {
+            chunk,
+            bytes_read,
+            eof: result.eof,
+            child_exited: result.child_exited,
+            exit_code: result.exit_code,
+            signal: result.signal,
+            error: result.error,
+            pending_input_bytes: result.pending_input_bytes,
+        })
+    }
+
+    /// The output ended and all of it was returned: nothing is carried (a
+    /// refused join or decode carries bytes past the reader's end).
+    fn ended(&self) -> bool {
+        self.eof && self.carry.is_empty()
+    }
+
     fn drain(&mut self, paused: Option<bool>) -> RawTransportRead {
+        let data = self.take_output(paused);
+        let exit = self.exit();
+        self.report(data, exit)
+    }
+
+    /// Up to DRAIN_READS reads joined into one batch of at most BATCH_BYTES,
+    /// carried ones first. The first is moved, not copied, so a read always
+    /// makes progress without allocating; a read that cannot be joined (a
+    /// refused allocation) is carried to the next call. A carried batch (a
+    /// refused decode's) counts its bytes, not one read: a full one goes
+    /// alone. No byte is ever dropped, and none is reordered.
+    fn take_output(&mut self, paused: Option<bool>) -> Vec<u8> {
         let mut bytes = Vec::new();
-        if let Some(rx) = &self.receiver {
-            if !paused.unwrap_or(false) {
-                for _ in 0..16 {
-                    match rx.try_recv() {
-                        Ok(data) => bytes.extend(data),
-                        Err(TryRecvError::Disconnected) => {
-                            self.eof = true;
-                            break;
-                        }
-                        Err(TryRecvError::Empty) => break,
-                    }
-                }
+        if paused.unwrap_or(false) {
+            return bytes;
+        }
+        let mut taken = 0;
+        while let Some(chunk) = self.carry.pop_front() {
+            if !bytes.is_empty() && bytes.len() + chunk.len() > BATCH_BYTES {
+                self.carry.push_front(chunk);
+                return bytes;
+            }
+            taken += 1;
+            if let Err(chunk) = join(&mut bytes, chunk) {
+                self.carry.push_front(chunk);
+                return bytes;
             }
         }
+        let Some(rx) = &self.receiver else {
+            return bytes;
+        };
+        while taken < DRAIN_READS && bytes.len() + READ_BYTES <= BATCH_BYTES {
+            match rx.try_recv() {
+                Ok(data) => {
+                    taken += 1;
+                    if let Err(data) = join(&mut bytes, data) {
+                        // The carry was emptied above: this one is its only entry.
+                        self.carry.push_front(data);
+                        break;
+                    }
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.eof = true;
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+            }
+        }
+        bytes
+    }
+
+    /// Hands a batch back for the next read, ahead of anything carried.
+    fn keep(&mut self, data: Vec<u8>) {
+        if data.is_empty() {
+            return;
+        }
+        // take_output leaves at most one entry: this is the second.
+        debug_assert!(self.carry.len() < self.carry.capacity());
+        self.carry.push_front(data);
+    }
+
+    fn exit(&mut self) -> Option<Exit> {
         let exit = self
             .state
             .exited
@@ -753,16 +831,25 @@ impl NativeTransport {
                 });
             }
         }
+        exit
+    }
+
+    /// What a read reports besides its bytes; takes the recorded error. The
+    /// end of the output (and so the exit) is reported once nothing is
+    /// carried, or a read that takes no bytes (paused) would end the output
+    /// before the carried bytes.
+    fn report(&self, data: Vec<u8>, exit: Option<Exit>) -> RawTransportRead {
+        let ended = self.ended();
         RawTransportRead {
-            data: bytes,
-            eof: self.eof,
+            data,
+            eof: ended,
             child_exited: exit.is_some(),
-            exit_code: if self.eof {
+            exit_code: if ended {
                 exit.as_ref().map(|e| e.code)
             } else {
                 None
             },
-            signal: if self.eof {
+            signal: if ended {
                 exit.and_then(|e| e.signal)
             } else {
                 None
@@ -790,6 +877,252 @@ impl Drop for NativeTransport {
 fn error(e: impl std::fmt::Display) -> Error {
     Error::from_reason(e.to_string())
 }
+
+/// Adds `chunk` to a read batch: moved when the batch is empty, else copied
+/// onto it. A refused copy hands the chunk back.
+fn join(bytes: &mut Vec<u8>, chunk: Vec<u8>) -> std::result::Result<(), Vec<u8>> {
+    if bytes.is_empty() {
+        *bytes = chunk;
+        return Ok(());
+    }
+    // Bounded by DRAIN_READS x READ_BYTES (256 KiB) per batch.
+    fallible::try_extend(bytes, &chunk, "a batch of PTY reads").map_err(|_| chunk)
+}
+
+/// Queues one write for the writer thread; whether anything was queued. A
+/// refused copy leaves the queue as it was.
+fn enqueue(input: &mut Input, data: &[u8]) -> CallResult<bool> {
+    if input.closed {
+        return Err(CallError::reason("PTY_CLOSED"));
+    }
+    let queued = input
+        .bytes
+        .checked_add(data.len())
+        .filter(|&n| n <= INPUT_LIMIT)
+        .ok_or_else(|| CallError::reason("PTY_BACKPRESSURE: input queue is full"))?;
+    if data.is_empty() {
+        return Ok(false);
+    }
+    // Bounded by INPUT_LIMIT (8 MiB) queued, this write included.
+    let copy = fallible::try_copy(data, "the PTY input queue")?;
+    fallible::try_reserve_deque(&mut input.queue, 1, "the PTY input queue")?;
+    input.bytes = queued;
+    input.queue.push_back(copy);
+    Ok(true)
+}
+
+/// The reader thread: forwards each read to the channel until the output
+/// ends. A copy refused for READ_RETRY_FOR (copy_read) or a panic ends this
+/// one session's output, with the error recorded for its next read (the seam
+/// message, or the panic's; present even when that message is empty, so JS
+/// tells it from a clean EOF by its presence); no other session sees it. On Windows the pipe is then still read to EOF and
+/// discarded, as after close: older ConPTY versions block ClosePseudoConsole
+/// until their output is drained.
+fn run_reader(
+    reader: &mut dyn Read,
+    tx: SyncSender<Vec<u8>>,
+    state: &State,
+    notify: &dyn Fn(),
+    wait_readable: &dyn Fn() -> std::io::Result<()>,
+    clock: &dyn RetryClock,
+) {
+    let mut buffer = [0; READ_BYTES];
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        read_loop(
+            reader,
+            &tx,
+            &mut buffer,
+            state,
+            notify,
+            wait_readable,
+            clock,
+        )
+    }));
+    let stopped = match outcome {
+        Ok(stopped) => stopped,
+        Err(panic) => {
+            state.record(format!("PTY_READER_PANIC: {}", panic_message(&*panic)));
+            true
+        }
+    };
+    drop(tx);
+    #[cfg(windows)]
+    if stopped {
+        // The error and the end of the output are reported before the drain.
+        notify();
+        discard(reader, &mut buffer);
+    }
+    #[cfg(unix)]
+    {
+        let _ = stopped;
+        state.reader_done.store(true, Ordering::Release);
+    }
+    notify();
+}
+
+/// Returns true when the output stopped on a refused copy (the error is
+/// recorded), false when it ended.
+fn read_loop(
+    reader: &mut dyn Read,
+    tx: &SyncSender<Vec<u8>>,
+    buffer: &mut [u8; READ_BYTES],
+    state: &State,
+    notify: &dyn Fn(),
+    wait_readable: &dyn Fn() -> std::io::Result<()>,
+    clock: &dyn RetryClock,
+) -> bool {
+    #[cfg(windows)]
+    let _ = wait_readable;
+    #[cfg(unix)]
+    let mut stop_by: Option<Instant> = None;
+    loop {
+        #[cfg(unix)]
+        if state.closed.load(Ordering::Acquire) {
+            return false;
+        }
+        match reader.read(buffer) {
+            Ok(0) => return false,
+            Ok(n) => {
+                // Older ConPTY versions block ClosePseudoConsole until their
+                // output is drained. After disposal, discard bytes until EOF
+                // instead of abandoning the pipe while the close worker is
+                // using it.
+                #[cfg(windows)]
+                if state.closed.load(Ordering::Acquire) {
+                    continue;
+                }
+                let Some(chunk) = copy_read(&buffer[..n], state, clock) else {
+                    return true;
+                };
+                if tx.send(chunk).is_err() {
+                    #[cfg(windows)]
+                    continue;
+                    #[cfg(unix)]
+                    return false;
+                }
+                notify();
+                // Output that never pauses would never reach the check
+                // below: end it at a deadline instead.
+                #[cfg(unix)]
+                if state.stop_reading.load(Ordering::Acquire)
+                    && Instant::now()
+                        >= *stop_by.get_or_insert_with(|| Instant::now() + EXIT_OUTPUT_GRACE)
+                {
+                    return false;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            #[cfg(unix)]
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // Nothing is pending: an exited shell's output ends here.
+                if state.stop_reading.load(Ordering::Acquire) {
+                    return false;
+                }
+                if let Err(e) = wait_readable() {
+                    if state.closed.load(Ordering::Acquire) {
+                        return false;
+                    }
+                    // Stopped while waiting: read what is pending first.
+                    if state.stop_reading.load(Ordering::Acquire) {
+                        continue;
+                    }
+                    state.record(e.to_string());
+                    notify();
+                    return false;
+                }
+            }
+            // Unix PTYs may signal slave closure with EIO.
+            Err(e) if cfg!(unix) && e.raw_os_error() == Some(5) => return false,
+            Err(e) => {
+                state.record(e.to_string());
+                notify();
+                return false;
+            }
+        }
+    }
+}
+
+/// How long the reader tries a refused copy of a read again before it ends
+/// the session's output: as long as JS tries a refused decode again.
+const READ_RETRY_FOR: Duration = Duration::from_secs(30);
+/// The longest wait between two tries of a refused read copy.
+const READ_RETRY_WAIT: Duration = Duration::from_millis(100);
+
+/// The time and the wait of the reader's retries (`copy_read`): the
+/// system's, or a test's, which moves on only when asked.
+trait RetryClock {
+    fn now(&self) -> Instant;
+    fn wait(&self, wait: Duration);
+}
+
+struct SystemClock;
+
+impl RetryClock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+    fn wait(&self, wait: Duration) {
+        std::thread::sleep(wait);
+    }
+}
+
+/// A copy of one read (at most READ_BYTES). The read is still in the
+/// reader's buffer, so a refused copy is tried again, with a wait that
+/// doubles up to READ_RETRY_WAIT, until READ_RETRY_FOR has passed on
+/// `clock`: then the refusal is recorded and None returned. None too once
+/// the transport closes. On Unix, once the shell has exited (`stop_reading`)
+/// the retries end EXIT_OUTPUT_GRACE later, as a read that never pauses does,
+/// so the exit is not held back for READ_RETRY_FOR.
+fn copy_read(read: &[u8], state: &State, clock: &dyn RetryClock) -> Option<Vec<u8>> {
+    let mut wait = Duration::from_millis(1);
+    let mut give_up_at = None;
+    #[cfg(unix)]
+    let mut exit_by: Option<Instant> = None;
+    loop {
+        let failed = match fallible::try_copy(read, "a PTY read") {
+            Ok(chunk) => return Some(chunk),
+            Err(failed) => failed,
+        };
+        if state.closed.load(Ordering::Acquire) {
+            return None;
+        }
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut give_up = *give_up_at.get_or_insert_with(|| clock.now() + READ_RETRY_FOR);
+        #[cfg(unix)]
+        if state.stop_reading.load(Ordering::Acquire) {
+            give_up = give_up.min(*exit_by.get_or_insert_with(|| clock.now() + EXIT_OUTPUT_GRACE));
+        }
+        if clock.now() >= give_up {
+            // Recorded even when the message could not be built (empty).
+            state.record(failed.message());
+            return None;
+        }
+        clock.wait(wait);
+        wait = (wait * 2).min(READ_RETRY_WAIT);
+    }
+}
+
+/// Reads to EOF without keeping anything (no allocation).
+#[cfg(windows)]
+fn discard(reader: &mut dyn Read, buffer: &mut [u8]) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loop {
+        match reader.read(buffer) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }));
+}
+
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("a panic without a message")
+}
+
 fn size(cols: u32, rows: u32) -> Result<PtySize> {
     if cols == 0 || rows == 0 || cols > 32767 || rows > 32767 {
         return Err(Error::from_reason("Invalid PTY dimensions"));
@@ -826,9 +1159,42 @@ fn signal_number(signal: Option<&str>) -> Option<u32> {
     None
 }
 
+/// A pane's session sweep: not armed, armed for a deadline, or run.
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum Sweep {
+    None,
+    Armed(Instant),
+    Done,
+}
+
+/// Arms the sweep HANGUP_GRACE from now: the deadline it has, if armed already
+/// and still ahead, so a later hangup never puts it off, or none once it ran.
+/// A deadline already past (a hangup whose root lived on) is armed again, so
+/// this hangup still gets its grace. The caller holds `exited` and found the
+/// child unreaped.
+#[cfg(unix)]
+fn arm(sweep: &Mutex<Sweep>) -> Option<Instant> {
+    let mut sweep = sweep.lock().unwrap_or_else(|p| p.into_inner());
+    match *sweep {
+        Sweep::Armed(at) if at > Instant::now() => Some(at),
+        Sweep::Done => None,
+        Sweep::None | Sweep::Armed(_) => {
+            let at = Instant::now() + HANGUP_GRACE;
+            *sweep = Sweep::Armed(at);
+            Some(at)
+        }
+    }
+}
+
+/// Blocks until `pid` has exited (unreaped). A stopped or continued root is
+/// not an exit: macOS answers WEXITED with a stop too (CLD_STOPPED, as a tree
+/// capture's SIGSTOP leaves the root). The only waits here keep WNOWAIT, so
+/// nothing reaps the root outside the waiter's lock.
 #[cfg(unix)]
 fn observe_exit(pid: i32) -> std::io::Result<()> {
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let mut pause = EXIT_POLL;
     loop {
         if unsafe {
             libc::waitid(
@@ -839,7 +1205,17 @@ fn observe_exit(pid: i32) -> std::io::Result<()> {
             )
         } == 0
         {
-            return Ok(());
+            match info.si_code {
+                // Asked again a moment later: while the root stays stopped, the
+                // same report comes back at once.
+                libc::CLD_STOPPED | libc::CLD_CONTINUED | libc::CLD_TRAPPED => {
+                    std::thread::sleep(pause);
+                    pause = (pause * 2).min(EXIT_POLL_MAX);
+                    continue;
+                }
+                // Any other report is an exit; the waiter's try_wait confirms it.
+                _ => return Ok(()),
+            }
         }
         let error = std::io::Error::last_os_error();
         if error.kind() != std::io::ErrorKind::Interrupted {
@@ -851,9 +1227,10 @@ fn observe_exit(pid: i32) -> std::io::Result<()> {
 /// portable-pty creates a fresh Unix session. Only processes still in that
 /// owned session are terminated; detached services with a new SID are separate.
 /// The root PID is not reaped until this scan finishes, so its SID cannot be reused.
-/// It runs for an explicit SIGKILL, and HANGUP_GRACE after a pane is closed
-/// while its shell is unreaped. It never runs on the shell's own exit, nor for a
-/// pane closed after the shell has exited and been reaped: once reaped, the
+/// It runs for an explicit SIGKILL, and HANGUP_GRACE after a pane is hung up
+/// (kill()'s SIGHUP, or close()) while its shell is unreaped. It never runs on
+/// the shell's own exit, nor for a pane hung up after the shell has exited and
+/// been reaped: once reaped, the
 /// session id may name another session, so what the shell left behind gets
 /// only the terminal's hangup there, as it does with node-pty.
 #[cfg(unix)]
@@ -970,4 +1347,415 @@ fn write_cancellable(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fallible::{fail_from, fail_next, fail_what, CallError, ALLOC_FAILED};
+
+    fn transport(rx: Receiver<Vec<u8>>, state: Arc<State>) -> NativeTransport {
+        NativeTransport {
+            master: None,
+            #[cfg(windows)]
+            killer: None,
+            receiver: Some(rx),
+            state,
+            pid: 0,
+            eof: false,
+            decoder: NativeOutputDecoder::default(),
+            carry: VecDeque::with_capacity(2),
+        }
+    }
+
+    /// A PTY whose reads return these pieces, then EOF.
+    struct Pieces(VecDeque<Vec<u8>>);
+    impl Read for Pieces {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            Ok(self.0.pop_front().map_or(0, |piece| {
+                buf[..piece.len()].copy_from_slice(&piece);
+                piece.len()
+            }))
+        }
+    }
+
+    struct Panics;
+    impl Read for Panics {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            panic!("read went wrong")
+        }
+    }
+
+    fn pieces(list: &[&[u8]]) -> Pieces {
+        Pieces(list.iter().map(|piece| piece.to_vec()).collect())
+    }
+
+    /// A clock that moves on only by the waits asked of it, each taken as
+    /// `step` (no real time passes), and keeps the waits asked for.
+    struct FakeClock {
+        now: std::cell::Cell<Instant>,
+        step: Duration,
+        waits: std::cell::RefCell<Vec<Duration>>,
+    }
+
+    impl FakeClock {
+        fn new(step: Duration) -> Self {
+            Self {
+                now: std::cell::Cell::new(Instant::now()),
+                step,
+                // Room for every wait a test asks for: a test may refuse
+                // every allocation while the reader runs.
+                waits: std::cell::RefCell::new(Vec::with_capacity(16)),
+            }
+        }
+    }
+
+    impl RetryClock for FakeClock {
+        fn now(&self) -> Instant {
+            self.now.get()
+        }
+        fn wait(&self, wait: Duration) {
+            self.waits.borrow_mut().push(wait);
+            self.now.set(self.now.get() + self.step);
+        }
+    }
+
+    /// `run_reader` with nothing to notify or wait for.
+    fn read_all(reader: &mut dyn Read, tx: SyncSender<Vec<u8>>, state: &State, clock: &FakeClock) {
+        run_reader(reader, tx, state, &|| {}, &|| Ok(()), clock);
+    }
+
+    #[test]
+    fn a_drain_joins_its_reads_into_one_batch() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let mut t = transport(rx, Arc::new(State::new()));
+        for piece in ["one", "two", "three"] {
+            tx.send(piece.as_bytes().to_vec()).unwrap();
+        }
+        assert_eq!(t.drain(None).data, b"onetwothree");
+    }
+
+    #[test]
+    fn a_refused_join_carries_the_read_to_the_next_drain_without_losing_a_byte() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let mut t = transport(rx, Arc::new(State::new()));
+        for piece in ["one", "two", "three"] {
+            tx.send(piece.as_bytes().to_vec()).unwrap();
+        }
+        {
+            let _fail = fail_from(1);
+            // The first read is moved, never copied: every drain makes progress.
+            let read = t.drain(None);
+            assert_eq!(read.data, b"one");
+            assert!(!read.eof && read.error.is_none());
+            assert_eq!(t.carry.len(), 1);
+            assert_eq!(t.drain(None).data, b"two");
+            // A paused read takes nothing, the carried read included.
+            assert!(t.drain(Some(true)).data.is_empty());
+        }
+        drop(tx);
+        let read = t.drain(None);
+        assert_eq!(read.data, b"three", "the carried read comes back next");
+        assert!(read.eof);
+        assert!(t.carry.is_empty());
+    }
+
+    #[test]
+    fn a_carried_batch_counts_its_bytes_toward_the_batch_limit() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let mut t = transport(rx, Arc::new(State::new()));
+        for n in 0..DRAIN_READS {
+            let mut read = vec![b'a' + n as u8; READ_BYTES];
+            if n == DRAIN_READS - 1 {
+                // An invalid byte: the decode needs its replacement copy.
+                read[READ_BYTES - 1] = 0xff;
+            }
+            tx.send(read).unwrap();
+        }
+        {
+            // A whole batch whose decode is refused comes back as one
+            // carried entry.
+            let _fail = fail_what("decoded PTY output");
+            assert!(t.read_chunk_raw(None).is_err());
+        }
+        assert_eq!(t.carry.len(), 1);
+        assert_eq!(t.carry[0].len(), BATCH_BYTES);
+        tx.send(b"after".to_vec()).unwrap();
+        // Retried alone: no read is added to a full carried batch.
+        let first = t.drain(None);
+        assert_eq!(first.data.len(), BATCH_BYTES);
+        assert_eq!(first.data[0], b'a');
+        assert_eq!(first.data[BATCH_BYTES - 1], 0xff);
+        assert_eq!(t.drain(None).data, b"after", "then the next read, in order");
+        // A carried batch and a carried read past the limit together go one
+        // after the other.
+        t.carry.push_back(vec![b'x'; BATCH_BYTES - 10]);
+        t.carry.push_back(vec![b'y'; 20]);
+        assert_eq!(t.drain(None).data.len(), BATCH_BYTES - 10);
+        assert_eq!(t.drain(None).data, [b'y'; 20]);
+    }
+
+    #[test]
+    fn a_refused_decode_keeps_its_bytes_and_the_read_error_for_the_next_read() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        let mut t = transport(rx, state.clone());
+        state.record("earlier error".into());
+        // An invalid byte needs the decoder's replacement copy.
+        tx.send(b"bad\xff".to_vec()).unwrap();
+        tx.send(b"next".to_vec()).unwrap();
+        {
+            let _fail = fail_from(1);
+            let refused = t.read_chunk_raw(None).err().expect("the decode is refused");
+            assert!(matches!(refused, CallError::Alloc(_)), "{refused:?}");
+            assert!(refused.message().starts_with(ALLOC_FAILED));
+        }
+        assert_eq!(
+            t.carry.len(),
+            2,
+            "the batch comes back ahead of the carried read"
+        );
+        let read = t.read_chunk_raw(None).unwrap();
+        assert_eq!(read.chunk.bytes, "bad\u{fffd}next".as_bytes());
+        assert_eq!(read.bytes_read, 8);
+        assert_eq!(read.error.as_deref(), Some("earlier error"));
+    }
+
+    #[test]
+    fn a_decode_refused_after_the_output_ended_keeps_the_end_for_its_bytes() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        let mut t = transport(rx, state.clone());
+        *state.exited.lock().unwrap() = Some(Exit {
+            code: 3,
+            signal: None,
+        });
+        tx.send(b"last\xff".to_vec()).unwrap();
+        drop(tx);
+        {
+            let _fail = fail_from(1);
+            assert!(t.read_chunk_raw(None).is_err(), "the decode is refused");
+        }
+        assert!(t.eof, "the reader's end was seen");
+        // A paused read takes no bytes: the output has not ended for it.
+        let paused = t.read_chunk_raw(Some(true)).unwrap();
+        assert!(paused.chunk.bytes.is_empty());
+        assert!(!paused.eof);
+        assert_eq!(paused.exit_code, None);
+        assert!(!t.drain(Some(true)).eof, "nor for a paused byte read");
+        let read = t.read_chunk_raw(None).unwrap();
+        assert_eq!(read.chunk.bytes, "last\u{fffd}".as_bytes());
+        assert!(read.eof);
+        assert_eq!(read.exit_code, Some(3));
+    }
+
+    #[test]
+    fn a_refused_reader_copy_is_tried_again_and_no_byte_is_lost() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        // Each wait moves the clock 9 s: three refusals take it to 27 s,
+        // short of the 30 s give-up, and no real time passes.
+        let clock = FakeClock::new(Duration::from_secs(9));
+        fail_next("a PTY read", 3);
+        read_all(&mut pieces(&[b"kept", b"next"]), tx, &state, &clock);
+        fail_next("", 0);
+        assert_eq!(
+            *clock.waits.borrow(),
+            [1, 2, 4].map(Duration::from_millis),
+            "the wait doubles"
+        );
+        let read = transport(rx, state).drain(None);
+        assert_eq!(read.data, b"keptnext");
+        assert!(read.eof);
+        assert_eq!(read.error, None, "nothing was recorded");
+    }
+
+    #[test]
+    fn a_reader_copy_refused_past_the_deadline_gives_up() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        // The second refusal comes 31 s after the first.
+        let clock = FakeClock::new(Duration::from_secs(31));
+        fail_next("a PTY read", 2);
+        read_all(&mut pieces(&[b"lost", b"never"]), tx, &state, &clock);
+        fail_next("", 0);
+        assert_eq!(clock.waits.borrow().len(), 1);
+        let read = transport(rx, state).drain(None);
+        assert!(read.data.is_empty() && read.eof);
+        assert_eq!(
+            read.error.as_deref(),
+            Some("ALLOC_FAILED: could not allocate 4 bytes for a PTY read")
+        );
+    }
+
+    /// Once the shell has exited, a refused read copy is tried for the exit
+    /// grace only, not READ_RETRY_FOR; a copy that succeeds within it is
+    /// still delivered.
+    #[cfg(unix)]
+    #[test]
+    fn after_the_shell_exits_a_refused_read_copy_is_retried_for_the_exit_grace_only() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        state.stop_reading.store(true, Ordering::Release);
+        let clock = FakeClock::new(Duration::from_millis(50));
+        fail_next("a PTY read", usize::MAX);
+        read_all(&mut pieces(&[b"lost"]), tx, &state, &clock);
+        fail_next("", 0);
+        let waited: Duration = clock.waits.borrow().len() as u32 * Duration::from_millis(50);
+        assert!(waited <= EXIT_OUTPUT_GRACE, "{waited:?}");
+        let read = transport(rx, state).drain(None);
+        assert!(read.data.is_empty() && read.eof);
+        assert_eq!(
+            read.error.as_deref(),
+            Some("ALLOC_FAILED: could not allocate 4 bytes for a PTY read")
+        );
+        // Within the grace, a copy that succeeds is delivered.
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        state.stop_reading.store(true, Ordering::Release);
+        fail_next("a PTY read", 2);
+        read_all(
+            &mut pieces(&[b"kept"]),
+            tx,
+            &state,
+            &FakeClock::new(Duration::from_millis(50)),
+        );
+        fail_next("", 0);
+        let read = transport(rx, state).drain(None);
+        assert_eq!(read.data, b"kept");
+        assert!(read.eof && read.error.is_none());
+    }
+
+    #[test]
+    fn a_give_up_whose_message_cannot_be_built_still_reports_an_error() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        let clock = FakeClock::new(READ_RETRY_FOR);
+        let failed = crate::fallible::AllocFailed {
+            what: "a PTY read",
+            bytes: 4,
+        };
+        // Both made outside the refusal: the reader, and this thread's spare
+        // (its first use can allocate to register its destructor).
+        let mut reader = pieces(&[b"lost"]);
+        crate::fallible::refill_spare();
+        // The channel is disconnected after the refusal, by the last sender:
+        // on macOS, std's channel allocates the mutex a disconnect takes at
+        // its first use, and nothing outside std can make it earlier.
+        let last_sender = tx.clone();
+        crate::test_allocator::refusing(1, || {
+            // This thread's spare message buffer goes first.
+            drop(failed.message());
+            read_all(&mut reader, tx, &state, &clock);
+        });
+        drop(last_sender);
+        let read = transport(rx, state).drain(None);
+        assert!(read.eof);
+        assert_eq!(
+            read.error.as_deref(),
+            Some(""),
+            "an empty message is still an error, unlike a clean EOF"
+        );
+    }
+
+    #[test]
+    fn a_reader_copy_refused_past_the_retries_ends_only_this_sessions_output_with_the_seam_error() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        let mut reader = pieces(&[b"kept", &[b'x'; 64], b"never"]);
+        {
+            let _fail = fail_from(64);
+            read_all(&mut reader, tx, &state, &FakeClock::new(READ_RETRY_FOR));
+        }
+        // Windows reads the pipe to EOF so ClosePseudoConsole cannot block.
+        #[cfg(windows)]
+        assert!(reader.0.is_empty());
+        let mut t = transport(rx, state);
+        let read = t.drain(None);
+        assert_eq!(read.data, b"kept");
+        assert!(read.eof, "the session's output ended");
+        assert_eq!(
+            read.error.as_deref(),
+            Some("ALLOC_FAILED: could not allocate 64 bytes for a PTY read")
+        );
+        assert_eq!(t.drain(None).error, None, "the error is reported once");
+    }
+
+    #[test]
+    fn a_reader_panic_is_the_sessions_read_error() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        let notified = std::cell::Cell::new(0);
+        run_reader(
+            &mut Panics,
+            tx,
+            &state,
+            &|| notified.set(notified.get() + 1),
+            &|| Ok(()),
+            &SystemClock,
+        );
+        assert!(notified.get() >= 1);
+        let read = transport(rx, state).drain(None);
+        assert!(read.eof);
+        assert_eq!(
+            read.error.as_deref(),
+            Some("PTY_READER_PANIC: read went wrong")
+        );
+    }
+
+    #[test]
+    fn a_reader_reaching_eof_ends_the_output_without_an_error() {
+        let (tx, rx) = sync_channel(DRAIN_READS);
+        let state = Arc::new(State::new());
+        read_all(
+            &mut pieces(&[b"a", b"b"]),
+            tx,
+            &state,
+            &FakeClock::new(Duration::ZERO),
+        );
+        let read = transport(rx, state).drain(None);
+        assert_eq!(read.data, b"ab");
+        assert!(read.eof && read.error.is_none());
+    }
+
+    #[test]
+    fn a_refused_input_copy_is_the_write_error_and_queues_nothing() {
+        let mut input = Input::default();
+        {
+            // The copy itself.
+            let _fail = fail_from(4);
+            let refused = enqueue(&mut input, b"abcd").unwrap_err();
+            assert_eq!(
+                refused.message(),
+                "ALLOC_FAILED: could not allocate 4 bytes for the PTY input queue"
+            );
+        }
+        {
+            // The queue's own growth (one Vec slot).
+            let _fail = fail_from(std::mem::size_of::<Vec<u8>>());
+            assert!(enqueue(&mut input, b"abcd").is_err());
+        }
+        assert_eq!(input.bytes, 0);
+        assert!(input.queue.is_empty());
+        assert!(enqueue(&mut input, b"abcd").unwrap());
+        assert_eq!(input.bytes, 4);
+        assert!(!enqueue(&mut input, b"").unwrap());
+    }
+
+    #[test]
+    fn the_input_limit_is_checked_without_overflow() {
+        let mut input = Input {
+            bytes: usize::MAX,
+            ..Input::default()
+        };
+        let refused = enqueue(&mut input, b"a").unwrap_err();
+        assert!(refused.message().starts_with("PTY_BACKPRESSURE"));
+        input.bytes = INPUT_LIMIT;
+        assert!(enqueue(&mut input, b"a").is_err());
+        input.closed = true;
+        assert_eq!(
+            enqueue(&mut input, b"a").unwrap_err(),
+            CallError::reason("PTY_CLOSED")
+        );
+    }
 }

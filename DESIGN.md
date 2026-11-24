@@ -1103,8 +1103,8 @@ Settings › LAN keeps only the listener switches. Top to bottom:
 
 - **Header:** the 16px title, then one muted line that sums it up
   (`2 of 3 PCs connected · 1 of 1 phones connected`, or `Nothing connected
-  yet`; never orange). On the right, LAN messages (only while some wait) and
-  **Connect a PC…** (secondary).
+  yet`; never orange). On the right, LAN messages (only while some wait),
+  **Connect a PC…** and **Pair a phone…** (both secondary).
 - **This computer — one line** on a `--selection-subtle` band: this PC's
   name, phone access (`off` / this computer only / local network / Tailnet),
   the A2A state, worded for people as PC messages (`PC messages on ·
@@ -1113,16 +1113,31 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   refuses, `PC messages: no firewall rule for port 45660`, another listener
   error, or `PC messages off`; never "not reachable", which the host cannot
   know; the UI never says "A2A") and a
-  **Details** toggle. While phone access is off, Share & pair sits on
-  the line (its popover leads with Pair a phone, which starts sharing and
-  shows the QR in the same click. It is offered only once the address will
-  be reachable: a usable tailnet ticks HTTPS over Tailscale visibly first,
-  never the LAN; otherwise the popover says why, as the wizard's first step
-  does. Start stays as a secondary that starts exactly what the boxes show).
-  A popover opened there keeps the button on the line until it closes, so
-  the QR survives sharing turning on.
+  **Details** toggle. **⚙ Phone access settings…** (a gear icon, not a
+  glyph in the label) always sits on the line and opens settings only:
+  sharing and Stop, this computer's input, conversation access, upload,
+  the transports and Advanced, Open here; nothing that pairs. Pairing a
+  phone is the **Pair a phone** dialog (owner decision 2026-11-18), one
+  modal mounted once for the app and opened from Pair a phone… in the
+  header, a ghost **+ Pair a phone** on the Phones heading and in the empty
+  state, and the sidebar's Remote menu. One screen, top to bottom: a
+  readiness line (Ready, Already shared over HTTPS, or the problem with
+  its one fix and Check again on that line; sharing without HTTPS points at
+  Phone access settings' Stop instead of restarting it), the name
+  (prefilled, unique), what the phone may do — View only (the default) or
+  Can type, one line under it — and, when Can type would let other devices
+  type too, that notice with its confirm checkbox in place; then a folded
+  "What a paired phone can see"; Cancel and **Pair** (the primary). Can
+  type raises this computer's input (never lowers it) after re-reading the
+  server at the click; the upload grant is never touched. Pair turns into
+  the QR, the code, New code and Copy link with the chosen access, and its
+  only action is Cancel the pairing in progress; then "“Name” is connected
+  · View only", a line that its access is changed on its Phones row, Pair
+  another phone and **Done**. Every way the dialog closes before a phone
+  arrives (×, Escape, cancel) burns the code and puts back any input it
+  raised.
   Details unfolds in place: the phone
-  address without its token (copy), whether input is allowed, Share & pair,
+  address without its token (copy), whether input is allowed,
   the PC messages port and the full security code (the certificate fingerprint;
   plain mono values; the code wraps anywhere, copy), and while A2A listens
   a **Firewall** line: what the last check said ("Allowed on private
@@ -1130,12 +1145,10 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   one has; "Not checked" before any check; "Could not read the firewall
   settings" after a failed one; never a bare dash), and in the actions
   column a ghost **Check firewall**, always, plus a ghost **Remove** for
-  wmux's own rule. Connecting another computer by A2A starts from
-  Connect a PC…; as a workspace share it starts from Connect a PC… or from
-  Share & pair's **Connect another computer**, which mints the pairing link
-  and copies it in one click. Connect a PC's invite tab carries **Also let
-  it see this PC's workspaces** (off by default, offered only while Share &
-  pair answers over HTTPS): ticked, the copy holds the invite and a
+  wmux's own rule. Connecting another computer starts from Connect a PC…,
+  by A2A or as a workspace share. Connect a PC's invite tab carries **Also
+  let it see this PC's workspaces** (off by default, offered only while
+  phone access answers over HTTPS): ticked, the copy holds the invite and a
   view-only pairing link on a second line, and the other PC's one paste
   connects both.
 - **Port and firewall notices** — directly under the band, drawn only
@@ -1178,8 +1191,9 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   The same rows appear in Connect a PC's invite tab (a
   bind failure; after copying, a muted "If the other PC can't connect, come
   back here and check the firewall." with a ghost Check firewall), Settings
-  › LAN (A2A and LanLink) and Share & pair (a failed start with Use port N
-  in the stopped body; the firewall row while exposed to the network);
+  › LAN (A2A and LanLink) and Phone access settings (a failed start with
+  Use port N in the stopped body; the firewall row while exposed to the
+  network);
   there their actions are always secondary.
 - **Tailscale** — inside the same band, under a `--stroke` hairline: four
   checks from one read-only `tailscale status --json`, run when the page
@@ -1196,10 +1210,10 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   the same account). Nothing ever runs `tailscale up` or installs anything.
   The failed mark is the caution yellow warning glyph; the rows stay
   neutral and no orange is spent.
-  The same button follows a Tailscale failure elsewhere: Share & pair's
-  notice and the phone wizard's first step, and every place a connection
-  to another PC starts (Connect a PC, Share & pair's Connect another
-  computer, the attach and Pair again dialog), which check Tailscale
+  The same button follows a Tailscale failure elsewhere: Phone access
+  settings' notice and the Pair a phone dialog's readiness line, and every
+  place a connection to another PC starts (Connect a PC, the attach and
+  Pair again dialog), which check Tailscale
   before connecting to a piece whose every address is in the tailnet range.
   An address that is surely Tailscale's (a `*.ts.net` name, or one its
   status lists as a peer) is not tried when the check fails, which is said
@@ -1247,6 +1261,12 @@ Settings › LAN keeps only the listener switches. Top to bottom:
     a PC drops both pairings this PC holds for it (the one it joined and the
     one that joined it); there is no one-sided removal. It says when the
     other PC was not told, and which side is left after a partial failure.
+    Right under the row sits its remote approvals row (nested, an elbow):
+    "Agents on <PC> can allow or deny permission prompts in tasks they sent
+    here" with Off / Tool only / Command as a segmented control. Raising it
+    asks in the row (Cancel, then Confirm as a neutral secondary) with one
+    line under it saying what it allows; lowering it applies at once. A
+    damaged settings file reads Off with one line saying so. No colour.
     Its live links
     sit nested under it (an elbow, `mine ↔ PC/theirs · direction`, or
     "waiting for PC to accept" with Check; Unlink asks twice). A pane this
@@ -1259,7 +1279,12 @@ Settings › LAN keeps only the listener switches. Top to bottom:
     connected is not known to the renderer, so LAN is never guessed.
   - **Phones** — paired web devices: what each is viewing ("Viewing api /
     build", from the daemon's live streams, named here), whether it may
-    type, and a direct Revoke asking twice (no ⋯ menu).
+    type, and a direct Revoke asking twice (no ⋯ menu). Before Revoke, a
+    ghost that changes the typing grant in place, with no re-pairing: Make
+    view-only applies at once; Allow typing asks once in the row (Cancel,
+    then Allow typing as a neutral secondary, never the red), with one line
+    under the row saying what it allows: approving requests and typing into
+    panes on this computer.
   - **Message links** — LanLink peers, messages only (a revoked one says
     Revoked in its meta). Paired from Connect a PC's LAN tab.
   - Status words are three: Connected, Disconnected (with "Disconnected 3h
@@ -1624,6 +1649,7 @@ leaves the page.
 - Opens on a plain **"Workspaces"** title with a muted count and icon
   buttons (new workspace, filter). 264px by default, resizable 220–400px from
   the inner edge.
+- **`+` menu, Browse WSL folder… (proposed):** a plain label + description row under Browse Folder, shown only on Windows with at least one WSL distro; one distro opens the folder dialog on its share; several give the row a trailing `›` and open a flyout submenu of the distros as plain rows (the sidebar's "Open with" submenu pattern: hover, click or ArrowRight/Enter opens it, Escape folds it before the menu). No new colour.
 - **Workspace filter:** the filter button (or Ctrl/Cmd+F) opens a popover —
   the text search on top, then checks for **bookmarks** (Bookmarked only),
   **status** (Needs you, Running,
@@ -2573,6 +2599,8 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-11-03 | The whole file in the company review (insight 170 follow-up): a quiet **Show the whole file** below the review's groups reads wmux.json again and shows it whole, only while it holds the bytes the review opened on; each character a reader would not see is shown as its code point where it sits | Approve trusts every byte of the file, and the groups list only what wmux reads from it: a key it does not know or an entry it dropped was approved unseen. Showing the file itself covers whatever wmux does not parse; marking the invisible characters keeps the view the bytes the grant binds, and a list of dropped entries would need the parser to report each one |
 | 2026-11-03 | Owner-approved (agent marker mockup): agent identity colours, the second exception to "colour carries state only". While agents drive other apps, each one's halo, name pill and pointer on screen wear its own colour from a ten-fill palette (slot 0 the attention orange, red left out, dark ink ≥ 4.5:1 on every fill), and that pane carries the same colour as an 8px filled dot before its tab title and before its workspace's name on the sidebar row (at most three, then "+N"), once it has used computer use. The palette is used for nothing else | With several agents on one desktop, a marker on screen has to say which pane it belongs to at a glance; a name pill alone needs reading. One colour per agent, kept until wmux quits, makes the marker and the pane one thing. Red stays the error colour, and confining the palette to markers and their dots keeps every other colour a state |
 | 2026-11-04 | Owner-approved: Hangul renders in a bundled Pretendard subset after each look's Latin face | Windows' Malgun Gothic fallback was taller and had no 500 weight |
+| 2026-11-07 | Owner decision: the Fleet list can be grouped by device (Group by Status \| Device, list only, saved with the session; Status stays the default). Needs you stays one section on top with each row naming its device; the rest sits under a sentence-case device head (this computer first, then the PC rail's order) with its running rows and its own Finished and Idle folds; a disconnected PC keeps a row-less head with how long ago it answered. No map, lines, per-device colours or boxes | With agents on several PCs, the status list mixed them, so "what is running on the office PC" meant scanning every row's host glyph. The one Needs you section keeps decisions in one place and its count single |
+| 2026-11-18 | Owner-approved (phone-only pairing mockup, a–c): pairing a phone is one modal, the Pair a phone dialog — readiness, name, View only / Can type with its shared-access notice in place, then the QR, then connected — mounted once and opened from the Remote page header, the Phones heading, the empty state and the sidebar's Remote menu. The Remote popover becomes Other computers plus two buttons, Pair a phone… and ⚙ Phone access settings… (settings only, no pairing; the Remote page's line button is the same settings view). The four-step wizard, the popover's phone card and its Connect another computer card are retired; a computer is connected from Connect a PC… | Pairing lived in three places (the popover's phone card, its computer card and a four-step wizard inside a 288px popover), and the popover mixed one-time pairing with standing settings. One focused dialog per pairing and one settings surface make each question one place |
 
 ### Desktop conversation view
 
@@ -2753,7 +2781,8 @@ no empty reply row or reserved gap under the latest prompt.
 ### Sidebar shortcuts and Agent dock refinement (2026-09-21)
 
 Sidebar shortcuts appear in order: Search, Remote, Fleet. Search opens the
-command palette. Remote opens the existing browser/phone pairing controls;
+command palette. Remote opens a menu: Other computers, then **Pair a
+phone…** (the app's one pairing dialog) and **⚙ Phone access settings…**;
 Agent, Git and Channels remain in the tools panel. The compact sidebar
 uses the same destinations with accessible names.
 
@@ -2859,6 +2888,56 @@ differently in the two places, and in the order `fleet_triage` returns.
   non-empty column at the nearest row; Enter, Space, the row verbs, filters,
   search and the detail area are the list's. The Tickets filter stays a list.
   The list remains the default.
+- **Group by device (list only, owner decision 2026-11-07):** a Group by
+  Status | Device switch in the header, shown only with the list (not on the
+  Tickets filter) and saved with the session; Status is the default and
+  draws the sections above. The board always groups by status. By device,
+  Needs you stays one section on top across every device, each row naming
+  its device in its context line (This computer, or the PC's name, in place
+  of the "@host" glyph), so the one count is unchanged (chip, head and rail
+  badge); Final reports and Ready to review stay where they are. Every other
+  row goes under its device: This computer first, then the paired PCs in the
+  PC rail's order, under the rail's name.
+  - **Device head:** sentence-case 12px text. An 8px dot before the name,
+    `--text-muted`: filled while the PC is reached, a hollow ring (a border,
+    so it survives forced-colors) once it is not; a device is not a status,
+    so never a status colour, and no per-device colour. Then the name in
+    `--text-main`, its state and running count muted (`Online · Running 2`),
+    the state in the PC rail's words for that PC: `Online` only while the rail
+    draws it online, `Not a secure connection` (hollow ring) while it is
+    paired over plain http, and no state at all while the rail has not said
+    (not on the rail, not answered yet, one missed poll),
+    and on the right its folds as plain text of the same weight open or
+    closed, `Finished 1 folded ›` and `Idle 2 folded ›` (`Idle 2` while
+    open, the chevron turned): no second row repeats a count. A fold has no
+    fill, border or radius of its own; hover, selection and focus light the
+    head as a row (the fold row's fill and 2px ring), so there is one
+    boundary. Each fold is an option in the keyboard order, with its
+    `aria-expanded`; open folds list their rows after the running rows.
+    Folds are per device and kept while the app runs, like the status
+    list's; a search or a status filter shows the rows and the count as plain
+    text. A row under its own device's head drops the "@host" glyph.
+  - **A PC out of reach** (the rail cannot reach it): its rows leave the page,
+    from both groupings and the chips, since Open on them could not reach it;
+    a Needs you row from it does not go on top. By device its head reads
+    `Disconnected · 3h ago` (the age only once this run has seen it answer),
+    then one muted line: `Last seen 3 panes, 1 needed you. They show here
+    again when it reconnects.` (every pane it had, agent or plain shell; the
+    needed-you count is agents only). It turns Disconnected on the tick the
+    "Lost the connection" notice fires, never on one missed poll, and the rows
+    are back as soon as it answers. A PC whose attachments here are all stale
+    gets the same head, counting its last snapshot, unless it answered without
+    them (a workspace gone from it, or a refusal) and the rail does not call it
+    down. fleet_triage and the rail badge drop the same rows.
+  - **A PC that needs pairing** (it refused this computer's credential): the
+    same row-less head, hollow ring and muted text, no status colour,
+    `Needs pairing · 3h ago`, then one muted line: `It can't be reached until
+    it's paired again on the Remote page.`, where Remote page is a quiet
+    underlined text link to that page (an option in the keyboard order).
+  - A search or a filter narrows each device and drops row-less heads; with no
+    agents at all the page stays the empty call to action. A device with
+    nothing to draw has no head. Keyboard order is the drawn order. No map,
+    connecting lines, per-device colours or boxes around a device.
 - **Tickets:** Moa's delegated work, one row per job — a hand-off waiting for
   its click, or a WorkLink with its A2A task. A chat message is never a
   ticket. States: Queued, Working, Needs your decision (yellow), Done

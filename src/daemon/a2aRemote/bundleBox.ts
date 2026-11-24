@@ -85,6 +85,11 @@ export interface BundleBoxDeps {
   startedInApp?: (hostId: HostId, spawnId: string) => boolean;
   outbox: Pick<BundleOutbox, 'offer' | 'withdraw' | 'send'>;
   enqueue: (hostId: HostId, envelope: A2aRemoteEnvelope) => void;
+  /**
+   * The asking PC imported a bundle of that start made here at `head` into one of its repositories (its
+   * `imported` ask): `wmux daemon headless prune` counts that work as kept elsewhere.
+   */
+  taken?: (hostId: HostId, spawnId: string, head: string) => void;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
   /** The limits of the moment (settings), over BUNDLE_BOX_DEFAULTS. */
   limits?: () => Partial<BundleBoxLimits>;
@@ -116,6 +121,8 @@ export class BundleBox {
    * delivered again is answered the same way, or not at all, and is never worked on twice.
    */
   private readonly asked = new Map<string, A2aBundleMadeV1 | null>();
+  /** The heads a bundle of each start (`hostId:spawnId`) was made at in this run. */
+  private readonly madeHeads = new Map<string, Set<string>>();
   /** Bumped when a PC is removed: a make for it that was under way then keeps nothing. */
   private readonly forgotten = new Map<HostId, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -192,6 +199,7 @@ export class BundleBox {
     }
     if (ask.op === 'make') void this.make(hostId, ask);
     else if (ask.op === 'send') void this.send(hostId, ask);
+    else if (ask.op === 'imported') this.imported(hostId, ask.spawnId, ask.head);
     else this.done(hostId, ask.bundleId);
     return OK;
   }
@@ -274,6 +282,8 @@ export class BundleBox {
         return refuse('unavailable', 'the offer was not taken');
       }
       own.set(bundleId, { spawnId: ask.spawnId, head: made.head, file, manifest, expiresAt: this.now() + limits.ttlMs });
+      const heads = this.madeHeads.get(`${hostId}:${ask.spawnId}`) ?? new Set<string>();
+      this.madeHeads.set(`${hostId}:${ask.spawnId}`, heads.add(made.head));
       this.offers.set(hostId, own);
       this.answer(hostId, { v: 1, askId: ask.askId, op: 'made', manifest });
     } catch (err) {
@@ -294,6 +304,19 @@ export class BundleBox {
     const reason: A2aBundleRefusal = sent.kind === 'again' ? 'again' : sent.kind === 'busy' ? 'busy' : 'unavailable';
     if (sent.kind !== 'busy' && sent.kind !== 'again') this.deps.log('info', `[a2a-remote] bundle ${ask.bundleId} for ${hostId} not sent: ${sent.kind}${'why' in sent ? ` (${sent.why})` : ''}`);
     this.answer(hostId, { v: 1, askId: ask.askId, op: 'refused', reason });
+  }
+
+  /**
+   * The asking PC imported its bundle of that start: recorded only for a head a bundle of it was made at in this
+   * run (a word about any other commit, or one from before a restart, is not taken).
+   */
+  private imported(hostId: HostId, spawnId: string, head: string): void {
+    if (!this.madeHeads.get(`${hostId}:${spawnId}`)?.has(head) || !this.deps.startOf(hostId, spawnId)) return;
+    try {
+      this.deps.taken?.(hostId, spawnId, head);
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] bundle of ${spawnId} for ${hostId}: imported there, not recorded: ${errMsg(err)}`);
+    }
   }
 
   /** The asking PC took it: the offer ends and the file goes. */
@@ -323,6 +346,7 @@ export class BundleBox {
   forgetHost(hostId: HostId): void {
     for (const bundleId of [...(this.offers.get(hostId)?.keys() ?? [])]) this.drop(hostId, bundleId);
     this.asks.delete(hostId);
+    for (const k of [...this.madeHeads.keys()]) if (k.startsWith(`${hostId}:`)) this.madeHeads.delete(k);
     this.forgotten.set(hostId, (this.forgotten.get(hostId) ?? 0) + 1);
   }
 

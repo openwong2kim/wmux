@@ -1,21 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { TerminalCoreSettings, TerminalEngine } from '../../../shared/terminalCoreSettings';
+import type { TerminalCoreSettings } from '../../../shared/terminalCoreSettings';
 import { useT } from '../../hooks/useT';
-import Select from '../ui/Select';
 import Badge from '../ui/Badge';
 import Button from '../ui/Button';
 import { SettingNote, SettingRow } from './SettingsLayout';
 
+/** What the terminal host runs. Read-only: Rust is the only engine. A host
+ *  whose Rust module does not load runs no terminals, and says why here. */
 export function TerminalEngineSetting() {
   const t = useT();
   const [settings, setSettings] = useState<TerminalCoreSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const generation = useRef(0);
-  const saving = useRef(false);
-  const refreshAfterSave = useRef(false);
   const refresh = useCallback(async () => {
-    if (saving.current) { refreshAfterSave.current = true; return; }
     const request = ++generation.current;
     setBusy(true);
     try {
@@ -32,45 +30,15 @@ export function TerminalEngineSetting() {
     const off = window.electronAPI.daemon?.onConnected?.(() => void refresh());
     return () => { generation.current++; off?.(); };
   }, [refresh]);
-  const save = async (engine: TerminalEngine) => {
-    if (saving.current) return;
-    saving.current = true;
-    const request = ++generation.current;
-    setBusy(true);
-    try {
-      const result = await window.electronAPI.settings.setTerminalCore(engine);
-      if (request === generation.current) { setSettings(result); setFailed(false); }
-    } catch {
-      if (request === generation.current) setFailed(true);
-    } finally {
-      saving.current = false;
-      if (request === generation.current) {
-        setBusy(false);
-        if (refreshAfterSave.current) { refreshAfterSave.current = false; void refresh(); }
-      }
-    }
-  };
+  const runtime = settings?.runtime ?? null;
+  // An older daemon reports no `available`; it runs whatever it reports.
+  const missing = runtime?.available === false;
   return <>
     <SettingRow id="terminal-engine" label={t('settings.terminalEngine')} description={t('settings.terminalEngineDesc')}>
-      <Select value={settings?.selected ?? 'node'} disabled={!settings || busy || settings.environmentOverride}
-        onChange={(event) => void save(event.target.value as TerminalEngine)}>
-        <option value="node">Node</option>
-        <option value="rust" disabled={!settings?.rustAvailable}>
-          {t(['win32', 'darwin', 'linux'].includes(window.electronAPI?.platform ?? '') ? 'settings.terminalEngineRustDefault' : 'settings.terminalEngineRust')}
-        </option>
-      </Select>
+      <Badge>{runtime ? (runtime.effective === 'rust' ? 'Rust' : 'Node') : t('settings.terminalEngineUnknown')}</Badge>
     </SettingRow>
-    <SettingNote role="status" aria-live="polite">
-      {t('settings.terminalEngineCurrent')}{' '}
-      <Badge>{settings?.runtime ? (settings.runtime.effective === 'rust' ? 'Rust' : 'Node') : t('settings.terminalEngineUnknown')}</Badge>
-    </SettingNote>
-    {settings?.environmentOverride && <SettingNote>{t('settings.terminalEngineOverride')}</SettingNote>}
-    {settings && !settings.rustAvailable && <SettingNote>{t('settings.terminalEngineUnavailable')}</SettingNote>}
-    {settings?.runtime?.requested === 'rust' && settings.runtime.effective === 'node' &&
-      <SettingNote tone="warning">{t('settings.terminalEngineFallback')}</SettingNote>}
-    {settings?.restartRequired && !settings.environmentOverride && <SettingNote>
-      {t(settings.host === 'daemon' ? 'settings.terminalEngineRestartDaemon' : 'settings.terminalEngineRestartApp')}
-      {settings.host === 'daemon' && <><br /><code className="ui-code">{settings.stopCommand}</code></>}
+    {missing && <SettingNote tone="danger" role="alert">
+      {t('settings.terminalEngineMissing')}{runtime?.reason ? <><br /><code className="ui-code">{runtime.reason}</code></> : null}
     </SettingNote>}
     {failed && <SettingNote tone="danger" role="alert">{t('settings.terminalEngineError')}{' '}
       <Button variant="secondary" disabled={busy} onClick={() => void refresh()}>{t('settings.terminalEngineRetry')}</Button>

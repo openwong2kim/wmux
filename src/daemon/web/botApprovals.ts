@@ -43,7 +43,7 @@ export type BotApprovalsCaller =
   | { kind: 'operator' }
   | { kind: 'device'; deviceId: string; mayInput: boolean; explicitInputGrant: boolean };
 
-export const GRANT_HINT = 'Grant it from "Paired devices" on the machine running wmux web.';
+export const GRANT_HINT = 'Allow typing for this device on the Remote page, under Phones, on the machine running wmux web.';
 
 /** Why this caller may not decide, or null when it may. `readOnly`: the
  *  server runs without --allow-input. */

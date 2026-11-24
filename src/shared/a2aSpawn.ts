@@ -494,6 +494,12 @@ export interface A2aSpawnAskInput {
   /** 1–72; default 24. */
   expiresInHours?: number;
   from: A2aSpawnFromV1;
+  /**
+   * The terminal in `from`'s pane that asked (main verified it as the
+   * caller's own pty): the replies go to it, as to any task's anchor. Never
+   * sent.
+   */
+  fromPtyId?: string;
   /** Counts toward the per-pane hourly limit: the pane that gets the replies. */
   callerKey: string;
   /**

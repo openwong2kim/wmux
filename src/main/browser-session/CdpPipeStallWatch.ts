@@ -35,7 +35,8 @@ export interface WatchedClient {
   readonly ping?: () => void;
   /**
    * What is still queued for the client, and how much has left for it in all
-   * (bytes); absent for clients without a socket.
+   * (bytes), counted as each part of a write leaves rather than when the
+   * whole write completes; absent for clients without a socket.
    */
   readonly drain?: () => { buffered: number; flushed: number };
 }

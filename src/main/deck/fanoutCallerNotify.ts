@@ -34,7 +34,9 @@ import { isTaskGateReport } from '../factory/taskGate';
 import { STOPPED_BY_OWNER } from '../factory/factoryStop';
 import { WakeQueue, getWakeQueue } from '../factory/wakeQueue';
 import { WORKER_ENDED } from '../factory/workerRunEnds';
+import { WORKER_IDLE_SUMMARY } from './fanoutWorkerWatch';
 import { getTaskLedger } from './taskLedgerHost';
+import { onRemoteWaitInPlace, remoteReplyWaitText } from '../worktask/remoteFanout';
 
 export interface FanoutCallerEvent {
   ownerWorkspaceId: string;
@@ -128,13 +130,33 @@ export function installFanoutCallerLedgerNotify(
   notify: (ownerWorkspaceId: string, taskWorkspaceId: string, taskId: string, kind: string, seq: number) => void,
   instance?: TaskLedger,
 ): () => void {
-  return (instance ?? getTaskLedger()).onTransition((t) => {
+  // A row of another PC's task that already waited and now waits on
+  // something someone must act on: it stays input_required, so no transition
+  // below sees it.
+  const offQuestion = onRemoteWaitInPlace((entry) => {
+    try {
+      if (hasBrain(entry.ownerWorkspaceId)) return;
+      notify(entry.ownerWorkspaceId, entry.taskWorkspaceId, entry.id, 'ledger.input_required', entry.rev);
+    } catch {
+      // best effort
+    }
+  });
+  const offTransition = (instance ?? getTaskLedger()).onTransition((t) => {
     // A worker's own failed / review_requested, or wmux itself moving the row
     // to input_required: the worker's agent never started (#1919) or sits on a
     // first-run screen. Either way nobody is working the task until someone
     // looks, and a worker that never started will never send a Stop.
     const byWorker = t.by.kind === 'worker' && (t.to === 'failed' || t.to === 'review_requested');
-    const bySystem = t.by.kind === 'system' && t.to === 'input_required';
+    // Only when someone has to act. A task on another PC moves here at every
+    // turn end of its agent, and that turn's reply already reached the
+    // caller's pane: that one is not told (a question on that PC's screen,
+    // or an agent that stopped with no reply, is). The idle flag repeats the
+    // "updated" the caller got at the worker's last stop.
+    const r = t.entry.remote;
+    const bySystem = t.by.kind === 'system' && t.to === 'input_required'
+      && (isRemoteTask(t.entry)
+        ? r?.waiting?.on === 'question' || !r?.a2aTaskId || t.entry.summary !== remoteReplyWaitText(r)
+        : t.entry.summary !== WORKER_IDLE_SUMMARY);
     // A task another PC runs has no worker here: wmux moves its row as that
     // PC reports. Its failure is told; its report is not (it already reached
     // the caller's pane as the A2A reply), and neither is a request refused
@@ -148,6 +170,10 @@ export function installFanoutCallerLedgerNotify(
       // best effort
     }
   });
+  return () => {
+    offQuestion();
+    offTransition();
+  };
 }
 
 /** What a bot-origin task transition wakes, by the status it moved to. */

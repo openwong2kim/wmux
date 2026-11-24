@@ -217,6 +217,25 @@ describe('RemoteA2aBridge', () => {
     expect(await bridge.retryHeld(id(7))).toMatchObject({ ok: false, error: 'not-held' });
   });
 
+  it('a delivery with a submit proof passes it to the daemon; a malformed one or another pty\'s is left out', async () => {
+    const proof = { ptyId: 'pty-p', incarnation: 'inc-1', keyEpoch: 'ep-1', submitRevision: 7, promptHash: 'a'.repeat(64) };
+    daemon.tasks.set(id(30), remoteTask(30));
+    daemon.tasks.set(id(31), remoteTask(31));
+    daemon.tasks.set(id(32), remoteTask(32));
+    answer = (p) => (p.presetTaskId === id(30)
+      ? { ok: true, delivered: true, ptyId: 'pty-p', submit: proof }
+      : p.presetTaskId === id(31)
+        ? { ok: true, delivered: true, ptyId: 'pty-p', submit: { ...proof, promptHash: 'not-a-hash' } }
+        : { ok: true, delivered: true, ptyId: 'pty-q', submit: proof });
+    bridge.start();
+    await settle();
+    expect(daemon.marks).toEqual([
+      { taskId: id(30), delivered: true, ptyId: 'pty-p', submit: proof },
+      { taskId: id(31), delivered: true, ptyId: 'pty-p' },
+      { taskId: id(32), delivered: true, ptyId: 'pty-q' },
+    ]);
+  });
+
   it('a transient miss backs off', async () => {
     daemon.tasks.set(id(8), remoteTask(8));
     answer = () => ({ ok: true, delivered: false, reason: 'approval_pending' });
@@ -258,6 +277,27 @@ describe('RemoteA2aBridge', () => {
     ]);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(renderer).toHaveBeenCalledTimes(3);
+  });
+
+  it('a state item says when its end reaches the pane another way (an open fan-out row); a reply never does', async () => {
+    bridge.stop();
+    const t = remoteTask(12);
+    (t.metadata.remote as A2aRemoteTaskState).inbox = [
+      { messageId: 'r1', kind: 'reply', delivered: false },
+      { messageId: 's1', kind: 'state', delivered: false },
+    ];
+    daemon.tasks.set(t.id, t);
+    bridge = new RemoteA2aBridge({
+      daemonRpc: (m, p) => daemon.rpc(m, p),
+      sendToRenderer: (m, p) => renderer(m, p),
+      onDaemonEvent: () => () => undefined,
+      endToldElsewhere: (taskId) => taskId === t.id,
+    });
+    bridge.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(5_000);
+    const notified = renderer.mock.calls.filter(([m]) => m === 'a2a.remote.notify').map(([, p]) => [p.messageId, p.endToldElsewhere]);
+    expect(notified).toEqual([['s1', true], ['r1', undefined]]);
   });
 
   it('a held reply is retried only through retryHeld', async () => {

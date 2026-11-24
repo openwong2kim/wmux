@@ -309,7 +309,7 @@ describe('BundleBox', () => {
     });
   }
 
-  type AskBody = { op: 'make'; spawnId: string; origin: string } | { op: 'send' | 'done'; bundleId: string };
+  type AskBody = { op: 'make'; spawnId: string; origin: string } | { op: 'send' | 'done'; bundleId: string } | { op: 'imported'; spawnId: string; head: string };
   function ask(b: BundleBox, hostId: HostId, a: AskBody, askId = askIdOf()): string {
     const env: A2aRemoteEnvelope = {
       protocol: A2A_REMOTE_PROTOCOL, linkId: askId, linkVersion: 0, messageId: `m-${crypto.randomUUID()}`, kind: 'link',
@@ -327,7 +327,8 @@ describe('BundleBox', () => {
     const rec = start();
     starts.push(rec);
     commit(rec.worktreePath!, 'work.txt', 'done\n');
-    const b = box();
+    const taken: Array<[string, string, string]> = [];
+    const b = box({ taken: (hostId, spawnId, head) => void taken.push([hostId, spawnId, head]) });
     const first = await answerTo(ask(b, ASKER, { op: 'make', spawnId: rec.spawnId, origin: ORIGIN }));
     expect(first).toMatchObject({ op: 'made' });
     if (first.op !== 'made') return;
@@ -340,6 +341,8 @@ describe('BundleBox', () => {
     ask(b, ASKER, { op: 'done', bundleId: first.manifest.bundleId });
     await vi.waitFor(() => expect(fs.existsSync(file)).toBe(false), { timeout: 10_000 });
     expect(b.standing(ASKER)).toEqual([]);
+    // Never fetched (a `done` for a bundle the asking PC refused or dropped): nothing is recorded as fetched back.
+    expect(taken).toEqual([]);
   });
 
   it('only the asking PC\'s own starts: another PC\'s spawn and an unknown one are `unknown-spawn`; one started in the app is `not-supported`', async () => {
@@ -635,10 +638,20 @@ describe('BundleBox', () => {
     }
 
     it('fetched by the asking PC (it joined the box): staged whole, and it reads back as the head', async () => {
-      const b = box();
+      const taken: Array<[string, string, string]> = [];
+      const b = box({ taken: (hostId, spawnId, h) => void taken.push([hostId, spawnId, h]) });
       const { rec, head, manifest } = await made(b);
       const intake = new BundleIntake({ a2aDir: askerA2a(), enabled: () => true, fetchFrom: () => getAs(ASKER), log: () => undefined });
       expect(await intake.pull(BOX, manifest)).toMatchObject({ kind: 'staged' });
+      // Staged there is not imported there: its `done` records nothing.
+      ask(b, ASKER, { op: 'done', bundleId: manifest.bundleId });
+      await vi.waitFor(() => expect(b.standing(ASKER)).toEqual([]), { timeout: 5_000 });
+      expect(taken).toEqual([]);
+      // A commit no bundle of it was made at, or another PC's word, is not taken; the import of that head is.
+      ask(b, ASKER, { op: 'imported', spawnId: rec.spawnId, head: 'f'.repeat(40) });
+      ask(b, OTHER, { op: 'imported', spawnId: rec.spawnId, head });
+      ask(b, ASKER, { op: 'imported', spawnId: rec.spawnId, head });
+      expect(taken).toEqual([[ASKER, rec.spawnId, head]]);
       const staged = bundleStagedFile(askerA2a(), BOX, manifest);
       expect(readBack(staged, rec.treeId!).head).toBe(head);
       // Another PC cannot fetch it.

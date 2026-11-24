@@ -37,6 +37,7 @@ function ToastItem({
   target,
   persist,
   durationMs,
+  code,
 }: {
   id: string;
   message: string;
@@ -45,6 +46,7 @@ function ToastItem({
   target?: Toast['target'];
   persist?: boolean;
   durationMs?: number;
+  code?: string;
 }) {
   const t = useT();
   const dismissToast = useStore((s) => s.dismissToast);
@@ -66,6 +68,29 @@ function ToastItem({
         dismissToast(id);
       }
     : undefined;
+
+  // F5 — optional action button (fan-out "diff 열기"). Runs then dismisses.
+  const actionButton = action && (
+    <button
+      type="button"
+      onClick={() => {
+        action.onClick();
+        dismissToast(id);
+      }}
+      className="flex-shrink-0 px-2 py-0.5 rounded font-semibold transition-colors"
+      style={{
+        backgroundColor: 'var(--accent)',
+        color: 'var(--bg-base)',
+        boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 22%, transparent), 0 1px 2px rgba(0, 0, 0, 0.3)',
+      }}
+    >
+      {action.label}
+    </button>
+  );
+
+  // A toast with a code block puts its action under the block, so the message
+  // and the code take the toast's full width instead of sharing a row with it.
+  const actionBelowCode = Boolean(code) && !jumpToTarget;
 
   return (
     <div
@@ -93,26 +118,15 @@ function ToastItem({
           {message}
         </button>
       ) : (
-        <span className="flex-1 leading-snug">{message}</span>
+        <span className="flex-1 leading-snug">
+          {message}
+          {code && (
+            <code data-toast-code className="ui-code block mt-1" style={{ overflowWrap: 'anywhere' }}>{code}</code>
+          )}
+          {actionBelowCode && actionButton && <span className="flex mt-2">{actionButton}</span>}
+        </span>
       )}
-      {/* F5 — optional action button (fan-out "diff 열기"). Runs then dismisses. */}
-      {action && (
-        <button
-          type="button"
-          onClick={() => {
-            action.onClick();
-            dismissToast(id);
-          }}
-          className="flex-shrink-0 px-2 py-0.5 rounded font-semibold transition-colors"
-          style={{
-            backgroundColor: 'var(--accent)',
-            color: 'var(--bg-base)',
-            boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 22%, transparent), 0 1px 2px rgba(0, 0, 0, 0.3)',
-          }}
-        >
-          {action.label}
-        </button>
-      )}
+      {!actionBelowCode && actionButton}
       <button
         type="button"
         aria-label={t('toast.dismiss')}
@@ -177,6 +191,7 @@ export default function ToastContainer() {
             target={toast.target}
             persist={toast.persist}
             durationMs={toast.durationMs}
+            code={toast.code}
           />
         </div>
       ))}

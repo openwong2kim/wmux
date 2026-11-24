@@ -7,7 +7,7 @@
 
 import type { IdentityClaimsSummary } from './identityClaims';
 import type { BrokerLimits } from './brokerLimits';
-import type { BrokerFlag } from './mcpBroker';
+import type { BrokerFlag, BrokerSetting } from './mcpBroker';
 
 /** A tool name as a report may carry it: never arguments or paths. */
 export const BROKER_TOOL_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -77,9 +77,11 @@ export const MCP_SESSION_ID_RE = /^[0-9a-f]{32}$/;
  * Why no broker runs: the app stopped it (quit, update), this build has no
  * broker script, another instance's broker serves the pipe, a restart is
  * scheduled after an exit, it failed too often and is off until wmux
- * restarts, or it was never started.
+ * restarts, its socket path holds something that is not a socket, its peer
+ * self-check never passed (so it would refuse every session), or it was never
+ * started.
  */
-export type BrokerDownReason = 'stopped' | 'script-missing' | 'standing-down' | 'restarting' | 'crash-loop' | 'not-started';
+export type BrokerDownReason = 'stopped' | 'script-missing' | 'standing-down' | 'restarting' | 'crash-loop' | 'path-occupied' | 'peer-unavailable' | 'not-started';
 
 export interface BrokerStatus {
   running: boolean;
@@ -102,8 +104,14 @@ export interface BrokerStatus {
 
 /** `mcp.sessions.summary` result. */
 export interface McpSessionsSummary {
-  /** `flag`: WMUX_MCP_BROKER as the app read it (shared/mcpBroker.ts); absent from older apps. */
-  broker: BrokerStatus & { enabled: boolean; flag?: BrokerFlag };
+  /**
+   * `flag`: WMUX_MCP_BROKER as the app read it (shared/mcpBroker.ts); absent
+   * from older apps. `flagValue`: that value as set (trimmed) when it decides,
+   * so doctor names `false` rather than `0`; absent from older apps.
+   * `setting`: the Settings choice it read at start; absent from apps that
+   * have none.
+   */
+  broker: BrokerStatus & { enabled: boolean; flag?: BrokerFlag; flagValue?: string; setting?: BrokerSetting };
   bundle: { recent: number; capped: boolean; ttlS: number };
   /** How main takes pid claims (shared/identityClaims.ts); absent from older apps. */
   identity?: IdentityClaimsSummary;

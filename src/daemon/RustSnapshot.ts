@@ -3,9 +3,10 @@ import { terminalCoreSelection } from '../shared/terminalCoreSettings';
  * gates; unsupported requests retain the reference path. */
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { nativeCorePath, type NativeFrozenRing } from '../shared/nativeTerminalCore';
+import { describeNativeError, isNativeAllocFailure, nativeCorePath, type NativeFrozenRing } from '../shared/nativeTerminalCore';
 import type { SnapshotRequest, SnapshotOutcome, TextSnapshotOutcome } from './HeadlessSnapshot';
 import { incompleteUtf8SuffixLength } from './util/ansiStreamScan';
+import { nativeScrollbackCap } from './nativeSnapshotLimits';
 
 interface NativeTerminal {
   feed(bytes: Uint8Array): void;
@@ -28,6 +29,9 @@ interface NativeModule {
   nativeCoreAbiVersion(): number;
   nativeCoreCapabilities?(): string[];
   NativeTerminal: new (cols: number, rows: number, scrollback: number) => NativeTerminal;
+  /** Fills this thread's parser pool (one vte parser, its 2 MiB sync buffer).
+   *  Absent from a module built before it. */
+  warmTerminalParsers?(): void;
 }
 let cached: { file: string; module: NativeModule } | undefined;
 const requireNative = createRequire(path.join(process.cwd(), 'wmux-native-loader.cjs'));
@@ -44,17 +48,15 @@ function load(): NativeModule {
   return cached.module;
 }
 
-/** NativeTerminal refuses a grid above four million cells, history included. */
-const NATIVE_CELL_LIMIT = 4_000_000;
 /**
- * The most history rows the native grid can hold at every size the request
- * replays. A resize changes rows first, at the old width (NativeTerminal
- * resize), so each step's old width with its new rows counts too.
+ * Takes the snapshot parser's one infallible allocation (vte's 2 MiB sync
+ * buffer, reused by every later snapshot on this thread) at daemon start,
+ * while memory is not yet short (#3440). A module that cannot load, or one
+ * built before the call, is left to the snapshot path, which reports it.
  */
-export function ansiScrollbackCap(req: Pick<SnapshotRequest, 'cols' | 'rows' | 'geometry'>): number {
-  const replayed = [...(req.geometry ? [req.geometry.start, ...req.geometry.changes] : []), req];
-  const steps = replayed.slice(1).map((next, i) => ({ cols: replayed[i].cols, rows: next.rows }));
-  return Math.min(...[...replayed, ...steps].map(({ cols, rows }) => Math.floor(NATIVE_CELL_LIMIT / Math.max(1, cols)) - rows));
+export function warmRustSnapshot(): void {
+  try { load().warmTerminalParsers?.(); }
+  catch { /* the first snapshot reports a load error itself */ }
 }
 
 export function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi'): Promise<SnapshotOutcome>;
@@ -69,7 +71,7 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
     // An attach asks for 100k rows of history. The native grid allocates rows
     // only as output fills them, so cap it at the grid's cell limit for every
     // recorded size; the snapshot refuses a history that reached the cap.
-    const scrollback = kind === 'ansi' ? Math.min(requested, ansiScrollbackCap(req)) : requested;
+    const scrollback = kind === 'ansi' ? Math.min(requested, nativeScrollbackCap(req)) : requested;
     const native = load();
     if (kind === 'ansi' && !native.nativeCoreCapabilities?.().includes('ansi-v3')) {
       throw new Error('Native ANSI capability missing; rebuild the native-core module');
@@ -163,9 +165,10 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
     // An incomplete UTF-8 character at the end goes out raw, as on xterm.
     return { ok: true, payload: Buffer.concat([core, carry]), bytesIn, durationMs: performance.now() - started };
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = describeNativeError(err);
     let families: string[] | undefined;
     try { families = kind === 'ansi' ? term?.refusalFamilies?.() : undefined; } catch { /* disposed or older module */ }
-    return { ok: false, reason: 'error', detail, ...(families?.length ? { families } : {}) };
+    // A refused allocation is told apart by its code, not by the text of `detail` (#3440).
+    return { ok: false, reason: 'error', detail, ...(families?.length ? { families } : {}), ...(isNativeAllocFailure(err) ? { allocFailed: true as const } : {}) };
   } finally { term?.dispose(); }
 }

@@ -82,6 +82,8 @@ export async function gatedSubmitToPty(
     ...(options.senderMentions && options.senderMentions.length > 0 ? { senderMentions: options.senderMentions } : {}),
     ...(options.pointerTaskId ? { pointerTaskId: options.pointerTaskId } : {}),
   };
+  // A remote A2A delivery asks main what it submitted (GatedSubmitSuccess `submit`).
+  const proof: GatedSubmitOptions = options.submitProof ? { submitProof: true } : {};
   try {
     // `newTask` only when set, so every other delivery calls exactly as before.
     const result = options.newTask
@@ -92,9 +94,10 @@ export async function gatedSubmitToPty(
           ...(options.pane ? { pane: options.pane } : {}),
           ...quiet,
           ...senders,
+          ...proof,
         })
-      : options.waitQuiet || Object.keys(senders).length > 0
-        ? await submit(ptyId, text, options.agent ?? null, { ...quiet, ...senders })
+      : options.waitQuiet || Object.keys(senders).length > 0 || options.submitProof
+        ? await submit(ptyId, text, options.agent ?? null, { ...quiet, ...senders, ...proof })
         : await submit(ptyId, text, options.agent ?? null);
     return result && typeof result === 'object' && 'ok' in result
       ? result

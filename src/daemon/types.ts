@@ -94,6 +94,14 @@ export interface DaemonSession {
    */
   recoveryPendingSince?: string;
   /**
+   * Why this suspended session waits without a recovery attempt. Only
+   * 'terminal-core-missing': the Rust terminal module did not load on the boot
+   * that held it, so nothing could start. It starts no retention clock and no
+   * TTL prunes it (StateWriter); the next boot with the module clears it and
+   * recovers the session with its saved scrollback.
+   */
+  holdReason?: 'terminal-core-missing';
+  /**
    * #2398 — when a pane last held this suspended session without promoting it
    * (its pane hidden). The suspended TTL counts it as use (heldSessions.ts).
    */
@@ -322,8 +330,10 @@ export interface DaemonConfig {
     /**
      * Keep the older part of each new session's ring buffer compressed in
      * memory (closed 256 KB chunks; the newest output stays uncompressed).
-     * Reads return the same bytes. Node terminal core only; the rust core
-     * ignores it. Off by default. Backfilled as `false` when absent.
+     * Reads return the same bytes, on either terminal core. `true` turns it
+     * on and `false` off; absent leaves it to Settings → Labs (labs.json),
+     * where it is on unless turned off. The `false` older daemons wrote into
+     * a new config.json is dropped once (RING_COMPRESSION_DEFAULT_MIGRATION).
      */
     ringCompression?: boolean;
   };

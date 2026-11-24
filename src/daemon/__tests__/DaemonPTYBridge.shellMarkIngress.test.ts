@@ -3,14 +3,16 @@
 // replay and the prompt log all read the same lowercase kind for them, and
 // the shell's own marks are unchanged.
 //
-// Runs on both engines: under vitest.rust-engine.config.ts the ring is the
-// native ring and the native harness feeds real decoder chunks.
+// With the built terminal core named (WMUX_TERMINAL_CORE_MODULE, as on CI) the
+// ring is the native ring and the native harness feeds real decoder chunks;
+// without it both lanes run on stand-ins.
+import fs from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { IPty } from 'node-pty';
 import { DaemonPTYBridge } from '../DaemonPTYBridge';
 import { RingBuffer } from '../RingBuffer';
 import { PromptEventLog } from '../PromptEventLog';
-import { loadNativeTerminalCore, type NativeOutputChunk } from '../../shared/nativeTerminalCore';
+import { loadNativeTerminalCore, nativeCorePath, type NativeOutputChunk } from '../../shared/nativeTerminalCore';
 
 const ESC = '\x1b';
 const BEL = '\x07';
@@ -19,9 +21,11 @@ const lower = (text: string) => text.replace(/\]133;([ABCD])/g, (_m, k: string) 
 
 type Lane = 'string' | 'native';
 
-/** A real decoder chunk on the rust engine, else one that behaves like it. */
+const nativeCore = fs.existsSync(nativeCorePath());
+
+/** A real decoder chunk with the built core, else one that behaves like it. */
 function chunkOf(text: string): NativeOutputChunk {
-  if (process.env.WMUX_TERMINAL_CORE === 'rust') {
+  if (nativeCore) {
     const Decoder = loadNativeTerminalCore('pty-v1').NativeOutputDecoder;
     if (Decoder) return new Decoder().feed(Buffer.from(text), true);
   }

@@ -3,13 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope, type A2aRemoteStatusV1 } from '../../../shared/a2aRemote';
+import { A2A_REMOTE_PROTOCOL, shownRemoteStatus, type A2aRemoteAnswerV1, type A2aRemoteApprovalV1, type A2aRemoteEnvelope, type A2aRemoteStatusV1 } from '../../../shared/a2aRemote';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { remoteTaskId } from '../ids';
 import { PeerTaskBudget, acceptInbound, type InboundDeps } from '../inbound';
 import { LinkStore } from '../linkStore';
-import { linkAlias, syncRemoteTask } from '../outbound';
+import { linkAlias, sendRemoteApproval, syncRemoteTask } from '../outbound';
 import { OutboxStore } from '../outboxStore';
 
 const HOST = '11111111-1111-4111-8111-111111111111';
@@ -683,6 +683,23 @@ describe('a worker\'s status on a task this PC sent', () => {
     expect(noted).toEqual([]);
   });
 
+  it('a picker id and an answer outcome are kept only in their checked shapes; the reason\'s words are this PC\'s own', async () => {
+    const linkId = activeLink();
+    const out = await sentTask(linkId);
+    await acceptInbound(env(linkId, {
+      ...status({ kind: 'question', detail: { question: 'menu', pickerId: '0123456789abcdef', optionCount: 2, answers: [{ messageId: 'an-1', outcome: 'not-answered', reason: 'picker-changed' }] } }),
+      taskId: out,
+    }), peer, withStatus);
+    const got = noted[0]![1];
+    expect(got.detail).toEqual({ question: 'menu', pickerId: '0123456789abcdef', optionCount: 2, answers: [{ messageId: 'an-1', outcome: 'not-answered', reason: 'picker-changed' }] });
+    expect(shownRemoteStatus(got).detail?.answers?.[0]?.reasonText).toMatch(/not the one answered/);
+    await acceptInbound(env(linkId, {
+      ...status({ kind: 'working', detail: { pickerId: 'NOT-HEX-0123456', answers: [{ messageId: 'an-2', outcome: 'not-answered', reason: 'PEER TEXT' }] } as never }),
+      taskId: out,
+    }), peer, withStatus);
+    expect(noted[1]![1]).toEqual({ kind: 'working', since: '2026-11-13T06:00:00.000Z' });
+  });
+
   it('a task that ended keeps none: one sent after is taken and dropped; its ending state forgets the one kept', async () => {
     const linkId = activeLink();
     const out = await sentTask(linkId);
@@ -885,5 +902,187 @@ describe('a host notice about one of our messages (held-notice.1, #3326)', () =>
     await acceptInbound(env(linkId, { kind: 'reply', taskId, messageId: 'plain-1', text: 'a reply' }), peer, noticeDeps);
     const item = (tasks.getTask(taskId)!.metadata.remote as { inbox: Array<{ messageId: string; kind: string }> }).inbox.find((i) => i.messageId === 'plain-1')!;
     expect(item.kind).toBe('reply');
+  });
+});
+
+describe('an answer from the sender of a task, to the question its worker shows here (answer.1)', () => {
+  let taken: Array<[string, string, A2aRemoteAnswerV1]>;
+  let withAnswer: InboundDeps;
+  const ANSWER: A2aRemoteAnswerV1 = { pickerId: '0123456789abcdef', option: 2 };
+  beforeEach(() => {
+    taken = [];
+    withAnswer = { ...deps, remoteAnswer: { take: (taskId, messageId, answer) => { taken.push([taskId, messageId, answer]); } } };
+  });
+  async function receivedTask(linkId: string): Promise<string> {
+    const e = env(linkId, {});
+    await acceptInbound(e, peer, withAnswer);
+    return remoteTaskId(linkId, e.messageId);
+  }
+  const answerEnv = (linkId: string, taskId: string, o: Record<string, unknown> = {}): A2aRemoteEnvelope =>
+    ({ ...env(linkId, { kind: 'answer', text: undefined, taskId }), answer: ANSWER, ...o } as unknown as A2aRemoteEnvelope);
+
+  it('is handed on for a task that host sent, never stored as a message or a state', async () => {
+    const linkId = activeLink();
+    const taskId = await receivedTask(linkId);
+    const before = structuredClone(tasks.getTask(taskId));
+    const e = answerEnv(linkId, taskId);
+    expect(await acceptInbound(e, peer, withAnswer)).toMatchObject({ ok: true, taskId });
+    expect(taken).toEqual([[taskId, e.messageId, ANSWER]]);
+    expect(tasks.getTask(taskId)).toEqual(before);
+  });
+
+  it('is refused for a task this PC sent, with text on it, malformed, or on a PC that takes none', async () => {
+    const linkId = activeLink();
+    const taskId = await receivedTask(linkId);
+    const mine = remoteTaskId(linkId, 'mine-1');
+    await tasks.createTask({
+      id: mine,
+      title: 'mine',
+      from: { workspaceId: 'ws-b', name: 'Backend', paneId: 'pane-b' },
+      to: { workspaceId: `remote:${linkId}`, name: 'pc-a/ws-a/claude' },
+      history: [{ kind: 'message', messageId: 'mine-1', role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+      remote: { v: 1, linkId, hostId: HOST, messageId: 'mine-1', direction: 'outbound', kind: 'pane' },
+    });
+    expect(await acceptInbound(answerEnv(linkId, mine), peer, withAnswer)).toMatchObject({ ok: false, error: 'forbidden' });
+    expect(await acceptInbound(answerEnv(linkId, taskId, { text: 'type this' }), peer, withAnswer)).toMatchObject({ ok: false, error: 'bad-request' });
+    for (const answer of [{ pickerId: 'nothex', option: 1 }, { pickerId: '0123456789abcdef', option: 0 }, { pickerId: '0123456789abcdef', option: 10 }, { pickerId: '0123456789abcdef', option: 1.5 }, null]) {
+      expect(await acceptInbound(answerEnv(linkId, taskId, { answer }), peer, withAnswer)).toMatchObject({ ok: false, error: 'bad-request' });
+    }
+    expect(await acceptInbound(answerEnv(linkId, taskId), peer, deps)).toMatchObject({ ok: false, error: 'bad-request' });
+    expect(taken).toEqual([]);
+  });
+});
+
+describe('an approval from the sender of a task, for a prompt offered in its status (approval.1)', () => {
+  let taken: Array<[string, string, string, A2aRemoteApprovalV1]>;
+  let on: boolean;
+  let withApproval: InboundDeps;
+  const APPROVAL: A2aRemoteApprovalV1 = { promptId: '0123456789abcdef', decision: 'allow' };
+  beforeEach(() => {
+    taken = [];
+    on = true;
+    withApproval = {
+      ...deps,
+      remoteApproval: {
+        on: () => on,
+        take: (hostId, taskId, messageId, approval) => { taken.push([hostId, taskId, messageId, approval]); },
+      },
+    };
+  });
+  async function receivedTask(linkId: string): Promise<string> {
+    const e = env(linkId, {});
+    await acceptInbound(e, peer, withApproval);
+    return remoteTaskId(linkId, e.messageId);
+  }
+  const approvalEnv = (linkId: string, taskId: string, o: Record<string, unknown> = {}): A2aRemoteEnvelope =>
+    ({ ...env(linkId, { kind: 'approval', text: undefined, taskId }), approval: APPROVAL, ...o } as unknown as A2aRemoteEnvelope);
+
+  it('is handed on, with the host it came from, for a task that host sent; never stored as a message or a state', async () => {
+    const linkId = activeLink();
+    const taskId = await receivedTask(linkId);
+    const before = structuredClone(tasks.getTask(taskId));
+    const e = approvalEnv(linkId, taskId, { approval: { ...APPROVAL, extra: 1 } });
+    // An unknown field in the approval is not taken as a looser shape.
+    expect(await acceptInbound(e, peer, withApproval)).toMatchObject({ ok: false, error: 'bad-request' });
+    const good = approvalEnv(linkId, taskId);
+    expect(await acceptInbound(good, peer, withApproval)).toMatchObject({ ok: true, taskId });
+    expect(taken).toEqual([[HOST, taskId, good.messageId, APPROVAL]]);
+    expect(tasks.getTask(taskId)).toEqual(before);
+  });
+
+  it('what the asking PC builds (sendRemoteApproval) is taken here as sent: the prompt id and the decision, nothing else', async () => {
+    const linkId = activeLink();
+    const taskId = await receivedTask(linkId);
+    // The asking PC (A): the same link, its own end of it, and the task it sent under the same id.
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-inbound-asker-'));
+    try {
+      const logA = new AppendOnlyLog({ dir: path.join(dirA, 'log'), fsync: () => undefined });
+      logA.open();
+      const tasksA = new A2aTaskService({ log: logA, origin: { machineId: 'pc-a', daemonEpoch: 1 } });
+      const linksA = new LinkStore({ dir: path.join(dirA, 'a2a'), scheduleHarden: () => undefined });
+      linksA.receiveProposal({
+        linkId,
+        local: { kind: 'pane', workspaceId: 'ws-a', paneId: 'pane-a' },
+        remote: { hostId: '33333333-3333-4333-8333-333333333333', kind: 'pane', workspaceId: 'ws-b', paneId: 'pane-b', label: 'claude' },
+        allow: { outbound: true, inbound: true },
+      });
+      linksA.accept(linkId);
+      expect((await tasksA.createTask({
+        id: taskId,
+        title: 'mine',
+        from: { workspaceId: 'ws-a', name: 'Frontend', paneId: 'pane-a' },
+        to: { workspaceId: `remote:${linkId}`, name: 'pc-b/ws-b/claude' },
+        history: [{ kind: 'message', messageId: 'm-1', role: 'user', parts: [{ kind: 'text', text: 'please review' }] }],
+        remote: { v: 1, linkId, hostId: '33333333-3333-4333-8333-333333333333', messageId: 'm-1', direction: 'outbound', kind: 'pane' },
+      })).ok).toBe(true);
+      const sent: A2aRemoteEnvelope[] = [];
+      const res = sendRemoteApproval(
+        { linkStore: linksA, taskService: tasksA, outbox: { enqueue: (_h: string, e: A2aRemoteEnvelope) => { sent.push(e); return {} as never; } } as never },
+        { taskId, workspaceId: 'ws-a', approval: { promptId: '0123456789abcdef', decision: 'deny' } },
+      );
+      expect(res).toMatchObject({ ok: true, taskId });
+      logA.close();
+      expect(await acceptInbound(JSON.parse(JSON.stringify(sent[0])), peer, withApproval)).toMatchObject({ ok: true, taskId });
+      expect(taken).toEqual([[HOST, taskId, sent[0]!.messageId, { promptId: '0123456789abcdef', decision: 'deny' }]]);
+    } finally {
+      fs.rmSync(dirA, { recursive: true, force: true });
+    }
+  });
+
+  it('off for that PC (or no approvals here at all): approvals-off before its shape, link or task is read', async () => {
+    on = false;
+    // Malformed, on an unknown link, for an unknown task: all the same refusal.
+    const garbage = { protocol: 'nope', kind: 'approval', linkId: 'no-such-link', taskId: 'no-such-task', approval: 'x' };
+    expect(await acceptInbound(garbage, peer, withApproval)).toEqual({ ok: false, error: 'approvals-off' });
+    const linkId = activeLink();
+    const taskId = await receivedTask(linkId);
+    expect(await acceptInbound(approvalEnv(linkId, taskId), peer, withApproval)).toEqual({ ok: false, error: 'approvals-off' });
+    expect(await acceptInbound(approvalEnv(linkId, taskId), peer, deps)).toEqual({ ok: false, error: 'approvals-off' });
+    expect(taken).toEqual([]);
+  });
+
+  it('past its PC\'s window: refused rate-limited and told in the status (never carried out); one that fails a check is refused rate-limited too, unread', async () => {
+    const linkId = activeLink();
+    const taskId = await receivedTask(linkId);
+    let admit: { ok: true } | { ok: false; retryAfterMs: number } = { ok: false, retryAfterMs: 12_000 };
+    const limited: unknown[][] = [];
+    const guarded: InboundDeps = {
+      ...withApproval,
+      remoteApproval: { ...withApproval.remoteApproval!, admit: () => admit, limited: (...args) => { limited.push(args); } },
+    };
+    const e = approvalEnv(linkId, taskId);
+    expect(await acceptInbound(e, peer, guarded)).toEqual({ ok: false, error: 'rate-limited' });
+    expect(taken).toEqual([]);
+    expect(limited).toEqual([[HOST, taskId, e.messageId, APPROVAL, 12_000]]);
+    // Past the window and for a task that host did not send: refused rate-limited unread, so the asker
+    // gets a final answer instead of an ack it reads as delivered; nothing noted in a status.
+    const mine = remoteTaskId(linkId, 'not-there');
+    expect(await acceptInbound(approvalEnv(linkId, mine), peer, guarded)).toEqual({ ok: false, error: 'rate-limited' });
+    expect(limited).toHaveLength(1);
+    admit = { ok: true };
+    expect(await acceptInbound(approvalEnv(linkId, taskId), peer, guarded)).toMatchObject({ ok: true, duplicate: false });
+    expect(taken).toHaveLength(1);
+  });
+
+  it('is refused for a task this PC sent, with text on it, or malformed', async () => {
+    const linkId = activeLink();
+    const taskId = await receivedTask(linkId);
+    const mine = remoteTaskId(linkId, 'mine-2');
+    await tasks.createTask({
+      id: mine,
+      title: 'mine',
+      from: { workspaceId: 'ws-b', name: 'Backend', paneId: 'pane-b' },
+      to: { workspaceId: `remote:${linkId}`, name: 'pc-a/ws-a/claude' },
+      history: [{ kind: 'message', messageId: 'mine-2', role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+      remote: { v: 1, linkId, hostId: HOST, messageId: 'mine-2', direction: 'outbound', kind: 'pane' },
+    });
+    expect(await acceptInbound(approvalEnv(linkId, mine), peer, withApproval)).toMatchObject({ ok: false, error: 'forbidden' });
+    expect(await acceptInbound(approvalEnv(linkId, taskId, { text: 'type this' }), peer, withApproval)).toMatchObject({ ok: false, error: 'bad-request' });
+    for (const approval of [{ promptId: 'nothex', decision: 'allow' }, { promptId: '0123456789abcdef', decision: 'always' }, { promptId: '0123456789abcdef' }, null]) {
+      expect(await acceptInbound(approvalEnv(linkId, taskId, { approval }), peer, withApproval)).toMatchObject({ ok: false, error: 'bad-request' });
+    }
+    // From another paired PC: not that PC's link.
+    expect(await acceptInbound(approvalEnv(linkId, taskId), { hostId: OTHER_HOST }, withApproval)).toMatchObject({ ok: false, error: 'forbidden' });
+    expect(taken).toEqual([]);
   });
 });

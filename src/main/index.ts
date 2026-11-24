@@ -11,7 +11,8 @@ import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserHis
 import { focusBuiltinTab, handlePhoneBrowser } from './phone/PhoneBrowser';
 import { readFocus } from './phone/PhoneBrowserFocus';
 import { presetViewScale } from './phone/PhoneBrowserGeometry';
-import { createPhoneChromeDeps, phoneChromeHelpTabs } from './phone/PhoneBrowserChrome';
+import { createPhoneChromeDeps, phoneChromeHelpTabs, type PhoneChromeRegistry } from './phone/PhoneBrowserChrome';
+import { phonePaneProfiles } from './phone/phonePaneProfiles';
 import { validateResolvedNavigationUrl } from './security/navigationPolicy';
 import { navigationPolicyOptions } from '../shared/types';
 import { handlePhoneWorkspaces } from './phone/PhoneWorkspaces';
@@ -73,6 +74,7 @@ import { PTYBridge } from './pty/PTYBridge';
 import { createLocalApprovalScreenReader } from './pty/localApprovalScreen';
 import { pruneDaemonPidMapAtConnect } from './pty/pidMap';
 import { getUserShellRecord, HELD_START_CONNECTED_WAIT_MS, startHeldUserShells } from './pty/userShellRecord';
+import { prunePaneFenceSessions } from './agents/paneFenceSessions';
 import { WSL_RPC_TIMEOUT_MS } from '../shared/wslTimeouts';
 import { resyncShellPromptsAtConnect } from './shellPrompt/shellPromptMirror';
 import { registerAllHandlers } from './ipc/registerHandlers';
@@ -127,7 +129,9 @@ import { registerPcEnvRpc } from './pipe/handlers/pcEnv.rpc';
 import { cachedAgentEnvSummary } from './pcdiff/agentEnv';
 import { AGENT_ENV_COMMAND } from '../shared/agentEnvSummary';
 import { UsageReserve, setUsageReserve } from './usage/usageReserve';
-import { usageReserveToastText } from './automation/toastText';
+import { poolAccountOfWorkspace, setFanoutAccountPoolHost } from './worktask/fanoutAccountPool';
+import { accountsWithoutCurrentHooks, isUncPath, primaryHookPaths } from './ipc/handlers/hooksBridge.handler';
+import { poolCallerFallbackToastText, usageReserveToastText } from './automation/toastText';
 import { formatResetClock } from '../shared/usageLimit';
 import { CompletionAlarm } from '../shared/hooks/CompletionAlarm';
 import { UsagePoller } from './claude/UsagePoller';
@@ -165,6 +169,8 @@ import { createFanOutService } from './worktask/createFanOutService';
 import { getWorkerTempDirSweeper, liveTempDirsFromSessions } from './worktask/fanoutTempDir';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
 import { registerRemoteSpawnRpc } from './pipe/handlers/remoteSpawn.rpc';
+import { registerRemoteAnswerRpc } from './pipe/handlers/remoteAnswer.rpc';
+import { registerRemoteApprovalRpc } from './pipe/handlers/remoteApproval.rpc';
 import { registerHandOutRpc } from './pipe/handlers/handOut.rpc';
 import { registerLedgerRpc } from './pipe/handlers/ledger.rpc';
 import { registerTaskPushRpc } from './pipe/handlers/taskPush.rpc';
@@ -222,16 +228,18 @@ import { keepOneStartMenuEntry, shouldWriteStartMenuEntry } from './notification
 import { readDaemonPid } from './updater/installTeardown';
 import { isAltF4Held, isAltF4KeyDown } from './altF4';
 import { McpRegistrar } from './mcp/McpRegistrar';
-import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
+import { BrokerSupervisor, brokerSettingAtStart, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { startBrokerAndRegister } from './mcp/brokerBoot';
-import { brokerFlag } from '../shared/mcpBroker';
+import { brokerFlag, brokerFlagValue } from '../shared/mcpBroker';
 import { identitySummary, notePeerReadCheck, setBrokerIdentitySource, setBrokerStampSource, setUnownedBrokerSource } from './pipe/handlers/peerPidShadow';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry, releaseCdpPortOnExit } from './browser-session/cdpPort';
 import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { registerBrowserPrivateNetworkIpc } from './ipc/handlers/browserPrivateNetwork.handler';
-import { ChromeLauncherRegistry } from './browser-session/ChromeLauncher';
+import { ChromeLauncherRegistry, closeRelayClients, setRelayAdmission } from './browser-session/ChromeLauncher';
+import { wireRelayClientTriggers } from './browser-session/relayClientTriggers';
+import { onPaneClaimChange } from './workspace/workspaceClaimTrust';
 import { ChromeProfileStore, LIVE_CHROME_PROFILE, reconcilePaneBindingsFromMirror } from './browser-session/ChromeProfileStore';
 import { createChromeProfileUseHandler, setChromeProfileUseListener } from './browser-session/profileFallback';
 import { noteRunBrowserProfileUnbound } from './automation/runIdentity';
@@ -271,6 +279,8 @@ import { loadConfig, getWmuxDir, isFailClosedConfig } from '../daemon/config';
 import { atomicWriteJSON } from '../daemon/util/atomicWrite';
 import { CLAUDE_FILE_SEND_IPC } from '../shared/claudeFileSend';
 import { claudeFileSendPath, readClaudeFileSend } from '../daemon/claudeFileSendSetting';
+import { NEW_PACKAGE_NOTE_IPC } from '../shared/newPackageNote';
+import { newPackageNotePath, readNewPackageNote } from '../daemon/newPackageNoteSetting';
 import { CHANNELS_EPOCH } from '../shared/channels';
 import { createTray, destroyTray, updateTraySessionCount } from './tray';
 import { installApplicationMenu } from './menu/appMenu';
@@ -942,11 +952,15 @@ registerPrivilegedSchemes();
 let pluginHostLoader: PluginHostLoader | null = null;
 let uiPluginManager: UiPluginManager | null = null;
 const mcpRegistrar = new McpRegistrar();
-// Shared MCP broker (Option A, WMUX_MCP_BROKER=1; default OFF). Started on
+// Shared MCP broker (Option A; on by default on macOS and Linux, see
+// shared/mcpBroker.ts). Started on
 // ready BEFORE mcpRegistrar.register so the broker pipe is (or is about to
 // be) listening when the first shim spawns — the shim retries connect with
 // backoff, so start order is a latency nicety, not a correctness gate.
 const mcpBrokerSupervisor = new BrokerSupervisor();
+// The Settings choice is read now, at start, so a change made in Settings
+// later never reaches this run (it applies from the next start).
+brokerSettingAtStart();
 setBrokerIdentitySource(() => mcpBrokerSupervisor.identity);
 setBrokerStampSource((stamp) => mcpBrokerSupervisor.stampMatches(stamp));
 setUnownedBrokerSource(() => mcpBrokerSupervisor.standingDown);
@@ -971,6 +985,7 @@ const browserAgentControl = new BrowserAgentControl({
   cancelInFlight: (surfaceId, error) => {
     webviewCdpManager.revokeRpcLeases(surfaceId, error);
     webviewCdpManager.stopLoading(surfaceId);
+    relayClientTriggers.userHold(surfaceId);
   },
 });
 webviewCdpManager.setLeaseObserver((surfaceId, leases) => browserAgentControl.noteLeases(surfaceId, leases));
@@ -1114,6 +1129,7 @@ const mcpHandlerOptions = {
   // to know whether that fallback is final.
   daemonMayReturn: (): boolean => daemonRespawnController?.daemonMayReturn ?? false,
   mcpRegistrar,
+  mcpBrokerDownReason: () => mcpBrokerSupervisor.downReason(),
   getMcpAuthToken: (): string | null => {
     try {
       return pipeServer.getAuthToken();
@@ -1338,6 +1354,7 @@ ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent
           : {}),
         ...gatedSubmitTaskContext(opts),
         ...gatedSubmitSenders(opts),
+        ...(typeof opts === 'object' && opts !== null && (opts as { submitProof?: unknown }).submitProof === true ? { submitProof: true } : {}),
       })
     : { ok: false, reason: 'write_failed', detail: 'delivery: missing target pty or text' },
 );
@@ -1346,6 +1363,11 @@ ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent
 const fanoutCallerSubmit = createFanoutCallerSubmit({
   deliveryGate: (ptyId) => inputRpc.deliveryGate(ptyId),
   ownerOf: (ptyId) => resolvePtyOwnerWorkspace(() => mainWindow, ptyId),
+  taskClosed: (taskId, owner) => {
+    // The ledger replays its log when it is made, so a row it does not have is not a task of this owner: refused.
+    const row = getTaskLedger().get(taskId);
+    return !row || row.ownerWorkspaceId !== owner || row.status === 'cancelled' || row.status === 'completed';
+  },
   prOf: (ptyId) => currentPrOfPty(ptyId),
   agentState: async (ptyId) => (daemonClient?.isConnected ? daemonClient.getAgentState(ptyId) : null),
   deliver: async (args) =>
@@ -1376,6 +1398,8 @@ rpcRouter.setMcpSessionSink(mcpSessionTracker);
 registerMcpSessionsRpc(rpcRouter, {
   brokerEnabled: isMcpBrokerEnabled,
   brokerFlag: () => brokerFlag(process.env.WMUX_MCP_BROKER),
+  brokerFlagValue: () => brokerFlagValue(process.env.WMUX_MCP_BROKER),
+  brokerSetting: () => brokerSettingAtStart().setting,
   brokerStatus: () => mcpBrokerSupervisor.status(),
   tracker: mcpSessionTracker,
   identity: () => identitySummary(),
@@ -1431,6 +1455,8 @@ const chromeRegistry = new ChromeLauncherRegistry({
     browserPolicyStore.protectionPlanFor(profile, { paneBindings: () => chromeProfileStore.getPaneBindings() }),
   // With the target grant flag, a download in a tab no agent holds lands here, as Chrome's own would.
   downloadsDir: () => app.getPath('downloads'),
+  // The operator's file setting that lets WMUX_CHROME_TRANSPORT=port apply to a protected profile.
+  protectedPortAllowed: () => browserBackendStore.protectedPortTransport(),
 });
 browserPolicyStore.onChange(() => {
   // #2063: every policy change (an Allow included) starts the recently-blocked
@@ -1438,6 +1464,18 @@ browserPolicyStore.onChange(() => {
   chromeRegistry.clearBlockedHosts();
   void chromeRegistry.reconcileProtection();
 });
+// Relay clients end when what their grant was minted on goes: the policy
+// epoch, their workspace, their pane, a user hold, or their pane's claim.
+const relayClientTriggers = wireRelayClientTriggers({
+  closeClients: closeRelayClients,
+  policy: browserPolicyStore,
+  paneBindings: () => chromeProfileStore.getPaneBindings(),
+  mirror: getWorkspaceMirror(),
+  surfaceWorkspace: (surfaceId) =>
+    webviewCdpManager.getTarget(surfaceId)?.workspaceId ?? chromeRegistry.ownerOfSurface(surfaceId)?.workspaceId,
+  onPaneClaimChange,
+});
+setRelayAdmission((identity) => relayClientTriggers.admit(identity));
 // Phase 2.2 enforcement mode. Production wmux defaults to `enforce`; dev
 // (electron-forge / npm start) defaults to `shadow` so a bad delta doesn't lock
 // the developer out. Override via `mcp.mode` in `~/.wmux/config.json`.
@@ -1494,16 +1532,32 @@ registerBrowserHelpIpc(ipcMain, { getWindow: () => mainWindow, requests: browser
 setPhoneBrowserHelpStore(browserHelpRequests);
 // The phone preview's dedicated Chrome tabs (phone/PhoneBrowserChrome.ts):
 // the workspace's own profile, strict workspace equality, never Live Chrome,
-// never a pane's exclusive profile, never a launch. The help
-// table below reads the same list, so its rows are previewable exactly when
-// the preview can drive them.
+// never a launch; and a profile bound to one of its panes alone, with no
+// browser policy on it, every tab included. The help table below reads the
+// same records, so its rows are previewable exactly when the preview can
+// drive them.
+const phoneChromeRegistry: PhoneChromeRegistry = {
+  profileFor: (workspaceId) => chromeRegistry.profileFor(workspaceId),
+  isPaneBound: (profile) => chromeRegistry.isPaneBound(profile),
+  peekLauncher: (profile) => chromeRegistry.peekLauncher(profile),
+  paneProfiles: (workspaceId) => phonePaneProfiles(workspaceId, {
+    paneBindings: () => chromeProfileStore.getPaneBindings(),
+    workspaceBindings: () => chromeProfileStore.getBindings(),
+    paneWorkspaces: () => getWorkspaceMirror().getPaneWorkspaces(),
+    sessionRestored: () => getWorkspaceMirror().isSessionRestored(),
+    isProtected: (profile) =>
+      browserPolicyStore.protectionPlanFor(profile, { paneBindings: () => chromeProfileStore.getPaneBindings() }) !== null,
+  }),
+};
 const phoneChromeDeps = createPhoneChromeDeps({
-  registry: chromeRegistry,
+  registry: phoneChromeRegistry,
   validateNavigation: async (url) => {
     const verdict = await validateResolvedNavigationUrl(url, navigationPolicyOptions(browserBackendStore.allowPrivateNetwork()));
     if (!verdict.valid) throw new Error('Navigation refused');
   },
 });
+// A policy applied to a pane's profile ends the phone's sessions on it at once.
+browserPolicyStore.onChange(() => phoneChromeDeps.revalidate?.());
 const browserHelpFeed = createBrowserHelpFeed({
   pending: () => browserHelpRequests.listPending(),
   tabs: {
@@ -1520,7 +1574,7 @@ const browserHelpFeed = createBrowserHelpFeed({
       chromeRegistry.profileFor(workspaceId) === LIVE_CHROME_PROFILE ||
       (!tabFound && chromeRegistry.hasPaneBindings(workspaceId) && chromeRegistry.peekLauncher(LIVE_CHROME_PROFILE) !== undefined),
     // Live Chrome is never listed: that is every tab the user has open.
-    chromeTabs: (workspaceId) => phoneChromeHelpTabs(workspaceId, chromeRegistry),
+    chromeTabs: (workspaceId) => phoneChromeHelpTabs(workspaceId, phoneChromeRegistry),
   },
   push: async (rows) => {
     if (!daemonClient?.isConnected) throw new Error('Daemon not connected');
@@ -1610,6 +1664,8 @@ registerHandOutHandlers({
 });
 registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow, { getDaemonClient: () => daemonClient });
 registerRemoteSpawnRpc(rpcRouter, () => mainWindow, { getDaemonClient: () => daemonClient });
+registerRemoteAnswerRpc(rpcRouter, () => mainWindow, { getDaemonClient: () => daemonClient });
+registerRemoteApprovalRpc(rpcRouter, () => mainWindow, { getDaemonClient: () => daemonClient });
 // To hand out for agent panes (MCP hand_out): read the list, add to it.
 registerHandOutRpc(rpcRouter, () => mainWindow);
 registerLedgerRpc(rpcRouter, () => mainWindow, {
@@ -1842,6 +1898,10 @@ const onClaudeTurnEnd = (workspaceId: string): void => {
   for (const rotated of getAccountRotationService().launchedAccounts(workspaceId, 'claude')) {
     if (rotated !== accountId) void accountUsageService.maybeProbe(rotated);
   }
+  // A fan-out worker the account pool put on an account: that account, under
+  // the same per-account probe limit.
+  const pooled = poolAccountOfWorkspace(workspaceId);
+  if (pooled && pooled !== accountId) void accountUsageService.maybeProbe(pooled);
 };
 getAccountRotationService().setClaudeUsage(accountUsageService);
 const disposeHooksRpc = registerHooksRpc(
@@ -1909,6 +1969,18 @@ const usageReserve = new UsageReserve({
   log: (line) => console.warn(line),
 });
 setUsageReserve(usageReserve);
+// The fan-out account pool reads these only while it is on (fanoutAccountPool.ts).
+setFanoutAccountPoolHost({
+  daemonConnected: () => daemonClient?.isConnected === true,
+  claudeUsage: () => accountUsageService.getAll(),
+  defaultSnapshot: () => usagePoller.getState().snapshot,
+  hookDriftIds: async (accounts) => accountsWithoutCurrentHooks(accounts, await primaryHookPaths()),
+  isUnc: isUncPath,
+  probeUsage: (accountId) => { void accountUsageService.maybeProbe(accountId); },
+  notifyCallerFallback: () => {
+    toastManager.showDirect(poolCallerFallbackToastText(getAutomationUiLocale()), '', undefined, { ignoreToastSetting: false, onClick: () => { mainWindow?.show(); } });
+  },
+});
 usagePoller.onStateChange(() => usageReserve.refresh());
 accountUsageService.onChange(() => usageReserve.refresh());
 ipcMain.handle(IPC.USAGE_RESERVE_GET, () => ({ enabled: usageReserve.enabled() }));
@@ -1928,6 +2000,19 @@ ipcMain.handle(CLAUDE_FILE_SEND_IPC.SET, async (_event, enabled: unknown) => {
   if (typeof enabled !== 'boolean') return { ok: false };
   try {
     await atomicWriteJSON(claudeFileSendPath(getWmuxDir()), { enabled });
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+});
+
+// New-package note on install approvals: main owns writes; the daemon reads
+// the file on each gated install command.
+ipcMain.handle(NEW_PACKAGE_NOTE_IPC.GET, () => ({ enabled: readNewPackageNote(getWmuxDir()) }));
+ipcMain.handle(NEW_PACKAGE_NOTE_IPC.SET, async (_event, enabled: unknown) => {
+  if (typeof enabled !== 'boolean') return { ok: false };
+  try {
+    await atomicWriteJSON(newPackageNotePath(getWmuxDir()), { enabled });
     return { ok: true };
   } catch {
     return { ok: false };
@@ -2278,9 +2363,14 @@ ipcMain.handle(
     if (!paneId || !workspaceId || profileName === undefined) return { ok: false, error: 'invalid payload' };
     try {
       await chromeProfileStore.setPaneBinding(paneId, workspaceId, profileName);
-      // A protected pane rebound to another profile (or unbound) stays
-      // protected and refuses every host until the user confirms it again.
-      await browserPolicyStore.onPaneRebind(paneId);
+      try {
+        // A protected pane rebound to another profile (or unbound) stays
+        // protected and refuses every host until the user confirms it again.
+        await browserPolicyStore.onPaneRebind(paneId);
+      } finally {
+        // The binding changed even when the policy step failed.
+        phoneChromeDeps.revalidate?.();
+      }
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -2312,6 +2402,8 @@ getWorkspaceMirror().onSnapshot(() => {
   reconcileBrowserPoliciesFromMirror(browserPolicyStore, getWorkspaceMirror()).catch((err) => {
     console.warn('[browser-policy] reconcile failed:', err);
   });
+  // A pane that moved or closed takes its profile off the old workspace's phone view.
+  phoneChromeDeps.revalidate?.();
 });
 // Protected browser panes: the operator's policy editor (A-ui). Agents have no
 // path to these channels; the handler accepts the main window's top frame only.
@@ -2961,6 +3053,8 @@ app.on('ready', async () => {
       const heldStart = startHeldUserShells(client, getUserShellRecord(app.getPath('userData')), {
         timeoutMs: WSL_RPC_TIMEOUT_MS,
         log: (line) => logLine('info', 'main', line),
+        // A person's fenced panes: a session the daemon no longer has keeps no record.
+        onLive: (live) => { prunePaneFenceSessions(live); },
       }).then((held) => {
         if (held > 0) logLine('info', 'main', `[env] started ${held} restored user shell(s) held for the app`);
       }, (err: unknown) => {
@@ -3012,6 +3106,8 @@ app.on('ready', async () => {
           return () => { client.off('event', listener); };
         },
         log: (level, msg) => logLine(level, 'a2a-remote', msg),
+        // An open fan-out row moves to failed and nudges its pane itself (a reported one stands, so not then).
+        endToldElsewhere: (taskId) => getTaskLedger().list({}).some((e) => e.remote?.a2aTaskId === taskId && (e.status === 'working' || e.status === 'input_required')),
         // Work sent to another PC: its links follow the daemon's copy of each task.
         afterPull: () => reconcileRemoteLinks((params) => client.rpc('a2a.task.query', params)),
       });

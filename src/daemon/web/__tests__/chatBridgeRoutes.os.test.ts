@@ -1594,6 +1594,91 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect((await turns({ ...device('dev-3'), ...QUEUE_CAP })).body.events[0]).not.toHaveProperty('clientMessageId');
     });
 
+    it('/turns: a row Claude Code stored inside paste markers still carries its clientMessageId (#3412)', async () => {
+      const info = await start();
+      const h = { ...bearer(info.token as string), ...QUEUE_CAP };
+      const fns = wireQueue();
+      const [pasted, other] = [freshId(), freshId()];
+      fns.delivered.mockImplementation(() => [
+        { clientMessageId: pasted, text: 'fix the failing test\nthen run the suite', at: 0 },
+        { clientMessageId: other, text: 'something else', at: 0 },
+      ]);
+      projectorMock.snapshot.mockReturnValue(page([
+        { id: 'p1', kind: 'user_text', text: '\n\n<pasted_content id="3de0">\nfix the failing test\nthen run the suite\n</pasted_content id="3de0">\n', ts: 10 },
+        { id: 'p2', kind: 'user_text', text: 'a different message', ts: 10 },
+      ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
+      const events = (await turns(h)).body.events as Array<Record<string, unknown>>;
+      expect(events.map((e) => e.clientMessageId)).toEqual([pasted, undefined]);
+    });
+
+    it('/turns: the exact text wins over a spacing-only match, and a capped pasted row matches by its start', async () => {
+      const info = await start();
+      const h = { ...bearer(info.token as string), ...QUEUE_CAP };
+      const fns = wireQueue();
+      const [spaced, joined, long] = [freshId(), freshId(), freshId()];
+      const body = 'x'.repeat(9_000);
+      fns.delivered.mockImplementation(() => [
+        { clientMessageId: spaced, text: 'a b', at: 0 },
+        { clientMessageId: joined, text: 'ab', at: 0 },
+        { clientMessageId: long, text: body, at: 0 },
+      ]);
+      // As parseEntry keeps it: the first 8000 characters (the opening marker
+      // included), then an ellipsis; the closing marker is cut off.
+      const capped = `${`\n\n<pasted_content id="9a9a">\n${body}\n</pasted_content id="9a9a">\n`.slice(0, 8_000)}…`;
+      projectorMock.snapshot.mockReturnValue(page([
+        { id: 'r1', kind: 'user_text', text: 'ab', ts: 10 },
+        { id: 'r2', kind: 'user_text', text: 'a b', ts: 10 },
+        { id: 'r3', kind: 'user_text', text: capped, ts: 10 },
+      ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
+      const events = (await turns(h)).body.events as Array<Record<string, unknown>>;
+      expect(events.map((e) => e.clientMessageId)).toEqual([joined, spaced, long]);
+    });
+
+    it('/turns: a capped row cut before an emoji, or at a bare `<`/`</`, still pairs by its start', async () => {
+      const info = await start();
+      const h = { ...bearer(info.token as string), ...QUEUE_CAP };
+      const fns = wireQueue();
+      const [emoji, lt, slash] = [freshId(), freshId(), freshId()];
+      const open = (id: string) => `\n\n<pasted_content id="${id}">\n`;
+      // An emoji whose two units would straddle the cut: parseEntry keeps 7999 units and the ellipsis.
+      const emojiBody = 'y'.repeat(8_000 - open('e1').length - 1) + '😀' + 'tail';
+      const emojiRow = `${(open('e1') + emojiBody).slice(0, 7_999)}…`;
+      // Bodies that end the kept text exactly at `<` or `</` of the closing marker.
+      const ltBody = 'z'.repeat(8_000 - open('l1').length - 2);
+      const ltRow = `${`${open('l1')}${ltBody}\n</pasted_content id="l1">\n`.slice(0, 8_000)}…`;
+      const slashBody = 'w'.repeat(8_000 - open('s1').length - 3);
+      const slashRow = `${`${open('s1')}${slashBody}\n</pasted_content id="s1">\n`.slice(0, 8_000)}…`;
+      expect([emojiRow.length, ltRow.endsWith('<…'), slashRow.endsWith('</…')]).toEqual([8_000, true, true]);
+      fns.delivered.mockImplementation(() => [
+        { clientMessageId: emoji, text: emojiBody, at: 0 },
+        { clientMessageId: lt, text: ltBody, at: 0 },
+        { clientMessageId: slash, text: slashBody, at: 0 },
+      ]);
+      projectorMock.snapshot.mockReturnValue(page([
+        { id: 'c1', kind: 'user_text', text: emojiRow, ts: 10 },
+        { id: 'c2', kind: 'user_text', text: ltRow, ts: 10 },
+        { id: 'c3', kind: 'user_text', text: slashRow, ts: 10 },
+      ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
+      const events = (await turns(h)).body.events as Array<Record<string, unknown>>;
+      expect(events.map((e) => e.clientMessageId)).toEqual([emoji, lt, slash]);
+    });
+
+    it('/turns: a photo whose caption Claude Code stored as a paste still pairs', async () => {
+      const dir = '/Users/me/.wmux/uploads/phone';
+      Object.assign((server as unknown as { deps: Record<string, unknown> }).deps, { uploadsDir: dir });
+      const info = await start();
+      const h = { ...bearer(info.token as string), ...QUEUE_CAP };
+      const fns = wireQueue();
+      const cmid = freshId();
+      const shot = `${dir}/photo-2026-11-17T20-53-51-000Z-0a1b2c31.jpg`;
+      fns.delivered.mockImplementation(() => [{ clientMessageId: cmid, text: `${shot} why does this\ncrash on start`, at: 0 }]);
+      projectorMock.snapshot.mockReturnValue(page([
+        { id: 'ph', kind: 'user_text', text: '[Image #1] \n\n<pasted_content id="77aa">\nwhy does this\ncrash on start\n</pasted_content id="77aa">\n', hasImage: true, ts: 10 },
+      ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
+      const events = (await turns(h)).body.events as Array<Record<string, unknown>>;
+      expect(events.map((e) => e.clientMessageId)).toEqual([cmid]);
+    });
+
     it('/turns: a photo row pairs by its placeholders with the upload paths the daemon typed', async () => {
       const dir = '/Users/me/.wmux/uploads/phone';
       Object.assign((server as unknown as { deps: Record<string, unknown> }).deps, { uploadsDir: dir });

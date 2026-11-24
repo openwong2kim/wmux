@@ -11,7 +11,7 @@
 import { A2A_BRAIN_ALIAS, isRemoteTaskId, type A2aEndpointKind, type A2aRemoteErrorCode, type A2aRemoteReceipt, type A2aRemoteStatusShown, type A2aRemoteTaskMarkerV1, type HostId } from './a2aRemote';
 import type { CompanyBriefV1 } from './company';
 import { AGENT_SLUG_SET } from './agentIdentity';
-import type { GatedSubmitRefusal } from './ptyMessageDelivery';
+import type { GatedSubmitProof, GatedSubmitRefusal } from './ptyMessageDelivery';
 import { isTaskState, type Part, type Task, type TaskState } from './types';
 
 /**
@@ -330,6 +330,8 @@ export interface A2aRemoteInboxItem {
   attempted?: boolean;
   /** A paste of it was once left unconfirmed (`delivery-unconfirmed`): it may be in the pane, whatever hold follows. */
   unconfirmed?: true;
+  /** With `delivered`: what main submitted to the pane for it, when it could tell. Recorded only. */
+  submit?: GatedSubmitProof;
   /**
    * Dropped here without being delivered (its hold expired): the task stays
    * open. `notice`: whether the PC that sent it was told (`held-notice.1`);
@@ -351,6 +353,8 @@ export interface A2aRemoteInboxItem {
 export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
   /** Inbound task: main started a paste and has not confirmed it yet. */
   attempted?: boolean;
+  /** Inbound task, with `delivered`: what main submitted to the pane for it, when it could tell. Recorded only. */
+  submit?: GatedSubmitProof;
   /** The last task state exchanged with the peer (sent, or applied from it). */
   stateSync?: TaskState;
   /**
@@ -411,7 +415,26 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
    * link comes back).
    */
   status?: A2aRemoteStatusShown;
+  /**
+   * Inbound: another PC's decisions carried out on this task's prompts here,
+   * oldest first, at most A2A_REMOTE_APPROVAL_NOTES_MAX. This PC's own record
+   * (the line its notification showed); never a message, never sent.
+   */
+  approvalNotes?: A2aRemoteApprovalNote[];
 };
+
+/** One carried-out remote approval as the receiving task records it (no command). */
+export interface A2aRemoteApprovalNote {
+  /** The approval's message id. */
+  messageId: string;
+  decision: 'allow' | 'deny';
+  tool: string;
+  /** "<PC> allowed|denied <tool> in <pane>" in this PC's words. */
+  text: string;
+  at: string;
+}
+
+export const A2A_REMOTE_APPROVAL_NOTES_MAX = 20;
 
 /** A hold older than this is rejected automatically (`held-expired`). */
 export const A2A_REMOTE_HOLD_TTL_MS = 24 * 60 * 60 * 1000;
@@ -443,6 +466,7 @@ export function localSideOf(task: Pick<Task, 'metadata'>): 'from' | 'to' {
 /**
  * What the renderer answers main's bridge for one remote-task delivery.
  *   - `delivered`: written to the pinned pane (or already was: `duplicate`).
+ *     `submit`: what main submitted there, when it could tell (recorded only).
  *   - `held`: refused for a reason that must not be retried blindly — the
  *     pane is gone, or another occupant holds it now. Never re-routed.
  *   - neither: not written this time (approval prompt, person typing, no
@@ -450,7 +474,7 @@ export function localSideOf(task: Pick<Task, 'metadata'>): 'from' | 'to' {
  *     which (`missKindOf`).
  */
 export type A2aRemoteDeliveryResult =
-  | { ok: true; delivered: true; duplicate?: boolean; ptyId?: string }
+  | { ok: true; delivered: true; duplicate?: boolean; ptyId?: string; submit?: GatedSubmitProof }
   | { ok: true; delivered: false; held?: A2aRemoteHeldReason; reason?: string }
   | { ok?: false; error: string };
 

@@ -95,9 +95,9 @@ export type BotRefusalListener = (refusal: BotRefusal) => void;
 // Methods that handle plugin identity themselves — they must NOT trigger
 // a parallel legacy write because their own handlers do the right thing
 // (record an `unconfirmed` contact via the resolved name).
-/** What a browser-only caller (a scheduled run's identity) may call. */
+/** What a browser-only caller (a scheduled run's identity) may call: never a relay grant for a pane's script. */
 function isRunBrowserMethod(method: string): boolean {
-  return method.startsWith('browser.')
+  return (method.startsWith('browser.') && method !== 'browser.cdp.grant')
     || method === 'a2a.resolve.identity'
     || method === 'mcp.identify'
     || method === 'mcp.declarePermissions';

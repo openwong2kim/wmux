@@ -10,6 +10,9 @@
 //   - the app-level "Pair again" (AppLayout → remoteRepairHostId) still mounts
 //     the attach dialog in repair mode, whose pairing replaces the host in
 //     place (AttachRemoteModal.repairAndAttached.test.tsx pins replaceHostId).
+// And the phone half: the hub's menu is two buttons, Pair a phone (the app's
+// one dialog) and Phone access settings (the settings view); a request for
+// Phone access settings is answered by the Remote page's button alone.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
@@ -105,6 +108,59 @@ describe('Remote hub entry points', () => {
     );
     await flush();
     expect(workspacesList).toHaveBeenCalledWith('host-1');
+  });
+
+  it('the menu: Pair a phone closes the hub and opens the app\'s one dialog; settings opens in place', async () => {
+    act(() => useStore.setState({ phonePairOpen: false }));
+    await act(async () => root.render(<WebToggle variant="sidebar" />));
+    await flush();
+    const toggle = () => container.querySelector('[data-testid="deck-web-toggle"]') as HTMLButtonElement;
+    await act(async () => toggle().click());
+    await flush();
+    expect(document.querySelector('[data-testid="remote-hub-others"]')).not.toBeNull();
+    const pair = document.querySelector('[data-testid="web-menu-pair"]') as HTMLButtonElement;
+    expect(pair.textContent).toBe('Pair a phone…');
+    await act(async () => pair.click());
+    await flush();
+    expect(useStore.getState().phonePairOpen).toBe(true);
+    expect(toggle().getAttribute('aria-expanded')).toBe('false');
+    // No second dialog here: AppLayout mounts the one.
+    expect(document.querySelector('[data-testid="phone-pair-dialog"]')).toBeNull();
+
+    await act(async () => toggle().click());
+    await flush();
+    await act(async () => (document.querySelector('[data-testid="web-menu-settings"]') as HTMLButtonElement).click());
+    await flush();
+    expect(document.querySelector('[data-testid="web-menu-pair"]')).toBeNull();
+    expect(document.body.textContent).toContain('Share this computer');
+    act(() => useStore.setState({ phonePairOpen: false }));
+  });
+
+  it('a Phone access settings request opens the Remote page button once, and never the sidebar hub', async () => {
+    await act(async () => root.render(<><WebToggle variant="sidebar" /><WebToggle variant="page" /></>));
+    await flush();
+    await act(async () => useStore.getState().setPhoneSettingsPending(true));
+    await flush();
+    const toggles = Array.from(container.querySelectorAll('[data-testid="deck-web-toggle"]'));
+    expect(toggles.map((b) => b.getAttribute('aria-expanded'))).toEqual(['false', 'true']);
+    expect(document.querySelectorAll('[data-testid="web-menu-pair"]')).toHaveLength(0);
+    expect(document.body.textContent).toContain('Share this computer');
+    expect(useStore.getState().phoneSettingsPending).toBe(false);
+  });
+
+  it('a request made before the Remote page mounts is answered when it does', async () => {
+    act(() => useStore.setState({ phoneSettingsPending: true }));
+    await act(async () => root.render(<WebToggle variant="page" />));
+    await flush();
+    expect((container.querySelector('[data-testid="deck-web-toggle"]') as HTMLButtonElement).getAttribute('aria-expanded')).toBe('true');
+    expect(useStore.getState().phoneSettingsPending).toBe(false);
+  });
+
+  it('AppLayout mounts the one Pair a phone dialog from the store flag', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', '..', 'Layout', 'AppLayout.tsx'), 'utf-8');
+    expect(source).toMatch(/phonePairOpen && \(\s*<PhonePairDialog/);
+    expect(source).toMatch(/setPhoneSettingsPending\(true\);\s*s\.setAppRoute\('remote'\)/);
+    expect(source.match(/<PhonePairDialog/g)).toHaveLength(1);
   });
 
   it('AppLayout still mounts the attach dialog in repair mode for "Pair again"', () => {

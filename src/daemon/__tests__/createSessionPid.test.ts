@@ -20,6 +20,7 @@ class DeferredPty extends EventEmitter {
   connect(pid: number): void { this.pid = pid; this._socket.emit('ready_datapipe'); }
 }
 
+vi.mock('../../shared/terminalPty', async (importOriginal) => (await import('../../test-utils/ptyTransportStub')).routeSpawnToNodePtyMock(importOriginal));
 vi.mock('node-pty', () => {
   const spawn = () => { const p = new DeferredPty(); spawned.push(p); return p; };
   return { default: { spawn }, spawn };
@@ -118,6 +119,18 @@ describe('createSessionAsync registers only a PTY whose pid is known (#2398)', (
     spawned[0].connect(7171);
     await first;
     expect(manager.getSession('cap-2')).toBeUndefined();
+  });
+
+  it('a fractional bufferSizeMb makes a ring of whole bytes instead of failing the create (#3351)', async () => {
+    const cfg = createDefaultConfig();
+    cfg.session.bufferSizeMb = 0.3;
+    manager.setConfig(cfg);
+    const pending = manager.createSessionAsync({ id: 'ring-frac', cmd: process.execPath, cwd: process.cwd() });
+    await flush();
+    spawned[0].connect(5151);
+    await pending;
+    const ring = manager.getSession('ring-frac')!.ringBuffer as unknown as { capacity: number };
+    expect(ring.capacity).toBe(Math.floor(0.3 * 1024 * 1024));
   });
 
   it('reports a cancel, not the spawn error, when a cancelled create then fails to spawn', async () => {

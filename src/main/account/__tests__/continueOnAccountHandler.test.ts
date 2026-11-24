@@ -50,6 +50,16 @@ describe('continue on an account', () => {
     expect(d.rpc).toHaveBeenCalledWith('session.continueOnAccount', { sessionId: 'daemon-1', configDir: '/acc/plain' });
   });
 
+  it('a task pane\'s launch record follows only a move the daemon confirmed in place', async () => {
+    const movedInPlace = vi.fn();
+    await continuePane(deps({ movedInPlace }), { ptyId: 'daemon-1', accountId: plain.id });
+    expect(movedInPlace).toHaveBeenCalledWith('daemon-1', plain.id);
+    movedInPlace.mockClear();
+    await continuePane(deps({ movedInPlace, rpc: vi.fn(async () => ({ ok: false, code: 'busy' })) }), { ptyId: 'daemon-1', accountId: plain.id });
+    await continuePane(deps({ movedInPlace }), { ptyId: 'daemon-1', accountId: token.id });
+    expect(movedInPlace).not.toHaveBeenCalled();
+  });
+
   it('a pane that spawned with a vault sign-in moves to a new pane even for a plain account', async () => {
     const sourceSignedIn = vi.fn(() => true);
     const d = deps({ sourceSignedIn });
@@ -94,5 +104,13 @@ describe('continue on an account', () => {
     expect(await continuePane(noCwd, { ptyId: 'daemon-1', accountId: token.id })).toEqual({ ok: false, code: 'unknown_session' });
     expect(await continuePane(deps(), { ptyId: 'daemon-1', accountId: 'nobody' })).toEqual({ ok: false, code: 'invalid_account' });
     expect(await continuePane(deps({ connected: () => false }), { ptyId: 'daemon-1', accountId: token.id })).toEqual({ ok: false, code: 'unavailable' });
+  });
+
+  it('a relaunch blocked after the stop passes its reason and the resume line through; a line with control characters is dropped (#3437)', async () => {
+    const line = `cd -- '/work' && CLAUDE_CONFIG_DIR='/acc/plain' claude --resume ${SID}`;
+    const blocked = deps({ rpc: vi.fn<ContinuePaneDeps['rpc']>(async () => ({ ok: false, code: 'shell_typed', resumeCommand: line })) });
+    expect(await continuePane(blocked, { ptyId: 'daemon-1', accountId: plain.id })).toEqual({ ok: false, code: 'shell_typed', resumeCommand: line });
+    const odd = deps({ rpc: vi.fn<ContinuePaneDeps['rpc']>(async () => ({ ok: false, code: 'shell_busy', resumeCommand: `${line}\r` })) });
+    expect(await continuePane(odd, { ptyId: 'daemon-1', accountId: plain.id })).toEqual({ ok: false, code: 'shell_busy' });
   });
 });

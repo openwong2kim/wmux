@@ -83,6 +83,10 @@ export interface HeadlessStartRecordV1 {
   startedAt: string;
   endedAt?: string;
   survivors?: HeadlessSurvivor[];
+  /** The port handed to the agent as WMUX_TASK_PORT (from the worktree's `fanout.portRange`): no other live start gets it. */
+  taskPort?: number;
+  /** The branch tip the asking PC last took back in a bundle: work at that commit is on that PC too. */
+  fetchedHead?: string;
 }
 
 export interface HeadlessStartStoreOptions {
@@ -166,7 +170,7 @@ export class HeadlessStartStore {
   update(
     hostId: string,
     spawnId: string,
-    patch: Partial<Pick<HeadlessStartRecordV1, 'phase' | 'worktreeIntended' | 'worktreePath' | 'cwd' | 'baseCommit' | 'branch' | 'rootPid' | 'rootStart' | 'rootStartKernel' | 'linkId' | 'endedAt' | 'survivors'>>,
+    patch: Partial<Pick<HeadlessStartRecordV1, 'phase' | 'worktreeIntended' | 'worktreePath' | 'cwd' | 'baseCommit' | 'branch' | 'rootPid' | 'rootStart' | 'rootStartKernel' | 'linkId' | 'endedAt' | 'survivors' | 'taskPort' | 'fetchedHead'>>,
   ): HeadlessStartRecordV1 {
     const k = key(hostId, spawnId);
     const rec = this.records.get(k);
@@ -225,7 +229,7 @@ function coerceSurvivors(v: unknown): HeadlessSurvivor[] | null | undefined {
 /** A record as stored, or null when it is not one (also read by `wmux daemon headless status`). */
 export function coerceHeadlessStart(raw: unknown): HeadlessStartRecordV1 | null {
   if (!isPlainObject(raw) || raw['v'] !== 1) return null;
-  const { hostId, spawnId, agent, repoPath, treeId, sessionId, workspaceId, agentSessionId, lineage, runId, phase, worktreeIntended, worktreePath, cwd, baseCommit, branch, rootPid, rootStart, rootStartKernel, linkId, startedAt, endedAt } = raw;
+  const { hostId, spawnId, agent, repoPath, treeId, sessionId, workspaceId, agentSessionId, lineage, runId, phase, worktreeIntended, worktreePath, cwd, baseCommit, branch, rootPid, rootStart, rootStartKernel, linkId, startedAt, endedAt, taskPort, fetchedHead } = raw;
   const survivors = coerceSurvivors(raw['survivors']);
   if (survivors === null) return null;
   if (!isHostId(hostId) || !isSpawnId(spawnId) || !isAgentSlug(agent)) return null;
@@ -243,6 +247,8 @@ export function coerceHeadlessStart(raw: unknown): HeadlessStartRecordV1 | null 
   if (rootStartKernel !== undefined && !isKernelStart(rootStartKernel)) return null;
   if (linkId !== undefined && (typeof linkId !== 'string' || !UUID_RE.test(linkId))) return null;
   if (!isIsoString(startedAt) || (endedAt !== undefined && !isIsoString(endedAt))) return null;
+  if (taskPort !== undefined && (!Number.isInteger(taskPort) || (taskPort as number) < 1 || (taskPort as number) > 65535)) return null;
+  if (fetchedHead !== undefined && (typeof fetchedHead !== 'string' || !/^[0-9a-f]{40,64}$/.test(fetchedHead))) return null;
   return {
     v: 1, hostId, spawnId, agent, repoPath, ...(treeId !== undefined ? { treeId: treeId as string } : {}), sessionId, workspaceId, agentSessionId, lineage, runId,
     phase: phase as HeadlessStartPhase,
@@ -258,5 +264,7 @@ export function coerceHeadlessStart(raw: unknown): HeadlessStartRecordV1 | null 
     startedAt,
     ...(endedAt !== undefined ? { endedAt } : {}),
     ...(survivors ? { survivors } : {}),
+    ...(taskPort !== undefined ? { taskPort: taskPort as number } : {}),
+    ...(fetchedHead !== undefined ? { fetchedHead } : {}),
   };
 }

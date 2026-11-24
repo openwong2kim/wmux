@@ -11,7 +11,7 @@ export type TerminalChatFailure = 'no-record' | 'transport-refused' | 'invalid-r
 type Exchange = { ok: true; body: Record<string, unknown> } | { ok: false; left: boolean; failure: TerminalChatFailure; unauthorized?: true; status?: number };
 /** `turn`: the plugin's running episode; absent from a plugin that predates it. */
 interface NativeRead { status: TranscriptStatus; page: TranscriptPage; turn?: ChatTurn }
-export interface TerminalChatSendOutcome { result: ChatSendResult; reason?: 'receipts-full' | 'transport-lost' | 'too-large' | 'unauthorized' }
+export interface TerminalChatSendOutcome { result: ChatSendResult; reason?: 'receipts-full' | 'transport-lost' | 'too-large' | 'unauthorized' | 'unsent-paste' }
 /** What the plugin did with an abort. `turn` is the plugin's episode when it answered. */
 export interface TerminalChatAbortOutcome {
   /** `pending`: the plugin's admission fence, a send accepted but not yet running. */

@@ -1,11 +1,38 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runCli } from '../runCli';
 
 const isWin = process.platform === 'win32';
+
+/**
+ * Bound on the survivor probe below. Inside the case's own 20 s, after
+ * runCli's 1.5 s, so a slow WMI answer fails with this probe's message rather
+ * than as an unexplained case timeout.
+ */
+const SURVIVOR_PROBE_MS = 15_000;
+
+/**
+ * How many node.exe processes still carry the hang shim's marker. Asked
+ * asynchronously: a WMI query can take seconds on a busy runner, and a
+ * synchronous one held the event loop, and with it the case's own timeout,
+ * for all of that time.
+ */
+function hangSurvivors(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      "@(Get-CimInstance Win32_Process | ? { $_.CommandLine -like '*wmux-runcli-hang-marker*' -and $_.Name -eq 'node.exe' }).Count"],
+    { encoding: 'utf8', windowsHide: true, timeout: SURVIVOR_PROBE_MS }, (error, stdout) => {
+      if (!error) { resolve(stdout.trim()); return; }
+      const { killed, code, signal } = error as Error & { killed?: boolean; code?: unknown; signal?: unknown };
+      reject(new Error(killed
+        ? `the survivor probe gave no answer within ${SURVIVOR_PROBE_MS} ms`
+        : `the survivor probe failed (code ${String(code)}, signal ${String(signal)}): ${error.message}`));
+    });
+  });
+}
 
 // #1619. An npm-installed CLI on Windows is a .cmd shim. Node's execFile cannot
 // find it (no PATHEXT walk) and would refuse to spawn it without a shell anyway,
@@ -95,10 +122,7 @@ describe.runIf(isWin)('runCli on Windows — real .cmd shims', () => {
   it('on timeout kills the whole tree, including the node process behind the shim', async () => {
     await expect(runCli('wmuxhang', [], { env, timeoutMs: 1500, maxBuffer: 64_000 }))
       .rejects.toMatchObject({ code: 'ETIMEDOUT' });
-    const survivors = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-      "@(Get-CimInstance Win32_Process | ? { $_.CommandLine -like '*wmux-runcli-hang-marker*' -and $_.Name -eq 'node.exe' }).Count"],
-    { encoding: 'utf8', windowsHide: true }).trim();
-    expect(survivors).toBe('0');
+    expect(await hangSurvivors()).toBe('0');
   }, 20_000);
 });
 

@@ -35,7 +35,9 @@ export default defineConfig({
   // A CRLF hashbang line loads (scripts/lib/vitest-hashbang-lf.mjs).
   plugins: [hashbangLf()],
   test: {
-    setupFiles: ['./src/test-utils/isolateDataDir.ts', './src/test-utils/jsdomEnv.ts'],
+    // requireRustEngine.ts: CI promises the Rust terminal core; it fails the
+    // run there when the module is missing or does not load.
+    setupFiles: ['./src/test-utils/requireRustEngine.ts', './src/test-utils/isolateDataDir.ts', './src/test-utils/jsdomEnv.ts'],
     // Installs the Electron binary once before any worker starts, so no test
     // that imports `electron` downloads it mid-run. Root-only in vitest 5 (not
     // inherited by the projects), so it runs once per run.

@@ -556,6 +556,7 @@ export type RpcMethod =
   | 'browser.type.humanlike'
   | 'browser.cdp.target'
   | 'browser.cdp.info'
+  | 'browser.cdp.grant'
   | 'browser.screenshot'
   | 'browser.evaluate'
   | 'browser.console.get'
@@ -699,6 +700,14 @@ export type RpcMethod =
   | 'a2a.remote.spawnPolicy.set'
   | 'a2a.remote.statusLabels.get'
   | 'a2a.remote.statusLabels.set'
+  | 'a2a.remote.answer'
+  | 'a2a.remote.answer.send'
+  | 'a2a.remote.answers.get'
+  | 'a2a.remote.answers.set'
+  | 'a2a.remote.approve'
+  | 'a2a.remote.approve.send'
+  | 'a2a.remote.approvals.get'
+  | 'a2a.remote.approvals.set'
   | 'a2a.remote.spawnRequests.list'
   | 'a2a.remote.spawn.work'
   | 'a2a.remote.spawn.decide'
@@ -960,6 +969,7 @@ export const ALL_RPC_METHODS = [
   'browser.type.humanlike',
   'browser.cdp.target',
   'browser.cdp.info',
+  'browser.cdp.grant',
   'browser.screenshot',
   'browser.evaluate',
   'browser.console.get',
@@ -1080,6 +1090,14 @@ export const ALL_RPC_METHODS = [
   'a2a.remote.spawnPolicy.set',
   'a2a.remote.statusLabels.get',
   'a2a.remote.statusLabels.set',
+  'a2a.remote.answer',
+  'a2a.remote.answer.send',
+  'a2a.remote.answers.get',
+  'a2a.remote.answers.set',
+  'a2a.remote.approve',
+  'a2a.remote.approve.send',
+  'a2a.remote.approvals.get',
+  'a2a.remote.approvals.set',
   'a2a.remote.spawnRequests.list',
   'a2a.remote.spawn.work',
   'a2a.remote.spawn.decide',

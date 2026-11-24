@@ -5,9 +5,9 @@ import { useT } from '../../hooks/useT';
 import Button from '../ui/Button';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import WebToggle, { webPairUrl } from '../StatusBar/WebToggle';
-import { revokeFailureMessage } from '../StatusBar/PairedDevicesModal';
+import { grantFailureMessage, revokeFailureMessage } from '../StatusBar/PairedDevicesModal';
 import { A2aExposureChecklist } from '../Settings/A2aExposureChecklist';
-import { IconChevron, IconComputer, IconCopy, IconElbow, IconMessage, IconPhone, IconServer } from '../icons';
+import { IconChevron, IconComputer, IconCopy, IconElbow, IconMessage, IconPhone, IconPlus, IconServer } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { timeAgo } from '../../utils/timeAgo';
 import type { WebDeviceSummary, WebTerminalInfo } from '../../../shared/web';
@@ -41,6 +41,8 @@ import { readSpawnPolicy, saveSpawnPolicy, type SpawnPolicySaveResult } from './
 import type { A2aSpawnOutgoingList, A2aSpawnOutgoingSummary, A2aSpawnPlace, A2aSpawnPolicyV1 } from '../../../shared/a2aSpawn';
 import { agentRow } from '../../../shared/agentIdentity';
 import RemoteSpawnAskDialog from './RemoteSpawnAskDialog';
+import RemoteApprovalsRow from './RemoteApprovalsRow';
+import { ApprovalsController } from './remoteApprovals';
 
 /** How often the page re-reads the roster, the hosts and the server state. */
 export const REMOTE_PAGE_POLL_MS = 10_000;
@@ -95,7 +97,7 @@ interface PcRow {
   links: A2aLinkRecordV1[];
 }
 
-type Confirm = { kind: 'entry' | 'pc' | 'link'; id: string } | null;
+type Confirm = { kind: 'entry' | 'pc' | 'link' | 'grant'; id: string } | null;
 
 /**
  * How many of this PC's panes an exposure lets that PC see now: a listed pane
@@ -172,8 +174,6 @@ export default function RemotePage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<{ key: string; message: string } | null>(null);
   const [details, setDetails] = useState(false);
-  /** The line's Share & pair popover is open (see the This computer line). */
-  const [shareOpen, setShareOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [hostWorkspaces, setHostWorkspaces] = useState<Record<string, RemoteWorkspaceSummary[] | 'loading' | 'failed'>>({});
@@ -185,6 +185,18 @@ export default function RemotePage() {
   const lastLive = useRef<Map<string, boolean> | null>(null);
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
+  // Remote approvals per paired PC (remoteApprovals.ts): the controller holds the
+  // levels, a raise waiting for its confirmation and the save in flight.
+  const [, setApprovalsTick] = useState(0);
+  const approvals = useRef<ApprovalsController | null>(null);
+  const approvalsApi = window.electronAPI?.a2aRemote;
+  if (!approvals.current && approvalsApi?.approvalsGet && approvalsApi.approvalsSet) {
+    approvals.current = new ApprovalsController(
+      { approvalsGet: () => approvalsApi.approvalsGet(), approvalsSet: (hostId, level, expected) => approvalsApi.approvalsSet(hostId, level, expected) },
+      { failed: t('remotePage.approvals.failed'), changed: t('remotePage.approvals.changed') },
+      () => { if (mounted.current) setApprovalsTick((n) => n + 1); },
+    );
+  }
 
   // A failed read keeps the last list.
   const readOutgoing = useCallback(async () => {
@@ -220,6 +232,7 @@ export default function RemotePage() {
     // A failed read keeps the last policy.
     if (REMOTE_SPAWN_UI_ENABLED) reads.push(readSpawnPolicy().then((p) => { if (mounted.current && p) setSpawnPolicy(p); }));
     if (REMOTE_SPAWN_UI_ENABLED) reads.push(readOutgoing());
+    if (approvals.current) reads.push(approvals.current.load());
     await Promise.all(reads);
     // A PC that joined this one sees only what this PC lists for it.
     const exposureGet = api?.a2aRemote?.exposureGet;
@@ -375,11 +388,13 @@ export default function RemotePage() {
     } catch {
       if (mounted.current) setError({ key, message: t('a2aLink.error.failed') });
     } finally {
+      // Busy until the roster is read back, so a row is never offered again
+      // in the state the action just changed.
+      await refresh();
       if (mounted.current) {
         setBusy(null);
         setConfirming(null);
       }
-      await refresh();
     }
   }, [refresh, t]);
 
@@ -425,6 +440,16 @@ export default function RemotePage() {
     if (!api?.web?.deviceRevoke) return t('web.revokeUnavailable');
     const res = await api.web.deviceRevoke(entry.id);
     return res.ok ? null : revokeFailureMessage(t, res);
+  });
+
+  // A phone's typing grant, changed in place: no re-pairing. Taking it away
+  // also drops that device's open streams (the daemon does it), so the phone
+  // re-reads its smaller grant at once.
+  const setTyping = (entry: RemoteEntry, allowInput: boolean) => run(entry.key, async () => {
+    const api = window.electronAPI?.web;
+    if (!api?.deviceSetInput) return t('web.grantUnavailable');
+    const res = await api.deviceSetInput(entry.id, allowInput);
+    return res.ok ? null : grantFailureMessage(t, res);
   });
 
   // A PC paired either way is dropped on both records this PC holds for it.
@@ -569,6 +594,23 @@ export default function RemotePage() {
     return `${what} · ${state}`;
   };
 
+  // What agents on that PC may answer here, nested under its row.
+  const approvalsRow = (c: ApprovalsController, pc: { hostId: string; name: string }) => (
+    <RemoteApprovalsRow
+      key={`approvals:${pc.hostId}`}
+      hostId={pc.hostId}
+      name={pc.name}
+      level={c.levelOf(pc.hostId)}
+      pending={c.pending[pc.hostId]?.level ?? null}
+      busy={c.busy[pc.hostId] !== undefined}
+      damaged={c.damaged}
+      error={c.errors[pc.hostId] ?? null}
+      onChange={(level) => void c.choose(pc.hostId, level)}
+      onConfirm={() => void c.confirm(pc.hostId)}
+      onCancel={() => c.cancel(pc.hostId)}
+      t={t}
+    />
+  );
   const seeLabel = (count: number) => (count === 0 ? t('remotePage.perm.seesNone') : count === 1 ? t('remotePage.perm.seesOne') : t('remotePage.perm.sees', { count }));
 
   // Rows of the one list, by group.
@@ -628,6 +670,7 @@ export default function RemotePage() {
         </span>
         {rowError(key)}
       </li>,
+      ...(approvals.current?.loaded ? [approvalsRow(approvals.current, pc)] : []),
       ...pc.links.map((l) => (
         <A2aLinkRow
           key={l.linkId}
@@ -742,8 +785,33 @@ export default function RemotePage() {
         <span className="wmux-remote-meta" data-remote-viewing>{meta}</span>
         {statusCell(d.live ? 'connected' : 'disconnected', d.live, d.live ? null : d.lastSeenAt)}
         <span className="wmux-remote-acts">
-          {twoStep(d.key, 'entry', t('web.revoke'), t('web.revokeConfirm'), () => void removeEntry(d), d.kind)}
+          {isConfirming('grant', d.key) ? (
+            <>
+              <Button size="sm" variant="ghost" onClick={() => setConfirming(null)} autoFocus>{t('remotePage.cancel')}</Button>
+              <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void setTyping(d, true)} data-remote-grant-confirm={d.id}>{t('remotePage.allowTyping')}</Button>
+            </>
+          ) : !isConfirming('entry', d.key) && (
+            <>
+              {/* A grandfathered grant can type but not approve: setting it makes it explicit. */}
+              {(d.access === 'view' || d.grantImplicit) && (
+                <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => {
+                  // An older failure on this row would share the line the question uses.
+                  if (error?.key === d.key) setError(null);
+                  setConfirming({ kind: 'grant', id: d.key });
+                }} data-remote-grant={d.id}>{t('remotePage.allowTyping')}</Button>
+              )}
+              {d.access !== 'view' && (
+                <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => void setTyping(d, false)} data-remote-view-only={d.id}>{t('remotePage.makeViewOnly')}</Button>
+              )}
+            </>
+          )}
+          {!isConfirming('grant', d.key) && twoStep(d.key, 'entry', t('web.revoke'), t('web.revokeConfirm'), () => void removeEntry(d), d.kind)}
         </span>
+        {isConfirming('grant', d.key) && (
+          <p className="wmux-remote-row-note" role="status">
+            {t(info?.allowInput ? 'remotePage.allowTypingAsk' : 'remotePage.allowTypingAskInputOff', { name: d.name || t('web.deviceUnnamed') })}
+          </p>
+        )}
         {rowError(d.key)}
       </li>
     );
@@ -767,11 +835,20 @@ export default function RemotePage() {
     </li>
   ));
 
+  const pairPhone = () => useStore.getState().setPhonePairOpen(true);
   const group = (id: string, title: string, rows: ReactNode[], hint?: string) => rows.length > 0 && [
     <li key={`g:${id}`} className="wmux-remote-grp" data-remote-group={id}>
       <span>{title}</span>
       <span className="wmux-remote-count">{id === 'pcs' ? pcTotal : id === 'phones' ? deviceEntries.length : peerEntries.length}</span>
       {hint && <span className="wmux-remote-hint">{hint}</span>}
+      {id === 'phones' && (
+        <>
+          <span className="flex-1" />
+          <Button variant="ghost" size="sm" onClick={pairPhone} data-remote-pair-phone-group>
+            <span className="inline-flex items-center gap-1"><IconPlus size={12} />{t('web.phonePairingAdd')}</span>
+          </Button>
+        </>
+      )}
     </li>,
     ...rows,
   ];
@@ -808,6 +885,7 @@ export default function RemotePage() {
             </Button>
           )}
           <Button variant="secondary" size="md" onClick={() => setConnect({})} data-remote-connect>{t('remotePage.connect.button')}</Button>
+          <Button variant="secondary" size="md" onClick={pairPhone} data-remote-pair-phone>{t('web.phonePairingOpen')}</Button>
         </div>
         <p className="wmux-remote-summary" data-remote-summary>
           {summary.length > 0 ? summary.join(' · ') : loaded ? t('remotePage.sumNothing') : ''}
@@ -830,11 +908,9 @@ export default function RemotePage() {
               {a2aWord}
             </span>
           )}
-          {/* Phone access off: its switch (the share popover's Start) is one click away.
-              Pair a phone starts sharing from this popover, so the next poll
-              reads phone access as on. Keep the button, and the QR it shows,
-              until the popover closes. */}
-          {(reach === 'off' || shareOpen) && <WebToggle variant="page" onOpenChange={setShareOpen} />}
+          {/* Phone access settings: sharing, its grants and Stop. Pairing a
+              phone is the Pair a phone dialog, not this button. */}
+          <WebToggle variant="page" />
           <span className="flex-1" />
           <button
             type="button"
@@ -866,13 +942,6 @@ export default function RemotePage() {
               <>
                 <dt>{t('remotePage.input')}</dt>
                 <dd>{info?.allowInput ? t('remotePage.inputOn') : t('remotePage.viewOnly')}</dd>
-                <dd />
-              </>
-            )}
-            {reach !== 'off' && (
-              <>
-                <dt>{t('remotePage.phones')}</dt>
-                <dd><WebToggle variant="page" /></dd>
                 <dd />
               </>
             )}
@@ -1006,7 +1075,12 @@ export default function RemotePage() {
       {nothing ? (
         <div className="wmux-remote-empty" data-remote-empty>
           <p>{t('remotePage.emptyBody')}</p>
-          <Button variant={needsCount > 0 ? 'secondary' : 'primary'} size="md" onClick={() => setConnect({})}>{t('remotePage.connect.button')}</Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant={needsCount > 0 ? 'secondary' : 'primary'} size="md" onClick={() => setConnect({})}>{t('remotePage.connect.button')}</Button>
+            <Button variant="ghost" size="md" onClick={pairPhone} data-remote-pair-phone-empty>
+              <span className="inline-flex items-center gap-1"><IconPlus size={12} />{t('web.phonePairingAdd')}</span>
+            </Button>
+          </div>
         </div>
       ) : (
         <ul className="wmux-remote-list" aria-label={t('remotePage.connections')} data-remote-list>

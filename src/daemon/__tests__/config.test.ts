@@ -18,6 +18,7 @@ import {
   CONFIG_READ_ATTEMPTS,
   setConfigReadSleepForTest,
   resetConfigReadStreaks,
+  RING_COMPRESSION_DEFAULT_MIGRATION,
 } from '../config';
 import {
   DESKTOP_PRESENCE_STALE_AFTER_MS,
@@ -1054,7 +1055,7 @@ describe('loadConfig — one-time PowerShell gate migration (#1939)', () => {
   }
 
   it('a fresh config already carries the migration id', () => {
-    expect(createDefaultConfig().appliedMigrations).toEqual([GATE_POWERSHELL_MIGRATION]);
+    expect(createDefaultConfig().appliedMigrations).toEqual([GATE_POWERSHELL_MIGRATION, RING_COMPRESSION_DEFAULT_MIGRATION]);
     expect(createDefaultConfig().gate?.gatedTools).toContain('PowerShell');
   });
 
@@ -1063,13 +1064,13 @@ describe('loadConfig — one-time PowerShell gate migration (#1939)', () => {
     expect(loadConfig().gate?.gatedTools).toEqual(['Bash', 'PowerShell', 'Write']);
     const disk = readDisk();
     expect(disk.gate).toEqual({ gatedTools: ['Bash', 'PowerShell', 'Write'] });
-    expect(disk.appliedMigrations).toEqual([GATE_POWERSHELL_MIGRATION]);
+    expect(disk.appliedMigrations).toEqual([GATE_POWERSHELL_MIGRATION, RING_COMPRESSION_DEFAULT_MIGRATION]);
   });
 
   it('does not add PowerShell where Bash is not gated, but still records the marker', () => {
     writeRawConfig(preMigrationConfig({ gatedTools: ['Write'] }));
     expect(loadConfig().gate?.gatedTools).toEqual(['Write']);
-    expect(readDisk().appliedMigrations).toEqual([GATE_POWERSHELL_MIGRATION]);
+    expect(readDisk().appliedMigrations).toEqual([GATE_POWERSHELL_MIGRATION, RING_COMPRESSION_DEFAULT_MIGRATION]);
     // A gate the user turned off stays off.
     writeRawConfig(preMigrationConfig({ gatedTools: [] }));
     expect(loadConfig().gate?.gatedTools).toEqual([]);
@@ -1088,7 +1089,7 @@ describe('loadConfig — one-time PowerShell gate migration (#1939)', () => {
 
     expect(loadConfig().gate?.gatedTools).toEqual(['Bash']);
     expect(loadConfig().gate?.gatedTools).toEqual(['Bash']);
-    expect(readDisk().appliedMigrations).toEqual([GATE_POWERSHELL_MIGRATION]);
+    expect(readDisk().appliedMigrations).toEqual([GATE_POWERSHELL_MIGRATION, RING_COMPRESSION_DEFAULT_MIGRATION]);
   });
 
   it('leaves an absent gate slice absent on disk, so it keeps tracking the defaults', () => {
@@ -1098,7 +1099,7 @@ describe('loadConfig — one-time PowerShell gate migration (#1939)', () => {
     expect(loadConfig().gate?.gatedTools).toContain('PowerShell');
     const disk = readDisk();
     expect('gate' in disk).toBe(false);
-    expect(disk.appliedMigrations).toEqual([GATE_POWERSHELL_MIGRATION]);
+    expect(disk.appliedMigrations).toEqual([GATE_POWERSHELL_MIGRATION, RING_COMPRESSION_DEFAULT_MIGRATION]);
   });
 
   it('a malformed gate slice still degrades to the defaults (gate stays on)', () => {
@@ -1109,11 +1110,11 @@ describe('loadConfig — one-time PowerShell gate migration (#1939)', () => {
   it('a malformed ledger is repaired, keeping the string ids it had', () => {
     writeRawConfig({ ...preMigrationConfig({ gatedTools: ['Bash'] }), appliedMigrations: ['other', 7] });
     expect(loadConfig().gate?.gatedTools).toEqual(['Bash', 'PowerShell']);
-    expect(readDisk().appliedMigrations).toEqual(['other', GATE_POWERSHELL_MIGRATION]);
+    expect(readDisk().appliedMigrations).toEqual(['other', GATE_POWERSHELL_MIGRATION, RING_COMPRESSION_DEFAULT_MIGRATION]);
 
     writeRawConfig({ ...preMigrationConfig({ gatedTools: ['Bash'] }), appliedMigrations: 'nope' });
     expect(loadConfig().gate?.gatedTools).toEqual(['Bash', 'PowerShell']);
-    expect(readDisk().appliedMigrations).toEqual([GATE_POWERSHELL_MIGRATION]);
+    expect(readDisk().appliedMigrations).toEqual([GATE_POWERSHELL_MIGRATION, RING_COMPRESSION_DEFAULT_MIGRATION]);
   });
 
   it('tries a failed save once per process, while the migrated list still applies in memory', () => {
@@ -1140,5 +1141,85 @@ describe('loadConfig — one-time PowerShell gate migration (#1939)', () => {
       appliedMigrations: [GATE_POWERSHELL_MIGRATION],
     });
     expect(loadConfig().gate?.gatedTools).toEqual(['Bash']);
+  });
+});
+
+describe('loadConfig — one-time ring compression default', () => {
+  const diskSession = () =>
+    JSON.parse(fs.readFileSync(path.join(getWmuxDir(), 'config.json'), 'utf-8')).session as Record<string, unknown>;
+  /** A config.json an older daemon created: the gate migration ran, `false` is stored. */
+  function olderConfig(ringCompression: unknown): Record<string, unknown> {
+    const c = createDefaultConfig();
+    return { ...c, session: { ...c.session, ringCompression }, appliedMigrations: [GATE_POWERSHELL_MIGRATION] };
+  }
+
+  it('a fresh config leaves it to Labs', () => {
+    expect('ringCompression' in createDefaultConfig().session).toBe(false);
+  });
+
+  it('drops the false an older daemon stored, once; a false set afterwards stays', () => {
+    writeRawConfig(olderConfig(false));
+    expect(loadConfig().session.ringCompression).toBeUndefined();
+    expect('ringCompression' in diskSession()).toBe(false);
+
+    const later = JSON.parse(fs.readFileSync(path.join(getWmuxDir(), 'config.json'), 'utf-8'));
+    later.session.ringCompression = false;
+    writeRawConfig(later);
+    expect(loadConfig().session.ringCompression).toBe(false);
+    expect(diskSession().ringCompression).toBe(false);
+  });
+
+  it('keeps a false in a hand-written file that no daemon migrated', () => {
+    writeRawConfig({ session: { ringCompression: false } });
+    expect(loadConfig().session.ringCompression).toBe(false);
+    expect(diskSession().ringCompression).toBe(false);
+    expect(loadConfig().session.ringCompression).toBe(false);
+  });
+
+  it('keeps false while the migrated file cannot be saved', () => {
+    writeRawConfig(olderConfig(false));
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw new Error('EACCES');
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      for (let i = 0; i < 3; i++) expect(loadConfig().session.ringCompression).toBe(false);
+    } finally {
+      rename.mockRestore();
+      error.mockRestore();
+      resetGateMigrationSaveFailure();
+    }
+    expect(diskSession().ringCompression).toBe(false);
+  });
+
+  it('leaves the migration pending in memory after a failed save, so a later save cannot pin false', () => {
+    writeRawConfig(olderConfig(false));
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
+      throw new Error('EACCES');
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let loaded: DaemonConfig;
+    try {
+      loaded = loadConfig();
+    } finally {
+      rename.mockRestore();
+      error.mockRestore();
+      resetGateMigrationSaveFailure();
+    }
+    expect(loaded.session.ringCompression).toBe(false);
+    expect(loaded.appliedMigrations).not.toContain(RING_COMPRESSION_DEFAULT_MIGRATION);
+    // A later save of that config (as `wmux gate` does) succeeds.
+    saveConfigOrThrow(loaded);
+    const disk = JSON.parse(fs.readFileSync(path.join(getWmuxDir(), 'config.json'), 'utf-8'));
+    expect(disk.session.ringCompression === false && disk.appliedMigrations.includes(RING_COMPRESSION_DEFAULT_MIGRATION)).toBe(false);
+    // The next load runs the migration and drops the false.
+    expect(loadConfig().session.ringCompression).toBeUndefined();
+  });
+
+  it('keeps a stored true, and never backfills a value that is not a boolean', () => {
+    writeRawConfig(olderConfig(true));
+    expect(loadConfig().session.ringCompression).toBe(true);
+    writeRawConfig({ ...olderConfig('yes'), appliedMigrations: [GATE_POWERSHELL_MIGRATION, RING_COMPRESSION_DEFAULT_MIGRATION] });
+    expect(loadConfig().session.ringCompression).toBeUndefined();
   });
 });

@@ -16,7 +16,10 @@
 // The broker hosts a session only for the peer the OS names (brokerPeer.ts):
 // this test process connects, so its own pid and parent are the true ones.
 // koffi resolves through NODE_PATH, as it does beside the packaged bundle.
-// Windows named pipes give no peer pid, so there every session is refused.
+// On Windows the broker listens with the terminal core's native pipe listener
+// (pipe-listener-v2, named by WMUX_TERMINAL_CORE_MODULE), which reads the same
+// facts; without that core the broker does not start, so this suite skips
+// there, and fails instead under WMUX_REQUIRE_RUST_CORE=1 (CI).
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
@@ -25,6 +28,7 @@ import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
+import { loadNativePipe } from '../nativePipe';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const isWin = process.platform === 'win32';
@@ -40,7 +44,19 @@ const INITIALIZE = JSON.stringify({
 let home = '';
 let broker: ChildProcess | null = null;
 let brokerLog = '';
-const hostable = !isWin;
+/** Windows: the native pipe listener the broker needs. */
+let nativePipeReady = false;
+if (isWin) {
+  try {
+    nativePipeReady = loadNativePipe() !== null;
+  } catch (error) {
+    if (process.env.WMUX_REQUIRE_RUST_CORE === '1') throw error;
+  }
+}
+/** The broker starts and hosts sessions here. */
+const hostable = !isWin || nativePipeReady;
+/** The suites below that rest on unix files (koffi, file modes, /tmp). */
+const unixOnly = !isWin;
 
 function pipeName(suffix = SUFFIX, dir = home): string {
   return isWin
@@ -127,7 +143,7 @@ async function startBroker(
   const env: NodeJS.ProcessEnv = { HOME: dir, USERPROFILE: dir, WMUX_DATA_SUFFIX: suffix };
   if (envToken !== null) env.WMUX_AUTH_TOKEN = envToken;
   Object.assign(env, extraEnv);
-  for (const keep of ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP', 'TMPDIR']) {
+  for (const keep of ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP', 'TMPDIR', 'WMUX_TERMINAL_CORE_MODULE']) {
     if (process.env[keep] !== undefined) env[keep] = process.env[keep];
   }
   // The bundle sits outside the repository: koffi is found only through NODE_PATH.
@@ -203,11 +219,11 @@ async function logged(text: string, read: () => string = () => brokerLog): Promi
   expect(read()).toContain(text);
 }
 
-describe('broker handshake ack', () => {
+describe.runIf(hostable)('broker handshake ack', () => {
   beforeAll(async () => {
     home = fs.mkdtempSync(path.join(isWin ? os.tmpdir() : '/tmp', 'bak-'));
     broker = await startBroker(home, SUFFIX, true, (text) => { brokerLog += text; });
-    if (hostable) await logged('peer-pid: available');
+    await logged('peer-pid: available');
   }, 60_000);
 
   afterAll(async () => {
@@ -284,9 +300,9 @@ describe('broker handshake ack', () => {
     for (const s of sessions) s.socket.destroy();
   });
 
-  it('a wrong token with ack: 1 gets ok:false and the connection closes', async () => {
+  it('a wrong token with ack: 1 gets ok:false and the connection closes (Windows: closed with no bytes)', async () => {
     const s = await open(handshake({ ack: 1 }, 'wrong-token'));
-    expect(await s.closed).toBe('{"wmuxBroker":1,"ok":false,"error":"auth"}\n');
+    expect(await s.closed).toBe(isWin ? '' : '{"wmuxBroker":1,"ok":false,"error":"auth"}\n');
   });
 
   it('a wrong token without ack is dropped with no bytes, as before', async () => {
@@ -297,7 +313,7 @@ describe('broker handshake ack', () => {
   it.runIf(hostable)('a client with the token that names another pid is closed with no bytes, with or without ack', async () => {
     const asked = await open(handshake({ ack: 1, callerPid: process.ppid }));
     expect(await asked.closed).toBe('');
-    await logged(`peer refused (peer): claimed pid ${process.ppid}, peer ${process.pid}`);
+    await logged(`peer refused (${isWin ? 'pid-mismatch' : 'peer'}): claimed pid ${process.ppid}, peer ${process.pid}`);
     const silent = await open(handshake({ callerPid: process.ppid }));
     expect(await silent.closed).toBe('');
   });
@@ -316,7 +332,7 @@ describe('broker handshake ack', () => {
   });
 
   it.runIf(hostable)('the node shim is hosted by a broker that reads its pid', async () => {
-    const dir = fs.mkdtempSync(path.join('/tmp', 'nsh-'));
+    const dir = fs.mkdtempSync(path.join(isWin ? os.tmpdir() : '/tmp', 'nsh-'));
     try {
       const run = await runShim(buildShim(dir), home, SUFFIX, TOKEN, INITIALIZE + '\n', '"serverInfo"');
       expect(JSON.parse(run.stdout.split('\n')[0])).toMatchObject({ id: 1, result: { serverInfo: { name: 'wmux' } } });
@@ -327,22 +343,21 @@ describe('broker handshake ack', () => {
     }
   });
 
-  it('the node shim ends on a wrong token and runs no full server', async () => {
+  it('the node shim ends on a wrong token and runs no full server (Windows: it runs the full server)', async () => {
     const dir = fs.mkdtempSync(path.join(isWin ? os.tmpdir() : '/tmp', 'nsh-'));
     try {
       const run = await runShim(buildShim(dir), home, SUFFIX, 'wrong-token');
+      if (isWin) {
+        expect(run.stderr).toContain('[wmux-mcp-shim] the broker closed the connection before its ack; running the full server');
+        expect(run.stdout).toBe(`FULL SERVER pid=${run.pid}\n`);
+        return;
+      }
       expect(run.stderr).toContain('[wmux-mcp-shim] broker refused the session: auth');
       expect(run.stdout).not.toContain('FULL SERVER');
       expect(run.code).toBe(1);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  });
-
-  it.runIf(isWin)('refuses every session where the OS names no peer (Windows named pipes)', async () => {
-    const s = await open(handshake({ ack: 1 }));
-    expect(await s.closed).toBe('');
-    await logged('peer refused (peer-unverified)');
   });
 });
 
@@ -392,7 +407,7 @@ describe('the node shim with no token file', () => {
   });
 });
 
-describe.runIf(hostable)('a broker that cannot read peer pids', () => {
+describe.runIf(unixOnly)('a broker that cannot read peer pids', () => {
   const suffix = `-brokernokoffi-${process.pid}`;
   let dir = '';
   let child: ChildProcess | null = null;
@@ -431,7 +446,7 @@ describe.runIf(hostable)('a broker that cannot read peer pids', () => {
 // a new token takes effect for the next session with no restart, and a file it
 // cannot use refuses the session before the ack (closed with no bytes, so the
 // shim runs its own full server) while the broker keeps serving.
-describe.runIf(hostable)('a broker that reads its token from the file', () => {
+describe.runIf(unixOnly)('a broker that reads its token from the file', () => {
   const suffix = `-brokertokfile-${process.pid}`;
   const first = `first-token-${process.pid}`;
   const second = `second-token-${process.pid}`;
@@ -501,7 +516,7 @@ describe.runIf(hostable)('a broker that reads its token from the file', () => {
 // config.json mcp.broker limits, as the app passes them (shared/brokerLimits.ts).
 // A session over a limit is closed before the ack, so the shim runs its own
 // full server, and the broker's log names the setting.
-describe.runIf(hostable)('a broker with limits set', () => {
+describe.runIf(unixOnly)('a broker with limits set', () => {
   const brokers: { child: ChildProcess; dir: string }[] = [];
   const start = async (name: string, limits: Record<string, number | null>) => {
     const dir = fs.mkdtempSync(path.join('/tmp', `bl${name}-`));

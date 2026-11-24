@@ -755,6 +755,28 @@ and `!` shell mode: the command (`bash_input`, labelled with the command line)
 and what it printed (`bash_output`, a fixed label; the output itself is not
 sent). The subtype set is additive: render an unknown one as a neutral meta row.
 
+**A message Claude Code stored as a paste is shown as the pasted text.**
+Claude Code records a long or multi-line message as a paste: the text inside
+`<pasted_content id="…">` and `</pasted_content id="…">`, with a line break
+right inside each tag (2.1.326 writes
+`"\n\n<pasted_content id=\"3de0\">\n…\n</pasted_content id=\"3de0\">\n"`).
+The daemon removes each matched pair before the row is served: an opening tag
+and the later closing tag with the same id, with the one `\n` Claude Code
+writes right inside each tag. The text between them is kept byte for byte: no
+trim, no re-wrap, so a `\r` or CRLF, trailing spaces, blank lines and Korean
+text reach the client exactly as typed, and a client can settle its outbox by
+comparing `user_text.text` with what it sent. A `<system-reminder>` block inside
+a paste is the user's text and stays; one Claude Code adds outside it is
+dropped as before. An unmatched tag, or a pair whose id is not the hex id
+Claude Code writes, stays in the text. This is the layout Claude Code 2.1.326
+writes; a row the transcript cut at its length cap (8000 characters and an
+ellipsis) is only the start of what was sent. Such a row carries
+`pasted: true` (absent otherwise). This holds for every read of
+`GET /api/sessions/:id/turns` (a snapshot, an older page, or what a
+`transcript.nudge` on `/api/stream` sends the client back for), and for host
+search, which matches and quotes the unwrapped text. Daemons before this served
+the markers in `text`.
+
 **A linked pull request is a `pr_link` row.** When Claude Code records that the
 session opened or linked a PR, the row is
 
@@ -3643,13 +3665,16 @@ exactly as above.
   new-page action then.
 - **Which tabs**: tabs of the workspace's own wmux Chrome profile that the
   desktop recorded under exactly this workspace; a tab with no workspace on
-  record is nobody's. A profile bound to one pane only (a protected pane's,
-  say) is not listed: its policy applies to that pane's calls. Listing never
-  starts Chrome: while it is not running there are no `chrome` rows, nor while
-  the desktop cannot attach to its pages (its tab watcher is off or failed);
-  help rows for those tabs are then `previewable: false`. A tab one of these
-  tabs opens (a `target=_blank` link or a script's `window.open`) is listed
-  too, in the same workspace (contract v1.7, below).
+  record is nobody's. A tab one of these tabs opens (a `target=_blank` link
+  or a script's `window.open`) is listed too, in the same workspace (contract
+  v1.7, below). A profile bound to exactly one pane, while that pane is in
+  this workspace, is listed too (contract v1.8, below), unless a workspace
+  binding also names it, it is the default or live profile, or a browser
+  policy applies to it (a protected pane's): that policy applies to the
+  pane's own calls. A profile bound to a pane of another workspace never is. Listing never starts Chrome:
+  while it is not running there are no `chrome` rows, nor while the desktop
+  cannot attach to its pages (its tab watcher is off or failed); help rows
+  for those tabs are then `previewable: false`.
 - **The same actions** take a `chrome` row's `id` as `surfaceId`: capture,
   `navigate`, `type`, `key`, `tap`, `scroll`, with the same checks
   (`expectedURL`, `geometry`, http(s) only). A Chrome capture has the builtin
@@ -3690,6 +3715,55 @@ exactly as above.
 | `409 {error:"browser-help-origin-changed"}` | Help-card typing: the tab is no longer at the request's origin, or the request has none. Nothing was typed. |
 | `404 {error:"browser-help-not-found"}` / `409 {error:"browser-help-closed"}` | Help-card typing: no request with that id for this workspace and tab (open or closed), or this tab's request already ended. |
 | `503 {error:"browser-preview-unavailable"}` | Any other failure, as before. Never retry input automatically. |
+
+#### Tabs opened outside wmux, on a pane's profile (contract v1.8)
+
+A Chrome profile bound to exactly one pane, while that pane is in this
+workspace, no workspace binding names the profile, it is neither the default
+nor the live profile, and no browser policy applies to it (it is
+unprotected), is that pane's alone.
+With `?chrome=1`, the list then also carries every other tab of that
+profile: the tabs a script opened over the DevTools protocol, or a person
+opened by hand. Additive; `protocolVersion` stays 1.
+
+- **Rows**: such a tab is a `chrome` row with `openedBy: "outside"`, after the
+  recorded rows, within the same 30. Its `id` starts `chrome-x-`, is opaque,
+  and lasts as long as the tab: a desktop restart, Chrome restarting, or the
+  desktop losing its connection to Chrome gives the tab a new id. Re-list on
+  `404 browser-tab-gone`. Every row without the field is as before.
+- **Actions**: the same as any `chrome` row (capture, `navigate`, `type`,
+  `key`, `tap`, `scroll`, `focus`, the stream), under the same permissions and
+  checks. Like every `chrome` row, the `id` alone addresses it: capture,
+  `POST …/browser` and `…/browser/stream` need no `?chrome=1`. A tap that
+  opens a tab from such a tab never carries `opened` (v1.7); refresh the list
+  instead.
+- **`chromeOutside`** on the list reply, only with `?chrome=1` and the desktop
+  setting Chrome, says why no outside tab can be listed; absent when one can
+  (even when there is none right now):
+  - `not-bound`: no profile is bound to one of this workspace's panes (or
+    only one a browser policy applies to);
+  - `live`: the workspace uses Live Chrome;
+  - `not-running`: the bound profile's Chrome is not running, or the desktop
+    cannot attach to its pages;
+  - `pane-unknown`: the desktop does not know yet which workspace a bound
+    pane is in (a pane with no terminal, or a layout not sent yet).
+  An older desktop never sends it, nor `openedBy`.
+- **Moves**: a pane moved to another workspace, unbound, closed, or a policy
+  applied takes its profile off this workspace's list at once; a stream on
+  one of its tabs ends with `browser-tab-gone`, and input answers `404
+  browser-tab-gone` without reaching the tab.
+- **Help requests** never name such a tab: an agent's help request is always
+  about a tab the desktop recorded.
+
+Suggested copy:
+
+| Where | Text |
+| --- | --- |
+| Row label (`openedBy: "outside"`) | Opened outside wmux |
+| `not-bound` | No Chrome profile is bound to one of this workspace's panes. |
+| `live` | This workspace uses your own Chrome, which is never shown here. |
+| `not-running` | That profile's Chrome isn't running. |
+| `pane-unknown` | This pane's workspace isn't known yet. Try again in a moment. |
 
 #### Live browser stream (`browserStream`)
 
@@ -5574,7 +5648,8 @@ closing a pull request without merging, or a release; the request shows as an
   input grant is on **and was set explicitly** — the rule of
   [Phone git write actions](#phone-git-write-actions-push-pr-create-merge-not-served-yet).
   A device paired before grants existed reads as allowed for typing but is
-  refused here until the desktop sets its grant in "Paired devices". A server
+  refused here until the desktop sets its grant (the Remote page, under
+  Phones: Allow typing). A server
   started without `--allow-input` takes no decision from anyone. These checks
   run before the body is read and again once it is in, on the credential the
   request carries: it must still be the same caller (the operator token, or
@@ -6744,6 +6819,7 @@ OpenCode.
 | native id or epoch changed | 409 | `{error:"session-changed", result:"session_changed", agentSessionId?, historyEpoch?}` | `none` |
 | agent not alive or plugin unreachable before the write | 409 | `{error:"chat-unavailable", result:"unavailable"}` | `none` |
 | Claude/Codex input line not provably empty | 409 | `{error:"input-not-provably-empty", result:"unconfirmed"}` | `none` |
+| the input box holds an earlier wmux paste that was not submitted | 409 | `{error:"input-not-provably-empty", result:"unconfirmed", detail}`; `detail` says how to clear it (Enter on the waiting text, or clearing the whole box: Ctrl+U clears one line at a time) | `none` |
 | safety proof changed after the paste, before Enter | 409 | `{error:"send-interrupted", result:"error"}` | `uncertain` |
 | OpenCode dispatch outcome unknown, or the dispatch failed internally | 409 | `{error:"delivery-unconfirmed", result:"unconfirmed"}` | `uncertain` |
 | grant withdrawn between paste and Enter | 401 | `{error:"authorization-expired", result:"error"}` | `uncertain` |

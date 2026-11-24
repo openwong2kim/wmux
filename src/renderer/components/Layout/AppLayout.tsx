@@ -118,6 +118,7 @@ import WorkspacePrepDialog from '../Project/WorkspacePrepDialog';
 import { DictationHost } from '../Dictation/DictationHost';
 import { dictationAvailable } from '../Dictation/DictationButton';
 import AttachRemoteModal from '../Sidebar/AttachRemoteModal';
+import PhonePairDialog from '../StatusBar/PhonePairDialog';
 import { probeProjectConfig, maybeAutoApplyProjectLayout, workspaceProbeCwd } from '../../utils/projectConfigProbe';
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
@@ -127,6 +128,7 @@ import { planAgentCandidateSeed, planLiveAgentSeed, asAgentSlug, markSeedAttempt
 import { agentSlugToDisplay } from '../../../shared/agentIdentity';
 import { applyProcessExits, clearSurfaceAgentOnProcessExit, clearSurfaceAgentsKnownGone, livenessSnapshotRequested, livenessSnapshotSettled } from '../../utils/agentRowLiveness';
 import { startChatStatusMirror } from '../ChatV2/status';
+import { startSiblingCollisionWatch } from '../../utils/siblingCollisionWatch';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import ComposeHost from '../AgentToolbar/ComposeHost';
 import { AgentToolbarStrip } from '../AgentToolbar/ToolbarHost';
@@ -509,11 +511,14 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     usageLimitAutoResume: state.usageLimitAutoResume,
     claudeResumeOnStart: state.claudeResumeOnStart,
     fleetLayout: state.fleetLayout,
+    fleetGroupBy: state.fleetGroupBy,
     mutedNotificationCategories: state.mutedNotificationCategories,
     customKeybindings: state.customKeybindings,
     shortcutOverrides: state.shortcutOverrides,
     autoUpdateEnabled: state.autoUpdateEnabled,
     secretGuardEnabled: state.secretGuardEnabled,
+    siblingCollisionWatch: state.siblingCollisionWatch,
+    siblingCollisionIntervalMin: state.siblingCollisionIntervalMin,
     sleepPreventionMode: state.sleepPreventionMode,
     customThemeColors: state.customThemeColors ?? undefined,
     pcRail: selectPcRailPersisted(state),
@@ -844,6 +849,7 @@ export default function AppLayout() {
   // 6-field zustand subscription doesn't run when the panel is closed (I3).
   const searchPanelOpen = useStore((s) => s.searchPanelOpen);
   const remoteRepairHostId = useStore((s) => s.remoteRepairHostId);
+  const phonePairOpen = useStore((s) => s.phonePairOpen);
   const requestRemoteRepair = useStore((s) => s.requestRemoteRepair);
   // The rail page shown in the sheet. Anything but Workspaces covers the
   // sidebar and the panes, which stay mounted and inert underneath.
@@ -927,6 +933,7 @@ export default function AppLayout() {
   useNotificationListener();
   // A chat-v2 chat's run state in the same per-pane maps, for the sidebar and Fleet.
   useEffect(() => startChatStatusMirror(), []);
+  useEffect(() => startSiblingCollisionWatch(), []);
   useRpcBridge();
   useCustomAgentsHydration();
   // Cross-host A2A: the pane tree for exposure and gone-pane link breaks.
@@ -2446,6 +2453,19 @@ export default function AppLayout() {
           key={remoteRepairHostId}
           repairHostId={remoteRepairHostId}
           onClose={() => requestRemoteRepair(null)}
+        />
+      )}
+
+      {/* Pair a phone, from the Remote page or the sidebar's Remote menu. */}
+      {phonePairOpen && (
+        <PhonePairDialog
+          onClose={() => useStore.getState().setPhonePairOpen(false)}
+          onOpenSettings={() => {
+            // Stop lives in Phone access settings, the Remote page's button.
+            const s = useStore.getState();
+            s.setPhoneSettingsPending(true);
+            s.setAppRoute('remote');
+          }}
         />
       )}
 

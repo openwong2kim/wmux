@@ -43,13 +43,20 @@ export class BrowserBackendStore {
    * server's preflight.
    */
   private privateNetwork = false;
+  /**
+   * Whether a protected profile starts on the DevTools port instead of the
+   * debugging pipe, where a client of the port reaches it without the pipe's
+   * rules. Operator-only like the live write scope: set by editing this file,
+   * never from the Settings UI or an RPC.
+   */
+  private protectedPort = false;
 
   constructor(userDataDir: string) {
     this.filePath = join(userDataDir, 'browser-backend.json');
     try {
       const parsed: unknown = JSON.parse(readFileSync(this.filePath, 'utf8'));
       const record = parsed as
-        | { backend?: unknown; liveWriteScope?: unknown; allowPrivateNetwork?: unknown }
+        | { backend?: unknown; liveWriteScope?: unknown; allowPrivateNetwork?: unknown; protectedPortTransport?: unknown }
         | null;
       const value = record?.backend;
       if (isBrowserBackend(value)) this.backend = value;
@@ -59,6 +66,8 @@ export class BrowserBackendStore {
       if (isLiveWriteScope(scope)) this.liveScope = scope;
       // Only a literal true opts in: it widens what an agent may reach.
       this.privateNetwork = record?.allowPrivateNetwork === true;
+      // Only a literal true opts in: it lets a protected profile run on the port.
+      this.protectedPort = record?.protectedPortTransport === true;
       // Unknown/corrupt content falls through to the builtin default — the
       // safe direction: worst case a pane spawns, never a broken toolset.
     } catch {
@@ -89,8 +98,25 @@ export class BrowserBackendStore {
     return this.liveScope;
   }
 
+  /**
+   * The protected-port setting as persisted, re-read from the file on every
+   * call for the same reasons as liveWriteScope(). An unreadable file keeps
+   * the last good value (off on a fresh store).
+   */
+  protectedPortTransport(): boolean {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(this.filePath, 'utf8'));
+      this.protectedPort = (parsed as { protectedPortTransport?: unknown } | null)?.protectedPortTransport === true;
+    } catch {
+      /* missing or unreadable file → keep the in-memory value */
+    }
+    return this.protectedPort;
+  }
+
   setLiveWriteScope(scope: LiveWriteScope): void {
     this.liveScope = scope;
+    // persist() writes the protected-port field too: the file's value, not a stale one.
+    this.protectedPortTransport();
     this.persist();
   }
 
@@ -106,8 +132,9 @@ export class BrowserBackendStore {
    */
   setAllowPrivateNetwork(allow: boolean): boolean {
     this.privateNetwork = allow;
-    // Same reason as set(): persist() writes the scope field too.
+    // Same reason as set(): persist() writes the operator fields too.
     this.liveWriteScope();
+    this.protectedPortTransport();
     const saved = this.persist();
     if (!saved && allow) this.privateNetwork = false;
     return saved;
@@ -115,9 +142,10 @@ export class BrowserBackendStore {
 
   set(backend: BrowserBackend): void {
     this.backend = backend;
-    // persist() writes the scope field too, so pick up an operator's file edit
-    // first rather than overwriting it with a stale in-memory value.
+    // persist() writes the operator fields too, so pick up an operator's file
+    // edit first rather than overwriting it with a stale in-memory value.
     this.liveWriteScope();
+    this.protectedPortTransport();
     this.persist();
   }
 
@@ -139,6 +167,7 @@ export class BrowserBackendStore {
           backend: this.backend,
           ...(this.liveScope !== DEFAULT_LIVE_WRITE_SCOPE && { liveWriteScope: this.liveScope }),
           ...(this.privateNetwork && { allowPrivateNetwork: true }),
+          ...(this.protectedPort && { protectedPortTransport: true }),
         }),
         'utf8',
       );

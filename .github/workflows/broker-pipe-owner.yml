@@ -1,0 +1,85 @@
+name: Broker pipe owner
+# Windows: the MCP broker's named pipe as seen from a second local account
+# (scripts/ci/broker-pipe-owner/run.ps1). wmux-native mcp-shim writes nothing
+# to a pipe at the broker's name that another account owns, and the native
+# pipe listener (terminal core, pipe-listener-v1) lets only its own account
+# open its pipe. The job creates a temporary local account on the runner and
+# removes it at the end. On this elevated runner it also starts the broker at
+# Medium integrity and checks that an elevated client and an elevated
+# mcp-shim are hosted while a Low integrity client is refused. It runs the
+# listener's adapter tests and the broker's Windows suites against the built
+# core, required to run: a missing core fails the job instead of skipping.
+on:
+  pull_request:
+    paths:
+      - 'core/**'
+      - 'src/mcp/**'
+      - 'src/main/**'
+      - 'src/shared/mcpBroker.ts'
+      - 'src/shared/nativeTerminalCore.ts'
+      - '.github/actions/terminal-core/**'
+      - 'scripts/build-native-hooks.mjs'
+      - 'scripts/ci/broker-pipe-owner/**'
+      - '.github/workflows/broker-pipe-owner.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: broker-pipe-owner-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pipe-owner:
+    name: broker pipe owner (windows-x64)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    # The adapter tests name the module they need; nothing else here starts a
+    # terminal (src/test-utils/requireRustEngine.ts).
+    env:
+      WMUX_TERMINAL_CORE_NOT_NEEDED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '>=24.21.0 <25'
+          cache: npm
+      - run: npm install -g npm@11
+      - run: npm ci
+      - name: Build the terminal core
+        uses: ./.github/actions/terminal-core
+      - name: Build wmux-native
+        run: node scripts/build-native-hooks.mjs
+      - name: Native pipe listener and the broker over it
+        run: >-
+          npx vitest run
+          src/mcp/__tests__/nativePipe.os.test.ts
+          src/mcp/__tests__/brokerAck.os.test.ts
+          src/mcp/__tests__/brokerWin32Wiring.os.test.ts
+          src/mcp/__tests__/brokerPeerWin32.os.test.ts
+        env:
+          WMUX_REQUIRE_RUST_CORE: '1'
+          WMUX_TERMINAL_CORE_MODULE: ${{ github.workspace }}/core/wmux-term/dist/native-core/index.cjs
+      - name: Pipe owner, owner-only access and integrity levels
+        shell: powershell
+        run: >-
+          & scripts/ci/broker-pipe-owner/run.ps1
+          -ShimExe "$env:GITHUB_WORKSPACE\dist\native-hooks\wmux-native.exe"
+          -CoreModule "$env:GITHUB_WORKSPACE\core\wmux-term\dist\native-core\index.cjs"
+          -WorkDir "$env:RUNNER_TEMP\broker-pipe-owner"
+      - name: Remove the temporary account
+        if: always()
+        shell: powershell
+        run: |
+          $name = $env:BROKER_PIPE_OWNER_USER
+          if (-not $name) { Write-Host 'No temporary account was created.'; exit 0 }
+          $user = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
+          if ($user) {
+            $sid = $user.SID.Value
+            Remove-LocalUser -Name $name
+            Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $sid } | Remove-CimInstance
+            Write-Host 'Removed the temporary account.'
+          } else {
+            Write-Host 'The temporary account is already gone.'
+          }

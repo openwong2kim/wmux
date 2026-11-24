@@ -25,7 +25,15 @@ export interface SurfaceSlice {
    * callers (e.g. the pane.split background-workspace path, #236) target a
    * non-active workspace — defaults to the active one, so existing positional
    * callers are unchanged. */
-  addSurface: (paneId: string, ptyId: string, shell: string, cwd: string, workspaceId?: string) => void;
+  /** `opts.workerFence`: the tab's worker fence switch; absent = the
+   *  workspace profile's `fenceAgents`, which the create carried too. */
+  addSurface: (paneId: string, ptyId: string, shell: string, cwd: string, workspaceId?: string, opts?: { workerFence?: boolean }) => void;
+  /** The tab's worker fence switch (applies to its next agent launch). */
+  setSurfaceWorkerFence: (surfaceId: string, on: boolean) => void;
+  /** Per pty, not persisted: the switch moved under a running agent
+   *  (`pending`), or main refused a fenced launch (`refused`). */
+  paneFenceNotice: Record<string, { kind: 'pending' } | { kind: 'refused'; reason: string }>;
+  setPaneFenceNotice: (ptyId: string, notice: { kind: 'pending' } | { kind: 'refused'; reason: string } | null) => void;
   addBrowserSurface: (paneId: string, url?: string, partition?: string, workspaceId?: string) => void;
   /** #1086/#1091 — mirror a session on a paired remote host as a surface in
    * an ordinary LOCAL workspace's own pane tree (stage 1: store only, no
@@ -174,7 +182,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     if (branch) state.surfaceGitBranch[ptyId] = branch;
     else delete state.surfaceGitBranch[ptyId];
   }),
-  addSurface: (paneId, ptyId, shell, cwd, workspaceId) => {
+  addSurface: (paneId, ptyId, shell, cwd, workspaceId, opts) => {
     // PC rail: a shadow shows another computer's sessions only. A local shell
     // created for one is refused and ended, never parked in that computer's scope.
     if (isShadowWorkspaceId(workspaceId || get().activeWorkspaceId)) {
@@ -188,11 +196,31 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       const pane = findLeafPane(ws.rootPane, paneId);
       if (!pane) return;
       const surface = createSurface(ptyId, shell, cwd);
+      if (opts?.workerFence ?? ws.profile?.fenceAgents === true) surface.workerFence = true;
       pane.surfaces.push(surface);
       activateSurface(pane, surface.id);
     });
     persistBindingNow(get);
   },
+
+  setSurfaceWorkerFence: (surfaceId, on) => set((state: StoreState) => {
+    for (const ws of state.workspaces) {
+      for (const pane of getWorkspaceLeafPanes(ws)) {
+        const surface = pane.surfaces.find((s) => s.id === surfaceId);
+        if (surface && (!surface.surfaceType || surface.surfaceType === 'terminal')) {
+          if (on) surface.workerFence = true;
+          else delete surface.workerFence;
+          return;
+        }
+      }
+    }
+  }),
+
+  paneFenceNotice: {},
+  setPaneFenceNotice: (ptyId, notice) => set((state: StoreState) => {
+    if (notice) state.paneFenceNotice[ptyId] = notice;
+    else delete state.paneFenceNotice[ptyId];
+  }),
 
   addBrowserSurface: (paneId, url, partition, workspaceId) => set((state: StoreState) => {
     const targetWsId = workspaceId || state.activeWorkspaceId;

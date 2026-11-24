@@ -1,5 +1,6 @@
 import type { ElectronAPI, McpRegisterTargetResult, McpTargetStatusPayload } from '../preload/preload';
 import type { QuickLaunchAPI } from '../preload/quickLaunchPreload';
+import type { BrokerSetting, BrokerSettingPayload } from './mcpBroker';
 import type {
   AgySensorInstallResult,
   AgySensorStatus,
@@ -37,6 +38,7 @@ import type {
 import type { FirewallActionResult, FirewallListener, InboundStatusView, NetworkSettingsUri } from './netFirewall';
 import type { ListenProblemReport } from './netListen';
 import type { A2aSpawnAskResult, A2aSpawnOutgoingList, A2aSpawnPolicySetResult, A2aSpawnPolicyV1, A2aSpawnRequestSummary, A2aSpawnUiAsk } from './a2aSpawn';
+import type { A2aApprovalExposure } from './a2aRemote';
 import type { RemoteSendResult, RemoteSendSource, RemoteWriteResult } from './remoteUpload';
 import type {
   A2aDiscoverCloseResult,
@@ -125,6 +127,8 @@ declare global {
         reregister: () => Promise<{ targets: McpTargetStatusPayload[] }>;
         unregister: () => Promise<{ targets: McpTargetStatusPayload[] }>;
         registerTarget: (targetId: string) => Promise<McpRegisterTargetResult>;
+        brokerSetting?: () => Promise<BrokerSettingPayload>;
+        setBrokerSetting?: (setting: BrokerSetting) => Promise<BrokerSettingPayload>;
       };
       tokenUsage?: {
         readQuota: (request?: QuotaReadRequest) => Promise<QuotaReadResult>;
@@ -316,6 +320,10 @@ declare global {
         spawnPolicySet: (policy: A2aSpawnPolicyV1) => Promise<A2aSpawnPolicySetResult>;
         /** Requests other PCs sent, newest first, without their prompt. */
         spawnRequestsList: () => Promise<{ requests: A2aSpawnRequestSummary[] }>;
+        /** Which paired PCs may allow or deny permission prompts in the tasks they sent here (absent: off). */
+        approvalsGet: () => Promise<{ hosts: Record<string, A2aApprovalExposure>; damaged: boolean }>;
+        /** Set it for one PC, as the app; a refusal carries the reason. With `expected` (the level shown), a raise of a PC set otherwise meanwhile is refused with `conflict`; a lowering always saves. */
+        approvalsSet: (hostId: string, exposure: 'off' | A2aApprovalExposure, expected?: 'off' | A2aApprovalExposure) => Promise<{ ok: true; hosts: Record<string, A2aApprovalExposure> } | { ok: false; error: string; conflict?: true }>;
         /** Ask another PC to start an agent; replies go to `end`, a pane here. Never rejects for a refusal. */
         spawnAsk: (ask: A2aSpawnUiAsk) => Promise<A2aSpawnAskResult>;
         /** The requests this PC sent (no prompt text) and what each PC lets it ask for. */

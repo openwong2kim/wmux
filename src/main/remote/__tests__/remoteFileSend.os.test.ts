@@ -3,13 +3,15 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { readDroppedFiles } from '../remoteFileSend';
 import { REMOTE_UPLOAD_LIMITS } from '../../../shared/remoteUpload';
+import { FAR_IDS, fakeFileIds } from '../../../test-utils/fileIds';
 
 let dir: string;
 beforeAll(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-drop-')); });
 afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); });
 
 describe('readDroppedFiles', () => {
   it('reads a regular file', async () => {
@@ -38,6 +40,13 @@ describe('readDroppedFiles', () => {
     fs.writeFileSync(target, 'x');
     fs.symlinkSync(target, link);
     expect(await readDroppedFiles([link])).toEqual({ reason: 'not-a-file' });
+  });
+
+  it('refuses an opened file whose 64-bit ID differs from the checked one only below Number precision', async () => {
+    const p = path.join(dir, 'far.png');
+    fs.writeFileSync(p, 'abc');
+    fakeFileIds({ [p]: { byPath: () => FAR_IDS[0], byHandle: () => FAR_IDS[1] } });
+    expect(await readDroppedFiles([p])).toEqual({ reason: 'not-a-file' });
   });
 
   it('refuses a file over the host\'s cap without reading it', async () => {

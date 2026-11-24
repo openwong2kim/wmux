@@ -28,6 +28,28 @@ afterEach(() => {
   }
 });
 
+/**
+ * Resolves once a watch on `gitDir`, armed after the watcher's own, has seen
+ * an event, writing probe files into `gitDir` until it does. A watch is not
+ * live the moment fs.watch returns: on macOS libuv rebuilds one shared
+ * FSEvents stream on its own thread for every new watch, and a write made
+ * before that stream starts is never reported. The probe watch joins the same
+ * stream after the watcher's, so its first event means the watcher's path is
+ * live too. The watcher ignores these names (it only reads HEAD events).
+ */
+async function watchIsLive(gitDir: string): Promise<void> {
+  let seen = false;
+  const probe = fs.watch(gitDir, () => { seen = true; });
+  try {
+    for (let n = 0; !seen; n++) {
+      fs.writeFileSync(path.join(gitDir, `probe-${n}`), String(n));
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    }
+  } finally {
+    probe.close();
+  }
+}
+
 function tmp(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-gitwatch-rt-'));
   tmpDirs.push(dir);
@@ -55,6 +77,7 @@ describe('GitContextWatcher (real fs.watch)', () => {
     watcher.update('s1', root);
     expect(events).toEqual([{ sessionId: 's1', branch: 'main', isWorktree: false }]);
 
+    await watchIsLive(path.join(root, '.git'));
     fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/feature-y\n');
     await secondEvent;
     expect(events[1].branch).toBe('feature-y');
@@ -90,6 +113,7 @@ describe('GitContextWatcher (real fs.watch)', () => {
     watcher.update('s1', short);
     expect(events).toEqual([{ sessionId: 's1', branch: 'main', isWorktree: false }]);
 
+    await watchIsLive(path.join(root, '.git'));
     fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/feature-y\n');
     await secondEvent;
     expect(events[1].branch).toBe('feature-y');

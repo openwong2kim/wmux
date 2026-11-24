@@ -28,6 +28,7 @@ vi.mock('../PlaywrightEngine', () => ({
 import { registerInspectionTools } from '../tools/inspection';
 import { attachPageCapture } from '../pageCapture';
 import { REDACTED_PASSWORD } from '../redact';
+import { fakeNetwork, type FakeNetwork } from './fakeNetworkSession';
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<{
   content: { type: 'text'; text: string }[];
@@ -56,11 +57,16 @@ if (!consoleTool || !network || !responseBody) throw new Error('inspection tools
 // A Page stand-in the capture module can listen on.
 interface FakePage extends EventEmitter {
   url: () => string;
+  context: () => { newCDPSession: () => Promise<unknown> };
+  net: FakeNetwork;
 }
 
 function makePage(url = 'about:blank'): FakePage {
   const page = new EventEmitter() as FakePage;
+  const { newCDPSession, net } = fakeNetwork();
   page.url = () => url;
+  page.context = () => ({ newCDPSession });
+  page.net = net;
   return page;
 }
 
@@ -68,15 +74,13 @@ function asPage(page: FakePage): Page {
   return page as unknown as Page;
 }
 
-function consoleMessage(level: string, text: string) {
-  return { type: () => level, text: () => text };
-}
 
 /** What the engine does on every page resolve under a non-builtin backend. */
-function resolveChromePage(page: FakePage): void {
+async function resolveChromePage(page: FakePage): Promise<void> {
   resolveWorkspaceBackend.mockResolvedValue('chrome');
   getPage.mockResolvedValue(asPage(page));
   attachPageCapture(asPage(page));
+  await page.net.ready();
 }
 
 beforeEach(() => {
@@ -92,9 +96,9 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
   it('returns what the page logged during navigation, with no priming call', async () => {
     const page = makePage();
     // browser_navigate resolves the page; the engine attaches capture there.
-    resolveChromePage(page);
+    await resolveChromePage(page);
     // The page loads and throws. Nothing has read the buffer yet.
-    page.emit('console', consoleMessage('error', 'Uncaught TypeError during load'));
+    page.net.console('error', 'Uncaught TypeError during load');
 
     const result = await consoleTool({});
 
@@ -103,18 +107,18 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
 
   it('records one copy of a message when the page is resolved repeatedly', async () => {
     const page = makePage();
-    resolveChromePage(page);
+    await resolveChromePage(page);
     // Ten more tool calls, ten more resolves.
     for (let i = 0; i < 10; i++) attachPageCapture(asPage(page));
 
-    page.emit('console', consoleMessage('log', 'exactly once'));
+    page.net.console('log', 'exactly once');
 
     const text = (await consoleTool({})).content[0].text;
     expect(text.match(/exactly once/g)).toHaveLength(1);
   });
 
   it('says the collection is running rather than implying a clean page', async () => {
-    resolveChromePage(makePage());
+    await resolveChromePage(makePage());
 
     const text = (await consoleTool({})).content[0].text;
 
@@ -124,12 +128,12 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
 
   it('admits the window it cannot cover when it attached to an open page', async () => {
     const page = makePage('https://x.test/opened-before-the-agent-arrived');
-    resolveChromePage(page);
+    await resolveChromePage(page);
 
     const empty = (await consoleTool({})).content[0].text;
     expect(empty).toContain('already open when collection started');
 
-    page.emit('console', consoleMessage('warn', 'something later'));
+    page.net.console('warn', 'something later');
     const withEntries = (await consoleTool({})).content[0].text;
     expect(withEntries).toContain('[warn] something later');
     expect(withEntries).toContain('not included');
@@ -137,8 +141,8 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
 
   it('clear:true empties the buffer and restarts the window', async () => {
     const page = makePage('https://x.test/opened-before-the-agent-arrived');
-    resolveChromePage(page);
-    page.emit('console', consoleMessage('log', 'before'));
+    await resolveChromePage(page);
+    page.net.console('log', 'before');
 
     const cleared = (await consoleTool({ clear: true })).content[0].text;
     expect(cleared).toContain('[log] before');
@@ -148,14 +152,14 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
     // The pre-attach gap is no longer what the emptiness is hiding.
     expect(afterClear).not.toContain('already open when collection started');
 
-    page.emit('console', consoleMessage('log', 'after'));
+    page.net.console('log', 'after');
     expect((await consoleTool({})).content[0].text).toContain('[log] after');
   });
 
   it('still masks a credential the page logged (eager path, #1079)', async () => {
     const page = makePage();
-    resolveChromePage(page);
-    page.emit('console', consoleMessage('log', 'POST /login {"password":"hunter2SECRET"}'));
+    await resolveChromePage(page);
+    page.net.console('log', 'POST /login {"password":"hunter2SECRET"}');
 
     const text = (await consoleTool({})).content[0].text;
 
@@ -165,7 +169,7 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
 
   it('surfaces an uncaught exception the page threw while loading', async () => {
     const page = makePage();
-    resolveChromePage(page);
+    await resolveChromePage(page);
     const error = new Error('Cannot read properties of undefined');
     error.stack = 'TypeError: Cannot read properties of undefined\n    at boot (app.js:12:5)';
     // Playwright routes this to 'pageerror', not 'console' — and a page that
@@ -180,9 +184,9 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
 
   it("speaks the filter's vocabulary for warnings ('warning' -> 'warn')", async () => {
     const page = makePage();
-    resolveChromePage(page);
-    // Playwright reports 'warning'; the level filter and main's capture say 'warn'.
-    page.emit('console', consoleMessage('warning', 'deprecated API'));
+    await resolveChromePage(page);
+    // Chrome reports 'warning'; the level filter and main's capture say 'warn'.
+    page.net.console('warning', 'deprecated API');
 
     const text = (await consoleTool({ level: 'warn' })).content[0].text;
 
@@ -191,9 +195,9 @@ describe('browser_console — collection starts at page resolve (#1081)', () => 
 
   it('level filtering still applies to the eagerly collected buffer', async () => {
     const page = makePage();
-    resolveChromePage(page);
-    page.emit('console', consoleMessage('log', 'chatter'));
-    page.emit('console', consoleMessage('error', 'the real problem'));
+    await resolveChromePage(page);
+    page.net.console('log', 'chatter');
+    page.net.console('error', 'the real problem');
 
     const text = (await consoleTool({ level: 'error' })).content[0].text;
 
@@ -209,7 +213,8 @@ describe('browser_console — transport selection', () => {
     const page = makePage();
     getPage.mockResolvedValue(asPage(page));
     attachPageCapture(asPage(page));
-    page.emit('console', consoleMessage('log', 'engine-side buffer'));
+    await page.net.ready();
+    page.net.console('log', 'engine-side buffer');
     mockSendRpc.mockResolvedValue({ entries: [{ level: 'log', text: 'main-side buffer' }] });
 
     const text = (await consoleTool({})).content[0].text;
@@ -223,7 +228,8 @@ describe('browser_console — transport selection', () => {
     const page = makePage();
     getPage.mockResolvedValue(asPage(page));
     attachPageCapture(asPage(page));
-    page.emit('console', consoleMessage('error', 'engine-side fallback'));
+    await page.net.ready();
+    page.net.console('error', 'engine-side fallback');
     mockSendRpc.mockRejectedValue(new Error('browser.console.get: no browser surface'));
 
     const text = (await consoleTool({})).content[0].text;
@@ -265,8 +271,8 @@ describe('browser_console — transport selection', () => {
 describe('browser_network — collection starts at page resolve (#1081)', () => {
   it('lists requests issued before the first read', async () => {
     const page = makePage();
-    resolveChromePage(page);
-    page.emit('request', { url: () => 'https://x.test/api/login', method: () => 'POST' });
+    await resolveChromePage(page);
+    page.net.request('https://x.test/api/login', { method: 'POST' });
 
     const text = (await network({})).content[0].text;
 
@@ -276,9 +282,9 @@ describe('browser_network — collection starts at page resolve (#1081)', () => 
 
   it('applies the URL glob filter to the eagerly collected buffer', async () => {
     const page = makePage();
-    resolveChromePage(page);
-    page.emit('request', { url: () => 'https://x.test/api/items', method: () => 'GET' });
-    page.emit('request', { url: () => 'https://x.test/static/app.css', method: () => 'GET' });
+    await resolveChromePage(page);
+    page.net.request('https://x.test/api/items', { method: 'GET' });
+    page.net.request('https://x.test/static/app.css', { method: 'GET' });
 
     const text = (await network({ filter: '*api*' })).content[0].text;
 
@@ -288,11 +294,8 @@ describe('browser_network — collection starts at page resolve (#1081)', () => 
 
   it('masks a credential a page put in a query string (eager path, #1079)', async () => {
     const page = makePage();
-    resolveChromePage(page);
-    page.emit('request', {
-      url: () => 'https://x.test/login?user=alice&password=hunter2SECRET',
-      method: () => 'GET',
-    });
+    await resolveChromePage(page);
+    page.net.request('https://x.test/login?user=alice&password=hunter2SECRET');
 
     const text = (await network({})).content[0].text;
 
@@ -303,9 +306,9 @@ describe('browser_network — collection starts at page resolve (#1081)', () => 
 
   it('clear:true empties the buffer without touching the console window', async () => {
     const page = makePage();
-    resolveChromePage(page);
-    page.emit('console', consoleMessage('log', 'console survives'));
-    page.emit('request', { url: () => 'https://x.test/gone', method: () => 'GET' });
+    await resolveChromePage(page);
+    page.net.console('log', 'console survives');
+    page.net.request('https://x.test/gone', { method: 'GET' });
 
     await network({ clear: true });
 
@@ -316,7 +319,7 @@ describe('browser_network — collection starts at page resolve (#1081)', () => 
 
 // ── #1360 papercuts ─────────────────────────────────────────────────────────
 
-/** Emit the request/response pair the capture module listens for. */
+/** One request, answered and finished, as the page's network session reports it. */
 function exchange(
   page: FakePage,
   url: string,
@@ -324,25 +327,19 @@ function exchange(
   status?: number,
   body?: string,
 ): void {
-  page.emit('request', { url: () => url, method: () => method });
-  if (status === undefined) return;
-  page.emit('response', {
-    url: () => url,
-    status: () => status,
-    headers: () => (body === undefined ? {} : { 'content-type': 'application/json' }),
-    text: () => Promise.resolve(body ?? ''),
-  });
+  if (status === undefined) {
+    page.net.request(url, { method });
+    return;
+  }
+  page.net.exchange(url, status, { method, body, contentType: body === undefined ? 'text/plain' : 'application/json' });
 }
 
 describe('browser_console — the URL Chrome leaves off a 404 line (#1360)', () => {
   it('appends the failing resource URL from the network buffer', async () => {
     const page = makePage();
-    resolveChromePage(page);
+    await resolveChromePage(page);
     exchange(page, 'https://x.test/api/missing', 'GET', 404);
-    page.emit(
-      'console',
-      consoleMessage('error', 'Failed to load resource: the server responded with a status of 404 ()'),
-    );
+    page.net.log('error', 'Failed to load resource: the server responded with a status of 404 ()');
 
     const text = (await consoleTool({ level: 'error' })).content[0].text;
 
@@ -351,11 +348,11 @@ describe('browser_console — the URL Chrome leaves off a 404 line (#1360)', () 
 
   it('pairs two failures with their own URLs, matching on the stated status', async () => {
     const page = makePage();
-    resolveChromePage(page);
+    await resolveChromePage(page);
     exchange(page, 'https://x.test/a.js', 'GET', 500);
     exchange(page, 'https://x.test/b.js', 'GET', 404);
-    page.emit('console', consoleMessage('error', 'Failed to load resource: the server responded with a status of 404 ()'));
-    page.emit('console', consoleMessage('error', 'Failed to load resource: the server responded with a status of 500 ()'));
+    page.net.log('error', 'Failed to load resource: the server responded with a status of 404 ()');
+    page.net.log('error', 'Failed to load resource: the server responded with a status of 500 ()');
 
     const lines = (await consoleTool({ level: 'error' })).content[0].text.split('\n');
 
@@ -365,9 +362,9 @@ describe('browser_console — the URL Chrome leaves off a 404 line (#1360)', () 
 
   it('leaves an ordinary line alone and reads the network buffer only when needed', async () => {
     const page = makePage();
-    resolveChromePage(page);
+    await resolveChromePage(page);
     exchange(page, 'https://x.test/api/missing', 'GET', 404);
-    page.emit('console', consoleMessage('log', 'just chatter'));
+    page.net.console('log', 'just chatter');
 
     const text = (await consoleTool({})).content[0].text;
 
@@ -378,7 +375,7 @@ describe('browser_console — the URL Chrome leaves off a 404 line (#1360)', () 
 describe('browser_network — filters and repeat collapsing (#1360)', () => {
   it('filters by status class, method and an exclude glob', async () => {
     const page = makePage();
-    resolveChromePage(page);
+    await resolveChromePage(page);
     exchange(page, 'https://x.test/api/ok', 'GET', 200);
     exchange(page, 'https://x.test/api/missing', 'GET', 404);
     exchange(page, 'https://x.test/api/submit', 'POST', 404);
@@ -399,7 +396,7 @@ describe('browser_network — filters and repeat collapsing (#1360)', () => {
 
   it('folds identical polling rows into one "xN" row keeping the newest id', async () => {
     const page = makePage();
-    resolveChromePage(page);
+    await resolveChromePage(page);
     exchange(page, 'https://x.test/api/poll', 'GET', 200);
     exchange(page, 'https://x.test/api/poll', 'GET', 200);
     exchange(page, 'https://x.test/api/poll', 'GET', 200);
@@ -418,7 +415,7 @@ describe('browser_network — filters and repeat collapsing (#1360)', () => {
 
   it('collapse:false keeps every row', async () => {
     const page = makePage();
-    resolveChromePage(page);
+    await resolveChromePage(page);
     exchange(page, 'https://x.test/api/poll', 'GET', 200);
     exchange(page, 'https://x.test/api/poll', 'GET', 200);
 
@@ -434,7 +431,7 @@ describe('browser_response_body — nth and request id (#1360)', () => {
 
   it('returns the LAST match by default, not the first', async () => {
     const page = makePage();
-    resolveChromePage(page);
+    await resolveChromePage(page);
     exchange(page, 'https://x.test/api/rows', 'GET', 200, '{"filter":"before"}');
     exchange(page, 'https://x.test/api/rows', 'GET', 200, '{"filter":"after"}');
     await settle();
@@ -446,7 +443,7 @@ describe('browser_response_body — nth and request id (#1360)', () => {
 
   it('nth picks an earlier match, and 1 is the first', async () => {
     const page = makePage();
-    resolveChromePage(page);
+    await resolveChromePage(page);
     exchange(page, 'https://x.test/api/rows', 'GET', 200, '{"filter":"before"}');
     exchange(page, 'https://x.test/api/rows', 'GET', 200, '{"filter":"after"}');
     await settle();
@@ -457,7 +454,7 @@ describe('browser_response_body — nth and request id (#1360)', () => {
 
   it('accepts the id the network listing printed', async () => {
     const page = makePage();
-    resolveChromePage(page);
+    await resolveChromePage(page);
     exchange(page, 'https://x.test/api/rows', 'GET', 200, '{"n":1}');
     exchange(page, 'https://x.test/api/rows', 'GET', 200, '{"n":2}');
     await settle();
@@ -468,8 +465,28 @@ describe('browser_response_body — nth and request id (#1360)', () => {
     expect(text).toContain('"n":1');
   });
 
+  it('says a body the browser let go is no longer available, instead of "not found"', async () => {
+    const page = makePage();
+    await resolveChromePage(page);
+    const id = page.net.exchange('https://x.test/api/gone', 200, { body: '{}' });
+    page.net.dropBody(id);
+
+    const text = (await responseBody({ urlPattern: '*api/gone*' })).content[0].text;
+
+    expect(text).toContain('no longer available');
+  });
+
+  it('refuses a fractional nth as an input error', async () => {
+    await resolveChromePage(makePage());
+
+    const result = await responseBody({ urlPattern: '*api*', nth: 1.5 });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('whole number');
+  });
+
   it('refuses a call that names neither a pattern nor an id', async () => {
-    resolveChromePage(makePage());
+    await resolveChromePage(makePage());
 
     const result = await responseBody({});
 

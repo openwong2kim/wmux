@@ -103,6 +103,7 @@ describe('build-native-hooks', () => {
       'scripts/__tests__/nativeHooksRelease.test.mjs', 'forge.config.ts', 'package.json', 'package-lock.json',
       '.github/workflows/native-hooks.yml', '.github/workflows/release.yml',
       'integrations/claude/bin/wmux-bridge.mjs', 'integrations/claude/__tests__/fixtures/claude-hook/cases/gate-reset.json',
+      'src/mcp/nativePipe.ts', 'core/wmux-term/src/native_pipe_listener/token.rs',
     ]) {
       expect(pattern.test(file), file).toBe(true);
     }

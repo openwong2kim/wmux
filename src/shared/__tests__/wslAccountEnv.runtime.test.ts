@@ -8,6 +8,7 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { buildWslInjection } from '../wslIntegration';
+import { wslAccountHomeKey } from '../wslAccountHome';
 
 const enabled = process.platform === 'win32' && process.env.WMUX_TEST_WSL === '1';
 
@@ -100,7 +101,8 @@ describe.runIf(enabled)('WSL account-home transport', () => {
         });
         return spawnSync(wsl, injected.args, {
           env: injected.env, encoding: 'utf8', timeout: 30_000, windowsHide: true,
-          ...(execCommand === undefined ? { input: 'exit\n' } : {}),
+          // No history: the interactive shell would append this to the user's ~/.bash_history.
+          ...(execCommand === undefined ? { input: 'unset HISTFILE; exit\n' } : {}),
         });
       };
       const write = `set -eu; printf '%s|%s' "\${CODEX_HOME-}" "\${WMUX_WSL_ACCOUNT_HOME_UNREACHABLE-}"; printf '{}' > "\${CODEX_HOME:-/nonexistent}/auth.json"`;
@@ -124,4 +126,68 @@ describe.runIf(enabled)('WSL account-home transport', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }, 90_000);
+
+  // A bound workspace's account runs on its own home in the distro
+  // (shared/wslAccountHome.ts). A unique data suffix keeps the test out of the
+  // user's real ~/.wmux, and its folder is removed at the end.
+  it('gives each bound account its own private home in the distro, and an unbound pane its Linux profile', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-bound-'));
+    const wsl = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'wsl.exe');
+    const distroArgs = process.env.WMUX_TEST_WSL_DISTRO ? ['-d', process.env.WMUX_TEST_WSL_DISTRO] : [];
+    const execute = (args: string[]) => execFileSync(wsl, [...distroArgs, '--exec', ...args], {
+      encoding: 'utf8', timeout: 30_000, windowsHide: true,
+    });
+    const suffix = `-wmuxtest-${process.pid}`;
+    let linuxRoot = '';
+    try {
+      const [distribution, user, linuxHome] = execute(['/bin/sh', '-c', 'printf "%s\\0%s\\0%s" "$WSL_DISTRO_NAME" "$(id -un)" "$HOME"']).split('\0');
+      linuxRoot = `${linuxHome}/.wmux${suffix}`;
+      const cwd = execute(['wslpath', '-u', dir]).trim();
+      const base = { SystemRoot: process.env.SystemRoot ?? 'C:\\Windows', PATH: process.env.PATH ?? '', WMUX_SHELL_INTEGRATION: '0', WMUX_DATA_SUFFIX: suffix };
+      const peek = `printf '%s|%s|%s' "\${CLAUDE_CONFIG_DIR-}" "\${CODEX_HOME-}" "$(stat -c %a "\${CLAUDE_CONFIG_DIR:-/nonexistent}" 2>/dev/null)"`;
+      const run = (env: Record<string, string>, execCommand?: string) => {
+        const injected = buildWslInjection({
+          target: { distribution, user }, cwd, integrationDir: dir, env: { ...base, ...env }, bashInit: '', mcpEntryPath: null,
+          ...(execCommand === undefined ? {} : { execCommand }),
+        });
+        return spawnSync(wsl, injected.args, {
+          env: injected.env, encoding: 'utf8', timeout: 30_000, windowsHide: true,
+          // No history: the interactive shell would append this to the user's ~/.bash_history.
+          ...(execCommand === undefined ? { input: `unset HISTFILE; ${peek}; exit\n` } : {}),
+        });
+      };
+      const work = { CLAUDE_CONFIG_DIR: path.join(dir, 'work'), CODEX_HOME: path.join(dir, 'codex'), WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR,CODEX_HOME' };
+      const workHome = `${linuxRoot}/accounts/claude-${wslAccountHomeKey(work.CLAUDE_CONFIG_DIR)}`;
+      const codexHome = `${linuxRoot}/accounts/codex-${wslAccountHomeKey(work.CODEX_HOME)}`;
+
+      const first = run(work, peek);
+      expect(first.stdout).toBe(`${workHome}|${codexHome}|700`);
+      expect(first.stderr).toBe('');
+      expect(execute(['cat', `${linuxRoot}/accounts/notices.log`])).toContain('has no sign-in in this WSL distro yet');
+
+      const personal = run({ CLAUDE_CONFIG_DIR: path.join(dir, 'personal'), WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR' }, peek);
+      expect(personal.stdout.split('|')[0]).toBe(`${linuxRoot}/accounts/claude-${wslAccountHomeKey(path.join(dir, 'personal'))}`);
+
+      // The interactive pane says once that the account has no sign-in here, and nothing once it has one.
+      const tab = run(work);
+      expect(tab.stdout).toContain(`${workHome}|${codexHome}|700`);
+      expect(tab.stderr).toContain('this pane\'s claude account has no sign-in in this WSL distro yet');
+      execute(['/bin/sh', '-c', `printf '{}' > "${workHome}/.credentials.json" && printf '{}' > "${codexHome}/auth.json"`]);
+      expect(run(work).stderr).not.toContain('has no sign-in');
+
+      // An unbound pane, and an unmarked (profile or inherited) variable, keep the Linux profile.
+      const baseline = execute(['/bin/sh', '-c', peek]);
+      expect(run({ CLAUDE_CONFIG_DIR: path.join(dir, 'inherited') }, peek).stdout).toBe(baseline);
+
+      // An exec unit whose account home cannot be made does not run on the default account.
+      execute(['/bin/sh', '-c', `rm -rf "${linuxRoot}" && mkdir -p "${linuxRoot}" && printf x > "${linuxRoot}/accounts"`]);
+      const blocked = run(work, 'printf ran');
+      expect(blocked.status).toBe(1);
+      expect(blocked.stdout).toBe('');
+      expect(blocked.stderr).toContain('cannot create');
+    } finally {
+      if (linuxRoot.includes('.wmux-wmuxtest-')) { try { execute(['rm', '-rf', linuxRoot]); } catch { /* best effort */ } }
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
 });

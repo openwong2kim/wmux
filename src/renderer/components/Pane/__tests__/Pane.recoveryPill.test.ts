@@ -719,7 +719,8 @@ describe('automatic resume refused because the screen could not be read', () => 
 
   it('the pane schedules the retry on the same timer its cleanup clears, and only while not cancelled', () => {
     const source = readFileSync(resolve(__dirname, '../Pane.tsx'), 'utf8');
-    expect(source).toMatch(/releaseAutoResume\(ptyId\);[\s\S]{0,400}?const wait = cancelled \? null : autoResumeRetryDelay\(err, retries\);\s*if \(wait !== null\) \{\s*retries\+\+;\s*timer = setTimeout\(attempt, wait\);/);
+    // A fenced tab's refusal is not tried again: the same line meets the same refusal.
+    expect(source).toMatch(/releaseAutoResume\(ptyId\);[\s\S]{0,600}?const fenceRefused = notePaneFenceError\(ptyId, err\);[\s\S]{0,300}?const wait = cancelled \|\| fenceRefused \? null : autoResumeRetryDelay\(err, retries\);\s*if \(wait !== null\) \{\s*retries\+\+;\s*timer = setTimeout\(attempt, wait\);/);
     expect(source).toMatch(/let timer = setTimeout\(attempt, 400\);\s*return \(\) => \{\s*cancelled = true;\s*clearTimeout\(timer\);/);
   });
 });

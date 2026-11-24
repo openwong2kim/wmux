@@ -6,7 +6,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const native = vi.hoisted(() => ({ processTable: vi.fn(), load: vi.fn() }));
 const spawn = vi.hoisted(() => ({ execFile: vi.fn() }));
 
-vi.mock('../../shared/nativeTerminalCore', () => ({
+vi.mock('../../shared/nativeTerminalCore', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../shared/nativeTerminalCore')>(),
   loadNativeTerminalCore: native.load,
   reportNativeFallback: vi.fn(),
 }));
@@ -78,6 +79,49 @@ describe('ProcessMonitor on the native process table', () => {
     await ProcessMonitor.batchCheckAliveDetailed([10]);
     expect(native.processTable).toHaveBeenCalledTimes(5);
     expect(spawn.execFile).toHaveBeenCalledTimes(2);
+  });
+
+  // #3440: a refused native allocation is the daemon's memory at that moment,
+  // not a broken read: it fails that read only and never latches native off.
+  it('a refused allocation fails only that read: three in a row leave the read on', async () => {
+    vi.resetModules();
+    const { readNativeProcessTable, nativeProcessTable } = await import('../nativeProcessTable');
+    const refusal = () => Object.assign(new Error(''), { code: 'ALLOC_FAILED' });
+    native.processTable.mockRejectedValueOnce(refusal()).mockRejectedValueOnce(refusal()).mockRejectedValueOnce(refusal());
+    for (let i = 0; i < 3; i++) expect(await readNativeProcessTable(false)).toBeUndefined();
+    expect(nativeProcessTable()).toBeDefined();
+    native.processTable.mockResolvedValueOnce([{ pid: 10, ppid: 1, name: 'pwsh.exe' }]);
+    expect(await readNativeProcessTable(false)).toEqual([{ pid: 10, ppid: 1, name: 'pwsh.exe' }]);
+    expect(native.processTable).toHaveBeenCalledTimes(4);
+  });
+
+  it('a refused allocation neither counts nor resets the count of plain failures', async () => {
+    vi.resetModules();
+    const { readNativeProcessTable, nativeProcessTable } = await import('../nativeProcessTable');
+    const refusal = () => Object.assign(new Error('ALLOC_FAILED: could not allocate 64 bytes for the process table'), { code: 'ALLOC_FAILED' });
+    native.processTable
+      .mockRejectedValueOnce(new Error('snapshot failed'))
+      .mockRejectedValueOnce(refusal())
+      .mockRejectedValueOnce(new Error('snapshot failed'))
+      .mockRejectedValueOnce(refusal())
+      .mockRejectedValueOnce(new Error('snapshot failed'));
+    for (let i = 0; i < 4; i++) expect(await readNativeProcessTable(false)).toBeUndefined();
+    expect(nativeProcessTable()).toBeDefined();
+    // The third plain failure latches native off, as before.
+    expect(await readNativeProcessTable(false)).toBeUndefined();
+    expect(nativeProcessTable()).toBeUndefined();
+    expect(await readNativeProcessTable(false)).toBeUndefined();
+    expect(native.processTable).toHaveBeenCalledTimes(5);
+  });
+
+  it('three plain rejections, even ones whose message reads "ALLOC_FAILED:" without the code, still latch the read off', async () => {
+    vi.resetModules();
+    const { readNativeProcessTable, nativeProcessTable } = await import('../nativeProcessTable');
+    native.processTable.mockRejectedValue(new Error('ALLOC_FAILED: could not allocate 64 bytes'));
+    for (let i = 0; i < 3; i++) expect(await readNativeProcessTable(false)).toBeUndefined();
+    expect(nativeProcessTable()).toBeUndefined();
+    expect(await readNativeProcessTable(false)).toBeUndefined();
+    expect(native.processTable).toHaveBeenCalledTimes(3);
   });
 
   it('loads the module once', async () => {

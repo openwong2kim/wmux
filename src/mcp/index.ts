@@ -54,7 +54,7 @@ import { registerUtilityTools } from './playwright/tools/utility';
 import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
 import { registerFanOutTools } from './fanout';
-import { registerRemoteSpawnTools } from './remoteSpawn';
+import { registerRemoteAnswerTool, registerRemoteApproveTool, registerRemoteSpawnTools } from './remoteSpawn';
 import { registerHandOutTools } from './handOut';
 import { registerLedgerUpdateTool, registerLedgerListTool, registerLedgerBrainUpdateTool } from './ledger';
 import { registerTaskFetchTool, registerTaskPushTool } from './taskPush';
@@ -1403,20 +1403,45 @@ async function requireWorkspaceId(): Promise<string> {
  * the server and a dedicated claim names no pane at all, so either would act
  * in a workspace that is not the caller's. Refused instead, saying why.
  */
-function refuseUnattributedSharedServer(): void {
-  if (codexParentUnverified && !codexParentClass) {
-    throw new Error(
-      'Browser tools could not verify this Codex session: wmux could not inspect the process that ' +
-        'started this MCP server, so it cannot tell whether the call comes from the shared Codex ' +
-        'background server. Retry the call in a minute.',
-    );
-  }
+function refuseUnattributedSharedServer(
+  subject = 'Browser tools',
+  risk = 'the browser could open in another pane\'s workspace',
+  alternative = 'use Claude Code or the `wmux browser` command in this pane',
+): void {
+  if (codexParentUnverified && !codexParentClass) throw unverifiedCodexSession(subject);
   if (codexParentClass !== 'shared-server' || threadOnlyScope()) return;
   throw new Error(
-    'Browser tools are not available in this Codex session. It runs on the shared Codex ' +
-      'background server, and wmux cannot tell which pane started this call there, so the ' +
-      'browser could open in another pane\'s workspace. Run Codex in this pane without the ' +
-      'shared background server, or use Claude Code or the `wmux browser` command in this pane.',
+    `${subject} ${subject.endsWith('s') ? 'are' : 'is'} not available in this Codex session. It runs on the shared Codex ` +
+      'background server, and wmux cannot tell which pane started this call there, so ' +
+      `${risk}. Run Codex in this pane without the shared background server, or ${alternative}.`,
+  );
+}
+
+function unverifiedCodexSession(subject: string): Error {
+  return new Error(
+    `${subject} could not verify this Codex session: wmux could not inspect the process that ` +
+      'started this MCP server, so it cannot tell whether the call comes from the shared Codex ' +
+      'background server. Retry the call in a minute.',
+  );
+}
+
+/**
+ * The same refusal for a call that acts on a task its pane sent to another PC
+ * (remote_answer, remote_approve): the sender is the calling pane, so a call
+ * the server cannot tie to its pane is refused before anything is sent. Run
+ * after the workspace resolution, which settles a thread-or-legacy call.
+ * Stricter than the browser tools: a call its thread does not identify, whose
+ * parent could not be inspected, is refused on every platform (not only where
+ * no owner index exists).
+ */
+async function refuseUnattributedRemoteTaskCall(tool: string): Promise<void> {
+  if (!threadOnlyScope() && !codexParentClass && !NON_CODEX_CLIENTS.has(getClientIdentity().name ?? '')) {
+    if ((await classifyCodexParent()) === 'unknown') throw unverifiedCodexSession(tool);
+  }
+  refuseUnattributedSharedServer(
+    tool,
+    'it could act on a task another pane sent',
+    'use the `wmux remote` command in this pane',
   );
 }
 
@@ -2472,6 +2497,22 @@ registerFanOutTools(server, {
 registerRemoteSpawnTools(server, {
   getSenderPtyId: () => verifiedPtyId(),
   resolveWorkspaceId: requireWorkspaceId,
+});
+
+// === Remote answer (full + core) — answer the menu a worker on another PC shows ===
+// Same provenance: main resolves the caller's pane; the daemon takes it only from the task's sender.
+registerRemoteAnswerTool(server, {
+  getSenderPtyId: () => verifiedPtyId(),
+  resolveWorkspaceId: requireWorkspaceId,
+  refuseUnattributed: () => refuseUnattributedRemoteTaskCall('remote_answer'),
+});
+
+// === Remote approve (full + core) — allow or deny a prompt a worker on another PC shows ===
+// Same provenance; the daemon also holds the decision to the offer in the task's status.
+registerRemoteApproveTool(server, {
+  getSenderPtyId: () => verifiedPtyId(),
+  resolveWorkspaceId: requireWorkspaceId,
+  refuseUnattributed: () => refuseUnattributedRemoteTaskCall('remote_approve'),
 });
 
 // === To hand out (full + core) — list, add, pick ===

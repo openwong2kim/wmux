@@ -9,6 +9,11 @@
 // the workspace the human is looking at: no claim, no action. This guards
 // against an agent's mistake; it is not a boundary against same-user code,
 // which can reach the pipe directly.
+//
+// One exception, for the settings actions only (app-wide, no workspace): a
+// call from a terminal outside any wmux pane (`wmux settings` run by a
+// person) is taken on the pipe token alone. The app labels that change
+// "from the command line". See `commandLineCaller` for exactly who counts.
 
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
@@ -24,6 +29,8 @@ import {
   type AppActionResult,
 } from '../../../shared/appActions';
 import { sendToRenderer } from './_bridge';
+import { readPidMapFiles } from '../../pty/pidMap';
+import { osParentPid } from '../../../mcp/brokerPeer';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -34,6 +41,34 @@ class AppActionTimeout extends Error {}
 
 export interface AppActionRpcDeps {
   timeoutMs?: number;
+  /**
+   * Whether the process on the other end of a claimless call runs inside a
+   * wmux pane: true, false, or null when that cannot be told (no peer pid,
+   * as on Windows). Defaults to walking the peer pid's parents to a pane's shell.
+   */
+  peerInPane?: (ctx: RpcContext) => Promise<boolean | null>;
+}
+
+/** How many parents the walk reads before it gives up; a pane's shell sits a few levels up. */
+const PEER_WALK_HOPS = 32;
+
+/**
+ * Whether the peer pid descends from a pane's shell (the pid map main writes
+ * for every pane), read up the OS parent chain. Null when it cannot be told:
+ * no peer pid (Windows), or a parent that could not be read.
+ */
+async function walkPeerToPane(ctx: RpcContext): Promise<boolean | null> {
+  if (typeof ctx.peerPid !== 'number') return null;
+  const shells = new Set(readPidMapFiles().map((f) => Number(f.pid)).filter((n) => Number.isInteger(n) && n > 1));
+  if (shells.size === 0) return false;
+  let pid: number | null = ctx.peerPid;
+  for (let hop = 0; hop < PEER_WALK_HOPS; hop++) {
+    if (pid === null) return null;
+    if (pid <= 1) return false;
+    if (shells.has(pid)) return true;
+    pid = await osParentPid(pid);
+  }
+  return null;
 }
 
 type ClaimedCaller = { ok: true; workspaceId: string; ptyId: string } | { ok: false; error: string };
@@ -54,7 +89,31 @@ function claimedCaller(ctx: RpcContext | undefined): ClaimedCaller {
   return { ok: true, workspaceId: claim.workspaceId, ptyId: claim.ptyId };
 }
 
+/**
+ * A caller on the local pipe that is outside every wmux pane: it came over the
+ * external wire with the pipe token, carries no claim at all (not a stale one,
+ * not a workspace-only one), names no pane on its envelope, and is none of the
+ * other lanes (the operator and plugin surfaces, a bot or commander token, a
+ * fenced worker, another computer). Only the settings actions take it.
+ */
+function commandLineCaller(ctx: RpcContext | undefined): boolean {
+  return !!ctx
+    && ctx.origin === 'local'
+    && ctx.externalWire === true
+    && !ctx.operator
+    && !ctx.firstParty
+    && ctx.hostedWorkspace === undefined
+    && !ctx.bot
+    && !ctx.commanderWorkspace
+    && !ctx.fencedWorker
+    && ctx.workspaceClaim === undefined
+    && !ctx.callerPtyId;
+}
+
+const isSettingsAction = (id: string): boolean => id.startsWith('settings.');
+
 export function registerAppActionRpc(router: RpcRouter, getWindow: GetWindow, deps: AppActionRpcDeps = {}): void {
+  const peerInPane = deps.peerInPane ?? walkPeerToPane;
   router.register(APP_ACTION_RPC.list, async (_params, ctx) => {
     if (ctx?.origin === 'remote') {
       return appActionRefusal('remote_refused', `${APP_ACTION_RPC.list}: not available to another computer`);
@@ -98,8 +157,15 @@ export function registerAppActionRpc(router: RpcRouter, getWindow: GetWindow, de
     // Nothing the call names (a workspace, a sender pane, the envelope's
     // pty) stands in for the claim. The operator lane carries no claim and
     // is refused like any caller without one.
-    const caller = claimedCaller(ctx);
-    if (!caller.ok) return appActionRefusal('no_identity', caller.error);
+    const claimed = claimedCaller(ctx);
+    const fromCommandLine = !claimed.ok && spec.target === 'none' && isSettingsAction(id) && commandLineCaller(ctx);
+    if (!claimed.ok && !fromCommandLine) return appActionRefusal('no_identity', claimed.error);
+    // A process in a pane is an agent's, claim or not: it does not get the
+    // command line's label by leaving its claim out. Where the peer cannot be
+    // told (Windows), the CLI's own check stands (cli/paneClaim.ts).
+    if (fromCommandLine && ctx && (await peerInPane(ctx)) === true) {
+      return appActionRefusal('no_identity', `${method}: this runs in a wmux pane, but its claim did not come with the call; run it again`);
+    }
 
     const win = getWindow();
     if (!win || win.isDestroyed()) {
@@ -114,8 +180,9 @@ export function registerAppActionRpc(router: RpcRouter, getWindow: GetWindow, de
           id,
           args: args.args,
           ...(target ? { target } : {}),
-          callerWorkspaceId: caller.workspaceId,
-          callerPtyId: caller.ptyId,
+          // Set here, never from the call: who the app says made the change.
+          source: claimed.ok ? 'agent' : 'command-line',
+          ...(claimed.ok ? { callerWorkspaceId: claimed.workspaceId, callerPtyId: claimed.ptyId } : {}),
         },
         { timeoutMs: deps.timeoutMs ?? RENDERER_TIMEOUT_MS, timeoutError: new AppActionTimeout() },
       );

@@ -69,6 +69,8 @@ export interface PaneDeliveryLocksOptions {
 
 export class PaneDeliveryLocks {
   private readonly panes = new Map<string, PaneEntry>();
+  /** #3393 — told of every held write that landed (writeUnderLock), in the tick it was counted. */
+  onHeldWrite: ((sessionId: string) => void) | undefined;
   private readonly leaseMs: number;
   private readonly log: (line: string) => void;
 
@@ -296,5 +298,6 @@ export function writeUnderLock(
   if (data.length > HELD_WRITE_CHUNK_MAX) return { ok: false, error: 'too large' };
   if (!admitPaneInput(target.pendingInputBytes, () => target.write(data))) return { ok: false, error: 'backpressure' };
   target.noteInput(data);
+  locks.onHeldWrite?.(sessionId);
   return { ok: true };
 }

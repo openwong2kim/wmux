@@ -12,7 +12,7 @@ import path from 'node:path';
 vi.mock('electron', () => ({ ipcMain: { handle: vi.fn(), removeHandler: vi.fn() } }));
 
 import { ipcMain } from 'electron';
-import { ShipActions, classifyShipFailure, shipActions, signerAskEnv, spawnRun } from '../shipActions';
+import { SHIP_GIT_TIMEOUT_MS, ShipActions, classifyShipFailure, shipActions, signerAskEnv, spawnRun } from '../shipActions';
 import { setSecretGuardEnabled } from '../secretGuardSetting';
 import { registerGitShipHandlers } from '../../ipc/handlers/gitShip.handler';
 import { IPC } from '../../../shared/constants';
@@ -512,8 +512,14 @@ describe('against real git', () => {
     const pin = { branch: 'main', head: g(work, 'rev-parse', 'HEAD') };
     const t0 = Date.now();
     const res = await new ShipActions().commit(work, 'msg', pin);
-    expect(Date.now() - t0, JSON.stringify(res)).toBeLessThan(15_000);
-    expect(res).toMatchObject({ ok: false, reason: 'signing' });
+    const tookMs = Date.now() - t0;
+    // The cause first: a signer that waited for the passphrase would end as a
+    // timeout (or a hang) instead, and this names which one it was.
+    expect(res, `after ${tookMs} ms`).toMatchObject({ ok: false, reason: 'signing' });
+    // "At once" is before the product would have stopped it: ShipActions' git
+    // runs under SHIP_GIT_TIMEOUT_MS, so a signer waiting on the prompt would
+    // take at least that long.
+    expect(tookMs, JSON.stringify(res)).toBeLessThan(SHIP_GIT_TIMEOUT_MS);
   }, 90_000);
 
   it('a folder moved away → missing-folder, for the status and for a commit', async () => {

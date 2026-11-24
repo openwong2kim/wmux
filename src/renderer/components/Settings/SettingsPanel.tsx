@@ -1,4 +1,5 @@
 import { TerminalEngineSetting } from './TerminalEngineSetting';
+import { DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, normalizeFanoutAccountPoolSettings, type FanoutAccountPoolSettings } from '../../../shared/fanoutAccountPool';
 import { QuickCommandsSection } from './QuickCommandsSection';
 import { SecretHookSetting } from './SecretHookSetting';
 import { CredentialEnvSetting } from './CredentialEnvSetting';
@@ -77,7 +78,7 @@ import {
 } from '../../utils/shortcutRebind';
 import KeyConflictConfirm from '../shared/KeyConflictConfirm';
 import { CLAUDE_EFFORT_LEVELS } from '../../../shared/claudeModels';
-import type { AgentSlug } from '../../../shared/agentIdentity';
+import { agentRow, type AgentSlug } from '../../../shared/agentIdentity';
 import {
   agyEffortOf,
   agyFamilyOf,
@@ -119,6 +120,7 @@ import UiButton from '../ui/Button';
 import Switch from '../ui/Switch';
 import Checkbox from '../ui/Checkbox';
 import Select from '../ui/Select';
+import { SIBLING_COLLISION_INTERVAL_CHOICES_MIN } from '../../../shared/siblingCollision';
 import Input from '../ui/Input';
 import SegmentedControl from '../ui/SegmentedControl';
 import { resolveAttentionRemindMs } from '../Sidebar/attentionBlink';
@@ -1672,6 +1674,10 @@ function TabGeneral() {
     storeSetSecretGuard(enabled);
     window.electronAPI.settings.setSecretGuardEnabled(enabled);
   };
+  const siblingCollisionWatch = useStore((s) => s.siblingCollisionWatch);
+  const setSiblingCollisionWatch = useStore((s) => s.setSiblingCollisionWatch);
+  const siblingCollisionIntervalMin = useStore((s) => s.siblingCollisionIntervalMin);
+  const setSiblingCollisionIntervalMin = useStore((s) => s.setSiblingCollisionIntervalMin);
 
   return (
     <div className="settings-page">
@@ -1711,6 +1717,18 @@ function TabGeneral() {
         </SettingRow>
         <SecretHookSetting />
         <CredentialEnvSetting />
+        <SettingRow id="siblingcollision" label={t('settings.siblingCollision')} description={t('settings.siblingCollisionDesc')}>
+          <Toggle checked={siblingCollisionWatch} onChange={setSiblingCollisionWatch} label={t('settings.siblingCollision')} />
+        </SettingRow>
+        <SettingRow id="siblingcollisioninterval" label={t('settings.siblingCollisionInterval')} description={t('settings.siblingCollisionIntervalDesc')}>
+          <SettingSelect
+            label={t('settings.siblingCollisionInterval')}
+            value={String(siblingCollisionIntervalMin)}
+            disabled={!siblingCollisionWatch}
+            onChange={(v) => setSiblingCollisionIntervalMin(Number(v))}
+            options={SIBLING_COLLISION_INTERVAL_CHOICES_MIN.map((m) => ({ value: String(m), label: t('settings.siblingCollisionEvery', { minutes: m }) }))}
+          />
+        </SettingRow>
       </SettingsSection>
 
       <SettingsSection title={t('settings.sectionSetupReset')}>
@@ -2216,6 +2234,10 @@ function FanoutWorkersSection() {
   }));
   // Main-side as well: main refuses the agy trust write while this is off.
   const [trustAgyFolders, setTrustAgyFoldersState] = useState(false);
+  // Main-side: the fan-out account pool, and the Claude account groups its
+  // group select offers ('' is the ungrouped accounts).
+  const [accountPool, setAccountPoolState] = useState<FanoutAccountPoolSettings>(DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS);
+  const [claudeGroups, setClaudeGroups] = useState<string[]>([]);
   // Main-side, per workspace: the worker fence of this workspace's bots.
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const [fenceOff, setFenceOffState] = useState(false);
@@ -2260,6 +2282,19 @@ function FanoutWorkersSection() {
     window.electronAPI?.fanout?.getTrustAgyFolders?.()
       .then((v) => {
         if (!cancelled && typeof v === 'boolean') setTrustAgyFoldersState(v);
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getAccountPool?.()
+      .then((v) => {
+        if (!cancelled && v) setAccountPoolState(normalizeFanoutAccountPoolSettings(v));
+      })
+      .catch(() => undefined);
+    window.electronAPI?.accounts?.list?.()
+      .then((r) => {
+        if (cancelled) return;
+        const named = new Set<string>();
+        for (const a of r.accounts) if (agentRow(a.vendor)?.usageReserve === true && a.group) named.add(a.group);
+        setClaudeGroups([...named].sort((a, b) => a.localeCompare(b)));
       })
       .catch(() => undefined);
     return () => {
@@ -2315,6 +2350,13 @@ function FanoutWorkersSection() {
     window.electronAPI.fanout
       .setTrustAgyFolders(next)
       .then((stored) => setTrustAgyFoldersState(stored))
+      .catch(() => undefined);
+  };
+
+  const onAccountPoolChange = (patch: Partial<FanoutAccountPoolSettings>) => {
+    window.electronAPI.fanout
+      .setAccountPool(patch)
+      .then((stored) => setAccountPoolState(normalizeFanoutAccountPoolSettings(stored)))
       .catch(() => undefined);
   };
 
@@ -2415,6 +2457,34 @@ function FanoutWorkersSection() {
           label={t('settings.fanoutTrustAgyFolders')}
         />
       </SettingRow>
+      <SettingRow
+        id="fanoutaccountpool"
+        label={t('settings.fanoutAccountPool')}
+        description={t('settings.fanoutAccountPoolDesc')}
+      >
+        <Toggle
+          checked={accountPool.enabled}
+          onChange={(on) => onAccountPoolChange({ enabled: on })}
+          label={t('settings.fanoutAccountPool')}
+        />
+      </SettingRow>
+      {accountPool.enabled && (
+        <SettingRow
+          id="fanoutaccountpoolgroup"
+          label={t('settings.fanoutAccountPoolGroup')}
+          description={t('settings.fanoutAccountPoolGroupDesc')}
+        >
+          <SettingSelect
+            value={accountPool.group ?? ''}
+            onChange={(v) => onAccountPoolChange({ group: v === '' ? null : v })}
+            options={[
+              { value: '', label: t('settings.fanoutAccountPoolUngrouped') },
+              ...[...new Set([...claudeGroups, ...(accountPool.group ? [accountPool.group] : [])])].map((g) => ({ value: g, label: g })),
+            ]}
+            label={t('settings.fanoutAccountPoolGroup')}
+          />
+        </SettingRow>
+      )}
       {activeWorkspaceId && (
         <SettingRow
           id="workerfence"
@@ -5276,7 +5346,9 @@ export function TabLabs() {
     run(() => window.electronAPI.settings.getLabs());
     return () => { live.current = false; };
   }, [run]);
-  const ringOn = !!labs && (labs.saved.ringCompression || labs.ringCompressionInConfig);
+  // config.json's flag, when set, wins over labs.json (as in the daemon).
+  const ringInConfig = labs?.ringCompressionInConfig ?? null;
+  const ringOn = !!labs && (ringInConfig ?? labs.saved.ringCompression);
   return (
     <SettingsSection description={t('settings.labsIntro')}>
       <SettingRow id="labs-compact-scrollback" label={t('settings.labsCompactScrollback')} description={t('settings.labsCompactScrollbackDesc')}>
@@ -5292,13 +5364,13 @@ export function TabLabs() {
       <SettingRow id="labs-ring-compression" label={t('settings.labsRingCompression')} description={t('settings.labsRingCompressionDesc')}>
         <Toggle
           checked={ringOn}
-          disabled={!labs || busy || labs.ringCompressionInConfig || labs.ringCompressionApplies === false}
+          disabled={!labs || busy || ringInConfig !== null}
           onChange={(on) => run(() => window.electronAPI.settings.setLabs({ ringCompression: on }))}
           label={t('settings.labsRingCompression')}
         />
       </SettingRow>
-      {labs?.ringCompressionApplies === false && <SettingNote>{t('settings.labsRingCompressionNodeOnly')}</SettingNote>}
-      {labs?.ringCompressionInConfig && <SettingNote>{t('settings.labsRingCompressionInConfig')}</SettingNote>}
+      {ringInConfig === true && <SettingNote>{t('settings.labsRingCompressionInConfig')}</SettingNote>}
+      {ringInConfig === false && <SettingNote>{t('settings.labsRingCompressionOffInConfig')}</SettingNote>}
       {labs?.restartRequired && <SettingNote>
         {t('settings.labsRestartDaemon')}<br /><code className="ui-code">{labs.stopCommand}</code>
       </SettingNote>}

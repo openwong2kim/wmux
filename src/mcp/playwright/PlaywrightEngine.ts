@@ -1,7 +1,7 @@
 import type { Browser, BrowserContext, Page, CDPSession } from 'playwright-core';
 import { loadPlaywright } from './lazyPlaywright';
 import { sendRpc } from '../wmux-client';
-import { getConnectionScope } from '../connectionScope';
+import { scopeOrRefuse } from '../connectionScope';
 import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 import type { BrowserBackend } from '../../shared/browserBackend';
@@ -20,7 +20,8 @@ import {
 } from './browserScope';
 import { BrowserPolicyError, POLICY_DENIED_CODE } from '../../shared/browserPolicy';
 import { attachPageCapture } from './pageCapture';
-import { trackRequestBaseline } from './actionSettle';
+import { TAP_READY_MS, trackRequestBaseline } from './actionSettle';
+import { networkTapReady } from './pageNetwork';
 import { guardUnclaimedDownloads, isDownloadGuardArmed } from './downloadGuard';
 import {
   attachModalTracking,
@@ -425,8 +426,10 @@ export class PlaywrightEngine {
     // engine so two panes driving two browser sessions cannot bleed CDP
     // state, auto-open scope, or the shell-URL cache into each other. The
     // nine tool modules keep calling getInstance() unchanged — the scope,
-    // when active, redirects them to the per-connection instance.
-    const scope = getConnectionScope();
+    // when active, redirects them to the per-connection instance. In the
+    // broker a call with no scope is refused: the singleton below would be
+    // one browser session shared by every connection.
+    const scope = scopeOrRefuse('this browser call');
     if (scope) {
       if (!scope.playwright) scope.playwright = new PlaywrightEngine();
       return scope.playwright as PlaywrightEngine;
@@ -1222,6 +1225,9 @@ export class PlaywrightEngine {
     if (page && this.workspaceBackend !== 'builtin') {
       attachPageCapture(page);
     }
+    // The network session opens asynchronously; a tool that navigates right
+    // after this resolve would otherwise lose the document request to it.
+    if (page) await networkTapReady(page, TAP_READY_MS);
     // Last, after every throwaway CDP session this resolution opened has
     // detached again. Chromium keeps the emulated `navigator.platform` as a
     // page-wide setting, and a detaching session clears it whether or not it

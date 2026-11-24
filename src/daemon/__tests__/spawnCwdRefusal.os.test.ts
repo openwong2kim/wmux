@@ -21,6 +21,7 @@ class FakePty extends EventEmitter {
   connect(pid: number): void { this.pid = pid; this._socket.emit('ready_datapipe'); }
 }
 
+vi.mock('../../shared/terminalPty', async (importOriginal) => (await import('../../test-utils/ptyTransportStub')).routeSpawnToNodePtyMock(importOriginal));
 vi.mock('node-pty', () => {
   const spawn = () => { const p = new FakePty(); spawned.push(p); return p; };
   return { default: { spawn }, spawn };

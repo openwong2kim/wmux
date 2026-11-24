@@ -4,6 +4,21 @@ import { AgentLoginGate } from '../agentLoginGate';
 const account = (dir?: string): NodeJS.ProcessEnv => (dir ? { CLAUDE_CONFIG_DIR: dir } : {});
 
 describe('AgentLoginGate', () => {
+  // A WSL pane on a bound account runs it on its Linux home (shared/wslAccountMark.ts).
+  it('never asks the Windows status about a WSL account home, and knows it works once a turn says so', async () => {
+    const probe = vi.fn(async () => false);
+    const gate = new AgentLoginGate(probe, { now: () => 0 });
+    const wsl: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: '/acc/a', WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR', WMUX_WSL_ACCOUNT_DISTRO: 'Ubuntu' };
+    expect(await gate.check('claude', wsl)).toBeNull();
+    expect(await gate.signedOut('claude', wsl)).toBe(false);
+    expect(probe).not.toHaveBeenCalled();
+    gate.markWorks('claude', 'wsl:Ubuntu:/acc/a');
+    expect(await gate.check('claude', wsl)).toBe(true);
+    // The same account's Windows panes are still asked.
+    expect(await gate.check('claude', account('/acc/a'))).toBe(false);
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
   it('lets a launch through the moment a sign-in lands, inside the cache window', async () => {
     const clock = { t: 0 };
     let signedIn = false;

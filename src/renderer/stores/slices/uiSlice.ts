@@ -24,6 +24,12 @@ import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
 import { sanitizeShortcutOverrides, type ShortcutActionId, type ShortcutOverrides } from '../../../shared/keymap';
 import { FILE_TREE_DEFAULT_WIDTH, clampFileTreeWidth } from '../../utils/fileTreeLayout';
 import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth, isNestedTask, togglePinned, type SidebarSortMode } from '../../utils/sidebarLayout';
+import {
+  EMPTY_SIBLING_COLLISIONS,
+  SIBLING_COLLISION_DEFAULT_INTERVAL_MIN,
+  SIBLING_COLLISION_INTERVAL_CHOICES_MIN,
+  type SiblingCollisionSnapshot,
+} from '../../../shared/siblingCollision';
 
 /**
  * #517: read main's authoritative browser backend synchronously at store-module
@@ -129,6 +135,7 @@ import {
   type NotificationCategory,
   type AgentStatus,
   type FleetLayout,
+  type FleetGroupBy,
   type ChatViewAskAgent,
   type ChatViewFirstAsk,
   BUILTIN_TEMPLATES,
@@ -282,6 +289,10 @@ export interface UISlice {
   // a four-column board. Saved with the session (buildSessionData).
   fleetLayout: FleetLayout;
   setFleetLayout: (layout: FleetLayout) => void;
+  // The Fleet list's grouping below Needs you: by status (default) or by
+  // device. The board always groups by status. Saved with the session.
+  fleetGroupBy: FleetGroupBy;
+  setFleetGroupBy: (groupBy: FleetGroupBy) => void;
 
 
   // Fleet attention board — whether the Idle section shows its rows or stays
@@ -291,6 +302,11 @@ export interface UISlice {
   // The same for the Finished section (turns that ended, not yet looked at).
   fleetFinishedExpanded: boolean;
   setFleetFinishedExpanded: (expanded: boolean) => void;
+  // The list grouped by device: `${'finished' | 'idle'}:${deviceId}` → open,
+  // for the folds toggled under a device head; an absent key follows the two
+  // flags above. Session-only, like them.
+  fleetDeviceFolds: Record<string, boolean>;
+  setFleetDeviceFold: (key: string, open: boolean) => void;
   // One-shot request from the sidebar's `N to review` link: Fleet consumes it
   // (focuses the first Ready to review row) and clears it. Session-only.
   fleetFocusReview: boolean;
@@ -1022,6 +1038,17 @@ export interface UISlice {
   secretGuardEnabled: boolean;
   setSecretGuardEnabled: (enabled: boolean) => void;
 
+  // ─── Git: sibling worktrees that touch the same file ─────────────────
+  /** Settings › General; on by default. Main runs the checks (main/git/siblingCollision.ts). */
+  siblingCollisionWatch: boolean;
+  setSiblingCollisionWatch: (enabled: boolean) => void;
+  /** Minutes between checks while two or more siblings are open. */
+  siblingCollisionIntervalMin: number;
+  setSiblingCollisionIntervalMin: (minutes: number) => void;
+  /** Main's latest answer: per pane folder, the siblings it collides with. Not persisted. */
+  siblingCollisions: SiblingCollisionSnapshot;
+  setSiblingCollisions: (snapshot: SiblingCollisionSnapshot) => void;
+
   // ─── Keep the computer awake ─────────────────────────────────────────
   /** Main holds the blocker (main/power/sleepPrevention.ts); this is the choice. */
   sleepPreventionMode: SleepPreventionMode;
@@ -1396,6 +1423,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.fleetLayout = layout;
   }),
 
+  fleetGroupBy: 'status',
+
+  setFleetGroupBy: (groupBy) => set((state) => {
+    state.fleetGroupBy = groupBy;
+  }),
+
   fleetIdleExpanded: false,
 
   setFleetIdleExpanded: (expanded) => set((state) => {
@@ -1406,6 +1439,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setFleetFinishedExpanded: (expanded) => set((state) => {
     state.fleetFinishedExpanded = expanded;
+  }),
+
+  fleetDeviceFolds: {},
+
+  setFleetDeviceFold: (key, open) => set((state) => {
+    state.fleetDeviceFolds[key] = open;
   }),
 
   fleetFocusReview: false,
@@ -2458,6 +2497,20 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setSecretGuardEnabled: (enabled) => set((state) => {
     state.secretGuardEnabled = enabled;
+  }),
+
+  // ─── Git: sibling collision watch ──────────────────────────────────────
+  siblingCollisionWatch: true,
+  setSiblingCollisionWatch: (enabled) => set((state) => {
+    state.siblingCollisionWatch = enabled;
+  }),
+  siblingCollisionIntervalMin: SIBLING_COLLISION_DEFAULT_INTERVAL_MIN,
+  setSiblingCollisionIntervalMin: (minutes) => set((state) => {
+    if ((SIBLING_COLLISION_INTERVAL_CHOICES_MIN as readonly number[]).includes(minutes)) state.siblingCollisionIntervalMin = minutes;
+  }),
+  siblingCollisions: EMPTY_SIBLING_COLLISIONS,
+  setSiblingCollisions: (snapshot) => set((state) => {
+    state.siblingCollisions = snapshot;
   }),
 
   // ─── Keep the computer awake ─────────────────────────────────────────

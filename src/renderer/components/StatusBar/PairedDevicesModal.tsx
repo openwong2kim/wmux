@@ -6,7 +6,7 @@ import Checkbox from '../ui/Checkbox';
 import Badge from '../ui/Badge';
 import { IconComputer, IconPhone, IconRemoteDevices, IconWarning } from '../icons';
 import { timeAgo } from '../../utils/timeAgo';
-import type { DeviceKind, WebDeviceListError, WebDeviceRevokeResult, WebDeviceSummary } from '../../../shared/web';
+import type { DeviceKind, WebDeviceListError, WebDeviceRevokeResult, WebDeviceSetInputResult, WebDeviceSummary } from '../../../shared/web';
 import PairingScope from '../PcRail/PairingScope';
 
 /** The roster's kind glyph: own monograms, never a vendor's mark. */
@@ -56,6 +56,19 @@ export function revokeFailureMessage(t: (key: string) => string, res: WebDeviceR
       : res.reason === 'not-found'
         ? t('web.revokeNotFound')
         : t('web.revokeUnknown');
+}
+
+/** Why a grant change failed, in the operator's words (also the Remote page's phone rows). */
+export function grantFailureMessage(t: (key: string) => string, res: WebDeviceSetInputResult): string {
+  return res.reason === 'persist-failed'
+    ? t('web.grantPersistFailed')
+    : res.reason === 'unavailable'
+      ? t('web.grantUnavailable')
+      : res.reason === 'revoked'
+        ? t('web.grantRevoked')
+        : res.reason === 'not-found'
+          ? t('web.revokeNotFound')
+          : t('web.grantUnknown');
 }
 
 export default function PairedDevicesModal({ onClose }: { onClose: () => void }) {
@@ -137,28 +150,14 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
     const api = window.electronAPI?.web;
     // A silent return leaves the checkbox flipped with nothing having happened.
     if (!api?.deviceSetInput) {
-      setRevokeError({ deviceId, message: t('web.revokeUnavailable') });
+      setRevokeError({ deviceId, message: t('web.grantUnavailable') });
       return;
     }
     setRevokeError(null);
     try {
       const res = await api.deviceSetInput(deviceId, allowInput);
       if (!mounted.current) return;
-      if (!res.ok) {
-        setRevokeError({
-          deviceId,
-          message:
-            res.reason === 'persist-failed'
-              ? t('web.grantPersistFailed')
-              : res.reason === 'unavailable'
-                ? t('web.revokeUnavailable')
-                : res.reason === 'revoked'
-                  ? t('web.grantRevoked')
-                  : res.reason === 'not-found'
-                    ? t('web.revokeNotFound')
-                    : t('web.grantUnknown'),
-        });
-      }
+      if (!res.ok) setRevokeError({ deviceId, message: grantFailureMessage(t, res) });
     } catch {
       if (mounted.current) setRevokeError({ deviceId, message: t('web.grantUnknown') });
     } finally {

@@ -1,10 +1,10 @@
 import { isWslShell, mergeWslEnv, resolveWslCwd, type WslTarget, type ResolvedWslCwd } from '../shared/wsl';
-import { buildWslInjection } from '../shared/wslIntegration';
+import { buildWslInjection, WSL_ACCOUNT_INJECTED_VARS } from '../shared/wslIntegration';
 import { getWmuxDir } from './config';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import type { IPty } from 'node-pty';
-import { ptyBackend, type TerminalPty } from '../shared/terminalPty';
+import { isTerminalCoreMissing, ptyBackend, type TerminalPty } from '../shared/terminalPty';
 import { spawnPty, spawnPtySync, type SpawnPtyRequest } from '../shared/spawnPty';
 import { applyParentWindow } from '../shared/conptyParentWindow';
 import type { PaneJob } from './paneJob';
@@ -41,6 +41,7 @@ import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsE
 import { ENV_KEYS } from '../shared/constants';
 import { containsControlChars } from '../shared/cwdShape';
 import { createDefaultConfig } from './config';
+import { ringBytes } from './ringLimits';
 import { getProcessCreatedAtFt, getProcessStartTime, isPhantomExit, isPidAlive } from './phantomExit';
 import { kernelStartOf } from '../shared/processStartTime';
 
@@ -374,10 +375,10 @@ export class DaemonSessionManager extends EventEmitter {
     this.config = config;
   }
 
-  /** Whether new rings are asked to compress: config.json's flag or the saved
-   *  Labs opt-in, both as read at startup. A Rust ring ignores the request. */
+  /** Whether new rings compress: config.json's flag when it is set, else the
+   *  Labs switch (on unless turned off), both as read at startup. */
   ringCompressionEnabled(): boolean {
-    return this.config?.session.ringCompression === true || labsSettingsAtStartup().ringCompression;
+    return this.config?.session.ringCompression ?? labsSettingsAtStartup().ringCompression;
   }
 
   private pendingRecovery = new Map<string, DaemonSession>();
@@ -453,6 +454,16 @@ export class DaemonSessionManager extends EventEmitter {
       delete pending.recoveryPendingSince;
     }
     this.pendingRecovery.set(session.id, pending);
+  }
+
+  /**
+   * Hold `session` as a pending recovery because the terminal core did not
+   * load (DaemonSession.holdReason). Unlike keepPendingRecovery it touches
+   * neither recoveryError nor recoveryPendingSince: a hold starts no retention
+   * clock, and a WSL entry's own clock, if it had one, stays as it was.
+   */
+  holdPendingRecovery(session: DaemonSession): void {
+    this.pendingRecovery.set(session.id, { ...session, state: 'suspended', holdReason: 'terminal-core-missing' });
   }
 
   getPendingRecovery(id: string): DaemonSession | undefined {
@@ -871,6 +882,9 @@ export class DaemonSessionManager extends EventEmitter {
         execCommand: params.exec ? (params.execLaunchCommand ?? params.exec.command) : undefined,
       });
       spawnArgs = injection.args;
+      // A replayed env's account variables that this spawn no longer sends
+      // (the account folder is gone, or the mark dropped) must not survive the merge.
+      for (const name of WSL_ACCOUNT_INJECTED_VARS) if (!(name in injection.env)) delete env[name];
       Object.assign(env, injection.env);
       if (!params.exec) shellMarks = 'integrated';
     } else if (params.exec) {
@@ -988,6 +1002,9 @@ export class DaemonSessionManager extends EventEmitter {
   }
 
   private spawnFailure(prepared: PreparedSpawn, err: unknown): Error {
+    // Kept as is: its code is what holds a restored session (promote) and tags
+    // the pipe answer, and its message already says what failed and what to do.
+    if (isTerminalCoreMissing(err) && err instanceof Error) return err;
     const detail = err instanceof Error ? err.message : String(err);
     return new Error(`Failed to start shell "${prepared.cmd}" in "${prepared.cwd}": ${detail}`);
   }
@@ -1094,10 +1111,11 @@ export class DaemonSessionManager extends EventEmitter {
 
     // Ring buffer for scrollback — use config's bufferSizeMb if available
     const bufferSize = this.config
-      ? this.config.session.bufferSizeMb * 1024 * 1024
+      ? ringBytes(this.config.session.bufferSizeMb, DEFAULT_BUFFER_SIZE)
       : DEFAULT_BUFFER_SIZE;
     const ringBuffer = new RingBuffer(bufferSize, ptyBackend(ptyProcess), {
       compress: this.ringCompressionEnabled(),
+      label: params.id,
     });
     // Replays parse each stretch of the ring at the size it was written at.
     // Recovered scrollback below is assumed to be at the spawn size.

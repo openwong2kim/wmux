@@ -69,6 +69,7 @@ class MockPty extends EventEmitter {
 
 let lastMockPty: MockPty | null = null;
 
+vi.mock('../../shared/terminalPty', async (importOriginal) => (await import('../../test-utils/ptyTransportStub')).routeSpawnToNodePtyMock(importOriginal));
 vi.mock('node-pty', () => ({
   default: {
     spawn: (cmd: string, args: string[], opts: Record<string, unknown>) => {

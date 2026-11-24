@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import * as http from 'node:http';
 import WebSocket from 'ws';
+import { PassThrough } from 'node:stream';
 import { FakeBrowser, type Command } from './fakePipeBrowser';
 
 // A protected profile on the debugging pipe: the launcher gives the pipe its
@@ -18,25 +19,51 @@ vi.mock('node:fs', async (orig) => {
     ...real,
     existsSync: () => true,
     mkdirSync: () => undefined,
-    readFileSync: vi.fn(() => { throw new Error('ENOENT (unit test)'); }),
+    readFileSync: vi.fn(() => { throw Object.assign(new Error('ENOENT (unit test)'), { code: 'ENOENT' }); }),
     writeFileSync: () => undefined,
     unlinkSync: () => undefined,
   };
 });
 
-import { ChromeLauncher, setPipeRelayForTests, type ChromeProtectionPlan } from '../ChromeLauncher';
+import { readFileSync } from 'node:fs';
+import { ChromeLauncher, PROTECTION_NOT_READY, setPipeRelayForTests, transportFor, transportLabel, type ChromeProtectionPlan } from '../ChromeLauncher';
 import { CdpPipeRelay, type RelayGrant } from '../CdpPipeRelay';
+import type { CdpPipeMux } from '../CdpPipeMux';
 
 type FakeChild = EventEmitter & { kill: (signal?: string) => void; stdio: unknown[]; killed: boolean; exitCode: number | null; signalCode: string | null };
 
 class ProtectedPipeChrome extends FakeBrowser {
   proxyPort = 0;
+  /** Methods this Chrome answers with an error (the launch step that sends them fails). */
+  readonly failing = new Set<string>();
+  /** Methods refused only on the download guard's session (the first to set the default download behaviour). */
+  readonly failingOnGuard = new Set<string>();
+  /** The first Target.setDiscoverTargets (the mux's own discovery session's) is never answered. */
+  holdFirstDiscovery = false;
+  /** The child exits (the pipe still open) just before a refusal on the guard's session is written. */
+  exitBeforeGuardRefusal = false;
+  private guardSession: string | undefined;
+  private discoveries = 0;
 
-  constructor(private readonly child: FakeChild) {
+  constructor(readonly child: FakeChild) {
     super();
   }
 
   protected override handle(c: Command): void {
+    if (c.method === 'Browser.setDownloadBehavior' && c.params.browserContextId === undefined && this.guardSession === undefined) this.guardSession = c.sessionId;
+    if (this.failingOnGuard.has(c.method) && c.sessionId !== undefined && c.sessionId === this.guardSession) {
+      if (this.exitBeforeGuardRefusal) {
+        this.child.exitCode = 0;
+        this.child.emit('exit', 0, null);
+      }
+      this.reply(c, '"error":{"code":-32000,"message":"refused (unit test)"}');
+      return;
+    }
+    if (c.method === 'Target.setDiscoverTargets' && this.holdFirstDiscovery && this.discoveries++ === 0) return;
+    if (this.failing.has(c.method)) {
+      this.reply(c, '"error":{"code":-32000,"message":"refused (unit test)"}');
+      return;
+    }
     if (c.method === 'Browser.close') {
       this.reply(c, '"result":{}');
       setImmediate(() => this.exit());
@@ -60,6 +87,26 @@ class ProtectedPipeChrome extends FakeBrowser {
     this.child.emit('exit', 0, null);
   }
 }
+
+/** A Chrome that exits during startup with `code`, before it answers anything. */
+function spawnFailing(code: number): void {
+  spawnMock.mockImplementationOnce(() => {
+    const child = new EventEmitter() as FakeChild;
+    child.killed = false;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.stdio = [null, null, null, new PassThrough(), new PassThrough()];
+    child.kill = () => { child.killed = true; };
+    setImmediate(() => {
+      child.exitCode = code;
+      child.emit('exit', code, null);
+    });
+    return child;
+  });
+}
+
+const spawnArgs = (n: number) => spawnMock.mock.calls[n]?.[1] as string[];
+const PORT_FLAGS = /^--remote-(debugging-port|debugging-address|allow-origins)/;
 
 function spawnChrome(): ProtectedPipeChrome {
   const child = new EventEmitter() as FakeChild;
@@ -123,7 +170,7 @@ describe('ChromeLauncher: a protected profile on the pipe', () => {
     const launcher = new ChromeLauncher('/tmp/pipe-protected', { profileName: 'bank', protection: () => denyAll });
     await launcher.endpoint();
     expect(launcher.isProtected()).toBe(true);
-    const c = await client(await launcher.relayGrant({ workspaceId: 'ws-bank' }));
+    const c = await client(await launcher.relayGrant({ lane: 'engine', workspaceId: 'ws-bank' }));
     const allows = () => chrome.received.filter((m) => m.method === 'Browser.setDownloadBehavior' && m.params.behavior !== 'deny');
 
     // A client's download setting is answered here and never reaches Chrome.
@@ -149,5 +196,207 @@ describe('ChromeLauncher: a protected profile on the pipe', () => {
 
     c.ws.close();
     await launcher.dispose({ immediate: true });
+  });
+
+  it('a protected launch on the pipe opens no port, whatever the pinned env or extra flags ask for', async () => {
+    vi.stubEnv('WMUX_CHROME_CDP_PORT', '9333');
+    spawnChrome();
+    const launcher = new ChromeLauncher('/tmp/pipe-protected-argv', {
+      profileName: 'default',
+      protection: () => denyAll,
+      extraArgs: ['--remote-debugging-port=9222', '--remote-allow-origins=*', '--remote-debugging-address=0.0.0.0', '--lang=en'],
+    });
+    await launcher.endpoint();
+    const args = spawnArgs(0);
+    expect(args).toContain('--remote-debugging-pipe');
+    expect(args).toContain('--lang=en');
+    expect(args.filter((a) => PORT_FLAGS.test(a))).toEqual([]);
+    expect(launcher.launchedTransport()).toEqual({ kind: 'pipe', weaker: false });
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('a protected start that fails on the pipe says why under PROTECTION_NOT_READY, and the next start is on the pipe again', async () => {
+    spawnFailing(1);
+    const launcher = new ChromeLauncher('/tmp/pipe-protected-fail', { profileName: 'bank', protection: () => denyAll });
+    const first = await launcher.endpoint().then(() => null, (e: unknown) => e as Error);
+    expect(first?.message.startsWith(PROTECTION_NOT_READY)).toBe(true);
+    expect(first?.message).toContain('Chrome exited during startup');
+    spawnFailing(1);
+    await launcher.endpoint().catch(() => undefined);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    for (const n of [0, 1]) {
+      expect(spawnArgs(n)).toContain('--remote-debugging-pipe');
+      expect(spawnArgs(n).filter((a) => PORT_FLAGS.test(a))).toEqual([]);
+    }
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('a protected start handed to a Chrome already on the profile says so', async () => {
+    // Chrome's process singleton: a windowed start hands over and exits 0.
+    spawnFailing(0);
+    const launcher = new ChromeLauncher('/tmp/pipe-protected-handoff', { profileName: 'bank', protection: () => denyAll });
+    const err = await launcher.endpoint().then(() => null, (e: unknown) => e as Error);
+    expect(err?.message.startsWith(PROTECTION_NOT_READY)).toBe(true);
+    expect(err?.message).toContain('another Chrome is still running on this profile');
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('a DevToolsActivePort that appears under a protected pipe Chrome closes it, and the next call is told why', async () => {
+    const chrome = spawnChrome();
+    const launcher = new ChromeLauncher('/tmp/pipe-protected-portfile', { profileName: 'bank', protection: () => denyAll });
+    await launcher.endpoint();
+    const read = vi.mocked(readFileSync);
+    read.mockImplementation(((file: unknown) => {
+      if (String(file).endsWith('DevToolsActivePort')) return '9222\n/devtools/browser/x';
+      throw Object.assign(new Error('ENOENT (unit test)'), { code: 'ENOENT' });
+    }) as typeof readFileSync);
+    try {
+      await vi.waitFor(() => expect(chrome.child.exitCode).not.toBeNull(), { timeout: 5_000 });
+      const err = await launcher.endpoint().then(() => null, (e: unknown) => e as Error);
+      expect(err?.message.startsWith(PROTECTION_NOT_READY)).toBe(true);
+      expect(err?.message).toContain('a debugging port opened in the protected browser');
+    } finally {
+      read.mockImplementation((() => { throw Object.assign(new Error('ENOENT (unit test)'), { code: 'ENOENT' }); }) as typeof readFileSync);
+    }
+    await launcher.dispose({ immediate: true });
+  });
+});
+
+describe('ChromeLauncher: the download guard on a protected pipe profile', () => {
+  /** The guard's own browser session: the one that set deny with no context. */
+  const guardSession = (chrome: ProtectedPipeChrome) =>
+    chrome.received.find((m) => m.method === 'Browser.setDownloadBehavior' && m.params.behavior === 'deny' && m.params.browserContextId === undefined)?.sessionId as string;
+
+  it('denies a new browser context the moment a target in it appears, before any tick lists it', async () => {
+    const chrome = spawnChrome();
+    const launcher = new ChromeLauncher('/tmp/pipe-protected-newctx', { profileName: 'bank', protection: () => denyAll });
+    await launcher.endpoint();
+    await vi.waitFor(() => expect(chrome.discover.has(guardSession(chrome))).toBe(true), { timeout: 5_000 });
+    // A context no list names (the fake's getBrowserContexts never lists it).
+    chrome.announce({ targetId: 'INCOG', type: 'page', browserContextId: 'CTX-NEW', url: 'about:blank' });
+    await vi.waitFor(() => expect(chrome.received.some((m) => m.method === 'Browser.setDownloadBehavior' && m.params.browserContextId === 'CTX-NEW' && m.params.behavior === 'deny')).toBe(true), { timeout: 5_000 });
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('cancels a stray download in every context it knows at once, without waiting for a list', async () => {
+    const chrome = spawnChrome();
+    const launcher = new ChromeLauncher('/tmp/pipe-protected-cancel', { profileName: 'bank', protection: () => denyAll });
+    await launcher.endpoint();
+    const session = guardSession(chrome);
+    await vi.waitFor(() => expect(chrome.discover.has(session)).toBe(true), { timeout: 5_000 });
+    chrome.announce({ targetId: 'INCOG', type: 'page', browserContextId: 'CTX-NEW', url: 'about:blank' });
+    await vi.waitFor(() => expect(chrome.received.some((m) => m.params.browserContextId === 'CTX-NEW')).toBe(true), { timeout: 5_000 });
+    // The list answer is held: only what the guard already knew can be used.
+    chrome.holdReplies.add('Target.getBrowserContexts');
+    chrome.event(session, 'Browser.downloadWillBegin', { frameId: 'INCOG', guid: 'g-new', url: 'http://a.test/f', suggestedFilename: 'f' });
+    await vi.waitFor(() => expect(chrome.received.some((m) => m.method === 'Browser.cancelDownload' && m.params.guid === 'g-new' && m.params.browserContextId === 'CTX-NEW')).toBe(true), { timeout: 5_000 });
+    chrome.holdReplies.delete('Target.getBrowserContexts');
+    chrome.releaseHeld();
+    await launcher.dispose({ immediate: true });
+  });
+});
+
+describe('ChromeLauncher: a protected start that is not ready names the step', () => {
+  it.each([
+    ['Browser.setDownloadBehavior', 'download-guard-deny'],
+    ['Target.setDiscoverTargets', 'download-guard-discovery'],
+  ])('a failing %s: the same PROTECTION_NOT_READY message, with %s and the error as its cause, logged once', async (method, site) => {
+    const chrome = spawnChrome();
+    chrome.failing.add(method);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const launcher = new ChromeLauncher(`/tmp/pipe-protected-site-${site}`, { profileName: 'bank', protection: () => denyAll });
+      const err = await launcher.endpoint().then(() => null, (e: unknown) => e as Error & { cause?: { site?: string; error?: Error } });
+      expect(err?.message).toBe(PROTECTION_NOT_READY);
+      expect(err?.cause?.site).toBe(site);
+      expect(err?.cause?.error?.message).toContain('refused (unit test)');
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes(`protected start not ready at ${site}`))).toHaveLength(1);
+      await launcher.dispose({ immediate: true });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('ChromeLauncher: the download guard\'s discovery on the pipe', () => {
+  const muxOf = (launcher: ChromeLauncher) => (launcher as unknown as { piped: { mux: CdpPipeMux } | null }).piped?.mux;
+  const skipped = (warn: { mock: { calls: unknown[][] } }) => warn.mock.calls.filter((c) => String(c[0]).includes('continues without download-guard-discovery'));
+
+  it('refused on the guard while the mux\'s own discovery is up: the start goes on, with one warning naming the step', async () => {
+    const chrome = spawnChrome();
+    chrome.failingOnGuard.add('Target.setDiscoverTargets');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const launcher = new ChromeLauncher('/tmp/pipe-protected-discovery-up', { profileName: 'bank', protection: () => denyAll });
+      const ep = await launcher.endpoint();
+      expect(ep.piped).toBe(true);
+      expect(muxOf(launcher)?.discoveryLive()).toBe(true);
+      expect(skipped(warn)).toHaveLength(1);
+      expect(String(skipped(warn)[0][0])).toContain('refused (unit test)');
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes('protected start not ready'))).toEqual([]);
+      await launcher.dispose({ immediate: true });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('refused on the guard while the mux\'s own discovery is not up yet: the start fails with that step as its cause', async () => {
+    const chrome = spawnChrome();
+    chrome.holdFirstDiscovery = true;
+    chrome.failingOnGuard.add('Target.setDiscoverTargets');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const launcher = new ChromeLauncher('/tmp/pipe-protected-discovery-pending', { profileName: 'bank', protection: () => denyAll });
+      const err = await launcher.endpoint().then(() => null, (e: unknown) => e as Error & { cause?: { site?: string } });
+      expect(err?.message).toBe(PROTECTION_NOT_READY);
+      expect(err?.cause?.site).toBe('download-guard-discovery');
+      expect(skipped(warn)).toEqual([]);
+      await launcher.dispose({ immediate: true });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('ChromeLauncher: the download guard\'s discovery when the child exits first', () => {
+  it('refused on the guard after the child exited, the pipe still open: decided as a pipe start, so it fails', async () => {
+    const chrome = spawnChrome();
+    chrome.holdFirstDiscovery = true;
+    chrome.exitBeforeGuardRefusal = true;
+    chrome.failingOnGuard.add('Target.setDiscoverTargets');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const launcher = new ChromeLauncher('/tmp/pipe-protected-discovery-exit', { profileName: 'bank', protection: () => denyAll });
+      const err = await launcher.endpoint().then(() => null, (e: unknown) => e as Error);
+      expect(err).not.toBeNull();
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes('continues without download-guard-discovery'))).toEqual([]);
+      await launcher.dispose({ immediate: true });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('transportFor', () => {
+  const plan = denyAll;
+  it.each([
+    // env, protected, setting, transport
+    [undefined, false, false, 'port'],
+    [undefined, true, false, 'pipe'],
+    [undefined, true, true, 'port (weaker)'],
+    ['auto', false, false, 'port'],
+    ['auto', true, false, 'pipe'],
+    ['auto', true, true, 'port (weaker)'],
+    ['pipe', false, false, 'pipe'],
+    ['pipe', true, false, 'pipe'],
+    ['pipe', true, true, 'pipe'],
+    ['port', false, false, 'port'],
+    ['port', true, false, 'pipe'],
+    ['port', true, true, 'port (weaker)'],
+  ] as const)('WMUX_CHROME_TRANSPORT=%s, protected %s, setting %s: %s', (env, isProtected, setting, label) => {
+    if (env === undefined) delete process.env.WMUX_CHROME_TRANSPORT;
+    else vi.stubEnv('WMUX_CHROME_TRANSPORT', env);
+    expect(transportLabel(transportFor(isProtected ? plan : null, setting))).toBe(label);
   });
 });

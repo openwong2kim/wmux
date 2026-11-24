@@ -316,7 +316,8 @@ describe('the Moa pane on the phone routes', () => {
 
   describe('Moa\'s rows on /turns', () => {
     const T = 1_700_000_000_000;
-    const pasted = (body: string) => `<pasted_content id="4d08">${body}</pasted_content id="4d08">`;
+    // A paste as the projector serves it (transcript/parseEntry.ts): unwrapped, and marked.
+    const pasted = (body: string) => ({ text: body, pasted: true as const });
     const cursor = { headOffset: 0, tailOffset: 10, fileSize: 10, mtimeMs: 1 };
 
     it('the snapshot and the append after it show the sent text, hide main\'s own prompts and fold Moa\'s working', async () => {
@@ -329,7 +330,7 @@ describe('the Moa pane on the phone routes', () => {
       const projector = serverDeps.projector!() as unknown as { snapshot: ReturnType<typeof vi.fn>; delta: ReturnType<typeof vi.fn> };
       projector.snapshot.mockImplementation(() => ({
         events: [
-          { id: 'u1', kind: 'user_text', ts: T, text: pasted('[active-work] … leave this work active. 뭐하냐 ') },
+          { id: 'u1', kind: 'user_text', ts: T, ...pasted('[active-work] … leave this work active. 뭐하냐 ') },
           { id: 't1', kind: 'tool_use', toolUseId: 'x', name: 'mcp__wmux__fleet_triage', argSummary: '' },
           { id: 'r1', kind: 'tool_result', toolUseId: 'x', ok: true, bytes: 2 },
           { id: 'a1', kind: 'assistant_text', text: 'All quiet.', turnComplete: true },
@@ -338,7 +339,7 @@ describe('the Moa pane on the phone routes', () => {
       }));
       projector.delta.mockImplementation(() => ({
         events: [
-          { id: 'u2', kind: 'user_text', ts: T + 5_000, text: pasted('[active-work] id: w1 — unchanged since your last turn') },
+          { id: 'u2', kind: 'user_text', ts: T + 5_000, ...pasted('[active-work] id: w1 — unchanged since your last turn') },
           { id: 'u3', kind: 'user_text', ts: T + 6_000, text: '[pane-events] (UNTRUSTED terminal/A2A signals' },
           { id: 'a2', kind: 'assistant_text', text: 'looking' },
         ],
@@ -361,7 +362,7 @@ describe('the Moa pane on the phone routes', () => {
       ]);
       // An ordinary pane's rows are served as the projector made them.
       expect((await (await fetch(`${base()}/api/sessions/s1/turns`, { headers: h })).json() as { events: Row[] }).events[0].text)
-        .toBe(pasted('[active-work] … leave this work active. 뭐하냐 '));
+        .toBe('[active-work] … leave this work active. 뭐하냐 ');
     });
   });
 

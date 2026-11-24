@@ -33,7 +33,6 @@ function Harness({ running = false, initialUpload = false }: { running?: boolean
   const [allowInput, setAllowInput] = useState(false);
   const [tailscale, setTailscale] = useState(false);
   const [expose, setExpose] = useState(false);
-  const [pairAllowInput, setPairAllowInput] = useState(false);
   const [allowTranscript, setAllowTranscript] = useState(false);
   const [allowUpload, setAllowUpload] = useState(initialUpload);
   const [allowDangerousLaunch, setAllowDangerousLaunch] = useState(false);
@@ -51,8 +50,6 @@ function Harness({ running = false, initialUpload = false }: { running?: boolean
     onToggleAdvanced: () => setAdvancedOpen((v) => !v),
     busy: false,
     copied: null,
-    deviceName: '',
-    qr: null,
     onToggleAllowInput: () => setAllowInput((v) => !v),
     onToggleExpose: () => setExpose((v) => !v),
     onToggleTailscale: () => setTailscale((v) => !v),
@@ -62,16 +59,9 @@ function Harness({ running = false, initialUpload = false }: { running?: boolean
     onStart: noop,
     onStop: noop,
     onCopyUrl: noop,
-    onCopyPairUrl: noop,
-    onCopyPairCode: noop,
     onOpenUrl: noop,
     onOpenLink: noop,
-    onNewPairCode: noop,
-    onDeviceNameChange: noop,
-    onStartPairing: noop,
     onOpenDevices: noop,
-    pairAllowInput,
-    onTogglePairAllowInput: () => setPairAllowInput((v) => !v),
     t,
   };
   return createElement(WebPopoverBody, props);
@@ -123,13 +113,6 @@ describe('Remote popover options', () => {
     press(box, 'Enter');
     expect(box.getAttribute('aria-checked')).toBe('false');
     press(box, ' ');
-    expect(box.getAttribute('aria-checked')).toBe('true');
-  });
-
-  it('"Let this device type" toggles from its label text in the running body', () => {
-    act(() => root.render(createElement(Harness, { running: true })));
-    const { label, box } = checkboxFor('web.pairAllowInput');
-    act(() => label.click());
     expect(box.getAttribute('aria-checked')).toBe('true');
   });
 

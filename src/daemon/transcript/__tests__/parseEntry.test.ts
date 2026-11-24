@@ -11,6 +11,7 @@ import {
   parseTranscriptLineDetailed,
 } from '../parseEntry';
 import type { TurnEvent } from '../../../shared/transcript/turnEvents';
+import { turnText } from '../../web/hostSearch';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -988,5 +989,82 @@ describe('parseTranscriptLine — compact summary is never "You"', () => {
   it('leaves a user entry without the flag as the user\'s own text', () => {
     const [event] = parseTranscriptLine(JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: summary } }), 0);
     expect(event).toMatchObject({ kind: 'user_text', text: summary });
+  });
+});
+
+describe('a message Claude Code stored as a paste: user_text is the pasted text itself', () => {
+  const pasteOf = (inner: string, id = '3de0') => `\n\n<pasted_content id="${id}">\n${inner}\n</pasted_content id="${id}">\n`;
+  const userLine = (content: unknown) => JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content } });
+
+  it('a string entry: the markers and the line break inside each go, the text stays byte-exact, pasted is set', () => {
+    const inner = 'first line  \r\n\nthird line';
+    expect(parseTranscriptLine(userLine(pasteOf(inner)), 0)).toEqual([{ id: 'u1', kind: 'user_text', text: inner, pasted: true }]);
+  });
+
+  it('content blocks (a paste sent with a photo): the same, with hasImage kept', () => {
+    const inner = '이 화면에서\n왜 멈추는지 봐 줘';
+    const [ev] = parseTranscriptLine(userLine([{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'x' } }, { type: 'text', text: pasteOf(inner) }]), 0);
+    expect(ev).toMatchObject({ kind: 'user_text', text: inner, pasted: true, hasImage: true });
+  });
+
+  it('a queued prompt (an attachment): unwrapped too, its outside line breaks gone', () => {
+    const inner = 'also check\nthe Windows build';
+    const [ev] = parseTranscriptLine(JSON.stringify({ type: 'attachment', uuid: 'q', attachment: { type: 'queued_command', commandMode: 'prompt', prompt: pasteOf(inner) } }), 0);
+    expect(ev).toEqual({ id: 'q', kind: 'user_text', text: inner, pasted: true });
+  });
+
+  it('typed text around a paste stays, and a message with no pair is unchanged (no pasted flag)', () => {
+    expect(parseTranscriptLine(userLine(`look at this:${pasteOf('stack trace')}thanks`), 0)[0])
+      .toMatchObject({ text: 'look at this:\n\nstack trace\nthanks', pasted: true });
+    const literal = 'how do I write <pasted_content id="3de0"> in a test?';
+    expect(parseTranscriptLine(userLine(literal), 0)).toEqual([{ id: 'u1', kind: 'user_text', text: literal }]);
+  });
+
+  it('a system reminder beside the paste is still dropped; one inside the paste is the user\'s text and stays', () => {
+    const [ev] = parseTranscriptLine(userLine(`${pasteOf('the real prompt')}<system-reminder>internal</system-reminder>`), 0);
+    expect(ev).toEqual({ id: 'u1', kind: 'user_text', text: 'the real prompt', pasted: true });
+    const log = 'a log I pasted:\n<system-reminder>quoted</system-reminder>\nend';
+    expect(parseTranscriptLine(userLine(pasteOf(log)), 0)[0]).toMatchObject({ text: log, pasted: true });
+    // An unclosed reminder inside the paste cannot reach a real one after it.
+    const half = 'quoted <system-reminder> only';
+    expect(parseTranscriptLine(userLine(`${pasteOf(half)}<system-reminder>real</system-reminder>`), 0)[0])
+      .toMatchObject({ text: half, pasted: true });
+  });
+
+  it('a reminder outside any paste is dropped whole, even when it quotes the paste wrapper', () => {
+    // CodeRabbit's case (#3415): paste-tag text inside a reminder, one tag unmatched.
+    const quoted = 'hello<system-reminder>example <pasted_content id="a">\ninternal\n</pasted_content id="a"> tail</system-reminder>';
+    expect(parseTranscriptLine(userLine(quoted), 0)).toEqual([{ id: 'u1', kind: 'user_text', text: 'hello' }]);
+    // A reminder holding a full matched pair in Claude Code's own id shape.
+    const pair = `hello<system-reminder>pastes look like ${pasteOf('secret body', 'ab12')} in transcripts</system-reminder>`;
+    expect(parseTranscriptLine(userLine(pair), 0)).toEqual([{ id: 'u1', kind: 'user_text', text: 'hello' }]);
+    // The same, after a real paste: the paste shows, the reminder does not.
+    const after = `${pasteOf('the real prompt')}<system-reminder>see ${pasteOf('quoted', 'cd34')}</system-reminder>`;
+    expect(parseTranscriptLine(userLine(after), 0)).toEqual([{ id: 'u1', kind: 'user_text', text: 'the real prompt', pasted: true }]);
+  });
+
+  it('a real paste holding a reminder-like line keeps it, byte for byte', () => {
+    const inner = 'from the log:\n<system-reminder>a line I copied</system-reminder>\nend of log';
+    expect(parseTranscriptLine(userLine(`${pasteOf(inner)}<system-reminder>injected</system-reminder>`), 0))
+      .toEqual([{ id: 'u1', kind: 'user_text', text: inner, pasted: true }]);
+  });
+
+  it('an empty or blank paste gives no row (no blank "You" card, no reminder chip)', () => {
+    expect(parseTranscriptLine(userLine(pasteOf('   ')), 0)).toEqual([]);
+    expect(parseTranscriptLine(JSON.stringify({ type: 'attachment', uuid: 'q', attachment: { type: 'queued_command', commandMode: 'prompt', prompt: pasteOf('') } }), 0)).toEqual([]);
+  });
+
+  it('recorded form (fixture): the Korean multi-line paste reads as the exact text, as /turns serves it', () => {
+    const events = parseFixture('pasted-korean.jsonl');
+    const user = events.find((e) => e.kind === 'user_text');
+    expect(user).toMatchObject({
+      kind: 'user_text',
+      text: '로그인 화면에서 비밀번호 칸이 비어 있으면\n제출 버튼을 막아 줘.\n\n테스트도 하나 추가해 줘.  ',
+      pasted: true,
+    });
+    // Host search indexes and quotes the same unwrapped text.
+    const searched = turnText(user!);
+    expect(searched).toContain('비밀번호 칸이 비어 있으면');
+    expect(searched).not.toContain('pasted_content');
   });
 });

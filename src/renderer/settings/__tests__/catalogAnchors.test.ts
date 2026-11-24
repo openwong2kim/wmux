@@ -25,6 +25,7 @@ const SOURCES = [
   'FanoutPresetsSection.tsx',
   'CustomAgentsSection.tsx',
   'McpStatusSection.tsx',
+  'BrokerSettingRow.tsx',
   'tabs/TokenUsageTab/ProfileSection.tsx',
   'tabs/TokenUsageTab.tsx',
   'ComputerUseSection.tsx',

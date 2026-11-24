@@ -135,6 +135,8 @@ async function makeRig(transport: Transport): Promise<Rig> {
     portEnvVar: null,
     profileName: `protected-table-${transport}`,
     protection: () => plan(),
+    // The port rows: a protected profile takes the port only with the protected-port setting.
+    ...(transport === 'port' && { protectedPortAllowed: () => true }),
     // Headless Chrome denies downloads in a new context by default, which hides
     // what row j checks; PROTECTED_HEADFUL=1 runs with windows, as wmux does.
     extraArgs: [...(process.env.PROTECTED_HEADFUL === '1' ? [] : ['--headless=new']), '--use-mock-keychain', '--password-store=basic'],
@@ -153,7 +155,7 @@ async function connect(rig: Rig): Promise<Browser> {
   const { chromium } = await import('playwright-core');
   const ep = await rig.launcher.endpoint();
   if (!ep.piped) return chromium.connectOverCDP(`http://127.0.0.1:${ep.cdpPort}`);
-  const grant = await rig.launcher.relayGrant({ workspaceId: 'ws-table' });
+  const grant = await rig.launcher.relayGrant({ lane: 'engine', workspaceId: 'ws-table' });
   return chromium.connectOverCDP(grant.endpoint, { headers: { ...grant.headers } });
 }
 
@@ -178,7 +180,7 @@ async function clickDownload(rig: Rig, p: Page): Promise<{ through: boolean; not
 /** A bare CDP client on the profile's endpoint: commands by id, and the events it was sent. */
 async function rawClient(rig: Rig) {
   const ep = await rig.launcher.endpoint();
-  const grant = ep.piped ? await rig.launcher.relayGrant({ workspaceId: 'ws-table' }) : null;
+  const grant = ep.piped ? await rig.launcher.relayGrant({ lane: 'engine', workspaceId: 'ws-table' }) : null;
   const url = grant?.endpoint ?? ((await (await fetch(`http://127.0.0.1:${ep.cdpPort}/json/version`)).json()) as { webSocketDebuggerUrl: string }).webSocketDebuggerUrl;
   const ws = new WebSocket(url, grant ? { headers: { ...grant.headers } } : {});
   await new Promise<void>((resolve, reject) => { ws.once('open', () => resolve()); ws.once('error', reject); });

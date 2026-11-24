@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurfaceStore } from './ChromeSurfaceStore';
@@ -8,7 +8,8 @@ import type { CdpConnection } from './CdpSocket';
 import type { Readable, Writable } from 'node:stream';
 import { pipeTransport, portTransport, type ChromeTransport } from './ChromeTransport';
 import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux, type CallerIdentity, type ClientRef } from './CdpPipeMux';
-import { ProtectedPipePolicy } from './ProtectedPipePolicy';
+import { CdpReplyError } from './CdpReplyError';
+import { ProtectedPipePolicy, SCHEME_NOT_ALLOWED, appLaunchUrl, protectedUrlAllowed } from './ProtectedPipePolicy';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from './CdpPipeRelay';
 import { browserPathOf, isRecordedBrowser, recordedBrowserPath } from './devToolsActivePort';
 import { cdpTargetGrantEnabled, recordVisibleTo } from './CdpTargetOwnership';
@@ -119,9 +120,9 @@ function maskHomes(text: string, homes: string[]): string {
  */
 const PIPE_MISSES_BEFORE_STOP = 3;
 /** A let-go pipe Chrome's time between SIGTERM and SIGKILL. */
-const PIPE_KILL_GRACE_MS = 2_000;
+export const PIPE_KILL_GRACE_MS = 2_000;
 /** How long a launch waits for a let-go pipe Chrome to exit after SIGKILL. */
-const PIPE_KILL_WAIT_MS = 3_000;
+export const PIPE_KILL_WAIT_MS = 3_000;
 /** A check that took this much longer than its timeout spanned a sleep (or a stalled main), and doesn't count. */
 const PIPE_SLEEP_SLACK_MS = 5_000;
 /** How long a Chrome asked to quit through Browser.close gets before a signal. */
@@ -150,11 +151,38 @@ export function chromeTargetWatcherEnabled(): boolean {
 }
 
 /**
- * How a launched Chrome is reached: its DevTools port (the default), or a
- * debugging pipe on fds 3 and 4 (`WMUX_CHROME_TRANSPORT=pipe`, off by default).
+ * Whether `WMUX_CHROME_TRANSPORT=pipe` puts every profile on the debugging
+ * pipe (fds 3 and 4). A launch's own transport is transportFor's.
  */
 export function chromeTransportKind(): 'port' | 'pipe' {
   return process.env.WMUX_CHROME_TRANSPORT === 'pipe' ? 'pipe' : 'port';
+}
+
+/** The transport one launch uses, and whether a protected profile runs on the port. */
+export interface ChromeTransportChoice {
+  kind: 'port' | 'pipe';
+  /** A protected profile on the port: a client of the port reaches Chrome without the pipe's rules. */
+  weaker: boolean;
+}
+
+/**
+ * The transport for a launch under `plan` (null: unprotected).
+ *  - A protected profile runs on the pipe. Only `protectedPortAllowed` (the
+ *    operator's setting) puts it on the port; the environment alone never does,
+ *    and `WMUX_CHROME_TRANSPORT=pipe` keeps it on the pipe even then.
+ *  - An unprotected profile runs on the port, or on the pipe with
+ *    `WMUX_CHROME_TRANSPORT=pipe`. Unset, `auto` and `port` all mean this
+ *    split.
+ */
+export function transportFor(plan: ChromeProtectionPlan | null, protectedPortAllowed = false): ChromeTransportChoice {
+  const pipeForAll = process.env.WMUX_CHROME_TRANSPORT === 'pipe';
+  const kind: 'port' | 'pipe' = pipeForAll ? 'pipe' : plan && !protectedPortAllowed ? 'pipe' : 'port';
+  return { kind, weaker: !!plan && kind === 'port' };
+}
+
+/** How status shows a transport. */
+export function transportLabel(choice: ChromeTransportChoice): 'pipe' | 'port' | 'port (weaker)' {
+  return choice.kind === 'pipe' ? 'pipe' : choice.weaker ? 'port (weaker)' : 'port';
 }
 
 export interface ChromeTargetInfo {
@@ -194,6 +222,63 @@ async function closePipeRelay(): Promise<void> {
   const relay = pipeRelay;
   pipeRelay = null;
   await relay?.close();
+}
+
+/** How long a sweep is kept for grants that were under way when it ran (relaySweptSince). */
+const RELAY_SWEEP_KEEP_MS = 5 * 60_000;
+let relaySweepSeq = 0;
+const relaySweeps: Array<{ readonly seq: number; readonly at: number; readonly match: (identity: CallerIdentity) => boolean }> = [];
+
+/**
+ * End every relay client (and unused token) whose identity `match` takes, on
+ * every Chrome on a pipe (CdpPipeRelay.closeClients). 0 before any relay was made.
+ * The sweep is kept a while, so a grant under way while it ran can be checked
+ * against it once minted (relaySweptSince).
+ */
+export function closeRelayClients(match: (identity: CallerIdentity) => boolean, reason: string): number {
+  const now = Date.now();
+  while (relaySweeps.length > 0 && relaySweeps[0].at < now - RELAY_SWEEP_KEEP_MS) relaySweeps.shift();
+  relaySweeps.push({ seq: ++relaySweepSeq, at: now, match });
+  return pipeRelay?.closeClients(match, reason) ?? 0;
+}
+
+/** What a relay grant is checked against before it is minted (relayAdmissionRefusal). */
+let relayAdmission: ((identity: CallerIdentity) => string | null) | null = null;
+
+/** Main: set (or, null, clear) the check a relay grant passes before it is minted. */
+export function setRelayAdmission(check: ((identity: CallerIdentity) => string | null) | null): void {
+  relayAdmission = check;
+}
+
+/**
+ * Why no relay token may be minted for `identity`, or null when it may. With
+ * no check set, a pane-script grant is refused (nothing could judge it) and
+ * any other passes.
+ */
+export function relayAdmissionRefusal(identity: CallerIdentity): string | null {
+  if (!relayAdmission) return identity.lane === 'pane-script' ? 'wmux has nothing to check a pane grant against yet' : null;
+  return relayAdmission(identity);
+}
+
+/** Drop the unused relay tokens whose identity `match` takes; connected clients stay. */
+export function revokeRelayTokens(match: (identity: CallerIdentity) => boolean): number {
+  return pipeRelay?.revokeTokens(match) ?? 0;
+}
+
+/** Where the sweeps stand now: what relaySweptSince takes. */
+export function relaySweepMark(): number {
+  return relaySweepSeq;
+}
+
+/**
+ * Whether a sweep since `mark` would have ended a client of `identity`: a
+ * grant minted while one ran is not one it saw. Past RELAY_SWEEP_KEEP_MS a
+ * sweep is no longer kept, so a mark that old answers true.
+ */
+export function relaySweptSince(mark: number, identity: CallerIdentity): boolean {
+  const oldestKept = relaySweeps.length > 0 ? relaySweeps[0].seq : relaySweepSeq + 1;
+  if (mark < relaySweepSeq && mark + 1 < oldestKept) return true;
+  return relaySweeps.some((sweep) => sweep.seq > mark && sweep.match(identity));
 }
 
 /**
@@ -290,6 +375,11 @@ export interface ChromeBackendClient {
   endpoint(): Promise<ChromeBackendEndpoint>;
   /** Dedicated instances on a debugging pipe (endpoint() said `piped`): a relay token for `identity`. */
   relayGrant?(identity: CallerIdentity): Promise<RelayGrant>;
+  /**
+   * Dedicated instances on a debugging pipe: whether a relay client of
+   * `identity` is kept to its own targets (C3b). A pane-script grant needs it.
+   */
+  narrowedFor?(identity: CallerIdentity): boolean;
   /** Targets reported through browser.cdp.info (page-selection seed). Live
    *  seeds only wmux-opened tabs so a random user tab can never become the
    *  default pin. */
@@ -313,6 +403,26 @@ export interface ChromeBackendClient {
   recordFor?(surfaceId: string): ChromeSurfaceRecord | undefined;
   /** Dedicated instances only: told each tab a wmux-opened tab opens; returns the unsubscribe. */
   onSurfaceOpened?(listener: (opened: ChromeOpenedSurface) => void): () => void;
+  /** Dedicated instances: whether a Chrome is bound now (never launches one). */
+  isRunning?(): boolean;
+  /**
+   * Dedicated instances, for the phone preview only: the current page of each
+   * tab wmux holds no record of (another CDP client or a person opened it),
+   * under an id of its own (`chrome-x-…`). Never in listTargets,
+   * cdpInfoTargets, recordFor, the surface store or the pipe's grants. Starts
+   * the tab watcher while Chrome runs; never launches Chrome.
+   */
+  outsideTabs?(opts?: { waitForPairing?: boolean }): Promise<ChromeTargetInfo[]>;
+  /** Whether an outside id still names an open tab that has no record. */
+  hasOutside?(id: string): boolean;
+  /** pageSession for an outside id. */
+  outsidePageSession?(id: string): Promise<ChromePageSession>;
+  /** streamSession for an outside id. */
+  outsideStreamSession?(id: string): Promise<ChromeStreamSession>;
+  /** selectSurface for an outside id. */
+  selectOutside?(id: string): Promise<boolean>;
+  /** Detach every outside page and stream session this launcher holds, and refuse the attaches still in flight. */
+  releaseOutside?(): void;
   /** Live attach only: the agent-window write policy. Absent = dedicated. */
   readonly writeScope?: LiveWriteScopeApi;
   dispose(): void | Promise<void>;
@@ -481,6 +591,11 @@ export interface ChromeLauncherOptions {
   proxyProbeTimeoutMs?: number;
   /** The user's download folder: where, with grants, a download no client asked for lands. Absent: those are cancelled. */
   downloadsDir?: () => string | null;
+  /**
+   * The operator's setting that puts a protected profile on the DevTools port
+   * (BrowserBackendStore.protectedPortTransport). Read per launch.
+   */
+  protectedPortAllowed?: () => boolean;
 }
 
 /** With grants on an unprotected profile (C3b): main's own folder, rules and session for the default context's downloads. */
@@ -521,6 +636,90 @@ export interface ConsentDownloadGuard {
 /** A protected profile could not be brought up under its enforcement. */
 export const PROTECTION_NOT_READY = 'policy_denied: the protected browser could not be started under its site policy';
 
+/** PROTECTION_NOT_READY with its cause for the reader; the message still starts with the constant. */
+export function protectionNotReady(cause: string): Error {
+  return new Error(`${PROTECTION_NOT_READY} (${cause})`);
+}
+
+/**
+ * PROTECTION_NOT_READY as the caller has always seen it, with the launch step
+ * that failed and what went wrong attached as its `cause`, and logged once.
+ */
+export function notReadyAt(profile: string, site: string, error?: unknown): Error {
+  const why = error instanceof Error ? error.message : error === undefined ? 'no detail' : String(error);
+  console.warn(`[ChromeLauncher] ${profile}: protected start not ready at ${site}: ${why}`);
+  return new Error(PROTECTION_NOT_READY, { cause: { site, ...(error !== undefined && { error }) } });
+}
+
+function isProtectionNotReady(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith(PROTECTION_NOT_READY);
+}
+
+/** Flags that would open a debugging port; never passed to a protected Chrome on the pipe. */
+const PORT_FLAG = /^--remote-(debugging-port|debugging-address|allow-origins)(=|$)/;
+
+/**
+ * Turn chrome://inspect's "Allow remote debugging for this browser instance"
+ * off in the profile's Local State before a protected launch: Chrome keeps it
+ * across restarts (devtools.remote_debugging.user-enabled), and with it on it
+ * starts a debugging server at launch.
+ *  - No file: nothing to turn off.
+ *  - A file that can't be read throws (the launch reports PROTECTION_NOT_READY):
+ *    its setting is unknown.
+ *  - A file that doesn't parse is left as it is: Chrome can't read it either,
+ *    so it starts from default local state, where the setting is off.
+ *  - The rewrite keeps the file's mode, and a failed rename leaves no temp file.
+ */
+export function clearRemoteDebuggingToggle(userDataDir: string): void {
+  const file = join(userDataDir, 'Local State');
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+  let state: { devtools?: { remote_debugging?: Record<string, unknown> } };
+  try {
+    state = JSON.parse(text) as typeof state;
+  } catch {
+    return;
+  }
+  const remote = state?.devtools?.remote_debugging;
+  if (!remote || typeof remote !== 'object' || !('user-enabled' in remote)) return;
+  delete remote['user-enabled'];
+  const tmp = `${file}.wmux-tmp`;
+  writeFileSync(tmp, JSON.stringify(state), { encoding: 'utf8', mode: statSync(file).mode & 0o777 });
+  try {
+    renameSync(tmp, file);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch { /* already gone */ }
+    throw err;
+  }
+}
+
+/**
+ * Whether a Chrome that exited during startup handed its start to another
+ * Chrome already running on the profile (Chrome's process singleton): a
+ * windowed one exits 0 after handing it over, a headless one 21 (profile in
+ * use), and on POSIX the profile's SingletonLock names the other process.
+ */
+function handedOff(child: ChildProcess, userDataDir: string): boolean {
+  if (child.exitCode === 0 || child.exitCode === 21) return true;
+  try {
+    const owner = readlinkSync(join(userDataDir, 'SingletonLock'));
+    const pid = Number(owner.slice(owner.lastIndexOf('-') + 1));
+    return Number.isInteger(pid) && pid > 0 && pid !== child.pid;
+  } catch {
+    return false;
+  }
+}
+
+/** The cause shown when a protected start was handed to a Chrome already on the profile. */
+const HANDED_OFF = 'another Chrome is still running on this profile and took the start over; close it and try again';
+
 /** The download guard's deny for one browser context, with its download events on the guard's session. */
 const contextDeny = (browserContextId: string) => ({ behavior: 'deny', browserContextId, eventsEnabled: true });
 
@@ -529,6 +728,27 @@ const contextDeny = (browserContextId: string) => ({ behavior: 'deny', browserCo
  *  types barrel (and everything it drags along) for one line. */
 function newSurfaceId(): string {
   return `chrome-${randomUUID()}`;
+}
+
+/** The id an outside tab (ChromeLauncher.outsideTabs) gets: a `chrome-` surface no record can hold. */
+export const OUTSIDE_ID_PREFIX = 'chrome-x-';
+
+/** How long outsideTabs waits for Chrome to name the pages behind tabs the watcher just attached. */
+export const OUTSIDE_PAIRING_WAIT_MS = 2_000;
+
+/** How long outsideTabs waits for openTab calls still creating their tab, before it leaves new tabs out. */
+export const OUTSIDE_OPENING_WAIT_MS = 1_000;
+
+/** Whether every promise settled within `ms` (they never reject). */
+function settledWithin(pending: Array<Promise<void>>, ms: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    (timer as { unref?: () => void }).unref?.();
+    void Promise.all(pending).then(() => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
 }
 
 /** Tabs one tab may open in a minute and still be adopted. */
@@ -612,6 +832,8 @@ interface PageSessionEntry {
 interface StreamSessionEntry {
   socket: CdpConnection;
   sessionId: string;
+  /** Set on a session to an outside tab (releaseOutside ends it). */
+  outside?: true;
   closed: boolean;
   unsubscribe: Array<() => void>;
   closers: Array<() => void>;
@@ -674,6 +896,19 @@ export class ChromeLauncher implements ChromeBackendClient {
   private readonly byTabTargetId = new Map<string, string>();
   /** True once the persisted records for this profile have been merged in. */
   private restored = false;
+  /** True once those records are bound to the running Chrome, so a tab without one is not ours. */
+  private recordsSettled = false;
+  /** openTab calls between createTarget and their record: their target is not an outside one. */
+  private readonly openingTabs = new Set<Promise<void>>();
+  /** Outside tabs (outsideTabs): tab targetId → phone-only id, and back. */
+  private readonly outsideIds = new Map<string, string>();
+  private readonly outsideTabsById = new Map<string, string>();
+  /** Told on every tab ↔ page pairing: outsideTabs waits on them for tabs just attached. */
+  private readonly pairingWaiters = new Set<() => void>();
+  /** When the watcher attached each tab: only a tab attached that recently is worth waiting for. */
+  private readonly tabAttachedAt = new Map<string, number>();
+  /** Bumped by releaseOutside and forgetOutside: an outside attach that started before them cannot finish. */
+  private outsideGeneration = 0;
 
   // ── Tab-target watcher state (all of it optional; see TARGET_WATCHER_ENV) ──
   private watcher: CdpConnection | null = null;
@@ -718,6 +953,11 @@ export class ChromeLauncher implements ChromeBackendClient {
   private readonly protection: (() => ChromeProtectionPlan | null) | undefined;
   private readonly extraArgs: string[];
   private readonly downloadsDir: (() => string | null) | undefined;
+  private readonly protectedPortAllowed: (() => boolean) | undefined;
+  /** The transport the running (or launching) Chrome was started on; null before the first launch. */
+  private transport: ChromeTransportChoice | null = null;
+  /** Why the last protected pipe Chrome was closed under it (a debugging port appeared); told once to the next call. */
+  private protectionLost: string | null = null;
   /** Whether the running instance was launched behind the proxy. */
   private launchedProtected = false;
   /** False until a protected launch's download guard holds and the tabs
@@ -748,6 +988,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.protection = opts?.protection;
     this.extraArgs = opts?.extraArgs ?? [];
     this.downloadsDir = opts?.downloadsDir;
+    this.protectedPortAllowed = opts?.protectedPortAllowed;
     this.proxyProbeTimeoutMs = opts?.proxyProbeTimeoutMs;
   }
 
@@ -766,6 +1007,11 @@ export class ChromeLauncher implements ChromeBackendClient {
   /** Whether this instance runs (or would run) behind the proxy. */
   isProtected(): boolean {
     return this.launchedProtected;
+  }
+
+  /** The transport the running Chrome was launched on; null when none is running. */
+  launchedTransport(): ChromeTransportChoice | null {
+    return this.isRunning() ? this.transport : null;
   }
 
   /** The hosts this profile's proxy refused recently, newest first. */
@@ -862,6 +1108,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.sessionTabs.clear();
     this.tabToPage.clear();
     this.pageToTab.clear();
+    this.forgetOutside();
     for (const entry of this.pageSessions.values()) entry.valid = false;
     this.pageSessions.clear();
     for (const entry of [...this.streamSessions]) this.endStreamSession(entry);
@@ -869,6 +1116,8 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   /** The watcher's connection went away (CdpSocket re-dials in place): every page session on it is dead. */
   private dropPageSessionsOf(socket: CdpConnection): void {
+    // The tab topology the outside ids rest on is re-read on the next connection.
+    if (this.watcher === socket) this.forgetOutside();
     for (const [surfaceId, entry] of this.pageSessions) {
       if (entry.socket !== socket) continue;
       entry.valid = false;
@@ -943,13 +1192,19 @@ export class ChromeLauncher implements ChromeBackendClient {
       }
       entry = await this.attachPage(surfaceId, record.targetId, socket);
     }
+    return this.sessionOf(entry);
+  }
+
+  /** The ChromePageSession over one attached entry; dead once the entry is, or once `still` says no. */
+  private sessionOf(entry: PageSessionEntry, still: () => boolean = () => true): ChromePageSession {
+    const live = () => entry.valid && this.watcher === entry.socket && still();
     return {
       send: async (method, params = {}) => {
-        if (!entry.valid || this.watcher !== entry.socket) throw new ChromePageSessionError('gone', 'ChromeLauncher: page session ended');
+        if (!live()) throw new ChromePageSessionError('gone', 'ChromeLauncher: page session ended');
         try {
           return await entry.socket.send(method, params, entry.sessionId);
         } catch (err) {
-          if (!entry.valid || this.watcher !== entry.socket) throw new ChromePageSessionError('gone', 'ChromeLauncher: page session ended');
+          if (!live()) throw new ChromePageSessionError('gone', 'ChromeLauncher: page session ended');
           throw err;
         }
       },
@@ -967,13 +1222,18 @@ export class ChromeLauncher implements ChromeBackendClient {
    * pageSession. Ownership is the caller's check.
    */
   async streamSession(surfaceId: string): Promise<ChromeStreamSession> {
-    const record = this.surfaces.get(surfaceId);
+    return this.openStream(() => this.surfaces.get(surfaceId)?.targetId ?? undefined);
+  }
+
+  /** A stream session on the page `targetOf` names, re-read after the attach. */
+  private async openStream(targetOf: () => string | undefined, outside = false): Promise<ChromeStreamSession> {
     if (!this.isRunning()) throw new ChromePageSessionError('unavailable', 'ChromeLauncher: Chrome is not running');
-    if (!record?.targetId) throw new ChromePageSessionError('gone', 'ChromeLauncher: no page for this surface');
+    if (!targetOf()) throw new ChromePageSessionError('gone', 'ChromeLauncher: no page for this surface');
     await this.ensureTargetWatcher();
     const socket = this.watcher;
     if (!socket?.isOpen()) throw new ChromePageSessionError('unavailable', 'ChromeLauncher: no browser CDP socket');
-    const targetId = record.targetId;
+    const targetId = targetOf();
+    if (!targetId) throw new ChromePageSessionError('gone', 'ChromeLauncher: no page for this surface');
     let sessionId: string | undefined;
     try {
       const res = (await socket.send('Target.attachToTarget', { targetId, flatten: true })) as { sessionId?: unknown };
@@ -982,12 +1242,12 @@ export class ChromeLauncher implements ChromeBackendClient {
       sessionId = undefined;
     }
     if (!sessionId) throw new ChromePageSessionError('gone', 'ChromeLauncher: the page could not be attached');
-    if (this.watcher !== socket || this.surfaces.get(surfaceId)?.targetId !== targetId) {
+    if (this.watcher !== socket || targetOf() !== targetId) {
       void socket.send('Target.detachFromTarget', { sessionId }).catch(() => undefined);
       throw new ChromePageSessionError('gone', 'ChromeLauncher: the page changed while attaching');
     }
     const id = sessionId;
-    const entry: StreamSessionEntry = { socket, sessionId: id, closed: false, unsubscribe: [], closers: [] };
+    const entry: StreamSessionEntry = { socket, sessionId: id, ...(outside && { outside: true as const }), closed: false, unsubscribe: [], closers: [] };
     this.streamSessions.add(entry);
     const ended = () => new ChromePageSessionError('gone', 'ChromeLauncher: stream session ended');
     return {
@@ -1019,8 +1279,16 @@ export class ChromeLauncher implements ChromeBackendClient {
     };
   }
 
-  private attachPage(surfaceId: string, targetId: string, socket: CdpConnection): Promise<PageSessionEntry> {
-    const key = `${surfaceId}\n${targetId}`;
+  private attachPage(
+    surfaceId: string,
+    targetId: string,
+    socket: CdpConnection,
+    // What `surfaceId` names now; an outside id has its own (outsidePage).
+    current: () => string | null | undefined = () => this.surfaces.get(surfaceId)?.targetId,
+    // Attaches share one in flight only within one generation (an outside id's release generation).
+    generation = '',
+  ): Promise<PageSessionEntry> {
+    const key = `${surfaceId}\n${targetId}\n${generation}`;
     const inFlight = this.attachingPages.get(key);
     if (inFlight) return inFlight;
     const attach = (async () => {
@@ -1032,7 +1300,7 @@ export class ChromeLauncher implements ChromeBackendClient {
         sessionId = undefined;
       }
       if (!sessionId) throw new ChromePageSessionError('gone', 'ChromeLauncher: the page could not be attached');
-      if (this.watcher !== socket || this.surfaces.get(surfaceId)?.targetId !== targetId) {
+      if (this.watcher !== socket || current() !== targetId) {
         void socket.send('Target.detachFromTarget', { sessionId }).catch(() => undefined);
         throw new ChromePageSessionError('gone', 'ChromeLauncher: the page changed while attaching');
       }
@@ -1174,6 +1442,12 @@ export class ChromeLauncher implements ChromeBackendClient {
         this.pageToTab.delete(targetId);
         if (this.tabToPage.get(pagesTab) === targetId) this.tabToPage.delete(pagesTab);
       }
+      this.tabAttachedAt.delete(targetId);
+      const outsideId = this.outsideIds.get(targetId);
+      if (outsideId) {
+        this.outsideIds.delete(targetId);
+        this.outsideTabsById.delete(outsideId);
+      }
       const surfaceId = this.byTabTargetId.get(targetId);
       // A destroyed PAGE proves nothing (that is the bug this PR fixes); a
       // destroyed anchor TAB is confirmed death — no orphan grace needed.
@@ -1303,6 +1577,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       if (!sessionId || this.watcher !== socket) return;
       this.tabSessions.set(tabTargetId, sessionId);
       this.sessionTabs.set(sessionId, tabTargetId);
+      this.tabAttachedAt.set(tabTargetId, Date.now());
       await socket.send(
         'Target.setAutoAttach',
         { autoAttach: true, flatten: true, waitForDebuggerOnStart: false },
@@ -1353,6 +1628,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (previous && previous !== pageTargetId) this.pageToTab.delete(previous);
     this.tabToPage.set(tabTargetId, pageTargetId);
     this.pageToTab.set(pageTargetId, tabTargetId);
+    for (const wake of [...this.pairingWaiters]) wake();
 
     const anchored = this.byTabTargetId.get(tabTargetId);
     if (!anchored) {
@@ -1452,6 +1728,8 @@ export class ChromeLauncher implements ChromeBackendClient {
    */
   async relayGrant(identity: CallerIdentity): Promise<RelayGrant> {
     this.assertOpen();
+    const refusal = relayAdmissionRefusal(identity);
+    if (refusal !== null) throw new Error(`ChromeLauncher: no relay token: ${refusal}`);
     const piped = this.piped;
     if (!piped) throw new Error('ChromeLauncher: Chrome exited');
     // With grants, no client before main holds the default context's downloads.
@@ -1476,6 +1754,15 @@ export class ChromeLauncher implements ChromeBackendClient {
     }
     if (this.piped !== piped) throw new Error('ChromeLauncher: Chrome exited');
     return page !== null ? { ...grant, bootstrapTargetId: page } : grant;
+  }
+
+  /**
+   * Whether a relay client of `identity` is kept to its own targets (C3b) on
+   * the running Chrome; false off the pipe. Today that is the launch's
+   * WMUX_CDP_TARGET_GRANT switch, the same for every client.
+   */
+  narrowedFor(_identity: CallerIdentity): boolean {
+    return this.piped?.grants === true;
   }
 
   /**
@@ -1588,6 +1875,11 @@ export class ChromeLauncher implements ChromeBackendClient {
   }
 
   private async ensureRunningOnce(): Promise<number> {
+    if (this.protectionLost) {
+      const cause = this.protectionLost;
+      this.protectionLost = null;
+      throw protectionNotReady(cause);
+    }
     const wanted = this.wantedProtection();
     if (!wanted && !this.launchedProtected) {
       // A launch in flight has published its port before it is done (restored
@@ -1722,6 +2014,7 @@ export class ChromeLauncher implements ChromeBackendClient {
         await this.restoreFromStore();
         await this.reviveByTabAnchor();
         this.assertOpen();
+        this.recordsSettled = true;
         return port;
       } catch (err) {
         this.unbindEndpoint();
@@ -1790,7 +2083,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       await this.closeBrowserAt(transport);
     }
     if (transport && !(await this.waitEndpointGone(transport)) && !(await this.forceKill(transport, child))) {
-      throw new Error(PROTECTION_NOT_READY);
+      throw notReadyAt(this.profileName, 'stop-previous', 'the previous Chrome did not exit');
     }
     this.onChildGone();
   }
@@ -2013,6 +2306,17 @@ export class ChromeLauncher implements ChromeBackendClient {
     return (await this.waitEndpointGone(previous)) || this.forceKill(previous, null, recorded);
   }
 
+  /**
+   * A protected Chrome on the pipe wrote a DevToolsActivePort: a debugging port
+   * is open in it. It is stopped, and the next call is told why.
+   */
+  private closeForOpenPort(): void {
+    this.protectionLost = 'a debugging port opened in the protected browser, so it was closed';
+    console.warn(`[ChromeLauncher] ${this.protectionLost}`);
+    this.dropUnresponsive();
+    this.forgetPortFile();
+  }
+
   /** Drop the profile's DevToolsActivePort: a Chrome on a pipe writes none, so it could only name a Chrome gone by now. */
   private forgetPortFile(): void {
     try {
@@ -2040,8 +2344,8 @@ export class ChromeLauncher implements ChromeBackendClient {
     let port: number;
     try {
       port = await proxy.start();
-    } catch {
-      throw new Error(PROTECTION_NOT_READY);
+    } catch (err) {
+      throw notReadyAt(this.profileName, 'proxy-start', err);
     }
     if (this.disposed) {
       // dispose() closed it before it was listening; close what start opened.
@@ -2087,6 +2391,9 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.downloadGuard?.close();
     this.downloadGuard = null;
     const transport = this.reach();
+    // The pipe's mux as the guard starts (null on the port): a child that exits
+    // meanwhile must not turn this start into a port one.
+    const mux = this.piped?.mux ?? null;
     const url = await this.browserWsUrl(transport);
     const guard = transport.connect(() => url, {
       label: 'ChromeLauncher download guard',
@@ -2096,19 +2403,48 @@ export class ChromeLauncher implements ChromeBackendClient {
       },
     });
     const deny = () => guard.send('Browser.setDownloadBehavior', { behavior: 'deny', eventsEnabled: true });
-    const denyContexts = async () => {
+    /** Every browser context the guard has seen: listed on its tick, or named by a new target. */
+    const contexts = new Set<string>();
+    const listContexts = async (): Promise<string[]> => {
       const listed = (await guard.send('Target.getBrowserContexts')) as { browserContextIds?: unknown } | null;
       const ids = Array.isArray(listed?.browserContextIds) ? listed.browserContextIds.filter((id): id is string => typeof id === 'string') : [];
+      for (const id of ids) contexts.add(id);
+      return ids;
+    };
+    const denyContexts = async () => {
+      const ids = await listContexts();
       await Promise.all(ids.map((browserContextId) =>
         guard.send('Browser.setDownloadBehavior', contextDeny(browserContextId)).catch(() => undefined)));
     };
+    /**
+     * Browser.cancelDownload looks for the guid in one context only (the
+     * default one when none is named), and downloadWillBegin doesn't say which:
+     * the cancel goes at once to the default context and to every context the
+     * guard knows, then to any the list adds.
+     */
+    const cancelEverywhere = async (guid: string) => {
+      const sent = new Set(contexts);
+      void guard.send('Browser.cancelDownload', { guid }).catch(() => undefined);
+      for (const browserContextId of sent) void guard.send('Browser.cancelDownload', { guid, browserContextId }).catch(() => undefined);
+      const ids = await listContexts().catch(() => [] as string[]);
+      await Promise.all(ids.filter((id) => !sent.has(id)).map((browserContextId) =>
+        guard.send('Browser.cancelDownload', { guid, browserContextId }).catch(() => undefined)));
+    };
+    // A context is denied the moment a target in it appears, not on the next tick.
+    guard.on('Target.targetCreated', (params) => {
+      const info = params.targetInfo as { browserContextId?: unknown } | undefined;
+      const id = info?.browserContextId;
+      if (typeof id !== 'string' || contexts.has(id)) return;
+      contexts.add(id);
+      void guard.send('Browser.setDownloadBehavior', contextDeny(id)).catch(() => undefined);
+    });
     guard.on('Browser.downloadWillBegin', (params) => {
       this.piped?.policy?.downloadEvent('Browser.downloadWillBegin', params);
       const guid = typeof params.guid === 'string' ? params.guid : '';
       // An operator-approved download (consent): its claimant re-denies itself.
       const claimant = this.downloadClaimant;
       if (guid && claimant?.(params) === true) return;
-      if (guid) void guard.send('Browser.cancelDownload', { guid }).catch(() => undefined);
+      if (guid) void cancelEverywhere(guid).catch(() => undefined);
       // While a claimant holds the guard it owns the behaviour (and restores
       // deny when it lets go); a stray download is cancelled by guid alone, so
       // it cannot close the window the operator approved.
@@ -2123,9 +2459,26 @@ export class ChromeLauncher implements ChromeBackendClient {
     });
     try {
       await deny();
-    } catch {
+    } catch (err) {
       guard.close();
-      throw new Error(PROTECTION_NOT_READY);
+      throw notReadyAt(this.profileName, 'download-guard-deny', err);
+    }
+    try {
+      await guard.send('Target.setDiscoverTargets', { discover: true });
+    } catch (err) {
+      // Discovery here only denies a new context before the next tick. On the
+      // pipe the URL gate learns targets from the mux's own discovery session,
+      // and this session's events reach it too: the start goes on only while
+      // that session is up now (not yet up counts as down). On the port there
+      // is no gate. Either way only Chrome refusing the call, on a guard that
+      // is still open, lets it go on: a closed guard, a timeout or an ended
+      // pipe stays fatal.
+      if (!(err instanceof CdpReplyError) || !guard.isOpen() || (mux !== null && !mux.discoveryLive())) {
+        guard.close();
+        throw notReadyAt(this.profileName, 'download-guard-discovery', err);
+      }
+      const why = err instanceof Error ? err.message : String(err);
+      console.warn(`[ChromeLauncher] ${this.profileName}: protected start continues without download-guard-discovery: ${why}`);
     }
     const reassert = setInterval(() => {
       if (!guard.isOpen()) return clearInterval(reassert);
@@ -2140,6 +2493,17 @@ export class ChromeLauncher implements ChromeBackendClient {
       void deny().catch(() => undefined);
       void denyContexts().catch(() => undefined);
     }, DOWNLOAD_DENY_REASSERT_MS);
+    // A protected Chrome on the pipe writes no DevToolsActivePort: one that
+    // appears means a debugging port opened in it. Checked on the same tick.
+    if (this.piped) {
+      const watch = setInterval(() => {
+        if (!guard.isOpen() || !this.piped || !this.launchedProtected) return clearInterval(watch);
+        if (this.readPortFile() === null) return;
+        clearInterval(watch);
+        this.closeForOpenPort();
+      }, DOWNLOAD_DENY_REASSERT_MS);
+      watch.unref?.();
+    }
     reassert.unref?.();
     this.downloadGuard = guard;
   }
@@ -2203,7 +2567,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     } catch {
       endpoint = null;
     }
-    if (endpoint === null) throw new Error(PROTECTION_NOT_READY);
+    if (endpoint === null) throw notReadyAt(this.profileName, 'browser-endpoint', 'no browser endpoint answered');
     return endpoint;
   }
 
@@ -2224,7 +2588,7 @@ export class ChromeLauncher implements ChromeBackendClient {
    */
   private async verifyProxyRoute(deadlineMs: number): Promise<void> {
     const proxy = this.proxy;
-    if (!proxy?.isRunning()) throw new Error(PROTECTION_NOT_READY);
+    if (!proxy?.isRunning()) throw notReadyAt(this.profileName, 'route-check', 'the proxy is not running');
     const probe = proxy.armProbe();
     const transport = this.reach();
     const url = await this.browserWsUrl(transport);
@@ -2271,8 +2635,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       socket.close();
     }
     if (why !== 'routed') {
-      console.warn(`[ChromeLauncher] ${this.profileName}: proxy route not proven (${why}); refusing the protected profile`);
-      throw new Error(PROTECTION_NOT_READY);
+      throw notReadyAt(this.profileName, 'route-check', `proxy route not proven (${why})`);
     }
   }
 
@@ -2327,7 +2690,14 @@ export class ChromeLauncher implements ChromeBackendClient {
     // A fresh Chrome starts with a fresh list: what the last one was refused
     // is not what this one will ask for.
     this.blocked.clear();
-    const pipe = chromeTransportKind() === 'pipe';
+    const transport = transportFor(plan, this.protectedPortAllowed?.() ?? false);
+    const pipe = transport.kind === 'pipe';
+    if (transport.weaker) {
+      console.warn('[ChromeLauncher] a protected profile starts on the DevTools port (the protected-port setting is on): a client of the port reaches it without the pipe\'s rules');
+    } else if (plan && process.env.WMUX_CHROME_TRANSPORT === 'port') {
+      console.warn('[ChromeLauncher] WMUX_CHROME_TRANSPORT=port does not apply to a protected profile without the protected-port setting; it starts on the pipe');
+    }
+    this.transport = transport;
     // A Chrome let go still holds the profile until it exits: wait for it, bounded.
     if (this.exiting) {
       const { child, exited } = this.exiting;
@@ -2340,7 +2710,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       if (this.exiting?.child === child) this.exiting = null;
     }
     if (plan) {
-      if (!(await this.evictExisting())) throw new Error(PROTECTION_NOT_READY);
+      if (!(await this.evictExisting())) throw protectionNotReady('a Chrome still running on this profile did not stop');
     } else {
       // Protection is off: the previous instance's proxy has nothing to serve.
       this.proxy?.close();
@@ -2357,6 +2727,13 @@ export class ChromeLauncher implements ChromeBackendClient {
     }
     // Once on a pipe, the recorded port could only lead to whatever took it since.
     if (pipe) this.forgetPortFile();
+    if (plan) {
+      try {
+        clearRemoteDebuggingToggle(this.userDataDir);
+      } catch (err) {
+        throw protectionNotReady(`the profile's remote debugging setting could not be turned off: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
 
     const binary = discoverChromeBinary();
     if (!binary) {
@@ -2408,7 +2785,8 @@ export class ChromeLauncher implements ChromeBackendClient {
         ...protectedArgs,
         // Edge: no implicit sign-in to the user's account, no sync.
         ...edgeArgs(binary),
-        ...this.extraArgs,
+        // A protected Chrome on the pipe opens no port, whatever else asks for one.
+        ...(pipe && plan ? this.extraArgs.filter((arg) => !PORT_FLAG.test(arg)) : this.extraArgs),
       ]),
       // The pipe: Chrome reads fd 3 and writes fd 4. stderr is read so a
       // failed start can quote Chrome (STARTUP_STDERR_TAIL).
@@ -2486,7 +2864,13 @@ export class ChromeLauncher implements ChromeBackendClient {
             child.kill();
           } catch { /* already gone */ }
         },
-        ...(policy && { filter: policy.filter, beforeReply: policy.beforeReply, onClientGone: (client: ClientRef) => policy.forget(client) }),
+        ...(policy && {
+          filter: policy.filter,
+          beforeReply: policy.beforeReply,
+          onClientGone: (client: ClientRef) => policy.forget(client),
+          // Outside clients see and drive only pages on the URLs a protected profile allows.
+          urlGate: { allows: protectedUrlAllowed, handedOff: appLaunchUrl, refusal: SCHEME_NOT_ALLOWED },
+        }),
         ...(relay && { filter: relay.policy.filter, onClientGone: (client: ClientRef) => relay.policy.forget(client) }),
         // C3b: each external client sees only its own targets, by this registry
         // and what it made itself. Main's own connections are never narrowed.
@@ -2513,8 +2897,14 @@ export class ChromeLauncher implements ChromeBackendClient {
     // Chrome that is still running is still starting: waited on, to a ceiling.
     const startedAt = Date.now();
     let toldStarting = false;
+    /** A protected start on the pipe that failed: PROTECTION_NOT_READY with its cause, never a start on the port. */
+    const protectedFailure = async (what: string, timedOut: boolean): Promise<Error> => {
+      if (!(plan && pipe)) return startFailure(what, timedOut);
+      if (!timedOut && handedOff(child, this.userDataDir)) return protectionNotReady(HANDED_OFF);
+      return protectionNotReady((await startFailure(what, timedOut)).message.replace(/^ChromeLauncher: /, ''));
+    };
     for (;;) {
-      if (gone) throw await startFailure('Chrome exited during startup', false);
+      if (gone) throw await protectedFailure('Chrome exited during startup', false);
       let candidate = pinned;
       if (candidate === null && !piped) {
         const fresh = this.readPortFile();
@@ -2531,6 +2921,7 @@ export class ChromeLauncher implements ChromeBackendClient {
           // revival rule can hold, so the persisted records are dropped rather
           // than left to linger as permanently unbound handles.
           this.restored = true;
+          this.recordsSettled = true;
           this.surfaces.clear();
           this.byTargetId.clear();
           this.byTabTargetId.clear();
@@ -2555,7 +2946,7 @@ export class ChromeLauncher implements ChromeBackendClient {
             try {
               await this.armDownloadGuard();
               // Traffic opens only once no restored page is left to use it.
-              if (!(await this.closeRestoredTabs())) throw new Error(PROTECTION_NOT_READY);
+              if (!(await this.closeRestoredTabs())) throw notReadyAt(this.profileName, 'restored-tabs', 'a restored tab could not be closed');
               this.enforcementReady = true;
               // Its own bound from now: a slow start must not eat the probe's turn.
               await this.verifyProxyRoute(Date.now() + READY_TIMEOUT_MS);
@@ -2571,7 +2962,7 @@ export class ChromeLauncher implements ChromeBackendClient {
         } catch (err) {
           // Enforcement that failed is final for this launch: the child is
           // already stopped, so polling on would only wait out the deadline.
-          if (err instanceof Error && (err.message === PROTECTION_NOT_READY || err.message === DOWNLOAD_RELAY_NOT_READY)) throw err;
+          if (isProtectionNotReady(err) || (err instanceof Error && err.message === DOWNLOAD_RELAY_NOT_READY)) throw err;
           lastStartError = err instanceof Error ? err.message : String(err);
           this.unbindEndpoint();
         }
@@ -2587,7 +2978,7 @@ export class ChromeLauncher implements ChromeBackendClient {
           child.kill();
         } catch { /* already gone */ }
         this.onChildGone();
-        throw await startFailure('CDP endpoint did not become ready in time', true);
+        throw await protectedFailure('CDP endpoint did not become ready in time', true);
       }
       await new Promise((r) => setTimeout(r, READY_POLL_MS));
     }
@@ -2690,25 +3081,33 @@ export class ChromeLauncher implements ChromeBackendClient {
     // Arm the anchor watcher before the tab exists so its targetCreated is
     // seen. Never throws — a launcher without a watcher still opens tabs.
     await this.ensureTargetWatcher();
-    const created = (await this.reach().createTarget(url)) as {
-      id?: string;
-      url?: string;
-    };
-    if (!created?.id) throw new Error('ChromeLauncher: /json/new returned no target id');
-    const now = Date.now();
-    const record: ChromeSurfaceRecord = {
-      surfaceId: newSurfaceId(),
-      targetId: created.id,
-      ...(workspaceId !== undefined && { workspaceId }),
-      url: created.url ?? url,
-      createdAt: now,
-      lastSeenAt: now,
-    };
-    this.surfaces.set(record.surfaceId, record);
-    this.byTargetId.set(created.id, record.surfaceId);
+    // Chrome lists the new tab before its record exists: outsideTabs waits for this.
+    let recorded!: () => void;
+    const opening = new Promise<void>((resolve) => { recorded = resolve; });
+    this.openingTabs.add(opening);
+    let record: ChromeSurfaceRecord;
+    let created: { id?: string; url?: string };
+    try {
+      created = (await this.reach().createTarget(url)) as { id?: string; url?: string };
+      if (!created?.id) throw new Error('ChromeLauncher: /json/new returned no target id');
+      const now = Date.now();
+      record = {
+        surfaceId: newSurfaceId(),
+        targetId: created.id,
+        ...(workspaceId !== undefined && { workspaceId }),
+        url: created.url ?? url,
+        createdAt: now,
+        lastSeenAt: now,
+      };
+      this.surfaces.set(record.surfaceId, record);
+      this.byTargetId.set(created.id, record.surfaceId);
+    } finally {
+      this.openingTabs.delete(opening);
+      recorded();
+    }
     await this.anchorTab(record);
     this.persist(true);
-    return { surfaceId: record.surfaceId, targetId: created.id, url: record.url };
+    return { surfaceId: record.surfaceId, targetId: created.id as string, url: record.url };
   }
 
   /**
@@ -2780,6 +3179,155 @@ export class ChromeLauncher implements ChromeBackendClient {
       return false;
     }
     return true;
+  }
+
+  // ── Outside tabs: the phone preview's view of tabs wmux holds no record of ──
+  // Kept apart from the records on purpose: nothing here is in `surfaces`,
+  // `byTargetId`, the store or the grants, so no agent lane can see it.
+
+  async outsideTabs(opts?: { waitForPairing?: boolean }): Promise<ChromeTargetInfo[]> {
+    // Until the persisted records are bound, a tab of ours would look like nobody's.
+    if (!this.isRunning() || (this.surfaceStore && !this.recordsSettled)) return [];
+    // The tab topology comes from the watcher; starting it never starts Chrome.
+    await this.ensureTargetWatcher();
+    if (!this.watcher?.isOpen()) return [];
+    // Chrome names the page behind a tab just attached after it answers the
+    // attach. Only the phone's list waits for that; a capture or input does not.
+    if (opts?.waitForPairing) await this.tabPagesKnown(OUTSIDE_PAIRING_WAIT_MS);
+    let live: Array<{ id: string; url: string; title: string; type: string }>;
+    try {
+      live = (await this.reach().listTargets()) as typeof live;
+    } catch {
+      return [];
+    }
+    // A tab openTab is creating is listed before its record exists. Only a
+    // tab first seen now can be one. The list read waits a bounded time for
+    // those creations; a tab still undecided then is left out. A read for a
+    // tab by id does not wait: no tab first seen now carries an id yet.
+    const fresh = (t: { id: string }) => {
+      const tab = this.outsideTabOf(t.id);
+      return tab !== undefined && !this.outsideIds.has(tab);
+    };
+    const opening = [...this.openingTabs];
+    let undecided = false;
+    if (opening.length > 0 && live.some((t) => t.type === 'page' && fresh(t))) {
+      undecided = !opts?.waitForPairing || !(await settledWithin(opening, OUTSIDE_OPENING_WAIT_MS));
+    }
+    const out: ChromeTargetInfo[] = [];
+    for (const t of live) {
+      if (t.type !== 'page') continue;
+      if (undecided && fresh(t)) continue;
+      const tab = this.outsideTabOf(t.id);
+      if (tab === undefined) continue;
+      let id = this.outsideIds.get(tab);
+      if (!id) {
+        id = `${OUTSIDE_ID_PREFIX}${randomUUID()}`;
+        this.outsideIds.set(tab, id);
+        this.outsideTabsById.set(id, tab);
+      }
+      out.push({ surfaceId: id, targetId: t.id, url: t.url, title: t.title });
+    }
+    return out;
+  }
+
+  hasOutside(id: string): boolean {
+    return this.isRunning() && this.outsidePage(id) !== undefined;
+  }
+
+  async outsidePageSession(id: string): Promise<ChromePageSession> {
+    if (!this.isRunning()) throw new ChromePageSessionError('unavailable', 'ChromeLauncher: Chrome is not running');
+    if (this.outsidePage(id) === undefined) throw new ChromePageSessionError('gone', 'ChromeLauncher: no page for this tab');
+    await this.ensureTargetWatcher();
+    const socket = this.watcher;
+    if (!socket?.isOpen()) throw new ChromePageSessionError('unavailable', 'ChromeLauncher: no browser CDP socket');
+    const page = this.outsidePage(id);
+    if (page === undefined) throw new ChromePageSessionError('gone', 'ChromeLauncher: no page for this tab');
+    const generation = this.outsideGeneration;
+    const cached = this.pageSessions.get(id);
+    let entry: PageSessionEntry;
+    if (cached && cached.valid && cached.socket === socket && cached.targetId === page) {
+      entry = cached;
+    } else {
+      // Chrome swapped the page inside the tab: the old session drives a page nobody sees.
+      if (cached) this.dropOutsideSession(id, cached);
+      // A release while the attach is out refuses it: it detaches, and nothing is kept.
+      entry = await this.attachPage(id, page, socket, () => (generation === this.outsideGeneration ? this.outsidePage(id) : undefined), String(generation));
+    }
+    return this.sessionOf(entry, () => this.outsidePage(id) === entry.targetId);
+  }
+
+  outsideStreamSession(id: string): Promise<ChromeStreamSession> {
+    const generation = this.outsideGeneration;
+    return this.openStream(() => (generation === this.outsideGeneration ? this.outsidePage(id) : undefined), true);
+  }
+
+  async selectOutside(id: string): Promise<boolean> {
+    const page = this.outsidePage(id);
+    if (page === undefined || !this.isRunning()) return false;
+    try {
+      await this.reach().activateTarget(page);
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
+  releaseOutside(): void {
+    this.outsideGeneration++;
+    for (const [id, entry] of [...this.pageSessions]) {
+      if (id.startsWith(OUTSIDE_ID_PREFIX)) this.dropOutsideSession(id, entry);
+    }
+    for (const entry of [...this.streamSessions]) {
+      if (!entry.outside) continue;
+      this.endStreamSession(entry);
+      if (entry.socket.isOpen()) void entry.socket.send('Target.detachFromTarget', { sessionId: entry.sessionId }).catch(() => undefined);
+    }
+  }
+
+  /** Until every tab the watcher attached has its page named, or `ms` passed. */
+  private async tabPagesKnown(ms: number): Promise<void> {
+    // A tab whose page closed with no successor is not named again: only tabs attached within `ms` are waited for.
+    const since = Date.now() - ms;
+    const pending = () => [...this.tabSessions.keys()].some((tab) => !this.tabToPage.has(tab) && (this.tabAttachedAt.get(tab) ?? 0) >= since);
+    if (!pending()) return;
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.pairingWaiters.delete(check);
+        resolve();
+      };
+      const check = () => { if (!pending()) done(); };
+      const timer = setTimeout(done, ms);
+      (timer as { unref?: () => void }).unref?.();
+      this.pairingWaiters.add(check);
+    });
+  }
+
+  /** The tab holding `pageId` while that page is its current one and neither has a record. */
+  private outsideTabOf(pageId: string): string | undefined {
+    const tab = this.pageToTab.get(pageId);
+    if (tab === undefined || this.tabToPage.get(tab) !== pageId) return undefined;
+    return this.byTargetId.has(pageId) || this.byTabTargetId.has(tab) ? undefined : tab;
+  }
+
+  /** The page an outside id names now: its tab's current page, while still without a record. */
+  private outsidePage(id: string): string | undefined {
+    const tab = this.outsideTabsById.get(id);
+    const page = tab === undefined ? undefined : this.tabToPage.get(tab);
+    return page !== undefined && this.outsideTabOf(page) === tab ? page : undefined;
+  }
+
+  private dropOutsideSession(id: string, entry: PageSessionEntry): void {
+    entry.valid = false;
+    this.pageSessions.delete(id);
+    if (entry.socket.isOpen()) void entry.socket.send('Target.detachFromTarget', { sessionId: entry.sessionId }).catch(() => undefined);
+  }
+
+  private forgetOutside(): void {
+    this.outsideGeneration++;
+    this.outsideIds.clear();
+    this.outsideTabsById.clear();
+    this.tabAttachedAt.clear();
   }
 
   /**
@@ -2893,6 +3441,8 @@ export class ChromeLauncherRegistry {
       protection?: (profile: string) => ChromeProtectionPlan | null;
       /** The user's download folder (ChromeLauncherOptions.downloadsDir). */
       downloadsDir?: () => string | null;
+      /** ChromeLauncherOptions.protectedPortAllowed. */
+      protectedPortAllowed?: () => boolean;
     },
   ) {}
 
@@ -2945,6 +3495,7 @@ export class ChromeLauncherRegistry {
         ...(this.opts.surfaceStore && !this.disposed && { surfaceStore: this.opts.surfaceStore }),
         ...(this.opts.protection && { protection: () => this.opts.protection?.(name) ?? null }),
         ...(this.opts.downloadsDir && { downloadsDir: this.opts.downloadsDir }),
+        ...(this.opts.protectedPortAllowed && { protectedPortAllowed: this.opts.protectedPortAllowed }),
       },
     );
     // Asked while the app quits: a launcher outside disposeAll's snapshot
@@ -2991,14 +3542,14 @@ export class ChromeLauncherRegistry {
    */
   async statusForWorkspace(
     workspaceId: string | undefined,
-  ): Promise<{ profile: string; running: boolean; cdpPort: number | null; liveAttach?: boolean }> {
+  ): Promise<{ profile: string; running: boolean; cdpPort: number | null; liveAttach?: boolean; transport?: ReturnType<typeof transportLabel> }> {
     return this.statusForProfile(this.opts.store.profileFor(workspaceId));
   }
 
   /** `statusForWorkspace` for an already resolved profile (a pane's own). */
   async statusForProfile(
     profile: string,
-  ): Promise<{ profile: string; running: boolean; cdpPort: number | null; liveAttach?: boolean }> {
+  ): Promise<{ profile: string; running: boolean; cdpPort: number | null; liveAttach?: boolean; transport?: ReturnType<typeof transportLabel> }> {
     if (profile === LIVE_CHROME_PROFILE) {
       // `running` here means the user's remote-debugging endpoint is LISTENING —
       // not the old "did we lazily new-up a LiveChromeClient" (an object the
@@ -3018,7 +3569,8 @@ export class ChromeLauncherRegistry {
     }
     const launcher = this.launchers.get(profile);
     if (launcher instanceof ChromeLauncher && launcher.isRunning()) {
-      return { profile, running: true, cdpPort: launcher.currentPort() };
+      const transport = launcher.launchedTransport();
+      return { profile, running: true, cdpPort: launcher.currentPort(), ...(transport && { transport: transportLabel(transport) }) };
     }
     return { profile, running: false, cdpPort: null };
   }

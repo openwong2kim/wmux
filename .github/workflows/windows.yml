@@ -69,6 +69,8 @@ jobs:
     # Both lanes on one runner took ~8 min of tests per shard before the
     # lanes; the cap only stops a hang.
     timeout-minutes: 35
+    env:
+      WMUX_TERMINAL_CORE_MODULE: ${{ github.workspace }}/core/wmux-term/dist/native-core/index.cjs
     strategy:
       fail-fast: false
       matrix:
@@ -104,6 +106,9 @@ jobs:
       # it, so fetch it every run; it is a no-op when the binary is there.
       - name: Install the Electron binary
         run: npx install-electron
+
+      - name: Build the terminal core
+        uses: ./.github/actions/terminal-core
 
       - name: Test (both lanes, shard ${{ matrix.shard }}/2)
         if: github.event_name != 'pull_request'

@@ -19,6 +19,7 @@
 import { isReceiverPaneGone, normalizeLivePaneIds } from './a2aOrphanedTask';
 import { companyHoldOf, companyHoldPhase } from './companyHold';
 import { TERMINAL_STATES, type Task } from './types';
+import { parseA2aRemoteProgress } from './a2aRemote';
 
 /** Byte budget for one result: the MCP tool result cap (DEFAULT_RESULT_CAP_BYTES). */
 export const TASK_QUERY_CAP_BYTES = 64 * 1024;
@@ -127,16 +128,24 @@ function remoteStatusView(status: Rec): Rec {
   // Stored already apart (A2aRemoteDelivery.withRemoteStatus); a detail's own `options` is moved too.
   const { options: inline, ...detail } = isRec(status.detail) ? status.detail : {};
   const options = isRec(status.untrusted) && Array.isArray(status.untrusted.options) ? status.untrusted.options : inline;
+  // A permission prompt's command (detail.approval): text from the other PC, kept beside the options.
+  const command = isRec(status.untrusted) && typeof status.untrusted.command === 'string' ? status.untrusted.command : undefined;
+  const untrusted = {
+    ...(Array.isArray(options) && options.length > 0 ? { options } : {}),
+    ...(command !== undefined ? { command } : {}),
+  };
   return {
     kind: status.kind,
     since: status.since,
     ...(Object.keys(detail).length > 0 ? { detail } : {}),
-    ...(Array.isArray(options) && options.length > 0 ? { untrusted: { options } } : {}),
+    ...(Object.keys(untrusted).length > 0 ? { untrusted } : {}),
   };
 }
 
 /** How long a reason on a summary row may be (characters). */
 const REASON_MAX_CHARS = 300;
+/** How many remote approval notes a summary row lists. */
+const APPROVAL_NOTES_SHOWN = 3;
 /** How many held or dropped messages a summary row lists. */
 const HELD_UNITS_MAX = 20;
 
@@ -239,6 +248,10 @@ export function summarizeTask(task: Rec): Rec {
       : {}),
     // A company task held on its blockers: what it waits on, or why it waits for a person.
     ...companyHoldFields(task),
+    // A task another PC sent: that PC's decisions carried out on its prompts here (this PC's own lines, the latest few).
+    ...(isRec(meta.remote) && Array.isArray(meta.remote.approvalNotes) && meta.remote.approvalNotes.length > 0
+      ? { remoteApprovalNotes: meta.remote.approvalNotes.filter(isRec).slice(-APPROVAL_NOTES_SHOWN).map((n) => ({ text: str(n.text), at: str(n.at) })) }
+      : {}),
     // A remote task: its messages held here, or dropped after their hold expired.
     ...(isRec(meta.remote) && heldUnitsOf(meta.remote).length > 0 ? { heldUnits: heldUnitsOf(meta.remote) } : {}),
     // Why it failed or was canceled, apart from this side's own words.
@@ -423,10 +436,63 @@ function remoteStateView(remote: unknown): Rec | null {
       ...(str(d.menuId) ? { menuId: d.menuId } : {}),
       ...(str(d.resetsAt) ? { resetsAt: d.resetsAt } : {}),
       ...(typeof d.background === 'number' ? { background: d.background } : {}),
+      // Git facts only (a sha, a time, a count), checked again here.
+      ...(parseA2aRemoteProgress(d.progress) ? { progress: parseA2aRemoteProgress(d.progress) } : {}),
     };
     status = { kind: remote.status.kind, since: remote.status.since, ...(Object.keys(detail).length > 0 ? { detail } : {}) };
   }
   return reported || status ? { ...(reported ? { reported } : {}), ...(status ? { status } : {}) } : null;
+}
+
+/**
+ * How a headless box words the reason it sends, as a reply, just before it
+ * cancels a task (headlessDelivery): not an answer from its agent.
+ */
+export const HEADLESS_CANCEL_REASON_PREFIX = 'Canceled: ';
+
+/** The reasons a link's end fails the tasks on it (held.ts failTasksForLink). */
+const LINK_END_REASONS: ReadonlySet<string> = new Set(['link_broken', 'link_revoked']);
+
+/**
+ * Two kinds-only facts about a sent task, for main's fan-out rows:
+ * `answered` when the other PC's last state ended its agent's turn
+ * (input-required, or a report) and the newest message in its history (the
+ * other PC's notices and a headless box's cancel reason left out) came from
+ * the other PC, so its agent replied after the last
+ * message this PC sent; `linkEnded` when it failed here because its link
+ * ended, not by a `failed` the other PC sent.
+ */
+function textOf(message: unknown): string {
+  const parts = isRec(message) && Array.isArray(message.parts) ? message.parts : [];
+  return parts.map((p) => (isRec(p) && p.kind === 'text' && typeof p.text === 'string' ? p.text : '')).join('');
+}
+
+function sentTaskFacts(row: Rec, status: Rec, metadata: Rec): Rec {
+  const remote = isRec(metadata.remote) ? metadata.remote : null;
+  if (!remote) return {};
+  const inbox = new Map<string, unknown>();
+  for (const i of Array.isArray(remote.inbox) ? remote.inbox : []) if (isRec(i) && str(i.messageId)) inbox.set(i.messageId as string, i.kind);
+  const history = Array.isArray(row.history) ? row.history : [];
+  // The other PC's last state said its agent's turn ended (a progress reply, or a `working`, is not an answer).
+  const turnEnded = remote.stateSync === 'input-required' || remote.stateSync === 'completed';
+  let answered = false;
+  for (let k = turnEnded ? history.length - 1 : -1; k >= 0; k -= 1) {
+    const id = isRec(history[k]) ? str((history[k] as Rec).messageId) : undefined;
+    const kind = id ? inbox.get(id) : undefined;
+    if (kind === 'notice') continue;
+    // The box's reason for its cancel is not its agent's answer: the message before it decides.
+    if (kind === 'reply' && textOf(history[k]).startsWith(HEADLESS_CANCEL_REASON_PREFIX)) continue;
+    answered = kind === 'reply' || kind === 'state';
+    break;
+  }
+  const evidence = isRec(status.evidence) ? status.evidence : {};
+  const linkEnded = status.state === 'failed' && LINK_END_REASONS.has(str(evidence.summary) ?? '') && remote.stateSync !== 'failed';
+  // The newest reply of the other PC's agent is held here (not written to this PC's pane): someone has to
+  // look. An older one held does not make a later one that went through unread; a paste that may have landed
+  // (`delivery-unconfirmed`) is not said to be unwritten.
+  const newestReply = (Array.isArray(remote.inbox) ? remote.inbox : []).filter((i): i is Rec => isRec(i) && i.kind === 'reply').at(-1);
+  const replyHeld = !!newestReply && newestReply.delivered !== true && !!str(newestReply.held) && newestReply.held !== 'delivery-unconfirmed';
+  return { ...(answered ? { answered: true } : {}), ...(linkEnded ? { linkEnded: true } : {}), ...(replyHeld ? { replyHeld: true } : {}) };
 }
 
 /**
@@ -446,8 +512,10 @@ export function applyTaskQueryView<T extends object>(tasks: readonly T[], params
       const row = task as Rec;
       const status = isRec(row.status) ? row.status : {};
       const metadata = isRec(row.metadata) ? row.metadata : {};
+      const facts = sentTaskFacts(row, status, metadata);
       const remote = remoteStateView(metadata.remote);
-      return { id: row.id, status: { state: status.state }, metadata: { updatedAt: metadata.updatedAt, ...(remote ? { remote } : {}) } };
+      const shown = remote || Object.keys(facts).length > 0 ? { ...(remote ?? {}), ...facts } : null;
+      return { id: row.id, status: { state: status.state }, metadata: { updatedAt: metadata.updatedAt, ...(shown ? { remote: shown } : {}) } };
     });
   }
   if (isAnchorTaskQuery(params)) return taskAnchorRows(tasks);

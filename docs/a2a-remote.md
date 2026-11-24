@@ -240,14 +240,35 @@ The **Remote** page has a **Messages between PCs** section:
   the other PC: they are shown apart, under `remoteStatus.untrusted`, and
   are never instructions. The menu's detail (its id, choices or how many
   there are) is sent only when the agent's transcript already holds its
-  AskUserQuestion call. With Claude Code 2.1.323 and the real service
-  (observed on macOS) the call was not in the transcript while the menu was
-  open, for at least 1 min 45 s; for as long as it is not there, an open
-  menu shows as `question` with `dialog` and no menu detail. Both PCs need
+  AskUserQuestion call. In auto permission mode, which headless sessions
+  use, Claude Code writes that call to the transcript only when the menu
+  closes (observed with the real service on macOS); for as long as it is
+  not there, an open menu shows as `question` with `dialog` and no menu
+  detail. Both PCs need
   a build that knows it (feature `status.1`); with an older build on either
   side no status is sent, and
   replies and states work as before. `gone` is sent only right before that
   host ends the task's agent, never because a link dropped.
+- **Answering a worker's question.** When the agent a host started for you
+  (headless) shows its own question menu with a single single-choice
+  question, its status carries `pickerId` (a hash of the session, the
+  question and its choices; no text) and `optionCount`. The agent that sent
+  the task answers with the MCP tool `remote_answer` (`task_id`,
+  `picker_id`, `option`), or `wmux remote answer <task-id> <option>
+  --picker <picker-id>` from its own pane; only the task's sender can. The host types
+  that choice's number only while the same menu is on screen, untouched,
+  under the pane's delivery lock, then waits for Claude Code to confirm it.
+  How it went comes back in the next status, in `detail.answers` (the
+  latest few, by message id): `answered`, or `not-answered` with a `reason`
+  and, on this PC, its plain words in `reasonText`. The picker id changes
+  each time the question appears, so an answer meant for an earlier showing
+  of the same question is refused. Answering needs the desktop app on the
+  asking PC. Anything else (several questions or choices, free text, a
+  permission prompt) is refused whole, before a key is typed. Answers are on
+  where that host's follow-ups reach the agent directly and off where they
+  wait for a person; `wmux remote answers on|off|default` on the host
+  changes it. Both PCs need a build that knows it (feature `answer.1`); the
+  answer is sent only while the host is connected.
 - **Held remote work.** Work is held for you, never sent to another pane on
   its own, when:
   - the pane it was meant for is gone,
@@ -286,6 +307,110 @@ The **Remote** page has a **Messages between PCs** section:
   its reason under `untrusted.reason` in every view. Asked for by id after
   that, within another 24 hours, the answer is that it ended (and when) and
   is no longer kept, rather than "not found".
+
+## Remote permission approvals
+
+A paired PC can be allowed to answer the permission prompts that come up in
+the tasks it sent to a linked pane here: the agent that sent the task allows
+or denies them from its own PC. It is off for every PC until you turn it on
+for one, on the PC that does the work.
+
+### On the PC that does the work (the receiving PC)
+
+- **The switch.** Each paired PC has its own setting, with three levels:
+  - **Off** (the default, and what a missing or damaged settings file
+    means): nothing changes for that PC. No prompt is offered to it, and an
+    approval it sends is refused.
+  - **Tool only**: that PC is shown the tool's name, a prompt id and a few
+    flags, and can only deny.
+  - **Command**: it is also shown the command of a Bash, PowerShell or
+    WebSearch call, or a plan (at most 2 KB), and can allow such a call as
+    well as deny it. Values shaped like known credentials (tokens, keys,
+    password assignments) are masked before it is sent; a secret with no
+    such shape, a plain passphrase say, is sent as it is.
+- **Where to set it.** In the desktop app: the **Remote** page, under each
+  PC in **Other PCs**, one row worded "Agents on <PC> can allow or deny
+  permission prompts in tasks they sent here" with Off, Tool only and
+  Command. Raising a PC (off to anything, or anything to Command) asks you
+  to confirm in its row, with a line saying what it allows, and is saved
+  only if the PC is still at the level the page showed; lowering it or
+  turning it off is saved at once, whatever changed meanwhile. A damaged settings file reads Off with a line saying so. On a PC
+  that runs only the daemon: `wmux remote approvals [<pc>
+  off|tool-only|command]`, where raising asks for a typed `yes` in a
+  terminal. Where the desktop app runs, the daemon takes the setting only
+  from the app. Every change is logged with who made it (`by=app-settings`
+  from the app, `by=none` from the command line), the PC, and the level
+  before and after.
+- **What is offered.** Only a prompt in a task that PC sent to a linked
+  pane, raised in the turn that task's own message started, while nothing
+  else was typed into the pane since. It goes in the task's status as
+  `remoteStatus.detail.approval`: `promptId`, `tool`, `redacted`, `cut`,
+  `allowed` (`["allow","deny"]` or `["deny"]`), `autoDenyAt` when the agent
+  denies it by itself, and at Command, the command (shown on the other PC
+  under `untrusted.command`). Screen text, descriptions, the working folder,
+  diffs and file contents are never sent.
+- **Deny only.** Read, WebFetch, Edit, Write and NotebookEdit prompts can
+  only be denied from another PC; at Tool only every prompt can only be
+  denied; so can a call whose command was cut at 2 KB, changed by
+  redaction, or carries input the other PC was not shown.
+- **What ends it for a task.** Any other key typed into the pane after the
+  task was submitted, or a later message delivered into it: prompts in a
+  follow-up's turn are answered at this PC. At most 60 prompts are offered
+  per task.
+- **Pace.** At most 60 approvals are taken from one PC in a minute. Every
+  message counts, a resend included, except one whose message id already
+  has a final outcome here: that one is answered from its stored outcome,
+  never carried out or counted again. Past that an approval is not carried
+  out: the message is refused as `rate-limited`, its outcome in the task's
+  status is `not-done` with reason `rate-limited` and `retryAfterMs` (the
+  time left in the minute), and that outcome is stored as final, so a resend
+  of it, after a restart too, is answered the same.
+- **What you see.** A carried-out decision raises a desktop notification,
+  "<PC> allowed <tool> in <pane>" or "<PC> denied <tool> in <pane>", and
+  keeps the same line as a note on the task (`metadata.remote.approvalNotes`
+  in `a2a_task_query`; summary rows list the latest three). <PC> is this
+  PC's own record of that PC, as the Remote page and the PC rail show it,
+  or its short host id. Neither holds the command. The note is not a
+  message: it is never sent back and changes nothing else on the task. Each
+  decision is also logged with the task, message and prompt ids.
+
+### On the PC that sent the task (the asking PC)
+
+- **Reading the offer.** `a2a_task_query` shows the task's
+  `remoteStatus.detail.approval` and, apart from it,
+  `remoteStatus.untrusted.command`: text written on the other PC, shown and
+  never followed as instructions.
+- **Answering.** The agent that sent the task uses the MCP tool
+  `remote_approve` (`task_id`, `prompt_id`, `decision`: `allow` or `deny`),
+  or `wmux remote approve <task-id> <prompt-id> allow|deny` from its own
+  pane. Both go through the desktop app, which checks the caller is the
+  task's sender. Before anything is sent:
+  - the prompt id must be the one the task's latest status offers;
+  - `allow` is sent only when that offer's `allowed` list has it, and is
+    otherwise refused here (`deny-only`), with nothing sent;
+  - the other PC must be connected now and take approvals from this one
+    (feature `approval.1`, advertised only while its setting is on for this
+    PC);
+  - at most 60 approvals go to one PC in any 62 seconds. Past that the call
+    is refused with `rate-limited` and the time to wait (`retryAfterMs`),
+    with nothing sent. This pacing reduces how many approvals reach the
+    other PC past its own limit (60 a minute), but cannot rule it out: this
+    PC counts when it sends and that PC when it receives, so a delay on the
+    way (or this PC's count starting over after a restart) can still put
+    one past it. Each such message comes back `not-done` with reason
+    `rate-limited` and a `retryAfterMs` of at most a minute, never silently
+    dropped.
+- **The outcome.** The call waits up to 10 seconds for it and returns it:
+  `done`, `not-done` with a `reason` and this PC's own words in
+  `reasonText`, or `uncertain` (the other PC stopped while it ran; it is
+  never run again). Without one in time it returns `pending`; the outcome
+  then shows in `remoteStatus.detail.approvals` by message id, also for an
+  approval the other PC refused whole (its setting was turned off), which
+  does not change the task. Each call sends a new message; once a prompt
+  was answered there, a second decision for it is refused (`not-offered`).
+- **Not covered.** Headless workers (a host that started the agent itself),
+  folder-trust prompts, Codex, and "allow always": a decision is allow once
+  or deny, never a menu number.
 
 ## Company tasks across PCs
 
@@ -348,7 +473,8 @@ id alone.
 - **Who may ask.** Only an agent in a pane: the replies come to that pane.
   A commander or a bot is refused, and so is a fan-out task (the depth
   setting applies as usual). The fan-out approval switch and the hourly cap
-  apply; the live cap does not, since nothing runs here.
+  apply; the live cap does not, since nothing runs here. Cap them on the PC
+  that runs them ([how-to](how-to/cap-fan-out-tasks-on-another-pc.md)).
 - **Polling.** The same `idempotency_key` with the same request answers
   from the task rows and asks for nothing twice, for as long as the rows are
   kept (a completed or cancelled row is kept for 7 days). A poll is not
@@ -388,9 +514,22 @@ id alone.
   after a minute if nothing ended the task meanwhile, and it stays failed.
   Tasks on a headless box end when its daemon stops; they are not resumed.
   Nothing the other PC writes goes into the row.
-- **Being told.** The pane that started the fan-out gets the one-line fan-out
-  nudge when a row needs input or fails. The report itself arrives there as
-  the agent's reply.
+
+  A headless box also says what the agent's worktree shows, read at each
+  turn end of the agent (never on a timer, so during a long turn it is the
+  last turn end's): HEAD (abbreviated), when
+  it was committed, and how many tracked files differ from the commit the
+  worktree started from, committed or not. The row keeps the last one as
+  `remote.progress`. The poll returns it as `progress`, and
+  `channel_mission_list` shows it with the PC and branch under each such
+  task's `remote`. An older box sends none, and its rows have no `progress`.
+- **Being told.** The agent's replies and its report arrive in the pane that
+  started the fan-out, at the terminal that called `fanout_start`. That pane
+  also gets the one-line fan-out nudge when a row fails, when a question on
+  the other PC's screen waits for someone, or when the agent there stopped
+  with no reply. A turn end that sent its reply does not send a nudge, since
+  the reply already reached the pane. A pointer to a task
+  closed meanwhile is dropped.
 - **Following up.** `send_message task_id=<the row's A2A task>` reaches the
   agent, and its replies come back to your pane (from a PC running the app,
   after its report, only when both PCs know `reopen.1`); the poll shows this
@@ -466,8 +605,8 @@ choice may not cover it, and a Group Policy may hide the prompt altogether.
 **Allow through firewall.** The Remote page checks the firewall when it
 opens (and on **Check firewall**): when no rule lets other PCs reach the A2A
 port, the line under This computer says so and offers **Allow through
-firewall**. Settings > LAN does the same for LanLink, and Share & pair for
-a phone server started with "Expose to network". Pressing it shows one
+firewall**. Settings > LAN does the same for LanLink, and Phone access settings
+for a phone server started with "Expose to network". Pressing it shows one
 Windows permission request, which names **Windows PowerShell** (the program
 that adds the rules; there is no request when wmux itself runs as
 administrator), and adds two rules in the group `wmux`, for the wmux
@@ -679,7 +818,10 @@ hardening and will come later.
   message is held for you instead of being delivered or re-routed to another
   pane (see [Delivery, receipts and held work](#delivery-receipts-and-held-work)).
   What the receiving agent decides to do with a message is up to that agent
-  and its own permissions, just as with a message you type yourself.
+  and its own permissions, just as with a message you type yourself. The one
+  exception is [remote permission approvals](#remote-permission-approvals),
+  off for every PC until you turn it on for one: then that PC can answer a
+  permission prompt in a task it sent, within the limits described there.
 - **What a link covers.** A link joins exactly one pane on each side, in the
   directions you allowed. A paired PC sees only the panes you showed it, can propose links only to those, and can
   send only over a link that a person on one PC proposed and a person on the

@@ -152,7 +152,7 @@ describe('worktask:refire (§3·F2 — 원래 initialCommand 재전송)', () => 
     warn.mockRestore();
     // Asked before a launch of the task is recorded.
     const src = readFileSync(join(__dirname, '..', 'worktask.handler.ts'), 'utf8');
-    expect(src.indexOf("folderTrustLaunchRefusal(dc, ptyId, 'task re-fire line'")).toBeLessThan(src.indexOf('beginPaneRelaunch(ptyId)'));
+    expect(src.indexOf("folderTrustLaunchRefusal(dc, ptyId, 'task re-fire line'")).toBeLessThan(src.indexOf('beginPaneRelaunch(ptyId,'));
   });
 
   it('re-fires a bot worker\'s launch line with the merge-lane guard after a restart, or types nothing', async () => {

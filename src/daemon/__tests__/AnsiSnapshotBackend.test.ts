@@ -2,16 +2,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getAnsiSnapshotBackendDiagnostics, selectAnsiSnapshot } from '../AnsiSnapshotBackend';
 import type { SnapshotOutcome, SnapshotRequest } from '../HeadlessSnapshot';
 import { generateRustSnapshot } from '../RustSnapshot';
+import { NATIVE_SNAPSHOT_MAX_INPUT_BYTES } from '../nativeSnapshotLimits';
+import { NATIVE_CIRCUIT_COOLDOWNS_MS } from '../nativeCircuit';
+import { nativeAllocError } from '../../shared/__tests__/_nativeAllocError';
 vi.mock('../RustSnapshot', () => ({ generateRustSnapshot: vi.fn() }));
 const native = vi.mocked(generateRustSnapshot);
 const request = { cols: 80, rows: 24, initial: Buffer.from('hello'), budgetMs: 1000 };
 const success = { ok: true as const, payload: Buffer.from('hello'), bytesIn: 5, durationMs: 1 };
 let moduleId = 0;
 beforeEach(() => {
+  // CI names the built core in WMUX_TERMINAL_CORE_MODULE, which nativeCorePath reads first: unset it here so the stub is the module.
+  vi.stubEnv('WMUX_TERMINAL_CORE_MODULE', undefined);
   vi.stubEnv('WMUX_RUST_SNAPSHOT', 'ansi');
   vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', `/test/native-${++moduleId}.cjs`);
 });
-afterEach(() => { vi.unstubAllEnvs(); vi.resetAllMocks(); });
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.resetAllMocks(); });
 const nativeSuccess = (initial: Buffer) => native.mockResolvedValue({ ...success, bytesIn: initial.length } as never);
 /** A candidate that drains the whole tee and parses every byte. */
 const drainAll = (async (req: SnapshotRequest) => {
@@ -31,24 +36,18 @@ describe('ANSI snapshot backend selection', () => {
     expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'rust', reason: 'native' });
   });
 
-  it.each([['rust', true], ['node', false]] as const)('reads the removed shadow mode as unset on the %s engine', async (engine, rust) => {
+  // The Node engine is removed: WMUX_TERMINAL_CORE no longer selects anything.
+  it.each(['rust', 'node', undefined])('reads the removed shadow mode as unset: Rust, with WMUX_TERMINAL_CORE=%s', async (engine) => {
     vi.stubEnv('WMUX_RUST_SNAPSHOT', 'shadow');
     vi.stubEnv('WMUX_TERMINAL_CORE', engine);
     nativeSuccess(request.initial);
     const reference = vi.fn(async () => success);
-    const out = await selectAnsiSnapshot(request, reference);
-    if (rust) {
-      expect(out).toMatchObject({ ...success, durationMs: expect.any(Number) });
-      expect(reference).not.toHaveBeenCalled();
-    } else {
-      expect(out).toBe(success);
-      expect(reference).toHaveBeenCalledTimes(1);
-      expect(native).not.toHaveBeenCalled();
-    }
+    expect(await selectAnsiSnapshot(request, reference)).toMatchObject({ ...success, durationMs: expect.any(Number) });
+    expect(reference).not.toHaveBeenCalled();
   });
 
-  it.each([['off', 'rust'], [undefined, 'node']])('keeps xterm with mode %s on the %s engine', async (mode, engine) => {
-    vi.stubEnv('WMUX_RUST_SNAPSHOT', mode);
+  it.each(['rust', 'node'])('keeps xterm with mode off, with WMUX_TERMINAL_CORE=%s', async (engine) => {
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');
     vi.stubEnv('WMUX_TERMINAL_CORE', engine);
     const reference = vi.fn(async () => success);
     expect(await selectAnsiSnapshot(request, reference)).toBe(success);
@@ -110,6 +109,78 @@ describe('ANSI snapshot backend selection', () => {
     expect(getAnsiSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: false, last: { backend: 'xterm', reason: 'unsupported' } });
   });
 
+  // R2 (b) prep: native is the delivering path, so it gets the caller's whole budget.
+  it('hands native the whole budget, and the fallback what a refusal leaves of it', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockImplementationOnce(async () => { now = 700; return { ok: false, reason: 'error', detail: 'unsupported-wide-edge' }; });
+    const reference = vi.fn(async (_req: SnapshotRequest) => success);
+    await selectAnsiSnapshot(request, reference);
+    expect(native.mock.calls[0][0].budgetMs).toBe(1000);
+    expect(reference.mock.calls[0][0].budgetMs).toBe(300);
+  });
+
+  it('ends with budget, without xterm, when native spent the whole budget', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockImplementationOnce(async () => { now = 1001; return { ok: false, reason: 'budget' }; });
+    const reference = vi.fn(async () => success);
+    const before = getAnsiSnapshotBackendDiagnostics();
+    expect(await selectAnsiSnapshot(request, reference)).toMatchObject({ ok: false, reason: 'budget' });
+    expect(reference).not.toHaveBeenCalled();
+    // Native's own outcome, not an xterm fallback that never ran.
+    const after = getAnsiSnapshotBackendDiagnostics();
+    expect(after.fallbacks).toBe(before.fallbacks);
+    expect(after.reasons.budget).toBe((before.reasons.budget ?? 0) + 1);
+    expect(after.last).toEqual({ backend: 'rust', reason: 'budget' });
+  });
+
+  it('delivers a complete native snapshot whose serialization ended just past the deadline', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockImplementationOnce((async () => { now = 1040; return success; }) as never);
+    const reference = vi.fn(async () => success);
+    expect(await selectAnsiSnapshot(request, reference)).toMatchObject({ ok: true, durationMs: 1040 });
+    expect(reference).not.toHaveBeenCalled();
+    expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'rust', reason: 'native' });
+  });
+
+  // #3440: one session's refused allocation must not turn native snapshots off
+  // for every session (the circuit is daemon-wide).
+  // Classified by its code alone: the message is diagnostic and may be empty.
+  it.each([
+    ['reported', () => native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'ALLOC_FAILED: could not allocate 64 bytes for grid', allocFailed: true })],
+    ['reported (empty message)', () => native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: '', allocFailed: true })],
+    ['thrown', () => native.mockRejectedValueOnce(nativeAllocError('ALLOC_FAILED: could not allocate 64 bytes for grid'))],
+    ['thrown (empty message)', () => native.mockRejectedValueOnce(nativeAllocError(''))],
+  ])('falls back on a %s refused allocation without opening the circuit', async (_how, refuse) => {
+    refuse();
+    const reference = vi.fn(async () => success);
+    const before = getAnsiSnapshotBackendDiagnostics().tried['alloc-failed'] ?? 0;
+    expect(await selectAnsiSnapshot(request, reference)).toMatchObject({ ...success, durationMs: expect.any(Number) });
+    expect(reference).toHaveBeenCalledOnce();
+    expect(getAnsiSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: false, circuitFailures: 0, last: { backend: 'xterm', reason: 'alloc-failed' } });
+    expect(getAnsiSnapshotBackendDiagnostics().tried['alloc-failed']).toBe(before + 1);
+    // The next session still gets a native snapshot.
+    nativeSuccess(request.initial);
+    await selectAnsiSnapshot(request, reference);
+    expect(native).toHaveBeenCalledTimes(2);
+    expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'rust', reason: 'native' });
+  });
+
+  // A message that merely reads like a refusal, without the code, is a module error.
+  it.each([
+    ['reported', () => native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'ALLOC_FAILED: could not allocate 64 bytes for grid' })],
+    ['thrown', () => native.mockRejectedValueOnce(new Error('ALLOC_FAILED: could not allocate 64 bytes for grid'))],
+  ])('opens the circuit on a %s "ALLOC_FAILED:" message without the code', async (_how, fail) => {
+    fail();
+    const reference = vi.fn(async () => success);
+    const before = getAnsiSnapshotBackendDiagnostics().tried['alloc-failed'] ?? 0;
+    expect(await selectAnsiSnapshot(request, reference)).toMatchObject({ ok: true });
+    expect(getAnsiSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: true, circuitFailures: 1 });
+    expect(getAnsiSnapshotBackendDiagnostics().tried['alloc-failed'] ?? 0).toBe(before);
+  });
+
   it('opens the circuit on a module error until the module changes', async () => {
     native.mockRejectedValueOnce(new Error('load failed'));
     const reference = vi.fn(async () => success);
@@ -124,6 +195,57 @@ describe('ANSI snapshot backend selection', () => {
     expect(native).toHaveBeenCalledTimes(2);
   });
 
+  // R2 (b) prep: the circuit no longer stays open for the life of the daemon (nativeCircuit.ts).
+  it('lets one trial through after the cooldown, and closes the circuit when the module works', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockRejectedValueOnce(new Error('load failed'));
+    const reference = vi.fn(async () => success);
+    await selectAnsiSnapshot(request, reference);
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0] - 1;
+    await selectAnsiSnapshot(request, reference);
+    expect(native).toHaveBeenCalledOnce();
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0];
+    nativeSuccess(request.initial);
+    expect(await selectAnsiSnapshot(request, reference)).toMatchObject({ ok: true });
+    expect(native).toHaveBeenCalledTimes(2);
+    expect(getAnsiSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: false, last: { backend: 'rust', reason: 'native' } });
+  });
+
+  it('reopens a failed trial for the next cooldown, and skips everything while the trial runs', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockRejectedValueOnce(new Error('load failed'));
+    const reference = vi.fn(async () => success);
+    await selectAnsiSnapshot(request, reference);
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0];
+    let failTrial!: (err: Error) => void;
+    native.mockImplementationOnce(() => new Promise((_resolve, reject) => { failTrial = reject; }));
+    const trial = selectAnsiSnapshot(request, reference);
+    // A second request while the trial is out: skipped, the trial is not doubled.
+    await selectAnsiSnapshot(request, reference);
+    expect(native).toHaveBeenCalledTimes(2);
+    expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'xterm', reason: 'circuit-open' });
+    failTrial(new Error('still broken'));
+    await trial;
+    expect(getAnsiSnapshotBackendDiagnostics().circuitOpen).toBe(true);
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0] + NATIVE_CIRCUIT_COOLDOWNS_MS[1] - 1;
+    await selectAnsiSnapshot(request, reference);
+    expect(native).toHaveBeenCalledTimes(2);
+  });
+
+  it('closes the circuit on a trial that the module refuses: a refusal means it works', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockRejectedValueOnce(new Error('load failed'));
+    const reference = vi.fn(async () => success);
+    await selectAnsiSnapshot(request, reference);
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0];
+    native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'unsupported-wide-edge' });
+    await selectAnsiSnapshot(request, reference);
+    expect(getAnsiSnapshotBackendDiagnostics().circuitOpen).toBe(false);
+  });
+
   it('takes an attach request: a full ring with its preamble and 100k rows of scrollback', async () => {
     const initial = Buffer.alloc(8 * 1024 * 1024 + 64, 0x61);
     nativeSuccess(initial);
@@ -132,8 +254,17 @@ describe('ANSI snapshot backend selection', () => {
     expect(native).toHaveBeenCalledOnce(); expect(reference).not.toHaveBeenCalled();
   });
 
+  it('takes a ring above the old 8 MiB cap: any ring the daemon allows', async () => {
+    const initial = Buffer.alloc(16 * 1024 * 1024, 0x61);
+    nativeSuccess(initial);
+    const reference = vi.fn();
+    await selectAnsiSnapshot({ ...request, initial }, reference);
+    expect(native).toHaveBeenCalledOnce(); expect(reference).not.toHaveBeenCalled();
+  });
+
   it.each([
-    ['an oversized input', { initial: Buffer.alloc(9 * 1024 * 1024) }],
+    // Only its length is read before the skip: a ring above the daemon's largest.
+    ['an oversized input', { initial: { length: NATIVE_SNAPSHOT_MAX_INPUT_BYTES + 1 } as Buffer }],
     ['a scrollback above 100k', { scrollback: 100001 }],
     ['a recorded size above 1000 columns', { geometry: { start: { cols: 1001, rows: 24 }, changes: [] } }],
   ])('keeps xterm for %s', async (_name, change) => {
@@ -148,6 +279,27 @@ describe('ANSI snapshot backend selection', () => {
     const reference = vi.fn();
     expect(await selectAnsiSnapshot(request, reference)).toEqual({ ok: false, reason: 'margins' });
     expect(reference).not.toHaveBeenCalled();
+  });
+
+  // R2 (b) prep 4: the refusal rates. Each native try by its outcome, counted when it settles.
+  it('counts each native try by its outcome, and nothing for a skip', async () => {
+    const before = getAnsiSnapshotBackendDiagnostics().tried;
+    const delta = () => {
+      const now = getAnsiSnapshotBackendDiagnostics().tried;
+      return Object.fromEntries(Object.entries(now).map(([k, n]) => [k, n - (before[k] ?? 0)]).filter(([, n]) => n));
+    };
+    const reference = vi.fn(async () => success);
+    nativeSuccess(request.initial);
+    await selectAnsiSnapshot(request, reference);
+    native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'unsupported-wide-edge' });
+    await selectAnsiSnapshot(request, reference);
+    // Limits and an open circuit are skips: native never ran.
+    await selectAnsiSnapshot({ ...request, scrollback: 100001 }, reference);
+    native.mockRejectedValueOnce(new Error('load failed'));
+    await selectAnsiSnapshot(request, reference);
+    await selectAnsiSnapshot(request, reference);
+    expect(delta()).toEqual({ native: 1, 'unsupported-wide-edge': 1, error: 1 });
+    expect(getAnsiSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: true, circuitFailures: 1 });
   });
 
   // `wmux doctor` shows these, so the next native gap is picked by how often

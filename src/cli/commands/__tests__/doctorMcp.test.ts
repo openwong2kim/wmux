@@ -116,6 +116,19 @@ describe('doctor mcp section', () => {
       expect(line.hint).toMatch(/native launcher start the full bundle themselves/);
     });
 
+    it('names an occupied socket path instead of a crash loop, and what to do', async () => {
+      const line = await down('path-occupied', ['wmux-native']);
+      expect(line.value).toBe('not running: something that is not a socket sits at its socket path, off until wmux restarts');
+      expect(line.hint).toMatch(/Move it away from the broker socket path \(the app log names it\), then restart wmux\./);
+      expect(line.value).not.toMatch(/kept failing/);
+    });
+
+    it('says a broker stopped for its peer self-check is off until wmux restarts', async () => {
+      const line = await down('peer-unavailable', ['wmux-native']);
+      expect(line.value).toBe('not running: it could not confirm which process connects to it on this system, off until wmux restarts');
+      expect(line.hint).toContain('Agents use their own MCP server.');
+    });
+
     it('says a missing script will not start, and that Node-shim agents cannot connect', async () => {
       const line = await down('script-missing', ['shim.js']);
       expect(line.value).toBe('not running: this build has no broker script');
@@ -186,30 +199,65 @@ describe('doctor broker rule', () => {
     return section.lines.find((l) => l.label === 'broker');
   };
 
+  it('off by default on an app with no Settings choice: names only the environment variable', async () => {
+    expect((await line({ enabled: false, flag: 'unset' }))?.hint).toBe(
+      "WMUX_MCP_BROKER=1 in the app's environment turns it on, from the next wmux start.",
+    );
+  });
+
   it('off by default: says so, and how to turn it on', async () => {
-    expect(await line({ enabled: false, flag: 'unset' })).toEqual({
+    expect(await line({ enabled: false, flag: 'unset', setting: 'default' })).toEqual({
       label: 'broker',
       value: 'off (the default)',
       verdict: 'OK',
-      hint: "WMUX_MCP_BROKER=1 in the app's environment turns it on, from the next wmux start.",
+      hint: "Settings > Claude Code > Shared MCP process, or WMUX_MCP_BROKER=1 in the app's environment, turns it on, from the next wmux start.",
     });
+  });
+
+  it('off by the Settings choice: names it, and where to turn it on', async () => {
+    expect(await line({ enabled: false, flag: 'unset', setting: 'off' })).toEqual({
+      label: 'broker',
+      value: 'off (Settings)',
+      verdict: 'OK',
+      hint: 'Settings > Claude Code > Shared MCP process turns it on, from the next wmux start.',
+    });
+  });
+
+  it('on by the Settings choice: names it and the way back', async () => {
+    expect((await line({ enabled: true, flag: 'unset', setting: 'on' }))?.hint).toContain(
+      'On because Settings > Claude Code > Shared MCP process is On. Off there turns it off, from the next wmux start.',
+    );
+  });
+
+  it('the environment still names itself over a Settings choice', async () => {
+    expect((await line({ enabled: false, flag: 'off', setting: 'on' }))?.value).toBe('off (WMUX_MCP_BROKER=0)');
+    expect((await line({ enabled: true, flag: 'on', setting: 'off' }))?.hint).toContain('On because WMUX_MCP_BROKER=1');
   });
 
   it('off by WMUX_MCP_BROKER=0: names it', async () => {
     expect(await line({ enabled: false, flag: 'off' })).toEqual({ label: 'broker', value: 'off (WMUX_MCP_BROKER=0)', verdict: 'OK' });
   });
 
+  it('names the value as set, not a canonical 0 or 1', async () => {
+    expect((await line({ enabled: false, flag: 'off', flagValue: 'false' }))?.value).toBe('off (WMUX_MCP_BROKER=false)');
+    expect((await line({ enabled: true, flag: 'on', flagValue: 'Yes' }))?.hint).toContain('On because WMUX_MCP_BROKER=Yes is set for the app.');
+  });
+
   it('on by WMUX_MCP_BROKER=1: names it and the way back, running or down', async () => {
     const running = await line({ enabled: true, flag: 'on' });
     expect(running?.verdict).toBe('OK');
-    expect(running?.hint).toContain('On because WMUX_MCP_BROKER=1 is set for the app. To turn it off, remove it (or set it to 0) and restart wmux');
+    expect(running?.hint).toContain('On because WMUX_MCP_BROKER=1 is set for the app. To turn it off, set it to 0 and restart wmux');
     const down = await line({ enabled: true, flag: 'on', running: false, pid: null, uptimeS: null, downReason: 'restarting' });
     expect(down?.verdict).toBe('WARN');
     expect(down?.hint).toContain('The app restarts it with a backoff.');
     expect(down?.hint).toContain('On because WMUX_MCP_BROKER=1');
   });
 
-  it('on with the flag unset (a platform default): says so, and that WMUX_MCP_BROKER=0 turns it off', async () => {
+  it('on with the flag unset (a platform default): says so, and names the Settings switch only where the app has one', async () => {
+    expect((await line({ enabled: true, flag: 'unset', setting: 'default' }))?.hint).toBe(
+      'On by default on this platform. Settings > Claude Code > Shared MCP process: Off turns it off '
+        + '(or WMUX_MCP_BROKER=0 for the app), from the next wmux start.',
+    );
     expect((await line({ enabled: true, flag: 'unset' }))?.hint).toBe(
       'On by default on this platform. WMUX_MCP_BROKER=0 for the app turns it off, from the next wmux start.',
     );

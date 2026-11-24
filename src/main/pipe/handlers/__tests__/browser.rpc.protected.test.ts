@@ -238,6 +238,84 @@ describe('protected-pane gate', () => {
     expect((await status('pty-b')).result).toMatchObject({ profile: 'default', port: 19000 });
   });
 
+  it('reports the transport the running Chrome was started on', async () => {
+    const router = register(profiles, policy);
+    registry.statusForProfile.mockImplementation(async (profile: string) => ({ profile, running: true, cdpPort: null, transport: 'pipe' }) as never);
+    const status = await router.dispatch({
+      id: '1',
+      method: 'browser.session.status',
+      params: { workspaceId: 'ws-1' },
+      callerPtyId: 'pty-b',
+      clientName: [...FIRST_PARTY_CLIENT_NAMES][0],
+      ...paneClaimOn('ws-1', 'pty-b'),
+    } as never, { externalWire: true }) as { result?: unknown };
+    expect(status.result).toMatchObject({ profile: 'default', transport: 'pipe' });
+  });
+
+  for (const transport of ['port', 'pipe'] as const) {
+    it(`never hands a protected pane the port or its WebSocket from cdp.info, on the ${transport}`, async () => {
+      await protectPaneA();
+      const router = register(profiles, policy);
+      const endpoint = transport === 'port'
+        ? { cdpPort: 19000, wsEndpoint: 'ws://127.0.0.1:19000/devtools/browser/x' }
+        // A piped endpoint as a launcher that also kept a port would report it: hidden all the same.
+        : { piped: true, cdpPort: 19000, wsEndpoint: 'ws://127.0.0.1:19000/devtools/browser/x' };
+      const relayGrant = vi.fn(async () => ({ endpoint: 'ws+unix:/tmp/relay.sock:/cdp', headers: { Authorization: 'Bearer t' }, proofKey: 'k' }));
+      for (const profile of ['pa', 'default']) {
+        const launcher = registry.forProfile(profile) as ReturnType<typeof makeLauncher> & { relayGrant?: unknown };
+        launcher.endpoint.mockResolvedValue(endpoint as never);
+        launcher.relayGrant = relayGrant;
+      }
+      // Asked by a caller allowed attach info, so only the pane's protection differs.
+      const info = async (callerPtyId: string) => ((await router.dispatch({
+        id: '1',
+        method: 'browser.cdp.info',
+        params: { workspaceId: 'ws-1', relay: true },
+        callerPtyId,
+        clientName: [...FIRST_PARTY_CLIENT_NAMES][0],
+        ...paneClaimOn('ws-1', callerPtyId),
+      } as never, { externalWire: true })) as { result?: Record<string, unknown> }).result ?? {};
+      const a = await info('pty-a');
+      expect(a).toMatchObject({ profile: 'pa', protected: true });
+      expect(a).not.toHaveProperty('cdpPort');
+      expect(a).not.toHaveProperty('wsEndpoint');
+      // The unprotected neighbour keeps both.
+      const b = await info('pty-b');
+      expect(b).toMatchObject({ profile: 'default', cdpPort: 19000, wsEndpoint: 'ws://127.0.0.1:19000/devtools/browser/x' });
+      if (transport === 'pipe') {
+        // On the pipe the protected pane still reaches Chrome, through the relay.
+        expect(a).toMatchObject({ piped: true, relay: { endpoint: 'ws+unix:/tmp/relay.sock:/cdp' } });
+        expect(relayGrant).toHaveBeenCalledWith(expect.objectContaining({ profile: 'pa', protectedEpoch: 1 }));
+      } else {
+        expect(a).not.toHaveProperty('relay');
+      }
+    });
+  }
+
+  it('hands out no relay token when the policy epoch moves while it is made', async () => {
+    await protectPaneA();
+    const router = register(profiles, policy);
+    const relayGrant = vi.fn(async () => {
+      // The operator changes the pane's policy while the token is being made.
+      await protectPaneA(['b.test']);
+      return { endpoint: 'ws+unix:/tmp/relay.sock:/cdp', headers: { Authorization: 'Bearer t' }, proofKey: 'k' };
+    });
+    const launcher = registry.forProfile('pa') as ReturnType<typeof makeLauncher> & { relayGrant?: unknown };
+    launcher.endpoint.mockResolvedValue({ piped: true } as never);
+    launcher.relayGrant = relayGrant;
+    const response = await router.dispatch({
+      id: '1',
+      method: 'browser.cdp.info',
+      params: { workspaceId: 'ws-1', relay: true },
+      callerPtyId: 'pty-a',
+      clientName: [...FIRST_PARTY_CLIENT_NAMES][0],
+      ...paneClaimOn('ws-1', 'pty-a'),
+    } as never, { externalWire: true });
+    expect(relayGrant).toHaveBeenCalledWith(expect.objectContaining({ profile: 'pa', protectedEpoch: 1 }));
+    expect(response.ok).toBe(false);
+    expect(String((response as { error?: unknown }).error)).toContain('changed while the relay token was made');
+  });
+
   it('never lets a protected pane drive a surface outside its own Chrome', async () => {
     await protectPaneA();
     const router = register(profiles, policy);

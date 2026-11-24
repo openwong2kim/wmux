@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 //
-// The hub's one-click paths: Pair a phone and Connect another computer start
-// a stopped server and mint the named code in the same click — offered only
-// once the address will be reachable (a usable tailnet, ticked visibly first;
-// never the LAN by default; input still off). A running server is never
-// restarted from here.
+// Phone access settings, stopped: a usable tailnet is ticked visibly before
+// anything can start (never the LAN by default; input still off), Start
+// starts what the boxes show, and nothing is paired from here — pairing is
+// the Pair a phone dialog, a computer link is Connect a PC…. A running server
+// is never restarted from here.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createElement, act } from 'react';
+import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import WebToggle from '../WebToggle';
 import type { WebDeviceSummary, WebDiagnosis, WebTerminalInfo } from '../../../../shared/web';
@@ -102,7 +102,8 @@ async function flush(): Promise<void> {
 }
 
 async function mountAndOpen(): Promise<void> {
-  await act(async () => root.render(createElement(WebToggle)));
+  // The Remote page's settings button opens straight on the settings view.
+  await act(async () => root.render(<WebToggle variant="page" />));
   await flush();
   const button = container.querySelector('[data-testid="deck-web-toggle"]') as HTMLButtonElement;
   await act(async () => button.click());
@@ -132,28 +133,25 @@ async function toggleOpen(): Promise<void> {
 }
 
 describe('WebToggle — one click', () => {
-  it('Pair a phone from a stopped server: tailnet ticked first, input off, then the prefilled unique name', async () => {
+  it('Start from a stopped server: the tailnet the check ticked, input off, and no code minted', async () => {
     await mountAndOpen();
     expect(tailnetBox().getAttribute('aria-checked')).toBe('true');
-    expect((document.querySelector('input[type="text"]') as HTMLInputElement).value).toBe('Phone 2');
-    await click('Pair a phone');
+    expect(document.querySelector('input[type="text"]')).toBeNull();
+    await click('Start');
     expect(start).toHaveBeenCalledTimes(1);
     expect(start).toHaveBeenCalledWith({ allowInput: false, expose: false, tailscale: true });
-    expect(pairStart).toHaveBeenCalledWith('Phone 2', false, 'phone');
-    expect(document.querySelector('[aria-label="QR code that pairs this phone"]')).not.toBeNull();
+    expect(pairStart).not.toHaveBeenCalled();
   });
 
-  it('nothing one-click is offered until the Tailscale check answers', async () => {
+  it('the transport is not defaulted until the Tailscale check answers', async () => {
     let answer: (d: WebDiagnosis) => void = () => undefined;
     diagnose.mockImplementationOnce(() => new Promise<WebDiagnosis>((resolve) => { answer = resolve; }));
     await mountAndOpen();
     expect(document.body.textContent).toContain('Checking Tailscale…');
-    expect(button('Pair a phone').disabled).toBe(true);
     expect(tailnetBox().getAttribute('aria-checked')).toBe('false');
     await act(async () => answer({ tailscale: { ok: true, serve: 'free' }, web: status }));
     await flush();
     expect(tailnetBox().getAttribute('aria-checked')).toBe('true');
-    expect(button('Pair a phone').disabled).toBe(false);
   });
 
   it('plain Start never waits for the check and starts what the boxes show', async () => {
@@ -163,14 +161,13 @@ describe('WebToggle — one click', () => {
     expect(start).toHaveBeenCalledWith({ allowInput: false, expose: false, tailscale: false });
   });
 
-  it('without Tailscale: says why, starts nothing, offers no computer link', async () => {
+  it('without Tailscale: says why, and offers no pairing of any kind', async () => {
     tailscaleOk = false;
     await mountAndOpen();
     expect(document.body.textContent).toContain('tailscale is not on PATH');
-    expect(button('Pair a phone').disabled).toBe(true);
-    expect(Array.from(document.querySelectorAll('button')).some((b) => b.textContent === 'Connect another computer')).toBe(false);
-    await click('Pair a phone');
-    expect(start).not.toHaveBeenCalled();
+    const names = Array.from(document.querySelectorAll('button')).map((b) => b.textContent);
+    expect(names).not.toContain('Pair a phone');
+    expect(names).not.toContain('Connect another computer');
     expect(pairStart).not.toHaveBeenCalled();
   });
 
@@ -178,7 +175,6 @@ describe('WebToggle — one click', () => {
     await mountAndOpen();
     await act(async () => tailnetBox().click());
     await flush();
-    expect(button('Pair a phone').disabled).toBe(true);
     await click('Turn on HTTPS over Tailscale');
     expect(start).toHaveBeenCalledWith({ allowInput: false, expose: false, tailscale: true });
     expect(pairStart).not.toHaveBeenCalled();
@@ -202,7 +198,6 @@ describe('WebToggle — one click', () => {
     tailscaleOk = false;
     await toggleOpen();
     expect(tailnetBox().getAttribute('aria-checked')).toBe('false');
-    expect(button('Pair a phone').disabled).toBe(true);
   });
 
   it('a check answering after unmount changes nothing', async () => {
@@ -218,21 +213,9 @@ describe('WebToggle — one click', () => {
     errors.mockRestore();
   });
 
-  it('Connect another computer from a stopped server: one click puts the link on the clipboard', async () => {
-    await mountAndOpen();
-    await click('Connect another computer');
-    expect(start).toHaveBeenCalledWith({ allowInput: false, expose: false, tailscale: true });
-    expect(pairStart).toHaveBeenCalledWith('Computer', false, 'computer');
-    const link = 'https://desk.tail1234.ts.net/pair#wmux-desktop-code=QWXZ7K9M';
-    expect(writeEphemeral).toHaveBeenCalledWith(link, expect.any(Number));
-    expect(clipboard).toBe(link);
-    expect(button('Copied')).toBeTruthy();
-  });
-
   it('a running server without HTTPS is never restarted from the popover', async () => {
     status = { ...LOOPBACK, allowInput: true };
     await mountAndOpen();
-    expect(document.body.textContent).toContain('Stop sharing, then start again with HTTPS over Tailscale ticked.');
     expect(Array.from(document.querySelectorAll('button')).some((b) => b.textContent === 'Turn on HTTPS over Tailscale')).toBe(false);
     expect(diagnose).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();

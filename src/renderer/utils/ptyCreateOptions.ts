@@ -4,6 +4,8 @@ import type { FanoutOrigin } from '../../shared/fanoutOrigin';
 import { applyRoleBinding, type RoleBinding, type WmuxTools } from '../../shared/orchestratorRole';
 import type { CustomAgent } from '../../shared/customAgents';
 import { commandLauncherStem } from '../../shared/fanoutPreset';
+import { isLinuxCwd } from '../../shared/wslTarget';
+import { wslShareToLinux } from '../../shared/wslPaths';
 
 export interface PtyCreateOptions {
   /** A role binding's wmux MCP tool level; main splices the flags into
@@ -44,6 +46,8 @@ export interface PtyCreateOptions {
   env?: Record<string, string>;
   /** Account-login tabs only; ordinary WSL panes retain their Linux profiles. */
   wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
+  /** A re-sign-in tab for a WSL account home: this variable runs as that account in WSL (main checks it). */
+  wslAccountHomeKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
   /** Agent-setup panes: main skips the workspace's bound-account env. */
   ignoreAccountBinding?: boolean;
   /** Run on this registered account instead of the workspace's bound one of
@@ -55,6 +59,9 @@ export interface PtyCreateOptions {
    * spawned as the executable — preserves shell-allowlist + quoting behavior).
    */
   initialCommand?: string;
+  /** The pane runs its agents inside the worker fence (main/agents/
+   *  paneFence.ts): a claude launch starts fenced or not at all. */
+  workerFence?: boolean;
   /**
    * X8 exec-style unit: run this command as the pane's ROOT process (daemon
    * mode only). Set by the AppLayout funnel for a supervised wmux.json leaf —
@@ -91,11 +98,18 @@ function isExecutableShellValue(shell: string | undefined): shell is string {
   return shell.includes('\\') || shell.includes('/') || shell.toLowerCase().endsWith('.exe');
 }
 
+/**
+ * Fill in the Settings default shell when the create names none. Not for a
+ * WSL share folder: the folder itself picks the shell (main starts WSL in
+ * that distro), and the default is a choice made for Windows folders. A shell
+ * the create or its profile names is still kept.
+ */
 export function withDefaultShell<T extends PtyCreateOptions>(
   options: T,
   defaultShell: string | undefined,
 ): T & { shell?: string } {
   if (options.shell || !isExecutableShellValue(defaultShell)) return options;
+  if (typeof options.cwd === 'string' && wslShareToLinux(options.cwd)) return options;
   return { ...options, shell: defaultShell };
 }
 
@@ -122,6 +136,9 @@ export function withWorkspaceProfile<T extends PtyCreateOptions>(
   if (profile.defaultPaneCommand && next.initialCommand === undefined) {
     next.initialCommand = profile.defaultPaneCommand;
   }
+  // New panes start in the worker fence; a caller that says otherwise (a
+  // tab restarted with its own switch) wins.
+  if (profile.fenceAgents === true && next.workerFence === undefined) next.workerFence = true;
   return next;
 }
 
@@ -189,6 +206,24 @@ export function withRoleBinding<T extends PtyCreateOptions>(
 }
 
 /**
+ * A WSL share cwd the pty create handler turned into a WSL shell is stored on
+ * the surface as the Linux path (`/home/me/repo`). A split seeded from it
+ * carries no source shell, so main would see a bare Linux cwd and not know the
+ * distro. When the workspace default is a WSL share, put the seed back inside
+ * that share (`\\\\wsl.localhost\\<distro>\\home\\me\\repo`) so main converts
+ * it the same way. Any other seed or profile is returned untouched.
+ */
+function rebaseLinuxSeed(seed: string, profileCwd: string | undefined): string | undefined {
+  if (!profileCwd || !seed.startsWith('/') || !isLinuxCwd(seed)) return seed;
+  const share = wslShareToLinux(profileCwd);
+  if (!share) return seed;
+  // A literal backslash is an ordinary Linux name character but a separator in
+  // the share path, so rebasing would open a different directory: not inherited.
+  if (seed.includes('\\')) return undefined;
+  return `\\\\wsl.localhost\\${share.distro}${seed.replace(/\//g, '\\')}`;
+}
+
+/**
  * Resolve the starting directory for a NEW terminal (issues #173/#174/#175).
  *
  * Priority: split-inherited cwd (when the toggle is on) > workspace
@@ -203,7 +238,10 @@ export function resolveStartupCwd(args: {
   profile?: WorkspaceProfile;
   startupDirectory?: string;
 }): string | undefined {
-  if (args.splitInheritsCwd && args.splitSeed) return args.splitSeed;
+  if (args.splitInheritsCwd && args.splitSeed) {
+    const seed = rebaseLinuxSeed(args.splitSeed, args.profile?.startupCwd);
+    if (seed !== undefined) return seed;
+  }
   if (args.profile?.startupCwd) return args.profile.startupCwd;
   if (args.startupDirectory && args.startupDirectory.trim().length > 0) return args.startupDirectory.trim();
   return undefined;

@@ -72,6 +72,7 @@ import { fileURLToPath } from 'node:url';
 import type { LedgerEntry } from '../../shared/ledger';
 import { BOT_ID_RE } from '../../shared/bot';
 import { getExecEnv } from '../../shared/execEnv';
+import { sameFileId } from '../../shared/sameFileId';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
 import { strictlyInside } from './roomFiles';
 import { assertNothingRunsIn, sessionHostDir } from '../worktask/stopSessionsInDir';
@@ -400,13 +401,13 @@ function foldCase(p: string): string {
  *  has no openat); it needs another process changing the folder while
  *  nothing of wmux runs in it. */
 export async function removeTreeNoFollow(dir: string, root?: string, readMounts: () => Promise<ReadonlySet<string>> = mountPoints): Promise<void> {
-  const top = await fs.promises.lstat(dir);
+  const top = await fs.promises.lstat(dir, { bigint: true });
   if (top.isSymbolicLink()) {
     await unlinkLink(dir);
     return;
   }
   // A volume mounted at the folder itself (its device is not its parent's).
-  if (top.isDirectory() && (await fs.promises.lstat(path.dirname(path.resolve(dir)))).dev !== top.dev) throw new MountPointError(dir);
+  if (top.isDirectory() && (await fs.promises.lstat(path.dirname(path.resolve(dir)), { bigint: true })).dev !== top.dev) throw new MountPointError(dir);
   // A mount on the same device (a Linux bind mount) keeps the device, the
   // inode and the real path: only the mount table names it.
   const mounts = top.isDirectory() ? await readMounts() : new Set<string>();
@@ -474,7 +475,7 @@ export class MountPointError extends Error {
 
 /** One entry of removeTreeNoFollow: `expected` is the real path it must
  *  resolve to when it is a folder. */
-async function removeEntry(p: string, expected: string, st: fs.Stats, mounts: ReadonlySet<string>): Promise<void> {
+async function removeEntry(p: string, expected: string, st: fs.BigIntStats, mounts: ReadonlySet<string>): Promise<void> {
   if (st.isSymbolicLink()) {
     await unlinkLink(p);
     return;
@@ -489,8 +490,8 @@ async function removeEntry(p: string, expected: string, st: fs.Stats, mounts: Re
   }
   if (mounts.has(expected)) throw new MountPointError(p);
   const where = async (): Promise<void> => {
-    const now = await fs.promises.lstat(p);
-    if (!now.isDirectory() || now.isSymbolicLink() || now.ino !== st.ino || now.dev !== st.dev || (await realKey(p)) !== expected) {
+    const now = await fs.promises.lstat(p, { bigint: true });
+    if (!now.isDirectory() || now.isSymbolicLink() || !sameFileId(now, st) || (await realKey(p)) !== expected) {
       throw new Error(`${p} is not the folder it was (a link, a mount point or a swap): left alone`);
     }
   };
@@ -501,9 +502,9 @@ async function removeEntry(p: string, expected: string, st: fs.Stats, mounts: Re
   let mount: MountPointError | null = null;
   for (const name of names) {
     const child = path.join(p, name);
-    let cst: fs.Stats;
+    let cst: fs.BigIntStats;
     try {
-      cst = await fs.promises.lstat(child);
+      cst = await fs.promises.lstat(child, { bigint: true });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
       throw err;

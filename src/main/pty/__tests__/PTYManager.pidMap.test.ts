@@ -9,6 +9,7 @@ import { EventEmitter } from 'node:events';
 const { spawn } = vi.hoisted(() => ({
   spawn: vi.fn(() => ({ pid: 4321, kill: vi.fn(), onData: vi.fn(), onExit: vi.fn(), write: vi.fn(), resize: vi.fn() })),
 }));
+vi.mock('../../../shared/terminalPty', async (importOriginal) => (await import('../../../test-utils/ptyTransportStub')).routeSpawnToNodePtyMock(importOriginal));
 vi.mock('node-pty', () => ({ spawn, default: { spawn } }));
 import { PTYManager } from '../PTYManager';
 import { getPidMapDir } from '../../../shared/constants';

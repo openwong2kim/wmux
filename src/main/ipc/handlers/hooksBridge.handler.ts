@@ -83,7 +83,7 @@ function physicalPath(file: string): string {
 /** A UNC folder (`\\wsl.localhost\…`, a network share): the hook commands
  *  Update writes name this machine's node and bridge path, which a Claude
  *  running behind that path cannot run. Such accounts get no row. */
-function isUncPath(dir: string): boolean {
+export function isUncPath(dir: string): boolean {
   return /^[\\/]{2}/.test(dir);
 }
 
@@ -121,6 +121,40 @@ export function accountHookDrift(accounts: readonly Account[], base: SetupHooksP
     }
   }
   return out;
+}
+
+/**
+ * The Claude accounts whose settings file does not hold the current wmux
+ * hooks, each judged on its own (a file two accounts share names both):
+ * none installed, some out of date, or a file that cannot be read. An
+ * account that keeps the default config's settings is judged on that file;
+ * a UNC folder is always listed. For the fan-out account pool, whose workers
+ * report through these hooks.
+ */
+export function accountsWithoutCurrentHooks(accounts: readonly Account[], base: SetupHooksPaths): Set<string> {
+  const out = new Set<string>();
+  for (const account of accounts) {
+    if (isUncPath(account.configDir)) { out.add(account.id); continue; }
+    const paths = ownAccountSettings(account, base) ?? base;
+    try {
+      if (!hookStatusCurrent(statusHooks(paths))) out.add(account.id);
+    } catch {
+      out.add(account.id);
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether a settings file's wmux hooks are current: installed in it and not
+ * out of date, or supplied by the active wmux plugin (settings.json then
+ * holds none by design) with the turn and conversation signals working. Pure.
+ */
+export function hookStatusCurrent(status: Pick<StatusOutcome, 'installedEvents' | 'bridgeExists' | 'settingsCorrupted' | 'updateAvailable' | 'features'>): boolean {
+  if (status.settingsCorrupted) return false;
+  if (computeInstalled(status as StatusOutcome)) return !status.updateAvailable;
+  const f = status.features;
+  return f.turnStart.state === 'ok' && f.turnEnd.state === 'ok' && f.conversationRead.state === 'ok';
 }
 
 export function computeInstalled(s: StatusOutcome): boolean {

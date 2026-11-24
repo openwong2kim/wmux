@@ -1,5 +1,1109 @@
 ## [Unreleased]
 
+## [4.17.0] — 2026-11-20
+
+### Added
+
+- **Fleet can group the list by device.** With agents on several PCs, choose Group by: Device in the Fleet header to see each PC's agents under its own heading, with Needs you still on top across all of them. Status stays the default. (#3197)
+
+- **Answer an agent's question on another PC.** When the agent another PC started for you (headless) shows its own question menu with a single single-choice question, your agent can now answer it: `wmux remote answer <task-id> <option> --picker <picker-id>`, run from the pane that sent the task. The picker id and the number of choices are in the task's status (`remoteStatus` in `a2a_task_query`). The other PC types that choice only while the same question is on its screen and untouched. How it went shows in the same status, with a reason in plain words when it was not typed. Before, such a question could only be answered by a person at that PC, and the task ended after ten minutes. On the PC running the agent, `wmux remote answers on|off|default` turns this on or off. The default is on where follow-ups reach the agent directly, and off where they wait for approval. (#3402)
+
+- **Answer a remote worker's menu from an MCP tool.** `remote_answer` does what `wmux remote answer` does: the agent that sent a task to another PC answers the single-choice menu that task's headless worker shows, by the choice's number, without going through a shell. The picker id and the number of choices are in the task's status (`a2a_task_query`), and so is how it went. (#3403)
+
+- **Browse WSL folder… in the `+` menu.** On Windows with WSL installed, pick a distro and then a folder in it to start a workspace there. (#3406)
+
+- **Change a paired phone's permission without pairing it again.** On the Remote page, a view-only phone has **Allow typing**, which asks once and says what it allows. A phone that can type has **Make view-only**, which applies at once and closes its open connections. A phone paired before per-device permissions existed can now be given the explicit permission that approvals need. (#3407)
+
+- **Choose View only or Can type where you pair.** The pairing wizard's one-click **Pair a phone** and the phone and computer cards in Share & pair now ask which one, View only by default. "Remote control" in the wizard is now "Can type". (#3407)
+
+- **Settings › Claude Code › MCP servers › Shared MCP process.** Choose whether agents share one wmux MCP process (On), each start their own (Off), or follow the platform default. The choice applies from the next wmux start. `WMUX_MCP_BROKER` in the app's environment still decides when it is set, and the row says so. `wmux mcp register` and `wmux doctor` follow the same choice. (#3408)
+
+- **`wmux settings list | get [<key>] | set <key> <value>`** reads and changes a set of wmux settings through the running app, from any terminal or from a wmux pane: theme, language, terminal font, cursor and scrollback, UI scale, sidebar, Fleet and multiview layout, attention blink, notification switches, keep awake and the titlebar clock. The app shows each change, and whether it came from an agent or the command line. Settings about approvals, accounts, remote and phone access, or that run a command, stay in Settings, and the command names the section. (#3426)
+
+- `wmux doctor --performance` shows how often each kind of native terminal
+  snapshot refusal happens, as a share of the native tries, and how many
+  errors in a row are keeping the native snapshot path bypassed.
+
+- **A paired PC can be allowed to answer permission prompts in the tasks it
+  sent to a linked pane here (receiving side).** `wmux remote approvals <pc>
+  tool-only|command` turns it on for one PC, after you type `yes` in a
+  terminal; lowering it or turning it off does not ask. It is off for every
+  PC until set, a missing or damaged settings file keeps it off, and a PC
+  that is removed and paired again starts off. While it is on, a permission
+  prompt that the task's own turn raised is offered in the task's status:
+  the tool name, and with `command`, for a Bash, PowerShell or WebSearch
+  call or a plan, the call's command (secrets redacted, at most 2 KB). That
+  PC's agent can then deny it, or allow such a call whose command it was
+  shown whole and that has no other input it was not shown. Read and
+  WebFetch prompts can only be denied from the other PC, and their path or
+  address is not sent. File-edit prompts (Edit, Write, NotebookEdit) can
+  only be denied from the other PC; allowing them stays with the person at
+  this PC. Today they are not offered at all, since this PC cannot yet tie
+  their dialog to the agent's call. Any other key typed into the pane after
+  the task was submitted ends this for the rest of the task, and so does a
+  later message delivered into the pane:
+  prompts in a follow-up's turn are answered at this PC. Each decision is
+  typed once, logged with the PC that sent it, and a resend gets the same
+  answer, also after a restart. On a PC where the desktop app runs, the
+  daemon takes this setting only from the app's Remote page (see below).
+  (#3445)
+
+- **An agent can allow or deny a permission prompt in a task it sent to
+  another PC.** When that PC's approvals setting is on for this one, the
+  task's status in `a2a_task_query` carries the prompt
+  (`remoteStatus.detail.approval`), and the agent that sent the task answers
+  it with the MCP tool `remote_approve` or `wmux remote approve <task-id>
+  <prompt-id> allow|deny` from its pane. Allow is sent only when the prompt
+  offers it; a deny-only prompt is refused here with nothing sent. At most
+  60 approvals go to one PC a minute; past that the call says how long to
+  wait and sends nothing. The call waits a few seconds and
+  returns how it went there, or that it is still pending. The command shown
+  with a prompt is text from the other PC, with known credential shapes
+  masked there (other secrets are not), and is kept apart, under
+  `untrusted.command`. (#3446)
+
+- **Remote approvals on the Remote page.** Under each paired PC, one row:
+  "Agents on <PC> can allow or deny permission prompts in tasks they sent
+  here", set to Off, Tool only or Command. Raising a PC asks you to confirm
+  in its row; lowering it or turning it off does not. This is how the
+  setting is changed on a PC where the desktop app runs, where `wmux remote
+  approvals` was refused until now. (#3446)
+
+- **A notification when another PC's decision is carried out here.** "<PC>
+  allowed <tool> in <pane>" (or denied), with <PC> as this PC names it, and
+  the same line kept as a note on the task. Neither includes the command.
+  (#3446)
+
+- **A PC answers approvals past its limit instead of dropping them.** It
+  takes at most 60 a minute from another PC; a resend of one it already
+  answered is answered the same and not counted again. Past that, an
+  approval is refused as `rate-limited` with the time to wait, stored as
+  final, and the PC that sent it sees that outcome instead of waiting for
+  one that never comes. (#3446)
+
+- **The phone's browser preview shows the tabs of a Chrome profile bound to
+  one of the workspace's panes, including tabs a script opened.** When a pane
+  has a wmux Chrome profile of its own (and no browser policy applies to it),
+  the preview now lists that profile's tabs, and you can watch and control
+  them from the phone as you do the workspace's other browser tabs. Tabs that
+  another program opened over the DevTools protocol, or that you opened by
+  hand, are listed too, labelled as opened outside wmux. Before, such a
+  profile was never listed, and the preview said there was no browser tab in
+  the workspace. (#3464)
+
+### Changed
+
+- **A workspace folder on a `\\wsl.localhost\…` / `\\wsl$\…` share opens a WSL shell in that distro.** It used to open a Windows shell. (#3406)
+
+- **The read-only message on a phone names the Remote page.** When a phone without permission tries to type or approve, the message now points to the Remote page, under Phones, instead of "Paired devices". (#3407)
+
+- **The Remote page switches a phone between View only and Can type.** Allow typing asks once; Make view-only applies at once. (#3407)
+
+- **Phone contract: a message Claude Code stored as a paste now arrives as the pasted text.** Claude Code records a long or multi-line message wrapped in `<pasted_content id="…">` markers, and `user_text` used to carry them. Each matched pair is now removed with the one line break Claude Code adds inside each tag, and the text between them is kept exactly (line endings, trailing spaces, blank lines). Such a row carries `pasted: true`. This applies to `/turns` and to host search. An unmatched tag stays in the text. See docs/phone-client-contract.md. (#3415)
+
+- **Pairing a phone is one dialog.** Pair a phone… (on the Remote page, the Phones heading, the empty state and the sidebar's Remote menu) opens one screen: whether this computer is ready, the phone's name, View only or Can type, then the QR, then the phone arriving. The four-step wizard is gone. (#3416)
+
+- **The Remote popover is two buttons.** Pair a phone… and ⚙ Phone access settings…, a settings view (sharing, Stop, what paired devices may do) with nothing that pairs. The Remote page's Share & pair button is now Phone access settings… and stays on the line. A computer is connected from Connect a PC…. (#3416)
+
+- Terminals run only on the Rust terminal core. The Node engine (node-pty and
+  the JavaScript ring) is no longer a choice: Settings › Terminal › Performance ›
+  Terminal engine is now a read-only status row, and a saved
+  `terminal-core.json` or a `WMUX_TERMINAL_CORE` setting from an older version is
+  ignored (and left in place). There is no switch back to the Node engine other
+  than installing an older version.
+
+- If the terminal core is missing or fails to load, a new terminal shows that
+  error instead of a shell, and the Settings row says so with the reason.
+  Restored sessions are kept, with their saved scrollback, until wmux starts with
+  the core again; they are not given up. Reinstalling wmux restores the core.
+
+- `npm start` builds the Rust terminal core first, and `npm run package` refuses
+  to run without it. Building from source now needs a Rust toolchain.
+
+- **Agents share one wmux MCP process by default on macOS and Linux.** With nothing chosen, agents now use the shared process (the native launcher in a packaged build) instead of starting a full wmux MCP server each, which uses far less memory with several agents open. Settings › Claude Code › Shared MCP process: Off turns it off, from the next wmux start, as does `WMUX_MCP_BROKER=0` (or `false`, `off`, `no`) in the app's environment. Windows is unchanged. (#3419)
+
+- **`WMUX_MCP_BROKER` reads `1`, `true`, `on` and `yes` as on, in any case and with surrounding spaces, matching the off spellings.** An empty value now counts as not set, so Settings and then the platform default decide. `wmux doctor` and Settings show the value as you set it. (#3420)
+
+- Reconnect restores and terminal text reads of a large scrollback buffer
+  (above 8 MiB) or a wide pane with deep history (more than one million
+  cells) now use the native terminal engine instead of the slower fallback.
+
+- Reconnect restores and terminal text reads of a busy or large pane are
+  less likely to time out: the native terminal engine now gets the whole
+  time allowance instead of half of it.
+
+- Windows: the native MCP launcher connects to the shared MCP process only
+  when its pipe belongs to your account; otherwise the agent runs its own
+  MCP server, as it does when the shared process is off.
+
+- **On Windows, the shared MCP process can host agents when you turn it on** (Settings › Claude Code › MCP servers), including agents in an administrator terminal. It stays off by default on Windows. (#3435)
+
+### Fixed
+
+- **A paste left waiting in an agent's input box is no longer typed over.** When wmux pasted text into a pane but could not press Enter, a later delivery from scheduled prompts, automations, the usage-limit continue, channel wake-ups, chat sends or another PC could type its own text after it, and both went in as one prompt. Every writer now waits until the box is used or cleared: you press Enter on the waiting text, clear it, type into the pane, or the agent exits. When the waiting text is exactly wmux's own paste and nothing else was typed, wmux clears it itself and tries again later. A chat send that is refused for this reason says how to clear the box. (#3398)
+
+- **What the docs say about an open question menu.** The docs blamed one Claude Code version for an open AskUserQuestion menu being missing from the transcript. They now name the cause: auto permission mode, which headless sessions use, writes the menu only when it closes. (#3402)
+
+- **A background workspace no longer resizes its terminals twice when first shown.** The first time a workspace that was hidden when wmux started is shown, each pane used to resize to one width and then, a moment later, to a width one column wider (at a fractional display scale). Programs in those panes got two resize signals, and the saved history kept a stretch written at a width the pane never showed. The pane now waits for its renderer and resizes once. (#3405)
+
+- **A folder picked under the Linux node of Browse Folder no longer starts in the Windows home folder.** It starts in that Linux folder. (#3406)
+
+- **Reveal in Explorer and Open with work for a WSL pane.** The pane's Linux folder is translated to its Windows share path. (#3406)
+
+- **Korean in Share & pair and on the Remote page.** "INPUT ENABLED", "Open on this machine", "Let this device type", relative times and other strings there showed in English. (#3407)
+
+- **The shared MCP process leaves alone anything at its socket path that is not a socket.** It stops and says what it found instead, and wmux does not restart it: agents use their own MCP server until the path is cleared and wmux restarts. (#3409)
+
+- **A headless host answers remote tasks again with current Claude Code.** Claude Code 2.1.326 stores a long or multi-line prompt as a paste, so the host did not recognise the prompt it had typed and failed every task with "the agent was given other input on this PC before the task". (#3414)
+
+- **A long or multi-line phone message keeps its sent state in the chat.** A message Claude Code stored as a paste, a very long one, or a photo with a multi-line caption now pairs with the message the phone sent. (#3414)
+
+- **A sign-in in a WSL pane no longer changes the account of every WSL pane.**
+  A WSL pane in a workspace bound to a Claude Code or Codex account used to
+  run on the distro's own `~/.claude` / `~/.codex`, so a `/login` there
+  replaced the account for every WSL pane in that distro. Each bound account
+  now gets its own folder inside the distro (`~/.wmux/accounts/…`), signed in
+  there once; unbound WSL panes keep the distro's default as before. The
+  Windows account folder is not used in WSL: its Windows-only hooks and MCP
+  servers fail on Linux. If a bound WSL pane's agent is signed out, **Sign in
+  again** opens the sign-in in that distro for that account.
+
+- Deleting an account leaves its WSL sign-in folder in each distro, and a
+  moved or renamed account folder needs a new sign-in in WSL. See
+  [Use workspace accounts in WSL panes](docs/how-to/use-accounts-in-wsl.md).
+
+- **The shared MCP process no longer keeps retrying on a system where its startup check can never pass.** After the retries run out it stops until wmux restarts, agents use their own MCP server, and `wmux doctor` and Settings say why. (#3420)
+
+- **A restarted shared MCP process can no longer be mistaken for the one it replaced** when both bind the same socket path within one clock tick on Linux. (#3420)
+
+- **A sidebar row no longer swaps between the running dot and the "no update for 30m+" ring at every turn end** when one agent in the workspace is working beside others that have gone quiet. The ring shows only once every pane has been quiet past the window. (#3423)
+
+- After an error in the native terminal engine's snapshot path, wmux now
+  tries it again after a short cooldown instead of using the slower fallback
+  until the next restart.
+
+- **Closing a worktask or a headless agent's pane no longer freezes wmux on macOS.** Ending a pane together with everything it started could leave the background service stuck: panes stopped responding until it was restarted. The same could happen when closing any pane whose program had been paused. (#3431)
+
+- **An HTML page on a mapped network drive opens in the preview.** Opening an
+  `.html` file from a mapped drive (for example `Z:`) on Windows showed "not
+  found" for the page and everything it loads, because the page's folder and
+  its files were compared in two different spellings of the same path. They
+  are now compared in one, and the page, its styles, scripts and images load.
+
+- **When another program holds the shared MCP process's connection name, wmux stops it and says so in Settings** instead of restarting it over and over. Each agent keeps its own MCP server, and one that starts while the name is held gets it within about two seconds instead of about a minute and a half. (#3435)
+
+- **Closing a pane ends a program that ignores the hangup, every time.** With
+  the Rust terminal engine, when the pane's shell died of the hangup before
+  the pane finished closing, nothing swept the pane's session any more: a
+  program there that ignored SIGHUP kept running with no pane. It is now
+  killed 5 seconds after the hangup, or at once when the pane is killed
+  outright. (#3436)
+
+- **wmux no longer freezes on a long Claude Code output row.** A row full of
+  cursor jumps that contained "instead" or "Interrupted" could make the
+  background service spend minutes in one check, freezing every pane until
+  wmux was shut down. The check now takes a moment whatever the row's
+  length. (#3441)
+
+- **A fractional scrollback size in config.json no longer stops every terminal
+  from opening.** A `session.bufferSizeMb` such as `0.3` made each pane fail
+  to start; it is now rounded down to whole bytes, with a 64 KB minimum.
+  (#3442)
+
+- **On Windows, an idle pane is no longer reported as busy because of an
+  unrelated process.** A process whose recorded parent had exited, and whose
+  parent's process ID the pane's shell now uses, was counted as the shell's
+  child, so sending a message or resuming into that pane could be refused as
+  "shell has children". (#3448)
+
+- **An approved download on a protected browser pane now finishes only once
+  downloads are denied again.** If Chrome does not confirm that deny, the
+  download is refused and its file is not handed to the agent. (#3449)
+
+- **On macOS and Linux, a browser client reading a large message is no
+  longer taken for stopped.** When an automation client shared a wmux
+  browser and was still reading a large CDP message while the app was busy,
+  wmux could let that client's new tab start before the client had set it
+  up. It now counts each part of the message the client reads as a sign of
+  life. (#3450)
+
+- **`repl_run` reports all of a large output as the run's own.** When code
+  printed a lot (about a megabyte or more), part of it could still be in
+  transit when the result arrived. The run then reported too few bytes, and
+  the rest showed up as background output of the next run. A run's output
+  now ends exactly where its result was sent. Output that code left running
+  writes after that point is reported as background on the next run. (#3451)
+
+- **On Windows, a browser client reading a large message is no longer taken
+  for stopped.** When several automation clients shared a wmux browser, a
+  client still reading a large CDP message could be treated as stopped. wmux
+  could then start that client's new tab before the client had set it up.
+  wmux now sends a large message in parts, and each part the client reads
+  counts as a sign of life. A client that has really stopped reading still
+  stops holding up other clients' new tabs after the usual short wait,
+  however large the message waiting for it. (#3460)
+
+- When Windows refuses the background service memory while panes print heavily, the terminal core no longer stops the whole service and every pane with it: only the pane whose output could not be stored or copied loses that output, restarts its saved history or ends, with one line in the log naming it. Under a hard memory limit the service can still run out of JavaScript memory; that is tracked separately. The service's error output is now kept in `daemon-stderr.log` in the wmux data folder.
+
+- Under a memory limit, reading the process list (for agent tracking and for ending a pane's process tree) now fails only that one read instead of ending the background service.
+
+- **Continue on another account now relaunches Claude after stopping it.**
+  Choosing an account stopped Claude and copied the conversation, but the
+  keys you had typed into Claude made the shell prompt look used, so Claude
+  was never started again on the new account. Seen on Windows, but every
+  platform was affected. The switch now counts those keys as Claude's, and a
+  key typed after Claude stopped still holds the relaunch back. If the
+  relaunch still cannot go ahead, the message says why and gives the command
+  that resumes the copied conversation, with a button to copy it. Thanks to
+  @p-poppe for the report and the diagnosis. (#3465)
+
+- macOS: a terminal whose output read is refused for want of memory reports the error instead of stopping the background service.
+
+## [4.16.0] — 2026-11-16
+
+### Added
+
+- **Add a Claude account straight from a long-lived token.** Settings ›
+  Accounts › Add account now asks how a Claude account signs in: a browser
+  login, as before, or a long-lived token from `claude setup-token`. Pick the
+  token, run `claude setup-token`, copy the token it prints and press "Paste
+  token and add": wmux reads the token from the clipboard, creates the account
+  signed in with it and clears the clipboard. If the clipboard holds no token,
+  or the token cannot be saved, no account or folder is left behind. Before, a
+  token could only be added to an account that already existed, so a new
+  account needed a browser login first. A token account does not show usage,
+  plan or Remote Control, cannot run scheduled runs (the schedule editor marks
+  it), and its Claude panes need the wmux daemon. (#3264)
+
+- **Manage each account's vault in Settings.** In Settings › Accounts, an
+  account's ⋯ menu now has **Show vault**, which lists the values the
+  account's panes get as environment variables. Each value shows its name,
+  length and a short fingerprint, never the value itself, and has a checkbox
+  for whether panes get it. **Save from clipboard** stores a value with an
+  optional "must start with" check and then clears the clipboard.
+  **Generate** stores a random value of the length you choose. Both say why
+  when nothing can be added, for example when an account already holds 8
+  values or the computer has no encrypted storage. A Claude account's
+  sign-in token is listed as managed and is still removed with
+  "Remove token". An account row shows how many values its vault holds.
+
+- **Send a message while the chat view is still working.** Send now stays
+  next to Stop during a reply. A message you send then is queued, shown as
+  Queued under the reply, and sent as soon as the reply ends. Until then you
+  can remove it, or take it back into the composer with Edit. Stop ends the
+  reply only, so the queued message goes next. Queued messages are sent only
+  while the chat view is showing, and are not kept if the app restarts.
+  (#3272)
+
+- **An agent can rename, lay out and restyle its own workspace with `wmux action`.**
+  From a wmux pane, `wmux action <id>` renames the workspace or a tab, balances
+  the layout, moves a pane next to another, reads or sets the theme, language,
+  terminal font size and font, or marks read or clears the workspace's
+  notifications. `wmux action --list` lists the actions and their arguments.
+  An action reaches only the workspace of the pane it runs in. A target in
+  another workspace, on another computer or from a fenced worker is refused
+  with a code the agent can read, and the app shows a toast when an agent
+  changes a setting. Before, an agent had no way to do any of this, so it
+  asked you to. (#3274)
+
+- **Pair a daemon-only host from the command line.** `wmux remote join`,
+  `wmux remote peers` and `wmux remote unpair` let a Linux box that runs only
+  `wmux-server` join a desktop's pairing invite, list its pairings and end
+  one, with no desktop app on the box. Before, pairing was only possible from
+  the desktop app's Settings. `join` connects out only; it does not start a
+  listener on the host.
+
+- **Allow remote agent starts from a daemon-only host's command line.**
+  `wmux remote allow` lets a paired PC start a chosen agent in a chosen git
+  repository on the host without an approval there for each request;
+  `wmux remote allowed` lists what is allowed and `wmux remote revoke`
+  removes it. Before, this policy could only be edited in the desktop app's
+  Settings. `allow` states what the rule grants and asks for a typed
+  confirmation, and runs only from a terminal.
+
+- **A host without the desktop app can start the agents a paired PC asks
+  for.** On a box that runs only the wmux daemon, a remote start request
+  used to wait for an app that was never coming. `wmux daemon headless on`
+  (after a typed confirmation) lets the daemon start them itself: a request
+  an allow rule matches gets a fresh git worktree and a Claude Code session
+  with the permission mode the policy names, and one no rule matches is
+  refused at once. `wmux daemon headless status` shows whether it is in
+  effect, how many agents run and which worktrees ended agents left; `off`
+  turns it off. If the desktop app is ever used on that install, the mode
+  turns off for good. (#3292)
+
+- **Fan-out depth and tasks per fan-out are settings.** Under Settings ›
+  Roles & fan-out, "Fan-out depth" (1–3, default 1) sets how many levels deep
+  fan-out may go. At 1, as before, a fan-out task, or an agent another PC
+  started, cannot start more. "Tasks per fan-out" (default 8) sets how many
+  tasks one fan-out may start, now up to 64.
+
+- **Two more limits for agents another PC starts here.** Under Settings ›
+  LAN, in the section about starting agents from another PC, you can set the
+  longest prompt this PC accepts with a request (up to 32 KiB) and the longest
+  a request may wait here for a decision (up to 72 hours). Left empty, they
+  stay at those maximums, as before.
+
+- **A bind address for cross-PC A2A.** Set `a2aRemote.bindHost` in
+  `config.json` to an IPv4 address or `localhost` and the cross-PC A2A
+  listener binds only that address; invites and tailnet discovery then
+  offer only it. Without the setting the listener binds every interface as
+  before. A value that is not an IPv4 address or `localhost` keeps the
+  listener down, and Settings and the daemon log name it. (#3298)
+
+- **A host without the desktop app now works on the task another PC sent,
+  and answers.** In headless mode the daemon types the asking PC's prompt
+  into the agent it started for it, and when the agent's turn ends, its
+  answer goes back to that PC as the reply. The answer is read from the
+  agent's own conversation, so no hooks are installed on the host. If the
+  agent is given other input on the host, is interrupted, hits an error, or
+  ends before answering, the asking PC sees why. Later tasks follow the
+  `--follow-ups` setting (below). (#3305)
+
+- **A host without the desktop app now takes what another PC sends after
+  the first task.** With `--follow-ups direct`, a new task or a reply on a
+  task is typed into the agent once it finished the one before, in the order
+  it arrived, and answered the same way. With `--follow-ups ask`, each is refused at once and
+  the asking PC is told why, since nobody on that host can approve it. (#3313)
+
+- **An orchestrator can answer its own fan-out workers' prompts by key.**
+  On the pane of an open task it started, `terminal_send_key` now takes every
+  key, Enter included, plus the new `space`, `backspace`, `y`, `n` and `0`-`9`.
+  Before, only ctrl+c and escape reached a worker's pane. A new fan-out policy
+  setting, `ownerAnswers` in `fanout-worker-policy.json`, decides what it may
+  answer there:
+  - `all` (the default): any prompt;
+  - `menus`: Claude Code's question and usage-limit menus only;
+  - `off`: no prompt. Keys and text still reach a pane with nothing on screen
+    to answer.
+
+  Every such write is logged in the main log as an `[owner-lane]` line, and
+  the task's workspace gets one notification per minute while its
+  orchestrator writes there. (#3314)
+
+- **Fan out to a paired PC.** `fanout_start` takes `pc` and `root`. Each task
+  is then started on that PC (Claude only) instead of in a worktree here. Its
+  mission channel and task row stay on this PC: the row shows whether the
+  other PC refused it, let it expire or started it, and once started, the
+  task its replies arrive on. Closing the mission ends the agent on the other
+  PC, also when the agent starts after the close. Before, a fan-out ran only
+  on this PC.
+
+- **Limits for the shared MCP broker, as settings.** With `WMUX_MCP_BROKER=1`,
+  `~/.wmux/config.json` can set `mcp.broker.maxSessions`, `mcp.broker.maxRssMb`
+  and `mcp.broker.maxBrowserReplRunners`. None is set by default. An agent over
+  the session or memory limit runs its own MCP server instead, so it keeps its
+  tools, and the broker's log names the setting. Over the runner limit,
+  `browser_repl` returns an error that names the setting. A change applies from
+  the next wmux start.
+  `wmux doctor` shows the limits in force. The broker also takes at most 120
+  new connections a second, as the app's own connection does.
+
+- **A PC that asked another PC's agent for work now sees what that agent is
+  doing.** When the other PC started the agent itself (headless mode),
+  `a2a_task_query` shows `remoteStatus` on the task: working, waiting for
+  more, on a question (a permission or plan prompt, the agent's own question
+  menu, another dialog, or the folder-trust prompt), at its usage limit with
+  its reset time, or gone. It is never a reply and never changes the task's
+  state. A question menu's choices are shown apart, under
+  `remoteStatus.untrusted`, as text written on the other PC. Both PCs need
+  this version; with an older one on either side nothing changes. On the
+  host, `wmux remote status-labels keep` keeps a menu's choices there and
+  sends only how many there are. (#3337)
+
+- **A fan-out task on another PC follows its agent there.** Rows from
+  `fanout_start` with `pc` used to show only whether the other PC refused,
+  let expire or started the request. Now the row moves as the agent does:
+  - its report sets the row to review requested, and a follow-up after it
+    reaches the agent;
+  - the agent asking you sets the row to input required;
+  - a task that failed or was cancelled there ends the row the same way.
+
+  From a headless box the row also follows the agent's screen: a question on
+  it, or an agent that stopped without a reply, sets the row to input
+  required (named by kind and PC only), and a usage limit keeps the row
+  working, with the reset time. A PC running the app does not report these
+  yet.
+
+  The pane that started the fan-out is told when a row needs input or fails.
+  The poll shows what the agent waits on and how to reach it (`send_message`
+  on its A2A task). A post in a remote task's mission channel says that
+  nobody on the other PC reads it.
+
+- **A follow-up on a task that ended on another PC gets its answer back.**
+  When the agent there completed the task (a fan-out report included), a
+  follow-up on it opens the task again on that PC, so the agent can answer
+  on the same task and its answer arrives as before. Both PCs need this
+  version; with an older one on either side, the follow-up still reaches
+  the agent and the task stays completed. A company task is not opened
+  again from another PC, nor a task from a remote start whose follow-ups
+  wait for approval. Opening a task again counts toward the hourly limit of
+  new tasks from that PC. (#3365)
+
+- `fanout_bring_back` brings the committed work of a fan-out task another PC ran back into your repository, as the branch `wmux/returned/<spawn id>`, without checking anything out. It is off unless `a2aRemote.bundles` is set in `config.json`, and it needs git 2.43.0 or later.
+
+- **`fanout_start` can place tasks on any paired PC.** With `pc: "any"`, each task goes to the online paired PC that offers the folder for Claude and has the fewest of your open tasks there. Tasks other PCs sent to it are not seen. When that PC answers that it is full, the task is held with no request out, and calling again with the same key places it on a PC with room. A task held for an hour fails. The pool finds the same folder on each PC by its git origin, so the folder needs one; a folder without an origin is matched only by its id. Naming a PC works as before. If you go back to an older wmux while such a task is held, the older wmux keeps that task open with no PC; close it by hand. (#3382)
+
+### Changed
+
+- **On macOS and Linux, a tool call's identity claim is checked against the
+  process that connected.** When a call names its own process to get a pane's
+  identity, wmux takes the claim only from the process the operating system
+  reports for the connection, with the same start time it had when it
+  connected. Claims the MCP broker relays for its sessions are taken only from
+  the broker the app started. A claim that is not taken gets no pane identity,
+  and the agent falls back to its own lookup. `wmux doctor` lists the claims
+  not taken, by reason. Windows is unchanged.
+
+- **Continuing a conversation on a token account opens a new pane.** An
+  account that signs in with a `claude setup-token` token cannot take a
+  conversation over in the same pane, because the token is never typed into a
+  shell. "Continue on another account" now copies the conversation to that
+  account and resumes it in a new pane beside the old one, signed in with the
+  token. The old pane is left as it was, so you can close it once you have
+  checked the new one. Before, the pane kept running on the old account. The
+  same happens when the pane itself was signed in with a saved token or API
+  key, which it would otherwise keep on the new account. A launch that
+  "Switch accounts by quota" moves to another account now also gets that
+  account's saved values instead of the workspace account's. Accounts without
+  a token still switch in the same pane.
+
+- **A workspace can no longer be renamed to a name another workspace has, or
+  to one that looks like a pane tag (`w1-2`).** Workspace names are addresses
+  (`#name`), and two of the same name resolved to neither. The sidebar now
+  keeps the old name and says why. (#3274)
+
+- **Many panes use far less GPU memory.** The pane column's rounded edge is
+  now drawn without clipping the whole column. On macOS, that clip had
+  Chromium keep extra column-sized buffers: with 17 panes on a Retina screen,
+  wmux now holds about 230 MB less GPU memory at rest, and less while
+  terminals print. The edge looks the same in opaque windows and under window
+  glass. (#3285)
+
+- `wmux remote join` and `wmux remote unpair` wait up to 30 seconds for the
+  daemon, like the desktop app, instead of reporting a timeout while the
+  pairing is still in progress.
+
+- **Fan-out caps now default to no limit.** The two app-wide brakes on
+  fan-out were fixed defaults: at most 8 fan-out tasks live at once and 24
+  started per hour. Both now default to no limit. A limit can still be set
+  under Settings › Roles & fan-out, where an empty field reads "No limit".
+  Installs that never changed them lose the old 8 and 24 on upgrade, and any
+  other value you chose is kept. A cap you had set to exactly 8 live or 24 per
+  hour cannot be told apart from the old default, so it reads as no limit after
+  upgrading: set it again in Settings if you want it.
+
+- **Remote-start limits are settings, unlimited by default.** Agents that
+  another PC may start here were limited to 2 running per PC, 4 running in
+  all, 3 starts per PC per hour and 10 per day. These limits are now optional
+  fields under Settings › LAN, in the section about starting agents from
+  another PC, and none applies unless you set it. The number of requests one
+  PC may have waiting here can also be set, from 1 to 1,000; unset, it is
+  100.
+
+- **Agents a host without the desktop app started clean up after
+  themselves.** After a daemon restart, an agent of the earlier run that is
+  still running is stopped; a crash while a start was being set up leaves no
+  worktree or branch behind, even one cut inside `git worktree add`; and a
+  worktree the agent left unchanged is removed with its branch when the
+  agent ends. `wmux daemon headless status` shows running
+  agents and kept worktrees per asking PC, and names any start still waiting
+  for its processes to exit; `wmux daemon headless release <spawn id>` lets
+  the owner drop such a hold once they checked. (#3295)
+
+- **Agents a host without the desktop app starts for two PCs no longer
+  share a worktree.** Their worktree, branch and workspace are named after
+  the asking PC as well as its request, so two PCs that send the same
+  request id get their own. Such an agent also runs with more of wmux's
+  agent tools turned off (starting agents on other PCs, handing out or
+  pushing work, messaging every agent, closing panes, proposing
+  automations, driving the desktop, running code in a wmux REPL), and an
+  agent whose start record is missing or unreadable is stopped instead of
+  left running. (#3296)
+
+- **`wmux web` no longer prints the access token unless you ask.** `wmux web`
+  and `wmux web --status` used to print the token and addresses with
+  `?token=` in them. By default they now leave the token out and print the
+  addresses without it. Add `--show-token` to print the token and the
+  addresses that sign in with it, as before; `wmux web --status
+  --show-token` reads them without restarting the server. In `--json`,
+  `token` is left out and `tokenHidden: true` is set unless `--show-token`
+  is given, so a script that reads `token` needs the flag. The Docker
+  image's startup script passes it. (#3297)
+
+- **Automated prompts wait while a dialog or selection menu is on screen.**
+  Scheduled prompts, automation runs and the fan-out caller nudge now check
+  the pane for a dialog or a selection menu before they type, and again
+  before they press Enter, the way they already checked for a folder-trust
+  prompt. If one is up before anything is typed, they wait and try again
+  later, and the prompt is sent once it is gone. If one appears after the
+  prompt was typed, Enter is not pressed and that delivery is not retried,
+  so the typed text is left unsent. Before, they were typed and submitted
+  whenever the agent read as ready for input. A prompt that starts with a
+  numbered list item is not mistaken for a menu. (#3299)
+
+- **The automatic usage-limit continue waits while a selection menu is on
+  the pane's screen.** That includes the agent's own usage-limit menu: if it
+  is still showing when the limit resets, the automatic continue waits until
+  the menu is dismissed, then sends on its next check. Pressing Continue in
+  wmux while such a menu is up sends nothing; press it again once the menu is
+  gone. Before, the continue was typed and submitted with the menu on
+  screen. (#3299)
+
+- **On Linux the daemon reads process details from `/proc`.** Checking
+  whether a pane's process is still running, finding a pane's agent
+  process, and reading a process's start time or name used to start a
+  `ps` process each time. On Linux these now read `/proc` and start
+  nothing, with `ps` kept for when `/proc` cannot be read. macOS and
+  Windows are unchanged. (#3300)
+
+- **`browser_repl` runs in a process of its own.** Its runtime used to be a
+  worker thread inside the wmux MCP server; it is now a child process that
+  starts on the first `browser_repl` call and ends with the agent's session,
+  after 15 minutes idle, or on a timeout, together with the processes it
+  started. A server runs at most 16 of them at once and says so when asked for
+  more. Scripts keep their globals and their `browser.*` calls as before; the
+  process they see is the runtime's own, and its environment has no wmux
+  variables and, as in `repl_run`, no credential-named ones.
+
+- **The main log notes a fan-out caller nudge the delivery gate refuses.**
+  When main's delivery gate refuses a caller nudge, for example because an
+  approval is on screen or a usage limit holds the pane, the main log now
+  shows one line naming the pane and the reason. Retries of the same refusal
+  add nothing, and the line comes back once a nudge to that pane has passed
+  the gate. Before, a nudge refused there left no log line. (#3303)
+
+- **Pane identity through the MCP broker needs the broker's own stamp.** On
+  macOS and Linux, wmux took a pane claim from any call that came over the
+  connection of the MCP broker it started. It now takes one only when the
+  broker marks the call with a value wmux gave that broker when it started it.
+  The broker marks only a session it has checked, for that session's own
+  process. Agents served by the broker see no change; Windows is unchanged.
+
+- **`wmux browser` and `wmux open` say why wmux could not verify the
+  process.** When wmux does not take the process id a command claims, it now
+  tells the CLI the reason, and the error names it and points at
+  `wmux doctor` instead of suggesting an app update. On macOS, a process
+  running as another user is always refused, and the error says so.
+
+- **An MCP session keeps working when the shared MCP broker stops.** Until
+  now the agent's MCP server exited and the agent had to restart it. Now the
+  wmux MCP shim answers each call that was in flight with an error saying it
+  may have run (it is not retried), and moves the session to a full MCP
+  server of its own for the rest of the session. The agent keeps its
+  connection and does not repeat its setup. The session does not move back to
+  the broker when the broker restarts.
+
+- **An agent on such a host that stops on a question no longer holds its
+  task forever.** After about a minute the asking PC is told the agent waits
+  on a question; after 10 minutes the task ends with that reason, and the
+  agent is left running. An answer larger than 32 KiB is now cut, keeping its
+  start, instead of failing the task. (#3313)
+
+- More panes restore through the native Rust snapshot instead of the slower fallback: G2/G3 designations, `ESC -` / `ESC .` / `ESC /`, and the soft terminal reset (DECSTR). National character sets still use the fallback.
+
+- `wmux doctor --performance` now names the control that sent a pane to the fallback (for example `unsupported-state-charset`), instead of a single `unsupported-state` count.
+
+- **A host without the desktop app now waits for work its agent left
+  running.** When the agent runs a command in the background, starts an agent
+  without waiting, or sets a Monitor, what it says meanwhile goes back as a
+  reply and the task keeps working; the answer is what it says once that work
+  ended. If the work still runs after 30 minutes, the answer goes saying so.
+  What the agent says later on its own (the work ending, a wake-up it set) is
+  sent on the same task, a few times at most. (#3318)
+
+- **A phone or browser terminal on a slow link catches up instead of falling
+  further behind.** When a pane prints faster than the viewer's connection can
+  take it, wmux stops queueing output for that viewer once about 2 MiB are
+  waiting, and repaints its screen from the pane when the connection catches
+  up. Before, output kept queueing until the stream was cut at 16 MiB and the
+  viewer had to reconnect. (#3324)
+
+- **`wmux doctor --performance` names every reason a terminal snapshot fell
+  back.** When the native snapshot could not take a pane's output, the
+  doctor's native ANSI snapshots line only counted the first unsupported
+  state it met. It now adds `also seen:` with the other unsupported states
+  in the same output, so one fallback with three causes shows all three.
+
+- **The shared MCP broker picks up a new auth token without a restart.** With
+  `WMUX_MCP_BROKER=1`, the broker now reads the token file for every new agent
+  session instead of once at start. A token file it cannot use (missing, empty,
+  or not private to the user) turns that one session away, and the agent runs
+  its own MCP server instead, as it does when no broker is running. The broker
+  keeps serving the other sessions. The broker is still off unless
+  `WMUX_MCP_BROKER=1` is set.
+
+- **A pane printing a lot while the app is busy no longer piles up memory in
+  the background service.** When the app stops reading a pane's output (a long
+  freeze, a suspended process), wmux stops queueing that pane's output once
+  about 8 MiB are waiting, and repaints the pane from its history when the app
+  reads again. Before, the queue grew for as long as the app was stalled.
+  (#3330)
+
+- **With the shared MCP broker turned on, wmux starts faster.** When
+  `WMUX_MCP_BROKER=1` is set, an installed wmux no longer waits for the broker
+  before it finishes starting. That wait could last up to 4 seconds on a slow
+  machine. Agents connect as before, and an agent that arrives before the broker
+  is ready runs its own MCP server. The broker is still off unless
+  `WMUX_MCP_BROKER=1` is set.
+
+- **A pane recovered after the daemon restarts gets the fast native
+  snapshot.** When a pane comes back after a restart, its saved screen and
+  the fresh shell are joined by a short reset sequence. The native terminal
+  snapshot refused every ring holding that sequence, so recovered panes
+  always took the slower xterm path when a window attached. It now serves
+  them, Claude Code panes that ended on their full-screen view included,
+  and still falls back where the result would differ.
+
+- **`wmux doctor` says why the shared MCP broker is on or off.** The broker
+  line now reads "off (the default)" with how to turn it on, or "off
+  (WMUX_MCP_BROKER=0)". While the broker is on, it says that
+  `WMUX_MCP_BROKER=1` turned it on, and how to turn it off: remove the
+  variable or set it to 0, then restart wmux.
+
+- **An A2A message a hidden pane could not take is kept and typed later.**
+  When wmux cannot confirm that a hidden agent pane is free of a folder-trust
+  prompt, the pane is held by a usage limit, another message is still being
+  typed into it, or the agent's input box holds a draft or is in another
+  mode, a local task's message is no longer simply refused:
+  wmux keeps it and types it when the pane's agent ends a turn, or on a check
+  once a minute, through the same checks as a new send. A later message on
+  the same task waits behind it. The sender's receipt says so
+  (`storedForLater`). The kept copy is dropped after 24 hours, when the task
+  ends, when the pane closes or its agent exits or restarts, or when more
+  messages wait for the pane than it keeps; it does not survive an app
+  restart. The task stays readable with `a2a_task_query`.
+
+- A parallel task whose start command has a word right after a space-separated `--disallowedTools` list (for example `claude --disallowedTools Bash "Fix the tests"`) used to start with that deny dropped. It is now refused, and the error says to put the deny rules last or write them as one quoted list with `=`. (#3374)
+
+- **A box no longer starts a signed-out Claude for another PC.** When a
+  paired PC asks this one to start Claude and Claude's own status says the
+  account here is signed out, the request is refused before anything starts,
+  instead of a Claude that stops at its sign-in screen. The asking PC shows
+  "Claude on <PC> is not signed in; sign in there, then send again" (an
+  older build there shows that the start failed), and this PC shows its usual
+  sign-in notice. Claude's status, run with the setting this check uses, was
+  measured to open no connection to the vendor. When the status cannot tell, the start
+  goes on as before.
+
+### Removed
+
+- **The experimental `WMUX_RUST_SNAPSHOT=shadow` comparison mode.** It ran
+  xterm and the native snapshot side by side for every eligible request.
+  Behaviour change for anyone who had set it: a daemon started with
+  `WMUX_RUST_SNAPSHOT=shadow` now uses the default snapshot backend for its
+  terminal engine, so on the Rust engine snapshots come from Rust instead of
+  always from xterm. `text`, `ansi`, `all` and `off` are unchanged. (#3304)
+
+### Fixed
+
+- **The Windows installer no longer stalls for about 16 s before wmux opens.**
+  The installer waited out a 16 s limit near the end of first installs and,
+  since 4.11.0, of every update too, before it went on. On a first install
+  the step that creates the Desktop shortcut came after that wait and was
+  cut off, so no shortcut was made. The install step now finishes in a few
+  seconds and creates the shortcut again.
+
+- **Chat view keeps your draft and follows the conversation.** Splitting a
+  pane no longer throws away a half-typed chat message. Sending a message
+  scrolls back to the end, and when you have scrolled up while new replies
+  come in, a jump-to-latest button takes you back.
+
+- **A running tool reads as running.** A command still in flight used to be
+  folded into a past-tense "Ran 3 tool calls" line. It now stays on its own
+  line as "Running …" until it finishes. A call that waits for your approval
+  says "Waiting for approval" with the needs-you mark, under a card drawn in
+  the needs-you outline, and the turn's footer says it is waiting for you.
+
+- **Tidier chat transcript.** Code blocks in replies show their language and
+  a Copy button. An edit's diff is no longer followed by the same result in
+  text. A long command output opens on its real last lines, with how many
+  came before, and Show full output.
+  Status marks are icons, and Korean wraps on whole words. The composer and
+  its chips follow the app's design, and the empty chat sits in the middle of
+  the pane.
+
+- **The experimental wongtty terminal (Labs) no longer flashes empty on a
+  workspace switch.** wongtty 0.0.5 draws a terminal's last frame as soon as
+  it is shown again, so its content is there from the first frame, as with
+  xterm.js. Before, it showed empty for about two frames. (#3268)
+
+- **A chat that needs you says so outside its pane.** While a chat started as
+  chat (Claude Code or Codex) waits for a permission or a question, its
+  sidebar row, Fleet and `fleet.triage` now show the orange needs-you mark,
+  as they do for a terminal agent. A running turn shows as running and a
+  finished one as finished. Before, a chat-only chat showed nothing there.
+
+- **A chat's tab is named after its agent.** A tab showing a chat reads
+  "Claude Code" or "Codex CLI" instead of the shell under it ("Zsh"), and
+  goes back to the shell's title once the chat closes or hands off to the
+  terminal.
+
+- **Chat view keeps attached images across a split.** Images attached to a
+  half-written message used to disappear when the pane was split. They now
+  stay with the draft until you send it or close the pane. (#3272)
+
+- **No double send after a split.** A message still being sent when the pane
+  was split came back as unsent text, so it could be sent twice. It now
+  clears once it goes, and anything you typed since stays. (#3272)
+
+- **Screen readers hear about new messages below.** While you are scrolled
+  up in the chat view, arriving messages are announced as "New messages
+  below". (#3272)
+
+- **A restored pane keeps a long line whole after part of it was erased.**
+  When a program erased or edited the end of a wrapped line, as shells do
+  while you edit a long command, the restored pane treated it as two lines,
+  so copying it or resizing the pane split it in two. Erased cells at the
+  end of such a line no longer come back as typed spaces either.
+
+- **Code blocks that start mid-sentence in chat replies.** A chat or agent
+  reply whose code block opened at the end of a line of text showed the code
+  as plain text and then an empty box. It now shows the text, then the code
+  block. A sentence that only mentions triple backticks before a real code
+  block stays a sentence. GitHub issue and pull request bodies render as
+  before. (#3278)
+
+- **Pinned wmux shortcuts work again after reinstalling.** A taskbar or
+  Start pin left from an earlier install now points at the new one after
+  wmux first starts. Before, it stayed broken, with a blank icon, until the
+  next update.
+
+- **Updates finish without waiting for wmux to close.** After an in-app
+  update or a package-manager upgrade, the installer now exits within seconds
+  while the new wmux runs. Before, it stayed running in the background until
+  you closed wmux.
+
+- **Browser automation keeps finding a free debugging port.** wmux now gives
+  back its debugging-port reservation when it quits, including a second launch
+  that only hands over to the running window and a Windows sign-out or
+  shutdown. A reservation left by an earlier Windows session is now freed even
+  when Windows has reused its process id, as long as that session ran longer
+  than the current one. Reservations from older wmux versions, and from shorter
+  earlier sessions, are still freed only once their process is gone. Before,
+  leftovers piled up and could crowd out the range, so two windows ended up on
+  one port with browser tools dead. (#3287)
+
+- **A fan-out cap that fails to save no longer looks saved.** In Settings ›
+  Roles & fan-out, the live-task and hourly-task caps used to keep the number
+  you typed even when the save failed, so the field could show a cap that was
+  not in force. They now show the save error and go back to the value in force,
+  the same as the tasks-per-call and depth fields.
+
+- **`wmux remote allow` no longer warns about a missing agent the daemon
+  finds.** It used to look at the PATH of the shell it ran in; it now asks the
+  daemon, which looks where a request is checked (the login PATH of the
+  account it runs as, and `~/.local/bin`). (#3296)
+
+- **`wmux daemon headless status` names what runs and what may be left.**
+  It lists each running agent with its request, the asking PC, since when and
+  its worktree; and when its record of starts was found unreadable and set
+  aside, it says so and lists the worktrees no record names. (#3296)
+
+- **No tool is both allowed and denied on an agent's launch line.** A tool
+  on the deny list is left off the allow list. (#3296)
+
+- **A host in headless mode no longer shuts itself down while it waits.**
+  The daemon exited about six minutes after its last client left, so a box
+  started with `wmux daemon start` went offline and paired PCs could no
+  longer reach it. While headless mode is on, it now keeps running. (#3306)
+
+- **The daemon no longer logs `MaxListenersExceededWarning` on every start.**
+  Its session manager has more long-lived subscribers than Node's default
+  limit of 10 for two events; the limit is now set to a stated value. There
+  was no leak. (#3310)
+
+- **An answer the agent gives after thinking is no longer reported empty.**
+  Claude Code writes the thinking and the text of one answer as separate
+  entries; the host now waits for the text before it ends the turn. (#3313)
+
+- **The asking PC now sees why a task was canceled on such a host.** The
+  reason is sent as a reply before the task is canceled, since a cancel
+  carries no reason of its own. (#3313)
+
+- On the Rust terminal engine, a pane that switched character sets with a locking shift (`ESC n`, `ESC o`, `ESC |`, `ESC }`, `ESC ~`) or reset G0 with `ESC % G` could be restored with box-drawing glyphs where it showed letters, or the reverse. This affected panes using DEC line drawing since it was first restored natively. The restore now matches what the pane showed.
+
+- **A process the daemon recorded is still recognised after the clock is
+  stepped.** On Linux, a pane's shell, a headless agent, or one of its leftover
+  processes was recognised by its start time as text, and that text changes
+  when the clock is adjusted (an NTP step). After an adjustment, the daemon
+  could take a process it had started for another one. It then left a
+  surviving agent running while reporting it ended, or did not close a shell
+  it should have. The daemon now also records the start time the kernel
+  keeps, together with the boot it belongs to, and compares that first.
+  Records written before this are still matched as before. (#3316)
+
+- **Stopping such a host now tells the asking PC why its task ended**, before
+  the connection closes, instead of the asking PC seeing a broken link. (#3318)
+
+- **Closing a fan-out mission with `channel_mission_close` now takes effect
+  at once.** The orchestrator's keys and text on the closed task's panes are
+  refused from that call on. Before, they kept reaching the worker until a
+  periodic sync caught up, which took up to a minute or more. (#3322)
+
+- **A task sent to a host without the desktop app no longer stays working
+  forever when that host's agent hits its usage limit.** The asking PC is told
+  once that the agent is at its limit and until when. Claude Code usually goes
+  on by itself shortly after the reset, and the host then types and presses
+  nothing. If instead the agent sits idle after the reset (its own wait was
+  cancelled, or its limit menu is up), the host closes that menu and types
+  "continue" once. If the agent has still not gone on 15 minutes after the
+  reset, or 6 hours after the limit when the reset time is not known, the task
+  ends as failed with the reason, and the agent is left running. (#3323)
+
+- **A host without the desktop app no longer sends the asking PC a usage-limit
+  notice for each of Claude Code's own retries.** Claude Code retries by itself
+  after the reset, and each retry that hit a limit that had not lifted sent
+  another notice. Now the first stop is told, and a later one only when the
+  reset moved 15 minutes or more. The latest reset is the one waited for. If 5
+  retries in a row hit the limit again before the agent did anything, the task
+  ends as failed with that reason and the agent is left running. When the
+  reset time is not known, the 6-hour limit counts from the first stop. (#3329)
+
+- **A host without the desktop app no longer logs a refused move for every
+  task when a link ends.** The link's own end had already failed the task
+  while the host was sending the reason; the host now sees that and stops,
+  and on an ended link it no longer tries to send the reason at all. (#3329)
+
+- **With the shared MCP broker on, every agent can start its own browser_repl
+  runtime again.** When `WMUX_MCP_BROKER=1` is set, one broker serves all
+  agents. It allowed 16 browser_repl runtimes in total, so with more than 16
+  agents the later ones were refused. Each agent now gets 16, as it does without
+  the broker.
+
+- **A remote fan-out key stays a poll after the hour.** Sending the same
+  `idempotency_key` to `fanout_start` with `pc` again more than an hour later
+  used to go through the approval switch, the hourly cap and the audit record
+  again. Now each task row keeps a digest of the request. While the rows are
+  kept, the same request under that key is a poll: nothing is checked,
+  charged, audited or asked again. A different request under that key is
+  refused.
+
+- **`wmux daemon headless status` names the app marker.** When headless mode is
+  off because this install has an `app-attached` marker, the status line names
+  the file and when it was written. It also says how to clear the marker if the
+  desktop app no longer runs on that machine.
+
+- **An agent registered on the wmux MCP launcher keeps its tools when wmux has
+  never run.** With no wmux auth token file (wmux never ran for this user, or
+  its files were removed), the native launcher and the node shim used to exit,
+  so the agent had no wmux tools listed at all. They now run the full MCP server
+  instead, as the plain entry does. Its tools are listed, and calls that need
+  the app say wmux is not running.
+
+- **A worker's `gone` status is logged once per task on the asking PC.** A peer
+  that repeated it could write one log line per message. The docs now say only
+  what was observed about Claude Code 2.1.323: its AskUserQuestion call was not
+  in the transcript while the menu was open. (#3343)
+
+- **One held reply no longer fails a whole cross-PC task.** A reply held
+  because the receiving pane had no agent used to end its task on both PCs
+  after 24 hours, even when later replies were delivered. Now only that reply
+  is dropped and the task stays open. It is offered again first, marked as
+  delayed, once a later reply on the task reaches the pane. When the other PC
+  runs this version, it is told once which of its messages was dropped. A
+  remote task that failed or was canceled stays in `a2a_task_query` for 24
+  hours, with its reason, and a task asked for by id after that is reported
+  as ended rather than not found. (#3344)
+
+- **A headless box reports `working` as soon as a follow-up is typed in.** It
+  reads the agent's screen again on that tick. Before, a question answered in
+  the pane could still show as the task's status for up to 10 seconds after
+  the next turn started.
+
+- **A task's orchestrator can message a busy, hidden worker pane.** An A2A
+  message or a channel-mention nudge to a hidden worker pane was refused while
+  the worker was mid-turn, because wmux could not rule out a folder-trust
+  dialog in screen rows the pane had not redrawn. A delivery from the
+  orchestrator of an open task in that pane is now typed in under the `all`
+  owner setting (the default), and each one is noted in the main log under
+  `[owner-lane]`. A worker that wmux started with Claude's sandboxed setting
+  is known to show no such dialog, so its deliveries are no longer held for
+  it. A folder-trust prompt that is visible on screen still stops every
+  delivery, and the refusal now says why.
+
+- **A PC that takes remote spawn requests keeps taking them after a busy
+  day.** Before, once 100 requests from one PC had been decided within a day,
+  every new one from it was refused as `rate-limited` until the old ones aged
+  out, even with no agent running. Requests that ended and can no longer be
+  resent no longer count; one PC may hold up to half the store in recent ones.
+  The refusal's text on the asking PC now names the limits it may mean.
+
+- **Manual worker mode now makes the agent ask, as its label says; before,
+  the agent's own settings decided.** This covers fan-out workers and the
+  agents this PC starts for another PC. Codex runs read-only with approval on
+  request, sent to you rather than an automatic reviewer, and Grok in its
+  default mode. A worker resumed in plan mode stays in plan mode. An agent wmux cannot make ask (agy)
+  is not started in manual mode, and the reason is shown.
+
+- **A restored pane keeps the cursor on the right row after output scrolled.**
+  When a program saved the cursor on the main screen, printed enough to scroll
+  rows into history, and then restored it (with `ESC 8`, `CSI u` or `?1049l`),
+  the native snapshot put the cursor on a different row than xterm does, so
+  later text in a recovered or re-attached pane could land on the wrong line.
+  The snapshot now restores xterm's row, including its clamp to the screen or
+  to the scrolling region.
+
+- **Agent messaging and computer use keep working after wmux restarts.** When
+  the wmux app restarted, an agent's next A2A call (`send_message`,
+  `a2a_task_query`, `a2a_task_update`, `a2a_task_cancel`, `a2a_broadcast`) or
+  computer-use call failed with "the workspace you claimed is gone" (or "the
+  workspace claim is no longer valid"), and the agent had to try again by hand.
+  The call now finds its workspace again and runs once more on its own, as
+  browser tools already did. A call is repeated only when wmux refused it
+  before doing anything, so a message is never sent twice.
+
+- **A fan-out row for another PC now says why it waits now, not why it first
+  waited.** While the agent there still needs input, the row's text follows
+  the current reason, e.g. a reply it waits for after a question was answered
+  in that PC's pane. A rate-limited refusal also says the other PC's request
+  store may be full.
+
+- **A restored pane keeps the cursor on the right row after the pane was made
+  shorter.** When a program saved the cursor, the pane's height changed, and
+  the program then restored it (with `ESC 8`, `CSI u` or `?1049l`), the native
+  snapshot could put the cursor on a different row than xterm does. It now
+  follows xterm's saved row across the height change, on the main and the
+  alternate screen, and leaves the few cases it cannot place to xterm.
+
+- **Messages wait for an agent that is ready for them.** A task, reply, mention, hand-off or scheduled prompt goes into a pane only when wmux can confirm an agent is running there and its input box is a plain prompt. Otherwise the delivery waits, and the sender is told it is held until an agent is ready in the pane. An agent whose input box wmux does not recognise yet gets a one-line pointer to a task or mention from another agent instead of its text; your own scheduled prompts and automation runs still go to it as before.
+
+- **A scheduled prompt that keeps finding its agent busy is given up after an hour.** A repeating one is given up when its next run comes due, and that run goes ahead. Before, it was retried every 15 seconds for as long as the agent stayed busy.
+
+- **A task between two PCs no longer fails when the other PC disagrees
+  about its state.** The task keeps its own state, and its summary shows
+  which state the other PC refused. When the other PC refuses a reply on a
+  task this PC sent, the task fails here as before, and its copy there is
+  now cancelled too instead of staying open.
+
+- **A narrowed pane with a fullwidth character at its new edge is restored
+  natively.** When a pane was made narrower and a fullwidth character (Korean,
+  Chinese, Japanese, emoji) in the line the cursor sat on ended up split by the
+  new right edge, the native snapshot refused and the slower xterm path served
+  it. The native grid now drops that character exactly as xterm does, so what
+  you see is unchanged and the snapshot is served natively.
+
+- **A scheduled prompt that gave up says so.** A one-time scheduled prompt
+  whose agent's input box stayed busy for an hour now reads "not sent: input
+  box stayed busy for an hour" in the schedule list, instead of "paused". The
+  hour counts from the first time the box was found busy, so a prompt that
+  waited while its agent was away gets its full hour when the agent is back,
+  and Resume starts a fresh hour.
+
+- **Deliveries submit only their own text.** An agent-to-agent delivery now
+  sends its Enter only when the agent's input box holds the delivered text
+  and nothing else (whitespace aside), and a blank delivery is refused before
+  anything is typed. A
+  fresh-context command that has to be taken back is erased only while it is
+  still shown at the cursor.
+
+- **Two messages arriving at an agent's pane together are both delivered.**
+  Two deliveries into the same pane at the same moment (two follow-ups on a
+  task, a reply and a channel mention) could both paste into the agent's input
+  box and then neither be sent, which left the box blocked for every later
+  message. Deliveries into a pane now go one at a time, in the order they
+  arrived. One that waits longer than a few seconds writes nothing and is
+  retried or reported as before.
+
+- **A cursor restored after a pane was made narrower lands where it should.**
+  With the native terminal core, a pane rebuilt from its snapshot (after an
+  app restart or when a hidden pane is shown again) could place a program's
+  saved cursor several rows too high. This happened after the pane was made
+  narrower while its history was full, for example a progress line that
+  saves the cursor and redraws at it. It now follows the same rule as the
+  live terminal. (#3373)
+
+- Tools denied on the command a parallel task is started with stay denied for that task's workers. (#3374)
+
+- **A task reopened by a follow-up that never reached the agent goes back
+  to completed.** When a follow-up opens a finished task again on another
+  PC and is then dropped unread there (its 24 h hold expired), the task
+  returns to completed with the result it had, and the PC that sent it is
+  told, after the notice about the dropped message. Before, the task stayed
+  working on both PCs with nothing left to do. When the link ends first,
+  the task is completed again on that PC instead of failing. (#3375)
+
+- **A message the other PC refuses is reported back whichever way it
+  travelled.** When the PC you joined sends a task message or state over
+  its connection and your PC refuses it for good, that PC is now told, and
+  fails the task or records the disagreement, as it already did for
+  messages it sends the other way. Before, it never learned of the refusal
+  and treated the message as delivered. Both PCs need this version. (#3376)
+
+- **A refused delivery no longer claims nothing was typed when a fresh-context
+  command is still there.** When the check right before the fresh-context
+  command's Enter refused and the command could not be taken back, the
+  sender's receipt said nothing was typed while the command could still be in
+  the agent's input line. It now reports that the command may still be there.
+
+- **A draft erased with Backspace no longer holds deliveries.** wmux counted
+  a draft in an agent's input box as gone only once it was sent or cleared
+  with Ctrl+C or Ctrl+U, so a draft deleted with Backspace (or leaving
+  Claude's `!` mode with Backspace) kept messages, scheduled continues and
+  reminders waiting until something else was sent. For Claude, wmux now also
+  looks at the input box: when it shows the empty prompt, the draft counts
+  as gone.
+
+- **Narrowing a wide pane on a full scrollback no longer leaves stale rows at
+  the bottom.** When a pane whose scrollback was full got much narrower, for
+  example a wide pane split in three, the bottom of the pane could show
+  leftover wrapped rows in place of the last lines and the prompt line, until
+  the pane was redrawn from the daemon. Whether it happened depended on the
+  pane's row count. (#3383)
+
+- A pane on another PC is addressed by the same name whatever agent ran in it when it was linked: an automatic pane name no longer carries the agent (`office-pc/api/w1-2`, not `w1-2(claude)`), so a send by the plain name reaches it. A name that still carries the agent keeps working.
+
+- **Work from another PC is no longer held as unconfirmed after an app
+  restart.** When wmux started with messages or tasks from another PC still
+  owed, it could hand them over before the window had loaded. The hand-over
+  then timed out and each one was held for a person to check
+  ("delivery unconfirmed"), though nothing had been typed anywhere. wmux now
+  waits until the window answers and its panes are restored, then delivers
+  them as usual. Company tasks and the lines that tell the CEO about held
+  tasks wait the same way.
+
+- When another PC refuses a message for good and wmux stops (or cannot write the task) before marking the task, the task is now failed, or its refused state recorded, the next time wmux starts or checks, once only. It is left alone if the task has changed since. After a day without success the attempt is dropped, with a line in the log.
+
+- **A message sent to an agent that has just started is no longer dropped.**
+  For a second or two after an agent starts in a pane, wmux does not yet
+  show that pane as running an agent. A message sent to it in that time was
+  dropped with "no agent in the pane" and never sent again. wmux now checks
+  the pane itself before typing anything. If the agent is there, it gets the
+  one-line notice at once. If wmux cannot tell yet, the message is kept and
+  tried again shortly, and once more when the agent is identified. A pane
+  with no agent in it still receives nothing.
+
+- A message sent to a name that matches nothing now lists, next to this PC's workspaces, the panes on other PCs that `a2a_discover` shows for the sender's workspace, so a slightly wrong remote pane name is easy to correct.
+
+- **A message to Claude Code in a narrow pane is submitted, not left in the
+  input box.** A pointer that wraps over several rows, or a long text scrolled
+  to its end, is now recognised as the delivery's own paste when wmux presses
+  Enter. Before, the Enter was skipped and the message stayed in the box.
+
+- **Nothing more is pasted into an input box that still holds an unsubmitted
+  delivery.** Later messages to that pane wait, stored, until the box is used:
+  a new turn starts, someone types in the pane, or the agent's session ends.
+  Before, the next message was pasted on top of the first.
+
+- **One delivery at a time into a pane.** An A2A message, channel nudge or
+  worker nudge from the app, and a scheduled prompt, automation run, caller
+  nudge, chat send or channel wake nudge from the background service, could
+  each check a pane and then write into it while the other was between its
+  check and its Enter. One of the two was then left pasted in the agent's
+  input box, not submitted. The background service now holds a per-pane
+  delivery lock that both sides take from their first look at the pane
+  through their Enter, so the second delivery waits for the first. An older
+  background service keeps the previous behaviour.
+
+### Security
+
+- **The MCP broker starts with its signal-opened debugger off.** Another
+  process can no longer open the broker's inspector by sending it a signal.
+
+- **A wmux started from a pane of another wmux keeps its MCP broker to its
+  own instance.** The broker no longer inherits the other instance's socket
+  path.
+
 ## [4.15.0] — 2026-11-11
 
 ### Added

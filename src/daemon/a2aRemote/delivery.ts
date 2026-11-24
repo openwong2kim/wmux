@@ -1,26 +1,41 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import {
+  A2A_ANSWER_RPC,
+  A2A_APPROVAL_OUTCOME_WAIT_MS,
+  A2A_APPROVAL_RPC,
+  A2A_APPROVALS_RECEIVED_WINDOW_MS,
+  A2A_APPROVALS_SENT_PER_WINDOW,
+  A2A_APPROVALS_SENT_WINDOW_MS,
+  A2A_FEATURE_ANSWER,
+  A2A_FEATURE_APPROVAL,
   A2A_FEATURE_IMAGES,
   A2A_FEATURE_HELD_NOTICE,
   A2A_FEATURE_REOPEN,
   A2A_FEATURE_STREAM_REFUSE,
   A2A_FEATURE_STATUS,
   A2A_REMOTE_IMAGE_LIMITS,
+  A2A_REMOTE_APPROVAL_REASON_TEXT,
+  A2A_REMOTE_PROMPT_ID_RE,
   A2A_REMOTE_PROTOCOL,
+  ANSWER_OUTCOMES_MAX,
   parseA2aRemoteImageRefs,
+  type A2aApprovalSendResult,
   type A2aLinkRecordV1,
   type A2aOutboxRecordV1,
   type A2aRemoteDeliverResponse,
   type A2aRemoteEnvelope,
   type A2aRemoteErrorCode,
+  type A2aRemoteApprovalOutcome,
   type A2aRemoteHostRecordV1,
   type A2aRemoteStatusV1,
+  type A2aRemoteTaskMarkerV1,
   type HostId,
   type PeerCredential,
   shownRemoteStatus,
 } from '../../shared/a2aRemote';
 import { A2A_REMOTE_RPC, isLegacyHeldReason, isWaitingCause, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteTaskState, type A2aRemoteWaitingCause } from '../../shared/a2aRemoteDelivery';
+import { parseGatedSubmitProof } from '../../shared/ptyMessageDelivery';
 import type { A2aRemoteHostStatus, A2aRemoteHostsStatusResult } from '../../shared/rpc';
 import { prepareA2aImage, type A2aImageInfo, type A2aImageRefusal } from '../../shared/a2aImages';
 import { companyBriefOf } from '../../shared/company';
@@ -35,7 +50,7 @@ import { PeerTaskBudget, acceptInbound, type ImagePull, type InboundDeps } from 
 import type { NotifyLinkChange } from './linkRpc';
 import type { LinkStore } from './linkStore';
 import type { A2aOffers } from './offers';
-import { aliasTable, imageRefsOf, linkAlias, listRemoteTargets, sendRemoteReply, sendRemoteState, sendRemoteStatus, sendRemoteTask, syncRemoteTask, type ImageCaller, type OutboundDeps, type PreparedImage } from './outbound';
+import { APPROVAL_STATUS_ID_PREFIX, aliasTable, imageRefsOf, linkAlias, listRemoteTargets, sendRemoteAnswer, sendRemoteApproval, sendRemoteReply, sendRemoteState, sendRemoteStatus, sendRemoteTask, syncRemoteTask, type ImageCaller, type OutboundDeps, type PreparedImage } from './outbound';
 import { OutboxStore } from './outboxStore';
 import { PeerFeatureStore } from './peerFeatureStore';
 import type { A2aRouteTable } from './routes';
@@ -43,6 +58,7 @@ import { addressPromoter } from './remoteHostStore';
 import { JoinerSession, taskOfEnvelope, type SessionClient, type SessionTiming, type StreamedGet, type StreamedPut } from './session';
 import type { PinnedClientOptions } from './pinnedClient';
 import { A2aStreamHub } from './streamHub';
+import { ApprovalPacer, checkApprovalOffer } from './approvalAsk';
 import { errMsg, isPlainObject, isSafeId } from './storeFile';
 
 /**
@@ -92,10 +108,23 @@ export interface A2aRemoteDeliveryDeps {
   continueBytes?: { registerRoutes(table: A2aRouteTable): void };
   /** Links a remote start made here (spawnStarter.ts): redacted, no images, follow-ups held for their card. */
   spawnLinks?: NonNullable<InboundDeps['spawnLinks']>;
+  /** The asking PC's answers to a headless worker's question (headless delivery); absent, one is refused. */
+  answers?: NonNullable<InboundDeps['remoteAnswer']>;
+  /** The sending PC's approvals of prompts in a linked pane (remoteApproval.ts); absent, one is refused as `approvals-off`. */
+  approvals?: NonNullable<InboundDeps['remoteApproval']>;
   /** This PC's requests to start agents on other PCs (spawnRequester.ts): told when the other PC refuses one for good. */
   spawnAsks?: { onRefused(hostId: HostId, envelope: A2aRemoteEnvelope, code: A2aRemoteErrorCode): void };
   /** Optional features this PC advertises: on its streams to the servers it joined, and in its own streams' `hello`. */
   features?: readonly string[];
+  /** Features advertised to one PC only, read each time a stream to or from it opens (`approval.1` while that PC's setting is on). */
+  hostFeatures?: (hostId: HostId) => readonly string[];
+  /**
+   * The approvals setting for a PC now (approvalSwitchStore.ts), read as a
+   * queued status leaves: one carrying a prompt offer or approval outcomes is
+   * dropped while it is off, and one carrying a command once it is no longer
+   * `command`.
+   */
+  approvalExposure?: (hostId: HostId) => 'tool-only' | 'command' | null;
   /** false: this build neither follows a task again after it ended nor advertises `reopen.1`, as an older one; tests only. */
   reopen?: false;
   /** false: this build neither takes a refusal on a stream ack nor advertises `stream-refuse.1`, as an older one; tests only. */
@@ -201,6 +230,8 @@ export const REMOTE_STATUS_TASK_GAP_MS = 2_000;
 /** Host notices one link may bring in a window (one per dropped message, so few in honest use). */
 export const REMOTE_NOTICES_PER_WINDOW = 60;
 const REMOTE_STATUS_AT_ONCE: ReadonlySet<A2aRemoteStatusV1['kind']> = new Set(['question', 'usage-limit', 'gone']);
+/** Refused approvals kept for their sender's wait and later sends. */
+export const REFUSED_APPROVALS_MAX = 256;
 
 export class A2aRemoteDelivery {
   readonly outbox: OutboxStore;
@@ -217,6 +248,16 @@ export class A2aRemoteDelivery {
   private readonly remoteStatuses = new Map<string, A2aRemoteStatusV1>();
   /** New tasks each PC sent this one in the last hour (the inbound limit). */
   private readonly taskBudget = new PeerTaskBudget();
+  /** Approvals this PC sent to each PC (A2A_APPROVALS_SENT_PER_WINDOW). */
+  private readonly approvalPacer = new ApprovalPacer();
+  /**
+   * Approvals the other PC refused whole (the message, before any prompt was
+   * read), by message id: what `send` and its wait report. Oldest dropped past
+   * REFUSED_APPROVALS_MAX.
+   */
+  private readonly refusedApprovals = new Map<string, A2aRemoteApprovalOutcome & { reasonText: string; taskId: string }>();
+  /** A send waiting for its outcome, by message id: resolved by the status or refusal that carries it, or by its timer. */
+  private readonly approvalWaiters = new Map<string, { taskId: string; done: (outcome: ShownApprovalOutcome | null) => void }>();
   private readonly deps: A2aRemoteDeliveryDeps;
   private readonly sessions = new Map<HostId, { session: JoinerSession; fingerprint: string; port: number }>();
   /** Server-side status, last announced. */
@@ -255,8 +296,8 @@ export class A2aRemoteDelivery {
         this.recordFeatures(hostId, 'asJoiner', features);
         deps.offers?.onPeerFeatures(hostId, features);
       },
-      features: this.features,
-      withhold: (hostId, rec) => this.withholdNotice(hostId, rec),
+      features: (hostId: HostId) => this.featuresFor(hostId),
+      withhold: (hostId, rec) => this.withhold(hostId, rec),
       // A joiner's refusal of a record streamed to it ends what the record was about, as a refused POST does.
       ...(streamRefuse ? { onRefused: (rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode) => this.onRefused(rec, code) } : {}),
       ...(deps.heartbeatMs !== undefined ? { heartbeatMs: deps.heartbeatMs } : {}),
@@ -347,6 +388,27 @@ export class A2aRemoteDelivery {
     } catch (err) {
       this.deps.log('warn', `[a2a-remote] peer features listener failed: ${errMsg(err)}`);
     }
+  }
+
+  /** What this PC advertises to `hostId`: its own features, and that PC's own ones (`hostFeatures`). */
+  featuresFor(hostId: HostId): readonly string[] {
+    let extra: readonly string[] = [];
+    try {
+      extra = this.deps.hostFeatures?.(hostId) ?? [];
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] features for ${hostId}: ${errMsg(err)}`);
+    }
+    return [...this.features, ...extra.filter((f) => !this.features.includes(f))];
+  }
+
+  /**
+   * What this PC advertises to `hostId` changed: its streams to and from that
+   * PC open again, so the new list is what that PC sees (each side reads the
+   * features as the stream opens).
+   */
+  readvertise(hostId: HostId): void {
+    if (this.hub.isConnected(hostId)) this.hub.close(hostId);
+    this.sessions.get(hostId)?.session.redial();
   }
 
   /** Both roles' features from the streams since this daemon started; undefined when neither came up. */
@@ -590,13 +652,17 @@ export class A2aRemoteDelivery {
         return { ok: false, error: 'bad-request: unknown held reason' };
       }
       const messageId = typeof p['messageId'] === 'string' ? p['messageId'] : undefined;
+      const ptyId = typeof p['ptyId'] === 'string' && isSafeId(p['ptyId']) ? p['ptyId'] : undefined;
+      // What main submitted for a delivery: recorded when well-formed and for the pty marked, dropped otherwise (never a refusal).
+      const submit = p['delivered'] === true ? parseGatedSubmitProof(p['submit']) : undefined;
       const res = await svc.markRemote({
         taskId,
         ...(messageId !== undefined ? { messageId } : {}),
         ...(p['delivered'] === true ? { delivered: true } : {}),
         ...(typeof held === 'string' ? { held: readHeldReason(held) } : {}),
         ...(typeof p['attempted'] === 'boolean' && p['delivered'] !== true && held === undefined ? { attempted: p['attempted'] } : {}),
-        ...(typeof p['ptyId'] === 'string' && isSafeId(p['ptyId']) ? { ptyId: p['ptyId'] } : {}),
+        ...(ptyId !== undefined ? { ptyId } : {}),
+        ...(submit && submit.ptyId === ptyId ? { submit } : {}),
         // main offering a held reply again (only with an attempt, on an item).
         ...(p['reoffer'] === true && typeof p['attempted'] === 'boolean' && messageId !== undefined ? { reoffer: true as const } : {}),
       });
@@ -680,6 +746,27 @@ export class A2aRemoteDelivery {
       });
     });
 
+    // An answer to the question the worker on a task this PC sent shows: only to a PC connected now that takes one.
+    onRpc(A2A_ANSWER_RPC.send, async (p) => {
+      const taskId = str(p, 'taskId');
+      const marker = this.deps.taskService.getTask(taskId)?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
+      const peer = this.statusPeer(taskId);
+      if (!marker || !peer) return { ok: false, error: 'unknown-task' };
+      // Connected now, on either stream: an answer is never queued for a PC that is away, since its question may be gone by then.
+      if (!peer.connected) return { ok: false, error: 'unavailable: that PC is not connected now; nothing was queued' };
+      if (this.liveFeatures(marker.hostId)?.has(A2A_FEATURE_ANSWER) !== true) {
+        return { ok: false, error: 'unsupported: that PC runs an older wmux that takes no answer' };
+      }
+      return sendRemoteAnswer(this.outboundDeps(), {
+        taskId,
+        workspaceId: str(p, 'workspaceId'),
+        answer: { pickerId: str(p, 'pickerId'), option: typeof p['option'] === 'number' ? p['option'] : Number.NaN },
+      });
+    });
+
+    // An allow or deny for the prompt the worker on a task this PC sent shows: checked against its offer, paced.
+    onRpc(A2A_APPROVAL_RPC.send, async (p) => this.sendApproval(p));
+
     // An agent's images for a pane on THIS PC: checked and kept like a
     // remote send's, in `uploads/a2a/local`, whose paths the receiver reads.
     onRpc(A2A_REMOTE_RPC.stageImages, async (p) => {
@@ -725,6 +812,120 @@ export class A2aRemoteDelivery {
     onRpc('a2a.remote.hosts.status', async (): Promise<A2aRemoteHostsStatusResult> => ({ hosts: this.status() }));
   }
 
+  /**
+   * `a2a.remote.approve.send`: `{ taskId, workspaceId, promptId, decision, waitMs? }`.
+   * Nothing is sent unless the task is one the caller's workspace sent, its PC
+   * is connected now and takes approvals from this one, the task's latest
+   * status offers that prompt with that decision, and fewer than
+   * A2A_APPROVALS_SENT_PER_WINDOW went to that PC in the window. Then it waits
+   * up to `waitMs` (at most A2A_APPROVAL_OUTCOME_WAIT_MS) for the outcome.
+   */
+  async sendApproval(p: Record<string, unknown>): Promise<A2aApprovalSendResult> {
+    const str = (k: string): string => (typeof p[k] === 'string' ? (p[k] as string) : '');
+    const no = (error: Extract<A2aApprovalSendResult, { ok: false }>['error'], message: string, retryAfterMs?: number): A2aApprovalSendResult =>
+      ({ ok: false, error, message, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) });
+    const taskId = str('taskId');
+    const workspaceId = str('workspaceId');
+    const promptId = str('promptId');
+    const decision = p['decision'];
+    if (decision !== 'allow' && decision !== 'deny') return no('bad-request', "decision must be 'allow' or 'deny'");
+    if (!A2A_REMOTE_PROMPT_ID_RE.test(promptId)) return no('bad-request', 'promptId is 16 hex characters: detail.approval.promptId in the task\'s status');
+    const task = this.deps.taskService.getTask(taskId);
+    const marker = task?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
+    if (!task || !marker || marker.direction !== 'outbound') return no('unknown-task', 'not a task this PC sent to another PC');
+    // The task's own sender only, before anything about its offer is read.
+    if (task.metadata.from.workspaceId !== workspaceId) return no('forbidden', 'only the agent that sent this task can answer its worker\'s prompts');
+    const peer = this.statusPeer(taskId);
+    if (!peer?.connected) return no('unavailable', 'that PC is not connected now; nothing was sent');
+    if (this.liveFeatures(marker.hostId)?.has(A2A_FEATURE_APPROVAL) !== true) {
+      return no('unsupported', 'that PC takes no approvals from this one now (its setting is off for this PC, or it runs an older wmux); nothing was sent');
+    }
+    this.settleRemoteStatus(taskId);
+    const offer = checkApprovalOffer(this.remoteStatuses.get(taskId), promptId, decision);
+    if (!offer.ok) return no(offer.error, offer.message);
+    const wait = this.approvalPacer.waitMs(marker.hostId);
+    if (wait > 0) {
+      return no('rate-limited', `${A2A_APPROVALS_SENT_PER_WINDOW} approvals went to that PC within ${A2A_APPROVALS_SENT_WINDOW_MS / 1000} s; try again in ${Math.ceil(wait / 1000)} s. Nothing was sent.`, wait);
+    }
+    const sent = sendRemoteApproval(this.outboundDeps(), { taskId, workspaceId, approval: { promptId, decision } });
+    if (!sent.ok) {
+      const kind = sent.error.startsWith('forbidden') ? 'forbidden' : sent.error.startsWith('bad-request') ? 'bad-request' : 'unavailable';
+      return no(kind, sent.error);
+    }
+    this.approvalPacer.note(marker.hostId);
+    const waitMs = typeof p['waitMs'] === 'number' && Number.isFinite(p['waitMs'])
+      ? Math.min(Math.max(0, p['waitMs']), A2A_APPROVAL_OUTCOME_WAIT_MS)
+      : A2A_APPROVAL_OUTCOME_WAIT_MS;
+    const outcome = await this.approvalOutcome(taskId, sent.messageId, waitMs);
+    return {
+      ok: true,
+      taskId,
+      messageId: sent.messageId,
+      promptId,
+      decision,
+      tool: offer.offer.tool,
+      ...(outcome ? { outcome } : { pending: true as const }),
+    };
+  }
+
+  /** How the approval `messageId` went, once its outcome is back (a status, or a refusal); null after `waitMs`. */
+  private approvalOutcome(taskId: string, messageId: string, waitMs: number): Promise<ShownApprovalOutcome | null> {
+    const now = this.knownApprovalOutcome(taskId, messageId);
+    if (now || waitMs <= 0) return Promise.resolve(now);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.approvalWaiters.delete(messageId);
+        resolve(null);
+      }, waitMs);
+      timer.unref?.();
+      this.approvalWaiters.set(messageId, {
+        taskId,
+        done: (outcome) => {
+          clearTimeout(timer);
+          this.approvalWaiters.delete(messageId);
+          resolve(outcome);
+        },
+      });
+    });
+  }
+
+  /** The outcome this PC holds now for `messageId`: a refusal of the whole message, else the task's status. */
+  private knownApprovalOutcome(taskId: string, messageId: string): ShownApprovalOutcome | null {
+    const refused = this.refusedApprovals.get(messageId);
+    if (refused) return shownRefusal(refused);
+    this.settleRemoteStatus(taskId);
+    const found = this.remoteStatuses.get(taskId)?.detail?.approvals?.find((a) => a.messageId === messageId);
+    return found ? shownApprovalOutcome(found) : null;
+  }
+
+  /** A status on `taskId` came in (applied now or after its gap): a send on that task waiting for one of its outcomes has it. */
+  private wakeApprovalWaiters(taskId: string, status: A2aRemoteStatusV1): void {
+    if (this.approvalWaiters.size === 0) return;
+    for (const a of status.detail?.approvals ?? []) {
+      const w = this.approvalWaiters.get(a.messageId);
+      if (w?.taskId === taskId) w.done(shownApprovalOutcome(a));
+    }
+  }
+
+  /** The other PC refused an approval this PC sent, whole: kept for its sender, and nothing else happens to the task. */
+  private noteRefusedApproval(rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode): void {
+    const messageId = rec.envelope.messageId;
+    this.refusedApprovals.delete(messageId);
+    const named = code === 'approvals-off' || code === 'link-not-active' || code === 'rate-limited';
+    this.refusedApprovals.set(messageId, {
+      taskId: rec.envelope.taskId ?? '',
+      messageId,
+      outcome: 'not-done',
+      ...(named ? { reason: code } : {}),
+      // The refusal names no time: the other PC's window is over within a minute of it.
+      ...(code === 'rate-limited' ? { retryAfterMs: A2A_APPROVALS_RECEIVED_WINDOW_MS } : {}),
+      reasonText: named ? A2A_REMOTE_APPROVAL_REASON_TEXT[code] : `refused by the other PC (${code}); nothing was typed`,
+    });
+    while (this.refusedApprovals.size > REFUSED_APPROVALS_MAX) this.refusedApprovals.delete(this.refusedApprovals.keys().next().value as string);
+    const kept = this.refusedApprovals.get(messageId);
+    if (kept) this.approvalWaiters.get(messageId)?.done(shownRefusal(kept));
+  }
+
   // --- internals ------------------------------------------------------------
 
   /**
@@ -754,12 +955,12 @@ export class A2aRemoteDelivery {
       outbox: this.outbox,
       accept: (env, peer) => this.accept(env, peer),
       onRefused: (rec, code, detail) => this.onRefused(rec, code, detail),
-      withhold: (rec) => this.withholdNotice(hostId, rec),
+      withhold: (rec) => this.withhold(hostId, rec),
       ...(this.images ? { images: this.images } : {}),
       reconcileLinks: () => this.reconcileLinks(hostId),
       onStatus: (status) => this.deps.broadcast({ type: 'a2a.remote.hosts.status', sessionId: '', data: status }),
       onServerFeatures: (features) => this.recordFeatures(hostId, 'asServer', features),
-      features: this.features,
+      features: () => this.featuresFor(hostId),
       ...(this.deps.timing ? { timing: this.deps.timing } : {}),
       ...(this.deps.client ? { client: this.deps.client } : {}),
       log: this.deps.log,
@@ -806,6 +1007,11 @@ export class A2aRemoteDelivery {
    * time (a change committed after it means the task moved on).
    */
   private async applyRefusal(rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode, detail?: string, replay = false): Promise<void> {
+    // An approval refused there ends nothing here: the task goes on, and its sender is told (sendApproval).
+    if (rec.envelope.kind === 'approval') {
+      this.noteRefusedApproval(rec, code);
+      return;
+    }
     const taskId = taskOfEnvelope(rec.envelope, remoteTaskId);
     if (!taskId || !this.deps.taskService.getTask(taskId)) return;
     const { state } = rec.envelope;
@@ -834,6 +1040,34 @@ export class A2aRemoteDelivery {
    * features are not known yet (a session before the server's hello) or the
    * refusal could not be written: it is checked again next time.
    */
+  /** A queued record that must not leave now (withholdApproval, withholdNotice): true holds or drops it. */
+  private withhold(hostId: HostId, rec: A2aOutboxRecordV1): boolean {
+    return this.withholdApproval(hostId, rec) || this.withholdNotice(hostId, rec);
+  }
+
+  /**
+   * A queued status about approvals that the setting no longer allows: any
+   * the approvals producer made (APPROVAL_STATUS_ID_PREFIX), or one with a
+   * prompt offer or outcomes, while it is off for that PC; or one with a
+   * command once it is no longer `command`. Dropped (refused here, never
+   * sent); the producer queues the current status in its place. False for
+   * anything else.
+   */
+  private withholdApproval(hostId: HostId, rec: A2aOutboxRecordV1): boolean {
+    if (rec.envelope.kind !== 'status') return false;
+    const detail = rec.envelope.status?.detail;
+    const fromApprovals = rec.envelope.messageId.startsWith(APPROVAL_STATUS_ID_PREFIX);
+    if (!fromApprovals && !detail?.approval && !detail?.approvals) return false;
+    const exposure = this.deps.approvalExposure?.(hostId) ?? null;
+    if (exposure !== null && (exposure === 'command' || detail?.approval?.command === undefined)) return false;
+    try {
+      this.outbox.refuse(hostId, rec.seq, 'protocol');
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] ${hostId}: a status the approvals setting no longer allows was not dropped: ${errMsg(err)}`);
+    }
+    return true;
+  }
+
   private withholdNotice(hostId: HostId, rec: A2aOutboxRecordV1): boolean {
     const notice = rec.envelope.notice;
     if (!notice) return false;
@@ -1017,12 +1251,15 @@ export class A2aRemoteDelivery {
       ...(this.deps.bundles ? { bundles: this.deps.bundles } : {}),
       ...(this.deps.bundleAsks ? { bundleAsks: this.deps.bundleAsks } : {}),
       ...(this.deps.spawnLinks ? { spawnLinks: this.deps.spawnLinks } : {}),
+      ...(this.deps.answers ? { remoteAnswer: this.deps.answers } : {}),
+      ...(this.deps.approvals ? { remoteApproval: this.deps.approvals } : {}),
       ...(this.images ? { images: { store: this.images, pullAttempts: this.pullAttempts } } : {}),
       remoteStatus: {
         admit: (hostId) => this.admitRemoteStatus(hostId),
         note: (taskId, status, hostId) => this.takeRemoteStatus(taskId, status, hostId),
         firstGone: (taskId) => this.firstGone(taskId),
         forget: (taskId) => { this.remoteStatuses.delete(taskId); this.statusGates.delete(taskId); this.goneSeen.delete(taskId); },
+        ended: (taskId, status) => this.wakeApprovalWaiters(taskId, status),
       },
       remoteNotice: {
         admit: (linkId) => this.noticeWindow(linkId, true),
@@ -1108,6 +1345,8 @@ export class A2aRemoteDelivery {
 
   /** A status that passed the checks: applied now, or kept as the task's newest until its gap is over. */
   private takeRemoteStatus(taskId: string, status: A2aRemoteStatusV1, hostId: HostId): void {
+    // Before any gap: a send waiting for an outcome this status carries is answered now.
+    this.wakeApprovalWaiters(taskId, status);
     const now = Date.now();
     const gate = this.statusGates.get(taskId);
     if (gate && now - gate.at < REMOTE_STATUS_TASK_GAP_MS && !REMOTE_STATUS_AT_ONCE.has(status.kind)) {
@@ -1166,7 +1405,12 @@ export class A2aRemoteDelivery {
       return task;
     }
     this.settleRemoteStatus(task.id);
-    const status = this.remoteStatuses.get(task.id);
+    const kept = this.remoteStatuses.get(task.id);
+    // An approval the other PC refused whole shows with the outcomes its worker sent, so none stays pending.
+    // Only beside a status that PC sent: none is made up.
+    const refused = kept ? [...this.refusedApprovals.values()].filter((r) => r.taskId === task.id)
+      .map(({ taskId: _t, reasonText: _r, ...o }): A2aRemoteApprovalOutcome => o) : [];
+    const status = kept && refused.length > 0 ? withRefusedApprovals(kept, refused) : kept;
     if (!status) return task;
     const remote = task.metadata.remote as A2aRemoteTaskState | undefined;
     if (!remote) return task;
@@ -1194,8 +1438,8 @@ export class A2aRemoteDelivery {
   }
 
   /** Queue the worker's status on an inbound task for its sender (`sendRemoteStatus`). */
-  sendStatus(taskId: string, status: A2aRemoteStatusV1): { ok: true } | { ok: false; error: string } {
-    const res = sendRemoteStatus(this.outboundDeps(), { taskId, status });
+  sendStatus(taskId: string, status: A2aRemoteStatusV1, source?: 'approvals'): { ok: true } | { ok: false; error: string } {
+    const res = sendRemoteStatus(this.outboundDeps(), { taskId, status, ...(source ? { source } : {}) });
     return res.ok ? { ok: true } : { ok: false, error: res.error };
   }
 
@@ -1310,4 +1554,28 @@ function replyOrStateTask(rec: A2aOutboxRecordV1): string | null {
   // A host notice is not this side's reply: its ack or refusal says nothing about replyDeliveredAt.
   if (rec.envelope.notice) return null;
   return rec.envelope.kind === 'reply' || rec.envelope.kind === 'state' ? taskOfEnvelope(rec.envelope, remoteTaskId) : null;
+}
+
+/** An approval outcome as `send` returns it: with this PC's own words for a reason. */
+type ShownApprovalOutcome = A2aRemoteApprovalOutcome & { reasonText?: string };
+
+function shownApprovalOutcome(o: A2aRemoteApprovalOutcome): ShownApprovalOutcome {
+  return { ...o, ...(o.reason ? { reasonText: A2A_REMOTE_APPROVAL_REASON_TEXT[o.reason] } : {}) };
+}
+
+function shownRefusal(r: A2aRemoteApprovalOutcome & { reasonText: string; taskId: string }): ShownApprovalOutcome {
+  const { taskId: _t, ...o } = r;
+  return o;
+}
+
+/**
+ * A status with the whole-message refusals of approvals added to its outcomes
+ * (one per message id). The two are bounded apart, each to its latest
+ * ANSWER_OUTCOMES_MAX: a refusal never pushes out an outcome the worker sent.
+ */
+function withRefusedApprovals(status: A2aRemoteStatusV1, refused: readonly A2aRemoteApprovalOutcome[]): A2aRemoteStatusV1 {
+  const kept = refused.slice(-ANSWER_OUTCOMES_MAX);
+  const ids = new Set(kept.map((r) => r.messageId));
+  const approvals = [...(status.detail?.approvals ?? []).filter((a) => !ids.has(a.messageId)), ...kept];
+  return { ...status, detail: { ...status.detail, approvals } };
 }

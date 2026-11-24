@@ -183,8 +183,8 @@ describe('ChromeLauncher over a debugging pipe', () => {
     const { chrome } = spawnPipeChrome();
     const launcher = new ChromeLauncher('/tmp/pipe-profile');
     expect(await launcher.endpoint()).toEqual({ piped: true });
-    const grant = await launcher.relayGrant({ workspaceId: 'ws-a' });
-    const other = await launcher.relayGrant({ workspaceId: 'ws-a' });
+    const grant = await launcher.relayGrant({ lane: 'engine', workspaceId: 'ws-a' });
+    const other = await launcher.relayGrant({ lane: 'engine', workspaceId: 'ws-a' });
     expect(other.headers.Authorization).not.toBe(grant.headers.Authorization);
     const ws = await dial(grant);
     const answer = await new Promise<Record<string, unknown>>((resolve) => {
@@ -197,7 +197,7 @@ describe('ChromeLauncher over a debugging pipe', () => {
     chrome.exit();
     await closed;
     await expect(dial(other)).rejects.toThrow('HTTP 401');
-    await expect(launcher.relayGrant({})).rejects.toThrow('Chrome exited');
+    await expect(launcher.relayGrant({ lane: 'engine' })).rejects.toThrow('Chrome exited');
   });
 
   describe('a Chrome with no page (every window closed, the macOS default)', () => {
@@ -223,11 +223,11 @@ describe('ChromeLauncher over a debugging pipe', () => {
       expect(chrome.targets).toEqual([]);
       // Two agents at once: each closes its own tab once attached, so neither
       // may lean on the other's.
-      const [first, second] = await Promise.all([launcher.relayGrant({}), launcher.relayGrant({})]);
+      const [first, second] = await Promise.all([launcher.relayGrant({ lane: 'engine' }), launcher.relayGrant({ lane: 'engine' })]);
       expect(opened(chrome).map((c) => c.params.url)).toEqual(['about:blank', 'about:blank']);
       expect(new Set([first.bootstrapTargetId, second.bootstrapTargetId])).toEqual(new Set(chrome.targets.map((t) => t.targetId)));
       // A third grant while those two are still attaching gets its own as well.
-      const third = await launcher.relayGrant({});
+      const third = await launcher.relayGrant({ lane: 'engine' });
       expect(third.bootstrapTargetId).toBeDefined();
       expect(opened(chrome)).toHaveLength(3);
       const a = await dial(first);
@@ -246,9 +246,9 @@ describe('ChromeLauncher over a debugging pipe', () => {
       const { chrome } = spawnPipeChrome();
       const launcher = new ChromeLauncher('/tmp/pipe-profile');
       await launcher.endpoint();
-      const held = await dial(await launcher.relayGrant({}));
+      const held = await dial(await launcher.relayGrant({ lane: 'engine' }));
       expect(opened(chrome)).toHaveLength(1);
-      await expect(launcher.relayGrant({})).rejects.toThrow('automation connections, the most it takes');
+      await expect(launcher.relayGrant({ lane: 'engine' })).rejects.toThrow('automation connections, the most it takes');
       expect(opened(chrome)).toHaveLength(1);
       held.close();
       await launcher.dispose({ immediate: true });
@@ -258,7 +258,7 @@ describe('ChromeLauncher over a debugging pipe', () => {
       const granted = spawnPipeChrome();
       const scoped = new ChromeLauncher('/tmp/pipe-profile');
       await scoped.endpoint();
-      expect((await scoped.relayGrant({})).bootstrapTargetId).toBeUndefined();
+      expect((await scoped.relayGrant({ lane: 'engine' })).bootstrapTargetId).toBeUndefined();
       expect(opened(granted.chrome)).toEqual([]);
       await scoped.dispose({ immediate: true });
     });
@@ -267,11 +267,11 @@ describe('ChromeLauncher over a debugging pipe', () => {
       const { chrome } = spawnPipeChrome();
       const launcher = new ChromeLauncher('/tmp/pipe-profile');
       await launcher.endpoint();
-      const grant = await launcher.relayGrant({});
+      const grant = await launcher.relayGrant({ lane: 'engine' });
       expect(opened(chrome)).toHaveLength(1);
       // The user went somewhere in the blank tab: it is a page now.
       chrome.targets[0].url = 'https://example.com/';
-      const next = await launcher.relayGrant({});
+      const next = await launcher.relayGrant({ lane: 'engine' });
       expect(next.bootstrapTargetId).toBeUndefined();
       expect(opened(chrome)).toHaveLength(1);
       const ws = await dial(grant);
@@ -289,12 +289,12 @@ describe('ChromeLauncher over a debugging pipe', () => {
     const first = spawnPipeChrome();
     const launcher = new ChromeLauncher('/tmp/pipe-profile');
     await launcher.endpoint();
-    const stale = await launcher.relayGrant({});
+    const stale = await launcher.relayGrant({ lane: 'engine' });
     first.chrome.exit();
     spawnPipeChrome();
     await vi.waitFor(async () => expect(await launcher.endpoint()).toEqual({ piped: true }), { timeout: 5_000 });
     await expect(dial(stale)).rejects.toThrow('HTTP 401');
-    (await dial(await launcher.relayGrant({}))).close();
+    (await dial(await launcher.relayGrant({ lane: 'engine' }))).close();
     await launcher.dispose({ immediate: true });
   });
 
@@ -312,9 +312,9 @@ describe('ChromeLauncher over a debugging pipe', () => {
     const launcher = new ChromeLauncher('/tmp/pipe-profile');
     await launcher.endpoint();
     vi.spyOn(CdpPipeRelay.prototype as unknown as { listen: () => Promise<unknown> }, 'listen').mockRejectedValueOnce(new Error('listen EACCES'));
-    await expect(launcher.relayGrant({})).rejects.toThrow('listen EACCES');
+    await expect(launcher.relayGrant({ lane: 'engine' })).rejects.toThrow('listen EACCES');
     // Loopback TCP, a Unix socket, or on Windows the relay's named pipe.
-    expect((await launcher.relayGrant({})).endpoint).toMatch(/^(ws:\/\/127\.0\.0\.1:|ws\+unix:)/);
+    expect((await launcher.relayGrant({ lane: 'engine' })).endpoint).toMatch(/^(ws:\/\/127\.0\.0\.1:|ws\+unix:)/);
     await launcher.dispose({ immediate: true });
   });
 

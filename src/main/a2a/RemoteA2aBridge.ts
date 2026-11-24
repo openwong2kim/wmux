@@ -14,6 +14,7 @@ import {
   type A2aRemoteWaitingCause,
 } from '../../shared/a2aRemoteDelivery';
 import { GATED_DELIVERY_DEADLINE_MARGIN_MS, GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../shared/freshContext';
+import { parseGatedSubmitProof, type GatedSubmitProof } from '../../shared/ptyMessageDelivery';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
 
 /**
@@ -70,6 +71,13 @@ export interface RemoteA2aBridgeDeps {
    * read as possibly pasted, though nothing could have been.
    */
   rendererReady?: () => Promise<boolean>;
+  /**
+   * Whether the peer's end of a task this PC sent reaches the sender's pane
+   * another way: its fan-out row is open, so the row moves to failed and its
+   * fan-out nudge says so. The pane then gets that one line, not also the
+   * task's ended pointer. Must not throw.
+   */
+  endToldElsewhere?: (taskId: string) => boolean;
   /** Runs after every pull that reached the daemon; never overlaps itself. */
   afterPull?: () => Promise<void>;
   backstopMs?: number;
@@ -78,7 +86,8 @@ export interface RemoteA2aBridgeDeps {
 }
 
 type Mark =
-  | { delivered: true; ptyId?: string }
+  /** `submit`: what main submitted to `ptyId` (recorded by the daemon only). */
+  | { delivered: true; ptyId?: string; submit?: GatedSubmitProof }
   | { held: A2aRemoteHeldReason }
   | { attempted: false; waiting?: A2aRemoteWaitingCause }
   | { attempted: false; reoffer: true };
@@ -130,6 +139,14 @@ export class RemoteA2aBridge {
   constructor(deps: RemoteA2aBridgeDeps) {
     this.deps = deps;
     this.now = deps.now ?? Date.now;
+  }
+
+  private endToldElsewhere(taskId: string): boolean {
+    try {
+      return this.deps.endToldElsewhere?.(taskId) === true;
+    } catch {
+      return false;
+    }
   }
 
   start(): void {
@@ -404,6 +421,7 @@ export class RemoteA2aBridge {
         ? await this.deps.sendToRenderer(A2A_REMOTE_NOTIFY_METHOD, {
           task,
           messageId: item.messageId,
+          ...(item.kind === 'state' && this.endToldElsewhere(task.id) ? { endToldElsewhere: true } : {}),
           ...(resnapshot ? { resnapshot: true } : {}),
           // Offered late: the pane is told it was held, and since when.
           ...(reoffer ? { delayed: heldDelayPrefix(item.at ?? item.heldAt) } : {}),
@@ -423,9 +441,10 @@ export class RemoteA2aBridge {
     if (isRecord(result) && result.ok === true && result.delivered === true) {
       this.retry.delete(unit.key);
       this.misses.delete(unit.key);
+      const submit = parseGatedSubmitProof(result.submit);
       await this.mark(unit.key, {
         ...ref,
-        mark: { delivered: true, ...(result.ptyId ? { ptyId: result.ptyId } : {}) },
+        mark: { delivered: true, ...(result.ptyId ? { ptyId: result.ptyId } : {}), ...(submit && submit.ptyId === result.ptyId ? { submit } : {}) },
       });
       return 'delivered';
     }

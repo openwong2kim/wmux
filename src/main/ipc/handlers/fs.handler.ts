@@ -40,6 +40,13 @@ const BLOCKED_FILES = [
 ];
 
 /**
+ * The home's real path, kept for the home it was read for: every sensitive-path
+ * check needs it, several per file request (a preview page's assets), and it
+ * runs on the main thread.
+ */
+let realHome: { home: string; real: string } | undefined;
+
+/**
  * The home folder as given and as its real path. A canonical (realpath'd)
  * path must be compared with the real home: when home is reached through a
  * symlink, or on Windows through an 8.3 short name, the two spellings differ
@@ -48,10 +55,15 @@ const BLOCKED_FILES = [
 export function homeRoots(): string[] {
   const home = os.homedir();
   let real = home;
-  try {
-    real = fs.realpathSync.native(home);
-  } catch {
-    // An unreadable home keeps the given spelling only.
+  if (realHome?.home === home) {
+    real = realHome.real;
+  } else {
+    try {
+      real = fs.realpathSync.native(home);
+      realHome = { home, real };
+    } catch {
+      // An unreadable home keeps the given spelling only, and is read again next time.
+    }
   }
   const roots = [home, real].map((h) => h.replace(/\\/g, '/').toLowerCase().normalize('NFC'));
   return roots[0] === roots[1] ? [roots[0]] : roots;
@@ -216,14 +228,19 @@ async function spelledFromDrive(inputPath: string, canonical: string): Promise<s
   const drivePath = path.win32.resolve(inputPath);
   const root = path.win32.parse(drivePath).root;
   const key = driveKey(drivePath);
-  mappedDrives.delete(key);
+  // The entry changes only once the root's read lands: a localSpelling call
+  // made while it is in flight still finds the drive as last read.
   try {
     const share = (await fs.promises.realpath(root)).replace(/[\\/]+$/, '').replace(/\//g, '\\');
     const onShare = isUncOrDevicePath(share) && !DEVICE_PATH.test(share);
-    if (!onShare) return null;
+    if (!onShare) {
+      mappedDrives.delete(key);
+      return null;
+    }
     mappedDrives.set(key, share);
     return underShare(canonical, share, root);
   } catch {
+    mappedDrives.delete(key);
     return null;
   }
 }

@@ -203,6 +203,17 @@ describe('answers', () => {
     expect(tasks.getTask(remoteTaskId(fan, spawnFirstMessageId(fan)))!.metadata.remote).toMatchObject({ direction: 'outbound', fanout: true });
   });
 
+  it('the asking pty main verified is the first task\'s anchor, kept across a restart and never sent', async () => {
+    const id = askOk({ budget: 'fanout', callerKey: 'fanout-key', fromPtyId: 'pty-a' });
+    expect(JSON.stringify(sent.at(-1)?.env)).not.toContain('pty-a');
+    store = new SpawnOutgoingStore({ dir: path.join(dir, 'a2a'), scheduleHarden: quiet, now: () => clock });
+    asks = make();
+    expect(store.get(B, id)?.from).toEqual({ workspaceId: 'ws-a', paneId: 'pane-a', ptyId: 'pty-a' });
+    const linkId = asSpawnLinkId(crypto.randomUUID())!;
+    expect(await asks.onResult(B, started(id, linkId))).toBe(true);
+    expect(tasks.getTask(remoteTaskId(linkId, spawnFirstMessageId(linkId)))!.metadata.from).toMatchObject({ paneId: 'pane-a', ptyId: 'pty-a' });
+  });
+
   it('a started answer this PC could not write is taken again, without a second link', async () => {
     const id = askOk();
     const result = started(id);
@@ -378,5 +389,8 @@ describe('the asker\'s name for the agent (label)', () => {
     const odd = (await ask({ ...base, label: 7 })) as { ok: boolean; spawn: { spawnId: string } };
     expect(odd.ok).toBe(true);
     expect(store.get(B, odd.spawn.spawnId)).not.toHaveProperty('label');
+    const stamped = (await ask({ ...base, fromPtyId: 'pty-a' })) as { ok: boolean; spawn: { spawnId: string } };
+    expect(store.get(B, stamped.spawn.spawnId)?.from.ptyId).toBe('pty-a');
+    expect(await ask({ ...base, fromPtyId: 7 })).toMatchObject({ ok: false, error: 'bad-request' });
   });
 });

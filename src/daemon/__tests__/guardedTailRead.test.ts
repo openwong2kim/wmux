@@ -2,7 +2,9 @@
 // none. Each hazard fixture is first shown to be served WRONG by a tail that
 // only checks for unknown cells (no cell is unknown, yet the rows differ),
 // then shown to fall back, with its reason, to the whole ring's answer.
+import fs from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { nativeCorePath } from '../../shared/nativeTerminalCore';
 import { RingBuffer } from '../RingBuffer';
 import { OutputModeTracker } from '../util/outputModeTracker';
 import { generateTextSnapshotUnqueued, type TextSnapshotOutcome } from '../HeadlessSnapshot';
@@ -55,9 +57,11 @@ const shell = '$ ls\r\nfile-a  file-b\r\n$ ';
 /**
  * `xtermOnly`: the rust engine does not implement the sequence (LNM, ?47 and
  * ?1047 are no-ops there), so its unguarded tail is not wrong; the guard
- * still falls back, as the engine the whole-ring read uses is not fixed.
+ * still falls back, as the engine the whole-ring read uses is not fixed. The
+ * text snapshot runs on the Rust core when its module is there (named by
+ * WMUX_TERMINAL_CORE_MODULE, as on CI), else on xterm.
  */
-const rustEngine = process.env.WMUX_TERMINAL_CORE === 'rust';
+const rustEngine = fs.existsSync(nativeCorePath());
 const hazards: Array<{ name: string; chunks: string[]; reason: string; xtermOnly?: boolean }> = [
   { name: 'margins set before the cut', reason: 'margins',
     chunks: pages('\x1b[1;20r', (i) => `\x1b[24;1Hstatus ${i}${Array.from({ length: 5 }, (_, j) => `\x1b[20;1H\nline ${i}-${j}`).join('')}`) },

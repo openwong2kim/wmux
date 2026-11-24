@@ -90,6 +90,8 @@ export interface DaemonJobSpec {
   label: string;
   programArguments: string[];
   env: Record<string, string>;
+  /** Where the daemon's stderr goes (launchd appends); /dev/null when absent. */
+  stderrPath?: string;
 }
 
 export function buildDaemonLaunchdPlist(spec: DaemonJobSpec): string {
@@ -115,9 +117,10 @@ export function buildDaemonLaunchdPlist(spec: DaemonJobSpec): string {
     '\t<key>AbandonProcessGroup</key>\n\t<true/>',
     // Hosts interactive shells — opt out of background throttling.
     '\t<key>ProcessType</key>\n\t<string>Interactive</string>',
-    // Matches the previous `stdio: 'ignore'`; the daemon writes its own logs.
+    // The daemon writes its own logs. stderr keeps the line a native abort
+    // prints just before the process ends (daemon-stderr.log).
     '\t<key>StandardOutPath</key>\n\t<string>/dev/null</string>',
-    '\t<key>StandardErrorPath</key>\n\t<string>/dev/null</string>',
+    `\t<key>StandardErrorPath</key>\n\t${str(spec.stderrPath && !XML_UNSAFE.test(spec.stderrPath) ? spec.stderrPath : '/dev/null')}`,
     '</dict>',
     '</plist>',
     '',
@@ -442,7 +445,7 @@ export async function pruneStaleDaemonJobs(baseLabel: string, plistDir: string, 
  * any failure is a plain Error: falling back then could start a second daemon.
  */
 export async function startDaemonViaLaunchd(
-  opts: { baseLabel: string; plistDir: string; programArguments: string[]; env: Record<string, string | undefined> },
+  opts: { baseLabel: string; plistDir: string; programArguments: string[]; env: Record<string, string | undefined>; stderrPath?: string },
   rt: LaunchdRuntime,
 ): Promise<LaunchdDaemonHandle> {
   if (rt.uid < 0) throw new LaunchdUnavailableError('no uid on this platform');
@@ -467,7 +470,7 @@ export async function startDaemonViaLaunchd(
     try {
       fs.writeFileSync(
         plistPath,
-        buildDaemonLaunchdPlist({ label, programArguments: opts.programArguments, env: filterEnvForLaunchd(opts.env) }),
+        buildDaemonLaunchdPlist({ label, programArguments: opts.programArguments, env: filterEnvForLaunchd(opts.env), stderrPath: opts.stderrPath }),
         { mode: 0o600 },
       );
       await rt.runLaunchctl(['bootstrap', `gui/${rt.uid}`, plistPath]);

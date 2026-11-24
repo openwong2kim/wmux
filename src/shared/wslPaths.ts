@@ -179,3 +179,27 @@ export function toAgentFileParts(value: unknown, env: NodeJS.ProcessEnv = proces
   };
   walk(value, 0);
 }
+
+/** `\\wsl.localhost\<distro>\…` or `\\wsl$\<distro>\…`: the distro, then the rest. */
+const WSL_SHARE = /^[\\/]{2}(?:wsl\.localhost|wsl\$)[\\/]([^\\/]+)(.*)$/i;
+
+/**
+ * A WSL share path (`\\wsl.localhost\Ubuntu\home\me`, `\\wsl$\…`, either
+ * slash spelling) as the distro and the Linux path it names. The path uses `/`,
+ * has `.`/`..` segments and repeated slashes collapsed (never above `/`) and no
+ * trailing slash except the root. Null when `p` is not a WSL share, the distro
+ * is not a valid WSL distro name, or the distro segment is `.`/`..`.
+ */
+export function wslShareToLinux(p: string): { distro: string; linuxPath: string } | null {
+  const m = WSL_SHARE.exec(p);
+  if (!m) return null;
+  const distro = m[1];
+  if (distro === '.' || distro === '..' || !isValidWslDistroName(distro)) return null;
+  const parts: string[] = [];
+  for (const seg of m[2].replace(/\\/g, '/').split('/')) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') parts.pop();
+    else parts.push(seg);
+  }
+  return { distro, linuxPath: `/${parts.join('/')}` };
+}

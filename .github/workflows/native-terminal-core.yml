@@ -16,6 +16,11 @@ jobs:
         os: [macos-15, windows-2022, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    # Each vitest step below names the module it needs (and requires it with
+    # WMUX_REQUIRE_RUST_CORE); the others run before the build or stub it, so
+    # the suite's setup does not ask for it on CI (requireRustEngine.ts).
+    env:
+      WMUX_TERMINAL_CORE_NOT_NEEDED: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -44,6 +49,14 @@ jobs:
         run: rustup toolchain install stable --profile minimal
       - name: Rust interpreter and grid unit tests
         run: cargo test --manifest-path core/wmux-term/Cargo.toml --no-default-features --locked
+      # The pipe listener's tests read back its mandatory label. The hosted runner
+      # runs at High integrity, so this also covers a High creator setting a
+      # Medium label; fail if the runner is not High, so that case is never lost.
+      - name: Runner integrity is High
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (whoami /groups | Select-String -SimpleMatch 'S-1-16-12288')) { throw 'expected a High integrity runner' }
       - name: Native core unit tests
         run: cargo test --manifest-path core/wmux-term/Cargo.toml --features native-core --locked
       # The vendored crate is not a workspace member (it has dev-dependencies),
@@ -62,7 +75,7 @@ jobs:
         if: runner.os == 'Linux'
         run: xvfb-run -a npx electron --no-sandbox core/wmux-term/spike/native-transport-electron.cjs
       - name: Backend, snapshot, input and lifecycle contracts
-        run: npx vitest run src/shared/__tests__/terminalPty.os.test.ts src/shared/__tests__/terminalCoreSettings.os.test.ts src/daemon/__tests__/RingBuffer.test.ts src/daemon/__tests__/BufferHibernation.os.test.ts src/daemon/__tests__/DaemonPTYBridge.nativeOutput.test.ts src/daemon/__tests__/SessionPipe.inputBackpressure.os.test.ts src/main/pty/__tests__/PTYManager.wsl.test.ts src/main/ipc/handlers/__tests__/terminalCore.handler.test.ts src/renderer/components/Settings/__tests__/TerminalEngineSetting.test.tsx src/daemon/__tests__/sessionReattach.engines.os.test.ts src/daemon/__tests__/paneHangup.engines.os.test.ts src/daemon/__tests__/nativeProcessTable.parity.os.test.ts
+        run: npx vitest run src/shared/__tests__/terminalPty.os.test.ts src/shared/__tests__/terminalCoreSettings.test.ts src/daemon/__tests__/RingBuffer.test.ts src/daemon/__tests__/BufferHibernation.os.test.ts src/daemon/__tests__/DaemonPTYBridge.nativeOutput.test.ts src/daemon/__tests__/SessionPipe.inputBackpressure.os.test.ts src/main/pty/__tests__/PTYManager.wsl.test.ts src/main/ipc/handlers/__tests__/terminalCore.handler.test.ts src/renderer/components/Settings/__tests__/TerminalEngineSetting.test.tsx src/daemon/__tests__/sessionReattach.engines.os.test.ts src/daemon/__tests__/paneHangup.engines.os.test.ts src/daemon/__tests__/nativeProcessTable.parity.os.test.ts
         env:
           # The module is built above, so on macOS and Linux its rust cases
           # must run, not skip. The suite is POSIX only: Windows skips it.
@@ -102,9 +115,9 @@ jobs:
       # Stub WMUX_RUST_SNAPSHOT_MODULE, which WMUX_TERMINAL_CORE_MODULE would override.
       - name: Opt-in snapshot module contracts
         run: npx vitest run src/daemon/__tests__/TextSnapshotBackend.test.ts src/daemon/__tests__/AnsiSnapshotBackend.test.ts src/daemon/__tests__/RustSnapshot.test.ts
-      # The unit lane builds no module, so on CI these suites skip there. Here
-      # the module is built: name it and require it, so a missing module fails
-      # instead of skipping. Every Rust*Parity suite in the tree runs, so a new
+      # ci.yml's unit lane runs these suites with the built module on Linux.
+      # Here they run on macOS and Windows: name the module and require it, so
+      # a missing module fails instead of skipping. Every Rust*Parity suite in the tree runs, so a new
       # or renamed one cannot drop out. Linux is left out: the linux-rust-daemon
       # job below already runs them with the built module required.
       - name: Rust snapshot parity with xterm (built module required)

@@ -39,27 +39,18 @@ function renderBody(overrides: Partial<WebPopoverBodyProps>): string {
     onToggleAdvanced: vi.fn(),
     busy: false,
     copied: null,
-    deviceName: '',
-    qr: null,
     onToggleAllowInput: vi.fn(),
     onToggleExpose: vi.fn(),
     onToggleTailscale: vi.fn(),
     onToggleAllowTranscript: vi.fn(),
     onToggleAllowUpload: vi.fn(),
     onToggleAllowDangerousLaunch: vi.fn(),
-    onDeviceNameChange: vi.fn(),
-    onStartPairing: vi.fn(),
     onOpenLink: vi.fn(),
     onStart: vi.fn(),
     onStop: vi.fn(),
     onCopyUrl: vi.fn(),
-    onCopyPairUrl: vi.fn(),
-    onCopyPairCode: vi.fn(),
     onOpenUrl: vi.fn(),
-    onNewPairCode: vi.fn(),
     onOpenDevices: vi.fn(),
-    pairAllowInput: false,
-    onTogglePairAllowInput: vi.fn(),
     t,
   };
   return renderToStaticMarkup(createElement(WebPopoverBody, { ...base, ...overrides }));
@@ -181,13 +172,12 @@ describe('oneClickReachable', () => {
   });
 });
 
-describe('WebPopoverBody — one-click readiness', () => {
-  const stopped = { info: { running: false }, deviceName: 'Phone' } as const;
+describe('WebPopoverBody — stopped readiness', () => {
+  const stopped = { info: { running: false } } as const;
 
   it('while Tailscale is being checked: says so, nothing is primary', () => {
     const html = renderBody({ ...stopped, tailscale: false, tailscaleCheck: { state: 'checking' } });
     expect(html).toContain('web.wizardChecking');
-    expect(html).toMatch(/disabled="">web\.connectPhonePair/);
     expect(html).not.toContain('ui-btn-primary');
   });
 
@@ -197,7 +187,6 @@ describe('WebPopoverBody — one-click readiness', () => {
       tailscaleCheck: { state: 'problem', lines: ['Install it from https://tailscale.com/download, then sign in.'] },
     });
     expect(html).toContain('>https://tailscale.com/download</button>');
-    expect(html).toMatch(/disabled="">web\.connectPhonePair/);
     expect(html).not.toContain('web.computerTurnOnHttps');
   });
 
@@ -208,37 +197,29 @@ describe('WebPopoverBody — one-click readiness', () => {
     expect(html.split('ui-btn-primary').length - 1).toBe(1);
   });
 
-  it('a ticked LAN enables the one-click (the daemon then says why it will not pair)', () => {
+  it('a ticked LAN makes Start the primary (the daemon then says why a phone cannot pair)', () => {
     const html = renderBody({ ...stopped, expose: true, tailscaleCheck: { state: 'problem', lines: [] } });
-    expect(html).not.toMatch(/disabled="">web\.connectPhonePair/);
+    expect(html).toMatch(/ui-btn-primary[^>]*>web\.start/);
   });
 });
 
 describe('WebPopoverBody — off state', () => {
-  const html = renderBody({ info: { running: false }, deviceName: 'Phone', tailscale: true, tailscaleCheck: { state: 'ok' } });
+  const html = renderBody({ info: { running: false }, tailscale: true, tailscaleCheck: { state: 'ok' } });
 
-  it('leads with Pair a phone, keeps the options and Start', () => {
-    expect(html).toContain('web.connectPhonePair');
-    expect(html).toContain('value="Phone"');
+  it('keeps the options and Start, and pairs nothing', () => {
+    expect(html).not.toContain('<input');
     expect(html).toContain('web.shareThisComputer');
     expect(html).toContain('web.allowInput');
     expect(html).toContain('web.expose');
     expect(html).toContain('web.start');
   });
 
-  it('offers the computer link only while the tailnet transport is chosen', () => {
-    expect(html).toContain('>web.connectComputer<');
-    expect(renderBody({ info: { running: false }, deviceName: 'Phone', tailscale: false })).not.toContain(
-      '>web.connectComputer<',
-    );
-  });
-
   it('surfaces the scrollback-exposure warning', () => {
     expect(html).toContain('web.scrollbackWarning');
   });
 
-  it('Pair a phone uses the single amber primary fill; Start is secondary', () => {
-    expect(html).toMatch(/ui-btn-primary[^>]*>web\.connectPhonePair/);
+  it('Start uses the single amber primary fill', () => {
+    expect(html).toMatch(/ui-btn-primary[^>]*>web\.start/);
     // One primary per surface: nothing else in the stopped body is filled.
     expect(html.split('ui-btn-primary').length - 1).toBe(1);
   });
@@ -274,21 +255,18 @@ describe('WebPopoverBody — on state', () => {
     clients: 2,
     urls: ['http://127.0.0.1:7681/'],
     pairCode: '48293576',
-    // A code only reaches the operator once a device has been named. An
-    // unnamed one is withheld on purpose — see the naming tests below.
     pendingDeviceName: 'my iPhone',
     allowInput: false,
   };
 
-  it('shows bind label, viewers, URL, copy button and the LARGE pair code', () => {
+  it('shows bind label, viewers, URL and copy button, and never the live pair code', () => {
     const html = renderBody({ info: runningInfo });
     expect(html).toContain('127.0.0.1:7681');
     expect(html).toContain('web.viewers');
     expect(html).toContain('http://127.0.0.1:7681/');
     expect(html).toContain('web.copy');
-    expect(html).toContain('48293576');
-    expect(html).toContain('text-[22px]'); // pair code rendered large
-    expect(html).toContain('web.pairValidity');
+    // Settings pairs nothing: the code is the Pair a phone dialog's.
+    expect(html).not.toContain('48293576');
   });
 
   it('read-only mode shows the read-only line, not INPUT ENABLED', () => {
@@ -328,86 +306,10 @@ describe('WebPopoverBody — on state', () => {
   });
 
   it('only the copied field swaps its label', () => {
-    const html = renderBody({ info: runningInfo, copied: 'pairCode' });
+    const html = renderBody({ info: runningInfo, copied: 'url' });
     // Exactly one button reads "Copied"; the others still offer to copy.
     expect(html.split('web.copied').length - 1).toBe(1);
-    expect(html).toContain('web.copy');
-  });
-
-  it('offers a way back when the pairing code is spent, instead of hiding the section', () => {
-    const html = renderBody({ info: { ...runningInfo, pairCode: undefined } });
-    expect(html).toContain('web.connectPhone');
-    // A spent code lands back on the name field, which IS the way back: the
-    // next device needs a name anyway, and minting from there gives it one.
-    expect(html).toContain('web.connectPhonePair');
-  });
-
-  it('★ the QR replaces the address text, and copy stays reachable', () => {
-    const html = renderBody({
-      info: runningInfo,
-      qr: { d: 'M0 0h1v1h-1z', size: 21 },
-    });
-    expect(html).toContain('<svg');
-    expect(html).toContain('viewBox="0 0 21 21"');
-    // The address as text is redundant once a scan carries it AND the code, and
-    // this popover is a fixed 288px box — so it is replaced, not stacked on.
-    expect(html).not.toContain('/pair</span>');
-    // A phone that will not scan still needs the link.
-    expect(html).toContain('web.copyLink');
-  });
-
-  it('falls back to the address text when there is no QR', () => {
-    const html = renderBody({ info: runningInfo, qr: null });
-    // The QR is the one labelled image; checkbox ticks are svg too.
-    expect(html).not.toContain('web.qrAlt');
-    expect(html).toContain('/pair');
-  });
-
-  it('★ withholds the code until a device has been named', () => {
-    // A code exists from the moment the server starts. Showing that one is how
-    // a roster fills with "Unnamed device" rows nobody can tell apart, which
-    // makes revoking a single device impossible.
-    const html = renderBody({
-      info: { ...runningInfo, pendingDeviceName: undefined },
-      deviceName: '',
-    });
-    expect(html).not.toContain('48293576');
-    expect(html).toContain('web.nameHint');
-    expect(html).toContain('web.connectPhonePair');
-  });
-
-  it('names the device the code will register, next to the code', () => {
-    // The shared identity translator returns the KEY, which carries no
-    // `{name}` placeholder, so interpolation would silently no-op. This one
-    // case needs a translator shaped like the real string to test at all.
-    const html = renderBody({
-      info: runningInfo,
-      t: (key: string) => (key === 'web.pairingAs' ? 'Pairing as {name}' : key),
-    });
-    expect(html).toContain('48293576');
-    // The code outlives the moment the name was typed by ten minutes, and a
-    // mis-labelled roster is only discovered when one entry of eight must go.
-    expect(html).toContain('Pairing as my iPhone');
-  });
-
-  it('cannot mint without a name', () => {
-    const empty = renderBody({ info: { ...runningInfo, pendingDeviceName: undefined }, deviceName: '   ' });
-    expect(empty).toContain('disabled=""');
-    const named = renderBody({
-      info: { ...runningInfo, pendingDeviceName: undefined },
-      deviceName: 'phone',
-    });
-    // Same button, now reachable.
-    expect(named).toContain('web.connectPhonePair');
-    expect(named.split('disabled=""').length).toBeLessThan(empty.split('disabled=""').length);
-  });
-
-  it('offers both connection paths: an openable URL and a token-free pair address', () => {
-    const html = renderBody({ info: runningInfo });
-    expect(html).toContain('web.openHere');
-    expect(html).toContain('web.connectPhone');
-    // The phone address must not carry the token — that is the point of the code.
-    expect(html).toContain('/pair');
+    expect(renderBody({ info: runningInfo })).toContain('web.copy');
   });
 
   it('offers the tailnet transport before the server is started', () => {
@@ -456,41 +358,6 @@ describe('WebPopoverBody — on state', () => {
     // as the link.
     expect(html).toContain('then run');
   });
-
-  it('★ a refusal REPLACES the pairing code rather than sitting beside it', () => {
-    // The code is left LIVE on purpose. Blanking it would test that a missing
-    // code renders nothing, which is not the invariant — the invariant is that
-    // a refusal wins over a code that does exist, because that is the state a
-    // server on a plaintext bind is actually in (start() always mints one).
-    const html = renderBody({
-      info: {
-        ...runningInfo,
-        pairRefusal: { reason: 'insecure-transport', detail: 'plaintext bind' },
-      },
-    });
-    expect(html).toContain('web.refusalInsecure');
-    expect(html).toContain('web.refusalInsecureFix');
-    // A code shown next to "pairing is unavailable" is still a code someone
-    // will read onto a phone. The whole fix is that it is not there.
-    //
-    // Asserted against the FIXTURE's code (48293576). An earlier version checked
-    // a different hard-coded value, so it passed no matter what the component
-    // rendered and left the regression it names unguarded.
-    expect(html).not.toContain('48293576');
-    expect(html).not.toContain('web.newPairCode');
-  });
-
-  it('★ a vanished tailnet front gets its own reason, not the plaintext one', () => {
-    const html = renderBody({
-      info: {
-        ...runningInfo,
-        pairCode: undefined,
-        pairRefusal: { reason: 'no-front', detail: 'serve config missing' },
-      },
-    });
-    expect(html).toContain('web.refusalNoFront');
-    expect(html).not.toContain('web.refusalInsecure');
-  });
 });
 
 describe('WebPopoverBody — phone grants', () => {
@@ -518,7 +385,7 @@ describe('WebPopoverBody — phone grants', () => {
     });
     expect(html).toContain('web.phoneAccess');
     const checked = [...html.matchAll(/role="checkbox"[^>]*aria-checked="(true|false)"/g)].map((m) => m[1]);
-    // Order: pairAllowInput (name form), transcript, upload.
+    // Order: transcript, upload (the device grant is a choice now, not a box).
     expect(checked.slice(-2)).toEqual(['true', 'false']);
   });
 

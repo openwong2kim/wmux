@@ -7,9 +7,11 @@
  * parent does not orphan children — is only true if it is true of a real
  * process, so mocking the child would test nothing worth testing.
  */
+import type { ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import type { Readable } from 'stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ReplSession, buildReplChildEnv } from '../ReplSession';
 import { deliberateSleep } from '../../../test-utils/waitFor';
@@ -280,6 +282,42 @@ describe('ReplSession output discipline', () => {
     expect(outcome.stdout.totalBytes).toBeGreaterThan(1_000_000);
     expect(Buffer.byteLength(outcome.stdout.text)).toBeLessThan(70 * 1024);
     expect(outcome.stdout.text).toContain('bytes elided');
+  }, 30_000);
+
+  it('counts all of a flood that is still in the pipe when the result arrives, and none of it as background', async () => {
+    const session = makeSession();
+    await session.run('1', 5000);
+    const child = (session as unknown as { child: ChildProcess }).child;
+    const stdout = child.stdout as Readable;
+    // Hold every stdout chunk until well after the IPC result: the order a
+    // loaded parent on darwin sees. Still read, so the child never blocks.
+    const listeners = stdout.listeners('data') as Array<(chunk: Buffer) => void>;
+    stdout.removeAllListeners('data');
+    const held: Buffer[] = [];
+    stdout.on('data', (chunk: Buffer) => held.push(chunk));
+    const result = new Promise<void>((resolve) => {
+      child.on('message', (message: { ok?: boolean }) => { if (message?.ok !== undefined) resolve(); });
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const outcome = session.run('for (let i = 0; i < 20000; i++) console.log("x".repeat(80)); "done"', 15_000);
+      await result;
+      await vi.advanceTimersByTimeAsync(1_000);
+      stdout.removeAllListeners('data');
+      for (const listener of listeners) stdout.on('data', listener);
+      for (const chunk of held) stdout.emit('data', chunk);
+      vi.useRealTimers();
+      const flood = await outcome;
+      expect(flood.ok).toBe(true);
+      expect(flood.stdout.totalBytes).toBe(20_000 * 81);
+      expect(flood.stdout.text).not.toContain('wmux-repl-end');
+      expect(flood.stderr.totalBytes).toBe(0);
+      const next = await session.run('2', 5000);
+      expect(next.background).toBeUndefined();
+      expect(next.stdout.totalBytes).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   }, 30_000);
 
   it('bounds a huge return value', async () => {

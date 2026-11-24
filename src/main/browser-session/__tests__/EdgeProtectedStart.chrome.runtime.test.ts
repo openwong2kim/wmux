@@ -53,6 +53,8 @@ describe.skipIf(skip)('a protected Edge start with the user signed in to Windows
       const launcher = new ChromeLauncher(profile.dir, {
         portEnvVar: null,
         profileName: `edge-protected-${run}`,
+        // This suite drives the protected profile on its DevTools port: the operator setting puts it there.
+        protectedPortAllowed: () => true,
         protection: () => plan,
         extraArgs: ['--headless=new', '--password-store=basic'],
       });

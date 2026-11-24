@@ -250,6 +250,16 @@ export function usageReserveHoldForWorkspace(workspaceId: string): UsageReserveH
   }
 }
 
+/** The running reserve's hold on one usage key ('default' or an account id),
+ *  or null (no reserve, or not held): a pool worker's own account. */
+export function usageReserveHoldForAccount(account: string): UsageReserveHold | null {
+  try {
+    return instance?.holdFor(account) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function noteUsageReserveHeld(hold: UsageReserveHold): void {
   instance?.noteHeld(hold.account, hold.untilMs);
 }

@@ -252,18 +252,33 @@ With headless mode on:
   for more, on a question, at its usage limit, gone) as `remoteStatus` in
   `a2a_task_query`, when its build knows it. For the agent's own question
   menu the choices are sent along, but only once the agent's transcript
-  holds the menu. With Claude Code 2.1.323 and the real service (observed
-  on macOS) the menu was not in the transcript for at least 1 min 45 s while
-  it was open; for as long as it is not there, an open menu shows as
-  `question` with `dialog` and no choices. To keep them on this host and send only
+  holds the menu. In auto permission mode, which headless sessions use,
+  Claude Code writes the menu to the transcript only when it closes
+  (observed with the real service on macOS); for as long as it is not
+  there, an open menu shows as `question` with `dialog` and no choices. To keep them on this host and send only
   how many there are, run `wmux remote status-labels keep` (`send` turns
   it back; with no argument it prints the setting). The setting has its own
   file, `a2a-remote-status.json`, next to the other remote settings; if that
   file is there but cannot be read, the choices are kept. It is a setting for
   this host's owner, not a limit on the host's own agents, which can change it
   like the other remote settings.
-- An agent that stops on a question (a permission prompt, say) cannot be
-  answered here. After about a minute the asking PC is told so, once. If
+- One kind of question can be answered from the asking PC: the agent's own
+  question menu (AskUserQuestion) when it holds a single single-choice
+  question. Its status then carries `pickerId` and `optionCount`, read off
+  this host's screen (no screen text is sent). The agent that sent the task
+  answers with the MCP tool `remote_answer`, or runs `wmux remote answer
+  <task-id> <option> --picker <picker-id>` from its own pane; this host types that choice's number only while the same menu
+  is still on screen and nobody has touched it, and says how it went in the
+  next status (`detail.answers`: `answered`, or `not-answered` with a reason
+  in plain words). Answers are on where follow-ups reach the agent directly
+  (`--follow-ups direct`) and off where they wait for approval here;
+  `wmux remote answers on|off|default` changes that (with no argument it
+  prints the setting). The setting has its own file,
+  `a2a-remote-answers.json`; if that file is there but cannot be read,
+  answers are off and the asking PC is told why.
+- Any other question (a permission prompt, a menu of several questions or
+  several choices, the folder-trust prompt) cannot be answered here. After
+  about a minute the asking PC is told so, once. If
   the question is still there after 10 minutes, the task ends with that
   reason: canceled if it was never typed in, failed if the agent was working
   on it. A task waiting behind the same question ends at once. The agent
@@ -286,10 +301,15 @@ With headless mode on:
   ends them within moments of starting; `daemon headless status` then lists
   the worktrees they left, and the daemon log has one line per agent ended.
 - When an agent ends, its worktree and branch are kept, with whatever the
-  agent wrote there. Remove them yourself with `git worktree remove` and
-  `git branch -D` once you no longer need them. A worktree the agent left
+  agent wrote there. `daemon headless prune` (below) removes the ones whose
+  work is safe elsewhere; remove any other yourself with `git worktree remove`
+  and `git branch -D` once you no longer need it. A worktree the agent left
   unchanged (no commit, nothing modified or added) is removed with its
   branch.
+- If the folder's `wmux.json` declares `fanout.portRange`, each agent gets one
+  free port from it as `WMUX_TASK_PORT`, as a desktop fan-out task does. The
+  range is read from the new worktree, and no two agents running on this host
+  get the same port (see [Fan-out task environment](fan-out-task-environment.md)).
 
 See whether headless mode is in effect, which agents run (each with its spawn
 id, the asking PC, since when and its worktree), and which worktrees ended
@@ -311,6 +331,22 @@ and refuses to run from inside an agent session or a wmux pane:
 
 ```bash
 "$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless release <spawn id>
+```
+
+Remove the kept worktrees of ended agents whose work is safe elsewhere. A
+worktree goes only when `git status` shows nothing modified or untracked, and
+its HEAD and branch tip are both on a remote-tracking ref of the clone
+(pushed; nothing is fetched to check) or inside the commit the asking PC last
+brought back. It is removed with `git worktree remove`, never forced, and its
+branch with it; files git ignores (a `node_modules`, a build) go with it. Every
+other worktree is kept and listed with the reason. `--dry-run` only lists.
+Like `release`, it refuses to run from inside an agent session or a wmux pane;
+removing needs a terminal, while `--dry-run` also runs from a script. With the daemon running, it drops the removed starts'
+records within a minute; otherwise `prune` drops them itself:
+
+```bash
+"$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless prune --dry-run
+"$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless prune
 ```
 
 Turn it off (no question asked). No new agent is started, and the ones
@@ -340,12 +376,13 @@ good, and the agents the daemon started end.
   ```
 
   Start `wmux web` with the same flags it had before.
-- **Terminal engine.** Terminals run on the Rust engine, which the server
-  ships, by default. To run them on the Node engine, write
-  `{"engine": "node"}` to `~/.wmux/terminal-core.json` (or start the daemon
-  with `WMUX_TERMINAL_CORE=node` set), then restart the daemon as above. The
-  daemon reads it once when it starts, and uses Node if the Rust engine cannot
-  load.
+- **Terminal engine.** Terminals run on the Rust engine the server ships. It
+  is the only engine: a `~/.wmux/terminal-core.json` or a
+  `WMUX_TERMINAL_CORE` setting from an older install is ignored (and left in
+  place). If the engine cannot load, terminals show an error instead of a
+  shell. To replace a damaged version, stop the daemon (this ends the
+  processes in its terminals), remove `~/.wmux/runtime/<version>`, then
+  repeat steps 2 to 4 for that version.
 - **Logging out may stop the daemon.** On systemd hosts with
   `KillUserProcesses=yes` in `logind.conf`, the daemon dies when your last SSH
   session ends, taking its terminals with it. Check with

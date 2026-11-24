@@ -3,7 +3,7 @@ import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../.
 import { stashedPaneLiveness } from '../../../shared/paneStash';
 import { isBrainPtyId } from '../../../shared/constants';
 import { remoteAgentKey } from '../../../shared/remoteHosts';
-import { isShadowWorkspaceId } from '../../../shared/pcRail';
+import { isShadowWorkspaceId, LOCAL_PC_ID } from '../../../shared/pcRail';
 import { isWorkSurfaceType, splitShownTerminal } from '../../components/Pane/surfaceKinds';
 import type { AttachedRemoteWorkspace } from '../slices/remoteWorkspacesSlice';
 import type { StoreState } from '../index';
@@ -97,6 +97,9 @@ export interface FleetPane {
    * (a remote row keeps `surfaceType: 'remote-terminal'`).
    */
   remote?: { hostId: string; hostLabel: string };
+  /** The host of a remote-terminal row, set even when no agent resolved
+   *  (`remote` absent): the list grouped by device puts it under that host. */
+  remoteHostId?: string;
   /**
    * The local ptyId of the BACKGROUND tab whose attention status won this
    * row's rollup (a background tab awaiting input while the active tab is
@@ -512,6 +515,24 @@ export function pickStashedRepresentativeSurface(
 }
 
 /**
+ * The tab a pane's Fleet row is keyed on. Stashed panes use the shared #977
+ * picker so the card and the sidebar roster can never disagree; visible panes
+ * keep the plain active-tab rule, except that a work tab (browser, editor,
+ * board…) draws beside the terminal column, which stays on screen, so the row
+ * stays on that column's terminal. Every reader that asks which host a row
+ * runs on (selectFleetPanes, selectDownHostAway) asks this.
+ */
+function fleetRowSurface(
+  leaf: PaneLeaf,
+  stashed: boolean,
+  surfaceAgent: Record<string, { name?: string } | undefined>,
+): Surface | undefined {
+  if (stashed) return pickStashedRepresentativeSurface(leaf, surfaceAgent);
+  const active = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
+  return (isWorkSurfaceType(active?.surfaceType) && splitShownTerminal(leaf)) || active;
+}
+
+/**
  * ptyId → true for every pane the hook derivation currently calls 'running'.
  *
  * The clock-dependent half of `selectFleetPanes`, pulled out so a consumer can
@@ -569,14 +590,18 @@ function remoteRowUnopenable(
 }
 
 /** Attachments the rail has outdated (see FleetSelectorState.outdatedRemoteKeys). */
-export function fleetOutdatedRemoteKeys(state: FleetSelectorState): ReadonlySet<string> | undefined {
+export function fleetOutdatedRemoteKeys(
+  state: Pick<FleetSelectorState, 'outdatedRemoteKeys' | 'remoteWorkspaces' | 'pcRailFeeds'>,
+): ReadonlySet<string> | undefined {
   if (state.outdatedRemoteKeys) return state.outdatedRemoteKeys;
   const { remoteWorkspaces, pcRailFeeds } = state;
   return remoteWorkspaces && pcRailFeeds ? selectOutdatedRemoteKeys({ remoteWorkspaces, pcRailFeeds }) : undefined;
 }
 
 /** The PCs whose remote rows leave (see FleetSelectorState.downHostIds). */
-export function fleetDownHostIds(state: FleetSelectorState): ReadonlySet<string> | undefined {
+export function fleetDownHostIds(
+  state: Pick<FleetSelectorState, 'downHostIds' | 'pcRailHostStatus' | 'pcRailFeeds'>,
+): ReadonlySet<string> | undefined {
   if (state.downHostIds) return state.downHostIds;
   const { pcRailHostStatus, pcRailFeeds } = state;
   return pcRailHostStatus && pcRailFeeds ? selectDownHostIds({ pcRailHostStatus, pcRailFeeds }) : undefined;
@@ -592,15 +617,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
     const visibleIds = new Set(getLeafPanes(ws.rootPane).map((l) => l.id));
     for (const leaf of getWorkspaceLeafPanes(ws)) {
       const stashed = !visibleIds.has(leaf.id);
-      // Stashed rows use the shared #977 picker (see above) so this card and
-      // the sidebar roster can never disagree; visible rows keep the plain
-      // active-tab rule the tests pin, except that a work tab (browser, editor,
-      // board…) draws beside the terminal column, which stays on screen, so
-      // the row stays on that column's terminal.
-      const active = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
-      const surf = stashed
-        ? pickStashedRepresentativeSurface(leaf, state.surfaceAgent ?? {})
-        : (isWorkSurfaceType(active?.surfaceType) && splitShownTerminal(leaf)) || active;
+      const surf = fleetRowSurface(leaf, stashed, state.surfaceAgent ?? {});
       const ptyId = surf?.ptyId ?? '';
       // A remote row that can't be opened leaves, with or without an agent: a
       // plain remote shell there is no more reachable than an agent.
@@ -823,6 +840,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         ...(remoteAgent
           ? { remote: { hostId: surf?.remoteHostId ?? '', hostLabel: remoteAgent.hostLabel } }
           : {}),
+        ...(surf?.surfaceType === 'remote-terminal' && surf.remoteHostId ? { remoteHostId: surf.remoteHostId } : {}),
         ...(!remoteAgent && !stashedExited && attentionPty && attentionPty !== ptyId
           ? { attentionPtyId: attentionPty }
           : {}),
@@ -959,9 +977,12 @@ export function selectAllWorkspaceAgentStatus(
  * has heard anything". Returns 0 unless the workspace's roll-up status IS
  * 'running' (so any attention state — needs-you, error, a finished turn —
  * outranks the ring exactly as it outranks the running dot) AND every running
- * pane in it is unverifiable. One live pane working alongside a wedged one
- * means the workspace really is being worked on; claiming "no update for 30m+"
- * over it would be false. The reported number is the FRESHEST stale pane's, the
+ * pane in it is unverifiable AND no other pane in it was heard from within
+ * UNVERIFIABLE_AFTER_MS. One live pane working alongside a wedged one means the
+ * workspace really is being worked on; claiming "no update for 30m+" over it
+ * would be false. That holds between that pane's turns too: its turn end or
+ * last activity counts as live, so the row does not swap between the running
+ * dot and the ring at every turn end. The reported number is the FRESHEST stale pane's, the
  * only figure true of the workspace as a whole.
  */
 export function selectWorkspaceUnverifiableMinutes(
@@ -1016,6 +1037,14 @@ interface WorkspaceRollups {
  */
 const rollupCache = new WeakMap<FleetSelectorState, WorkspaceRollups>();
 
+/** Whether the pane at `ptyId` ended a turn or reported activity within
+ *  UNVERIFIABLE_AFTER_MS of the agent clock. */
+function heardWithinUnverifiableWindow(state: FleetSelectorState, ptyId: string): boolean {
+  if (!ptyId || state.agentClockMs === undefined) return false;
+  const heardAt = Math.max(state.surfaceActivityAt?.[ptyId] ?? 0, state.surfaceTurnEndAt?.[ptyId] ?? 0);
+  return heardAt > 0 && state.agentClockMs - heardAt <= UNVERIFIABLE_AFTER_MS;
+}
+
 function workspaceRollups(state: FleetSelectorState): WorkspaceRollups {
   const cached = rollupCache.get(state);
   if (cached) return cached;
@@ -1023,7 +1052,9 @@ function workspaceRollups(state: FleetSelectorState): WorkspaceRollups {
   const unverifiableByWorkspace: Record<string, number> = {};
   const unverifiableByPty: Record<string, number> = {};
   const quietest: Record<string, number> = {};
-  const verifiableRunning = new Set<string>();
+  /** Workspaces with a pane that is running and heard from, or was heard from
+   *  within UNVERIFIABLE_AFTER_MS (a turn end, an activity stamp). */
+  const live = new Set<string>();
   for (const pane of selectFleetPanes(state)) {
     // A stopped turn without a question is idle in the sidebar. Normalize
     // before ranking so it cannot hide a sibling's running indicator.
@@ -1031,15 +1062,18 @@ function workspaceRollups(state: FleetSelectorState): WorkspaceRollups {
     const paneStatus = pane.agentStatus === 'waiting' ? 'idle' : pane.agentStatus;
     const cur = status[pane.workspaceId] ?? 'idle';
     if (STATUS_RANK[paneStatus] < STATUS_RANK[cur]) status[pane.workspaceId] = paneStatus;
-    if (pane.agentStatus !== 'running') continue;
-    if (!pane.unverifiable) { verifiableRunning.add(pane.workspaceId); continue; }
+    if (pane.agentStatus !== 'running') {
+      if (heardWithinUnverifiableWindow(state, pane.ptyId)) live.add(pane.workspaceId);
+      continue;
+    }
+    if (!pane.unverifiable) { live.add(pane.workspaceId); continue; }
     const mins = Math.floor((pane.staleForMs ?? 0) / 60_000);
     if (pane.ptyId) unverifiableByPty[pane.ptyId] = mins;
     const prev = quietest[pane.workspaceId];
     if (prev === undefined || mins < prev) quietest[pane.workspaceId] = mins;
   }
   for (const workspaceId in quietest) {
-    if (status[workspaceId] !== 'running' || verifiableRunning.has(workspaceId)) continue;
+    if (status[workspaceId] !== 'running' || live.has(workspaceId)) continue;
     unverifiableByWorkspace[workspaceId] = quietest[workspaceId];
   }
   const out = { status, unverifiableByWorkspace, unverifiableByPty };
@@ -1390,6 +1424,234 @@ export function groupFleetPanes(panes: FleetPane[], ctx: FleetGroupContext = {})
     groups.idle.sort(compare);
   }
   return groups;
+}
+
+/** What a PC the rail cannot reach last had on the list. */
+export interface FleetAwayCounts {
+  panes: number;
+  /** Of those, the ones in Needs you. */
+  neededYou: number;
+}
+
+/** The host a row runs on, or undefined for this computer. A remote-terminal
+ *  row whose agent did not resolve still runs on its host. */
+function rowHostId(pane: FleetPane): string | undefined {
+  return pane.remote?.hostId || pane.remoteHostId || undefined;
+}
+
+/**
+ * The device a row runs on: LOCAL_PC_ID with label '' for this computer (the
+ * UI names it), else the host's id and name. A host the rail knows carries the
+ * rail's name, then the row's snapshot, then the attachment's, then its id.
+ * The grouping and a Needs you row's device name both read this, so a row is
+ * always named after the group it would sit in.
+ */
+export function fleetRowDevice(
+  pane: FleetPane,
+  opts: {
+    hosts?: readonly Pick<FleetDeviceHost, 'id' | 'label'>[];
+    remoteWorkspaces?: readonly Pick<AttachedRemoteWorkspace, 'hostId' | 'hostLabel'>[];
+  } = {},
+): { id: string; label: string } {
+  const hostId = rowHostId(pane);
+  if (!hostId) return { id: LOCAL_PC_ID, label: '' };
+  const label = opts.hosts?.find((h) => h.id === hostId)?.label
+    ?? pane.remote?.hostLabel
+    ?? opts.remoteWorkspaces?.find((r) => r.hostId === hostId)?.hostLabel
+    ?? hostId;
+  return { id: hostId, label };
+}
+
+/**
+ * What each PC the rail calls down last had here, for its device head's note:
+ * every remote pane on it (agent or plain shell), and how many of them were
+ * agents asking for you by their last snapshot. Those rows never reach the board (selectFleetPanes drops a down
+ * host's rows), so this counts them from the same inputs, on the same tick
+ * the drop notice fires (selectDownHostIds). Empty while no host is down.
+ */
+export function selectDownHostAway(
+  state: Pick<FleetSelectorState, 'workspaces' | 'surfaceAgent' | 'remoteWorkspaces' | 'downHostIds' | 'outdatedRemoteKeys'
+    | 'pcRailHostStatus' | 'pcRailFeeds'>,
+): Record<string, FleetAwayCounts> {
+  const away: Record<string, FleetAwayCounts> = {};
+  const down = fleetDownHostIds(state);
+  if (!down || down.size === 0) return away;
+  // A snapshot the rail has outdated resolves no agent, as on the board.
+  // `down` stays out: a down host's last snapshot is what this counts.
+  const outdated = fleetOutdatedRemoteKeys(state);
+  for (const ws of state.workspaces) {
+    const visibleIds = new Set(getLeafPanes(ws.rootPane).map((l) => l.id));
+    for (const leaf of getWorkspaceLeafPanes(ws)) {
+      // The row's own tab decides its host, as in selectFleetPanes: a pane
+      // whose row is a local tab stays on the board, so it is not counted here.
+      const surf = fleetRowSurface(leaf, !visibleIds.has(leaf.id), state.surfaceAgent ?? {});
+      if (surf?.surfaceType !== 'remote-terminal' || !surf.remoteHostId || !down.has(surf.remoteHostId)) continue;
+      const hostId = surf.remoteHostId;
+      let neededYou = false;
+      for (const s of leaf.surfaces) {
+        if (s.surfaceType !== 'remote-terminal' || s.remoteHostId !== hostId) continue;
+        if (resolveRemoteAgent(state.remoteWorkspaces, s.remoteHostId, s.remoteSessionId, undefined, outdated)?.status === 'awaiting_input') {
+          neededYou = true;
+        }
+      }
+      const counts = (away[hostId] ??= { panes: 0, neededYou: 0 });
+      counts.panes++;
+      if (neededYou) counts.neededYou++;
+    }
+  }
+  return away;
+}
+
+/** One device's part of the list grouped by device: everything but Needs you. */
+export interface FleetDeviceGroup {
+  /** LOCAL_PC_ID, or the remote host's id. */
+  id: string;
+  /** The host's label; '' for this computer (the UI names it). */
+  label: string;
+  /** The rail's word on the host. 'connected': the rail draws it online.
+   *  'disconnected': the rail calls it down. It has no rows; `lastSeen` says
+   *  what it had. 'needs-repair': the host refused this computer's
+   *  credential; its rows go until it is paired again. 'insecure': paired over
+   *  plain http, so this computer does not contact it. 'unknown': it has rows
+   *  here but the rail has not said it reaches it (not on the rail, not
+   *  answered yet, or one missed poll short of down), so the head claims
+   *  nothing about reachability. */
+  state: 'local' | 'connected' | 'unknown' | 'insecure' | 'disconnected' | 'needs-repair';
+  /** Disconnected or needs-repair: when the host last answered, or null when not known. */
+  lastSeenAt?: number | null;
+  /** Disconnected only: the panes it last had here. */
+  lastSeen?: FleetAwayCounts;
+  running: FleetRow[];
+  finished: FleetRow[];
+  idle: FleetRow[];
+}
+
+export interface FleetDeviceGroups {
+  /** Unchanged: one section across every device, so its count stays one count. */
+  needsYou: FleetRow[];
+  devices: FleetDeviceGroup[];
+}
+
+/** What the grouping reads of one paired PC from the rail, in the rail's order. */
+export interface FleetDeviceHost {
+  id: string;
+  label: string;
+  /** True once the rail calls it down (selectDownHostIds). */
+  offline: boolean;
+  /** It refused this computer's credential (the rail's needs-repair). */
+  needsRepair: boolean;
+  /** Paired over plain http, so the rail does not contact it (the rail's insecure). */
+  insecure: boolean;
+  /** The rail draws it online (isPcRailHostOnline). */
+  online: boolean;
+  /** When it last answered, or null when not known. */
+  lastSeenAt: number | null;
+}
+
+/** A host's head state while it has rows here, from the rail alone. */
+function railDeviceState(host: FleetDeviceHost | undefined): FleetDeviceGroup['state'] {
+  if (!host) return 'unknown';
+  if (host.offline) return 'disconnected';
+  if (host.needsRepair) return 'needs-repair';
+  if (host.insecure) return 'insecure';
+  return host.online ? 'connected' : 'unknown';
+}
+
+/**
+ * The list grouped by device, over the board's rows (a PC the rail calls down
+ * has none there; `away` is selectDownHostAway). Needs you stays one section; every other row
+ * goes under its device, in the order the status grouping gave it. This
+ * computer comes first, then the hosts in the rail's order, then any other
+ * host by label; a host the rail knows carries the rail's name. While
+ * `includeDisconnected` is set, a PC the rail cannot reach keeps a row-less
+ * head when it had rows (`away`) or every attachment from it is stale (on a
+ * host the rail does not know, only when it went unanswered), and a
+ * PC that needs pairing again keeps one while it has attachments here; a
+ * device with no rows is otherwise not drawn.
+ */
+export function groupFleetByDevice(
+  groups: FleetGroups,
+  opts: {
+    remoteWorkspaces?: readonly Pick<AttachedRemoteWorkspace, 'hostId' | 'hostLabel' | 'stale' | 'staleReason' | 'panes'>[];
+    hosts?: readonly FleetDeviceHost[];
+    away?: Readonly<Record<string, FleetAwayCounts>>;
+    includeDisconnected?: boolean;
+  } = {},
+): FleetDeviceGroups {
+  const railHost = new Map((opts.hosts ?? []).map((host) => [host.id, host]));
+  const byId = new Map<string, FleetDeviceGroup>();
+  const device = (id: string, label: string, state: FleetDeviceGroup['state']): FleetDeviceGroup => {
+    let d = byId.get(id);
+    if (!d) {
+      d = { id, label, state, running: [], finished: [], idle: [] };
+      byId.set(id, d);
+    }
+    return d;
+  };
+  const attachedLabel = new Map((opts.remoteWorkspaces ?? []).map((r) => [r.hostId, r.hostLabel]));
+  for (const section of ['running', 'finished', 'idle'] as const) {
+    for (const row of groups[section]) {
+      const { id, label } = fleetRowDevice(row.pane, { hosts: opts.hosts, remoteWorkspaces: opts.remoteWorkspaces });
+      let d = byId.get(id);
+      if (!d) {
+        d = device(id, label, id === LOCAL_PC_ID ? 'local' : railDeviceState(railHost.get(id)));
+        if (d.state === 'needs-repair' || d.state === 'disconnected') d.lastSeenAt = railHost.get(id)?.lastSeenAt ?? null;
+      }
+      d[section].push(row);
+    }
+  }
+  if (opts.includeDisconnected) {
+    const disconnected = (hostId: string, label: string, lastSeen: FleetAwayCounts) => {
+      const d = device(hostId, railHost.get(hostId)?.label ?? label, 'disconnected');
+      d.lastSeenAt = railHost.get(hostId)?.lastSeenAt ?? null;
+      d.lastSeen = lastSeen;
+    };
+    for (const [hostId, counts] of Object.entries(opts.away ?? {})) {
+      if (!byId.has(hostId)) disconnected(hostId, attachedLabel.get(hostId) ?? hostId, counts);
+    }
+    // No rows here (the PC slept before this run saw its rows, or it has no
+    // pane here): the last snapshot's panes are what it had.
+    const live = new Set<string>();
+    // Hosts with an attachment stale for want of an answer (or not answered
+    // yet this run). 'gone' and 'refused' are answers: the PC is up.
+    const unanswered = new Set<string>();
+    const snapshot = new Map<string, FleetAwayCounts>();
+    for (const r of opts.remoteWorkspaces ?? []) {
+      if (!r.stale) live.add(r.hostId);
+      else if (r.staleReason !== 'gone' && r.staleReason !== 'refused') unanswered.add(r.hostId);
+      const counts = snapshot.get(r.hostId) ?? { panes: 0, neededYou: 0 };
+      for (const p of r.panes) {
+        counts.panes++;
+        if (p.agentName && p.agentStatus === 'awaiting_input') counts.neededYou++;
+      }
+      snapshot.set(r.hostId, counts);
+    }
+    // Refused this computer: its rows are gone until it is paired again.
+    for (const host of opts.hosts ?? []) {
+      if (!host.needsRepair || byId.has(host.id)) continue;
+      if (!(opts.remoteWorkspaces ?? []).some((r) => r.hostId === host.id)) continue;
+      device(host.id, host.label, 'needs-repair').lastSeenAt = host.lastSeenAt;
+    }
+    for (const [hostId, counts] of snapshot) {
+      // A PC the rail calls down keeps its head even before its attachments
+      // are marked stale (the two are written apart). A stale attachment on a
+      // host the rail still reaches is a workspace gone from it, not a
+      // disconnected PC. A host the rail does not know is disconnected only
+      // when every attachment is stale and one went unanswered.
+      const host = railHost.get(hostId);
+      if (byId.has(hostId) || (host ? !host.offline : live.has(hostId) || !unanswered.has(hostId))) continue;
+      disconnected(hostId, attachedLabel.get(hostId) ?? hostId, counts);
+    }
+  }
+  const order = new Map((opts.hosts ?? []).map((host, i) => [host.id, i]));
+  const remotes = [...byId.values()].filter((d) => d.id !== LOCAL_PC_ID).sort((a, b) => {
+    const ai = order.get(a.id) ?? Infinity;
+    const bi = order.get(b.id) ?? Infinity;
+    if (ai !== bi) return ai - bi;
+    return a.label.localeCompare(b.label) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  });
+  const local = byId.get(LOCAL_PC_ID);
+  return { needsYou: groups.needsYou, devices: local ? [local, ...remotes] : remotes };
 }
 
 /** A terminal title that names only the program (an agent CLI, a shell or a

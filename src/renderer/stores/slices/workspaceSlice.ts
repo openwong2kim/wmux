@@ -44,6 +44,7 @@ import { clampFileTreeWidth } from '../../utils/fileTreeLayout';
 import { isSleepPreventionMode } from '../../../shared/sleepPrevention';
 import { parseWorkspaceCompany, type WorkspaceCompany } from '../../../shared/company';
 import { clampSidebarWidth, dropOwnerFoldKeys, movePinned, pinnedFirst, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention, unpinNestedTasks } from '../../utils/sidebarLayout';
+import { SIBLING_COLLISION_INTERVAL_CHOICES_MIN } from '../../../shared/siblingCollision';
 import {
   collectLeafIds,
   getLeafPanes,
@@ -1263,6 +1264,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         state.secretGuardEnabled = data.secretGuardEnabled;
         window.electronAPI.settings.setSecretGuardEnabled?.(data.secretGuardEnabled);
       }
+      // Sibling collision watch: absent or malformed keeps the defaults (on, 2 min).
+      if (typeof data.siblingCollisionWatch === 'boolean') state.siblingCollisionWatch = data.siblingCollisionWatch;
+      if (typeof data.siblingCollisionIntervalMin === 'number'
+        && (SIBLING_COLLISION_INTERVAL_CHOICES_MIN as readonly number[]).includes(data.siblingCollisionIntervalMin)) {
+        state.siblingCollisionIntervalMin = data.siblingCollisionIntervalMin;
+      }
 
       // Keep the computer awake: an unknown value keeps the default. Main
       // hears of it from utils/sleepPreventionBridge.ts.
@@ -1935,6 +1942,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       if (data.fleetLayout === 'list' || data.fleetLayout === 'board') {
         state.fleetLayout = data.fleetLayout;
+      }
+      if (data.fleetGroupBy === 'status' || data.fleetGroupBy === 'device') {
+        state.fleetGroupBy = data.fleetGroupBy;
       }
       // Whitelisted like everything else a hand-editable, cross-version
       // session file carries: only configurable actions (they have a Settings

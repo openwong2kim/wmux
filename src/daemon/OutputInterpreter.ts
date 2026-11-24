@@ -1,12 +1,33 @@
+import { isUtf8 } from 'node:buffer';
 import { OscParser, type OscCallback } from '../main/pty/OscParser';
-import { loadNativeTerminalCore, reportNativeFallback, type NativeOutputChunk, type NativeOutputInterpreter } from '../shared/nativeTerminalCore';
+import {
+  createNativeAllocReporter,
+  isNativeAllocFailure,
+  loadNativeTerminalCore,
+  reportNativeFallback,
+  type NativeOscBatch,
+  type NativeOutputChunk,
+  type NativeOutputInterpreter,
+} from '../shared/nativeTerminalCore';
 import { OutputModeTracker } from './util/outputModeTracker';
 
 export type OutputModes = Pick<OutputModeTracker, 'isSet' | 'altScreen' | 'preamble' | 'reset'>;
 
 /** One interpreter per bridge lifetime. Feed only captured output, after the
  * ring write. Recovered history seeds modes without replaying historical OSC
- * notifications or prompt events. Native capability is optional for ABI-1 builds. */
+ * notifications or prompt events. Native capability is optional for ABI-1 builds.
+ *
+ * A native feed that refuses an allocation (isNativeAllocFailure) leaves the
+ * native interpreter as it was, so the chunk is fed once more. A second
+ * refusal reads the chunk for its modes only (skipChunk / skipBytes, which
+ * never allocate): its mode changes still reach `modes`, so a replay preamble
+ * stays right, while its OSC events are not read and the open OSC is dropped,
+ * so an OSC the chunk would have closed cannot swallow the output after it.
+ * The chunk is counted as skipped; the next one is interpreted as usual. A
+ * module built before skipChunk only skips the chunk. Refused recovered
+ * history is read the same way. The backend never switches mid-stream:
+ * `modes` is handed out by reference, and a fresh JS tracker would report
+ * power-on defaults for a pane already in an alternate screen. */
 export class OutputInterpreter {
   readonly backend: 'node' | 'rust';
   readonly modes: OutputModes;
@@ -14,8 +35,12 @@ export class OutputInterpreter {
   private readonly osc?: OscParser;
   private readonly jsModes?: OutputModeTracker;
   private readonly callbacks: OscCallback[] = [];
+  private skipped = 0;
+  private readonly reportAllocFailure: (error: unknown, detail?: string) => void;
 
-  constructor(backend: 'node' | 'rust') {
+  /** `label` names the session in log lines. */
+  constructor(backend: 'node' | 'rust', label?: string) {
+    this.reportAllocFailure = createNativeAllocReporter('output-interpreter', () => label);
     if (backend === 'rust') {
       try {
         const Constructor = loadNativeTerminalCore('output-interpreter-v1').NativeOutputInterpreter;
@@ -35,13 +60,41 @@ export class OutputInterpreter {
     if (this.osc) this.osc.onOsc(callback);
     else this.callbacks.push(callback);
   }
-  seedModes(text: string, end: number): void {
-    if (this.native) this.native.feed(text, end, false);
-    else this.jsModes?.feed(text, end);
+  /**
+   * `bytes`, when given, are the UTF-8 bytes `text` was decoded from (the
+   * recovered ring): a refused feed reads them for their modes without
+   * encoding the text again. Nothing a refused seed does escapes: if the
+   * modes-only read fails too, the history is only skipped.
+   */
+  seedModes(text: string, end: number, bytes?: Uint8Array): void {
+    if (this.native) {
+      try { this.native.feed(text, end, false); }
+      catch (error) {
+        if (!isNativeAllocFailure(error)) throw error;
+        let read = false;
+        try { read = this.readModesOnly(text, end, undefined, bytes); }
+        catch { read = false; }
+        this.skip(error, read ? 'recovered history read for its modes only' : 'recovered history not scanned for modes');
+      }
+    } else this.jsModes?.feed(text, end);
   }
   feed(text: string, end: number, chunk?: NativeOutputChunk): void {
     if (this.native) {
-      const events = chunk ? this.native.feedChunk(chunk, end) : this.native.feed(text, end, true);
+      const native = this.native;
+      const once = (): NativeOscBatch | null => (chunk ? native.feedChunk(chunk, end) : native.feed(text, end, true));
+      let events: NativeOscBatch | null;
+      try { events = once(); }
+      catch (first) {
+        if (!isNativeAllocFailure(first)) throw first;
+        // A refused feed changed nothing: the same chunk once more.
+        try { events = once(); }
+        catch (error) {
+          if (!isNativeAllocFailure(error)) throw error;
+          const read = this.readModesOnly(text, end, chunk);
+          this.skip(error, read ? 'output chunk read for its modes only; its OSC events were not read' : 'output chunk not interpreted');
+          return;
+        }
+      }
       // As in the JS bridge, all mode updates precede OSC callbacks, and OSC
       // callbacks precede agent interpretation and raw output forwarding.
       if (events) for (let i = 0; i < events.codes.length; i++) {
@@ -52,6 +105,25 @@ export class OutputInterpreter {
       this.jsModes?.feed(text, end);
       this.osc?.process(text);
     }
+  }
+  /** Chunks a refused native allocation kept from being interpreted. */
+  get skippedChunks(): number {
+    return this.skipped;
+  }
+  /** A refused chunk read for its modes only; false on a module without skipChunk. */
+  private readModesOnly(text: string, end: number, chunk?: NativeOutputChunk, bytes?: Uint8Array): boolean {
+    const native = this.native;
+    if (!native?.skipChunk || !native.skipBytes) return false;
+    if (chunk) native.skipChunk(chunk, end);
+    // A ring that wrapped can start inside a character; only then is the
+    // decoded text encoded again.
+    else native.skipBytes(bytes && isUtf8(bytes) ? bytes : Buffer.from(text), end);
+    return true;
+  }
+  private skip(error: unknown, what: string): void {
+    if (!isNativeAllocFailure(error)) throw error;
+    this.skipped++;
+    this.reportAllocFailure(error, `${what} (${this.skipped} in all)`);
   }
   dispose(): void {
     this.callbacks.length = 0;

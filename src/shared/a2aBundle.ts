@@ -51,6 +51,10 @@ export interface A2aBundleManifestV1 {
 //   send  the asking PC waits for that bundle now: the box puts it there
 //         (only when the box joined the asking PC; else the asking PC fetches);
 //   done  the asking PC took it: the offer ends and the file goes.
+//   imported  the asking PC imported a bundle of the spawn made at `head` into
+//         one of its repositories (only to a box that advertises
+//         `bundle-imported.1`): the box records it, so `wmux daemon headless
+//         prune` may count that work as kept elsewhere.
 
 export const A2A_BUNDLE_LINK_STATES = ['bundle-ask', 'bundle-made'] as const;
 export type A2aBundleLinkState = (typeof A2A_BUNDLE_LINK_STATES)[number];
@@ -61,6 +65,8 @@ const SPAWN_ID_RE = /^sp-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 /** An origin as originUrlRepoKey writes it (shared/a2aContinue.ts). */
 const REPO_KEY_RE = /^[a-z0-9_.-]+(?:\/[a-z0-9_.-]+){1,21}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
+/** A git commit id (sha-1 or sha-256). */
+const COMMIT_RE = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
 export function isBundleAskId(v: unknown): v is string {
   return typeof v === 'string' && ASK_ID_RE.test(v);
@@ -68,7 +74,8 @@ export function isBundleAskId(v: unknown): v is string {
 
 export type A2aBundleAskV1 =
   | { v: 1; askId: string; op: 'make'; spawnId: string; origin: string }
-  | { v: 1; askId: string; op: 'send' | 'done'; bundleId: string };
+  | { v: 1; askId: string; op: 'send' | 'done'; bundleId: string }
+  | { v: 1; askId: string; op: 'imported'; spawnId: string; head: string };
 
 /**
  * Why the box makes or sends no bundle. Only these reach the asking PC:
@@ -140,6 +147,11 @@ export function parseBundleAsk(v: unknown): A2aBundleAskV1 | null {
   if (v.op === 'send' || v.op === 'done') {
     if (!onlyKeys(v, ['v', 'askId', 'op', 'bundleId']) || !isBundleId(v.bundleId)) return null;
     return { v: 1, askId: v.askId, op: v.op, bundleId: v.bundleId };
+  }
+  if (v.op === 'imported') {
+    if (!onlyKeys(v, ['v', 'askId', 'op', 'spawnId', 'head'])) return null;
+    if (typeof v.spawnId !== 'string' || !SPAWN_ID_RE.test(v.spawnId) || typeof v.head !== 'string' || !COMMIT_RE.test(v.head)) return null;
+    return { v: 1, askId: v.askId, op: 'imported', spawnId: v.spawnId, head: v.head };
   }
   return null;
 }

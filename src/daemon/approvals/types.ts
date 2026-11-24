@@ -12,6 +12,7 @@
 import type { ApprovalPressRefusal } from './approvalKeystrokes';
 import type { QuestionShape } from './askUserQuestion';
 import type { AgentSlug } from '../../shared/agentIdentity';
+import type { NewPackageNote } from './installPackageLookup';
 
 /** What the resolver asked for. Approve = affirmative, deny = reject. */
 export type ApprovalDecision = 'approve' | 'deny';
@@ -181,6 +182,15 @@ export interface ApprovalRequest {
    * command" / "what file" without a second round trip.
    */
   toolInputSummary?: string;
+  /**
+   * Packages a shell install command names that the pane's project does not
+   * have yet (installPackageLookup.ts), for one quiet line on the card: "New
+   * package: X — not in package.json". On `awaiting_permission` and
+   * `terminal_prompt` records only, absent (never empty) when there is nothing
+   * to say, when no manifest was there to compare with, or when the setting is
+   * off. INFORMATIONAL ONLY: no risk verdict, button, or answer reads it.
+   */
+  newPackages?: NewPackageNote[];
   /**
    * What the dialog is about, sanitized and capped at 200 characters. Present
    * only on `kind:'terminal_prompt'` records, and only when known (the command
@@ -681,6 +691,23 @@ export interface TerminalPromptNote {
   promptId?: string;
   /** `hook` (PermissionRequest) or `detector` (confirmed screen attention). */
   source: 'hook' | 'detector';
+  /**
+   * See ApprovalRequest.newPackages, with the command they were read from:
+   * the record carries them only when its own call is that command.
+   */
+  packageCheck?: PackageCheck;
+  /**
+   * The same, still being read off the disk: the registry awaits it next to
+   * its own screen read (never longer than the lookup's own timeout), so the
+   * hook's path never waits on a file.
+   */
+  packageCheckPending?: Promise<PackageCheck | undefined>;
+}
+
+/** A package line with the command it was read from. */
+export interface PackageCheck {
+  command: string;
+  newPackages: NewPackageNote[];
 }
 
 /**
@@ -730,6 +757,8 @@ export interface ApprovalHookSink {
     workspaceId?: string;
     toolName: string;
     toolInputSummary?: string;
+    /** See ApprovalRequest.newPackages. */
+    newPackages?: NewPackageNote[];
     /** Judged on the call's FULL input before the summary was cut. */
     risk?: 'critical';
     /** See ApprovalRequest.attribution. */
@@ -828,22 +857,34 @@ export interface ApprovalResolveParams {
    * declared the `terminal-prompt-answer` capability. A Symbol, so JSON params
    * (the pipe RPC, MCP `approval_press`) can never carry it.
    */
-  terminalPromptAnswer?: typeof TERMINAL_PROMPT_WEB_ANSWER;
+  terminalPromptAnswer?: typeof TERMINAL_PROMPT_WEB_ANSWER | typeof REMOTE_TERMINAL_PROMPT_ANSWER;
   /**
    * `terminal_prompt` only: set by the web decline route for a caller that
    * declared `terminal-prompt-decline`. The answer is then ONE Esc, written
    * only while the record is pending and its dialog is on screen; `decision`
    * must be 'deny' and `choiceKey` absent.
    */
-  terminalPromptDecline?: typeof TERMINAL_PROMPT_WEB_DECLINE;
+  terminalPromptDecline?: typeof TERMINAL_PROMPT_WEB_DECLINE | typeof REMOTE_TERMINAL_PROMPT_DECLINE;
   /**
    * Set by the web answer route (`POST /api/approvals/:id/answer`) for a
    * caller that declared `decision-v2`. Same Symbol discipline as the markers
    * above: a JSON caller can never carry it.
    */
-  decisionV2Answer?: typeof DECISION_V2_WEB_ANSWER;
+  decisionV2Answer?: typeof DECISION_V2_WEB_ANSWER | typeof REMOTE_DECISION_V2_ANSWER;
   /** The validated v2 answer body; only honoured together with `decisionV2Answer`. */
   decisionAnswer?: DecisionAnswer;
+  /**
+   * Remote branch only (one of the three REMOTE_* markers): checked
+   * synchronously inside the write block, right before the key, after the
+   * last `authorize`. False refuses as `unauthorized`; nothing is written.
+   */
+  authorizeNow?: (record: ApprovalRequest) => boolean;
+  /**
+   * Remote branch only: called in the same synchronous block as the key
+   * write, with the pane's key revision right after it (null when it could
+   * not be read).
+   */
+  onKeyWritten?: (revision: number | null) => void;
 }
 
 /** The web route's marker for a capable `terminal_prompt` answer (see above). */
@@ -862,6 +903,17 @@ export const TERMINAL_PROMPT_WEB_DECLINE: unique symbol = Symbol('terminal-promp
  * (`daemon.approvals.resolve`) and MCP `approval_press` can never answer one.
  */
 export const DECISION_V2_WEB_ANSWER: unique symbol = Symbol('decision-v2-web-answer');
+
+/**
+ * The markers of an approval from a paired PC (a2aRemote/remoteApproval.ts),
+ * distinct from the web ones: a `terminal_prompt` allow (the plain Yes), its
+ * decline (one Esc), and the plan dialog's manual approve. A resolve that
+ * carries one must also carry `authorize` and `authorizeNow`, and is taken
+ * only for a `terminal_prompt` record that no native adapter answers.
+ */
+export const REMOTE_TERMINAL_PROMPT_ANSWER: unique symbol = Symbol('remote-terminal-prompt-answer');
+export const REMOTE_TERMINAL_PROMPT_DECLINE: unique symbol = Symbol('remote-terminal-prompt-decline');
+export const REMOTE_DECISION_V2_ANSWER: unique symbol = Symbol('remote-decision-v2-answer');
 
 /**
  * `GET /api/approvals/:id/detail` — the full text a pending, bound

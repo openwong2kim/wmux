@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateRustSnapshot } from '../RustSnapshot';
 import { selectTextSnapshot, getTextSnapshotBackendDiagnostics } from '../TextSnapshotBackend';
 import { generateTextSnapshot, generateSnapshot, type SnapshotRequest, type TextSnapshotOutcome } from '../HeadlessSnapshot';
+import { NATIVE_CELL_LIMIT, NATIVE_SNAPSHOT_MAX_INPUT_BYTES } from '../nativeSnapshotLimits';
+import { NATIVE_CIRCUIT_COOLDOWNS_MS } from '../nativeCircuit';
+import { nativeAllocError } from '../../shared/__tests__/_nativeAllocError';
 
 vi.mock('../RustSnapshot', () => ({ generateRustSnapshot: vi.fn() }));
 const native = vi.mocked(generateRustSnapshot);
@@ -9,6 +12,8 @@ const req: SnapshotRequest = { cols: 80, rows: 24, initial: Buffer.from('hello')
 const success: TextSnapshotOutcome = { ok: true, rows: [{ text: 'hello', wrapped: false }], bufferType: 'normal', rowsBelowCursor: 0, bytesIn: 5, durationMs: 1 };
 let moduleId = 0;
 beforeEach(() => {
+  // CI names the built core in WMUX_TERMINAL_CORE_MODULE, which nativeCorePath reads first: unset it here so the stub is the module.
+  vi.stubEnv('WMUX_TERMINAL_CORE_MODULE', undefined);
   vi.stubEnv('WMUX_RUST_SNAPSHOT', 'text');
   vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', `/test/native-${++moduleId}.cjs`);
 });
@@ -24,13 +29,13 @@ describe('opt-in Rust text delivery', () => {
     expect(reference).not.toHaveBeenCalled();
   });
 
-  it('reads the removed shadow mode as unset: xterm on the node engine, and never runs native', async () => {
+  it('reads the removed shadow mode as unset: Rust with WMUX_TERMINAL_CORE=node too (the Node engine is removed)', async () => {
     vi.stubEnv('WMUX_RUST_SNAPSHOT', 'shadow');
     vi.stubEnv('WMUX_TERMINAL_CORE', 'node');
+    native.mockResolvedValueOnce(success);
     const reference = vi.fn(async () => success);
-    expect(await selectTextSnapshot(req, reference)).toBe(success);
-    expect(reference).toHaveBeenCalledTimes(1);
-    expect(native).not.toHaveBeenCalled();
+    expect(await selectTextSnapshot(req, reference)).toMatchObject({ ...success, durationMs: expect.any(Number) });
+    expect(reference).not.toHaveBeenCalled();
   });
 
   it.each(['', 'off', 'unknown'])('leaves the reference authoritative with mode %s', async mode => {
@@ -47,7 +52,7 @@ describe('opt-in Rust text delivery', () => {
     const before = getTextSnapshotBackendDiagnostics().native;
     expect(await selectTextSnapshot(req, reference)).toMatchObject({ ...success, durationMs: expect.any(Number) });
     expect(reference).not.toHaveBeenCalled();
-    expect(native).toHaveBeenCalledWith({ ...req, budgetMs: 500 }, 'text');
+    expect(native).toHaveBeenCalledWith({ ...req, budgetMs: 1000 }, 'text');
     expect(getTextSnapshotBackendDiagnostics().native).toBe(before + 1);
   });
 
@@ -60,12 +65,29 @@ describe('opt-in Rust text delivery', () => {
   });
 
   it.each([
-    { cols: 1 }, { scrollback: 100000 }, { initial: Buffer.alloc(8 * 1024 * 1024 + 1) },
+    // Only its length is read before the skip: a ring above the daemon's largest.
+    { cols: 1 }, { scrollback: 100000 }, { initial: { length: NATIVE_SNAPSHOT_MAX_INPUT_BYTES + 1 } as Buffer },
+    // 1000 × (1000 + 5000) cells, and a grid past 4M cells reached only on the way through a
+    // resize: rows change first at the old width, so 1000 × (1000 + 3500); each recorded size fits.
     { geometry: { start: { cols: 1000, rows: 1000 }, changes: [] } },
+    { cols: 100, rows: 1000, scrollback: 3500, geometry: { start: { cols: 1000, rows: 10 }, changes: [{ offset: 0, cols: 100, rows: 1000 }] } },
   ])('keeps requests outside the native limits on xterm', async extra => {
     const reference = vi.fn(async () => success);
     expect(await selectTextSnapshot({ ...req, ...extra }, reference)).toBe(success);
     expect(native).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a ring above the old 8 MiB cap', { initial: Buffer.alloc(16 * 1024 * 1024, 0x61) }],
+    ['a 200-column pane with 5000 rows of history (past the old 1M cells)', { cols: 200, rows: 30, scrollback: 5000 }],
+    ['a grid at the native cell limit', { cols: 400, rows: 30, scrollback: NATIVE_CELL_LIMIT / 400 - 30 }],
+  ])('takes %s natively', async (_name, extra) => {
+    const request = { ...req, ...extra };
+    native.mockResolvedValue({ ...success, bytesIn: request.initial.length });
+    const reference = vi.fn(async () => success);
+    await selectTextSnapshot(request, reference);
+    expect(native).toHaveBeenCalledOnce();
+    expect(reference).not.toHaveBeenCalled();
   });
 
   it('replays the original bytes and geometry through real xterm on native failure', async () => {
@@ -84,6 +106,52 @@ describe('opt-in Rust text delivery', () => {
     expect(getTextSnapshotBackendDiagnostics().circuitOpen).toBe(true);
   });
 
+  // A refusal is the module working, as on the ANSI path: no circuit, a family in the tries.
+  it('falls back on a native refusal without opening the circuit, and counts it by family', async () => {
+    native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'unsupported-history-limit' });
+    const reference = vi.fn(async () => success);
+    const before = getTextSnapshotBackendDiagnostics().tried['unsupported-history-limit'] ?? 0;
+    expect(await selectTextSnapshot(req, reference)).toMatchObject({ ok: true });
+    expect(getTextSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: false, circuitFailures: 0 });
+    expect(getTextSnapshotBackendDiagnostics().tried['unsupported-history-limit']).toBe(before + 1);
+  });
+
+  // #3440: one session's refused allocation must not turn native snapshots off
+  // for every session (the circuit is daemon-wide).
+  // Classified by its code alone: the message is diagnostic and may be empty.
+  it.each([
+    ['reported', () => native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'ALLOC_FAILED: could not allocate 64 bytes for grid', allocFailed: true })],
+    ['reported (empty message)', () => native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: '', allocFailed: true })],
+    ['thrown', () => native.mockRejectedValueOnce(nativeAllocError('ALLOC_FAILED: could not allocate 64 bytes for grid'))],
+    ['thrown (empty message)', () => native.mockRejectedValueOnce(nativeAllocError(''))],
+  ])('falls back on a %s refused allocation without opening the circuit', async (_how, refuse) => {
+    refuse();
+    const reference = vi.fn(async () => success);
+    const before = getTextSnapshotBackendDiagnostics().tried['alloc-failed'] ?? 0;
+    expect(await selectTextSnapshot(req, reference)).toMatchObject({ ok: true });
+    expect(reference).toHaveBeenCalledOnce();
+    expect(getTextSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: false, circuitFailures: 0, last: { backend: 'xterm', reason: 'alloc-failed' } });
+    expect(getTextSnapshotBackendDiagnostics().tried['alloc-failed']).toBe(before + 1);
+    // The next session still gets a native snapshot.
+    native.mockResolvedValueOnce(success);
+    await selectTextSnapshot(req, reference);
+    expect(native).toHaveBeenCalledTimes(2);
+    expect(reference).toHaveBeenCalledOnce();
+  });
+
+  // A message that merely reads like a refusal, without the code, is a module error.
+  it.each([
+    ['reported', () => native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'ALLOC_FAILED: could not allocate 64 bytes for grid' })],
+    ['thrown', () => native.mockRejectedValueOnce(new Error('ALLOC_FAILED: could not allocate 64 bytes for grid'))],
+  ])('opens the circuit on a %s "ALLOC_FAILED:" message without the code', async (_how, fail) => {
+    fail();
+    const reference = vi.fn(async () => success);
+    const before = getTextSnapshotBackendDiagnostics().tried['alloc-failed'] ?? 0;
+    expect(await selectTextSnapshot(req, reference)).toMatchObject({ ok: true });
+    expect(getTextSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: true, circuitFailures: 1 });
+    expect(getTextSnapshotBackendDiagnostics().tried['alloc-failed'] ?? 0).toBe(before);
+  });
+
   it('avoids repeated broken-module loads and retries a changed module path', async () => {
     native.mockResolvedValueOnce({ ok: false, reason: 'error' }).mockResolvedValueOnce(success);
     const reference = vi.fn(async () => success);
@@ -98,6 +166,42 @@ describe('opt-in Rust text delivery', () => {
     expect(getTextSnapshotBackendDiagnostics().circuitOpen).toBe(false);
   });
 
+  // R2 (b) prep: the circuit no longer stays open for the life of the daemon (nativeCircuit.ts).
+  it('retries a broken module once its cooldown ran out, and closes the circuit when it works', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockResolvedValueOnce({ ok: false, reason: 'error' }).mockResolvedValueOnce({ ok: false, reason: 'error' }).mockResolvedValueOnce(success);
+    const reference = vi.fn(async () => success);
+    await selectTextSnapshot(req, reference);
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0] - 1;
+    await selectTextSnapshot(req, reference);
+    expect(native).toHaveBeenCalledTimes(1);
+    // The trial fails: open again, for the second cooldown.
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0];
+    await selectTextSnapshot(req, reference);
+    expect(native).toHaveBeenCalledTimes(2);
+    expect(getTextSnapshotBackendDiagnostics().circuitOpen).toBe(true);
+    now += NATIVE_CIRCUIT_COOLDOWNS_MS[1] - 1;
+    await selectTextSnapshot(req, reference);
+    expect(native).toHaveBeenCalledTimes(2);
+    // The next trial works: closed.
+    now += 1;
+    expect(await selectTextSnapshot(req, reference)).toMatchObject({ ok: true });
+    expect(native).toHaveBeenCalledTimes(3);
+    expect(getTextSnapshotBackendDiagnostics().circuitOpen).toBe(false);
+  });
+
+  it('closes the circuit on a trial that ran out of budget: the module worked', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockResolvedValueOnce({ ok: false, reason: 'error' }).mockResolvedValueOnce({ ok: false, reason: 'budget' });
+    const reference = vi.fn(async () => success);
+    await selectTextSnapshot(req, reference);
+    now = NATIVE_CIRCUIT_COOLDOWNS_MS[0];
+    await selectTextSnapshot(req, reference);
+    expect(getTextSnapshotBackendDiagnostics().circuitOpen).toBe(false);
+  });
+
   it('rejects malformed native output and preserves the reference outcome', async () => {
     native.mockResolvedValueOnce({ ...success, bytesIn: 0 });
     const reference = vi.fn(async () => ({ ok: false as const, reason: 'budget' as const }));
@@ -108,21 +212,38 @@ describe('opt-in Rust text delivery', () => {
   it('gives fallback only the remaining budget and counts total duration', async () => {
     let now = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => now);
-    native.mockImplementationOnce(async () => { now = 600; return { ok: false, reason: 'budget' }; });
+    // Native has the whole budget; a failure 600 ms in leaves the reference the other 400.
+    native.mockImplementationOnce(async () => { now = 600; return { ok: false, reason: 'error', detail: 'module fault' }; });
     const reference = vi.fn(async (captured: SnapshotRequest) => {
       expect(captured.budgetMs).toBe(400); now += 100; return success;
     });
     expect(await selectTextSnapshot(req, reference)).toMatchObject({ ok: true, durationMs: 700 });
-    expect(getTextSnapshotBackendDiagnostics().circuitOpen).toBe(false);
+    expect(native.mock.calls[0][0].budgetMs).toBe(1000);
   });
 
-  it('does not restart an exhausted deadline', async () => {
+  it('does not restart an exhausted deadline, and reports it as native\'s, not a fallback', async () => {
     let now = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => now);
     native.mockImplementationOnce(async () => { now = 1001; return { ok: false, reason: 'budget' }; });
     const reference = vi.fn(async () => success);
+    const before = getTextSnapshotBackendDiagnostics();
     expect(await selectTextSnapshot(req, reference)).toEqual({ ok: false, reason: 'budget' });
     expect(reference).not.toHaveBeenCalled();
+    const after = getTextSnapshotBackendDiagnostics();
+    expect(after.fallbacks).toBe(before.fallbacks);
+    expect(after.reasons.budget).toBe((before.reasons.budget ?? 0) + 1);
+    expect(after.last).toEqual({ backend: 'rust', reason: 'budget' });
+  });
+
+  it('delivers a complete native result that ended just past the deadline', async () => {
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    native.mockImplementationOnce(async () => { now = 1040; return success; });
+    const reference = vi.fn(async () => success);
+    const before = getTextSnapshotBackendDiagnostics().native;
+    expect(await selectTextSnapshot(req, reference)).toMatchObject({ ok: true, durationMs: 1040 });
+    expect(reference).not.toHaveBeenCalled();
+    expect(getTextSnapshotBackendDiagnostics().native).toBe(before + 1);
   });
 
   it('does not load native code for a zero budget', async () => {

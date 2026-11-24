@@ -18,7 +18,7 @@
 import crypto from 'node:crypto';
 import type { A2aSpawnAskError, A2aSpawnAskInput, A2aSpawnAskResult, A2aSpawnOutgoingList, A2aSpawnOutgoingSummary } from '../../shared/a2aSpawn';
 import { asSpawnLinkId, spawnFirstMessageId } from '../../shared/a2aSpawn';
-import { isHostId } from '../../shared/a2aRemote';
+import { isHostId, parseA2aRemoteProgress, type A2aRemoteProgressV1 } from '../../shared/a2aRemote';
 import type { AgentSlug } from '../../shared/agentIdentity';
 import { LEDGER_POOL_REFUSALS_MAX, LEDGER_REMOTE_QUESTIONS, type LedgerEntry, type LedgerRemote, type LedgerRemoteWaiting, type LedgerStatus, remoteTaskWorkspaceId } from '../../shared/ledger';
 import { STATE_VIEW_IDS_MAX } from '../../shared/a2aTaskQueryView';
@@ -76,23 +76,35 @@ export interface RemoteTaskView {
   state: string;
   /** The id of the other PC's message that last reported it; absent before any report. */
   reportId?: string;
-  status?: { kind: string; since: string; question?: string; resetsAt?: string };
+  status?: { kind: string; since: string; question?: string; resetsAt?: string; progress?: A2aRemoteProgressV1 };
+  /** The other PC's agent replied after the last message this PC sent. */
+  answered?: true;
+  /** It failed here because its link ended, not by a `failed` the other PC sent. */
+  linkEnded?: true;
+  /** A reply of that PC's agent is held here: it was not written to the caller's pane. */
+  replyHeld?: true;
 }
 
 /** One row of the state view, or nothing when it is not one. */
 export function remoteTaskViewOf(raw: unknown): RemoteTaskView[] {
-  const t = raw && typeof raw === 'object' ? raw as { id?: unknown; status?: { state?: unknown }; metadata?: { remote?: { reported?: unknown; status?: unknown } } } : null;
+  const t = raw && typeof raw === 'object' ? raw as { id?: unknown; status?: { state?: unknown }; metadata?: { remote?: { reported?: unknown; status?: unknown; answered?: unknown; linkEnded?: unknown; replyHeld?: unknown } } } : null;
   if (!t || typeof t.id !== 'string' || typeof t.status?.state !== 'string') return [];
   const remote = t.metadata?.remote;
-  const st = remote?.status && typeof remote.status === 'object' ? remote.status as { kind?: unknown; since?: unknown; detail?: { question?: unknown; resetsAt?: unknown } } : null;
+  const st = remote?.status && typeof remote.status === 'object' ? remote.status as { kind?: unknown; since?: unknown; detail?: { question?: unknown; resetsAt?: unknown; progress?: unknown } } : null;
+  const progress = parseA2aRemoteProgress(st?.detail?.progress);
   const status = st && typeof st.kind === 'string' && typeof st.since === 'string'
     ? {
       kind: st.kind, since: st.since,
       ...(typeof st.detail?.question === 'string' ? { question: st.detail.question } : {}),
       ...(typeof st.detail?.resetsAt === 'string' ? { resetsAt: st.detail.resetsAt } : {}),
+      ...(progress ? { progress } : {}),
     }
     : undefined;
-  return [{ id: t.id, state: t.status.state, ...(typeof remote?.reported === 'string' ? { reportId: remote.reported } : {}), ...(status ? { status } : {}) }];
+  return [{
+    id: t.id, state: t.status.state, ...(typeof remote?.reported === 'string' ? { reportId: remote.reported } : {}), ...(status ? { status } : {}),
+    ...(remote?.answered === true ? { answered: true as const } : {}), ...(remote?.linkEnded === true ? { linkEnded: true as const } : {}),
+    ...(remote?.replyHeld === true ? { replyHeld: true as const } : {}),
+  }];
 }
 
 export type RemoteLedger = Pick<TaskLedger, 'get' | 'list' | 'register' | 'update' | 'updateRemote' | 'placeRemote' | 'closeTask' | 'onTransition'>;
@@ -116,6 +128,8 @@ export interface RemoteFanoutRequest {
   scopedKey: string;
   ownerWorkspaceId: string;
   paneId: string;
+  /** The caller's own terminal in that pane (its verified senderPtyId): where the replies go. */
+  ptyId?: string;
   pc: string;
   root: string;
   sub?: string;
@@ -150,6 +164,8 @@ export interface RemoteTaskResult {
   hostId?: string;
   /** How to reach the agent once it started. */
   followUp?: string;
+  /** What the agent's worktree on that PC shows, as of its last turn end (a headless box only). */
+  progress?: A2aRemoteProgressV1;
 }
 
 const sha256 = (s: string): string => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
@@ -341,6 +357,7 @@ function resultOf(index: number, title: string, entry: LedgerEntry, channelId: s
       ...(r.state === 'held' && !failed ? { pending: { waitingOn: 'pc-full' as const } } : {}),
       ...(r.pool ? { pc: r.pc, hostId: r.hostId } : {}),
       ...(r.a2aTaskId && !failed ? { followUp: followUpText(r) } : {}),
+      ...(r.progress ? { progress: r.progress } : {}),
     } : {}),
     ...(failed && !r?.code ? { reason: entry.summary ?? entry.status } : {}),
   };
@@ -511,6 +528,7 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
         text,
         expiresInHours: REMOTE_FANOUT_EXPIRES_HOURS,
         from: { kind: 'pane', workspaceId: req.ownerWorkspaceId, paneId: req.paneId },
+        ...(req.ptyId ? { fromPtyId: req.ptyId } : {}),
         callerKey: keys.callerKey,
         requestKey: r.pool ? keys.poolRequestKey(k, r.hostId, r.pool.attempt) : keys.requestKey(k),
         budget: 'fanout',
@@ -658,6 +676,26 @@ const SYSTEM_ACTOR = { kind: 'system', workspaceId: 'main' } as const;
 /** How long a gone agent, or a task the daemon no longer lists, waits before its row fails: the end normally follows within seconds. */
 export const REMOTE_GONE_GRACE_MS = 60_000;
 
+/** The row's text while its agent waits for a reply its turn already sent (the caller's pane has that reply). */
+export function remoteReplyWaitText(r: Pick<LedgerRemote, 'pc' | 'a2aTaskId'>): string {
+  return `the agent on ${r.pc} waits for your reply on A2A task ${r.a2aTaskId}`;
+}
+
+/** Listeners for a row of another PC's task that, already waiting, now waits on something someone must act on (onRemoteWaitInPlace). */
+const waitInPlace = new Set<(entry: LedgerEntry) => void>();
+
+/**
+ * A row already input_required that now waits on something someone must act
+ * on (a question on that PC's screen, its agent stopped with no reply, or its
+ * reply held here) moves no status, so no ledger transition tells it: this
+ * does, once per new reason, with the row as it is now. Returns the
+ * unsubscribe.
+ */
+export function onRemoteWaitInPlace(listener: (entry: LedgerEntry) => void): () => void {
+  waitInPlace.add(listener);
+  return () => waitInPlace.delete(listener);
+}
+
 /**
  * Started rows follow their A2A task: one state-view call per owner workspace
  * and pass (STATE_VIEW_IDS_MAX ids at most each), whatever the number of rows.
@@ -698,7 +736,10 @@ async function followTasks(deps: RemoteFanoutDeps): Promise<void> {
  * Precedence: a new report (another report message id) moves the row to
  * review_requested, and a report stands there until a follow-up sets the
  * agent working again (then the statuses below apply as before), also once
- * the daemon no longer lists the task. An ended task beats the worker's status.
+ * the daemon no longer lists the task (a cancel then leaves it as it is). An
+ * ended task beats the worker's status. A task whose agent answered the last
+ * message and that then failed only because its link ended (a headless box
+ * ends the link when it ends the agent) is cancelled, not failed.
  * A gone agent, or a task the daemon dropped, fails the row only after
  * REMOTE_GONE_GRACE_MS, so the end that normally follows is taken instead.
  * Text from the other PC never goes into the row: kinds, the PC's name and
@@ -718,25 +759,48 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
     const res = await deps.ledger.update({ id: entry!.id, status, actor: SYSTEM_ACTOR, expectedRev: entry!.rev, summary });
     if (res.ok) entry = res.entry;
   };
-  const replyText = `the agent on ${r.pc} waits for your reply on ${on}`;
+  const replyText = remoteReplyWaitText(r);
+  const replyHeldText = `the agent on ${r.pc} replied, but its reply is held here (not written to your pane); read it on ${on}, or retry it from the Remote page`;
   const stoppedText = `the agent on ${r.pc} stopped without a reply; send it a follow-up on ${on}`;
   const questionText = (question?: string): string => `the agent on ${r.pc} waits on a ${question ?? 'screen'} question: answer it in that PC's pane; it cannot be answered from here yet, and a headless box ends the task after 10 minutes`;
   const reportedText = `reported on ${r.pc}; the report is on ${on}`;
   const workingText = `working on ${r.pc}`;
+  const endedAfterReplyText = `the agent on ${r.pc} ended after it replied; its reply is on ${on}`;
   /** Every text this pass writes on an open row; a brain's move keeps the one it found when it gives none. */
-  const ownTexts = new Set([replyText, stoppedText, reportedText, workingText, questionText(), ...LEDGER_REMOTE_QUESTIONS.map(questionText)]);
+  const ownTexts = new Set([replyText, replyHeldText, stoppedText, reportedText, workingText, questionText(), ...LEDGER_REMOTE_QUESTIONS.map(questionText)]);
   /**
    * The row waits, as `summary` says, after `p` on its remote record. Into input_required: the record, then the move.
    * Already there: a text this pass wrote (a question answered, then a reply asked for; or one left by a brain that
    * sent the row back with no text) is replaced, with the record in one write. A text a brain wrote is kept.
    */
+  /** Why the row waits, as far as telling the caller goes: only `reply` (its reply reached the pane) is not told. */
+  const waitKind = (e: LedgerEntry, summary: string | undefined): string =>
+    e.remote?.waiting?.on === 'question' ? 'question' : summary === replyText ? 'reply' : summary === stoppedText ? 'stopped' : summary === replyHeldText ? 'held' : 'other';
   const waitFor = async (summary: string, p: Partial<LedgerRemote>): Promise<void> => {
+    // Already waiting: a new reason moves no status, so a new one that needs someone is told below.
+    const before = entry!.status === 'input_required' ? waitKind(entry!, entry!.summary) : null;
     const ownText = entry!.status === 'input_required' && entry!.summary !== summary && ownTexts.has(entry!.summary ?? '');
     if (!ownText) {
       await patch(p);
-      return move('input_required', summary);
+      await move('input_required', summary);
+    } else {
+      const written = await deps.ledger.updateRemote(entry!.id, p, { summary, expectedRev: entry!.rev });
+      // Not written (the row went, or moved meanwhile): the next pass reads it again; nothing is told for it.
+      if (!written || written.summary !== summary) return;
+      entry = written;
     }
-    entry = (await deps.ledger.updateRemote(entry!.id, p, { summary, expectedRev: entry!.rev })) ?? entry;
+    // The reason this pass found (a brain's own text on the row is kept, but the reason is still new).
+    const now = waitKind(entry!, ownTexts.has(entry!.summary ?? '') ? entry!.summary : summary);
+    if (before === null || entry!.status !== 'input_required' || now === 'reply' || now === before) return;
+    // Under a brain's own text only a question is remembered on the row (`waiting`): any other reason would read as new every pass.
+    if (before === 'other' && now !== 'question') return;
+    for (const listener of waitInPlace) {
+      try {
+        listener(entry!);
+      } catch {
+        // best effort
+      }
+    }
   };
   /** Fails the row once the grace from the first sighting is over. */
   const failAfterGrace = async (summary: string): Promise<void> => {
@@ -746,8 +810,12 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   // A report stands: a reported task the daemon dropped later (its log keeps
   // ended tasks only a while) keeps its row as it is.
   if (!view) return entry.status === 'review_requested' ? undefined : failAfterGrace(`the task on ${r.pc} is no longer known here`);
+  // The worktree's facts, as that PC last said: kept on the row whatever else this pass does (no status moves for
+  // it). A status without them (that PC could not read them) clears them; no status at all, or `gone` (which
+  // never carries any), leaves the last ones on the row.
+  const progress = view.status?.progress;
+  if (view.status && view.status.kind !== 'gone' && JSON.stringify(progress) !== JSON.stringify(r.progress)) await patch({ progress });
   const settled = r.waiting || r.goneSeenAt !== undefined ? { waiting: undefined, goneSeenAt: undefined } : null;
-  if (view.state === 'canceled') return move('cancelled', `cancelled on ${r.pc}`);
   const newReport = view.reportId !== undefined && view.reportId !== r.reportId;
   if (newReport || (view.state === 'completed' && entry.status !== 'review_requested')) {
     await patch({ ...(settled ?? {}), ...(view.reportId ? { reportId: view.reportId } : {}) });
@@ -755,8 +823,11 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   }
   // A report stands until a follow-up sets the agent working again.
   if (entry.status === 'review_requested' && view.state !== 'working' && view.state !== 'submitted') return;
+  if (view.state === 'canceled') return move('cancelled', `cancelled on ${r.pc}`);
+  // The agent answered the last message, then its link ended (it was ended on that PC): its reply stands on the task.
+  if (view.state === 'failed' && view.linkEnded && view.answered) return move('cancelled', endedAfterReplyText);
   if (view.state === 'failed') return move('failed', `failed on ${r.pc}; why is on ${on}`);
-  if (view.state === 'input-required') return waitFor(replyText, settled ?? {});
+  if (view.state === 'input-required') return waitFor(view.replyHeld ? replyHeldText : replyText, settled ?? {});
   const st = view.status;
   if (st?.kind === 'question') {
     const question = (LEDGER_REMOTE_QUESTIONS as readonly string[]).includes(st.question ?? '') ? st.question as LedgerRemoteWaiting['question'] : undefined;

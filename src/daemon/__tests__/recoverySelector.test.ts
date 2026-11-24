@@ -204,6 +204,13 @@ describe('recoversInBackground', () => {
   it('leaves a plain shell for its pane to start', () => {
     expect(recoversInBackground({})).toBe(false);
   });
+
+  // R2 (a): a held session (no terminal core) starts by itself nowhere: not at
+  // boot, not on main's reconnect, not on the renderer's reconcile.
+  it('does not start a held exec unit or supervised session', () => {
+    expect(recoversInBackground({ exec: { command: 'claude' }, holdReason: 'terminal-core-missing' })).toBe(false);
+    expect(recoversInBackground({ supervision: { status: 'armed' }, holdReason: 'terminal-core-missing' })).toBe(false);
+  });
 });
 
 // #3049 — boot holds a plain user shell main listed for main to start with its

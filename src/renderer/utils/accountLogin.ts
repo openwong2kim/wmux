@@ -102,10 +102,14 @@ async function openLoginTab(req: AccountLoginRequest): Promise<LoginTab | null> 
 export async function openTerminalTab(req: {
   env?: Record<string, string>;
   wslAccountLoginEnvKey?: ReturnType<typeof loginEnvKey>;
+  /** A WSL account home's re-sign-in: this variable of `env` runs as that account in WSL. */
+  wslAccountHomeKey?: ReturnType<typeof loginEnvKey>;
   initialCommand: string;
   title: string;
   /** Run in this shell instead of the user's default one. */
   shell?: string;
+  /** With a WSL `shell`: this distro instead of the default one. */
+  wslDistro?: string;
   /** Start here instead of the workspace's startup folder; null = the home folder. */
   cwd?: string | null;
   /**
@@ -142,8 +146,12 @@ export async function openTerminalTab(req: {
         ...(req.plainEnv ? { ignoreAccountBinding: true } : {}),
         ...(req.env ? { env: req.env } : {}),
         ...(req.wslAccountLoginEnvKey ? { wslAccountLoginEnvKey: req.wslAccountLoginEnvKey } : {}),
+        ...(req.wslAccountHomeKey ? { wslAccountHomeKey: req.wslAccountHomeKey } : {}),
         ...(req.shell ? { shell: req.shell } : {}),
+        ...(req.wslDistro ? { wslDistro: req.wslDistro } : {}),
         initialCommand: req.initialCommand,
+        // A sign-in or setup tab reads the credentials the fence hides.
+        workerFence: false,
       },
       state.defaultShell,
     );
@@ -159,7 +167,7 @@ export async function openTerminalTab(req: {
     }
     // addSurface's third argument is the SHELL (also the initial title); the
     // restore path re-spawns it, so it must be a real shell, never the label.
-    useStore.getState().addSurface(paneId, created.id, created.shell || options.shell || '', created.cwd || cwd || '', ws.id);
+    useStore.getState().addSurface(paneId, created.id, created.shell || options.shell || '', created.cwd || cwd || '', ws.id, { workerFence: false });
     const surface = findSurfaceByPty(ws.id, created.id);
     if (!surface) {
       dispose();

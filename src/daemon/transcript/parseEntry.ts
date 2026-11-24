@@ -22,6 +22,7 @@
 // The `[]` default is why a future Claude Code entry type cannot leak into the
 // chat as if the agent had said it.
 
+import { findPaste, type PasteSegment } from '../../shared/promptMatch';
 import path from 'node:path';
 import { summarizeActivity } from '../../shared/activitySummary';
 import type { EntryLink } from './rewind';
@@ -158,7 +159,12 @@ function parseEntryObject(entry: Record<string, unknown>, offsetHint: number): P
     const prompt = attachment?.['prompt'];
     if (attachment?.['type'] === 'queued_command' && attachment['commandMode'] === 'prompt') {
       if (typeof prompt === 'string' && prompt.trim()) {
-        return single({ id: baseId, kind: 'user_text', text: capText(stripNul(prompt)), ...tsOf(ts) }, empty);
+        const shown = shownUserText(prompt);
+        // A prompt with no paste stays exactly as before.
+        if (!shown.pasted) return single({ id: baseId, kind: 'user_text', text: capText(stripNul(prompt)), ...tsOf(ts) }, empty);
+        return shown.text.trim()
+          ? single({ id: baseId, kind: 'user_text', text: capText(stripNul(shown.text)), pasted: true, ...tsOf(ts) }, empty)
+          : empty;
       }
       // With photos the prompt is content blocks (2.1.312), read as a user entry's.
       if (Array.isArray(prompt)) return parseUserEntry(entry, prompt, baseId, ts, offsetHint, true);
@@ -219,17 +225,18 @@ function parseUserEntry(
   if (typeof content === 'string') {
     const meta = classifyMetaUser(entry, content);
     if (meta) return single(metaEvent(baseId, ts, meta.subtype, meta.label), empty);
-    const clean = stripSystemReminders(content);
+    const shown = shownUserText(content);
     // Claude Code records tool results as `user` entries too, so "has text" —
     // not "type is user" — is what marks a human turn (the isHumanTurn rule).
-    if (!clean) {
-      // The whole message WAS the injected reminder. An empty `user_text` would
-      // render as a blank "You" card, so it degrades to a quiet meta row.
-      return content.trim()
+    if (!shown.text.trim()) {
+      // The whole message WAS the injected reminder (or an empty paste). An
+      // empty `user_text` would render as a blank "You" card, so it degrades
+      // to a quiet meta row, or to nothing.
+      return content.trim() && !shown.pasted
         ? single(metaEvent(baseId, ts, 'system_reminder', 'System reminder'), empty)
         : empty;
     }
-    const ev: UserTextEvent = { id: baseId, kind: 'user_text', text: capText(stripNul(clean)), ...tsOf(ts) };
+    const ev: UserTextEvent = { id: baseId, kind: 'user_text', text: capText(stripNul(shown.text)), ...(shown.pasted ? { pasted: true } : {}), ...tsOf(ts) };
     return single(ev, empty);
   }
 
@@ -278,18 +285,19 @@ function parseUserEntry(
   if (meta) {
     out.push(metaEvent(`${baseId}#${out.length}`, ts, meta.subtype, meta.label));
   } else {
-    const clean = stripSystemReminders(prose);
-    if (clean || hasImage) {
+    const shown = shownUserText(parts.join('\n'));
+    if (shown.text.trim() || hasImage) {
       const ev: UserTextEvent = {
         id: baseId,
         kind: 'user_text',
-        text: capText(stripNul(clean)),
+        text: capText(stripNul(shown.text)),
+        ...(shown.pasted ? { pasted: true } : {}),
         ...(hasImage ? { hasImage: true } : {}),
         ...(hasImage && images.length ? { images: images.slice(0, 8) } : {}),
         ...tsOf(ts),
       };
       out.push(ev);
-    } else if (prose) {
+    } else if (prose && !shown.pasted) {
       out.push(metaEvent(`${baseId}#${out.length}`, ts, 'system_reminder', 'System reminder'));
     }
   }
@@ -355,7 +363,7 @@ function classifyMetaUser(
   text: string,
 ): { subtype: MetaEvent['subtype']; label: string } | null {
   // Leading whitespace only — the tag must OPEN the entry. A reminder appended
-  // to a real message is stripped by `stripSystemReminders` instead, so the
+  // to a real message is dropped by `shownUserText` instead, so the
   // human's own words still render.
   const head = text.trimStart();
   for (const known of INJECTED_USER_TAGS) {
@@ -397,17 +405,46 @@ function injectedLabel(head: string, tag: string): string {
   return '';
 }
 
+const REMINDER_OPEN = '<system-reminder>';
+const REMINDER_CLOSE = '</system-reminder>';
+
+
 /**
- * Drop `<system-reminder>` blocks appended to an otherwise real user message.
- * The human's words must render; the reminder must not. Returns the trimmed
- * remainder, which the caller treats as "no human content" when empty.
- *
- * An UNCLOSED reminder is left alone on purpose — the parser would otherwise
- * have to guess where it ends and could swallow real prose.
+ * What a user message shows: each paste Claude Code recorded as its own text,
+ * byte for byte (shared/promptMatch.ts findPaste), and around them the text
+ * with injected reminders dropped and the message's two ends trimmed. Read
+ * left to right, whichever starts first wins: a closed `<system-reminder>`
+ * block is dropped whole, paste-tag text inside it included (a reminder can
+ * quote the wrapper), and a paste is kept whole, a reminder-like block inside
+ * it included (the user's text). An unclosed reminder is left alone. With no
+ * paste this is the old reminder strip and trim exactly.
  */
-function stripSystemReminders(text: string): string {
-  if (!text.includes('<system-reminder>')) return text.trim();
-  return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
+function shownUserText(text: string): { text: string; pasted: boolean } {
+  const segments: PasteSegment[] = [];
+  let at = 0;
+  while (at < text.length) {
+    const open = text.indexOf(REMINDER_OPEN, at);
+    const close = open < 0 ? -1 : text.indexOf(REMINDER_CLOSE, open + REMINDER_OPEN.length);
+    const reminder = close < 0 ? -1 : open;
+    const paste = text.includes('<pasted_content', at) ? findPaste(text, at) : null;
+    if (paste && (reminder < 0 || paste.start < reminder)) {
+      if (paste.start > at) segments.push({ text: text.slice(at, paste.start), pasted: false });
+      segments.push({ text: paste.inner, pasted: true });
+      at = paste.end;
+    } else if (reminder >= 0) {
+      if (reminder > at) segments.push({ text: text.slice(at, reminder), pasted: false });
+      at = close + REMINDER_CLOSE.length;
+    } else {
+      segments.push({ text: text.slice(at), pasted: false });
+      at = text.length;
+    }
+  }
+  if (segments.length === 0) return { text: '', pasted: false };
+  const parts = segments.map((s) => s.text);
+  if (!segments[0].pasted) parts[0] = parts[0].trimStart();
+  const last = parts.length - 1;
+  if (!segments[last].pasted) parts[last] = parts[last].trimEnd();
+  return { text: parts.join(''), pasted: segments.some((s) => s.pasted) };
 }
 
 function toolResultEvent(

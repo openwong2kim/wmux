@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 
 // Local PTY mode: every write reaches the input observer (workspace settle).
+vi.mock('../../../shared/terminalPty', async (importOriginal) => (await import('../../../test-utils/ptyTransportStub')).routeSpawnToNodePtyMock(importOriginal));
 vi.mock('node-pty', () => ({ spawn: vi.fn(), default: { spawn: vi.fn() } }));
 import { PTYManager } from '../PTYManager';
 

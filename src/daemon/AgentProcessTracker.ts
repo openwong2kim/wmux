@@ -1065,6 +1065,8 @@ export class AgentProcessTracker {
     const shell = anyShell ? /^(?:-?)(?:zsh|bash|sh|powershell|pwsh|cmd)(?:\.exe)?$/i : /^(?:-?)(?:zsh|bash|sh)$/i;
     if (!shell.test(path.basename(root.name))) return { ok: false, reason: 'unsupported-shell' };
     for (const child of entries.filter(entry => entry.ppid === pid)) {
+      // Older than the shell: its ppid names an earlier process that had this pid (see ProcessTreeEntry.created).
+      if (child.created !== undefined && root.created !== undefined && child.created < root.created) continue;
       // The real image is read only for a child whose self-reported argv already qualifies.
       if (!isVerifiedPassiveHelper(child, pid, entries, env, this.userHome) ||
           !isHelperImage(await this.readImage(child.pid).catch(() => undefined), env, this.userHome)) {
