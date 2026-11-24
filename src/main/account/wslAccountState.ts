@@ -76,6 +76,9 @@ export interface WslAccountEntry {
   sampleAtMs: number | null;
   /** Last sign-in evidence: true after a turn worked, false after one failed on its sign-in. */
   signedIn: boolean | null;
+  /** A sample from a live pane arrived in this run (a reading seeded from the
+   *  trail is not one: the sign-in evidence of before the restart is gone). */
+  live?: true;
 }
 
 export class WslAccountState {
@@ -133,6 +136,7 @@ export class WslAccountState {
     const merged = mergeLive(e.snapshot, update, this.now()) ?? (e.snapshot ? null : firstSnapshot(update, this.now()));
     // Arrival is what makes a reading fresh, even when the numbers did not move.
     e.sampleAtMs = this.now();
+    e.live = true;
     if (merged) e.snapshot = merged;
     this.changed();
     return merged ?? e.snapshot;

@@ -130,7 +130,8 @@ import {
 import { validateFanoutTaskGraph, type FanoutTaskGraph } from '../../../shared/fanoutTaskGraph';
 import { agentRow } from '../../../shared/agentIdentity';
 import { noteUsageReserveHeld, usageReserveHoldForAccount, usageReserveHoldForWorkspace, usageReserveRefusalText, type UsageReserveHold } from '../../usage/usageReserve';
-import { notePoolCallerFallback, openWorkersOn, pickFromPool, poolAllHeld, poolFallsBackToCaller, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
+import { heldHomeKey, notePoolCallerFallback, openWorkersOn, pickFromPool, poolAllHeld, poolFallsBackToCaller, poolHeldInPlace, poolUsageKey, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
+import { getWslAccountState, type WslPlace } from '../../account/wslAccountState';
 import { wslShareToLinux } from '../../../shared/wslPaths';
 import { POOL_DEFAULT_ACCOUNT, poolRefusalText } from '../../../shared/fanoutAccountPool';
 import { getAccountStore } from '../../account/accountStore';
@@ -721,6 +722,9 @@ export interface FanOutRpcDeps {
   preparePool?: (callerWorkspaceId: string) => Promise<PreparedPool | null>;
   /** The pool's pick for one worker (default: fanoutAccountPool.ts pickFromPool). */
   pickFromPool?: typeof pickFromPool;
+  /** Where a plain WSL pane asking for a distro starts (default:
+   *  main/account/wslAccountState.ts defaultPlace): a WSL-share task's place. */
+  wslDefaultPlace?: (distro: string) => WslPlace | undefined;
   /** The usage key a workspace's Claude launches run on, an account id or
    *  'default' (default: its bound Claude account), and the open workers on
    *  a key (default: fanoutAccountPool.ts openWorkersOn): a pool fallback
@@ -2034,6 +2038,13 @@ export function registerFanOutRpc(
     // when it holds every one of them, and each launch checks the account
     // picked for it. Read again right before each launch (accountPick).
     const holdForAccount = deps.usageReserveHoldForAccount ?? usageReserveHoldForAccount;
+    const wslDefaultPlace = deps.wslDefaultPlace ?? ((d: string) => getWslAccountState().defaultPlace(d));
+    // The tasks run in folders under the wmux data dir (worktrees, output
+    // and research folders), Windows ones even for a repository on a WSL
+    // share: the whole fan-out is decided on the pool's Windows members, as
+    // each task's own pick is. A task whose own folder is a WSL share is
+    // left to its pick (accountPick), which runs it on its home there or on
+    // the caller's account.
     const reserveHoldOf = (agents: ReadonlyArray<string | undefined>): UsageReserveHold | null => {
       if (!agents.some(spendsUsageReserve)) return null;
       // A pool with no account that can run a worker sends them to the
@@ -2372,19 +2383,21 @@ export function registerFanOutRpc(
         // Whether a task passed its launch check: a request part of which
         // launched is not held again whole (the rest is refused).
         let launchPassed = false;
-        // Tasks the pool left out (their folder starts a WSL pane, or no pool
-        // account can run them): they run on the caller's account, as
-        // without the pool.
+        // Tasks the pool left out (their folder starts a WSL pane it knows no
+        // account home for, or no pool account can run them): they run on
+        // the caller's account, as without the pool.
         const callerTasks = new Set<number>();
         // Of those, the ones the pool sent there because none of its accounts
         // can run them: the owner is told once, when one actually launches.
         const fallbackTasks = new Set<number>();
-        const reserveAtTaskLaunch = (index: number | undefined, accountId?: string): string | null => {
+        const reserveAtTaskLaunch = (index: number | undefined, accountId?: string, wslPlace?: WslPlace): string | null => {
           const agents = index === undefined ? taskAgents : [taskAgent(index)];
           const spends = agents.some(spendsUsageReserve);
-          // A pool worker: the account picked for it, not the caller's.
+          // A pool worker: the account picked for it (its WSL home's key in a
+          // WSL pane), not the caller's.
+          const poolKey = accountId !== undefined ? poolUsageKey(accountId, wslPlace) : null;
           const hold = accountId !== undefined
-            ? (spends ? holdForAccount(accountId) : null)
+            ? (spends && poolKey ? holdForAccount(poolKey) : null)
             : index !== undefined && callerTasks.has(index)
               ? (spends ? (deps.usageReserveHold ?? usageReserveHoldForWorkspace)(callerWorkspaceId) : null)
               : reserveHoldOf(agents);
@@ -2398,20 +2411,29 @@ export function registerFanOutRpc(
           prepare: async (task: { index: number }) => {
             if (spendsUsageReserve(taskAgent(task.index))) await refreshPool();
           },
-          pick: (task: { index: number; cwd?: string }): { accountId: string } | { callerAccount: string } | { refusal: string } | null => {
+          pick: (task: { index: number; cwd?: string }): { accountId: string; wslPlace?: WslPlace } | { callerAccount: string } | { refusal: string } | null => {
             const current = pool;
             if (!current || !spendsUsageReserve(taskAgent(task.index))) return null;
-            // A task folder on a WSL share starts a WSL pane, which the pool
-            // keeps out of: its launch checks the caller's account as before.
-            if (task.cwd && wslShareToLinux(task.cwd)) {
-              callerTasks.add(task.index);
-              return null;
-            }
-            const picked = pick(current);
+            // A task folder on a WSL share starts a WSL pane in that distro,
+            // as the user a plain pane there last started as. Its accounts run
+            // on their homes there: picked by those homes' own sign-in, quota,
+            // holds and workers. With no such place known, or no home there
+            // with a sign-in, it runs on the caller's account as before.
+            const share = task.cwd ? wslShareToLinux(task.cwd) : null;
+            const wslPlace = share ? wslDefaultPlace(share.distro) : undefined;
             // A pick of its own decides again each time (a dependent's or a retry's).
             callerTasks.delete(task.index);
             fallbackTasks.delete(task.index);
-            if (picked.kind === 'pick') return { accountId: picked.accountId };
+            if (share && !wslPlace) {
+              callerTasks.add(task.index);
+              return null;
+            }
+            const picked = pick(current, wslPlace ? { place: wslPlace } : {});
+            if (picked.kind === 'pick') return { accountId: picked.accountId, ...(wslPlace ? { wslPlace } : {}) };
+            if (wslPlace && picked.reason === 'empty') {
+              callerTasks.add(task.index);
+              return null;
+            }
             // No pool account can run it at all (none eligible): the
             // caller's account, as with the pool off, said once. The
             // per-account worker limit the owner set still holds there: such
@@ -2429,8 +2451,10 @@ export function registerFanOutRpc(
             // Every usable account is in the reserve: held as the reserve
             // holds a fan-out without the pool (a bot's request is kept).
             if (picked.reason === 'held') {
-              const hold = poolAllHeld(current, holdForAccount)
-                ?? (picked.availableAtMs !== null ? { account: current.members[0]?.id ?? 'default', untilMs: picked.availableAtMs } : null);
+              // A WSL pick's hold is its held home's that ends first, named by
+              // that home's key (the owner is told of the account in WSL).
+              const hold = (wslPlace ? poolHeldInPlace(current, wslPlace, { holdFor: holdForAccount }) : poolAllHeld(current, holdForAccount))
+                ?? (picked.availableAtMs !== null ? { account: (wslPlace ? heldHomeKey(current, wslPlace) : current.members[0]?.id) ?? 'default', untilMs: picked.availableAtMs } : null);
               if (hold) return { refusal: reserveRefusal(hold, !launchPassed) };
             }
             return { refusal: poolRefusalText(picked, Date.now()) };
@@ -2527,7 +2551,7 @@ export function registerFanOutRpc(
             accountPick,
             mayLaunch: (task) => {
               const firstPass = !launchPassed;
-              const refusal = (bot && botPort ? botPort.launchRefusal(bot.botId, botWakeId) : null) ?? reserveAtTaskLaunch(task?.index, task?.accountId);
+              const refusal = (bot && botPort ? botPort.launchRefusal(bot.botId, botWakeId) : null) ?? reserveAtTaskLaunch(task?.index, task?.accountId, task?.wslPlace);
               if (!refusal) launchPassed = true;
               if (!refusal && task && fallbackTasks.has(task.index)) notePoolCallerFallback();
               // A pool worker whose pane turns out WSL is checked on the

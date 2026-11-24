@@ -1957,17 +1957,26 @@ registerPcEnvRpc(rpcRouter, { wmuxVersion: app.getVersion() });
 // Usage reserve: unattended starts wait while an account's 5h usage is in the
 // last 15%. Reads the usage held above; the daemon gets the holds for its
 // scheduled runs, and fan-outs ask it directly (fanout.rpc.ts).
+/** A reserve key's name for the owner: the account's, marked WSL for a WSL home's key. */
+function usageReserveAccountName(key: string): string {
+  const at = key.indexOf('@wsl:');
+  const id = at < 0 ? key : key.slice(0, at);
+  const name = getAccountStore().getAccount(id)?.name ?? id;
+  return at < 0 ? name : `${name} (WSL)`;
+}
 const usageReserve = new UsageReserve({
   wmuxDir: getWmuxDir(),
   snapshots: () => [
     ['default', usagePoller.getState().snapshot],
     ...accountUsageService.getAll().map((e): [string, typeof e.snapshot] => [e.accountId, e.snapshot]),
+    // A WSL account home's own reading, by its key: a pool worker there is held on it.
+    ...getWslAccountState().all().map(([key, e]): [string, typeof e.snapshot] => [key, e.snapshot]),
   ],
   accountOfWorkspace: (workspaceId) => getAccountStore().getBinding(workspaceId, 'claude') ?? 'default',
   push: (holds) => daemonClient?.setUsageReserveHolds(holds) ?? Promise.resolve(false),
   notify: (account, untilMs) => {
     const locale = getAutomationUiLocale();
-    const who = account === 'default' ? null : getAccountStore().getAccount(account)?.name ?? account;
+    const who = account === 'default' ? null : usageReserveAccountName(account);
     const text = usageReserveToastText(locale, who, formatResetClock(untilMs, Date.now(), locale));
     toastManager.showDirect(text, '', undefined, { ignoreToastSetting: false, onClick: () => { mainWindow?.show(); } });
   },
@@ -1988,6 +1997,7 @@ setFanoutAccountPoolHost({
 });
 usagePoller.onStateChange(() => usageReserve.refresh());
 accountUsageService.onChange(() => usageReserve.refresh());
+getWslAccountState().onChange(() => usageReserve.refresh());
 ipcMain.handle(IPC.USAGE_RESERVE_GET, () => ({ enabled: usageReserve.enabled() }));
 ipcMain.handle(IPC.USAGE_RESERVE_SET, async (_event, enabled: unknown) => {
   if (typeof enabled !== 'boolean') return { ok: false };

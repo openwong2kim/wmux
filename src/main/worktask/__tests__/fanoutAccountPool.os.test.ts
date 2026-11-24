@@ -24,6 +24,9 @@ import {
   poolRelaunchRefusal,
   notePoolCallerFallback,
   poolFallsBackToCaller,
+  heldHomeKey,
+  poolHeldInPlace,
+  poolUsageKey,
   preparePool,
   resetFanoutAccountPoolForTests,
   setFanoutAccountPoolSettings,
@@ -32,6 +35,7 @@ import {
 } from '../fanoutAccountPool';
 import { DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, POOL_DEFAULT_ACCOUNT, type FanoutAccountPoolSettings } from '../../../shared/fanoutAccountPool';
 import type { Account } from '../../account/accountStore';
+import { WslAccountState, wslStateKey } from '../../account/wslAccountState';
 import { commandLineBinding } from '../../../daemon/transcript/agentCommandLineBinding';
 import { trackedTempDir } from '../../../test-utils/trackedTempDir';
 import { workerSlotStores } from '../../../test-utils/workerSlotStores';
@@ -127,6 +131,8 @@ describe('preparePool', () => {
     });
     expect(pool?.members).toEqual([]);
     expect(log.join('\n')).toMatch(/wsl-unc \(unc\).*wsl-win \(signed-out\)/);
+    // A WSL pane may still pick the Windows-folder one, on its home's own evidence (never the UNC one).
+    expect(pool?.wslMembers).toEqual([{ id: 'wsl-win', configDir: win.configDir }]);
   });
 
   it('a caller bound to an account picks only in its group, without the default login', async () => {
@@ -483,5 +489,162 @@ describe('a fallback onto the caller\'s account', () => {
     // Its pane's create takes no pool account from it.
     const g = s.launchOf('f1')!.gen;
     expect(poolAccountForCreate({ fanoutTaskOf: 'ws', fanoutLaunch: { taskId: 'f1', gen: g }, initialCommand: 'claude' }, (id) => s.launchOf(id))).toEqual({ kind: 'none' });
+  });
+});
+
+describe('(d) a WSL task pane\'s pick reads its homes there, a native one only the Windows entries', () => {
+  const UBUNTU = { distribution: 'Ubuntu', user: 'me' };
+  const pool: PreparedPool = {
+    settings: on, group: '',
+    members: [{ id: 'a', configDir: '/acc/a' }, { id: POOL_DEFAULT_ACCOUNT, configDir: null }],
+    // 'b' is signed in only in WSL, so its Windows folder left it out of `members`.
+    wslMembers: [{ id: 'a', configDir: '/acc/a' }, { id: 'b', configDir: '/acc/b' }],
+  };
+  const reset = Math.floor(Date.now() / 1000) + 3600;
+  const windows = (pct: number) => ({ accountId: 'a', status: 'ok' as const, snapshot: { sessionPct: pct, sessionResetEpochSec: reset, fetchedAtMs: Date.now() } as never, fetchedAtMs: Date.now(), lastError: null });
+  function wslState(t0 = Date.now()) {
+    let now = t0;
+    const s = new WslAccountState(() => now);
+    return { s, at: (ms: number) => { now = ms; } };
+  }
+  const deps = (sl: WorkerSlots, over: Record<string, unknown> = {}) => ({ slots: sl, holdFor: () => null, workerMayRun: () => true, dirOk: () => true, ...over });
+
+  it('picks by the homes\' own readings, and a WSL reading never reaches a native pick', () => {
+    const { s } = wslState();
+    // Windows: 'a' is spent. WSL: 'a' is spent there too, 'b' has most left.
+    s.noteSample('a', UBUNTU, { session: { pct: 100, resetEpochSec: reset } });
+    s.noteSample('b', UBUNTU, { session: { pct: 10, resetEpochSec: reset } });
+    const h = host({ claudeUsage: () => [windows(100)] });
+    const wsl = pickFromPool(pool, deps(slots(), { host: h, place: UBUNTU, wslState: s }));
+    expect(wsl).toEqual({ kind: 'pick', accountId: 'b' });
+    // Native: 'b' is no member, 'a' is spent on Windows: the default login.
+    expect(pickFromPool(pool, deps(slots(), { host: h, wslState: s }))).toEqual({ kind: 'pick', accountId: POOL_DEFAULT_ACCOUNT });
+    // A fresh WSL 'a' at 0% changes nothing for the native pick.
+    s.noteSample('a', UBUNTU, { session: { pct: 0, resetEpochSec: reset } });
+    expect(poolCandidates(pool, deps(slots(), { host: h, wslState: s })).find((c) => c.id === 'a')?.verdict.usable).toBe(false);
+    // Another user of the same distro is another home: nothing known there.
+    expect(poolCandidates(pool, deps(slots(), { host: h, place: { distribution: 'Ubuntu', user: 'other' }, wslState: s }))).toEqual([]);
+  });
+
+  it('needs sign-in evidence from the home; a stale reading rules a spent home out but ranks no fresh one', () => {
+    const t0 = 10_000_000_000;
+    const { s, at } = wslState(t0);
+    s.noteAuth('a', UBUNTU, true);
+    s.noteSample('b', UBUNTU, { session: { pct: 99, resetEpochSec: Math.floor(t0 / 1000) + 3600 } });
+    s.noteAuth('c', UBUNTU, false);
+    const p = { ...pool, wslMembers: [...pool.wslMembers!, { id: 'c', configDir: '/acc/c' }] };
+    at(t0 + 20 * 60_000);
+    const byId = Object.fromEntries(poolCandidates(p, deps(slots(), { place: UBUNTU, wslState: s, now: () => t0 + 20 * 60_000 })).map((c) => [c.id, c.verdict]));
+    // 'a': signed in, never measured. 'b': spent 20 min ago, before its reset. 'c': signed out.
+    expect(byId.a).toEqual({ usable: true, remaining: null, availableAtMs: null });
+    expect(byId.b?.usable).toBe(false);
+    expect(byId).not.toHaveProperty('c');
+    expect(byId).not.toHaveProperty(POOL_DEFAULT_ACCOUNT);
+  });
+
+  it('holds a WSL home under its own key, and counts its workers on the account', () => {
+    const { s } = wslState();
+    s.noteAuth('a', UBUNTU, true);
+    const sl = slots();
+    sl.beginLaunch({ taskId: 'w1', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'a', wslPlace: UBUNTU });
+    sl.beginLaunch({ taskId: 'n1', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'a' });
+    const key = wslStateKey('a', UBUNTU)!;
+    expect(poolUsageKey('a', UBUNTU)).toBe(key);
+    // The per-account limit holds across Windows and every distro.
+    expect(Object.fromEntries(openWorkersByAccount(sl, () => true))).toEqual({ a: 2 });
+    const asked: string[] = [];
+    const [c] = poolCandidates({ ...pool, wslMembers: [{ id: 'a', configDir: '/acc/a' }] }, deps(sl, { place: UBUNTU, wslState: s, holdFor: (k: string) => { asked.push(k); return k === key ? { untilMs: 7 } : null; } }));
+    expect(c).toMatchObject({ id: 'a', heldUntilMs: 7, open: 2 });
+    expect(asked).toEqual([key]);
+  });
+
+  it('after a restart a seeded reading is no sign-in: it rules a spent home out but never makes one a candidate', () => {
+    const t0 = 10_000_000_000;
+    const { s, at } = wslState(t0);
+    const resetSec = Math.floor(t0 / 1000) + 3600;
+    // Before the restart 'a' failed on its sign-in; only its last reading is in the trail.
+    s.seed(wslStateKey('a', UBUNTU)!, { sessionPct: 10, sessionResetEpochSec: resetSec, fetchedAtMs: t0 }, t0);
+    s.seed(wslStateKey('b', UBUNTU)!, { sessionPct: 100, sessionResetEpochSec: resetSec, fetchedAtMs: t0 }, t0);
+    at(t0 + 60_000);
+    const d = deps(slots(), { place: UBUNTU, wslState: s, now: () => t0 + 60_000 });
+    expect(poolCandidates(pool, d)).toEqual([]);
+    // A live sample in this run is evidence again; a turn that worked too, but a spent home stays out.
+    s.noteSample('a', UBUNTU, { session: { pct: 10, resetEpochSec: resetSec } });
+    s.noteAuth('b', UBUNTU, true);
+    expect(Object.fromEntries(poolCandidates(pool, d).map((c) => [c.id, c.verdict.usable]))).toEqual({ a: true, b: false });
+  });
+
+  it('names a held WSL pick by the home whose hold ends first, among that place\'s candidates only', () => {
+    const { s } = wslState();
+    s.noteAuth('a', UBUNTU, true);
+    s.noteAuth('b', UBUNTU, true);
+    const ka = wslStateKey('a', UBUNTU)!;
+    const kb = wslStateKey('b', UBUNTU)!;
+    const p = { ...pool, wslMembers: [...pool.wslMembers!, { id: 'z', configDir: '/acc/z' }, { id: 'x', configDir: '/acc/x' }] }; // 'z': no home there
+    // 'x' is spent there and not held: no reserve stop, so it is left out.
+    s.noteSample('x', UBUNTU, { session: { pct: 100, resetEpochSec: reset } });
+    const holds: Record<string, number> = { [ka]: 9, [kb]: 5 };
+    const d = { ...deps(slots()), wslState: s, holdFor: (k: string) => (holds[k] ? { untilMs: holds[k] } : null) };
+    expect(poolHeldInPlace(p, UBUNTU, d)).toEqual({ account: kb, untilMs: 5 });
+    expect(heldHomeKey(p, UBUNTU, d)).toBe(kb);
+    delete holds[ka];
+    expect(poolHeldInPlace(p, UBUNTU, d)).toBeNull();
+    expect(heldHomeKey(p, UBUNTU, d)).toBe(kb);
+    expect(poolHeldInPlace(p, { distribution: 'Debian', user: 'me' }, d)).toBeNull();
+    expect(heldHomeKey(p, { distribution: 'Debian', user: 'me' }, d)).toBeNull();
+  });
+
+  it('a held bot is rechecked on the Windows members its tasks run on, whatever its WSL homes hold', async () => {
+    const { s } = wslState();
+    s.noteAuth('b', UBUNTU, true);
+    await preparePool('ws-bot-wsl', {
+      settings: () => ({ ...on, includeDefaultLogin: false }), host: host(), accounts: () => [acct('a')], binding: () => undefined,
+      dirOk: () => true, signedIn: async () => true, vaultSignIn: () => false, log: () => undefined,
+    });
+    const base = { host: host(), slots: slots(), workerMayRun: () => true, dirOk: () => true, poolOn: () => true, refresh: () => undefined, wslState: s };
+    // 'a' held on Windows: held, though its home is not.
+    expect(poolReserveHeldForWorkspace('ws-bot-wsl', { ...base, holdFor: (k: string) => (k === 'a' ? { untilMs: Date.now() + 60_000 } : null) })).toBe(true);
+    // 'a' free on Windows: woken, though a home is held.
+    expect(poolReserveHeldForWorkspace('ws-bot-wsl', { ...base, holdFor: (k: string) => (k === 'a' ? null : { untilMs: Date.now() + 60_000 }) })).toBe(false);
+  });
+
+  it('a pane keeps a WSL pick only where it was picked for', () => {
+    const rec = (wslPlace?: typeof UBUNTU) => () => ({ gen: 2, state: 'launching', accountId: 'a', ...(wslPlace ? { wslPlace } : {}) });
+    const opts = { fanoutTaskOf: 'ws-owner', fanoutLaunch: { taskId: 't1', gen: 2 }, initialCommand: 'claude "$(cat p)"' };
+    const released = { kind: 'release', taskId: 't1', gen: 2, wsl: true };
+    // Kept with its recorded place, which the spawn pins (-d Ubuntu -u me).
+    expect(poolAccountForCreate(opts, rec(UBUNTU), { wsl: true, wslPlace: { distribution: 'ubuntu', user: 'me' } })).toEqual({ kind: 'account', accountId: 'a', wslPlace: UBUNTU });
+    expect(poolAccountForCreate(opts, rec(UBUNTU), { wsl: true, wslPlace: { distribution: 'Ubuntu', user: 'root' } })).toEqual(released);
+    expect(poolAccountForCreate(opts, rec(UBUNTU), { wsl: true, wslPlace: null })).toEqual(released);
+    expect(poolAccountForCreate(opts, rec(UBUNTU), { wsl: false })).toEqual(released);
+    expect(poolAccountForCreate(opts, rec(), { wsl: true, wslPlace: UBUNTU })).toEqual(released);
+  });
+
+  it('a respawn on the same account keeps its home, and is held on that home\'s quota and hold', () => {
+    const sl = slots();
+    const g = sl.beginLaunch({ taskId: 't1', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'a', wslPlace: UBUNTU }).gen;
+    sl.launched('t1', g, 'ws-t1', 'pty-1');
+    const g2 = sl.beginLaunch({ taskId: 't1', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'a' }).gen;
+    expect(sl.launchOf('t1')?.wslPlace).toEqual(UBUNTU);
+    sl.launched('t1', g2, 'ws-t1', 'pty-2');
+    const { s } = wslState();
+    s.noteSample('a', UBUNTU, { session: { pct: 100, resetEpochSec: reset } });
+    const base = { host: host({ claudeUsage: () => [windows(0)] }), slots: sl, taskId: 't1', holdFor: () => null, workerMayRun: () => true, dirOk: () => true, poolOn: () => true, account: () => acct('a'), wslState: s };
+    expect(poolRelaunchRefusal('a', base)).toMatch(/out of quota/);
+    const fine = wslState().s;
+    expect(poolRelaunchRefusal('a', { ...base, wslState: fine })).toBeNull();
+    expect(poolRelaunchRefusal('a', { ...base, wslState: fine, holdFor: (k: string) => (k === wslStateKey('a', UBUNTU) ? { untilMs: Date.now() + 1000 } : null) })).toMatch(/usage reserve holds/);
+    // A home whose last turn failed on its sign-in is not relaunched into.
+    fine.noteAuth('a', UBUNTU, false);
+    expect(poolRelaunchRefusal('a', { ...base, wslState: fine })).toMatch(/signed out in WSL Ubuntu/);
+    // A codex generation in the pane keeps the place with the pool mark, so
+    // a Claude line typed there later is checked on the same home.
+    sl.beginLaunch({ taskId: 't1', origin: 'owner', ownerWorkspaceId: 'ws', accountId: null, pane: { sessionId: 'pty-2', workspaceId: 'ws-t1' } });
+    expect(sl.launchOf('t1')).toMatchObject({ pooled: true, wslPlace: UBUNTU });
+    expect(sl.launchOf('t1')).not.toHaveProperty('accountId');
+    expect(poolRelaunchRefusal('a', { ...base, wslState: fine })).toMatch(/signed out in WSL Ubuntu/);
+    // On another account it is a native launch again.
+    sl.beginLaunch({ taskId: 't1', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'b' });
+    expect(sl.launchOf('t1')).not.toHaveProperty('wslPlace');
   });
 });

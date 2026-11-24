@@ -54,6 +54,7 @@ import type { DaemonClient } from '../../../DaemonClient';
 import type { ImportGit } from '../../../worktask/bundleImport';
 import { validateFanoutTaskGraph } from '../../../../shared/fanoutTaskGraph';
 import { trackedTempDir } from '../../../../test-utils/trackedTempDir';
+import { wslStateKey } from '../../../account/wslAccountState';
 
 // A fan-out run is detached: the handler appends to its guards' audit file
 // (making the dir again if it is gone) once the service's start settles, which
@@ -137,6 +138,8 @@ function setup(opts?: {
     read?: () => Promise<void>;
     settings?: Partial<FanoutAccountPoolSettings>;
     openWorkersOn?: (key: string) => number;
+    /** Where a plain pane in a distro starts, and the accounts with a home there. */
+    wsl?: { place?: { distribution: string; user: string }; members: string[] };
   };
   ownerWorkspaceId?: string;
   cwd?: string | null;
@@ -309,7 +312,13 @@ function setup(opts?: {
       ...(opts.pool.openWorkersOn ? { openWorkersOn: opts.pool.openWorkersOn } : {}),
       usageReserveHoldForAccount: opts.pool.holdFor,
       noteUsageReserveHeld: () => undefined,
-      pickFromPool: (pool: PreparedPool) => pickPoolAccount(pool.members.map((m) => ({ id: m.id, verdict: { usable: true, remaining: null, availableAtMs: null }, heldUntilMs: opts.pool!.holdFor(m.id)?.untilMs ?? null, open: 0 })), pool.settings),
+      pickFromPool: (pool: PreparedPool, d?: { place?: { distribution: string; user: string } }) => {
+        const place = d?.place;
+        const ids = place ? opts.pool!.wsl?.members ?? [] : pool.members.map((m) => m.id);
+        const key = (id: string) => (place ? wslStateKey(id, place)! : id);
+        return pickPoolAccount(ids.map((id) => ({ id, verdict: { usable: true, remaining: null, availableAtMs: null }, heldUntilMs: opts.pool!.holdFor(key(id))?.untilMs ?? null, open: 0 })), pool.settings);
+      },
+      wslDefaultPlace: () => opts.pool!.wsl?.place,
     } : {}),
     ...(opts?.remoteFanout ? { remoteFanout: opts.remoteFanout } : {}),
     ...(opts?.resolveCallerPane ? { resolveCallerPane: opts.resolveCallerPane } : {}),
@@ -1715,6 +1724,36 @@ describe('task.fanout.start — usage reserve with the account pool', () => {
     expect(lr.accountPick?.pick({ index: 1, cwd: 'C:\\work\\wt2' })).toEqual({ refusal: expect.stringMatching(/already runs its most workers/) });
     open = 0;
     expect(lr.accountPick?.pick({ index: 1, cwd: 'C:\\work\\wt2' })).toEqual({ callerAccount: 'default' });
+  });
+
+  it('a WSL-share task with a known place picks a home there, and is held on that home\'s key', async () => {
+    const untilMs = Date.now() + 60 * 60_000;
+    const place = { distribution: 'Ubuntu', user: 'me' };
+    const held = new Set<string>();
+    const h = setup({
+      pool: { members: ['acc-a'], holdFor: (k) => (held.has(k) ? { account: k, untilMs } : null), wsl: { place, members: ['acc-b'] } },
+      approval: { approved: true, outcome: 'approved' },
+    });
+    expect((await h.call(goodParams())).status).toBe('accepted');
+    await h.flush();
+    await h.flush();
+    const req = h.request();
+    const share = '\\\\wsl.localhost\\Ubuntu\\home\\me\\wt';
+    expect(req.accountPick?.pick({ index: 0, cwd: share })).toEqual({ accountId: 'acc-b', wslPlace: place });
+    expect(req.mayLaunch?.({ index: 0, accountId: 'acc-b', wslPlace: place })).toBeNull();
+    // Its Windows folder's hold says nothing about the home; the home's does.
+    held.add('acc-b');
+    expect(req.mayLaunch?.({ index: 0, accountId: 'acc-b', wslPlace: place })).toBeNull();
+    held.add(wslStateKey('acc-b', place)!);
+    expect(req.mayLaunch?.({ index: 0, accountId: 'acc-b', wslPlace: place })).toMatch(/^usage reserve: /);
+  });
+
+  it('a WSL-share task with no home known there runs on the caller\'s account, as before', async () => {
+    const h = setup({ pool: { members: ['acc-a'], holdFor: () => null, wsl: { place: { distribution: 'Ubuntu', user: 'me' }, members: [] } }, approval: { approved: true, outcome: 'approved' } });
+    expect((await h.call(goodParams())).status).toBe('accepted');
+    await h.flush();
+    await h.flush();
+    expect(h.request().accountPick?.pick({ index: 0, cwd: '\\\\wsl.localhost\\Ubuntu\\home\\me\\wt' })).toBeNull();
   });
 
   it('a failed pool read is asked again, not kept as fresh', async () => {

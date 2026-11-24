@@ -18,6 +18,12 @@
 //     the usage reserve's holds, and the open workers on each account.
 //   - the create of the worker's pane (poolAccountForCreate): main reads the
 //     account from the launch record; the renderer never names it.
+//   - a WSL task pane (a task folder on a WSL share): its accounts run on
+//     their homes in that distro, which are other logins than the Windows
+//     folders. Such a pick is keyed by (account, distro, user) and reads only
+//     WslAccountState (wslAccountState.ts): a member needs sign-in evidence
+//     from that home, its quota and its usage-reserve hold are the home's,
+//     and its open workers are counted there. Nothing is asked of the distro.
 //
 // Off by default, and off reads nothing: no settings beyond the file's
 // `enabled`, no account folders, no keychain, and no launch record gets an
@@ -56,6 +62,7 @@ import type { UsageSnapshot } from '../claude/UsageApi';
 import { macKeychainServiceName } from '../claude/claudeCredential';
 import { usageReserveHoldForAccount } from '../usage/usageReserve';
 import { getWorkerSlots, paneTaskPooled, parseLaunchToken, type WorkerSlots } from '../factory/workerSlots';
+import { getWslAccountState, wslStateKey, type WslAccountState, type WslPlace } from '../account/wslAccountState';
 import { liveHolders } from '../factory/workerHolders';
 
 /** What the running app hands the pool (index.ts): none of it is read while the pool is off. */
@@ -166,6 +173,12 @@ export interface PreparedPool {
   settings: FanoutAccountPoolSettings;
   group: string;
   members: PoolMember[];
+  /** The accounts a WSL task pane may pick from: the group's local folders,
+   *  whatever their Windows sign-in and hooks (a WSL home signs in and runs
+   *  its hooks inside the distro). Each is checked against that home's own
+   *  evidence at the pick (poolCandidates `place`). Never the default login:
+   *  nothing is known of a distro's own login. */
+  wslMembers?: PoolMember[];
 }
 
 export type PoolExclusion = 'missing-folder' | 'unc' | 'hook-drift' | 'vault-only' | 'signed-out';
@@ -267,7 +280,7 @@ export async function preparePool(callerWorkspaceId: string, deps: PreparePoolDe
     }
   }
   if (excluded.length > 0) log(`[fanout-pool] left out of the pool: ${excluded.map(([id, why]) => `${id} (${why})`).join(', ')}`);
-  const pool = { settings, group, members };
+  const pool = { settings, group, members, wslMembers: local.map((a) => ({ id: a.id, configDir: a.configDir })) };
   lastPools.delete(callerWorkspaceId);
   lastPools.set(callerWorkspaceId, { pool, at: Date.now() });
   while (lastPools.size > LAST_POOLS_MAX) lastPools.delete(lastPools.keys().next().value as string);
@@ -278,6 +291,10 @@ export async function preparePool(callerWorkspaceId: string, deps: PreparePoolDe
 
 export interface PickDeps {
   host?: FanoutAccountPoolHost | null;
+  /** A WSL task pane's place: the pick is among the pool's WSL members, on
+   *  their homes there (absent: a native pane). */
+  place?: WslPlace;
+  wslState?: Pick<WslAccountState, 'get' | 'reading'>;
   slots?: WorkerSlots;
   holdFor?: (account: string) => { untilMs: number } | null;
   /** Whether a launched task's worker may still run (liveHolders: a free holder does not). */
@@ -303,8 +320,17 @@ function holderMayRun(): (taskId: string) => boolean {
   return (taskId) => running === null || running.has(taskId);
 }
 
+/** The usage key a pool launch runs on: the account id for a native pane,
+ *  its WSL home's key (`<id>@wsl:<hash>`) for a WSL one, null when that key
+ *  would pass the key cap. The reserve's holds and the open-worker counts use it. */
+export function poolUsageKey(accountId: string, wslPlace?: WslPlace): string | null {
+  return wslPlace ? wslStateKey(accountId, wslPlace) : accountId;
+}
+
 /** Open workers per pool account: launching ones under way, and launched ones
- *  whose worker may still run. Released and ended ones do not count. */
+ *  whose worker may still run. Released and ended ones do not count. A
+ *  worker on one of the account's WSL homes counts on the account too, so
+ *  the per-account limit holds across Windows and every distro. */
 export function openWorkersByAccount(slots: WorkerSlots, workerMayRun: (taskId: string) => boolean): Map<string, number> {
   const out = new Map<string, number>();
   for (const l of slots.poolLaunches()) {
@@ -314,17 +340,75 @@ export function openWorkersByAccount(slots: WorkerSlots, workerMayRun: (taskId: 
   return out;
 }
 
+/** For the reserve's refusal of a WSL task: null when some usable home in
+ *  `place` is not held (or none is usable), else the hold that ends first,
+ *  named by its home's key. A home out of quota is no reserve stop. */
+export function poolHeldInPlace(pool: PreparedPool, place: WslPlace, deps: PickDeps = {}): { account: string; untilMs: number } | null {
+  const candidates = poolCandidates(pool, { ...deps, place }).filter((c) => c.verdict.usable);
+  if (candidates.length === 0 || candidates.some((c) => c.heldUntilMs === null)) return null;
+  let first: { account: string; untilMs: number } | null = null;
+  for (const c of candidates) {
+    const key = poolUsageKey(c.id, place);
+    if (key && c.heldUntilMs !== null && (!first || c.heldUntilMs < first.untilMs)) first = { account: key, untilMs: c.heldUntilMs };
+  }
+  return first;
+}
+
+/** The key a WSL pick's hold is named by when no single home is held: the
+ *  candidate home there whose hold ends first, else the first candidate. */
+export function heldHomeKey(pool: PreparedPool, place: WslPlace, deps: PickDeps = {}): string | null {
+  const candidates = poolCandidates(pool, { ...deps, place });
+  const held = candidates.filter((c) => c.heldUntilMs !== null).sort((a, b) => (a.heldUntilMs ?? 0) - (b.heldUntilMs ?? 0));
+  const c = held[0] ?? candidates[0];
+  return c ? poolUsageKey(c.id, place) : null;
+}
+
+/** Sign-in evidence from a WSL home in this run: a turn that worked, or a
+ *  sample from a live pane with no failed turn since. A reading seeded from
+ *  the trail after a restart is none (a failed sign-in of before it is not
+ *  kept): it can rule a home out by its quota, never make it a candidate. */
+function wslHomeSignedIn(e: { signedIn: boolean | null; live?: true } | undefined): boolean {
+  return !!e && (e.signedIn === true || (e.signedIn === null && e.live === true));
+}
+
+/**
+ * A WSL member's verdict on its home: null when the home is not a candidate
+ * (no sign-in evidence from it, or its last turn failed on its sign-in).
+ * The reading at any age rules a spent home out until its reset; only one
+ * that arrived within the candidate age ranks it, an older one counts as not
+ * measured (so a home last seen exhausted is never picked as if it were fresh).
+ */
+function wslVerdict(state: Pick<WslAccountState, 'get' | 'reading'>, accountId: string, place: WslPlace, now: number): ReturnType<typeof evaluateQuota> | null {
+  if (!wslHomeSignedIn(state.get(accountId, place))) return null;
+  const any = evaluateQuota(state.reading(accountId, place, 'bound'), now);
+  if (!any.usable) return any;
+  return evaluateQuota(state.reading(accountId, place, 'candidate'), now);
+}
+
 /** The candidates of a prepared pool now: quota from the readings on hand,
  *  the reserve's holds, the open workers. A member whose folder went since
  *  is left out. */
 export function poolCandidates(pool: PreparedPool, deps: PickDeps = {}): PoolCandidate[] {
   const h = deps.host === undefined ? host : deps.host;
   const now = (deps.now ?? Date.now)();
-  const usage = h?.claudeUsage() ?? [];
   const holdFor = deps.holdFor ?? usageReserveHoldForAccount;
   const open = openWorkersByAccount(deps.slots ?? getWorkerSlots(), deps.workerMayRun ?? holderMayRun());
   const dirOk = deps.dirOk ?? isAccessibleDir;
   const out: PoolCandidate[] = [];
+  if (deps.place) {
+    // A WSL pane: only the homes in its place, read from WslAccountState
+    // (never the Windows entries, the default login's included).
+    const state = deps.wslState ?? getWslAccountState();
+    for (const m of pool.wslMembers ?? []) {
+      if (m.configDir === null || !dirOk(m.configDir)) continue;
+      const key = poolUsageKey(m.id, deps.place);
+      const verdict = key ? wslVerdict(state, m.id, deps.place, now) : null;
+      if (!key || !verdict) continue;
+      out.push({ id: m.id, verdict, heldUntilMs: holdFor(key)?.untilMs ?? null, open: open.get(m.id) ?? 0 });
+    }
+    return out;
+  }
+  const usage = h?.claudeUsage() ?? [];
   for (const m of pool.members) {
     if (m.configDir !== null && !dirOk(m.configDir)) continue;
     const reading = m.id === POOL_DEFAULT_ACCOUNT
@@ -403,8 +487,18 @@ export function poolRelaunchRefusal(accountId: string, deps: PickDeps & { accoun
     ? null
     : (deps.account ?? ((id: string) => getAccountStore().getAccount(id)))(accountId)?.configDir;
   if (configDir === undefined) return 'fan-out account pool: the account this task ran on is no longer registered';
-  const [c] = poolCandidates({ settings: DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, group: '', members: [{ id: accountId, configDir }] }, deps);
+  // A WSL launch runs again on the same home: its quota and hold are that home's.
+  const own = deps.taskId ? (deps.slots ?? getWorkerSlots()).launchOf(deps.taskId) : null;
+  // The pane's place, kept with the pool mark across a codex or agy generation.
+  const wslPlace = own && (own.accountId === accountId || (!own.accountId && own.pooled === true)) ? own.wslPlace : undefined;
+  const c = wslPlace && configDir !== null
+    ? wslRelaunchCandidate(accountId, configDir, wslPlace, deps)
+    : poolCandidates({ settings: DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, group: '', members: [{ id: accountId, configDir }] }, deps)[0];
   if (!c) return 'fan-out account pool: the folder of the account this task ran on is missing';
+  // Its WSL home's last turn failed on its sign-in: a worker there would stop at the login.
+  if (wslPlace && (deps.wslState ?? getWslAccountState()).get(accountId, wslPlace)?.signedIn === false) {
+    return `fan-out account pool: the account this task ran on is signed out in WSL ${wslPlace.distribution}; sign it in there first`;
+  }
   const h = deps.host === undefined ? host : deps.host;
   const poolOn = deps.poolOn ?? (() => !!h && loadFanoutAccountPoolSettings().enabled);
   if (!poolOn()) return null;
@@ -415,7 +509,6 @@ export function poolRelaunchRefusal(accountId: string, deps: PickDeps & { accoun
   // relaunch replaces it).
   const max = (deps.settings ?? loadFanoutAccountPoolSettings)().maxWorkersPerAccount;
   if (max > 0) {
-    const own = deps.taskId ? (deps.slots ?? getWorkerSlots()).launchOf(deps.taskId) : null;
     const ownCounted = own?.accountId === accountId && own.state !== 'released' ? 1 : 0;
     if (c.open - ownCounted >= max) return `fan-out account pool: the account this task ran on already runs its most workers (${max}); it starts again once one ends`;
   }
@@ -445,11 +538,29 @@ export function poolReserveHeldForWorkspace(
     (deps.refresh ?? refreshPoolInBackground)(workspaceId);
     if (!entry) return true;
   }
+  // Its tasks run in Windows folders (worktrees, research folders): the same
+  // native pick as at their launch.
   const pick = pickPoolAccount(poolCandidates(entry.pool, deps), entry.pool.settings);
   // No pool account can run it: its workers run on the workspace's own
   // account, which the caller checks (as with the pool off).
   if (poolFallsBackToCaller(pick)) return undefined;
   return pick.kind === 'none' && (pick.reason === 'held' || (pick.reason === 'quota' && pick.availableAtMs !== null));
+}
+
+/** A WSL relaunch's own home as a candidate: its quota at any age and its
+ *  hold (no sign-in evidence is asked: its conversation lives there). */
+function wslRelaunchCandidate(accountId: string, configDir: string, place: WslPlace, deps: PickDeps): PoolCandidate | undefined {
+  if (!(deps.dirOk ?? isAccessibleDir)(configDir)) return undefined;
+  const key = poolUsageKey(accountId, place);
+  if (!key) return undefined;
+  const now = (deps.now ?? Date.now)();
+  const open = openWorkersByAccount(deps.slots ?? getWorkerSlots(), deps.workerMayRun ?? holderMayRun());
+  return {
+    id: accountId,
+    verdict: evaluateQuota((deps.wslState ?? getWslAccountState()).reading(accountId, place, 'bound'), now),
+    heldUntilMs: (deps.holdFor ?? usageReserveHoldForAccount)(key)?.untilMs ?? null,
+    open: open.get(accountId) ?? 0,
+  };
 }
 
 function refreshPoolInBackground(workspaceId: string): void {
@@ -512,25 +623,30 @@ export type PoolCreateDecision =
   /** No pool account for this create: it runs as before. */
   | { kind: 'none' }
   /** The record named an account but the line launches no Claude, or the
-   *  pane is WSL (`wsl`): drop it. */
+   *  pane does not run where the account was picked for (`wsl`: it runs on
+   *  the caller's account, as without the pool): drop it. */
   | { kind: 'release'; taskId: string; gen: number; wsl?: true }
   /** The default login: no account folder, and no quota rotation away from it. */
   | { kind: 'default' }
-  | { kind: 'account'; accountId: string };
+  /** `wslPlace`: a WSL pane picked for its home there, spawned as that user. */
+  | { kind: 'account'; accountId: string; wslPlace?: WslPlace };
 
 /**
  * What a fan-out task pane's create does with its launch record's pool
  * account. Read only after the launch was claimed (stampFanoutTaskPane). The
  * renderer's `accountId` is never taken: one that differs from the record's
  * refuses the create (THROWS). Only a Claude line (and not a Codex one) runs
- * on the account; any other line releases it. A WSL pane releases it too
- * (`place.wsl`): the pool reads no WSL sign-in or quota yet, so such a pane
- * runs as it did before the pool. Pure over its inputs.
+ * on the account; any other line releases it. The account runs only where
+ * it was picked for: a WSL pane keeps it when the record's place is the
+ * pane's own (same distro, any case, and same user), a native pane when the
+ * record names no place. Any other pane releases it (`wsl`): its sign-in and
+ * quota there were never read, so it runs as it did before the pool. Pure
+ * over its inputs.
  */
 export function poolAccountForCreate(
   options: { fanoutTaskOf?: unknown; fanoutLaunch?: unknown; accountId?: unknown; initialCommand?: unknown } | undefined,
-  launchOf: (taskId: string) => { gen: number; state: string; accountId?: string } | null,
-  place: { wsl?: boolean } = {},
+  launchOf: (taskId: string) => { gen: number; state: string; accountId?: string; wslPlace?: WslPlace } | null,
+  place: { wsl?: boolean; wslPlace?: WslPlace | null } = {},
 ): PoolCreateDecision {
   if (typeof options?.fanoutTaskOf !== 'string' || !options.fanoutTaskOf) return { kind: 'none' };
   const token = parseLaunchToken(options.fanoutLaunch);
@@ -545,8 +661,14 @@ export function poolAccountForCreate(
   const raw = typeof options.initialCommand === 'string' ? options.initialCommand : '';
   const line = splitModelEnvMarker(raw).command;
   if (!line || !namesClaude(line) || namesCodex(line)) return { kind: 'release', taskId: token.taskId, gen: token.gen };
-  if (place.wsl === true) return { kind: 'release', taskId: token.taskId, gen: token.gen, wsl: true };
-  return recorded ? { kind: 'account', accountId: recorded } : { kind: 'default' };
+  const at = launch.wslPlace;
+  const here = place.wsl === true ? place.wslPlace ?? null : undefined;
+  const same = at && here
+    ? at.distribution.toLowerCase() === here.distribution.toLowerCase() && at.user === here.user
+    : !at && here === undefined;
+  if (!same) return { kind: 'release', taskId: token.taskId, gen: token.gen, wsl: true };
+  if (!recorded) return { kind: 'default' };
+  return at ? { kind: 'account', accountId: recorded, wslPlace: at } : { kind: 'account', accountId: recorded };
 }
 
 /** The pool account (never the default login) a task workspace's current
@@ -557,6 +679,8 @@ export function poolAccountOfWorkspace(workspaceId: string, slots: WorkerSlots =
     if (!ref) return null;
     const launch = slots.launchOf(ref.taskId);
     if (!launch || launch.gen !== ref.gen || !launch.accountId || launch.accountId === POOL_DEFAULT_ACCOUNT) return null;
+    // A WSL home is measured by its own pane's samples, never by a Windows probe.
+    if (launch.wslPlace) return null;
     return launch.accountId;
   } catch {
     return null;

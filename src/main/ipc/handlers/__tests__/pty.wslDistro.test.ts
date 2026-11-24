@@ -66,13 +66,13 @@ describe('launchPlace (where the quota gate reads a WSL launch)', () => {
   it('a recovered pane without a valid target of its own has no place and records none; the distro is read once', () => {
     const src = readFileSync(path.resolve(process.cwd(), 'src/main/ipc/handlers/pty.handler.ts'), 'utf8');
     expect(src).toMatch(/const createPlace: LaunchPlace \| undefined = trustedRecovery && !knownTarget && isWslShell\(shell\)\s*\? \{ wsl: null \}/);
-    expect(src).toContain('if (isWslShell(shell) && !wslFromTarget && !trustedRecovery && validWslTarget(createdTarget)) {');
+    expect(src).toContain('if (isWslShell(shell) && !wslFromTarget && !trustedRecovery && !poolTarget && validWslTarget(createdTarget)) {');
     expect(src).toContain('getWslAccountState().noteDefaultPlace(requestedDistro, createdTarget);');
     // The distro booted is the gate's: the source pane's, else the recovered pane's recorded one.
     expect(src).toContain('wslDistroArgs(shell, knownTarget?.distribution ?? requestedDistro)');
     expect(src).toContain('const wslArgs = !wslFromTarget && isWslDistroSpawnArgs(shell, trustedRecovery?.args)');
-    // The spawn's target is the gate's, in the same order.
-    expect(src).toContain('wslTarget: wslFromTarget ?? trustedRecovery?.wslTarget,');
+    // The spawn's target is the gate's, in the same order; a pool pick's home is pinned last.
+    expect(src).toContain('wslTarget: wslFromTarget ?? trustedRecovery?.wslTarget ?? poolTarget,');
     expect(src).not.toMatch(/noteDefaultPlace\(requestedWslDistro\(options\)/);
   });
 });

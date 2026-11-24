@@ -3,10 +3,12 @@
 // spawn env names the account's folder from the launch record, carries no
 // vault value, is not rotated away from a default-login pick, and the
 // daemon's transcript binding then reads that folder.
+// @wmux-lane unit
+// Its one 'win32' only stubs process.platform for a WSL shell; nothing of Windows runs.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 const captured = new Map<string, (...a: unknown[]) => unknown>();
 vi.mock('electron', () => ({
@@ -31,6 +33,7 @@ import { __resetAccountStoreForTests, getAccountsPath } from '../../account/acco
 import { setAccountVault } from '../../account/accountVault';
 import { __resetAccountRotationServiceForTests, getAccountRotationService } from '../../account/AccountRotationService';
 import { POOL_DEFAULT_ACCOUNT } from '../../../shared/fanoutAccountPool';
+import { getWslAccountState } from '../../account/wslAccountState';
 import { commandLineBinding } from '../../../daemon/transcript/agentCommandLineBinding';
 import { trackedTempDir } from '../../../test-utils/trackedTempDir';
 
@@ -68,13 +71,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function createTaskPane(accountId: string, extra: Record<string, unknown> = {}): Promise<{ params?: { env?: Record<string, string>; secretEnv?: unknown }; error?: unknown }> {
+async function createTaskPane(accountId: string, extra: Record<string, unknown> = {}, wslPlace?: { distribution: string; user: string }): Promise<{ params?: { env?: Record<string, string>; secretEnv?: unknown; wslTarget?: unknown }; error?: unknown }> {
   const rpc = vi.fn(async () => ({}));
   const daemonClient = {
     isConnected: true, writeToSession: vi.fn(), on: () => undefined, off: () => undefined, removeListener: () => undefined,
     rpc, connectSessionPipe: vi.fn(), disconnectSessionPipe: vi.fn(async () => undefined),
   };
-  const { gen } = slots.beginLaunch({ taskId: 't1', origin: 'owner', ownerWorkspaceId: 'ws-owner', accountId });
+  const { gen } = slots.beginLaunch({ taskId: 't1', origin: 'owner', ownerWorkspaceId: 'ws-owner', accountId, ...(wslPlace ? { wslPlace } : {}) });
   registerPTYHandlers({} as never, { setupDataForwarding: () => undefined } as never, daemonClient as never, () => null);
   const create = captured.get(IPC.PTY_CREATE);
   let error: unknown;
@@ -83,7 +86,7 @@ async function createTaskPane(accountId: string, extra: Record<string, unknown> 
     initialCommand: 'claude', ...extra,
   })).catch((err: unknown) => { error = err; });
   const call = rpc.mock.calls.find((c) => (c as unknown[])[0] === 'daemon.createSession') as unknown[] | undefined;
-  return { params: call?.[1] as { env?: Record<string, string>; secretEnv?: unknown } | undefined, error };
+  return { params: call?.[1] as { env?: Record<string, string>; secretEnv?: unknown; wslTarget?: unknown } | undefined, error };
 }
 
 describe('a pool worker pane create (daemon mode)', () => {
@@ -127,6 +130,28 @@ describe('a pool worker pane create (daemon mode)', () => {
   it('a task switched to codex drops the record\'s account and spawns without it', async () => {
     const { params } = await createTaskPane('acc-a', { initialCommand: 'codex' });
     expect(params?.env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(slots.launchOf('t1')).not.toHaveProperty('accountId');
+  });
+
+  it('a WSL pane picked for its home there runs on the account, marked for that home; any other WSL pane runs as before', async () => {
+    // A WSL shell is a Windows one.
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    onTestFinished(() => { Object.defineProperty(process, 'platform', platform); });
+    const place = { distribution: 'Ubuntu', user: 'me' };
+    getWslAccountState().noteDefaultPlace('Ubuntu', place);
+    const wsl = { shell: 'wsl.exe', wslDistro: 'Ubuntu' };
+    const picked = await createTaskPane('acc-a', wsl, place);
+    expect(picked.error).toBeUndefined();
+    expect(picked.params?.env?.CLAUDE_CONFIG_DIR).toBe(accountDir);
+    expect(picked.params?.env?.WMUX_WSL_ACCOUNT_KEYS).toBe('CLAUDE_CONFIG_DIR');
+    // Spawned as the user whose home the pick checked, not whoever the distro starts as now.
+    expect(picked.params?.wslTarget).toEqual(place);
+    expect(slots.launchOf('t1')).toMatchObject({ accountId: 'acc-a', wslPlace: place });
+    // Picked for another user's home: released, as without the pool.
+    const other = await createTaskPane('acc-a', wsl, { distribution: 'Ubuntu', user: 'root' });
+    expect(other.params?.env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(other.params?.wslTarget).toBeUndefined();
     expect(slots.launchOf('t1')).not.toHaveProperty('accountId');
   });
 });
