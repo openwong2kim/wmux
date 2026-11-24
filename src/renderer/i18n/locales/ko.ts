@@ -1446,6 +1446,7 @@ export const ko = {
   'pane.continueOnAccountInvalidAccount': "그 계정의 폴더가 없습니다.",
   'pane.continueOnAccountInProgress': "이 페인의 대화를 이미 다른 계정으로 옮기는 중입니다.",
   'pane.continueOnAccountPending': "아직 대화를 옮기는 중입니다. 잠시 뒤 페인을 확인하세요.",
+  'pane.continueOnAccountLost': "전환 중에 세션 서비스와의 연결이 끊겼습니다. 판을 확인하세요. Claude가 멈췄을 수 있습니다.",
   'pane.continueOnAccountStillRunning': "Claude가 멈추지 않아 대화를 옮기지 않았습니다.",
   'pane.continueOnAccountCopyFailed': "대화를 그 계정으로 복사하지 못했습니다. 다시 띄우지 않았습니다.",
   'pane.continueOnAccountShellBusy': "Claude는 멈췄지만 셸이 빈 프롬프트로 돌아오지 않았습니다. 프롬프트를 비우고 다시 시도하세요.",

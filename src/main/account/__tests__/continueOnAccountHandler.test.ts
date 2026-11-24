@@ -71,6 +71,14 @@ describe('continue on an account', () => {
     expect(movedInPlace).not.toHaveBeenCalled();
   });
 
+  it('the daemon lost mid-call is a failure of its own (lost), not "nothing happened"', async () => {
+    const rpc: Rpc = vi.fn<ContinuePaneDeps['rpc']>(async () => { throw new Error('Daemon connection closed'); });
+    expect(await continuePane(deps({ rpc }), { ptyId: 'daemon-1', accountId: plain.id })).toEqual({ ok: false, code: 'lost' });
+    expect(await continuePane(deps({ rpc }), { ptyId: 'daemon-1', accountId: token.id })).toEqual({ ok: false, code: 'lost' });
+    const slow: Rpc = vi.fn<ContinuePaneDeps['rpc']>(async () => { throw new Error('RPC timeout: session.continueOnAccountV2'); });
+    expect(await continuePane(deps({ rpc: slow }), { ptyId: 'daemon-1', accountId: plain.id })).toEqual({ ok: false, code: 'pending' });
+  });
+
   it('a daemon without the sign-in check moves nothing in place: unavailable', async () => {
     const rpc: Rpc = vi.fn<ContinuePaneDeps['rpc']>(async (method) => { throw new Error(`Unknown method: ${method}`); });
     expect(await continuePane(deps({ rpc }), { ptyId: 'daemon-1', accountId: plain.id })).toEqual({ ok: false, code: 'unavailable' });

@@ -1600,6 +1600,7 @@ export const pl = {
   'pane.continueOnAccountInvalidAccount': "Brak folderu tego konta.",
   'pane.continueOnAccountInProgress': "Rozmowa w tym panelu jest już przenoszona na inne konto.",
   'pane.continueOnAccountPending': "Rozmowa jest wciąż przenoszona. Sprawdź panel za chwilę.",
+  'pane.continueOnAccountLost': "Połączenie z usługą sesji zerwało się podczas przełączania. Sprawdź panel: Claude mógł się zatrzymać.",
   'pane.continueOnAccountStillRunning': "Claude nie zatrzymał się, więc rozmowy nie przeniesiono.",
   'pane.continueOnAccountCopyFailed': "Nie udało się skopiować rozmowy na to konto. Niczego nie uruchomiono ponownie.",
   'pane.continueOnAccountShellBusy': "Claude został zatrzymany, ale powłoka nie wróciła do pustego wiersza poleceń. Wyczyść wiersz i spróbuj ponownie.",

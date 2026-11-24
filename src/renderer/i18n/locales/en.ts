@@ -1648,6 +1648,7 @@ export const en = {
   'pane.continueOnAccountInvalidAccount': "That account's folder is missing.",
   'pane.continueOnAccountInProgress': "This pane's conversation is already moving to another account.",
   'pane.continueOnAccountPending': "Still moving this conversation. Check the pane in a moment.",
+  'pane.continueOnAccountLost': "The connection to the session service dropped during the switch. Check the pane: Claude may have stopped.",
   'pane.continueOnAccountStillRunning': "Claude did not stop, so the conversation was not moved.",
   'pane.continueOnAccountCopyFailed': "Could not copy the conversation to that account. Nothing was relaunched.",
   'pane.continueOnAccountShellBusy': "Claude stopped, but the shell did not return to an empty prompt. Clear the prompt and try again.",

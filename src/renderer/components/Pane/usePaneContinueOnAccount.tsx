@@ -56,6 +56,7 @@ const REFUSAL_KEYS: Record<string, string> = {
   turn_open: 'pane.continueOnAccountTurnOpen',
   busy: 'pane.continueOnAccountInProgress',
   pending: 'pane.continueOnAccountPending',
+  lost: 'pane.continueOnAccountLost',
   still_running: 'pane.continueOnAccountStillRunning',
   copy_failed: 'pane.continueOnAccountCopyFailed',
   diverged: 'pane.continueOnAccountDiverged',

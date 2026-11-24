@@ -110,8 +110,12 @@ export async function continuePane(
     return { ok: true, newPane: { accountId: account.id, command, cwd: res.cwd, ...(wsl ? { wslFrom: ptyId } : {}) } };
   } catch (err) {
     // A timeout is not a refusal: the daemon may still finish the move. A
-    // daemon without the copy method answers Unknown method: nothing moved.
-    return { ok: false, code: err instanceof Error && err.message.startsWith('RPC timeout') ? 'pending' : 'unavailable' };
+    // daemon without the method answers Unknown method: nothing moved. Any
+    // other error (the daemon gone mid-call) may land after Claude stopped:
+    // `lost`, a failure, never read as nothing having happened.
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.startsWith('RPC timeout')) return { ok: false, code: 'pending' };
+    return { ok: false, code: message.includes('Unknown method') ? 'unavailable' : 'lost' };
   }
 }
 

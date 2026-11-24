@@ -55,7 +55,7 @@ describe('switching a workspace\'s open panes to an account', () => {
     for (const code of ['turn_open', 'busy', 'folder_trust', 'not_claude', 'unsupported', 'invalid_account', 'unavailable', 'still_running', 'no_session', 'not_signed_in']) {
       expect(isSkip({ kind: 'refused', code })).toBe(true);
     }
-    for (const code of ['diverged', 'copy_failed', 'unknown_session', 'pending', 'something_new', 'same_account']) {
+    for (const code of ['diverged', 'copy_failed', 'unknown_session', 'pending', 'lost', 'something_new', 'same_account']) {
       expect(isSkip({ kind: 'refused', code })).toBe(false);
     }
     expect(tallySwitch([{ ptyId: 'x', title: 'x', outcome: { kind: 'refused', code: 'pending' } }]).failed).toBe(1);
@@ -98,5 +98,7 @@ describe('an account\'s sign-in mark in the workspace account menu', () => {
     expect(workspaceRunsInWsl(paneWslMap(['a', 'n'], sessions), 'wsl.exe')).toBe(false);
     expect(workspaceRunsInWsl({}, 'C:\\Windows\\System32\\wsl.exe')).toBe(true);
     expect(workspaceRunsInWsl({}, 'powershell')).toBe(false);
+    // The legacy bare value a create drops (it then starts PowerShell) is not WSL.
+    expect(workspaceRunsInWsl({}, 'wsl')).toBe(false);
   });
 });

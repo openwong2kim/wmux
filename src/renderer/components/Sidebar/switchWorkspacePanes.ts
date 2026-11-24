@@ -12,6 +12,7 @@ import { isWslDistroSpawnArgs, isWslShellPath } from '../../../shared/wslDistro'
 import { validWslTarget } from '../../../shared/wslTarget';
 import type { WorkspacePaneOwner } from '../../../shared/paneUtils';
 import { collectWorkspaceTerminalSurfaces } from '../../utils/paneTraversal';
+import { withDefaultShell } from '../../utils/ptyCreateOptions';
 import type { ContinueOutcome } from '../Pane/usePaneContinueOnAccount';
 
 export interface SwitchPane { ptyId: string; title: string }
@@ -109,13 +110,14 @@ export function paneWslMap(
 
 /**
  * Whether the workspace's panes all run in WSL: every open pane does, or,
- * with none open, a new pane would (the Settings default shell is WSL; a
- * workspace profile names no shell). One native pane needs the Windows
- * sign-in, so a mixed workspace is not.
+ * with none open, a new pane would: the Settings default shell as a create
+ * applies it (a legacy value it drops starts PowerShell; a workspace profile
+ * names no shell). One native pane needs the Windows sign-in, so a mixed
+ * workspace is not.
  */
 export function workspaceRunsInWsl(wsl: Record<string, boolean>, defaultShell: string | undefined): boolean {
   const ids = Object.keys(wsl);
-  if (ids.length === 0) return isWslShellPath(defaultShell);
+  if (ids.length === 0) return isWslShellPath(withDefaultShell({}, defaultShell).shell);
   return ids.every((id) => wsl[id]);
 }
 
