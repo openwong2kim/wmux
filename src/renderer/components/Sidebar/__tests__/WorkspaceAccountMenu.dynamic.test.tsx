@@ -15,11 +15,11 @@ let container: HTMLDivElement;
 let root: Root;
 let saved: ReturnType<typeof useStore.getState>;
 
-function api(opts: { sessions: unknown[]; continuePane?: ReturnType<typeof vi.fn> }) {
+function api(opts: { sessions: unknown[]; continuePane?: ReturnType<typeof vi.fn>; homeSignedIn?: boolean }) {
   const bindings: Record<string, Record<string, string>> = { ws1: { claude: 'b' } };
   const pty = { list: vi.fn().mockResolvedValue(opts.sessions), write: vi.fn(), kill: vi.fn(), resize: vi.fn() };
   const accounts = {
-    list: vi.fn(async () => ({ accounts: [account('a', 'Work', true), account('b', 'Home', false)], bindings })),
+    list: vi.fn(async () => ({ accounts: [account('a', 'Work', true), account('b', 'Home', opts.homeSignedIn ?? false)], bindings })),
     setBinding: vi.fn(async ({ accountId }: { accountId?: string }) => { bindings.ws1 = accountId ? { claude: accountId } : {}; }),
     continuePane: opts.continuePane ?? vi.fn().mockResolvedValue({ ok: true }),
   };
@@ -67,7 +67,8 @@ describe('WorkspaceAccountMenu', () => {
 
     act(() => root.unmount());
     root = createRoot(container);
-    api({ sessions: [{ id: 'c1', shell: 'C:\\Windows\\System32\\wsl.exe', args: ['-d', 'Ubuntu'] }] });
+    const wsl = (id: string) => ({ id, shell: 'C:\\Windows\\System32\\wsl.exe', args: ['-d', 'Ubuntu'] });
+    api({ sessions: [wsl('c1'), wsl('sh'), wsl('c2')] });
     await render();
     expect(container.textContent).not.toContain('logged out');
     expect(container.querySelector('[data-account-menu-wsl-sign-in]')?.textContent).toBe('sign-in in WSL');
@@ -75,7 +76,7 @@ describe('WorkspaceAccountMenu', () => {
 
   it('switches only the Claude panes after a confirm, skips one in a turn, and leaves the shell pane\'s process alone', async () => {
     const continuePane = vi.fn(async ({ ptyId }: { ptyId: string }) => (ptyId === 'c2' ? { ok: false, code: 'turn_open' } : { ok: true }));
-    const { pty, accounts } = api({ sessions: [], continuePane });
+    const { pty, accounts } = api({ sessions: [], continuePane, homeSignedIn: true });
     await render();
     const action = container.querySelector('[data-account-menu-switch-panes]') as HTMLButtonElement;
     expect(action.textContent).toContain('Home');
@@ -96,8 +97,9 @@ describe('WorkspaceAccountMenu', () => {
     expect(pty.resize).not.toHaveBeenCalled();
 
     const toasts = useStore.getState().toasts.map((t) => t.message);
-    expect(toasts).toContain('#w1-3: Wait for Claude to finish its turn, then try again.');
-    expect(toasts).toContain('Open panes on Home: 1 switched, 1 skipped, 0 failed.');
+    const skipped = useStore.getState().toasts.find((t) => t.message.startsWith('#w1-3: '));
+    expect(skipped).toMatchObject({ level: 'warn', message: '#w1-3: Wait for Claude to finish its turn, then try again.' });
+    expect(toasts).toContain('Open panes on Home: 1 switched, 0 continued in a new pane beside, 1 skipped, 0 failed.');
   });
 
   it('keeps going after a failed pane and says the binding changed', async () => {
@@ -105,7 +107,7 @@ describe('WorkspaceAccountMenu', () => {
       if (ptyId === 'c1') throw new Error('ipc gone');
       return { ok: true };
     });
-    api({ sessions: [], continuePane });
+    api({ sessions: [], continuePane, homeSignedIn: true });
     await render();
     await act(async () => { (container.querySelector('[data-account-menu-switch-panes]') as HTMLButtonElement).click(); });
     await act(async () => { (container.querySelector('[data-account-menu-switch-confirm] button') as HTMLButtonElement).click(); });
@@ -113,6 +115,23 @@ describe('WorkspaceAccountMenu', () => {
     expect(continuePane).toHaveBeenCalledTimes(2);
     const summary = useStore.getState().toasts.at(-1);
     expect(summary?.level).toBe('warn');
-    expect(summary?.message).toBe('Open panes on Home: 1 switched, 0 skipped, 1 failed. The workspace now uses Home; the failed panes stay on their account.');
+    expect(summary?.message).toBe('Open panes on Home: 1 switched, 0 continued in a new pane beside, 0 skipped, 1 failed. The workspace now uses Home; the failed panes stay on their account.');
+  });
+
+  it('with the account signed out on Windows, switches only the WSL panes and skips the native ones', async () => {
+    const continuePane = vi.fn().mockResolvedValue({ ok: true });
+    api({ sessions: [{ id: 'c1', shell: 'pwsh.exe' }, { id: 'c2', shell: 'wsl.exe' }], continuePane });
+    await render();
+    await act(async () => { (container.querySelector('[data-account-menu-switch-panes]') as HTMLButtonElement).click(); });
+    await act(async () => { (container.querySelector('[data-account-menu-switch-confirm] button') as HTMLButtonElement).click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(continuePane.mock.calls.map(([a]) => a.ptyId)).toEqual(['c2']);
+    expect(useStore.getState().toasts.find((t) => t.message.startsWith('#w1-1: '))?.level).toBe('warn');
+  });
+
+  it('offers no switch where every pane is native and the account is signed out on Windows', async () => {
+    api({ sessions: [{ id: 'c1', shell: 'pwsh.exe' }, { id: 'c2', shell: 'pwsh.exe' }] });
+    await render();
+    expect((container.querySelector('[data-account-menu-switch-panes]') as HTMLButtonElement).disabled).toBe(true);
   });
 });

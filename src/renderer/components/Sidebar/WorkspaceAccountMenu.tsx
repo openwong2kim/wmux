@@ -10,11 +10,24 @@ import { agentRow } from '../../../shared/agentIdentity';
 import { useStore } from '../../stores';
 import { useDaemonModeActive } from '../../hooks/useDaemonMode';
 import { collectWorkspaceTerminalSurfaces } from '../../utils/paneTraversal';
+import { withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { continueOutcomeToast, continuePaneOnAccount } from '../Pane/usePaneContinueOnAccount';
-import { accountSignInMark, switchWorkspacePanes, tallySwitch, workspaceContinuePanes, workspaceRunsInWsl } from './switchWorkspacePanes';
+import {
+  accountSignInMark, isSkip, NOT_SIGNED_IN, paneWslMap, switchWorkspacePanes, tallySwitch, workspaceContinuePanes, workspaceRunsInWsl,
+} from './switchWorkspacePanes';
 
 type Vendor = 'claude' | 'codex';
 type AccountRow = Account & { status: CredentialStatus; tokenSignIn?: { createdAt: number; usable: boolean } };
+
+/** Workspaces with a "switch open panes" run in flight: outlives the menu, which closes and reopens during one. */
+const switchingWorkspaces = new Set<string>();
+
+/** The shell a new pane in the workspace would start, as a create resolves it. */
+function newPaneShell(workspaceId: string): string | undefined {
+  const st = useStore.getState();
+  const ws = st.workspaces.find((w) => w.id === workspaceId);
+  return withWorkspaceProfile(withDefaultShell({}, st.defaultShell), ws?.profile).shell;
+}
 
 /**
  * Workspace right-click → per-vendor account submenu.
@@ -38,15 +51,21 @@ export default function WorkspaceAccountMenu({
   const [bindings, setBindings] = useState<Partial<Record<Vendor, string>>>({});
   const [openVendor, setOpenVendor] = useState<Vendor | null>(null);
   const [loaded, setLoaded] = useState(false);
-  /** The workspace's panes run in WSL, where an account's Windows sign-in says nothing. */
+  /** Per open pane: it runs in WSL, where an account's Windows sign-in says nothing. */
+  const [wslPanes, setWslPanes] = useState<Record<string, boolean>>({});
+  /** All the workspace's panes run in WSL (or, none open, a new one would). */
   const [inWsl, setInWsl] = useState(false);
   /** The vendor whose "switch open panes" confirm row is showing. */
   const [confirming, setConfirming] = useState<Vendor | null>(null);
-  const [switching, setSwitching] = useState(false);
+  const [switching, setSwitching] = useState(() => switchingWorkspaces.has(workspaceId));
   const daemon = useDaemonModeActive();
-  const continuePanes = useStore((s) => {
+  // Each vendor's open panes that can continue, as "<vendor> <ptyId>" lines:
+  // a string, so the selector's value is stable between renders.
+  const continuePaneLines = useStore((s) => {
     const ws = s.workspaces.find((w) => w.id === workspaceId);
-    return ws ? workspaceContinuePanes(ws, s.surfaceAgent).length : 0;
+    if (!ws) return '';
+    return (['claude', 'codex'] as const)
+      .flatMap((v) => workspaceContinuePanes(ws, s.surfaceAgent, v).map((p) => `${v} ${p.ptyId}`)).join('\n');
   });
 
   const reload = useCallback(() => {
@@ -61,7 +80,11 @@ export default function WorkspaceAccountMenu({
     const ws = st.workspaces.find((w) => w.id === workspaceId);
     const ptyIds = ws ? collectWorkspaceTerminalSurfaces(ws).map((x) => x.ptyId).filter(Boolean) : [];
     const sessions = ptyIds.length > 0 && window.electronAPI?.pty?.list ? window.electronAPI.pty.list() : Promise.resolve([]);
-    void sessions.then((list) => setInWsl(workspaceRunsInWsl(ptyIds, [...list], st.defaultShell))).catch(() => setInWsl(false));
+    void sessions.then((list) => {
+      const wsl = paneWslMap(ptyIds, list);
+      setWslPanes(wsl);
+      setInWsl(workspaceRunsInWsl(wsl, newPaneShell(workspaceId)));
+    }).catch(() => { setWslPanes({}); setInWsl(false); });
   }, [workspaceId]);
 
   useEffect(() => { reload(); }, [reload]);
@@ -75,11 +98,12 @@ export default function WorkspaceAccountMenu({
   // Bind (again) and continue each open pane of the vendor's agent on the
   // account, one at a time. A pane that fails or is skipped never stops the
   // rest, and the binding stays changed.
-  const switchPanes = useCallback(async (vendor: Vendor, account: { id: string; name: string }) => {
+  const switchPanes = useCallback(async (vendor: Vendor, account: AccountRow) => {
     const api = window.electronAPI?.accounts;
     setConfirming(null);
-    if (!api) return;
+    if (!api || switchingWorkspaces.has(workspaceId)) return;
     const { pushToast } = useStore.getState();
+    switchingWorkspaces.add(workspaceId);
     setSwitching(true);
     try {
       try {
@@ -91,26 +115,37 @@ export default function WorkspaceAccountMenu({
       reload();
       const st = useStore.getState();
       const ws = st.workspaces.find((w) => w.id === workspaceId);
-      const panes = ws ? workspaceContinuePanes(ws, st.surfaceAgent) : [];
-      const results = await switchWorkspacePanes(panes, (ptyId) => continuePaneOnAccount(ptyId, account.id, workspaceId));
+      const panes = ws ? workspaceContinuePanes(ws, st.surfaceAgent, vendor) : [];
+      // A native pane needs the account signed in on Windows (or a token),
+      // as the pane menu requires; a WSL pane signs in on its home there.
+      const windowsSignIn = accountSignInMark(account, false) === 'in';
+      const results = await switchWorkspacePanes(panes, (ptyId) => (
+        windowsSignIn || wslPanes[ptyId]
+          ? continuePaneOnAccount(ptyId, account.id, workspaceId)
+          : Promise.resolve({ kind: 'refused', code: NOT_SIGNED_IN })
+      ));
       for (const r of results) {
         const { kind } = r.outcome;
         if (kind === 'done' || kind === 'new_pane' || (kind === 'refused' && r.outcome.code === 'same_account')) continue;
-        const toast = continueOutcomeToast(r.outcome, account.name, t);
-        pushToast({ ...toast, message: `${r.title}: ${toast.message}` });
+        const toast = r.outcome.kind === 'refused' && r.outcome.code === NOT_SIGNED_IN
+          ? { level: 'warn' as const, message: t('accounts.notLoggedIn') }
+          : continueOutcomeToast(r.outcome, account.name, t);
+        // Skipped panes are as they were: a warning, not an error.
+        pushToast({ ...toast, ...(isSkip(r.outcome) ? { level: 'warn' as const } : {}), message: `${r.title}: ${toast.message}` });
       }
       const n = tallySwitch(results);
       const summary = t('accounts.switchPanesSummary', {
-        name: account.name, switched: String(n.switched + n.already), skipped: String(n.skipped), failed: String(n.failed),
+        name: account.name, switched: String(n.switched + n.already), opened: String(n.opened), skipped: String(n.skipped), failed: String(n.failed),
       });
       pushToast({
         level: n.failed > 0 ? 'warn' : 'info',
         message: n.failed > 0 ? `${summary} ${t('accounts.switchPanesBindingKept', { name: account.name })}` : summary,
       });
     } finally {
+      switchingWorkspaces.delete(workspaceId);
       setSwitching(false);
     }
-  }, [workspaceId, reload, t]);
+  }, [workspaceId, reload, wslPanes, t]);
 
   // Hide entirely when the preload doesn't expose accounts (older build) or no
   // accounts of any vendor are registered — nothing to bind.
@@ -212,10 +247,17 @@ export default function WorkspaceAccountMenu({
                 <div className="px-3 pt-1 mt-1 border-t border-[var(--bg-overlay)] text-[10px] text-[var(--text-muted)] leading-snug">
                   {t('accounts.newTerminalsNote')}
                 </div>
-                {bound && daemon && continuePanes > 0 && agentRow(vendor)?.continueOnAccount && (
+                {(() => {
+                  const paneIds = continuePaneLines.split('\n').filter((l) => l.startsWith(`${vendor} `)).map((l) => l.slice(vendor.length + 1));
+                  if (!bound || !daemon || paneIds.length === 0 || !agentRow(vendor)?.continueOnAccount
+                    || !window.electronAPI?.accounts?.continuePane) return null;
+                  // Panes that can take the account: all, when it is signed in on
+                  // Windows; else only the WSL ones (a native pane would be skipped).
+                  const takers = accountSignInMark(bound, false) === 'in' ? paneIds.length : paneIds.filter((id) => wslPanes[id]).length;
+                  return (
                   confirming === vendor ? (
                     <div className="px-3 py-1.5 text-[12px]" style={{ color: 'var(--text-main)' }} data-account-menu-switch-confirm>
-                      <div className="leading-snug">{t('accounts.switchPanesConfirm', { count: String(continuePanes), name: bound.name })}</div>
+                      <div className="leading-snug">{t('accounts.switchPanesConfirm', { count: String(paneIds.length), name: bound.name })}</div>
                       <div className="flex gap-2 mt-1.5">
                         <button className="px-2 py-0.5 rounded text-[12px] hover:bg-[var(--bg-overlay)] text-[var(--accent)]" onClick={() => { void switchPanes(vendor, bound); }}>
                           {t('accounts.switchPanesRun')}
@@ -229,14 +271,16 @@ export default function WorkspaceAccountMenu({
                     <button
                       className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--bg-overlay)] disabled:opacity-50"
                       style={{ color: 'var(--text-main)' }}
-                      disabled={switching}
+                      disabled={switching || takers === 0}
+                      title={takers === 0 ? t('accounts.notLoggedIn') : undefined}
                       onClick={() => setConfirming(vendor)}
                       data-account-menu-switch-panes
                     >
                       {t('accounts.switchPanes', { name: bound.name })}
                     </button>
                   )
-                )}
+                  );
+                })()}
               </div>
             )}
           </div>

@@ -16,13 +16,17 @@ import type { ContinueOutcome } from '../Pane/usePaneContinueOnAccount';
 
 export interface SwitchPane { ptyId: string; title: string }
 
-/** The workspace's open panes whose agent can continue on another account. */
+/** The workspace's open panes running the vendor's agent, when that agent can continue on another account. */
 export function workspaceContinuePanes(
   ws: WorkspacePaneOwner,
   surfaceAgent: Record<string, { slug?: string } | undefined>,
+  vendor: string,
 ): SwitchPane[] {
   return collectWorkspaceTerminalSurfaces(ws)
-    .filter((s) => s.ptyId && agentRow(surfaceAgent[s.ptyId]?.slug)?.continueOnAccount)
+    .filter((s) => {
+      const slug = s.ptyId ? surfaceAgent[s.ptyId]?.slug : undefined;
+      return slug === vendor && !!agentRow(slug)?.continueOnAccount;
+    })
     .map((s) => ({ ptyId: s.ptyId, title: s.title }));
 }
 
@@ -42,38 +46,58 @@ export async function switchWorkspacePanes(
   return out;
 }
 
-export type SwitchTally = { switched: number; already: number; skipped: number; failed: number };
+export type SwitchTally = { switched: number; opened: number; already: number; skipped: number; failed: number };
+
+/** A refusal that leaves the pane as it was: "skipped", not "failed". */
+export function isSkip(outcome: ContinueOutcome): boolean {
+  return outcome.kind === 'refused' && outcome.code !== 'same_account';
+}
+
+/** Refused here, before the daemon: a native pane cannot take an account its Windows folder is not signed in to. */
+export const NOT_SIGNED_IN = 'not_signed_in';
 
 /**
- * Switched: moved (in place or to a new pane). Already: it ran on the account.
+ * Switched: moved in place. Opened: a token sign-in continued it in a new
+ * pane beside it, the original left running. Already: it ran on the account.
  * Skipped: refused before anything stopped (a turn open, among others), so the
  * pane is as it was. Failed: the run broke, or Claude stopped and was not
  * relaunched.
  */
 export function tallySwitch(results: SwitchResult[]): SwitchTally {
-  const tally: SwitchTally = { switched: 0, already: 0, skipped: 0, failed: 0 };
+  const tally: SwitchTally = { switched: 0, opened: 0, already: 0, skipped: 0, failed: 0 };
   for (const { outcome } of results) {
-    if (outcome.kind === 'done' || outcome.kind === 'new_pane') tally.switched++;
+    if (outcome.kind === 'done') tally.switched++;
+    else if (outcome.kind === 'new_pane') tally.opened++;
     else if (outcome.kind === 'refused' && outcome.code === 'same_account') tally.already++;
-    else if (outcome.kind === 'refused') tally.skipped++;
+    else if (isSkip(outcome)) tally.skipped++;
     else tally.failed++;
   }
   return tally;
 }
 
-/**
- * Whether a workspace's panes run in WSL: any of its open panes does, or, with
- * none open, a new pane would (the Settings default shell is WSL).
- */
-export function workspaceRunsInWsl(
+/** Which of the panes run in WSL, by the daemon's session list. */
+export function paneWslMap(
   ptyIds: string[],
-  sessions: { id: string; shell?: string; args?: unknown; wslTarget?: unknown }[],
-  defaultShell: string | undefined,
-): boolean {
-  if (ptyIds.length === 0) return isWslShellPath(defaultShell);
-  const ids = new Set(ptyIds);
-  return sessions.some((s) => ids.has(s.id)
-    && (validWslTarget(s.wslTarget) || isWslDistroSpawnArgs(s.shell, s.args) || isWslShellPath(s.shell)));
+  sessions: ReadonlyArray<{ id: string; shell?: string; args?: unknown; wslTarget?: unknown }>,
+): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const id of ptyIds) {
+    const s = sessions.find((x) => x.id === id);
+    out[id] = !!s && (validWslTarget(s.wslTarget) || isWslDistroSpawnArgs(s.shell, s.args) || isWslShellPath(s.shell));
+  }
+  return out;
+}
+
+/**
+ * Whether the workspace's panes all run in WSL: every open pane does, or,
+ * with none open, a new pane would (`newPaneShell`: the default shell under
+ * the workspace profile, as a create resolves it). One native pane needs the
+ * Windows sign-in, so a mixed workspace is not.
+ */
+export function workspaceRunsInWsl(wsl: Record<string, boolean>, newPaneShell: string | undefined): boolean {
+  const ids = Object.keys(wsl);
+  if (ids.length === 0) return isWslShellPath(newPaneShell);
+  return ids.every((id) => wsl[id]);
 }
 
 /**

@@ -1912,7 +1912,7 @@ export const pl = {
   'accounts.switchPanes': "Przełącz otwarte panele na {name}…",
   'accounts.switchPanesConfirm': "Kontynuować {count} otwartych paneli Claude na {name}? Panele w trakcie tury zostaną pominięte.",
   'accounts.switchPanesRun': "Przełącz",
-  'accounts.switchPanesSummary': "Otwarte panele na {name}: przełączone {switched}, pominięte {skipped}, nieudane {failed}.",
+  'accounts.switchPanesSummary': "Otwarte panele na {name}: przełączone {switched}, kontynuowane w nowym panelu obok {opened}, pominięte {skipped}, nieudane {failed}.",
   'accounts.switchPanesBindingKept': "Obszar roboczy używa teraz {name}; nieudane panele zostają na swoim koncie.",
   'accounts.switchPanesBindFailed': "Nie udało się przypisać konta, więc żaden panel nie został przełączony.",
   'accounts.groupsDesc': 'Automatyczne przełączanie kont odbywa się tylko w obrębie grupy konta, więc konta służbowe i prywatne się nie mieszają. Konta bez grupy tworzą jedną pulę.',

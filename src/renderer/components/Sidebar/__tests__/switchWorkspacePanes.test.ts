@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  accountSignInMark, switchWorkspacePanes, tallySwitch, workspaceContinuePanes, workspaceRunsInWsl,
+  accountSignInMark, paneWslMap, switchWorkspacePanes, tallySwitch, workspaceContinuePanes, workspaceRunsInWsl,
 } from '../switchWorkspacePanes';
 import type { ContinueOutcome } from '../../Pane/usePaneContinueOnAccount';
 import type { WorkspacePaneOwner } from '../../../../shared/paneUtils';
@@ -13,9 +13,11 @@ const ws = {
 
 describe('switching a workspace\'s open panes to an account', () => {
   it('takes the Claude panes, stashed ones too, and leaves shell panes and other agents out', () => {
-    expect(workspaceContinuePanes(ws, { a: { slug: 'claude' }, b: { slug: 'claude' }, sh: undefined }))
+    expect(workspaceContinuePanes(ws, { a: { slug: 'claude' }, b: { slug: 'claude' }, sh: undefined }, 'claude'))
       .toEqual([{ ptyId: 'a', title: '#w1-1' }, { ptyId: 'b', title: '#w1-3' }]);
-    expect(workspaceContinuePanes(ws, { a: { slug: 'codex' } })).toEqual([]);
+    expect(workspaceContinuePanes(ws, { a: { slug: 'codex' } }, 'codex')).toEqual([]);
+    // Only the vendor's own agent: a Claude account never takes another agent's pane.
+    expect(workspaceContinuePanes(ws, { a: { slug: 'claude' } }, 'codex')).toEqual([]);
   });
 
   it('runs one pane at a time and keeps going after a failure or a throw', async () => {
@@ -41,12 +43,12 @@ describe('switching a workspace\'s open panes to an account', () => {
     expect(results.map((r) => r.outcome.kind)).toEqual(['failed', 'failed', 'done']);
   });
 
-  it('counts a pane in a turn as skipped, one already on the account as switched, a stop without relaunch as failed', () => {
+  it('counts a pane in a turn as skipped, a new pane beside apart, a stop without relaunch as failed', () => {
     const r = (outcome: ContinueOutcome) => ({ ptyId: 'x', title: 'x', outcome });
     expect(tallySwitch([
       r({ kind: 'done' }), r({ kind: 'new_pane' }), r({ kind: 'refused', code: 'same_account' }),
       r({ kind: 'refused', code: 'turn_open' }), r({ kind: 'stopped', code: 'shell_busy', resumeCommand: 'claude -r x' }), r({ kind: 'failed' }),
-    ])).toEqual({ switched: 2, already: 1, skipped: 1, failed: 2 });
+    ])).toEqual({ switched: 1, opened: 1, already: 1, skipped: 1, failed: 2 });
   });
 });
 
@@ -59,16 +61,17 @@ describe('an account\'s sign-in mark in the workspace account menu', () => {
     expect(accountSignInMark({ ...out, tokenSignIn: { usable: true } }, false)).toBe('in');
   });
 
-  it('reads WSL from the open panes, or from the default shell when none is open', () => {
+  it('reads WSL per open pane, and calls the workspace WSL only when all are (or, none open, a new pane would be)', () => {
     const sessions = [
       { id: 'a', shell: 'C:\\Windows\\System32\\wsl.exe', args: ['-d', 'Ubuntu'] },
       { id: 'n', shell: 'pwsh.exe' },
       { id: 't', shell: 'pwsh.exe', wslTarget: { distribution: 'Ubuntu', user: 'me' } },
     ];
-    expect(workspaceRunsInWsl(['n'], sessions, 'wsl.exe')).toBe(false);
-    expect(workspaceRunsInWsl(['n', 'a'], sessions, 'powershell')).toBe(true);
-    expect(workspaceRunsInWsl(['t'], sessions, 'powershell')).toBe(true);
-    expect(workspaceRunsInWsl([], sessions, 'C:\\Windows\\System32\\wsl.exe')).toBe(true);
-    expect(workspaceRunsInWsl([], sessions, 'powershell')).toBe(false);
+    expect(paneWslMap(['a', 'n', 't', 'gone'], sessions)).toEqual({ a: true, n: false, t: true, gone: false });
+    expect(workspaceRunsInWsl(paneWslMap(['a', 't'], sessions), 'powershell')).toBe(true);
+    // One native pane needs the Windows sign-in.
+    expect(workspaceRunsInWsl(paneWslMap(['a', 'n'], sessions), 'wsl.exe')).toBe(false);
+    expect(workspaceRunsInWsl({}, 'C:\\Windows\\System32\\wsl.exe')).toBe(true);
+    expect(workspaceRunsInWsl({}, 'powershell')).toBe(false);
   });
 });
