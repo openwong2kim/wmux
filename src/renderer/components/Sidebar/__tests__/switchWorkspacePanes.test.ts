@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
-  accountSignInMark, paneWslMap, switchWorkspacePanes, tallySwitch, workspaceContinuePanes, workspaceRunsInWsl,
+  accountSignInMark, isSkip, noteContinuedBeside, paneWslMap, resetSwitchStateForTests, switchWorkspacePanes, wasContinuedBeside, tallySwitch, workspaceContinuePanes, workspaceRunsInWsl,
 } from '../switchWorkspacePanes';
 import type { ContinueOutcome } from '../../Pane/usePaneContinueOnAccount';
 import type { WorkspacePaneOwner } from '../../../../shared/paneUtils';
@@ -49,6 +49,31 @@ describe('switching a workspace\'s open panes to an account', () => {
       r({ kind: 'done' }), r({ kind: 'new_pane' }), r({ kind: 'refused', code: 'same_account' }),
       r({ kind: 'refused', code: 'turn_open' }), r({ kind: 'stopped', code: 'shell_busy', resumeCommand: 'claude -r x' }), r({ kind: 'failed' }),
     ])).toEqual({ switched: 1, opened: 1, already: 1, skipped: 1, failed: 2 });
+  });
+
+  it('only refusals before the stop are skips; a broken copy, a timeout or an unknown code is a failure', () => {
+    for (const code of ['turn_open', 'busy', 'folder_trust', 'not_claude', 'unsupported', 'invalid_account', 'unavailable', 'still_running', 'no_session', 'not_signed_in']) {
+      expect(isSkip({ kind: 'refused', code })).toBe(true);
+    }
+    for (const code of ['diverged', 'copy_failed', 'unknown_session', 'pending', 'something_new', 'same_account']) {
+      expect(isSkip({ kind: 'refused', code })).toBe(false);
+    }
+    expect(tallySwitch([{ ptyId: 'x', title: 'x', outcome: { kind: 'refused', code: 'pending' } }]).failed).toBe(1);
+  });
+
+  it('leaves out, silently, a pane gone or no longer the agent by its step', async () => {
+    const run = vi.fn(async () => ({ kind: 'done' as const }));
+    const results = await switchWorkspacePanes([{ ptyId: 'a', title: 'A' }, { ptyId: 'b', title: 'B' }], run, (id) => id !== 'b');
+    expect(results.map((r) => r.ptyId)).toEqual(['a']);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('remembers a pane continued beside per workspace and account', () => {
+    resetSwitchStateForTests();
+    noteContinuedBeside('ws', 'acc', 'p1');
+    expect(wasContinuedBeside('ws', 'acc', 'p1')).toBe(true);
+    expect(wasContinuedBeside('ws', 'other', 'p1')).toBe(false);
+    expect(wasContinuedBeside('ws2', 'acc', 'p1')).toBe(false);
   });
 });
 

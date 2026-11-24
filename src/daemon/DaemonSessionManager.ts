@@ -1,4 +1,5 @@
 import { isWslShell, mergeWslEnv, resolveWslCwd, type WslTarget, type ResolvedWslCwd } from '../shared/wsl';
+import { isContinueSignInName } from '../shared/agentAuthNames';
 import { buildWslInjection, WSL_ACCOUNT_INJECTED_VARS, WSL_CLAUDE_TOKEN_MARK } from '../shared/wslIntegration';
 import { getWmuxDir } from './config';
 import { EventEmitter } from 'node:events';
@@ -1051,7 +1052,7 @@ export class DaemonSessionManager extends EventEmitter {
     conptyBackend: ConptyBackend,
     spawnMark: bigint | null,
   ): DaemonSession {
-    const { params, cfg, cmd, cwd, env, cols, rows, wsl, shellMarks } = prepared;
+    const { params, cfg, cmd, cwd, env, secretEnv, credentialEnv, cols, rows, wsl, shellMarks } = prepared;
     // The Rust core puts each pane in its own kill-on-close job already.
     if (ptyBackend(ptyProcess) === 'node') this.paneJob?.contain(ptyProcess.pid, spawnMark);
     const now = new Date().toISOString();
@@ -1089,6 +1090,7 @@ export class DaemonSessionManager extends EventEmitter {
       // retention; a brand-new session takes the current config default
       // (codex P2 — recovery must not silently restamp existing retention).
       deadTtlHours: params.deadTtlHours ?? cfg.session.deadSessionTtlHours,
+      signInEnv: [env, secretEnv, credentialEnv].some((e) => !!e && Object.keys(e).some(isContinueSignInName)),
     };
     if (params.agent) {
       meta.agent = params.agent;

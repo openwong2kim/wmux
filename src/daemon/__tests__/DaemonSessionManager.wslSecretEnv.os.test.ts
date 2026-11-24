@@ -92,6 +92,16 @@ describe('createSessionAsync — a WSL worker with secrets', () => {
     expect(meta?.env?.WSLENV ?? '').not.toContain('NPM_TOKEN');
   });
 
+  it('records whether the spawn carried a Claude sign-in variable, by name only', async () => {
+    await manager.createSessionAsync({ id: 'signed', cmd: 'wsl.exe', cwd: '~', env: { PATH: 'C:\\Windows' }, secretEnv: { CLAUDE_CODE_OAUTH_TOKEN: VALUE } });
+    await manager.createSessionAsync({ id: 'npm', cmd: 'wsl.exe', cwd: '~', env: { PATH: 'C:\\Windows' }, secretEnv: { NPM_TOKEN: VALUE } });
+    await manager.createSessionAsync({ id: 'inherited', cmd: 'wsl.exe', cwd: '~', env: { PATH: 'C:\\Windows', anthropic_api_key: 'k' } });
+    expect(manager.getSession('signed')?.meta.signInEnv).toBe(true);
+    expect(manager.getSession('npm')?.meta.signInEnv).toBe(false);
+    expect(manager.getSession('inherited')?.meta.signInEnv).toBe(true);
+    expect(JSON.stringify(manager.getSession('signed')?.meta)).not.toContain(VALUE);
+  });
+
   it('a WSL spawn without secrets is unchanged', async () => {
     await manager.createSessionAsync({ id: 'wsl-plain', cmd: 'wsl.exe', cwd: '~', env: { PATH: 'C:\\Windows', WSLENV: 'USERPROFILE/p' } });
     expect(spawnEnv().WSLENV).toBe('USERPROFILE/p:WMUX_PTY_ID:WMUX_WSL_BIN/p');

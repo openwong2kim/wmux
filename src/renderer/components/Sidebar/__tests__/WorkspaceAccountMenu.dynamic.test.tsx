@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import WorkspaceAccountMenu from '../WorkspaceAccountMenu';
 import { useStore } from '../../../stores';
 import { resetDaemonModeForTests, setDaemonModeActive } from '../../../daemon/daemonMode';
+import { beginSwitch, endSwitch, resetSwitchStateForTests } from '../switchWorkspacePanes';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -55,6 +56,7 @@ afterEach(() => {
   container.remove();
   useStore.setState(saved, true);
   resetDaemonModeForTests();
+  resetSwitchStateForTests();
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
 });
 
@@ -99,7 +101,7 @@ describe('WorkspaceAccountMenu', () => {
     const toasts = useStore.getState().toasts.map((t) => t.message);
     const skipped = useStore.getState().toasts.find((t) => t.message.startsWith('#w1-3: '));
     expect(skipped).toMatchObject({ level: 'warn', message: '#w1-3: Wait for Claude to finish its turn, then try again.' });
-    expect(toasts).toContain('Open panes on Home: 1 switched, 0 continued in a new pane beside, 1 skipped, 0 failed.');
+    expect(toasts).toContain('Open panes on Home: 1 switched, 0 already on it, 0 continued in a new pane beside, 1 skipped, 0 failed.');
   });
 
   it('keeps going after a failed pane and says the binding changed', async () => {
@@ -115,7 +117,7 @@ describe('WorkspaceAccountMenu', () => {
     expect(continuePane).toHaveBeenCalledTimes(2);
     const summary = useStore.getState().toasts.at(-1);
     expect(summary?.level).toBe('warn');
-    expect(summary?.message).toBe('Open panes on Home: 1 switched, 0 continued in a new pane beside, 0 skipped, 1 failed. The workspace now uses Home; the failed panes stay on their account.');
+    expect(summary?.message).toBe('Open panes on Home: 1 switched, 0 already on it, 0 continued in a new pane beside, 0 skipped, 1 failed. The workspace now uses Home; the failed panes stay on their account.');
   });
 
   it('with the account signed out on Windows, switches only the WSL panes and skips the native ones', async () => {
@@ -127,6 +129,37 @@ describe('WorkspaceAccountMenu', () => {
     await act(async () => { await Promise.resolve(); });
     expect(continuePane.mock.calls.map(([a]) => a.ptyId)).toEqual(['c2']);
     expect(useStore.getState().toasts.find((t) => t.message.startsWith('#w1-1: '))?.level).toBe('warn');
+  });
+
+  it('drops "now uses" when the binding changed during the run, and calls a broken copy a failure', async () => {
+    let bindingsRef: Record<string, Record<string, string>> | null = null;
+    const continuePane = vi.fn(async ({ ptyId }: { ptyId: string }) => {
+      // Someone binds another account while the run is going.
+      if (bindingsRef) bindingsRef.ws1 = { claude: 'a' };
+      return ptyId === 'c1' ? { ok: false, code: 'diverged' } : { ok: true };
+    });
+    const { accounts } = api({ sessions: [], continuePane, homeSignedIn: true });
+    const list = accounts.list;
+    bindingsRef = (await list()).bindings;
+    await render();
+    await act(async () => { (container.querySelector('[data-account-menu-switch-panes]') as HTMLButtonElement).click(); });
+    await act(async () => { (container.querySelector('[data-account-menu-switch-confirm] button') as HTMLButtonElement).click(); });
+    await act(async () => { await Promise.resolve(); });
+    const toasts = useStore.getState().toasts;
+    expect(toasts.find((t) => t.message.startsWith('#w1-1: '))?.level).toBe('error');
+    expect(toasts.at(-1)?.message).toBe('Open panes on Home: 1 switched, 0 already on it, 0 continued in a new pane beside, 0 skipped, 1 failed.');
+  });
+
+  it('a run in flight disables the action and the rows, and a reopened menu is enabled again when it ends', async () => {
+    api({ sessions: [], homeSignedIn: true });
+    expect(beginSwitch('ws1')).toBe(true);
+    expect(beginSwitch('ws1')).toBe(false);
+    await render();
+    expect((container.querySelector('[data-account-menu-switch-panes]') as HTMLButtonElement).disabled).toBe(true);
+    const rows = [...container.querySelectorAll('button')].filter((b) => b.textContent?.includes('Work'));
+    expect(rows[0]?.disabled).toBe(true);
+    await act(async () => { endSwitch('ws1'); });
+    expect((container.querySelector('[data-account-menu-switch-panes]') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('offers no switch where every pane is native and the account is signed out on Windows', async () => {

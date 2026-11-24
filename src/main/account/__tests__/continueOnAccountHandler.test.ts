@@ -56,7 +56,25 @@ describe('continue on an account', () => {
   it('an account without a token keeps the same-pane switch', async () => {
     const d = deps();
     expect(await continuePane(d, { ptyId: 'daemon-1', accountId: plain.id })).toEqual({ ok: true });
-    expect(d.rpc).toHaveBeenCalledWith('session.continueOnAccount', { sessionId: 'daemon-1', configDir: '/acc/plain' });
+    expect(d.rpc).toHaveBeenCalledWith('session.continueOnAccountV2', { sessionId: 'daemon-1', configDir: '/acc/plain' });
+  });
+
+  it('a pane the daemon knows spawned with a sign-in (or cannot tell) is copied to a new pane, never guessed from the binding', async () => {
+    // Started before this main run: main does not know, the daemon does.
+    const rpc: Rpc = vi.fn<ContinuePaneDeps['rpc']>(async (method, params) => (method === 'session.continueOnAccountV2'
+      ? { ok: false, code: 'env_sign_in' }
+      : { ok: true, sessionId: SID, transcriptPath: `${params.configDir}/projects/-work/${SID}.jsonl`, cwd: '/work' }));
+    const movedInPlace = vi.fn();
+    const res = await continuePane(deps({ rpc, movedInPlace }), { ptyId: 'daemon-1', accountId: plain.id, workspaceId: 'ws-1' });
+    expect(rpc.mock.calls.map(([m]) => m)).toEqual(['session.continueOnAccountV2', 'session.copyToAccountV1']);
+    expect(res).toMatchObject({ ok: true, newPane: { accountId: plain.id, command: `claude --resume ${SID}`, cwd: '/work' } });
+    expect(movedInPlace).not.toHaveBeenCalled();
+  });
+
+  it('a daemon without the sign-in check moves nothing in place: unavailable', async () => {
+    const rpc: Rpc = vi.fn<ContinuePaneDeps['rpc']>(async (method) => { throw new Error(`Unknown method: ${method}`); });
+    expect(await continuePane(deps({ rpc }), { ptyId: 'daemon-1', accountId: plain.id })).toEqual({ ok: false, code: 'unavailable' });
+    expect(rpc).toHaveBeenCalledTimes(1);
   });
 
   it('a task pane\'s launch record follows only a move the daemon confirmed in place', async () => {
@@ -73,7 +91,7 @@ describe('continue on an account', () => {
     const sourceSignedIn = vi.fn(() => true);
     const d = deps({ sourceSignedIn });
     const res = await continuePane(d, { ptyId: 'daemon-1', accountId: plain.id, workspaceId: 'ws-1' });
-    expect(sourceSignedIn).toHaveBeenCalledWith('daemon-1', 'ws-1');
+    expect(sourceSignedIn).toHaveBeenCalledWith('daemon-1');
     expect(d.rpc).toHaveBeenCalledWith('session.copyToAccountV1', { sessionId: 'daemon-1', configDir: '/acc/plain', wslNewPane: true });
     expect(res).toMatchObject({ ok: true, newPane: { accountId: plain.id, cwd: '/work' } });
   });
