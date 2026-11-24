@@ -2369,6 +2369,9 @@ export function registerFanOutRpc(
         // account can run them): they run on the caller's account, as
         // without the pool.
         const callerTasks = new Set<number>();
+        // Of those, the ones the pool sent there because none of its accounts
+        // can run them: the owner is told once, when one actually launches.
+        const fallbackTasks = new Set<number>();
         const reserveAtTaskLaunch = (index: number | undefined, accountId?: string): string | null => {
           const agents = index === undefined ? taskAgents : [taskAgent(index)];
           const spends = agents.some(spendsUsageReserve);
@@ -2400,12 +2403,13 @@ export function registerFanOutRpc(
             const picked = pick(current);
             // A pick of its own decides again each time (a dependent's or a retry's).
             callerTasks.delete(task.index);
+            fallbackTasks.delete(task.index);
             if (picked.kind === 'pick') return { accountId: picked.accountId };
             // No pool account can run it (none eligible, or all out of
             // quota): the caller's account, as with the pool off, said once.
             if (poolFallsBackToCaller(picked)) {
               callerTasks.add(task.index);
-              notePoolCallerFallback();
+              fallbackTasks.add(task.index);
               return null;
             }
             // Every usable account is in the reserve: held as the reserve
@@ -2511,6 +2515,7 @@ export function registerFanOutRpc(
               const firstPass = !launchPassed;
               const refusal = (bot && botPort ? botPort.launchRefusal(bot.botId, botWakeId) : null) ?? reserveAtTaskLaunch(task?.index, task?.accountId);
               if (!refusal) launchPassed = true;
+              if (!refusal && task && fallbackTasks.has(task.index)) notePoolCallerFallback();
               // A pool worker whose pane turns out WSL is checked on the
               // caller's account at its create: held there as it would be here.
               if (!refusal && task?.accountId && task.taskId) registerPoolCreateReserveHold(task.taskId, (hold) => reserveRefusal(hold, firstPass));

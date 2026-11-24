@@ -20,11 +20,11 @@
 // and a denial must be reported instead of going quiet.
 
 import { DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, pickPoolAccount } from '../../../../shared/fanoutAccountPool';
-import { poolCreateReserveRefusal, type PreparedPool } from '../../../worktask/fanoutAccountPool';
+import { poolCreateReserveRefusal, resetFanoutAccountPoolForTests, setFanoutAccountPoolHost, type PreparedPool } from '../../../worktask/fanoutAccountPool';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { RpcContext } from '../../../../shared/rpc';
 import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../../../../shared/workTask';
 import { CHANNEL_TOPIC_MAX, HUMAN_WORKSPACE_ID } from '../../../../shared/channels';
@@ -1673,6 +1673,16 @@ describe('task.fanout.start — usage reserve with the account pool', () => {
     expect(req.mayLaunch?.({ index: 0, taskId: 'wtask-e1' })).toBeNull();
     callerHeld = true;
     expect(req.mayLaunch?.({ index: 0, taskId: 'wtask-e1' })).toMatch(/^usage reserve: /);
+    // The owner is told only once a worker really launches there.
+    const notify = vi.fn();
+    setFanoutAccountPoolHost({ daemonConnected: () => true, claudeUsage: () => [], defaultSnapshot: () => null, hookDriftIds: async () => new Set(), isUnc: () => false, notifyCallerFallback: notify });
+    onTestFinished(() => resetFanoutAccountPoolForTests());
+    expect(req.accountPick?.pick({ index: 0, cwd: 'C:\\work\\wt' })).toBeNull();
+    expect(req.mayLaunch?.({ index: 0, taskId: 'wtask-e1' })).toMatch(/^usage reserve: /);
+    expect(notify).not.toHaveBeenCalled();
+    callerHeld = false;
+    expect(req.mayLaunch?.({ index: 0, taskId: 'wtask-e1' })).toBeNull();
+    expect(notify).toHaveBeenCalledTimes(1);
     // Up front too: such a fan-out is decided on the caller's own hold.
     const held = setup({ reserve: () => ({ account: 'default', untilMs }), pool: { members: [], holdFor: () => null } });
     expect(errorOf(await held.call(goodParams())).code).toBe('RESOURCE_EXHAUSTED');
