@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
 import { CHATV2_AGENT_CAPS, type ChatV2Agent, type ChatV2RunMode } from '../../../shared/chatv2/ipc';
-import { Composer, dequeueMessage, enqueueMessage, moveDraft, requeueToDraft, restoreToDraft, setDelivering, setDraft, useDeliveringId, useDraft, useQueuedMessages } from './Composer';
+import { Composer, dequeueMessage, enqueueMessage, moveDraft, QueuedMessages, requeueToDraft, restoreToDraft, setDelivering, setDraft, useDeliveringId, useDraft, useQueuedMessages } from './Composer';
 import { clientMessageId } from './controller';
 import { shortDir } from '../../utils/shortDir';
 import { FindBar } from './FindBar';
@@ -16,7 +16,6 @@ import { useStore } from '../../stores';
 import { focusPaneByPtyId } from '../../hooks/useNotificationListener';
 import { useTranscriptWindow } from '../shared/useTranscriptWindow';
 import { ArrowIcon } from './ArrowIcon';
-import { IconX } from '../icons';
 
 const NEAR_BOTTOM_PX = 48;
 
@@ -87,11 +86,12 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   const draftKey = view ? `${paneId}:${view.binding.chatSessionId}` : `${paneId}:new`;
   const queue = useQueuedMessages(draftKey);
   const deliveringId = useDeliveringId(draftKey);
-  // A queued message whose Edit was refused (no room for its images).
-  const [editRefused, setEditRefused] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findId, setFindId] = useState<string | null>(null);
   const [newModel, setNewModel] = useState('');
+  const [newEffort, setNewEffort] = useState('');
+  // A model or effort change on its way to the agent.
+  const [configuring, setConfiguring] = useState(false);
   const [newMode, setNewMode] = useState<ChatV2RunMode>('default');
   const [newAgent, setNewAgent] = useState<ChatV2Agent>('claude');
   // An agent without the Claude models or a bypass mode (Codex) starts on its own default and always asks.
@@ -99,6 +99,7 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
     setNewAgent(agent);
     if (!CHATV2_AGENT_CAPS[agent].claudeModels) setNewModel('');
     if (!CHATV2_AGENT_CAPS[agent].bypass) setNewMode('default');
+    if (!CHATV2_AGENT_CAPS[agent].efforts.includes(newEffort)) setNewEffort('');
   };
   const [handingOff, setHandingOff] = useState(false);
   const moveError = usePaneMove(paneId).error;
@@ -296,11 +297,11 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
             disabled={false}
             running={false}
             canStop={false}
-            canAttach={false}
-            chips={{ agent: newAgent, model: newModel, effort: '', mode: newMode, editable: true, onModel: setNewModel, onMode: setNewMode, onAgent: pickAgent }}
+            canAttach
+            chips={{ agent: newAgent, model: newModel, effort: newEffort, mode: newMode, editable: true, onModel: setNewModel, onEffort: setNewEffort, onMode: setNewMode, onAgent: pickAgent }}
             onSend={async (text, staged) => {
               const attachments = staged.map((item) => item.path);
-              if (!(await controller.create({ agent: newAgent, mode: newMode, model: newModel }))) return false;
+              if (!(await controller.create({ agent: newAgent, mode: newMode, model: newModel, effort: newEffort }))) return false;
               setDraft(`${paneId}:new`, '');
               const chatSessionId = controller.current.view?.binding.chatSessionId;
               if (await controller.send(text, attachments)) return true;
@@ -325,6 +326,12 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
     setHandingOff(true);
     try { if (await controller.toTerminal()) onTerminal(); } finally { setHandingOff(false); }
   };
+  // Model and effort change between turns; the daemon applies them live or restarts on the same conversation.
+  const tunable = !configuring && !running && !handedOff && (binding.status === 'idle' || binding.status === 'stopped');
+  const configure = async (change: { model?: string; effort?: string }) => {
+    setConfiguring(true);
+    try { await controller.configure(change); } finally { setConfiguring(false); }
+  };
 
   return (
     <div className="wmux-chatv2" data-chatv2="ready" data-status={binding.status} onKeyDown={onKeyDown}>
@@ -345,29 +352,6 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
               findId={row.kind === 'toolGroup' ? findId : undefined}
               enter={entered.current.has(row.key)}
             />
-          ))}
-          {queue.map((item) => (
-            <div key={item.id} className="wmux-chatv2-queued" data-chatv2-queued data-sending={item.id === deliveringId || undefined}>
-              <div className="wmux-chatv2-user">{item.text}</div>
-              {item.staged.map((file) => <div key={file.path} className="wmux-chatv2-meta">{file.name}</div>)}
-              {/* Until it goes, a queued message can be taken back: Edit puts it in the composer, × drops it.
-                  Once its delivery started neither could stop it, so neither is offered. */}
-              {item.id === deliveringId ? (
-                <div className="wmux-chatv2-queued-caption"><span>{S.queuedSending}</span></div>
-              ) : (
-                <div className="wmux-chatv2-queued-caption">
-                  <span>{editRefused === item.id ? S.editQueuedFull : t('chat.queued')}</span>
-                  <button type="button" className="wmux-chatv2-link" data-chatv2-queued-edit
-                    onClick={() => {
-                      if (!restoreToDraft(draftKey, item)) { setEditRefused(item.id); return; }
-                      setEditRefused(null);
-                      dequeueMessage(draftKey, item.id);
-                    }}>{S.editQueued}</button>
-                  <button type="button" className="wmux-chatv2-icon" aria-label={S.removeQueued} title={S.removeQueued} data-chatv2-queued-remove
-                    onClick={() => dequeueMessage(draftKey, item.id)}><IconX size={12} /></button>
-                </div>
-              )}
-            </div>
           ))}
         </div>
       </div>
@@ -392,6 +376,8 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
             <button type="button" className="wmux-chatv2-btn" title={S.startNewChatHint} onClick={() => void controller.close()}>{S.startNewChat}</button>
           </div>
         ) : (
+          <>
+          <QueuedMessages draftKey={draftKey} deliveringId={deliveringId} queuedLabel={t('chat.queued')} />
           <Composer
             key={`${binding.chatSessionId}:${draftRev}`}
             paneId={paneId}
@@ -401,7 +387,18 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
             disabled={!binding.capabilities.send || binding.status === 'failed'}
             running={running}
             canStop={binding.capabilities.interrupt}
-            chips={{ agent: binding.agent, model: binding.model, effort: view.session.modelSettings.effort ?? '', mode: binding.mode, cwd: view.session.cwd, editable: false }}
+            chips={{
+              agent: binding.agent,
+              model: binding.model,
+              effort: view.session.modelSettings.effort ?? '',
+              mode: binding.mode,
+              cwd: view.session.cwd,
+              editable: false,
+              tunable,
+              onModel: (model) => void configure({ model }),
+              onEffort: (effort) => void configure({ effort }),
+            }}
+            skills={() => controller.skills()}
             onSend={async (text, staged) => {
               toLatest();
               // Behind a running turn, an agent still starting, or what is already queued, so the order holds.
@@ -409,12 +406,15 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
               return controller.send(text, staged.map((item) => item.path));
             }}
             onStop={() => void controller.interrupt()}
-            extra={canHandOff ? (
-              <button type="button" className="wmux-chatv2-btn" title={S.continueInTerminalHint} disabled={handingOff} onClick={() => void continueInTerminal()}>
-                {S.continueInTerminal}
-              </button>
-            ) : null}
+            menu={binding.capabilities.toTerminal && !handedOff ? [{
+              id: 'terminal',
+              label: S.continueInTerminal,
+              title: canHandOff ? S.continueInTerminalHint : S.modelBusy,
+              disabled: !canHandOff || handingOff,
+              onSelect: () => void continueInTerminal(),
+            }] : []}
           />
+          </>
         )}
         {(binding.status === 'starting' || binding.status === 'stopped' || binding.status === 'failed') && (
           <div className="wmux-chatv2-status" data-status={binding.status}>{binding.error?.message ?? S.status[binding.status]}</div>

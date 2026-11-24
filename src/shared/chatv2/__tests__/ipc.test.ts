@@ -55,10 +55,23 @@ describe('parseChatV2Params', () => {
     expect(parseChatV2Params('send', { ...ok, clientMessageId: 'short' })).toBeNull();
     expect(parseChatV2Params('send', { ...ok, text: '   ' })).toBeNull();
     expect(parseChatV2Params('send', { ...ok, attachments: ['relative.png'] })).toBeNull();
+    // Any file, by its absolute path; never a directory or a multi-line value.
+    expect(parseChatV2Params('send', { ...ok, attachments: ['/repo/src/a.ts'] })).toEqual({ ...ok, attachments: ['/repo/src/a.ts'] });
+    expect(parseChatV2Params('send', { ...ok, attachments: ['/repo/src/'] })).toBeNull();
+    expect(parseChatV2Params('send', { ...ok, attachments: ['/repo/a\nb.ts'] })).toBeNull();
     expect(parseChatV2Params('send', { ...ok, epoch: 'not-an-epoch' })).toBeNull();
     const korean = '가'.repeat(Math.floor(CHATV2_MAX_PROMPT_BYTES / 3));
     expect(parseChatV2Params('send', { ...ok, text: korean })).not.toBeNull();
     expect(parseChatV2Params('send', { ...ok, text: `${korean}가` })).toBeNull();
+  });
+
+  it('validates a model or effort change: at least one, each a known shape, empty = the default', () => {
+    expect(parseChatV2Params('configure', { ...session, model: 'claude-opus-5-5', effort: 'high' })).toEqual({ ...session, model: 'claude-opus-5-5', effort: 'high' });
+    expect(parseChatV2Params('configure', { ...session, model: '', effort: '' })).toEqual({ ...session, model: '', effort: '' });
+    expect(parseChatV2Params('configure', { ...session })).toBeNull();
+    expect(parseChatV2Params('configure', { ...session, effort: 'ultra' })).toBeNull();
+    expect(parseChatV2Params('configure', { ...session, model: '--dangerously' })).toBeNull();
+    expect(parseChatV2Params('create', { paneId: 'pty-1', agent: 'claude', mode: 'default', effort: 'max' })).toEqual({ paneId: 'pty-1', agent: 'claude', mode: 'default', effort: 'max' });
   });
 
   it('names an answer by request id', () => {

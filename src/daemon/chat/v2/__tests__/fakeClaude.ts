@@ -18,6 +18,8 @@ export class FakeClaude {
   readonly reaped: number[] = [];
   /** Answer the initialize handshake (false: never answer). */
   handshake = true;
+  /** How other control requests (set_model, apply_flag_settings) are answered; undefined = never. */
+  controlAnswer: ((subtype: string) => 'success' | 'error' | undefined) | null = null;
   /** Ignore stdin EOF and kills (a process that will not die). */
   stubborn = false;
   /** Ignore stdin EOF but die on a kill (a hung agent). */
@@ -53,6 +55,11 @@ export class FakeClaude {
           const request = line.request as Record<string, unknown> | undefined;
           if (line.type === 'control_request' && request?.subtype === 'initialize' && this.handshake) {
             this.out({ type: 'control_response', response: { subtype: 'success', request_id: line.request_id, response: {} } });
+          }
+          else if (line.type === 'control_request' && request && request.subtype !== 'initialize' && request.subtype !== 'interrupt') {
+            const answer = this.controlAnswer?.(String(request.subtype));
+            if (answer === 'success') this.out({ type: 'control_response', response: { subtype: 'success', request_id: line.request_id, response: {} } });
+            else if (answer === 'error') this.out({ type: 'control_response', response: { subtype: 'error', request_id: line.request_id, error: 'refused' } });
           }
         }
         callback();

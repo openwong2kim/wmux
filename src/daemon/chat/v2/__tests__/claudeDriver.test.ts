@@ -48,6 +48,47 @@ describe('ClaudeDriver', () => {
     await t.driver.stop();
   });
 
+  it('switches model and effort live between turns, and passes --effort at start', async () => {
+    const t = setup({ effort: 'high' });
+    t.fake.controlAnswer = () => 'success';
+    await t.start();
+    expect(t.fake.args).toContain('--effort=high');
+    await expect(t.driver.configure({ model: 'opus', effort: 'max' })).resolves.toBe(true);
+    const requests = t.fake.stdin.filter((line) => line.type === 'control_request').map((line) => line.request);
+    expect(requests).toEqual(expect.arrayContaining([
+      { subtype: 'set_model', model: 'opus' },
+      { subtype: 'apply_flag_settings', settings: { effortLevel: 'max' } },
+    ]));
+    // Nothing changed: nothing is written.
+    const before = t.fake.stdin.length;
+    await expect(t.driver.configure({ model: 'opus', effort: 'max' })).resolves.toBe(true);
+    expect(t.fake.stdin.length).toBe(before);
+    await t.driver.stop();
+  });
+
+  it('answers false (so the host restarts) on a refused switch, a reset to a default, or an exit', async () => {
+    const t = setup();
+    t.fake.controlAnswer = () => 'error';
+    await t.start();
+    await expect(t.driver.configure({ model: 'opus', effort: '' })).resolves.toBe(false);
+    // Back to the CLI default when the spawn named a model cannot be done live.
+    await expect(t.driver.configure({ model: '', effort: '' })).resolves.toBe(false);
+    t.fake.controlAnswer = () => undefined;
+    const pending = t.driver.configure({ model: 'sonnet', effort: '' });
+    await tick(20);
+    t.fake.exit(0, null);
+    await expect(pending).resolves.toBe(false);
+  });
+
+  it('names an attached file in its own text block and never reads it', async () => {
+    const t = setup();
+    await t.start();
+    await t.driver.send({ text: 'fix this', attachments: [{ path: '/repo/src/a.ts', mimeType: 'application/octet-stream', kind: 'file' }] });
+    const user = t.fake.stdin.find((line) => line.type === 'user') as { message: { content: Array<{ type: string; text?: string }> } };
+    expect(user.message.content).toEqual([{ type: 'text', text: 'fix this' }, { type: 'text', text: 'Attached file:\n/repo/src/a.ts' }]);
+    await t.driver.stop();
+  });
+
   it('rejects start when the handshake never comes back', async () => {
     const t = setup();
     t.fake.handshake = false;

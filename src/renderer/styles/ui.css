@@ -732,9 +732,6 @@
 .wmux-chatv2-cwd { max-width: 18em; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); }
 .wmux-chatv2-user { align-self: flex-end; max-width: 85%; margin-top: 10px; padding: 6px 12px; border-radius: 12px; background: var(--bg-surface); white-space: pre-wrap; word-break: keep-all; overflow-wrap: anywhere; line-height: 1.55; }
 /* A message sent mid-turn: the same bubble, then a muted Queued line until it runs. */
-.wmux-chatv2-queued { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
-.wmux-chatv2-queued-caption { display: flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11px; }
-.wmux-chatv2-queued-caption .wmux-chatv2-link { font-size: 11px; }
 /* A reply's code block: its language label and Copy sit as a compact 15px row in the block's top
    padding, and the code starts under it (8px more than the plain padding), so they never cover it. */
 .wmux-chatv2 [data-brain-md-code-rich]:not([data-brain-md-code-view]) > div:first-child { top: 1px; line-height: 15px; }
@@ -833,35 +830,8 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 /* Jump to latest: shown only while scrolled up with newer rows below; floats over the transcript, no layout row. */
 .wmux-chatv2-jump { position: absolute; top: -44px; left: 50%; z-index: 1; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg-surface); color: var(--text-main); box-shadow: var(--shadow-popover); transform: translateX(-50%); }
 .wmux-chatv2-jump:hover { background: var(--selection-hover); --text-muted: var(--text-subtle); }
-.wmux-chatv2-composer { display: flex; flex-direction: column; gap: 4px; padding: 6px 6px 6px 10px; border: 1px solid var(--line); border-radius: 12px; background: transparent; transition: border-color 150ms; }
-.wmux-chatv2-composer:focus-within { border-color: var(--line-strong); }
-.wmux-chatv2-textarea { display: block; width: 100%; min-height: 40px; max-height: 200px; resize: none; padding: 4px 0; background: transparent; color: var(--text-main); font: inherit; line-height: 1.55; word-break: keep-all; overflow-wrap: anywhere; outline: none; field-sizing: content; }
-.wmux-chatv2-textarea::placeholder { color: var(--text-muted); }
-.wmux-chatv2-composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
-/* One row of chips: a narrow composer scrolls the strip sideways instead of growing taller, and the
-   permissions chip stays outside it, always whole. An edge fades while chips are hidden past it;
-   the padding keeps focus rings unclipped. */
-.wmux-chatv2-chips { display: flex; flex: 1 1 auto; flex-wrap: nowrap; align-items: center; gap: 4px; min-width: 0; }
-.wmux-chatv2-chips > .wmux-chatv2-chip { flex-shrink: 0; }
-.wmux-chatv2-chip-strip { display: flex; flex: 0 1 auto; align-items: center; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; padding: 4px; margin: -4px; }
-.wmux-chatv2-chip-strip::-webkit-scrollbar { display: none; }
-.wmux-chatv2-chip-strip > .wmux-chatv2-chip { flex-shrink: 0; }
-.wmux-chatv2-chip-strip[data-fade="start"] { -webkit-mask-image: linear-gradient(to right, transparent, #000 20px); mask-image: linear-gradient(to right, transparent, #000 20px); }
-.wmux-chatv2-chip-strip[data-fade="end"] { -webkit-mask-image: linear-gradient(to left, transparent, #000 20px); mask-image: linear-gradient(to left, transparent, #000 20px); }
-.wmux-chatv2-chip-strip[data-fade="both"] { -webkit-mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent); mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent); }
-.wmux-chatv2-chip { display: inline-flex; align-items: center; min-height: 26px; padding: 0 8px; border-radius: var(--chip-radius, 6px); background: var(--selection); color: var(--text-sub); font-size: 11.5px; white-space: nowrap; }
-.wmux-chatv2-chip:hover:not([aria-disabled="true"]) { background: var(--selection-hover); --text-muted: var(--text-subtle); color: var(--text-main); }
-.wmux-chatv2-chip select { appearance: none; field-sizing: content; background: transparent; color: inherit; font: inherit; cursor: pointer; outline: none; }
-.wmux-chatv2-chip select:disabled { cursor: default; }
-.wmux-chatv2-chip[aria-disabled="true"] { color: var(--text-muted); }
-.wmux-chatv2-chip[aria-disabled="true"] select:disabled { opacity: 1; }
-.wmux-chatv2-chip[data-mode="bypass"] { color: var(--accent-red); }
-.wmux-chatv2-attachments { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.wmux-chatv2-chip[data-attachment] { gap: 2px; padding-right: 0; color: var(--text-main); }
 .wmux-chatv2-handed-off { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.wmux-chatv2-composer-actions { display: flex; flex-shrink: 0; align-items: center; gap: 6px; }
-.wmux-chatv2-send { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; background: var(--text-main); color: var(--bg-base); transition: opacity 150ms; }
-.wmux-chatv2-send:disabled { opacity: .3; cursor: not-allowed; }
+/* The composer, its chips, attachments, queue and menus: ChatV2/composer.css. */
 .wmux-chatv2-status { color: var(--text-muted); font-size: 11.5px; }
 .wmux-chatv2-status[data-status="failed"] { color: var(--accent-red); }
 .wmux-chatv2-find { display: flex; align-items: center; gap: 4px; padding: 4px 8px; box-shadow: inset 0 -1px 0 var(--border-soft); }

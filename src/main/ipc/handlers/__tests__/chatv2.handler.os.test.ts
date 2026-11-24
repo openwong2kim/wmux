@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => {
   const handlers = new Map<string, (...args: any[]) => unknown>();
   return { __handlers: handlers, ipcMain: { removeHandler: (name: string) => handlers.delete(name),
-    handle: (name: string, fn: (...args: any[]) => unknown) => handlers.set(name, fn) } };
+    handle: (name: string, fn: (...args: any[]) => unknown) => handlers.set(name, fn) },
+    nativeImage: { createFromPath: () => ({ isEmpty: () => true }) }, dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) } };
 });
 import * as electron from 'electron';
 import { registerChatV2Handlers, stageChatV2Attachment } from '../chatv2.handler';
@@ -99,7 +100,7 @@ describe('chat v2 IPC bridge', () => {
     expect(f.wc.send).toHaveBeenCalledTimes(2);
   });
 
-  it('stages only image files into the attachment directory, private to the user', async () => {
+  it('stages images into the attachment directory, private to the user, and keeps any other file at its own path', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatv2-stage-'));
     const image = path.join(dir, 'shot.PNG');
     fs.writeFileSync(image, 'png');
@@ -109,7 +110,12 @@ describe('chat v2 IPC bridge', () => {
     expect(path.dirname(staged.path)).toBe(path.join(dir, 'chatv2-attachments'));
     expect(staged.path.endsWith('.png')).toBe(true);
     if (process.platform !== 'win32') expect(fs.statSync(staged.path).mode & 0o777).toBe(0o600);
-    expect(await stageChatV2Attachment(path.join(dir, 'notes.txt'), dir)).toEqual({ ok: false, reason: 'not-image' });
+    expect(staged.kind).toBe('image');
+    expect(staged.name).toBe('shot.PNG');
+    fs.writeFileSync(path.join(dir, 'notes.txt'), 'notes');
+    expect(await stageChatV2Attachment(path.join(dir, 'notes.txt'), dir)).toEqual({ ok: true, path: path.join(dir, 'notes.txt'), name: 'notes.txt', kind: 'file', size: 5 });
+    expect(await stageChatV2Attachment(path.join(dir, 'gone.txt'), dir)).toEqual({ ok: false, reason: 'missing' });
+    expect(await stageChatV2Attachment(dir, dir)).toEqual({ ok: false, reason: 'missing' });
     expect(await stageChatV2Attachment('relative.png', dir)).toEqual({ ok: false, reason: 'missing' });
     // Staged images past a day are removed when the next one is staged.
     const old = new Date(Date.now() - 25 * 60 * 60 * 1000);

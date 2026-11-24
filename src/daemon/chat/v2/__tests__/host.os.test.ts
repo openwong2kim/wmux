@@ -186,6 +186,49 @@ describe('chat v2 host', () => {
     await r.host.dispose();
   });
 
+  it('changes model and effort between turns: live when the agent takes it, else by a restart on the same conversation', async () => {
+    const r = rig();
+    const binding = await created(r);
+    r.fake().controlAnswer = () => 'success';
+    const live = await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, model: 'opus', effort: 'high' }, 'main');
+    expect(live).toMatchObject({ ok: true, applied: 'live', binding: { model: 'opus', status: 'idle' } });
+    expect(r.fakes).toHaveLength(1);
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort).toBe('high');
+    // Refused while a turn runs.
+    await sent(r);
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'low' }, 'main')).toMatchObject({ ok: false, error: { code: 'turn-running' } });
+    r.fake().result();
+    await until(() => r.host.statusForPane(PANE) === 'idle');
+    // The agent refuses the live switch: it restarts on the same conversation with the new options.
+    r.fake().controlAnswer = () => 'error';
+    const restarted = await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'max' }, 'main');
+    expect(restarted).toMatchObject({ ok: true, applied: 'restarted', binding: { status: 'idle' } });
+    expect(r.fakes).toHaveLength(2);
+    expect(r.fake().args).toEqual(expect.arrayContaining(['--model=opus', '--effort=max', '--resume', binding.providerSessionId]));
+    // An effort the agent does not take is refused.
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'ultra' }, 'main')).toMatchObject({ ok: false, error: { code: 'invalid-params' } });
+    await r.host.dispose();
+  });
+
+  it('sends a non-image file as its own path and refuses a non-image inside the staging directory', async () => {
+    const r = rig();
+    const binding = await created(r);
+    const file = path.join(dir, 'notes.md');
+    fs.writeFileSync(file, '# notes');
+    const ok = await r.host.call('send', { paneId: PANE, chatSessionId: binding.chatSessionId, epoch: binding.epoch, clientMessageId: 'msg-file1', text: 'read this', attachments: [file] }, 'main');
+    expect(ok).toMatchObject({ ok: true });
+    const user = r.host.sessionForPane(PANE)!.blocks.find((b) => b.role === 'user')!;
+    expect(user.attachments).toEqual([expect.objectContaining({ kind: 'file', name: 'notes.md', path: file })]);
+    r.fake().result();
+    await until(() => r.host.statusForPane(PANE) === 'idle');
+    const stagingDir = path.join(dir, 'chatv2-attachments');
+    fs.mkdirSync(stagingDir, { recursive: true });
+    fs.writeFileSync(path.join(stagingDir, 'x.txt'), 'x');
+    const refused = await r.host.call('send', { paneId: PANE, chatSessionId: binding.chatSessionId, epoch: r.host.bindingForPane(PANE)!.epoch, clientMessageId: 'msg-file2', text: 'and this', attachments: [path.join(stagingDir, 'x.txt')] }, 'main');
+    expect(refused).toMatchObject({ ok: false, error: { code: 'attachment-refused' } });
+    await r.host.dispose();
+  });
+
   it('refuses to start while an agent or process runs in the pane', async () => {
     const r = rig();
     r.paneFree.value = false;
