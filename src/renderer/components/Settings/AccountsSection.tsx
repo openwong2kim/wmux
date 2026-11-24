@@ -26,8 +26,10 @@ import {
   cancelAccountLogin,
   subscribeAccountLogins,
   getPendingAccountLogins,
+  startWslSignIn,
   type PendingLogin,
 } from '../../utils/accountLogin';
+import type { WslAccountStatus } from '../../../main/account/wslAccountState';
 
 type Vendor = 'claude' | 'codex';
 type AccountRow = AccountListRow;
@@ -63,6 +65,66 @@ function fmtAge(fetchedAtMs: number | null): string {
  *  so the panel isn't a wall of color. */
 function pctColor(pct: number): string {
   return pct >= 80 ? 'var(--accent-yellow)' : 'var(--text-sub)';
+}
+
+/** A WSL reading older than this is shown as stale: a switch no longer picks it (WSL_CANDIDATE_MAX_AGE_MS). */
+const WSL_READING_STALE_MS = 10 * 60 * 1000;
+
+/**
+ * Each WSL home of the account, as its WSL panes reported it
+ * (wslAccountState.ts): the distro, the sign-in and the usage, wrapping
+ * rather than cut; when it was seen is the tooltip. A signed-out home has its
+ * own Sign in, which signs in that distro's home (never the Windows folder).
+ */
+export function WslStatusLines({ statuses, onSignIn }: {
+  statuses: readonly WslAccountStatus[];
+  onSignIn?: (distro: string) => void;
+}): React.ReactElement | null {
+  const t = useT();
+  if (statuses.length === 0) return null;
+  return (
+    <>
+      {statuses.map((s) => {
+        const where = t('accounts.wslPlace', { distro: s.distribution });
+        const out = s.signedIn === false;
+        const state = out ? t('accounts.wslSignedOut') : s.signedIn ? t('accounts.wslSignedIn') : t('accounts.wslUnknown');
+        // The usage, each window amber past 80% as the Windows reading is.
+        const windows: Array<[string, number]> = out ? [] : [
+          ...(s.sessionPct !== null ? [['5h', s.sessionPct] as [string, number]] : []),
+          ...(s.weeklyPct !== null ? [['7d', s.weeklyPct] as [string, number]] : []),
+        ];
+        const stale = windows.length > 0 && s.seenAtMs !== null && Date.now() - s.seenAtMs > WSL_READING_STALE_MS;
+        const seen = windows.length > 0 && s.seenAtMs !== null ? t('accounts.wslSeen', { age: fmtAge(s.seenAtMs) }) : null;
+        const title = [`${where}: ${state}`, ...windows.map(([w, pct]) => `${w} ${pct}%`), ...(seen ? [seen] : [])].join(' · ');
+        return (
+          <span
+            key={`${s.distribution}\0${s.user}`}
+            className="text-[11px] tabular-nums"
+            style={{ color: out ? 'var(--accent-red)' : 'var(--text-sub)' }}
+            title={`${title} (${s.user})`}
+            data-account-wsl-status={s.distribution}
+          >
+            {`${where}: ${state}`}
+            {windows.map(([w, pct]) => <Fragment key={w}>{' · '}<span style={{ color: stale ? undefined : pctColor(pct), whiteSpace: 'nowrap' }}>{`${w} ${pct}%`}</span></Fragment>)}
+            {stale ? ` (${t('accounts.stale')})` : ''}
+            {out && onSignIn && (
+              <>
+                {' · '}
+                <button
+                  type="button"
+                  className="underline underline-offset-2 text-[var(--text-main)] hover:text-[var(--text-main)]"
+                  onClick={() => onSignIn(s.distribution)}
+                  data-account-wsl-sign-in={s.distribution}
+                >
+                  {t('accounts.wslSignInShort')}
+                </button>
+              </>
+            )}
+          </span>
+        );
+      })}
+    </>
+  );
 }
 
 /** The account's last usage reading; Refresh lives in the row's ⋯ menu. */
@@ -468,6 +530,11 @@ export function AccountsSection(): React.ReactElement | null {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [confirmRemove, setConfirmRemove] = useState<AccountRow | null>(null);
+  /** The WSL sign-in being confirmed: the account and its distro (null: the
+   *  default one). Every one asks first: opening the tab starts that distro
+   *  if it is not running. */
+  const [confirmWslDefault, setConfirmWslDefault] = useState<{ row: AccountRow; distro: string | null } | null>(null);
+  const [wslStatuses, setWslStatuses] = useState<WslAccountStatus[]>([]);
   const [bindings, setBindings] = useState<Record<string, Partial<Record<Vendor, string>>>>({});
   const [move, setMove] = useState<PendingMove | null>(null);
   /** The account whose token sign-in panel is open. */
@@ -476,7 +543,7 @@ export function AccountsSection(): React.ReactElement | null {
   const [vaultPanel, setVaultPanel] = useState<string | null>(null);
   const workspaces = useStore((s) => s.workspaces);
   // Settings closes on Escape unless something it opened owns the key.
-  useOwnedDialog(move !== null || confirmRemove !== null);
+  useOwnedDialog(move !== null || confirmRemove !== null || confirmWslDefault !== null);
   const [removeNotice, setRemoveNotice] = useState<string | null>(null);
   const [usage, setUsage] = useState<Map<string, AccountUsageEntry>>(new Map());
   const pending = useSyncExternalStore(subscribeAccountLogins, getPendingAccountLogins);
@@ -536,6 +603,18 @@ export function AccountsSection(): React.ReactElement | null {
     const t = setInterval(() => setAgeTick((n) => n + 1), 30_000);
     return () => clearInterval(t);
   }, [usage.size]);
+
+  // WSL homes (Windows only): asked again every 30 s, the age labels' tick, so
+  // a sample or a sign-in from a WSL pane shows while the tab is open.
+  const wslOn = window.electronAPI?.platform === 'win32' && !!window.electronAPI?.accounts?.wslStatus;
+  useEffect(() => {
+    const api = window.electronAPI?.accounts;
+    if (!wslOn || !api?.wslStatus) return;
+    const load = () => { void api.wslStatus().then(setWslStatuses, () => undefined); };
+    load();
+    const timer = setInterval(load, 30_000);
+    return () => clearInterval(timer);
+  }, [wslOn]);
 
   // Hidden when the preload predates multi-account.
   if (!window.electronAPI?.accounts) return null;
@@ -646,6 +725,14 @@ export function AccountsSection(): React.ReactElement | null {
       })),
       ...(from ? [{ id: 'move:none', label: t('accounts.moveToNoGroup'), onSelect: () => requestMove({ ids: [r.id], from, to: '', kind: 'move' }) }] : []),
       { id: 'move:new', label: t('accounts.moveToNewGroup'), onSelect: () => setMove({ ids: [r.id], from, to: null, kind: 'move' }) },
+      // Sign in for WSL: in each distro the account's WSL panes reported, or in
+      // the default distribution; each after a confirm, since it may start it.
+      ...(wslOn && r.vendor === 'claude' ? [
+        ...[...new Set(wslStatuses.filter((s) => s.accountId === r.id).map((s) => s.distribution))].map((d) => ({
+          id: `wsl-sign-in:${d}`, label: t('accounts.wslSignIn', { distro: d }), onSelect: () => setConfirmWslDefault({ row: r, distro: d }),
+        })),
+        { id: 'wsl-sign-in:default', label: t('accounts.wslSignInDefault'), onSelect: () => setConfirmWslDefault({ row: r, distro: null }) },
+      ] : []),
       ...(r.vendor === 'claude' ? [
         // A token account's usage cannot be read, so it has no refresh.
         ...(r.tokenSignIn ? [] : [{ id: 'refresh', label: t('accounts.refreshUsage'), onSelect: () => window.electronAPI?.accounts?.usageRefresh?.(r.id) }]),
@@ -687,6 +774,7 @@ export function AccountsSection(): React.ReactElement | null {
           {r.vaultCount > 0 && (
             <span className="text-[11px] text-[var(--text-sub)] truncate" data-account-vault-count>{t('accounts.vaultCount', { n: r.vaultCount })}</span>
           )}
+          <WslStatusLines statuses={wslStatuses.filter((s) => s.accountId === r.id)} onSignIn={(distro) => setConfirmWslDefault({ row: r, distro })} />
         </span>
       )}
       <AccountRowStatus
@@ -757,6 +845,28 @@ export function AccountsSection(): React.ReactElement | null {
         </div>
       )}
       {move && <MoveDialog move={move} impact={(to) => moveImpact(move, to)} onApply={(to) => applyMove(move, to)} onCancel={() => closeMove(move)} />}
+      {confirmWslDefault && (
+        <Dialog onClose={() => setConfirmWslDefault(null)} width={420}>
+          <DialogHeader
+            title={t('accounts.wslSignInDefaultTitle', { name: confirmWslDefault.row.name })}
+            description={confirmWslDefault.distro
+              ? t('accounts.wslSignInNamedDesc', { distro: confirmWslDefault.distro })
+              : t('accounts.wslSignInDefaultDesc')}
+            closeLabel={t('common.cancel')}
+          />
+          <DialogFooter>
+            <Button variant="ghost" size="md" onClick={() => setConfirmWslDefault(null)}>{t('common.cancel')}</Button>
+            <Button variant="primary" size="md" onClick={() => {
+              const { row, distro } = confirmWslDefault;
+              setConfirmWslDefault(null);
+              // No tab (Settings has no local pane to put it in): say so.
+              void startWslSignIn(row, distro).then((tab) => {
+                if (!tab) useStore.getState().pushToast({ level: 'error', message: t('accounts.wslSignInNoTab') });
+              });
+            }}>{t('accounts.wslSignInDefaultGo')}</Button>
+          </DialogFooter>
+        </Dialog>
+      )}
       {confirmRemove && (
         <Dialog onClose={() => closeRemove(confirmRemove.id)} width={420}>
           <DialogHeader title={t('accounts.removeTitle', { name: confirmRemove.name })} description={t('accounts.removeDesc')} closeLabel={t('common.cancel')} />

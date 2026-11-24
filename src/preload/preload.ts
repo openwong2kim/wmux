@@ -1008,6 +1008,11 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.ACCOUNT_USAGE_LIST) as Promise<
         import('../main/account/AccountUsageService').AccountUsageEntry[]
       >,
+    // Each WSL account home's sign-in and usage, as WSL panes reported them.
+    wslStatus: () =>
+      ipcRenderer.invoke(IPC.ACCOUNT_WSL_STATUS) as Promise<
+        import('../main/account/wslAccountState').WslAccountStatus[]
+      >,
     usageRefresh: (accountId: string) => ipcRenderer.send(IPC.ACCOUNT_USAGE_REFRESH, accountId),
     onUsageUpdate: (
       callback: (entry: import('../main/account/AccountUsageService').AccountUsageEntry) => void,

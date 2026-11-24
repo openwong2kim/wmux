@@ -102,5 +102,16 @@ describe('wslAccountState', () => {
     seedWslAccountState(s, trail);
     expect(s.reading('a', PLACE, 'bound')?.windows).toEqual([{ remaining: expect.closeTo(0.3), resetAtMs: RESET * 1000 }]);
   });
+
+  it('lists the homes a sample or a hook named, a reading counting as signed in until a turn says otherwise', () => {
+    const s = new WslAccountState(() => 5_000);
+    s.noteSample('a', PLACE, { session: { pct: 40, resetEpochSec: RESET }, weekly: { pct: 5, resetEpochSec: RESET } });
+    s.noteAuth('b', { distribution: 'Debian', user: 'root' }, false);
+    s.seed(wslStateKey('c', PLACE)!, { sessionPct: 1, fetchedAtMs: 0 }, 1);
+    expect(s.statuses()).toEqual([
+      { accountId: 'a', distribution: 'Ubuntu', user: 'me', signedIn: true, sessionPct: 40, weeklyPct: 5, seenAtMs: 5_000 },
+      { accountId: 'b', distribution: 'Debian', user: 'root', signedIn: false, sessionPct: null, weeklyPct: null, seenAtMs: null },
+    ]);
+  });
 });
 

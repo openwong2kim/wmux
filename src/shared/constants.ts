@@ -316,6 +316,7 @@ export const IPC = {
   // account (explicit user action, bypasses the opt-in/cooldown gates); UPDATE
   // (main → renderer) pushes a single account's entry when its cache changes.
   ACCOUNT_USAGE_LIST: 'account:usage:list',
+  ACCOUNT_WSL_STATUS: 'account:wsl:status',
   ACCOUNT_USAGE_REFRESH: 'account:usage:refresh',
   ACCOUNT_USAGE_UPDATE: 'account:usage:update',
   // Quota-driven account choice for Claude and Codex launches (per vendor

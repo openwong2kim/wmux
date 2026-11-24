@@ -11,6 +11,7 @@ import {
   LOGIN_POLL_INTERVAL_MS,
   LOGIN_TIMEOUT_MS,
   openTerminalTab,
+  startWslSignIn,
 } from '../accountLogin';
 
 type Status = { loggedIn: boolean; stamp?: string | null };
@@ -216,3 +217,24 @@ describe('startAccountLogin', () => {
     expect(again.pty.dispose).not.toHaveBeenCalled();
   });
 });
+
+describe('startWslSignIn', () => {
+  it('opens a WSL tab in the named distro whose claude signs in on the account\'s own WSL home', async () => {
+    const { pty } = setup({ CLAUDE_CONFIG_DIR: '/profile/dir' });
+    await startWslSignIn({ vendor: 'claude', name: 'Work', configDir: 'C:\\acc\\claude-b' }, 'Ubuntu');
+    const opts = (pty.create.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
+    expect(opts).toMatchObject({
+      shell: 'wsl.exe', wslDistro: 'Ubuntu', wslAccountHomeKey: 'CLAUDE_CONFIG_DIR', ignoreAccountBinding: true,
+      env: { CLAUDE_CONFIG_DIR: 'C:\\acc\\claude-b' }, initialCommand: 'claude auth login',
+    });
+    // Never the Windows folder's own login transport, and no profile env.
+    expect(opts).not.toHaveProperty('wslAccountLoginEnvKey');
+  });
+
+  it('names no distro for the default one (the person confirmed it may start)', async () => {
+    const { pty } = setup();
+    await startWslSignIn({ vendor: 'claude', name: 'Work', configDir: 'C:\\acc\\claude-b' }, null);
+    expect((pty.create.mock.calls[0] as unknown[])[0]).not.toHaveProperty('wslDistro');
+  });
+});
+
