@@ -45,6 +45,28 @@ export const WSL_CANDIDATE_MAX_AGE_MS = 10 * 60 * 1000;
 
 const KEY_MARK = '@wsl:';
 
+interface PlainPane {
+  requested: string;
+  pid: number;
+  /** The process's start identity, when the daemon had it at the create. */
+  start?: string;
+  /** When it was noted (newest wins for a distro). */
+  at: number;
+}
+
+/** The start identity the daemon records for a session's process (Windows'
+ *  FILETIME, else POSIX `lstart` or the kernel start tick), or null. */
+function processStart(s: { pidCreatedAtFt?: unknown; pidStartTime?: unknown; pidStartKernel?: unknown } | null | undefined): string | null {
+  for (const v of [s?.pidCreatedAtFt, s?.pidStartTime, s?.pidStartKernel]) {
+    if ((typeof v === 'string' && v) || typeof v === 'number') return String(v);
+  }
+  return null;
+}
+
+/** The plain WSL panes kept for a restart (notePlainPane), next to the places file. */
+export const WSL_PLAIN_PANES_FILENAME = 'wsl-plain-panes.json';
+const MAX_PLAIN_PANES = 256;
+
 function firstSnapshot(update: UsageUpdate, nowMs: number): UsageSnapshot | null {
   if (!update.session && !update.weekly) return null;
   return {
@@ -87,6 +109,12 @@ export class WslAccountState {
    *  (lowercased; '' for wsl.exe's default distro). */
   private readonly defaultPlaces = new Map<string, WslPlace>();
   private readonly listeners = new Set<() => void>();
+  /** Plain WSL panes this store saw start, by session id: the distro they
+   *  asked for and their process id (wsl-plain-panes.json). After a restart a
+   *  live one of them, reattached with the same process, says where its
+   *  distro starts (learnFromLiveSessions). */
+  private readonly plainPanes = new Map<string, PlainPane>();
+  private plainFile?: string;
 
   /**
    * `placesFile`: where the default places are kept across restarts, so the
@@ -98,6 +126,20 @@ export class WslAccountState {
    */
   constructor(private readonly now: () => number = Date.now, private readonly placesFile?: string) {
     if (!placesFile) return;
+    this.plainFile = path.join(path.dirname(placesFile), WSL_PLAIN_PANES_FILENAME);
+    try {
+      const raw = atomicReadJSONSync<Record<string, unknown>>(this.plainFile);
+      for (const [id, v] of Object.entries(raw ?? {})) {
+        const r = v as { requested?: unknown; pid?: unknown; start?: unknown; at?: unknown } | null;
+        if (id && typeof r?.requested === 'string' && typeof r.pid === 'number' && Number.isInteger(r.pid) && r.pid > 0) {
+          this.plainPanes.set(id, {
+            requested: r.requested.toLowerCase(), pid: r.pid,
+            ...(typeof r.start === 'string' && r.start ? { start: r.start } : {}),
+            at: typeof r.at === 'number' && Number.isFinite(r.at) ? r.at : 0,
+          });
+        }
+      }
+    } catch { /* none kept yet: learned from the next plain pane */ }
     try {
       const raw = atomicReadJSONSync<Record<string, unknown>>(placesFile);
       for (const [requested, place] of Object.entries(raw ?? {})) {
@@ -179,6 +221,70 @@ export class WslAccountState {
     try {
       if (!key) return;
       atomicWriteJSONSync(this.placesFile, Object.fromEntries([...this.defaultPlaces].filter(([requested]) => requested)));
+    } catch { /* kept for this run only */ }
+  }
+
+  /** A plain WSL pane (no target of its own: not a recovery, a continued
+   *  conversation or a pool pin) started as session `sessionId`, process
+   *  `pid`, asking for `requested`: kept so a restart can learn its place
+   *  again from it while that same process lives. */
+  notePlainPane(sessionId: string, session: { pid?: unknown; pidCreatedAtFt?: unknown; pidStartTime?: unknown; pidStartKernel?: unknown } | null | undefined, requested: string | null): void {
+    const pid = session?.pid;
+    if (!this.plainFile || !sessionId || typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return;
+    const start = processStart(session);
+    this.plainPanes.delete(sessionId);
+    this.plainPanes.set(sessionId, { requested: (requested ?? '').toLowerCase(), pid, ...(start ? { start } : {}), at: this.now() });
+    while (this.plainPanes.size > MAX_PLAIN_PANES) this.plainPanes.delete(this.plainPanes.keys().next().value as string);
+    this.savePlainPanes();
+  }
+
+  /**
+   * After a restart: the daemon's live sessions. A plain pane kept from
+   * before, still the same process (a reattach, not a respawn), is live
+   * evidence of where its distro starts now, so a distro whose start place
+   * is not known in this run (the unnamed default's is never kept) learns
+   * it. In memory only, as from a plain create. Panes that are gone are
+   * dropped from the file.
+   */
+  learnFromLiveSessions(sessions: ReadonlyArray<{ id?: unknown; pid?: unknown; state?: unknown; wslTarget?: unknown; pidCreatedAtFt?: unknown; pidStartTime?: unknown; pidStartKernel?: unknown }>): void {
+    if (this.plainPanes.size === 0) return;
+    const live = new Set<string>();
+    // Per distro asked for, the most recently started live pane (one started
+    // before a `wsl --set-default` says less than one started after it).
+    const newest = new Map<string, { at: number; place: WslPlace }>();
+    for (const s of sessions) {
+      if (typeof s?.id !== 'string') continue;
+      const kept = this.plainPanes.get(s.id);
+      // Only a running process: a daemon restart's placeholders ('suspended')
+      // carry the old pid and target, and a respawn has another process.
+      if (!kept || (s.state !== 'attached' && s.state !== 'detached') || s.pid !== kept.pid) continue;
+      // The process that started then, not a later one that got its pid.
+      const start = processStart(s);
+      if (kept.start && start !== kept.start) continue;
+      live.add(s.id);
+      if (!validWslTarget(s.wslTarget)) continue;
+      const prev = newest.get(kept.requested);
+      if (!prev || kept.at > prev.at) newest.set(kept.requested, { at: kept.at, place: { distribution: s.wslTarget.distribution, user: s.wslTarget.user } });
+    }
+    for (const [requested, { place }] of newest) {
+      if (!this.defaultPlaces.has(requested)) this.defaultPlaces.set(requested, place);
+    }
+    let dropped = false;
+    for (const id of [...this.plainPanes.keys()]) if (!live.has(id)) { this.plainPanes.delete(id); dropped = true; }
+    if (dropped) this.savePlainPanes();
+  }
+
+  /** Whether a kept plain pane's distro has no start place in this run yet:
+   *  then the daemon's sessions are worth reading (learnFromLiveSessions). */
+  hasUnlearnedPlainPanes(): boolean {
+    for (const p of this.plainPanes.values()) if (!this.defaultPlaces.has(p.requested)) return true;
+    return false;
+  }
+
+  private savePlainPanes(): void {
+    if (!this.plainFile) return;
+    try {
+      atomicWriteJSONSync(this.plainFile, Object.fromEntries(this.plainPanes));
     } catch { /* kept for this run only */ }
   }
 

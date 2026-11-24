@@ -22,11 +22,11 @@ import {
   registerPoolCreateReserveHold,
   setFanoutAccountPoolHost,
   poolRelaunchRefusal,
-  notePoolCallerFallback,
-  poolFallsBackToCaller,
   heldHomeKey,
   poolHeldInPlace,
   poolUsageKey,
+  notePoolCallerFallback,
+  poolFallsBackToCaller,
   preparePool,
   resetFanoutAccountPoolForTests,
   setFanoutAccountPoolSettings,
@@ -447,51 +447,6 @@ describe('a reserve stop at a WSL pane\'s create', () => {
   });
 });
 
-describe('a pool with no account that can run a worker', () => {
-  it('a group whose accounts are not signed in on Windows sends its workers to the caller\'s account, told once', async () => {
-    const notify = vi.fn();
-    const h = host({ notifyCallerFallback: notify });
-    setFanoutAccountPoolHost(h);
-    // Signed in only inside WSL: no sign-in in their Windows folders.
-    const pool = await preparePool('ws-owner', {
-      settings: () => ({ ...on, group: 'work' }), host: h, accounts: () => [acct('a', 'work'), acct('b', 'work')],
-      binding: () => undefined, dirOk: () => true, signedIn: async () => false, vaultSignIn: () => false, log: () => undefined,
-    });
-    expect(pool?.members).toEqual([]);
-    const picked = pickFromPool(pool!, { host: h, slots: slots(), holdFor: () => null, workerMayRun: () => true, dirOk: () => true });
-    expect(picked).toMatchObject({ kind: 'none', reason: 'empty' });
-    expect(poolFallsBackToCaller(picked)).toBe(true);
-    // Not told while no host can show it, so the first shown notice is not lost.
-    notePoolCallerFallback({ host: null, log: () => undefined });
-    notePoolCallerFallback({ log: () => undefined });
-    notePoolCallerFallback({ log: () => undefined });
-    expect(notify).toHaveBeenCalledTimes(1);
-    // Every account out of quota still refuses with its reset (the caller's may be one of them),
-    // and a limit the owner set still stops it.
-    expect(poolFallsBackToCaller({ kind: 'none', reason: 'quota', availableAtMs: 5 })).toBe(false);
-    expect(poolFallsBackToCaller({ kind: 'none', reason: 'held', availableAtMs: 5 })).toBe(false);
-    expect(poolFallsBackToCaller({ kind: 'none', reason: 'full', availableAtMs: null })).toBe(false);
-    // A held bot's recheck leaves it to the workspace's own account.
-    expect(poolReserveHeldForWorkspace('ws-owner', { poolOn: () => true, host: h, slots: slots(), holdFor: () => null, workerMayRun: () => true, dirOk: () => true, refresh: () => undefined })).toBeUndefined();
-  });
-});
-
-describe('a fallback onto the caller\'s account', () => {
-  it('is booked on that account and counts toward its worker limit, never as a pool account', () => {
-    const s = slots();
-    s.beginLaunch({ taskId: 'f1', origin: 'owner', ownerWorkspaceId: 'ws', callerAccount: POOL_DEFAULT_ACCOUNT });
-    s.beginLaunch({ taskId: 'f2', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'a', callerAccount: 'x' });
-    expect(s.launchOf('f1')).toMatchObject({ callerAccount: POOL_DEFAULT_ACCOUNT });
-    expect(s.launchOf('f1')).not.toHaveProperty('accountId');
-    expect(s.launchOf('f2')).not.toHaveProperty('callerAccount');
-    expect(Object.fromEntries(openWorkersByAccount(s, () => true))).toEqual({ [POOL_DEFAULT_ACCOUNT]: 1, a: 1 });
-    expect(openWorkersOn(POOL_DEFAULT_ACCOUNT, { slots: s, workerMayRun: () => true })).toBe(1);
-    // Its pane's create takes no pool account from it.
-    const g = s.launchOf('f1')!.gen;
-    expect(poolAccountForCreate({ fanoutTaskOf: 'ws', fanoutLaunch: { taskId: 'f1', gen: g }, initialCommand: 'claude' }, (id) => s.launchOf(id))).toEqual({ kind: 'none' });
-  });
-});
-
 describe('(d) a WSL task pane\'s pick reads its homes there, a native one only the Windows entries', () => {
   const UBUNTU = { distribution: 'Ubuntu', user: 'me' };
   const pool: PreparedPool = {
@@ -594,6 +549,26 @@ describe('(d) a WSL task pane\'s pick reads its homes there, a native one only t
     expect(heldHomeKey(p, { distribution: 'Debian', user: 'me' }, d)).toBeNull();
   });
 
+  it('with a WSL default shell, a held bot is rechecked on the homes its task panes start in', async () => {
+    const { s } = wslState();
+    s.noteAuth('b', UBUNTU, true);
+    const kb = wslStateKey('b', UBUNTU)!;
+    await preparePool('ws-bot-shell', {
+      settings: () => ({ ...on, includeDefaultLogin: false }), host: host(), accounts: () => [acct('a'), acct('b')], binding: () => undefined,
+      dirOk: () => true, signedIn: async (d) => d.endsWith('/a'), vaultSignIn: () => false, log: () => undefined,
+    });
+    const shell = () => ({ wsl: true, distro: 'Ubuntu' });
+    const base = { host: host(), slots: slots(), workerMayRun: () => true, dirOk: () => true, poolOn: () => true, refresh: () => undefined, wslState: s, paneShell: shell, defaultPlace: () => UBUNTU };
+    const until = Date.now() + 60_000;
+    // Windows 'a' held, the Ubuntu home of 'b' free: woken.
+    expect(poolReserveHeldForWorkspace('ws-bot-shell', { ...base, holdFor: (k: string) => (k === 'a' ? { untilMs: until } : null) })).toBe(false);
+    // The home held: stays held, whatever Windows holds.
+    expect(poolReserveHeldForWorkspace('ws-bot-shell', { ...base, holdFor: (k: string) => (k === kb ? { untilMs: until } : null) })).toBe(true);
+    // No place known there, or no usable home: the workspace's own account decides.
+    expect(poolReserveHeldForWorkspace('ws-bot-shell', { ...base, defaultPlace: () => undefined, holdFor: () => null })).toBeUndefined();
+    expect(poolReserveHeldForWorkspace('ws-bot-shell', { ...base, wslState: wslState().s, holdFor: () => null })).toBeUndefined();
+  });
+
   it('a held bot is rechecked on the Windows members its tasks run on, whatever its WSL homes hold', async () => {
     const { s } = wslState();
     s.noteAuth('b', UBUNTU, true);
@@ -646,5 +621,50 @@ describe('(d) a WSL task pane\'s pick reads its homes there, a native one only t
     // On another account it is a native launch again.
     sl.beginLaunch({ taskId: 't1', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'b' });
     expect(sl.launchOf('t1')).not.toHaveProperty('wslPlace');
+  });
+});
+
+describe('a pool with no account that can run a worker', () => {
+  it('a group whose accounts are not signed in on Windows sends its workers to the caller\'s account, told once', async () => {
+    const notify = vi.fn();
+    const h = host({ notifyCallerFallback: notify });
+    setFanoutAccountPoolHost(h);
+    // Signed in only inside WSL: no sign-in in their Windows folders.
+    const pool = await preparePool('ws-owner', {
+      settings: () => ({ ...on, group: 'work' }), host: h, accounts: () => [acct('a', 'work'), acct('b', 'work')],
+      binding: () => undefined, dirOk: () => true, signedIn: async () => false, vaultSignIn: () => false, log: () => undefined,
+    });
+    expect(pool?.members).toEqual([]);
+    const picked = pickFromPool(pool!, { host: h, slots: slots(), holdFor: () => null, workerMayRun: () => true, dirOk: () => true });
+    expect(picked).toMatchObject({ kind: 'none', reason: 'empty' });
+    expect(poolFallsBackToCaller(picked)).toBe(true);
+    // Not told while no host can show it, so the first shown notice is not lost.
+    notePoolCallerFallback({ host: null, log: () => undefined });
+    notePoolCallerFallback({ log: () => undefined });
+    notePoolCallerFallback({ log: () => undefined });
+    expect(notify).toHaveBeenCalledTimes(1);
+    // Every account out of quota still refuses with its reset (the caller's may be one of them),
+    // and a limit the owner set still stops it.
+    expect(poolFallsBackToCaller({ kind: 'none', reason: 'quota', availableAtMs: 5 })).toBe(false);
+    expect(poolFallsBackToCaller({ kind: 'none', reason: 'held', availableAtMs: 5 })).toBe(false);
+    expect(poolFallsBackToCaller({ kind: 'none', reason: 'full', availableAtMs: null })).toBe(false);
+    // A held bot's recheck leaves it to the workspace's own account.
+    expect(poolReserveHeldForWorkspace('ws-owner', { poolOn: () => true, host: h, slots: slots(), holdFor: () => null, workerMayRun: () => true, dirOk: () => true, refresh: () => undefined })).toBeUndefined();
+  });
+});
+
+describe('a fallback onto the caller\'s account', () => {
+  it('is booked on that account and counts toward its worker limit, never as a pool account', () => {
+    const s = slots();
+    s.beginLaunch({ taskId: 'f1', origin: 'owner', ownerWorkspaceId: 'ws', callerAccount: POOL_DEFAULT_ACCOUNT });
+    s.beginLaunch({ taskId: 'f2', origin: 'owner', ownerWorkspaceId: 'ws', accountId: 'a', callerAccount: 'x' });
+    expect(s.launchOf('f1')).toMatchObject({ callerAccount: POOL_DEFAULT_ACCOUNT });
+    expect(s.launchOf('f1')).not.toHaveProperty('accountId');
+    expect(s.launchOf('f2')).not.toHaveProperty('callerAccount');
+    expect(Object.fromEntries(openWorkersByAccount(s, () => true))).toEqual({ [POOL_DEFAULT_ACCOUNT]: 1, a: 1 });
+    expect(openWorkersOn(POOL_DEFAULT_ACCOUNT, { slots: s, workerMayRun: () => true })).toBe(1);
+    // Its pane's create takes no pool account from it.
+    const g = s.launchOf('f1')!.gen;
+    expect(poolAccountForCreate({ fanoutTaskOf: 'ws', fanoutLaunch: { taskId: 'f1', gen: g }, initialCommand: 'claude' }, (id) => s.launchOf(id))).toEqual({ kind: 'none' });
   });
 });

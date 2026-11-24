@@ -662,6 +662,7 @@ const electronAPI = {
     setSecretGuardEnabled: (enabled: boolean) => ipcRenderer.send(IPC.SECRET_GUARD_ENABLED, enabled),
     // #1103 — null clears the choice (back to wsl.exe's system default).
     setDefaultWslDistro: (distro: string | null) => ipcRenderer.send(IPC.SETTINGS_DEFAULT_WSL_DISTRO, distro),
+    setDefaultShell: (shell: string | null) => ipcRenderer.send(IPC.SETTINGS_DEFAULT_SHELL, shell),
   },
   // Windows "start on login" toggle (issue #460). Backed by the per-user Run
   // registry key. `get`/`set` resolve to the live state; off-Windows both

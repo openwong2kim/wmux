@@ -85,6 +85,7 @@ import { toastManager } from '../pipe/handlers/notify.rpc';
 import { markRendererNotificationListenerReady } from '../notification/rendererNotificationReadiness';
 import { setMutedNotificationCategories } from '../notification/mutedCategories';
 import { setDefaultWslDistro, enumerateWslDistros } from '../pty/defaultWslDistro';
+import { setDefaultShellMirror } from '../pty/defaultShellMirror';
 import { setSecretGuardEnabled } from '../git/secretGuardSetting';
 import { updateUnreadBadge } from '../tray';
 import { eventBus } from '../events/EventBus';
@@ -352,6 +353,14 @@ export function registerAllHandlers(
   };
   ipcMain.removeAllListeners(IPC.SETTINGS_DEFAULT_WSL_DISTRO);
   ipcMain.on(IPC.SETTINGS_DEFAULT_WSL_DISTRO, onDefaultWslDistro);
+
+  // The renderer's default shell, for the fan-out account pool's prediction
+  // of where a task pane runs (pty/defaultShellMirror.ts). Never spawned from.
+  const onDefaultShell = (_event: Electron.IpcMainEvent, shell: unknown): void => {
+    setDefaultShellMirror(shell);
+  };
+  ipcMain.removeAllListeners(IPC.SETTINGS_DEFAULT_SHELL);
+  ipcMain.on(IPC.SETTINGS_DEFAULT_SHELL, onDefaultShell);
 
   // Mirror the secret guard switch; anything but an explicit false keeps it on.
   ipcMain.removeAllListeners(IPC.SECRET_GUARD_ENABLED);
@@ -683,6 +692,7 @@ export function registerAllHandlers(
     ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
     ipcMain.removeAllListeners(IPC.MUTED_NOTIFICATION_CATEGORIES);
     ipcMain.removeAllListeners(IPC.SETTINGS_DEFAULT_WSL_DISTRO);
+    ipcMain.removeAllListeners(IPC.SETTINGS_DEFAULT_SHELL);
     ipcMain.removeAllListeners(IPC.SECRET_GUARD_ENABLED);
     ipcMain.removeAllListeners(IPC.WINDOW_HIDE);
     ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);

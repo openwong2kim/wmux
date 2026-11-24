@@ -92,6 +92,42 @@ describe('wslAccountState', () => {
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('learns the start place again after a restart only from a plain pane still running as the same process', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-plain-'));
+    try {
+      const file = path.join(dir, 'wsl-default-places.json');
+      let now = 1;
+      const before = new WslAccountState(() => now, file);
+      before.notePlainPane('s-old', { pid: 10, pidCreatedAtFt: 'ft-10' }, null);
+      now = 2;
+      before.notePlainPane('s-live', { pid: 11, pidCreatedAtFt: 'ft-11' }, null);
+      before.notePlainPane('s-respawned', { pid: 12 }, null);
+      before.notePlainPane('s-placeholder', { pid: 13, pidCreatedAtFt: 'ft-13' }, 'Debian');
+      before.notePlainPane('s-recycled', { pid: 14, pidCreatedAtFt: 'ft-14' }, 'Alpine');
+      before.notePlainPane('s-gone', { pid: 15 }, null);
+      const after = new WslAccountState(() => 3, file);
+      expect(after.hasUnlearnedPlainPanes()).toBe(true);
+      after.learnFromLiveSessions([
+        // A respawn (another process), a daemon restart's placeholder (old pid and target, 'suspended'),
+        // and a pid now held by another process: none says where the distro starts now.
+        { id: 's-respawned', pid: 99, state: 'attached', wslTarget: { distribution: 'Ubuntu', user: 'root' } },
+        { id: 's-placeholder', pid: 13, pidCreatedAtFt: 'ft-13', state: 'suspended', wslTarget: { distribution: 'Debian', user: 'root' } },
+        { id: 's-recycled', pid: 14, pidCreatedAtFt: 'ft-other', state: 'detached', wslTarget: { distribution: 'Alpine', user: 'root' } },
+        // Two live reattaches for the unnamed default: the newer one wins.
+        { id: 's-live', pid: 11, pidCreatedAtFt: 'ft-11', state: 'detached', wslTarget: PLACE },
+        { id: 's-old', pid: 10, pidCreatedAtFt: 'ft-10', state: 'attached', wslTarget: { distribution: 'Ubuntu', user: 'old' } },
+      ]);
+      expect(after.defaultPlace('Debian')).toBeUndefined();
+      expect(after.defaultPlace('Alpine')).toBeUndefined();
+      expect(after.defaultPlace(null)).toEqual(PLACE);
+      // Nothing left to learn: no further daemon read is needed.
+      expect(after.hasUnlearnedPlainPanes()).toBe(false);
+      // Only the live ones stay in the file; the unnamed default's place itself is never written.
+      expect(Object.keys(JSON.parse(fs.readFileSync(path.join(dir, 'wsl-plain-panes.json'), 'utf8'))).sort()).toEqual(['s-live', 's-old']);
+      expect(fs.existsSync(file) ? Object.keys(JSON.parse(fs.readFileSync(file, 'utf8'))) : []).toEqual([]);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('a one-window plan is mirrored to the trail and seeded back without the window it does not have', () => {
     const trail = new UsageTrail();
     const key = wslStateKey('a', PLACE)!;

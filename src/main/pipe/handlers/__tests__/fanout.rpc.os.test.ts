@@ -20,7 +20,7 @@
 // and a denial must be reported instead of going quiet.
 
 import { DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, pickPoolAccount, type FanoutAccountPoolSettings } from '../../../../shared/fanoutAccountPool';
-import { poolCreateReserveRefusal, resetFanoutAccountPoolForTests, setFanoutAccountPoolHost, type PreparedPool } from '../../../worktask/fanoutAccountPool';
+import { poolCreateReserveRefusal, type PreparedPool } from '../../../worktask/fanoutAccountPool';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
@@ -54,7 +54,10 @@ import type { DaemonClient } from '../../../DaemonClient';
 import type { ImportGit } from '../../../worktask/bundleImport';
 import { validateFanoutTaskGraph } from '../../../../shared/fanoutTaskGraph';
 import { trackedTempDir } from '../../../../test-utils/trackedTempDir';
-import { wslStateKey } from '../../../account/wslAccountState';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
+import { WslAccountState, wslStateKey } from '../../../account/wslAccountState';
+import { pickFromPool as realPickFromPool, resetFanoutAccountPoolForTests, setFanoutAccountPoolHost } from '../../../worktask/fanoutAccountPool';
+import { WORKER_SLOTS_FILENAME, WorkerSlots } from '../../../factory/workerSlots';
 
 // A fan-out run is detached: the handler appends to its guards' audit file
 // (making the dir again if it is gone) once the service's start settles, which
@@ -141,6 +144,17 @@ function setup(opts?: {
     /** Where a plain pane in a distro starts, and the accounts with a home there. */
     wsl?: { place?: { distribution: string; user: string }; members: string[] };
   };
+  /** The real pool picker over a prepared pool, WSL homes and a pane shell. */
+  realPool?: {
+    pool: PreparedPool;
+    wslState: WslAccountState;
+    slots: WorkerSlots;
+    holdFor: (account: string) => { account: string; untilMs: number } | null;
+    paneShell: { wsl: boolean; distro: string | null } | (() => { wsl: boolean; distro: string | null });
+    place?: { distribution: string; user: string };
+    /** The start places come from this store (and its restart learning) instead of `place`. */
+    starts?: WslAccountState;
+  };
   ownerWorkspaceId?: string;
   cwd?: string | null;
   approval?: ApprovalStub;
@@ -165,6 +179,8 @@ function setup(opts?: {
   platform?: NodeJS.Platform;
   /** What daemon.listSessions answers. Omitted = no daemon client at all. */
   daemonSessions?: unknown[];
+  /** How long the daemon takes to answer (a slow daemon). */
+  daemonDelayMs?: number;
   /** The fan-out worker permission mode Settings holds, read at each use.
    *  Defaults to auto. */
   workerMode?: () => 'auto' | 'acceptEdits' | 'bypassPermissions' | 'manual';
@@ -291,7 +307,10 @@ function setup(opts?: {
       countLiveTasks: () => 0,
       ledgerTaskOwner: () => null,
     });
-  const daemonRpc = vi.fn(async () => opts?.daemonSessions);
+  const daemonRpc = vi.fn(async () => {
+    if (opts?.daemonDelayMs) await deliberateSleep(opts.daemonDelayMs, 'latency inside the daemon stub: a slow daemon');
+    return opts?.daemonSessions;
+  });
   registerFanOutRpc(router, service, () => null, {
     guards,
     workerPermissionMode: opts?.workerMode ?? (() => 'auto'),
@@ -319,6 +338,21 @@ function setup(opts?: {
         return pickPoolAccount(ids.map((id) => ({ id, verdict: { usable: true, remaining: null, availableAtMs: null }, heldUntilMs: opts.pool!.holdFor(key(id))?.untilMs ?? null, open: 0 })), pool.settings);
       },
       wslDefaultPlace: () => opts.pool!.wsl?.place,
+    } : {}),
+    ...(opts?.realPool ? {
+      preparePool: async () => opts.realPool!.pool,
+      usageReserveHoldForAccount: opts.realPool.holdFor,
+      noteUsageReserveHeld: () => undefined,
+      pickFromPool: (pool: PreparedPool, d?: Parameters<typeof realPickFromPool>[1]) => realPickFromPool(pool, {
+        ...d, host: null, slots: opts.realPool!.slots, holdFor: opts.realPool!.holdFor, workerMayRun: () => true, dirOk: () => true, wslState: opts.realPool!.wslState,
+      }),
+      wslState: opts.realPool.wslState,
+      taskPaneShell: () => { const p = opts.realPool!.paneShell; return typeof p === 'function' ? p() : p; },
+      wslDefaultPlace: (d: string | null) => (opts.realPool!.starts ? opts.realPool!.starts.defaultPlace(d) : opts.realPool!.place),
+      ...(opts.realPool.starts ? {
+        learnWslStartPlaces: (s: unknown[]) => opts.realPool!.starts!.learnFromLiveSessions(s as Array<Record<string, unknown>>),
+        wslStartPlacesPending: () => opts.realPool!.starts!.hasUnlearnedPlainPanes(),
+      } : {}),
     } : {}),
     ...(opts?.remoteFanout ? { remoteFanout: opts.remoteFanout } : {}),
     ...(opts?.resolveCallerPane ? { resolveCallerPane: opts.resolveCallerPane } : {}),
@@ -1676,6 +1710,36 @@ describe('task.fanout.start — usage reserve with the account pool', () => {
     expect(req.mayLaunch?.({ index: 1, accountId: 'acc-a', taskId: 'wtask-w2' })).toBeNull();
   });
 
+  it('a WSL-share task with a known place picks a home there, and is held on that home\'s key', async () => {
+    const untilMs = Date.now() + 60 * 60_000;
+    const place = { distribution: 'Ubuntu', user: 'me' };
+    const held = new Set<string>();
+    const h = setup({
+      pool: { members: ['acc-a'], holdFor: (k) => (held.has(k) ? { account: k, untilMs } : null), wsl: { place, members: ['acc-b'] } },
+      approval: { approved: true, outcome: 'approved' },
+    });
+    expect((await h.call(goodParams())).status).toBe('accepted');
+    await h.flush();
+    await h.flush();
+    const req = h.request();
+    const share = '\\\\wsl.localhost\\Ubuntu\\home\\me\\wt';
+    expect(req.accountPick?.pick({ index: 0, cwd: share })).toEqual({ accountId: 'acc-b', wslPlace: place });
+    expect(req.mayLaunch?.({ index: 0, accountId: 'acc-b', wslPlace: place })).toBeNull();
+    // Its Windows folder's hold says nothing about the home; the home's does.
+    held.add('acc-b');
+    expect(req.mayLaunch?.({ index: 0, accountId: 'acc-b', wslPlace: place })).toBeNull();
+    held.add(wslStateKey('acc-b', place)!);
+    expect(req.mayLaunch?.({ index: 0, accountId: 'acc-b', wslPlace: place })).toMatch(/^usage reserve: /);
+  });
+
+  it('a WSL-share task with no home known there runs on the caller\'s account, as before', async () => {
+    const h = setup({ pool: { members: ['acc-a'], holdFor: () => null, wsl: { place: { distribution: 'Ubuntu', user: 'me' }, members: [] } }, approval: { approved: true, outcome: 'approved' } });
+    expect((await h.call(goodParams())).status).toBe('accepted');
+    await h.flush();
+    await h.flush();
+    expect(h.request().accountPick?.pick({ index: 0, cwd: '\\\\wsl.localhost\\Ubuntu\\home\\me\\wt' })).toBeNull();
+  });
+
   it('a pool no account of which can run a worker sends it to the caller\'s account, checked on its reserve', async () => {
     const untilMs = Date.now() + 60 * 60_000;
     let callerHeld = false;
@@ -1705,6 +1769,166 @@ describe('task.fanout.start — usage reserve with the account pool', () => {
     expect(errorOf(await held.call(goodParams())).code).toBe('RESOURCE_EXHAUSTED');
   });
 
+  describe('(acceptance) task panes that start WSL through the default shell', () => {
+    const UBUNTU = { distribution: 'Ubuntu', user: 'me' };
+    const reset = Math.floor(Date.now() / 1000) + 3600;
+    // Signed in only inside the distro: no Windows member at all.
+    const pool: PreparedPool = { settings: { ...DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, enabled: true }, group: '', members: [], wslMembers: [{ id: 'acc-a', configDir: trackedTempDir('wmux-acc-a-') }, { id: 'acc-b', configDir: trackedTempDir('wmux-acc-b-') }] };
+    async function run(over: { spent?: string[]; held?: string[] } = {}) {
+      const wslState = new WslAccountState();
+      for (const id of ['acc-a', 'acc-b']) wslState.noteSample(id, UBUNTU, { session: { pct: over.spent?.includes(id) ? 100 : 10, resetEpochSec: reset } });
+      const heldKeys = new Set((over.held ?? []).map((id) => wslStateKey(id, UBUNTU)!));
+      const slots = new WorkerSlots(nodePath.join(trackedTempDir('wmux-acc-'), 'factory', WORKER_SLOTS_FILENAME), () => [], () => undefined);
+      slots.load();
+      const untilMs = Date.now() + 60 * 60_000;
+      const h = setup({
+        reserve: () => null,
+        realPool: { pool, wslState, slots, holdFor: (k) => (heldKeys.has(k) ? { account: k, untilMs } : null), paneShell: { wsl: true, distro: 'Ubuntu' }, place: UBUNTU },
+        approval: { approved: true, outcome: 'approved' },
+      });
+      expect((await h.call(goodParams({ titles: ['t1', 't2', 't3', 't4'] }))).status).toBe('accepted');
+      await h.flush();
+      await h.flush();
+      const req = h.request();
+      const picks: unknown[] = [];
+      for (let i = 0; i < 4; i++) {
+        // A worktree on C:\ that the WSL default shell opens.
+        const p = req.accountPick?.pick({ index: i, cwd: `C:\\wmux\\worktrees\\t${i}` }) ?? null;
+        picks.push(p);
+        if (p && 'accountId' in p) slots.beginLaunch({ taskId: `wt-${i}`, origin: 'owner', ownerWorkspaceId: 'ws', accountId: p.accountId, wslPlace: p.wslPlace ?? null });
+      }
+      return picks;
+    }
+
+    it('spreads 4 tasks over the 2 homes, with the Windows side signed out', async () => {
+      const picks = await run();
+      expect(picks.map((p) => (p as { accountId: string }).accountId)).toEqual(['acc-a', 'acc-b', 'acc-a', 'acc-b']);
+      expect(picks.every((p) => (p as { wslPlace?: unknown }).wslPlace !== undefined)).toBe(true);
+    });
+
+    it('skips a spent home and a reserve-held one; with neither usable it runs on the caller\'s account', async () => {
+      expect((await run({ spent: ['acc-a'] })).map((p) => (p as { accountId: string }).accountId)).toEqual(['acc-b', 'acc-b', 'acc-b', 'acc-b']);
+      expect((await run({ held: ['acc-b'] })).map((p) => (p as { accountId: string }).accountId)).toEqual(['acc-a', 'acc-a', 'acc-a', 'acc-a']);
+      expect(await run({ spent: ['acc-a', 'acc-b'] })).toEqual([null, null, null, null]);
+    });
+
+    it('after a restart, a plain pane that survived by reattach gives the default distro\'s start place, with no new pane', async () => {
+      const dir = trackedTempDir('wmux-wsl-restart-');
+      const placesFile = nodePath.join(dir, 'wsl-default-places.json');
+      // Before: a plain pane in the unnamed default distro started as 'me' (process 4242).
+      const before = new WslAccountState(() => 0, placesFile);
+      before.noteDefaultPlace(null, UBUNTU);
+      before.notePlainPane('daemon-plain', { pid: 4242, pidCreatedAtFt: 'ft-4242' }, null);
+      // After the restart nothing is known of the unnamed default's start place.
+      const starts = new WslAccountState(() => 0, placesFile);
+      expect(starts.defaultPlace(null)).toBeUndefined();
+      const wslState = new WslAccountState();
+      for (const id of ['acc-a', 'acc-b']) wslState.noteSample(id, UBUNTU, { session: { pct: 10, resetEpochSec: reset } });
+      const slots = new WorkerSlots(nodePath.join(trackedTempDir('wmux-acc-'), 'factory', WORKER_SLOTS_FILENAME), () => [], () => undefined);
+      slots.load();
+      const h = setup({
+        // The caller's own account is held: the homes decide, learned before the reserve check.
+        reserve: () => ({ account: 'default', untilMs: Date.now() + 60 * 60_000 }),
+        daemonSessions: [{ id: 'daemon-plain', pid: 4242, pidCreatedAtFt: 'ft-4242', state: 'detached', cmd: 'wsl.exe', wslTarget: UBUNTU }],
+        realPool: { pool, wslState, slots, holdFor: () => null, paneShell: { wsl: true, distro: null }, starts },
+        approval: { approved: true, outcome: 'approved' },
+      });
+      expect((await h.call(goodParams({ titles: ['t1', 't2'] }))).status).toBe('accepted');
+      await h.flush();
+      await h.flush();
+      expect(starts.defaultPlace(null)).toEqual(UBUNTU);
+      const req = h.request();
+      const picks = [0, 1].map((i) => {
+        const p = req.accountPick?.pick({ index: i, cwd: `C:\\wmux\\worktrees\\t${i}` }) ?? null;
+        if (p && 'accountId' in p) slots.beginLaunch({ taskId: `rt-${i}`, origin: 'owner', ownerWorkspaceId: 'ws', accountId: p.accountId, wslPlace: p.wslPlace ?? null });
+        return p;
+      });
+      expect(picks).toEqual([{ accountId: 'acc-a', wslPlace: UBUNTU }, { accountId: 'acc-b', wslPlace: UBUNTU }]);
+      expect(req.mayLaunch?.({ index: 0, accountId: 'acc-a', wslPlace: UBUNTU })).toBeNull();
+    });
+
+    async function restartRig(over: { shell: () => { wsl: boolean; distro: string | null }; daemonDelayMs?: number }) {
+      const dir = trackedTempDir('wmux-wsl-restart-');
+      const placesFile = nodePath.join(dir, 'wsl-default-places.json');
+      new WslAccountState(() => 0, placesFile).notePlainPane('daemon-plain', { pid: 4242, pidCreatedAtFt: 'ft-4242' }, null);
+      const starts = new WslAccountState(() => 0, placesFile);
+      const wslState = new WslAccountState();
+      for (const id of ['acc-a', 'acc-b']) wslState.noteSample(id, UBUNTU, { session: { pct: 10, resetEpochSec: reset } });
+      const slots = new WorkerSlots(nodePath.join(trackedTempDir('wmux-acc-'), 'factory', WORKER_SLOTS_FILENAME), () => [], () => undefined);
+      slots.load();
+      const h = setup({
+        // The caller's own account is held: only a learned place lets it through.
+        reserve: () => ({ account: 'default', untilMs: Date.now() + 60 * 60_000 }),
+        daemonSessions: [{ id: 'daemon-plain', pid: 4242, pidCreatedAtFt: 'ft-4242', state: 'detached', cmd: 'wsl.exe', wslTarget: UBUNTU }],
+        ...(over.daemonDelayMs ? { daemonDelayMs: over.daemonDelayMs } : {}),
+        realPool: { pool, wslState, slots, holdFor: () => null, paneShell: over.shell, starts },
+        approval: { approved: true, outcome: 'approved' },
+      });
+      return { h, starts };
+    }
+
+    it('learns after a restart even before the WSL default shell is pushed, so a later push still picks homes', async () => {
+      let shell = { wsl: false, distro: null as string | null };
+      const { h, starts } = await restartRig({ shell: () => shell });
+      // The push lands while the fan-out is under way, before its gate.
+      const started = h.call(goodParams());
+      shell = { wsl: true, distro: null };
+      expect((await started).status).toBe('accepted');
+      expect(starts.defaultPlace(null)).toEqual(UBUNTU);
+      await h.flush();
+      await h.flush();
+      expect(h.request().accountPick?.pick({ index: 0, cwd: 'C:\\wmux\\worktrees\\t0' })).toEqual({ accountId: 'acc-a', wslPlace: UBUNTU });
+    });
+
+    it('waits once more for a slow daemon, so the reserve check sees the learned place', async () => {
+      const { h, starts } = await restartRig({ shell: () => ({ wsl: true, distro: null }), daemonDelayMs: 2_500 });
+      expect((await h.call(goodParams())).status).toBe('accepted');
+      expect(starts.defaultPlace(null)).toEqual(UBUNTU);
+    }, 15_000);
+
+    it('reads the default shell at each pick, so one pushed after the fan-out began counts', async () => {
+      const wslState = new WslAccountState();
+      wslState.noteSample('acc-a', UBUNTU, { session: { pct: 10, resetEpochSec: reset } });
+      const slots = new WorkerSlots(nodePath.join(trackedTempDir('wmux-acc-'), 'factory', WORKER_SLOTS_FILENAME), () => [], () => undefined);
+      slots.load();
+      let shell = { wsl: false, distro: 'Ubuntu' as string | null };
+      const h = setup({ reserve: () => null, realPool: { pool: { ...pool, members: [{ id: 'acc-a', configDir: pool.wslMembers![0].configDir }] }, wslState, slots, holdFor: () => null, paneShell: () => shell, place: UBUNTU }, approval: { approved: true, outcome: 'approved' } });
+      expect((await h.call(goodParams())).status).toBe('accepted');
+      await h.flush();
+      await h.flush();
+      shell = { wsl: true, distro: 'Ubuntu' };
+      expect(h.request().accountPick?.pick({ index: 0, cwd: 'C:\\wmux\\worktrees\\t0' })).toEqual({ accountId: 'acc-a', wslPlace: UBUNTU });
+    });
+
+    it('a WSL pane whose user there is not known runs on the caller\'s account', async () => {
+      const wslState = new WslAccountState();
+      wslState.noteSample('acc-a', UBUNTU, { session: { pct: 10, resetEpochSec: reset } });
+      const slots = new WorkerSlots(nodePath.join(trackedTempDir('wmux-acc-'), 'factory', WORKER_SLOTS_FILENAME), () => [], () => undefined);
+      slots.load();
+      const h = setup({ reserve: () => null, realPool: { pool, wslState, slots, holdFor: () => null, paneShell: { wsl: true, distro: 'Ubuntu' } }, approval: { approved: true, outcome: 'approved' } });
+      expect((await h.call(goodParams())).status).toBe('accepted');
+      await h.flush();
+      await h.flush();
+      expect(h.request().accountPick?.pick({ index: 0, cwd: 'C:\\wmux\\worktrees\\t0' })).toBeNull();
+    });
+
+    it('is decided up front on the homes there, not on the caller\'s account', async () => {
+      const untilMs = Date.now() + 60 * 60_000;
+      const wslState = new WslAccountState();
+      for (const id of ['acc-a', 'acc-b']) wslState.noteSample(id, UBUNTU, { session: { pct: 10, resetEpochSec: reset } });
+      const slots = new WorkerSlots(nodePath.join(trackedTempDir('wmux-acc-'), 'factory', WORKER_SLOTS_FILENAME), () => [], () => undefined);
+      slots.load();
+      const both = new Set(['acc-a', 'acc-b'].map((id) => wslStateKey(id, UBUNTU)!));
+      const base = { pool, wslState, slots, paneShell: { wsl: true, distro: 'Ubuntu' }, place: UBUNTU };
+      // The caller's account is held, the homes are free: it goes ahead.
+      const free = setup({ reserve: () => ({ account: 'default', untilMs }), realPool: { ...base, holdFor: () => null }, approval: { approved: true, outcome: 'approved' } });
+      expect((await free.call(goodParams())).status).toBe('accepted');
+      // Every home there is held: refused.
+      const held = setup({ reserve: () => null, realPool: { ...base, holdFor: (k) => (both.has(k) ? { account: k, untilMs } : null) } });
+      expect(errorOf(await held.call(goodParams())).code).toBe('RESOURCE_EXHAUSTED');
+    });
+  });
+
   it('a fallback onto the caller\'s account still keeps the per-account worker limit', async () => {
     let open = 0;
     // No limit set: behaviour is unchanged.
@@ -1724,36 +1948,6 @@ describe('task.fanout.start — usage reserve with the account pool', () => {
     expect(lr.accountPick?.pick({ index: 1, cwd: 'C:\\work\\wt2' })).toEqual({ refusal: expect.stringMatching(/already runs its most workers/) });
     open = 0;
     expect(lr.accountPick?.pick({ index: 1, cwd: 'C:\\work\\wt2' })).toEqual({ callerAccount: 'default' });
-  });
-
-  it('a WSL-share task with a known place picks a home there, and is held on that home\'s key', async () => {
-    const untilMs = Date.now() + 60 * 60_000;
-    const place = { distribution: 'Ubuntu', user: 'me' };
-    const held = new Set<string>();
-    const h = setup({
-      pool: { members: ['acc-a'], holdFor: (k) => (held.has(k) ? { account: k, untilMs } : null), wsl: { place, members: ['acc-b'] } },
-      approval: { approved: true, outcome: 'approved' },
-    });
-    expect((await h.call(goodParams())).status).toBe('accepted');
-    await h.flush();
-    await h.flush();
-    const req = h.request();
-    const share = '\\\\wsl.localhost\\Ubuntu\\home\\me\\wt';
-    expect(req.accountPick?.pick({ index: 0, cwd: share })).toEqual({ accountId: 'acc-b', wslPlace: place });
-    expect(req.mayLaunch?.({ index: 0, accountId: 'acc-b', wslPlace: place })).toBeNull();
-    // Its Windows folder's hold says nothing about the home; the home's does.
-    held.add('acc-b');
-    expect(req.mayLaunch?.({ index: 0, accountId: 'acc-b', wslPlace: place })).toBeNull();
-    held.add(wslStateKey('acc-b', place)!);
-    expect(req.mayLaunch?.({ index: 0, accountId: 'acc-b', wslPlace: place })).toMatch(/^usage reserve: /);
-  });
-
-  it('a WSL-share task with no home known there runs on the caller\'s account, as before', async () => {
-    const h = setup({ pool: { members: ['acc-a'], holdFor: () => null, wsl: { place: { distribution: 'Ubuntu', user: 'me' }, members: [] } }, approval: { approved: true, outcome: 'approved' } });
-    expect((await h.call(goodParams())).status).toBe('accepted');
-    await h.flush();
-    await h.flush();
-    expect(h.request().accountPick?.pick({ index: 0, cwd: '\\\\wsl.localhost\\Ubuntu\\home\\me\\wt' })).toBeNull();
   });
 
   it('a failed pool read is asked again, not kept as fresh', async () => {

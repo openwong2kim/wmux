@@ -1578,9 +1578,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   defaultShell: 'powershell',
 
-  setDefaultShell: (shell) => set((state) => {
-    state.defaultShell = shell;
-  }),
+  setDefaultShell: (shell) => {
+    set((state) => {
+      state.defaultShell = shell;
+    });
+    // Mirrored to main for its fan-out task pane prediction (pty/defaultShellMirror.ts).
+    if (typeof window !== 'undefined') window.electronAPI?.settings?.setDefaultShell?.(shell);
+  },
 
   /**
    * #1103 — which WSL distro `wsl.exe -d <name>` boots when the default

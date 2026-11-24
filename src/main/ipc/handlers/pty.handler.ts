@@ -1307,6 +1307,8 @@ export function registerPTYHandlers(
         const createdTarget = (result as { wslTarget?: unknown })?.wslTarget;
         if (isWslShell(shell) && !wslFromTarget && !trustedRecovery && !poolTarget && validWslTarget(createdTarget)) {
           getWslAccountState().noteDefaultPlace(requestedDistro, createdTarget);
+          // Kept so a restart can learn the place again from this same process.
+          getWslAccountState().notePlainPane(sessionId, result as Record<string, unknown> | undefined, requestedDistro);
         }
         const createdCwd = (result as { cwd?: string })?.cwd;
         if (isWslShell(shell) && createdCwd) effectiveCwd = createdCwd;

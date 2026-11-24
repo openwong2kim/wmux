@@ -63,6 +63,9 @@ import { macKeychainServiceName } from '../claude/claudeCredential';
 import { usageReserveHoldForAccount } from '../usage/usageReserve';
 import { getWorkerSlots, paneTaskPooled, parseLaunchToken, type WorkerSlots } from '../factory/workerSlots';
 import { getWslAccountState, wslStateKey, type WslAccountState, type WslPlace } from '../account/wslAccountState';
+import { isWslShellPath } from '../../shared/wslDistro';
+import { getDefaultShellMirror } from '../pty/defaultShellMirror';
+import { getDefaultWslDistro } from '../pty/defaultWslDistro';
 import { liveHolders } from '../factory/workerHolders';
 
 /** What the running app hands the pool (index.ts): none of it is read while the pool is off. */
@@ -435,7 +438,10 @@ export function pickFromPool(pool: PreparedPool, deps: PickDeps = {}): PoolPick 
  * workers at all (none eligible, such as accounts signed in only inside
  * WSL). Every account out of quota still refuses with its reset (the
  * caller's may be one of them), and a limit the owner set (the usage
- * reserve's holds, the per-account worker limit) still stops it.
+ * reserve's holds, the per-account worker limit) still stops it. A WSL
+ * task pane's pick over its homes is the exception: with no usable home
+ * there it runs on the caller's account, as WSL panes did before the pool
+ * took them in (fanout.rpc.ts accountPick).
  */
 export function poolFallsBackToCaller(pick: PoolPick): boolean {
   return pick.kind === 'none' && pick.reason === 'empty';
@@ -527,7 +533,7 @@ export function poolRelaunchRefusal(accountId: string, deps: PickDeps & { accoun
  */
 export function poolReserveHeldForWorkspace(
   workspaceId: string,
-  deps: PickDeps & { poolOn?: () => boolean; refresh?: (workspaceId: string) => void } = {},
+  deps: PickDeps & { poolOn?: () => boolean; refresh?: (workspaceId: string) => void; paneShell?: () => { wsl: boolean; distro: string | null }; defaultPlace?: (distro: string | null) => WslPlace | undefined } = {},
 ): boolean | undefined {
   const h = deps.host === undefined ? host : deps.host;
   const poolOn = deps.poolOn ?? (() => !!h && h.daemonConnected() && loadFanoutAccountPoolSettings().enabled);
@@ -538,8 +544,16 @@ export function poolReserveHeldForWorkspace(
     (deps.refresh ?? refreshPoolInBackground)(workspaceId);
     if (!entry) return true;
   }
-  // Its tasks run in Windows folders (worktrees, research folders): the same
-  // native pick as at their launch.
+  // Its tasks run in Windows folders (worktrees, research folders); their
+  // panes start WSL with a WSL default shell. The same pick as at their
+  // launch: over the homes at that place, else (no usable home, or no place
+  // known) the workspace's own account decides.
+  const shell = (deps.paneShell ?? defaultTaskPaneShell)();
+  if (shell.wsl) {
+    const place = (deps.defaultPlace ?? ((d: string | null) => getWslAccountState().defaultPlace(d)))(shell.distro);
+    if (!place || !poolCandidates(entry.pool, { ...deps, place }).some((c) => c.verdict.usable)) return undefined;
+    return poolHeldInPlace(entry.pool, place, deps) !== null;
+  }
   const pick = pickPoolAccount(poolCandidates(entry.pool, deps), entry.pool.settings);
   // No pool account can run it: its workers run on the workspace's own
   // account, which the caller checks (as with the pool off).
@@ -561,6 +575,13 @@ function wslRelaunchCandidate(accountId: string, configDir: string, place: WslPl
     heldUntilMs: (deps.holdFor ?? usageReserveHoldForAccount)(key)?.untilMs ?? null,
     open: open.get(accountId) ?? 0,
   };
+}
+
+/** Whether a task pane with no shell of its own starts WSL (the Settings
+ *  default shell, mirrored to main), and the distro it asks for. A
+ *  prediction: the pane's create checks the shell it really got. */
+export function defaultTaskPaneShell(platform: NodeJS.Platform = process.platform): { wsl: boolean; distro: string | null } {
+  return { wsl: platform === 'win32' && isWslShellPath(getDefaultShellMirror() ?? undefined), distro: getDefaultWslDistro() };
 }
 
 function refreshPoolInBackground(workspaceId: string): void {
