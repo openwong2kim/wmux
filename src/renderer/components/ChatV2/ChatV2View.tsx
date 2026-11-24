@@ -401,8 +401,8 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
             skills={() => controller.skills()}
             onSend={async (text, staged) => {
               toLatest();
-              // Behind a running turn, an agent still starting, or what is already queued, so the order holds.
-              if (running || queue.length || binding.status === 'starting') { enqueueMessage(draftKey, { id: clientMessageId(), text, staged }); return true; }
+              // Behind a running turn, an agent still starting, a model change, or what is already queued, so the order holds.
+              if (running || queue.length || binding.status === 'starting' || configuring) { enqueueMessage(draftKey, { id: clientMessageId(), text, staged }); return true; }
               return controller.send(text, staged.map((item) => item.path));
             }}
             onStop={() => void controller.interrupt()}

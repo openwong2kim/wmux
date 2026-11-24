@@ -716,24 +716,26 @@ class Host implements ChatV2Host {
       const driver = live.driver;
       let applied: 'live' | 'restarted' | 'saved' = 'saved';
       if (driver) {
-        let took = false;
+        let outcome: 'live' | 'restart' | 'refused' = 'restart';
         try {
-          took = (await driver.configure?.({ model, effort })) === true;
+          outcome = (await driver.configure?.({ model, effort })) ?? 'restart';
         } catch (error) {
           this.deps.log('warn', `[chatv2] ${record.paneId}: live model/effort change failed: ${String(error)}`);
         }
         if (live.closed || live.driver !== driver) return chatV2Error('driver-failed', 'The agent stopped.');
-        applied = took ? 'live' : 'restarted';
+        // The agent said no to these options: a restart with them would fail the same way.
+        if (outcome === 'refused') return chatV2Error('invalid-params', 'The agent does not take that model or effort.');
+        if (outcome === 'restart') {
+          // Same conversation, new options. The record keeps the old ones until the new start succeeded.
+          if (!(await this.stopDriver(live))) return chatV2Error('driver-failed', 'The agent did not stop, so the change waits for it.');
+          if (live.closed) return chatV2Error('session-not-found', 'The chat was closed.');
+          const started = await this.startDriver(live, { model, effort });
+          if (!started.ok) return started;
+        }
+        applied = outcome === 'live' ? 'live' : 'restarted';
       }
       record.model = model;
       this.stamp(live, { type: 'session.configChanged', model, modelSettings: { effort } });
-      if (applied === 'restarted') {
-        // Same conversation, new options: the next start resumes it.
-        if (!(await this.stopDriver(live))) return chatV2Error('driver-failed', 'The agent did not stop, so the change waits for it.');
-        if (live.closed) return chatV2Error('session-not-found', 'The chat was closed.');
-        const started = await this.startDriver(live);
-        if (!started.ok) return started;
-      }
       await this.persistNow(live);
       return { ok: true, binding: this.binding(live), applied };
     } finally {
@@ -1426,7 +1428,8 @@ class Host implements ChatV2Host {
   }
 
   /** Spawn the record's driver after re-checking the pane. A conversation with a turn resumes. */
-  private async startDriver(live: Live): Promise<{ ok: true } | { ok: false; error: ChatV2Error }> {
+  /** `options`: model and effort to start with instead of the record's (a `configure` not yet recorded). */
+  private async startDriver(live: Live, options?: { model: string; effort: string }): Promise<{ ok: true } | { ok: false; error: ChatV2Error }> {
     const { record } = live;
     const pane = this.deps.sessionManager.getSession(record.paneId);
     if (!pane) return chatV2Error('pane-not-found', 'That pane is gone.');
@@ -1477,8 +1480,8 @@ class Host implements ChatV2Host {
           cwd: record.session.cwd,
           env,
           mode: record.mode,
-          model: record.model,
-          effort: record.session.modelSettings.effort ?? '',
+          model: options?.model ?? record.model,
+          effort: options?.effort ?? record.session.modelSettings.effort ?? '',
           providerSession: { id: record.providerSessionId, mode: resume ? 'resume' : 'new' },
           chatSessionId: record.chatSessionId,
         }, {

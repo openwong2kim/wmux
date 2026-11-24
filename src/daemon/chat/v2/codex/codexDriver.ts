@@ -157,6 +157,7 @@ export class CodexDriver implements ChatV2Driver {
       exit: (info) => this.handleExit(info),
       stderr: (chunk) => { this.stderrTail = (this.stderrTail + chunk).slice(-STDERR_TAIL_BYTES); },
     });
+    let refusedEffort = false;
     try {
       if (this.stopping) throw new Error('Codex was stopped during startup.');
       const init = asRecord(await this.call('initialize', { clientInfo: { name: CODEX_CLIENT_NAME, title: 'wmux', version: '1.0.0' } }));
@@ -186,10 +187,17 @@ export class CodexDriver implements ChatV2Driver {
         throw new Error('This Codex conversation is still running somewhere else.');
       }
       this.threadId = threadId;
-      // Effort has no start option: the thread's settings carry it (what chat 1's settings use too).
-      if (spec.effort) await this.call('thread/settings/update', { threadId, effort: spec.effort });
       this.model = spec.model;
-      this.effort = spec.effort ?? '';
+      // Effort has no start option: the thread's settings carry it (what chat 1's settings use too).
+      // Best effort: a refused level leaves Codex on its own, and the chat still starts.
+      if (spec.effort) {
+        try {
+          await this.call('thread/settings/update', { threadId, effort: spec.effort });
+          this.effort = spec.effort;
+        } catch {
+          refusedEffort = true;
+        }
+      }
       this.initialized = true;
     } catch (error) {
       const exited = await this.stop().then(() => true, () => false);
@@ -200,6 +208,8 @@ export class CodexDriver implements ChatV2Driver {
     }
     this.emit({ type: 'session.providerBound', providerSessionId: this.threadId });
     this.emit({ type: 'session.started' });
+    // The chip must not claim a level Codex refused: it runs on its own default.
+    if (refusedEffort) this.emit({ type: 'session.configChanged', modelSettings: { effort: '' } });
   }
 
   async send(turn: ChatV2DriverTurn): Promise<void> {
@@ -241,11 +251,12 @@ export class CodexDriver implements ChatV2Driver {
   /**
    * Codex keeps model and effort on the thread (`thread/settings/update`,
    * the call chat 1's settings use), so a change applies from the next turn.
-   * Back to a default cannot be expressed there: false, and the host restarts.
+   * Back to a default cannot be expressed there: `restart`. A level or model
+   * Codex refuses is `refused`: a restart would not take it either.
    */
-  async configure(change: { model: string; effort: string }): Promise<boolean> {
-    if (!this.backend.alive || !this.initialized || this.stopping || this.activeTurn) return false;
-    if ((change.model !== this.model && !change.model) || (change.effort !== this.effort && !change.effort)) return false;
+  async configure(change: { model: string; effort: string }): Promise<'live' | 'restart' | 'refused'> {
+    if (!this.backend.alive || !this.initialized || this.stopping || this.activeTurn) return 'restart';
+    if ((change.model !== this.model && !change.model) || (change.effort !== this.effort && !change.effort)) return 'restart';
     try {
       await this.call('thread/settings/update', {
         threadId: this.threadId,
@@ -253,11 +264,11 @@ export class CodexDriver implements ChatV2Driver {
         ...(change.effort ? { effort: change.effort } : {}),
       });
     } catch {
-      return false;
+      return 'refused';
     }
     this.model = change.model;
     this.effort = change.effort;
-    return true;
+    return 'live';
   }
 
   async interrupt(): Promise<boolean> {

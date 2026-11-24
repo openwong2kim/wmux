@@ -31,7 +31,7 @@
 .wmux-chatv2-attachment-icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; color: var(--text-sub); flex-shrink: 0; }
 .wmux-chatv2-attachment-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmux-chatv2-attachment-remove { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; color: var(--text-sub); flex-shrink: 0; }
-.wmux-chatv2-attachment-remove:hover { background: var(--selection-hover); color: var(--text-main); }
+.wmux-chatv2-attachment-remove:hover { background: var(--selection-hover); --text-muted: var(--text-subtle); color: var(--text-main); }
 
 /* Actions: mic, ⋯, and one round primary that is Send, or Stop while a reply runs and nothing is typed. */
 .wmux-chatv2-composer-actions { display: flex; flex-shrink: 0; align-items: center; gap: 4px; }
@@ -39,7 +39,7 @@
 .wmux-chatv2-send:disabled { opacity: .3; cursor: not-allowed; }
 /* Stop stays neutral (DESIGN.md, Chat feedback): never amber, never red. */
 .wmux-chatv2-send[data-stop] { background: var(--selection); color: var(--text-main); }
-.wmux-chatv2-send[data-stop]:hover { background: var(--selection-hover); }
+.wmux-chatv2-send[data-stop]:hover { background: var(--selection-hover); --text-muted: var(--text-subtle); }
 .wmux-chatv2-more { position: relative; display: inline-flex; }
 .wmux-chatv2-more-menu { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; min-width: 220px; max-width: min(320px, 90vw); }
 .wmux-chatv2-more-cwd { padding: 4px 10px 6px; color: var(--text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

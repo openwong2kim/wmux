@@ -164,10 +164,11 @@ export interface ChatV2Driver {
   stop(): Promise<void>;
   /**
    * Apply a model and effort ('' = the agent's default) to the running agent
-   * between turns. True when the agent confirmed it; false (or absent) and the
+   * between turns. `live`: the agent confirmed it. `restart` (or absent): the
    * host restarts the agent on the same conversation with the new options.
+   * `refused`: the agent does not take them; nothing changes.
    */
-  configure?(change: { model: string; effort: string }): Promise<boolean>;
+  configure?(change: { model: string; effort: string }): Promise<'live' | 'restart' | 'refused'>;
 }
 
 export type ChatV2DriverFactory = (agent: HarnessId) => ChatV2Driver | null;

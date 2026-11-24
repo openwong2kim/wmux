@@ -24,7 +24,7 @@ let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatv2-host-codex-')); });
 afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
-function rig(options: { owners?: (call: number) => string[]; nativeOn?: boolean; commandLine?: string } = {}) {
+function rig(options: { owners?: (call: number) => string[]; nativeOn?: boolean; commandLine?: string; settingsUpdate?: 'ok' | 'refuse' } = {}) {
   let ownerCalls = 0;
   const killed: number[] = [];
   const clock = { now: 100_000 };
@@ -58,6 +58,7 @@ function rig(options: { owners?: (call: number) => string[]; nativeOn?: boolean;
     drivers: (agent) => {
       if (agent !== 'codex') return null;
       const fake = new FakeCodex();
+      fake.settingsUpdate = options.settingsUpdate ?? 'ok';
       fakes.push(fake);
       return new CodexDriver({ command: 'codex', backend: fake.backend() });
     },
@@ -81,6 +82,34 @@ function rig(options: { owners?: (call: number) => string[]; nativeOn?: boolean;
 }
 
 describe('chat v2 host: a Codex chat', () => {
+  it('changes effort on the thread between turns, and a refused level leaves the chat as it was and usable', async () => {
+    const r = rig();
+    const b = await r.create();
+    r.fake().settingsUpdate = 'refuse';
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: 'xhigh' }, 'main'))
+      .toMatchObject({ ok: false, error: { code: 'invalid-params' } });
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort).toBeUndefined();
+    expect(r.host.statusForPane(PANE)).toBe('idle');
+    expect(r.fakes).toHaveLength(1);
+    r.fake().settingsUpdate = 'ok';
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: 'high' }, 'main'))
+      .toMatchObject({ ok: true, applied: 'live' });
+    expect(r.fake().calls('thread/settings/update').at(-1)?.params).toMatchObject({ threadId: expect.any(String), effort: 'high' });
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort).toBe('high');
+    expect(await r.send()).toMatchObject({ ok: true });
+    await r.host.dispose();
+  });
+
+  it('starts anyway when Codex refuses the effort a new chat asked for', async () => {
+    const r = rig({ settingsUpdate: 'refuse' });
+    const res = await r.host.call('create', { paneId: PANE, agent: 'codex', mode: 'default', effort: 'xhigh' }, 'main');
+    expect(res).toMatchObject({ ok: true, binding: { status: 'idle' } });
+    expect(r.fake().calls('thread/settings/update')).toHaveLength(1);
+    await until(() => r.host.sessionForPane(PANE)?.modelSettings.effort === '');
+    expect(await r.send()).toMatchObject({ ok: true });
+    await r.host.dispose();
+  });
+
   it('records its decisions as chat-v2 Codex ones, and an answer approves only the card raised last', async () => {
     const r = rig();
     const b = await r.create();

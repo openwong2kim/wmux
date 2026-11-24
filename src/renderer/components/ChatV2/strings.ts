@@ -15,7 +15,6 @@ export const S = {
   effortDefault: 'Default effort',
   effortLevel: (level: string) => `${level} effort`,
   modelBusy: 'Changes once the agent is free.',
-  modelChanged: 'Applies from the next message.',
   commandModel: 'Change the model',
   commandEffort: 'Change the effort',
   commandsAndSkills: 'Commands and skills',

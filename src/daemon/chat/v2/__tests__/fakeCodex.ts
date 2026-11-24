@@ -24,6 +24,8 @@ export class FakeCodex {
    * JSON-RPC error.
    */
   turnStart: 'id' | 'hold' | 'noId' | 'refuse' = 'id';
+  /** How thread/settings/update (model, effort) is answered. */
+  settingsUpdate: 'ok' | 'refuse' = 'ok';
   /** A reply line this returns true for fails its write, 20 ms later. */
   failWrite: ((line: Record<string, unknown>) => boolean) | null = null;
   private heldTurnStart: Record<string, unknown> | null = null;
@@ -51,6 +53,9 @@ export class FakeCodex {
       if (this.turnStart === 'hold') this.heldTurnStart = line;
       else if (this.turnStart === 'refuse') this.out({ id: line.id, error: { code: -32600, message: 'bad input' } });
       else this.out({ id: line.id, result: { turn: this.turnStart === 'noId' ? { status: 'inProgress' } : { id: `turn-${this.turns}`, status: 'inProgress', items: [] } } });
+    } else if (line.method === 'thread/settings/update') {
+      if (this.settingsUpdate === 'refuse') this.out({ id: line.id, error: { code: -32600, message: 'unsupported effort' } });
+      else this.out({ id: line.id, result: {} });
     } else if (line.method === 'turn/interrupt') {
       this.out({ id: line.id, result: {} });
     }

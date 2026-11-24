@@ -96,6 +96,8 @@ const ANSWERABLE_REQUEST_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 const STDERR_TAIL_BYTES = 2_048;
 /** A control request other than initialize (a model or effort change) must answer within this long. */
 export const CLAUDE_CONTROL_TIMEOUT_MS = 10_000;
+/** Effort levels the flag-settings layer takes (`effortLevel`); `max` only as a start flag. */
+const LIVE_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
 
 type PendingDecision =
   | { kind: 'permission'; input: Record<string, unknown> }
@@ -309,24 +311,26 @@ export class ClaudeDriver implements ChatV2Driver {
    * Switch the running Claude between turns: `set_model` for the model and
    * the flag-settings layer for effort (what Claude's own /effort sends on a
    * hosted session; session-only, no settings file is written). Going back to
-   * a default that differs from the spawn's is not something the CLI can do
-   * live, so that answers false and the host restarts on the same conversation.
+   * a default that differs from the spawn's, and `max` (the flag-settings
+   * layer stops at xhigh), are not something the CLI can do live: those
+   * answer `restart`, and the host restarts on the same conversation with
+   * `--model` / `--effort`.
    */
-  async configure(change: { model: string; effort: string }): Promise<boolean> {
-    if (!this.backend.alive || !this.initialized || this.stopping || this.activeTurn) return false;
+  async configure(change: { model: string; effort: string }): Promise<'live' | 'restart'> {
+    if (!this.backend.alive || !this.initialized || this.stopping || this.activeTurn) return 'restart';
     const modelChanged = change.model !== this.model;
     const effortChanged = change.effort !== this.effort;
-    if (modelChanged && !change.model && this.spawnModel) return false;
-    if (effortChanged && !change.effort) return false;
+    if (modelChanged && !change.model && this.spawnModel) return 'restart';
+    if (effortChanged && (!change.effort || !LIVE_EFFORTS.has(change.effort))) return 'restart';
     if (modelChanged) {
-      if (!(await this.control({ subtype: 'set_model', model: change.model || 'default' }))) return false;
+      if (!(await this.control({ subtype: 'set_model', model: change.model || 'default' }))) return 'restart';
       this.model = change.model;
     }
     if (effortChanged) {
-      if (!(await this.control({ subtype: 'apply_flag_settings', settings: { effortLevel: change.effort } }))) return false;
+      if (!(await this.control({ subtype: 'apply_flag_settings', settings: { effortLevel: change.effort } }))) return 'restart';
       this.effort = change.effort;
     }
-    return true;
+    return 'live';
   }
 
   /** Send one control request and wait for its answer: false on an error answer, a timeout or an exit. */

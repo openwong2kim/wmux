@@ -53,31 +53,34 @@ describe('ClaudeDriver', () => {
     t.fake.controlAnswer = () => 'success';
     await t.start();
     expect(t.fake.args).toContain('--effort=high');
-    await expect(t.driver.configure({ model: 'opus', effort: 'max' })).resolves.toBe(true);
+    await expect(t.driver.configure({ model: 'opus', effort: 'xhigh' })).resolves.toBe('live');
     const requests = t.fake.stdin.filter((line) => line.type === 'control_request').map((line) => line.request);
     expect(requests).toEqual(expect.arrayContaining([
       { subtype: 'set_model', model: 'opus' },
-      { subtype: 'apply_flag_settings', settings: { effortLevel: 'max' } },
+      { subtype: 'apply_flag_settings', settings: { effortLevel: 'xhigh' } },
     ]));
     // Nothing changed: nothing is written.
     const before = t.fake.stdin.length;
-    await expect(t.driver.configure({ model: 'opus', effort: 'max' })).resolves.toBe(true);
+    await expect(t.driver.configure({ model: 'opus', effort: 'xhigh' })).resolves.toBe('live');
+    expect(t.fake.stdin.length).toBe(before);
+    // max is a start flag only: the flag-settings layer stops at xhigh.
+    await expect(t.driver.configure({ model: 'opus', effort: 'max' })).resolves.toBe('restart');
     expect(t.fake.stdin.length).toBe(before);
     await t.driver.stop();
   });
 
-  it('answers false (so the host restarts) on a refused switch, a reset to a default, or an exit', async () => {
+  it('answers restart on a refused switch, a reset to a default, or an exit', async () => {
     const t = setup();
     t.fake.controlAnswer = () => 'error';
     await t.start();
-    await expect(t.driver.configure({ model: 'opus', effort: '' })).resolves.toBe(false);
+    await expect(t.driver.configure({ model: 'opus', effort: '' })).resolves.toBe('restart');
     // Back to the CLI default when the spawn named a model cannot be done live.
-    await expect(t.driver.configure({ model: '', effort: '' })).resolves.toBe(false);
+    await expect(t.driver.configure({ model: '', effort: '' })).resolves.toBe('restart');
     t.fake.controlAnswer = () => undefined;
     const pending = t.driver.configure({ model: 'sonnet', effort: '' });
     await tick(20);
     t.fake.exit(0, null);
-    await expect(pending).resolves.toBe(false);
+    await expect(pending).resolves.toBe('restart');
   });
 
   it('names an attached file in its own text block and never reads it', async () => {
