@@ -1659,6 +1659,25 @@ describe('task.fanout.start — usage reserve with the account pool', () => {
     expect(req.mayLaunch?.({ index: 1, accountId: 'acc-a', taskId: 'wtask-w2' })).toBeNull();
   });
 
+  it('a pool no account of which can run a worker sends it to the caller\'s account, checked on its reserve', async () => {
+    const untilMs = Date.now() + 60 * 60_000;
+    let callerHeld = false;
+    const h = setup({ reserve: () => (callerHeld ? { account: 'default', untilMs } : null), pool: { members: [], holdFor: () => null }, approval: { approved: true, outcome: 'approved' } });
+    expect((await h.call(goodParams())).status).toBe('accepted');
+    await h.flush();
+    await h.flush();
+    expect(h.start).toHaveBeenCalledTimes(1);
+    const req = h.request();
+    // No pool account and no refusal: it launches on the caller's account.
+    expect(req.accountPick?.pick({ index: 0, cwd: 'C:\\work\\wt' })).toBeNull();
+    expect(req.mayLaunch?.({ index: 0, taskId: 'wtask-e1' })).toBeNull();
+    callerHeld = true;
+    expect(req.mayLaunch?.({ index: 0, taskId: 'wtask-e1' })).toMatch(/^usage reserve: /);
+    // Up front too: such a fan-out is decided on the caller's own hold.
+    const held = setup({ reserve: () => ({ account: 'default', untilMs }), pool: { members: [], holdFor: () => null } });
+    expect(errorOf(await held.call(goodParams())).code).toBe('RESOURCE_EXHAUSTED');
+  });
+
   it('a failed pool read is asked again, not kept as fresh', async () => {
     let reads = 0;
     const h = setup({ pool: { members: ['acc-a'], holdFor: () => null, read: async () => { reads += 1; if (reads === 1) throw new Error('keychain busy'); } }, approval: { approved: true, outcome: 'approved' } });

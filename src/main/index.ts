@@ -131,7 +131,7 @@ import { AGENT_ENV_COMMAND } from '../shared/agentEnvSummary';
 import { UsageReserve, setUsageReserve } from './usage/usageReserve';
 import { poolAccountOfWorkspace, setFanoutAccountPoolHost } from './worktask/fanoutAccountPool';
 import { accountsWithoutCurrentHooks, isUncPath, primaryHookPaths } from './ipc/handlers/hooksBridge.handler';
-import { usageReserveToastText } from './automation/toastText';
+import { poolCallerFallbackToastText, usageReserveToastText } from './automation/toastText';
 import { formatResetClock } from '../shared/usageLimit';
 import { CompletionAlarm } from '../shared/hooks/CompletionAlarm';
 import { UsagePoller } from './claude/UsagePoller';
@@ -1977,6 +1977,9 @@ setFanoutAccountPoolHost({
   hookDriftIds: async (accounts) => accountsWithoutCurrentHooks(accounts, await primaryHookPaths()),
   isUnc: isUncPath,
   probeUsage: (accountId) => { void accountUsageService.maybeProbe(accountId); },
+  notifyCallerFallback: () => {
+    toastManager.showDirect(poolCallerFallbackToastText(getAutomationUiLocale()), '', undefined, { ignoreToastSetting: false, onClick: () => { mainWindow?.show(); } });
+  },
 });
 usagePoller.onStateChange(() => usageReserve.refresh());
 accountUsageService.onChange(() => usageReserve.refresh());

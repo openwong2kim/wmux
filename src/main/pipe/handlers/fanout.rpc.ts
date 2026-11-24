@@ -130,7 +130,7 @@ import {
 import { validateFanoutTaskGraph, type FanoutTaskGraph } from '../../../shared/fanoutTaskGraph';
 import { agentRow } from '../../../shared/agentIdentity';
 import { noteUsageReserveHeld, usageReserveHoldForAccount, usageReserveHoldForWorkspace, usageReserveRefusalText, type UsageReserveHold } from '../../usage/usageReserve';
-import { pickFromPool, poolAllHeld, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
+import { notePoolCallerFallback, pickFromPool, poolAllHeld, poolFallsBackToCaller, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
 import { wslShareToLinux } from '../../../shared/wslPaths';
 import { poolRefusalText } from '../../../shared/fanoutAccountPool';
 import { botTemplate, type BotBinding, type BotProfile } from '../../../shared/bot';
@@ -2029,7 +2029,9 @@ export function registerFanOutRpc(
     const holdForAccount = deps.usageReserveHoldForAccount ?? usageReserveHoldForAccount;
     const reserveHoldOf = (agents: ReadonlyArray<string | undefined>): UsageReserveHold | null => {
       if (!agents.some(spendsUsageReserve)) return null;
-      if (pool) return poolAllHeld(pool, holdForAccount);
+      // A pool with no account that can run a worker sends them to the
+      // caller's account, checked on its own hold (as with the pool off).
+      if (pool && !poolFallsBackToCaller((deps.pickFromPool ?? pickFromPool)(pool))) return poolAllHeld(pool, holdForAccount);
       return (deps.usageReserveHold ?? usageReserveHoldForWorkspace)(callerWorkspaceId);
     };
     /** Hold a bot's request for the reserve (once), and say why nothing started. */
@@ -2363,16 +2365,17 @@ export function registerFanOutRpc(
         // Whether a task passed its launch check: a request part of which
         // launched is not held again whole (the rest is refused).
         let launchPassed = false;
-        // Tasks the pool left out because their folder starts a WSL pane:
-        // they run on the caller's account, as without the pool.
-        const wslTasks = new Set<number>();
+        // Tasks the pool left out (their folder starts a WSL pane, or no pool
+        // account can run them): they run on the caller's account, as
+        // without the pool.
+        const callerTasks = new Set<number>();
         const reserveAtTaskLaunch = (index: number | undefined, accountId?: string): string | null => {
           const agents = index === undefined ? taskAgents : [taskAgent(index)];
           const spends = agents.some(spendsUsageReserve);
           // A pool worker: the account picked for it, not the caller's.
           const hold = accountId !== undefined
             ? (spends ? holdForAccount(accountId) : null)
-            : index !== undefined && wslTasks.has(index)
+            : index !== undefined && callerTasks.has(index)
               ? (spends ? (deps.usageReserveHold ?? usageReserveHoldForWorkspace)(callerWorkspaceId) : null)
               : reserveHoldOf(agents);
           return hold ? reserveRefusal(hold, !launchPassed) : null;
@@ -2391,11 +2394,20 @@ export function registerFanOutRpc(
             // A task folder on a WSL share starts a WSL pane, which the pool
             // keeps out of: its launch checks the caller's account as before.
             if (task.cwd && wslShareToLinux(task.cwd)) {
-              wslTasks.add(task.index);
+              callerTasks.add(task.index);
               return null;
             }
             const picked = pick(current);
+            // A pick of its own decides again each time (a dependent's or a retry's).
+            callerTasks.delete(task.index);
             if (picked.kind === 'pick') return { accountId: picked.accountId };
+            // No pool account can run it (none eligible, or all out of
+            // quota): the caller's account, as with the pool off, said once.
+            if (poolFallsBackToCaller(picked)) {
+              callerTasks.add(task.index);
+              notePoolCallerFallback();
+              return null;
+            }
             // Every usable account is in the reserve: held as the reserve
             // holds a fan-out without the pool (a bot's request is kept).
             if (picked.reason === 'held') {

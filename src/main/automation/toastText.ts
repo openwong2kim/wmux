@@ -70,6 +70,13 @@ export function automationToastText(
   return `${name} · ${labels[kind]}`;
 }
 
+/** The fan-out account pool had no account that could run a worker, so it
+ *  ran on the caller's account (told once per app run). */
+export function poolCallerFallbackToastText(locale: AutomationUiLocale): string {
+  if (locale === 'ko') return '팬아웃 계정 풀: 여기서 실행할 수 있는 풀 계정이 없어 호출한 창의 계정으로 실행합니다';
+  return 'Fan-out account pool: no pool account can run here, so workers use the calling pane\'s account';
+}
+
 /** The usage-reserve notice: unattended work on an account waits for its 5h
  *  reset. `who` is the account's name, or null for the default login. */
 export function usageReserveToastText(locale: AutomationUiLocale, who: string | null, untilClock: string): string {

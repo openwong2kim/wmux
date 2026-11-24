@@ -21,6 +21,8 @@ import {
   registerPoolCreateReserveHold,
   setFanoutAccountPoolHost,
   poolRelaunchRefusal,
+  notePoolCallerFallback,
+  poolFallsBackToCaller,
   preparePool,
   resetFanoutAccountPoolForTests,
   setFanoutAccountPoolSettings,
@@ -435,5 +437,34 @@ describe('a reserve stop at a WSL pane\'s create', () => {
     expect(poolCreateReserveRefusal('t9', { account: 'default', untilMs: 5 })).toBe('usage reserve: held for the reset');
     expect(hold).toHaveBeenCalledWith({ account: 'default', untilMs: 5 });
     expect(poolCreateReserveRefusal('t9', { account: 'default', untilMs: 5 })).toBeNull();
+  });
+});
+
+describe('a pool with no account that can run a worker', () => {
+  it('a group whose accounts are not signed in on Windows sends its workers to the caller\'s account, told once', async () => {
+    const notify = vi.fn();
+    const h = host({ notifyCallerFallback: notify });
+    setFanoutAccountPoolHost(h);
+    // Signed in only inside WSL: no sign-in in their Windows folders.
+    const pool = await preparePool('ws-owner', {
+      settings: () => ({ ...on, group: 'work' }), host: h, accounts: () => [acct('a', 'work'), acct('b', 'work')],
+      binding: () => undefined, dirOk: () => true, signedIn: async () => false, vaultSignIn: () => false, log: () => undefined,
+    });
+    expect(pool?.members).toEqual([]);
+    const picked = pickFromPool(pool!, { host: h, slots: slots(), holdFor: () => null, workerMayRun: () => true, dirOk: () => true });
+    expect(picked).toMatchObject({ kind: 'none', reason: 'empty' });
+    expect(poolFallsBackToCaller(picked)).toBe(true);
+    // Not told while no host can show it, so the first shown notice is not lost.
+    notePoolCallerFallback({ host: null, log: () => undefined });
+    notePoolCallerFallback({ log: () => undefined });
+    notePoolCallerFallback({ log: () => undefined });
+    expect(notify).toHaveBeenCalledTimes(1);
+    // Every account out of quota still refuses with its reset (the caller's may be one of them),
+    // and a limit the owner set still stops it.
+    expect(poolFallsBackToCaller({ kind: 'none', reason: 'quota', availableAtMs: 5 })).toBe(false);
+    expect(poolFallsBackToCaller({ kind: 'none', reason: 'held', availableAtMs: 5 })).toBe(false);
+    expect(poolFallsBackToCaller({ kind: 'none', reason: 'full', availableAtMs: null })).toBe(false);
+    // A held bot's recheck leaves it to the workspace's own account.
+    expect(poolReserveHeldForWorkspace('ws-owner', { poolOn: () => true, host: h, slots: slots(), holdFor: () => null, workerMayRun: () => true, dirOk: () => true, refresh: () => undefined })).toBeUndefined();
   });
 });

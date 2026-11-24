@@ -74,6 +74,9 @@ export interface FanoutAccountPoolHost {
   probeUsage?: (accountId: string) => void;
   /** A UNC folder (hooksBridge.handler isUncPath). */
   isUnc: (dir: string) => boolean;
+  /** Tell the owner once that a worker ran on the caller's account because no
+   *  pool account could run it (poolCallerFallback). Optional. */
+  notifyCallerFallback?: () => void;
 }
 
 let host: FanoutAccountPoolHost | null = null;
@@ -89,6 +92,8 @@ const refreshingPools = new Set<string>();
  *  the pane's create (a WSL pane, checked on its caller's account). */
 const createReserveHolds = new Map<string, (hold: { account: string; untilMs: number }) => string>();
 const CREATE_RESERVE_HOLDS_MAX = 500;
+/** The owner was told this run that the pool fell back to the caller's account. */
+let toldCallerFallback = false;
 
 export function setFanoutAccountPoolHost(next: FanoutAccountPoolHost | null): void {
   host = next;
@@ -145,6 +150,7 @@ export function resetFanoutAccountPoolForTests(): void {
   lastPools.clear();
   refreshingPools.clear();
   createReserveHolds.clear();
+  toldCallerFallback = false;
 }
 
 // ── Eligibility (async, before the launches) ────────────────────────────────
@@ -339,9 +345,33 @@ export function pickFromPool(pool: PreparedPool, deps: PickDeps = {}): PoolPick 
   return pickPoolAccount(poolCandidates(pool, deps), pool.settings);
 }
 
+/**
+ * Whether a pick that found no account sends the worker to the caller's
+ * account, as with the pool off: the pool has no account that can run
+ * workers at all (none eligible, such as accounts signed in only inside
+ * WSL). Every account out of quota still refuses with its reset (the
+ * caller's may be one of them), and a limit the owner set (the usage
+ * reserve's holds, the per-account worker limit) still stops it.
+ */
+export function poolFallsBackToCaller(pick: PoolPick): boolean {
+  return pick.kind === 'none' && pick.reason === 'empty';
+}
+
+/** A worker ran on the caller's account (poolFallsBackToCaller): said once per app run. */
+export function notePoolCallerFallback(deps: { host?: FanoutAccountPoolHost | null; log?: (line: string) => void } = {}): void {
+  if (toldCallerFallback) return;
+  (deps.log ?? ((line: string) => console.log(line)))('[fanout-pool] no pool account can run a worker: it runs on the caller\'s account, as with the pool off');
+  const h = deps.host === undefined ? host : deps.host;
+  if (!h?.notifyCallerFallback) return;
+  try {
+    h.notifyCallerFallback();
+    toldCallerFallback = true;
+  } catch { /* a notice never stops a launch; the next fallback tries again */ }
+}
+
 /** For the usage reserve's check at the fan-out: null when some member is
- *  not held (or the pool has none: the pick refuses that itself), else the
- *  member's hold that ends first. */
+ *  not held (or the pool has none: the caller checks its own account then,
+ *  poolFallsBackToCaller), else the member's hold that ends first. */
 export function poolAllHeld(pool: PreparedPool, holdFor: (account: string) => { account: string; untilMs: number } | null = usageReserveHoldForAccount): { account: string; untilMs: number } | null {
   if (pool.members.length === 0) return null;
   let first: { account: string; untilMs: number } | null = null;
@@ -389,8 +419,9 @@ export function poolRelaunchRefusal(accountId: string, deps: PickDeps & { accoun
  * Whether a held bot fan-out of `workspaceId` stays held with the pool on:
  * decided by the same pick that held it (every usable account held by the
  * reserve, or every one out of quota with a known reset). Undefined when the
- * pool is off or the daemon is away: the caller then checks the workspace's
- * own account, as the fan-out itself would. A pool not read yet (after a
+ * pool is off, the daemon is away, or no pool account can run workers at all
+ * (poolFallsBackToCaller): the caller then checks the workspace's own
+ * account, as the fan-out itself would. A pool not read yet (after a
  * restart) or read too long ago is read again in the background, and stays
  * held until that read is in.
  */
@@ -408,6 +439,9 @@ export function poolReserveHeldForWorkspace(
     if (!entry) return true;
   }
   const pick = pickPoolAccount(poolCandidates(entry.pool, deps), entry.pool.settings);
+  // No pool account can run it: its workers run on the workspace's own
+  // account, which the caller checks (as with the pool off).
+  if (poolFallsBackToCaller(pick)) return undefined;
   return pick.kind === 'none' && (pick.reason === 'held' || (pick.reason === 'quota' && pick.availableAtMs !== null));
 }
 
