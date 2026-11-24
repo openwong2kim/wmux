@@ -5837,6 +5837,9 @@ function registerRpcHandlers(
         }
       },
       applyResumeBinding: (id, binding, paneExact) => { applyResumeBinding(id, binding, paneExact); },
+      // The pane's agent started again (a startup/resume SessionStart with a
+      // new session id): re-attribute it now (deliveryPresence restartedSince).
+      onAgentRestart: (id) => agentProcessTracker.noteAgentRestart(id),
       liveAgentFor: (id) => {
         const tracked = agentProcessTracker.identityFor(id);
         return tracked?.alive ? tracked.slug : undefined;
@@ -6495,6 +6498,8 @@ function registerRpcHandlers(
     tracked: (sid) => agentProcessTracker.identityFor(sid),
     probe: (sid, shellPid, timeoutMs) => agentProcessTracker.probeNamedAgentNow(sid, shellPid, timeoutMs),
     reprobe: (sid, shellPid, timeoutMs) => agentProcessTracker.reprobeNow(sid, shellPid, timeoutMs),
+    restartedSince: (sid) => agentProcessTracker.restartedSince(sid),
+    noAgentUnderShell: (sid, since) => agentProcessTracker.reprobeSawNoAgent(sid, since),
     agentRunning: (sid, slug) => agentProcessTracker.isAgentRunning(sid, slug, (pid) => ProcessMonitor.isRunning(pid), BY_ATTRIBUTION),
     ownedRoot: (sid, pid, slug) => agentProcessTracker.verifyOwnedRoot(sid, pid, slug, BY_ATTRIBUTION),
     processRunning: (pid) => ProcessMonitor.isRunning(pid),
