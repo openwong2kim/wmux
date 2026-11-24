@@ -454,7 +454,7 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
             </select>
           </label>
           {/* Permissions say whether the agent asks first: always shown, after the agent chip (DESIGN.md, Agent chip). */}
-          <label className="wmux-chatv2-chip" data-chatv2-permission data-mode={chips.mode} aria-disabled={!caps.bypass || undefined} title={!caps.bypass ? S.alwaysAsks(S.agentName[agent]) : chips.mode === 'bypass' ? S.modeBypassHint : S.modeDefaultHint}>
+          <label className="wmux-chatv2-chip" data-chatv2-permission data-mode={chips.mode} aria-disabled={!chips.editable || !caps.bypass || undefined} title={!caps.bypass ? S.alwaysAsks(S.agentName[agent]) : chips.mode === 'bypass' ? S.modeBypassHint : S.modeDefaultHint}>
             <span className="sr-only">{S.permission}</span>
             <select value={chips.mode} disabled={!chips.editable || !caps.bypass} onChange={(event) => chips.onMode?.(event.target.value as ChatV2RunMode)}>
               <option value="default">{S.modeDefault}</option>
