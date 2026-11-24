@@ -181,7 +181,10 @@ ${push}${connections}${signedIn}`;
 export interface AccountPick {
   prepare: (task: { index: number }) => Promise<void>;
   /** `cwd`: the folder the task's pane starts in (a WSL share starts WSL). */
-  pick: (task: { index: number; cwd?: string }) => { accountId: string } | { refusal: string } | null;
+  /** `callerAccount`: no pool account can run it, so it runs on the
+   *  caller's account (that usage key), booked only to count toward the
+   *  per-account worker limit. */
+  pick: (task: { index: number; cwd?: string }) => { accountId: string } | { callerAccount: string } | { refusal: string } | null;
 }
 
 export type LaunchSlot =
@@ -1860,11 +1863,13 @@ export class FanOutService {
     // From the pick to the launch record nothing is awaited: the account is
     // picked and booked in one step, so parallel launches spread.
     let accountId: string | undefined;
+    let callerAccount: string | undefined;
     // The caller's last word before anything is launched.
     let refusal: string | null = null;
     try {
       const picked = ctx.accountPick?.pick({ index: ctx.index, cwd }) ?? null;
       if (picked && 'refusal' in picked) refusal = picked.refusal;
+      else if (picked && 'callerAccount' in picked) callerAccount = picked.callerAccount;
       else if (picked) accountId = picked.accountId;
     } catch (err) {
       refusal = `the account pick failed: ${String(err)}`;
@@ -1906,6 +1911,7 @@ export class FanOutService {
         ownerWorkspaceId: ctx.verifiedWorkspaceId,
         sandboxed: firstRunEnv[CLAUDE_SANDBOXED_ENV] === '1',
         ...(accountId ? { accountId } : {}),
+        ...(callerAccount ? { callerAccount } : {}),
       }).gen;
     } catch (err) {
       releaseSlot();

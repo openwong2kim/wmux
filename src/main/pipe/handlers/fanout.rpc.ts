@@ -130,9 +130,10 @@ import {
 import { validateFanoutTaskGraph, type FanoutTaskGraph } from '../../../shared/fanoutTaskGraph';
 import { agentRow } from '../../../shared/agentIdentity';
 import { noteUsageReserveHeld, usageReserveHoldForAccount, usageReserveHoldForWorkspace, usageReserveRefusalText, type UsageReserveHold } from '../../usage/usageReserve';
-import { pickFromPool, poolAllHeld, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
+import { notePoolCallerFallback, openWorkersOn, pickFromPool, poolAllHeld, poolFallsBackToCaller, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
 import { wslShareToLinux } from '../../../shared/wslPaths';
-import { poolRefusalText } from '../../../shared/fanoutAccountPool';
+import { POOL_DEFAULT_ACCOUNT, poolRefusalText } from '../../../shared/fanoutAccountPool';
+import { getAccountStore } from '../../account/accountStore';
 import { botTemplate, type BotBinding, type BotProfile } from '../../../shared/bot';
 import { SHARED_SURFACE } from '../../../shared/botSurface';
 import { WAKE_LIMITS, botFanoutIdempotencyKey, type HeldFanoutArgs, type HeldWakeKind, type WakeItem } from '../../../shared/wake';
@@ -720,6 +721,12 @@ export interface FanOutRpcDeps {
   preparePool?: (callerWorkspaceId: string) => Promise<PreparedPool | null>;
   /** The pool's pick for one worker (default: fanoutAccountPool.ts pickFromPool). */
   pickFromPool?: typeof pickFromPool;
+  /** The usage key a workspace's Claude launches run on, an account id or
+   *  'default' (default: its bound Claude account), and the open workers on
+   *  a key (default: fanoutAccountPool.ts openWorkersOn): a pool fallback
+   *  onto the caller's account counts toward the per-account worker limit. */
+  callerAccountKey?: (workspaceId: string) => string;
+  openWorkersOn?: (key: string) => number;
   /** The connections' OAuth service, for signed-in connections (default:
    *  main/connectors/workerGateway.ts workerGatewayOAuth). */
   gatewayOAuth?: () => GatewayOAuth | null;
@@ -2029,7 +2036,9 @@ export function registerFanOutRpc(
     const holdForAccount = deps.usageReserveHoldForAccount ?? usageReserveHoldForAccount;
     const reserveHoldOf = (agents: ReadonlyArray<string | undefined>): UsageReserveHold | null => {
       if (!agents.some(spendsUsageReserve)) return null;
-      if (pool) return poolAllHeld(pool, holdForAccount);
+      // A pool with no account that can run a worker sends them to the
+      // caller's account, checked on its own hold (as with the pool off).
+      if (pool && !poolFallsBackToCaller((deps.pickFromPool ?? pickFromPool)(pool))) return poolAllHeld(pool, holdForAccount);
       return (deps.usageReserveHold ?? usageReserveHoldForWorkspace)(callerWorkspaceId);
     };
     /** Hold a bot's request for the reserve (once), and say why nothing started. */
@@ -2363,16 +2372,20 @@ export function registerFanOutRpc(
         // Whether a task passed its launch check: a request part of which
         // launched is not held again whole (the rest is refused).
         let launchPassed = false;
-        // Tasks the pool left out because their folder starts a WSL pane:
-        // they run on the caller's account, as without the pool.
-        const wslTasks = new Set<number>();
+        // Tasks the pool left out (their folder starts a WSL pane, or no pool
+        // account can run them): they run on the caller's account, as
+        // without the pool.
+        const callerTasks = new Set<number>();
+        // Of those, the ones the pool sent there because none of its accounts
+        // can run them: the owner is told once, when one actually launches.
+        const fallbackTasks = new Set<number>();
         const reserveAtTaskLaunch = (index: number | undefined, accountId?: string): string | null => {
           const agents = index === undefined ? taskAgents : [taskAgent(index)];
           const spends = agents.some(spendsUsageReserve);
           // A pool worker: the account picked for it, not the caller's.
           const hold = accountId !== undefined
             ? (spends ? holdForAccount(accountId) : null)
-            : index !== undefined && wslTasks.has(index)
+            : index !== undefined && callerTasks.has(index)
               ? (spends ? (deps.usageReserveHold ?? usageReserveHoldForWorkspace)(callerWorkspaceId) : null)
               : reserveHoldOf(agents);
           return hold ? reserveRefusal(hold, !launchPassed) : null;
@@ -2385,17 +2398,34 @@ export function registerFanOutRpc(
           prepare: async (task: { index: number }) => {
             if (spendsUsageReserve(taskAgent(task.index))) await refreshPool();
           },
-          pick: (task: { index: number; cwd?: string }): { accountId: string } | { refusal: string } | null => {
+          pick: (task: { index: number; cwd?: string }): { accountId: string } | { callerAccount: string } | { refusal: string } | null => {
             const current = pool;
             if (!current || !spendsUsageReserve(taskAgent(task.index))) return null;
             // A task folder on a WSL share starts a WSL pane, which the pool
             // keeps out of: its launch checks the caller's account as before.
             if (task.cwd && wslShareToLinux(task.cwd)) {
-              wslTasks.add(task.index);
+              callerTasks.add(task.index);
               return null;
             }
             const picked = pick(current);
+            // A pick of its own decides again each time (a dependent's or a retry's).
+            callerTasks.delete(task.index);
+            fallbackTasks.delete(task.index);
             if (picked.kind === 'pick') return { accountId: picked.accountId };
+            // No pool account can run it at all (none eligible): the
+            // caller's account, as with the pool off, said once. The
+            // per-account worker limit the owner set still holds there: such
+            // workers are booked on that account and count toward it.
+            if (poolFallsBackToCaller(picked)) {
+              const callerKey = (deps.callerAccountKey ?? ((ws: string) => getAccountStore().getBinding(ws, 'claude') ?? POOL_DEFAULT_ACCOUNT))(callerWorkspaceId);
+              const max = current.settings.maxWorkersPerAccount;
+              if (max > 0 && (deps.openWorkersOn ?? openWorkersOn)(callerKey) >= max) {
+                return { refusal: poolRefusalText({ kind: 'none', reason: 'full', availableAtMs: null }, Date.now()) };
+              }
+              callerTasks.add(task.index);
+              fallbackTasks.add(task.index);
+              return { callerAccount: callerKey };
+            }
             // Every usable account is in the reserve: held as the reserve
             // holds a fan-out without the pool (a bot's request is kept).
             if (picked.reason === 'held') {
@@ -2499,6 +2529,7 @@ export function registerFanOutRpc(
               const firstPass = !launchPassed;
               const refusal = (bot && botPort ? botPort.launchRefusal(bot.botId, botWakeId) : null) ?? reserveAtTaskLaunch(task?.index, task?.accountId);
               if (!refusal) launchPassed = true;
+              if (!refusal && task && fallbackTasks.has(task.index)) notePoolCallerFallback();
               // A pool worker whose pane turns out WSL is checked on the
               // caller's account at its create: held there as it would be here.
               if (!refusal && task?.accountId && task.taskId) registerPoolCreateReserveHold(task.taskId, (hold) => reserveRefusal(hold, firstPass));

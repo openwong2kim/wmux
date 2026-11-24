@@ -83,6 +83,10 @@ export interface TaskLaunch {
    *  create runs it there, whatever the renderer names. Absent with the pool
    *  off, for a non-Claude launch, and on any older record. */
   accountId?: string;
+  /** A pool launch that found no pool account and runs on the caller's
+   *  account instead (its usage key: an account id or 'default'): counted
+   *  for the per-account worker limit only. Never set with `accountId`. */
+  callerAccount?: string;
   /** The task ran on the account pool once: kept across later generations,
    *  a codex or agy one included (which records no account), so a Claude
    *  line typed later reads its pane's account again. */
@@ -109,7 +113,8 @@ function isLaunch(v: unknown): v is TaskLaunch {
     && typeof r.ownerWorkspaceId === 'string' && isState(r.state)
     && (r.sandboxed === undefined || r.sandboxed === true)
     && (r.accountId === undefined || (typeof r.accountId === 'string' && r.accountId.length > 0 && r.accountId.length <= 128))
-    && (r.pooled === undefined || r.pooled === true);
+    && (r.pooled === undefined || r.pooled === true)
+    && (r.callerAccount === undefined || (typeof r.callerAccount === 'string' && r.callerAccount.length > 0 && r.callerAccount.length <= 128 && r.accountId === undefined));
 }
 
 function isPane(v: unknown): v is TaskPane {
@@ -134,6 +139,8 @@ export interface LaunchRequest {
    *  pane of the task's latest generation: the pane keeps its env, so the new
    *  generation keeps what that one recorded. */
   accountId?: string | null;
+  /** The caller's account a pool fallback runs on (TaskLaunch.callerAccount). */
+  callerAccount?: string;
   /** A relaunch in an existing pane: the pane and its workspace name the
    *  new generation in the same write, before the line is typed. */
   pane?: { sessionId: string; workspaceId: string };
@@ -379,6 +386,7 @@ export class WorkerSlots {
       state: 'launching',
       ...(sandboxed ? { sandboxed: true as const } : {}),
       ...(accountId ? { accountId } : {}),
+      ...(!accountId && req.callerAccount ? { callerAccount: req.callerAccount } : {}),
       ...(pooled ? { pooled: true as const } : {}),
     };
     if (this.mode === 'broken') {
@@ -470,9 +478,11 @@ export class WorkerSlots {
   poolLaunches(): Array<{ taskId: string; gen: number; accountId: string; state: 'launching' | 'launched' }> {
     const out: Array<{ taskId: string; gen: number; accountId: string; state: 'launching' | 'launched' }> = [];
     for (const t of this.tasks.values()) {
-      if (!t.accountId || t.state === 'released') continue;
+      // A fallback onto the caller's account counts there (the per-account limit).
+      const account = t.accountId ?? t.callerAccount;
+      if (!account || t.state === 'released') continue;
       if (t.state === 'launching' && this.underway.get(t.taskId) !== t.gen) continue;
-      out.push({ taskId: t.taskId, gen: t.gen, accountId: t.accountId, state: t.state });
+      out.push({ taskId: t.taskId, gen: t.gen, accountId: account, state: t.state });
     }
     return out;
   }

@@ -19,12 +19,12 @@
 // long before the run finishes, the same key must progress rather than restart,
 // and a denial must be reported instead of going quiet.
 
-import { DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, pickPoolAccount } from '../../../../shared/fanoutAccountPool';
-import { poolCreateReserveRefusal, type PreparedPool } from '../../../worktask/fanoutAccountPool';
+import { DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, pickPoolAccount, type FanoutAccountPoolSettings } from '../../../../shared/fanoutAccountPool';
+import { poolCreateReserveRefusal, resetFanoutAccountPoolForTests, setFanoutAccountPoolHost, type PreparedPool } from '../../../worktask/fanoutAccountPool';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { RpcContext } from '../../../../shared/rpc';
 import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../../../../shared/workTask';
 import { CHANNEL_TOPIC_MAX, HUMAN_WORKSPACE_ID } from '../../../../shared/channels';
@@ -131,7 +131,13 @@ function setup(opts?: {
   /** The usage reserve's hold for a workspace. Omitted = no reserve. */
   reserve?: (workspaceId: string) => { account: string; untilMs: number } | null;
   /** The fan-out account pool and the reserve's hold per account. Omitted = no pool. */
-  pool?: { members: string[]; holdFor: (account: string) => { account: string; untilMs: number } | null; read?: () => Promise<void> };
+  pool?: {
+    members: string[];
+    holdFor: (account: string) => { account: string; untilMs: number } | null;
+    read?: () => Promise<void>;
+    settings?: Partial<FanoutAccountPoolSettings>;
+    openWorkersOn?: (key: string) => number;
+  };
   ownerWorkspaceId?: string;
   cwd?: string | null;
   approval?: ApprovalStub;
@@ -298,7 +304,9 @@ function setup(opts?: {
     ...(opts?.wmuxDir ? { wmuxDir: () => opts.wmuxDir as string } : {}),
     ...(opts?.reserve ? { usageReserveHold: opts.reserve, noteUsageReserveHeld: () => undefined } : {}),
     ...(opts?.pool ? {
-      preparePool: async () => (await opts.pool!.read?.(), { settings: { ...DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, enabled: true }, group: '', members: opts.pool!.members.map((id) => ({ id, configDir: null })) }),
+      preparePool: async () => (await opts.pool!.read?.(), { settings: { ...DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, enabled: true, ...opts.pool!.settings }, group: '', members: opts.pool!.members.map((id) => ({ id, configDir: null })) }),
+      callerAccountKey: () => 'default',
+      ...(opts.pool.openWorkersOn ? { openWorkersOn: opts.pool.openWorkersOn } : {}),
       usageReserveHoldForAccount: opts.pool.holdFor,
       noteUsageReserveHeld: () => undefined,
       pickFromPool: (pool: PreparedPool) => pickPoolAccount(pool.members.map((m) => ({ id: m.id, verdict: { usable: true, remaining: null, availableAtMs: null }, heldUntilMs: opts.pool!.holdFor(m.id)?.untilMs ?? null, open: 0 })), pool.settings),
@@ -1657,6 +1665,56 @@ describe('task.fanout.start — usage reserve with the account pool', () => {
     // A native task of the same fan-out still runs on the free pool account.
     expect(req.accountPick?.pick({ index: 1, cwd: 'C:\\work\\wt2' })).toEqual({ accountId: 'acc-a' });
     expect(req.mayLaunch?.({ index: 1, accountId: 'acc-a', taskId: 'wtask-w2' })).toBeNull();
+  });
+
+  it('a pool no account of which can run a worker sends it to the caller\'s account, checked on its reserve', async () => {
+    const untilMs = Date.now() + 60 * 60_000;
+    let callerHeld = false;
+    const h = setup({ reserve: () => (callerHeld ? { account: 'default', untilMs } : null), pool: { members: [], holdFor: () => null }, approval: { approved: true, outcome: 'approved' } });
+    expect((await h.call(goodParams())).status).toBe('accepted');
+    await h.flush();
+    await h.flush();
+    expect(h.start).toHaveBeenCalledTimes(1);
+    const req = h.request();
+    // No pool account and no refusal: it launches on the caller's account, booked there.
+    expect(req.accountPick?.pick({ index: 0, cwd: 'C:\\work\\wt' })).toEqual({ callerAccount: 'default' });
+    expect(req.mayLaunch?.({ index: 0, taskId: 'wtask-e1' })).toBeNull();
+    callerHeld = true;
+    expect(req.mayLaunch?.({ index: 0, taskId: 'wtask-e1' })).toMatch(/^usage reserve: /);
+    // The owner is told only once a worker really launches there.
+    const notify = vi.fn();
+    setFanoutAccountPoolHost({ daemonConnected: () => true, claudeUsage: () => [], defaultSnapshot: () => null, hookDriftIds: async () => new Set(), isUnc: () => false, notifyCallerFallback: notify });
+    onTestFinished(() => resetFanoutAccountPoolForTests());
+    expect(req.accountPick?.pick({ index: 0, cwd: 'C:\\work\\wt' })).toEqual({ callerAccount: 'default' });
+    expect(req.mayLaunch?.({ index: 0, taskId: 'wtask-e1' })).toMatch(/^usage reserve: /);
+    expect(notify).not.toHaveBeenCalled();
+    callerHeld = false;
+    expect(req.mayLaunch?.({ index: 0, taskId: 'wtask-e1' })).toBeNull();
+    expect(notify).toHaveBeenCalledTimes(1);
+    // Up front too: such a fan-out is decided on the caller's own hold.
+    const held = setup({ reserve: () => ({ account: 'default', untilMs }), pool: { members: [], holdFor: () => null } });
+    expect(errorOf(await held.call(goodParams())).code).toBe('RESOURCE_EXHAUSTED');
+  });
+
+  it('a fallback onto the caller\'s account still keeps the per-account worker limit', async () => {
+    let open = 0;
+    // No limit set: behaviour is unchanged.
+    const free = setup({ pool: { members: [], holdFor: () => null, openWorkersOn: () => 5 }, approval: { approved: true, outcome: 'approved' } });
+    expect((await free.call(goodParams({ titles: ['a', 'b'] }))).status).toBe('accepted');
+    await free.flush();
+    await free.flush();
+    expect(free.request().accountPick?.pick({ index: 1, cwd: 'C:\\work\\wt' })).toEqual({ callerAccount: 'default' });
+    // Limit 1: the first launches, the second is refused while the first runs.
+    const limited = setup({ pool: { members: [], holdFor: () => null, settings: { maxWorkersPerAccount: 1 }, openWorkersOn: () => open }, approval: { approved: true, outcome: 'approved' } });
+    expect((await limited.call(goodParams({ titles: ['a', 'b'] }))).status).toBe('accepted');
+    await limited.flush();
+    await limited.flush();
+    const lr = limited.request();
+    expect(lr.accountPick?.pick({ index: 0, cwd: 'C:\\work\\wt' })).toEqual({ callerAccount: 'default' });
+    open = 1;
+    expect(lr.accountPick?.pick({ index: 1, cwd: 'C:\\work\\wt2' })).toEqual({ refusal: expect.stringMatching(/already runs its most workers/) });
+    open = 0;
+    expect(lr.accountPick?.pick({ index: 1, cwd: 'C:\\work\\wt2' })).toEqual({ callerAccount: 'default' });
   });
 
   it('a failed pool read is asked again, not kept as fresh', async () => {
