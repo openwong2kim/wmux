@@ -553,6 +553,9 @@ export class A2aHeadlessStarter {
       made = { ok: false, code: 'failed', detail: errMsg(err) };
     }
     if (!made.ok) return undo(made.code, made.detail, true);
+    // Branched from origin's default branch as fetched now; when it could not be, from HEAD, said once here.
+    if (made.baseNote) this.deps.log('warn', `[headless] spawn ${spawnId} from ${hostId}: ${made.baseNote}`);
+    else if (made.baseRef) this.deps.log('info', `[headless] spawn ${spawnId} from ${hostId}: worktree from ${made.baseRef} at ${made.base}`);
     try {
       const baseCommit = await this.deps.worktrees.baseOf(made.worktreePath).catch(() => null);
       this.deps.starts.update(hostId, spawnId, { worktreePath: made.worktreePath, cwd: made.cwd, branch: made.branch, ...(baseCommit ? { baseCommit } : {}) });

@@ -28,6 +28,21 @@ import { getExecEnv } from '../../shared/execEnv';
 /** Env var carrying a fan-out task's assigned port into its pane. */
 export const FANOUT_TASK_PORT_ENV = 'WMUX_TASK_PORT';
 
+/** Claude Code's switch for its background auto-updater. */
+export const AUTOUPDATER_OFF_ENV = 'DISABLE_AUTOUPDATER';
+
+/**
+ * Env for an agent wmux starts as a worker (a fan-out task pane, a headless
+ * or remote start): `DISABLE_AUTOUPDATER=1`. An updater running in any
+ * session rewrites `~/.local/bin/claude`, the launcher wmux pins and
+ * per-account launchers wrap, under every other pane that uses it. Empty when
+ * `env` (what the worker inherits) sets the key already, whatever the value:
+ * the user's own choice stands. A pane the user opens never gets this.
+ */
+export function workerAutoUpdateEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  return env[AUTOUPDATER_OFF_ENV] !== undefined ? {} : { [AUTOUPDATER_OFF_ENV]: '1' };
+}
+
 /** Setup hooks are allowed to install dependencies, so the budget is minutes. */
 export const FANOUT_SETUP_TIMEOUT_MS = 300_000;
 

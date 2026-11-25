@@ -65,7 +65,8 @@ describe.skipIf(!posix)('the headless pane port, for real', () => {
       'exec sleep 300',
       '',
     ].join('\n'), { mode: 0o755 });
-    for (const key of ['HOME', 'PATH', PLANTED]) saved[key] = process.env[key];
+    for (const key of ['HOME', 'PATH', PLANTED, 'DISABLE_AUTOUPDATER']) saved[key] = process.env[key];
+    delete process.env.DISABLE_AUTOUPDATER;
     process.env.HOME = home;
     process.env.PATH = '/usr/bin:/bin';
     process.env[PLANTED] = 'planted-not-a-real-key';
@@ -151,11 +152,25 @@ describe.skipIf(!posix)('the headless pane port, for real', () => {
     expect(env.get('HOME')).toBe(home);
     expect(env.get('PATH')).toBe(`${path.dirname(stub)}:/usr/bin:/bin`);
     expect(env.get('CLAUDE_CODE_EXTRA')).toBe('from-the-start');
+    // A worker's updater is off: it would rewrite the launcher every pane runs.
+    expect(env.get('DISABLE_AUTOUPDATER')).toBe('1');
     expect(env.has(PLANTED)).toBe(false);
     expect([...env.keys()].filter((k) => isCredentialEnvKey(k))).toEqual([]);
     // What is persisted (and what a recovery would run) is the replay line, never the agent's.
     expect(mgr.getSession(id)?.meta.exec?.command).toBe(HEADLESS_REPLAY_LINE);
     expect(p.alive(id)).toBe(true);
+  }, TEST_MS);
+
+  it('keeps the DISABLE_AUTOUPDATER the daemon\'s own env sets', async () => {
+    process.env.DISABLE_AUTOUPDATER = '0';
+    try {
+      const { port: p } = port();
+      await start(p);
+      const env = new Map(read('env').trim().split('\n').map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)] as const));
+      expect(env.get('DISABLE_AUTOUPDATER')).toBe('0');
+    } finally {
+      delete process.env.DISABLE_AUTOUPDATER;
+    }
   }, TEST_MS);
 
   it('ends the whole tree, and what it had then holds nothing', async () => {

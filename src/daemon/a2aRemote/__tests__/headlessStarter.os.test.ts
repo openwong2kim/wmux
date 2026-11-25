@@ -136,7 +136,7 @@ beforeEach(() => {
   failed = [];
   gone = [];
   removedTrees = [];
-  worktree = { ok: true, worktreePath: '/wt/remote-x', cwd: '/wt/remote-x/apps', branch: `wmux/remote/${TREE}` };
+  worktree = { ok: true, worktreePath: '/wt/remote-x', cwd: '/wt/remote-x/apps', branch: `wmux/remote/${TREE}`, base: 'a'.repeat(40) };
   sessionPort = makeSessions();
   createThrows = false;
   agentBin = '/home/u/.local/bin/claude';
@@ -741,7 +741,7 @@ describe('headless start: task port', () => {
     // Recorded before the agent started, and kept across a reload of the file.
     expect(new HeadlessStartStore({ dir, scheduleHarden: () => undefined }).get(HOST, SPAWN)?.taskPort).toBe(4000);
     request = { state: 'approved' };
-    worktree = { ok: true, worktreePath: '/wt/remote-y', cwd: '/wt/remote-y', branch: `wmux/remote/${headlessTreeId(HOST, SPAWN2)}` };
+    worktree = { ok: true, worktreePath: '/wt/remote-y', cwd: '/wt/remote-y', branch: `wmux/remote/${headlessTreeId(HOST, SPAWN2)}`, base: 'a'.repeat(40) };
     await makeStarter({ taskPort }).start(HOST, SPAWN2);
     expect(asked[1]).toEqual([4000]);
     expect(created[1].env).toMatchObject({ WMUX_TASK_PORT: '4001' });
@@ -765,7 +765,7 @@ describe('headless start: task port', () => {
     const wtDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hl-port-wt-'));
     try {
       fs.writeFileSync(path.join(wtDir, 'wmux.json'), JSON.stringify({ fanout: { portRange: '4300-4301' } }));
-      worktree = { ok: true, worktreePath: wtDir, cwd: wtDir, branch: `wmux/remote/${TREE}` };
+      worktree = { ok: true, worktreePath: wtDir, cwd: wtDir, branch: `wmux/remote/${TREE}`, base: 'a'.repeat(40) };
       const taskPort = (w: string, taken: ReadonlySet<number>) => pickHeadlessTaskPort(w, taken, async () => true);
       await makeStarter({ taskPort }).start(HOST, SPAWN);
       expect(starts.get(HOST, SPAWN)?.taskPort).toBe(4300);

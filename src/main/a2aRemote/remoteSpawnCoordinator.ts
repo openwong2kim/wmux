@@ -1,5 +1,6 @@
 import { agentLauncherStem, agentRow } from '../../shared/agentIdentity';
 import { firstRunEnvForAgent } from '../../shared/agentFirstRun';
+import { workerAutoUpdateEnv } from '../worktask/fanoutEnvironment';
 import { A2A_REMOTE_INBOUND_EVENT, A2A_REMOTE_RPC } from '../../shared/a2aRemoteDelivery';
 import {
   A2A_SPAWN_EVENT,
@@ -272,12 +273,15 @@ export class RemoteSpawnCoordinator {
       const made = await (this.deps.createWorktree ?? createSpawnWorktree)({ repoPath: claim.repoPath, sub: claim.sub, spawnId });
       if (!made.ok) return await undo(made.code, made.detail);
       tree = { repoPath: claim.repoPath, spawnId };
+      // Branched from origin's default branch as fetched now; when it could not be, from HEAD, said once here.
+      if (made.baseNote) this.deps.log('warn', `[remote-spawn] ${spawnId}: ${made.baseNote}`);
+      else if (made.baseRef) this.deps.log('info', `[remote-spawn] ${spawnId}: worktree from ${made.baseRef} at ${made.base}`);
       // The renderer takes a name of at most 64 characters (it drops the marker otherwise).
       const spawnedBy: A2aRemoteSpawnedBy = { hostId, name: claim.hostName.slice(0, 64), spawnId, agent: claim.agent };
       let opened: unknown;
       // The worktree is a folder nobody opened here: without the first-run env
       // Claude Code stops on its folder-trust prompt, as a fan-out worker would.
-      const paneEnv = firstRunEnvForAgent(agentLauncherStem(row));
+      const paneEnv = { ...workerAutoUpdateEnv(), ...firstRunEnvForAgent(agentLauncherStem(row)) };
       try {
         opened = await this.deps.sendToRenderer('fanout.spawnWorkspace', {
           name: `From ${claim.hostName}`,

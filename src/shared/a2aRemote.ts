@@ -311,6 +311,34 @@ export const REMOTE_APPROVAL_DONE_EVENT = 'a2a.remote.approval.done';
 export function remoteApprovalNoticeText(n: { pc: string | undefined; decision: A2aRemoteApprovalDecision; tool: string; pane: string | undefined }): string {
   return `${oneLineName(n.pc, 'Another PC')} ${n.decision === 'allow' ? 'allowed' : 'denied'} ${oneLineName(n.tool, 'a tool')} in ${oneLineName(n.pane, 'a pane')}`;
 }
+
+/**
+ * How long after a task to another PC is sent the sending PC waits for its
+ * `delivered` receipt before it tells the sender, once, that it has none
+ * (daemon/a2aRemote/undeliveredAlert.ts).
+ */
+export const REMOTE_UNDELIVERED_ALERT_MS = 90_000;
+
+/**
+ * The daemon event for that (data: `{ taskId, ptyId?, text }`); main shows it
+ * as a notification on the sending pane.
+ */
+export const REMOTE_TASK_UNDELIVERED_EVENT = 'a2a.remote.undelivered';
+
+/**
+ * The line for a task with no `delivered` receipt yet. `received`: the other
+ * PC acknowledged the task itself (it is there, not handed to its agent yet);
+ * otherwise it is still queued on this PC. `link` and `connected` are the
+ * link's state and whether that PC is connected now. `pc` is this PC's own
+ * name for it, cut to one plain line.
+ */
+export function remoteUndeliveredText(n: { pc: string | undefined; seconds: number; received: boolean; link: string; connected: boolean }): string {
+  const pc = oneLineName(n.pc, 'The other PC');
+  const state = `link ${oneLineName(n.link, 'unknown')}, ${n.connected ? 'connected' : 'not connected'}`;
+  return n.received
+    ? `${pc} took your task ${n.seconds} s ago but has not handed it to its agent yet (${state})`
+    : `${pc} has not received your task after ${n.seconds} s (${state}); it is still queued on this PC`;
+}
 /** A host's notice about one message the receiver sent (`held-notice.1`). Nothing in it is shown as written. */
 export interface A2aRemoteNoticeV1 {
   kind: 'held-expired';
