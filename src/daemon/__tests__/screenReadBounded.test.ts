@@ -34,8 +34,8 @@ const COLS = 120;
 const ROWS = 40;
 const RING = 2 * 1024 * 1024;
 
-function pane(paint: string[]) {
-  const ring = new RingBuffer(RING);
+function pane(paint: string[], capacity = RING) {
+  const ring = new RingBuffer(capacity);
   const modes = new OutputModeTracker();
   ring.noteGeometry(COLS, ROWS);
   const size = () => ({ cols: COLS, rows: ROWS });
@@ -127,6 +127,18 @@ describe("StallWatch's screen read on a wrapped ring", () => {
     await queuedScreenTail(p.sessions, 'pane', 'stallwatch');
     expect(parsed.length).toBe(1);
     expect(parsed[0]).toBeLessThan(screenCheckpointBytes(p.ring) + 16 * 1024);
+  });
+
+  it('a wrapped ring smaller than the tail still reads the cells only its checkpoint holds', async () => {
+    const small = 128 * 1024;
+    const p = pane(claudeScreen(), small);
+    await spin(p, small * 3);
+    expect(p.ring.totalBytesWritten).toBeGreaterThan(small);
+    const tail = await queuedScreenTail(p.sessions, 'pane', 'stallwatch');
+    const screen = await queuedScreenText(p.sessions, 'pane');
+    if (!tail?.ok || !screen?.ok) throw new Error('read failed');
+    expect(tail.rows[0].text).toBe('⏺ started the task');
+    expect(tail.rows.map((r) => r.text)).toEqual(screen.rows.map((r) => r.text));
   });
 
   it('parses nothing again while the ring has not moved', async () => {

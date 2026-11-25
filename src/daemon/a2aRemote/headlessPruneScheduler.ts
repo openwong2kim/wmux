@@ -129,6 +129,7 @@ export async function folderSize(dir: string, limits: { ms?: number; entries?: n
     // eslint-disable-next-line no-await-in-loop -- a walk, one folder at a time
     try { entries = await fs.promises.readdir(at, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
+      if (Date.now() > deadline || budget <= 0) return { bytes, complete: false };
       budget--;
       const p = path.join(at, entry.name);
       if (entry.isDirectory()) stack.push(p);

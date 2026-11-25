@@ -242,8 +242,9 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   // edge would leave almost nothing to replay, so start at an escape instead.
   const cut = tailCut(data, TAIL_BYTES, TAIL_LINE_WITHIN);
   if (cut === 0) {
-    // The whole ring fits: the tail is the whole replay.
-    const answer = await options.parse(wholeReplay());
+    // The whole ring fits: the tail is the whole replay. A screen read's is its checkpoint's, which may
+    // still hold cells a wrapped ring dropped (else the same whole ring).
+    const answer = screen ? await parseFallback() : await options.parse(wholeReplay());
     c.whole++;
     time(c, 'tailMs', performance.now() - started);
     return { ...answer, via: 'tail' };

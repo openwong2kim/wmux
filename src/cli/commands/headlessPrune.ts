@@ -1,4 +1,4 @@
-import { existsSync } from 'fs';
+import { closeSync, existsSync, openSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { gitRunner, type Git } from '../../main/a2aRemote/spawnWorktree';
 import { HeadlessStartStore, type HeadlessStartRecordV1 } from '../../daemon/a2aRemote/headlessStartStore';
@@ -130,6 +130,26 @@ async function judge(rec: HeadlessStartRecordV1, git: Git, policy: PrunePolicy, 
   return { ok: true, reason: `clean, ${[...new Set(ways)].join(' and ')}`, head, tip };
 }
 
+/**
+ * Take the worktree's index lock, as `git commit` does, so no commit lands
+ * between the last HEAD check and the removal (which deletes the lock with the
+ * worktree's git folder). Null when it cannot be taken: another git process
+ * holds it, or the folder could not be read. A writer that skips the index
+ * (`git commit-tree` and `update-ref`) is not held off.
+ */
+async function lockIndex(git: Git): Promise<(() => void) | null> {
+  const out = await git(['rev-parse', '--absolute-git-dir']);
+  const dir = out.stdout.trim();
+  if (out.code !== 0 || !dir) return null;
+  const lock = join(dir, 'index.lock');
+  try {
+    closeSync(openSync(lock, 'wx'));
+  } catch {
+    return null;
+  }
+  return () => { try { unlinkSync(lock); } catch { /* gone with the worktree */ } };
+}
+
 /** Where `branch` is checked out (in the repository or a worktree of it), or null when nowhere or not known to be. */
 async function checkedOutIn(git: Git, branch: string): Promise<string | null> {
   const out = await git(['worktree', 'list', '--porcelain']);
@@ -180,15 +200,23 @@ export async function pruneHeadless(
     }
     // The tip as judged: the branch goes only while it is still there.
     const tip = verdict.tip;
-    // HEAD again right before the removal: a commit made since (a detached one has no branch to keep it) keeps it all.
+    // No commit from here to the removal; then HEAD again: a commit made since (a detached one has no branch to keep it) keeps it all.
+    // eslint-disable-next-line no-await-in-loop -- one worktree at a time
+    const unlock = await lockIndex(git);
+    if (!unlock) {
+      kept.push({ ...entry, reason: 'its index is locked (another git process may be at work in it)', kind: 'other' });
+      continue;
+    }
     // eslint-disable-next-line no-await-in-loop -- one worktree at a time
     if (await revOf(git, 'HEAD') !== verdict.head) {
+      unlock();
       kept.push({ ...entry, reason: 'its HEAD moved while it was checked', kind: 'other' });
       continue;
     }
     // eslint-disable-next-line no-await-in-loop -- one worktree at a time
     const out = await gitAt(rec.repoPath)(['worktree', 'remove', rec.worktreePath]);
     if (out.code !== 0) {
+      unlock();
       kept.push({ ...entry, reason: `git worktree remove refused: ${(out.stderr || out.stdout).trim().split('\n')[0] ?? 'unknown'}`, kind: 'other' });
       continue;
     }

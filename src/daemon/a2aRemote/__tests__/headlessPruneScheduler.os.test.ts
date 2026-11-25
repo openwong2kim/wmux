@@ -154,6 +154,22 @@ describe("the daemon's 'merged' prune policy", () => {
     expect(res.kept.find((e) => e.spawnId === merged.spawnId)?.reason).toMatch(/not merged into origin's default branch/);
   });
 
+  it('keeps a merged worktree whose index another git process holds, and takes the lock it holds itself with the worktree', async () => {
+    const busy = endedStart();
+    sh(repo, 'push', '-q', 'origin', busy.branch!);
+    mergeUpstream(busy.branch!, 'merge');
+    const lock = path.join(sh(busy.worktreePath!, 'rev-parse', '--absolute-git-dir'), 'index.lock');
+    fs.writeFileSync(lock, '');
+    const held = await auto();
+    expect(held.removed).toEqual([]);
+    expect(held.kept.map((e) => [e.spawnId, e.reason])).toEqual([[busy.spawnId, expect.stringMatching(/index is locked/)]]);
+    expect(fs.existsSync(busy.worktreePath!)).toBe(true);
+    // The other process is done: the pass takes the lock itself, and it goes with the worktree's git folder.
+    fs.unlinkSync(lock);
+    expect((await auto()).removed.map((e) => e.spawnId)).toEqual([busy.spawnId]);
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
   it('the manual policy is unchanged: pushed-only work still goes there', async () => {
     const pushedOnly = endedStart();
     sh(repo, 'push', '-q', 'origin', pushedOnly.branch!);
@@ -219,6 +235,13 @@ describe('HeadlessPruneScheduler', () => {
     fs.symlinkSync(root, path.join(dir, 'loop'));
     expect(await folderSize(dir)).toEqual({ bytes: 1024, complete: true });
     expect((await folderSize(dir, { entries: 1 })).complete).toBe(false);
+    // A flat folder stops inside its one listing too.
+    const flat = path.join(root, 'flat');
+    fs.mkdirSync(flat);
+    fs.writeFileSync(path.join(flat, 'a'), Buffer.alloc(10));
+    fs.writeFileSync(path.join(flat, 'b'), Buffer.alloc(10));
+    expect(await folderSize(flat, { entries: 1 })).toEqual({ bytes: 10, complete: false });
+    expect(await folderSize(flat, { entries: 2 })).toEqual({ bytes: 20, complete: true });
     expect(keptSummary([{ spawnId: 's', hostId: 'h', worktreePath: dir, reason: 'r', kind: 'held' }], 1024, false))
       .toMatch(/kept 1 worktree\(s\), at least 1 KB: 1 with processes of their agent still running/);
   });
