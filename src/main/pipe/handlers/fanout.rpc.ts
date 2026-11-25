@@ -130,7 +130,7 @@ import {
 import { validateFanoutTaskGraph, type FanoutTaskGraph } from '../../../shared/fanoutTaskGraph';
 import { agentRow } from '../../../shared/agentIdentity';
 import { noteUsageReserveHeld, usageReserveHoldForAccount, usageReserveHoldForWorkspace, usageReserveRefusalText, type UsageReserveHold } from '../../usage/usageReserve';
-import { defaultTaskPaneShell, heldHomeKey, notePoolCallerFallback, openWorkersOn, pickFromPool, pickPoolTask, poolAllHeld, poolCandidates, poolFallsBackToCaller, poolHeldInPlace, poolTaskCallerLine, poolUsageKey, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
+import { defaultTaskPaneShell, heldHomeKey, notePoolCallerFallback, openWorkersOn, pickFromPool, pickPoolTask, poolAllHeld, poolCandidates, poolClaudeAccounts, poolFallsBackToCaller, poolHeldInPlace, poolTaskCallerLine, poolUsageKey, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
 import { getWslAccountState, type WslAccountState, type WslPlace } from '../../account/wslAccountState';
 import { POOL_DEFAULT_ACCOUNT, poolRefusalText } from '../../../shared/fanoutAccountPool';
 import { getAccountStore } from '../../account/accountStore';
@@ -734,11 +734,12 @@ export interface FanOutRpcDeps {
   taskPaneShell?: () => { wsl: boolean; distro: string | null };
   /** The WSL homes' sign-in and readings (default: main/account/wslAccountState.ts). */
   wslState?: Pick<WslAccountState, 'get' | 'reading'>;
-  /** Learn where a distro starts from the daemon's live plain panes, after a
-   *  restart (default: wslAccountState.ts learnFromLiveSessions). */
+  /** Learn where a distro starts, and which homes run a live claude, from
+   *  the daemon's sessions after a restart (default: wslAccountState.ts
+   *  learnFromLiveSessions). */
   learnWslStartPlaces?: (sessions: unknown[]) => void;
-  /** Whether a kept plain pane's start place is still to be learned (default:
-   *  wslAccountState.ts hasUnlearnedPlainPanes). */
+  /** Whether the daemon's sessions are still to be read for that (default:
+   *  wslAccountState.ts liveSessionsPending). */
   wslStartPlacesPending?: () => boolean;
   /** The usage key a workspace's Claude launches run on, an account id or
    *  'default' (default: its bound Claude account), and the open workers on
@@ -1543,10 +1544,10 @@ export function registerFanOutRpc(
     // Read whatever the default shell says now: it may be pushed after this
     // fan-out began, and the pick reads it again.
     const learnStartPlaces = async (): Promise<void> => {
-      if (!(deps.wslStartPlacesPending ?? (() => getWslAccountState().hasUnlearnedPlainPanes()))()) return;
+      if (!(deps.wslStartPlacesPending ?? (() => getWslAccountState().liveSessionsPending()))()) return;
       try {
         const sessions = await daemonRpc('daemon.listSessions', {});
-        if (Array.isArray(sessions)) (deps.learnWslStartPlaces ?? ((s: unknown[]) => getWslAccountState().learnFromLiveSessions(s as Array<Record<string, unknown>>)))(sessions);
+        if (Array.isArray(sessions)) (deps.learnWslStartPlaces ?? ((s: unknown[]) => getWslAccountState().learnFromLiveSessions(s as Array<Record<string, unknown>>, poolClaudeAccounts())))(sessions);
       } catch { /* not known: such a task runs on the caller's account */ }
     };
     let learning: Promise<void> | null = null;

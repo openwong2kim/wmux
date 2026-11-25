@@ -13,7 +13,10 @@
 //     home (usage.rpc.ts): the READING, stamped when it arrived;
 //   - a hook from a WSL claude whose transcript lies under that home's
 //     projects/ (a turn that failed on its sign-in, or one that worked): the
-//     SIGN-IN evidence.
+//     SIGN-IN evidence;
+//   - after a restart, a reattached pane whose live claude process (the
+//     daemon's process watch) runs on that home by its own env and user:
+//     live evidence, as a sample would be (learnFromLiveSessions).
 // It never asks the distro anything, never reads its files, and so never
 // boots a stopped one. Readings are mirrored into the usage trail under the
 // same key, which seeds them after a restart.
@@ -26,6 +29,7 @@ import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSONSync } from '../../daemon/util/atomicWrite';
 import { validWslTarget } from '../../shared/wslTarget';
+import { canonicalAccountFolder, wslAccountLinuxHome } from '../../shared/wslAccountHome';
 import type { UsageSnapshot } from '../claude/UsageApi';
 import { mergeLive, type UsageUpdate } from '../claude/usageMerge';
 import type { AccountQuotaReading } from '../../shared/accountQuota';
@@ -115,6 +119,8 @@ export class WslAccountState {
    *  distro starts (learnFromLiveSessions). */
   private readonly plainPanes = new Map<string, PlainPane>();
   private plainFile?: string;
+  /** The daemon's sessions were read for live claude homes in this run. */
+  private liveHomesRead = false;
 
   /**
    * `placesFile`: where the default places are kept across restarts, so the
@@ -246,7 +252,11 @@ export class WslAccountState {
    * it. In memory only, as from a plain create. Panes that are gone are
    * dropped from the file.
    */
-  learnFromLiveSessions(sessions: ReadonlyArray<{ id?: unknown; pid?: unknown; state?: unknown; wslTarget?: unknown; pidCreatedAtFt?: unknown; pidStartTime?: unknown; pidStartKernel?: unknown }>): void {
+  learnFromLiveSessions(
+    sessions: ReadonlyArray<{ id?: unknown; pid?: unknown; state?: unknown; wslTarget?: unknown; pidCreatedAtFt?: unknown; pidStartTime?: unknown; pidStartKernel?: unknown; env?: unknown; liveAgent?: unknown }>,
+    claudeAccounts?: ReadonlyArray<{ id: string; configDir: string }>,
+  ): void {
+    if (claudeAccounts) this.learnLiveHomes(sessions, claudeAccounts);
     if (this.plainPanes.size === 0) return;
     const live = new Set<string>();
     // Per distro asked for, the most recently started live pane (one started
@@ -272,6 +282,46 @@ export class WslAccountState {
     let dropped = false;
     for (const id of [...this.plainPanes.keys()]) if (!live.has(id)) { this.plainPanes.delete(id); dropped = true; }
     if (dropped) this.savePlainPanes();
+  }
+
+  /**
+   * After a restart, a pane that survived by reattach with claude still
+   * running in it (the daemon's process watch, `liveAgent`) on an account's
+   * home is live evidence for that home, as a sample from it would be: an
+   * idle claude does not redraw, so no sample comes on its own. The home is
+   * the one the session's own env and user give (as usage.rpc.ts reads a
+   * sample's), never a saved binding. A home whose last turn failed on its
+   * sign-in stays out (`signedIn` is not touched). Read once per run.
+   */
+  private learnLiveHomes(
+    sessions: ReadonlyArray<{ state?: unknown; wslTarget?: unknown; env?: unknown; liveAgent?: unknown }>,
+    claudeAccounts: ReadonlyArray<{ id: string; configDir: string }>,
+  ): void {
+    this.liveHomesRead = true;
+    let marked = false;
+    for (const s of sessions) {
+      if ((s?.state !== 'attached' && s?.state !== 'detached') || s.liveAgent !== 'claude' || !validWslTarget(s.wslTarget)) continue;
+      if (!s.env || typeof s.env !== 'object') continue;
+      const env: Record<string, string> = {};
+      for (const [k, v] of Object.entries(s.env)) if (typeof v === 'string') env[k] = v;
+      if (!wslAccountLinuxHome(env, 'claude', s.wslTarget.user)) continue;
+      const folder = canonicalAccountFolder(env.CLAUDE_CONFIG_DIR ?? '');
+      const place = { distribution: s.wslTarget.distribution, user: s.wslTarget.user };
+      for (const a of claudeAccounts) {
+        const key = canonicalAccountFolder(a.configDir) === folder ? wslStateKey(a.id, place) : null;
+        if (!key) continue;
+        this.entry(key).live = true;
+        marked = true;
+      }
+    }
+    if (marked) this.changed();
+  }
+
+  /** Whether the daemon's sessions are worth reading (learnFromLiveSessions):
+   *  live claude homes not read yet in this run, or a kept plain pane's
+   *  distro with no start place yet. */
+  liveSessionsPending(): boolean {
+    return !this.liveHomesRead || this.hasUnlearnedPlainPanes();
   }
 
   /** Whether a kept plain pane's distro has no start place in this run yet:

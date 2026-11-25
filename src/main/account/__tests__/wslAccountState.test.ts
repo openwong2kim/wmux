@@ -92,6 +92,29 @@ describe('wslAccountState', () => {
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('after a restart, takes a reattached pane with claude live on an account home as live evidence for that home only', () => {
+    const s = new WslAccountState(() => 5);
+    const accounts = [{ id: 'acc-a', configDir: 'C:\\Users\\me\\.wmux\\accounts\\a' }, { id: 'acc-b', configDir: 'C:\\Users\\me\\.wmux\\accounts\\b' }];
+    const onHome = (dir: string) => ({ CLAUDE_CONFIG_DIR: dir, WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR' });
+    // A's last turn failed on its sign-in: a live claude there does not undo that.
+    s.noteAuth('acc-a', PLACE, false);
+    expect(s.liveSessionsPending()).toBe(true);
+    s.learnFromLiveSessions([
+      { id: 'b', state: 'detached', liveAgent: 'claude', wslTarget: PLACE, env: onHome('c:/users/me/.wmux/accounts/b/') },
+      { id: 'a', state: 'attached', liveAgent: 'claude', wslTarget: PLACE, env: onHome(accounts[0].configDir) },
+      // Not evidence: no live claude, another agent, a restart's placeholder, a folder not marked as the account's.
+      { id: 'idle', state: 'attached', wslTarget: { distribution: 'Ubuntu', user: 'idle' }, env: onHome(accounts[1].configDir) },
+      { id: 'codex', state: 'attached', liveAgent: 'codex', wslTarget: { distribution: 'Ubuntu', user: 'codex' }, env: onHome(accounts[1].configDir) },
+      { id: 'gone', state: 'suspended', liveAgent: 'claude', wslTarget: { distribution: 'Ubuntu', user: 'gone' }, env: onHome(accounts[1].configDir) },
+      { id: 'plain', state: 'attached', liveAgent: 'claude', wslTarget: { distribution: 'Ubuntu', user: 'plain' }, env: { CLAUDE_CONFIG_DIR: accounts[1].configDir } },
+    ], accounts);
+    expect(s.get('acc-b', PLACE)).toMatchObject({ live: true, signedIn: null, sampleAtMs: null });
+    expect(s.get('acc-a', PLACE)).toMatchObject({ live: true, signedIn: false });
+    for (const user of ['idle', 'codex', 'gone', 'plain']) expect(s.get('acc-b', { distribution: 'Ubuntu', user })).toBeUndefined();
+    // Read once per run.
+    expect(s.liveSessionsPending()).toBe(false);
+  });
+
   it('learns the start place again after a restart only from a plain pane still running as the same process', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-plain-'));
     try {

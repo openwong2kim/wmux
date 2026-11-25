@@ -637,15 +637,21 @@ export function poolTaskCallerLine(index: number, p: Extract<PoolTaskPick, { kin
   return `[fanout-pool] task ${index + 1} runs on the caller's account: ${why}`;
 }
 
-/** After a restart, learn where a distro starts from the daemon's live plain
- *  panes (wslAccountState.ts learnFromLiveSessions), when one is still unknown. */
-export async function learnPoolStartPlaces(deps: { host?: FanoutAccountPoolHost | null; state?: Pick<WslAccountState, 'hasUnlearnedPlainPanes' | 'learnFromLiveSessions'> } = {}): Promise<void> {
+/** The registered Claude accounts, by folder: what a live pane's env is read against (learnFromLiveSessions). */
+export function poolClaudeAccounts(accounts: () => readonly Account[] = () => getAccountStore().listAccounts()): Array<{ id: string; configDir: string }> {
+  return accounts().filter((a) => a.vendor === 'claude').map((a) => ({ id: a.id, configDir: a.configDir }));
+}
+
+/** After a restart, learn from the daemon's live sessions where a distro
+ *  starts and which homes run a live claude (wslAccountState.ts
+ *  learnFromLiveSessions), while that is still to be read. */
+export async function learnPoolStartPlaces(deps: { host?: FanoutAccountPoolHost | null; state?: Pick<WslAccountState, 'liveSessionsPending' | 'learnFromLiveSessions'>; accounts?: () => readonly Account[] } = {}): Promise<void> {
   const h = deps.host === undefined ? host : deps.host;
   const state = deps.state ?? getWslAccountState();
-  if (!h?.daemonSessions || !state.hasUnlearnedPlainPanes()) return;
+  if (!h?.daemonSessions || !state.liveSessionsPending()) return;
   try {
     const sessions = await h.daemonSessions();
-    if (Array.isArray(sessions)) state.learnFromLiveSessions(sessions as Array<Record<string, unknown>>);
+    if (Array.isArray(sessions)) state.learnFromLiveSessions(sessions as Array<Record<string, unknown>>, poolClaudeAccounts(deps.accounts));
   } catch { /* not known: such a task runs on the caller's account */ }
 }
 

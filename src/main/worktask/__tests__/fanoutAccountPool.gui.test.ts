@@ -4,7 +4,8 @@
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { WORKER_SLOTS_FILENAME, WorkerSlots } from '../../factory/workerSlots';
-import { guiFanOutAccountPick, pickFromPool, type PickDeps, type PreparedPool } from '../fanoutAccountPool';
+import { guiFanOutAccountPick, learnPoolStartPlaces, pickFromPool, type FanoutAccountPoolHost, type PickDeps, type PreparedPool } from '../fanoutAccountPool';
+import type { Account } from '../../account/accountStore';
 import { DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS } from '../../../shared/fanoutAccountPool';
 import { WslAccountState } from '../../account/wslAccountState';
 import { trackedTempDir } from '../../../test-utils/trackedTempDir';
@@ -12,7 +13,7 @@ import { trackedTempDir } from '../../../test-utils/trackedTempDir';
 const BOX = { distribution: 'wmuxbox', user: 'box' };
 const reset = Math.floor(Date.now() / 1000) + 3600;
 
-function setup(over: { signedIn?: string[]; place?: typeof BOX; wsl?: boolean; held?: boolean } = {}) {
+function setup(over: { signedIn?: string[]; place?: typeof BOX; wsl?: boolean; held?: boolean; sessions?: (pool: PreparedPool) => unknown[] } = {}) {
   // Signed out on Windows: no Windows member; A and B are WSL members, C has no home in the distro.
   const pool: PreparedPool = {
     settings: { ...DEFAULT_FANOUT_ACCOUNT_POOL_SETTINGS, enabled: true },
@@ -25,7 +26,9 @@ function setup(over: { signedIn?: string[]; place?: typeof BOX; wsl?: boolean; h
   const slots = new WorkerSlots(path.join(trackedTempDir('wmux-slots-'), 'factory', WORKER_SLOTS_FILENAME), () => [], () => undefined);
   slots.load();
   const prepare = vi.fn(async () => pool);
-  const learn = vi.fn(async () => undefined);
+  const daemonHost = { daemonSessions: async () => over.sessions?.(pool) ?? [] } as unknown as FanoutAccountPoolHost;
+  const accounts = () => (pool.wslMembers ?? []).map((m) => ({ id: m.id, vendor: 'claude', configDir: m.configDir })) as unknown as Account[];
+  const learn = vi.fn(async () => { if (over.sessions) await learnPoolStartPlaces({ host: daemonHost, state: wslState, accounts }); });
   const log = vi.fn();
   const notifyFallback = vi.fn();
   const untilMs = Date.now() + 3_600_000;
@@ -35,7 +38,7 @@ function setup(over: { signedIn?: string[]; place?: typeof BOX; wsl?: boolean; h
     paneShell: () => ({ wsl: over.wsl ?? true, distro: 'wmuxbox' }),
     defaultPlace: () => ('place' in over ? over.place : BOX),
   });
-  return { accountPick, prepare, learn, log, notifyFallback, slots };
+  return { accountPick, prepare, learn, log, notifyFallback, slots, wslState };
 }
 
 describe('a GUI fan-out\'s account pick', () => {
@@ -55,6 +58,20 @@ describe('a GUI fan-out\'s account pick', () => {
     // One read of the pool for the batch, and the start places learned after it.
     expect(h.prepare).toHaveBeenCalledTimes(1);
     expect(h.learn).toHaveBeenCalledTimes(1);
+    expect(h.notifyFallback).not.toHaveBeenCalled();
+  });
+
+  it('after an app restart, picks a home whose reattached pane still runs claude, with no turn or sample since', async () => {
+    // The daemon kept B's pane: same process, claude idle on B's home (no redraw, so no sample comes).
+    const h = setup({
+      signedIn: [],
+      sessions: (pool) => [{
+        id: 'pty-b', state: 'attached', liveAgent: 'claude', wslTarget: BOX,
+        env: { CLAUDE_CONFIG_DIR: pool.wslMembers![1].configDir!, WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR' },
+      }],
+    });
+    await h.accountPick.prepare({ index: 0 });
+    expect(h.accountPick.pick({ index: 0, cwd: 'C:\\wt' })).toEqual({ accountId: 'acc-b', wslPlace: BOX });
     expect(h.notifyFallback).not.toHaveBeenCalled();
   });
 
