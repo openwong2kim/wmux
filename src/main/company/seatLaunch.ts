@@ -13,6 +13,7 @@ import { getWmuxDir } from '../../daemon/config';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { agentLauncherStem, agentRow, isAgentSlug } from '../../shared/agentIdentity';
 import { firstRunEnvForAgent } from '../../shared/agentFirstRun';
+import { workerAutoUpdateEnv } from '../worktask/fanoutEnvironment';
 import { COMPANY_TEXT_MAX as TEXT_MAX, companySeatsError, freeSeatLabels, ownWorktreeSeats, seatBrief } from '../../shared/companyPreset';
 import { normalizePaneLabel, paneLabelShapeError } from '../../shared/paneLabelRules';
 import { PANE_METADATA_LABEL_MAX } from '../../shared/types';
@@ -261,7 +262,8 @@ export async function seatLaunches(req: unknown, deps: SeatLaunchDeps = {}): Pro
     // the first-run screens (the folder-trust one) in a folder wmux just made.
     const launchEnvs = seats.map((seat) => {
       const row = seat.agent ? agentRow(seat.agent) : undefined;
-      const env = row ? firstRunEnvForAgent(agentLauncherStem(row), deps.env) : {};
+      // And its updater off unless the user's env sets it (workerAutoUpdateEnv).
+      const env = row ? { ...workerAutoUpdateEnv(deps.env), ...firstRunEnvForAgent(agentLauncherStem(row), deps.env) } : {};
       return Object.keys(env).length > 0 ? env : null;
     });
     return { ok: true, labels, commands, cwds: made.map((s) => s.worktree?.path ?? null), launchEnvs };
@@ -358,7 +360,7 @@ export async function hireSeat(req: unknown, deps: SeatLaunchDeps = {}): Promise
     }), { encoding: 'utf8', flag: 'wx' });
     // As a remote start's pane: the agent was asked for here, so it does not
     // stop on the first-run screens in a folder wmux just made.
-    const env = firstRunEnvForAgent(agentLauncherStem(row), deps.env);
+    const env = { ...workerAutoUpdateEnv(deps.env), ...firstRunEnvForAgent(agentLauncherStem(row), deps.env) };
     return {
       ok: true,
       label,

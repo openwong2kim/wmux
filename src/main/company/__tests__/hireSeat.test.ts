@@ -35,7 +35,7 @@ describe('hireSeat', () => {
   it('starts the agent with its brief where the panes start when the company has no folder and no other agent seat', async () => {
     const res = await hireSeat(req(), deps);
     const file = path.join(dir, 'company-briefs', 'ws-1', `hire-dev-${NOW}.md`);
-    expect(res).toEqual({ ok: true, label: 'dev', command: `claude "$(cat '${file}')"`, cwd: null, launchEnv: { CLAUDE_CODE_SANDBOXED: '1' } });
+    expect(res).toEqual({ ok: true, label: 'dev', command: `claude "$(cat '${file}')"`, cwd: null, launchEnv: { CLAUDE_CODE_SANDBOXED: '1', DISABLE_AUTOUPDATER: '1' } });
     const brief = fs.readFileSync(file, 'utf8');
     expect(brief).toContain('You are #dev in the company "checkout" in wmux. Your CEO is #ceo.');
     expect(brief).toContain('You own: Payments.');
@@ -46,8 +46,11 @@ describe('hireSeat', () => {
   });
 
   it('starts with no first-run env when the owner turned the first-run handling off', async () => {
-    const res = await hireSeat(req(), { ...deps, env: { WMUX_AGENT_FIRST_RUN: 'off' } });
+    const res = await hireSeat(req(), { ...deps, env: { WMUX_AGENT_FIRST_RUN: 'off', DISABLE_AUTOUPDATER: '0' } });
     expect(res.ok && res.launchEnv).toBe(undefined);
+    // The updater is off apart from the first-run handling, unless the user's env sets it.
+    const off = await hireSeat(req({ seat: { label: 'dev2', owns: 'Payments', agent: 'claude' } }), { ...deps, env: { WMUX_AGENT_FIRST_RUN: 'off' } });
+    expect(off.ok && off.launchEnv).toEqual({ DISABLE_AUTOUPDATER: '1' });
   });
 
   it('writes beside the briefs a preset left, and never over one', async () => {
