@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -78,14 +79,23 @@ describe('newPackagesForCommand', () => {
     write('package.json', JSON.stringify({ dependencies: {} }));
     const sub = path.join(root, 'locked');
     fs.mkdirSync(sub);
-    fs.chmodSync(sub, 0o000);
+    // EACCES from the stat itself, not from a chmod: Windows does not honour
+    // POSIX modes, so a chmod-made failure is a stat that succeeds there.
+    const stat = fsp.stat.bind(fsp);
+    const spy = vi.spyOn(fsp, 'stat').mockImplementation((async (p: fs.PathLike, ...rest: unknown[]) => {
+      if (path.resolve(String(p)) === path.join(sub, 'package.json')) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      return stat(p, ...(rest as []));
+    }) as typeof fsp.stat);
     try {
       // `locked/package.json` cannot be told present or absent (EACCES): no
       // line, where reading on to the root's empty package.json would say `x`.
       expect(await names('npm i x', sub)).toBeUndefined();
+      expect(spy).toHaveBeenCalled();
     } finally {
-      fs.chmodSync(sub, 0o755);
+      spy.mockRestore();
     }
+    // The same folder once its stat answers: absent, so the root's empty package.json says `x`.
+    expect(await names('npm i x', sub)).toEqual(['x<package.json']);
   });
 
   it('looks up to the repo root (a `.git` file in a worktree), not past it', async () => {
