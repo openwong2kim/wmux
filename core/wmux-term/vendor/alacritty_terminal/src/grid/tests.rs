@@ -277,6 +277,25 @@ fn shrink_reflow_skips_the_paragraph_the_moved_cursor_row_is_in() {
     assert_eq!(grid.cursor.point.line, Line(1));
 }
 
+/// wmux: a row erased with a background color has no content for xterm, so
+/// a narrowing cuts it instead of wrapping its blank cells onto a new row.
+#[test]
+fn shrink_reflow_cuts_an_erased_row() {
+    use crate::vte::ansi::{Color, NamedColor};
+    let mut grid = Grid::<Cell>::new(3, 4, 10);
+    let mut bg = Cell::default();
+    bg.bg = Color::Named(NamedColor::Green);
+    for x in 0..4 {
+        grid[Line(1)][Column(x)] = bg.clone();
+    }
+    grid[Line(1)].mark_erased_from(0);
+    grid.cursor.point = Point::new(Line(0), Column(0));
+    grid.resize(true, 3, 2);
+    assert_eq!(grid.history_size(), 0);
+    assert!(!grid[Line(1)][Column(1)].flags.contains(Flags::WRAPLINE));
+    assert_eq!(grid[Line(1)].empty_from(), Some(0));
+}
+
 #[test]
 fn shrink_reflow_twice() {
     let mut grid = Grid::<Cell>::new(1, 5, 2);

@@ -121,9 +121,17 @@ impl<T: Default> Row<T> {
             return None;
         }
 
+        // wmux: the cells an erase left at the edge of a paragraph's last row
+        // carry no content in xterm, whatever their background, so they are
+        // cut, not wrapped. A row that wraps on counts its whole width there
+        // (`getWrappedLineTrimmedLength`).
+        let wraps = self.inner.last().is_some_and(|cell| cell.flags().contains(Flags::WRAPLINE));
+        let written = if wraps { self.inner.len() } else { self.empty_from().unwrap_or(self.inner.len()) };
+
         // Split off cells for a new row.
         let mut new_row = wmux_alloc::split_off(&mut self.inner, columns, ROW);
-        let index = new_row.iter().rposition(|c| !c.is_empty()).map_or(0, |i| i + 1);
+        let written = written.saturating_sub(columns).min(new_row.len());
+        let index = new_row[..written].iter().rposition(|c| !c.is_empty()).map_or(0, |i| i + 1);
         new_row.truncate(index);
 
         self.occ = min(self.occ, columns);

@@ -76,6 +76,10 @@ export const reflowCases: Case[] = [
   // No history: the rows xterm drops are a reflowed paragraph's own (the
   // bottom row), and it keeps that paragraph's end. Refused.
   script('reflow-below-cursor-drops-reflowed-row', [80, 24], [`${rows(2, 70)}\x1b[24H${'z'.repeat(70)}\x1b[1H`, [40, 24]], 'xterm'),
+  // Rows erased with a background color below the cursor (SGR 42, then EL):
+  // their cells carry no content for xterm, so they do not reflow.
+  script('reflow-below-cursor-bg-erased-rows', [80, 24], [`${rows(2, 70)}\r\n\x1b[42m\x1b[2K\r\n\x1b[2Kx\x1b[0m\r\nab\x1b[43m\x1b[K\x1b[0m\x1b[1H`, [40, 24]]),
+  script('reflow-below-cursor-bg-erased-history', [80, 24], [`${rows(30, 20)}\r\n${rows(2, 70)}\r\n\x1b[42m\x1b[2K\x1b[0m\r\nab\x1b[43m\x1b[K\x1b[0m\x1b[20H`, [40, 24]]),
   // Wider: xterm counts every row the reflow removes, above or below the
   // cursor: each takes a history row first, then moves both cursors up.
   script('widen-below-cursor', [40, 24], [`${rows(4, 70)}\x1b[2H`, [80, 24]]),

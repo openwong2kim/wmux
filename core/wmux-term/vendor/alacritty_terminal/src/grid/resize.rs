@@ -631,12 +631,12 @@ fn narrowing_plan<T: GridCell>(
         if reflows(lo, hi) {
             let at = (total - 1) as isize - (ybase + y) as isize;
             if (lo as isize..=hi as isize).contains(&at) {
-                plan.skipped.push(lo..=hi);
+                wmux_alloc::push(&mut plan.skipped, lo..=hi, REFLOW);
             } else {
                 plan.cursor_reflowed |= cursor_paragraph.contains(&lo);
                 // Rows dropped before xterm reached it: it reflows what is left.
                 plan.clips_reflowed |= lo < dropped;
-                reflowed.push((lo, hi));
+                wmux_alloc::push(&mut reflowed, (lo, hi), REFLOW);
                 let count = hi - lo + 1;
                 let added = new_row_count(&rows[lo..=hi], old, columns).saturating_sub(count);
                 let trimmed = if ybase == 0 && y + 1 != len {
@@ -668,9 +668,12 @@ fn narrowing_plan<T: GridCell>(
 }
 
 /// xterm's `BufferLine.getTrimmedLength`: up to the last cell with content,
-/// a fullwidth glyph counting both its cells.
+/// a fullwidth glyph counting both its cells. The cells an erase left at the
+/// row's edge (`Row::empty_from`) carry no content there, whatever their
+/// background: xterm tests content, not the cell's look.
 fn trimmed_length<T: GridCell>(row: &Row<T>) -> usize {
-    match (0..row.len()).rev().find(|&x| !row[Column(x)].is_empty()) {
+    let written = row.empty_from().unwrap_or(row.len());
+    match (0..written).rev().find(|&x| !row[Column(x)].is_empty()) {
         Some(x) if row[Column(x)].flags().contains(Flags::WIDE_CHAR) => x + 2,
         Some(x) => x + 1,
         None => 0,

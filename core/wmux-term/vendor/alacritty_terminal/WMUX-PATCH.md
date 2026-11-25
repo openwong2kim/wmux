@@ -44,6 +44,15 @@ Local changes:
   and reflow the cursor's own; this grid now does the same, and the cursor
   keeps its column through such a reflow. `new_row_count` is xterm's
   `reflowSmallerGetNewLineLengths` count. Added 2026-11-25.
+- `src/grid/row.rs` `Row::shrink` and `resize.rs` `trimmed_length`: the cells
+  an erase left at a row's edge (`empty_from`) carry no content for xterm,
+  whatever their background (`getTrimmedLength` tests content), so a narrowing
+  cuts them instead of wrapping them onto a new row, and the plan does not
+  count them. Before, a row erased with a background color (`CSI 2 K` after
+  `SGR 42`) reflowed at its full width. `src/term/mod.rs` `line_down` drops a
+  row's wrap flag through `Row::take_wrap`, so a line feed no longer counts
+  the whole row as written and loses that empty run (an erased row was then
+  replayed as printed blanks). Added 2026-11-25.
 - `src/grid/mod.rs` `narrowing_clipped`, set by `shrink_columns` and reset by
   every `Grid::resize`: with no history, xterm drops the buffer's last rows
   before it inserts any new row (`lines.pop()`), so where one belongs to a
