@@ -18,9 +18,11 @@ function makeFakePty(): { pty: IPty; feed: (data: string) => void } {
       dataHandler = cb;
       return { dispose: () => { dataHandler = null; } };
     },
-    onExit: () => ({ dispose: () => {} }),
+    onExit: () => ({ dispose: () => { /* no-op */ } }),
   } as unknown as IPty;
-  return { pty, feed: (data: string) => dataHandler?.(data) };
+  // The bridge analyses a chunk after forwarding it (M3 A1): one turn of
+  // the (fake) event loop lets that analysis run, as it did inside the call.
+  return { pty, feed: (data: string) => { dataHandler?.(data); vi.advanceTimersByTime(0); } };
 }
 
 describe('DaemonPTYBridge — interrupted-turn row', () => {

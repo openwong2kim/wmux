@@ -218,6 +218,8 @@ export class DaemonPTYBridge extends EventEmitter {
   private static readonly MAX_HELD_TAIL_BYTES = 2 * 1024 * 1024;
   /** The unmuted capture path, set by setupDataForwarding; replays held chunks. */
   private captureChunk: ((data: string, buf: Buffer) => void) | null = null;
+  /** The current setup's pending chunk analysis (setupDataForwarding): run it now, or drop it. */
+  private analysis: { flush: () => void; drop: () => void } | null = null;
 
   /** See armStartupDa1Reply. Null once the startup window has closed. */
   private startupDa1: {
@@ -526,6 +528,7 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /** Called by DaemonSessionManager.resizeSession on every applied resize. */
   noteResize(): void {
+    this.flushPendingDetection();
     this.agentDetector?.invalidateApprovalScreen();
     this.lastResizeAtMs = Date.now();
     // One event for BOTH resize paths (the phone's /api/sessions/:id/resize and
@@ -542,6 +545,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * faithfully — see util/outputModeTracker.ts.
    */
   get outputModes(): OutputModes | null {
+    this.flushPendingDetection();
     return this.modeTracker;
   }
 
@@ -561,6 +565,7 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   noteInput(data: string, opts: { selfWrite: true }): number;
   noteInput(data: string, opts: boolean | { selfWrite: true } = false): void | number {
+    this.flushPendingDetection();
     if (typeof opts === 'object') {
       if (data.length > 0) {
         this.agentDetector?.invalidateApprovalScreen();
@@ -701,6 +706,9 @@ export class DaemonPTYBridge extends EventEmitter {
     if (!DaemonPTYBridge.transcriptTurnEndProbe) return;
     const probe = (): void => {
       this.dialogCancelTimer = null;
+      // Output that arrived before this timer is analysed first, as it was then
+      // (after the slot is cleared: the analysis may arm a new probe).
+      this.flushPendingDetection();
       // Already reported, or a later dialog Esc owns its own read.
       if (this.dialogCancel?.escAt !== escAt) return;
       const endedAt = DaemonPTYBridge.transcriptTurnEndProbe?.(sessionId);
@@ -739,6 +747,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * does nothing, when the pane was not awaiting.
    */
   clearAwaiting(reason: 'screen-cleared'): boolean {
+    this.flushPendingDetection();
     if (!this.awaitingHuman) return false;
     this.startAnsweredTurn(true, reason);
     return true;
@@ -752,6 +761,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * NEWER question, nor a permission dialog that went up in between.
    */
   clearAnsweredQuestion(answeredAt: number): boolean {
+    this.flushPendingDetection();
     if (!this.awaitingHuman || this.awaitingQuestionAt === null) return false;
     if (answeredAt < this.awaitingQuestionAt) return false;
     this.startAnsweredTurn(true, 'input');
@@ -764,11 +774,13 @@ export class DaemonPTYBridge extends EventEmitter {
    * recognised answer key would have done it.
    */
   noteSubmitted(): void {
+    this.flushPendingDetection();
     this.startAnsweredTurn(this.awaitingHuman, 'input');
   }
 
   /** Whether the pane is blocked on a human right now. */
   isAwaitingHuman(): boolean {
+    this.flushPendingDetection();
     return this.awaitingHuman;
   }
 
@@ -854,6 +866,7 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /** Whether the composer holds a typed but unsubmitted draft. */
   hasDraft(): boolean {
+    this.flushPendingDetection();
     return this.draftPending;
   }
 
@@ -862,6 +875,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * mark, unless a key arrived since `keyRevision` was read before that frame.
    */
   clearDraftIfUnchanged(keyRevision: number): boolean {
+    this.flushPendingDetection();
     if (this.keyInputRevision !== keyRevision) return false;
     this.draftPending = false;
     return true;
@@ -892,6 +906,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * settles or runs the turn.
    */
   noteAgentStatus(status: AgentEventStatus, authoritative = false, questionAt?: number, provisional = false, signalTs?: number, source?: 'program'): void {
+    this.flushPendingDetection();
     const program = source === 'program';
     if (!authoritative && !program && this.programMutesScreen(status)) return;
     this.spinnerArmedCycle = false;
@@ -1001,39 +1016,49 @@ export class DaemonPTYBridge extends EventEmitter {
    * pane nobody has typed into is quiet from the moment it spawns.
    */
   isInputQuiet(): boolean {
+    this.flushPendingDetection();
     return Date.now() - this.lastInputAt >= DaemonPTYBridge.INPUT_ECHO_QUIET_MS;
   }
 
   /** #1621 — an episode is open (a submit or running edge not yet settled). */
   isTurnOpen(): boolean {
+    this.flushPendingDetection();
     return this.turnOpen;
   }
 
   /** Milliseconds since the pane's last settled status (a turn's result),
    *  or null when none settled since its current agent started. */
   settledAgoMs(): number | null {
+    this.flushPendingDetection();
     return this.settledAtMs > 0 ? Math.max(0, Date.now() - this.settledAtMs) : null;
   }
 
   /** #1621 — an authoritative hook has reported on this pane's current agent. */
   hasHookReports(): boolean {
+    this.flushPendingDetection();
     return this.hookSeen;
   }
 
   /** Current stdin generation; every non-empty write advances it once. */
-  isEmptyShellPrompt(): boolean { return this.emptyShellPrompt; }
+  isEmptyShellPrompt(): boolean {
+    this.flushPendingDetection();
+    return this.emptyShellPrompt;
+  }
 
   getInputRevision(): number {
+    this.flushPendingDetection();
     return this.inputRevision;
   }
 
   /** Stdin generation counting only writes that can act on the screen (see the field). */
   getKeyInputRevision(): number {
+    this.flushPendingDetection();
     return this.keyInputRevision;
   }
 
   /** The epoch `getKeyInputRevision` counts in (see the field). */
   getKeyEpoch(): string {
+    this.flushPendingDetection();
     return this.keyEpoch;
   }
 
@@ -1045,6 +1070,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * whether the shell has already drawn that prompt or not.
    */
   rebaseShellKeyInput(keyRevision: number): void {
+    this.flushPendingDetection();
     if (this.shellCommandRunning) {
       this.shellCommandKeyRevision = Math.max(this.shellCommandKeyRevision, keyRevision);
       return;
@@ -1061,21 +1087,25 @@ export class DaemonPTYBridge extends EventEmitter {
   /** `isInputQuiet` for writes that can act on the screen only: focus and
    *  pointer-motion reports do not break the quiet (#1680). */
   isKeyInputQuiet(): boolean {
+    this.flushPendingDetection();
     return Date.now() - this.lastKeyInputAt >= DaemonPTYBridge.INPUT_ECHO_QUIET_MS;
   }
 
   /** Milliseconds since the last key input (focus and pointer reports excluded). */
   keyInputIdleMs(): number {
+    this.flushPendingDetection();
     return Date.now() - this.lastKeyInputAt;
   }
 
   /** `isKeyInputQuiet` over a caller-chosen window: no key input for `ms`. */
   isKeyInputQuietFor(ms: number): boolean {
+    this.flushPendingDetection();
     return Date.now() - this.lastKeyInputAt >= ms;
   }
 
   /** Actual submitted input/hook work, excluding terminal redraw activity. */
   getLastTurnStartedAt(): number {
+    this.flushPendingDetection();
     return this.lastTurnStartedAt;
   }
 
@@ -1117,6 +1147,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * (noteClaudeTitle); a submit that only answered a dialog draws none.
    */
   isAgentMidTurn(): boolean {
+    this.flushPendingDetection();
     return this.turnOpen && !this.bootEpisode && (this.hookSeen || this.programStatusSeen || this.trackedAgent?.alive === true);
   }
 
@@ -1222,6 +1253,9 @@ export class DaemonPTYBridge extends EventEmitter {
       if (this.titleCycleTimer) clearTimeout(this.titleCycleTimer);
       this.titleCycleTimer = setTimeout(() => {
         this.titleCycleTimer = null;
+        // Output that arrived before this timer is analysed first, as it was then
+        // (after the slot is cleared: the analysis may arm a new cycle timer).
+        this.flushPendingDetection();
         // Only the cycle the title armed, unclaimed: output, a submit, an idle
         // or a hook took any other over, and it is theirs to end.
         if (!this.titleCycleStillPending()) {
@@ -1451,6 +1485,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * which is how the cwd moves back once the agent exits to the prompt.
    */
   forgetEmittedCwd(): void {
+    this.flushPendingDetection();
     this.lastEmittedOscCwd = null;
     this.lastDetectedPromptCwd = '';
   }
@@ -1464,6 +1499,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * reported as `turnInterrupted`, since a hook-governed pane settles only on that.
    */
   noteTranscriptTurnEnd(at: number): void {
+    this.flushPendingDetection();
     if ((this.turnOpen || this.turnSoftClosed) && !this.awaitingHuman && at >= this.turnOpenedAt) {
       const declined = this.takeDialogCancel(at);
       this.closeTurn();
@@ -1479,6 +1515,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * none of its stops will end it.
    */
   noteNoTranscriptTurn(): void {
+    this.flushPendingDetection();
     // A real prompt reaches the rollout within milliseconds of its Enter; only
     // an episode that has stayed empty past the grace is taken as no turn.
     if (Date.now() - this.turnOpenedAt < NO_TRANSCRIPT_TURN_GRACE_MS) return;
@@ -1514,10 +1551,12 @@ export class DaemonPTYBridge extends EventEmitter {
    * it to tell whether a watched agent's death may have a successor.
    */
   getCommandStarts(): number | undefined {
+    this.flushPendingDetection();
     return this.parsesOsc133 ? this.commandStarts : undefined;
   }
 
   noteAgentEnded(clearDetectorIdentity = true): void {
+    this.flushPendingDetection();
     this.closeTurn();
     this.hookSeen = false;
     this.endProgramStatusEpisode();
@@ -1708,6 +1747,9 @@ export class DaemonPTYBridge extends EventEmitter {
     if (this.programQuietTimer) clearTimeout(this.programQuietTimer);
     this.programQuietTimer = setTimeout(() => {
       this.programQuietTimer = null;
+      // Output that arrived before this timer is analysed first, as it was then
+      // (after the slot is cleared: the analysis may arm a new check).
+      this.flushPendingDetection();
       const root = this.programStatus.root();
       if (!this.programWorking() || !root || this.sessionId !== sessionId) return;
       // Output or a report since: wait out the bound from the later of them.
@@ -1782,17 +1824,20 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /** The root OSC 7501 record (a copy), or undefined. */
   getProgramStatus(): ProgramStatusRecord | undefined {
+    this.flushPendingDetection();
     const root = this.programStatus.root();
     return root ? { ...root } : undefined;
   }
 
   /** Whether the program's own reports drive this pane's turn state now. */
   isProgramStatusDriving(): boolean {
+    this.flushPendingDetection();
     return this.programStatusSeen;
   }
 
   /** The host supplies a parsed live viewport with output/geometry fences. */
   setApprovalScreenReader(reader: ApprovalScreenReader): void {
+    this.flushPendingDetection();
     this.approvalScreenReader = reader;
   }
 
@@ -1813,6 +1858,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * already picked is never ended by its predecessor's late death edge.
    */
   noteAgentProcess(state: { slug?: string; pid?: number; alive: boolean; observedAt?: number; replacedLive?: true; identityEpoch?: number | null }): void {
+    this.flushPendingDetection();
     const detector = this.agentDetector;
     const now = Date.now();
     const boundaryAt = Math.max(this.identityLifetimeAt, detector?.getIdentityBoundaryAt() ?? 0);
@@ -1858,6 +1904,7 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /** Capture before an async probe, not when its result is delivered. */
   captureIdentityProbe(): { epoch: number; isCurrent: () => boolean } | undefined {
+    this.flushPendingDetection();
     const detector = this.agentDetector;
     if (!detector) return undefined;
     const epoch = detector.getIdentityEpoch();
@@ -1866,6 +1913,7 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /** Fresh hook identity may enable screen fallback patterns, never a turn. */
   noteHookAgentIdentity(signal: AgentSignal, canonical: CanonicalAgentIdentity | undefined): boolean {
+    this.flushPendingDetection();
     const detector = this.agentDetector;
     if (!detector || !this.sessionId || canonical?.source !== 'hook' || canonical.slug !== signal.agent) return false;
     if (!canSeedHookIdentity(signal, {
@@ -1907,6 +1955,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * dialog is left as it is.
    */
   noteServerLost(): void {
+    this.flushPendingDetection();
     if (!this.turnOpen && !this.awaitingHuman) return;
     if (this.awaitingHuman) {
       this.awaitingHuman = false;
@@ -1921,6 +1970,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * current state: the last submit/hook, or a later byte-promoted episode.
    */
   getTurnEvidenceStartedAt(): number {
+    this.flushPendingDetection();
     return Math.max(this.lastTurnStartedAt, this.turnOpen ? this.turnOpenedAt : 0);
   }
 
@@ -1931,6 +1981,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * before the first episode.
    */
   getTurn(chatStatus: AgentStatus): { id: string; state: 'running' | 'idle'; startedAt?: number } {
+    this.flushPendingDetection();
     const running = this.turnOpen && (chatStatus === 'running' || chatStatus === 'awaiting_input');
     return {
       id: `t1:${this.turnNonce}.${this.turnSeq}`,
@@ -1946,6 +1997,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * it. Null when it predates both. Before the first episode: current, no id.
    */
   turnAt(ts: number): { turnId?: string; current: boolean } | null {
+    this.flushPendingDetection();
     if (this.turnSeq === 0) return { current: true };
     if (ts >= this.turnOpenedAt) return { turnId: `t1:${this.turnNonce}.${this.turnSeq}`, current: true };
     if (this.turnSeq > 1 && ts >= this.prevTurnOpenedAt) return { turnId: `t1:${this.turnNonce}.${this.turnSeq - 1}`, current: false };
@@ -1958,6 +2010,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * is open or soft-closed, or before the first episode.
    */
   endedTurnId(): string | null {
+    this.flushPendingDetection();
     if (this.turnSeq === 0 || this.turnOpen || this.turnSoftClosed) return null;
     return `t1:${this.turnNonce}.${this.turnSeq}`;
   }
@@ -1968,6 +2021,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * is, so every surface serves one `turnId`/`at`; `fresh` is false then.
    */
   noteTurnFailure(failure: TurnFailure, agentSessionId?: string): { failure: TurnFailure; fresh: boolean } {
+    this.flushPendingDetection();
     const held = this.lastFailure?.failure;
     if (held && held.turnId === failure.turnId) return { failure: held, fresh: false };
     this.lastFailure = { failure, ...(agentSessionId ? { agentSessionId } : {}) };
@@ -1976,11 +2030,13 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /** The failure of the last turn, while no later turn has started. */
   getLastFailure(): { failure: TurnFailure; agentSessionId?: string } | undefined {
+    this.flushPendingDetection();
     return this.lastFailure ?? undefined;
   }
 
   /** When a lone Esc was last written to this PTY, from any source; 0 = never. */
   getLastEscAt(): number {
+    this.flushPendingDetection();
     return this.lastEscAt;
   }
 
@@ -2040,6 +2096,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * else a key would change (input revision, answered prompts) moves.
    */
   noteInterrupt(): void {
+    this.flushPendingDetection();
     this.lastEscAt = Date.now();
   }
 
@@ -2048,6 +2105,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * the root OSC 7501 state while the agent's reports drive the pane.
    */
   getTitle(): TitleEvidence {
+    this.flushPendingDetection();
     const slug = this.programStatusSeen ? this.programAgentSlug : null;
     const root = slug ? this.programStatus.root() : undefined;
     return {
@@ -2067,6 +2125,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * will follow, so the pre-turn idle is reported here.
    */
   noteSessionStart(signalTs: number, source: unknown): void {
+    this.flushPendingDetection();
     const atIdlePrompt = this.explicitTerminalStatus && this.settledStatus === 'waiting' && !this.awaitingHuman;
     const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, prevTurnOpenedAt, turnSoftClosed, codexBootWindow, bootEpisode, byteOpenedTurn, spinnerOpenedTurn, lastFailure } = this;
     this.noteAgentStatus('running', true);
@@ -2135,6 +2194,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * SessionStart, so it does not count as a turn.
    */
   isPreTurn(): boolean {
+    this.flushPendingDetection();
     return this.preTurn;
   }
 
@@ -2173,6 +2233,18 @@ export class DaemonPTYBridge extends EventEmitter {
   // eslint-disable-next-line no-control-regex
   private static readonly ANSI_STRIP = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[[?]?[0-9;]*[hlm]/g;
 
+  /**
+   * M3 A1: run, now, the analysis of every chunk already written to the ring
+   * and forwarded. Every entry point that reads or changes what that analysis
+   * produces calls this first, so it sees the stream as of its own call, as
+   * when the analysis ran inside the PTY callback. Called from inside the
+   * analysis (an event listener, a screen re-read) it does nothing: the
+   * caller sees the state as of the chunk being analysed, as it did then.
+   */
+  flushPendingDetection(): void {
+    this.analysis?.flush();
+  }
+
   setupDataForwarding(
     ptyProcess: IPty,
     ringBuffer: RingBuffer,
@@ -2187,6 +2259,11 @@ export class DaemonPTYBridge extends EventEmitter {
      */
     shellMarks: 'exec' | 'integrated' | 'plain' = 'plain',
   ): void {
+    // A respawn: the previous process's chunks are analysed against its own
+    // state (interpreter, detector, ring) before any of it is replaced.
+    this.analysis?.flush();
+    this.analysis?.drop();
+    this.analysis = null;
     // The PTY's own log lines (a refused output copy, a reader error) name this session.
     (ptyProcess as TerminalPty).label = sessionId;
     const interpreter = new OutputInterpreter((ptyProcess as TerminalPty).backend === 'rust' ? 'rust' : 'node', sessionId);
@@ -2248,6 +2325,10 @@ export class DaemonPTYBridge extends EventEmitter {
     // Activity → idle notification. Once a detector or hook has already
     // settled this turn, byte silence is weaker evidence and must not clear the
     // explicit waiting/complete state five seconds later.
+    // Runs inside the monitor's own timer, after it flipped the cycle to idle:
+    // nothing here may flush pending analysis (that would feed the monitor
+    // from inside its callback), so it reads fields, not flushing getters. A
+    // chunk still waiting is analysed after, as if it arrived after the idle.
     this.idleUnsubscribe = activityMonitor.onActiveToIdle((ptyId) => {
       this.hookArmedCycle = false;
       this.titleArmedCycle = null;
@@ -2286,11 +2367,11 @@ export class DaemonPTYBridge extends EventEmitter {
         this.closeTurn(true);
         this.settledStatus = root.state === 'idle' ? 'waiting' : 'complete';
         this.explicitTerminalStatus = true;
-        this.emit('idle', { sessionId: ptyId, ...(this.isPreTurn() ? { preTurn: true } : {}) });
+        this.emit('idle', { sessionId: ptyId, ...(this.preTurn ? { preTurn: true } : {}) });
         return;
       }
       if (this.explicitTerminalStatus) return;
-      this.emit('idle', { sessionId: ptyId, ...(this.isPreTurn() ? { preTurn: true } : {}) });
+      this.emit('idle', { sessionId: ptyId, ...(this.preTurn ? { preTurn: true } : {}) });
     });
     // Activity → active notification. A submitted turn is re-armed by
     // beginTurn(), so its very first output emits running even for a short
@@ -2379,6 +2460,9 @@ export class DaemonPTYBridge extends EventEmitter {
             if (this.resizeGuardTimer) clearTimeout(this.resizeGuardTimer);
             this.resizeGuardTimer = setTimeout(() => {
               this.resizeGuardTimer = null;
+              // Output that arrived before this timer is analysed first, as it was then
+              // (after the slot is cleared: the analysis may arm a new guard).
+              this.flushPendingDetection();
               this.agentDetector?.resetEmissionState();
             }, RESIZE_REDRAW_GUARD_MS - elapsed);
             // A resize repaint is not work, so it does not reach the status
@@ -2427,6 +2511,12 @@ export class DaemonPTYBridge extends EventEmitter {
         likelyRepaint,
       });
     });
+
+    // The chunk being analysed: where it ended in the ring and when it
+    // arrived. Its analysis runs after later chunks may have been written, so
+    // what it records is stamped with these, not with the ring's counter or
+    // the clock at analysis time. Null outside the analysis.
+    let current: { end: number; at: number } | null = null;
 
     // Terminal desktop-notification sequences (OSC 9/777/99). Stateful for
     // OSC 99 chunk assembly, so it lives per-bridge like OscParser itself.
@@ -2483,12 +2573,12 @@ export class DaemonPTYBridge extends EventEmitter {
       if (event.code === 9 || event.code === 99 || event.code === 777) {
         const notification = notificationParser.handle(event.code, event.data);
         if (notification) {
-          this.emit('notification', { sessionId, event: { ...notification, ts: Date.now() } });
+          this.emit('notification', { sessionId, event: { ...notification, ts: current?.at ?? Date.now() } });
         }
         return;
       }
       if (event.code === 133 && promptLog) {
-        const parsed = parseOsc133Payload(event.data, Date.now(), ringBuffer.totalBytesWritten);
+        const parsed = parseOsc133Payload(event.data, current?.at ?? Date.now(), current?.end ?? ringBuffer.totalBytesWritten);
         if (parsed) {
           if (parsed.type === 'command_end') {
             // Input queued while a command runs can become history or a draft
@@ -2501,7 +2591,7 @@ export class DaemonPTYBridge extends EventEmitter {
           }
           if (parsed.type === 'command_start') {
             this.commandStarts += 1;
-            this.lastCommandStartAt = Date.now();
+            this.lastCommandStartAt = current?.at ?? Date.now();
             this.shellCommandKeyRevision = this.shellSubmittedKeyRevision ?? this.keyInputRevision;
             this.shellSubmittedKeyRevision = undefined;
             this.shellCommandRunning = true; this.completedShellCommand = false; this.emptyShellPrompt = false;
@@ -2588,7 +2678,184 @@ export class DaemonPTYBridge extends EventEmitter {
       }
     };
 
-    const capture = (data: string, buf?: Buffer, nativeChunk?: NativeOutputChunk): void => {
+    // M3 A1: a chunk is written to the ring and forwarded inside the PTY
+    // callback; its analysis (activity, detector, interpreter and OSC, codex,
+    // cwd) is queued and runs after, one chunk at a time in arrival order,
+    // with the same steps in the same order as when it all ran inline. The
+    // bytes never wait for their own analysis, and in one event-loop turn
+    // every session's chunk goes out before any of them is analysed. Whatever
+    // reads what the analysis produces flushes it first
+    // (flushPendingDetection), so no reader sees the ring ahead of it.
+    type PendingChunk = {
+      /**
+       * live: the whole analysis. muted: the detector only; the chunk is held,
+       * not stored. replay: an unmute release, analysed as capture() did
+       * (no activity, no detector: those read it while it was muted).
+       */
+      kind: 'live' | 'muted' | 'replay';
+      data: string;
+      byteLength: number;
+      /** The ring's byte counter right after this chunk was written. */
+      end: number;
+      /** When the chunk arrived. */
+      at: number;
+      /** False when the ring write threw: the analysis after it was skipped then too. */
+      stored: boolean;
+    };
+    const queue: PendingChunk[] = [];
+    // The last stored chunk ended inside an OSC sequence (see store()).
+    let oscOpen = false;
+    let draining = false;
+    let scheduled: NodeJS.Immediate | null = null;
+    // Set when this PTY reports its exit: output it delivers later is analysed at once.
+    let exited = false;
+
+    // What capture() did with a stored chunk around its forward. Interpreted
+    // from the text: the native chunk is disposed when the PTY callback returns.
+    const analyse = (data: string, end: number): void => {
+      // Before the titles in this chunk are read (see ClaudeTitleTurnEdge.noteOutput).
+      titleTurnEdge.noteOutput(data);
+      // RIS removes every OSC 7501 record, in stream order against this
+      // chunk's last report: before it, the report stands; after it, it goes.
+      const risCarry = this.outputEndsWithEsc;
+      this.outputEndsWithEsc = data.endsWith('\x1b');
+      let risAfterReports = false;
+      if (this.programStatus.size > 0 || this.programStatusSeen || data.includes('\x1b]7501;')) {
+        const risAt = Math.max(data.lastIndexOf('\x1bc'), risCarry && data.startsWith('c') ? 0 : -1);
+        if (risAt >= 0) {
+          if (risAt > data.lastIndexOf('\x1b]7501;')) risAfterReports = true;
+          else this.resetProgramStatus();
+        }
+      }
+      // The tracker's offsets are in the ring's own coordinate system: the
+      // counter as this chunk's write left it, not as later chunks moved it.
+      interpreter.feed(data, end);
+      if (risAfterReports) this.resetProgramStatus();
+      // After the mode tracker and OSC 133 have seen this chunk (see noteCodexOutput).
+      this.noteCodexOutput(data);
+
+      // Prompt-based CWD detection — fallback for shells WITHOUT the
+      // integration hook only. Once OSC 7 has been seen (oscCwdSeen), the
+      // scraper is permanently off for this session: the hook re-emits on
+      // every prompt, so scraping can only ever add false positives.
+      if (!this.oscCwdSeen) {
+        promptBuffer += data;
+        if (promptBuffer.length > 1024) promptBuffer = promptBuffer.slice(-512);
+
+        const clean = promptBuffer.replace(DaemonPTYBridge.ANSI_STRIP, '');
+        const detectedCwd = detectPromptCwd(clean);
+        if (detectedCwd !== null) {
+          if (detectedCwd !== this.lastDetectedPromptCwd) {
+            this.lastDetectedPromptCwd = detectedCwd;
+            this.emit('cwd', { sessionId, cwd: detectedCwd });
+          }
+          promptBuffer = '';
+        }
+      }
+
+      // Output on a pane blocked on a human may be the dialog closing (see
+      // `clearAwaiting`); the daemon re-reads the screen off this.
+      if (this.awaitingHuman) this.emit('awaitingActivity', { sessionId, cause: 'output' });
+    };
+
+    const run = (chunk: PendingChunk): void => {
+      current = { end: chunk.end, at: chunk.at };
+      let approvalRecheck = false;
+      if (chunk.kind !== 'replay') {
+        // Byte activity is weaker than a detector/hook terminal edge. Process it
+        // FIRST, so a waiting/complete pattern found in this same chunk is
+        // forwarded last and remains authoritative. Across chunks the queue
+        // keeps the same order: the next chunk's bytes are counted only after
+        // this chunk's detection.
+        //
+        // While the pane is settled the bytes still count, but only once the
+        // user's own keystrokes have gone quiet (#935). A turn the agent starts
+        // by ITSELF — a background task finishing and the agent picking up —
+        // submits no input and, on a hook install without PostToolUse, produces
+        // no explicit running edge either, so those two openers left the pane
+        // wearing the previous turn's `complete` for the whole autonomous turn.
+        // Echo is what the settled branch has to exclude, and the input stamp
+        // names it directly instead of blocking every byte to be safe.
+        if (chunk.kind === 'live' && !this.muted && (!this.explicitTerminalStatus || this.isInputQuiet())) {
+          // Only the settled hook-pane gate reads it (see idleTitleOnHookPane).
+          this.chunkSetsSpinnerTitle = this.explicitTerminalStatus && this.hookSeen
+            && CLAUDE_RUNNING_TITLE_OSC.test(chunk.data);
+          try {
+            activityMonitor.feed(sessionId, chunk.byteLength);
+          } catch {
+            // activity heuristics must never block detection or data forwarding.
+          }
+          this.chunkSetsSpinnerTitle = false;
+        }
+
+        // AgentDetector는 순수 텍스트 분석(side effect 없음)이라 muted 구간에서도
+        // 돌려야 한다. recovery 세션은 첫 resize 전까지 muted인데, 그 사이에
+        // 에이전트 시작 배너("Claude Code vX" 등)가 출력되면 gate 정규식이 영구
+        // 미활성화되어 이후 모든 status 감지가 죽는다(daemon mode agent detection
+        // 갭). activity보다 뒤에서 처리해 같은 chunk의 명시 상태가 최종 승자가 된다.
+        // The chunk's arrival time is the detector's clock for this feed.
+        try {
+          agentDetector.feed(chunk.data, chunk.at);
+        } catch {
+          // detection 실패가 데이터 포워딩을 막아선 안 된다.
+        }
+        // A grid-only question this chunk finished (approvalReady): read the
+        // screen once the chunk is in the ring, below. Muted, it is dropped.
+        approvalRecheck = agentDetector.takeApprovalRecheckRequest();
+        if (chunk.kind === 'muted') return;
+      }
+      if (chunk.stored) {
+        try {
+          analyse(chunk.data, chunk.end);
+        } catch {
+          // The bytes went out already; a parse failure only loses its analysis.
+        }
+      }
+      if (approvalRecheck) this.recheckQuietApproval(agentDetector);
+    };
+
+    const drain = (): void => {
+      // Re-entered from inside run() (an event listener, a screen read): the
+      // caller sees the state as of the chunk being analysed.
+      if (draining) return;
+      if (scheduled) clearImmediate(scheduled);
+      scheduled = null;
+      draining = true;
+      try {
+        // By index: an entry leaves the queue only once its analysis finished.
+        while (queue.length > 0) {
+          try {
+            run(queue[0]);
+          } catch (error) {
+            console.error(`[pty] ${sessionId}: output analysis failed: ${error instanceof Error ? error.message : String(error)}`);
+          } finally {
+            current = null;
+            queue.shift();
+          }
+        }
+      } finally {
+        draining = false;
+      }
+    };
+    const enqueue = (chunk: PendingChunk): void => {
+      queue.push(chunk);
+      if (exited) drain();
+      else if (!scheduled && !draining) scheduled = setImmediate(drain);
+    };
+    this.analysis = {
+      flush: drain,
+      drop: () => {
+        queue.length = 0;
+        if (scheduled) clearImmediate(scheduled);
+        scheduled = null;
+      },
+    };
+    // Readers of the prompt log outside the bridge ("at a prompt?" before a
+    // delivery) see every chunk already in the ring.
+    promptLog?.setBeforeRead(() => this.flushPendingDetection());
+
+    // Store a chunk, queue its analysis, then forward it.
+    const store = (kind: 'live' | 'replay', data: string, at: number, byteLength: number, buf?: Buffer, nativeChunk?: NativeOutputChunk): void => {
       // Detached sessions need retention/analysis, but no JS byte copy. Snapshot
       // tees and live clients subscribe to data and materialize exactly once.
       let delivery = buf;
@@ -2599,6 +2866,7 @@ export class DaemonPTYBridge extends EventEmitter {
           this.emit('data', delivery);
         }
       };
+      let stored = true;
       try {
         const droppedBefore = ringBuffer.droppedBytes;
         if (nativeChunk) ringBuffer.writeNativeChunk(nativeChunk);
@@ -2612,63 +2880,33 @@ export class DaemonPTYBridge extends EventEmitter {
           ringBuffer.clear();
           if (had > 0) console.error(`[pty] ${sessionId}: output not stored; replay history restarts after it (${had} bytes dropped)`);
         }
-        // AFTER the ring write: the tracker's offsets are in the ring's own
-        // coordinate system, so it needs the counter this chunk already moved.
-        // Before the titles in this chunk are read (see ClaudeTitleTurnEdge.noteOutput).
-        titleTurnEdge.noteOutput(data);
-        // RIS removes every OSC 7501 record, in stream order against this
-        // chunk's last report: before it, the report stands; after it, it goes.
-        const risCarry = this.outputEndsWithEsc;
-        this.outputEndsWithEsc = data.endsWith('\x1b');
-        let risAfterReports = false;
-        if (this.programStatus.size > 0 || this.programStatusSeen || data.includes('\x1b]7501;')) {
-          const risAt = Math.max(data.lastIndexOf('\x1bc'), risCarry && data.startsWith('c') ? 0 : -1);
-          if (risAt >= 0) {
-            if (risAt > data.lastIndexOf('\x1b]7501;')) risAfterReports = true;
-            else this.resetProgramStatus();
-          }
-        }
-        interpreter.feed(data, ringBuffer.totalBytesWritten, nativeChunk);
-        if (risAfterReports) this.resetProgramStatus();
-        // After the mode tracker and OSC 133 have seen this chunk (see noteCodexOutput).
-        this.noteCodexOutput(data);
-
-        // Prompt-based CWD detection — fallback for shells WITHOUT the
-        // integration hook only. Once OSC 7 has been seen (oscCwdSeen), the
-        // scraper is permanently off for this session: the hook re-emits on
-        // every prompt, so scraping can only ever add false positives.
-        if (!this.oscCwdSeen) {
-          promptBuffer += data;
-          if (promptBuffer.length > 1024) promptBuffer = promptBuffer.slice(-512);
-
-          const clean = promptBuffer.replace(DaemonPTYBridge.ANSI_STRIP, '');
-          const detectedCwd = detectPromptCwd(clean);
-          if (detectedCwd !== null) {
-            if (detectedCwd !== this.lastDetectedPromptCwd) {
-              this.lastDetectedPromptCwd = detectedCwd;
-              this.emit('cwd', { sessionId, cwd: detectedCwd });
-            }
-            promptBuffer = '';
-          }
-        }
-
-        forward();
-        // Output on a pane blocked on a human may be the dialog closing (see
-        // `clearAwaiting`); the daemon re-reads the screen off this.
-        if (this.awaitingHuman) this.emit('awaitingActivity', { sessionId, cause: 'output' });
-      } catch (err) {
-        // Still forward raw data even if parsing failed
-        forward();
+      } catch {
+        // Still forward raw data even if storing failed.
+        stored = false;
       }
+      // An OSC 7501 query is answered from the analysis, and the answer must
+      // reach the PTY before any viewer sees the chunk and answers the DA1
+      // behind it (answerProgramStatusProbe). A chunk that may carry one, or
+      // finish one the previous chunk opened, is analysed before its forward.
+      const beforeForward = oscOpen || data.includes('7501');
+      const oscAt = data.lastIndexOf('\x1b]');
+      oscOpen = oscAt >= 0
+        ? data.indexOf('\x07', oscAt) < 0 && data.indexOf('\x1b\\', oscAt) < 0
+        : oscOpen && !data.includes('\x07') && !data.includes('\x1b\\');
+      // Queued before the forward: a reader a data listener calls flushes this chunk too.
+      enqueue({ kind, data, byteLength, end: ringBuffer.totalBytesWritten, at, stored });
+      if (beforeForward) drain();
+      forward();
     };
-    this.captureChunk = capture;
+    this.captureChunk = (data: string, buf: Buffer) => store('replay', data, Date.now(), buf.length, buf);
 
     // PTY data handler
     const onOutput = (data: string, nativeChunk?: NativeOutputChunk) => {
       // Ahead of the mute check: a recovered session is muted at spawn, and
       // its startup query is exactly the one nobody else will answer.
       if (this.startupDa1) this.checkStartupDa1(data, ptyProcess);
-      this.lastOutputAt = Date.now();
+      const at = Date.now();
+      this.lastOutputAt = at;
 
       // #2771 — before anything reads the chunk: a mark the running program
       // wrote (not the shell) gets a lowercase kind, so the detector, the
@@ -2686,49 +2924,11 @@ export class DaemonPTYBridge extends EventEmitter {
       const buf = nativeChunk ? undefined : Buffer.from(data);
       const byteLength = nativeChunk ? nativeChunk.byteLength : (buf?.length ?? 0);
 
-      // Byte activity is weaker than a detector/hook terminal edge. Process it
-      // FIRST, so a waiting/complete pattern found in this same chunk is
-      // forwarded last and remains authoritative.
-      //
-      // While the pane is settled the bytes still count, but only once the
-      // user's own keystrokes have gone quiet (#935). A turn the agent starts
-      // by ITSELF — a background task finishing and the agent picking up —
-      // submits no input and, on a hook install without PostToolUse, produces
-      // no explicit running edge either, so those two openers left the pane
-      // wearing the previous turn's `complete` for the whole autonomous turn.
-      // Echo is what the settled branch has to exclude, and the input stamp
-      // names it directly instead of blocking every byte to be safe.
-      if (!this.muted && (!this.explicitTerminalStatus || this.isInputQuiet())) {
-        // Only the settled hook-pane gate reads it (see idleTitleOnHookPane).
-        this.chunkSetsSpinnerTitle = this.explicitTerminalStatus && this.hookSeen
-          && CLAUDE_RUNNING_TITLE_OSC.test(data);
-        try {
-          activityMonitor.feed(sessionId, byteLength);
-        } catch {
-          // activity heuristics must never block detection or data forwarding.
-        }
-        this.chunkSetsSpinnerTitle = false;
-      }
-
-      // AgentDetector는 순수 텍스트 분석(side effect 없음)이라 muted 구간에서도
-      // 돌려야 한다. recovery 세션은 첫 resize 전까지 muted인데, 그 사이에
-      // 에이전트 시작 배너("Claude Code vX" 등)가 출력되면 gate 정규식이 영구
-      // 미활성화되어 이후 모든 status 감지가 죽는다(daemon mode agent detection
-      // 갭). activity보다 뒤에서 처리해 같은 chunk의 명시 상태가 최종 승자가 된다.
-      try {
-        agentDetector.feed(data);
-      } catch {
-        // detection 실패가 데이터 포워딩을 막아선 안 된다.
-      }
-      // A grid-only question this chunk finished (approvalReady): read the
-      // screen once the chunk is in the ring, below. Muted, it is dropped.
-      const approvalRecheck = agentDetector.takeApprovalRecheckRequest();
-
       // Muted: keep the chunk out of the ring before any side effect. Recovery
       // sessions run muted until their first resize so the geometry mismatch
       // window (Bug 2 in v2.8.0) doesn't pollute the ring buffer. The chunk is
       // held (bounded, head kept) so the unmute can release what was produced
-      // at the geometry the renderer shows (#1464).
+      // at the geometry the renderer shows (#1464). The detector still reads it.
       if (this.muted) {
         if (this.heldWhileMuted && !this.heldFull) {
           if (this.heldBytes + byteLength > DaemonPTYBridge.MAX_HELD_BYTES) {
@@ -2742,10 +2942,10 @@ export class DaemonPTYBridge extends EventEmitter {
           this.heldTail ??= new RingBuffer(DaemonPTYBridge.MAX_HELD_TAIL_BYTES, 'node');
           this.heldTail.write(buf ?? bytesOf(data, nativeChunk));
         }
+        enqueue({ kind: 'muted', data, byteLength, end: ringBuffer.totalBytesWritten, at, stored: false });
         return;
       }
-      capture(data, buf, nativeChunk);
-      if (approvalRecheck) this.recheckQuietApproval(agentDetector);
+      store('live', data, at, byteLength, buf, nativeChunk);
     };
     const nativePty = ptyProcess as TerminalPty;
     const onDataDisposable = nativePty.onNativeData
@@ -2769,6 +2969,11 @@ export class DaemonPTYBridge extends EventEmitter {
     // buried a live shell. Consumers must not infer a death from a null code
     // alone; see phantomExit.ts for the liveness check that settles it.
     const onExitDisposable = ptyProcess.onExit(({ exitCode, signal }) => {
+      // What the process wrote before it exited is analysed, and reported,
+      // before its exit. Only then is the flag set: output after it is
+      // analysed at once (enqueue), so nothing queued outlives the exit.
+      drain();
+      exited = true;
       // The process is gone: its working and blocked records go with it.
       this.endProgramStatusEpisode();
       this.emit('exit', { sessionId, exitCode, signal });
@@ -2805,6 +3010,7 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   /** The shell runs in a WSL distro on this machine (see wslDistro). */
   markWslDistro(): void {
+    this.flushPendingDetection();
     this.wslDistro = true;
   }
 
@@ -2849,6 +3055,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * the same sanitizer the attach-time ring replay goes through.
    */
   setMuted(muted: boolean, opts?: { replayHeld?: boolean }): void {
+    this.flushPendingDetection();
     // Unmuting a recovered pane releases a full repaint at the new geometry,
     // and `noteResize` only stamps when the dimensions actually CHANGED — a
     // pane recovered at the size it was saved at gets the storm with no guard
@@ -2899,11 +3106,13 @@ export class DaemonPTYBridge extends EventEmitter {
    * renderer의 detection pull이 이 값을 직접 조회한다.
    */
   getLastAgent(): string | null {
+    this.flushPendingDetection();
     return this.agentDetector?.getLastAgent() ?? null;
   }
 
   /** Authoritative status snapshot used when the desktop reconnects. */
   getAgentStatus(): AgentStatus {
+    this.flushPendingDetection();
     if (this.awaitingHuman) return 'awaiting_input';
     if (this.settledStatus) return this.settledStatus;
     if (this.programWorking()) return 'running';
@@ -2939,6 +3148,9 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   cleanup(): void {
+    // Disposed: output not analysed yet is dropped with the rest of the state.
+    this.analysis?.drop();
+    this.analysis = null;
     if (this.titleCycleTimer) clearTimeout(this.titleCycleTimer);
     this.titleCycleTimer = null;
     this.dataDisposable?.();

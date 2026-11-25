@@ -28,7 +28,9 @@ function makeFakePty(write?: (data: string) => void): { pty: IPty; feed: (data: 
       writes.push(data);
     },
   } as unknown as IPty;
-  return { pty, feed: (data) => dataHandler?.(data), writes };
+  // The bridge analyses a chunk after forwarding it (M3 A1): one turn of
+  // the (fake) event loop lets that analysis run, as it did inside the call.
+  return { pty, feed: (data) => { dataHandler?.(data); vi.advanceTimersByTime(0); }, writes };
 }
 
 describe('DaemonPTYBridge — OSC 7501 feature query', () => {
