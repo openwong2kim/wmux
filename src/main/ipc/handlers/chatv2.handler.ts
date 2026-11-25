@@ -19,6 +19,7 @@ import {
   validChatV2AttachmentPath,
 } from '../../../shared/chatv2/ipc';
 import { wrapHandler } from '../wrapHandler';
+import { resolveAccessiblePath } from './fs.handler';
 
 /**
  * Panes the renderer subscribed, each with the generation of its latest
@@ -48,18 +49,22 @@ export async function stageChatV2Attachment(raw: unknown, wmuxDir = getWmuxDir()
   const file = path.resolve(raw);
   if (!validChatV2AttachmentPath(file)) return { ok: false, reason: 'missing' };
   const dir = path.resolve(wmuxDir, CHATV2_ATTACHMENT_DIR);
-  const image = validChatImagePath(file);
-  // The daemon takes only staged images from the staging directory.
-  if (path.dirname(file) === dir && !image) return { ok: false, reason: 'missing' };
   try {
-    const stat = await fs.stat(file);
+    // Read from the real file, checked like a preview: never through a link to somewhere else.
+    const source = await resolveAccessiblePath(file);
+    if (!source) return { ok: false, reason: 'missing' };
+    const stat = await fs.stat(source);
     if (!stat.isFile()) return { ok: false, reason: 'missing' };
+    const image = validChatImagePath(file) && validChatImagePath(source);
+    // The daemon takes only staged images from the staging directory.
+    const staged = path.dirname(file) === dir || path.dirname(source) === dir;
+    if (staged && (!image || stat.size > CHAT_IMAGE_MAX_BYTES)) return { ok: false, reason: 'missing' };
     const name = path.basename(file);
     if (!image || stat.size > CHAT_IMAGE_MAX_BYTES) return { ok: true, path: file, name, kind: 'file', size: stat.size };
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
     await pruneStaged(dir);
-    const target = path.join(dir, `${randomUUID()}${path.extname(file).toLowerCase()}`);
-    await fs.copyFile(file, target);
+    const target = path.join(dir, `${randomUUID()}${path.extname(source).toLowerCase()}`);
+    await fs.copyFile(source, target);
     await fs.chmod(target, 0o600);
     return { ok: true, path: target, name, kind: 'image', size: stat.size };
   } catch {

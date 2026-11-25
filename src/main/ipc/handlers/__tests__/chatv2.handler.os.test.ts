@@ -127,6 +127,18 @@ describe('chat v2 IPC bridge', () => {
     const big = path.join(dir, 'big.png');
     fs.writeFileSync(big, Buffer.alloc(CHAT_IMAGE_MAX_BYTES + 1));
     expect(await stageChatV2Attachment(big, dir)).toMatchObject({ ok: true, path: big, kind: 'file' });
+    // Nor an image over the image limit there.
+    fs.writeFileSync(path.join(dir, 'chatv2-attachments', 'big.png'), Buffer.alloc(CHAT_IMAGE_MAX_BYTES + 1));
+    expect(await stageChatV2Attachment(path.join(dir, 'chatv2-attachments', 'big.png'), dir)).toEqual({ ok: false, reason: 'missing' });
+    if (process.platform !== 'win32') {
+      // A link is staged from the real file it leads to, and only as what that file is.
+      fs.symlinkSync(image, path.join(dir, 'link.png'));
+      const linked = await stageChatV2Attachment(path.join(dir, 'link.png'), dir);
+      expect(linked).toMatchObject({ ok: true, kind: 'image', name: 'link.png' });
+      if (linked.ok) expect(fs.readFileSync(linked.path, 'utf8')).toBe('png');
+      fs.symlinkSync(path.join(dir, 'notes.txt'), path.join(dir, 'notes.png'));
+      expect(await stageChatV2Attachment(path.join(dir, 'notes.png'), dir)).toMatchObject({ ok: true, kind: 'file' });
+    }
     // Staged images past a day are removed when the next one is staged.
     const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
     fs.utimesSync(staged.path, old, old);

@@ -1,8 +1,8 @@
 /**
  * Thumbnails of attachments this window staged, by staged path. The composer
- * draws one from the staged copy it shows through the preview scheme (main
- * never decodes the image) and records it here, so the sent message can show
- * the picture. A message from before this window started shows its file chip.
+ * draws one from the staged copy as it stages it, through the preview scheme
+ * (main never decodes the image), and records it here, so the sent message can
+ * show the picture. A message from before this window started shows its file chip.
  * Bounded: the oldest entries go first.
  */
 const thumbnails = new Map<string, string>();

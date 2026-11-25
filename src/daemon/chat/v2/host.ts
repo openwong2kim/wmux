@@ -712,6 +712,10 @@ class Host implements ChatV2Host {
       return { ok: true, binding: this.binding(live), applied: live.driver ? 'live' : 'saved' };
     }
     live.sending = true;
+    // This change holds the send lock until release(); after that it belongs to whoever takes it next.
+    const owner = live;
+    let held = true;
+    const release = () => { if (held) { held = false; owner.sending = false; } };
     try {
       const driver = live.driver;
       let applied: 'live' | 'restarted' | 'saved' = 'saved';
@@ -729,7 +733,7 @@ class Host implements ChatV2Host {
           const now = driver.settings?.();
           if (now && (now.model !== record.model || now.effort !== (record.session.modelSettings.effort ?? ''))) {
             record.model = now.model;
-            live.sending = false;
+            release();
             this.stamp(live, { type: 'session.configChanged', model: now.model, modelSettings: { effort: now.effort } });
             await this.persistNow(live);
           }
@@ -742,13 +746,16 @@ class Host implements ChatV2Host {
           // No message yet, so no conversation to keep: a fresh session id, so an
           // agent that already wrote its session file is never asked to create it
           // again (Codex starts a new thread either way and reports its id).
-          if (!record.resumeExisting && !record.session.blocks.some((b) => b.role === 'user')) {
-            record.providerSessionId = randomUUID();
-          }
+          const fresh = !record.resumeExisting && !record.session.blocks.some((b) => b.role === 'user');
+          if (fresh) record.providerSessionId = randomUUID();
           const started = await this.startDriver(live, { model, effort });
           if (!started.ok) {
             // Back on what ran before, once, so the chat is not left failed by a change; the change's error is the answer.
-            if (!live.closed && !live.driver && !live.unreaped) await this.startDriver(live);
+            // A fresh chat takes another id: the failed start may have written a session under the last one.
+            if (!live.closed && !live.driver && !live.unreaped) {
+              if (fresh) record.providerSessionId = randomUUID();
+              if ((await this.startDriver(live)).ok) await this.persistNow(live);
+            }
             return started;
           }
         }
@@ -758,12 +765,12 @@ class Host implements ChatV2Host {
       const now = live.driver?.settings?.() ?? { model, effort };
       record.model = now.model;
       // Free before the stamp, so a send that answers this change's event is not refused as a running turn.
-      live.sending = false;
+      release();
       this.stamp(live, { type: 'session.configChanged', model: now.model, modelSettings: { effort: now.effort } });
       await this.persistNow(live);
       return { ok: true, binding: this.binding(live), applied };
     } finally {
-      live.sending = false;
+      release();
     }
   }
 

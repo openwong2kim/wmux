@@ -881,6 +881,53 @@ describe('ChatV2View', () => {
     expect(sent()[0]).toMatchObject({ text: 'summarize this', attachments: ['/repo/notes.md'] });
   });
 
+  it('leaves no copy of a first message that went in the new chat\u2019s composer, and keeps one that did not', async () => {
+    let release: () => void = () => undefined;
+    let sends = 0;
+    intercept('send', (forward) => { sends += 1; return sends === 1 ? new Promise<void>((resolve) => { release = resolve; }).then(forward) : Promise.resolve(chatV2Error('invalid-params', 'no')); });
+    await act(async () => root.render(<ChatV2View paneId="daemon-firstsend" active onTerminal={() => undefined} />));
+    await flush();
+    await type('hello');
+    await clickSend();
+    // The chat shows while its first message is still on the way.
+    expect(host.querySelector('[data-chatv2="ready"]')).not.toBeNull();
+    await act(async () => { release(); });
+    await flush();
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('');
+    await remount('daemon-firstsend');
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('');
+    await act(async () => root.render(<ChatV2View paneId="daemon-firstfail" active onTerminal={() => undefined} />));
+    await flush();
+    await type('kept');
+    await clickSend();
+    await flush();
+    expect(host.querySelector('[data-chatv2="ready"]')).not.toBeNull();
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('kept');
+  });
+
+  it('sends on the Enter that follows a finished IME composition, once and with no newline', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-ime' });
+    await mock.call('create', { paneId: 'daemon-ime', agent: 'claude', mode: 'default' });
+    await act(async () => root.render(<ChatV2View paneId="daemon-ime" active onTerminal={() => undefined} />));
+    await flush();
+    const box = host.querySelector('textarea') as HTMLTextAreaElement;
+    await act(async () => { box.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })); });
+    await type('\uD55C\uAE00');
+    // The Enter that commits the syllable belongs to the IME.
+    const commit = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true, cancelable: true });
+    await act(async () => { box.dispatchEvent(commit); });
+    expect(commit.defaultPrevented).toBe(false);
+    await act(async () => { box.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '\uAE00' })); });
+    expect(sent()).toEqual([]);
+    // A real Enter a few ms later sends, and keeps the newline out.
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, cancelable: true });
+    await act(async () => { box.dispatchEvent(enter); });
+    await flush();
+    expect(enter.defaultPrevented).toBe(true);
+    expect(sent().map((p) => p.text)).toEqual(['\uD55C\uAE00']);
+    expect(box.value).toBe('');
+  });
+
   it('keeps staged attachments with the draft across a split remount, and clears both on send', async () => {
     await mock.call('subscribe', { paneId: 'daemon-attach' });
     await mock.call('create', { paneId: 'daemon-attach', agent: 'claude', mode: 'default' });

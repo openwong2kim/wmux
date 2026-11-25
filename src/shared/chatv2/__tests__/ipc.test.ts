@@ -59,8 +59,12 @@ describe('parseChatV2Params', () => {
     expect(parseChatV2Params('send', { ...ok, attachments: ['/repo/src/a.ts'] })).toEqual({ ...ok, attachments: ['/repo/src/a.ts'] });
     expect(parseChatV2Params('send', { ...ok, attachments: ['/repo/src/'] })).toBeNull();
     expect(parseChatV2Params('send', { ...ok, attachments: ['/repo/a\nb.ts'] })).toBeNull();
-    for (const odd of ['\u0085', '\u2028', '\u2029', '\u202e', '\u2066']) {
+    for (const odd of ['\u0085', '\u2028', '\u2029', '\u202e', '\u2066', '\u200b', '\u2060', '\u2064', '\ufeff', '\u{e0001}', '\u{e007f}']) {
       expect(parseChatV2Params('send', { ...ok, attachments: [`/repo/a${odd}b.ts`] })).toBeNull();
+    }
+    // The joiners stay: emoji and Indic names use them.
+    for (const name of ['/repo/\u{1F468}\u200d\u{1F469}.png', '/repo/\u0915\u094d\u200c\u0937.txt']) {
+      expect(parseChatV2Params('send', { ...ok, attachments: [name] })).toEqual({ ...ok, attachments: [name] });
     }
     expect(parseChatV2Params('send', { ...ok, epoch: 'not-an-epoch' })).toBeNull();
     const korean = '가'.repeat(Math.floor(CHATV2_MAX_PROMPT_BYTES / 3));

@@ -14,7 +14,8 @@ import { S } from './strings';
 import { Icon, IconFile, IconMoreHorizontal, IconPlus, IconX } from '../icons';
 import { ArrowIcon } from './ArrowIcon';
 import { usePreviewSource } from '../Preview/usePreviewSource';
-import { rememberAttachmentThumbnail } from './thumbnails';
+import { attachmentThumbnail, rememberAttachmentThumbnail } from './thumbnails';
+import { previewUrl } from '../../../shared/filePreview';
 import './composer.css';
 
 // Drafts survive view switches and split remounts, per pane and conversation
@@ -186,21 +187,30 @@ function thumbnailOf(img: HTMLImageElement): string | undefined {
 }
 
 /**
- * A staged image, shown from its staged copy through the preview scheme (main
- * never decodes it). Once it loads, a small copy is kept for the sent message.
+ * Keep a small copy of a staged image for the sent message. It loads the
+ * staged copy through the preview scheme on its own (main never decodes it),
+ * so it does not depend on the chip staying mounted until a quick send.
  */
+function captureThumbnail(path: string): void {
+  const api = window.electronAPI?.preview;
+  if (!api || attachmentThumbnail(path)) return;
+  void api.open(path).then((result) => {
+    if (!result.ok) return;
+    const done = () => { void api.close(result.token); };
+    if (result.kind !== 'image') { done(); return; }
+    // A CORS load, so the canvas can be read.
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => { rememberAttachmentThumbnail(path, thumbnailOf(img)); done(); };
+    img.onerror = done;
+    img.src = previewUrl(result.token, path, result.version);
+  }, () => undefined);
+}
+
+/** A staged image, shown from its staged copy through the preview scheme. */
 function AttachmentThumb({ path }: { path: string }) {
   const source = usePreviewSource(path);
   const url = source.status === 'ready' && source.kind === 'image' ? source.url : null;
-  useEffect(() => {
-    if (!url) return;
-    // A CORS load of its own, so the canvas can be read; the chip's picture never depends on it.
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => rememberAttachmentThumbnail(path, thumbnailOf(img));
-    img.src = url;
-    return () => { img.onload = null; };
-  }, [path, url]);
   return url
     ? <img src={url} alt="" />
     : <span className="wmux-chatv2-attachment-icon" aria-hidden="true"><IconFile size={14} /></span>;
@@ -242,8 +252,10 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
     const ok: StagedAttachment[] = [];
     let refused = '';
     for (const result of results) {
-      if (result.ok) ok.push({ path: result.path, name: result.name, kind: result.kind });
-      else refused = result.reason === 'too-large' ? S.attachTooLarge : S.attachRefused;
+      if (result.ok) {
+        ok.push({ path: result.path, name: result.name, kind: result.kind });
+        if (result.kind === 'image') captureThumbnail(result.path);
+      } else refused = result.reason === 'too-large' ? S.attachTooLarge : S.attachRefused;
     }
     const current = getStaged(draftKey);
     const fresh = ok.filter((item) => !current.some((other) => other.path === item.path));
@@ -391,12 +403,10 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
     requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(prefix.length, prefix.length); setCaret(prefix.length); });
   };
 
-  // IME: a keydown inside a composition, or the Enter that ends one (some engines send it just after compositionend), is the IME's.
+  // IME: a keydown inside a composition is the IME's. The Enter after compositionend is a real one.
   const composing = useRef(false);
-  const composedAt = useRef(-Infinity);
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
-    if (event.key === 'Enter' && event.timeStamp - composedAt.current < 50) return;
     if (slashOpen && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key) && !(event.key === 'Enter' && event.shiftKey)) {
       event.preventDefault();
       if (event.key === 'Escape') setDismissed(true);
@@ -474,7 +484,7 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
         onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
         onBlur={() => setDismissed(true)}
         onCompositionStart={() => { composing.current = true; }}
-        onCompositionEnd={(event) => { composing.current = false; composedAt.current = event.timeStamp; }}
+        onCompositionEnd={() => { composing.current = false; }}
         onKeyDown={onKeyDown}
         onPaste={paste}
       />

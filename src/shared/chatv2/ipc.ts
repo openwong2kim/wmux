@@ -619,9 +619,11 @@ function answers(value: unknown): value is Array<{ keys: string[]; other?: strin
 /** An attachment path `send` may carry: absolute, one line, naming a file (see the header). */
 export function validChatV2AttachmentPath(value: unknown): value is string {
   if (typeof value !== 'string' || value.length >= 4096 || !/^(?:\/|[A-Za-z]:[\\/])/.test(value)) return false;
-  // Control characters, other line breaks and bidi controls: a path is one plain line in the prompt.
+  // Control characters, other line breaks, bidi controls and invisible format characters (tags,
+  // zero-width space, word joiner, invisible operators, BOM): a path is one plain line in the
+  // prompt. The joiners (U+200C, U+200D) stay: emoji and Indic names need them.
   // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(value)) return false;
+  if (/[\x00-\x1f\x7f-\x9f\u061c\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/u.test(value)) return false;
   return !/[\\/]$/.test(value);
 }
 

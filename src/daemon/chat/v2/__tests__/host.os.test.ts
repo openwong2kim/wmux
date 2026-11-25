@@ -13,6 +13,7 @@ import { sessionNeedsInput } from '../../../../shared/chatv2/session';
 import { ChildBackend } from '../childBackend';
 import { ClaudeDriver } from '../claude/claudeDriver';
 import { createChatV2Host } from '../host';
+import { ChatV2Store } from '../store';
 import type { ChatV2Host, ChatV2HostDeps } from '../types';
 import { FakeClaude, tick, until } from './fakeClaude';
 import { deliberateSleep } from '../../../../test-utils/waitFor';
@@ -63,7 +64,7 @@ interface Rig {
 
 const PANE_ENV = { PATH: '/usr/bin', WMUX_WORKSPACE_ID: 'ws-1', CLAUDECODE: '1', WMUX_AUTH_TOKEN: 'x' };
 
-function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record<string, string>; stubborn?: boolean; paneCwd?: string; panePid?: number; driverCwd?: ChatV2HostDeps['driverCwd']; terminalBindings?: ChatV2HostDeps['terminalBindings'] } = {}): Rig {
+function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record<string, string>; stubborn?: boolean; paneCwd?: string; panePid?: number; driverCwd?: ChatV2HostDeps['driverCwd']; terminalBindings?: ChatV2HostDeps['terminalBindings']; onFake?: (fake: FakeClaude, index: number) => void } = {}): Rig {
   const r = {
     fakes: [] as FakeClaude[],
     pushes: [] as Rig['pushes'],
@@ -133,6 +134,7 @@ function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record
     drivers: () => {
       const fake = new FakeClaude();
       fake.stubborn = options.stubborn ?? false;
+      options.onFake?.(fake, r.fakes.length);
       r.fakes.push(fake);
       const backend = fake.backend();
       r.backends.push(backend);
@@ -231,6 +233,57 @@ describe('chat v2 host', () => {
     expect(r.fake().args).not.toContain(binding.providerSessionId);
     expect(r.fake().args).toContain('--effort=max');
     expect(await sent(r)).toMatchObject({ ok: true });
+    await r.host.dispose();
+  });
+
+  it('keeps the send lock with the change that took it last, not with one that let go of it before saving', async () => {
+    const r = rig();
+    const binding = await created(r);
+    r.fake().controlAnswer = () => 'success';
+    let open: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    const save = ChatV2Store.prototype.save;
+    let saving = 0;
+    const spy = vi.spyOn(ChatV2Store.prototype, 'save').mockImplementation(async function (this: ChatV2Store, record) {
+      saving += 1;
+      await gate;
+      return save.call(this, record);
+    });
+    try {
+      // The first change lets go of the lock and waits on its save.
+      const first = r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, model: 'opus' }, 'main');
+      await until(() => saving > 0);
+      // The second takes it and waits on the agent.
+      r.fake().controlAnswer = () => undefined;
+      const controls = () => r.fake().stdin.filter((line) => line.type === 'control_request' && (line.request as { subtype?: string }).subtype !== 'initialize');
+      const before = controls().length;
+      const second = r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'high' }, 'main');
+      await until(() => controls().length > before);
+      open();
+      expect(await first).toMatchObject({ ok: true, applied: 'live' });
+      // The first change's end left the second one's lock alone.
+      expect(await sent(r)).toMatchObject({ ok: false, error: { code: 'turn-running' } });
+      for (const line of controls().slice(before)) r.fake().out({ type: 'control_response', response: { subtype: 'success', request_id: line.request_id, response: {} } });
+      expect(await second).toMatchObject({ ok: true, applied: 'live' });
+      expect(await sent(r)).toMatchObject({ ok: true });
+    } finally {
+      spy.mockRestore();
+    }
+    await r.host.dispose();
+  });
+
+  it('falls back on a fresh session id and saves it when a change fails to start a chat with no message yet', async () => {
+    const r = rig({ onFake: (fake, index) => { if (index === 1) { fake.handshake = false; fake.exitOnSpawn = true; } } });
+    const binding = await created(r);
+    const failed = await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'max' }, 'main');
+    expect(failed).toMatchObject({ ok: false });
+    expect(r.fakes).toHaveLength(3);
+    const failedId = r.fakes[1].args[r.fakes[1].args.indexOf('--session-id') + 1];
+    const fallbackId = r.fakes[2].args[r.fakes[2].args.indexOf('--session-id') + 1];
+    expect(r.fakes[2].args).not.toContain('--resume');
+    expect(new Set([binding.providerSessionId, failedId, fallbackId]).size).toBe(3);
+    expect(r.host.bindingForPane(PANE)).toMatchObject({ status: 'idle', providerSessionId: fallbackId });
+    await until(() => JSON.stringify(new ChatV2Store(path.join(dir, 'chat-sessions', 'v2')).load(() => undefined)).includes(fallbackId));
     await r.host.dispose();
   });
 
