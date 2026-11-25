@@ -637,9 +637,9 @@ export function poolTaskCallerLine(index: number, p: Extract<PoolTaskPick, { kin
   return `[fanout-pool] task ${index + 1} runs on the caller's account: ${why}`;
 }
 
-/** The registered Claude accounts, by folder: what a live pane's env is read against (learnFromLiveSessions). */
+/** The pool's accounts (an agent with usageReserve: Claude), by folder: what a live pane's env is read against (learnFromLiveSessions). */
 export function poolClaudeAccounts(accounts: () => readonly Account[] = () => getAccountStore().listAccounts()): Array<{ id: string; configDir: string }> {
-  return accounts().filter((a) => a.vendor === 'claude').map((a) => ({ id: a.id, configDir: a.configDir }));
+  return accounts().filter((a) => agentRow(a.vendor)?.usageReserve === true).map((a) => ({ id: a.id, configDir: a.configDir }));
 }
 
 /** After a restart, learn from the daemon's live sessions where a distro

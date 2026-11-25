@@ -30,6 +30,7 @@ import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSONSync } from '../../daemon/util/atomicWrite';
 import { validWslTarget } from '../../shared/wslTarget';
 import { canonicalAccountFolder, wslAccountLinuxHome } from '../../shared/wslAccountHome';
+import { agentRow } from '../../shared/agentIdentity';
 import type { UsageSnapshot } from '../claude/UsageApi';
 import { mergeLive, type UsageUpdate } from '../claude/usageMerge';
 import type { AccountQuotaReading } from '../../shared/accountQuota';
@@ -300,7 +301,7 @@ export class WslAccountState {
     this.liveHomesRead = true;
     let marked = false;
     for (const s of sessions) {
-      if ((s?.state !== 'attached' && s?.state !== 'detached') || s.liveAgent !== 'claude' || !validWslTarget(s.wslTarget)) continue;
+      if ((s?.state !== 'attached' && s?.state !== 'detached') || agentRow(typeof s.liveAgent === 'string' ? s.liveAgent : undefined)?.usageReserve !== true || !validWslTarget(s.wslTarget)) continue;
       if (!s.env || typeof s.env !== 'object') continue;
       const env: Record<string, string> = {};
       for (const [k, v] of Object.entries(s.env)) if (typeof v === 'string') env[k] = v;
