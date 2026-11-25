@@ -52,7 +52,14 @@ Local changes:
   `SGR 42`) reflowed at its full width. `src/term/mod.rs` `line_down` drops a
   row's wrap flag through `Row::take_wrap`, so a line feed no longer counts
   the whole row as written and loses that empty run (an erased row was then
-  replayed as printed blanks). Added 2026-11-25.
+  replayed as printed blanks). `Row::append_front` moves the empty run right
+  with the cells put in front instead of dropping it, so the erase on a
+  wrapped paragraph's last row is still cut after the reflow carries the
+  paragraph's cells into that row. And as xterm's `_reflowSmaller` nulls the
+  cell right after a reflowed line's content ("Null out the end of the line
+  ends"), `shrink_columns` puts a default cell there on a reflowed
+  paragraph's last row (`Row::null_at`, not counted as written), so it loses
+  the background an erase left. Added 2026-11-25.
 - `src/grid/mod.rs` `narrowing_clipped`, set by `shrink_columns` and reset by
   every `Grid::resize`: with no history, xterm drops the buffer's last rows
   before it inserts any new row (`lines.pop()`), so where one belongs to a

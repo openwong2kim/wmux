@@ -382,10 +382,29 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             plan.skipped.iter().any(|range| range.contains(&i))
                 || (!plan.cursor_reflowed && cursor_paragraph.contains(&i))
         };
+        // wmux: which rows wrap on, and which are longer than the new width by
+        // xterm's trimmed length: what makes xterm reflow a paragraph.
+        let wraps_on: Vec<bool> = wmux_alloc::collect(
+            rows.iter().map(|r| {
+                old_columns > 0
+                    && r.len() >= old_columns
+                    && r[Column(old_columns - 1)].flags().contains(Flags::WRAPLINE)
+            }),
+            REFLOW,
+        );
+        let long: Vec<bool> =
+            wmux_alloc::collect(rows.iter().map(|r| trimmed_length(r) > columns), REFLOW);
+        // The rows of the paragraph being walked.
+        let mut paragraph_rows = 0usize;
         for (i, mut row) in rows.drain(..).enumerate().rev() {
+            paragraph_rows += 1;
+            let paragraph_ends = i == 0 || !wraps_on[i];
             if reflow && unreflowed(i) {
                 Self::resize_cursor_row(&mut row, columns, i > 0 && starts_wide[i - 1]);
                 wmux_alloc::push(&mut new_raw, row, REFLOW);
+                if paragraph_ends {
+                    paragraph_rows = 0;
+                }
                 continue;
             }
             // wmux: without reflow (the alternate screen) xterm keeps a line's
@@ -500,6 +519,21 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                         self.display_offset += 1;
                     }
                 }
+            }
+            // wmux: xterm nulls the cell right after the content of a line it
+            // reflowed (`_reflowSmaller`, "Null out the end of the line ends"):
+            // on the paragraph's last row that cell loses the background an
+            // erase left there. It stays in the row's empty run.
+            if paragraph_ends {
+                if paragraph_rows > 1 || long[i] {
+                    if let Some(last) = new_raw.last_mut() {
+                        let length = trimmed_length(last);
+                        if length < columns {
+                            last.null_at(length);
+                        }
+                    }
+                }
+                paragraph_rows = 0;
             }
         }
 

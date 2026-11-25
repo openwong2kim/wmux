@@ -79,6 +79,11 @@ export const reflowCases: Case[] = [
   // Rows erased with a background color below the cursor (SGR 42, then EL):
   // their cells carry no content for xterm, so they do not reflow.
   script('reflow-below-cursor-bg-erased-rows', [80, 24], [`${rows(2, 70)}\r\n\x1b[42m\x1b[2K\r\n\x1b[2Kx\x1b[0m\r\nab\x1b[43m\x1b[K\x1b[0m\x1b[1H`, [40, 24]]),
+  // A wrapped paragraph whose last row carries the erase: the reflow carries
+  // the paragraph's cells in front of it, and the erase is still cut.
+  script('reflow-below-cursor-wrapped-bg-erased', [80, 24], [`top\r\n${'a'.repeat(80)}xx\x1b[42m\x1b[K\x1b[0m\x1b[1H`, [50, 24]]),
+  script('reflow-below-cursor-wrapped-bg-erased-history', [80, 24], [`${rows(30, 20)}\r\ntop\r\n${'a'.repeat(80)}xx\x1b[42m\x1b[K\x1b[0m\x1b[20H`, [50, 24]]),
+  script('reflow-wrapped-bg-erased-above-cursor', [80, 24], [`${'a'.repeat(80)}xx\x1b[42m\x1b[K\x1b[0m\r\n${prompt}`, [50, 24]]),
   script('reflow-below-cursor-bg-erased-history', [80, 24], [`${rows(30, 20)}\r\n${rows(2, 70)}\r\n\x1b[42m\x1b[2K\x1b[0m\r\nab\x1b[43m\x1b[K\x1b[0m\x1b[20H`, [40, 24]]),
   // Wider: xterm counts every row the reflow removes, above or below the
   // cursor: each takes a history row first, then moves both cursors up.

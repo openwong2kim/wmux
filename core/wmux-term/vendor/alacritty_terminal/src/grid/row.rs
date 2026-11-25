@@ -233,6 +233,18 @@ impl<T> Row<T> {
         self.occ = min(self.occ, column);
     }
 
+    /// wmux: a default cell at `column`, not counted as written: the cell
+    /// xterm's narrowing nulls after a reflowed line's content, inside the
+    /// row's empty run.
+    pub(crate) fn null_at(&mut self, column: usize)
+    where
+        T: Default,
+    {
+        if let Some(cell) = self.inner.get_mut(column) {
+            *cell = T::default();
+        }
+    }
+
     /// wmux: take the wrap flag off the last cell without counting it as a
     /// write (`occ`), so a resize keeps an earlier widen's empty cells.
     pub(crate) fn take_wrap(&mut self) -> bool
@@ -322,7 +334,13 @@ impl<T> Row<T> {
     #[inline]
     pub fn append_front(&mut self, mut vec: Vec<T>) {
         wmux_alloc::reserve(&mut vec, self.inner.len(), ROW);
-        self.forget_mark();
+        // wmux: the row's cells move right by the cells put in front, and its
+        // empty run with them: a reflow carries a paragraph's cells into its
+        // last row this way, and that row's erase must still be seen there
+        // (`Row::shrink`). `reset` covers the run past `occ` while marked.
+        if self.empty_mark != 0 {
+            self.empty_mark += vec.len();
+        }
         self.occ += vec.len();
 
         vec.append(&mut self.inner);

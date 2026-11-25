@@ -296,6 +296,32 @@ fn shrink_reflow_cuts_an_erased_row() {
     assert_eq!(grid[Line(1)].empty_from(), Some(0));
 }
 
+/// wmux: and so is the erase on a wrapped paragraph's last row, after the
+/// reflow carries the paragraph's cells in front of it.
+#[test]
+fn shrink_reflow_cuts_the_erase_on_a_wrapped_last_row() {
+    use crate::vte::ansi::{Color, NamedColor};
+    let mut grid = Grid::<Cell>::new(3, 4, 10);
+    for x in 0..3 {
+        grid[Line(1)][Column(x)] = cell('a');
+    }
+    grid[Line(1)][Column(3)] = wrap_cell('a');
+    grid[Line(2)][Column(0)] = cell('x');
+    let mut bg = Cell::default();
+    bg.bg = Color::Named(NamedColor::Green);
+    for x in 1..4 {
+        grid[Line(2)][Column(x)] = bg.clone();
+    }
+    grid[Line(2)].mark_erased_from(1);
+    grid.cursor.point = Point::new(Line(0), Column(0));
+    grid.resize(true, 3, 3);
+    // aaa | ax + erased: the erase is cut, not wrapped onto a third row.
+    assert_eq!(grid.history_size(), 0);
+    assert_eq!(grid[Line(2)][Column(0)], cell('a'));
+    assert_eq!(grid[Line(2)][Column(1)], cell('x'));
+    assert_eq!(grid[Line(2)].empty_from(), Some(2));
+}
+
 #[test]
 fn shrink_reflow_twice() {
     let mut grid = Grid::<Cell>::new(1, 5, 2);
