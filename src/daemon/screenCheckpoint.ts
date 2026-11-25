@@ -32,6 +32,8 @@ export interface CheckpointRing {
   readAllWithGeometry(): { data: Buffer; geometry: ReplayGeometry | undefined; writtenAt: number };
   readonly totalBytesWritten: number;
   readonly capacityBytes: number;
+  /** Bumps on every clear(): the bytes before it are gone though the counter did not move. */
+  readonly clearGeneration: number;
   readonly isHibernated?: boolean;
 }
 
@@ -40,6 +42,8 @@ type CheckpointModes = Pick<OutputModes, 'altScreen' | 'preamble'>;
 interface ScreenCheckpoint {
   /** The ring's lifetime byte count the grid describes. */
   offset: number;
+  /** The ring's clear generation at that count: a clear since leaves a hole the replay cannot cross. */
+  generation: number;
   cols: number;
   rows: number;
   /** The grid as ANSI (its modes, its alternate screen, its cursor). */
@@ -52,8 +56,9 @@ export const SCREEN_CHECKPOINT_MAX_BYTES = 512 * 1024;
 const REFRESH_SHARE = 0.5;
 /** After a checkpoint that failed or was not kept, the next try waits for this share of the ring. */
 const RETRY_SHARE = 0.125;
-/** A checkpoint job's parse budget: it waits its turn, so it may take its time. */
-const CHECKPOINT_BUDGET_MS = 4000;
+/** A checkpoint job's parse budget. It holds the shared snapshot slot pane reveals wait on, and a job that
+ *  runs out is retried later, so it is kept short (a 4 MiB stretch measured ~25 ms on Rust, ~75 ms on xterm). */
+const CHECKPOINT_BUDGET_MS = 1000;
 
 const checkpoints = new WeakMap<CheckpointRing, ScreenCheckpoint>();
 const attempts = new WeakMap<CheckpointRing, number>();
@@ -70,8 +75,8 @@ export interface ScreenReplay {
 
 /**
  * The bytes that rebuild the visible grid: the checkpoint and the ring's bytes
- * after it when the checkpoint still applies (the ring holds its offset, the
- * screen is still alternate, no size change since), else the ring led by its
+ * after it when the checkpoint still applies (the ring holds its offset and
+ * was not cleared since, the screen is still alternate, no size change since), else the ring led by its
  * mode preamble. `markUnknown`: cells no byte wrote carry UNKNOWN_CELL (a
  * checkpoint's own unknown cells carry it either way).
  */
@@ -84,7 +89,7 @@ export function screenReplay(
   const { data, geometry, writtenAt } = ring.readAllWithGeometry();
   const start = writtenAt - data.length;
   const checkpoint = checkpoints.get(ring);
-  if (checkpoint && modes?.altScreen && checkpoint.offset >= start && checkpoint.offset <= writtenAt
+  if (checkpoint && modes?.altScreen && checkpoint.generation === ring.clearGeneration && checkpoint.offset >= start && checkpoint.offset <= writtenAt
     && checkpoint.cols === size.cols && checkpoint.rows === size.rows
     && !(geometry?.changes ?? []).some((change) => start + change.offset > checkpoint.offset)) {
     // The payload enters the alternate screen and sets its modes itself: no preamble before it.
@@ -115,7 +120,8 @@ export function noteScreenOutput(ring: CheckpointRing, modes: CheckpointModes | 
     return;
   }
   const total = ring.totalBytesWritten;
-  const covered = checkpoints.get(ring)?.offset ?? 0;
+  const current = checkpoints.get(ring);
+  const covered = current && current.generation === ring.clearGeneration ? current.offset : 0;
   if (total - covered <= ring.capacityBytes * REFRESH_SHARE || running.has(ring)) return;
   const tried = attempts.get(ring);
   if (tried !== undefined && tried > covered && total - tried < ring.capacityBytes * RETRY_SHARE) return;
@@ -135,6 +141,7 @@ export async function takeScreenCheckpoint(
   const at = size();
   if (!at || !modes.altScreen) return false;
   // Read (and copied) before the first await: `writtenAt` names exactly these bytes.
+  const generation = ring.clearGeneration;
   const read = screenReplay(ring, modes, at, { markUnknown: true });
   // A ring that failed to wake read only its newest bytes.
   if (ring.isHibernated) return false;
@@ -149,8 +156,8 @@ export async function takeScreenCheckpoint(
   if (!outcome.ok || outcome.payload.length > SCREEN_CHECKPOINT_MAX_BYTES) return false;
   const now = size();
   // Left the alternate screen or resized while it parsed: the grid no longer applies.
-  if (!modes.altScreen || !now || now.cols !== at.cols || now.rows !== at.rows) return false;
-  checkpoints.set(ring, { offset: read.writtenAt, cols: at.cols, rows: at.rows, payload: outcome.payload });
+  if (!modes.altScreen || !now || now.cols !== at.cols || now.rows !== at.rows || ring.clearGeneration !== generation) return false;
+  checkpoints.set(ring, { offset: read.writtenAt, generation, cols: at.cols, rows: at.rows, payload: outcome.payload });
   return true;
 }
 

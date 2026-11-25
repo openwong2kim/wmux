@@ -4,7 +4,7 @@
 // that row blank. The screen checkpoint (screenCheckpoint.ts) keeps the grid
 // across the wrap; a cell nothing vouches for stays unknown.
 import { describe, expect, it } from 'vitest';
-import { deliveryFrameOf, readComposer, type DeliveryPhase } from '../deliveryComposer';
+import { cursorInComposer, deliveryFrameOf, readComposer, type DeliveryPhase } from '../deliveryComposer';
 import { RingBuffer } from '../RingBuffer';
 import { OutputModeTracker } from '../util/outputModeTracker';
 import { enqueueSnapshotJob } from '../HeadlessSnapshot';
@@ -55,7 +55,8 @@ async function read(p: Pane, phase: DeliveryPhase = 'paste') {
   const outcome = await queuedScreenText({ getSession: () => session }, 'pane', true, { keepUnknown: true });
   if (!outcome?.ok) throw new Error('screen read failed');
   const frame = deliveryFrameOf(outcome.rows, outcome.rowsBelowCursor);
-  return { frame, verdict: readComposer(frame, 'claude', phase).verdict };
+  const composer = readComposer(frame, 'claude', phase);
+  return { frame, verdict: composer.verdict, cursorIn: cursorInComposer(frame, composer) };
 }
 
 describe('a delivery frame replayed from a wrapped ring', () => {
@@ -115,6 +116,27 @@ describe('a delivery frame replayed from a wrapped ring', () => {
     for (let i = 0; i < 100; i++) await p.feed(at(1, 1, `⏺ late ${i}`.padEnd(40)));
     await p.feed(at(3, 1, RULE) + at(4, 1, '❯') + at(5, 1, RULE));
     expect(screenCheckpointBytes(p.ring)).toBeGreaterThan(0);
+    expect((await read(p)).verdict).toBe('unknown');
+  });
+
+  it('with checkpoints, a dimmed suggestion in the idle prompt still reads empty, and the cursor sits on the prompt', async () => {
+    const p = pane(4096, true);
+    await claudeSession(p, '\x1b[2mTry "fix lint"\x1b[0m');
+    // Claude leaves the cursor in its prompt row.
+    await p.feed(at(3, 1, RULE) + at(4, 1, '❯') + at(4, 3, ''));
+    const { frame, verdict, cursorIn } = await read(p);
+    expect(frame.rows[3]).toBe('❯\u00a0Try "fix lint"');
+    expect(verdict).toBe('plain');
+    expect(cursorIn).toBe(true);
+  });
+
+  it('a ring cleared after its checkpoint (a chunk it refused to store) does not replay across the hole', async () => {
+    const p = pane(4096, true);
+    await claudeSession(p, '');
+    expect(screenCheckpointBytes(p.ring)).toBeGreaterThan(0);
+    p.ring.clear();
+    await p.feed(at(3, 1, RULE) + at(4, 1, '❯') + at(5, 1, RULE));
+    // The cells around the redrawn rows are no longer vouched for.
     expect((await read(p)).verdict).toBe('unknown');
   });
 
