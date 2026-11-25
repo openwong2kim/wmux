@@ -4,7 +4,8 @@ import * as path from 'path';
 import { execFile } from 'node:child_process';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
-import { foregroundRemoteShellClient, imagePathForPane } from '../../../shared/imagePaste';
+import { foregroundClientOf, foregroundRemoteShellClient, imagePathForPane } from '../../../shared/imagePaste';
+import { readLinuxProcessTable } from '../../../daemon/nativeProcessTable';
 import { getPtyShell } from '../../pty/ptyShellRegistry';
 import { EphemeralClipboard } from '../../clipboard/ephemeralClipboard';
 import { clipboardHasImage, readClipboardPng } from '../../clipboard/clipboardImage';
@@ -175,6 +176,8 @@ async function paneRemoteShell(
   if (process.platform === 'win32' || !shellPidFor || typeof ptyId !== 'string' || !ptyId) return null;
   const pid = await shellPidFor(ptyId).catch(() => undefined);
   if (typeof pid !== 'number' || pid <= 0) return null;
+  const native = await readLinuxProcessTable(false);
+  if (native) return foregroundClientOf(new Map(native.map((r) => [r.pid, { pgid: r.pgid, tpgid: r.tpgid, comm: r.comm }])), pid);
   const stdout = await new Promise<string | null>((resolve) => {
     execFile('/bin/ps', ['-A', '-o', 'pid=,pgid=,tpgid=,comm='], { timeout: 2000, maxBuffer: 8 * 1024 * 1024 }, (error, out) => {
       resolve(error ? null : String(out));

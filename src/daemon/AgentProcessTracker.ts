@@ -55,7 +55,7 @@ import { AGENT_ROWS, AGENT_SLUG_SET, type AgentSlug } from '../shared/agentIdent
 import { customProcessNameForm } from '../shared/customAgents';
 import { npmSpecName } from '../shared/installCommandParse';
 import type { WslAgentLocation, WslReportedAgent, WslWatchedAgent } from './wslAgentProcess';
-import { readNativeProcessTable, type NativeProcessRow } from './nativeProcessTable';
+import { linuxArgsTableUsable, readLinuxProcessTable, readNativeProcessTable, type NativeProcessRow } from './nativeProcessTable';
 import { procTable } from './procfs';
 
 const execFileAsync = promisify(execFile);
@@ -888,7 +888,8 @@ export interface LiveCheck { byImage?: boolean }
  *  the native core's table when it is packaged (nativeProcessTable.ts); else,
  *  as tasklist has no PPID, it shells out to Windows PowerShell 5.1 (always
  *  present, absolute System32 path — no PATH trust) for a single CIM
- *  enumeration. Linux reads /proc, the same rows `ps` prints; other POSIX,
+ *  enumeration. Linux reads the native core's table, else /proc in TS
+ *  (procfs.procTable), the same rows `ps` prints either way; other POSIX,
  *  or Linux when /proc cannot be listed, uses one `ps`. Throws on failure —
  *  the caller stays undecided. */
 async function enumerateProcesses(): Promise<ProcessTreeEntry[]> {
@@ -913,7 +914,9 @@ async function enumerateProcesses(): Promise<ProcessTreeEntry[]> {
     );
     return parsePipeDelimited(stdout as string);
   }
-  const rows = await procTable();
+  // After a failed native read, straight to `ps`: procTable would wait on the
+  // same stuck command line, and `ps` can be timed out and killed.
+  const rows = await readLinuxProcessTable(true) ?? (linuxArgsTableUsable() ? null : await procTable());
   if (rows) return parsePsOutput(rows.map((r) => `${r.pid} ${r.ppid} ${r.args}`).join('\n'));
   const { stdout } = await execFileAsync(
     'ps',

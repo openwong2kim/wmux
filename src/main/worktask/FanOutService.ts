@@ -58,6 +58,7 @@ import {
   releaseFanoutPorts,
   FANOUT_SETUP_TIMEOUT_MS,
   runFanoutSetup,
+  workerAutoUpdateEnv,
   type FanoutSetupSkipReason,
 } from './fanoutEnvironment';
 import {
@@ -1981,8 +1982,10 @@ export class FanOutService {
     const initialCommand = launch.command;
     base.initialCommand = initialCommand; // F2 재발사 재료(맨 셸 오배선 방지).
     const wsName = `wtask: ${ctx.title.slice(0, 32)}`;
-    // The first-run env decided above, over the task's own.
+    // The first-run env decided above, over the task's own; the worker's
+    // updater off unless the user's env sets it (workerAutoUpdateEnv).
     const paneEnv = {
+      ...workerAutoUpdateEnv(),
       ...taskEnv,
       ...firstRunEnv,
     };
@@ -2507,7 +2510,7 @@ export class FanOutService {
     const launches = this.launches ?? getWorkerSlots();
     // The same first-run env as the task's first launch: without it a
     // resumed worker stops at claude's folder-trust dialog (#2261).
-    const paneEnv = firstRunEnvForAgent(input.command);
+    const paneEnv = { ...workerAutoUpdateEnv(), ...firstRunEnvForAgent(input.command) };
     // A task the account pool put on an account resumes there (its
     // conversation lives in that folder), or is held while it cannot.
     const poolAccount = (launches as Partial<Pick<WorkerSlots, 'launchOf'>>).launchOf?.(input.taskId)?.accountId;

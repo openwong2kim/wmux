@@ -644,6 +644,7 @@ mod tests {
             name: "x".into(),
             created: None,
             cmdline: None,
+            linux: None,
         };
         let walked = [(row(1), 0), (row(2), 501), (row(3), 502), (row(4), 501)];
         assert_eq!(owned_by(&walked, 501), Ok(vec![2, 4]));
@@ -662,6 +663,7 @@ mod tests {
             name: "x".into(),
             created: None,
             cmdline: None,
+            linux: None,
         };
         let walked: Vec<_> = (1..=1000)
             .map(|pid| (row(pid), if pid == 7 { 501 } else { 502 }))

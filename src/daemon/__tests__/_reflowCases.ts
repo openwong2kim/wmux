@@ -61,9 +61,30 @@ export const reflowCases: Case[] = [
   // A cursor saved before a narrowing with room below, restored after it.
   script('saved-cursor-narrow', [80, 24], [`${rows(3, 70)}\r\n${prompt}\x1b7`, [40, 24], '\x1b8Z']),
   // A paragraph below the cursor reflows: xterm moves its cursor row as if
-  // the rows were above it, off its content. Refused.
-  script('reflow-below-cursor', [80, 24], [`${rows(4, 70)}\x1b[2H`, [40, 24]], 'xterm'),
-  script('narrow-history-below-cursor', [80, 24], [`${rows(40, 20)}\r\n${rows(6, 70)}\x1b[19H`, [40, 24]], 'xterm'),
+  // the rows were above it, off its content, and every row a lower paragraph
+  // adds moves the row it leaves unreflowed too (vendor `narrowing_plan`).
+  script('reflow-below-cursor', [80, 24], [`${rows(4, 70)}\x1b[2H`, [40, 24]]),
+  script('narrow-history-below-cursor', [80, 24], [`${rows(40, 20)}\r\n${rows(6, 70)}\x1b[19H`, [40, 24]]),
+  // The cursor's own paragraph is reflowed once a lower one moved the row off it.
+  script('reflow-below-cursor-reflows-cursor-paragraph', [80, 24], [`${rows(2, 70)}\x1b[1H`, [40, 24]]),
+  // The moved row lands in another paragraph below, which stays unreflowed.
+  script('reflow-below-cursor-skips-a-lower-paragraph', [80, 24], [`x\r\n${rows(2, 70)}\x1b[1H`, [40, 24]]),
+  // History above: the viewport moves instead of the cursor, nothing is dropped.
+  script('reflow-below-cursor-history-wrapped-status', [80, 24], [`${rows(40, 20)}\r\n${'s'.repeat(150)}\r\n${rows(2, 70, 't')}\x1b[2A\x1b[3G`, [50, 24]]),
+  // Two steps, the second narrower again.
+  script('reflow-below-cursor-two-steps', [80, 24], [`${rows(3, 70)}\x1b[1H`, [60, 24], [30, 24]]),
+  // No history: the rows xterm drops are a reflowed paragraph's own (the
+  // bottom row), and it keeps that paragraph's end. Refused.
+  script('reflow-below-cursor-drops-reflowed-row', [80, 24], [`${rows(2, 70)}\x1b[24H${'z'.repeat(70)}\x1b[1H`, [40, 24]], 'xterm'),
+  // Rows erased with a background color below the cursor (SGR 42, then EL):
+  // their cells carry no content for xterm, so they do not reflow.
+  script('reflow-below-cursor-bg-erased-rows', [80, 24], [`${rows(2, 70)}\r\n\x1b[42m\x1b[2K\r\n\x1b[2Kx\x1b[0m\r\nab\x1b[43m\x1b[K\x1b[0m\x1b[1H`, [40, 24]]),
+  // A wrapped paragraph whose last row carries the erase: the reflow carries
+  // the paragraph's cells in front of it, and the erase is still cut.
+  script('reflow-below-cursor-wrapped-bg-erased', [80, 24], [`top\r\n${'a'.repeat(80)}xx\x1b[42m\x1b[K\x1b[0m\x1b[1H`, [50, 24]]),
+  script('reflow-below-cursor-wrapped-bg-erased-history', [80, 24], [`${rows(30, 20)}\r\ntop\r\n${'a'.repeat(80)}xx\x1b[42m\x1b[K\x1b[0m\x1b[20H`, [50, 24]]),
+  script('reflow-wrapped-bg-erased-above-cursor', [80, 24], [`${'a'.repeat(80)}xx\x1b[42m\x1b[K\x1b[0m\r\n${prompt}`, [50, 24]]),
+  script('reflow-below-cursor-bg-erased-history', [80, 24], [`${rows(30, 20)}\r\n${rows(2, 70)}\r\n\x1b[42m\x1b[2K\x1b[0m\r\nab\x1b[43m\x1b[K\x1b[0m\x1b[20H`, [40, 24]]),
   // Wider: xterm counts every row the reflow removes, above or below the
   // cursor: each takes a history row first, then moves both cursors up.
   script('widen-below-cursor', [40, 24], [`${rows(4, 70)}\x1b[2H`, [80, 24]]),
@@ -119,7 +140,7 @@ export const reflowCases: Case[] = [
   // Still on an alternate screen whose wrapped rows changed width since.
   script('alt-wrapped-left-entered-again-resized', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], `\x1b[?1049l\x1b[?1049h${'v'.repeat(100)}`, [80, 24]], 'xterm'),
   // Another refusal set in the same resize or after it outlives the leave.
-  script('alt-wrapped-left-reflow-below-cursor', [80, 24], [`${rows(4, 70)}\x1b[2H\x1b[?1049h${'w'.repeat(100)}`, [40, 24], '\x1b[?1049l'], 'xterm'),
+  script('alt-wrapped-left-reflow-drops-reflowed-row', [80, 24], [`${rows(2, 70)}\x1b[24H${'z'.repeat(70)}\x1b[1H\x1b[?1049h${'w'.repeat(100)}`, [40, 24], '\x1b[?1049l'], 'xterm'),
   script('alt-wrapped-left-after-refused-decstr', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], '\x1b[1!p\x1b[?1049l$ '], 'xterm'),
   // DECSTR in its plain spelling is no refusal: the leave lifts the reflow.
   script('alt-wrapped-left-after-decstr', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], '\x1b[!p\x1b[?1049l$ '], 'rust'),
@@ -242,3 +263,43 @@ export const knownGaps: Case[] = [
   // printed blanks (after its charset PR).
   script('trailing-spaces', [80, 24], [`x${' '.repeat(60)}\r\n${prompt}`, [40, 24]]),
 ];
+
+/** A small seeded generator (mulberry32), so the random cases are the same on every run. */
+function seeded(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Seeded random resize sequences around the cursor: rows of random widths
+ * (some soft-wrapped, some with a fullwidth glyph), an optional history, the
+ * cursor moved to a random cell, then one to three narrowings or widenings.
+ * Which backend serves each is not fixed: Rust must replay like xterm when it
+ * answers, and refuse with a named reason otherwise.
+ */
+export function randomResizeCases(seed: number, count: number): Case[] {
+  const next = seeded(seed);
+  const int = (n: number) => Math.floor(next() * n);
+  const out: Case[] = [];
+  for (let k = 0; k < count; k++) {
+    const cols = 30 + int(60);
+    const height = 8 + int(16);
+    const history = next() < 0.5 ? `${rows(30 + int(20), 20, 'h')}\r\n` : '';
+    const lines = Array.from({ length: 2 + int(height - 2) }, (_, i) => {
+      const width = int(cols * 2);
+      const text = `r${i} `.padEnd(Math.max(4, width), String.fromCharCode(97 + int(26)));
+      return next() < 0.2 ? `${text.slice(0, -2)}한` : text;
+    });
+    const cursor = `\x1b[${1 + int(height)};${1 + int(cols)}H`;
+    const steps = Array.from({ length: 1 + int(3) }, () => [10 + int(cols + 20), height] as [number, number]);
+    const name = `random-${seed}-${k}`;
+    out.push(script(name, [cols, height], [`${history}${lines.join('\r\n')}${cursor}`, ...steps], 'rust', 100));
+  }
+  return out;
+}

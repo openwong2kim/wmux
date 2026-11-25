@@ -66,6 +66,9 @@ describe('createSpawnWorktree', () => {
       worktreePath: realpath(spawnDir()),
       cwd: realpath(path.join(spawnDir(), 'apps', 'site')),
       branch: BRANCH,
+      // No origin: the branch starts at HEAD, and says so.
+      base: g(repo, 'rev-parse', 'HEAD'),
+      baseNote: expect.stringContaining('the repository has no origin remote'),
     });
     expect(g(spawnDir(), 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(BRANCH);
     expect(fs.readFileSync(path.join(spawnDir(), 'apps', 'site', 'index.txt'), 'utf8')).toBe('site\n');
@@ -214,5 +217,84 @@ describe('createSpawnWorktree', () => {
     expect(r).toMatchObject({ ok: false, code: 'failed' });
     expect(branchExists()).toBe(true);
     expect(fs.existsSync(spawnDir())).toBe(false);
+  });
+});
+
+describe('createSpawnWorktree: the base', () => {
+  /** A bare origin with one commit more on main than this checkout has, which is on an older feature branch. */
+  const originAhead = (): { origin: string; tip: string } => {
+    const origin = path.join(root, 'origin.git');
+    g(root, 'clone', '-q', '--bare', repo, origin);
+    const other = path.join(root, 'other');
+    g(root, 'clone', '-q', origin, other);
+    g(other, 'config', 'user.name', 't');
+    g(other, 'config', 'user.email', 't@example.invalid');
+    fs.writeFileSync(path.join(other, 'NEW.md'), 'new\n');
+    g(other, 'add', '.');
+    g(other, 'commit', '-qm', 'ahead');
+    g(other, 'push', '-q', 'origin', 'main');
+    g(repo, 'checkout', '-q', '-b', 'old-feature');
+    g(repo, 'remote', 'add', 'origin', origin);
+    return { origin, tip: g(other, 'rev-parse', 'HEAD') };
+  };
+
+  it('branches from origin\'s default branch as fetched now, not from the checkout\'s HEAD', async () => {
+    const { tip } = originAhead();
+    // Never fetched here: the default branch is read from the remote, then fetched.
+    expect(() => g(repo, 'rev-parse', '--verify', '--quiet', 'refs/remotes/origin/main')).toThrow();
+    const r = await create();
+    expect(r).toMatchObject({ ok: true, base: tip, baseRef: 'origin/main' });
+    expect(r.ok && r.baseNote).toBeFalsy();
+    expect(g(spawnDir(), 'rev-parse', 'HEAD')).toBe(tip);
+    expect(fs.existsSync(path.join(spawnDir(), 'NEW.md'))).toBe(true);
+    expect(g(repo, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('old-feature');
+  });
+
+  it('an origin it cannot reach: HEAD, with the reason', async () => {
+    g(repo, 'remote', 'add', 'origin', path.join(root, 'no-such-origin.git'));
+    const head = g(repo, 'rev-parse', 'HEAD');
+    const r = await create();
+    expect(r).toMatchObject({ ok: true, base: head, baseNote: expect.stringContaining("branched from this PC's HEAD") });
+    expect(g(spawnDir(), 'rev-parse', 'HEAD')).toBe(head);
+  });
+
+  it('a stale origin/main and a fetch that fails: HEAD, never the stale ref', async () => {
+    originAhead();
+    g(repo, 'fetch', '-q', 'origin');
+    const stale = g(repo, 'rev-parse', 'refs/remotes/origin/main');
+    g(repo, 'remote', 'set-url', 'origin', path.join(root, 'gone.git'));
+    g(repo, 'commit', '-q', '--allow-empty', '-m', 'local only');
+    const head = g(repo, 'rev-parse', 'HEAD');
+    const r = await create();
+    expect(r).toMatchObject({ ok: true, base: head, baseNote: expect.stringContaining('git fetch origin main failed') });
+    expect(head).not.toBe(stale);
+  });
+
+  it('fetches nothing when the repository\'s own config names how git connects', async () => {
+    originAhead();
+    g(repo, 'config', 'http.proxy', 'http://127.0.0.1:9');
+    const head = g(repo, 'rev-parse', 'HEAD');
+    const r = await create();
+    expect(r).toMatchObject({ ok: true, base: head, baseNote: expect.stringContaining('http.proxy') });
+    expect(() => g(repo, 'rev-parse', '--verify', '--quiet', 'refs/remotes/origin/main')).toThrow();
+  });
+
+  it('a configured fetch mapping of origin moves no local branch: only origin/<default> is written', async () => {
+    originAhead();
+    g(repo, 'branch', 'important');
+    const before = g(repo, 'rev-parse', 'important');
+    g(repo, 'config', '--add', 'remote.origin.fetch', '+refs/heads/main:refs/heads/important');
+    const r = await create();
+    expect(r).toMatchObject({ ok: true, baseRef: 'origin/main' });
+    expect(g(repo, 'rev-parse', 'important')).toBe(before);
+  });
+
+  it('takes a default branch name git takes, `+` included', async () => {
+    const { tip } = originAhead();
+    const other = path.join(root, 'other');
+    g(other, 'push', '-q', 'origin', 'main:release+stable');
+    g(root, '-C', path.join(root, 'origin.git'), 'symbolic-ref', 'HEAD', 'refs/heads/release+stable');
+    const r = await create();
+    expect(r).toMatchObject({ ok: true, base: tip, baseRef: 'origin/release+stable' });
   });
 });

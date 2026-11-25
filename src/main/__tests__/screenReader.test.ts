@@ -11,6 +11,9 @@ vi.mock('child_process', () => ({
   },
 }));
 
+const nativeTable = vi.hoisted(() => ({ rows: undefined as Array<{ comm: string }> | undefined }));
+vi.mock('../../daemon/nativeProcessTable', () => ({ readLinuxProcessTable: async () => nativeTable.rows }));
+
 import {
   createScreenReaderMonitor,
   includesScreenReader,
@@ -59,6 +62,18 @@ describe('listProcessNames', () => {
     const cmd = exec.calls[0]?.cmd ?? '';
     expect(path.win32.isAbsolute(cmd)).toBe(true);
     expect(cmd).toMatch(/[\\/]System32[\\/]tasklist\.exe$/);
+  });
+
+  it('reads the names from the native table on Linux, and from ps when it cannot', async () => {
+    exec.calls = [];
+    exec.err = null;
+    nativeTable.rows = [{ comm: 'gnome-shell' }, { comm: 'orca' }];
+    expect(await listProcessNames('linux')).toEqual(['gnome-shell', 'orca']);
+    expect(exec.calls).toEqual([]);
+    nativeTable.rows = undefined;
+    exec.out = 'systemd\norca\n';
+    expect(await listProcessNames('linux')).toEqual(['systemd', 'orca']);
+    expect(exec.calls).toEqual([{ cmd: 'ps', args: ['-eo', 'comm='] }]);
   });
 
   it('answers null, not an empty list, when the list cannot be read', async () => {

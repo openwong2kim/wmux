@@ -1039,9 +1039,11 @@ impl<T> Term<T> {
             self.scroll_up_relative(self.scroll_region.start, 1);
         } else if next < self.screen_lines() {
             if new_line {
+                // wmux: through `take_wrap`, which leaves the row's written
+                // extent as it was: a cell write would count the whole row
+                // as written and drop the empty run an erase left there.
                 let line = self.grid.cursor.point.line;
-                let last = self.grid.last_column();
-                self.grid[line][last].flags.remove(Flags::WRAPLINE);
+                self.grid[line].take_wrap();
             }
             self.damage_cursor();
             self.grid.cursor.point.line += 1;

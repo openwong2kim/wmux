@@ -68,6 +68,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let template = mem::take(&mut self.cursor.template);
         // wmux: set again below only by a narrowing that reflows.
         self.narrowing_added = 0;
+        self.narrowing_clipped = false;
 
         match self.lines.cmp(&lines) {
             Ordering::Less => self.grow_lines(lines),
@@ -342,7 +343,9 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let history_before = self.history_size();
         let total_before = self.total_lines();
         let cursor_line_before = self.cursor.point.line;
+        let cursor_column_before = self.cursor.point.column;
         let saved_line_before = self.saved_cursor.point.line;
+        let old_columns = self.columns;
         self.columns = columns;
 
         // Remove the linewrap special case, by moving the cursor outside of the grid.
@@ -361,10 +364,47 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             rows.iter().map(|r| r.len() > 0 && r[Column(0)].flags().contains(Flags::WIDE_CHAR)),
             REFLOW,
         );
+        // wmux: the paragraphs xterm leaves as they are, and whether its
+        // narrowing drops rows of one it reflowed (`narrowing_plan`).
+        let plan = if reflow {
+            narrowing_plan(&rows, old_columns, columns, self.lines, self.max_scroll_limit,
+                cursor_line_before.0.max(0) as usize, &cursor_paragraph)
+        } else {
+            NarrowingPlan::default()
+        };
+        // xterm reflows the cursor's paragraph like any other once its cursor
+        // row moved off it: the cursor does not shape the reflow then (its row
+        // and column are set below, as xterm sets them).
+        if plan.cursor_reflowed {
+            self.cursor.point.column = Column(0);
+        }
+        let unreflowed = |i: usize| {
+            plan.skipped.iter().any(|range| range.contains(&i))
+                || (!plan.cursor_reflowed && cursor_paragraph.contains(&i))
+        };
+        // wmux: which rows wrap on, and which are longer than the new width by
+        // xterm's trimmed length: what makes xterm reflow a paragraph.
+        let wraps_on: Vec<bool> = wmux_alloc::collect(
+            rows.iter().map(|r| {
+                old_columns > 0
+                    && r.len() >= old_columns
+                    && r[Column(old_columns - 1)].flags().contains(Flags::WRAPLINE)
+            }),
+            REFLOW,
+        );
+        let long: Vec<bool> =
+            wmux_alloc::collect(rows.iter().map(|r| trimmed_length(r) > columns), REFLOW);
+        // The rows of the paragraph being walked.
+        let mut paragraph_rows = 0usize;
         for (i, mut row) in rows.drain(..).enumerate().rev() {
-            if reflow && cursor_paragraph.contains(&i) {
+            paragraph_rows += 1;
+            let paragraph_ends = i == 0 || !wraps_on[i];
+            if reflow && unreflowed(i) {
                 Self::resize_cursor_row(&mut row, columns, i > 0 && starts_wide[i - 1]);
                 wmux_alloc::push(&mut new_raw, row, REFLOW);
+                if paragraph_ends {
+                    paragraph_rows = 0;
+                }
                 continue;
             }
             // wmux: without reflow (the alternate screen) xterm keeps a line's
@@ -480,6 +520,21 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                     }
                 }
             }
+            // wmux: xterm nulls the cell right after the content of a line it
+            // reflowed (`_reflowSmaller`, "Null out the end of the line ends"):
+            // on the paragraph's last row that cell loses the background an
+            // erase left there. It stays in the row's empty run.
+            if paragraph_ends {
+                if paragraph_rows > 1 || long[i] {
+                    if let Some(last) = new_raw.last_mut() {
+                        let length = trimmed_length(last);
+                        if length < columns {
+                            last.null_at(length);
+                        }
+                    }
+                }
+                paragraph_rows = 0;
+            }
         }
 
         // Reverse iterator and use it as the new grid storage.
@@ -522,6 +577,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             // growth. The snapshot moves it xterm's way (`native_core.rs`,
             // the column step of `resize`).
             self.narrowing_added = added;
+            self.narrowing_clipped = plan.clips_reflowed;
         }
 
         // Clamp display offset in case some lines went off.
@@ -529,10 +585,175 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // wmux: the cursor paragraph was not reflowed. xterm clamps its cursor
         // and clears pending wrap after a shrink, even if older lines reflowed.
-        self.cursor.point.column = min(self.cursor.point.column, Column(columns - 1));
+        // (xterm keeps its column through the reflow and clamps it.)
+        self.cursor.point.column = min(cursor_column_before, Column(columns - 1));
         self.cursor.input_needs_wrap = false;
 
         // Clamp the saved cursor to the grid.
         self.saved_cursor.point.column = min(self.saved_cursor.point.column, Column(columns - 1));
     }
+}
+
+/// wmux: what xterm's narrowing does that this grid's reflow alone does not
+/// (`Buffer.ts` `_reflowSmaller`, lines 369-490 in 6.1.0-beta.336), read
+/// before the reflow runs. Row indices count from the bottom row, as storage
+/// does.
+#[derive(Default)]
+struct NarrowingPlan {
+    /// Paragraphs xterm leaves unreflowed: the one its cursor row is in when
+    /// it reaches it.
+    skipped: Vec<std::ops::RangeInclusive<usize>>,
+    /// xterm reflows the cursor's own paragraph: its cursor row had moved
+    /// off it by then.
+    cursor_reflowed: bool,
+    /// xterm drops rows of a paragraph it reflowed.
+    clips_reflowed: bool,
+}
+
+/// xterm walks the paragraphs from the bottom and leaves the one its cursor
+/// row is in unreflowed (`reflowCursorLine` false). Every row a lower
+/// paragraph adds moves that row down first: with no history the cursor
+/// moves down while there is room, dropping the buffer's last row each time
+/// (`lines.pop()`); otherwise the viewport moves down (`ybase++`). So the row
+/// it skips can be another paragraph below the cursor's, and the cursor's
+/// own can be reflowed. The rows it drops are the last ones before any new
+/// row is inserted: where one belongs to a paragraph it reflowed, xterm keeps
+/// that paragraph's new rows and loses its first ones, which this grid's
+/// reflow does not do (`clips_reflowed`, refused by the snapshot).
+fn narrowing_plan<T: GridCell>(
+    rows: &[Row<T>],
+    old: usize,
+    columns: usize,
+    lines: usize,
+    max_scroll_limit: usize,
+    cursor_line: usize,
+    cursor_paragraph: &std::ops::RangeInclusive<usize>,
+) -> NarrowingPlan {
+    let mut plan = NarrowingPlan::default();
+    let total = rows.len();
+    if old == 0 || lines == 0 || total < lines {
+        return plan;
+    }
+    let wraps = |i: usize| {
+        rows[i].len() >= old && rows[i][Column(old - 1)].flags().contains(Flags::WRAPLINE)
+    };
+    // A paragraph's rows, from the bottom one at `lo`.
+    let paragraph = |lo: usize| {
+        let mut hi = lo;
+        while hi + 1 < total && wraps(hi + 1) {
+            hi += 1;
+        }
+        hi
+    };
+    // xterm passes over a lone row that fits.
+    let reflows = |lo: usize, hi: usize| hi > lo || trimmed_length(&rows[lo]) > columns;
+    let max_len = max_scroll_limit + lines;
+    // xterm's state: its cursor row, the history above the viewport, the
+    // buffer's length less the rows dropped, and the rows it will insert.
+    let (mut y, mut ybase, mut len, mut inserted) = (cursor_line, total - lines, total, 0usize);
+    let cursor = lines - 1 - cursor_line.min(lines - 1);
+    let mut dropped = 0usize;
+    let mut reflowed: Vec<(usize, usize)> = Vec::new();
+    let mut lo = 0;
+    while lo < total {
+        let hi = paragraph(lo);
+        // Above the cursor nothing is skipped any more, and nothing is dropped
+        // once the cursor reached the last row or history exists.
+        if lo > cursor && !(ybase == 0 && y + 1 < lines) {
+            break;
+        }
+        if reflows(lo, hi) {
+            let at = (total - 1) as isize - (ybase + y) as isize;
+            if (lo as isize..=hi as isize).contains(&at) {
+                wmux_alloc::push(&mut plan.skipped, lo..=hi, REFLOW);
+            } else {
+                plan.cursor_reflowed |= cursor_paragraph.contains(&lo);
+                // Rows dropped before xterm reached it: it reflows what is left.
+                plan.clips_reflowed |= lo < dropped;
+                wmux_alloc::push(&mut reflowed, (lo, hi), REFLOW);
+                let count = hi - lo + 1;
+                let added = new_row_count(&rows[lo..=hi], old, columns).saturating_sub(count);
+                let trimmed = if ybase == 0 && y + 1 != len {
+                    (y + added).saturating_sub(max_len)
+                } else {
+                    (len + added).saturating_sub(max_len)
+                };
+                inserted += added;
+                for _ in 0..added.saturating_sub(trimmed) {
+                    if ybase == 0 {
+                        if y + 1 < lines {
+                            y += 1;
+                            len -= 1;
+                            dropped += 1;
+                        } else {
+                            ybase += 1;
+                        }
+                    } else if ybase < min(max_len, len + inserted).saturating_sub(lines) {
+                        ybase += 1;
+                    }
+                }
+            }
+        }
+        lo = hi + 1;
+    }
+    // A row dropped after, for a paragraph above, can belong to one reflowed below.
+    plan.clips_reflowed |= reflowed.iter().any(|&(lo, _)| lo < dropped);
+    plan
+}
+
+/// xterm's `BufferLine.getTrimmedLength`: up to the last cell with content,
+/// a fullwidth glyph counting both its cells. The cells an erase left at the
+/// row's edge (`Row::empty_from`) carry no content there, whatever their
+/// background: xterm tests content, not the cell's look.
+fn trimmed_length<T: GridCell>(row: &Row<T>) -> usize {
+    let written = row.empty_from().unwrap_or(row.len());
+    match (0..written).rev().find(|&x| !row[Column(x)].is_empty()) {
+        Some(x) if row[Column(x)].flags().contains(Flags::WIDE_CHAR) => x + 2,
+        Some(x) => x + 1,
+        None => 0,
+    }
+}
+
+/// The rows xterm reflows a paragraph into at `columns`
+/// (`reflowSmallerGetNewLineLengths` with `getWrappedLineTrimmedLength`,
+/// `BufferReflow.ts`). `para` runs from its bottom row up.
+fn new_row_count<T: GridCell>(para: &[Row<T>], old: usize, columns: usize) -> usize {
+    let n = para.len();
+    let row = |k: usize| &para[n - 1 - k];
+    let length = |k: usize| -> usize {
+        if k + 1 >= n {
+            return trimmed_length(row(n - 1));
+        }
+        let last = &row(k)[Column(old - 1)];
+        let ends_in_null = (last.is_empty()
+            || last.flags().contains(Flags::LEADING_WIDE_CHAR_SPACER))
+            && !last.flags().contains(Flags::WIDE_CHAR_SPACER);
+        let next_starts_wide =
+            row(k + 1).len() > 0 && row(k + 1)[Column(0)].flags().contains(Flags::WIDE_CHAR);
+        if ends_in_null && next_starts_wide { old - 1 } else { old }
+    };
+    let needed: usize = (0..n).map(length).sum();
+    let (mut src_col, mut src_line, mut available, mut count) = (0usize, 0usize, 0usize, 0usize);
+    while available < needed {
+        if needed - available < columns {
+            count += 1;
+            break;
+        }
+        src_col += columns;
+        let line_length = length(src_line);
+        if src_col > line_length {
+            src_col -= line_length;
+            src_line += 1;
+        }
+        let ends_wide = src_line < n
+            && src_col >= 1
+            && src_col - 1 < row(src_line).len()
+            && row(src_line)[Column(src_col - 1)].flags().contains(Flags::WIDE_CHAR);
+        if ends_wide {
+            src_col -= 1;
+        }
+        available += if ends_wide { columns - 1 } else { columns };
+        count += 1;
+    }
+    count
 }

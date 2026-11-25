@@ -39,6 +39,7 @@
 
 import { execFile } from 'child_process';
 import path from 'path';
+import { readLinuxProcessTable } from '../daemon/nativeProcessTable';
 
 /** Process names of the screen readers wmux recognizes, per platform. The
  *  Windows names are unverified on a Windows machine so far. */
@@ -83,10 +84,12 @@ export function parseProcessNames(platform: NodeJS.Platform, output: string): st
   return lines.map((l) => /^"([^"]*)"/.exec(l)?.[1] ?? '').filter(Boolean);
 }
 
-/** The running processes' names; null when they cannot be read. tasklist by
- *  its System32 path: Windows looks in the current folder first for a bare
- *  name. */
-export function listProcessNames(platform: NodeJS.Platform): Promise<string[] | null> {
+/** The running processes' names; null when they cannot be read. Linux reads
+ *  the native table when it can. tasklist by its System32 path: Windows looks
+ *  in the current folder first for a bare name. */
+export async function listProcessNames(platform: NodeJS.Platform): Promise<string[] | null> {
+  const native = platform === 'linux' ? await readLinuxProcessTable(false) : undefined;
+  if (native) return parseProcessNames(platform, native.map((r) => r.comm).join('\n'));
   const [cmd, args] = platform === 'win32'
     ? [path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tasklist.exe'), ['/FO', 'CSV', '/NH']]
     : platform === 'darwin'
