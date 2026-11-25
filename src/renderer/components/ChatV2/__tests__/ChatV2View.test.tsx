@@ -444,8 +444,10 @@ describe('ChatV2View', () => {
     const isRow = (el: Element) => el.classList.contains('wmux-chatv2-chips');
     const client = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return isRow(this) ? row.client : 0; });
     const scroll = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLElement) { return isRow(this) ? Math.max(row.scroll, row.client) : 0; });
-    let resized: () => void = () => undefined;
-    vi.stubGlobal('ResizeObserver', class { constructor(cb: () => void) { resized = cb; } observe() { /* the test calls resized() itself */ } disconnect() { /* nothing to release */ } });
+    // Every observer (the chip row's and the transcript's) hears the resize.
+    const observers: Array<() => void> = [];
+    const resized = () => { for (const cb of observers) cb(); };
+    vi.stubGlobal('ResizeObserver', class { constructor(cb: () => void) { observers.push(cb); } observe() { /* the test calls resized() itself */ } disconnect() { /* nothing to release */ } });
     try {
       await mock.call('subscribe', { paneId: 'daemon-fold' });
       await mock.call('create', { paneId: 'daemon-fold', agent: 'claude', mode: 'default', model: 'claude-opus-5-5' });
