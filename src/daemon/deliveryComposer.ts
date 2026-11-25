@@ -92,7 +92,17 @@ function slice(rows: ChatScreenRows, from: number, to: number): ChatScreenRows {
  * missing closing rule is then no composer, never an empty one: a draft's
  * cells can be missing the same way.
  */
-function readClaude(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRead {
+function readClaude(rows: ChatScreenRows, phase: DeliveryPhase, unknown?: readonly string[]): ComposerRead {
+  const read = readClaudeRows(rows, phase);
+  // A blank the read could not see may be a draft's text or a dialog's row: no
+  // evidence of a plain prompt, from the composer's top rule down.
+  if (read.verdict !== 'mode' && read.span && unknown?.slice(Math.max(0, read.span.from - 1)).some((row) => row.includes(UNKNOWN_CELL))) {
+    return { verdict: 'unknown' };
+  }
+  return read;
+}
+
+function readClaudeRows(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRead {
   if (rows.every((row) => !row.trim())) return { verdict: 'unknown' };
   const isRule = (row: string): boolean => CLAUDE_RULE.test(row.trimEnd());
   const isTopRule = (row: string | undefined): boolean => row !== undefined && (isRule(row) || CLAUDE_LABELLED_RULE.test(row.trimEnd()));
@@ -146,7 +156,7 @@ function readCodex(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRead {
   return { verdict: empty && between.length === 0 ? 'plain' : 'busy', span };
 }
 
-const PLAIN_PROMPT = { claude: readClaude, codex: readCodex } satisfies Partial<Record<AgentSlug, (rows: ChatScreenRows, phase: DeliveryPhase) => ComposerRead>>;
+const PLAIN_PROMPT = { claude: readClaude, codex: readCodex } satisfies Partial<Record<AgentSlug, (rows: ChatScreenRows, phase: DeliveryPhase, unknown?: readonly string[]) => ComposerRead>>;
 
 /** An agent whose plain prompt wmux can recognise: it gets the full text. */
 export type PlainPromptAgent = keyof typeof PLAIN_PROMPT;
@@ -157,13 +167,7 @@ export function hasPlainPrompt(slug: AgentSlug): slug is PlainPromptAgent {
 
 export function readComposer(frame: DeliveryFrame | null, slug: PlainPromptAgent, phase: DeliveryPhase): ComposerRead {
   if (!frame) return { verdict: 'unknown' };
-  const read = PLAIN_PROMPT[slug](frame.rows, phase);
-  // A blank the read could not see may be a draft's text or a dialog's row: no
-  // evidence of a plain prompt, from Claude's top rule down.
-  if (slug === 'claude' && read.verdict !== 'mode' && read.span && frame.unknown?.slice(Math.max(0, read.span.from - 1)).some((row) => row.includes(UNKNOWN_CELL))) {
-    return { verdict: 'unknown' };
-  }
-  return read;
+  return PLAIN_PROMPT[slug](frame.rows, phase, frame.unknown);
 }
 
 /**

@@ -76,7 +76,9 @@ export interface ScreenReplay {
 /**
  * The bytes that rebuild the visible grid: the checkpoint and the ring's bytes
  * after it when the checkpoint still applies (the ring holds its offset and
- * was not cleared since, the screen is still alternate, no size change since), else the ring led by its
+ * was not cleared since, the screen is still alternate, no size change at or
+ * after its offset: a shrink and a grow back at that very byte leave the same
+ * size but drop rows), else the ring led by its
  * mode preamble. `markUnknown`: cells no byte wrote carry UNKNOWN_CELL (a
  * checkpoint's own unknown cells carry it either way).
  */
@@ -91,7 +93,7 @@ export function screenReplay(
   const checkpoint = checkpoints.get(ring);
   if (checkpoint && modes?.altScreen && checkpoint.generation === ring.clearGeneration && checkpoint.offset >= start && checkpoint.offset <= writtenAt
     && checkpoint.cols === size.cols && checkpoint.rows === size.rows
-    && !(geometry?.changes ?? []).some((change) => start + change.offset > checkpoint.offset)) {
+    && !(geometry?.changes ?? []).some((change) => start + change.offset >= checkpoint.offset)) {
     // The payload enters the alternate screen and sets its modes itself: no preamble before it.
     const replay = Buffer.concat([checkpoint.payload, data.subarray(checkpoint.offset - start)]);
     return { replay, geometry: undefined, writtenAt, marked: checkpoint.payload.includes(UNKNOWN_CELL) };

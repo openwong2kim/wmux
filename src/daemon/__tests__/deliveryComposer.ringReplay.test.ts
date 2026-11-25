@@ -9,7 +9,7 @@ import { RingBuffer } from '../RingBuffer';
 import { OutputModeTracker } from '../util/outputModeTracker';
 import { enqueueSnapshotJob } from '../HeadlessSnapshot';
 import { queuedScreenText } from '../queuedSessionText';
-import { noteScreenOutput, screenCheckpointBytes } from '../screenCheckpoint';
+import { noteScreenOutput, screenCheckpointBytes, takeScreenCheckpoint } from '../screenCheckpoint';
 
 const RULE = '─'.repeat(80);
 const at = (row: number, col: number, text: string): string => `\x1b[${row};${col}H${text}`;
@@ -138,6 +138,18 @@ describe('a delivery frame replayed from a wrapped ring', () => {
     await p.feed(at(3, 1, RULE) + at(4, 1, '❯') + at(5, 1, RULE));
     // The cells around the redrawn rows are no longer vouched for.
     expect((await read(p)).verdict).toBe('unknown');
+  });
+
+  it('a shrink and a grow back at the checkpoint\'s own byte still invalidate it', async () => {
+    const p = pane(4096, true);
+    await claudeSession(p, '');
+    // A checkpoint at the ring's very end, then no output between the two marks: both sit at its offset, and the size ends where it was.
+    expect(await takeScreenCheckpoint(p.ring, p.modes, () => ({ cols: COLS, rows: ROWS }))).toBe(true);
+    p.ring.noteGeometry(COLS, 4);
+    p.ring.noteGeometry(COLS, ROWS);
+    p.checkpoints = false;
+    await p.feed(at(1, 1, 'x'));
+    expect((await read(p)).verdict).not.toBe('plain');
   });
 
   it('a checkpoint does not outlive a resize or the alternate screen', async () => {
