@@ -472,7 +472,13 @@ mod tests {
         assert!(rows.iter().all(|r| r.pid != tid), "a thread id is no row");
         let own = rows.iter().find(|r| r.pid == me).expect("own row");
         let details = own.linux.as_ref().expect("details");
-        assert_eq!(details.state, "R");
+        // The state is the thread group leader's, as `ps` shows it: the test
+        // harness's main thread may be waiting on this test's thread.
+        assert!(
+            matches!(details.state.as_str(), "R" | "S"),
+            "{}",
+            details.state
+        );
         // SAFETY: getpgrp only reads this process's group.
         assert_eq!(details.pgid, unsafe { getpgrp() });
         let now_ms = std::time::SystemTime::now()
