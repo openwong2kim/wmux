@@ -50,6 +50,10 @@ export interface MarkdownOptions {
   /** Draw `@Name` mentions in plain text as something else (the Bots chat's
    *  bot marks). `pattern` matches the whole mention, group 1 the name. */
   mention?: { pattern: RegExp; render: (name: string, key: string) => React.ReactNode };
+  /** The chat view's code blocks (with `richCode`): the fence's file name
+   *  is kept beside its language, and the label and Copy sit on a header row
+   *  above the code, Copy always visible. Other surfaces keep the hover Copy. */
+  chat?: boolean;
   /** `*` and `**` emphasis only at word boundaries: no emphasis where the
    *  delimiter sits between two ASCII letters or digits (CommonMark's rule
    *  for `_`, applied to `*`), and none whose delimiter touches a space on
@@ -100,7 +104,7 @@ export const HTML_BLOCK_PREVIEW_MAX = 512 * 1024;
  *  html block with `htmlPreview` carries them on a row above it, with
  *  Preview / Code: Code first, Preview drawn in a sandboxed frame at the
  *  block's 320px cap. */
-function RichCodeBlock({ code, lang, htmlPreview }: { code: string; lang: string; htmlPreview?: boolean }): React.ReactElement {
+function RichCodeBlock({ code, lang, file, htmlPreview, chat }: { code: string; lang: string; file?: string; htmlPreview?: boolean; chat?: boolean }): React.ReactElement {
   const [copied, setCopied] = useState(false);
   const [view, setView] = useState<'code' | 'preview'>('code');
   const wanted = !!htmlPreview && /^x?html?$/i.test(lang) && code.length <= HTML_BLOCK_PREVIEW_MAX;
@@ -116,12 +120,18 @@ function RichCodeBlock({ code, lang, htmlPreview }: { code: string; lang: string
         void navigator.clipboard?.writeText(code).then(() => setCopied(true)).catch(() => undefined);
       }}
       onBlur={() => setCopied(false)}
-      className="pointer-events-auto h-[22px] rounded-[6px] px-1.5 text-[11px] text-[var(--text-sub)] opacity-0 hover:bg-[var(--hover-fill)] focus-visible:opacity-100 group-hover:opacity-100"
+      className={`pointer-events-auto h-[22px] rounded-[6px] px-1.5 text-[11px] text-[var(--text-sub)] hover:bg-[var(--hover-fill)] ${chat ? '' : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100'}`}
     >
       {copied ? t('botsPage.chat.copied') : t('botsPage.chat.copyCode')}
     </button>
   );
-  const label = lang && <span data-brain-md-code-lang className="text-[11px] text-[var(--text-muted)]">{lang}</span>;
+  const label = chat
+    ? (lang || file) && (
+      <span data-brain-md-code-lang className="min-w-0 truncate text-[11px] text-[var(--text-muted)]" title={file || undefined}>
+        {file ? <><span data-brain-md-code-file className="font-mono text-[var(--text-sub)]">{file}</span>{lang && <> · {lang}</>}</> : lang}
+      </span>
+    )
+    : lang && <span data-brain-md-code-lang className="text-[11px] text-[var(--text-muted)]">{lang}</span>;
   const pre = (
     <pre className="max-h-[320px] overflow-auto rounded-lg px-3 py-2 pr-20 font-mono text-[12px] leading-relaxed whitespace-pre bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)] text-[var(--text-sub)]">
       {code}
@@ -155,6 +165,19 @@ function RichCodeBlock({ code, lang, htmlPreview }: { code: string; lang: string
             {code}
           </pre>
         )}
+      </div>
+    );
+  }
+  if (chat) {
+    return (
+      <div data-brain-md-code data-brain-md-code-rich data-brain-md-code-chat className="my-1 overflow-hidden rounded-lg bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)]">
+        <div className="flex min-h-[26px] items-center justify-between gap-2 pl-3 pr-1 pt-0.5">
+          <span className="min-w-0 flex">{label}</span>
+          {copy}
+        </div>
+        <pre className="max-h-[320px] overflow-auto px-3 pb-2 pt-0.5 font-mono text-[12px] leading-relaxed whitespace-pre text-[var(--text-main)]">
+          {code}
+        </pre>
       </div>
     );
   }
@@ -484,7 +507,10 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
     const open = fenceOpenLength(line);
     if (open > 0) {
       const codeLines: string[] = [];
-      const lang = line.trimStart().slice(open).trim().split(/\s+/)[0]?.slice(0, 24) ?? '';
+      const info = line.trimStart().slice(open).trim().split(/\s+/);
+      const lang = info[0]?.slice(0, 24) ?? '';
+      // "```ts src/a.ts": the chat view keeps the file name the fence gave.
+      const file = opts.chat ? info.slice(1).join(' ').slice(0, 120) : '';
       i++;
       while (i < lines.length && !closesFence(lines[i], open)) {
         codeLines.push(lines[i]);
@@ -492,7 +518,7 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
       }
       i++; // skip the closing fence (or run past the end)
       if (opts.richCode) {
-        out.push(<RichCodeBlock key={out.length} code={codeLines.join('\n')} lang={lang} htmlPreview={opts.htmlPreview} />);
+        out.push(<RichCodeBlock key={out.length} code={codeLines.join('\n')} lang={lang} file={file} htmlPreview={opts.htmlPreview} chat={opts.chat} />);
         continue;
       }
       out.push(

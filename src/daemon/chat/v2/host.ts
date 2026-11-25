@@ -33,7 +33,7 @@ import {
   utf8Bytes,
 } from '../../../shared/chatv2/limits';
 import { agentExecEnv } from '../../../shared/execEnv';
-import { newChatSession, sessionNeedsInput, type Attachment, type Block, type Session } from '../../../shared/chatv2/session';
+import { newChatSession, sessionNeedsInput, type Attachment, type Block, type Session, type TurnOutcome } from '../../../shared/chatv2/session';
 import { CHAT_IMAGE_EXTENSIONS, CHAT_IMAGE_MAX_BYTES } from '../../../shared/transcript/chatAttachments';
 import type { DecisionForm, NativeDecisionOutcome, NativeDecisionRef, NativeDecisionReply } from '../../approvals/types';
 import { ClaudeDriver } from './claude/claudeDriver';
@@ -213,6 +213,14 @@ function sendDigest(text: string, attachments: readonly string[]): string {
 /** The id of the user block that opened the last turn, or undefined. */
 function openTurnId(session: Session): string | undefined {
   for (let i = session.blocks.length - 1; i >= 0; i--) if (session.blocks[i].role === 'user') return session.blocks[i].id;
+  return undefined;
+}
+
+/** How the newest turn ended: the outcome on the last prompt (none before the first, or while it runs). */
+function lastTurnOutcome(blocks: readonly Block[]): TurnOutcome | undefined {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    if (blocks[index].role === 'user') return blocks[index].outcome;
+  }
   return undefined;
 }
 
@@ -468,6 +476,7 @@ class Host implements ChatV2Host {
 
   private binding(live: Live): ChatV2Binding {
     const { record } = live;
+    const lastOutcome = record.session.busy ? undefined : lastTurnOutcome(record.session.blocks);
     return {
       paneId: record.paneId,
       chatSessionId: record.chatSessionId,
@@ -481,6 +490,7 @@ class Host implements ChatV2Host {
       capabilities: this.capabilities(live),
       ...(live.error ? { error: { ...live.error } } : {}),
       ...(record.state === 'handed-off' && record.continuedIn ? { continuedIn: { ...record.continuedIn } } : {}),
+      ...(lastOutcome ? { lastOutcome } : {}),
     };
   }
 

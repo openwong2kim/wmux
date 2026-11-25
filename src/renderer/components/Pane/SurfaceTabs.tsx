@@ -48,6 +48,8 @@ import { RENAME_ACTIVE_TAB_EVENT } from '../../utils/commandActions';
 import { isTerminalSurfaceType } from './surfaceKinds';
 import { ComputerUseDot } from '../shared/ComputerUseDots';
 import { chatTabLabel, useChatTabLabels } from '../ChatV2/status';
+import { useShowsChatV2 } from '../ChatV2/ChatSurface';
+import { ChatKindBadge } from '../Chat/ChatKindBadge';
 
 export { isTerminalSurfaceType };
 
@@ -438,6 +440,9 @@ export default function SurfaceTabs({
   // A tab a chat-v2 chat holds in chat view is named after its agent, derived
   // here and never written to the title, so it ends with the chat.
   useChatTabLabels(surfaces, chatViewEnabled);
+  // The chat-only view names its kind here, in the header, beside the Terminal / Chat switch.
+  const shownSurface = surfaces.find((s) => s.id === activeSurfaceId);
+  const showsChatV2 = useShowsChatV2(shownSurface?.ptyId || undefined, chatViewEnabled, shownSurface?.viewMode);
   const tabLabel = (s: Surface): string => chatTabLabel(s, chatViewEnabled) ?? (s.title || (s.surfaceType === 'board' ? t('company.board') : t('surface.terminal')));
   // "Continue in another agent": a held tab and the tab its work went on in
   // each name the other on a tooltip line of its own, and carry a muted mark
@@ -1281,7 +1286,7 @@ export default function SurfaceTabs({
       {(() => {
         const surface = surfaces.find((s) => s.id === activeSurfaceId);
         if (!chatViewEnabled || readOnly || !surface || (surface.surfaceType && surface.surfaceType !== 'terminal')) return null;
-        return <div className="wmux-chat-toggle" role="group" aria-label={t('chat.viewMode')} title={t('chat.viewMode')}>
+        return <>{showsChatV2 && <span className="wmux-chat-kind-slot"><ChatKindBadge kind="chatOnly" /></span>}<div className="wmux-chat-toggle" role="group" aria-label={t('chat.viewMode')} title={t('chat.viewMode')}>
           {(['terminal', 'chat'] as const).map((view) => <button key={view} type="button"
             className={FOCUS_RING} data-surface-view={view}
             aria-pressed={(surface.viewMode ?? 'terminal') === view}
@@ -1290,7 +1295,7 @@ export default function SurfaceTabs({
             onClick={(e) => { e.stopPropagation(); useStore.getState().setSurfaceViewMode(surface.id, view); }}>
             {t(`chat.${view}`)}
           </button>)}
-        </div>;
+        </div></>;
       })()}
 
       {/* D2 — muted enforced-model badge on a role-bound TERMINAL pane. Amber

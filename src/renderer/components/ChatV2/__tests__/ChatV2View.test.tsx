@@ -7,12 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CHATV2_ANSWER_ARM_MS } from '../../../../shared/chatv2/limits';
 import type { Block } from '../../../../shared/chatv2/session';
 import { setChatV2BridgeForTests } from '../bridge';
-import { ApprovalCard, QuestionCard } from '../Cards';
+import { ApprovalCard, PinnedApproval, QuestionCard, readableError } from '../Cards';
 import { deliverChatDrop } from '../../Chat/chatAttachments';
 import { chatV2Error } from '../../../../shared/chatv2/ipc';
 import { enqueueMessage, setStaged } from '../Composer';
 import ChatV2View from '../ChatV2View';
 import { SHELL_TAIL_LINES, shellView, TranscriptRowView, type TranscriptActions } from '../Transcript';
+import type { TranscriptRow } from '../rows';
 import { createMockHost, type MockHost } from './mockHost';
 
 const store = vi.hoisted(() => ({ state: { surfaceAgent: {} as Record<string, { name: string }>, agentAliveByPtyId: {}, commandRunningByPtyId: {} } }));
@@ -56,7 +57,8 @@ describe('tool rows', () => {
     await renderRow(block, 'running');
     expect(host.querySelector('.wmux-chatv2-tool-verb')?.textContent).toBe('Waiting for approval');
     expect(host.querySelector('.wmux-chatv2-tool-object')?.textContent).toBe('rm -rf dist');
-    expect(host.querySelector('.wmux-chatv2-card-title')?.textContent).toBe('Permission needed');
+    // The card that answers it is pinned over the composer, not drawn under the row.
+    expect(host.querySelector('[data-chatv2-approval]')).toBeNull();
     // The needs-you ring, not the running dot.
     expect(host.querySelector('.wmux-chatv2-glyph')?.getAttribute('data-state')).toBe('waiting');
     expect(host.querySelector('.wmux-chatv2-glyph [data-mark="ring"]')).not.toBeNull();
@@ -181,7 +183,7 @@ describe('approval arm', () => {
     const onAnswer = vi.fn(async () => true);
     // Stamped long before "now" by a daemon whose clock runs behind: still armed from local receipt.
     const block: Block = { id: '3.1', role: 'tool', text: 'Write', tool: { callId: 't', title: 'Write' }, approval: { requestId: 'r-arm-1', requestedAt: 10_000 } };
-    await act(async () => root.render(<ApprovalCard block={block} onAnswer={onAnswer} />));
+    await act(async () => root.render(<PinnedApproval block={block} cwd="/repo" active onAnswer={onAnswer} />));
     const buttons = () => [...host.querySelectorAll('button')];
     expect(buttons().map((b) => b.disabled)).toEqual([true, true]);
     act(() => buttons()[0].click());
@@ -192,8 +194,8 @@ describe('approval arm', () => {
     expect(buttons().map((b) => b.disabled)).toEqual([false, false]);
     await act(async () => { buttons()[0].click(); });
     expect(onAnswer).toHaveBeenCalledWith('r-arm-1', 'allow');
-    // Accepted: shown as decided until the resolved push arrives, so it cannot be answered twice.
-    expect(host.querySelector('[data-decision="allow"]')).not.toBeNull();
+    // Accepted: the pinned card goes at once, so it cannot be answered twice (the row keeps the receipt).
+    expect(host.querySelector('[data-chatv2-approval]')).toBeNull();
     expect(host.querySelectorAll('button')).toHaveLength(0);
   });
 
@@ -201,10 +203,10 @@ describe('approval arm', () => {
     vi.useFakeTimers({ now: 200_000 });
     const block: Block = { id: '4.1', role: 'tool', text: 'Bash', approval: { requestId: 'r-arm-2', requestedAt: 200_000 } };
     const onAnswer = vi.fn(async () => false);
-    await act(async () => root.render(<ApprovalCard block={block} onAnswer={onAnswer} />));
+    await act(async () => root.render(<PinnedApproval block={block} cwd="/repo" active onAnswer={onAnswer} />));
     await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
     await act(async () => root.render(<div />));
-    await act(async () => root.render(<ApprovalCard block={block} onAnswer={onAnswer} />));
+    await act(async () => root.render(<PinnedApproval block={block} cwd="/repo" active onAnswer={onAnswer} />));
     expect([...host.querySelectorAll('button')].every((b) => !b.disabled)).toBe(true);
     await act(async () => { host.querySelector('button')!.click(); });
     expect([...host.querySelectorAll('button')].every((b) => !b.disabled)).toBe(true);
@@ -275,9 +277,8 @@ describe('ChatV2View', () => {
     await act(async () => root.render(<ChatV2View paneId="daemon-free" active cwd="/reported/elsewhere" onTerminal={() => undefined} />));
     await flush();
     expect(host.querySelector('[data-chatv2="empty"]')?.textContent).toContain('New chat');
-    // Chat 2 names itself apart from the terminal-linked chat 1.
-    expect(host.querySelector('[data-chatv2="empty"] .wmux-chat-kind')?.textContent).toBe('chat.kind.chatOnly');
-    expect(host.querySelector('.wmux-chat-kind')?.getAttribute('title')).toBe('chat.kind.chatOnlyHint');
+    // The "Chat only" kind badge lives in the pane header now, not in a row of the view.
+    expect(host.querySelector('.wmux-chat-kind')).toBeNull();
     expect(host.querySelector('[data-chatv2-runs-in]')?.textContent).toBe('Runs in …/verified/repo');
     expect(host.querySelector('[data-chatv2-runs-in]')?.getAttribute('title')).toBe('/home/me/verified/repo');
     expect(mock.calls.map((call) => call.method).sort()).toEqual(['bindingForPane', 'subscribe']);
@@ -332,11 +333,12 @@ describe('ChatV2View', () => {
     Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 300 });
     viewport.scrollTop = 100;
     await act(async () => { viewport.dispatchEvent(new Event('scroll')); });
-    expect(host.querySelector('[data-chatv2-jump]')).toBeNull();
+    // Away from the end, the way back is offered by itself, labelled.
+    expect(host.querySelector('[data-chatv2-jump]')?.textContent).toBe('Jump to latest');
     await act(async () => { mock.emit('daemon-follow', [{ type: 'session.error', message: 'boom' }]); });
     const jump = host.querySelector('[data-chatv2-jump]') as HTMLButtonElement;
-    expect(jump?.getAttribute('aria-label')).toBe('chat.scrollToBottom');
-    expect(jump.textContent).toBe('');
+    expect(jump?.getAttribute('title')).toBe('chat.scrollToBottom');
+    expect(jump.textContent).toBe('New messages below');
     // The permissions chip is never scrolled away with the other chips.
     expect(host.querySelector('.wmux-chatv2-chips > [data-chatv2-permission]')).not.toBeNull();
     expect(host.querySelector('.wmux-chatv2-chip-strip [data-chatv2-permission]')).toBeNull();
@@ -423,7 +425,11 @@ describe('ChatV2View', () => {
         { type: 'turn.ended', outcome: 'completed' },
       ]);
     });
-    expect(host.querySelector('.wmux-chatv2-footer')?.textContent).toMatch(/^Opus 5\.5 worked for \d+s/);
+    // The settled turn's receipt is one line under the prompt: how long it worked, then the model on hover.
+    expect(host.querySelector('.wmux-chatv2-footer')).toBeNull();
+    expect(host.querySelector('[data-turn-fold] .wmux-chatv2-turn-toggle')?.textContent).toMatch(/^Worked for \d+s/);
+    expect(host.querySelector('[data-turn-fold] .wmux-chatv2-turn-meta')?.textContent).toMatch(/^Opus 5\.5/);
+    expect(host.querySelector('[data-chatv2-approval]')).toBeNull();
     // The ⋯ menu shows the directory the chat runs in, and Continue in Terminal (out of the chip row).
     expect(host.querySelector('.wmux-chatv2-chips')?.textContent).not.toContain('Continue in Terminal');
     await act(async () => { (host.querySelector('[data-chatv2-more]') as HTMLButtonElement).click(); });
@@ -438,8 +444,10 @@ describe('ChatV2View', () => {
     const isRow = (el: Element) => el.classList.contains('wmux-chatv2-chips');
     const client = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return isRow(this) ? row.client : 0; });
     const scroll = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLElement) { return isRow(this) ? Math.max(row.scroll, row.client) : 0; });
-    let resized: () => void = () => undefined;
-    vi.stubGlobal('ResizeObserver', class { constructor(cb: () => void) { resized = cb; } observe() { /* the test calls resized() itself */ } disconnect() { /* nothing to release */ } });
+    // Every observer (the chip row's and the transcript's) hears the resize.
+    const observers: Array<() => void> = [];
+    const resized = () => { for (const cb of observers) cb(); };
+    vi.stubGlobal('ResizeObserver', class { constructor(cb: () => void) { observers.push(cb); } observe() { /* the test calls resized() itself */ } disconnect() { /* nothing to release */ } });
     try {
       await mock.call('subscribe', { paneId: 'daemon-fold' });
       await mock.call('create', { paneId: 'daemon-fold', agent: 'claude', mode: 'default', model: 'claude-opus-5-5' });
@@ -1062,5 +1070,319 @@ describe('ChatV2View', () => {
     viewport.scrollTop = 1700;
     await act(async () => { viewport.dispatchEvent(new Event('scroll')); });
     expect(region().textContent).toBe('');
+  });
+
+  it('does not call a settled turn news when its fold leaves a plan it already showed as the newest row', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-fold-news' });
+    await mock.call('create', { paneId: 'daemon-fold-news', agent: 'claude', mode: 'default' });
+    await act(async () => root.render(<ChatV2View paneId="daemon-fold-news" active onTerminal={() => undefined} />));
+    await flush();
+    await act(async () => {
+      mock.emit('daemon-fold-news', [
+        { type: 'user.message', text: 'one', clientMessageId: 'c-00000001' },
+        { type: 'plan', text: '1. read\n2. write' },
+        { type: 'tool.started', callId: 't1', title: 'Write', kind: 'edit', status: 'pending' },
+        { type: 'tool.updated', callId: 't1', status: 'completed' },
+      ]);
+    });
+    const viewport = host.querySelector('.wmux-chatv2-viewport') as HTMLDivElement;
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 2000 });
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 300 });
+    viewport.scrollTop = 100;
+    await act(async () => { viewport.dispatchEvent(new Event('scroll')); });
+    await act(async () => { mock.emit('daemon-fold-news', [{ type: 'turn.ended', outcome: 'completed' }]); });
+    expect(host.querySelector('[data-chatv2-announce]')?.textContent).toBe('');
+    expect(host.querySelector('[data-chatv2-jump]')?.hasAttribute('data-new')).not.toBe(true);
+  });
+
+  it('keeps focus in the chat across two approvals in a row, even when the decision lands before the answer returns', async () => {
+    vi.useFakeTimers({ now: 700_000, shouldAdvanceTime: true });
+    await mock.call('subscribe', { paneId: 'daemon-two-cards' });
+    await mock.call('create', { paneId: 'daemon-two-cards', agent: 'claude', mode: 'default' });
+    await act(async () => root.render(<ChatV2View paneId="daemon-two-cards" active onTerminal={() => undefined} />));
+    await flush();
+    const request = (n: number) => [
+      { type: 'tool.started', callId: `t${n}`, title: 'ls', kind: 'execute', status: 'pending', preview: { kind: 'shell', command: 'ls' } },
+      { type: 'approval.requested', requestId: `r${n}`, title: 'ls', callId: `t${n}` },
+    ] as const;
+    await act(async () => { mock.emit('daemon-two-cards', [{ type: 'user.message', text: 'go', clientMessageId: 'c-00000001' }, ...request(1)]); });
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
+    const allow = () => [...host.querySelectorAll('[data-chatv2-approval] button')].find((button) => button.textContent === 'Allow') as HTMLButtonElement;
+    allow().focus();
+    // The mock host emits the decision before the answer returns: the card is gone by then.
+    await act(async () => { allow().click(); });
+    await flush();
+    expect(host.querySelector('[data-chatv2-approval]')).toBeNull();
+    const composer = host.querySelector('.wmux-chatv2-textarea');
+    expect(document.activeElement).toBe(composer);
+    await act(async () => { mock.emit('daemon-two-cards', [...request(2)]); });
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
+    await act(async () => { composer!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true })); });
+    await flush();
+    expect(mock.calls.filter((call) => call.method === 'answer').map((call) => call.params)).toEqual([
+      expect.objectContaining({ requestId: 'r1', decision: 'allow' }),
+      expect.objectContaining({ requestId: 'r2', decision: 'allow' }),
+    ]);
+    expect(document.activeElement).toBe(composer);
+  });
+
+  it('leaves Esc to an open composer menu or the chip row: the approval stays pending', async () => {
+    vi.useFakeTimers({ now: 800_000, shouldAdvanceTime: true });
+    await mock.call('subscribe', { paneId: 'daemon-esc-menu' });
+    await mock.call('create', { paneId: 'daemon-esc-menu', agent: 'claude', mode: 'default', model: 'claude-opus-5-5' });
+    await act(async () => root.render(<ChatV2View paneId="daemon-esc-menu" active onTerminal={() => undefined} />));
+    await flush();
+    await act(async () => { mock.emit('daemon-esc-menu', [
+      { type: 'user.message', text: 'go', clientMessageId: 'c-00000001' },
+      { type: 'tool.started', callId: 't1', title: 'ls', kind: 'execute', status: 'pending', preview: { kind: 'shell', command: 'ls' } },
+      { type: 'approval.requested', requestId: 'r1', title: 'ls', callId: 't1' },
+    ]); });
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
+    const esc = async (el: Element) => { await act(async () => { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); }); await flush(); };
+    const answers = () => mock.calls.filter((call) => call.method === 'answer');
+    // The ⋯ menu: Esc from inside it, or from its button, closes it.
+    await act(async () => { (host.querySelector('[data-chatv2-more]') as HTMLButtonElement).click(); });
+    await esc(host.querySelector('.wmux-chatv2-more-menu [role="menuitem"], .wmux-chatv2-more-menu button') as Element);
+    expect(host.querySelector('.wmux-chatv2-more-menu')).toBeNull();
+    await act(async () => { (host.querySelector('[data-chatv2-more]') as HTMLButtonElement).click(); });
+    await esc(host.querySelector('[data-chatv2-more]') as Element);
+    await act(async () => { (host.querySelector('[data-chatv2-more]') as HTMLButtonElement).click(); });
+    expect(host.querySelector('.wmux-chatv2-more-menu')).toBeNull();
+    // A chip in the row keeps its Esc too.
+    const chip = host.querySelector('.wmux-chatv2-chips select');
+    expect(chip).not.toBeNull();
+    await esc(chip as Element);
+    // The / menu: open on a typed slash, Esc closes it.
+    const textarea = host.querySelector('.wmux-chatv2-textarea') as HTMLTextAreaElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await esc(textarea);
+    expect(answers()).toEqual([]);
+    expect(host.querySelector('[data-chatv2-approval]')).not.toBeNull();
+    expect(host.querySelector('.wmux-chatv2-composer [aria-expanded="true"]')).toBeNull();
+    // With nothing open and the composer empty, Esc denies.
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await esc(textarea);
+    expect(answers().map((call) => call.params)).toEqual([expect.objectContaining({ requestId: 'r1', decision: 'deny' })]);
+  });
+
+  it('measures again when the content shrinks under a reader with no scroll, and drops the way back at the end', async () => {
+    const observed: Array<() => void> = [];
+    vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { observed.push(callback); } observe() { return undefined; } disconnect() { return undefined; } });
+    try {
+      await mock.call('subscribe', { paneId: 'daemon-resize' });
+      await mock.call('create', { paneId: 'daemon-resize', agent: 'claude', mode: 'default' });
+      await act(async () => root.render(<ChatV2View paneId="daemon-resize" active onTerminal={() => undefined} />));
+      await flush();
+      await act(async () => { mock.emit('daemon-resize', [{ type: 'user.message', text: 'one', clientMessageId: 'c-00000001' }, { type: 'turn.ended', outcome: 'completed' }]); });
+      const viewport = host.querySelector('.wmux-chatv2-viewport') as HTMLDivElement;
+      Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 2000 });
+      Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 300 });
+      viewport.scrollTop = 100;
+      await act(async () => { viewport.dispatchEvent(new Event('scroll')); });
+      await act(async () => { mock.emit('daemon-resize', [{ type: 'session.error', message: 'boom' }]); });
+      expect(host.querySelector('[data-chatv2-jump]')).not.toBeNull();
+      // The reader closed a long row: the bottom is on screen now, though nothing scrolled.
+      Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 400 });
+      await act(async () => { observed.forEach((callback) => callback()); });
+      expect(host.querySelector('[data-chatv2-jump]')).toBeNull();
+      expect(host.querySelector('[data-chatv2-announce]')?.textContent).toBe('');
+    } finally { vi.unstubAllGlobals(); }
+  });
+});
+
+describe('pinned approval and turn errors', () => {
+  it('shows the command in the card, reads a destructive one red, defaults to Deny and denies on Esc', async () => {
+    vi.useFakeTimers({ now: 300_000 });
+    const onAnswer = vi.fn(async () => true);
+    const block: Block = { id: '7.1', role: 'tool', text: 'Bash', tool: { callId: 't', title: 'rm -rf dist', kind: 'execute', preview: { kind: 'shell', command: 'rm -rf /repo/dist' } }, approval: { requestId: 'r-pin-1', requestedAt: 300_000 } };
+    await act(async () => root.render(<div className="wmux-chatv2"><div tabIndex={-1} data-log /><PinnedApproval block={block} cwd="/repo" active onAnswer={onAnswer} /></div>));
+    (host.querySelector('[data-log]') as HTMLElement).focus();
+    const card = host.querySelector('[data-chatv2-approval]') as HTMLElement;
+    // The command exactly as it will run: never shortened.
+    expect(card.querySelector('.wmux-chatv2-card-subject')?.textContent).toBe('rm -rf /repo/dist');
+    expect(card.hasAttribute('data-destructive')).toBe(true);
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
+    expect(document.activeElement?.textContent).toBe('Deny');
+    await act(async () => { card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(onAnswer).toHaveBeenCalledWith('r-pin-1', 'deny');
+  });
+
+  it('says an API error in words and keeps the raw text behind Details', () => {
+    expect(readableError('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}')).toMatch(/overloaded right now \(529\)/);
+    expect(readableError('API Error: 400 {"error":{"message":"prompt is too long"}}')).toBe('prompt is too long (400)');
+    expect(readableError('boom')).toBe('boom');
+  });
+});
+
+describe('pinned approval focus and sent attachments', () => {
+  const pinBlock = (requestId: string): Block => ({ id: requestId, role: 'tool', text: 'Bash', tool: { callId: 't', title: 'ls', kind: 'execute', preview: { kind: 'shell', command: 'ls' } }, approval: { requestId, requestedAt: 400_000 } });
+  const pinned = (requestId: string, active: boolean, onAnswer = vi.fn(async () => true)) => (
+    <div className="wmux-chatv2">
+      <div className="wmux-chatv2-find"><input data-find /></div>
+      <div className="wmux-chatv2-viewport"><div tabIndex={-1} data-log /></div>
+      <PinnedApproval key={requestId} block={pinBlock(requestId)} cwd="/repo" active={active} onAnswer={onAnswer} />
+      <div className="wmux-chatv2-composer"><textarea className="wmux-chatv2-textarea" data-composer /></div>
+    </div>
+  );
+
+  it('takes focus only in the active pane, from the transcript, never out of a text field or from nowhere', async () => {
+    vi.useFakeTimers({ now: 400_000 });
+    const outside = document.createElement('textarea');
+    document.body.append(outside);
+    const arm = async () => { await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); }); };
+    // Another pane's (empty) input keeps focus.
+    outside.focus();
+    await act(async () => root.render(pinned('r-focus-1', true)));
+    await arm();
+    expect(document.activeElement).toBe(outside);
+    // This chat's own empty composer keeps it too: the next Space must not answer the card.
+    await act(async () => root.render(<div />));
+    await act(async () => root.render(pinned('r-focus-2', true)));
+    (host.querySelector('[data-composer]') as HTMLElement).focus();
+    await arm();
+    expect(document.activeElement).toBe(host.querySelector('[data-composer]'));
+    // Nothing focused (the body): a background card must not take it.
+    await act(async () => root.render(<div />));
+    (document.activeElement as HTMLElement | null)?.blur();
+    await act(async () => root.render(pinned('r-focus-3', true)));
+    await arm();
+    expect(document.activeElement).toBe(document.body);
+    // In the transcript of an inactive pane: not either.
+    await act(async () => root.render(<div />));
+    await act(async () => root.render(pinned('r-focus-4', false)));
+    (host.querySelector('[data-log]') as HTMLElement).focus();
+    await arm();
+    expect(document.activeElement).toBe(host.querySelector('[data-log]'));
+    // In the transcript of the active pane: the default answer takes it.
+    await act(async () => root.render(<div />));
+    await act(async () => root.render(pinned('r-focus-5', true)));
+    (host.querySelector('[data-log]') as HTMLElement).focus();
+    await arm();
+    expect(document.activeElement?.textContent).toBe('Allow');
+    outside.remove();
+  });
+
+  it('is answered from the composer: Cmd/Ctrl+Enter allows, Esc denies, neither while a draft is typed', async () => {
+    vi.useFakeTimers({ now: 500_000 });
+    const onAnswer = vi.fn(async () => true);
+    await act(async () => root.render(pinned('r-keys-1', true, onAnswer)));
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
+    const composer = host.querySelector('[data-composer]') as HTMLTextAreaElement;
+    const composerKeys = vi.fn();
+    composer.addEventListener('keydown', composerKeys);
+    // A typed draft keeps both keys: Cmd/Ctrl+Enter sends it, Esc is the composer's.
+    composer.value = 'a draft';
+    await act(async () => { composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    await act(async () => { composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true })); });
+    await act(async () => { composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true })); });
+    // A file staged with no text is a draft too: Cmd/Ctrl+Enter sends it.
+    composer.value = '';
+    const staged = document.createElement('span');
+    staged.setAttribute('data-attachment', '');
+    composer.parentElement!.prepend(staged);
+    await act(async () => { composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true })); });
+    staged.remove();
+    expect(onAnswer).not.toHaveBeenCalled();
+    expect(composerKeys).toHaveBeenCalledTimes(4);
+    // A key the IME still holds answers nothing.
+    await act(async () => { composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, keyCode: 229, bubbles: true })); });
+    await act(async () => { composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, isComposing: true, bubbles: true })); });
+    expect(onAnswer).not.toHaveBeenCalled();
+    // From the empty composer the card takes the key, and the composer's own handler never sees it.
+    await act(async () => { composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true })); });
+    expect(onAnswer).toHaveBeenCalledWith('r-keys-1', 'allow');
+    expect(composerKeys).toHaveBeenCalledTimes(6);
+
+    const onDeny = vi.fn(async () => true);
+    await act(async () => root.render(<div />));
+    await act(async () => root.render(pinned('r-keys-2', true, onDeny)));
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
+    // Esc in the (empty) find box closes find: it never answers the card.
+    const find = host.querySelector('[data-find]') as HTMLInputElement;
+    await act(async () => { find.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(onDeny).not.toHaveBeenCalled();
+    const empty = host.querySelector('[data-composer]') as HTMLTextAreaElement;
+    await act(async () => { empty.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(onDeny).toHaveBeenCalledWith('r-keys-2', 'deny');
+  });
+
+  it('never allows a destructive call from a key: Esc denies, Allow takes a click', async () => {
+    vi.useFakeTimers({ now: 550_000 });
+    const onAnswer = vi.fn(async () => true);
+    const block: Block = { id: 'd.1', role: 'tool', text: 'Bash', tool: { callId: 't', title: 'rm -rf dist', kind: 'execute', preview: { kind: 'shell', command: 'rm -rf dist' } }, approval: { requestId: 'r-destructive', requestedAt: 550_000 } };
+    await act(async () => root.render(
+      <div className="wmux-chatv2">
+        <div className="wmux-chatv2-viewport"><div tabIndex={-1} data-log /></div>
+        <PinnedApproval block={block} cwd="/repo" active onAnswer={onAnswer} />
+        <div className="wmux-chatv2-composer"><textarea className="wmux-chatv2-textarea" data-composer /></div>
+      </div>,
+    ));
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
+    const card = host.querySelector('[data-chatv2-approval]') as HTMLElement;
+    expect(card.querySelector('.wmux-chatv2-card-hint')?.textContent).toBe('Esc to deny');
+    for (const from of [host.querySelector('[data-composer]'), host.querySelector('[data-log]'), card]) {
+      await act(async () => { (from as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true })); });
+      await act(async () => { (from as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true })); });
+    }
+    expect(onAnswer).not.toHaveBeenCalled();
+    const allow = [...card.querySelectorAll('button')].find((button) => button.textContent === 'Allow') as HTMLButtonElement;
+    await act(async () => { allow.click(); });
+    expect(onAnswer).toHaveBeenCalledWith('r-destructive', 'allow');
+  });
+
+  it('hands focus to the composer after an answer, so the next card is answered from the keyboard too', async () => {
+    vi.useFakeTimers({ now: 560_000 });
+    const onAnswer = vi.fn(async () => true);
+    await act(async () => root.render(pinned('r-row-1', true, onAnswer)));
+    (host.querySelector('[data-log]') as HTMLElement).focus();
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
+    expect(document.activeElement?.textContent).toBe('Allow');
+    await act(async () => { (document.activeElement as HTMLButtonElement).click(); });
+    expect(onAnswer).toHaveBeenCalledWith('r-row-1', 'allow');
+    const composer = host.querySelector('[data-composer]');
+    expect(document.activeElement).toBe(composer);
+    // The next approval: answered from the (empty) composer without a click.
+    await act(async () => root.render(pinned('r-row-2', true, onAnswer)));
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
+    expect(document.activeElement).toBe(composer);
+    await act(async () => { composer!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(onAnswer).toHaveBeenLastCalledWith('r-row-2', 'deny');
+    // An answer whose button already dropped focus to the body brings it back to the composer too.
+    await act(async () => root.render(pinned('r-row-3', true, onAnswer)));
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
+    (document.activeElement as HTMLElement | null)?.blur();
+    const allow = [...host.querySelectorAll('[data-chatv2-approval] button')].find((button) => button.textContent === 'Allow') as HTMLButtonElement;
+    await act(async () => { allow.click(); });
+    expect(document.activeElement).toBe(composer);
+  });
+
+  it('lets the reader close a fold a find match opened, until another match opens it', async () => {
+    const member: TranscriptRow = { kind: 'assistant', key: 'f.2', block: { id: 'f.2', role: 'assistant', text: 'inside the fold' } };
+    const row: TranscriptRow = { kind: 'turnFold', key: 'f.1:fold', turnId: 'f.1', model: '', failed: 0, answer: '', rows: [member] };
+    const actions: TranscriptActions = { answer: async () => true, body: async () => null };
+    const show = (findId: string | null) => root.render(<TranscriptRowView row={row} cwd="/repo" actions={actions} findActive={!!findId} findId={findId} />);
+    await act(async () => show('f.2'));
+    expect(host.textContent).toContain('inside the fold');
+    await act(async () => { (host.querySelector('.wmux-chatv2-turn-toggle') as HTMLButtonElement).click(); });
+    expect(host.textContent).not.toContain('inside the fold');
+    await act(async () => show('f.2'));
+    expect(host.textContent).not.toContain('inside the fold');
+    await act(async () => show(null));
+    await act(async () => show('f.2'));
+    expect(host.textContent).toContain('inside the fold');
+  });
+
+  it('shows what a sent message carried: a file as a chip with its name', async () => {
+    const block: Block = { id: '9.9', role: 'user', text: 'look', attachments: [{ id: 'a1', name: 'notes.md', mimeType: 'text/markdown', kind: 'image', size: 10, path: '/tmp/notes.md' }] };
+    const actions: TranscriptActions = { answer: async () => true, body: async () => null };
+    await act(async () => root.render(<TranscriptRowView row={{ kind: 'user', key: block.id, block }} cwd="/repo" actions={actions} findActive={false} />));
+    expect(host.querySelector('[data-chatv2-sent-attachments]')?.textContent).toContain('notes.md');
+    expect(host.querySelector('.wmux-chatv2-user')?.textContent).toBe('look');
   });
 });

@@ -159,7 +159,7 @@
 import { CHAT_ATTACHMENT_LIMIT } from '../transcript/chatAttachments';
 import type { ChatSkillCatalog } from '../transcript/chatSkills';
 import { CHATV2_MAX_PROMPT_BYTES, utf8Bytes } from './limits';
-import type { HarnessId, Session } from './session';
+import type { HarnessId, Session, TurnOutcome } from './session';
 import type { StampedHarnessEvent } from './harnessEvents';
 
 /** Private desktop IPC (renderer ↔ main); never registered on the MCP router. */
@@ -314,6 +314,12 @@ export interface ChatV2Binding {
    * `paneId` names it when the binding came from that pane itself.
    */
   continuedIn?: { paneId?: string };
+  /**
+   * How the newest turn ended, once it has (absent while it runs, before the
+   * first turn, and after the chat was cleared). Lets the sidebar and Fleet
+   * tell a failed turn from a finished one for a chat that is not on screen.
+   */
+  lastOutcome?: TurnOutcome;
 }
 
 /** The session without its blocks. */

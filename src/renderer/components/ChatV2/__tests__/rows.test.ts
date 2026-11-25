@@ -73,7 +73,7 @@ describe('sessionRows (fold-to-view mapping)', () => {
     expect(formatElapsed(400)).toBe('1s');
   });
 
-  it('never folds a running tool into a past-tense group: it reads "Running" on its own line', () => {
+  it('names a running call apart from the finished calls of its run', () => {
     const session = fold([
       { type: 'user.message', text: 'run the e2e suite', clientMessageId: 'c-00000001' },
       { type: 'tool.started', callId: 't1', title: 'Read', kind: 'read', status: 'in_progress', preview: { kind: 'read', path: '/repo/a.ts' } },
@@ -83,9 +83,9 @@ describe('sessionRows (fold-to-view mapping)', () => {
       { type: 'tool.started', callId: 't3', title: 'npm run e2e', kind: 'execute', status: 'in_progress' },
     ]);
     const rows = groupToolRows(sessionRows(session));
-    // Three calls would fold into "Ran 3 tool calls"; the one in flight is not one of them.
-    expect(rows.map((row) => row.kind)).toEqual(['user', 'tool', 'tool', 'tool', 'footer']);
-    expect(rows[3]).toMatchObject({ kind: 'tool', state: 'running' });
+    expect(rows.map((row) => row.kind)).toEqual(['user', 'toolGroup', 'footer']);
+    // The sentence is past tense for what finished; the call in flight is named on its own.
+    expect(rows[1]).toMatchObject({ kind: 'toolGroup', label: 'Read 1 file, ran 1 command', state: 'running' });
     expect(toolLabelParts('npm run e2e', { command: true, running: true })).toEqual({ verb: 'Running', object: 'npm run e2e' });
   });
 

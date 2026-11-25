@@ -2223,7 +2223,19 @@ always neutral (the fill ladder).
 
 - **Tool calls render as flat mono log lines,** never boxed chips: status
   glyph + tool name + one-line arg summary + right-aligned jump link (muted
-  at rest, accent on hover).
+  at rest, accent on hover). The chat view is the exception (owner decision
+  2026-11-25): every unbroken run of calls is **one sans line**, a sentence in the order
+  the kinds were first used ("Read 3 files, edited 2, ran 1 command"; a noun
+  the item before already said is dropped), the call still running named
+  after it ("· Running npm test"), failures counted in red ("1 failed"); a
+  single call shows its own line ("Ran npm test"). Paths are shown relative
+  to the chat's working directory. Mono is kept for the command, path or
+  pattern itself, never for the verb or the sentence.
+- **Done is quiet in the chat view** (owner decision 2026-11-25): no green
+  check per finished call. A run, and a settled turn's line, carry at most
+  one muted check (`--text-muted`, like the sidebar's complete mark); calls
+  inside a run carry none. Red stays for failures. Green still means added
+  lines in a diff stat or diff.
 - **Every claim is one click from its evidence:** anything referencing a
   pane gets a jump affordance.
 - **Buttons:** primary = solid `--primary-fill` / `--primary-ink`, one per
@@ -2258,7 +2270,15 @@ always neutral (the fill ladder).
   rows in the bubble fill in the dock above the composer, with Edit and ×,
   and enter the transcript only once sent. Assistant prose
   has no bubble. Each recorded turn ends in a muted receipt: check, duration
-  (when the transcript carried both times), clock time, copy.
+  (when the transcript carried both times), clock time, copy. In the chat
+  view (owner decision 2026-11-25) a **settled turn folds its work** into that
+  receipt, placed as one quiet line directly under the prompt ("Worked for
+  2m 14s ›", "Failed after 3s", "Interrupted after 4s"): tool runs, reasoning
+  and the prose written along the way go behind it, and only the answer (the
+  prose after the last piece of work) and the turn's own notices, plans and
+  images stay open. Click opens it. The clock time, model and Copy (of the
+  answer) show on hover or focus. The running turn stays open, with its live
+  footer at the bottom.
 - **Popovers** 12px, `--line` hairline, `--shadow-popover`; menu rows 6px.
 - No emoji glyphs in chrome; status marks are icons, not text glyphs.
 - **Agent verbs** stay one workspace-spanning bar overlaid on the grid's
@@ -2310,8 +2330,9 @@ always neutral (the fill ladder).
     neutral `Badge` (11px, full round, no colour: the kind is not a state).
     Chat 1, which follows the agent in the terminal, reads "Terminal-linked
     chat" at the right of its progress row (under the status when the pane
-    is too narrow, never clipped); chat 2 reads "Chat only" in its
-    own top row. Each has a one-line hover explanation. Chat 1's approval
+    is too narrow, never clipped); chat 2 reads "Chat only" in the pane
+    header, just before the Terminal / Chat switch (owner decision
+    2026-11-25; it no longer takes a row of its own). Each has a one-line hover explanation. Chat 1's approval
     note is plain: "Waiting for your approval." and an Answer in Terminal
     link that switches the pane to its terminal.
   - **First-start question.** The pane header's Terminal / Chat switch is
@@ -2615,6 +2636,9 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-11-04 | Owner-approved: Hangul renders in a bundled Pretendard subset after each look's Latin face | Windows' Malgun Gothic fallback was taller and had no 500 weight |
 | 2026-11-07 | Owner decision: the Fleet list can be grouped by device (Group by Status \| Device, list only, saved with the session; Status stays the default). Needs you stays one section on top with each row naming its device; the rest sits under a sentence-case device head (this computer first, then the PC rail's order) with its running rows and its own Finished and Idle folds; a disconnected PC keeps a row-less head with how long ago it answered. No map, lines, per-device colours or boxes | With agents on several PCs, the status list mixed them, so "what is running on the office PC" meant scanning every row's host glyph. The one Needs you section keeps decisions in one place and its count single |
 | 2026-11-18 | Owner-approved (phone-only pairing mockup, a–c): pairing a phone is one modal, the Pair a phone dialog — readiness, name, View only / Can type with its shared-access notice in place, then the QR, then connected — mounted once and opened from the Remote page header, the Phones heading, the empty state and the sidebar's Remote menu. The Remote popover becomes Other computers plus two buttons, Pair a phone… and ⚙ Phone access settings… (settings only, no pairing; the Remote page's line button is the same settings view). The four-step wizard, the popover's phone card and its Connect another computer card are retired; a computer is connected from Connect a PC… | Pairing lived in three places (the popover's phone card, its computer card and a four-step wizard inside a 288px popover), and the popover mixed one-time pairing with standing settings. One focused dialog per pairing and one settings surface make each question one place |
+| 2026-11-25 | Owner-approved chat view revamp (compared with Orca's native chat): (1) a settled turn folds its work into one line under the prompt and only the answer stays open, the running turn stays open; (2) a run of tool calls is one sans sentence, a single call shows its own command, paths are relative to the chat's directory, mono only for commands, paths and patterns (supersedes "flat mono log lines" for the chat view); (3) no green check per finished call, at most one muted check per run, red for failures; (4) the "Chat only" badge moves into the pane header | Owner: the view was "a mess, unusable". Every row of every turn stayed open, so the answer was buried under its own work, read as a block of terminal text, and spent colour on a column of green ticks. The badge's row pushed content under a hard edge. Folding the work behind the receipt makes a settled turn read as prompt, one line, answer; the work is one click away |
+| 2026-11-25 | Follows from the row above (not a separate owner decision): a failed call rides inside its run and is counted in red on the run's line (amends the 2026-10-05 "failures never fold"); approvals that wait, questions, notices and replies still never fold. The waiting approval is pinned over the composer with its command shown verbatim (a destructive command reads red and defaults to Deny). From the card, the composer or the transcript (not the find box), Esc denies and Cmd/Ctrl+Enter allows, neither while the composer holds a draft, typed text or a staged file (both keys stay the composer's there); a destructive call has no allow key, only a click or Enter on its Allow button, and its hint names Esc alone. The default answer takes focus only in the active pane, and only when focus is already in the chat and not in a text field; an answer hands focus to the composer, so the next card is answered from the keyboard too. It leaves a muted receipt on its row | One run is one line, so a failure inside it has to be visible on that line, not by breaking the run apart. An approval scrolled out of view held the turn with nothing on screen to answer it |
+| 2026-11-25 | Owner-approved after the #3507 review: (1) while an approval or question holds the turn, the live footer's dot takes the attention colour (orange), as the sidebar's needs-you mark; (2) Find floats over the transcript's top right instead of taking a row; (3) a new chat's empty state sits right above the composer; (4) a call that a stop or the turn's early end cut short (or whose approval a stop cancelled) reads "Stopped" with a muted step mark, never the done check, and a denied call is left out of its run's sentence and counted apart ("1 denied"); a denied call on its own reads "Denied". Recorded with them: a decided approval's receipt (Allowed, Denied) is muted text with no green or red; chat prose is 14px (headings 16 and 14, code 13); http(s) links in chat answers are clickable and open in the browser | A waiting turn read like a working one; the find row pushed the transcript down; the empty state left the eye at the top while the cursor sat at the bottom; an interrupted or denied call read as done. The receipt colours, prose size and links were visible changes of the same PR not yet written down |
 
 ### Desktop conversation view
 
@@ -2637,7 +2661,7 @@ Chat feedback (2026-09-25, owner-approved): a file dropped or pasted into Chat
 view becomes a composer chip (thumbnail, name, × or Backspace removes it) and the
 sent message shows the picture; a refused file says why in one line. While a turn
 runs, a neutral Stop button (never amber; Esc in an empty composer, never during
-IME composition) reads Stopping…, then Stopped or "kept running". A message sent
+IME composition, except while an approval is pinned, when Esc denies it) reads Stopping…, then Stopped or "kept running". A message sent
 mid-turn to Claude shows as Queued until it runs (chat 2: in the dock above the
 composer, not in the transcript; its Send and Stop are one button). The thread anchors to the bottom:
 no empty reply row or reserved gap under the latest prompt.

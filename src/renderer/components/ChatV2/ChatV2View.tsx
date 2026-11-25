@@ -5,12 +5,12 @@ import { Composer, dequeueMessage, enqueueMessage, moveDraft, QueuedMessages, re
 import { clientMessageId } from './controller';
 import { shortDir } from '../../utils/shortDir';
 import { FindBar } from './FindBar';
-import { groupToolRows, sessionRows, type RowCache, type TranscriptRow } from './rows';
+import { PinnedApproval } from './Cards';
+import { rowHolds, transcriptRows, type RowCache, type TranscriptRow } from './rows';
 import { S } from './strings';
-import { TranscriptRowView, type TranscriptActions } from './Transcript';
+import { OpenScope, TranscriptRowView, type TranscriptActions } from './Transcript';
 import { useChatV2 } from './useChatV2';
 import { getChatV2Bridge } from './bridge';
-import { ChatKindBadge } from '../Chat/ChatKindBadge';
 import { ContinueInChat, usePaneMove } from './ContinueInChat';
 import { useStore } from '../../stores';
 import { focusPaneByPtyId } from '../../hooks/useNotificationListener';
@@ -18,6 +18,8 @@ import { useTranscriptWindow } from '../shared/useTranscriptWindow';
 import { ArrowIcon } from './ArrowIcon';
 
 const NEAR_BOTTOM_PX = 48;
+/** How far above the newest row the reader has to be before "Jump to latest" shows by itself. */
+const AWAY_PX = 240;
 
 // Chats with a model or effort change on its way, by draft key. Outside the
 // view, so a view that remounts meanwhile still holds its queue until it settles.
@@ -32,11 +34,19 @@ function useConfiguring(key: string): boolean {
   return useSyncExternalStore((listener) => { configuringListeners.add(listener); return () => { configuringListeners.delete(listener); }; }, () => configuringKeys.has(key));
 }
 
-/** Whether `row` shows the block `blockId` (a group, as one of its members). */
-const holdsBlock = (row: TranscriptRow, blockId: string): boolean =>
-  row.kind === 'toolGroup' ? row.rows.some((member) => 'block' in member && member.block.id === blockId) : 'block' in row && row.block.id === blockId;
+const holdsBlock = rowHolds;
 
-const kindRow = <div className="wmux-chatv2-kind"><ChatKindBadge kind="chatOnly" /></div>;
+/** A row's own key and the keys of every row it holds (a run's calls, a folded turn's work). */
+const rowKeys = (row: TranscriptRow): string[] =>
+  row.kind === 'toolGroup' || row.kind === 'turnFold' ? [row.key, ...row.rows.flatMap(rowKeys)] : [row.key];
+
+/** The newest row's key, read through runs and folded turns (their last member), skipping the footer. */
+export function newestKey(rows: readonly TranscriptRow[]): string | undefined {
+  let row: TranscriptRow | undefined = rows.findLast((candidate) => candidate.kind !== 'footer');
+  while (row && (row.kind === 'toolGroup' || row.kind === 'turnFold') && row.rows.length) row = row.rows.at(-1);
+  // A settled turn with nothing in its fold stands for its prompt, the newest row before it settled.
+  return row?.kind === 'turnFold' ? row.turnId : row?.key;
+}
 
 /**
  * Keys of rows appended after the transcript first loaded, so only those fade
@@ -46,7 +56,7 @@ const kindRow = <div className="wmux-chatv2-kind"><ChatKindBadge kind="chatOnly"
  * below the rows that stream in, so they do not count as "last shown".
  */
 export function enteringKeys(rows: readonly TranscriptRow[], known: Set<string> | null, entered: Set<string>): Set<string> | null {
-  const keys = (row: TranscriptRow) => (row.kind === 'toolGroup' ? [row.key, ...row.rows.map((member) => member.key)] : [row.key]);
+  const keys = rowKeys;
   if (!known) return rows.length ? new Set(rows.flatMap(keys)) : null;
   let lastKnown = -1;
   rows.forEach((row, index) => {
@@ -119,15 +129,21 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   // Bumped to remount the composer when a draft moved under it.
   const [draftRev, setDraftRev] = useState(0);
   const scroller = useRef<HTMLDivElement>(null);
+  const column = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   // Rows arrived below while the reader was scrolled up: offer the way back,
   // and say so to a screen reader (a polite live region, apart from the button).
   const [newBelow, setNewBelow] = useState(false);
+  // Scrolled away from the newest row (more than a screen's worth of slack): the way back is offered too.
+  const [away, setAway] = useState(false);
   const [announce, setAnnounce] = useState('');
   const lastRowKey = useRef<string | undefined>(undefined);
+  // Every row key the last commit showed: a turn folding its work under a notice
+  // it already showed makes that notice the newest row, but it is not news.
+  const shownKeys = useRef(new Set<string>());
 
   const rowCache = useRef<RowCache>(new WeakMap());
-  const rows = useMemo(() => (view ? groupToolRows(sessionRows(view.session, rowCache.current), rowCache.current) : []), [view]);
+  const rows = useMemo(() => (view ? transcriptRows(view.session, rowCache.current) : []), [view]);
   const knownKeys = useRef<Set<string> | null>(null);
   const entered = useRef(new Set<string>());
   const knownFor = useRef<string | undefined>(undefined);
@@ -140,6 +156,7 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
     pinned.current = true;
     lastRowKey.current = undefined;
   }
+  const lastKey = newestKey(rows);
   knownKeys.current = enteringKeys(rows, knownKeys.current, entered.current);
   // A long transcript mounts its recent rows; earlier ones are read in on the way up.
   const transcriptWindow = useTranscriptWindow({
@@ -149,25 +166,68 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
     isTurnStart: (row) => row.kind === 'user',
     scrollRef: scroller,
   });
+  // The newest turn ended on an error and nothing runs: its error offers Retry (the same prompt, sent again).
+  const lastUser = view?.session.blocks.findLast((block) => block.role === 'user');
+  const lastError = view && !view.session.busy && lastUser?.outcome === 'failed'
+    ? view.session.blocks.findLast((block) => block.role === 'system' && block.notice === 'error')
+    : undefined;
+  const retryId = lastError && lastUser && view!.session.blocks.indexOf(lastError) > view!.session.blocks.indexOf(lastUser) ? lastError.id : undefined;
+  // Only a prompt the view holds whole, with no attachments, can be sent again as it was.
+  // A handed-off chat sends nothing (the terminal holds the conversation).
+  const retryText = retryId && view?.binding.capabilities.send && view.binding.status !== 'handed-off' && !lastUser?.overflow?.text && !lastUser?.attachments?.length ? lastUser?.text : undefined;
   const actions = useMemo<TranscriptActions>(() => ({
     answer: (requestId, decision, answers) => controller?.answer(requestId, decision, answers) ?? Promise.resolve(false),
     body: (blockId, field, offset) => controller?.body(blockId, field, offset) ?? Promise.resolve(null),
-  }), [controller]);
+    ...(retryId && retryText ? { retryId, retry: () => controller?.send(retryText) ?? Promise.resolve(false) } : {}),
+  }), [controller, retryId, retryText]);
 
   // Stay at the bottom while the reader is there; otherwise note that a row
   // arrived below (the live footer only ticks, so it does not count).
-  const lastKey = rows.findLast((row) => row.kind !== 'footer')?.key;
+  // A turn that settles folds its work, which is not news either: the newest
+  // row is read through runs and folds, so it stays the same row across the fold.
+  // Far enough from the newest row (or in a window cut short by find) to offer the way back.
+  const measureAway = () => {
+    const el = scroller.current;
+    if (!el) return;
+    setAway(el.scrollHeight - el.scrollTop - el.clientHeight > AWAY_PX || transcriptWindow.laterCount > 0);
+  };
   useLayoutEffect(() => {
     const el = scroller.current;
-    const arrived = lastRowKey.current !== undefined && lastKey !== lastRowKey.current;
+    const arrived = lastRowKey.current !== undefined && lastKey !== lastRowKey.current && !(lastKey !== undefined && shownKeys.current.has(lastKey));
     lastRowKey.current = lastKey;
+    shownKeys.current = new Set(rows.flatMap(rowKeys));
     if (el && pinned.current && !findId) { el.scrollTop = el.scrollHeight; setNewBelow(false); setAnnounce(''); }
+    // A turn that settles while the reader is inside it keeps their place through the browser's own scroll anchoring.
     else if (arrived) { setNewBelow(true); setAnnounce(S.newBelow); }
+    measureAway();
   }, [transcriptWindow.visible, findId, lastKey, queue.length]);
+  // A row opened or closed by the reader, or the pane resized, moves the bottom
+  // without a scroll: measured again, and back at the end it follows again.
+  const settle = useRef(() => undefined as void);
+  settle.current = () => {
+    const el = scroller.current;
+    if (!el) return;
+    measureAway();
+    if (!findId && transcriptWindow.laterCount === 0 && el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX) {
+      pinned.current = true;
+      setNewBelow(false);
+      setAnnounce('');
+    }
+  };
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined' || !scroller.current) return;
+    const observer = new ResizeObserver(() => settle.current());
+    observer.observe(scroller.current);
+    if (column.current) observer.observe(column.current);
+    return () => observer.disconnect();
+    // Again whenever the viewport itself may have been swapped (loading, unavailable, another chat).
+  }, [view?.session.id, state.phase, !controller]);
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = fromBottom < NEAR_BOTTOM_PX;
+    measureAway();
     // The bottom of a window cut short (after find) is not the end of the chat.
     pinned.current = atBottom && transcriptWindow.laterCount === 0;
     if (pinned.current) { setNewBelow(false); setAnnounce(''); }
@@ -180,6 +240,7 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
     if (findOpen || findId) { setFindOpen(false); setFindId(null); }
     pinned.current = true;
     setNewBelow(false);
+    setAway(false);
     setAnnounce('');
     transcriptWindow.toTail();
     const el = scroller.current;
@@ -268,12 +329,12 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   }, [view, newChatDraft, paneId, draftKey]);
 
   if (state.phase === 'loading') {
-    return <div className="wmux-chatv2" data-chatv2="loading">{kindRow}<div className="wmux-chatv2-state" role="status">{t('chat.loading')}</div></div>;
+    return <div className="wmux-chatv2" data-chatv2="loading"><div className="wmux-chatv2-state" role="status">{t('chat.loading')}</div></div>;
   }
   if (state.phase === 'unavailable' || !controller) {
     return (
       <div className="wmux-chatv2" data-chatv2="unavailable">
-        {kindRow}
+        
         <div className="wmux-chatv2-state" role="alert">
           <p>{state.error?.message ?? S.unavailable}</p>
           <div className="wmux-chatv2-card-actions">
@@ -294,7 +355,7 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   if (state.phase === 'empty' || !view) {
     return (
       <div className="wmux-chatv2" data-chatv2="empty">
-        {kindRow}
+        
         <div className="wmux-chatv2-viewport">
           <div className="wmux-chatv2-column wmux-chatv2-empty">
             <strong>{S.newChat}</strong>
@@ -330,6 +391,8 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   }
 
   const binding = view.binding;
+  // The oldest approval that waits is pinned over the composer (one at a time).
+  const pendingApproval = view.session.blocks.find((block) => block.approval && !block.approval.decided);
   const handedOff = binding.status === 'handed-off';
   // Handed off because a terminal agent in another pane took the conversation.
   const continuedIn = handedOff ? binding.continuedIn : undefined;
@@ -349,10 +412,11 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
 
   return (
     <div className="wmux-chatv2" data-chatv2="ready" data-status={binding.status} onKeyDown={onKeyDown}>
-      {kindRow}
+      
       {findOpen && <FindBar blocks={view.session.blocks} onNavigate={setFindId} onClose={closeFind} />}
       <div className="wmux-chatv2-viewport" ref={scroller} onScroll={onScroll}>
-        <div className="wmux-chatv2-column" role="log" aria-label={t('chat.conversation')}>
+        <OpenScope.Provider value={view.session.id}>
+        <div ref={column} className="wmux-chatv2-column" role="log" aria-label={t('chat.conversation')}>
           {state.hasEarlier && transcriptWindow.hiddenCount === 0 && (
             <button type="button" className="wmux-chatv2-link wmux-chatv2-earlier" onClick={() => void controller.loadEarlier()}>{S.loadEarlier}</button>
           )}
@@ -363,20 +427,23 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
               cwd={view.session.cwd}
               actions={actions}
               findActive={!!findId && holdsBlock(row, findId)}
-              findId={row.kind === 'toolGroup' ? findId : undefined}
+              findId={row.kind === 'toolGroup' || row.kind === 'turnFold' ? findId : undefined}
               enter={entered.current.has(row.key)}
             />
           ))}
         </div>
+        </OpenScope.Provider>
       </div>
       <div className="wmux-chatv2-dock">
         <div className="sr-only" role="status" aria-live="polite" data-chatv2-announce>{announce}</div>
-        {newBelow && (
-          <button type="button" className="wmux-chatv2-jump" aria-label={t('chat.scrollToBottom')} title={t('chat.scrollToBottom')} data-chatv2-jump onClick={toLatest}>
+        {(newBelow || away) && (
+          <button type="button" className="wmux-chatv2-jump" title={t('chat.scrollToBottom')} data-chatv2-jump data-new={newBelow || undefined} onClick={toLatest}>
             <ArrowIcon dir="down" />
+            <span>{newBelow ? S.newBelow : S.jumpToLatest}</span>
           </button>
         )}
         {error}
+        {pendingApproval && !handedOff && <PinnedApproval key={pendingApproval.approval!.requestId} block={pendingApproval} cwd={view.session.cwd} active={active} onAnswer={actions.answer} />}
         {handedOff ? (
           <div className="wmux-chatv2-notice wmux-chatv2-handed-off">
             <span>{continuedIn ? t(continuedInPane ? 'chat.continuedInPane' : 'chat.continuedInTerminal') : S.handedOff}</span>
