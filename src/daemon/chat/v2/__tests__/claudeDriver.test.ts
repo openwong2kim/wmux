@@ -49,16 +49,16 @@ describe('ClaudeDriver', () => {
   });
 
   it('switches model and effort live between turns, and passes --effort at start', async () => {
-    const t = setup({ effort: 'high' });
+    const t = setup();
     t.fake.controlAnswer = () => 'success';
     await t.start();
-    expect(t.fake.args).toContain('--effort=high');
     await expect(t.driver.configure({ model: 'opus', effort: 'xhigh' })).resolves.toBe('live');
     const requests = t.fake.stdin.filter((line) => line.type === 'control_request').map((line) => line.request);
     expect(requests).toEqual(expect.arrayContaining([
       { subtype: 'set_model', model: 'opus' },
       { subtype: 'apply_flag_settings', settings: { effortLevel: 'xhigh' } },
     ]));
+    expect(t.driver.settings()).toEqual({ model: 'opus', effort: 'xhigh' });
     // Nothing changed: nothing is written.
     const before = t.fake.stdin.length;
     await expect(t.driver.configure({ model: 'opus', effort: 'xhigh' })).resolves.toBe('live');
@@ -67,28 +67,42 @@ describe('ClaudeDriver', () => {
     await expect(t.driver.configure({ model: 'opus', effort: 'max' })).resolves.toBe('restart');
     expect(t.fake.stdin.length).toBe(before);
     await t.driver.stop();
+
+    // A spawn --effort may outrank the flag-settings layer: an effort change restarts.
+    const flagged = setup({ effort: 'high' });
+    flagged.fake.controlAnswer = () => 'success';
+    await flagged.start();
+    expect(flagged.fake.args).toContain('--effort=high');
+    await expect(flagged.driver.configure({ model: '', effort: 'low' })).resolves.toBe('restart');
+    await flagged.driver.stop();
   });
 
-  it('answers restart on a refused switch, a reset to a default, or an exit', async () => {
+  it('answers refused when the CLI says no, restart when it does not know the request, a reset to a default, or an exit', async () => {
     const t = setup();
     t.fake.controlAnswer = () => 'error';
     await t.start();
+    await expect(t.driver.configure({ model: 'opus', effort: '' })).resolves.toBe('refused');
+    expect(t.driver.settings()).toEqual({ model: 'haiku', effort: '' });
+    t.fake.controlAnswer = () => 'unsupported';
     await expect(t.driver.configure({ model: 'opus', effort: '' })).resolves.toBe('restart');
-    // Back to the CLI default when the spawn named a model cannot be done live.
-    await expect(t.driver.configure({ model: '', effort: '' })).resolves.toBe('restart');
     t.fake.controlAnswer = () => undefined;
     const pending = t.driver.configure({ model: 'sonnet', effort: '' });
     await tick(20);
     t.fake.exit(0, null);
     await expect(pending).resolves.toBe('restart');
+    // Back to the CLI default when the spawn named a model cannot be done live.
+    const named = setup();
+    await named.start();
+    await expect(named.driver.configure({ model: '', effort: '' })).resolves.toBe('restart');
+    await named.driver.stop();
   });
 
-  it('names an attached file in its own text block and never reads it', async () => {
+  it('names an attached file in its own text block, JSON-quoted, and never reads it', async () => {
     const t = setup();
     await t.start();
-    await t.driver.send({ text: 'fix this', attachments: [{ path: '/repo/src/a.ts', mimeType: 'application/octet-stream', kind: 'file' }] });
+    await t.driver.send({ text: 'fix this', attachments: [{ path: '/repo/src/a "b".ts', mimeType: 'application/octet-stream', kind: 'file' }] });
     const user = t.fake.stdin.find((line) => line.type === 'user') as { message: { content: Array<{ type: string; text?: string }> } };
-    expect(user.message.content).toEqual([{ type: 'text', text: 'fix this' }, { type: 'text', text: 'Attached file:\n/repo/src/a.ts' }]);
+    expect(user.message.content).toEqual([{ type: 'text', text: 'fix this' }, { type: 'text', text: 'Attached file (JSON-quoted path):\n"/repo/src/a \\"b\\".ts"' }]);
     await t.driver.stop();
   });
 

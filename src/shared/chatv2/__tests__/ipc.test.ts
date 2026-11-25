@@ -59,6 +59,9 @@ describe('parseChatV2Params', () => {
     expect(parseChatV2Params('send', { ...ok, attachments: ['/repo/src/a.ts'] })).toEqual({ ...ok, attachments: ['/repo/src/a.ts'] });
     expect(parseChatV2Params('send', { ...ok, attachments: ['/repo/src/'] })).toBeNull();
     expect(parseChatV2Params('send', { ...ok, attachments: ['/repo/a\nb.ts'] })).toBeNull();
+    for (const odd of ['\u0085', '\u2028', '\u2029', '\u202e', '\u2066']) {
+      expect(parseChatV2Params('send', { ...ok, attachments: [`/repo/a${odd}b.ts`] })).toBeNull();
+    }
     expect(parseChatV2Params('send', { ...ok, epoch: 'not-an-epoch' })).toBeNull();
     const korean = '가'.repeat(Math.floor(CHATV2_MAX_PROMPT_BYTES / 3));
     expect(parseChatV2Params('send', { ...ok, text: korean })).not.toBeNull();

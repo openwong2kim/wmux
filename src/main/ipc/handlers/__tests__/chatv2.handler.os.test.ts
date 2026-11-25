@@ -7,12 +7,13 @@ vi.mock('electron', () => {
   const handlers = new Map<string, (...args: any[]) => unknown>();
   return { __handlers: handlers, ipcMain: { removeHandler: (name: string) => handlers.delete(name),
     handle: (name: string, fn: (...args: any[]) => unknown) => handlers.set(name, fn) },
-    nativeImage: { createFromPath: () => ({ isEmpty: () => true }) }, dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) } };
+    dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) } };
 });
 import * as electron from 'electron';
 import { registerChatV2Handlers, stageChatV2Attachment } from '../chatv2.handler';
 import { CHATV2_IPC, CHATV2_RPC, type ChatV2Method } from '../../../../shared/chatv2/ipc';
 import type { DaemonClient } from '../../../DaemonClient';
+import { CHAT_IMAGE_MAX_BYTES } from '../../../../shared/transcript/chatAttachments';
 
 const handlers = (electron as unknown as { __handlers: Map<string, (...args: any[]) => unknown> }).__handlers;
 let cleanup: (() => void) | undefined;
@@ -117,6 +118,15 @@ describe('chat v2 IPC bridge', () => {
     expect(await stageChatV2Attachment(path.join(dir, 'gone.txt'), dir)).toEqual({ ok: false, reason: 'missing' });
     expect(await stageChatV2Attachment(dir, dir)).toEqual({ ok: false, reason: 'missing' });
     expect(await stageChatV2Attachment('relative.png', dir)).toEqual({ ok: false, reason: 'missing' });
+    // Resolved the way the daemon checks it, so a send never fails on the spelling.
+    expect(await stageChatV2Attachment(`${dir}/sub/../notes.txt`, dir)).toMatchObject({ ok: true, path: path.join(dir, 'notes.txt') });
+    // The daemon takes only staged images from the staging directory.
+    fs.writeFileSync(path.join(dir, 'chatv2-attachments', 'x.txt'), 'x');
+    expect(await stageChatV2Attachment(path.join(dir, 'chatv2-attachments', 'x.txt'), dir)).toEqual({ ok: false, reason: 'missing' });
+    // An image over the image limit goes as a file, by its own path.
+    const big = path.join(dir, 'big.png');
+    fs.writeFileSync(big, Buffer.alloc(CHAT_IMAGE_MAX_BYTES + 1));
+    expect(await stageChatV2Attachment(big, dir)).toMatchObject({ ok: true, path: big, kind: 'file' });
     // Staged images past a day are removed when the next one is staged.
     const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
     fs.utimesSync(staged.path, old, old);

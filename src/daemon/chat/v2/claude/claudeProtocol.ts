@@ -124,16 +124,19 @@ export function buildClaudeUserMessage(input: {
 }
 
 /**
+ * The note naming attached files to the agent: a fixed header, then each path
+ * as a JSON string on its own line, so no file name can read as more prompt.
+ */
+export function attachedFilesNote(files: readonly string[]): string {
+  return [files.length === 1 ? 'Attached file (JSON-quoted path):' : 'Attached files (JSON-quoted paths):', ...files.map((file) => JSON.stringify(file))].join('\n');
+}
+
+/**
  * The full argv after the `claude` executable. `model` is already checked
  * against `CHATV2_MODEL` and travels as ONE `--model=<id>` argument; the
  * provider session id is always in argv (`--session-id` or `--resume`), which
  * is the marker the orphan sweep matches.
  */
-/** The line naming attached files to the agent, one absolute path per line. */
-export function attachedFilesNote(files: readonly string[]): string {
-  return [files.length === 1 ? 'Attached file:' : 'Attached files:', ...files].join('\n');
-}
-
 export function buildClaudeSpawnArgs(input: {
   mode: ChatV2RunMode;
   model: string;
@@ -197,6 +200,8 @@ export type ClaudeControlResponse = {
   ok: boolean;
   payload: Record<string, unknown> | null;
   error?: string;
+  /** The CLI's `error_code` on an error answer (`unsupported_request` for a subtype it does not know). */
+  code?: string;
 };
 
 export function parseControlResponse(
@@ -214,6 +219,7 @@ export function parseControlResponse(
       ok: false,
       payload: null,
       error: stringField(nested, 'error') ?? 'control request failed',
+      ...(stringField(nested, 'error_code') ? { code: stringField(nested, 'error_code') } : {}),
     };
   }
   if (subtype && subtype !== 'success') return null;

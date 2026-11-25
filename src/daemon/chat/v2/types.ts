@@ -169,6 +169,8 @@ export interface ChatV2Driver {
    * `refused`: the agent does not take them; nothing changes.
    */
   configure?(change: { model: string; effort: string }): Promise<'live' | 'restart' | 'refused'>;
+  /** The model and effort the agent runs with now, as far as the driver knows ('' = its default). */
+  settings?(): { model: string; effort: string };
 }
 
 export type ChatV2DriverFactory = (agent: HarnessId) => ChatV2Driver | null;

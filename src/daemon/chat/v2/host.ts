@@ -729,13 +729,26 @@ class Host implements ChatV2Host {
           // Same conversation, new options. The record keeps the old ones until the new start succeeded.
           if (!(await this.stopDriver(live))) return chatV2Error('driver-failed', 'The agent did not stop, so the change waits for it.');
           if (live.closed) return chatV2Error('session-not-found', 'The chat was closed.');
+          // No message yet, so no conversation to keep: a fresh session id, so a
+          // Claude that already wrote its session file is never asked to create it again.
+          if (record.agent === 'claude' && !record.resumeExisting && !record.session.blocks.some((b) => b.role === 'user')) {
+            record.providerSessionId = randomUUID();
+          }
           const started = await this.startDriver(live, { model, effort });
-          if (!started.ok) return started;
+          if (!started.ok) {
+            // Back on what ran before, once, so the chat is not left failed by a change; the change's error is the answer.
+            if (!live.closed && !live.driver && !live.unreaped) await this.startDriver(live);
+            return started;
+          }
         }
         applied = outcome === 'live' ? 'live' : 'restarted';
       }
-      record.model = model;
-      this.stamp(live, { type: 'session.configChanged', model, modelSettings: { effort } });
+      // What the agent runs with now (a level it refused at start falls back to its default).
+      const now = live.driver?.settings?.() ?? { model, effort };
+      record.model = now.model;
+      // Free before the stamp, so a send that answers this change's event is not refused as a running turn.
+      live.sending = false;
+      this.stamp(live, { type: 'session.configChanged', model: now.model, modelSettings: { effort: now.effort } });
       await this.persistNow(live);
       return { ok: true, binding: this.binding(live), applied };
     } finally {

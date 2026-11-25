@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
 import { CHATV2_AGENT_CAPS, type ChatV2Agent, type ChatV2RunMode } from '../../../shared/chatv2/ipc';
-import { Composer, dequeueMessage, enqueueMessage, moveDraft, QueuedMessages, requeueToDraft, restoreToDraft, setDelivering, setDraft, useDeliveringId, useDraft, useQueuedMessages } from './Composer';
+import { Composer, dequeueMessage, enqueueMessage, moveDraft, QueuedMessages, requeueToDraft, restoreToDraft, setDelivering, useDeliveringId, useDraft, useQueuedMessages } from './Composer';
 import { clientMessageId } from './controller';
 import { shortDir } from '../../utils/shortDir';
 import { FindBar } from './FindBar';
@@ -213,7 +213,8 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   // item keeps its message id, so a resend after a remount is a duplicate.
   const status = view?.binding.status;
   const running = !!view && (!!view.session.busy || status === 'running' || status === 'needs-input');
-  const canDeliver = !!view && !running && (status === 'idle' || status === 'stopped') && view.binding.capabilities.send;
+  // Not while a model change runs: the host refuses a send then, and the queue drains once it settles.
+  const canDeliver = !!view && !running && !configuring && (status === 'idle' || status === 'stopped') && view.binding.capabilities.send;
   const nextQueued = canDeliver ? queue[0] : undefined;
   // The copy (epoch and seq) a delivery last waited on: it is tried again only
   // once another event folded (a turn's end, a reload), never in a loop.
@@ -243,7 +244,7 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
       setDelivering(key, null);
       hold();
     });
-  }, [nextQueued, controller, draftKey, deliveringId, copyAt, paneId]);
+  }, [nextQueued, controller, draftKey, deliveringId, copyAt, paneId, configuring]);
 
   // A first message whose chat was created after a split remount stays under
   // the new-chat draft; once the chat shows, it moves to the chat's composer.
@@ -302,11 +303,10 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
             onSend={async (text, staged) => {
               const attachments = staged.map((item) => item.path);
               if (!(await controller.create({ agent: newAgent, mode: newMode, model: newModel, effort: newEffort }))) return false;
-              setDraft(`${paneId}:new`, '');
               const chatSessionId = controller.current.view?.binding.chatSessionId;
               if (await controller.send(text, attachments)) return true;
-              // The chat exists but the first message did not go: keep it in that chat's composer.
-              if (chatSessionId) { setDraft(`${paneId}:${chatSessionId}`, text); setDraftRev((rev) => rev + 1); }
+              // The chat exists but the first message did not go: its text and files move to that chat's composer together.
+              if (chatSessionId) { moveDraft(`${paneId}:new`, `${paneId}:${chatSessionId}`); setDraftRev((rev) => rev + 1); }
               return false;
             }}
             onStop={() => undefined}

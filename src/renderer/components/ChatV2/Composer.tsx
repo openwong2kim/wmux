@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent } from 'react';
 import { CLAUDE_MODEL_OPTIONS, claudeModelLabel } from '../../../shared/claudeModels';
 import { CHATV2_AGENT_CAPS, CHATV2_AGENTS, type ChatV2Agent, type ChatV2RunMode, type ChatV2StageAttachmentResult } from '../../../shared/chatv2/ipc';
 import { CHATV2_MAX_PROMPT_BYTES, utf8Bytes } from '../../../shared/chatv2/limits';
@@ -13,14 +13,15 @@ import { getChatV2Bridge } from './bridge';
 import { S } from './strings';
 import { Icon, IconFile, IconMoreHorizontal, IconPlus, IconX } from '../icons';
 import { ArrowIcon } from './ArrowIcon';
+import { usePreviewSource } from '../Preview/usePreviewSource';
 import './composer.css';
 
 // Drafts survive view switches and split remounts, per pane and conversation
 // (`<paneId>:<chatSessionId|new>`): the text, the staged attachments, the
 // messages queued behind a running turn, whether a send is in flight, and
 // which queued message is being delivered.
-/** `path` is what `send` takes; `kind` and `thumbnail` only shape the chip (an older draft has neither). */
-export interface StagedAttachment { path: string; name: string; kind?: 'image' | 'file'; thumbnail?: string }
+/** `path` is what `send` takes; `kind` only shapes the chip (an older draft has none). */
+export interface StagedAttachment { path: string; name: string; kind?: 'image' | 'file' }
 /** A message sent mid-turn, delivered when the turn ends. `id` is its clientMessageId. */
 export interface QueuedMessage { id: string; text: string; staged: readonly StagedAttachment[] }
 interface DraftEntry { text: string; staged: readonly StagedAttachment[]; queue: readonly QueuedMessage[]; sending: boolean; delivering: string | null }
@@ -100,7 +101,7 @@ export function restoreToDraft(key: string, message: { text: string; staged: rea
   const { text, staged } = draftEntry(key);
   if (!force && message.staged.length + staged.length > CHAT_ATTACHMENT_LIMIT) return false;
   updateDraft(key, {
-    text: text ? `${message.text}\n\n${text}` : message.text,
+    text: text && message.text ? `${message.text}\n\n${text}` : message.text || text,
     staged: [...message.staged, ...staged],
   });
   return true;
@@ -165,9 +166,17 @@ function StopIcon() {
   return <Icon size={14}><rect x="3.5" y="3.5" width="7" height="7" rx="1.5" fill="currentColor" stroke="none" /></Icon>;
 }
 
+/** A staged image, shown from its staged copy through the preview scheme (main never decodes it). */
+function AttachmentThumb({ path }: { path: string }) {
+  const source = usePreviewSource(path);
+  return source.status === 'ready' && source.kind === 'image'
+    ? <img src={source.url} alt="" />
+    : <span className="wmux-chatv2-attachment-icon" aria-hidden="true"><IconFile size={14} /></span>;
+}
+
 type MenuEntry = ChatSkill & { action?: 'model' | 'effort' | 'menu'; menuId?: string };
 
-export function Composer({ paneId, draftKey, chips, placeholder, disabled, running, canStop, canAttach, onSend, onStop, menu = [], skills }: {
+export function Composer({ paneId, draftKey, chips, placeholder, disabled, running, canStop, canAttach, onSend, onStop, menu: extraMenu = [], skills }: {
   paneId: string;
   draftKey: string;
   chips: ComposerChips;
@@ -196,12 +205,12 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
   textRef.current = text;
   const setText = (value: string) => setDraft(draftKey, value);
 
-  // Checked by main: an image becomes a staged copy with a thumbnail, any other file keeps its path.
+  // Checked by main: an image becomes a staged copy, any other file keeps its path.
   const addResults = (results: readonly ChatV2StageAttachmentResult[]) => {
     const ok: StagedAttachment[] = [];
     let refused = '';
     for (const result of results) {
-      if (result.ok) ok.push({ path: result.path, name: result.name, kind: result.kind, ...(result.thumbnail ? { thumbnail: result.thumbnail } : {}) });
+      if (result.ok) ok.push({ path: result.path, name: result.name, kind: result.kind });
       else refused = result.reason === 'too-large' ? S.attachTooLarge : S.attachRefused;
     }
     const current = getStaged(draftKey);
@@ -271,7 +280,10 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
   // Mid-turn, Send queues the message (the view delivers it when the turn ends).
   const canSend = !disabled && !sending && (!!text.trim() || staged.length > 0) && !tooLong;
   // One button: Stop while a turn runs and nothing is typed, else Send (which queues mid-turn).
-  const showStop = running && canStop && !text.trim() && staged.length === 0;
+  // Esc stops on the same condition; with a draft, Stop stays in the ⋯ menu and as `/stop`.
+  const stoppable = running && canStop;
+  const showStop = stoppable && !text.trim() && staged.length === 0;
+  const menu: readonly ComposerMenuItem[] = stoppable ? [{ id: 'stop', label: S.stop, title: S.stopHint, onSelect: onStop }, ...extraMenu] : extraMenu;
 
   const send = async () => {
     if (!canSend) return;
@@ -297,14 +309,21 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
   const [dismissed, setDismissed] = useState(false);
   const [catalog, setCatalog] = useState<ChatSkillCatalog | null>(null);
   const [selected, setSelected] = useState(0);
+  // skillQuery reads only a token at the very start of the text, so choosing replaces from index 0.
   const query = skillQuery(text, caret);
   const slashOpen = !disabled && !dismissed && !!query && text.startsWith('/');
+  const skillsRef = useRef(skills);
+  skillsRef.current = skills;
+  const canLoadSkills = !!skills;
   useEffect(() => {
-    if (!slashOpen || catalog || !skills) return;
+    // A catalog that could not be read is asked for again the next time the menu opens.
+    if (!slashOpen) { if (catalog?.state === 'unavailable') setCatalog(null); return; }
+    const load = skillsRef.current;
+    if (catalog || !load) return;
     let cancelled = false;
-    void skills().then((result) => { if (!cancelled) setCatalog(result); }, () => { if (!cancelled) setCatalog({ skills: [], state: 'unavailable' }); });
+    void load().then((result) => { if (!cancelled) setCatalog(result); }, () => { if (!cancelled) setCatalog({ skills: [], state: 'unavailable' }); });
     return () => { cancelled = true; };
-  }, [slashOpen, catalog, skills]);
+  }, [slashOpen, catalog, canLoadSkills]);
   const agent = chips.agent ?? 'claude';
   const caps = CHATV2_AGENT_CAPS[agent];
   const adjustable = chips.editable || !!chips.tunable;
@@ -314,9 +333,15 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
     ...menu.filter((item) => !item.disabled).map((item) => ({ name: item.id, invocation: `/${item.id}`, description: item.label, source: 'chat', action: 'menu' as const, menuId: item.id })),
   ];
   const needle = (query?.query ?? '').toLocaleLowerCase();
-  const entries: MenuEntry[] = [...commands, ...(catalog?.skills ?? [])].filter((entry) => `${entry.name} ${entry.description}`.toLocaleLowerCase().includes(needle));
+  // One row per invocation: a chat command wins over a skill of the same name.
+  const entries: MenuEntry[] = [...commands, ...(catalog?.skills ?? [])]
+    .filter((entry, i, all) => all.findIndex((other) => other.invocation === entry.invocation) === i)
+    .filter((entry) => `${entry.name} ${entry.description}`.toLocaleLowerCase().includes(needle));
   const index = Math.min(selected, Math.max(0, entries.length - 1));
   useEffect(() => { setSelected(0); }, [query?.query, catalog]);
+  useLayoutEffect(() => {
+    if (slashOpen) document.getElementById(`${listId}-${index}`)?.scrollIntoView?.({ block: 'nearest' });
+  }, [slashOpen, index, listId]);
   const choose = (entry: MenuEntry) => {
     if (!query) return;
     const tail = text.slice(query.end);
@@ -334,8 +359,12 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
     requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(prefix.length, prefix.length); setCaret(prefix.length); });
   };
 
+  // IME: a keydown inside a composition, or the Enter that ends one (some engines send it just after compositionend), is the IME's.
+  const composing = useRef(false);
+  const composedAt = useRef(-Infinity);
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (event.key === 'Enter' && event.timeStamp - composedAt.current < 50) return;
     if (slashOpen && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key) && !(event.key === 'Enter' && event.shiftKey)) {
       event.preventDefault();
       if (event.key === 'Escape') setDismissed(true);
@@ -345,7 +374,7 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
       return;
     }
     if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); }
-    else if (event.key === 'Escape' && !text && running && canStop) { event.preventDefault(); onStop(); }
+    else if (event.key === 'Escape' && showStop) { event.preventDefault(); onStop(); }
     else if (event.key === 'Backspace' && event.currentTarget.selectionStart === 0 && event.currentTarget.selectionEnd === 0 && staged.length) {
       event.preventDefault();
       setStaged(draftKey, staged.slice(0, -1));
@@ -371,7 +400,7 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
         <Popover role="presentation" className="wmux-chatv2-slash" aria-label={S.commandsAndSkills}>
           {catalog === null && skills && <p className="wmux-chatv2-slash-note" role="status">{S.loadingSkills}</p>}
           {catalog?.state === 'unavailable' && <p className="wmux-chatv2-slash-note" role="status">{S.skillsUnavailable}</p>}
-          {!entries.length && catalog !== null && <p className="wmux-chatv2-slash-note" role="status">{S.noMatch}</p>}
+          {!entries.length && (catalog !== null || !skills) && <p className="wmux-chatv2-slash-note" role="status">{S.noMatch}</p>}
           <div id={listId} role="listbox" aria-label={S.commandsAndSkills} className="wmux-chatv2-slash-list">
             {entries.map((entry, i) => (
               <button key={`${entry.action ?? 'skill'}:${entry.invocation}`} id={`${listId}-${i}`} type="button" role="option" aria-selected={i === index} tabIndex={-1}
@@ -387,7 +416,7 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
         <div className="wmux-chatv2-attachments">
           {staged.map((item) => (
             <span key={item.path} className="wmux-chatv2-attachment" data-attachment data-kind={item.kind ?? 'image'} title={item.name}>
-              {item.thumbnail ? <img src={item.thumbnail} alt="" /> : <span className="wmux-chatv2-attachment-icon" aria-hidden="true"><IconFile size={14} /></span>}
+              {(item.kind ?? 'image') === 'image' ? <AttachmentThumb path={item.path} /> : <span className="wmux-chatv2-attachment-icon" aria-hidden="true"><IconFile size={14} /></span>}
               <span className="wmux-chatv2-attachment-name">{item.name}</span>
               <button type="button" className="wmux-chatv2-attachment-remove" aria-label={`${S.removeAttachment} ${item.name}`}
                 onClick={() => setStaged(draftKey, staged.filter((other) => other.path !== item.path))}><IconX size={10} /></button>
@@ -404,14 +433,16 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
         value={text}
         rows={2}
         disabled={disabled}
-        role={skills ? 'combobox' : undefined}
-        aria-autocomplete={skills ? 'list' : undefined}
-        aria-expanded={skills ? slashOpen : undefined}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={slashOpen}
         aria-controls={slashOpen ? listId : undefined}
         aria-activedescendant={slashOpen && entries[index] ? `${listId}-${index}` : undefined}
         onChange={(event) => { setText(event.target.value); setCaret(event.target.selectionStart); setDismissed(false); }}
         onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
         onBlur={() => setDismissed(true)}
+        onCompositionStart={() => { composing.current = true; }}
+        onCompositionEnd={(event) => { composing.current = false; composedAt.current = event.timeStamp; }}
         onKeyDown={onKeyDown}
         onPaste={paste}
       />

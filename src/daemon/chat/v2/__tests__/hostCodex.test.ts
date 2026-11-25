@@ -100,6 +100,21 @@ describe('chat v2 host: a Codex chat', () => {
     await r.host.dispose();
   });
 
+  it('restarts when a change goes unanswered, and records the level the new process runs, not one it refused', async () => {
+    const options: { settingsUpdate: 'ok' | 'refuse' } = { settingsUpdate: 'ok' };
+    const r = rig(options);
+    const b = await r.create();
+    // The write fails: whether Codex took it is unknown, so it restarts with the change.
+    r.fake().failWrite = (line) => line.method === 'thread/settings/update';
+    options.settingsUpdate = 'refuse';
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: 'xhigh' }, 'main'))
+      .toMatchObject({ ok: true, applied: 'restarted' });
+    expect(r.fakes).toHaveLength(2);
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort).toBe('');
+    expect(await r.send()).toMatchObject({ ok: true });
+    await r.host.dispose();
+  });
+
   it('starts anyway when Codex refuses the effort a new chat asked for', async () => {
     const r = rig({ settingsUpdate: 'refuse' });
     const res = await r.host.call('create', { paneId: PANE, agent: 'codex', mode: 'default', effort: 'xhigh' }, 'main');

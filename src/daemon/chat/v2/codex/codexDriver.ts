@@ -252,7 +252,8 @@ export class CodexDriver implements ChatV2Driver {
    * Codex keeps model and effort on the thread (`thread/settings/update`,
    * the call chat 1's settings use), so a change applies from the next turn.
    * Back to a default cannot be expressed there: `restart`. A level or model
-   * Codex refuses is `refused`: a restart would not take it either.
+   * Codex answers with an error is `refused`: a restart would not take it
+   * either. No answer (a timeout, a failed write, an exit): `restart`.
    */
   async configure(change: { model: string; effort: string }): Promise<'live' | 'restart' | 'refused'> {
     if (!this.backend.alive || !this.initialized || this.stopping || this.activeTurn) return 'restart';
@@ -263,12 +264,17 @@ export class CodexDriver implements ChatV2Driver {
         ...(change.model ? { model: change.model } : {}),
         ...(change.effort ? { effort: change.effort } : {}),
       });
-    } catch {
-      return 'refused';
+    } catch (error) {
+      return error instanceof CodexRefusal ? 'refused' : 'restart';
     }
     this.model = change.model;
     this.effort = change.effort;
     return 'live';
+  }
+
+  /** The model and effort the thread runs with now ('' = Codex's default; also a level it refused at start). */
+  settings(): { model: string; effort: string } {
+    return { model: this.model, effort: this.effort };
   }
 
   async interrupt(): Promise<boolean> {

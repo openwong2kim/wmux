@@ -161,9 +161,10 @@ export class ClaudeDriver implements ChatV2Driver {
   private initialized = false;
   private stopping = false;
   // Control requests awaiting their control_response, by request id.
-  private readonly controlWaiters = new Map<string, (ok: boolean) => void>();
+  private readonly controlWaiters = new Map<string, (answer: 'ok' | 'refused' | 'restart') => void>();
   // What the process was started with, and what it runs now ('' = the CLI's default).
   private spawnModel = '';
+  private spawnEffort = '';
   private model = '';
   private effort = '';
   private exitedOnce = false;
@@ -208,7 +209,7 @@ export class ClaudeDriver implements ChatV2Driver {
     this.sink = sink;
     this.claudeSessionId = spec.providerSession.id;
     this.spawnModel = this.model = spec.model;
-    this.effort = spec.effort ?? '';
+    this.spawnEffort = this.effort = spec.effort ?? '';
     const args = buildClaudeSpawnArgs({
       mode: spec.mode,
       model: spec.model,
@@ -310,50 +311,63 @@ export class ClaudeDriver implements ChatV2Driver {
   /**
    * Switch the running Claude between turns: `set_model` for the model and
    * the flag-settings layer for effort (what Claude's own /effort sends on a
-   * hosted session; session-only, no settings file is written). Going back to
-   * a default that differs from the spawn's, and `max` (the flag-settings
-   * layer stops at xhigh), are not something the CLI can do live: those
-   * answer `restart`, and the host restarts on the same conversation with
-   * `--model` / `--effort`.
+   * hosted session; session-only, no settings file is written). Not
+   * something the CLI can do live, so `restart` (the host restarts on the
+   * same conversation with `--model` / `--effort`): going back to a default
+   * that differs from the spawn's, `max` (the flag-settings layer stops at
+   * xhigh), any effort change on a process spawned with `--effort` (that
+   * flag may outrank the flag-settings layer), a CLI that does not know the
+   * request, and no answer. An error answer is the CLI saying no: `refused`.
    */
-  async configure(change: { model: string; effort: string }): Promise<'live' | 'restart'> {
+  async configure(change: { model: string; effort: string }): Promise<'live' | 'restart' | 'refused'> {
     if (!this.backend.alive || !this.initialized || this.stopping || this.activeTurn) return 'restart';
     const modelChanged = change.model !== this.model;
     const effortChanged = change.effort !== this.effort;
     if (modelChanged && !change.model && this.spawnModel) return 'restart';
-    if (effortChanged && (!change.effort || !LIVE_EFFORTS.has(change.effort))) return 'restart';
+    if (effortChanged && (!change.effort || !LIVE_EFFORTS.has(change.effort) || this.spawnEffort)) return 'restart';
     if (modelChanged) {
-      if (!(await this.control({ subtype: 'set_model', model: change.model || 'default' }))) return 'restart';
+      const answer = await this.control({ subtype: 'set_model', model: change.model || 'default' });
+      if (answer !== 'ok') return answer;
       this.model = change.model;
     }
     if (effortChanged) {
-      if (!(await this.control({ subtype: 'apply_flag_settings', settings: { effortLevel: change.effort } }))) return 'restart';
+      const answer = await this.control({ subtype: 'apply_flag_settings', settings: { effortLevel: change.effort } });
+      if (answer !== 'ok') return answer;
       this.effort = change.effort;
     }
     return 'live';
   }
 
-  /** Send one control request and wait for its answer: false on an error answer, a timeout or an exit. */
-  private async control(request: Record<string, unknown>): Promise<boolean> {
+  /** The model and effort the process runs with now ('' = the CLI's default). */
+  settings(): { model: string; effort: string } {
+    return { model: this.model, effort: this.effort };
+  }
+
+  /**
+   * Send one control request and wait for its answer: `ok`; `refused` on an
+   * error answer; `restart` when the CLI does not know the request, or on a
+   * timeout, a failed write or an exit (whether it landed is unknown).
+   */
+  private async control(request: Record<string, unknown>): Promise<'ok' | 'refused' | 'restart'> {
     const requestId = this.nextControlId();
-    const answered = new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => this.settleControl(requestId, false), CLAUDE_CONTROL_TIMEOUT_MS);
+    const answered = new Promise<'ok' | 'refused' | 'restart'>((resolve) => {
+      const timer = setTimeout(() => this.settleControl(requestId, 'restart'), CLAUDE_CONTROL_TIMEOUT_MS);
       timer.unref?.();
-      this.controlWaiters.set(requestId, (ok) => { clearTimeout(timer); resolve(ok); });
+      this.controlWaiters.set(requestId, (answer) => { clearTimeout(timer); resolve(answer); });
     });
     try {
       await this.write(buildControlRequest(requestId, request));
     } catch {
-      this.settleControl(requestId, false);
+      this.settleControl(requestId, 'restart');
     }
     return answered;
   }
 
-  private settleControl(requestId: string, ok: boolean): void {
+  private settleControl(requestId: string, answer: 'ok' | 'refused' | 'restart'): void {
     const waiter = this.controlWaiters.get(requestId);
     if (!waiter) return;
     this.controlWaiters.delete(requestId);
-    waiter(ok);
+    waiter(answer);
   }
 
   /** Rejects when the process was not seen to exit: it may still be running. */
@@ -384,7 +398,7 @@ export class ClaudeDriver implements ChatV2Driver {
     this.clearAwaitingResume();
     this.initDone?.(false, 'Claude Code exited during startup.');
     this.initDone = null;
-    for (const requestId of [...this.controlWaiters.keys()]) this.settleControl(requestId, false);
+    for (const requestId of [...this.controlWaiters.keys()]) this.settleControl(requestId, 'restart');
     for (const requestId of this.pending.keys()) this.settled.add(requestId);
     this.pending.clear();
     this.activeTurn = false;
@@ -428,7 +442,8 @@ export class ClaudeDriver implements ChatV2Driver {
         if (response.ok) this.markInitialized();
         else this.initDone?.(false, response.error ?? 'Claude Code refused its startup handshake.');
       } else if (response) {
-        this.settleControl(response.requestId, response.ok);
+        const unsupported = response.code === 'unsupported_request' || /unsupported control request/i.test(response.error ?? '');
+        this.settleControl(response.requestId, response.ok ? 'ok' : unsupported ? 'restart' : 'refused');
       }
       return;
     }

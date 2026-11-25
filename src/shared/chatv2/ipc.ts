@@ -567,10 +567,10 @@ export interface ChatV2ResultByMethod {
 
 /**
  * `path` is what `send` takes: the staged copy of an image, the file's own
- * path otherwise. `thumbnail` is a small data URL for an image main could decode.
+ * path otherwise (also an image over the image size limit, sent as a file).
  */
 export type ChatV2StageAttachmentResult =
-  | { ok: true; path: string; name: string; kind: 'image' | 'file'; size: number; thumbnail?: string }
+  | { ok: true; path: string; name: string; kind: 'image' | 'file'; size: number }
   | { ok: false; reason: 'missing' | 'not-image' | 'too-large' };
 
 /**
@@ -619,8 +619,9 @@ function answers(value: unknown): value is Array<{ keys: string[]; other?: strin
 /** An attachment path `send` may carry: absolute, one line, naming a file (see the header). */
 export function validChatV2AttachmentPath(value: unknown): value is string {
   if (typeof value !== 'string' || value.length >= 4096 || !/^(?:\/|[A-Za-z]:[\\/])/.test(value)) return false;
+  // Control characters, other line breaks and bidi controls: a path is one plain line in the prompt.
   // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1f\x7f]/.test(value)) return false;
+  if (/[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(value)) return false;
   return !/[\\/]$/.test(value);
 }
 

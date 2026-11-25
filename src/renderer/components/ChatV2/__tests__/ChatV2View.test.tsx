@@ -619,6 +619,25 @@ describe('ChatV2View', () => {
     expect(new Set(sent().map((p) => p.clientMessageId)).size).toBe(3);
   });
 
+  it('keeps Stop reachable with a draft typed: the ⋯ menu offers it, and Esc then leaves the draft alone', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-stopdraft' });
+    await mock.call('create', { paneId: 'daemon-stopdraft', agent: 'claude', mode: 'default' });
+    await act(async () => root.render(<ChatV2View paneId="daemon-stopdraft" active onTerminal={() => undefined} />));
+    await flush();
+    await type('first');
+    await clickSend();
+    await type('a draft');
+    expect(host.querySelector('.wmux-chatv2-send[data-stop]')).toBeNull();
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement;
+    await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(mock.calls.some((call) => call.method === 'interrupt')).toBe(false);
+    await act(async () => { (host.querySelector('[data-chatv2-more]') as HTMLButtonElement).click(); });
+    await act(async () => { (host.querySelector('[data-chatv2-menu="stop"]') as HTMLButtonElement).click(); });
+    await flush();
+    expect(mock.calls.some((call) => call.method === 'interrupt')).toBe(true);
+    expect(textarea.value).toBe('a draft');
+  });
+
   // Holds or fails the host's answers to one method, for the review cases below.
   const intercept = (method: string, answer: (forward: () => Promise<unknown>) => Promise<unknown>) => {
     const call = mock.call.bind(mock);

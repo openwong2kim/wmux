@@ -199,14 +199,32 @@ describe('chat v2 host', () => {
     expect(await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'low' }, 'main')).toMatchObject({ ok: false, error: { code: 'turn-running' } });
     r.fake().result();
     await until(() => r.host.statusForPane(PANE) === 'idle');
-    // The agent refuses the live switch: it restarts on the same conversation with the new options.
-    r.fake().controlAnswer = () => 'error';
+    // max is a start flag only: it restarts on the same conversation with the new options.
     const restarted = await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'max' }, 'main');
     expect(restarted).toMatchObject({ ok: true, applied: 'restarted', binding: { status: 'idle' } });
     expect(r.fakes).toHaveLength(2);
     expect(r.fake().args).toEqual(expect.arrayContaining(['--model=opus', '--effort=max', '--resume', binding.providerSessionId]));
     // An effort the agent does not take is refused.
     expect(await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'ultra' }, 'main')).toMatchObject({ ok: false, error: { code: 'invalid-params' } });
+    await r.host.dispose();
+  });
+
+  it('refuses a model the agent says no to without a restart, and restarts a chat with no message yet on a fresh session id', async () => {
+    const r = rig();
+    const binding = await created(r);
+    r.fake().controlAnswer = () => 'error';
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, model: 'opus' }, 'main'))
+      .toMatchObject({ ok: false, error: { code: 'invalid-params' } });
+    expect(r.fakes).toHaveLength(1);
+    expect(r.host.bindingForPane(PANE)).toMatchObject({ model: 'haiku', status: 'idle' });
+    // Nothing was said yet, so there is no conversation to resume.
+    const restarted = await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'max' }, 'main');
+    expect(restarted).toMatchObject({ ok: true, applied: 'restarted' });
+    expect(r.fakes).toHaveLength(2);
+    expect(r.fake().args).not.toContain('--resume');
+    expect(r.fake().args).not.toContain(binding.providerSessionId);
+    expect(r.fake().args).toContain('--effort=max');
+    expect(await sent(r)).toMatchObject({ ok: true });
     await r.host.dispose();
   });
 
