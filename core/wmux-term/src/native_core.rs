@@ -60,6 +60,9 @@ pub fn native_core_capabilities() -> Vec<String> {
         "console-owner-v1".into(),
         #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
         "process-table-v1".into(),
+        // Rows carry state, pgid, tpgid and created; cmdline with command lines.
+        #[cfg(target_os = "linux")]
+        "process-table-linux-v1".into(),
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         "listen-sockets-v1".into(),
         #[cfg(windows)]
@@ -78,6 +81,10 @@ pub struct NativeProcessRow {
     pub name: String,
     pub created: Option<f64>,
     pub cmdline: Option<String>,
+    /// Linux (`process-table-linux-v1`).
+    pub state: Option<String>,
+    pub pgid: Option<i32>,
+    pub tpgid: Option<i32>,
 }
 
 /// The rows JS receives, in one buffer reserved fallibly (one per process).
@@ -88,12 +95,21 @@ fn native_rows(
     rows: Vec<crate::process_table::ProcessRow>,
 ) -> std::result::Result<Vec<NativeProcessRow>, AllocFailed> {
     let mut out = fallible::try_with_capacity(rows.len(), "the process table for JS")?;
-    out.extend(rows.into_iter().map(|r| NativeProcessRow {
-        pid: r.pid,
-        ppid: r.ppid,
-        name: r.name,
-        created: r.created,
-        cmdline: r.cmdline,
+    out.extend(rows.into_iter().map(|r| {
+        let (state, pgid, tpgid) = match r.linux {
+            Some(d) => (Some(d.state), Some(d.pgid), Some(d.tpgid)),
+            None => (None, None, None),
+        };
+        NativeProcessRow {
+            pid: r.pid,
+            ppid: r.ppid,
+            name: r.name,
+            created: r.created,
+            cmdline: r.cmdline,
+            state,
+            pgid,
+            tpgid,
+        }
     }));
     Ok(out)
 }
@@ -152,6 +168,8 @@ impl Task for ProcessTableTask {
 
 /// The process table off the JS thread. With `with_command_lines`, each
 /// row also carries its creation time and command line where readable.
+/// Linux fills state, groups and creation time either way (one stat line per
+/// process) and reads command lines only with `with_command_lines`.
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 #[napi(catch_unwind)]
 pub fn process_table(env: Env, with_command_lines: bool) -> AsyncTask<ProcessTableTask> {

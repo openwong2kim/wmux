@@ -1,7 +1,6 @@
-import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { confirmedKernelStarts, parsePsIdentityRows, type PosixProcRow } from '../automation/verifiedTreeKill';
+import { confirmedKernelStarts, listPosixIdentityRows, type PosixProcRow } from '../automation/verifiedTreeKill';
 import { kernelStartOf, sameKernelStart } from '../../shared/processStartTime';
 import type { HeadlessSurvivor } from './headlessStartStore';
 
@@ -32,13 +31,7 @@ export interface HeadlessProcDeps {
 }
 
 export const defaultHeadlessProcDeps: HeadlessProcDeps = {
-  listProcesses: () =>
-    new Promise((resolve, reject) => {
-      execFile('/bin/ps', ['-axo', 'pid=,ppid=,stat=,lstart='], { timeout: 2000, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (error, output) => {
-        if (error) reject(error);
-        else resolve(parsePsIdentityRows(output ?? ''));
-      });
-    }),
+  listProcesses: listPosixIdentityRows,
   procRoot: '/proc',
   kernelStart: kernelStartOf,
 };

@@ -257,3 +257,146 @@ describe('agent tracker rows from the native table', () => {
       .toEqual(tracker.parsePipeDelimited('4|0||System|')[0]);
   });
 });
+
+describe('the Linux process table in ps columns', () => {
+  const realTz = process.env.TZ;
+  beforeEach(() => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    process.env.TZ = 'UTC';
+  });
+  afterEach(() => {
+    if (realTz === undefined) delete process.env.TZ;
+    else process.env.TZ = realTz;
+  });
+  const created = Date.UTC(2026, 10, 5, 3, 4, 5) + 999;
+  const row = (pid: number, extra: Record<string, unknown> = {}) => ({
+    pid, ppid: 1, name: 'bash', created, state: 'S', pgid: pid, tpgid: -1, ...extra,
+  });
+
+  it('maps each row to the text ps prints: lstart in local time, args by the procfs rule', async () => {
+    vi.resetModules();
+    const { readLinuxProcessTable, lstartOf } = await import('../nativeProcessTable');
+    native.processTable.mockResolvedValue([
+      row(10, { cmdline: 'bash\0-c\0a\nb\0' }),
+      row(11, { name: 'kworker/0:1', state: 'I' }),
+      row(12, { name: 'gone', state: 'Z' }),
+    ]);
+    const rows = await readLinuxProcessTable(true);
+    expect(native.load).toHaveBeenCalledWith('process-table-linux-v1');
+    expect(native.processTable).toHaveBeenCalledWith(true);
+    // The ms fraction never rounds the second up; a one-digit day is padded as ctime pads it.
+    expect(rows?.map((r) => [r.pid, r.state, lstartOf(r), r.args])).toEqual([
+      [10, 'S', 'Thu Nov  5 03:04:05 2026', 'bash -c a b'],
+      [11, 'I', 'Thu Nov  5 03:04:05 2026', '[kworker/0:1]'],
+      [12, 'Z', 'Thu Nov  5 03:04:05 2026', '[gone] <defunct>'],
+    ]);
+    expect(rows?.[0]).toMatchObject({ ppid: 1, pgid: 10, tpgid: -1, comm: 'bash' });
+    // Without args no command line is asked for, and no args are made.
+    native.processTable.mockResolvedValue([row(10)]);
+    expect((await readLinuxProcessTable(false))?.[0].args).toBeUndefined();
+    expect(native.processTable).toHaveBeenLastCalledWith(false);
+  });
+
+  it('a row without its stat details fails the read, and three in a row latch it off', async () => {
+    vi.resetModules();
+    const { readLinuxProcessTable } = await import('../nativeProcessTable');
+    // A core that fills only the walk (no capability check would catch a partial one).
+    native.processTable.mockResolvedValue([row(10), { pid: 11, ppid: 1, name: 'bash' }]);
+    for (let i = 0; i < 3; i++) expect(await readLinuxProcessTable(false)).toBeUndefined();
+    native.processTable.mockResolvedValue([row(10)]);
+    expect(await readLinuxProcessTable(false)).toBeUndefined();
+    expect(native.processTable).toHaveBeenCalledTimes(3);
+  });
+
+  it('serves the identity rows of tree kills, and spawns ps only once the native read is latched off', async () => {
+    vi.resetModules();
+    const { listPosixIdentityRows } = await import('../automation/verifiedTreeKill');
+    native.processTable.mockResolvedValue([row(10), row(11, { ppid: 10, state: 'Z' })]);
+    // The same text `ps` gives after the identity parser joins its spaces.
+    expect(await listPosixIdentityRows()).toEqual([
+      { pid: 10, ppid: 1, stat: 'S', start: 'Thu Nov 5 03:04:05 2026' },
+      { pid: 11, ppid: 10, stat: 'Z', start: 'Thu Nov 5 03:04:05 2026' },
+    ]);
+    expect(native.processTable).toHaveBeenCalledWith(false);
+    expect(spawn.execFile).not.toHaveBeenCalled();
+
+    native.processTable.mockRejectedValue(new Error('snapshot failed'));
+    spawn.execFile.mockImplementation((_f: string, _a: string[], _o: unknown, cb: (e: Error | null, out: string) => void) =>
+      cb(null, '   10     1 Ss   Thu Nov  5 03:04:05 2026\n'));
+    for (let i = 0; i < 3; i++) expect(await listPosixIdentityRows()).toEqual([{ pid: 10, ppid: 1, stat: 'Ss', start: 'Thu Nov 5 03:04:05 2026' }]);
+    expect(spawn.execFile).toHaveBeenLastCalledWith('/bin/ps', ['-axo', 'pid=,ppid=,stat=,lstart='], expect.anything(), expect.any(Function));
+  });
+
+  it('walks the freeze-and-kill tree from the native table', async () => {
+    vi.resetModules();
+    const { killProcessTreePosix } = await import('../automation/treeKill');
+    native.processTable.mockResolvedValue([row(10), row(11, { ppid: 10 }), row(12, { ppid: 11 }), row(13)]);
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      await killProcessTreePosix(10);
+      const stopped = kill.mock.calls.filter(([, sig]) => sig === 'SIGSTOP').map(([pid]) => pid);
+      expect(new Set(stopped)).toEqual(new Set([10, 11, 12]));
+      expect(spawn.execFile).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  it('stops an agent tree from the native table, with ps start text and zombies marked', async () => {
+    vi.resetModules();
+    const { stopAgentTree } = await import('../../main/deck/agentTreeStop');
+    native.processTable.mockResolvedValue([row(10), row(11, { ppid: 10 }), row(12, { ppid: 10, state: 'Z' })]);
+    const signal = vi.fn();
+    await stopAgentTree(10, { signal, alive: () => false, pollMs: 1, interruptWaitMs: 1, termGraceMs: 1, log: () => undefined });
+    // The agent is found by pid and start text; the zombie is left out.
+    expect(signal.mock.calls.filter(([, sig]) => sig === 'SIGTERM').map(([pid]) => pid).sort()).toEqual([10, 11]);
+    expect(spawn.execFile).not.toHaveBeenCalled();
+  });
+
+  it('reads the agent tracker table natively with args, before procfs and ps', async () => {
+    vi.resetModules();
+    const { AgentProcessTracker } = await import('../AgentProcessTracker');
+    native.processTable.mockResolvedValue([row(10, { name: 'claude', cmdline: 'claude\0--resume\0x\0' })]);
+    const tracker = new AgentProcessTracker({ watch: vi.fn(), unwatch: vi.fn() } as never);
+    const entries = await (tracker as unknown as { enumerate(): Promise<Array<{ pid: number; ppid: number; cmdline?: string }>> }).enumerate();
+    expect(entries.map((e) => [e.pid, e.ppid, e.cmdline])).toEqual([[10, 1, 'claude --resume x']]);
+    expect(native.processTable).toHaveBeenCalledWith(true);
+    expect(spawn.execFile).not.toHaveBeenCalled();
+  });
+
+  it('a read with args hung on a command line neither turns away nor latches off the reads without it', async () => {
+    vi.resetModules();
+    const { readLinuxProcessTable } = await import('../nativeProcessTable');
+    native.processTable.mockImplementation((withArgs: boolean) => (withArgs ? new Promise(() => undefined) : Promise.resolve([row(10)])));
+    void readLinuxProcessTable(true); // never settles
+    for (let i = 0; i < 4; i++) expect((await readLinuxProcessTable(false))?.map((r) => r.pid)).toEqual([10]);
+  });
+
+  it('without a boot time, the tree walks still read natively, and only the identity rows go to ps', async () => {
+    vi.resetModules();
+    const { listProcessPairs } = await import('../automation/treeKill');
+    const { listPosixIdentityRows } = await import('../automation/verifiedTreeKill');
+    native.processTable.mockResolvedValue([row(10, { created: null }), row(11, { ppid: 10, created: null })]);
+    expect(await listProcessPairs()).toEqual([[10, 1], [11, 10]]);
+    expect(spawn.execFile).not.toHaveBeenCalled();
+    spawn.execFile.mockImplementation((_f: string, _a: string[], _o: unknown, cb: (e: Error | null, out: string) => void) => cb(null, '10 1 S Thu Nov  5 03:04:05 2026\n'));
+    expect(await listPosixIdentityRows()).toEqual([{ pid: 10, ppid: 1, stat: 'S', start: 'Thu Nov 5 03:04:05 2026' }]);
+    expect(spawn.execFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('is off under WMUX_NATIVE_PROCESS_TABLE=off, off Linux, and without the capability', async () => {
+    process.env.WMUX_NATIVE_PROCESS_TABLE = 'off';
+    vi.resetModules();
+    expect(await (await import('../nativeProcessTable')).readLinuxProcessTable(false)).toBeUndefined();
+    delete process.env.WMUX_NATIVE_PROCESS_TABLE;
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    vi.resetModules();
+    expect(await (await import('../nativeProcessTable')).readLinuxProcessTable(false)).toBeUndefined();
+    expect(native.load).not.toHaveBeenCalled();
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    native.load.mockImplementation(() => { throw new Error('Native terminal core lacks process-table-linux-v1'); });
+    vi.resetModules();
+    expect(await (await import('../nativeProcessTable')).readLinuxProcessTable(false)).toBeUndefined();
+    expect(native.processTable).not.toHaveBeenCalled();
+  });
+});
