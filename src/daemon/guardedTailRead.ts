@@ -3,6 +3,8 @@ import type { TailReadCounters } from '../shared/memoryDiagnostics';
 import type { TextSnapshotOutcome, TextSnapshotRow } from './HeadlessSnapshot';
 import type { RingBuffer } from './RingBuffer';
 import { UNKNOWN_CELL, readRingWithModes, tailCut, withUnknownCells } from './sessionTextReplay';
+import { screenCheckpointBytes, screenReplay, takeScreenCheckpoint, type CheckpointRing } from './screenCheckpoint';
+import { enqueueSnapshotJob } from './HeadlessSnapshot';
 import { TailHazardScan, type TailHazard } from './tailHazards';
 import type { OutputModeTracker } from './util/outputModeTracker';
 
@@ -21,6 +23,14 @@ import type { OutputModeTracker } from './util/outputModeTracker';
  * For readers that only display or estimate (Fleet's preview, StallWatch).
  * Safety gates keep reading the whole ring: the caller picks a separate read
  * kind, so a tail answer is never cached or joined under a whole-ring kind.
+ *
+ * A read of the visible screen only (variant 'screen') falls back to the
+ * screen read queuedScreenText makes instead: the ring's screen checkpoint
+ * and the bytes after it when one applies (screenCheckpoint.ts), else the
+ * whole ring. A Claude Code pane misses the tail on every read, and parsing
+ * its whole 8 MiB ring each StallWatch cycle kept a box daemon's memory up;
+ * the checkpoint bounds that parse to its grid and at most a quarter of the
+ * ring, and holds no history the screen does not show.
  */
 
 export const TAIL_BYTES = 256 * 1024;
@@ -52,8 +62,49 @@ export type TailInputs = (rows: readonly string[]) => Readonly<Record<string, bo
 
 export interface GuardedTailSession {
   meta: { cols: number; rows: number };
-  ringBuffer: Pick<RingBuffer, 'readAll' | 'totalBytesWritten'>;
-  bridge: { readonly outputModes: Pick<OutputModeTracker, 'preamble'> | null };
+  /** A whole RingBuffer (a CheckpointRing too) lets a screen read fall back to its checkpoint. */
+  ringBuffer: Pick<RingBuffer, 'readAll' | 'totalBytesWritten'> & Partial<CheckpointRing>;
+  bridge: { readonly outputModes: (Pick<OutputModeTracker, 'preamble'> & { readonly altScreen?: boolean }) | null };
+}
+
+/** The variant that reads the visible screen only (no scrollback): its fallback is the checkpoint-backed screen read. */
+const SCREEN_VARIANT = 'screen';
+
+function checkpointRing(ring: GuardedTailSession['ringBuffer']): CheckpointRing | null {
+  return typeof ring.readAllWithGeometry === 'function' && typeof ring.clearGeneration === 'number' && typeof ring.totalCapacity === 'number'
+    ? (ring as CheckpointRing)
+    : null;
+}
+
+/**
+ * A screen read whose checkpoint is followed by more than this many bytes
+ * asks for a newer checkpoint, so the next read parses its grid and little
+ * more. The ring's own refresh waits for a quarter of the ring (2 MiB of an
+ * 8 MiB one), which a spinner that writes a few KB a second takes many
+ * minutes to reach, and every read in between parses all of it again.
+ */
+export const SCREEN_REFRESH_BYTES = TAIL_BYTES;
+/** Per ring: a refresh queued or running, and the byte count the last one was asked at. */
+const refreshing = new WeakSet<CheckpointRing>();
+const refreshedAt = new WeakMap<CheckpointRing, number>();
+
+/** Queue a newer checkpoint behind this read, at most one per ring and per SCREEN_REFRESH_BYTES of output. */
+function refreshCheckpoint(ring: CheckpointRing, modes: CheckpointModesOf, size: () => { cols: number; rows: number } | null, writtenAt: number): void {
+  if (refreshing.has(ring) || writtenAt - (refreshedAt.get(ring) ?? Number.NEGATIVE_INFINITY) < SCREEN_REFRESH_BYTES) return;
+  refreshing.add(ring);
+  refreshedAt.set(ring, writtenAt);
+  void enqueueSnapshotJob(() => takeScreenCheckpoint(ring, modes, size))
+    .catch(() => false)
+    .finally(() => refreshing.delete(ring));
+}
+
+type CheckpointModesOf = Parameters<typeof takeScreenCheckpoint>[1];
+
+/** An unknown cell as every plain screen reader sees one (queuedScreenText): a blank, trailing spaces trimmed. */
+function blankUnknown(outcome: TextSnapshotOutcome): TextSnapshotOutcome {
+  if (!outcome.ok) return outcome;
+  const blank = (text: string): string => (text.includes(UNKNOWN_CELL) ? text.split(UNKNOWN_CELL).join(' ').replace(/ +$/, '') : text);
+  return { ...outcome, rows: outcome.rows.map((row) => ({ ...row, text: blank(row.text), ...(row.undimmed !== undefined ? { undimmed: blank(row.undimmed) } : {}) })) };
 }
 
 export interface GuardedTailOptions {
@@ -128,14 +179,32 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   c.reads++;
   const started = performance.now();
   const modes = session.bridge.outputModes;
-  // The whole-ring read's own bytes and preamble, so a fallback is its answer.
-  const { raw: data, replay: full } = readRingWithModes(session.ringBuffer, modes);
-  const writtenAt = session.ringBuffer.totalBytesWritten;
-  const ringStart = writtenAt - data.length;
-  time(c, 'ringCopyMs', performance.now() - started);
   // Dims backstop as the whole-ring reads have: a recovered session may not have real dims yet.
   const cols = session.meta.cols ?? 80;
   const rows = session.meta.rows ?? 24;
+  const ring = options.variant === SCREEN_VARIANT ? checkpointRing(session.ringBuffer) : null;
+  // The fallback's bytes, read in this same step as the tail's: a screen read's from its checkpoint
+  // (queuedScreenText's own read, parsed at the current size), any other read's the whole ring and its preamble.
+  // Read live: a checkpoint job checks the screen again once it has parsed.
+  const screenModes: CheckpointModesOf | null = modes ? { get altScreen() { return modes.altScreen === true; }, preamble: (at) => modes.preamble(at) } : null;
+  const screen = ring ? screenReplay(ring, screenModes, { cols, rows }, { geometry: false }) : null;
+  const data = session.ringBuffer.readAll();
+  const writtenAt = session.ringBuffer.totalBytesWritten;
+  const ringStart = writtenAt - data.length;
+  const full = screen ? null : readRingWithModes({ readAll: () => data, totalBytesWritten: writtenAt }, modes).replay;
+  const wholeReplay = (): Buffer => full ?? readRingWithModes({ readAll: () => data, totalBytesWritten: writtenAt }, modes).replay;
+  time(c, 'ringCopyMs', performance.now() - started);
+  /** The fallback's answer: the screen read's (its unknown cells blanked), or the whole ring's. */
+  const parseFallback = async (): Promise<TextSnapshotOutcome> => {
+    if (!screen) return options.parse(wholeReplay());
+    const answer = await options.parse(screen.replay);
+    // From the checkpoint (not rebuilt from the ring), with more than a tail's worth of bytes after its grid.
+    if (ring && screenModes && !screen.rebuilt && screen.replay.length - screenCheckpointBytes(ring) > SCREEN_REFRESH_BYTES && screenCheckpointBytes(ring) > 0) {
+      // At the size the screen reads use (the pane's recorded one), as the daemon's repair refreshes it.
+      refreshCheckpoint(ring, screenModes, () => (session.meta.cols > 0 && session.meta.rows > 0 ? { cols: session.meta.cols, rows: session.meta.rows } : null), screen.writtenAt);
+    }
+    return screen.marked ? blankUnknown(answer) : answer;
+  };
 
   /** The whole ring's answer: after a fallback for `reason`, or (none) a capped reader's skip. */
   const fallback = async (reason: TailFallbackReason | null): Promise<TailOutcome> => {
@@ -148,7 +217,7 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
       c.skipped = (c.skipped ?? 0) + 1;
     }
     const at = performance.now();
-    const answer = await options.parse(full);
+    const answer = await parseFallback();
     time(c, 'fallbackMs', performance.now() - at);
     return { ...answer, via: 'full' };
   };
@@ -158,7 +227,7 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   const cut = tailCut(data, TAIL_BYTES, TAIL_LINE_WITHIN);
   if (cut === 0) {
     // The whole ring fits: the tail is the whole replay.
-    const answer = await options.parse(full);
+    const answer = await options.parse(wholeReplay());
     c.whole++;
     time(c, 'tailMs', performance.now() - started);
     return { ...answer, via: 'tail' };
@@ -201,7 +270,7 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
     lastAnyCheck = now;
     c.checks++;
     // The check never changes the answer: a failure is counted, not thrown.
-    try { compare(c, tail, await options.parse(full), rows, options.inputs); } catch { bump(c.mismatches, 'check-failed'); }
+    try { compare(c, tail, await parseFallback(), rows, options.inputs); } catch { bump(c.mismatches, 'check-failed'); }
   }
   return { ...tail, via: 'tail' };
 }
