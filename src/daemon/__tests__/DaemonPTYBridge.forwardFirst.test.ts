@@ -9,6 +9,7 @@ import type { IPty } from 'node-pty';
 import { DaemonPTYBridge } from '../DaemonPTYBridge';
 import { PromptEventLog } from '../PromptEventLog';
 import { RingBuffer } from '../RingBuffer';
+import { OutputInterpreter } from '../OutputInterpreter';
 import type { AgentSignal } from '../../shared/hooks/signal-types';
 
 const BIG = 'x'.repeat(3000); // over ActivityMonitor's 2 KB active threshold
@@ -115,6 +116,30 @@ describe('DaemonPTYBridge: bytes first, analysis after, in order', () => {
       expect(trusted()).toBe('codex');
     });
 
+    it('a probe observed before a shell return still waiting for analysis does not seed', () => {
+      vi.setSystemTime(T0 + 10);
+      pty.feed(SHELL_RETURN);
+      bridge.noteAgentProcess({ slug: 'codex', alive: true, observedAt: T0 + 5 });
+      settle();
+      expect(trusted()).toBeNull();
+    });
+
+    it('a key typed after a burst on a settled pane does not hide the burst it followed', () => {
+      bridge.noteAgentStatus('waiting', true);
+      vi.advanceTimersByTime(6100); // past the settle cool-down and the input/resize guards
+      pty.feed(BIG);
+      bridge.noteInput('a');
+      settle();
+      expect(events.filter(([n]) => n === 'active')).toHaveLength(1);
+    });
+
+    it('typing after a prompt mark still waiting for analysis leaves the prompt not empty', () => {
+      pty.feed('\x1b]133;B\x07');
+      bridge.noteInput('draft');
+      settle();
+      expect(bridge.isEmptyShellPrompt()).toBe(false);
+    });
+
     it('a probe observed after a shell return, read later, still seeds', () => {
       pty.feed(SHELL_RETURN);
       vi.setSystemTime(T0 + 50);
@@ -211,6 +236,8 @@ describe('DaemonPTYBridge: bytes first, analysis after, in order', () => {
 
   // 8. A reader called from inside the analysis does not run the queue again.
   it('listeners that read the bridge mid-analysis see each chunk once, in order', () => {
+    const failures = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const interpreted = vi.spyOn(OutputInterpreter.prototype, 'feed');
     const seen: string[] = [];
     bridge.on('prompt', (e: { event: { type: string } }) => {
       seen.push(e.event.type);
@@ -223,6 +250,10 @@ describe('DaemonPTYBridge: bytes first, analysis after, in order', () => {
     pty.feed('\x1b]133;C\x07');
     settle();
     expect(seen).toEqual(['prompt_start', 'prompt_end', 'command_start']);
+    expect(failures).not.toHaveBeenCalled();
+    expect(interpreted).toHaveBeenCalledTimes(3);
+    failures.mockRestore();
+    interpreted.mockRestore();
     expect(log.snapshot().map((e) => e.type)).toEqual(['prompt_start', 'prompt_end', 'command_start']);
   });
 
