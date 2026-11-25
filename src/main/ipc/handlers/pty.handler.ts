@@ -1083,6 +1083,14 @@ export function registerPTYHandlers(
         throw err;
       }
       options = staged.options;
+      // A quota switch on a plain WSL pane picked its account by the readings
+      // of its home at the place this run last saw the distro start: the pane
+      // spawns there (-d/-u), not as whoever the distro starts as now, so it
+      // runs on the home that was evaluated. No switch, it starts as before.
+      const switchTarget = namedAccount === undefined && options?.accountId !== undefined
+        && isWslShell(shell) && !knownTarget && !trustedRecovery && !poolTarget && createPlace?.wsl
+        ? createPlace.wsl
+        : undefined;
       const paneFence = paneFenceOf(options);
       // The account this create names for itself, resolved by main; an
       // unknown one refuses the create. Its folder goes into the pane env, as
@@ -1293,7 +1301,7 @@ export function registerPTYHandlers(
           cmd: shell,
           ...(wslArgs ? { args: wslArgs } : {}),
           cwd: effectiveCwd,
-          wslTarget: wslFromTarget ?? trustedRecovery?.wslTarget ?? poolTarget,
+          wslTarget: wslFromTarget ?? trustedRecovery?.wslTarget ?? poolTarget ?? switchTarget,
           cols: options?.cols || 80,
           rows: options?.rows || 24,
           env: resolvedEnv,
@@ -1305,7 +1313,7 @@ export function registerPTYHandlers(
 
         // Where a plain WSL pane starts: the place the gate reads for the next plain launch.
         const createdTarget = (result as { wslTarget?: unknown })?.wslTarget;
-        if (isWslShell(shell) && !wslFromTarget && !trustedRecovery && !poolTarget && validWslTarget(createdTarget)) {
+        if (isWslShell(shell) && !wslFromTarget && !trustedRecovery && !poolTarget && !switchTarget && validWslTarget(createdTarget)) {
           getWslAccountState().noteDefaultPlace(requestedDistro, createdTarget);
           // Kept so a restart can learn the place again from this same process.
           getWslAccountState().notePlainPane(sessionId, result as Record<string, unknown> | undefined, requestedDistro);

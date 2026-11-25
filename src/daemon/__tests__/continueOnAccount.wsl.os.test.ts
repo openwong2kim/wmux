@@ -129,6 +129,11 @@ describe('continueOnAccount in a WSL pane', () => {
     const open = deps({ turnClosed: () => false });
     expect(await run(open)).toEqual({ ok: false, code: 'turn_open' });
     expect(open.calls.filter((c) => c !== 'ready')).toEqual([]);
+    // A turn that opens while the folder-trust screen is read is not copied mid-write.
+    let screenRead = false;
+    const opening = deps({ turnClosed: () => !screenRead, atFolderTrust: async () => { screenRead = true; return false; } });
+    expect(await run(opening)).toEqual({ ok: false, code: 'turn_open' });
+    expect(opening.calls.filter((c) => c !== 'ready')).toEqual([]);
   });
 
   it('refuses before anything stops: an unreported Claude, no WSL support, a missing source', async () => {

@@ -34,7 +34,7 @@ function setup(over: { signedIn?: string[]; place?: typeof BOX; wsl?: boolean; h
   const untilMs = Date.now() + 3_600_000;
   const pick = (p: PreparedPool, d: PickDeps) => pickFromPool(p, { ...d, host: null, slots, workerMayRun: () => true, holdFor: () => (over.held ? { untilMs } : null) });
   const accountPick = guiFanOutAccountPick('ws-1', (k) => k !== 9, {
-    prepare, learn, log, notifyFallback, pick, wslState,
+    prepare, learn, log, notifyFallback, pick, wslState, callerAccountKey: () => 'acc-caller',
     paneShell: () => ({ wsl: over.wsl ?? true, distro: 'wmuxbox' }),
     defaultPlace: () => ('place' in over ? over.place : BOX),
   });
@@ -101,7 +101,15 @@ describe('a GUI fan-out\'s account pick', () => {
   it('a click is never refused by the pool: every native account held runs on the caller\'s account', async () => {
     const h = setup({ wsl: false, held: true });
     await h.accountPick.prepare({ index: 0 });
-    expect(h.accountPick.pick({ index: 0, cwd: 'C:\\wt' })).toBeNull();
+    // Booked on the caller's account, so it counts toward the per-account worker limit.
+    expect(h.accountPick.pick({ index: 0, cwd: 'C:\\wt' })).toEqual({ callerAccount: 'acc-caller' });
     expect(h.log).toHaveBeenCalledWith(expect.stringContaining('no pool account is free (held)'));
+  });
+
+  it('a native worker with no pool account that can run it is booked on the caller\'s account, and said once', async () => {
+    const h = setup({ wsl: false });
+    await h.accountPick.prepare({ index: 0 });
+    expect(h.accountPick.pick({ index: 0, cwd: 'C:\\wt' })).toEqual({ callerAccount: 'acc-caller' });
+    expect(h.notifyFallback).toHaveBeenCalledTimes(1);
   });
 });

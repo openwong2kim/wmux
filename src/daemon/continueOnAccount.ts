@@ -426,6 +426,8 @@ async function runWsl(
   if (!(await wsl.sourceReady(id, binding))) return { ok: false, code: 'unknown_session' };
   if (!deps.turnClosed(id)) return { ok: false, code: 'turn_open' };
   if (await deps.atFolderTrust?.(id)) return { ok: false, code: 'folder_trust' };
+  // A turn opened while the screen was read: its transcript is being written.
+  if (!deps.turnClosed(id)) return { ok: false, code: 'turn_open' };
   const copy = async (): Promise<'copied' | 'diverged' | 'same'> => {
     const out = await wsl.copy(id, { configDir, plan, sessionId: binding.sessionId });
     if (out.result === 'failed') throw new Error(out.reason);

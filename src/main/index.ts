@@ -2073,9 +2073,15 @@ registerUsageRpc(rpcRouter, {
     .map((a) => ({ id: a.id, configDir: a.configDir })),
   // A WSL pane's sample names its account home in the distro: resolved against
   // that pane's own env and user, as the daemon holds them.
-  isWslPane: (ptyId, configDir) => {
+  isWslPane: async (ptyId, configDir) => {
     const shell = getPtyShell(ptyId);
-    return shell !== undefined ? isWslShell(shell) : process.platform === 'win32' && !!configDir?.startsWith('/');
+    if (shell !== undefined) return isWslShell(shell);
+    if (process.platform !== 'win32') return false;
+    if (configDir?.startsWith('/')) return true;
+    // Not registered yet (a pane kept over a restart, before its reattach):
+    // the daemon's record says. Unknown, it takes the WSL path, which drops
+    // a sample it cannot place rather than read it as the Windows default.
+    try { return (await wslUsagePane(ptyId, true)) !== null; } catch { return true; }
   },
   wslPane: (ptyId, fresh) => wslUsagePane(ptyId, fresh),
   noteWslAccountSample: (accountId, place, update) => {

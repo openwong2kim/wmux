@@ -248,6 +248,22 @@ describe('statusline live-usage push', () => {
     }
   });
 
+  it('a second pane on the same config dir pushes its own first sample', async () => {
+    clearState();
+    writeToken();
+    const pipe = socketPathFor('panes');
+    const main = await fakeMain(pipe, { ok: true, applied: true });
+    try {
+      await run(input(30.5), pipe);
+      await waitFor(() => readStates().some((s) => s.ok));
+      await run(input(30.5), pipe, { WMUX_PTY_ID: 'pty-other' });
+      await waitFor(() => main.received.length === 2);
+      expect(main.received.map((r) => (r.params as { ptyId?: string }).ptyId)).toEqual(['pty-test', 'pty-other']);
+    } finally {
+      await main.close();
+    }
+  });
+
   it('an accepted sample is re-sent unchanged once the record is 10 minutes old', async () => {
     clearState();
     writeToken();

@@ -31,4 +31,18 @@ describe('a GUI fan-out and the account pool', () => {
     expect(ws).toBe('ws-1');
     expect([claude(0), claude(1)]).toEqual([true, false]);
   });
+
+  it('reads each pick\'s agent at the title the service kept, past an empty one it dropped', async () => {
+    setFanOutGuardsForTests(new FanOutGuards({ dir: trackedTempDir('wmux-fanout-gui-pool-'), countLiveTasks: () => 0, ledgerTaskOwner: () => null }));
+    guiFanOutAccountPick.mockClear();
+    const start = vi.fn(async (_req: FanOutRequest) => ({ ok: true, tasks: [] }));
+    const req = {
+      idempotencyKey: 'gui-pool-2', prompt: 'p', titles: ['', 'task'], repoPath: 'D:\\repo', agentCmd: 'claude',
+      agents: [{ agent: 'codex' }, { agent: 'claude' }], verifiedWorkspaceId: 'ws-1',
+    } as FanOutRequest;
+    await startGuiFanOut({ start } as unknown as FanOutService, req);
+    const [, claude] = guiFanOutAccountPick.mock.calls[0]!;
+    // The service's task 0 is the second title sent, a Claude one.
+    expect(claude(0)).toBe(true);
+  });
 });

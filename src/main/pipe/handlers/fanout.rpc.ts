@@ -1566,10 +1566,13 @@ export function registerFanOutRpc(
         /* the caps count what is known */
       }
       // A slow daemon (a reattach burst) may still be answering: when task
-      // panes start WSL and their place is not known yet, wait for it once
-      // more, so the reserve check below does not decide without it.
+      // panes start WSL and no usable home is known at their place yet (the
+      // place itself, or a home whose pane survived the restart), wait for it
+      // once more, so the reserve check below does not decide without it.
       const shell = paneShellNow();
-      if (learning && !learned && shell.wsl && wslDefaultPlace(shell.distro) === undefined) {
+      const place = shell.wsl ? wslDefaultPlace(shell.distro) : undefined;
+      const usableHome = !!place && !!pool && poolCandidates(pool, { place, ...(deps.wslState ? { wslState: deps.wslState } : {}) }).some((c) => c.verdict.usable);
+      if (learning && !learned && shell.wsl && !usableHome) {
         await withinMs(learning, START_PLACE_WAIT_MS);
       }
     }

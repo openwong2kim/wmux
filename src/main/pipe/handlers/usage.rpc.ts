@@ -31,8 +31,9 @@ export interface UsageRpcDeps {
   ingestAccount: (accountId: string, update: UsageUpdate) => boolean;
   log?: (line: string) => void;
   /** Whether the pane may run in WSL: its shell as main recorded it, or, for
-   *  a pane main has not seen yet, a Linux config dir on Windows. */
-  isWslPane?: (ptyId: string, configDir: string | null) => boolean;
+   *  a pane main has not seen yet on Windows, a Linux config dir or the
+   *  daemon's record of the pane. */
+  isWslPane?: (ptyId: string, configDir: string | null) => boolean | Promise<boolean>;
   /** A WSL pane's distro, user and env, from the daemon; null when unknown.
    *  `fresh`: past any kept lookup. */
   wslPane?: (ptyId: string, fresh: boolean) => Promise<WslUsagePane | null>;
@@ -195,7 +196,7 @@ export function registerUsageRpc(router: RpcRouter, deps: UsageRpcDeps): void {
     // A WSL pane's config dir is a Linux one; unset, it is the distro's own
     // ~/.claude, a sign-in of its own and not the Windows default profile,
     // whose reading holds unattended starts (the usage reserve).
-    if (parsed.ptyId && deps.isWslPane?.(parsed.ptyId, parsed.configDir)) {
+    if (parsed.ptyId && await deps.isWslPane?.(parsed.ptyId, parsed.configDir)) {
       return ingestWslSample({ configDir: parsed.configDir, ptyId: parsed.ptyId, update: parsed.update }, deps);
     }
     // Per pane, whatever account it is: a pane held at a usage limit with no

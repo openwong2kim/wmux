@@ -253,6 +253,19 @@ describe('usage.rateLimits from a WSL pane', () => {
     expect(isWslPane).toHaveBeenCalledWith('pty-1', HOME);
   });
 
+  it('waits for a pane judged by the daemon\'s record: a WSL one is never read as the Windows default, a native one is', async () => {
+    const wsl = setup({ target: TARGET, env: ENV });
+    wsl.deps.isWslPane = async () => true;
+    await expect(wsl.call(sample())).resolves.toEqual({ ok: false, reason: 'unknown-account' });
+    expect(wsl.deps.ingestDefault).not.toHaveBeenCalled();
+    const native = setup(null);
+    native.deps.defaultConfigDir = () => HOME;
+    native.deps.isWslPane = async () => false;
+    await native.call(sample());
+    expect(native.deps.wslPane).not.toHaveBeenCalled();
+    expect(native.deps.ingestDefault).toHaveBeenCalledTimes(1);
+  });
+
   it('an unset config dir is the distro\'s own sign-in: no account and not the Windows default, only the pane\'s window', async () => {
     const { call, deps } = setup({ target: TARGET, env: ENV });
     await expect(call(sample())).resolves.toEqual({ ok: false, reason: 'unknown-account' });

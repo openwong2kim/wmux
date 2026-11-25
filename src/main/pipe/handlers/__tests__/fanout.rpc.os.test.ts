@@ -350,8 +350,11 @@ function setup(opts?: {
       taskPaneShell: () => { const p = opts.realPool!.paneShell; return typeof p === 'function' ? p() : p; },
       wslDefaultPlace: (d: string | null) => (opts.realPool!.starts ? opts.realPool!.starts.defaultPlace(d) : opts.realPool!.place),
       ...(opts.realPool.starts ? {
-        learnWslStartPlaces: (s: unknown[]) => opts.realPool!.starts!.learnFromLiveSessions(s as Array<Record<string, unknown>>),
-        wslStartPlacesPending: () => opts.realPool!.starts!.hasUnlearnedPlainPanes(),
+        learnWslStartPlaces: (s: unknown[]) => opts.realPool!.starts!.learnFromLiveSessions(
+          s as Array<Record<string, unknown>>,
+          (opts.realPool!.pool.wslMembers ?? []).map((m) => ({ id: m.id, configDir: m.configDir ?? '' })),
+        ),
+        wslStartPlacesPending: () => opts.realPool!.starts!.liveSessionsPending(),
       } : {}),
     } : {}),
     ...(opts?.remoteFanout ? { remoteFanout: opts.remoteFanout } : {}),
@@ -1874,17 +1877,41 @@ describe('task.fanout.start — usage reserve with the account pool', () => {
     }
 
     it('learns after a restart even before the WSL default shell is pushed, so a later push still picks homes', async () => {
-      let shell = { wsl: false, distro: null as string | null };
-      const { h, starts } = await restartRig({ shell: () => shell });
-      // The push lands while the fan-out is under way, before its gate.
-      const started = h.call(goodParams());
-      shell = { wsl: true, distro: null };
-      expect((await started).status).toBe('accepted');
+      // The WSL default shell is pushed only once the place was learned: the
+      // learning itself ran while the shell still read native.
+      let learnedBy: WslAccountState | null = null;
+      const { h, starts } = await restartRig({ shell: () => ({ wsl: learnedBy?.defaultPlace(null) !== undefined, distro: null }) });
+      learnedBy = starts;
+      expect(starts.defaultPlace(null)).toBeUndefined();
+      expect((await h.call(goodParams())).status).toBe('accepted');
       expect(starts.defaultPlace(null)).toEqual(UBUNTU);
       await h.flush();
       await h.flush();
       expect(h.request().accountPick?.pick({ index: 0, cwd: 'C:\\wmux\\worktrees\\t0' })).toEqual({ accountId: 'acc-a', wslPlace: UBUNTU });
     });
+
+    it('with the place known, waits once more for a slow daemon whose surviving pane makes a home usable', async () => {
+      const placesFile = nodePath.join(trackedTempDir('wmux-wsl-restart-'), 'wsl-default-places.json');
+      // A named distro's start place is kept across the restart; no home has evidence in this run.
+      new WslAccountState(() => 0, placesFile).noteDefaultPlace('Ubuntu', UBUNTU);
+      const homes = new WslAccountState(() => 0, placesFile);
+      expect(homes.defaultPlace('Ubuntu')).toEqual(UBUNTU);
+      const slots = new WorkerSlots(nodePath.join(trackedTempDir('wmux-acc-'), 'factory', WORKER_SLOTS_FILENAME), () => [], () => undefined);
+      slots.load();
+      const h = setup({
+        // The caller's own account is held: only a usable home lets it through.
+        reserve: () => ({ account: 'default', untilMs: Date.now() + 60 * 60_000 }),
+        daemonSessions: [{
+          id: 'daemon-b', state: 'attached', cmd: 'wsl.exe', liveAgent: 'claude', wslTarget: UBUNTU,
+          env: { CLAUDE_CONFIG_DIR: pool.wslMembers![1].configDir!, WMUX_WSL_ACCOUNT_KEYS: 'CLAUDE_CONFIG_DIR' },
+        }],
+        daemonDelayMs: 2_500,
+        realPool: { pool, wslState: homes, slots, holdFor: () => null, paneShell: { wsl: true, distro: 'Ubuntu' }, starts: homes },
+        approval: { approved: true, outcome: 'approved' },
+      });
+      expect((await h.call(goodParams())).status).toBe('accepted');
+      expect(homes.get('acc-b', UBUNTU)?.live).toBe(true);
+    }, 15_000);
 
     it('waits once more for a slow daemon, so the reserve check sees the learned place', async () => {
       const { h, starts } = await restartRig({ shell: () => ({ wsl: true, distro: null }), daemonDelayMs: 2_500 });

@@ -299,8 +299,10 @@ function stateDir(home) {
   return join(home, `.wmux${dataSuffix()}`, 'statusline-push');
 }
 
+// Per pane too: two panes on one config dir each push their own first sample
+// (main keeps a pane's own window, paneUsageLimits.ts).
 function statePathFor(home, pipes, configDir) {
-  const key = createHash('sha1').update(`${pipes[0]}\0${configDir ?? ''}`).digest('hex').slice(0, 16);
+  const key = createHash('sha1').update(`${pipes[0]}\0${configDir ?? ''}\0${process.env.WMUX_PTY_ID || ''}`).digest('hex').slice(0, 16);
   return join(stateDir(home), `${key}.json`);
 }
 

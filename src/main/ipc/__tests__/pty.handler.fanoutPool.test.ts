@@ -150,6 +150,9 @@ describe('a pool worker pane create (daemon mode)', () => {
     expect(slots.launchOf('t1')).toMatchObject({ accountId: 'acc-a', wslPlace: place });
     // Picked for another user's home: released, as without the pool.
     const other = await createTaskPane('acc-a', wsl, { distribution: 'Ubuntu', user: 'root' });
+    // The pane still opens: released, not refused.
+    expect(other.error).toBeUndefined();
+    expect(other.params).toBeDefined();
     expect(other.params?.env?.CLAUDE_CONFIG_DIR).toBeUndefined();
     expect(other.params?.wslTarget).toBeUndefined();
     expect(slots.launchOf('t1')).not.toHaveProperty('accountId');

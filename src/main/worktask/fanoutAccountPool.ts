@@ -667,9 +667,15 @@ const GUI_POOL_FRESH_MS = 10_000;
 export function guiFanOutAccountPick(
   callerWorkspaceId: string,
   taskRunsClaude: (index: number) => boolean,
-  deps: PoolTaskDeps & { prepare?: (workspaceId: string) => Promise<PreparedPool | null>; learn?: () => Promise<void>; log?: (line: string) => void; notifyFallback?: () => void } = {},
+  deps: PoolTaskDeps & { prepare?: (workspaceId: string) => Promise<PreparedPool | null>; learn?: () => Promise<void>; log?: (line: string) => void; notifyFallback?: () => void; callerAccountKey?: (workspaceId: string) => string } = {},
 ): AccountPick {
   const log = deps.log ?? ((line: string) => console.log(line));
+  // A worker that falls to the caller's account with no pool account free is
+  // booked there, as on the wire, so it counts toward the per-account worker
+  // limit of later picks. Never refused: a person started it.
+  const onCaller = (): { callerAccount: string } => ({
+    callerAccount: (deps.callerAccountKey ?? ((ws: string) => getAccountStore().getBinding(ws, 'claude') ?? POOL_DEFAULT_ACCOUNT))(callerWorkspaceId),
+  });
   const fellBack = deps.notifyFallback ?? (() => notePoolCallerFallback());
   let pool: PreparedPool | null = null;
   let readAt = 0;
@@ -698,7 +704,7 @@ export function guiFanOutAccountPick(
       }
       if (poolFallsBackToCaller(d.pick)) fellBack();
       else log(`[fanout-pool] task ${task.index + 1} runs on the caller's account: no pool account is free (${d.pick.reason})`);
-      return null;
+      return onCaller();
     },
   };
 }

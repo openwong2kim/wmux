@@ -37,4 +37,12 @@ describe('pty.handler PTY_CREATE — account quota before wmux tools', () => {
     expect(lookup).toBeLessThan(daemon.indexOf('staged = await stageCreate('));
     expect(daemon.indexOf('const knownTarget = ')).toBeLessThan(daemon.indexOf('staged = await stageCreate('));
   });
+
+  it('spawns a plain WSL pane a quota switch moved at the place whose home it evaluated, and learns no start place from it', () => {
+    const daemon = source.slice(source.indexOf('ipcMain.handle(IPC.PTY_CREATE'));
+    const target = daemon.indexOf('const switchTarget = namedAccount === undefined && options?.accountId !== undefined');
+    expect(target).toBeGreaterThan(daemon.indexOf('options = staged.options;'));
+    expect(daemon).toContain('wslTarget: wslFromTarget ?? trustedRecovery?.wslTarget ?? poolTarget ?? switchTarget,');
+    expect(daemon).toContain('!poolTarget && !switchTarget && validWslTarget(createdTarget)');
+  });
 });

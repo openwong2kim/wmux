@@ -322,7 +322,10 @@ export async function startGuiFanOut(service: FanOutService, req: FanOutRequest)
   }
   // The account pool picks each Claude worker's account, as on the wire
   // (it reads nothing while the pool is off).
-  const taskAgent = (k: number): string => req.agents?.[k]?.agent ?? launcherStem(req.agentCmd || 'claude');
+  // The service drops empty titles and numbers the rest from 0, so a pick's
+  // index names the k-th kept title, not the k-th one sent.
+  const kept = req.titles.flatMap((t, k) => (typeof t === 'string' && t.trim().length > 0 ? [k] : []));
+  const taskAgent = (k: number): string => req.agents?.[kept[k] ?? k]?.agent ?? launcherStem(req.agentCmd || 'claude');
   const accountPick = req.accountPick ?? guiFanOutAccountPick(req.verifiedWorkspaceId, (k) => agentRow(taskAgent(k))?.usageReserve === true);
   const result = await service.start({ ...req, workerPermissionMode: workerMode, caller: { kind: 'gui' }, accountPick });
   try {
