@@ -20,6 +20,7 @@ import {
   type ChatScreenRows,
 } from './transcript/deliverChatPrompt';
 import { screenBlocksChatSend } from './transcript/chatScreenGate';
+import { UNKNOWN_CELL } from './sessionTextReplay';
 
 export type DeliveryPhase = 'paste' | 'enter';
 
@@ -37,6 +38,12 @@ export interface DeliveryFrame {
   rows: ChatScreenRows;
   /** Index into `rows` of the cursor's row, or -1 when unknown. */
   cursorRow: number;
+  /**
+   * The same rows with UNKNOWN_CELL for each cell the read could not see (no
+   * byte left in the ring or its screen checkpoint wrote it), where `rows`
+   * has a blank. Absent when there is none.
+   */
+  unknown?: readonly string[];
 }
 
 export interface ComposerRead {
@@ -150,7 +157,26 @@ export function hasPlainPrompt(slug: AgentSlug): slug is PlainPromptAgent {
 
 export function readComposer(frame: DeliveryFrame | null, slug: PlainPromptAgent, phase: DeliveryPhase): ComposerRead {
   if (!frame) return { verdict: 'unknown' };
-  return PLAIN_PROMPT[slug](frame.rows, phase);
+  const read = PLAIN_PROMPT[slug](frame.rows, phase);
+  // A blank the read could not see may be a draft's text or a dialog's row: no
+  // evidence of a plain prompt, from Claude's top rule down.
+  if (slug === 'claude' && read.verdict !== 'mode' && read.span && frame.unknown?.slice(Math.max(0, read.span.from - 1)).some((row) => row.includes(UNKNOWN_CELL))) {
+    return { verdict: 'unknown' };
+  }
+  return read;
+}
+
+/**
+ * A delivery frame from a screen read whose unknown cells carry UNKNOWN_CELL:
+ * the rows (and their undimmed copies) with those cells blank, as every
+ * reader sees them, and the marked rows under `unknown` when there is one.
+ */
+export function deliveryFrameOf(read: readonly { text: string; undimmed?: string }[], rowsBelowCursor: number): DeliveryFrame {
+  const blank = (text: string): string => (text.includes(UNKNOWN_CELL) ? text.split(UNKNOWN_CELL).join(' ').trimEnd() : text);
+  const marked = read.map((row) => row.text);
+  const rows = Object.assign(marked.map(blank), { undimmed: read.map((row) => blank(row.undimmed ?? row.text)) });
+  const unknown = marked.some((row) => row.includes(UNKNOWN_CELL)) ? { unknown: marked } : {};
+  return { rows, cursorRow: rows.length - 1 - rowsBelowCursor, ...unknown };
 }
 
 /** The cursor sits on the composer's own rows: a frame being drawn now, not a leftover. */

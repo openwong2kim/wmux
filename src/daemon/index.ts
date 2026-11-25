@@ -208,6 +208,7 @@ import { ProcessMonitor } from './ProcessMonitor';
 import { processHoldsForeground } from './agentForeground';
 import { SHOWN_TEXT_MAX, type DeliveryCheck, type DeliveryPresence } from '../shared/deliveryPresence';
 import { deliveryPresence, promptGrant, type DeliveryPresenceDeps, type PromptAuthor } from './deliveryPresence';
+import { deliveryFrameOf } from './deliveryComposer';
 import { AgentProcessTracker, agentProcessExitEvent, type LiveCheck } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
 import { liveRecoveryHint, markCwdMissing, namedAgentAlive, recordedTurnStillOpen, recordWasMidTurn, screenShowsLiveAgent, sightedRecoveredAgent } from './recoveryHint';
@@ -6501,10 +6502,9 @@ function registerRpcHandlers(
     agentPid: (sid) => agentProcessTracker.pidFor(sid),
     holdsForeground: (pid) => processHoldsForeground(pid),
     frame: async (sid) => {
-      const outcome = await queuedScreenText(sessionManager, sid, true);
+      const outcome = await queuedScreenText(sessionManager, sid, true, { keepUnknown: true });
       if (!outcome?.ok) return null;
-      const rows = Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) });
-      return { rows, cursorRow: rows.length - 1 - outcome.rowsBelowCursor };
+      return deliveryFrameOf(outcome.rows, outcome.rowsBelowCursor);
     },
     platform: process.platform,
     log: (line) => log('info', line),

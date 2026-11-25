@@ -2,7 +2,8 @@ import type { RingBuffer } from './RingBuffer';
 import type { OutputModeTracker } from './util/outputModeTracker';
 import { enqueueSnapshotJob, generateTextSnapshotUnqueued, type TextSnapshotOutcome } from './HeadlessSnapshot';
 import { snapshotRingTextUnqueued } from './nativeRingSnapshot';
-import { readSessionTextReplay } from './sessionTextReplay';
+import { UNKNOWN_CELL } from './sessionTextReplay';
+import { screenReplay } from './screenCheckpoint';
 import { fencedRead, identityTag, noteScreenParse } from './screenReadCache';
 import { guardedTailRead, type TailInputs, type TailOutcome, type TailSite } from './guardedTailRead';
 
@@ -10,7 +11,7 @@ import { guardedTailRead, type TailInputs, type TailOutcome, type TailSite } fro
 export interface TextReadSession {
   meta: { cols: number; rows: number };
   ringBuffer: RingBuffer;
-  bridge: { readonly outputModes: Pick<OutputModeTracker, 'preamble'> | null };
+  bridge: { readonly outputModes: Pick<OutputModeTracker, 'preamble' | 'altScreen'> | null };
 }
 
 /** The session manager's lookup (DaemonSessionManager.getSession). */
@@ -108,15 +109,23 @@ export function queuedTextSnapshot(sessions: TextReadSessions, sessionId: string
  * pollers that call this many times while the queue is busy share one parse
  * per pane instead of each queueing a whole-ring parse of its own.
  */
-export function queuedScreenText(sessions: TextReadSessions, sessionId: string, undimmed = false): Promise<TextSnapshotOutcome | null> {
-  return queuedSessionRead(sessions, sessionId, `screen:${undimmed ? 'undimmed' : 'plain'}`, (managed) =>
-    generateTextSnapshotUnqueued({
-      cols: managed.meta.cols ?? 80,
-      rows: managed.meta.rows ?? 24,
-      scrollback: 0,
-      initial: readSessionTextReplay(managed.ringBuffer, managed.bridge.outputModes),
-      ...(undimmed ? { undimmed: true } : {}),
-    }));
+export function queuedScreenText(
+  sessions: TextReadSessions,
+  sessionId: string,
+  undimmed = false,
+  opts: { keepUnknown?: boolean } = {},
+): Promise<TextSnapshotOutcome | null> {
+  const kind = `screen:${undimmed ? 'undimmed' : 'plain'}${opts.keepUnknown ? ':unknown' : ''}`;
+  return queuedSessionRead(sessions, sessionId, kind, async (managed) => {
+    const size = { cols: managed.meta.cols ?? 80, rows: managed.meta.rows ?? 24 };
+    // From the ring's screen checkpoint when it has one (screenCheckpoint.ts).
+    const read = screenReplay(managed.ringBuffer, managed.bridge.outputModes, size, { markUnknown: opts.keepUnknown });
+    const outcome = await generateTextSnapshotUnqueued({ ...size, scrollback: 0, initial: read.replay, ...(undimmed ? { undimmed: true } : {}) });
+    if (!outcome.ok || !read.marked || opts.keepUnknown) return outcome;
+    // Every other reader sees an unknown cell as it always did: a blank.
+    const blank = (text: string): string => (text.includes(UNKNOWN_CELL) ? text.split(UNKNOWN_CELL).join(' ').trimEnd() : text);
+    return { ...outcome, rows: outcome.rows.map((row) => ({ ...row, text: blank(row.text), ...(row.undimmed !== undefined ? { undimmed: blank(row.undimmed) } : {}) })) };
+  });
 }
 
 /**
