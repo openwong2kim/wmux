@@ -91,7 +91,9 @@ describe.runIf(available)('the native Linux process table matches ps', () => {
       return zombie > 0
         && ps(['-o', 'stat=', '-p', String(stopped.pid)]).trim().startsWith('T')
         && ps(['-o', 'args=', '-p', String(raw.pid)]).includes('raw')
-        && ps(['-o', 'args=', '-p', String(odd.pid)]).includes('an argument with spaces');
+        && ps(['-o', 'args=', '-p', String(odd.pid)]).includes('an argument with spaces')
+        // A node that is still starting reads as running ('R'), and as sleeping by the next read: its state is compared below.
+        && ps(['-o', 'stat=', '-p', String(odd.pid)]).trim().startsWith('S');
     }, 10_000, 'the children');
 
     const bootBefore = btime();
