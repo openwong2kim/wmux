@@ -31,7 +31,7 @@ const SHAPE = {
   agent: z.string().max(64).optional().describe('An agent the other PC allows, e.g. claude or codex.'),
   root: z.string().max(64).optional().describe('A folder id the other PC allows (remote_spawn with no pc lists them).'),
   sub: z.string().max(512).optional().describe('A relative path under that folder.'),
-  base: z.string().max(200).optional().describe('A branch of that PC\'s origin to start from (default: its origin\'s default branch). If that PC cannot fetch it, the agent starts from its HEAD and the request\'s baseNote says why.'),
+  base: z.string().min(1).max(200).optional().describe('A branch of that PC\'s origin to start from (default: its origin\'s default branch). If that PC cannot fetch it, the agent starts from its HEAD and the request\'s baseNote says why.'),
   prompt: z.string().optional().describe('The first instruction.'),
   expires_in_hours: z.number().int().min(1).max(72).optional().describe('How long it may wait for that PC (default 24).'),
   spawn_id: z.string().max(64).optional().describe('Read this request (never asks). With neither pc nor spawn_id, lists every request and what each PC allows.'),

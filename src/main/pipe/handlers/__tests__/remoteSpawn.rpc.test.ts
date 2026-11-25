@@ -82,6 +82,14 @@ describe('a2a.remote.spawn', () => {
     expect((await call('a2a.remote.spawn', { ...ask, prompt: '  ' })).error?.code).toBe('INVALID_ARGUMENT');
     expect(daemon.a2aSpawnAsk).not.toHaveBeenCalled();
   });
+
+  it('a base that is given names a branch: an empty or blank one is refused, never sent as "the default branch"', async () => {
+    for (const base of ['', '   ', 7]) expect((await call('a2a.remote.spawn', { ...ask, base })).error?.code).toBe('INVALID_ARGUMENT');
+    expect(daemon.a2aSpawnAsk).not.toHaveBeenCalled();
+    // A named one is passed on as given (the daemon checks the name).
+    expect(await call('a2a.remote.spawn', { ...ask, base: 'release/2.0' })).toEqual({ ok: true });
+    expect(daemon.a2aSpawnAsk).toHaveBeenCalledWith(expect.objectContaining({ base: 'release/2.0' }));
+  });
 });
 
 describe('a2a.remote.spawnStatus', () => {
