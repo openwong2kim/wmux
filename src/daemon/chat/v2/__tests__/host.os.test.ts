@@ -172,10 +172,13 @@ describe('chat v2 host', () => {
     const res = await sent(r);
     expect(res).toEqual({ ok: true, clientMessageId: 'msg-00001', seq: 3 });
     expect(r.host.statusForPane(PANE)).toBe('running');
+    // How the newest turn ended rides on the binding, and only once it has ended.
+    expect(r.host.bindingForPane(PANE)!.lastOutcome).toBeUndefined();
     r.fake().out({ type: 'stream_event', session_id: 's', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hi there' } } });
     r.fake().result();
     await until(() => r.host.statusForPane(PANE) === 'idle');
     await tick(150);
+    expect(r.host.bindingForPane(PANE)!.lastOutcome).toBe('completed');
     const events = r.pushes.flatMap((p) => p.push.events);
     expect(events.map((e) => e.seq)).toEqual(events.map((_, i) => i + 1));
     const last = r.pushes[r.pushes.length - 1].push;

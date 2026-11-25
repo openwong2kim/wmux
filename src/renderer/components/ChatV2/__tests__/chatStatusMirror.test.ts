@@ -76,6 +76,16 @@ afterEach(() => {
 });
 
 describe('chat status mirror', () => {
+  it('a turn that failed reads as an error from the binding alone (no view mounted), until the next turn runs', () => {
+    setKnownBinding(PTY, binding({ status: 'running' }));
+    setKnownBinding(PTY, binding({ status: 'idle', lastOutcome: 'failed' }));
+    expect(state().surfaceAgent[PTY]?.status).toBe('error');
+    setKnownBinding(PTY, binding({ status: 'running', seq: 2 }));
+    expect(state().surfaceAgent[PTY]?.status).toBe('running');
+    setKnownBinding(PTY, binding({ status: 'idle', seq: 3, lastOutcome: 'completed' }));
+    expect(state().surfaceAgent[PTY]?.status).toBe('complete');
+  });
+
   it('a waiting card makes the pane needs-you everywhere, and answering clears it', async () => {
     const host: MockHost = createMockHost();
     await host.call('create', { paneId: PTY, agent: 'claude', mode: 'default' });

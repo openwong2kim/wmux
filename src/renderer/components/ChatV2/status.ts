@@ -98,6 +98,8 @@ function apply(ptyId: string): void {
   // A turn that ran (or waited on the person) and is over reads as finished,
   // like a terminal agent's Stop, until the next turn.
   if (status === 'idle' && (prev?.status === 'running' || prev?.status === 'awaiting_input' || prev?.status === 'complete')) status = 'complete';
+  // A finished turn that failed reads as an error, not done (the host drops the outcome when the next turn starts).
+  if (held.lastOutcome === 'failed' && (status === 'complete' || (status === 'idle' && prev?.status === 'error'))) status = 'error';
   const name = chatAgentName(held.agent);
   const slug = agentRow(held.agent)?.slug;
   if (prev && prev.agent === held.agent && prev.status === status) {
@@ -141,7 +143,8 @@ function refreshUncovered(): void {
       if (!result.ok || isChatV2Covering(ptyId)) return;
       const current = knownBinding(ptyId);
       const next = result.binding;
-      if (current && next && current.chatSessionId === next.chatSessionId && current.status === next.status && current.error?.code === next.error?.code) return;
+      if (current && next && current.chatSessionId === next.chatSessionId && current.status === next.status && current.error?.code === next.error?.code
+        && current.lastOutcome === next.lastOutcome) return;
       setKnownBinding(ptyId, next);
     }, () => undefined);
   }
