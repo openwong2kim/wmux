@@ -865,6 +865,28 @@ describe('ChatV2View', () => {
     expect(queued()).toEqual([]);
   });
 
+  it('keeps holding the queue through a remount during a model change, and delivers it once a refusal settles it', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-holdmove' });
+    await mock.call('create', { paneId: 'daemon-holdmove', agent: 'claude', mode: 'default' });
+    let release: (() => void) | undefined;
+    intercept('configure', () => new Promise<void>((resolve) => { release = resolve; }).then(() => chatV2Error('invalid-params', 'The agent does not take that model or effort.')));
+    await act(async () => root.render(<ChatV2View paneId="daemon-holdmove" active onTerminal={() => undefined} />));
+    await flush();
+    const effort = host.querySelector('[data-chatv2-effort] select') as HTMLSelectElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(effort, 'high');
+      effort.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await type('after the change');
+    await clickSend();
+    await remount('daemon-holdmove');
+    expect(sent()).toEqual([]);
+    expect(queued()).toEqual(['after the change']);
+    await act(async () => { release?.(); });
+    await flush();
+    expect(sent().map((p) => p.text)).toEqual(['after the change']);
+  });
+
   it('attaches any file to the first message, as a file chip, and sends it with the new chat', async () => {
     mock.stageAttachment = async (file: string) => ({ ok: true, path: file, name: file.split('/').pop() ?? file, kind: 'file', size: 3 });
     await act(async () => root.render(<ChatV2View paneId="daemon-first" active onTerminal={() => undefined} />));

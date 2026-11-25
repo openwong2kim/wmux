@@ -56,7 +56,7 @@
 .wmux-chatv2-slash-desc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-sub); font-size: 12px; }
 
 /* Queued messages: compact rows in the dock above the composer, not sent bubbles. */
-.wmux-chatv2-queue { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.wmux-chatv2-queue { display: flex; flex-direction: column; gap: 2px; max-height: min(160px, 30vh); overflow-y: auto; margin: 0; padding: 0; list-style: none; }
 .wmux-chatv2-queued { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 2px 6px 2px 12px; border-radius: 10px; background: var(--selection); font-size: 13px; }
 .wmux-chatv2-queued[data-sending] { opacity: .6; }
 .wmux-chatv2-queued-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-main); }

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
 import { CHATV2_AGENT_CAPS, type ChatV2Agent, type ChatV2RunMode } from '../../../shared/chatv2/ipc';
 import { Composer, dequeueMessage, enqueueMessage, moveDraft, QueuedMessages, requeueToDraft, restoreToDraft, setDelivering, useDeliveringId, useDraft, useQueuedMessages } from './Composer';
@@ -18,6 +18,19 @@ import { useTranscriptWindow } from '../shared/useTranscriptWindow';
 import { ArrowIcon } from './ArrowIcon';
 
 const NEAR_BOTTOM_PX = 48;
+
+// Chats with a model or effort change on its way, by draft key. Outside the
+// view, so a view that remounts meanwhile still holds its queue until it settles.
+const configuringKeys = new Set<string>();
+const configuringListeners = new Set<() => void>();
+function setConfiguringKey(key: string, on: boolean): void {
+  if (on === configuringKeys.has(key)) return;
+  if (on) configuringKeys.add(key); else configuringKeys.delete(key);
+  for (const listener of [...configuringListeners]) listener();
+}
+function useConfiguring(key: string): boolean {
+  return useSyncExternalStore((listener) => { configuringListeners.add(listener); return () => { configuringListeners.delete(listener); }; }, () => configuringKeys.has(key));
+}
 
 /** Whether `row` shows the block `blockId` (a group, as one of its members). */
 const holdsBlock = (row: TranscriptRow, blockId: string): boolean =>
@@ -91,7 +104,7 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   const [newModel, setNewModel] = useState('');
   const [newEffort, setNewEffort] = useState('');
   // A model or effort change on its way to the agent.
-  const [configuring, setConfiguring] = useState(false);
+  const configuring = useConfiguring(draftKey);
   const [newMode, setNewMode] = useState<ChatV2RunMode>('default');
   const [newAgent, setNewAgent] = useState<ChatV2Agent>('claude');
   // An agent without the Claude models or a bypass mode (Codex) starts on its own default and always asks.
@@ -329,8 +342,9 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   // Model and effort change between turns; the daemon applies them live or restarts on the same conversation.
   const tunable = !configuring && !running && !handedOff && (binding.status === 'idle' || binding.status === 'stopped');
   const configure = async (change: { model?: string; effort?: string }) => {
-    setConfiguring(true);
-    try { await controller.configure(change); } finally { setConfiguring(false); }
+    const key = draftKey;
+    setConfiguringKey(key, true);
+    try { await controller.configure(change); } finally { setConfiguringKey(key, false); }
   };
 
   return (

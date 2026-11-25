@@ -109,6 +109,8 @@ export class CodexDriver implements ChatV2Driver {
   // The thread's model and effort as last set ('' = Codex's default).
   private model = '';
   private effort = '';
+  /** The thread has turns: a resume then keeps its last model and effort, so there is no way back to a default. */
+  private hasTurns = false;
   private stopping = false;
   private exitedOnce = false;
   private stderrTail = '';
@@ -187,14 +189,17 @@ export class CodexDriver implements ChatV2Driver {
         throw new Error('This Codex conversation is still running somewhere else.');
       }
       this.threadId = threadId;
+      this.hasTurns = turns.length > 0;
       this.model = spec.model;
       // Effort has no start option: the thread's settings carry it (what chat 1's settings use too).
-      // Best effort: a refused level leaves Codex on its own, and the chat still starts.
+      // A refused level leaves Codex on its own, and the chat still starts. No
+      // answer (a timeout, a failed write, an exit) fails the start: the level is unknown.
       if (spec.effort) {
         try {
           await this.call('thread/settings/update', { threadId, effort: spec.effort });
           this.effort = spec.effort;
-        } catch {
+        } catch (error) {
+          if (!(error instanceof CodexRefusal)) throw error;
           refusedEffort = true;
         }
       }
@@ -225,6 +230,7 @@ export class CodexDriver implements ChatV2Driver {
     try {
       const started = asRecord(asRecord(await this.call('turn/start', { threadId: this.threadId, input }))?.turn);
       this.noteTurn(str(started?.id));
+      this.hasTurns = true;
       if (this.activeTurn && !this.turnId) throw new Error('Codex started a turn without naming it.');
     } catch (error) {
       await this.abandonTurn(error);
@@ -251,13 +257,15 @@ export class CodexDriver implements ChatV2Driver {
   /**
    * Codex keeps model and effort on the thread (`thread/settings/update`,
    * the call chat 1's settings use), so a change applies from the next turn.
-   * Back to a default cannot be expressed there: `restart`. A level or model
+   * Back to a default cannot be expressed there: `restart` on a thread with no
+   * turns (it starts again as a new one), `refused` on one with turns (a resume
+   * keeps the thread's last model and effort). A level or model
    * Codex answers with an error is `refused`: a restart would not take it
    * either. No answer (a timeout, a failed write, an exit): `restart`.
    */
   async configure(change: { model: string; effort: string }): Promise<'live' | 'restart' | 'refused'> {
     if (!this.backend.alive || !this.initialized || this.stopping || this.activeTurn) return 'restart';
-    if ((change.model !== this.model && !change.model) || (change.effort !== this.effort && !change.effort)) return 'restart';
+    if ((change.model !== this.model && !change.model) || (change.effort !== this.effort && !change.effort)) return this.hasTurns ? 'refused' : 'restart';
     try {
       await this.call('thread/settings/update', {
         threadId: this.threadId,
