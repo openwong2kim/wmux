@@ -432,6 +432,41 @@ describe('ChatV2View', () => {
     expect(ptyCalls).toEqual([]);
   });
 
+  it('moves the chips into the ⋯ menu together when the row cannot hold them, and back once it can', async () => {
+    // jsdom lays nothing out: the chip row reports the widths a pane would.
+    const row = { client: 400, scroll: 300 };
+    const isRow = (el: Element) => el.classList.contains('wmux-chatv2-chips');
+    const client = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return isRow(this) ? row.client : 0; });
+    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLElement) { return isRow(this) ? Math.max(row.scroll, row.client) : 0; });
+    let resized: () => void = () => undefined;
+    vi.stubGlobal('ResizeObserver', class { constructor(cb: () => void) { resized = cb; } observe() { /* the test calls resized() itself */ } disconnect() { /* nothing to release */ } });
+    try {
+      await mock.call('subscribe', { paneId: 'daemon-fold' });
+      await mock.call('create', { paneId: 'daemon-fold', agent: 'claude', mode: 'default', model: 'claude-opus-5-5' });
+      await act(async () => root.render(<ChatV2View paneId="daemon-fold" active onTerminal={() => undefined} />));
+      await flush();
+      const chipsInRow = () => host.querySelectorAll('.wmux-chatv2-chips .wmux-chatv2-chip').length;
+      expect(chipsInRow()).toBeGreaterThan(0);
+      row.client = 150;
+      await act(async () => { resized(); });
+      expect(chipsInRow()).toBe(0);
+      expect(host.querySelector('.wmux-chatv2-send')).not.toBeNull();
+      await act(async () => { (host.querySelector('[data-chatv2-more]') as HTMLButtonElement).click(); });
+      const folded = host.querySelector('[data-chatv2-folded-chips]');
+      expect(folded?.querySelector('[data-chatv2-model] select')).not.toBeNull();
+      expect(folded?.querySelector('[data-chatv2-effort] select')).not.toBeNull();
+      expect(folded?.querySelector('[data-chatv2-permission] select')).not.toBeNull();
+      // Wide enough for what the row needed when they moved: all back in the row.
+      row.client = 320;
+      await act(async () => { resized(); });
+      expect(chipsInRow()).toBeGreaterThan(0);
+      expect(host.querySelector('[data-chatv2-folded-chips]')).toBeNull();
+    } finally {
+      client.mockRestore();
+      scroll.mockRestore();
+    }
+  });
+
   it('keeps an unterminated code fence as code while it streams', async () => {
     await mock.call('subscribe', { paneId: 'daemon-fence' });
     await mock.call('create', { paneId: 'daemon-fence', agent: 'claude', mode: 'default' });

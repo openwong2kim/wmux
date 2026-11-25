@@ -7,10 +7,11 @@
 .wmux-chatv2-composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
 
 /* Chips: one row that never scrolls. A chip that can change has the selection fill and a
-   chevron; a fixed one is plain muted text. Narrow panes drop the fixed agent chip and let
-   the pickers shorten with an ellipsis; the working directory lives in the ⋯ menu. */
+   chevron; a fixed one is plain muted text. Narrow panes drop the fixed agent chip; when the
+   rest still do not fit they move into the ⋯ menu together (Composer, `folded`), so no chip
+   is ever cut. The working directory lives in the ⋯ menu. */
 .wmux-chatv2-chips { display: flex; flex: 1 1 auto; flex-wrap: nowrap; align-items: center; gap: 4px; min-width: 0; overflow: hidden; padding: 2px; margin: -2px; }
-.wmux-chatv2-chip { position: relative; display: inline-flex; flex: 0 1 auto; align-items: center; min-width: 0; min-height: 26px; padding: 0 8px; border-radius: var(--chip-radius, 6px); background: var(--selection); color: var(--text-sub); font-size: 11px; white-space: nowrap; }
+.wmux-chatv2-chip { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; min-height: 26px; padding: 0 8px; border-radius: var(--chip-radius, 6px); background: var(--selection); color: var(--text-sub); font-size: 11px; white-space: nowrap; }
 .wmux-chatv2-chip:has(select:not(:disabled)) { padding-right: 20px; }
 .wmux-chatv2-chip:has(select:not(:disabled))::after { content: ''; position: absolute; right: 8px; top: 50%; width: 5px; height: 5px; border-right: 1.25px solid currentColor; border-bottom: 1.25px solid currentColor; transform: translateY(-70%) rotate(45deg); opacity: .7; pointer-events: none; }
 .wmux-chatv2-chip:hover:not([aria-disabled="true"]) { background: var(--selection-hover); --text-muted: var(--text-subtle); color: var(--text-main); }
@@ -40,8 +41,10 @@
 /* Stop stays neutral (DESIGN.md, Chat feedback): never amber, never red. */
 .wmux-chatv2-send[data-stop] { background: var(--selection); color: var(--text-main); }
 .wmux-chatv2-send[data-stop]:hover { background: var(--selection-hover); --text-muted: var(--text-subtle); }
-.wmux-chatv2-more { position: relative; display: inline-flex; }
-.wmux-chatv2-more-menu { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; min-width: 220px; max-width: min(320px, 90vw); }
+/* The ⋯ menu opens above the composer box (like the / menu), never wider than it, so a narrow pane does not cut it. */
+.wmux-chatv2-more { display: inline-flex; }
+.wmux-chatv2-more-menu { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; min-width: min(220px, 100cqw); max-width: min(320px, 100cqw); }
+.wmux-chatv2-more-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 6px 6px; }
 .wmux-chatv2-more-cwd { padding: 4px 10px 6px; color: var(--text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmux-chatv2-more-row { width: 100%; font-size: 13px; text-align: left; }
 .wmux-chatv2-more-row:disabled { opacity: .4; cursor: not-allowed; }

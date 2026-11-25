@@ -22,6 +22,7 @@ export const S = {
   skillsUnavailable: 'Skills could not be listed here. Commands still work.',
   noMatch: 'No match',
   moreActions: 'More',
+  chatSettings: 'Chat settings',
   attach: 'Attach files',
   attachTooLarge: 'An image is over 10 MB and was not attached.',
   attachLimit: (n: number) => `At most ${n} attachments per message.`,

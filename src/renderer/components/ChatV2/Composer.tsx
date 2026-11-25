@@ -393,14 +393,19 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
     if (entry.action) {
       setText(tail.replace(/^ /, ''));
       if (entry.action === 'menu') { menu.find((item) => item.id === entry.menuId)?.onSelect(); return; }
-      const target = entry.action === 'model' ? modelSelect.current : effortSelect.current;
-      target?.focus();
-      try { target?.showPicker?.(); } catch { /* focus is enough where the picker cannot open */ }
+      if (folded) { pickerAfterOpen.current = entry.action; setMenuOpen(true); return; }
+      openPicker(entry.action);
       return;
     }
     const prefix = entry.invocation + (tail.startsWith(' ') ? '' : ' ');
     setText(prefix + tail);
     requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(prefix.length, prefix.length); setCaret(prefix.length); });
+  };
+
+  const openPicker = (action: 'model' | 'effort') => {
+    const target = action === 'model' ? modelSelect.current : effortSelect.current;
+    target?.focus();
+    try { target?.showPicker?.(); } catch { /* focus is enough where the picker cannot open */ }
   };
 
   // IME: a keydown inside a composition is the IME's. The Enter after compositionend is a real one.
@@ -432,10 +437,88 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
     document.addEventListener('pointerdown', away);
     return () => document.removeEventListener('pointerdown', away);
   }, [menuOpen]);
-  const showMenu = menu.length > 0 || !!chips.cwd;
+  // Chips that do not fit the row move into the ⋯ menu, all together, before
+  // anything else gives way (Send/Stop never does). `fullWidth` is what the row
+  // needed when they moved, so they come back only once that much is free.
+  const chipsRow = useRef<HTMLDivElement>(null);
+  const [folded, setFolded] = useState(false);
+  const fullWidth = useRef(0);
+  const fit = () => {
+    const row = chipsRow.current;
+    if (!row) return;
+    if (!folded) {
+      if (row.scrollWidth > row.clientWidth + 1) { fullWidth.current = row.scrollWidth; setFolded(true); }
+    } else if (row.clientWidth >= fullWidth.current) {
+      setFolded(false);
+    }
+  };
+  const fitRef = useRef(fit);
+  fitRef.current = fit;
+  // Every render (a chip's text can change), and on every resize of the row.
+  useLayoutEffect(() => { fit(); });
+  useEffect(() => {
+    const row = chipsRow.current;
+    if (!row || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => fitRef.current());
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, []);
+  const pickerAfterOpen = useRef<'model' | 'effort' | null>(null);
+  useEffect(() => {
+    if (!menuOpen || !pickerAfterOpen.current) return;
+    const action = pickerAfterOpen.current;
+    pickerAfterOpen.current = null;
+    openPicker(action);
+  });
+  const showMenu = menu.length > 0 || !!chips.cwd || folded;
 
   const modelKnown = CLAUDE_MODEL_OPTIONS.some((option) => option.value === chips.model);
   const effortKnown = !chips.effort || caps.efforts.includes(chips.effort);
+  const chipEls = (
+    <>
+    {chips.onAgent ? (
+      <label className="wmux-chatv2-chip" title={S.agent} data-chatv2-agent={agent}>
+        <span className="sr-only">{S.agent}</span>
+        <select value={agent} disabled={!chips.editable} onChange={(event) => chips.onAgent?.(event.target.value as ChatV2Agent)}>
+          {CHATV2_AGENTS.map((id) => <option key={id} value={id}>{S.agentName[id]}</option>)}
+        </select>
+      </label>
+    ) : (
+      <span className="wmux-chatv2-chip" aria-disabled="true" title={S.agentFixed} data-chatv2-agent={agent} data-fixed>
+        <span className="sr-only">{S.agent}: </span>{S.agentName[agent]}
+      </span>
+    )}
+    {!caps.claudeModels ? (
+      <span className="wmux-chatv2-chip" aria-disabled="true" title={S.agentModelHint(S.agentName[agent])}>
+        <span className="sr-only">{S.model}: </span>{chips.model || S.agentModelDefault(S.agentName[agent])}
+      </span>
+    ) : (
+      <label className="wmux-chatv2-chip" title={adjustable ? S.model : S.modelBusy} aria-disabled={!adjustable || undefined} data-chatv2-model>
+        <span className="sr-only">{S.model}</span>
+        <select ref={modelSelect} value={chips.model} disabled={!adjustable} onChange={(event) => chips.onModel?.(event.target.value)}>
+          {!modelKnown && <option value={chips.model}>{claudeModelLabel(chips.model)}</option>}
+          {CLAUDE_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </label>
+    )}
+    <label className="wmux-chatv2-chip" title={adjustable ? S.effort : S.modelBusy} aria-disabled={!adjustable || undefined} data-chatv2-effort>
+      <span className="sr-only">{S.effort}</span>
+      <select ref={effortSelect} value={chips.effort} disabled={!adjustable} onChange={(event) => chips.onEffort?.(event.target.value)}>
+        <option value="">{S.effortDefault}</option>
+        {!effortKnown && <option value={chips.effort}>{chips.effort}</option>}
+        {caps.efforts.map((level) => <option key={level} value={level}>{S.effortLevel(EFFORT_LABEL[level] ?? level)}</option>)}
+      </select>
+    </label>
+    {/* Permissions say whether the agent asks first: always shown, after the agent chip (DESIGN.md, Agent chip). */}
+    <label className="wmux-chatv2-chip" data-chatv2-permission data-mode={chips.mode} aria-disabled={!chips.editable || !caps.bypass || undefined} title={!caps.bypass ? S.alwaysAsks(S.agentName[agent]) : chips.mode === 'bypass' ? S.modeBypassHint : S.modeDefaultHint}>
+      <span className="sr-only">{S.permission}</span>
+      <select value={chips.mode} disabled={!chips.editable || !caps.bypass} onChange={(event) => chips.onMode?.(event.target.value as ChatV2RunMode)}>
+        <option value="default">{S.modeDefault}</option>
+        <option value="bypass">{S.modeBypass}</option>
+      </select>
+    </label>
+    </>
+  );
   return (
     <div className="wmux-chatv2-composer" data-chatv2-composer>
       {slashOpen && (
@@ -489,51 +572,11 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
         onPaste={paste}
       />
       <div className="wmux-chatv2-composer-bar">
-        <div className="wmux-chatv2-chips">
+        <div className="wmux-chatv2-chips" ref={chipsRow} data-folded={folded || undefined}>
           {canAttach && (
             <button type="button" className="wmux-chatv2-icon" aria-label={S.attach} title={S.attach} disabled={disabled} onClick={pick} data-chatv2-attach><IconPlus size={14} /></button>
           )}
-          {chips.onAgent ? (
-            <label className="wmux-chatv2-chip" title={S.agent} data-chatv2-agent={agent}>
-              <span className="sr-only">{S.agent}</span>
-              <select value={agent} disabled={!chips.editable} onChange={(event) => chips.onAgent?.(event.target.value as ChatV2Agent)}>
-                {CHATV2_AGENTS.map((id) => <option key={id} value={id}>{S.agentName[id]}</option>)}
-              </select>
-            </label>
-          ) : (
-            <span className="wmux-chatv2-chip" aria-disabled="true" title={S.agentFixed} data-chatv2-agent={agent} data-fixed>
-              <span className="sr-only">{S.agent}: </span>{S.agentName[agent]}
-            </span>
-          )}
-          {!caps.claudeModels ? (
-            <span className="wmux-chatv2-chip" aria-disabled="true" title={S.agentModelHint(S.agentName[agent])}>
-              <span className="sr-only">{S.model}: </span>{chips.model || S.agentModelDefault(S.agentName[agent])}
-            </span>
-          ) : (
-            <label className="wmux-chatv2-chip" title={adjustable ? S.model : S.modelBusy} aria-disabled={!adjustable || undefined} data-chatv2-model>
-              <span className="sr-only">{S.model}</span>
-              <select ref={modelSelect} value={chips.model} disabled={!adjustable} onChange={(event) => chips.onModel?.(event.target.value)}>
-                {!modelKnown && <option value={chips.model}>{claudeModelLabel(chips.model)}</option>}
-                {CLAUDE_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </select>
-            </label>
-          )}
-          <label className="wmux-chatv2-chip" title={adjustable ? S.effort : S.modelBusy} aria-disabled={!adjustable || undefined} data-chatv2-effort>
-            <span className="sr-only">{S.effort}</span>
-            <select ref={effortSelect} value={chips.effort} disabled={!adjustable} onChange={(event) => chips.onEffort?.(event.target.value)}>
-              <option value="">{S.effortDefault}</option>
-              {!effortKnown && <option value={chips.effort}>{chips.effort}</option>}
-              {caps.efforts.map((level) => <option key={level} value={level}>{S.effortLevel(EFFORT_LABEL[level] ?? level)}</option>)}
-            </select>
-          </label>
-          {/* Permissions say whether the agent asks first: always shown, after the agent chip (DESIGN.md, Agent chip). */}
-          <label className="wmux-chatv2-chip" data-chatv2-permission data-mode={chips.mode} aria-disabled={!chips.editable || !caps.bypass || undefined} title={!caps.bypass ? S.alwaysAsks(S.agentName[agent]) : chips.mode === 'bypass' ? S.modeBypassHint : S.modeDefaultHint}>
-            <span className="sr-only">{S.permission}</span>
-            <select value={chips.mode} disabled={!chips.editable || !caps.bypass} onChange={(event) => chips.onMode?.(event.target.value as ChatV2RunMode)}>
-              <option value="default">{S.modeDefault}</option>
-              <option value="bypass">{S.modeBypass}</option>
-            </select>
-          </label>
+          {!folded && chipEls}
         </div>
         <div className="wmux-chatv2-composer-actions">
           {dictationAvailable() && (
@@ -545,6 +588,7 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
                 data-chatv2-more onClick={() => setMenuOpen((open) => !open)}><IconMoreHorizontal size={14} /></button>
               {menuOpen && (
                 <Popover role="menu" className="wmux-chatv2-more-menu" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setMenuOpen(false); } }}>
+                  {folded && <div className="wmux-chatv2-more-chips" role="group" aria-label={S.chatSettings} data-chatv2-folded-chips>{chipEls}</div>}
                   {chips.cwd && <p className="wmux-chatv2-more-cwd" title={chips.cwd} data-chatv2-cwd>{S.runsIn(shortDir(chips.cwd))}</p>}
                   {menu.map((item) => (
                     <button key={item.id} type="button" role="menuitem" className="ui-section-row wmux-chatv2-more-row" title={item.title} disabled={item.disabled}
