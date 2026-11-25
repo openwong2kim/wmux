@@ -170,6 +170,8 @@ import { createSpawnWorktree, gitRunner, removeSpawnWorktree } from '../main/a2a
 import { HeadlessMode, headlessReleases } from './a2aRemote/headlessMode';
 import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
 import { A2aHeadlessStarter, HEADLESS_PROGRESS_GIT_TIMEOUT_MS, worktreeProgress, worktreeUnchanged, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
+import { HeadlessPruneScheduler, mergedChecks } from './a2aRemote/headlessPruneScheduler';
+import { pruneHeadless } from '../cli/commands/headlessPrune';
 import { createHeadlessSessions } from './a2aRemote/headlessSessions';
 import { endHeadlessOnStop, HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
 import { LinkedTaskTurns } from './a2aRemote/linkedTaskTurns';
@@ -569,6 +571,7 @@ let sessionLifecycle: WebSessionLifecycle | null = null;
 // session RPCs it wraps live), and each side reaches the other through these.
 let headlessSessionsRef: HeadlessSessionPort | null = null;
 let headlessStarterRef: A2aHeadlessStarter | null = null;
+let headlessPruneRef: HeadlessPruneScheduler | null = null;
 // Headless mode in effect: the idle timeout does not stop a host other PCs are meant to reach.
 let idleHoldForRemoteStarts: () => boolean = () => false;
 // What types a remote task into a headless agent's session (a2aRemote/headlessDelivery.ts).
@@ -9610,6 +9613,7 @@ async function shutdown(
   try { void a2aDeliveryRef?.stop(); } catch { /* best effort */ }
   // No headless start begins while the daemon goes down (its retries would only fail), nor any task is typed in.
   headlessStarterRef?.stop();
+  headlessPruneRef?.stop();
   headlessDeliveryRef?.stop();
   linkedTaskTurnsRef?.stop();
   remoteApprovalsRef?.stop();
@@ -11881,11 +11885,24 @@ async function main(): Promise<void> {
             if (paneGone) await paneGone({ workspaceId, paneId, reason: 'pane-closed' });
           },
           abandon: (hostId, spawnId) => starter.abandon(hostId, spawnId),
-          startEnding: (rec, why) => headlessDelivery.startEnding(rec, why),
+          startEnding: (rec, why) => {
+            headlessPruneRef?.noteStartEnded();
+            return headlessDelivery.startEnding(rec, why);
+          },
           runId: headlessRunId,
           log: a2aLog,
         });
         headlessStarterRef = a2aHeadless;
+        // Ended starts' worktrees whose work is merged go by themselves (a2aRemote/headlessPruneScheduler.ts);
+        // the records are dropped by the starter's reconcile, which owns the store.
+        const pruneGit = (at: string) => gitRunner(at, { env: { GIT_TERMINAL_PROMPT: '0' } });
+        headlessPruneRef = new HeadlessPruneScheduler({
+          active: () => headlessMode.active(),
+          prune: () => pruneHeadless(wmuxDir, { dryRun: false, daemonRunning: async () => true, policy: 'merged' },
+            { git: pruneGit, store: headlessStarts, merged: mergedChecks({ git: pruneGit }) }),
+          log: a2aLog,
+        });
+        headlessPruneRef.start();
         headlessDelivery.start();
         const headless = a2aHeadless;
         sessionManager.on('session:died', (payload: { id: string }) => headless.onSessionGone(payload.id));
