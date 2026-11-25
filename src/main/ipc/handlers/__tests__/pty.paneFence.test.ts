@@ -78,8 +78,11 @@ async function createLocal(options: Record<string, unknown>): Promise<{ result: 
 
 describe('pty:create in an opted-in pane', () => {
   it('types the fenced line, records the session and says so', async () => {
-    const { result, written } = await createLocal({ initialCommand: 'claude --dangerously-skip-permissions', workerFence: true });
-    expect(fence.calls).toEqual([{ line: 'claude --dangerously-skip-permissions', cwd: '/tmp' }]);
+    // A folder that exists on every OS: the create keeps only a cwd that is a
+    // directory here (validatePtyCwd), and `/tmp` is none on Windows.
+    const folder = process.cwd();
+    const { result, written } = await createLocal({ cwd: folder, initialCommand: 'claude --dangerously-skip-permissions', workerFence: true });
+    expect(fence.calls).toEqual([{ line: 'claude --dangerously-skip-permissions', cwd: folder }]);
     // The session pin still lands on the fenced claude.
     expect(written[0]).toMatch(/^\/opt\/claude --session-id [0-9a-f-]{36} --setting-sources=project --settings="\/d\/f\.json" --dangerously-skip-permissions\r$/);
     expect(fence.noted).toEqual(['pty-c']);
