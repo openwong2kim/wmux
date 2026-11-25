@@ -253,6 +253,30 @@ fn shrink_lines_drops_the_wrap_into_a_dropped_row() {
     assert!(!grid[Line(1)][Column(1)].flags.contains(Flags::WRAPLINE));
 }
 
+/// wmux: an erase's empty run in the cells kept past a narrower width (the
+/// alternate screen) is still unwritten once a widen shows them again,
+/// whether the run started in the visible cells or in the kept ones.
+#[test]
+fn grow_without_reflow_keeps_the_erase_in_kept_cells() {
+    use crate::vte::ansi::{Color, NamedColor};
+    for narrow in [3, 2, 1] {
+        let mut grid = Grid::<Cell>::new(1, 6, 0);
+        grid[Line(0)][Column(0)] = cell('a');
+        grid[Line(0)][Column(1)] = cell('b');
+        let mut bg = Cell::default();
+        bg.bg = Color::Named(NamedColor::Green);
+        for x in 2..6 {
+            grid[Line(0)][Column(x)] = bg.clone();
+        }
+        grid[Line(0)].mark_erased_from(2);
+        grid.resize(false, 1, narrow);
+        grid.resize(false, 1, 6);
+        assert_eq!(grid[Line(0)].empty_from(), Some(2), "narrowed to {narrow}");
+        assert_eq!(grid[Line(0)][Column(1)], cell('b'));
+        assert_eq!(grid[Line(0)][Column(4)].bg, Color::Named(NamedColor::Green));
+    }
+}
+
 /// wmux: and dropping that wrap leaves an erased row's empty run as it was:
 /// the row still replays as erased, not as printed blanks.
 #[test]

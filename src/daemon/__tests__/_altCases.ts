@@ -25,6 +25,10 @@ export const altCases: Case[] = [
   script('alt-frame-zoom', [80, 24], [`\x1b[?1049h${frame(80)}`, [60, 18]]),
   // Text written after the width change continues on the wrapped row.
   script('alt-frame-written-after', [80, 24], [`\x1b[?1049h${frame(80)}`, [60, 24], '\x1b[2;1Hmore']),
+  // A row erased with a background color, narrowed past the erase's start
+  // or before it, then widened: the kept cells come back erased.
+  script('alt-erased-narrow-widen', [80, 24], [`$ top\r\n\x1b[?1049h\x1b[3;1Hstatus\x1b[42m\x1b[K\x1b[0m\x1b[5;7H`, [40, 24], [80, 24]]),
+  script('alt-erased-hidden-narrow-widen', [80, 24], [`$ top\r\n\x1b[?1049h\x1b[3;1H${'s'.repeat(50)}\x1b[42m\x1b[K\x1b[0m\x1b[5;7H`, [40, 24], [80, 24]]),
 ];
 
 /** A small seeded generator (mulberry32), so the cases are the same on every run. */

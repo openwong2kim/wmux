@@ -7,7 +7,7 @@ import { getAnsiSnapshotBackendDiagnostics } from '../AnsiSnapshotBackend';
 import { getTextSnapshotBackendDiagnostics } from '../TextSnapshotBackend';
 import { generateSnapshotUnqueued, generateTextSnapshotUnqueued } from '../HeadlessSnapshot';
 import { generateRustSnapshot } from '../RustSnapshot';
-import { available, expectParity, liveDifference, modulePath, parity } from './_rustParity';
+import { available, expectParity, liveDifference, liveDifferenceExcept, modulePath, parity } from './_rustParity';
 import { altCases, randomAltCases } from './_altCases';
 
 describe.skipIf(!available)('Rust snapshot parity across alternate-screen width changes', { timeout: 30_000 }, () => {
@@ -36,9 +36,13 @@ describe.skipIf(!available)('Rust snapshot parity across alternate-screen width 
   it('replays seeded random alternate-screen sequences like xterm', async () => {
     let native = 0;
     const refused: Record<string, number> = {};
-    // xterm's own payload does not restore the live terminal there, so it is
-    // no reference (its serializer), and Rust is held to neither.
+    // xterm's own payload does not restore the live terminal there (its
+    // serializer), so it is no reference. Rust is held to the live terminal
+    // instead, all but the cells kept past the width, which no payload
+    // carries: a row's text reads them, so the text is left out and the
+    // visible cells are compared.
     const referenceOff: string[] = [];
+    const visibleOnly = (state: { rows: Array<{ text: string }> }) => state.rows.forEach(row => { row.text = ''; });
     for (const c of randomAltCases(5, 60)) {
       vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');
       const reference = await generateSnapshotUnqueued(c.req);
@@ -48,8 +52,10 @@ describe.skipIf(!available)('Rust snapshot parity across alternate-screen width 
       if (getAnsiSnapshotBackendDiagnostics().last?.backend === 'rust') {
         const difference = await parity(c.req, selected.payload, reference.payload);
         if (difference === undefined) native++;
-        else if (await liveDifference(c.req, reference.payload) !== undefined) referenceOff.push(c.name);
-        else expect(difference, c.name).toBeUndefined();
+        else if (await liveDifference(c.req, reference.payload) !== undefined) {
+          referenceOff.push(c.name);
+          expect(await liveDifferenceExcept(c.req, selected.payload, visibleOnly), c.name).toBeUndefined();
+        } else expect(difference, c.name).toBeUndefined();
       } else {
         const alone = await generateRustSnapshot(c.req, 'ansi');
         expect(alone.ok ? 'served' : alone.detail, c.name).toMatch(/^unsupported-/);
@@ -57,7 +63,7 @@ describe.skipIf(!available)('Rust snapshot parity across alternate-screen width 
         refused[family] = (refused[family] ?? 0) + 1;
       }
     }
-    console.log(`random alternate-screen sequences: ${native}/60 native and in parity; refused: ${JSON.stringify(refused)}; xterm's payload off the live terminal: ${referenceOff.join(', ') || 'none'}`);
+    console.log(`random alternate-screen sequences: ${native}/60 native and in parity; refused: ${JSON.stringify(refused)}; xterm's payload off the live terminal, Rust held to its visible cells instead: ${referenceOff.join(', ') || 'none'}`);
     // Most of them are served natively, in parity.
     expect(native).toBeGreaterThan(40);
   }, 120_000);

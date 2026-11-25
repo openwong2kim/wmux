@@ -166,7 +166,12 @@ core/wmux-term/vendor/alacritty_terminal/Cargo.toml --locked`.
   A widen marks a wrapped row's new cells, past those xterm's line held
   (visible and kept), as unwritten (`set_empty_from`), so the serializer does
   not print them. `Row::hidden_cells` exposes the kept cells: xterm's text
-  read returns them, and so does the native text snapshot. Added 2026-11-25.
+  read returns them, and so does the native text snapshot. An erase's empty
+  run (`empty_from`) survives the kept cells: `Row::hide_past` moves the
+  run's start into the mark before it clamps `occ` to the visible cells, and
+  `Row::grow` counts the restored cells as written only up to that start, so
+  a widen does not replay an erase in the kept cells as printed blanks.
+  Added 2026-11-25.
 - `src/grid/resize.rs` `shrink_lines`: fewer rows drop the rows below the
   cursor, and with the first of them xterm drops its wrapped flag (it pops
   the lines, `Buffer.ts` `resize`, the rows shrink branch). The row left at

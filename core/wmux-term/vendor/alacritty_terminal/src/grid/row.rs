@@ -85,7 +85,12 @@ impl<T: Default> Row<T> {
             let [mut hidden] = *hidden;
             hidden.truncate(columns - self.inner.len());
             self.inner.append(&mut hidden);
-            self.occ = self.inner.len();
+            // An erase's empty run in the kept cells stays unwritten.
+            let written = match self.empty_mark {
+                0 => self.inner.len(),
+                mark => min(mark - 1, self.inner.len()),
+            };
+            self.occ = max(self.occ, written);
         }
 
         self.inner.resize_with(columns, T::default);
@@ -98,6 +103,11 @@ impl<T: Default> Row<T> {
             return;
         }
 
+        // The empty run's start, which `occ` alone no longer gives once it
+        // is clamped to the visible cells: a widen restores the run from it.
+        if self.empty_mark != 0 {
+            self.empty_mark = max(self.empty_mark - 1, self.occ) + 1;
+        }
         let mut cut = wmux_alloc::split_off(&mut self.inner, columns, ROW);
         self.occ = min(self.occ, columns);
         match self.hidden.as_mut() {
