@@ -23,19 +23,21 @@ if (process.platform === 'win32' || posix) {
 
 type Row = { pid: number; ppid: number; name: string; created?: number; cmdline?: string };
 
+// The command line is base64-encoded: it can hold newlines (a `node -e`
+// script, say), and a raw one would be cut at the first by the line split.
 function cimTable(): Map<number, Row> {
   const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const stdout = execFileSync(ps, ['-NoProfile', '-NonInteractive', '-Command',
-    "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance -ClassName Win32_Process | ForEach-Object { '{0}|{1}|{2}|{3}|{4}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }), $_.Name, $_.CommandLine }"],
+    "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance -ClassName Win32_Process | ForEach-Object { '{0}|{1}|{2}|{3}|{4}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }), $_.Name, $(if ($_.CommandLine) { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_.CommandLine)) }) }"],
   { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 60_000 });
   const rows = new Map<number, Row>();
   for (const line of stdout.split(/\r?\n/)) {
     const m = line.match(/^(\d+)\|(\d+)\|(\d*)\|(.+)$/);
     if (!m) continue;
-    const parts = m[4].split('|');
-    const cmdline = parts.slice(1).join('|');
+    const [name, encoded = ''] = m[4].split('|');
+    const cmdline = Buffer.from(encoded, 'base64').toString('utf8');
     rows.set(Number(m[1]), {
-      pid: Number(m[1]), ppid: Number(m[2]), name: parts[0],
+      pid: Number(m[1]), ppid: Number(m[2]), name,
       ...(m[3] ? { created: Number(m[3]) } : {}),
       ...(cmdline ? { cmdline } : {}),
     });
