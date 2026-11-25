@@ -9,7 +9,9 @@ import { RingBuffer } from '../RingBuffer';
 import { OutputModeTracker } from '../util/outputModeTracker';
 import { enqueueSnapshotJob } from '../HeadlessSnapshot';
 import { queuedScreenText } from '../queuedSessionText';
-import { noteScreenOutput, screenCheckpointBytes, takeScreenCheckpoint } from '../screenCheckpoint';
+import { noteScreenOutput, screenCheckpointBytes, screenCheckpointCounters, takeScreenCheckpoint } from '../screenCheckpoint';
+import { getAnsiSnapshotBackendDiagnostics } from '../AnsiSnapshotBackend';
+import { rustTerminalCoreAvailable } from '../../shared/terminalCoreSettings';
 
 const RULE = '─'.repeat(80);
 const at = (row: number, col: number, text: string): string => `\x1b[${row};${col}H${text}`;
@@ -94,7 +96,7 @@ describe('a delivery frame replayed from a wrapped ring', () => {
     expect(screenCheckpointBytes(p.ring)).toBeGreaterThan(0);
     const { frame, verdict } = await read(p);
     expect(frame.rows.slice(2, 5)).toEqual([RULE, '❯\u00a0', RULE]);
-    expect(frame.unknown).toBeUndefined();
+    expect(frame.rows.unknown).toBeUndefined();
     expect(verdict).toBe('plain');
     expect((await read(p, 'enter')).verdict).toBe('plain');
   });
@@ -113,7 +115,9 @@ describe('a delivery frame replayed from a wrapped ring', () => {
     await claudeSession(p, 'my draft');
     // The bridge starts noting writes only now (a daemon that took up an already-wrapped ring).
     p.checkpoints = true;
+    const rebuiltBefore = screenCheckpointCounters().rebuiltFromWrappedRing;
     for (let i = 0; i < 100; i++) await p.feed(at(1, 1, `⏺ late ${i}`.padEnd(40)));
+    expect(screenCheckpointCounters().rebuiltFromWrappedRing).toBeGreaterThan(rebuiltBefore);
     await p.feed(at(3, 1, RULE) + at(4, 1, '❯') + at(5, 1, RULE));
     expect(screenCheckpointBytes(p.ring)).toBeGreaterThan(0);
     expect((await read(p)).verdict).toBe('unknown');
@@ -152,6 +156,22 @@ describe('a delivery frame replayed from a wrapped ring', () => {
     expect((await read(p)).verdict).not.toBe('plain');
   });
 
+  it('a checkpoint left at an old size is replaced at once, so the next wrap is still covered', async () => {
+    const p = pane(4096, true);
+    await claudeSession(p, '');
+    // A checkpoint at the ring's end; then the pane grows and Claude repaints its whole frame at the new size.
+    expect(await takeScreenCheckpoint(p.ring, p.modes, () => ({ cols: COLS, rows: ROWS }))).toBe(true);
+    p.ring.noteGeometry(COLS, ROWS + 2);
+    p.meta.rows = ROWS + 2;
+    const taken = screenCheckpointCounters().taken;
+    await p.feed('\x1b[2J' + at(3, 1, RULE) + at(4, 1, '❯\u00a0') + at(5, 1, RULE));
+    // Replaced on the first write at the new size, not a quarter of the ring later.
+    expect(screenCheckpointCounters().taken).toBe(taken + 1);
+    // Then output that rewrites only the transcript row, past another wrap.
+    for (let i = 0; i < 400; i++) await p.feed(at(1, 1, `⏺ grown ${i}`.padEnd(40)));
+    expect((await read(p)).verdict).toBe('plain');
+  });
+
   it('a checkpoint does not outlive a resize or the alternate screen', async () => {
     const p = pane(4096, true);
     await claudeSession(p, '');
@@ -164,5 +184,37 @@ describe('a delivery frame replayed from a wrapped ring', () => {
     // Leaving the alternate screen drops it.
     await p.feed('\x1b[?1049l');
     expect(screenCheckpointBytes(p.ring)).toBe(0);
+  });
+});
+
+describe('a checkpoint taken mid-sequence', () => {
+  const legs = [{ backend: 'xterm', mode: 'off' }, ...(rustTerminalCoreAvailable() ? [{ backend: 'rust', mode: undefined }] : [])];
+  it.each(legs)('re-emits an unfinished CSI and an unfinished UTF-8 character on $backend', async ({ backend, mode }) => {
+    const prev = process.env.WMUX_RUST_SNAPSHOT;
+    if (mode === undefined) delete process.env.WMUX_RUST_SNAPSHOT;
+    else process.env.WMUX_RUST_SNAPSHOT = mode;
+    try {
+      const p = pane(1 << 20, false);
+      await claudeSession(p, '');
+      const size = () => ({ cols: COLS, rows: ROWS });
+      const bytes = (data: Buffer): void => p.ring.write(data);
+      // The ring ends inside `\x1b[4;3H`.
+      bytes(Buffer.from('\x1b[4;'));
+      const nativeBefore = getAnsiSnapshotBackendDiagnostics().native;
+      expect(await takeScreenCheckpoint(p.ring, p.modes, size)).toBe(true);
+      // The leg ran on the serializer it names.
+      expect(getAnsiSnapshotBackendDiagnostics().native - nativeBefore).toBe(backend === 'rust' ? 1 : 0);
+      bytes(Buffer.from('3Hab'));
+      // Then inside the three bytes of `가`.
+      const ga = Buffer.from('가');
+      bytes(Buffer.concat([Buffer.from(at(4, 5, '')), ga.subarray(0, 1)]));
+      expect(await takeScreenCheckpoint(p.ring, p.modes, size)).toBe(true);
+      bytes(ga.subarray(1));
+      const { frame } = await read(p);
+      expect(frame.rows[3]).toBe('❯\u00a0ab가');
+    } finally {
+      if (prev === undefined) delete process.env.WMUX_RUST_SNAPSHOT;
+      else process.env.WMUX_RUST_SNAPSHOT = prev;
+    }
   });
 });

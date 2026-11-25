@@ -31,7 +31,8 @@ import { UNKNOWN_CELL, withUnknownCells } from './sessionTextReplay';
 export interface CheckpointRing {
   readAllWithGeometry(): { data: Buffer; geometry: ReplayGeometry | undefined; writtenAt: number };
   readonly totalBytesWritten: number;
-  readonly capacityBytes: number;
+  /** The most bytes the ring holds before it drops its oldest. */
+  readonly totalCapacity: number;
   /** Bumps on every clear(): the bytes before it are gone though the counter did not move. */
   readonly clearGeneration: number;
   readonly isHibernated?: boolean;
@@ -52,15 +53,31 @@ interface ScreenCheckpoint {
 
 /** A checkpoint larger than this is not kept (a 200×60 Claude screen is far below it). */
 export const SCREEN_CHECKPOINT_MAX_BYTES = 512 * 1024;
-/** A new checkpoint once this share of the ring was written since the last one: well before the ring drops what it covers. */
-const REFRESH_SHARE = 0.5;
-/** After a checkpoint that failed or was not kept, the next try waits for this share of the ring. */
-const RETRY_SHARE = 0.125;
+/** A new checkpoint once this share of the ring was written since the last one: a busy snapshot queue or a
+ *  failed job then has three quarters of the ring before the ring drops the bytes the last one covers. */
+const REFRESH_SHARE = 0.25;
+/** After a checkpoint that failed or was not kept, the next try waits for this share of the ring, and tries go on
+ *  until one is kept: while the last checkpoint's offset is still in the ring, a try still chains from it. */
+const RETRY_SHARE = 1 / 16;
 /** A checkpoint job's parse budget. It holds the shared snapshot slot pane reveals wait on, and a job that
  *  runs out is retried later, so it is kept short (a 4 MiB stretch measured ~25 ms on Rust, ~75 ms on xterm). */
 const CHECKPOINT_BUDGET_MS = 1000;
 
 const checkpoints = new WeakMap<CheckpointRing, ScreenCheckpoint>();
+
+/** Daemon-wide counts (memory diagnostics): never terminal contents. */
+const counters = {
+  /** Checkpoints kept. */
+  taken: 0,
+  /** Of those, rebuilt from a ring that had dropped bytes no checkpoint covered: their unseen cells stay unknown. */
+  rebuiltFromWrappedRing: 0,
+  /** Jobs that kept nothing (a parse that failed or ran out of time, an oversized grid, a size or screen change). */
+  failed: 0,
+};
+
+export function screenCheckpointCounters(): { taken: number; rebuiltFromWrappedRing: number; failed: number } {
+  return { ...counters };
+}
 const attempts = new WeakMap<CheckpointRing, number>();
 const running = new WeakSet<CheckpointRing>();
 
@@ -71,6 +88,8 @@ export interface ScreenReplay {
   writtenAt: number;
   /** Cells no byte of the replay wrote carry UNKNOWN_CELL. */
   marked: boolean;
+  /** Not from the checkpoint: the ring alone, which had dropped bytes (its first cells are unknown). */
+  rebuilt: boolean;
 }
 
 /**
@@ -80,13 +99,14 @@ export interface ScreenReplay {
  * after its offset: a shrink and a grow back at that very byte leave the same
  * size but drop rows), else the ring led by its
  * mode preamble. `markUnknown`: cells no byte wrote carry UNKNOWN_CELL (a
- * checkpoint's own unknown cells carry it either way).
+ * checkpoint's own unknown cells carry it either way). `geometry: false`: the
+ * caller parses everything at `size`, so no recorded geometry is returned.
  */
 export function screenReplay(
   ring: CheckpointRing,
   modes: CheckpointModes | null,
   size: { cols: number; rows: number },
-  opts: { markUnknown?: boolean } = {},
+  opts: { markUnknown?: boolean; geometry?: boolean } = {},
 ): ScreenReplay {
   const { data, geometry, writtenAt } = ring.readAllWithGeometry();
   const start = writtenAt - data.length;
@@ -96,7 +116,7 @@ export function screenReplay(
     && !(geometry?.changes ?? []).some((change) => start + change.offset >= checkpoint.offset)) {
     // The payload enters the alternate screen and sets its modes itself: no preamble before it.
     const replay = Buffer.concat([checkpoint.payload, data.subarray(checkpoint.offset - start)]);
-    return { replay, geometry: undefined, writtenAt, marked: checkpoint.payload.includes(UNKNOWN_CELL) };
+    return { replay, geometry: undefined, writtenAt, marked: checkpoint.payload.includes(UNKNOWN_CELL), rebuilt: false };
   }
   const preamble = modes?.preamble(start) ?? '';
   const lead = Buffer.from(preamble, 'utf8');
@@ -106,9 +126,11 @@ export function screenReplay(
     geometry: geometry && { start: geometry.start, changes: geometry.changes.map((c) => ({ ...c, offset: c.offset + lead.length })) },
     writtenAt,
   };
-  if (!opts.markUnknown) return { replay: read.replay, geometry: read.geometry, writtenAt, marked: false };
+  if (opts.geometry === false) read.geometry = undefined;
+  if (!opts.markUnknown) return { replay: read.replay, geometry: read.geometry, writtenAt, marked: false, rebuilt: start > 0 };
+  // The fill is drawn at the size the first stretch is parsed at: its recorded one, or `size` without geometry.
   const marked = withUnknownCells(read, size);
-  return { replay: marked.replay, geometry: marked.geometry, writtenAt, marked: marked.marked };
+  return { replay: marked.replay, geometry: marked.geometry, writtenAt, marked: marked.marked, rebuilt: marked.marked };
 }
 
 /**
@@ -122,11 +144,18 @@ export function noteScreenOutput(ring: CheckpointRing, modes: CheckpointModes | 
     return;
   }
   const total = ring.totalBytesWritten;
-  const current = checkpoints.get(ring);
-  const covered = current && current.generation === ring.clearGeneration ? current.offset : 0;
-  if (total - covered <= ring.capacityBytes * REFRESH_SHARE || running.has(ring)) return;
+  let current = checkpoints.get(ring);
+  // A checkpoint at another size covers nothing (screenReplay will not use it): replace it now.
+  const now = size();
+  if (current && (!now || now.cols !== current.cols || now.rows !== current.rows || current.generation !== ring.clearGeneration)) {
+    checkpoints.delete(ring);
+    current = undefined;
+  }
+  const covered = current?.offset ?? 0;
+  const capacity = ring.totalCapacity;
+  if (total - covered <= capacity * REFRESH_SHARE || running.has(ring)) return;
   const tried = attempts.get(ring);
-  if (tried !== undefined && tried > covered && total - tried < ring.capacityBytes * RETRY_SHARE) return;
+  if (tried !== undefined && tried > covered && total - tried < capacity * RETRY_SHARE) return;
   attempts.set(ring, total);
   running.add(ring);
   void enqueueSnapshotJob(() => takeScreenCheckpoint(ring, modes, size))
@@ -155,11 +184,16 @@ export async function takeScreenCheckpoint(
     geometry: read.geometry,
     budgetMs: CHECKPOINT_BUDGET_MS,
   });
-  if (!outcome.ok || outcome.payload.length > SCREEN_CHECKPOINT_MAX_BYTES) return false;
   const now = size();
   // Left the alternate screen or resized while it parsed: the grid no longer applies.
-  if (!modes.altScreen || !now || now.cols !== at.cols || now.rows !== at.rows || ring.clearGeneration !== generation) return false;
+  if (!outcome.ok || outcome.payload.length > SCREEN_CHECKPOINT_MAX_BYTES
+    || !modes.altScreen || !now || now.cols !== at.cols || now.rows !== at.rows || ring.clearGeneration !== generation) {
+    counters.failed++;
+    return false;
+  }
   checkpoints.set(ring, { offset: read.writtenAt, generation, cols: at.cols, rows: at.rows, payload: outcome.payload });
+  counters.taken++;
+  if (read.rebuilt) counters.rebuiltFromWrappedRing++;
   return true;
 }
 

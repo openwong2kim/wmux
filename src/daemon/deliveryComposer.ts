@@ -16,11 +16,12 @@ import {
   CODEX_FOOTER,
   CODEX_SCROLLED_HINT,
   CODEX_SHORTCUT_HINT,
+  chatScreenRowsOf,
   codexScreenBlocked,
+  unseenFrom,
   type ChatScreenRows,
 } from './transcript/deliverChatPrompt';
 import { screenBlocksChatSend } from './transcript/chatScreenGate';
-import { UNKNOWN_CELL } from './sessionTextReplay';
 
 export type DeliveryPhase = 'paste' | 'enter';
 
@@ -38,12 +39,6 @@ export interface DeliveryFrame {
   rows: ChatScreenRows;
   /** Index into `rows` of the cursor's row, or -1 when unknown. */
   cursorRow: number;
-  /**
-   * The same rows with UNKNOWN_CELL for each cell the read could not see (no
-   * byte left in the ring or its screen checkpoint wrote it), where `rows`
-   * has a blank. Absent when there is none.
-   */
-  unknown?: readonly string[];
 }
 
 export interface ComposerRead {
@@ -92,13 +87,11 @@ function slice(rows: ChatScreenRows, from: number, to: number): ChatScreenRows {
  * missing closing rule is then no composer, never an empty one: a draft's
  * cells can be missing the same way.
  */
-function readClaude(rows: ChatScreenRows, phase: DeliveryPhase, unknown?: readonly string[]): ComposerRead {
+function readClaude(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRead {
   const read = readClaudeRows(rows, phase);
   // A blank the read could not see may be a draft's text or a dialog's row: no
   // evidence of a plain prompt, from the composer's top rule down.
-  if (read.verdict !== 'mode' && read.span && unknown?.slice(Math.max(0, read.span.from - 1)).some((row) => row.includes(UNKNOWN_CELL))) {
-    return { verdict: 'unknown' };
-  }
+  if (read.verdict !== 'mode' && read.span && unseenFrom(rows, read.span.from - 1)) return { verdict: 'unknown' };
   return read;
 }
 
@@ -148,6 +141,8 @@ function readCodex(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRead {
   const span = { from, to: from + 1 + firstChrome };
   // An overlay that waits for esc draws under the composer, never in the transcript.
   if (codexScreenBlocked(slice(rows, span.to, rows.length))) return { verdict: 'mode', span };
+  // A blank the read could not see, from the prompt row down: no evidence either way.
+  if (unseenFrom(rows, span.from)) return { verdict: 'unknown' };
   if (phase === 'enter') return { verdict: 'plain', span };
   // Anything between the prompt row and the chrome is a draft's rows or a popup.
   const between = tail.slice(from + 1, span.to).filter((row) => row.trim());
@@ -156,7 +151,7 @@ function readCodex(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRead {
   return { verdict: empty && between.length === 0 ? 'plain' : 'busy', span };
 }
 
-const PLAIN_PROMPT = { claude: readClaude, codex: readCodex } satisfies Partial<Record<AgentSlug, (rows: ChatScreenRows, phase: DeliveryPhase, unknown?: readonly string[]) => ComposerRead>>;
+const PLAIN_PROMPT = { claude: readClaude, codex: readCodex } satisfies Partial<Record<AgentSlug, (rows: ChatScreenRows, phase: DeliveryPhase) => ComposerRead>>;
 
 /** An agent whose plain prompt wmux can recognise: it gets the full text. */
 export type PlainPromptAgent = keyof typeof PLAIN_PROMPT;
@@ -167,20 +162,13 @@ export function hasPlainPrompt(slug: AgentSlug): slug is PlainPromptAgent {
 
 export function readComposer(frame: DeliveryFrame | null, slug: PlainPromptAgent, phase: DeliveryPhase): ComposerRead {
   if (!frame) return { verdict: 'unknown' };
-  return PLAIN_PROMPT[slug](frame.rows, phase, frame.unknown);
+  return PLAIN_PROMPT[slug](frame.rows, phase);
 }
 
-/**
- * A delivery frame from a screen read whose unknown cells carry UNKNOWN_CELL:
- * the rows (and their undimmed copies) with those cells blank, as every
- * reader sees them, and the marked rows under `unknown` when there is one.
- */
+/** A delivery frame from a screen read whose unknown cells carry UNKNOWN_CELL (chatScreenRowsOf). */
 export function deliveryFrameOf(read: readonly { text: string; undimmed?: string }[], rowsBelowCursor: number): DeliveryFrame {
-  const blank = (text: string): string => (text.includes(UNKNOWN_CELL) ? text.split(UNKNOWN_CELL).join(' ').trimEnd() : text);
-  const marked = read.map((row) => row.text);
-  const rows = Object.assign(marked.map(blank), { undimmed: read.map((row) => blank(row.undimmed ?? row.text)) });
-  const unknown = marked.some((row) => row.includes(UNKNOWN_CELL)) ? { unknown: marked } : {};
-  return { rows, cursorRow: rows.length - 1 - rowsBelowCursor, ...unknown };
+  const rows = chatScreenRowsOf(read);
+  return { rows, cursorRow: rows.length - 1 - rowsBelowCursor };
 }
 
 /** The cursor sits on the composer's own rows: a frame being drawn now, not a leftover. */

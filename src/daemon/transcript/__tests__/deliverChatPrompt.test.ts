@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { claudeComposerEmpty, claudeComposerRows, claudeComposerShows, claudeComposerVisible, codexComposerEmpty, codexComposerVisible, deliverChatPrompt, type ChatDeliveryDeps } from '../deliverChatPrompt';
+import { chatScreenRowsOf, claudeComposerEmpty, claudeComposerRows, claudeComposerShows, claudeComposerVisible, codexComposerEmpty, codexComposerVisible, deliverChatPrompt, type ChatDeliveryDeps } from '../deliverChatPrompt';
+import { UNKNOWN_CELL } from '../../sessionTextReplay';
+import { readComposer } from '../../deliveryComposer';
 import type { ScheduledPromptAgentState } from '../../sessionPromptDelivery';
 import { generateTextSnapshot } from '../../HeadlessSnapshot';
 
@@ -493,5 +495,48 @@ describe('Codex steer and next-turn keys (codex-cli 0.162.1)', () => {
       expect(await deliverChatPrompt('conversation-1', text, running.deps)).toBe('busy');
       expect(running.write).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe('cells the screen read could not see (the ring dropped what last wrote them)', () => {
+  const U = UNKNOWN_CELL;
+  const RULE = '─'.repeat(40);
+  // The rules and `❯` were redrawn; the cells after the glyph were not, and may hold a draft.
+  const unseenDraft = () => chatScreenRowsOf([RULE, `❯\u00a0${U.repeat(12)}`, RULE, '  ? for shortcuts'].map((text) => ({ text })));
+
+  it('a Claude composer with an unseen cell is not empty, though it reads blank', async () => {
+    const rows = unseenDraft();
+    expect(rows[1]).toBe('❯\u00a0');
+    expect(claudeComposerEmpty(rows)).toBe(false);
+    expect(claudeComposerRows(rows)).toBeNull();
+    expect(claudeComposerVisible(rows)).toBe(true);
+  });
+
+  it('chat send and a queued prompt do not paste into it', async () => {
+    const f = fixture(); f.state.status = 'idle';
+    f.show(unseenDraft() as string[]);
+    expect(await deliverChatPrompt('conversation-1', 'next task', f.deps)).toBe('unconfirmed');
+    const queued = fixture();
+    queued.show(unseenDraft() as string[]);
+    expect(await deliverChatPrompt('conversation-1', 'next task', { ...queued.deps, idleOnly: true })).toBe('unconfirmed');
+    expect(f.write).not.toHaveBeenCalled();
+    expect(queued.write).not.toHaveBeenCalled();
+  });
+
+  it('an unseen cell in the transcript above the composer changes nothing', () => {
+    const rows = chatScreenRowsOf([`⏺ ${U.repeat(5)}`, RULE, '❯\u00a0', RULE].map((text) => ({ text })));
+    expect(claudeComposerEmpty(rows)).toBe(true);
+  });
+
+  it('a Codex composer with an unseen cell is not empty, and the delivery check reads it as unknown', () => {
+    const rows = chatScreenRowsOf([`› ${U.repeat(10)}`, '', '  gpt-5 medium · ~/project', '  ? for shortcuts'].map((text) => ({ text })));
+    expect(codexComposerEmpty(rows)).toBe(false);
+    expect(readComposer({ rows, cursorRow: 0 }, 'codex', 'paste').verdict).toBe('unknown');
+    const seen = chatScreenRowsOf(['› ', '', '  gpt-5 medium · ~/project', '  ? for shortcuts'].map((text) => ({ text })));
+    expect(readComposer({ rows: seen, cursorRow: 0 }, 'codex', 'paste').verdict).toBe('plain');
+  });
+
+  it('blanking keeps the no-break space after Claude\'s prompt glyph', () => {
+    expect(chatScreenRowsOf([{ text: `❯\u00a0${U}${U}`, undimmed: `❯\u00a0${U}` }]).undimmed?.[0]).toBe('❯\u00a0');
   });
 });

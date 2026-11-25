@@ -366,11 +366,6 @@ export class RingBuffer {
   /** Every ring's dropped output, daemon-wide (diagnostics). */
   static allocDroppedBytes = 0;
 
-  /** The most bytes this ring holds before it drops its oldest. */
-  get capacityBytes(): number {
-    return this.capacity;
-  }
-
   /**
    * Total bytes ever written to this buffer over its lifetime (monotonic).
    * Used by PromptEventLog as a stable offset even after the ring wraps.

@@ -50,7 +50,7 @@ describe.skipIf(skip)('a screen checkpoint in a real session', () => {
     });
     const managed = mgr.getSession(id);
     if (!managed) throw new Error('no session');
-    const capacity = managed.ringBuffer.capacityBytes;
+    const capacity = managed.ringBuffer.totalCapacity;
 
     fs.writeFileSync(path.join(cwd, 'frame'), '\x1b[?1049h\x1b[2J'
       + at(19, 1, RULE) + at(20, 1, '❯ ') + at(21, 1, RULE) + at(22, 1, '  Opus · acct · ctx 9%') + at(23, 1, '  ⏵⏵ bypass permissions on (shift+tab to cycle)'));

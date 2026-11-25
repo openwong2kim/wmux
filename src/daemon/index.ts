@@ -96,7 +96,7 @@ import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import { WEB_DEFAULT_PORT, webHostIsLoopback, type WebTlsConfig } from '../shared/web';
 import { warmRustSnapshot } from './RustSnapshot';
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, runSmallSnapshotJob, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
-import { queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
+import { queuedComposerRows, queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
 import { usageLimitMenuOnScreen, usageLimitWaitOnScreen } from './usageLimit/limitMenu';
 import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, readFolderTrust, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
@@ -5285,10 +5285,7 @@ function registerRpcHandlers(
           if (!approvalRegistry || approvalRegistry.list().pending.some((r) => r.sessionId === id)) return 'Something in this pane waits for an approval.';
           // No watcher, or no watch of this pane's transcript, is "may be working".
           if (!transcriptActivity || transcriptActivity.helpersWorking(id)) return 'Claude\u2019s teammates or subagents may still be working.';
-          const outcome = await queuedScreenText(sessionManager, id, true);
-          const rows = outcome?.ok
-            ? Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) })
-            : null;
+          const rows = (await queuedComposerRows(sessionManager, id))?.rows ?? null;
           if (screenBlocksChatSend(rows)) return 'A dialog is open in the terminal, or its screen could not be read.';
           if (screenShowsRunningTurn(rows, 'claude') || titleShowsRunningTurn(pane.bridge.getTitle(), 'claude', Date.now())) {
             return 'Claude is still working. Try once its turn ends.';
@@ -5445,8 +5442,9 @@ function registerRpcHandlers(
         return sessionManager.listManagedSessions().some((other) => other.meta.id !== id && realCwd(other.meta.id) === cwd && liveHermes(other.meta.id));
       },
       readScreen: async (id) => {
-        // Undimmed, so a dim placeholder in the prompt never reads as typed text.
-        const outcome = await queuedScreenText(sessionManager, id, true);
+        // Undimmed, so a dim placeholder in the prompt never reads as typed text. A cell the
+        // read could not see keeps its UNKNOWN_CELL, so it never reads as an empty prompt either.
+        const outcome = await queuedScreenText(sessionManager, id, true, { keepUnknown: true });
         return outcome?.ok ? outcome.rows.map((row) => row.undimmed ?? row.text) : null;
       },
       bracketedPaste: (id) => sessionManager.getSession(id)?.bridge.outputModes?.isSet(2004) === true,
@@ -5546,11 +5544,8 @@ function registerRpcHandlers(
       },
     } : null,
     readScreen: async (id) => {
-      // The composer check tells a dimmed suggested prompt from typed input.
-      const outcome = await queuedScreenText(sessionManager, id, true);
-      return outcome?.ok
-        ? Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) })
-        : null;
+      // The composer check tells a dimmed suggested prompt from typed input, and an unseen cell from a blank.
+      return (await queuedComposerRows(sessionManager, id))?.rows ?? null;
     },
     atFolderTrust: async (id, writer) => (await trustRefusal(sessionManager, id, writer, false)) !== null,
     agentProcessAlive: async (id, slug) => {
@@ -7030,12 +7025,7 @@ function registerRpcHandlers(
         return tail ? lastHumanPrompt(tail.entries) : null;
       },
       holdKeyboard: () => bridge.holdKeyboard(id),
-      readScreen: async () => {
-        const outcome = await queuedScreenText(sessionManager, id, true);
-        return outcome?.ok
-          ? Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) })
-          : null;
-      },
+      readScreen: async () => (await queuedComposerRows(sessionManager, id))?.rows ?? null,
       write: (data) => {
         const managed = sessionManager.getSession(id);
         if (!managed || resolveTranscriptBinding(id)?.sessionId !== binding.sessionId) return false;

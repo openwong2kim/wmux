@@ -4,6 +4,7 @@ import { enqueueSnapshotJob, generateTextSnapshotUnqueued, type TextSnapshotOutc
 import { snapshotRingTextUnqueued } from './nativeRingSnapshot';
 import { UNKNOWN_CELL } from './sessionTextReplay';
 import { screenReplay } from './screenCheckpoint';
+import { chatScreenRowsOf, type ChatScreenRows } from './transcript/deliverChatPrompt';
 import { fencedRead, identityTag, noteScreenParse } from './screenReadCache';
 import { guardedTailRead, type TailInputs, type TailOutcome, type TailSite } from './guardedTailRead';
 
@@ -119,13 +120,26 @@ export function queuedScreenText(
   return queuedSessionRead(sessions, sessionId, kind, async (managed) => {
     const size = { cols: managed.meta.cols ?? 80, rows: managed.meta.rows ?? 24 };
     // From the ring's screen checkpoint when it has one (screenCheckpoint.ts).
-    const read = screenReplay(managed.ringBuffer, managed.bridge.outputModes, size, { markUnknown: opts.keepUnknown });
+    // Parsed at the current size (no recorded geometry), so an unknown fill is drawn at that size too.
+    const read = screenReplay(managed.ringBuffer, managed.bridge.outputModes, size, { markUnknown: opts.keepUnknown, geometry: false });
     const outcome = await generateTextSnapshotUnqueued({ ...size, scrollback: 0, initial: read.replay, ...(undimmed ? { undimmed: true } : {}) });
     if (!outcome.ok || !read.marked || opts.keepUnknown) return outcome;
-    // Every other reader sees an unknown cell as it always did: a blank.
-    const blank = (text: string): string => (text.includes(UNKNOWN_CELL) ? text.split(UNKNOWN_CELL).join(' ').trimEnd() : text);
+    // Every other reader sees an unknown cell as it always did: a blank (trailing
+    // spaces trimmed, a no-break space kept: Claude's prompt is `❯\u00a0`).
+    const blank = (text: string): string => (text.includes(UNKNOWN_CELL) ? text.split(UNKNOWN_CELL).join(' ').replace(/ +$/, '') : text);
     return { ...outcome, rows: outcome.rows.map((row) => ({ ...row, text: blank(row.text), ...(row.undimmed !== undefined ? { undimmed: blank(row.undimmed) } : {}) })) };
   });
+}
+
+/**
+ * The visible grid for a reader that decides from the agent's composer (is it
+ * empty, does it hold a draft): undimmed, with the cells the read could not
+ * see marked (ChatScreenRows' `unknown`), which the composer checks treat as
+ * not empty. Null when the pane cannot be read.
+ */
+export async function queuedComposerRows(sessions: TextReadSessions, sessionId: string): Promise<{ rows: ChatScreenRows; rowsBelowCursor: number } | null> {
+  const outcome = await queuedScreenText(sessions, sessionId, true, { keepUnknown: true });
+  return outcome?.ok ? { rows: chatScreenRowsOf(outcome.rows), rowsBelowCursor: outcome.rowsBelowCursor } : null;
 }
 
 /**

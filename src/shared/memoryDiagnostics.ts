@@ -50,6 +50,12 @@ export interface DaemonMemoryDiagnostics {
    * by the site that asked (`fleet`, `stallwatch`). Absent from older daemons.
    */
   tailReads?: Record<string, TailReadCounters>;
+  /**
+   * Screen checkpoints of full-screen panes (daemon/screenCheckpoint.ts):
+   * kept, kept but rebuilt from a ring that had dropped bytes no checkpoint
+   * covered, and jobs that kept nothing. Absent from older daemons.
+   */
+  screenCheckpoints?: { taken: number; rebuiltFromWrappedRing: number; failed: number };
 }
 
 /** Counts and times only: never terminal text. */
@@ -165,7 +171,8 @@ export function isDaemonMemoryDiagnostics(value: unknown): value is DaemonMemory
     countersByKey(value.screenParses, ['parses', 'msTotal', 'msMax', 'bytes']) &&
     (value.snapshotQueue === undefined || (record(value.snapshotQueue) && counters(value.snapshotQueue, ['jobs', 'waitMsTotal', 'waitMsMax', 'runMsTotal', 'runMsMax']))) &&
     (value.eventLoop === undefined || (record(value.eventLoop) && counters(value.eventLoop, ['activeMs', 'idleMs']))) &&
-    (value.tailReads === undefined || (record(value.tailReads) && Object.values(value.tailReads).every(tailReadCounters)));
+    (value.tailReads === undefined || (record(value.tailReads) && Object.values(value.tailReads).every(tailReadCounters))) &&
+    (value.screenCheckpoints === undefined || (record(value.screenCheckpoints) && counters(value.screenCheckpoints, ['taken', 'rebuiltFromWrappedRing', 'failed'])));
 }
 
 function tailReadCounters(value: unknown): boolean {
