@@ -147,11 +147,13 @@ export async function deliveryPresence(
   // the process monitor has not polled yet, and names a new one).
   const settled = deps.tracked(id)?.alive === true || await deps.probe(id, session.shellPid, DELIVERY_PRESENCE_PROBE_MS);
   let tracked = deps.tracked(id);
-  if (tracked && !tracked.alive && deps.restartedSince?.(id) === true) {
-    // The agent reported a restart since: the death on record is its earlier
-    // process's. Name the new one (the re-probe skips the miss backoff the
-    // probe above may have hit); only a re-probe that saw no agent at all
-    // under the shell lets the death stand.
+  if (tracked && !tracked.alive && (deps.restartedSince?.(id) === true || session.commandRunning !== false)) {
+    // The agent reported a restart since, or a command (or nothing the shell
+    // reported) runs where the agent was: the death on record may be its
+    // earlier process's, with a new one starting (a package runner still
+    // downloading it). Name the new one (the re-probe skips the miss backoff
+    // the probe above may have hit); only a re-probe that saw no agent and no
+    // runner under the shell lets the death stand. A shell at its prompt does.
     const askedAt = Date.now();
     const named = await deps.reprobe(id, session.shellPid, DELIVERY_PRESENCE_PROBE_MS).catch(() => false);
     tracked = deps.tracked(id);

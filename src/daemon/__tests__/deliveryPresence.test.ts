@@ -51,7 +51,12 @@ describe('deliveryPresence: the process tier', () => {
   });
 
   it('an ended tracked agent is none, whatever the screen still shows', async () => {
-    expect(await deliveryPresence(deps({ tracked: () => ({ alive: false, slug: 'claude' }) }), 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
+    // With no shell report the re-probe looks once: nothing under the shell.
+    expect(await deliveryPresence(deps({ tracked: () => ({ alive: false, slug: 'claude' }), noAgentUnderShell: () => true }), 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
+    // At its prompt, with no re-probe.
+    const d = deps({ s: { commandRunning: false }, tracked: () => ({ alive: false, slug: 'claude' }),
+      reprobe: async () => { throw new Error('no re-probe at the prompt'); } });
+    expect(await deliveryPresence(d, 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
   });
 
   it('reads liveness fresh: a cached-alive agent the process table no longer shows is none', async () => {
@@ -260,7 +265,8 @@ describe('deliveryPresence: the screen tier (nothing attributed)', () => {
 
 describe('deliveryPresence at the Enter', () => {
   it('a refusal says whether the pane still shows the paste, so main takes back only what it typed', async () => {
-    const ended = { tracked: () => ({ alive: false, slug: 'claude' as const }) };
+    // The agent ended and its shell is back at the prompt.
+    const ended = { s: { commandRunning: false }, tracked: () => ({ alive: false, slug: 'claude' as const }) };
     const shown = ['user@host ~ % [wmux] A2A task t-1 is waiting'];
     expect(await deliveryPresence(deps({ ...ended, frame: async () => frame(shown, 0) }), 'p', 'claude', { phase: 'enter', shownProbe: '[wmux] A2A task t-1' }))
       .toEqual({ tier: 'none', reason: 'agent-ended', pasteShown: true });
@@ -285,14 +291,15 @@ describe('promptGrant: a daemon-typed prompt, by its author', () => {
   });
 });
 
-// The monitor recorded the earlier agent's death, then the agent reported a
-// restart (startup/resume SessionStart) before the tracker named its new
-// process: the named-agent probe may sit in its miss backoff.
+// The earlier agent's death is on record (the monitor's, or a re-probe's),
+// and the agent reported a restart, or a command runs in the pane (a package
+// runner still downloading it), before the tracker named its new process: the
+// named-agent probe may sit in its miss backoff.
 describe('deliveryPresence: a recorded death after a restart', () => {
-  function restarted(reprobe: 'names' | 'running' | 'no-agent' | 'agent-in-tree', mark = true) {
+  function restarted(reprobe: 'names' | 'running' | 'no-agent' | 'agent-in-tree', mark = true, commandRunning: boolean | undefined = true) {
     let current: { alive: boolean; slug: 'claude'; pid: number } = { alive: false, slug: 'claude', pid: 41 };
     const d = deps({
-      s: { commandRunning: true },
+      s: { commandRunning },
       tracked: () => ({ alive: current.alive, slug: current.slug }),
       agentPid: () => current.pid,
       // Skipped by its backoff: done, nothing named.
@@ -322,10 +329,19 @@ describe('deliveryPresence: a recorded death after a restart', () => {
     }
   });
 
-  it('the re-probe saw no agent under the shell, or there was no restart: agent-ended', async () => {
+  it('with no restart mark, a running command is re-probed too: a runner keeps it pending, its agent once named is verified', async () => {
+    const pending = restarted('agent-in-tree', false);
+    expect(await deliveryPresence(pending, 'p', 'claude')).toEqual({ tier: 'none', reason: 'attribution-pending' });
+    expect(pending.probes).toBe(1);
+    expect(await deliveryPresence(restarted('names', false), 'p', 'claude')).toEqual(FULL);
+    expect(await deliveryPresence(restarted('agent-in-tree', false, undefined), 'p', 'claude')).toEqual({ tier: 'none', reason: 'attribution-pending' });
+  });
+
+  it('the re-probe saw no agent under the shell (vim), or the shell is at its prompt with no restart: agent-ended', async () => {
     expect(await deliveryPresence(restarted('no-agent'), 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
-    const unmarked = restarted('names', false);
-    expect(await deliveryPresence(unmarked, 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
-    expect(unmarked.probes).toBe(0);
+    expect(await deliveryPresence(restarted('no-agent', false), 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
+    const atPrompt = restarted('names', false, false);
+    expect(await deliveryPresence(atPrompt, 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
+    expect(atPrompt.probes).toBe(0);
   });
 });
