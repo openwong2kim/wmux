@@ -506,6 +506,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     paneRingEnabled: state.paneRingEnabled,
     paneFlashEnabled: state.paneFlashEnabled,
     taskbarFlashEnabled: state.taskbarFlashEnabled,
+    taskbarBadgeEnabled: state.taskbarBadgeEnabled,
     paneGlowOpacity: state.paneGlowOpacity,
     anthropicUsageEnabled: state.anthropicUsageEnabled,
     usageLimitAutoResume: state.usageLimitAutoResume,

@@ -266,6 +266,7 @@ const chat: ChatBridgeApi = {
 const chatv2: ChatV2BridgeApi = {
   call: (method, params) => ipcRenderer.invoke(CHATV2_IPC[method], params),
   stageAttachment: (path) => ipcRenderer.invoke(CHATV2_IPC.stageAttachment, path),
+  pickAttachments: () => ipcRenderer.invoke(CHATV2_IPC.pickAttachments),
   onEvents: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, push: ChatV2EventsPush) => listener(push);
     ipcRenderer.on(CHATV2_IPC.events, handler);
@@ -722,6 +723,8 @@ const electronAPI = {
       ipcRenderer.send(IPC.NOTIFICATION_OS_TOAST, payload),
     // E5 — push unread count to main for the dock/tray badge.
     setBadgeCount: (count: number) => ipcRenderer.send(IPC.NOTIFICATION_BADGE_COUNT, count),
+    // Windows taskbar overlay setting + running flag (main/taskbarStatus.ts).
+    setTaskbarState: (state: { enabled: boolean; running: boolean }) => ipcRenderer.send(IPC.NOTIFICATION_TASKBAR_STATE, state),
     // Daemon security notices (shared/securityNotice.ts): main keeps each one
     // until it is acknowledged, outside the notification policy.
     securityNotices: () => ipcRenderer.invoke(SECURITY_NOTICE_IPC.list) as Promise<SecurityNotice[]>,

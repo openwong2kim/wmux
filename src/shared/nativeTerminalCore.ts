@@ -49,8 +49,12 @@ export interface NativeTerminalCore {
   NativeOutputDecoder?: new () => { feed(bytes: Uint8Array, finish: boolean): NativeOutputChunk };
   NativeOutputInterpreter?: new () => NativeOutputInterpreter;
   NativeTransport: new (command: string, args: string[], cwd: string, env: Record<string, string>, cols: number, rows: number, wake: () => void, conptyDll?: string, parentWindow?: Uint8Array) => NativeTransport;
-  /** Windows, macOS and Linux (`process-table-v1`); macOS and Linux read the walk only (no created/cmdline). */
-  processTable?(withCommandLines: boolean): Promise<Array<{ pid: number; ppid: number; name: string; created?: number | null; cmdline?: string | null }>>;
+  /** Windows, macOS and Linux (`process-table-v1`); macOS reads the walk only (no created/cmdline). Linux
+   *  (`process-table-linux-v1`) fills created, state, pgid and tpgid on every row, and cmdline with command lines. */
+  processTable?(withCommandLines: boolean): Promise<Array<{
+    pid: number; ppid: number; name: string; created?: number | null; cmdline?: string | null;
+    state?: string | null; pgid?: number | null; tpgid?: number | null;
+  }>>;
   /** macOS and Linux (`listen-sockets-v1`): the process walk and every listening TCP socket this user can read
    *  (one row per socket), from one walk. */
   portSnapshot?(): Promise<{

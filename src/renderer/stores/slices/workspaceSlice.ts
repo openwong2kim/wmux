@@ -65,12 +65,13 @@ function leafCwd(leaf: PaneLeaf): string {
 }
 
 /**
- * Cold-park (TASK-9) is safe ONLY for terminal-only workspaces. Unmounting a
- * pane tree that holds a browser (live webview session), editor (unsaved local
- * scratch edits), or diff/git/review surface would lose that state — unlike a
- * terminal, whose bytes live in the daemon ring and replay on reveal. So a
- * workspace is parkable only when every surface is a terminal (surfaceType
- * absent defaults to terminal). Deeper per-surface parking is a follow-up.
+ * Cold-park (TASK-9) may unmount a whole pane tree ONLY for a terminal-only
+ * workspace. Unmounting one that holds a browser (live webview session),
+ * editor (unsaved local scratch edits), or diff/git/review surface would lose
+ * that state — unlike a terminal, whose bytes live in the daemon ring and
+ * replay on reveal. A parked mixed workspace keeps its tree mounted and
+ * unmounts only its terminals (WorkspaceSlot). Terminal-only means every
+ * surface is a terminal (surfaceType absent defaults to terminal).
  */
 /**
  * Cold-park convergence helper: drop a workspace's parked / idle-clock entries.
@@ -463,19 +464,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
           continue;
         }
-        if (state.parkedWorkspaceIds[id]) {
-          // Already parked — but a parked workspace can GAIN a non-terminal
-          // surface (e.g. browser.open targeting it), which would never mount
-          // until manual reveal. Re-check and unpark so the new surface renders.
-          if (!isTerminalOnlyWorkspace(ws)) {
-            delete state.parkedWorkspaceIds[id];
-            if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
-          }
-          continue;
-        }
-        // Never park a workspace holding a browser/editor/diff surface — those
-        // carry live state a terminal doesn't (no daemon ring to replay from).
-        if (!isTerminalOnlyWorkspace(ws)) continue;
+        // Already parked. A workspace that holds (or later gains) a browser,
+        // editor or diff surface parks too: WorkspaceSlot keeps its pane tree
+        // mounted and unmounts only its terminals, so those surfaces keep
+        // their live state and a new one mounts while the workspace is parked.
+        if (state.parkedWorkspaceIds[id]) continue;
         const since = state.lastVisibleAt[id];
         if (since === undefined) {
           // First time we observe it hidden — start the idle clock. (Covers
@@ -1285,6 +1278,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         state.windowGlass = resolveWindowGlass(data.windowGlass);
         document.documentElement.setAttribute('data-glass-level', state.windowGlass);
       }
+
+      // Windows taskbar overlay, ahead of the empty-workspace return below:
+      // sessionSettingsLoaded is already true, so a skipped restore would let
+      // the StatusBar send the default "on" for someone who turned it off.
+      if (typeof data.taskbarBadgeEnabled === 'boolean') state.taskbarBadgeEnabled = data.taskbarBadgeEnabled;
 
       if (!data.workspaces || data.workspaces.length === 0) return;
 

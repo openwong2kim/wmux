@@ -266,6 +266,116 @@ fn shrink_lines_keeps_the_erased_run_of_the_row_left_at_the_bottom() {
     assert_eq!(grid[Line(1)].empty_from(), Some(0));
 }
 
+/// wmux: a grid of `lines` rows at 4 columns, each row of `text` written from
+/// its first column, the cursor on the top row, no history.
+fn rows_at_four(text: &[&str]) -> Grid<Cell> {
+    let mut grid = Grid::<Cell>::new(text.len(), 4, 10);
+    for (y, row) in text.iter().enumerate() {
+        for (x, c) in row.chars().enumerate() {
+            grid[Line(y as i32)][Column(x)] = cell(c);
+        }
+    }
+    grid.cursor.point = Point::new(Line(0), Column(0));
+    grid
+}
+
+fn text_of(grid: &Grid<Cell>, line: i32) -> String {
+    let row = &grid[Line(line)];
+    (0..row.len()).map(|x| row[Column(x)].c).collect::<String>().trim_end().to_string()
+}
+
+/// wmux: xterm narrows a paragraph below the cursor like one above: the cursor
+/// moves down one row per added row while there is room, and the bottom row
+/// (an empty one here) is dropped.
+#[test]
+fn shrink_reflow_below_cursor_drops_the_bottom_row() {
+    let mut grid = rows_at_four(&["ab", "1234", ""]);
+    grid.resize(true, 3, 2);
+    assert_eq!((0..3).map(|y| text_of(&grid, y)).collect::<Vec<_>>(), ["ab", "12", "34"]);
+    assert_eq!(grid.cursor.point.line, Line(1));
+    assert!(!grid.narrowing_clipped);
+}
+
+/// wmux: the row xterm drops is the last one of its buffer before the new rows
+/// go in. Here it is a reflowed paragraph's own row: xterm keeps its new row
+/// and loses its first, which this grid does not, so it says so.
+#[test]
+fn shrink_reflow_dropping_a_reflowed_row_is_recorded() {
+    let mut grid = rows_at_four(&["ab", "", "1234"]);
+    grid.resize(true, 3, 2);
+    assert!(grid.narrowing_clipped);
+    // Any later resize clears it.
+    grid.resize(true, 3, 4);
+    assert!(!grid.narrowing_clipped);
+}
+
+/// wmux: a lower paragraph's added row moves xterm's cursor row off the
+/// cursor's paragraph before xterm reaches it, so xterm reflows that one too.
+#[test]
+fn shrink_reflow_cursor_paragraph_reflowed_once_the_cursor_row_moved() {
+    let mut grid = rows_at_four(&["abcd", "1234", "", ""]);
+    grid.resize(true, 4, 2);
+    assert_eq!((0..4).map(|y| text_of(&grid, y)).collect::<Vec<_>>(), ["ab", "cd", "12", "34"]);
+    assert_eq!(grid.cursor.point, Point::new(Line(2), Column(0)));
+    assert!(!grid.narrowing_clipped);
+}
+
+/// wmux: and the row it moved to can be in another paragraph below the
+/// cursor, which xterm then leaves unreflowed (cut at the new width).
+#[test]
+fn shrink_reflow_skips_the_paragraph_the_moved_cursor_row_is_in() {
+    let mut grid = rows_at_four(&["x", "abcd", "1234", "", ""]);
+    grid.resize(true, 5, 2);
+    assert_eq!((0..5).map(|y| text_of(&grid, y)).collect::<Vec<_>>(), ["x", "ab", "12", "34", ""]);
+    assert!(!grid[Line(1)][Column(1)].flags().contains(Flags::WRAPLINE));
+    assert_eq!(grid.cursor.point.line, Line(1));
+}
+
+/// wmux: a row erased with a background color has no content for xterm, so
+/// a narrowing cuts it instead of wrapping its blank cells onto a new row.
+#[test]
+fn shrink_reflow_cuts_an_erased_row() {
+    use crate::vte::ansi::{Color, NamedColor};
+    let mut grid = Grid::<Cell>::new(3, 4, 10);
+    let mut bg = Cell::default();
+    bg.bg = Color::Named(NamedColor::Green);
+    for x in 0..4 {
+        grid[Line(1)][Column(x)] = bg.clone();
+    }
+    grid[Line(1)].mark_erased_from(0);
+    grid.cursor.point = Point::new(Line(0), Column(0));
+    grid.resize(true, 3, 2);
+    assert_eq!(grid.history_size(), 0);
+    assert!(!grid[Line(1)][Column(1)].flags.contains(Flags::WRAPLINE));
+    assert_eq!(grid[Line(1)].empty_from(), Some(0));
+}
+
+/// wmux: and so is the erase on a wrapped paragraph's last row, after the
+/// reflow carries the paragraph's cells in front of it.
+#[test]
+fn shrink_reflow_cuts_the_erase_on_a_wrapped_last_row() {
+    use crate::vte::ansi::{Color, NamedColor};
+    let mut grid = Grid::<Cell>::new(3, 4, 10);
+    for x in 0..3 {
+        grid[Line(1)][Column(x)] = cell('a');
+    }
+    grid[Line(1)][Column(3)] = wrap_cell('a');
+    grid[Line(2)][Column(0)] = cell('x');
+    let mut bg = Cell::default();
+    bg.bg = Color::Named(NamedColor::Green);
+    for x in 1..4 {
+        grid[Line(2)][Column(x)] = bg.clone();
+    }
+    grid[Line(2)].mark_erased_from(1);
+    grid.cursor.point = Point::new(Line(0), Column(0));
+    grid.resize(true, 3, 3);
+    // aaa | ax + erased: the erase is cut, not wrapped onto a third row.
+    assert_eq!(grid.history_size(), 0);
+    assert_eq!(grid[Line(2)][Column(0)], cell('a'));
+    assert_eq!(grid[Line(2)][Column(1)], cell('x'));
+    assert_eq!(grid[Line(2)].empty_from(), Some(2));
+}
+
 #[test]
 fn shrink_reflow_twice() {
     let mut grid = Grid::<Cell>::new(1, 5, 2);

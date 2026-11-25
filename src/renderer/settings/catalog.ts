@@ -168,6 +168,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'toast', tab: 'notifications', labelKey: 'settings.toast', descKey: 'settings.toastDesc', synonyms: 'toast popup banner' },
   { id: 'osnotify', tab: 'notifications', labelKey: 'settings.ring', descKey: 'settings.ringDesc', synonyms: 'system toast windows macos banner' },
   { id: 'catmute', tab: 'notifications', labelKey: 'settings.notificationCategories', descKey: 'settings.notificationCategoriesDesc', synonyms: 'mute category subagent approval' },
+  { id: 'taskbarbadge', tab: 'notifications', labelKey: 'settings.taskbarBadge', descKey: 'settings.taskbarBadgeDesc', synonyms: 'taskbar overlay badge unread count progress windows 작업 표시줄 배지 읽지 않은 진행', platform: 'win32' },
   { id: 'wsmute', tab: 'notifications', labelKey: 'settings.perWorkspaceNotifications', descKey: 'settings.perWorkspaceNotificationsDesc', synonyms: 'mute workspace quiet' },
   { id: 'wsprwake', tab: 'notifications', labelKey: 'settings.prWake', descKey: 'settings.prWakeDesc', synonyms: 'pull request ci checks review comment conflict nudge agent' },
   { id: 'labs-compact-scrollback', tab: 'labs', labelKey: 'settings.labsCompactScrollback', descKey: 'settings.labsCompactScrollbackDesc', synonyms: 'labs experimental memory ram scrollback compress 실험 메모리 압축 스크롤백' },

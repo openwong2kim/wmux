@@ -51,6 +51,7 @@ export const APP_SETTINGS = {
   'notifications.paneRing': BOOL,
   'notifications.paneFlash': BOOL,
   'notifications.taskbarFlash': BOOL,
+  'notifications.taskbarBadge': BOOL,
   'notifications.glowOpacity': { kind: 'number', min: 0.6, max: 1, step: 0.05 },
   'power.keepAwake': { kind: 'enum', values: SLEEP_PREVENTION_MODES },
   'titlebar.clock': BOOL,

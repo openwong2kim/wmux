@@ -284,8 +284,9 @@ export interface TranscriptAppendData {
 export type ChatSendResult = 'sent' | 'busy' | 'blocked' | 'unconfirmed' | 'session_changed' | 'unavailable' | 'error';
 /** `sent` means ESC reached the agent, not that the turn stopped; the transcript says that. */
 export type ChatInterruptResult = 'sent' | 'not_running' | 'blocked' | 'session_changed' | 'unavailable' | 'error';
-/** Opening Claude's Rewind picker in a terminal pane: `draft` = the composer holds text, `retry` = the two ESCs could not be sent close enough together. */
-export type ClaudeRewindResult = 'opened' | 'busy' | 'draft' | 'blocked' | 'retry' | 'unavailable' | 'error';
+/** Opening Claude's Rewind picker in a terminal pane: `draft` = the composer holds text, `unseen` = part of the composer
+ *  could not be seen (it may be empty), `retry` = the two ESCs could not be sent close enough together. */
+export type ClaudeRewindResult = 'opened' | 'busy' | 'draft' | 'unseen' | 'blocked' | 'retry' | 'unavailable' | 'error';
 /** A staged composer image, validated and thumbnailed by main. */
 export type ChatAttachmentPreview = { ok: true; path: string; name: string; bytes: number; thumbnail: string } | { ok: false; reason: 'type' | 'size' | 'missing' };
 
@@ -302,10 +303,11 @@ export interface ChatBridgeApi {
    * wrote nothing, `uncertain` may have written. An older daemon omits it.
    * `queued` marks a `sent` the agent's composer queued behind a running turn.
    * `reason: 'unsent-paste'`: refused because the pane's input box still holds
-   * an earlier message wmux pasted and did not submit.
+   * an earlier message wmux pasted and did not submit. `reason: 'input-unseen'`:
+   * refused because part of the input box could not be seen (it may be empty).
    */
   send: (args: { ptyId: string; agentSessionId: string; text: string; requestId?: string; attachments?: string[] }) => Promise<{
-    result: ChatSendResult; replayed?: boolean; effect?: 'none' | 'uncertain' | 'submitted'; queued?: true; reason?: 'unsent-paste';
+    result: ChatSendResult; replayed?: boolean; effect?: 'none' | 'uncertain' | 'submitted'; queued?: true; reason?: 'unsent-paste' | 'input-unseen';
   }>;
   /** ESC into the live terminal agent, only while its turn is running. */
   interrupt?: (args: { ptyId: string; agentSessionId: string }) => Promise<{ result: ChatInterruptResult }>;

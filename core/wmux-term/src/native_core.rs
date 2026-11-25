@@ -6,7 +6,7 @@ use crate::native_output::NativeOutputChunk;
 use crate::native_serialize::XtermControl;
 use crate::ring_pack::{PackedRing, PackedView};
 use alacritty_terminal::event::VoidListener;
-use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
+use alacritty_terminal::grid::{Dimensions, Grid};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
@@ -60,6 +60,9 @@ pub fn native_core_capabilities() -> Vec<String> {
         "console-owner-v1".into(),
         #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
         "process-table-v1".into(),
+        // Rows carry state, pgid, tpgid and created; cmdline with command lines.
+        #[cfg(target_os = "linux")]
+        "process-table-linux-v1".into(),
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         "listen-sockets-v1".into(),
         #[cfg(windows)]
@@ -78,6 +81,10 @@ pub struct NativeProcessRow {
     pub name: String,
     pub created: Option<f64>,
     pub cmdline: Option<String>,
+    /// Linux (`process-table-linux-v1`).
+    pub state: Option<String>,
+    pub pgid: Option<i32>,
+    pub tpgid: Option<i32>,
 }
 
 /// The rows JS receives, in one buffer reserved fallibly (one per process).
@@ -88,12 +95,21 @@ fn native_rows(
     rows: Vec<crate::process_table::ProcessRow>,
 ) -> std::result::Result<Vec<NativeProcessRow>, AllocFailed> {
     let mut out = fallible::try_with_capacity(rows.len(), "the process table for JS")?;
-    out.extend(rows.into_iter().map(|r| NativeProcessRow {
-        pid: r.pid,
-        ppid: r.ppid,
-        name: r.name,
-        created: r.created,
-        cmdline: r.cmdline,
+    out.extend(rows.into_iter().map(|r| {
+        let (state, pgid, tpgid) = match r.linux {
+            Some(d) => (Some(d.state), Some(d.pgid), Some(d.tpgid)),
+            None => (None, None, None),
+        };
+        NativeProcessRow {
+            pid: r.pid,
+            ppid: r.ppid,
+            name: r.name,
+            created: r.created,
+            cmdline: r.cmdline,
+            state,
+            pgid,
+            tpgid,
+        }
     }));
     Ok(out)
 }
@@ -152,6 +168,8 @@ impl Task for ProcessTableTask {
 
 /// The process table off the JS thread. With `with_command_lines`, each
 /// row also carries its creation time and command line where readable.
+/// Linux fills state, groups and creation time either way (one stat line per
+/// process) and reads command lines only with `with_command_lines`.
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 #[napi(catch_unwind)]
 pub fn process_table(env: Env, with_command_lines: bool) -> AsyncTask<ProcessTableTask> {
@@ -316,27 +334,6 @@ pub struct NativeTerminal {
     /// A grid allocation was refused: the terminal is gone and every call
     /// that needs it fails with GRID_REFUSED (`settle`).
     grid_refused: bool,
-}
-
-/// Whether narrowing to `cols` reflows a row below the cursor's paragraph on
-/// this grid: a soft-wrapped row there, or a row with content past the new
-/// width. A widen follows xterm's cursor rule (vendor grow_columns).
-fn reflows_below_cursor<T: GridCell>(grid: &Grid<T>, cols: usize) -> bool {
-    let old = grid.columns();
-    if cols >= old {
-        return false;
-    }
-    let last = Column(old - 1);
-    let lines = grid.screen_lines() as i32;
-    let mut y = grid.cursor.point.line.0;
-    while y + 1 < lines && grid[Line(y)][last].flags().contains(Flags::WRAPLINE) {
-        y += 1;
-    }
-    ((y + 1)..lines).any(|y| {
-        let row = &grid[Line(y)];
-        row[last].flags().contains(Flags::WRAPLINE)
-            || (cols..old).any(|x| !row[Column(x)].is_empty())
-    })
 }
 
 const C1: &str = "unsupported-state-c1: a C1 control, which Alacritty prints";
@@ -2505,11 +2502,6 @@ impl NativeTerminal {
                     self.refusal.get_or_insert(HISTORY_LIMIT);
                 }
             }
-            // Narrower, a paragraph below the cursor's that reflows: xterm moves
-            // its cursor row by the rows that adds as if they were above it and
-            // clips a different row than Alacritty does. (A widen follows xterm's
-            // rule in the vendored grow_columns.)
-            let primary = main_grid(term);
             // xterm resizes its alternate screen's cursor without a reflow, and
             // the round trip's `?47l` then hands it to the main screen.
             let resized =
@@ -2517,11 +2509,6 @@ impl NativeTerminal {
             if self.feed.round_trip && resized {
                 self.refusal
                     .get_or_insert("unsupported-state-mode: a resize between ?47h and ?47l");
-            }
-            if reflows_below_cursor(primary, cols as usize) {
-                self.refusal.get_or_insert(
-                    "unsupported-reflow: a paragraph below the cursor reflows, which moves xterm's cursor off its row",
-                );
             }
             // Both terminals reset the margins of both screens on a size change.
             if resized {
@@ -2581,6 +2568,14 @@ impl NativeTerminal {
             let narrows = size.columns() < term.columns();
             term.resize(size);
             let grid = main_grid(term);
+            // Narrower, xterm dropped rows of a paragraph it reflowed below the
+            // cursor: it keeps that paragraph's last rows, this grid its first
+            // (vendor shrink_columns, `NarrowingPlan`).
+            if narrows && grid.narrowing_clipped {
+                self.refusal.get_or_insert(
+                    "unsupported-reflow: a narrowing drops rows of a paragraph it reflowed, which xterm keeps from its end",
+                );
+            }
             self.feed.saved[0].history = if narrows && grid.narrowing_added > 0 {
                 narrowed_saved_history(grid, self.feed.saved[0].history, saved_line)
             } else {

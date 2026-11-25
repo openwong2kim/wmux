@@ -4,7 +4,8 @@
 // run is a PTY whose root is the wrapper shell, and an agent can leave tool
 // subprocesses in their own process groups. So, on POSIX:
 //   1. freeze: SIGSTOP the root and every descendant found by walking
-//      `ps -axo pid,ppid`, rescanning until no new descendant appears (a
+//      `ps -axo pid,ppid` (on Linux the native process table when it reads),
+//      rescanning until no new descendant appears (a
 //      frozen parent cannot fork a child the next scan would miss);
 //   2. SIGKILL everything found, leaves first, then the PTY's process group
 //      (the PTY root is a session leader, so its pgid is its pid) and the root.
@@ -13,6 +14,7 @@
 
 import { execFile } from 'node:child_process';
 import path from 'node:path';
+import { readLinuxProcessTable } from '../nativeProcessTable';
 
 /** Every descendant of `root` (root included), from `pid ppid` rows. */
 export function collectDescendants(rows: ReadonlyArray<readonly [number, number]>, root: number): number[] {
@@ -47,13 +49,19 @@ export interface TreeKillDeps {
 /** Freeze-and-rescan rounds before the kill. */
 export const TREE_KILL_SCAN_ROUNDS = 4;
 
+/** `pid ppid` rows: on Linux the native table when it reads, else `ps`; [] when neither can be read. */
+export async function listProcessPairs(): Promise<Array<[number, number]>> {
+  const native = await readLinuxProcessTable(false);
+  if (native) return native.map((r): [number, number] => [r.pid, r.ppid]);
+  return new Promise((resolve) => {
+    execFile('/bin/ps', ['-axo', 'pid=,ppid='], { timeout: 2000, maxBuffer: 4 * 1024 * 1024 }, (error, output) => {
+      resolve(error ? [] : parsePsRows(output ?? ''));
+    });
+  });
+}
+
 const defaultDeps: TreeKillDeps = {
-  listProcesses: () =>
-    new Promise((resolve) => {
-      execFile('/bin/ps', ['-axo', 'pid=,ppid='], { timeout: 2000, maxBuffer: 4 * 1024 * 1024 }, (error, output) => {
-        resolve(error ? [] : parsePsRows(output ?? ''));
-      });
-    }),
+  listProcesses: listProcessPairs,
   signal: (pid, sig) => process.kill(pid, sig),
 };
 

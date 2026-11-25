@@ -1,3 +1,5 @@
+// @wmux-lane unit
+// 'win32' is only the view's platform prop here; nothing reads process.platform or the OS.
 /**
  * Tests for the SettingsPanel notifications section (T12).
  *
@@ -63,6 +65,8 @@ function makeProps(overrides: Partial<NotificationsViewProps> = {}): Notificatio
     onChangePaneFlashEnabled: noopBool,
     taskbarFlashEnabled: true,
     onChangeTaskbarFlashEnabled: noopBool,
+    taskbarBadgeEnabled: true,
+    onChangeTaskbarBadgeEnabled: noopBool,
     notificationSoundChoice: 'default',
     workspaces: [],
     onChangeWorkspaceMuted: noopMute,
@@ -160,6 +164,16 @@ describe('NotificationsView — child rows follow the pane ring', () => {
     expect(mac).toContain('settings.taskbarFlashDesc.darwin');
     expect(switchTag(win, 'settings.taskbarFlash')).not.toBe('');
     expect(win).toContain('settings.taskbarFlashDesc<');
+  });
+
+  it('shows the taskbar overlay switch on Windows only', () => {
+    for (const platform of ['darwin', 'linux', undefined]) {
+      const html = renderToStaticMarkup(createElement(NotificationsView, makeProps({ platform })));
+      expect(html).not.toContain('settings.taskbarBadge');
+    }
+    const win = renderToStaticMarkup(createElement(NotificationsView, makeProps({ platform: 'win32', taskbarBadgeEnabled: false })));
+    expect(switchTag(win, 'settings.taskbarBadge')).toMatch(/aria-checked="false"/);
+    expect(win).toContain('data-setting-id="taskbarbadge"');
   });
 });
 

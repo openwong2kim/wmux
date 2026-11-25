@@ -34,6 +34,7 @@ import type { DaemonSessionManager } from '../../DaemonSessionManager';
 import type { ProcessTreeEntry } from '../../AgentProcessTracker';
 import type { AgentStopResult } from '../../agentStop';
 import type { ResumeBinding } from '../../../shared/agentResume';
+import type { ChatSkillCatalog } from '../../../shared/transcript/chatSkills';
 
 /** The push's DaemonEvent type, checked against the union in shared/rpc.ts. */
 export const CHATV2_DAEMON_EVENT: DaemonEvent['type'] = CHATV2_PUSH_EVENT;
@@ -54,6 +55,8 @@ export interface ChatV2DriverStart {
   mode: ChatV2RunMode;
   /** '' = the agent's default. Otherwise `CHATV2_MODEL`, passed as one `--model=<id>` argument. */
   model: string;
+  /** '' = the agent's default. Otherwise one of `CHATV2_AGENT_CAPS[agent].efforts`. */
+  effort?: string;
   /**
    * The agent conversation id (`CHATV2_PROVIDER_SESSION_ID`). `new`: start a
    * conversation with this id (Claude `--session-id`); `resume`: continue it
@@ -69,10 +72,14 @@ export interface ChatV2DriverStart {
   chatSessionId?: string;
 }
 
-/** A user turn as the driver sends it. Attachments are staged paths the host already checked. */
+/**
+ * A user turn as the driver sends it, attachments already checked by the host:
+ * an `image` is a staged copy the driver reads and sends; a `file` is a path
+ * the driver names to the agent and never reads.
+ */
 export interface ChatV2DriverTurn {
   text: string;
-  attachments: Array<{ path: string; mimeType: string }>;
+  attachments: Array<{ path: string; mimeType: string; kind?: 'image' | 'file' }>;
 }
 
 /**
@@ -155,6 +162,15 @@ export interface ChatV2Driver {
   answer(requestId: string, reply: NativeDecisionReply): Promise<NativeDecisionOutcome>;
   /** Stop the process tree (`agentProcess.ts` tree kill, never a bare `child.kill`) and wait until it is reaped. */
   stop(): Promise<void>;
+  /**
+   * Apply a model and effort ('' = the agent's default) to the running agent
+   * between turns. `live`: the agent confirmed it. `restart` (or absent): the
+   * host restarts the agent on the same conversation with the new options.
+   * `refused`: the agent does not take them; nothing changes.
+   */
+  configure?(change: { model: string; effort: string }): Promise<'live' | 'restart' | 'refused'>;
+  /** The model and effort the agent runs with now, as far as the driver knows ('' = its default). */
+  settings?(): { model: string; effort: string };
 }
 
 export type ChatV2DriverFactory = (agent: HarnessId) => ChatV2Driver | null;
@@ -268,6 +284,8 @@ export interface ChatV2HostDeps {
   killTree: (pid: number) => Promise<void>;
   /** Defaults to the built-in drivers. Tests pass fakes. */
   drivers?: ChatV2DriverFactory;
+  /** Defaults to `loadChatSkills`. Tests pass fakes. */
+  loadSkills?: (agent: string, cwd: string, env: Record<string, string | undefined>) => Promise<ChatSkillCatalog>;
   /** Where a new driver runs (default: `driverCwd` in cwd.ts). Tests pass fakes. */
   driverCwd?: (meta: { spawnCwd?: string; pid?: number }) => Promise<string | undefined>;
   /**

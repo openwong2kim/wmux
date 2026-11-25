@@ -17,6 +17,7 @@ import {
   type ChatV2ResyncPush,
 } from '../../../../shared/chatv2/ipc';
 import { newChatSession, sessionNeedsInput, type Session } from '../../../../shared/chatv2/session';
+import type { ChatSkillCatalog } from '../../../../shared/transcript/chatSkills';
 
 interface Record_ {
   binding: ChatV2Binding;
@@ -51,6 +52,8 @@ export interface MockHost extends ChatV2BridgeApi {
   nextCwd?: string;
   /** Fail the next `bodies` call at or past this offset (once). */
   failBodiesAt?: number;
+  /** What `skills` answers. */
+  skillCatalog?: ChatSkillCatalog;
 }
 
 let epochCounter = 0;
@@ -261,6 +264,18 @@ export function createMockHost(options: MockHostOptions = {}): MockHost {
       records.delete(params.paneId);
       return { ok: true };
     },
+    async configure(params) {
+      const record = find(params);
+      if (!record) return notFound();
+      if (record.session.busy) return chatV2Error('turn-running', 'The agent is still working.');
+      if (params.model !== undefined) record.binding = { ...record.binding, model: params.model };
+      emit(params.paneId, [{ type: 'session.configChanged', ...(params.model !== undefined ? { model: params.model } : {}), ...(params.effort !== undefined ? { modelSettings: { effort: params.effort } } : {}) }], true);
+      return { ok: true, binding: record.binding, applied: 'live' };
+    },
+    async skills(params) {
+      if (!find(params)) return notFound();
+      return { ok: true, catalog: host.skillCatalog ?? { skills: [], state: 'unavailable' } };
+    },
   };
 
   const host: MockHost = {
@@ -274,6 +289,9 @@ export function createMockHost(options: MockHostOptions = {}): MockHost {
     },
     async stageAttachment() {
       return { ok: false, reason: 'missing' };
+    },
+    async pickAttachments() {
+      return [];
     },
     onEvents(listener) {
       eventListeners.add(listener);

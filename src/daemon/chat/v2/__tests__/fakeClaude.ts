@@ -18,10 +18,14 @@ export class FakeClaude {
   readonly reaped: number[] = [];
   /** Answer the initialize handshake (false: never answer). */
   handshake = true;
+  /** How other control requests (set_model, apply_flag_settings) are answered; undefined = never. */
+  controlAnswer: ((subtype: string) => 'success' | 'error' | 'unsupported' | undefined) | null = null;
   /** Ignore stdin EOF and kills (a process that will not die). */
   stubborn = false;
   /** Ignore stdin EOF but die on a kill (a hung agent). */
   ignoresEof = false;
+  /** Exit with code 1 right after spawning (an agent that fails to start). */
+  exitOnSpawn = false;
   /** Tree kills the backend sent. */
   kills = 0;
   private child: (EventEmitter & { stdout: PassThrough; stderr: PassThrough; exitCode: number | null; pid: number }) | null = null;
@@ -54,6 +58,12 @@ export class FakeClaude {
           if (line.type === 'control_request' && request?.subtype === 'initialize' && this.handshake) {
             this.out({ type: 'control_response', response: { subtype: 'success', request_id: line.request_id, response: {} } });
           }
+          else if (line.type === 'control_request' && request && request.subtype !== 'initialize' && request.subtype !== 'interrupt') {
+            const answer = this.controlAnswer?.(String(request.subtype));
+            if (answer === 'success') this.out({ type: 'control_response', response: { subtype: 'success', request_id: line.request_id, response: {} } });
+            else if (answer === 'error') this.out({ type: 'control_response', response: { subtype: 'error', request_id: line.request_id, error: 'set_model: refused', error_code: 'invalid_request' } });
+            else if (answer === 'unsupported') this.out({ type: 'control_response', response: { subtype: 'error', request_id: line.request_id, error: `Unsupported control request subtype: ${String(request.subtype)}`, error_code: 'unsupported_request' } });
+          }
         }
         callback();
       },
@@ -61,7 +71,7 @@ export class FakeClaude {
     stdin.on('finish', () => { if (!this.stubborn && !this.ignoresEof) this.exit(0, null); });
     const child = Object.assign(new EventEmitter(), { stdin, stdout, stderr, pid: nextPid++, exitCode: null as number | null, signalCode: null });
     this.child = child;
-    setImmediate(() => child.emit('spawn'));
+    setImmediate(() => { child.emit('spawn'); if (this.exitOnSpawn) this.exit(1, null); });
     return child as unknown as ChildProcessWithoutNullStreams;
   }
 

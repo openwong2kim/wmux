@@ -2,6 +2,7 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child
 import path from 'node:path';
 import launch from 'cross-spawn';
 import { findExecutable } from '../../shared/exeSearch';
+import { listProcessPairs } from '../automation/treeKill';
 
 /** Own a process group; never run executable strings through a user shell. */
 export function spawnAgent(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): ChildProcessWithoutNullStreams {
@@ -27,9 +28,8 @@ export function stopAgent(child: ChildProcessWithoutNullStreams): void {
   }
   // Some tools start their own process group. Walk parentage before terminating
   // the root, then signal descendants while the original child is still live.
-  execFile('/bin/ps', ['-axo', 'pid=,ppid='], { timeout: 2000, maxBuffer: 4 * 1024 * 1024 }, (_error, output) => {
+  void listProcessPairs().then((rows) => {
     if (child.exitCode !== null || child.signalCode !== null) return;
-    const rows = output.split('\n').map((line) => line.trim().split(/\s+/).map(Number));
     const descendants = new Set<number>([pid]);
     for (let changed = true; changed;) {
       changed = false;

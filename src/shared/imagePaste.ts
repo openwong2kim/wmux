@@ -128,11 +128,19 @@ export function remoteShellClient(image: string | null | undefined): string | nu
  * then keeps today's paste.
  */
 export function foregroundRemoteShellClient(psOutput: string, shellPid: number): string | null {
-  const rows = new Map<number, { pgid: number; tpgid: number; comm: string }>();
+  const rows = new Map<number, ForegroundRow>();
   for (const line of psOutput.split('\n')) {
     const m = /^\s*(\d+)\s+(\d+)\s+(-?\d+)\s+(.+?)\s*$/.exec(line);
     if (m) rows.set(Number(m[1]), { pgid: Number(m[2]), tpgid: Number(m[3]), comm: m[4] });
   }
+  return foregroundClientOf(rows, shellPid);
+}
+
+/** One process in foregroundClientOf's table: `ps -o pgid,tpgid,comm`. */
+export interface ForegroundRow { pgid: number; tpgid: number; comm: string }
+
+/** foregroundRemoteShellClient over rows already read, keyed by pid. */
+export function foregroundClientOf(rows: ReadonlyMap<number, ForegroundRow>, shellPid: number): string | null {
   const shell = rows.get(shellPid);
   if (!shell || shell.tpgid <= 0 || shell.tpgid === shell.pgid) return null;
   const leader = rows.get(shell.tpgid);

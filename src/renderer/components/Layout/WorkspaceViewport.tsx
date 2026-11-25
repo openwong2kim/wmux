@@ -21,6 +21,8 @@ import { ALL_PANE_CORNERS } from '../Pane/paneCorners';
 import { multiviewGridStyle, type MultiviewArrangement } from '../../utils/multiviewGrid';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import { selectWorkerPanelHost } from '../../stores/slices/roomSlice';
+import { isTerminalOnlyWorkspace } from '../../stores/slices/workspaceSlice';
+import { TerminalsParkedContext } from '../Pane/terminalsParked';
 import type { Workspace } from '../../../shared/types';
 
 /** One single-view workspace pane subtree. Inactive → display:none (kept mounted).
@@ -31,9 +33,10 @@ import type { Workspace } from '../../../shared/types';
  * workspace count. A parked slot is always hidden (parked ⇒ not active, or
  * the Bots page covers it while hosting the workspace), so the placeholder is
  * never visible; it exists only to keep the mount slot alive.
- * Only terminal-only workspaces are ever parked (sweepColdPark gates on
- * isTerminalOnlyWorkspace), so unmounting here can never drop a browser webview
- * session or unsaved editor state — those have no daemon-side replay. */
+ * A parked workspace that also holds a browser, editor, diff or other
+ * non-terminal surface keeps its PaneContainer mounted, so a webview session or
+ * unsaved editor state (neither has a daemon-side replay) is never dropped;
+ * only its local terminals unmount (TerminalsParkedContext). */
 export const WorkspaceSlot = memo(function WorkspaceSlot({
   workspace,
   isActive,
@@ -52,8 +55,10 @@ export const WorkspaceSlot = memo(function WorkspaceSlot({
         flexDirection: 'column',
       }}
     >
-      {parked ? null : (
-        <PaneContainer pane={workspace.rootPane} workspace={workspace} isWorkspaceVisible={isActive} corners={isActive ? ALL_PANE_CORNERS : undefined} />
+      {parked && isTerminalOnlyWorkspace(workspace) ? null : (
+        <TerminalsParkedContext.Provider value={parked === true}>
+          <PaneContainer pane={workspace.rootPane} workspace={workspace} isWorkspaceVisible={isActive} corners={isActive ? ALL_PANE_CORNERS : undefined} />
+        </TerminalsParkedContext.Provider>
       )}
     </div>
   );

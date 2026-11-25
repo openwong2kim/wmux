@@ -2,9 +2,35 @@ import { deliverScheduledPrompt, type ScheduledPromptDeliveryDeps } from '../ses
 import type { ChatSendResult } from '../../shared/transcript/turnEvents';
 import { screenBlocksChatSend, titleShowsRunningTurn } from './chatScreenGate';
 import { quoteImagePathForPty } from '../../shared/imagePaste';
+import { UNKNOWN_CELL } from '../sessionTextReplay';
 
-/** Screen rows, optionally with a dim-blanked copy of each row (same indexes). */
-export type ChatScreenRows = readonly string[] & { readonly undimmed?: readonly string[] };
+/**
+ * Screen rows, optionally with a dim-blanked copy of each row (same indexes),
+ * and a copy with UNKNOWN_CELL for each cell the read could not see (no byte
+ * left in the ring or its screen checkpoint wrote it), where the rows have a
+ * blank. `unknown` is present only when there is such a cell.
+ */
+export type ChatScreenRows = readonly string[] & { readonly undimmed?: readonly string[]; readonly unknown?: readonly string[] };
+
+/** Trailing spaces only: a no-break space (Claude's `❯\u00a0`) is content. */
+const trimSpaces = (text: string): string => text.replace(/ +$/, '');
+
+/**
+ * ChatScreenRows from a screen read taken with its unknown cells marked
+ * (queuedScreenText's keepUnknown): the rows and their undimmed copies with
+ * those cells blank, and the marked rows under `unknown` when there is one.
+ */
+export function chatScreenRowsOf(read: readonly { text: string; undimmed?: string }[]): ChatScreenRows {
+  const blank = (text: string): string => (text.includes(UNKNOWN_CELL) ? trimSpaces(text.split(UNKNOWN_CELL).join(' ')) : text);
+  const marked = read.map((row) => row.text);
+  const unknown = marked.some((row) => row.includes(UNKNOWN_CELL)) ? { unknown: marked } : {};
+  return Object.assign(marked.map(blank), { undimmed: read.map((row) => blank(row.undimmed ?? row.text)), ...unknown });
+}
+
+/** A cell the read could not see, from row `from` down: it may hold a draft's text or a dialog's row. */
+export function unseenFrom(rows: ChatScreenRows, from: number): boolean {
+  return !!rows.unknown?.slice(Math.max(0, from)).some((row) => row.includes(UNKNOWN_CELL));
+}
 
 export interface ChatDeliveryDeps extends ScheduledPromptDeliveryDeps {
   getTranscriptSessionId: () => string | undefined;
@@ -17,6 +43,8 @@ export interface ChatDeliveryDeps extends ScheduledPromptDeliveryDeps {
   steer?: boolean;
   /** Why a `blocked` answer came from the screen: a dialog on it, or no composer at all. */
   onScreenHold?: (why: 'dialog' | 'no-composer') => void;
+  /** An `unconfirmed` answer came from cells of the composer the screen read could not see, not from a draft. */
+  onInputUnseen?: () => void;
   /** The pane's latest window title and when it was set (`at` 0 = never). */
   readTitle?: () => { title: string; at: number } | null;
 }
@@ -45,6 +73,9 @@ export async function deliverChatPrompt(
   // Mid-turn, a draft typed in Terminal would be joined the same way. Only the
   // empty composer on screen is permission for either (running stays 'busy').
   const claudeEmpty = initial.slug === 'claude' && claudeComposerEmpty(rows);
+  // Not empty because some of it could not be seen: say so rather than "a draft".
+  // (Only Claude's composer is drawn this way, so the layout itself names the agent.)
+  if (!claudeEmpty && claudeComposerUnseen(rows)) deps.onInputUnseen?.();
   // A delayed (queued) message is typed with nobody watching: whatever the
   // status reads, only an empty composer on screen is permission. A draft in
   // a visible composer is `unconfirmed`; no composer at all (a usage screen,
@@ -163,7 +194,23 @@ export function claudeComposerEmpty(rows: ChatScreenRows | null): boolean {
   tail.forEach((row, index) => { if (/^❯(?:\s|$)/.test(row)) at = index; });
   // A fresh session dims a suggestion into the empty prompt: `❯ Try "…"`.
   const empty = /^❯(?: Try "[^"]*")?$/.test(tail[at] ?? '') || /^❯$/.test(rows.undimmed?.[at]?.trim() ?? '');
-  return at > 0 && empty && claudeTopRule(rows, at, at + 1) && claudeRule(tail[at + 1]);
+  return at > 0 && empty && claudeTopRule(rows, at, at + 1) && claudeRule(tail[at + 1]) && !unseenFrom(rows, at - 1);
+}
+
+/** A chat send refused because the composer could not be seen whole: what the person is told. */
+export const UNSEEN_INPUT_CHAT_DETAIL =
+  "wmux can't confirm the agent's input box is empty yet: part of it has not been redrawn since its output history was trimmed. Resizing the pane redraws it";
+
+/**
+ * The Claude composer is on screen, and cells of it (from its top rule down)
+ * are ones the screen read could not see: it may be empty, it may hold a
+ * draft, and the screen cannot tell which until Claude redraws them.
+ */
+export function claudeComposerUnseen(rows: ChatScreenRows | null): boolean {
+  if (!rows || !claudeComposerVisible(rows)) return false;
+  let at = -1;
+  rows.forEach((row, index) => { if (/^❯(?:\s|$)/.test(row.trim())) at = index; });
+  return at > 0 && unseenFrom(rows, at - 1);
 }
 
 /** The Claude composer is on screen (prompt row between two rules), empty or not. */
@@ -189,6 +236,8 @@ export function claudeComposerRows(rows: ChatScreenRows | null): { rows: string[
   const end = tail.findIndex((row, index) => index > at && claudeRule(row));
   // Continuation rows are indented under the `❯`; anything else is not the composer.
   if (end < 0 || !claudeTopRule(rows, at, end) || rows.slice(at + 1, end).some(row => !/^\s{2}/.test(row) && row.trim())) return null;
+  // Rows the read could not see wholly are no composer it can show.
+  if (unseenFrom(rows, at - 1)) return null;
   const width = tail[at - 1].length;
   if (claudeComposerEmpty(rows)) return { rows: [], width };
   // Claude draws a no-break space after the `❯` (Claude Code 2.1, captured live).
@@ -264,7 +313,7 @@ export function codexComposerEmpty(rows: ChatScreenRows | null): boolean {
   const tail = rows.map(row => row.trimEnd());
   const prompts = tail.flatMap((row, index) => /^\s*› /.test(row) ? [index] : []);
   const at = prompts.at(-1);
-  if (at === undefined) return false;
+  if (at === undefined || unseenFrom(rows, at)) return false;
   // The placeholder's words prove nothing on their own (a draft can hold
   // them); with the dim-blanked copy, only a bare `›` there is empty.
   const empty = rows.undimmed
