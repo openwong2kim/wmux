@@ -57,6 +57,18 @@ describe('WSL per-launch Claude integration', () => {
     expect(build({}).some((e) => e.startsWith('CLAUDE_CODE_SANDBOXED'))).toBe(false);
   });
 
+  it('a worker pane\'s DISABLE_AUTOUPDATER reaches Linux claude; an ordinary pane\'s env is not sent', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-test-')); dirs.push(dir);
+    const build = (env: Record<string, string>) => buildWslInjection({
+      target: { distribution: 'test', user: 'test' }, cwd: dir, env: { HOME: dir, PATH: '/usr/bin:/bin', ...env },
+      integrationDir: dir, bashInit: BASH_INIT, runtimePath: process.execPath, bridgePath: '/unused-bridge',
+    }).env.WSLENV.split(':');
+    expect(build({ CLAUDE_CODE_SANDBOXED: '1', DISABLE_AUTOUPDATER: '1' })).toContain('DISABLE_AUTOUPDATER/u');
+    expect(build({ CLAUDE_CODE_SANDBOXED: '1', DISABLE_AUTOUPDATER: '0' })).toContain('DISABLE_AUTOUPDATER/u');
+    expect(build({ DISABLE_AUTOUPDATER: '1' }).some((e) => e.startsWith('DISABLE_AUTOUPDATER'))).toBe(false);
+    expect(build({ CLAUDE_CODE_SANDBOXED: '1' }).some((e) => e.startsWith('DISABLE_AUTOUPDATER'))).toBe(false);
+  });
+
   it('uses scoped settings and the existing Windows bridge without writing user settings', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-test-')); dirs.push(dir);
     const injected = buildWslInjection({

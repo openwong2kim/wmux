@@ -74,6 +74,7 @@ import {
 } from '../../shared/ledger';
 import { sanitizeTaskCriteria, gradeNonCodeEvidence } from '../../shared/nonCodeTaskEvidence';
 import { A2A_REMOTE_MESSAGE_ID_RE, parseA2aRemoteProgress } from '../../shared/a2aRemote';
+import { SPAWN_BASE_NOTE_MAX } from '../../shared/a2aSpawn';
 import type { CompletionEvidence } from '../../shared/types';
 
 export const LEDGER_FILENAME = 'task-ledger.jsonl';
@@ -324,6 +325,7 @@ export function copyRemote(r: unknown): LedgerRemote | null {
     ...(typeof o.linkId === 'string' && UUID_RE.test(o.linkId) ? { linkId: o.linkId } : {}),
     ...(boundedText(o.a2aTaskId, 128) ? { a2aTaskId: o.a2aTaskId } : {}),
     ...(typeof o.branchOnPc === 'string' && BRANCH_ON_PC_RE.test(o.branchOnPc) ? { branchOnPc: o.branchOnPc } : {}),
+    ...(boundedText(o.baseNote, SPAWN_BASE_NOTE_MAX) ? { baseNote: o.baseNote } : {}),
     ...(o.withdrawn === true ? { withdrawn: true as const } : {}),
     ...(o.revoked === true ? { revoked: true as const } : {}),
     ...(typeof o.requestDigest === 'string' && /^[0-9a-f]{64}$/.test(o.requestDigest) ? { requestDigest: o.requestDigest } : {}),

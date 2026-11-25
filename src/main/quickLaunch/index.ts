@@ -23,6 +23,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { IPC, dataSuffix } from '../../shared/constants';
 import { firstRunEnvForAgent } from '../../shared/agentFirstRun';
+import { workerAutoUpdateEnv } from '../worktask/fanoutEnvironment';
 import { reservedAccelerators, resolveForPlatform } from '../../shared/keymap';
 import {
   formatAccelerator,
@@ -149,7 +150,8 @@ export async function launchQuick(
     return { ok: false, error: `Could not save the prompt: ${(err as Error).message}` };
   }
   const launch = workerLaunchCommand('claude', promptPath);
-  const env = firstRunEnvForAgent(agentChoice?.agent ?? 'claude');
+  // An agent wmux starts: its updater stays off unless the user's env sets it (workerAutoUpdateEnv).
+  const env = { ...workerAutoUpdateEnv(), ...firstRunEnvForAgent(agentChoice?.agent ?? 'claude') };
   try {
     const spawned = (await sendToRenderer(
       deps.getMainWindow,

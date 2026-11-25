@@ -152,6 +152,9 @@ export interface LedgerRemote {
   /** The branch the agent works on, on that PC (set once it started; the
    *  branch name follows from the other PC's mode, which the link shows). */
   branchOnPc?: string;
+  /** That PC's word on why the agent's branch starts at its HEAD instead of
+   *  its origin's fetched base (A2aSpawnResultV1.baseNote, one line). */
+  baseNote?: string;
   /** The task was closed (or expired) here: a start that arrives later is
    *  ended at once instead of left running. */
   withdrawn?: true;

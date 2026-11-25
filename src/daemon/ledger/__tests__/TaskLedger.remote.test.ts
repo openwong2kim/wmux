@@ -152,5 +152,9 @@ describe('a remote task row', () => {
   it('copyRemote keeps only the fields it knows, each checked', () => {
     expect(copyRemote({ ...REMOTE, extra: 1, withdrawn: 'yes', revoked: 1, branchOnPc: 'main' })).toEqual(REMOTE);
     expect(copyRemote({ ...REMOTE, spawnId: 'sp-x' })).toBeNull();
+    // That PC's base note: one line, bounded.
+    expect(copyRemote({ ...REMOTE, baseNote: 'fetch failed; from HEAD' })).toEqual({ ...REMOTE, baseNote: 'fetch failed; from HEAD' });
+    expect(copyRemote({ ...REMOTE, baseNote: 'a\nb' })).toEqual(REMOTE);
+    expect(copyRemote({ ...REMOTE, baseNote: 'x'.repeat(601) })).toEqual(REMOTE);
   });
 });

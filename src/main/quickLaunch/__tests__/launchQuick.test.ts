@@ -25,6 +25,7 @@ const deps = { getMainWindow: () => null, fanOutService: {} as FanOutService };
 
 describe('launchQuick', () => {
   beforeEach(() => {
+    vi.stubEnv('DISABLE_AUTOUPDATER', undefined);
     h.home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-ql-home-'));
     h.sendToRenderer.mockReset();
     h.startGuiFanOut.mockReset();
@@ -66,10 +67,23 @@ describe('launchQuick', () => {
     expect(params).toMatchObject({ cwd: '/repo', agentChoice: { agent: 'codex' }, nestUnder: 'ws-1' });
     expect(params.fanoutTaskOf).toBeUndefined();
     expect(params.workerPermissionMode).toBeUndefined();
+    // An agent wmux starts: its updater is off (it would rewrite the launcher every pane runs).
+    expect(params.env).toMatchObject({ DISABLE_AUTOUPDATER: '1' });
     // The prompt is read from a file, never typed into the shell: `cat '…'`
     // on POSIX, `Get-Content -LiteralPath '…'` in PowerShell on Windows.
     const file = /(?:cat|-LiteralPath) '([^']+)'/.exec(params.initialCommand)?.[1];
     expect(file && fs.readFileSync(file, 'utf8')).toBe('fix it');
+  });
+
+  it('keeps the user\'s own DISABLE_AUTOUPDATER for the current checkout', async () => {
+    vi.stubEnv('DISABLE_AUTOUPDATER', '0');
+    try {
+      await launchQuick({ prompt: 'fix it', workspaceId: 'ws-1', agent: { kind: 'agent', agent: 'codex' }, checkout: 'current' }, deps);
+      const [, , params] = h.sendToRenderer.mock.calls[1];
+      expect(params.env?.DISABLE_AUTOUPDATER).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('refuses a workspace without a folder', async () => {

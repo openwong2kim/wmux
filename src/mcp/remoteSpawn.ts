@@ -31,6 +31,7 @@ const SHAPE = {
   agent: z.string().max(64).optional().describe('An agent the other PC allows, e.g. claude or codex.'),
   root: z.string().max(64).optional().describe('A folder id the other PC allows (remote_spawn with no pc lists them).'),
   sub: z.string().max(512).optional().describe('A relative path under that folder.'),
+  base: z.string().min(1).max(200).optional().describe('A branch of that PC\'s origin to start from (default: its origin\'s default branch). If that PC cannot fetch it, the agent starts from its HEAD and the request\'s baseNote says why.'),
   prompt: z.string().optional().describe('The first instruction.'),
   expires_in_hours: z.number().int().min(1).max(72).optional().describe('How long it may wait for that PC (default 24).'),
   spawn_id: z.string().max(64).optional().describe('Read this request (never asks). With neither pc nor spawn_id, lists every request and what each PC allows.'),
@@ -132,7 +133,7 @@ export function registerRemoteSpawnTools(server: McpServer, deps: RemoteSpawnToo
     'Ask a paired PC to start an agent there in a folder it allows, with a first prompt; its replies come to your pane as a task. ' +
       'That PC decides (its card or rule); if it is off, the request waits until it is on. With spawn_id (or no pc), read requests and what each PC allows instead.',
     SHAPE,
-    async ({ pc, agent, root, sub, prompt, expires_in_hours, spawn_id }) => {
+    async ({ pc, agent, root, sub, base, prompt, expires_in_hours, spawn_id }) => {
       try {
         let result: unknown;
         // spawn_id reads, whatever else is given: a read never sends a request.
@@ -148,6 +149,7 @@ export function registerRemoteSpawnTools(server: McpServer, deps: RemoteSpawnToo
           }
           const params: Record<string, unknown> = { pc, agent, root, prompt };
           if (sub !== undefined) params['sub'] = sub;
+          if (base !== undefined) params['base'] = base;
           if (expires_in_hours !== undefined) params['expiresInHours'] = expires_in_hours;
           const pty = deps.getSenderPtyId();
           if (pty) params['senderPtyId'] = pty;

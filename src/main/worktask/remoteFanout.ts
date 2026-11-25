@@ -155,6 +155,8 @@ export interface RemoteTaskResult {
   a2aTaskId?: string;
   /** The branch the agent works on, on that PC (once it started). */
   branchOnPc?: string;
+  /** That PC's word on why that branch starts at its HEAD, not its origin's fetched base (once it started). */
+  baseNote?: string;
   /** Why it failed or will not run, in words. */
   reason?: string;
   /** What the agent waits on while the task stays open (kinds only); `pc-full`: wmux holds it for a PC with room. */
@@ -352,6 +354,7 @@ function resultOf(index: number, title: string, entry: LedgerEntry, channelId: s
       ...(r.linkId ? { linkId: r.linkId } : {}),
       ...(r.a2aTaskId ? { a2aTaskId: r.a2aTaskId } : {}),
       ...(r.branchOnPc ? { branchOnPc: r.branchOnPc } : {}),
+      ...(r.baseNote ? { baseNote: r.baseNote } : {}),
       ...(r.state === 'refused' || r.state === 'expired' ? { reason: remoteCodeText(r.code, r.pc, promptBytes) } : {}),
       ...(r.waiting && !failed ? { pending: { waitingOn: r.waiting.on, ...(r.waiting.question ? { question: r.waiting.question } : {}), ...(r.waiting.resetsAt ? { resetsAt: r.waiting.resetsAt } : {}) } } : {}),
       ...(r.state === 'held' && !failed ? { pending: { waitingOn: 'pc-full' as const } } : {}),
@@ -653,7 +656,10 @@ async function reconcileOnce(deps: RemoteFanoutDeps): Promise<void> {
     } else if (rec.state === 'started' && asSpawnLinkId(rec.linkId)) {
       const linkId = asSpawnLinkId(rec.linkId)!;
       const branch = r.branchOnPc ?? await branchOf(linkId, r.spawnId);
-      next = await deps.ledger.updateRemote(row.id, { state: 'started', linkId, a2aTaskId: remoteTaskId(linkId, spawnFirstMessageId(linkId)), ...(branch ? { branchOnPc: branch } : {}) });
+      next = await deps.ledger.updateRemote(row.id, {
+        state: 'started', linkId, a2aTaskId: remoteTaskId(linkId, spawnFirstMessageId(linkId)), ...(branch ? { branchOnPc: branch } : {}),
+        ...(rec.baseNote ? { baseNote: rec.baseNote } : {}),
+      });
     } else if ((rec.state !== r.state || rec.code !== r.code) && !(r.state === 'expired' && r.code === 'pc-full')) {
       // A pool task that ran out of time keeps its own reason: the request of its last placement says nothing of it.
       next = await deps.ledger.updateRemote(row.id, { state: rec.state, ...(rec.code ? { code: rec.code } : {}) });

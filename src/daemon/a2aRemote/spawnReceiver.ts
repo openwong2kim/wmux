@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { agentExecEnv } from '../../shared/execEnv';
 import { agentLauncherStem, agentRow, type AgentSlug } from '../../shared/agentIdentity';
-import { A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_REMOTE_PROTOCOL, isHostId, type A2aRemoteDeliverResponse, type A2aRemoteEnvelope, type HostId } from '../../shared/a2aRemote';
+import { A2A_FEATURE_SPAWN_BASE, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_REMOTE_PROTOCOL, isHostId, type A2aRemoteDeliverResponse, type A2aRemoteEnvelope, type HostId } from '../../shared/a2aRemote';
 import {
   A2A_SPAWN_RPC,
   SPAWN_TARGETS_LINK_ID,
@@ -17,6 +17,7 @@ import {
   parseSpawnTargets,
   spawnClockOk,
   spawnHostAllowed,
+  spawnBaseNoteLine,
   spawnPendingPerHost,
   spawnTargetsFor,
   type A2aSpawnCardV1,
@@ -565,6 +566,7 @@ export class A2aSpawnReceiver {
         repoPath: root.path,
         sub,
         permissionMode: now.permissionMode,
+        ...(req.base ? { base: req.base } : {}),
       },
     };
   }
@@ -576,9 +578,10 @@ export class A2aSpawnReceiver {
    * order: the link is reserved (nothing reachable), the request is stored
    * `started` (committed), and only then the link, the exposure and the
    * first task are made and the answer goes. A `failed` from main before the
-   * commit abandons the start; after it, the start stands.
+   * commit abandons the start; after it, the start stands. `baseNote`: why the
+   * worktree starts at this PC's HEAD (spawnWorktree), kept for the answer.
    */
-  async started(hostId: HostId, spawnId: string, end: { workspaceId: string; paneId: string }): Promise<A2aSpawnStepResult> {
+  async started(hostId: HostId, spawnId: string, end: { workspaceId: string; paneId: string }, baseNote?: string): Promise<A2aSpawnStepResult> {
     const rec = this.deps.requests.get(hostId, spawnId);
     const req = rec?.request;
     if (!rec || rec.state !== 'starting' || !req) return { ok: false, error: 'this request is not starting' };
@@ -615,7 +618,8 @@ export class A2aSpawnReceiver {
         return { ok: false, error: 'the start was abandoned' };
       }
       try {
-        decided = this.deps.requests.decide(hostId, spawnId, 'started', { endpoint: { kind: 'pane', ...end }, linkVersion: 1, linkId });
+        const note = spawnBaseNoteLine(baseNote);
+        decided = this.deps.requests.decide(hostId, spawnId, 'started', { endpoint: { kind: 'pane', ...end }, linkVersion: 1, linkId, ...(note ? { baseNote: note } : {}) });
       } catch (err) {
         start.discard(linkId);
         this.failStart(hostId, spawnId, 'failed');
@@ -808,8 +812,10 @@ export class A2aSpawnReceiver {
     if (!rec.code) return false;
     // A start is answered only once it is reachable.
     if (rec.code === 'started' && rec.linkId && this.deps.start && !this.deps.start.isActive(rec.linkId)) return false;
+    // The note only to an asker that reads it: an older one refuses a result with a key it does not know.
+    const note = rec.baseNote && this.deps.peerFeatures?.(rec.hostId)?.has(A2A_FEATURE_SPAWN_BASE) === true ? { baseNote: rec.baseNote } : {};
     const started = rec.code === 'started' && rec.endpoint && rec.linkVersion && rec.linkId
-      ? { endpoint: rec.endpoint, linkVersion: rec.linkVersion, linkId: rec.linkId }
+      ? { endpoint: rec.endpoint, linkVersion: rec.linkVersion, linkId: rec.linkId, ...note }
       : {};
     if (!this.sendResult(rec.hostId, { v: 1, spawnId: rec.spawnId, code: rec.code, ...started })) return false;
     try {

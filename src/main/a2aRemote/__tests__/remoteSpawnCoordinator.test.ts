@@ -196,6 +196,18 @@ describe('starting an approved request', () => {
     expect(calls(r, A2A_SPAWN_RPC.started)).toEqual([{ hostId: HOST, spawnId: SPAWN, workspaceId: 'ws-new', paneId: 'pane-new' }]);
   });
 
+  it('makes the worktree from the base the asker named, and the worktree\'s base note goes with started', async () => {
+    const note = 'git fetch origin release/2.0 failed (offline); branched from HEAD';
+    const r = rig(() => ({ ...empty(), approved: [{ hostId: HOST, spawnId: SPAWN }] }), {
+      claim: () => ({ ok: true, claim: { ...claim, base: 'release/2.0' } }),
+      worktree: () => ({ ok: true, worktreePath: '/wt/remote-x', cwd: '/wt/remote-x/apps', branch: `wmux/remote/${SPAWN}`, base: 'a'.repeat(40), baseNote: note }),
+    });
+    r.coord.start();
+    await vi.waitFor(() => expect(calls(r, A2A_SPAWN_RPC.started)).toHaveLength(1), { timeout: 5_000 });
+    expect(r.worktree).toHaveBeenCalledWith({ repoPath: '/repo', sub: 'apps', spawnId: SPAWN, base: 'release/2.0' });
+    expect(calls(r, A2A_SPAWN_RPC.started)).toEqual([{ hostId: HOST, spawnId: SPAWN, workspaceId: 'ws-new', paneId: 'pane-new', baseNote: note }]);
+  });
+
   it('keeps the user\'s own DISABLE_AUTOUPDATER: the worker\'s env does not set it over theirs', async () => {
     vi.stubEnv('DISABLE_AUTOUPDATER', '0');
     const r = rig(() => ({ ...empty(), approved: [{ hostId: HOST, spawnId: SPAWN }] }));

@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { getExecEnv } from '../../shared/execEnv';
 import { resolveExecutable } from '../../shared/exeSearch';
-import { isSpawnId } from '../../shared/a2aSpawn';
+import { isSpawnBaseName, isSpawnId } from '../../shared/a2aSpawn';
 import { parseGitConfigList, urlNamedRemoteRefusal, workerGitConfigRefusal, workerGitEnv, workerGitSafeArgs, workerOriginRefusal, type GitConfigEntry } from '../worktask/workerGit';
 
 /**
@@ -44,6 +44,8 @@ export interface SpawnWorktreeInput {
   sub: string;
   /** 'sp-<uuid>' */
   spawnId: string;
+  /** The branch of origin to start from (isSpawnBaseName); absent: origin's default branch. */
+  base?: string;
 }
 
 export type SpawnWorktreeResult =
@@ -126,7 +128,7 @@ export async function createSpawnWorktree(input: SpawnWorktreeInput, opts: Spawn
   const undo = (): Promise<void> => removeWorktree(git, root, worktreePath, branch);
 
   // The base: origin's default branch, fetched now, else HEAD.
-  const base = await resolveSpawnBase(repo, opts, git, parseGitConfigList(conf.stdout));
+  const base = await resolveSpawnBase(repo, opts, git, parseGitConfigList(conf.stdout), input.base);
 
   // No files yet: the config is read again first, as the new worktree sees it.
   const add = await git(['worktree', 'add', '--no-checkout', '--no-track', '-b', branch, worktreePath, base.commit], [...noSubmodules, ...noTracking, ...noFilters]);
@@ -178,22 +180,24 @@ export async function createSpawnWorktree(input: SpawnWorktreeInput, opts: Spawn
 }
 
 /**
- * Where a spawn's branch starts: origin's default branch, fetched now
- * (`origin/HEAD`, else `origin/main`, else `origin/master`, else the remote's
- * own HEAD), pinned to one commit. Fetched only when the repository's own
+ * Where a spawn's branch starts: `wanted` (a branch the asker named), else
+ * origin's default branch (`origin/HEAD`, else `origin/main`, else
+ * `origin/master`, else the remote's own HEAD), fetched now and pinned to one
+ * commit. Fetched only when the repository's own
  * config names nothing git would run or connect through (workerGitConfigRefusal),
  * origin holds only its URL and refspec, and no remote or bundle URI would
  * stand in for it. Every network call has SPAWN_BASE_FETCH_TIMEOUT_MS, no
  * prompt, and ssh in batch mode unless the owner set their own ssh command.
  * Anything else: HEAD, with the reason in `note`. Never throws.
  */
-async function resolveSpawnBase(repo: string, opts: SpawnWorktreeOptions, git: Git, entries: readonly GitConfigEntry[]): Promise<{ commit: string; ref?: string; note?: string }> {
+async function resolveSpawnBase(repo: string, opts: SpawnWorktreeOptions, git: Git, entries: readonly GitConfigEntry[], wanted?: string): Promise<{ commit: string; ref?: string; note?: string }> {
   const head = await git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
   const headCommit = head.code === 0 ? head.stdout.trim() : 'HEAD';
   const fallback = (why: string): { commit: string; note: string } => ({
     commit: headCommit,
-    note: `${why.slice(0, DETAIL_MAX)}; branched from this PC's HEAD, which may not be origin's default branch`,
+    note: `${why.slice(0, DETAIL_MAX)}; branched from this PC's HEAD, which may not be ${wanted ? `origin/${wanted}` : 'origin\'s default branch'}`,
   });
+  if (wanted !== undefined && !isSpawnBaseName(wanted)) return fallback(`the base ${JSON.stringify(String(wanted).slice(0, 80))} is not a branch name`);
 
   const refused = workerGitConfigRefusal(entries);
   if (refused) return fallback(`origin was not fetched: ${refused}`);
@@ -211,9 +215,9 @@ async function resolveSpawnBase(repo: string, opts: SpawnWorktreeOptions, git: G
     env: { ...(opts.env ?? {}), GIT_TERMINAL_PROMPT: '0', ...(ownSsh ? {} : { GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' }) },
   });
 
-  let name: string | undefined;
-  const sym = await git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
-  if (sym.code === 0 && sym.stdout.trim().startsWith('refs/remotes/origin/')) name = sym.stdout.trim().slice('refs/remotes/origin/'.length);
+  let name: string | undefined = wanted;
+  const sym = name ? null : await git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
+  if (sym && sym.code === 0 && sym.stdout.trim().startsWith('refs/remotes/origin/')) name = sym.stdout.trim().slice('refs/remotes/origin/'.length);
   for (const candidate of ['main', 'master']) {
     if (name) break;
     if ((await git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${candidate}^{commit}`])).code === 0) name = candidate;

@@ -7,9 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { A2aLinkRecordV1, HostId } from '../../../shared/a2aRemote';
-import type { A2aSpawnClaimResult, A2aSpawnStepResult } from '../../../shared/a2aSpawn';
+import type { A2aSpawnClaimResult, A2aSpawnClaimV1, A2aSpawnStepResult } from '../../../shared/a2aSpawn';
 import { toolRuleCovers, workerLaunchFlags } from '../../../shared/workerLaunch';
-import type { SpawnWorktreeResult } from '../../../main/a2aRemote/spawnWorktree';
+import type { SpawnWorktreeInput, SpawnWorktreeResult } from '../../../main/a2aRemote/spawnWorktree';
 import { HeadlessStartStore, type HeadlessSurvivor } from '../headlessStartStore';
 import { clearFanoutPortReservationsForTest } from '../../../main/worktask/fanoutEnvironment';
 import { pickHeadlessTaskPort } from '../headlessTaskPort';
@@ -30,6 +30,8 @@ let startedResult: A2aSpawnStepResult;
 let request: Partial<SpawnRequestRecordV1> | undefined;
 let link: A2aLinkRecordV1 | undefined;
 let calls: string[];
+let treeInputs: SpawnWorktreeInput[];
+let startedNotes: (string | undefined)[];
 let created: HeadlessSessionInput[];
 let live: Set<string>;
 let failed: string[];
@@ -86,8 +88,9 @@ function makeStarter(over: Partial<HeadlessStarterDeps> = {}): A2aHeadlessStarte
         if (claimResult.ok) request = { state: 'starting' };
         return claimResult;
       },
-      started: async (_h, _s, end) => {
+      started: async (_h, _s, end, baseNote) => {
         calls.push(`started:${end.workspaceId}:${end.paneId}`);
+        startedNotes.push(baseNote);
         if (startedResult.ok) request = { state: 'decided', code: 'started', linkId: LINK };
         return startedResult;
       },
@@ -102,8 +105,9 @@ function makeStarter(over: Partial<HeadlessStarterDeps> = {}): A2aHeadlessStarte
     starts,
     sessions: () => sessionPort,
     worktrees: {
-      create: async () => {
+      create: async (input) => {
         calls.push('worktree');
+        treeInputs.push(input);
         return worktree;
       },
       remove: async (input) => void removedTrees.push(input.spawnId),
@@ -131,6 +135,8 @@ beforeEach(() => {
   request = { state: 'approved' };
   link = { linkId: LINK, state: 'active' } as A2aLinkRecordV1;
   calls = [];
+  treeInputs = [];
+  startedNotes = [];
   created = [];
   live = new Set();
   failed = [];
@@ -153,6 +159,14 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 describe('headless start', () => {
+  it('makes the worktree from the base the asker named, and hands the worktree\'s base note to the answer', async () => {
+    claimResult = { ok: true, claim: { ...(claimResult as { claim: A2aSpawnClaimV1 }).claim, base: 'release/2.0' } };
+    worktree = { ...worktree, baseNote: 'git fetch origin release/2.0 failed (offline); branched from HEAD' } as SpawnWorktreeResult;
+    await makeStarter().start(HOST, SPAWN);
+    expect(treeInputs[0]).toMatchObject({ repoPath: '/repo', sub: 'apps', base: 'release/2.0' });
+    expect(startedNotes).toEqual(['git fetch origin release/2.0 failed (offline); branched from HEAD']);
+  });
+
   it('claims, records, makes the worktree and the session, then reports the session it made', async () => {
     await makeStarter().start(HOST, SPAWN);
     expect(calls).toEqual(['claim', 'worktree', 'create', `started:hl-${TREE.slice(3)}:${starts.get(HOST, SPAWN)?.sessionId}`]);

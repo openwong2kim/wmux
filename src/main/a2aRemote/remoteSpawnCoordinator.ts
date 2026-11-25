@@ -270,7 +270,7 @@ export class RemoteSpawnCoordinator {
     try {
       const row = agentRow(claim.agent);
       if (!row) return await undo('failed', `unknown agent ${claim.agent}`);
-      const made = await (this.deps.createWorktree ?? createSpawnWorktree)({ repoPath: claim.repoPath, sub: claim.sub, spawnId });
+      const made = await (this.deps.createWorktree ?? createSpawnWorktree)({ repoPath: claim.repoPath, sub: claim.sub, spawnId, ...(claim.base ? { base: claim.base } : {}) });
       if (!made.ok) return await undo(made.code, made.detail);
       tree = { repoPath: claim.repoPath, spawnId };
       // Branched from origin's default branch as fetched now; when it could not be, from HEAD, said once here.
@@ -303,7 +303,8 @@ export class RemoteSpawnCoordinator {
       if (this.stopped) return await undo('failed', 'wmux reconnected to its background service meanwhile');
       let res: unknown;
       try {
-        res = await this.deps.daemonRpc(A2A_SPAWN_RPC.started, { hostId, spawnId, ...ws });
+        // The base note goes back to the asking PC with the answer.
+        res = await this.deps.daemonRpc(A2A_SPAWN_RPC.started, { hostId, spawnId, ...ws, ...(made.baseNote ? { baseNote: made.baseNote } : {}) });
       } catch (err) {
         // No answer: the daemon may have stored the start anyway. Ask before
         // taking anything down; a start it stored stands (it finishes linking

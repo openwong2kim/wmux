@@ -684,6 +684,10 @@ fi
     // stopped on "Is this a project you created or one you trust?" (#2231).
     // Only a pane that carries it: an ordinary WSL pane keeps the dialog.
     ...(options.env.CLAUDE_CODE_SANDBOXED ? ['CLAUDE_CODE_SANDBOXED/u'] : []),
+    // The same worker pane's DISABLE_AUTOUPDATER (main/worktask/fanoutEnvironment.ts
+    // workerAutoUpdateEnv), so Linux claude in it does not update the launcher
+    // either. Only beside the worker marker: an ordinary WSL pane's env is not sent.
+    ...(options.env.CLAUDE_CODE_SANDBOXED && options.env.DISABLE_AUTOUPDATER !== undefined ? ['DISABLE_AUTOUPDATER/u'] : []),
     // The Claude file send setting (shared/claudeFileSend.ts), when it is on.
     ...(options.env[CLAUDE_FILE_SEND_ENV] ? [`${CLAUDE_FILE_SEND_ENV}/u`] : []),
   ];
