@@ -247,7 +247,7 @@ export function applyHarnessEvent(
     case "session.configChanged":
       return {
         ...session,
-        ...(event.model ? { model: event.model } : {}),
+        ...(event.model !== undefined ? { model: event.model } : {}),
         ...(event.modelSettings
           ? {
               modelSettings: {

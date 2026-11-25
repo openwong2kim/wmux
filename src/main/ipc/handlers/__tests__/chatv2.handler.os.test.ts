@@ -6,12 +6,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => {
   const handlers = new Map<string, (...args: any[]) => unknown>();
   return { __handlers: handlers, ipcMain: { removeHandler: (name: string) => handlers.delete(name),
-    handle: (name: string, fn: (...args: any[]) => unknown) => handlers.set(name, fn) } };
+    handle: (name: string, fn: (...args: any[]) => unknown) => handlers.set(name, fn) },
+    dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) } };
 });
 import * as electron from 'electron';
 import { registerChatV2Handlers, stageChatV2Attachment } from '../chatv2.handler';
 import { CHATV2_IPC, CHATV2_RPC, type ChatV2Method } from '../../../../shared/chatv2/ipc';
 import type { DaemonClient } from '../../../DaemonClient';
+import { CHAT_IMAGE_MAX_BYTES } from '../../../../shared/transcript/chatAttachments';
 
 const handlers = (electron as unknown as { __handlers: Map<string, (...args: any[]) => unknown> }).__handlers;
 let cleanup: (() => void) | undefined;
@@ -99,7 +101,7 @@ describe('chat v2 IPC bridge', () => {
     expect(f.wc.send).toHaveBeenCalledTimes(2);
   });
 
-  it('stages only image files into the attachment directory, private to the user', async () => {
+  it('stages images into the attachment directory, private to the user, and keeps any other file at its own path', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatv2-stage-'));
     const image = path.join(dir, 'shot.PNG');
     fs.writeFileSync(image, 'png');
@@ -109,8 +111,34 @@ describe('chat v2 IPC bridge', () => {
     expect(path.dirname(staged.path)).toBe(path.join(dir, 'chatv2-attachments'));
     expect(staged.path.endsWith('.png')).toBe(true);
     if (process.platform !== 'win32') expect(fs.statSync(staged.path).mode & 0o777).toBe(0o600);
-    expect(await stageChatV2Attachment(path.join(dir, 'notes.txt'), dir)).toEqual({ ok: false, reason: 'not-image' });
+    expect(staged.kind).toBe('image');
+    expect(staged.name).toBe('shot.PNG');
+    fs.writeFileSync(path.join(dir, 'notes.txt'), 'notes');
+    expect(await stageChatV2Attachment(path.join(dir, 'notes.txt'), dir)).toEqual({ ok: true, path: path.join(dir, 'notes.txt'), name: 'notes.txt', kind: 'file', size: 5 });
+    expect(await stageChatV2Attachment(path.join(dir, 'gone.txt'), dir)).toEqual({ ok: false, reason: 'missing' });
+    expect(await stageChatV2Attachment(dir, dir)).toEqual({ ok: false, reason: 'missing' });
     expect(await stageChatV2Attachment('relative.png', dir)).toEqual({ ok: false, reason: 'missing' });
+    // Resolved the way the daemon checks it, so a send never fails on the spelling.
+    expect(await stageChatV2Attachment(`${dir}/sub/../notes.txt`, dir)).toMatchObject({ ok: true, path: path.join(dir, 'notes.txt') });
+    // The daemon takes only staged images from the staging directory.
+    fs.writeFileSync(path.join(dir, 'chatv2-attachments', 'x.txt'), 'x');
+    expect(await stageChatV2Attachment(path.join(dir, 'chatv2-attachments', 'x.txt'), dir)).toEqual({ ok: false, reason: 'missing' });
+    // An image over the image limit goes as a file, by its own path.
+    const big = path.join(dir, 'big.png');
+    fs.writeFileSync(big, Buffer.alloc(CHAT_IMAGE_MAX_BYTES + 1));
+    expect(await stageChatV2Attachment(big, dir)).toMatchObject({ ok: true, path: big, kind: 'file' });
+    // Nor an image over the image limit there.
+    fs.writeFileSync(path.join(dir, 'chatv2-attachments', 'big.png'), Buffer.alloc(CHAT_IMAGE_MAX_BYTES + 1));
+    expect(await stageChatV2Attachment(path.join(dir, 'chatv2-attachments', 'big.png'), dir)).toEqual({ ok: false, reason: 'missing' });
+    if (process.platform !== 'win32') {
+      // A link is staged from the real file it leads to, and only as what that file is.
+      fs.symlinkSync(image, path.join(dir, 'link.png'));
+      const linked = await stageChatV2Attachment(path.join(dir, 'link.png'), dir);
+      expect(linked).toMatchObject({ ok: true, kind: 'image', name: 'link.png' });
+      if (linked.ok) expect(fs.readFileSync(linked.path, 'utf8')).toBe('png');
+      fs.symlinkSync(path.join(dir, 'notes.txt'), path.join(dir, 'notes.png'));
+      expect(await stageChatV2Attachment(path.join(dir, 'notes.png'), dir)).toMatchObject({ ok: true, kind: 'file' });
+    }
     // Staged images past a day are removed when the next one is staged.
     const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
     fs.utimesSync(staged.path, old, old);

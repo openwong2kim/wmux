@@ -1,0 +1,68 @@
+/* Chat v2 composer (DESIGN.md, Composer and Chips): one hairline box, input on top,
+   one row of chips and actions under it. Queued messages sit in the dock above it. */
+.wmux-chatv2-composer { position: relative; display: flex; flex-direction: column; gap: 4px; padding: 6px 6px 6px 10px; border: 1px solid var(--line); border-radius: 12px; background: transparent; transition: border-color 150ms; container-type: inline-size; container-name: chatv2-composer; }
+.wmux-chatv2-composer:focus-within { border-color: var(--line-strong); }
+.wmux-chatv2-textarea { display: block; width: 100%; min-height: 40px; max-height: 200px; resize: none; padding: 4px 0; background: transparent; color: var(--text-main); font: inherit; font-size: 14px; line-height: 1.55; word-break: keep-all; overflow-wrap: anywhere; outline: none; field-sizing: content; }
+.wmux-chatv2-textarea::placeholder { color: var(--text-muted); }
+.wmux-chatv2-composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+
+/* Chips: one row that never scrolls. A chip that can change has the selection fill and a
+   chevron; a fixed one is plain muted text. Narrow panes drop the fixed agent chip; when the
+   rest still do not fit they move into the ⋯ menu together (Composer, `folded`), so no chip
+   is ever cut. The working directory lives in the ⋯ menu. */
+.wmux-chatv2-chips { display: flex; flex: 1 1 auto; flex-wrap: nowrap; align-items: center; gap: 4px; min-width: 0; overflow: hidden; padding: 2px; margin: -2px; }
+.wmux-chatv2-chip { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; min-height: 26px; padding: 0 8px; border-radius: var(--chip-radius, 6px); background: var(--selection); color: var(--text-sub); font-size: 11px; white-space: nowrap; }
+.wmux-chatv2-chip:has(select:not(:disabled)) { padding-right: 20px; }
+.wmux-chatv2-chip:has(select:not(:disabled))::after { content: ''; position: absolute; right: 8px; top: 50%; width: 5px; height: 5px; border-right: 1.25px solid currentColor; border-bottom: 1.25px solid currentColor; transform: translateY(-70%) rotate(45deg); opacity: .7; pointer-events: none; }
+.wmux-chatv2-chip:hover:not([aria-disabled="true"]) { background: var(--selection-hover); --text-muted: var(--text-subtle); color: var(--text-main); }
+.wmux-chatv2-chip select { appearance: none; field-sizing: content; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; background: transparent; color: inherit; font: inherit; cursor: pointer; outline: none; }
+.wmux-chatv2-chip select:disabled { cursor: default; }
+.wmux-chatv2-chip[aria-disabled="true"] { background: transparent; color: var(--text-muted); padding-left: 4px; padding-right: 4px; }
+.wmux-chatv2-chip[aria-disabled="true"] select:disabled { opacity: 1; }
+.wmux-chatv2-chip[data-mode="bypass"] { color: var(--accent-red); }
+.wmux-chatv2-chip[data-chatv2-permission] { flex-shrink: 0; }
+@container chatv2-composer (max-width: 480px) {
+  .wmux-chatv2-chip[data-fixed] { display: none; }
+}
+
+/* Attachments: a thumbnail for an image, a file glyph otherwise; × or Backspace at the start removes. */
+.wmux-chatv2-attachments { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 2px; }
+.wmux-chatv2-attachment { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; height: 36px; padding: 2px 4px 2px 2px; border-radius: 8px; background: var(--selection); color: var(--text-main); font-size: 12px; }
+.wmux-chatv2-attachment img { width: 32px; height: 32px; border-radius: 6px; object-fit: cover; flex-shrink: 0; }
+.wmux-chatv2-attachment-icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; color: var(--text-sub); flex-shrink: 0; }
+.wmux-chatv2-attachment-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wmux-chatv2-attachment-remove { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; color: var(--text-sub); flex-shrink: 0; }
+.wmux-chatv2-attachment-remove:hover { background: var(--selection-hover); --text-muted: var(--text-subtle); color: var(--text-main); }
+
+/* Actions: mic, ⋯, and one round primary that is Send, or Stop while a reply runs and nothing is typed. */
+.wmux-chatv2-composer-actions { display: flex; flex-shrink: 0; align-items: center; gap: 4px; }
+.wmux-chatv2-send { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; background: var(--text-main); color: var(--bg-base); transition: opacity 150ms; }
+.wmux-chatv2-send:disabled { opacity: .3; cursor: not-allowed; }
+/* Stop stays neutral (DESIGN.md, Chat feedback): never amber, never red. */
+.wmux-chatv2-send[data-stop] { background: var(--selection); color: var(--text-main); }
+.wmux-chatv2-send[data-stop]:hover { background: var(--selection-hover); --text-muted: var(--text-subtle); }
+/* The ⋯ menu opens above the composer box (like the / menu), never wider than it, so a narrow pane does not cut it. */
+.wmux-chatv2-more { display: inline-flex; }
+.wmux-chatv2-more-menu { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; min-width: min(220px, 100cqw); max-width: min(320px, 100cqw); }
+.wmux-chatv2-more-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 6px 6px; }
+.wmux-chatv2-more-cwd { padding: 4px 10px 6px; color: var(--text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wmux-chatv2-more-row { width: 100%; font-size: 13px; text-align: left; }
+.wmux-chatv2-more-row:disabled { opacity: .4; cursor: not-allowed; }
+
+/* The / menu: above the composer, the width of the box. */
+.wmux-chatv2-slash { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 20; max-height: min(320px, 50vh); display: flex; flex-direction: column; }
+.wmux-chatv2-slash-list { overflow-y: auto; }
+.wmux-chatv2-slash-note { padding: 4px 10px; color: var(--text-muted); font-size: 12px; }
+.wmux-chatv2-slash-row { display: flex; align-items: baseline; gap: 10px; width: 100%; min-height: 30px; padding: 5px 10px; border-radius: 8px; text-align: left; font-size: 13px; color: var(--text-main); }
+.wmux-chatv2-slash-row[aria-selected="true"] { background: var(--surface-fill-hover, var(--selection)); }
+.wmux-chatv2-slash-name { flex-shrink: 0; font-weight: 500; }
+.wmux-chatv2-slash-desc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-sub); font-size: 12px; }
+
+/* Queued messages: compact rows in the dock above the composer, not sent bubbles. */
+.wmux-chatv2-queue { display: flex; flex-direction: column; gap: 2px; max-height: min(160px, 30vh); overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.wmux-chatv2-queued { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 2px 6px 2px 12px; border-radius: 10px; background: var(--selection); font-size: 13px; }
+.wmux-chatv2-queued[data-sending] { opacity: .6; }
+.wmux-chatv2-queued-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-main); }
+.wmux-chatv2-queued-files { flex-shrink: 0; color: var(--text-muted); font-size: 11px; }
+.wmux-chatv2-queued-caption { display: flex; flex-shrink: 0; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11px; }
+.wmux-chatv2-queued-caption .wmux-chatv2-link { font-size: 11px; }

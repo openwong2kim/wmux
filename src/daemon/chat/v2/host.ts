@@ -51,6 +51,7 @@ import { findExecutable } from '../../../shared/exeSearch';
 import { sameProcessStartTime } from '../../phantomExit';
 import { classifyShell } from '../../shell-integration';
 import { ChatV2Store } from './store';
+import { loadChatSkills } from '../../transcript/chatSkills';
 import {
   CHATV2_DAEMON_EVENT,
   type ChatV2Driver,
@@ -528,6 +529,8 @@ class Host implements ChatV2Host {
     toTerminal: (p) => this.toTerminal(p),
     fromTerminal: (p) => this.fromTerminal(p),
     close: (p) => this.close(p),
+    configure: (p) => this.configure(p),
+    skills: (p) => this.skills(p),
   };
 
   private liveFor(paneId: string, chatSessionId: string): Live | null {
@@ -555,6 +558,7 @@ class Host implements ChatV2Host {
     if (p.model !== undefined && !CHATV2_MODEL.test(p.model)) return chatV2Error('invalid-params', 'Invalid model.');
     // An agent with no bypass mode always asks before a command or an edit (Codex runs on-request).
     if (p.mode === 'bypass' && !CHATV2_AGENT_CAPS[p.agent].bypass) return chatV2Error('invalid-params', 'This chat always asks before it runs a command or edits a file.');
+    if (p.effort !== undefined && !CHATV2_AGENT_CAPS[p.agent].efforts.includes(p.effort)) return chatV2Error('invalid-params', 'This agent does not take that effort level.');
     const chatSessionId = randomUUID();
     const providerSessionId = randomUUID();
     const model = p.model ?? '';
@@ -568,7 +572,7 @@ class Host implements ChatV2Host {
       state: 'active',
       providerSessionId,
       seq: 0,
-      session: newChatSession({ id: chatSessionId, harness: p.agent, cwd, model, runtimeMode: p.mode }),
+      session: newChatSession({ id: chatSessionId, harness: p.agent, cwd, model, runtimeMode: p.mode, ...(p.effort ? { modelSettings: { effort: p.effort } } : {}) }),
       bodies: {},
       sends: [],
       savedAt: this.deps.now(),
@@ -645,30 +649,154 @@ class Host implements ChatV2Host {
     return { ok: true, text: page, ...(next < full.length ? { nextOffset: next } : {}) };
   }
 
+  /**
+   * An image must be a staged copy (read and sent to the agent); any other
+   * file is a path the agent opens itself, so it only has to be a regular
+   * file now (see ipc.ts, Attachments).
+   */
   private checkAttachments(paths: readonly string[]): Attachment[] | null {
     const dir = path.resolve(this.deps.wmuxDir, CHATV2_ATTACHMENT_DIR);
     const out: Attachment[] = [];
     for (const file of paths) {
       const resolved = path.resolve(file);
+      if (resolved !== file) return null;
       const ext = path.extname(resolved).toLowerCase();
-      if (resolved !== file || path.dirname(resolved) !== dir || !CHAT_IMAGE_EXTENSIONS.includes(ext)) return null;
+      const staged = path.dirname(resolved) === dir;
+      const image = staged && CHAT_IMAGE_EXTENSIONS.includes(ext);
+      // Inside the staging directory only staged images are accepted.
+      if (staged && !image) return null;
       let stat: fs.Stats;
       try {
-        stat = fs.lstatSync(resolved);
+        stat = image ? fs.lstatSync(resolved) : fs.statSync(resolved);
       } catch {
         return null;
       }
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > CHAT_IMAGE_MAX_BYTES) return null;
+      if (!stat.isFile() || (image && (stat.isSymbolicLink() || stat.size > CHAT_IMAGE_MAX_BYTES))) return null;
       out.push({
         id: randomUUID(),
         name: path.basename(resolved),
-        mimeType: IMAGE_MIME[ext] ?? 'application/octet-stream',
-        kind: 'image',
+        mimeType: image ? IMAGE_MIME[ext] ?? 'application/octet-stream' : 'application/octet-stream',
+        kind: image ? 'image' : 'file',
         size: stat.size,
         path: resolved,
       });
     }
     return out;
+  }
+
+  /**
+   * Change the chat's model and/or effort between turns. Serialised like
+   * `send`: driver output still queued is folded first, and a send is refused
+   * while this runs. A running agent takes it live when its driver can;
+   * otherwise it is restarted on the same conversation with the new options.
+   */
+  private async configure(p: ChatV2ParamsByMethod['configure']): Promise<Result<'configure'>> {
+    let live = this.liveFor(p.paneId, p.chatSessionId);
+    if (!live) return chatV2Error('session-not-found', 'No chat for this pane.');
+    await live.drained;
+    live = this.liveFor(p.paneId, p.chatSessionId);
+    if (!live) return chatV2Error('session-not-found', 'No chat for this pane.');
+    const { record } = live;
+    const handedOff = handedOffRefusal(record);
+    if (handedOff) return handedOff;
+    const caps = CHATV2_AGENT_CAPS[record.agent];
+    if (p.model !== undefined && p.model !== '' && !CHATV2_MODEL.test(p.model)) return chatV2Error('invalid-params', 'Invalid model.');
+    if (p.effort !== undefined && p.effort !== '' && !caps.efforts.includes(p.effort)) return chatV2Error('invalid-params', 'This agent does not take that effort level.');
+    if (sessionNeedsInput(record.session)) return chatV2Error('needs-input', 'Answer the pending request first.');
+    if (record.session.busy || live.sending || live.starting) return chatV2Error('turn-running', 'The agent is still working.');
+    if (live.unreaped) return chatV2Error('driver-failed', 'The last agent process has not exited yet.');
+    if (live.forceStopping) return chatV2Error('turn-running', 'The agent is being stopped.');
+    const model = p.model ?? record.model;
+    const effort = p.effort ?? record.session.modelSettings.effort ?? '';
+    if (model === record.model && effort === (record.session.modelSettings.effort ?? '')) {
+      return { ok: true, binding: this.binding(live), applied: live.driver ? 'live' : 'saved' };
+    }
+    // A resumed conversation of such an agent (Codex) keeps its last model and
+    // effort, so with no agent running a reset to the default could only be
+    // saved, never applied (the running driver refuses it the same way).
+    const resumes = record.resumeExisting === true || record.session.blocks.some((b) => b.role === 'user');
+    const toDefault = (model !== record.model && !model) || (effort !== (record.session.modelSettings.effort ?? '') && !effort);
+    if (!live.driver && caps.resumeKeepsSettings && resumes && toDefault) {
+      return chatV2Error('invalid-params', 'The agent does not take that model or effort.');
+    }
+    live.sending = true;
+    // This change holds the send lock until release(); after that it belongs to whoever takes it next.
+    const owner = live;
+    let held = true;
+    const release = () => { if (held) { held = false; owner.sending = false; } };
+    try {
+      const driver = live.driver;
+      let applied: 'live' | 'restarted' | 'saved' = 'saved';
+      if (driver) {
+        let outcome: 'live' | 'restart' | 'refused' = 'restart';
+        try {
+          outcome = (await driver.configure?.({ model, effort })) ?? 'restart';
+        } catch (error) {
+          this.deps.log('warn', `[chatv2] ${record.paneId}: live model/effort change failed: ${String(error)}`);
+        }
+        if (live.closed || live.driver !== driver) return chatV2Error('driver-failed', 'The agent stopped.');
+        // The agent said no to these options: a restart with them would fail the same way.
+        if (outcome === 'refused') {
+          // Part of the change may have landed first (the model, then the effort was refused): record what runs.
+          const now = driver.settings?.();
+          if (now && (now.model !== record.model || now.effort !== (record.session.modelSettings.effort ?? ''))) {
+            record.model = now.model;
+            release();
+            this.stamp(live, { type: 'session.configChanged', model: now.model, modelSettings: { effort: now.effort } });
+            await this.persistNow(live);
+          }
+          return chatV2Error('invalid-params', 'The agent does not take that model or effort.');
+        }
+        if (outcome === 'restart') {
+          // Same conversation, new options. The record keeps the old ones until the new start succeeded.
+          if (!(await this.stopDriver(live))) return chatV2Error('driver-failed', 'The agent did not stop, so the change waits for it.');
+          if (live.closed) return chatV2Error('session-not-found', 'The chat was closed.');
+          // No message yet, so no conversation to keep: a fresh session id, so an
+          // agent that already wrote its session file is never asked to create it
+          // again (Codex starts a new thread either way and reports its id).
+          const fresh = !record.resumeExisting && !record.session.blocks.some((b) => b.role === 'user');
+          if (fresh) record.providerSessionId = randomUUID();
+          const started = await this.startDriver(live, { model, effort });
+          if (!started.ok) {
+            // Back on what ran before, once, so the chat is not left failed by a change; the change's error is the answer.
+            // A fresh chat takes another id: the failed start may have written a session under the last one.
+            if (!live.closed && !live.driver && !live.unreaped) {
+              if (fresh) record.providerSessionId = randomUUID();
+              if ((await this.startDriver(live)).ok) await this.persistNow(live);
+            }
+            return started;
+          }
+        }
+        applied = outcome === 'live' ? 'live' : 'restarted';
+      }
+      // What the agent runs with now (a level it refused at start falls back to its default).
+      const now = live.driver?.settings?.() ?? { model, effort };
+      record.model = now.model;
+      // Free before the stamp, so a send that answers this change's event is not refused as a running turn.
+      release();
+      this.stamp(live, { type: 'session.configChanged', model: now.model, modelSettings: { effort: now.effort } });
+      await this.persistNow(live);
+      return { ok: true, binding: this.binding(live), applied };
+    } finally {
+      release();
+    }
+  }
+
+  /** The skills and commands the chat's agent offers in the chat's folder, with the env its driver gets. */
+  private async skills(p: ChatV2ParamsByMethod['skills']): Promise<Result<'skills'>> {
+    const live = this.liveFor(p.paneId, p.chatSessionId);
+    if (!live) return chatV2Error('session-not-found', 'No chat for this pane.');
+    const pane = this.deps.sessionManager.getSession(p.paneId);
+    if (!pane) return chatV2Error('pane-not-found', 'That pane is gone.');
+    let env: Record<string, string>;
+    try {
+      env = buildDriverEnv(p.paneId, pane.meta.env, process.env);
+    } catch {
+      return { ok: true, catalog: { skills: [], state: 'unavailable' } };
+    }
+    const load = this.deps.loadSkills ?? loadChatSkills;
+    const catalog = await load(live.record.agent, live.record.session.cwd, env).catch(() => ({ skills: [], state: 'unavailable' as const }));
+    return { ok: true, catalog };
   }
 
   private async send(p: ChatV2ParamsByMethod['send']): Promise<Result<'send'>> {
@@ -732,7 +860,7 @@ class Host implements ChatV2Host {
         return handedOffRefusal(live.record) ?? chatV2Error('driver-failed', 'The agent stopped.');
       }
       try {
-        await driver.send({ text: p.text, attachments: attachments.map((a) => ({ path: a.path, mimeType: a.mimeType })) });
+        await driver.send({ text: p.text, attachments: attachments.map((a) => ({ path: a.path, mimeType: a.mimeType, kind: a.kind })) });
       } catch (error) {
         // Off the ledger: a retry with the same id is a new attempt, not a duplicate.
         failTurn(`The message could not be delivered: ${error instanceof Error ? error.message : String(error)}`);
@@ -1339,7 +1467,8 @@ class Host implements ChatV2Host {
   }
 
   /** Spawn the record's driver after re-checking the pane. A conversation with a turn resumes. */
-  private async startDriver(live: Live): Promise<{ ok: true } | { ok: false; error: ChatV2Error }> {
+  /** `options`: model and effort to start with instead of the record's (a `configure` not yet recorded). */
+  private async startDriver(live: Live, options?: { model: string; effort: string }): Promise<{ ok: true } | { ok: false; error: ChatV2Error }> {
     const { record } = live;
     const pane = this.deps.sessionManager.getSession(record.paneId);
     if (!pane) return chatV2Error('pane-not-found', 'That pane is gone.');
@@ -1390,7 +1519,8 @@ class Host implements ChatV2Host {
           cwd: record.session.cwd,
           env,
           mode: record.mode,
-          model: record.model,
+          model: options?.model ?? record.model,
+          effort: options?.effort ?? record.session.modelSettings.effort ?? '',
           providerSession: { id: record.providerSessionId, mode: resume ? 'resume' : 'new' },
           chatSessionId: record.chatSessionId,
         }, {
