@@ -45,7 +45,9 @@ import {
   setFanoutWorkerPermissionMode,
 } from '../../worktask/fanoutWorkerPolicy';
 import { isWorkerFenceOff, setWorkerFenceOff } from '../../agents/workerFencePolicy';
-import { loadFanoutAccountPoolSettings, setFanoutAccountPoolSettings } from '../../worktask/fanoutAccountPool';
+import { guiFanOutAccountPick, loadFanoutAccountPoolSettings, setFanoutAccountPoolSettings } from '../../worktask/fanoutAccountPool';
+import { agentRow } from '../../../shared/agentIdentity';
+import { launcherStem } from '../../../shared/agentFirstRun';
 import { customAgentUsers, loadFanoutPresetsReport, saveFanoutPresets } from '../../worktask/fanoutPresets';
 import { loadCustomAgentsReport, saveCustomAgents } from '../../worktask/customAgents';
 
@@ -318,7 +320,11 @@ export async function startGuiFanOut(service: FanOutService, req: FanOutRequest)
   } catch (err) {
     return { ok: false, error: `fan-out audit log could not be written: ${(err as Error).message}`, tasks: [] };
   }
-  const result = await service.start({ ...req, workerPermissionMode: workerMode, caller: { kind: 'gui' } });
+  // The account pool picks each Claude worker's account, as on the wire
+  // (it reads nothing while the pool is off).
+  const taskAgent = (k: number): string => req.agents?.[k]?.agent ?? launcherStem(req.agentCmd || 'claude');
+  const accountPick = req.accountPick ?? guiFanOutAccountPick(req.verifiedWorkspaceId, (k) => agentRow(taskAgent(k))?.usageReserve === true);
+  const result = await service.start({ ...req, workerPermissionMode: workerMode, caller: { kind: 'gui' }, accountPick });
   try {
     guards.appendAudit({
       ...base,

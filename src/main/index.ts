@@ -1991,6 +1991,7 @@ setFanoutAccountPoolHost({
   hookDriftIds: async (accounts) => accountsWithoutCurrentHooks(accounts, await primaryHookPaths()),
   isUnc: isUncPath,
   probeUsage: (accountId) => { void accountUsageService.maybeProbe(accountId); },
+  daemonSessions: async () => (daemonClient?.isConnected ? daemonClient.rpc('daemon.listSessions', {}) : []),
   notifyCallerFallback: () => {
     toastManager.showDirect(poolCallerFallbackToastText(getAutomationUiLocale()), '', undefined, { ignoreToastSetting: false, onClick: () => { mainWindow?.show(); } });
   },

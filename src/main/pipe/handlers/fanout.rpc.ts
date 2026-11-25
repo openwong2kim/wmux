@@ -130,9 +130,8 @@ import {
 import { validateFanoutTaskGraph, type FanoutTaskGraph } from '../../../shared/fanoutTaskGraph';
 import { agentRow } from '../../../shared/agentIdentity';
 import { noteUsageReserveHeld, usageReserveHoldForAccount, usageReserveHoldForWorkspace, usageReserveRefusalText, type UsageReserveHold } from '../../usage/usageReserve';
-import { defaultTaskPaneShell, heldHomeKey, notePoolCallerFallback, openWorkersOn, pickFromPool, poolAllHeld, poolCandidates, poolFallsBackToCaller, poolHeldInPlace, poolUsageKey, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
+import { defaultTaskPaneShell, heldHomeKey, notePoolCallerFallback, openWorkersOn, pickFromPool, pickPoolTask, poolAllHeld, poolCandidates, poolFallsBackToCaller, poolHeldInPlace, poolTaskCallerLine, poolUsageKey, preparePool, registerPoolCreateReserveHold, type PreparedPool } from '../../worktask/fanoutAccountPool';
 import { getWslAccountState, type WslAccountState, type WslPlace } from '../../account/wslAccountState';
-import { wslShareToLinux } from '../../../shared/wslPaths';
 import { POOL_DEFAULT_ACCOUNT, poolRefusalText } from '../../../shared/fanoutAccountPool';
 import { getAccountStore } from '../../account/accountStore';
 import { botTemplate, type BotBinding, type BotProfile } from '../../../shared/bot';
@@ -2473,33 +2472,29 @@ export function registerFanOutRpc(
           pick: (task: { index: number; cwd?: string }): { accountId: string; wslPlace?: WslPlace } | { callerAccount: string } | { refusal: string } | null => {
             const current = pool;
             if (!current || !spendsUsageReserve(taskAgent(task.index))) return null;
-            // A task folder on a WSL share starts a WSL pane in that distro,
-            // as the user a plain pane there last started as. Its accounts run
-            // on their homes there: picked by those homes' own sign-in, quota,
-            // holds and workers. With no such place known, or no home there
-            // with a sign-in, it runs on the caller's account as before.
-            // A task pane on any other folder starts WSL when the default
-            // shell is WSL: in the chosen distro, as a plain pane there starts
-            // (the place its create reads too). Unknown: the caller's account.
-            const share = task.cwd ? wslShareToLinux(task.cwd) : null;
-            const paneShell = paneShellNow();
-            const wslPane = !!share || paneShell.wsl;
-            const wslPlace = share ? wslDefaultPlace(share.distro) : paneShell.wsl ? wslDefaultPlace(paneShell.distro) : undefined;
+            // Where its pane runs and the pool's answer (pickPoolTask, shared
+            // with the GUI's fan-outs).
+            const decided = pickPoolTask(current, task, {
+              paneShell: paneShellNow,
+              defaultPlace: wslDefaultPlace,
+              pick,
+              ...(deps.wslState ? { wslState: deps.wslState } : {}),
+            });
             // A pick of its own decides again each time (a dependent's or a retry's).
             callerTasks.delete(task.index);
             fallbackTasks.delete(task.index);
-            if (wslPane && !wslPlace) {
+            if (decided.kind === 'pick') return { accountId: decided.accountId, ...(decided.wslPlace ? { wslPlace: decided.wslPlace } : {}) };
+            // A WSL pane with no usable home there, or no start place known:
+            // the caller's account, as before the pool took WSL panes in,
+            // said once when one launches (and why, in the log).
+            if (decided.kind === 'wsl-caller') {
+              console.log(poolTaskCallerLine(task.index, decided));
               callerTasks.add(task.index);
+              fallbackTasks.add(task.index);
               return null;
             }
-            const picked = pick(current, wslPlace ? { place: wslPlace, ...(deps.wslState ? { wslState: deps.wslState } : {}) } : {});
-            if (picked.kind === 'pick') return { accountId: picked.accountId, ...(wslPlace ? { wslPlace } : {}) };
-            // No usable home there (none signed in, or every one spent): the
-            // caller's account, as before the pool took WSL panes in.
-            if (wslPlace && (picked.reason === 'empty' || picked.reason === 'quota')) {
-              callerTasks.add(task.index);
-              return null;
-            }
+            const picked = decided.pick;
+            const wslPlace = decided.wslPlace;
             // No pool account can run it at all (none eligible): the
             // caller's account, as with the pool off, said once. The
             // per-account worker limit the owner set still holds there: such

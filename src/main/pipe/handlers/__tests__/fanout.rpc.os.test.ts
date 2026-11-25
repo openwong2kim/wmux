@@ -1738,6 +1738,12 @@ describe('task.fanout.start — usage reserve with the account pool', () => {
     await h.flush();
     await h.flush();
     expect(h.request().accountPick?.pick({ index: 0, cwd: '\\\\wsl.localhost\\Ubuntu\\home\\me\\wt' })).toBeNull();
+    // The owner is told once, when it launches there.
+    const notify = vi.fn();
+    setFanoutAccountPoolHost({ daemonConnected: () => true, claudeUsage: () => [], defaultSnapshot: () => null, hookDriftIds: async () => new Set(), isUnc: () => false, notifyCallerFallback: notify });
+    onTestFinished(() => resetFanoutAccountPoolForTests());
+    expect(h.request().mayLaunch?.({ index: 0, taskId: 'wtask-w1' })).toBeNull();
+    expect(notify).toHaveBeenCalledTimes(1);
   });
 
   it('a pool no account of which can run a worker sends it to the caller\'s account, checked on its reserve', async () => {

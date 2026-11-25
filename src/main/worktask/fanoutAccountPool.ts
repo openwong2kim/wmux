@@ -67,6 +67,8 @@ import { isWslShellPath } from '../../shared/wslDistro';
 import { getDefaultShellMirror } from '../pty/defaultShellMirror';
 import { getDefaultWslDistro } from '../pty/defaultWslDistro';
 import { liveHolders } from '../factory/workerHolders';
+import { wslShareToLinux } from '../../shared/wslPaths';
+import type { AccountPick } from './FanOutService';
 
 /** What the running app hands the pool (index.ts): none of it is read while the pool is off. */
 export interface FanoutAccountPoolHost {
@@ -87,6 +89,9 @@ export interface FanoutAccountPoolHost {
   /** Tell the owner once that a worker ran on the caller's account because no
    *  pool account could run it (poolCallerFallback). Optional. */
   notifyCallerFallback?: () => void;
+  /** The daemon's sessions (daemon.listSessions), for learning where a WSL
+   *  distro starts after a restart (learnPoolStartPlaces). Optional. */
+  daemonSessions?: () => Promise<unknown>;
 }
 
 let host: FanoutAccountPoolHost | null = null;
@@ -582,6 +587,114 @@ function wslRelaunchCandidate(accountId: string, configDir: string, place: WslPl
  *  prediction: the pane's create checks the shell it really got. */
 export function defaultTaskPaneShell(platform: NodeJS.Platform = process.platform): { wsl: boolean; distro: string | null } {
   return { wsl: platform === 'win32' && isWslShellPath(getDefaultShellMirror() ?? undefined), distro: getDefaultWslDistro() };
+}
+
+/** The pool's answer for one fan-out task, with where its pane runs. */
+export type PoolTaskPick =
+  | { kind: 'pick'; accountId: string; wslPlace?: WslPlace }
+  /** A WSL pane the pool has no usable home for: it runs on the caller's
+   *  account, as WSL panes did before the pool took them in. `place` absent:
+   *  no start place is known for `distro` in this run. */
+  | { kind: 'wsl-caller'; distro: string | null; place?: WslPlace }
+  /** No account now: the caller decides (fall back, refuse or hold). */
+  | { kind: 'none'; pick: Extract<PoolPick, { kind: 'none' }>; wslPlace?: WslPlace };
+
+export interface PoolTaskDeps {
+  /** Whether a task pane with no shell of its own starts WSL (default: defaultTaskPaneShell). */
+  paneShell?: () => { wsl: boolean; distro: string | null };
+  /** Where a plain WSL pane asking for a distro starts (default: WslAccountState defaultPlace). */
+  defaultPlace?: (distro: string | null) => WslPlace | undefined;
+  wslState?: Pick<WslAccountState, 'get' | 'reading'>;
+  pick?: (pool: PreparedPool, deps: PickDeps) => PoolPick;
+}
+
+/**
+ * One task's pick, shared by every fan-out entry point (the wire and the GUI).
+ * A task folder on a WSL share starts a WSL pane in that distro; a task pane
+ * on any other folder starts WSL when the default shell is WSL, in the chosen
+ * distro. Such a pane runs as whoever a plain pane there starts as, and its
+ * accounts on their homes there: with no such place known, or no usable home
+ * there (none signed in, or every one spent), it runs on the caller's account.
+ */
+export function pickPoolTask(pool: PreparedPool, task: { cwd?: string }, deps: PoolTaskDeps = {}): PoolTaskPick {
+  const share = task.cwd ? wslShareToLinux(task.cwd) : null;
+  const shell = (deps.paneShell ?? defaultTaskPaneShell)();
+  const wslPane = !!share || shell.wsl;
+  const distro = share ? share.distro : shell.distro;
+  const place = wslPane ? (deps.defaultPlace ?? ((d: string | null) => getWslAccountState().defaultPlace(d)))(distro) : undefined;
+  if (wslPane && !place) return { kind: 'wsl-caller', distro };
+  const picked = (deps.pick ?? pickFromPool)(pool, place ? { place, ...(deps.wslState ? { wslState: deps.wslState } : {}) } : {});
+  if (picked.kind === 'pick') return { kind: 'pick', accountId: picked.accountId, ...(place ? { wslPlace: place } : {}) };
+  if (place && (picked.reason === 'empty' || picked.reason === 'quota')) return { kind: 'wsl-caller', distro, place };
+  return { kind: 'none', pick: picked, ...(place ? { wslPlace: place } : {}) };
+}
+
+/** The log line for a WSL task the pool sent to the caller's account, saying why. */
+export function poolTaskCallerLine(index: number, p: Extract<PoolTaskPick, { kind: 'wsl-caller' }>): string {
+  const why = p.place
+    ? `no pool account has a usable sign-in on its home in WSL ${p.place.distribution} as ${p.place.user} (a working turn or a live pane there in this run)`
+    : `no start place is known in this run for WSL ${p.distro ?? '(default distro)'} (a plain WSL pane there tells it)`;
+  return `[fanout-pool] task ${index + 1} runs on the caller's account: ${why}`;
+}
+
+/** After a restart, learn where a distro starts from the daemon's live plain
+ *  panes (wslAccountState.ts learnFromLiveSessions), when one is still unknown. */
+export async function learnPoolStartPlaces(deps: { host?: FanoutAccountPoolHost | null; state?: Pick<WslAccountState, 'hasUnlearnedPlainPanes' | 'learnFromLiveSessions'> } = {}): Promise<void> {
+  const h = deps.host === undefined ? host : deps.host;
+  const state = deps.state ?? getWslAccountState();
+  if (!h?.daemonSessions || !state.hasUnlearnedPlainPanes()) return;
+  try {
+    const sessions = await h.daemonSessions();
+    if (Array.isArray(sessions)) state.learnFromLiveSessions(sessions as Array<Record<string, unknown>>);
+  } catch { /* not known: such a task runs on the caller's account */ }
+}
+
+const GUI_POOL_FRESH_MS = 10_000;
+
+/**
+ * The pool's account pick for a fan-out a person started (the dialog, the Git
+ * page's hand-off, hand out): the same pick as the wire's (pickPoolTask), so
+ * its workers spread over the pool too. A click is never refused by the pool:
+ * with no account free (held by the reserve, at the worker limit, or spent)
+ * a worker runs on the caller's account, as it did with the pool off.
+ */
+export function guiFanOutAccountPick(
+  callerWorkspaceId: string,
+  taskRunsClaude: (index: number) => boolean,
+  deps: PoolTaskDeps & { prepare?: (workspaceId: string) => Promise<PreparedPool | null>; learn?: () => Promise<void>; log?: (line: string) => void; notifyFallback?: () => void } = {},
+): AccountPick {
+  const log = deps.log ?? ((line: string) => console.log(line));
+  const fellBack = deps.notifyFallback ?? (() => notePoolCallerFallback());
+  let pool: PreparedPool | null = null;
+  let readAt = 0;
+  let reading: Promise<void> | null = null;
+  return {
+    prepare: async ({ index }) => {
+      if (!taskRunsClaude(index)) return;
+      if (!reading || Date.now() - readAt >= GUI_POOL_FRESH_MS) {
+        readAt = Date.now();
+        reading = (deps.prepare ?? preparePool)(callerWorkspaceId).then(
+          async (p) => { pool = p; if (p) await (deps.learn ?? learnPoolStartPlaces)(); },
+          () => { readAt = 0; },
+        );
+      }
+      await reading;
+    },
+    pick: (task) => {
+      const current = pool;
+      if (!current || !taskRunsClaude(task.index)) return null;
+      const d = pickPoolTask(current, task, deps);
+      if (d.kind === 'pick') return { accountId: d.accountId, ...(d.wslPlace ? { wslPlace: d.wslPlace } : {}) };
+      if (d.kind === 'wsl-caller') {
+        log(poolTaskCallerLine(task.index, d));
+        fellBack();
+        return null;
+      }
+      if (poolFallsBackToCaller(d.pick)) fellBack();
+      else log(`[fanout-pool] task ${task.index + 1} runs on the caller's account: no pool account is free (${d.pick.reason})`);
+      return null;
+    },
+  };
 }
 
 function refreshPoolInBackground(workspaceId: string): void {
