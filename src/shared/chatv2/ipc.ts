@@ -259,9 +259,11 @@ export const CHATV2_AGENT_CAPS: Readonly<Record<ChatV2Agent, {
   claudeModels: boolean;
   /** Effort levels the agent takes ('' = its default is always allowed). */
   efforts: readonly string[];
+  /** A resumed conversation keeps its last model and effort, so going back to the default needs a new one. */
+  resumeKeepsSettings: boolean;
 }>> = {
-  claude: { bypass: true, terminalHandoff: true, sharedServerThreads: false, claudeModels: true, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  codex: { bypass: false, terminalHandoff: false, sharedServerThreads: true, claudeModels: false, efforts: ['low', 'medium', 'high', 'xhigh'] },
+  claude: { bypass: true, terminalHandoff: true, sharedServerThreads: false, claudeModels: true, resumeKeepsSettings: false, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  codex: { bypass: false, terminalHandoff: false, sharedServerThreads: true, claudeModels: false, resumeKeepsSettings: true, efforts: ['low', 'medium', 'high', 'xhigh'] },
 };
 
 /** Every effort any agent takes; the host checks the agent's own list. */
