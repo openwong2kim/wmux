@@ -2237,12 +2237,26 @@ always neutral (the fill ladder).
   actions (fan-out) stay neutral at rest.
 - **Composer:** one box with a `--line` hairline (`--line-strong` focused)
   and no fill; input on top, a toolbar row under it with chips and a solid
-  26px send. The chat, channel and orchestrator composers share it. Moa's
+  26px send. The chat, channel and orchestrator composers share it.
+  Chat 2's composer (2026-11-25): a `+` attach button starts the chip row
+  (any file; an image shows a thumbnail chip, another file a file-glyph
+  chip); the chip row never scrolls, so a chip that can change wears the
+  chip fill and a chevron while a fixed one is plain muted text, and a
+  narrow pane drops the fixed agent chip first. Model and effort stay
+  changeable between turns of a started chat. Send and Stop are one round
+  button: Stop (neutral, a square) while a reply runs and nothing is typed,
+  Send otherwise; with a draft, Stop stays in the ⋯ menu and as `/stop`.
+  Actions that are not chips (Continue in Terminal) and the working
+  directory sit in a ⋯ menu beside it. An image chip's thumbnail is the
+  staged copy, drawn in the renderer. `/` opens a menu above the
+  box: in-chat commands, then the agent's skills. Moa's
   composer sits directly on the panel fill with no footer frame (one field,
   one border, send inside); its key hint shows only while the field is
   focused and empty, or when the field is disabled and the hint says why.
 - **User bubble:** a content-10% fill, no border, full round on one line and
-  12px when it wraps; queued messages use the same bubble. Assistant prose
+  12px when it wraps. Queued messages are not bubbles: they wait as compact
+  rows in the bubble fill in the dock above the composer, with Edit and ×,
+  and enter the transcript only once sent. Assistant prose
   has no bubble. Each recorded turn ends in a muted receipt: check, duration
   (when the transcript carried both times), clock time, copy.
 - **Popovers** 12px, `--line` hairline, `--shadow-popover`; menu rows 6px.
@@ -2624,7 +2638,8 @@ view becomes a composer chip (thumbnail, name, × or Backspace removes it) and t
 sent message shows the picture; a refused file says why in one line. While a turn
 runs, a neutral Stop button (never amber; Esc in an empty composer, never during
 IME composition) reads Stopping…, then Stopped or "kept running". A message sent
-mid-turn to Claude shows as Queued until it runs. The thread anchors to the bottom:
+mid-turn to Claude shows as Queued until it runs (chat 2: in the dock above the
+composer, not in the transcript; its Send and Stop are one button). The thread anchors to the bottom:
 no empty reply row or reserved gap under the latest prompt.
 
 ### Sidebar rows (2026-09-24)

@@ -633,22 +633,22 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     expect(await generateRustSnapshot(req, 'ansi')).toMatchObject({ ok: true });
   });
 
-  it('takes an attach-sized request and refuses a history past the native cap', async () => {
+  it('takes an attach-sized request natively, its history capped at the native grid for both engines', async () => {
     const lines = (n: number) => Buffer.from(Array.from({ length: n }, (_, i) => `l${i}`).join('\r\n'));
     // 4M cells / 1000 columns leave 3999 history rows next to one screen row.
     const fits: SnapshotRequest = { cols: 1000, rows: 1, scrollback: 100000, initial: lines(50) };
     const overflows: SnapshotRequest = { ...fits, initial: lines(5000) };
+    // The core still refuses an uncapped request (its guard)...
     expect(await generateRustSnapshot(overflows, 'ansi')).toMatchObject({ ok: false, detail: expect.stringMatching(/^unsupported-history-limit/) });
-    for (const [req, backend] of [[fits, 'rust'], [overflows, 'xterm']] as const) {
+    // ...which the snapshot entry no longer sends: both engines keep the newest 3999 rows.
+    for (const req of [fits, overflows]) {
       vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');
       const reference = await generateSnapshotUnqueued(req);
       vi.stubEnv('WMUX_RUST_SNAPSHOT', 'ansi');
       const selected = await generateSnapshotUnqueued(req);
       if (!reference.ok || !selected.ok) throw new Error('snapshot failed');
-      expect(getAnsiSnapshotBackendDiagnostics().last?.backend).toBe(backend);
-      // The fallback is xterm's own payload; replaying 4M cells adds nothing.
-      if (backend === 'xterm') expect(selected.payload.equals(reference.payload)).toBe(true);
-      else expect(await parity(req, selected.payload, reference.payload)).toBeUndefined();
+      expect(getAnsiSnapshotBackendDiagnostics().last?.backend).toBe('rust');
+      expect(await parity({ ...req, scrollback: 3999 }, selected.payload, reference.payload)).toBeUndefined();
     }
   });
 

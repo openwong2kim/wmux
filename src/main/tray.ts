@@ -2,6 +2,7 @@ import { app, Tray, Menu, nativeImage, BrowserWindow, shell, dialog } from 'elec
 import fs from 'fs';
 import path from 'path';
 import { platformChoice } from '../shared/platform';
+import { updateTaskbarNeedsYou } from './taskbarStatus';
 
 let tray: Tray | null = null;
 // Retained so updateTraySessionCount() can rebuild the context menu (and so
@@ -225,7 +226,9 @@ export function updateUnreadBadge(count: number): void {
     return;
   }
   // Windows/Linux: no dock, so the count rides the tray tooltip — composed
-  // with the background-session nudge rather than replacing it.
+  // with the background-session nudge rather than replacing it. On Windows the
+  // same count also drives the taskbar overlay (no-op elsewhere).
+  updateTaskbarNeedsYou(count);
   trayUnreadCount = count;
   applyTrayTooltip();
 }

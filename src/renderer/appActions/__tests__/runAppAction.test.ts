@@ -246,6 +246,7 @@ describe('settings', () => {
     'notifications.paneRing': 'off',
     'notifications.paneFlash': 'off',
     'notifications.taskbarFlash': 'off',
+    'notifications.taskbarBadge': 'off',
     'notifications.glowOpacity': '0.75',
     'power.keepAwake': 'always',
     'titlebar.clock': 'on',

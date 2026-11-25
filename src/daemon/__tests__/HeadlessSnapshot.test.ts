@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { Terminal } from '@xterm/headless';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
-import { generateSnapshot, FEED_SLICE_BYTES } from '../HeadlessSnapshot';
+import { generateSnapshot, generateTextSnapshotUnqueued, FEED_SLICE_BYTES } from '../HeadlessSnapshot';
 
 // ── Round-trip harness ──────────────────────────────────────────────
 //
@@ -320,5 +320,25 @@ describe('generateSnapshot — cursor visibility', () => {
     const core = (renderer as unknown as { _core: { coreService: { isCursorHidden: boolean } } })._core;
     expect(core.coreService.isCursorHidden).toBe(false);
     renderer.dispose();
+  });
+});
+
+describe('the snapshot history depth', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("caps a wide pane's history at the native grid's depth on either engine", async () => {
+    // xterm alone: 4M cells / 1000 columns leave 3999 history rows next to one
+    // screen row, though the request asks for 100k.
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');
+    const initial = Buffer.from(Array.from({ length: 5000 }, (_, i) => `l${i}`).join('\r\n'));
+    const out = await generateTextSnapshotUnqueued({ cols: 1000, rows: 1, scrollback: 100000, initial });
+    if (!out.ok) throw new Error('snapshot failed');
+    expect(out.rows).toHaveLength(4000);
+    expect(out.rows[0].text).toBe('l1000');
+    expect(out.rows[3999].text).toBe('l4999');
+    // A narrow pane keeps what it asks for.
+    const narrow = await generateTextSnapshotUnqueued({ cols: 80, rows: 1, scrollback: 100000, initial });
+    if (!narrow.ok) throw new Error('snapshot failed');
+    expect(narrow.rows).toHaveLength(5000);
   });
 });

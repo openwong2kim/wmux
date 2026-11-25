@@ -13,6 +13,7 @@ import { sessionNeedsInput } from '../../../../shared/chatv2/session';
 import { ChildBackend } from '../childBackend';
 import { ClaudeDriver } from '../claude/claudeDriver';
 import { createChatV2Host } from '../host';
+import { ChatV2Store } from '../store';
 import type { ChatV2Host, ChatV2HostDeps } from '../types';
 import { FakeClaude, tick, until } from './fakeClaude';
 import { deliberateSleep } from '../../../../test-utils/waitFor';
@@ -63,7 +64,7 @@ interface Rig {
 
 const PANE_ENV = { PATH: '/usr/bin', WMUX_WORKSPACE_ID: 'ws-1', CLAUDECODE: '1', WMUX_AUTH_TOKEN: 'x' };
 
-function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record<string, string>; stubborn?: boolean; paneCwd?: string; panePid?: number; driverCwd?: ChatV2HostDeps['driverCwd']; terminalBindings?: ChatV2HostDeps['terminalBindings'] } = {}): Rig {
+function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record<string, string>; stubborn?: boolean; paneCwd?: string; panePid?: number; driverCwd?: ChatV2HostDeps['driverCwd']; terminalBindings?: ChatV2HostDeps['terminalBindings']; onFake?: (fake: FakeClaude, index: number) => void } = {}): Rig {
   const r = {
     fakes: [] as FakeClaude[],
     pushes: [] as Rig['pushes'],
@@ -133,6 +134,7 @@ function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record
     drivers: () => {
       const fake = new FakeClaude();
       fake.stubborn = options.stubborn ?? false;
+      options.onFake?.(fake, r.fakes.length);
       r.fakes.push(fake);
       const backend = fake.backend();
       r.backends.push(backend);
@@ -183,6 +185,124 @@ describe('chat v2 host', () => {
     // A repeated send is answered from the ledger; a changed one is refused.
     expect(await sent(r)).toEqual({ ok: true, clientMessageId: 'msg-00001', seq: 3, duplicate: true });
     expect(await sent(r, 'other')).toMatchObject({ ok: false, error: { code: 'client-message-conflict' } });
+    await r.host.dispose();
+  });
+
+  it('changes model and effort between turns: live when the agent takes it, else by a restart on the same conversation', async () => {
+    const r = rig();
+    const binding = await created(r);
+    r.fake().controlAnswer = () => 'success';
+    const live = await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, model: 'opus', effort: 'high' }, 'main');
+    expect(live).toMatchObject({ ok: true, applied: 'live', binding: { model: 'opus', status: 'idle' } });
+    expect(r.fakes).toHaveLength(1);
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort).toBe('high');
+    // Refused while a turn runs.
+    await sent(r);
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'low' }, 'main')).toMatchObject({ ok: false, error: { code: 'turn-running' } });
+    r.fake().result();
+    await until(() => r.host.statusForPane(PANE) === 'idle');
+    // max is a start flag only: it restarts on the same conversation with the new options.
+    const restarted = await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'max' }, 'main');
+    expect(restarted).toMatchObject({ ok: true, applied: 'restarted', binding: { status: 'idle' } });
+    expect(r.fakes).toHaveLength(2);
+    expect(r.fake().args).toEqual(expect.arrayContaining(['--model=opus', '--effort=max', '--resume', binding.providerSessionId]));
+    // An effort the agent does not take is refused.
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'ultra' }, 'main')).toMatchObject({ ok: false, error: { code: 'invalid-params' } });
+    await r.host.dispose();
+  });
+
+  it('refuses a model the agent says no to without a restart, and restarts a chat with no message yet on a fresh session id', async () => {
+    const r = rig();
+    const binding = await created(r);
+    r.fake().controlAnswer = () => 'error';
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, model: 'opus' }, 'main'))
+      .toMatchObject({ ok: false, error: { code: 'invalid-params' } });
+    expect(r.fakes).toHaveLength(1);
+    expect(r.host.bindingForPane(PANE)).toMatchObject({ model: 'haiku', status: 'idle' });
+    // The model lands, then the effort is refused: the chat records the model that runs.
+    r.fake().controlAnswer = (subtype) => (subtype === 'set_model' ? 'success' : 'error');
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, model: 'opus', effort: 'low' }, 'main'))
+      .toMatchObject({ ok: false, error: { code: 'invalid-params' } });
+    expect(r.host.bindingForPane(PANE)).toMatchObject({ model: 'opus', status: 'idle' });
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort ?? '').toBe('');
+    // Nothing was said yet, so there is no conversation to resume.
+    const restarted = await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'max' }, 'main');
+    expect(restarted).toMatchObject({ ok: true, applied: 'restarted' });
+    expect(r.fakes).toHaveLength(2);
+    expect(r.fake().args).not.toContain('--resume');
+    expect(r.fake().args).not.toContain(binding.providerSessionId);
+    expect(r.fake().args).toContain('--effort=max');
+    expect(await sent(r)).toMatchObject({ ok: true });
+    await r.host.dispose();
+  });
+
+  it('keeps the send lock with the change that took it last, not with one that let go of it before saving', async () => {
+    const r = rig();
+    const binding = await created(r);
+    r.fake().controlAnswer = () => 'success';
+    let open: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    const save = ChatV2Store.prototype.save;
+    let saving = 0;
+    const spy = vi.spyOn(ChatV2Store.prototype, 'save').mockImplementation(async function (this: ChatV2Store, record) {
+      saving += 1;
+      await gate;
+      return save.call(this, record);
+    });
+    try {
+      // The first change lets go of the lock and waits on its save.
+      const first = r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, model: 'opus' }, 'main');
+      await until(() => saving > 0);
+      // The second takes it and waits on the agent.
+      r.fake().controlAnswer = () => undefined;
+      const controls = () => r.fake().stdin.filter((line) => line.type === 'control_request' && (line.request as { subtype?: string }).subtype !== 'initialize');
+      const before = controls().length;
+      const second = r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'high' }, 'main');
+      await until(() => controls().length > before);
+      open();
+      expect(await first).toMatchObject({ ok: true, applied: 'live' });
+      // The first change's end left the second one's lock alone.
+      expect(await sent(r)).toMatchObject({ ok: false, error: { code: 'turn-running' } });
+      for (const line of controls().slice(before)) r.fake().out({ type: 'control_response', response: { subtype: 'success', request_id: line.request_id, response: {} } });
+      expect(await second).toMatchObject({ ok: true, applied: 'live' });
+      expect(await sent(r)).toMatchObject({ ok: true });
+    } finally {
+      spy.mockRestore();
+    }
+    await r.host.dispose();
+  });
+
+  it('falls back on a fresh session id and saves it when a change fails to start a chat with no message yet', async () => {
+    const r = rig({ onFake: (fake, index) => { if (index === 1) { fake.handshake = false; fake.exitOnSpawn = true; } } });
+    const binding = await created(r);
+    const failed = await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'max' }, 'main');
+    expect(failed).toMatchObject({ ok: false });
+    expect(r.fakes).toHaveLength(3);
+    const failedId = r.fakes[1].args[r.fakes[1].args.indexOf('--session-id') + 1];
+    const fallbackId = r.fakes[2].args[r.fakes[2].args.indexOf('--session-id') + 1];
+    expect(r.fakes[2].args).not.toContain('--resume');
+    expect(new Set([binding.providerSessionId, failedId, fallbackId]).size).toBe(3);
+    expect(r.host.bindingForPane(PANE)).toMatchObject({ status: 'idle', providerSessionId: fallbackId });
+    await until(() => JSON.stringify(new ChatV2Store(path.join(dir, 'chat-sessions', 'v2')).load(() => undefined)).includes(fallbackId));
+    await r.host.dispose();
+  });
+
+  it('sends a non-image file as its own path and refuses a non-image inside the staging directory', async () => {
+    const r = rig();
+    const binding = await created(r);
+    const file = path.join(dir, 'notes.md');
+    fs.writeFileSync(file, '# notes');
+    const ok = await r.host.call('send', { paneId: PANE, chatSessionId: binding.chatSessionId, epoch: binding.epoch, clientMessageId: 'msg-file1', text: 'read this', attachments: [file] }, 'main');
+    expect(ok).toMatchObject({ ok: true });
+    const user = r.host.sessionForPane(PANE)!.blocks.find((b) => b.role === 'user')!;
+    expect(user.attachments).toEqual([expect.objectContaining({ kind: 'file', name: 'notes.md', path: file })]);
+    r.fake().result();
+    await until(() => r.host.statusForPane(PANE) === 'idle');
+    const stagingDir = path.join(dir, 'chatv2-attachments');
+    fs.mkdirSync(stagingDir, { recursive: true });
+    fs.writeFileSync(path.join(stagingDir, 'x.txt'), 'x');
+    const refused = await r.host.call('send', { paneId: PANE, chatSessionId: binding.chatSessionId, epoch: r.host.bindingForPane(PANE)!.epoch, clientMessageId: 'msg-file2', text: 'and this', attachments: [path.join(stagingDir, 'x.txt')] }, 'main');
+    expect(refused).toMatchObject({ ok: false, error: { code: 'attachment-refused' } });
     await r.host.dispose();
   });
 

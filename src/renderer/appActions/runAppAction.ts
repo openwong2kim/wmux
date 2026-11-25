@@ -179,6 +179,7 @@ function readSetting(store: Store, key: AppSettingKey): AppSettingValue {
     case 'notifications.paneRing': return store.paneRingEnabled;
     case 'notifications.paneFlash': return store.paneFlashEnabled;
     case 'notifications.taskbarFlash': return store.taskbarFlashEnabled;
+    case 'notifications.taskbarBadge': return store.taskbarBadgeEnabled;
     case 'notifications.glowOpacity': return store.paneGlowOpacity;
     case 'power.keepAwake': return store.sleepPreventionMode;
     case 'titlebar.clock': return store.titlebarClockVisible;
@@ -243,6 +244,7 @@ function writeSetting(store: Store, key: AppSettingKey, value: AppSettingValue):
     case 'notifications.paneRing': store.setPaneRingEnabled(value as boolean); return;
     case 'notifications.paneFlash': store.setPaneFlashEnabled(value as boolean); return;
     case 'notifications.taskbarFlash': store.setTaskbarFlashEnabled(value as boolean); return;
+    case 'notifications.taskbarBadge': store.setTaskbarBadgeEnabled(value as boolean); return;
     case 'notifications.glowOpacity': store.setPaneGlowOpacity(value as number); return;
     case 'power.keepAwake': store.setSleepPreventionMode(value as Store['sleepPreventionMode']); return;
     case 'titlebar.clock': store.setTitlebarClockVisible(value as boolean); return;

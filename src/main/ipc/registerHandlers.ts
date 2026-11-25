@@ -88,6 +88,7 @@ import { setDefaultWslDistro, enumerateWslDistros } from '../pty/defaultWslDistr
 import { setDefaultShellMirror } from '../pty/defaultShellMirror';
 import { setSecretGuardEnabled } from '../git/secretGuardSetting';
 import { updateUnreadBadge } from '../tray';
+import { updateTaskbarState } from '../taskbarStatus';
 import { eventBus } from '../events/EventBus';
 import { WMUX_EVENT_TYPES, type WmuxEventType } from '../../shared/events';
 import { VALID_TRANSITIONS, type TaskState } from '../../shared/types';
@@ -442,6 +443,16 @@ export function registerAllHandlers(
     updateUnreadBadge(safe);
   });
 
+  // Windows taskbar overlay setting + running flag. Anything but two booleans
+  // is dropped, so a malformed message cannot flip the taskbar state.
+  ipcMain.removeAllListeners(IPC.NOTIFICATION_TASKBAR_STATE);
+  ipcMain.on(IPC.NOTIFICATION_TASKBAR_STATE, (_event: Electron.IpcMainEvent, state: unknown) => {
+    if (!state || typeof state !== 'object') return;
+    const { enabled, running } = state as { enabled?: unknown; running?: unknown };
+    if (typeof enabled !== 'boolean' || typeof running !== 'boolean') return;
+    updateTaskbarState({ enabled, running });
+  });
+
   // Renderer confirms useNotificationListener's effect has subscribed —
   // dispatchNotification consults this before trusting webContents.send to
   // actually reach a listener. See rendererNotificationReadiness.ts.
@@ -698,6 +709,7 @@ export function registerAllHandlers(
     ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);
     ipcMain.removeAllListeners(IPC.NOTIFICATION_OS_TOAST);
     ipcMain.removeAllListeners(IPC.NOTIFICATION_BADGE_COUNT);
+    ipcMain.removeAllListeners(IPC.NOTIFICATION_TASKBAR_STATE);
     ipcMain.removeAllListeners(IPC.NOTIFICATION_LISTENER_READY);
   };
 }

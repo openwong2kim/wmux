@@ -286,6 +286,7 @@ import { NEW_PACKAGE_NOTE_IPC } from '../shared/newPackageNote';
 import { newPackageNotePath, readNewPackageNote } from '../daemon/newPackageNoteSetting';
 import { CHANNELS_EPOCH } from '../shared/channels';
 import { createTray, destroyTray, updateTraySessionCount } from './tray';
+import { bindTaskbarWindow } from './taskbarStatus';
 import { installApplicationMenu } from './menu/appMenu';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
@@ -3755,6 +3756,9 @@ function adoptMainWindow(win: BrowserWindow): void {
   // picker a terminal command opens stacks above it (Windows).
   ptyManager.setHostWindow(hostWindowHandle(win));
   reportHostWindow(() => daemonClient, win);
+  // Windows taskbar overlay + progress follow every adopted window, including
+  // one rebuilt after a failed install (no-op elsewhere).
+  bindTaskbarWindow(win);
 
   // Windows logoff/shutdown/restart. WM_ENDSESSION is a per-window message:
   // Electron emits 'session-end' on the BrowserWindow that received it and

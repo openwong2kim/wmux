@@ -2,7 +2,7 @@ import type { AgentStatus } from '../../shared/types';
 import type { ClaudeRewindResult } from '../../shared/transcript/turnEvents';
 import { agentRow } from '../../shared/agentIdentity';
 import { screenBlocksChatSend, screenShowsRunningTurn, titleShowsRunningTurn } from './chatScreenGate';
-import { claudeComposerEmpty, claudeComposerVisible, type ChatScreenRows } from './deliverChatPrompt';
+import { claudeComposerEmpty, claudeComposerUnseen, claudeComposerVisible, type ChatScreenRows } from './deliverChatPrompt';
 
 /** Gap between the two ESCs: well inside Claude's double-tap window, and two separate chunks. */
 export const REWIND_ESC_GAP_MS = 120;
@@ -67,7 +67,7 @@ export async function openClaudeRewind(deps: ClaudeRewindDeps): Promise<ClaudeRe
     let title: { title: string; at: number } | null = null;
     try { title = deps.readTitle?.() ?? null; } catch { /* no title = no title evidence */ }
     if (screenShowsRunningTurn(rows, 'claude') || titleShowsRunningTurn(title, 'claude', now())) return 'busy';
-    if (!claudeComposerEmpty(rows)) return claudeComposerVisible(rows) ? 'draft' : 'blocked';
+    if (!claudeComposerEmpty(rows)) return claudeComposerUnseen(rows) ? 'unseen' : claudeComposerVisible(rows) ? 'draft' : 'blocked';
     return check(expected);
   };
   const first = check();

@@ -16,7 +16,9 @@ import {
   CODEX_FOOTER,
   CODEX_SCROLLED_HINT,
   CODEX_SHORTCUT_HINT,
+  chatScreenRowsOf,
   codexScreenBlocked,
+  unseenFrom,
   type ChatScreenRows,
 } from './transcript/deliverChatPrompt';
 import { screenBlocksChatSend } from './transcript/chatScreenGate';
@@ -52,6 +54,10 @@ const CLAUDE_LABELLED_RULE = /^─{8,} \S(?:.*\S)? ─+$/;
 const CLAUDE_PROMPT = /^([❯!#])(?:[ \u00a0]|$)/;
 /** The hint Claude draws under the composer in a mode (`  ! for shell mode`). */
 const CLAUDE_MODE_HINT = /^\s*(?:! for (?:shell|bash) mode|# to memorize)\b/;
+/** The session survey's choices (`1: Bad    2: Fine   3: Good   0: Dismiss`): it takes a digit typed at an empty prompt. */
+const CLAUDE_SURVEY_CHOICES = /\b1: Bad\s+2: Fine\s+3: Good\s+0: Dismiss\b/;
+/** How far above the composer's top rule the survey is looked for (its choices, a blank row, a notice row). */
+const CLAUDE_SURVEY_ROWS = 4;
 
 function lastIndex(rows: readonly string[], test: (row: string) => boolean): number {
   for (let i = rows.length - 1; i >= 0; i--) if (test(rows[i])) return i;
@@ -73,9 +79,23 @@ function slice(rows: ChatScreenRows, from: number, to: number): ChatScreenRows {
  * indents the transcript, so text it prints cannot forge them). Only the
  * composer and the rows under it decide: a transcript above that quotes a
  * dialog's footer or a mode's hint is not the pane's state, and neither is
- * the text this delivery pasted into the composer.
+ * the text this delivery pasted into the composer. The one exception is the
+ * session survey, drawn right over the top rule: it refuses, never admits.
+ *
+ * The frame is the ring's replay, so a row Claude drew before the ring's
+ * oldest byte and never redrew reads blank (outputModeTracker's preamble). A
+ * missing closing rule is then no composer, never an empty one: a draft's
+ * cells can be missing the same way.
  */
 function readClaude(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRead {
+  const read = readClaudeRows(rows, phase);
+  // A blank the read could not see may be a draft's text or a dialog's row: no
+  // evidence of a plain prompt, from the composer's top rule down.
+  if (read.verdict !== 'mode' && read.span && unseenFrom(rows, read.span.from - 1)) return { verdict: 'unknown' };
+  return read;
+}
+
+function readClaudeRows(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRead {
   if (rows.every((row) => !row.trim())) return { verdict: 'unknown' };
   const isRule = (row: string): boolean => CLAUDE_RULE.test(row.trimEnd());
   const isTopRule = (row: string | undefined): boolean => row !== undefined && (isRule(row) || CLAUDE_LABELLED_RULE.test(row.trimEnd()));
@@ -96,7 +116,11 @@ function readClaude(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRead {
   const span = { from, to };
   const glyph = CLAUDE_PROMPT.exec(rows[from])?.[1];
   const below = rows.slice(to + 1);
-  if (glyph !== '❯' || below.some((row) => CLAUDE_MODE_HINT.test(row)) || blocks(below)) return { verdict: 'mode', span };
+  // The survey draws over the composer's top rule, so the rows right above it
+  // decide too. It takes a digit at an empty prompt only: at the Enter the
+  // prompt holds this delivery's paste, and the Enter submits it.
+  const survey = phase === 'paste' && rows.slice(Math.max(0, from - 1 - CLAUDE_SURVEY_ROWS), from - 1).some((row) => CLAUDE_SURVEY_CHOICES.test(row));
+  if (glyph !== '❯' || survey || below.some((row) => CLAUDE_MODE_HINT.test(row)) || blocks(below)) return { verdict: 'mode', span };
   if (phase === 'enter') return { verdict: 'plain', span };
   // The composer alone, from its top rule to its closing rule.
   const own = slice(rows, from - 1, to + 1);
@@ -117,6 +141,8 @@ function readCodex(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRead {
   const span = { from, to: from + 1 + firstChrome };
   // An overlay that waits for esc draws under the composer, never in the transcript.
   if (codexScreenBlocked(slice(rows, span.to, rows.length))) return { verdict: 'mode', span };
+  // A blank the read could not see, from the prompt row down: no evidence either way.
+  if (unseenFrom(rows, span.from)) return { verdict: 'unknown' };
   if (phase === 'enter') return { verdict: 'plain', span };
   // Anything between the prompt row and the chrome is a draft's rows or a popup.
   const between = tail.slice(from + 1, span.to).filter((row) => row.trim());
@@ -137,6 +163,12 @@ export function hasPlainPrompt(slug: AgentSlug): slug is PlainPromptAgent {
 export function readComposer(frame: DeliveryFrame | null, slug: PlainPromptAgent, phase: DeliveryPhase): ComposerRead {
   if (!frame) return { verdict: 'unknown' };
   return PLAIN_PROMPT[slug](frame.rows, phase);
+}
+
+/** A delivery frame from a screen read whose unknown cells carry UNKNOWN_CELL (chatScreenRowsOf). */
+export function deliveryFrameOf(read: readonly { text: string; undimmed?: string }[], rowsBelowCursor: number): DeliveryFrame {
+  const rows = chatScreenRowsOf(read);
+  return { rows, cursorRow: rows.length - 1 - rowsBelowCursor };
 }
 
 /** The cursor sits on the composer's own rows: a frame being drawn now, not a leftover. */

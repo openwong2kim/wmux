@@ -1286,6 +1286,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         document.documentElement.setAttribute('data-glass-level', state.windowGlass);
       }
 
+      // Windows taskbar overlay, ahead of the empty-workspace return below:
+      // sessionSettingsLoaded is already true, so a skipped restore would let
+      // the StatusBar send the default "on" for someone who turned it off.
+      if (typeof data.taskbarBadgeEnabled === 'boolean') state.taskbarBadgeEnabled = data.taskbarBadgeEnabled;
+
       if (!data.workspaces || data.workspaces.length === 0) return;
 
       // Cold-park is renderer-only and non-persisted. loadSession replaces the

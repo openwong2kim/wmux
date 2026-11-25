@@ -4,6 +4,7 @@
  * apply rule and re-snapshot whenever it says the copy is stale (epoch, seq
  * gap, a change below the window, a fold mismatch, a daemon reconnect).
  */
+import type { ChatSkillCatalog } from '../../../shared/transcript/chatSkills';
 import type {
   ChatV2Agent,
   ChatV2Binding,
@@ -202,9 +203,15 @@ export class ChatV2Controller {
     if (this.state.error) this.set({ error: null });
   }
 
-  async create(input: { agent: ChatV2Agent; mode: ChatV2RunMode; model: string }): Promise<boolean> {
+  async create(input: { agent: ChatV2Agent; mode: ChatV2RunMode; model: string; effort?: string }): Promise<boolean> {
     this.set({ error: null });
-    const result = await this.bridge.call('create', { paneId: this.paneId, agent: input.agent, mode: input.mode, ...(input.model ? { model: input.model } : {}) });
+    const result = await this.bridge.call('create', {
+      paneId: this.paneId,
+      agent: input.agent,
+      mode: input.mode,
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
+    });
     if (this.disposed) return false;
     if (!result.ok) return this.fail(result.error);
     if (!this.state.view) await this.snapshot(result.binding.chatSessionId);
@@ -295,6 +302,24 @@ export class ChatV2Controller {
     });
     if (this.disposed) return false;
     return result.ok ? true : this.fail(result.error);
+  }
+
+  /** Change the chat's model and/or effort between turns ('' = the agent's default). */
+  async configure(change: { model?: string; effort?: string }): Promise<boolean> {
+    const view = this.state.view;
+    if (!view) return false;
+    this.set({ error: null });
+    const result = await this.bridge.call('configure', { paneId: this.paneId, chatSessionId: view.binding.chatSessionId, ...change });
+    if (this.disposed) return false;
+    return result.ok ? true : this.fail(result.error);
+  }
+
+  /** The chat agent's skills and commands for the `/` menu; unavailable on any failure. */
+  async skills(): Promise<ChatSkillCatalog> {
+    const view = this.state.view;
+    if (!view) return { skills: [], state: 'unavailable' };
+    const result = await this.bridge.call('skills', { paneId: this.paneId, chatSessionId: view.binding.chatSessionId }).catch(() => null);
+    return result?.ok ? result.catalog : { skills: [], state: 'unavailable' };
   }
 
   async toTerminal(): Promise<boolean> {

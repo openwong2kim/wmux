@@ -33,6 +33,7 @@ type TestState = WorkspaceSlice & {
   paneRingEnabled: boolean;
   paneFlashEnabled: boolean;
   taskbarFlashEnabled: boolean;
+  taskbarBadgeEnabled: boolean;
   paneGlowOpacity: number;
   anthropicUsageEnabled: boolean;
   usageLimitAutoResume: boolean;
@@ -93,6 +94,7 @@ function createTestStore() {
       paneRingEnabled: true,
       paneFlashEnabled: true,
       taskbarFlashEnabled: true,
+      taskbarBadgeEnabled: true,
       paneGlowOpacity: 0.6,
       anthropicUsageEnabled: false,
       usageLimitAutoResume: false,
@@ -387,6 +389,17 @@ describe('WorkspaceSlice.loadSession — Fix 0 contract', () => {
 
     // Initial state preserved — no replacement.
     expect(store.getState().workspaces).toBe(beforeWorkspaces);
+  });
+
+  it('restores the taskbar overlay setting even when data.workspaces is empty', () => {
+    const store = createTestStore();
+    store.getState().loadSession({
+      workspaces: [],
+      activeWorkspaceId: '',
+      sidebarVisible: true,
+      taskbarBadgeEnabled: false,
+    } as unknown as SessionData);
+    expect(store.getState().taskbarBadgeEnabled).toBe(false);
   });
 });
 

@@ -608,7 +608,8 @@ export function projectChatV2Block(block: Block): TurnEvent[] {
   const truncated = block.overflow?.text ? { truncated: true } : {};
   switch (block.role) {
     case 'user': {
-      const images = block.attachments?.map((a) => a.path) ?? [];
+      // The phone shows images only; a file the agent opens itself has no bytes to show there.
+      const images = block.attachments?.filter((a) => a.kind !== 'file').map((a) => a.path) ?? [];
       return [{
         id: block.id, kind: 'user_text', text: block.text, ...truncated,
         ...(block.startedAt !== undefined ? { ts: block.startedAt } : {}),

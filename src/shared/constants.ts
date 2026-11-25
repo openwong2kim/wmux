@@ -96,6 +96,9 @@ export const IPC = {
   // the total unread changes; main applies it to the platform badge surface
   // (macOS dock, Windows tray tooltip).
   NOTIFICATION_BADGE_COUNT: 'notification:badge-count',
+  // Windows taskbar: the overlay setting and whether any agent is running
+  // (main/taskbarStatus.ts). The overlay count itself rides BADGE_COUNT.
+  NOTIFICATION_TASKBAR_STATE: 'notification:taskbar-state',
   // X2 — OS toast click → jump to the originating pane. Main sends the
   // toast's {ptyId, workspaceId} context; renderer resolves and activates
   // the workspace/pane/surface (see useNotificationListener).
