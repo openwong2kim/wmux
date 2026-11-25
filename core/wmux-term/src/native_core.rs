@@ -6,7 +6,7 @@ use crate::native_output::NativeOutputChunk;
 use crate::native_serialize::XtermControl;
 use crate::ring_pack::{PackedRing, PackedView};
 use alacritty_terminal::event::VoidListener;
-use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
+use alacritty_terminal::grid::{Dimensions, Grid};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
@@ -335,27 +335,6 @@ pub struct NativeTerminal {
     /// A grid allocation was refused: the terminal is gone and every call
     /// that needs it fails with GRID_REFUSED (`settle`).
     grid_refused: bool,
-}
-
-/// Whether narrowing to `cols` reflows a row below the cursor's paragraph on
-/// this grid: a soft-wrapped row there, or a row with content past the new
-/// width. A widen follows xterm's cursor rule (vendor grow_columns).
-fn reflows_below_cursor<T: GridCell>(grid: &Grid<T>, cols: usize) -> bool {
-    let old = grid.columns();
-    if cols >= old {
-        return false;
-    }
-    let last = Column(old - 1);
-    let lines = grid.screen_lines() as i32;
-    let mut y = grid.cursor.point.line.0;
-    while y + 1 < lines && grid[Line(y)][last].flags().contains(Flags::WRAPLINE) {
-        y += 1;
-    }
-    ((y + 1)..lines).any(|y| {
-        let row = &grid[Line(y)];
-        row[last].flags().contains(Flags::WRAPLINE)
-            || (cols..old).any(|x| !row[Column(x)].is_empty())
-    })
 }
 
 const C1: &str = "unsupported-state-c1: a C1 control, which Alacritty prints";
@@ -2557,11 +2536,6 @@ impl NativeTerminal {
                     self.feed.alt_reflow = true;
                 }
             }
-            // Narrower, a paragraph below the cursor's that reflows: xterm moves
-            // its cursor row by the rows that adds as if they were above it and
-            // clips a different row than Alacritty does. (A widen follows xterm's
-            // rule in the vendored grow_columns.)
-            let primary = main_grid(term);
             // xterm resizes its alternate screen's cursor without a reflow, and
             // the round trip's `?47l` then hands it to the main screen.
             let resized =
@@ -2569,11 +2543,6 @@ impl NativeTerminal {
             if self.feed.round_trip && resized {
                 self.refusal
                     .get_or_insert("unsupported-state-mode: a resize between ?47h and ?47l");
-            }
-            if reflows_below_cursor(primary, cols as usize) {
-                self.refusal.get_or_insert(
-                    "unsupported-reflow: a paragraph below the cursor reflows, which moves xterm's cursor off its row",
-                );
             }
             // Both terminals reset the margins of both screens on a size change.
             if resized {
@@ -2633,6 +2602,14 @@ impl NativeTerminal {
             let narrows = size.columns() < term.columns();
             term.resize(size);
             let grid = main_grid(term);
+            // Narrower, xterm dropped rows of a paragraph it reflowed below the
+            // cursor: it keeps that paragraph's last rows, this grid its first
+            // (vendor shrink_columns, `NarrowingPlan`).
+            if narrows && grid.narrowing_clipped {
+                self.refusal.get_or_insert(
+                    "unsupported-reflow: a narrowing drops rows of a paragraph it reflowed, which xterm keeps from its end",
+                );
+            }
             self.feed.saved[0].history = if narrows && grid.narrowing_added > 0 {
                 narrowed_saved_history(grid, self.feed.saved[0].history, saved_line)
             } else {
