@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState, useMemo, useRef } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useState, useMemo, useRef } from 'react';
 import { notePaneFenceError, notePaneFenceResult, toastPaneFenceRefusal } from '../../utils/paneFence';
 import { Panel, Group, Separator, type Layout } from 'react-resizable-panels';
 import type { PaneLeaf, Surface, Workspace } from '../../../shared/types';
@@ -41,6 +41,7 @@ import { isTerminalKindSurfaceType, isTerminalSurfaceType, isWorkSurfaceType, pi
 import { isPlainTerminalPane } from './paneCorners';
 import { AUTO_RESUME_AGENTS } from '../../stores/selectors/surfaceShown';
 import WorkTabs from './WorkTabs';
+import { TerminalsParkedContext } from './terminalsParked';
 import { useElementWidth } from '../../hooks/useElementWidth';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { type ResumeBinding, agentSupportsPermissionFlag, defaultResumeSkipPermissions, normalizeResumeCwd, permissionFlagFor, resumeGrammarFor, resumePermissionFlag } from '../../../shared/agentResume';
@@ -1695,6 +1696,9 @@ function TerminalSurface({ surface, paneId, chatViewEnabled, isActive, visible, 
   // A split remounts the same surface, so only a PTY no surface holds any more is forgotten.
   const ptyId = surface.ptyId;
   useEffect(() => () => { if (ptyId) forgetChatV2PaneIfClosed(ptyId, useStore.getState()); }, [ptyId]);
+  // A cold-parked mixed workspace: the terminal unmounts, its neighbours stay.
+  const parked = useContext(TerminalsParkedContext);
+  if (parked) return null;
   return (
     <>
       <div style={{ display: 'contents' }} inert={chatV2 || undefined}>
