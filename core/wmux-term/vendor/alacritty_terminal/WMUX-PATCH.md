@@ -124,6 +124,26 @@ core/wmux-term/vendor/alacritty_terminal/Cargo.toml --locked`.
   new line at the current width. The alternate screen's kept cells are
   dropped once it is no longer shown. `Storage::swap` uses a plain slice swap,
   since a row is no longer four machine words.
+- `src/grid/resize.rs`: a resize without reflow (the alternate screen) keeps a
+  soft-wrapped row wrapped. xterm.js's `isWrapped` belongs to the line and
+  survives any width change; here the flag lives on the row's last cell, so
+  `shrink_columns` and `grow_columns` move it to the new last cell
+  (`Row::take_wrap`, `Row::put_wrap`). `native_core.rs` no longer refuses an
+  alternate screen that changed width with a wrapped row on it. The upstream
+  test `grow_reflow_disabled` (`src/grid/tests.rs`) asserted the flag stays on
+  the old last cell; it now expects it on the new last cell, and
+  `resize_without_reflow_keeps_the_wrap` covers a narrowing and a widening.
+  A widen marks a wrapped row's new cells, past those xterm's line held
+  (visible and kept), as unwritten (`set_empty_from`), so the serializer does
+  not print them. `Row::hidden_cells` exposes the kept cells: xterm's text
+  read returns them, and so does the native text snapshot. Added 2026-11-25.
+- `src/grid/resize.rs` `shrink_lines`: fewer rows drop the rows below the
+  cursor, and with the first of them xterm drops its wrapped flag (it pops
+  the lines, `Buffer.ts` `resize`, the rows shrink branch). The row left at
+  the bottom then continues into nothing, so its wrap flag is cleared; before,
+  it made the row added by a later taller resize a continuation. The flag is
+  taken through `Row::take_wrap`, so the row's written extent (and an erase's
+  empty run there) stays as it was. Added 2026-11-25.
 - `src/term/mod.rs` runs character insert, delete and erase and insert-mode
   printing on every row as xterm's `BufferLine` does: over the physical row,
   with its wide-glyph fixes (a glyph cut at the cursor or pushed to the end

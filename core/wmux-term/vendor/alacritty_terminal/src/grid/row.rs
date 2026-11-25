@@ -258,6 +258,13 @@ impl<T> Row<T> {
         self.hidden.as_ref().map_or(0, |hidden| hidden[0].len())
     }
 
+    /// wmux: the cells kept past the visible width, which xterm's line still
+    /// holds and its text read still returns.
+    #[inline]
+    pub fn hidden_cells(&self) -> &[T] {
+        self.hidden.as_ref().map_or(&[], |hidden| &hidden[0][..])
+    }
+
     /// wmux: run `f` over the row's physical cells, the visible ones then the
     /// kept ones, as xterm's line operations (ICH, DCH, ECH, insert mode) do.
     pub(crate) fn with_physical<R>(&mut self, f: impl FnOnce(&mut [T]) -> R) -> R {

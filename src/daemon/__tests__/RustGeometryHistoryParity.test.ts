@@ -40,8 +40,7 @@ const CASES: Case[] = (() => {
   const reenter = '\x1b[?1049l\x1b[H\x1b[?1049hfresh';
   const altBlankRight = '\x1b[?1049h\x1b[H' + rowsOf(6, 18);
   // Row 2 runs past the width and soft-wraps onto row 3. xterm keeps the wrap
-  // flags across a width change and the kept cells don't (a widen loses row
-  // 3's), so a width change with a soft-wrapped row on screen still refuses.
+  // flags across a width change, and so does the vendored grid now: native.
   const altWrap = '\x1b[?1049h\x1b[Htop\r\n' + 'w'.repeat(30) + 'W'.repeat(25) + '\r\nafter';
   const altDip = '\x1b[?1049h\x1b[H' + rowsOf(8, 12) + '\x1b[8;1H';
   const primary = rowsOf(7, 70) + '\r\n$ ';
@@ -90,22 +89,19 @@ const CASES: Case[] = (() => {
       name: 'an alternate screen with a soft-wrapped row narrowed and widened back',
       steps: [{ size: [40, 8] }, { out: altWrap }, { size: [20, 8] }, { size: [40, 8] }, { out: '\x1b[8;1H' }],
       shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: altWrap.length, cols: 20, rows: 8 }, { offset: altWrap.length, cols: 40, rows: 8 }] },
-      rustRefuses: true,
     },
     {
       name: 'an alternate screen with a soft-wrapped row narrowed, written, then widened',
       steps: [{ size: [40, 8] }, { out: altWrap }, { size: [20, 8] }, { out: altNarrowWrite }, { size: [40, 8] }],
       shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: altWrap.length, cols: 20, rows: 8 }, { offset: altWrap.length + altNarrowWrite.length, cols: 40, rows: 8 }] },
-      rustRefuses: true,
     },
     {
       name: 'an alternate screen with a soft-wrapped row widened',
       steps: [{ size: [40, 8] }, { out: altWrap }, { size: [60, 8] }, { out: '\x1b[8;1H' }],
       shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: altWrap.length, cols: 60, rows: 8 }] },
-      rustRefuses: true,
     },
     {
-      // Leaving drops the rows whose wrap flags the width change lost.
+      // And left after: the main screen comes back.
       name: 'an alternate screen with a soft-wrapped row narrowed, written, widened, then left, is native again',
       steps: [{ size: [40, 8] }, { out: altWrap }, { size: [20, 8] }, { out: altNarrowWrite }, { size: [40, 8] }, { out: leave }],
       shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: altWrap.length, cols: 20, rows: 8 }, { offset: altWrap.length + altNarrowWrite.length, cols: 40, rows: 8 }] },

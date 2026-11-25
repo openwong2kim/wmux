@@ -3,7 +3,7 @@
 import type { Case } from './_rustParity';
 
 /** `n` rows `<tag><i> ` padded with x to `width` printed cells. */
-const rows = (n: number, width: number, tag = 'l') =>
+export const rows = (n: number, width: number, tag = 'l') =>
   Array.from({ length: n }, (_, i) => `${tag}${i} `.padEnd(width, 'x')).join('\r\n');
 
 /**
@@ -11,7 +11,7 @@ const rows = (n: number, width: number, tag = 'l') =>
  * resizes the pane there. Extends `resized()` to several steps and to bytes
  * written after a resize.
  */
-function script(name: string, start: [number, number], parts: Array<string | [number, number]>, backend: Case['backend'] = 'rust', scrollback = 100): Case {
+export function script(name: string, start: [number, number], parts: Array<string | [number, number]>, backend: Case['backend'] = 'rust', scrollback = 100): Case {
   const chunks: Buffer[] = [];
   const changes: Array<{ offset: number; cols: number; rows: number }> = [];
   let offset = 0;
@@ -107,9 +107,9 @@ export const reflowCases: Case[] = [
   // Widening alone hides nothing: still native.
   script('alt-widen', [40, 24], [`n\x1b[?1049h${rows(3, 30)}`, [80, 24]]),
   // Soft-wrapped rows on the alternate screen keep their wrap flag in xterm
-  // across any width change; Alacritty drops it. Refused until fixed.
-  script('alt-wrapped-widen', [40, 24], [`\x1b[?1049h${rows(2, 70)}`, [80, 24]], 'xterm'),
-  script('alt-wrapped-narrow', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24]], 'xterm'),
+  // across any width change, and in the vendored grid (RustAltParity has more).
+  script('alt-wrapped-widen', [40, 24], [`\x1b[?1049h${rows(2, 70)}`, [80, 24]]),
+  script('alt-wrapped-narrow', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24]]),
   // Leaving the alternate screen discards those rows on both: native again,
   // also with a fresh alternate screen entered after it, in the same write.
   script('alt-wrapped-widen-left', [40, 24], [`$ less\r\n\x1b[?1049h${rows(2, 70)}`, [80, 24], '\x1b[?1049l$ '], 'rust'),
@@ -117,7 +117,7 @@ export const reflowCases: Case[] = [
   script('alt-wrapped-reset', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], '\x1bc$ '], 'rust'),
   script('alt-wrapped-left-entered-again', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], `\x1b[?1049l$ less\r\n\x1b[?1049h\x1b[H${rows(2, 30)}`], 'rust'),
   // Still on an alternate screen whose wrapped rows changed width since.
-  script('alt-wrapped-left-entered-again-resized', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], `\x1b[?1049l\x1b[?1049h${'v'.repeat(100)}`, [80, 24]], 'xterm'),
+  script('alt-wrapped-left-entered-again-resized', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], `\x1b[?1049l\x1b[?1049h${'v'.repeat(100)}`, [80, 24]]),
   // Another refusal set in the same resize or after it outlives the leave.
   script('alt-wrapped-left-reflow-below-cursor', [80, 24], [`${rows(4, 70)}\x1b[2H\x1b[?1049h${'w'.repeat(100)}`, [40, 24], '\x1b[?1049l'], 'xterm'),
   script('alt-wrapped-left-after-refused-decstr', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], '\x1b[1!p\x1b[?1049l$ '], 'xterm'),

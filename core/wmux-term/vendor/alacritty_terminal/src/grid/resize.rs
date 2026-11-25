@@ -158,9 +158,21 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         // Clamp saved cursor, since only primary cursor is scrolled into viewport.
         self.saved_cursor.point.line = min(self.saved_cursor.point.line, Line(target as i32 - 1));
 
+        // wmux: the rows below the cursor are dropped. xterm pops them, and
+        // with them the wrapped flag of the first one (`Buffer.ts` `resize`,
+        // the rows shrink branch): the row now at the bottom no longer
+        // continues into anything, so its wrap flag goes too.
+        let dropped_below = (self.lines - target).saturating_sub(required_scrolling);
+
         self.raw.rotate((self.lines - target) as isize);
         self.raw.shrink_visible_lines(target);
         self.lines = target;
+
+        // Through `take_wrap`: a cell write would count the whole row as
+        // written and drop the empty run an erase left there.
+        if dropped_below > 0 {
+            self[Line(target as i32 - 1)].take_wrap();
+        }
     }
 
     /// Grow number of columns in each row, reflowing if necessary.
@@ -311,7 +323,20 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let mut new_raw = wmux_alloc::with_capacity(reversed.len(), REFLOW);
         for mut row in reversed.drain(..).rev() {
             if row.len() < columns {
+                // wmux: without reflow (the alternate screen) xterm keeps a
+                // soft-wrapped line wrapped across a width change; the flag
+                // moves to the new last cell here.
+                let wrapped = !reflow && row.take_wrap();
+                // The cells xterm's line held: the visible ones and those kept
+                // past the width. The rest of the row is new, never written.
+                let held = row.len() + row.hidden_len();
                 row.grow(columns);
+                if wrapped {
+                    if held < columns {
+                        row.set_empty_from(held);
+                    }
+                    row.put_wrap();
+                }
             }
             wmux_alloc::push(&mut new_raw, row, REFLOW);
         }
@@ -370,7 +395,12 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             // wmux: without reflow (the alternate screen) xterm keeps a line's
             // cells past the narrower width; a later widen shows them again.
             if !reflow {
+                // The wrap flag stays with the line, on its new last cell.
+                let wrapped = row.take_wrap();
                 row.hide_past(columns);
+                if wrapped {
+                    row.put_wrap();
+                }
                 wmux_alloc::push(&mut new_raw, row, REFLOW);
                 continue;
             }
