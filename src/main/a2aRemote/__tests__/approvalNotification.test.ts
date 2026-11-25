@@ -4,8 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('../../notification/dispatchNotification', () => ({ dispatchNotification: vi.fn() }));
 
 import { dispatchNotification } from '../../notification/dispatchNotification';
-import { registerRemoteApprovalNotifications, remoteApprovalNotification } from '../approvalNotification';
-import { REMOTE_APPROVAL_DONE_EVENT } from '../../../shared/a2aRemote';
+import { registerRemoteApprovalNotifications, remoteApprovalNotification, remoteUndeliveredNotification } from '../approvalNotification';
+import { REMOTE_APPROVAL_DONE_EVENT, REMOTE_TASK_UNDELIVERED_EVENT } from '../../../shared/a2aRemote';
 import { describeNotification } from '../../../renderer/components/Notification/NotificationPanel';
 import type { Notification } from '../../../shared/types';
 import type { DaemonClient } from '../../DaemonClient';
@@ -44,5 +44,23 @@ describe('remoteApprovalNotification', () => {
     expect(dispatchNotification).toHaveBeenCalledTimes(1);
     off();
     expect(client.off).toHaveBeenCalled();
+  });
+});
+
+describe('remoteUndeliveredNotification', () => {
+  it('shows the daemon\'s line on the sending pane as a warning', () => {
+    const text = 'box has not received your task after 90 s (link active, not connected); it is still queued on this PC';
+    expect(remoteUndeliveredNotification({ taskId: 't', ptyId: 'pty-1', text })).toMatchObject({ ptyId: 'pty-1', payload: { type: 'warning', title: text, category: 'system' } });
+    for (const bad of [null, [], { text: '' }, { text: 'x'.repeat(301) }]) expect(remoteUndeliveredNotification(bad)).toBeNull();
+  });
+
+  it('the listener raises one notification for the undelivered event', () => {
+    vi.mocked(dispatchNotification).mockClear();
+    let listener: ((e: { type?: unknown; data?: unknown }) => void) | undefined;
+    const client = { on: vi.fn((_n: string, fn: typeof listener) => { listener = fn; }), off: vi.fn() } as unknown as DaemonClient;
+    registerRemoteApprovalNotifications(client, () => null);
+    listener!({ type: REMOTE_TASK_UNDELIVERED_EVENT, data: { taskId: 't', ptyId: 'pty-9', text: 'box has not received your task after 90 s' } });
+    expect(dispatchNotification).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(dispatchNotification).mock.calls[0][1]).toBe('pty-9');
   });
 });

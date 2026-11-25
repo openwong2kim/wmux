@@ -1781,6 +1781,28 @@ describe('fan-out worker first run (A-1)', () => {
     expect(other.spawned.every((s) => s.env?.CLAUDE_CODE_SANDBOXED === undefined)).toBe(true);
   });
 
+  it('turns a worker\'s auto-updater off for every agent, unless the user\'s env sets it', async () => {
+    vi.stubEnv('DISABLE_AUTOUPDATER', undefined);
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: renderer.port, worktrees: makeWorktreesFake() });
+    await svc.start(baseReq());
+    expect(renderer.spawned.length).toBeGreaterThan(0);
+    expect(renderer.spawned.every((s) => s.env?.DISABLE_AUTOUPDATER === '1')).toBe(true);
+
+    const codex = makeRendererFake();
+    const svc2 = new FanOutService({ daemon: makeDaemonFake().port, renderer: codex.port, worktrees: makeWorktreesFake() });
+    await svc2.start(baseReq({ idempotencyKey: 'fo-key-codex-updater', agentCmd: 'codex' }));
+    expect(codex.spawned.every((s) => s.env?.DISABLE_AUTOUPDATER === '1')).toBe(true);
+
+    vi.stubEnv('DISABLE_AUTOUPDATER', '0');
+    const own = makeRendererFake();
+    const svc3 = new FanOutService({ daemon: makeDaemonFake().port, renderer: own.port, worktrees: makeWorktreesFake() });
+    await svc3.start(baseReq({ idempotencyKey: 'fo-key-own-updater' }));
+    expect(own.spawned.length).toBeGreaterThan(0);
+    expect(own.spawned.every((s) => s.env?.DISABLE_AUTOUPDATER === undefined)).toBe(true);
+    vi.unstubAllEnvs();
+  });
+
   it('reports a worker still stuck on a first-run screen instead of calling it working', async () => {
     const upsell = [
       'Try the new fullscreen renderer?',

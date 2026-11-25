@@ -43,6 +43,7 @@ type Call = (method: string, params: Record<string, unknown>, opts?: { timeoutMs
 const starters: ContinueStarter[] = [];
 afterEach(() => {
   for (const s of starters.splice(0)) s.stop();
+  vi.unstubAllEnvs();
 });
 
 function rig(over: Over = {}) {
@@ -115,6 +116,7 @@ describe('starting a received conversation', () => {
   });
 
   it('opens the pane resuming the placed path in this PC\'s mode, never skipping permissions', async () => {
+    vi.stubEnv('DISABLE_AUTOUPDATER', undefined);
     const r = rig();
     await r.run();
     const params = r.render.mock.calls.find((c) => c[0] === 'fanout.spawnWorkspace')?.[1] ?? {};
@@ -124,8 +126,8 @@ describe('starting a received conversation', () => {
       initialCommand: `claude --resume '${PLACED}' --permission-mode acceptEdits`,
       workerPermissionMode: 'acceptEdits',
     });
-    const env = firstRunEnvForAgent('claude');
-    if (Object.keys(env).length > 0) expect(params['env']).toEqual(env);
+    // The worker's updater stays off: it would rewrite the launcher every pane runs.
+    expect(params['env']).toEqual({ ...firstRunEnvForAgent('claude'), DISABLE_AUTOUPDATER: '1' });
     expect(JSON.stringify(params)).not.toMatch(/bypassPermissions|dangerously-skip-permissions/);
     // Not a link: nothing names the pane as another PC's remote spawn.
     expect(params).not.toHaveProperty('remoteSpawnedBy');
