@@ -526,6 +526,18 @@ describe('AgentProcessTracker', () => {
     expect(win2.statusFor('s2')).toBe(false);
   });
 
+  it('a WSL pane cannot be re-probed: reprobeNow enumerates nothing and never reports "no agent"', async () => {
+    let listed = 0;
+    const tracker = new AgentProcessTracker(makeWatcher(), async () => { listed++; return [entry(300, SHELL, 'vim')]; },
+      undefined, undefined, { isWslSession: (id) => id === 'wsl' });
+    expect(tracker.canReprobe('wsl')).toBe(false);
+    expect(tracker.canReprobe('s1')).toBe(true);
+    const askedAt = Date.now();
+    expect(await tracker.reprobeNow('wsl', SHELL, 1_000)).toBe(true);
+    expect(listed).toBe(0);
+    expect(tracker.reprobeSawNoAgent('wsl', askedAt)).toBe(false);
+  });
+
   it("a delivery's re-probe says whether any agent was in the shell's tree, from an enumeration started after the ask", async () => {
     const watcher = makeWatcher();
     let table: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];

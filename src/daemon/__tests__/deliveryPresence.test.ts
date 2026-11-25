@@ -29,6 +29,7 @@ function deps(over: Partial<DeliveryPresenceDeps> & { s?: Partial<PresenceSessio
     tracked: () => ({ alive: true, slug: 'claude' as const }),
     probe: async () => { d.probes++; return true; },
     reprobe: async () => { d.probes++; return true; },
+    canReprobe: () => true,
     agentRunning: async () => true,
     processRunning: async () => true,
     ownedRoot: async () => false,
@@ -335,6 +336,19 @@ describe('deliveryPresence: a recorded death after a restart', () => {
     expect(pending.probes).toBe(1);
     expect(await deliveryPresence(restarted('names', false), 'p', 'claude')).toEqual(FULL);
     expect(await deliveryPresence(restarted('agent-in-tree', false, undefined), 'p', 'claude')).toEqual({ tier: 'none', reason: 'attribution-pending' });
+  });
+
+  it('a session the tracker cannot re-probe (WSL): with no restart mark the death stands at once; a mark still re-probes', async () => {
+    for (const commandRunning of [true, undefined]) {
+      const wsl = restarted('agent-in-tree', false, commandRunning);
+      wsl.canReprobe = () => false;
+      expect(await deliveryPresence(wsl, 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
+      expect(wsl.probes).toBe(0);
+    }
+    const marked = restarted('agent-in-tree', true);
+    marked.canReprobe = () => false;
+    expect(await deliveryPresence(marked, 'p', 'claude')).toEqual({ tier: 'none', reason: 'attribution-pending' });
+    expect(marked.probes).toBe(1);
   });
 
   it('the re-probe saw no agent under the shell (vim), or the shell is at its prompt with no restart: agent-ended', async () => {

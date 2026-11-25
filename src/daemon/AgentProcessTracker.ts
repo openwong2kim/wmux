@@ -1545,6 +1545,11 @@ export class AgentProcessTracker {
     return entryAgentSlug(entry, this.userHome) !== cur.slug;
   }
 
+  /** Whether reprobeNow enumerates this session's process tree: not for a WSL pane (armWsl attributes it). */
+  canReprobe(sessionId: string): boolean {
+    return !this.isWsl(sessionId);
+  }
+
   /** The pane's agent restarted and the tracker has picked no process for it since (at most RESTART_MARK_MS ago). */
   restartedSince(sessionId: string): boolean {
     const at = this.restartMarks.get(sessionId);

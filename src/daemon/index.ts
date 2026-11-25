@@ -6500,6 +6500,7 @@ function registerRpcHandlers(
     reprobe: (sid, shellPid, timeoutMs) => agentProcessTracker.reprobeNow(sid, shellPid, timeoutMs),
     restartedSince: (sid) => agentProcessTracker.restartedSince(sid),
     noAgentUnderShell: (sid, since) => agentProcessTracker.reprobeSawNoAgent(sid, since),
+    canReprobe: (sid) => agentProcessTracker.canReprobe(sid),
     agentRunning: (sid, slug) => agentProcessTracker.isAgentRunning(sid, slug, (pid) => ProcessMonitor.isRunning(pid), BY_ATTRIBUTION),
     ownedRoot: (sid, pid, slug) => agentProcessTracker.verifyOwnedRoot(sid, pid, slug, BY_ATTRIBUTION),
     processRunning: (pid) => ProcessMonitor.isRunning(pid),

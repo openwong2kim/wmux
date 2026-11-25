@@ -20,5 +20,6 @@ describe('delivery presence restart wiring', () => {
     const deps = src.slice(at, src.indexOf('\n  };', at));
     expect(deps).toContain('restartedSince: (sid) => agentProcessTracker.restartedSince(sid),');
     expect(deps).toContain('noAgentUnderShell: (sid, since) => agentProcessTracker.reprobeSawNoAgent(sid, since),');
+    expect(deps).toContain('canReprobe: (sid) => agentProcessTracker.canReprobe(sid),');
   });
 });
