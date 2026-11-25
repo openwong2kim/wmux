@@ -3,6 +3,7 @@ import { nativeImage, type BrowserWindow, type NativeImage } from 'electron';
 /**
  * Windows taskbar status: the unread count (the macOS dock badge's number) as
  * an overlay icon on the taskbar button, and an indeterminate progress state while any agent runs.
+ * Both are set on every main window, each of which owns its taskbar button.
  *
  * The overlay count is fed from updateUnreadBadge (tray.ts), the same call and
  * value that set the macOS dock badge, so the two can never disagree. The
@@ -121,7 +122,9 @@ export class TaskbarStatus {
   private count = 0;
   private running = false;
   private enabled: boolean | null = null;
-  private sink: TaskbarSink | null = null;
+  // Every main window, each with its own taskbar button. Windows draws a
+  // grouped button from its windows' own states, so each one carries both.
+  private readonly sinks = new Set<TaskbarSink>();
   private shownText: string | null = null;
   private shownDescription = '';
   private shownProgress = false;
@@ -129,22 +132,18 @@ export class TaskbarStatus {
 
   constructor(private readonly timers: TaskbarTimers, private readonly debounceMs = PROGRESS_DEBOUNCE_MS) {}
 
-  /** Bind (or re-bind) the window sink and re-apply the current state to it. */
-  bind(sink: TaskbarSink | null): void {
-    this.sink = sink;
-    this.shownText = null;
-    this.shownDescription = '';
-    this.shownProgress = false;
-    if (!sink || !this.enabled) return;
+  /** Bind (or re-bind) a window sink and re-apply the current state. */
+  bind(sink: TaskbarSink): void {
+    this.sinks.add(sink);
+    if (!this.enabled) return;
     this.applyOverlay(true);
     this.cancelTimer();
     this.applyProgress(true);
   }
 
-  /** Drop `sink` only if it is still the bound one: a window adopted after it
-   *  must keep its binding when the old window's `closed` fires late. */
+  /** Drop `sink` alone: the other windows keep their binding. */
   unbind(sink: TaskbarSink): void {
-    if (this.sink === sink) this.bind(null);
+    this.sinks.delete(sink);
   }
 
   setCount(count: number): void {
@@ -172,7 +171,7 @@ export class TaskbarStatus {
   }
 
   private applyOverlay(force: boolean): void {
-    if (!this.sink || !this.enabled) return;
+    if (this.sinks.size === 0 || !this.enabled) return;
     const text = overlayBadgeText(this.count);
     // The description carries the exact count, so "9+" from 12 to 15 still
     // re-applies for screen readers.
@@ -180,7 +179,7 @@ export class TaskbarStatus {
     if (!force && text === this.shownText && description === this.shownDescription) return;
     this.shownText = text;
     this.shownDescription = description;
-    this.sink.setOverlay(text, description);
+    for (const sink of this.sinks) sink.setOverlay(text, description);
   }
 
   private scheduleProgress(): void {
@@ -193,19 +192,21 @@ export class TaskbarStatus {
   }
 
   private applyProgress(force: boolean): void {
-    if (!this.sink || !this.enabled) return;
+    if (this.sinks.size === 0 || !this.enabled) return;
     if (!force && this.running === this.shownProgress) return;
     this.shownProgress = this.running;
-    this.sink.setProgress(this.running);
+    for (const sink of this.sinks) sink.setProgress(this.running);
   }
 
   private clearAll(wasShowing: boolean): void {
-    if (!this.sink || !wasShowing) return;
+    if (this.sinks.size === 0 || !wasShowing) return;
     this.shownText = null;
     this.shownDescription = '';
     this.shownProgress = false;
-    this.sink.setOverlay(null, '');
-    this.sink.setProgress(false);
+    for (const sink of this.sinks) {
+      sink.setOverlay(null, '');
+      sink.setProgress(false);
+    }
   }
 
   private cancelTimer(): void {
