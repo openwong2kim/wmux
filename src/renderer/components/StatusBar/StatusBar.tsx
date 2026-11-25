@@ -9,7 +9,7 @@ import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspacePr
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24 } from '../hitArea';
 import { IconGear, IconCornerUpLeft } from '../icons';
-import { selectFleetPanes, type FleetPane } from '../../stores/selectors/fleet';
+import { selectFleetPanes, selectLocalAgentsInTurn, type FleetPane } from '../../stores/selectors/fleet';
 import { selectDownHostIds, selectOutdatedRemoteKeys } from '../../stores/selectors/pcRail';
 import { selectOwnerWorkspaces } from '../Sidebar/botTasks';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
@@ -184,6 +184,21 @@ export default function StatusBar() {
       };
     }),
   );
+  // Windows taskbar: the overlay setting and whether any agent runs. The unread
+  // count itself rides setBadgeCount above, so the overlay and the dock badge
+  // read one number. Held until the saved session has loaded, so a default "on"
+  // never flashes an overlay for someone who turned it off. Main ignores this
+  // off Windows.
+  const taskbarBadgeEnabled = useStore((s) => s.taskbarBadgeEnabled);
+  const sessionSettingsLoaded = useStore((s) => s.sessionSettingsLoaded);
+  // Fleet's Running rule for this computer's agents, bot workers included.
+  // The chip's selector above has no turn or hook inputs, and the store never
+  // keeps 'running' in surfaceAgentStatus, so it misses a local Claude turn.
+  const anyRunning = useStore(selectLocalAgentsInTurn);
+  useEffect(() => {
+    if (!sessionSettingsLoaded) return;
+    window.electronAPI?.notification?.setTaskbarState?.({ enabled: taskbarBadgeEnabled, running: anyRunning });
+  }, [sessionSettingsLoaded, taskbarBadgeEnabled, anyRunning]);
   // No Needs you count here (DESIGN.md › Colour grammar › Attention
   // renditions): one event is drawn at most twice — the sidebar row that is its
   // evidence and one global count, the rail's Fleet badge.

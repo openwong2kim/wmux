@@ -3419,6 +3419,8 @@ export const ko = {
   'settings.unknownError': '알 수 없는 오류',
   'settings.notificationBehavior': '알림 동작',
   'settings.prWake': 'PR 이벤트 때 에이전트 깨우기',
+  'settings.taskbarBadge': '작업 표시줄 버튼에 읽지 않은 알림 수 표시',
+  'settings.taskbarBadgeDesc': '읽지 않은 알림 수를 wmux 작업 표시줄 버튼에 표시하고, 에이전트가 실행 중이면 진행 상태를 보여 줍니다.',
   'settings.prWakeDesc': '오케스트레이터가 없는 워크스페이스에서 CI가 실패하거나, 다른 사람이 코멘트를 달거나, PR에 충돌이 나면(켜 두면 체크 통과 때도) 그 PR 브랜치를 체크아웃한 에이전트 페인에 한 줄을 씁니다. 그 줄에는 PR 번호와 무슨 일이 있었는지만 들어갑니다. PR 주인의 에이전트에게 가는 기능이라 HQ 메인 봇과 그 끄기 스위치와는 별개입니다.',
   'settings.prWakeFailures': '실패·리뷰·충돌',
   'settings.prWakeChecksPassed': '체크 통과',

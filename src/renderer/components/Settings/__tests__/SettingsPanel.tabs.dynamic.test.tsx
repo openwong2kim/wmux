@@ -20,6 +20,7 @@ import { useStore } from '../../../stores';
 import { loadLocale } from '../../../i18n';
 import {
   SETTINGS_CATALOG,
+  catalogEntryOnPlatform,
   SETTINGS_NAV_GROUPS,
   LEGACY_SETTINGS_TAB_ALIASES,
   resolveSettingsTab,
@@ -215,6 +216,8 @@ describe('Settings tabs', () => {
     await openTab(tab);
     const missing = SETTINGS_CATALOG
       .filter((e) => e.tab === tab)
+      // A row for another platform (the Windows-only taskbar overlay) is not rendered here.
+      .filter((e) => catalogEntryOnPlatform(e, EXPLICIT.platform as string))
       .filter((e) => !page().querySelector(`[data-setting-id="${e.id}"]`))
       .map((e) => e.id);
     expect(missing).toEqual([]);

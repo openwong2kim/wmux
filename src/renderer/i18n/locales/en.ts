@@ -3984,6 +3984,8 @@ export const en = {
   'settings.taskbarFlashDesc': 'Triggers Windows taskbar attention when a notification arrives and wmux is hidden.',
   'settings.taskbarFlashDesc.darwin': 'Bounces the wmux icon in the Dock when a notification arrives and wmux is in the background.',
   'settings.taskbarFlashDesc.linux': 'Marks wmux as needing attention in the taskbar when a notification arrives and wmux is hidden.',
+  'settings.taskbarBadge': 'Show unread count on the taskbar button',
+  'settings.taskbarBadgeDesc': 'Puts the number of unread notifications on the wmux taskbar button, and shows a progress state while any agent is running.',
   'settings.notificationSoundChoice': 'Notification sound',
   'settings.notificationSoundChoiceDesc': 'default = play the system notification sound. none = silent.',
   'settings.notificationSoundChoiceDefault': 'Default',
