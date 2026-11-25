@@ -120,6 +120,23 @@ describe('TaskbarStatus', () => {
     expect(newSink.setOverlay).not.toHaveBeenCalledWith('5', expect.anything());
   });
 
+  it('every bound window carries the overlay and progress, so a grouped taskbar button still shows them', () => {
+    const { status, overlay, progress } = harness();
+    const second: TaskbarSink = { setOverlay: vi.fn(), setProgress: vi.fn() };
+    status.bind(second);
+    status.setCount(2);
+    status.setState({ enabled: true, running: false });
+    status.setState({ enabled: true, running: true });
+    vi.advanceTimersByTime(PROGRESS_DEBOUNCE_MS);
+    for (const [setOverlay, setProgress] of [[overlay, progress], [second.setOverlay, second.setProgress]]) {
+      expect(setOverlay).toHaveBeenLastCalledWith('2', 'wmux: 2 unread notifications');
+      expect(setProgress).toHaveBeenLastCalledWith(true);
+    }
+    status.setState({ enabled: false, running: true });
+    expect(progress).toHaveBeenLastCalledWith(false);
+    expect(second.setProgress).toHaveBeenLastCalledWith(false);
+  });
+
   it('debounces the progress state so a quick flip does not flicker', () => {
     const { status, progress } = harness();
     status.setState({ enabled: true, running: false });

@@ -1,3 +1,5 @@
+// @wmux-lane unit
+// 'win32' is only the view's platform prop here; nothing reads process.platform or the OS.
 /**
  * Tests for the SettingsPanel notifications section (T12).
  *
