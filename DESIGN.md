@@ -2245,8 +2245,10 @@ always neutral (the fill ladder).
   narrow pane drops the fixed agent chip first. Model and effort stay
   changeable between turns of a started chat. Send and Stop are one round
   button: Stop (neutral, a square) while a reply runs and nothing is typed,
-  Send otherwise. Actions that are not chips (Continue in Terminal) and the
-  working directory sit in a ⋯ menu beside it. `/` opens a menu above the
+  Send otherwise; with a draft, Stop stays in the ⋯ menu and as `/stop`.
+  Actions that are not chips (Continue in Terminal) and the working
+  directory sit in a ⋯ menu beside it. An image chip's thumbnail is the
+  staged copy, drawn in the renderer. `/` opens a menu above the
   box: in-chat commands, then the agent's skills. Moa's
   composer sits directly on the panel fill with no footer frame (one field,
   one border, send inside); its key hint shows only while the field is

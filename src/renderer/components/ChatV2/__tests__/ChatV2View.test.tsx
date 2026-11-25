@@ -816,6 +816,55 @@ describe('ChatV2View', () => {
     expect((host.querySelector('[data-chatv2-effort] select') as HTMLSelectElement).disabled).toBe(true);
   });
 
+  it('asks for the skills once per opening of /, again after an unavailable answer, and never for a / later in the text', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-skills' });
+    await mock.call('create', { paneId: 'daemon-skills', agent: 'claude', mode: 'default' });
+    let answer: 'unavailable' | 'ready' = 'unavailable';
+    let skillAsks = 0;
+    intercept('skills', async () => { skillAsks += 1; return { ok: true, catalog: { skills: answer === 'ready' ? [{ name: 'review', description: 'Review', invocation: '/review', source: 'project' }] : [], state: answer } }; });
+    await act(async () => root.render(<ChatV2View paneId="daemon-skills" active onTerminal={() => undefined} />));
+    await flush();
+    const skillCalls = () => skillAsks;
+    await type('/');
+    await flush();
+    // Streaming re-renders the view: the open menu does not ask again.
+    await act(async () => { mock.emit('daemon-skills', [{ type: 'user.message', text: 'go', clientMessageId: 'c-00000011' }]); });
+    await act(async () => root.render(<ChatV2View paneId="daemon-skills" active onTerminal={() => undefined} cwd="/elsewhere" />));
+    await flush();
+    expect(skillCalls()).toBe(1);
+    await type('');
+    answer = 'ready';
+    await type('/');
+    await flush();
+    expect(skillCalls()).toBe(2);
+    expect([...host.querySelectorAll('[role="option"] .wmux-chatv2-slash-name')].map((el) => el.textContent)).toContain('/review');
+    await type('hello /re');
+    expect(host.querySelector('.wmux-chatv2-slash')).toBeNull();
+  });
+
+  it('holds a message sent during a model change and delivers it once the change settles, also a refused one', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-hold' });
+    await mock.call('create', { paneId: 'daemon-hold', agent: 'claude', mode: 'default' });
+    let release: (() => void) | undefined;
+    intercept('configure', () => new Promise<void>((resolve) => { release = resolve; }).then(() => chatV2Error('invalid-params', 'The agent does not take that model or effort.')));
+    await act(async () => root.render(<ChatV2View paneId="daemon-hold" active onTerminal={() => undefined} />));
+    await flush();
+    const effort = host.querySelector('[data-chatv2-effort] select') as HTMLSelectElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(effort, 'high');
+      effort.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await type('after the change');
+    await clickSend();
+    await flush();
+    expect(sent()).toEqual([]);
+    expect(queued()).toEqual(['after the change']);
+    await act(async () => { release?.(); });
+    await flush();
+    expect(sent().map((p) => p.text)).toEqual(['after the change']);
+    expect(queued()).toEqual([]);
+  });
+
   it('attaches any file to the first message, as a file chip, and sends it with the new chat', async () => {
     mock.stageAttachment = async (file: string) => ({ ok: true, path: file, name: file.split('/').pop() ?? file, kind: 'file', size: 3 });
     await act(async () => root.render(<ChatV2View paneId="daemon-first" active onTerminal={() => undefined} />));

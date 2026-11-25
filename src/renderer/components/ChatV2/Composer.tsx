@@ -14,6 +14,7 @@ import { S } from './strings';
 import { Icon, IconFile, IconMoreHorizontal, IconPlus, IconX } from '../icons';
 import { ArrowIcon } from './ArrowIcon';
 import { usePreviewSource } from '../Preview/usePreviewSource';
+import { rememberAttachmentThumbnail } from './thumbnails';
 import './composer.css';
 
 // Drafts survive view switches and split remounts, per pane and conversation
@@ -166,11 +167,42 @@ function StopIcon() {
   return <Icon size={14}><rect x="3.5" y="3.5" width="7" height="7" rx="1.5" fill="currentColor" stroke="none" /></Icon>;
 }
 
-/** A staged image, shown from its staged copy through the preview scheme (main never decodes it). */
+const THUMBNAIL_EDGE = 160;
+
+/** A small data URL of a loaded image, or undefined where it cannot be drawn. */
+function thumbnailOf(img: HTMLImageElement): string | undefined {
+  const scale = Math.min(1, THUMBNAIL_EDGE / Math.max(img.naturalWidth, img.naturalHeight, 1));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+  const context = canvas.getContext('2d');
+  if (!context) return undefined;
+  try {
+    context.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/png');
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A staged image, shown from its staged copy through the preview scheme (main
+ * never decodes it). Once it loads, a small copy is kept for the sent message.
+ */
 function AttachmentThumb({ path }: { path: string }) {
   const source = usePreviewSource(path);
-  return source.status === 'ready' && source.kind === 'image'
-    ? <img src={source.url} alt="" />
+  const url = source.status === 'ready' && source.kind === 'image' ? source.url : null;
+  useEffect(() => {
+    if (!url) return;
+    // A CORS load of its own, so the canvas can be read; the chip's picture never depends on it.
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => rememberAttachmentThumbnail(path, thumbnailOf(img));
+    img.src = url;
+    return () => { img.onload = null; };
+  }, [path, url]);
+  return url
+    ? <img src={url} alt="" />
     : <span className="wmux-chatv2-attachment-icon" aria-hidden="true"><IconFile size={14} /></span>;
 }
 
@@ -283,7 +315,7 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
   // Esc stops on the same condition; with a draft, Stop stays in the ⋯ menu and as `/stop`.
   const stoppable = running && canStop;
   const showStop = stoppable && !text.trim() && staged.length === 0;
-  const menu: readonly ComposerMenuItem[] = stoppable ? [{ id: 'stop', label: S.stop, title: S.stopHint, onSelect: onStop }, ...extraMenu] : extraMenu;
+  const menu: readonly ComposerMenuItem[] = stoppable ? [{ id: 'stop', label: S.stop, onSelect: onStop }, ...extraMenu] : extraMenu;
 
   const send = async () => {
     if (!canSend) return;

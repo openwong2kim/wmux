@@ -217,6 +217,12 @@ describe('chat v2 host', () => {
       .toMatchObject({ ok: false, error: { code: 'invalid-params' } });
     expect(r.fakes).toHaveLength(1);
     expect(r.host.bindingForPane(PANE)).toMatchObject({ model: 'haiku', status: 'idle' });
+    // The model lands, then the effort is refused: the chat records the model that runs.
+    r.fake().controlAnswer = (subtype) => (subtype === 'set_model' ? 'success' : 'error');
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, model: 'opus', effort: 'low' }, 'main'))
+      .toMatchObject({ ok: false, error: { code: 'invalid-params' } });
+    expect(r.host.bindingForPane(PANE)).toMatchObject({ model: 'opus', status: 'idle' });
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort ?? '').toBe('');
     // Nothing was said yet, so there is no conversation to resume.
     const restarted = await r.host.call('configure', { paneId: PANE, chatSessionId: binding.chatSessionId, effort: 'max' }, 'main');
     expect(restarted).toMatchObject({ ok: true, applied: 'restarted' });

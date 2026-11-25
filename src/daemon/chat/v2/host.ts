@@ -724,14 +724,25 @@ class Host implements ChatV2Host {
         }
         if (live.closed || live.driver !== driver) return chatV2Error('driver-failed', 'The agent stopped.');
         // The agent said no to these options: a restart with them would fail the same way.
-        if (outcome === 'refused') return chatV2Error('invalid-params', 'The agent does not take that model or effort.');
+        if (outcome === 'refused') {
+          // Part of the change may have landed first (the model, then the effort was refused): record what runs.
+          const now = driver.settings?.();
+          if (now && (now.model !== record.model || now.effort !== (record.session.modelSettings.effort ?? ''))) {
+            record.model = now.model;
+            live.sending = false;
+            this.stamp(live, { type: 'session.configChanged', model: now.model, modelSettings: { effort: now.effort } });
+            await this.persistNow(live);
+          }
+          return chatV2Error('invalid-params', 'The agent does not take that model or effort.');
+        }
         if (outcome === 'restart') {
           // Same conversation, new options. The record keeps the old ones until the new start succeeded.
           if (!(await this.stopDriver(live))) return chatV2Error('driver-failed', 'The agent did not stop, so the change waits for it.');
           if (live.closed) return chatV2Error('session-not-found', 'The chat was closed.');
-          // No message yet, so no conversation to keep: a fresh session id, so a
-          // Claude that already wrote its session file is never asked to create it again.
-          if (record.agent === 'claude' && !record.resumeExisting && !record.session.blocks.some((b) => b.role === 'user')) {
+          // No message yet, so no conversation to keep: a fresh session id, so an
+          // agent that already wrote its session file is never asked to create it
+          // again (Codex starts a new thread either way and reports its id).
+          if (!record.resumeExisting && !record.session.blocks.some((b) => b.role === 'user')) {
             record.providerSessionId = randomUUID();
           }
           const started = await this.startDriver(live, { model, effort });
