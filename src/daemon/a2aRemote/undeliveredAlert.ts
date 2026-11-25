@@ -88,10 +88,14 @@ export class UndeliveredAlertStore {
   private readonly ids: Set<string>;
   private readonly writable: boolean;
   private readonly log: StoreLog;
+  private readonly write: (filePath: string, data: unknown) => void;
+  /** The set differs from the file (a write failed): written again on the next update, alerting nothing again. */
+  private dirty = false;
 
-  constructor(opts: { dir: string; log?: StoreLog; now?: () => number }) {
+  constructor(opts: { dir: string; log?: StoreLog; now?: () => number; write?: (filePath: string, data: unknown) => void }) {
     this.filePath = path.join(opts.dir, UNDELIVERED_ALERTS_FILE);
     this.log = opts.log ?? ((): void => undefined);
+    this.write = opts.write ?? ((p, d): void => atomicWriteJSONSync(p, d));
     const loaded = loadStore({
       filePath: this.filePath,
       fileName: UNDELIVERED_ALERTS_FILE,
@@ -118,11 +122,13 @@ export class UndeliveredAlertStore {
     for (const id of taskIds) {
       if (!this.ids.has(id)) { this.ids.add(id); changed = true; }
     }
-    if (!changed || !this.writable) return;
+    if ((!changed && !this.dirty) || !this.writable) return;
     try {
-      atomicWriteJSONSync(this.filePath, { v: 1, taskIds: [...this.ids] } satisfies AlertsFileV1);
+      this.write(this.filePath, { v: 1, taskIds: [...this.ids] } satisfies AlertsFileV1);
+      this.dirty = false;
       scheduleTokenFileReHarden(this.filePath);
     } catch (err) {
+      this.dirty = true;
       this.log('warn', `[a2a-remote] ${UNDELIVERED_ALERTS_FILE}: not saved: ${err instanceof Error ? err.message : String(err)}`);
     }
   }

@@ -278,4 +278,23 @@ describe('createSpawnWorktree: the base', () => {
     expect(r).toMatchObject({ ok: true, base: head, baseNote: expect.stringContaining('http.proxy') });
     expect(() => g(repo, 'rev-parse', '--verify', '--quiet', 'refs/remotes/origin/main')).toThrow();
   });
+
+  it('a configured fetch mapping of origin moves no local branch: only origin/<default> is written', async () => {
+    originAhead();
+    g(repo, 'branch', 'important');
+    const before = g(repo, 'rev-parse', 'important');
+    g(repo, 'config', '--add', 'remote.origin.fetch', '+refs/heads/main:refs/heads/important');
+    const r = await create();
+    expect(r).toMatchObject({ ok: true, baseRef: 'origin/main' });
+    expect(g(repo, 'rev-parse', 'important')).toBe(before);
+  });
+
+  it('takes a default branch name git takes, `+` included', async () => {
+    const { tip } = originAhead();
+    const other = path.join(root, 'other');
+    g(other, 'push', '-q', 'origin', 'main:release+stable');
+    g(root, '-C', path.join(root, 'origin.git'), 'symbolic-ref', 'HEAD', 'refs/heads/release+stable');
+    const r = await create();
+    expect(r).toMatchObject({ ok: true, base: tip, baseRef: 'origin/release+stable' });
+  });
 });

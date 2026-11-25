@@ -13,6 +13,7 @@ import { A2aRemoteDelivery } from '../delivery';
 import { remoteTaskId } from '../ids';
 import { LinkStore } from '../linkStore';
 import { sendRemoteTask } from '../outbound';
+import { UndeliveredAlertStore } from '../undeliveredAlert';
 
 const HOST = '22222222-2222-4222-8222-222222222222';
 
@@ -141,5 +142,23 @@ describe('a task to another PC with no delivered receipt', () => {
     const queued = d.outbox.pending(HOST);
     expect(queued).toHaveLength(1);
     expect(queued[0].envelope).toMatchObject({ protocol: A2A_REMOTE_PROTOCOL, kind: 'task' });
+  });
+});
+
+describe('UndeliveredAlertStore', () => {
+  it('a write that failed is made again on a later check, so a restart does not alert again', () => {
+    const at = path.join(dir, 'alerts');
+    fs.mkdirSync(at);
+    let fail = true;
+    const writes: unknown[] = [];
+    const store = new UndeliveredAlertStore({ dir: at, write: (_p, data) => { if (fail) throw new Error('disk full'); writes.push(data); fs.writeFileSync(path.join(at, 'a2a-undelivered-alerts.json'), JSON.stringify(data)); } });
+    store.update(['rt-1'], new Set(['rt-1']));
+    expect(store.alerted.has('rt-1')).toBe(true);
+    expect(writes).toEqual([]);
+    fail = false;
+    // Nothing new to alert: the set is written anyway, as it was owed.
+    store.update([], new Set(['rt-1']));
+    expect(writes).toEqual([{ v: 1, taskIds: ['rt-1'] }]);
+    expect(new UndeliveredAlertStore({ dir: at }).alerted.has('rt-1')).toBe(true);
   });
 });

@@ -177,9 +177,6 @@ export async function createSpawnWorktree(input: SpawnWorktreeInput, opts: Spawn
   return { ok: true, worktreePath: wtReal, cwd: cwdReal, branch, base: base.commit, ...(base.ref ? { baseRef: base.ref } : {}), ...(base.note ? { baseNote: base.note } : {}) };
 }
 
-/** A default branch name as origin may name it: plain, never an option or a range. */
-const BRANCH_NAME_RE = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]{1,200}$/;
-
 /**
  * Where a spawn's branch starts: origin's default branch, fetched now
  * (`origin/HEAD`, else `origin/main`, else `origin/master`, else the remote's
@@ -226,10 +223,16 @@ async function resolveSpawnBase(repo: string, opts: SpawnWorktreeOptions, git: G
     if (remote.code !== 0) return fallback(`origin's default branch could not be read (${remote.stderr.trim() || `exit ${remote.code}`})`);
     name = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(remote.stdout)?.[1];
   }
-  if (!name || !BRANCH_NAME_RE.test(name)) return fallback(name ? `origin's default branch name ${JSON.stringify(name.slice(0, 80))} was not used` : 'origin names no default branch');
+  if (!name) return fallback('origin names no default branch');
+  // A name git takes as a branch (check-ref-format), and never one read as an option.
+  if (name.startsWith('-') || name.length > 200 || (await git(['check-ref-format', `refs/heads/${name}`])).code !== 0) {
+    return fallback(`origin's default branch name ${JSON.stringify(name.slice(0, 80))} was not used`);
+  }
 
   const ref = `refs/remotes/origin/${name}`;
-  const fetched = await net(['fetch', '--no-tags', '--recurse-submodules=no', '--no-write-fetch-head', '--no-auto-maintenance', 'origin', `+refs/heads/${name}:${ref}`]);
+  // `--refmap=`: only this refspec is written. Without it a configured `remote.origin.fetch` mapping
+  // (`+refs/heads/main:refs/heads/x`) would also move whatever local ref it names.
+  const fetched = await net(['fetch', '--no-tags', '--recurse-submodules=no', '--no-write-fetch-head', '--no-auto-maintenance', '--refmap=', 'origin', `+refs/heads/${name}:${ref}`]);
   if (fetched.code !== 0) return fallback(`git fetch origin ${name} failed (${fetched.stderr.trim() || `exit ${fetched.code}`})`);
   const pinned = await git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
   if (pinned.code !== 0) return fallback(`${ref} does not exist after git fetch origin ${name}`);
