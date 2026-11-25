@@ -189,5 +189,6 @@ describe('spawn-base.1 fields', () => {
     expect(spawnBaseNoteLine('y'.repeat(900))).toHaveLength(SPAWN_BASE_NOTE_MAX);
     expect(spawnBaseNoteLine(' \n ')).toBeUndefined();
     expect(isSpawnBaseName('main')).toBe(true);
+    expect(isSpawnBaseName('release+stable')).toBe(true);
   });
 });
