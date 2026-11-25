@@ -42,7 +42,7 @@
 // from settings.json, so no TS imports and no wmux install-dir dependency
 // (installed to the stable ~/.wmux/hooks/ path by `wmux setup-statusline`).
 
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, utimesSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { basename, join, resolve, win32 } from 'node:path';
 import { createConnection } from 'node:net';
@@ -58,6 +58,11 @@ const PUSH_RETRY_MS = 60_000;
 const PUSH_RESEND_MS = 10 * 60_000;
 /** Env var carrying the payload from the statusline process to the push child. */
 const PUSH_PAYLOAD_ENV = 'WMUX_STATUSLINE_PUSH';
+/** A pane's push state untouched this long is a closed pane's: pruned. */
+const STATE_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+/** Pruning runs at most this often (a marker file's mtime), in the push child only. */
+const PRUNE_EVERY_MS = 60 * 60_000;
+const PRUNE_MARKER = '.pruned';
 // #1111: the envelope-less `legacy` grandfather closes in the first release on
 // or after 2026-09-30. `usage.rateLimits` on the MAIN pipe is `wmux.internal`,
 // so no declaration can ever grant it; the enforcer instead recognises this
@@ -378,6 +383,28 @@ async function runPush() {
     break; // reached something — never double-send
   }
   writeState(home, statePathFor(home, pipes, configDir), { sig, ok: accepted, at: Date.now() });
+  pruneStates(home, Date.now());
+}
+
+/** The state is kept per pane, so closed panes leave files behind: remove the
+ *  ones untouched for STATE_MAX_AGE_MS, at most once per PRUNE_EVERY_MS. */
+function pruneStates(home, now) {
+  const dir = stateDir(home);
+  const marker = join(dir, PRUNE_MARKER);
+  try {
+    if (now - statSync(marker).mtimeMs < PRUNE_EVERY_MS) return;
+  } catch { /* never pruned here */ }
+  try {
+    writeFileSync(marker, '', { mode: 0o600 });
+    utimesSync(marker, now / 1000, now / 1000);
+    for (const name of readdirSync(dir)) {
+      if (name === PRUNE_MARKER || !(name.endsWith('.json') || name.endsWith('.tmp'))) continue;
+      const file = join(dir, name);
+      try {
+        if (now - statSync(file).mtimeMs > STATE_MAX_AGE_MS) unlinkSync(file);
+      } catch { /* gone meanwhile */ }
+    }
+  } catch { /* no state dir: nothing to prune */ }
 }
 
 /** One request over one pipe. Resolves the parsed response carrying our id,

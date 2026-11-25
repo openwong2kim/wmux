@@ -248,6 +248,39 @@ describe('statusline live-usage push', () => {
     }
   });
 
+  it('prunes a closed pane\'s state after 7 days, at most once an hour', async () => {
+    clearState();
+    writeToken();
+    const pipe = socketPathFor('prune');
+    const main = await fakeMain(pipe, { ok: true, applied: true });
+    const plant = (name: string, ageMs: number): string => {
+      fs.mkdirSync(stateDir(), { recursive: true });
+      const file = path.join(stateDir(), name);
+      fs.writeFileSync(file, JSON.stringify({ sig: 'x', ok: true, at: 0 }));
+      const t = (Date.now() - ageMs) / 1000;
+      fs.utimesSync(file, t, t);
+      return file;
+    };
+    const day = 24 * 60 * 60_000;
+    try {
+      const stale = plant('stale.json', 8 * day);
+      const recent = plant('recent.json', 6 * day);
+      await run(input(30.5), pipe);
+      await waitFor(() => !fs.existsSync(stale));
+      expect(fs.existsSync(recent)).toBe(true);
+      // Within the hour, nothing more is pruned.
+      const later = plant('later.json', 8 * day);
+      await run(input(31), pipe, { WMUX_PTY_ID: 'pty-prune-2' });
+      await waitFor(() => main.received.length === 2);
+      // The second push's own state is written just before its prune would run.
+      await waitFor(() => readStates().some((s) => s.ok && s.sig.includes('"pct":31')));
+      await settle();
+      expect(fs.existsSync(later)).toBe(true);
+    } finally {
+      await main.close();
+    }
+  });
+
   it('a second pane on the same config dir pushes its own first sample', async () => {
     clearState();
     writeToken();
