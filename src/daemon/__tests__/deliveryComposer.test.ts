@@ -69,6 +69,41 @@ describe('Claude Code', () => {
     expect(cursorInComposer(frame, read)).toBe(true);
     expect(cursorInComposer({ ...frame, cursorRow: 3 }, read)).toBe(false);
   });
+
+  describe('the rows of a pane whose ring has wrapped (2.1.330/2.1.331 after an auto-update)', () => {
+    const R80 = '─'.repeat(80);
+    const NOTICE = '                                        ✔ Update installed · /restart to apply';
+    const STATUS = '                                     21% · 7d 68% ↺ 2d1h';
+    const FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle) · PR #3508 · ← 2 agents';
+    const SURVEY = ['● How is Claude doing this session? (optional)', '  1: Bad    2: Fine   3: Good   0: Dismiss', ''];
+    const NOTICE_LEFT = '  new task? /clear to save 210.5k to… · ✔ Update installed · /restart to apply';
+
+    it('a blank row where the closing rule was drawn is no composer: its cells may hide a draft', () => {
+      const rows = ['✻ Worked for 7m 38s · done 2:21 PM', NOTICE, R80, '❯ ', '', STATUS, FOOTER];
+      expect(readComposer(f(rows), 'claude', 'paste').verdict).toBe('unknown');
+      expect(readComposer(f(rows), 'claude', 'enter').verdict).toBe('unknown');
+    });
+
+    it('the update notice over the top rule is not what refuses: with its closing rule the composer is plain', () => {
+      expect(readComposer(f(['✻ Worked for 7m 38s · done 2:21 PM', NOTICE, R80, '❯ ', R80, STATUS, FOOTER]), 'claude', 'paste').verdict).toBe('plain');
+      expect(readComposer(f([NOTICE_LEFT, R80, '❯ ', R80, FOOTER]), 'claude', 'paste').verdict).toBe('plain');
+    });
+
+    it("the session survey takes a digit at the empty prompt: it is a mode, with or without the closing rule", () => {
+      expect(readComposer(f([...SURVEY, NOTICE_LEFT, R80, '❯ ', R80, FOOTER]), 'claude', 'paste').verdict).toBe('mode');
+      expect(readComposer(f([...SURVEY, NOTICE_LEFT, R80, '❯ ', R80, FOOTER]), 'claude', 'enter').verdict).toBe('mode');
+      expect(readComposer(f([...SURVEY, NOTICE_LEFT, R80, '❯ ', '', STATUS, FOOTER]), 'claude', 'paste').verdict).not.toBe('plain');
+    });
+
+    it('a survey far up the transcript, answered long ago, is not the pane\'s state', () => {
+      expect(readComposer(f([...SURVEY, '⏺ ok', '', '⏺ more', '', NOTICE, R80, '❯ ', R80, FOOTER]), 'claude', 'paste').verdict).toBe('plain');
+    });
+
+    it('a permission prompt and a draft still refuse under the update notice', () => {
+      expect(readComposer(f([NOTICE, R80, ' Do you want to make this edit?', ' ❯ 1. Yes', '   2. No', ' Esc to cancel']), 'claude', 'paste').verdict).toBe('mode');
+      expect(readComposer(f([NOTICE, R80, '❯ my draft', R80, FOOTER]), 'claude', 'paste').verdict).toBe('busy');
+    });
+  });
 });
 
 describe('Codex', () => {
