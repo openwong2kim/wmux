@@ -39,7 +39,8 @@ describe.skipIf(skip)('a screen checkpoint in a real session', () => {
     mgr.disposeAll();
     if (prevEngine === undefined) delete process.env.WMUX_TERMINAL_CORE;
     else process.env.WMUX_TERMINAL_CORE = prevEngine;
-    fs.rmSync(cwd, { recursive: true, force: true });
+    // The killed shell can still be writing in its folder (a shell history file): retry the removal.
+    fs.rmSync(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('keeps the idle composer readable after the ring wrapped', async () => {
