@@ -56,6 +56,7 @@ import { SNAPSHOT_MAX_SCROLLBACK } from '../shared/terminal/attachSnapshot';
 import type { ReplayGeometry } from './RingBuffer';
 import { selectAnsiSnapshot } from './AnsiSnapshotBackend';
 import { selectTextSnapshot } from './TextSnapshotBackend';
+import { capScrollbackToNative } from './nativeSnapshotLimits';
 import { describeNativeError, isNativeAllocFailure } from '../shared/nativeTerminalCore';
 import {
   PartialSequenceTracker,
@@ -295,7 +296,7 @@ export function capTextRowsToFrameBudget(
 
 async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutcome> {
   try {
-    return await selectTextSnapshot(req, generateXtermTextInner);
+    return await selectTextSnapshot(capScrollbackToNative(req, DEFAULT_SCROLLBACK), generateXtermTextInner);
   } catch (err) {
     return refusedSnapshot(err);
   }
@@ -427,7 +428,7 @@ export function generateSnapshotUnqueued(req: SnapshotRequest): Promise<Snapshot
 
 async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
   try {
-    return await selectAnsiSnapshot(req, generateXtermInner);
+    return await selectAnsiSnapshot(capScrollbackToNative(req, DEFAULT_SCROLLBACK), generateXtermInner);
   } catch (err) {
     return refusedSnapshot(err);
   }

@@ -30,3 +30,18 @@ export function nativeSizesAccepted(req: Pick<SnapshotRequest, 'cols' | 'rows' |
   return [req, ...(req.geometry ? [req.geometry.start, ...req.geometry.changes] : [])].every(({ cols, rows }) =>
     Number.isInteger(cols) && Number.isInteger(rows) && cols >= 2 && cols <= 1000 && rows >= 1 && rows <= 1000);
 }
+
+/**
+ * The request with its history capped at what the native grid holds at every
+ * size it replays (nativeScrollbackCap), for both engines: a wide pane keeps
+ * fewer rows than the 100k an attach asks for, and the snapshot never has to
+ * fall back to xterm for the rows past the cap. A size the native grid does
+ * not accept keeps its request (xterm serves it). `fallback` is the depth the
+ * snapshot uses when the request names none.
+ */
+export function capScrollbackToNative<T extends Pick<SnapshotRequest, 'cols' | 'rows' | 'geometry' | 'scrollback'>>(req: T, fallback: number): T {
+  const scrollback = req.scrollback ?? fallback;
+  if (!Number.isFinite(scrollback) || !nativeSizesAccepted(req)) return req;
+  const cap = nativeScrollbackCap(req);
+  return scrollback > cap ? { ...req, scrollback: cap } : req;
+}
