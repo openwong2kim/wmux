@@ -166,10 +166,12 @@ export default function StatusBar() {
   // the signal moved here and renders ONLY when nonzero). Derived-number
   // subscription (useShallow on two counters) keeps the A1 no-whole-tree rule:
   // re-render only when a count actually changes.
+  // `anyRunning` also counts a bot's task workers, which the chip leaves to the
+  // Bots page: the taskbar progress says "wmux is working" for the whole app.
   const fleetVitals = useStore(
     useShallow((s) => {
-      const panes = selectFleetPanes({
-        workspaces: selectOwnerWorkspaces(s),
+      const runningIn = (workspaces: StoreState['workspaces']): number => selectFleetPanes({
+        workspaces,
         surfaceAgentStatus: s.surfaceAgentStatus,
         surfaceActivity: s.surfaceActivity,
         surfaceAgent: s.surfaceAgent,
@@ -178,9 +180,12 @@ export default function StatusBar() {
         downHostIds: selectDownHostIds(s),
         outdatedRemoteKeys: selectOutdatedRemoteKeys(s),
         usageLimitWaiting: s.usageLimitWaiting,
-      }).filter((p) => isFleetAgentRow(p));
+      }).filter((p) => isFleetAgentRow(p) && p.agentStatus === 'running').length;
+      const owners = selectOwnerWorkspaces(s);
+      const running = runningIn(owners);
       return {
-        running: panes.filter((p) => p.agentStatus === 'running').length,
+        running,
+        anyRunning: running > 0 || (owners !== s.workspaces && runningIn(s.workspaces) > 0),
       };
     }),
   );
@@ -191,7 +196,7 @@ export default function StatusBar() {
   // off Windows.
   const taskbarBadgeEnabled = useStore((s) => s.taskbarBadgeEnabled);
   const sessionSettingsLoaded = useStore((s) => s.sessionSettingsLoaded);
-  const anyRunning = fleetVitals.running > 0;
+  const anyRunning = fleetVitals.anyRunning;
   useEffect(() => {
     if (!sessionSettingsLoaded) return;
     window.electronAPI?.notification?.setTaskbarState?.({ enabled: taskbarBadgeEnabled, running: anyRunning });

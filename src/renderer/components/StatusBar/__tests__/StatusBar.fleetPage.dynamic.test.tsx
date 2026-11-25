@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // The titlebar's fleet vitals step aside on the Fleet page, whose own summary
 // line says the same; everywhere else they stay.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import StatusBar from '../StatusBar';
@@ -66,5 +66,25 @@ describe('titlebar fleet vitals', () => {
     act(() => root.render(<StatusBar />));
     expect(container.querySelector('[data-statusbar-needs]')).toBeNull();
     expect(container.textContent).not.toMatch(/need/i);
+  });
+});
+
+describe('Windows taskbar running state', () => {
+  it("counts a bot's running task worker, which the vitals chip leaves to the Bots page", () => {
+    const setTaskbarState = vi.fn();
+    (window as unknown as { electronAPI: Record<string, unknown> }).electronAPI.notification = {
+      setBadgeCount: () => undefined,
+      setTaskbarState,
+    };
+    act(() => useStore.setState({
+      workspaces: [ws('a'), ws('t')], activeWorkspaceId: 'a', appRoute: 'workspaces', fleetViewVisible: false,
+      fanoutOrigin: { t: { kind: 'bot', botId: 'bot-0000000a' } },
+      sessionSettingsLoaded: true, taskbarBadgeEnabled: true,
+      surfaceAgent: { 'pty-t': { name: 'Claude Code', status: 'running' } },
+      surfaceAgentStatus: { 'pty-t': 'running' },
+    }));
+    act(() => root.render(<StatusBar />));
+    expect(container.querySelector('[data-statusbar-running]')).toBeNull();
+    expect(setTaskbarState).toHaveBeenLastCalledWith({ enabled: true, running: true });
   });
 });
