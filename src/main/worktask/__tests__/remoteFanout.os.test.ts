@@ -308,6 +308,19 @@ describe('startRemoteFanout', () => {
 });
 
 describe('reconcileRemoteTasks', () => {
+  it('a start from that PC\'s HEAD keeps that PC\'s note on the row, and the call\'s answer shows it', async () => {
+    const f = fakeDaemon();
+    const deps = depsOf(f.daemon);
+    const res = await startRemoteFanout(request(1), deps);
+    if ('error' in res) throw new Error(res.error);
+    f.set(res.tasks[0].spawnId!, { state: 'started', code: 'started', linkId: LINK, baseNote: 'git fetch origin main failed (offline); branched from this PC\'s HEAD' });
+    await reconcileRemoteTasks(deps);
+    expect(deps.ledger.get(res.tasks[0].taskId!)?.remote?.baseNote).toBe('git fetch origin main failed (offline); branched from this PC\'s HEAD');
+    const again = await startRemoteFanout(request(1), deps);
+    if ('error' in again) throw new Error(again.error);
+    expect(again.tasks[0].baseNote).toContain('offline');
+  });
+
   it('fails a refused row with a readable reason, and starts one with its link and task', async () => {
     const f = fakeDaemon();
     const deps = depsOf(f.daemon);

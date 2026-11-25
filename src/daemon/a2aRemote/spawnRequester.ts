@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { A2A_FEATURE_SPAWN, A2A_REMOTE_PROTOCOL, isHostId, type A2aLinkRecordV1, type A2aRemoteEnvelope, type A2aRemoteErrorCode, type A2aRemoteTaskMarkerV1, type HostId } from '../../shared/a2aRemote';
+import { A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_BASE, A2A_REMOTE_PROTOCOL, isHostId, type A2aLinkRecordV1, type A2aRemoteEnvelope, type A2aRemoteErrorCode, type A2aRemoteTaskMarkerV1, type HostId } from '../../shared/a2aRemote';
 import { remoteWorkspaceId, sanitizeRemoteMessage } from '../../shared/a2aRemoteDelivery';
 import { isAgentSlug } from '../../shared/agentIdentity';
 import {
@@ -13,8 +13,10 @@ import {
   SPAWN_REQUEST_KEY_RE,
   SPAWN_TTL_MAX_MS,
   asSpawnLinkId,
+  isSpawnBaseName,
   isSpawnId,
   parseSpawnRequest,
+  spawnBaseNoteLine,
   spawnFirstMessageId,
   type A2aSpawnAskInput,
   type A2aSpawnAskResult,
@@ -86,6 +88,13 @@ export class A2aSpawnRequester {
       const sent = this.deps.store.byRequestKey(input.callerKey, input.requestKey);
       if (sent) return sent.hostId === host.hostId ? { ok: true, spawn: this.summary(sent, host.name), online: host.online } : { ok: false, error: 'bad-request', message: 'that requestKey was used for another PC' };
     }
+    // A base only to a PC that reads it: an older one refuses the whole request for a key it does not know.
+    if (input.base !== undefined) {
+      if (!isSpawnBaseName(input.base)) return { ok: false, error: 'bad-request', message: 'base must be a branch name ([A-Za-z0-9._/-], no leading -, no ..)' };
+      if (!this.deps.features(host.hostId)?.has(A2A_FEATURE_SPAWN_BASE)) {
+        return { ok: false, error: 'not-supported', message: `${host.name}'s wmux cannot start from a named base yet; update it there, or leave base out to start from its origin's default branch` };
+      }
+    }
     const hours = input.expiresInHours ?? SPAWN_ASK_TTL_DEFAULT_MS / HOUR_MS;
     if (!Number.isInteger(hours) || hours < 1 || hours > 72) return { ok: false, error: 'bad-request', message: 'expiresInHours must be a whole number from 1 to 72' };
     const now = this.now();
@@ -101,6 +110,7 @@ export class A2aSpawnRequester {
       text: typeof input.text === 'string' ? sanitizeRemoteMessage(input.text) : input.text,
       expiresAt: new Date(now + Math.min(hours * HOUR_MS, TTL_CEILING_MS)).toISOString(),
       from: input.from,
+      ...(input.base !== undefined ? { base: input.base } : {}),
     });
     if (!request) return { ok: false, error: 'bad-request', message: 'the agent, folder, prompt or reply pane is not valid' };
     if (input.budget !== 'fanout' && this.deps.store.sentSince(input.callerKey, now - HOUR_MS) >= SPAWN_ASKS_PER_PANE_PER_HOUR) {
@@ -117,6 +127,7 @@ export class A2aSpawnRequester {
       callerKey: input.callerKey, ...(input.requestKey !== undefined ? { requestKey: input.requestKey } : {}),
       text: request.text, ...(input.label ? { label: input.label } : {}),
       ...(input.budget === 'fanout' ? { fanout: true as const } : {}),
+      ...(request.base ? { base: request.base } : {}),
       state: 'sent', createdAt: at, updatedAt: at, expiresAt: request.expiresAt,
     };
     try {
@@ -236,8 +247,11 @@ export class A2aSpawnRequester {
         });
         if (!created.ok) throw new Error(`the first task was not recorded: ${created.error}`);
       }
-      this.settle(rec, { state: 'started', linkId });
+      // That PC's word on why the agent started from its HEAD: kept for the caller, and said here.
+      const baseNote = spawnBaseNoteLine(result.baseNote);
+      this.settle(rec, { state: 'started', linkId, ...(baseNote ? { baseNote } : {}) });
       this.deps.log('info', `[a2a-remote] spawn request ${rec.spawnId}: started on ${hostId}, link ${linkId}`);
+      if (baseNote) this.deps.log('warn', `[a2a-remote] spawn request ${rec.spawnId}: ${hostId} says: ${baseNote}`);
       return true;
     } catch (err) {
       this.deps.log('warn', `[a2a-remote] spawn result ${result.spawnId} from ${hostId} not taken yet: ${errMsg(err)}`);
@@ -325,6 +339,7 @@ export class A2aSpawnRequester {
       ...(rec.sub ? { sub: rec.sub } : {}),
       from: { kind: 'pane', workspaceId: rec.from.workspaceId, paneId: rec.from.paneId }, ...(rec.label ? { label: rec.label } : {}),
       state: rec.state, ...(rec.code ? { code: rec.code } : {}), ...(rec.linkId ? { linkId: rec.linkId } : {}),
+      ...(rec.base ? { base: rec.base } : {}), ...(rec.baseNote ? { baseNote: rec.baseNote } : {}),
       createdAt: rec.createdAt, updatedAt: rec.updatedAt, expiresAt: rec.expiresAt,
     };
   }
@@ -340,7 +355,7 @@ export function registerSpawnAskRpc(onRpc: (method: string, handler: RpcHandler)
     if (typeof p['pc'] !== 'string' || !isAgentSlug(p['agent']) || !folder || typeof folder['root'] !== 'string' || typeof p['text'] !== 'string' ||
       !from || typeof from['workspaceId'] !== 'string' || typeof from['paneId'] !== 'string' || typeof p['callerKey'] !== 'string' ||
       (p['expiresInHours'] !== undefined && typeof p['expiresInHours'] !== 'number') || (p['requestKey'] !== undefined && typeof p['requestKey'] !== 'string') ||
-      (p['fromPtyId'] !== undefined && !isSafeId(p['fromPtyId']))) {
+      (p['fromPtyId'] !== undefined && !isSafeId(p['fromPtyId'])) || (p['base'] !== undefined && typeof p['base'] !== 'string')) {
       return { ok: false, error: 'bad-request', message: 'pc, agent, folder{root, sub?}, text, from{workspaceId, paneId} and callerKey are required; fromPtyId, when given, is an id' };
     }
     return requester.ask({
@@ -356,6 +371,7 @@ export function registerSpawnAskRpc(onRpc: (method: string, handler: RpcHandler)
       ...(typeof p['label'] === 'string' ? { label: p['label'] } : {}),
       ...(p['budget'] === 'fanout' ? { budget: 'fanout' as const } : {}),
       ...(typeof p['spawnId'] === 'string' ? { spawnId: p['spawnId'] } : {}),
+      ...(typeof p['base'] === 'string' ? { base: p['base'] } : {}),
     });
   });
   onRpc(A2A_SPAWN_RPC.outgoing, async (p) => requester.list(typeof p['spawnId'] === 'string' ? p['spawnId'] : undefined));

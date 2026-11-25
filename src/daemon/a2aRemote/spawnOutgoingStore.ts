@@ -7,11 +7,13 @@ import {
   SPAWN_REQUESTS_MAX,
   SPAWN_REQUEST_KEEP_MS,
   SPAWN_REQUEST_KEY_RE,
+  isSpawnBaseName,
   isSpawnCode,
   isSpawnId,
   isSpawnRootId,
   normalizeSpawnSub,
   parseSpawnTargets,
+  spawnBaseNoteLine,
   type A2aSpawnCode,
   type A2aSpawnOutgoingState,
   type A2aSpawnTargetsV1,
@@ -58,6 +60,10 @@ export interface SpawnOutgoingRecordV1 {
   code?: A2aSpawnCode;
   /** `started`: the link to the agent (the uuid the other PC minted). */
   linkId?: string;
+  /** The branch of that PC's origin it asked to start from. */
+  base?: string;
+  /** `started`: that PC's word on why the agent started from its HEAD instead (spawnBaseNoteLine). */
+  baseNote?: string;
   createdAt: string;
   updatedAt: string;
   expiresAt: string;
@@ -180,7 +186,7 @@ export class SpawnOutgoingStore {
   }
 
   /** A new state; started or refused drops the prompt, refused its link id too. Written before memory changes. */
-  settle(hostId: HostId, spawnId: string, patch: { state: A2aSpawnOutgoingState; code?: A2aSpawnCode; linkId?: string }): SpawnOutgoingRecordV1 {
+  settle(hostId: HostId, spawnId: string, patch: { state: A2aSpawnOutgoingState; code?: A2aSpawnCode; linkId?: string; baseNote?: string }): SpawnOutgoingRecordV1 {
     const k = key(hostId, spawnId);
     const rec = this.records.get(k);
     if (!rec) throw new Error(`spawn request ${spawnId}: not recorded`);
@@ -192,6 +198,7 @@ export class SpawnOutgoingStore {
       state: patch.state,
       ...(patch.code ? { code: patch.code } : {}),
       ...(patch.linkId ? { linkId: patch.linkId } : {}),
+      ...(patch.baseNote ? { baseNote: patch.baseNote } : {}),
       updatedAt: new Date(this.now()).toISOString(),
     };
     const next = new Map(this.records);
@@ -260,6 +267,9 @@ function coerceRecord(raw: unknown): SpawnOutgoingRecordV1 | null {
   if (requestKey !== undefined && (typeof requestKey !== 'string' || !SPAWN_REQUEST_KEY_RE.test(requestKey))) return null;
   if (typeof state !== 'string' || !STATES.has(state) || (code !== undefined && !isSpawnCode(code))) return null;
   if (linkId !== undefined && (typeof linkId !== 'string' || !UUID_RE.test(linkId))) return null;
+  const base = raw['base'];
+  if (base !== undefined && !isSpawnBaseName(base)) return null;
+  const baseNote = typeof raw['baseNote'] === 'string' ? spawnBaseNoteLine(raw['baseNote']) : undefined;
   if (!isIsoString(createdAt) || !isIsoString(updatedAt) || !isIsoString(expiresAt)) return null;
   return {
     v: 1, hostId, spawnId, agent, rootId, ...(sub ? { sub: sub as string } : {}),
@@ -269,6 +279,8 @@ function coerceRecord(raw: unknown): SpawnOutgoingRecordV1 | null {
     ...(raw['fanout'] === true ? { fanout: true as const } : {}),
     state: state as A2aSpawnOutgoingState, ...(code ? { code: code as A2aSpawnCode } : {}),
     ...(typeof linkId === 'string' ? { linkId } : {}),
+    ...(base !== undefined ? { base } : {}),
+    ...(baseNote ? { baseNote } : {}),
     createdAt, updatedAt, expiresAt,
   };
 }

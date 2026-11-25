@@ -149,6 +149,14 @@ export const A2A_FEATURE_SPAWN_SIGNED_OUT = 'spawn-signed-out.1';
  */
 export const A2A_FEATURE_SPAWN_ROOT_HASH = 'spawn-root-hash.1';
 /**
+ * The PC reads `base` in a spawn request (the branch of origin to start the
+ * agent from) and `baseNote` in a `started` result (why the agent started
+ * from that PC's HEAD instead). Both readers refuse a body with a key they do
+ * not know, so an asker sends `base` only to a PC that advertises this, and a
+ * PC sends `baseNote` only to an asker that advertises it.
+ */
+export const A2A_FEATURE_SPAWN_BASE = 'spawn-base.1';
+/**
  * The PC takes a Claude conversation another PC continues here
  * (`shared/a2aContinue.ts`). A requester sends one only to a PC that
  * advertises it.

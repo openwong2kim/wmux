@@ -81,8 +81,9 @@ export function registerRemoteSpawnRpc(router: RpcRouter, getWindow: GetWindow, 
     const root = str(params['root']);
     const prompt = typeof params['prompt'] === 'string' ? params['prompt'] : '';
     const expires = params['expiresInHours'];
-    if (!str(params['pc']) || !isAgentSlug(agent) || !root || !prompt.trim() || (expires !== undefined && typeof expires !== 'number')) {
-      return deny('INVALID_ARGUMENT', 'pc, agent, root and prompt are required (sub and expiresInHours are optional)');
+    const base = params['base'];
+    if (!str(params['pc']) || !isAgentSlug(agent) || !root || !prompt.trim() || (expires !== undefined && typeof expires !== 'number') || (base !== undefined && typeof base !== 'string')) {
+      return deny('INVALID_ARGUMENT', 'pc, agent, root and prompt are required (sub, base and expiresInHours are optional)');
     }
     const dc = deps.getDaemonClient();
     if (!dc?.isConnected) return deny('UNAVAILABLE', 'the background service is not connected');
@@ -93,6 +94,7 @@ export function registerRemoteSpawnRpc(router: RpcRouter, getWindow: GetWindow, 
       folder: { root, ...(sub ? { sub } : {}) },
       text: prompt,
       ...(typeof expires === 'number' ? { expiresInHours: expires } : {}),
+      ...(typeof base === 'string' && base ? { base } : {}),
       from: { kind: 'pane', workspaceId: caller.workspaceId, paneId: caller.paneId },
       // The hourly limit is per pane: a new pty in the same pane counts with the old one.
       callerKey: caller.paneId,

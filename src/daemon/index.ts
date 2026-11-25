@@ -185,7 +185,7 @@ import { A2A_REMOTE_RPC, type A2aRemoteTaskState } from '../shared/a2aRemoteDeli
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
-import { A2A_ANSWER_RPC, A2A_APPROVALS_RPC, A2A_FEATURE_ANSWER, A2A_FEATURE_APPROVAL, isA2aAnswersSetting, A2A_FEATURE_BUNDLE, A2A_FEATURE_BUNDLE_IMPORTED, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
+import { A2A_ANSWER_RPC, A2A_APPROVALS_RPC, A2A_FEATURE_ANSWER, A2A_FEATURE_APPROVAL, isA2aAnswersSetting, A2A_FEATURE_BUNDLE, A2A_FEATURE_BUNDLE_IMPORTED, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_BASE, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
@@ -11577,7 +11577,7 @@ async function main(): Promise<void> {
         // messages and pings its streams: tell the servers it joins, and the
         // joiners in its hello.
         // `bundle.1` only while bundles are on (read at start: a change takes effect on the next one).
-        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_ANSWER, ...(a2aBundlesOn() ? [A2A_FEATURE_BUNDLE, A2A_FEATURE_BUNDLE_IMPORTED] : [])],
+        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_SIGNED_OUT, A2A_FEATURE_SPAWN_ROOT_HASH, A2A_FEATURE_SPAWN_BASE, A2A_FEATURE_STATUS, A2A_FEATURE_HELD_NOTICE, A2A_FEATURE_ANSWER, ...(a2aBundlesOn() ? [A2A_FEATURE_BUNDLE, A2A_FEATURE_BUNDLE_IMPORTED] : [])],
         uploadsRoot: path.join(wmuxDir, 'uploads'),
         // A live terminal of the sender's workspace (stamped at spawn by main), else none.
         spawnCwdOf: (ptyId, workspaceId) => {

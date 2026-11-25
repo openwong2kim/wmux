@@ -120,6 +120,12 @@ export interface A2aSpawnRequestV1 {
   /** ISO; judged by B's clock. */
   expiresAt: string;
   from: A2aSpawnFromV1;
+  /**
+   * The branch of B's origin to start from (`isSpawnBaseName`); absent: B's
+   * origin default branch. Sent only to a PC that advertises
+   * A2A_FEATURE_SPAWN_BASE.
+   */
+  base?: string;
 }
 
 /** B -> A: one per decision (`waiting-for-approval` may come first). */
@@ -133,6 +139,31 @@ export interface A2aSpawnResultV1 {
   linkVersion?: number;
   /** `started` only: the link's id (a uuid B minted when it started the agent). */
   linkId?: string;
+  /**
+   * `started` only: why the agent's branch starts at B's HEAD instead of the
+   * base it was to fetch (B's own words, one line, at most SPAWN_BASE_NOTE_MAX).
+   * Sent only to an asker that advertises A2A_FEATURE_SPAWN_BASE.
+   */
+  baseNote?: string;
+}
+
+/** The longest `baseNote` a result carries. */
+export const SPAWN_BASE_NOTE_MAX = 600;
+
+/** A branch name a spawn may start from: plain, never an option, a range or a path out. */
+export function isSpawnBaseName(v: unknown): v is string {
+  return typeof v === 'string' && /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*\/$)(?!.*\.lock$)[A-Za-z0-9._/+-]{1,200}$/.test(v);
+}
+
+/** A base note as a result carries it: control characters and line breaks folded to spaces, cut to SPAWN_BASE_NOTE_MAX; undefined when nothing is left. */
+export function spawnBaseNoteLine(note: string | undefined): string | undefined {
+  const line = (note ?? '').replace(/[\p{Cc}\s]+/gu, ' ').trim().slice(0, SPAWN_BASE_NOTE_MAX).trim();
+  return line || undefined;
+}
+
+/** One line of text, at most SPAWN_BASE_NOTE_MAX characters, no control characters. */
+function isBaseNote(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0 && v.length <= SPAWN_BASE_NOTE_MAX && !/\p{Cc}/u.test(v);
 }
 
 /**
@@ -427,6 +458,8 @@ export interface A2aSpawnClaimV1 {
   /** Normalized relative POSIX path below it ('' = the root). */
   sub: string;
   permissionMode: A2aSpawnPermissionMode;
+  /** The branch of origin the asker named (A2aSpawnRequestV1.base); absent: the default branch. */
+  base?: string;
 }
 
 export type A2aSpawnClaimResult =
@@ -479,6 +512,10 @@ export interface A2aSpawnOutgoingSummary {
   state: A2aSpawnOutgoingState;
   code?: A2aSpawnCode;
   linkId?: string;
+  /** The branch of that PC's origin it asked to start from. */
+  base?: string;
+  /** Started only: that PC's word on why the agent started from its HEAD instead of the base. */
+  baseNote?: string;
   createdAt: string;
   updatedAt: string;
   expiresAt: string;
@@ -494,6 +531,8 @@ export interface A2aSpawnAskInput {
   /** 1–72; default 24. */
   expiresInHours?: number;
   from: A2aSpawnFromV1;
+  /** The branch of that PC's origin to start from (isSpawnBaseName); absent: its default branch. */
+  base?: string;
   /**
    * The terminal in `from`'s pane that asked (main verified it as the
    * caller's own pty): the replies go to it, as to any task's anchor. Never
@@ -655,7 +694,7 @@ export function normalizeSpawnSub(sub: unknown): string | null {
 
 /** A request body, strictly; null when it is not exactly one. */
 export function parseSpawnRequest(raw: unknown): A2aSpawnRequestV1 | null {
-  if (!isPlain(raw) || !onlyKeys(raw, ['v', 'spawnId', 'agent', 'folder', 'text', 'expiresAt', 'from'])) return null;
+  if (!isPlain(raw) || !onlyKeys(raw, ['v', 'spawnId', 'agent', 'folder', 'text', 'expiresAt', 'from', 'base'])) return null;
   if (raw['v'] !== 1 || !isSpawnId(raw['spawnId']) || !isAgentSlug(raw['agent'])) return null;
   const folder = raw['folder'];
   if (!isPlain(folder) || !onlyKeys(folder, ['root', 'sub']) || !isSpawnRootId(folder['root'])) return null;
@@ -668,6 +707,8 @@ export function parseSpawnRequest(raw: unknown): A2aSpawnRequestV1 | null {
   const from = raw['from'];
   if (!isPlain(from) || !onlyKeys(from, ['kind', 'workspaceId', 'paneId']) || from['kind'] !== 'pane') return null;
   if (!isConsistentEndpoint(from) || !safeId(from['workspaceId']) || !safeId(from['paneId'])) return null;
+  const base = raw['base'];
+  if (base !== undefined && !isSpawnBaseName(base)) return null;
   return {
     v: 1,
     spawnId: raw['spawnId'] as string,
@@ -676,6 +717,7 @@ export function parseSpawnRequest(raw: unknown): A2aSpawnRequestV1 | null {
     text,
     expiresAt,
     from: { kind: 'pane', workspaceId: from['workspaceId'] as string, paneId: from['paneId'] as string },
+    ...(base !== undefined ? { base } : {}),
   };
 }
 
@@ -694,20 +736,22 @@ export function spawnClockOk(sentAt: string, expiresAt: string, now: number, ttl
 }
 
 export function parseSpawnResult(raw: unknown): A2aSpawnResultV1 | null {
-  if (!isPlain(raw) || !onlyKeys(raw, ['v', 'spawnId', 'code', 'endpoint', 'linkVersion', 'linkId'])) return null;
+  if (!isPlain(raw) || !onlyKeys(raw, ['v', 'spawnId', 'code', 'endpoint', 'linkVersion', 'linkId', 'baseNote'])) return null;
   if (raw['v'] !== 1 || !isSpawnId(raw['spawnId']) || !isSpawnCode(raw['code'])) return null;
   const code = raw['code'];
   const endpoint = raw['endpoint'];
   const linkVersion = raw['linkVersion'];
   const linkId = raw['linkId'];
+  const baseNote = raw['baseNote'];
   if (code !== 'started') {
-    if (endpoint !== undefined || linkVersion !== undefined || linkId !== undefined) return null;
+    if (endpoint !== undefined || linkVersion !== undefined || linkId !== undefined || baseNote !== undefined) return null;
     return { v: 1, spawnId: raw['spawnId'] as string, code };
   }
   if (!isPlain(endpoint) || !onlyKeys(endpoint, ['kind', 'workspaceId', 'paneId']) || endpoint['kind'] !== 'pane') return null;
   if (!safeId(endpoint['workspaceId']) || !safeId(endpoint['paneId'])) return null;
   if (typeof linkVersion !== 'number' || !Number.isInteger(linkVersion) || linkVersion < 1) return null;
   if (typeof linkId !== 'string' || !UUID_RE.test(linkId)) return null;
+  if (baseNote !== undefined && !isBaseNote(baseNote)) return null;
   return {
     v: 1,
     spawnId: raw['spawnId'] as string,
@@ -715,6 +759,7 @@ export function parseSpawnResult(raw: unknown): A2aSpawnResultV1 | null {
     endpoint: { kind: 'pane', workspaceId: endpoint['workspaceId'] as string, paneId: endpoint['paneId'] as string },
     linkVersion,
     linkId,
+    ...(baseNote !== undefined ? { baseNote } : {}),
   };
 }
 

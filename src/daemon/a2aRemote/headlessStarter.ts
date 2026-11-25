@@ -119,7 +119,7 @@ export interface HeadlessStarterDeps {
   mode: { active(): boolean };
   receiver: {
     claim(hostId: HostId, spawnId: string): Promise<A2aSpawnClaimResult>;
-    started(hostId: HostId, spawnId: string, end: { workspaceId: string; paneId: string }): Promise<A2aSpawnStepResult>;
+    started(hostId: HostId, spawnId: string, end: { workspaceId: string; paneId: string }, baseNote?: string): Promise<A2aSpawnStepResult>;
     failed(hostId: HostId, spawnId: string, code: 'folder-not-allowed' | 'failed'): A2aSpawnStepResult;
   };
   requests: { get(hostId: HostId, spawnId: string): SpawnRequestRecordV1 | undefined };
@@ -548,7 +548,7 @@ export class A2aHeadlessStarter {
     }
     let made: SpawnWorktreeResult;
     try {
-      made = await this.deps.worktrees.create({ repoPath: claim.repoPath, sub: claim.sub, spawnId: treeId });
+      made = await this.deps.worktrees.create({ repoPath: claim.repoPath, sub: claim.sub, spawnId: treeId, ...(claim.base ? { base: claim.base } : {}) });
     } catch (err) {
       made = { ok: false, code: 'failed', detail: errMsg(err) };
     }
@@ -590,7 +590,8 @@ export class A2aHeadlessStarter {
 
     let res: A2aSpawnStepResult;
     try {
-      res = await this.deps.receiver.started(hostId, spawnId, { workspaceId: rec.workspaceId, paneId: rec.sessionId });
+      // The base note goes back to the asking PC with the answer.
+      res = await this.deps.receiver.started(hostId, spawnId, { workspaceId: rec.workspaceId, paneId: rec.sessionId }, made.baseNote);
     } catch (err) {
       res = { ok: false, error: errMsg(err) };
     }

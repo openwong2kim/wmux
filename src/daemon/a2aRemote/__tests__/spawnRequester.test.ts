@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { A2A_FEATURE_SPAWN, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
+import { A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_BASE, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
 import {
   A2A_SPAWN_RPC,
   SPAWN_ASKS_OPEN_PER_HOST_MAX,
@@ -392,5 +392,34 @@ describe('the asker\'s name for the agent (label)', () => {
     const stamped = (await ask({ ...base, fromPtyId: 'pty-a' })) as { ok: boolean; spawn: { spawnId: string } };
     expect(store.get(B, stamped.spawn.spawnId)?.from.ptyId).toBe('pty-a');
     expect(await ask({ ...base, fromPtyId: 7 })).toMatchObject({ ok: false, error: 'bad-request' });
+  });
+});
+
+describe('a named base, and the note on a start from HEAD (spawn-base.1)', () => {
+  it('a base goes only to a PC that reads it: another is refused here, with nothing sent', () => {
+    const r = asks.ask(input({ base: 'release/2.0' }));
+    expect(r).toMatchObject({ ok: false, error: 'not-supported' });
+    expect(sent).toEqual([]);
+    expect(asks.ask(input({ base: '--upload-pack=x' }))).toMatchObject({ ok: false, error: 'bad-request' });
+  });
+
+  it('to a PC that reads it, the request carries the base and the summary says it', () => {
+    features.set(B, new Set([A2A_FEATURE_SPAWN, A2A_FEATURE_SPAWN_BASE]));
+    const spawnId = askOk({ base: 'release/2.0' });
+    expect(sent[0].env.spawn?.base).toBe('release/2.0');
+    expect(stateOf(spawnId)).toMatchObject({ base: 'release/2.0' });
+    // Without one, the request has no base key at all (an older PC reads it as before).
+    const plain = askOk({ callerKey: 'pane-b', from: { kind: 'pane', workspaceId: 'ws-a', paneId: 'pane-b' } });
+    expect(Object.keys(sent[1].env.spawn ?? {})).not.toContain('base');
+    expect(stateOf(plain).base).toBeUndefined();
+  });
+
+  it('keeps the other PC\'s base note on the started request, across a restart', async () => {
+    const spawnId = askOk();
+    expect(await asks.onResult(B, { ...started(spawnId), baseNote: 'git fetch origin main failed (offline); branched from this PC\'s HEAD' })).toBe(true);
+    expect(stateOf(spawnId)).toMatchObject({ state: 'started', baseNote: 'git fetch origin main failed (offline); branched from this PC\'s HEAD' });
+    store = new SpawnOutgoingStore({ dir: path.join(dir, 'a2a'), scheduleHarden: quiet, now: () => clock });
+    asks = make();
+    expect(stateOf(spawnId).baseNote).toContain('offline');
   });
 });

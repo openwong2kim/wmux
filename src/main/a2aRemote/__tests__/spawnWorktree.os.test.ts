@@ -250,6 +250,28 @@ describe('createSpawnWorktree: the base', () => {
     expect(g(repo, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('old-feature');
   });
 
+  it('a named base: that branch of origin, fetched now', async () => {
+    originAhead();
+    const other = path.join(root, 'other');
+    g(other, 'checkout', '-q', '-b', 'release/2.0');
+    fs.writeFileSync(path.join(other, 'REL.md'), 'rel\n');
+    g(other, 'add', '.');
+    g(other, 'commit', '-qm', 'release');
+    g(other, 'push', '-q', 'origin', 'release/2.0');
+    const tip = g(other, 'rev-parse', 'HEAD');
+    const r = await create({ base: 'release/2.0' });
+    expect(r).toMatchObject({ ok: true, base: tip, baseRef: 'origin/release/2.0' });
+    expect(fs.existsSync(path.join(spawnDir(), 'REL.md'))).toBe(true);
+  });
+
+  it('a named base origin does not have: HEAD, and the note names that base', async () => {
+    originAhead();
+    const head = g(repo, 'rev-parse', 'HEAD');
+    const r = await create({ base: 'no-such-branch' });
+    expect(r).toMatchObject({ ok: true, base: head, baseNote: expect.stringContaining('git fetch origin no-such-branch failed') });
+    expect(r.ok && r.baseNote).toContain('which may not be origin/no-such-branch');
+  });
+
   it('an origin it cannot reach: HEAD, with the reason', async () => {
     g(repo, 'remote', 'add', 'origin', path.join(root, 'no-such-origin.git'));
     const head = g(repo, 'rev-parse', 'HEAD');
