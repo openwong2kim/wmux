@@ -9,7 +9,7 @@ import { RingBuffer } from '../RingBuffer';
 import { OutputModeTracker } from '../util/outputModeTracker';
 import { enqueueSnapshotJob } from '../HeadlessSnapshot';
 import { queuedScreenText } from '../queuedSessionText';
-import { noteScreenOutput, screenCheckpointBytes, screenCheckpointCounters, takeScreenCheckpoint } from '../screenCheckpoint';
+import { noteScreenOutput, onUnseenScreenCheckpoint, screenCheckpointBytes, screenCheckpointCounters, takeScreenCheckpoint, type ScreenRepairLineage } from '../screenCheckpoint';
 import { getAnsiSnapshotBackendDiagnostics } from '../AnsiSnapshotBackend';
 import { rustTerminalCoreAvailable } from '../../shared/terminalCoreSettings';
 
@@ -216,5 +216,48 @@ describe('a checkpoint taken mid-sequence', () => {
       if (prev === undefined) delete process.env.WMUX_RUST_SNAPSHOT;
       else process.env.WMUX_RUST_SNAPSHOT = prev;
     }
+  });
+});
+
+describe('a rebuilt checkpoint asks for one redraw', () => {
+  it('the redraw\'s repaint gives a fresh checkpoint that reads plain, and the chain asks no more', async () => {
+    const asked: ScreenRepairLineage[] = [];
+    onUnseenScreenCheckpoint((_ring, lineage) => { asked.push(lineage); });
+    try {
+      const p = pane(4096, false);
+      await claudeSession(p, '');
+      // Checkpoints start over a wrapped ring: the rebuilt one leaves the composer's unseen cells marked.
+      p.checkpoints = true;
+      for (let i = 0; i < 100; i++) await p.feed(at(1, 1, `⏺ late ${i}`.padEnd(40)));
+      await p.feed(at(3, 1, RULE) + at(4, 1, '❯') + at(5, 1, RULE));
+      expect((await read(p)).verdict).toBe('unknown');
+      expect(asked).toHaveLength(1);
+      // The repair marks the chain, then the resize makes Claude repaint its whole frame.
+      asked[0].nudged = true;
+      await p.feed('\x1b[2J' + at(3, 1, RULE) + at(4, 1, '❯\u00a0') + at(5, 1, RULE) + at(4, 3, ''));
+      expect(await takeScreenCheckpoint(p.ring, p.modes, () => ({ cols: COLS, rows: ROWS }))).toBe(true);
+      expect((await read(p)).verdict).toBe('plain');
+      // More output, more chained checkpoints: no second request.
+      for (let i = 0; i < 100; i++) await p.feed(at(1, 1, `⏺ after ${i}`.padEnd(40)));
+      expect(asked).toHaveLength(1);
+    } finally {
+      onUnseenScreenCheckpoint(null);
+    }
+  });
+});
+
+describe('a checkpoint the serializer refuses', () => {
+  it('backs off instead of re-parsing the ring every sixteenth of it', async () => {
+    const p = pane(4096, true);
+    // Scroll margins: both serializers refuse the snapshot (`margins`), and every later try would too.
+    await p.feed('\x1b[?1049h\x1b[2J\x1b[2;8r');
+    const failed = screenCheckpointCounters().failed;
+    // Eight rings of output from a TUI that keeps its scroll region set.
+    for (let i = 0; i < 800; i++) await p.feed(`\x1b[2;8r${at(1, 1, `⏺ line ${i}`.padEnd(40))}`);
+    expect(p.ring.totalBytesWritten).toBeGreaterThan(8 * 4096);
+    const tries = screenCheckpointCounters().failed - failed;
+    // Doubling from a quarter ring to a whole one: about one try a ring, where a sixteenth would make over a hundred.
+    expect(tries).toBeGreaterThan(0);
+    expect(tries).toBeLessThanOrEqual(16);
   });
 });

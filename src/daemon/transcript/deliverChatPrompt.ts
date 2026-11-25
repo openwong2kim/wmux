@@ -43,6 +43,8 @@ export interface ChatDeliveryDeps extends ScheduledPromptDeliveryDeps {
   steer?: boolean;
   /** Why a `blocked` answer came from the screen: a dialog on it, or no composer at all. */
   onScreenHold?: (why: 'dialog' | 'no-composer') => void;
+  /** An `unconfirmed` answer came from cells of the composer the screen read could not see, not from a draft. */
+  onInputUnseen?: () => void;
   /** The pane's latest window title and when it was set (`at` 0 = never). */
   readTitle?: () => { title: string; at: number } | null;
 }
@@ -71,6 +73,9 @@ export async function deliverChatPrompt(
   // Mid-turn, a draft typed in Terminal would be joined the same way. Only the
   // empty composer on screen is permission for either (running stays 'busy').
   const claudeEmpty = initial.slug === 'claude' && claudeComposerEmpty(rows);
+  // Not empty because some of it could not be seen: say so rather than "a draft".
+  // (Only Claude's composer is drawn this way, so the layout itself names the agent.)
+  if (!claudeEmpty && claudeComposerUnseen(rows)) deps.onInputUnseen?.();
   // A delayed (queued) message is typed with nobody watching: whatever the
   // status reads, only an empty composer on screen is permission. A draft in
   // a visible composer is `unconfirmed`; no composer at all (a usage screen,
@@ -190,6 +195,22 @@ export function claudeComposerEmpty(rows: ChatScreenRows | null): boolean {
   // A fresh session dims a suggestion into the empty prompt: `❯ Try "…"`.
   const empty = /^❯(?: Try "[^"]*")?$/.test(tail[at] ?? '') || /^❯$/.test(rows.undimmed?.[at]?.trim() ?? '');
   return at > 0 && empty && claudeTopRule(rows, at, at + 1) && claudeRule(tail[at + 1]) && !unseenFrom(rows, at - 1);
+}
+
+/** A chat send refused because the composer could not be seen whole: what the person is told. */
+export const UNSEEN_INPUT_CHAT_DETAIL =
+  "wmux can't confirm the agent's input box is empty yet: part of it has not been redrawn since its output history was trimmed. Resizing the pane redraws it";
+
+/**
+ * The Claude composer is on screen, and cells of it (from its top rule down)
+ * are ones the screen read could not see: it may be empty, it may hold a
+ * draft, and the screen cannot tell which until Claude redraws them.
+ */
+export function claudeComposerUnseen(rows: ChatScreenRows | null): boolean {
+  if (!rows || !claudeComposerVisible(rows)) return false;
+  let at = -1;
+  rows.forEach((row, index) => { if (/^❯(?:\s|$)/.test(row.trim())) at = index; });
+  return at > 0 && unseenFrom(rows, at - 1);
 }
 
 /** The Claude composer is on screen (prompt row between two rules), empty or not. */

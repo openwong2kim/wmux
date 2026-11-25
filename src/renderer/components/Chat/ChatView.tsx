@@ -204,7 +204,8 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
         setSendState(state); setSendEffect(response.effect ?? null);
         // Keep the draft on a refused/uncertain delivery. The error text makes
         // partial delivery explicit; it is never retried automatically.
-        throw new MessageNotSentError(t(state === 'refused' && response.reason === 'unsent-paste' ? 'chat.send.unsentPaste' : `chat.send.${state}`));
+        const refusedKey = response.reason === 'unsent-paste' ? 'chat.send.unsentPaste' : response.reason === 'input-unseen' ? 'chat.send.inputUnseen' : null;
+        throw new MessageNotSentError(t(state === 'refused' && refusedKey ? refusedKey : `chat.send.${state}`));
       }
       setSendState('sent');
       setAttachments((current) => current.filter((item) => !images.includes(item)));

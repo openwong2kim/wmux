@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { chatScreenRowsOf, claudeComposerEmpty, claudeComposerRows, claudeComposerShows, claudeComposerVisible, codexComposerEmpty, codexComposerVisible, deliverChatPrompt, type ChatDeliveryDeps } from '../deliverChatPrompt';
+import { UNSEEN_INPUT_CHAT_DETAIL, chatScreenRowsOf, claudeComposerEmpty, claudeComposerUnseen, claudeComposerRows, claudeComposerShows, claudeComposerVisible, codexComposerEmpty, codexComposerVisible, deliverChatPrompt, type ChatDeliveryDeps } from '../deliverChatPrompt';
 import { UNKNOWN_CELL } from '../../sessionTextReplay';
 import { readComposer } from '../../deliveryComposer';
 import type { ScheduledPromptAgentState } from '../../sessionPromptDelivery';
@@ -521,6 +521,21 @@ describe('cells the screen read could not see (the ring dropped what last wrote 
     expect(await deliverChatPrompt('conversation-1', 'next task', { ...queued.deps, idleOnly: true })).toBe('unconfirmed');
     expect(f.write).not.toHaveBeenCalled();
     expect(queued.write).not.toHaveBeenCalled();
+  });
+
+  it('says the input could not be seen, apart from a draft', async () => {
+    const unseen = vi.fn();
+    const f = fixture(); f.state.status = 'idle';
+    f.show(unseenDraft() as string[]);
+    expect(await deliverChatPrompt('conversation-1', 'next task', { ...f.deps, onInputUnseen: unseen })).toBe('unconfirmed');
+    expect(unseen).toHaveBeenCalledTimes(1);
+    expect(claudeComposerUnseen(unseenDraft())).toBe(true);
+    const draft = fixture(); draft.state.status = 'idle';
+    draft.show([RULE, '❯\u00a0half-typed', RULE, '  ? for shortcuts']);
+    const notUnseen = vi.fn();
+    expect(await deliverChatPrompt('conversation-1', 'next task', { ...draft.deps, onInputUnseen: notUnseen })).toBe('unconfirmed');
+    expect(notUnseen).not.toHaveBeenCalled();
+    expect(UNSEEN_INPUT_CHAT_DETAIL).not.toMatch(/draft/i);
   });
 
   it('an unseen cell in the transcript above the composer changes nothing', () => {

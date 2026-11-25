@@ -105,7 +105,7 @@ import { isTerminalCoreMissing, TERMINAL_CORE_MISSING, type TerminalPty } from '
 import { serializeSession } from './sessionSerialize';
 import { AwaitingScreenVerifier, AWAITING_NARROW_DIALOG_COLS, questionInFlight, renderPaneScreen, renderPaneTail } from './AwaitingScreenVerifier';
 import { screenBlocksChatSend, screenShowsAgentDialog, screenShowsActiveDialog, screenShowsPermissionDialog, screenShowsRunningTurn, titleShowsRunningTurn } from './transcript/chatScreenGate';
-import { claudeComposerEmpty, claudeComposerVisible } from './transcript/deliverChatPrompt';
+import { claudeComposerEmpty, claudeComposerUnseen, claudeComposerVisible } from './transcript/deliverChatPrompt';
 import { CHATV2_LAUNCH_ALLOWED_RPC } from '../shared/chatv2/ipc';
 import { isPaneMoving } from './chat/v2/paneClaims';
 import { ApprovalPushRouter } from './push/approvalPushRouter';
@@ -209,6 +209,8 @@ import { processHoldsForeground } from './agentForeground';
 import { SHOWN_TEXT_MAX, type DeliveryCheck, type DeliveryPresence } from '../shared/deliveryPresence';
 import { deliveryPresence, promptGrant, type DeliveryPresenceDeps, type PromptAuthor } from './deliveryPresence';
 import { deliveryFrameOf } from './deliveryComposer';
+import { noteScreenRepairNudge, onUnseenScreenCheckpoint, pauseScreenCheckpoints, takeScreenCheckpoint } from './screenCheckpoint';
+import { repairUnseenScreen } from './screenCheckpointRepair';
 import { AgentProcessTracker, agentProcessExitEvent, type LiveCheck } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
 import { liveRecoveryHint, markCwdMissing, namedAgentAlive, recordedTurnStillOpen, recordWasMidTurn, screenShowsLiveAgent, sightedRecoveredAgent } from './recoveryHint';
@@ -5291,6 +5293,7 @@ function registerRpcHandlers(
             return 'Claude is still working. Try once its turn ends.';
           }
           if (!claudeComposerEmpty(rows)) {
+            if (claudeComposerUnseen(rows)) return 'wmux can\u2019t confirm Claude\u2019s input is empty yet. Resize the pane once to redraw it.';
             return claudeComposerVisible(rows) ? 'Claude\u2019s input holds a draft. Send or clear it first.' : 'Claude\u2019s input is not on screen.';
           }
           return null;
@@ -6518,6 +6521,42 @@ function registerRpcHandlers(
     return deliveryPresence(presenceDeps, id, expectAgent, check);
   });
   deliveryPresenceRef = (id, check) => deliveryPresence(presenceDeps, id, undefined, check);
+  // A screen checkpoint rebuilt from a ring that had dropped bytes leaves cells Claude never rewrites
+  // unseen, and every composer reader then refuses the pane: one redraw at rest (screenCheckpointRepair.ts).
+  onUnseenScreenCheckpoint((ring, lineage) => {
+    const managed = sessionManager.listManagedSessions().find((s) => s.ringBuffer === ring);
+    if (!managed) return;
+    const id = managed.meta.id;
+    const size = (): { cols: number; rows: number } | null => {
+      const live = sessionManager.getSession(id);
+      return live === managed && live.meta.cols > 0 && live.meta.rows > 0 ? { cols: live.meta.cols, rows: live.meta.rows } : null;
+    };
+    void repairUnseenScreen(lineage, {
+      atRest: () => {
+        const live = sessionManager.getSession(id);
+        if (live !== managed || (live.meta.state !== 'attached' && live.meta.state !== 'detached')) return false;
+        const { bridge } = live;
+        return !bridge.isMuted && !bridge.isTurnOpen() && bridge.getAgentStatus() !== 'running' && bridge.isKeyInputQuiet()
+          && unsentPasteHolds?.held(id) !== true;
+      },
+      composerUnseen: async () => claudeComposerUnseen((await queuedComposerRows(sessionManager, id))?.rows ?? null),
+      size,
+      resizePty: (cols, rows) => {
+        if (sessionManager.getSession(id) !== managed) return;
+        managed.ptyProcess.resize(cols, rows);
+        // The repaint that follows is a resize's, not new output (agent detection's redraw guard).
+        managed.bridge.noteResize();
+      },
+      pause: (on) => pauseScreenCheckpoints(ring, on),
+      refresh: () => {
+        const modes = managed.bridge.outputModes;
+        return modes ? enqueueSnapshotJob(() => takeScreenCheckpoint(ring, modes, size)) : Promise.resolve(false);
+      },
+      delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      noteNudge: noteScreenRepairNudge,
+      log: (line) => log('info', `${line} on pane ${id}`),
+    }).catch(() => undefined);
+  });
   // A draft mark the key path left after the draft was erased (Backspace), cleared
   // by a fresh frame of the agent's empty prompt (draftScreen.ts).
   draftOnScreen = draftScreenCheck({

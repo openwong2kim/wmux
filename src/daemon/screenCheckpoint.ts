@@ -49,6 +49,13 @@ interface ScreenCheckpoint {
   rows: number;
   /** The grid as ANSI (its modes, its alternate screen, its cursor). */
   payload: Buffer;
+  /** Shared by the checkpoints chained from one rebuilt from a wrapped ring: whether that chain asked for a redraw yet. */
+  lineage: ScreenRepairLineage;
+}
+
+/** A chain of checkpoints from one rebuild: it asks for at most one redraw. */
+export interface ScreenRepairLineage {
+  nudged: boolean;
 }
 
 /** A checkpoint larger than this is not kept (a 200×60 Claude screen is far below it). */
@@ -59,6 +66,9 @@ const REFRESH_SHARE = 0.25;
 /** After a checkpoint that failed or was not kept, the next try waits for this share of the ring, and tries go on
  *  until one is kept: while the last checkpoint's offset is still in the ring, a try still chains from it. */
 const RETRY_SHARE = 1 / 16;
+/** Failures no later try of the same bytes can avoid (a parse the serializer refuses): back off, doubling from the
+ *  refresh interval up to a whole ring, instead of re-parsing the ring every RETRY_SHARE on the shared queue. */
+const STRUCTURAL_FAILURES: ReadonlySet<string> = new Set(['margins', 'partial-tail-overflow']);
 /** A checkpoint job's parse budget. It holds the shared snapshot slot pane reveals wait on, and a job that
  *  runs out is retried later, so it is kept short (a 4 MiB stretch measured ~25 ms on Rust, ~75 ms on xterm). */
 const CHECKPOINT_BUDGET_MS = 1000;
@@ -73,13 +83,42 @@ const counters = {
   rebuiltFromWrappedRing: 0,
   /** Jobs that kept nothing (a parse that failed or ran out of time, an oversized grid, a size or screen change). */
   failed: 0,
+  /** Redraws asked of a pane whose rebuilt checkpoint still left part of its composer unseen (screenCheckpointRepair.ts). */
+  repairNudges: 0,
 };
 
-export function screenCheckpointCounters(): { taken: number; rebuiltFromWrappedRing: number; failed: number } {
+export function screenCheckpointCounters(): { taken: number; rebuiltFromWrappedRing: number; failed: number; repairNudges: number } {
   return { ...counters };
 }
-const attempts = new WeakMap<CheckpointRing, number>();
+
+/** Count a redraw asked by the repair. */
+export function noteScreenRepairNudge(): void {
+  counters.repairNudges++;
+}
+
+/** The last try per ring: where, and how much more of the ring the next one waits for. */
+const attempts = new WeakMap<CheckpointRing, { at: number; share: number }>();
+/** Structural failures in a row, per ring (STRUCTURAL_FAILURES). */
+const structural = new WeakMap<CheckpointRing, number>();
 const running = new WeakSet<CheckpointRing>();
+/** Rings whose checkpoints wait while a repair resizes the pane and back. */
+const paused = new WeakSet<CheckpointRing>();
+
+/** Hold (or resume) a ring's checkpoints: a repair's interim size is not the pane's. */
+export function pauseScreenCheckpoints(ring: CheckpointRing, pause: boolean): void {
+  if (pause) paused.add(ring);
+  else paused.delete(ring);
+}
+
+type UnseenHandler = (ring: CheckpointRing, lineage: ScreenRepairLineage) => void;
+/** Chains the handler was told about. */
+const notified = new WeakSet<ScreenRepairLineage>();
+let unseenHandler: UnseenHandler | null = null;
+
+/** Who is told when a kept checkpoint still has unseen cells and its chain has not asked for a redraw (the daemon's repair). */
+export function onUnseenScreenCheckpoint(handler: UnseenHandler | null): void {
+  unseenHandler = handler;
+}
 
 /** The replay of a screen read, and the ring's byte count at the read. */
 export interface ScreenReplay {
@@ -139,6 +178,7 @@ export function screenReplay(
  * Cheap: a few comparisons, and one queued job at a time per ring.
  */
 export function noteScreenOutput(ring: CheckpointRing, modes: CheckpointModes | null, size: () => { cols: number; rows: number } | null): void {
+  if (paused.has(ring)) return;
   if (!modes?.altScreen) {
     checkpoints.delete(ring);
     return;
@@ -155,8 +195,8 @@ export function noteScreenOutput(ring: CheckpointRing, modes: CheckpointModes | 
   const capacity = ring.totalCapacity;
   if (total - covered <= capacity * REFRESH_SHARE || running.has(ring)) return;
   const tried = attempts.get(ring);
-  if (tried !== undefined && tried > covered && total - tried < capacity * RETRY_SHARE) return;
-  attempts.set(ring, total);
+  if (tried !== undefined && tried.at > covered && total - tried.at < capacity * tried.share) return;
+  attempts.set(ring, { at: total, share: RETRY_SHARE });
   running.add(ring);
   void enqueueSnapshotJob(() => takeScreenCheckpoint(ring, modes, size))
     .catch(() => undefined)
@@ -173,6 +213,7 @@ export async function takeScreenCheckpoint(
   if (!at || !modes.altScreen) return false;
   // Read (and copied) before the first await: `writtenAt` names exactly these bytes.
   const generation = ring.clearGeneration;
+  const chainedFrom = checkpoints.get(ring);
   const read = screenReplay(ring, modes, at, { markUnknown: true });
   // A ring that failed to wake read only its newest bytes.
   if (ring.isHibernated) return false;
@@ -189,11 +230,24 @@ export async function takeScreenCheckpoint(
   if (!outcome.ok || outcome.payload.length > SCREEN_CHECKPOINT_MAX_BYTES
     || !modes.altScreen || !now || now.cols !== at.cols || now.rows !== at.rows || ring.clearGeneration !== generation) {
     counters.failed++;
+    if (!outcome.ok && STRUCTURAL_FAILURES.has(outcome.reason)) {
+      const inARow = (structural.get(ring) ?? 0) + 1;
+      structural.set(ring, inARow);
+      attempts.set(ring, { at: ring.totalBytesWritten, share: Math.min(1, REFRESH_SHARE * 2 ** (inARow - 1)) });
+    }
     return false;
   }
-  checkpoints.set(ring, { offset: read.writtenAt, generation, cols: at.cols, rows: at.rows, payload: outcome.payload });
+  structural.delete(ring);
+  // A checkpoint chained from the last one keeps its chain; one rebuilt from the ring starts a new chain.
+  const lineage = !read.rebuilt && chainedFrom && read.marked ? chainedFrom.lineage : { nudged: false };
+  checkpoints.set(ring, { offset: read.writtenAt, generation, cols: at.cols, rows: at.rows, payload: outcome.payload, lineage });
   counters.taken++;
   if (read.rebuilt) counters.rebuiltFromWrappedRing++;
+  // Once per chain: the handler waits for the pane to come to rest itself.
+  if (outcome.payload.includes(UNKNOWN_CELL) && !lineage.nudged && !notified.has(lineage)) {
+    notified.add(lineage);
+    unseenHandler?.(ring, lineage);
+  }
   return true;
 }
 

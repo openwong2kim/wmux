@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentStatus } from '../../../shared/types';
 import { ESCAPE_CSI_U, openClaudeRewind, type ClaudeRewindDeps } from '../openClaudeRewind';
+import { chatScreenRowsOf } from '../deliverChatPrompt';
+import { UNKNOWN_CELL } from '../../sessionTextReplay';
 
 const RULE = '─'.repeat(40);
 const empty = ['● hi', '', RULE, '❯ ', RULE, '  ⏵⏵ auto mode on'];
@@ -47,6 +49,8 @@ describe('openClaudeRewind', () => {
     ['a running turn', { status: 'running' as const }, 'busy'],
     ['a running turn the hook missed', { title: '◐ Working' }, 'busy'],
     ['a draft in the composer', { screen: ['● hi', RULE, '❯ half-typed', RULE] }, 'draft'],
+    // The read could not see the rest of the prompt row: unseen, said apart from a draft.
+    ['a composer the read could not see whole', { screen: chatScreenRowsOf(['● hi', RULE, `❯\u00a0${UNKNOWN_CELL.repeat(6)}`, RULE].map((text) => ({ text }))) as string[] }, 'unseen'],
     ['an open approval', { approval: true }, 'blocked'],
     ['an unreadable screen', { screen: null }, 'blocked'],
     ['another agent', { slug: 'codex' }, 'unavailable'],
