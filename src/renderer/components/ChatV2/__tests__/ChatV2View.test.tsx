@@ -1126,6 +1126,51 @@ describe('ChatV2View', () => {
     expect(document.activeElement).toBe(composer);
   });
 
+  it('leaves Esc to an open composer menu or the chip row: the approval stays pending', async () => {
+    vi.useFakeTimers({ now: 800_000, shouldAdvanceTime: true });
+    await mock.call('subscribe', { paneId: 'daemon-esc-menu' });
+    await mock.call('create', { paneId: 'daemon-esc-menu', agent: 'claude', mode: 'default', model: 'claude-opus-5-5' });
+    await act(async () => root.render(<ChatV2View paneId="daemon-esc-menu" active onTerminal={() => undefined} />));
+    await flush();
+    await act(async () => { mock.emit('daemon-esc-menu', [
+      { type: 'user.message', text: 'go', clientMessageId: 'c-00000001' },
+      { type: 'tool.started', callId: 't1', title: 'ls', kind: 'execute', status: 'pending', preview: { kind: 'shell', command: 'ls' } },
+      { type: 'approval.requested', requestId: 'r1', title: 'ls', callId: 't1' },
+    ]); });
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
+    const esc = async (el: Element) => { await act(async () => { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); }); await flush(); };
+    const answers = () => mock.calls.filter((call) => call.method === 'answer');
+    // The ⋯ menu: Esc from inside it, or from its button, closes it.
+    await act(async () => { (host.querySelector('[data-chatv2-more]') as HTMLButtonElement).click(); });
+    await esc(host.querySelector('.wmux-chatv2-more-menu [role="menuitem"], .wmux-chatv2-more-menu button') as Element);
+    expect(host.querySelector('.wmux-chatv2-more-menu')).toBeNull();
+    await act(async () => { (host.querySelector('[data-chatv2-more]') as HTMLButtonElement).click(); });
+    await esc(host.querySelector('[data-chatv2-more]') as Element);
+    await act(async () => { (host.querySelector('[data-chatv2-more]') as HTMLButtonElement).click(); });
+    expect(host.querySelector('.wmux-chatv2-more-menu')).toBeNull();
+    // A chip in the row keeps its Esc too.
+    const chip = host.querySelector('.wmux-chatv2-chips select');
+    expect(chip).not.toBeNull();
+    await esc(chip as Element);
+    // The / menu: open on a typed slash, Esc closes it.
+    const textarea = host.querySelector('.wmux-chatv2-textarea') as HTMLTextAreaElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await esc(textarea);
+    expect(answers()).toEqual([]);
+    expect(host.querySelector('[data-chatv2-approval]')).not.toBeNull();
+    expect(host.querySelector('.wmux-chatv2-composer [aria-expanded="true"]')).toBeNull();
+    // With nothing open and the composer empty, Esc denies.
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await esc(textarea);
+    expect(answers().map((call) => call.params)).toEqual([expect.objectContaining({ requestId: 'r1', decision: 'deny' })]);
+  });
+
   it('measures again when the content shrinks under a reader with no scroll, and drops the way back at the end', async () => {
     const observed: Array<() => void> = [];
     vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { observed.push(callback); } observe() { return undefined; } disconnect() { return undefined; } });

@@ -143,6 +143,9 @@ export function PinnedApproval({ block, cwd, active, onAnswer }: { block: Block;
     const target = event.target instanceof Element ? event.target : null;
     // From the card, the composer or the transcript only: Esc in the find box closes find.
     if (!target?.closest('[data-chatv2-approval], .wmux-chatv2-composer, .wmux-chatv2-viewport')) return;
+    // An open composer menu (⋯ or /), or focus in a menu, a list or the chip row, owns its keys: Esc closes it.
+    if (target.closest('[role="menu"], [role="listbox"], .wmux-chatv2-chips, [data-chatv2-folded-chips]')
+      || cardRef.current?.closest('.wmux-chatv2')?.querySelector('.wmux-chatv2-composer [aria-expanded="true"]')) return;
     // A draft (typed text, or a file staged in the composer) keeps both keys: Esc and Cmd/Ctrl+Enter are the composer's own there.
     const typing = inTextField(target) && (((target as HTMLInputElement).value ?? target?.textContent ?? '').trim() !== ''
       || !!target?.closest('.wmux-chatv2-composer')?.querySelector('[data-attachment]'));
