@@ -137,6 +137,26 @@ describe('TaskbarStatus', () => {
     expect(second.setProgress).toHaveBeenLastCalledWith(false);
   });
 
+  it('logs one [taskbar] progress line per applied change', () => {
+    vi.useFakeTimers();
+    const log = vi.fn<(line: string) => void>();
+    const status = new TaskbarStatus({
+      set: (fn, ms) => setTimeout(fn, ms),
+      clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    }, PROGRESS_DEBOUNCE_MS, log);
+    status.bind({ setOverlay: vi.fn(), setProgress: vi.fn() });
+    status.setState({ enabled: true, running: false });
+    status.setState({ enabled: true, running: true });
+    status.setState({ enabled: true, running: true });
+    vi.advanceTimersByTime(PROGRESS_DEBOUNCE_MS);
+    status.setState({ enabled: false, running: true });
+    expect(log.mock.calls.map(([line]) => line)).toEqual([
+      '[taskbar] progress none (windows=1)',
+      '[taskbar] progress indeterminate (windows=1)',
+      '[taskbar] progress none (windows=1)',
+    ]);
+  });
+
   it('debounces the progress state so a quick flip does not flicker', () => {
     const { status, progress } = harness();
     status.setState({ enabled: true, running: false });

@@ -70,18 +70,41 @@ describe('titlebar fleet vitals', () => {
 });
 
 describe('Windows taskbar running state', () => {
-  it("counts a bot's running task worker, which the vitals chip leaves to the Bots page", () => {
+  function taskbarSpy() {
     const setTaskbarState = vi.fn();
     (window as unknown as { electronAPI: Record<string, unknown> }).electronAPI.notification = {
       setBadgeCount: () => undefined,
       setTaskbarState,
     };
+    return setTaskbarState;
+  }
+
+  // A hook-driven Claude turn: the turn is open and the agent is known, but no
+  // byte-promoted surfaceAgentStatus. Fleet counts it as running.
+  const hookTurn = (ptyId: string) => ({
+    surfaceAgent: { [ptyId]: { name: 'Claude Code', status: 'running' as const } },
+    surfaceAgentStatus: {},
+    surfaceTurnOpenAt: { [ptyId]: Date.now() - 1_000 },
+  });
+
+  it('reports a hook-driven turn as running, the way Fleet counts it', () => {
+    const setTaskbarState = taskbarSpy();
+    act(() => useStore.setState({
+      workspaces: [ws('a')], activeWorkspaceId: 'a', appRoute: 'workspaces', fleetViewVisible: false,
+      fanoutOrigin: {}, sessionSettingsLoaded: true, taskbarBadgeEnabled: true, ...hookTurn('pty-a'),
+    }));
+    act(() => root.render(<StatusBar />));
+    expect(setTaskbarState).toHaveBeenLastCalledWith({ enabled: true, running: true });
+    act(() => useStore.setState({ surfaceTurnOpenAt: {}, surfaceAgent: { 'pty-a': { name: 'Claude Code', status: 'idle' } } }));
+    expect(setTaskbarState).toHaveBeenLastCalledWith({ enabled: true, running: false });
+  });
+
+  it("counts a bot's running task worker, which the vitals chip leaves to the Bots page", () => {
+    const setTaskbarState = taskbarSpy();
     act(() => useStore.setState({
       workspaces: [ws('a'), ws('t')], activeWorkspaceId: 'a', appRoute: 'workspaces', fleetViewVisible: false,
       fanoutOrigin: { t: { kind: 'bot', botId: 'bot-0000000a' } },
-      sessionSettingsLoaded: true, taskbarBadgeEnabled: true,
-      surfaceAgent: { 'pty-t': { name: 'Claude Code', status: 'running' } },
-      surfaceAgentStatus: { 'pty-t': 'running' },
+      sessionSettingsLoaded: true, taskbarBadgeEnabled: true, ...hookTurn('pty-t'),
     }));
     act(() => root.render(<StatusBar />));
     expect(container.querySelector('[data-statusbar-running]')).toBeNull();

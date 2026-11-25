@@ -130,7 +130,11 @@ export class TaskbarStatus {
   private shownProgress = false;
   private timer: unknown = null;
 
-  constructor(private readonly timers: TaskbarTimers, private readonly debounceMs = PROGRESS_DEBOUNCE_MS) {}
+  constructor(
+    private readonly timers: TaskbarTimers,
+    private readonly debounceMs = PROGRESS_DEBOUNCE_MS,
+    private readonly log: (line: string) => void = () => undefined,
+  ) {}
 
   /** Bind (or re-bind) a window sink and re-apply the current state. */
   bind(sink: TaskbarSink): void {
@@ -195,6 +199,7 @@ export class TaskbarStatus {
     if (this.sinks.size === 0 || !this.enabled) return;
     if (!force && this.running === this.shownProgress) return;
     this.shownProgress = this.running;
+    this.logProgress(this.running);
     for (const sink of this.sinks) sink.setProgress(this.running);
   }
 
@@ -203,10 +208,17 @@ export class TaskbarStatus {
     this.shownText = null;
     this.shownDescription = '';
     this.shownProgress = false;
+    this.logProgress(false);
     for (const sink of this.sinks) {
       sink.setOverlay(null, '');
       sink.setProgress(false);
     }
+  }
+
+  // One line per applied change, so a Windows run can confirm the call from
+  // main.log as well as from a taskbar crop.
+  private logProgress(running: boolean): void {
+    this.log(`[taskbar] progress ${running ? 'indeterminate' : 'none'} (windows=${this.sinks.size})`);
   }
 
   private cancelTimer(): void {
@@ -215,10 +227,14 @@ export class TaskbarStatus {
   }
 }
 
-const status = new TaskbarStatus({
-  set: (fn, ms) => setTimeout(fn, ms),
-  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-});
+const status = new TaskbarStatus(
+  {
+    set: (fn, ms) => setTimeout(fn, ms),
+    clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  },
+  PROGRESS_DEBOUNCE_MS,
+  (line) => console.log(line),
+);
 
 function windowSink(win: BrowserWindow): TaskbarSink {
   return {

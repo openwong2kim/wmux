@@ -9,7 +9,7 @@ import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspacePr
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24 } from '../hitArea';
 import { IconGear, IconCornerUpLeft } from '../icons';
-import { selectFleetPanes, type FleetPane } from '../../stores/selectors/fleet';
+import { selectFleetPanes, selectLocalAgentsWorking, type FleetPane } from '../../stores/selectors/fleet';
 import { selectDownHostIds, selectOutdatedRemoteKeys } from '../../stores/selectors/pcRail';
 import { selectOwnerWorkspaces } from '../Sidebar/botTasks';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
@@ -166,12 +166,10 @@ export default function StatusBar() {
   // the signal moved here and renders ONLY when nonzero). Derived-number
   // subscription (useShallow on two counters) keeps the A1 no-whole-tree rule:
   // re-render only when a count actually changes.
-  // `anyRunning` also counts a bot's task workers, which the chip leaves to the
-  // Bots page: the taskbar progress says "wmux is working" for the whole app.
   const fleetVitals = useStore(
     useShallow((s) => {
-      const runningIn = (workspaces: StoreState['workspaces']): number => selectFleetPanes({
-        workspaces,
+      const panes = selectFleetPanes({
+        workspaces: selectOwnerWorkspaces(s),
         surfaceAgentStatus: s.surfaceAgentStatus,
         surfaceActivity: s.surfaceActivity,
         surfaceAgent: s.surfaceAgent,
@@ -180,12 +178,9 @@ export default function StatusBar() {
         downHostIds: selectDownHostIds(s),
         outdatedRemoteKeys: selectOutdatedRemoteKeys(s),
         usageLimitWaiting: s.usageLimitWaiting,
-      }).filter((p) => isFleetAgentRow(p) && p.agentStatus === 'running').length;
-      const owners = selectOwnerWorkspaces(s);
-      const running = runningIn(owners);
+      }).filter((p) => isFleetAgentRow(p));
       return {
-        running,
-        anyRunning: running > 0 || (owners !== s.workspaces && runningIn(s.workspaces) > 0),
+        running: panes.filter((p) => p.agentStatus === 'running').length,
       };
     }),
   );
@@ -196,7 +191,10 @@ export default function StatusBar() {
   // off Windows.
   const taskbarBadgeEnabled = useStore((s) => s.taskbarBadgeEnabled);
   const sessionSettingsLoaded = useStore((s) => s.sessionSettingsLoaded);
-  const anyRunning = fleetVitals.anyRunning;
+  // Fleet's Running rule for this computer's agents, bot workers included:
+  // the same verdict that keeps the computer awake. The chip's selector above
+  // has no turn or hook inputs, so it reads an active hook-driven turn as idle.
+  const anyRunning = useStore(selectLocalAgentsWorking);
   useEffect(() => {
     if (!sessionSettingsLoaded) return;
     window.electronAPI?.notification?.setTaskbarState?.({ enabled: taskbarBadgeEnabled, running: anyRunning });
