@@ -29,6 +29,7 @@ function deps(over: Partial<DeliveryPresenceDeps> & { s?: Partial<PresenceSessio
     tracked: () => ({ alive: true, slug: 'claude' as const }),
     probe: async () => { d.probes++; return true; },
     reprobe: async () => { d.probes++; return true; },
+    canReprobe: () => true,
     agentRunning: async () => true,
     processRunning: async () => true,
     ownedRoot: async () => false,
@@ -51,7 +52,12 @@ describe('deliveryPresence: the process tier', () => {
   });
 
   it('an ended tracked agent is none, whatever the screen still shows', async () => {
-    expect(await deliveryPresence(deps({ tracked: () => ({ alive: false, slug: 'claude' }) }), 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
+    // With no shell report the re-probe looks once: nothing under the shell.
+    expect(await deliveryPresence(deps({ tracked: () => ({ alive: false, slug: 'claude' }), noAgentUnderShell: () => true }), 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
+    // At its prompt, with no re-probe.
+    const d = deps({ s: { commandRunning: false }, tracked: () => ({ alive: false, slug: 'claude' }),
+      reprobe: async () => { throw new Error('no re-probe at the prompt'); } });
+    expect(await deliveryPresence(d, 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
   });
 
   it('reads liveness fresh: a cached-alive agent the process table no longer shows is none', async () => {
@@ -133,7 +139,11 @@ describe('deliveryPresence: the process tier', () => {
 // missed, or the pick was made mid-launch) while a new command runs there.
 describe('deliveryPresence: a tracked agent not running under a running command', () => {
   /** The tracker: the stale record until the probe names `next` (or nothing). */
-  function reused(next: { slug: 'claude' | 'codex'; running: boolean } | null, s: Partial<PresenceSession> = { commandRunning: true }) {
+  function reused(
+    next: { slug: 'claude' | 'codex'; running: boolean } | null,
+    s: Partial<PresenceSession> = { commandRunning: true },
+    opts: { oldGone?: boolean; restarted?: boolean; agentInTree?: boolean } = {},
+  ) {
     let current: { alive: boolean; slug: 'claude' | 'codex'; pid: number } = { alive: true, slug: 'claude', pid: 41 };
     const lines: string[] = [];
     const d = deps({
@@ -144,9 +154,13 @@ describe('deliveryPresence: a tracked agent not running under a running command'
       reprobe: async () => {
         d.probes++;
         if (next) current = { alive: true, slug: next.slug, pid: 77 };
+        // As AgentProcessTracker.reprobeNow: a tracked pid gone from the table has its death recorded.
+        else if (opts.oldGone) current = { ...current, alive: false };
         return true;
       },
       agentRunning: async () => current.pid === 77 && !!next?.running,
+      ...(opts.restarted !== undefined ? { restartedSince: () => opts.restarted === true } : {}),
+      noAgentUnderShell: () => opts.agentInTree === false,
       log: (line) => lines.push(line),
     });
     return { d, lines };
@@ -166,9 +180,35 @@ describe('deliveryPresence: a tracked agent not running under a running command'
     expect(lines[0]).toMatch(/re-probe → still pending$/);
   });
 
+  it("the agent ended and a plain command (vim) runs: once the re-probe records the old pid's exit, agent-ended (no agent), not pending", async () => {
+    const { d, lines } = reused(null, { commandRunning: true }, { oldGone: true, agentInTree: false });
+    expect(await deliveryPresence(d, 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
+    expect(d.probes).toBe(1);
+    expect(lines[0]).toMatch(/re-probe → its exit, no agent named$/);
+  });
+
+  it('a fast relaunch: the old pid is dead, a new claude is in the tree but not settled yet: still pending (stored), never agent-ended', async () => {
+    const { d, lines } = reused(null, { commandRunning: true }, { oldGone: true, agentInTree: true });
+    expect(await deliveryPresence(d, 'p', 'claude')).toEqual({ tier: 'none', reason: 'attribution-pending' });
+    expect(lines[0]).toMatch(/re-probe → still pending$/);
+  });
+
   it('the probe names another agent than the one addressed: other-agent', async () => {
     const { d } = reused({ slug: 'codex', running: true });
     expect(await deliveryPresence(d, 'p', 'claude')).toEqual({ tier: 'none', reason: 'other-agent' });
+  });
+
+  it("a reused pane whose new agent's SessionStart (startup/resume) rebound it: named again even with no shell report, not not-running", async () => {
+    const { d, lines } = reused({ slug: 'claude', running: true }, { commandRunning: undefined }, { restarted: true });
+    expect(await deliveryPresence(d, 'p', 'claude')).toEqual(FULL);
+    expect(d.probes).toBe(1);
+    expect(lines).toEqual(['[delivery-presence] pane "p": tracked claude pid 41 is not running after the agent restarted; re-probe → claude pid 77']);
+  });
+
+  it('the same reused pane with no restart mark stays not-running, with no probe', async () => {
+    const { d } = reused({ slug: 'claude', running: true }, { commandRunning: undefined }, { restarted: false });
+    expect(await deliveryPresence(d, 'p', 'claude')).toEqual({ tier: 'none', reason: 'not-running' });
+    expect(d.probes).toBe(0);
   });
 
   it('a stopped agent with no command running (or no shell report) is not-running, with no probe', async () => {
@@ -226,7 +266,8 @@ describe('deliveryPresence: the screen tier (nothing attributed)', () => {
 
 describe('deliveryPresence at the Enter', () => {
   it('a refusal says whether the pane still shows the paste, so main takes back only what it typed', async () => {
-    const ended = { tracked: () => ({ alive: false, slug: 'claude' as const }) };
+    // The agent ended and its shell is back at the prompt.
+    const ended = { s: { commandRunning: false }, tracked: () => ({ alive: false, slug: 'claude' as const }) };
     const shown = ['user@host ~ % [wmux] A2A task t-1 is waiting'];
     expect(await deliveryPresence(deps({ ...ended, frame: async () => frame(shown, 0) }), 'p', 'claude', { phase: 'enter', shownProbe: '[wmux] A2A task t-1' }))
       .toEqual({ tier: 'none', reason: 'agent-ended', pasteShown: true });
@@ -248,5 +289,73 @@ describe('promptGrant: a daemon-typed prompt, by its author', () => {
     expect(promptGrant({ tier: 'none', reason: 'agent-ended' }, 'owner')).toBe('unavailable');
     expect(promptGrant({ tier: 'none', reason: 'composer-busy' }, 'owner')).toBe('busy');
     expect(promptGrant({ tier: 'none', reason: 'foreground-unknown' }, 'wmux')).toBe('busy');
+  });
+});
+
+// The earlier agent's death is on record (the monitor's, or a re-probe's),
+// and the agent reported a restart, or a command runs in the pane (a package
+// runner still downloading it), before the tracker named its new process: the
+// named-agent probe may sit in its miss backoff.
+describe('deliveryPresence: a recorded death after a restart', () => {
+  function restarted(reprobe: 'names' | 'running' | 'no-agent' | 'agent-in-tree', mark = true, commandRunning: boolean | undefined = true) {
+    let current: { alive: boolean; slug: 'claude'; pid: number } = { alive: false, slug: 'claude', pid: 41 };
+    const d = deps({
+      s: { commandRunning },
+      tracked: () => ({ alive: current.alive, slug: current.slug }),
+      agentPid: () => current.pid,
+      // Skipped by its backoff: done, nothing named.
+      probe: async () => true,
+      reprobe: async () => {
+        d.probes++;
+        if (reprobe === 'running') return false;
+        if (reprobe === 'names') current = { alive: true, slug: 'claude', pid: 77 };
+        return true;
+      },
+      agentRunning: async () => current.pid === 77,
+      restartedSince: () => mark,
+      noAgentUnderShell: () => reprobe === 'no-agent',
+    });
+    return d;
+  }
+
+  it('the re-probe names the new agent: verified on it, not agent-ended', async () => {
+    const d = restarted('names');
+    expect(await deliveryPresence(d, 'p', 'claude')).toEqual(FULL);
+    expect(d.probes).toBe(1);
+  });
+
+  it('the re-probe is still running, or saw an agent not settled yet: attribution-pending (stored)', async () => {
+    for (const reprobe of ['running', 'agent-in-tree'] as const) {
+      expect(await deliveryPresence(restarted(reprobe), 'p', 'claude')).toEqual({ tier: 'none', reason: 'attribution-pending' });
+    }
+  });
+
+  it('with no restart mark, a running command is re-probed too: a runner keeps it pending, its agent once named is verified', async () => {
+    const pending = restarted('agent-in-tree', false);
+    expect(await deliveryPresence(pending, 'p', 'claude')).toEqual({ tier: 'none', reason: 'attribution-pending' });
+    expect(pending.probes).toBe(1);
+    expect(await deliveryPresence(restarted('names', false), 'p', 'claude')).toEqual(FULL);
+    expect(await deliveryPresence(restarted('agent-in-tree', false, undefined), 'p', 'claude')).toEqual({ tier: 'none', reason: 'attribution-pending' });
+  });
+
+  it('a session the tracker cannot re-probe (WSL): with no restart mark the death stands at once; a mark still re-probes', async () => {
+    for (const commandRunning of [true, undefined]) {
+      const wsl = restarted('agent-in-tree', false, commandRunning);
+      wsl.canReprobe = () => false;
+      expect(await deliveryPresence(wsl, 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
+      expect(wsl.probes).toBe(0);
+    }
+    const marked = restarted('agent-in-tree', true);
+    marked.canReprobe = () => false;
+    expect(await deliveryPresence(marked, 'p', 'claude')).toEqual({ tier: 'none', reason: 'attribution-pending' });
+    expect(marked.probes).toBe(1);
+  });
+
+  it('the re-probe saw no agent under the shell (vim), or the shell is at its prompt with no restart: agent-ended', async () => {
+    expect(await deliveryPresence(restarted('no-agent'), 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
+    expect(await deliveryPresence(restarted('no-agent', false), 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
+    const atPrompt = restarted('names', false, false);
+    expect(await deliveryPresence(atPrompt, 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
+    expect(atPrompt.probes).toBe(0);
   });
 });

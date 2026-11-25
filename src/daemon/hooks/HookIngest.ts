@@ -243,6 +243,14 @@ export interface HookIngestDeps {
    * signal's own ptyId named this pane (not a workspace or cwd route).
    */
   applyResumeBinding: (ptyId: string, binding: ResumeBinding, paneExact: boolean) => void;
+  /**
+   * The pane's agent may have started again: its pane-exact SessionStart
+   * from a start or resume (`startup`, `resume`; never a clear or a
+   * compaction, which the same process fires) was bound, with a new session
+   * id or the same one. The tracker re-attributes the pane (delivery
+   * presence reads its restart mark).
+   */
+  onAgentRestart?: (ptyId: string, agent: string) => void;
   /** #1823: slug of the agent process alive in the pane right now, if known. */
   liveAgentFor?: (ptyId: string) => string | undefined;
   /**
@@ -1587,6 +1595,14 @@ export class HookIngest {
               'debug',
               `[hooks] rebound ${sessionId} (${signal.kind}): ${prevSessionId ?? 'none'} -> ${signal.agentSessionId}`,
             );
+          }
+          // A start or resume, with a new session id or the same one (`claude
+          // -c`, `--resume <id>`): the pane's agent process may be new. A
+          // `/resume` inside a live agent also lands here; the re-probe then
+          // finds the same process, which is harmless.
+          const source = signal.payload?.['source'];
+          if (signal.kind === 'agent.session_start' && signal.ptyId === sessionId && (source === 'startup' || source === 'resume')) {
+            this.deps.onAgentRestart?.(sessionId, signal.agent);
           }
         } catch (err) {
           // A binding we failed to persist costs an exact resume after a
