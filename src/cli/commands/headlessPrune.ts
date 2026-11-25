@@ -46,8 +46,8 @@ export type PrunePolicy = 'elsewhere' | 'merged';
 export interface MergedChecks {
   /** origin's default branch as a remote-tracking ref (`origin/main`), or null when it cannot be told. */
   defaultRef: (repoPath: string) => Promise<string | null>;
-  /** Whether a merged pull request has `sha` as its head (or a head that contains it). Never throws; false when unknown. */
-  pullRequestMerged?: (worktreePath: string, branch: string, sha: string) => Promise<boolean>;
+  /** Whether a merged pull request has `sha` as its head (or a head that contains it); null when that could not be asked. Never throws. */
+  pullRequestMerged?: (worktreePath: string, branch: string, sha: string) => Promise<boolean | null>;
 }
 
 export interface PruneResult {
@@ -84,11 +84,16 @@ async function elsewhere(git: Git, sha: string, fetchedHead: string | undefined)
   return null;
 }
 
-/** Why `sha` is in origin's default branch ('merged into origin/main' / 'its pull request was merged'), or null when it is not known to be. */
-async function merged(git: Git, sha: string, defaultRef: string | null, rec: HeadlessStartRecordV1, checks: MergedChecks): Promise<string | null> {
+/**
+ * Why `sha` is in origin's default branch ('merged into origin/main' / 'its
+ * pull request was merged'); 'unknown' when its pull request could not be
+ * asked about; null when it is not merged.
+ */
+async function merged(git: Git, sha: string, defaultRef: string | null, rec: HeadlessStartRecordV1, checks: MergedChecks): Promise<string | 'unknown' | null> {
   if (defaultRef && (await git(['merge-base', '--is-ancestor', sha, `refs/remotes/${defaultRef}`])).code === 0) return `merged into ${defaultRef}`;
-  if (rec.branch && rec.worktreePath && checks.pullRequestMerged && await checks.pullRequestMerged(rec.worktreePath, rec.branch, sha)) return 'its pull request was merged';
-  return null;
+  if (!rec.branch || !rec.worktreePath || !checks.pullRequestMerged) return null;
+  const pr = await checks.pullRequestMerged(rec.worktreePath, rec.branch, sha);
+  return pr === null ? 'unknown' : pr ? 'its pull request was merged' : null;
 }
 
 type Verdict = { ok: true; reason: string; head: string; tip: string | null } | { ok: false; reason: string; kind: PruneKeptKind };
@@ -109,7 +114,9 @@ async function judge(rec: HeadlessStartRecordV1, git: Git, policy: PrunePolicy, 
     for (const sha of shas) {
       // eslint-disable-next-line no-await-in-loop -- two commits at most
       const way = await merged(git, sha, defaultRef, rec, checks);
-      if (!way) return { ok: false, reason: `commit ${sha.slice(0, 12)} is not merged into ${defaultRef ?? "origin's default branch"}`, kind: 'unmerged' };
+      const into = defaultRef ?? "origin's default branch";
+      if (way === 'unknown') return { ok: false, reason: `commit ${sha.slice(0, 12)} is not in ${into}, and whether its pull request was merged could not be asked (gh)`, kind: 'other' };
+      if (!way) return { ok: false, reason: `commit ${sha.slice(0, 12)} is not merged into ${into}`, kind: 'unmerged' };
       ways.push(way);
     }
     return { ok: true, reason: `clean, ${[...new Set(ways)].join(' and ')}`, head, tip };

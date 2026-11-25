@@ -154,6 +154,21 @@ describe("the question probe's folder-trust read on a wrapped ring", () => {
     expect(parsed).toEqual([]);
   });
 
+  it('keeps the checkpoint close to the output by itself, with no StallWatch read on the pane', async () => {
+    const p = pane(claudeScreen());
+    await spin(p, RING + RING / 2);
+    const probe = () => readFolderTrust({ getSession: (id) => p.sessions.getSession(id), timeoutMs: 5000, log: () => undefined }, 'pane');
+    await probe();
+    await spin(p, SCREEN_REFRESH_BYTES + 32 * 1024);
+    await probe();
+    await enqueueSnapshotJob(async () => undefined);
+    p.frame();
+    parsed.length = 0;
+    expect(await probe()).toEqual({ state: 'clear' });
+    expect(parsed.length).toBe(1);
+    expect(parsed[0]).toBeLessThan(screenCheckpointBytes(p.ring) + 16 * 1024);
+  });
+
   it("reads a dialog drawn once, long before the ring's tail, as 'trust'", async () => {
     const dialog = fixtureRows('claude-folder-trust-120x40');
     const p = pane(dialog);

@@ -65,7 +65,7 @@ function mergeUpstream(branch: string, how: 'merge' | 'squash'): void {
   sh(other, 'push', '-q', 'origin', 'main');
 }
 
-const auto = (gh: GhRunner = async () => null) =>
+const auto = (gh: GhRunner = async () => '[]') =>
   pruneHeadless(wmuxDir, { dryRun: false, daemonRunning: async () => true, policy: 'merged' }, { git, store, merged: mergedChecks({ git, gh }) });
 
 beforeEach(() => {
@@ -141,7 +141,9 @@ describe("the daemon's 'merged' prune policy", () => {
     const squashed = endedStart();
     sh(repo, 'push', '-q', 'origin', squashed.branch!);
     mergeUpstream(squashed.branch!, 'squash');
-    expect((await auto(async () => null)).removed).toEqual([]);
+    const unasked = await auto(async () => null);
+    expect(unasked.removed).toEqual([]);
+    expect(unasked.kept.map((e) => [e.kind, e.reason])).toEqual([['other', expect.stringMatching(/could not be asked \(gh\)/)]]);
 
     const merged = endedStart();
     sh(repo, 'push', '-q', 'origin', merged.branch!);

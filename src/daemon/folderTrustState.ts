@@ -4,6 +4,7 @@ import { AWAITING_RENDER_WINDOW_BYTES, liveGeometry, renderPaneScreen, type Awai
 import { createSnapshotLane, generateTextSnapshotUnqueued, runSmallSnapshotJob } from './HeadlessSnapshot';
 import { UNKNOWN_CELL } from './sessionTextReplay';
 import { screenReplay, type CheckpointRing } from './screenCheckpoint';
+import { refreshScreenCheckpoint, type CheckpointModesOf } from './guardedTailRead';
 import { noteScreenParse } from './screenReadCache';
 import { joinWrappedRows } from './web/hostSearch';
 import { FOLDER_TRUST_DEFAULT_BUDGET_MS } from '../shared/folderTrustWording';
@@ -416,9 +417,15 @@ async function renderScreenRead(
   const pane = live();
   const size = pane ? liveGeometry(pane) : null;
   if (!pane || !size) return null;
-  const modes = session.bridge.outputModes;
+  const outputModes = session.bridge.outputModes;
+  // Read live: a checkpoint job checks the screen again once it has parsed.
+  const modes: CheckpointModesOf | null = outputModes ? { get altScreen() { return outputModes.altScreen === true; }, preamble: (at) => outputModes.preamble(at) } : null;
   // Read (and copied) before the first await: `mark` names exactly these bytes.
-  const read = screenReplay(ring, modes ? { altScreen: modes.altScreen === true, preamble: (at) => modes.preamble(at) } : null, size, { markUnknown: true });
+  const read = screenReplay(ring, modes, size, { markUnknown: true });
+  // A checkpoint far behind the output gets a newer one, as StallWatch's read asks (guardedTailRead.ts).
+  if (modes) {
+    refreshScreenCheckpoint(ring, modes, () => liveGeometry(session), { replayBytes: read.replay.length, writtenAt: read.writtenAt, rebuilt: read.rebuilt });
+  }
   if (read.replay.length > maxBytes) return 'oversized';
   const askedAt = performance.now();
   const outcome = await parse({ ...size, scrollback: 0, initial: read.replay, ...(read.geometry ? { geometry: read.geometry } : {}) });

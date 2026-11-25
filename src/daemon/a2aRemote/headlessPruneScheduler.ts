@@ -2,6 +2,8 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Git } from '../../main/a2aRemote/spawnWorktree';
+import { getExecEnv } from '../../shared/execEnv';
+import { resolveExecutable } from '../../shared/exeSearch';
 import type { MergedChecks, PruneEntry, PruneKeptKind, PruneResult } from '../../cli/commands/headlessPrune';
 
 /**
@@ -142,14 +144,11 @@ export async function folderSize(dir: string, limits: { ms?: number; entries?: n
 /** gh, run for a check: its JSON stdout, or null on any failure (none installed, not signed in, a timeout). */
 export type GhRunner = (args: string[], cwd: string) => Promise<string | null>;
 
+/** gh found the way git is (the login shell's PATH, not a service's thin one). */
 export const ghRunner: GhRunner = (args, cwd) => new Promise((resolve) => {
-  execFile('gh', args, {
-    cwd,
-    timeout: 20_000,
-    windowsHide: true,
-    maxBuffer: 1024 * 1024,
-    env: { ...process.env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1' },
-  }, (err, stdout) => resolve(err ? null : stdout));
+  const env = { ...getExecEnv(), GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1' };
+  execFile(resolveExecutable('gh', { env }), args, { cwd, env, timeout: 20_000, windowsHide: true, maxBuffer: 1024 * 1024 },
+    (err, stdout) => resolve(err ? null : stdout));
 });
 
 const SHA_RE = /^[0-9a-f]{40,64}$/;
@@ -160,7 +159,7 @@ const SHA_RE = /^[0-9a-f]{40,64}$/;
  * repository per pass so a merge since the start shows up; a failed fetch
  * judges by what the clone already knows. A pull request counts only when
  * gh lists a merged one for the branch whose head is the commit, or contains
- * it; no gh, no sign-in or no answer counts as not merged.
+ * it; no gh, no sign-in or no answer is null (not known), and keeps the worktree.
  */
 export function mergedChecks(deps: { git: (at: string) => Git; gh?: GhRunner }): MergedChecks {
   const fetched = new Map<string, Promise<string | null>>();
@@ -187,13 +186,14 @@ export function mergedChecks(deps: { git: (at: string) => Git; gh?: GhRunner }):
     },
     pullRequestMerged: async (worktreePath, branch, sha) => {
       const out = await gh(['pr', 'list', '--head', branch, '--state', 'merged', '--json', 'headRefOid', '--limit', '20'], worktreePath);
-      if (out === null) return false;
+      if (out === null) return null;
       let heads: string[];
       try {
         const parsed = JSON.parse(out) as unknown;
-        heads = Array.isArray(parsed) ? parsed.map((p) => (p as { headRefOid?: unknown }).headRefOid).filter((h): h is string => typeof h === 'string' && SHA_RE.test(h)) : [];
+        if (!Array.isArray(parsed)) return null;
+        heads = parsed.map((p) => (p as { headRefOid?: unknown }).headRefOid).filter((h): h is string => typeof h === 'string' && SHA_RE.test(h));
       } catch {
-        return false;
+        return null;
       }
       if (heads.includes(sha)) return true;
       const git = deps.git(worktreePath);

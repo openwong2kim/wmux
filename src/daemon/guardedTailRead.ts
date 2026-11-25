@@ -84,21 +84,37 @@ function checkpointRing(ring: GuardedTailSession['ringBuffer']): CheckpointRing 
  * minutes to reach, and every read in between parses all of it again.
  */
 export const SCREEN_REFRESH_BYTES = TAIL_BYTES;
-/** Per ring: a refresh queued or running, and the byte count the last one was asked at. */
+/** Per ring: a refresh queued or running, where the last one was asked, and the output the next one waits for. */
 const refreshing = new WeakSet<CheckpointRing>();
-const refreshedAt = new WeakMap<CheckpointRing, number>();
+const refreshes = new WeakMap<CheckpointRing, { at: number; gap: number }>();
 
-/** Queue a newer checkpoint behind this read, at most one per ring and per SCREEN_REFRESH_BYTES of output. */
-function refreshCheckpoint(ring: CheckpointRing, modes: CheckpointModesOf, size: () => { cols: number; rows: number } | null, writtenAt: number): void {
-  if (refreshing.has(ring) || writtenAt - (refreshedAt.get(ring) ?? Number.NEGATIVE_INFINITY) < SCREEN_REFRESH_BYTES) return;
+export type CheckpointModesOf = Parameters<typeof takeScreenCheckpoint>[1];
+
+/**
+ * After a screen read from the checkpoint with more than SCREEN_REFRESH_BYTES
+ * after its grid: queue a newer checkpoint behind the read. One per ring at a
+ * time; a refresh that keeps nothing doubles the output the next one waits
+ * for, up to the whole ring, so a grid that cannot be kept is not re-parsed
+ * on every read.
+ */
+export function refreshScreenCheckpoint(
+  ring: CheckpointRing,
+  modes: CheckpointModesOf,
+  size: () => { cols: number; rows: number } | null,
+  read: { replayBytes: number; writtenAt: number; rebuilt: boolean },
+): void {
+  const grid = screenCheckpointBytes(ring);
+  // From a checkpoint (not rebuilt from the ring), with more than a refresh's worth after its grid.
+  if (read.rebuilt || grid === 0 || read.replayBytes - grid <= SCREEN_REFRESH_BYTES || refreshing.has(ring)) return;
+  const last = refreshes.get(ring);
+  if (last && read.writtenAt - last.at < last.gap) return;
   refreshing.add(ring);
-  refreshedAt.set(ring, writtenAt);
+  const gap = last?.gap ?? SCREEN_REFRESH_BYTES;
   void enqueueSnapshotJob(() => takeScreenCheckpoint(ring, modes, size))
     .catch(() => false)
+    .then((kept) => refreshes.set(ring, { at: read.writtenAt, gap: kept ? SCREEN_REFRESH_BYTES : Math.min(ring.totalCapacity, gap * 2) }))
     .finally(() => refreshing.delete(ring));
 }
-
-type CheckpointModesOf = Parameters<typeof takeScreenCheckpoint>[1];
 
 /** An unknown cell as every plain screen reader sees one (queuedScreenText): a blank, trailing spaces trimmed. */
 function blankUnknown(outcome: TextSnapshotOutcome): TextSnapshotOutcome {
@@ -185,7 +201,7 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   const ring = options.variant === SCREEN_VARIANT ? checkpointRing(session.ringBuffer) : null;
   // The fallback's bytes, read in this same step as the tail's: a screen read's from its checkpoint
   // (queuedScreenText's own read, parsed at the current size), any other read's the whole ring and its preamble.
-  // Read live: a checkpoint job checks the screen again once it has parsed.
+  // The modes are read live: a checkpoint job checks the screen again once it has parsed.
   const screenModes: CheckpointModesOf | null = modes ? { get altScreen() { return modes.altScreen === true; }, preamble: (at) => modes.preamble(at) } : null;
   const screen = ring ? screenReplay(ring, screenModes, { cols, rows }, { geometry: false }) : null;
   const data = session.ringBuffer.readAll();
@@ -198,10 +214,10 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   const parseFallback = async (): Promise<TextSnapshotOutcome> => {
     if (!screen) return options.parse(wholeReplay());
     const answer = await options.parse(screen.replay);
-    // From the checkpoint (not rebuilt from the ring), with more than a tail's worth of bytes after its grid.
-    if (ring && screenModes && !screen.rebuilt && screen.replay.length - screenCheckpointBytes(ring) > SCREEN_REFRESH_BYTES && screenCheckpointBytes(ring) > 0) {
+    if (ring && screenModes) {
       // At the size the screen reads use (the pane's recorded one), as the daemon's repair refreshes it.
-      refreshCheckpoint(ring, screenModes, () => (session.meta.cols > 0 && session.meta.rows > 0 ? { cols: session.meta.cols, rows: session.meta.rows } : null), screen.writtenAt);
+      refreshScreenCheckpoint(ring, screenModes, () => (session.meta.cols > 0 && session.meta.rows > 0 ? { cols: session.meta.cols, rows: session.meta.rows } : null),
+        { replayBytes: screen.replay.length, writtenAt: screen.writtenAt, rebuilt: screen.rebuilt });
     }
     return screen.marked ? blankUnknown(answer) : answer;
   };
