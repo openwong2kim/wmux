@@ -150,6 +150,22 @@ describe('chat v2 host: a Codex chat', () => {
     await r.host.dispose();
   });
 
+  it('with no agent running, refuses the default effort for a thread that has turns, and still saves a level', async () => {
+    const r = rig();
+    const b = await r.create();
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: 'high' }, 'main')).toMatchObject({ ok: true, applied: 'live' });
+    await r.send();
+    r.fake().note('turn/completed', { turn: { id: 'turn-1', status: 'completed', items: [] } });
+    await until(() => r.host.statusForPane(PANE) === 'idle');
+    r.fake().exit(1, null);
+    await until(() => r.host.statusForPane(PANE) === 'stopped');
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: '' }, 'main')).toMatchObject({ ok: false, error: { code: 'invalid-params' } });
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort).toBe('high');
+    expect(await r.host.call('configure', { paneId: PANE, chatSessionId: b.chatSessionId, effort: 'xhigh' }, 'main')).toMatchObject({ ok: true, applied: 'saved' });
+    expect(r.host.sessionForPane(PANE)!.modelSettings.effort).toBe('xhigh');
+    await r.host.dispose();
+  });
+
   it('records its decisions as chat-v2 Codex ones, and an answer approves only the card raised last', async () => {
     const r = rig();
     const b = await r.create();

@@ -711,6 +711,14 @@ class Host implements ChatV2Host {
     if (model === record.model && effort === (record.session.modelSettings.effort ?? '')) {
       return { ok: true, binding: this.binding(live), applied: live.driver ? 'live' : 'saved' };
     }
+    // A resumed Codex thread keeps its last model and effort, so with no agent
+    // running a reset to the default could only be saved, never applied (the
+    // running driver refuses it the same way).
+    const resumes = record.resumeExisting === true || record.session.blocks.some((b) => b.role === 'user');
+    const toDefault = (model !== record.model && !model) || (effort !== (record.session.modelSettings.effort ?? '') && !effort);
+    if (!live.driver && record.agent === 'codex' && resumes && toDefault) {
+      return chatV2Error('invalid-params', 'The agent does not take that model or effort.');
+    }
     live.sending = true;
     // This change holds the send lock until release(); after that it belongs to whoever takes it next.
     const owner = live;
