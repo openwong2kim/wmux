@@ -21,6 +21,7 @@
 // so. Windows uses its tree kill (taskkill /T), not this.
 
 import { execFile } from 'node:child_process';
+import { readLinuxProcessTable } from '../../daemon/nativeProcessTable';
 
 /** One row of the process table. */
 export interface ProcRow {
@@ -33,7 +34,7 @@ export interface ProcRow {
 }
 
 export interface AgentTreeStopDeps {
-  /** The process table (default: `ps -A -o pid=,ppid=,stat=,lstart=`); null when it cannot be read. */
+  /** The process table (default: on Linux the native table when it reads, else `ps -A -o pid=,ppid=,stat=,lstart=`); null when it cannot be read. */
   table?: () => Promise<ProcRow[] | null>;
   /** Send a signal (default: process.kill). */
   signal?: (pid: number, sig: NodeJS.Signals) => void;
@@ -93,7 +94,10 @@ export function treeOf(root: number, rows: readonly ProcRow[]): ProcRow[] {
   return out;
 }
 
-function readTable(): Promise<ProcRow[] | null> {
+async function readTable(): Promise<ProcRow[] | null> {
+  // The same start text `ps` prints, so a start recorded from either source compares equal.
+  const native = await readLinuxProcessTable(false);
+  if (native) return native.map((r) => ({ pid: r.pid, ppid: r.ppid, start: r.lstart, ...(r.state === 'Z' ? { zombie: true } : {}) }));
   return new Promise((resolve) => {
     execFile('ps', ['-A', '-o', 'pid=,ppid=,stat=,lstart='], { timeout: 5_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } }, (err, stdout) => {
       resolve(err ? null : parseProcTable(String(stdout)));

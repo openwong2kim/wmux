@@ -342,6 +342,17 @@ describe('the Linux process table in ps columns', () => {
     }
   });
 
+  it('stops an agent tree from the native table, with ps start text and zombies marked', async () => {
+    vi.resetModules();
+    const { stopAgentTree } = await import('../../main/deck/agentTreeStop');
+    native.processTable.mockResolvedValue([row(10), row(11, { ppid: 10 }), row(12, { ppid: 10, state: 'Z' })]);
+    const signal = vi.fn();
+    await stopAgentTree(10, { signal, alive: () => false, pollMs: 1, interruptWaitMs: 1, termGraceMs: 1, log: () => undefined });
+    // The agent is found by pid and start text; the zombie is left out.
+    expect(signal.mock.calls.filter(([, sig]) => sig === 'SIGTERM').map(([pid]) => pid).sort()).toEqual([10, 11]);
+    expect(spawn.execFile).not.toHaveBeenCalled();
+  });
+
   it('reads the agent tracker table natively with args, before procfs and ps', async () => {
     vi.resetModules();
     const { AgentProcessTracker } = await import('../AgentProcessTracker');
