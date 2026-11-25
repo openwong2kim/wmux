@@ -87,7 +87,7 @@ describe('Windows taskbar running state', () => {
     surfaceTurnOpenAt: { [ptyId]: Date.now() - 1_000 },
   });
 
-  it('reports a hook-driven turn as running, the way Fleet counts it', () => {
+  it("reports a hook-driven turn as running, as Fleet's Running section does", () => {
     const setTaskbarState = taskbarSpy();
     act(() => useStore.setState({
       workspaces: [ws('a')], activeWorkspaceId: 'a', appRoute: 'workspaces', fleetViewVisible: false,
@@ -96,6 +96,19 @@ describe('Windows taskbar running state', () => {
     act(() => root.render(<StatusBar />));
     expect(setTaskbarState).toHaveBeenLastCalledWith({ enabled: true, running: true });
     act(() => useStore.setState({ surfaceTurnOpenAt: {}, surfaceAgent: { 'pty-a': { name: 'Claude Code', status: 'idle' } } }));
+    expect(setTaskbarState).toHaveBeenLastCalledWith({ enabled: true, running: false });
+  });
+
+  it('does not report an idle agent that just printed as running', () => {
+    const setTaskbarState = taskbarSpy();
+    const now = Date.now();
+    act(() => useStore.setState({
+      workspaces: [ws('a')], activeWorkspaceId: 'a', appRoute: 'workspaces', fleetViewVisible: false,
+      fanoutOrigin: {}, sessionSettingsLoaded: true, taskbarBadgeEnabled: true,
+      surfaceAgent: { 'pty-a': { name: 'Claude Code', status: 'idle' } }, surfaceAgentStatus: {}, surfaceTurnOpenAt: {},
+      agentAliveByPtyId: { 'pty-a': true }, surfaceOutputAt: { 'pty-a': now - 10_000 }, agentClockMs: now,
+    }));
+    act(() => root.render(<StatusBar />));
     expect(setTaskbarState).toHaveBeenLastCalledWith({ enabled: true, running: false });
   });
 

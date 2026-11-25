@@ -9,7 +9,7 @@ import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspacePr
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24 } from '../hitArea';
 import { IconGear, IconCornerUpLeft } from '../icons';
-import { selectFleetPanes, selectLocalAgentsWorking, type FleetPane } from '../../stores/selectors/fleet';
+import { selectFleetPanes, selectLocalAgentsInTurn, type FleetPane } from '../../stores/selectors/fleet';
 import { selectDownHostIds, selectOutdatedRemoteKeys } from '../../stores/selectors/pcRail';
 import { selectOwnerWorkspaces } from '../Sidebar/botTasks';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
@@ -191,10 +191,10 @@ export default function StatusBar() {
   // off Windows.
   const taskbarBadgeEnabled = useStore((s) => s.taskbarBadgeEnabled);
   const sessionSettingsLoaded = useStore((s) => s.sessionSettingsLoaded);
-  // Fleet's Running rule for this computer's agents, bot workers included:
-  // the same verdict that keeps the computer awake. The chip's selector above
-  // has no turn or hook inputs, so it reads an active hook-driven turn as idle.
-  const anyRunning = useStore(selectLocalAgentsWorking);
+  // Fleet's Running rule for this computer's agents, bot workers included.
+  // The chip's selector above has no turn or hook inputs, and the store never
+  // keeps 'running' in surfaceAgentStatus, so it misses a local Claude turn.
+  const anyRunning = useStore(selectLocalAgentsInTurn);
   useEffect(() => {
     if (!sessionSettingsLoaded) return;
     window.electronAPI?.notification?.setTaskbarState?.({ enabled: taskbarBadgeEnabled, running: anyRunning });

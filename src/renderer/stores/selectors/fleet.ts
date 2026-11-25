@@ -1837,6 +1837,23 @@ export const QUIET_TURN_OUTPUT_MS = 120_000;
  * behind another tab of its pane that needs you, which Fleet ranks first.
  */
 export function selectLocalAgentsWorking(state: FleetBoardState): boolean {
+  const memo = localWorking(state);
+  if (memo.running) return true;
+  const clock = state.agentClockMs ?? Date.now();
+  return memo.quietPtyIds.some((ptyId) => clock - (state.surfaceOutputAt?.[ptyId] ?? -Infinity) <= QUIET_TURN_OUTPUT_MS);
+}
+
+/**
+ * Whether a row of THIS computer's agents is in Fleet's Running section: the
+ * turn-based half of selectLocalAgentsWorking, without its quiet-output tail.
+ * An idle agent that just printed (its prompt redrawn, a keystroke echoed) is
+ * not running, so the Windows taskbar progress reads this one.
+ */
+export function selectLocalAgentsInTurn(state: FleetBoardState): boolean {
+  return localWorking(state).running;
+}
+
+function localWorking(state: FleetBoardState): NonNullable<typeof localWorkingMemo> {
   // From `state`, not a local copy: the roll-up is cached on the state object.
   // Shadow and remote keys never match a local row, so they are harmless here.
   const hook = state.hookRunningByPtyId ?? selectHookRunningByPtyId(state);
@@ -1862,9 +1879,7 @@ export function selectLocalAgentsWorking(state: FleetBoardState): boolean {
     memo = { inputs, hook, unverifiable, running: countFleetSections(local, hook, unverifiable).running > 0, quietPtyIds };
     localWorkingMemo = memo;
   }
-  if (memo.running) return true;
-  const clock = state.agentClockMs ?? Date.now();
-  return memo.quietPtyIds.some((ptyId) => clock - (state.surfaceOutputAt?.[ptyId] ?? -Infinity) <= QUIET_TURN_OUTPUT_MS);
+  return memo;
 }
 
 /**
