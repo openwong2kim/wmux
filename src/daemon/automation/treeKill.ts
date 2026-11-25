@@ -49,16 +49,19 @@ export interface TreeKillDeps {
 /** Freeze-and-rescan rounds before the kill. */
 export const TREE_KILL_SCAN_ROUNDS = 4;
 
-const defaultDeps: TreeKillDeps = {
-  listProcesses: async () => {
-    const native = await readLinuxProcessTable(false);
-    if (native) return native.map((r): [number, number] => [r.pid, r.ppid]);
-    return new Promise((resolve) => {
-      execFile('/bin/ps', ['-axo', 'pid=,ppid='], { timeout: 2000, maxBuffer: 4 * 1024 * 1024 }, (error, output) => {
-        resolve(error ? [] : parsePsRows(output ?? ''));
-      });
+/** `pid ppid` rows: on Linux the native table when it reads, else `ps`; [] when neither can be read. */
+export async function listProcessPairs(): Promise<Array<[number, number]>> {
+  const native = await readLinuxProcessTable(false);
+  if (native) return native.map((r): [number, number] => [r.pid, r.ppid]);
+  return new Promise((resolve) => {
+    execFile('/bin/ps', ['-axo', 'pid=,ppid='], { timeout: 2000, maxBuffer: 4 * 1024 * 1024 }, (error, output) => {
+      resolve(error ? [] : parsePsRows(output ?? ''));
     });
-  },
+  });
+}
+
+const defaultDeps: TreeKillDeps = {
+  listProcesses: listProcessPairs,
   signal: (pid, sig) => process.kill(pid, sig),
 };
 

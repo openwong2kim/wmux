@@ -44,7 +44,7 @@ import { collectDescendants } from './treeKill';
 import { dmtfToUtcMicros, sameProcessStartTime } from '../phantomExit';
 import { tryProcessHandleApi, type ProcessHandle, type ProcessHandleApi } from '../../main/pty/winSnapshotNative';
 import { kernelStartOf, sameKernelStart } from '../../shared/processStartTime';
-import { readLinuxProcessTable } from '../nativeProcessTable';
+import { lstartsOf, readLinuxProcessTable } from '../nativeProcessTable';
 
 /** A process of the tree that did not exit, and why. */
 export interface TreeKillSurvivor {
@@ -599,13 +599,14 @@ export async function confirmedKernelStarts(
 
 /**
  * The rows of `ps -axo pid=,ppid=,stat=,lstart=`: on Linux from the native
- * table when it reads (the same lstart text; stat is the state letter
- * alone, enough for the zombie check), else from `ps`. Throws when neither
- * can be read.
+ * table when it reads with every start (the same lstart text; stat is the
+ * state letter alone, enough for the zombie check), else from `ps`. Throws
+ * when neither can be read.
  */
 export async function listPosixIdentityRows(): Promise<PosixProcRow[]> {
   const native = await readLinuxProcessTable(false);
-  if (native) return native.map((r) => ({ pid: r.pid, ppid: r.ppid, stat: r.state, start: r.lstart.replace(/\s+/g, ' ') }));
+  const starts = native && lstartsOf(native);
+  if (native && starts) return native.map((r, i) => ({ pid: r.pid, ppid: r.ppid, stat: r.state, start: starts[i].replace(/\s+/g, ' ') }));
   return new Promise((resolve, reject) => {
     // The daemon's own environment, as getProcessStartTime reads a
     // session's `lstart`: the same locale gives the same words.

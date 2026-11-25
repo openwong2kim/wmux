@@ -54,7 +54,7 @@ import os from 'os';
 import { AGENT_ROWS, AGENT_SLUG_SET, type AgentSlug } from '../shared/agentIdentity';
 import { customProcessNameForm } from '../shared/customAgents';
 import type { WslAgentLocation, WslReportedAgent, WslWatchedAgent } from './wslAgentProcess';
-import { readLinuxProcessTable, readNativeProcessTable, type NativeProcessRow } from './nativeProcessTable';
+import { linuxArgsTableUsable, readLinuxProcessTable, readNativeProcessTable, type NativeProcessRow } from './nativeProcessTable';
 import { procTable } from './procfs';
 
 const execFileAsync = promisify(execFile);
@@ -847,7 +847,9 @@ async function enumerateProcesses(): Promise<ProcessTreeEntry[]> {
     );
     return parsePipeDelimited(stdout as string);
   }
-  const rows = await readLinuxProcessTable(true) ?? await procTable();
+  // After a failed native read, straight to `ps`: procTable would wait on the
+  // same stuck command line, and `ps` can be timed out and killed.
+  const rows = await readLinuxProcessTable(true) ?? (linuxArgsTableUsable() ? null : await procTable());
   if (rows) return parsePsOutput(rows.map((r) => `${r.pid} ${r.ppid} ${r.args}`).join('\n'));
   const { stdout } = await execFileAsync(
     'ps',

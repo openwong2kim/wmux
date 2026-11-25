@@ -11,7 +11,7 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import { afterAll, describe, expect, it } from 'vitest';
 import { loadNativeTerminalCore } from '../../shared/nativeTerminalCore';
-import { readLinuxProcessTable, type LinuxProcessRow } from '../nativeProcessTable';
+import { lstartOf, readLinuxProcessTable, type LinuxProcessRow } from '../nativeProcessTable';
 import { listPosixIdentityRows, parsePsIdentityRows } from '../automation/verifiedTreeKill';
 import { waitFor } from '../../test-utils/waitFor';
 
@@ -33,7 +33,7 @@ function ps(args: string[]): string {
   return execFileSync('ps', args, { encoding: 'utf8', env: UTF8, maxBuffer: 64 * 1024 * 1024 });
 }
 
-type PsRow = Omit<LinuxProcessRow, 'state'> & { stat: string };
+type PsRow = { pid: number; ppid: number; pgid: number; tpgid: number; stat: string; lstart: string; comm: string; args: string };
 
 /** Three `ps` reads joined by pid: the fixed columns, comm, and args (each may hold spaces, so each has its own read). */
 function psTable(): Map<number, PsRow> {
@@ -110,9 +110,9 @@ describe.runIf(available)('the native Linux process table matches ps', () => {
       if (!a || JSON.stringify(a) !== JSON.stringify(after.get(pid)) || pid === 2 || row.ppid === 2) continue;
       // The state of a busy process can change between reads, so it is
       // compared below, on the children that hold theirs still.
-      const columns = (r: PsRow | LinuxProcessRow, lstart: string) =>
+      const columns = (r: PsRow | LinuxProcessRow, lstart: string | undefined) =>
         ({ pid: r.pid, ppid: r.ppid, pgid: r.pgid, tpgid: r.tpgid, lstart, comm: r.comm, args: r.args });
-      expect(columns(a, sameBoot ? a.lstart : row.lstart)).toEqual(columns(row, row.lstart));
+      expect(columns(a, sameBoot ? lstartOf(a) : row.lstart)).toEqual(columns(row, row.lstart));
       compared++;
     }
     expect(compared).toBeGreaterThan(2); // a container sees only its own few

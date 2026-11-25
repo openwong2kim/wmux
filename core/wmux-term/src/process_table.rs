@@ -3,13 +3,17 @@
 //! on Windows, `ps` and `lsof` (PortWatcher) on macOS and Linux.
 //!
 //! The same rules hold on every OS:
-//! - the liveness table (no details) is the walk alone, so a detail read that
-//!   fails can never read as a death;
+//! - the liveness table (no details) reads no detail that can fail on its
+//!   own, so a failed detail read can never read as a death. On Windows and
+//!   macOS it is the walk alone; on Linux it also takes state, groups and
+//!   start time from the same stat line, so a line that does not parse that
+//!   far, or a refused /proc/stat buffer, fails the read (an error, not a
+//!   shorter table);
 //! - a walk cut short is an error, never a shorter table;
 //! - a row is never dropped because its details could not be read. Windows
 //!   attaches them only when they provably belong to the walked process;
-//!   Linux takes them from the same stat line, and reads the command line
-//!   only with details. macOS reads no details.
+//!   Linux reads the command line only with details, and leaves out a
+//!   process that read finds gone. macOS reads no details.
 //! - every buffer the system sizes (the kernel's tables, a /proc file, the
 //!   rows, one per process or socket, and the command lines) is reserved
 //!   through `fallible`, and a refusal fails the whole read (`CallError::Alloc`)

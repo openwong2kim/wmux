@@ -275,7 +275,7 @@ describe('the Linux process table in ps columns', () => {
 
   it('maps each row to the text ps prints: lstart in local time, args by the procfs rule', async () => {
     vi.resetModules();
-    const { readLinuxProcessTable } = await import('../nativeProcessTable');
+    const { readLinuxProcessTable, lstartOf } = await import('../nativeProcessTable');
     native.processTable.mockResolvedValue([
       row(10, { cmdline: 'bash\0-c\0a\nb\0' }),
       row(11, { name: 'kworker/0:1', state: 'I' }),
@@ -285,7 +285,7 @@ describe('the Linux process table in ps columns', () => {
     expect(native.load).toHaveBeenCalledWith('process-table-linux-v1');
     expect(native.processTable).toHaveBeenCalledWith(true);
     // The ms fraction never rounds the second up; a one-digit day is padded as ctime pads it.
-    expect(rows?.map((r) => [r.pid, r.state, r.lstart, r.args])).toEqual([
+    expect(rows?.map((r) => [r.pid, r.state, lstartOf(r), r.args])).toEqual([
       [10, 'S', 'Thu Nov  5 03:04:05 2026', 'bash -c a b'],
       [11, 'I', 'Thu Nov  5 03:04:05 2026', '[kworker/0:1]'],
       [12, 'Z', 'Thu Nov  5 03:04:05 2026', '[gone] <defunct>'],
@@ -362,6 +362,26 @@ describe('the Linux process table in ps columns', () => {
     expect(entries.map((e) => [e.pid, e.ppid, e.cmdline])).toEqual([[10, 1, 'claude --resume x']]);
     expect(native.processTable).toHaveBeenCalledWith(true);
     expect(spawn.execFile).not.toHaveBeenCalled();
+  });
+
+  it('a read with args hung on a command line neither turns away nor latches off the reads without it', async () => {
+    vi.resetModules();
+    const { readLinuxProcessTable } = await import('../nativeProcessTable');
+    native.processTable.mockImplementation((withArgs: boolean) => (withArgs ? new Promise(() => undefined) : Promise.resolve([row(10)])));
+    void readLinuxProcessTable(true); // never settles
+    for (let i = 0; i < 4; i++) expect((await readLinuxProcessTable(false))?.map((r) => r.pid)).toEqual([10]);
+  });
+
+  it('without a boot time, the tree walks still read natively, and only the identity rows go to ps', async () => {
+    vi.resetModules();
+    const { listProcessPairs } = await import('../automation/treeKill');
+    const { listPosixIdentityRows } = await import('../automation/verifiedTreeKill');
+    native.processTable.mockResolvedValue([row(10, { created: null }), row(11, { ppid: 10, created: null })]);
+    expect(await listProcessPairs()).toEqual([[10, 1], [11, 10]]);
+    expect(spawn.execFile).not.toHaveBeenCalled();
+    spawn.execFile.mockImplementation((_f: string, _a: string[], _o: unknown, cb: (e: Error | null, out: string) => void) => cb(null, '10 1 S Thu Nov  5 03:04:05 2026\n'));
+    expect(await listPosixIdentityRows()).toEqual([{ pid: 10, ppid: 1, stat: 'S', start: 'Thu Nov 5 03:04:05 2026' }]);
+    expect(spawn.execFile).toHaveBeenCalledTimes(1);
   });
 
   it('is off under WMUX_NATIVE_PROCESS_TABLE=off, off Linux, and without the capability', async () => {

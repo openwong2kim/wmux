@@ -127,13 +127,15 @@ pub(super) fn walk(
     pids: impl IntoIterator<Item = u32>,
     read_stat: impl FnMut(u32) -> Result<io::Result<Vec<u8>>, AllocFailed>,
 ) -> Result<Vec<ProcessRow>, CallError> {
-    walk_with(pids, read_stat, |_, _, _| Ok(()))
+    walk_with(pids, read_stat, |_, _, _| Ok(true))
 }
 
 /// walk, with each row's details: state, groups and `created` (with
 /// `clock`; None without one) from its stat line, and its command line read
 /// with `read_cmdline` (an empty read is None). A command line that cannot be
-/// read is None; only a refused buffer fails the walk.
+/// read is None, except that a process found gone by that read (ENOENT,
+/// ESRCH: it exited after its stat line) is left out, as `ps` leaves it out.
+/// Only a refused buffer fails the walk.
 pub(super) fn walk_details(
     pids: impl IntoIterator<Item = u32>,
     read_stat: impl FnMut(u32) -> Result<io::Result<Vec<u8>>, AllocFailed>,
@@ -145,15 +147,26 @@ pub(super) fn walk_details(
             .ok_or_else(|| CallError::reason(format!("unparsable /proc/{pid}/stat")))?;
         row.linux = Some(details);
         row.created = clock.and_then(|clock| created_ms(clock, start_ticks));
-        row.cmdline = read_cmdline(pid)?.ok().and_then(cmdline_text);
-        Ok(())
+        row.cmdline = match read_cmdline(pid)? {
+            Ok(bytes) => cmdline_text(bytes),
+            Err(e) if exited(&e) => return Ok(false),
+            Err(_) => None,
+        };
+        Ok(true)
     })
+}
+
+/// Whether a failed read under `/proc/<pid>` means the process has exited
+/// (ENOENT, ESRCH), by the Linux errno alone (see unreadable).
+fn exited(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(2 | 3))
 }
 
 fn walk_with(
     pids: impl IntoIterator<Item = u32>,
     mut read_stat: impl FnMut(u32) -> Result<io::Result<Vec<u8>>, AllocFailed>,
-    mut detail: impl FnMut(u32, &[u8], &mut ProcessRow) -> Result<(), CallError>,
+    // Fills a row's details; false leaves the row out.
+    mut detail: impl FnMut(u32, &[u8], &mut ProcessRow) -> Result<bool, CallError>,
 ) -> Result<Vec<ProcessRow>, CallError> {
     let mut rows = fallible::try_with_capacity(512, ROWS)?;
     for pid in pids {
@@ -177,7 +190,9 @@ fn walk_with(
             cmdline: None,
             linux: None,
         };
-        detail(pid, &stat, &mut row)?;
+        if !detail(pid, &stat, &mut row)? {
+            continue;
+        }
         fallible::try_reserve(&mut rows, 1, ROWS)?;
         rows.push(row);
     }
@@ -413,17 +428,24 @@ mod tests {
                 1 => Ok(b"/sbin/init\0".to_vec()),
                 2 => Err(io::Error::from_raw_os_error(13)), // EACCES
                 3 => Err(io::Error::from_raw_os_error(5)),  // EIO
+                5 => Err(io::Error::from_raw_os_error(2)),  // ENOENT: exited after its stat
+                6 => Err(io::Error::from_raw_os_error(3)),  // ESRCH: exited after its stat
                 _ => Ok(Vec::new()),                        // a kernel thread
             })
         };
         let rows = walk_details(
-            [1, 2, 3, 4],
+            [1, 2, 3, 4, 5, 6],
             |_| Ok(Ok(full_stat("p", 0))),
             cmdline,
             Some(clock),
         )
         .expect("walk");
-        assert_eq!(rows.len(), 4);
+        let pids: Vec<u32> = rows.iter().map(|r| r.pid).collect();
+        assert_eq!(
+            pids,
+            vec![1, 2, 3, 4],
+            "a process gone at its command line is left out"
+        );
         assert_eq!(rows[0].cmdline.as_deref(), Some("/sbin/init\0"));
         assert!(rows[1..].iter().all(|r| r.cmdline.is_none()));
         assert!(rows.iter().all(|r| r.created == Some(1_005_000.0)));

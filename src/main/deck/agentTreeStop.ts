@@ -21,7 +21,7 @@
 // so. Windows uses its tree kill (taskkill /T), not this.
 
 import { execFile } from 'node:child_process';
-import { readLinuxProcessTable } from '../../daemon/nativeProcessTable';
+import { lstartsOf, readLinuxProcessTable } from '../../daemon/nativeProcessTable';
 
 /** One row of the process table. */
 export interface ProcRow {
@@ -97,7 +97,8 @@ export function treeOf(root: number, rows: readonly ProcRow[]): ProcRow[] {
 async function readTable(): Promise<ProcRow[] | null> {
   // The same start text `ps` prints, so a start recorded from either source compares equal.
   const native = await readLinuxProcessTable(false);
-  if (native) return native.map((r) => ({ pid: r.pid, ppid: r.ppid, start: r.lstart, ...(r.state === 'Z' ? { zombie: true } : {}) }));
+  const starts = native && lstartsOf(native);
+  if (native && starts) return native.map((r, i) => ({ pid: r.pid, ppid: r.ppid, start: starts[i], ...(r.state === 'Z' ? { zombie: true } : {}) }));
   return new Promise((resolve) => {
     execFile('ps', ['-A', '-o', 'pid=,ppid=,stat=,lstart='], { timeout: 5_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } }, (err, stdout) => {
       resolve(err ? null : parseProcTable(String(stdout)));
