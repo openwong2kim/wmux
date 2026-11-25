@@ -14,9 +14,12 @@ import {
   selectAgentProcess,
   selectCustomAgentProcess,
   tokenizeCmdline,
+  hasAgentCandidate,
+  RESTART_MARK_MS,
   type PidWatcher,
   type ProcessTreeEntry,
 } from '../AgentProcessTracker';
+import { AGENT_SLUG_SET } from '../../shared/agentIdentity';
 import { stopAgentTree } from '../agentStop';
 import { recordPaneIdentity, reportedAgentName, resolveCanonicalAgentIdentity } from '../canonicalAgent';
 
@@ -140,9 +143,59 @@ describe('resolveAgentSlug', () => {
   it('resolves launcher spellings whose name differs from the slug (kiro)', () => {
     expect(resolveAgentSlug('node /x/node_modules/kiro-cli/dist/cli.js')).toBe('kiro');
   });
+
+  it("names a runner's package with a version spec (`@latest`, `@1.2.3`) by the package", () => {
+    expect(resolveAgentSlug('node /usr/local/lib/node_modules/npm/bin/npx-cli.js @anthropic-ai/claude-code@latest')).toBe('claude');
+    expect(resolveAgentSlug('npx -y gemini@0.9.0')).toBe('gemini');
+    expect(resolveAgentSlug('npx -y @acme/claude@latest')).toBeUndefined();
+  });
+});
+
+describe('hasAgentCandidate: package runners (#3391)', () => {
+  const shell = entry(100, 1, 'zsh', 'zsh');
+  const has = (name: string, cmdline: string) => hasAgentCandidate([shell, entry(200, 100, name, cmdline)], 100);
+
+  it('a runner fetching or running a package counts as a possible agent, whatever the package', () => {
+    // npx as Windows lists it, and as macOS and Linux show it once it retitled itself.
+    expect(has('node', 'node /usr/local/lib/node_modules/npm/bin/npx-cli.js @anthropic-ai/claude-code@latest')).toBe(true);
+    expect(has('npm', 'npm exec @anthropic-ai/claude-code@latest')).toBe(true);
+    expect(has('npx', 'npx -y cowsay')).toBe(true);
+    expect(has('pnpm', 'pnpm dlx @google/gemini-cli')).toBe(true);
+    expect(has('node', 'node /opt/pnpm/bin/pnpm.cjs dlx @google/gemini-cli')).toBe(true);
+    expect(has('bunx', 'bunx claude')).toBe(true);
+    expect(has('bun', 'bun x claude')).toBe(true);
+    expect(has('uvx', 'uvx aider-chat')).toBe(true);
+    expect(has('python3', 'python3 /home/u/.local/bin/pipx run aider-chat')).toBe(true);
+  });
+
+  it('other programs do not: vim, a bare runtime, a project script through a package manager', () => {
+    for (const [name, cmdline] of [['vim', 'vim notes.md'], ['python3', 'python3'], ['node', 'node'], ['node', 'node server.js'],
+      ['npm', 'npm run dev'], ['pnpm', 'pnpm dev'], ['yarn', 'yarn build'], ['bun', 'bun run dev']]) {
+      expect(has(name, cmdline)).toBe(false);
+    }
+  });
 });
 
 describe('selectAgentProcess', () => {
+  // #3391 pin: the slug test moved into entryAgentSlug, shared with
+  // hasAgentCandidate; what selectAgentProcess picks must not change.
+  it('picks the same agent for every slug, by image or by runtime script; none for other programs or a tie', () => {
+    const shell = entry(100, 1, 'zsh', 'zsh');
+    for (const slug of AGENT_SLUG_SET) {
+      expect(selectAgentProcess([shell, entry(200, 100, slug, slug)], 100)).toEqual({ pid: 200, slug });
+      expect(hasAgentCandidate([shell, entry(200, 100, slug, slug)], 100)).toBe(true);
+    }
+    expect(selectAgentProcess([shell, entry(200, 100, 'node', 'node /repo/scripts/fixtures/fake-agents/claude.mjs')], 100)).toEqual({ pid: 200, slug: 'claude' });
+    expect(selectAgentProcess([shell, entry(200, 100, 'node', 'node /repo/scripts/fixtures/fake-agents/codex.mjs')], 100)).toEqual({ pid: 200, slug: 'codex' });
+    for (const other of ['vim', 'python3', 'npm']) {
+      expect(selectAgentProcess([shell, entry(200, 100, other, other)], 100)).toEqual({ pid: 200 });
+      expect(hasAgentCandidate([shell, entry(200, 100, other, other)], 100)).toBe(false);
+    }
+    const tie = [shell, entry(200, 100, 'claude', 'claude'), entry(201, 100, 'codex', 'codex')];
+    expect(selectAgentProcess(tie, 100)).toEqual({ pid: 200 });
+    expect(hasAgentCandidate(tie, 100)).toBe(true);
+  });
+
   it('identifies the factory smoke launcher while leaving arbitrary Node stubs unnamed', () => {
     const shell = entry(100, 1, 'zsh', 'zsh');
     expect(selectAgentProcess([shell, entry(200, 100, 'node', 'node /repo/scripts/factory-e2e/claude.mjs --session-id stub')], 100))
@@ -434,7 +487,8 @@ describe('AgentProcessTracker', () => {
     expect(states.at(-1)).toEqual({ alive: false, slug: 'claude' });
     expect(watcher.watches.has('agent:s1')).toBe(false);
 
-    // Another pane: the tracked pid still runs (reused), and the command is vim.
+    // Another pane: the tracked pid now holds another program (reused), and
+    // the command is vim: the agent is gone as well.
     const watcher2 = makeWatcher();
     let table2: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];
     const tracker2 = new AgentProcessTracker(watcher2, async () => table2);
@@ -442,8 +496,133 @@ describe('AgentProcessTracker', () => {
     await flush();
     table2 = [entry(200, 1, 'notepad.exe'), entry(300, SHELL, 'vim')];
     expect(await tracker2.reprobeNow('s2', SHELL, 1_000)).toBe(true);
-    expect(tracker2.pidFor('s2')).toBe(200);
-    expect(watcher2.watches.get('agent:s2')?.pid).toBe(200);
+    expect(tracker2.statusFor('s2')).toBe(false);
+    expect(watcher2.watches.has('agent:s2')).toBe(false);
+  });
+
+  it("on Windows a re-probe takes a tracked pid as gone when it holds another program (vim.exe) or a process created after the pick", async () => {
+    const dated = (pid: number, ppid: number, name: string, created: number, cmdline?: string): ProcessTreeEntry => ({ ...entry(pid, ppid, name, cmdline), created });
+    // vim.exe on the agent's pid: the pane's agent ended, and no agent is under the shell.
+    let table: ProcessTreeEntry[] = [dated(200, SHELL, 'claude.exe', 1_000)];
+    const win = new AgentProcessTracker(makeWatcher(), async () => table, undefined, undefined, undefined, 'win32');
+    win.arm('s1', SHELL);
+    await flush();
+    table = [dated(200, SHELL, 'vim.exe', 5_000, 'vim.exe notes.txt')];
+    const askedAt = Date.now();
+    expect(await win.reprobeNow('s1', SHELL, 1_000)).toBe(true);
+    expect(win.statusFor('s1')).toBe(false);
+    expect(win.reprobeSawNoAgent('s1', askedAt)).toBe(true);
+
+    // A node.exe whose command line could not be read: judged by its creation time only.
+    table = [dated(200, SHELL, 'node.exe', 1_000, 'node /x/node_modules/@anthropic-ai/claude-code/cli.js')];
+    const win2 = new AgentProcessTracker(makeWatcher(), async () => table, undefined, undefined, undefined, 'win32');
+    win2.arm('s2', SHELL);
+    await flush();
+    table = [dated(200, SHELL, 'node.exe', 1_000)];
+    expect(await win2.reprobeNow('s2', SHELL, 1_000)).toBe(true);
+    expect(win2.statusFor('s2')).toBe(true);
+    table = [dated(200, 1, 'node.exe', 9_000)];
+    expect(await win2.reprobeNow('s2', SHELL, 1_000)).toBe(true);
+    expect(win2.statusFor('s2')).toBe(false);
+  });
+
+  it('a WSL pane cannot be re-probed: reprobeNow enumerates nothing and never reports "no agent"', async () => {
+    let listed = 0;
+    const tracker = new AgentProcessTracker(makeWatcher(), async () => { listed++; return [entry(300, SHELL, 'vim')]; },
+      undefined, undefined, { isWslSession: (id) => id === 'wsl' });
+    expect(tracker.canReprobe('wsl')).toBe(false);
+    expect(tracker.canReprobe('s1')).toBe(true);
+    const askedAt = Date.now();
+    expect(await tracker.reprobeNow('wsl', SHELL, 1_000)).toBe(true);
+    expect(listed).toBe(0);
+    expect(tracker.reprobeSawNoAgent('wsl', askedAt)).toBe(false);
+  });
+
+  it("a delivery's re-probe says whether any agent was in the shell's tree, from an enumeration started after the ask", async () => {
+    const watcher = makeWatcher();
+    let table: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];
+    const tracker = new AgentProcessTracker(watcher, async () => table);
+    tracker.arm('s1', SHELL);
+    await flush();
+    // Claude exited; vim runs: no agent anywhere under the shell.
+    table = [entry(300, SHELL, 'vim')];
+    const askedAt = Date.now();
+    expect(await tracker.reprobeNow('s1', SHELL, 1_000)).toBe(true);
+    expect(tracker.reprobeSawNoAgent('s1', askedAt)).toBe(true);
+    // An enumeration older than the ask proves nothing.
+    expect(tracker.reprobeSawNoAgent('s1', Date.now() + 60_000)).toBe(false);
+    // Two agents at one depth: no slug is named (ambiguous), yet agents are there.
+    table = [entry(300, SHELL, 'claude.exe'), entry(301, SHELL, 'codex')];
+    const again = Date.now();
+    expect(await tracker.reprobeNow('s1', SHELL, 1_000)).toBe(true);
+    expect(tracker.reprobeSawNoAgent('s1', again)).toBe(false);
+    // Never re-probed: false.
+    expect(tracker.reprobeSawNoAgent('s2', 0)).toBe(false);
+  });
+
+  it('a restart that arrives while a probe is in flight is replayed after it; the death that probe records keeps the mark', async () => {
+    const watcher = makeWatcher();
+    let table: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];
+    let gate: Promise<void> | null = null;
+    const tracker = new AgentProcessTracker(watcher, async () => {
+      const seen = table;
+      if (gate) await gate;
+      return seen;
+    });
+    const states: Array<{ alive: boolean; pid?: number }> = [];
+    tracker.setStateChangeListener((sid, state) => states.push({ alive: state.alive, ...(state.alive ? { pid: tracker.pidFor(sid) } : {}) }));
+    tracker.arm('s1', SHELL);
+    await flush();
+    // Claude exited; a command-start probe reads the table before the new one starts.
+    table = [];
+    let release!: () => void;
+    gate = new Promise((resolve) => { release = resolve; });
+    tracker.armIfAgent('s1', SHELL);
+    await flush();
+    gate = null;
+    table = [entry(300, SHELL, 'claude.exe')];
+    tracker.noteAgentRestart('s1');
+    release();
+    await vi.waitFor(() => expect(tracker.pidFor('s1')).toBe(300), { timeout: 2_000 });
+    expect(tracker.statusFor('s1')).toBe(true);
+    expect(states.slice(1)).toEqual([{ alive: false }, { alive: true, pid: 300 }]);
+    // The pick spent the mark.
+    expect(tracker.restartedSince('s1')).toBe(false);
+
+    // A restart whose re-probe records only the earlier process's death: the mark stays.
+    table = [];
+    tracker.noteAgentRestart('s1');
+    await vi.waitFor(() => expect(tracker.statusFor('s1')).toBe(false), { timeout: 2_000 });
+    expect(tracker.restartedSince('s1')).toBe(true);
+  });
+
+  it("an agent restart re-attributes the pane at once, and its mark lasts until the pane's next pick (at most 10 s)", async () => {
+    const watcher = makeWatcher();
+    let table: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];
+    const tracker = new AgentProcessTracker(watcher, async () => table);
+    tracker.arm('s1', SHELL);
+    await flush();
+    // A new Claude replaced the old one before the monitor polled.
+    table = [entry(300, SHELL, 'claude.exe')];
+    tracker.noteAgentRestart('s1');
+    expect(tracker.restartedSince('s1')).toBe(true);
+    await flush();
+    expect(tracker.pidFor('s1')).toBe(300);
+    // The new record spent the mark.
+    expect(tracker.restartedSince('s1')).toBe(false);
+
+    // A restart whose re-probe names nothing new keeps the mark, then it lapses.
+    vi.useFakeTimers();
+    try {
+      table = [entry(300, SHELL, 'claude.exe')];
+      tracker.noteAgentRestart('s1');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tracker.restartedSince('s1')).toBe(true);
+      await vi.advanceTimersByTimeAsync(RESTART_MARK_MS + 1);
+      expect(tracker.restartedSince('s1')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a re-probe of the same agent after the tree read still takes the confirmed death', async () => {
