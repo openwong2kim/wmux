@@ -96,7 +96,7 @@ import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import { WEB_DEFAULT_PORT, webHostIsLoopback, type WebTlsConfig } from '../shared/web';
 import { warmRustSnapshot } from './RustSnapshot';
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, runSmallSnapshotJob, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
-import { queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
+import { queuedComposerRows, queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
 import { usageLimitMenuOnScreen, usageLimitWaitOnScreen } from './usageLimit/limitMenu';
 import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, readFolderTrust, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
@@ -105,7 +105,7 @@ import { isTerminalCoreMissing, TERMINAL_CORE_MISSING, type TerminalPty } from '
 import { serializeSession } from './sessionSerialize';
 import { AwaitingScreenVerifier, AWAITING_NARROW_DIALOG_COLS, questionInFlight, renderPaneScreen, renderPaneTail } from './AwaitingScreenVerifier';
 import { screenBlocksChatSend, screenShowsAgentDialog, screenShowsActiveDialog, screenShowsPermissionDialog, screenShowsRunningTurn, titleShowsRunningTurn } from './transcript/chatScreenGate';
-import { claudeComposerEmpty, claudeComposerVisible } from './transcript/deliverChatPrompt';
+import { claudeComposerEmpty, claudeComposerUnseen, claudeComposerVisible } from './transcript/deliverChatPrompt';
 import { CHATV2_LAUNCH_ALLOWED_RPC } from '../shared/chatv2/ipc';
 import { isPaneMoving } from './chat/v2/paneClaims';
 import { ApprovalPushRouter } from './push/approvalPushRouter';
@@ -208,6 +208,9 @@ import { ProcessMonitor } from './ProcessMonitor';
 import { processHoldsForeground } from './agentForeground';
 import { SHOWN_TEXT_MAX, type DeliveryCheck, type DeliveryPresence } from '../shared/deliveryPresence';
 import { deliveryPresence, promptGrant, type DeliveryPresenceDeps, type PromptAuthor } from './deliveryPresence';
+import { deliveryFrameOf } from './deliveryComposer';
+import { noteScreenRepairNudge, onUnseenScreenCheckpoint, pauseScreenCheckpoints, releaseScreenRepairLineage, takeScreenCheckpoint } from './screenCheckpoint';
+import { repairUnseenScreen } from './screenCheckpointRepair';
 import { AgentProcessTracker, agentProcessExitEvent, type LiveCheck } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
 import { liveRecoveryHint, markCwdMissing, namedAgentAlive, recordedTurnStillOpen, recordWasMidTurn, screenShowsLiveAgent, sightedRecoveredAgent } from './recoveryHint';
@@ -5284,15 +5287,13 @@ function registerRpcHandlers(
           if (!approvalRegistry || approvalRegistry.list().pending.some((r) => r.sessionId === id)) return 'Something in this pane waits for an approval.';
           // No watcher, or no watch of this pane's transcript, is "may be working".
           if (!transcriptActivity || transcriptActivity.helpersWorking(id)) return 'Claude\u2019s teammates or subagents may still be working.';
-          const outcome = await queuedScreenText(sessionManager, id, true);
-          const rows = outcome?.ok
-            ? Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) })
-            : null;
+          const rows = (await queuedComposerRows(sessionManager, id))?.rows ?? null;
           if (screenBlocksChatSend(rows)) return 'A dialog is open in the terminal, or its screen could not be read.';
           if (screenShowsRunningTurn(rows, 'claude') || titleShowsRunningTurn(pane.bridge.getTitle(), 'claude', Date.now())) {
             return 'Claude is still working. Try once its turn ends.';
           }
           if (!claudeComposerEmpty(rows)) {
+            if (claudeComposerUnseen(rows)) return 'wmux can\u2019t confirm Claude\u2019s input is empty yet. Resize the pane once to redraw it.';
             return claudeComposerVisible(rows) ? 'Claude\u2019s input holds a draft. Send or clear it first.' : 'Claude\u2019s input is not on screen.';
           }
           return null;
@@ -5444,8 +5445,9 @@ function registerRpcHandlers(
         return sessionManager.listManagedSessions().some((other) => other.meta.id !== id && realCwd(other.meta.id) === cwd && liveHermes(other.meta.id));
       },
       readScreen: async (id) => {
-        // Undimmed, so a dim placeholder in the prompt never reads as typed text.
-        const outcome = await queuedScreenText(sessionManager, id, true);
+        // Undimmed, so a dim placeholder in the prompt never reads as typed text. A cell the
+        // read could not see keeps its UNKNOWN_CELL, so it never reads as an empty prompt either.
+        const outcome = await queuedScreenText(sessionManager, id, true, { keepUnknown: true });
         return outcome?.ok ? outcome.rows.map((row) => row.undimmed ?? row.text) : null;
       },
       bracketedPaste: (id) => sessionManager.getSession(id)?.bridge.outputModes?.isSet(2004) === true,
@@ -5545,11 +5547,8 @@ function registerRpcHandlers(
       },
     } : null,
     readScreen: async (id) => {
-      // The composer check tells a dimmed suggested prompt from typed input.
-      const outcome = await queuedScreenText(sessionManager, id, true);
-      return outcome?.ok
-        ? Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) })
-        : null;
+      // The composer check tells a dimmed suggested prompt from typed input, and an unseen cell from a blank.
+      return (await queuedComposerRows(sessionManager, id))?.rows ?? null;
     },
     atFolderTrust: async (id, writer) => (await trustRefusal(sessionManager, id, writer, false)) !== null,
     agentProcessAlive: async (id, slug) => {
@@ -6507,10 +6506,9 @@ function registerRpcHandlers(
     agentPid: (sid) => agentProcessTracker.pidFor(sid),
     holdsForeground: (pid) => processHoldsForeground(pid),
     frame: async (sid) => {
-      const outcome = await queuedScreenText(sessionManager, sid, true);
+      const outcome = await queuedScreenText(sessionManager, sid, true, { keepUnknown: true });
       if (!outcome?.ok) return null;
-      const rows = Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) });
-      return { rows, cursorRow: rows.length - 1 - outcome.rowsBelowCursor };
+      return deliveryFrameOf(outcome.rows, outcome.rowsBelowCursor);
     },
     platform: process.platform,
     log: (line) => log('info', line),
@@ -6529,6 +6527,45 @@ function registerRpcHandlers(
     return deliveryPresence(presenceDeps, id, expectAgent, check);
   });
   deliveryPresenceRef = (id, check) => deliveryPresence(presenceDeps, id, undefined, check);
+  // A screen checkpoint rebuilt from a ring that had dropped bytes leaves cells Claude never rewrites
+  // unseen, and every composer reader then refuses the pane: one redraw at rest (screenCheckpointRepair.ts).
+  onUnseenScreenCheckpoint((ring, lineage) => {
+    const managed = sessionManager.listManagedSessions().find((s) => s.ringBuffer === ring);
+    if (!managed) return;
+    const id = managed.meta.id;
+    const size = (): { cols: number; rows: number } | null => {
+      const live = sessionManager.getSession(id);
+      return live === managed && live.meta.cols > 0 && live.meta.rows > 0 ? { cols: live.meta.cols, rows: live.meta.rows } : null;
+    };
+    void repairUnseenScreen(lineage, {
+      atRest: () => {
+        const live = sessionManager.getSession(id);
+        if (live !== managed || (live.meta.state !== 'attached' && live.meta.state !== 'detached')) return false;
+        const { bridge } = live;
+        return !bridge.isMuted && !bridge.isTurnOpen() && bridge.getAgentStatus() !== 'running' && bridge.isKeyInputQuiet()
+          && unsentPasteHolds?.held(id) !== true;
+      },
+      composerUnseen: async () => claudeComposerUnseen((await queuedComposerRows(sessionManager, id))?.rows ?? null),
+      size,
+      resizePty: (cols, rows) => {
+        if (sessionManager.getSession(id) !== managed) return;
+        managed.ptyProcess.resize(cols, rows);
+        // The repaint that follows is a resize's, not new output (agent detection's redraw guard).
+        managed.bridge.noteResize();
+      },
+      pause: (on) => pauseScreenCheckpoints(ring, on),
+      refresh: () => {
+        const modes = managed.bridge.outputModes;
+        return modes ? enqueueSnapshotJob(() => takeScreenCheckpoint(ring, modes, size)) : Promise.resolve(false);
+      },
+      delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      noteNudge: noteScreenRepairNudge,
+      log: (line) => log('info', `${line} on pane ${id}`),
+    }).then((outcome) => {
+      // Busy past the repair's wait: the chain's next checkpoint (the long turn writes plenty) asks again.
+      if (outcome === 'gave-up') releaseScreenRepairLineage(lineage);
+    }).catch(() => undefined);
+  });
   // A draft mark the key path left after the draft was erased (Backspace), cleared
   // by a fresh frame of the agent's empty prompt (draftScreen.ts).
   draftOnScreen = draftScreenCheck({
@@ -7036,12 +7073,7 @@ function registerRpcHandlers(
         return tail ? lastHumanPrompt(tail.entries) : null;
       },
       holdKeyboard: () => bridge.holdKeyboard(id),
-      readScreen: async () => {
-        const outcome = await queuedScreenText(sessionManager, id, true);
-        return outcome?.ok
-          ? Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) })
-          : null;
-      },
+      readScreen: async () => (await queuedComposerRows(sessionManager, id))?.rows ?? null,
       write: (data) => {
         const managed = sessionManager.getSession(id);
         if (!managed || resolveTranscriptBinding(id)?.sessionId !== binding.sessionId) return false;

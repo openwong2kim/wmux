@@ -13,7 +13,7 @@ import { withChosenAccountEnv } from '../phone/paneAccountSpawn';
 import { codexCdOperand, withCodexRemote } from '../web/recoverCodexPane';
 import type { CodexNativeInterrupt, CodexTurnRef } from '../web/codexPaneRelays';
 import { screenBlocksChatSend, screenShowsRunningTurn, screenShowsTurnEnding, titleShowsFinishedTurn } from '../transcript/chatScreenGate';
-import { claudeComposerRows, claudeComposerShows, deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
+import { UNSEEN_INPUT_CHAT_DETAIL, claudeComposerRows, claudeComposerShows, deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
 import { INTERRUPT_COOLDOWN_MS, interruptChatTurn, type ChatInterruptVerdict } from '../transcript/interruptChatTurn';
 import { openClaudeRewind } from '../transcript/openClaudeRewind';
 import { boundResumeCommand, codexRuntimeEnv, resumeCwdUsable, terminalLaunchCommand } from '../transcript/terminalLaunch';
@@ -219,7 +219,7 @@ export interface NativeChatBridge extends Omit<ChatBridge, QueueMethods>, Requir
   snapshot(id: string, before?: number): Promise<TranscriptPage | null>;
   /** `daemon.transcript.send`: never refuses a desktop request id, mints one instead. */
   desktopSend(req: { id: string; agentSessionId: string; text: string; requestId: unknown; attachments?: readonly string[] }):
-    Promise<{ result: ChatSendResult; effect?: ChatEffect; replayed: boolean; pending?: true; queued?: true; reason?: 'unsent-paste' }>;
+    Promise<{ result: ChatSendResult; effect?: ChatEffect; replayed: boolean; pending?: true; queued?: true; reason?: 'unsent-paste' | 'input-unseen' }>;
   /**
    * `daemon.transcript.interrupt`: the desktop Stop, through the same lock,
    * once-per-turn latch and cooldown as the phone cancel. No receipt.
@@ -758,6 +758,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     // writer refused (false) did not reach the pane, so what was pasted is still in the box.
     let submitted = false;
     let enterNext = false;
+    // The composer could not be seen whole: an `unconfirmed` then says that, not "a draft".
+    let unseen = false;
     let denied: 'paste' | 'submit' | undefined;
     const authorize = req.authorized;
     try {
@@ -804,6 +806,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         ...(opts.idleOnly ? { idleOnly: true } : {}),
         ...(opts.steer ? { steer: true } : {}),
         ...(opts.onScreenHold ? { onScreenHold: opts.onScreenHold } : {}),
+        onInputUnseen: () => { unseen = true; },
         ...(authorize ? { authorized: async (stage: 'first-write' | 'submit') => {
           let ok = false;
           try { ok = await authorize(stage); } catch { /* a failed check is a refusal */ }
@@ -837,7 +840,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         case 'busy': return { result, effect: 'none', error: 'chat-busy' };
         case 'blocked': return { result, effect: 'none', error: 'chat-blocked', blockedBy: blockedBy(id) };
         case 'session_changed': return sessionChanged(id);
-        case 'unconfirmed': return { result, effect: 'none', error: 'input-not-provably-empty' };
+        case 'unconfirmed': return { result, effect: 'none', error: 'input-not-provably-empty', ...(unseen ? { detail: UNSEEN_INPUT_CHAT_DETAIL } : {}) };
         case 'unavailable':
           // The write wrapper refuses before anything reaches the PTY.
           return { result, effect: 'none', error: 'chat-unavailable' };
@@ -2115,7 +2118,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       return { result, replayed: outcome.replayed, ...(outcome.effect ? { effect: outcome.effect } : {}),
         ...(outcome.pending ? { pending: true as const } : {}), ...(outcome.queued ? { queued: true as const } : {}),
         // The pane holds an earlier unsubmitted paste: the chat view says how to clear it (#3393).
-        ...(outcome.detail === UNSENT_PASTE_CHAT_DETAIL ? { reason: 'unsent-paste' as const } : {}) };
+        ...(outcome.detail === UNSENT_PASTE_CHAT_DETAIL ? { reason: 'unsent-paste' as const } : {}),
+        // Part of the input box could not be seen: the chat view says it is not a draft.
+        ...(outcome.detail === UNSEEN_INPUT_CHAT_DETAIL ? { reason: 'input-unseen' as const } : {}) };
     },
     desktopInterrupt,
     desktopRewind,

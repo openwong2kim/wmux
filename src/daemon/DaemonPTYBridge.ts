@@ -29,6 +29,7 @@ import type { CanonicalAgentIdentity } from './canonicalAgent';
 import type { TurnFailure } from '../shared/phoneTurnFailure';
 import type { ApprovalScreenReader } from '../shared/approvalScreen';
 import { PROGRAM_STATUS_OSC, ProgramStatusStore, parseProgramStatus, type ProgramStatusRecord } from './programStatus';
+import { noteScreenOutput } from './screenCheckpoint';
 
 /**
  * #1965 — the answer the daemon gives the bundled OpenConsole's startup DA1.
@@ -2204,6 +2205,8 @@ export class DaemonPTYBridge extends EventEmitter {
     // the ring, once per PTY lifetime.
     const modeTracker = interpreter.modes;
     this.modeTracker = modeTracker;
+    const screenSize = (): { cols: number; rows: number } | null =>
+      ptyProcess.cols > 0 && ptyProcess.rows > 0 ? { cols: ptyProcess.cols, rows: ptyProcess.rows } : null;
     // A refused copy of the recovered ring leaves the tracker at its defaults:
     // the session starts, and only the attach preamble for that old scrollback is lost.
     let prefilled: Buffer | undefined;
@@ -2629,6 +2632,8 @@ export class DaemonPTYBridge extends EventEmitter {
           }
         }
         interpreter.feed(data, ringBuffer.totalBytesWritten, nativeChunk);
+        // After the mode tracker saw this chunk: the checkpoint follows the screen it switched to.
+        noteScreenOutput(ringBuffer, interpreter.modes, screenSize);
         if (risAfterReports) this.resetProgramStatus();
         // After the mode tracker and OSC 133 have seen this chunk (see noteCodexOutput).
         this.noteCodexOutput(data);

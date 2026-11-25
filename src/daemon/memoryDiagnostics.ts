@@ -7,6 +7,7 @@ import { screenParseCounters, screenReadCounters, snapshotQueueCounters } from '
 import { getAnsiSnapshotBackendDiagnostics } from './AnsiSnapshotBackend';
 import { getTextSnapshotBackendDiagnostics } from './TextSnapshotBackend';
 import { tailReadCounters } from './guardedTailRead';
+import { screenCheckpointCounters } from './screenCheckpoint';
 
 type BackendDiagnostics = SnapshotBackendCounters & { last?: unknown };
 /** The counters without the last outcome, which says nothing a count doesn't. */
@@ -52,5 +53,6 @@ export function collectDaemonMemoryDiagnostics(
     eventLoop: { activeMs: loop.active, idleMs: loop.idle },
     snapshots: { ansi: snapshotCounters(getAnsiSnapshotBackendDiagnostics()), text: snapshotCounters(getTextSnapshotBackendDiagnostics()) },
     tailReads: tailReadCounters(),
+    screenCheckpoints: screenCheckpointCounters(),
   };
 }
