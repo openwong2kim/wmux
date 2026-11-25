@@ -34,6 +34,7 @@ pub(super) fn parse_kinfo(buf: &[u8]) -> Result<Vec<(ProcessRow, u32)>, AllocFai
             name: String::from_utf8_lossy(&comm[..len]).into_owned(),
             created: None,
             cmdline: None,
+            linux: None,
         };
         (row, read_i32(r, KINFO_UID) as u32)
     }));
@@ -170,16 +171,11 @@ mod tests {
         for pid in 0..100 {
             buf.extend(record(pid, 1, b"zsh"));
         }
-        // 100 rows of 80 bytes: refused, never aborted.
+        // 100 rows: refused, never aborted.
         let rows = crate::test_allocator::refusing(4096, || parse_kinfo(&buf).map(|r| r.len()));
+        let bytes = 100 * std::mem::size_of::<(ProcessRow, u32)>();
         assert!(
-            matches!(
-                rows,
-                Err(AllocFailed {
-                    what: ROWS,
-                    bytes: 8000
-                })
-            ),
+            matches!(rows, Err(AllocFailed { what: ROWS, bytes: b }) if b == bytes),
             "{rows:?}"
         );
         assert_eq!(parse_kinfo(&buf).map(|r| r.len()), Ok(100));

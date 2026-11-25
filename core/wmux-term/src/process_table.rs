@@ -6,9 +6,10 @@
 //! - the liveness table (no details) is the walk alone, so a detail read that
 //!   fails can never read as a death;
 //! - a walk cut short is an error, never a shorter table;
-//! - Windows only: a row's details are attached only when they provably
-//!   belong to the walked process, and a row is never dropped because its
-//!   details could not be read. macOS and Linux read no details.
+//! - a row is never dropped because its details could not be read. Windows
+//!   attaches them only when they provably belong to the walked process;
+//!   Linux takes them from the same stat line, and reads the command line
+//!   only with details. macOS reads no details.
 //! - every buffer the system sizes (the kernel's tables, a /proc file, the
 //!   rows, one per process or socket, and the command lines) is reserved
 //!   through `fallible`, and a refusal fails the whole read (`CallError::Alloc`)
@@ -87,10 +88,26 @@ pub struct ProcessRow {
     /// Windows: the image file name. macOS and Linux: the kernel's short
     /// process name (`p_comm`, `comm`), as `ps -o ucomm` reads it.
     pub name: String,
-    /// Creation time, epoch ms (Windows, with details). None when it could
-    /// not be read.
+    /// Creation time, epoch ms (Windows with details; Linux always). None
+    /// when it could not be read.
     pub created: Option<f64>,
-    /// Command line (Windows, with details). None when unreadable
+    /// Command line (Windows and Linux, with details). None when unreadable
     /// (protected, other session without rights, exited mid-walk) or empty.
+    /// Linux: the raw `/proc/<pid>/cmdline`, NULs kept, each byte of an
+    /// invalid UTF-8 sequence as `?` (what `ps` prints in a UTF-8 locale).
     pub cmdline: Option<String>,
+    /// Linux table rows (not PortWatcher's walk); None elsewhere.
+    pub linux: Option<LinuxDetails>,
+}
+
+/// The stat fields a Linux table row adds, as `ps -o stat,pgid,tpgid`
+/// reads them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinuxDetails {
+    /// The one-letter state (field 3).
+    pub state: String,
+    /// The process group (field 5).
+    pub pgid: i32,
+    /// The foreground process group of its terminal, -1 without one (field 8).
+    pub tpgid: i32,
 }
