@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Terminal } from '@xterm/xterm';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
@@ -16,22 +16,25 @@ import { FOCUS_RING } from '../focusRing';
 export default function ScrollToBottomButton({ terminal }: { terminal: Terminal | null }) {
   const t = useT();
   const [scrolledUp, setScrolledUp] = useState(false);
+  // The value last handed to setScrolledUp. A same-value set does not
+  // re-render, but React still queues it on the hook until the component's
+  // next render, and output alone never re-renders this one: one queued
+  // update per write and per scrolled line, held for the pane's lifetime.
+  const lastSet = useRef(false);
 
   const update = useCallback(() => {
-    if (!terminal) {
-      setScrolledUp(false);
-      return;
-    }
     // xterm: at the bottom means viewportY equals baseY (following output);
     // scrolled up means viewportY < baseY. Same relation the resize
     // preservation logic in useTerminal relies on.
-    const { baseY, viewportY } = terminal.buffer.active;
-    setScrolledUp(viewportY < baseY);
+    const next = terminal ? terminal.buffer.active.viewportY < terminal.buffer.active.baseY : false;
+    if (next === lastSet.current) return;
+    lastSet.current = next;
+    setScrolledUp(next);
   }, [terminal]);
 
   // Re-evaluate on scroll, on new output (baseY grows / viewport shifts),
-  // and on resize (rows change the at-bottom relation). Setting the same
-  // boolean value is a no-op for React, so an output flood does not re-render.
+  // and on resize (rows change the at-bottom relation). Only a change of the
+  // value reaches React, so an output flood neither re-renders nor queues.
   useEffect(() => {
     if (!terminal) return;
     update();
