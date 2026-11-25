@@ -308,6 +308,51 @@ describe('the Linux process table in ps columns', () => {
     expect(native.processTable).toHaveBeenCalledTimes(3);
   });
 
+  it('serves the identity rows of tree kills, and spawns ps only once the native read is latched off', async () => {
+    vi.resetModules();
+    const { listPosixIdentityRows } = await import('../automation/verifiedTreeKill');
+    native.processTable.mockResolvedValue([row(10), row(11, { ppid: 10, state: 'Z' })]);
+    // The same text `ps` gives after the identity parser joins its spaces.
+    expect(await listPosixIdentityRows()).toEqual([
+      { pid: 10, ppid: 1, stat: 'S', start: 'Thu Nov 5 03:04:05 2026' },
+      { pid: 11, ppid: 10, stat: 'Z', start: 'Thu Nov 5 03:04:05 2026' },
+    ]);
+    expect(native.processTable).toHaveBeenCalledWith(false);
+    expect(spawn.execFile).not.toHaveBeenCalled();
+
+    native.processTable.mockRejectedValue(new Error('snapshot failed'));
+    spawn.execFile.mockImplementation((_f: string, _a: string[], _o: unknown, cb: (e: Error | null, out: string) => void) =>
+      cb(null, '   10     1 Ss   Thu Nov  5 03:04:05 2026\n'));
+    for (let i = 0; i < 3; i++) expect(await listPosixIdentityRows()).toEqual([{ pid: 10, ppid: 1, stat: 'Ss', start: 'Thu Nov 5 03:04:05 2026' }]);
+    expect(spawn.execFile).toHaveBeenLastCalledWith('/bin/ps', ['-axo', 'pid=,ppid=,stat=,lstart='], expect.anything(), expect.any(Function));
+  });
+
+  it('walks the freeze-and-kill tree from the native table', async () => {
+    vi.resetModules();
+    const { killProcessTreePosix } = await import('../automation/treeKill');
+    native.processTable.mockResolvedValue([row(10), row(11, { ppid: 10 }), row(12, { ppid: 11 }), row(13)]);
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      await killProcessTreePosix(10);
+      const stopped = kill.mock.calls.filter(([, sig]) => sig === 'SIGSTOP').map(([pid]) => pid);
+      expect(new Set(stopped)).toEqual(new Set([10, 11, 12]));
+      expect(spawn.execFile).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  it('reads the agent tracker table natively with args, before procfs and ps', async () => {
+    vi.resetModules();
+    const { AgentProcessTracker } = await import('../AgentProcessTracker');
+    native.processTable.mockResolvedValue([row(10, { name: 'claude', cmdline: 'claude\0--resume\0x\0' })]);
+    const tracker = new AgentProcessTracker({ watch: vi.fn(), unwatch: vi.fn() } as never);
+    const entries = await (tracker as unknown as { enumerate(): Promise<Array<{ pid: number; ppid: number; cmdline?: string }>> }).enumerate();
+    expect(entries.map((e) => [e.pid, e.ppid, e.cmdline])).toEqual([[10, 1, 'claude --resume x']]);
+    expect(native.processTable).toHaveBeenCalledWith(true);
+    expect(spawn.execFile).not.toHaveBeenCalled();
+  });
+
   it('is off under WMUX_NATIVE_PROCESS_TABLE=off, off Linux, and without the capability', async () => {
     process.env.WMUX_NATIVE_PROCESS_TABLE = 'off';
     vi.resetModules();
