@@ -115,6 +115,11 @@ type UnseenHandler = (ring: CheckpointRing, lineage: ScreenRepairLineage) => voi
 const notified = new WeakSet<ScreenRepairLineage>();
 let unseenHandler: UnseenHandler | null = null;
 
+/** A repair that gave up (the pane never came to rest): the chain's next checkpoint tells the handler again. */
+export function releaseScreenRepairLineage(lineage: ScreenRepairLineage): void {
+  notified.delete(lineage);
+}
+
 /** Who is told when a kept checkpoint still has unseen cells and its chain has not asked for a redraw (the daemon's repair). */
 export function onUnseenScreenCheckpoint(handler: UnseenHandler | null): void {
   unseenHandler = handler;

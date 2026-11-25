@@ -9,7 +9,7 @@ import { RingBuffer } from '../RingBuffer';
 import { OutputModeTracker } from '../util/outputModeTracker';
 import { enqueueSnapshotJob } from '../HeadlessSnapshot';
 import { queuedScreenText } from '../queuedSessionText';
-import { noteScreenOutput, onUnseenScreenCheckpoint, screenCheckpointBytes, screenCheckpointCounters, takeScreenCheckpoint, type ScreenRepairLineage } from '../screenCheckpoint';
+import { noteScreenOutput, onUnseenScreenCheckpoint, releaseScreenRepairLineage, screenCheckpointBytes, screenCheckpointCounters, takeScreenCheckpoint, type ScreenRepairLineage } from '../screenCheckpoint';
 import { getAnsiSnapshotBackendDiagnostics } from '../AnsiSnapshotBackend';
 import { rustTerminalCoreAvailable } from '../../shared/terminalCoreSettings';
 
@@ -259,5 +259,26 @@ describe('a checkpoint the serializer refuses', () => {
     // Doubling from a quarter ring to a whole one: about one try a ring, where a sixteenth would make over a hundred.
     expect(tries).toBeGreaterThan(0);
     expect(tries).toBeLessThanOrEqual(16);
+  });
+});
+
+describe('a repair that gave up', () => {
+  it('lets the chain\'s next checkpoint ask again', async () => {
+    const asked: ScreenRepairLineage[] = [];
+    onUnseenScreenCheckpoint((_ring, lineage) => { asked.push(lineage); });
+    try {
+      const p = pane(4096, false);
+      await claudeSession(p, 'my draft');
+      p.checkpoints = true;
+      for (let i = 0; i < 100; i++) await p.feed(at(1, 1, `⏺ late ${i}`.padEnd(40)));
+      expect(asked).toHaveLength(1);
+      // The pane stayed busy past the repair's wait.
+      releaseScreenRepairLineage(asked[0]);
+      for (let i = 0; i < 100; i++) await p.feed(at(1, 1, `⏺ long turn ${i}`.padEnd(40)));
+      expect(asked).toHaveLength(2);
+      expect(asked[1]).toBe(asked[0]);
+    } finally {
+      onUnseenScreenCheckpoint(null);
+    }
   });
 });

@@ -209,7 +209,7 @@ import { processHoldsForeground } from './agentForeground';
 import { SHOWN_TEXT_MAX, type DeliveryCheck, type DeliveryPresence } from '../shared/deliveryPresence';
 import { deliveryPresence, promptGrant, type DeliveryPresenceDeps, type PromptAuthor } from './deliveryPresence';
 import { deliveryFrameOf } from './deliveryComposer';
-import { noteScreenRepairNudge, onUnseenScreenCheckpoint, pauseScreenCheckpoints, takeScreenCheckpoint } from './screenCheckpoint';
+import { noteScreenRepairNudge, onUnseenScreenCheckpoint, pauseScreenCheckpoints, releaseScreenRepairLineage, takeScreenCheckpoint } from './screenCheckpoint';
 import { repairUnseenScreen } from './screenCheckpointRepair';
 import { AgentProcessTracker, agentProcessExitEvent, type LiveCheck } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
@@ -6555,6 +6555,9 @@ function registerRpcHandlers(
       delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       noteNudge: noteScreenRepairNudge,
       log: (line) => log('info', `${line} on pane ${id}`),
+    }).then((outcome) => {
+      // Busy past the repair's wait: the chain's next checkpoint (the long turn writes plenty) asks again.
+      if (outcome === 'gave-up') releaseScreenRepairLineage(lineage);
     }).catch(() => undefined);
   });
   // A draft mark the key path left after the draft was erased (Backspace), cleared
