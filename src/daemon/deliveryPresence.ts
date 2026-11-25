@@ -146,7 +146,17 @@ export async function deliveryPresence(
   // Not known alive: probe once (it also records the death of a tracked agent
   // the process monitor has not polled yet, and names a new one).
   const settled = deps.tracked(id)?.alive === true || await deps.probe(id, session.shellPid, DELIVERY_PRESENCE_PROBE_MS);
-  const tracked = deps.tracked(id);
+  let tracked = deps.tracked(id);
+  if (tracked && !tracked.alive && deps.restartedSince?.(id) === true) {
+    // The agent reported a restart since: the death on record is its earlier
+    // process's. Name the new one (the re-probe skips the miss backoff the
+    // probe above may have hit); only a re-probe that saw no agent at all
+    // under the shell lets the death stand.
+    const askedAt = Date.now();
+    const named = await deps.reprobe(id, session.shellPid, DELIVERY_PRESENCE_PROBE_MS).catch(() => false);
+    tracked = deps.tracked(id);
+    if (tracked && !tracked.alive && !(named && deps.noAgentUnderShell?.(id, askedAt) === true)) return refuse('attribution-pending');
+  }
   if (tracked && !tracked.alive) return refuse('agent-ended');
   // A probe still running is not "nothing to attribute": the screen does not decide yet.
   if (!tracked && !settled) return refuse('attribution-pending');

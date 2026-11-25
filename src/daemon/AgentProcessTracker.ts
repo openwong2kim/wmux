@@ -53,6 +53,7 @@ import path from 'path';
 import os from 'os';
 import { AGENT_ROWS, AGENT_SLUG_SET, type AgentSlug } from '../shared/agentIdentity';
 import { customProcessNameForm } from '../shared/customAgents';
+import { npmSpecName } from '../shared/installCommandParse';
 import type { WslAgentLocation, WslReportedAgent, WslWatchedAgent } from './wslAgentProcess';
 import { readNativeProcessTable, type NativeProcessRow } from './nativeProcessTable';
 import { procTable } from './procfs';
@@ -106,6 +107,19 @@ const UNREADABLE_HOLDER_IMAGE = /^(claude|node|bun)(\.exe)?$/i;
  *  python's `-m`), the agent name rides the NEXT non-flag argument
  *  (`npx -y gemini`, `python -m aider`). */
 const RUNNER_STEMS: ReadonlySet<string> = new Set(['npx', 'npx-cli', 'bunx', 'yarn']);
+
+/** Runners that fetch or run a package whatever follows them. */
+const PACKAGE_RUNNER_STEMS: ReadonlySet<string> = new Set(['npx', 'npx-cli', 'bunx', 'pnpx', 'uvx', 'pipx']);
+/** Package managers that run a package only through one verb: `npm exec`
+ *  (npx retitles itself `npm exec <pkg>` on macOS and Linux), `pnpm dlx`.
+ *  Their other verbs (`npm run dev`) run the project's own scripts. */
+const PACKAGE_RUNNER_VERBS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['npm', new Set(['exec', 'x'])],
+  ['npm-cli', new Set(['exec', 'x'])],
+  ['pnpm', new Set(['dlx'])],
+  ['yarn', new Set(['dlx'])],
+  ['bun', new Set(['x'])],
+]);
 
 /** Launcher spellings → slug: every npm package name and native executable
  *  name a registry row declares under `process` (agentIdentity.ts). The
@@ -251,7 +265,8 @@ function scriptCandidates(cmdline: string | undefined): string[] {
   if (scriptToken) candidates.push({ token: scriptToken, bare: !/[/\\]/.test(scriptToken) });
   if (scanFrom >= 0) {
     const next = argv.slice(scanFrom).find((t) => !t.startsWith('-'));
-    if (next) candidates.push({ token: next, bare: false });
+    // A package spec: `@anthropic-ai/claude-code@latest` names the package without its version.
+    if (next) candidates.push({ token: npmSpecName(next) ?? next, bare: false });
   }
   for (const { token } of [...candidates]) {
     // Exact path SEGMENT only: `not_node_modules` or a directory literally
@@ -476,9 +491,30 @@ function entryAgentSlug(entry: ProcessTreeEntry, userHome: string): AgentSlug | 
 }
 
 /**
+ * A package runner fetching or running a package (`npx …`, `npm exec …`,
+ * `pnpm dlx …`, `bunx …`, `uvx …`, `pipx …`), as its image or as the script a
+ * runtime runs (`node …/npx-cli.js …`). While it downloads, nothing names the
+ * agent it will start, so it counts as one that may be.
+ */
+function isPackageRunner(entry: ProcessTreeEntry): boolean {
+  const argv = tokenizeCmdline(entry.cmdline ?? '');
+  const slots: Array<{ stem: string; at: number }> = [{ stem: imageStem(entry.name), at: 0 }];
+  if (RUNTIME_STEMS.has(runtimeStem(slots[0].stem))) {
+    const at = argv.findIndex((t, i) => i > 0 && !t.startsWith('-'));
+    if (at > 0) slots.push({ stem: lookupForm(argv[at]), at });
+  }
+  return slots.some(({ stem, at }) => {
+    if (PACKAGE_RUNNER_STEMS.has(stem)) return true;
+    const verb = argv.slice(at + 1).find((t) => !t.startsWith('-'));
+    return verb !== undefined && PACKAGE_RUNNER_VERBS.get(stem)?.has(verb) === true;
+  });
+}
+
+/**
  * Whether any process in the shell's tree (the shell itself included) is an
- * agent: settled or not, one pick or several. False only for a tree of other
- * programs (`vim`, `python`, a plain command).
+ * agent: settled or not, one pick or several, or a package runner that may be
+ * starting one (isPackageRunner). False only for a tree of other programs
+ * (`vim`, `python`, `npm run dev`).
  */
 export function hasAgentCandidate(entries: ReadonlyArray<ProcessTreeEntry>, shellPid: number, userHome = os.homedir()): boolean {
   const byParent = new Map<number, ProcessTreeEntry[]>();
@@ -488,14 +524,15 @@ export function hasAgentCandidate(entries: ReadonlyArray<ProcessTreeEntry>, shel
     else byParent.set(e.ppid, [e]);
   }
   const root = entries.find((e) => e.pid === shellPid);
-  if (root && entryAgentSlug(root, userHome)) return true;
+  const candidate = (e: ProcessTreeEntry) => !!entryAgentSlug(e, userHome) || isPackageRunner(e);
+  if (root && candidate(root)) return true;
   const seen = new Set<number>([shellPid]);
   const queue = [shellPid];
   while (queue.length > 0) {
     for (const child of byParent.get(queue.shift() as number) ?? []) {
       if (seen.has(child.pid)) continue;
       seen.add(child.pid);
-      if (entryAgentSlug(child, userHome)) return true;
+      if (candidate(child)) return true;
       queue.push(child.pid);
     }
   }
@@ -900,6 +937,9 @@ interface TrackedAgent {
   /** #2673 — the pane's launch count (setLaunchCounter) when this process was
    *  picked: a later command start in the pane may have launched its successor. */
   launchSeq?: number;
+  /** The picked process's creation time (epoch ms) when its listing had one:
+   *  a later process on the same pid is another one (Windows reuses pids). */
+  created?: number;
   /** agentImageMissingFor's read of `pid`'s executable: `path` once read
    *  (null for an image outside the agent's native install directory), absent
    *  while the read started at `readAt` is pending or after it failed.
@@ -952,7 +992,7 @@ export function agentProcessExitEvent(
   return state.alive ? null : { type: 'agent.processExit', sessionId, data: { slug: state.slug ?? null } };
 }
 
-/** How long a restart mark (noteAgentRestart) lasts with no new record for the pane. */
+/** How long a restart mark (noteAgentRestart) lasts with no new pick for the pane. */
 export const RESTART_MARK_MS = 10_000;
 
 export class AgentProcessTracker {
@@ -985,8 +1025,10 @@ export class AgentProcessTracker {
   /** A delivery re-probe's view of the shell's tree: when its enumeration
    *  started, and whether any agent was in it (reprobeSawNoAgent). */
   private readonly lastReprobe = new Map<string, { at: number; agentCandidate: boolean }>();
-  /** When the pane's agent was started again (noteAgentRestart), until its next record. */
+  /** When the pane's agent was started again (noteAgentRestart), until its next pick. */
   private readonly restartMarks = new Map<string, number>();
+  /** noteAgentRestart() called while a probe was in flight → replay once it lands. */
+  private readonly restartQueued = new Set<string>();
   /** Shared snapshot promise — concurrent probes across sessions ride one
    *  enumeration instead of spawning one each. */
   private snapshotInFlight: Promise<ProcessTreeEntry[]> | null = null;
@@ -1138,8 +1180,9 @@ export class AgentProcessTracker {
   }
 
   private emitState(sessionId: string, state: TrackedAgentState): void {
-    // The pane has a new record (a pick or a death): a restart mark is spent.
-    this.restartMarks.delete(sessionId);
+    // The pane has a new pick: a restart mark is spent. A death does not spend
+    // it: the one recorded after a restart is the earlier process's.
+    if (state.alive) this.restartMarks.delete(sessionId);
     try {
       this.stateListener?.(sessionId, state);
     } catch {
@@ -1252,17 +1295,20 @@ export class AgentProcessTracker {
             // long command can name the pane after the background agent.
             // Narrowing to the terminal's foreground process group needs a
             // pgid column no Windows listing has.)
-            if (entries.some((e) => e.pid === cur.pid)) {
+            const curEntry = entries.find((e) => e.pid === cur.pid);
+            if (curEntry && !(replaceRunning && this.isOtherProcess(curEntry, cur))) {
               // A delivery's re-probe (reprobeNow): a named pick other than
               // the tracked pid takes the record, with no death recorded for
               // a pid that still runs.
               if (!replaceRunning || !pick?.slug || pick.pid === cur.pid) return;
               this.watcher.unwatch(AgentProcessTracker.watchKey(sessionId));
               this.commitPick(sessionId, pick, observedAt,
-                identity ? (identity.isCurrent() ? (ownsSnapshot ? identity.epoch : undefined) : null) : undefined, pick.slug === cur.slug);
+                identity ? (identity.isCurrent() ? (ownsSnapshot ? identity.epoch : undefined) : null) : undefined, pick.slug === cur.slug,
+                entries.find((e) => e.pid === pick.pid)?.created);
               return;
             }
-            // Gone before the monitor noticed: drop its watch so the monitor
+            // Gone before the monitor noticed (or, for a re-probe, its pid now
+            // holds another process: isOtherProcess): drop its watch so the monitor
             // cannot report the same death again, and record its death edge
             // now, unless the same agent already took its place (#2673: the
             // pick below is its relaunch's edge, and the pane's agent never
@@ -1285,7 +1331,8 @@ export class AgentProcessTracker {
           return;
         }
         this.commitPick(sessionId, pick, observedAt,
-          identity ? (identity.isCurrent() ? (ownsSnapshot ? identity.epoch : undefined) : null) : undefined, replaced);
+          identity ? (identity.isCurrent() ? (ownsSnapshot ? identity.epoch : undefined) : null) : undefined, replaced,
+          entries.find((e) => e.pid === pick.pid)?.created);
       } catch {
         // Enumeration failed (timeout, spawn error) — undecided, never a lie.
         if (requireSlug) this.slugProbeBlockedUntil.set(sessionId, Date.now() + ARM_BACKOFF_MS);
@@ -1298,6 +1345,9 @@ export class AgentProcessTracker {
         // (lastRearmAt was set seconds ago, so rearm() no-opped and the forced
         // probe was lost). forceQueued is a single bit: no self-retrigger.
         const pid = this.shellPids.get(sessionId);
+        // A restart that arrived meanwhile re-attributes first; a queued arm
+        // below then waits behind it (probe() queues it again).
+        if (this.restartQueued.delete(sessionId) && pid !== undefined) this.probe(sessionId, pid, true, true);
         if (this.forceQueued.delete(sessionId)) {
           this.slugQueued.delete(sessionId); // the plain probe covers it
           if (pid !== undefined) this.probe(sessionId, pid);
@@ -1310,13 +1360,14 @@ export class AgentProcessTracker {
   }
 
   /** Track `pick` as the pane's agent: watch it and report its launch edge. */
-  private commitPick(sessionId: string, pick: AgentProcessPick, observedAt: number, identityEpoch: number | null | undefined, replacedLive: boolean): void {
+  private commitPick(sessionId: string, pick: AgentProcessPick, observedAt: number, identityEpoch: number | null | undefined, replacedLive: boolean, created?: number): void {
     const launchSeq = this.launchCounter?.(sessionId);
     this.states.set(sessionId, {
       pid: pick.pid,
       alive: true,
       ...(pick.slug ? { slug: pick.slug } : {}),
       ...(launchSeq !== undefined ? { launchSeq } : {}),
+      ...(created !== undefined ? { created } : {}),
     });
     this.watcher.watch(AgentProcessTracker.watchKey(sessionId), pick.pid, () => this.noteWatchedDeath(sessionId, pick.pid));
     this.emitState(sessionId, { ...(pick.slug ? { slug: pick.slug } : {}), alive: true, observedAt,
@@ -1464,19 +1515,37 @@ export class AgentProcessTracker {
 
   /**
    * The pane's agent was started again (HookIngest onAgentRestart: a
-   * pane-exact SessionStart from a process start with a new session id). The
+   * pane-exact SessionStart from a process start or resume). The
    * tracked record is superseded: re-attribute now, as a delivery's re-probe
    * does (a named pick replaces it, a gone pid's death is recorded, a plain
-   * command leaves it), and mark the pane until its next record, at most
+   * command leaves it), and mark the pane until its next pick, at most
    * RESTART_MARK_MS. The hook only says when; the process table says who.
    */
   noteAgentRestart(sessionId: string): void {
     this.restartMarks.set(sessionId, Date.now());
     const shellPid = this.shellPids.get(sessionId);
-    if (shellPid !== undefined && !this.isWsl(sessionId) && !this.inFlight.has(sessionId)) this.probe(sessionId, shellPid, true, true);
+    if (shellPid === undefined || this.isWsl(sessionId)) return;
+    // A probe in flight may have started before the new process: replay after it.
+    if (this.inFlight.has(sessionId)) this.restartQueued.add(sessionId);
+    else this.probe(sessionId, shellPid, true, true);
   }
 
-  /** The pane's agent restarted and the tracker has made no record for it since (at most RESTART_MARK_MS ago). */
+  /**
+   * Whether `entry`, listed on the tracked pid, is another process than the
+   * tracked agent (for a delivery's or a restart's re-probe): on Windows one
+   * created after the agent was picked, or one that is not that agent by its
+   * image or command line. A record with no slug (a wrapper, a tie) is not
+   * judged by slug, nor a Windows listing that could not read the command
+   * line of an image that may hold the agent (UNREADABLE_HOLDER_IMAGE).
+   */
+  private isOtherProcess(entry: ProcessTreeEntry, cur: TrackedAgent): boolean {
+    const win = this.platform === 'win32';
+    if (win && cur.created !== undefined && entry.created !== undefined && entry.created > cur.created) return true;
+    if (cur.slug === undefined || (win && !entry.cmdline && UNREADABLE_HOLDER_IMAGE.test(entry.name))) return false;
+    return entryAgentSlug(entry, this.userHome) !== cur.slug;
+  }
+
+  /** The pane's agent restarted and the tracker has picked no process for it since (at most RESTART_MARK_MS ago). */
   restartedSince(sessionId: string): boolean {
     const at = this.restartMarks.get(sessionId);
     if (at === undefined) return false;
@@ -1809,6 +1878,7 @@ export class AgentProcessTracker {
     this.slugProbeBlockedUntil.delete(sessionId);
     this.lastReprobe.delete(sessionId);
     this.restartMarks.delete(sessionId);
+    this.restartQueued.delete(sessionId);
   }
 
   private snapshot(): Promise<ProcessTreeEntry[]> {

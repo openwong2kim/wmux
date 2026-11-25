@@ -284,3 +284,48 @@ describe('promptGrant: a daemon-typed prompt, by its author', () => {
     expect(promptGrant({ tier: 'none', reason: 'foreground-unknown' }, 'wmux')).toBe('busy');
   });
 });
+
+// The monitor recorded the earlier agent's death, then the agent reported a
+// restart (startup/resume SessionStart) before the tracker named its new
+// process: the named-agent probe may sit in its miss backoff.
+describe('deliveryPresence: a recorded death after a restart', () => {
+  function restarted(reprobe: 'names' | 'running' | 'no-agent' | 'agent-in-tree', mark = true) {
+    let current: { alive: boolean; slug: 'claude'; pid: number } = { alive: false, slug: 'claude', pid: 41 };
+    const d = deps({
+      s: { commandRunning: true },
+      tracked: () => ({ alive: current.alive, slug: current.slug }),
+      agentPid: () => current.pid,
+      // Skipped by its backoff: done, nothing named.
+      probe: async () => true,
+      reprobe: async () => {
+        d.probes++;
+        if (reprobe === 'running') return false;
+        if (reprobe === 'names') current = { alive: true, slug: 'claude', pid: 77 };
+        return true;
+      },
+      agentRunning: async () => current.pid === 77,
+      restartedSince: () => mark,
+      noAgentUnderShell: () => reprobe === 'no-agent',
+    });
+    return d;
+  }
+
+  it('the re-probe names the new agent: verified on it, not agent-ended', async () => {
+    const d = restarted('names');
+    expect(await deliveryPresence(d, 'p', 'claude')).toEqual(FULL);
+    expect(d.probes).toBe(1);
+  });
+
+  it('the re-probe is still running, or saw an agent not settled yet: attribution-pending (stored)', async () => {
+    for (const reprobe of ['running', 'agent-in-tree'] as const) {
+      expect(await deliveryPresence(restarted(reprobe), 'p', 'claude')).toEqual({ tier: 'none', reason: 'attribution-pending' });
+    }
+  });
+
+  it('the re-probe saw no agent under the shell, or there was no restart: agent-ended', async () => {
+    expect(await deliveryPresence(restarted('no-agent'), 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
+    const unmarked = restarted('names', false);
+    expect(await deliveryPresence(unmarked, 'p', 'claude')).toEqual({ tier: 'none', reason: 'agent-ended' });
+    expect(unmarked.probes).toBe(0);
+  });
+});

@@ -1039,17 +1039,22 @@ describe('HookIngest', () => {
     };
     const bound = [session({ id: 'pty-a', resumeBinding: { agent: 'claude', sessionId: OLD_ID } })];
 
-    it('a pane-exact SessionStart from a process start (startup, resume) that binds a new session id is a restart', () => {
+    it('a pane-exact SessionStart from a start or resume (startup, resume) that binds a new session id is a restart', () => {
       for (const source of ['startup', 'resume']) {
         expect(restarts(bound, { ptyId: 'pty-a', payload: { source } })).toEqual([['pty-a', 'claude']]);
       }
     });
 
-    it('a clear or a compaction (the same process), the same session id, or a guessed route is not', () => {
+    it('so is one that keeps the session id (`claude -c`, `--resume <id>`)', () => {
+      for (const source of ['startup', 'resume']) {
+        expect(restarts(bound, { ptyId: 'pty-a', agentSessionId: OLD_ID, payload: { source } })).toEqual([['pty-a', 'claude']]);
+      }
+    });
+
+    it('a clear or a compaction (the same process), no source, or a guessed route is not', () => {
       for (const source of ['clear', 'compact', undefined]) {
         expect(restarts(bound, { ptyId: 'pty-a', payload: source ? { source } : {} })).toEqual([]);
       }
-      expect(restarts(bound, { ptyId: 'pty-a', agentSessionId: OLD_ID, payload: { source: 'startup' } })).toEqual([]);
       expect(restarts(bound, { payload: { source: 'startup' } })).toEqual([]);
     });
   });
