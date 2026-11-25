@@ -51,6 +51,21 @@ describe.skipIf(!available)('native snapshots past the old size caps', { timeout
     expect(native.rows.map(row => row.text)).toEqual(xterm.rows.map(row => row.text));
   });
 
+  it("reads an attach-deep history on a 200-column pane natively, capped at the grid's depth as xterm is", async () => {
+    // 4M cells / 200 columns - 30 screen rows = 19970 history rows; the ring holds about 26k lines.
+    const deep: SnapshotRequest = { ...req, scrollback: 100000, initial: output(6 * 1024 * 1024, 200) };
+    const before = getTextSnapshotBackendDiagnostics();
+    const native = await generateTextSnapshotUnqueued(deep);
+    const after = getTextSnapshotBackendDiagnostics();
+    expect(after.native).toBe(before.native + 1);
+    expect(after.reasons).toEqual(before.reasons);
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');
+    const xterm = await generateTextSnapshotUnqueued(deep);
+    if (!native.ok || !xterm.ok) throw new Error(`snapshot failed: ${JSON.stringify({ native: !native.ok && native, xterm: !xterm.ok && xterm })}`);
+    expect(native.rows).toHaveLength(20000);
+    expect(native.rows.map(row => row.text)).toEqual(xterm.rows.map(row => row.text));
+  });
+
   it('restores the ANSI screen of a 16 MiB ring natively', async () => {
     const before = getAnsiSnapshotBackendDiagnostics().native;
     const native = await selectAnsiSnapshot(req, noFallback);
