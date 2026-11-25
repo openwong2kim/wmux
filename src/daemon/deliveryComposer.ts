@@ -106,8 +106,10 @@ function readClaude(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRead {
   const span = { from, to };
   const glyph = CLAUDE_PROMPT.exec(rows[from])?.[1];
   const below = rows.slice(to + 1);
-  // The survey draws over the composer's top rule, so the rows right above it decide too.
-  const survey = rows.slice(Math.max(0, from - 1 - CLAUDE_SURVEY_ROWS), from - 1).some((row) => CLAUDE_SURVEY_CHOICES.test(row));
+  // The survey draws over the composer's top rule, so the rows right above it
+  // decide too. It takes a digit at an empty prompt only: at the Enter the
+  // prompt holds this delivery's paste, and the Enter submits it.
+  const survey = phase === 'paste' && rows.slice(Math.max(0, from - 1 - CLAUDE_SURVEY_ROWS), from - 1).some((row) => CLAUDE_SURVEY_CHOICES.test(row));
   if (glyph !== '❯' || survey || below.some((row) => CLAUDE_MODE_HINT.test(row)) || blocks(below)) return { verdict: 'mode', span };
   if (phase === 'enter') return { verdict: 'plain', span };
   // The composer alone, from its top rule to its closing rule.

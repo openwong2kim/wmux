@@ -89,9 +89,10 @@ describe('Claude Code', () => {
       expect(readComposer(f([NOTICE_LEFT, R80, '❯ ', R80, FOOTER]), 'claude', 'paste').verdict).toBe('plain');
     });
 
-    it("the session survey takes a digit at the empty prompt: it is a mode, with or without the closing rule", () => {
+    it("the session survey takes a digit at the empty prompt: a mode at the paste, with or without the closing rule", () => {
       expect(readComposer(f([...SURVEY, NOTICE_LEFT, R80, '❯ ', R80, FOOTER]), 'claude', 'paste').verdict).toBe('mode');
-      expect(readComposer(f([...SURVEY, NOTICE_LEFT, R80, '❯ ', R80, FOOTER]), 'claude', 'enter').verdict).toBe('mode');
+      // At the Enter the prompt holds this delivery's paste, which no digit key answers: the Enter submits it.
+      expect(readComposer(f([...SURVEY, NOTICE_LEFT, R80, '❯\u00a0hello', R80, FOOTER]), 'claude', 'enter').verdict).toBe('plain');
       expect(readComposer(f([...SURVEY, NOTICE_LEFT, R80, '❯ ', '', STATUS, FOOTER]), 'claude', 'paste').verdict).not.toBe('plain');
     });
 
