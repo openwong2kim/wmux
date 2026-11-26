@@ -2453,10 +2453,16 @@ export function registerA2aRpc(
     };
     const done: string[] = [];
     for (const taskId of plan.targets) {
-      const res = bulk.dryRun
-        ? await daemonTaskRpc(getDaemonClient, 'a2a.task.cancel', { taskId, workspaceId, ...paneFields, dryRun: true })
-            .then((g) => (g.kind === 'ok' ? g.result : g.kind === 'reject' ? { error: g.error } : { error: 'a2a.task.cancel: task log unavailable' }))
-        : await cancelTask(bulkFreeParams(params, taskId), ctx);
+      // One task failing never loses the results already in hand.
+      let res: unknown;
+      try {
+        res = bulk.dryRun
+          ? await daemonTaskRpc(getDaemonClient, 'a2a.task.cancel', { taskId, workspaceId, ...paneFields, dryRun: true })
+              .then((g) => (g.kind === 'ok' ? g.result : g.kind === 'reject' ? { error: g.error } : { error: 'a2a.task.cancel: task log unavailable' }))
+          : await cancelTask(bulkFreeParams(params, taskId), ctx);
+      } catch (err) {
+        res = { error: `a2a.task.cancel: ${err instanceof Error ? err.message : String(err)}` };
+      }
       const error = errorOf(res);
       if (error) refused.push({ taskId, error });
       else done.push(taskId);

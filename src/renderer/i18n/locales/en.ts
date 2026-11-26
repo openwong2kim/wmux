@@ -3665,7 +3665,7 @@ export const en = {
   'settings.fanoutHourlyTaskCap': 'Hourly fan-out task limit',
   'settings.fanoutHourlyTaskCapDesc': 'How many tasks agents\' fan-outs may start in any rolling hour across wmux (1–200). A fan-out that would go past it does not start. Empty: no limit.',
   'settings.a2aTaskRetention': 'Close tasks that never started',
-  'settings.a2aTaskRetentionDesc': 'After this many days (1–365), a task your workspace sent that is still waiting to start is closed as canceled. Checked every hour, and logged by the daemon. Empty: off.',
+  'settings.a2aTaskRetentionDesc': 'After this many days (1–365), a task your workspace sent that is still waiting to start is closed as canceled. Left open: a company task only the pane that created it may cancel, and a task another PC sent. Checked every hour, and logged by the daemon. Empty: off.',
   'settings.a2aTaskRetentionOff': 'Off',
   'settings.noLimit': "No limit",
   'settings.fanoutTasksPerCall': "Tasks per fan-out",

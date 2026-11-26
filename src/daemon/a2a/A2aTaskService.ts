@@ -239,6 +239,8 @@ export interface CancelTaskInput {
   idempotencyKey?: string;
   /** Run every check, change nothing: a bulk cancel's dry run (#3068). */
   dryRun?: boolean;
+  /** In-process only (the retention sweep): checked under the task lock; false leaves the task alone. */
+  stillEligible?: (task: Task) => boolean;
 }
 
 export type OpErr = { ok: false; error: string };
@@ -804,6 +806,18 @@ export class A2aTaskService {
         trusted: input.trustedLane === true,
       });
       if (companyRefusal) return { ok: false, error: `a2a.task.cancel: ${companyRefusal}` };
+      if (input.stillEligible && !input.stillEligible(task)) {
+        return { ok: false, error: 'a2a.task.cancel: no longer eligible' };
+      }
+      // A dry run reads and writes nothing: no idempotency replay, no log
+      // entry, and every success carries dryRun so no follow-up runs either.
+      if (input.dryRun === true) {
+        if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: true, task, dryRun: true };
+        if (!validateTransition(task.status.state, 'canceled')) {
+          return { ok: false, error: `a2a.task.cancel: cannot cancel task in state ${task.status.state}` };
+        }
+        return { ok: true, task, dryRun: true };
+      }
       // §4 멱등: transition과 대칭 — 히트는 authz 뒤(비참여자 키 재생 조회 차단),
       // op 네임스페이스 분리(transition 키로 cancel 결과를 재생하지 못하게 — codex 델타).
       const cached = this.idempotencyHit(input.taskId, input.idempotencyKey, 'cancel');
@@ -817,8 +831,6 @@ export class A2aTaskService {
       if (!validateTransition(task.status.state, 'canceled')) {
         return { ok: false, error: `a2a.task.cancel: cannot cancel task in state ${task.status.state}` };
       }
-      // A dry run stops here: the same checks a real cancel makes, no log entry.
-      if (input.dryRun === true) return { ok: true, task, dryRun: true };
 
       const payload: A2aTaskCancelPayload = {
         kind: 'task.cancel',
@@ -849,7 +861,7 @@ export class A2aTaskService {
    * and no trusted lane, so a company task only its creating pane may cancel
    * is refused and left as it is.
    */
-  async sweepStaleSubmitted(olderThanMs: number, nowMs: number = this.now()): Promise<{ closed: string[]; refused: number; seen: number }> {
+  async sweepStaleSubmitted(olderThanMs: number, nowMs: number = this.now()): Promise<{ closed: string[]; refused: number; seen: number; skipped: number }> {
     // A task another PC sent is that PC's to close, not this one's.
     const stale = [...this.tasks.values()].filter((t) =>
       t.status.state === 'submitted'
@@ -857,12 +869,17 @@ export class A2aTaskService {
       && idleFor(t.metadata.updatedAt, olderThanMs, nowMs));
     const closed: string[] = [];
     let refused = 0;
+    let skipped = 0;
+    // Each cancel awaits, so a task may have started or been reopened since
+    // the list was made: eligibility is checked again under its lock.
+    const stillStale = (t: Task) => t.status.state === 'submitted' && idleFor(t.metadata.updatedAt, olderThanMs, this.now());
     for (const task of stale) {
-      const res = await this.cancelTask({ taskId: task.id, callerWorkspaceId: task.metadata.from.workspaceId });
+      const res = await this.cancelTask({ taskId: task.id, callerWorkspaceId: task.metadata.from.workspaceId, stillEligible: stillStale });
       if (res.ok && res.task.status.state === 'canceled') closed.push(task.id);
+      else if (!res.ok && res.error === 'a2a.task.cancel: no longer eligible') skipped += 1;
       else refused += 1;
     }
-    return { closed, refused, seen: stale.length };
+    return { closed, refused, seen: stale.length, skipped };
   }
 
   /**

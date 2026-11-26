@@ -115,6 +115,27 @@ describe('a2a.task.cancel in bulk', () => {
     expect(realCancels()).toHaveLength(0);
   });
 
+  it('one task throwing keeps the results already done and goes on', async () => {
+    sendToRendererMock.mockImplementation(async (_win: unknown, method: string, params: Record<string, unknown>) => {
+      if (method === 'input.findOwnerWorkspace') return { workspaceId: OWNERS[params.ptyId as string] ?? null };
+      if (method === 'pane.list') return [];
+      if (method === 'a2a.task.cancel' && params.taskId === 't-old') throw new Error('renderer gone');
+      return { ok: true, taskId: params.taskId };
+    });
+    const res = await cancel({ workspaceId: 'ws-a', senderPtyId: 'pty-a', taskIds: ['t-in', 't-old', 't-new'] });
+    expect(res).toMatchObject({
+      ok: true,
+      canceled: ['t-in', 't-new'],
+      refused: [{ taskId: 't-old', error: 'a2a.task.cancel: renderer gone' }],
+    });
+  });
+
+  it('a pane with no named workspace (the CLI) acts as the pane\'s workspace', async () => {
+    const res = await cancel({ senderPtyId: 'pty-a', taskIds: ['t-old'] });
+    expect(res).toMatchObject({ ok: true, canceled: ['t-old'] });
+    expect(realCancels().map((c) => c.params.workspaceId)).toEqual(['ws-a']);
+  });
+
   it('a dry run of a single taskId changes nothing', async () => {
     const res = await cancel({ workspaceId: 'ws-a', senderPtyId: 'pty-a', taskId: 't-old', dryRun: true });
     expect(res).toMatchObject({ ok: true, dryRun: true, wouldCancel: ['t-old'] });

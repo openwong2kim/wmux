@@ -45,6 +45,17 @@ describe('cancelTask dryRun', () => {
     const foreign = await svc.cancelTask({ taskId: 't1', callerWorkspaceId: 'ws-c', dryRun: true });
     expect(foreign).toEqual({ ok: false, error: 'a2a.task.cancel: caller ws-c is not sender or receiver' });
   });
+
+  it('an ended task: marked dryRun, nothing written, nothing settled', async () => {
+    const { log, svc } = setup();
+    await create(svc, 't2');
+    expect((await svc.cancelTask({ taskId: 't2', callerWorkspaceId: 'ws-a', idempotencyKey: 'k1' })).ok).toBe(true);
+    const before = log.readAllRecords().length;
+    expect(await svc.cancelTask({ taskId: 't2', callerWorkspaceId: 'ws-a', dryRun: true })).toMatchObject({ ok: true, dryRun: true });
+    // The same key as the real cancel: no cached replay without the dryRun mark.
+    expect(await svc.cancelTask({ taskId: 't2', callerWorkspaceId: 'ws-a', idempotencyKey: 'k1', dryRun: true })).toMatchObject({ ok: true, dryRun: true });
+    expect(log.readAllRecords()).toHaveLength(before);
+  });
 });
 
 describe('sweepStaleSubmitted', () => {
@@ -63,7 +74,7 @@ describe('sweepStaleSubmitted', () => {
 
     const swept = await svc.sweepStaleSubmitted(7 * DAY);
 
-    expect(swept).toEqual({ closed: ['old'], refused: 0, seen: 1 });
+    expect(swept).toEqual({ closed: ['old'], refused: 0, seen: 1, skipped: 0 });
     expect(svc.getTask('old')?.status.state).toBe('canceled');
     expect(svc.getTask('recent')?.status.state).toBe('submitted');
     expect(svc.getTask('reopened')?.status.state).toBe('submitted');
@@ -73,11 +84,24 @@ describe('sweepStaleSubmitted', () => {
     expect(entry?.authContext.verifiedWorkspaceId).toBe('ws-a');
   });
 
+  it('checks each task again just before closing it', async () => {
+    const { svc } = setup();
+    await create(svc, 'first');
+    await create(svc, 'second');
+    clock += 10 * DAY;
+    const sweep = svc.sweepStaleSubmitted(7 * DAY);
+    // Started while the sweep was busy with the first one.
+    const started = svc.transition({ taskId: 'second', to: 'working', callerWorkspaceId: 'ws-b' });
+    const [swept] = await Promise.all([sweep, started]);
+    expect(swept).toEqual({ closed: ['first'], refused: 0, seen: 2, skipped: 1 });
+    expect(svc.getTask('second')?.status.state).toBe('working');
+  });
+
   it('leaves a task another PC sent', async () => {
     const { svc } = setup();
     await create(svc, 'from-peer', 'remote:host1:ws-x');
     clock += 30 * DAY;
-    expect(await svc.sweepStaleSubmitted(7 * DAY)).toEqual({ closed: [], refused: 0, seen: 0 });
+    expect(await svc.sweepStaleSubmitted(7 * DAY)).toEqual({ closed: [], refused: 0, seen: 0, skipped: 0 });
     expect(svc.getTask('from-peer')?.status.state).toBe('submitted');
   });
 });

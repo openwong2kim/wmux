@@ -3607,7 +3607,7 @@ export const pl = {
   'settings.fanoutHourlyTaskCap': 'Godzinowy limit zadań fan-out',
   'settings.fanoutHourlyTaskCapDesc': 'Ile zadań mogą uruchomić fan-outy agentów w dowolnej kroczącej godzinie w całym wmux (1–200). Fan-out, który by go przekroczył, nie startuje. Puste: bez limitu.',
   'settings.a2aTaskRetention': 'Zamykaj zadania, które nie wystartowały',
-  'settings.a2aTaskRetentionDesc': 'Po tylu dniach (1–365) zadanie wysłane przez Twój obszar roboczy, które wciąż czeka na start, zostaje zamknięte jako anulowane. Sprawdzane co godzinę i zapisywane w logu demona. Puste: wyłączone.',
+  'settings.a2aTaskRetentionDesc': 'Po tylu dniach (1–365) zadanie wysłane przez Twój obszar roboczy, które wciąż czeka na start, zostaje zamknięte jako anulowane. Pozostają otwarte: zadanie firmy, które może anulować tylko panel, który je utworzył, oraz zadanie wysłane z innego komputera. Sprawdzane co godzinę i zapisywane w logu demona. Puste: wyłączone.',
   'settings.a2aTaskRetentionOff': 'Wyłączone',
   'settings.noLimit': "Bez limitu",
   'settings.fanoutTasksPerCall': "Zadania na fan-out",

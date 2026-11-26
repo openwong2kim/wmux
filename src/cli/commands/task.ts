@@ -7,7 +7,6 @@
 import { sendRequest } from '../client';
 import { ensureOk, printResult } from '../utils';
 import { resolveSenderPtyId } from './channel';
-import { ENV_KEYS } from '../../shared/constants';
 import { A2A_BULK_CANCEL_CLIENT_TIMEOUT_MS, A2A_BULK_CANCEL_MAX, A2A_BULK_CANCEL_STATES } from '../../shared/a2aTaskCleanup';
 
 export const TASK_HELP = `
@@ -74,13 +73,14 @@ export async function handleTask(sub: string | undefined, args: string[], jsonMo
     console.error(`Error: ${built.error}\n${TASK_HELP}`);
     process.exit(1);
   }
-  const workspaceId = process.env[ENV_KEYS.WORKSPACE_ID]?.trim() ?? '';
+  // Only the pane: main derives the workspace from it (a2aCaller.ts). The
+  // pane's WMUX_WORKSPACE_ID can be stale after a restore, so it is not sent.
   const senderPtyId = await resolveSenderPtyId();
-  if (!workspaceId || !senderPtyId) {
-    console.error('Error: run this from a shell inside a wmux pane (no workspace or pane identity).');
+  if (!senderPtyId) {
+    console.error('Error: run this from a shell inside a wmux pane (no pane identity).');
     process.exit(1);
   }
-  const response = await sendRequest('a2a.task.cancel', { ...built, workspaceId, senderPtyId }, A2A_BULK_CANCEL_CLIENT_TIMEOUT_MS);
+  const response = await sendRequest('a2a.task.cancel', { ...built, senderPtyId }, A2A_BULK_CANCEL_CLIENT_TIMEOUT_MS);
   if (jsonMode) {
     printResult(response);
     return;

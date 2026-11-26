@@ -9383,11 +9383,11 @@ async function sweepA2aRetention(svc: A2aTaskService): Promise<void> {
   }
   const days = parseRetentionFile(raw);
   if (days === null) return;
-  const { closed, refused, seen } = await svc.sweepStaleSubmitted(retentionMs(days));
+  const { closed, refused, seen, skipped } = await svc.sweepStaleSubmitted(retentionMs(days));
   for (const taskId of closed) {
     if (isRemoteTaskId(taskId)) await a2aDeliveryRef?.syncTask(taskId);
   }
-  log('info', `A2A retention sweep: closed ${closed.length} of ${seen} task(s) submitted over ${days} day(s)${refused > 0 ? `, ${refused} refused` : ''}`);
+  log('info', `A2A retention sweep: closed ${closed.length} of ${seen} task(s) submitted over ${days} day(s)${refused > 0 ? `, ${refused} refused` : ''}${skipped > 0 ? `, ${skipped} changed meanwhile` : ''}`);
 }
 
 // Channels v2 — wake worker handle for shutdown + the emit fast path.
