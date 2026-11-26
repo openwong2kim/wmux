@@ -138,4 +138,46 @@ describe('EditorPanel dirty reporting', () => {
       useStore.setState({ workspaces: prev });
     }
   });
+
+  it('keeps the scratch text when its pane is stashed out of the layout', async () => {
+    const prev = useStore.getState().workspaces;
+    useStore.setState({
+      workspaces: [{ id: 'w1', rootPane: { type: 'leaf', id: 'p0', surfaces: [] },
+        stashedPanes: [{ pane: { type: 'leaf', id: 'p1', surfaces: [{ id: 's1' }] } }] }] as any,
+    });
+    try {
+      await open('hello');
+      await type(await enterEditMode(), 'stashed');
+      act(() => root.render(null));
+      await open('hello');
+      expect((await enterEditMode()).value).toBe('stashed');
+    } finally {
+      useStore.setState({ workspaces: prev });
+    }
+  });
+
+  it('keeps parked scratch through an unmount before the read lands, and a stale read does not take it', async () => {
+    const prev = useStore.getState().workspaces;
+    useStore.setState({
+      workspaces: [{ id: 'w1', rootPane: { type: 'leaf', id: 'p1', surfaces: [{ id: 's1' }] } }] as any,
+    });
+    try {
+      await open('hello');
+      await type(await enterEditMode(), 'parked');
+      act(() => root.render(null));
+      // Remount whose read is still pending, then unmount before it lands.
+      let land!: (v: string) => void;
+      (window as any).electronAPI = { fs: { readFile: vi.fn(() => new Promise<string>((r) => { land = r; })) } };
+      await act(async () => {
+        root.render(createElement(EditorPanel, { filePath: '/p/notes.txt', isActive: true, surfaceId: 's1' }));
+      });
+      act(() => root.render(null));
+      await act(async () => land('hello'));
+      expect(isEditorDirty('s1')).toBe(true);
+      await open('hello');
+      expect((await enterEditMode()).value).toBe('parked');
+    } finally {
+      useStore.setState({ workspaces: prev });
+    }
+  });
 });

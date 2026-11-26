@@ -3,7 +3,7 @@ import { useT } from '../../hooks/useT';
 import { renderBrainMarkdownWhole } from '../shared/BrainMarkdown';
 import { setEditorDirty, keepEditorScratch, takeEditorScratch } from './dirtyEditors';
 import { useStore } from '../../stores';
-import { findSurfaceById } from '../../utils/paneTraversal';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import Dialog, { DialogFooter, DialogHeader } from '../ui/Dialog';
 import Button from '../ui/Button';
 
@@ -74,15 +74,21 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
     [isMarkdown, forceSource, editing, viewText],
   );
   const bodyRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    setEditorDirty(surfaceId, dirty);
-  }, [surfaceId, dirty]);
-  // Unmounting while the tab is still open (a split, a move, a workspace
-  // switch) parks the scratch text for the remount; a closed tab drops it.
+  // Unmounting while the tab is still open (a split, a move, a stash, a
+  // workspace switch) parks the scratch text for the remount; a closed tab
+  // drops it. Until the file read lands, a parked copy has not been taken
+  // back yet, so an unmount then leaves it parked.
   const scratchRef = useRef<string | null>(null);
+  const restoredRef = useRef(false);
   scratchRef.current = dirty ? editContent : null;
+  // A parked copy keeps its dirty flag until the read takes it back.
+  useEffect(() => {
+    if (restoredRef.current) setEditorDirty(surfaceId, dirty);
+  }, [surfaceId, dirty]);
   useEffect(() => () => {
-    const open = useStore.getState().workspaces.some((w) => findSurfaceById(w.rootPane, surfaceId) !== null);
+    const open = useStore.getState().workspaces.some((w) =>
+      getWorkspaceLeafPanes(w).some((leaf) => leaf.surfaces.some((s) => s.id === surfaceId)));
+    if (open && !restoredRef.current) return;
     const text = open ? scratchRef.current : null;
     keepEditorScratch(surfaceId, text);
     setEditorDirty(surfaceId, text !== null);
@@ -91,20 +97,29 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
 
   // Load file content
   useEffect(() => {
+    // A read that lands after unmount or a file change must not take the
+    // parked scratch.
+    let live = true;
     setLoading(true);
     setError(null);
     readFileContent(filePath).then((result) => {
+      if (!live) return;
       if (result === null) {
         setError(t('editor.unableToRead'));
         setContent(null);
       } else {
+        const kept = takeEditorScratch(surfaceId);
+        restoredRef.current = true;
+        // Hold it for an unmount that comes before this render commits.
+        scratchRef.current = kept !== undefined && kept !== result ? kept : null;
         setContent(result);
-        setEditContent(takeEditorScratch(surfaceId) ?? result);
+        setEditContent(kept ?? result);
       }
       setLoading(false);
     });
     setForceSource(false);
     setMarkedLine(null);
+    return () => { live = false; };
   }, [filePath]);
 
   // A (re-)target arrives: mark the line and, for markdown, show the source.
