@@ -53,3 +53,11 @@ describe('setup-hooks --agent omp', () => {
     expect(installCompatHooks).toHaveBeenLastCalledWith('omp', { marker: 'paths' }, { reprobe: false });
   });
 });
+
+// #3067 — jcode is wired: its [hooks] entries go through the same lane.
+describe('setup-hooks --agent jcode', () => {
+  it('is accepted and handed to the installer', async () => {
+    await handleSetupHooks(['--agent', 'jcode'], true);
+    expect(installCompatHooks).toHaveBeenLastCalledWith('jcode', { marker: 'paths' }, { reprobe: false });
+  });
+});

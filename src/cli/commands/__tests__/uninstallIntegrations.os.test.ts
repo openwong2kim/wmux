@@ -110,6 +110,7 @@ function installEverything(): { accountSettings: string } {
   write(at('.copilot', 'hooks', 'wmux.json'), JSON.stringify(buildOwnedHookFile('copilot', at('.wmux', 'hooks', 'wmux-hooks-bridge.mjs'))));
   write(at('.omp', 'agent', 'extensions', 'wmux.js'), '// wmux-managed: omp-extension\nexport default () => {};\n');
   write(at('.omp', 'agent', 'extensions', 'mine.js'), 'export default () => {};\n');
+  write(at('.jcode', 'config.toml'), '# my jcode config\n[hooks]\nturn_end = ["~/bin/notify", "node \\"/x/.wmux/hooks/wmux-jcode-bridge.mjs\\""] # mine\nsession_start = ["node \\"/x/.wmux/hooks/wmux-jcode-bridge.mjs\\""]\n');
 
   const configRoot = at('.config', 'opencode');
   write(path.join(configRoot, 'tui.json'), JSON.stringify({ plugin: ['my-plugin'], theme: 'x' }));
@@ -181,6 +182,7 @@ describe('removeAgentIntegrations', () => {
     expect(fs.existsSync(at('.copilot', 'hooks', 'wmux.json'))).toBe(false);
     expect(fs.existsSync(at('.omp', 'agent', 'extensions', 'wmux.js'))).toBe(false);
     expect(fs.existsSync(at('.omp', 'agent', 'extensions', 'mine.js'))).toBe(true);
+    expect(fs.readFileSync(at('.jcode', 'config.toml'), 'utf8')).toBe('# my jcode config\n[hooks]\nturn_end = ["~/bin/notify"] # mine\n');
 
     const configRoot = at('.config', 'opencode');
     expect(fs.existsSync(path.join(configRoot, 'plugins', 'wmux.js'))).toBe(false);

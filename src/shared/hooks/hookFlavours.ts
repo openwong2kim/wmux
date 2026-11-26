@@ -95,6 +95,27 @@ export type CompatHookInstall =
     readonly marker: string;
   }
   | {
+    /** `toml-hooks`: a `[hooks]` table in the CLI's own TOML config, each key
+     *  a command string or an array (jcode). wmux copies its entry point
+     *  beside the shared bridge and adds one command per event next to the
+     *  user's, by line-level edits that keep comments
+     *  (src/shared/hooks/tomlHookEntries.ts); a file it cannot edit that way is
+     *  left alone and the lines to add are printed instead. */
+    readonly strategy: 'toml-hooks';
+    readonly configDir: readonly string[];
+    readonly configDirEnv: string | null;
+    /** The TOML file, as path segments under the config directory. */
+    readonly file: readonly string[];
+    /** Event keys given wmux's command. Must be events the bridge maps. */
+    readonly register: readonly string[];
+    /** Basename of the shipped entry point, copied beside the shared bridge. */
+    readonly entryBasename: string;
+    /** Path of the entry point in a source checkout, from the repo root. */
+    readonly entrySource: readonly string[];
+    /** First-line marker of the entry point. */
+    readonly marker: string;
+  }
+  | {
     readonly strategy: 'settings-hooks-key';
     readonly userFile: readonly string[];
     readonly register: readonly string[];
@@ -334,7 +355,18 @@ export const COMPAT_HOOK_FLAVOURS: Readonly<Record<CompatHookFlavourId, CompatHo
       '~/.jcode/config.toml `[hooks]` (user; a command string or an array per event)',
       'JCODE_HOOK_TURN_START and the other JCODE_HOOK_<EVENT> variables (override the config)',
     ],
-    install: null,
+    install: {
+      strategy: 'toml-hooks',
+      // jcode-base config.rs: "loaded from ~/.jcode/config.toml (or
+      // $JCODE_HOME/config.toml)".
+      configDir: ['.jcode'],
+      configDirEnv: 'JCODE_HOME',
+      file: ['config.toml'],
+      register: ['session_start', 'turn_start', 'turn_end', 'session_end'],
+      entryBasename: 'wmux-jcode-bridge.mjs',
+      entrySource: ['integrations', 'jcode', 'bin', 'wmux-jcode-bridge.mjs'],
+      marker: 'wmux-managed: jcode-hooks-bridge',
+    },
   },
 };
 
