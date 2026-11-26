@@ -161,6 +161,12 @@ describe('DaemonPTYBridge: bytes first, analysis after, in order', () => {
       expect(events.length).toBe(atExit);
     });
 
+    it('output still waiting when the bridge is disposed is analysed first', () => {
+      pty.feed('\x1b]133;A\x07');
+      bridge.cleanup();
+      expect(events).toEqual([['prompt', 'prompt_start']]);
+    });
+
     it('data the PTY delivers after its exit is still analysed', () => {
       pty.exit();
       pty.feed('\x1b]133;A\x07');
@@ -265,7 +271,35 @@ describe('DaemonPTYBridge: bytes first, analysis after, in order', () => {
     expect(log.isCommandRunning()).toBe(true);
   });
 
-  // 10. While the daemon's loop is saturated, each chunk is analysed before its forward.
+  // 10. The activity monitor's idle callback does not run a pending analysis
+  // inside itself: a chunk still waiting is analysed after the idle, as if it
+  // arrived after it (never an 'active' inside the idle).
+  it('a burst still waiting when the idle timer fires is reported after the idle', () => {
+    bridge.cleanup();
+    // setImmediate stays real, so a fed chunk waits while the fake timers run.
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    vi.setSystemTime(T0);
+    bridge = new DaemonPTYBridge();
+    pty = fakePty();
+    events = [];
+    record(bridge);
+    bridge.setupDataForwarding(pty.pty, new RingBuffer(65536), 'pane-a', new PromptEventLog());
+    vi.advanceTimersByTime(1);
+    bridge.noteAgentStatus('complete', true); // a hook Stop: the pane is settled and reports hooks
+    vi.advanceTimersByTime(6100); // past the settle cool-down and the input/resize guards
+    pty.feed(BIG);
+    bridge.flushPendingDetection(); // the burst opens a turn the output alone opened
+    expect(events.filter(([n]) => n === 'active')).toHaveLength(1);
+    vi.advanceTimersByTime(4000);
+    pty.feed(BIG);
+    vi.advanceTimersByTime(1500); // the idle timer fires with that burst still waiting
+    bridge.flushPendingDetection();
+    const tail = events.filter(([n]) => n === 'active' || n === 'idle').slice(1);
+    expect(tail).toEqual([['idle', ''], ['active', '']]);
+  });
+
+  // 11. While the daemon's loop is saturated, each chunk is analysed before its forward.
   describe('while the loop is saturated', () => {
     const forwarded = () => bridge.on('data', (b: Buffer) => events.push(['data', b.toString()]));
     afterEach(() => resetLoopSaturationForTests());

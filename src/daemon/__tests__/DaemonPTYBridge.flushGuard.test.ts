@@ -10,7 +10,6 @@ import path from 'node:path';
 /** Public members that need no flush, and why. */
 const EXEMPT: Record<string, string> = {
   setupDataForwarding: 'flushes the previous setup itself, then builds the new queue',
-  cleanup: 'disposal: drops the pending analysis with the rest of the state',
   flushPendingDetection: 'the flush itself',
   isMuted: 'the mute flag is set inline, never by the analysis',
   heldOutput: 'muted output is held inline, before the analysis',

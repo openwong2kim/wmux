@@ -1150,12 +1150,20 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   isAgentMidTurn(): boolean {
     this.flushPendingDetection();
+    return this.midTurnNow();
+  }
+
+  private midTurnNow(): boolean {
     return this.turnOpen && !this.bootEpisode && (this.hookSeen || this.programStatusSeen || this.trackedAgent?.alive === true);
   }
 
-  /** Emits 'agentTurn' when `isAgentMidTurn` changed since the last report. */
+  /**
+   * Emits 'agentTurn' when `isAgentMidTurn` changed since the last report.
+   * Without a flush: it runs inside the activity monitor's idle callback too,
+   * and a chunk still waiting reports again from its own analysis.
+   */
   private reportMidTurn(): void {
-    const midTurn = this.isAgentMidTurn();
+    const midTurn = this.midTurnNow();
     if (midTurn === this.reportedMidTurn || !this.sessionId) return;
     this.reportedMidTurn = midTurn;
     this.emit('agentTurn', { sessionId: this.sessionId, runningSince: midTurn ? this.turnOpenedAt : null });
@@ -3157,7 +3165,9 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   cleanup(): void {
-    // Disposed: output not analysed yet is dropped with the rest of the state.
+    // Output already forwarded is analysed before the bridge lets go of it, as
+    // it was on arrival (a kill right after a notification or a prompt mark).
+    this.flushPendingDetection();
     this.analysis?.drop();
     this.analysis = null;
     if (this.titleCycleTimer) clearTimeout(this.titleCycleTimer);
