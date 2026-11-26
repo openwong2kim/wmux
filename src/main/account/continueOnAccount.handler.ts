@@ -7,7 +7,9 @@
 // ANTHROPIC_AUTH_TOKEN) reaches a process only at spawn and is never typed.
 // So when the target account holds one, or the source pane spawned with one
 // (it would keep it over the new folder), the same pane cannot switch. The
-// daemon then only copies the conversation (`session.copyToAccountV1`, a
+// daemon records the latter on the session at every spawn and refuses the
+// move in place (`env_sign_in`) for it, or when it does not know; nothing
+// here guesses it from the workspace binding. The daemon then only copies the conversation (`session.copyToAccountV1`, a
 // method of its own, so an older daemon refuses it instead of moving the pane
 // in place), and the reply asks the renderer for a new pane beside the source
 // one that resumes it on that account (`newPane`: the resume command and its
@@ -44,11 +46,12 @@ const CONTINUE_TIMEOUT_MS = 60_000;
 export interface ContinuePaneDeps {
   account: (id: string) => Account | undefined;
   vaultEntries: (accountId: string) => ReadonlyArray<Pick<AccountVaultEntry, 'name' | 'inject' | 'usable'>>;
-  /** Whether the source pane spawned with a Claude sign-in value from a vault. May throw. */
-  sourceSignedIn: (ptyId: string, workspaceId: string | undefined) => boolean;
+  /** The source pane spawned with a Claude sign-in value from a vault, known
+   *  in this main run (the daemon's `env_sign_in` covers the rest). May throw. */
+  sourceSignedIn: (ptyId: string) => boolean;
   dirOk: (dir: string) => boolean;
   connected: () => boolean;
-  rpc: (method: 'session.continueOnAccount' | 'session.copyToAccountV1', params: { sessionId: string; configDir: string; wslNewPane?: true }) => Promise<unknown>;
+  rpc: (method: 'session.continueOnAccountV2' | 'session.copyToAccountV1', params: { sessionId: string; configDir: string; wslNewPane?: true }) => Promise<unknown>;
   /** The daemon moved the pane to the account in place (a fan-out task's
    *  launch record follows: fanoutAccountPool.ts notePoolPaneMoved). */
   movedInPlace?: (ptyId: string, accountId: string) => void;
@@ -60,8 +63,6 @@ export async function continuePane(
 ): Promise<ContinuePaneResult> {
   const ptyId = typeof args?.ptyId === 'string' && args.ptyId.length < 256 ? args.ptyId : '';
   const accountId = typeof args?.accountId === 'string' && !isUnsafeKey(args.accountId) ? args.accountId : '';
-  const workspaceId = typeof args?.workspaceId === 'string' && args.workspaceId.length < 256 && !isUnsafeKey(args.workspaceId)
-    ? args.workspaceId : undefined;
   if (!ptyId || !accountId) return { ok: false, code: 'invalid' };
   const account = deps.account(accountId);
   if (!account || !agentRow(account.vendor)?.continueOnAccount) return { ok: false, code: 'invalid_account' };
@@ -70,16 +71,23 @@ export async function continuePane(
   if (!deps.connected()) return { ok: false, code: 'unavailable' };
   let newPane: boolean;
   try {
-    newPane = holdsClaudeSignIn(deps.vaultEntries(account.id)) || deps.sourceSignedIn(ptyId, workspaceId);
+    newPane = holdsClaudeSignIn(deps.vaultEntries(account.id)) || deps.sourceSignedIn(ptyId);
   } catch {
     // Unknown, so neither move is known to be right.
     return { ok: false, code: 'unavailable' };
   }
   try {
+    type Reply = { ok?: unknown; code?: unknown; sessionId?: unknown; cwd?: unknown; permissionMode?: unknown; resumeCommand?: unknown; wsl?: unknown } | null;
+    const params = { sessionId: ptyId, configDir: account.configDir };
     // `wslNewPane`: this main opens a WSL pane's copy as that pane runs (ContinueNewPane.wslFrom).
-    const res = await deps.rpc(newPane ? 'session.copyToAccountV1' : 'session.continueOnAccount',
-      newPane ? { sessionId: ptyId, configDir: account.configDir, wslNewPane: true } : { sessionId: ptyId, configDir: account.configDir }) as
-      { ok?: unknown; code?: unknown; sessionId?: unknown; cwd?: unknown; permissionMode?: unknown; resumeCommand?: unknown; wsl?: unknown } | null;
+    const copyParams = { ...params, wslNewPane: true as const };
+    let res = await deps.rpc(newPane ? 'session.copyToAccountV1' : 'session.continueOnAccountV2', newPane ? copyParams : params) as Reply;
+    // The daemon knows the pane spawned with a sign-in (or cannot tell): it
+    // refused before anything stopped, so copy only, to a new pane.
+    if (!newPane && res?.ok !== true && res?.code === 'env_sign_in') {
+      newPane = true;
+      res = await deps.rpc('session.copyToAccountV1', copyParams) as Reply;
+    }
     if (res?.ok !== true) {
       const code = typeof res?.code === 'string' ? res.code : 'unknown';
       const resume = res?.resumeCommand;
@@ -102,18 +110,13 @@ export async function continuePane(
     return { ok: true, newPane: { accountId: account.id, command, cwd: res.cwd, ...(wsl ? { wslFrom: ptyId } : {}) } };
   } catch (err) {
     // A timeout is not a refusal: the daemon may still finish the move. A
-    // daemon without the copy method answers Unknown method: nothing moved.
-    return { ok: false, code: err instanceof Error && err.message.startsWith('RPC timeout') ? 'pending' : 'unavailable' };
+    // daemon without the method answers Unknown method: nothing moved. Any
+    // other error (the daemon gone mid-call) may land after Claude stopped:
+    // `lost`, a failure, never read as nothing having happened.
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.startsWith('RPC timeout')) return { ok: false, code: 'pending' };
+    return { ok: false, code: message.includes('Unknown method') ? 'unavailable' : 'lost' };
   }
-}
-
-/** The source pane spawned with a vault sign-in: recorded at its create in
- *  this main run, else its workspace's Claude account holds one (a pane from
- *  before this main started got that account's vault, if any). */
-function sourceSignedIn(ptyId: string, workspaceId: string | undefined): boolean {
-  if (paneHasVaultSignIn(ptyId)) return true;
-  const bound = workspaceId ? getAccountStore().getBinding(workspaceId, 'claude') : undefined;
-  return !!bound && holdsClaudeSignIn(appAccountVault().list(bound));
 }
 
 export function registerContinueOnAccountHandler(daemonClient: DaemonClient | undefined): () => void {
@@ -122,7 +125,7 @@ export function registerContinueOnAccountHandler(daemonClient: DaemonClient | un
     continuePane({
       account: (id) => getAccountStore().getAccount(id),
       vaultEntries: (id) => appAccountVault().list(id),
-      sourceSignedIn,
+      sourceSignedIn: paneHasVaultSignIn,
       dirOk: isAccessibleDir,
       connected: () => !!daemonClient?.isConnected,
       rpc: async (method, params) => daemonClient?.rpc(method, params, { timeoutMs: CONTINUE_TIMEOUT_MS }),

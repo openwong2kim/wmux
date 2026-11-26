@@ -56,6 +56,7 @@ const REFUSAL_KEYS: Record<string, string> = {
   turn_open: 'pane.continueOnAccountTurnOpen',
   busy: 'pane.continueOnAccountInProgress',
   pending: 'pane.continueOnAccountPending',
+  lost: 'pane.continueOnAccountLost',
   still_running: 'pane.continueOnAccountStillRunning',
   copy_failed: 'pane.continueOnAccountCopyFailed',
   diverged: 'pane.continueOnAccountDiverged',
@@ -95,6 +96,51 @@ export function stoppedNotRelaunchedToast(
       onClick: () => { void navigator.clipboard?.writeText(resumeCommand).catch(() => undefined); },
     },
   };
+}
+
+/** What one "Continue on <account>" run did to its pane. */
+export type ContinueOutcome =
+  | { kind: 'done' }
+  /** The conversation went to a new pane beside it (a token sign-in). */
+  | { kind: 'new_pane' }
+  /** Refused before anything stopped: the pane is as it was. */
+  | { kind: 'refused'; code: string }
+  /** Claude stopped and the copy exists, but it was not relaunched. */
+  | { kind: 'stopped'; code: string; resumeCommand: string }
+  | { kind: 'failed' };
+
+/**
+ * Continue the pane's Claude conversation on the account, through the
+ * daemon's copy and resume (the pane menu and the workspace account menu's
+ * "switch open panes" both run this). Never throws.
+ */
+export async function continuePaneOnAccount(ptyId: string, accountId: string, workspaceId?: string): Promise<ContinueOutcome> {
+  const api = window.electronAPI?.accounts;
+  if (!api?.continuePane) return { kind: 'failed' };
+  try {
+    const res = await api.continuePane({ ptyId, accountId, ...(workspaceId ? { workspaceId } : {}) });
+    if (res.ok && res.newPane) return openContinuePane(ptyId, res.newPane) ? { kind: 'new_pane' } : { kind: 'failed' };
+    if (res.ok) return { kind: 'done' };
+    if (res.resumeCommand) return { kind: 'stopped', code: res.code, resumeCommand: res.resumeCommand };
+    return { kind: 'refused', code: res.code };
+  } catch {
+    return { kind: 'failed' };
+  }
+}
+
+/** The toast that tells the owner what a continue did. */
+export function continueOutcomeToast(
+  outcome: ContinueOutcome,
+  accountName: string,
+  t: (key: string, vars?: Record<string, string>) => string,
+): Omit<Toast, 'id'> {
+  switch (outcome.kind) {
+    case 'done': return { level: 'info', message: t('pane.continueOnAccountDone', { name: accountName }) };
+    case 'new_pane': return { level: 'info', message: t('pane.continueOnAccountNewPane', { name: accountName }) };
+    case 'stopped': return stoppedNotRelaunchedToast(outcome.code, outcome.resumeCommand, accountName, t);
+    case 'refused': return { level: outcome.code === 'pending' ? 'warn' : 'error', message: t(REFUSAL_KEYS[outcome.code] ?? 'pane.continueOnAccountFailed') };
+    default: return { level: 'error', message: t('pane.continueOnAccountFailed') };
+  }
 }
 
 export function usePaneContinueOnAccount(opts: {
@@ -142,31 +188,9 @@ export function usePaneContinueOnAccount(opts: {
   }, [ready, workspaceId, ptyId]);
 
   const continueOn = useCallback(async (account: { id: string; name: string }) => {
-    const api = window.electronAPI?.accounts;
-    if (!api || !ptyId) return;
-    const { pushToast } = useStore.getState();
-    try {
-      const res = await api.continuePane({ ptyId, accountId: account.id, ...(workspaceId ? { workspaceId } : {}) });
-      if (res.ok && res.newPane) {
-        if (!openContinuePane(ptyId, res.newPane)) {
-          pushToast({ level: 'error', message: t('pane.continueOnAccountFailed') });
-          return;
-        }
-        pushToast({ level: 'info', message: t('pane.continueOnAccountNewPane', { name: account.name }) });
-        return;
-      }
-      if (res.ok) {
-        pushToast({ level: 'info', message: t('pane.continueOnAccountDone', { name: account.name }) });
-        return;
-      }
-      if (res.resumeCommand) {
-        pushToast(stoppedNotRelaunchedToast(res.code, res.resumeCommand, account.name, t));
-        return;
-      }
-      pushToast({ level: res.code === 'pending' ? 'warn' : 'error', message: t(REFUSAL_KEYS[res.code] ?? 'pane.continueOnAccountFailed') });
-    } catch {
-      pushToast({ level: 'error', message: t('pane.continueOnAccountFailed') });
-    }
+    if (!ptyId) return;
+    const outcome = await continuePaneOnAccount(ptyId, account.id, workspaceId);
+    useStore.getState().pushToast(continueOutcomeToast(outcome, account.name, t));
   }, [ptyId, workspaceId, t]);
 
   const enabled = ready && accounts.length > 0;

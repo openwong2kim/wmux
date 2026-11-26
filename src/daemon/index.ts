@@ -10795,6 +10795,10 @@ async function main(): Promise<void> {
     const id = typeof p.sessionId === 'string' ? p.sessionId : '';
     const configDir = typeof p.configDir === 'string' ? p.configDir : '';
     if (!id || !sessionManager.getSession(id)) return { ok: false, code: 'no_session' };
+    // A sign-in variable the pane spawned with (or one not known either way)
+    // stays its sign-in over a folder move: never moved in place. main then
+    // copies only and opens a new pane on the account.
+    if (!copyOnly && sessionManager.getSession(id)?.meta.signInEnv !== false) return { ok: false, code: 'env_sign_in' };
     try {
       return await continueOnAccount({
         pane: (sid) => sessionManager.getSession(sid)?.meta,
@@ -10903,6 +10907,9 @@ async function main(): Promise<void> {
     }
   };
   pipeServer.onRpc('session.continueOnAccount', continueOnAccountRpc(false));
+  // The same move, named apart so a main that relies on the sign-in check
+  // above gets Unknown method from a daemon without it, never a move in place.
+  pipeServer.onRpc('session.continueOnAccountV2', continueOnAccountRpc(false));
   // A method of its own, so a daemon without it answers Unknown method and
   // never moves the pane in place.
   pipeServer.onRpc('session.copyToAccountV1', continueOnAccountRpc(true));
