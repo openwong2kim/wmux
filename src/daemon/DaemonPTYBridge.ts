@@ -30,6 +30,7 @@ import type { TurnFailure } from '../shared/phoneTurnFailure';
 import type { ApprovalScreenReader } from '../shared/approvalScreen';
 import { PROGRAM_STATUS_OSC, ProgramStatusStore, parseProgramStatus, type ProgramStatusRecord } from './programStatus';
 import { noteScreenOutput } from './screenCheckpoint';
+import { isLoopSaturated } from './loopSaturation';
 
 /**
  * #1965 — the answer the daemon gives the bundled OpenConsole's startup DA1.
@@ -2689,6 +2690,9 @@ export class DaemonPTYBridge extends EventEmitter {
     // every session's chunk goes out before any of them is analysed. Whatever
     // reads what the analysis produces flushes it first
     // (flushPendingDetection), so no reader sees the ring ahead of it.
+    // While the daemon's loop is saturated (loopSaturation.ts) a turn is long,
+    // so waiting for the next one costs more than the analysis: each chunk is
+    // then analysed inline before its forward, as before.
     type PendingChunk = {
       /**
        * live: the whole analysis. muted: the detector only; the chunk is held,
@@ -2900,7 +2904,7 @@ export class DaemonPTYBridge extends EventEmitter {
         : oscOpen && !data.includes('\x07') && !data.includes('\x1b\\');
       // Queued before the forward: a reader a data listener calls flushes this chunk too.
       enqueue({ kind, data, byteLength, end: ringBuffer.totalBytesWritten, at, stored });
-      if (beforeForward) drain();
+      if (beforeForward || isLoopSaturated()) drain();
       forward();
     };
     this.captureChunk = (data: string, buf: Buffer) => store('replay', data, Date.now(), buf.length, buf);

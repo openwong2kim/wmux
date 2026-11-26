@@ -11,6 +11,7 @@ import { PromptEventLog } from '../PromptEventLog';
 import { RingBuffer } from '../RingBuffer';
 import { OutputInterpreter } from '../OutputInterpreter';
 import type { AgentSignal } from '../../shared/hooks/signal-types';
+import { LOOP_SATURATED_ENTER_MS, LOOP_SATURATED_EXIT_MS, noteLoopLag, resetLoopSaturationForTests } from '../loopSaturation';
 
 const BIG = 'x'.repeat(3000); // over ActivityMonitor's 2 KB active threshold
 const APPROVAL = 'Would you like to run the following command?\r\n';
@@ -262,5 +263,32 @@ describe('DaemonPTYBridge: bytes first, analysis after, in order', () => {
     pty.feed('\x1b]133;C\x07');
     expect(log.commandRunningIfKnown()).toBe(true);
     expect(log.isCommandRunning()).toBe(true);
+  });
+
+  // 10. While the daemon's loop is saturated, each chunk is analysed before its forward.
+  describe('while the loop is saturated', () => {
+    const forwarded = () => bridge.on('data', (b: Buffer) => events.push(['data', b.toString()]));
+    afterEach(() => resetLoopSaturationForTests());
+
+    it('each chunk is analysed before its bytes are forwarded, chunk by chunk', () => {
+      noteLoopLag(LOOP_SATURATED_ENTER_MS + 1);
+      forwarded();
+      pty.feed('\x1b]133;A\x07');
+      pty.feed('\x1b]133;B\x07');
+      expect(events).toEqual([
+        ['prompt', 'prompt_start'], ['data', '\x1b]133;A\x07'],
+        ['prompt', 'prompt_end'], ['data', '\x1b]133;B\x07'],
+      ]);
+    });
+
+    it('once the loop catches up, the bytes go first again', () => {
+      noteLoopLag(LOOP_SATURATED_ENTER_MS + 1);
+      noteLoopLag(LOOP_SATURATED_EXIT_MS - 1);
+      forwarded();
+      pty.feed('\x1b]133;A\x07');
+      expect(events).toEqual([['data', '\x1b]133;A\x07']]);
+      settle();
+      expect(events).toEqual([['data', '\x1b]133;A\x07'], ['prompt', 'prompt_start']]);
+    });
   });
 });
